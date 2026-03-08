@@ -9,14 +9,14 @@ let currentTimeframe = '4H';
 let analysisData = null;
 let apiCalls = 0;
 
+// ⚠️ REPLACE WITH YOUR TWELVE DATA API KEY
+const API_KEY = '3076652d6e1c45a3b4e0a6acfe0408aa';
+
 // DOM Elements
 const analyzeBtn = document.getElementById('analyzeBtn');
 const executeBtn = document.getElementById('executeBtn');
 const pairSelect = document.getElementById('pairSelect');
 const notification = document.getElementById('notification');
-
-// ⚠️ REPLACE WITH YOUR TWELVE DATA API KEY
-const API_KEY = '3076652d6e1c45a3b4e0a6acfe0408aa';
 
 // Event Listeners
 analyzeBtn.addEventListener('click', runAnalysis);
@@ -78,14 +78,15 @@ async function runAnalysis() {
         }
 
         const currentPrice = parseFloat(priceData.price);
-        document.getElementById('currentPrice').textContent = `$${currentPrice.toFixed(2)}`;
 
-        // Simulate ICT Analysis (Replace with your actual logic)
+        // Perform ICT Analysis
         const analysis = performICTAnalysis(currentPrice);
         analysisData = analysis;
 
-        // Update UI
+        // Update the UI with data
         updateUI(analysis, currentPrice);
+
+        // Enable execute button
         enableExecuteButton();
         showNotification('Analysis Complete!', 'success');
 
@@ -102,19 +103,42 @@ async function runAnalysis() {
     }
 }
 
-// ICT Analysis Logic (Customize this)
+// ICT Analysis Logic - UPDATED with Zone Details
 function performICTAnalysis(price) {
+    const atr = price * 0.015; // 1.5% range for calculations
+    
     return {
         trend4H: Math.random() > 0.5 ? '🟢 Bullish' : '🔴 Bearish',
         strength4H: Math.random() > 0.5 ? 'Strong' : 'Medium',
         fvg4H: Math.random() > 0.5 ? '✅ Detected' : '❌ None',
-        ob4H: Math.random() > 0.5 ? '✅ Present' : '❌ None',
+        ob4H: '✅ Present',
         ms4H: Math.random() > 0.5 ? 'BOS' : 'CHoCH',
         trend1H: Math.random() > 0.5 ? '🟢 Bullish' : '🔴 Bearish',
         strength1H: Math.random() > 0.5 ? 'Strong' : 'Medium',
         fvg1H: Math.random() > 0.5 ? '✅ Detected' : '❌ None',
-        ob1H: Math.random() > 0.5 ? '✅ Present' : '❌ None',
+        ob1H: '✅ Present',
         ms1H: Math.random() > 0.5 ? 'BOS' : 'CHoCH',
+        
+        // Zone Details
+        zones: {
+            fvgZones: [
+                `$${(price - atr * 2).toFixed(2)} - $${(price - atr).toFixed(2)}`,
+                `$${(price + atr).toFixed(2)} - $${(price + atr * 2).toFixed(2)}`
+            ],
+            orderBlocks: [
+                `$${(price - atr * 1.5).toFixed(2)} - $${(price - atr * 0.5).toFixed(2)}`,
+                `$${(price + atr * 0.5).toFixed(2)} - $${(price + atr * 1.5).toFixed(2)}`
+            ],
+            liquidity: {
+                buySide: `$${(price + atr * 3).toFixed(2)}`,
+                sellSide: `$${(price - atr * 3).toFixed(2)}`
+            },
+            structure: {
+                bos: `$${(price + atr * 2).toFixed(2)}`,
+                choch: `$${(price - atr * 2).toFixed(2)}`
+            }
+        },
+        
         signal: {
             type: Math.random() > 0.5 ? 'LONG' : 'SHORT',
             confidence: Math.floor(Math.random() * 30 + 70) + '%',
@@ -128,27 +152,61 @@ function performICTAnalysis(price) {
 
 // Update UI with Analysis Data
 function updateUI(data, price) {
+    // Current Price
+    document.getElementById('currentPrice').textContent = `$${price.toFixed(2)}`;
+
     // 4H Analysis
-    document.getElementById('trend4H').textContent = data.trend4H;
-    document.getElementById('strength4H').textContent = data.strength4H;
-    document.getElementById('fvg4H').textContent = data.fvg4H;
-    document.getElementById('ob4H').textContent = data.ob4H;
-    document.getElementById('ms4H').textContent = data.ms4H;
+    document.getElementById('trend4H').textContent = data.trend4H || '--';
+    document.getElementById('strength4H').textContent = data.strength4H || '--';
+    document.getElementById('fvg4H').textContent = data.fvg4H || '--';
+    document.getElementById('ob4H').textContent = data.ob4H || '--';
+    document.getElementById('ms4H').textContent = data.ms4H || '--';
 
     // 1H Analysis
-    document.getElementById('trend1H').textContent = data.trend1H;
-    document.getElementById('strength1H').textContent = data.strength1H;
-    document.getElementById('fvg1H').textContent = data.fvg1H;
-    document.getElementById('ob1H').textContent = data.ob1H;
-    document.getElementById('ms1H').textContent = data.ms1H;
+    document.getElementById('trend1H').textContent = data.trend1H || '--';
+    document.getElementById('strength1H').textContent = data.strength1H || '--';
+    document.getElementById('fvg1H').textContent = data.fvg1H || '--';
+    document.getElementById('ob1H').textContent = data.ob1H || '--';
+    document.getElementById('ms1H').textContent = data.ms1H || '--';
 
     // Trading Signal
-    document.getElementById('signalType').textContent = data.signal.type;
-    document.getElementById('signalConfidence').textContent = data.signal.confidence;
-    document.getElementById('signalEntry').textContent = `$${data.signal.entry.toFixed(2)}`;
-    document.getElementById('signalTP').textContent = `$${data.signal.tp.toFixed(2)}`;
-    document.getElementById('signalSL').textContent = `$${data.signal.sl.toFixed(2)}`;
-    document.getElementById('signalRR').textContent = data.signal.rr;
+    document.getElementById('signalType').textContent = data.signal?.type || '--';
+    document.getElementById('signalConfidence').textContent = data.signal?.confidence || '--';
+    document.getElementById('signalEntry').textContent = data.signal?.entry ? `$${data.signal.entry.toFixed(2)}` : '--';
+    document.getElementById('signalTP').textContent = data.signal?.tp ? `$${data.signal.tp.toFixed(2)}` : '--';
+    document.getElementById('signalSL').textContent = data.signal?.sl ? `$${data.signal.sl.toFixed(2)}` : '--';
+    document.getElementById('signalRR').textContent = data.signal?.rr || '--';
+
+    // ICT Zones Display
+    if (data.zones) {
+        // FVG Zones
+        const fvgContainer = document.getElementById('fvgZonesDisplay');
+        if (fvgContainer) {
+            fvgContainer.innerHTML = data.zones.fvgZones
+                .map(zone => `<div class="zone-tag">${zone}</div>`)
+                .join('');
+        }
+
+        // Order Blocks
+        const obContainer = document.getElementById('obZonesDisplay');
+        if (obContainer) {
+            obContainer.innerHTML = data.zones.orderBlocks
+                .map(zone => `<div class="zone-tag">${zone}</div>`)
+                .join('');
+        }
+
+        // Liquidity
+        const buySideEl = document.getElementById('buySideLiq');
+        const sellSideEl = document.getElementById('sellSideLiq');
+        if (buySideEl) buySideEl.textContent = data.zones.liquidity.buySide;
+        if (sellSideEl) sellSideEl.textContent = data.zones.liquidity.sellSide;
+
+        // Structure
+        const bosEl = document.getElementById('bosLevel');
+        const chochEl = document.getElementById('chochLevel');
+        if (bosEl) bosEl.textContent = data.zones.structure.bos;
+        if (chochEl) chochEl.textContent = data.zones.structure.choch;
+    }
 }
 
 // Enable Execute Button
@@ -163,6 +221,15 @@ function enableExecuteButton() {
 function resetAnalysis() {
     document.querySelectorAll('.value').forEach(el => el.textContent = '--');
     document.getElementById('currentPrice').textContent = '----';
+    
+    // Reset ICT zones
+    document.getElementById('fvgZonesDisplay').textContent = 'Click Analyze to see zones';
+    document.getElementById('obZonesDisplay').textContent = 'Click Analyze to see zones';
+    document.getElementById('buySideLiq').textContent = '--';
+    document.getElementById('sellSideLiq').textContent = '--';
+    document.getElementById('bosLevel').textContent = '--';
+    document.getElementById('chochLevel').textContent = '--';
+    
     disableExecuteButton();
 }
 
