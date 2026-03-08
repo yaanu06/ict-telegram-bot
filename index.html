@@ -154,14 +154,38 @@
             <button id="executeBtn" class="execute-btn" disabled>⚡ Execute Order</button>
         </div>
 
-        <!-- ICT Details -->
+        <!-- ICT Analysis Details - UPDATED SECTION -->
         <div class="section ict-details">
             <h3>📊 ICT Analysis Details</h3>
-            <div class="ict-grid">
-                <div class="ict-item">🔷 FVG Zones</div>
-                <div class="ict-item">📦 Order Blocks</div>
-                <div class="ict-item">💧 Liquidity</div>
-                <div class="ict-item">⚡ Structure</div>
+            
+            <h4>🔷 FVG Zones</h4>
+            <div id="fvgZonesDisplay" class="zone-display">Click Analyze to see zones</div>
+            
+            <h4>📦 Order Blocks</h4>
+            <div id="obZonesDisplay" class="zone-display">Click Analyze to see zones</div>
+            
+            <h4>💧 Liquidity Levels</h4>
+            <div class="zone-grid">
+                <div class="zone-box">
+                    <label>Buy Side (BSL)</label>
+                    <span id="buySideLiq">--</span>
+                </div>
+                <div class="zone-box">
+                    <label>Sell Side (SSL)</label>
+                    <span id="sellSideLiq">--</span>
+                </div>
+            </div>
+            
+            <h4>⚡ Market Structure</h4>
+            <div class="zone-grid">
+                <div class="zone-box">
+                    <label>BOS Level</label>
+                    <span id="bosLevel">--</span>
+                </div>
+                <div class="zone-box">
+                    <label>CHoCH Level</label>
+                    <span id="chochLevel">--</span>
+                </div>
             </div>
         </div>
 
