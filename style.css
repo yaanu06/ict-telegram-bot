@@ -47,6 +47,12 @@ body {
     color: var(--tg-theme-text-color, #ffffff);
 }
 
+.section h4 {
+    font-size: 14px;
+    margin: 12px 0 8px 0;
+    color: var(--tg-theme-text-color, #ffffff);
+}
+
 .btn-group {
     display: flex;
     gap: 8px;
@@ -175,18 +181,56 @@ body {
     cursor: not-allowed;
 }
 
-.ict-grid {
+/* ICT Details Section */
+.ict-details {
+    background: var(--tg-theme-secondary-bg-color, #2c2c2e);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.zone-display {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 16px;
+}
+
+.zone-tag {
+    background: var(--tg-theme-bg-color, #1c1c1e);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: monospace;
+    color: var(--tg-theme-button-color, #3390ec);
+}
+
+.zone-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 8px;
+    margin-bottom: 16px;
 }
 
-.ict-item {
+.zone-box {
     background: var(--tg-theme-bg-color, #1c1c1e);
-    padding: 12px;
+    padding: 10px;
     border-radius: 8px;
     text-align: center;
+}
+
+.zone-box label {
+    display: block;
+    font-size: 11px;
+    color: var(--tg-theme-hint-color, #8e8e93);
+    margin-bottom: 4px;
+}
+
+.zone-box span {
     font-size: 14px;
+    font-weight: bold;
+    color: var(--tg-theme-button-color, #3390ec);
+    font-family: monospace;
 }
 
 .notification {
