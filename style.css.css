@@ -1,0 +1,238 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+body {
+    background-color: var(--tg-theme-bg-color, #1c1c1e);
+    color: var(--tg-theme-text-color, #ffffff);
+    min-height: 100vh;
+    padding: 16px;
+}
+
+.container {
+    max-width: 500px;
+    margin: 0 auto;
+}
+
+.header {
+    text-align: center;
+    padding: 20px 0;
+    border-bottom: 1px solid var(--tg-theme-hint-color, #3a3a3c);
+    margin-bottom: 20px;
+}
+
+.header h1 {
+    font-size: 24px;
+    margin-bottom: 8px;
+}
+
+.subtitle {
+    color: var(--tg-theme-hint-color, #8e8e93);
+    font-size: 14px;
+}
+
+.section {
+    background: var(--tg-theme-secondary-bg-color, #2c2c2e);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.section h3 {
+    font-size: 16px;
+    margin-bottom: 12px;
+    color: var(--tg-theme-text-color, #ffffff);
+}
+
+.btn-group {
+    display: flex;
+    gap: 8px;
+}
+
+.category-btn, .tf-btn {
+    flex: 1;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    background: var(--tg-theme-button-color, #3390ec);
+    color: var(--tg-theme-button-text-color, #ffffff);
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.category-btn.active, .tf-btn.active {
+    opacity: 1;
+}
+
+.category-btn:not(.active), .tf-btn:not(.active) {
+    background: var(--tg-theme-hint-color, #3a3a3c);
+    opacity: 0.7;
+}
+
+.input-field {
+    width: 100%;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--tg-theme-hint-color, #3a3a3c);
+    background: var(--tg-theme-bg-color, #1c1c1e);
+    color: var(--tg-theme-text-color, #ffffff);
+    font-size: 16px;
+}
+
+.chart-container {
+    text-align: center;
+    padding: 20px 0;
+}
+
+.current-price {
+    font-size: 32px;
+    font-weight: bold;
+    color: var(--tg-theme-button-color, #3390ec);
+    margin-bottom: 16px;
+}
+
+.timeframe-btns {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+}
+
+.analyze-btn {
+    width: 100%;
+    padding: 16px;
+    border: none;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #3390ec, #007aff);
+    color: #ffffff;
+    font-size: 18px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+.analyze-btn:active {
+    transform: scale(0.98);
+}
+
+.analyze-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.status-section .status-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 14px;
+}
+
+.connection-status {
+    color: #34c759;
+}
+
+.analysis-grid, .signal-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.analysis-item, .signal-item {
+    background: var(--tg-theme-bg-color, #1c1c1e);
+    padding: 12px;
+    border-radius: 8px;
+}
+
+.analysis-item label, .signal-item label {
+    display: block;
+    font-size: 12px;
+    color: var(--tg-theme-hint-color, #8e8e93);
+    margin-bottom: 4px;
+}
+
+.analysis-item .value, .signal-item .value {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.execute-btn {
+    width: 100%;
+    padding: 16px;
+    border: none;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #34c759, #30d158);
+    color: #ffffff;
+    font-size: 18px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.execute-btn:disabled {
+    background: var(--tg-theme-hint-color, #3a3a3c);
+    cursor: not-allowed;
+}
+
+.ict-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.ict-item {
+    background: var(--tg-theme-bg-color, #1c1c1e);
+    padding: 12px;
+    border-radius: 8px;
+    text-align: center;
+    font-size: 14px;
+}
+
+.notification {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 12px 24px;
+    border-radius: 8px;
+    background: var(--tg-theme-button-color, #3390ec);
+    color: #ffffff;
+    font-size: 14px;
+    z-index: 1000;
+}
+
+.notification.hidden {
+    display: none;
+}
+
+.notification.success {
+    background: #34c759;
+}
+
+.notification.error {
+    background: #ff3b30;
+}
+
+.loading {
+    position: relative;
+    pointer-events: none;
+}
+
+.loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 20px;
+    height: 20px;
+    border: 2px solid transparent;
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    transform: translate(-50%, -50%);
+}
+
+@keyframes spin {
+    to { transform: translate(-50%, -50%) rotate(360deg); }
+}

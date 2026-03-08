@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>ICT Trading Bot</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>📊 ICT Trading Bot</h1>
+            <p class="subtitle">Twelve Data API - Real-time Market Analysis</p>
+        </div>
+
+        <!-- Market Categories -->
+        <div class="section">
+            <h3>🔄 Market Categories</h3>
+            <div class="btn-group">
+                <button class="category-btn active" data-category="crypto">Crypto</button>
+                <button class="category-btn" data-category="forex">Forex</button>
+                <button class="category-btn" data-category="metals">Metals</button>
+            </div>
+        </div>
+
+        <!-- Trading Pairs -->
+        <div class="section">
+            <h3>💱 Trading Pairs</h3>
+            <select id="pairSelect" class="input-field">
+                <option value="BTC/USD">BTC/USD</option>
+                <option value="ETH/USD">ETH/USD</option>
+                <option value="EUR/USD">EUR/USD</option>
+                <option value="GBP/USD">GBP/USD</option>
+                <option value="XAU/USD">XAU/USD</option>
+            </select>
+        </div>
+
+        <!-- Price Chart Section -->
+        <div class="section">
+            <h3>📈 Price Chart</h3>
+            <div class="chart-container">
+                <div id="currentPrice" class="current-price">----</div>
+                <div class="timeframe-btns">
+                    <button class="tf-btn" data-tf="1H">1H</button>
+                    <button class="tf-btn active" data-tf="4H">4H</button>
+                    <button class="tf-btn" data-tf="1D">1D</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Analyze Button -->
+        <div class="section">
+            <button id="analyzeBtn" class="analyze-btn">🔍 Analyze Signal</button>
+        </div>
+
+        <!-- API Status -->
+        <div class="section status-section">
+            <h3>📊 API Status</h3>
+            <div class="status-info">
+                <span>API Usage: <strong id="apiUsage">0 / 800</strong> calls</span>
+                <span class="connection-status">🟢 Connection Ready</span>
+            </div>
+        </div>
+
+        <!-- 4H Analysis -->
+        <div class="section analysis-card">
+            <h3>⏱️ 4H Analysis</h3>
+            <div class="analysis-grid">
+                <div class="analysis-item">
+                    <label>Trend Direction</label>
+                    <span id="trend4H" class="value">--</span>
+                </div>
+                <div class="analysis-item">
+                    <label>Strength</label>
+                    <span id="strength4H" class="value">--</span>
+                </div>
+                <div class="analysis-item">
+                    <label>FVG Status</label>
+                    <span id="fvg4H" class="value">--</span>
+                </div>
+                <div class="analysis-item">
+                    <label>Order Blocks</label>
+                    <span id="ob4H" class="value">--</span>
+                </div>
+                <div class="analysis-item">
+                    <label>Market Structure</label>
+                    <span id="ms4H" class="value">--</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 1H Analysis -->
+        <div class="section analysis-card">
+            <h3>⏰ 1H Analysis</h3>
+            <div class="analysis-grid">
+                <div class="analysis-item">
+                    <label>Trend Direction</label>
+                    <span id="trend1H" class="value">--</span>
+                </div>
+                <div class="analysis-item">
+                    <label>Strength</label>
+                    <span id="strength1H" class="value">--</span>
+                </div>
+                <div class="analysis-item">
+                    <label>FVG Status</label>
+                    <span id="fvg1H" class="value">--</span>
+                </div>
+                <div class="analysis-item">
+                    <label>Order Blocks</label>
+                    <span id="ob1H" class="value">--</span>
+                </div>
+                <div class="analysis-item">
+                    <label>Market Structure</label>
+                    <span id="ms1H" class="value">--</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Trading Signal -->
+        <div class="section signal-card">
+            <h3>🎯 Trading Signal</h3>
+            <div class="signal-grid">
+                <div class="signal-item">
+                    <label>Type</label>
+                    <span id="signalType" class="value">--</span>
+                </div>
+                <div class="signal-item">
+                    <label>Confidence</label>
+                    <span id="signalConfidence" class="value">--</span>
+                </div>
+                <div class="signal-item">
+                    <label>Entry</label>
+                    <span id="signalEntry" class="value">--</span>
+                </div>
+                <div class="signal-item">
+                    <label>TP</label>
+                    <span id="signalTP" class="value">--</span>
+                </div>
+                <div class="signal-item">
+                    <label>SL</label>
+                    <span id="signalSL" class="value">--</span>
+                </div>
+                <div class="signal-item">
+                    <label>R:R</label>
+                    <span id="signalRR" class="value">--</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Execute Order Button -->
+        <div class="section">
+            <button id="executeBtn" class="execute-btn" disabled>⚡ Execute Order</button>
+        </div>
+
+        <!-- ICT Details -->
+        <div class="section ict-details">
+            <h3>📊 ICT Analysis Details</h3>
+            <div class="ict-grid">
+                <div class="ict-item">🔷 FVG Zones</div>
+                <div class="ict-item">📦 Order Blocks</div>
+                <div class="ict-item">💧 Liquidity</div>
+                <div class="ict-item">⚡ Structure</div>
+            </div>
+        </div>
+
+        <!-- Notification -->
+        <div id="notification" class="notification hidden"></div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
