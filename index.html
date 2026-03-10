@@ -3,19 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>ICT Trading Bot</title>
+    <title>🚀 Advanced ICT Trading Bot</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
-        <!-- Header -->
+        <!-- ===== HEADER ===== -->
         <div class="header">
-            <h1>📊 ICT Trading Bot</h1>
-            <p class="subtitle">Twelve Data API - Real-time Market Analysis</p>
+            <h1>🚀 ICT Trading Bot</h1>
+            <p class="subtitle">Advanced Market Analysis & Risk Management</p>
         </div>
 
-        <!-- Market Categories -->
+        <!-- ===== MARKET CATEGORIES ===== -->
         <div class="section">
             <h3>🔄 Market Categories</h3>
             <div class="btn-group">
@@ -25,21 +25,23 @@
             </div>
         </div>
 
-        <!-- Trading Pairs -->
+        <!-- ===== TRADING PAIRS ===== -->
         <div class="section">
             <h3>💱 Trading Pairs</h3>
             <select id="pairSelect" class="input-field">
                 <option value="BTC/USD">BTC/USD</option>
                 <option value="ETH/USD">ETH/USD</option>
+                <option value="BNB/USD">BNB/USD</option>
+                <option value="SOL/USD">SOL/USD</option>
                 <option value="EUR/USD">EUR/USD</option>
                 <option value="GBP/USD">GBP/USD</option>
                 <option value="XAU/USD">XAU/USD</option>
             </select>
         </div>
 
-        <!-- Price Chart Section -->
+        <!-- ===== PRICE CHART SECTION ===== -->
         <div class="section">
-            <h3>📈 Price Chart</h3>
+            <h3>📈 Current Market Price</h3>
             <div class="chart-container">
                 <div id="currentPrice" class="current-price">----</div>
                 <div class="timeframe-btns">
@@ -50,128 +52,136 @@
             </div>
         </div>
 
-        <!-- Analyze Button -->
+        <!-- ===== ANALYZE BUTTON ===== -->
         <div class="section">
             <button id="analyzeBtn" class="analyze-btn">🔍 Analyze Signal</button>
         </div>
 
-        <!-- API Status -->
+        <!-- ===== API STATUS ===== -->
         <div class="section status-section">
             <h3>📊 API Status</h3>
             <div class="status-info">
-                <span>API Usage: <strong id="apiUsage">0 / 800</strong> calls</span>
-                <span class="connection-status">🟢 Connection Ready</span>
+                <span>📡 API Calls: <strong id="apiUsage">0 / 800</strong></span>
+                <span class="connection-status">🟢 Connected</span>
             </div>
         </div>
 
-        <!-- 4H Analysis -->
+        <!-- ===== 4H ANALYSIS CARD ===== -->
         <div class="section analysis-card">
-            <h3>⏱️ 4H Analysis</h3>
+            <h3>⏱️ 4H Timeframe Analysis</h3>
             <div class="analysis-grid">
                 <div class="analysis-item">
-                    <label>Trend Direction</label>
+                    <label>📊 Trend</label>
                     <span id="trend4H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>Strength</label>
+                    <label>💪 Strength</label>
                     <span id="strength4H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>FVG Status</label>
+                    <label>🎯 FVG</label>
                     <span id="fvg4H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>Order Blocks</label>
+                    <label>📦 Order Blocks</label>
                     <span id="ob4H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>Market Structure</label>
+                    <label>⚡ Structure</label>
                     <span id="ms4H" class="value">--</span>
+                </div>
+                <div class="analysis-item">
+                    <label>🔍 Confidence</label>
+                    <span id="conf4H" class="value">--</span>
                 </div>
             </div>
         </div>
 
-        <!-- 1H Analysis -->
+        <!-- ===== 1H ANALYSIS CARD ===== -->
         <div class="section analysis-card">
-            <h3>⏰ 1H Analysis</h3>
+            <h3>⏰ 1H Timeframe Analysis</h3>
             <div class="analysis-grid">
                 <div class="analysis-item">
-                    <label>Trend Direction</label>
+                    <label>📊 Trend</label>
                     <span id="trend1H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>Strength</label>
+                    <label>💪 Strength</label>
                     <span id="strength1H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>FVG Status</label>
+                    <label>🎯 FVG</label>
                     <span id="fvg1H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>Order Blocks</label>
+                    <label>📦 Order Blocks</label>
                     <span id="ob1H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>Market Structure</label>
+                    <label>⚡ Structure</label>
                     <span id="ms1H" class="value">--</span>
+                </div>
+                <div class="analysis-item">
+                    <label>🔍 Confidence</label>
+                    <span id="conf1H" class="value">--</span>
                 </div>
             </div>
         </div>
 
-        <!-- Trading Signal -->
+        <!-- ===== TRADING SIGNAL CARD ===== -->
         <div class="section signal-card">
-            <h3>🎯 Trading Signal</h3>
+            <h3>🎯 Trading Signal & Risk Management</h3>
             <div class="signal-grid">
                 <div class="signal-item">
-                    <label>Type</label>
+                    <label>📍 Signal Type</label>
                     <span id="signalType" class="value">--</span>
                 </div>
                 <div class="signal-item">
-                    <label>Confidence</label>
+                    <label>🎲 Confidence</label>
                     <span id="signalConfidence" class="value">--</span>
                 </div>
                 <div class="signal-item">
-                    <label>Entry</label>
+                    <label>💰 Entry Price</label>
                     <span id="signalEntry" class="value">--</span>
                 </div>
                 <div class="signal-item">
-                    <label>TP</label>
+                    <label>🎯 Take Profit</label>
                     <span id="signalTP" class="value">--</span>
                 </div>
                 <div class="signal-item">
-                    <label>SL</label>
+                    <label>🛑 Stop Loss</label>
                     <span id="signalSL" class="value">--</span>
                 </div>
                 <div class="signal-item">
-                    <label>R:R</label>
+                    <label>📊 Risk:Reward</label>
                     <span id="signalRR" class="value">--</span>
                 </div>
             </div>
         </div>
 
-        <!-- Execute Order Button -->
+        <!-- ===== EXECUTE ORDER BUTTON ===== -->
         <div class="section">
             <button id="executeBtn" class="execute-btn" disabled>⚡ Execute Order</button>
         </div>
 
-        <!-- ICT Analysis Details - UPDATED SECTION -->
+        <!-- ===== ICT ANALYSIS DETAILS ===== -->
         <div class="section ict-details">
             <h3>📊 ICT Analysis Details</h3>
             
-            <h4>🔷 FVG Zones</h4>
+            <h4>🔷 Fair Value Gap (FVG) Zones</h4>
             <div id="fvgZonesDisplay" class="zone-display">Click Analyze to see zones</div>
             
-            <h4>📦 Order Blocks</h4>
+            <h4>📦 Order Block Zones</h4>
             <div id="obZonesDisplay" class="zone-display">Click Analyze to see zones</div>
             
             <h4>💧 Liquidity Levels</h4>
             <div class="zone-grid">
                 <div class="zone-box">
-                    <label>Buy Side (BSL)</label>
+                    <label>Buy Side Liquidity</label>
                     <span id="buySideLiq">--</span>
                 </div>
                 <div class="zone-box">
-                    <label>Sell Side (SSL)</label>
+                    <label>Sell Side Liquidity</label>
                     <span id="sellSideLiq">--</span>
                 </div>
             </div>
@@ -179,17 +189,17 @@
             <h4>⚡ Market Structure</h4>
             <div class="zone-grid">
                 <div class="zone-box">
-                    <label>BOS Level</label>
+                    <label>Break of Structure</label>
                     <span id="bosLevel">--</span>
                 </div>
                 <div class="zone-box">
-                    <label>CHoCH Level</label>
+                    <label>Change of Character</label>
                     <span id="chochLevel">--</span>
                 </div>
             </div>
         </div>
 
-        <!-- Notification -->
+        <!-- ===== NOTIFICATION ===== -->
         <div id="notification" class="notification hidden"></div>
     </div>
 
