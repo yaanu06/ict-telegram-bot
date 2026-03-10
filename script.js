@@ -105,47 +105,61 @@ async function runAnalysis() {
 
 // ICT Analysis Logic - UPDATED with Zone Details
 function performICTAnalysis(price) {
-    const atr = price * 0.015; // 1.5% range for calculations
+    const volatilityFactor = price * 0.015; // Using 1.5% of price as a volatility proxy (like a simplified ATR)
+    const riskMultiplier = 1.5; // SL will be 1.5 times the volatility factor
+    const targetRR = 2; // Target Risk-Reward ratio (e.g., 1:2)
+
+    let signalSL, signalTP;
+    const signalType = Math.random() > 0.5 ? 'LONG' : 'SHORT'; // Keep random for now, but will be replaced by actual analysis
+
+    if (signalType === 'LONG') {
+        signalSL = price - (volatilityFactor * riskMultiplier);
+        signalTP = price + (volatilityFactor * riskMultiplier * targetRR);
+    } else { // SHORT
+        signalSL = price + (volatilityFactor * riskMultiplier);
+        signalTP = price - (volatilityFactor * riskMultiplier * targetRR);
+    }
     
     return {
-        trend4H: Math.random() > 0.5 ? '🟢 Bullish' : '🔴 Bearish',
-        strength4H: Math.random() > 0.5 ? 'Strong' : 'Medium',
-        fvg4H: Math.random() > 0.5 ? '✅ Detected' : '❌ None',
-        ob4H: '✅ Present',
-        ms4H: Math.random() > 0.5 ? 'BOS' : 'CHoCH',
-        trend1H: Math.random() > 0.5 ? '🟢 Bullish' : '🔴 Bearish',
-        strength1H: Math.random() > 0.5 ? 'Strong' : 'Medium',
-        fvg1H: Math.random() > 0.5 ? '✅ Detected' : '❌ None',
-        ob1H: '✅ Present',
-        ms1H: Math.random() > 0.5 ? 'BOS' : 'CHoCH',
+        // Placeholder values for ICT analysis as historical data is not available
+        trend4H: 'Neutral', // Placeholder
+        strength4H: 'Medium', // Placeholder
+        fvg4H: 'N/A', // Placeholder
+        ob4H: 'N/A', // Placeholder
+        ms4H: 'N/A', // Placeholder
+        trend1H: 'Neutral', // Placeholder
+        strength1H: 'Medium', // Placeholder
+        fvg1H: 'N/A', // Placeholder
+        ob1H: 'N/A', // Placeholder
+        ms1H: 'N/A', // Placeholder
         
         // Zone Details
         zones: {
             fvgZones: [
-                `$${(price - atr * 2).toFixed(2)} - $${(price - atr).toFixed(2)}`,
-                `$${(price + atr).toFixed(2)} - $${(price + atr * 2).toFixed(2)}`
+                `$${(price - volatilityFactor * 2).toFixed(2)} - $${(price - volatilityFactor).toFixed(2)}`,
+                `$${(price + volatilityFactor).toFixed(2)} - $${(price + volatilityFactor * 2).toFixed(2)}`
             ],
             orderBlocks: [
-                `$${(price - atr * 1.5).toFixed(2)} - $${(price - atr * 0.5).toFixed(2)}`,
-                `$${(price + atr * 0.5).toFixed(2)} - $${(price + atr * 1.5).toFixed(2)}`
+                `$${(price - volatilityFactor * 1.5).toFixed(2)} - $${(price - volatilityFactor * 0.5).toFixed(2)}`,
+                `$${(price + volatilityFactor * 0.5).toFixed(2)} - $${(price + volatilityFactor * 1.5).toFixed(2)}`
             ],
             liquidity: {
-                buySide: `$${(price + atr * 3).toFixed(2)}`,
-                sellSide: `$${(price - atr * 3).toFixed(2)}`
+                buySide: `$${(price + volatilityFactor * 3).toFixed(2)}`,
+                sellSide: `$${(price - volatilityFactor * 3).toFixed(2)}`
             },
             structure: {
-                bos: `$${(price + atr * 2).toFixed(2)}`,
-                choch: `$${(price - atr * 2).toFixed(2)}`
+                bos: `$${(price + volatilityFactor * 2).toFixed(2)}`,
+                choch: `$${(price - volatilityFactor * 2).toFixed(2)}`
             }
         },
         
         signal: {
-            type: Math.random() > 0.5 ? 'LONG' : 'SHORT',
+            type: signalType,
             confidence: Math.floor(Math.random() * 30 + 70) + '%',
             entry: price,
-            tp: price * 1.02,
-            sl: price * 0.98,
-            rr: '1:2'
+            tp: signalTP,
+            sl: signalSL,
+            rr: `1:${targetRR}`
         }
     };
 }
