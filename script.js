@@ -18,8 +18,23 @@ const executeBtn = document.getElementById('executeBtn');
 const pairSelect = document.getElementById('pairSelect');
 const notification = document.getElementById("notification");
 const accountBalanceInput = document.getElementById("accountBalance");
-const riskAmountInput = document.getElementById("riskAmount");
-const calculatedLotSizeSpan = document.getElementById("calculatedLotSize");
+    const riskAmountInput = document.getElementById("riskAmount");
+    const calculatedLotSizeSpan = document.getElementById("calculatedLotSize");
+
+// Define contract sizes for different pairs (example values, adjust as needed)
+const contractSizes = {
+    'BTC/USD': 1,     // 1 unit = 1 BTC
+    'ETH/USD': 1,     // 1 unit = 1 ETH
+    'BNB/USD': 1,     // 1 unit = 1 BNB
+    'SOL/USD': 1,     // 1 unit = 1 SOL
+    'EUR/USD': 100000, // 1 lot = 100,000 units
+    'GBP/USD': 100000,
+    'USD/JPY': 100000,
+    'AUD/USD': 100000,
+    'XAU/USD': 100,    // 1 lot = 100 ounces of Gold
+    'XAG/USD': 5000,   // 1 lot = 5000 ounces of Silver
+    'XPT/USD': 50     // 1 lot = 50 ounces of Platinum
+};
 
 // Event Listeners
 analyzeBtn.addEventListener('click', runAnalysis);
@@ -28,7 +43,6 @@ executeBtn.addEventListener('click', executeOrder);
 pairSelect.addEventListener("change", (e) => {
     currentPair = e.target.value;
     resetAnalysis();
-    calculateLotSize();
 });
 
 accountBalanceInput.addEventListener("input", calculateLotSize);
@@ -317,8 +331,8 @@ function calculateLotSize() {
     const accountBalance = parseFloat(accountBalanceInput.value);
     const riskAmount = parseFloat(riskAmountInput.value);
     
-    if (isNaN(accountBalance) || isNaN(riskAmount) || !analysisData || !analysisData.signal) {
-        calculatedLotSizeSpan.textContent = '--';
+    if (isNaN(accountBalance) || isNaN(riskAmount) || !analysisData || !analysisData.signal || !analysisData.signal.entry || !analysisData.signal.sl) {
+        calculatedLotSizeSpan.textContent = `--`;
         return;
     }
 
@@ -326,7 +340,7 @@ function calculateLotSize() {
     const stopLossPrice = analysisData.signal.sl;
 
     if (entryPrice === 0 || stopLossPrice === 0) {
-        calculatedLotSizeSpan.textContent = '--';
+        calculatedLotSizeSpan.textContent = `Calculating...`;
         return;
     }
 
@@ -338,9 +352,11 @@ function calculateLotSize() {
         return;
     }
 
-    // Calculate lot size (assuming 1 unit per lot for simplicity for now)
-    // In a real scenario, you might need to adjust for contract size, leverage, etc.
-    const lotSize = riskAmount / dollarRiskPerUnit;
+    // Get the contract size for the current pair, default to 1 if not found
+    const contractSize = contractSizes[currentPair] || 1;
+
+    // Calculate lot size based on risk amount, dollar risk per unit, and contract size
+    const lotSize = (riskAmount / dollarRiskPerUnit) / contractSize;
 
     calculatedLotSizeSpan.textContent = `${lotSize.toFixed(2)} units`;
 }
@@ -378,19 +394,38 @@ function calculateATR(data, period = 14) {
     return atr;
 }
 
-// Helper function to determine trend from historical data (simplified)
-function getTrend(data) {
-    if (!data || data.length < 20) return 'Neutral';
+// Helper function to determine trend from historical data using Moving Averages
+function getTrend(data, shortPeriod = 5, longPeriod = 20) {
+    if (!data || data.length < longPeriod) return 'Neutral';
 
-    const recentData = data.slice(0, 20); // Use last 20 periods
-    const startPrice = parseFloat(recentData[recentData.length - 1].close);
-    const endPrice = parseFloat(recentData[0].close);
+    // Ensure data is sorted from oldest to newest for MA calculation
+    const sortedData = [...data].reverse();
 
-    const change = ((endPrice - startPrice) / startPrice) * 100;
+    const closes = sortedData.map(d => parseFloat(d.close));
 
-    if (change > 1) return '🟢 Bullish';
-    if (change < -1) return '🔴 Bearish';
-    return 'Neutral';
+    // Calculate Simple Moving Averages
+    const calculateSMA = (arr, period) => {
+        if (arr.length < period) return null;
+        let sum = 0;
+        for (let i = 0; i < period; i++) {
+            sum += arr[arr.length - 1 - i];
+        }
+        return sum / period;
+    };
+
+    const smaShort = calculateSMA(closes, shortPeriod);
+    const smaLong = calculateSMA(closes, longPeriod);
+
+    if (smaShort === null || smaLong === null) return 'Neutral';
+
+    // Trend determination based on MA crossover
+    if (smaShort > smaLong) {
+        return '🟢 Bullish';
+    } else if (smaShort < smaLong) {
+        return '🔴 Bearish';
+    } else {
+        return 'Neutral';
+    }
 }
 
 // Initial calculation on page load
