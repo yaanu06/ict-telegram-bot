@@ -175,6 +175,7 @@ function updateUI(data, price) {
     document.getElementById('fvg4H').textContent = data.fvg4H || '--';
     document.getElementById('ob4H').textContent = data.ob4H || '--';
     document.getElementById('ms4H').textContent = data.ms4H || '--';
+    document.getElementById('conf4H').textContent = data.signal?.confidence || '--';
 
     // 1H Analysis
     document.getElementById('trend1H').textContent = data.trend1H || '--';
@@ -182,6 +183,7 @@ function updateUI(data, price) {
     document.getElementById('fvg1H').textContent = data.fvg1H || '--';
     document.getElementById('ob1H').textContent = data.ob1H || '--';
     document.getElementById('ms1H').textContent = data.ms1H || '--';
+    document.getElementById('conf1H').textContent = data.signal?.confidence || '--';
 
     // Trading Signal
     document.getElementById('signalType').textContent = data.signal?.type || '--';
