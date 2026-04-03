@@ -7,7 +7,7 @@ if (tg) {
 
 // Configuration
 const API_KEY = '3076652d6e1c45a3b4e0a6acfe0408aa';
-const USE_MOCK_DATA = true; // Set to false when API works
+const USE_MOCK_DATA = false; // Set to false when API works
 
 // State
 let currentPair = 'BTC/USD';
