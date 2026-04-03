@@ -5,7 +5,6 @@ tg.ready();
 
 // Configuration
 const API_KEY = '3076652d6e1c45a3b4e0a6acfe0408aa'; // Replace with your key
-const MAX_API_CALLS = 800;
 
 // State
 let currentPair = 'BTC/USD';
@@ -13,7 +12,6 @@ let currentTimeframe = '4H';
 let analysisData = null;
 let apiCalls = 0;
 let historicalData = {};
-let lastPrice = null;
 
 // DOM Elements
 const analyzeBtn = document.getElementById('analyzeBtn');
@@ -26,7 +24,14 @@ function init() {
     updateLiveTime();
     setInterval(updateLiveTime, 1000);
     setupEventListeners();
-    loadSavedData();
+}
+
+function updateLiveTime() {
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const liveTimeEl = document.getElementById('liveTime');
+    if (liveTimeEl) liveTimeEl.textContent = `${dateStr} ${timeStr} UTC`;
 }
 
 function setupEventListeners() {
@@ -62,16 +67,10 @@ function setupEventListeners() {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             e.target.classList.add('active');
-            document.getElementById(`${tabId}Tab`).classList.add('active');
+            const tabContent = document.getElementById(`${tabId}Tab`);
+            if (tabContent) tabContent.classList.add('active');
         });
     });
-}
-
-function updateLiveTime() {
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    document.getElementById('liveTime').textContent = `${dateStr} ${timeStr} UTC`;
 }
 
 function updatePairsByCategory(category) {
@@ -127,9 +126,9 @@ function calculateEMA(data, period) {
 
 function calculateRSI(data, period = 14) {
     let gains = 0, losses = 0;
+    const start = Math.max(0, data.length - period);
     
-    for (let i = data.length - period; i < data.length; i++) {
-        if (i === 0) continue;
+    for (let i = start + 1; i < data.length; i++) {
         const change = data[i].close - data[i-1].close;
         if (change >= 0) gains += change;
         else losses -= change;
@@ -155,7 +154,8 @@ function calculateATR(data, period = 14) {
         trueRanges.push(tr);
     }
     
-    return trueRanges.slice(-period).reduce((a, b) => a + b, 0) / period;
+    const atr = trueRanges.slice(-period).reduce((a, b) => a + b, 0) / period;
+    return atr || (data[data.length-1].close * 0.01);
 }
 
 function findSwingPoints(data, lookback = 5) {
@@ -218,7 +218,6 @@ function findFVGs(data) {
     
     for (let i = 2; i < data.length; i++) {
         const prev = data[i-2];
-        const curr = data[i-1];
         const next = data[i];
         
         // Bullish FVG
@@ -227,7 +226,7 @@ function findFVGs(data) {
                 type: 'bullish',
                 upper: next.low,
                 lower: prev.high,
-                isFilled: curr.low <= prev.high
+                isFilled: false
             });
         }
         
@@ -237,7 +236,7 @@ function findFVGs(data) {
                 type: 'bearish',
                 upper: prev.low,
                 lower: next.high,
-                isFilled: curr.high >= prev.low
+                isFilled: false
             });
         }
     }
@@ -272,9 +271,9 @@ function calculateFibonacci(high, low, currentPrice) {
     let minDiff = Infinity;
     
     for (const [key, value] of Object.entries(levels.retracement)) {
-        const diff = Math.abs(currentPrice - value);
-        if (diff < minDiff) {
-            minDiff = diff;
+        const diffAbs = Math.abs(currentPrice - value);
+        if (diffAbs < minDiff) {
+            minDiff = diffAbs;
             nearestLevel = { key, value, type: 'retracement' };
         }
     }
@@ -309,12 +308,33 @@ function detectMarketStructure(swingPoints, currentPrice) {
     return { structure, bosLevel, chochLevel };
 }
 
-async function performFullAnalysis(price, timeframe) {
+// Main Analysis Function
+async function runAnalysis() {
+    analyzeBtn.classList.add('loading');
+    analyzeBtn.disabled = true;
+    showNotification('Analyzing market with ICT + Fibonacci...', 'info');
+
     try {
-        const data = await fetchOHLCV(currentPair, timeframe, 100);
+        // Fetch current price
+        const priceResponse = await fetch(
+            `https://api.twelvedata.com/price?symbol=${currentPair}&apikey=${API_KEY}`
+        );
+        const priceData = await priceResponse.json();
+
+        if (priceData.code) {
+            throw new Error(priceData.message || 'API Error');
+        }
+
+        const currentPrice = parseFloat(priceData.price);
+        
+        // Update price display
+        document.getElementById('currentPrice').innerHTML = `$${currentPrice.toFixed(2)}`;
+        
+        // Fetch and analyze data for current timeframe
+        const data = await fetchOHLCV(currentPair, currentTimeframe, 100);
         if (!data || data.length < 30) throw new Error('Insufficient data');
         
-        historicalData[timeframe] = data;
+        historicalData[currentTimeframe] = data;
         
         // Calculate indicators
         const ema20 = calculateEMA(data, 20);
@@ -326,7 +346,7 @@ async function performFullAnalysis(price, timeframe) {
         const swingPoints = findSwingPoints(data, 5);
         const orderBlocks = findOrderBlocks(data, swingPoints);
         const fvgs = findFVGs(data);
-        const marketStructure = detectMarketStructure(swingPoints, price);
+        const marketStructure = detectMarketStructure(swingPoints, currentPrice);
         
         // Determine trend
         const currentEMA20 = ema20[ema20.length - 1];
@@ -347,10 +367,9 @@ async function performFullAnalysis(price, timeframe) {
         // Fibonacci calculation
         const recentHigh = Math.max(...data.slice(-20).map(c => c.high));
         const recentLow = Math.min(...data.slice(-20).map(c => c.low));
-        const fibonacci = calculateFibonacci(recentHigh, recentLow, price);
+        const fibonacci = calculateFibonacci(recentHigh, recentLow, currentPrice);
         
-        // Generate signal with multiple confirmations
-        let signal = null;
+        // Generate signal with confirmations
         let confidenceScore = 0;
         
         // Trend alignment (30 points)
@@ -363,14 +382,310 @@ async function performFullAnalysis(price, timeframe) {
         }
         
         // Order block proximity (25 points)
-        const nearestOB = orderBlocks[0];
-        if (nearestOB) {
-            const distanceToOB = Math.abs(price - nearestOB.price) / price * 100;
+        if (orderBlocks.length > 0) {
+            const nearestOB = orderBlocks[0];
+            const distanceToOB = Math.abs(currentPrice - nearestOB.price) / currentPrice * 100;
             if (distanceToOB < 1) confidenceScore += 25;
             else if (distanceToOB < 2) confidenceScore += 15;
         }
         
         // FVG confirmation (15 points)
-        const activeFVG = fvgs.find(f => !f.isFilled);
-        if (activeFVG && ((trend === 'bullish' && activeFVG.type === 'bullish') ||
-            (trend === 'bearish' && activeFVG.type === 'bearish')))
+        if (fvgs.length > 0) confidenceScore += 15;
+        
+        // Fibonacci level proximity (10 points)
+        if (fibonacci.nearestLevel && 
+            Math.abs(currentPrice - fibonacci.nearestLevel.value) / currentPrice * 100 < 0.5) {
+            confidenceScore += 10;
+        }
+        
+        // Generate signal
+        let signal = null;
+        if (trend === 'bullish' && confidenceScore >= 50) {
+            const entryPrice = currentPrice;
+            const stopLoss = entryPrice - (atr * 1.5);
+            const takeProfit = entryPrice + (atr * 2.5);
+            const risk = entryPrice - stopLoss;
+            const reward = takeProfit - entryPrice;
+            
+            signal = {
+                type: 'LONG',
+                confidence: `${confidenceScore}%`,
+                entry: entryPrice,
+                tp: takeProfit,
+                sl: stopLoss,
+                rr: (reward / risk).toFixed(1)
+            };
+        } else if (trend === 'bearish' && confidenceScore >= 50) {
+            const entryPrice = currentPrice;
+            const stopLoss = entryPrice + (atr * 1.5);
+            const takeProfit = entryPrice - (atr * 2.5);
+            const risk = stopLoss - entryPrice;
+            const reward = entryPrice - takeProfit;
+            
+            signal = {
+                type: 'SHORT',
+                confidence: `${confidenceScore}%`,
+                entry: entryPrice,
+                tp: takeProfit,
+                sl: stopLoss,
+                rr: (reward / risk).toFixed(1)
+            };
+        } else {
+            signal = {
+                type: 'NEUTRAL',
+                confidence: `${confidenceScore}%`,
+                entry: currentPrice,
+                tp: currentPrice,
+                sl: currentPrice,
+                rr: 'N/A'
+            };
+        }
+        
+        // Prepare analysis data
+        analysisData = {
+            trend4H: trend === 'bullish' ? '🟢 Bullish' : (trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral'),
+            strength4H: strength,
+            fvg4H: fvgs.length > 0 ? `✅ ${fvgs.length} Detected` : '❌ None',
+            ob4H: orderBlocks.length > 0 ? `✅ ${orderBlocks.length} Present` : '❌ None',
+            ms4H: marketStructure.structure,
+            trend1H: trend === 'bullish' ? '🟢 Bullish' : (trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral'),
+            strength1H: strength,
+            fvg1H: fvgs.length > 0 ? `✅ ${fvgs.length} Detected` : '❌ None',
+            ob1H: orderBlocks.length > 0 ? `✅ ${orderBlocks.length} Present` : '❌ None',
+            ms1H: marketStructure.structure,
+            signal: signal,
+            confidence: confidenceScore,
+            rsi: rsi.toFixed(1),
+            atr: atr.toFixed(2),
+            zones: {
+                fvgZones: fvgs.slice(0, 3).map(fvg => 
+                    `${fvg.type.toUpperCase()}: $${fvg.lower.toFixed(2)} - $${fvg.upper.toFixed(2)}`
+                ),
+                orderBlocks: orderBlocks.slice(0, 3).map(ob => 
+                    `${ob.type.toUpperCase()}: $${ob.low.toFixed(2)} - $${ob.high.toFixed(2)}`
+                ),
+                fibonacci: {
+                    level382: `$${fibonacci.levels.retracement.level382.toFixed(2)}`,
+                    level500: `$${fibonacci.levels.retracement.level500.toFixed(2)}`,
+                    level618: `$${fibonacci.levels.retracement.level618.toFixed(2)}`,
+                    level786: `$${fibonacci.levels.retracement.level786.toFixed(2)}`,
+                    currentLevel: fibonacci.nearestLevel ? 
+                        `${fibonacci.nearestLevel.key.replace('level', '')}% at $${fibonacci.nearestLevel.value.toFixed(2)}` : 
+                        'No nearby level'
+                },
+                liquidity: {
+                    buySide: `$${(recentHigh + atr).toFixed(2)}`,
+                    sellSide: `$${(recentLow - atr).toFixed(2)}`
+                },
+                structure: {
+                    bos: marketStructure.bosLevel ? `$${marketStructure.bosLevel.toFixed(2)}` : '--',
+                    choch: marketStructure.chochLevel ? `$${marketStructure.chochLevel.toFixed(2)}` : '--'
+                }
+            }
+        };
+        
+        // Update UI
+        updateUI(analysisData, currentPrice);
+        
+        // Enable execute button if confidence is high
+        if (analysisData.confidence >= 50 && analysisData.signal.type !== 'NEUTRAL') {
+            enableExecuteButton();
+        } else {
+            disableExecuteButton();
+            if (analysisData.signal.type === 'NEUTRAL') {
+                showNotification(`No clear signal (${confidenceScore}% confidence)`, 'warning');
+            }
+        }
+        
+        // Update API Usage
+        apiCalls++;
+        document.getElementById('apiUsage').textContent = `${apiCalls} / 800`;
+        showNotification('Analysis Complete!', 'success');
+        
+    } catch (error) {
+        console.error('Analysis error:', error);
+        showNotification('Error: ' + error.message, 'error');
+    } finally {
+        analyzeBtn.classList.remove('loading');
+        analyzeBtn.disabled = false;
+    }
+}
+
+function updateUI(data, price) {
+    // Update price change
+    if (lastPrice) {
+        const change = price - lastPrice;
+        const changePercent = (change / lastPrice * 100).toFixed(2);
+        const priceChangeEl = document.getElementById('priceChange');
+        if (priceChangeEl) {
+            priceChangeEl.innerHTML = `${change >= 0 ? '▲' : '▼'} $${Math.abs(change).toFixed(2)} (${changePercent}%)`;
+            priceChangeEl.className = `price-change ${change >= 0 ? 'positive' : 'negative'}`;
+        }
+    }
+    lastPrice = price;
+    
+    document.getElementById('currentPrice').innerHTML = `$${price.toFixed(2)}<span style="font-size:12px; display:block;">RSI: ${data.rsi} | ATR: ${data.atr}</span>`;
+    
+    // 4H Analysis
+    document.getElementById('trend4H').innerHTML = data.trend4H || '--';
+    document.getElementById('trend4H').className = `value trend-value ${data.trend4H?.includes('Bullish') ? 'bullish' : (data.trend4H?.includes('Bearish') ? 'bearish' : '')}`;
+    document.getElementById('strength4H').innerHTML = data.strength4H || '--';
+    document.getElementById('fvg4H').innerHTML = data.fvg4H || '--';
+    document.getElementById('ob4H').innerHTML = data.ob4H || '--';
+    document.getElementById('ms4H').innerHTML = data.ms4H || '--';
+    
+    // 1H Analysis
+    document.getElementById('trend1H').innerHTML = data.trend1H || '--';
+    document.getElementById('trend1H').className = `value trend-value ${data.trend1H?.includes('Bullish') ? 'bullish' : (data.trend1H?.includes('Bearish') ? 'bearish' : '')}`;
+    document.getElementById('strength1H').innerHTML = data.strength1H || '--';
+    document.getElementById('fvg1H').innerHTML = data.fvg1H || '--';
+    document.getElementById('ob1H').innerHTML = data.ob1H || '--';
+    document.getElementById('ms1H').innerHTML = data.ms1H || '--';
+    
+    // Trading Signal
+    const signalType = document.getElementById('signalType');
+    signalType.innerHTML = data.signal?.type || '--';
+    signalType.className = `value signal-type ${data.signal?.type === 'LONG' ? 'long' : (data.signal?.type === 'SHORT' ? 'short' : '')}`;
+    
+    document.getElementById('signalConfidence').innerHTML = data.signal?.confidence || '--';
+    document.getElementById('signalEntry').innerHTML = data.signal?.entry ? `$${data.signal.entry.toFixed(2)}` : '--';
+    document.getElementById('signalTP').innerHTML = data.signal?.tp ? `$${data.signal.tp.toFixed(2)}` : '--';
+    document.getElementById('signalSL').innerHTML = data.signal?.sl ? `$${data.signal.sl.toFixed(2)}` : '--';
+    document.getElementById('signalRR').innerHTML = data.signal?.rr || '--';
+    
+    // Update badge
+    const badge = document.getElementById('signalStrengthBadge');
+    if (badge) {
+        const conf = data.confidence;
+        badge.textContent = conf >= 70 ? '🔥 HIGH CONFIDENCE' : (conf >= 50 ? '📊 MEDIUM' : '⚠️ LOW');
+        badge.className = `signal-badge ${conf >= 70 ? 'high' : (conf >= 50 ? 'medium' : 'low')}`;
+    }
+    
+    // ICT Zones
+    if (data.zones) {
+        const fvgContainer = document.getElementById('fvgZonesDisplay');
+        if (fvgContainer && data.zones.fvgZones.length > 0) {
+            fvgContainer.innerHTML = data.zones.fvgZones.map(zone => 
+                `<div class="zone-tag">${zone}</div>`
+            ).join('');
+        } else if (fvgContainer) {
+            fvgContainer.innerHTML = '<div class="zone-tag">No FVG zones detected</div>';
+        }
+        
+        const obContainer = document.getElementById('obZonesDisplay');
+        if (obContainer && data.zones.orderBlocks.length > 0) {
+            obContainer.innerHTML = data.zones.orderBlocks.map(ob => 
+                `<div class="zone-tag ${ob.includes('bullish') ? 'ob-bullish' : (ob.includes('bearish') ? 'ob-bearish' : '')}">${ob}</div>`
+            ).join('');
+        } else if (obContainer) {
+            obContainer.innerHTML = '<div class="zone-tag">No order blocks detected</div>';
+        }
+        
+        // Fibonacci display
+        const fibContainer = document.getElementById('fibLevelsDisplay');
+        if (fibContainer && data.zones.fibonacci) {
+            fibContainer.innerHTML = `
+                <div class="zone-tag fib">📐 38.2%: ${data.zones.fibonacci.level382}</div>
+                <div class="zone-tag fib">📐 50%: ${data.zones.fibonacci.level500}</div>
+                <div class="zone-tag fib">📐 61.8%: ${data.zones.fibonacci.level618}</div>
+                <div class="zone-tag fib">📐 78.6%: ${data.zones.fibonacci.level786}</div>
+                <div class="zone-tag" style="background:#3390ec20; border-left-color:#3390ec;">🎯 Current: ${data.zones.fibonacci.currentLevel}</div>
+            `;
+        }
+        
+        const buySideEl = document.getElementById('buySideLiq');
+        const sellSideEl = document.getElementById('sellSideLiq');
+        if (buySideEl) buySideEl.textContent = data.zones.liquidity.buySide;
+        if (sellSideEl) sellSideEl.textContent = data.zones.liquidity.sellSide;
+        
+        const bosEl = document.getElementById('bosLevel');
+        const chochEl = document.getElementById('chochLevel');
+        if (bosEl) bosEl.textContent = data.zones.structure.bos;
+        if (chochEl) chochEl.textContent = data.zones.structure.choch;
+    }
+}
+
+function enableExecuteButton() {
+    executeBtn.disabled = false;
+    if (tg.MainButton) {
+        tg.MainButton.setText(`⚡ Execute ${analysisData?.signal?.type || 'Order'}`);
+        tg.MainButton.show();
+        tg.MainButton.enable();
+    }
+}
+
+function disableExecuteButton() {
+    executeBtn.disabled = true;
+    if (tg.MainButton) {
+        tg.MainButton.hide();
+    }
+}
+
+function resetAnalysis() {
+    const valueElements = document.querySelectorAll('.value:not(.signal-type)');
+    valueElements.forEach(el => {
+        if (el.id !== 'signalType') el.innerHTML = '--';
+    });
+    document.getElementById('currentPrice').innerHTML = '----';
+    document.getElementById('priceChange').innerHTML = '--';
+    document.getElementById('priceChange').className = 'price-change';
+    
+    const fvgContainer = document.getElementById('fvgZonesDisplay');
+    const obContainer = document.getElementById('obZonesDisplay');
+    const fibContainer = document.getElementById('fibLevelsDisplay');
+    if (fvgContainer) fvgContainer.innerHTML = 'Click Analyze to see zones';
+    if (obContainer) obContainer.innerHTML = 'Click Analyze to see zones';
+    if (fibContainer) fibContainer.innerHTML = 'Click Analyze to see Fibonacci levels';
+    
+    document.getElementById('buySideLiq').textContent = '--';
+    document.getElementById('sellSideLiq').textContent = '--';
+    document.getElementById('bosLevel').textContent = '--';
+    document.getElementById('chochLevel').textContent = '--';
+    
+    const badge = document.getElementById('signalStrengthBadge');
+    if (badge) {
+        badge.textContent = '--';
+        badge.className = 'signal-badge';
+    }
+    
+    disableExecuteButton();
+}
+
+function executeOrder() {
+    if (!analysisData || analysisData.confidence < 50) {
+        showNotification('Low confidence - Trade not recommended', 'error');
+        return;
+    }
+    
+    const orderData = {
+        action: 'execute_order',
+        pair: currentPair,
+        signal: analysisData.signal,
+        analysis: {
+            trend: analysisData.trend4H,
+            confidence: analysisData.confidence,
+            rsi: analysisData.rsi,
+            timeframe: currentTimeframe
+        },
+        timestamp: new Date().toISOString()
+    };
+    
+    if (tg.sendData) {
+        tg.sendData(JSON.stringify(orderData));
+    }
+    
+    showNotification(`✅ ${analysisData.signal.type} order executed! TP: $${analysisData.signal.tp?.toFixed(2)} SL: $${analysisData.signal.sl?.toFixed(2)}`, 'success');
+}
+
+function showNotification(message, type = 'info') {
+    notification.textContent = message;
+    notification.className = `notification ${type}`;
+    notification.classList.remove('hidden');
+    
+    setTimeout(() => {
+        notification.classList.add('hidden');
+    }, 3000);
+}
+
+// Start the app
+init();
