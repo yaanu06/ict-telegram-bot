@@ -1,17 +1,213 @@
 // Initialize Telegram Web App
 const tg = window.Telegram.WebApp;
-tg.expand();
-tg.ready();
+if (tg) {
+    tg.expand();
+    tg.ready();
+}
 
 // Configuration
-const API_KEY = '3076652d6e1c45a3b4e0a6acfe0408aa'; // Replace with your key
+const API_KEY = '3076652d6e1c45a3b4e0a6acfe0408aa';
+const USE_MOCK_DATA = true; // Set to false when API works
 
 // State
 let currentPair = 'BTC/USD';
 let currentTimeframe = '4H';
 let analysisData = null;
 let apiCalls = 0;
-let historicalData = {};
+
+// Mock price database
+const mockPrices = {
+    'BTC/USD': { price: 43250.75, change: 2.3 },
+    'ETH/USD': { price: 2280.50, change: 1.8 },
+    'BNB/USD': { price: 310.25, change: -0.5 },
+    'SOL/USD': { price: 98.40, change: 5.2 },
+    'XRP/USD': { price: 0.62, change: 1.2 },
+    'EUR/USD': { price: 1.0890, change: 0.3 },
+    'GBP/USD': { price: 1.2750, change: -0.2 },
+    'USD/JPY': { price: 148.50, change: 0.1 },
+    'AUD/USD': { price: 0.6580, change: 0.4 },
+    'USD/CAD': { price: 1.3450, change: -0.1 },
+    'XAU/USD': { price: 2035.80, change: 0.7 },
+    'XAG/USD': { price: 23.45, change: 1.1 },
+    'XPT/USD': { price: 912.30, change: -0.3 },
+    'XPD/USD': { price: 985.60, change: 0.5 }
+};
+
+// Mock OHLCV data generator
+function generateMockData(symbol, interval, count = 100) {
+    const basePrice = mockPrices[symbol]?.price || 100;
+    const volatility = symbol.includes('USD') ? 0.02 : 0.01;
+    const data = [];
+    let currentPrice = basePrice;
+    
+    for (let i = 0; i < count; i++) {
+        const change = (Math.random() - 0.5) * volatility * currentPrice;
+        const open = currentPrice;
+        const close = currentPrice + change;
+        const high = Math.max(open, close) + Math.random() * volatility * currentPrice;
+        const low = Math.min(open, close) - Math.random() * volatility * currentPrice;
+        
+        data.push({
+            time: new Date(Date.now() - (count - i) * 3600000),
+            open: open,
+            high: high,
+            low: low,
+            close: close,
+            volume: Math.random() * 1000000
+        });
+        currentPrice = close;
+    }
+    return data;
+}
+
+// Technical Analysis Functions
+function calculateEMA(data, period) {
+    const multiplier = 2 / (period + 1);
+    const ema = [data[0].close];
+    for (let i = 1; i < data.length; i++) {
+        const value = (data[i].close - ema[i-1]) * multiplier + ema[i-1];
+        ema.push(value);
+    }
+    return ema;
+}
+
+function calculateRSI(data, period = 14) {
+    let gains = 0, losses = 0;
+    const start = Math.max(0, data.length - period);
+    
+    for (let i = start + 1; i < data.length; i++) {
+        const change = data[i].close - data[i-1].close;
+        if (change >= 0) gains += change;
+        else losses -= change;
+    }
+    
+    const avgGain = gains / period;
+    const avgLoss = losses / period;
+    if (avgLoss === 0) return 100;
+    const rs = avgGain / avgLoss;
+    return 100 - (100 / (1 + rs));
+}
+
+function calculateATR(data, period = 14) {
+    const trueRanges = [];
+    for (let i = 1; i < data.length; i++) {
+        const tr = Math.max(
+            data[i].high - data[i].low,
+            Math.abs(data[i].high - data[i-1].close),
+            Math.abs(data[i].low - data[i-1].close)
+        );
+        trueRanges.push(tr);
+    }
+    const atr = trueRanges.slice(-period).reduce((a, b) => a + b, 0) / period;
+    return atr || data[data.length-1].close * 0.01;
+}
+
+function findSwingPoints(data, lookback = 5) {
+    const highs = [], lows = [];
+    for (let i = lookback; i < data.length - lookback; i++) {
+        let isHigh = true, isLow = true;
+        for (let j = i - lookback; j <= i + lookback; j++) {
+            if (j === i) continue;
+            if (data[j].high >= data[i].high) isHigh = false;
+            if (data[j].low <= data[i].low) isLow = false;
+        }
+        if (isHigh) highs.push({ price: data[i].high, index: i });
+        if (isLow) lows.push({ price: data[i].low, index: i });
+    }
+    return { highs, lows };
+}
+
+function findOrderBlocks(data, swingPoints) {
+    const orderBlocks = [];
+    for (let i = 1; i < swingPoints.lows.length; i++) {
+        if (swingPoints.lows[i].price > swingPoints.lows[i-1].price) {
+            const obCandle = data[swingPoints.lows[i].index - 1];
+            if (obCandle) {
+                orderBlocks.push({
+                    type: 'bullish',
+                    high: obCandle.high,
+                    low: obCandle.low,
+                    price: obCandle.close
+                });
+            }
+        }
+    }
+    for (let i = 1; i < swingPoints.highs.length; i++) {
+        if (swingPoints.highs[i].price < swingPoints.highs[i-1].price) {
+            const obCandle = data[swingPoints.highs[i].index - 1];
+            if (obCandle) {
+                orderBlocks.push({
+                    type: 'bearish',
+                    high: obCandle.high,
+                    low: obCandle.low,
+                    price: obCandle.close
+                });
+            }
+        }
+    }
+    return orderBlocks;
+}
+
+function findFVGs(data) {
+    const fvgs = [];
+    for (let i = 2; i < data.length; i++) {
+        const prev = data[i-2];
+        const next = data[i];
+        if (prev.high < next.low) {
+            fvgs.push({ type: 'bullish', upper: next.low, lower: prev.high });
+        }
+        if (prev.low > next.high) {
+            fvgs.push({ type: 'bearish', upper: prev.low, lower: next.high });
+        }
+    }
+    return fvgs;
+}
+
+function calculateFibonacci(high, low, currentPrice) {
+    const diff = high - low;
+    const levels = {
+        retracement: {
+            level0: low,
+            level236: low + diff * 0.236,
+            level382: low + diff * 0.382,
+            level500: low + diff * 0.5,
+            level618: low + diff * 0.618,
+            level786: low + diff * 0.786,
+            level1000: high
+        }
+    };
+    
+    let nearestLevel = null;
+    let minDiff = Infinity;
+    for (const [key, value] of Object.entries(levels.retracement)) {
+        const diffAbs = Math.abs(currentPrice - value);
+        if (diffAbs < minDiff) {
+            minDiff = diffAbs;
+            nearestLevel = { key, value };
+        }
+    }
+    return { levels, nearestLevel };
+}
+
+function detectMarketStructure(swingPoints, currentPrice) {
+    const lastHigh = swingPoints.highs[swingPoints.highs.length - 1];
+    const lastLow = swingPoints.lows[swingPoints.lows.length - 1];
+    const prevHigh = swingPoints.highs[swingPoints.highs.length - 2];
+    const prevLow = swingPoints.lows[swingPoints.lows.length - 2];
+    
+    let structure = 'CHoCH';
+    let bosLevel = null;
+    let chochLevel = null;
+    
+    if (lastHigh && prevHigh && currentPrice > prevHigh.price) {
+        structure = 'BOS ↑';
+        bosLevel = prevHigh.price;
+    } else if (lastLow && prevLow && currentPrice < prevLow.price) {
+        structure = 'BOS ↓';
+        bosLevel = prevLow.price;
+    }
+    return { structure, bosLevel, chochLevel };
+}
 
 // DOM Elements
 const analyzeBtn = document.getElementById('analyzeBtn');
@@ -42,7 +238,6 @@ function setupEventListeners() {
         resetAnalysis();
     });
 
-    // Category buttons
     document.querySelectorAll('.category-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             document.querySelectorAll('.category-btn').forEach(b => b.classList.remove('active'));
@@ -51,7 +246,6 @@ function setupEventListeners() {
         });
     });
 
-    // Timeframe buttons
     document.querySelectorAll('.tf-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
@@ -60,7 +254,6 @@ function setupEventListeners() {
         });
     });
 
-    // Tab buttons for ICT details
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const tabId = e.target.dataset.tab;
@@ -92,249 +285,50 @@ function updatePairsByCategory(category) {
     resetAnalysis();
 }
 
-async function fetchOHLCV(symbol, interval, outputsize = 100) {
-    const intervals = { '1H': '1h', '4H': '4h', '1D': '1day' };
-    const url = `https://api.twelvedata.com/time_series?symbol=${symbol}&interval=${intervals[interval]}&outputsize=${outputsize}&apikey=${API_KEY}`;
-    
-    const response = await fetch(url);
-    if (!response.ok) throw new Error('Network error');
-    
-    const data = await response.json();
-    if (data.code) throw new Error(data.message);
-    if (!data.values) throw new Error('No data received');
-    
-    return data.values.map(candle => ({
-        time: new Date(candle.datetime),
-        open: parseFloat(candle.open),
-        high: parseFloat(candle.high),
-        low: parseFloat(candle.low),
-        close: parseFloat(candle.close),
-        volume: parseFloat(candle.volume)
-    }));
-}
-
-function calculateEMA(data, period) {
-    const multiplier = 2 / (period + 1);
-    const ema = [data[0].close];
-    
-    for (let i = 1; i < data.length; i++) {
-        const value = (data[i].close - ema[i-1]) * multiplier + ema[i-1];
-        ema.push(value);
-    }
-    return ema;
-}
-
-function calculateRSI(data, period = 14) {
-    let gains = 0, losses = 0;
-    const start = Math.max(0, data.length - period);
-    
-    for (let i = start + 1; i < data.length; i++) {
-        const change = data[i].close - data[i-1].close;
-        if (change >= 0) gains += change;
-        else losses -= change;
-    }
-    
-    const avgGain = gains / period;
-    const avgLoss = losses / period;
-    
-    if (avgLoss === 0) return 100;
-    const rs = avgGain / avgLoss;
-    return 100 - (100 / (1 + rs));
-}
-
-function calculateATR(data, period = 14) {
-    const trueRanges = [];
-    
-    for (let i = 1; i < data.length; i++) {
-        const high = data[i].high;
-        const low = data[i].low;
-        const prevClose = data[i-1].close;
-        
-        const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
-        trueRanges.push(tr);
-    }
-    
-    const atr = trueRanges.slice(-period).reduce((a, b) => a + b, 0) / period;
-    return atr || (data[data.length-1].close * 0.01);
-}
-
-function findSwingPoints(data, lookback = 5) {
-    const highs = [], lows = [];
-    
-    for (let i = lookback; i < data.length - lookback; i++) {
-        let isHigh = true, isLow = true;
-        
-        for (let j = i - lookback; j <= i + lookback; j++) {
-            if (j === i) continue;
-            if (data[j].high >= data[i].high) isHigh = false;
-            if (data[j].low <= data[i].low) isLow = false;
-        }
-        
-        if (isHigh) highs.push({ price: data[i].high, index: i });
-        if (isLow) lows.push({ price: data[i].low, index: i });
-    }
-    
-    return { highs, lows };
-}
-
-function findOrderBlocks(data, swingPoints) {
-    const orderBlocks = [];
-    
-    // Bullish order blocks
-    for (let i = 1; i < swingPoints.lows.length; i++) {
-        if (swingPoints.lows[i].price > swingPoints.lows[i-1].price) {
-            const obCandle = data[swingPoints.lows[i].index - 1];
-            if (obCandle) {
-                orderBlocks.push({
-                    type: 'bullish',
-                    high: obCandle.high,
-                    low: obCandle.low,
-                    price: obCandle.close
-                });
-            }
-        }
-    }
-    
-    // Bearish order blocks
-    for (let i = 1; i < swingPoints.highs.length; i++) {
-        if (swingPoints.highs[i].price < swingPoints.highs[i-1].price) {
-            const obCandle = data[swingPoints.highs[i].index - 1];
-            if (obCandle) {
-                orderBlocks.push({
-                    type: 'bearish',
-                    high: obCandle.high,
-                    low: obCandle.low,
-                    price: obCandle.close
-                });
-            }
-        }
-    }
-    
-    return orderBlocks;
-}
-
-function findFVGs(data) {
-    const fvgs = [];
-    
-    for (let i = 2; i < data.length; i++) {
-        const prev = data[i-2];
-        const next = data[i];
-        
-        // Bullish FVG
-        if (prev.high < next.low) {
-            fvgs.push({
-                type: 'bullish',
-                upper: next.low,
-                lower: prev.high,
-                isFilled: false
-            });
-        }
-        
-        // Bearish FVG
-        if (prev.low > next.high) {
-            fvgs.push({
-                type: 'bearish',
-                upper: prev.low,
-                lower: next.high,
-                isFilled: false
-            });
-        }
-    }
-    
-    return fvgs;
-}
-
-function calculateFibonacci(high, low, currentPrice) {
-    const diff = high - low;
-    
-    const levels = {
-        retracement: {
-            level0: low,
-            level236: low + diff * 0.236,
-            level382: low + diff * 0.382,
-            level500: low + diff * 0.5,
-            level618: low + diff * 0.618,
-            level786: low + diff * 0.786,
-            level1000: high
-        },
-        extension: {
-            level1272: high + diff * 0.272,
-            level1414: high + diff * 0.414,
-            level1618: high + diff * 0.618,
-            level2000: high + diff,
-            level2618: high + diff * 1.618
-        }
-    };
-    
-    // Find nearest Fibonacci level to current price
-    let nearestLevel = null;
-    let minDiff = Infinity;
-    
-    for (const [key, value] of Object.entries(levels.retracement)) {
-        const diffAbs = Math.abs(currentPrice - value);
-        if (diffAbs < minDiff) {
-            minDiff = diffAbs;
-            nearestLevel = { key, value, type: 'retracement' };
-        }
-    }
-    
-    return { levels, nearestLevel };
-}
-
-function detectMarketStructure(swingPoints, currentPrice) {
-    const lastHigh = swingPoints.highs[swingPoints.highs.length - 1];
-    const lastLow = swingPoints.lows[swingPoints.lows.length - 1];
-    const prevHigh = swingPoints.highs[swingPoints.highs.length - 2];
-    const prevLow = swingPoints.lows[swingPoints.lows.length - 2];
-    
-    let structure = 'CHoCH';
-    let bosLevel = null;
-    let chochLevel = null;
-    
-    if (lastHigh && prevHigh && currentPrice > prevHigh.price) {
-        structure = 'BOS ↑';
-        bosLevel = prevHigh.price;
-    } else if (lastLow && prevLow && currentPrice < prevLow.price) {
-        structure = 'BOS ↓';
-        bosLevel = prevLow.price;
-    }
-    
-    if (lastHigh && lastLow && currentPrice > lastHigh.price) {
-        chochLevel = lastHigh.price;
-    } else if (lastLow && lastHigh && currentPrice < lastLow.price) {
-        chochLevel = lastLow.price;
-    }
-    
-    return { structure, bosLevel, chochLevel };
-}
-
-// Main Analysis Function
+// Main Analysis Function - WORKS WITH MOCK DATA
 async function runAnalysis() {
     analyzeBtn.classList.add('loading');
     analyzeBtn.disabled = true;
     showNotification('Analyzing market with ICT + Fibonacci...', 'info');
 
     try {
-        // Fetch current price
-        const priceResponse = await fetch(
-            `https://api.twelvedata.com/price?symbol=${currentPair}&apikey=${API_KEY}`
-        );
-        const priceData = await priceResponse.json();
-
-        if (priceData.code) {
-            throw new Error(priceData.message || 'API Error');
+        // Get current price (mock or real)
+        let currentPrice;
+        if (USE_MOCK_DATA) {
+            currentPrice = mockPrices[currentPair]?.price || 50000;
+            // Simulate API delay
+            await new Promise(resolve => setTimeout(resolve, 500));
+        } else {
+            const priceResponse = await fetch(
+                `https://api.twelvedata.com/price?symbol=${currentPair}&apikey=${API_KEY}`
+            );
+            const priceData = await priceResponse.json();
+            if (priceData.code) throw new Error(priceData.message);
+            currentPrice = parseFloat(priceData.price);
         }
-
-        const currentPrice = parseFloat(priceData.price);
         
-        // Update price display
-        document.getElementById('currentPrice').innerHTML = `$${currentPrice.toFixed(2)}`;
+        // Get historical data
+        let data;
+        if (USE_MOCK_DATA) {
+            data = generateMockData(currentPair, currentTimeframe, 100);
+        } else {
+            const intervals = { '1H': '1h', '4H': '4h', '1D': '1day' };
+            const response = await fetch(
+                `https://api.twelvedata.com/time_series?symbol=${currentPair}&interval=${intervals[currentTimeframe]}&outputsize=100&apikey=${API_KEY}`
+            );
+            const jsonData = await response.json();
+            if (jsonData.code) throw new Error(jsonData.message);
+            data = jsonData.values.map(candle => ({
+                time: new Date(candle.datetime),
+                open: parseFloat(candle.open),
+                high: parseFloat(candle.high),
+                low: parseFloat(candle.low),
+                close: parseFloat(candle.close),
+                volume: parseFloat(candle.volume)
+            }));
+        }
         
-        // Fetch and analyze data for current timeframe
-        const data = await fetchOHLCV(currentPair, currentTimeframe, 100);
         if (!data || data.length < 30) throw new Error('Insufficient data');
-        
-        historicalData[currentTimeframe] = data;
         
         // Calculate indicators
         const ema20 = calculateEMA(data, 20);
@@ -369,34 +363,20 @@ async function runAnalysis() {
         const recentLow = Math.min(...data.slice(-20).map(c => c.low));
         const fibonacci = calculateFibonacci(recentHigh, recentLow, currentPrice);
         
-        // Generate signal with confirmations
-        let confidenceScore = 0;
+        // Calculate confidence score
+        let confidenceScore = 30; // Base confidence
         
-        // Trend alignment (30 points)
-        if (trend !== 'neutral') confidenceScore += 30;
-        
-        // RSI confirmation (20 points)
+        if (trend !== 'neutral') confidenceScore += 20;
         if ((trend === 'bullish' && rsi > 40 && rsi < 70) ||
-            (trend === 'bearish' && rsi < 60 && rsi > 30)) {
-            confidenceScore += 20;
-        }
-        
-        // Order block proximity (25 points)
-        if (orderBlocks.length > 0) {
-            const nearestOB = orderBlocks[0];
-            const distanceToOB = Math.abs(currentPrice - nearestOB.price) / currentPrice * 100;
-            if (distanceToOB < 1) confidenceScore += 25;
-            else if (distanceToOB < 2) confidenceScore += 15;
-        }
-        
-        // FVG confirmation (15 points)
-        if (fvgs.length > 0) confidenceScore += 15;
-        
-        // Fibonacci level proximity (10 points)
+            (trend === 'bearish' && rsi < 60 && rsi > 30)) confidenceScore += 15;
+        if (orderBlocks.length > 0) confidenceScore += 15;
+        if (fvgs.length > 0) confidenceScore += 10;
         if (fibonacci.nearestLevel && 
             Math.abs(currentPrice - fibonacci.nearestLevel.value) / currentPrice * 100 < 0.5) {
             confidenceScore += 10;
         }
+        
+        confidenceScore = Math.min(confidenceScore, 95);
         
         // Generate signal
         let signal = null;
@@ -492,9 +472,6 @@ async function runAnalysis() {
             enableExecuteButton();
         } else {
             disableExecuteButton();
-            if (analysisData.signal.type === 'NEUTRAL') {
-                showNotification(`No clear signal (${confidenceScore}% confidence)`, 'warning');
-            }
         }
         
         // Update API Usage
@@ -512,17 +489,13 @@ async function runAnalysis() {
 }
 
 function updateUI(data, price) {
-    // Update price change
-    if (lastPrice) {
-        const change = price - lastPrice;
-        const changePercent = (change / lastPrice * 100).toFixed(2);
-        const priceChangeEl = document.getElementById('priceChange');
-        if (priceChangeEl) {
-            priceChangeEl.innerHTML = `${change >= 0 ? '▲' : '▼'} $${Math.abs(change).toFixed(2)} (${changePercent}%)`;
-            priceChangeEl.className = `price-change ${change >= 0 ? 'positive' : 'negative'}`;
-        }
+    // Update price display
+    const change = mockPrices[currentPair]?.change || 0;
+    const priceChangeEl = document.getElementById('priceChange');
+    if (priceChangeEl) {
+        priceChangeEl.innerHTML = `${change >= 0 ? '▲' : '▼'} ${Math.abs(change)}%`;
+        priceChangeEl.className = `price-change ${change >= 0 ? 'positive' : 'negative'}`;
     }
-    lastPrice = price;
     
     document.getElementById('currentPrice').innerHTML = `$${price.toFixed(2)}<span style="font-size:12px; display:block;">RSI: ${data.rsi} | ATR: ${data.atr}</span>`;
     
@@ -564,24 +537,19 @@ function updateUI(data, price) {
     // ICT Zones
     if (data.zones) {
         const fvgContainer = document.getElementById('fvgZonesDisplay');
-        if (fvgContainer && data.zones.fvgZones.length > 0) {
+        if (fvgContainer) {
             fvgContainer.innerHTML = data.zones.fvgZones.map(zone => 
                 `<div class="zone-tag">${zone}</div>`
-            ).join('');
-        } else if (fvgContainer) {
-            fvgContainer.innerHTML = '<div class="zone-tag">No FVG zones detected</div>';
+            ).join('') || '<div class="zone-tag">No FVG zones detected</div>';
         }
         
         const obContainer = document.getElementById('obZonesDisplay');
-        if (obContainer && data.zones.orderBlocks.length > 0) {
+        if (obContainer) {
             obContainer.innerHTML = data.zones.orderBlocks.map(ob => 
-                `<div class="zone-tag ${ob.includes('bullish') ? 'ob-bullish' : (ob.includes('bearish') ? 'ob-bearish' : '')}">${ob}</div>`
-            ).join('');
-        } else if (obContainer) {
-            obContainer.innerHTML = '<div class="zone-tag">No order blocks detected</div>';
+                `<div class="zone-tag">${ob}</div>`
+            ).join('') || '<div class="zone-tag">No order blocks detected</div>';
         }
         
-        // Fibonacci display
         const fibContainer = document.getElementById('fibLevelsDisplay');
         if (fibContainer && data.zones.fibonacci) {
             fibContainer.innerHTML = `
@@ -589,41 +557,27 @@ function updateUI(data, price) {
                 <div class="zone-tag fib">📐 50%: ${data.zones.fibonacci.level500}</div>
                 <div class="zone-tag fib">📐 61.8%: ${data.zones.fibonacci.level618}</div>
                 <div class="zone-tag fib">📐 78.6%: ${data.zones.fibonacci.level786}</div>
-                <div class="zone-tag" style="background:#3390ec20; border-left-color:#3390ec;">🎯 Current: ${data.zones.fibonacci.currentLevel}</div>
+                <div class="zone-tag" style="background:#3390ec20; border-left-color:#3390ec;">🎯 ${data.zones.fibonacci.currentLevel}</div>
             `;
         }
         
-        const buySideEl = document.getElementById('buySideLiq');
-        const sellSideEl = document.getElementById('sellSideLiq');
-        if (buySideEl) buySideEl.textContent = data.zones.liquidity.buySide;
-        if (sellSideEl) sellSideEl.textContent = data.zones.liquidity.sellSide;
-        
-        const bosEl = document.getElementById('bosLevel');
-        const chochEl = document.getElementById('chochLevel');
-        if (bosEl) bosEl.textContent = data.zones.structure.bos;
-        if (chochEl) chochEl.textContent = data.zones.structure.choch;
+        document.getElementById('buySideLiq').textContent = data.zones.liquidity.buySide;
+        document.getElementById('sellSideLiq').textContent = data.zones.liquidity.sellSide;
+        document.getElementById('bosLevel').textContent = data.zones.structure.bos;
+        document.getElementById('chochLevel').textContent = data.zones.structure.choch;
     }
 }
 
 function enableExecuteButton() {
     executeBtn.disabled = false;
-    if (tg.MainButton) {
-        tg.MainButton.setText(`⚡ Execute ${analysisData?.signal?.type || 'Order'}`);
-        tg.MainButton.show();
-        tg.MainButton.enable();
-    }
 }
 
 function disableExecuteButton() {
     executeBtn.disabled = true;
-    if (tg.MainButton) {
-        tg.MainButton.hide();
-    }
 }
 
 function resetAnalysis() {
-    const valueElements = document.querySelectorAll('.value:not(.signal-type)');
-    valueElements.forEach(el => {
+    document.querySelectorAll('.value').forEach(el => {
         if (el.id !== 'signalType') el.innerHTML = '--';
     });
     document.getElementById('currentPrice').innerHTML = '----';
@@ -670,7 +624,7 @@ function executeOrder() {
         timestamp: new Date().toISOString()
     };
     
-    if (tg.sendData) {
+    if (tg && tg.sendData) {
         tg.sendData(JSON.stringify(orderData));
     }
     
