@@ -5,17 +5,21 @@ if (tg) {
     tg.ready();
 }
 
-// Configuration
-const API_KEY = '3076652d6e1c45a3b4e0a6acfe0408aa';
-const USE_MOCK_DATA = false; // Set to false when API works
+// ============================================
+// ALPHA VANTAGE API CONFIGURATION
+// ============================================
+const ALPHA_VANTAGE_KEY = 'E4HPPIL10X34R418';
+const USE_ALPHA_VANTAGE = true;  // Using Alpha Vantage
+const USE_MOCK_FALLBACK = true;   // Fallback to mock if API fails
 
 // State
 let currentPair = 'BTC/USD';
 let currentTimeframe = '4H';
 let analysisData = null;
 let apiCalls = 0;
+let lastPrice = null;
 
-// Mock price database
+// Mock price database (fallback)
 const mockPrices = {
     'BTC/USD': { price: 43250.75, change: 2.3 },
     'ETH/USD': { price: 2280.50, change: 1.8 },
@@ -33,7 +37,179 @@ const mockPrices = {
     'XPD/USD': { price: 985.60, change: 0.5 }
 };
 
-// Mock OHLCV data generator
+// ============================================
+// ALPHA VANTAGE API FUNCTIONS
+// ============================================
+
+// Convert pair format (BTC/USD -> BTCUSD)
+function formatPairForAlphaVantage(symbol) {
+    return symbol.replace('/', '');
+}
+
+// Fetch current price from Alpha Vantage
+async function fetchPriceAlphaVantage(symbol) {
+    const pair = formatPairForAlphaVantage(symbol);
+    
+    // For crypto
+    if (symbol.includes('BTC') || symbol.includes('ETH') || symbol.includes('BNB') || symbol.includes('SOL') || symbol.includes('XRP')) {
+        const cryptoPair = pair.replace('USD', '');
+        const url = `https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency=${cryptoPair}&to_currency=USD&apikey=${ALPHA_VANTAGE_KEY}`;
+        
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        if (data['Realtime Currency Exchange Rate']) {
+            return parseFloat(data['Realtime Currency Exchange Rate']['5. Exchange Rate']);
+        }
+        throw new Error('No data for crypto');
+    }
+    
+    // For forex
+    if (symbol.includes('EUR') || symbol.includes('GBP') || symbol.includes('USD') || symbol.includes('AUD') || symbol.includes('CAD') || symbol.includes('JPY')) {
+        const fromCurrency = pair.substring(0, 3);
+        const toCurrency = pair.substring(3, 6);
+        const url = `https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency=${fromCurrency}&to_currency=${toCurrency}&apikey=${ALPHA_VANTAGE_KEY}`;
+        
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        if (data['Realtime Currency Exchange Rate']) {
+            return parseFloat(data['Realtime Currency Exchange Rate']['5. Exchange Rate']);
+        }
+        throw new Error('No data for forex');
+    }
+    
+    // For metals (XAU, XAG, etc.)
+    if (symbol.includes('XAU')) {
+        const url = `https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency=XAU&to_currency=USD&apikey=${ALPHA_VANTAGE_KEY}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        if (data['Realtime Currency Exchange Rate']) {
+            return parseFloat(data['Realtime Currency Exchange Rate']['5. Exchange Rate']);
+        }
+        throw new Error('No data for metals');
+    }
+    
+    throw new Error('Unsupported pair');
+}
+
+// Fetch historical data from Alpha Vantage
+async function fetchHistoricalAlphaVantage(symbol, interval) {
+    const pair = formatPairForAlphaVantage(symbol);
+    const intervals = { '1H': '60min', '4H': '60min', '1D': 'daily' };
+    
+    // Map intervals
+    let function_name = 'FX_DAILY';
+    let outputsize = 'compact';
+    
+    if (interval === '1H' || interval === '4H') {
+        function_name = 'FX_INTRADAY';
+        const timeInterval = interval === '1H' ? '60min' : '60min';
+        
+        // For crypto
+        if (symbol.includes('BTC') || symbol.includes('ETH')) {
+            const cryptoPair = pair.replace('USD', '');
+            const url = `https://www.alphavantage.co/query?function=CRYPTO_INTRADAY&symbol=${cryptoPair}&market=USD&interval=60min&outputsize=compact&apikey=${ALPHA_VANTAGE_KEY}`;
+            
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            if (data['Time Series Crypto (60min)']) {
+                const timeSeries = data['Time Series Crypto (60min)'];
+                const candles = [];
+                for (const [time, values] of Object.entries(timeSeries)) {
+                    candles.push({
+                        time: new Date(time),
+                        open: parseFloat(values['1a. open (USD)']),
+                        high: parseFloat(values['2a. high (USD)']),
+                        low: parseFloat(values['3a. low (USD)']),
+                        close: parseFloat(values['4a. close (USD)']),
+                        volume: parseFloat(values['5. volume'])
+                    });
+                }
+                return candles.reverse();
+            }
+        }
+        
+        // For forex
+        const fromCurrency = pair.substring(0, 3);
+        const toCurrency = pair.substring(3, 6);
+        const url = `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=${fromCurrency}&to_symbol=${toCurrency}&interval=60min&outputsize=compact&apikey=${ALPHA_VANTAGE_KEY}`;
+        
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        if (data['Time Series FX (60min)']) {
+            const timeSeries = data['Time Series FX (60min)'];
+            const candles = [];
+            for (const [time, values] of Object.entries(timeSeries)) {
+                candles.push({
+                    time: new Date(time),
+                    open: parseFloat(values['1. open']),
+                    high: parseFloat(values['2. high']),
+                    low: parseFloat(values['3. low']),
+                    close: parseFloat(values['4. close']),
+                    volume: 0
+                });
+            }
+            return candles.reverse();
+        }
+    }
+    
+    // For daily data
+    if (symbol.includes('BTC') || symbol.includes('ETH')) {
+        const cryptoPair = pair.replace('USD', '');
+        const url = `https://www.alphavantage.co/query?function=DIGITAL_CURRENCY_DAILY&symbol=${cryptoPair}&market=USD&apikey=${ALPHA_VANTAGE_KEY}`;
+        
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        if (data['Time Series (Digital Currency Daily)']) {
+            const timeSeries = data['Time Series (Digital Currency Daily)'];
+            const candles = [];
+            for (const [time, values] of Object.entries(timeSeries)) {
+                candles.push({
+                    time: new Date(time),
+                    open: parseFloat(values['1a. open (USD)']),
+                    high: parseFloat(values['2a. high (USD)']),
+                    low: parseFloat(values['3a. low (USD)']),
+                    close: parseFloat(values['4a. close (USD)']),
+                    volume: parseFloat(values['5. volume'])
+                });
+            }
+            return candles.reverse();
+        }
+    }
+    
+    // For forex daily
+    const fromCurrency = pair.substring(0, 3);
+    const toCurrency = pair.substring(3, 6);
+    const url = `https://www.alphavantage.co/query?function=FX_DAILY&from_symbol=${fromCurrency}&to_symbol=${toCurrency}&outputsize=compact&apikey=${ALPHA_VANTAGE_KEY}`;
+    
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (data['Time Series FX (Daily)']) {
+        const timeSeries = data['Time Series FX (Daily)'];
+        const candles = [];
+        for (const [time, values] of Object.entries(timeSeries)) {
+            candles.push({
+                time: new Date(time),
+                open: parseFloat(values['1. open']),
+                high: parseFloat(values['2. high']),
+                low: parseFloat(values['3. low']),
+                close: parseFloat(values['4. close']),
+                volume: 0
+            });
+        }
+        return candles.reverse();
+    }
+    
+    throw new Error('No historical data available');
+}
+
+// Generate mock data as fallback
 function generateMockData(symbol, interval, count = 100) {
     const basePrice = mockPrices[symbol]?.price || 100;
     const volatility = symbol.includes('USD') ? 0.02 : 0.01;
@@ -60,7 +236,10 @@ function generateMockData(symbol, interval, count = 100) {
     return data;
 }
 
-// Technical Analysis Functions
+// ============================================
+// TECHNICAL ANALYSIS FUNCTIONS
+// ============================================
+
 function calculateEMA(data, period) {
     const multiplier = 2 / (period + 1);
     const ema = [data[0].close];
@@ -206,16 +385,28 @@ function detectMarketStructure(swingPoints, currentPrice) {
         structure = 'BOS ↓';
         bosLevel = prevLow.price;
     }
+    
+    if (lastHigh && lastLow && currentPrice > lastHigh.price) {
+        chochLevel = lastHigh.price;
+    } else if (lastLow && lastHigh && currentPrice < lastLow.price) {
+        chochLevel = lastLow.price;
+    }
+    
     return { structure, bosLevel, chochLevel };
 }
 
-// DOM Elements
+// ============================================
+// DOM ELEMENTS
+// ============================================
 const analyzeBtn = document.getElementById('analyzeBtn');
 const executeBtn = document.getElementById('executeBtn');
 const pairSelect = document.getElementById('pairSelect');
 const notification = document.getElementById('notification');
 
-// Initialize
+// ============================================
+// UI FUNCTIONS
+// ============================================
+
 function init() {
     updateLiveTime();
     setInterval(updateLiveTime, 1000);
@@ -285,47 +476,41 @@ function updatePairsByCategory(category) {
     resetAnalysis();
 }
 
-// Main Analysis Function - WORKS WITH MOCK DATA
+// ============================================
+// MAIN ANALYSIS FUNCTION
+// ============================================
+
 async function runAnalysis() {
     analyzeBtn.classList.add('loading');
     analyzeBtn.disabled = true;
     showNotification('Analyzing market with ICT + Fibonacci...', 'info');
 
     try {
-        // Get current price (mock or real)
         let currentPrice;
-        if (USE_MOCK_DATA) {
-            currentPrice = mockPrices[currentPair]?.price || 50000;
-            // Simulate API delay
-            await new Promise(resolve => setTimeout(resolve, 500));
-        } else {
-            const priceResponse = await fetch(
-                `https://api.twelvedata.com/price?symbol=${currentPair}&apikey=${API_KEY}`
-            );
-            const priceData = await priceResponse.json();
-            if (priceData.code) throw new Error(priceData.message);
-            currentPrice = parseFloat(priceData.price);
-        }
-        
-        // Get historical data
         let data;
-        if (USE_MOCK_DATA) {
-            data = generateMockData(currentPair, currentTimeframe, 100);
+        let usedMock = false;
+        
+        if (USE_ALPHA_VANTAGE) {
+            try {
+                // Try Alpha Vantage API
+                currentPrice = await fetchPriceAlphaVantage(currentPair);
+                data = await fetchHistoricalAlphaVantage(currentPair, currentTimeframe);
+                showNotification(`Live price: $${currentPrice.toFixed(2)} (Alpha Vantage)`, 'success');
+            } catch (apiError) {
+                console.warn('Alpha Vantage API error:', apiError);
+                if (USE_MOCK_FALLBACK) {
+                    usedMock = true;
+                    currentPrice = mockPrices[currentPair]?.price || 50000;
+                    data = generateMockData(currentPair, currentTimeframe, 100);
+                    showNotification(`API limit reached - Using demo data`, 'warning');
+                } else {
+                    throw apiError;
+                }
+            }
         } else {
-            const intervals = { '1H': '1h', '4H': '4h', '1D': '1day' };
-            const response = await fetch(
-                `https://api.twelvedata.com/time_series?symbol=${currentPair}&interval=${intervals[currentTimeframe]}&outputsize=100&apikey=${API_KEY}`
-            );
-            const jsonData = await response.json();
-            if (jsonData.code) throw new Error(jsonData.message);
-            data = jsonData.values.map(candle => ({
-                time: new Date(candle.datetime),
-                open: parseFloat(candle.open),
-                high: parseFloat(candle.high),
-                low: parseFloat(candle.low),
-                close: parseFloat(candle.close),
-                volume: parseFloat(candle.volume)
-            }));
+            // Use mock data
+            currentPrice = mockPrices[currentPair]?.price || 50000;
+            data = generateMockData(currentPair, currentTimeframe, 100);
         }
         
         if (!data || data.length < 30) throw new Error('Insufficient data');
@@ -364,8 +549,7 @@ async function runAnalysis() {
         const fibonacci = calculateFibonacci(recentHigh, recentLow, currentPrice);
         
         // Calculate confidence score
-        let confidenceScore = 30; // Base confidence
-        
+        let confidenceScore = 30;
         if (trend !== 'neutral') confidenceScore += 20;
         if ((trend === 'bullish' && rsi > 40 && rsi < 70) ||
             (trend === 'bearish' && rsi < 60 && rsi > 30)) confidenceScore += 15;
@@ -437,6 +621,7 @@ async function runAnalysis() {
             confidence: confidenceScore,
             rsi: rsi.toFixed(1),
             atr: atr.toFixed(2),
+            usedMock: usedMock,
             zones: {
                 fvgZones: fvgs.slice(0, 3).map(fvg => 
                     `${fvg.type.toUpperCase()}: $${fvg.lower.toFixed(2)} - $${fvg.upper.toFixed(2)}`
@@ -497,7 +682,8 @@ function updateUI(data, price) {
         priceChangeEl.className = `price-change ${change >= 0 ? 'positive' : 'negative'}`;
     }
     
-    document.getElementById('currentPrice').innerHTML = `$${price.toFixed(2)}<span style="font-size:12px; display:block;">RSI: ${data.rsi} | ATR: ${data.atr}</span>`;
+    const apiStatus = data.usedMock ? ' (Demo Mode)' : ' (Live)';
+    document.getElementById('currentPrice').innerHTML = `$${price.toFixed(2)}${apiStatus}<span style="font-size:12px; display:block;">RSI: ${data.rsi} | ATR: ${data.atr}</span>`;
     
     // 4H Analysis
     document.getElementById('trend4H').innerHTML = data.trend4H || '--';
@@ -592,54 +778,4 @@ function resetAnalysis() {
     if (fibContainer) fibContainer.innerHTML = 'Click Analyze to see Fibonacci levels';
     
     document.getElementById('buySideLiq').textContent = '--';
-    document.getElementById('sellSideLiq').textContent = '--';
-    document.getElementById('bosLevel').textContent = '--';
-    document.getElementById('chochLevel').textContent = '--';
-    
-    const badge = document.getElementById('signalStrengthBadge');
-    if (badge) {
-        badge.textContent = '--';
-        badge.className = 'signal-badge';
-    }
-    
-    disableExecuteButton();
-}
-
-function executeOrder() {
-    if (!analysisData || analysisData.confidence < 50) {
-        showNotification('Low confidence - Trade not recommended', 'error');
-        return;
-    }
-    
-    const orderData = {
-        action: 'execute_order',
-        pair: currentPair,
-        signal: analysisData.signal,
-        analysis: {
-            trend: analysisData.trend4H,
-            confidence: analysisData.confidence,
-            rsi: analysisData.rsi,
-            timeframe: currentTimeframe
-        },
-        timestamp: new Date().toISOString()
-    };
-    
-    if (tg && tg.sendData) {
-        tg.sendData(JSON.stringify(orderData));
-    }
-    
-    showNotification(`✅ ${analysisData.signal.type} order executed! TP: $${analysisData.signal.tp?.toFixed(2)} SL: $${analysisData.signal.sl?.toFixed(2)}`, 'success');
-}
-
-function showNotification(message, type = 'info') {
-    notification.textContent = message;
-    notification.className = `notification ${type}`;
-    notification.classList.remove('hidden');
-    
-    setTimeout(() => {
-        notification.classList.add('hidden');
-    }, 3000);
-}
-
-// Start the app
-init();
+    document.getElementById('sellSideLiq').text
