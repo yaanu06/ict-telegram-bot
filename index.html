@@ -3,19 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>ICT Fibonacci Trading Bot</title>
+    <title>ICT Volume Profile Trader</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
-        <!-- Header with live time -->
+        <!-- Header -->
         <div class="header">
             <div class="header-top">
                 <h1>📊 ICT Pro Trader</h1>
                 <div class="live-badge">LIVE</div>
             </div>
-            <p class="subtitle">ICT + Fibonacci | Smart Confluence Trading</p>
+            <p class="subtitle">Volume Profile + Order Flow | ICT Smart Money Concepts</p>
             <div id="liveTime" class="live-time"></div>
         </div>
 
@@ -75,7 +75,7 @@
             </div>
         </div>
 
-        <!-- Trading Signal Card - Prominent -->
+        <!-- Trading Signal Card -->
         <div class="section signal-card">
             <div class="signal-header">
                 <h3>🎯 TRADING SIGNAL</h3>
@@ -106,10 +106,14 @@
                     <label>Risk:Reward</label>
                     <span id="signalRR" class="value">--</span>
                 </div>
+                <div class="signal-item full-width">
+                    <label>Signal Reason</label>
+                    <span id="signalReason" class="value" style="font-size: 12px;">--</span>
+                </div>
             </div>
         </div>
 
-        <!-- Analysis Grid - 4H & 1H Side by Side -->
+        <!-- Analysis Row - 4H & 1H -->
         <div class="analysis-row">
             <div class="section analysis-card half">
                 <h3>⏱️ 4H Analysis</h3>
@@ -122,15 +126,15 @@
                     <span id="strength4H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>FVG</label>
+                    <label>Volume Profile</label>
                     <span id="fvg4H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>Order Blocks</label>
+                    <label>Order Flow</label>
                     <span id="ob4H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>Structure</label>
+                    <label>Market Structure</label>
                     <span id="ms4H" class="value">--</span>
                 </div>
             </div>
@@ -146,15 +150,15 @@
                     <span id="strength1H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>FVG</label>
+                    <label>Value Area</label>
                     <span id="fvg1H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>Order Blocks</label>
+                    <label>Delta</label>
                     <span id="ob1H" class="value">--</span>
                 </div>
                 <div class="analysis-item">
-                    <label>Structure</label>
+                    <label>VWAP</label>
                     <span id="ms1H" class="value">--</span>
                 </div>
             </div>
@@ -163,17 +167,17 @@
         <!-- ICT Details with Tabs -->
         <div class="section ict-details">
             <div class="tabs">
-                <button class="tab-btn active" data-tab="fvg">📊 FVG Zones</button>
-                <button class="tab-btn" data-tab="ob">📦 Order Blocks</button>
+                <button class="tab-btn active" data-tab="volume">📊 Volume Profile</button>
+                <button class="tab-btn" data-tab="order">📦 Order Flow</button>
                 <button class="tab-btn" data-tab="fib">📐 Fibonacci</button>
             </div>
             
-            <div id="fvgTab" class="tab-content active">
-                <div id="fvgZonesDisplay" class="zone-display">Click Analyze to see zones</div>
+            <div id="volumeTab" class="tab-content active">
+                <div id="fvgZonesDisplay" class="zone-display">Click Analyze to see Volume Profile</div>
             </div>
             
-            <div id="obTab" class="tab-content">
-                <div id="obZonesDisplay" class="zone-display">Click Analyze to see zones</div>
+            <div id="orderTab" class="tab-content">
+                <div id="obZonesDisplay" class="zone-display">Click Analyze to see Order Flow</div>
             </div>
             
             <div id="fibTab" class="tab-content">
@@ -194,7 +198,7 @@
                     <span id="bosLevel">--</span>
                 </div>
                 <div class="zone-box">
-                    <label>🔄 CHoCH Level</label>
+                    <label>🔄 CHoCH/VWAP</label>
                     <span id="chochLevel">--</span>
                 </div>
             </div>
