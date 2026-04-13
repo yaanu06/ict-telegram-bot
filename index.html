@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>ICT Volume Profile Trader - Complete</title>
+    <title>ICT Pro Trader - Smart Entry</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
@@ -11,7 +11,7 @@
     <div class="container">
         <div class="header">
             <h1>📊 ICT Pro Trader</h1>
-            <p class="subtitle">Volume Profile + Order Flow | ICT Smart Money Concepts</p>
+            <p class="subtitle">ICT + Volume Profile + Order Flow | Smart Entry Zones</p>
             <div id="liveTime" class="live-time"></div>
         </div>
 
@@ -39,7 +39,7 @@
 
         <!-- Current Price -->
         <div class="section">
-            <h3>📈 Current Price</h3>
+            <h3>📈 Live Price</h3>
             <div class="price-container">
                 <div id="currentPrice" class="current-price">----</div>
                 <div id="priceChange" class="price-change">--</div>
@@ -81,7 +81,11 @@
 
             <div class="trade-levels">
                 <div class="level-row">
-                    <span class="level-label">📌 ENTRY (Current Price):</span>
+                    <span class="level-label">🎯 IDEAL ENTRY (Wait for this price):</span>
+                    <span class="level-value" id="idealEntryDisplay" style="color: #ff9f0a; font-size: 18px;">--</span>
+                </div>
+                <div class="level-row">
+                    <span class="level-label">📌 Current Price:</span>
                     <span class="level-value" id="entryPrice">--</span>
                 </div>
                 <div class="level-row">
@@ -99,19 +103,19 @@
             </div>
 
             <div class="signal-reason">
-                <strong>📋 Signal Reason:</strong><br>
+                <strong>📋 Analysis Summary:</strong><br>
                 <span id="signalReason">--</span>
             </div>
         </div>
 
-        <!-- ========== ENTRY ZONE CARD (The important one) ========== -->
+        <!-- ========== ENTRY ZONE CARD ========== -->
         <div class="section entry-card">
-            <h3>📍 IDEAL ENTRY ZONE (Wait Here)</h3>
+            <h3>📍 SMART ENTRY ZONE (Based on ICT + Volume Profile)</h3>
             <div class="entry-zone-simple">
                 <div class="zone-price" id="idealEntryZone">--</div>
                 <div class="zone-instruction" id="entryInstruction">--</div>
                 <div class="progress-container">
-                    <div class="progress-label">Price distance to ideal entry:</div>
+                    <div class="progress-label">Current price vs ideal entry:</div>
                     <div class="progress-bar-bg">
                         <div id="zoneProgress" class="progress-fill" style="width: 0%"></div>
                     </div>
@@ -120,17 +124,18 @@
             </div>
         </div>
 
-        <!-- ========== VOLUME PROFILE & ORDER FLOW ========== -->
+        <!-- ========== VOLUME PROFILE ========== -->
         <div class="section">
             <h3>📊 Volume Profile</h3>
             <div class="info-grid">
                 <div class="info-item"><label>POC (Point of Control):</label><span id="pocValue">--</span></div>
-                <div class="info-item"><label>Value Area High:</label><span id="valueHigh">--</span></div>
-                <div class="info-item"><label>Value Area Low:</label><span id="valueLow">--</span></div>
+                <div class="info-item"><label>Value Area High (Resistance):</label><span id="valueHigh">--</span></div>
+                <div class="info-item"><label>Value Area Low (Support):</label><span id="valueLow">--</span></div>
                 <div class="info-item"><label>Total Volume:</label><span id="totalVolume">--</span></div>
             </div>
         </div>
 
+        <!-- ========== ORDER FLOW ========== -->
         <div class="section">
             <h3>📦 Order Flow</h3>
             <div class="info-grid">
@@ -161,7 +166,7 @@
             </div>
         </div>
 
-        <!-- ========== FIBONACCI LEVELS ========== -->
+        <!-- ========== FIBONACCI ========== -->
         <div class="section">
             <h3>📐 Fibonacci Levels</h3>
             <div class="fib-grid">
@@ -172,7 +177,7 @@
             </div>
         </div>
 
-        <!-- ========== LIQUIDITY LEVELS ========== -->
+        <!-- ========== LIQUIDITY ========== -->
         <div class="zone-grid">
             <div class="zone-box">
                 <label>💧 Buy Side Liquidity</label>
