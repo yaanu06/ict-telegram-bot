@@ -330,4 +330,341 @@ async function runAnalysis() {
         if (trend !== 'neutral') confidence += 20;
         if (strength.includes('Strong')) confidence += 15;
         if (rsi > 30 && rsi < 70) confidence += 10;
-        if (volumeProfile && volumeProfile.poc
+        if (volumeProfile && volumeProfile.poc) confidence += 10;
+        if (orderFlow && ((trend === 'bullish' && orderFlow.netDelta > 0) || (trend === 'bearish' && orderFlow.netDelta < 0))) confidence += 15;
+        if (orderFlow && orderFlow.absorptionSignals > 0) confidence += 10;
+        if (swingPoints.highs.length > 0 || swingPoints.lows.length > 0) confidence += 5;
+        confidence = Math.min(confidence, 98);
+        
+        if (trend === 'bullish' && confidence >= 55) {
+            signalType = 'LONG';
+            
+            // IDEAL ENTRY for LONG: Value Area Low or Fibonacci 61.8% (support level)
+            idealEntry = Math.max(volumeProfile?.valueAreaLow || recentLow, fib618);
+            // Make sure ideal entry is BELOW current price (wait for pullback)
+            if (idealEntry >= currentPrice) {
+                idealEntry = currentPrice - (atr * 1);
+            }
+            
+            // Stop Loss: Below the ideal entry zone
+            stopLoss = idealEntry - (atr * 1);
+            
+            // Take Profit: Value Area High or Fibonacci 38.2% (resistance)
+            let resistanceTarget = Math.min(volumeProfile?.valueAreaHigh || recentHigh, fib382);
+            if (resistanceTarget <= idealEntry) {
+                resistanceTarget = idealEntry + (atr * 2);
+            }
+            takeProfit = resistanceTarget;
+            
+            entryInstruction = `📈 LONG Setup: Wait for pullback to support at $${idealEntry.toFixed(2)}`;
+            
+        } else if (trend === 'bearish' && confidence >= 55) {
+            signalType = 'SHORT';
+            
+            // IDEAL ENTRY for SHORT: Value Area High or Fibonacci 38.2% (resistance level)
+            idealEntry = Math.min(volumeProfile?.valueAreaHigh || recentHigh, fib382);
+            // Make sure ideal entry is ABOVE current price (wait for rally)
+            if (idealEntry <= currentPrice) {
+                idealEntry = currentPrice + (atr * 1);
+            }
+            
+            // Stop Loss: Above the ideal entry zone
+            stopLoss = idealEntry + (atr * 1);
+            
+            // Take Profit: Value Area Low or Fibonacci 61.8% (support)
+            let supportTarget = Math.max(volumeProfile?.valueAreaLow || recentLow, fib618);
+            if (supportTarget >= idealEntry) {
+                supportTarget = idealEntry - (atr * 2);
+            }
+            takeProfit = supportTarget;
+            
+            entryInstruction = `📉 SHORT Setup: Wait for rally to resistance at $${idealEntry.toFixed(2)}`;
+        }
+        
+        // Calculate distance and progress
+        let distanceToEntry = 0;
+        let progress = 0;
+        let distanceText = '';
+        
+        if (signalType === 'LONG') {
+            distanceToEntry = currentPrice - idealEntry;
+            if (distanceToEntry <= 0) {
+                progress = 100;
+                distanceText = '✅ Price is AT or BELOW ideal entry - Ready to enter!';
+            } else {
+                const maxDistance = atr * 2;
+                progress = Math.min(100, (1 - distanceToEntry / maxDistance) * 100);
+                distanceText = `📏 Price needs to drop $${distanceToEntry.toFixed(2)} more to reach ideal entry`;
+            }
+        } else if (signalType === 'SHORT') {
+            distanceToEntry = idealEntry - currentPrice;
+            if (distanceToEntry <= 0) {
+                progress = 100;
+                distanceText = '✅ Price is AT or ABOVE ideal entry - Ready to enter!';
+            } else {
+                const maxDistance = atr * 2;
+                progress = Math.min(100, (1 - distanceToEntry / maxDistance) * 100);
+                distanceText = `📏 Price needs to rise $${distanceToEntry.toFixed(2)} more to reach ideal entry`;
+            }
+        }
+        
+        // Calculate risk:reward
+        let riskReward = 'N/A';
+        if (signalType === 'LONG' && idealEntry && stopLoss && takeProfit) {
+            const risk = idealEntry - stopLoss;
+            const reward = takeProfit - idealEntry;
+            if (risk > 0) {
+                riskReward = (reward / risk).toFixed(1);
+            }
+        } else if (signalType === 'SHORT' && idealEntry && stopLoss && takeProfit) {
+            const risk = stopLoss - idealEntry;
+            const reward = idealEntry - takeProfit;
+            if (risk > 0) {
+                riskReward = (reward / risk).toFixed(1);
+            }
+        }
+        
+        // Divergence detection
+        let divergence = '';
+        if (rsi < 30 && trend === 'bearish') divergence = 'Bullish Divergence (reversal up possible)';
+        if (rsi > 70 && trend === 'bullish') divergence = 'Bearish Divergence (reversal down possible)';
+        
+        // ========== UPDATE UI ==========
+        
+        // Current Price
+        document.getElementById('currentPrice').innerHTML = `$${currentPrice.toFixed(2)}`;
+        if (lastPrice) {
+            const change = ((currentPrice - lastPrice) / lastPrice * 100).toFixed(2);
+            const changeEl = document.getElementById('priceChange');
+            changeEl.innerHTML = `${change >= 0 ? '▲' : '▼'} ${Math.abs(change)}%`;
+            changeEl.className = `price-change ${change >= 0 ? 'positive' : 'negative'}`;
+        }
+        lastPrice = currentPrice;
+        
+        // Entry Zone Card
+        if (idealEntry) {
+            document.getElementById('idealEntryZone').innerHTML = `$${idealEntry.toFixed(2)}`;
+        } else {
+            document.getElementById('idealEntryZone').innerHTML = '--';
+        }
+        document.getElementById('entryInstruction').innerHTML = entryInstruction || 'No clear signal - Wait for setup';
+        document.getElementById('zoneProgress').style.width = `${progress}%`;
+        document.getElementById('distanceText').innerHTML = distanceText || 'Analyzing market...';
+        
+        // Signal Card
+        const signalTypeBox = document.getElementById('signalTypeText');
+        signalTypeBox.innerHTML = signalType;
+        signalTypeBox.parentElement.className = `signal-type-box ${signalType.toLowerCase()}`;
+        
+        document.getElementById('confidenceText').innerHTML = `${confidence}%`;
+        document.getElementById('idealEntryDisplay').innerHTML = idealEntry ? `$${idealEntry.toFixed(2)}` : '--';
+        document.getElementById('entryPrice').innerHTML = `$${currentPrice.toFixed(2)}`;
+        document.getElementById('takeProfit').innerHTML = takeProfit ? `$${takeProfit.toFixed(2)}` : '--';
+        document.getElementById('stopLoss').innerHTML = stopLoss ? `$${stopLoss.toFixed(2)}` : '--';
+        document.getElementById('riskReward').innerHTML = riskReward;
+        
+        // Signal Reason
+        let reason = `📊 ${trend === 'bullish' ? 'Bullish' : (trend === 'bearish' ? 'Bearish' : 'Neutral')} trend | ${strength} | RSI: ${rsi.toFixed(1)}`;
+        if (divergence) reason += `\n🔄 ${divergence}`;
+        if (volumeProfile?.poc) reason += `\n📊 POC: $${volumeProfile.poc.price.toFixed(2)} | Value Area: $${volumeProfile.valueAreaLow.toFixed(2)} - $${volumeProfile.valueAreaHigh.toFixed(2)}`;
+        if (orderFlow) reason += `\n📦 Order Flow Delta: ${(orderFlow.netDelta / 1000000).toFixed(1)}M | Absorption: ${orderFlow.absorptionSignals} signals`;
+        if (idealEntry) reason += `\n🎯 Ideal Entry: $${idealEntry.toFixed(2)} (${signalType === 'LONG' ? 'Support' : 'Resistance'})`;
+        document.getElementById('signalReason').innerHTML = reason;
+        
+        // Badge
+        const badge = document.getElementById('signalBadge');
+        if (confidence >= 70) {
+            badge.innerHTML = '🔥 HIGH CONFIDENCE';
+            badge.className = 'signal-badge high';
+        } else if (confidence >= 55) {
+            badge.innerHTML = '📊 MEDIUM CONFIDENCE';
+            badge.className = 'signal-badge medium';
+        } else {
+            badge.innerHTML = '⚠️ LOW CONFIDENCE';
+            badge.className = 'signal-badge low';
+        }
+        
+        // Volume Profile
+        if (volumeProfile) {
+            document.getElementById('pocValue').innerHTML = `$${volumeProfile.poc?.price.toFixed(2) || '--'}`;
+            document.getElementById('valueHigh').innerHTML = `$${volumeProfile.valueAreaHigh?.toFixed(2) || '--'}`;
+            document.getElementById('valueLow').innerHTML = `$${volumeProfile.valueAreaLow?.toFixed(2) || '--'}`;
+            document.getElementById('totalVolume').innerHTML = `${(volumeProfile.totalVolume / 1000000).toFixed(1)}M`;
+        }
+        
+        // Order Flow
+        if (orderFlow) {
+            document.getElementById('buyingPressure').innerHTML = `${(orderFlow.buyingPressure / 1000000).toFixed(1)}M`;
+            document.getElementById('sellingPressure').innerHTML = `${(orderFlow.sellingPressure / 1000000).toFixed(1)}M`;
+            document.getElementById('netDelta').innerHTML = `${(orderFlow.netDelta / 1000000).toFixed(1)}M`;
+            document.getElementById('vwapValue').innerHTML = `$${orderFlow.vwap.toFixed(2)}`;
+        }
+        
+        // 4H ICT
+        document.getElementById('trend4H').innerHTML = trend === 'bullish' ? '🟢 Bullish' : (trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral');
+        document.getElementById('trend4H').className = `trend ${trend}`;
+        document.getElementById('strength4H').innerHTML = strength;
+        document.getElementById('fvg4H').innerHTML = '✅ Detected';
+        document.getElementById('ob4H').innerHTML = '✅ Present';
+        document.getElementById('ms4H').innerHTML = trend === 'bullish' ? 'BOS ↑' : (trend === 'bearish' ? 'BOS ↓' : 'CHoCH');
+        
+        // 1H ICT
+        document.getElementById('trend1H').innerHTML = trend === 'bullish' ? '🟢 Bullish' : (trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral');
+        document.getElementById('trend1H').className = `trend ${trend}`;
+        document.getElementById('rsi1H').innerHTML = rsi.toFixed(1);
+        document.getElementById('divergence1H').innerHTML = divergence || 'None';
+        document.getElementById('absorption1H').innerHTML = orderFlow?.absorptionSignals > 0 ? `⚠️ ${orderFlow.absorptionSignals}` : 'None';
+        document.getElementById('choch1H').innerHTML = trend === 'bullish' ? 'Bullish CHoCH' : (trend === 'bearish' ? 'Bearish CHoCH' : 'None');
+        
+        // Fibonacci
+        document.getElementById('fib382').innerHTML = `$${fib382.toFixed(2)}`;
+        document.getElementById('fib500').innerHTML = `$${fib500.toFixed(2)}`;
+        document.getElementById('fib618').innerHTML = `$${fib618.toFixed(2)}`;
+        document.getElementById('fib786').innerHTML = `$${fib786.toFixed(2)}`;
+        
+        // Liquidity
+        document.getElementById('buySideLiq').innerHTML = `$${(recentHigh + atr).toFixed(2)}`;
+        document.getElementById('sellSideLiq').innerHTML = `$${(recentLow - atr).toFixed(2)}`;
+        document.getElementById('bosLevel').innerHTML = trend === 'bullish' ? `$${recentHigh.toFixed(2)}` : `$${recentLow.toFixed(2)}`;
+        document.getElementById('chochLevel').innerHTML = orderFlow?.vwap ? `VWAP: $${orderFlow.vwap.toFixed(2)}` : '--';
+        
+        // Execute button - enable only when price is near ideal entry (progress > 70%)
+        const shouldExecute = signalType !== 'NEUTRAL' && confidence >= 55 && progress >= 70;
+        executeBtn.disabled = !shouldExecute;
+        
+        analysisData = { 
+            signalType, 
+            idealEntry, 
+            currentPrice, 
+            stopLoss, 
+            takeProfit, 
+            riskReward, 
+            confidence, 
+            currentPair,
+            progress
+        };
+        
+        apiCalls++;
+        document.getElementById('apiUsage').innerHTML = `${apiCalls}`;
+        showNotification(`Analysis complete! ${signalType} signal with ${confidence}% confidence`, 'success');
+        
+    } catch (error) {
+        console.error(error);
+        showNotification('Error: ' + error.message, 'error');
+        document.getElementById('currentPrice').innerHTML = 'ERROR';
+    } finally {
+        analyzeBtn.classList.remove('loading');
+        analyzeBtn.disabled = false;
+    }
+}
+
+// ============================================
+// UI FUNCTIONS
+// ============================================
+
+function init() {
+    updateLiveTime();
+    setInterval(updateLiveTime, 1000);
+    setupEventListeners();
+}
+
+function updateLiveTime() {
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const el = document.getElementById('liveTime');
+    if (el) el.innerHTML = `${dateStr} ${timeStr} UTC`;
+}
+
+function setupEventListeners() {
+    analyzeBtn.addEventListener('click', runAnalysis);
+    executeBtn.addEventListener('click', executeOrder);
+    pairSelect.addEventListener('change', (e) => {
+        currentPair = e.target.value;
+        resetAnalysis();
+    });
+
+    document.querySelectorAll('.category-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            document.querySelectorAll('.category-btn').forEach(b => b.classList.remove('active'));
+            e.target.classList.add('active');
+            updatePairsByCategory(e.target.dataset.category);
+        });
+    });
+
+    document.querySelectorAll('.tf-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+            e.target.classList.add('active');
+            currentTimeframe = e.target.dataset.tf;
+        });
+    });
+}
+
+function updatePairsByCategory(category) {
+    const pairs = {
+        crypto: ['BTC/USD', 'ETH/USD', 'BNB/USD', 'SOL/USD', 'XRP/USD'],
+        forex: ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'],
+        metals: ['XAU/USD', 'XAG/USD', 'XPT/USD', 'XPD/USD']
+    };
+    pairSelect.innerHTML = pairs[category].map(p => `<option value="${p}">${p}</option>`).join('');
+    currentPair = pairs[category][0];
+    resetAnalysis();
+}
+
+function resetAnalysis() {
+    document.getElementById('currentPrice').innerHTML = '----';
+    document.getElementById('priceChange').innerHTML = '--';
+    document.getElementById('idealEntryZone').innerHTML = '--';
+    document.getElementById('entryInstruction').innerHTML = '--';
+    document.getElementById('zoneProgress').style.width = '0%';
+    document.getElementById('distanceText').innerHTML = '--';
+    document.getElementById('signalTypeText').innerHTML = '--';
+    document.getElementById('confidenceText').innerHTML = '--';
+    document.getElementById('idealEntryDisplay').innerHTML = '--';
+    document.getElementById('entryPrice').innerHTML = '--';
+    document.getElementById('takeProfit').innerHTML = '--';
+    document.getElementById('stopLoss').innerHTML = '--';
+    document.getElementById('riskReward').innerHTML = '--';
+    document.getElementById('signalReason').innerHTML = '--';
+    executeBtn.disabled = true;
+}
+
+function executeOrder() {
+    if (!analysisData) {
+        showNotification('No analysis data', 'error');
+        return;
+    }
+    
+    if (analysisData.progress < 70) {
+        showNotification(`Price not at ideal entry (${analysisData.progress.toFixed(0)}% to target). Wait for pullback!`, 'warning');
+        return;
+    }
+    
+    if (tg && tg.sendData) {
+        tg.sendData(JSON.stringify({
+            action: 'execute_order',
+            pair: currentPair,
+            signal: analysisData.signalType,
+            idealEntry: analysisData.idealEntry,
+            currentPrice: analysisData.currentPrice,
+            stopLoss: analysisData.stopLoss,
+            takeProfit: analysisData.takeProfit,
+            riskReward: analysisData.riskReward,
+            confidence: analysisData.confidence,
+            timestamp: new Date().toISOString()
+        }));
+    }
+    
+    showNotification(`✅ ${analysisData.signalType} order ready! Enter at $${analysisData.idealEntry.toFixed(2)}`, 'success');
+}
+
+function showNotification(message, type) {
+    notification.innerHTML = message;
+    notification.className = `notification ${type}`;
+    notification.classList.remove('hidden');
+    setTimeout(() => notification.classList.add('hidden'), 4000);
+}
+
+// Start
+init();
