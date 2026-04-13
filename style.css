@@ -22,6 +22,7 @@ body {
     background: #1c1c1e;
     border-radius: 20px;
     margin-bottom: 12px;
+    border: 1px solid #2c2c2e;
 }
 
 .header h1 {
@@ -86,6 +87,7 @@ body {
     background: #2c2c2e;
     color: white;
     font-size: 16px;
+    cursor: pointer;
 }
 
 .price-container {
@@ -106,6 +108,12 @@ body {
 
 .price-change.positive { color: #34c759; }
 .price-change.negative { color: #ff3b30; }
+
+.api-source {
+    font-size: 10px;
+    color: #8e8e93;
+    margin-top: 4px;
+}
 
 .timeframe-btns {
     display: flex;
@@ -230,6 +238,7 @@ body {
 /* Entry Card */
 .entry-card {
     border: 2px solid #ff9f0a;
+    background: linear-gradient(135deg, #1c1c1e, #1a1a1a);
 }
 
 .entry-zone-simple {
@@ -237,7 +246,7 @@ body {
 }
 
 .zone-price {
-    font-size: 28px;
+    font-size: 32px;
     font-weight: bold;
     color: #ff9f0a;
     font-family: monospace;
@@ -268,7 +277,7 @@ body {
 }
 
 .progress-fill {
-    background: linear-gradient(90deg, #ff9f0a, #ff3b30);
+    background: linear-gradient(90deg, #ff9f0a, #34c759);
     height: 100%;
     width: 0%;
     border-radius: 10px;
@@ -279,6 +288,34 @@ body {
     font-size: 11px;
     margin-top: 6px;
     color: #8e8e93;
+}
+
+/* Info Grid */
+.info-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.info-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #2c2c2e;
+    padding: 8px 12px;
+    border-radius: 8px;
+}
+
+.info-item label {
+    font-size: 11px;
+    color: #8e8e93;
+}
+
+.info-item span {
+    font-size: 13px;
+    font-weight: bold;
+    font-family: monospace;
+    color: #3390ec;
 }
 
 /* Quick Cards */
@@ -299,13 +336,64 @@ body {
 }
 
 .quick-card div {
-    font-size: 13px;
+    font-size: 12px;
     margin: 6px 0;
 }
 
 .trend.bullish { color: #34c759; }
 .trend.bearish { color: #ff3b30; }
 .trend.neutral { color: #8e8e93; }
+
+/* Fibonacci Grid */
+.fib-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.fib-item {
+    background: #2c2c2e;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+}
+
+.fib-item span {
+    font-family: monospace;
+    color: #af52de;
+    font-weight: bold;
+}
+
+/* Zone Grid */
+.zone-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.zone-box {
+    background: #2c2c2e;
+    padding: 10px;
+    border-radius: 10px;
+    text-align: center;
+}
+
+.zone-box label {
+    display: block;
+    font-size: 10px;
+    color: #8e8e93;
+    margin-bottom: 4px;
+}
+
+.zone-box span {
+    font-size: 13px;
+    font-weight: bold;
+    font-family: monospace;
+    color: #3390ec;
+}
 
 /* Execute Button */
 .execute-btn {
@@ -375,6 +463,8 @@ body {
 
 @media (max-width: 480px) {
     .current-price { font-size: 32px; }
-    .zone-price { font-size: 24px; }
+    .zone-price { font-size: 28px; }
     .signal-type-box { font-size: 28px; }
+    .info-grid { grid-template-columns: 1fr; }
+    .fib-grid { grid-template-columns: 1fr; }
 }
