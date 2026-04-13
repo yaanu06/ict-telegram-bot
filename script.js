@@ -23,7 +23,6 @@ const notification = document.getElementById('notification');
 // ============================================
 
 async function getCurrentPrice() {
-    // Try Twelve Data first
     try {
         const url = `https://api.twelvedata.com/price?symbol=${currentPair}&apikey=${TWELVE_DATA_KEY}`;
         const response = await fetch(url);
@@ -34,7 +33,6 @@ async function getCurrentPrice() {
         }
     } catch(e) { console.log('Twelve error:', e); }
     
-    // Try Alpha Vantage as backup
     try {
         let fromCurr, toCurr;
         const pairs = {
@@ -272,13 +270,13 @@ function findOrderBlocks(data, swingPoints) {
 }
 
 // ============================================
-// MAIN ANALYSIS - CORRECTED ENTRY ZONE
+// MAIN ANALYSIS - SIMPLE & CORRECT ENTRY ZONE
 // ============================================
 
 async function runAnalysis() {
     analyzeBtn.classList.add('loading');
     analyzeBtn.disabled = true;
-    showNotification('Analyzing Volume Profile + Order Flow...', 'info');
+    showNotification('Analyzing market...', 'info');
 
     try {
         // Get data
@@ -318,46 +316,40 @@ async function runAnalysis() {
         if (currentEMA20 > currentEMA50 && currentEMA20 > prevEMA20) {
             trend = 'bullish';
             strength = rsi > 55 ? 'Strong' : 'Medium';
-            if (orderFlow && orderFlow.buyingPressure > orderFlow.sellingPressure * 1.2) {
-                strength = 'Strong (Vol Confirmed)';
-            }
         } else if (currentEMA20 < currentEMA50 && currentEMA20 < prevEMA20) {
             trend = 'bearish';
             strength = rsi < 45 ? 'Strong' : 'Medium';
-            if (orderFlow && orderFlow.sellingPressure > orderFlow.buyingPressure * 1.2) {
-                strength = 'Strong (Vol Confirmed)';
-            }
         }
         
-        // Fibonacci levels
+        // Find recent levels
         const recentHigh = Math.max(...highs.slice(-20));
         const recentLow = Math.min(...lows.slice(-20));
-        const range = recentHigh - recentLow;
         
-        const fib382 = recentLow + range * 0.382;
-        const fib500 = recentLow + range * 0.5;
-        const fib618 = recentLow + range * 0.618;
-        const fib786 = recentLow + range * 0.786;
+        // ========== SIMPLE ENTRY ZONE CALCULATION ==========
+        // For SHORT: Use Value Area High + Recent High
+        // For LONG: Use Value Area Low + Recent Low
         
-        // ========== CORRECTED ENTRY ZONE CALCULATION ==========
         let idealEntryZone = null;
         let entryInstruction = '';
         let distanceToZone = 0;
         
         if (trend === 'bullish') {
-            // For LONG: Entry zone is SUPPORT (BELOW current price)
-            // Use Fibonacci 61.8% or 78.6% as support levels
-            const supportLevel = Math.max(fib618, fib786);
-            const valueLow = volumeProfile?.valueAreaLow || (currentPrice - atr);
-            idealEntryZone = Math.max(supportLevel, valueLow);
+            // LONG: Entry zone is SUPPORT (below price)
+            idealEntryZone = volumeProfile?.valueAreaLow || (recentLow);
+            // Make sure it's below current price
+            if (idealEntryZone >= currentPrice) {
+                idealEntryZone = currentPrice - (atr * 1.5);
+            }
             entryInstruction = '⬇️ WAIT for price to PULL BACK DOWN to this support zone';
             distanceToZone = currentPrice - idealEntryZone;
         } else if (trend === 'bearish') {
-            // For SHORT: Entry zone is RESISTANCE (ABOVE current price)
-            // Use Fibonacci 38.2% or 50% as resistance levels (these are ABOVE price in downtrend)
-            const resistanceLevel = Math.max(fib382, fib500);
-            const valueHigh = volumeProfile?.valueAreaHigh || (currentPrice + atr);
-            idealEntryZone = Math.max(resistanceLevel, valueHigh);
+            // SHORT: Entry zone is RESISTANCE (above price)
+            // Use Value Area High from Volume Profile
+            idealEntryZone = volumeProfile?.valueAreaHigh || (recentHigh);
+            // Make sure it's above current price
+            if (idealEntryZone <= currentPrice) {
+                idealEntryZone = currentPrice + (atr * 1.5);
+            }
             entryInstruction = '⬆️ WAIT for price to PULL BACK UP to this resistance zone';
             distanceToZone = idealEntryZone - currentPrice;
         } else {
@@ -366,20 +358,7 @@ async function runAnalysis() {
             distanceToZone = 0;
         }
         
-        // Make sure entry zone is valid (not lower than current price for SHORT)
-        if (trend === 'bearish' && idealEntryZone < currentPrice) {
-            // Fallback: Use Value Area High or add ATR
-            idealEntryZone = volumeProfile?.valueAreaHigh || (currentPrice + atr);
-            distanceToZone = idealEntryZone - currentPrice;
-        }
-        
-        if (trend === 'bullish' && idealEntryZone > currentPrice) {
-            // Fallback for LONG
-            idealEntryZone = volumeProfile?.valueAreaLow || (currentPrice - atr);
-            distanceToZone = currentPrice - idealEntryZone;
-        }
-        
-        // Calculate progress to zone (0-100%)
+        // Calculate progress
         let progress = 0;
         let distanceText = '';
         const maxDistance = atr * 2;
@@ -395,18 +374,15 @@ async function runAnalysis() {
             distanceText = `✅ Price is IN the entry zone - Ready to enter!`;
         }
         
-        // Calculate confidence score
+        // Calculate confidence
         let confidence = 30;
-        if (trend !== 'neutral') confidence += 15;
-        if (strength.includes('Strong')) confidence += 15;
+        if (trend !== 'neutral') confidence += 20;
+        if (strength === 'Strong') confidence += 15;
         if (rsi > 30 && rsi < 70) confidence += 10;
         if (volumeProfile && volumeProfile.poc) confidence += 10;
-        if (orderFlow && orderFlow.netDelta > 0 && trend === 'bullish') confidence += 10;
-        if (orderFlow && orderFlow.netDelta < 0 && trend === 'bearish') confidence += 10;
+        if (orderFlow && ((trend === 'bullish' && orderFlow.netDelta > 0) || (trend === 'bearish' && orderFlow.netDelta < 0))) confidence += 15;
         if (orderFlow && orderFlow.absorptionSignals > 0) confidence += 10;
-        if (fvgCount > 0) confidence += 5;
-        if (obCount > 0) confidence += 5;
-        if (progress > 70) confidence += 15;
+        if (progress > 70) confidence += 10;
         confidence = Math.min(confidence, 98);
         
         // Generate signal
@@ -417,7 +393,6 @@ async function runAnalysis() {
         let rr = 'N/A';
         let divergence = '';
         
-        // Detect divergence
         if (rsi < 30 && trend === 'bearish') divergence = 'Bullish Divergence';
         if (rsi > 70 && trend === 'bullish') divergence = 'Bearish Divergence';
         
@@ -437,7 +412,6 @@ async function runAnalysis() {
         
         // ========== UPDATE UI ==========
         
-        // Current Price
         document.getElementById('currentPrice').innerHTML = `$${currentPrice.toFixed(2)}`;
         if (lastPrice) {
             const change = ((currentPrice - lastPrice) / lastPrice * 100).toFixed(2);
@@ -465,10 +439,10 @@ async function runAnalysis() {
         document.getElementById('riskReward').innerHTML = rr;
         
         // Signal Reason
-        let reason = `${trend === 'bullish' ? '📈 Bullish' : (trend === 'bearish' ? '📉 Bearish' : '⚪ Neutral')} trend | ${strength} | RSI: ${rsi.toFixed(1)}`;
+        let reason = `${trend === 'bullish' ? '📈 Bullish' : (trend === 'bearish' ? '📉 Bearish' : '⚪ Neutral')} | ${strength} | RSI: ${rsi.toFixed(1)}`;
         if (divergence) reason += ` | 🔄 ${divergence}`;
         if (volumeProfile?.poc) reason += ` | POC: $${volumeProfile.poc.price.toFixed(2)}`;
-        if (orderFlow?.absorptionSignals > 0) reason += ` | ⚠️ ${orderFlow.absorptionSignals} Absorption signals`;
+        if (orderFlow?.absorptionSignals > 0) reason += ` | ⚠️ ${orderFlow.absorptionSignals} Absorption`;
         document.getElementById('signalReason').innerHTML = reason;
         
         // Badge
@@ -504,8 +478,8 @@ async function runAnalysis() {
         document.getElementById('trend4H').innerHTML = trend === 'bullish' ? '🟢 Bullish' : (trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral');
         document.getElementById('trend4H').className = `trend ${trend}`;
         document.getElementById('strength4H').innerHTML = strength;
-        document.getElementById('fvg4H').innerHTML = fvgCount > 0 ? `✅ ${fvgCount} detected` : '❌ None';
-        document.getElementById('ob4H').innerHTML = obCount > 0 ? `✅ ${obCount} detected` : '❌ None';
+        document.getElementById('fvg4H').innerHTML = fvgCount > 0 ? `✅ ${fvgCount}` : '❌';
+        document.getElementById('ob4H').innerHTML = obCount > 0 ? `✅ ${obCount}` : '❌';
         document.getElementById('ms4H').innerHTML = trend === 'bullish' ? 'BOS ↑' : (trend === 'bearish' ? 'BOS ↓' : 'CHoCH');
         
         // 1H ICT
@@ -514,9 +488,14 @@ async function runAnalysis() {
         document.getElementById('rsi1H').innerHTML = rsi.toFixed(1);
         document.getElementById('divergence1H').innerHTML = divergence || 'None';
         document.getElementById('absorption1H').innerHTML = orderFlow?.absorptionSignals > 0 ? `⚠️ ${orderFlow.absorptionSignals}` : 'None';
-        document.getElementById('choch1H').innerHTML = trend === 'bullish' ? 'Bullish CHoCH' : (trend === 'bearish' ? 'Bearish CHoCH' : 'None');
+        document.getElementById('choch1H').innerHTML = trend === 'bullish' ? 'Bullish' : (trend === 'bearish' ? 'Bearish' : 'None');
         
         // Fibonacci
+        const fib382 = recentLow + (recentHigh - recentLow) * 0.382;
+        const fib500 = recentLow + (recentHigh - recentLow) * 0.5;
+        const fib618 = recentLow + (recentHigh - recentLow) * 0.618;
+        const fib786 = recentLow + (recentHigh - recentLow) * 0.786;
+        
         document.getElementById('fib382').innerHTML = `$${fib382.toFixed(2)}`;
         document.getElementById('fib500').innerHTML = `$${fib500.toFixed(2)}`;
         document.getElementById('fib618').innerHTML = `$${fib618.toFixed(2)}`;
@@ -528,14 +507,12 @@ async function runAnalysis() {
         document.getElementById('bosLevel').innerHTML = trend === 'bullish' ? `$${recentHigh.toFixed(2)}` : `$${recentLow.toFixed(2)}`;
         document.getElementById('chochLevel').innerHTML = orderFlow?.vwap ? `VWAP: $${orderFlow.vwap.toFixed(2)}` : '--';
         
-        // Enable execute button ONLY when price is near entry zone
+        // Execute button
         const shouldExecute = signalType !== 'NEUTRAL' && confidence >= 55 && progress >= 70;
         executeBtn.disabled = !shouldExecute;
         
-        // Store analysis
         analysisData = { signalType, entry, tp, sl, rr, confidence, currentPair, currentPrice, idealEntryZone, progress };
         
-        // Update API count
         apiCalls++;
         document.getElementById('apiUsage').innerHTML = `${apiCalls}`;
         showNotification(`Analysis complete! ${signalType} signal with ${confidence}% confidence`, 'success');
