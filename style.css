@@ -18,7 +18,6 @@
     --accent-purple: #af52de;
     --border-color: #3a3a3c;
     --entry-zone-bg: rgba(52, 199, 89, 0.1);
-    --entry-zone-border: #34c759;
 }
 
 body {
@@ -33,7 +32,6 @@ body {
     margin: 0 auto;
 }
 
-/* Header Styles */
 .header {
     text-align: center;
     padding: 16px 0;
@@ -86,7 +84,6 @@ body {
     font-family: monospace;
 }
 
-/* Section Styles */
 .section {
     background: var(--bg-secondary);
     border-radius: 16px;
@@ -103,7 +100,6 @@ body {
     letter-spacing: 0.5px;
 }
 
-/* Entry Zone Card */
 .entry-zone-card {
     background: linear-gradient(135deg, var(--bg-secondary), #1a2a1a);
     border: 2px solid var(--accent-green);
@@ -165,7 +161,6 @@ body {
     color: var(--text-secondary);
 }
 
-/* Button Groups */
 .btn-group {
     display: flex;
     gap: 8px;
@@ -194,7 +189,6 @@ body {
     transform: translateY(-1px);
 }
 
-/* Input Field */
 .input-field {
     width: 100%;
     padding: 12px;
@@ -206,7 +200,6 @@ body {
     cursor: pointer;
 }
 
-/* Price Container */
 .price-container {
     text-align: center;
     padding: 16px 0;
@@ -239,7 +232,6 @@ body {
     margin-top: 12px;
 }
 
-/* Analyze Button */
 .analyze-btn {
     width: 100%;
     padding: 14px;
@@ -262,7 +254,6 @@ body {
     cursor: not-allowed;
 }
 
-/* Status Section */
 .status-section .status-info {
     display: flex;
     justify-content: space-between;
@@ -288,7 +279,6 @@ body {
     color: var(--accent-red);
 }
 
-/* Signal Card */
 .signal-card {
     background: linear-gradient(135deg, var(--bg-secondary), #1a1a2e);
     border: 2px solid var(--accent-blue);
@@ -364,7 +354,6 @@ body {
     color: var(--accent-red);
 }
 
-/* Analysis Row */
 .analysis-row {
     display: flex;
     gap: 12px;
@@ -400,7 +389,6 @@ body {
     color: var(--accent-red);
 }
 
-/* Tabs */
 .tabs {
     display: flex;
     gap: 8px;
@@ -432,7 +420,6 @@ body {
     display: block;
 }
 
-/* Zone Display */
 .zone-display {
     margin-bottom: 16px;
     min-height: 60px;
@@ -457,7 +444,6 @@ body {
     background: var(--entry-zone-bg);
 }
 
-/* Zone Grid */
 .zone-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
@@ -486,7 +472,6 @@ body {
     color: var(--accent-blue);
 }
 
-/* Execute Button */
 .execute-btn {
     width: 100%;
     padding: 16px;
@@ -510,7 +495,6 @@ body {
     opacity: 0.5;
 }
 
-/* Notification */
 .notification {
     position: fixed;
     bottom: 20px;
@@ -544,7 +528,6 @@ body {
     color: black;
 }
 
-/* Loading State */
 .analyze-btn.loading {
     position: relative;
     pointer-events: none;
@@ -572,7 +555,6 @@ body {
     to { transform: translate(-50%, -50%) rotate(360deg); }
 }
 
-/* Responsive */
 @media (max-width: 480px) {
     body {
         padding: 8px;
