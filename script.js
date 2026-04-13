@@ -272,7 +272,7 @@ function findOrderBlocks(data, swingPoints) {
 }
 
 // ============================================
-// MAIN ANALYSIS
+// MAIN ANALYSIS - CORRECTED ENTRY ZONE
 // ============================================
 
 async function runAnalysis() {
@@ -339,27 +339,44 @@ async function runAnalysis() {
         const fib618 = recentLow + range * 0.618;
         const fib786 = recentLow + range * 0.786;
         
-        // ========== ENTRY ZONE CALCULATION (THE FIXED ONE) ==========
+        // ========== CORRECTED ENTRY ZONE CALCULATION ==========
         let idealEntryZone = null;
         let entryInstruction = '';
         let distanceToZone = 0;
         
         if (trend === 'bullish') {
-            // For LONG: Entry zone is SUPPORT (below current price)
-            // Use Fibonacci 61.8% or Volume Profile Value Area Low
-            idealEntryZone = Math.max(fib618, volumeProfile?.valueAreaLow || (currentPrice - atr));
-            entryInstruction = '⬇️ WAIT for price to PULL BACK DOWN to this entry zone';
+            // For LONG: Entry zone is SUPPORT (BELOW current price)
+            // Use Fibonacci 61.8% or 78.6% as support levels
+            const supportLevel = Math.max(fib618, fib786);
+            const valueLow = volumeProfile?.valueAreaLow || (currentPrice - atr);
+            idealEntryZone = Math.max(supportLevel, valueLow);
+            entryInstruction = '⬇️ WAIT for price to PULL BACK DOWN to this support zone';
             distanceToZone = currentPrice - idealEntryZone;
         } else if (trend === 'bearish') {
             // For SHORT: Entry zone is RESISTANCE (ABOVE current price)
-            // Use Fibonacci 61.8% or Volume Profile Value Area High
-            idealEntryZone = Math.min(fib618, volumeProfile?.valueAreaHigh || (currentPrice + atr));
-            entryInstruction = '⬆️ WAIT for price to PULL BACK UP to this entry zone';
+            // Use Fibonacci 38.2% or 50% as resistance levels (these are ABOVE price in downtrend)
+            const resistanceLevel = Math.max(fib382, fib500);
+            const valueHigh = volumeProfile?.valueAreaHigh || (currentPrice + atr);
+            idealEntryZone = Math.max(resistanceLevel, valueHigh);
+            entryInstruction = '⬆️ WAIT for price to PULL BACK UP to this resistance zone';
             distanceToZone = idealEntryZone - currentPrice;
         } else {
             idealEntryZone = currentPrice;
             entryInstruction = 'No clear trend - Wait for setup';
             distanceToZone = 0;
+        }
+        
+        // Make sure entry zone is valid (not lower than current price for SHORT)
+        if (trend === 'bearish' && idealEntryZone < currentPrice) {
+            // Fallback: Use Value Area High or add ATR
+            idealEntryZone = volumeProfile?.valueAreaHigh || (currentPrice + atr);
+            distanceToZone = idealEntryZone - currentPrice;
+        }
+        
+        if (trend === 'bullish' && idealEntryZone > currentPrice) {
+            // Fallback for LONG
+            idealEntryZone = volumeProfile?.valueAreaLow || (currentPrice - atr);
+            distanceToZone = currentPrice - idealEntryZone;
         }
         
         // Calculate progress to zone (0-100%)
