@@ -283,3 +283,27 @@ function calculateRSI(prices, period = 14) {
     
     for (let i = length - period; i < length; i++) {
         if (i === 0) continue;
+        const change = prices[i] - prices[i-1];
+        if (change >= 0) gains += change;
+        else losses -= change;
+    }
+    
+    const avgGain = gains / period;
+    const avgLoss = losses / period;
+    if (avgLoss === 0) return 100;
+    return 100 - (100 / (1 + avgGain / avgLoss));
+}
+
+function calculateATR(highs, lows, closes, period = 14) {
+    const trueRanges = [];
+    for (let i = 1; i < closes.length; i++) {
+        trueRanges.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i-1]), Math.abs(lows[i] - closes[i-1])));
+    }
+    return trueRanges.slice(-period).reduce((a, b) => a + b, 0) / period;
+}
+
+// ============================================
+// FIXED ENTRY ZONE CALCULATION
+// ============================================
+
+function calculateEntryZone(currentPrice, atr, trend, volumeProfile, order
