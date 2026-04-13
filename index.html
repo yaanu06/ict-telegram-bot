@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>ICT Volume Profile Trader - Enhanced</title>
+    <title>ICT Volume Profile Trader</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
@@ -41,13 +41,12 @@
             </select>
         </div>
 
-        <!-- Price & Chart Section -->
+        <!-- Price Section -->
         <div class="section">
             <h3>📈 Market Data</h3>
             <div class="price-container">
                 <div id="currentPrice" class="current-price">----</div>
                 <div id="priceChange" class="price-change">--</div>
-                <div id="apiStatus" class="api-status">🟢 Ready</div>
             </div>
             <div class="timeframe-btns">
                 <button class="tf-btn" data-tf="1H">1H</button>
@@ -139,7 +138,7 @@
             </div>
         </div>
 
-        <!-- Analysis Row - 4H & 1H -->
+        <!-- Analysis Row -->
         <div class="analysis-row">
             <div class="section analysis-card half">
                 <h3>⏱️ 4H Analysis</h3>
@@ -190,7 +189,7 @@
             </div>
         </div>
 
-        <!-- ICT Details with Tabs -->
+        <!-- ICT Details Tabs -->
         <div class="section ict-details">
             <div class="tabs">
                 <button class="tab-btn active" data-tab="volume">📊 Volume Profile</button>
@@ -235,7 +234,7 @@
             </div>
         </div>
 
-        <!-- Execute Order Button -->
+        <!-- Execute Button -->
         <div class="section">
             <button id="executeBtn" class="execute-btn" disabled>
                 ⚡ Execute Order
