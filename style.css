@@ -17,6 +17,8 @@
     --accent-yellow: #ff9f0a;
     --accent-purple: #af52de;
     --border-color: #3a3a3c;
+    --entry-zone-bg: rgba(52, 199, 89, 0.1);
+    --entry-zone-border: #34c759;
 }
 
 body {
@@ -99,6 +101,68 @@ body {
     margin-bottom: 12px;
     color: var(--text-secondary);
     letter-spacing: 0.5px;
+}
+
+/* Entry Zone Card */
+.entry-zone-card {
+    background: linear-gradient(135deg, var(--bg-secondary), #1a2a1a);
+    border: 2px solid var(--accent-green);
+}
+
+.entry-zone-display {
+    padding: 8px 0;
+}
+
+.entry-zone-level {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.zone-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.zone-value {
+    font-size: 16px;
+    font-weight: bold;
+    font-family: monospace;
+    color: var(--accent-green);
+}
+
+.entry-zone-progress {
+    margin-top: 12px;
+}
+
+.progress-bar-container {
+    background: var(--bg-tertiary);
+    border-radius: 10px;
+    height: 8px;
+    overflow: hidden;
+    margin-bottom: 6px;
+}
+
+.progress-bar {
+    background: linear-gradient(90deg, var(--accent-green), var(--accent-yellow));
+    height: 100%;
+    border-radius: 10px;
+    transition: width 0.3s ease;
+}
+
+.progress-text {
+    font-size: 11px;
+    color: var(--text-secondary);
+    display: block;
+    text-align: center;
+}
+
+.api-status {
+    font-size: 11px;
+    margin-top: 8px;
+    color: var(--text-secondary);
 }
 
 /* Button Groups */
@@ -214,6 +278,14 @@ body {
 
 .connection-status {
     color: var(--accent-green);
+}
+
+.connection-status.warning {
+    color: var(--accent-yellow);
+}
+
+.connection-status.error {
+    color: var(--accent-red);
 }
 
 /* Signal Card */
@@ -333,6 +405,7 @@ body {
     display: flex;
     gap: 8px;
     margin-bottom: 16px;
+    flex-wrap: wrap;
 }
 
 .tab-btn {
@@ -377,6 +450,11 @@ body {
 
 .zone-tag.fib {
     border-left-color: var(--accent-purple);
+}
+
+.zone-tag.entry {
+    border-left-color: var(--accent-green);
+    background: var(--entry-zone-bg);
 }
 
 /* Zone Grid */
@@ -518,5 +596,13 @@ body {
     
     .current-price {
         font-size: 28px;
+    }
+    
+    .tabs {
+        flex-wrap: wrap;
+    }
+    
+    .tab-btn {
+        min-width: 80px;
     }
 }
