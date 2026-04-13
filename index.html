@@ -3,25 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>ICT Volume Profile Trader</title>
+    <title>ICT Trading Bot</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
-        <!-- Header -->
         <div class="header">
-            <div class="header-top">
-                <h1>📊 ICT Pro Trader</h1>
-                <div class="live-badge" id="liveStatusBadge">LIVE</div>
-            </div>
-            <p class="subtitle">Volume Profile + Order Flow | ICT Smart Money Concepts</p>
+            <h1>📊 ICT Trading Bot</h1>
+            <p class="subtitle">Smart Money Concepts | ICT + Volume Profile</p>
             <div id="liveTime" class="live-time"></div>
         </div>
 
         <!-- Market Categories -->
         <div class="section">
-            <h3>🔄 Market Categories</h3>
+            <h3>🔄 Market</h3>
             <div class="btn-group">
                 <button class="category-btn active" data-category="crypto">💰 Crypto</button>
                 <button class="category-btn" data-category="forex">💱 Forex</button>
@@ -29,21 +25,21 @@
             </div>
         </div>
 
-        <!-- Trading Pairs -->
+        <!-- Trading Pair -->
         <div class="section">
             <h3>💱 Trading Pair</h3>
             <select id="pairSelect" class="input-field">
-                <option value="BTC/USD">₿ BTC/USD</option>
-                <option value="ETH/USD">⟠ ETH/USD</option>
-                <option value="EUR/USD">€ EUR/USD</option>
-                <option value="GBP/USD">£ GBP/USD</option>
-                <option value="XAU/USD">👑 XAU/USD</option>
+                <option value="BTC/USD">BTC/USD</option>
+                <option value="ETH/USD">ETH/USD</option>
+                <option value="EUR/USD">EUR/USD</option>
+                <option value="GBP/USD">GBP/USD</option>
+                <option value="XAU/USD">XAU/USD</option>
             </select>
         </div>
 
-        <!-- Price Section -->
+        <!-- Current Price -->
         <div class="section">
-            <h3>📈 Market Data</h3>
+            <h3>📈 Current Price</h3>
             <div class="price-container">
                 <div id="currentPrice" class="current-price">----</div>
                 <div id="priceChange" class="price-change">--</div>
@@ -55,193 +51,92 @@
             </div>
         </div>
 
-        <!-- Entry Zone Card -->
-        <div class="section entry-zone-card">
-            <h3>🎯 ENTRY ZONE</h3>
-            <div class="entry-zone-display">
-                <div class="entry-zone-level">
-                    <span class="zone-label">Ideal Entry:</span>
-                    <span id="idealEntry" class="zone-value">--</span>
-                </div>
-                <div class="entry-zone-level">
-                    <span class="zone-label">Entry Range:</span>
-                    <span id="entryRange" class="zone-value">--</span>
-                </div>
-                <div class="entry-zone-level">
-                    <span class="zone-label">Action:</span>
-                    <span id="entryAction" class="zone-value">--</span>
-                </div>
-                <div class="entry-zone-progress">
-                    <div class="progress-bar-container">
-                        <div id="entryProgressBar" class="progress-bar" style="width: 0%"></div>
-                    </div>
-                    <span id="entryDistance" class="progress-text">--</span>
-                </div>
-            </div>
-        </div>
-
         <!-- Analyze Button -->
-        <div class="section">
-            <button id="analyzeBtn" class="analyze-btn">
-                <span>🔍 Analyze Market</span>
-            </button>
-        </div>
+        <button id="analyzeBtn" class="analyze-btn">🔍 Analyze Market</button>
 
         <!-- API Status -->
         <div class="section status-section">
             <div class="status-info">
-                <div class="status-left">
-                    <span>📊 API Calls</span>
-                    <strong id="apiUsage">0 / 800</strong>
-                </div>
-                <div class="status-right">
-                    <span id="connectionStatus" class="connection-status">🟢 Connected</span>
-                </div>
+                <span>API: <strong id="apiUsage">0</strong> calls</span>
+                <span id="connectionStatus" class="connection-status">🟢 Ready</span>
             </div>
         </div>
 
-        <!-- Trading Signal Card -->
+        <!-- TRADING SIGNAL - Main Card -->
         <div class="section signal-card">
             <div class="signal-header">
-                <h3>🎯 TRADING SIGNAL</h3>
-                <div id="signalStrengthBadge" class="signal-badge">--</div>
+                <h2>🎯 SIGNAL</h2>
+                <div id="signalBadge" class="signal-badge">--</div>
             </div>
-            <div class="signal-grid">
-                <div class="signal-item">
-                    <label>Type</label>
-                    <span id="signalType" class="value signal-type">--</span>
+            
+            <div class="signal-main">
+                <div class="signal-type-box" id="signalTypeBox">
+                    <span id="signalTypeText">--</span>
                 </div>
-                <div class="signal-item">
-                    <label>Confidence</label>
-                    <span id="signalConfidence" class="value">--</span>
+                <div class="signal-confidence">
+                    Confidence: <strong id="confidenceText">--</strong>
                 </div>
-                <div class="signal-item">
-                    <label>Entry Price</label>
-                    <span id="signalEntry" class="value">--</span>
+            </div>
+
+            <div class="trade-levels">
+                <div class="level-row">
+                    <span class="level-label">📌 ENTRY:</span>
+                    <span class="level-value" id="entryPrice">--</span>
                 </div>
-                <div class="signal-item">
-                    <label>Take Profit</label>
-                    <span id="signalTP" class="value">--</span>
+                <div class="level-row">
+                    <span class="level-label">🎯 TAKE PROFIT:</span>
+                    <span class="level-value" id="takeProfit">--</span>
                 </div>
-                <div class="signal-item">
-                    <label>Stop Loss</label>
-                    <span id="signalSL" class="value">--</span>
+                <div class="level-row">
+                    <span class="level-label">🛑 STOP LOSS:</span>
+                    <span class="level-value" id="stopLoss">--</span>
                 </div>
-                <div class="signal-item">
-                    <label>Risk:Reward</label>
-                    <span id="signalRR" class="value">--</span>
+                <div class="level-row">
+                    <span class="level-label">📊 R:R:</span>
+                    <span class="level-value" id="riskReward">--</span>
                 </div>
-                <div class="signal-item full-width">
-                    <label>Signal Reason</label>
-                    <span id="signalReason" class="value" style="font-size: 12px;">--</span>
+            </div>
+
+            <div class="signal-reason">
+                <strong>Reason:</strong> <span id="signalReason">--</span>
+            </div>
+        </div>
+
+        <!-- ENTRY ZONE - Simplified -->
+        <div class="section entry-card">
+            <h3>📍 IDEAL ENTRY ZONE</h3>
+            <div class="entry-zone-simple">
+                <div class="zone-price" id="idealEntryZone">--</div>
+                <div class="zone-instruction" id="entryInstruction">--</div>
+                <div class="progress-container">
+                    <div class="progress-label">Price distance to zone:</div>
+                    <div class="progress-bar-bg">
+                        <div id="zoneProgress" class="progress-fill" style="width: 0%"></div>
+                    </div>
+                    <div id="distanceText" class="distance-text">--</div>
                 </div>
             </div>
         </div>
 
-        <!-- Analysis Row -->
+        <!-- Quick Analysis -->
         <div class="analysis-row">
-            <div class="section analysis-card half">
-                <h3>⏱️ 4H Analysis</h3>
-                <div class="analysis-item">
-                    <label>Trend</label>
-                    <span id="trend4H" class="value trend-value">--</span>
-                </div>
-                <div class="analysis-item">
-                    <label>Strength</label>
-                    <span id="strength4H" class="value">--</span>
-                </div>
-                <div class="analysis-item">
-                    <label>Volume Profile</label>
-                    <span id="fvg4H" class="value">--</span>
-                </div>
-                <div class="analysis-item">
-                    <label>Order Flow</label>
-                    <span id="ob4H" class="value">--</span>
-                </div>
-                <div class="analysis-item">
-                    <label>Market Structure</label>
-                    <span id="ms4H" class="value">--</span>
-                </div>
+            <div class="section quick-card">
+                <h3>⏱️ 4H</h3>
+                <div>Trend: <span id="trend4H" class="trend">--</span></div>
+                <div>Strength: <span id="strength4H">--</span></div>
+                <div>Volume POC: <span id="poc4H">--</span></div>
             </div>
-
-            <div class="section analysis-card half">
-                <h3>⏰ 1H Analysis</h3>
-                <div class="analysis-item">
-                    <label>Trend</label>
-                    <span id="trend1H" class="value trend-value">--</span>
-                </div>
-                <div class="analysis-item">
-                    <label>Strength</label>
-                    <span id="strength1H" class="value">--</span>
-                </div>
-                <div class="analysis-item">
-                    <label>Value Area</label>
-                    <span id="fvg1H" class="value">--</span>
-                </div>
-                <div class="analysis-item">
-                    <label>Delta</label>
-                    <span id="ob1H" class="value">--</span>
-                </div>
-                <div class="analysis-item">
-                    <label>VWAP</label>
-                    <span id="ms1H" class="value">--</span>
-                </div>
-            </div>
-        </div>
-
-        <!-- ICT Details Tabs -->
-        <div class="section ict-details">
-            <div class="tabs">
-                <button class="tab-btn active" data-tab="volume">📊 Volume Profile</button>
-                <button class="tab-btn" data-tab="order">📦 Order Flow</button>
-                <button class="tab-btn" data-tab="fib">📐 Fibonacci</button>
-                <button class="tab-btn" data-tab="entries">🎯 Entry Zones</button>
-            </div>
-            
-            <div id="volumeTab" class="tab-content active">
-                <div id="fvgZonesDisplay" class="zone-display">Click Analyze to see Volume Profile</div>
-            </div>
-            
-            <div id="orderTab" class="tab-content">
-                <div id="obZonesDisplay" class="zone-display">Click Analyze to see Order Flow</div>
-            </div>
-            
-            <div id="fibTab" class="tab-content">
-                <div id="fibLevelsDisplay" class="zone-display">Click Analyze to see Fibonacci levels</div>
-            </div>
-            
-            <div id="entriesTab" class="tab-content">
-                <div id="entriesDisplay" class="zone-display">Click Analyze to see Entry Zones</div>
-            </div>
-            
-            <div class="zone-grid">
-                <div class="zone-box">
-                    <label>💧 Buy Side Liquidity</label>
-                    <span id="buySideLiq">--</span>
-                </div>
-                <div class="zone-box">
-                    <label>💧 Sell Side Liquidity</label>
-                    <span id="sellSideLiq">--</span>
-                </div>
-                <div class="zone-box">
-                    <label>⚡ BOS Level</label>
-                    <span id="bosLevel">--</span>
-                </div>
-                <div class="zone-box">
-                    <label>🔄 CHoCH/VWAP</label>
-                    <span id="chochLevel">--</span>
-                </div>
+            <div class="section quick-card">
+                <h3>⏰ 1H</h3>
+                <div>Trend: <span id="trend1H" class="trend">--</span></div>
+                <div>RSI: <span id="rsi1H">--</span></div>
+                <div>Divergence: <span id="divergence1H">--</span></div>
             </div>
         </div>
 
         <!-- Execute Button -->
-        <div class="section">
-            <button id="executeBtn" class="execute-btn" disabled>
-                ⚡ Execute Order
-            </button>
-        </div>
+        <button id="executeBtn" class="execute-btn" disabled>⚡ Execute Order</button>
 
-        <!-- Notification -->
         <div id="notification" class="notification hidden"></div>
     </div>
 
