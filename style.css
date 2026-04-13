@@ -148,7 +148,6 @@ body {
     color: #34c759;
 }
 
-/* Signal Card */
 .signal-card {
     background: linear-gradient(135deg, #1c1c1e, #1a1a2e);
     border: 2px solid #3390ec;
@@ -233,9 +232,9 @@ body {
     border-radius: 12px;
     font-size: 12px;
     color: #8e8e93;
+    line-height: 1.5;
 }
 
-/* Entry Card */
 .entry-card {
     border: 2px solid #ff9f0a;
     background: linear-gradient(135deg, #1c1c1e, #1a1a1a);
@@ -246,7 +245,7 @@ body {
 }
 
 .zone-price {
-    font-size: 32px;
+    font-size: 36px;
     font-weight: bold;
     color: #ff9f0a;
     font-family: monospace;
@@ -290,7 +289,6 @@ body {
     color: #8e8e93;
 }
 
-/* Info Grid */
 .info-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -318,7 +316,6 @@ body {
     color: #3390ec;
 }
 
-/* Quick Cards */
 .analysis-row {
     display: flex;
     gap: 12px;
@@ -344,7 +341,6 @@ body {
 .trend.bearish { color: #ff3b30; }
 .trend.neutral { color: #8e8e93; }
 
-/* Fibonacci Grid */
 .fib-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -366,7 +362,6 @@ body {
     font-weight: bold;
 }
 
-/* Zone Grid */
 .zone-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
@@ -395,7 +390,6 @@ body {
     color: #3390ec;
 }
 
-/* Execute Button */
 .execute-btn {
     width: 100%;
     padding: 16px;
@@ -414,7 +408,6 @@ body {
     cursor: not-allowed;
 }
 
-/* Notification */
 .notification {
     position: fixed;
     bottom: 20px;
@@ -435,7 +428,6 @@ body {
 .notification.error { background: #ff3b30; }
 .notification.warning { background: #ff9f0a; color: black; }
 
-/* Loading */
 .analyze-btn.loading {
     position: relative;
     pointer-events: none;
