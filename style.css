@@ -17,7 +17,6 @@
     --accent-yellow: #ff9f0a;
     --accent-purple: #af52de;
     --border-color: #3a3a3c;
-    --entry-zone-bg: rgba(52, 199, 89, 0.1);
 }
 
 body {
@@ -90,14 +89,12 @@ body {
     padding: 16px;
     margin-bottom: 12px;
     border: 1px solid var(--border-color);
-    transition: all 0.3s ease;
 }
 
 .section h3 {
     font-size: 14px;
     margin-bottom: 12px;
     color: var(--text-secondary);
-    letter-spacing: 0.5px;
 }
 
 .entry-zone-card {
@@ -153,12 +150,6 @@ body {
     color: var(--text-secondary);
     display: block;
     text-align: center;
-}
-
-.api-status {
-    font-size: 11px;
-    margin-top: 8px;
-    color: var(--text-secondary);
 }
 
 .btn-group {
@@ -269,14 +260,6 @@ body {
 
 .connection-status {
     color: var(--accent-green);
-}
-
-.connection-status.warning {
-    color: var(--accent-yellow);
-}
-
-.connection-status.error {
-    color: var(--accent-red);
 }
 
 .signal-card {
@@ -441,7 +424,7 @@ body {
 
 .zone-tag.entry {
     border-left-color: var(--accent-green);
-    background: var(--entry-zone-bg);
+    background: rgba(52, 199, 89, 0.1);
 }
 
 .zone-grid {
@@ -578,13 +561,5 @@ body {
     
     .current-price {
         font-size: 28px;
-    }
-    
-    .tabs {
-        flex-wrap: wrap;
-    }
-    
-    .tab-btn {
-        min-width: 80px;
     }
 }
