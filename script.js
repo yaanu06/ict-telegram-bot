@@ -18,6 +18,7 @@ let currentTimeframe = '4H';
 let analysisData = null;
 let apiCalls = 0;
 let lastPrice = null;
+let lastAnalysisTime = null;
 
 // DOM Elements
 const analyzeBtn = document.getElementById('analyzeBtn');
@@ -204,15 +205,18 @@ function calculateAverageVolume(data, period) {
 }
 
 // ============================================
-// API FUNCTIONS
+// API FUNCTIONS WITH BETTER ERROR HANDLING
 // ============================================
 
 async function getPriceTwelve(symbol) {
     const url = `https://api.twelvedata.com/price?symbol=${symbol}&apikey=${TWELVE_DATA_KEY}`;
     const response = await fetch(url);
     const data = await response.json();
-    if (data.price) return parseFloat(data.price);
-    throw new Error(data.message || 'Twelve Data error');
+    
+    if (data.price && !isNaN(parseFloat(data.price))) {
+        return parseFloat(data.price);
+    }
+    throw new Error(data.message || 'Twelve Data invalid response');
 }
 
 async function getHistoryTwelve(symbol, interval) {
@@ -221,17 +225,17 @@ async function getHistoryTwelve(symbol, interval) {
     const response = await fetch(url);
     const data = await response.json();
     
-    if (data.values) {
+    if (data.values && Array.isArray(data.values) && data.values.length > 0) {
         return data.values.map(candle => ({
             time: new Date(candle.datetime),
             open: parseFloat(candle.open),
             high: parseFloat(candle.high),
             low: parseFloat(candle.low),
             close: parseFloat(candle.close),
-            volume: parseFloat(candle.volume) || Math.random() * 1000000
+            volume: parseFloat(candle.volume) || Math.random() * 1000000 + 500000
         }));
     }
-    throw new Error(data.message || 'Twelve Data error');
+    throw new Error(data.message || 'Twelve Data no data');
 }
 
 async function getPriceAlpha(symbol) {
@@ -254,7 +258,7 @@ async function getPriceAlpha(symbol) {
     const response = await fetch(url);
     const data = await response.json();
     
-    if (data['Realtime Currency Exchange Rate']) {
+    if (data['Realtime Currency Exchange Rate'] && data['Realtime Currency Exchange Rate']['5. Exchange Rate']) {
         return parseFloat(data['Realtime Currency Exchange Rate']['5. Exchange Rate']);
     }
     throw new Error('Alpha Vantage error');
@@ -299,6 +303,67 @@ function calculateATR(highs, lows, closes, period = 14) {
 }
 
 // ============================================
+// ENTRY ZONE CALCULATION
+// ============================================
+
+function calculateEntryZone(currentPrice, atr, trend, volumeProfile, orderFlow, fibLevels) {
+    let idealEntry = null;
+    let entryRangeLow = null;
+    let entryRangeHigh = null;
+    let distanceToEntry = null;
+    let entryProgress = 0;
+    
+    if (trend === 'bullish') {
+        // For bullish: Entry zone is between 61.8% Fibonacci and Value Area Low
+        const fib618 = fibLevels.level618;
+        const valueLow = volumeProfile?.valueAreaLow || (currentPrice - atr);
+        const supportLevel = Math.max(fib618, valueLow);
+        
+        entryRangeLow = supportLevel - (atr * 0.3);
+        entryRangeHigh = supportLevel + (atr * 0.3);
+        idealEntry = supportLevel;
+        
+        if (currentPrice <= entryRangeHigh) {
+            distanceToEntry = Math.max(0, currentPrice - entryRangeLow);
+            const rangeSize = entryRangeHigh - entryRangeLow;
+            if (rangeSize > 0) {
+                entryProgress = Math.min(100, (distanceToEntry / rangeSize) * 100);
+            }
+        } else {
+            distanceToEntry = currentPrice - entryRangeHigh;
+            entryProgress = 0;
+        }
+    } else if (trend === 'bearish') {
+        // For bearish: Entry zone is between 61.8% Fibonacci and Value Area High
+        const fib618 = fibLevels.level618;
+        const valueHigh = volumeProfile?.valueAreaHigh || (currentPrice + atr);
+        const resistanceLevel = Math.min(fib618, valueHigh);
+        
+        entryRangeLow = resistanceLevel - (atr * 0.3);
+        entryRangeHigh = resistanceLevel + (atr * 0.3);
+        idealEntry = resistanceLevel;
+        
+        if (currentPrice >= entryRangeLow) {
+            distanceToEntry = entryRangeHigh - currentPrice;
+            const rangeSize = entryRangeHigh - entryRangeLow;
+            if (rangeSize > 0) {
+                entryProgress = Math.min(100, (distanceToEntry / rangeSize) * 100);
+            }
+        } else {
+            distanceToEntry = entryRangeLow - currentPrice;
+            entryProgress = 0;
+        }
+    }
+    
+    return {
+        idealEntry: idealEntry ? `$${idealEntry.toFixed(2)}` : '--',
+        entryRange: (entryRangeLow && entryRangeHigh) ? `$${entryRangeLow.toFixed(2)} - $${entryRangeHigh.toFixed(2)}` : '--',
+        entryProgress: entryProgress,
+        distanceText: distanceToEntry ? `$${distanceToEntry.toFixed(2)} away` : '--'
+    };
+}
+
+// ============================================
 // MAIN ANALYSIS FUNCTION
 // ============================================
 
@@ -306,35 +371,72 @@ async function runAnalysis() {
     analyzeBtn.classList.add('loading');
     analyzeBtn.disabled = true;
     showNotification('Analyzing Volume Profile + Order Flow...', 'info');
+    
+    // Update connection status
+    const connectionEl = document.getElementById('connectionStatus');
+    if (connectionEl) {
+        connectionEl.textContent = '🟡 Connecting...';
+        connectionEl.className = 'connection-status warning';
+    }
 
     try {
-        let currentPrice, historicalData, apiUsed = '';
+        let currentPrice = null;
+        let historicalData = null;
+        let apiUsed = '';
+        let apiError = null;
         
+        // Try Twelve Data first
         try {
+            console.log('Trying Twelve Data for', currentPair);
             currentPrice = await getPriceTwelve(currentPair);
             historicalData = await getHistoryTwelve(currentPair, currentTimeframe);
             apiUsed = 'Twelve Data';
             currentApi = 'twelve';
+            console.log('Twelve Data success:', currentPrice);
         } catch (twelveError) {
+            console.log('Twelve Data failed:', twelveError.message);
+            apiError = twelveError;
+            
+            // Try Alpha Vantage as backup
             try {
+                console.log('Trying Alpha Vantage for', currentPair);
                 currentPrice = await getPriceAlpha(currentPair);
+                // For Alpha Vantage, we need to get historical from Twelve or generate
                 historicalData = await getHistoryTwelve(currentPair, currentTimeframe);
                 if (historicalData) {
-                    historicalData = historicalData.map(c => ({ ...c, volume: Math.random() * 1000000 }));
+                    historicalData = historicalData.map(c => ({ ...c, volume: Math.random() * 1000000 + 500000 }));
                 }
                 apiUsed = 'Alpha Vantage';
                 currentApi = 'alpha';
+                console.log('Alpha Vantage success:', currentPrice);
             } catch (alphaError) {
-                throw new Error('Both APIs failed');
+                console.log('Alpha Vantage failed:', alphaError.message);
+                throw new Error(`Both APIs failed: ${twelveError.message} | ${alphaError.message}`);
             }
         }
         
-        if (!historicalData || historicalData.length < 30) throw new Error('Insufficient data');
+        // Validate price
+        if (!currentPrice || isNaN(currentPrice) || currentPrice <= 0) {
+            throw new Error('Invalid price received from API');
+        }
         
+        // Validate historical data
+        if (!historicalData || historicalData.length < 30) {
+            throw new Error('Insufficient historical data');
+        }
+        
+        // Update connection status to success
+        if (connectionEl) {
+            connectionEl.textContent = '🟢 Live Data';
+            connectionEl.className = 'connection-status';
+        }
+        
+        // Extract price arrays
         const closes = historicalData.map(c => c.close);
         const highs = historicalData.map(c => c.high);
         const lows = historicalData.map(c => c.low);
         
+        // Calculate indicators
         const ema20 = calculateEMA(closes, 20);
         const ema50 = calculateEMA(closes, 50);
         const rsi = calculateRSI(closes, 14);
@@ -343,6 +445,7 @@ async function runAnalysis() {
         const volumeProfile = calculateVolumeProfile(historicalData, 12);
         const orderFlow = calculateOrderFlow(historicalData);
         
+        // Determine trend
         const currentEMA20 = ema20[ema20.length - 1];
         const currentEMA50 = ema50[ema50.length - 1];
         const prevEMA20 = ema20[ema20.length - 2];
@@ -364,6 +467,7 @@ async function runAnalysis() {
             }
         }
         
+        // Fibonacci levels
         const recentHigh = Math.max(...highs.slice(-20));
         const recentLow = Math.min(...lows.slice(-20));
         const fibDiff = recentHigh - recentLow;
@@ -375,6 +479,7 @@ async function runAnalysis() {
             level786: recentLow + fibDiff * 0.786
         };
         
+        // Find nearest Fibonacci level
         let nearestFib = '';
         let minDist = Infinity;
         for (const [key, value] of Object.entries(fibLevels)) {
@@ -385,6 +490,10 @@ async function runAnalysis() {
             }
         }
         
+        // Calculate Entry Zone
+        const entryZone = calculateEntryZone(currentPrice, atr, trend, volumeProfile, orderFlow, fibLevels);
+        
+        // Calculate confidence score
         let confidence = 30;
         if (trend !== 'neutral') confidence += 15;
         if (strength.includes('Strong')) confidence += 15;
@@ -405,8 +514,13 @@ async function runAnalysis() {
             if (orderFlow.isBuyingExhaustion || orderFlow.isSellingExhaustion) confidence += 15;
         }
         
+        // Entry zone proximity bonus
+        if (entryZone.entryProgress > 80) confidence += 15;
+        else if (entryZone.entryProgress > 50) confidence += 10;
+        
         confidence = Math.min(confidence, 98);
         
+        // Generate signal
         let signal = null;
         let signalReason = [];
         
@@ -420,6 +534,7 @@ async function runAnalysis() {
             if (volumeProfile && currentPrice < volumeProfile.valueAreaLow) signalReason.push('💰 Price at discount');
             if (orderFlow && orderFlow.netDelta > 0) signalReason.push('📊 Positive delta');
             if (orderFlow && orderFlow.divergence) signalReason.push(`🔄 ${orderFlow.divergence}`);
+            if (entryZone.entryProgress > 70) signalReason.push('🎯 Near ideal entry zone');
             
             signal = {
                 type: 'LONG 🟢',
@@ -440,6 +555,7 @@ async function runAnalysis() {
             if (volumeProfile && currentPrice > volumeProfile.valueAreaHigh) signalReason.push('💸 Price at premium');
             if (orderFlow && orderFlow.netDelta < 0) signalReason.push('📊 Negative delta');
             if (orderFlow && orderFlow.divergence) signalReason.push(`🔄 ${orderFlow.divergence}`);
+            if (entryZone.entryProgress > 70) signalReason.push('🎯 Near ideal entry zone');
             
             signal = {
                 type: 'SHORT 🔴',
@@ -462,9 +578,15 @@ async function runAnalysis() {
             };
         }
         
-        // Update UI
-        document.getElementById('currentPrice').innerHTML = `$${currentPrice.toFixed(2)}<span style="font-size:11px; display:block;">${apiUsed} | RSI: ${rsi.toFixed(1)} | ATR: ${atr.toFixed(2)}</span>`;
+        // ========== UPDATE UI ==========
         
+        // Update price display
+        const currentPriceEl = document.getElementById('currentPrice');
+        if (currentPriceEl) {
+            currentPriceEl.innerHTML = `$${currentPrice.toFixed(2)}<span style="font-size:11px; display:block;">${apiUsed} | RSI: ${rsi.toFixed(1)} | ATR: ${atr.toFixed(2)}</span>`;
+        }
+        
+        // Update price change
         if (lastPrice) {
             const change = ((currentPrice - lastPrice) / lastPrice * 100).toFixed(2);
             const priceChangeEl = document.getElementById('priceChange');
@@ -475,6 +597,18 @@ async function runAnalysis() {
         }
         lastPrice = currentPrice;
         
+        // Update Entry Zone Display
+        const idealEntryEl = document.getElementById('idealEntry');
+        const entryRangeEl = document.getElementById('entryRange');
+        const entryProgressBar = document.getElementById('entryProgressBar');
+        const entryDistanceEl = document.getElementById('entryDistance');
+        
+        if (idealEntryEl) idealEntryEl.textContent = entryZone.idealEntry;
+        if (entryRangeEl) entryRangeEl.textContent = entryZone.entryRange;
+        if (entryProgressBar) entryProgressBar.style.width = `${entryZone.entryProgress}%`;
+        if (entryDistanceEl) entryDistanceEl.textContent = entryZone.distanceText;
+        
+        // Update 4H Analysis
         document.getElementById('trend4H').innerHTML = trend === 'bullish' ? '🟢 Bullish' : (trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral');
         document.getElementById('trend4H').className = `value trend-value ${trend}`;
         document.getElementById('strength4H').innerHTML = strength;
@@ -482,12 +616,14 @@ async function runAnalysis() {
         document.getElementById('ob4H').innerHTML = orderFlow?.absorptionSignals.length > 0 ? `✅ ${orderFlow.absorptionSignals.length} Signals` : '❌ None';
         document.getElementById('ms4H').innerHTML = orderFlow?.divergence ? 'Divergence' : (trend === 'bullish' ? 'BOS ↑' : 'BOS ↓');
         
+        // Update 1H Analysis
         document.getElementById('trend1H').innerHTML = trend === 'bullish' ? '🟢 Bullish' : (trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral');
         document.getElementById('strength1H').innerHTML = strength;
         document.getElementById('fvg1H').innerHTML = volumeProfile ? `VA: $${volumeProfile.valueAreaLow?.toFixed(2)}-$${volumeProfile.valueAreaHigh?.toFixed(2)}` : '--';
         document.getElementById('ob1H').innerHTML = orderFlow ? `Delta: ${(orderFlow.netDelta / 1000000).toFixed(2)}M` : '--';
         document.getElementById('ms1H').innerHTML = orderFlow?.vwap ? `VWAP: $${orderFlow.vwap.toFixed(2)}` : '--';
         
+        // Update Signal Card
         document.getElementById('signalType').innerHTML = signal.type;
         document.getElementById('signalType').className = `value signal-type ${signal.type.includes('LONG') ? 'long' : (signal.type.includes('SHORT') ? 'short' : '')}`;
         document.getElementById('signalConfidence').innerHTML = signal.confidence;
@@ -497,6 +633,7 @@ async function runAnalysis() {
         document.getElementById('signalRR').innerHTML = signal.rr;
         document.getElementById('signalReason').innerHTML = signal.reason;
         
+        // Update Badge
         const badge = document.getElementById('signalStrengthBadge');
         if (badge) {
             const conf = confidence;
@@ -504,6 +641,7 @@ async function runAnalysis() {
             badge.className = `signal-badge ${conf >= 70 ? 'high' : (conf >= 50 ? 'medium' : 'low')}`;
         }
         
+        // Update Volume Profile Tab
         if (volumeProfile) {
             document.getElementById('fvgZonesDisplay').innerHTML = `
                 <div class="zone-tag" style="border-left-color: #34c759;">📊 POC: $${volumeProfile.poc?.price.toFixed(2)}</div>
@@ -514,6 +652,7 @@ async function runAnalysis() {
             `;
         }
         
+        // Update Order Flow Tab
         if (orderFlow) {
             document.getElementById('obZonesDisplay').innerHTML = `
                 <div class="zone-tag">🟢 Buying Pressure: ${(orderFlow.buyingPressure / 1000000).toFixed(2)}M</div>
@@ -527,6 +666,7 @@ async function runAnalysis() {
             `;
         }
         
+        // Update Fibonacci Tab
         document.getElementById('fibLevelsDisplay').innerHTML = `
             <div class="zone-tag fib">📐 38.2%: $${fibLevels.level382.toFixed(2)}</div>
             <div class="zone-tag fib">📐 50%: $${fibLevels.level500.toFixed(2)}</div>
@@ -535,26 +675,79 @@ async function runAnalysis() {
             <div class="zone-tag" style="background:#3390ec20;">🎯 Nearest: ${nearestFib}</div>
         `;
         
+        // Update Entry Zones Tab
+        document.getElementById('entriesDisplay').innerHTML = `
+            <div class="zone-tag entry">🎯 Ideal Entry: ${entryZone.idealEntry}</div>
+            <div class="zone-tag entry">📊 Entry Range: ${entryZone.entryRange}</div>
+            <div class="zone-tag entry">📏 Distance: ${entryZone.distanceText}</div>
+            <div class="zone-tag entry">📈 Progress: ${entryZone.entryProgress.toFixed(0)}% to zone</div>
+            <div class="zone-tag" style="background:#3390ec20;">💡 Tip: Wait for price to enter the green zone before entering</div>
+        `;
+        
+        // Update Liquidity & Structure
         document.getElementById('buySideLiq').textContent = `$${(recentHigh + atr).toFixed(2)}`;
         document.getElementById('sellSideLiq').textContent = `$${(recentLow - atr).toFixed(2)}`;
         document.getElementById('bosLevel').textContent = trend === 'bullish' ? `$${(recentHigh).toFixed(2)}` : `$${(recentLow).toFixed(2)}`;
         document.getElementById('chochLevel').textContent = orderFlow?.vwap ? `VWAP: $${orderFlow.vwap.toFixed(2)}` : '--';
         
-        if (confidence >= 55 && signal.type !== 'NEUTRAL ⚪') {
+        // Enable/disable execute button
+        const shouldEnable = confidence >= 55 && signal.type !== 'NEUTRAL ⚪' && entryZone.entryProgress > 50;
+        if (shouldEnable) {
             executeBtn.disabled = false;
+            executeBtn.style.background = 'linear-gradient(135deg, var(--accent-green), #28a745)';
         } else {
             executeBtn.disabled = true;
+            executeBtn.style.background = '';
         }
         
-        analysisData = { signal, confidence, currentPair, currentPrice, orderFlow, volumeProfile };
+        // Save analysis data
+        analysisData = { 
+            signal, 
+            confidence, 
+            currentPair, 
+            currentPrice, 
+            orderFlow, 
+            volumeProfile,
+            entryZone,
+            trend,
+            atr,
+            tp: signal.tp,
+            sl: signal.sl
+        };
         
+        // Update API count
         apiCalls++;
         document.getElementById('apiUsage').textContent = `${apiCalls} / 800`;
         showNotification(`Analysis complete! ${signal.type} - ${signal.confidence} confidence`, 'success');
         
+        // Update live badge
+        const liveBadge = document.getElementById('liveStatusBadge');
+        if (liveBadge) {
+            liveBadge.textContent = 'LIVE';
+            liveBadge.style.background = 'var(--accent-green)';
+        }
+        
+        lastAnalysisTime = new Date();
+        
     } catch (error) {
         console.error('Analysis error:', error);
         showNotification('Error: ' + error.message, 'error');
+        
+        // Update connection status to error
+        const connectionEl = document.getElementById('connectionStatus');
+        if (connectionEl) {
+            connectionEl.textContent = '🔴 API Error';
+            connectionEl.className = 'connection-status error';
+        }
+        
+        const liveBadge = document.getElementById('liveStatusBadge');
+        if (liveBadge) {
+            liveBadge.textContent = 'ERROR';
+            liveBadge.style.background = 'var(--accent-red)';
+        }
+        
+        // Show fallback price? No, show error clearly
+        document.getElementById('currentPrice').innerHTML = 'ERROR<br><span style="font-size:11px;">Check API key</span>';
     } finally {
         analyzeBtn.classList.remove('loading');
         analyzeBtn.disabled = false;
@@ -569,6 +762,14 @@ function init() {
     updateLiveTime();
     setInterval(updateLiveTime, 1000);
     setupEventListeners();
+    
+    // Auto-refresh every 5 minutes if there was an analysis
+    setInterval(() => {
+        if (lastAnalysisTime && (new Date() - lastAnalysisTime) > 300000) {
+            console.log('Auto-refresh analysis');
+            runAnalysis();
+        }
+    }, 300000);
 }
 
 function updateLiveTime() {
@@ -643,11 +844,36 @@ function resetAnalysis() {
     document.getElementById('fvgZonesDisplay').innerHTML = 'Click Analyze to see Volume Profile';
     document.getElementById('obZonesDisplay').innerHTML = 'Click Analyze to see Order Flow';
     document.getElementById('fibLevelsDisplay').innerHTML = 'Click Analyze to see Fibonacci levels';
+    document.getElementById('entriesDisplay').innerHTML = 'Click Analyze to see Entry Zones';
     document.getElementById('buySideLiq').textContent = '--';
     document.getElementById('sellSideLiq').textContent = '--';
     document.getElementById('bosLevel').textContent = '--';
     document.getElementById('chochLevel').textContent = '--';
+    
+    // Reset entry zone display
+    const idealEntryEl = document.getElementById('idealEntry');
+    const entryRangeEl = document.getElementById('entryRange');
+    const entryProgressBar = document.getElementById('entryProgressBar');
+    const entryDistanceEl = document.getElementById('entryDistance');
+    if (idealEntryEl) idealEntryEl.textContent = '--';
+    if (entryRangeEl) entryRangeEl.textContent = '--';
+    if (entryProgressBar) entryProgressBar.style.width = '0%';
+    if (entryDistanceEl) entryDistanceEl.textContent = '--';
+    
     executeBtn.disabled = true;
+    
+    // Reset connection status
+    const connectionEl = document.getElementById('connectionStatus');
+    if (connectionEl) {
+        connectionEl.textContent = '🟢 Ready';
+        connectionEl.className = 'connection-status';
+    }
+    
+    const liveBadge = document.getElementById('liveStatusBadge');
+    if (liveBadge) {
+        liveBadge.textContent = 'LIVE';
+        liveBadge.style.background = 'var(--accent-red)';
+    }
 }
 
 function executeOrder() {
@@ -661,33 +887,45 @@ function executeOrder() {
         return;
     }
     
-    if (tg && tg.sendData) {
-        tg.sendData(JSON.stringify({
-            action: 'execute_order',
-            pair: currentPair,
-            signal: analysisData.signal,
-            volumeProfile: {
-                poc: analysisData.volumeProfile?.poc?.price,
-                valueAreaHigh: analysisData.volumeProfile?.valueAreaHigh,
-                valueAreaLow: analysisData.volumeProfile?.valueAreaLow
-            },
-            orderFlow: {
-                netDelta: analysisData.orderFlow?.netDelta,
-                vwap: analysisData.orderFlow?.vwap,
-                divergence: analysisData.orderFlow?.divergence
-            },
-            timestamp: new Date().toISOString()
-        }));
+    if (analysisData.entryZone && analysisData.entryZone.entryProgress < 50) {
+        showNotification('Price not in entry zone - Wait for better entry', 'warning');
+        return;
     }
     
-    showNotification(`✅ ${analysisData.signal.type} executed! ${analysisData.signal.reason}`, 'success');
+    const orderDetails = {
+        action: 'execute_order',
+        pair: currentPair,
+        signal: analysisData.signal,
+        entryPrice: analysisData.currentPrice,
+        stopLoss: analysisData.sl,
+        takeProfit: analysisData.tp,
+        riskReward: analysisData.signal.rr,
+        volumeProfile: {
+            poc: analysisData.volumeProfile?.poc?.price,
+            valueAreaHigh: analysisData.volumeProfile?.valueAreaHigh,
+            valueAreaLow: analysisData.volumeProfile?.valueAreaLow
+        },
+        orderFlow: {
+            netDelta: analysisData.orderFlow?.netDelta,
+            vwap: analysisData.orderFlow?.vwap,
+            divergence: analysisData.orderFlow?.divergence
+        },
+        entryZone: analysisData.entryZone,
+        timestamp: new Date().toISOString()
+    };
+    
+    if (tg && tg.sendData) {
+        tg.sendData(JSON.stringify(orderDetails));
+    }
+    
+    showNotification(`✅ ${analysisData.signal.type} executed! Entry: ${analysisData.signal.entry} | TP: ${analysisData.signal.tp} | SL: ${analysisData.signal.sl}`, 'success');
 }
 
 function showNotification(message, type = 'info') {
     notification.textContent = message;
     notification.className = `notification ${type}`;
     notification.classList.remove('hidden');
-    setTimeout(() => notification.classList.add('hidden'), 4000);
+    setTimeout(() => notification.classList.add('hidden'), 5000);
 }
 
 // Start the app
