@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>ICT Volume Profile Trader</title>
+    <title>ICT Volume Profile Trader - Enhanced</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
@@ -13,7 +13,7 @@
         <div class="header">
             <div class="header-top">
                 <h1>📊 ICT Pro Trader</h1>
-                <div class="live-badge">LIVE</div>
+                <div class="live-badge" id="liveStatusBadge">LIVE</div>
             </div>
             <p class="subtitle">Volume Profile + Order Flow | ICT Smart Money Concepts</p>
             <div id="liveTime" class="live-time"></div>
@@ -41,17 +41,39 @@
             </select>
         </div>
 
-        <!-- Price & Chart Section -->
+        <!-- Price & Chart Section with Entry Zone Highlight -->
         <div class="section">
             <h3>📈 Market Data</h3>
             <div class="price-container">
                 <div id="currentPrice" class="current-price">----</div>
                 <div id="priceChange" class="price-change">--</div>
+                <div id="apiStatus" class="api-status">🟢 Ready</div>
             </div>
             <div class="timeframe-btns">
                 <button class="tf-btn" data-tf="1H">1H</button>
                 <button class="tf-btn active" data-tf="4H">4H</button>
                 <button class="tf-btn" data-tf="1D">1D</button>
+            </div>
+        </div>
+
+        <!-- Entry Zone Card - NEW -->
+        <div class="section entry-zone-card">
+            <h3>🎯 ENTRY ZONE</h3>
+            <div class="entry-zone-display">
+                <div class="entry-zone-level">
+                    <span class="zone-label">Ideal Entry:</span>
+                    <span id="idealEntry" class="zone-value">--</span>
+                </div>
+                <div class="entry-zone-level">
+                    <span class="zone-label">Entry Range:</span>
+                    <span id="entryRange" class="zone-value">--</span>
+                </div>
+                <div class="entry-zone-progress">
+                    <div class="progress-bar-container">
+                        <div id="entryProgressBar" class="progress-bar" style="width: 0%"></div>
+                    </div>
+                    <span id="entryDistance" class="progress-text">--</span>
+                </div>
             </div>
         </div>
 
@@ -70,7 +92,7 @@
                     <strong id="apiUsage">0 / 800</strong>
                 </div>
                 <div class="status-right">
-                    <span class="connection-status">🟢 Connected</span>
+                    <span id="connectionStatus" class="connection-status">🟢 Connected</span>
                 </div>
             </div>
         </div>
@@ -170,6 +192,7 @@
                 <button class="tab-btn active" data-tab="volume">📊 Volume Profile</button>
                 <button class="tab-btn" data-tab="order">📦 Order Flow</button>
                 <button class="tab-btn" data-tab="fib">📐 Fibonacci</button>
+                <button class="tab-btn" data-tab="entries">🎯 Entry Zones</button>
             </div>
             
             <div id="volumeTab" class="tab-content active">
@@ -182,6 +205,10 @@
             
             <div id="fibTab" class="tab-content">
                 <div id="fibLevelsDisplay" class="zone-display">Click Analyze to see Fibonacci levels</div>
+            </div>
+            
+            <div id="entriesTab" class="tab-content">
+                <div id="entriesDisplay" class="zone-display">Click Analyze to see Entry Zones</div>
             </div>
             
             <div class="zone-grid">
