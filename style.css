@@ -72,11 +72,16 @@ body {
     color: #8e8e93;
     font-size: 13px;
     cursor: pointer;
+    transition: all 0.2s;
 }
 
 .category-btn.active, .tf-btn.active {
     background: #3390ec;
     color: white;
+}
+
+.category-btn:hover, .tf-btn:hover {
+    opacity: 0.8;
 }
 
 .input-field {
@@ -132,6 +137,11 @@ body {
     font-weight: bold;
     cursor: pointer;
     margin-bottom: 12px;
+    transition: all 0.2s;
+}
+
+.analyze-btn:active {
+    transform: scale(0.98);
 }
 
 .analyze-btn:disabled {
@@ -401,6 +411,11 @@ body {
     font-weight: bold;
     cursor: pointer;
     margin-bottom: 12px;
+    transition: all 0.2s;
+}
+
+.execute-btn:active {
+    transform: scale(0.98);
 }
 
 .execute-btn:disabled {
