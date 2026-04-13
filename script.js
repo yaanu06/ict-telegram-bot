@@ -250,7 +250,7 @@ function findSwingPoints(data, lookback = 5) {
 }
 
 // ============================================
-// MAIN ANALYSIS - SMART ENTRY ZONE
+// MAIN ANALYSIS FUNCTION
 // ============================================
 
 async function runAnalysis() {
@@ -259,7 +259,6 @@ async function runAnalysis() {
     showNotification('Analyzing ICT + Volume Profile + Order Flow...', 'info');
 
     try {
-        // Get data
         const currentPrice = await getCurrentPrice();
         if (!currentPrice) throw new Error('Could not get price');
         
@@ -270,20 +269,15 @@ async function runAnalysis() {
         const highs = historicalData.map(c => c.high);
         const lows = historicalData.map(c => c.low);
         
-        // Calculate indicators
         const ema20 = calculateEMA(closes, 20);
         const ema50 = calculateEMA(closes, 50);
         const rsi = calculateRSI(closes, 14);
         const atr = calculateATR(historicalData, 14);
         
-        // Volume Profile & Order Flow
         const volumeProfile = calculateVolumeProfile(historicalData, 12);
         const orderFlow = calculateOrderFlow(historicalData);
-        
-        // ICT Swing Points
         const swingPoints = findSwingPoints(historicalData, 5);
         
-        // Determine trend
         const currentEMA20 = ema20[ema20.length - 1];
         const currentEMA50 = ema50[ema50.length - 1];
         const prevEMA20 = ema20[ema20.length - 2];
@@ -294,31 +288,21 @@ async function runAnalysis() {
         if (currentEMA20 > currentEMA50 && currentEMA20 > prevEMA20) {
             trend = 'bullish';
             strength = rsi > 55 ? 'Strong' : 'Medium';
-            if (orderFlow && orderFlow.buyingPressure > orderFlow.sellingPressure * 1.2) {
-                strength = 'Strong (Volume Confirmed)';
-            }
         } else if (currentEMA20 < currentEMA50 && currentEMA20 < prevEMA20) {
             trend = 'bearish';
             strength = rsi < 45 ? 'Strong' : 'Medium';
-            if (orderFlow && orderFlow.sellingPressure > orderFlow.buyingPressure * 1.2) {
-                strength = 'Strong (Volume Confirmed)';
-            }
         }
         
-        // Find key levels
         const recentHigh = Math.max(...highs.slice(-20));
         const recentLow = Math.min(...lows.slice(-20));
         const range = recentHigh - recentLow;
         
-        // Fibonacci levels
         const fib382 = recentLow + range * 0.382;
         const fib500 = recentLow + range * 0.5;
         const fib618 = recentLow + range * 0.618;
         const fib786 = recentLow + range * 0.786;
         
-        // ========== SMART ENTRY ZONE CALCULATION ==========
-        // Using ALL concepts to find the BEST entry price
-        
+        // Calculate SMART ENTRY
         let idealEntry = null;
         let stopLoss = null;
         let takeProfit = null;
@@ -326,67 +310,47 @@ async function runAnalysis() {
         let entryInstruction = '';
         let confidence = 30;
         
-        // Calculate confidence score
         if (trend !== 'neutral') confidence += 20;
-        if (strength.includes('Strong')) confidence += 15;
+        if (strength === 'Strong') confidence += 15;
         if (rsi > 30 && rsi < 70) confidence += 10;
         if (volumeProfile && volumeProfile.poc) confidence += 10;
         if (orderFlow && ((trend === 'bullish' && orderFlow.netDelta > 0) || (trend === 'bearish' && orderFlow.netDelta < 0))) confidence += 15;
         if (orderFlow && orderFlow.absorptionSignals > 0) confidence += 10;
-        if (swingPoints.highs.length > 0 || swingPoints.lows.length > 0) confidence += 5;
         confidence = Math.min(confidence, 98);
         
         if (trend === 'bullish' && confidence >= 55) {
             signalType = 'LONG';
-            
-            // IDEAL ENTRY for LONG: Value Area Low or Fibonacci 61.8% (support level)
             idealEntry = Math.max(volumeProfile?.valueAreaLow || recentLow, fib618);
-            // Make sure ideal entry is BELOW current price (wait for pullback)
             if (idealEntry >= currentPrice) {
                 idealEntry = currentPrice - (atr * 1);
             }
-            
-            // Stop Loss: Below the ideal entry zone
             stopLoss = idealEntry - (atr * 1);
-            
-            // Take Profit: Value Area High or Fibonacci 38.2% (resistance)
             let resistanceTarget = Math.min(volumeProfile?.valueAreaHigh || recentHigh, fib382);
             if (resistanceTarget <= idealEntry) {
                 resistanceTarget = idealEntry + (atr * 2);
             }
             takeProfit = resistanceTarget;
-            
             entryInstruction = `📈 LONG Setup: Wait for pullback to support at $${idealEntry.toFixed(2)}`;
-            
         } else if (trend === 'bearish' && confidence >= 55) {
             signalType = 'SHORT';
-            
-            // IDEAL ENTRY for SHORT: Value Area High or Fibonacci 38.2% (resistance level)
             idealEntry = Math.min(volumeProfile?.valueAreaHigh || recentHigh, fib382);
-            // Make sure ideal entry is ABOVE current price (wait for rally)
             if (idealEntry <= currentPrice) {
                 idealEntry = currentPrice + (atr * 1);
             }
-            
-            // Stop Loss: Above the ideal entry zone
             stopLoss = idealEntry + (atr * 1);
-            
-            // Take Profit: Value Area Low or Fibonacci 61.8% (support)
             let supportTarget = Math.max(volumeProfile?.valueAreaLow || recentLow, fib618);
             if (supportTarget >= idealEntry) {
                 supportTarget = idealEntry - (atr * 2);
             }
             takeProfit = supportTarget;
-            
             entryInstruction = `📉 SHORT Setup: Wait for rally to resistance at $${idealEntry.toFixed(2)}`;
         }
         
-        // Calculate distance and progress
         let distanceToEntry = 0;
         let progress = 0;
         let distanceText = '';
         
-        if (signalType === 'LONG') {
+        if (signalType === 'LONG' && idealEntry) {
             distanceToEntry = currentPrice - idealEntry;
             if (distanceToEntry <= 0) {
                 progress = 100;
@@ -396,7 +360,7 @@ async function runAnalysis() {
                 progress = Math.min(100, (1 - distanceToEntry / maxDistance) * 100);
                 distanceText = `📏 Price needs to drop $${distanceToEntry.toFixed(2)} more to reach ideal entry`;
             }
-        } else if (signalType === 'SHORT') {
+        } else if (signalType === 'SHORT' && idealEntry) {
             distanceToEntry = idealEntry - currentPrice;
             if (distanceToEntry <= 0) {
                 progress = 100;
@@ -408,30 +372,22 @@ async function runAnalysis() {
             }
         }
         
-        // Calculate risk:reward
         let riskReward = 'N/A';
         if (signalType === 'LONG' && idealEntry && stopLoss && takeProfit) {
             const risk = idealEntry - stopLoss;
             const reward = takeProfit - idealEntry;
-            if (risk > 0) {
-                riskReward = (reward / risk).toFixed(1);
-            }
+            if (risk > 0) riskReward = (reward / risk).toFixed(1);
         } else if (signalType === 'SHORT' && idealEntry && stopLoss && takeProfit) {
             const risk = stopLoss - idealEntry;
             const reward = idealEntry - takeProfit;
-            if (risk > 0) {
-                riskReward = (reward / risk).toFixed(1);
-            }
+            if (risk > 0) riskReward = (reward / risk).toFixed(1);
         }
         
-        // Divergence detection
         let divergence = '';
         if (rsi < 30 && trend === 'bearish') divergence = 'Bullish Divergence (reversal up possible)';
         if (rsi > 70 && trend === 'bullish') divergence = 'Bearish Divergence (reversal down possible)';
         
-        // ========== UPDATE UI ==========
-        
-        // Current Price
+        // UPDATE UI
         document.getElementById('currentPrice').innerHTML = `$${currentPrice.toFixed(2)}`;
         if (lastPrice) {
             const change = ((currentPrice - lastPrice) / lastPrice * 100).toFixed(2);
@@ -441,17 +397,11 @@ async function runAnalysis() {
         }
         lastPrice = currentPrice;
         
-        // Entry Zone Card
-        if (idealEntry) {
-            document.getElementById('idealEntryZone').innerHTML = `$${idealEntry.toFixed(2)}`;
-        } else {
-            document.getElementById('idealEntryZone').innerHTML = '--';
-        }
+        document.getElementById('idealEntryZone').innerHTML = idealEntry ? `$${idealEntry.toFixed(2)}` : '--';
         document.getElementById('entryInstruction').innerHTML = entryInstruction || 'No clear signal - Wait for setup';
         document.getElementById('zoneProgress').style.width = `${progress}%`;
         document.getElementById('distanceText').innerHTML = distanceText || 'Analyzing market...';
         
-        // Signal Card
         const signalTypeBox = document.getElementById('signalTypeText');
         signalTypeBox.innerHTML = signalType;
         signalTypeBox.parentElement.className = `signal-type-box ${signalType.toLowerCase()}`;
@@ -463,7 +413,6 @@ async function runAnalysis() {
         document.getElementById('stopLoss').innerHTML = stopLoss ? `$${stopLoss.toFixed(2)}` : '--';
         document.getElementById('riskReward').innerHTML = riskReward;
         
-        // Signal Reason
         let reason = `📊 ${trend === 'bullish' ? 'Bullish' : (trend === 'bearish' ? 'Bearish' : 'Neutral')} trend | ${strength} | RSI: ${rsi.toFixed(1)}`;
         if (divergence) reason += `\n🔄 ${divergence}`;
         if (volumeProfile?.poc) reason += `\n📊 POC: $${volumeProfile.poc.price.toFixed(2)} | Value Area: $${volumeProfile.valueAreaLow.toFixed(2)} - $${volumeProfile.valueAreaHigh.toFixed(2)}`;
@@ -471,7 +420,6 @@ async function runAnalysis() {
         if (idealEntry) reason += `\n🎯 Ideal Entry: $${idealEntry.toFixed(2)} (${signalType === 'LONG' ? 'Support' : 'Resistance'})`;
         document.getElementById('signalReason').innerHTML = reason;
         
-        // Badge
         const badge = document.getElementById('signalBadge');
         if (confidence >= 70) {
             badge.innerHTML = '🔥 HIGH CONFIDENCE';
@@ -484,7 +432,6 @@ async function runAnalysis() {
             badge.className = 'signal-badge low';
         }
         
-        // Volume Profile
         if (volumeProfile) {
             document.getElementById('pocValue').innerHTML = `$${volumeProfile.poc?.price.toFixed(2) || '--'}`;
             document.getElementById('valueHigh').innerHTML = `$${volumeProfile.valueAreaHigh?.toFixed(2) || '--'}`;
@@ -492,7 +439,6 @@ async function runAnalysis() {
             document.getElementById('totalVolume').innerHTML = `${(volumeProfile.totalVolume / 1000000).toFixed(1)}M`;
         }
         
-        // Order Flow
         if (orderFlow) {
             document.getElementById('buyingPressure').innerHTML = `${(orderFlow.buyingPressure / 1000000).toFixed(1)}M`;
             document.getElementById('sellingPressure').innerHTML = `${(orderFlow.sellingPressure / 1000000).toFixed(1)}M`;
@@ -500,7 +446,6 @@ async function runAnalysis() {
             document.getElementById('vwapValue').innerHTML = `$${orderFlow.vwap.toFixed(2)}`;
         }
         
-        // 4H ICT
         document.getElementById('trend4H').innerHTML = trend === 'bullish' ? '🟢 Bullish' : (trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral');
         document.getElementById('trend4H').className = `trend ${trend}`;
         document.getElementById('strength4H').innerHTML = strength;
@@ -508,7 +453,6 @@ async function runAnalysis() {
         document.getElementById('ob4H').innerHTML = '✅ Present';
         document.getElementById('ms4H').innerHTML = trend === 'bullish' ? 'BOS ↑' : (trend === 'bearish' ? 'BOS ↓' : 'CHoCH');
         
-        // 1H ICT
         document.getElementById('trend1H').innerHTML = trend === 'bullish' ? '🟢 Bullish' : (trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral');
         document.getElementById('trend1H').className = `trend ${trend}`;
         document.getElementById('rsi1H').innerHTML = rsi.toFixed(1);
@@ -516,33 +460,20 @@ async function runAnalysis() {
         document.getElementById('absorption1H').innerHTML = orderFlow?.absorptionSignals > 0 ? `⚠️ ${orderFlow.absorptionSignals}` : 'None';
         document.getElementById('choch1H').innerHTML = trend === 'bullish' ? 'Bullish CHoCH' : (trend === 'bearish' ? 'Bearish CHoCH' : 'None');
         
-        // Fibonacci
         document.getElementById('fib382').innerHTML = `$${fib382.toFixed(2)}`;
         document.getElementById('fib500').innerHTML = `$${fib500.toFixed(2)}`;
         document.getElementById('fib618').innerHTML = `$${fib618.toFixed(2)}`;
         document.getElementById('fib786').innerHTML = `$${fib786.toFixed(2)}`;
         
-        // Liquidity
         document.getElementById('buySideLiq').innerHTML = `$${(recentHigh + atr).toFixed(2)}`;
         document.getElementById('sellSideLiq').innerHTML = `$${(recentLow - atr).toFixed(2)}`;
         document.getElementById('bosLevel').innerHTML = trend === 'bullish' ? `$${recentHigh.toFixed(2)}` : `$${recentLow.toFixed(2)}`;
         document.getElementById('chochLevel').innerHTML = orderFlow?.vwap ? `VWAP: $${orderFlow.vwap.toFixed(2)}` : '--';
         
-        // Execute button - enable only when price is near ideal entry (progress > 70%)
         const shouldExecute = signalType !== 'NEUTRAL' && confidence >= 55 && progress >= 70;
         executeBtn.disabled = !shouldExecute;
         
-        analysisData = { 
-            signalType, 
-            idealEntry, 
-            currentPrice, 
-            stopLoss, 
-            takeProfit, 
-            riskReward, 
-            confidence, 
-            currentPair,
-            progress
-        };
+        analysisData = { signalType, idealEntry, currentPrice, stopLoss, takeProfit, riskReward, confidence, currentPair, progress };
         
         apiCalls++;
         document.getElementById('apiUsage').innerHTML = `${apiCalls}`;
@@ -666,5 +597,5 @@ function showNotification(message, type) {
     setTimeout(() => notification.classList.add('hidden'), 4000);
 }
 
-// Start
+// Start the app
 init();
