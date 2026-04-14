@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>ICT Chart Analyzer - Upload & Trade</title>
+    <title>ICT Pro Trader - Smart Entry</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>📊 ICT Chart Analyzer</h1>
-            <p class="subtitle">Upload 4H & 1H Charts | AI Pattern Recognition</p>
+            <h1>📊 ICT Pro Trader</h1>
+            <p class="subtitle">ICT + Volume Profile + Order Flow | Smart Entry Zones</p>
             <div id="liveTime" class="live-time"></div>
         </div>
 
@@ -37,45 +37,29 @@
             </select>
         </div>
 
-        <!-- Current Price Input -->
+        <!-- Current Price -->
         <div class="section">
-            <h3>💰 Current Price</h3>
-            <input type="number" id="currentPriceInput" class="input-field" placeholder="Enter current price from chart" step="0.01">
-            <div class="help-text">Enter the current market price shown on your chart</div>
-        </div>
-
-        <!-- 4H Chart Upload -->
-        <div class="section upload-section">
-            <h3>📸 4H CHART</h3>
-            <div class="upload-area" id="upload4h">
-                <div class="upload-icon">📊</div>
-                <p>Tap to select 4H chart screenshot</p>
-                <input type="file" id="chart4h" accept="image/*" style="display:none">
+            <h3>📈 Live Price</h3>
+            <div class="price-container">
+                <div id="currentPrice" class="current-price">----</div>
+                <div id="priceChange" class="price-change">--</div>
+                <div id="apiSource" class="api-source">--</div>
             </div>
-            <div id="preview4h" class="preview-container"></div>
-            <div id="status4h" class="upload-status">No chart uploaded</div>
-        </div>
-
-        <!-- 1H Chart Upload -->
-        <div class="section upload-section">
-            <h3>📸 1H CHART</h3>
-            <div class="upload-area" id="upload1h">
-                <div class="upload-icon">📈</div>
-                <p>Tap to select 1H chart screenshot</p>
-                <input type="file" id="chart1h" accept="image/*" style="display:none">
+            <div class="timeframe-btns">
+                <button class="tf-btn" data-tf="1H">1H</button>
+                <button class="tf-btn active" data-tf="4H">4H</button>
+                <button class="tf-btn" data-tf="1D">1D</button>
             </div>
-            <div id="preview1h" class="preview-container"></div>
-            <div id="status1h" class="upload-status">No chart uploaded</div>
         </div>
 
         <!-- Analyze Button -->
-        <button id="analyzeBtn" class="analyze-btn" disabled>🔍 Analyze Charts</button>
+        <button id="analyzeBtn" class="analyze-btn">🔍 Analyze Market</button>
 
-        <!-- Status -->
+        <!-- API Status -->
         <div class="section status-section">
             <div class="status-info">
-                <span>📊 Status: <strong id="analysisStatus">Ready</strong></span>
-                <span id="connectionStatus" class="connection-status">🟢 Waiting for charts</span>
+                <span>📊 API: <strong id="apiUsage">0</strong> calls</span>
+                <span id="connectionStatus" class="connection-status">🟢 Ready</span>
             </div>
         </div>
 
@@ -97,7 +81,7 @@
 
             <div class="trade-levels">
                 <div class="level-row">
-                    <span class="level-label">🎯 IDEAL ENTRY:</span>
+                    <span class="level-label">🎯 IDEAL ENTRY (Wait for this price):</span>
                     <span class="level-value" id="idealEntryDisplay" style="color: #ff9f0a; font-size: 18px;">--</span>
                 </div>
                 <div class="level-row">
@@ -119,50 +103,97 @@
             </div>
 
             <div class="signal-reason">
-                <strong>📋 Pattern Analysis:</strong><br>
+                <strong>📋 Analysis Summary:</strong><br>
                 <span id="signalReason">--</span>
             </div>
         </div>
 
-        <!-- ========== DETECTED PATTERNS ========== -->
-        <div class="section">
-            <h3>🔍 Detected ICT Patterns</h3>
-            <div id="patternsList" class="patterns-list">
-                <div class="pattern-placeholder">Upload charts to detect patterns</div>
-            </div>
-        </div>
-
-        <!-- ========== ANALYSIS RESULTS ========== -->
-        <div class="analysis-row">
-            <div class="section quick-card">
-                <h3>⏱️ 4H Analysis</h3>
-                <div>Trend: <span id="trend4H" class="trend">--</span></div>
-                <div>Structure: <span id="structure4H">--</span></div>
-                <div>Key Levels: <span id="levels4H">--</span></div>
-                <div>Order Blocks: <span id="ob4H">--</span></div>
-            </div>
-            <div class="section quick-card">
-                <h3>⏰ 1H Analysis</h3>
-                <div>Trend: <span id="trend1H" class="trend">--</span></div>
-                <div>Patterns: <span id="patterns1H">--</span></div>
-                <div>Confluence: <span id="confluence1H">--</span></div>
-                <div>FVG: <span id="fvg1H">--</span></div>
-            </div>
-        </div>
-
-        <!-- Entry Zone Card -->
+        <!-- ========== ENTRY ZONE CARD ========== -->
         <div class="section entry-card">
-            <h3>📍 IDEAL ENTRY ZONE</h3>
+            <h3>📍 SMART ENTRY ZONE (Based on ICT + Volume Profile)</h3>
             <div class="entry-zone-simple">
                 <div class="zone-price" id="idealEntryZone">--</div>
                 <div class="zone-instruction" id="entryInstruction">--</div>
                 <div class="progress-container">
-                    <div class="progress-label">Distance to ideal entry:</div>
+                    <div class="progress-label">Current price vs ideal entry:</div>
                     <div class="progress-bar-bg">
                         <div id="zoneProgress" class="progress-fill" style="width: 0%"></div>
                     </div>
                     <div id="distanceText" class="distance-text">--</div>
                 </div>
+            </div>
+        </div>
+
+        <!-- ========== VOLUME PROFILE ========== -->
+        <div class="section">
+            <h3>📊 Volume Profile</h3>
+            <div class="info-grid">
+                <div class="info-item"><label>POC (Point of Control):</label><span id="pocValue">--</span></div>
+                <div class="info-item"><label>Value Area High (Resistance):</label><span id="valueHigh">--</span></div>
+                <div class="info-item"><label>Value Area Low (Support):</label><span id="valueLow">--</span></div>
+                <div class="info-item"><label>Total Volume:</label><span id="totalVolume">--</span></div>
+            </div>
+        </div>
+
+        <!-- ========== ORDER FLOW ========== -->
+        <div class="section">
+            <h3>📦 Order Flow</h3>
+            <div class="info-grid">
+                <div class="info-item"><label>Buying Pressure:</label><span id="buyingPressure">--</span></div>
+                <div class="info-item"><label>Selling Pressure:</label><span id="sellingPressure">--</span></div>
+                <div class="info-item"><label>Net Delta:</label><span id="netDelta">--</span></div>
+                <div class="info-item"><label>VWAP:</label><span id="vwapValue">--</span></div>
+            </div>
+        </div>
+
+        <!-- ========== ICT ANALYSIS ========== -->
+        <div class="analysis-row">
+            <div class="section quick-card">
+                <h3>⏱️ 4H ICT</h3>
+                <div>Trend: <span id="trend4H" class="trend">--</span></div>
+                <div>Strength: <span id="strength4H">--</span></div>
+                <div>FVG: <span id="fvg4H">--</span></div>
+                <div>Order Blocks: <span id="ob4H">--</span></div>
+                <div>Structure: <span id="ms4H">--</span></div>
+            </div>
+            <div class="section quick-card">
+                <h3>⏰ 1H ICT</h3>
+                <div>Trend: <span id="trend1H" class="trend">--</span></div>
+                <div>RSI: <span id="rsi1H">--</span></div>
+                <div>Divergence: <span id="divergence1H">--</span></div>
+                <div>Absorption: <span id="absorption1H">--</span></div>
+                <div>CHoCH: <span id="choch1H">--</span></div>
+            </div>
+        </div>
+
+        <!-- ========== FIBONACCI ========== -->
+        <div class="section">
+            <h3>📐 Fibonacci Levels</h3>
+            <div class="fib-grid">
+                <div class="fib-item">38.2%: <span id="fib382">--</span></div>
+                <div class="fib-item">50%: <span id="fib500">--</span></div>
+                <div class="fib-item">61.8%: <span id="fib618">--</span></div>
+                <div class="fib-item">78.6%: <span id="fib786">--</span></div>
+            </div>
+        </div>
+
+        <!-- ========== LIQUIDITY ========== -->
+        <div class="zone-grid">
+            <div class="zone-box">
+                <label>💧 Buy Side Liquidity</label>
+                <span id="buySideLiq">--</span>
+            </div>
+            <div class="zone-box">
+                <label>💧 Sell Side Liquidity</label>
+                <span id="sellSideLiq">--</span>
+            </div>
+            <div class="zone-box">
+                <label>⚡ BOS Level</label>
+                <span id="bosLevel">--</span>
+            </div>
+            <div class="zone-box">
+                <label>🔄 CHoCH Level</label>
+                <span id="chochLevel">--</span>
             </div>
         </div>
 
