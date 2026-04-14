@@ -1052,7 +1052,12 @@ function showNotification(message, type) {
     notification.innerHTML = message;
     notification.className = `notification ${type}`;
     notification.classList.remove('hidden');
-    setTimeout(() => notification.classList.add('hidden'), 4000);
+    // Add show class for animation
+    setTimeout(() => notification.classList.add('show'), 10);
+    setTimeout(() => {
+        notification.classList.remove('show');
+        notification.classList.add('hidden');
+    }, 4000);
 }
 
 // Start the app
