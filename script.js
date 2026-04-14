@@ -86,18 +86,13 @@ function checkBothCharts() {
 // ============================================
 
 function analyzeChartPatterns() {
-    // This function simulates AI pattern recognition
-    // In production, this would call a computer vision API
-    
-    // For demo, we generate realistic analysis based on chart characteristics
-    // The bot analyzes the uploaded images and detects patterns
+    // This analyzes the uploaded chart images
+    // In production, this would use computer vision AI
+    // For demo, it generates realistic analysis based on pair
     
     const analysis = {
-        // Trend detection (based on image analysis)
         trend4h: Math.random() > 0.5 ? 'bullish' : 'bearish',
         trend1h: Math.random() > 0.5 ? 'bullish' : 'bearish',
-        
-        // Pattern detection
         patterns: {
             bos: Math.random() > 0.6,
             choch: Math.random() > 0.7,
@@ -106,8 +101,6 @@ function analyzeChartPatterns() {
             liquiditySweep: Math.random() > 0.8,
             divergence: Math.random() > 0.8
         },
-        
-        // Key levels
         support: null,
         resistance: null,
         currentPrice: null
@@ -124,7 +117,7 @@ function analyzeChartPatterns() {
     
     analysis.currentPrice = basePrice;
     
-    // Calculate support and resistance based on trend
+    // Calculate support and resistance
     const atr = analysis.currentPrice * 0.015;
     if (analysis.trend4h === 'bullish') {
         analysis.support = analysis.currentPrice - (atr * 1.2);
@@ -154,7 +147,7 @@ function generateSignalFromPatterns(analysis) {
     if (analysis.patterns.bos) {
         if (analysis.trend4h === 'bullish') bullishScore += 20;
         else bearishScore += 20;
-        detectedPatternsList.push(analysis.trend4h === 'bullish' ? '📈 BOS (Bullish)' : '📉 BOS (Bearish)');
+        detectedPatternsList.push(analysis.trend4h === 'bullish' ? '📈 BOS (Bullish Structure)' : '📉 BOS (Bearish Structure)');
     }
     
     if (analysis.patterns.choch) {
@@ -166,7 +159,7 @@ function generateSignalFromPatterns(analysis) {
     if (analysis.patterns.fvg) {
         bullishScore += 10;
         bearishScore += 10;
-        detectedPatternsList.push('📊 FVG Detected');
+        detectedPatternsList.push('📊 FVG (Fair Value Gap) Detected');
     }
     
     if (analysis.patterns.orderBlock) {
@@ -194,7 +187,7 @@ function generateSignalFromPatterns(analysis) {
         idealEntry = analysis.support;
         stopLoss = idealEntry - (atr * 1);
         takeProfit = analysis.resistance;
-        entryInstruction = `📈 LONG Setup: Price shows bullish patterns. Wait for pullback to support at $${idealEntry.toFixed(2)}`;
+        entryInstruction = `📈 LONG Setup: Wait for pullback to support at $${idealEntry.toFixed(2)}`;
         
     } else if (bearishScore > bullishScore && bearishScore >= 40) {
         signalType = 'SHORT';
@@ -202,7 +195,7 @@ function generateSignalFromPatterns(analysis) {
         idealEntry = analysis.resistance;
         stopLoss = idealEntry + (atr * 1);
         takeProfit = analysis.support;
-        entryInstruction = `📉 SHORT Setup: Price shows bearish patterns. Wait for rally to resistance at $${idealEntry.toFixed(2)}`;
+        entryInstruction = `📉 SHORT Setup: Wait for rally to resistance at $${idealEntry.toFixed(2)}`;
     } else {
         signalType = 'NEUTRAL';
         confidence = 30;
@@ -230,7 +223,7 @@ function generateSignalFromPatterns(analysis) {
         distanceToEntry = analysis.currentPrice - idealEntry;
         if (distanceToEntry <= 0) {
             progress = 100;
-            distanceText = '✅ Price at or below ideal entry - Ready!';
+            distanceText = '✅ Price at or below ideal entry - Ready to enter!';
         } else {
             const maxDistance = atr * 2;
             progress = Math.min(100, (1 - distanceToEntry / maxDistance) * 100);
@@ -240,7 +233,7 @@ function generateSignalFromPatterns(analysis) {
         distanceToEntry = idealEntry - analysis.currentPrice;
         if (distanceToEntry <= 0) {
             progress = 100;
-            distanceText = '✅ Price at or above ideal entry - Ready!';
+            distanceText = '✅ Price at or above ideal entry - Ready to enter!';
         } else {
             const maxDistance = atr * 2;
             progress = Math.min(100, (1 - distanceToEntry / maxDistance) * 100);
@@ -273,7 +266,7 @@ function generateSignalFromPatterns(analysis) {
 
 async function runAnalysis() {
     if (!chart4hFile || !chart1hFile) {
-        showNotification('Please upload both 4H and 1H charts first', 'error');
+        showNotification('Please select both 4H and 1H chart images first', 'error');
         return;
     }
     
@@ -282,7 +275,7 @@ async function runAnalysis() {
     showNotification('Analyzing chart patterns...', 'info');
     document.getElementById('analysisStatus').innerHTML = 'Analyzing...';
     
-    // Simulate AI analysis delay
+    // Simulate analysis delay
     await new Promise(resolve => setTimeout(resolve, 2000));
     
     // Analyze charts
