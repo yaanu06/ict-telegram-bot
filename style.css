@@ -96,6 +96,12 @@ body {
     cursor: pointer;
 }
 
+.help-text {
+    font-size: 11px;
+    color: #8e8e93;
+    margin-top: 6px;
+}
+
 .upload-section {
     text-align: center;
 }
