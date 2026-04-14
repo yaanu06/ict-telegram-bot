@@ -16,6 +16,7 @@ let analysisData = null;
 let apiCalls = 0;
 let lastPrice = null;
 let priceUpdateInterval = null;
+let mtfAnalysis = null; // Multi-timeframe analysis results
 
 // DOM Elements
 const analyzeBtn = document.getElementById('analyzeBtn');
@@ -72,7 +73,7 @@ async function getCurrentPrice() {
     return null;
 }
 
-async function getHistoricalData() {
+async function getHistoricalData(timeframe = null) {
     // Rate limiting check
     const now = Date.now();
     if (now - lastApiCall < MIN_API_INTERVAL) {
@@ -80,8 +81,9 @@ async function getHistoricalData() {
     }
     lastApiCall = Date.now();
     
+    const tf = timeframe || currentTimeframe;
     const intervals = { '1H': '1h', '4H': '4h', '1D': '1day' };
-    const url = `https://api.twelvedata.com/time_series?symbol=${currentPair}&interval=${intervals[currentTimeframe]}&outputsize=100&apikey=${TWELVE_DATA_KEY}`;
+    const url = `https://api.twelvedata.com/time_series?symbol=${currentPair}&interval=${intervals[tf]}&outputsize=100&apikey=${TWELVE_DATA_KEY}`;
     
     try {
         const response = await fetch(url, { timeout: 10000 });
@@ -108,6 +110,117 @@ async function getHistoricalData() {
     }
     
     return null;
+}
+
+// ============================================
+// MULTI-TIMEFRAME ANALYSIS
+// ============================================
+
+async function analyzeTimeframe(tf) {
+    try {
+        const historicalData = await getHistoricalData(tf);
+        if (!historicalData || historicalData.length < 30) return null;
+        
+        const closes = historicalData.map(c => c.close);
+        const highs = historicalData.map(c => c.high);
+        const lows = historicalData.map(c => c.low);
+        
+        const ema20 = calculateEMA(closes, 20);
+        const ema50 = calculateEMA(closes, 50);
+        const rsi = calculateRSI(closes, 14);
+        const atr = calculateATR(historicalData, 14);
+        
+        const volumeProfile = calculateVolumeProfile(historicalData, 12);
+        const orderFlow = calculateOrderFlow(historicalData);
+        const swingPoints = findSwingPoints(historicalData, 5);
+        
+        const fvgList = detectFVG(historicalData);
+        const orderBlocks = detectOrderBlocks(historicalData, swingPoints);
+        const liquiditySweeps = detectLiquiditySweeps(historicalData, swingPoints);
+        const marketStructure = detectMarketStructure(historicalData, swingPoints);
+        
+        const currentEMA20 = ema20[ema20.length - 1];
+        const currentEMA50 = ema50[ema50.length - 1];
+        const prevEMA20 = ema20[ema20.length - 2];
+        
+        let trend = 'neutral';
+        if (currentEMA20 > currentEMA50 && currentEMA20 > prevEMA20) {
+            trend = 'bullish';
+        } else if (currentEMA20 < currentEMA50 && currentEMA20 < prevEMA20) {
+            trend = 'bearish';
+        }
+        
+        const recentHigh = Math.max(...highs.slice(-20));
+        const recentLow = Math.min(...lows.slice(-20));
+        
+        return {
+            timeframe: tf,
+            trend,
+            rsi,
+            atr,
+            ema20: currentEMA20,
+            ema50: currentEMA50,
+            marketStructure,
+            fvgCount: fvgList.length,
+            orderBlockCount: orderBlocks.length,
+            liquiditySweeps: liquiditySweeps.length,
+            volumeProfile,
+            orderFlow,
+            recentHigh,
+            recentLow,
+            currentPrice: closes[closes.length - 1]
+        };
+    } catch (error) {
+        console.error(`Error analyzing ${tf}:`, error);
+        return null;
+    }
+}
+
+async function runMultiTimeframeAnalysis() {
+    const timeframes = ['1H', '4H', '1D'];
+    const results = {};
+    
+    for (const tf of timeframes) {
+        const result = await analyzeTimeframe(tf);
+        if (result) {
+            results[tf] = result;
+        }
+    }
+    
+    // Determine overall trend alignment
+    const trends = timeframes.filter(tf => results[tf]).map(tf => results[tf].trend);
+    const bullishCount = trends.filter(t => t === 'bullish').length;
+    const bearishCount = trends.filter(t => t === 'bearish').length;
+    
+    let overallTrend = 'neutral';
+    let trendStrength = 'weak';
+    
+    if (bullishCount >= 2) {
+        overallTrend = 'bullish';
+        if (bullishCount === 3) trendStrength = 'strong';
+        else trendStrength = 'moderate';
+    } else if (bearishCount >= 2) {
+        overallTrend = 'bearish';
+        if (bearishCount === 3) trendStrength = 'strong';
+        else trendStrength = 'moderate';
+    }
+    
+    // Check for trend confluence (all timeframes aligned)
+    const allAligned = trends.every(t => t === trends[0] && t !== 'neutral');
+    
+    // Calculate multi-timeframe confidence boost
+    let mtfConfidenceBoost = 0;
+    if (allAligned) mtfConfidenceBoost = 20;  // All TFs aligned - strong signal
+    else if (bullishCount >= 2 || bearishCount >= 2) mtfConfidenceBoost = 10;  // Majority aligned
+    
+    return {
+        results,
+        overallTrend,
+        trendStrength,
+        allAligned,
+        mtfConfidenceBoost,
+        trends
+    };
 }
 
 // ============================================
@@ -429,9 +542,12 @@ function detectMarketStructure(data, swingPoints) {
 async function runAnalysis() {
     analyzeBtn.classList.add('loading');
     analyzeBtn.disabled = true;
-    showNotification('Analyzing ICT + Volume Profile + Order Flow...', 'info');
+    showNotification('Running Multi-Timeframe Analysis...', 'info');
 
     try {
+        // Run multi-timeframe analysis first
+        mtfAnalysis = await runMultiTimeframeAnalysis();
+        
         const currentPrice = await getCurrentPrice();
         if (!currentPrice) throw new Error('Could not get price');
         
@@ -472,6 +588,14 @@ async function runAnalysis() {
             strength = rsi < 45 ? 'Strong' : 'Medium';
         }
         
+        // Apply multi-timeframe trend confirmation
+        if (mtfAnalysis && mtfAnalysis.overallTrend !== 'neutral') {
+            // If MTF agrees with current timeframe, boost strength
+            if (mtfAnalysis.overallTrend === trend) {
+                strength = 'Strong';
+            }
+        }
+        
         const recentHigh = Math.max(...highs.slice(-20));
         const recentLow = Math.min(...lows.slice(-20));
         const range = recentHigh - recentLow;
@@ -502,6 +626,11 @@ async function runAnalysis() {
         if (orderBlocks.length > 0) confidence += 8;  // Order Block present
         if (liquiditySweeps.length > 0) confidence += 12;  // Liquidity sweep detected
         if (marketStructure.structure === trend) confidence += 15;  // Market structure confirms trend
+        
+        // NEW: Add multi-timeframe confidence boost
+        if (mtfAnalysis) {
+            confidence += mtfAnalysis.mtfConfidenceBoost;
+        }
         
         confidence = Math.min(confidence, 95);  // Cap at 95% to be conservative
         
@@ -691,12 +820,46 @@ async function runAnalysis() {
         // UPDATED: Show real market structure
         document.getElementById('ms4H').innerHTML = marketStructure.signal;
         
-        document.getElementById('trend1H').innerHTML = trend === 'bullish' ? '🟢 Bullish' : (trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral');
-        document.getElementById('trend1H').className = `trend ${trend}`;
-        document.getElementById('rsi1H').innerHTML = rsi.toFixed(1);
-        document.getElementById('divergence1H').innerHTML = divergence || 'None';
-        document.getElementById('absorption1H').innerHTML = orderFlow?.absorptionSignals > 0 ? `⚠️ ${orderFlow.absorptionSignals}` : 'None';
-        document.getElementById('choch1H').innerHTML = marketStructure.signal !== 'None' ? marketStructure.signal : 'None';
+        // NEW: Display multi-timeframe analysis results
+        if (mtfAnalysis) {
+            const tf1h = mtfAnalysis.results['1H'];
+            const tf4h = mtfAnalysis.results['4H'];
+            const tf1d = mtfAnalysis.results['1D'];
+            
+            if (tf1h) {
+                document.getElementById('trend1H').innerHTML = tf1h.trend === 'bullish' ? '🟢 Bullish' : (tf1h.trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral');
+                document.getElementById('trend1H').className = `trend ${tf1h.trend}`;
+                document.getElementById('rsi1H').innerHTML = tf1h.rsi.toFixed(1);
+            }
+            
+            if (tf4h) {
+                document.getElementById('trend4H').innerHTML = tf4h.trend === 'bullish' ? '🟢 Bullish' : (tf4h.trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral');
+                document.getElementById('trend4H').className = `trend ${tf4h.trend}`;
+                document.getElementById('strength4H').innerHTML = mtfAnalysis.trendStrength.charAt(0).toUpperCase() + mtfAnalysis.trendStrength.slice(1);
+                document.getElementById('fvg4H').innerHTML = tf4h.fvgCount > 0 ? `✅ ${tf4h.fvgCount} FVG(s)` : '❌ None';
+                document.getElementById('ob4H').innerHTML = tf4h.orderBlockCount > 0 ? `✅ ${tf4h.orderBlockCount} OB(s)` : '❌ None';
+                document.getElementById('ms4H').innerHTML = tf4h.marketStructure.signal;
+            }
+            
+            // Add daily trend info to divergence section
+            if (tf1d) {
+                const dailyTrendText = tf1d.trend === 'bullish' ? '🟢 Bullish' : (tf1d.trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral');
+                document.getElementById('divergence1H').innerHTML = `${divergence || 'None'} | 1D: ${dailyTrendText}`;
+            }
+            
+            // Show alignment status
+            const alignmentStatus = mtfAnalysis.allAligned ? '✅ All TFs Aligned' : `⚠️ Mixed (${mtfAnalysis.trends.join(', ')})`;
+            document.getElementById('absorption1H').innerHTML = orderFlow?.absorptionSignals > 0 ? `⚠️ ${orderFlow.absorptionSignals}` : alignmentStatus;
+            document.getElementById('choch1H').innerHTML = marketStructure.signal !== 'None' ? marketStructure.signal : (mtfAnalysis.overallTrend !== 'neutral' ? `MTF: ${mtfAnalysis.overallTrend}` : 'None');
+        } else {
+            // Fallback if MTF analysis failed
+            document.getElementById('trend1H').innerHTML = trend === 'bullish' ? '🟢 Bullish' : (trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral');
+            document.getElementById('trend1H').className = `trend ${trend}`;
+            document.getElementById('rsi1H').innerHTML = rsi.toFixed(1);
+            document.getElementById('divergence1H').innerHTML = divergence || 'None';
+            document.getElementById('absorption1H').innerHTML = orderFlow?.absorptionSignals > 0 ? `⚠️ ${orderFlow.absorptionSignals}` : 'None';
+            document.getElementById('choch1H').innerHTML = marketStructure.signal !== 'None' ? marketStructure.signal : 'None';
+        }
         
         document.getElementById('fib382').innerHTML = `$${fib382.toFixed(2)}`;
         document.getElementById('fib500').innerHTML = `$${fib500.toFixed(2)}`;
@@ -722,7 +885,18 @@ async function runAnalysis() {
         if (fvgList.length > 0 || orderBlocks.length > 0 || liquiditySweeps.length > 0) {
             ictInfo = ` | FVG:${fvgList.length} OB:${orderBlocks.length} Sweep:${liquiditySweeps.length}`;
         }
-        showNotification(`Analysis complete! ${signalType} signal with ${confidence}% confidence${ictInfo}`, 'success');
+        
+        // Add multi-timeframe alignment info
+        let mtfInfo = '';
+        if (mtfAnalysis) {
+            if (mtfAnalysis.allAligned) {
+                mtfInfo = ` | 🎯 MTF: All TFs aligned (${mtfAnalysis.overallTrend})`;
+            } else {
+                mtfInfo = ` | ⚠️ MTF: Mixed signals (${mtfAnalysis.trends.join('/')})`;
+            }
+        }
+        
+        showNotification(`Analysis complete! ${signalType} signal with ${confidence}% confidence${ictInfo}${mtfInfo}`, 'success');
         
     } catch (error) {
         console.error(error);
