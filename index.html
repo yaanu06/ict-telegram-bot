@@ -2,329 +2,167 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ICT Bot Pro - Live</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>ICT Trading Bot</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <style>
-        :root {
-            --bg-color: #0f172a;
-            --card-bg: #1e293b;
-            --text-primary: #f8fafc;
-            --text-secondary: #94a3b8;
-            --accent: #3b82f6;
-            --success: #10b981;
-            --danger: #ef4444;
-            --warning: #f59e0b;
-        }
-
-        body {
-            margin: 0;
-            padding: 0;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-primary);
-            overflow-x: hidden;
-        }
-
-        /* Header */
-        .header {
-            padding: 15px;
-            background: rgba(30, 41, 59, 0.8);
-            backdrop-filter: blur(10px);
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            border-bottom: 1px solid #334155;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .status-dot {
-            height: 10px;
-            width: 10px;
-            background-color: var(--success);
-            border-radius: 50%;
-            display: inline-block;
-            box-shadow: 0 0 8px var(--success);
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.5; }
-            100% { opacity: 1; }
-        }
-
-        /* Main Container */
-        .container {
-            padding: 15px;
-            max-width: 600px;
-            margin: 0 auto;
-        }
-
-        /* Price Card */
-        .price-card {
-            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-            border-radius: 16px;
-            padding: 20px;
-            text-align: center;
-            margin-bottom: 20px;
-            border: 1px solid #334155;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-        }
-
-        .pair-title {
-            font-size: 1.2rem;
-            color: var(--text-secondary);
-            margin-bottom: 5px;
-        }
-
-        .live-price {
-            font-size: 2.5rem;
-            font-weight: 700;
-            color: var(--text-primary);
-            font-variant-numeric: tabular-nums;
-        }
-
-        .price-up { color: var(--success); }
-        .price-down { color: var(--danger); }
-
-        /* Signal Card */
-        .signal-card {
-            background: var(--card-bg);
-            border-radius: 16px;
-            padding: 20px;
-            margin-bottom: 20px;
-            border-left: 5px solid var(--accent);
-        }
-
-        .signal-type {
-            font-size: 1.5rem;
-            font-weight: bold;
-            text-transform: uppercase;
-            margin-bottom: 10px;
-        }
-
-        .signal-long { color: var(--success); border-left-color: var(--success); }
-        .signal-short { color: var(--danger); border-left-color: var(--danger); }
-        .signal-wait { color: var(--text-secondary); border-left-color: var(--text-secondary); }
-
-        .confidence-bar {
-            height: 8px;
-            background: #334155;
-            border-radius: 4px;
-            margin-top: 10px;
-            overflow: hidden;
-        }
-
-        .confidence-fill {
-            height: 100%;
-            background: var(--accent);
-            width: 0%;
-            transition: width 0.5s ease;
-        }
-
-        /* Data Grid */
-        .grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-
-        .data-box {
-            background: var(--card-bg);
-            padding: 15px;
-            border-radius: 12px;
-            text-align: center;
-        }
-
-        .data-label {
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            margin-bottom: 5px;
-        }
-
-        .data-value {
-            font-size: 1.1rem;
-            font-weight: 600;
-        }
-
-        /* Loader */
-        .loader {
-            text-align: center;
-            padding: 20px;
-            color: var(--text-secondary);
-        }
-
-        /* Telegram Button Styling */
-        .tg-button {
-            width: 100%;
-            padding: 15px;
-            background: var(--accent);
-            color: white;
-            border: none;
-            border-radius: 12px;
-            font-size: 1rem;
-            font-weight: bold;
-            cursor: pointer;
-            margin-top: 10px;
-        }
-    </style>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
-
-    <div class="header">
-        <div style="font-weight:bold;">ICT Bot Pro</div>
-        <div><span class="status-dot"></span> Live</div>
-    </div>
-
     <div class="container">
-        <!-- Price Section -->
-        <div class="price-card">
-            <div class="pair-title" id="pairDisplay">BTC/USDT</div>
-            <div class="live-price" id="priceDisplay">Loading...</div>
-            <div id="priceChange" style="font-size: 0.9rem; margin-top: 5px;">--</div>
+        <div class="header">
+            <h1>📊 ICT Trading Bot</h1>
+            <p class="subtitle">ICT + Volume Profile | Smart Money Concepts</p>
+            <div id="liveTime" class="live-time"></div>
         </div>
 
-        <!-- Signal Section -->
-        <div class="signal-card" id="signalCard">
-            <div class="signal-type signal-wait" id="signalText">WAITING</div>
-            <div style="display:flex; justify-content:space-between; font-size:0.9rem;">
-                <span>Confidence</span>
-                <span id="confText">0%</span>
-            </div>
-            <div class="confidence-bar">
-                <div class="confidence-fill" id="confBar"></div>
-            </div>
-            <div id="setupDetails" style="margin-top:15px; font-size:0.9rem; color:var(--text-secondary);">
-                Analyzing market structure...
+        <!-- Market Categories -->
+        <div class="section">
+            <h3>🔄 Market</h3>
+            <div class="btn-group">
+                <button class="category-btn active" data-category="crypto">💰 Crypto</button>
+                <button class="category-btn" data-category="forex">💱 Forex</button>
+                <button class="category-btn" data-category="metals">🥇 Metals</button>
             </div>
         </div>
 
-        <!-- Multi-Timeframe Grid -->
-        <div class="grid">
-            <div class="data-box">
-                <div class="data-label">1H Trend</div>
-                <div class="data-value" id="tf1h">--</div>
+        <!-- Trading Pair -->
+        <div class="section">
+            <h3>💱 Trading Pair</h3>
+            <select id="pairSelect" class="input-field">
+                <option value="BTC/USD">₿ BTC/USD</option>
+                <option value="ETH/USD">⟠ ETH/USD</option>
+                <option value="EUR/USD">€ EUR/USD</option>
+                <option value="GBP/USD">£ GBP/USD</option>
+                <option value="XAU/USD">👑 XAU/USD</option>
+            </select>
+        </div>
+
+        <!-- Price Display -->
+        <div class="section">
+            <h3>📈 Live Price</h3>
+            <div class="price-container">
+                <div id="currentPrice" class="current-price">----</div>
+                <div id="priceChange" class="price-change">--</div>
+                <div id="apiSource" class="api-source">--</div>
             </div>
-            <div class="data-box">
-                <div class="data-label">4H Trend</div>
-                <div class="data-value" id="tf4h">--</div>
-            </div>
-            <div class="data-box">
-                <div class="data-label">RSI (14)</div>
-                <div class="data-value" id="rsiVal">--</div>
-            </div>
-            <div class="data-box">
-                <div class="data-label">Vol Profile</div>
-                <div class="data-value" id="volVal">--</div>
+            <div class="timeframe-btns">
+                <button class="tf-btn" data-tf="1H">1H</button>
+                <button class="tf-btn active" data-tf="4H">4H</button>
+                <button class="tf-btn" data-tf="1D">1D</button>
             </div>
         </div>
 
-        <button class="tg-button" onclick="sendDataToTelegram()">Refresh Analysis</button>
+        <!-- Analyze Button -->
+        <button id="analyzeBtn" class="analyze-btn">🔍 Analyze Market</button>
+
+        <!-- Status -->
+        <div class="section status-section">
+            <div class="status-info">
+                <span>📊 API: <strong id="apiUsage">0</strong> calls</span>
+                <span id="connectionStatus" class="connection-status">🟢 Ready</span>
+            </div>
+        </div>
+
+        <!-- TRADING SIGNAL CARD -->
+        <div class="section signal-card">
+            <div class="signal-header">
+                <h2>🎯 TRADING SIGNAL</h2>
+                <div id="signalBadge" class="signal-badge">--</div>
+            </div>
+            
+            <div class="signal-main">
+                <div class="signal-type-box" id="signalTypeBox">
+                    <span id="signalTypeText">--</span>
+                </div>
+                <div class="signal-confidence">
+                    Confidence: <strong id="confidenceText">--</strong>
+                </div>
+            </div>
+
+            <div class="trade-levels">
+                <div class="level-row">
+                    <span class="level-label">🎯 IDEAL ENTRY:</span>
+                    <span class="level-value" id="idealEntryDisplay" style="color: #ff9f0a;">--</span>
+                </div>
+                <div class="level-row">
+                    <span class="level-label">📌 Current Price:</span>
+                    <span class="level-value" id="entryPrice">--</span>
+                </div>
+                <div class="level-row">
+                    <span class="level-label">🎯 TAKE PROFIT:</span>
+                    <span class="level-value" id="takeProfit">--</span>
+                </div>
+                <div class="level-row">
+                    <span class="level-label">🛑 STOP LOSS:</span>
+                    <span class="level-value" id="stopLoss">--</span>
+                </div>
+                <div class="level-row">
+                    <span class="level-label">📊 RISK:REWARD:</span>
+                    <span class="level-value" id="riskReward">--</span>
+                </div>
+            </div>
+
+            <div class="signal-reason">
+                <strong>📋 Analysis:</strong><br>
+                <span id="signalReason">--</span>
+            </div>
+        </div>
+
+        <!-- Volume Profile -->
+        <div class="section">
+            <h3>📊 Volume Profile</h3>
+            <div class="info-grid">
+                <div class="info-item"><label>POC:</label><span id="pocValue">--</span></div>
+                <div class="info-item"><label>Value Area High:</label><span id="valueHigh">--</span></div>
+                <div class="info-item"><label>Value Area Low:</label><span id="valueLow">--</span></div>
+                <div class="info-item"><label>Total Volume:</label><span id="totalVolume">--</span></div>
+            </div>
+        </div>
+
+        <!-- Order Flow -->
+        <div class="section">
+            <h3>📦 Order Flow</h3>
+            <div class="info-grid">
+                <div class="info-item"><label>Buying Pressure:</label><span id="buyingPressure">--</span></div>
+                <div class="info-item"><label>Selling Pressure:</label><span id="sellingPressure">--</span></div>
+                <div class="info-item"><label>Net Delta:</label><span id="netDelta">--</span></div>
+                <div class="info-item"><label>VWAP:</label><span id="vwapValue">--</span></div>
+            </div>
+        </div>
+
+        <!-- ICT Analysis -->
+        <div class="analysis-row">
+            <div class="section quick-card">
+                <h3>⏱️ 4H</h3>
+                <div>Trend: <span id="trend4H" class="trend">--</span></div>
+                <div>RSI: <span id="rsi4H">--</span></div>
+                <div>ATR: <span id="atr4H">--</span></div>
+            </div>
+            <div class="section quick-card">
+                <h3>⏰ 1H</h3>
+                <div>Trend: <span id="trend1H" class="trend">--</span></div>
+                <div>FVG: <span id="fvg1H">--</span></div>
+                <div>OB: <span id="ob1H">--</span></div>
+            </div>
+        </div>
+
+        <!-- Fibonacci Levels -->
+        <div class="section">
+            <h3>📐 Fibonacci</h3>
+            <div class="fib-grid">
+                <div class="fib-item">38.2%: <span id="fib382">--</span></div>
+                <div class="fib-item">50%: <span id="fib500">--</span></div>
+                <div class="fib-item">61.8%: <span id="fib618">--</span></div>
+                <div class="fib-item">78.6%: <span id="fib786">--</span></div>
+            </div>
+        </div>
+
+        <!-- Execute Button -->
+        <button id="executeBtn" class="execute-btn" disabled>⚡ Execute Order</button>
+
+        <div id="notification" class="notification hidden"></div>
     </div>
 
-    <script>
-        const tg = window.Telegram.WebApp;
-        tg.expand();
-        
-        // Theme sync
-        document.documentElement.style.setProperty('--bg-color', tg.themeParams.bg_color || '#0f172a');
-        document.documentElement.style.setProperty('--card-bg', tg.themeParams.secondary_bg_color || '#1e293b');
-        document.documentElement.style.setProperty('--text-primary', tg.themeParams.text_color || '#f8fafc');
-
-        let currentPrice = 0;
-        let prevPrice = 0;
-        const pair = 'BTCUSDT';
-
-        // Connect to Binance WebSocket for LIVE prices
-        const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${pair.toLowerCase()}@trade`);
-
-        ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            const price = parseFloat(data.p).toFixed(2);
-            
-            // Update Price UI
-            const priceEl = document.getElementById('priceDisplay');
-            const changeEl = document.getElementById('priceChange');
-            
-            prevPrice = currentPrice;
-            currentPrice = parseFloat(price);
-            
-            priceEl.innerText = price;
-            
-            // Color logic
-            if (currentPrice > prevPrice) {
-                priceEl.className = 'live-price price-up';
-                changeEl.innerText = '▲ Tick Up';
-                changeEl.style.color = 'var(--success)';
-            } else if (currentPrice < prevPrice) {
-                priceEl.className = 'live-price price-down';
-                changeEl.innerText = '▼ Tick Down';
-                changeEl.style.color = 'var(--danger)';
-            }
-
-            // Simulate Analysis Logic (Simple Demo)
-            runAnalysis(currentPrice);
-        };
-
-        function runAnalysis(price) {
-            // Simple mock logic for demonstration since we don't have backend history in pure frontend
-            // In a real app, you'd fetch candle history here.
-            
-            const rsi = Math.floor(Math.random() * (75 - 25) + 25); // Mock RSI
-            const trend = rsi > 50 ? 'BULLISH' : 'BEARISH';
-            const conf = Math.floor(Math.random() * 40) + 40; // Random 40-80%
-
-            // Update DOM
-            document.getElementById('rsiVal').innerText = rsi;
-            document.getElementById('tf1h').innerText = trend;
-            document.getElementById('tf4h').innerText = trend;
-            document.getElementById('volVal').innerText = 'High';
-
-            const signalCard = document.getElementById('signalCard');
-            const signalText = document.getElementById('signalText');
-            const confBar = document.getElementById('confBar');
-            const confText = document.getElementById('confText');
-
-            if (rsi < 30) {
-                signalText.innerText = "LONG";
-                signalText.className = "signal-type signal-long";
-                signalCard.style.borderLeftColor = "var(--success)";
-                confBar.style.background = "var(--success)";
-            } else if (rsi > 70) {
-                signalText.innerText = "SHORT";
-                signalText.className = "signal-type signal-short";
-                signalCard.style.borderLeftColor = "var(--danger)";
-                confBar.style.background = "var(--danger)";
-            } else {
-                signalText.innerText = "WAIT";
-                signalText.className = "signal-type signal-wait";
-                signalCard.style.borderLeftColor = "var(--text-secondary)";
-                confBar.style.background = "var(--text-secondary)";
-            }
-
-            confBar.style.width = conf + '%';
-            confText.innerText = conf + '%';
-            
-            document.getElementById('setupDetails').innerText = 
-                `Entry: ${price} | SL: ${(price * 0.99).toFixed(2)} | TP: ${(price * 1.02).toFixed(2)}`;
-        }
-
-        function sendDataToTelegram() {
-            tg.sendData(JSON.stringify({
-                action: "refresh",
-                price: currentPrice,
-                timestamp: new Date().toISOString()
-            }));
-            tg.showPopup({
-                title: 'Updated',
-                message: 'Analysis refreshed successfully.',
-                buttons: [{type: 'ok'}]
-            });
-        }
-    </script>
+    <script src="script.js"></script>
 </body>
 </html>
