@@ -2,205 +2,313 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>ICT Pro Trader - Smart Entry</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ICT Trading Bot Pro</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>📊 ICT Pro Trader</h1>
-            <p class="subtitle">ICT + Volume Profile + Order Flow | Smart Entry Zones</p>
-            <div id="liveTime" class="live-time"></div>
-        </div>
-
-        <!-- Market Categories -->
-        <div class="section">
-            <h3>🔄 Market</h3>
-            <div class="btn-group">
-                <button class="category-btn active" data-category="crypto">💰 Crypto</button>
-                <button class="category-btn" data-category="forex">💱 Forex</button>
-                <button class="category-btn" data-category="metals">🥇 Metals</button>
-            </div>
-        </div>
-
-        <!-- Trading Pair -->
-        <div class="section">
-            <h3>💱 Trading Pair</h3>
-            <select id="pairSelect" class="input-field">
-                <option value="BTC/USD">₿ BTC/USD</option>
-                <option value="ETH/USD">⟠ ETH/USD</option>
-                <option value="EUR/USD">€ EUR/USD</option>
-                <option value="GBP/USD">£ GBP/USD</option>
-                <option value="XAU/USD">👑 XAU/USD</option>
-            </select>
-        </div>
-
-        <!-- Current Price -->
-        <div class="section">
-            <h3>📈 Live Price</h3>
-            <div class="price-container">
-                <div id="currentPrice" class="current-price">----</div>
-                <div id="priceChange" class="price-change">--</div>
-                <div id="apiSource" class="api-source">--</div>
-            </div>
-            <div class="timeframe-btns">
-                <button class="tf-btn" data-tf="1H">1H</button>
-                <button class="tf-btn active" data-tf="4H">4H</button>
-                <button class="tf-btn" data-tf="1D">1D</button>
-            </div>
-        </div>
-
-        <!-- Analyze Button -->
-        <button id="analyzeBtn" class="analyze-btn">🔍 Analyze Market</button>
-
-        <!-- API Status -->
-        <div class="section status-section">
-            <div class="status-info">
-                <span>📊 API: <strong id="apiUsage">0</strong> calls</span>
-                <span id="connectionStatus" class="connection-status">🟢 Ready</span>
-            </div>
-        </div>
-
-        <!-- ========== TRADING SIGNAL CARD ========== -->
-        <div class="section signal-card">
-            <div class="signal-header">
-                <h2>🎯 TRADING SIGNAL</h2>
-                <div id="signalBadge" class="signal-badge">--</div>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <div class="logo-icon">🤖</div>
+                <span class="logo-text">ICT Bot Pro</span>
             </div>
             
-            <div class="signal-main">
-                <div class="signal-type-box" id="signalTypeBox">
-                    <span id="signalTypeText">--</span>
-                </div>
-                <div class="signal-confidence">
-                    Confidence: <strong id="confidenceText">--</strong>
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active">
+                    <span class="nav-icon">📊</span>
+                    <span class="nav-text">Dashboard</span>
+                </a>
+                <a href="#" class="nav-item">
+                    <span class="nav-icon">⚙️</span>
+                    <span class="nav-text">Settings</span>
+                </a>
+                <a href="#" class="nav-item">
+                    <span class="nav-icon">📜</span>
+                    <span class="nav-text">History</span>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="connection-status">
+                    <span class="status-dot online"></span>
+                    <span class="status-text">Live Data</span>
                 </div>
             </div>
+        </aside>
 
-            <div class="trade-levels">
-                <div class="level-row">
-                    <span class="level-label">🎯 IDEAL ENTRY (Wait for this price):</span>
-                    <span class="level-value" id="idealEntryDisplay" style="color: #ff9f0a; font-size: 18px;">--</span>
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Top Bar -->
+            <header class="top-bar">
+                <div class="market-selector">
+                    <select id="pairSelect" class="modern-select">
+                        <option value="EURUSD">EUR/USD</option>
+                        <option value="GBPUSD">GBP/USD</option>
+                        <option value="USDJPY">USD/JPY</option>
+                        <option value="XAUUSD">Gold (XAU/USD)</option>
+                        <option value="BTCUSD">Bitcoin</option>
+                    </select>
                 </div>
-                <div class="level-row">
-                    <span class="level-label">📌 Current Price:</span>
-                    <span class="level-value" id="entryPrice">--</span>
+                
+                <div class="timeframe-toggles">
+                    <button class="tf-btn" data-tf="1H">1H</button>
+                    <button class="tf-btn active" data-tf="4H">4H</button>
+                    <button class="tf-btn" data-tf="1D">1D</button>
                 </div>
-                <div class="level-row">
-                    <span class="level-label">🎯 TAKE PROFIT:</span>
-                    <span class="level-value" id="takeProfit">--</span>
-                </div>
-                <div class="level-row">
-                    <span class="level-label">🛑 STOP LOSS:</span>
-                    <span class="level-value" id="stopLoss">--</span>
-                </div>
-                <div class="level-row">
-                    <span class="level-label">📊 RISK:REWARD:</span>
-                    <span class="level-value" id="riskReward">--</span>
-                </div>
-            </div>
 
-            <div class="signal-reason">
-                <strong>📋 Analysis Summary:</strong><br>
-                <span id="signalReason">--</span>
-            </div>
-        </div>
+                <button id="refreshBtn" class="icon-btn">
+                    <span class="refresh-icon">🔄</span>
+                </button>
+            </header>
 
-        <!-- ========== ENTRY ZONE CARD ========== -->
-        <div class="section entry-card">
-            <h3>📍 SMART ENTRY ZONE (Based on ICT + Volume Profile)</h3>
-            <div class="entry-zone-simple">
-                <div class="zone-price" id="idealEntryZone">--</div>
-                <div class="zone-instruction" id="entryInstruction">--</div>
-                <div class="progress-container">
-                    <div class="progress-label">Current price vs ideal entry:</div>
-                    <div class="progress-bar-bg">
-                        <div id="zoneProgress" class="progress-fill" style="width: 0%"></div>
+            <!-- Dashboard Grid -->
+            <div class="dashboard-grid">
+                <!-- Live Market Data -->
+                <div class="card market-card">
+                    <div class="card-header">
+                        <h3>Live Market Data</h3>
+                        <span class="badge live">LIVE</span>
                     </div>
-                    <div id="distanceText" class="distance-text">--</div>
+                    <div class="card-body">
+                        <div class="price-display">
+                            <span id="currentPrice" class="price-value">Loading...</span>
+                            <span id="priceChange" class="price-change">--%</span>
+                        </div>
+                        <div class="market-stats">
+                            <div class="stat-item">
+                                <span class="stat-label">24h High</span>
+                                <span id="high24" class="stat-value">--</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">24h Low</span>
+                                <span id="low24" class="stat-value">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trading Signal -->
+                <div class="card signal-card">
+                    <div class="card-header">
+                        <h3>Trading Signal</h3>
+                        <span id="signalBadge" class="badge neutral">WAIT</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="signal-display">
+                            <div id="signalIcon" class="signal-icon">⏳</div>
+                            <div id="signalText" class="signal-text">Analyzing...</div>
+                        </div>
+                        <div class="confidence-meter">
+                            <div class="meter-label">Confidence</div>
+                            <div class="meter-track">
+                                <div id="confidenceBar" class="meter-fill" style="width: 0%"></div>
+                            </div>
+                            <div id="confidenceValue" class="meter-value">0%</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Smart Entry Zone -->
+                <div class="card entry-card">
+                    <div class="card-header">
+                        <h3>Smart Entry Zone</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="entry-zone">
+                            <div class="zone-item">
+                                <span class="zone-label">FVG Start</span>
+                                <span id="fvgStart" class="zone-value">--</span>
+                            </div>
+                            <div class="zone-item">
+                                <span class="zone-label">FVG End</span>
+                                <span id="fvgEnd" class="zone-value">--</span>
+                            </div>
+                            <div class="zone-item highlight">
+                                <span class="zone-label">Optimal Entry</span>
+                                <span id="optimalEntry" class="zone-value">--</span>
+                            </div>
+                        </div>
+                        <div class="progress-tracker">
+                            <div class="tracker-label">Distance to Entry</div>
+                            <div class="tracker-bar">
+                                <div id="distanceBar" class="tracker-fill" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trade Setup -->
+                <div class="card setup-card">
+                    <div class="card-header">
+                        <h3>Trade Setup</h3>
+                    </div>
+                    <div class="card-body">
+                        <table class="setup-table">
+                            <tr>
+                                <td class="label">Entry Price</td>
+                                <td id="setupEntry" class="value">--</td>
+                            </tr>
+                            <tr>
+                                <td class="label">Stop Loss</td>
+                                <td id="setupSL" class="value loss">--</td>
+                            </tr>
+                            <tr>
+                                <td class="label">Take Profit 1</td>
+                                <td id="setupTP1" class="value profit">--</td>
+                            </tr>
+                            <tr>
+                                <td class="label">Take Profit 2</td>
+                                <td id="setupTP2" class="value profit">--</td>
+                            </tr>
+                            <tr>
+                                <td class="label">Risk:Reward</td>
+                                <td id="setupRR" class="value">--</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Volume Profile -->
+                <div class="card volume-card">
+                    <div class="card-header">
+                        <h3>Volume Profile</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="volume-bars">
+                            <div class="vol-row">
+                                <span class="vol-label">High</span>
+                                <div class="vol-bar-bg"><div class="vol-bar" style="width: 80%"></div></div>
+                            </div>
+                            <div class="vol-row">
+                                <span class="vol-label">POC</span>
+                                <div class="vol-bar-bg"><div class="vol-bar poc" style="width: 100%"></div></div>
+                            </div>
+                            <div class="vol-row">
+                                <span class="vol-label">Low</span>
+                                <div class="vol-bar-bg"><div class="vol-bar" style="width: 60%"></div></div>
+                            </div>
+                        </div>
+                        <div class="poc-display">
+                            <span>POC: <span id="pocValue" class="highlight">--</span></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Order Flow -->
+                <div class="card flow-card">
+                    <div class="card-header">
+                        <h3>Order Flow</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="flow-indicator">
+                            <div class="flow-bar">
+                                <div id="buyPressure" class="pressure buy" style="height: 50%"></div>
+                                <div id="sellPressure" class="pressure sell" style="height: 50%"></div>
+                            </div>
+                            <div class="flow-stats">
+                                <span class="buy-stat">Buy: <span id="buyVol">50%</span></span>
+                                <span class="sell-stat">Sell: <span id="sellVol">50%</span></span>
+                            </div>
+                        </div>
+                        <div class="vwap-display">
+                            <span>VWAP: <span id="vwapValue" class="highlight">--</span></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Multi-Timeframe -->
+                <div class="card mtf-card full-width">
+                    <div class="card-header">
+                        <h3>Multi-Timeframe Analysis</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="mtf-grid">
+                            <div class="mtf-item">
+                                <div class="mtf-label">4H Trend</div>
+                                <div id="tf4h" class="mtf-value neutral">Neutral</div>
+                                <div id="tf4h_rsi" class="mtf-sub">RSI: --</div>
+                            </div>
+                            <div class="mtf-item">
+                                <div class="mtf-label">1H Trend</div>
+                                <div id="tf1h" class="mtf-value neutral">Neutral</div>
+                                <div id="tf1h_rsi" class="mtf-sub">RSI: --</div>
+                            </div>
+                            <div class="mtf-item">
+                                <div class="mtf-label">Daily Trend</div>
+                                <div id="tf1d" class="mtf-value neutral">Neutral</div>
+                                <div id="tf1d_rsi" class="mtf-sub">RSI: --</div>
+                            </div>
+                            <div class="mtf-item highlight">
+                                <div class="mtf-label">Alignment</div>
+                                <div id="tfAlign" class="mtf-value">Checking...</div>
+                                <div class="mtf-sub">Confluence Score</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ICT Concepts -->
+                <div class="card ict-card">
+                    <div class="card-header">
+                        <h3>ICT Concepts</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="ict-list">
+                            <div class="ict-item">
+                                <span class="ict-icon">🕳️</span>
+                                <span class="ict-label">FVG Detected</span>
+                                <span id="ictFvg" class="ict-status">No</span>
+                            </div>
+                            <div class="ict-item">
+                                <span class="ict-icon">🧱</span>
+                                <span class="ict-label">Order Block</span>
+                                <span id="ictOb" class="ict-status">None</span>
+                            </div>
+                            <div class="ict-item">
+                                <span class="ict-icon">💧</span>
+                                <span class="ict-label">Liquidity Sweep</span>
+                                <span id="ictLiq" class="ict-status">No</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Fibonacci -->
+                <div class="card fib-card">
+                    <div class="card-header">
+                        <h3>Fibonacci Levels</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="fib-levels">
+                            <div class="fib-row">
+                                <span class="fib-label">0.618 (Golden)</span>
+                                <span id="fib618" class="fib-value">--</span>
+                            </div>
+                            <div class="fib-row">
+                                <span class="fib-label">0.500</span>
+                                <span id="fib500" class="fib-value">--</span>
+                            </div>
+                            <div class="fib-row">
+                                <span class="fib-label">0.382</span>
+                                <span id="fib382" class="fib-value">--</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
+        </main>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="notification" class="toast hidden">
+        <div class="toast-content">
+            <span id="toastIcon" class="toast-icon">ℹ️</span>
+            <span id="toastMessage" class="toast-message">Notification</span>
         </div>
-
-        <!-- ========== VOLUME PROFILE ========== -->
-        <div class="section">
-            <h3>📊 Volume Profile</h3>
-            <div class="info-grid">
-                <div class="info-item"><label>POC (Point of Control):</label><span id="pocValue">--</span></div>
-                <div class="info-item"><label>Value Area High (Resistance):</label><span id="valueHigh">--</span></div>
-                <div class="info-item"><label>Value Area Low (Support):</label><span id="valueLow">--</span></div>
-                <div class="info-item"><label>Total Volume:</label><span id="totalVolume">--</span></div>
-            </div>
-        </div>
-
-        <!-- ========== ORDER FLOW ========== -->
-        <div class="section">
-            <h3>📦 Order Flow</h3>
-            <div class="info-grid">
-                <div class="info-item"><label>Buying Pressure:</label><span id="buyingPressure">--</span></div>
-                <div class="info-item"><label>Selling Pressure:</label><span id="sellingPressure">--</span></div>
-                <div class="info-item"><label>Net Delta:</label><span id="netDelta">--</span></div>
-                <div class="info-item"><label>VWAP:</label><span id="vwapValue">--</span></div>
-            </div>
-        </div>
-
-        <!-- ========== ICT ANALYSIS ========== -->
-        <div class="analysis-row">
-            <div class="section quick-card">
-                <h3>⏱️ 4H ICT</h3>
-                <div>Trend: <span id="trend4H" class="trend">--</span></div>
-                <div>Strength: <span id="strength4H">--</span></div>
-                <div>FVG: <span id="fvg4H">--</span></div>
-                <div>Order Blocks: <span id="ob4H">--</span></div>
-                <div>Structure: <span id="ms4H">--</span></div>
-            </div>
-            <div class="section quick-card">
-                <h3>⏰ 1H ICT</h3>
-                <div>Trend: <span id="trend1H" class="trend">--</span></div>
-                <div>RSI: <span id="rsi1H">--</span></div>
-                <div>Divergence: <span id="divergence1H">--</span></div>
-                <div>Absorption: <span id="absorption1H">--</span></div>
-                <div>CHoCH: <span id="choch1H">--</span></div>
-            </div>
-        </div>
-
-        <!-- ========== FIBONACCI ========== -->
-        <div class="section">
-            <h3>📐 Fibonacci Levels</h3>
-            <div class="fib-grid">
-                <div class="fib-item">38.2%: <span id="fib382">--</span></div>
-                <div class="fib-item">50%: <span id="fib500">--</span></div>
-                <div class="fib-item">61.8%: <span id="fib618">--</span></div>
-                <div class="fib-item">78.6%: <span id="fib786">--</span></div>
-            </div>
-        </div>
-
-        <!-- ========== LIQUIDITY ========== -->
-        <div class="zone-grid">
-            <div class="zone-box">
-                <label>💧 Buy Side Liquidity</label>
-                <span id="buySideLiq">--</span>
-            </div>
-            <div class="zone-box">
-                <label>💧 Sell Side Liquidity</label>
-                <span id="sellSideLiq">--</span>
-            </div>
-            <div class="zone-box">
-                <label>⚡ BOS Level</label>
-                <span id="bosLevel">--</span>
-            </div>
-            <div class="zone-box">
-                <label>🔄 CHoCH Level</label>
-                <span id="chochLevel">--</span>
-            </div>
-        </div>
-
-        <!-- Execute Button -->
-        <button id="executeBtn" class="execute-btn" disabled>⚡ Execute Order</button>
-
-        <div id="notification" class="notification hidden"></div>
     </div>
 
     <script src="script.js"></script>
