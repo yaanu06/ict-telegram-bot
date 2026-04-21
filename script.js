@@ -11,7 +11,7 @@ if (tg) {
 const TWELVE_DATA_KEY = '3076652d6e1c45a3b4e0a6acfe0408aa'; // Your API key
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 
-// Symbol mapping for Twelve Data (they use different formats)
+// Symbol mapping for Twelve Data
 const TWELVE_DATA_SYMBOLS = {
     // Crypto
     'BTC/USD': 'BTC/USD',
@@ -178,8 +178,23 @@ function getPairDisplayName(pair) {
     return `${icon} ${pair}`;
 }
 
+// Helper function to detect pair type
+function isForexPair(pair) {
+    return ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'].includes(pair);
+}
+
+function isJPYPair(pair) {
+    return pair.includes('JPY');
+}
+
+function getPricePrecision(pair) {
+    if (isJPYPair(pair)) return 3;
+    if (isForexPair(pair)) return 5;
+    return 2;
+}
+
 // ============================================
-// TWELVE DATA API FUNCTIONS (PRIMARY)
+// TWELVE DATA API FUNCTIONS
 // ============================================
 
 async function getPrice() {
@@ -201,7 +216,6 @@ async function getPrice() {
             return parseFloat(data.price);
         }
         
-        // Check for API limit error
         if (data.code === 429) {
             console.error('Twelve Data rate limit reached');
             document.getElementById('apiSource').innerHTML = '⚠️ API Limit';
@@ -263,7 +277,7 @@ function updateApiCounter() {
 }
 
 // ============================================
-// ALL TECHNICAL ANALYSIS FUNCTIONS
+// TECHNICAL ANALYSIS FUNCTIONS
 // ============================================
 
 function calculateEMA(prices, period) {
@@ -300,6 +314,10 @@ function calculateATR(data, period = 14) {
     }
     return trueRanges.slice(-period).reduce((a,b) => a+b, 0) / period;
 }
+
+// ============================================
+// ICT CONCEPTS DETECTION
+// ============================================
 
 function detectFairValueGaps(data) {
     const fvgs = [];
@@ -640,6 +658,9 @@ async function runAnalysis() {
             fib100: recentHigh
         };
         
+        // ============================================
+        // FIXED: Signal generation with proper precision
+        // ============================================
         let idealEntry = currentPrice;
         let stopLoss = 0;
         let takeProfit1 = 0, takeProfit2 = 0, takeProfit3 = 0;
@@ -715,11 +736,12 @@ async function runAnalysis() {
 }
 
 // ============================================
-// UI UPDATE FUNCTIONS
+// UI UPDATE FUNCTIONS (FIXED PRECISION)
 // ============================================
 
 function updatePriceDisplay(currentPrice) {
-    document.getElementById('currentPrice').innerHTML = `$${currentPrice.toFixed(2)}`;
+    const precision = getPricePrecision(currentPair);
+    document.getElementById('currentPrice').innerHTML = `$${currentPrice.toFixed(precision)}`;
     
     if (lastPrice) {
         const change = ((currentPrice - lastPrice) / lastPrice * 100).toFixed(2);
@@ -731,15 +753,17 @@ function updatePriceDisplay(currentPrice) {
 }
 
 function updateSignalDisplay(type, confidence, entry, current, sl, tp1, tp2, tp3, rr) {
+    const precision = getPricePrecision(currentPair);
+    
     document.getElementById('signalTypeText').innerHTML = type;
     document.getElementById('signalTypeBox').className = `signal-type-box ${type.toLowerCase()}`;
     document.getElementById('confidenceText').innerHTML = `${confidence}%`;
-    document.getElementById('idealEntryDisplay').innerHTML = `$${entry.toFixed(2)}`;
-    document.getElementById('entryPrice').innerHTML = `$${current.toFixed(2)}`;
-    document.getElementById('stopLoss').innerHTML = `$${sl.toFixed(2)}`;
-    document.getElementById('takeProfit1').innerHTML = `$${tp1.toFixed(2)}`;
-    document.getElementById('takeProfit2').innerHTML = `$${tp2.toFixed(2)}`;
-    document.getElementById('takeProfit3').innerHTML = `$${tp3.toFixed(2)}`;
+    document.getElementById('idealEntryDisplay').innerHTML = `$${entry.toFixed(precision)}`;
+    document.getElementById('entryPrice').innerHTML = `$${current.toFixed(precision)}`;
+    document.getElementById('stopLoss').innerHTML = `$${sl.toFixed(precision)}`;
+    document.getElementById('takeProfit1').innerHTML = `$${tp1.toFixed(precision)}`;
+    document.getElementById('takeProfit2').innerHTML = `$${tp2.toFixed(precision)}`;
+    document.getElementById('takeProfit3').innerHTML = `$${tp3.toFixed(precision)}`;
     document.getElementById('riskReward').innerHTML = rr;
     
     const badge = document.getElementById('signalBadge');
@@ -760,18 +784,20 @@ function updateSignalDisplay(type, confidence, entry, current, sl, tp1, tp2, tp3
 
 function updateVolumeProfileDisplay(vp) {
     if (!vp) return;
-    document.getElementById('pocValue').innerHTML = `$${vp.poc?.price.toFixed(2) || '--'}`;
-    document.getElementById('valueHigh').innerHTML = `$${vp.valueAreaHigh?.toFixed(2) || '--'}`;
-    document.getElementById('valueLow').innerHTML = `$${vp.valueAreaLow?.toFixed(2) || '--'}`;
+    const precision = getPricePrecision(currentPair);
+    document.getElementById('pocValue').innerHTML = `$${vp.poc?.price.toFixed(precision) || '--'}`;
+    document.getElementById('valueHigh').innerHTML = `$${vp.valueAreaHigh?.toFixed(precision) || '--'}`;
+    document.getElementById('valueLow').innerHTML = `$${vp.valueAreaLow?.toFixed(precision) || '--'}`;
     document.getElementById('totalVolume').innerHTML = `${(vp.totalVolume / 1000000).toFixed(1)}M`;
 }
 
 function updateOrderFlowDisplay(of) {
     if (!of) return;
+    const precision = getPricePrecision(currentPair);
     document.getElementById('buyingPressure').innerHTML = `${(of.buyingPressure / 1000000).toFixed(1)}M`;
     document.getElementById('sellingPressure').innerHTML = `${(of.sellingPressure / 1000000).toFixed(1)}M`;
     document.getElementById('netDelta').innerHTML = `${(of.netDelta / 1000000).toFixed(1)}M`;
-    document.getElementById('vwapValue').innerHTML = `$${of.vwap.toFixed(2)}`;
+    document.getElementById('vwapValue').innerHTML = `$${of.vwap.toFixed(precision)}`;
 }
 
 function updateICTDisplay(fvgs, obs, liquidity, structure) {
@@ -782,13 +808,14 @@ function updateICTDisplay(fvgs, obs, liquidity, structure) {
 }
 
 function updateFibDisplay(levels) {
-    document.getElementById('fib0').innerHTML = `$${levels.fib0.toFixed(2)}`;
-    document.getElementById('fib236').innerHTML = `$${levels.fib236.toFixed(2)}`;
-    document.getElementById('fib382').innerHTML = `$${levels.fib382.toFixed(2)}`;
-    document.getElementById('fib500').innerHTML = `$${levels.fib500.toFixed(2)}`;
-    document.getElementById('fib618').innerHTML = `$${levels.fib618.toFixed(2)}`;
-    document.getElementById('fib786').innerHTML = `$${levels.fib786.toFixed(2)}`;
-    document.getElementById('fib100').innerHTML = `$${levels.fib100.toFixed(2)}`;
+    const precision = getPricePrecision(currentPair);
+    document.getElementById('fib0').innerHTML = `$${levels.fib0.toFixed(precision)}`;
+    document.getElementById('fib236').innerHTML = `$${levels.fib236.toFixed(precision)}`;
+    document.getElementById('fib382').innerHTML = `$${levels.fib382.toFixed(precision)}`;
+    document.getElementById('fib500').innerHTML = `$${levels.fib500.toFixed(precision)}`;
+    document.getElementById('fib618').innerHTML = `$${levels.fib618.toFixed(precision)}`;
+    document.getElementById('fib786').innerHTML = `$${levels.fib786.toFixed(precision)}`;
+    document.getElementById('fib100').innerHTML = `$${levels.fib100.toFixed(precision)}`;
 }
 
 function calculatePositionSize() {
