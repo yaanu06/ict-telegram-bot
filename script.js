@@ -316,7 +316,259 @@ function calculateATR(data, period = 14) {
 }
 
 // ============================================
-// ICT CONCEPTS DETECTION
+// SWING POINT DETECTION (Helper for multiple features)
+// ============================================
+
+function findSwingPoints(values, lookback = 3) {
+    const highs = [];
+    const lows = [];
+    
+    for (let i = lookback; i < values.length - lookback; i++) {
+        let isHigh = true;
+        let isLow = true;
+        
+        for (let j = 1; j <= lookback; j++) {
+            if (values[i] <= values[i - j] || values[i] <= values[i + j]) isHigh = false;
+            if (values[i] >= values[i - j] || values[i] >= values[i + j]) isLow = false;
+        }
+        
+        if (isHigh) highs.push({ index: i, value: values[i] });
+        if (isLow) lows.push({ index: i, value: values[i] });
+    }
+    
+    return { highs, lows };
+}
+
+// ============================================
+// FEATURE #3: LIQUIDITY SWEEP DETECTION (Stop Hunt)
+// ============================================
+
+function detectLiquiditySweep(data) {
+    const highs = data.map(c => c.high);
+    const lows = data.map(c => c.low);
+    const closes = data.map(c => c.close);
+    
+    const sweeps = [];
+    
+    // Find equal highs/lows (liquidity pools)
+    for (let i = 10; i < data.length - 3; i++) {
+        // Check for equal highs (Buy-side liquidity)
+        const recentHighs = highs.slice(i-5, i);
+        const maxHigh = Math.max(...recentHighs);
+        const highCount = recentHighs.filter(h => Math.abs(h - maxHigh) / maxHigh < 0.001).length;
+        
+        if (highCount >= 2) {
+            const nextCandles = data.slice(i, i+4);
+            const sweptAbove = nextCandles.some(c => c.high > maxHigh * 1.001);
+            const closedBelow = closes[i+3] < maxHigh;
+            
+            if (sweptAbove && closedBelow) {
+                sweeps.push({
+                    type: 'buy_side',
+                    level: maxHigh,
+                    message: '🔼 Buy-side liquidity swept - Potential SHORT',
+                    confidence: 65
+                });
+            }
+        }
+        
+        // Check for equal lows (Sell-side liquidity)
+        const recentLows = lows.slice(i-5, i);
+        const minLow = Math.min(...recentLows);
+        const lowCount = recentLows.filter(l => Math.abs(l - minLow) / minLow < 0.001).length;
+        
+        if (lowCount >= 2) {
+            const nextCandles = data.slice(i, i+4);
+            const sweptBelow = nextCandles.some(c => c.low < minLow * 0.999);
+            const closedAbove = closes[i+3] > minLow;
+            
+            if (sweptBelow && closedAbove) {
+                sweeps.push({
+                    type: 'sell_side',
+                    level: minLow,
+                    message: '🔽 Sell-side liquidity swept - Potential LONG',
+                    confidence: 65
+                });
+            }
+        }
+    }
+    
+    // Return most recent sweep if any
+    return sweeps.length > 0 ? sweeps[sweeps.length - 1] : null;
+}
+
+// ============================================
+// FEATURE #4: OPTIMAL TRADE ENTRY (OTE) LEVELS
+// ============================================
+
+function findOTELevels(data, trend) {
+    const closes = data.map(c => c.close);
+    const swings = findSwingPoints(closes, 3);
+    
+    if (trend === 'bullish') {
+        // Find recent swing low to swing high
+        const recentLow = swings.lows[swings.lows.length - 1];
+        const recentHigh = swings.highs[swings.highs.length - 1];
+        
+        if (recentLow && recentHigh && recentLow.index < recentHigh.index) {
+            const range = recentHigh.value - recentLow.value;
+            const oteLow = recentHigh.value - (range * 0.79);  // 79% retracement
+            const oteHigh = recentHigh.value - (range * 0.618); // 61.8% retracement
+            const optimalEntry = (oteLow + oteHigh) / 2;
+            
+            return {
+                zoneLow: oteLow,
+                zoneHigh: oteHigh,
+                optimalEntry: optimalEntry,
+                swingLow: recentLow.value,
+                swingHigh: recentHigh.value,
+                description: '🎯 OTE Long Zone (61.8% - 79% retracement)',
+                inZone: function(price) {
+                    return price >= oteLow && price <= oteHigh;
+                }
+            };
+        }
+    } else if (trend === 'bearish') {
+        const recentHigh = swings.highs[swings.highs.length - 1];
+        const recentLow = swings.lows[swings.lows.length - 1];
+        
+        if (recentHigh && recentLow && recentHigh.index < recentLow.index) {
+            const range = recentHigh.value - recentLow.value;
+            const oteLow = recentLow.value + (range * 0.618);
+            const oteHigh = recentLow.value + (range * 0.79);
+            const optimalEntry = (oteLow + oteHigh) / 2;
+            
+            return {
+                zoneLow: oteLow,
+                zoneHigh: oteHigh,
+                optimalEntry: optimalEntry,
+                swingHigh: recentHigh.value,
+                swingLow: recentLow.value,
+                description: '🎯 OTE Short Zone (61.8% - 79% retracement)',
+                inZone: function(price) {
+                    return price >= oteLow && price <= oteHigh;
+                }
+            };
+        }
+    }
+    
+    return null;
+}
+
+// ============================================
+// FEATURE #5: SESSION RANGE & INITIAL BALANCE
+// ============================================
+
+function getAsianSessionData(data) {
+    // Filter data for Asian session hours (00:00 - 08:00 UTC)
+    return data.filter(c => {
+        const hour = new Date(c.time).getUTCHours();
+        return hour >= 0 && hour < 8;
+    });
+}
+
+function calculateSessionLevels(data) {
+    const asianSessionData = getAsianSessionData(data);
+    
+    if (!asianSessionData || asianSessionData.length === 0) return null;
+    
+    const asianHigh = Math.max(...asianSessionData.map(c => c.high));
+    const asianLow = Math.min(...asianSessionData.map(c => c.low));
+    const asianRange = asianHigh - asianLow;
+    const asianMid = (asianHigh + asianLow) / 2;
+    
+    // London session (08:00 - 16:00 UTC)
+    const londonData = data.filter(c => {
+        const hour = new Date(c.time).getUTCHours();
+        return hour >= 8 && hour < 16;
+    });
+    
+    const londonHigh = londonData.length > 0 ? Math.max(...londonData.map(c => c.high)) : null;
+    const londonLow = londonData.length > 0 ? Math.min(...londonData.map(c => c.low)) : null;
+    
+    // Current session
+    const now = new Date();
+    const currentHour = now.getUTCHours();
+    let currentSession = 'Asian';
+    if (currentHour >= 8 && currentHour < 16) currentSession = 'London';
+    else if (currentHour >= 13 && currentHour < 21) currentSession = 'New York';
+    
+    return {
+        asian: {
+            high: asianHigh,
+            low: asianLow,
+            mid: asianMid,
+            range: asianRange
+        },
+        london: {
+            high: londonHigh,
+            low: londonLow
+        },
+        currentSession: currentSession,
+        breakoutLevels: {
+            long: asianHigh + (asianRange * 0.5),
+            short: asianLow - (asianRange * 0.5)
+        },
+        description: `🌏 Asian Range: ${asianHigh.toFixed(getPricePrecision(currentPair))} - ${asianLow.toFixed(getPricePrecision(currentPair))}`
+    };
+}
+
+// ============================================
+// FEATURE #6: TURTLE SOUP PATTERN DETECTION
+// ============================================
+
+function detectTurtleSoup(data) {
+    const recentData = data.slice(-15);
+    const highs = recentData.map(c => c.high);
+    const lows = recentData.map(c => c.low);
+    const closes = recentData.map(c => c.close);
+    const opens = recentData.map(c => c.open);
+    
+    const patterns = [];
+    
+    // Turtle Soup Buy: False breakout below a key low
+    const keyLow = Math.min(...lows.slice(0, -4));
+    const recentLow = lows[lows.length - 4];
+    const currentClose = closes[closes.length - 1];
+    const currentOpen = opens[opens.length - 1];
+    
+    if (recentLow < keyLow * 0.999 && currentClose > keyLow) {
+        const bullishCandle = currentClose > currentOpen;
+        const confidenceBonus = bullishCandle ? 10 : 0;
+        
+        patterns.push({
+            type: 'bullish',
+            name: '🐢 Turtle Soup Buy',
+            confidence: 70 + confidenceBonus,
+            message: 'False breakdown below key low - Aggressive LONG entry',
+            keyLevel: keyLow,
+            sweptLevel: recentLow
+        });
+    }
+    
+    // Turtle Soup Sell: False breakout above a key high
+    const keyHigh = Math.max(...highs.slice(0, -4));
+    const recentHigh = highs[highs.length - 4];
+    
+    if (recentHigh > keyHigh * 1.001 && currentClose < keyHigh) {
+        const bearishCandle = currentClose < currentOpen;
+        const confidenceBonus = bearishCandle ? 10 : 0;
+        
+        patterns.push({
+            type: 'bearish',
+            name: '🐢 Turtle Soup Sell',
+            confidence: 70 + confidenceBonus,
+            message: 'False breakout above key high - Aggressive SHORT entry',
+            keyLevel: keyHigh,
+            sweptLevel: recentHigh
+        });
+    }
+    
+    return patterns.length > 0 ? patterns[0] : null;
+}
+
+// ============================================
+// ICT CONCEPTS DETECTION (Original Functions)
 // ============================================
 
 function detectFairValueGaps(data) {
@@ -587,14 +839,14 @@ function updateChartAnnotations() {
 }
 
 // ============================================
-// MAIN ANALYSIS FUNCTION
+// MAIN ANALYSIS FUNCTION (UPDATED WITH NEW FEATURES)
 // ============================================
 
 async function runAnalysis() {
     const analyzeBtn = document.getElementById('analyzeBtn');
     analyzeBtn.classList.add('loading');
     analyzeBtn.disabled = true;
-    showNotification('Analyzing market with Twelve Data...', 'info');
+    showNotification('Analyzing market with ICT concepts...', 'info');
 
     try {
         const currentPrice = await getPrice();
@@ -624,6 +876,19 @@ async function runAnalysis() {
         const volumeProfile = calculateVolumeProfile(historicalData);
         const orderFlow = calculateOrderFlow(historicalData);
         
+        // ============================================
+        // NEW FEATURES INTEGRATION
+        // ============================================
+        
+        // Feature #3: Liquidity Sweep Detection
+        const liquiditySweep = detectLiquiditySweep(historicalData);
+        
+        // Feature #5: Session Range
+        const sessionLevels = calculateSessionLevels(historicalData);
+        
+        // Feature #6: Turtle Soup Pattern
+        const turtleSoup = detectTurtleSoup(historicalData);
+        
         const currentEMA20 = ema20[ema20.length - 1];
         const currentEMA50 = ema50[ema50.length - 1];
         const prevEMA20 = ema20[ema20.length - 2];
@@ -639,10 +904,25 @@ async function runAnalysis() {
             strength = rsi < 45 ? 'Strong' : 'Medium';
         }
         
+        // Override with Turtle Soup if detected (high confidence pattern)
+        if (turtleSoup) {
+            trend = turtleSoup.type;
+            strength = 'Strong (Turtle Soup)';
+        }
+        
+        // Override with Liquidity Sweep
+        if (liquiditySweep) {
+            if (liquiditySweep.type === 'sell_side') trend = 'bullish';
+            if (liquiditySweep.type === 'buy_side') trend = 'bearish';
+        }
+        
         if (mtfResults.confluenceScore > 75) {
             trend = mtfResults.direction.toLowerCase();
             strength = 'Strong (MTF Confluence)';
         }
+        
+        // Feature #4: OTE Levels
+        const oteLevels = findOTELevels(historicalData, trend);
         
         const recentHigh = Math.max(...highs.slice(-20));
         const recentLow = Math.min(...lows.slice(-20));
@@ -658,19 +938,23 @@ async function runAnalysis() {
             fib100: recentHigh
         };
         
-        // ============================================
-        // FIXED: Signal generation with proper precision
-        // ============================================
         let idealEntry = currentPrice;
         let stopLoss = 0;
         let takeProfit1 = 0, takeProfit2 = 0, takeProfit3 = 0;
         let signalType = 'NEUTRAL';
         let confidence = 40;
         
+        // Use OTE levels for entry if available
+        if (oteLevels) {
+            idealEntry = oteLevels.optimalEntry;
+        }
+        
         if (trend === 'bullish') {
             signalType = 'LONG';
-            idealEntry = Math.max(fibLevels.fib618, volumeProfile?.valueAreaLow || recentLow);
-            if (idealEntry >= currentPrice) idealEntry = currentPrice - (atr * 0.5);
+            if (!oteLevels) {
+                idealEntry = Math.max(fibLevels.fib618, volumeProfile?.valueAreaLow || recentLow);
+                if (idealEntry >= currentPrice) idealEntry = currentPrice - (atr * 0.5);
+            }
             stopLoss = idealEntry - (atr * 1.2);
             
             const risk = idealEntry - stopLoss;
@@ -679,12 +963,26 @@ async function runAnalysis() {
             takeProfit3 = idealEntry + (risk * 4);
             
             confidence = 55 + (rsi > 50 ? 10 : 0) + (orderFlow?.netDelta > 0 ? 10 : 0);
+            
+            // Add Turtle Soup confidence
+            if (turtleSoup && turtleSoup.type === 'bullish') {
+                confidence += turtleSoup.confidence - 55;
+            }
+            
+            // Add Liquidity Sweep confidence
+            if (liquiditySweep && liquiditySweep.type === 'sell_side') {
+                confidence += liquiditySweep.confidence - 55;
+            }
+            
             confidence += mtfResults.confluenceScore > 70 ? 15 : 0;
             confidence = Math.min(confidence, 95);
+            
         } else if (trend === 'bearish') {
             signalType = 'SHORT';
-            idealEntry = Math.min(fibLevels.fib382, volumeProfile?.valueAreaHigh || recentHigh);
-            if (idealEntry <= currentPrice) idealEntry = currentPrice + (atr * 0.5);
+            if (!oteLevels) {
+                idealEntry = Math.min(fibLevels.fib382, volumeProfile?.valueAreaHigh || recentHigh);
+                if (idealEntry <= currentPrice) idealEntry = currentPrice + (atr * 0.5);
+            }
             stopLoss = idealEntry + (atr * 1.2);
             
             const risk = stopLoss - idealEntry;
@@ -693,6 +991,17 @@ async function runAnalysis() {
             takeProfit3 = idealEntry - (risk * 4);
             
             confidence = 55 + (rsi < 50 ? 10 : 0) + (orderFlow?.netDelta < 0 ? 10 : 0);
+            
+            // Add Turtle Soup confidence
+            if (turtleSoup && turtleSoup.type === 'bearish') {
+                confidence += turtleSoup.confidence - 55;
+            }
+            
+            // Add Liquidity Sweep confidence
+            if (liquiditySweep && liquiditySweep.type === 'buy_side') {
+                confidence += liquiditySweep.confidence - 55;
+            }
+            
             confidence += mtfResults.confluenceScore > 70 ? 15 : 0;
             confidence = Math.min(confidence, 95);
         }
@@ -704,6 +1013,22 @@ async function runAnalysis() {
             if (risk > 0) riskReward = (reward / risk).toFixed(1);
         }
         
+        // Build comprehensive analysis reason
+        let analysisReason = '';
+        if (turtleSoup) {
+            analysisReason = `🐢 ${turtleSoup.message}. `;
+        } else if (liquiditySweep) {
+            analysisReason = `${liquiditySweep.message}. `;
+        } else if (oteLevels) {
+            analysisReason = `${oteLevels.description}. `;
+        } else {
+            analysisReason = `Analysis based on ICT concepts, volume profile, and multi-timeframe confluence. `;
+        }
+        
+        if (sessionLevels) {
+            analysisReason += `${sessionLevels.description}. Current: ${sessionLevels.currentSession} session.`;
+        }
+        
         updatePriceDisplay(currentPrice);
         updateSignalDisplay(signalType, confidence, idealEntry, currentPrice, 
                           stopLoss, takeProfit1, takeProfit2, takeProfit3, riskReward);
@@ -711,6 +1036,9 @@ async function runAnalysis() {
         updateOrderFlowDisplay(orderFlow);
         updateICTDisplay(fvgs, orderBlocks, liquidity, marketStructure);
         updateFibDisplay(fibLevels);
+        
+        // Update signal reason with comprehensive analysis
+        document.getElementById('signalReason').innerHTML = analysisReason;
         
         updateChart(historicalData, fvgs, orderBlocks, liquidity);
         
@@ -724,7 +1052,13 @@ async function runAnalysis() {
         
         calculatePositionSize();
         
-        showNotification(`✅ Analysis complete! ${signalType} signal (${confidence}% confidence)`, 'success');
+        // Show notification with feature used
+        let featureUsed = '';
+        if (turtleSoup) featureUsed = ' (Turtle Soup)';
+        else if (liquiditySweep) featureUsed = ' (Liquidity Sweep)';
+        else if (oteLevels) featureUsed = ' (OTE Levels)';
+        
+        showNotification(`✅ Analysis complete! ${signalType} signal (${confidence}% confidence)${featureUsed}`, 'success');
         
     } catch (error) {
         console.error(error);
@@ -736,7 +1070,7 @@ async function runAnalysis() {
 }
 
 // ============================================
-// UI UPDATE FUNCTIONS (FIXED PRECISION)
+// UI UPDATE FUNCTIONS
 // ============================================
 
 function updatePriceDisplay(currentPrice) {
@@ -777,9 +1111,6 @@ function updateSignalDisplay(type, confidence, entry, current, sl, tp1, tp2, tp3
         badge.innerHTML = '⚠️ LOW CONFIDENCE';
         badge.className = 'signal-badge low';
     }
-    
-    document.getElementById('signalReason').innerHTML = 
-        `Analysis based on ICT concepts, volume profile, and multi-timeframe confluence.`;
 }
 
 function updateVolumeProfileDisplay(vp) {
