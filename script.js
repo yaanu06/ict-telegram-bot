@@ -6,22 +6,39 @@ if (tg) {
 }
 
 // ============================================
-// NEW: Free Unlimited Data Sources (No API Keys Needed)
+// TWELVE DATA API CONFIGURATION
 // ============================================
-const DATA_SOURCES = {
-    BINANCE: 'https://api.binance.com/api/v3',
-    COINGECKO: 'https://api.coingecko.com/api/v3',
-    FRANKFURTER: 'https://api.frankfurter.app',
-    EXCHANGERATE: 'https://api.exchangerate-api.com/v4/latest'
+const TWELVE_DATA_KEY = '3076652d6e1c45a3b4e0a6acfe0408aa'; // Your API key
+const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
+
+// Symbol mapping for Twelve Data (they use different formats)
+const TWELVE_DATA_SYMBOLS = {
+    // Crypto
+    'BTC/USD': 'BTC/USD',
+    'ETH/USD': 'ETH/USD',
+    'BNB/USD': 'BNB/USD',
+    'SOL/USD': 'SOL/USD',
+    'XRP/USD': 'XRP/USD',
+    // Forex
+    'EUR/USD': 'EUR/USD',
+    'GBP/USD': 'GBP/USD',
+    'USD/JPY': 'USD/JPY',
+    'AUD/USD': 'AUD/USD',
+    'USD/CAD': 'USD/CAD',
+    // Metals
+    'XAU/USD': 'XAU/USD',
+    'XAG/USD': 'XAG/USD',
+    'XPT/USD': 'XPT/USD',
+    'XPD/USD': 'XPD/USD'
 };
 
-// Mapping for different APIs
-const CRYPTO_MAP = {
-    'BTC/USD': { binance: 'BTCUSDT', coingecko: 'bitcoin' },
-    'ETH/USD': { binance: 'ETHUSDT', coingecko: 'ethereum' },
-    'BNB/USD': { binance: 'BNBUSDT', coingecko: 'binancecoin' },
-    'SOL/USD': { binance: 'SOLUSDT', coingecko: 'solana' },
-    'XRP/USD': { binance: 'XRPUSDT', coingecko: 'ripple' }
+// Timeframe mapping
+const TIMEFRAME_MAP = {
+    '15M': '15min',
+    '1H': '1h',
+    '4H': '4h',
+    '1D': '1day',
+    '1W': '1week'
 };
 
 // State
@@ -104,7 +121,6 @@ function setupEventListeners() {
         currentPair = e.target.value;
     });
 
-    // Category buttons
     document.querySelectorAll('.category-btn').forEach(btn => {
         btn.addEventListener('click', function(e) {
             document.querySelectorAll('.category-btn').forEach(b => b.classList.remove('active'));
@@ -113,7 +129,6 @@ function setupEventListeners() {
         });
     });
 
-    // Timeframe buttons
     document.querySelectorAll('.tf-btn').forEach(btn => {
         btn.addEventListener('click', function(e) {
             document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
@@ -125,7 +140,6 @@ function setupEventListeners() {
         });
     });
 
-    // Chart toggle buttons
     document.getElementById('showFVG')?.addEventListener('change', updateChartAnnotations);
     document.getElementById('showOB')?.addEventListener('change', updateChartAnnotations);
     document.getElementById('showLQ')?.addEventListener('change', updateChartAnnotations);
@@ -148,247 +162,110 @@ function updatePairsByCategory(category) {
     };
     const pairSelect = document.getElementById('pairSelect');
     if (pairSelect) {
-        pairSelect.innerHTML = pairs[category].map(p => `<option value="${p}">${p}</option>`).join('');
+        pairSelect.innerHTML = pairs[category].map(p => `<option value="${p}">${getPairDisplayName(p)}</option>`).join('');
         currentPair = pairs[category][0];
     }
 }
 
+function getPairDisplayName(pair) {
+    const icons = {
+        'BTC/USD': '₿', 'ETH/USD': '⟠', 'EUR/USD': '€', 'GBP/USD': '£',
+        'XAU/USD': '👑', 'XAG/USD': '🥈', 'USD/JPY': '💴', 'AUD/USD': '🇦🇺',
+        'USD/CAD': '🇨🇦', 'BNB/USD': '💰', 'SOL/USD': '☀️', 'XRP/USD': '💧',
+        'XPT/USD': '🔘', 'XPD/USD': '⚪'
+    };
+    const icon = icons[pair] || '📊';
+    return `${icon} ${pair}`;
+}
+
 // ============================================
-// NEW: Hybrid Data Fetching (Replaces Twelve Data)
+// TWELVE DATA API FUNCTIONS (PRIMARY)
 // ============================================
 
 async function getPrice() {
-    let price = null;
-    
-    // Try Binance first (for crypto pairs)
-    if (CRYPTO_MAP[currentPair]) {
-        price = await fetchFromBinance();
-        if (price) return price;
+    const symbol = TWELVE_DATA_SYMBOLS[currentPair];
+    if (!symbol) {
+        console.error('No Twelve Data symbol mapping for:', currentPair);
+        return null;
     }
     
-    // Try Frankfurter (for forex pairs)
-    if (isForexPair(currentPair)) {
-        price = await fetchFromFrankfurter();
-        if (price) return price;
-    }
-    
-    // Try CoinGecko (crypto fallback)
-    if (CRYPTO_MAP[currentPair]) {
-        price = await fetchFromCoinGecko();
-        if (price) return price;
-    }
-    
-    // Try ExchangeRate API (forex fallback)
-    if (isForexPair(currentPair)) {
-        price = await fetchFromExchangeRate();
-        if (price) return price;
-    }
-    
-    // Try Metals API for gold/silver
-    if (isMetalPair(currentPair)) {
-        price = await fetchMetalPrice();
-        if (price) return price;
-    }
-    
-    console.log('All data sources failed');
-    document.getElementById('apiSource').innerHTML = '⚠️ Offline';
-    return null;
-}
-
-async function fetchFromBinance() {
     try {
-        const symbol = CRYPTO_MAP[currentPair].binance;
-        const url = `${DATA_SOURCES.BINANCE}/ticker/price?symbol=${symbol}`;
+        const url = `${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(symbol)}&apikey=${TWELVE_DATA_KEY}`;
         const response = await fetch(url);
         const data = await response.json();
         
-        if (data.price && !isNaN(data.price)) {
-            document.getElementById('apiSource').innerHTML = '📡 Binance (Free)';
+        if (data.price && !isNaN(parseFloat(data.price))) {
+            document.getElementById('apiSource').innerHTML = '📡 Twelve Data';
+            apiCalls++;
+            updateApiCounter();
             return parseFloat(data.price);
         }
-    } catch(e) {
-        console.log('Binance error:', e);
-    }
-    return null;
-}
-
-async function fetchFromCoinGecko() {
-    try {
-        const coinId = CRYPTO_MAP[currentPair].coingecko;
-        const url = `${DATA_SOURCES.COINGECKO}/simple/price?ids=${coinId}&vs_currencies=usd`;
-        const response = await fetch(url);
-        const data = await response.json();
         
-        if (data[coinId] && data[coinId].usd) {
-            document.getElementById('apiSource').innerHTML = '📡 CoinGecko (Free)';
-            return data[coinId].usd;
+        // Check for API limit error
+        if (data.code === 429) {
+            console.error('Twelve Data rate limit reached');
+            document.getElementById('apiSource').innerHTML = '⚠️ API Limit';
+            showNotification('API limit reached. Try again in a minute.', 'warning');
+            return null;
         }
+        
+        console.error('Twelve Data price error:', data);
     } catch(e) {
-        console.log('CoinGecko error:', e);
+        console.error('Twelve Data fetch error:', e);
     }
+    
+    document.getElementById('apiSource').innerHTML = '⚠️ Error';
     return null;
-}
-
-async function fetchFromFrankfurter() {
-    try {
-        const parts = currentPair.split('/');
-        const url = `${DATA_SOURCES.FRANKFURTER}/latest?from=${parts[0]}&to=${parts[1]}`;
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        if (data.rates && data.rates[parts[1]]) {
-            document.getElementById('apiSource').innerHTML = '📡 Frankfurter (Free)';
-            return data.rates[parts[1]];
-        }
-    } catch(e) {
-        console.log('Frankfurter error:', e);
-    }
-    return null;
-}
-
-async function fetchFromExchangeRate() {
-    try {
-        const parts = currentPair.split('/');
-        const url = `${DATA_SOURCES.EXCHANGERATE}/${parts[1]}`;
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        if (data.rates && data.rates[parts[0]]) {
-            document.getElementById('apiSource').innerHTML = '📡 ExchangeRate (Free)';
-            return 1 / data.rates[parts[0]];
-        }
-    } catch(e) {
-        console.log('ExchangeRate error:', e);
-    }
-    return null;
-}
-
-async function fetchMetalPrice() {
-    // Simple fallback - you can replace with a real metals API
-    try {
-        const url = 'https://api.metals.live/v1/spot';
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        const metalMap = {
-            'XAU/USD': 'gold',
-            'XAG/USD': 'silver',
-            'XPT/USD': 'platinum',
-            'XPD/USD': 'palladium'
-        };
-        
-        const metal = data.find(m => m.currency === 'USD' && 
-                      m.metal.toLowerCase() === metalMap[currentPair]);
-        
-        if (metal && metal.price) {
-            document.getElementById('apiSource').innerHTML = '📡 Metals.live (Free)';
-            return parseFloat(metal.price);
-        }
-    } catch(e) {
-        console.log('Metals error:', e);
-    }
-    return null;
-}
-
-function isForexPair(pair) {
-    const forexPairs = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'];
-    return forexPairs.includes(pair);
-}
-
-function isMetalPair(pair) {
-    const metalPairs = ['XAU/USD', 'XAG/USD', 'XPT/USD', 'XPD/USD'];
-    return metalPairs.includes(pair);
 }
 
 async function getHistoricalData(timeframe = currentTimeframe) {
-    // Try Binance first for crypto
-    if (CRYPTO_MAP[currentPair]) {
-        const data = await fetchBinanceHistorical(timeframe);
-        if (data && data.length > 30) return data;
-    }
+    const symbol = TWELVE_DATA_SYMBOLS[currentPair];
+    const interval = TIMEFRAME_MAP[timeframe];
     
-    // Try Frankfurter for forex (daily only)
-    if (isForexPair(currentPair)) {
-        const data = await fetchFrankfurterHistorical();
-        if (data && data.length > 30) return data;
+    if (!symbol || !interval) {
+        console.error('Missing symbol or interval mapping');
+        return null;
     }
-    
-    console.log('Historical data fetch failed');
-    return null;
-}
-
-async function fetchBinanceHistorical(timeframe) {
-    const intervalMap = {
-        '15M': '15m', '1H': '1h', '4H': '4h', 
-        '1D': '1d', '1W': '1w'
-    };
     
     try {
-        const symbol = CRYPTO_MAP[currentPair].binance;
-        const url = `${DATA_SOURCES.BINANCE}/klines?symbol=${symbol}&interval=${intervalMap[timeframe]}&limit=100`;
+        const url = `${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=100&apikey=${TWELVE_DATA_KEY}`;
         const response = await fetch(url);
         const data = await response.json();
         
-        if (data && data.length > 30) {
-            return data.map(c => ({
-                time: new Date(c[0]).toISOString(),
-                open: parseFloat(c[1]),
-                high: parseFloat(c[2]),
-                low: parseFloat(c[3]),
-                close: parseFloat(c[4]),
-                volume: parseFloat(c[5])
-            }));
+        if (data.values && data.values.length > 30) {
+            apiCalls++;
+            updateApiCounter();
+            
+            return data.values.map(c => ({
+                time: c.datetime,
+                open: parseFloat(c.open),
+                high: parseFloat(c.high),
+                low: parseFloat(c.low),
+                close: parseFloat(c.close),
+                volume: parseFloat(c.volume) || 1000000
+            })).reverse();
         }
+        
+        if (data.code === 429) {
+            showNotification('API limit reached. Try again in a minute.', 'warning');
+        }
+        
+        console.error('Twelve Data history error:', data);
     } catch(e) {
-        console.log('Binance history error:', e);
+        console.error('Twelve Data history fetch error:', e);
     }
+    
     return null;
 }
 
-async function fetchFrankfurterHistorical() {
-    try {
-        const parts = currentPair.split('/');
-        const endDate = new Date();
-        const startDate = new Date();
-        startDate.setDate(startDate.getDate() - 100);
-        
-        const url = `${DATA_SOURCES.FRANKFURTER}/${startDate.toISOString().split('T')[0]}..${endDate.toISOString().split('T')[0]}?from=${parts[0]}&to=${parts[1]}`;
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        if (data.rates) {
-            const candles = [];
-            let previousClose = null;
-            
-            Object.entries(data.rates).forEach(([date, rates]) => {
-                const close = rates[parts[1]];
-                const open = previousClose || close;
-                
-                candles.push({
-                    time: date,
-                    open: open,
-                    high: close * 1.001,
-                    low: close * 0.999,
-                    close: close,
-                    volume: 1000000
-                });
-                
-                previousClose = close;
-            });
-            
-            return candles;
-        }
-    } catch(e) {
-        console.log('Frankfurter history error:', e);
-    }
-    return null;
+function updateApiCounter() {
+    document.getElementById('apiUsage').innerHTML = `${apiCalls}`;
 }
 
 // ============================================
-// ALL EXISTING FUNCTIONS BELOW REMAIN EXACTLY THE SAME
+// ALL TECHNICAL ANALYSIS FUNCTIONS
 // ============================================
 
-// Technical Analysis Functions
 function calculateEMA(prices, period) {
     const multiplier = 2 / (period + 1);
     const ema = [prices[0]];
@@ -424,7 +301,6 @@ function calculateATR(data, period = 14) {
     return trueRanges.slice(-period).reduce((a,b) => a+b, 0) / period;
 }
 
-// ICT Concepts Detection
 function detectFairValueGaps(data) {
     const fvgs = [];
     for (let i = 1; i < data.length - 1; i++) {
@@ -594,7 +470,10 @@ function calculateOrderFlow(data) {
     };
 }
 
-// Multi-Timeframe Analysis
+// ============================================
+// MULTI-TIMEFRAME ANALYSIS
+// ============================================
+
 async function analyzeTimeframe(timeframe) {
     const data = await getHistoricalData(timeframe);
     if (!data || data.length < 30) return null;
@@ -624,13 +503,18 @@ async function multiTimeframeAnalysis() {
             if (results[tf].trend === 'bullish') bullishCount++;
             else if (results[tf].trend === 'bearish') bearishCount++;
             
-            document.getElementById(`trend${tf}`).innerHTML = 
-                results[tf].trend === 'bullish' ? '🟢 Bullish' :
-                results[tf].trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral';
-            document.getElementById(`trend${tf}`).className = `mtf-trend ${results[tf].trend}`;
-            document.getElementById(`rsi${tf}`).innerHTML = results[tf].rsi.toFixed(1);
-            document.getElementById(`vol${tf}`).innerHTML = 
-                (results[tf].volume / 1000000).toFixed(1) + 'M';
+            const trendEl = document.getElementById(`trend${tf}`);
+            if (trendEl) {
+                trendEl.innerHTML = results[tf].trend === 'bullish' ? '🟢 Bullish' :
+                                   results[tf].trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral';
+                trendEl.className = `mtf-trend ${results[tf].trend}`;
+            }
+            
+            const rsiEl = document.getElementById(`rsi${tf}`);
+            if (rsiEl) rsiEl.innerHTML = results[tf].rsi.toFixed(1);
+            
+            const volEl = document.getElementById(`vol${tf}`);
+            if (volEl) volEl.innerHTML = (results[tf].volume / 1000000).toFixed(1) + 'M';
         }
     }
     
@@ -638,13 +522,16 @@ async function multiTimeframeAnalysis() {
     const confluenceScore = total > 0 ? Math.max(bullishCount, bearishCount) / total * 100 : 0;
     const direction = bullishCount > bearishCount ? 'Bullish' : bearishCount > bullishCount ? 'Bearish' : 'Neutral';
     
-    document.getElementById('confluenceScore').innerHTML = 
-        `${direction} (${confluenceScore.toFixed(0)}% confluence)`;
+    const scoreEl = document.getElementById('confluenceScore');
+    if (scoreEl) scoreEl.innerHTML = `${direction} (${confluenceScore.toFixed(0)}% confluence)`;
     
     return { results, confluenceScore, direction };
 }
 
-// Chart Functions
+// ============================================
+// CHART FUNCTIONS
+// ============================================
+
 function updateChart(data, fvgs = [], obs = [], liquidity = []) {
     if (!priceChart) return;
     
@@ -665,17 +552,9 @@ function updateChart(data, fvgs = [], obs = [], liquidity = []) {
     priceChart.update();
 }
 
-function addFVGAnnotations(fvgs) {
-    // Placeholder - chart annotations can be expanded here
-}
-
-function addOBAnnotations(obs) {
-    // Placeholder - chart annotations can be expanded here
-}
-
-function addLiquidityAnnotations(liquidity) {
-    // Placeholder - chart annotations can be expanded here
-}
+function addFVGAnnotations(fvgs) {}
+function addOBAnnotations(obs) {}
+function addLiquidityAnnotations(liquidity) {}
 
 function updateChartWithTimeframe() {
     if (allTimeframeData[currentTimeframe]) {
@@ -689,21 +568,24 @@ function updateChartAnnotations() {
     }
 }
 
-// Main Analysis Function
+// ============================================
+// MAIN ANALYSIS FUNCTION
+// ============================================
+
 async function runAnalysis() {
     const analyzeBtn = document.getElementById('analyzeBtn');
     analyzeBtn.classList.add('loading');
     analyzeBtn.disabled = true;
-    showNotification('Analyzing market across multiple timeframes...', 'info');
+    showNotification('Analyzing market with Twelve Data...', 'info');
 
     try {
         const currentPrice = await getPrice();
-        if (!currentPrice) throw new Error('Could not get price');
+        if (!currentPrice) throw new Error('Could not fetch price from Twelve Data');
         
         const mtfResults = await multiTimeframeAnalysis();
         
         const historicalData = await getHistoricalData();
-        if (!historicalData || historicalData.length < 30) throw new Error('Insufficient data');
+        if (!historicalData || historicalData.length < 30) throw new Error('Insufficient historical data');
         chartData = historicalData;
         allTimeframeData[currentTimeframe] = historicalData;
         
@@ -821,9 +703,7 @@ async function runAnalysis() {
         
         calculatePositionSize();
         
-        apiCalls++;
-        document.getElementById('apiUsage').innerHTML = `${apiCalls}`;
-        showNotification(`Analysis complete! ${signalType} signal with ${confidence}% confidence`, 'success');
+        showNotification(`✅ Analysis complete! ${signalType} signal (${confidence}% confidence)`, 'success');
         
     } catch (error) {
         console.error(error);
@@ -834,7 +714,10 @@ async function runAnalysis() {
     }
 }
 
-// UI Update Functions
+// ============================================
+// UI UPDATE FUNCTIONS
+// ============================================
+
 function updatePriceDisplay(currentPrice) {
     document.getElementById('currentPrice').innerHTML = `$${currentPrice.toFixed(2)}`;
     
@@ -872,7 +755,7 @@ function updateSignalDisplay(type, confidence, entry, current, sl, tp1, tp2, tp3
     }
     
     document.getElementById('signalReason').innerHTML = 
-        `Multi-timeframe analysis complete. ${type} signal generated based on ICT concepts and volume profile.`;
+        `Analysis based on ICT concepts, volume profile, and multi-timeframe confluence.`;
 }
 
 function updateVolumeProfileDisplay(vp) {
