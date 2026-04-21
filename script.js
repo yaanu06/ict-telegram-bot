@@ -6,11 +6,13 @@ if (tg) {
 }
 
 // ============================================
-// API CONFIGURATION
+// SECURE API KEY STORAGE USING TELEGRAM CLOUD
 // ============================================
-const TWELVE_DATA_KEY = '3076652d6e1c45a3b4e0a6acfe0408aa';
+let TWELVE_DATA_KEY = '';
+let DEEPSEEK_API_KEY = '';
+let PROXY_ENABLED = false;
+
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
-const DEEPSEEK_API_KEY = 'sk-e3103ef0f7c34ee183d64e74410412ac';
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
 
 // Symbol mapping for Twelve Data
@@ -27,6 +29,191 @@ const TIMEFRAME_MAP = {
 };
 
 // ============================================
+// LOAD API KEYS FROM TELEGRAM STORAGE
+// ============================================
+async function loadAPIKeys() {
+    if (!tg || !tg.CloudStorage) {
+        console.log('Telegram CloudStorage not available');
+        return false;
+    }
+    
+    try {
+        // Try to get keys from Telegram cloud
+        const keys = await tg.CloudStorage.getItem('api_keys_v1');
+        
+        if (keys) {
+            const parsed = JSON.parse(keys);
+            TWELVE_DATA_KEY = parsed.twelveData || '';
+            DEEPSEEK_API_KEY = parsed.deepseek || '';
+            
+            // Hide keys in UI - show only last 4 chars
+            if (TWELVE_DATA_KEY) {
+                console.log('✅ Twelve Data key loaded: ...' + TWELVE_DATA_KEY.slice(-4));
+            }
+            if (DEEPSEEK_API_KEY) {
+                console.log('✅ DeepSeek key loaded: ...' + DEEPSEEK_API_KEY.slice(-4));
+            }
+            
+            return true;
+        }
+    } catch(e) {
+        console.error('Failed to load keys:', e);
+    }
+    
+    return false;
+}
+
+// Save API keys to Telegram cloud
+async function saveAPIKeys(twelveKey, deepseekKey) {
+    if (!tg || !tg.CloudStorage) {
+        showNotification('Telegram CloudStorage not available', 'error');
+        return false;
+    }
+    
+    try {
+        const keys = JSON.stringify({
+            twelveData: twelveKey,
+            deepseek: deepseekKey
+        });
+        
+        await tg.CloudStorage.setItem('api_keys_v1', keys);
+        TWELVE_DATA_KEY = twelveKey;
+        DEEPSEEK_API_KEY = deepseekKey;
+        
+        showNotification('✅ API keys saved securely!', 'success');
+        return true;
+    } catch(e) {
+        console.error('Failed to save keys:', e);
+        showNotification('Failed to save keys', 'error');
+        return false;
+    }
+}
+
+// Show setup modal for first-time users
+function showSetupModal() {
+    const setupHTML = `
+        <div class="setup-overlay" id="setupOverlay">
+            <div class="setup-modal">
+                <h3>🔐 API Key Setup</h3>
+                <p class="setup-desc">Enter your API keys once. They'll be encrypted and stored securely in Telegram.</p>
+                
+                <label>Twelve Data API Key:</label>
+                <input type="password" id="twelveInput" placeholder="3076..." class="setup-input">
+                
+                <label>DeepSeek API Key:</label>
+                <input type="password" id="deepseekInput" placeholder="sk-..." class="setup-input">
+                
+                <p class="setup-note">Keys are stored ONLY in your Telegram cloud, never on our servers.</p>
+                
+                <div class="setup-buttons">
+                    <button id="saveKeysBtn" class="setup-btn primary">Save Keys</button>
+                    <button id="skipSetupBtn" class="setup-btn secondary">Skip (Limited Mode)</button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Add modal to body
+    document.body.insertAdjacentHTML('beforeend', setupHTML);
+    
+    // Add styles dynamically
+    const style = document.createElement('style');
+    style.textContent = `
+        .setup-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+        .setup-modal {
+            background: #1c1c1e;
+            border-radius: 16px;
+            padding: 24px;
+            max-width: 350px;
+            width: 90%;
+            border: 1px solid #3390ec;
+        }
+        .setup-modal h3 {
+            color: #3390ec;
+            margin-bottom: 8px;
+        }
+        .setup-desc {
+            color: #8e8e93;
+            font-size: 13px;
+            margin-bottom: 16px;
+        }
+        .setup-modal label {
+            color: white;
+            font-size: 13px;
+            display: block;
+            margin-bottom: 4px;
+        }
+        .setup-input {
+            width: 100%;
+            padding: 12px;
+            border-radius: 10px;
+            border: 1px solid #2c2c2e;
+            background: #2c2c2e;
+            color: white;
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+        .setup-note {
+            color: #ff9f0a;
+            font-size: 11px;
+            margin-bottom: 16px;
+        }
+        .setup-buttons {
+            display: flex;
+            gap: 8px;
+        }
+        .setup-btn {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .setup-btn.primary {
+            background: #3390ec;
+            color: white;
+        }
+        .setup-btn.secondary {
+            background: #2c2c2e;
+            color: #8e8e93;
+        }
+    `;
+    document.head.appendChild(style);
+    
+    // Setup event listeners
+    document.getElementById('saveKeysBtn').addEventListener('click', async () => {
+        const twelveKey = document.getElementById('twelveInput').value.trim();
+        const deepseekKey = document.getElementById('deepseekInput').value.trim();
+        
+        if (!twelveKey && !deepseekKey) {
+            showNotification('Please enter at least one API key', 'warning');
+            return;
+        }
+        
+        const saved = await saveAPIKeys(twelveKey, deepseekKey);
+        if (saved) {
+            document.getElementById('setupOverlay').remove();
+            showNotification('Setup complete! You can now use the bot.', 'success');
+        }
+    });
+    
+    document.getElementById('skipSetupBtn').addEventListener('click', () => {
+        document.getElementById('setupOverlay').remove();
+        showNotification('Limited mode: Basic analysis only', 'warning');
+    });
+}
+
+// ============================================
 // STATE
 // ============================================
 let currentPair = 'BTC/USD';
@@ -39,10 +226,16 @@ let chartData = [];
 let allTimeframeData = {};
 let pendingLimitOrder = null;
 let priceCheckInterval = null;
-let aiAnalysisResult = null;
 
 // Initialize on DOM load
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
+    const keysLoaded = await loadAPIKeys();
+    
+    if (!keysLoaded) {
+        // First time user - show setup
+        setTimeout(() => showSetupModal(), 500);
+    }
+    
     init();
 });
 
@@ -180,6 +373,11 @@ function getPricePrecision(pair) {
 // ============================================
 
 async function getPrice() {
+    if (!TWELVE_DATA_KEY) {
+        document.getElementById('apiSource').innerHTML = '⚠️ No API Key';
+        return null;
+    }
+    
     const symbol = TWELVE_DATA_SYMBOLS[currentPair];
     if (!symbol) return null;
     
@@ -196,16 +394,18 @@ async function getPrice() {
         }
         
         if (data.code === 429) {
-            showNotification('API limit reached. Try again in a minute.', 'warning');
+            showNotification('API limit reached', 'warning');
         }
     } catch(e) {
-        console.error('Twelve Data fetch error:', e);
+        console.error('Price fetch error:', e);
     }
     
     return null;
 }
 
 async function getHistoricalData(timeframe = currentTimeframe) {
+    if (!TWELVE_DATA_KEY) return null;
+    
     const symbol = TWELVE_DATA_SYMBOLS[currentPair];
     const interval = TIMEFRAME_MAP[timeframe];
     if (!symbol || !interval) return null;
@@ -242,58 +442,29 @@ function updateApiCounter() {
 // ============================================
 
 async function getAIAnalysis(marketData) {
-    showNotification('🤖 DeepSeek AI analyzing market...', 'info');
+    if (!DEEPSEEK_API_KEY) {
+        console.log('No DeepSeek key - using rule-based analysis');
+        return null;
+    }
     
-    const prompt = `You are an expert ICT (Inner Circle Trader) and Smart Money Concepts trader. Analyze the following market data and provide a trading signal.
+    showNotification('🤖 DeepSeek AI analyzing...', 'info');
+    
+    const prompt = `You are an expert ICT trader. Analyze this market data and provide a trading signal.
 
-Market: ${currentPair}
-Timeframe: ${currentTimeframe}
-Current Price: ${marketData.currentPrice}
-24h Change: ${marketData.priceChange}%
+Market: ${currentPair} | Timeframe: ${currentTimeframe} | Price: ${marketData.currentPrice}
+RSI: ${marketData.rsi} | Trend: ${marketData.trend}
 
-Technical Indicators:
-- RSI (14): ${marketData.rsi}
-- ATR (14): ${marketData.atr}
-- EMA20: ${marketData.ema20}
-- EMA50: ${marketData.ema50}
-- Trend: ${marketData.trend}
-- Market Structure: ${marketData.marketStructure}
-
-ICT Concepts Detected:
-- Fair Value Gaps: ${marketData.fvgCount}
-- Order Blocks: ${marketData.obCount}
-- Liquidity Levels: ${marketData.liquidityLevels}
-- Turtle Soup Pattern: ${marketData.turtleSoup || 'None'}
-- Liquidity Sweep: ${marketData.liquiditySweep || 'None'}
-
-Volume Profile:
-- POC: ${marketData.poc}
-- Value Area High: ${marketData.valueHigh}
-- Value Area Low: ${marketData.valueLow}
-
-Fibonacci Levels (from recent swing):
-- 0%: ${marketData.fib0}
-- 38.2%: ${marketData.fib382}
-- 50%: ${marketData.fib500}
-- 61.8%: ${marketData.fib618}
-- 78.6%: ${marketData.fib786}
-- 100%: ${marketData.fib100}
-
-Based on ICT concepts, provide a trading recommendation in the following JSON format ONLY:
+Return ONLY valid JSON:
 {
     "signal": "LONG" or "SHORT" or "NEUTRAL",
-    "confidence": number between 0-100,
+    "confidence": 0-100,
     "idealEntry": number,
     "stopLoss": number,
     "takeProfit1": number,
     "takeProfit2": number,
     "takeProfit3": number,
-    "reasoning": "Brief explanation of your analysis using ICT terminology (FVG, OB, liquidity, displacement, etc.)",
-    "keyLevels": ["level1", "level2"],
-    "riskRewardRatio": number
-}
-
-Important: Only respond with valid JSON. No other text.`;
+    "reasoning": "Brief analysis"
+}`;
 
     try {
         const response = await fetch(DEEPSEEK_API_URL, {
@@ -305,17 +476,11 @@ Important: Only respond with valid JSON. No other text.`;
             body: JSON.stringify({
                 model: 'deepseek-chat',
                 messages: [
-                    {
-                        role: 'system',
-                        content: 'You are an expert ICT trader. Analyze market data and provide trading signals in JSON format only.'
-                    },
-                    {
-                        role: 'user',
-                        content: prompt
-                    }
+                    { role: 'system', content: 'You are an expert ICT trader. Respond in JSON only.' },
+                    { role: 'user', content: prompt }
                 ],
                 temperature: 0.3,
-                max_tokens: 1000
+                max_tokens: 800
             })
         });
 
@@ -326,145 +491,16 @@ Important: Only respond with valid JSON. No other text.`;
             const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
             
             if (jsonMatch) {
-                const analysis = JSON.parse(jsonMatch[0]);
-                aiAnalysisResult = analysis;
-                return analysis;
+                return JSON.parse(jsonMatch[0]);
             }
         }
         
-        throw new Error('Invalid AI response format');
+        return null;
         
     } catch (error) {
-        console.error('DeepSeek API error:', error);
-        showNotification('AI analysis failed, using rule-based fallback', 'warning');
+        console.error('AI error:', error);
         return null;
     }
-}
-
-// ============================================
-// LIMIT ORDER MANAGEMENT
-// ============================================
-
-function loadPendingOrder() {
-    const saved = localStorage.getItem('pendingLimitOrder');
-    if (saved) {
-        pendingLimitOrder = JSON.parse(saved);
-        updateLimitOrderUI();
-        startPriceMonitoring();
-    }
-}
-
-function savePendingOrder(order) {
-    pendingLimitOrder = order;
-    localStorage.setItem('pendingLimitOrder', JSON.stringify(order));
-    updateLimitOrderUI();
-}
-
-function clearPendingOrder() {
-    pendingLimitOrder = null;
-    localStorage.removeItem('pendingLimitOrder');
-    if (priceCheckInterval) {
-        clearInterval(priceCheckInterval);
-        priceCheckInterval = null;
-    }
-    updateLimitOrderUI();
-    document.getElementById('executeBtn').innerHTML = '⚡ Place Limit Order';
-}
-
-function updateLimitOrderUI() {
-    const executeBtn = document.getElementById('executeBtn');
-    const statusEl = document.getElementById('connectionStatus');
-    
-    if (pendingLimitOrder) {
-        executeBtn.innerHTML = '⏳ Waiting for Entry...';
-        executeBtn.style.background = 'linear-gradient(135deg, #ff9f0a, #ff6b00)';
-        statusEl.innerHTML = `🟡 Waiting for ${pendingLimitOrder.pair} @ $${pendingLimitOrder.idealEntry.toFixed(getPricePrecision(currentPair))}`;
-        statusEl.className = 'connection-status waiting';
-    } else {
-        executeBtn.innerHTML = '⚡ Place Limit Order';
-        executeBtn.style.background = 'linear-gradient(135deg, #34c759, #28a745)';
-        statusEl.innerHTML = '🟢 Ready';
-        statusEl.className = 'connection-status';
-    }
-}
-
-function startPriceMonitoring() {
-    if (priceCheckInterval) {
-        clearInterval(priceCheckInterval);
-    }
-    
-    priceCheckInterval = setInterval(async () => {
-        if (!pendingLimitOrder) {
-            clearInterval(priceCheckInterval);
-            priceCheckInterval = null;
-            return;
-        }
-        
-        const currentPrice = await getPrice();
-        if (!currentPrice) return;
-        
-        const order = pendingLimitOrder;
-        const precision = getPricePrecision(order.pair);
-        let shouldExecute = false;
-        
-        if (order.signalType === 'LONG') {
-            // For LONG: Wait for price to drop TO or BELOW entry
-            if (currentPrice <= order.idealEntry) {
-                shouldExecute = true;
-            }
-        } else if (order.signalType === 'SHORT') {
-            // For SHORT: Wait for price to rise TO or ABOVE entry
-            if (currentPrice >= order.idealEntry) {
-                shouldExecute = true;
-            }
-        }
-        
-        // Update status with distance to entry
-        const distance = Math.abs(currentPrice - order.idealEntry);
-        const distancePercent = (distance / order.idealEntry * 100).toFixed(2);
-        const direction = order.signalType === 'LONG' ? 
-            (currentPrice > order.idealEntry ? '▼' : '▲') : 
-            (currentPrice < order.idealEntry ? '▲' : '▼');
-        
-        const statusEl = document.getElementById('connectionStatus');
-        if (statusEl) {
-            statusEl.innerHTML = `⏳ ${order.pair}: $${currentPrice.toFixed(precision)} → Target: $${order.idealEntry.toFixed(precision)} (${distancePercent}% away)`;
-        }
-        
-        if (shouldExecute) {
-            executeLimitOrder(order, currentPrice);
-        }
-        
-        updatePriceDisplay(currentPrice);
-        
-    }, 5000); // Check every 5 seconds
-}
-
-function executeLimitOrder(order, fillPrice) {
-    clearPendingOrder();
-    
-    if (tg && tg.sendData) {
-        tg.sendData(JSON.stringify({
-            action: 'limit_order_filled',
-            pair: order.pair,
-            signal: order.signalType,
-            requestedEntry: order.idealEntry,
-            filledPrice: fillPrice,
-            stopLoss: order.stopLoss,
-            takeProfits: [order.takeProfit1, order.takeProfit2, order.takeProfit3],
-            confidence: order.confidence,
-            aiReasoning: order.aiReasoning,
-            timestamp: new Date().toISOString()
-        }));
-    }
-    
-    showNotification(`✅ LIMIT ORDER FILLED! ${order.signalType} @ $${fillPrice.toFixed(getPricePrecision(order.pair))}`, 'success');
-    
-    // Play sound alert
-    try {
-        const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
-        audio.play();
-    } catch(e) {}
 }
 
 // ============================================
@@ -504,83 +540,6 @@ function calculateATR(data, period = 14) {
         trueRanges.push(tr);
     }
     return trueRanges.slice(-period).reduce((a,b) => a+b, 0) / period;
-}
-
-function findSwingPoints(values, lookback = 3) {
-    const highs = [], lows = [];
-    for (let i = lookback; i < values.length - lookback; i++) {
-        let isHigh = true, isLow = true;
-        for (let j = 1; j <= lookback; j++) {
-            if (values[i] <= values[i - j] || values[i] <= values[i + j]) isHigh = false;
-            if (values[i] >= values[i - j] || values[i] >= values[i + j]) isLow = false;
-        }
-        if (isHigh) highs.push({ index: i, value: values[i] });
-        if (isLow) lows.push({ index: i, value: values[i] });
-    }
-    return { highs, lows };
-}
-
-function detectLiquiditySweep(data) {
-    const highs = data.map(c => c.high);
-    const lows = data.map(c => c.low);
-    const closes = data.map(c => c.close);
-    
-    for (let i = 10; i < data.length - 3; i++) {
-        const recentHighs = highs.slice(i-5, i);
-        const maxHigh = Math.max(...recentHighs);
-        const highCount = recentHighs.filter(h => Math.abs(h - maxHigh) / maxHigh < 0.001).length;
-        
-        if (highCount >= 2) {
-            const nextCandles = data.slice(i, i+4);
-            const sweptAbove = nextCandles.some(c => c.high > maxHigh * 1.001);
-            const closedBelow = closes[i+3] < maxHigh;
-            
-            if (sweptAbove && closedBelow) {
-                return { type: 'buy_side', message: 'Buy-side liquidity swept - Potential SHORT' };
-            }
-        }
-        
-        const recentLows = lows.slice(i-5, i);
-        const minLow = Math.min(...recentLows);
-        const lowCount = recentLows.filter(l => Math.abs(l - minLow) / minLow < 0.001).length;
-        
-        if (lowCount >= 2) {
-            const nextCandles = data.slice(i, i+4);
-            const sweptBelow = nextCandles.some(c => c.low < minLow * 0.999);
-            const closedAbove = closes[i+3] > minLow;
-            
-            if (sweptBelow && closedAbove) {
-                return { type: 'sell_side', message: 'Sell-side liquidity swept - Potential LONG' };
-            }
-        }
-    }
-    return null;
-}
-
-function detectTurtleSoup(data) {
-    const recentData = data.slice(-15);
-    const highs = recentData.map(c => c.high);
-    const lows = recentData.map(c => c.low);
-    const closes = recentData.map(c => c.close);
-    const opens = recentData.map(c => c.open);
-    
-    const keyLow = Math.min(...lows.slice(0, -4));
-    const recentLow = lows[lows.length - 4];
-    const currentClose = closes[closes.length - 1];
-    const currentOpen = opens[opens.length - 1];
-    
-    if (recentLow < keyLow * 0.999 && currentClose > keyLow) {
-        return { type: 'bullish', name: 'Turtle Soup Buy', message: 'False breakdown - Aggressive LONG' };
-    }
-    
-    const keyHigh = Math.max(...highs.slice(0, -4));
-    const recentHigh = highs[highs.length - 4];
-    
-    if (recentHigh > keyHigh * 1.001 && currentClose < keyHigh) {
-        return { type: 'bearish', name: 'Turtle Soup Sell', message: 'False breakout - Aggressive SHORT' };
-    }
-    
-    return null;
 }
 
 function detectFairValueGaps(data) {
@@ -694,130 +653,29 @@ function calculateVolumeProfile(data) {
     return { poc, valueAreaHigh: vaHigh, valueAreaLow: vaLow, totalVolume: totalVol };
 }
 
-function calculateOrderFlow(data) {
-    if (!data || data.length < 10) return null;
-    
-    let buyPressure = 0, sellPressure = 0;
-    data.forEach(candle => {
-        const isBullish = candle.close > candle.open;
-        if (isBullish) {
-            buyPressure += candle.volume * 0.7;
-            sellPressure += candle.volume * 0.3;
-        } else {
-            buyPressure += candle.volume * 0.3;
-            sellPressure += candle.volume * 0.7;
-        }
-    });
-    
-    let pv = 0, vol = 0;
-    data.forEach(candle => {
-        const tp = (candle.high + candle.low + candle.close) / 3;
-        pv += tp * candle.volume;
-        vol += candle.volume;
-    });
-    const vwap = pv / vol;
-    
-    return { buyingPressure: buyPressure, sellingPressure: sellPressure, netDelta: buyPressure - sellPressure, vwap: vwap };
-}
-
 // ============================================
-// MULTI-TIMEFRAME ANALYSIS
-// ============================================
-
-async function analyzeTimeframe(timeframe) {
-    const data = await getHistoricalData(timeframe);
-    if (!data || data.length < 30) return null;
-    
-    const closes = data.map(c => c.close);
-    const rsi = calculateRSI(closes);
-    const trend = closes[closes.length - 1] > closes[closes.length - 20] ? 'bullish' : 
-                  closes[closes.length - 1] < closes[closes.length - 20] ? 'bearish' : 'neutral';
-    
-    return { data, trend, rsi, volume: data.slice(-20).reduce((s, c) => s + c.volume, 0) };
-}
-
-async function multiTimeframeAnalysis() {
-    const timeframes = ['15M', '1H', '4H', '1D'];
-    const results = {};
-    let bullishCount = 0, bearishCount = 0;
-    
-    for (const tf of timeframes) {
-        results[tf] = await analyzeTimeframe(tf);
-        if (results[tf]) {
-            if (results[tf].trend === 'bullish') bullishCount++;
-            else if (results[tf].trend === 'bearish') bearishCount++;
-            
-            const trendEl = document.getElementById(`trend${tf}`);
-            if (trendEl) {
-                trendEl.innerHTML = results[tf].trend === 'bullish' ? '🟢 Bullish' :
-                                   results[tf].trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral';
-                trendEl.className = `mtf-trend ${results[tf].trend}`;
-            }
-            
-            const rsiEl = document.getElementById(`rsi${tf}`);
-            if (rsiEl) rsiEl.innerHTML = results[tf].rsi.toFixed(1);
-            
-            const volEl = document.getElementById(`vol${tf}`);
-            if (volEl) volEl.innerHTML = (results[tf].volume / 1000000).toFixed(1) + 'M';
-        }
-    }
-    
-    const total = bullishCount + bearishCount;
-    const confluenceScore = total > 0 ? Math.max(bullishCount, bearishCount) / total * 100 : 0;
-    const direction = bullishCount > bearishCount ? 'Bullish' : bearishCount > bullishCount ? 'Bearish' : 'Neutral';
-    
-    const scoreEl = document.getElementById('confluenceScore');
-    if (scoreEl) scoreEl.innerHTML = `${direction} (${confluenceScore.toFixed(0)}% confluence)`;
-    
-    return { results, confluenceScore, direction };
-}
-
-// ============================================
-// CHART FUNCTIONS
-// ============================================
-
-function updateChart(data) {
-    if (!priceChart) return;
-    
-    priceChart.data.datasets = [{
-        label: currentPair,
-        data: data.slice(-50).map(c => ({ x: c.time, y: c.close })),
-        borderColor: '#3390ec',
-        borderWidth: 2,
-        pointRadius: 0,
-        tension: 0.1
-    }];
-    priceChart.data.labels = data.slice(-50).map(c => 
-        new Date(c.time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-    );
-    priceChart.update();
-}
-
-function updateChartWithTimeframe() {
-    if (allTimeframeData[currentTimeframe]) {
-        updateChart(allTimeframeData[currentTimeframe]);
-    }
-}
-
-function updateChartAnnotations() {
-    if (chartData.length > 0) updateChart(chartData);
-}
-
-// ============================================
-// MAIN ANALYSIS FUNCTION WITH AI
+// MAIN ANALYSIS FUNCTION
 // ============================================
 
 async function runAnalysis() {
     const analyzeBtn = document.getElementById('analyzeBtn');
     analyzeBtn.classList.add('loading');
     analyzeBtn.disabled = true;
-    showNotification('🔍 Gathering market data...', 'info');
+    
+    if (!TWELVE_DATA_KEY) {
+        showNotification('Please set up your API keys first', 'error');
+        showSetupModal();
+        analyzeBtn.classList.remove('loading');
+        analyzeBtn.disabled = false;
+        return;
+    }
+    
+    showNotification('🔍 Analyzing market...', 'info');
 
     try {
         const currentPrice = await getPrice();
         if (!currentPrice) throw new Error('Could not fetch price');
         
-        const mtfResults = await multiTimeframeAnalysis();
         const historicalData = await getHistoricalData();
         if (!historicalData || historicalData.length < 30) throw new Error('Insufficient data');
         
@@ -830,6 +688,8 @@ async function runAnalysis() {
         
         const ema20 = calculateEMA(closes, 20);
         const ema50 = calculateEMA(closes, 50);
+        const currentEMA20 = ema20[ema20.length - 1];
+        const currentEMA50 = ema50[ema50.length - 1];
         const rsi = calculateRSI(closes, 14);
         const atr = calculateATR(historicalData, 14);
         
@@ -838,9 +698,6 @@ async function runAnalysis() {
         const liquidity = detectLiquidityLevels(historicalData);
         const marketStructure = analyzeMarketStructure(historicalData);
         const volumeProfile = calculateVolumeProfile(historicalData);
-        const orderFlow = calculateOrderFlow(historicalData);
-        const liquiditySweep = detectLiquiditySweep(historicalData);
-        const turtleSoup = detectTurtleSoup(historicalData);
         
         let trend = 'neutral';
         if (currentEMA20 > currentEMA50) trend = 'bullish';
@@ -857,41 +714,16 @@ async function runAnalysis() {
             fib100: recentHigh
         };
         
-        // Calculate price change
-        const prevClose = closes[closes.length - 2] || currentPrice;
-        const priceChange = ((currentPrice - prevClose) / prevClose * 100).toFixed(2);
-        
-        // Prepare data for AI
         const marketData = {
             currentPrice: currentPrice.toFixed(getPricePrecision(currentPair)),
-            priceChange: priceChange,
             rsi: rsi.toFixed(1),
-            atr: atr.toFixed(getPricePrecision(currentPair)),
-            ema20: ema20[ema20.length - 1].toFixed(getPricePrecision(currentPair)),
-            ema50: ema50[ema50.length - 1].toFixed(getPricePrecision(currentPair)),
-            trend: trend,
-            marketStructure: marketStructure,
-            fvgCount: fvgs.length,
-            obCount: orderBlocks.length,
-            liquidityLevels: liquidity.length,
-            turtleSoup: turtleSoup?.name || 'None',
-            liquiditySweep: liquiditySweep?.type || 'None',
-            poc: volumeProfile?.poc?.price.toFixed(getPricePrecision(currentPair)) || 'N/A',
-            valueHigh: volumeProfile?.valueAreaHigh?.toFixed(getPricePrecision(currentPair)) || 'N/A',
-            valueLow: volumeProfile?.valueAreaLow?.toFixed(getPricePrecision(currentPair)) || 'N/A',
-            fib0: fibLevels.fib0.toFixed(getPricePrecision(currentPair)),
-            fib382: fibLevels.fib382.toFixed(getPricePrecision(currentPair)),
-            fib500: fibLevels.fib500.toFixed(getPricePrecision(currentPair)),
-            fib618: fibLevels.fib618.toFixed(getPricePrecision(currentPair)),
-            fib786: fibLevels.fib786.toFixed(getPricePrecision(currentPair)),
-            fib100: fibLevels.fib100.toFixed(getPricePrecision(currentPair))
+            trend: trend
         };
         
-        // Get AI Analysis
-        showNotification('🤖 DeepSeek AI is thinking...', 'info');
-        const aiSignal = await getAIAnalysis(marketData);
-        
         let signalType, confidence, idealEntry, stopLoss, tp1, tp2, tp3, riskReward, analysisReason;
+        
+        // Try AI first
+        const aiSignal = await getAIAnalysis(marketData);
         
         if (aiSignal && aiSignal.signal !== 'NEUTRAL') {
             signalType = aiSignal.signal;
@@ -901,39 +733,35 @@ async function runAnalysis() {
             tp1 = aiSignal.takeProfit1;
             tp2 = aiSignal.takeProfit2;
             tp3 = aiSignal.takeProfit3;
-            riskReward = aiSignal.riskRewardRatio?.toFixed(1) || 'N/A';
+            riskReward = 'N/A';
             analysisReason = `🤖 AI: ${aiSignal.reasoning}`;
-            
-            showNotification(`✅ AI Signal: ${signalType} (${confidence}% confidence)`, 'success');
+            showNotification(`✅ AI Signal: ${signalType} (${confidence}%)`, 'success');
         } else {
             // Fallback to rule-based
-            signalType = 'NEUTRAL';
-            confidence = 40;
+            signalType = trend === 'bullish' ? 'LONG' : (trend === 'bearish' ? 'SHORT' : 'NEUTRAL');
+            confidence = 50;
             idealEntry = currentPrice;
             stopLoss = trend === 'bullish' ? currentPrice - atr : currentPrice + atr;
             tp1 = trend === 'bullish' ? currentPrice + atr * 1.5 : currentPrice - atr * 1.5;
             tp2 = trend === 'bullish' ? currentPrice + atr * 2.5 : currentPrice - atr * 2.5;
             tp3 = trend === 'bullish' ? currentPrice + atr * 4 : currentPrice - atr * 4;
             riskReward = '1.5';
-            analysisReason = 'AI unavailable - using rule-based analysis.';
+            analysisReason = 'Rule-based analysis (AI unavailable or neutral)';
         }
         
         updatePriceDisplay(currentPrice);
         updateSignalDisplay(signalType, confidence, idealEntry, currentPrice, stopLoss, tp1, tp2, tp3, riskReward);
         updateVolumeProfileDisplay(volumeProfile);
-        updateOrderFlowDisplay(orderFlow);
         updateICTDisplay(fvgs, orderBlocks, liquidity, marketStructure);
         updateFibDisplay(fibLevels);
         document.getElementById('signalReason').innerHTML = analysisReason;
         updateChart(historicalData);
         
-        analysisData = { signalType, idealEntry, currentPrice, stopLoss, takeProfit1: tp1, takeProfit2: tp2, takeProfit3: tp3, confidence, aiReasoning: analysisReason };
+        analysisData = { signalType, idealEntry, currentPrice, stopLoss, takeProfit1: tp1, takeProfit2: tp2, takeProfit3: tp3, confidence };
         
         calculatePositionSize();
         
-        // Enable limit order button
-        const shouldExecute = signalType !== 'NEUTRAL' && confidence >= 50;
-        document.getElementById('executeBtn').disabled = !shouldExecute;
+        document.getElementById('executeBtn').disabled = signalType === 'NEUTRAL';
         
     } catch (error) {
         console.error(error);
@@ -945,35 +773,122 @@ async function runAnalysis() {
 }
 
 // ============================================
-// HANDLE EXECUTE - PLACE LIMIT ORDER
+// LIMIT ORDER MANAGEMENT
 // ============================================
+
+function loadPendingOrder() {
+    const saved = localStorage.getItem('pendingLimitOrder');
+    if (saved) {
+        pendingLimitOrder = JSON.parse(saved);
+        updateLimitOrderUI();
+        startPriceMonitoring();
+    }
+}
+
+function savePendingOrder(order) {
+    pendingLimitOrder = order;
+    localStorage.setItem('pendingLimitOrder', JSON.stringify(order));
+    updateLimitOrderUI();
+}
+
+function clearPendingOrder() {
+    pendingLimitOrder = null;
+    localStorage.removeItem('pendingLimitOrder');
+    if (priceCheckInterval) {
+        clearInterval(priceCheckInterval);
+        priceCheckInterval = null;
+    }
+    updateLimitOrderUI();
+    document.getElementById('executeBtn').innerHTML = '⚡ Place Limit Order';
+    document.getElementById('executeBtn').style.background = 'linear-gradient(135deg, #34c759, #28a745)';
+}
+
+function updateLimitOrderUI() {
+    const executeBtn = document.getElementById('executeBtn');
+    const statusEl = document.getElementById('connectionStatus');
+    
+    if (pendingLimitOrder) {
+        executeBtn.innerHTML = '⏳ Waiting for Entry...';
+        executeBtn.style.background = 'linear-gradient(135deg, #ff9f0a, #ff6b00)';
+        statusEl.innerHTML = `🟡 Waiting for ${pendingLimitOrder.pair}`;
+        statusEl.className = 'connection-status waiting';
+    } else {
+        executeBtn.innerHTML = '⚡ Place Limit Order';
+        executeBtn.style.background = 'linear-gradient(135deg, #34c759, #28a745)';
+        statusEl.innerHTML = '🟢 Ready';
+        statusEl.className = 'connection-status';
+    }
+}
+
+function startPriceMonitoring() {
+    if (priceCheckInterval) clearInterval(priceCheckInterval);
+    
+    priceCheckInterval = setInterval(async () => {
+        if (!pendingLimitOrder) {
+            clearInterval(priceCheckInterval);
+            return;
+        }
+        
+        const currentPrice = await getPrice();
+        if (!currentPrice) return;
+        
+        const order = pendingLimitOrder;
+        let shouldExecute = false;
+        
+        if (order.signalType === 'LONG' && currentPrice <= order.idealEntry) {
+            shouldExecute = true;
+        } else if (order.signalType === 'SHORT' && currentPrice >= order.idealEntry) {
+            shouldExecute = true;
+        }
+        
+        if (shouldExecute) {
+            executeLimitOrder(order, currentPrice);
+        }
+        
+        updatePriceDisplay(currentPrice);
+        
+    }, 5000);
+}
+
+function executeLimitOrder(order, fillPrice) {
+    clearPendingOrder();
+    
+    if (tg && tg.sendData) {
+        tg.sendData(JSON.stringify({
+            action: 'limit_order_filled',
+            pair: order.pair,
+            signal: order.signalType,
+            filledPrice: fillPrice,
+            stopLoss: order.stopLoss,
+            takeProfits: [order.takeProfit1, order.takeProfit2, order.takeProfit3]
+        }));
+    }
+    
+    showNotification(`✅ ORDER FILLED! ${order.signalType} @ $${fillPrice.toFixed(getPricePrecision(order.pair))}`, 'success');
+}
 
 function handleExecuteOrder() {
     if (!analysisData) {
-        showNotification('No analysis data. Run analysis first.', 'error');
+        showNotification('Run analysis first', 'error');
         return;
     }
     
     if (pendingLimitOrder) {
-        // Cancel existing order
         clearPendingOrder();
         showNotification('❌ Limit order cancelled', 'warning');
         return;
     }
     
-    // Create limit order
     const order = {
         id: Date.now(),
         pair: currentPair,
         signalType: analysisData.signalType,
         idealEntry: analysisData.idealEntry,
-        currentPrice: analysisData.currentPrice,
         stopLoss: analysisData.stopLoss,
         takeProfit1: analysisData.takeProfit1,
         takeProfit2: analysisData.takeProfit2,
         takeProfit3: analysisData.takeProfit3,
         confidence: analysisData.confidence,
-        aiReasoning: analysisData.aiReasoning,
         createdAt: new Date().toISOString()
     };
     
@@ -981,15 +896,7 @@ function handleExecuteOrder() {
     startPriceMonitoring();
     
     const precision = getPricePrecision(currentPair);
-    showNotification(`📝 Limit order placed! Waiting for ${currentPair} to reach $${order.idealEntry.toFixed(precision)}`, 'info');
-    
-    // Send to Telegram
-    if (tg && tg.sendData) {
-        tg.sendData(JSON.stringify({
-            action: 'limit_order_placed',
-            ...order
-        }));
-    }
+    showNotification(`📝 Limit order placed @ $${order.idealEntry.toFixed(precision)}`, 'info');
 }
 
 // ============================================
@@ -1045,15 +952,6 @@ function updateVolumeProfileDisplay(vp) {
     document.getElementById('totalVolume').innerHTML = `${(vp.totalVolume / 1000000).toFixed(1)}M`;
 }
 
-function updateOrderFlowDisplay(of) {
-    if (!of) return;
-    const precision = getPricePrecision(currentPair);
-    document.getElementById('buyingPressure').innerHTML = `${(of.buyingPressure / 1000000).toFixed(1)}M`;
-    document.getElementById('sellingPressure').innerHTML = `${(of.sellingPressure / 1000000).toFixed(1)}M`;
-    document.getElementById('netDelta').innerHTML = `${(of.netDelta / 1000000).toFixed(1)}M`;
-    document.getElementById('vwapValue').innerHTML = `$${of.vwap.toFixed(precision)}`;
-}
-
 function updateICTDisplay(fvgs, obs, liquidity, structure) {
     document.getElementById('fvgCount').innerHTML = fvgs.length;
     document.getElementById('obCount').innerHTML = obs.length;
@@ -1092,4 +990,19 @@ function showNotification(message, type) {
     notification.className = `notification ${type}`;
     notification.classList.remove('hidden');
     setTimeout(() => notification.classList.add('hidden'), 4000);
+}
+
+function updateChart(data) {
+    if (!priceChart) return;
+    priceChart.data.datasets[0].data = data.slice(-50).map(c => ({ x: c.time, y: c.close }));
+    priceChart.data.labels = data.slice(-50).map(c => new Date(c.time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }));
+    priceChart.update();
+}
+
+function updateChartWithTimeframe() {
+    if (allTimeframeData[currentTimeframe]) updateChart(allTimeframeData[currentTimeframe]);
+}
+
+function updateChartAnnotations() {
+    if (chartData.length > 0) updateChart(chartData);
 }
