@@ -6,14 +6,13 @@
     <title>ICT Trading Bot Pro</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@0.1.0/dist/chartjs-chart-financial.min.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
         <div class="header">
             <h1>📊 ICT Trading Bot Pro</h1>
-            <p class="subtitle">Multi-TF Analysis | Volume Profile | Smart Money Concepts</p>
+            <p class="subtitle">AI-Powered | Limit Orders | Smart Money Concepts</p>
             <div id="liveTime" class="live-time"></div>
         </div>
 
@@ -48,7 +47,6 @@
                 <div id="apiSource" class="api-source">--</div>
             </div>
             
-            <!-- Chart Container -->
             <div class="chart-container">
                 <canvas id="priceChart"></canvas>
             </div>
@@ -60,17 +58,6 @@
                     <button class="tf-btn active" data-tf="4H">4H</button>
                     <button class="tf-btn" data-tf="1D">1D</button>
                     <button class="tf-btn" data-tf="1W">1W</button>
-                </div>
-                <div class="chart-toggles">
-                    <label class="toggle-label">
-                        <input type="checkbox" id="showFVG" checked> FVG
-                    </label>
-                    <label class="toggle-label">
-                        <input type="checkbox" id="showOB" checked> Order Blocks
-                    </label>
-                    <label class="toggle-label">
-                        <input type="checkbox" id="showLQ" checked> Liquidity
-                    </label>
                 </div>
             </div>
         </div>
@@ -119,18 +106,24 @@
 
         <button id="analyzeBtn" class="analyze-btn">🔍 Analyze Market</button>
 
-        <!-- API Status -->
+        <!-- API Status & Limit Order Status -->
         <div class="section status-section">
             <div class="status-info">
                 <span>📊 API: <strong id="apiUsage">0</strong> calls</span>
                 <span id="connectionStatus" class="connection-status">🟢 Ready</span>
+            </div>
+            <div id="limitOrderStatus" class="limit-order-status hidden">
+                <div class="limit-order-info">
+                    <span id="limitOrderText">⏳ Waiting for limit order...</span>
+                    <button id="cancelLimitBtn" class="cancel-limit-btn">✕ Cancel</button>
+                </div>
             </div>
         </div>
 
         <!-- Trading Signal -->
         <div class="section signal-card">
             <div class="signal-header">
-                <h2>🎯 TRADING SIGNAL</h2>
+                <h2>🎯 AI TRADING SIGNAL</h2>
                 <div id="signalBadge" class="signal-badge">--</div>
             </div>
             
@@ -145,7 +138,7 @@
 
             <div class="trade-levels">
                 <div class="level-row highlight">
-                    <span class="level-label">🎯 IDEAL ENTRY:</span>
+                    <span class="level-label">🎯 LIMIT ENTRY (Wait for price):</span>
                     <span class="level-value" id="idealEntryDisplay">--</span>
                 </div>
                 <div class="level-row">
@@ -153,11 +146,14 @@
                     <span class="level-value" id="entryPrice">--</span>
                 </div>
                 <div class="level-row">
+                    <span class="level-label">📏 Distance to Entry:</span>
+                    <span class="level-value" id="distanceToEntry">--</span>
+                </div>
+                <div class="level-row">
                     <span class="level-label">🛑 STOP LOSS:</span>
                     <span class="level-value" id="stopLoss">--</span>
                 </div>
                 
-                <!-- Multiple Take Profit Levels -->
                 <div class="tp-section">
                     <div class="tp-header">🎯 TAKE PROFIT LEVELS</div>
                     <div class="level-row tp-row">
@@ -198,7 +194,7 @@
             </div>
 
             <div class="signal-reason">
-                <strong>📋 Analysis:</strong><br>
+                <strong>📋 AI Analysis:</strong><br>
                 <span id="signalReason">--</span>
             </div>
         </div>
@@ -262,7 +258,7 @@
             </div>
         </div>
 
-        <button id="executeBtn" class="execute-btn" disabled>⚡ Execute Order</button>
+        <button id="executeBtn" class="execute-btn" disabled>⚡ Place Limit Order</button>
 
         <div id="notification" class="notification hidden"></div>
     </div>
