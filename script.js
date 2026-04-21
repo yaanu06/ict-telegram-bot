@@ -6,11 +6,10 @@ if (tg) {
 }
 
 // ============================================
-// SECURE API KEY STORAGE USING TELEGRAM CLOUD
+// SECURE API KEY STORAGE
 // ============================================
 let TWELVE_DATA_KEY = '';
 let DEEPSEEK_API_KEY = '';
-let PROXY_ENABLED = false;
 
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
@@ -29,187 +28,211 @@ const TIMEFRAME_MAP = {
 };
 
 // ============================================
-// LOAD API KEYS FROM TELEGRAM STORAGE
+// LOAD API KEYS (FIXED)
 // ============================================
 async function loadAPIKeys() {
-    if (!tg || !tg.CloudStorage) {
-        console.log('Telegram CloudStorage not available');
-        return false;
+    // First try localStorage (more reliable than Telegram CloudStorage)
+    const saved = localStorage.getItem('ict_bot_keys');
+    if (saved) {
+        try {
+            const keys = JSON.parse(saved);
+            TWELVE_DATA_KEY = keys.twelveData || '';
+            DEEPSEEK_API_KEY = keys.deepseek || '';
+            console.log('✅ Keys loaded from localStorage');
+            return true;
+        } catch(e) {
+            console.error('Failed to parse saved keys:', e);
+        }
     }
     
-    try {
-        // Try to get keys from Telegram cloud
-        const keys = await tg.CloudStorage.getItem('api_keys_v1');
-        
-        if (keys) {
-            const parsed = JSON.parse(keys);
-            TWELVE_DATA_KEY = parsed.twelveData || '';
-            DEEPSEEK_API_KEY = parsed.deepseek || '';
-            
-            // Hide keys in UI - show only last 4 chars
-            if (TWELVE_DATA_KEY) {
-                console.log('✅ Twelve Data key loaded: ...' + TWELVE_DATA_KEY.slice(-4));
+    // Fallback to Telegram CloudStorage
+    if (tg && tg.CloudStorage) {
+        try {
+            const keys = await tg.CloudStorage.getItem('api_keys_v1');
+            if (keys) {
+                const parsed = JSON.parse(keys);
+                TWELVE_DATA_KEY = parsed.twelveData || '';
+                DEEPSEEK_API_KEY = parsed.deepseek || '';
+                // Also save to localStorage for faster access
+                localStorage.setItem('ict_bot_keys', keys);
+                console.log('✅ Keys loaded from Telegram Cloud');
+                return true;
             }
-            if (DEEPSEEK_API_KEY) {
-                console.log('✅ DeepSeek key loaded: ...' + DEEPSEEK_API_KEY.slice(-4));
-            }
-            
-            return true;
+        } catch(e) {
+            console.error('CloudStorage error:', e);
         }
-    } catch(e) {
-        console.error('Failed to load keys:', e);
     }
     
     return false;
 }
 
-// Save API keys to Telegram cloud
+// Save API keys (FIXED - dual storage)
 async function saveAPIKeys(twelveKey, deepseekKey) {
-    if (!tg || !tg.CloudStorage) {
-        showNotification('Telegram CloudStorage not available', 'error');
-        return false;
-    }
+    const keys = JSON.stringify({
+        twelveData: twelveKey,
+        deepseek: deepseekKey
+    });
     
+    // Always save to localStorage (reliable)
     try {
-        const keys = JSON.stringify({
-            twelveData: twelveKey,
-            deepseek: deepseekKey
-        });
-        
-        await tg.CloudStorage.setItem('api_keys_v1', keys);
+        localStorage.setItem('ict_bot_keys', keys);
         TWELVE_DATA_KEY = twelveKey;
         DEEPSEEK_API_KEY = deepseekKey;
-        
-        showNotification('✅ API keys saved securely!', 'success');
-        return true;
+        console.log('✅ Keys saved to localStorage');
     } catch(e) {
-        console.error('Failed to save keys:', e);
-        showNotification('Failed to save keys', 'error');
-        return false;
+        console.error('localStorage save error:', e);
     }
+    
+    // Also try Telegram CloudStorage
+    if (tg && tg.CloudStorage) {
+        try {
+            await tg.CloudStorage.setItem('api_keys_v1', keys);
+            console.log('✅ Keys saved to Telegram Cloud');
+        } catch(e) {
+            console.error('CloudStorage save error:', e);
+            // Not critical - localStorage already saved it
+        }
+    }
+    
+    showNotification('✅ API keys saved!', 'success');
+    return true;
 }
 
 // Show setup modal for first-time users
 function showSetupModal() {
+    // Remove existing modal if any
+    const existing = document.getElementById('setupOverlay');
+    if (existing) existing.remove();
+    
     const setupHTML = `
         <div class="setup-overlay" id="setupOverlay">
             <div class="setup-modal">
                 <h3>🔐 API Key Setup</h3>
-                <p class="setup-desc">Enter your API keys once. They'll be encrypted and stored securely in Telegram.</p>
+                <p class="setup-desc">Enter your API keys once. They're stored locally on your device.</p>
                 
                 <label>Twelve Data API Key:</label>
                 <input type="password" id="twelveInput" placeholder="3076..." class="setup-input">
                 
-                <label>DeepSeek API Key:</label>
+                <label>DeepSeek API Key (Optional):</label>
                 <input type="password" id="deepseekInput" placeholder="sk-..." class="setup-input">
                 
-                <p class="setup-note">Keys are stored ONLY in your Telegram cloud, never on our servers.</p>
+                <p class="setup-note">⚠️ Get your free Twelve Data key at twelvedata.com</p>
                 
                 <div class="setup-buttons">
                     <button id="saveKeysBtn" class="setup-btn primary">Save Keys</button>
-                    <button id="skipSetupBtn" class="setup-btn secondary">Skip (Limited Mode)</button>
+                    <button id="skipSetupBtn" class="setup-btn secondary">Skip</button>
                 </div>
             </div>
         </div>
     `;
     
-    // Add modal to body
     document.body.insertAdjacentHTML('beforeend', setupHTML);
     
-    // Add styles dynamically
-    const style = document.createElement('style');
-    style.textContent = `
-        .setup-overlay {
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.8);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 9999;
-        }
-        .setup-modal {
-            background: #1c1c1e;
-            border-radius: 16px;
-            padding: 24px;
-            max-width: 350px;
-            width: 90%;
-            border: 1px solid #3390ec;
-        }
-        .setup-modal h3 {
-            color: #3390ec;
-            margin-bottom: 8px;
-        }
-        .setup-desc {
-            color: #8e8e93;
-            font-size: 13px;
-            margin-bottom: 16px;
-        }
-        .setup-modal label {
-            color: white;
-            font-size: 13px;
-            display: block;
-            margin-bottom: 4px;
-        }
-        .setup-input {
-            width: 100%;
-            padding: 12px;
-            border-radius: 10px;
-            border: 1px solid #2c2c2e;
-            background: #2c2c2e;
-            color: white;
-            font-size: 14px;
-            margin-bottom: 16px;
-        }
-        .setup-note {
-            color: #ff9f0a;
-            font-size: 11px;
-            margin-bottom: 16px;
-        }
-        .setup-buttons {
-            display: flex;
-            gap: 8px;
-        }
-        .setup-btn {
-            flex: 1;
-            padding: 12px;
-            border: none;
-            border-radius: 10px;
-            font-size: 14px;
-            font-weight: bold;
-            cursor: pointer;
-        }
-        .setup-btn.primary {
-            background: #3390ec;
-            color: white;
-        }
-        .setup-btn.secondary {
-            background: #2c2c2e;
-            color: #8e8e93;
-        }
-    `;
-    document.head.appendChild(style);
+    // Add styles
+    if (!document.getElementById('setupStyles')) {
+        const style = document.createElement('style');
+        style.id = 'setupStyles';
+        style.textContent = `
+            .setup-overlay {
+                position: fixed;
+                top: 0; left: 0; right: 0; bottom: 0;
+                background: rgba(0,0,0,0.85);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                z-index: 9999;
+            }
+            .setup-modal {
+                background: #1c1c1e;
+                border-radius: 16px;
+                padding: 24px;
+                max-width: 350px;
+                width: 90%;
+                border: 1px solid #3390ec;
+            }
+            .setup-modal h3 {
+                color: #3390ec;
+                margin-bottom: 8px;
+                font-size: 18px;
+            }
+            .setup-desc {
+                color: #8e8e93;
+                font-size: 13px;
+                margin-bottom: 16px;
+            }
+            .setup-modal label {
+                color: white;
+                font-size: 13px;
+                display: block;
+                margin-bottom: 4px;
+            }
+            .setup-input {
+                width: 100%;
+                padding: 12px;
+                border-radius: 10px;
+                border: 1px solid #2c2c2e;
+                background: #0f0f11;
+                color: white;
+                font-size: 13px;
+                margin-bottom: 16px;
+                font-family: monospace;
+            }
+            .setup-input:focus {
+                outline: none;
+                border-color: #3390ec;
+            }
+            .setup-note {
+                color: #ff9f0a;
+                font-size: 11px;
+                margin-bottom: 16px;
+            }
+            .setup-buttons {
+                display: flex;
+                gap: 8px;
+            }
+            .setup-btn {
+                flex: 1;
+                padding: 12px;
+                border: none;
+                border-radius: 10px;
+                font-size: 14px;
+                font-weight: bold;
+                cursor: pointer;
+                transition: all 0.2s;
+            }
+            .setup-btn.primary {
+                background: #3390ec;
+                color: white;
+            }
+            .setup-btn.primary:hover {
+                background: #0055cc;
+            }
+            .setup-btn.secondary {
+                background: #2c2c2e;
+                color: #8e8e93;
+            }
+        `;
+        document.head.appendChild(style);
+    }
     
     // Setup event listeners
     document.getElementById('saveKeysBtn').addEventListener('click', async () => {
         const twelveKey = document.getElementById('twelveInput').value.trim();
         const deepseekKey = document.getElementById('deepseekInput').value.trim();
         
-        if (!twelveKey && !deepseekKey) {
-            showNotification('Please enter at least one API key', 'warning');
+        if (!twelveKey) {
+            showNotification('Twelve Data key is required', 'warning');
             return;
         }
         
-        const saved = await saveAPIKeys(twelveKey, deepseekKey);
-        if (saved) {
-            document.getElementById('setupOverlay').remove();
-            showNotification('Setup complete! You can now use the bot.', 'success');
-        }
+        await saveAPIKeys(twelveKey, deepseekKey);
+        document.getElementById('setupOverlay').remove();
+        showNotification('Setup complete! Click Analyze to start.', 'success');
     });
     
     document.getElementById('skipSetupBtn').addEventListener('click', () => {
         document.getElementById('setupOverlay').remove();
-        showNotification('Limited mode: Basic analysis only', 'warning');
+        showNotification('Limited mode: Add API keys in settings', 'warning');
     });
 }
 
@@ -231,9 +254,8 @@ let priceCheckInterval = null;
 document.addEventListener('DOMContentLoaded', async function() {
     const keysLoaded = await loadAPIKeys();
     
-    if (!keysLoaded) {
-        // First time user - show setup
-        setTimeout(() => showSetupModal(), 500);
+    if (!keysLoaded || !TWELVE_DATA_KEY) {
+        setTimeout(() => showSetupModal(), 300);
     }
     
     init();
@@ -452,7 +474,8 @@ async function getAIAnalysis(marketData) {
     const prompt = `You are an expert ICT trader. Analyze this market data and provide a trading signal.
 
 Market: ${currentPair} | Timeframe: ${currentTimeframe} | Price: ${marketData.currentPrice}
-RSI: ${marketData.rsi} | Trend: ${marketData.trend}
+RSI: ${marketData.rsi} | Trend: ${marketData.trend} | ATR: ${marketData.atr}
+FVG Count: ${marketData.fvgCount} | Order Blocks: ${marketData.obCount}
 
 Return ONLY valid JSON:
 {
@@ -463,7 +486,7 @@ Return ONLY valid JSON:
     "takeProfit1": number,
     "takeProfit2": number,
     "takeProfit3": number,
-    "reasoning": "Brief analysis"
+    "reasoning": "Brief ICT analysis"
 }`;
 
     try {
@@ -654,6 +677,64 @@ function calculateVolumeProfile(data) {
 }
 
 // ============================================
+// MULTI-TIMEFRAME ANALYSIS (FIXED - RESTORED)
+// ============================================
+
+async function analyzeTimeframe(timeframe) {
+    const data = await getHistoricalData(timeframe);
+    if (!data || data.length < 30) return null;
+    
+    const closes = data.map(c => c.close);
+    const rsi = calculateRSI(closes);
+    const trend = closes[closes.length - 1] > closes[closes.length - 20] ? 'bullish' : 
+                  closes[closes.length - 1] < closes[closes.length - 20] ? 'bearish' : 'neutral';
+    
+    return {
+        data,
+        trend,
+        rsi,
+        volume: data.slice(-20).reduce((s, c) => s + c.volume, 0),
+        structure: analyzeMarketStructure(data)
+    };
+}
+
+async function multiTimeframeAnalysis() {
+    const timeframes = ['15M', '1H', '4H', '1D'];
+    const results = {};
+    let bullishCount = 0, bearishCount = 0;
+    
+    for (const tf of timeframes) {
+        results[tf] = await analyzeTimeframe(tf);
+        if (results[tf]) {
+            if (results[tf].trend === 'bullish') bullishCount++;
+            else if (results[tf].trend === 'bearish') bearishCount++;
+            
+            const trendEl = document.getElementById(`trend${tf}`);
+            if (trendEl) {
+                trendEl.innerHTML = results[tf].trend === 'bullish' ? '🟢 Bullish' :
+                                   results[tf].trend === 'bearish' ? '🔴 Bearish' : '⚪ Neutral';
+                trendEl.className = `mtf-trend ${results[tf].trend}`;
+            }
+            
+            const rsiEl = document.getElementById(`rsi${tf}`);
+            if (rsiEl) rsiEl.innerHTML = results[tf].rsi.toFixed(1);
+            
+            const volEl = document.getElementById(`vol${tf}`);
+            if (volEl) volEl.innerHTML = (results[tf].volume / 1000000).toFixed(1) + 'M';
+        }
+    }
+    
+    const total = bullishCount + bearishCount;
+    const confluenceScore = total > 0 ? Math.max(bullishCount, bearishCount) / total * 100 : 0;
+    const direction = bullishCount > bearishCount ? 'Bullish' : bearishCount > bullishCount ? 'Bearish' : 'Neutral';
+    
+    const scoreEl = document.getElementById('confluenceScore');
+    if (scoreEl) scoreEl.innerHTML = `${direction} (${confluenceScore.toFixed(0)}% confluence)`;
+    
+    return { results, confluenceScore, direction };
+}
+
+// ============================================
 // MAIN ANALYSIS FUNCTION
 // ============================================
 
@@ -675,6 +756,9 @@ async function runAnalysis() {
     try {
         const currentPrice = await getPrice();
         if (!currentPrice) throw new Error('Could not fetch price');
+        
+        // Multi-timeframe analysis
+        const mtfResults = await multiTimeframeAnalysis();
         
         const historicalData = await getHistoricalData();
         if (!historicalData || historicalData.length < 30) throw new Error('Insufficient data');
@@ -703,6 +787,11 @@ async function runAnalysis() {
         if (currentEMA20 > currentEMA50) trend = 'bullish';
         else if (currentEMA20 < currentEMA50) trend = 'bearish';
         
+        // Override with MTF confluence
+        if (mtfResults.confluenceScore > 70) {
+            trend = mtfResults.direction.toLowerCase();
+        }
+        
         const recentHigh = Math.max(...highs.slice(-20));
         const recentLow = Math.min(...lows.slice(-20));
         const range = recentHigh - recentLow;
@@ -717,7 +806,10 @@ async function runAnalysis() {
         const marketData = {
             currentPrice: currentPrice.toFixed(getPricePrecision(currentPair)),
             rsi: rsi.toFixed(1),
-            trend: trend
+            atr: atr.toFixed(getPricePrecision(currentPair)),
+            trend: trend,
+            fvgCount: fvgs.length,
+            obCount: orderBlocks.length
         };
         
         let signalType, confidence, idealEntry, stopLoss, tp1, tp2, tp3, riskReward, analysisReason;
@@ -739,14 +831,17 @@ async function runAnalysis() {
         } else {
             // Fallback to rule-based
             signalType = trend === 'bullish' ? 'LONG' : (trend === 'bearish' ? 'SHORT' : 'NEUTRAL');
-            confidence = 50;
+            confidence = 50 + (mtfResults.confluenceScore > 60 ? 15 : 0);
             idealEntry = currentPrice;
-            stopLoss = trend === 'bullish' ? currentPrice - atr : currentPrice + atr;
-            tp1 = trend === 'bullish' ? currentPrice + atr * 1.5 : currentPrice - atr * 1.5;
-            tp2 = trend === 'bullish' ? currentPrice + atr * 2.5 : currentPrice - atr * 2.5;
-            tp3 = trend === 'bullish' ? currentPrice + atr * 4 : currentPrice - atr * 4;
+            stopLoss = trend === 'bullish' ? currentPrice - atr * 1.2 : currentPrice + atr * 1.2;
+            
+            const risk = Math.abs(idealEntry - stopLoss);
+            tp1 = trend === 'bullish' ? idealEntry + risk * 1.5 : idealEntry - risk * 1.5;
+            tp2 = trend === 'bullish' ? idealEntry + risk * 2.5 : idealEntry - risk * 2.5;
+            tp3 = trend === 'bullish' ? idealEntry + risk * 4 : idealEntry - risk * 4;
+            
             riskReward = '1.5';
-            analysisReason = 'Rule-based analysis (AI unavailable or neutral)';
+            analysisReason = `Rule-based analysis (${trend} trend, MTF: ${mtfResults.confluenceScore.toFixed(0)}%)`;
         }
         
         updatePriceDisplay(currentPrice);
@@ -779,9 +874,13 @@ async function runAnalysis() {
 function loadPendingOrder() {
     const saved = localStorage.getItem('pendingLimitOrder');
     if (saved) {
-        pendingLimitOrder = JSON.parse(saved);
-        updateLimitOrderUI();
-        startPriceMonitoring();
+        try {
+            pendingLimitOrder = JSON.parse(saved);
+            updateLimitOrderUI();
+            startPriceMonitoring();
+        } catch(e) {
+            localStorage.removeItem('pendingLimitOrder');
+        }
     }
 }
 
@@ -810,7 +909,8 @@ function updateLimitOrderUI() {
     if (pendingLimitOrder) {
         executeBtn.innerHTML = '⏳ Waiting for Entry...';
         executeBtn.style.background = 'linear-gradient(135deg, #ff9f0a, #ff6b00)';
-        statusEl.innerHTML = `🟡 Waiting for ${pendingLimitOrder.pair}`;
+        const precision = getPricePrecision(pendingLimitOrder.pair);
+        statusEl.innerHTML = `🟡 Waiting for ${pendingLimitOrder.pair} @ $${pendingLimitOrder.idealEntry.toFixed(precision)}`;
         statusEl.className = 'connection-status waiting';
     } else {
         executeBtn.innerHTML = '⚡ Place Limit Order';
@@ -841,6 +941,15 @@ function startPriceMonitoring() {
             shouldExecute = true;
         }
         
+        // Update status with distance
+        const precision = getPricePrecision(order.pair);
+        const distance = Math.abs(currentPrice - order.idealEntry);
+        const distancePercent = (distance / order.idealEntry * 100).toFixed(2);
+        const statusEl = document.getElementById('connectionStatus');
+        if (statusEl && !shouldExecute) {
+            statusEl.innerHTML = `⏳ ${order.pair}: $${currentPrice.toFixed(precision)} → Target: $${order.idealEntry.toFixed(precision)} (${distancePercent}% away)`;
+        }
+        
         if (shouldExecute) {
             executeLimitOrder(order, currentPrice);
         }
@@ -865,6 +974,11 @@ function executeLimitOrder(order, fillPrice) {
     }
     
     showNotification(`✅ ORDER FILLED! ${order.signalType} @ $${fillPrice.toFixed(getPricePrecision(order.pair))}`, 'success');
+    
+    try {
+        const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+        audio.play();
+    } catch(e) {}
 }
 
 function handleExecuteOrder() {
@@ -977,10 +1091,11 @@ function calculatePositionSize() {
     const riskPercent = parseFloat(document.getElementById('riskPercent').value) || 1;
     const riskAmount = accountSize * (riskPercent / 100);
     const stopDistance = Math.abs(analysisData.idealEntry - analysisData.stopLoss);
-    const positionSize = riskAmount / stopDistance;
+    const positionSize = stopDistance > 0 ? riskAmount / stopDistance : 0;
     
     document.getElementById('positionSize').innerHTML = positionSize.toFixed(4);
     document.getElementById('riskAmount').innerHTML = `$${riskAmount.toFixed(2)}`;
+    document.getElementById('suggestedLeverage').innerHTML = '--';
 }
 
 function showNotification(message, type) {
