@@ -206,8 +206,8 @@ async function getHistoricalData(timeframe = currentTimeframe) {
 function calculateEMA(p, n) { const m = 2/(n+1); let e = [p[0]]; for(let i=1;i<p.length;i++) e.push((p[i]-e[i-1])*m+e[i-1]); return e; }
 function calculateRSI(p, n=14) { let g=0,l=0; for(let i=p.length-n;i<p.length;i++){ let c=p[i]-p[i-1]; if(c>=0)g+=c; else l-=c; } let ag=g/n, al=l/n; return al===0?100:100-(100/(1+ag/al)); }
 function calculateATR(d, n=14) { let t=[]; for(let i=1;i<d.length;i++) t.push(Math.max(d[i].high-d[i].low, Math.abs(d[i].high-d[i-1].close), Math.abs(d[i].low-d[i-1].close))); return t.slice(-n).reduce((a,b)=>a+b,0)/n; }
-function detectFairValueGaps(d) { let f=[]; for(let i=1;i<d.length-1;i++){ if(d[i-1].high<d[i+1].low&&d[i+1].low-d[i-1].high>d[i+1].close*0.001) f.push({type:'bullish'}); if(d[i-1].low>d[i+1].high&&d[i-1].low-d[i+1].high>d[i+1].close*0.001) f.push({type:'bearish'}); } return f; }
-function detectOrderBlocks(d) { let o=[]; for(let i=2;i<d.length-1;i++){ if(d[i].close<d[i].open&&d[i+1].close>d[i+1].open&&d[i+1].close>d[i].high) o.push({type:'bullish'}); if(d[i].close>d[i].open&&d[i+1].close<d[i+1].open&&d[i+1].close<d[i].low) o.push({type:'bearish'}); } return o; }
+function detectFairValueGaps(d) { let f=[]; for(let i=1;i<d.length-1;i++){ if(d[i-1].high<d[i+1].low&&d[i+1].low-d[i-1].high>d[i+1].close*0.001) f.push({type:'bullish', low: d[i-1].high, high: d[i+1].low}); if(d[i-1].low>d[i+1].high&&d[i-1].low-d[i+1].high>d[i+1].close*0.001) f.push({type:'bearish', low: d[i+1].high, high: d[i-1].low}); } return f; }
+function detectOrderBlocks(d) { let o=[]; for(let i=2;i<d.length-1;i++){ if(d[i].close<d[i].open&&d[i+1].close>d[i+1].open&&d[i+1].close>d[i].high) o.push({type:'bullish', high: d[i].high, low: d[i].low}); if(d[i].close>d[i].open&&d[i+1].close<d[i+1].open&&d[i+1].close<d[i].low) o.push({type:'bearish', high: d[i].high, low: d[i].low}); } return o; }
 function detectLiquidityLevels(d) { let h=d.map(c=>c.high), l=d.map(c=>c.low), L=[]; for(let i=2;i<d.length-2;i++){ if(h[i]>h[i-1]&&h[i]>h[i-2]&&h[i]>h[i+1]&&h[i]>h[i+2]) L.push({type:'resistance',price:h[i]}); if(l[i]<l[i-1]&&l[i]<l[i-2]&&l[i]<l[i+1]&&l[i]<l[i+2]) L.push({type:'support',price:l[i]}); } return L; }
 function analyzeMarketStructure(d) { let h=d.map(c=>c.high), l=d.map(c=>c.low); let rh=h.slice(-20), rl=l.slice(-20); let hh=rh[rh.length-1]>rh[0], hl=rl[rl.length-1]>rl[0], lh=rh[rh.length-1]<rh[0], ll=rl[rl.length-1]<rl[0]; if(hh&&hl) return 'Bullish'; if(lh&&ll) return 'Bearish'; return 'Ranging'; }
 
@@ -258,13 +258,20 @@ async function multiTimeframeAnalysis() {
 }
 
 // ============================================
-// DEEPSEEK AI (FIXED - Single consistent signal)
+// DEEPSEEK AI (IMPROVED - Forces ICT Entry Zones)
 // ============================================
 async function getAIAnalysis(marketData) {
     if (!DEEPSEEK_API_KEY) return null;
     showNotification('🤖 DeepSeek AI analyzing...', 'info');
     
-    const prompt = `You are an expert ICT (Inner Circle Trader) and Smart Money trader. Analyze this market data and provide ONE clear trading signal with a LIMIT ORDER entry (price to wait for).
+    const prompt = `You are an expert ICT (Inner Circle Trader) and Smart Money trader. Your task is to provide ONE high-probability limit order entry based on ICT concepts. We are PATIENT traders—we wait for price to come to optimal zones, not chase the market.
+
+IMPORTANT: The entry price MUST be at a strategic ICT level, NOT near the current price unless current price is already at that level. The entry should be at:
+- Bullish: 61.8%-79% Fibonacci retracement (OTE zone), or a bullish FVG, or a demand zone (order block)
+- Bearish: 61.8%-79% Fibonacci retracement (OTE zone), or a bearish FVG, or a supply zone (order block)
+- Also consider POC (Point of Control) and Value Area boundaries for entries
+
+DO NOT give an entry within 0.2% of current price unless current price is exactly at one of these zones. The limit order should be placed where smart money would enter—often below current price for longs, above for shorts.
 
 Market: ${currentPair} | Timeframe: ${currentTimeframe}
 Current Price: ${marketData.currentPrice}
@@ -276,27 +283,32 @@ Order Flow - Net Delta: ${marketData.netDelta} (${marketData.netDelta > 0 ? 'Buy
 VWAP: ${marketData.vwap}
 POC: ${marketData.poc} | Value Area: ${marketData.valueHigh} - ${marketData.valueLow}
 
-Fibonacci Levels: 0%:${marketData.fib0}, 38.2%:${marketData.fib382}, 50%:${marketData.fib500}, 61.8%:${marketData.fib618}, 78.6%:${marketData.fib786}, 100%:${marketData.fib100}
-
-IMPORTANT: Provide a limit order entry (price where we wait for the market to come to us, NOT market order). Be decisive - give ONE signal.
+Fibonacci Levels (from recent swing):
+0%: ${marketData.fib0}
+23.6%: ${marketData.fib236}
+38.2%: ${marketData.fib382}
+50%: ${marketData.fib500}
+61.8%: ${marketData.fib618}
+78.6%: ${marketData.fib786}
+100%: ${marketData.fib100}
 
 Return ONLY valid JSON:
 {
     "signal": "LONG" or "SHORT" or "NEUTRAL",
     "confidence": 0-100,
-    "idealEntry": number (limit price to wait for),
-    "stopLoss": number,
-    "takeProfit1": number,
+    "idealEntry": number (MUST be a strategic ICT level, not close to current price unless at zone),
+    "stopLoss": number (placed beyond the zone or recent swing),
+    "takeProfit1": number (first target - often opposing liquidity or fib extension),
     "takeProfit2": number,
     "takeProfit3": number,
-    "reasoning": "Brief ICT analysis explaining why this entry level"
+    "reasoning": "Explain exactly which ICT concept this entry is based on (e.g., 'OTE long at 61.8% fib retracement with bullish FVG confluence')"
 }`;
 
     try {
         const res = await fetch(DEEPSEEK_API_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` },
-            body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: 'You are an expert ICT trader. Return ONLY valid JSON.' }, { role: 'user', content: prompt }], temperature: 0.2, max_tokens: 800 })
+            body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: 'You are an expert ICT trader. Return ONLY valid JSON with strategic limit entries.' }, { role: 'user', content: prompt }], temperature: 0.1, max_tokens: 800 })
         });
         const data = await res.json();
         if (data.choices?.[0]) {
@@ -363,13 +375,14 @@ async function runAnalysis() {
         } else {
             signal = trend==='bullish'?'LONG':(trend==='bearish'?'SHORT':'NEUTRAL');
             confidence = 45 + (mtf.confluenceScore>60?10:0);
-            entry = trend==='bullish' ? Math.min(price, fibs.fib618) : Math.max(price, fibs.fib382);
-            sl = trend==='bullish' ? entry - atr*1.2 : entry + atr*1.2;
+            // Rule-based fallback uses OTE zone
+            entry = trend==='bullish' ? (fibs.fib618 + fibs.fib786)/2 : (fibs.fib382 + fibs.fib500)/2;
+            sl = trend==='bullish' ? fibs.fib0 - atr*0.5 : fibs.fib100 + atr*0.5;
             const risk = Math.abs(entry-sl);
             tp1 = trend==='bullish' ? entry+risk*1.5 : entry-risk*1.5;
             tp2 = trend==='bullish' ? entry+risk*2.5 : entry-risk*2.5;
             tp3 = trend==='bullish' ? entry+risk*4 : entry-risk*4;
-            reason = `Rule-based (${trend} trend, MTF: ${mtf.confluenceScore.toFixed(0)}%)`;
+            reason = `Rule-based OTE entry (${trend})`;
         }
         
         // Update UI
