@@ -156,17 +156,29 @@ function setupPositionCalculator() {
 }
 
 function updatePairsByCategory(category) {
-    const pairs = { crypto: ['BTC/USD','ETH/USD'], forex: ['EUR/USD','GBP/USD'], metals: ['XAU/USD','XAG/USD'] };
+    const pairs = { 
+        crypto: ['BTC/USD','ETH/USD','BNB/USD','SOL/USD','XRP/USD'], 
+        forex: ['EUR/USD','GBP/USD','USD/JPY','AUD/USD','USD/CAD'], 
+        metals: ['XAU/USD','XAG/USD','XPT/USD','XPD/USD'] 
+    };
     const select = document.getElementById('pairSelect');
-    if (select) { select.innerHTML = pairs[category].map(p => `<option value="${p}">${getPairDisplayName(p)}</option>`).join(''); currentPair = pairs[category][0]; }
+    if (select) { 
+        select.innerHTML = pairs[category].map(p => `<option value="${p}">${getPairDisplayName(p)}</option>`).join(''); 
+        currentPair = pairs[category][0]; 
+    }
 }
 
 function getPairDisplayName(pair) {
-    const icons = { 'BTC/USD':'₿','ETH/USD':'⟠','EUR/USD':'€','GBP/USD':'£','XAU/USD':'👑','XAG/USD':'🥈' };
+    const icons = { 
+        'BTC/USD':'₿','ETH/USD':'⟠','EUR/USD':'€','GBP/USD':'£',
+        'XAU/USD':'👑','XAG/USD':'🥈','USD/JPY':'💴','AUD/USD':'🇦🇺',
+        'USD/CAD':'🇨🇦','BNB/USD':'💰','SOL/USD':'☀️','XRP/USD':'💧',
+        'XPT/USD':'🔘','XPD/USD':'⚪'
+    };
     return `${icons[pair]||'📊'} ${pair}`;
 }
 
-function isForexPair(p) { return ['EUR/USD','GBP/USD','USD/JPY'].includes(p); }
+function isForexPair(p) { return ['EUR/USD','GBP/USD','USD/JPY','AUD/USD','USD/CAD'].includes(p); }
 function isJPYPair(p) { return p.includes('JPY'); }
 function isGold(p) { return p.includes('XAU'); }
 function getPricePrecision(p) { 
@@ -185,7 +197,12 @@ async function getPrice() {
     try {
         const res = await fetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(symbol)}&apikey=${TWELVE_DATA_KEY}`);
         const data = await res.json();
-        if (data.price) { apiCalls++; document.getElementById('apiUsage').innerHTML = apiCalls; document.getElementById('apiSource').innerHTML = '📡 Twelve Data'; return parseFloat(data.price); }
+        if (data.price) { 
+            apiCalls++; 
+            document.getElementById('apiUsage').innerHTML = apiCalls; 
+            document.getElementById('apiSource').innerHTML = '📡 Twelve Data'; 
+            return parseFloat(data.price); 
+        }
     } catch(e) {}
     return null;
 }
@@ -195,114 +212,171 @@ async function getHistoricalData(timeframe = currentTimeframe) {
     const symbol = TWELVE_DATA_SYMBOLS[currentPair];
     const interval = TIMEFRAME_MAP[timeframe] || '15min';
     try {
-        const res = await fetch(`${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=200&apikey=${TWELVE_DATA_KEY}`);
+        const res = await fetch(`${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=100&apikey=${TWELVE_DATA_KEY}`);
         const data = await res.json();
         if (data.values) {
             apiCalls++;
-            return data.values.map(c => ({ time: c.datetime, open: +c.open, high: +c.high, low: +c.low, close: +c.close, volume: +c.volume || 1000000 })).reverse();
+            return data.values.map(c => ({ 
+                time: c.datetime, 
+                open: +c.open, 
+                high: +c.high, 
+                low: +c.low, 
+                close: +c.close, 
+                volume: +c.volume || 1000000 
+            })).reverse();
         }
     } catch(e) {}
     return null;
 }
 
-// ============================================
-// TECHNICAL ANALYSIS - ICT CONCEPTS
-// ============================================
-function calculateEMA(p, n) { const m = 2/(n+1); let e = [p[0]]; for(let i=1;i<p.length;i++) e.push((p[i]-e[i-1])*m+e[i-1]); return e; }
-function calculateRSI(p, n=14) { let g=0,l=0; for(let i=p.length-n;i<p.length;i++){ let c=p[i]-p[i-1]; if(c>=0)g+=c; else l-=c; } let ag=g/n, al=l/n; return al===0?100:100-(100/(1+ag/al)); }
-function calculateATR(d, n=14) { let t=[]; for(let i=1;i<d.length;i++) t.push(Math.max(d[i].high-d[i].low, Math.abs(d[i].high-d[i-1].close), Math.abs(d[i].low-d[i-1].close))); return t.slice(-n).reduce((a,b)=>a+b,0)/n; }
+function updateApiCounter() {
+    document.getElementById('apiUsage').innerHTML = `${apiCalls}`;
+}
 
-// Market Structure Shift (MSS) - Key for reversals
+// ============================================
+// TECHNICAL ANALYSIS FUNCTIONS
+// ============================================
+function calculateEMA(p, n) { 
+    const m = 2/(n+1); 
+    let e = [p[0]]; 
+    for(let i=1;i<p.length;i++) e.push((p[i]-e[i-1])*m+e[i-1]); 
+    return e; 
+}
+
+function calculateRSI(p, n=14) { 
+    let g=0,l=0; 
+    for(let i=p.length-n;i<p.length;i++){ 
+        let c=p[i]-p[i-1]; 
+        if(c>=0) g+=c; 
+        else l-=c; 
+    } 
+    let ag=g/n, al=l/n; 
+    return al===0?100:100-(100/(1+ag/al)); 
+}
+
+function calculateATR(d, n=14) { 
+    let t=[]; 
+    for(let i=1;i<d.length;i++) {
+        t.push(Math.max(
+            d[i].high-d[i].low, 
+            Math.abs(d[i].high-d[i-1].close), 
+            Math.abs(d[i].low-d[i-1].close)
+        )); 
+    }
+    return t.slice(-n).reduce((a,b)=>a+b,0)/n; 
+}
+
+// ============================================
+// ICT CONCEPTS DETECTION
+// ============================================
+function detectFairValueGaps(d) { 
+    let f=[]; 
+    for(let i=1;i<d.length-1;i++){ 
+        if(d[i-1].high<d[i+1].low && d[i+1].low-d[i-1].high>d[i+1].close*0.001) {
+            f.push({type:'bullish', low: d[i-1].high, high: d[i+1].low, mid: (d[i-1].high+d[i+1].low)/2}); 
+        }
+        if(d[i-1].low>d[i+1].high && d[i-1].low-d[i+1].high>d[i+1].close*0.001) {
+            f.push({type:'bearish', low: d[i+1].high, high: d[i-1].low, mid: (d[i+1].high+d[i-1].low)/2}); 
+        }
+    } 
+    return f; 
+}
+
+function detectOrderBlocks(d) { 
+    let o=[]; 
+    for(let i=2;i<d.length-1;i++){ 
+        if(d[i].close<d[i].open && d[i+1].close>d[i+1].open && d[i+1].close>d[i].high) {
+            o.push({type:'bullish', high: d[i].high, low: d[i].low}); 
+        }
+        if(d[i].close>d[i].open && d[i+1].close<d[i+1].open && d[i+1].close<d[i].low) {
+            o.push({type:'bearish', high: d[i].high, low: d[i].low}); 
+        }
+    } 
+    return o; 
+}
+
+function detectLiquidityLevels(d) { 
+    let h=d.map(c=>c.high), l=d.map(c=>c.low), L=[]; 
+    for(let i=2;i<d.length-2;i++){ 
+        if(h[i]>h[i-1]&&h[i]>h[i-2]&&h[i]>h[i+1]&&h[i]>h[i+2]) {
+            L.push({type:'resistance',price:h[i]}); 
+        }
+        if(l[i]<l[i-1]&&l[i]<l[i-2]&&l[i]<l[i+1]&&l[i]<l[i+2]) {
+            L.push({type:'support',price:l[i]}); 
+        }
+    } 
+    return L; 
+}
+
+function analyzeMarketStructure(d) { 
+    let h=d.map(c=>c.high), l=d.map(c=>c.low); 
+    let rh=h.slice(-20), rl=l.slice(-20); 
+    let hh=rh[rh.length-1]>rh[0], hl=rl[rl.length-1]>rl[0];
+    let lh=rh[rh.length-1]<rh[0], ll=rl[rl.length-1]<rl[0]; 
+    if(hh&&hl) return 'Bullish'; 
+    if(lh&&ll) return 'Bearish'; 
+    return 'Ranging'; 
+}
+
+function calculateVolumeProfile(d) {
+    if(!d?.length) return null;
+    let maxP=Math.max(...d.map(c=>c.high)), minP=Math.min(...d.map(c=>c.low));
+    let r=maxP-minP, ls=r/12;
+    let levels=[]; 
+    for(let i=0;i<12;i++){ 
+        let lo=minP+i*ls; 
+        levels.push({low:lo, high:lo+ls, volume:0, price:(lo+lo+ls)/2}); 
+    }
+    d.forEach(c=>{ 
+        levels.forEach(l=>{ 
+            if(c.high>=l.low && c.low<=l.high){ 
+                let o=Math.min(c.high,l.high)-Math.max(c.low,l.low); 
+                l.volume+=c.volume*(o/(c.high-c.low)); 
+            } 
+        }); 
+    });
+    let maxV=0, poc=null; 
+    levels.forEach(l=>{ if(l.volume>maxV){ maxV=l.volume; poc=l; } });
+    let totalV=levels.reduce((s,l)=>s+l.volume,0), target=totalV*.7, acc=0;
+    let sorted=[...levels].sort((a,b)=>b.volume-a.volume), va=[];
+    for(let l of sorted){ if(acc<target){ va.push(l); acc+=l.volume; } }
+    let vaH=va.length?Math.max(...va.map(l=>l.high)):maxP;
+    let vaL=va.length?Math.min(...va.map(l=>l.low)):minP;
+    return {poc, valueAreaHigh:vaH, valueAreaLow:vaL, totalVolume:totalV};
+}
+
+function calculateOrderFlow(d) {
+    if(!d?.length) return null;
+    let buy=0, sell=0;
+    d.forEach(c=>{ 
+        let bull=c.close>c.open; 
+        if(bull){ buy+=c.volume*.7; sell+=c.volume*.3; } 
+        else { buy+=c.volume*.3; sell+=c.volume*.7; } 
+    });
+    let pv=0, vol=0; 
+    d.forEach(c=>{ let tp=(c.high+c.low+c.close)/3; pv+=tp*c.volume; vol+=c.volume; });
+    return { buyingPressure:buy, sellingPressure:sell, netDelta:buy-sell, vwap:pv/vol };
+}
+
+// ============================================
+// ADVANCED ICT - MSS, BREAKERS, FVG SNIPER
+// ============================================
 function detectMSS(data) {
     const highs = data.map(c => c.high);
     const lows = data.map(c => c.low);
     const closes = data.map(c => c.close);
     
-    // Find recent swing high and swing low
     const recentHigh = Math.max(...highs.slice(-20));
     const recentLow = Math.min(...lows.slice(-20));
     const currentPrice = closes[closes.length - 1];
     
-    // Bullish MSS: Price breaks above recent swing high
     if (currentPrice > recentHigh) {
-        return { type: 'BULLISH', level: recentHigh, message: 'MSS confirmed - Transition from bear to bull' };
+        return { type: 'BULLISH', level: recentHigh, message: 'MSS confirmed - Transition to bull' };
     }
-    
-    // Bearish MSS: Price breaks below recent swing low
     if (currentPrice < recentLow) {
-        return { type: 'BEARISH', level: recentLow, message: 'MSS confirmed - Transition from bull to bear' };
+        return { type: 'BEARISH', level: recentLow, message: 'MSS confirmed - Transition to bear' };
     }
-    
     return null;
-}
-
-// Fair Value Gaps (FVG) - The ghost machine's favorite
-function detectFVGs(data) {
-    const fvgs = [];
-    for(let i = 1; i < data.length - 1; i++) {
-        // Bullish FVG (price gaps up)
-        if (data[i-1].high < data[i+1].low && (data[i+1].low - data[i-1].high) > data[i+1].close * 0.001) {
-            fvgs.push({
-                type: 'BULLISH',
-                low: data[i-1].high,
-                high: data[i+1].low,
-                mid: (data[i-1].high + data[i+1].low) / 2,
-                index: i,
-                mitigated: false
-            });
-        }
-        // Bearish FVG (price gaps down)
-        if (data[i-1].low > data[i+1].high && (data[i-1].low - data[i+1].high) > data[i+1].close * 0.001) {
-            fvgs.push({
-                type: 'BEARISH',
-                low: data[i+1].high,
-                high: data[i-1].low,
-                mid: (data[i+1].high + data[i-1].low) / 2,
-                index: i,
-                mitigated: false
-            });
-        }
-    }
-    return fvgs;
-}
-
-// Breaker Blocks - Key for reversals after MSS
-function detectBreakerBlocks(data) {
-    const blocks = [];
-    const swings = findSwingPoints(data);
-    
-    for (let i = 5; i < data.length - 5; i++) {
-        const candle = data[i];
-        
-        // Bullish Breaker (failed resistance becomes support)
-        if (candle.close > candle.open) {
-            const prevResistance = swings.highs.find(h => h.index < i && h.price < candle.close);
-            if (prevResistance) {
-                blocks.push({
-                    type: 'BULLISH',
-                    low: prevResistance.price - 5,
-                    high: prevResistance.price + 5,
-                    price: prevResistance.price,
-                    message: 'Breaker block - Failed resistance becomes support'
-                });
-            }
-        }
-        
-        // Bearish Breaker (failed support becomes resistance)
-        if (candle.close < candle.open) {
-            const prevSupport = swings.lows.find(l => l.index < i && l.price > candle.close);
-            if (prevSupport) {
-                blocks.push({
-                    type: 'BEARISH',
-                    low: prevSupport.price - 5,
-                    high: prevSupport.price + 5,
-                    price: prevSupport.price,
-                    message: 'Breaker block - Failed support becomes resistance'
-                });
-            }
-        }
-    }
-    return blocks;
 }
 
 function findSwingPoints(data, lookback = 3) {
@@ -321,34 +395,60 @@ function findSwingPoints(data, lookback = 3) {
     return { highs, lows };
 }
 
-// Find unmitigated FVGs (the ones price hasn't filled yet)
+function detectBreakerBlocks(data) {
+    const blocks = [];
+    const swings = findSwingPoints(data);
+    
+    for (let i = 5; i < data.length - 5; i++) {
+        const candle = data[i];
+        
+        if (candle.close > candle.open) {
+            const prevResistance = swings.highs.find(h => h.index < i && h.price < candle.close);
+            if (prevResistance) {
+                blocks.push({
+                    type: 'BULLISH',
+                    price: prevResistance.price,
+                    message: 'Breaker block - Failed resistance becomes support'
+                });
+            }
+        }
+        
+        if (candle.close < candle.open) {
+            const prevSupport = swings.lows.find(l => l.index < i && l.price > candle.close);
+            if (prevSupport) {
+                blocks.push({
+                    type: 'BEARISH',
+                    price: prevSupport.price,
+                    message: 'Breaker block - Failed support becomes resistance'
+                });
+            }
+        }
+    }
+    return blocks;
+}
+
 function findUnmitigatedFVGs(data, direction) {
-    const fvgs = detectFVGs(data);
+    const fvgs = detectFairValueGaps(data);
     const currentPrice = data[data.length - 1].close;
     
     if (direction === 'BUY') {
-        // For buys: look for bullish FVGs BELOW current price (support)
-        return fvgs.filter(f => f.type === 'BULLISH' && f.low < currentPrice)
+        return fvgs.filter(f => f.type === 'bullish' && f.low < currentPrice)
                   .sort((a, b) => b.low - a.low);
     } else {
-        // For sells: look for bearish FVGs ABOVE current price (resistance)
-        return fvgs.filter(f => f.type === 'BEARISH' && f.high > currentPrice)
+        return fvgs.filter(f => f.type === 'bearish' && f.high > currentPrice)
                   .sort((a, b) => a.high - b.high);
     }
 }
 
-// Find optimal limit entry (like the ghost machine)
 function findOptimalLimitEntry(data, direction) {
     const currentPrice = data[data.length - 1].close;
     const atr = calculateATR(data, 14);
     const fvgs = findUnmitigatedFVGs(data, direction);
-    const swings = findSwingPoints(data);
     const blocks = detectBreakerBlocks(data);
     
     let entryZone = null;
     
     if (direction === 'BUY') {
-        // Priority 1: Bullish FVG below price
         if (fvgs.length > 0) {
             const bestFVG = fvgs[0];
             entryZone = {
@@ -360,36 +460,35 @@ function findOptimalLimitEntry(data, direction) {
             };
         }
         
-        // Priority 2: Breaker block
         if (!entryZone) {
             const bullishBlocks = blocks.filter(b => b.type === 'BULLISH' && b.price < currentPrice);
             if (bullishBlocks.length > 0) {
                 const bestBlock = bullishBlocks.sort((a, b) => b.price - a.price)[0];
                 entryZone = {
                     price: bestBlock.price,
-                    low: bestBlock.low,
-                    high: bestBlock.high,
+                    low: bestBlock.price - atr * 0.5,
+                    high: bestBlock.price + atr * 0.5,
                     source: 'Breaker',
                     reason: bestBlock.message
                 };
             }
         }
         
-        // Priority 3: OTE zone (61.8%-79% fib)
         if (!entryZone) {
             const recentLow = Math.min(...data.slice(-20).map(c => c.low));
             const recentHigh = Math.max(...data.slice(-20).map(c => c.high));
             const range = recentHigh - recentLow;
+            const oteLow = recentLow + range * 0.618;
+            const oteHigh = recentLow + range * 0.79;
             entryZone = {
-                price: recentLow + range * 0.7,
-                low: recentLow + range * 0.618,
-                high: recentLow + range * 0.79,
+                price: (oteLow + oteHigh) / 2,
+                low: oteLow,
+                high: oteHigh,
                 source: 'OTE',
-                reason: 'OTE Zone (61.8%-79% retracement)'
+                reason: 'OTE Zone (61.8%-79%)'
             };
         }
     } else {
-        // Priority 1: Bearish FVG above price
         if (fvgs.length > 0) {
             const bestFVG = fvgs[0];
             entryZone = {
@@ -401,30 +500,30 @@ function findOptimalLimitEntry(data, direction) {
             };
         }
         
-        // Priority 2: Breaker block
         if (!entryZone) {
             const bearishBlocks = blocks.filter(b => b.type === 'BEARISH' && b.price > currentPrice);
             if (bearishBlocks.length > 0) {
                 const bestBlock = bearishBlocks.sort((a, b) => a.price - b.price)[0];
                 entryZone = {
                     price: bestBlock.price,
-                    low: bestBlock.low,
-                    high: bestBlock.high,
+                    low: bestBlock.price - atr * 0.5,
+                    high: bestBlock.price + atr * 0.5,
                     source: 'Breaker',
                     reason: bestBlock.message
                 };
             }
         }
         
-        // Priority 3: OTE zone
         if (!entryZone) {
             const recentLow = Math.min(...data.slice(-20).map(c => c.low));
             const recentHigh = Math.max(...data.slice(-20).map(c => c.high));
             const range = recentHigh - recentLow;
+            const oteLow = recentHigh - range * 0.79;
+            const oteHigh = recentHigh - range * 0.618;
             entryZone = {
-                price: recentHigh - range * 0.3,
-                low: recentHigh - range * 0.382,
-                high: recentHigh - range * 0.5,
+                price: (oteLow + oteHigh) / 2,
+                low: oteLow,
+                high: oteHigh,
                 source: 'OTE',
                 reason: 'OTE Zone for shorts'
             };
@@ -434,14 +533,11 @@ function findOptimalLimitEntry(data, direction) {
     return entryZone;
 }
 
-// Calculate tight stop loss (3-4 pips on gold like ghost machine)
 function calculateTightStop(entryPrice, direction, entryZone, atr) {
     if (direction === 'BUY') {
-        // For buys: stop just below the zone low
         const buffer = isGold(currentPair) ? 3 : atr * 0.3;
         return entryZone.low - buffer;
     } else {
-        // For sells: stop just above the zone high
         const buffer = isGold(currentPair) ? 3 : atr * 0.3;
         return entryZone.high + buffer;
     }
@@ -476,7 +572,7 @@ async function analyzeTimeframe(tf) {
 }
 
 async function updateMultiTimeframeUI() {
-    const timeframes = ['5M', '15M', '1H', '4H'];
+    const timeframes = ['15M', '1H', '4H', '1D'];
     let bullishCount = 0, bearishCount = 0;
     
     for (let tf of timeframes) {
@@ -497,6 +593,13 @@ async function updateMultiTimeframeUI() {
             
             const volEl = document.getElementById(`vol${tf}`);
             if (volEl) volEl.innerHTML = (result.volume / 1000000).toFixed(1) + 'M';
+        } else {
+            const trendEl = document.getElementById(`trend${tf}`);
+            if (trendEl) { trendEl.innerHTML = '⚪ --'; trendEl.className = 'mtf-trend neutral'; }
+            const rsiEl = document.getElementById(`rsi${tf}`);
+            if (rsiEl) rsiEl.innerHTML = '--';
+            const volEl = document.getElementById(`vol${tf}`);
+            if (volEl) volEl.innerHTML = '--';
         }
     }
     
@@ -515,23 +618,22 @@ async function getAIAnalysis(marketData) {
     if (!DEEPSEEK_API_KEY) return null;
     showNotification('🤖 AI analyzing FVGs & structure...', 'info');
     
-    const prompt = `You are Theghostmachine - an elite ICT/Smart Money trader. Find the BEST limit order setup.
+    const prompt = `You are Theghostmachine - an elite ICT/Smart Money trader.
 
 Current: ${currentPair} | ${currentTimeframe} | Price: ${marketData.currentPrice}
 
 KEY LEVELS:
 - MSS: ${marketData.mss || 'None'}
-- Nearest FVG: ${marketData.fvgZone || 'None'}
+- FVG Zone: ${marketData.fvgZone || 'None'}
 - Breaker Block: ${marketData.breakerBlock || 'None'}
 - OTE Zone: ${marketData.oteZone || 'None'}
+- POC: ${marketData.poc} | VWAP: ${marketData.vwap}
 
 Trend: ${marketData.trend} | RSI: ${marketData.rsi} | ATR: ${marketData.atr}
+Structure: ${marketData.structure}
+FVG Count: ${marketData.fvgCount} | Order Blocks: ${marketData.obCount}
 
-INSTRUCTIONS:
-1. Find ONE high-probability limit order entry
-2. Entry MUST be at a FVG, Breaker Block, or OTE zone
-3. Stop loss MUST be TIGHT (3-5 pips on gold, 10-15 pips on forex)
-4. Take profit at opposing liquidity or next FVG
+Fibonacci: 0%:${marketData.fib0} | 38.2%:${marketData.fib382} | 50%:${marketData.fib500} | 61.8%:${marketData.fib618} | 78.6%:${marketData.fib786} | 100%:${marketData.fib100}
 
 Return JSON:
 {
@@ -539,16 +641,26 @@ Return JSON:
     "confidence": 0-100,
     "entryPrice": number,
     "stopLoss": number,
-    "takeProfit": number,
+    "takeProfit1": number,
+    "takeProfit2": number,
+    "takeProfit3": number,
     "entrySource": "FVG" or "Breaker" or "OTE",
-    "reasoning": "Brief analysis like Theghostmachine"
+    "reasoning": "Brief analysis"
 }`;
 
     try {
         const res = await fetch(DEEPSEEK_API_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` },
-            body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: 'You are Theghostmachine - ICT elite trader. Return ONLY valid JSON.' }, { role: 'user', content: prompt }], temperature: 0.1, max_tokens: 600 })
+            body: JSON.stringify({ 
+                model: 'deepseek-chat', 
+                messages: [
+                    { role: 'system', content: 'You are Theghostmachine - ICT elite trader. Return ONLY valid JSON.' }, 
+                    { role: 'user', content: prompt }
+                ], 
+                temperature: 0.1, 
+                max_tokens: 800 
+            })
         });
         const data = await res.json();
         if (data.choices?.[0]) {
@@ -564,53 +676,78 @@ Return JSON:
 // ============================================
 async function runAnalysis() {
     const btn = document.getElementById('analyzeBtn');
-    btn.classList.add('loading'); btn.disabled = true;
+    btn.classList.add('loading'); 
+    btn.disabled = true;
     
-    if (!TWELVE_DATA_KEY) { showSetupModal(); btn.classList.remove('loading'); btn.disabled = false; return; }
+    if (!TWELVE_DATA_KEY) { 
+        showSetupModal(); 
+        btn.classList.remove('loading'); 
+        btn.disabled = false; 
+        return; 
+    }
     
     showNotification('🔍 Scanning FVGs & structure...', 'info');
     
     try {
-        const price = await getPrice(); if (!price) throw new Error('No price');
+        const price = await getPrice(); 
+        if (!price) throw new Error('No price');
         
         // Update multi-timeframe UI
         await updateMultiTimeframeUI();
         
-        // Get data for 15M (primary) and 1H (context)
-        const hist15 = await getHistoricalData('15M');
-        const hist1H = await getHistoricalData('1H');
-        if (!hist15?.length) throw new Error('No data');
+        const hist = await getHistoricalData(); 
+        if (!hist?.length) throw new Error('No data');
         
-        chartData = hist15;
+        chartData = hist;
+        allTimeframeData[currentTimeframe] = hist;
         
-        const closes = hist15.map(c => c.close);
+        const closes = hist.map(c=>c.close);
+        const highs = hist.map(c=>c.high);
+        const lows = hist.map(c=>c.low);
+        
+        const ema20 = calculateEMA(closes, 20);
+        const ema50 = calculateEMA(closes, 50);
+        const currentEMA20 = ema20[ema20.length - 1];
+        const currentEMA50 = ema50[ema50.length - 1];
         const rsi = calculateRSI(closes);
-        const atr = calculateATR(hist15, 14);
-        const trend = detectTrend(hist1H || hist15); // Use 1H for trend context
-        const mss = detectMSS(hist15);
+        const atr = calculateATR(hist);
         
-        // Determine direction from MSS or trend
+        // ICT Concepts
+        const fvgs = detectFairValueGaps(hist);
+        const orderBlocks = detectOrderBlocks(hist);
+        const liquidity = detectLiquidityLevels(hist);
+        const structure = analyzeMarketStructure(hist);
+        const volumeProfile = calculateVolumeProfile(hist);
+        const orderFlow = calculateOrderFlow(hist);
+        
+        // Advanced ICT
+        const mss = detectMSS(hist);
+        const blocks = detectBreakerBlocks(hist);
+        
+        let trend = 'NEUTRAL';
+        if (currentEMA20 > currentEMA50) trend = 'BULLISH';
+        else if (currentEMA20 < currentEMA50) trend = 'BEARISH';
+        
         let direction;
         if (mss?.type === 'BULLISH') direction = 'BUY';
         else if (mss?.type === 'BEARISH') direction = 'SELL';
         else direction = trend === 'BULLISH' ? 'BUY' : 'SELL';
         
-        // Find optimal entry zone
-        const entryZone = findOptimalLimitEntry(hist15, direction);
+        const entryZone = findOptimalLimitEntry(hist, direction);
+        if (!entryZone) throw new Error('No entry zone found');
         
-        if (!entryZone) {
-            showNotification('No clear entry zone found', 'warning');
-            btn.classList.remove('loading'); btn.disabled = false;
-            return;
-        }
-        
-        // Calculate tight stop
         const stopLoss = calculateTightStop(entryZone.price, direction, entryZone, atr);
         
-        // Get FVG info for AI
-        const fvgs = detectFVGs(hist15);
-        const unmitigatedFVG = findUnmitigatedFVGs(hist15, direction)[0];
-        const blocks = detectBreakerBlocks(hist15);
+        const recentHigh = Math.max(...highs.slice(-20));
+        const recentLow = Math.min(...lows.slice(-20));
+        const range = recentHigh - recentLow;
+        const fibs = {
+            fib0: recentLow, fib236: recentLow+range*.236, fib382: recentLow+range*.382,
+            fib500: recentLow+range*.5, fib618: recentLow+range*.618, 
+            fib786: recentLow+range*.786, fib100: recentHigh
+        };
+        
+        const unmitigatedFVG = findUnmitigatedFVGs(hist, direction)[0];
         const relevantBlock = blocks.find(b => b.type === (direction === 'BUY' ? 'BULLISH' : 'BEARISH'));
         
         const marketData = {
@@ -618,42 +755,59 @@ async function runAnalysis() {
             rsi: rsi.toFixed(1),
             atr: atr.toFixed(2),
             trend: trend,
+            structure: structure,
             mss: mss?.message || 'None',
             fvgZone: unmitigatedFVG ? `${unmitigatedFVG.low.toFixed(2)}-${unmitigatedFVG.high.toFixed(2)}` : 'None',
             breakerBlock: relevantBlock?.message || 'None',
-            oteZone: entryZone.source === 'OTE' ? entryZone.reason : 'None'
+            oteZone: entryZone.source === 'OTE' ? entryZone.reason : 'None',
+            fvgCount: fvgs.length,
+            obCount: orderBlocks.length,
+            poc: volumeProfile?.poc?.price.toFixed(2) || 'N/A',
+            vwap: orderFlow?.vwap.toFixed(2) || 'N/A',
+            fib0: fibs.fib0.toFixed(2), fib382: fibs.fib382.toFixed(2),
+            fib500: fibs.fib500.toFixed(2), fib618: fibs.fib618.toFixed(2),
+            fib786: fibs.fib786.toFixed(2), fib100: fibs.fib100.toFixed(2)
         };
         
-        // Get AI analysis
         const ai = await getAIAnalysis(marketData);
         
-        let signal, confidence, entry, sl, tp, reason;
+        let signal, confidence, entry, sl, tp1, tp2, tp3, reason;
         
         if (ai && ai.signal !== 'NEUTRAL') {
             signal = ai.signal;
             confidence = ai.confidence;
             entry = ai.entryPrice || entryZone.price;
             sl = ai.stopLoss || stopLoss;
-            tp = ai.takeProfit;
+            tp1 = ai.takeProfit1;
+            tp2 = ai.takeProfit2 || (signal === 'BUY' ? entry + (entry-sl)*2.5 : entry - (entry-sl)*2.5);
+            tp3 = ai.takeProfit3 || (signal === 'BUY' ? entry + (entry-sl)*4 : entry - (entry-sl)*4);
             reason = ai.reasoning;
-            showNotification(`✅ ${signal} signal (${confidence}%)`, 'success');
+            showNotification(`✅ AI: ${signal} (${confidence}%)`, 'success');
         } else {
             signal = direction;
-            confidence = 65;
+            confidence = 60;
             entry = entryZone.price;
             sl = stopLoss;
-            
-            // Calculate TP based on risk
             const risk = Math.abs(entry - sl);
-            tp = signal === 'BUY' ? entry + risk * 3 : entry - risk * 3;
-            reason = `${entryZone.source} entry: ${entryZone.reason}`;
+            tp1 = signal === 'BUY' ? entry + risk * 2 : entry - risk * 2;
+            tp2 = signal === 'BUY' ? entry + risk * 3.5 : entry - risk * 3.5;
+            tp3 = signal === 'BUY' ? entry + risk * 5 : entry - risk * 5;
+            reason = `${entryZone.source}: ${entryZone.reason}`;
         }
         
-        // Update UI
+        // Update ALL UI
         const prec = getPricePrecision(currentPair);
-        document.getElementById('currentPrice').innerHTML = `$${price.toFixed(prec)}`;
-        
         const signalType = signal === 'BUY' ? 'LONG' : 'SHORT';
+        
+        document.getElementById('currentPrice').innerHTML = `$${price.toFixed(prec)}`;
+        if (lastPrice) {
+            const ch = ((price-lastPrice)/lastPrice*100).toFixed(2);
+            const chEl = document.getElementById('priceChange');
+            chEl.innerHTML = `${ch>=0?'▲':'▼'} ${Math.abs(ch)}%`;
+            chEl.className = `price-change ${ch>=0?'positive':'negative'}`;
+        }
+        lastPrice = price;
+        
         document.getElementById('signalTypeText').innerHTML = signalType;
         document.getElementById('signalTypeBox').className = `signal-type-box ${signalType.toLowerCase()}`;
         document.getElementById('confidenceText').innerHTML = `${confidence}%`;
@@ -667,11 +821,11 @@ async function runAnalysis() {
         distEl.style.color = (signal==='BUY'&&distance>0)||(signal==='SELL'&&distance<0) ? '#34c759' : '#ff3b30';
         
         document.getElementById('stopLoss').innerHTML = `$${sl.toFixed(prec)}`;
-        document.getElementById('takeProfit1').innerHTML = `$${tp.toFixed(prec)}`;
-        document.getElementById('takeProfit2').innerHTML = '--';
-        document.getElementById('takeProfit3').innerHTML = '--';
+        document.getElementById('takeProfit1').innerHTML = `$${tp1.toFixed(prec)}`;
+        document.getElementById('takeProfit2').innerHTML = `$${tp2.toFixed(prec)}`;
+        document.getElementById('takeProfit3').innerHTML = `$${tp3.toFixed(prec)}`;
         
-        const rrValue = Math.abs(tp-entry)/Math.abs(entry-sl);
+        const rrValue = Math.abs(tp1-entry)/Math.abs(entry-sl);
         document.getElementById('riskReward').innerHTML = rrValue.toFixed(1);
         
         const badge = document.getElementById('signalBadge');
@@ -681,22 +835,47 @@ async function runAnalysis() {
         
         document.getElementById('signalReason').innerHTML = `🤖 ${reason}`;
         
-        // Update FVG/ICT counts
-        document.getElementById('fvgCount').innerHTML = fvgs.length;
-        document.getElementById('obCount').innerHTML = blocks.length;
-        document.getElementById('liquidityLevels').innerHTML = '-';
-        document.getElementById('marketStructure').innerHTML = mss ? 'MSS Detected' : trend;
+        // Volume Profile
+        if (volumeProfile) {
+            document.getElementById('pocValue').innerHTML = `$${volumeProfile.poc?.price.toFixed(prec)||'--'}`;
+            document.getElementById('valueHigh').innerHTML = `$${volumeProfile.valueAreaHigh?.toFixed(prec)||'--'}`;
+            document.getElementById('valueLow').innerHTML = `$${volumeProfile.valueAreaLow?.toFixed(prec)||'--'}`;
+            document.getElementById('totalVolume').innerHTML = `${(volumeProfile.totalVolume/1e6).toFixed(1)}M`;
+        }
         
-        updateChart(hist15);
+        // Order Flow
+        if (orderFlow) {
+            document.getElementById('buyingPressure').innerHTML = `${(orderFlow.buyingPressure/1e6).toFixed(1)}M`;
+            document.getElementById('sellingPressure').innerHTML = `${(orderFlow.sellingPressure/1e6).toFixed(1)}M`;
+            document.getElementById('netDelta').innerHTML = `${(orderFlow.netDelta/1e6).toFixed(1)}M`;
+            document.getElementById('vwapValue').innerHTML = `$${orderFlow.vwap.toFixed(prec)}`;
+        }
+        
+        // ICT Concepts
+        document.getElementById('fvgCount').innerHTML = fvgs.length;
+        document.getElementById('obCount').innerHTML = orderBlocks.length;
+        document.getElementById('liquidityLevels').innerHTML = liquidity.length;
+        document.getElementById('marketStructure').innerHTML = mss ? `MSS: ${mss.type}` : structure;
+        
+        // Fibonacci
+        document.getElementById('fib0').innerHTML = `$${fibs.fib0.toFixed(prec)}`;
+        document.getElementById('fib236').innerHTML = `$${fibs.fib236.toFixed(prec)}`;
+        document.getElementById('fib382').innerHTML = `$${fibs.fib382.toFixed(prec)}`;
+        document.getElementById('fib500').innerHTML = `$${fibs.fib500.toFixed(prec)}`;
+        document.getElementById('fib618').innerHTML = `$${fibs.fib618.toFixed(prec)}`;
+        document.getElementById('fib786').innerHTML = `$${fibs.fib786.toFixed(prec)}`;
+        document.getElementById('fib100').innerHTML = `$${fibs.fib100.toFixed(prec)}`;
+        
+        updateChart(hist);
         
         analysisData = { 
             signalType: signalType, 
             idealEntry: entry, 
             currentPrice: price, 
             stopLoss: sl, 
-            takeProfit1: tp,
-            takeProfit2: 0,
-            takeProfit3: 0,
+            takeProfit1: tp1,
+            takeProfit2: tp2,
+            takeProfit3: tp3,
             confidence 
         };
         
@@ -717,16 +896,38 @@ async function runAnalysis() {
 // ============================================
 function loadPendingOrder() {
     const saved = localStorage.getItem('pendingLimitOrder');
-    if (saved) { try { pendingLimitOrder = JSON.parse(saved); updateLimitOrderUI(); startPriceMonitoring(); } catch(e) {} }
+    if (saved) { 
+        try { 
+            pendingLimitOrder = JSON.parse(saved); 
+            updateLimitOrderUI(); 
+            startPriceMonitoring(); 
+        } catch(e) {} 
+    }
 }
 
-function savePendingOrder(o) { pendingLimitOrder = o; localStorage.setItem('pendingLimitOrder', JSON.stringify(o)); updateLimitOrderUI(); }
-function clearPendingOrder() { pendingLimitOrder = null; localStorage.removeItem('pendingLimitOrder'); if(priceCheckInterval) clearInterval(priceCheckInterval); updateLimitOrderUI(); }
+function savePendingOrder(o) { 
+    pendingLimitOrder = o; 
+    localStorage.setItem('pendingLimitOrder', JSON.stringify(o)); 
+    updateLimitOrderUI(); 
+}
 
-function cancelLimitOrder() { clearPendingOrder(); showNotification('❌ Limit order cancelled', 'warning'); }
+function clearPendingOrder() { 
+    pendingLimitOrder = null; 
+    localStorage.removeItem('pendingLimitOrder'); 
+    if(priceCheckInterval) clearInterval(priceCheckInterval); 
+    updateLimitOrderUI(); 
+}
+
+function cancelLimitOrder() { 
+    clearPendingOrder(); 
+    showNotification('❌ Limit order cancelled', 'warning'); 
+}
 
 function updateLimitOrderUI() {
-    const btn = document.getElementById('executeBtn'), status = document.getElementById('limitOrderStatus'), text = document.getElementById('limitOrderText');
+    const btn = document.getElementById('executeBtn');
+    const status = document.getElementById('limitOrderStatus');
+    const text = document.getElementById('limitOrderText');
+    
     if (pendingLimitOrder) {
         btn.innerHTML = '⏳ Waiting for Entry...'; 
         btn.style.background = 'linear-gradient(135deg, #ff9f0a, #ff6b00)';
@@ -746,26 +947,29 @@ function startPriceMonitoring() {
     if (priceCheckInterval) clearInterval(priceCheckInterval);
     priceCheckInterval = setInterval(async () => {
         if (!pendingLimitOrder) { clearInterval(priceCheckInterval); return; }
-        const price = await getPrice(); if (!price) return;
+        const price = await getPrice(); 
+        if (!price) return;
         const o = pendingLimitOrder;
         let exec = false;
         if (o.signalType === 'LONG' && price <= o.idealEntry) exec = true;
         else if (o.signalType === 'SHORT' && price >= o.idealEntry) exec = true;
         if (exec) {
             clearPendingOrder();
-            if (tg?.sendData) tg.sendData(JSON.stringify({ 
-                action: 'limit_order_filled', 
-                pair: o.pair, 
-                signal: o.signalType, 
-                filledPrice: price, 
-                stopLoss: o.stopLoss, 
-                takeProfit: o.takeProfit1 
-            }));
+            if (tg?.sendData) {
+                tg.sendData(JSON.stringify({ 
+                    action: 'limit_order_filled', 
+                    pair: o.pair, 
+                    signal: o.signalType, 
+                    filledPrice: price, 
+                    stopLoss: o.stopLoss, 
+                    takeProfits: [o.takeProfit1, o.takeProfit2, o.takeProfit3] 
+                }));
+            }
             showNotification(`✅ LIMIT ORDER FILLED! ${o.signalType} @ $${price.toFixed(getPricePrecision(o.pair))}`, 'success');
             new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play().catch(()=>{});
         }
         updatePriceDisplay(price);
-    }, 3000); // Check every 3 seconds for sniping
+    }, 3000);
 }
 
 function handleExecuteOrder() {
@@ -805,7 +1009,7 @@ function calculatePositionSize() {
     const riskAmt = acc * (riskP/100);
     const stopDist = Math.abs(analysisData.idealEntry - analysisData.stopLoss);
     const pos = stopDist > 0 ? riskAmt/stopDist : 0;
-    document.getElementById('positionSize').innerHTML = pos.toFixed(2);
+    document.getElementById('positionSize').innerHTML = pos.toFixed(4);
     document.getElementById('riskAmount').innerHTML = `$${riskAmt.toFixed(2)}`;
     document.getElementById('suggestedLeverage').innerHTML = '--';
 }
