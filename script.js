@@ -102,7 +102,6 @@ let chartData = [];
 let allTimeframeData = {};
 let pendingLimitOrder = null;
 let priceCheckInterval = null;
-let orderFlowData = null;
 
 document.addEventListener('DOMContentLoaded', async function() {
     const keysLoaded = await loadAPIKeys();
@@ -207,6 +206,21 @@ function calculateEMA(p, n) { const m = 2/(n+1); let e = [p[0]]; for(let i=1;i<p
 function calculateRSI(p, n=14) { let g=0,l=0; for(let i=p.length-n;i<p.length;i++){ let c=p[i]-p[i-1]; if(c>=0)g+=c; else l-=c; } let ag=g/n, al=l/n; return al===0?100:100-(100/(1+ag/al)); }
 function calculateATR(d, n=14) { let t=[]; for(let i=1;i<d.length;i++) t.push(Math.max(d[i].high-d[i].low, Math.abs(d[i].high-d[i-1].close), Math.abs(d[i].low-d[i-1].close))); return t.slice(-n).reduce((a,b)=>a+b,0)/n; }
 
+function findSwingPoints(d, lookback=3) {
+    let highs = [], lows = [];
+    let h = d.map(c => c.high), l = d.map(c => c.low);
+    for(let i = lookback; i < h.length - lookback; i++) {
+        let isHigh = true, isLow = true;
+        for(let j = 1; j <= lookback; j++) {
+            if(h[i] <= h[i-j] || h[i] <= h[i+j]) isHigh = false;
+            if(l[i] >= l[i-j] || l[i] >= l[i+j]) isLow = false;
+        }
+        if(isHigh) highs.push({ price: h[i], index: i, type: 'resistance' });
+        if(isLow) lows.push({ price: l[i], index: i, type: 'support' });
+    }
+    return { highs, lows };
+}
+
 function detectFairValueGaps(d) { 
     let f=[]; 
     for(let i=1;i<d.length-1;i++){ 
@@ -223,24 +237,6 @@ function detectOrderBlocks(d) {
         if(d[i].close>d[i].open&&d[i+1].close<d[i+1].open&&d[i+1].close<d[i].low) o.push({type:'bearish', high: d[i].high, low: d[i].low}); 
     } 
     return o; 
-}
-
-function detectLiquidityLevels(d) { 
-    let h=d.map(c=>c.high), l=d.map(c=>c.low), L=[]; 
-    for(let i=2;i<d.length-2;i++){ 
-        if(h[i]>h[i-1]&&h[i]>h[i-2]&&h[i]>h[i+1]&&h[i]>h[i+2]) L.push({type:'resistance',price:h[i]}); 
-        if(l[i]<l[i-1]&&l[i]<l[i-2]&&l[i]<l[i+1]&&l[i]<l[i+2]) L.push({type:'support',price:l[i]}); 
-    } 
-    return L; 
-}
-
-function analyzeMarketStructure(d) { 
-    let h=d.map(c=>c.high), l=d.map(c=>c.low); 
-    let rh=h.slice(-20), rl=l.slice(-20); 
-    let hh=rh[rh.length-1]>rh[0], hl=rl[rl.length-1]>rl[0], lh=rh[rh.length-1]<rh[0], ll=rl[rl.length-1]<rl[0]; 
-    if(hh&&hl) return 'Bullish'; 
-    if(lh&&ll) return 'Bearish'; 
-    return 'Ranging'; 
 }
 
 function calculateVolumeProfile(d) {
@@ -264,7 +260,118 @@ function calculateOrderFlow(d) {
 }
 
 // ============================================
-// TREND DETECTION (Proper EMA-based)
+// PROFESSIONAL STOP LOSS CALCULATION
+// ============================================
+function calculateProfessionalStop(data, direction, entry) {
+    const swings = findSwingPoints(data, 3);
+    const atr = calculateATR(data, 14);
+    const currentPrice = data[data.length - 1].close;
+    
+    if (direction === 'LONG') {
+        // Find ALL swing lows BELOW entry
+        const supportLevels = swings.lows
+            .filter(s => s.price < entry)
+            .sort((a, b) => b.price - a.price); // Closest to entry first
+        
+        // Also check FVGs and Order Blocks for support
+        const fvgs = detectFairValueGaps(data).filter(f => f.type === 'bullish');
+        const obs = detectOrderBlocks(data).filter(o => o.type === 'bullish');
+        
+        // Best stop: Just below the nearest significant low
+        let stopPrice = null;
+        let stopReason = '';
+        
+        // Priority 1: Nearest swing low
+        if (supportLevels.length > 0) {
+            const nearestSupport = supportLevels[0];
+            // Add small buffer (0.1% for crypto, 0.05% for forex)
+            const buffer = isForexPair(currentPair) ? atr * 0.2 : entry * 0.001;
+            stopPrice = nearestSupport.price - buffer;
+            stopReason = `Below swing low at ${nearestSupport.price.toFixed(getPricePrecision(currentPair))}`;
+        }
+        
+        // Priority 2: Bullish FVG low
+        if (!stopPrice && fvgs.length > 0) {
+            const nearestFVG = fvgs.sort((a, b) => b.low - a.low)[0];
+            if (nearestFVG.low < entry) {
+                const buffer = isForexPair(currentPair) ? atr * 0.15 : entry * 0.0008;
+                stopPrice = nearestFVG.low - buffer;
+                stopReason = `Below FVG low at ${nearestFVG.low.toFixed(getPricePrecision(currentPair))}`;
+            }
+        }
+        
+        // Priority 3: Order Block low
+        if (!stopPrice && obs.length > 0) {
+            const nearestOB = obs.sort((a, b) => b.low - a.low)[0];
+            if (nearestOB.low < entry) {
+                const buffer = isForexPair(currentPair) ? atr * 0.15 : entry * 0.0008;
+                stopPrice = nearestOB.low - buffer;
+                stopReason = `Below Order Block low at ${nearestOB.low.toFixed(getPricePrecision(currentPair))}`;
+            }
+        }
+        
+        // Priority 4: Fallback - 1.5x ATR (but capped at 1.5% for crypto, 0.5% for forex)
+        if (!stopPrice) {
+            const maxStopPercent = isForexPair(currentPair) ? 0.005 : 0.015;
+            const atrStop = entry - atr * 1.2;
+            const percentStop = entry * (1 - maxStopPercent);
+            stopPrice = Math.max(atrStop, percentStop); // Tighter of the two
+            stopReason = `Technical stop (${((entry - stopPrice) / entry * 100).toFixed(2)}% from entry)`;
+        }
+        
+        return { price: stopPrice, reason: stopReason };
+        
+    } else {
+        // Find ALL swing highs ABOVE entry
+        const resistanceLevels = swings.highs
+            .filter(s => s.price > entry)
+            .sort((a, b) => a.price - b.price); // Closest to entry first
+        
+        const fvgs = detectFairValueGaps(data).filter(f => f.type === 'bearish');
+        const obs = detectOrderBlocks(data).filter(o => o.type === 'bearish');
+        
+        let stopPrice = null;
+        let stopReason = '';
+        
+        if (resistanceLevels.length > 0) {
+            const nearestResistance = resistanceLevels[0];
+            const buffer = isForexPair(currentPair) ? atr * 0.2 : entry * 0.001;
+            stopPrice = nearestResistance.price + buffer;
+            stopReason = `Above swing high at ${nearestResistance.price.toFixed(getPricePrecision(currentPair))}`;
+        }
+        
+        if (!stopPrice && fvgs.length > 0) {
+            const nearestFVG = fvgs.sort((a, b) => a.high - b.high)[0];
+            if (nearestFVG.high > entry) {
+                const buffer = isForexPair(currentPair) ? atr * 0.15 : entry * 0.0008;
+                stopPrice = nearestFVG.high + buffer;
+                stopReason = `Above FVG high at ${nearestFVG.high.toFixed(getPricePrecision(currentPair))}`;
+            }
+        }
+        
+        if (!stopPrice && obs.length > 0) {
+            const nearestOB = obs.sort((a, b) => a.high - b.high)[0];
+            if (nearestOB.high > entry) {
+                const buffer = isForexPair(currentPair) ? atr * 0.15 : entry * 0.0008;
+                stopPrice = nearestOB.high + buffer;
+                stopReason = `Above Order Block high at ${nearestOB.high.toFixed(getPricePrecision(currentPair))}`;
+            }
+        }
+        
+        if (!stopPrice) {
+            const maxStopPercent = isForexPair(currentPair) ? 0.005 : 0.015;
+            const atrStop = entry + atr * 1.2;
+            const percentStop = entry * (1 + maxStopPercent);
+            stopPrice = Math.min(atrStop, percentStop);
+            stopReason = `Technical stop (${((stopPrice - entry) / entry * 100).toFixed(2)}% from entry)`;
+        }
+        
+        return { price: stopPrice, reason: stopReason };
+    }
+}
+
+// ============================================
+// TREND DETECTION
 // ============================================
 function detectTrend(data) {
     const closes = data.map(c => c.close);
@@ -274,18 +381,11 @@ function detectTrend(data) {
     const currentEMA50 = ema50[ema50.length - 1];
     const prevEMA20 = ema20[ema20.length - 5];
     
-    // Strong trend: EMA20 > EMA50 and EMAs sloping up
-    if (currentEMA20 > currentEMA50 && currentEMA20 > prevEMA20) {
-        return 'BULLISH';
-    } else if (currentEMA20 < currentEMA50 && currentEMA20 < prevEMA20) {
-        return 'BEARISH';
-    }
+    if (currentEMA20 > currentEMA50 && currentEMA20 > prevEMA20) return 'BULLISH';
+    if (currentEMA20 < currentEMA50 && currentEMA20 < prevEMA20) return 'BEARISH';
     return 'NEUTRAL';
 }
 
-// ============================================
-// MULTI-TIMEFRAME TREND ALIGNMENT (CRITICAL!)
-// ============================================
 async function checkTrendAlignment() {
     const tf1h = await getHistoricalData('1H');
     const tf4h = await getHistoricalData('4H');
@@ -305,132 +405,152 @@ async function checkTrendAlignment() {
 }
 
 // ============================================
-// FIND DEMAND/SUPPLY ZONES (For Entry)
+// FIND OPTIMAL ENTRY ZONE
 // ============================================
-function findEntryZone(data, direction) {
-    const fvgs = detectFairValueGaps(data);
-    const obs = detectOrderBlocks(data);
-    const swings = detectLiquidityLevels(data);
-    const closes = data.map(c => c.close);
+function findOptimalEntry(data, direction) {
     const highs = data.map(c => c.high);
     const lows = data.map(c => c.low);
-    
     const recentHigh = Math.max(...highs.slice(-20));
     const recentLow = Math.min(...lows.slice(-20));
     const range = recentHigh - recentLow;
     
-    // Fibonacci levels
-    const fib382 = direction === 'BULLISH' ? recentLow + range * 0.382 : recentHigh - range * 0.382;
-    const fib500 = direction === 'BULLISH' ? recentLow + range * 0.5 : recentHigh - range * 0.5;
-    const fib618 = direction === 'BULLISH' ? recentLow + range * 0.618 : recentHigh - range * 0.618;
-    const fib786 = direction === 'BULLISH' ? recentLow + range * 0.786 : recentHigh - range * 0.786;
+    let entryZone = null;
     
-    let entryZone = { low: fib618, high: fib786, optimal: (fib618 + fib786) / 2, source: 'OTE Zone' };
-    
-    // Check for FVG confluence
-    const relevantFVG = fvgs.find(f => direction === 'BULLISH' ? f.type === 'bullish' : f.type === 'bearish');
-    if (relevantFVG) {
-        const fvgMid = (relevantFVG.low + relevantFVG.high) / 2;
-        if (direction === 'BULLISH' && fvgMid >= fib618 && fvgMid <= fib786) {
-            entryZone = { low: relevantFVG.low, high: relevantFVG.high, optimal: fvgMid, source: 'FVG in OTE' };
+    if (direction === 'BULLISH') {
+        // OTE Zone: 61.8% - 79% retracement
+        const oteLow = recentLow + range * 0.618;
+        const oteHigh = recentLow + range * 0.79;
+        
+        // Check for FVG confluence
+        const fvgs = detectFairValueGaps(data).filter(f => f.type === 'bullish');
+        const fvgInZone = fvgs.find(f => f.low >= oteLow && f.high <= oteHigh);
+        
+        // Check for Order Block confluence
+        const obs = detectOrderBlocks(data).filter(o => o.type === 'bullish');
+        const obInZone = obs.find(o => o.low >= oteLow && o.high <= oteHigh);
+        
+        if (fvgInZone) {
+            entryZone = {
+                low: fvgInZone.low,
+                high: fvgInZone.high,
+                optimal: (fvgInZone.low + fvgInZone.high) / 2,
+                source: 'FVG in OTE Zone'
+            };
+        } else if (obInZone) {
+            entryZone = {
+                low: obInZone.low,
+                high: obInZone.high,
+                optimal: (obInZone.low + obInZone.high) / 2,
+                source: 'Order Block in OTE Zone'
+            };
+        } else {
+            entryZone = {
+                low: oteLow,
+                high: oteHigh,
+                optimal: (oteLow + oteHigh) / 2,
+                source: 'OTE Zone (61.8%-79%)'
+            };
+        }
+    } else {
+        // Bearish OTE Zone
+        const oteLow = recentHigh - range * 0.79;
+        const oteHigh = recentHigh - range * 0.618;
+        
+        const fvgs = detectFairValueGaps(data).filter(f => f.type === 'bearish');
+        const fvgInZone = fvgs.find(f => f.low >= oteLow && f.high <= oteHigh);
+        
+        const obs = detectOrderBlocks(data).filter(o => o.type === 'bearish');
+        const obInZone = obs.find(o => o.low >= oteLow && o.high <= oteHigh);
+        
+        if (fvgInZone) {
+            entryZone = {
+                low: fvgInZone.low,
+                high: fvgInZone.high,
+                optimal: (fvgInZone.low + fvgInZone.high) / 2,
+                source: 'FVG in OTE Zone'
+            };
+        } else if (obInZone) {
+            entryZone = {
+                low: obInZone.low,
+                high: obInZone.high,
+                optimal: (obInZone.low + obInZone.high) / 2,
+                source: 'Order Block in OTE Zone'
+            };
+        } else {
+            entryZone = {
+                low: oteLow,
+                high: oteHigh,
+                optimal: (oteLow + oteHigh) / 2,
+                source: 'OTE Zone (61.8%-79%)'
+            };
         }
     }
     
-    // Check for Order Block confluence
-    const relevantOB = obs.find(o => direction === 'BULLISH' ? o.type === 'bullish' : o.type === 'bearish');
-    if (relevantOB) {
-        const obMid = (relevantOB.low + relevantOB.high) / 2;
-        if (direction === 'BULLISH' && obMid >= fib618 && obMid <= fib786) {
-            entryZone = { low: relevantOB.low, high: relevantOB.high, optimal: obMid, source: 'Order Block in OTE' };
-        }
-    }
-    
-    // Find nearest support/resistance for stop loss
-    const relevantSwings = swings.filter(s => direction === 'BULLISH' ? s.type === 'support' : s.type === 'resistance');
-    const nearestSwing = relevantSwings.length ? relevantSwings.reduce((a, b) => 
-        Math.abs(a.price - entryZone.optimal) < Math.abs(b.price - entryZone.optimal) ? a : b
-    ) : null;
-    
-    return { ...entryZone, nearestSwing };
+    return entryZone;
 }
 
 // ============================================
-// MULTI-TIMEFRAME ANALYSIS UI UPDATE
-// ============================================
-async function analyzeTimeframe(tf) {
-    let d = await getHistoricalData(tf); if(!d||d.length<30) return null;
-    let c = d.map(x=>x.close), rsi = calculateRSI(c);
-    let trend = detectTrend(d);
-    return {data:d, trend, rsi, volume: d.slice(-20).reduce((s,x)=>s+x.volume,0)};
-}
-
-async function multiTimeframeAnalysis() {
-    let tfs = ['15M','1H','4H','1D'], res={}, bull=0, bear=0;
-    for(let tf of tfs) {
-        res[tf] = await analyzeTimeframe(tf);
-        if(res[tf]) {
-            if(res[tf].trend==='BULLISH') bull++; else if(res[tf].trend==='BEARISH') bear++;
-            let el=document.getElementById(`trend${tf}`); if(el){ el.innerHTML = res[tf].trend==='BULLISH'?'🟢 Bullish':(res[tf].trend==='BEARISH'?'🔴 Bearish':'⚪ Neutral'); el.className=`mtf-trend ${res[tf].trend.toLowerCase()}`; }
-            let r=document.getElementById(`rsi${tf}`); if(r) r.innerHTML = res[tf].rsi.toFixed(1);
-            let v=document.getElementById(`vol${tf}`); if(v) v.innerHTML = (res[tf].volume/1e6).toFixed(1)+'M';
-        }
-    }
-    let total=bull+bear, score=total?Math.max(bull,bear)/total*100:0, dir=bull>bear?'Bullish':(bear>bull?'Bearish':'Neutral');
-    let scoreEl=document.getElementById('confluenceScore'); if(scoreEl) scoreEl.innerHTML = `${dir} (${score.toFixed(0)}% confluence)`;
-    return {res, confluenceScore:score, direction:dir};
-}
-
-// ============================================
-// DEEPSEEK AI - SMART ENTRY WITH TREND VALIDATION
+// DEEPSEEK AI - PROFESSIONAL TRADER LOGIC
 // ============================================
 async function getAIAnalysis(marketData) {
     if (!DEEPSEEK_API_KEY) return null;
     showNotification('🤖 DeepSeek AI analyzing...', 'info');
     
-    const prompt = `You are an expert trader combining trend analysis with ICT concepts.
+    const prompt = `You are a professional institutional trader. Analyze this setup and provide a trading signal.
 
 CRITICAL RULES:
-1. ONLY trade in direction of 1H AND 4H trend alignment (both must agree).
-2. Entry must be at a DEMAND zone (for longs) or SUPPLY zone (for shorts) where price is likely to retrace.
-3. We are PATIENT - we place limit orders and wait for price to come to the zone.
+1. ONLY trade if 1H AND 4H trends are BOTH aligned (${marketData.trendAligned ? '✅ THEY ARE' : '❌ THEY ARE NOT'}).
+2. Entry must be at a LOGICAL demand/supply zone where institutions accumulate/distribute.
+3. Stop loss must be placed JUST BEYOND the nearest significant swing point or zone boundary - NOT an arbitrary percentage.
+4. We wait PATIENTLY with limit orders - never chase price.
 
-Current Trend Alignment: ${marketData.trendAligned ? '✅ ALIGNED - ' + marketData.trendDirection : '❌ NOT ALIGNED - NO TRADE'}
-1H Trend: ${marketData.trend1H} | 4H Trend: ${marketData.trend4H}
+Current Situation:
+- Pair: ${currentPair}
+- Current Price: ${marketData.currentPrice}
+- 1H Trend: ${marketData.trend1H} | 4H Trend: ${marketData.trend4H}
+- ${marketData.trendAligned ? '✅ TRENDS ALIGNED - ' + marketData.trendDirection : '❌ TRENDS NOT ALIGNED - DO NOT TRADE'}
 
-Market: ${currentPair}
-Current Price: ${marketData.currentPrice}
-ATR: ${marketData.atr}
-FVG Count: ${marketData.fvgCount} | Order Blocks: ${marketData.obCount}
-Demand/Supply Zones Found:
-- OTE Zone: ${marketData.oteLow} - ${marketData.oteHigh} (Optimal: ${marketData.oteOptimal})
-- FVG Zone: ${marketData.fvgZone || 'None'}
-- Order Block: ${marketData.obZone || 'None'}
-- Nearest Swing: ${marketData.nearestSwing || 'None'}
+Entry Zone Identified:
+- Type: ${marketData.entryZoneSource}
+- Zone: ${marketData.entryZoneLow} - ${marketData.entryZoneHigh}
+- Optimal Entry: ${marketData.entryZoneOptimal}
+
+Key Levels:
+- Nearest Support: ${marketData.nearestSupport}
+- Nearest Resistance: ${marketData.nearestResistance}
+- POC: ${marketData.poc}
+- VWAP: ${marketData.vwap}
+
+Market Context:
+- RSI: ${marketData.rsi}
+- ATR: ${marketData.atr}
+- Order Flow Delta: ${marketData.netDelta}
 
 Fibonacci Levels:
 0%: ${marketData.fib0} | 38.2%: ${marketData.fib382} | 50%: ${marketData.fib500}
 61.8%: ${marketData.fib618} | 78.6%: ${marketData.fib786} | 100%: ${marketData.fib100}
 
-IF TRENDS ARE ALIGNED: Choose the best demand/supply zone for entry and provide signal.
-IF TRENDS NOT ALIGNED: Return NEUTRAL signal.
+${marketData.trendAligned ? 
+`Provide a LIMIT ORDER signal. Stop loss should be just beyond the nearest swing point that would invalidate the setup.` : 
+`Return NEUTRAL signal with reasoning explaining why we wait for trend alignment.`}
 
 Return ONLY valid JSON:
 {
     "signal": "LONG" or "SHORT" or "NEUTRAL",
     "confidence": 0-100,
-    "idealEntry": number (the optimal price within the chosen zone),
-    "stopLoss": number (just beyond the zone/swing point),
+    "idealEntry": number,
+    "stopLoss": number (MUST be beyond a real swing point/zone),
     "takeProfit1": number,
     "takeProfit2": number,
     "takeProfit3": number,
-    "reasoning": "Explain trend alignment and why this zone is chosen"
+    "reasoning": "Explain entry zone, stop placement logic, and why this is a high-probability setup"
 }`;
 
     try {
         const res = await fetch(DEEPSEEK_API_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` },
-            body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: 'You are an expert trader. Return ONLY valid JSON. No trades without trend alignment.' }, { role: 'user', content: prompt }], temperature: 0.1, max_tokens: 800 })
+            body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: 'You are a professional institutional trader. Return ONLY valid JSON with logical stop placements.' }, { role: 'user', content: prompt }], temperature: 0.1, max_tokens: 800 })
         });
         const data = await res.json();
         if (data.choices?.[0]) {
@@ -442,7 +562,7 @@ Return ONLY valid JSON:
 }
 
 // ============================================
-// MAIN ANALYSIS - WITH TREND ALIGNMENT FILTER
+// MAIN ANALYSIS
 // ============================================
 async function runAnalysis() {
     const btn = document.getElementById('analyzeBtn');
@@ -463,7 +583,7 @@ async function runAnalysis() {
             document.getElementById('signalTypeText').innerHTML = 'NEUTRAL';
             document.getElementById('signalTypeBox').className = 'signal-type-box neutral';
             document.getElementById('confidenceText').innerHTML = '0%';
-            document.getElementById('signalReason').innerHTML = `⛔ NO TRADE: 1H trend (${trendCheck.tf1h}) and 4H trend (${trendCheck.tf4h}) must be aligned.`;
+            document.getElementById('signalReason').innerHTML = `⛔ NO TRADE: 1H (${trendCheck.tf1h}) and 4H (${trendCheck.tf4h}) must be aligned. Wait for confirmation.`;
             document.getElementById('executeBtn').disabled = true;
             btn.classList.remove('loading'); btn.disabled = false;
             return;
@@ -471,30 +591,29 @@ async function runAnalysis() {
         
         showNotification(`✅ Trends Aligned: 1H=${trendCheck.tf1h} | 4H=${trendCheck.tf4h} - ${trendCheck.direction}`, 'success');
         
-        const mtf = await multiTimeframeAnalysis();
         const hist = await getHistoricalData(); if (!hist?.length) throw new Error('No history');
         chartData = hist; allTimeframeData[currentTimeframe] = hist;
         
         const closes = hist.map(c=>c.close), highs = hist.map(c=>c.high), lows = hist.map(c=>c.low);
         const rsi = calculateRSI(closes), atr = calculateATR(hist);
-        const fvgs = detectFairValueGaps(hist), obs = detectOrderBlocks(hist), liq = detectLiquidityLevels(hist);
-        const structure = analyzeMarketStructure(hist);
+        const swings = findSwingPoints(hist, 3);
+        const fvgs = detectFairValueGaps(hist), obs = detectOrderBlocks(hist);
         const vp = calculateVolumeProfile(hist);
         const of = calculateOrderFlow(hist);
-        orderFlowData = of;
         
-        // Find entry zone based on trend direction
-        const entryZone = findEntryZone(hist, trendCheck.direction);
+        // Find optimal entry zone
+        const entryZone = findOptimalEntry(hist, trendCheck.direction);
+        
+        // Calculate professional stop loss
+        const stopResult = calculateProfessionalStop(hist, trendCheck.direction, entryZone.optimal);
+        
+        // Find nearest support/resistance for AI context
+        const nearestSupport = swings.lows.filter(s => s.price < price).sort((a,b) => b.price - a.price)[0];
+        const nearestResistance = swings.highs.filter(s => s.price > price).sort((a,b) => a.price - b.price)[0];
         
         const recentHigh = Math.max(...highs.slice(-20)), recentLow = Math.min(...lows.slice(-20));
         const range = recentHigh - recentLow;
         const fibs = { fib0:recentLow, fib236:recentLow+range*.236, fib382:recentLow+range*.382, fib500:recentLow+range*.5, fib618:recentLow+range*.618, fib786:recentLow+range*.786, fib100:recentHigh };
-        
-        // Find FVG and OB zones for AI context
-        const bullishFVG = fvgs.find(f => f.type === 'bullish');
-        const bearishFVG = fvgs.find(f => f.type === 'bearish');
-        const bullishOB = obs.find(o => o.type === 'bullish');
-        const bearishOB = obs.find(o => o.type === 'bearish');
         
         const marketData = {
             currentPrice: price.toFixed(getPricePrecision(currentPair)),
@@ -503,17 +622,14 @@ async function runAnalysis() {
             trendDirection: trendCheck.direction,
             trend1H: trendCheck.tf1h,
             trend4H: trendCheck.tf4h,
-            fvgCount: fvgs.length, obCount: obs.length,
-            oteLow: entryZone.low.toFixed(getPricePrecision(currentPair)),
-            oteHigh: entryZone.high.toFixed(getPricePrecision(currentPair)),
-            oteOptimal: entryZone.optimal.toFixed(getPricePrecision(currentPair)),
-            fvgZone: trendCheck.direction === 'BULLISH' && bullishFVG ? `${bullishFVG.low.toFixed(5)}-${bullishFVG.high.toFixed(5)}` : (trendCheck.direction === 'BEARISH' && bearishFVG ? `${bearishFVG.low.toFixed(5)}-${bearishFVG.high.toFixed(5)}` : 'None'),
-            obZone: trendCheck.direction === 'BULLISH' && bullishOB ? `${bullishOB.low.toFixed(5)}-${bullishOB.high.toFixed(5)}` : (trendCheck.direction === 'BEARISH' && bearishOB ? `${bearishOB.low.toFixed(5)}-${bearishOB.high.toFixed(5)}` : 'None'),
-            nearestSwing: entryZone.nearestSwing ? `$${entryZone.nearestSwing.price.toFixed(getPricePrecision(currentPair))} (${entryZone.nearestSwing.type})` : 'None',
+            entryZoneSource: entryZone.source,
+            entryZoneLow: entryZone.low.toFixed(getPricePrecision(currentPair)),
+            entryZoneHigh: entryZone.high.toFixed(getPricePrecision(currentPair)),
+            entryZoneOptimal: entryZone.optimal.toFixed(getPricePrecision(currentPair)),
+            nearestSupport: nearestSupport ? `$${nearestSupport.price.toFixed(getPricePrecision(currentPair))}` : 'None',
+            nearestResistance: nearestResistance ? `$${nearestResistance.price.toFixed(getPricePrecision(currentPair))}` : 'None',
             netDelta: (of.netDelta/1e6).toFixed(1)+'M', vwap: of.vwap.toFixed(getPricePrecision(currentPair)),
             poc: vp?.poc?.price.toFixed(getPricePrecision(currentPair))||'N/A',
-            valueHigh: vp?.valueAreaHigh?.toFixed(getPricePrecision(currentPair))||'N/A',
-            valueLow: vp?.valueAreaLow?.toFixed(getPricePrecision(currentPair))||'N/A',
             ...fibs
         };
         
@@ -521,29 +637,28 @@ async function runAnalysis() {
         
         const ai = await getAIAnalysis(marketData);
         
-        if (ai && ai.signal !== 'NEUTRAL') {
-            signal = ai.signal; confidence = ai.confidence; entry = ai.idealEntry;
-            sl = ai.stopLoss; tp1 = ai.takeProfit1; tp2 = ai.takeProfit2; tp3 = ai.takeProfit3;
+        if (ai && ai.signal !== 'NEUTRAL' && (ai.signal === 'LONG' || ai.signal === 'SHORT')) {
+            signal = ai.signal; 
+            confidence = ai.confidence; 
+            entry = ai.idealEntry || entryZone.optimal;
+            sl = ai.stopLoss || stopResult.price;
+            tp1 = ai.takeProfit1; 
+            tp2 = ai.takeProfit2; 
+            tp3 = ai.takeProfit3;
             reason = `🤖 AI: ${ai.reasoning}`;
             showNotification(`✅ AI Signal: ${signal} (${confidence}%)`, 'success');
         } else {
-            // Fallback using entry zone
+            // Professional fallback
             signal = trendCheck.direction === 'BULLISH' ? 'LONG' : 'SHORT';
-            confidence = 55;
+            confidence = 60;
             entry = entryZone.optimal;
-            
-            // Tight stop loss
-            if (entryZone.nearestSwing) {
-                sl = signal === 'LONG' ? entryZone.nearestSwing.price - atr*0.3 : entryZone.nearestSwing.price + atr*0.3;
-            } else {
-                sl = signal === 'LONG' ? entryZone.low - atr*0.3 : entryZone.high + atr*0.3;
-            }
+            sl = stopResult.price;
             
             const risk = Math.abs(entry - sl);
-            tp1 = signal === 'LONG' ? entry + risk*2 : entry - risk*2;
-            tp2 = signal === 'LONG' ? entry + risk*3 : entry - risk*3;
-            tp3 = signal === 'LONG' ? entry + risk*5 : entry - risk*5;
-            reason = `📊 ${entryZone.source} entry (1H/4H ${trendCheck.direction} aligned)`;
+            tp1 = signal === 'LONG' ? entry + risk * 2.5 : entry - risk * 2.5;
+            tp2 = signal === 'LONG' ? entry + risk * 4 : entry - risk * 4;
+            tp3 = signal === 'LONG' ? entry + risk * 6 : entry - risk * 6;
+            reason = `📊 ${entryZone.source} | Stop: ${stopResult.reason}`;
         }
         
         // Update UI
@@ -600,8 +715,8 @@ async function runAnalysis() {
         
         document.getElementById('fvgCount').innerHTML = fvgs.length;
         document.getElementById('obCount').innerHTML = obs.length;
-        document.getElementById('liquidityLevels').innerHTML = liq.length;
-        document.getElementById('marketStructure').innerHTML = structure;
+        document.getElementById('liquidityLevels').innerHTML = swings.highs.length + swings.lows.length;
+        document.getElementById('marketStructure').innerHTML = trendCheck.direction;
         
         document.getElementById('fib0').innerHTML = `$${fibs.fib0.toFixed(prec)}`;
         document.getElementById('fib236').innerHTML = `$${fibs.fib236.toFixed(prec)}`;
