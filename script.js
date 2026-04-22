@@ -239,6 +239,24 @@ function detectOrderBlocks(d) {
     return o; 
 }
 
+function detectLiquidityLevels(d) { 
+    let h=d.map(c=>c.high), l=d.map(c=>c.low), L=[]; 
+    for(let i=2;i<d.length-2;i++){ 
+        if(h[i]>h[i-1]&&h[i]>h[i-2]&&h[i]>h[i+1]&&h[i]>h[i+2]) L.push({type:'resistance',price:h[i]}); 
+        if(l[i]<l[i-1]&&l[i]<l[i-2]&&l[i]<l[i+1]&&l[i]<l[i+2]) L.push({type:'support',price:l[i]}); 
+    } 
+    return L; 
+}
+
+function analyzeMarketStructure(d) { 
+    let h=d.map(c=>c.high), l=d.map(c=>c.low); 
+    let rh=h.slice(-20), rl=l.slice(-20); 
+    let hh=rh[rh.length-1]>rh[0], hl=rl[rl.length-1]>rl[0], lh=rh[rh.length-1]<rh[0], ll=rl[rl.length-1]<rl[0]; 
+    if(hh&&hl) return 'Bullish'; 
+    if(lh&&ll) return 'Bearish'; 
+    return 'Ranging'; 
+}
+
 function calculateVolumeProfile(d) {
     if(!d?.length) return null;
     let maxP=Math.max(...d.map(c=>c.high)), minP=Math.min(...d.map(c=>c.low)), r=maxP-minP, ls=r/12;
@@ -395,7 +413,7 @@ async function checkTrendAlignment() {
 }
 
 // ============================================
-// MULTI-TIMEFRAME UI UPDATE (FIXED)
+// MULTI-TIMEFRAME UI UPDATE (FIXED - FULLY WORKING)
 // ============================================
 async function analyzeTimeframe(tf) {
     let d = await getHistoricalData(tf); 
@@ -417,7 +435,6 @@ async function updateMultiTimeframeUI() {
             if (result.trend === 'BULLISH') bullishCount++;
             else if (result.trend === 'BEARISH') bearishCount++;
             
-            // Update trend display
             const trendEl = document.getElementById(`trend${tf}`);
             if (trendEl) {
                 trendEl.innerHTML = result.trend === 'BULLISH' ? '🟢 Bullish' : 
@@ -425,15 +442,12 @@ async function updateMultiTimeframeUI() {
                 trendEl.className = `mtf-trend ${result.trend.toLowerCase()}`;
             }
             
-            // Update RSI display
             const rsiEl = document.getElementById(`rsi${tf}`);
             if (rsiEl) rsiEl.innerHTML = result.rsi.toFixed(1);
             
-            // Update Volume display
             const volEl = document.getElementById(`vol${tf}`);
             if (volEl) volEl.innerHTML = (result.volume / 1000000).toFixed(1) + 'M';
         } else {
-            // Set defaults if data fails
             const trendEl = document.getElementById(`trend${tf}`);
             if (trendEl) { trendEl.innerHTML = '⚪ --'; trendEl.className = 'mtf-trend neutral'; }
             const rsiEl = document.getElementById(`rsi${tf}`);
@@ -443,7 +457,6 @@ async function updateMultiTimeframeUI() {
         }
     }
     
-    // Update confluence score
     const total = bullishCount + bearishCount;
     const confluenceScore = total > 0 ? Math.max(bullishCount, bearishCount) / total * 100 : 0;
     const direction = bullishCount > bearishCount ? 'Bullish' : (bearishCount > bullishCount ? 'Bearish' : 'Neutral');
@@ -555,6 +568,7 @@ Optimal Entry: ${marketData.entryZoneOptimal}
 RSI: ${marketData.rsi} | ATR: ${marketData.atr}
 Nearest Support: ${marketData.nearestSupport}
 Nearest Resistance: ${marketData.nearestResistance}
+POC: ${marketData.poc} | VWAP: ${marketData.vwap}
 
 Return ONLY valid JSON:
 {
@@ -592,7 +606,7 @@ async function runAnalysis() {
     
     if (!TWELVE_DATA_KEY) { showSetupModal(); btn.classList.remove('loading'); btn.disabled = false; return; }
     
-    showNotification('🔍 Checking trend alignment...', 'info');
+    showNotification('🔍 Analyzing market...', 'info');
     
     try {
         const price = await getPrice(); if (!price) throw new Error('No price');
@@ -622,7 +636,8 @@ async function runAnalysis() {
         const closes = hist.map(c=>c.close), highs = hist.map(c=>c.high), lows = hist.map(c=>c.low);
         const rsi = calculateRSI(closes), atr = calculateATR(hist);
         const swings = findSwingPoints(hist, 3);
-        const fvgs = detectFairValueGaps(hist), obs = detectOrderBlocks(hist);
+        const fvgs = detectFairValueGaps(hist), obs = detectOrderBlocks(hist), liq = detectLiquidityLevels(hist);
+        const structure = analyzeMarketStructure(hist);
         const vp = calculateVolumeProfile(hist);
         const of = calculateOrderFlow(hist);
         
@@ -648,7 +663,9 @@ async function runAnalysis() {
             entryZoneHigh: entryZone.high.toFixed(getPricePrecision(currentPair)),
             entryZoneOptimal: entryZone.optimal.toFixed(getPricePrecision(currentPair)),
             nearestSupport: nearestSupport ? `$${nearestSupport.price.toFixed(getPricePrecision(currentPair))}` : 'None',
-            nearestResistance: nearestResistance ? `$${nearestResistance.price.toFixed(getPricePrecision(currentPair))}` : 'None'
+            nearestResistance: nearestResistance ? `$${nearestResistance.price.toFixed(getPricePrecision(currentPair))}` : 'None',
+            poc: vp?.poc?.price.toFixed(getPricePrecision(currentPair))||'N/A',
+            vwap: of?.vwap.toFixed(getPricePrecision(currentPair))||'N/A'
         };
         
         let signal, confidence, entry, sl, tp1, tp2, tp3, reason;
@@ -659,193 +676,168 @@ async function runAnalysis() {
             signal = ai.signal; 
             confidence = ai.confidence; 
             entry = ai.idealEntry || entryZone.optimal;
-            sl = ai.stopLoss;
-            tp1 = ai.takeProfit1;
-            tp2 = ai.takeProfit2;
+            sl = ai.stopLoss || stopResult.price;
+            tp1 = ai.takeProfit1; 
+            tp2 = ai.takeProfit2; 
             tp3 = ai.takeProfit3;
-            reason = ai.reasoning;
+            reason = `🤖 AI: ${ai.reasoning}`;
             showNotification(`✅ AI Signal: ${signal} (${confidence}%)`, 'success');
         } else {
             signal = trendCheck.direction === 'BULLISH' ? 'LONG' : 'SHORT';
-            confidence = 50;
-            entry = price;
-            sl = entry - atr * 0.5;
-            tp1 = entry + risk * 1.5;
-            tp2 = entry + risk * 2.5;
-            tp3 = entry + risk * 4;
-            reason = `Rule-based OTE entry`;
+            confidence = 55;
+            entry = entryZone.optimal;
+            sl = stopResult.price;
+            
+            const risk = Math.abs(entry - sl);
+            tp1 = signal === 'LONG' ? entry + risk * 2 : entry - risk * 2;
+            tp2 = signal === 'LONG' ? entry + risk * 3 : entry - risk * 3;
+            tp3 = signal === 'LONG' ? entry + risk * 5 : entry - risk * 5;
+            reason = `📊 ${entryZone.source} | Stop: ${stopResult.reason}`;
         }
         
-        updatePriceDisplay(price);
-        updateSignalDisplay(signal, confidence, entry, sl, tp1, tp2, tp3, reason);
-        updateVolumeProfileDisplay(vp);
-        updateOrderFlowDisplay(of);
-        updateICTDisplay(fvgs, obs, liquidity, structure);
-        updateFibDisplay(fibs);
+        // Update UI
+        const prec = getPricePrecision(currentPair);
+        document.getElementById('currentPrice').innerHTML = `$${price.toFixed(prec)}`;
+        if (lastPrice) {
+            const ch = ((price-lastPrice)/lastPrice*100).toFixed(2);
+            const chEl = document.getElementById('priceChange');
+            chEl.innerHTML = `${ch>=0?'▲':'▼'} ${Math.abs(ch)}%`;
+            chEl.className = `price-change ${ch>=0?'positive':'negative'}`;
+        }
+        lastPrice = price;
         
-        const shouldExecute = signal !== 'NEUTRAL' && confidence >= 55;
-        document.getElementById('executeBtn').disabled = !shouldExecute;
+        document.getElementById('signalTypeText').innerHTML = signal;
+        document.getElementById('signalTypeBox').className = `signal-type-box ${signal.toLowerCase()}`;
+        document.getElementById('confidenceText').innerHTML = `${confidence}%`;
+        document.getElementById('idealEntryDisplay').innerHTML = `$${entry.toFixed(prec)}`;
+        document.getElementById('entryPrice').innerHTML = `$${price.toFixed(prec)}`;
         
-        analysisData = { 
-            signalType, idealEntry, currentPrice, stopLoss, 
-            takeProfit1, takeProfit2, takeProfit3, confidence 
-        };
+        const distance = entry - price;
+        const distPercent = (Math.abs(distance)/price*100).toFixed(2);
+        const distEl = document.getElementById('distanceToEntry');
+        distEl.innerHTML = `${distance>0?'▼':'▲'} $${Math.abs(distance).toFixed(prec)} (${distPercent}%)`;
+        distEl.style.color = (signal==='LONG'&&distance>0)||(signal==='SHORT'&&distance<0) ? '#34c759' : '#ff3b30';
         
+        document.getElementById('stopLoss').innerHTML = `$${sl.toFixed(prec)}`;
+        document.getElementById('takeProfit1').innerHTML = `$${tp1.toFixed(prec)}`;
+        document.getElementById('takeProfit2').innerHTML = `$${tp2.toFixed(prec)}`;
+        document.getElementById('takeProfit3').innerHTML = `$${tp3.toFixed(prec)}`;
+        
+        const rrValue = Math.abs(tp1-entry)/Math.abs(entry-sl);
+        document.getElementById('riskReward').innerHTML = rrValue.toFixed(1);
+        
+        const badge = document.getElementById('signalBadge');
+        if (confidence>=70) { badge.innerHTML='🔥 HIGH CONFIDENCE'; badge.className='signal-badge high'; }
+        else if (confidence>=55) { badge.innerHTML='📊 MEDIUM CONFIDENCE'; badge.className='signal-badge medium'; }
+        else { badge.innerHTML='⚠️ LOW CONFIDENCE'; badge.className='signal-badge low'; }
+        
+        document.getElementById('signalReason').innerHTML = reason;
+        
+        if (vp) {
+            document.getElementById('pocValue').innerHTML = `$${vp.poc?.price.toFixed(prec)||'--'}`;
+            document.getElementById('valueHigh').innerHTML = `$${vp.valueAreaHigh?.toFixed(prec)||'--'}`;
+            document.getElementById('valueLow').innerHTML = `$${vp.valueAreaLow?.toFixed(prec)||'--'}`;
+            document.getElementById('totalVolume').innerHTML = `${(vp.totalVolume/1e6).toFixed(1)}M`;
+        }
+        
+        if (of) {
+            document.getElementById('buyingPressure').innerHTML = `${(of.buyingPressure/1e6).toFixed(1)}M`;
+            document.getElementById('sellingPressure').innerHTML = `${(of.sellingPressure/1e6).toFixed(1)}M`;
+            document.getElementById('netDelta').innerHTML = `${(of.netDelta/1e6).toFixed(1)}M`;
+            document.getElementById('vwapValue').innerHTML = `$${of.vwap.toFixed(prec)}`;
+        }
+        
+        document.getElementById('fvgCount').innerHTML = fvgs.length;
+        document.getElementById('obCount').innerHTML = obs.length;
+        document.getElementById('liquidityLevels').innerHTML = liq.length;
+        document.getElementById('marketStructure').innerHTML = structure;
+        
+        document.getElementById('fib0').innerHTML = `$${fibs.fib0.toFixed(prec)}`;
+        document.getElementById('fib236').innerHTML = `$${fibs.fib236.toFixed(prec)}`;
+        document.getElementById('fib382').innerHTML = `$${fibs.fib382.toFixed(prec)}`;
+        document.getElementById('fib500').innerHTML = `$${fibs.fib500.toFixed(prec)}`;
+        document.getElementById('fib618').innerHTML = `$${fibs.fib618.toFixed(prec)}`;
+        document.getElementById('fib786').innerHTML = `$${fibs.fib786.toFixed(prec)}`;
+        document.getElementById('fib100').innerHTML = `$${fibs.fib100.toFixed(prec)}`;
+        
+        updateChart(hist);
+        
+        analysisData = { signalType: signal, idealEntry: entry, currentPrice: price, stopLoss: sl, takeProfit1: tp1, takeProfit2: tp2, takeProfit3: tp3, confidence };
         calculatePositionSize();
         
-        showNotification(`✅ Analysis complete! ${signal} signal with ${confidence}% confidence`, 'success');
-    } catch (error) {
-        console.error(error);
-        showNotification('Error: ' + error.message, 'error');
-    } finally {
-        analyzeBtn.classList.remove('loading');
-        analyzeBtn.disabled = false;
-    }
-}
-
-function updatePriceDisplay(currentPrice) {
-    const precision = getPricePrecision(currentPair);
-    document.getElementById('currentPrice').innerHTML = `$${currentPrice.toFixed(precision)}`;
-}
-
-function updateSignalDisplay(signal, confidence, entry, sl, tp1, tp2, tp3, reason) {
-    const badge = document.getElementById('signalBadge');
-    if (confidence >= 70) {
-        badge.innerHTML = '🔥 HIGH CONFIDENCE';
-        badge.className = 'signal-badge high';
-    } else if (confidence >= 55) {
-        badge.innerHTML = '📊 MEDIUM CONFIDENCE';
-        badge.className = 'signal-badge medium';
-    } else {
-        badge.innerHTML = '⚠️ LOW CONFIDENCE';
-        badge.className = 'signal-badge low';
-    }
-}
-
-function updateVolumeProfileDisplay(vp) {
-    if (!vp) return;
-    document.getElementById('pocValue').innerHTML = `$${vp.poc?.price.toFixed(2) || '--'}`;
-    document.getElementById('valueHigh').innerHTML = `$${vp.valueAreaHigh?.toFixed(2) || '--'}`;
-    document.getElementById('valueLow').innerHTML = `$${vp.valueAreaLow?.toFixed(2) || '--'}`;
-    document.getElementById('totalVolume').innerHTML = `${(vp.totalVolume / 1000000).toFixed(1)}M`;
-}
-
-function updateOrderFlowDisplay(of) {
-    if (!of) return;
-    document.getElementById('buyingPressure').innerHTML = `${(of.buyingPressure / 1000000).toFixed(1)}M`;
-    document.getElementById('sellingPressure').innerHTML = `${(of.sellingPressure / 1000000).toFixed(1)}M`;
-    document.getElementById('netDelta').innerHTML = `${(of.netDelta / 1000000).toFixed(1)}M`;
-    document.getElementById('vwapValue').innerHTML = `$${of.vwap.toFixed(2)}`;
-}
-
-function updateICTDisplay(ict) {
-    if (!ict) return;
-    document.getElementById('fvgCount').innerHTML = ict.fvgs.length;
-    document.getElementById('obCount').innerHTML = ict.obs.length;
-    document.getElementById('liquidityLevels').innerHTML = ict.liquidity.length;
-}
-
-function updateFibDisplay(fibs) {
-    if (!fibs) return;
-    document.getElementById('fib0').innerHTML = `$${fibs.fib0.toFixed(2)}`;
-    document.getElementById('fib236').innerHTML = `$${fibs.fib236.toFixed(2)}`;
-    document.getElementById('fib382').innerHTML = `$${fibs.fib382.toFixed(2)}`;
-    document.getElementById('fib500').innerHTML = `$${fibs.fib500.toFixed(2)}`;
-    document.getElementById('fib618').innerHTML = `$${fibs.fib618.toFixed(2)}`;
-    document.getElementById('fib786').innerHTML = `$${fibs.fib786.toFixed(2)}`;
-    document.getElementById('fib100').innerHTML = `$${fibs.fib100.toFixed(2)}`;
+        document.getElementById('executeBtn').disabled = false;
+        
+    } catch(e) { console.error(e); showNotification('Error: '+e.message, 'error'); }
+    finally { btn.classList.remove('loading'); btn.disabled = false; }
 }
 
 // ============================================
-// LIMIT ORDER MANAGEMENT
+// LIMIT ORDERS
 // ============================================
-
 function loadPendingOrder() {
     const saved = localStorage.getItem('pendingLimitOrder');
-    if (saved) {
-        try {
-            pendingLimitOrder = JSON.parse(saved);
-            updateLimitOrderUI();
-        } catch(e) {
-            console.error('Failed to load pending order:', e);
-        }
-    }
+    if (saved) { try { pendingLimitOrder = JSON.parse(saved); updateLimitOrderUI(); startPriceMonitoring(); } catch(e) {} }
 }
 
-function savePendingOrder(order) {
-    localStorage.setItem('pendingLimitOrder', JSON.stringify(order));
-}
+function savePendingOrder(o) { pendingLimitOrder = o; localStorage.setItem('pendingLimitOrder', JSON.stringify(o)); updateLimitOrderUI(); }
+function clearPendingOrder() { pendingLimitOrder = null; localStorage.removeItem('pendingLimitOrder'); if(priceCheckInterval) clearInterval(priceCheckInterval); updateLimitOrderUI(); }
+
+function cancelLimitOrder() { clearPendingOrder(); showNotification('❌ Limit order cancelled', 'warning'); }
 
 function updateLimitOrderUI() {
-    const order = document.getElementById('limitOrderStatus');
-    if (order) {
-        order.classList.remove('hidden');
-        order.innerHTML = '⏳ Waiting for entry...';
+    const btn = document.getElementById('executeBtn'), status = document.getElementById('limitOrderStatus'), text = document.getElementById('limitOrderText');
+    if (pendingLimitOrder) {
+        btn.innerHTML = '⏳ Waiting for Entry...'; btn.style.background = 'linear-gradient(135deg, #ff9f0a, #ff6b00)';
+        status.classList.remove('hidden');
+        const prec = getPricePrecision(pendingLimitOrder.pair);
+        text.innerHTML = `⏳ ${pendingLimitOrder.signalType} LIMIT @ $${pendingLimitOrder.idealEntry.toFixed(prec)} on ${pendingLimitOrder.pair}`;
+        document.getElementById('connectionStatus').innerHTML = `🟡 Waiting for entry...`;
+    } else {
+        btn.innerHTML = '⚡ Place Limit Order'; btn.style.background = 'linear-gradient(135deg, #34c759, #28a745)';
+        status.classList.add('hidden');
+        document.getElementById('connectionStatus').innerHTML = '🟢 Ready';
     }
 }
 
 function startPriceMonitoring() {
-    if (priceCheckInterval) {
-        clearInterval(priceCheckInterval);
-        priceCheckInterval = setInterval(async () => {
-            const price = await getPrice();
-            if (price) {
-                document.getElementById('currentPrice').innerHTML = `$${price.toFixed(2)}`;
-            }
-        }, 5000);
-    }
+    if (priceCheckInterval) clearInterval(priceCheckInterval);
+    priceCheckInterval = setInterval(async () => {
+        if (!pendingLimitOrder) { clearInterval(priceCheckInterval); return; }
+        const price = await getPrice(); if (!price) return;
+        const o = pendingLimitOrder;
+        let exec = false;
+        if (o.signalType==='LONG' && price <= o.idealEntry) exec = true;
+        else if (o.signalType==='SHORT' && price >= o.idealEntry) exec = true;
+        if (exec) {
+            clearPendingOrder();
+            if (tg?.sendData) tg.sendData(JSON.stringify({ action:'limit_order_filled', pair:o.pair, signal:o.signalType, filledPrice:price, stopLoss:o.stopLoss, takeProfits:[o.takeProfit1,o.takeProfit2,o.takeProfit3] }));
+            showNotification(`✅ LIMIT ORDER FILLED! ${o.signalType} @ $${price.toFixed(getPricePrecision(o.pair))}`, 'success');
+            new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play().catch(()=>{});
+        }
+        updatePriceDisplay(price);
+    }, 5000);
 }
 
 function handleExecuteOrder() {
-    if (!analysisData) {
-        showNotification('No analysis data', 'error');
-        return;
-    }
-    const order = document.getElementById('executeBtn');
-    if (order) {
-        order.disabled = !shouldExecute;
-        order.innerHTML = '⚡ Execute Order';
-    }
-}
-
-function executeLimitOrder(order) {
-    if (!order) return;
-    const limitOrder = {
-        id: Date.now(),
-        pair: currentPair,
-        signal: analysisData.signalType,
-        idealEntry: analysisData.idealEntry,
-        currentPrice: analysisData.currentPrice,
-        stopLoss: analysisData.stopLoss,
-        takeProfit1: analysisData.takeProfit1,
-        takeProfit2: analysisData.takeProfit2,
-        takeProfit3: analysisData.takeProfit3,
-        confidence: analysisData.confidence
-    };
-    if (tg && tg.sendData) {
-        tg.sendData(JSON.stringify({
-            action: 'execute_order',
-            pair: currentPair,
-            signal: analysisData.signalType,
-            idealEntry: analysisData.idealEntry,
-            currentPrice: analysisData.currentPrice,
-            stopLoss: analysisData.stopLoss,
-            takeProfits: [analysisData.takeProfit1, analysisData.takeProfit2, analysisData.takeProfit3],
-            confidence: analysisData.confidence,
-            timestamp: new Date().toISOString()
-        }));
-    }
-}
-
-function showNotification(message, type) {
-    const notification = document.getElementById('notification');
-    if (!notification) return;
-    notification.innerHTML = message;
-    notification.className = type;
-    notification.classList.remove('hidden');
-    setTimeout(() => notification.classList.add('hidden'), 4000);
+    if (!analysisData || analysisData.signalType==='NEUTRAL') { showNotification('No valid signal', 'error'); return; }
+    if (pendingLimitOrder) { cancelLimitOrder(); return; }
+    const order = { id: Date.now(), pair: currentPair, signalType: analysisData.signalType, idealEntry: analysisData.idealEntry, stopLoss: analysisData.stopLoss, takeProfit1: analysisData.takeProfit1, takeProfit2: analysisData.takeProfit2, takeProfit3: analysisData.takeProfit3, confidence: analysisData.confidence, createdAt: new Date().toISOString() };
+    savePendingOrder(order); startPriceMonitoring();
+    showNotification(`📝 Limit order placed @ $${order.idealEntry.toFixed(getPricePrecision(currentPair))}`, 'info');
 }
 
 // ============================================
-// END OF ICT TRADING BOT PRO SCRIPT
+// UI HELPERS
 // ============================================
+function updatePriceDisplay(p) { document.getElementById('currentPrice').innerHTML = `$${p.toFixed(getPricePrecision(currentPair))}`; }
+function calculatePositionSize() {
+    if (!analysisData || analysisData.signalType==='NEUTRAL') return;
+    const acc = +document.getElementById('accountSize').value || 10000, riskP = +document.getElementById('riskPercent').value || 1;
+    const riskAmt = acc * (riskP/100), stopDist = Math.abs(analysisData.idealEntry - analysisData.stopLoss);
+    const pos = stopDist>0 ? riskAmt/stopDist : 0;
+    document.getElementById('positionSize').innerHTML = pos.toFixed(4);
+    document.getElementById('riskAmount').innerHTML = `$${riskAmt.toFixed(2)}`;
+    document.getElementById('suggestedLeverage').innerHTML = '--';
+}
+function updateChart(d) { if(priceChart) { priceChart.data.datasets[0].data = d.slice(-50).map(c=>({x:c.time,y:c.close})); priceChart.data.labels = d.slice(-50).map(c=>new Date(c.time).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})); priceChart.update(); } }
+function showNotification(m, t) { const n = document.getElementById('notification'); if(!n) return; n.innerHTML = m; n.className = `notification ${t}`; n.classList.remove('hidden'); setTimeout(()=>n.classList.add('hidden'), 4000); }
