@@ -18,44 +18,103 @@ const SYMBOLS = {
 const TF_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day' };
 
 // ============================================
-// API KEYS
+// API KEYS MANAGEMENT
 // ============================================
 async function loadKeys() {
     const s = localStorage.getItem('ict_bot_keys');
-    if (s) { try { const k = JSON.parse(s); TWELVE_DATA_KEY = k.twelveData||''; DEEPSEEK_API_KEY = k.deepseek||''; return true; } catch(e) {} }
+    if (s) {
+        try {
+            const k = JSON.parse(s);
+            TWELVE_DATA_KEY = k.twelveData || '';
+            DEEPSEEK_API_KEY = k.deepseek || '';
+            return true;
+        } catch(e) {}
+    }
     return false;
 }
 
 async function saveKeys(tk, dk) {
     localStorage.setItem('ict_bot_keys', JSON.stringify({twelveData:tk, deepseek:dk}));
-    TWELVE_DATA_KEY = tk; DEEPSEEK_API_KEY = dk;
-    showNotif('✅ Keys saved!','success');
+    TWELVE_DATA_KEY = tk;
+    DEEPSEEK_API_KEY = dk;
+    updateKeyStatus();
 }
 
-function showSetup() {
-    const ex = document.getElementById('setupOverlay'); if (ex) ex.remove();
+function clearKeys() {
+    localStorage.removeItem('ict_bot_keys');
+    TWELVE_DATA_KEY = '';
+    DEEPSEEK_API_KEY = '';
+    updateKeyStatus();
+    showNotif('🗑️ API keys removed','warning');
+}
+
+function updateKeyStatus() {
+    const ts = document.getElementById('twelveStatus');
+    const ds = document.getElementById('deepseekStatus');
+    
+    if (TWELVE_DATA_KEY) {
+        ts.innerHTML = '✅ Active';
+        ts.className = 'status-badge active';
+    } else {
+        ts.innerHTML = '❌ Missing';
+        ts.className = 'status-badge inactive';
+    }
+    
+    if (DEEPSEEK_API_KEY) {
+        ds.innerHTML = '✅ Active';
+        ds.className = 'status-badge active';
+    } else {
+        ds.innerHTML = '❌ Missing';
+        ds.className = 'status-badge inactive';
+    }
+}
+
+function showSetup(existingKeys = null) {
+    const ex = document.getElementById('setupOverlay');
+    if (ex) ex.remove();
+    
+    const tkVal = existingKeys?.twelveData || TWELVE_DATA_KEY || '';
+    const dkVal = existingKeys?.deepseek || DEEPSEEK_API_KEY || '';
+    
     document.body.insertAdjacentHTML('beforeend', `
         <div class="setup-overlay" id="setupOverlay">
             <div class="setup-modal">
                 <h3>🔐 API Key Setup</h3>
-                <p class="setup-desc">Enter your API keys</p>
-                <label>Twelve Data Key:</label>
-                <input type="password" id="twInput" class="setup-input">
-                <label>DeepSeek Key:</label>
-                <input type="password" id="dsInput" class="setup-input">
+                <p class="setup-desc">Enter your API keys. Keys are stored locally on your device only.</p>
+                <label>📡 Twelve Data API Key:</label>
+                <input type="password" id="twInput" class="setup-input" value="${tkVal}" placeholder="Enter Twelve Data key...">
+                <label>🤖 DeepSeek AI Key:</label>
+                <input type="password" id="dsInput" class="setup-input" value="${dkVal}" placeholder="sk-... (optional)">
+                <p class="setup-note">⚠️ Without DeepSeek key, bot uses rule-based signals only</p>
                 <div class="setup-buttons">
-                    <button id="svBtn" class="setup-btn primary">Save</button>
-                    <button id="skBtn" class="setup-btn secondary">Skip</button>
+                    <button id="svBtn" class="setup-btn primary">💾 Save Keys</button>
+                    <button id="clBtn" class="setup-btn danger">🗑️ Clear</button>
                 </div>
+                <button id="skBtn" class="setup-btn secondary" style="width:100%;margin-top:8px;">Close</button>
             </div>
         </div>`);
+    
     document.getElementById('svBtn').addEventListener('click', async () => {
         const tk = document.getElementById('twInput').value.trim();
         const dk = document.getElementById('dsInput').value.trim();
-        if (!tk) { showNotif('Twelve Data key required','warning'); return; }
-        await saveKeys(tk, dk); document.getElementById('setupOverlay').remove();
+        if (!tk) { showNotif('⚠️ Twelve Data key is required','warning'); return; }
+        await saveKeys(tk, dk);
+        document.getElementById('setupOverlay').remove();
+        if (dk) showNotif('✅ Keys saved! AI enabled','success');
+        else showNotif('⚠️ Keys saved (no AI)','warning');
     });
-    document.getElementById('skBtn').addEventListener('click', () => document.getElementById('setupOverlay').remove());
+    
+    document.getElementById('clBtn').addEventListener('click', () => {
+        if (confirm('Remove all saved API keys?')) {
+            clearKeys();
+            document.getElementById('twInput').value = '';
+            document.getElementById('dsInput').value = '';
+        }
+    });
+    
+    document.getElementById('skBtn').addEventListener('click', () => {
+        document.getElementById('setupOverlay').remove();
+    });
 }
 
 // ============================================
@@ -65,7 +124,14 @@ let pair = 'XAU/USD', tf = '15M', analysis = null, calls = 0, lastPrice = null;
 let limitOrder = null, priceTimer = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
-    if (!await loadKeys() || !TWELVE_DATA_KEY) setTimeout(showSetup, 300);
+    await loadKeys();
+    updateKeyStatus();
+    
+    // If no keys at all, show setup automatically
+    if (!TWELVE_DATA_KEY && !DEEPSEEK_API_KEY) {
+        setTimeout(() => showSetup(), 500);
+    }
+    
     init();
 });
 
@@ -76,6 +142,7 @@ function init() {
     document.getElementById('executeBtn').addEventListener('click', handleLimit);
     document.getElementById('cancelLimitBtn').addEventListener('click', cancelLimit);
     document.getElementById('copyJsonBtn').addEventListener('click', copyJson);
+    document.getElementById('updateKeysBtn').addEventListener('click', () => showSetup());
     document.getElementById('pairSelect').addEventListener('change', e => pair = e.target.value);
     document.querySelectorAll('.category-btn').forEach(b => b.addEventListener('click', function() {
         document.querySelectorAll('.category-btn').forEach(x => x.classList.remove('active'));
@@ -110,11 +177,17 @@ function getPrec(p) { if (isGold(p)) return 2; if (isForex(p)) return 5; return 
 // API
 // ============================================
 async function getPrice() {
-    if (!TWELVE_DATA_KEY) return null;
+    if (!TWELVE_DATA_KEY) {
+        showNotif('⚠️ Twelve Data key missing! Update in settings.','error');
+        return null;
+    }
     try {
         const r = await fetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(SYMBOLS[pair])}&apikey=${TWELVE_DATA_KEY}`);
         const d = await r.json();
         if (d.price) { calls++; document.getElementById('apiSource').innerHTML = '📡 Live'; return +d.price; }
+        if (d.code === 401 || d.code === 403) {
+            showNotif('❌ Invalid Twelve Data key! Update in settings.','error');
+        }
     } catch(e) {}
     return null;
 }
@@ -161,7 +234,7 @@ function detectBreakers(d) {
 }
 
 // ============================================
-// PROFESSIONAL STOP LOSS (FIXED - Based on Structure)
+// STOP LOSS
 // ============================================
 function calcStopLoss(data, dir, entry, zone) {
     const a = atr(data, 14);
@@ -169,58 +242,31 @@ function calcStopLoss(data, dir, entry, zone) {
     const fvgs = detectFVG(data);
     
     if (dir === 'BUY') {
-        // Find nearest swing low BELOW entry
         const swingLows = swings.L.filter(s => s.p < entry).sort((a,b) => b.p - a.p);
-        
-        // Find nearest bullish FVG low below entry
         const bullFVGs = fvgs.filter(f => f.type === 'bull' && f.l < entry).sort((a,b) => b.l - a.l);
-        
-        // Priority 1: Nearest swing low (structure-based)
         if (swingLows.length > 0) {
-            const nearestSwing = swingLows[0];
-            const buffer = isGold(pair) ? 5 : (isForex(pair) ? a * 0.5 : a * 0.4);
-            const stopPrice = nearestSwing.p - buffer;
-            return { price: stopPrice, reason: `Below swing low ${nearestSwing.p.toFixed(getPrec(pair))}` };
+            const buf = isGold(pair) ? 5 : (isForex(pair) ? a * 0.5 : a * 0.4);
+            return { price: swingLows[0].p - buf, reason: `Below swing low ${swingLows[0].p.toFixed(getPrec(pair))}` };
         }
-        
-        // Priority 2: Below FVG low
         if (bullFVGs.length > 0) {
-            const nearestFVG = bullFVGs[0];
-            const buffer = isGold(pair) ? 4 : (isForex(pair) ? a * 0.4 : a * 0.3);
-            const stopPrice = nearestFVG.l - buffer;
-            return { price: stopPrice, reason: `Below FVG ${nearestFVG.l.toFixed(getPrec(pair))}` };
+            const buf = isGold(pair) ? 4 : (isForex(pair) ? a * 0.4 : a * 0.3);
+            return { price: bullFVGs[0].l - buf, reason: `Below FVG ${bullFVGs[0].l.toFixed(getPrec(pair))}` };
         }
-        
-        // Priority 3: Below zone low with ATR buffer
         const atrStop = zone.l - (isGold(pair) ? a * 1.5 : a * 1.2);
-        return { price: atrStop, reason: `Below entry zone + ATR` };
-        
+        return { price: atrStop, reason: 'Below entry zone + ATR' };
     } else {
-        // Find nearest swing high ABOVE entry
         const swingHighs = swings.H.filter(s => s.p > entry).sort((a,b) => a.p - b.p);
-        
-        // Find nearest bearish FVG high above entry
         const bearFVGs = fvgs.filter(f => f.type === 'bear' && f.h > entry).sort((a,b) => a.h - b.h);
-        
-        // Priority 1: Nearest swing high
         if (swingHighs.length > 0) {
-            const nearestSwing = swingHighs[0];
-            const buffer = isGold(pair) ? 5 : (isForex(pair) ? a * 0.5 : a * 0.4);
-            const stopPrice = nearestSwing.p + buffer;
-            return { price: stopPrice, reason: `Above swing high ${nearestSwing.p.toFixed(getPrec(pair))}` };
+            const buf = isGold(pair) ? 5 : (isForex(pair) ? a * 0.5 : a * 0.4);
+            return { price: swingHighs[0].p + buf, reason: `Above swing high ${swingHighs[0].p.toFixed(getPrec(pair))}` };
         }
-        
-        // Priority 2: Above FVG high
         if (bearFVGs.length > 0) {
-            const nearestFVG = bearFVGs[0];
-            const buffer = isGold(pair) ? 4 : (isForex(pair) ? a * 0.4 : a * 0.3);
-            const stopPrice = nearestFVG.h + buffer;
-            return { price: stopPrice, reason: `Above FVG ${nearestFVG.h.toFixed(getPrec(pair))}` };
+            const buf = isGold(pair) ? 4 : (isForex(pair) ? a * 0.4 : a * 0.3);
+            return { price: bearFVGs[0].h + buf, reason: `Above FVG ${bearFVGs[0].h.toFixed(getPrec(pair))}` };
         }
-        
-        // Priority 3: Above zone high with ATR buffer
         const atrStop = zone.h + (isGold(pair) ? a * 1.5 : a * 1.2);
-        return { price: atrStop, reason: `Above entry zone + ATR` };
+        return { price: atrStop, reason: 'Above entry zone + ATR' };
     }
 }
 
@@ -275,14 +321,54 @@ async function updateMTF() {
 // ============================================
 // AI
 // ============================================
-async function askAI(md) {
-    if(!DEEPSEEK_API_KEY) return null;
-    showNotif('🤖 AI...','info');
-    try{
-        let r=await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'Return ONLY JSON.'},{role:'user',content:`ICT trader. ${pair} ${tf} Price:${md.price}\nB:${md.bS} S:${md.sS}\nEntry zone: ${md.zone}\nSuggested SL: ${md.suggestedSL}\nReturn:{"signal":"BUY/SELL/NEUTRAL","confidence":0-100,"entryPrice":#,"stopLoss":#,"takeProfit1":#,"takeProfit2":#,"takeProfit3":#,"reasoning":"..."}`}],temperature:.1,max_tokens:600})});
-        let d=await r.json();
-        if(d.choices?.[0]){ let m=d.choices[0].message.content.match(/\{[\s\S]*\}/); if(m) return JSON.parse(m[0]); }
-    }catch(e){}
+async function askAI(marketData) {
+    if (!DEEPSEEK_API_KEY) {
+        console.log('❌ No DeepSeek key - using rule-based');
+        return null;
+    }
+    
+    showNotif('🤖 AI analyzing...','info');
+    console.log('🤖 Calling DeepSeek...');
+    
+    const prompt = `You are an expert ICT trader. Based on this data, provide ONE trading signal.
+
+Pair: ${pair} | TF: ${tf} | Price: $${marketData.price}
+Bullish Score: ${marketData.bS}/100 | Bearish Score: ${marketData.sS}/100
+Entry Zone: ${marketData.zoneSrc} at $${marketData.entryPrice} (${marketData.zoneLow}-${marketData.zoneHigh})
+Suggested SL: $${marketData.suggestedSL} (${marketData.slReason})
+MTF: 5M=${marketData.mtf5} 15M=${marketData.mtf15} 1H=${marketData.mtf1H} 4H=${marketData.mtf4H}
+
+Return ONLY this JSON:
+{"signal":"BUY","confidence":75,"entryPrice":4720,"stopLoss":4710,"takeProfit1":4750,"takeProfit2":4780,"takeProfit3":4820,"reasoning":"..."}`;
+
+    try {
+        const r = await fetch(DEEPSEEK_API_URL, {
+            method:'POST',
+            headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},
+            body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.2,max_tokens:600})
+        });
+        const d = await r.json();
+        console.log('📡 AI response:', d);
+        
+        if (d.error) {
+            console.error('❌ AI error:', d.error);
+            showNotif('AI error: ' + (d.error.message || 'Check key'),'error');
+            return null;
+        }
+        
+        if (d.choices?.[0]) {
+            const m = d.choices[0].message.content.match(/\{[\s\S]*\}/);
+            if (m) {
+                const parsed = JSON.parse(m[0]);
+                console.log('✅ AI parsed:', parsed);
+                return parsed;
+            }
+        }
+        console.log('❌ No valid JSON in AI response');
+    } catch(e) {
+        console.error('❌ AI fetch error:', e);
+        showNotif('AI connection failed','warning');
+    }
     return null;
 }
 
@@ -292,52 +378,69 @@ async function askAI(md) {
 async function runAnalysis() {
     const btn = document.getElementById('analyzeBtn');
     btn.classList.add('loading'); btn.disabled = true;
-    if(!TWELVE_DATA_KEY){ showSetup(); btn.classList.remove('loading'); btn.disabled=false; return; }
+    
+    if (!TWELVE_DATA_KEY) {
+        showNotif('⚠️ Set Twelve Data key in settings!','error');
+        btn.classList.remove('loading'); btn.disabled = false;
+        return;
+    }
+    
     showNotif('🔍 Analyzing...','info');
     
-    try{
-        const price = await getPrice(); if(!price) throw new Error('No price');
+    try {
+        const price = await getPrice(); if (!price) throw new Error('No price data');
         await updateMTF();
-        const data = await getHistory(); if(!data?.length) throw new Error('No data');
+        const data = await getHistory(); if (!data?.length) throw new Error('No historical data');
         
         const sig = score(data, price);
-        if (!sig.zone) throw new Error('No entry zone');
+        if (!sig.zone) throw new Error('No clear entry zone detected');
         
-        // Calculate professional stop loss
         const slResult = calcStopLoss(data, sig.dir, sig.zone.p, sig.zone);
         
-        const ai = await askAI({
-            price:price.toFixed(2),
-            bS:sig.scores.bS,
-            sS:sig.scores.sS,
-            zone:sig.zone?.src||'None',
-            suggestedSL: slResult.price.toFixed(2)
-        });
+        const marketData = {
+            price: price.toFixed(2),
+            bS: sig.scores.bS, sS: sig.scores.sS,
+            zoneSrc: sig.zone.src,
+            entryPrice: sig.zone.p.toFixed(2),
+            zoneLow: sig.zone.l.toFixed(2),
+            zoneHigh: sig.zone.h.toFixed(2),
+            suggestedSL: slResult.price.toFixed(2),
+            slReason: slResult.reason,
+            mtf5: document.getElementById('trend5M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
+            mtf15: document.getElementById('trend15M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
+            mtf1H: document.getElementById('trend1H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
+            mtf4H: document.getElementById('trend4H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--'
+        };
+        
+        const ai = await askAI(marketData);
         
         let dir, conf, entry, sl, tp1, tp2, tp3, reason, src;
-        if(ai&&ai.signal!=='NEUTRAL'){
-            dir=ai.signal; conf=ai.confidence; entry=ai.entryPrice||sig.zone.p;
-            sl=ai.stopLoss||slResult.price;
-            tp1=ai.takeProfit1; tp2=ai.takeProfit2; tp3=ai.takeProfit3;
-            reason=ai.reasoning; src='AI';
+        
+        if (ai && (ai.signal === 'BUY' || ai.signal === 'SELL')) {
+            dir = ai.signal; conf = ai.confidence || 70;
+            entry = ai.entryPrice || sig.zone.p;
+            sl = ai.stopLoss || slResult.price;
+            tp1 = ai.takeProfit1; tp2 = ai.takeProfit2; tp3 = ai.takeProfit3;
+            reason = '🤖 AI: ' + (ai.reasoning || 'AI signal');
+            src = 'AI';
+            console.log('✅ Using AI signal');
         } else {
-            dir=sig.dir; conf=sig.conf; entry=sig.zone.p;
-            sl=slResult.price;
-            const risk=Math.abs(entry-sl);
-            tp1=dir==='BUY'?entry+risk*2:entry-risk*2;
-            tp2=dir==='BUY'?entry+risk*3.5:entry-risk*3.5;
-            tp3=dir==='BUY'?entry+risk*5:entry-risk*5;
-            reason=sig.reason + ' | SL: ' + slResult.reason;
-            src=sig.zone.src;
+            dir = sig.dir; conf = sig.conf; entry = sig.zone.p; sl = slResult.price;
+            const risk = Math.abs(entry-sl);
+            tp1 = dir==='BUY'?entry+risk*2:entry-risk*2;
+            tp2 = dir==='BUY'?entry+risk*3.5:entry-risk*3.5;
+            tp3 = dir==='BUY'?entry+risk*5:entry-risk*5;
+            reason = sig.reason + ' | SL: ' + slResult.reason;
+            src = sig.zone.src;
+            console.log('⚠️ Using rule-based fallback');
         }
         
         const st = dir==='BUY'?'LONG':(dir==='SELL'?'SHORT':'NEUTRAL');
         const prec = getPrec(pair);
         const rr = (Math.abs(tp1-entry)/Math.abs(entry-sl)).toFixed(1);
         
-        // Update price
         document.getElementById('currentPrice').innerHTML = `$${price.toFixed(prec)}`;
-        if(lastPrice){
+        if (lastPrice) {
             const ch = ((price-lastPrice)/lastPrice*100).toFixed(2);
             const ce = document.getElementById('priceChange');
             ce.innerHTML = `${ch>=0?'▲':'▼'} ${Math.abs(ch)}%`;
@@ -345,7 +448,6 @@ async function runAnalysis() {
         }
         lastPrice = price;
         
-        // Build JSON output
         const out = {
             trade_signal: {
                 date: new Date().toISOString().split('T')[0],
@@ -362,13 +464,14 @@ async function runAnalysis() {
                 risk_reward: rr,
                 confidence: conf,
                 entry_source: src,
+                ai_used: src === 'AI',
                 analysis: {
                     scoring: { bullish: sig.scores.bS, bearish: sig.scores.sS },
                     multi_timeframe: {
-                        "5M": document.getElementById('trend5M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
-                        "15M": document.getElementById('trend15M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
-                        "1H": document.getElementById('trend1H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
-                        "4H": document.getElementById('trend4H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--'
+                        "5M": marketData.mtf5,
+                        "15M": marketData.mtf15,
+                        "1H": marketData.mtf1H,
+                        "4H": marketData.mtf4H
                     },
                     reasoning: reason
                 }
@@ -380,7 +483,8 @@ async function runAnalysis() {
         analysis = { signalType:st, idealEntry:entry, currentPrice:price, stopLoss:sl, takeProfit1:tp1, takeProfit2:tp2, takeProfit3:tp3, confidence:conf };
         document.getElementById('executeBtn').disabled = st==='NEUTRAL';
         
-        showNotif(`✅ ${st} ${conf}%`,'success');
+        showNotif(src==='AI'?`✅ AI: ${st} ${conf}%`:`⚠️ Rule: ${st} ${conf}%`,'success');
+        
     } catch(e) { console.error(e); showNotif('Error: '+e.message,'error'); }
     finally { btn.classList.remove('loading'); btn.disabled=false; }
 }
@@ -399,7 +503,7 @@ function cancelLimit() { clearLimit(); showNotif('❌ Cancelled','warning'); }
 
 function updateLimitUI() {
     const t = document.getElementById('limitOrderText'), c = document.getElementById('cancelLimitBtn');
-    if(limitOrder){
+    if (limitOrder) {
         const prec = getPrec(pair);
         t.innerHTML = `⏳ ${limitOrder.signalType} LIMIT @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)}`;
         t.className = 'active'; c.classList.remove('hidden');
@@ -413,13 +517,13 @@ function updateLimitUI() {
 }
 
 function startMonitor() {
-    if(priceTimer) clearInterval(priceTimer);
+    if (priceTimer) clearInterval(priceTimer);
     priceTimer = setInterval(async () => {
-        if(!limitOrder){ clearInterval(priceTimer); return; }
-        const price = await getPrice(); if(!price) return;
+        if (!limitOrder) { clearInterval(priceTimer); return; }
+        const price = await getPrice(); if (!price) return;
         const prec = getPrec(pair);
         document.getElementById('currentPrice').innerHTML = `$${price.toFixed(prec)}`;
-        if((limitOrder.signalType==='LONG'&&price<=limitOrder.idealEntry)||(limitOrder.signalType==='SHORT'&&price>=limitOrder.idealEntry)){
+        if ((limitOrder.signalType==='LONG'&&price<=limitOrder.idealEntry)||(limitOrder.signalType==='SHORT'&&price>=limitOrder.idealEntry)) {
             clearLimit();
             showNotif(`✅ FILLED! ${limitOrder.signalType} @ $${price.toFixed(prec)}`,'success');
             try { new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play(); } catch(e) {}
@@ -428,8 +532,8 @@ function startMonitor() {
 }
 
 function handleLimit() {
-    if(!analysis||analysis.signalType==='NEUTRAL'){ showNotif('No signal','error'); return; }
-    if(limitOrder){ cancelLimit(); return; }
+    if (!analysis||analysis.signalType==='NEUTRAL') { showNotif('No signal','error'); return; }
+    if (limitOrder) { cancelLimit(); return; }
     const o = { id:Date.now(), pair, signalType:analysis.signalType, idealEntry:analysis.idealEntry, stopLoss:analysis.stopLoss, takeProfit1:analysis.takeProfit1, takeProfit2:analysis.takeProfit2, takeProfit3:analysis.takeProfit3, confidence:analysis.confidence, createdAt:new Date().toISOString() };
     saveLimit(o); startMonitor();
     showNotif(`📝 Limit @ $${o.idealEntry.toFixed(getPrec(pair))}`,'info');
@@ -440,7 +544,7 @@ function handleLimit() {
 // ============================================
 function copyJson() {
     const t = document.getElementById('jsonOutput').innerHTML;
-    if(t.includes('Click')){ showNotif('Run analysis first','warning'); return; }
+    if (t.includes('Click')) { showNotif('Run analysis first','warning'); return; }
     navigator.clipboard.writeText(t).then(()=>showNotif('📋 Copied!','success')).catch(()=>showNotif('Failed','error'));
 }
 
