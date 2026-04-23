@@ -157,9 +157,9 @@ function setupPositionCalculator() {
 
 function updatePairsByCategory(category) {
     const pairs = { 
-        crypto: ['BTC/USD','ETH/USD','BNB/USD','SOL/USD','XRP/USD'], 
-        forex: ['EUR/USD','GBP/USD','USD/JPY','AUD/USD','USD/CAD'], 
-        metals: ['XAU/USD','XAG/USD','XPT/USD','XPD/USD'] 
+        crypto: ['BTC/USD','ETH/USD'], 
+        forex: ['EUR/USD','GBP/USD'], 
+        metals: ['XAU/USD','XAG/USD'] 
     };
     const select = document.getElementById('pairSelect');
     if (select) { 
@@ -169,20 +169,13 @@ function updatePairsByCategory(category) {
 }
 
 function getPairDisplayName(pair) {
-    const icons = { 
-        'BTC/USD':'₿','ETH/USD':'⟠','EUR/USD':'€','GBP/USD':'£',
-        'XAU/USD':'👑','XAG/USD':'🥈','USD/JPY':'💴','AUD/USD':'🇦🇺',
-        'USD/CAD':'🇨🇦','BNB/USD':'💰','SOL/USD':'☀️','XRP/USD':'💧',
-        'XPT/USD':'🔘','XPD/USD':'⚪'
-    };
+    const icons = { 'BTC/USD':'₿','ETH/USD':'⟠','EUR/USD':'€','GBP/USD':'£','XAU/USD':'👑','XAG/USD':'🥈' };
     return `${icons[pair]||'📊'} ${pair}`;
 }
 
-function isForexPair(p) { return ['EUR/USD','GBP/USD','USD/JPY','AUD/USD','USD/CAD'].includes(p); }
-function isJPYPair(p) { return p.includes('JPY'); }
+function isForexPair(p) { return ['EUR/USD','GBP/USD','USD/JPY'].includes(p); }
 function isGold(p) { return p.includes('XAU'); }
 function getPricePrecision(p) { 
-    if (isJPYPair(p)) return 3;
     if (isGold(p)) return 2;
     if (isForexPair(p)) return 5;
     return 2;
@@ -217,67 +210,25 @@ async function getHistoricalData(timeframe = currentTimeframe) {
         if (data.values) {
             apiCalls++;
             return data.values.map(c => ({ 
-                time: c.datetime, 
-                open: +c.open, 
-                high: +c.high, 
-                low: +c.low, 
-                close: +c.close, 
-                volume: +c.volume || 1000000 
+                time: c.datetime, open: +c.open, high: +c.high, low: +c.low, close: +c.close, volume: +c.volume || 1000000 
             })).reverse();
         }
     } catch(e) {}
     return null;
 }
 
-function updateApiCounter() {
-    document.getElementById('apiUsage').innerHTML = `${apiCalls}`;
-}
-
 // ============================================
-// TECHNICAL ANALYSIS FUNCTIONS
+// TECHNICAL ANALYSIS
 // ============================================
-function calculateEMA(p, n) { 
-    const m = 2/(n+1); 
-    let e = [p[0]]; 
-    for(let i=1;i<p.length;i++) e.push((p[i]-e[i-1])*m+e[i-1]); 
-    return e; 
-}
+function calculateEMA(p, n) { const m = 2/(n+1); let e = [p[0]]; for(let i=1;i<p.length;i++) e.push((p[i]-e[i-1])*m+e[i-1]); return e; }
+function calculateRSI(p, n=14) { let g=0,l=0; for(let i=p.length-n;i<p.length;i++){ let c=p[i]-p[i-1]; if(c>=0)g+=c; else l-=c; } let ag=g/n, al=l/n; return al===0?100:100-(100/(1+ag/al)); }
+function calculateATR(d, n=14) { let t=[]; for(let i=1;i<d.length;i++) t.push(Math.max(d[i].high-d[i].low, Math.abs(d[i].high-d[i-1].close), Math.abs(d[i].low-d[i-1].close))); return t.slice(-n).reduce((a,b)=>a+b,0)/n; }
 
-function calculateRSI(p, n=14) { 
-    let g=0,l=0; 
-    for(let i=p.length-n;i<p.length;i++){ 
-        let c=p[i]-p[i-1]; 
-        if(c>=0) g+=c; 
-        else l-=c; 
-    } 
-    let ag=g/n, al=l/n; 
-    return al===0?100:100-(100/(1+ag/al)); 
-}
-
-function calculateATR(d, n=14) { 
-    let t=[]; 
-    for(let i=1;i<d.length;i++) {
-        t.push(Math.max(
-            d[i].high-d[i].low, 
-            Math.abs(d[i].high-d[i-1].close), 
-            Math.abs(d[i].low-d[i-1].close)
-        )); 
-    }
-    return t.slice(-n).reduce((a,b)=>a+b,0)/n; 
-}
-
-// ============================================
-// ICT CONCEPTS DETECTION
-// ============================================
 function detectFairValueGaps(d) { 
     let f=[]; 
     for(let i=1;i<d.length-1;i++){ 
-        if(d[i-1].high<d[i+1].low && d[i+1].low-d[i-1].high>d[i+1].close*0.001) {
-            f.push({type:'bullish', low: d[i-1].high, high: d[i+1].low, mid: (d[i-1].high+d[i+1].low)/2}); 
-        }
-        if(d[i-1].low>d[i+1].high && d[i-1].low-d[i+1].high>d[i+1].close*0.001) {
-            f.push({type:'bearish', low: d[i+1].high, high: d[i-1].low, mid: (d[i+1].high+d[i-1].low)/2}); 
-        }
+        if(d[i-1].high<d[i+1].low && d[i+1].low-d[i-1].high>d[i+1].close*0.0005) f.push({type:'bullish', low: d[i-1].high, high: d[i+1].low, mid: (d[i-1].high+d[i+1].low)/2}); 
+        if(d[i-1].low>d[i+1].high && d[i-1].low-d[i+1].high>d[i+1].close*0.0005) f.push({type:'bearish', low: d[i+1].high, high: d[i-1].low, mid: (d[i+1].high+d[i-1].low)/2}); 
     } 
     return f; 
 }
@@ -285,12 +236,8 @@ function detectFairValueGaps(d) {
 function detectOrderBlocks(d) { 
     let o=[]; 
     for(let i=2;i<d.length-1;i++){ 
-        if(d[i].close<d[i].open && d[i+1].close>d[i+1].open && d[i+1].close>d[i].high) {
-            o.push({type:'bullish', high: d[i].high, low: d[i].low}); 
-        }
-        if(d[i].close>d[i].open && d[i+1].close<d[i+1].open && d[i+1].close<d[i].low) {
-            o.push({type:'bearish', high: d[i].high, low: d[i].low}); 
-        }
+        if(d[i].close<d[i].open && d[i+1].close>d[i+1].open && d[i+1].close>d[i].high) o.push({type:'bullish', high: d[i].high, low: d[i].low}); 
+        if(d[i].close>d[i].open && d[i+1].close<d[i+1].open && d[i+1].close<d[i].low) o.push({type:'bearish', high: d[i].high, low: d[i].low}); 
     } 
     return o; 
 }
@@ -298,12 +245,8 @@ function detectOrderBlocks(d) {
 function detectLiquidityLevels(d) { 
     let h=d.map(c=>c.high), l=d.map(c=>c.low), L=[]; 
     for(let i=2;i<d.length-2;i++){ 
-        if(h[i]>h[i-1]&&h[i]>h[i-2]&&h[i]>h[i+1]&&h[i]>h[i+2]) {
-            L.push({type:'resistance',price:h[i]}); 
-        }
-        if(l[i]<l[i-1]&&l[i]<l[i-2]&&l[i]<l[i+1]&&l[i]<l[i+2]) {
-            L.push({type:'support',price:l[i]}); 
-        }
+        if(h[i]>h[i-1]&&h[i]>h[i-2]&&h[i]>h[i+1]&&h[i]>h[i+2]) L.push({type:'resistance',price:h[i]}); 
+        if(l[i]<l[i-1]&&l[i]<l[i-2]&&l[i]<l[i+1]&&l[i]<l[i+2]) L.push({type:'support',price:l[i]}); 
     } 
     return L; 
 }
@@ -311,8 +254,7 @@ function detectLiquidityLevels(d) {
 function analyzeMarketStructure(d) { 
     let h=d.map(c=>c.high), l=d.map(c=>c.low); 
     let rh=h.slice(-20), rl=l.slice(-20); 
-    let hh=rh[rh.length-1]>rh[0], hl=rl[rl.length-1]>rl[0];
-    let lh=rh[rh.length-1]<rh[0], ll=rl[rl.length-1]<rl[0]; 
+    let hh=rh[rh.length-1]>rh[0], hl=rl[rl.length-1]>rl[0], lh=rh[rh.length-1]<rh[0], ll=rl[rl.length-1]<rl[0]; 
     if(hh&&hl) return 'Bullish'; 
     if(lh&&ll) return 'Bearish'; 
     return 'Ranging'; 
@@ -320,69 +262,39 @@ function analyzeMarketStructure(d) {
 
 function calculateVolumeProfile(d) {
     if(!d?.length) return null;
-    let maxP=Math.max(...d.map(c=>c.high)), minP=Math.min(...d.map(c=>c.low));
-    let r=maxP-minP, ls=r/12;
-    let levels=[]; 
-    for(let i=0;i<12;i++){ 
-        let lo=minP+i*ls; 
-        levels.push({low:lo, high:lo+ls, volume:0, price:(lo+lo+ls)/2}); 
-    }
-    d.forEach(c=>{ 
-        levels.forEach(l=>{ 
-            if(c.high>=l.low && c.low<=l.high){ 
-                let o=Math.min(c.high,l.high)-Math.max(c.low,l.low); 
-                l.volume+=c.volume*(o/(c.high-c.low)); 
-            } 
-        }); 
-    });
-    let maxV=0, poc=null; 
-    levels.forEach(l=>{ if(l.volume>maxV){ maxV=l.volume; poc=l; } });
-    let totalV=levels.reduce((s,l)=>s+l.volume,0), target=totalV*.7, acc=0;
-    let sorted=[...levels].sort((a,b)=>b.volume-a.volume), va=[];
+    let maxP=Math.max(...d.map(c=>c.high)), minP=Math.min(...d.map(c=>c.low)), r=maxP-minP, ls=r/12;
+    let levels=[]; for(let i=0;i<12;i++){ let lo=minP+i*ls; levels.push({low:lo,high:lo+ls,volume:0,price:(lo+lo+ls)/2}); }
+    d.forEach(c=>{ levels.forEach(l=>{ if(c.high>=l.low&&c.low<=l.high){ let o=Math.min(c.high,l.high)-Math.max(c.low,l.low); l.volume+=c.volume*(o/(c.high-c.low)); } }); });
+    let maxV=0, poc=null; levels.forEach(l=>{ if(l.volume>maxV){ maxV=l.volume; poc=l; } });
+    let totalV=levels.reduce((s,l)=>s+l.volume,0), target=totalV*.7, acc=0, sorted=[...levels].sort((a,b)=>b.volume-a.volume), va=[];
     for(let l of sorted){ if(acc<target){ va.push(l); acc+=l.volume; } }
-    let vaH=va.length?Math.max(...va.map(l=>l.high)):maxP;
-    let vaL=va.length?Math.min(...va.map(l=>l.low)):minP;
+    let vaH=va.length?Math.max(...va.map(l=>l.high)):maxP, vaL=va.length?Math.min(...va.map(l=>l.low)):minP;
     return {poc, valueAreaHigh:vaH, valueAreaLow:vaL, totalVolume:totalV};
 }
 
 function calculateOrderFlow(d) {
     if(!d?.length) return null;
     let buy=0, sell=0;
-    d.forEach(c=>{ 
-        let bull=c.close>c.open; 
-        if(bull){ buy+=c.volume*.7; sell+=c.volume*.3; } 
-        else { buy+=c.volume*.3; sell+=c.volume*.7; } 
-    });
-    let pv=0, vol=0; 
-    d.forEach(c=>{ let tp=(c.high+c.low+c.close)/3; pv+=tp*c.volume; vol+=c.volume; });
+    d.forEach(c=>{ let bull=c.close>c.open; if(bull){ buy+=c.volume*.7; sell+=c.volume*.3; } else { buy+=c.volume*.3; sell+=c.volume*.7; } });
+    let pv=0, vol=0; d.forEach(c=>{ let tp=(c.high+c.low+c.close)/3; pv+=tp*c.volume; vol+=c.volume; });
     return { buyingPressure:buy, sellingPressure:sell, netDelta:buy-sell, vwap:pv/vol };
 }
 
 // ============================================
-// ADVANCED ICT - MSS, BREAKERS, FVG SNIPER
+// ADVANCED ICT
 // ============================================
 function detectMSS(data) {
-    const highs = data.map(c => c.high);
-    const lows = data.map(c => c.low);
-    const closes = data.map(c => c.close);
-    
-    const recentHigh = Math.max(...highs.slice(-20));
-    const recentLow = Math.min(...lows.slice(-20));
+    const highs = data.map(c => c.high), lows = data.map(c => c.low), closes = data.map(c => c.close);
+    const recentHigh = Math.max(...highs.slice(-20)), recentLow = Math.min(...lows.slice(-20));
     const currentPrice = closes[closes.length - 1];
-    
-    if (currentPrice > recentHigh) {
-        return { type: 'BULLISH', level: recentHigh, message: 'MSS confirmed - Transition to bull' };
-    }
-    if (currentPrice < recentLow) {
-        return { type: 'BEARISH', level: recentLow, message: 'MSS confirmed - Transition to bear' };
-    }
+    if (currentPrice > recentHigh) return { type: 'BULLISH', level: recentHigh };
+    if (currentPrice < recentLow) return { type: 'BEARISH', level: recentLow };
     return null;
 }
 
 function findSwingPoints(data, lookback = 3) {
     const highs = [], lows = [];
     const h = data.map(c => c.high), l = data.map(c => c.low);
-    
     for(let i = lookback; i < h.length - lookback; i++) {
         let isHigh = true, isLow = true;
         for(let j = 1; j <= lookback; j++) {
@@ -396,183 +308,157 @@ function findSwingPoints(data, lookback = 3) {
 }
 
 function detectBreakerBlocks(data) {
-    const blocks = [];
-    const swings = findSwingPoints(data);
-    
+    const blocks = [], swings = findSwingPoints(data);
     for (let i = 5; i < data.length - 5; i++) {
         const candle = data[i];
-        
         if (candle.close > candle.open) {
             const prevResistance = swings.highs.find(h => h.index < i && h.price < candle.close);
-            if (prevResistance) {
-                blocks.push({
-                    type: 'BULLISH',
-                    price: prevResistance.price,
-                    message: 'Breaker block - Failed resistance becomes support'
-                });
-            }
+            if (prevResistance) blocks.push({ type: 'BULLISH', price: prevResistance.price });
         }
-        
         if (candle.close < candle.open) {
             const prevSupport = swings.lows.find(l => l.index < i && l.price > candle.close);
-            if (prevSupport) {
-                blocks.push({
-                    type: 'BEARISH',
-                    price: prevSupport.price,
-                    message: 'Breaker block - Failed support becomes resistance'
-                });
-            }
+            if (prevSupport) blocks.push({ type: 'BEARISH', price: prevSupport.price });
         }
     }
     return blocks;
 }
 
-function findUnmitigatedFVGs(data, direction) {
-    const fvgs = detectFairValueGaps(data);
-    const currentPrice = data[data.length - 1].close;
-    
-    if (direction === 'BUY') {
-        return fvgs.filter(f => f.type === 'bullish' && f.low < currentPrice)
-                  .sort((a, b) => b.low - a.low);
-    } else {
-        return fvgs.filter(f => f.type === 'bearish' && f.high > currentPrice)
-                  .sort((a, b) => a.high - b.high);
-    }
-}
-
-function findOptimalLimitEntry(data, direction) {
-    const currentPrice = data[data.length - 1].close;
+// ============================================
+// DYNAMIC SIGNAL SCORING (FIXED)
+// ============================================
+function generateSignal(data, price) {
     const atr = calculateATR(data, 14);
-    const fvgs = findUnmitigatedFVGs(data, direction);
-    const blocks = detectBreakerBlocks(data);
-    
-    let entryZone = null;
-    
-    if (direction === 'BUY') {
-        if (fvgs.length > 0) {
-            const bestFVG = fvgs[0];
-            entryZone = {
-                price: bestFVG.mid,
-                low: bestFVG.low,
-                high: bestFVG.high,
-                source: 'FVG',
-                reason: `Bullish FVG at ${bestFVG.low.toFixed(2)}-${bestFVG.high.toFixed(2)}`
-            };
-        }
-        
-        if (!entryZone) {
-            const bullishBlocks = blocks.filter(b => b.type === 'BULLISH' && b.price < currentPrice);
-            if (bullishBlocks.length > 0) {
-                const bestBlock = bullishBlocks.sort((a, b) => b.price - a.price)[0];
-                entryZone = {
-                    price: bestBlock.price,
-                    low: bestBlock.price - atr * 0.5,
-                    high: bestBlock.price + atr * 0.5,
-                    source: 'Breaker',
-                    reason: bestBlock.message
-                };
-            }
-        }
-        
-        if (!entryZone) {
-            const recentLow = Math.min(...data.slice(-20).map(c => c.low));
-            const recentHigh = Math.max(...data.slice(-20).map(c => c.high));
-            const range = recentHigh - recentLow;
-            const oteLow = recentLow + range * 0.618;
-            const oteHigh = recentLow + range * 0.79;
-            entryZone = {
-                price: (oteLow + oteHigh) / 2,
-                low: oteLow,
-                high: oteHigh,
-                source: 'OTE',
-                reason: 'OTE Zone (61.8%-79%)'
-            };
-        }
-    } else {
-        if (fvgs.length > 0) {
-            const bestFVG = fvgs[0];
-            entryZone = {
-                price: bestFVG.mid,
-                low: bestFVG.low,
-                high: bestFVG.high,
-                source: 'FVG',
-                reason: `Bearish FVG at ${bestFVG.low.toFixed(2)}-${bestFVG.high.toFixed(2)}`
-            };
-        }
-        
-        if (!entryZone) {
-            const bearishBlocks = blocks.filter(b => b.type === 'BEARISH' && b.price > currentPrice);
-            if (bearishBlocks.length > 0) {
-                const bestBlock = bearishBlocks.sort((a, b) => a.price - b.price)[0];
-                entryZone = {
-                    price: bestBlock.price,
-                    low: bestBlock.price - atr * 0.5,
-                    high: bestBlock.price + atr * 0.5,
-                    source: 'Breaker',
-                    reason: bestBlock.message
-                };
-            }
-        }
-        
-        if (!entryZone) {
-            const recentLow = Math.min(...data.slice(-20).map(c => c.low));
-            const recentHigh = Math.max(...data.slice(-20).map(c => c.high));
-            const range = recentHigh - recentLow;
-            const oteLow = recentHigh - range * 0.79;
-            const oteHigh = recentHigh - range * 0.618;
-            entryZone = {
-                price: (oteLow + oteHigh) / 2,
-                low: oteLow,
-                high: oteHigh,
-                source: 'OTE',
-                reason: 'OTE Zone for shorts'
-            };
-        }
-    }
-    
-    return entryZone;
-}
-
-function calculateTightStop(entryPrice, direction, entryZone, atr) {
-    if (direction === 'BUY') {
-        const buffer = isGold(currentPair) ? 3 : atr * 0.3;
-        return entryZone.low - buffer;
-    } else {
-        const buffer = isGold(currentPair) ? 3 : atr * 0.3;
-        return entryZone.high + buffer;
-    }
-}
-
-// ============================================
-// TREND DETECTION
-// ============================================
-function detectTrend(data) {
     const closes = data.map(c => c.close);
+    const rsi = calculateRSI(closes, 14);
+    
+    const fvgs = detectFairValueGaps(data);
+    const mss = detectMSS(data);
+    const blocks = detectBreakerBlocks(data);
+    const liquidity = detectLiquidityLevels(data);
+    const orderFlow = calculateOrderFlow(data);
+    const volumeProfile = calculateVolumeProfile(data);
+    
     const ema20 = calculateEMA(closes, 20);
     const ema50 = calculateEMA(closes, 50);
     const currentEMA20 = ema20[ema20.length - 1];
     const currentEMA50 = ema50[ema50.length - 1];
     
-    if (currentEMA20 > currentEMA50) return 'BULLISH';
-    if (currentEMA20 < currentEMA50) return 'BEARISH';
-    return 'NEUTRAL';
+    // Find unmitigated FVGs
+    const bullishFVGs = fvgs.filter(f => f.type === 'bullish' && f.low < price).sort((a,b) => b.low - a.low);
+    const bearishFVGs = fvgs.filter(f => f.type === 'bearish' && f.high > price).sort((a,b) => a.high - b.high);
+    
+    // Find supports/resistances
+    const supports = liquidity.filter(l => l.type === 'support' && l.price < price).sort((a,b) => b.price - a.price);
+    const resistances = liquidity.filter(l => l.type === 'resistance' && l.price > price).sort((a,b) => a.price - b.price);
+    
+    // DYNAMIC SCORING
+    let bullishScore = 0, bearishScore = 0;
+    const reasons = { bullish: [], bearish: [] };
+    
+    // 1. MSS (25 pts) - Most important!
+    if (mss?.type === 'BULLISH') { bullishScore += 25; reasons.bullish.push('MSS Bullish'); }
+    else if (mss?.type === 'BEARISH') { bearishScore += 25; reasons.bearish.push('MSS Bearish'); }
+    
+    // 2. FVG Position (20 pts)
+    if (bullishFVGs.length > 0) { bullishScore += 20; reasons.bullish.push(`FVG support at ${bullishFVGs[0].low.toFixed(2)}`); }
+    if (bearishFVGs.length > 0) { bearishScore += 20; reasons.bearish.push(`FVG resistance at ${bearishFVGs[0].high.toFixed(2)}`); }
+    
+    // 3. Breaker Blocks (15 pts)
+    const bullishBreakers = blocks.filter(b => b.type === 'BULLISH' && b.price < price);
+    const bearishBreakers = blocks.filter(b => b.type === 'BEARISH' && b.price > price);
+    if (bullishBreakers.length > 0) { bullishScore += 15; reasons.bullish.push('Breaker support'); }
+    if (bearishBreakers.length > 0) { bearishScore += 15; reasons.bearish.push('Breaker resistance'); }
+    
+    // 4. Trend - EMA (15 pts)
+    if (currentEMA20 > currentEMA50) { bullishScore += 15; reasons.bullish.push('EMA20 > EMA50'); }
+    else if (currentEMA20 < currentEMA50) { bearishScore += 15; reasons.bearish.push('EMA20 < EMA50'); }
+    
+    // 5. Order Flow (10 pts)
+    if (orderFlow && orderFlow.netDelta > 0) { bullishScore += 10; reasons.bullish.push('Buyers aggressive'); }
+    else if (orderFlow && orderFlow.netDelta < 0) { bearishScore += 10; reasons.bearish.push('Sellers aggressive'); }
+    
+    // 6. POC Position (10 pts)
+    if (volumeProfile?.poc) {
+        if (price > volumeProfile.poc.price) { bullishScore += 10; reasons.bullish.push('Price > POC'); }
+        else if (price < volumeProfile.poc.price) { bearishScore += 10; reasons.bearish.push('Price < POC'); }
+    }
+    
+    // 7. RSI (5 pts)
+    if (rsi > 50) { bullishScore += 5; }
+    else if (rsi < 50) { bearishScore += 5; }
+    
+    // DETERMINE DIRECTION
+    let direction, confidence, entryZone, stopLoss, reason;
+    
+    if (bullishScore > bearishScore && bullishScore >= 45) {
+        direction = 'BUY';
+        confidence = Math.min(bullishScore + 10, 95);
+        reason = reasons.bullish.join('; ');
+        
+        // Best entry: FVG > Breaker > Support > OTE
+        if (bullishFVGs.length > 0) {
+            entryZone = { price: bullishFVGs[0].mid, low: bullishFVGs[0].low, high: bullishFVGs[0].high, source: 'FVG' };
+        } else if (bullishBreakers.length > 0) {
+            entryZone = { price: bullishBreakers[0].price, low: bullishBreakers[0].price - atr*0.3, high: bullishBreakers[0].price + atr*0.3, source: 'Breaker' };
+        } else if (supports.length > 0) {
+            entryZone = { price: supports[0].price, low: supports[0].price - atr*0.3, high: supports[0].price + atr*0.3, source: 'Support' };
+        } else {
+            const recentLow = Math.min(...data.slice(-20).map(c => c.low));
+            const recentHigh = Math.max(...data.slice(-20).map(c => c.high));
+            const range = recentHigh - recentLow;
+            const oteLow = recentLow + range * 0.618;
+            const oteHigh = recentLow + range * 0.79;
+            entryZone = { price: (oteLow + oteHigh) / 2, low: oteLow, high: oteHigh, source: 'OTE' };
+        }
+    } else if (bearishScore > bullishScore && bearishScore >= 45) {
+        direction = 'SELL';
+        confidence = Math.min(bearishScore + 10, 95);
+        reason = reasons.bearish.join('; ');
+        
+        if (bearishFVGs.length > 0) {
+            entryZone = { price: bearishFVGs[0].mid, low: bearishFVGs[0].low, high: bearishFVGs[0].high, source: 'FVG' };
+        } else if (bearishBreakers.length > 0) {
+            entryZone = { price: bearishBreakers[0].price, low: bearishBreakers[0].price - atr*0.3, high: bearishBreakers[0].price + atr*0.3, source: 'Breaker' };
+        } else if (resistances.length > 0) {
+            entryZone = { price: resistances[0].price, low: resistances[0].price - atr*0.3, high: resistances[0].price + atr*0.3, source: 'Resistance' };
+        } else {
+            const recentLow = Math.min(...data.slice(-20).map(c => c.low));
+            const recentHigh = Math.max(...data.slice(-20).map(c => c.high));
+            const range = recentHigh - recentLow;
+            const oteLow = recentHigh - range * 0.79;
+            const oteHigh = recentHigh - range * 0.618;
+            entryZone = { price: (oteLow + oteHigh) / 2, low: oteLow, high: oteHigh, source: 'OTE' };
+        }
+    } else {
+        direction = 'NEUTRAL';
+        confidence = 0;
+        reason = `Bullish: ${bullishScore} | Bearish: ${bearishScore} - No edge`;
+        entryZone = null;
+    }
+    
+    // Calculate stop loss
+    if (entryZone) {
+        const buffer = isGold(currentPair) ? 2 : atr * 0.2;
+        stopLoss = direction === 'BUY' ? entryZone.low - buffer : entryZone.high + buffer;
+    }
+    
+    return { direction, confidence, entryZone, stopLoss, reason, scores: { bullishScore, bearishScore } };
 }
 
 // ============================================
-// MULTI-TIMEFRAME UI UPDATE
+// MULTI-TIMEFRAME UI
 // ============================================
 async function analyzeTimeframe(tf) {
     let d = await getHistoricalData(tf); 
     if(!d || d.length < 30) return null;
     let c = d.map(x => x.close);
     let rsi = calculateRSI(c);
-    let trend = detectTrend(d);
-    let volume = d.slice(-20).reduce((s, x) => s + x.volume, 0);
-    return { data: d, trend, rsi, volume };
+    let trend = (c[c.length-1] > c[c.length-20]) ? 'BULLISH' : ((c[c.length-1] < c[c.length-20]) ? 'BEARISH' : 'NEUTRAL');
+    return { data: d, trend, rsi };
 }
 
 async function updateMultiTimeframeUI() {
-    const timeframes = ['15M', '1H', '4H', '1D'];
+    const timeframes = ['5M', '15M', '1H', '4H'];
     let bullishCount = 0, bearishCount = 0;
     
     for (let tf of timeframes) {
@@ -583,91 +469,49 @@ async function updateMultiTimeframeUI() {
             
             const trendEl = document.getElementById(`trend${tf}`);
             if (trendEl) {
-                trendEl.innerHTML = result.trend === 'BULLISH' ? '🟢 Bullish' : 
-                                   (result.trend === 'BEARISH' ? '🔴 Bearish' : '⚪ Neutral');
+                trendEl.innerHTML = result.trend === 'BULLISH' ? '🟢 Bullish' : (result.trend === 'BEARISH' ? '🔴 Bearish' : '⚪ Neutral');
                 trendEl.className = `mtf-trend ${result.trend.toLowerCase()}`;
             }
-            
             const rsiEl = document.getElementById(`rsi${tf}`);
             if (rsiEl) rsiEl.innerHTML = result.rsi.toFixed(1);
-            
-            const volEl = document.getElementById(`vol${tf}`);
-            if (volEl) volEl.innerHTML = (result.volume / 1000000).toFixed(1) + 'M';
-        } else {
-            const trendEl = document.getElementById(`trend${tf}`);
-            if (trendEl) { trendEl.innerHTML = '⚪ --'; trendEl.className = 'mtf-trend neutral'; }
-            const rsiEl = document.getElementById(`rsi${tf}`);
-            if (rsiEl) rsiEl.innerHTML = '--';
-            const volEl = document.getElementById(`vol${tf}`);
-            if (volEl) volEl.innerHTML = '--';
         }
     }
     
     const total = bullishCount + bearishCount;
     const confluenceScore = total > 0 ? Math.max(bullishCount, bearishCount) / total * 100 : 0;
     const direction = bullishCount > bearishCount ? 'Bullish' : (bearishCount > bullishCount ? 'Bearish' : 'Neutral');
-    
     const scoreEl = document.getElementById('confluenceScore');
-    if (scoreEl) scoreEl.innerHTML = `${direction} (${confluenceScore.toFixed(0)}% confluence)`;
+    if (scoreEl) scoreEl.innerHTML = `${direction} (${confluenceScore.toFixed(0)}%)`;
 }
 
 // ============================================
-// DEEPSEEK AI - GHOST MACHINE STYLE
+// DEEPSEEK AI
 // ============================================
 async function getAIAnalysis(marketData) {
     if (!DEEPSEEK_API_KEY) return null;
-    showNotification('🤖 AI analyzing FVGs & structure...', 'info');
+    showNotification('🤖 AI analyzing...', 'info');
     
-    const prompt = `You are Theghostmachine - an elite ICT/Smart Money trader.
-
+    const prompt = `You are an elite ICT trader. Analyze and return JSON.
 Current: ${currentPair} | ${currentTimeframe} | Price: ${marketData.currentPrice}
+Scores: Bullish=${marketData.bullishScore} | Bearish=${marketData.bearishScore}
+FVGs: ${marketData.fvgCount} | OB: ${marketData.obCount}
+RSI: ${marketData.rsi} | Trend: ${marketData.trend}
+Entry Zone: ${marketData.entryZone}
 
-KEY LEVELS:
-- MSS: ${marketData.mss || 'None'}
-- FVG Zone: ${marketData.fvgZone || 'None'}
-- Breaker Block: ${marketData.breakerBlock || 'None'}
-- OTE Zone: ${marketData.oteZone || 'None'}
-- POC: ${marketData.poc} | VWAP: ${marketData.vwap}
-
-Trend: ${marketData.trend} | RSI: ${marketData.rsi} | ATR: ${marketData.atr}
-Structure: ${marketData.structure}
-FVG Count: ${marketData.fvgCount} | Order Blocks: ${marketData.obCount}
-
-Fibonacci: 0%:${marketData.fib0} | 38.2%:${marketData.fib382} | 50%:${marketData.fib500} | 61.8%:${marketData.fib618} | 78.6%:${marketData.fib786} | 100%:${marketData.fib100}
-
-Return JSON:
-{
-    "signal": "BUY" or "SELL" or "NEUTRAL",
-    "confidence": 0-100,
-    "entryPrice": number,
-    "stopLoss": number,
-    "takeProfit1": number,
-    "takeProfit2": number,
-    "takeProfit3": number,
-    "entrySource": "FVG" or "Breaker" or "OTE",
-    "reasoning": "Brief analysis"
-}`;
+Return JSON: {"signal": "BUY/SELL/NEUTRAL", "confidence": 0-100, "entryPrice": number, "stopLoss": number, "takeProfit1": number, "takeProfit2": number, "takeProfit3": number, "reasoning": "brief"}`;
 
     try {
         const res = await fetch(DEEPSEEK_API_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` },
-            body: JSON.stringify({ 
-                model: 'deepseek-chat', 
-                messages: [
-                    { role: 'system', content: 'You are Theghostmachine - ICT elite trader. Return ONLY valid JSON.' }, 
-                    { role: 'user', content: prompt }
-                ], 
-                temperature: 0.1, 
-                max_tokens: 800 
-            })
+            body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: 'Return ONLY valid JSON.' }, { role: 'user', content: prompt }], temperature: 0.1, max_tokens: 600 })
         });
         const data = await res.json();
         if (data.choices?.[0]) {
             const match = data.choices[0].message.content.match(/\{[\s\S]*\}/);
             if (match) return JSON.parse(match[0]);
         }
-    } catch(e) { console.error('AI error:', e); }
+    } catch(e) {}
     return null;
 }
 
@@ -676,129 +520,65 @@ Return JSON:
 // ============================================
 async function runAnalysis() {
     const btn = document.getElementById('analyzeBtn');
-    btn.classList.add('loading'); 
-    btn.disabled = true;
+    btn.classList.add('loading'); btn.disabled = true;
     
-    if (!TWELVE_DATA_KEY) { 
-        showSetupModal(); 
-        btn.classList.remove('loading'); 
-        btn.disabled = false; 
-        return; 
-    }
+    if (!TWELVE_DATA_KEY) { showSetupModal(); btn.classList.remove('loading'); btn.disabled = false; return; }
     
-    showNotification('🔍 Scanning FVGs & structure...', 'info');
+    showNotification('🔍 Analyzing...', 'info');
     
     try {
-        const price = await getPrice(); 
-        if (!price) throw new Error('No price');
-        
-        // Update multi-timeframe UI
+        const price = await getPrice(); if (!price) throw new Error('No price');
         await updateMultiTimeframeUI();
         
-        const hist = await getHistoricalData(); 
-        if (!hist?.length) throw new Error('No data');
-        
+        const hist = await getHistoricalData(); if (!hist?.length) throw new Error('No data');
         chartData = hist;
-        allTimeframeData[currentTimeframe] = hist;
         
-        const closes = hist.map(c=>c.close);
-        const highs = hist.map(c=>c.high);
-        const lows = hist.map(c=>c.low);
-        
-        const ema20 = calculateEMA(closes, 20);
-        const ema50 = calculateEMA(closes, 50);
-        const currentEMA20 = ema20[ema20.length - 1];
-        const currentEMA50 = ema50[ema50.length - 1];
-        const rsi = calculateRSI(closes);
-        const atr = calculateATR(hist);
-        
-        // ICT Concepts
-        const fvgs = detectFairValueGaps(hist);
-        const orderBlocks = detectOrderBlocks(hist);
-        const liquidity = detectLiquidityLevels(hist);
-        const structure = analyzeMarketStructure(hist);
-        const volumeProfile = calculateVolumeProfile(hist);
-        const orderFlow = calculateOrderFlow(hist);
-        
-        // Advanced ICT
+        const closes = hist.map(c=>c.close), highs = hist.map(c=>c.high), lows = hist.map(c=>c.low);
+        const rsi = calculateRSI(closes), atr = calculateATR(hist);
+        const fvgs = detectFairValueGaps(hist), orderBlocks = detectOrderBlocks(hist);
+        const liquidity = detectLiquidityLevels(hist), structure = analyzeMarketStructure(hist);
+        const volumeProfile = calculateVolumeProfile(hist), orderFlow = calculateOrderFlow(hist);
         const mss = detectMSS(hist);
-        const blocks = detectBreakerBlocks(hist);
         
-        let trend = 'NEUTRAL';
-        if (currentEMA20 > currentEMA50) trend = 'BULLISH';
-        else if (currentEMA20 < currentEMA50) trend = 'BEARISH';
+        const ema20 = calculateEMA(closes, 20), ema50 = calculateEMA(closes, 50);
+        const trend = ema20[ema20.length-1] > ema50[ema50.length-1] ? 'BULLISH' : 'BEARISH';
         
-        let direction;
-        if (mss?.type === 'BULLISH') direction = 'BUY';
-        else if (mss?.type === 'BEARISH') direction = 'SELL';
-        else direction = trend === 'BULLISH' ? 'BUY' : 'SELL';
+        // Generate signal with dynamic scoring
+        const signalData = generateSignal(hist, price);
         
-        const entryZone = findOptimalLimitEntry(hist, direction);
-        if (!entryZone) throw new Error('No entry zone found');
+        let signal, confidence, entry, sl, tp1, tp2, tp3, reason;
         
-        const stopLoss = calculateTightStop(entryZone.price, direction, entryZone, atr);
-        
-        const recentHigh = Math.max(...highs.slice(-20));
-        const recentLow = Math.min(...lows.slice(-20));
-        const range = recentHigh - recentLow;
-        const fibs = {
-            fib0: recentLow, fib236: recentLow+range*.236, fib382: recentLow+range*.382,
-            fib500: recentLow+range*.5, fib618: recentLow+range*.618, 
-            fib786: recentLow+range*.786, fib100: recentHigh
-        };
-        
-        const unmitigatedFVG = findUnmitigatedFVGs(hist, direction)[0];
-        const relevantBlock = blocks.find(b => b.type === (direction === 'BUY' ? 'BULLISH' : 'BEARISH'));
-        
+        // Try AI
         const marketData = {
-            currentPrice: price.toFixed(2),
-            rsi: rsi.toFixed(1),
-            atr: atr.toFixed(2),
-            trend: trend,
-            structure: structure,
-            mss: mss?.message || 'None',
-            fvgZone: unmitigatedFVG ? `${unmitigatedFVG.low.toFixed(2)}-${unmitigatedFVG.high.toFixed(2)}` : 'None',
-            breakerBlock: relevantBlock?.message || 'None',
-            oteZone: entryZone.source === 'OTE' ? entryZone.reason : 'None',
-            fvgCount: fvgs.length,
-            obCount: orderBlocks.length,
-            poc: volumeProfile?.poc?.price.toFixed(2) || 'N/A',
-            vwap: orderFlow?.vwap.toFixed(2) || 'N/A',
-            fib0: fibs.fib0.toFixed(2), fib382: fibs.fib382.toFixed(2),
-            fib500: fibs.fib500.toFixed(2), fib618: fibs.fib618.toFixed(2),
-            fib786: fibs.fib786.toFixed(2), fib100: fibs.fib100.toFixed(2)
+            currentPrice: price.toFixed(2), rsi: rsi.toFixed(1), trend,
+            bullishScore: signalData.scores.bullishScore, bearishScore: signalData.scores.bearishScore,
+            fvgCount: fvgs.length, obCount: orderBlocks.length,
+            entryZone: signalData.entryZone?.source || 'None'
         };
         
         const ai = await getAIAnalysis(marketData);
         
-        let signal, confidence, entry, sl, tp1, tp2, tp3, reason;
-        
         if (ai && ai.signal !== 'NEUTRAL') {
-            signal = ai.signal;
-            confidence = ai.confidence;
-            entry = ai.entryPrice || entryZone.price;
-            sl = ai.stopLoss || stopLoss;
-            tp1 = ai.takeProfit1;
-            tp2 = ai.takeProfit2 || (signal === 'BUY' ? entry + (entry-sl)*2.5 : entry - (entry-sl)*2.5);
-            tp3 = ai.takeProfit3 || (signal === 'BUY' ? entry + (entry-sl)*4 : entry - (entry-sl)*4);
+            signal = ai.signal; confidence = ai.confidence;
+            entry = ai.entryPrice || signalData.entryZone?.price || price;
+            sl = ai.stopLoss || signalData.stopLoss;
+            tp1 = ai.takeProfit1; tp2 = ai.takeProfit2; tp3 = ai.takeProfit3;
             reason = ai.reasoning;
-            showNotification(`✅ AI: ${signal} (${confidence}%)`, 'success');
         } else {
-            signal = direction;
-            confidence = 60;
-            entry = entryZone.price;
-            sl = stopLoss;
+            signal = signalData.direction; confidence = signalData.confidence;
+            entry = signalData.entryZone?.price || price;
+            sl = signalData.stopLoss;
             const risk = Math.abs(entry - sl);
             tp1 = signal === 'BUY' ? entry + risk * 2 : entry - risk * 2;
             tp2 = signal === 'BUY' ? entry + risk * 3.5 : entry - risk * 3.5;
             tp3 = signal === 'BUY' ? entry + risk * 5 : entry - risk * 5;
-            reason = `${entryZone.source}: ${entryZone.reason}`;
+            reason = signalData.reason;
         }
         
-        // Update ALL UI
+        const signalType = signal === 'BUY' ? 'LONG' : (signal === 'SELL' ? 'SHORT' : 'NEUTRAL');
         const prec = getPricePrecision(currentPair);
-        const signalType = signal === 'BUY' ? 'LONG' : 'SHORT';
         
+        // Update UI
         document.getElementById('currentPrice').innerHTML = `$${price.toFixed(prec)}`;
         if (lastPrice) {
             const ch = ((price-lastPrice)/lastPrice*100).toFixed(2);
@@ -818,22 +598,19 @@ async function runAnalysis() {
         const distPercent = (Math.abs(distance)/price*100).toFixed(2);
         const distEl = document.getElementById('distanceToEntry');
         distEl.innerHTML = `${distance>0?'▼':'▲'} $${Math.abs(distance).toFixed(prec)} (${distPercent}%)`;
-        distEl.style.color = (signal==='BUY'&&distance>0)||(signal==='SELL'&&distance<0) ? '#34c759' : '#ff3b30';
         
         document.getElementById('stopLoss').innerHTML = `$${sl.toFixed(prec)}`;
         document.getElementById('takeProfit1').innerHTML = `$${tp1.toFixed(prec)}`;
         document.getElementById('takeProfit2').innerHTML = `$${tp2.toFixed(prec)}`;
         document.getElementById('takeProfit3').innerHTML = `$${tp3.toFixed(prec)}`;
-        
-        const rrValue = Math.abs(tp1-entry)/Math.abs(entry-sl);
-        document.getElementById('riskReward').innerHTML = rrValue.toFixed(1);
+        document.getElementById('riskReward').innerHTML = (Math.abs(tp1-entry)/Math.abs(entry-sl)).toFixed(1);
         
         const badge = document.getElementById('signalBadge');
-        if (confidence>=70) { badge.innerHTML='🔥 HIGH CONFIDENCE'; badge.className='signal-badge high'; }
-        else if (confidence>=55) { badge.innerHTML='📊 MEDIUM CONFIDENCE'; badge.className='signal-badge medium'; }
-        else { badge.innerHTML='⚠️ LOW CONFIDENCE'; badge.className='signal-badge low'; }
+        if (confidence>=70) { badge.innerHTML='🔥 HIGH'; badge.className='signal-badge high'; }
+        else if (confidence>=55) { badge.innerHTML='📊 MEDIUM'; badge.className='signal-badge medium'; }
+        else { badge.innerHTML='⚠️ LOW'; badge.className='signal-badge low'; }
         
-        document.getElementById('signalReason').innerHTML = `🤖 ${reason}`;
+        document.getElementById('signalReason').innerHTML = reason;
         
         // Volume Profile
         if (volumeProfile) {
@@ -851,44 +628,30 @@ async function runAnalysis() {
             document.getElementById('vwapValue').innerHTML = `$${orderFlow.vwap.toFixed(prec)}`;
         }
         
-        // ICT Concepts
+        // ICT
         document.getElementById('fvgCount').innerHTML = fvgs.length;
         document.getElementById('obCount').innerHTML = orderBlocks.length;
         document.getElementById('liquidityLevels').innerHTML = liquidity.length;
-        document.getElementById('marketStructure').innerHTML = mss ? `MSS: ${mss.type}` : structure;
+        document.getElementById('marketStructure').innerHTML = mss ? `MSS ${mss.type}` : structure;
         
         // Fibonacci
-        document.getElementById('fib0').innerHTML = `$${fibs.fib0.toFixed(prec)}`;
-        document.getElementById('fib236').innerHTML = `$${fibs.fib236.toFixed(prec)}`;
-        document.getElementById('fib382').innerHTML = `$${fibs.fib382.toFixed(prec)}`;
-        document.getElementById('fib500').innerHTML = `$${fibs.fib500.toFixed(prec)}`;
-        document.getElementById('fib618').innerHTML = `$${fibs.fib618.toFixed(prec)}`;
-        document.getElementById('fib786').innerHTML = `$${fibs.fib786.toFixed(prec)}`;
-        document.getElementById('fib100').innerHTML = `$${fibs.fib100.toFixed(prec)}`;
+        const recentHigh = Math.max(...highs.slice(-20)), recentLow = Math.min(...lows.slice(-20));
+        const range = recentHigh - recentLow;
+        document.getElementById('fib0').innerHTML = `$${recentLow.toFixed(prec)}`;
+        document.getElementById('fib382').innerHTML = `$${(recentLow+range*.382).toFixed(prec)}`;
+        document.getElementById('fib500').innerHTML = `$${(recentLow+range*.5).toFixed(prec)}`;
+        document.getElementById('fib618').innerHTML = `$${(recentLow+range*.618).toFixed(prec)}`;
+        document.getElementById('fib786').innerHTML = `$${(recentLow+range*.786).toFixed(prec)}`;
+        document.getElementById('fib100').innerHTML = `$${recentHigh.toFixed(prec)}`;
         
         updateChart(hist);
         
-        analysisData = { 
-            signalType: signalType, 
-            idealEntry: entry, 
-            currentPrice: price, 
-            stopLoss: sl, 
-            takeProfit1: tp1,
-            takeProfit2: tp2,
-            takeProfit3: tp3,
-            confidence 
-        };
-        
+        analysisData = { signalType, idealEntry: entry, currentPrice: price, stopLoss: sl, takeProfit1: tp1, takeProfit2: tp2, takeProfit3: tp3, confidence };
         calculatePositionSize();
-        document.getElementById('executeBtn').disabled = false;
+        document.getElementById('executeBtn').disabled = signalType === 'NEUTRAL';
         
-    } catch(e) { 
-        console.error(e); 
-        showNotification('Error: '+e.message, 'error'); 
-    } finally { 
-        btn.classList.remove('loading'); 
-        btn.disabled = false; 
-    }
+    } catch(e) { console.error(e); showNotification('Error: '+e.message, 'error'); }
+    finally { btn.classList.remove('loading'); btn.disabled = false; }
 }
 
 // ============================================
@@ -896,50 +659,22 @@ async function runAnalysis() {
 // ============================================
 function loadPendingOrder() {
     const saved = localStorage.getItem('pendingLimitOrder');
-    if (saved) { 
-        try { 
-            pendingLimitOrder = JSON.parse(saved); 
-            updateLimitOrderUI(); 
-            startPriceMonitoring(); 
-        } catch(e) {} 
-    }
+    if (saved) { try { pendingLimitOrder = JSON.parse(saved); updateLimitOrderUI(); startPriceMonitoring(); } catch(e) {} }
 }
 
-function savePendingOrder(o) { 
-    pendingLimitOrder = o; 
-    localStorage.setItem('pendingLimitOrder', JSON.stringify(o)); 
-    updateLimitOrderUI(); 
-}
-
-function clearPendingOrder() { 
-    pendingLimitOrder = null; 
-    localStorage.removeItem('pendingLimitOrder'); 
-    if(priceCheckInterval) clearInterval(priceCheckInterval); 
-    updateLimitOrderUI(); 
-}
-
-function cancelLimitOrder() { 
-    clearPendingOrder(); 
-    showNotification('❌ Limit order cancelled', 'warning'); 
-}
+function savePendingOrder(o) { pendingLimitOrder = o; localStorage.setItem('pendingLimitOrder', JSON.stringify(o)); updateLimitOrderUI(); }
+function clearPendingOrder() { pendingLimitOrder = null; localStorage.removeItem('pendingLimitOrder'); if(priceCheckInterval) clearInterval(priceCheckInterval); updateLimitOrderUI(); }
+function cancelLimitOrder() { clearPendingOrder(); showNotification('❌ Cancelled', 'warning'); }
 
 function updateLimitOrderUI() {
-    const btn = document.getElementById('executeBtn');
-    const status = document.getElementById('limitOrderStatus');
-    const text = document.getElementById('limitOrderText');
-    
+    const btn = document.getElementById('executeBtn'), status = document.getElementById('limitOrderStatus'), text = document.getElementById('limitOrderText');
     if (pendingLimitOrder) {
-        btn.innerHTML = '⏳ Waiting for Entry...'; 
-        btn.style.background = 'linear-gradient(135deg, #ff9f0a, #ff6b00)';
+        btn.innerHTML = '⏳ Waiting...'; btn.style.background = 'linear-gradient(135deg, #ff9f0a, #ff6b00)';
         status.classList.remove('hidden');
-        const prec = getPricePrecision(pendingLimitOrder.pair);
-        text.innerHTML = `⏳ ${pendingLimitOrder.signalType} LIMIT @ $${pendingLimitOrder.idealEntry.toFixed(prec)}`;
-        document.getElementById('connectionStatus').innerHTML = `🟡 Waiting for entry...`;
+        text.innerHTML = `⏳ ${pendingLimitOrder.signalType} LIMIT @ $${pendingLimitOrder.idealEntry.toFixed(getPricePrecision(currentPair))}`;
     } else {
-        btn.innerHTML = '⚡ Place Limit Order'; 
-        btn.style.background = 'linear-gradient(135deg, #34c759, #28a745)';
+        btn.innerHTML = '⚡ Place Limit Order'; btn.style.background = 'linear-gradient(135deg, #34c759, #28a745)';
         status.classList.add('hidden');
-        document.getElementById('connectionStatus').innerHTML = '🟢 Ready';
     }
 }
 
@@ -947,86 +682,38 @@ function startPriceMonitoring() {
     if (priceCheckInterval) clearInterval(priceCheckInterval);
     priceCheckInterval = setInterval(async () => {
         if (!pendingLimitOrder) { clearInterval(priceCheckInterval); return; }
-        const price = await getPrice(); 
-        if (!price) return;
+        const price = await getPrice(); if (!price) return;
         const o = pendingLimitOrder;
         let exec = false;
         if (o.signalType === 'LONG' && price <= o.idealEntry) exec = true;
         else if (o.signalType === 'SHORT' && price >= o.idealEntry) exec = true;
         if (exec) {
             clearPendingOrder();
-            if (tg?.sendData) {
-                tg.sendData(JSON.stringify({ 
-                    action: 'limit_order_filled', 
-                    pair: o.pair, 
-                    signal: o.signalType, 
-                    filledPrice: price, 
-                    stopLoss: o.stopLoss, 
-                    takeProfits: [o.takeProfit1, o.takeProfit2, o.takeProfit3] 
-                }));
-            }
-            showNotification(`✅ LIMIT ORDER FILLED! ${o.signalType} @ $${price.toFixed(getPricePrecision(o.pair))}`, 'success');
+            showNotification(`✅ FILLED! ${o.signalType} @ $${price.toFixed(getPricePrecision(o.pair))}`, 'success');
             new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play().catch(()=>{});
         }
-        updatePriceDisplay(price);
     }, 3000);
 }
 
 function handleExecuteOrder() {
-    if (!analysisData || analysisData.signalType === 'NEUTRAL') { 
-        showNotification('No valid signal', 'error'); 
-        return; 
-    }
+    if (!analysisData || analysisData.signalType === 'NEUTRAL') { showNotification('No signal', 'error'); return; }
     if (pendingLimitOrder) { cancelLimitOrder(); return; }
-    const order = { 
-        id: Date.now(), 
-        pair: currentPair, 
-        signalType: analysisData.signalType, 
-        idealEntry: analysisData.idealEntry, 
-        stopLoss: analysisData.stopLoss, 
-        takeProfit1: analysisData.takeProfit1,
-        takeProfit2: analysisData.takeProfit2,
-        takeProfit3: analysisData.takeProfit3,
-        confidence: analysisData.confidence, 
-        createdAt: new Date().toISOString() 
-    };
-    savePendingOrder(order); 
-    startPriceMonitoring();
-    showNotification(`📝 Limit order placed @ $${order.idealEntry.toFixed(getPricePrecision(currentPair))}`, 'info');
+    const order = { id: Date.now(), pair: currentPair, signalType: analysisData.signalType, idealEntry: analysisData.idealEntry, stopLoss: analysisData.stopLoss, takeProfit1: analysisData.takeProfit1, takeProfit2: analysisData.takeProfit2, takeProfit3: analysisData.takeProfit3, confidence: analysisData.confidence, createdAt: new Date().toISOString() };
+    savePendingOrder(order); startPriceMonitoring();
+    showNotification(`📝 Limit @ $${order.idealEntry.toFixed(getPricePrecision(currentPair))}`, 'info');
 }
 
 // ============================================
 // UI HELPERS
 // ============================================
-function updatePriceDisplay(p) { 
-    document.getElementById('currentPrice').innerHTML = `$${p.toFixed(getPricePrecision(currentPair))}`; 
-}
-
 function calculatePositionSize() {
     if (!analysisData || analysisData.signalType === 'NEUTRAL') return;
-    const acc = +document.getElementById('accountSize').value || 10000;
-    const riskP = +document.getElementById('riskPercent').value || 1;
-    const riskAmt = acc * (riskP/100);
-    const stopDist = Math.abs(analysisData.idealEntry - analysisData.stopLoss);
+    const acc = +document.getElementById('accountSize').value || 10000, riskP = +document.getElementById('riskPercent').value || 1;
+    const riskAmt = acc * (riskP/100), stopDist = Math.abs(analysisData.idealEntry - analysisData.stopLoss);
     const pos = stopDist > 0 ? riskAmt/stopDist : 0;
     document.getElementById('positionSize').innerHTML = pos.toFixed(4);
     document.getElementById('riskAmount').innerHTML = `$${riskAmt.toFixed(2)}`;
-    document.getElementById('suggestedLeverage').innerHTML = '--';
 }
 
-function updateChart(d) { 
-    if(priceChart) { 
-        priceChart.data.datasets[0].data = d.slice(-50).map(c=>({x:c.time, y:c.close})); 
-        priceChart.data.labels = d.slice(-50).map(c=>new Date(c.time).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})); 
-        priceChart.update(); 
-    } 
-}
-
-function showNotification(m, t) { 
-    const n = document.getElementById('notification'); 
-    if(!n) return; 
-    n.innerHTML = m; 
-    n.className = `notification ${t}`; 
-    n.classList.remove('hidden'); 
-    setTimeout(()=>n.classList.add('hidden'), 4000); 
-}
+function updateChart(d) { if(priceChart) { priceChart.data.datasets[0].data = d.slice(-50).map(c=>({x:c.time, y:c.close})); priceChart.data.labels = d.slice(-50).map(c=>new Date(c.time).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})); priceChart.update(); } }
+function showNotification(m, t) { const n = document.getElementById('notification'); if(!n) return; n.innerHTML = m; n.className = `notification ${t}`; n.classList.remove('hidden'); setTimeout(()=>n.classList.add('hidden'), 4000); }
