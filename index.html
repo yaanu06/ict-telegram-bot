@@ -5,15 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>ICT Trading Bot Pro</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
         <div class="header">
             <h1>📊 ICT Trading Bot Pro</h1>
-            <p class="subtitle">FVG Sniper | Breaker Blocks | MSS | Smart Money</p>
-            <div id="liveTime" class="live-time"></div>
+            <p class="subtitle">AI-Powered | Limit Orders | JSON Output</p>
+            <div class="status-row">
+                <span id="liveTime" class="live-time"></span>
+                <span id="apiSource" class="api-source">⚪ Ready</span>
+            </div>
         </div>
 
         <!-- Market Selection -->
@@ -39,210 +41,56 @@
             </select>
         </div>
 
-        <!-- Live Price & Chart -->
-        <div class="section">
+        <!-- Live Price -->
+        <div class="section price-section">
             <h3>📈 Live Price</h3>
-            <div class="price-container">
-                <div id="currentPrice" class="current-price">----</div>
-                <div id="priceChange" class="price-change">--</div>
-                <div id="apiSource" class="api-source">--</div>
-            </div>
-            
-            <div class="chart-container">
-                <canvas id="priceChart"></canvas>
-            </div>
-            
-            <div class="chart-controls">
-                <div class="timeframe-btns">
-                    <button class="tf-btn" data-tf="5M">5M</button>
-                    <button class="tf-btn active" data-tf="15M">15M</button>
-                    <button class="tf-btn" data-tf="1H">1H</button>
-                    <button class="tf-btn" data-tf="4H">4H</button>
-                    <button class="tf-btn" data-tf="1D">1D</button>
-                </div>
+            <div id="currentPrice" class="current-price">----</div>
+            <div id="priceChange" class="price-change">--</div>
+        </div>
+
+        <!-- Timeframe Selection -->
+        <div class="section">
+            <h3>⏱️ Timeframe</h3>
+            <div class="timeframe-btns">
+                <button class="tf-btn" data-tf="5M">5M</button>
+                <button class="tf-btn active" data-tf="15M">15M</button>
+                <button class="tf-btn" data-tf="1H">1H</button>
+                <button class="tf-btn" data-tf="4H">4H</button>
+                <button class="tf-btn" data-tf="1D">1D</button>
             </div>
         </div>
 
         <!-- Multi-Timeframe Analysis -->
         <div class="section">
-            <h3>📊 Multi-Timeframe Analysis</h3>
+            <h3>📊 Multi-Timeframe</h3>
             <div class="mtf-grid">
-                <div class="mtf-card">
-                    <div class="mtf-header">5M</div>
-                    <div class="mtf-trend" id="trend5M">--</div>
-                    <div class="mtf-details"><span>RSI: <span id="rsi5M">--</span></span></div>
-                </div>
-                <div class="mtf-card">
-                    <div class="mtf-header">15M</div>
-                    <div class="mtf-trend" id="trend15M">--</div>
-                    <div class="mtf-details"><span>RSI: <span id="rsi15M">--</span></span></div>
-                </div>
-                <div class="mtf-card">
-                    <div class="mtf-header">1H</div>
-                    <div class="mtf-trend" id="trend1H">--</div>
-                    <div class="mtf-details"><span>RSI: <span id="rsi1H">--</span></span></div>
-                </div>
-                <div class="mtf-card">
-                    <div class="mtf-header">4H</div>
-                    <div class="mtf-trend" id="trend4H">--</div>
-                    <div class="mtf-details"><span>RSI: <span id="rsi4H">--</span></span></div>
-                </div>
-            </div>
-            <div class="confluence-box" id="confluenceBox">
-                <strong>Confluence:</strong> <span id="confluenceScore">--</span>
+                <div class="mtf-card"><div class="mtf-header">5M</div><div class="mtf-trend" id="trend5M">--</div></div>
+                <div class="mtf-card"><div class="mtf-header">15M</div><div class="mtf-trend" id="trend15M">--</div></div>
+                <div class="mtf-card"><div class="mtf-header">1H</div><div class="mtf-trend" id="trend1H">--</div></div>
+                <div class="mtf-card"><div class="mtf-header">4H</div><div class="mtf-trend" id="trend4H">--</div></div>
             </div>
         </div>
 
         <button id="analyzeBtn" class="analyze-btn">🔍 Analyze Market</button>
 
-        <!-- API Status & Limit Order Status -->
-        <div class="section status-section">
-            <div class="status-info">
-                <span>📊 API: <strong id="apiUsage">0</strong> calls</span>
-                <span id="connectionStatus" class="connection-status">🟢 Ready</span>
-            </div>
-            <div id="limitOrderStatus" class="limit-order-status hidden">
-                <div class="limit-order-info">
-                    <span id="limitOrderText">⏳ Waiting for limit order...</span>
-                    <button id="cancelLimitBtn" class="cancel-limit-btn">✕ Cancel</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Trading Signal -->
-        <div class="section signal-card">
-            <div class="signal-header">
-                <h2>🎯 TRADING SIGNAL</h2>
-                <div id="signalBadge" class="signal-badge">--</div>
-            </div>
-            
-            <div class="signal-main">
-                <div class="signal-type-box" id="signalTypeBox">
-                    <span id="signalTypeText">--</span>
-                </div>
-                <div class="signal-confidence">
-                    Confidence: <strong id="confidenceText">--</strong>
-                </div>
-            </div>
-
-            <div class="trade-levels">
-                <div class="level-row highlight">
-                    <span class="level-label">🎯 LIMIT ENTRY:</span>
-                    <span class="level-value" id="idealEntryDisplay">--</span>
-                </div>
-                <div class="level-row">
-                    <span class="level-label">📌 Current Price:</span>
-                    <span class="level-value" id="entryPrice">--</span>
-                </div>
-                <div class="level-row">
-                    <span class="level-label">📏 Distance:</span>
-                    <span class="level-value" id="distanceToEntry">--</span>
-                </div>
-                <div class="level-row">
-                    <span class="level-label">🛑 STOP LOSS:</span>
-                    <span class="level-value" id="stopLoss">--</span>
-                </div>
-                
-                <div class="tp-section">
-                    <div class="tp-header">🎯 TAKE PROFIT LEVELS</div>
-                    <div class="level-row tp-row">
-                        <span class="level-label">TP1:</span>
-                        <span class="level-value" id="takeProfit1">--</span>
-                    </div>
-                    <div class="level-row tp-row">
-                        <span class="level-label">TP2:</span>
-                        <span class="level-value" id="takeProfit2">--</span>
-                    </div>
-                    <div class="level-row tp-row">
-                        <span class="level-label">TP3:</span>
-                        <span class="level-value" id="takeProfit3">--</span>
-                    </div>
-                </div>
-                
-                <div class="level-row">
-                    <span class="level-label">📊 RISK:REWARD:</span>
-                    <span class="level-value" id="riskReward">--</span>
-                </div>
-            </div>
-
-            <div class="position-calculator">
-                <h4>💰 Position Calculator</h4>
-                <div class="calc-input">
-                    <label>Account Size ($):</label>
-                    <input type="number" id="accountSize" value="10000" min="100" step="100">
-                </div>
-                <div class="calc-input">
-                    <label>Risk %:</label>
-                    <input type="number" id="riskPercent" value="1" min="0.1" max="5" step="0.1">
-                </div>
-                <div class="calc-results">
-                    <div>Position Size: <strong id="positionSize">--</strong></div>
-                    <div>Risk Amount: <strong id="riskAmount">--</strong></div>
-                </div>
-            </div>
-
-            <div class="signal-reason">
-                <strong>📋 Analysis:</strong><br>
-                <span id="signalReason">--</span>
-            </div>
-        </div>
-
-        <!-- 📋 JSON ANALYSIS OUTPUT (NEW!) -->
+        <!-- JSON Output (The Only Output) -->
         <div class="section json-section">
             <div class="json-header">
-                <h3>📋 JSON Analysis Output</h3>
-                <button id="copyJsonBtn" class="copy-json-btn">📋 Copy JSON</button>
+                <h3>📋 Analysis Output</h3>
+                <button id="copyJsonBtn" class="copy-json-btn">📋 Copy</button>
             </div>
-            <pre id="jsonOutput" class="json-output">// Click "Analyze Market" to generate JSON output...</pre>
+            <pre id="jsonOutput" class="json-output">Click "Analyze Market" to generate signal...</pre>
         </div>
 
-        <!-- Volume Profile -->
+        <!-- Limit Order Status -->
         <div class="section">
-            <h3>📊 Volume Profile</h3>
-            <div class="info-grid">
-                <div class="info-item"><label>POC:</label><span id="pocValue">--</span></div>
-                <div class="info-item"><label>Value High:</label><span id="valueHigh">--</span></div>
-                <div class="info-item"><label>Value Low:</label><span id="valueLow">--</span></div>
-                <div class="info-item"><label>Total Vol:</label><span id="totalVolume">--</span></div>
+            <h3>📝 Limit Order</h3>
+            <div id="limitOrderBox" class="limit-box">
+                <span id="limitOrderText">No active limit order</span>
+                <button id="cancelLimitBtn" class="cancel-btn hidden">✕ Cancel</button>
             </div>
+            <button id="executeBtn" class="execute-btn" disabled>⚡ Place Limit Order</button>
         </div>
-
-        <!-- Order Flow -->
-        <div class="section">
-            <h3>📦 Order Flow</h3>
-            <div class="info-grid">
-                <div class="info-item"><label>Buying:</label><span id="buyingPressure">--</span></div>
-                <div class="info-item"><label>Selling:</label><span id="sellingPressure">--</span></div>
-                <div class="info-item"><label>Net Delta:</label><span id="netDelta">--</span></div>
-                <div class="info-item"><label>VWAP:</label><span id="vwapValue">--</span></div>
-            </div>
-        </div>
-
-        <!-- ICT Concepts -->
-        <div class="section">
-            <h3>🎯 ICT Concepts</h3>
-            <div class="ict-grid">
-                <div class="ict-item"><label>FVGs:</label><span id="fvgCount">--</span></div>
-                <div class="ict-item"><label>Order Blocks:</label><span id="obCount">--</span></div>
-                <div class="ict-item"><label>Liquidity:</label><span id="liquidityLevels">--</span></div>
-                <div class="ict-item"><label>Structure:</label><span id="marketStructure">--</span></div>
-            </div>
-        </div>
-
-        <!-- Fibonacci Levels -->
-        <div class="section">
-            <h3>📐 Fibonacci</h3>
-            <div class="fib-grid">
-                <div class="fib-item">0%: <span id="fib0">--</span></div>
-                <div class="fib-item">38.2%: <span id="fib382">--</span></div>
-                <div class="fib-item">50%: <span id="fib500">--</span></div>
-                <div class="fib-item">61.8%: <span id="fib618">--</span></div>
-                <div class="fib-item">78.6%: <span id="fib786">--</span></div>
-                <div class="fib-item">100%: <span id="fib100">--</span></div>
-            </div>
-        </div>
-
-        <button id="executeBtn" class="execute-btn" disabled>⚡ Place Limit Order</button>
 
         <div id="notification" class="notification hidden"></div>
     </div>
