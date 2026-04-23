@@ -60,6 +60,65 @@ body {
     margin-bottom: 10px;
 }
 
+/* Settings Section */
+.settings-section {
+    border: 1px solid #ff9f0a;
+}
+
+.settings-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.setting-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+    padding: 6px 0;
+}
+
+.status-badge {
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: bold;
+}
+
+.status-badge.active {
+    background: rgba(52, 199, 89, 0.2);
+    color: #34c759;
+}
+
+.status-badge.inactive {
+    background: rgba(255, 59, 48, 0.2);
+    color: #ff3b30;
+}
+
+.status-badge.checking {
+    background: rgba(255, 159, 10, 0.2);
+    color: #ff9f0a;
+}
+
+.settings-btn {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ff9f0a;
+    border-radius: 10px;
+    background: transparent;
+    color: #ff9f0a;
+    font-size: 13px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: all 0.2s;
+}
+
+.settings-btn:hover {
+    background: rgba(255, 159, 10, 0.1);
+}
+
 .btn-group {
     display: flex;
     gap: 8px;
@@ -296,6 +355,7 @@ body {
 .notification.warning { background: #ff9f0a; color: black; }
 .notification.info { background: #3390ec; }
 
+/* Setup Modal */
 .setup-overlay {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
@@ -310,7 +370,7 @@ body {
     background: #1c1c1e;
     border-radius: 16px;
     padding: 24px;
-    max-width: 340px;
+    max-width: 360px;
     width: 90%;
     border: 1px solid #3390ec;
 }
@@ -318,6 +378,7 @@ body {
 .setup-modal h3 { color: #3390ec; margin-bottom: 8px; font-size: 17px; }
 .setup-desc { color: #8e8e93; font-size: 12px; margin-bottom: 14px; }
 .setup-modal label { color: white; font-size: 12px; display: block; margin-bottom: 4px; }
+.setup-note { color: #ff9f0a; font-size: 11px; margin-bottom: 14px; }
 
 .setup-input {
     width: 100%;
@@ -345,6 +406,7 @@ body {
 
 .setup-btn.primary { background: #3390ec; color: white; }
 .setup-btn.secondary { background: #2c2c2e; color: #8e8e93; }
+.setup-btn.danger { background: #ff3b30; color: white; }
 
 @media (max-width: 480px) {
     body { padding: 8px; }
