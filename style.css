@@ -360,15 +360,6 @@ body {
     border-bottom: 2px solid #ff9f0a;
 }
 
-.level-row.highlight .level-label {
-    color: #ff9f0a;
-}
-
-.level-row.highlight .level-value {
-    color: #ff9f0a;
-    font-size: 16px;
-}
-
 .level-row:last-child {
     border-bottom: none;
 }
