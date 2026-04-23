@@ -186,7 +186,6 @@ body {
 
 @keyframes spin { to { transform: translate(-50%, -50%) rotate(360deg); } }
 
-/* JSON Output */
 .json-section {
     border: 2px solid #af52de;
     background: #0a0a0f;
@@ -232,7 +231,6 @@ body {
     border: 1px solid #1c1c1e;
 }
 
-/* Limit Order */
 .limit-box {
     display: flex;
     justify-content: space-between;
@@ -278,7 +276,6 @@ body {
     opacity: 0.5;
 }
 
-/* Notification */
 .notification {
     position: fixed;
     bottom: 20px;
@@ -299,7 +296,6 @@ body {
 .notification.warning { background: #ff9f0a; color: black; }
 .notification.info { background: #3390ec; }
 
-/* Setup Modal */
 .setup-overlay {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
