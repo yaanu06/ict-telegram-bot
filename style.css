@@ -117,7 +117,6 @@ body {
     margin-top: 4px;
 }
 
-/* Chart Styles */
 .chart-container {
     position: relative;
     height: 250px;
@@ -198,7 +197,6 @@ body {
     color: #3390ec;
 }
 
-/* Analyze Button */
 .analyze-btn {
     width: 100%;
     padding: 16px;
@@ -239,22 +237,15 @@ body {
     to { transform: translate(-50%, -50%) rotate(360deg); }
 }
 
-/* Status Section */
 .status-section .status-info {
     display: flex;
     justify-content: space-between;
     font-size: 13px;
 }
 
-.connection-status {
-    color: #34c759;
-}
+.connection-status { color: #34c759; }
+.connection-status.waiting { color: #ff9f0a; }
 
-.connection-status.waiting {
-    color: #ff9f0a;
-}
-
-/* Limit Order Status */
 .limit-order-status {
     margin-top: 12px;
     padding: 12px;
@@ -271,10 +262,7 @@ body {
     align-items: center;
 }
 
-#limitOrderText {
-    font-size: 13px;
-    color: #ff9f0a;
-}
+#limitOrderText { font-size: 13px; color: #ff9f0a; }
 
 .cancel-limit-btn {
     background: #ff3b30;
@@ -287,7 +275,6 @@ body {
     font-weight: bold;
 }
 
-/* Signal Card */
 .signal-card {
     background: linear-gradient(135deg, #1c1c1e, #1a1a2e);
     border: 2px solid #3390ec;
@@ -300,9 +287,7 @@ body {
     margin-bottom: 16px;
 }
 
-.signal-header h2 {
-    font-size: 18px;
-}
+.signal-header h2 { font-size: 18px; }
 
 .signal-badge {
     padding: 4px 12px;
@@ -332,12 +317,8 @@ body {
 .signal-type-box.short { background: rgba(255, 59, 48, 0.2); color: #ff3b30; }
 .signal-type-box.neutral { background: rgba(142, 142, 147, 0.2); color: #8e8e93; }
 
-.signal-confidence {
-    font-size: 14px;
-    color: #8e8e93;
-}
+.signal-confidence { font-size: 14px; color: #8e8e93; }
 
-/* Trade Levels */
 .trade-levels {
     background: #2c2c2e;
     border-radius: 12px;
@@ -360,41 +341,20 @@ body {
     border-bottom: 2px solid #ff9f0a;
 }
 
-.level-row:last-child {
-    border-bottom: none;
-}
+.level-row:last-child { border-bottom: none; }
 
-.level-label {
-    color: #8e8e93;
-    font-size: 13px;
-}
+.level-label { color: #8e8e93; font-size: 13px; }
+.level-value { font-weight: bold; font-family: monospace; font-size: 15px; color: #3390ec; }
 
-.level-value {
-    font-weight: bold;
-    font-family: monospace;
-    font-size: 15px;
-    color: #3390ec;
-}
-
-/* Take Profit Section */
 .tp-section {
     margin: 12px 0;
     padding-top: 8px;
     border-top: 2px solid #3a3a3c;
 }
 
-.tp-header {
-    font-size: 13px;
-    color: #34c759;
-    margin-bottom: 8px;
-    font-weight: bold;
-}
+.tp-header { font-size: 13px; color: #34c759; margin-bottom: 8px; font-weight: bold; }
+.tp-row .level-value { color: #34c759; }
 
-.tp-row .level-value {
-    color: #34c759;
-}
-
-/* Position Calculator */
 .position-calculator {
     background: #1c1c1e;
     border-radius: 12px;
@@ -402,11 +362,7 @@ body {
     margin: 12px 0;
 }
 
-.position-calculator h4 {
-    font-size: 14px;
-    margin-bottom: 12px;
-    color: #8e8e93;
-}
+.position-calculator h4 { font-size: 14px; margin-bottom: 12px; color: #8e8e93; }
 
 .calc-input {
     display: flex;
@@ -415,10 +371,7 @@ body {
     margin-bottom: 10px;
 }
 
-.calc-input label {
-    font-size: 13px;
-    color: #8e8e93;
-}
+.calc-input label { font-size: 13px; color: #8e8e93; }
 
 .calc-input input {
     width: 120px;
@@ -444,11 +397,8 @@ body {
     justify-content: space-between;
 }
 
-.calc-results strong {
-    color: #3390ec;
-}
+.calc-results strong { color: #3390ec; }
 
-/* Signal Reason */
 .signal-reason {
     background: #2c2c2e;
     padding: 12px;
@@ -458,7 +408,59 @@ body {
     line-height: 1.5;
 }
 
-/* Info Grids */
+/* JSON OUTPUT SECTION (NEW!) */
+.json-section {
+    border: 2px solid #af52de;
+    background: #0d0d12;
+}
+
+.json-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.json-header h3 {
+    margin-bottom: 0;
+    color: #af52de;
+}
+
+.copy-json-btn {
+    background: #af52de;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: all 0.2s;
+}
+
+.copy-json-btn:hover { background: #8e44ad; }
+.copy-json-btn.copied { background: #34c759; }
+
+.json-output {
+    background: #0a0a0f;
+    border-radius: 10px;
+    padding: 16px;
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    color: #34c759;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 500px;
+    overflow-y: auto;
+    line-height: 1.5;
+    border: 1px solid #1c1c1e;
+}
+
+.json-output .key { color: #3390ec; }
+.json-output .string { color: #34c759; }
+.json-output .number { color: #ff9f0a; }
+.json-output .boolean { color: #af52de; }
+
 .info-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -474,19 +476,9 @@ body {
     border-radius: 8px;
 }
 
-.info-item label {
-    font-size: 11px;
-    color: #8e8e93;
-}
+.info-item label { font-size: 11px; color: #8e8e93; }
+.info-item span { font-size: 13px; font-weight: bold; font-family: monospace; color: #3390ec; }
 
-.info-item span {
-    font-size: 13px;
-    font-weight: bold;
-    font-family: monospace;
-    color: #3390ec;
-}
-
-/* ICT Grid */
 .ict-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -502,18 +494,9 @@ body {
     border-radius: 8px;
 }
 
-.ict-item label {
-    font-size: 11px;
-    color: #8e8e93;
-}
+.ict-item label { font-size: 11px; color: #8e8e93; }
+.ict-item span { font-size: 13px; font-weight: bold; color: #af52de; }
 
-.ict-item span {
-    font-size: 13px;
-    font-weight: bold;
-    color: #af52de;
-}
-
-/* Fibonacci Grid */
 .fib-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
@@ -529,13 +512,8 @@ body {
     justify-content: space-between;
 }
 
-.fib-item span {
-    font-family: monospace;
-    color: #af52de;
-    font-weight: bold;
-}
+.fib-item span { font-family: monospace; color: #af52de; font-weight: bold; }
 
-/* Execute Button */
 .execute-btn {
     width: 100%;
     padding: 16px;
@@ -551,14 +529,8 @@ body {
 }
 
 .execute-btn:active { transform: scale(0.98); }
+.execute-btn:disabled { background: #2c2c2e; cursor: not-allowed; opacity: 0.5; }
 
-.execute-btn:disabled {
-    background: #2c2c2e;
-    cursor: not-allowed;
-    opacity: 0.5;
-}
-
-/* Notification */
 .notification {
     position: fixed;
     bottom: 20px;
@@ -581,7 +553,6 @@ body {
 .notification.warning { background: #ff9f0a; color: black; }
 .notification.info { background: #3390ec; }
 
-/* Setup Modal */
 .setup-overlay {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
@@ -601,23 +572,9 @@ body {
     border: 1px solid #3390ec;
 }
 
-.setup-modal h3 {
-    color: #3390ec;
-    margin-bottom: 8px;
-}
-
-.setup-desc {
-    color: #8e8e93;
-    font-size: 13px;
-    margin-bottom: 16px;
-}
-
-.setup-modal label {
-    color: white;
-    font-size: 13px;
-    display: block;
-    margin-bottom: 4px;
-}
+.setup-modal h3 { color: #3390ec; margin-bottom: 8px; }
+.setup-desc { color: #8e8e93; font-size: 13px; margin-bottom: 16px; }
+.setup-modal label { color: white; font-size: 13px; display: block; margin-bottom: 4px; }
 
 .setup-input {
     width: 100%;
@@ -631,16 +588,9 @@ body {
     font-family: monospace;
 }
 
-.setup-note {
-    color: #ff9f0a;
-    font-size: 11px;
-    margin-bottom: 16px;
-}
+.setup-note { color: #ff9f0a; font-size: 11px; margin-bottom: 16px; }
 
-.setup-buttons {
-    display: flex;
-    gap: 8px;
-}
+.setup-buttons { display: flex; gap: 8px; }
 
 .setup-btn {
     flex: 1;
@@ -652,17 +602,9 @@ body {
     cursor: pointer;
 }
 
-.setup-btn.primary {
-    background: #3390ec;
-    color: white;
-}
+.setup-btn.primary { background: #3390ec; color: white; }
+.setup-btn.secondary { background: #2c2c2e; color: #8e8e93; }
 
-.setup-btn.secondary {
-    background: #2c2c2e;
-    color: #8e8e93;
-}
-
-/* Responsive */
 @media (max-width: 480px) {
     body { padding: 8px; }
     .current-price { font-size: 32px; }
@@ -672,4 +614,5 @@ body {
     .fib-grid { grid-template-columns: 1fr; }
     .mtf-grid { grid-template-columns: repeat(2, 1fr); }
     .chart-container { height: 200px; }
+    .json-output { font-size: 10px; max-height: 400px; }
 }
