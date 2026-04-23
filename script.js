@@ -7,7 +7,7 @@ if (tg) { tg.expand(); tg.ready(); }
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
-const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
+const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions'; // FIXED: removed /v1
 
 const SYMBOLS = {
     'BTC/USD':'BTC/USD','ETH/USD':'ETH/USD','BNB/USD':'BNB/USD','SOL/USD':'SOL/USD','XRP/USD':'XRP/USD',
@@ -27,6 +27,7 @@ async function loadKeys() {
             const k = JSON.parse(s);
             TWELVE_DATA_KEY = k.twelveData || '';
             DEEPSEEK_API_KEY = k.deepseek || '';
+            console.log('🔑 Keys loaded. DeepSeek key length:', DEEPSEEK_API_KEY.length);
             return true;
         } catch(e) {}
     }
@@ -37,6 +38,7 @@ async function saveKeys(tk, dk) {
     localStorage.setItem('ict_bot_keys', JSON.stringify({twelveData:tk, deepseek:dk}));
     TWELVE_DATA_KEY = tk;
     DEEPSEEK_API_KEY = dk;
+    console.log('💾 Keys saved. DeepSeek key starts with:', dk.substring(0, 5) + '...');
     updateKeyStatus();
 }
 
@@ -61,7 +63,7 @@ function updateKeyStatus() {
     }
     
     if (DEEPSEEK_API_KEY) {
-        ds.innerHTML = '✅ Active';
+        ds.innerHTML = '✅ Active (' + DEEPSEEK_API_KEY.substring(0, 5) + '...)';
         ds.className = 'status-badge active';
     } else {
         ds.innerHTML = '❌ Missing';
@@ -85,12 +87,14 @@ function showSetup(existingKeys = null) {
                 <input type="password" id="twInput" class="setup-input" value="${tkVal}" placeholder="Enter Twelve Data key...">
                 <label>🤖 DeepSeek AI Key:</label>
                 <input type="password" id="dsInput" class="setup-input" value="${dkVal}" placeholder="sk-... (optional)">
-                <p class="setup-note">⚠️ Without DeepSeek key, bot uses rule-based signals only</p>
+                <p class="setup-note">⚠️ Get your DeepSeek key from <b>platform.deepseek.com/api_keys</b></p>
                 <div class="setup-buttons">
                     <button id="svBtn" class="setup-btn primary">💾 Save Keys</button>
                     <button id="clBtn" class="setup-btn danger">🗑️ Clear</button>
                 </div>
-                <button id="skBtn" class="setup-btn secondary" style="width:100%;margin-top:8px;">Close</button>
+                <button id="testAiBtn" class="setup-btn secondary" style="width:100%;margin-top:8px;">🧪 Test AI Connection</button>
+                <button id="skBtn" class="setup-btn secondary" style="width:100%;margin-top:4px;">Close</button>
+                <div id="testResult" style="margin-top:8px;font-size:11px;color:#8e8e93;"></div>
             </div>
         </div>`);
     
@@ -112,9 +116,67 @@ function showSetup(existingKeys = null) {
         }
     });
     
+    document.getElementById('testAiBtn').addEventListener('click', async () => {
+        const dk = document.getElementById('dsInput').value.trim();
+        if (!dk) {
+            document.getElementById('testResult').innerHTML = '❌ Enter a DeepSeek key first';
+            return;
+        }
+        document.getElementById('testResult').innerHTML = '🔄 Testing connection...';
+        const result = await testAIConnection(dk);
+        document.getElementById('testResult').innerHTML = result;
+    });
+    
     document.getElementById('skBtn').addEventListener('click', () => {
         document.getElementById('setupOverlay').remove();
     });
+}
+
+// ============================================
+// TEST AI CONNECTION
+// ============================================
+async function testAIConnection(apiKey) {
+    const testBody = JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [{ role: 'user', content: 'Say "OK" only.' }],
+        max_tokens: 10
+    });
+    
+    // Try multiple endpoints
+    const endpoints = [
+        'https://api.deepseek.com/chat/completions',
+        'https://api.deepseek.com/v1/chat/completions'
+    ];
+    
+    for (const url of endpoints) {
+        try {
+            console.log('🧪 Testing endpoint:', url);
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`
+                },
+                body: testBody
+            });
+            
+            const data = await response.json();
+            console.log('📡 Test response:', data);
+            
+            if (data.choices) {
+                return `✅ SUCCESS! Endpoint: ${url.split('/').pop()}<br>Response: "${data.choices[0]?.message?.content}"`;
+            }
+            
+            if (data.error) {
+                console.error('❌ API Error:', data.error);
+                return `❌ Error: ${data.error.message || JSON.stringify(data.error)}`;
+            }
+        } catch (e) {
+            console.error('❌ Fetch error for', url, ':', e.message);
+        }
+    }
+    
+    return '❌ All endpoints failed. Check console (F12) for details.';
 }
 
 // ============================================
@@ -127,7 +189,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadKeys();
     updateKeyStatus();
     
-    // If no keys at all, show setup automatically
     if (!TWELVE_DATA_KEY && !DEEPSEEK_API_KEY) {
         setTimeout(() => showSetup(), 500);
     }
@@ -185,9 +246,6 @@ async function getPrice() {
         const r = await fetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(SYMBOLS[pair])}&apikey=${TWELVE_DATA_KEY}`);
         const d = await r.json();
         if (d.price) { calls++; document.getElementById('apiSource').innerHTML = '📡 Live'; return +d.price; }
-        if (d.code === 401 || d.code === 403) {
-            showNotif('❌ Invalid Twelve Data key! Update in settings.','error');
-        }
     } catch(e) {}
     return null;
 }
@@ -319,7 +377,7 @@ async function updateMTF() {
 }
 
 // ============================================
-// AI
+// AI (FIXED - Better error handling, multiple endpoints)
 // ============================================
 async function askAI(marketData) {
     if (!DEEPSEEK_API_KEY) {
@@ -328,47 +386,95 @@ async function askAI(marketData) {
     }
     
     showNotif('🤖 AI analyzing...','info');
-    console.log('🤖 Calling DeepSeek...');
+    console.log('🤖 Calling DeepSeek API...');
+    console.log('🔑 Key starts with:', DEEPSEEK_API_KEY.substring(0, 5) + '...');
+    console.log('🔑 Key length:', DEEPSEEK_API_KEY.length);
     
     const prompt = `You are an expert ICT trader. Based on this data, provide ONE trading signal.
 
 Pair: ${pair} | TF: ${tf} | Price: $${marketData.price}
-Bullish Score: ${marketData.bS}/100 | Bearish Score: ${marketData.sS}/100
-Entry Zone: ${marketData.zoneSrc} at $${marketData.entryPrice} (${marketData.zoneLow}-${marketData.zoneHigh})
-Suggested SL: $${marketData.suggestedSL} (${marketData.slReason})
+Bullish: ${marketData.bS}/100 | Bearish: ${marketData.sS}/100
+Entry Zone: ${marketData.zoneSrc} at $${marketData.entryPrice}
+Suggested SL: $${marketData.suggestedSL}
 MTF: 5M=${marketData.mtf5} 15M=${marketData.mtf15} 1H=${marketData.mtf1H} 4H=${marketData.mtf4H}
 
-Return ONLY this JSON:
-{"signal":"BUY","confidence":75,"entryPrice":4720,"stopLoss":4710,"takeProfit1":4750,"takeProfit2":4780,"takeProfit3":4820,"reasoning":"..."}`;
+Return ONLY: {"signal":"BUY","confidence":75,"entryPrice":4720,"stopLoss":4710,"takeProfit1":4750,"takeProfit2":4780,"takeProfit3":4820,"reasoning":"..."}`;
 
-    try {
-        const r = await fetch(DEEPSEEK_API_URL, {
-            method:'POST',
-            headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},
-            body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.2,max_tokens:600})
-        });
-        const d = await r.json();
-        console.log('📡 AI response:', d);
-        
-        if (d.error) {
-            console.error('❌ AI error:', d.error);
-            showNotif('AI error: ' + (d.error.message || 'Check key'),'error');
-            return null;
-        }
-        
-        if (d.choices?.[0]) {
-            const m = d.choices[0].message.content.match(/\{[\s\S]*\}/);
-            if (m) {
-                const parsed = JSON.parse(m[0]);
-                console.log('✅ AI parsed:', parsed);
-                return parsed;
+    const body = JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [
+            { role: 'system', content: 'Return ONLY valid JSON. No other text.' },
+            { role: 'user', content: prompt }
+        ],
+        temperature: 0.2,
+        max_tokens: 600,
+        stream: false
+    });
+
+    // Try multiple endpoints
+    const endpoints = [
+        'https://api.deepseek.com/chat/completions',
+        'https://api.deepseek.com/v1/chat/completions'
+    ];
+
+    for (const url of endpoints) {
+        try {
+            console.log('🔄 Trying endpoint:', url);
+            
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+                },
+                body: body
+            });
+
+            console.log('📡 Response status:', response.status);
+            
+            const data = await response.json();
+            console.log('📡 Response data:', JSON.stringify(data).substring(0, 200));
+            
+            // Check for errors
+            if (data.error) {
+                console.error('❌ API Error:', data.error);
+                const errMsg = data.error.message || data.error.code || 'Unknown error';
+                
+                if (errMsg.includes('rate') || errMsg.includes('quota')) {
+                    showNotif('⚠️ AI rate limit - try again later','warning');
+                } else if (errMsg.includes('auth') || errMsg.includes('key') || errMsg.includes('invalid')) {
+                    showNotif('❌ Invalid API key - check in settings','error');
+                } else {
+                    showNotif('AI error: ' + errMsg,'warning');
+                }
+                continue; // Try next endpoint
             }
+            
+            // Check for valid response
+            if (data.choices && data.choices[0] && data.choices[0].message) {
+                const content = data.choices[0].message.content;
+                console.log('📝 AI raw response:', content.substring(0, 150));
+                
+                const jsonMatch = content.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    const parsed = JSON.parse(jsonMatch[0]);
+                    console.log('✅ AI parsed successfully');
+                    return parsed;
+                }
+                console.log('❌ No JSON found in:', content);
+            }
+            
+            if (data.choices) {
+                console.log('❌ Unexpected response structure');
+            }
+            
+        } catch (e) {
+            console.error('❌ Fetch error for', url, ':', e.message);
+            showNotif('AI connection failed - check console','warning');
         }
-        console.log('❌ No valid JSON in AI response');
-    } catch(e) {
-        console.error('❌ AI fetch error:', e);
-        showNotif('AI connection failed','warning');
     }
+    
+    console.log('❌ All AI endpoints failed');
     return null;
 }
 
