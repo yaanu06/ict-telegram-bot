@@ -58,11 +58,8 @@ function showSetup() {
                 <input type="password" id="twInput" class="setup-input" value="${TWELVE_DATA_KEY}">
                 <label>🤖 DeepSeek Key:</label>
                 <input type="password" id="dsInput" class="setup-input" value="${DEEPSEEK_API_KEY}">
-                <p class="setup-note">⚠️ Get DeepSeek key from platform.deepseek.com</p>
-                <div class="setup-buttons">
-                    <button id="svBtn" class="setup-btn primary">💾 Save</button>
-                    <button id="clBtn" class="setup-btn danger">🗑️ Clear</button>
-                </div>
+                <p class="setup-note">Get DeepSeek key from platform.deepseek.com</p>
+                <div class="setup-buttons"><button id="svBtn" class="setup-btn primary">💾 Save</button><button id="clBtn" class="setup-btn danger">🗑️ Clear</button></div>
                 <button id="testAiBtn" class="setup-btn secondary" style="width:100%;margin-top:8px;">🧪 Test AI</button>
                 <button id="skBtn" class="setup-btn secondary" style="width:100%;margin-top:4px;">Close</button>
                 <div id="testResult" style="margin-top:8px;font-size:11px;color:#8e8e93;"></div>
@@ -163,11 +160,80 @@ const ema = (p,n) => { const m=2/(n+1); let e=[p[0]]; for(let i=1;i<p.length;i++
 const rsi = (p,n=14) => { let g=0,l=0; for(let i=p.length-n;i<p.length;i++){ let c=p[i]-p[i-1]; c>=0?g+=c:l-=c; } let ag=g/n,al=l/n; return al===0?100:100-(100/(1+ag/al)); };
 const atr = (d,n=14) => { let t=[]; for(let i=1;i<d.length;i++) t.push(Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c))); return t.slice(-n).reduce((a,b)=>a+b,0)/n; };
 
+// ============================================
+// IMPROVEMENT #4: FRESH ZONE DETECTION
+// ============================================
 function detectFVG(d) {
-    let f=[]; for(let i=1;i<d.length-1;i++){
-        if(d[i-1].h<d[i+1].l&&d[i+1].l-d[i-1].h>d[i+1].c*0.0005) f.push({type:'bull',l:d[i-1].h,h:d[i+1].l,m:(d[i-1].h+d[i+1].l)/2});
-        if(d[i-1].l>d[i+1].h&&d[i-1].l-d[i+1].h>d[i+1].c*0.0005) f.push({type:'bear',l:d[i+1].h,h:d[i-1].l,m:(d[i+1].h+d[i-1].l)/2});
-    } return f;
+    let f=[]; 
+    for(let i=1;i<d.length-1;i++){
+        // Bullish FVG
+        if(d[i-1].h<d[i+1].l && d[i+1].l-d[i-1].h>d[i+1].c*0.0005) {
+            const fvgLow = d[i-1].h, fvgHigh = d[i+1].l;
+            // Check if this FVG has been touched by subsequent candles
+            let mitigated = false;
+            for(let j=i+2;j<d.length;j++) {
+                if(d[j].l <= fvgHigh && d[j].l >= fvgLow) { mitigated = true; break; }
+            }
+            f.push({type:'bull', l:fvgLow, h:fvgHigh, m:(fvgLow+fvgHigh)/2, fresh:!mitigated, idx:i});
+        }
+        // Bearish FVG
+        if(d[i-1].l>d[i+1].h && d[i-1].l-d[i+1].h>d[i+1].c*0.0005) {
+            const fvgLow = d[i+1].h, fvgHigh = d[i-1].l;
+            let mitigated = false;
+            for(let j=i+2;j<d.length;j++) {
+                if(d[j].h >= fvgLow && d[j].h <= fvgHigh) { mitigated = true; break; }
+            }
+            f.push({type:'bear', l:fvgLow, h:fvgHigh, m:(fvgLow+fvgHigh)/2, fresh:!mitigated, idx:i});
+        }
+    } 
+    return f;
+}
+
+// ============================================
+// IMPROVEMENT #3: REJECTION CANDLE DETECTION
+// ============================================
+function detectRejection(data, direction, zoneLow, zoneHigh) {
+    if (data.length < 3) return { confirmed: false, reason: 'Not enough data' };
+    
+    const lastCandle = data[data.length - 1];
+    const prevCandle = data[data.length - 2];
+    const body = Math.abs(lastCandle.c - lastCandle.o);
+    const totalRange = lastCandle.h - lastCandle.l;
+    
+    if (direction === 'BUY') {
+        // Check if price touched the zone on last candle
+        const touchedZone = lastCandle.l <= zoneHigh && lastCandle.l >= zoneLow;
+        const lowerWick = Math.min(lastCandle.o, lastCandle.c) - lastCandle.l;
+        const bullishClose = lastCandle.c > lastCandle.o;
+        const significantWick = lowerWick > body * 1.5 || lowerWick > totalRange * 0.4;
+        
+        if (touchedZone && significantWick && bullishClose) {
+            return { confirmed: true, reason: 'Bullish rejection wick at zone', strength: 'strong' };
+        }
+        if (touchedZone && lowerWick > body) {
+            return { confirmed: true, reason: 'Wick at zone, moderate rejection', strength: 'moderate' };
+        }
+        if (touchedZone) {
+            return { confirmed: false, reason: 'Price at zone but no rejection yet' };
+        }
+    } else {
+        const touchedZone = lastCandle.h >= zoneLow && lastCandle.h <= zoneHigh;
+        const upperWick = lastCandle.h - Math.max(lastCandle.o, lastCandle.c);
+        const bearishClose = lastCandle.c < lastCandle.o;
+        const significantWick = upperWick > body * 1.5 || upperWick > totalRange * 0.4;
+        
+        if (touchedZone && significantWick && bearishClose) {
+            return { confirmed: true, reason: 'Bearish rejection wick at zone', strength: 'strong' };
+        }
+        if (touchedZone && upperWick > body) {
+            return { confirmed: true, reason: 'Wick at zone, moderate rejection', strength: 'moderate' };
+        }
+        if (touchedZone) {
+            return { confirmed: false, reason: 'Price at zone but no rejection yet' };
+        }
+    }
+    
+    return { confirmed: false, reason: 'Price not at entry zone yet' };
 }
 
 function findSwings(d,lb=3) {
@@ -187,111 +253,292 @@ function detectBreakers(d) {
     return b;
 }
 
+function detectTrend(data) {
+    const closes = data.map(c=>c.c);
+    const e20 = ema(closes,20), e50 = ema(closes,50);
+    const cE20 = e20[e20.length-1], cE50 = e50[e50.length-1];
+    if (cE20 > cE50) return 'BULLISH';
+    if (cE20 < cE50) return 'BEARISH';
+    return 'NEUTRAL';
+}
+
 // ============================================
-// PROFESSIONAL STOP LOSS (FIXED - Tighter, Structure-Based)
+// IMPROVEMENT #5: DYNAMIC BUFFER (Spread-based)
+// ============================================
+function getDynamicBuffer() {
+    const buffers = {
+        'XAU/USD': { tight: 1.5, normal: 2.5, wide: 4 },
+        'XAG/USD': { tight: 0.03, normal: 0.05, wide: 0.08 },
+        'BTC/USD': { tight: 30, normal: 50, wide: 80 },
+        'ETH/USD': { tight: 2, normal: 3, wide: 5 },
+        'EUR/USD': { tight: 0.00005, normal: 0.0001, wide: 0.0002 },
+        'GBP/USD': { tight: 0.00005, normal: 0.0001, wide: 0.0002 }
+    };
+    
+    const defaultBuf = isGold(pair) ? { tight: 1.5, normal: 2.5, wide: 4 } :
+                       isForex(pair) ? { tight: 0.00005, normal: 0.0001, wide: 0.0002 } :
+                       { tight: 20, normal: 40, wide: 60 };
+    
+    return buffers[pair] || defaultBuf;
+}
+
+// ============================================
+// IMPROVEMENT #2: MTF ALIGNMENT (4H → 1H → 15M → 5M)
+// ============================================
+async function checkMTFAlignment(direction) {
+    const results = {
+        aligned: false,
+        score: 0,
+        maxScore: 4,
+        details: {},
+        rejectReason: ''
+    };
+    
+    // 1. Check 4H trend (Gatekeeper - must align)
+    const d4h = await getHistory('4H');
+    if (d4h && d4h.length > 30) {
+        const trend4h = detectTrend(d4h);
+        results.details['4H'] = trend4h;
+        
+        if (direction === 'BUY' && trend4h === 'BEARISH') {
+            results.rejectReason = '4H bearish - no buys allowed';
+            return results;
+        }
+        if (direction === 'SELL' && trend4h === 'BULLISH') {
+            results.rejectReason = '4H bullish - no sells allowed';
+            return results;
+        }
+        if ((direction === 'BUY' && trend4h === 'BULLISH') || 
+            (direction === 'SELL' && trend4h === 'BEARISH')) {
+            results.score += 1;
+        }
+    }
+    
+    // 2. Check 1H zone (Structure validator)
+    const d1h = await getHistory('1H');
+    if (d1h && d1h.length > 30) {
+        const trend1h = detectTrend(d1h);
+        results.details['1H'] = trend1h;
+        
+        if ((direction === 'BUY' && trend1h === 'BULLISH') || 
+            (direction === 'SELL' && trend1h === 'BEARISH')) {
+            results.score += 1;
+        }
+    }
+    
+    // 3. Check 15M zone (Entry finder)
+    const d15m = await getHistory('15M');
+    if (d15m && d15m.length > 30) {
+        const trend15m = detectTrend(d15m);
+        results.details['15M'] = trend15m;
+        
+        if ((direction === 'BUY' && trend15m === 'BULLISH') || 
+            (direction === 'SELL' && trend15m === 'BEARISH')) {
+            results.score += 1;
+        }
+    }
+    
+    // 4. Check 5M for precision (Sniper scope)
+    const d5m = await getHistory('5M');
+    if (d5m && d5m.length > 30) {
+        const trend5m = detectTrend(d5m);
+        results.details['5M'] = trend5m;
+        
+        // 5M is more forgiving - used for timing, not direction
+        if ((direction === 'BUY' && trend5m !== 'BEARISH') || 
+            (direction === 'SELL' && trend5m !== 'BULLISH')) {
+            results.score += 1;
+        }
+    }
+    
+    // Alignment threshold: At least 3 out of 4 timeframes must agree
+    results.aligned = results.score >= 2;
+    if (!results.aligned && !results.rejectReason) {
+        results.rejectReason = `Only ${results.score}/${results.maxScore} timeframes aligned`;
+    }
+    
+    return results;
+}
+
+// ============================================
+// IMPROVEMENT #2: Find best zone across multiple timeframes
+// ============================================
+async function findBestEntryZone(data, direction) {
+    const a = atr(data,14);
+    const fvgs = detectFVG(data);
+    const bk = detectBreakers(data);
+    const currentPrice = data[data.length-1].c;
+    
+    let bestZone = null;
+    let bestScore = -1;
+    
+    // Candidate 1: Fresh bullish/bearish FVGs
+    const relevantFVGs = direction === 'BUY' 
+        ? fvgs.filter(f => f.type==='bull' && f.l < currentPrice && f.fresh)
+        : fvgs.filter(f => f.type==='bear' && f.h > currentPrice && f.fresh);
+    
+    for (const fvg of relevantFVGs) {
+        // IMPROVEMENT #1: Entry at FVG EDGE, not midpoint
+        const entryPrice = direction === 'BUY' ? fvg.l : fvg.h;
+        const distanceFromCurrent = Math.abs(currentPrice - entryPrice) / currentPrice;
+        
+        // Score: Fresh FVGs get priority, closer ones get bonus
+        let score = 50;
+        if (fvg.fresh) score += 30;
+        if (distanceFromCurrent < 0.01) score += 10;
+        if (distanceFromCurrent < 0.005) score += 10;
+        
+        if (score > bestScore) {
+            bestScore = score;
+            bestZone = { 
+                p: entryPrice, 
+                l: fvg.l, 
+                h: fvg.h, 
+                src: 'FVG',
+                fresh: fvg.fresh,
+                edge: true,
+                reason: `Fresh FVG edge at ${entryPrice.toFixed(getPrec(pair))}`
+            };
+        }
+    }
+    
+    // Candidate 2: Breaker blocks (fallback)
+    if (!bestZone) {
+        const relevantBreakers = direction === 'BUY'
+            ? bk.filter(b => b.type==='BULL' && b.p < currentPrice)
+            : bk.filter(b => b.type==='BEAR' && b.p > currentPrice);
+        
+        if (relevantBreakers.length > 0) {
+            const bestBreaker = relevantBreakers.sort((a,b) => 
+                direction === 'BUY' ? b.p - a.p : a.p - b.p
+            )[0];
+            bestZone = { 
+                p: bestBreaker.p, 
+                l: bestBreaker.p - a*0.5, 
+                h: bestBreaker.p + a*0.5, 
+                src: 'Breaker',
+                fresh: true,
+                edge: true,
+                reason: `Breaker block at ${bestBreaker.p.toFixed(getPrec(pair))}`
+            };
+        }
+    }
+    
+    // Candidate 3: OTE zone (last resort)
+    if (!bestZone) {
+        const recentLow = Math.min(...data.slice(-20).map(c=>c.l));
+        const recentHigh = Math.max(...data.slice(-20).map(c=>c.h));
+        const range = recentHigh - recentLow;
+        
+        if (direction === 'BUY') {
+            const oteLow = recentLow + range * 0.618;
+            const oteHigh = recentLow + range * 0.79;
+            const entryPrice = oteLow; // Edge of OTE zone
+            bestZone = { 
+                p: entryPrice, 
+                l: oteLow, 
+                h: oteHigh, 
+                src: 'OTE',
+                fresh: true,
+                edge: true,
+                reason: `OTE zone edge at ${entryPrice.toFixed(getPrec(pair))}`
+            };
+        } else {
+            const oteLow = recentHigh - range * 0.79;
+            const oteHigh = recentHigh - range * 0.618;
+            const entryPrice = oteHigh; // Edge of OTE zone
+            bestZone = { 
+                p: entryPrice, 
+                l: oteLow, 
+                h: oteHigh, 
+                src: 'OTE',
+                fresh: true,
+                edge: true,
+                reason: `OTE zone edge at ${entryPrice.toFixed(getPrec(pair))}`
+            };
+        }
+    }
+    
+    return bestZone;
+}
+
+// ============================================
+// STOP LOSS
 // ============================================
 function calcStopLoss(data, dir, entry, zone) {
     const a = atr(data, 14);
     const swings = findSwings(data, 4);
     const fvgs = detectFVG(data);
-    const currentPrice = data[data.length-1].c;
     
-    // Maximum SL distance as % of entry
     const maxSLPercent = isGold(pair) ? 0.008 : (isForex(pair) ? 0.003 : 0.015);
     const maxSLDistance = entry * maxSLPercent;
     
     if (dir === 'BUY') {
-        // Priority 1: Nearest swing low just below entry
-        const swingLows = swings.L.filter(s => s.p < entry && s.p > entry - maxSLDistance*2)
-                         .sort((a,b) => b.p - a.p);
+        const swingLows = swings.L.filter(s => s.p < entry && s.p > entry - maxSLDistance*2).sort((a,b) => b.p - a.p);
+        const bullFVGs = fvgs.filter(f => f.type==='bull' && f.l < entry && f.l > entry - maxSLDistance*2).sort((a,b) => b.l - a.l);
         
-        // Priority 2: Bullish FVG low
-        const bullFVGs = fvgs.filter(f => f.type==='bull' && f.l < entry && f.l > entry - maxSLDistance*2)
-                         .sort((a,b) => b.l - a.l);
-        
-        // Priority 3: Zone low
         let stopPrice = null, stopReason = '';
         
         if (swingLows.length > 0) {
-            const nearestSwing = swingLows[0];
-            const buffer = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
-            const proposedSL = nearestSwing.p - buffer;
-            
-            // Check if SL is too far
+            const buf = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
+            const proposedSL = swingLows[0].p - buf;
             if (entry - proposedSL <= maxSLDistance) {
                 stopPrice = proposedSL;
-                stopReason = `Below swing ${nearestSwing.p.toFixed(getPrec(pair))}`;
+                stopReason = `Below swing ${swingLows[0].p.toFixed(getPrec(pair))}`;
             }
         }
         
         if (!stopPrice && bullFVGs.length > 0) {
-            const nearestFVG = bullFVGs[0];
-            const buffer = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15);
-            const proposedSL = nearestFVG.l - buffer;
-            
+            const buf = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15);
+            const proposedSL = bullFVGs[0].l - buf;
             if (entry - proposedSL <= maxSLDistance) {
                 stopPrice = proposedSL;
-                stopReason = `Below FVG ${nearestFVG.l.toFixed(getPrec(pair))}`;
+                stopReason = `Below FVG ${bullFVGs[0].l.toFixed(getPrec(pair))}`;
             }
         }
         
         if (!stopPrice && zone) {
-            const buffer = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
-            const proposedSL = zone.l - buffer;
-            
+            const buf = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
+            const proposedSL = zone.l - buf;
             if (entry - proposedSL <= maxSLDistance) {
                 stopPrice = proposedSL;
                 stopReason = `Below zone ${zone.l.toFixed(getPrec(pair))}`;
             }
         }
         
-        // Fallback: Use ATR-based but capped
         if (!stopPrice) {
-            const atrStop = entry - (isGold(pair) ? a * 0.8 : a * 0.6);
-            const percentStop = entry - maxSLDistance;
-            stopPrice = Math.max(atrStop, percentStop);
+            stopPrice = Math.max(entry - a * 0.8, entry - maxSLDistance);
             stopReason = `Capped at ${(maxSLPercent*100).toFixed(1)}%`;
         }
         
         return { price: stopPrice, reason: stopReason };
-        
     } else {
-        // Priority 1: Nearest swing high just above entry
-        const swingHighs = swings.H.filter(s => s.p > entry && s.p < entry + maxSLDistance*2)
-                          .sort((a,b) => a.p - b.p);
-        
-        // Priority 2: Bearish FVG high
-        const bearFVGs = fvgs.filter(f => f.type==='bear' && f.h > entry && f.h < entry + maxSLDistance*2)
-                        .sort((a,b) => a.h - b.h);
+        const swingHighs = swings.H.filter(s => s.p > entry && s.p < entry + maxSLDistance*2).sort((a,b) => a.p - b.p);
+        const bearFVGs = fvgs.filter(f => f.type==='bear' && f.h > entry && f.h < entry + maxSLDistance*2).sort((a,b) => a.h - b.h);
         
         let stopPrice = null, stopReason = '';
         
         if (swingHighs.length > 0) {
-            const nearestSwing = swingHighs[0];
-            const buffer = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
-            const proposedSL = nearestSwing.p + buffer;
-            
+            const buf = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
+            const proposedSL = swingHighs[0].p + buf;
             if (proposedSL - entry <= maxSLDistance) {
                 stopPrice = proposedSL;
-                stopReason = `Above swing ${nearestSwing.p.toFixed(getPrec(pair))}`;
+                stopReason = `Above swing ${swingHighs[0].p.toFixed(getPrec(pair))}`;
             }
         }
         
         if (!stopPrice && bearFVGs.length > 0) {
-            const nearestFVG = bearFVGs[0];
-            const buffer = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15);
-            const proposedSL = nearestFVG.h + buffer;
-            
+            const buf = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15);
+            const proposedSL = bearFVGs[0].h + buf;
             if (proposedSL - entry <= maxSLDistance) {
                 stopPrice = proposedSL;
-                stopReason = `Above FVG ${nearestFVG.h.toFixed(getPrec(pair))}`;
+                stopReason = `Above FVG ${bearFVGs[0].h.toFixed(getPrec(pair))}`;
             }
         }
         
         if (!stopPrice && zone) {
-            const buffer = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
-            const proposedSL = zone.h + buffer;
-            
+            const buf = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
+            const proposedSL = zone.h + buf;
             if (proposedSL - entry <= maxSLDistance) {
                 stopPrice = proposedSL;
                 stopReason = `Above zone ${zone.h.toFixed(getPrec(pair))}`;
@@ -299,9 +546,7 @@ function calcStopLoss(data, dir, entry, zone) {
         }
         
         if (!stopPrice) {
-            const atrStop = entry + (isGold(pair) ? a * 0.8 : a * 0.6);
-            const percentStop = entry + maxSLDistance;
-            stopPrice = Math.min(atrStop, percentStop);
+            stopPrice = Math.min(entry + a * 0.8, entry + maxSLDistance);
             stopReason = `Capped at ${(maxSLPercent*100).toFixed(1)}%`;
         }
         
@@ -310,7 +555,7 @@ function calcStopLoss(data, dir, entry, zone) {
 }
 
 // ============================================
-// SIGNAL SCORING
+// SIGNAL SCORING (using 15M data for scoring)
 // ============================================
 function score(data, price) {
     const a = atr(data), cl = data.map(c=>c.c), rs = rsi(cl);
@@ -331,22 +576,16 @@ function score(data, price) {
     if(cE20>cE50){ bS+=15; bR.push('EMA20>50'); } else { sS+=15; sR.push('EMA20<50'); }
     if(rs>50) bS+=10; else sS+=10;
     
-    let dir, conf, zone, reason;
-    if(bS>sS&&bS>=45){ dir='BUY'; conf=Math.min(bS+10,95); reason=bR.join('; ');
-        if(bF.length) zone={p:bF[0].m,l:bF[0].l,h:bF[0].h,src:'FVG'};
-        else if(bB.length) zone={p:bB[0].p,l:bB[0].p-a*.5,h:bB[0].p+a*.5,src:'Breaker'};
-        else { let rL=Math.min(...data.slice(-20).map(c=>c.l)),rH=Math.max(...data.slice(-20).map(c=>c.h)),r=rH-rL; zone={p:rL+r*.7,l:rL+r*.618,h:rL+r*.79,src:'OTE'}; }
-    } else if(sS>bS&&sS>=45){ dir='SELL'; conf=Math.min(sS+10,95); reason=sR.join('; ');
-        if(sF.length) zone={p:sF[0].m,l:sF[0].l,h:sF[0].h,src:'FVG'};
-        else if(sB.length) zone={p:sB[0].p,l:sB[0].p-a*.5,h:sB[0].p+a*.5,src:'Breaker'};
-        else { let rL=Math.min(...data.slice(-20).map(c=>c.l)),rH=Math.max(...data.slice(-20).map(c=>c.h)),r=rH-rL; zone={p:rH-r*.3,l:rH-r*.382,h:rH-r*.5,src:'OTE'}; }
-    } else { dir='NEUTRAL'; conf=0; reason=`B:${bS} S:${sS}`; zone=null; }
+    let dir, conf, reason;
+    if(bS>sS&&bS>=45){ dir='BUY'; conf=Math.min(bS+10,95); reason=bR.join('; '); }
+    else if(sS>bS&&sS>=45){ dir='SELL'; conf=Math.min(sS+10,95); reason=sR.join('; '); }
+    else { dir='NEUTRAL'; conf=0; reason=`B:${bS} S:${sS}`; }
     
-    return {dir,conf,zone,reason,scores:{bS,sS}};
+    return {dir,conf,reason,scores:{bS,sS}};
 }
 
 // ============================================
-// MULTI-TF
+// MULTI-TF UI
 // ============================================
 async function updateMTF() {
     const tfs=['5M','15M','1H','4H'];
@@ -367,11 +606,13 @@ async function askAI(marketData) {
     const prompt = `ICT trader. Return JSON.
 ${pair} ${tf} Price:${marketData.price}
 Bull:${marketData.bS} Bear:${marketData.sS}
-Entry:${marketData.zoneSrc} $${marketData.entryPrice}
+MTF: 4H=${marketData.mtf4h} 1H=${marketData.mtf1h} 15M=${marketData.mtf15m} 5M=${marketData.mtf5m}
+MTF Aligned: ${marketData.mtfAligned}
+Entry zone: ${marketData.zoneInfo}
 SL suggestion:$${marketData.suggestedSL}
-MTF:5M=${marketData.mtf5} 15M=${marketData.mtf15} 1H=${marketData.mtf1H} 4H=${marketData.mtf4H}
+Rejection: ${marketData.rejection}
 Return:{"signal":"BUY/SELL/NEUTRAL","confidence":0-100,"entryPrice":#,"stopLoss":#,"takeProfit1":#,"takeProfit2":#,"takeProfit3":#,"reasoning":"..."}
-IMPORTANT: SL must be LESS than TP distance from entry. Minimum 1:2 R:R.`;
+IMPORTANT: SL must be LESS than TP distance. Min 1:2 R:R.`;
 
     try {
         const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.2,max_tokens:600})});
@@ -389,26 +630,72 @@ async function runAnalysis() {
     const btn = document.getElementById('analyzeBtn');
     btn.classList.add('loading'); btn.disabled = true;
     if (!TWELVE_DATA_KEY) { showNotif('⚠️ Set Twelve Data key!','error'); btn.classList.remove('loading'); btn.disabled=false; return; }
-    showNotif('🔍 Analyzing...','info');
+    showNotif('🔍 Analyzing MTF...','info');
     
     try {
         const price = await getPrice(); if (!price) throw new Error('No price');
         await updateMTF();
-        const data = await getHistory(); if (!data?.length) throw new Error('No data');
         
-        const sig = score(data, price);
-        if (!sig.zone) throw new Error('No entry zone');
+        // Get 15M data for scoring and zone finding
+        const d15m = await getHistory('15M');
+        if (!d15m?.length) throw new Error('No 15M data');
         
-        const slResult = calcStopLoss(data, sig.dir, sig.zone.p, sig.zone);
+        // Score the signal
+        const sig = score(d15m, price);
+        if (sig.dir === 'NEUTRAL') throw new Error('No clear direction');
         
+        // IMPROVEMENT #2: Check MTF alignment (4H → 1H → 15M → 5M)
+        const mtfCheck = await checkMTFAlignment(sig.dir === 'BUY' ? 'BUY' : 'SELL');
+        
+        if (!mtfCheck.aligned) {
+            showNotif('⛔ MTF not aligned: ' + mtfCheck.rejectReason, 'warning');
+            document.getElementById('jsonOutput').innerHTML = JSON.stringify({
+                trade_signal: {
+                    date: new Date().toISOString().split('T')[0],
+                    time: new Date().toISOString().split('T')[1].split('.')[0],
+                    pair, timeframe: tf,
+                    current_price: price,
+                    trade_type: 'NEUTRAL',
+                    reason: 'MTF alignment failed',
+                    mtf_details: mtfCheck.details,
+                    mtf_score: mtfCheck.score + '/' + mtfCheck.maxScore,
+                    reject_reason: mtfCheck.rejectReason
+                }
+            }, null, 2);
+            btn.classList.remove('loading'); btn.disabled = false;
+            return;
+        }
+        
+        // IMPROVEMENT #1 & #4: Find best zone with fresh FVGs at edge
+        const zone = await findBestEntryZone(d15m, sig.dir === 'BUY' ? 'BUY' : 'SELL');
+        if (!zone) throw new Error('No entry zone found');
+        
+        // IMPROVEMENT #3: Check rejection candle
+        const rejection = detectRejection(d15m, sig.dir === 'BUY' ? 'BUY' : 'SELL', zone.l, zone.h);
+        
+        // IMPROVEMENT #5: Dynamic buffer
+        const buffer = getDynamicBuffer();
+        const spreadBuffer = rejection.confirmed ? buffer.tight : buffer.normal;
+        
+        // Adjust entry with dynamic buffer
+        const adjustedEntry = sig.dir === 'BUY' 
+            ? zone.p - spreadBuffer 
+            : zone.p + spreadBuffer;
+        
+        // Calculate stop loss
+        const slResult = calcStopLoss(d15m, sig.dir === 'BUY' ? 'BUY' : 'SELL', adjustedEntry, zone);
+        
+        // Build market data for AI
         const marketData = {
             price: price.toFixed(2), bS: sig.scores.bS, sS: sig.scores.sS,
-            zoneSrc: sig.zone.src, entryPrice: sig.zone.p.toFixed(2),
+            mtf4h: mtfCheck.details['4H'] || '--',
+            mtf1h: mtfCheck.details['1H'] || '--',
+            mtf15m: mtfCheck.details['15M'] || '--',
+            mtf5m: mtfCheck.details['5M'] || '--',
+            mtfAligned: mtfCheck.aligned ? '✅ ' + mtfCheck.score + '/4' : '❌',
+            zoneInfo: `${zone.src} | Fresh:${zone.fresh} | Edge entry`,
             suggestedSL: slResult.price.toFixed(2),
-            mtf5: document.getElementById('trend5M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
-            mtf15: document.getElementById('trend15M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
-            mtf1H: document.getElementById('trend1H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
-            mtf4H: document.getElementById('trend4H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--'
+            rejection: rejection.confirmed ? '✅ ' + rejection.reason : '⚠️ ' + rejection.reason
         };
         
         const ai = await askAI(marketData);
@@ -416,16 +703,18 @@ async function runAnalysis() {
         let dir, conf, entry, sl, tp1, tp2, tp3, reason, src;
         
         if (ai && (ai.signal==='BUY'||ai.signal==='SELL')) {
-            dir = ai.signal; conf = ai.confidence||70; entry = ai.entryPrice||sig.zone.p;
+            dir = ai.signal; conf = ai.confidence||70; entry = ai.entryPrice||adjustedEntry;
             sl = ai.stopLoss||slResult.price; tp1 = ai.takeProfit1; tp2 = ai.takeProfit2; tp3 = ai.takeProfit3;
             reason = '🤖 AI: '+ (ai.reasoning||'AI signal'); src = 'AI';
         } else {
-            dir = sig.dir; conf = sig.conf; entry = sig.zone.p; sl = slResult.price;
+            dir = sig.dir; conf = sig.conf; entry = adjustedEntry; sl = slResult.price;
             const risk = Math.abs(entry-sl);
-            tp1 = dir==='BUY'?entry+risk*2:entry-risk*2;      // 1:2 R:R
-            tp2 = dir==='BUY'?entry+risk*3.5:entry-risk*3.5;  // 1:3.5 R:R
-            tp3 = dir==='BUY'?entry+risk*5:entry-risk*5;      // 1:5 R:R
-            reason = sig.reason + ' | SL: ' + slResult.reason; src = sig.zone.src;
+            tp1 = dir==='BUY'?entry+risk*2:entry-risk*2;
+            tp2 = dir==='BUY'?entry+risk*3.5:entry-risk*3.5;
+            tp3 = dir==='BUY'?entry+risk*5:entry-risk*5;
+            reason = sig.reason + ' | ' + zone.reason + ' | SL: ' + slResult.reason;
+            if (rejection.confirmed) reason += ' | ' + rejection.reason;
+            src = zone.src;
         }
         
         const st = dir==='BUY'?'LONG':(dir==='SELL'?'SHORT':'NEUTRAL');
@@ -453,9 +742,16 @@ async function runAnalysis() {
                 take_profit_1: tp1, take_profit_2: tp2, take_profit_3: tp3,
                 risk_reward: rr, confidence: conf,
                 entry_source: src, ai_used: src==='AI',
+                improvements: {
+                    fvg_edge_entry: true,
+                    mtf_alignment: { score: mtfCheck.score + '/4', aligned: mtfCheck.aligned, details: mtfCheck.details },
+                    rejection_confirmation: { confirmed: rejection.confirmed, reason: rejection.reason },
+                    fresh_zone: zone.fresh,
+                    dynamic_buffer: spreadBuffer
+                },
                 analysis: {
                     scoring: { bullish: sig.scores.bS, bearish: sig.scores.sS },
-                    multi_timeframe: { "5M":marketData.mtf5, "15M":marketData.mtf15, "1H":marketData.mtf1H, "4H":marketData.mtf4H },
+                    multi_timeframe: { "5M":marketData.mtf5m, "15M":marketData.mtf15m, "1H":marketData.mtf1h, "4H":marketData.mtf4h },
                     reasoning: reason
                 }
             }
