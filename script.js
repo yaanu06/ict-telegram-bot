@@ -76,23 +76,23 @@ function detectBreakers(d){let b=[],s=findSwings(d);for(let i=5;i<d.length-5;i++
 function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
 
 // ============================================
-// LIQUIDITY SWEEP DETECTION (NEW!)
+// LIQUIDITY SWEEP DETECTION (FILTERED BY PROXIMITY)
 // ============================================
-function detectLiquiditySweeps(data) {
+function detectLiquiditySweeps(data, currentPrice) {
     const sweeps = [];
     const highs = data.map(c => c.h);
     const lows = data.map(c => c.l);
     const closes = data.map(c => c.c);
+    const a = atr(data, 14);
+    const maxDistance = a * 3; // Only sweeps within 3 ATR of current price
     
-    // Find equal highs (buy-side liquidity pools)
     for (let i = 10; i < data.length - 3; i++) {
         const recentHighs = highs.slice(i-5, i);
         const maxHigh = Math.max(...recentHighs);
         const tolerance = maxHigh * 0.001;
         const equalHighCount = recentHighs.filter(h => Math.abs(h - maxHigh) <= tolerance).length;
         
-        if (equalHighCount >= 2) {
-            // Check if price swept above these highs and reversed down
+        if (equalHighCount >= 2 && Math.abs(maxHigh - currentPrice) <= maxDistance) {
             const nextCandles = data.slice(i, i+4);
             const sweptAbove = nextCandles.some(c => c.h > maxHigh + tolerance);
             const closedBelow = closes[i+3] < maxHigh;
@@ -101,19 +101,19 @@ function detectLiquiditySweeps(data) {
                 sweeps.push({
                     type: 'BUY_SIDE_SWEPT',
                     level: maxHigh,
-                    message: 'Buy-side liquidity swept above equal highs - POTENTIAL SHORT',
+                    distance: Math.abs(maxHigh - currentPrice),
+                    message: 'Buy-side swept - POTENTIAL SHORT',
                     direction: 'BEARISH'
                 });
             }
         }
         
-        // Find equal lows (sell-side liquidity pools)
         const recentLows = lows.slice(i-5, i);
         const minLow = Math.min(...recentLows);
         const lowTolerance = minLow * 0.001;
         const equalLowCount = recentLows.filter(l => Math.abs(l - minLow) <= lowTolerance).length;
         
-        if (equalLowCount >= 2) {
+        if (equalLowCount >= 2 && Math.abs(minLow - currentPrice) <= maxDistance) {
             const nextCandles = data.slice(i, i+4);
             const sweptBelow = nextCandles.some(c => c.l < minLow - lowTolerance);
             const closedAbove = closes[i+3] > minLow;
@@ -122,46 +122,33 @@ function detectLiquiditySweeps(data) {
                 sweeps.push({
                     type: 'SELL_SIDE_SWEPT',
                     level: minLow,
-                    message: 'Sell-side liquidity swept below equal lows - POTENTIAL LONG',
+                    distance: Math.abs(minLow - currentPrice),
+                    message: 'Sell-side swept - POTENTIAL LONG',
                     direction: 'BULLISH'
                 });
             }
         }
     }
     
-    return sweeps;
+    // Sort by closest to current price, return most relevant
+    return sweeps.sort((a,b) => a.distance - b.distance);
 }
 
-// Find imbalances (where price will retrace to)
 function findImbalances(data) {
     const imbalances = [];
-    
     for (let i = 1; i < data.length - 1; i++) {
-        // Bullish imbalance: price might retrace up to fill
         if (data[i-1].l > data[i+1].h) {
-            imbalances.push({
-                type: 'BULLISH_IMBALANCE',
-                low: data[i+1].h,
-                high: data[i-1].l,
-                message: 'Price may retrace up to fill imbalance'
-            });
+            imbalances.push({type:'BULLISH_IMBALANCE',low:data[i+1].h,high:data[i-1].l});
         }
-        // Bearish imbalance: price might retrace down to fill
         if (data[i-1].h < data[i+1].l) {
-            imbalances.push({
-                type: 'BEARISH_IMBALANCE',
-                low: data[i-1].h,
-                high: data[i+1].l,
-                message: 'Price may retrace down to fill imbalance'
-            });
+            imbalances.push({type:'BEARISH_IMBALANCE',low:data[i-1].h,high:data[i+1].l});
         }
     }
-    
     return imbalances.slice(-5);
 }
 
 // ============================================
-// STOP LOSS
+// STOP LOSS (ENFORCED CAP)
 // ============================================
 function calcStopLoss(data, dir, entry, zone) {
     const a = atr(data, 14);
@@ -192,12 +179,29 @@ function calcStopLoss(data, dir, entry, zone) {
 }
 
 // ============================================
-// SIGNAL SCORING (Now considers liquidity sweeps)
+// ENFORCE SL CAP ON ANY PRICE
+// ============================================
+function enforceSLCap(slPrice, entry, dir) {
+    const maxSLPercent = isGold(pair) ? 0.008 : (isForex(pair) ? 0.003 : 0.015);
+    const maxSLDistance = entry * maxSLPercent;
+    
+    if (dir === 'BUY') {
+        const minSL = entry - maxSLDistance;
+        if (slPrice < minSL) return { price: minSL, capped: true };
+    } else {
+        const maxSL = entry + maxSLDistance;
+        if (slPrice > maxSL) return { price: maxSL, capped: true };
+    }
+    return { price: slPrice, capped: false };
+}
+
+// ============================================
+// SIGNAL SCORING (Filtered sweeps + MTF penalty)
 // ============================================
 function score(data, price) {
     const a = atr(data), cl = data.map(c=>c.c), rs = rsi(cl);
     const fv = detectFVG(data), ms = detectMSS(data), bk = detectBreakers(data);
-    const sweeps = detectLiquiditySweeps(data);
+    const sweeps = detectLiquiditySweeps(data, price);
     const e20 = ema(cl,20), e50 = ema(cl,50), cE20 = e20[e20.length-1], cE50 = e50[e50.length-1];
     
     const bF = fv.filter(f=>f.type==='bull'&&f.l<price).sort((a,b)=>b.l-a.l);
@@ -205,15 +209,13 @@ function score(data, price) {
     const bB = bk.filter(b=>b.type==='BULL'&&b.p<price);
     const sB = bk.filter(b=>b.type==='BEAR'&&b.p>price);
     
-    // Check for recent liquidity sweeps
-    const recentSellSweep = sweeps.filter(s => s.type === 'SELL_SIDE_SWEPT').pop();
-    const recentBuySweep = sweeps.filter(s => s.type === 'BUY_SIDE_SWEPT').pop();
+    const recentSellSweep = sweeps.filter(s => s.type === 'SELL_SIDE_SWEPT')[0];
+    const recentBuySweep = sweeps.filter(s => s.type === 'BUY_SIDE_SWEPT')[0];
     
     let bS=0, sS=0, bR=[], sR=[];
     
-    // Liquidity sweeps are HIGH priority signals
-    if (recentSellSweep) { bS += 30; bR.push(`🔥 Sell-side swept - POTENTIAL LONG`); }
-    if (recentBuySweep) { sS += 30; sR.push(`🔥 Buy-side swept - POTENTIAL SHORT`); }
+    if (recentSellSweep) { bS += 30; bR.push(`Sell swept @ $${recentSellSweep.level.toFixed(2)}`); }
+    if (recentBuySweep) { sS += 30; sR.push(`Buy swept @ $${recentBuySweep.level.toFixed(2)}`); }
     
     if(ms?.type==='BULL'){ bS+=20; bR.push('MSS Bull'); } else if(ms?.type==='BEAR'){ sS+=20; sR.push('MSS Bear'); }
     if(bF.length){ bS+=15; bR.push(`FVG ${bF[0].l.toFixed(2)}`); }
@@ -243,50 +245,42 @@ function score(data, price) {
 async function updateMTF(){const tfs=['5M','15M','1H','4H'];for(let t of tfs){let d=await getHistory(t);if(!d||d.length<30)continue;let c=d.map(x=>x.c),tr=c[c.length-1]>c[c.length-20]?'bullish':(c[c.length-1]<c[c.length-20]?'bearish':'neutral');let el=document.getElementById(`trend${t}`);if(el){el.innerHTML=tr==='bullish'?'🟢 Bull':(tr==='bearish'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr}`;}}}
 
 // ============================================
-// ADVANCED AI WITH LIQUIDITY SWEEP CONTEXT
+// ADVANCED AI WITH MTF AWARENESS
 // ============================================
 async function askAI(marketData) {
     if (!DEEPSEEK_API_KEY) return null;
-    showNotif('🤖 AI analyzing sweeps...','info');
+    showNotif('🤖 AI analyzing...','info');
     
-    const prompt = `You are an ELITE ICT SNIPER. You understand liquidity sweeps, inducement, and smart money traps.
+    const prompt = `You are an ELITE ICT SNIPER. You respect multi-timeframe alignment.
 
-CRITICAL: When sell-side liquidity is swept (price dips below equal lows and reverses), this is a BUY signal. When buy-side liquidity is swept (price spikes above equal highs and reverses), this is a SELL signal. These are the HIGHEST probability setups.
+CRITICAL RULES:
+1. If 3+ timeframes show same direction, you MUST trade that direction. Do NOT fight the trend.
+2. If 4H and 1H agree, you can trade. If they disagree, be cautious.
+3. Sell-side swept = BUY signal. Buy-side swept = SELL signal. These are highest priority.
+4. Entry at zone EDGE only (FVG boundary, breaker block, OTE edge).
+5. Stop loss MUST be within 0.8% for gold, 0.3% for forex. TIGHT and logical.
+6. If MTF opposes your signal, cap confidence at 50% and mention it.
 
 CONTEXT:
 - Pair: ${pair} | Timeframe: ${tf} | Price: $${marketData.price}
 
-LIQUIDITY SWEEPS DETECTED (MOST IMPORTANT):
-${marketData.sweeps || 'No sweeps detected'}
+MTF TRENDS:
+- 5M: ${marketData.mtf5} | 15M: ${marketData.mtf15} | 1H: ${marketData.mtf1H} | 4H: ${marketData.mtf4H}
+- MTF Consensus: ${marketData.mtfConsensus}
 
-SCORING:
-- Bullish: ${marketData.bS}/100 | Bearish: ${marketData.sS}/100
-- Direction bias: ${marketData.detectedDir}
+SWEEPS (filtered, nearby only):
+${marketData.sweeps || 'No nearby sweeps'}
 
-ENTRY ZONE:
-- Source: ${marketData.zoneSrc} | Price: $${marketData.entryPrice}
-- Zone: $${marketData.zoneLow} - $${marketData.zoneHigh}
-
-IMBALANCES (where price retraces to):
-${marketData.imbalances || 'None detected'}
-
-MTF: 5M=${marketData.mtf5} 15M=${marketData.mtf15} 1H=${marketData.mtf1H} 4H=${marketData.mtf4H}
-MSS: ${marketData.mss} | FVGs: ${marketData.fvgCount} | Breakers: ${marketData.breakerCount}
-
-FIB LEVELS: 0%:$${marketData.fib0} 38%:$${marketData.fib382} 50%:$${marketData.fib500} 62%:$${marketData.fib618} 79%:$${marketData.fib786} 100%:$${marketData.fib100}
-
-RULES:
-1. If sell-side swept → BIAS LONG (look for buy entry at discount FVG/OTE)
-2. If buy-side swept → BIAS SHORT (look for sell entry at premium FVG/OTE)
-3. Entry at zone EDGE, not midpoint
-4. SL tight behind the sweep level
-5. TP at opposing liquidity or imbalance
+SCORING: Bull:${marketData.bS} Bear:${marketData.sS} | Bias:${marketData.detectedDir}
+ENTRY: ${marketData.zoneSrc} $${marketData.entryPrice} (${marketData.zoneLow}-${marketData.zoneHigh})
+IMBALANCES: ${marketData.imbalances || 'None'}
+MSS: ${marketData.mss} | FVGs:${marketData.fvgCount} | Breakers:${marketData.breakerCount}
 
 Return JSON:
-{"signal":"BUY/SELL/NEUTRAL","confidence":0-100,"entryPrice":#,"stopLoss":#,"takeProfit1":#,"takeProfit2":#,"takeProfit3":#,"reasoning":"Brief analysis including sweep detection","conviction":"HIGH/MEDIUM/LOW"}`;
+{"signal":"BUY/SELL/NEUTRAL","confidence":0-100,"entryPrice":#,"stopLoss":#,"takeProfit1":#,"takeProfit2":#,"takeProfit3":#,"reasoning":"Brief"}`;
 
     try {
-        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are an elite ICT sniper who understands liquidity sweeps. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.15,max_tokens:800})});
+        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You respect MTF alignment. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.15,max_tokens:800})});
         const d = await r.json();
         if (d.choices?.[0]) { const m = d.choices[0].message.content.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); }
         if (d.error) console.error('AI error:', d.error);
@@ -301,7 +295,7 @@ async function runAnalysis() {
     const btn = document.getElementById('analyzeBtn');
     btn.classList.add('loading'); btn.disabled = true;
     if (!TWELVE_DATA_KEY) { showNotif('⚠️ Set Twelve Data key!','error'); btn.classList.remove('loading'); btn.disabled=false; return; }
-    showNotif('🔍 Scanning sweeps...','info');
+    showNotif('🔍 Scanning...','info');
     
     try {
         const price = await getPrice(); if (!price) throw new Error('No price');
@@ -311,38 +305,46 @@ async function runAnalysis() {
         const sig = score(data, price);
         if (!sig.zone) throw new Error('No entry zone');
         
+        // Get MTF consensus
+        const mtf5 = document.getElementById('trend5M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--';
+        const mtf15 = document.getElementById('trend15M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--';
+        const mtf1h = document.getElementById('trend1H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--';
+        const mtf4h = document.getElementById('trend4H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--';
+        
+        // Count MTF alignment
+        let bullCount=0, bearCount=0;
+        [mtf5,mtf15,mtf1h,mtf4h].forEach(t=>{if(t==='Bull')bullCount++;if(t==='Bear')bearCount++;});
+        const mtfConsensus = bullCount>=3?'STRONG BULL':(bearCount>=3?'STRONG BEAR':(bullCount>bearCount?'Weak Bull':'Weak Bear'));
+        
+        // MTF penalty: if all TFs oppose the signal direction, reduce confidence
+        let mtfPenalty = 0;
+        if (sig.dir==='BUY' && bearCount>=3) mtfPenalty = 25;
+        if (sig.dir==='SELL' && bullCount>=3) mtfPenalty = 25;
+        if (sig.dir==='BUY' && bearCount===2) mtfPenalty = 10;
+        if (sig.dir==='SELL' && bullCount===2) mtfPenalty = 10;
+        
         const slResult = calcStopLoss(data, sig.dir, sig.zone.p, sig.zone);
         const imbalances = findImbalances(data);
-        const swings = findSwings(data, 4);
         
         const recentHigh = Math.max(...data.slice(-20).map(c=>c.h));
         const recentLow = Math.min(...data.slice(-20).map(c=>c.l));
         const range = recentHigh - recentLow;
         
-        // Format sweeps for AI
         const sweepsText = sig.sweeps.length > 0 
-            ? sig.sweeps.map(s => `- ${s.type}: ${s.message} at $${s.level.toFixed(2)}`).join('\n')
-            : 'No liquidity sweeps detected';
-        
-        const imbalancesText = imbalances.length > 0
-            ? imbalances.map(i => `- ${i.type}: ${i.message} at $${i.low.toFixed(2)}-$${i.high.toFixed(2)}`).join('\n')
-            : 'No imbalances detected';
+            ? sig.sweeps.slice(0,3).map(s => `- ${s.type}: ${s.message} at $${s.level.toFixed(2)} (${s.distance.toFixed(0)} away)`).join('\n')
+            : 'No nearby sweeps';
         
         const marketData = {
             price: price.toFixed(2), bS: sig.scores.bS, sS: sig.scores.sS,
             detectedDir: sig.dir,
+            mtfConsensus, mtf5, mtf15, mtf1h: mtf1h, mtf4h: mtf4h,
             sweeps: sweepsText,
-            imbalances: imbalancesText,
+            imbalances: imbalances.length>0?imbalances.map(i=>`${i.type}: $${i.low.toFixed(2)}-$${i.high.toFixed(2)}`).join('; '):'None',
             zoneSrc: sig.zone.src, entryPrice: sig.zone.p.toFixed(2),
             zoneLow: sig.zone.l.toFixed(2), zoneHigh: sig.zone.h.toFixed(2),
             suggestedSL: slResult.price.toFixed(2),
-            mtf5: document.getElementById('trend5M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
-            mtf15: document.getElementById('trend15M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
-            mtf1H: document.getElementById('trend1H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
-            mtf4H: document.getElementById('trend4H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
-            mss: detectMSS(data) ? `${detectMSS(data).type} at ${detectMSS(data).level.toFixed(2)}` : 'None',
-            fvgCount: detectFVG(data).length,
-            breakerCount: detectBreakers(data).length,
+            mss: detectMSS(data)?`${detectMSS(data).type} at ${detectMSS(data).level.toFixed(2)}`:'None',
+            fvgCount: detectFVG(data).length, breakerCount: detectBreakers(data).length,
             fib0: recentLow.toFixed(2), fib382: (recentLow+range*.382).toFixed(2),
             fib500: (recentLow+range*.5).toFixed(2), fib618: (recentLow+range*.618).toFixed(2),
             fib786: (recentLow+range*.786).toFixed(2), fib100: recentHigh.toFixed(2)
@@ -350,20 +352,33 @@ async function runAnalysis() {
         
         const ai = await askAI(marketData);
         
-        let dir, conf, entry, sl, tp1, tp2, tp3, reason, src, conviction;
+        let dir, conf, entry, sl, tp1, tp2, tp3, reason, src;
         
         if (ai && (ai.signal==='BUY'||ai.signal==='SELL')) {
             dir = ai.signal; conf = ai.confidence||70; entry = ai.entryPrice||sig.zone.p;
-            sl = ai.stopLoss||slResult.price; tp1 = ai.takeProfit1; tp2 = ai.takeProfit2; tp3 = ai.takeProfit3;
-            reason = ai.reasoning||'AI signal'; conviction = ai.conviction||'MEDIUM'; src = 'AI';
+            
+            // ENFORCE SL CAP on AI's stop loss
+            const rawSL = ai.stopLoss || slResult.price;
+            const cappedSL = enforceSLCap(rawSL, entry, dir === 'BUY' ? 'BUY' : 'SELL');
+            sl = cappedSL.price;
+            
+            tp1 = ai.takeProfit1; tp2 = ai.takeProfit2; tp3 = ai.takeProfit3;
+            reason = ai.reasoning||'AI signal'; src = 'AI';
+            
+            // Apply MTF penalty
+            conf = Math.max(conf - mtfPenalty, 30);
+            if (cappedSL.capped) reason += ' [SL capped]';
+            if (mtfPenalty > 0) reason += ` [MTF penalty: -${mtfPenalty}]`;
         } else {
-            dir = sig.dir; conf = sig.conf; entry = sig.zone.p; sl = slResult.price;
+            dir = sig.dir; entry = sig.zone.p; sl = slResult.price;
+            conf = Math.max(sig.conf - mtfPenalty, 30);
             const risk = Math.abs(entry-sl);
             tp1 = dir==='BUY'?entry+risk*2:entry-risk*2;
             tp2 = dir==='BUY'?entry+risk*3.5:entry-risk*3.5;
             tp3 = dir==='BUY'?entry+risk*5:entry-risk*5;
             reason = sig.reason + ' | SL: ' + slResult.reason;
-            conviction = 'RULE-BASED'; src = sig.zone.src;
+            if (mtfPenalty > 0) reason += ` [MTF penalty: -${mtfPenalty}]`;
+            src = sig.zone.src;
         }
         
         const st = dir==='BUY'?'LONG':(dir==='SELL'?'SHORT':'NEUTRAL');
@@ -390,12 +405,12 @@ async function runAnalysis() {
                 take_profit_1: tp1, take_profit_2: tp2, take_profit_3: tp3,
                 risk_reward: rr, confidence: conf,
                 entry_source: src, ai_used: src==='AI',
-                conviction: conviction,
-                liquidity_sweeps: sig.sweeps.map(s => ({type: s.type, level: s.level, message: s.message})),
-                imbalances: imbalances.map(i => ({type: i.type, low: i.low, high: i.high})),
+                mtf_consensus: mtfConsensus,
+                mtf_penalty: mtfPenalty,
+                nearby_sweeps: sig.sweeps.slice(0,3).map(s => ({type:s.type,level:s.level,distance:s.distance})),
                 analysis: {
                     scoring: { bullish: sig.scores.bS, bearish: sig.scores.sS },
-                    multi_timeframe: { "5M":marketData.mtf5, "15M":marketData.mtf15, "1H":marketData.mtf1H, "4H":marketData.mtf4H },
+                    multi_timeframe: { "5M":mtf5, "15M":mtf15, "1H":mtf1h, "4H":mtf4h },
                     reasoning: reason
                 }
             }
@@ -404,7 +419,7 @@ async function runAnalysis() {
         document.getElementById('jsonOutput').innerHTML = JSON.stringify(out, null, 2);
         analysis = { signalType:st, idealEntry:entry, currentPrice:price, stopLoss:sl, takeProfit1:tp1, takeProfit2:tp2, takeProfit3:tp3, confidence:conf };
         document.getElementById('executeBtn').disabled = st==='NEUTRAL';
-        showNotif(src==='AI'?`🎯 AI: ${st} ${conf}% [${conviction}]`:`✅ ${st} ${conf}%`,'success');
+        showNotif(src==='AI'?`🎯 AI: ${st} ${conf}%`:`✅ ${st} ${conf}%`,'success');
     } catch(e) { console.error(e); showNotif('Error: '+e.message,'error'); }
     finally { btn.classList.remove('loading'); btn.disabled=false; }
 }
