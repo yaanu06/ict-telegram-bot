@@ -187,124 +187,77 @@ function detectBreakers(d) {
     return b;
 }
 
+function detectTrend(data) {
+    const closes = data.map(c=>c.c);
+    const e20 = ema(closes,20), e50 = ema(closes,50);
+    const cE20 = e20[e20.length-1], cE50 = e50[e50.length-1];
+    if (cE20 > cE50) return 'BULLISH';
+    if (cE20 < cE50) return 'BEARISH';
+    return 'NEUTRAL';
+}
+
 // ============================================
-// PROFESSIONAL STOP LOSS (FIXED - Tighter, Structure-Based)
+// STOP LOSS
 // ============================================
 function calcStopLoss(data, dir, entry, zone) {
     const a = atr(data, 14);
     const swings = findSwings(data, 4);
     const fvgs = detectFVG(data);
-    const currentPrice = data[data.length-1].c;
     
-    // Maximum SL distance as % of entry
     const maxSLPercent = isGold(pair) ? 0.008 : (isForex(pair) ? 0.003 : 0.015);
     const maxSLDistance = entry * maxSLPercent;
     
     if (dir === 'BUY') {
-        // Priority 1: Nearest swing low just below entry
-        const swingLows = swings.L.filter(s => s.p < entry && s.p > entry - maxSLDistance*2)
-                         .sort((a,b) => b.p - a.p);
+        const swingLows = swings.L.filter(s => s.p < entry && s.p > entry - maxSLDistance*2).sort((a,b) => b.p - a.p);
+        const bullFVGs = fvgs.filter(f => f.type==='bull' && f.l < entry && f.l > entry - maxSLDistance*2).sort((a,b) => b.l - a.l);
         
-        // Priority 2: Bullish FVG low
-        const bullFVGs = fvgs.filter(f => f.type==='bull' && f.l < entry && f.l > entry - maxSLDistance*2)
-                         .sort((a,b) => b.l - a.l);
-        
-        // Priority 3: Zone low
         let stopPrice = null, stopReason = '';
         
         if (swingLows.length > 0) {
-            const nearestSwing = swingLows[0];
-            const buffer = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
-            const proposedSL = nearestSwing.p - buffer;
-            
-            // Check if SL is too far
-            if (entry - proposedSL <= maxSLDistance) {
-                stopPrice = proposedSL;
-                stopReason = `Below swing ${nearestSwing.p.toFixed(getPrec(pair))}`;
-            }
+            const buf = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
+            const pSL = swingLows[0].p - buf;
+            if (entry - pSL <= maxSLDistance) { stopPrice = pSL; stopReason = `Below swing ${swingLows[0].p.toFixed(getPrec(pair))}`; }
         }
-        
         if (!stopPrice && bullFVGs.length > 0) {
-            const nearestFVG = bullFVGs[0];
-            const buffer = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15);
-            const proposedSL = nearestFVG.l - buffer;
-            
-            if (entry - proposedSL <= maxSLDistance) {
-                stopPrice = proposedSL;
-                stopReason = `Below FVG ${nearestFVG.l.toFixed(getPrec(pair))}`;
-            }
+            const buf = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15);
+            const pSL = bullFVGs[0].l - buf;
+            if (entry - pSL <= maxSLDistance) { stopPrice = pSL; stopReason = `Below FVG ${bullFVGs[0].l.toFixed(getPrec(pair))}`; }
         }
-        
         if (!stopPrice && zone) {
-            const buffer = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
-            const proposedSL = zone.l - buffer;
-            
-            if (entry - proposedSL <= maxSLDistance) {
-                stopPrice = proposedSL;
-                stopReason = `Below zone ${zone.l.toFixed(getPrec(pair))}`;
-            }
+            const buf = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
+            const pSL = zone.l - buf;
+            if (entry - pSL <= maxSLDistance) { stopPrice = pSL; stopReason = `Below zone ${zone.l.toFixed(getPrec(pair))}`; }
         }
-        
-        // Fallback: Use ATR-based but capped
         if (!stopPrice) {
-            const atrStop = entry - (isGold(pair) ? a * 0.8 : a * 0.6);
-            const percentStop = entry - maxSLDistance;
-            stopPrice = Math.max(atrStop, percentStop);
+            stopPrice = Math.max(entry - a * 0.8, entry - maxSLDistance);
             stopReason = `Capped at ${(maxSLPercent*100).toFixed(1)}%`;
         }
-        
         return { price: stopPrice, reason: stopReason };
-        
     } else {
-        // Priority 1: Nearest swing high just above entry
-        const swingHighs = swings.H.filter(s => s.p > entry && s.p < entry + maxSLDistance*2)
-                          .sort((a,b) => a.p - b.p);
-        
-        // Priority 2: Bearish FVG high
-        const bearFVGs = fvgs.filter(f => f.type==='bear' && f.h > entry && f.h < entry + maxSLDistance*2)
-                        .sort((a,b) => a.h - b.h);
+        const swingHighs = swings.H.filter(s => s.p > entry && s.p < entry + maxSLDistance*2).sort((a,b) => a.p - b.p);
+        const bearFVGs = fvgs.filter(f => f.type==='bear' && f.h > entry && f.h < entry + maxSLDistance*2).sort((a,b) => a.h - b.h);
         
         let stopPrice = null, stopReason = '';
         
         if (swingHighs.length > 0) {
-            const nearestSwing = swingHighs[0];
-            const buffer = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
-            const proposedSL = nearestSwing.p + buffer;
-            
-            if (proposedSL - entry <= maxSLDistance) {
-                stopPrice = proposedSL;
-                stopReason = `Above swing ${nearestSwing.p.toFixed(getPrec(pair))}`;
-            }
+            const buf = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
+            const pSL = swingHighs[0].p + buf;
+            if (pSL - entry <= maxSLDistance) { stopPrice = pSL; stopReason = `Above swing ${swingHighs[0].p.toFixed(getPrec(pair))}`; }
         }
-        
         if (!stopPrice && bearFVGs.length > 0) {
-            const nearestFVG = bearFVGs[0];
-            const buffer = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15);
-            const proposedSL = nearestFVG.h + buffer;
-            
-            if (proposedSL - entry <= maxSLDistance) {
-                stopPrice = proposedSL;
-                stopReason = `Above FVG ${nearestFVG.h.toFixed(getPrec(pair))}`;
-            }
+            const buf = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15);
+            const pSL = bearFVGs[0].h + buf;
+            if (pSL - entry <= maxSLDistance) { stopPrice = pSL; stopReason = `Above FVG ${bearFVGs[0].h.toFixed(getPrec(pair))}`; }
         }
-        
         if (!stopPrice && zone) {
-            const buffer = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
-            const proposedSL = zone.h + buffer;
-            
-            if (proposedSL - entry <= maxSLDistance) {
-                stopPrice = proposedSL;
-                stopReason = `Above zone ${zone.h.toFixed(getPrec(pair))}`;
-            }
+            const buf = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2);
+            const pSL = zone.h + buf;
+            if (pSL - entry <= maxSLDistance) { stopPrice = pSL; stopReason = `Above zone ${zone.h.toFixed(getPrec(pair))}`; }
         }
-        
         if (!stopPrice) {
-            const atrStop = entry + (isGold(pair) ? a * 0.8 : a * 0.6);
-            const percentStop = entry + maxSLDistance;
-            stopPrice = Math.min(atrStop, percentStop);
+            stopPrice = Math.min(entry + a * 0.8, entry + maxSLDistance);
             stopReason = `Capped at ${(maxSLPercent*100).toFixed(1)}%`;
         }
-        
         return { price: stopPrice, reason: stopReason };
     }
 }
@@ -358,27 +311,109 @@ async function updateMTF() {
 }
 
 // ============================================
-// AI
+// ADVANCED AI - SNIPER LOGIC
 // ============================================
 async function askAI(marketData) {
     if (!DEEPSEEK_API_KEY) return null;
     showNotif('🤖 AI analyzing...','info');
     
-    const prompt = `ICT trader. Return JSON.
-${pair} ${tf} Price:${marketData.price}
-Bull:${marketData.bS} Bear:${marketData.sS}
-Entry:${marketData.zoneSrc} $${marketData.entryPrice}
-SL suggestion:$${marketData.suggestedSL}
-MTF:5M=${marketData.mtf5} 15M=${marketData.mtf15} 1H=${marketData.mtf1H} 4H=${marketData.mtf4H}
-Return:{"signal":"BUY/SELL/NEUTRAL","confidence":0-100,"entryPrice":#,"stopLoss":#,"takeProfit1":#,"takeProfit2":#,"takeProfit3":#,"reasoning":"..."}
-IMPORTANT: SL must be LESS than TP distance from entry. Minimum 1:2 R:R.`;
+    const prompt = `You are an ELITE SNIPER trader using ICT (Inner Circle Trader) concepts. Your job is to find the MOST PRECISE limit order entry possible. You are PATIENT and wait for price to come to you.
+
+CONTEXT:
+- Pair: ${pair}
+- Timeframe: ${tf}
+- Current Price: $${marketData.price}
+
+SCORING (Bot's Analysis):
+- Bullish Score: ${marketData.bS}/100
+- Bearish Score: ${marketData.sS}/100
+- Detected Direction: ${marketData.detectedDir}
+- Entry Zone Source: ${marketData.zoneSrc}
+- Entry Zone Price: $${marketData.entryPrice}
+- Zone Low: $${marketData.zoneLow}
+- Zone High: $${marketData.zoneHigh}
+- Suggested Stop Loss: $${marketData.suggestedSL}
+- Stop Loss Reason: ${marketData.slReason}
+
+MULTI-TIMEFRAME CONTEXT:
+- 5M Trend: ${marketData.mtf5}
+- 15M Trend: ${marketData.mtf15}
+- 1H Trend: ${marketData.mtf1H}
+- 4H Trend: ${marketData.mtf4H}
+
+MARKET STRUCTURE:
+- MSS (Market Structure Shift): ${marketData.mss || 'None detected'}
+- FVGs Found: ${marketData.fvgCount}
+- Breaker Blocks: ${marketData.breakerCount}
+- Recent Swing High: $${marketData.swingHigh}
+- Recent Swing Low: $${marketData.swingLow}
+- RSI: ${marketData.rsi}
+- ATR: ${marketData.atr}
+
+FIBONACCI LEVELS (from recent swing):
+- 0%: $${marketData.fib0}
+- 38.2%: $${marketData.fib382}
+- 50%: $${marketData.fib500}
+- 61.8%: $${marketData.fib618}
+- 78.6%: $${marketData.fib786}
+- 100%: $${marketData.fib100}
+
+SNIPER RULES YOU MUST FOLLOW:
+1. Entry MUST be at a PRECISE level - FVG edge, Breaker block, or OTE zone boundary. NOT in the middle of a zone.
+2. Stop Loss must be TIGHT but logical - just beyond the nearest swing point that invalidates the trade.
+3. Take Profit should target opposing liquidity or key fib levels.
+4. If trends on 1H and 4H agree with the direction, increase confidence.
+5. If only 15M agrees but 1H/4H disagree, reduce confidence but still give the signal.
+6. Minimum Risk:Reward ratio of 1:2. Prefer 1:3 or better.
+7. For SNIPER entries on gold (XAU/USD), entry precision should be within $1-2 of the zone edge.
+
+YOUR RESPONSE MUST BE ONLY THIS JSON (no other text):
+{
+    "signal": "BUY" or "SELL" or "NEUTRAL",
+    "confidence": 0-100,
+    "entryPrice": number (precise sniper entry),
+    "stopLoss": number (tight, logical),
+    "takeProfit1": number (first target),
+    "takeProfit2": number (second target),
+    "takeProfit3": number (third target),
+    "entryReason": "Why this exact entry price was chosen (mention FVG/OTE/Breaker)",
+    "slReason": "Why stop loss is placed here",
+    "conviction": "HIGH/MEDIUM/LOW - your confidence level in this setup"
+}`;
 
     try {
-        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.2,max_tokens:600})});
+        const r = await fetch(DEEPSEEK_API_URL, {
+            method:'POST',
+            headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},
+            body:JSON.stringify({
+                model:'deepseek-chat',
+                messages:[
+                    {role:'system',content:'You are an elite sniper trader. You only take high-precision entries at exact zone boundaries. Return ONLY valid JSON with no other text.'},
+                    {role:'user',content:prompt}
+                ],
+                temperature:0.15,
+                max_tokens:800
+            })
+        });
         const d = await r.json();
-        if (d.choices?.[0]) { const m = d.choices[0].message.content.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); }
-        if (d.error) console.error('AI error:', d.error);
-    } catch(e) { console.error('AI fetch error:', e); }
+        
+        if (d.choices?.[0]) {
+            const content = d.choices[0].message.content;
+            console.log('📝 AI raw:', content.substring(0,200));
+            const m = content.match(/\{[\s\S]*\}/);
+            if (m) {
+                const parsed = JSON.parse(m[0]);
+                console.log('✅ AI parsed successfully');
+                return parsed;
+            }
+        }
+        if (d.error) {
+            console.error('❌ AI error:', d.error);
+            showNotif('AI: ' + (d.error.message||'Error'),'warning');
+        }
+    } catch(e) {
+        console.error('❌ AI fetch:', e);
+    }
     return null;
 }
 
@@ -396,36 +431,91 @@ async function runAnalysis() {
         await updateMTF();
         const data = await getHistory(); if (!data?.length) throw new Error('No data');
         
+        // Get additional data for AI context
+        const d1h = await getHistory('1H');
+        const d4h = await getHistory('4H');
+        const swings = findSwings(data, 4);
+        const fvgs = detectFVG(data);
+        const breakers = detectBreakers(data);
+        const mss = detectMSS(data);
+        const a = atr(data,14);
+        const cl = data.map(c=>c.c);
+        const rs = rsi(cl,14);
+        
+        // Calculate fib levels
+        const recentHigh = Math.max(...data.slice(-20).map(c=>c.h));
+        const recentLow = Math.min(...data.slice(-20).map(c=>c.l));
+        const range = recentHigh - recentLow;
+        
         const sig = score(data, price);
-        if (!sig.zone) throw new Error('No entry zone');
+        if (!sig.zone) throw new Error('No entry zone detected');
         
         const slResult = calcStopLoss(data, sig.dir, sig.zone.p, sig.zone);
         
+        // Nearest swing points
+        const nearestSwingLow = swings.L.filter(s=>s.p<price).sort((a,b)=>b.p-a.p)[0];
+        const nearestSwingHigh = swings.H.filter(s=>s.p>price).sort((a,b)=>a.p-b.p)[0];
+        
+        // Build comprehensive market data for AI
         const marketData = {
-            price: price.toFixed(2), bS: sig.scores.bS, sS: sig.scores.sS,
+            price: price.toFixed(2),
+            bS: sig.scores.bS, sS: sig.scores.sS,
+            detectedDir: sig.dir,
             zoneSrc: sig.zone.src, entryPrice: sig.zone.p.toFixed(2),
+            zoneLow: sig.zone.l.toFixed(2), zoneHigh: sig.zone.h.toFixed(2),
             suggestedSL: slResult.price.toFixed(2),
+            slReason: slResult.reason,
             mtf5: document.getElementById('trend5M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
             mtf15: document.getElementById('trend15M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
             mtf1H: document.getElementById('trend1H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
-            mtf4H: document.getElementById('trend4H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--'
+            mtf4H: document.getElementById('trend4H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--',
+            mss: mss ? `${mss.type} at ${mss.level.toFixed(2)}` : 'None',
+            fvgCount: fvgs.length,
+            breakerCount: breakers.length,
+            swingHigh: nearestSwingHigh ? nearestSwingHigh.p.toFixed(2) : 'N/A',
+            swingLow: nearestSwingLow ? nearestSwingLow.p.toFixed(2) : 'N/A',
+            rsi: rs.toFixed(1),
+            atr: a.toFixed(2),
+            fib0: recentLow.toFixed(2),
+            fib382: (recentLow+range*.382).toFixed(2),
+            fib500: (recentLow+range*.5).toFixed(2),
+            fib618: (recentLow+range*.618).toFixed(2),
+            fib786: (recentLow+range*.786).toFixed(2),
+            fib100: recentHigh.toFixed(2)
         };
         
+        // Call AI with full context
         const ai = await askAI(marketData);
         
-        let dir, conf, entry, sl, tp1, tp2, tp3, reason, src;
+        let dir, conf, entry, sl, tp1, tp2, tp3, reason, src, conviction;
         
         if (ai && (ai.signal==='BUY'||ai.signal==='SELL')) {
-            dir = ai.signal; conf = ai.confidence||70; entry = ai.entryPrice||sig.zone.p;
-            sl = ai.stopLoss||slResult.price; tp1 = ai.takeProfit1; tp2 = ai.takeProfit2; tp3 = ai.takeProfit3;
-            reason = '🤖 AI: '+ (ai.reasoning||'AI signal'); src = 'AI';
+            // AI SNIPER SIGNAL
+            dir = ai.signal;
+            conf = ai.confidence || 70;
+            entry = ai.entryPrice || sig.zone.p;
+            sl = ai.stopLoss || slResult.price;
+            tp1 = ai.takeProfit1;
+            tp2 = ai.takeProfit2;
+            tp3 = ai.takeProfit3;
+            reason = ai.entryReason || 'AI sniper entry';
+            conviction = ai.conviction || 'MEDIUM';
+            src = 'AI';
+            console.log('✅ Using AI sniper signal');
         } else {
-            dir = sig.dir; conf = sig.conf; entry = sig.zone.p; sl = slResult.price;
+            // Fallback
+            dir = sig.dir;
+            conf = sig.conf;
+            entry = sig.zone.p;
+            sl = slResult.price;
             const risk = Math.abs(entry-sl);
-            tp1 = dir==='BUY'?entry+risk*2:entry-risk*2;      // 1:2 R:R
-            tp2 = dir==='BUY'?entry+risk*3.5:entry-risk*3.5;  // 1:3.5 R:R
-            tp3 = dir==='BUY'?entry+risk*5:entry-risk*5;      // 1:5 R:R
-            reason = sig.reason + ' | SL: ' + slResult.reason; src = sig.zone.src;
+            tp1 = dir==='BUY'?entry+risk*2:entry-risk*2;
+            tp2 = dir==='BUY'?entry+risk*3.5:entry-risk*3.5;
+            tp3 = dir==='BUY'?entry+risk*5:entry-risk*5;
+            reason = sig.reason + ' | SL: ' + slResult.reason;
+            conviction = 'RULE-BASED';
+            src = sig.zone.src;
+            console.log('⚠️ Using rule-based fallback');
         }
         
         const st = dir==='BUY'?'LONG':(dir==='SELL'?'SHORT':'NEUTRAL');
@@ -453,9 +543,11 @@ async function runAnalysis() {
                 take_profit_1: tp1, take_profit_2: tp2, take_profit_3: tp3,
                 risk_reward: rr, confidence: conf,
                 entry_source: src, ai_used: src==='AI',
+                conviction: conviction,
                 analysis: {
                     scoring: { bullish: sig.scores.bS, bearish: sig.scores.sS },
                     multi_timeframe: { "5M":marketData.mtf5, "15M":marketData.mtf15, "1H":marketData.mtf1H, "4H":marketData.mtf4H },
+                    market_structure: { mss: marketData.mss, fvg_count: marketData.fvgCount, breaker_count: marketData.breakerCount },
                     reasoning: reason
                 }
             }
@@ -464,7 +556,10 @@ async function runAnalysis() {
         document.getElementById('jsonOutput').innerHTML = JSON.stringify(out, null, 2);
         analysis = { signalType:st, idealEntry:entry, currentPrice:price, stopLoss:sl, takeProfit1:tp1, takeProfit2:tp2, takeProfit3:tp3, confidence:conf };
         document.getElementById('executeBtn').disabled = st==='NEUTRAL';
-        showNotif(src==='AI'?`✅ AI: ${st} ${conf}%`:`⚠️ Rule: ${st} ${conf}%`,'success');
+        
+        const notifMsg = src==='AI' ? `🎯 AI Sniper: ${st} ${conf}% [${conviction}]` : `⚠️ Rule: ${st} ${conf}%`;
+        showNotif(notifMsg, 'success');
+        
     } catch(e) { console.error(e); showNotif('Error: '+e.message,'error'); }
     finally { btn.classList.remove('loading'); btn.disabled=false; }
 }
