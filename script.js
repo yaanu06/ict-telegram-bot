@@ -76,7 +76,7 @@ function detectBreakers(d){let b=[],s=findSwings(d);for(let i=5;i<d.length-5;i++
 function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
 
 // ============================================
-// LIQUIDITY SWEEP DETECTION (FILTERED BY PROXIMITY)
+// LIQUIDITY SWEEPS (Filtered by proximity)
 // ============================================
 function detectLiquiditySweeps(data, currentPrice) {
     const sweeps = [];
@@ -84,7 +84,7 @@ function detectLiquiditySweeps(data, currentPrice) {
     const lows = data.map(c => c.l);
     const closes = data.map(c => c.c);
     const a = atr(data, 14);
-    const maxDistance = a * 3; // Only sweeps within 3 ATR of current price
+    const maxDistance = a * 3;
     
     for (let i = 10; i < data.length - 3; i++) {
         const recentHighs = highs.slice(i-5, i);
@@ -94,17 +94,8 @@ function detectLiquiditySweeps(data, currentPrice) {
         
         if (equalHighCount >= 2 && Math.abs(maxHigh - currentPrice) <= maxDistance) {
             const nextCandles = data.slice(i, i+4);
-            const sweptAbove = nextCandles.some(c => c.h > maxHigh + tolerance);
-            const closedBelow = closes[i+3] < maxHigh;
-            
-            if (sweptAbove && closedBelow) {
-                sweeps.push({
-                    type: 'BUY_SIDE_SWEPT',
-                    level: maxHigh,
-                    distance: Math.abs(maxHigh - currentPrice),
-                    message: 'Buy-side swept - POTENTIAL SHORT',
-                    direction: 'BEARISH'
-                });
+            if (nextCandles.some(c => c.h > maxHigh + tolerance) && closes[i+3] < maxHigh) {
+                sweeps.push({type:'BUY_SIDE_SWEPT',level:maxHigh,distance:Math.abs(maxHigh-currentPrice),direction:'BEARISH'});
             }
         }
         
@@ -115,40 +106,25 @@ function detectLiquiditySweeps(data, currentPrice) {
         
         if (equalLowCount >= 2 && Math.abs(minLow - currentPrice) <= maxDistance) {
             const nextCandles = data.slice(i, i+4);
-            const sweptBelow = nextCandles.some(c => c.l < minLow - lowTolerance);
-            const closedAbove = closes[i+3] > minLow;
-            
-            if (sweptBelow && closedAbove) {
-                sweeps.push({
-                    type: 'SELL_SIDE_SWEPT',
-                    level: minLow,
-                    distance: Math.abs(minLow - currentPrice),
-                    message: 'Sell-side swept - POTENTIAL LONG',
-                    direction: 'BULLISH'
-                });
+            if (nextCandles.some(c => c.l < minLow - lowTolerance) && closes[i+3] > minLow) {
+                sweeps.push({type:'SELL_SIDE_SWEPT',level:minLow,distance:Math.abs(minLow-currentPrice),direction:'BULLISH'});
             }
         }
     }
-    
-    // Sort by closest to current price, return most relevant
     return sweeps.sort((a,b) => a.distance - b.distance);
 }
 
 function findImbalances(data) {
     const imbalances = [];
     for (let i = 1; i < data.length - 1; i++) {
-        if (data[i-1].l > data[i+1].h) {
-            imbalances.push({type:'BULLISH_IMBALANCE',low:data[i+1].h,high:data[i-1].l});
-        }
-        if (data[i-1].h < data[i+1].l) {
-            imbalances.push({type:'BEARISH_IMBALANCE',low:data[i-1].h,high:data[i+1].l});
-        }
+        if (data[i-1].l > data[i+1].h) imbalances.push({type:'BULLISH_IMBALANCE',low:data[i+1].h,high:data[i-1].l});
+        if (data[i-1].h < data[i+1].l) imbalances.push({type:'BEARISH_IMBALANCE',low:data[i-1].h,high:data[i+1].l});
     }
     return imbalances.slice(-5);
 }
 
 // ============================================
-// STOP LOSS (ENFORCED CAP)
+// STOP LOSS (Capped)
 // ============================================
 function calcStopLoss(data, dir, entry, zone) {
     const a = atr(data, 14);
@@ -161,44 +137,35 @@ function calcStopLoss(data, dir, entry, zone) {
         const swingLows = swings.L.filter(s => s.p < entry && s.p > entry - maxSLDistance*2).sort((a,b) => b.p - a.p);
         const bullFVGs = fvgs.filter(f => f.type==='bull' && f.l < entry && f.l > entry - maxSLDistance*2).sort((a,b) => b.l - a.l);
         let stopPrice = null, stopReason = '';
-        if (swingLows.length > 0) { const buf = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2); const pSL = swingLows[0].p - buf; if (entry - pSL <= maxSLDistance) { stopPrice = pSL; stopReason = `Below swing ${swingLows[0].p.toFixed(getPrec(pair))}`; } }
-        if (!stopPrice && bullFVGs.length > 0) { const buf = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15); const pSL = bullFVGs[0].l - buf; if (entry - pSL <= maxSLDistance) { stopPrice = pSL; stopReason = `Below FVG ${bullFVGs[0].l.toFixed(getPrec(pair))}`; } }
-        if (!stopPrice && zone) { const buf = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2); const pSL = zone.l - buf; if (entry - pSL <= maxSLDistance) { stopPrice = pSL; stopReason = `Below zone ${zone.l.toFixed(getPrec(pair))}`; } }
-        if (!stopPrice) { stopPrice = Math.max(entry - a * 0.8, entry - maxSLDistance); stopReason = `Capped at ${(maxSLPercent*100).toFixed(1)}%`; }
+        if (swingLows.length > 0) { const buf = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15); const pSL = swingLows[0].p - buf; if (entry - pSL <= maxSLDistance) { stopPrice = pSL; stopReason = `Below swing ${swingLows[0].p.toFixed(getPrec(pair))}`; } }
+        if (!stopPrice && bullFVGs.length > 0) { const buf = isGold(pair) ? 1.5 : (isForex(pair) ? a * 0.15 : a * 0.1); const pSL = bullFVGs[0].l - buf; if (entry - pSL <= maxSLDistance) { stopPrice = pSL; stopReason = `Below FVG ${bullFVGs[0].l.toFixed(getPrec(pair))}`; } }
+        if (!stopPrice && zone) { const buf = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15); const pSL = zone.l - buf; if (entry - pSL <= maxSLDistance) { stopPrice = pSL; stopReason = `Below zone ${zone.l.toFixed(getPrec(pair))}`; } }
+        if (!stopPrice) { stopPrice = Math.max(entry - a * 0.7, entry - maxSLDistance); stopReason = `Capped at ${(maxSLPercent*100).toFixed(1)}%`; }
         return { price: stopPrice, reason: stopReason };
     } else {
         const swingHighs = swings.H.filter(s => s.p > entry && s.p < entry + maxSLDistance*2).sort((a,b) => a.p - b.p);
         const bearFVGs = fvgs.filter(f => f.type==='bear' && f.h > entry && f.h < entry + maxSLDistance*2).sort((a,b) => a.h - b.h);
         let stopPrice = null, stopReason = '';
-        if (swingHighs.length > 0) { const buf = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2); const pSL = swingHighs[0].p + buf; if (pSL - entry <= maxSLDistance) { stopPrice = pSL; stopReason = `Above swing ${swingHighs[0].p.toFixed(getPrec(pair))}`; } }
-        if (!stopPrice && bearFVGs.length > 0) { const buf = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15); const pSL = bearFVGs[0].h + buf; if (pSL - entry <= maxSLDistance) { stopPrice = pSL; stopReason = `Above FVG ${bearFVGs[0].h.toFixed(getPrec(pair))}`; } }
-        if (!stopPrice && zone) { const buf = isGold(pair) ? 3 : (isForex(pair) ? a * 0.3 : a * 0.2); const pSL = zone.h + buf; if (pSL - entry <= maxSLDistance) { stopPrice = pSL; stopReason = `Above zone ${zone.h.toFixed(getPrec(pair))}`; } }
-        if (!stopPrice) { stopPrice = Math.min(entry + a * 0.8, entry + maxSLDistance); stopReason = `Capped at ${(maxSLPercent*100).toFixed(1)}%`; }
+        if (swingHighs.length > 0) { const buf = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15); const pSL = swingHighs[0].p + buf; if (pSL - entry <= maxSLDistance) { stopPrice = pSL; stopReason = `Above swing ${swingHighs[0].p.toFixed(getPrec(pair))}`; } }
+        if (!stopPrice && bearFVGs.length > 0) { const buf = isGold(pair) ? 1.5 : (isForex(pair) ? a * 0.15 : a * 0.1); const pSL = bearFVGs[0].h + buf; if (pSL - entry <= maxSLDistance) { stopPrice = pSL; stopReason = `Above FVG ${bearFVGs[0].h.toFixed(getPrec(pair))}`; } }
+        if (!stopPrice && zone) { const buf = isGold(pair) ? 2 : (isForex(pair) ? a * 0.2 : a * 0.15); const pSL = zone.h + buf; if (pSL - entry <= maxSLDistance) { stopPrice = pSL; stopReason = `Above zone ${zone.h.toFixed(getPrec(pair))}`; } }
+        if (!stopPrice) { stopPrice = Math.min(entry + a * 0.7, entry + maxSLDistance); stopReason = `Capped at ${(maxSLPercent*100).toFixed(1)}%`; }
         return { price: stopPrice, reason: stopReason };
     }
 }
 
-// ============================================
-// ENFORCE SL CAP ON ANY PRICE
-// ============================================
 function enforceSLCap(slPrice, entry, dir) {
     const maxSLPercent = isGold(pair) ? 0.008 : (isForex(pair) ? 0.003 : 0.015);
     const maxSLDistance = entry * maxSLPercent;
-    
-    if (dir === 'BUY') {
-        const minSL = entry - maxSLDistance;
-        if (slPrice < minSL) return { price: minSL, capped: true };
-    } else {
-        const maxSL = entry + maxSLDistance;
-        if (slPrice > maxSL) return { price: maxSL, capped: true };
-    }
+    if (dir === 'BUY') { const minSL = entry - maxSLDistance; if (slPrice < minSL) return { price: minSL, capped: true }; }
+    else { const maxSL = entry + maxSLDistance; if (slPrice > maxSL) return { price: maxSL, capped: true }; }
     return { price: slPrice, capped: false };
 }
 
 // ============================================
-// SIGNAL SCORING (Filtered sweeps + MTF penalty)
+// SIGNAL SCORING (TREND-FOLLOWING ENFORCED)
 // ============================================
-function score(data, price) {
+function score(data, price, mtfDirection, mtfStrength) {
     const a = atr(data), cl = data.map(c=>c.c), rs = rsi(cl);
     const fv = detectFVG(data), ms = detectMSS(data), bk = detectBreakers(data);
     const sweeps = detectLiquiditySweeps(data, price);
@@ -214,73 +181,118 @@ function score(data, price) {
     
     let bS=0, sS=0, bR=[], sR=[];
     
-    if (recentSellSweep) { bS += 30; bR.push(`Sell swept @ $${recentSellSweep.level.toFixed(2)}`); }
-    if (recentBuySweep) { sS += 30; sR.push(`Buy swept @ $${recentBuySweep.level.toFixed(2)}`); }
+    // TREND ALIGNMENT BONUS/PENALTY
+    if (mtfDirection === 'BULLISH') {
+        bS += 20; bR.push('MTF Bull trend');
+        if (mtfStrength >= 3) { bS += 10; bR.push('Strong trend'); }
+        // In bullish trend, sweeps CONFIRM direction
+        if (recentSellSweep) { bS += 25; bR.push(`Sweep confirms trend`); }
+    } else if (mtfDirection === 'BEARISH') {
+        sS += 20; sR.push('MTF Bear trend');
+        if (mtfStrength >= 3) { sS += 10; sR.push('Strong trend'); }
+        if (recentBuySweep) { sS += 25; sR.push(`Sweep confirms trend`); }
+    } else {
+        // Neutral MTF - sweeps determine direction
+        if (recentSellSweep) { bS += 30; bR.push(`Sell swept`); }
+        if (recentBuySweep) { sS += 30; sR.push(`Buy swept`); }
+    }
     
-    if(ms?.type==='BULL'){ bS+=20; bR.push('MSS Bull'); } else if(ms?.type==='BEAR'){ sS+=20; sR.push('MSS Bear'); }
+    if(ms?.type==='BULL'){ bS+=15; bR.push('MSS Bull'); } else if(ms?.type==='BEAR'){ sS+=15; sR.push('MSS Bear'); }
     if(bF.length){ bS+=15; bR.push(`FVG ${bF[0].l.toFixed(2)}`); }
     if(sF.length){ sS+=15; sR.push(`FVG ${sF[0].h.toFixed(2)}`); }
     if(bB.length){ bS+=10; bR.push('Breaker sup'); }
     if(sB.length){ sS+=10; sR.push('Breaker res'); }
-    if(cE20>cE50){ bS+=15; bR.push('EMA20>50'); } else { sS+=15; sR.push('EMA20<50'); }
-    if(rs>50) bS+=10; else sS+=10;
+    if(cE20>cE50){ bS+=10; } else { sS+=10; }
+    if(rs>50) bS+=5; else sS+=5;
     
+    // FORCE direction to match MTF if strong trend (3+ TFs)
     let dir, conf, zone, reason;
-    if(bS>sS&&bS>=40){ dir='BUY'; conf=Math.min(bS+10,95); reason=bR.join('; ');
-        if(bF.length) zone={p:bF[0].m,l:bF[0].l,h:bF[0].h,src:'FVG'};
-        else if(bB.length) zone={p:bB[0].p,l:bB[0].p-a*.5,h:bB[0].p+a*.5,src:'Breaker'};
-        else { let rL=Math.min(...data.slice(-20).map(c=>c.l)),rH=Math.max(...data.slice(-20).map(c=>c.h)),r=rH-rL; zone={p:rL+r*.7,l:rL+r*.618,h:rL+r*.79,src:'OTE'}; }
-    } else if(sS>bS&&sS>=40){ dir='SELL'; conf=Math.min(sS+10,95); reason=sR.join('; ');
-        if(sF.length) zone={p:sF[0].m,l:sF[0].l,h:sF[0].h,src:'FVG'};
-        else if(sB.length) zone={p:sB[0].p,l:sB[0].p-a*.5,h:sB[0].p+a*.5,src:'Breaker'};
-        else { let rL=Math.min(...data.slice(-20).map(c=>c.l)),rH=Math.max(...data.slice(-20).map(c=>c.h)),r=rH-rL; zone={p:rH-r*.3,l:rH-r*.382,h:rH-r*.5,src:'OTE'}; }
-    } else { dir='NEUTRAL'; conf=0; reason=`B:${bS} S:${sS}`; zone=null; }
+    
+    if (mtfStrength >= 3) {
+        // STRONG TREND - Force direction
+        dir = mtfDirection === 'BULLISH' ? 'BUY' : 'SELL';
+        conf = mtfDirection === 'BULLISH' ? Math.min(bS+15, 95) : Math.min(sS+15, 95);
+        reason = `STRONG ${mtfDirection} TREND | ` + (mtfDirection==='BULLISH'?bR.join('; '):sR.join('; '));
+        
+        if (dir === 'BUY') {
+            if(bF.length) zone={p:bF[0].m,l:bF[0].l,h:bF[0].h,src:'FVG'};
+            else if(bB.length) zone={p:bB[0].p,l:bB[0].p-a*.5,h:bB[0].p+a*.5,src:'Breaker'};
+            else { let rL=Math.min(...data.slice(-20).map(c=>c.l)),rH=Math.max(...data.slice(-20).map(c=>c.h)),r=rH-rL; zone={p:rL+r*.7,l:rL+r*.618,h:rL+r*.79,src:'OTE'}; }
+        } else {
+            if(sF.length) zone={p:sF[0].m,l:sF[0].l,h:sF[0].h,src:'FVG'};
+            else if(sB.length) zone={p:sB[0].p,l:sB[0].p-a*.5,h:sB[0].p+a*.5,src:'Breaker'};
+            else { let rL=Math.min(...data.slice(-20).map(c=>c.l)),rH=Math.max(...data.slice(-20).map(c=>c.h)),r=rH-rL; zone={p:rH-r*.3,l:rH-r*.382,h:rH-r*.5,src:'OTE'}; }
+        }
+    } else {
+        // Weak/Neutral trend - scoring decides
+        if(bS>sS&&bS>=40){ dir='BUY'; conf=Math.min(bS+10,90); reason=bR.join('; ');
+            if(bF.length) zone={p:bF[0].m,l:bF[0].l,h:bF[0].h,src:'FVG'};
+            else if(bB.length) zone={p:bB[0].p,l:bB[0].p-a*.5,h:bB[0].p+a*.5,src:'Breaker'};
+            else { let rL=Math.min(...data.slice(-20).map(c=>c.l)),rH=Math.max(...data.slice(-20).map(c=>c.h)),r=rH-rL; zone={p:rL+r*.7,l:rL+r*.618,h:rL+r*.79,src:'OTE'}; }
+        } else if(sS>bS&&sS>=40){ dir='SELL'; conf=Math.min(sS+10,90); reason=sR.join('; ');
+            if(sF.length) zone={p:sF[0].m,l:sF[0].l,h:sF[0].h,src:'FVG'};
+            else if(sB.length) zone={p:sB[0].p,l:sB[0].p-a*.5,h:sB[0].p+a*.5,src:'Breaker'};
+            else { let rL=Math.min(...data.slice(-20).map(c=>c.l)),rH=Math.max(...data.slice(-20).map(c=>c.h)),r=rH-rL; zone={p:rH-r*.3,l:rH-r*.382,h:rH-r*.5,src:'OTE'}; }
+        } else { dir='NEUTRAL'; conf=0; reason=`B:${bS} S:${sS}`; zone=null; }
+    }
     
     return {dir,conf,zone,reason,scores:{bS,sS},sweeps};
 }
 
 // ============================================
-// MULTI-TF
+// MULTI-TF & GET MTF CONSENSUS
 // ============================================
-async function updateMTF(){const tfs=['5M','15M','1H','4H'];for(let t of tfs){let d=await getHistory(t);if(!d||d.length<30)continue;let c=d.map(x=>x.c),tr=c[c.length-1]>c[c.length-20]?'bullish':(c[c.length-1]<c[c.length-20]?'bearish':'neutral');let el=document.getElementById(`trend${t}`);if(el){el.innerHTML=tr==='bullish'?'🟢 Bull':(tr==='bearish'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr}`;}}}
+async function getMTFConsensus() {
+    const tfs=['5M','15M','1H','4H'];
+    let bullCount=0, bearCount=0;
+    const trends={};
+    
+    for(let t of tfs){
+        let d=await getHistory(t); if(!d||d.length<30) continue;
+        let c=d.map(x=>x.c), tr=c[c.length-1]>c[c.length-20]?'BULLISH':(c[c.length-1]<c[c.length-20]?'BEARISH':'NEUTRAL');
+        trends[t]=tr;
+        if(tr==='BULLISH')bullCount++; else if(tr==='BEARISH')bearCount++;
+        let el=document.getElementById(`trend${t}`); if(el){ el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut'); el.className=`mtf-trend ${tr.toLowerCase()}`; }
+    }
+    
+    const direction = bullCount > bearCount ? 'BULLISH' : (bearCount > bullCount ? 'BEARISH' : 'NEUTRAL');
+    const strength = Math.max(bullCount, bearCount);
+    
+    return { direction, strength, bullCount, bearCount, trends };
+}
 
 // ============================================
-// ADVANCED AI WITH MTF AWARENESS
+// AI (TREND-FOLLOWING ENFORCED)
 // ============================================
 async function askAI(marketData) {
     if (!DEEPSEEK_API_KEY) return null;
     showNotif('🤖 AI analyzing...','info');
     
-    const prompt = `You are an ELITE ICT SNIPER. You respect multi-timeframe alignment.
+    const prompt = `You are an ELITE ICT SNIPER. You ONLY trade WITH the trend.
 
-CRITICAL RULES:
-1. If 3+ timeframes show same direction, you MUST trade that direction. Do NOT fight the trend.
-2. If 4H and 1H agree, you can trade. If they disagree, be cautious.
-3. Sell-side swept = BUY signal. Buy-side swept = SELL signal. These are highest priority.
-4. Entry at zone EDGE only (FVG boundary, breaker block, OTE edge).
-5. Stop loss MUST be within 0.8% for gold, 0.3% for forex. TIGHT and logical.
-6. If MTF opposes your signal, cap confidence at 50% and mention it.
+CRITICAL RULE: The market trend is ${marketData.mtfDirection} (${marketData.mtfStrength}/4 timeframes agree).
+You MUST only give ${marketData.mtfDirection === 'BULLISH' ? 'BUY' : (marketData.mtfDirection === 'BEARISH' ? 'SELL' : 'BUY or SELL')} signals.
+${marketData.mtfStrength >= 3 ? 'THIS IS A STRONG TREND. DO NOT FIGHT IT. Only give ' + (marketData.mtfDirection === 'BULLISH' ? 'BUY' : 'SELL') + ' signals.' : ''}
+
+For a ${marketData.mtfDirection === 'BULLISH' ? 'BUY (bullish trend)' : (marketData.mtfDirection === 'BEARISH' ? 'SELL (bearish trend)' : 'BUY or SELL')}:
+- Entry at discount FVG/OTE edge (wait for pullback into demand zone)
+- SL tight below the zone
+- TP at opposing liquidity above
 
 CONTEXT:
 - Pair: ${pair} | Timeframe: ${tf} | Price: $${marketData.price}
-
-MTF TRENDS:
-- 5M: ${marketData.mtf5} | 15M: ${marketData.mtf15} | 1H: ${marketData.mtf1H} | 4H: ${marketData.mtf4H}
-- MTF Consensus: ${marketData.mtfConsensus}
-
-SWEEPS (filtered, nearby only):
-${marketData.sweeps || 'No nearby sweeps'}
-
-SCORING: Bull:${marketData.bS} Bear:${marketData.sS} | Bias:${marketData.detectedDir}
-ENTRY: ${marketData.zoneSrc} $${marketData.entryPrice} (${marketData.zoneLow}-${marketData.zoneHigh})
-IMBALANCES: ${marketData.imbalances || 'None'}
-MSS: ${marketData.mss} | FVGs:${marketData.fvgCount} | Breakers:${marketData.breakerCount}
+- MTF: 5M=${marketData.mtf5} 15M=${marketData.mtf15} 1H=${marketData.mtf1h} 4H=${marketData.mtf4h}
+- Scoring: Bull=${marketData.bS} Bear=${marketData.sS}
+- Entry Zone: ${marketData.zoneSrc} $${marketData.entryPrice} (${marketData.zoneLow}-${marketData.zoneHigh})
+- Suggested SL: $${marketData.suggestedSL}
+- Sweeps: ${marketData.sweeps || 'None'}
+- Imbalances: ${marketData.imbalances || 'None'}
 
 Return JSON:
-{"signal":"BUY/SELL/NEUTRAL","confidence":0-100,"entryPrice":#,"stopLoss":#,"takeProfit1":#,"takeProfit2":#,"takeProfit3":#,"reasoning":"Brief"}`;
+{"signal":"${marketData.mtfDirection === 'BULLISH' ? 'BUY' : (marketData.mtfDirection === 'BEARISH' ? 'SELL' : 'BUY')}","confidence":0-100,"entryPrice":#,"stopLoss":#,"takeProfit1":#,"takeProfit2":#,"takeProfit3":#,"reasoning":"Brief analysis"}`;
 
     try {
-        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You respect MTF alignment. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.15,max_tokens:800})});
+        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You ONLY trade WITH the trend. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:800})});
         const d = await r.json();
         if (d.choices?.[0]) { const m = d.choices[0].message.content.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); }
         if (d.error) console.error('AI error:', d.error);
@@ -295,33 +307,19 @@ async function runAnalysis() {
     const btn = document.getElementById('analyzeBtn');
     btn.classList.add('loading'); btn.disabled = true;
     if (!TWELVE_DATA_KEY) { showNotif('⚠️ Set Twelve Data key!','error'); btn.classList.remove('loading'); btn.disabled=false; return; }
-    showNotif('🔍 Scanning...','info');
+    showNotif('🔍 Analyzing MTF...','info');
     
     try {
         const price = await getPrice(); if (!price) throw new Error('No price');
-        await updateMTF();
+        
+        // GET MTF CONSENSUS FIRST
+        const mtf = await getMTFConsensus();
+        
         const data = await getHistory(); if (!data?.length) throw new Error('No data');
         
-        const sig = score(data, price);
+        // Pass MTF direction to scoring
+        const sig = score(data, price, mtf.direction, mtf.strength);
         if (!sig.zone) throw new Error('No entry zone');
-        
-        // Get MTF consensus
-        const mtf5 = document.getElementById('trend5M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--';
-        const mtf15 = document.getElementById('trend15M')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--';
-        const mtf1h = document.getElementById('trend1H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--';
-        const mtf4h = document.getElementById('trend4H')?.innerHTML?.replace(/[🟢🔴⚪]/g,'').trim()||'--';
-        
-        // Count MTF alignment
-        let bullCount=0, bearCount=0;
-        [mtf5,mtf15,mtf1h,mtf4h].forEach(t=>{if(t==='Bull')bullCount++;if(t==='Bear')bearCount++;});
-        const mtfConsensus = bullCount>=3?'STRONG BULL':(bearCount>=3?'STRONG BEAR':(bullCount>bearCount?'Weak Bull':'Weak Bear'));
-        
-        // MTF penalty: if all TFs oppose the signal direction, reduce confidence
-        let mtfPenalty = 0;
-        if (sig.dir==='BUY' && bearCount>=3) mtfPenalty = 25;
-        if (sig.dir==='SELL' && bullCount>=3) mtfPenalty = 25;
-        if (sig.dir==='BUY' && bearCount===2) mtfPenalty = 10;
-        if (sig.dir==='SELL' && bullCount===2) mtfPenalty = 10;
         
         const slResult = calcStopLoss(data, sig.dir, sig.zone.p, sig.zone);
         const imbalances = findImbalances(data);
@@ -331,20 +329,19 @@ async function runAnalysis() {
         const range = recentHigh - recentLow;
         
         const sweepsText = sig.sweeps.length > 0 
-            ? sig.sweeps.slice(0,3).map(s => `- ${s.type}: ${s.message} at $${s.level.toFixed(2)} (${s.distance.toFixed(0)} away)`).join('\n')
-            : 'No nearby sweeps';
+            ? sig.sweeps.slice(0,2).map(s => `${s.type} at $${s.level.toFixed(2)}`).join('; ')
+            : 'None';
         
         const marketData = {
             price: price.toFixed(2), bS: sig.scores.bS, sS: sig.scores.sS,
-            detectedDir: sig.dir,
-            mtfConsensus, mtf5, mtf15, mtf1h: mtf1h, mtf4h: mtf4h,
+            mtfDirection: mtf.direction, mtfStrength: mtf.strength,
+            mtf5: mtf.trends['5M']||'--', mtf15: mtf.trends['15M']||'--',
+            mtf1h: mtf.trends['1H']||'--', mtf4h: mtf.trends['4H']||'--',
             sweeps: sweepsText,
             imbalances: imbalances.length>0?imbalances.map(i=>`${i.type}: $${i.low.toFixed(2)}-$${i.high.toFixed(2)}`).join('; '):'None',
             zoneSrc: sig.zone.src, entryPrice: sig.zone.p.toFixed(2),
             zoneLow: sig.zone.l.toFixed(2), zoneHigh: sig.zone.h.toFixed(2),
             suggestedSL: slResult.price.toFixed(2),
-            mss: detectMSS(data)?`${detectMSS(data).type} at ${detectMSS(data).level.toFixed(2)}`:'None',
-            fvgCount: detectFVG(data).length, breakerCount: detectBreakers(data).length,
             fib0: recentLow.toFixed(2), fib382: (recentLow+range*.382).toFixed(2),
             fib500: (recentLow+range*.5).toFixed(2), fib618: (recentLow+range*.618).toFixed(2),
             fib786: (recentLow+range*.786).toFixed(2), fib100: recentHigh.toFixed(2)
@@ -355,30 +352,35 @@ async function runAnalysis() {
         let dir, conf, entry, sl, tp1, tp2, tp3, reason, src;
         
         if (ai && (ai.signal==='BUY'||ai.signal==='SELL')) {
-            dir = ai.signal; conf = ai.confidence||70; entry = ai.entryPrice||sig.zone.p;
-            
-            // ENFORCE SL CAP on AI's stop loss
-            const rawSL = ai.stopLoss || slResult.price;
-            const cappedSL = enforceSLCap(rawSL, entry, dir === 'BUY' ? 'BUY' : 'SELL');
-            sl = cappedSL.price;
-            
+            // Validate AI didn't fight the trend
+            if (mtf.strength >= 3) {
+                if (mtf.direction === 'BULLISH' && ai.signal === 'SELL') {
+                    // AI fought strong trend - REJECT
+                    dir = 'BUY'; conf = sig.conf; entry = sig.zone.p; sl = slResult.price;
+                    reason = 'AI overridden - Strong bullish trend | ' + sig.reason;
+                    src = 'RULE';
+                } else if (mtf.direction === 'BEARISH' && ai.signal === 'BUY') {
+                    dir = 'SELL'; conf = sig.conf; entry = sig.zone.p; sl = slResult.price;
+                    reason = 'AI overridden - Strong bearish trend | ' + sig.reason;
+                    src = 'RULE';
+                } else {
+                    dir = ai.signal; conf = ai.confidence||sig.conf; entry = ai.entryPrice||sig.zone.p;
+                    const cappedSL = enforceSLCap(ai.stopLoss||slResult.price, entry, dir==='BUY'?'BUY':'SELL');
+                    sl = cappedSL.price; reason = ai.reasoning||'AI signal'; src = 'AI';
+                }
+            } else {
+                dir = ai.signal; conf = ai.confidence||sig.conf; entry = ai.entryPrice||sig.zone.p;
+                const cappedSL = enforceSLCap(ai.stopLoss||slResult.price, entry, dir==='BUY'?'BUY':'SELL');
+                sl = cappedSL.price; reason = ai.reasoning||'AI signal'; src = 'AI';
+            }
             tp1 = ai.takeProfit1; tp2 = ai.takeProfit2; tp3 = ai.takeProfit3;
-            reason = ai.reasoning||'AI signal'; src = 'AI';
-            
-            // Apply MTF penalty
-            conf = Math.max(conf - mtfPenalty, 30);
-            if (cappedSL.capped) reason += ' [SL capped]';
-            if (mtfPenalty > 0) reason += ` [MTF penalty: -${mtfPenalty}]`;
         } else {
-            dir = sig.dir; entry = sig.zone.p; sl = slResult.price;
-            conf = Math.max(sig.conf - mtfPenalty, 30);
+            dir = sig.dir; conf = sig.conf; entry = sig.zone.p; sl = slResult.price;
             const risk = Math.abs(entry-sl);
-            tp1 = dir==='BUY'?entry+risk*2:entry-risk*2;
-            tp2 = dir==='BUY'?entry+risk*3.5:entry-risk*3.5;
-            tp3 = dir==='BUY'?entry+risk*5:entry-risk*5;
-            reason = sig.reason + ' | SL: ' + slResult.reason;
-            if (mtfPenalty > 0) reason += ` [MTF penalty: -${mtfPenalty}]`;
-            src = sig.zone.src;
+            tp1 = dir==='BUY'?entry+risk*2.5:entry-risk*2.5;
+            tp2 = dir==='BUY'?entry+risk*4:entry-risk*4;
+            tp3 = dir==='BUY'?entry+risk*6:entry-risk*6;
+            reason = sig.reason + ' | SL: ' + slResult.reason; src = sig.zone.src;
         }
         
         const st = dir==='BUY'?'LONG':(dir==='SELL'?'SHORT':'NEUTRAL');
@@ -405,12 +407,10 @@ async function runAnalysis() {
                 take_profit_1: tp1, take_profit_2: tp2, take_profit_3: tp3,
                 risk_reward: rr, confidence: conf,
                 entry_source: src, ai_used: src==='AI',
-                mtf_consensus: mtfConsensus,
-                mtf_penalty: mtfPenalty,
-                nearby_sweeps: sig.sweeps.slice(0,3).map(s => ({type:s.type,level:s.level,distance:s.distance})),
+                mtf_consensus: `${mtf.direction} (${mtf.strength}/4 TFs)`,
                 analysis: {
                     scoring: { bullish: sig.scores.bS, bearish: sig.scores.sS },
-                    multi_timeframe: { "5M":mtf5, "15M":mtf15, "1H":mtf1h, "4H":mtf4h },
+                    multi_timeframe: { "5M":marketData.mtf5, "15M":marketData.mtf15, "1H":marketData.mtf1h, "4H":marketData.mtf4h },
                     reasoning: reason
                 }
             }
@@ -419,7 +419,7 @@ async function runAnalysis() {
         document.getElementById('jsonOutput').innerHTML = JSON.stringify(out, null, 2);
         analysis = { signalType:st, idealEntry:entry, currentPrice:price, stopLoss:sl, takeProfit1:tp1, takeProfit2:tp2, takeProfit3:tp3, confidence:conf };
         document.getElementById('executeBtn').disabled = st==='NEUTRAL';
-        showNotif(src==='AI'?`🎯 AI: ${st} ${conf}%`:`✅ ${st} ${conf}%`,'success');
+        showNotif(src==='AI'?`🎯 AI: ${st} ${conf}%`:`✅ ${st} ${conf}% (${mtf.direction})`,'success');
     } catch(e) { console.error(e); showNotif('Error: '+e.message,'error'); }
     finally { btn.classList.remove('loading'); btn.disabled=false; }
 }
