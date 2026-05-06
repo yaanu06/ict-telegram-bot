@@ -18,32 +18,6 @@ const SYMBOLS = {
 const TF_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day' };
 
 // ============================================
-// ATR-BASED STOP LOSS BUFFERS (BY TIMEFRAME)
-// ============================================
-function getSLBuffer(atrValue) {
-    // Minimum SL distance based on timeframe and market
-    const buffers = {
-        'XAU/USD': {
-            '5M': Math.max(atrValue * 0.8, 4),
-            '15M': Math.max(atrValue * 1.0, 6),
-            '1H': Math.max(atrValue * 1.2, 10),
-            '4H': Math.max(atrValue * 1.5, 15),
-            '1D': Math.max(atrValue * 2.0, 25)
-        },
-        'EUR/USD': {
-            '5M': Math.max(atrValue * 0.8, 0.0003),
-            '15M': Math.max(atrValue * 1.0, 0.0005),
-            '1H': Math.max(atrValue * 1.2, 0.0008),
-            '4H': Math.max(atrValue * 1.5, 0.0012),
-            '1D': Math.max(atrValue * 2.0, 0.0020)
-        }
-    };
-    
-    const key = isGold(pair) ? 'XAU/USD' : (isForex(pair) ? 'EUR/USD' : 'XAU/USD');
-    return (buffers[key] && buffers[key][tf]) ? buffers[key][tf] : Math.max(atrValue * 1.5, 15);
-}
-
-// ============================================
 // API KEYS MANAGEMENT
 // ============================================
 async function loadKeys() {
@@ -95,76 +69,189 @@ const ema=(p,n)=>{const m=2/(n+1);let e=[p[0]];for(let i=1;i<p.length;i++)e.push
 const rsi=(p,n=14)=>{let g=0,l=0;for(let i=p.length-n;i<p.length;i++){let c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;return al===0?100:100-(100/(1+ag/al));};
 const atr=(d,n=14)=>{let t=[];for(let i=1;i<d.length;i++)t.push(Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c)));return t.slice(-n).reduce((a,b)=>a+b,0)/n;};
 
-function detectFVG(d){let f=[];for(let i=1;i<d.length-1;i++){if(d[i-1].h<d[i+1].l&&d[i+1].l-d[i-1].h>d[i+1].c*0.0005)f.push({type:'bull',l:d[i-1].h,h:d[i+1].l,m:(d[i-1].h+d[i+1].l)/2});if(d[i-1].l>d[i+1].h&&d[i-1].l-d[i+1].h>d[i+1].c*0.0005)f.push({type:'bear',l:d[i+1].h,h:d[i-1].l,m:(d[i+1].h+d[i-1].l)/2});}return f;}
+// ============================================
+// IMPROVEMENT #1: FRESH FVG DETECTION
+// ============================================
+function detectFVG(d){let f=[];for(let i=1;i<d.length-1;i++){
+    if(d[i-1].h<d[i+1].l&&d[i+1].l-d[i-1].h>d[i+1].c*0.0005){
+        let mitigated=false;
+        for(let j=i+2;j<d.length;j++){if(d[j].l<=d[i+1].l&&d[j].l>=d[i-1].h){mitigated=true;break;}}
+        f.push({type:'bull',l:d[i-1].h,h:d[i+1].l,m:(d[i-1].h+d[i+1].l)/2,fresh:!mitigated});
+    }
+    if(d[i-1].l>d[i+1].h&&d[i-1].l-d[i+1].h>d[i+1].c*0.0005){
+        let mitigated=false;
+        for(let j=i+2;j<d.length;j++){if(d[j].h>=d[i+1].h&&d[j].h<=d[i-1].l){mitigated=true;break;}}
+        f.push({type:'bear',l:d[i+1].h,h:d[i-1].l,m:(d[i+1].h+d[i-1].l)/2,fresh:!mitigated});
+    }
+}return f;}
+
 function findSwings(d,lb=3){let H=[],L=[],h=d.map(c=>c.h),l=d.map(c=>c.l);for(let i=lb;i<h.length-lb;i++){let iH=true,iL=true;for(let j=1;j<=lb;j++){if(h[i]<=h[i-j]||h[i]<=h[i+j])iH=false;if(l[i]>=l[i-j]||l[i]>=l[i+j])iL=false;}if(iH)H.push({p:h[i],i});if(iL)L.push({p:l[i],i});}return{H,L};}
 function detectMSS(d){let h=d.map(c=>c.h),l=d.map(c=>c.l),c=d.map(c=>c.c),rH=Math.max(...h.slice(-20)),rL=Math.min(...l.slice(-20)),cP=c[c.length-1];if(cP>rH)return{type:'BULL',level:rH};if(cP<rL)return{type:'BEAR',level:rL};return null;}
 function detectBreakers(d){let b=[],s=findSwings(d);for(let i=5;i<d.length-5;i++){let c=d[i];if(c.c>c.o){let r=s.H.find(h=>h.i<i&&h.p<c.c);if(r)b.push({type:'BULL',p:r.p});}if(c.c<c.o){let sp=s.L.find(l=>l.i<i&&l.p>c.c);if(sp)b.push({type:'BEAR',p:sp.p});}}return b;}
 function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
 
 // ============================================
-// LIQUIDITY SWEEPS (Filtered)
+// IMPROVEMENT #2: DISPLACEMENT DETECTION
 // ============================================
-function detectLiquiditySweeps(data, currentPrice) {
-    const sweeps = []; const a = atr(data, 14); const maxDistance = a * 3;
-    const highs = data.map(c => c.h); const lows = data.map(c => c.l); const closes = data.map(c => c.c);
-    for (let i = 10; i < data.length - 3; i++) {
-        const recentHighs = highs.slice(i-5, i); const maxHigh = Math.max(...recentHighs);
-        const tolerance = maxHigh * 0.001;
-        if (recentHighs.filter(h => Math.abs(h - maxHigh) <= tolerance).length >= 2 && Math.abs(maxHigh - currentPrice) <= maxDistance) {
-            if (data.slice(i, i+4).some(c => c.h > maxHigh + tolerance) && closes[i+3] < maxHigh)
-                sweeps.push({type:'BUY_SIDE_SWEPT',level:maxHigh,distance:Math.abs(maxHigh-currentPrice)});
+function detectDisplacement(data, direction) {
+    if (data.length < 5) return { detected: false, reason: 'Not enough data' };
+    
+    const lastCandles = data.slice(-5);
+    const bodies = lastCandles.map(c => Math.abs(c.c - c.o));
+    const avgBody = bodies.reduce((a,b) => a+b, 0) / bodies.length;
+    const lastBody = bodies[bodies.length - 1];
+    
+    // Displacement = candle body 2x larger than average
+    const isDisplacement = lastBody > avgBody * 2;
+    
+    if (direction === 'BUY') {
+        const lastCandle = lastCandles[lastCandles.length - 1];
+        const isBullish = lastCandle.c > lastCandle.o;
+        const brokeHigh = lastCandle.c > Math.max(...data.slice(-10, -1).map(c => c.h));
+        
+        if (isDisplacement && isBullish && brokeHigh) {
+            return { detected: true, reason: 'Bullish displacement - strong move up breaking structure' };
         }
-        const recentLows = lows.slice(i-5, i); const minLow = Math.min(...recentLows);
-        const lowTolerance = minLow * 0.001;
-        if (recentLows.filter(l => Math.abs(l - minLow) <= lowTolerance).length >= 2 && Math.abs(minLow - currentPrice) <= maxDistance) {
-            if (data.slice(i, i+4).some(c => c.l < minLow - lowTolerance) && closes[i+3] > minLow)
-                sweeps.push({type:'SELL_SIDE_SWEPT',level:minLow,distance:Math.abs(minLow-currentPrice)});
+        if (isDisplacement && isBullish) {
+            return { detected: true, reason: 'Bullish displacement - above average momentum' };
+        }
+    } else {
+        const lastCandle = lastCandles[lastCandles.length - 1];
+        const isBearish = lastCandle.c < lastCandle.o;
+        const brokeLow = lastCandle.c < Math.min(...data.slice(-10, -1).map(c => c.l));
+        
+        if (isDisplacement && isBearish && brokeLow) {
+            return { detected: true, reason: 'Bearish displacement - strong move down breaking structure' };
+        }
+        if (isDisplacement && isBearish) {
+            return { detected: true, reason: 'Bearish displacement - above average momentum' };
         }
     }
-    return sweeps.sort((a,b) => a.distance - b.distance);
+    
+    return { detected: false, reason: 'No displacement detected' };
 }
 
-function findImbalances(data) {
-    const imbs = [];
-    for (let i = 1; i < data.length - 1; i++) {
-        if (data[i-1].l > data[i+1].h) imbs.push({type:'BULLISH',low:data[i+1].h,high:data[i-1].l});
-        if (data[i-1].h < data[i+1].l) imbs.push({type:'BEARISH',low:data[i-1].h,high:data[i+1].l});
+// ============================================
+// IMPROVEMENT #3: 5M REJECTION CHECK
+// ============================================
+async function check5MRejection(entryZone, direction) {
+    const d5m = await getHistory('5M');
+    if (!d5m || d5m.length < 5) return { confirmed: false, reason: 'No 5M data' };
+    
+    const lastCandle = d5m[d5m.length - 1];
+    const body = Math.abs(lastCandle.c - lastCandle.o);
+    const totalRange = lastCandle.h - lastCandle.l;
+    
+    if (direction === 'BUY') {
+        const lowerWick = Math.min(lastCandle.o, lastCandle.c) - lastCandle.l;
+        const touchedZone = lastCandle.l <= entryZone.h && lastCandle.l >= entryZone.l;
+        const bullishClose = lastCandle.c > lastCandle.o;
+        const significantWick = lowerWick > body * 1.5 || lowerWick > totalRange * 0.4;
+        
+        if (touchedZone && significantWick && bullishClose) {
+            return { confirmed: true, reason: '5M bullish rejection wick at zone - SNIPER ENTRY' };
+        }
+        if (touchedZone && lowerWick > body) {
+            return { confirmed: true, reason: '5M wick at zone - moderate confirmation' };
+        }
+        if (touchedZone) {
+            return { confirmed: false, reason: 'Price at zone on 5M but no rejection yet' };
+        }
+    } else {
+        const upperWick = lastCandle.h - Math.max(lastCandle.o, lastCandle.c);
+        const touchedZone = lastCandle.h >= entryZone.l && lastCandle.h <= entryZone.h;
+        const bearishClose = lastCandle.c < lastCandle.o;
+        const significantWick = upperWick > body * 1.5 || upperWick > totalRange * 0.4;
+        
+        if (touchedZone && significantWick && bearishClose) {
+            return { confirmed: true, reason: '5M bearish rejection wick at zone - SNIPER ENTRY' };
+        }
+        if (touchedZone && upperWick > body) {
+            return { confirmed: true, reason: '5M wick at zone - moderate confirmation' };
+        }
+        if (touchedZone) {
+            return { confirmed: false, reason: 'Price at zone on 5M but no rejection yet' };
+        }
     }
-    return imbs.slice(-5);
+    
+    return { confirmed: false, reason: 'Price not at entry zone on 5M yet' };
 }
 
 // ============================================
-// PROFESSIONAL STOP LOSS (ATR-BASED + SWING POINTS)
+// IMPROVEMENT #4: DEEP DISCOUNT ZONE (OTE)
 // ============================================
+function findDeepDiscountZone(data, direction) {
+    const highs = data.map(c => c.h);
+    const lows = data.map(c => c.l);
+    const recentHigh = Math.max(...highs.slice(-30));
+    const recentLow = Math.min(...lows.slice(-30));
+    const range = recentHigh - recentLow;
+    
+    // Check if there's been a significant move (displacement)
+    const lastMove = Math.abs(data[data.length-1].c - data[data.length-10].c);
+    const avgRange = atr(data, 14) * 2;
+    
+    // Only use deep OTE if there's been a big move
+    if (lastMove < avgRange) return null;
+    
+    if (direction === 'BUY') {
+        const oteLow = recentLow + range * 0.618;
+        const oteHigh = recentLow + range * 0.79;
+        const optimalEntry = (oteLow + oteHigh) / 2;
+        return {
+            low: oteLow,
+            high: oteHigh,
+            optimal: optimalEntry,
+            source: 'DEEP OTE (61.8%-79%)',
+            reason: `Deep discount zone after ${lastMove.toFixed(1)} move`
+        };
+    } else {
+        const oteLow = recentHigh - range * 0.79;
+        const oteHigh = recentHigh - range * 0.618;
+        const optimalEntry = (oteLow + oteHigh) / 2;
+        return {
+            low: oteLow,
+            high: oteHigh,
+            optimal: optimalEntry,
+            source: 'DEEP OTE (61.8%-79%)',
+            reason: `Deep premium zone after ${lastMove.toFixed(1)} move`
+        };
+    }
+}
+
+// ============================================
+// STOP LOSS (ATR-based by timeframe)
+// ============================================
+function getSLBuffer(atrValue) {
+    const buffers = {
+        'XAU/USD':{'5M':Math.max(atrValue*0.8,4),'15M':Math.max(atrValue*1.0,6),'1H':Math.max(atrValue*1.2,10),'4H':Math.max(atrValue*1.5,15),'1D':Math.max(atrValue*2.0,25)},
+        'EUR/USD':{'5M':Math.max(atrValue*0.8,0.0003),'15M':Math.max(atrValue*1.0,0.0005),'1H':Math.max(atrValue*1.2,0.0008),'4H':Math.max(atrValue*1.5,0.0012),'1D':Math.max(atrValue*2.0,0.0020)}
+    };
+    const key = isGold(pair) ? 'XAU/USD' : (isForex(pair) ? 'EUR/USD' : 'XAU/USD');
+    return (buffers[key] && buffers[key][tf]) ? buffers[key][tf] : Math.max(atrValue * 1.5, 15);
+}
+
 function calcStopLoss(data, dir, entry, zone) {
     const a = atr(data, 14);
     const swings = findSwings(data, 4);
     const fvgs = detectFVG(data);
-    
-    // Get minimum buffer based on timeframe and ATR
     const minBuffer = getSLBuffer(a);
     const maxSLPercent = isGold(pair) ? 0.01 : (isForex(pair) ? 0.005 : 0.02);
     const maxSLDistance = entry * maxSLPercent;
     
     if (dir === 'BUY') {
-        // Find ALL swing lows below entry (sorted closest first)
         const allSwings = swings.L.filter(s => s.p < entry).sort((a,b) => b.p - a.p);
         const bullFVGs = fvgs.filter(f => f.type==='bull' && f.l < entry).sort((a,b) => b.l - a.l);
-        
         let stopPrice = null, stopReason = '';
         
-        // Try each swing low until we find one at proper distance
         for (const swing of allSwings) {
             const distance = entry - swing.p;
-            // SL needs to be at least minBuffer below the swing, but not more than maxSLDistance from entry
             if (distance >= minBuffer * 0.5 && distance <= maxSLDistance * 1.5) {
                 stopPrice = swing.p - (minBuffer * 0.3);
-                stopReason = `Below swing ${swing.p.toFixed(getPrec(pair))} (${distance.toFixed(1)} away)`;
+                stopReason = `Below swing ${swing.p.toFixed(getPrec(pair))}`;
                 break;
             }
         }
-        
-        // If no valid swing, try FVG
         if (!stopPrice && bullFVGs.length > 0) {
             const nearestFVG = bullFVGs[0];
             const distance = entry - nearestFVG.l;
@@ -173,41 +260,26 @@ function calcStopLoss(data, dir, entry, zone) {
                 stopReason = `Below FVG ${nearestFVG.l.toFixed(getPrec(pair))}`;
             }
         }
+        if (!stopPrice) { stopPrice = entry - minBuffer; stopReason = `ATR buffer`; }
         
-        // If still nothing, use ATR-based stop with minimum distance
-        if (!stopPrice) {
-            stopPrice = entry - minBuffer;
-            stopReason = `ATR buffer (${minBuffer.toFixed(1)})`;
-        }
-        
-        // FINAL CHECK: SL must be meaningful (not too tight, not too wide)
         const finalDistance = entry - stopPrice;
-        if (finalDistance < minBuffer * 0.6) {
-            stopPrice = entry - minBuffer;
-            stopReason = `Min ATR buffer (${minBuffer.toFixed(1)})`;
-        }
-        if (finalDistance > maxSLDistance) {
-            stopPrice = entry - maxSLDistance;
-            stopReason = `Capped at ${(maxSLPercent*100).toFixed(1)}%`;
-        }
+        if (finalDistance < minBuffer * 0.6) { stopPrice = entry - minBuffer; stopReason = `Min ATR`; }
+        if (finalDistance > maxSLDistance) { stopPrice = entry - maxSLDistance; stopReason = `Capped`; }
         
         return { price: stopPrice, reason: stopReason, distance: entry - stopPrice };
-        
     } else {
         const allSwings = swings.H.filter(s => s.p > entry).sort((a,b) => a.p - b.p);
         const bearFVGs = fvgs.filter(f => f.type==='bear' && f.h > entry).sort((a,b) => a.h - b.h);
-        
         let stopPrice = null, stopReason = '';
         
         for (const swing of allSwings) {
             const distance = swing.p - entry;
             if (distance >= minBuffer * 0.5 && distance <= maxSLDistance * 1.5) {
                 stopPrice = swing.p + (minBuffer * 0.3);
-                stopReason = `Above swing ${swing.p.toFixed(getPrec(pair))} (${distance.toFixed(1)} away)`;
+                stopReason = `Above swing ${swing.p.toFixed(getPrec(pair))}`;
                 break;
             }
         }
-        
         if (!stopPrice && bearFVGs.length > 0) {
             const nearestFVG = bearFVGs[0];
             const distance = nearestFVG.h - entry;
@@ -216,21 +288,11 @@ function calcStopLoss(data, dir, entry, zone) {
                 stopReason = `Above FVG ${nearestFVG.h.toFixed(getPrec(pair))}`;
             }
         }
-        
-        if (!stopPrice) {
-            stopPrice = entry + minBuffer;
-            stopReason = `ATR buffer (${minBuffer.toFixed(1)})`;
-        }
+        if (!stopPrice) { stopPrice = entry + minBuffer; stopReason = `ATR buffer`; }
         
         const finalDistance = stopPrice - entry;
-        if (finalDistance < minBuffer * 0.6) {
-            stopPrice = entry + minBuffer;
-            stopReason = `Min ATR buffer (${minBuffer.toFixed(1)})`;
-        }
-        if (finalDistance > maxSLDistance) {
-            stopPrice = entry + maxSLDistance;
-            stopReason = `Capped at ${(maxSLPercent*100).toFixed(1)}%`;
-        }
+        if (finalDistance < minBuffer * 0.6) { stopPrice = entry + minBuffer; stopReason = `Min ATR`; }
+        if (finalDistance > maxSLDistance) { stopPrice = entry + maxSLDistance; stopReason = `Capped`; }
         
         return { price: stopPrice, reason: stopReason, distance: stopPrice - entry };
     }
@@ -245,41 +307,33 @@ function enforceSLCap(slPrice, entry, dir) {
 }
 
 // ============================================
-// SIGNAL SCORING (Trend-following enforced)
+// SIGNAL SCORING
 // ============================================
 function score(data, price, mtfDirection, mtfStrength) {
     const a = atr(data), cl = data.map(c=>c.c), rs = rsi(cl);
     const fv = detectFVG(data), ms = detectMSS(data), bk = detectBreakers(data);
-    const sweeps = detectLiquiditySweeps(data, price);
     const e20 = ema(cl,20), e50 = ema(cl,50), cE20 = e20[e20.length-1], cE50 = e50[e50.length-1];
     
-    const bF = fv.filter(f=>f.type==='bull'&&f.l<price).sort((a,b)=>b.l-a.l);
-    const sF = fv.filter(f=>f.type==='bear'&&f.h>price).sort((a,b)=>a.h-b.h);
+    const bF = fv.filter(f=>f.type==='bull'&&f.l<price&&f.fresh).sort((a,b)=>b.l-a.l);
+    const sF = fv.filter(f=>f.type==='bear'&&f.h>price&&f.fresh).sort((a,b)=>a.h-b.h);
     const bB = bk.filter(b=>b.type==='BULL'&&b.p<price);
     const sB = bk.filter(b=>b.type==='BEAR'&&b.p>price);
-    const recentSellSweep = sweeps.filter(s => s.type === 'SELL_SIDE_SWEPT')[0];
-    const recentBuySweep = sweeps.filter(s => s.type === 'BUY_SIDE_SWEPT')[0];
     
     let bS=0, sS=0, bR=[], sR=[];
     
     if (mtfDirection === 'BULLISH') {
-        bS += 20; bR.push('MTF Bull trend');
+        bS += 20; bR.push('MTF Bull');
         if (mtfStrength >= 3) { bS += 10; bR.push('Strong trend'); }
-        if (recentSellSweep) { bS += 25; bR.push(`Sweep confirms trend`); }
     } else if (mtfDirection === 'BEARISH') {
-        sS += 20; sR.push('MTF Bear trend');
+        sS += 20; sR.push('MTF Bear');
         if (mtfStrength >= 3) { sS += 10; sR.push('Strong trend'); }
-        if (recentBuySweep) { sS += 25; sR.push(`Sweep confirms trend`); }
-    } else {
-        if (recentSellSweep) { bS += 30; bR.push(`Sell swept`); }
-        if (recentBuySweep) { sS += 30; sR.push(`Buy swept`); }
     }
     
     if(ms?.type==='BULL'){ bS+=15; bR.push('MSS Bull'); } else if(ms?.type==='BEAR'){ sS+=15; sR.push('MSS Bear'); }
-    if(bF.length){ bS+=15; bR.push(`FVG ${bF[0].l.toFixed(2)}`); }
-    if(sF.length){ sS+=15; sR.push(`FVG ${sF[0].h.toFixed(2)}`); }
-    if(bB.length){ bS+=10; bR.push('Breaker sup'); }
-    if(sB.length){ sS+=10; sR.push('Breaker res'); }
+    if(bF.length){ bS+=15; bR.push(`Fresh FVG`); }
+    if(sF.length){ sS+=15; sR.push(`Fresh FVG`); }
+    if(bB.length){ bS+=10; bR.push('Breaker'); }
+    if(sB.length){ sS+=10; sR.push('Breaker'); }
     if(cE20>cE50){ bS+=10; } else { sS+=10; }
     if(rs>50) bS+=5; else sS+=5;
     
@@ -288,8 +342,13 @@ function score(data, price, mtfDirection, mtfStrength) {
     if (mtfStrength >= 3) {
         dir = mtfDirection === 'BULLISH' ? 'BUY' : 'SELL';
         conf = mtfDirection === 'BULLISH' ? Math.min(bS+15, 95) : Math.min(sS+15, 95);
-        reason = `STRONG ${mtfDirection} TREND | ` + (mtfDirection==='BULLISH'?bR.join('; '):sR.join('; '));
-        if (dir === 'BUY') {
+        reason = `STRONG ${mtfDirection} | ` + (mtfDirection==='BULLISH'?bR.join('; '):sR.join('; '));
+        
+        // Try deep OTE first
+        const deepZone = findDeepDiscountZone(data, dir);
+        if (deepZone) {
+            zone = {p:deepZone.optimal,l:deepZone.low,h:deepZone.high,src:'DEEP_OTE',reason:deepZone.reason};
+        } else if (dir === 'BUY') {
             if(bF.length) zone={p:bF[0].m,l:bF[0].l,h:bF[0].h,src:'FVG'};
             else if(bB.length) zone={p:bB[0].p,l:bB[0].p-a*.5,h:bB[0].p+a*.5,src:'Breaker'};
             else { let rL=Math.min(...data.slice(-20).map(c=>c.l)),rH=Math.max(...data.slice(-20).map(c=>c.h)),r=rH-rL; zone={p:rL+r*.7,l:rL+r*.618,h:rL+r*.79,src:'OTE'}; }
@@ -310,11 +369,11 @@ function score(data, price, mtfDirection, mtfStrength) {
         } else { dir='NEUTRAL'; conf=0; reason=`B:${bS} S:${sS}`; zone=null; }
     }
     
-    return {dir,conf,zone,reason,scores:{bS,sS},sweeps};
+    return {dir,conf,zone,reason,scores:{bS,sS}};
 }
 
 // ============================================
-// MULTI-TF CONSENSUS
+// MULTI-TF
 // ============================================
 async function getMTFConsensus() {
     const tfs=['5M','15M','1H','4H']; let bullCount=0, bearCount=0; const trends={};
@@ -328,7 +387,7 @@ async function getMTFConsensus() {
 }
 
 // ============================================
-// AI (Trend-following enforced)
+// AI (Sniper prompts)
 // ============================================
 async function askAI(marketData) {
     if (!DEEPSEEK_API_KEY) return null;
@@ -336,31 +395,32 @@ async function askAI(marketData) {
     
     const forcedDir = marketData.mtfDirection === 'BULLISH' ? 'BUY' : (marketData.mtfDirection === 'BEARISH' ? 'SELL' : null);
     
-    const prompt = `You are an ELITE ICT SNIPER. You ONLY trade WITH the trend.
+    const prompt = `You are an ELITE ICT SNIPER. Check ALL conditions before giving a signal.
 
-TREND: ${marketData.mtfDirection} (${marketData.mtfStrength}/4 timeframes agree)
-${marketData.mtfStrength >= 3 ? 'STRONG TREND - YOU MUST ONLY GIVE ' + forcedDir + ' SIGNALS.' : 'Trend is moderate - prefer ' + (forcedDir || 'the dominant direction') + '.'}
+TREND: ${marketData.mtfDirection} (${marketData.mtfStrength}/4 TFs)
+${marketData.mtfStrength >= 3 ? 'STRONG TREND. ONLY ' + forcedDir + ' SIGNALS.' : ''}
 
-For ${forcedDir || 'the trade'}:
-- Entry at discount/premium FVG/OTE edge (wait for pullback)
-- SL at proper ATR-based distance (minimum ${marketData.minBuffer} for this timeframe)
-- SL must be beyond a real swing point, not just zone edge
-- TP at opposing liquidity/sweeps/imbalances
+CONDITIONS TO VERIFY:
+1. Displacement: ${marketData.displacement}
+2. Deep Zone: ${marketData.deepZone || 'Not available'}
+3. 5M Rejection: ${marketData.rejection5M}
+4. FVG Freshness: ${marketData.fvgFreshness}
 
-CONTEXT:
-- Pair: ${pair} | Timeframe: ${tf} | Price: $${marketData.price}
-- MTF: 5M=${marketData.mtf5} 15M=${marketData.mtf15} 1H=${marketData.mtf1h} 4H=${marketData.mtf4h}
-- Scoring: Bull=${marketData.bS} Bear=${marketData.sS}
-- Entry Zone: ${marketData.zoneSrc} $${marketData.entryPrice} (${marketData.zoneLow}-${marketData.zoneHigh})
-- Min ATR Buffer: $${marketData.minBuffer}
-- Suggested SL: $${marketData.suggestedSL} (${marketData.slReason})
-- Nearest swing points: ${marketData.swingInfo}
+Entry Zone: ${marketData.zoneSrc} $${marketData.entryPrice}
+Min SL Buffer: $${marketData.minBuffer}
+
+ONLY give a signal if:
+- Displacement detected OR deep discount/premium zone available
+- 5M shows rejection or price is approaching zone
+- FVGs are fresh (untested)
+
+If conditions NOT met, return NEUTRAL.
 
 Return JSON:
-{"signal":"${forcedDir || 'BUY'}","confidence":0-100,"entryPrice":#,"stopLoss":#,"takeProfit1":#,"takeProfit2":#,"takeProfit3":#,"reasoning":"..."}`;
+{"signal":"${forcedDir||'BUY'}","confidence":0-100,"entryPrice":#,"stopLoss":#,"takeProfit1":#,"takeProfit2":#,"takeProfit3":#,"reasoning":"..."}`;
 
     try {
-        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You ONLY trade WITH the trend. Return ONLY valid JSON. SL must be at proper ATR distance beyond swing points.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:800})});
+        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You verify conditions before giving signals. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:800})});
         const d = await r.json();
         if (d.choices?.[0]) { const m = d.choices[0].message.content.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); }
         if (d.error) console.error('AI error:', d.error);
@@ -375,7 +435,7 @@ async function runAnalysis() {
     const btn = document.getElementById('analyzeBtn');
     btn.classList.add('loading'); btn.disabled = true;
     if (!TWELVE_DATA_KEY) { showNotif('⚠️ Set Twelve Data key!','error'); btn.classList.remove('loading'); btn.disabled=false; return; }
-    showNotif('🔍 Analyzing MTF...','info');
+    showNotif('🔍 Sniper scanning...','info');
     
     try {
         const price = await getPrice(); if (!price) throw new Error('No price');
@@ -385,65 +445,53 @@ async function runAnalysis() {
         const sig = score(data, price, mtf.direction, mtf.strength);
         if (!sig.zone) throw new Error('No entry zone');
         
+        // RUN ALL SNIPER CHECKS
+        const displacement = detectDisplacement(data, sig.dir);
+        const rejection5M = await check5MRejection(sig.zone, sig.dir);
+        const deepZone = findDeepDiscountZone(data, sig.dir);
+        
+        // Count fresh FVGs
+        const allFvgs = detectFVG(data);
+        const freshCount = allFvgs.filter(f=>f.fresh).length;
+        const fvgFreshness = `${freshCount}/${allFvgs.length} fresh`;
+        
         const a = atr(data, 14);
         const slResult = calcStopLoss(data, sig.dir, sig.zone.p, sig.zone);
         const minBuffer = getSLBuffer(a);
-        const imbalances = findImbalances(data);
-        
-        const swings = findSwings(data, 4);
-        const nearSwingsLow = swings.L.filter(s=>s.p<price).sort((a,b)=>b.p-a.p).slice(0,2);
-        const nearSwingsHigh = swings.H.filter(s=>s.p>price).sort((a,b)=>a.p-b.p).slice(0,2);
-        const swingInfo = `Lows: ${nearSwingsLow.map(s=>'$'+s.p.toFixed(2)).join(', ') || 'None'} | Highs: ${nearSwingsHigh.map(s=>'$'+s.p.toFixed(2)).join(', ') || 'None'}`;
-        
-        const recentHigh = Math.max(...data.slice(-20).map(c=>c.h));
-        const recentLow = Math.min(...data.slice(-20).map(c=>c.l));
-        const range = recentHigh - recentLow;
         
         const marketData = {
             price: price.toFixed(2), bS: sig.scores.bS, sS: sig.scores.sS,
             mtfDirection: mtf.direction, mtfStrength: mtf.strength,
-            mtf5: mtf.trends['5M']||'--', mtf15: mtf.trends['15M']||'--',
-            mtf1h: mtf.trends['1H']||'--', mtf4h: mtf.trends['4H']||'--',
+            displacement: displacement.detected ? '✅ '+displacement.reason : '❌ '+displacement.reason,
+            deepZone: deepZone ? `✅ ${deepZone.source}: $${deepZone.low.toFixed(2)}-$${deepZone.high.toFixed(2)}` : '❌ No deep zone',
+            rejection5M: rejection5M.confirmed ? '✅ '+rejection5M.reason : '⚠️ '+rejection5M.reason,
+            fvgFreshness,
             zoneSrc: sig.zone.src, entryPrice: sig.zone.p.toFixed(2),
-            zoneLow: sig.zone.l.toFixed(2), zoneHigh: sig.zone.h.toFixed(2),
             minBuffer: minBuffer.toFixed(1),
-            suggestedSL: slResult.price.toFixed(2),
-            slReason: slResult.reason,
-            swingInfo,
-            fib0: recentLow.toFixed(2), fib382: (recentLow+range*.382).toFixed(2),
-            fib500: (recentLow+range*.5).toFixed(2), fib618: (recentLow+range*.618).toFixed(2),
-            fib786: (recentLow+range*.786).toFixed(2), fib100: recentHigh.toFixed(2)
+            suggestedSL: slResult.price.toFixed(2)
         };
         
         const ai = await askAI(marketData);
         
         let dir, conf, entry, sl, tp1, tp2, tp3, reason, src;
+        let sniperChecks = [];
         
         if (ai && (ai.signal==='BUY'||ai.signal==='SELL')) {
             if (mtf.strength >= 3) {
-                if (mtf.direction === 'BULLISH' && ai.signal === 'SELL') {
-                    dir = 'BUY'; conf = sig.conf; entry = sig.zone.p; sl = slResult.price;
-                    reason = 'AI overridden - Strong bullish | ' + sig.reason; src = 'RULE';
-                } else if (mtf.direction === 'BEARISH' && ai.signal === 'BUY') {
-                    dir = 'SELL'; conf = sig.conf; entry = sig.zone.p; sl = slResult.price;
-                    reason = 'AI overridden - Strong bearish | ' + sig.reason; src = 'RULE';
+                if ((mtf.direction==='BULLISH'&&ai.signal==='SELL')||(mtf.direction==='BEARISH'&&ai.signal==='BUY')) {
+                    dir = mtf.direction==='BULLISH'?'BUY':'SELL'; conf = sig.conf; entry = sig.zone.p; sl = slResult.price;
+                    reason = 'AI overridden - Strong trend'; src = 'RULE';
+                    sniperChecks.push('⚠️ AI fought trend');
                 } else {
                     dir = ai.signal; conf = ai.confidence||sig.conf; entry = ai.entryPrice||sig.zone.p;
-                    let rawSL = ai.stopLoss || slResult.price;
-                    const entryDist = dir==='BUY'?entry-rawSL:rawSL-entry;
-                    if (entryDist < minBuffer * 0.6) { rawSL = slResult.price; reason = (ai.reasoning||'AI') + ' [SL adjusted to ATR minimum]'; }
+                    const rawSL = ai.stopLoss||slResult.price;
                     const cappedSL = enforceSLCap(rawSL, entry, dir==='BUY'?'BUY':'SELL');
-                    sl = cappedSL.price; src = 'AI';
-                    if (!reason) reason = ai.reasoning||'AI signal';
+                    sl = cappedSL.price; reason = ai.reasoning||'AI signal'; src = 'AI';
                 }
             } else {
                 dir = ai.signal; conf = ai.confidence||sig.conf; entry = ai.entryPrice||sig.zone.p;
-                let rawSL = ai.stopLoss || slResult.price;
-                const entryDist = dir==='BUY'?entry-rawSL:rawSL-entry;
-                if (entryDist < minBuffer * 0.6) { rawSL = slResult.price; }
-                const cappedSL = enforceSLCap(rawSL, entry, dir==='BUY'?'BUY':'SELL');
-                sl = cappedSL.price; src = 'AI';
-                reason = ai.reasoning||'AI signal';
+                const cappedSL = enforceSLCap(ai.stopLoss||slResult.price, entry, dir==='BUY'?'BUY':'SELL');
+                sl = cappedSL.price; reason = ai.reasoning||'AI signal'; src = 'AI';
             }
             tp1 = ai.takeProfit1; tp2 = ai.takeProfit2; tp3 = ai.takeProfit3;
         } else {
@@ -452,8 +500,17 @@ async function runAnalysis() {
             tp1 = dir==='BUY'?entry+risk*2.5:entry-risk*2.5;
             tp2 = dir==='BUY'?entry+risk*4:entry-risk*4;
             tp3 = dir==='BUY'?entry+risk*6:entry-risk*6;
-            reason = sig.reason + ' | SL: ' + slResult.reason; src = sig.zone.src;
+            reason = sig.reason; src = sig.zone.src;
         }
+        
+        // Add sniper check results
+        if (displacement.detected) sniperChecks.push('✅ Displacement');
+        else sniperChecks.push('❌ No displacement');
+        if (rejection5M.confirmed) sniperChecks.push('✅ 5M Rejection');
+        else sniperChecks.push('⚠️ No 5M rejection');
+        if (deepZone) sniperChecks.push('✅ Deep zone');
+        else sniperChecks.push('⚠️ No deep zone');
+        sniperChecks.push(`📊 ${fvgFreshness}`);
         
         const st = dir==='BUY'?'LONG':(dir==='SELL'?'SHORT':'NEUTRAL');
         const prec = getPrec(pair);
@@ -477,16 +534,21 @@ async function runAnalysis() {
                 trade_type: dir==='BUY'?'BUY-LIMIT':(dir==='SELL'?'SELL-LIMIT':'NEUTRAL'),
                 entry_price: entry, stop_loss: sl,
                 stop_loss_distance: slDist.toFixed(2),
-                stop_loss_pct: ((slDist/entry)*100).toFixed(2) + '%',
-                stop_loss_reason: slResult.reason,
-                atr_buffer_minimum: minBuffer.toFixed(1),
+                stop_loss_pct: ((slDist/entry)*100).toFixed(2)+'%',
                 take_profit_1: tp1, take_profit_2: tp2, take_profit_3: tp3,
                 risk_reward: rr, confidence: conf,
                 entry_source: src, ai_used: src==='AI',
                 mtf_consensus: `${mtf.direction} (${mtf.strength}/4 TFs)`,
+                sniper_checks: sniperChecks,
+                conditions: {
+                    displacement: displacement,
+                    rejection_5m: rejection5M,
+                    deep_zone: deepZone,
+                    fvg_freshness: fvgFreshness
+                },
                 analysis: {
                     scoring: { bullish: sig.scores.bS, bearish: sig.scores.sS },
-                    multi_timeframe: { "5M":marketData.mtf5, "15M":marketData.mtf15, "1H":marketData.mtf1h, "4H":marketData.mtf4h },
+                    multi_timeframe: { "5M":mtf.trends['5M']||'--', "15M":mtf.trends['15M']||'--', "1H":mtf.trends['1H']||'--', "4H":mtf.trends['4H']||'--' },
                     reasoning: reason
                 }
             }
@@ -495,7 +557,7 @@ async function runAnalysis() {
         document.getElementById('jsonOutput').innerHTML = JSON.stringify(out, null, 2);
         analysis = { signalType:st, idealEntry:entry, currentPrice:price, stopLoss:sl, takeProfit1:tp1, takeProfit2:tp2, takeProfit3:tp3, confidence:conf };
         document.getElementById('executeBtn').disabled = st==='NEUTRAL';
-        showNotif(`✅ ${st} ${conf}% | SL: $${slDist.toFixed(1)} (${((slDist/entry)*100).toFixed(2)}%)`,'success');
+        showNotif(`✅ ${st} ${conf}% | SL: $${slDist.toFixed(1)} | ${sniperChecks.filter(c=>c.startsWith('✅')).length}/4 checks passed`,'success');
     } catch(e) { console.error(e); showNotif('Error: '+e.message,'error'); }
     finally { btn.classList.remove('loading'); btn.disabled=false; }
 }
