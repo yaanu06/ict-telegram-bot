@@ -127,58 +127,6 @@ function findImbalances(data) {
 }
 
 // ============================================
-// PATH CLEARANCE CHECK
-// ============================================
-function checkPathClearance(data, entry, tp, direction, msnr) {
-    const obstacles = [];
-    const settings = getMarketSettings(pair);
-    
-    if (direction === 'BUY') {
-        // Check MSNR resistances between entry and TP
-        if (msnr && msnr.allResistances) {
-            const resistancesInPath = msnr.allResistances.filter(r => r > entry && r < tp);
-            if (resistancesInPath.length > 0) {
-                obstacles.push(`MSNR Resistance at $${resistancesInPath.map(r=>r.toFixed(getPrec(pair))).join(', $')}`);
-            }
-        }
-        // Check bearish FVGs between entry and TP
-        const bearFVGs = detectFVG(data).filter(f => f.type==='bear' && f.l > entry && f.l < tp);
-        if (bearFVGs.length > 0) {
-            obstacles.push(`Bearish FVG at $${bearFVGs.map(f=>f.l.toFixed(getPrec(pair))).join(', $')}`);
-        }
-        // Check swing highs in path
-        const swings = findSwings(data).H.filter(s => s.p > entry && s.p < tp);
-        if (swings.length > 0) {
-            obstacles.push(`Swing high at $${swings.map(s=>s.p.toFixed(getPrec(pair))).join(', $')}`);
-        }
-    } else {
-        // Check MSNR supports between entry and TP
-        if (msnr && msnr.allSupports) {
-            const supportsInPath = msnr.allSupports.filter(s => s < entry && s > tp);
-            if (supportsInPath.length > 0) {
-                obstacles.push(`MSNR Support at $${supportsInPath.map(s=>s.toFixed(getPrec(pair))).join(', $')}`);
-            }
-        }
-        // Check bullish FVGs between entry and TP
-        const bullFVGs = detectFVG(data).filter(f => f.type==='bull' && f.h < entry && f.h > tp);
-        if (bullFVGs.length > 0) {
-            obstacles.push(`Bullish FVG at $${bullFVGs.map(f=>f.h.toFixed(getPrec(pair))).join(', $')}`);
-        }
-        // Check swing lows in path
-        const swings = findSwings(data).L.filter(s => s.p < entry && s.p > tp);
-        if (swings.length > 0) {
-            obstacles.push(`Swing low at $${swings.map(s=>s.p.toFixed(getPrec(pair))).join(', $')}`);
-        }
-    }
-    
-    return {
-        clear: obstacles.length === 0,
-        obstacles: obstacles,
-        count: obstacles.length
-    };
-}
-
-// ============================================
 // MSNR LEVELS
 // ============================================
 function calculateMSNR(data, currentPrice) {
@@ -197,20 +145,18 @@ function calculateMSNR(data, currentPrice) {
 }
 
 // ============================================
-// PRECISION ENTRY ZONE (3+ Confluences = POWERFUL)
+// PRECISION ENTRY ZONE (3+ Confluences)
 // ============================================
 function findPrecisionEntry(data, price, direction, msnr) {
     const a = atr(data,14), fvgs = detectFVG(data), breakers = detectBreakers(data), swings = findSwings(data,4);
     const imbalances = findImbalances(data);
     let allZones = [];
-    
     if (direction === 'BUY') {
         fvgs.filter(f => f.type==='bull' && f.l < price && f.fresh).forEach(f => {
             let score = 30; let cf = ['Fresh FVG'];
             if(breakers.find(b=>b.type==='BULL'&&Math.abs(b.p-f.l)<a*0.5)){score+=25;cf.push('Breaker');}
             if(swings.L.find(s=>Math.abs(s.p-f.l)<a*0.3)){score+=20;cf.push('Swing');}
             if(msnr.nearestSupport&&Math.abs(msnr.nearestSupport-f.l)<f.l*0.003){score+=20;cf.push('MSNR');}
-            // Imbalance as price magnet
             if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-f.l)<f.l*0.005)){score+=20;cf.push('Imbalance');}
             const rH=Math.max(...data.slice(-20).map(c=>c.h)),rL=Math.min(...data.slice(-20).map(c=>c.l)),r=rH-rL;
             if(f.l>=rL+r*.618&&f.l<=rL+r*.79){score+=15;cf.push('OTE');}
@@ -252,28 +198,6 @@ function findPrecisionEntry(data, price, direction, msnr) {
 }
 
 // ============================================
-// PROBABILITY CHECK (Stable)
-// ============================================
-function checkProbability(zone, mtf, sweeps, direction, pathClear) {
-    const checks = [];
-    const hasConfluence = zone.confluenceCount >= 2;
-    checks.push({name:'Confluence (2+)', passed:hasConfluence, critical:true});
-    const mtfAligned = mtf.strength >= 2;
-    checks.push({name:'MTF aligned (2+)', passed:mtfAligned, critical:true});
-    const sweepAligned = sweeps.filter(s => direction==='BUY'?s.direction==='BULLISH':s.direction==='BEARISH').length > 0;
-    checks.push({name:'Sweep confirmation', passed:sweepAligned, critical:false});
-    const pathIsClear = pathClear.clear;
-    checks.push({name:'Clear path to TP', passed:pathIsClear, critical:false});
-    const isQuality = zone.quality === 'A' || zone.quality === 'B';
-    checks.push({name:'Quality A/B', passed:isQuality, critical:false});
-    
-    const criticalPassed = checks.filter(c=>c.critical).every(c=>c.passed);
-    const totalPassed = checks.filter(c=>c.passed).length;
-    const probability = criticalPassed ? (totalPassed >= 4 ? 'HIGH' : (totalPassed >= 3 ? 'MEDIUM' : 'LOW')) : 'LOW';
-    return {probability, checks, totalPassed, passed: criticalPassed};
-}
-
-// ============================================
 // STOP LOSS
 // ============================================
 function calcStopLoss(data, dir, entry, zone, msnr) {
@@ -304,16 +228,16 @@ function calcStopLoss(data, dir, entry, zone, msnr) {
 }
 
 // ============================================
-// TAKE PROFIT
+// TAKE PROFIT (FIXED - 1:4 minimum)
 // ============================================
 function calcTakeProfits(dir, entry, sl) {
     const risk = Math.abs(entry - sl);
     const settings = getMarketSettings(pair);
     const rr = settings.targetRR;
     return {
-        tp1: dir==='BUY'?entry+risk*rr:entry-risk*rr,
-        tp2: dir==='BUY'?entry+risk*(rr+1):entry-risk*(rr+1),
-        tp3: dir==='BUY'?entry+risk*(rr+2):entry-risk*(rr+2)
+        tp1: dir==='BUY' ? entry + risk * rr : entry - risk * rr,
+        tp2: dir==='BUY' ? entry + risk * (rr + 1) : entry - risk * (rr + 1),
+        tp3: dir==='BUY' ? entry + risk * (rr + 2) : entry - risk * (rr + 2)
     };
 }
 
@@ -328,80 +252,50 @@ function score(data,price){const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl);cons
 async function getMTFInfo(){const tfs=['5M','15M','1H','4H'];let bullCount=0,bearCount=0;const trends={};for(let t of tfs){let d=await getHistory(t);if(!d||d.length<30)continue;let c=d.map(x=>x.c),tr=c[c.length-1]>c[c.length-20]?'BULLISH':(c[c.length-1]<c[c.length-20]?'BEARISH':'NEUTRAL');trends[t]=tr;if(tr==='BULLISH')bullCount++;else if(tr==='BEARISH')bearCount++;let el=document.getElementById(`trend${t}`);if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}}return{direction:bullCount>bearCount?'BULLISH':(bearCount>bullCount?'BEARISH':'NEUTRAL'),strength:Math.max(bullCount,bearCount),bullCount,bearCount,trends};}
 
 // ============================================
-// ADVANCED AI - GHOST MACHINE
+// AI
 // ============================================
-async function askAI(marketData) {
-    if (!DEEPSEEK_API_KEY) return null;
-    showNotif('🤖 Ghost AI...','info');
-    const prompt = `You are TheGhostMachine - elite ICT sniper. Find POWERFUL zones where price WILL reverse.
-
-${pair} ${tf} $${marketData.price}
-MTF: ${marketData.mtfDir} (${marketData.mtfStr}/4) | 5M:${marketData.mtf5} 15M:${marketData.mtf15} 1H:${marketData.mtf1h} 4H:${marketData.mtf4h}
-MSS: ${marketData.mss} | RSI: ${marketData.rsi} | Vol: ${marketData.volatility}
-Displacement: ${marketData.displacement} | 5M Rej: ${marketData.rejection5M}
-Sweeps: ${marketData.sweeps}
-Imbalances: ${marketData.imbalances}
-Zone: ${marketData.zoneSrc} | Quality:${marketData.zoneQuality} | Entry:$${marketData.entryPrice}
-Confluences: ${marketData.zoneConfluence} (${marketData.confluenceCount} factors)
-Path to TP: ${marketData.pathClear}
-SL:$${marketData.suggestedSL} | RR:1:${marketData.targetRR}
-MSNR: Pivot:$${marketData.msnrPivot} S1:$${marketData.msnrS1} R1:$${marketData.msnrR1}
-
-Return JSON:
-{"signal":"BUY/SELL","confidence":0-100,"entryPrice":#,"stopLoss":#,"takeProfit1":#,"takeProfit2":#,"takeProfit3":#,"entryReasoning":"Why this zone will hold","slReasoning":"Why this SL is safe","conviction":"HIGH/MEDIUM/LOW","possibleOutcomes":["Primary","Alt","Invalidation"]}`;
-
-    try {
-        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'Return ONLY JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:800})});
-        const d = await r.json();
-        if (d.choices?.[0]) { const m = d.choices[0].message.content.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); }
-        if (d.error) console.error('AI error:', d.error);
-    } catch(e) { console.error('AI fetch:', e); }
-    return null;
-}
+async function askAI(marketData){if(!DEEPSEEK_API_KEY)return null;showNotif('🤖 AI...','info');const prompt=`ICT Sniper. ${pair} ${tf} $${marketData.price}\nMTF:${marketData.mtfDir}(${marketData.mtfStr}/4)\nZone:${marketData.zoneSrc} $${marketData.entryPrice} Q:${marketData.zoneQuality}\nConfluence:${marketData.zoneConfluence} (${marketData.confluenceCount})\nSL:$${marketData.suggestedSL}\nRR:1:${marketData.targetRR}\nReturn JSON:{"signal":"BUY/SELL","confidence":0-100,"entryPrice":#,"stopLoss":#,"takeProfit1":#,"takeProfit2":#,"takeProfit3":#}`;try{const r=await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'Return ONLY JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:400})});const d=await r.json();if(d.choices?.[0]){const m=d.choices[0].message.content.match(/\{[\s\S]*\}/);if(m)return JSON.parse(m[0]);}}catch(e){}return null;}
 
 // ============================================
-// MAIN
+// MAIN - Always gives signal, confidence varies
 // ============================================
-async function runAnalysis(){const btn=document.getElementById('analyzeBtn');btn.classList.add('loading');btn.disabled=true;if(!TWELVE_DATA_KEY){showNotif('⚠️ Set Twelve Data key!','error');btn.classList.remove('loading');btn.disabled=false;return;}showNotif('🔍 Power zone scan...','info');try{const price=await getPrice();if(!price)throw new Error('No price');const mtf=await getMTFInfo();const data=await getHistory();if(!data?.length)throw new Error('No data');const sig=score(data,price);const msnr=calculateMSNR(data,price);const settings=getMarketSettings(pair);
+async function runAnalysis(){const btn=document.getElementById('analyzeBtn');btn.classList.add('loading');btn.disabled=true;if(!TWELVE_DATA_KEY){showNotif('⚠️ Set Twelve Data key!','error');btn.classList.remove('loading');btn.disabled=false;return;}showNotif('🔍 Scanning...','info');try{const price=await getPrice();if(!price)throw new Error('No price');const mtf=await getMTFInfo();const data=await getHistory();if(!data?.length)throw new Error('No data');const sig=score(data,price);const msnr=calculateMSNR(data,price);const settings=getMarketSettings(pair);
 let direction=sig.dir;if(mtf.strength>=3){direction=mtf.direction==='BULLISH'?'BUY':'SELL';}
 const zone=findPrecisionEntry(data,price,direction,msnr);
-const a=atr(data,14);const displacement=detectDisplacement(data,direction);const rejection5M=await check5MRejection(zone,direction);const volatility=getVolatilityLevel(a,price);const sweeps=detectLiquiditySweeps(data,price);const imbalances=findImbalances(data);const mss=detectMSS(data);const cl=data.map(c=>c.c);const rs=rsi(cl,14);
+const a=atr(data,14);const displacement=detectDisplacement(data,direction);const rejection5M=await check5MRejection(zone,direction);const volatility=getVolatilityLevel(a,price);const sweeps=detectLiquiditySweeps(data,price);
 const slResult=calcStopLoss(data,direction,zone.p,zone,msnr);const tps=calcTakeProfits(direction,zone.p,slResult.price);
-const pathCheck=checkPathClearance(data,zone.p,tps.tp1,direction,msnr);
-const probCheck=checkProbability(zone,mtf,sweeps,direction,pathCheck);
 
-if(!probCheck.passed){const failed=probCheck.checks.filter(c=>!c.passed).map(c=>c.name);showNotif(`⚠️ Low prob - ${failed.join(', ')}`,'warning');document.getElementById('jsonOutput').innerHTML=JSON.stringify({trade_signal:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,timeframe:tf,current_price:price,trade_type:'NEUTRAL',reason:`Failed: ${failed.join(', ')}`,zone_quality:zone.quality,confluence_count:zone.confluenceCount,mtf:mtf.direction+' ('+mtf.strength+'/4)'}},null,2);btn.classList.remove('loading');btn.disabled=false;return;}
-
-let conf=sig.conf;
+// Build confidence naturally - lower for weak setups, higher for strong
+let conf = sig.conf;
 if(mtf.direction===direction){conf=Math.min(conf+10,95);}
-if(zone.quality==='A')conf=Math.min(conf+15,98);else if(zone.quality==='B')conf=Math.min(conf+8,95);
+else{conf=Math.max(conf-15,30);}
+if(zone.quality==='A')conf=Math.min(conf+15,98);
+else if(zone.quality==='B')conf=Math.min(conf+8,92);
+else if(zone.quality==='C')conf=Math.min(conf,80);
 if(displacement.detected)conf=Math.min(conf+5,98);
 if(rejection5M.confirmed)conf=Math.min(conf+5,98);
-if(pathCheck.clear)conf=Math.min(conf+5,98);
-if(probCheck.probability==='HIGH')conf=Math.min(conf+5,98);
+const sweepAligned=sweeps.filter(s=>direction==='BUY'?s.direction==='BULLISH':s.direction==='BEARISH').length>0;
+if(sweepAligned)conf=Math.min(conf+5,98);
 
 const prec=getPrec(pair);
-const sweepsText=sweeps.slice(0,3).map(s=>`${s.type}:$${s.level.toFixed(2)}(${s.direction})`).join('; ')||'None';
-const imbalancesText=imbalances.map(i=>`${i.type}:$${i.low.toFixed(2)}-$${i.high.toFixed(2)}`).join('; ')||'None';
-const pathText=pathCheck.clear?'✅ Clear':'⚠️ '+pathCheck.obstacles.join('; ');
-
-const marketData={price:price.toFixed(2),mtfDir:mtf.direction,mtfStr:mtf.strength,mtf5:mtf.trends['5M']||'--',mtf15:mtf.trends['15M']||'--',mtf1h:mtf.trends['1H']||'--',mtf4h:mtf.trends['4H']||'--',mss:mss?`${mss.type} $${mss.level.toFixed(2)}`:'None',rsi:rs.toFixed(1),volatility:volatility.level,displacement:displacement.detected?'✅':'❌',rejection5M:rejection5M.confirmed?'✅':'⚠️',sweeps:sweepsText,imbalances:imbalancesText,zoneSrc:zone.src,zoneQuality:zone.quality,entryPrice:zone.p.toFixed(2),zoneConfluence:zone.confluence,confluenceCount:zone.confluenceCount,pathClear:pathText,suggestedSL:slResult.price.toFixed(2),targetRR:settings.targetRR,msnrPivot:msnr.pivot.toFixed(prec),msnrS1:msnr.supports.S1?.toFixed(prec)||'--',msnrR1:msnr.resistances.R1?.toFixed(prec)||'--'};
+const marketData={price:price.toFixed(2),mtfDir:mtf.direction,mtfStr:mtf.strength,zoneSrc:zone.src,entryPrice:zone.p.toFixed(2),zoneQuality:zone.quality,zoneConfluence:zone.confluence,confluenceCount:zone.confluenceCount,suggestedSL:slResult.price.toFixed(2),targetRR:settings.targetRR};
 const ai=await askAI(marketData);
 
-let dir,entry,sl,tp1,tp2,tp3,reason,src,conviction,entryReason,slReason,possibleOutcomes;
-if(ai&&ai.signal&&(ai.signal==='BUY'||ai.signal==='SELL')){dir=ai.signal;conf=ai.confidence||conf;entry=ai.entryPrice||zone.p;sl=ai.stopLoss||slResult.price;tp1=ai.takeProfit1||tps.tp1;tp2=ai.takeProfit2||tps.tp2;tp3=ai.takeProfit3||tps.tp3;reason=ai.entryReasoning||'AI';src='AI';conviction=ai.conviction||'MEDIUM';entryReason=ai.entryReasoning||'';slReason=ai.slReasoning||slResult.reason;possibleOutcomes=ai.possibleOutcomes||[];}
-else{dir=direction;entry=zone.p;sl=slResult.price;tp1=tps.tp1;tp2=tps.tp2;tp3=tps.tp3;reason=sig.reason+' | '+zone.confluence+' [Q:'+zone.quality+']';src=zone.src;conviction=probCheck.probability==='HIGH'?'HIGH':'MEDIUM';entryReason=`${zone.src} with ${zone.confluence} (${zone.confluenceCount} factors)`;slReason=slResult.reason;possibleOutcomes=[`Price enters at $${entry.toFixed(prec)} and reverses to TP`,`Sweep then reverse`,`Close beyond $${sl.toFixed(prec)} invalidates`];}
+let dir,entry,sl,tp1,tp2,tp3,reason,src;
+if(ai&&ai.signal){dir=ai.signal;conf=ai.confidence||conf;entry=ai.entryPrice||zone.p;sl=ai.stopLoss||slResult.price;tp1=ai.takeProfit1||tps.tp1;tp2=ai.takeProfit2||tps.tp2;tp3=ai.takeProfit3||tps.tp3;reason='🤖 AI';src='AI';}
+else{dir=direction;entry=zone.p;sl=slResult.price;tp1=tps.tp1;tp2=tps.tp2;tp3=tps.tp3;reason=sig.reason+' | '+zone.confluence+' [Q:'+zone.quality+']';src=zone.src;}
 
 const st=dir==='BUY'?'LONG':'SHORT';const risk=Math.abs(entry-sl);const slDist=risk;const rr=(Math.abs(tp1-entry)/risk).toFixed(1);
 document.getElementById('currentPrice').innerHTML=`$${price.toFixed(prec)}`;
 if(lastPrice){const ch=((price-lastPrice)/lastPrice*100).toFixed(2);const ce=document.getElementById('priceChange');ce.innerHTML=`${ch>=0?'▲':'▼'} ${Math.abs(ch)}%`;ce.className=`price-change ${ch>=0?'up':'down'}`;}lastPrice=price;
 
-const out={trade_signal:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,timeframe:tf,current_price:price,trade_type:dir==='BUY'?'BUY-LIMIT':'SELL-LIMIT',entry_price:entry,stop_loss:sl,risk_amount:slDist.toFixed(prec),stop_loss_pct:((slDist/entry)*100).toFixed(2)+'%',take_profit_1:tp1,take_profit_2:tp2,take_profit_3:tp3,risk_reward:'1:'+rr,confidence:conf,conviction:conviction,entry_source:src,ai_used:src==='AI',entry_reasoning:entryReason,sl_reasoning:slReason,possible_outcomes:possibleOutcomes,zone_quality:zone.quality,confluence_count:zone.confluenceCount,confluence:zone.confluence,path_clearance:{clear:pathCheck.clear,obstacles:pathCheck.obstacles},msnr_levels:{pivot:msnr.pivot.toFixed(prec),supports:{S1:msnr.supports.S1?.toFixed(prec),S2:msnr.supports.S2?.toFixed(prec),S3:msnr.supports.S3?.toFixed(prec)},resistances:{R1:msnr.resistances.R1?.toFixed(prec),R2:msnr.resistances.R2?.toFixed(prec),R3:msnr.resistances.R3?.toFixed(prec)}},sweeps:sweeps.filter(s=>s.distance<atr(data,14)*2).map(s=>({type:s.type,level:s.level,direction:s.direction})),analysis:{trend_detection:`${mtf.direction} (${mtf.strength}/4 TFs)${mtf.strength>=3?' - STRONG':''}`,volatility_level:`${volatility.level} - ${volatility.desc}`,zone_magnetism:{imbalances:imbalances.length>0?imbalances.map(i=>i.type+' at $'+i.low.toFixed(prec)+'-$'+i.high.toFixed(prec)).join('; '):'None',sweeps:sweepsText},technical_indicators:[`RSI: ${rs.toFixed(1)}`,`FVG: ${detectFVG(data).length} (${detectFVG(data).filter(f=>f.fresh).length} fresh)`,`Displacement: ${displacement.detected?'Yes':'No'}`,`5M Rejection: ${rejection5M.confirmed?'Yes':'No'}`],reasoning:reason}}};
+const out={trade_signal:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,timeframe:tf,current_price:price,trade_type:dir==='BUY'?'BUY-LIMIT':'SELL-LIMIT',entry_price:entry,stop_loss:sl,risk_amount:slDist.toFixed(prec),stop_loss_pct:((slDist/entry)*100).toFixed(2)+'%',take_profit_1:tp1,take_profit_2:tp2,take_profit_3:tp3,risk_reward:'1:'+rr,confidence:conf,entry_source:src,ai_used:src==='AI',zone_quality:zone.quality,confluence_count:zone.confluenceCount,confluence:zone.confluence,msnr_levels:{pivot:msnr.pivot.toFixed(prec),supports:{S1:msnr.supports.S1?.toFixed(prec),S2:msnr.supports.S2?.toFixed(prec),S3:msnr.supports.S3?.toFixed(prec)},resistances:{R1:msnr.resistances.R1?.toFixed(prec),R2:msnr.resistances.R2?.toFixed(prec),R3:msnr.resistances.R3?.toFixed(prec)}},analysis:{trend_detection:`${mtf.direction} (${mtf.strength}/4 TFs)`,volatility:`${volatility.level}`,indicators:[`RSI:${rsi(data.map(c=>c.c),14).toFixed(1)}`,`Displacement:${displacement.detected?'Yes':'No'}`,`5M Rej:${rejection5M.confirmed?'Yes':'No'}`,`Sweeps:${sweepAligned?'Aligned':'None'}`],reasoning:reason}}};
 
 document.getElementById('jsonOutput').innerHTML=JSON.stringify(out,null,2);
 analysis={signalType:st,idealEntry:entry,currentPrice:price,stopLoss:sl,takeProfit1:tp1,takeProfit2:tp2,takeProfit3:tp3,confidence:conf};
 document.getElementById('executeBtn').disabled=false;
-showNotif(`✅ ${st} ${conf}% | ${zone.quality}(${zone.confluenceCount}) | ${conviction} | 1:${rr}`,'success');
+const qLabel=zone.quality==='A'?'🔥':(zone.quality==='B'?'📊':'⚠️');
+showNotif(`${qLabel} ${st} ${conf}% | Q:${zone.quality}(${zone.confluenceCount}) | 1:${rr}`,'success');
 }catch(e){console.error(e);showNotif('Error: '+e.message,'error');}finally{btn.classList.remove('loading');btn.disabled=false;}}
 
 // ============================================
