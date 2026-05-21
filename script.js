@@ -19,6 +19,21 @@ const SYMBOLS = {
 const TF_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day' };
 
 // ============================================
+// TIMEFRAME ALIGNMENT HIERARCHY
+// ============================================
+function getTimeframeHierarchy(selectedTF) {
+    // Returns [trendTF, structureTF, entryTF, sniperTF]
+    const hierarchy = {
+        '1D': ['1D', '4H', '1H', '15M'],
+        '4H': ['4H', '1H', '15M', '5M'],
+        '1H': ['1H', '15M', '5M', '5M'],
+        '15M': ['15M', '5M', '5M', '5M'],
+        '5M': ['5M', '5M', '5M', '5M']
+    };
+    return hierarchy[selectedTF] || ['4H', '1H', '15M', '5M'];
+}
+
+// ============================================
 // MARKET SETTINGS
 // ============================================
 function getMarketSettings(p) {
@@ -56,7 +71,7 @@ function getPrec(p){const s=getMarketSettings(p);return s.prec;}
 // API
 // ============================================
 async function getPrice(){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(SYMBOLS[pair])}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.price){calls++;document.getElementById('apiSource').innerHTML='📡 Live';return +d.price;}}catch(e){}return null;}
-async function getHistory(tfStr=tf){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${TF_MAP[tfStr]}&outputsize=100&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){calls++;return d.values.map(c=>({t:c.datetime,o:+c.open,h:+c.high,l:+c.low,c:+c.close,v:+c.volume||1e6})).reverse();}}catch(e){}return null;}
+async function getHistory(tfStr){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${TF_MAP[tfStr]}&outputsize=100&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){calls++;return d.values.map(c=>({t:c.datetime,o:+c.open,h:+c.high,l:+c.low,c:+c.close,v:+c.volume||1e6})).reverse();}}catch(e){}return null;}
 async function getTechnicalIndicators(){if(!TWELVE_DATA_KEY)return{};const symbol=encodeURIComponent(SYMBOLS[pair]);const interval=TF_MAP[tf];const ind={};try{const r=await fetch(`${TWELVE_DATA_BASE}/rsi?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.rsi=parseFloat(d.values[0].rsi);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/macd?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.macd=parseFloat(d.values[0].macd);ind.macd_signal=parseFloat(d.values[0].macd_signal);ind.macd_hist=parseFloat(d.values[0].macd_hist);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/adx?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.adx=parseFloat(d.values[0].adx);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/bbands?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.bb_upper=parseFloat(d.values[0].upper_band);ind.bb_middle=parseFloat(d.values[0].middle_band);ind.bb_lower=parseFloat(d.values[0].lower_band);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/stoch?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.stoch_k=parseFloat(d.values[0].slow_k);ind.stoch_d=parseFloat(d.values[0].slow_d);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/obv?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.obv=parseFloat(d.values[0].obv);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/cci?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.cci=parseFloat(d.values[0].cci);calls++;}}catch(e){}return ind;}
 
 // ============================================
@@ -71,12 +86,12 @@ function detectMSS(d){let h=d.map(c=>c.h),l=d.map(c=>c.l),c=d.map(c=>c.c),rH=Mat
 function detectBreakers(d){let b=[],s=findSwings(d);for(let i=5;i<d.length-5;i++){let c=d[i];if(c.c>c.o){let r=s.H.find(h=>h.i<i&&h.p<c.c);if(r)b.push({type:'BULL',p:r.p});}if(c.c<c.o){let sp=s.L.find(l=>l.i<i&&l.p>c.c);if(sp)b.push({type:'BEAR',p:sp.p});}}return b;}
 function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
 function detectDisplacement(data,direction){if(data.length<5)return{detected:false};const lc=data.slice(-5);const bodies=lc.map(c=>Math.abs(c.c-c.o));const avg=bodies.reduce((a,b)=>a+b,0)/bodies.length;const lb=bodies[bodies.length-1];if(direction==='BUY'&&lb>avg*2.5&&lc[4].c>lc[4].o)return{detected:true};if(direction==='SELL'&&lb>avg*2.5&&lc[4].c<lc[4].o)return{detected:true};return{detected:false};}
-async function check5MRejection(zone,direction){const d5m=await getHistory('5M');if(!d5m||d5m.length<3)return{confirmed:false};const lc=d5m[d5m.length-1];const body=Math.abs(lc.c-lc.o);if(direction==='BUY'){const wick=Math.min(lc.o,lc.c)-lc.l;const t=lc.l<=zone.h&&lc.l>=zone.l;if(t&&wick>body*2&&lc.c>lc.o)return{confirmed:true};}else{const wick=lc.h-Math.max(lc.o,lc.c);const t=lc.h>=zone.l&&lc.h<=zone.h;if(t&&wick>body*2&&lc.c<lc.o)return{confirmed:true};}return{confirmed:false};}
+async function checkSniperRejection(zone,direction,sniperTF){const dSn=await getHistory(sniperTF);if(!dSn||dSn.length<3)return{confirmed:false};const lc=dSn[dSn.length-1];const body=Math.abs(lc.c-lc.o);if(direction==='BUY'){const wick=Math.min(lc.o,lc.c)-lc.l;const t=lc.l<=zone.h&&lc.l>=zone.l;if(t&&wick>body*2&&lc.c>lc.o)return{confirmed:true};}else{const wick=lc.h-Math.max(lc.o,lc.c);const t=lc.h>=zone.l&&lc.h<=zone.h;if(t&&wick>body*2&&lc.c<lc.o)return{confirmed:true};}return{confirmed:false};}
 function getVolatilityLevel(atrValue,price){const pct=(atrValue/price)*100;if(pct>0.8)return{level:'High - Impulsive',desc:'Large candles, expanding ranges'};if(pct>0.4)return{level:'Moderate - Control',desc:'Normal market conditions'};return{level:'Low - Consolidation',desc:'Tight ranges, potential breakout'};}
 function detectLiquiditySweeps(data,currentPrice){const sweeps=[];const a=atr(data,14);const maxDistance=a*3;const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);for(let i=10;i<data.length-3;i++){const rH=highs.slice(i-5,i);const maxH=Math.max(...rH);if(rH.filter(h=>Math.abs(h-maxH)<=maxH*0.001).length>=2&&Math.abs(maxH-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.h>maxH*1.001)&&closes[i+3]<maxH)sweeps.push({type:'BUY_SIDE',level:maxH,distance:Math.abs(maxH-currentPrice),direction:'BEARISH'});}const rL=lows.slice(i-5,i);const minL=Math.min(...rL);if(rL.filter(l=>Math.abs(l-minL)<=minL*0.001).length>=2&&Math.abs(minL-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.l<minL*0.999)&&closes[i+3]>minL)sweeps.push({type:'SELL_SIDE',level:minL,distance:Math.abs(minL-currentPrice),direction:'BULLISH'});}}return sweeps.sort((a,b)=>a.distance-b.distance);}
 function findImbalances(data){const im=[];for(let i=1;i<data.length-1;i++){if(data[i-1].l>data[i+1].h)im.push({type:'BULLISH',low:data[i+1].h,high:data[i-1].l});if(data[i-1].h<data[i+1].l)im.push({type:'BEARISH',low:data[i-1].h,high:data[i+1].l});}return im.slice(-5);}
 function detectTurtleSoup(data){if(data.length<15)return{detected:false,type:null};const rd=data.slice(-15);const highs=rd.map(c=>c.h),lows=rd.map(c=>c.l),closes=rd.map(c=>c.c),opens=rd.map(c=>c.o);const keyLow=Math.min(...lows.slice(0,-4));const recentLow=lows[lows.length-4];const cc=closes[closes.length-1];const co=opens[opens.length-1];if(recentLow<keyLow*0.999&&cc>keyLow&&cc>co)return{detected:true,type:'BUY',keyLevel:keyLow,sweptLevel:recentLow};const keyHigh=Math.max(...highs.slice(0,-4));const recentHigh=highs[highs.length-4];if(recentHigh>keyHigh*1.001&&cc<keyHigh&&cc<co)return{detected:true,type:'SELL',keyLevel:keyHigh,sweptLevel:recentHigh};return{detected:false,type:null};}
-function detectCRT(data,direction){if(data.length<10)return{detected:false};const lc=data.slice(-5);const ranges=lc.map(c=>c.h-c.l);const avgRange=ranges.reduce((a,b)=>a+b,0)/ranges.length;const lastRange=ranges[ranges.length-1];const expanding=lastRange>avgRange*1.5;const contracting=lastRange<avgRange*0.5;return{detected:expanding||contracting,pattern:expanding?'Expanding':(contracting?'Contracting':'Neutral'),rangeRatio:(lastRange/avgRange).toFixed(2),signal:expanding?(direction==='BUY'?'Bullish momentum':'Bearish momentum'):(contracting?'Consolidation - potential breakout':'Neutral')};}
+function detectCRT(data,direction){if(data.length<10)return{detected:false};const lc=data.slice(-5);const ranges=lc.map(c=>c.h-c.l);const avgRange=ranges.reduce((a,b)=>a+b,0)/ranges.length;const lastRange=ranges[ranges.length-1];const expanding=lastRange>avgRange*1.5;const contracting=lastRange<avgRange*0.5;return{detected:expanding||contracting,pattern:expanding?'Expanding':(contracting?'Contracting':'Neutral'),rangeRatio:(lastRange/avgRange).toFixed(2),signal:expanding?(direction==='BUY'?'Bullish momentum':'Bearish momentum'):(contracting?'Consolidation':'Neutral')};}
 
 // ============================================
 // MSNR LEVELS
@@ -119,58 +134,87 @@ async function getMTFInfo(){const tfs=['5M','15M','1H','4H'];let bullCount=0,bea
 async function askAI(marketData){if(!DEEPSEEK_API_KEY)return null;showNotif('🤖 Ghost AI...','info');
 const prompt=`Use the bot to find trade opportunity for today on ${pair}. Convert the analysis in {json}
 
-${pair} | ${tf} | $${marketData.price}
-MTF: ${marketData.mtfDir} (${marketData.mtfStr}/4) | 5M:${marketData.mtf5} 15M:${marketData.mtf15} 1H:${marketData.mtf1h} 4H:${marketData.mtf4h}
+${pair} | Analysis TF: ${marketData.tf} | Entry TF: ${marketData.entryTF} | Sniper TF: ${marketData.sniperTF} | $${marketData.price}
 Timeframe Alignment: ${marketData.tfAlign}
+MTF: ${marketData.mtfDir} (${marketData.mtfStr}/4) | 5M:${marketData.mtf5} 15M:${marketData.mtf15} 1H:${marketData.mtf1h} 4H:${marketData.mtf4h}
 MSS: ${marketData.mss} | Turtle Soup: ${marketData.turtleSoup} | CRT: ${marketData.crt}
 RSI: ${marketData.rsi} | ATR: ${marketData.atr} | Vol: ${marketData.volatility}
-${marketData.twelveIndicators ? `MACD: ${marketData.twelveIndicators.macd} (Sig: ${marketData.twelveIndicators.macd_signal}) | ADX: ${marketData.twelveIndicators.adx} | StochK: ${marketData.twelveIndicators.stoch_k} | CCI: ${marketData.twelveIndicators.cci}` : ''}
+${marketData.twelveIndicators ? `MACD: ${marketData.twelveIndicators.macd} | ADX: ${marketData.twelveIndicators.adx} | StochK: ${marketData.twelveIndicators.stoch_k}` : ''}
 Sweeps: ${marketData.sweeps} | Imbalances: ${marketData.imbalances}
 Entry Zone: ${marketData.zoneSrc} Q:${marketData.zoneQuality} | $${marketData.entryPrice} ($${marketData.zoneLow}-$${marketData.zoneHigh})
-Confluence: ${marketData.zoneConfluence} (${marketData.confluenceCount}) | SL: $${marketData.suggestedSL} | RR: 1:${marketData.targetRR}
+Confluence: ${marketData.zoneConfluence} (${marketData.confluenceCount}) | SL: $${marketData.suggestedSL}
 MSNR: Pivot:$${marketData.msnrPivot} S1:$${marketData.msnrS1} R1:$${marketData.msnrR1}
-CRITICAL: Entry MUST be ${marketData.direction==='BUY'?'BELOW':'ABOVE'} current price. SL MUST be ${marketData.direction==='BUY'?'BELOW':'ABOVE'} entry. TPs MUST be ${marketData.direction==='BUY'?'ABOVE':'BELOW'} entry.
 
 Return ONLY JSON:
 {"trade_signal_Theghostmachine":{"date":"${new Date().toISOString().split('T')[0]}","current_price":"${marketData.price}","pair":"${pair}","trade_type":"${marketData.direction==='BUY'?'BUY-LIMIT':'SELL-LIMIT'}","entry_price":${marketData.entryPrice},"stop_loss":${marketData.suggestedSL},"take_profit":${marketData.entryPrice},"analysis":{"trend_detection":"...","volatility_level":"${marketData.volatility}","technical_indicators":["...","...","..."],"possible_outcomes":["Primary","Alternative","Invalidation"]}}}`;
-try{const r=await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are TheGhostMachine. Return ONLY valid JSON. Entry, SL, and TPs must be on correct side of price.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:800})});const d=await r.json();if(d.choices?.[0]){const m=d.choices[0].message.content.match(/\{[\s\S]*\}/);if(m)return JSON.parse(m[0]);}if(d.error)console.error('AI error:',d.error);}catch(e){console.error('AI fetch:',e);}return null;}
+try{const r=await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are TheGhostMachine. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:800})});const d=await r.json();if(d.choices?.[0]){const m=d.choices[0].message.content.match(/\{[\s\S]*\}/);if(m)return JSON.parse(m[0]);}if(d.error)console.error('AI error:',d.error);}catch(e){console.error('AI fetch:',e);}return null;}
 
 // ============================================
-// MAIN
+// MAIN - PROPER TIMEFRAME ALIGNMENT
 // ============================================
-async function runAnalysis(){const btn=document.getElementById('analyzeBtn');btn.classList.add('loading');btn.disabled=true;if(!TWELVE_DATA_KEY){showNotif('⚠️ Set Twelve Data key!','error');btn.classList.remove('loading');btn.disabled=false;return;}showNotif('🔍 Full scan...','info');try{const price=await getPrice();if(!price)throw new Error('No price');const mtf=await getMTFInfo();const data=await getHistory();if(!data?.length)throw new Error('No data');
+async function runAnalysis(){const btn=document.getElementById('analyzeBtn');btn.classList.add('loading');btn.disabled=true;if(!TWELVE_DATA_KEY){showNotif('⚠️ Set Twelve Data key!','error');btn.classList.remove('loading');btn.disabled=false;return;}showNotif('🔍 MTF alignment scan...','info');try{const price=await getPrice();if(!price)throw new Error('No price');
+const mtf=await getMTFInfo();
+const settings=getMarketSettings(pair);
+
+// GET TIMEFRAME HIERARCHY
+const [trendTF, structureTF, entryTF, sniperTF] = getTimeframeHierarchy(tf);
+
+// Get data for each level
+const trendData = await getHistory(trendTF);
+const structureData = await getHistory(structureTF);
+const entryData = await getHistory(entryTF);
+if(!entryData?.length)throw new Error('No entry timeframe data');
+
+// Get Twelve Data indicators on entry timeframe
 const twelveIndicators=await getTechnicalIndicators();
-const sig=score(data,price);const msnr=calculateMSNR(data,price);const settings=getMarketSettings(pair);
-let direction=sig.dir;if(mtf.strength>=3){direction=mtf.direction==='BULLISH'?'BUY':'SELL';}
-const turtleSoup=detectTurtleSoup(data);if(turtleSoup.detected){direction=turtleSoup.type;}
 
-const zone=findPrecisionEntry(data,price,direction,msnr);
-// FIX: Force entry to correct side - but also check if zone is valid
+// Direction from trend TF
+let direction;
+if(trendData?.length){
+    const sig=score(trendData,price);
+    direction=sig.dir;
+}else{
+    const sig=score(entryData,price);
+    direction=sig.dir;
+}
+if(mtf.strength>=3){direction=mtf.direction==='BULLISH'?'BUY':'SELL';}
+const turtleSoup=detectTurtleSoup(entryData);
+if(turtleSoup.detected){direction=turtleSoup.type;}
+
+// MSNR from structure TF
+const msnr = calculateMSNR(structureData||entryData, price);
+
+// Find entry zone from ENTRY timeframe (not trend timeframe!)
+const zone=findPrecisionEntry(entryData,price,direction,msnr);
 let entry=zone.p;
-if(direction==='BUY'&&entry>=price){
-    // Find closest support below price as fallback
-    const nearestBelow=msnr.nearestSupport||price*0.99;
-    entry=Math.min(zone.l,nearestBelow,price*0.995);
-}
-if(direction==='SELL'&&entry<=price){
-    const nearestAbove=msnr.nearestResistance||price*1.01;
-    entry=Math.max(zone.h,nearestAbove,price*1.005);
-}
 
-const a=atr(data,14);const displacement=detectDisplacement(data,direction);const rejection5M=await check5MRejection(zone,direction);const volatility=getVolatilityLevel(a,price);const sweeps=detectLiquiditySweeps(data,price);const imbalances=findImbalances(data);const mss=detectMSS(data);const fvgsAll=detectFVG(data);const breakersAll=detectBreakers(data);const cl=data.map(c=>c.c);const e20v=ema(cl,20),e50v=ema(cl,50);const rs=rsi(cl,14);
-const crt=detectCRT(data,direction);
+// Force entry to correct side
+if(direction==='BUY'&&entry>=price){const nb=msnr.nearestSupport||price*0.99;entry=Math.min(zone.l,nb,price*0.995);}
+if(direction==='SELL'&&entry<=price){const na=msnr.nearestResistance||price*1.01;entry=Math.max(zone.h,na,price*1.005);}
+
+const a=atr(entryData,14);
+const displacement=detectDisplacement(entryData,direction);
+const sniperRej=await checkSniperRejection(zone,direction,sniperTF);
+const volatility=getVolatilityLevel(a,price);
+const sweeps=detectLiquiditySweeps(entryData,price);
+const imbalances=findImbalances(entryData);
+const mss=detectMSS(entryData);
+const fvgsAll=detectFVG(entryData);
+const breakersAll=detectBreakers(entryData);
+const cl=entryData.map(c=>c.c);
+const rs=rsi(cl,14);
+const crt=detectCRT(entryData,direction);
 const probCheck=checkProbability(zone,mtf);
 
 if(!probCheck.passed){const failedChecks=probCheck.checks.filter(c=>!c.passed).map(c=>c.name);showNotif(`⚠️ Low prob - Failed: ${failedChecks.join(', ')}`,'warning');document.getElementById('jsonOutput').innerHTML=JSON.stringify({trade_signal:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,timeframe:tf,current_price:price,trade_type:'NEUTRAL',reason:`Low probability`,failed_checks:failedChecks,zone:zone.quality,confluence:zone.confluence,mtf:mtf.direction+' ('+mtf.strength+'/4)'}},null,2);btn.classList.remove('loading');btn.disabled=false;return;}
 
-const slResult=calcStopLoss(data,direction,entry,zone,msnr);
+const slResult=calcStopLoss(entryData,direction,entry,zone,msnr);
 const tps=calcTakeProfits(direction,entry,slResult.price);
 
-let conf=sig.conf;
-if(mtf.direction===direction)conf=Math.min(conf+10,95);else conf=Math.max(conf-15,30);
+let conf=sig? (mtf.direction===direction?Math.min(sig.conf+10,95):Math.max(sig.conf-15,30)) : 50;
 if(zone.quality==='A')conf=Math.min(conf+15,98);else if(zone.quality==='B')conf=Math.min(conf+8,95);
 if(displacement.detected)conf=Math.min(conf+5,98);
-if(rejection5M.confirmed)conf=Math.min(conf+5,98);
+if(sniperRej.confirmed)conf=Math.min(conf+5,98);
 if(probCheck.probability==='HIGH')conf=Math.min(conf+5,98);
 if(turtleSoup.detected)conf=Math.min(conf+10,98);
 if(crt.detected&&crt.pattern==='Expanding')conf=Math.min(conf+5,98);
@@ -182,18 +226,18 @@ const sweepsText=sweeps.slice(0,3).map(s=>`${s.type}: $${s.level.toFixed(2)}`).j
 const imbalancesText=imbalances.map(i=>`${i.type}: $${i.low.toFixed(2)}-$${i.high.toFixed(2)}`).join('; ')||'None';
 const prec=getPrec(pair);
 
-// Build timeframe alignment
-const tfAlign=`1D:${mtf.trends['1D']||'--'} 4H:${mtf.trends['4H']||'--'} 1H:${mtf.trends['1H']||'--'} 15M:${mtf.trends['15M']||'--'} 5M:${mtf.trends['5M']||'--'} | Entry on ${tf} | ${mtf.strength>=3?'STRONG TREND':(mtf.strength>=2?'MODERATE':'WEAK')}`;
+// Build timeframe alignment display
+const tfAlign = `Trend:${trendTF} → Structure:${structureTF} → Entry:${entryTF} → Sniper:${sniperTF} | ${mtf.strength>=3?'STRONG':(mtf.strength>=2?'MODERATE':'WEAK')}`;
 
-const marketData={price:price.toFixed(2),mtfDir:mtf.direction,mtfStr:mtf.strength,mtf5:mtf.trends['5M']||'--',mtf15:mtf.trends['15M']||'--',mtf1h:mtf.trends['1H']||'--',mtf4h:mtf.trends['4H']||'--',tfAlign:tfAlign,direction:direction,mss:mss?`${mss.type} at $${mss.level.toFixed(2)}`:'None',turtleSoup:turtleSoup.detected?`🐢 ${turtleSoup.type}`:'None',crt:crt.detected?`${crt.pattern} (${crt.rangeRatio}x) - ${crt.signal}`:'Neutral',atr:a.toFixed(prec),volatility:volatility.level,volatilityDesc:volatility.desc,rsi:rs.toFixed(1),ema20:e20v[e20v.length-1].toFixed(prec),ema50:e50v[e50v.length-1].toFixed(prec),fvgCount:fvgsAll.length,freshFvg:fvgsAll.filter(f=>f.fresh).length,breakerCount:breakersAll.length,displacement:displacement.detected?'✅':'❌',rejection5M:rejection5M.confirmed?'✅':'⚠️',sweeps:sweepsText,imbalances:imbalancesText,twelveIndicators:twelveIndicators,zoneSrc:zone.src,zoneQuality:zone.quality,entryPrice:entry.toFixed(prec),zoneLow:zone.l.toFixed(prec),zoneHigh:zone.h.toFixed(prec),zoneConfluence:zone.confluence,confluenceCount:zone.cc,probability:probCheck.probability,msnrPivot:msnr.pivot.toFixed(prec),msnrS1:msnr.supports.S1?.toFixed(prec)||'--',msnrS2:msnr.supports.S2?.toFixed(prec)||'--',msnrS3:msnr.supports.S3?.toFixed(prec)||'--',msnrR1:msnr.resistances.R1?.toFixed(prec)||'--',msnrR2:msnr.resistances.R2?.toFixed(prec)||'--',msnrR3:msnr.resistances.R3?.toFixed(prec)||'--',nearestSupport:msnr.nearestSupport?.toFixed(prec)||'--',nearestResistance:msnr.nearestResistance?.toFixed(prec)||'--',suggestedSL:slResult.price.toFixed(prec),slReason:slResult.reason,targetRR:settings.targetRR};
+const marketData={tf:tf,entryTF:entryTF,sniperTF:sniperTF,tfAlign:tfAlign,price:price.toFixed(2),mtfDir:mtf.direction,mtfStr:mtf.strength,mtf5:mtf.trends['5M']||'--',mtf15:mtf.trends['15M']||'--',mtf1h:mtf.trends['1H']||'--',mtf4h:mtf.trends['4H']||'--',direction:direction,mss:mss?`${mss.type} at $${mss.level.toFixed(2)}`:'None',turtleSoup:turtleSoup.detected?`🐢 ${turtleSoup.type}`:'None',crt:crt.detected?`${crt.pattern} (${crt.rangeRatio}x)`:'Neutral',atr:a.toFixed(prec),volatility:volatility.level,rsi:rs.toFixed(1),twelveIndicators:twelveIndicators,zoneSrc:zone.src,zoneQuality:zone.quality,entryPrice:entry.toFixed(prec),zoneLow:zone.l.toFixed(prec),zoneHigh:zone.h.toFixed(prec),zoneConfluence:zone.confluence,confluenceCount:zone.cc,sweeps:sweepsText,imbalances:imbalancesText,msnrPivot:msnr.pivot.toFixed(prec),msnrS1:msnr.supports.S1?.toFixed(prec)||'--',msnrR1:msnr.resistances.R1?.toFixed(prec)||'--',suggestedSL:slResult.price.toFixed(prec),targetRR:settings.targetRR};
 const ai=await askAI(marketData);
 
 let dir,sl,tp1,tp2,tp3,reason,src,conviction,entryReason,slReason,possibleOutcomes;
 if(ai&&ai.trade_signal_Theghostmachine){const ts=ai.trade_signal_Theghostmachine;dir=ts.trade_type.includes('BUY')?'BUY':'SELL';conf=conf;entry=parseFloat(ts.entry_price)||entry;sl=parseFloat(ts.stop_loss)||slResult.price;tp1=tps.tp1;tp2=tps.tp2;tp3=tps.tp3;reason=ts.analysis?.trend_detection||'AI';src='AI';conviction='HIGH';entryReason=ts.analysis?.technical_indicators?.join('; ')||'';slReason='AI optimized';possibleOutcomes=ts.analysis?.possible_outcomes||[];}
 else if(ai&&ai.signal){dir=ai.signal;conf=ai.confidence||conf;entry=ai.entryPrice||entry;sl=ai.stopLoss||slResult.price;tp1=tps.tp1;tp2=tps.tp2;tp3=tps.tp3;reason=ai.entryReasoning||'AI';src='AI';conviction=ai.conviction||'MEDIUM';entryReason=ai.entryReasoning||'';slReason=ai.slReasoning||slResult.reason;possibleOutcomes=ai.possibleOutcomes||[];}
-else{dir=direction;sl=slResult.price;tp1=tps.tp1;tp2=tps.tp2;tp3=tps.tp3;reason=sig.reason+' | '+zone.confluence+' [Q:'+zone.quality+']';if(turtleSoup.detected)reason='🐢 '+turtleSoup.type;src=zone.src;conviction=probCheck.probability==='HIGH'?'HIGH':'MEDIUM';entryReason=`${zone.src} zone with ${zone.confluence}`;slReason=slResult.reason;possibleOutcomes=[`Price enters zone at $${entry.toFixed(prec)} and reverses`,`Price sweeps then reverses`,`Close beyond $${sl.toFixed(prec)} invalidates`];}
+else{dir=direction;sl=slResult.price;tp1=tps.tp1;tp2=tps.tp2;tp3=tps.tp3;reason=`${zone.confluence} [Q:${zone.quality}]`;if(turtleSoup.detected)reason='🐢 '+turtleSoup.type;src=zone.src;conviction=probCheck.probability==='HIGH'?'HIGH':'MEDIUM';entryReason=`${zone.src} zone with ${zone.confluence}`;slReason=slResult.reason;possibleOutcomes=[`Price enters at $${entry.toFixed(prec)} and reverses`,`Sweep then reverse`,`Close beyond $${sl.toFixed(prec)} invalidates`];}
 
-// FINAL VALIDATION: Force correct SL/TP direction
+// FINAL VALIDATION
 if(dir==='BUY'){if(sl>=entry)sl=entry-(entry*settings.maxSLPct);if(tp1<=entry)tp1=tps.tp1;if(tp2<=entry)tp2=tps.tp2;if(tp3<=entry)tp3=tps.tp3;}
 if(dir==='SELL'){if(sl<=entry)sl=entry+(entry*settings.maxSLPct);if(tp1>=entry)tp1=tps.tp1;if(tp2>=entry)tp2=tps.tp2;if(tp3>=entry)tp3=tps.tp3;}
 
@@ -201,12 +245,12 @@ const st=dir==='BUY'?'LONG':'SHORT';const risk=Math.abs(entry-sl);const slDist=r
 document.getElementById('currentPrice').innerHTML=`$${price.toFixed(prec)}`;
 if(lastPrice){const ch=((price-lastPrice)/lastPrice*100).toFixed(2);const ce=document.getElementById('priceChange');ce.innerHTML=`${ch>=0?'▲':'▼'} ${Math.abs(ch)}%`;ce.className=`price-change ${ch>=0?'up':'down'}`;}lastPrice=price;
 
-const out={trade_signal:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,timeframe:tf,current_price:price,trade_type:dir==='BUY'?'BUY-LIMIT':'SELL-LIMIT',entry_price:entry,stop_loss:sl,risk_amount:slDist.toFixed(prec),stop_loss_pct:((slDist/entry)*100).toFixed(2)+'%',take_profit_1:tp1,take_profit_2:tp2,take_profit_3:tp3,risk_reward:'1:'+rr,confidence:conf,conviction:conviction,entry_source:src,ai_used:src==='AI',entry_reasoning:entryReason,sl_reasoning:slReason,possible_outcomes:possibleOutcomes,zone_quality:zone.quality,zone_confluence:zone.confluence,confluence_count:zone.cc,probability:probCheck.probability,timeframe_alignment:{levels_tf:tf,levels_used:'MSNR Pivot, S1-S3, R1-R3',trend_tf:tf,trend_direction:mtf.direction,trend_strength:mtf.strength+'/4 TFs',entry_tf:tf,entry_zone:`${zone.src} at $${entry.toFixed(prec)}`,sniper_tf:'5M',sniper_confirmation:rejection5M.confirmed?'✅ Confirmed':'⚠️ No rejection - wait'},turtle_soup:turtleSoup,crt_analysis:crt,twelve_data_indicators:twelveIndicators,msnr_levels:{pivot:msnr.pivot.toFixed(prec),supports:{S1:msnr.supports.S1?.toFixed(prec),S2:msnr.supports.S2?.toFixed(prec),S3:msnr.supports.S3?.toFixed(prec)},resistances:{R1:msnr.resistances.R1?.toFixed(prec),R2:msnr.resistances.R2?.toFixed(prec),R3:msnr.resistances.R3?.toFixed(prec)}},sweeps:sweeps.filter(s=>s.distance<atr(data,14)*2).map(s=>({type:s.type,level:s.level,distance:s.distance})),analysis:{trend_detection:`${mtf.direction} (${mtf.strength}/4 TFs)${mtf.strength>=3?' - STRONG':''}`,volatility_level:`${volatility.level} - ${volatility.desc}`,market_structure:{mss:mss?mss.type:'None',displacement:displacement.detected,sniper_rejection:rejection5M.confirmed,turtle_soup:turtleSoup.detected,crt_pattern:crt.pattern},indicator_confluence:{macd:twelveIndicators.macd?`${twelveIndicators.macd>twelveIndicators.macd_signal?'Bullish':'Bearish'}`:'N/A',adx:twelveIndicators.adx?`${twelveIndicators.adx>25?'Trending':'Ranging'} (${twelveIndicators.adx})`:'N/A',stochastic:twelveIndicators.stoch_k?`K:${twelveIndicators.stoch_k} D:${twelveIndicators.stoch_d}`:'N/A'},technical_indicators:[`RSI: ${twelveIndicators.rsi||rs.toFixed(1)}`,`MACD: ${twelveIndicators.macd||'N/A'}`,`ADX: ${twelveIndicators.adx||'N/A'}`,`FVG: ${fvgsAll.length} (${fvgsAll.filter(f=>f.fresh).length} fresh)`],reasoning:reason}}};
+const out={trade_signal:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,timeframe:tf,current_price:price,trade_type:dir==='BUY'?'BUY-LIMIT':'SELL-LIMIT',entry_price:entry,stop_loss:sl,risk_amount:slDist.toFixed(prec),stop_loss_pct:((slDist/entry)*100).toFixed(2)+'%',take_profit_1:tp1,take_profit_2:tp2,take_profit_3:tp3,risk_reward:'1:'+rr,confidence:conf,conviction:conviction,entry_source:src,ai_used:src==='AI',entry_reasoning:entryReason,sl_reasoning:slReason,possible_outcomes:possibleOutcomes,zone_quality:zone.quality,zone_confluence:zone.confluence,confluence_count:zone.cc,probability:probCheck.probability,timeframe_alignment:{trend_tf:trendTF,structure_tf:structureTF,entry_tf:entryTF,sniper_tf:sniperTF,alignment:`${trendTF} → ${structureTF} → ${entryTF} → ${sniperTF}`,trend_direction:mtf.direction,trend_strength:mtf.strength+'/4 TFs',sniper_confirmation:sniperRej.confirmed?'✅ Confirmed':'⚠️ No rejection'},turtle_soup:turtleSoup,crt_analysis:crt,twelve_data_indicators:twelveIndicators,msnr_levels:{pivot:msnr.pivot.toFixed(prec),supports:{S1:msnr.supports.S1?.toFixed(prec),S2:msnr.supports.S2?.toFixed(prec),S3:msnr.supports.S3?.toFixed(prec)},resistances:{R1:msnr.resistances.R1?.toFixed(prec),R2:msnr.resistances.R2?.toFixed(prec),R3:msnr.resistances.R3?.toFixed(prec)}},sweeps:sweeps.filter(s=>s.distance<a*2).map(s=>({type:s.type,level:s.level,distance:s.distance})),analysis:{trend_detection:`${mtf.direction} (${mtf.strength}/4 TFs)${mtf.strength>=3?' - STRONG':''}`,volatility_level:`${volatility.level} - ${volatility.desc}`,market_structure:{mss:mss?mss.type:'None',displacement:displacement.detected,sniper_rejection:sniperRej.confirmed,turtle_soup:turtleSoup.detected,crt_pattern:crt.pattern},indicator_confluence:{macd:twelveIndicators.macd?`${twelveIndicators.macd>twelveIndicators.macd_signal?'Bullish':'Bearish'}`:'N/A',adx:twelveIndicators.adx?`${twelveIndicators.adx>25?'Trending':'Ranging'}`:'N/A',stochastic:twelveIndicators.stoch_k?`K:${twelveIndicators.stoch_k} D:${twelveIndicators.stoch_d}`:'N/A'},technical_indicators:[`RSI: ${twelveIndicators.rsi||rs.toFixed(1)}`,`MACD: ${twelveIndicators.macd||'N/A'}`,`ADX: ${twelveIndicators.adx||'N/A'}`,`FVG: ${fvgsAll.length} (${fvgsAll.filter(f=>f.fresh).length} fresh)`],reasoning:reason}}};
 
 document.getElementById('jsonOutput').innerHTML=JSON.stringify(out,null,2);
 analysis={signalType:st,idealEntry:entry,currentPrice:price,stopLoss:sl,takeProfit1:tp1,takeProfit2:tp2,takeProfit3:tp3,confidence:conf};
 document.getElementById('executeBtn').disabled=false;
-showNotif(`✅ ${st} ${conf}% | Q:${zone.quality} | ${conviction} | 1:${rr}`,'success');
+showNotif(`✅ ${st} ${conf}% | ${zone.quality} | TF:${trendTF}→${entryTF} | 1:${rr}`,'success');
 }catch(e){console.error(e);showNotif('Error: '+e.message,'error');}finally{btn.classList.remove('loading');btn.disabled=false;}}
 
 // ============================================
