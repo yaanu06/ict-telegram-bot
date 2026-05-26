@@ -72,10 +72,10 @@ function getPrec(p){const s=getMarketSettings(p);return s.prec;}
 // ============================================
 async function getPrice(){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(SYMBOLS[pair])}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.price){calls++;document.getElementById('apiSource').innerHTML='📡 Live';return +d.price;}}catch(e){}return null;}
 async function getHistory(tfStr){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${TF_MAP[tfStr]}&outputsize=100&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){calls++;return d.values.map(c=>({t:c.datetime,o:+c.open,h:+c.high,l:+c.low,c:+c.close,v:+c.volume||1e6})).reverse();}}catch(e){}return null;}
-async function getTechnicalIndicators(tfUsed){if(!TWELVE_DATA_KEY)return{};const symbol=encodeURIComponent(SYMBOLS[pair]);const interval=TF_MAP[tfUsed];const ind={};try{const r=await fetch(`${TWELVE_DATA_BASE}/rsi?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.rsi=parseFloat(d.values[0].rsi);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/macd?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.macd=parseFloat(d.values[0].macd);ind.macd_signal=parseFloat(d.values[0].macd_signal);ind.macd_hist=parseFloat(d.values[0].macd_hist);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/adx?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.adx=parseFloat(d.values[0].adx);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/bbands?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.bb_upper=parseFloat(d.values[0].upper_band);ind.bb_middle=parseFloat(d.values[0].middle_band);ind.bb_lower=parseFloat(d.values[0].lower_band);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/stoch?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.stoch_k=parseFloat(d.values[0].slow_k);ind.stoch_d=parseFloat(d.values[0].slow_d);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/obv?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.obv=parseFloat(d.values[0].obv);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/cci?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.cci=parseFloat(d.values[0].cci);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/atr?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.atr_api=parseFloat(d.values[0].atr);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/williams?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.williams_r=parseFloat(d.values[0].williams);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/sar?symbol=${symbol}&interval=${interval}&acceleration=0.02&maximum=0.2&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.sar=parseFloat(d.values[0].sar);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/ad?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.adl=parseFloat(d.values[0].ad);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/ichimoku?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.ichimoku_tenkan=parseFloat(d.values[0].tenkan_sen);ind.ichimoku_kijun=parseFloat(d.values[0].kijun_sen);ind.ichimoku_senkou_a=parseFloat(d.values[0].senkou_span_a);ind.ichimoku_senkou_b=parseFloat(d.values[0].senkou_span_b);calls++;}}catch(e){}return ind;}
+async function getTechnicalIndicators(tfUsed){if(!TWELVE_DATA_KEY)return{};const symbol=encodeURIComponent(SYMBOLS[pair]);const interval=TF_MAP[tfUsed];const ind={};try{const r=await fetch(`${TWELVE_DATA_BASE}/rsi?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.rsi=parseFloat(d.values[0].rsi);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/macd?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.macd=parseFloat(d.values[0].macd);ind.macd_signal=parseFloat(d.values[0].macd_signal);ind.macd_hist=parseFloat(d.values[0].macd_hist);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/adx?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.adx=parseFloat(d.values[0].adx);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/bbands?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.bb_upper=parseFloat(d.values[0].upper_band);ind.bb_middle=parseFloat(d.values[0].middle_band);ind.bb_lower=parseFloat(d.values[0].lower_band);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/stoch?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.stoch_k=parseFloat(d.values[0].slow_k);ind.stoch_d=parseFloat(d.values[0].slow_d);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/cci?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.cci=parseFloat(d.values[0].cci);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/atr?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.atr_api=parseFloat(d.values[0].atr);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/williams?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.williams_r=parseFloat(d.values[0].williams);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/sar?symbol=${symbol}&interval=${interval}&acceleration=0.02&maximum=0.2&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.sar=parseFloat(d.values[0].sar);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/ichimoku?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.ichimoku_tenkan=parseFloat(d.values[0].tenkan_sen);ind.ichimoku_kijun=parseFloat(d.values[0].kijun_sen);ind.ichimoku_senkou_a=parseFloat(d.values[0].senkou_span_a);ind.ichimoku_senkou_b=parseFloat(d.values[0].senkou_span_b);calls++;}}catch(e){}return ind;}
 
 // ============================================
-// TECHNICALS
+// TECHNICALS (All unchanged - compact)
 // ============================================
 const ema=(p,n)=>{const m=2/(n+1);let e=[p[0]];for(let i=1;i<p.length;i++)e.push((p[i]-e[i-1])*m+e[i-1]);return e;};
 const rsi=(p,n=14)=>{let g=0,l=0;for(let i=p.length-n;i<p.length;i++){let c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;return al===0?100:100-(100/(1+ag/al));};
@@ -103,8 +103,8 @@ function calculateMSNR(data,currentPrice){const highs=data.map(c=>c.h),lows=data
 // PRECISION ENTRY ZONE
 // ============================================
 function findPrecisionEntry(data,price,direction,msnr){const a=atr(data,14),fvgs=detectFVG(data),breakers=detectBreakers(data),swings=findSwings(data,4);const imbalances=findImbalances(data);let allZones=[];
-if(direction==='BUY'){fvgs.filter(f=>f.type==='bull'&&f.l<price&&f.fresh).forEach(f=>{let s=30;let cf=['FVG'];if(breakers.find(b=>b.type==='BULL'&&Math.abs(b.p-f.l)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.L.find(x=>Math.abs(x.p-f.l)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport&&Math.abs(msnr.nearestSupport-f.l)<f.l*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-f.l)<f.l*0.005)){s+=25;cf.push('🧲Imbalance');}allZones.push({p:f.l,l:f.l,h:f.h,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});if(msnr.nearestSupport&&msnr.nearestSupport<price){let s=25;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bull'&&Math.abs(f.l-msnr.nearestSupport)<msnr.nearestSupport*0.003)){s+=25;cf.push('FVG');}if(swings.L.find(x=>Math.abs(x.p-msnr.nearestSupport)<msnr.nearestSupport*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-msnr.nearestSupport)<msnr.nearestSupport*0.005)){s+=25;cf.push('🧲Imbalance');}allZones.push({p:msnr.nearestSupport,l:msnr.nearestSupport*0.998,h:msnr.nearestSupport*1.002,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}}
-else{fvgs.filter(f=>f.type==='bear'&&f.h>price&&f.fresh).forEach(f=>{let s=30;let cf=['FVG'];if(breakers.find(b=>b.type==='BEAR'&&Math.abs(b.p-f.h)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.H.find(x=>Math.abs(x.p-f.h)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance&&Math.abs(msnr.nearestResistance-f.h)<f.h*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-f.h)<f.h*0.005)){s+=25;cf.push('🧲Imbalance');}allZones.push({p:f.h,l:f.l,h:f.h,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});if(msnr.nearestResistance&&msnr.nearestResistance>price){let s=25;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bear'&&Math.abs(f.h-msnr.nearestResistance)<msnr.nearestResistance*0.003)){s+=25;cf.push('FVG');}if(swings.H.find(x=>Math.abs(x.p-msnr.nearestResistance)<msnr.nearestResistance*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-msnr.nearestResistance)<msnr.nearestResistance*0.005)){s+=25;cf.push('🧲Imbalance');}allZones.push({p:msnr.nearestResistance,l:msnr.nearestResistance*0.998,h:msnr.nearestResistance*1.002,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}}
+if(direction==='BUY'){fvgs.filter(f=>f.type==='bull'&&f.l<price&&f.fresh).forEach(f=>{let s=30;let cf=['FVG'];if(breakers.find(b=>b.type==='BULL'&&Math.abs(b.p-f.l)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.L.find(x=>Math.abs(x.p-f.l)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport&&Math.abs(msnr.nearestSupport-f.l)<f.l*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-f.l)<f.l*0.005)){s+=25;cf.push('Imbalance');}allZones.push({p:f.l,l:f.l,h:f.h,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});if(msnr.nearestSupport&&msnr.nearestSupport<price){let s=25;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bull'&&Math.abs(f.l-msnr.nearestSupport)<msnr.nearestSupport*0.003)){s+=25;cf.push('FVG');}if(swings.L.find(x=>Math.abs(x.p-msnr.nearestSupport)<msnr.nearestSupport*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-msnr.nearestSupport)<msnr.nearestSupport*0.005)){s+=25;cf.push('Imbalance');}allZones.push({p:msnr.nearestSupport,l:msnr.nearestSupport*0.998,h:msnr.nearestSupport*1.002,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}}
+else{fvgs.filter(f=>f.type==='bear'&&f.h>price&&f.fresh).forEach(f=>{let s=30;let cf=['FVG'];if(breakers.find(b=>b.type==='BEAR'&&Math.abs(b.p-f.h)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.H.find(x=>Math.abs(x.p-f.h)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance&&Math.abs(msnr.nearestResistance-f.h)<f.h*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-f.h)<f.h*0.005)){s+=25;cf.push('Imbalance');}allZones.push({p:f.h,l:f.l,h:f.h,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});if(msnr.nearestResistance&&msnr.nearestResistance>price){let s=25;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bear'&&Math.abs(f.h-msnr.nearestResistance)<msnr.nearestResistance*0.003)){s+=25;cf.push('FVG');}if(swings.H.find(x=>Math.abs(x.p-msnr.nearestResistance)<msnr.nearestResistance*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-msnr.nearestResistance)<msnr.nearestResistance*0.005)){s+=25;cf.push('Imbalance');}allZones.push({p:msnr.nearestResistance,l:msnr.nearestResistance*0.998,h:msnr.nearestResistance*1.002,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}}
 allZones.sort((x,y)=>y.score-x.score);
 if(allZones.length>0){const b=allZones[0];return{p:b.p,l:b.l,h:b.h,src:b.src,confluence:b.confluence,cc:b.cc,quality:b.quality,hasImbalance:b.hasImbalance};}
 const rH=Math.max(...data.slice(-20).map(c=>c.h)),rL=Math.min(...data.slice(-20).map(c=>c.l)),r=rH-rL;
@@ -137,36 +137,7 @@ function score(data,price){const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl);cons
 async function updateMTFDisplay(){const tfs=['5M','15M','1H','4H'];for(let t of tfs){let d=await getHistory(t);if(!d||d.length<30)continue;let c=d.map(x=>x.c),tr=c[c.length-1]>c[c.length-20]?'BULLISH':(c[c.length-1]<c[c.length-20]?'BEARISH':'NEUTRAL');let el=document.getElementById(`trend${t}`);if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}}}
 
 // ============================================
-// GHOST MACHINE AI
-// ============================================
-async function askAI(marketData){if(!DEEPSEEK_API_KEY)return null;showNotif('🤖 Ghost AI...','info');
-const prompt=`Use the bot to find trade opportunity for today on ${pair}. Convert the analysis in {json}
-
-${pair} | Best TF: ${marketData.tf} | Entry TF: ${marketData.entryTF} | Sniper: ${marketData.sniperTF} | $${marketData.price}
-TF Alignment: ${marketData.tfAlign}
-MTF: ${marketData.mtfDir} (${marketData.mtfStr}/4) | 5M:${marketData.mtf5} 15M:${marketData.mtf15} 1H:${marketData.mtf1h} 4H:${marketData.mtf4h}
-
-INDICATORS: RSI:${marketData.rsi} | ATR:${marketData.atr} | Vol:${marketData.volatility}
-${marketData.twelveIndicators ? `MACD:${marketData.twelveIndicators.macd} (Sig:${marketData.twelveIndicators.macd_signal}) | ADX:${marketData.twelveIndicators.adx} | StochK:${marketData.twelveIndicators.stoch_k} | CCI:${marketData.twelveIndicators.cci}` : ''}
-${marketData.twelveIndicators ? `BB Upper:${marketData.twelveIndicators.bb_upper} Lower:${marketData.twelveIndicators.bb_lower} | W%R:${marketData.twelveIndicators.williams_r} | SAR:${marketData.twelveIndicators.sar}` : ''}
-${marketData.twelveIndicators ? `Ichimoku: TK=${marketData.twelveIndicators.ichimoku_tenkan} KJ=${marketData.twelveIndicators.ichimoku_kijun}` : ''}
-
-STRUCTURE: MSS:${marketData.mss} | TurtleSoup:${marketData.turtleSoup} | CRT:${marketData.crt}
-Displacement:${marketData.displacement} | SniperRej:${marketData.sniperRej}
-Sweeps:${marketData.sweeps} | Imbalances:${marketData.imbalances}
-
-ENTRY ZONE: ${marketData.zoneSrc} Q:${marketData.zoneQuality} | $${marketData.entryPrice} ($${marketData.zoneLow}-$${marketData.zoneHigh})
-Imbalance Magnet: ${marketData.hasImbalance} | Confluence: ${marketData.zoneConfluence} (${marketData.confluenceCount})
-Path to TP: ${marketData.pathClear}
-MSNR: Pivot:$${marketData.msnrPivot} S1:$${marketData.msnrS1} R1:$${marketData.msnrR1}
-Suggested SL: $${marketData.suggestedSL} | Target RR: 1:${marketData.targetRR}
-
-Return ONLY JSON:
-{"trade_signal_Theghostmachine":{"date":"${new Date().toISOString().split('T')[0]}","current_price":"${marketData.price}","pair":"${pair}","trade_type":"${marketData.direction==='BUY'?'BUY-LIMIT':'SELL-LIMIT'}","entry_price":${marketData.entryPrice},"stop_loss":${marketData.suggestedSL},"take_profit":${marketData.entryPrice},"analysis":{"market_context":"...","trend_detection":"...","volatility_level":"${marketData.volatility}","technical_indicators":["...","...","..."],"entry_logic":"...","sl_logic":"...","tp_logic":"...","possible_outcomes":["Primary","Alternative","Invalidation"]}}}`;
-try{const r=await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are TheGhostMachine. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:1000})});const d=await r.json();if(d.choices?.[0]){const m=d.choices[0].message.content.match(/\{[\s\S]*\}/);if(m)return JSON.parse(m[0]);}if(d.error)console.error('AI error:',d.error);}catch(e){console.error('AI fetch:',e);}return null;}
-
-// ============================================
-// ANALYZE SINGLE TIMEFRAME
+// ANALYZE SINGLE TIMEFRAME (No AI call - returns data only)
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price) {
     try {
@@ -219,7 +190,6 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         const crt = detectCRT(entryData, direction);
         const cl = entryData.map(c => c.c);
         const rs = rsi(cl, 14);
-        const e20v = ema(cl, 20), e50v = ema(cl, 50);
         const fvgsAll = detectFVG(entryData);
         const breakersAll = detectBreakers(entryData);
         
@@ -238,72 +208,69 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (twelveIndicators.macd_hist && direction === 'SELL' && twelveIndicators.macd < twelveIndicators.macd_signal) conf = Math.min(conf + 5, 98);
         if (twelveIndicators.adx && twelveIndicators.adx > 25) conf = Math.min(conf + 5, 98);
         
-        const sweepsText = sweeps.slice(0, 3).map(s => `${s.type}:$${s.level.toFixed(2)}`).join('; ') || 'None';
-        const imbalancesText = imbalances.map(i => `${i.type}:$${i.low.toFixed(2)}-$${i.high.toFixed(2)}`).join('; ') || 'None';
-        const prec = getPrec(pair);
-        const tfAlign = `Trend:${trendTF}→Structure:${structureTF}→Entry:${entryTF}→Sniper:${sniperTF} | ${mtf.strength >= 3 ? 'STRONG' : (mtf.strength >= 2 ? 'MODERATE' : 'WEAK')}`;
-        
-        // AI Market Data
-        const aiMarketData = {
-            tf: tfToAnalyze, entryTF, sniperTF, tfAlign,
-            price: price.toFixed(2),
-            mtfDir: mtf.direction, mtfStr: mtf.strength,
-            mtf5: trends['5M'] || '--', mtf15: trends['15M'] || '--', mtf1h: trends['1H'] || '--', mtf4h: trends['4H'] || '--',
-            direction, mss: mss ? `${mss.type} at $${mss.level.toFixed(2)}` : 'None',
-            turtleSoup: turtleSoup.detected ? `🐢 ${turtleSoup.type}` : 'None',
-            crt: crt.detected ? `${crt.pattern} (${crt.rangeRatio}x)` : 'Neutral',
-            atr: a.toFixed(prec), volatility: volatility.level,
-            rsi: rs.toFixed(1),
-            displacement: displacement.detected ? '✅' : '❌',
-            sniperRej: sniperRej.confirmed ? '✅' : '⚠️',
-            twelveIndicators,
-            zoneSrc: zone.src, zoneQuality: zone.quality,
-            entryPrice: entry.toFixed(prec), zoneLow: zone.l.toFixed(prec), zoneHigh: zone.h.toFixed(prec),
-            zoneConfluence: zone.confluence, confluenceCount: zone.cc,
-            hasImbalance: zone.hasImbalance ? '✅ Yes - Price magnet' : '❌ No magnet',
-            pathClear: pathCheck.clear ? '✅ Clear' : `⚠️ ${pathCheck.obstacles.join('; ')}`,
-            sweeps: sweepsText, imbalances: imbalancesText,
-            msnrPivot: msnr.pivot.toFixed(prec),
-            msnrS1: msnr.supports.S1?.toFixed(prec) || '--',
-            msnrR1: msnr.resistances.R1?.toFixed(prec) || '--',
-            suggestedSL: slResult.price.toFixed(prec),
-            targetRR: getMarketSettings(pair).targetRR
-        };
-        
-        // CALL AI
-        const ai = await askAI(aiMarketData);
-        
-        let aiEntryReason = '', aiSlReason = '', aiPossibleOutcomes = [], aiConviction = 'MEDIUM', aiReason = '';
-        if (ai && ai.trade_signal_Theghostmachine) {
-            const ts = ai.trade_signal_Theghostmachine;
-            aiEntryReason = ts.analysis?.entry_logic || ts.analysis?.technical_indicators?.join('; ') || '';
-            aiSlReason = ts.analysis?.sl_logic || 'AI optimized';
-            aiPossibleOutcomes = ts.analysis?.possible_outcomes || [];
-            aiConviction = 'HIGH';
-            aiReason = ts.analysis?.trend_detection || 'AI signal';
-        }
+        const tfAlign = `Trend:${trendTF}→Structure:${structureTF}→Entry:${entryTF}→Sniper:${sniperTF}`;
         
         return {
             timeframe: tfToAnalyze, trendTF, structureTF, entryTF, sniperTF,
-            direction, entry, sl: slResult.price,
-            tp1: tps.tp1, tp2: tps.tp2, tp3: tps.tp3,
-            confidence: conf,
-            zone, slResult, tps, displacement, sniperRej,
-            probCheck, turtleSoup, mtf, msnr,
-            twelveIndicators, pathCheck, tfAlign,
-            aiUsed: !!ai,
-            aiEntryReason, aiSlReason, aiPossibleOutcomes, aiConviction, aiReason,
-            sweeps, imbalances, mss, volatility, crt,
-            fvgsAll, breakersAll, rs, a, e20v, e50v, trends
+            direction, entry, sl: slResult.price, tp1: tps.tp1, tp2: tps.tp2, tp3: tps.tp3,
+            confidence: conf, zone, slResult, displacement, sniperRej,
+            probCheck, turtleSoup, mtf, msnr, twelveIndicators, pathCheck, tfAlign,
+            sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, rs, a, trends
         };
-    } catch (e) {
-        console.error(`Error analyzing ${tfToAnalyze}:`, e);
-        return null;
-    }
+    } catch (e) { console.error(`Error ${tfToAnalyze}:`, e); return null; }
 }
 
 // ============================================
-// AUTO SCAN ALL TIMEFRAMES
+// AI - CALLED ONCE WITH ALL RESULTS
+// ============================================
+async function askAIWithAllResults(allResults, price) {
+    if (!DEEPSEEK_API_KEY || allResults.length === 0) return null;
+    showNotif('🤖 AI selecting best setup...', 'info');
+    
+    // Build summary of all timeframes
+    let tfSummary = '';
+    for (const r of allResults) {
+        tfSummary += `${r.timeframe}: ${r.direction} | Entry:$${r.entry.toFixed(2)} | SL:$${r.sl.toFixed(2)} | TP1:$${r.tp1.toFixed(2)} | Conf:${r.confidence}% | Q:${r.zone.quality} | ${r.zone.confluence}\n`;
+    }
+    
+    const best = allResults[0]; // Highest confidence
+    const prec = getPrec(pair);
+    
+    const prompt = `You are TheGhostMachine - elite ICT sniper. Select the BEST trade from these multi-timeframe scan results.
+
+PAIR: ${pair} | PRICE: $${price.toFixed(2)} | DATE: ${new Date().toISOString().split('T')[0]}
+
+ALL SETUPS FOUND:
+${tfSummary}
+
+MTF TRENDS: ${best.trends ? `5M:${best.trends['5M']||'--'} 15M:${best.trends['15M']||'--'} 1H:${best.trends['1H']||'--'} 4H:${best.trends['4H']||'--'}` : 'N/A'}
+TOP PICK: ${best.timeframe} ${best.direction} | Entry:$${best.entry.toFixed(2)} | SL:$${best.sl.toFixed(2)} | TP1:$${best.tp1.toFixed(2)} | Conf:${best.confidence}%
+
+INDICATORS (${best.timeframe}):
+RSI:${best.twelveIndicators.rsi||best.rs.toFixed(1)} | MACD:${best.twelveIndicators.macd||'N/A'} | ADX:${best.twelveIndicators.adx||'N/A'}
+StochK:${best.twelveIndicators.stoch_k||'N/A'} | CCI:${best.twelveIndicators.cci||'N/A'} | W%R:${best.twelveIndicators.williams_r||'N/A'}
+SAR:${best.twelveIndicators.sar||'N/A'} | BB:${best.twelveIndicators.bb_upper||'N/A'}/${best.twelveIndicators.bb_lower||'N/A'}
+
+ZONE: ${best.zone.src} Q:${best.zone.quality} | ${best.zone.confluence} (${best.zone.cc} factors)
+Imbalance Magnet: ${best.zone.hasImbalance?'YES':'NO'} | Path Clear: ${best.pathCheck.clear?'YES':'NO (${best.pathCheck.count} obstacles)'}
+Turtle Soup: ${best.turtleSoup.detected?best.turtleSoup.type:'None'} | CRT: ${best.crt.pattern}
+
+Return ONLY JSON selecting the best setup:
+{"trade_signal_Theghostmachine":{"date":"${new Date().toISOString().split('T')[0]}","current_price":"${price.toFixed(2)}","pair":"${pair}","selected_timeframe":"${best.timeframe}","trade_type":"${best.direction==='BUY'?'BUY-LIMIT':'SELL-LIMIT'}","entry_price":${best.entry.toFixed(2)},"stop_loss":${best.sl.toFixed(2)},"take_profit":${best.tp1.toFixed(2)},"take_profit_2":${best.tp2.toFixed(2)},"take_profit_3":${best.tp3.toFixed(2)},"analysis":{"market_context":"...","trend_detection":"...","volatility_level":"${best.volatility.level}","technical_indicators":["...","..."],"entry_logic":"...","sl_logic":"...","possible_outcomes":["Primary","Alternative","Invalidation"]}}}`;
+
+    try {
+        const r = await fetch(DEEPSEEK_API_URL, {
+            method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},
+            body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are TheGhostMachine. Select the best setup. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:1000})
+        });
+        const d = await r.json();
+        if (d.choices?.[0]) { const m = d.choices[0].message.content.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); }
+    } catch(e) { console.error('AI fetch:', e); }
+    return null;
+}
+
+// ============================================
+// AUTO SCAN - AI CALLED ONCE AT THE END
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
@@ -324,54 +291,51 @@ async function runAutoScan() {
         
         await updateMTFDisplay();
         document.getElementById('currentPrice').innerHTML = `$${price.toFixed(getPrec(pair))}`;
-        if (lastPrice) {
-            const ch = ((price - lastPrice) / lastPrice * 100).toFixed(2);
-            const ce = document.getElementById('priceChange');
-            ce.innerHTML = `${ch >= 0 ? '▲' : '▼'} ${Math.abs(ch)}%`;
-            ce.className = `price-change ${ch >= 0 ? 'up' : 'down'}`;
-        }
+        if (lastPrice) { const ch = ((price - lastPrice) / lastPrice * 100).toFixed(2); const ce = document.getElementById('priceChange'); ce.innerHTML = `${ch >= 0 ? '▲' : '▼'} ${Math.abs(ch)}%`; ce.className = `price-change ${ch >= 0 ? 'up' : 'down'}`; }
         lastPrice = price;
         
         const results = [];
         const timeframesToScan = ['5M', '15M', '1H', '4H', '1D'];
         
+        // Phase 1: Scan all timeframes (no AI)
         for (let i = 0; i < timeframesToScan.length; i++) {
             const tfScan = timeframesToScan[i];
             scanText.innerHTML = `Scanning ${tfScan}... (${i + 1}/${timeframesToScan.length})`;
             scanFill.style.width = ((i + 1) / timeframesToScan.length * 100) + '%';
             
             const result = await analyzeTimeframe(tfScan, price);
-            if (result && result.confidence >= 40) {
-                results.push(result);
-            }
+            if (result && result.confidence >= 40) results.push(result);
         }
-        
-        scanStatus.classList.add('hidden');
         
         if (results.length === 0) {
-            showNotif('⚠️ No valid setups found across any timeframe', 'warning');
-            document.getElementById('jsonOutput').innerHTML = JSON.stringify({
-                auto_scan_result: {
-                    date: new Date().toISOString().split('T')[0],
-                    time: new Date().toISOString().split('T')[1].split('.')[0],
-                    pair, current_price: price,
-                    status: 'NO_SETUP',
-                    message: 'No high-probability setups detected',
-                    timeframes_scanned: timeframesToScan.length
-                }
-            }, null, 2);
-            btn.classList.remove('loading'); btn.disabled = false;
-            return;
+            showNotif('⚠️ No valid setups found', 'warning');
+            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',timeframes_scanned:timeframesToScan.length}}, null, 2);
+            btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
-        // Sort by confidence (highest first)
         results.sort((a, b) => b.confidence - a.confidence);
-        const best = results[0];
         
-        const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
+        // Phase 2: Call AI ONCE with all results
+        scanText.innerHTML = '🤖 AI analyzing all setups...';
+        const aiResult = await askAIWithAllResults(results, price);
+        
+        scanStatus.classList.add('hidden');
+        const best = results[0];
         const prec = getPrec(pair);
         const risk = Math.abs(best.entry - best.sl);
         const rr = (Math.abs(best.tp1 - best.entry) / risk).toFixed(1);
+        const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
+        
+        // Build output
+        let aiReason = '', aiEntryLogic = '', aiSlLogic = '', aiOutcomes = [], aiConviction = 'MEDIUM';
+        if (aiResult && aiResult.trade_signal_Theghostmachine) {
+            const ts = aiResult.trade_signal_Theghostmachine;
+            aiReason = ts.analysis?.trend_detection || '';
+            aiEntryLogic = ts.analysis?.entry_logic || '';
+            aiSlLogic = ts.analysis?.sl_logic || '';
+            aiOutcomes = ts.analysis?.possible_outcomes || [];
+            aiConviction = 'HIGH';
+        }
         
         const out = {
             auto_scan_result: {
@@ -380,14 +344,7 @@ async function runAutoScan() {
                 pair, current_price: price,
                 best_timeframe: best.timeframe,
                 total_setups_found: results.length,
-                all_setups: results.map(r => ({
-                    timeframe: r.timeframe,
-                    direction: r.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT',
-                    confidence: r.confidence,
-                    entry: r.entry,
-                    quality: r.zone.quality,
-                    ai_analyzed: r.aiUsed
-                })),
+                ai_analyzed: !!aiResult,
                 trade_signal: {
                     trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT',
                     entry_price: best.entry,
@@ -399,16 +356,12 @@ async function runAutoScan() {
                     take_profit_3: best.tp3,
                     risk_reward: '1:' + rr,
                     confidence: best.confidence,
-                    conviction: best.aiConviction,
-                    entry_source: best.aiUsed ? 'AI' : 'Rule-Based',
-                    ai_used: best.aiUsed,
-                    entry_reasoning: best.aiEntryReason || `${best.zone.src} zone with ${best.zone.confluence}`,
-                    sl_reasoning: best.aiSlReason || best.slResult.reason,
-                    possible_outcomes: best.aiPossibleOutcomes.length > 0 ? best.aiPossibleOutcomes : [
-                        `Price enters at $${best.entry.toFixed(prec)} and reverses to TP`,
-                        `Sweep then reverse`,
-                        `Close beyond $${best.sl.toFixed(prec)} invalidates`
-                    ],
+                    conviction: aiConviction,
+                    entry_source: aiResult ? 'AI' : 'Rule-Based',
+                    ai_used: !!aiResult,
+                    entry_reasoning: aiEntryLogic || `${best.zone.src} zone with ${best.zone.confluence}`,
+                    sl_reasoning: aiSlLogic || best.slResult.reason,
+                    possible_outcomes: aiOutcomes.length > 0 ? aiOutcomes : [`Enter at $${best.entry.toFixed(prec)} and reverse`, `Sweep then reverse`, `Close beyond $${best.sl.toFixed(prec)} invalidates`],
                     zone_quality: best.zone.quality,
                     zone_confluence: best.zone.confluence,
                     confluence_count: best.zone.cc,
@@ -416,13 +369,9 @@ async function runAutoScan() {
                     path_clearance: { clear: best.pathCheck.clear, obstacles: best.pathCheck.obstacles },
                     probability: best.probCheck.probability,
                     timeframe_alignment: {
-                        trend_tf: best.trendTF,
-                        structure_tf: best.structureTF,
-                        entry_tf: best.entryTF,
-                        sniper_tf: best.sniperTF,
+                        trend_tf: best.trendTF, structure_tf: best.structureTF, entry_tf: best.entryTF, sniper_tf: best.sniperTF,
                         alignment: best.tfAlign,
-                        trend_direction: best.mtf.direction,
-                        trend_strength: best.mtf.strength + '/4 TFs',
+                        trend_direction: best.mtf.direction, trend_strength: best.mtf.strength + '/4 TFs',
                         sniper_confirmation: best.sniperRej.confirmed ? '✅ Confirmed' : '⚠️ No rejection'
                     },
                     turtle_soup: best.turtleSoup,
@@ -437,57 +386,24 @@ async function runAutoScan() {
                     analysis: {
                         trend_detection: `${best.mtf.direction} (${best.mtf.strength}/4 TFs)${best.mtf.strength >= 3 ? ' - STRONG' : ''}`,
                         volatility_level: `${best.volatility.level} - ${best.volatility.desc}`,
-                        market_structure: {
-                            mss: best.mss ? best.mss.type : 'None',
-                            displacement: best.displacement.detected,
-                            sniper_rejection: best.sniperRej.confirmed,
-                            turtle_soup: best.turtleSoup.detected,
-                            crt_pattern: best.crt.pattern,
-                            imbalance_magnet: best.zone.hasImbalance
-                        },
-                        indicator_confluence: {
-                            macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A',
-                            adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'}` : 'N/A',
-                            stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A',
-                            cci: best.twelveIndicators.cci || 'N/A',
-                            williams_r: best.twelveIndicators.williams_r || 'N/A',
-                            sar: best.twelveIndicators.sar ? `$${best.twelveIndicators.sar}` : 'N/A',
-                            ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A'
-                        },
-                        technical_indicators: [
-                            `RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`,
-                            `MACD: ${best.twelveIndicators.macd || 'N/A'}`,
-                            `ADX: ${best.twelveIndicators.adx || 'N/A'}`,
-                            `ATR: ${best.twelveIndicators.atr_api || best.a.toFixed(prec)}`,
-                            `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`,
-                            `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`
-                        ],
-                        reasoning: best.aiReason || `${best.zone.confluence} [Q:${best.zone.quality}]${best.zone.hasImbalance ? ' 🧲' : ''}`
+                        market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, imbalance_magnet: best.zone.hasImbalance },
+                        indicator_confluence: { macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A', adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'}` : 'N/A', stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A', cci: best.twelveIndicators.cci || 'N/A', williams_r: best.twelveIndicators.williams_r || 'N/A', sar: best.twelveIndicators.sar ? `$${best.twelveIndicators.sar}` : 'N/A', ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A' },
+                        technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ATR: ${best.twelveIndicators.atr_api || best.a.toFixed(prec)}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`],
+                        reasoning: aiReason || `${best.zone.confluence} [Q:${best.zone.quality}]${best.zone.hasImbalance ? ' 🧲' : ''}`
                     }
                 }
             }
         };
         
         document.getElementById('jsonOutput').innerHTML = JSON.stringify(out, null, 2);
-        analysis = {
-            signalType: st, idealEntry: best.entry, currentPrice: price,
-            stopLoss: best.sl, takeProfit1: best.tp1, takeProfit2: best.tp2, takeProfit3: best.tp3,
-            confidence: best.confidence
-        };
+        analysis = { signalType: st, idealEntry: best.entry, currentPrice: price, stopLoss: best.sl, takeProfit1: best.tp1, takeProfit2: best.tp2, takeProfit3: best.tp3, confidence: best.confidence };
         document.getElementById('executeBtn').disabled = false;
         
-        const magLabel = best.zone.hasImbalance ? '🧲' : '';
-        const aiLabel = best.aiUsed ? '🤖' : '';
-        showNotif(`${aiLabel}${magLabel} Best: ${best.timeframe} ${st} ${best.confidence}% | Q:${best.zone.quality} | 1:${rr} | ${results.length} setups`, 'success');
+        const aiLabel = aiResult ? '🤖' : '';
+        showNotif(`${aiLabel} Best: ${best.timeframe} ${st} ${best.confidence}% | Q:${best.zone.quality} | 1:${rr} | AI called 1x`, 'success');
         
-    } catch (e) {
-        console.error(e);
-        showNotif('Error: ' + e.message, 'error');
-        scanStatus.classList.add('hidden');
-    } finally {
-        btn.classList.remove('loading');
-        btn.disabled = false;
-    }
+    } catch (e) { console.error(e); showNotif('Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
+    finally { btn.classList.remove('loading'); btn.disabled = false; }
 }
 
 // ============================================
