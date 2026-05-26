@@ -11,7 +11,7 @@
     <div class="container">
         <div class="header">
             <h1>📊 ICT Trading Bot Pro</h1>
-            <p class="subtitle">AI-Powered | Limit Orders | JSON Output</p>
+            <p class="subtitle">AI-Powered | Multi-TF Auto Scan | Limit Orders</p>
             <div class="status-row">
                 <span id="liveTime" class="live-time"></span>
                 <span id="apiSource" class="api-source">⚪ Ready</span>
@@ -51,7 +51,6 @@
                 <option value="XAU/USD" selected>👑 XAU/USD</option>
                 <option value="XAG/USD">🥈 XAG/USD</option>
                 <option value="BTC/USD">₿ BTC/USD</option>
-                <option value="ETH/USD">⟠ ETH/USD</option>
                 <option value="EUR/USD">€ EUR/USD</option>
                 <option value="GBP/USD">£ GBP/USD</option>
             </select>
@@ -64,21 +63,9 @@
             <div id="priceChange" class="price-change">--</div>
         </div>
 
-        <!-- Timeframe Selection -->
+        <!-- Multi-Timeframe Display (Info Only) -->
         <div class="section">
-            <h3>⏱️ Timeframe</h3>
-            <div class="timeframe-btns">
-                <button class="tf-btn" data-tf="5M">5M</button>
-                <button class="tf-btn active" data-tf="15M">15M</button>
-                <button class="tf-btn" data-tf="1H">1H</button>
-                <button class="tf-btn" data-tf="4H">4H</button>
-                <button class="tf-btn" data-tf="1D">1D</button>
-            </div>
-        </div>
-
-        <!-- Multi-Timeframe Analysis -->
-        <div class="section">
-            <h3>📊 Multi-Timeframe</h3>
+            <h3>📊 Multi-Timeframe Trends</h3>
             <div class="mtf-grid">
                 <div class="mtf-card"><div class="mtf-header">5M</div><div class="mtf-trend" id="trend5M">--</div></div>
                 <div class="mtf-card"><div class="mtf-header">15M</div><div class="mtf-trend" id="trend15M">--</div></div>
@@ -87,15 +74,24 @@
             </div>
         </div>
 
-        <button id="analyzeBtn" class="analyze-btn">🔍 Analyze Market</button>
+        <!-- AUTO SCAN BUTTON -->
+        <button id="analyzeBtn" class="analyze-btn">🔍 Auto-Scan All Timeframes</button>
+        
+        <!-- Scanning Status -->
+        <div id="scanStatus" class="scan-status hidden">
+            <div class="scan-progress">
+                <span id="scanText">Scanning 1D...</span>
+                <div class="progress-bar"><div id="scanProgressFill" class="progress-fill"></div></div>
+            </div>
+        </div>
 
         <!-- JSON Output -->
         <div class="section json-section">
             <div class="json-header">
-                <h3>📋 Analysis Output</h3>
+                <h3>📋 Best Setup Found</h3>
                 <button id="copyJsonBtn" class="copy-json-btn">📋 Copy</button>
             </div>
-            <pre id="jsonOutput" class="json-output">Click "Analyze Market" to generate signal...</pre>
+            <pre id="jsonOutput" class="json-output">Click "Auto-Scan All Timeframes" to find the best setup...</pre>
         </div>
 
         <!-- Limit Order Status -->
