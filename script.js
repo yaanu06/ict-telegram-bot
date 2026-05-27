@@ -43,7 +43,12 @@ function getMarketSettings(p) {
     if (p === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.015, targetRR: 4, prec: 2, slBuffers: { '5M': 30, '15M': 50, '1H': 80, '4H': 120, '1D': 200 } };
     return { slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.005, targetRR: 4, prec: 5, slBuffers: { '5M': 0.0003, '15M': 0.0005, '1H': 0.0008, '4H': 0.0012, '1D': 0.0020 } };
 }
-function getSLBufferForTF(atrValue, tfUsed) { const s = getMarketSettings(pair); return Math.max(s.slBuffers[tfUsed] || s.slBuffers['15M'] || 3, atrValue * 0.5); }
+function getSLBufferForTF(apiATR, tfUsed) { 
+    const s = getMarketSettings(pair); 
+    const tfBuffer = s.slBuffers[tfUsed] || s.slBuffers['15M'] || 3;
+    // Use API ATR * 0.5 as minimum, but use timeframe-specific buffer as base
+    return Math.max(tfBuffer, apiATR * 0.5); 
+}
 
 // ============================================
 // API KEYS MANAGEMENT
@@ -95,96 +100,48 @@ function detectCRT(data,direction){if(data.length<10)return{detected:false};cons
 function checkPathClearance(entryData,entry,tp,direction){const obstacles=[];const fvgs=detectFVG(entryData);const swings=findSwings(entryData,3);if(direction==='BUY'){const bearFVGs=fvgs.filter(f=>f.type==='bear'&&f.l>entry&&f.l<tp);if(bearFVGs.length>0)obstacles.push('Bearish FVG');const swingHighs=swings.H.filter(s=>s.p>entry&&s.p<tp);if(swingHighs.length>0)obstacles.push('Swing high');}else{const bullFVGs=fvgs.filter(f=>f.type==='bull'&&f.h>tp&&f.h<entry);if(bullFVGs.length>0)obstacles.push('Bullish FVG');const swingLows=swings.L.filter(s=>s.p>tp&&s.p<entry);if(swingLows.length>0)obstacles.push('Swing low');}return{clear:obstacles.length===0,obstacles,count:obstacles.length};}
 
 // ============================================
-// ZONE MAGNETISM CHECK (NEW!)
+// ZONE MAGNETISM CHECK
 // ============================================
 function checkZoneMagnetism(entryData, price, entry, direction) {
     const imbalances = findImbalances(entryData);
     const sweeps = detectLiquiditySweeps(entryData, price);
-    const a = atr(entryData, 14);
     
     let score = 0;
     const checks = [];
     
-    // 1. Check if there's an imbalance pulling price toward entry
     if (direction === 'BUY') {
-        // For BUY: entry is below price. Look for bullish imbalances between entry and price
         const pullingImbalances = imbalances.filter(i => i.type === 'BULLISH' && i.low > entry && i.high < price);
-        if (pullingImbalances.length > 0) {
-            score += 30;
-            checks.push({name: 'Imbalance pulling toward zone', passed: true, detail: `${pullingImbalances.length} bullish imbalance(s) between entry and price`});
-        } else {
-            checks.push({name: 'Imbalance pulling toward zone', passed: false, detail: 'No imbalance magnet between current price and entry'});
-        }
+        if (pullingImbalances.length > 0) { score += 30; checks.push({name: 'Imbalance pulling toward zone', passed: true, detail: `${pullingImbalances.length} bullish imbalance(s)`}); }
+        else { checks.push({name: 'Imbalance pulling toward zone', passed: false, detail: 'No imbalance magnet'}); }
     } else {
-        // For SELL: entry is above price. Look for bearish imbalances between price and entry
         const pullingImbalances = imbalances.filter(i => i.type === 'BEARISH' && i.low > price && i.high < entry);
-        if (pullingImbalances.length > 0) {
-            score += 30;
-            checks.push({name: 'Imbalance pulling toward zone', passed: true, detail: `${pullingImbalances.length} bearish imbalance(s) between price and entry`});
-        } else {
-            checks.push({name: 'Imbalance pulling toward zone', passed: false, detail: 'No imbalance magnet between current price and entry'});
-        }
+        if (pullingImbalances.length > 0) { score += 30; checks.push({name: 'Imbalance pulling toward zone', passed: true, detail: `${pullingImbalances.length} bearish imbalance(s)`}); }
+        else { checks.push({name: 'Imbalance pulling toward zone', passed: false, detail: 'No imbalance magnet'}); }
     }
     
-    // 2. Check if sweeps support direction toward zone
     const supportingSweeps = sweeps.filter(s => direction === 'BUY' ? s.direction === 'BULLISH' : s.direction === 'BEARISH');
-    if (supportingSweeps.length > 0) {
-        score += 25;
-        checks.push({name: 'Sweeps support direction', passed: true, detail: `${supportingSweeps.length} sweep(s) supporting ${direction}`});
-    } else {
-        checks.push({name: 'Sweeps support direction', passed: false, detail: 'No sweeps supporting direction toward zone'});
-    }
+    if (supportingSweeps.length > 0) { score += 25; checks.push({name: 'Sweeps support direction', passed: true, detail: `${supportingSweeps.length} sweep(s)`}); }
+    else { checks.push({name: 'Sweeps support direction', passed: false, detail: 'No supporting sweeps'}); }
     
-    // 3. Check momentum direction (EMA alignment)
     const closes = entryData.map(c => c.c);
     const e20 = ema(closes, 20), e50 = ema(closes, 50);
-    const cE20 = e20[e20.length - 1], cE50 = e50[e50.length - 1];
-    const prevE20 = e20[e20.length - 3];
+    const cE20 = e20[e20.length - 1], cE50 = e50[e50.length - 1], prevE20 = e20[e20.length - 3];
+    if (direction === 'BUY' && cE20 > cE50 && cE20 > prevE20) { score += 20; checks.push({name: 'EMA momentum aligned', passed: true, detail: 'Bullish momentum'}); }
+    else if (direction === 'SELL' && cE20 < cE50 && cE20 < prevE20) { score += 20; checks.push({name: 'EMA momentum aligned', passed: true, detail: 'Bearish momentum'}); }
+    else { checks.push({name: 'EMA momentum aligned', passed: false, detail: 'Not aligned'}); }
     
-    if (direction === 'BUY' && cE20 > cE50 && cE20 > prevE20) {
-        score += 20;
-        checks.push({name: 'EMA momentum aligned', passed: true, detail: 'EMA20 > EMA50 and rising - bullish momentum'});
-    } else if (direction === 'SELL' && cE20 < cE50 && cE20 < prevE20) {
-        score += 20;
-        checks.push({name: 'EMA momentum aligned', passed: true, detail: 'EMA20 < EMA50 and falling - bearish momentum'});
-    } else {
-        checks.push({name: 'EMA momentum aligned', passed: false, detail: 'EMA not confirming direction toward zone'});
-    }
-    
-    // 4. Check zone proximity (closer = more likely to reach)
     const distancePct = Math.abs(price - entry) / price * 100;
-    if (distancePct < 0.3) {
-        score += 15;
-        checks.push({name: 'Zone proximity', passed: true, detail: `Very close (${distancePct.toFixed(2)}%) - high probability of fill`});
-    } else if (distancePct < 0.8) {
-        score += 10;
-        checks.push({name: 'Zone proximity', passed: true, detail: `Reachable (${distancePct.toFixed(2)}%)`});
-    } else if (distancePct < 2.0) {
-        score += 5;
-        checks.push({name: 'Zone proximity', passed: true, detail: `Extended (${distancePct.toFixed(2)}%) - may take time`});
-    } else {
-        checks.push({name: 'Zone proximity', passed: false, detail: `Very far (${distancePct.toFixed(2)}%) - unlikely to reach soon`});
-    }
+    if (distancePct < 0.3) { score += 15; checks.push({name: 'Zone proximity', passed: true, detail: `Very close (${distancePct.toFixed(2)}%)`}); }
+    else if (distancePct < 0.8) { score += 10; checks.push({name: 'Zone proximity', passed: true, detail: `Reachable (${distancePct.toFixed(2)}%)`}); }
+    else if (distancePct < 2.0) { score += 5; checks.push({name: 'Zone proximity', passed: true, detail: `Extended (${distancePct.toFixed(2)}%)`}); }
+    else { checks.push({name: 'Zone proximity', passed: false, detail: `Very far (${distancePct.toFixed(2)}%)`}); }
     
-    // 5. Check displacement
     const displacement = detectDisplacement(entryData, direction);
-    if (displacement.detected) {
-        score += 10;
-        checks.push({name: 'Displacement momentum', passed: true, detail: 'Strong displacement toward zone'});
-    } else {
-        checks.push({name: 'Displacement momentum', passed: false, detail: 'No displacement - weaker pull toward zone'});
-    }
+    if (displacement.detected) { score += 10; checks.push({name: 'Displacement momentum', passed: true, detail: 'Detected'}); }
+    else { checks.push({name: 'Displacement momentum', passed: false, detail: 'None'}); }
     
     const magnetism = score >= 60 ? 'STRONG' : (score >= 35 ? 'MODERATE' : 'WEAK');
-    
-    return {
-        magnetism,
-        score,
-        maxScore: 100,
-        checks,
-        likelyToReach: score >= 35,
-        summary: `Zone magnetism: ${magnetism} (${score}/100). ${score >= 35 ? 'Price likely to reach zone.' : 'Price unlikely to reach zone - weak magnet.'}`
-    };
+    return { magnetism, score, maxScore: 100, checks, likelyToReach: score >= 35, summary: `Zone magnetism: ${magnetism} (${score}/100)` };
 }
 
 // ============================================
@@ -210,12 +167,34 @@ else{return{p:rH-r*.3,l:rH-r*.79,h:rH-r*.618,src:'OTE',confluence:'OTE',cc:1,qua
 function checkProbability(zone,mtf,magnetism){const checks=[];checks.push({name:'Confluence (2+)',passed:zone.cc>=2,critical:true});checks.push({name:'MTF aligned (2+)',passed:mtf.strength>=2,critical:true});checks.push({name:'Zone Magnetism',passed:magnetism.likelyToReach,critical:true});checks.push({name:'Imbalance Magnet',passed:zone.hasImbalance,critical:false});checks.push({name:'Quality A/B',passed:zone.quality==='A'||zone.quality==='B',critical:false});const cp=checks.filter(c=>c.critical).every(c=>c.passed);const tp=checks.filter(c=>c.passed).length;return{probability:cp?(tp>=4?'HIGH':(tp>=3?'MEDIUM':'LOW')):'LOW',checks,totalPassed:tp,passed:cp};}
 
 // ============================================
-// STOP LOSS
+// STOP LOSS - NOW USES API ATR
 // ============================================
-function calcStopLoss(data,dir,entry,zone,msnr,tfUsed){const a=atr(data,14),swings=findSwings(data,4),fvgs=detectFVG(data);const s=getMarketSettings(pair);const maxSLD=entry*s.maxSLPct;const slBuf=getSLBufferForTF(a,tfUsed);let c=[];if(dir==='BUY'){if(msnr&&msnr.allSupports){msnr.allSupports.filter(x=>x<entry).forEach(x=>{const sl=x-slBuf;const d=entry-sl;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Below MSNR',distance:d});});}if(zone&&zone.l<entry){const sl=zone.l-slBuf*0.6;const d=entry-sl;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Below zone',distance:d});}swings.L.filter(x=>x.p<entry).forEach(x=>{const sl=x.p-slBuf;const d=entry-sl;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Below swing',distance:d});});fvgs.filter(f=>f.type==='bull'&&f.l<entry).forEach(f=>{const sl=f.l-slBuf*0.6;const d=entry-sl;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Below FVG',distance:d});});}else{if(msnr&&msnr.allResistances){msnr.allResistances.filter(x=>x>entry).forEach(x=>{const sl=x+slBuf;const d=sl-entry;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Above MSNR',distance:d});});}if(zone&&zone.h>entry){const sl=zone.h+slBuf*0.6;const d=sl-entry;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Above zone',distance:d});}swings.H.filter(x=>x.p>entry).forEach(x=>{const sl=x.p+slBuf;const d=sl-entry;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Above swing',distance:d});});fvgs.filter(f=>f.type==='bear'&&f.h>entry).forEach(f=>{const sl=f.h+slBuf*0.6;const d=sl-entry;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Above FVG',distance:d});});}c.sort((a,b)=>a.distance-b.distance);for(const x of c){if(x.distance<=maxSLD)return{price:x.price,reason:x.reason,distance:x.distance};}const fb=dir==='BUY'?entry-Math.max(a*0.5,s.minSL):entry+Math.max(a*0.5,s.minSL);return{price:fb,reason:'Min ATR',distance:Math.abs(entry-fb)};}
+function calcStopLoss(data,dir,entry,zone,msnr,tfUsed,twelveIndicators){
+    const apiATR = twelveIndicators?.atr_api || atr(data, 14);
+    const swings=findSwings(data,4),fvgs=detectFVG(data);
+    const s=getMarketSettings(pair);
+    const maxSLD=entry*s.maxSLPct;
+    const slBuf=getSLBufferForTF(apiATR, tfUsed);
+    let c=[];
+    if(dir==='BUY'){
+        if(msnr&&msnr.allSupports){msnr.allSupports.filter(x=>x<entry).forEach(x=>{const sl=x-slBuf;const d=entry-sl;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Below MSNR',distance:d});});}
+        if(zone&&zone.l<entry){const sl=zone.l-slBuf*0.6;const d=entry-sl;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Below zone',distance:d});}
+        swings.L.filter(x=>x.p<entry).forEach(x=>{const sl=x.p-slBuf;const d=entry-sl;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Below swing',distance:d});});
+        fvgs.filter(f=>f.type==='bull'&&f.l<entry).forEach(f=>{const sl=f.l-slBuf*0.6;const d=entry-sl;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Below FVG',distance:d});});
+    }else{
+        if(msnr&&msnr.allResistances){msnr.allResistances.filter(x=>x>entry).forEach(x=>{const sl=x+slBuf;const d=sl-entry;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Above MSNR',distance:d});});}
+        if(zone&&zone.h>entry){const sl=zone.h+slBuf*0.6;const d=sl-entry;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Above zone',distance:d});}
+        swings.H.filter(x=>x.p>entry).forEach(x=>{const sl=x.p+slBuf;const d=sl-entry;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Above swing',distance:d});});
+        fvgs.filter(f=>f.type==='bear'&&f.h>entry).forEach(f=>{const sl=f.h+slBuf*0.6;const d=sl-entry;if(d>0&&d<=maxSLD*1.5)c.push({price:sl,reason:'Above FVG',distance:d});});
+    }
+    c.sort((a,b)=>a.distance-b.distance);
+    for(const x of c){if(x.distance<=maxSLD)return{price:x.price,reason:x.reason,distance:x.distance};}
+    const fb=dir==='BUY'?entry-Math.max(apiATR*0.5,s.minSL):entry+Math.max(apiATR*0.5,s.minSL);
+    return{price:fb,reason:'Min ATR',distance:Math.abs(entry-fb)};
+}
 
 // ============================================
-// TAKE PROFIT
+// TAKE PROFIT - USES API ATR-BASED RISK
 // ============================================
 function calcTakeProfits(dir,entry,sl){const risk=Math.abs(entry-sl);const settings=getMarketSettings(pair);const rr=settings.targetRR;if(dir==='BUY'){return{tp1:entry+risk*rr,tp2:entry+risk*(rr+1),tp3:entry+risk*(rr+2)};}else{return{tp1:entry-risk*rr,tp2:entry-risk*(rr+1),tp3:entry-risk*(rr+2)};}}
 
@@ -267,23 +246,23 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (direction === 'BUY' && entry >= price) { const nb = msnr.nearestSupport || price * 0.99; entry = Math.min(zone.l, nb, price * 0.995); }
         if (direction === 'SELL' && entry <= price) { const na = msnr.nearestResistance || price * 1.01; entry = Math.max(zone.h, na, price * 1.005); }
         
-        // ZONE MAGNETISM CHECK
         const magnetism = checkZoneMagnetism(entryData, price, entry, direction);
-        if (!magnetism.likelyToReach) return null; // Skip zones price won't reach
+        if (!magnetism.likelyToReach) return null;
         
         const displacement = detectDisplacement(entryData, direction);
         const sniperRej = await checkSniperRejection(zone, direction, sniperTF);
         const probCheck = checkProbability(zone, mtf, magnetism);
         if (!probCheck.passed) return null;
         
-        const slResult = calcStopLoss(entryData, direction, entry, zone, msnr, tfToAnalyze);
+        // USE API ATR FOR SL
+        const slResult = calcStopLoss(entryData, direction, entry, zone, msnr, tfToAnalyze, twelveIndicators);
         const tps = calcTakeProfits(direction, entry, slResult.price);
         const pathCheck = checkPathClearance(entryData, entry, tps.tp1, direction);
-        const a = atr(entryData, 14);
+        const apiATR = twelveIndicators?.atr_api || atr(entryData, 14);
         const sweeps = detectLiquiditySweeps(entryData, price);
         const imbalances = findImbalances(entryData);
         const mss = detectMSS(entryData);
-        const volatility = getVolatilityLevel(a, price);
+        const volatility = getVolatilityLevel(apiATR, price);
         const crt = detectCRT(entryData, direction);
         const cl = entryData.map(c => c.c);
         const rs = rsi(cl, 14);
@@ -314,8 +293,7 @@ async function analyzeTimeframe(tfToAnalyze, price) {
             direction, entry, sl: slResult.price, tp1: tps.tp1, tp2: tps.tp2, tp3: tps.tp3,
             confidence: conf, zone, slResult, displacement, sniperRej,
             probCheck, turtleSoup, mtf, msnr, twelveIndicators, pathCheck, tfAlign,
-            sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, rs, a, trends,
-            magnetism
+            sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, rs, apiATR, trends, magnetism
         };
     } catch (e) { console.error(`Error ${tfToAnalyze}:`, e); return null; }
 }
@@ -333,19 +311,19 @@ async function askAIWithAllResults(allResults, price) {
     }
     
     const best = allResults[0];
-    const prec = getPrec(pair);
     
     const prompt = `You are TheGhostMachine - elite ICT sniper. Select the BEST trade.
 
 PAIR: ${pair} | PRICE: $${price.toFixed(2)} | DATE: ${new Date().toISOString().split('T')[0]}
 
-ALL SETUPS (with zone magnetism scores):
+ALL SETUPS:
 ${tfSummary}
 
 TOP PICK: ${best.timeframe} ${best.direction} | Entry:$${best.entry.toFixed(2)} | SL:$${best.sl.toFixed(2)} | TP1:$${best.tp1.toFixed(2)} | Conf:${best.confidence}%
-Magnetism: ${best.magnetism.magnetism} (${best.magnetism.score}/100) | ${best.magnetism.summary}
+Magnetism: ${best.magnetism.magnetism} (${best.magnetism.score}/100)
 Indicators: RSI:${best.twelveIndicators.rsi||best.rs.toFixed(1)} | MACD:${best.twelveIndicators.macd||'N/A'} | ADX:${best.twelveIndicators.adx||'N/A'}
 Zone: ${best.zone.src} Q:${best.zone.quality} | ${best.zone.confluence} (${best.zone.cc} factors)
+ATR(API): ${best.twelveIndicators.atr_api||best.apiATR.toFixed(2)}
 
 Return ONLY JSON:
 {"trade_signal_Theghostmachine":{"date":"${new Date().toISOString().split('T')[0]}","current_price":"${price.toFixed(2)}","pair":"${pair}","selected_timeframe":"${best.timeframe}","trade_type":"${best.direction==='BUY'?'BUY-LIMIT':'SELL-LIMIT'}","entry_price":${best.entry.toFixed(2)},"stop_loss":${best.sl.toFixed(2)},"take_profit":${best.tp1.toFixed(2)},"take_profit_2":${best.tp2.toFixed(2)},"take_profit_3":${best.tp3.toFixed(2)},"analysis":{"market_context":"...","trend_detection":"...","volatility_level":"${best.volatility.level}","technical_indicators":["...","..."],"entry_logic":"...","sl_logic":"...","possible_outcomes":["Primary","Alternative","Invalidation"]}}}`;
@@ -474,14 +452,14 @@ async function runAutoScan() {
                         supports: { S1: best.msnr.supports.S1?.toFixed(prec), S2: best.msnr.supports.S2?.toFixed(prec), S3: best.msnr.supports.S3?.toFixed(prec) },
                         resistances: { R1: best.msnr.resistances.R1?.toFixed(prec), R2: best.msnr.resistances.R2?.toFixed(prec), R3: best.msnr.resistances.R3?.toFixed(prec) }
                     },
-                    sweeps: best.sweeps.filter(s => s.distance < best.a * 2).map(s => ({ type: s.type, level: s.level, distance: s.distance })),
+                    sweeps: best.sweeps.filter(s => s.distance < best.apiATR * 2).map(s => ({ type: s.type, level: s.level, distance: s.distance })),
                     analysis: {
                         trend_detection: `${best.mtf.direction} (${best.mtf.strength}/4 TFs)${best.mtf.strength >= 3 ? ' - STRONG' : ''}`,
                         volatility_level: `${best.volatility.level} - ${best.volatility.desc}`,
                         market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism },
                         indicator_confluence: { macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A', adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'}` : 'N/A', stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A', cci: best.twelveIndicators.cci || 'N/A', williams_r: best.twelveIndicators.williams_r || 'N/A', sar: best.twelveIndicators.sar ? `$${best.twelveIndicators.sar}` : 'N/A', ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A' },
-                        technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ATR: ${best.twelveIndicators.atr_api || best.a.toFixed(prec)}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`],
-                        reasoning: aiReason || `${best.zone.confluence} [Q:${best.zone.quality}] | Magnet:${best.magnetism.magnetism}`
+                        technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ATR(API): ${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`],
+                        reasoning: aiReason || `${best.zone.confluence} [Q:${best.zone.quality}] | Magnet:${best.magnetism.magnetism} | ATR:${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`
                     }
                 }
             }
