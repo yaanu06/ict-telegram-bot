@@ -75,7 +75,7 @@ async function getHistory(tfStr){if(!TWELVE_DATA_KEY)return null;try{const r=awa
 async function getTechnicalIndicators(tfUsed){if(!TWELVE_DATA_KEY)return{};const symbol=encodeURIComponent(SYMBOLS[pair]);const interval=TF_MAP[tfUsed];const ind={};try{const r=await fetch(`${TWELVE_DATA_BASE}/rsi?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.rsi=parseFloat(d.values[0].rsi);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/macd?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.macd=parseFloat(d.values[0].macd);ind.macd_signal=parseFloat(d.values[0].macd_signal);ind.macd_hist=parseFloat(d.values[0].macd_hist);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/adx?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.adx=parseFloat(d.values[0].adx);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/bbands?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.bb_upper=parseFloat(d.values[0].upper_band);ind.bb_middle=parseFloat(d.values[0].middle_band);ind.bb_lower=parseFloat(d.values[0].lower_band);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/stoch?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.stoch_k=parseFloat(d.values[0].slow_k);ind.stoch_d=parseFloat(d.values[0].slow_d);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/cci?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.cci=parseFloat(d.values[0].cci);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/atr?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.atr_api=parseFloat(d.values[0].atr);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/williams?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.williams_r=parseFloat(d.values[0].williams);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/sar?symbol=${symbol}&interval=${interval}&acceleration=0.02&maximum=0.2&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.sar=parseFloat(d.values[0].sar);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/ichimoku?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.ichimoku_tenkan=parseFloat(d.values[0].tenkan_sen);ind.ichimoku_kijun=parseFloat(d.values[0].kijun_sen);ind.ichimoku_senkou_a=parseFloat(d.values[0].senkou_span_a);ind.ichimoku_senkou_b=parseFloat(d.values[0].senkou_span_b);calls++;}}catch(e){}return ind;}
 
 // ============================================
-// TECHNICALS (All unchanged - compact)
+// TECHNICALS
 // ============================================
 const ema=(p,n)=>{const m=2/(n+1);let e=[p[0]];for(let i=1;i<p.length;i++)e.push((p[i]-e[i-1])*m+e[i-1]);return e;};
 const rsi=(p,n=14)=>{let g=0,l=0;for(let i=p.length-n;i<p.length;i++){let c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;return al===0?100:100-(100/(1+ag/al));};
@@ -93,6 +93,99 @@ function findImbalances(data){const im=[];for(let i=1;i<data.length-1;i++){if(da
 function detectTurtleSoup(data){if(data.length<15)return{detected:false,type:null};const rd=data.slice(-15);const highs=rd.map(c=>c.h),lows=rd.map(c=>c.l),closes=rd.map(c=>c.c),opens=rd.map(c=>c.o);const keyLow=Math.min(...lows.slice(0,-4));const recentLow=lows[lows.length-4];const cc=closes[closes.length-1];const co=opens[opens.length-1];if(recentLow<keyLow*0.999&&cc>keyLow&&cc>co)return{detected:true,type:'BUY',keyLevel:keyLow,sweptLevel:recentLow};const keyHigh=Math.max(...highs.slice(0,-4));const recentHigh=highs[highs.length-4];if(recentHigh>keyHigh*1.001&&cc<keyHigh&&cc<co)return{detected:true,type:'SELL',keyLevel:keyHigh,sweptLevel:recentHigh};return{detected:false,type:null};}
 function detectCRT(data,direction){if(data.length<10)return{detected:false};const lc=data.slice(-5);const ranges=lc.map(c=>c.h-c.l);const avgRange=ranges.reduce((a,b)=>a+b,0)/ranges.length;const lastRange=ranges[ranges.length-1];const expanding=lastRange>avgRange*1.5;const contracting=lastRange<avgRange*0.5;return{detected:expanding||contracting,pattern:expanding?'Expanding':(contracting?'Contracting':'Neutral'),rangeRatio:(lastRange/avgRange).toFixed(2),signal:expanding?(direction==='BUY'?'Bullish momentum':'Bearish momentum'):(contracting?'Consolidation':'Neutral')};}
 function checkPathClearance(entryData,entry,tp,direction){const obstacles=[];const fvgs=detectFVG(entryData);const swings=findSwings(entryData,3);if(direction==='BUY'){const bearFVGs=fvgs.filter(f=>f.type==='bear'&&f.l>entry&&f.l<tp);if(bearFVGs.length>0)obstacles.push('Bearish FVG');const swingHighs=swings.H.filter(s=>s.p>entry&&s.p<tp);if(swingHighs.length>0)obstacles.push('Swing high');}else{const bullFVGs=fvgs.filter(f=>f.type==='bull'&&f.h>tp&&f.h<entry);if(bullFVGs.length>0)obstacles.push('Bullish FVG');const swingLows=swings.L.filter(s=>s.p>tp&&s.p<entry);if(swingLows.length>0)obstacles.push('Swing low');}return{clear:obstacles.length===0,obstacles,count:obstacles.length};}
+
+// ============================================
+// ZONE MAGNETISM CHECK (NEW!)
+// ============================================
+function checkZoneMagnetism(entryData, price, entry, direction) {
+    const imbalances = findImbalances(entryData);
+    const sweeps = detectLiquiditySweeps(entryData, price);
+    const a = atr(entryData, 14);
+    
+    let score = 0;
+    const checks = [];
+    
+    // 1. Check if there's an imbalance pulling price toward entry
+    if (direction === 'BUY') {
+        // For BUY: entry is below price. Look for bullish imbalances between entry and price
+        const pullingImbalances = imbalances.filter(i => i.type === 'BULLISH' && i.low > entry && i.high < price);
+        if (pullingImbalances.length > 0) {
+            score += 30;
+            checks.push({name: 'Imbalance pulling toward zone', passed: true, detail: `${pullingImbalances.length} bullish imbalance(s) between entry and price`});
+        } else {
+            checks.push({name: 'Imbalance pulling toward zone', passed: false, detail: 'No imbalance magnet between current price and entry'});
+        }
+    } else {
+        // For SELL: entry is above price. Look for bearish imbalances between price and entry
+        const pullingImbalances = imbalances.filter(i => i.type === 'BEARISH' && i.low > price && i.high < entry);
+        if (pullingImbalances.length > 0) {
+            score += 30;
+            checks.push({name: 'Imbalance pulling toward zone', passed: true, detail: `${pullingImbalances.length} bearish imbalance(s) between price and entry`});
+        } else {
+            checks.push({name: 'Imbalance pulling toward zone', passed: false, detail: 'No imbalance magnet between current price and entry'});
+        }
+    }
+    
+    // 2. Check if sweeps support direction toward zone
+    const supportingSweeps = sweeps.filter(s => direction === 'BUY' ? s.direction === 'BULLISH' : s.direction === 'BEARISH');
+    if (supportingSweeps.length > 0) {
+        score += 25;
+        checks.push({name: 'Sweeps support direction', passed: true, detail: `${supportingSweeps.length} sweep(s) supporting ${direction}`});
+    } else {
+        checks.push({name: 'Sweeps support direction', passed: false, detail: 'No sweeps supporting direction toward zone'});
+    }
+    
+    // 3. Check momentum direction (EMA alignment)
+    const closes = entryData.map(c => c.c);
+    const e20 = ema(closes, 20), e50 = ema(closes, 50);
+    const cE20 = e20[e20.length - 1], cE50 = e50[e50.length - 1];
+    const prevE20 = e20[e20.length - 3];
+    
+    if (direction === 'BUY' && cE20 > cE50 && cE20 > prevE20) {
+        score += 20;
+        checks.push({name: 'EMA momentum aligned', passed: true, detail: 'EMA20 > EMA50 and rising - bullish momentum'});
+    } else if (direction === 'SELL' && cE20 < cE50 && cE20 < prevE20) {
+        score += 20;
+        checks.push({name: 'EMA momentum aligned', passed: true, detail: 'EMA20 < EMA50 and falling - bearish momentum'});
+    } else {
+        checks.push({name: 'EMA momentum aligned', passed: false, detail: 'EMA not confirming direction toward zone'});
+    }
+    
+    // 4. Check zone proximity (closer = more likely to reach)
+    const distancePct = Math.abs(price - entry) / price * 100;
+    if (distancePct < 0.3) {
+        score += 15;
+        checks.push({name: 'Zone proximity', passed: true, detail: `Very close (${distancePct.toFixed(2)}%) - high probability of fill`});
+    } else if (distancePct < 0.8) {
+        score += 10;
+        checks.push({name: 'Zone proximity', passed: true, detail: `Reachable (${distancePct.toFixed(2)}%)`});
+    } else if (distancePct < 2.0) {
+        score += 5;
+        checks.push({name: 'Zone proximity', passed: true, detail: `Extended (${distancePct.toFixed(2)}%) - may take time`});
+    } else {
+        checks.push({name: 'Zone proximity', passed: false, detail: `Very far (${distancePct.toFixed(2)}%) - unlikely to reach soon`});
+    }
+    
+    // 5. Check displacement
+    const displacement = detectDisplacement(entryData, direction);
+    if (displacement.detected) {
+        score += 10;
+        checks.push({name: 'Displacement momentum', passed: true, detail: 'Strong displacement toward zone'});
+    } else {
+        checks.push({name: 'Displacement momentum', passed: false, detail: 'No displacement - weaker pull toward zone'});
+    }
+    
+    const magnetism = score >= 60 ? 'STRONG' : (score >= 35 ? 'MODERATE' : 'WEAK');
+    
+    return {
+        magnetism,
+        score,
+        maxScore: 100,
+        checks,
+        likelyToReach: score >= 35,
+        summary: `Zone magnetism: ${magnetism} (${score}/100). ${score >= 35 ? 'Price likely to reach zone.' : 'Price unlikely to reach zone - weak magnet.'}`
+    };
+}
 
 // ============================================
 // MSNR LEVELS
@@ -114,7 +207,7 @@ else{return{p:rH-r*.3,l:rH-r*.79,h:rH-r*.618,src:'OTE',confluence:'OTE',cc:1,qua
 // ============================================
 // PROBABILITY CHECK
 // ============================================
-function checkProbability(zone,mtf){const checks=[];checks.push({name:'Confluence (2+)',passed:zone.cc>=2,critical:true});checks.push({name:'MTF aligned (2+)',passed:mtf.strength>=2,critical:true});checks.push({name:'Imbalance Magnet',passed:zone.hasImbalance,critical:false});checks.push({name:'Quality A/B',passed:zone.quality==='A'||zone.quality==='B',critical:false});const cp=checks.filter(c=>c.critical).every(c=>c.passed);const tp=checks.filter(c=>c.passed).length;return{probability:cp?(tp>=3?'HIGH':(tp>=2?'MEDIUM':'LOW')):'LOW',checks,totalPassed:tp,passed:cp};}
+function checkProbability(zone,mtf,magnetism){const checks=[];checks.push({name:'Confluence (2+)',passed:zone.cc>=2,critical:true});checks.push({name:'MTF aligned (2+)',passed:mtf.strength>=2,critical:true});checks.push({name:'Zone Magnetism',passed:magnetism.likelyToReach,critical:true});checks.push({name:'Imbalance Magnet',passed:zone.hasImbalance,critical:false});checks.push({name:'Quality A/B',passed:zone.quality==='A'||zone.quality==='B',critical:false});const cp=checks.filter(c=>c.critical).every(c=>c.passed);const tp=checks.filter(c=>c.passed).length;return{probability:cp?(tp>=4?'HIGH':(tp>=3?'MEDIUM':'LOW')):'LOW',checks,totalPassed:tp,passed:cp};}
 
 // ============================================
 // STOP LOSS
@@ -137,7 +230,7 @@ function score(data,price){const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl);cons
 async function updateMTFDisplay(){const tfs=['5M','15M','1H','4H'];for(let t of tfs){let d=await getHistory(t);if(!d||d.length<30)continue;let c=d.map(x=>x.c),tr=c[c.length-1]>c[c.length-20]?'BULLISH':(c[c.length-1]<c[c.length-20]?'BEARISH':'NEUTRAL');let el=document.getElementById(`trend${t}`);if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}}}
 
 // ============================================
-// ANALYZE SINGLE TIMEFRAME (No AI call - returns data only)
+// ANALYZE SINGLE TIMEFRAME
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price) {
     try {
@@ -174,9 +267,13 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (direction === 'BUY' && entry >= price) { const nb = msnr.nearestSupport || price * 0.99; entry = Math.min(zone.l, nb, price * 0.995); }
         if (direction === 'SELL' && entry <= price) { const na = msnr.nearestResistance || price * 1.01; entry = Math.max(zone.h, na, price * 1.005); }
         
+        // ZONE MAGNETISM CHECK
+        const magnetism = checkZoneMagnetism(entryData, price, entry, direction);
+        if (!magnetism.likelyToReach) return null; // Skip zones price won't reach
+        
         const displacement = detectDisplacement(entryData, direction);
         const sniperRej = await checkSniperRejection(zone, direction, sniperTF);
-        const probCheck = checkProbability(zone, mtf);
+        const probCheck = checkProbability(zone, mtf, magnetism);
         if (!probCheck.passed) return null;
         
         const slResult = calcStopLoss(entryData, direction, entry, zone, msnr, tfToAnalyze);
@@ -204,6 +301,8 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (zone.hasImbalance) conf = Math.min(conf + 8, 98);
         if (pathCheck.clear) conf = Math.min(conf + 5, 98);
         if (!zone.hasImbalance) conf = Math.max(conf - 10, 30);
+        if (magnetism.magnetism === 'STRONG') conf = Math.min(conf + 10, 98);
+        else if (magnetism.magnetism === 'WEAK') conf = Math.max(conf - 15, 25);
         if (twelveIndicators.macd_hist && direction === 'BUY' && twelveIndicators.macd > twelveIndicators.macd_signal) conf = Math.min(conf + 5, 98);
         if (twelveIndicators.macd_hist && direction === 'SELL' && twelveIndicators.macd < twelveIndicators.macd_signal) conf = Math.min(conf + 5, 98);
         if (twelveIndicators.adx && twelveIndicators.adx > 25) conf = Math.min(conf + 5, 98);
@@ -215,7 +314,8 @@ async function analyzeTimeframe(tfToAnalyze, price) {
             direction, entry, sl: slResult.price, tp1: tps.tp1, tp2: tps.tp2, tp3: tps.tp3,
             confidence: conf, zone, slResult, displacement, sniperRej,
             probCheck, turtleSoup, mtf, msnr, twelveIndicators, pathCheck, tfAlign,
-            sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, rs, a, trends
+            sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, rs, a, trends,
+            magnetism
         };
     } catch (e) { console.error(`Error ${tfToAnalyze}:`, e); return null; }
 }
@@ -227,42 +327,31 @@ async function askAIWithAllResults(allResults, price) {
     if (!DEEPSEEK_API_KEY || allResults.length === 0) return null;
     showNotif('🤖 AI selecting best setup...', 'info');
     
-    // Build summary of all timeframes
     let tfSummary = '';
     for (const r of allResults) {
-        tfSummary += `${r.timeframe}: ${r.direction} | Entry:$${r.entry.toFixed(2)} | SL:$${r.sl.toFixed(2)} | TP1:$${r.tp1.toFixed(2)} | Conf:${r.confidence}% | Q:${r.zone.quality} | ${r.zone.confluence}\n`;
+        tfSummary += `${r.timeframe}: ${r.direction} | Entry:$${r.entry.toFixed(2)} | SL:$${r.sl.toFixed(2)} | Conf:${r.confidence}% | Q:${r.zone.quality} | Magnet:${r.magnetism.magnetism}\n`;
     }
     
-    const best = allResults[0]; // Highest confidence
+    const best = allResults[0];
     const prec = getPrec(pair);
     
-    const prompt = `You are TheGhostMachine - elite ICT sniper. Select the BEST trade from these multi-timeframe scan results.
+    const prompt = `You are TheGhostMachine - elite ICT sniper. Select the BEST trade.
 
 PAIR: ${pair} | PRICE: $${price.toFixed(2)} | DATE: ${new Date().toISOString().split('T')[0]}
 
-ALL SETUPS FOUND:
+ALL SETUPS (with zone magnetism scores):
 ${tfSummary}
 
-MTF TRENDS: ${best.trends ? `5M:${best.trends['5M']||'--'} 15M:${best.trends['15M']||'--'} 1H:${best.trends['1H']||'--'} 4H:${best.trends['4H']||'--'}` : 'N/A'}
 TOP PICK: ${best.timeframe} ${best.direction} | Entry:$${best.entry.toFixed(2)} | SL:$${best.sl.toFixed(2)} | TP1:$${best.tp1.toFixed(2)} | Conf:${best.confidence}%
+Magnetism: ${best.magnetism.magnetism} (${best.magnetism.score}/100) | ${best.magnetism.summary}
+Indicators: RSI:${best.twelveIndicators.rsi||best.rs.toFixed(1)} | MACD:${best.twelveIndicators.macd||'N/A'} | ADX:${best.twelveIndicators.adx||'N/A'}
+Zone: ${best.zone.src} Q:${best.zone.quality} | ${best.zone.confluence} (${best.zone.cc} factors)
 
-INDICATORS (${best.timeframe}):
-RSI:${best.twelveIndicators.rsi||best.rs.toFixed(1)} | MACD:${best.twelveIndicators.macd||'N/A'} | ADX:${best.twelveIndicators.adx||'N/A'}
-StochK:${best.twelveIndicators.stoch_k||'N/A'} | CCI:${best.twelveIndicators.cci||'N/A'} | W%R:${best.twelveIndicators.williams_r||'N/A'}
-SAR:${best.twelveIndicators.sar||'N/A'} | BB:${best.twelveIndicators.bb_upper||'N/A'}/${best.twelveIndicators.bb_lower||'N/A'}
-
-ZONE: ${best.zone.src} Q:${best.zone.quality} | ${best.zone.confluence} (${best.zone.cc} factors)
-Imbalance Magnet: ${best.zone.hasImbalance?'YES':'NO'} | Path Clear: ${best.pathCheck.clear?'YES':'NO (${best.pathCheck.count} obstacles)'}
-Turtle Soup: ${best.turtleSoup.detected?best.turtleSoup.type:'None'} | CRT: ${best.crt.pattern}
-
-Return ONLY JSON selecting the best setup:
+Return ONLY JSON:
 {"trade_signal_Theghostmachine":{"date":"${new Date().toISOString().split('T')[0]}","current_price":"${price.toFixed(2)}","pair":"${pair}","selected_timeframe":"${best.timeframe}","trade_type":"${best.direction==='BUY'?'BUY-LIMIT':'SELL-LIMIT'}","entry_price":${best.entry.toFixed(2)},"stop_loss":${best.sl.toFixed(2)},"take_profit":${best.tp1.toFixed(2)},"take_profit_2":${best.tp2.toFixed(2)},"take_profit_3":${best.tp3.toFixed(2)},"analysis":{"market_context":"...","trend_detection":"...","volatility_level":"${best.volatility.level}","technical_indicators":["...","..."],"entry_logic":"...","sl_logic":"...","possible_outcomes":["Primary","Alternative","Invalidation"]}}}`;
 
     try {
-        const r = await fetch(DEEPSEEK_API_URL, {
-            method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},
-            body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are TheGhostMachine. Select the best setup. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:1000})
-        });
+        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are TheGhostMachine. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:1000})});
         const d = await r.json();
         if (d.choices?.[0]) { const m = d.choices[0].message.content.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); }
     } catch(e) { console.error('AI fetch:', e); }
@@ -270,7 +359,7 @@ Return ONLY JSON selecting the best setup:
 }
 
 // ============================================
-// AUTO SCAN - AI CALLED ONCE AT THE END
+// AUTO SCAN
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
@@ -283,7 +372,7 @@ async function runAutoScan() {
     
     if (!TWELVE_DATA_KEY) { showSetup(); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
     
-    showNotif('🔍 Auto-scanning all timeframes...', 'info');
+    showNotif('🔍 Auto-scanning + magnetism check...', 'info');
     
     try {
         const price = await getPrice();
@@ -297,36 +386,33 @@ async function runAutoScan() {
         const results = [];
         const timeframesToScan = ['5M', '15M', '1H', '4H', '1D'];
         
-        // Phase 1: Scan all timeframes (no AI)
         for (let i = 0; i < timeframesToScan.length; i++) {
             const tfScan = timeframesToScan[i];
             scanText.innerHTML = `Scanning ${tfScan}... (${i + 1}/${timeframesToScan.length})`;
             scanFill.style.width = ((i + 1) / timeframesToScan.length * 100) + '%';
             
             const result = await analyzeTimeframe(tfScan, price);
-            if (result && result.confidence >= 40) results.push(result);
+            if (result && result.confidence >= 30) results.push(result);
         }
         
         if (results.length === 0) {
-            showNotif('⚠️ No valid setups found', 'warning');
-            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',timeframes_scanned:timeframesToScan.length}}, null, 2);
+            showNotif('⚠️ No setups with sufficient magnetism found', 'warning');
+            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_MAGNETIC_SETUP',timeframes_scanned:timeframesToScan.length}}, null, 2);
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
         results.sort((a, b) => b.confidence - a.confidence);
         
-        // Phase 2: Call AI ONCE with all results
         scanText.innerHTML = '🤖 AI analyzing all setups...';
         const aiResult = await askAIWithAllResults(results, price);
-        
         scanStatus.classList.add('hidden');
+        
         const best = results[0];
         const prec = getPrec(pair);
         const risk = Math.abs(best.entry - best.sl);
         const rr = (Math.abs(best.tp1 - best.entry) / risk).toFixed(1);
         const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
         
-        // Build output
         let aiReason = '', aiEntryLogic = '', aiSlLogic = '', aiOutcomes = [], aiConviction = 'MEDIUM';
         if (aiResult && aiResult.trade_signal_Theghostmachine) {
             const ts = aiResult.trade_signal_Theghostmachine;
@@ -366,6 +452,12 @@ async function runAutoScan() {
                     zone_confluence: best.zone.confluence,
                     confluence_count: best.zone.cc,
                     imbalance_magnet: best.zone.hasImbalance,
+                    zone_magnetism: {
+                        strength: best.magnetism.magnetism,
+                        score: best.magnetism.score,
+                        summary: best.magnetism.summary,
+                        checks: best.magnetism.checks
+                    },
                     path_clearance: { clear: best.pathCheck.clear, obstacles: best.pathCheck.obstacles },
                     probability: best.probCheck.probability,
                     timeframe_alignment: {
@@ -386,10 +478,10 @@ async function runAutoScan() {
                     analysis: {
                         trend_detection: `${best.mtf.direction} (${best.mtf.strength}/4 TFs)${best.mtf.strength >= 3 ? ' - STRONG' : ''}`,
                         volatility_level: `${best.volatility.level} - ${best.volatility.desc}`,
-                        market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, imbalance_magnet: best.zone.hasImbalance },
+                        market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism },
                         indicator_confluence: { macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A', adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'}` : 'N/A', stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A', cci: best.twelveIndicators.cci || 'N/A', williams_r: best.twelveIndicators.williams_r || 'N/A', sar: best.twelveIndicators.sar ? `$${best.twelveIndicators.sar}` : 'N/A', ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A' },
                         technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ATR: ${best.twelveIndicators.atr_api || best.a.toFixed(prec)}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`],
-                        reasoning: aiReason || `${best.zone.confluence} [Q:${best.zone.quality}]${best.zone.hasImbalance ? ' 🧲' : ''}`
+                        reasoning: aiReason || `${best.zone.confluence} [Q:${best.zone.quality}] | Magnet:${best.magnetism.magnetism}`
                     }
                 }
             }
@@ -399,8 +491,9 @@ async function runAutoScan() {
         analysis = { signalType: st, idealEntry: best.entry, currentPrice: price, stopLoss: best.sl, takeProfit1: best.tp1, takeProfit2: best.tp2, takeProfit3: best.tp3, confidence: best.confidence };
         document.getElementById('executeBtn').disabled = false;
         
+        const magLabel = best.magnetism.magnetism === 'STRONG' ? '🧲' : (best.magnetism.magnetism === 'MODERATE' ? '🔗' : '⚠️');
         const aiLabel = aiResult ? '🤖' : '';
-        showNotif(`${aiLabel} Best: ${best.timeframe} ${st} ${best.confidence}% | Q:${best.zone.quality} | 1:${rr} | AI called 1x`, 'success');
+        showNotif(`${aiLabel}${magLabel} Best: ${best.timeframe} ${st} ${best.confidence}% | Magnet:${best.magnetism.magnetism} | 1:${rr}`, 'success');
         
     } catch (e) { console.error(e); showNotif('Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
     finally { btn.classList.remove('loading'); btn.disabled = false; }
