@@ -63,7 +63,7 @@
             <div id="priceChange" class="price-change">--</div>
         </div>
 
-        <!-- Multi-Timeframe Display (Info Only) -->
+        <!-- Multi-Timeframe Display -->
         <div class="section">
             <h3>📊 Multi-Timeframe Trends</h3>
             <div class="mtf-grid">
@@ -71,6 +71,8 @@
                 <div class="mtf-card"><div class="mtf-header">15M</div><div class="mtf-trend" id="trend15M">--</div></div>
                 <div class="mtf-card"><div class="mtf-header">1H</div><div class="mtf-trend" id="trend1H">--</div></div>
                 <div class="mtf-card"><div class="mtf-header">4H</div><div class="mtf-trend" id="trend4H">--</div></div>
+                <div class="mtf-card"><div class="mtf-header">1D</div><div class="mtf-trend" id="trend1D">--</div></div>
+                <div class="mtf-card"><div class="mtf-header">1W</div><div class="mtf-trend" id="trend1W">--</div></div>
             </div>
         </div>
 
@@ -80,7 +82,7 @@
         <!-- Scanning Status -->
         <div id="scanStatus" class="scan-status hidden">
             <div class="scan-progress">
-                <span id="scanText">Scanning 1D...</span>
+                <span id="scanText">Initializing...</span>
                 <div class="progress-bar"><div id="scanProgressFill" class="progress-fill"></div></div>
             </div>
         </div>
@@ -91,7 +93,7 @@
                 <h3>📋 Best Setup Found</h3>
                 <button id="copyJsonBtn" class="copy-json-btn">📋 Copy</button>
             </div>
-            <pre id="jsonOutput" class="json-output">Click "Auto-Scan All Timeframes" to find the best setup...</pre>
+            <pre id="jsonOutput" class="json-output">{}</pre>
         </div>
 
         <!-- Limit Order Status -->
