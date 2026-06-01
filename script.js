@@ -117,7 +117,7 @@ function detectOrderBlocks(data, direction) {
 
 function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
 function detectDisplacement(data,direction){if(data.length<5)return{detected:false};const lc=data.slice(-5);const bodies=lc.map(c=>Math.abs(c.c-c.o));const avg=bodies.reduce((a,b)=>a+b,0)/bodies.length;const lb=bodies[bodies.length-1];if(direction==='BUY'&&lb>avg*2.5&&lc[4].c>lc[4].o)return{detected:true};if(direction==='SELL'&&lb>avg*2.5&&lc[4].c<lc[4].o)return{detected:true};return{detected:false};}
-async function checkSniperRejection(zone,direction,sniperTF){const dSn=await getHistory(sniperTF);if(!dSn||dSn.length<3)return{confirmed:false};const lc=dSn[dSn.length-1];const body=Math.abs(lc.c-lc.o);if(direction==='BUY'){const wick=Math.min(lc.o,lc.c)-lc.l;const t=lc.l<=zone.h&&lc.l>=zone.l;if(t&&wick>body*2&&lc.c>lc.o)return{confirmed:true};}else{const wick=lc.h-Math.max(lc.o,lc.c);const t=lc.h>=zone.l&&lc.h<=zone.h;if(t&&wick>body*2&&lc.c<lc.o)return{confirmed:true};}return{confirmed:false};}
+async function checkSniperRejection(zone,direction,sniperTF){const dSn=await getHistory(sniperTF);if(!dSn||dSn.length<3)return{confirmed:false};const lc=dSn[dSn.length-1];const body=Math.abs(lc.c-lc.o);if(direction==='BUY'){const wick=Math.min(lc.o,lc.c)-lc.l;const t=lc.l<=zone.high&&lc.l>=zone.low;if(t&&wick>body*2&&lc.c>lc.o)return{confirmed:true};}else{const wick=lc.h-Math.max(lc.o,lc.c);const t=lc.h>=zone.low&&lc.h<=zone.high;if(t&&wick>body*2&&lc.c<lc.o)return{confirmed:true};}return{confirmed:false};}
 function getVolatilityLevel(atrValue,price){const pct=(atrValue/price)*100;if(pct>0.8)return{level:'High - Impulsive',desc:'Large candles'};if(pct>0.4)return{level:'Moderate - Control',desc:'Normal'};return{level:'Low - Consolidation',desc:'Tight ranges'};}
 function detectLiquiditySweeps(data,currentPrice){const sweeps=[];const a=atr(data,14);const maxDistance=a*3;const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);for(let i=10;i<data.length-3;i++){const rH=highs.slice(i-5,i);const maxH=Math.max(...rH);if(rH.filter(h=>Math.abs(h-maxH)<=maxH*0.001).length>=2&&Math.abs(maxH-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.h>maxH*1.001)&&closes[i+3]<maxH)sweeps.push({type:'BUY_SIDE',level:maxH,distance:Math.abs(maxH-currentPrice),direction:'BEARISH'});}const rL=lows.slice(i-5,i);const minL=Math.min(...rL);if(rL.filter(l=>Math.abs(l-minL)<=minL*0.001).length>=2&&Math.abs(minL-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.l<minL*0.999)&&closes[i+3]>minL)sweeps.push({type:'SELL_SIDE',level:minL,distance:Math.abs(minL-currentPrice),direction:'BULLISH'});}}return sweeps.sort((a,b)=>a.distance-b.distance);}
 function findImbalances(data){const im=[];for(let i=1;i<data.length-1;i++){if(data[i-1].l>data[i+1].h)im.push({type:'BULLISH',low:data[i+1].h,high:data[i-1].l});if(data[i-1].h<data[i+1].l)im.push({type:'BEARISH',low:data[i-1].h,high:data[i+1].l});}return im.slice(-5);}
@@ -195,20 +195,18 @@ function calculateMSNR(data,currentPrice){const highs=data.map(c=>c.h),lows=data
 function findPrecisionEntry(data,price,direction,msnr){
     const a=atr(data,14),fvgs=detectFVG(data),breakers=detectBreakers(data),swings=findSwings(data,4);
     const imbalances=findImbalances(data);
-    const orderBlocks=detectOrderBlocks(data,direction); // FIX #4: Added OB detection
+    const orderBlocks=detectOrderBlocks(data,direction);
     let allZones=[];
     
     if(direction==='BUY'){
         fvgs.filter(f=>f.type==='bull'&&f.l<price&&f.fresh).forEach(f=>{let s=30;let cf=['FVG'];if(breakers.find(b=>b.type==='BULL'&&Math.abs(b.p-f.l)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.L.find(x=>Math.abs(x.p-f.l)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport&&Math.abs(msnr.nearestSupport-f.l)<f.l*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-f.l)<f.l*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         
-        // FIX #4: Add Order Blocks to entry zones
         orderBlocks.forEach(ob=>{let s=35;let cf=['OrderBlock'];if(swings.L.find(x=>Math.abs(x.p-ob.low)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport&&Math.abs(msnr.nearestSupport-ob.low)<ob.low*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-ob.low)<ob.low*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:ob.low,high:ob.high,p:(ob.low+ob.high)/2,src:'OB',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         
         if(msnr.nearestSupport&&msnr.nearestSupport<price){let s=25;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bull'&&Math.abs(f.l-msnr.nearestSupport)<msnr.nearestSupport*0.003)){s+=25;cf.push('FVG');}if(swings.L.find(x=>Math.abs(x.p-msnr.nearestSupport)<msnr.nearestSupport*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-msnr.nearestSupport)<msnr.nearestSupport*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:msnr.nearestSupport*0.998,high:msnr.nearestSupport*1.002,p:msnr.nearestSupport,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}
     } else {
         fvgs.filter(f=>f.type==='bear'&&f.h>price&&f.fresh).forEach(f=>{let s=30;let cf=['FVG'];if(breakers.find(b=>b.type==='BEAR'&&Math.abs(b.p-f.h)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.H.find(x=>Math.abs(x.p-f.h)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance&&Math.abs(msnr.nearestResistance-f.h)<f.h*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-f.h)<f.h*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         
-        // FIX #4: Add Order Blocks to entry zones
         orderBlocks.forEach(ob=>{let s=35;let cf=['OrderBlock'];if(swings.H.find(x=>Math.abs(x.p-ob.high)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance&&Math.abs(msnr.nearestResistance-ob.high)<ob.high*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-ob.high)<ob.high*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:ob.low,high:ob.high,p:(ob.low+ob.high)/2,src:'OB',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         
         if(msnr.nearestResistance&&msnr.nearestResistance>price){let s=25;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bear'&&Math.abs(f.h-msnr.nearestResistance)<msnr.nearestResistance*0.003)){s+=25;cf.push('FVG');}if(swings.H.find(x=>Math.abs(x.p-msnr.nearestResistance)<msnr.nearestResistance*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-msnr.nearestResistance)<msnr.nearestResistance*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:msnr.nearestResistance*0.998,high:msnr.nearestResistance*1.002,p:msnr.nearestResistance,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}
@@ -218,7 +216,6 @@ function findPrecisionEntry(data,price,direction,msnr){
     
     if(allZones.length>0){
         const b=allZones[0];
-        // FIX #1: Return zone range (low/high) not just single point
         return {low:b.low,high:b.high,p:(b.low+b.high)/2,src:b.src,confluence:b.confluence,cc:b.cc,quality:b.quality,hasImbalance:b.hasImbalance};
     }
     
@@ -277,7 +274,16 @@ function score(data,price){const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl);cons
 // ============================================
 // MULTI-TF DISPLAY
 // ============================================
-async function updateMTFDisplay(){const tfs=['5M','15M','1H','4H'];for(let t of tfs){let d=await getHistory(t);if(!d||d.length<30)continue;let c=d.map(x=>x.c),tr=c[c.length-1]>c[c.length-20]?'BULLISH':(c[c.length-1]<c[c.length-20]?'BEARISH':'NEUTRAL');let el=document.getElementById(`trend${t}`);if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}}}
+async function updateMTFDisplay(){
+    const tfs=['5M','15M','1H','4H','1D'];
+    for(let t of tfs){
+        let d=await getHistory(t);
+        if(!d||d.length<30)continue;
+        let c=d.map(x=>x.c),tr=c[c.length-1]>c[c.length-20]?'BULLISH':(c[c.length-1]<c[c.length-20]?'BEARISH':'NEUTRAL');
+        let el=document.getElementById(`trend${t}`);
+        if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}
+    }
+}
 
 // ============================================
 // ANALYZE SINGLE TIMEFRAME
@@ -314,20 +320,18 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         const msnr = calculateMSNR(structureData || entryData, price);
         const zone = findPrecisionEntry(entryData, price, direction, msnr);
         
-        // FIX #1: Use zone range for entry — place limit at zone edge, use midpoint for calculations
-        let entry = direction === 'BUY' ? zone.low : zone.high; // Place at edge for better fill
+        let entry = direction === 'BUY' ? zone.low : zone.high;
         if (direction === 'BUY' && entry >= price) { const nb = msnr.nearestSupport || price * 0.99; entry = Math.min(zone.low, nb, price * 0.995); }
         if (direction === 'SELL' && entry <= price) { const na = msnr.nearestResistance || price * 1.01; entry = Math.max(zone.high, na, price * 1.005); }
         
         const magnetism = checkZoneMagnetism(entryData, price, entry, direction);
         
-        // FIX #2: Don't discard MODERATE magnetism — penalize instead
-        if (magnetism.magnetism === 'WEAK' && magnetism.score < 20) return null; // Only kill very weak
+        if (magnetism.magnetism === 'WEAK' && magnetism.score < 20) return null;
         
         const displacement = detectDisplacement(entryData, direction);
         const sniperRej = await checkSniperRejection(zone, direction, sniperTF);
         const probCheck = checkProbability(zone, mtf, magnetism);
-        if (!probCheck.passed && probCheck.probability === 'LOW') return null; // Still kill LOW probability
+        if (!probCheck.passed && probCheck.probability === 'LOW') return null;
         
         const slResult = calcStopLoss(entryData, direction, entry, zone, msnr, tfToAnalyze, twelveIndicators);
         const tps = calcTakeProfits(direction, entry, slResult.price);
@@ -342,7 +346,7 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         const rs = rsi(cl, 14);
         const fvgsAll = detectFVG(entryData);
         const breakersAll = detectBreakers(entryData);
-        const obsAll = detectOrderBlocks(entryData, direction); // FIX #4: Include OBs in result
+        const obsAll = detectOrderBlocks(entryData, direction);
         
         let conf = sig.conf;
         if (mtf.direction === direction) conf = Math.min(conf + 10, 95); else conf = Math.max(conf - 15, 30);
@@ -356,7 +360,7 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (pathCheck.clear) conf = Math.min(conf + 5, 98);
         if (!zone.hasImbalance) conf = Math.max(conf - 10, 30);
         if (magnetism.magnetism === 'STRONG') conf = Math.min(conf + 10, 98);
-        else if (magnetism.magnetism === 'WEAK') conf = Math.max(conf - 15, 25); // FIX #2: Penalize WEAK but keep
+        else if (magnetism.magnetism === 'WEAK') conf = Math.max(conf - 15, 25);
         if (twelveIndicators.macd_hist && direction === 'BUY' && twelveIndicators.macd > twelveIndicators.macd_signal) conf = Math.min(conf + 5, 98);
         if (twelveIndicators.macd_hist && direction === 'SELL' && twelveIndicators.macd < twelveIndicators.macd_signal) conf = Math.min(conf + 5, 98);
         if (twelveIndicators.adx && twelveIndicators.adx > 25) conf = Math.min(conf + 5, 98);
@@ -388,12 +392,10 @@ async function askAIWithAllResults(allResults, price, htfData) {
     const best = allResults[0];
     const prec = getPrec(pair);
     
-    // FIX #7: Get HTF data for confluence check
     const dailyDir = htfData['1D'] ? detectTrend(htfData['1D']) : 'NEUTRAL';
     const h4Dir = htfData['4H'] ? detectTrend(htfData['4H']) : 'NEUTRAL';
     const htfConfluence = checkHTFConfluence(htfData['1D'], htfData['4H'], best.direction);
     
-    // FIX #5: AI now VERIFIES, not rubber-stamps
     const prompt = `You are TheGhostMachine - elite ICT sniper. VERIFY this trade setup against higher timeframe context.
 
 PAIR: ${pair} | CURRENT PRICE: $${price.toFixed(prec)}
@@ -462,7 +464,6 @@ async function runAutoScan() {
         const results = [];
         const timeframesToScan = ['5M', '15M', '1H', '4H', '1D'];
         
-        // FIX #7: Pre-fetch HTF data for confluence check
         const htfData = {};
         scanText.innerHTML = 'Loading HTF context...';
         const dailyData = await getHistory('1D');
@@ -476,7 +477,7 @@ async function runAutoScan() {
             scanFill.style.width = ((i + 1) / timeframesToScan.length * 100) + '%';
             
             const result = await analyzeTimeframe(tfScan, price);
-            if (result && result.confidence >= 20) results.push(result); // Lowered from 30 to catch more setups for AI review
+            if (result && result.confidence >= 20) results.push(result);
         }
         
         if (results.length === 0) {
@@ -485,7 +486,6 @@ async function runAutoScan() {
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
-        // FIX #3: Sort by confidence + TF weight (HTF priority)
         results.sort((a, b) => {
             const scoreA = a.confidence + (TF_WEIGHT[a.timeframe] || 0) * 4;
             const scoreB = b.confidence + (TF_WEIGHT[b.timeframe] || 0) * 4;
@@ -502,11 +502,9 @@ async function runAutoScan() {
         const rr = (Math.abs(best.tp1 - best.entry) / risk).toFixed(1);
         const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
         
-        // FIX #7: Apply HTF confluence penalty to confidence
         const htfConfluence = checkHTFConfluence(htfData['1D'], htfData['4H'], best.direction);
         best.confidence = Math.max(best.confidence - htfConfluence.penalty, 10);
         
-        // FIX #6: AI refines entry zone
         let aiConviction = 'MEDIUM', aiApproved = true, aiConfAdj = 0;
         let finalEntry = best.entry, finalZoneLow = best.zone.low, finalZoneHigh = best.zone.high;
         let aiEntryLogic = '', aiSlLogic = '', aiKeyReason = '', aiRiskWarning = '', aiOutcomes = [];
@@ -517,7 +515,6 @@ async function runAutoScan() {
             aiConfAdj = ts.confidence_adjustment || 0;
             aiConviction = ts.approved === false ? 'REJECTED' : (aiConfAdj >= 10 ? 'HIGH' : (aiConfAdj >= 0 ? 'MEDIUM' : 'LOW'));
             
-            // FIX #6: Use AI's entry refinement
             if (ts.entry_refinement && ts.entry_refinement.low && ts.entry_refinement.high) {
                 finalZoneLow = ts.entry_refinement.low;
                 finalZoneHigh = ts.entry_refinement.high;
@@ -550,7 +547,7 @@ async function runAutoScan() {
                 trade_signal: {
                     trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT',
                     entry_price: finalEntry,
-                    entry_zone: { low: finalZoneLow, high: finalZoneHigh }, // FIX #1: Zone range in output
+                    entry_zone: { low: finalZoneLow, high: finalZoneHigh },
                     stop_loss: best.sl,
                     risk_amount: risk.toFixed(prec),
                     stop_loss_pct: ((risk / best.entry) * 100).toFixed(2) + '%',
@@ -568,7 +565,7 @@ async function runAutoScan() {
                     key_reason: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}]`,
                     possible_outcomes: aiOutcomes.length > 0 ? aiOutcomes : [`Enter at zone $${finalZoneLow.toFixed(prec)}-$${finalZoneHigh.toFixed(prec)}`, `Sweep then reverse`, `Close beyond $${best.sl.toFixed(prec)} invalidates`],
                     zone_quality: best.zone.quality,
-                    zone_source: best.zone.src, // FIX #4: Shows if entry is OB, FVG, etc.
+                    zone_source: best.zone.src,
                     zone_confluence: best.zone.confluence,
                     confluence_count: best.zone.cc,
                     imbalance_magnet: best.zone.hasImbalance,
@@ -589,7 +586,7 @@ async function runAutoScan() {
                     },
                     turtle_soup: best.turtleSoup,
                     crt_analysis: best.crt,
-                    order_blocks_found: best.obsAll ? best.obsAll.length : 0, // FIX #4
+                    order_blocks_found: best.obsAll ? best.obsAll.length : 0,
                     twelve_data_indicators: best.twelveIndicators,
                     msnr_levels: {
                         pivot: best.msnr.pivot.toFixed(prec),
