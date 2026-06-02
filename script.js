@@ -95,7 +95,7 @@ function detectMSS(d){let h=d.map(c=>c.h),l=d.map(c=>c.l),c=d.map(c=>c.c),rH=Mat
 function detectBreakers(d){let b=[],s=findSwings(d);for(let i=5;i<d.length-5;i++){let c=d[i];if(c.c>c.o){let r=s.H.find(h=>h.i<i&&h.p<c.c);if(r)b.push({type:'BULL',p:r.p});}if(c.c<c.o){let sp=s.L.find(l=>l.i<i&&l.p>c.c);if(sp)b.push({type:'BEAR',p:sp.p});}}return b;}
 
 // ============================================
-// ORDER BLOCK DETECTION (FIX #4)
+// ORDER BLOCK DETECTION
 // ============================================
 function detectOrderBlocks(data, direction) {
     const obs = [];
@@ -124,6 +124,46 @@ function findImbalances(data){const im=[];for(let i=1;i<data.length-1;i++){if(da
 function detectTurtleSoup(data){if(data.length<15)return{detected:false,type:null};const rd=data.slice(-15);const highs=rd.map(c=>c.h),lows=rd.map(c=>c.l),closes=rd.map(c=>c.c),opens=rd.map(c=>c.o);const keyLow=Math.min(...lows.slice(0,-4));const recentLow=lows[lows.length-4];const cc=closes[closes.length-1];const co=opens[opens.length-1];if(recentLow<keyLow*0.999&&cc>keyLow&&cc>co)return{detected:true,type:'BUY',keyLevel:keyLow,sweptLevel:recentLow};const keyHigh=Math.max(...highs.slice(0,-4));const recentHigh=highs[highs.length-4];if(recentHigh>keyHigh*1.001&&cc<keyHigh&&cc<co)return{detected:true,type:'SELL',keyLevel:keyHigh,sweptLevel:recentHigh};return{detected:false,type:null};}
 function detectCRT(data,direction){if(data.length<10)return{detected:false};const lc=data.slice(-5);const ranges=lc.map(c=>c.h-c.l);const avgRange=ranges.reduce((a,b)=>a+b,0)/ranges.length;const lastRange=ranges[ranges.length-1];const expanding=lastRange>avgRange*1.5;const contracting=lastRange<avgRange*0.5;return{detected:expanding||contracting,pattern:expanding?'Expanding':(contracting?'Contracting':'Neutral'),rangeRatio:(lastRange/avgRange).toFixed(2),signal:expanding?(direction==='BUY'?'Bullish momentum':'Bearish momentum'):(contracting?'Consolidation':'Neutral')};}
 function checkPathClearance(entryData,entry,tp,direction){const obstacles=[];const fvgs=detectFVG(entryData);const swings=findSwings(entryData,3);if(direction==='BUY'){const bearFVGs=fvgs.filter(f=>f.type==='bear'&&f.l>entry&&f.l<tp);if(bearFVGs.length>0)obstacles.push('Bearish FVG');const swingHighs=swings.H.filter(s=>s.p>entry&&s.p<tp);if(swingHighs.length>0)obstacles.push('Swing high');}else{const bullFVGs=fvgs.filter(f=>f.type==='bull'&&f.h>tp&&f.h<entry);if(bullFVGs.length>0)obstacles.push('Bullish FVG');const swingLows=swings.L.filter(s=>s.p>tp&&s.p<entry);if(swingLows.length>0)obstacles.push('Swing low');}return{clear:obstacles.length===0,obstacles,count:obstacles.length};}
+
+// ============================================
+// ZONE REACTION CHECK
+// ============================================
+function checkZoneReaction(data, zone, direction) {
+    if (data.length < 3) return { confirmed: false, type: 'none', strength: 'NONE' };
+    const last = data[data.length - 1];
+    const prev = data[data.length - 2];
+    const prev2 = data[data.length - 3];
+    
+    if (direction === 'BUY') {
+        const wickedIntoZone = last.l <= zone.high && last.l >= zone.low;
+        const closedAbove = last.c > zone.high;
+        const bullishEngulf = last.c > last.o && prev.c < prev.o && last.c > prev.h;
+        const bullishPinbar = (last.c - last.l) > Math.abs(last.c - last.o) * 2 && last.c > last.o;
+        const rejectionInZone = wickedIntoZone && (closedAbove || bullishPinbar || last.c > last.o);
+        const followThrough = last.c > prev.c && prev.c > prev2.c && last.c > last.o;
+        
+        if (bullishEngulf && followThrough) return { confirmed: true, type: 'bullish engulf + momentum', strength: 'STRONG' };
+        if (bullishEngulf) return { confirmed: true, type: 'bullish engulf', strength: 'STRONG' };
+        if (rejectionInZone && followThrough) return { confirmed: true, type: 'zone rejection + momentum', strength: 'MODERATE' };
+        if (rejectionInZone) return { confirmed: true, type: 'zone rejection wick', strength: 'MODERATE' };
+        if (last.c > prev.c && last.c > prev2.c && last.c > last.o) return { confirmed: true, type: 'momentum shift', strength: 'WEAK' };
+        return { confirmed: false, type: 'none', strength: 'NONE' };
+    } else {
+        const wickedIntoZone = last.h >= zone.low && last.h <= zone.high;
+        const closedBelow = last.c < zone.low;
+        const bearishEngulf = last.c < last.o && prev.c > prev.o && last.c < prev.l;
+        const bearishPinbar = (last.h - last.c) > Math.abs(last.c - last.o) * 2 && last.c < last.o;
+        const rejectionInZone = wickedIntoZone && (closedBelow || bearishPinbar || last.c < last.o);
+        const followThrough = last.c < prev.c && prev.c < prev2.c && last.c < last.o;
+        
+        if (bearishEngulf && followThrough) return { confirmed: true, type: 'bearish engulf + momentum', strength: 'STRONG' };
+        if (bearishEngulf) return { confirmed: true, type: 'bearish engulf', strength: 'STRONG' };
+        if (rejectionInZone && followThrough) return { confirmed: true, type: 'zone rejection + momentum', strength: 'MODERATE' };
+        if (rejectionInZone) return { confirmed: true, type: 'zone rejection wick', strength: 'MODERATE' };
+        if (last.c < prev.c && last.c < prev2.c && last.c < last.o) return { confirmed: true, type: 'momentum shift', strength: 'WEAK' };
+        return { confirmed: false, type: 'none', strength: 'NONE' };
+    }
+}
 
 // ============================================
 // ZONE MAGNETISM CHECK
@@ -171,7 +211,7 @@ function checkZoneMagnetism(entryData, price, entry, direction) {
 }
 
 // ============================================
-// HTF CONFLUENCE CHECK (FIX #7)
+// HTF CONFLUENCE CHECK
 // ============================================
 function checkHTFConfluence(dailyData, h4Data, entryDirection) {
     const dailyDir = dailyData && dailyData.length >= 20 ? detectTrend(dailyData) : 'NEUTRAL';
@@ -190,7 +230,7 @@ function checkHTFConfluence(dailyData, h4Data, entryDirection) {
 function calculateMSNR(data,currentPrice){const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);const period=Math.min(data.length,20);const rH=Math.max(...highs.slice(-period)),rL=Math.min(...lows.slice(-period)),rC=closes[closes.length-1];const pp=(rH+rL+rC)/3;const s1=pp*2-rH,s2=pp-(rH-rL),s3=rL-2*(rH-pp);const r1=pp*2-rL,r2=pp+(rH-rL),r3=rH+2*(pp-rL);const ms1=(s1+s2)/2,ms2=(pp+s1)/2,mr1=(r1+r2)/2,mr2=(pp+r1)/2;const allS=[s1,ms2,ms1,s2,s3].filter(s=>s<currentPrice).sort((a,b)=>b-a);const allR=[r1,mr2,mr1,r2,r3].filter(r=>r>currentPrice).sort((a,b)=>a-b);return{pivot:pp,supports:{S1:s1,S2:s2,S3:s3,MS1:ms1,MS2:ms2},resistances:{R1:r1,R2:r2,R3:r3,MR1:mr1,MR2:mr2},nearestSupport:allS[0]||null,nearestResistance:allR[0]||null,allSupports:allS,allResistances:allR};}
 
 // ============================================
-// PRECISION ENTRY ZONE - NOW INCLUDES ORDER BLOCKS (FIX #1 + #4)
+// PRECISION ENTRY ZONE - NOW INCLUDES ORDER BLOCKS
 // ============================================
 function findPrecisionEntry(data,price,direction,msnr){
     const a=atr(data,14),fvgs=detectFVG(data),breakers=detectBreakers(data),swings=findSwings(data,4);
@@ -267,36 +307,9 @@ function calcStopLoss(data,dir,entry,zone,msnr,tfUsed,twelveIndicators){
 function calcTakeProfits(dir,entry,sl){const risk=Math.abs(entry-sl);const settings=getMarketSettings(pair);const rr=settings.targetRR;if(dir==='BUY'){return{tp1:entry+risk*rr,tp2:entry+risk*(rr+1),tp3:entry+risk*(rr+2)};}else{return{tp1:entry-risk*rr,tp2:entry-risk*(rr+1),tp3:entry-risk*(rr+2)};}}
 
 // ============================================
-// SCORING (FIXED: HTF CONTEXT WEIGHTED IN)
+// SCORING
 // ============================================
-function score(data,price){
-    const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl);
-    const fv=detectFVG(data),ms=detectMSS(data),bk=detectBreakers(data);
-    const e20=ema(cl,20),e50=ema(cl,50),cE20=e20[e20.length-1],cE50=e50[e50.length-1];
-    const bF=fv.filter(f=>f.type==='bull'&&f.l<price).sort((a,b)=>b.l-a.l);
-    const sF=fv.filter(f=>f.type==='bear'&&f.h>price).sort((a,b)=>a.h-b.h);
-    const bB=bk.filter(b=>b.type==='BULL'&&b.p<price);
-    const sB=bk.filter(b=>b.type==='BEAR'&&b.p>price);
-    
-    let bS=0,sS=0,bR=[],sR=[];
-    
-    if(ms?.type==='BULL'){bS+=20;bR.push('MSS Bull');}
-    else if(ms?.type==='BEAR'){sS+=20;sR.push('MSS Bear');}
-    if(bF.length){bS+=15;bR.push('Bull FVG');}
-    if(sF.length){sS+=15;sR.push('Bear FVG');}
-    if(bB.length){bS+=10;bR.push('Bull breaker');}
-    if(sB.length){sS+=10;sR.push('Bear breaker');}
-    if(cE20>cE50){bS+=15;bR.push('EMA bull');}
-    else{sS+=15;sR.push('EMA bear');}
-    if(rs>50)bS+=10;else sS+=10;
-    
-    let dir,conf,reason;
-    if(bS>sS){dir='BUY';conf=Math.min(bS+15,95);reason=bR.join('; ');}
-    else if(sS>bS){dir='SELL';conf=Math.min(sS+15,95);reason=sR.join('; ');}
-    else{dir=cE20>cE50?'BUY':'SELL';conf=50;reason='EMA tiebreaker';}
-    
-    return{dir,conf,reason,scores:{bS,sS}};
-}
+function score(data,price){const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl);const fv=detectFVG(data),ms=detectMSS(data),bk=detectBreakers(data);const e20=ema(cl,20),e50=ema(cl,50),cE20=e20[e20.length-1],cE50=e50[e50.length-1];const bF=fv.filter(f=>f.type==='bull'&&f.l<price).sort((a,b)=>b.l-a.l);const sF=fv.filter(f=>f.type==='bear'&&f.h>price).sort((a,b)=>a.h-b.h);const bB=bk.filter(b=>b.type==='BULL'&&b.p<price);const sB=bk.filter(b=>b.type==='BEAR'&&b.p>price);let bS=0,sS=0,bR=[],sR=[];if(ms?.type==='BULL'){bS+=20;bR.push('MSS Bull');}else if(ms?.type==='BEAR'){sS+=20;sR.push('MSS Bear');}if(bF.length){bS+=15;bR.push('Bull FVG');}if(sF.length){sS+=15;sR.push('Bear FVG');}if(bB.length){bS+=10;bR.push('Bull breaker');}if(sB.length){sS+=10;sR.push('Bear breaker');}if(cE20>cE50){bS+=15;bR.push('EMA bull');}else{sS+=15;sR.push('EMA bear');}if(rs>50)bS+=10;else sS+=10;let dir,conf,reason;if(bS>sS){dir='BUY';conf=Math.min(bS+15,95);reason=bR.join('; ');}else if(sS>bS){dir='SELL';conf=Math.min(sS+15,95);reason=sR.join('; ');}else{dir=cE20>cE50?'BUY':'SELL';conf=50;reason='EMA tiebreaker';}return{dir,conf,reason,scores:{bS,sS}};}
 
 // ============================================
 // MULTI-TF DISPLAY
@@ -347,7 +360,24 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         const msnr = calculateMSNR(structureData || entryData, price);
         const zone = findPrecisionEntry(entryData, price, direction, msnr);
         
-        let entry = direction === 'BUY' ? zone.low : zone.high;
+        // Zone reaction check - now gates the entry
+        const zoneReaction = checkZoneReaction(entryData, zone, direction);
+        
+        // Entry placed AFTER reaction confirmed, at the reaction candle close
+        let entry;
+        const lastCandle = entryData[entryData.length - 1];
+        if (zoneReaction.confirmed) {
+            if (direction === 'BUY') {
+                // Enter just above the rejection candle high
+                entry = Math.max(lastCandle.h, zone.low) + zone.low * 0.0002;
+            } else {
+                // Enter just below the rejection candle low
+                entry = Math.min(lastCandle.l, zone.high) - zone.high * 0.0002;
+            }
+        } else {
+            // No reaction yet - place entry at zone edge but mark as pending
+            entry = direction === 'BUY' ? zone.low : zone.high;
+        }
         if (direction === 'BUY' && entry >= price) { const nb = msnr.nearestSupport || price * 0.99; entry = Math.min(zone.low, nb, price * 0.995); }
         if (direction === 'SELL' && entry <= price) { const na = msnr.nearestResistance || price * 1.01; entry = Math.max(zone.high, na, price * 1.005); }
         
@@ -359,6 +389,11 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         const sniperRej = await checkSniperRejection(zone, direction, sniperTF);
         const probCheck = checkProbability(zone, mtf, magnetism);
         if (!probCheck.passed && probCheck.probability === 'LOW') return null;
+        
+        // Require zone reaction confirmation for trades (blocks weak entries)
+        if (!zoneReaction.confirmed && !displacement.detected && !turtleSoup.detected && !sniperRej.confirmed) {
+            // No confirmation at all - heavily penalize
+        }
         
         const slResult = calcStopLoss(entryData, direction, entry, zone, msnr, tfToAnalyze, twelveIndicators);
         const tps = calcTakeProfits(direction, entry, slResult.price);
@@ -388,6 +423,17 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (!zone.hasImbalance) conf = Math.max(conf - 10, 30);
         if (magnetism.magnetism === 'STRONG') conf = Math.min(conf + 10, 98);
         else if (magnetism.magnetism === 'WEAK') conf = Math.max(conf - 15, 25);
+        
+        // Zone reaction boosts - stronger boost for confirmed reactions
+        if (zoneReaction.confirmed && zoneReaction.strength === 'STRONG') conf = Math.min(conf + 15, 98);
+        else if (zoneReaction.confirmed && zoneReaction.strength === 'MODERATE') conf = Math.min(conf + 8, 98);
+        else if (zoneReaction.confirmed && zoneReaction.strength === 'WEAK') conf = Math.min(conf + 3, 98);
+        
+        // Heavy penalty if NO confirmation at all
+        if (!zoneReaction.confirmed && !displacement.detected && !turtleSoup.detected && !sniperRej.confirmed) {
+            conf = Math.max(conf - 25, 10);
+        }
+        
         if (twelveIndicators.macd_hist && direction === 'BUY' && twelveIndicators.macd > twelveIndicators.macd_signal) conf = Math.min(conf + 5, 98);
         if (twelveIndicators.macd_hist && direction === 'SELL' && twelveIndicators.macd < twelveIndicators.macd_signal) conf = Math.min(conf + 5, 98);
         if (twelveIndicators.adx && twelveIndicators.adx > 25) conf = Math.min(conf + 5, 98);
@@ -399,13 +445,14 @@ async function analyzeTimeframe(tfToAnalyze, price) {
             direction, entry, sl: slResult.price, tp1: tps.tp1, tp2: tps.tp2, tp3: tps.tp3,
             confidence: conf, zone, slResult, displacement, sniperRej,
             probCheck, turtleSoup, mtf, msnr, twelveIndicators, pathCheck, tfAlign,
-            sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, obsAll, rs, apiATR, trends, magnetism
+            sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, obsAll, rs, apiATR, trends, magnetism,
+            zoneReaction
         };
     } catch (e) { console.error(`Error ${tfToAnalyze}:`, e); return null; }
 }
 
 // ============================================
-// AI - CALLED ONCE WITH ALL RESULTS (FIX #5 + #6)
+// AI - CALLED ONCE WITH ALL RESULTS
 // ============================================
 async function askAIWithAllResults(allResults, price, htfData) {
     if (!DEEPSEEK_API_KEY || allResults.length === 0) return null;
@@ -413,7 +460,7 @@ async function askAIWithAllResults(allResults, price, htfData) {
     
     let tfSummary = '';
     for (const r of allResults) {
-        tfSummary += `${r.timeframe}: ${r.direction} | Entry zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | SL:$${r.sl.toFixed(2)} | Conf:${r.confidence}% | Q:${r.zone.quality} | Magnet:${r.magnetism.magnetism} | Src:${r.zone.src}\n`;
+        tfSummary += `${r.timeframe}: ${r.direction} | Entry zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | SL:$${r.sl.toFixed(2)} | Conf:${r.confidence}% | Q:${r.zone.quality} | Magnet:${r.magnetism.magnetism} | Src:${r.zone.src} | React:${r.zoneReaction?.confirmed ? r.zoneReaction.type + '(' + r.zoneReaction.strength + ')' : 'None'}\n`;
     }
     
     const best = allResults[0];
@@ -442,6 +489,7 @@ Entry Zone: $${best.zone.low.toFixed(prec)} - $${best.zone.high.toFixed(prec)}
 Zone Type: ${best.zone.src} | Quality: ${best.zone.quality} | Confluence: ${best.zone.confluence}
 SL: $${best.sl.toFixed(prec)}
 Zone Magnetism: ${best.magnetism.magnetism} (${best.magnetism.score}/100)
+Zone Reaction: ${best.zoneReaction?.confirmed ? best.zoneReaction.type + ' (' + best.zoneReaction.strength + ')' : 'No reaction - WAIT'}
 Displacement: ${best.displacement.detected ? 'Yes' : 'No'}
 Turtle Soup: ${best.turtleSoup.detected ? 'Yes' : 'No'}
 Sniper Rejection: ${best.sniperRej.confirmed ? 'Yes' : 'No'}
@@ -449,8 +497,9 @@ Sniper Rejection: ${best.sniperRej.confirmed ? 'Yes' : 'No'}
 VERIFY:
 1. Does HTF narrative (1D/4H) support this ${best.direction} on ${best.timeframe}?
 2. Is the entry zone (${best.zone.src} at $${best.zone.low.toFixed(prec)}-$${best.zone.high.toFixed(prec)}) a valid PD Array within HTF context?
-3. Can you refine the entry zone to be more precise?
-4. Any risk warnings for this specific setup?
+3. Is the zone reaction strong enough to enter now, or should we wait?
+4. Can you refine the entry zone to be more precise?
+5. Any risk warnings for this specific setup?
 
 Return ONLY this JSON:
 {"trade_signal_Theghostmachine":{"date":"${new Date().toISOString().split('T')[0]}","current_price":"${price.toFixed(prec)}","pair":"${pair}","selected_timeframe":"${best.timeframe}","trade_type":"${best.direction==='BUY'?'BUY-LIMIT':'SELL-LIMIT'}","entry_price":${best.entry.toFixed(prec)},"stop_loss":${best.sl.toFixed(prec)},"take_profit":${best.tp1.toFixed(prec)},"take_profit_2":${best.tp2.toFixed(prec)},"take_profit_3":${best.tp3.toFixed(prec)},"approved":true,"confidence_adjustment":0,"htf_alignment":"${htfConfluence.level.toLowerCase()}","entry_refinement":{"low":${best.zone.low.toFixed(prec)},"high":${best.zone.high.toFixed(prec)}},"analysis":{"market_context":"...","trend_detection":"...","entry_logic":"...","sl_logic":"...","key_reason":"...","risk_warning":null,"possible_outcomes":["Primary","Alternative","Invalidation"]}}}`;
@@ -477,7 +526,7 @@ async function runAutoScan() {
     
     if (!TWELVE_DATA_KEY) { showSetup(); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
     
-    showNotif('🔍 Auto-scanning + magnetism check...', 'info');
+    showNotif('🔍 Auto-scanning + momentum check...', 'info');
     
     try {
         const price = await getPrice();
@@ -508,8 +557,8 @@ async function runAutoScan() {
         }
         
         if (results.length === 0) {
-            showNotif('⚠️ No setups with sufficient magnetism found', 'warning');
-            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_MAGNETIC_SETUP',timeframes_scanned:timeframesToScan.length}}, null, 2);
+            showNotif('⚠️ No setups with sufficient momentum found', 'warning');
+            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_MOMENTUM_SETUP',timeframes_scanned:timeframesToScan.length}}, null, 2);
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
@@ -575,6 +624,8 @@ async function runAutoScan() {
                     trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT',
                     entry_price: finalEntry,
                     entry_zone: { low: finalZoneLow, high: finalZoneHigh },
+                    entry_confirmed: best.zoneReaction?.confirmed || false,
+                    entry_confirmation_type: best.zoneReaction?.type || 'pending',
                     stop_loss: best.sl,
                     risk_amount: risk.toFixed(prec),
                     stop_loss_pct: ((risk / best.entry) * 100).toFixed(2) + '%',
@@ -596,6 +647,7 @@ async function runAutoScan() {
                     zone_confluence: best.zone.confluence,
                     confluence_count: best.zone.cc,
                     imbalance_magnet: best.zone.hasImbalance,
+                    zone_reaction: best.zoneReaction,
                     zone_magnetism: {
                         strength: best.magnetism.magnetism,
                         score: best.magnetism.score,
@@ -624,23 +676,24 @@ async function runAutoScan() {
                     analysis: {
                         trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)${best.mtf.strength >= 3 ? ' - STRONG' : ''}`,
                         volatility_level: `${best.volatility.level} - ${best.volatility.desc}`,
-                        market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level },
+                        market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, zone_reaction: best.zoneReaction, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level },
                         indicator_confluence: { macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A', adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'}` : 'N/A', stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A', cci: best.twelveIndicators.cci || 'N/A', williams_r: best.twelveIndicators.williams_r || 'N/A', sar: best.twelveIndicators.sar ? `$${best.twelveIndicators.sar}` : 'N/A', ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A' },
                         technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ATR(API): ${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`, `OB: ${best.obsAll ? best.obsAll.length : 0}`],
-                        reasoning: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}] | Magnet:${best.magnetism.magnetism} | HTF:${htfConfluence.level} | ATR:${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`
+                        reasoning: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}] | Magnet:${best.magnetism.magnetism} | HTF:${htfConfluence.level} | React:${best.zoneReaction?.confirmed ? best.zoneReaction.type : 'WAIT'} | ATR:${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`
                     }
                 }
             }
         };
         
         document.getElementById('jsonOutput').innerHTML = JSON.stringify(out, null, 2);
-        analysis = { signalType: st, idealEntry: finalEntry, currentPrice: price, stopLoss: best.sl, takeProfit1: best.tp1, takeProfit2: best.tp2, takeProfit3: best.tp3, confidence: best.confidence, entryZoneLow: finalZoneLow, entryZoneHigh: finalZoneHigh };
+        analysis = { signalType: st, idealEntry: finalEntry, currentPrice: price, stopLoss: best.sl, takeProfit1: best.tp1, takeProfit2: best.tp2, takeProfit3: best.tp3, confidence: best.confidence, entryZoneLow: finalZoneLow, entryZoneHigh: finalZoneHigh, entryConfirmed: best.zoneReaction?.confirmed || false };
         document.getElementById('executeBtn').disabled = false;
         
         const magLabel = best.magnetism.magnetism === 'STRONG' ? '🧲' : (best.magnetism.magnetism === 'MODERATE' ? '🔗' : '⚠️');
         const aiLabel = aiResult ? (aiApproved ? '🤖✅' : '🤖❌') : '';
         const htfLabel = htfConfluence.level === 'FULL' ? '💪' : (htfConfluence.level === 'CONFLICT' ? '⚠️' : '');
-        showNotif(`${aiLabel}${magLabel}${htfLabel} Best: ${best.timeframe} ${st} ${best.confidence}% | Zone:$${finalZoneLow.toFixed(prec)}-$${finalZoneHigh.toFixed(prec)} | 1:${rr}`, 'success');
+        const reactLabel = best.zoneReaction?.confirmed ? '🎯' : '⏳WAIT';
+        showNotif(`${aiLabel}${magLabel}${htfLabel}${reactLabel} Best: ${best.timeframe} ${st} ${best.confidence}% | Zone:$${finalZoneLow.toFixed(prec)}-$${finalZoneHigh.toFixed(prec)} | 1:${rr}`, 'success');
         
     } catch (e) { console.error(e); showNotif('Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
     finally { btn.classList.remove('loading'); btn.disabled = false; }
@@ -655,6 +708,6 @@ function clearLimit(){limitOrder=null;localStorage.removeItem('limitOrder');if(p
 function cancelLimit(){clearLimit();showNotif('❌ Cancelled','warning');}
 function updateLimitUI(){const t=document.getElementById('limitOrderText'),c=document.getElementById('cancelLimitBtn');if(limitOrder){const prec=getPrec(pair);t.innerHTML=`⏳ ${limitOrder.signalType} LIMIT @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)}`;t.className='active';c.classList.remove('hidden');document.getElementById('executeBtn').innerHTML='⏳ Waiting...';document.getElementById('executeBtn').style.background='linear-gradient(135deg, #ff9f0a, #ff6b00)';}else{t.innerHTML='No active limit order';t.className='';c.classList.add('hidden');document.getElementById('executeBtn').innerHTML='⚡ Place Limit Order';document.getElementById('executeBtn').style.background='linear-gradient(135deg, #34c759, #28a745)';}}
 function startMonitor(){if(priceTimer)clearInterval(priceTimer);priceTimer=setInterval(async()=>{if(!limitOrder){clearInterval(priceTimer);return;}const p=await getPrice();if(!p)return;const prec=getPrec(pair);document.getElementById('currentPrice').innerHTML=`$${p.toFixed(prec)}`;if((limitOrder.signalType==='LONG'&&p<=limitOrder.idealEntry)||(limitOrder.signalType==='SHORT'&&p>=limitOrder.idealEntry)){clearLimit();showNotif(`✅ FILLED! ${limitOrder.signalType} @ $${p.toFixed(prec)}`,'success');try{new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play();}catch(e){}}},2000);}
-function handleLimit(){if(!analysis||analysis.signalType==='NEUTRAL'){showNotif('No signal','error');return;}if(limitOrder){cancelLimit();return;}const o={id:Date.now(),pair,signalType:analysis.signalType,idealEntry:analysis.idealEntry,stopLoss:analysis.stopLoss,takeProfit1:analysis.takeProfit1,takeProfit2:analysis.takeProfit2,takeProfit3:analysis.takeProfit3,confidence:analysis.confidence,entryZoneLow:analysis.entryZoneLow,entryZoneHigh:analysis.entryZoneHigh,createdAt:new Date().toISOString()};saveLimit(o);startMonitor();showNotif(`📝 Limit @ $${o.idealEntry.toFixed(getPrec(pair))}`,'info');}
+function handleLimit(){if(!analysis||analysis.signalType==='NEUTRAL'){showNotif('No signal','error');return;}if(limitOrder){cancelLimit();return;}const o={id:Date.now(),pair,signalType:analysis.signalType,idealEntry:analysis.idealEntry,stopLoss:analysis.stopLoss,takeProfit1:analysis.takeProfit1,takeProfit2:analysis.takeProfit2,takeProfit3:analysis.takeProfit3,confidence:analysis.confidence,entryZoneLow:analysis.entryZoneLow,entryZoneHigh:analysis.entryZoneHigh,entryConfirmed:analysis.entryConfirmed,createdAt:new Date().toISOString()};saveLimit(o);startMonitor();showNotif(`📝 Limit @ $${o.idealEntry.toFixed(getPrec(pair))}`,'info');}
 function copyJson(){const t=document.getElementById('jsonOutput').innerHTML;if(t.includes('Click')){showNotif('Run analysis first','warning');return;}navigator.clipboard.writeText(t).then(()=>showNotif('📋 Copied!','success')).catch(()=>showNotif('Failed','error'));}
 function showNotif(m,t){const n=document.getElementById('notification');n.innerHTML=m;n.className=`notification ${t}`;n.classList.remove('hidden');setTimeout(()=>n.classList.add('hidden'),3000);}
