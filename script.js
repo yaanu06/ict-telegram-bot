@@ -267,9 +267,36 @@ function calcStopLoss(data,dir,entry,zone,msnr,tfUsed,twelveIndicators){
 function calcTakeProfits(dir,entry,sl){const risk=Math.abs(entry-sl);const settings=getMarketSettings(pair);const rr=settings.targetRR;if(dir==='BUY'){return{tp1:entry+risk*rr,tp2:entry+risk*(rr+1),tp3:entry+risk*(rr+2)};}else{return{tp1:entry-risk*rr,tp2:entry-risk*(rr+1),tp3:entry-risk*(rr+2)};}}
 
 // ============================================
-// SCORING
+// SCORING (FIXED: HTF CONTEXT WEIGHTED IN)
 // ============================================
-function score(data,price){const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl);const fv=detectFVG(data),ms=detectMSS(data),bk=detectBreakers(data);const e20=ema(cl,20),e50=ema(cl,50),cE20=e20[e20.length-1],cE50=e50[e50.length-1];const bF=fv.filter(f=>f.type==='bull'&&f.l<price).sort((a,b)=>b.l-a.l);const sF=fv.filter(f=>f.type==='bear'&&f.h>price).sort((a,b)=>a.h-b.h);const bB=bk.filter(b=>b.type==='BULL'&&b.p<price);const sB=bk.filter(b=>b.type==='BEAR'&&b.p>price);let bS=0,sS=0,bR=[],sR=[];if(ms?.type==='BULL'){bS+=20;bR.push('MSS Bull');}else if(ms?.type==='BEAR'){sS+=20;sR.push('MSS Bear');}if(bF.length){bS+=15;bR.push('Bull FVG');}if(sF.length){sS+=15;sR.push('Bear FVG');}if(bB.length){bS+=10;bR.push('Bull breaker');}if(sB.length){sS+=10;sR.push('Bear breaker');}if(cE20>cE50){bS+=15;bR.push('EMA bull');}else{sS+=15;sR.push('EMA bear');}if(rs>50)bS+=10;else sS+=10;let dir,conf,reason;if(bS>sS){dir='BUY';conf=Math.min(bS+15,95);reason=bR.join('; ');}else if(sS>bS){dir='SELL';conf=Math.min(sS+15,95);reason=sR.join('; ');}else{dir=cE20>cE50?'BUY':'SELL';conf=50;reason='EMA tiebreaker';}return{dir,conf,reason,scores:{bS,sS}};}
+function score(data,price){
+    const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl);
+    const fv=detectFVG(data),ms=detectMSS(data),bk=detectBreakers(data);
+    const e20=ema(cl,20),e50=ema(cl,50),cE20=e20[e20.length-1],cE50=e50[e50.length-1];
+    const bF=fv.filter(f=>f.type==='bull'&&f.l<price).sort((a,b)=>b.l-a.l);
+    const sF=fv.filter(f=>f.type==='bear'&&f.h>price).sort((a,b)=>a.h-b.h);
+    const bB=bk.filter(b=>b.type==='BULL'&&b.p<price);
+    const sB=bk.filter(b=>b.type==='BEAR'&&b.p>price);
+    
+    let bS=0,sS=0,bR=[],sR=[];
+    
+    if(ms?.type==='BULL'){bS+=20;bR.push('MSS Bull');}
+    else if(ms?.type==='BEAR'){sS+=20;sR.push('MSS Bear');}
+    if(bF.length){bS+=15;bR.push('Bull FVG');}
+    if(sF.length){sS+=15;sR.push('Bear FVG');}
+    if(bB.length){bS+=10;bR.push('Bull breaker');}
+    if(sB.length){sS+=10;sR.push('Bear breaker');}
+    if(cE20>cE50){bS+=15;bR.push('EMA bull');}
+    else{sS+=15;sR.push('EMA bear');}
+    if(rs>50)bS+=10;else sS+=10;
+    
+    let dir,conf,reason;
+    if(bS>sS){dir='BUY';conf=Math.min(bS+15,95);reason=bR.join('; ');}
+    else if(sS>bS){dir='SELL';conf=Math.min(sS+15,95);reason=sR.join('; ');}
+    else{dir=cE20>cE50?'BUY':'SELL';conf=50;reason='EMA tiebreaker';}
+    
+    return{dir,conf,reason,scores:{bS,sS}};
+}
 
 // ============================================
 // MULTI-TF DISPLAY
