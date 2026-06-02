@@ -20,7 +20,7 @@ const TF_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day','1W':
 const ALL_TIMEFRAMES = ['5M', '15M', '1H', '4H', '1D'];
 
 // ============================================
-// TIMEFRAME WEIGHT FOR SORTING
+// TIMEFRAME WEIGHT FOR SORTING (FIX #3)
 // ============================================
 const TF_WEIGHT = { '1D': 5, '4H': 4, '1H': 3, '15M': 2, '5M': 1 };
 
@@ -81,57 +81,7 @@ function getPrec(p){const s=getMarketSettings(p);return s.prec;}
 // ============================================
 async function getPrice(){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(SYMBOLS[pair])}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.price){calls++;document.getElementById('apiSource').innerHTML='📡 Live';return +d.price;}}catch(e){}return null;}
 async function getHistory(tfStr){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${TF_MAP[tfStr]}&outputsize=100&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){calls++;return d.values.map(c=>({t:c.datetime,o:+c.open,h:+c.high,l:+c.low,c:+c.close,v:+c.volume||1e6})).reverse();}}catch(e){}return null;}
-async function getHistoryForPair(sym, tfStr){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(sym)}&interval=${TF_MAP[tfStr]}&outputsize=50&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){calls++;return d.values.map(c=>({t:c.datetime,o:+c.open,h:+c.high,l:+c.low,c:+c.close,v:+c.volume||1e6})).reverse();}}catch(e){}return null;}
 async function getTechnicalIndicators(tfUsed){if(!TWELVE_DATA_KEY)return{};const symbol=encodeURIComponent(SYMBOLS[pair]);const interval=TF_MAP[tfUsed];const ind={};try{const r=await fetch(`${TWELVE_DATA_BASE}/rsi?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.rsi=parseFloat(d.values[0].rsi);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/macd?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.macd=parseFloat(d.values[0].macd);ind.macd_signal=parseFloat(d.values[0].macd_signal);ind.macd_hist=parseFloat(d.values[0].macd_hist);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/adx?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.adx=parseFloat(d.values[0].adx);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/bbands?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.bb_upper=parseFloat(d.values[0].upper_band);ind.bb_middle=parseFloat(d.values[0].middle_band);ind.bb_lower=parseFloat(d.values[0].lower_band);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/stoch?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.stoch_k=parseFloat(d.values[0].slow_k);ind.stoch_d=parseFloat(d.values[0].slow_d);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/cci?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.cci=parseFloat(d.values[0].cci);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/atr?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.atr_api=parseFloat(d.values[0].atr);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/williams?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.williams_r=parseFloat(d.values[0].williams);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/sar?symbol=${symbol}&interval=${interval}&acceleration=0.02&maximum=0.2&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.sar=parseFloat(d.values[0].sar);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/ichimoku?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.ichimoku_tenkan=parseFloat(d.values[0].tenkan_sen);ind.ichimoku_kijun=parseFloat(d.values[0].kijun_sen);ind.ichimoku_senkou_a=parseFloat(d.values[0].senkou_span_a);ind.ichimoku_senkou_b=parseFloat(d.values[0].senkou_span_b);calls++;}}catch(e){}return ind;}
-
-// ============================================
-// SMT DIVERGENCE CHECK
-// ============================================
-async function checkSMT(p, direction) {
-    if (p !== 'XAU/USD') return { aligned: true, pair: 'N/A', note: 'SMT only for XAU' };
-    try {
-        const xagData = await getHistoryForPair('XAG/USD', '15min');
-        if (!xagData || xagData.length < 20) return { aligned: true, pair: 'XAG/USD', note: 'No data' };
-        const xagDir = detectTrend(xagData);
-        const goldDir = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
-        const aligned = xagDir === goldDir;
-        return { aligned, pair: 'XAG/USD', xag: xagDir, gold: goldDir, note: aligned ? '✅ SMT aligned' : '⚠️ SMT divergence - caution' };
-    } catch(e) { return { aligned: true, pair: 'XAG/USD', note: 'Error checking' }; }
-}
-
-// ============================================
-// ZONE REACTION CHECK
-// ============================================
-function checkZoneReaction(data, zone, direction) {
-    if (data.length < 3) return { confirmed: false, type: 'none' };
-    const last = data[data.length - 1];
-    const prev = data[data.length - 2];
-    const prev2 = data[data.length - 3];
-    
-    if (direction === 'BUY') {
-        const wickedIntoZone = last.l <= zone.high && last.l >= zone.low;
-        const closedAbove = last.c > zone.high;
-        const bullishEngulf = last.c > last.o && prev.c < prev.o && last.c > prev.h;
-        const bullishPinbar = (last.c - last.l) > Math.abs(last.c - last.o) * 2 && last.c > last.o;
-        const rejectionInZone = wickedIntoZone && (closedAbove || bullishPinbar || last.c > last.o);
-        
-        if (bullishEngulf) return { confirmed: true, type: 'bullish engulf', strength: 'STRONG' };
-        if (rejectionInZone) return { confirmed: true, type: 'zone rejection wick', strength: 'MODERATE' };
-        if (last.c > prev.c && last.c > prev2.c && last.c > last.o) return { confirmed: true, type: 'momentum shift', strength: 'WEAK' };
-        return { confirmed: false, type: 'none' };
-    } else {
-        const wickedIntoZone = last.h >= zone.low && last.h <= zone.high;
-        const closedBelow = last.c < zone.low;
-        const bearishEngulf = last.c < last.o && prev.c > prev.o && last.c < prev.l;
-        const bearishPinbar = (last.h - last.c) > Math.abs(last.c - last.o) * 2 && last.c < last.o;
-        const rejectionInZone = wickedIntoZone && (closedBelow || bearishPinbar || last.c < last.o);
-        
-        if (bearishEngulf) return { confirmed: true, type: 'bearish engulf', strength: 'STRONG' };
-        if (rejectionInZone) return { confirmed: true, type: 'zone rejection wick', strength: 'MODERATE' };
-        if (last.c < prev.c && last.c < prev2.c && last.c < last.o) return { confirmed: true, type: 'momentum shift', strength: 'WEAK' };
-        return { confirmed: false, type: 'none' };
-    }
-}
 
 // ============================================
 // TECHNICALS
@@ -145,7 +95,7 @@ function detectMSS(d){let h=d.map(c=>c.h),l=d.map(c=>c.l),c=d.map(c=>c.c),rH=Mat
 function detectBreakers(d){let b=[],s=findSwings(d);for(let i=5;i<d.length-5;i++){let c=d[i];if(c.c>c.o){let r=s.H.find(h=>h.i<i&&h.p<c.c);if(r)b.push({type:'BULL',p:r.p});}if(c.c<c.o){let sp=s.L.find(l=>l.i<i&&l.p>c.c);if(sp)b.push({type:'BEAR',p:sp.p});}}return b;}
 
 // ============================================
-// ORDER BLOCK DETECTION
+// ORDER BLOCK DETECTION (FIX #4)
 // ============================================
 function detectOrderBlocks(data, direction) {
     const obs = [];
@@ -221,7 +171,7 @@ function checkZoneMagnetism(entryData, price, entry, direction) {
 }
 
 // ============================================
-// HTF CONFLUENCE CHECK
+// HTF CONFLUENCE CHECK (FIX #7)
 // ============================================
 function checkHTFConfluence(dailyData, h4Data, entryDirection) {
     const dailyDir = dailyData && dailyData.length >= 20 ? detectTrend(dailyData) : 'NEUTRAL';
@@ -240,7 +190,7 @@ function checkHTFConfluence(dailyData, h4Data, entryDirection) {
 function calculateMSNR(data,currentPrice){const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);const period=Math.min(data.length,20);const rH=Math.max(...highs.slice(-period)),rL=Math.min(...lows.slice(-period)),rC=closes[closes.length-1];const pp=(rH+rL+rC)/3;const s1=pp*2-rH,s2=pp-(rH-rL),s3=rL-2*(rH-pp);const r1=pp*2-rL,r2=pp+(rH-rL),r3=rH+2*(pp-rL);const ms1=(s1+s2)/2,ms2=(pp+s1)/2,mr1=(r1+r2)/2,mr2=(pp+r1)/2;const allS=[s1,ms2,ms1,s2,s3].filter(s=>s<currentPrice).sort((a,b)=>b-a);const allR=[r1,mr2,mr1,r2,r3].filter(r=>r>currentPrice).sort((a,b)=>a-b);return{pivot:pp,supports:{S1:s1,S2:s2,S3:s3,MS1:ms1,MS2:ms2},resistances:{R1:r1,R2:r2,R3:r3,MR1:mr1,MR2:mr2},nearestSupport:allS[0]||null,nearestResistance:allR[0]||null,allSupports:allS,allResistances:allR};}
 
 // ============================================
-// PRECISION ENTRY ZONE WITH ORDER BLOCKS
+// PRECISION ENTRY ZONE - NOW INCLUDES ORDER BLOCKS (FIX #1 + #4)
 // ============================================
 function findPrecisionEntry(data,price,direction,msnr){
     const a=atr(data,14),fvgs=detectFVG(data),breakers=detectBreakers(data),swings=findSwings(data,4);
@@ -285,7 +235,7 @@ function findPrecisionEntry(data,price,direction,msnr){
 function checkProbability(zone,mtf,magnetism){const checks=[];checks.push({name:'Confluence (2+)',passed:zone.cc>=2,critical:true});checks.push({name:'MTF aligned (2+)',passed:mtf.strength>=2,critical:true});checks.push({name:'Zone Magnetism',passed:magnetism.likelyToReach,critical:true});checks.push({name:'Imbalance Magnet',passed:zone.hasImbalance,critical:false});checks.push({name:'Quality A/B',passed:zone.quality==='A'||zone.quality==='B',critical:false});const cp=checks.filter(c=>c.critical).every(c=>c.passed);const tp=checks.filter(c=>c.passed).length;return{probability:cp?(tp>=4?'HIGH':(tp>=3?'MEDIUM':'LOW')):'LOW',checks,totalPassed:tp,passed:cp};}
 
 // ============================================
-// STOP LOSS - ORIGINAL LOGIC (USES TWELVE DATA ATR)
+// STOP LOSS - USES API ATR
 // ============================================
 function calcStopLoss(data,dir,entry,zone,msnr,tfUsed,twelveIndicators){
     const apiATR = twelveIndicators?.atr_api || atr(data, 14);
@@ -348,7 +298,7 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
         const sig = score(entryData, price);
         
-        const tfs = ['5M', '15M', '1H', '4H'];
+        const tfs = ['5M', '15M', '1H', '4H', '1D'];
         let bullCount = 0, bearCount = 0;
         const trends = {};
         for (let t of tfs) {
@@ -370,18 +320,9 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         const msnr = calculateMSNR(structureData || entryData, price);
         const zone = findPrecisionEntry(entryData, price, direction, msnr);
         
-        // Entry at optimal point within zone (61.8% for buy, 38.2% for sell)
-        let entry;
-        if (direction === 'BUY') {
-            entry = zone.low + (zone.high - zone.low) * 0.618;
-        } else {
-            entry = zone.high - (zone.high - zone.low) * 0.618;
-        }
-        if (direction === 'BUY' && entry >= price) { const nb = msnr.nearestSupport || price * 0.99; entry = Math.min(zone.low + (zone.high - zone.low) * 0.382, nb, price * 0.995); }
-        if (direction === 'SELL' && entry <= price) { const na = msnr.nearestResistance || price * 1.01; entry = Math.max(zone.high - (zone.high - zone.low) * 0.382, na, price * 1.005); }
-        
-        // Zone reaction check
-        const zoneReaction = checkZoneReaction(entryData, zone, direction);
+        let entry = direction === 'BUY' ? zone.low : zone.high;
+        if (direction === 'BUY' && entry >= price) { const nb = msnr.nearestSupport || price * 0.99; entry = Math.min(zone.low, nb, price * 0.995); }
+        if (direction === 'SELL' && entry <= price) { const na = msnr.nearestResistance || price * 1.01; entry = Math.max(zone.high, na, price * 1.005); }
         
         const magnetism = checkZoneMagnetism(entryData, price, entry, direction);
         
@@ -420,9 +361,6 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (!zone.hasImbalance) conf = Math.max(conf - 10, 30);
         if (magnetism.magnetism === 'STRONG') conf = Math.min(conf + 10, 98);
         else if (magnetism.magnetism === 'WEAK') conf = Math.max(conf - 15, 25);
-        if (zoneReaction.confirmed && zoneReaction.strength === 'STRONG') conf = Math.min(conf + 12, 98);
-        else if (zoneReaction.confirmed && zoneReaction.strength === 'MODERATE') conf = Math.min(conf + 6, 98);
-        else if (zoneReaction.confirmed) conf = Math.min(conf + 3, 98);
         if (twelveIndicators.macd_hist && direction === 'BUY' && twelveIndicators.macd > twelveIndicators.macd_signal) conf = Math.min(conf + 5, 98);
         if (twelveIndicators.macd_hist && direction === 'SELL' && twelveIndicators.macd < twelveIndicators.macd_signal) conf = Math.min(conf + 5, 98);
         if (twelveIndicators.adx && twelveIndicators.adx > 25) conf = Math.min(conf + 5, 98);
@@ -434,22 +372,21 @@ async function analyzeTimeframe(tfToAnalyze, price) {
             direction, entry, sl: slResult.price, tp1: tps.tp1, tp2: tps.tp2, tp3: tps.tp3,
             confidence: conf, zone, slResult, displacement, sniperRej,
             probCheck, turtleSoup, mtf, msnr, twelveIndicators, pathCheck, tfAlign,
-            sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, obsAll, rs, apiATR, trends, magnetism,
-            zoneReaction
+            sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, obsAll, rs, apiATR, trends, magnetism
         };
     } catch (e) { console.error(`Error ${tfToAnalyze}:`, e); return null; }
 }
 
 // ============================================
-// AI - WITH RAW CANDLE DATA
+// AI - CALLED ONCE WITH ALL RESULTS (FIX #5 + #6)
 // ============================================
-async function askAIWithAllResults(allResults, price, htfData, smtResult) {
+async function askAIWithAllResults(allResults, price, htfData) {
     if (!DEEPSEEK_API_KEY || allResults.length === 0) return null;
     showNotif('🤖 AI verifying setups...', 'info');
     
     let tfSummary = '';
     for (const r of allResults) {
-        tfSummary += `${r.timeframe}: ${r.direction} | Entry zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | SL:$${r.sl.toFixed(2)} | Conf:${r.confidence}% | Q:${r.zone.quality} | Magnet:${r.magnetism.magnetism} | Src:${r.zone.src} | React:${r.zoneReaction?.confirmed ? r.zoneReaction.type : 'None'}\n`;
+        tfSummary += `${r.timeframe}: ${r.direction} | Entry zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | SL:$${r.sl.toFixed(2)} | Conf:${r.confidence}% | Q:${r.zone.quality} | Magnet:${r.magnetism.magnetism} | Src:${r.zone.src}\n`;
     }
     
     const best = allResults[0];
@@ -459,29 +396,14 @@ async function askAIWithAllResults(allResults, price, htfData, smtResult) {
     const h4Dir = htfData['4H'] ? detectTrend(htfData['4H']) : 'NEUTRAL';
     const htfConfluence = checkHTFConfluence(htfData['1D'], htfData['4H'], best.direction);
     
-    const entryTFHistory = await getHistory(best.entryTF || best.timeframe);
-    let rawCandles = '';
-    if (entryTFHistory && entryTFHistory.length >= 10) {
-        const lastCandles = entryTFHistory.slice(-10);
-        rawCandles = 'LAST 10 CANDLES (' + (best.entryTF || best.timeframe) + '):\n';
-        for (const c of lastCandles) {
-            rawCandles += `O:${c.o.toFixed(prec)} H:${c.h.toFixed(prec)} L:${c.l.toFixed(prec)} C:${c.c.toFixed(prec)}\n`;
-        }
-    }
-    
-    const prompt = `You are TheGhostMachine - elite ICT sniper. VERIFY this trade setup with raw data.
+    const prompt = `You are TheGhostMachine - elite ICT sniper. VERIFY this trade setup against higher timeframe context.
 
 PAIR: ${pair} | CURRENT PRICE: $${price.toFixed(prec)}
-
-SMT CHECK:
-${smtResult ? `XAG/USD: ${smtResult.xag || 'N/A'} | XAU/USD: ${smtResult.gold || 'N/A'} | ${smtResult.note}` : 'Not checked'}
 
 HTF CONTEXT:
 1D Trend: ${dailyDir}
 4H Trend: ${h4Dir}
 HTF Confluence: ${htfConfluence.level}
-
-${rawCandles}
 
 ALL CANDIDATE SETUPS:
 ${tfSummary}
@@ -491,27 +413,23 @@ Timeframe: ${best.timeframe}
 Direction: ${best.direction}
 Entry Zone: $${best.zone.low.toFixed(prec)} - $${best.zone.high.toFixed(prec)}
 Zone Type: ${best.zone.src} | Quality: ${best.zone.quality} | Confluence: ${best.zone.confluence}
-SL: $${best.sl.toFixed(prec)} (${best.slResult.reason})
+SL: $${best.sl.toFixed(prec)}
 Zone Magnetism: ${best.magnetism.magnetism} (${best.magnetism.score}/100)
-Zone Reaction: ${best.zoneReaction?.confirmed ? best.zoneReaction.type + ' (' + best.zoneReaction.strength + ')' : 'No reaction yet'}
 Displacement: ${best.displacement.detected ? 'Yes' : 'No'}
 Turtle Soup: ${best.turtleSoup.detected ? 'Yes' : 'No'}
-ATR: ${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}
-RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}
-ADX: ${best.twelveIndicators.adx || 'N/A'}
+Sniper Rejection: ${best.sniperRej.confirmed ? 'Yes' : 'No'}
 
-VALIDATE:
-1. Look at last 10 candles. Does price action support this setup?
-2. Is entry zone precise enough?
-3. Is SL safe given swing structure?
-4. Does SMT warn against this trade?
-5. Probability of hitting TP1 before SL?
+VERIFY:
+1. Does HTF narrative (1D/4H) support this ${best.direction} on ${best.timeframe}?
+2. Is the entry zone (${best.zone.src} at $${best.zone.low.toFixed(prec)}-$${best.zone.high.toFixed(prec)}) a valid PD Array within HTF context?
+3. Can you refine the entry zone to be more precise?
+4. Any risk warnings for this specific setup?
 
 Return ONLY this JSON:
-{"trade_signal_Theghostmachine":{"date":"${new Date().toISOString().split('T')[0]}","current_price":"${price.toFixed(prec)}","pair":"${pair}","selected_timeframe":"${best.timeframe}","trade_type":"${best.direction==='BUY'?'BUY-LIMIT':'SELL-LIMIT'}","entry_price":${best.entry.toFixed(prec)},"stop_loss":${best.sl.toFixed(prec)},"take_profit":${best.tp1.toFixed(prec)},"take_profit_2":${best.tp2.toFixed(prec)},"take_profit_3":${best.tp3.toFixed(prec)},"approved":true,"confidence_adjustment":0,"htf_alignment":"${htfConfluence.level.toLowerCase()}","entry_refinement":{"low":${best.zone.low.toFixed(prec)},"high":${best.zone.high.toFixed(prec)}},"analysis":{"market_context":"...","trend_detection":"...","entry_logic":"...","sl_logic":"...","key_reason":"...","risk_warning":null,"smt_analysis":"...","possible_outcomes":["Primary","Alternative","Invalidation"]}}}`;
+{"trade_signal_Theghostmachine":{"date":"${new Date().toISOString().split('T')[0]}","current_price":"${price.toFixed(prec)}","pair":"${pair}","selected_timeframe":"${best.timeframe}","trade_type":"${best.direction==='BUY'?'BUY-LIMIT':'SELL-LIMIT'}","entry_price":${best.entry.toFixed(prec)},"stop_loss":${best.sl.toFixed(prec)},"take_profit":${best.tp1.toFixed(prec)},"take_profit_2":${best.tp2.toFixed(prec)},"take_profit_3":${best.tp3.toFixed(prec)},"approved":true,"confidence_adjustment":0,"htf_alignment":"${htfConfluence.level.toLowerCase()}","entry_refinement":{"low":${best.zone.low.toFixed(prec)},"high":${best.zone.high.toFixed(prec)}},"analysis":{"market_context":"...","trend_detection":"...","entry_logic":"...","sl_logic":"...","key_reason":"...","risk_warning":null,"possible_outcomes":["Primary","Alternative","Invalidation"]}}}`;
 
     try {
-        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are TheGhostMachine - elite ICT sniper. Return ONLY valid JSON. Analyze raw candles. Be honest.'},{role:'user',content:prompt}],temperature:0.05,max_tokens:1200})});
+        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are TheGhostMachine - elite ICT trader. Return ONLY valid JSON. Verify setups against HTF context. Be honest if setup should be skipped.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:1000})});
         const d = await r.json();
         if (d.choices?.[0]) { const m = d.choices[0].message.content.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); }
     } catch(e) { console.error('AI fetch:', e); }
@@ -532,7 +450,7 @@ async function runAutoScan() {
     
     if (!TWELVE_DATA_KEY) { showSetup(); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
     
-    showNotif('🔍 Auto-scanning...', 'info');
+    showNotif('🔍 Auto-scanning + magnetism check...', 'info');
     
     try {
         const price = await getPrice();
@@ -553,9 +471,6 @@ async function runAutoScan() {
         if (dailyData) htfData['1D'] = dailyData;
         if (h4Data) htfData['4H'] = h4Data;
         
-        scanText.innerHTML = 'Checking SMT...';
-        const smtResult = await checkSMT(pair, 'BUY');
-        
         for (let i = 0; i < timeframesToScan.length; i++) {
             const tfScan = timeframesToScan[i];
             scanText.innerHTML = `Scanning ${tfScan}... (${i + 1}/${timeframesToScan.length})`;
@@ -566,8 +481,8 @@ async function runAutoScan() {
         }
         
         if (results.length === 0) {
-            showNotif('⚠️ No setups found', 'warning');
-            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',timeframes_scanned:timeframesToScan.length}}, null, 2);
+            showNotif('⚠️ No setups with sufficient magnetism found', 'warning');
+            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_MAGNETIC_SETUP',timeframes_scanned:timeframesToScan.length}}, null, 2);
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
@@ -577,14 +492,8 @@ async function runAutoScan() {
             return scoreB - scoreA;
         });
         
-        const bestInitial = results[0];
-        const smtFinal = await checkSMT(pair, bestInitial.direction);
-        if (!smtFinal.aligned) {
-            bestInitial.confidence = Math.max(bestInitial.confidence - 15, 10);
-        }
-        
-        scanText.innerHTML = '🤖 AI verifying...';
-        const aiResult = await askAIWithAllResults(results, price, htfData, smtFinal);
+        scanText.innerHTML = '🤖 AI verifying setups...';
+        const aiResult = await askAIWithAllResults(results, price, htfData);
         scanStatus.classList.add('hidden');
         
         const best = results[0];
@@ -598,7 +507,7 @@ async function runAutoScan() {
         
         let aiConviction = 'MEDIUM', aiApproved = true, aiConfAdj = 0;
         let finalEntry = best.entry, finalZoneLow = best.zone.low, finalZoneHigh = best.zone.high;
-        let aiEntryLogic = '', aiSlLogic = '', aiKeyReason = '', aiRiskWarning = '', aiOutcomes = [], aiSmtAnalysis = '';
+        let aiEntryLogic = '', aiSlLogic = '', aiKeyReason = '', aiRiskWarning = '', aiOutcomes = [];
         
         if (aiResult && aiResult.trade_signal_Theghostmachine) {
             const ts = aiResult.trade_signal_Theghostmachine;
@@ -609,11 +518,7 @@ async function runAutoScan() {
             if (ts.entry_refinement && ts.entry_refinement.low && ts.entry_refinement.high) {
                 finalZoneLow = ts.entry_refinement.low;
                 finalZoneHigh = ts.entry_refinement.high;
-                if (best.direction === 'BUY') {
-                    finalEntry = finalZoneLow + (finalZoneHigh - finalZoneLow) * 0.618;
-                } else {
-                    finalEntry = finalZoneHigh - (finalZoneHigh - finalZoneLow) * 0.618;
-                }
+                finalEntry = (finalZoneLow + finalZoneHigh) / 2;
             }
             
             aiEntryLogic = ts.analysis?.entry_logic || '';
@@ -621,7 +526,6 @@ async function runAutoScan() {
             aiKeyReason = ts.analysis?.key_reason || '';
             aiRiskWarning = ts.analysis?.risk_warning || '';
             aiOutcomes = ts.analysis?.possible_outcomes || [];
-            aiSmtAnalysis = ts.analysis?.smt_analysis || smtFinal.note || '';
             
             if (aiApproved) {
                 best.confidence = Math.min(Math.max(best.confidence + aiConfAdj, 10), 98);
@@ -640,13 +544,11 @@ async function runAutoScan() {
                 ai_verified: !!aiResult,
                 ai_approved: aiApproved,
                 htf_confluence: htfConfluence,
-                smt_check: smtFinal,
                 trade_signal: {
                     trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT',
                     entry_price: finalEntry,
                     entry_zone: { low: finalZoneLow, high: finalZoneHigh },
                     stop_loss: best.sl,
-                    sl_reason: best.slResult.reason,
                     risk_amount: risk.toFixed(prec),
                     stop_loss_pct: ((risk / best.entry) * 100).toFixed(2) + '%',
                     take_profit_1: best.tp1,
@@ -661,14 +563,12 @@ async function runAutoScan() {
                     entry_reasoning: aiEntryLogic || `${best.zone.src} zone with ${best.zone.confluence}`,
                     sl_reasoning: aiSlLogic || best.slResult.reason,
                     key_reason: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}]`,
-                    smt_analysis: aiSmtAnalysis,
-                    possible_outcomes: aiOutcomes.length > 0 ? aiOutcomes : [`Enter at zone`, `Sweep then reverse`, `SL hit invalidates`],
+                    possible_outcomes: aiOutcomes.length > 0 ? aiOutcomes : [`Enter at zone $${finalZoneLow.toFixed(prec)}-$${finalZoneHigh.toFixed(prec)}`, `Sweep then reverse`, `Close beyond $${best.sl.toFixed(prec)} invalidates`],
                     zone_quality: best.zone.quality,
                     zone_source: best.zone.src,
                     zone_confluence: best.zone.confluence,
                     confluence_count: best.zone.cc,
                     imbalance_magnet: best.zone.hasImbalance,
-                    zone_reaction: best.zoneReaction,
                     zone_magnetism: {
                         strength: best.magnetism.magnetism,
                         score: best.magnetism.score,
@@ -680,7 +580,7 @@ async function runAutoScan() {
                     timeframe_alignment: {
                         trend_tf: best.trendTF, structure_tf: best.structureTF, entry_tf: best.entryTF, sniper_tf: best.sniperTF,
                         alignment: best.tfAlign,
-                        trend_direction: best.mtf.direction, trend_strength: best.mtf.strength + '/4 TFs',
+                        trend_direction: best.mtf.direction, trend_strength: best.mtf.strength + '/5 TFs',
                         sniper_confirmation: best.sniperRej.confirmed ? '✅ Confirmed' : '⚠️ No rejection',
                         htf_confluence: htfConfluence
                     },
@@ -695,9 +595,9 @@ async function runAutoScan() {
                     },
                     sweeps: best.sweeps.filter(s => s.distance < best.apiATR * 2).map(s => ({ type: s.type, level: s.level, distance: s.distance })),
                     analysis: {
-                        trend_detection: `${best.mtf.direction} (${best.mtf.strength}/4 TFs)${best.mtf.strength >= 3 ? ' - STRONG' : ''}`,
+                        trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)${best.mtf.strength >= 3 ? ' - STRONG' : ''}`,
                         volatility_level: `${best.volatility.level} - ${best.volatility.desc}`,
-                        market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, zone_reaction: best.zoneReaction, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level, smt_aligned: smtFinal.aligned },
+                        market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level },
                         indicator_confluence: { macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A', adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'}` : 'N/A', stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A', cci: best.twelveIndicators.cci || 'N/A', williams_r: best.twelveIndicators.williams_r || 'N/A', sar: best.twelveIndicators.sar ? `$${best.twelveIndicators.sar}` : 'N/A', ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A' },
                         technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ATR(API): ${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`, `OB: ${best.obsAll ? best.obsAll.length : 0}`],
                         reasoning: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}] | Magnet:${best.magnetism.magnetism} | HTF:${htfConfluence.level} | ATR:${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`
@@ -713,9 +613,7 @@ async function runAutoScan() {
         const magLabel = best.magnetism.magnetism === 'STRONG' ? '🧲' : (best.magnetism.magnetism === 'MODERATE' ? '🔗' : '⚠️');
         const aiLabel = aiResult ? (aiApproved ? '🤖✅' : '🤖❌') : '';
         const htfLabel = htfConfluence.level === 'FULL' ? '💪' : (htfConfluence.level === 'CONFLICT' ? '⚠️' : '');
-        const smtLabel = smtFinal.aligned ? '' : '⚠️SMT';
-        const reactLabel = best.zoneReaction?.confirmed ? '🎯' : '';
-        showNotif(`${aiLabel}${magLabel}${htfLabel}${reactLabel}${smtLabel} Best: ${best.timeframe} ${st} ${best.confidence}% | Zone:$${finalZoneLow.toFixed(prec)}-$${finalZoneHigh.toFixed(prec)} | 1:${rr}`, 'success');
+        showNotif(`${aiLabel}${magLabel}${htfLabel} Best: ${best.timeframe} ${st} ${best.confidence}% | Zone:$${finalZoneLow.toFixed(prec)}-$${finalZoneHigh.toFixed(prec)} | 1:${rr}`, 'success');
         
     } catch (e) { console.error(e); showNotif('Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
     finally { btn.classList.remove('loading'); btn.disabled = false; }
