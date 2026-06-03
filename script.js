@@ -354,7 +354,7 @@ function calcTakeProfits(dir,entry,sl,twelveIndicators){
 }
 
 // ============================================
-// SCORING
+// SCORING - ALL 10 TWELVE DATA INDICATORS
 // ============================================
 function score(data,price,twelveIndicators){
     const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl);
@@ -558,9 +558,12 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (volSurge && zoneReaction.confirmed) conf = Math.min(conf + 5, 98);
         if (volDry && !displacement.detected) conf = Math.max(conf - 8, 10);
         
-        // Killzone
-        conf = Math.round(conf * killzone.weight);
-        if (killzone.weight < 0.5) conf = Math.max(conf - 15, 10);
+        // Killzone - single penalty only, no double-counting
+        if (killzone.weight < 0.4) {
+            conf = Math.max(conf - 15, 10);
+        } else if (killzone.weight < 0.7) {
+            conf = Math.max(conf - 5, 10);
+        }
         
         // Twelve Data indicator confirmations
         if (twelveIndicators.macd_hist && direction === 'BUY' && twelveIndicators.macd > twelveIndicators.macd_signal) conf = Math.min(conf + 5, 98);
