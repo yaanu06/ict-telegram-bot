@@ -479,12 +479,10 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (magnetism.magnetism === 'STRONG') conf = Math.min(conf + 10, 98);
         else if (magnetism.magnetism === 'WEAK') conf = Math.max(conf - 15, 25);
         
-        // Zone reaction
         if (zoneReaction.confirmed && zoneReaction.strength === 'STRONG') conf = Math.min(conf + 15, 98);
         else if (zoneReaction.confirmed && zoneReaction.strength === 'MODERATE') conf = Math.min(conf + 8, 98);
         else if (zoneReaction.confirmed && zoneReaction.strength === 'WEAK') conf = Math.min(conf + 3, 98);
         
-        // Zone touches
         if (zoneTouches >= 5 && !zoneReaction.confirmed && !displacement.detected) conf = Math.max(conf - 15, 10);
         if (zoneTouches >= 2 && zoneReaction.confirmed) conf = Math.min(conf + 8, 98);
         
@@ -601,10 +599,12 @@ async function runAutoScan() {
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
+        // FIXED: Higher timeframe ALWAYS wins, confidence only tiebreaker
         results.sort((a, b) => {
-            const scoreA = a.confidence + (TF_WEIGHT[a.timeframe] || 0) * 4;
-            const scoreB = b.confidence + (TF_WEIGHT[b.timeframe] || 0) * 4;
-            return scoreB - scoreA;
+            const tfA = TF_WEIGHT[a.timeframe] || 0;
+            const tfB = TF_WEIGHT[b.timeframe] || 0;
+            if (tfA !== tfB) return tfB - tfA;
+            return b.confidence - a.confidence;
         });
         
         scanText.innerHTML = '🤖 AI verifying...';
