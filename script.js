@@ -391,21 +391,21 @@ function score(data,price,twelveIndicators){
 }
 
 // ============================================
-// MULTI-TF DISPLAY (NOW USES EMA TREND)
+// MULTI-TF DISPLAY (REVERTED TO ORIGINAL 20-BAR PRICE COMPARISON)
 // ============================================
 async function updateMTFDisplay(){
     const tfs=['5M','15M','1H','4H','1D'];
     for(let t of tfs){
         let d=await getHistory(t);
         if(!d||d.length<30)continue;
-        let tr=detectTrend(d);
+        let c=d.map(x=>x.c),tr=c[c.length-1]>c[c.length-20]?'BULLISH':(c[c.length-1]<c[c.length-20]?'BEARISH':'NEUTRAL');
         let el=document.getElementById(`trend${t}`);
         if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}
     }
 }
 
 // ============================================
-// ANALYZE SINGLE TIMEFRAME (EMA TREND)
+// ANALYZE SINGLE TIMEFRAME (INTERNAL EMA TREND PRESERVED)
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price) {
     try {
@@ -423,7 +423,7 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         for (let t of tfs) {
             let d = await getHistory(t);
             if (!d || d.length < 30) continue;
-            let tr = detectTrend(d);
+            let tr = detectTrend(d); // EMA trend for internal use
             trends[t] = tr;
             if (tr === 'BULLISH') bullCount++;
             else if (tr === 'BEARISH') bearCount++;
