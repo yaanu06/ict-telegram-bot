@@ -319,7 +319,7 @@ function calcStopLoss(data,dir,entry,zone,msnr,tfUsed,twelveIndicators){
 }
 
 // ============================================
-// TAKE PROFIT - DYNAMIC RR BASED ON ADX
+// TAKE PROFIT - FIXED DIRECTION LOGIC
 // ============================================
 function calcTakeProfits(dir,entry,sl,twelveIndicators){
     const risk=Math.abs(entry-sl);
@@ -329,8 +329,11 @@ function calcTakeProfits(dir,entry,sl,twelveIndicators){
     if (adx > 30) rr = settings.targetRR;
     else if (adx > 20) rr = Math.max(2.5, settings.targetRR - 1);
     else rr = 2;
-    if(dir==='BUY'){return{tp1:entry+risk*rr,tp2:entry+risk*(rr+1),tp3:entry+risk*(rr+2),rrUsed:rr};}
-    else{return{tp1:entry-risk*rr,tp2:entry-risk*(rr+1),tp3:entry-risk*(rr+2),rrUsed:rr};}
+    if(dir==='BUY'){
+        return{tp1:entry+risk*rr,tp2:entry+risk*(rr+1),tp3:entry+risk*(rr+2),rrUsed:rr};
+    }else{
+        return{tp1:entry-risk*rr,tp2:entry-risk*(rr+1),tp3:entry-risk*(rr+2),rrUsed:rr};
+    }
 }
 
 // ============================================
@@ -402,7 +405,7 @@ async function updateMTFDisplay(){
 }
 
 // ============================================
-// ANALYZE SINGLE TIMEFRAME (NO PER-TF FILTER)
+// ANALYZE SINGLE TIMEFRAME
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price) {
     try {
@@ -604,7 +607,6 @@ async function runAutoScan() {
         if (dailyData) htfData['1D'] = dailyData;
         if (h4Data) htfData['4H'] = h4Data;
         
-        // Determine daily trend for global bias
         const dailyTrend = dailyData && dailyData.length >= 30 ? detectTrend(dailyData) : 'NEUTRAL';
         
         for (let i = 0; i < timeframesToScan.length; i++) {
@@ -615,10 +617,8 @@ async function runAutoScan() {
             const result = await analyzeTimeframe(tfScan, price);
             if (!result || result.confidence < 20) continue;
             
-            // GLOBAL FILTER: only keep setups aligned with daily trend
             if (dailyTrend === 'BULLISH' && result.direction !== 'BUY') continue;
             if (dailyTrend === 'BEARISH' && result.direction !== 'SELL') continue;
-            // if NEUTRAL, allow both
             
             results.push(result);
         }
@@ -629,7 +629,6 @@ async function runAutoScan() {
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
-        // Higher timeframe wins
         results.sort((a, b) => {
             const tfA = TF_WEIGHT[a.timeframe] || 0;
             const tfB = TF_WEIGHT[b.timeframe] || 0;
