@@ -143,7 +143,7 @@ function detectCRT(data,direction){if(data.length<10)return{detected:false};cons
 function checkPathClearance(entryData,entry,tp,direction){const obstacles=[];const fvgs=detectFVG(entryData);const swings=findSwings(entryData,3);if(direction==='BUY'){const bearFVGs=fvgs.filter(f=>f.type==='bear'&&f.l>entry&&f.l<tp);if(bearFVGs.length>0)obstacles.push('Bearish FVG');const swingHighs=swings.H.filter(s=>s.p>entry&&s.p<tp);if(swingHighs.length>0)obstacles.push('Swing high');}else{const bullFVGs=fvgs.filter(f=>f.type==='bull'&&f.h>tp&&f.h<entry);if(bullFVGs.length>0)obstacles.push('Bullish FVG');const swingLows=swings.L.filter(s=>s.p>tp&&s.p<entry);if(swingLows.length>0)obstacles.push('Swing low');}return{clear:obstacles.length===0,obstacles,count:obstacles.length};}
 
 // ============================================
-// ZONE REACTION CHECK (unchanged, critical for entry gate)
+// ZONE REACTION CHECK
 // ============================================
 function checkZoneReaction(data, zone, direction) {
     if (data.length < 3) return { confirmed: false, type: 'none', strength: 'NONE' };
@@ -402,7 +402,7 @@ async function updateMTFDisplay(){
 }
 
 // ============================================
-// ANALYZE SINGLE TIMEFRAME
+// ANALYZE SINGLE TIMEFRAME (NO PER-TF FILTER)
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price) {
     try {
@@ -438,20 +438,17 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         const zoneTouches = countZoneTouches(entryData, zone, direction);
         const zoneReaction = checkZoneReaction(entryData, zone, direction);
         
-        // ENTRY LOGIC: Require confirmed reaction (MODERATE or STRONG)
         let entry = null;
         let entryReady = false;
         if (zoneReaction.confirmed && (zoneReaction.strength === 'STRONG' || zoneReaction.strength === 'MODERATE')) {
             entryReady = true;
             const lastCandle = entryData[entryData.length - 1];
             if (direction === 'BUY') {
-                // Enter just above the reaction candle's high (momentum entry)
                 entry = Math.max(lastCandle.h, zone.low) + zone.low * 0.0002;
             } else {
                 entry = Math.min(lastCandle.l, zone.high) - zone.high * 0.0002;
             }
         }
-        // Fallback: if no reaction, use zone midpoint but mark as not ready
         if (!entryReady) {
             entry = (zone.low + zone.high) / 2;
         }
@@ -496,11 +493,10 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (magnetism.magnetism === 'STRONG') conf = Math.min(conf + 10, 98);
         else if (magnetism.magnetism === 'WEAK') conf = Math.max(conf - 15, 25);
         
-        // Reaction is now mandatory for high confidence
         if (zoneReaction.confirmed && (zoneReaction.strength === 'STRONG' || zoneReaction.strength === 'MODERATE')) {
             conf = Math.min(conf + 20, 98);
         } else if (!zoneReaction.confirmed) {
-            conf = Math.max(conf - 20, 10); // no reaction = low confidence
+            conf = Math.max(conf - 20, 10);
         }
         
         if (zoneTouches >= 5 && !zoneReaction.confirmed) conf = Math.max(conf - 20, 10);
@@ -556,7 +552,7 @@ Displacement: ${best.displacement.detected ? 'YES' : 'NO'} | Touches: ${best.zon
 ALL INDICATORS: RSI:${best.twelveIndicators.rsi || 'N/A'} MACD:${best.twelveIndicators.macd || 'N/A'} ADX:${best.twelveIndicators.adx || 'N/A'} Stoch:${best.twelveIndicators.stoch_k || 'N/A'}/${best.twelveIndicators.stoch_d || 'N/A'} CCI:${best.twelveIndicators.cci || 'N/A'} BB:${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'} SAR:${best.twelveIndicators.sar || 'N/A'}
 
 STRICT RULES:
-- If entryReady is NO (no confirmed reaction), you MUST return execution_decision: "wait_for_reaction"
+- If entryReady is NO, you MUST return execution_decision: "wait_for_reaction"
 - If entryReady is YES and HTF is FULL or PARTIAL, you may return "enter_now"
 - If HTF is CONFLICT, return "skip" even with reaction
 - If zone has >=5 touches and no displacement, return "skip"
@@ -574,7 +570,7 @@ Return ONLY JSON:
 }
 
 // ============================================
-// AUTO SCAN
+// AUTO SCAN (GLOBAL DAILY BIAS FILTER)
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
@@ -608,18 +604,28 @@ async function runAutoScan() {
         if (dailyData) htfData['1D'] = dailyData;
         if (h4Data) htfData['4H'] = h4Data;
         
+        // Determine daily trend for global bias
+        const dailyTrend = dailyData && dailyData.length >= 30 ? detectTrend(dailyData) : 'NEUTRAL';
+        
         for (let i = 0; i < timeframesToScan.length; i++) {
             const tfScan = timeframesToScan[i];
             scanText.innerHTML = `Scanning ${tfScan}... (${i + 1}/${timeframesToScan.length})`;
             scanFill.style.width = ((i + 1) / timeframesToScan.length * 100) + '%';
             
             const result = await analyzeTimeframe(tfScan, price);
-            if (result && result.confidence >= 20) results.push(result);
+            if (!result || result.confidence < 20) continue;
+            
+            // GLOBAL FILTER: only keep setups aligned with daily trend
+            if (dailyTrend === 'BULLISH' && result.direction !== 'BUY') continue;
+            if (dailyTrend === 'BEARISH' && result.direction !== 'SELL') continue;
+            // if NEUTRAL, allow both
+            
+            results.push(result);
         }
         
         if (results.length === 0) {
-            showNotif('⚠️ No valid setups', 'warning');
-            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',timeframes_scanned:timeframesToScan.length}}, null, 2);
+            showNotif('⚠️ No valid setups aligned with daily trend', 'warning');
+            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,daily_trend:dailyTrend,status:'NO_DAILY_ALIGNED_SETUP',timeframes_scanned:timeframesToScan.length}}, null, 2);
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
@@ -682,6 +688,7 @@ async function runAutoScan() {
                 date: new Date().toISOString().split('T')[0],
                 time: new Date().toISOString().split('T')[1].split('.')[0],
                 pair, current_price: price,
+                daily_trend: dailyTrend,
                 best_timeframe: best.timeframe,
                 total_setups_found: results.length,
                 ai_verified: !!aiResult,
@@ -746,6 +753,7 @@ async function runAutoScan() {
                     },
                     sweeps: best.sweeps.filter(s => s.distance < best.apiATR * 2).map(s => ({ type: s.type, level: s.level, distance: s.distance })),
                     analysis: {
+                        daily_trend: dailyTrend,
                         trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)${best.mtf.strength >= 3 ? ' - STRONG' : ''}`,
                         volatility_level: `${best.volatility.level} - ${best.volatility.desc}`,
                         market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, zone_reaction: best.zoneReaction, zone_touches: best.zoneTouches, entry_ready: best.entryReady, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level },
@@ -765,7 +773,7 @@ async function runAutoScan() {
         const aiLabel = aiResult ? (aiApproved ? '🤖✅' : '🤖❌') : '';
         const htfLabel = htfConfluence.level === 'FULL' ? '💪' : (htfConfluence.level === 'CONFLICT' ? '⚠️' : '');
         const execLabel = executionDecision === 'enter_now' ? '🟢ENTER' : (executionDecision === 'wait_for_reaction' ? '🟡WAIT' : '🔴SKIP');
-        showNotif(`${aiLabel}${magLabel}${htfLabel} ${execLabel} ${best.timeframe} ${st} ${best.confidence}% | 1:${rrDisplay}`, 'success');
+        showNotif(`${aiLabel}${magLabel}${htfLabel} ${execLabel} ${best.timeframe} ${st} ${best.confidence}% | ${dailyTrend} | 1:${rrDisplay}`, 'success');
         
     } catch (e) { console.error(e); showNotif('Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
     finally { btn.classList.remove('loading'); btn.disabled = false; }
