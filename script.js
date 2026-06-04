@@ -391,14 +391,14 @@ function score(data,price,twelveIndicators){
 }
 
 // ============================================
-// MULTI-TF DISPLAY (REVERTED TO ORIGINAL 20-BAR PRICE COMPARISON)
+// MULTI-TF DISPLAY (NOW USING ACCURATE EMA TREND)
 // ============================================
 async function updateMTFDisplay(){
     const tfs=['5M','15M','1H','4H','1D'];
     for(let t of tfs){
         let d=await getHistory(t);
         if(!d||d.length<30)continue;
-        let c=d.map(x=>x.c),tr=c[c.length-1]>c[c.length-20]?'BULLISH':(c[c.length-1]<c[c.length-20]?'BEARISH':'NEUTRAL');
+        let tr=detectTrend(d); // Uses EMA crossover, still from Twelve Data candles
         let el=document.getElementById(`trend${t}`);
         if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}
     }
