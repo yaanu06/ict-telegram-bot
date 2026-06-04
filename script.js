@@ -573,7 +573,7 @@ Return ONLY JSON:
 }
 
 // ============================================
-// AUTO SCAN (ALL SETUPS + MTF TRENDS IN JSON)
+// AUTO SCAN (HIGHER TF ALWAYS WINS)
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
@@ -636,11 +636,12 @@ async function runAutoScan() {
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
+        // FIXED: Higher timeframe ALWAYS wins, confidence only tiebreaker for same TF
         results.sort((a, b) => {
             const tfA = TF_WEIGHT[a.timeframe] || 0;
             const tfB = TF_WEIGHT[b.timeframe] || 0;
-            if (tfA !== tfB) return tfB - tfA;
-            return b.confidence - a.confidence;
+            if (tfA !== tfB) return tfB - tfA; // Higher TF first (1D > 4H > 1H > 15M > 5M)
+            return b.confidence - a.confidence; // Same TF: higher confidence wins
         });
         
         scanText.innerHTML = '🤖 AI strict execution decision...';
