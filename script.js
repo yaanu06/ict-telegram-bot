@@ -391,14 +391,14 @@ function score(data,price,twelveIndicators){
 }
 
 // ============================================
-// MULTI-TF DISPLAY (RAW PRICE FROM TWELVE DATA)
+// MULTI-TF DISPLAY (CURRENT CANDLE DIRECTION)
 // ============================================
 async function updateMTFDisplay(){
     const tfs=['5M','15M','1H','4H','1D'];
     for(let t of tfs){
         let d=await getHistory(t);
-        if(!d||d.length<30)continue;
-        let c=d.map(x=>x.c),tr=c[c.length-1]>c[c.length-20]?'BULLISH':(c[c.length-1]<c[c.length-20]?'BEARISH':'NEUTRAL');
+        if(!d||d.length<2)continue;
+        let last=d[d.length-1],tr=last.c>last.o?'BULLISH':(last.c<last.o?'BEARISH':'NEUTRAL');
         let el=document.getElementById(`trend${t}`);
         if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}
     }
@@ -422,9 +422,9 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         const trends = {};
         for (let t of tfs) {
             let d = await getHistory(t);
-            if (!d || d.length < 30) continue;
-            let c = d.map(x => x.c);
-            let tr = c[c.length - 1] > c[c.length - 20] ? 'BULLISH' : (c[c.length - 1] < c[c.length - 20] ? 'BEARISH' : 'NEUTRAL');
+            if (!d || d.length < 2) continue;
+            let last = d[d.length - 1];
+            let tr = last.c > last.o ? 'BULLISH' : (last.c < last.o ? 'BEARISH' : 'NEUTRAL');
             trends[t] = tr;
             if (tr === 'BULLISH') bullCount++;
             else if (tr === 'BEARISH') bearCount++;
@@ -592,14 +592,14 @@ async function runAutoScan() {
         const price = await getPrice();
         if (!price) throw new Error('No price');
         
-        // Fetch all 5 timeframe trends for JSON output
+        // Fetch all 5 timeframe trends for JSON output (current candle direction)
         const mtfTrendsData = {};
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         for (let t of tfs) {
             let d = await getHistory(t);
-            if (d && d.length >= 30) {
-                let c = d.map(x => x.c);
-                let tr = c[c.length - 1] > c[c.length - 20] ? 'BULLISH' : (c[c.length - 1] < c[c.length - 20] ? 'BEARISH' : 'NEUTRAL');
+            if (d && d.length >= 2) {
+                let last = d[d.length - 1];
+                let tr = last.c > last.o ? 'BULLISH' : (last.c < last.o ? 'BEARISH' : 'NEUTRAL');
                 mtfTrendsData[t] = tr;
             } else {
                 mtfTrendsData[t] = 'N/A';
