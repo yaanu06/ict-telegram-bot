@@ -391,21 +391,21 @@ function score(data,price,twelveIndicators){
 }
 
 // ============================================
-// MULTI-TF DISPLAY (NOW USING ACCURATE EMA TREND)
+// MULTI-TF DISPLAY (RAW PRICE FROM TWELVE DATA)
 // ============================================
 async function updateMTFDisplay(){
     const tfs=['5M','15M','1H','4H','1D'];
     for(let t of tfs){
         let d=await getHistory(t);
         if(!d||d.length<30)continue;
-        let tr=detectTrend(d); // Uses EMA crossover, still from Twelve Data candles
+        let c=d.map(x=>x.c),tr=c[c.length-1]>c[c.length-20]?'BULLISH':(c[c.length-1]<c[c.length-20]?'BEARISH':'NEUTRAL');
         let el=document.getElementById(`trend${t}`);
         if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}
     }
 }
 
 // ============================================
-// ANALYZE SINGLE TIMEFRAME (INTERNAL EMA TREND PRESERVED)
+// ANALYZE SINGLE TIMEFRAME
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price) {
     try {
@@ -423,7 +423,8 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         for (let t of tfs) {
             let d = await getHistory(t);
             if (!d || d.length < 30) continue;
-            let tr = detectTrend(d); // EMA trend for internal use
+            let c = d.map(x => x.c);
+            let tr = c[c.length - 1] > c[c.length - 20] ? 'BULLISH' : (c[c.length - 1] < c[c.length - 20] ? 'BEARISH' : 'NEUTRAL');
             trends[t] = tr;
             if (tr === 'BULLISH') bullCount++;
             else if (tr === 'BEARISH') bearCount++;
@@ -572,7 +573,7 @@ Return ONLY JSON:
 }
 
 // ============================================
-// AUTO SCAN (GLOBAL DAILY BIAS FILTER)
+// AUTO SCAN (NO DAILY FILTER - ALL SETUPS PASS)
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
@@ -606,25 +607,18 @@ async function runAutoScan() {
         if (dailyData) htfData['1D'] = dailyData;
         if (h4Data) htfData['4H'] = h4Data;
         
-        const dailyTrend = dailyData && dailyData.length >= 30 ? detectTrend(dailyData) : 'NEUTRAL';
-        
         for (let i = 0; i < timeframesToScan.length; i++) {
             const tfScan = timeframesToScan[i];
             scanText.innerHTML = `Scanning ${tfScan}... (${i + 1}/${timeframesToScan.length})`;
             scanFill.style.width = ((i + 1) / timeframesToScan.length * 100) + '%';
             
             const result = await analyzeTimeframe(tfScan, price);
-            if (!result || result.confidence < 20) continue;
-            
-            if (dailyTrend === 'BULLISH' && result.direction !== 'BUY') continue;
-            if (dailyTrend === 'BEARISH' && result.direction !== 'SELL') continue;
-            
-            results.push(result);
+            if (result && result.confidence >= 20) results.push(result);
         }
         
         if (results.length === 0) {
-            showNotif('⚠️ No valid setups aligned with daily trend', 'warning');
-            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,daily_trend:dailyTrend,status:'NO_DAILY_ALIGNED_SETUP',timeframes_scanned:timeframesToScan.length}}, null, 2);
+            showNotif('⚠️ No valid setups found', 'warning');
+            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',timeframes_scanned:timeframesToScan.length}}, null, 2);
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
@@ -686,7 +680,6 @@ async function runAutoScan() {
                 date: new Date().toISOString().split('T')[0],
                 time: new Date().toISOString().split('T')[1].split('.')[0],
                 pair, current_price: price,
-                daily_trend: dailyTrend,
                 best_timeframe: best.timeframe,
                 total_setups_found: results.length,
                 ai_verified: !!aiResult,
@@ -751,7 +744,6 @@ async function runAutoScan() {
                     },
                     sweeps: best.sweeps.filter(s => s.distance < best.apiATR * 2).map(s => ({ type: s.type, level: s.level, distance: s.distance })),
                     analysis: {
-                        daily_trend: dailyTrend,
                         trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)${best.mtf.strength >= 3 ? ' - STRONG' : ''}`,
                         volatility_level: `${best.volatility.level} - ${best.volatility.desc}`,
                         market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, zone_reaction: best.zoneReaction, zone_touches: best.zoneTouches, entry_ready: best.entryReady, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level },
@@ -771,7 +763,7 @@ async function runAutoScan() {
         const aiLabel = aiResult ? (aiApproved ? '🤖✅' : '🤖❌') : '';
         const htfLabel = htfConfluence.level === 'FULL' ? '💪' : (htfConfluence.level === 'CONFLICT' ? '⚠️' : '');
         const execLabel = executionDecision === 'enter_now' ? '🟢ENTER' : (executionDecision === 'wait_for_reaction' ? '🟡WAIT' : '🔴SKIP');
-        showNotif(`${aiLabel}${magLabel}${htfLabel} ${execLabel} ${best.timeframe} ${st} ${best.confidence}% | ${dailyTrend} | 1:${rrDisplay}`, 'success');
+        showNotif(`${aiLabel}${magLabel}${htfLabel} ${execLabel} ${best.timeframe} ${st} ${best.confidence}% | 1:${rrDisplay}`, 'success');
         
     } catch (e) { console.error(e); showNotif('Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
     finally { btn.classList.remove('loading'); btn.disabled = false; }
