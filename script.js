@@ -573,7 +573,7 @@ Return ONLY JSON:
 }
 
 // ============================================
-// AUTO SCAN (NO DAILY FILTER - ALL SETUPS PASS)
+// AUTO SCAN (ALL SETUPS + MTF TRENDS IN JSON)
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
@@ -591,6 +591,20 @@ async function runAutoScan() {
     try {
         const price = await getPrice();
         if (!price) throw new Error('No price');
+        
+        // Fetch all 5 timeframe trends for JSON output
+        const mtfTrendsData = {};
+        const tfs = ['5M', '15M', '1H', '4H', '1D'];
+        for (let t of tfs) {
+            let d = await getHistory(t);
+            if (d && d.length >= 30) {
+                let c = d.map(x => x.c);
+                let tr = c[c.length - 1] > c[c.length - 20] ? 'BULLISH' : (c[c.length - 1] < c[c.length - 20] ? 'BEARISH' : 'NEUTRAL');
+                mtfTrendsData[t] = tr;
+            } else {
+                mtfTrendsData[t] = 'N/A';
+            }
+        }
         
         await updateMTFDisplay();
         document.getElementById('currentPrice').innerHTML = `$${price.toFixed(getPrec(pair))}`;
@@ -618,7 +632,7 @@ async function runAutoScan() {
         
         if (results.length === 0) {
             showNotif('⚠️ No valid setups found', 'warning');
-            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',timeframes_scanned:timeframesToScan.length}}, null, 2);
+            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}, null, 2);
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
@@ -680,6 +694,7 @@ async function runAutoScan() {
                 date: new Date().toISOString().split('T')[0],
                 time: new Date().toISOString().split('T')[1].split('.')[0],
                 pair, current_price: price,
+                multi_timeframe_trends: mtfTrendsData,
                 best_timeframe: best.timeframe,
                 total_setups_found: results.length,
                 ai_verified: !!aiResult,
