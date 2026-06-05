@@ -132,10 +132,8 @@ function countZoneTouches(data, zone, direction) {
     return touches;
 }
 
-// detectTrend kept for internal use (magnetism, scoring, etc.) - uses EMA on historical data
 function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
 
-// NEW: Get current candle direction for HTF decisions
 function getCurrentCandleDirection(data) {
     if (!data || data.length < 1) return 'NEUTRAL';
     const last = data[data.length - 1];
@@ -239,10 +237,9 @@ function checkZoneMagnetism(entryData, price, entry, direction) {
 }
 
 // ============================================
-// HTF CONFLUENCE CHECK - NOW USES CURRENT CANDLE DIRECTION
+// HTF CONFLUENCE CHECK - USES CURRENT CANDLE DIRECTION
 // ============================================
 function checkHTFConfluence(dailyData, h4Data, entryDirection) {
-    // Use CURRENT CANDLE direction for 1D and 4H - what's happening NOW
     const dailyDir = dailyData && dailyData.length >= 1 ? getCurrentCandleDirection(dailyData) : 'NEUTRAL';
     const h4Dir = h4Data && h4Data.length >= 1 ? getCurrentCandleDirection(h4Data) : 'NEUTRAL';
     const entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH';
@@ -410,7 +407,7 @@ async function updateMTFDisplay(){
 }
 
 // ============================================
-// ANALYZE SINGLE TIMEFRAME
+// ANALYZE SINGLE TIMEFRAME (FILTERS REMOVED)
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price) {
     try {
@@ -464,12 +461,12 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (direction === 'SELL' && entry <= price) { const na = msnr.nearestResistance || price * 1.01; entry = Math.max(zone.high, na, price * 1.005); }
         
         const magnetism = checkZoneMagnetism(entryData, price, entry, direction);
-        if (magnetism.magnetism === 'WEAK' && magnetism.score < 20) return null;
+        // REMOVED: if (magnetism.magnetism === 'WEAK' && magnetism.score < 20) return null;
         
         const displacement = detectDisplacement(entryData, direction);
         const sniperRej = await checkSniperRejection(zone, direction, sniperTF);
         const probCheck = checkProbability(zone, mtf, magnetism);
-        if (!probCheck.passed && probCheck.probability === 'LOW') return null;
+        // REMOVED: if (!probCheck.passed && probCheck.probability === 'LOW') return null;
         
         const slResult = calcStopLoss(entryData, direction, entry, zone, msnr, tfToAnalyze, twelveIndicators);
         const tps = calcTakeProfits(direction, entry, slResult.price);
@@ -597,7 +594,6 @@ async function runAutoScan() {
         const price = await getPrice();
         if (!price) throw new Error('No price');
         
-        // Fetch all 5 timeframe trends for JSON output (current candle direction)
         const mtfTrendsData = {};
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         for (let t of tfs) {
@@ -641,7 +637,6 @@ async function runAutoScan() {
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
-        // Higher timeframe ALWAYS wins
         results.sort((a, b) => {
             const tfA = TF_WEIGHT[a.timeframe] || 0;
             const tfB = TF_WEIGHT[b.timeframe] || 0;
