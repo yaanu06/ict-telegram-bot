@@ -292,7 +292,7 @@ function findPrecisionEntry(data,price,direction,msnr){
 function checkProbability(zone,mtf,magnetism){const checks=[];checks.push({name:'Confluence (2+)',passed:zone.cc>=2,critical:true});checks.push({name:'MTF aligned (2+)',passed:mtf.strength>=2,critical:true});checks.push({name:'Zone Magnetism',passed:magnetism.likelyToReach,critical:true});checks.push({name:'Imbalance Magnet',passed:zone.hasImbalance,critical:false});checks.push({name:'Quality A/B',passed:zone.quality==='A'||zone.quality==='B',critical:false});const cp=checks.filter(c=>c.critical).every(c=>c.passed);const tp=checks.filter(c=>c.passed).length;return{probability:cp?(tp>=4?'HIGH':(tp>=3?'MEDIUM':'LOW')):'LOW',checks,totalPassed:tp,passed:cp};}
 
 // ============================================
-// STOP LOSS - USES API ATR
+// STOP LOSS - USES API ATR (ORIGINAL)
 // ============================================
 function calcStopLoss(data,dir,entry,zone,msnr,tfUsed,twelveIndicators){
     const apiATR = twelveIndicators?.atr_api || atr(data, 14);
@@ -319,21 +319,14 @@ function calcStopLoss(data,dir,entry,zone,msnr,tfUsed,twelveIndicators){
 }
 
 // ============================================
-// TAKE PROFIT - FIXED DIRECTION LOGIC
+// TAKE PROFIT - ORIGINAL (USES API ATR-BASED RISK)
 // ============================================
-function calcTakeProfits(dir,entry,sl,twelveIndicators){
+function calcTakeProfits(dir,entry,sl){
     const risk=Math.abs(entry-sl);
     const settings=getMarketSettings(pair);
-    const adx = twelveIndicators?.adx || 20;
-    let rr;
-    if (adx > 30) rr = settings.targetRR;
-    else if (adx > 20) rr = Math.max(2.5, settings.targetRR - 1);
-    else rr = 2;
-    if(dir==='BUY'){
-        return{tp1:entry+risk*rr,tp2:entry+risk*(rr+1),tp3:entry+risk*(rr+2),rrUsed:rr};
-    }else{
-        return{tp1:entry-risk*rr,tp2:entry-risk*(rr+1),tp3:entry-risk*(rr+2),rrUsed:rr};
-    }
+    const rr=settings.targetRR;
+    if(dir==='BUY'){return{tp1:entry+risk*rr,tp2:entry+risk*(rr+1),tp3:entry+risk*(rr+2),rrUsed:rr};}
+    else{return{tp1:entry-risk*rr,tp2:entry-risk*(rr+1),tp3:entry-risk*(rr+2),rrUsed:rr};}
 }
 
 // ============================================
@@ -467,7 +460,7 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (!probCheck.passed && probCheck.probability === 'LOW') return null;
         
         const slResult = calcStopLoss(entryData, direction, entry, zone, msnr, tfToAnalyze, twelveIndicators);
-        const tps = calcTakeProfits(direction, entry, slResult.price, twelveIndicators);
+        const tps = calcTakeProfits(direction, entry, slResult.price);
         const pathCheck = checkPathClearance(entryData, entry, tps.tp1, direction);
         const apiATR = twelveIndicators?.atr_api || atr(entryData, 14);
         const sweeps = detectLiquiditySweeps(entryData, price);
@@ -636,7 +629,7 @@ async function runAutoScan() {
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
-        // FIXED: Higher timeframe ALWAYS wins, confidence only tiebreaker for same TF
+        // Higher timeframe ALWAYS wins, confidence only tiebreaker for same TF
         results.sort((a, b) => {
             const tfA = TF_WEIGHT[a.timeframe] || 0;
             const tfB = TF_WEIGHT[b.timeframe] || 0;
