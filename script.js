@@ -134,11 +134,22 @@ function countZoneTouches(data, zone, direction) {
 
 function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
 
+// FIXED: Metals use close vs open. Forex use close vs previous close (more accurate for tiny bodies).
 function getCurrentCandleDirection(data) {
-    if (!data || data.length < 1) return 'NEUTRAL';
+    if (!data || data.length < 2) return 'NEUTRAL';
     const last = data[data.length - 1];
-    if (last.c > last.o) return 'BULLISH';
-    if (last.c < last.o) return 'BEARISH';
+    const prev = data[data.length - 2];
+    
+    // Gold and Silver: use close vs open (accurate)
+    if (pair.includes('XAU') || pair.includes('XAG') || pair === 'BTC/USD') {
+        if (last.c > last.o) return 'BULLISH';
+        if (last.c < last.o) return 'BEARISH';
+        return 'NEUTRAL';
+    }
+    
+    // Forex: use close vs previous close (handles tiny candle bodies)
+    if (last.c > prev.c) return 'BULLISH';
+    if (last.c < prev.c) return 'BEARISH';
     return 'NEUTRAL';
 }
 
@@ -240,8 +251,8 @@ function checkZoneMagnetism(entryData, price, entry, direction) {
 // HTF CONFLUENCE CHECK - USES CURRENT CANDLE DIRECTION
 // ============================================
 function checkHTFConfluence(dailyData, h4Data, entryDirection) {
-    const dailyDir = dailyData && dailyData.length >= 1 ? getCurrentCandleDirection(dailyData) : 'NEUTRAL';
-    const h4Dir = h4Data && h4Data.length >= 1 ? getCurrentCandleDirection(h4Data) : 'NEUTRAL';
+    const dailyDir = dailyData && dailyData.length >= 2 ? getCurrentCandleDirection(dailyData) : 'NEUTRAL';
+    const h4Dir = h4Data && h4Data.length >= 2 ? getCurrentCandleDirection(h4Data) : 'NEUTRAL';
     const entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH';
     
     if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 };
@@ -393,14 +404,14 @@ function score(data,price,twelveIndicators){
 }
 
 // ============================================
-// MULTI-TF DISPLAY (CURRENT CANDLE DIRECTION)
+// MULTI-TF DISPLAY (METALS: close vs open, FOREX: close vs prev close)
 // ============================================
 async function updateMTFDisplay(){
     const tfs=['5M','15M','1H','4H','1D'];
     for(let t of tfs){
         let d=await getHistory(t);
         if(!d||d.length<2)continue;
-        let last=d[d.length-1],tr=last.c>last.o?'BULLISH':(last.c<last.o?'BEARISH':'NEUTRAL');
+        let tr=getCurrentCandleDirection(d);
         let el=document.getElementById(`trend${t}`);
         if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}
     }
@@ -425,8 +436,7 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         for (let t of tfs) {
             let d = await getHistory(t);
             if (!d || d.length < 2) continue;
-            let last = d[d.length - 1];
-            let tr = last.c > last.o ? 'BULLISH' : (last.c < last.o ? 'BEARISH' : 'NEUTRAL');
+            let tr = getCurrentCandleDirection(d);
             trends[t] = tr;
             if (tr === 'BULLISH') bullCount++;
             else if (tr === 'BEARISH') bearCount++;
@@ -461,12 +471,10 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (direction === 'SELL' && entry <= price) { const na = msnr.nearestResistance || price * 1.01; entry = Math.max(zone.high, na, price * 1.005); }
         
         const magnetism = checkZoneMagnetism(entryData, price, entry, direction);
-        // REMOVED: if (magnetism.magnetism === 'WEAK' && magnetism.score < 20) return null;
         
         const displacement = detectDisplacement(entryData, direction);
         const sniperRej = await checkSniperRejection(zone, direction, sniperTF);
         const probCheck = checkProbability(zone, mtf, magnetism);
-        // REMOVED: if (!probCheck.passed && probCheck.probability === 'LOW') return null;
         
         const slResult = calcStopLoss(entryData, direction, entry, zone, msnr, tfToAnalyze, twelveIndicators);
         const tps = calcTakeProfits(direction, entry, slResult.price);
@@ -599,9 +607,7 @@ async function runAutoScan() {
         for (let t of tfs) {
             let d = await getHistory(t);
             if (d && d.length >= 2) {
-                let last = d[d.length - 1];
-                let tr = last.c > last.o ? 'BULLISH' : (last.c < last.o ? 'BEARISH' : 'NEUTRAL');
-                mtfTrendsData[t] = tr;
+                mtfTrendsData[t] = getCurrentCandleDirection(d);
             } else {
                 mtfTrendsData[t] = 'N/A';
             }
