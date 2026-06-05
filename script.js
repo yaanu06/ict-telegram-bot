@@ -566,7 +566,7 @@ Return ONLY JSON:
 }
 
 // ============================================
-// AUTO SCAN (HIGHER TF ALWAYS WINS)
+// AUTO SCAN (ALL SETUPS PASS - NO CONFIDENCE FILTER)
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
@@ -620,7 +620,7 @@ async function runAutoScan() {
             scanFill.style.width = ((i + 1) / timeframesToScan.length * 100) + '%';
             
             const result = await analyzeTimeframe(tfScan, price);
-            if (result && result.confidence >= 20) results.push(result);
+            if (result) results.push(result); // ALL setups pass, no confidence filter
         }
         
         if (results.length === 0) {
