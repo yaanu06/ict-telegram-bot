@@ -132,7 +132,18 @@ function countZoneTouches(data, zone, direction) {
     return touches;
 }
 
+// detectTrend kept for internal use (magnetism, scoring, etc.) - uses EMA on historical data
 function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
+
+// NEW: Get current candle direction for HTF decisions
+function getCurrentCandleDirection(data) {
+    if (!data || data.length < 1) return 'NEUTRAL';
+    const last = data[data.length - 1];
+    if (last.c > last.o) return 'BULLISH';
+    if (last.c < last.o) return 'BEARISH';
+    return 'NEUTRAL';
+}
+
 function detectDisplacement(data,direction){if(data.length<5)return{detected:false};const lc=data.slice(-5);const bodies=lc.map(c=>Math.abs(c.c-c.o));const avg=bodies.reduce((a,b)=>a+b,0)/bodies.length;const lb=bodies[bodies.length-1];if(direction==='BUY'&&lb>avg*2.5&&lc[4].c>lc[4].o)return{detected:true};if(direction==='SELL'&&lb>avg*2.5&&lc[4].c<lc[4].o)return{detected:true};return{detected:false};}
 async function checkSniperRejection(zone,direction,sniperTF){const dSn=await getHistory(sniperTF);if(!dSn||dSn.length<3)return{confirmed:false};const lc=dSn[dSn.length-1];const body=Math.abs(lc.c-lc.o);if(direction==='BUY'){const wick=Math.min(lc.o,lc.c)-lc.l;const t=lc.l<=zone.high&&lc.l>=zone.low;if(t&&wick>body*2&&lc.c>lc.o)return{confirmed:true};}else{const wick=lc.h-Math.max(lc.o,lc.c);const t=lc.h>=zone.low&&lc.h<=zone.high;if(t&&wick>body*2&&lc.c<lc.o)return{confirmed:true};}return{confirmed:false};}
 function getVolatilityLevel(atrValue,price){const pct=(atrValue/price)*100;if(pct>0.8)return{level:'High - Impulsive',desc:'Large candles'};if(pct>0.4)return{level:'Moderate - Control',desc:'Normal'};return{level:'Low - Consolidation',desc:'Tight ranges'};}
@@ -228,11 +239,12 @@ function checkZoneMagnetism(entryData, price, entry, direction) {
 }
 
 // ============================================
-// HTF CONFLUENCE CHECK
+// HTF CONFLUENCE CHECK - NOW USES CURRENT CANDLE DIRECTION
 // ============================================
 function checkHTFConfluence(dailyData, h4Data, entryDirection) {
-    const dailyDir = dailyData && dailyData.length >= 20 ? detectTrend(dailyData) : 'NEUTRAL';
-    const h4Dir = h4Data && h4Data.length >= 20 ? detectTrend(h4Data) : 'NEUTRAL';
+    // Use CURRENT CANDLE direction for 1D and 4H - what's happening NOW
+    const dailyDir = dailyData && dailyData.length >= 1 ? getCurrentCandleDirection(dailyData) : 'NEUTRAL';
+    const h4Dir = h4Data && h4Data.length >= 1 ? getCurrentCandleDirection(h4Data) : 'NEUTRAL';
     const entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH';
     
     if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 };
@@ -530,8 +542,8 @@ async function askAIWithAllResults(allResults, price, htfData) {
     const best = allResults[0];
     const prec = getPrec(pair);
     
-    const dailyDir = htfData['1D'] ? detectTrend(htfData['1D']) : 'NEUTRAL';
-    const h4Dir = htfData['4H'] ? detectTrend(htfData['4H']) : 'NEUTRAL';
+    const dailyDir = htfData['1D'] ? getCurrentCandleDirection(htfData['1D']) : 'NEUTRAL';
+    const h4Dir = htfData['4H'] ? getCurrentCandleDirection(htfData['4H']) : 'NEUTRAL';
     const htfConfluence = checkHTFConfluence(htfData['1D'], htfData['4H'], best.direction);
     
     const prompt = `You are TheGhostMachine, a brutally honest ICT execution coach. Decide if we should enter NOW based on strict rules.
@@ -566,7 +578,7 @@ Return ONLY JSON:
 }
 
 // ============================================
-// AUTO SCAN (ALL SETUPS PASS - NO CONFIDENCE FILTER)
+// AUTO SCAN (ALL SETUPS PASS)
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
@@ -620,7 +632,7 @@ async function runAutoScan() {
             scanFill.style.width = ((i + 1) / timeframesToScan.length * 100) + '%';
             
             const result = await analyzeTimeframe(tfScan, price);
-            if (result) results.push(result); // ALL setups pass, no confidence filter
+            if (result) results.push(result);
         }
         
         if (results.length === 0) {
@@ -629,12 +641,12 @@ async function runAutoScan() {
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
-        // Higher timeframe ALWAYS wins, confidence only tiebreaker for same TF
+        // Higher timeframe ALWAYS wins
         results.sort((a, b) => {
             const tfA = TF_WEIGHT[a.timeframe] || 0;
             const tfB = TF_WEIGHT[b.timeframe] || 0;
-            if (tfA !== tfB) return tfB - tfA; // Higher TF first (1D > 4H > 1H > 15M > 5M)
-            return b.confidence - a.confidence; // Same TF: higher confidence wins
+            if (tfA !== tfB) return tfB - tfA;
+            return b.confidence - a.confidence;
         });
         
         scanText.innerHTML = '🤖 AI strict execution decision...';
