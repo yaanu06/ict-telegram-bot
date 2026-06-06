@@ -17,6 +17,7 @@ const SYMBOLS = {
 };
 
 const TF_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day','1W':'1week' };
+const QUOTE_INTERVAL_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day' };
 const ALL_TIMEFRAMES = ['5M', '15M', '1H', '4H', '1D'];
 
 // ============================================
@@ -80,6 +81,34 @@ function getPrec(p){const s=getMarketSettings(p);return s.prec;}
 // API
 // ============================================
 async function getPrice(){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(SYMBOLS[pair])}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.price){calls++;document.getElementById('apiSource').innerHTML='📡 Live';return +d.price;}}catch(e){}return null;}
+
+// NEW: Get quote data for accurate current candle direction
+async function getQuote(tfStr){
+    if(!TWELVE_DATA_KEY)return null;
+    const interval = QUOTE_INTERVAL_MAP[tfStr] || '1day';
+    try{
+        const r=await fetch(`${TWELVE_DATA_BASE}/quote?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);
+        const d=await r.json();
+        if(d.open && d.close){calls++;return{open:+d.open,close:+d.close,is_market_open:d.is_market_open};}
+    }catch(e){}
+    return null;
+}
+
+// Get current candle direction from quote endpoint (most accurate)
+async function getQuoteDirection(tfStr){
+    const q = await getQuote(tfStr);
+    if(q && q.close > q.open) return 'BULLISH';
+    if(q && q.close < q.open) return 'BEARISH';
+    // Fallback to time_series if quote fails
+    const d = await getHistory(tfStr);
+    if(d && d.length >= 1){
+        const last = d[d.length-1];
+        if(last.c > last.o) return 'BULLISH';
+        if(last.c < last.o) return 'BEARISH';
+    }
+    return 'NEUTRAL';
+}
+
 async function getHistory(tfStr){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${TF_MAP[tfStr]}&outputsize=100&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){calls++;return d.values.map(c=>({t:c.datetime,o:+c.open,h:+c.high,l:+c.low,c:+c.close,v:+c.volume||1e6})).reverse();}}catch(e){}return null;}
 async function getTechnicalIndicators(tfUsed){if(!TWELVE_DATA_KEY)return{};const symbol=encodeURIComponent(SYMBOLS[pair]);const interval=TF_MAP[tfUsed];const ind={};try{const r=await fetch(`${TWELVE_DATA_BASE}/rsi?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.rsi=parseFloat(d.values[0].rsi);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/macd?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.macd=parseFloat(d.values[0].macd);ind.macd_signal=parseFloat(d.values[0].macd_signal);ind.macd_hist=parseFloat(d.values[0].macd_hist);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/adx?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.adx=parseFloat(d.values[0].adx);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/bbands?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.bb_upper=parseFloat(d.values[0].upper_band);ind.bb_middle=parseFloat(d.values[0].middle_band);ind.bb_lower=parseFloat(d.values[0].lower_band);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/stoch?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.stoch_k=parseFloat(d.values[0].slow_k);ind.stoch_d=parseFloat(d.values[0].slow_d);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/cci?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.cci=parseFloat(d.values[0].cci);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/atr?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.atr_api=parseFloat(d.values[0].atr);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/williams?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.williams_r=parseFloat(d.values[0].williams);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/sar?symbol=${symbol}&interval=${interval}&acceleration=0.02&maximum=0.2&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.sar=parseFloat(d.values[0].sar);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/ichimoku?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.ichimoku_tenkan=parseFloat(d.values[0].tenkan_sen);ind.ichimoku_kijun=parseFloat(d.values[0].kijun_sen);ind.ichimoku_senkou_a=parseFloat(d.values[0].senkou_span_a);ind.ichimoku_senkou_b=parseFloat(d.values[0].senkou_span_b);calls++;}}catch(e){}return ind;}
 
@@ -258,11 +287,11 @@ function checkZoneMagnetism(entryData, price, entry, direction) {
 }
 
 // ============================================
-// HTF CONFLUENCE CHECK
+// HTF CONFLUENCE CHECK - USES QUOTE ENDPOINT
 // ============================================
-function checkHTFConfluence(dailyData, h4Data, entryDirection) {
-    const dailyDir = dailyData && dailyData.length >= 1 ? (dailyData[dailyData.length-1].c > dailyData[dailyData.length-1].o ? 'BULLISH' : (dailyData[dailyData.length-1].c < dailyData[dailyData.length-1].o ? 'BEARISH' : 'NEUTRAL')) : 'NEUTRAL';
-    const h4Dir = h4Data && h4Data.length >= 1 ? (h4Data[h4Data.length-1].c > h4Data[h4Data.length-1].o ? 'BULLISH' : (h4Data[h4Data.length-1].c < h4Data[h4Data.length-1].o ? 'BEARISH' : 'NEUTRAL')) : 'NEUTRAL';
+async function checkHTFConfluenceAsync(dailyData, h4Data, entryDirection) {
+    const dailyDir = await getQuoteDirection('1D');
+    const h4Dir = await getQuoteDirection('4H');
     const entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH';
     
     if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 };
@@ -414,14 +443,12 @@ function score(data,price,twelveIndicators){
 }
 
 // ============================================
-// MULTI-TF DISPLAY (ORIGINAL: close vs open)
+// MULTI-TF DISPLAY - USES QUOTE ENDPOINT
 // ============================================
 async function updateMTFDisplay(){
     const tfs=['5M','15M','1H','4H','1D'];
     for(let t of tfs){
-        let d=await getHistory(t);
-        if(!d||d.length<2)continue;
-        let last=d[d.length-1],tr=last.c>last.o?'BULLISH':(last.c<last.o?'BEARISH':'NEUTRAL');
+        let tr = await getQuoteDirection(t);
         let el=document.getElementById(`trend${t}`);
         if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}
     }
@@ -440,15 +467,12 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
         const sig = score(entryData, price, twelveIndicators);
         
-        // ORIGINAL TREND COUNTING: close vs open
+        // TREND COUNTING - uses quote endpoint for accuracy
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         let bullCount = 0, bearCount = 0;
         const trends = {};
         for (let t of tfs) {
-            let d = await getHistory(t);
-            if (!d || d.length < 2) continue;
-            let last = d[d.length - 1];
-            let tr = last.c > last.o ? 'BULLISH' : (last.c < last.o ? 'BEARISH' : 'NEUTRAL');
+            let tr = await getQuoteDirection(t);
             trends[t] = tr;
             if (tr === 'BULLISH') bullCount++;
             else if (tr === 'BEARISH') bearCount++;
@@ -579,9 +603,9 @@ async function askAIWithAllResults(allResults, price, htfData) {
     const best = allResults[0];
     const prec = getPrec(pair);
     
-    const dailyDir = htfData['1D'] && htfData['1D'].length >= 1 ? (htfData['1D'][htfData['1D'].length-1].c > htfData['1D'][htfData['1D'].length-1].o ? 'BULLISH' : (htfData['1D'][htfData['1D'].length-1].c < htfData['1D'][htfData['1D'].length-1].o ? 'BEARISH' : 'NEUTRAL')) : 'NEUTRAL';
-    const h4Dir = htfData['4H'] && htfData['4H'].length >= 1 ? (htfData['4H'][htfData['4H'].length-1].c > htfData['4H'][htfData['4H'].length-1].o ? 'BULLISH' : (htfData['4H'][htfData['4H'].length-1].c < htfData['4H'][htfData['4H'].length-1].o ? 'BEARISH' : 'NEUTRAL')) : 'NEUTRAL';
-    const htfConfluence = checkHTFConfluence(htfData['1D'], htfData['4H'], best.direction);
+    const dailyDir = await getQuoteDirection('1D');
+    const h4Dir = await getQuoteDirection('4H');
+    const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
     
     const prompt = `You are TheGhostMachine. Decide if we should enter NOW.
 
@@ -625,17 +649,11 @@ async function runAutoScan() {
         const price = await getPrice();
         if (!price) throw new Error('No price');
         
-        // MTF trends: close vs open
+        // MTF trends from quote endpoint
         const mtfTrendsData = {};
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         for (let t of tfs) {
-            let d = await getHistory(t);
-            if (d && d.length >= 2) {
-                let last = d[d.length - 1];
-                mtfTrendsData[t] = last.c > last.o ? 'BULLISH' : (last.c < last.o ? 'BEARISH' : 'NEUTRAL');
-            } else {
-                mtfTrendsData[t] = 'N/A';
-            }
+            mtfTrendsData[t] = await getQuoteDirection(t);
         }
         
         await updateMTFDisplay();
@@ -686,7 +704,7 @@ async function runAutoScan() {
         const rrDisplay = (Math.abs(best.tp1 - best.entry) / risk).toFixed(1);
         const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
         
-        const htfConfluence = checkHTFConfluence(htfData['1D'], htfData['4H'], best.direction);
+        const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
         best.confidence = Math.max(best.confidence - htfConfluence.penalty, 10);
         
         let aiConviction = 'MEDIUM', aiApproved = true, aiConfAdj = 0, executionDecision = best.entryReady ? 'enter_now' : 'wait_for_reaction', waitCondition = 'Wait for engulf/pinbar at zone', aiInvalidation = best.invalidationPrice;
