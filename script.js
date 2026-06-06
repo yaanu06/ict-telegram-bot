@@ -134,15 +134,6 @@ function countZoneTouches(data, zone, direction) {
 
 function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
 
-// SIMPLE CANDLE DIRECTION - SAME AS ORIGINAL BOT
-function getCurrentCandleDirection(data) {
-    if (!data || data.length < 2) return 'NEUTRAL';
-    const last = data[data.length - 1];
-    if (last.c > last.o) return 'BULLISH';
-    if (last.c < last.o) return 'BEARISH';
-    return 'NEUTRAL';
-}
-
 // ============================================
 // FIND PD ARRAYS FOR A TIMEFRAME (FVG + OB + BREAKER)
 // ============================================
@@ -267,11 +258,11 @@ function checkZoneMagnetism(entryData, price, entry, direction) {
 }
 
 // ============================================
-// HTF CONFLUENCE CHECK - USES CURRENT CANDLE DIRECTION
+// HTF CONFLUENCE CHECK
 // ============================================
 function checkHTFConfluence(dailyData, h4Data, entryDirection) {
-    const dailyDir = dailyData && dailyData.length >= 1 ? getCurrentCandleDirection(dailyData) : 'NEUTRAL';
-    const h4Dir = h4Data && h4Data.length >= 1 ? getCurrentCandleDirection(h4Data) : 'NEUTRAL';
+    const dailyDir = dailyData && dailyData.length >= 2 ? (dailyData[dailyData.length-1].c > dailyData[dailyData.length-1].o ? 'BULLISH' : (dailyData[dailyData.length-1].c < dailyData[dailyData.length-1].o ? 'BEARISH' : 'NEUTRAL')) : 'NEUTRAL';
+    const h4Dir = h4Data && h4Data.length >= 2 ? (h4Data[h4Data.length-1].c > h4Data[h4Data.length-1].o ? 'BULLISH' : (h4Data[h4Data.length-1].c < h4Data[h4Data.length-1].o ? 'BEARISH' : 'NEUTRAL')) : 'NEUTRAL';
     const entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH';
     
     if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 };
@@ -423,7 +414,7 @@ function score(data,price,twelveIndicators){
 }
 
 // ============================================
-// MULTI-TF DISPLAY (ORIGINAL: CLOSE VS OPEN)
+// MULTI-TF DISPLAY (close vs open - same everywhere)
 // ============================================
 async function updateMTFDisplay(){
     const tfs=['5M','15M','1H','4H','1D'];
@@ -449,7 +440,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
         const sig = score(entryData, price, twelveIndicators);
         
-        // ORIGINAL TREND COUNTING - RESTORED
+        // TREND COUNTING - close vs open (same as MTF display)
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         let bullCount = 0, bearCount = 0;
         const trends = {};
@@ -474,7 +465,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const zoneTouches = countZoneTouches(entryData, zone, direction);
         const zoneReaction = checkZoneReaction(entryData, zone, direction);
         
-        // HTF VALIDATION: Check if entry zone is within structure TF's PD Arrays
+        // HTF VALIDATION
         let htfValidation = { passed: true, parentArray: null, structureTF: structureTF };
         if (structureTF !== entryTF && structureData && structureData.length >= 20) {
             const structureArrays = findPDArrays(structureData, direction);
@@ -588,8 +579,8 @@ async function askAIWithAllResults(allResults, price, htfData) {
     const best = allResults[0];
     const prec = getPrec(pair);
     
-    const dailyDir = htfData['1D'] ? getCurrentCandleDirection(htfData['1D']) : 'NEUTRAL';
-    const h4Dir = htfData['4H'] ? getCurrentCandleDirection(htfData['4H']) : 'NEUTRAL';
+    const dailyDir = htfData['1D'] && htfData['1D'].length >= 2 ? (htfData['1D'][htfData['1D'].length-1].c > htfData['1D'][htfData['1D'].length-1].o ? 'BULLISH' : (htfData['1D'][htfData['1D'].length-1].c < htfData['1D'][htfData['1D'].length-1].o ? 'BEARISH' : 'NEUTRAL')) : 'NEUTRAL';
+    const h4Dir = htfData['4H'] && htfData['4H'].length >= 2 ? (htfData['4H'][htfData['4H'].length-1].c > htfData['4H'][htfData['4H'].length-1].o ? 'BULLISH' : (htfData['4H'][htfData['4H'].length-1].c < htfData['4H'][htfData['4H'].length-1].o ? 'BEARISH' : 'NEUTRAL')) : 'NEUTRAL';
     const htfConfluence = checkHTFConfluence(htfData['1D'], htfData['4H'], best.direction);
     
     const prompt = `You are TheGhostMachine, a brutally honest ICT execution coach. Decide if we should enter NOW.
@@ -635,6 +626,7 @@ async function runAutoScan() {
         const price = await getPrice();
         if (!price) throw new Error('No price');
         
+        // MTF trends - same close vs open check
         const mtfTrendsData = {};
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         for (let t of tfs) {
