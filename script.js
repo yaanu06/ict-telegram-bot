@@ -134,17 +134,12 @@ function countZoneTouches(data, zone, direction) {
 
 function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
 
+// SIMPLE CANDLE DIRECTION - SAME AS ORIGINAL BOT
 function getCurrentCandleDirection(data) {
     if (!data || data.length < 2) return 'NEUTRAL';
     const last = data[data.length - 1];
-    const prev = data[data.length - 2];
-    if (pair.includes('XAU') || pair.includes('XAG') || pair === 'BTC/USD') {
-        if (last.c > last.o) return 'BULLISH';
-        if (last.c < last.o) return 'BEARISH';
-        return 'NEUTRAL';
-    }
-    if (last.c > prev.c) return 'BULLISH';
-    if (last.c < prev.c) return 'BEARISH';
+    if (last.c > last.o) return 'BULLISH';
+    if (last.c < last.o) return 'BEARISH';
     return 'NEUTRAL';
 }
 
@@ -169,12 +164,8 @@ function findPDArrays(data, direction) {
     return arrays;
 }
 
-// ============================================
-// CHECK IF ENTRY ZONE IS WITHIN HTF PD ARRAY
-// ============================================
 function isZoneWithinHTFArray(entryZone, htfArrays) {
     for (const arr of htfArrays) {
-        // Entry zone overlaps with or is contained within the HTF array
         if (entryZone.low >= arr.low && entryZone.high <= arr.high) return { contained: true, parentArray: arr };
         if (entryZone.low <= arr.high && entryZone.high >= arr.low) return { contained: true, parentArray: arr, partial: true };
     }
@@ -279,8 +270,8 @@ function checkZoneMagnetism(entryData, price, entry, direction) {
 // HTF CONFLUENCE CHECK - USES CURRENT CANDLE DIRECTION
 // ============================================
 function checkHTFConfluence(dailyData, h4Data, entryDirection) {
-    const dailyDir = dailyData && dailyData.length >= 2 ? getCurrentCandleDirection(dailyData) : 'NEUTRAL';
-    const h4Dir = h4Data && h4Data.length >= 2 ? getCurrentCandleDirection(h4Data) : 'NEUTRAL';
+    const dailyDir = dailyData && dailyData.length >= 1 ? getCurrentCandleDirection(dailyData) : 'NEUTRAL';
+    const h4Dir = h4Data && h4Data.length >= 1 ? getCurrentCandleDirection(h4Data) : 'NEUTRAL';
     const entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH';
     
     if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 };
@@ -432,14 +423,14 @@ function score(data,price,twelveIndicators){
 }
 
 // ============================================
-// MULTI-TF DISPLAY (METALS: close vs open, FOREX: close vs prev close)
+// MULTI-TF DISPLAY (ORIGINAL: CLOSE VS OPEN)
 // ============================================
 async function updateMTFDisplay(){
     const tfs=['5M','15M','1H','4H','1D'];
     for(let t of tfs){
         let d=await getHistory(t);
         if(!d||d.length<2)continue;
-        let tr=getCurrentCandleDirection(d);
+        let last=d[d.length-1],tr=last.c>last.o?'BULLISH':(last.c<last.o?'BEARISH':'NEUTRAL');
         let el=document.getElementById(`trend${t}`);
         if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}
     }
@@ -458,13 +449,15 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
         const sig = score(entryData, price, twelveIndicators);
         
+        // ORIGINAL TREND COUNTING - RESTORED
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         let bullCount = 0, bearCount = 0;
         const trends = {};
         for (let t of tfs) {
             let d = await getHistory(t);
             if (!d || d.length < 2) continue;
-            let tr = getCurrentCandleDirection(d);
+            let last = d[d.length - 1];
+            let tr = last.c > last.o ? 'BULLISH' : (last.c < last.o ? 'BEARISH' : 'NEUTRAL');
             trends[t] = tr;
             if (tr === 'BULLISH') bullCount++;
             else if (tr === 'BEARISH') bearCount++;
@@ -487,7 +480,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const structureArrays = findPDArrays(structureData, direction);
             const validation = isZoneWithinHTFArray(zone, structureArrays);
             if (!validation.contained) {
-                // Zone not within HTF structure - heavily penalize but allow
                 htfValidation = { passed: false, parentArray: null, structureTF: structureTF };
             } else {
                 htfValidation = { passed: true, parentArray: validation.parentArray, structureTF: structureTF };
@@ -547,11 +539,10 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         if (magnetism.magnetism === 'STRONG') conf = Math.min(conf + 10, 98);
         else if (magnetism.magnetism === 'WEAK') conf = Math.max(conf - 15, 25);
         
-        // HTF validation scoring
         if (htfValidation.passed) {
-            conf = Math.min(conf + 15, 98); // Bonus for being within HTF structure
+            conf = Math.min(conf + 15, 98);
         } else if (structureTF !== entryTF) {
-            conf = Math.max(conf - 20, 10); // Penalty for not being within HTF structure
+            conf = Math.max(conf - 20, 10);
         }
         
         if (zoneReaction.confirmed && (zoneReaction.strength === 'STRONG' || zoneReaction.strength === 'MODERATE')) {
@@ -590,8 +581,8 @@ async function askAIWithAllResults(allResults, price, htfData) {
     
     let tfSummary = '';
     for (const r of allResults) {
-        const htfStatus = r.htfValidation ? (r.htfValidation.passed ? '✅ In HTF' : '⚠️ No HTF') : 'N/A';
-        tfSummary += `${r.timeframe}: ${r.direction} | Zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | EntryReady: ${r.entryReady ? 'YES' : 'NO'} | React: ${r.zoneReaction?.confirmed ? r.zoneReaction.type + '(' + r.zoneReaction.strength + ')' : 'None'} | HTF: ${htfStatus} | Touches: ${r.zoneTouches} | Conf:${r.confidence}% | RR:1:${r.rrUsed}\n`;
+        const htfStatus = r.htfValidation ? (r.htfValidation.passed ? 'In HTF' : 'No HTF') : 'N/A';
+        tfSummary += `${r.timeframe}: ${r.direction} | Zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | EntryReady: ${r.entryReady ? 'YES' : 'NO'} | React: ${r.zoneReaction?.confirmed ? r.zoneReaction.type : 'None'} | HTF: ${htfStatus} | Touches: ${r.zoneTouches} | Conf:${r.confidence}% | RR:1:${r.rrUsed}\n`;
     }
     
     const best = allResults[0];
@@ -601,32 +592,23 @@ async function askAIWithAllResults(allResults, price, htfData) {
     const h4Dir = htfData['4H'] ? getCurrentCandleDirection(htfData['4H']) : 'NEUTRAL';
     const htfConfluence = checkHTFConfluence(htfData['1D'], htfData['4H'], best.direction);
     
-    const prompt = `You are TheGhostMachine, a brutally honest ICT execution coach. Decide if we should enter NOW based on strict rules.
+    const prompt = `You are TheGhostMachine, a brutally honest ICT execution coach. Decide if we should enter NOW.
 
 PAIR: ${pair} | PRICE: $${price.toFixed(prec)}
 HTF: 1D=${dailyDir} 4H=${h4Dir} | Confluence: ${htfConfluence.level}
 
 TOP SETUP (${best.timeframe}):
 Direction: ${best.direction} | Zone: $${best.zone.low.toFixed(prec)}-$${best.zone.high.toFixed(prec)} (${best.zone.src} Q:${best.zone.quality})
-HTF Validated: ${best.htfValidation ? (best.htfValidation.passed ? 'YES ✅ - Entry within ' + best.htfValidation.structureTF + ' structure' : 'NO ⚠️') : 'N/A'}
-Entry Ready: ${best.entryReady ? 'YES ✅' : 'NO ⚠️'} | Reaction: ${best.zoneReaction?.confirmed ? best.zoneReaction.type + ' (' + best.zoneReaction.strength + ')' : 'NONE'}
+HTF Validated: ${best.htfValidation ? (best.htfValidation.passed ? 'YES - Entry within ' + best.htfValidation.structureTF + ' structure' : 'NO') : 'N/A'}
+Entry Ready: ${best.entryReady ? 'YES' : 'NO'} | Reaction: ${best.zoneReaction?.confirmed ? best.zoneReaction.type + ' (' + best.zoneReaction.strength + ')' : 'NONE'}
 Proposed Entry: $${best.entry.toFixed(prec)} | SL: $${best.sl.toFixed(prec)} | TP1: $${best.tp1.toFixed(prec)} | RR: 1:${best.rrUsed}
-Displacement: ${best.displacement.detected ? 'YES' : 'NO'} | Touches: ${best.zoneTouches} | Invalidation: $${best.invalidationPrice.toFixed(prec)}
+Displacement: ${best.displacement.detected ? 'YES' : 'NO'} | Touches: ${best.zoneTouches}
 
-ALL INDICATORS: RSI:${best.twelveIndicators.rsi || 'N/A'} MACD:${best.twelveIndicators.macd || 'N/A'} ADX:${best.twelveIndicators.adx || 'N/A'} Stoch:${best.twelveIndicators.stoch_k || 'N/A'}/${best.twelveIndicators.stoch_d || 'N/A'} CCI:${best.twelveIndicators.cci || 'N/A'} BB:${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'} SAR:${best.twelveIndicators.sar || 'N/A'}
-
-STRICT RULES:
-- If entryReady is NO, you MUST return execution_decision: "wait_for_reaction"
-- If HTF is NOT validated (zone not within structure TF PD Array), heavily consider "skip"
-- If entryReady is YES and HTF is FULL or PARTIAL and zone IS within HTF structure, you may return "enter_now"
-- If HTF is CONFLICT, return "skip" even with reaction
-- If zone has >=5 touches and no displacement, return "skip"
-
-Return ONLY JSON:
-{"trade_signal_Theghostmachine":{"approved":true,"execution_decision":"enter_now","confidence_adjustment":0,"entry_refinement":{"low":${best.zone.low.toFixed(prec)},"high":${best.zone.high.toFixed(prec)}},"invalidation_price":${best.invalidationPrice.toFixed(prec)},"wait_condition":"Look for bullish engulf at zone","analysis":{"entry_logic":"...","sl_logic":"...","key_reason":"...","risk_warning":null,"possible_outcomes":["Primary","Alternative","Invalidation"]}}}`;
+RULES: If entryReady is NO, return "wait_for_reaction". If HTF not validated, consider "skip". If CONFLICT, "skip".
+Return ONLY JSON with execution_decision.`;
 
     try {
-        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are a strict ICT execution coach. Follow the rules exactly. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:1000})});
+        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are a strict ICT execution coach. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:1000})});
         const d = await r.json();
         if (d.choices?.[0]) { const m = d.choices[0].message.content.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); }
     } catch(e) { console.error('AI fetch:', e); }
@@ -634,7 +616,7 @@ Return ONLY JSON:
 }
 
 // ============================================
-// AUTO SCAN (ALL SETUPS PASS WITH HTF VALIDATION)
+// AUTO SCAN
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
@@ -658,7 +640,8 @@ async function runAutoScan() {
         for (let t of tfs) {
             let d = await getHistory(t);
             if (d && d.length >= 2) {
-                mtfTrendsData[t] = getCurrentCandleDirection(d);
+                let last = d[d.length - 1];
+                mtfTrendsData[t] = last.c > last.o ? 'BULLISH' : (last.c < last.o ? 'BEARISH' : 'NEUTRAL');
             } else {
                 mtfTrendsData[t] = 'N/A';
             }
@@ -824,7 +807,7 @@ async function runAutoScan() {
                         market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, zone_reaction: best.zoneReaction, zone_touches: best.zoneTouches, entry_ready: best.entryReady, htf_validated: best.htfValidation?.passed || false, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level },
                         indicator_confluence: { macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A', adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'} (RR:1:${rr})` : 'N/A', stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A', cci: best.twelveIndicators.cci || 'N/A', williams_r: best.twelveIndicators.williams_r || 'N/A', sar: best.twelveIndicators.sar ? `$${best.twelveIndicators.sar}` : 'N/A', ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A' },
                         technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ATR(API): ${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`, `OB: ${best.obsAll ? best.obsAll.length : 0}`],
-                        reasoning: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}] | HTF:${best.htfValidation?.passed ? '✅' : '⚠️'} | Magnet:${best.magnetism.magnetism} | Confluence:${htfConfluence.level} | EntryReady:${best.entryReady ? 'YES' : 'NO'} | React:${best.zoneReaction?.type || 'None'} | Touch#${best.zoneTouches}`
+                        reasoning: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}] | HTF:${best.htfValidation?.passed ? 'YES' : 'NO'} | Magnet:${best.magnetism.magnetism} | Confluence:${htfConfluence.level} | EntryReady:${best.entryReady ? 'YES' : 'NO'} | React:${best.zoneReaction?.type || 'None'} | Touch#${best.zoneTouches}`
                     }
                 }
             }
