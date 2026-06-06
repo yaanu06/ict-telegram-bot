@@ -134,21 +134,6 @@ function countZoneTouches(data, zone, direction) {
 
 function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
 
-// Metals: close vs open. Forex: close vs previous close.
-function getCurrentCandleDirection(data) {
-    if (!data || data.length < 2) return 'NEUTRAL';
-    const last = data[data.length - 1];
-    const prev = data[data.length - 2];
-    if (pair.includes('XAU') || pair.includes('XAG') || pair === 'BTC/USD') {
-        if (last.c > last.o) return 'BULLISH';
-        if (last.c < last.o) return 'BEARISH';
-        return 'NEUTRAL';
-    }
-    if (last.c > prev.c) return 'BULLISH';
-    if (last.c < prev.c) return 'BEARISH';
-    return 'NEUTRAL';
-}
-
 // ============================================
 // FIND PD ARRAYS FOR A TIMEFRAME (FVG + OB + BREAKER)
 // ============================================
@@ -276,8 +261,8 @@ function checkZoneMagnetism(entryData, price, entry, direction) {
 // HTF CONFLUENCE CHECK
 // ============================================
 function checkHTFConfluence(dailyData, h4Data, entryDirection) {
-    const dailyDir = dailyData && dailyData.length >= 2 ? getCurrentCandleDirection(dailyData) : 'NEUTRAL';
-    const h4Dir = h4Data && h4Data.length >= 2 ? getCurrentCandleDirection(h4Data) : 'NEUTRAL';
+    const dailyDir = dailyData && dailyData.length >= 1 ? (dailyData[dailyData.length-1].c > dailyData[dailyData.length-1].o ? 'BULLISH' : (dailyData[dailyData.length-1].c < dailyData[dailyData.length-1].o ? 'BEARISH' : 'NEUTRAL')) : 'NEUTRAL';
+    const h4Dir = h4Data && h4Data.length >= 1 ? (h4Data[h4Data.length-1].c > h4Data[h4Data.length-1].o ? 'BULLISH' : (h4Data[h4Data.length-1].c < h4Data[h4Data.length-1].o ? 'BEARISH' : 'NEUTRAL')) : 'NEUTRAL';
     const entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH';
     
     if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 };
@@ -429,14 +414,14 @@ function score(data,price,twelveIndicators){
 }
 
 // ============================================
-// MULTI-TF DISPLAY (METALS: close vs open, FOREX: close vs prev close)
+// MULTI-TF DISPLAY (ORIGINAL: close vs open)
 // ============================================
 async function updateMTFDisplay(){
     const tfs=['5M','15M','1H','4H','1D'];
     for(let t of tfs){
         let d=await getHistory(t);
         if(!d||d.length<2)continue;
-        let tr=getCurrentCandleDirection(d);
+        let last=d[d.length-1],tr=last.c>last.o?'BULLISH':(last.c<last.o?'BEARISH':'NEUTRAL');
         let el=document.getElementById(`trend${t}`);
         if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}
     }
@@ -455,13 +440,15 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
         const sig = score(entryData, price, twelveIndicators);
         
+        // ORIGINAL TREND COUNTING: close vs open
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         let bullCount = 0, bearCount = 0;
         const trends = {};
         for (let t of tfs) {
             let d = await getHistory(t);
             if (!d || d.length < 2) continue;
-            let tr = getCurrentCandleDirection(d);
+            let last = d[d.length - 1];
+            let tr = last.c > last.o ? 'BULLISH' : (last.c < last.o ? 'BEARISH' : 'NEUTRAL');
             trends[t] = tr;
             if (tr === 'BULLISH') bullCount++;
             else if (tr === 'BEARISH') bearCount++;
@@ -478,7 +465,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const zoneTouches = countZoneTouches(entryData, zone, direction);
         const zoneReaction = checkZoneReaction(entryData, zone, direction);
         
-        // HTF VALIDATION: Check if entry zone is within structure TF's PD Arrays
+        // HTF VALIDATION
         let htfValidation = { passed: true, parentArray: null, structureTF: structureTF };
         if (structureTF !== entryTF && structureData && structureData.length >= 20) {
             const structureArrays = findPDArrays(structureData, direction);
@@ -543,7 +530,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         if (magnetism.magnetism === 'STRONG') conf = Math.min(conf + 10, 98);
         else if (magnetism.magnetism === 'WEAK') conf = Math.max(conf - 15, 25);
         
-        // HTF validation scoring
         if (htfValidation.passed) {
             conf = Math.min(conf + 15, 98);
         } else if (structureTF !== entryTF) {
@@ -593,21 +579,20 @@ async function askAIWithAllResults(allResults, price, htfData) {
     const best = allResults[0];
     const prec = getPrec(pair);
     
-    const dailyDir = htfData['1D'] ? getCurrentCandleDirection(htfData['1D']) : 'NEUTRAL';
-    const h4Dir = htfData['4H'] ? getCurrentCandleDirection(htfData['4H']) : 'NEUTRAL';
+    const dailyDir = htfData['1D'] && htfData['1D'].length >= 1 ? (htfData['1D'][htfData['1D'].length-1].c > htfData['1D'][htfData['1D'].length-1].o ? 'BULLISH' : (htfData['1D'][htfData['1D'].length-1].c < htfData['1D'][htfData['1D'].length-1].o ? 'BEARISH' : 'NEUTRAL')) : 'NEUTRAL';
+    const h4Dir = htfData['4H'] && htfData['4H'].length >= 1 ? (htfData['4H'][htfData['4H'].length-1].c > htfData['4H'][htfData['4H'].length-1].o ? 'BULLISH' : (htfData['4H'][htfData['4H'].length-1].c < htfData['4H'][htfData['4H'].length-1].o ? 'BEARISH' : 'NEUTRAL')) : 'NEUTRAL';
     const htfConfluence = checkHTFConfluence(htfData['1D'], htfData['4H'], best.direction);
     
-    const prompt = `You are TheGhostMachine, a brutally honest ICT execution coach. Decide if we should enter NOW.
+    const prompt = `You are TheGhostMachine. Decide if we should enter NOW.
 
 PAIR: ${pair} | PRICE: $${price.toFixed(prec)}
 HTF: 1D=${dailyDir} 4H=${h4Dir} | Confluence: ${htfConfluence.level}
 
 TOP SETUP (${best.timeframe}):
 Direction: ${best.direction} | Zone: $${best.zone.low.toFixed(prec)}-$${best.zone.high.toFixed(prec)} (${best.zone.src} Q:${best.zone.quality})
-HTF Validated: ${best.htfValidation ? (best.htfValidation.passed ? 'YES - Entry within ' + best.htfValidation.structureTF + ' structure' : 'NO') : 'N/A'}
-Entry Ready: ${best.entryReady ? 'YES' : 'NO'} | Reaction: ${best.zoneReaction?.confirmed ? best.zoneReaction.type + ' (' + best.zoneReaction.strength + ')' : 'NONE'}
-Proposed Entry: $${best.entry.toFixed(prec)} | SL: $${best.sl.toFixed(prec)} | TP1: $${best.tp1.toFixed(prec)} | RR: 1:${best.rrUsed}
-Displacement: ${best.displacement.detected ? 'YES' : 'NO'} | Touches: ${best.zoneTouches}
+HTF Validated: ${best.htfValidation ? (best.htfValidation.passed ? 'YES' : 'NO') : 'N/A'}
+Entry Ready: ${best.entryReady ? 'YES' : 'NO'} | Reaction: ${best.zoneReaction?.confirmed ? best.zoneReaction.type : 'NONE'}
+Entry: $${best.entry.toFixed(prec)} | SL: $${best.sl.toFixed(prec)} | TP1: $${best.tp1.toFixed(prec)} | RR: 1:${best.rrUsed}
 
 RULES: If entryReady is NO, return "wait_for_reaction". If HTF not validated, consider "skip". If CONFLICT, "skip".
 Return ONLY JSON with execution_decision.`;
@@ -640,12 +625,14 @@ async function runAutoScan() {
         const price = await getPrice();
         if (!price) throw new Error('No price');
         
+        // MTF trends: close vs open
         const mtfTrendsData = {};
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         for (let t of tfs) {
             let d = await getHistory(t);
             if (d && d.length >= 2) {
-                mtfTrendsData[t] = getCurrentCandleDirection(d);
+                let last = d[d.length - 1];
+                mtfTrendsData[t] = last.c > last.o ? 'BULLISH' : (last.c < last.o ? 'BEARISH' : 'NEUTRAL');
             } else {
                 mtfTrendsData[t] = 'N/A';
             }
