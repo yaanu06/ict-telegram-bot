@@ -134,23 +134,51 @@ function countZoneTouches(data, zone, direction) {
 
 function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
 
-// FIXED: Metals use close vs open. Forex use close vs previous close (more accurate for tiny bodies).
 function getCurrentCandleDirection(data) {
     if (!data || data.length < 2) return 'NEUTRAL';
     const last = data[data.length - 1];
     const prev = data[data.length - 2];
-    
-    // Gold and Silver: use close vs open (accurate)
     if (pair.includes('XAU') || pair.includes('XAG') || pair === 'BTC/USD') {
         if (last.c > last.o) return 'BULLISH';
         if (last.c < last.o) return 'BEARISH';
         return 'NEUTRAL';
     }
-    
-    // Forex: use close vs previous close (handles tiny candle bodies)
     if (last.c > prev.c) return 'BULLISH';
     if (last.c < prev.c) return 'BEARISH';
     return 'NEUTRAL';
+}
+
+// ============================================
+// FIND PD ARRAYS FOR A TIMEFRAME (FVG + OB + BREAKER)
+// ============================================
+function findPDArrays(data, direction) {
+    const arrays = [];
+    const fvgs = detectFVG(data);
+    const obs = detectOrderBlocks(data, direction);
+    const breakers = detectBreakers(data);
+    
+    if (direction === 'BUY') {
+        fvgs.filter(f => f.type === 'bull').forEach(f => arrays.push({ low: f.l, high: f.h, src: 'FVG' }));
+        obs.forEach(o => arrays.push({ low: o.low, high: o.high, src: 'OB' }));
+        breakers.filter(b => b.type === 'BULL').forEach(b => arrays.push({ low: b.p * 0.998, high: b.p * 1.002, src: 'Breaker' }));
+    } else {
+        fvgs.filter(f => f.type === 'bear').forEach(f => arrays.push({ low: f.l, high: f.h, src: 'FVG' }));
+        obs.forEach(o => arrays.push({ low: o.low, high: o.high, src: 'OB' }));
+        breakers.filter(b => b.type === 'BEAR').forEach(b => arrays.push({ low: b.p * 0.998, high: b.p * 1.002, src: 'Breaker' }));
+    }
+    return arrays;
+}
+
+// ============================================
+// CHECK IF ENTRY ZONE IS WITHIN HTF PD ARRAY
+// ============================================
+function isZoneWithinHTFArray(entryZone, htfArrays) {
+    for (const arr of htfArrays) {
+        // Entry zone overlaps with or is contained within the HTF array
+        if (entryZone.low >= arr.low && entryZone.high <= arr.high) return { contained: true, parentArray: arr };
+        if (entryZone.low <= arr.high && entryZone.high >= arr.low) return { contained: true, parentArray: arr, partial: true };
+    }
+    return { contained: false, parentArray: null };
 }
 
 function detectDisplacement(data,direction){if(data.length<5)return{detected:false};const lc=data.slice(-5);const bodies=lc.map(c=>Math.abs(c.c-c.o));const avg=bodies.reduce((a,b)=>a+b,0)/bodies.length;const lb=bodies[bodies.length-1];if(direction==='BUY'&&lb>avg*2.5&&lc[4].c>lc[4].o)return{detected:true};if(direction==='SELL'&&lb>avg*2.5&&lc[4].c<lc[4].o)return{detected:true};return{detected:false};}
@@ -418,9 +446,9 @@ async function updateMTFDisplay(){
 }
 
 // ============================================
-// ANALYZE SINGLE TIMEFRAME (FILTERS REMOVED)
+// ANALYZE SINGLE TIMEFRAME (WITH HTF VALIDATION)
 // ============================================
-async function analyzeTimeframe(tfToAnalyze, price) {
+async function analyzeTimeframe(tfToAnalyze, price, htfData) {
     try {
         const [trendTF, structureTF, entryTF, sniperTF] = getTimeframeHierarchy(tfToAnalyze);
         const entryData = await getHistory(entryTF);
@@ -452,6 +480,19 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         const zone = findPrecisionEntry(entryData, price, direction, msnr);
         const zoneTouches = countZoneTouches(entryData, zone, direction);
         const zoneReaction = checkZoneReaction(entryData, zone, direction);
+        
+        // HTF VALIDATION: Check if entry zone is within structure TF's PD Arrays
+        let htfValidation = { passed: true, parentArray: null, structureTF: structureTF };
+        if (structureTF !== entryTF && structureData && structureData.length >= 20) {
+            const structureArrays = findPDArrays(structureData, direction);
+            const validation = isZoneWithinHTFArray(zone, structureArrays);
+            if (!validation.contained) {
+                // Zone not within HTF structure - heavily penalize but allow
+                htfValidation = { passed: false, parentArray: null, structureTF: structureTF };
+            } else {
+                htfValidation = { passed: true, parentArray: validation.parentArray, structureTF: structureTF };
+            }
+        }
         
         let entry = null;
         let entryReady = false;
@@ -506,6 +547,13 @@ async function analyzeTimeframe(tfToAnalyze, price) {
         if (magnetism.magnetism === 'STRONG') conf = Math.min(conf + 10, 98);
         else if (magnetism.magnetism === 'WEAK') conf = Math.max(conf - 15, 25);
         
+        // HTF validation scoring
+        if (htfValidation.passed) {
+            conf = Math.min(conf + 15, 98); // Bonus for being within HTF structure
+        } else if (structureTF !== entryTF) {
+            conf = Math.max(conf - 20, 10); // Penalty for not being within HTF structure
+        }
+        
         if (zoneReaction.confirmed && (zoneReaction.strength === 'STRONG' || zoneReaction.strength === 'MODERATE')) {
             conf = Math.min(conf + 20, 98);
         } else if (!zoneReaction.confirmed) {
@@ -527,7 +575,8 @@ async function analyzeTimeframe(tfToAnalyze, price) {
             confidence: conf, zone, slResult, displacement, sniperRej,
             probCheck, turtleSoup, mtf, msnr, twelveIndicators, pathCheck, tfAlign,
             sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, obsAll, rs, apiATR, trends, magnetism,
-            zoneReaction, zoneTouches, entryReady, invalidationPrice, rrUsed: tps.rrUsed
+            zoneReaction, zoneTouches, entryReady, invalidationPrice, rrUsed: tps.rrUsed,
+            htfValidation
         };
     } catch (e) { console.error(`Error ${tfToAnalyze}:`, e); return null; }
 }
@@ -541,7 +590,8 @@ async function askAIWithAllResults(allResults, price, htfData) {
     
     let tfSummary = '';
     for (const r of allResults) {
-        tfSummary += `${r.timeframe}: ${r.direction} | Zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | EntryReady: ${r.entryReady ? 'YES' : 'NO'} | React: ${r.zoneReaction?.confirmed ? r.zoneReaction.type + '(' + r.zoneReaction.strength + ')' : 'None'} | Touches: ${r.zoneTouches} | Conf:${r.confidence}% | RR:1:${r.rrUsed}\n`;
+        const htfStatus = r.htfValidation ? (r.htfValidation.passed ? '✅ In HTF' : '⚠️ No HTF') : 'N/A';
+        tfSummary += `${r.timeframe}: ${r.direction} | Zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | EntryReady: ${r.entryReady ? 'YES' : 'NO'} | React: ${r.zoneReaction?.confirmed ? r.zoneReaction.type + '(' + r.zoneReaction.strength + ')' : 'None'} | HTF: ${htfStatus} | Touches: ${r.zoneTouches} | Conf:${r.confidence}% | RR:1:${r.rrUsed}\n`;
     }
     
     const best = allResults[0];
@@ -558,6 +608,7 @@ HTF: 1D=${dailyDir} 4H=${h4Dir} | Confluence: ${htfConfluence.level}
 
 TOP SETUP (${best.timeframe}):
 Direction: ${best.direction} | Zone: $${best.zone.low.toFixed(prec)}-$${best.zone.high.toFixed(prec)} (${best.zone.src} Q:${best.zone.quality})
+HTF Validated: ${best.htfValidation ? (best.htfValidation.passed ? 'YES ✅ - Entry within ' + best.htfValidation.structureTF + ' structure' : 'NO ⚠️') : 'N/A'}
 Entry Ready: ${best.entryReady ? 'YES ✅' : 'NO ⚠️'} | Reaction: ${best.zoneReaction?.confirmed ? best.zoneReaction.type + ' (' + best.zoneReaction.strength + ')' : 'NONE'}
 Proposed Entry: $${best.entry.toFixed(prec)} | SL: $${best.sl.toFixed(prec)} | TP1: $${best.tp1.toFixed(prec)} | RR: 1:${best.rrUsed}
 Displacement: ${best.displacement.detected ? 'YES' : 'NO'} | Touches: ${best.zoneTouches} | Invalidation: $${best.invalidationPrice.toFixed(prec)}
@@ -566,10 +617,10 @@ ALL INDICATORS: RSI:${best.twelveIndicators.rsi || 'N/A'} MACD:${best.twelveIndi
 
 STRICT RULES:
 - If entryReady is NO, you MUST return execution_decision: "wait_for_reaction"
-- If entryReady is YES and HTF is FULL or PARTIAL, you may return "enter_now"
+- If HTF is NOT validated (zone not within structure TF PD Array), heavily consider "skip"
+- If entryReady is YES and HTF is FULL or PARTIAL and zone IS within HTF structure, you may return "enter_now"
 - If HTF is CONFLICT, return "skip" even with reaction
 - If zone has >=5 touches and no displacement, return "skip"
-- Refine entry price based on reaction candle data if entering now
 
 Return ONLY JSON:
 {"trade_signal_Theghostmachine":{"approved":true,"execution_decision":"enter_now","confidence_adjustment":0,"entry_refinement":{"low":${best.zone.low.toFixed(prec)},"high":${best.zone.high.toFixed(prec)}},"invalidation_price":${best.invalidationPrice.toFixed(prec)},"wait_condition":"Look for bullish engulf at zone","analysis":{"entry_logic":"...","sl_logic":"...","key_reason":"...","risk_warning":null,"possible_outcomes":["Primary","Alternative","Invalidation"]}}}`;
@@ -583,7 +634,7 @@ Return ONLY JSON:
 }
 
 // ============================================
-// AUTO SCAN (ALL SETUPS PASS)
+// AUTO SCAN (ALL SETUPS PASS WITH HTF VALIDATION)
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
@@ -596,7 +647,7 @@ async function runAutoScan() {
     
     if (!TWELVE_DATA_KEY) { showSetup(); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
     
-    showNotif('🔍 Scanning for high-probability setups...', 'info');
+    showNotif('🔍 Scanning for HTF-validated setups...', 'info');
     
     try {
         const price = await getPrice();
@@ -633,7 +684,7 @@ async function runAutoScan() {
             scanText.innerHTML = `Scanning ${tfScan}... (${i + 1}/${timeframesToScan.length})`;
             scanFill.style.width = ((i + 1) / timeframesToScan.length * 100) + '%';
             
-            const result = await analyzeTimeframe(tfScan, price);
+            const result = await analyzeTimeframe(tfScan, price, htfData);
             if (result) results.push(result);
         }
         
@@ -715,6 +766,8 @@ async function runAutoScan() {
                     entry_zone: { low: finalZoneLow, high: finalZoneHigh },
                     entry_ready: best.entryReady,
                     zone_touches: best.zoneTouches,
+                    htf_validated: best.htfValidation ? best.htfValidation.passed : null,
+                    htf_parent_structure: best.htfValidation?.parentArray ? `${best.htfValidation.parentArray.src} @ ${best.htfValidation.structureTF}` : null,
                     stop_loss: best.sl,
                     sl_reason: best.slResult.reason,
                     invalidation_price: aiInvalidation,
@@ -768,10 +821,10 @@ async function runAutoScan() {
                     analysis: {
                         trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)${best.mtf.strength >= 3 ? ' - STRONG' : ''}`,
                         volatility_level: `${best.volatility.level} - ${best.volatility.desc}`,
-                        market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, zone_reaction: best.zoneReaction, zone_touches: best.zoneTouches, entry_ready: best.entryReady, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level },
+                        market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, zone_reaction: best.zoneReaction, zone_touches: best.zoneTouches, entry_ready: best.entryReady, htf_validated: best.htfValidation?.passed || false, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level },
                         indicator_confluence: { macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A', adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'} (RR:1:${rr})` : 'N/A', stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A', cci: best.twelveIndicators.cci || 'N/A', williams_r: best.twelveIndicators.williams_r || 'N/A', sar: best.twelveIndicators.sar ? `$${best.twelveIndicators.sar}` : 'N/A', ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A' },
                         technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ATR(API): ${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`, `OB: ${best.obsAll ? best.obsAll.length : 0}`],
-                        reasoning: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}] | Magnet:${best.magnetism.magnetism} | HTF:${htfConfluence.level} | EntryReady:${best.entryReady ? 'YES' : 'NO'} | React:${best.zoneReaction?.type || 'None'} | Touch#${best.zoneTouches}`
+                        reasoning: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}] | HTF:${best.htfValidation?.passed ? '✅' : '⚠️'} | Magnet:${best.magnetism.magnetism} | Confluence:${htfConfluence.level} | EntryReady:${best.entryReady ? 'YES' : 'NO'} | React:${best.zoneReaction?.type || 'None'} | Touch#${best.zoneTouches}`
                     }
                 }
             }
@@ -784,8 +837,9 @@ async function runAutoScan() {
         const magLabel = best.magnetism.magnetism === 'STRONG' ? '🧲' : (best.magnetism.magnetism === 'MODERATE' ? '🔗' : '⚠️');
         const aiLabel = aiResult ? (aiApproved ? '🤖✅' : '🤖❌') : '';
         const htfLabel = htfConfluence.level === 'FULL' ? '💪' : (htfConfluence.level === 'CONFLICT' ? '⚠️' : '');
+        const htfValLabel = best.htfValidation?.passed ? '🏗️' : '';
         const execLabel = executionDecision === 'enter_now' ? '🟢ENTER' : (executionDecision === 'wait_for_reaction' ? '🟡WAIT' : '🔴SKIP');
-        showNotif(`${aiLabel}${magLabel}${htfLabel} ${execLabel} ${best.timeframe} ${st} ${best.confidence}% | 1:${rrDisplay}`, 'success');
+        showNotif(`${aiLabel}${magLabel}${htfLabel}${htfValLabel} ${execLabel} ${best.timeframe} ${st} ${best.confidence}% | 1:${rrDisplay}`, 'success');
         
     } catch (e) { console.error(e); showNotif('Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
     finally { btn.classList.remove('loading'); btn.disabled = false; }
