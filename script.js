@@ -450,7 +450,7 @@ function calcTakeProfits(dir,entry,sl){
 }
 
 // ============================================
-// SCORING - ALL 10 TWELVE DATA INDICATORS
+// SCORING - ALL 17 TWELVE DATA INDICATORS (10 ORIGINAL + 7 NEW)
 // ============================================
 function score(data,price,twelveIndicators){
     const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl);
@@ -475,6 +475,7 @@ function score(data,price,twelveIndicators){
     
     const ind = twelveIndicators || {};
     
+    // ORIGINAL 10 INDICATORS
     if (ind.rsi && ind.rsi < 30) { bS += 8; bR.push('RSI oversold'); }
     if (ind.rsi && ind.rsi > 70) { sS += 8; sR.push('RSI overbought'); }
     if (ind.stoch_k && ind.stoch_d && ind.stoch_k < 20 && ind.stoch_d < 20) { bS += 5; bR.push('Stoch oversold'); }
@@ -495,6 +496,50 @@ function score(data,price,twelveIndicators){
     }
     if (ind.macd_hist && ind.macd_hist > 0) { bS += 3; }
     if (ind.macd_hist && ind.macd_hist < 0) { sS += 3; }
+    
+    // ============ NEW 7 INDICATORS WIRED INTO SCORING ============
+    
+    // ADXR - Trend stability confirmation
+    if (ind.adxr && ind.adx && ind.adx > 25) {
+        if (ind.adxr > ind.adx * 0.7) { 
+            if (cE20 > cE50) { bS += 8; bR.push('ADXR stable trend'); }
+            else { sS += 8; sR.push('ADXR stable trend'); }
+        }
+        if (ind.adxr < ind.adx * 0.4) { bS -= 5; sS -= 5; } // unstable trend penalty
+    }
+    
+    // Heikin-Ashi - Smoothed trend confirmation
+    if (ind.ha_close && ind.ha_open) {
+        if (ind.ha_close > ind.ha_open) { bS += 10; bR.push('HA bullish'); }
+        if (ind.ha_close < ind.ha_open) { sS += 10; sR.push('HA bearish'); }
+        // HA trend stronger than regular candles = more conviction
+        const haBody = Math.abs(ind.ha_close - ind.ha_open);
+        const haRange = ind.ha_high - ind.ha_low;
+        if (haRange > 0 && haBody > haRange * 0.5) {
+            if (ind.ha_close > ind.ha_open) { bS += 5; bR.push('HA strong body'); }
+            else { sS += 5; sR.push('HA strong body'); }
+        }
+    }
+    
+    // Weighted Close vs HLC3 - Fair value comparison
+    if (ind.wclprice && ind.hlc3) {
+        if (price > ind.wclprice && price > ind.hlc3) { bS += 5; bR.push('Price above fair value'); }
+        if (price < ind.wclprice && price < ind.hlc3) { sS += 5; sR.push('Price below fair value'); }
+    }
+    
+    // Midpoint & Midprice - Zone edge proximity
+    if (ind.midpoint && ind.midprice) {
+        const fairMid = (ind.midpoint + ind.midprice) / 2;
+        const distPct = Math.abs(price - fairMid) / price;
+        if (distPct < 0.001) { bS += 3; sS += 3; } // at fair value - neutral boost
+    }
+    
+    // Typical Price - Confluence with Weighted Close
+    if (ind.typprice && ind.wclprice) {
+        const avgFair = (ind.typprice + ind.wclprice + ind.hlc3) / 3;
+        if (price < avgFair * 0.998 && cE20 > cE50) { bS += 6; bR.push('Undervalued (avg fair)'); }
+        if (price > avgFair * 1.002 && cE20 < cE50) { sS += 6; sR.push('Overvalued (avg fair)'); }
+    }
     
     let dir,conf,reason;
     if(bS>sS){dir='BUY';conf=Math.min(bS+10,95);reason=bR.join('; ');}
@@ -634,6 +679,17 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         if (twelveIndicators.macd_hist && direction === 'SELL' && twelveIndicators.macd < twelveIndicators.macd_signal) conf = Math.min(conf + 5, 98);
         if (twelveIndicators.adx && twelveIndicators.adx > 25) conf = Math.min(conf + 5, 98);
         
+        // NEW - ADXR stability bonus
+        if (twelveIndicators.adxr && twelveIndicators.adx && twelveIndicators.adxr > twelveIndicators.adx * 0.7) conf = Math.min(conf + 5, 98);
+        
+        // NEW - Heikin-Ashi direction confirmation bonus
+        if (twelveIndicators.ha_close && twelveIndicators.ha_open) {
+            if (direction === 'BUY' && twelveIndicators.ha_close > twelveIndicators.ha_open) conf = Math.min(conf + 5, 98);
+            if (direction === 'SELL' && twelveIndicators.ha_close < twelveIndicators.ha_open) conf = Math.min(conf + 5, 98);
+            if (direction === 'BUY' && twelveIndicators.ha_close < twelveIndicators.ha_open) conf = Math.max(conf - 8, 10);
+            if (direction === 'SELL' && twelveIndicators.ha_close > twelveIndicators.ha_open) conf = Math.max(conf - 8, 10);
+        }
+        
         const tfAlign = `Trend:${trendTF}→Structure:${structureTF}→Entry:${entryTF}→Sniper:${sniperTF}`;
         
         return {
@@ -649,7 +705,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 }
 
 // ============================================
-// AI - STRICT EXECUTION COACH
+// AI - STRICT EXECUTION COACH (ENHANCED WITH NEW INDICATORS)
 // ============================================
 async function askAIWithAllResults(allResults, price, htfData) {
     if (!DEEPSEEK_API_KEY || allResults.length === 0) return null;
@@ -658,7 +714,9 @@ async function askAIWithAllResults(allResults, price, htfData) {
     let tfSummary = '';
     for (const r of allResults) {
         const htfStatus = r.htfValidation ? (r.htfValidation.passed ? 'In HTF' : 'No HTF') : 'N/A';
-        tfSummary += `${r.timeframe}: ${r.direction} | Zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | EntryReady: ${r.entryReady ? 'YES' : 'NO'} | React: ${r.zoneReaction?.confirmed ? r.zoneReaction.type : 'None'} | HTF: ${htfStatus} | Touches: ${r.zoneTouches} | Conf:${r.confidence}% | RR:1:${r.rrUsed}\n`;
+        const haInfo = r.twelveIndicators?.ha_close ? ` | HA:${r.twelveIndicators.ha_close > r.twelveIndicators.ha_open ? 'Bull' : 'Bear'}` : '';
+        const adxrInfo = r.twelveIndicators?.adxr ? ` | ADXR:${r.twelveIndicators.adxr.toFixed(1)}` : '';
+        tfSummary += `${r.timeframe}: ${r.direction} | Zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | EntryReady: ${r.entryReady ? 'YES' : 'NO'} | React: ${r.zoneReaction?.confirmed ? r.zoneReaction.type : 'None'} | HTF: ${htfStatus} | Touches: ${r.zoneTouches} | Conf:${r.confidence}% | RR:1:${r.rrUsed}${haInfo}${adxrInfo}\n`;
     }
     
     const best = allResults[0];
@@ -668,10 +726,20 @@ async function askAIWithAllResults(allResults, price, htfData) {
     const h4Dir = await getQuoteDirection('4H');
     const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
     
+    // Build enhanced indicator summary for AI
+    let indicatorSummary = '';
+    const ind = best.twelveIndicators || {};
+    if (ind.adxr) indicatorSummary += `ADXR: ${ind.adxr.toFixed(1)} (${ind.adxr > (ind.adx||0) * 0.7 ? 'Stable' : 'Unstable'}) | `;
+    if (ind.ha_close) indicatorSummary += `HA: ${ind.ha_close > ind.ha_open ? 'Bullish' : 'Bearish'} (Body: ${Math.abs(ind.ha_close - ind.ha_open).toFixed(prec)}) | `;
+    if (ind.wclprice) indicatorSummary += `WClose: $${ind.wclprice.toFixed(prec)} | `;
+    if (ind.hlc3) indicatorSummary += `HLC3: $${ind.hlc3.toFixed(prec)} | `;
+    
     const prompt = `You are TheGhostMachine. Decide if we should enter NOW.
 
 PAIR: ${pair} | PRICE: $${price.toFixed(prec)}
 HTF: 1D=${dailyDir} 4H=${h4Dir} | Confluence: ${htfConfluence.level}
+
+ENHANCED INDICATORS: ${indicatorSummary}
 
 TOP SETUP (${best.timeframe}):
 Direction: ${best.direction} | Zone: $${best.zone.low.toFixed(prec)}-$${best.zone.high.toFixed(prec)} (${best.zone.src} Q:${best.zone.quality})
@@ -679,7 +747,7 @@ HTF Validated: ${best.htfValidation ? (best.htfValidation.passed ? 'YES' : 'NO')
 Entry Ready: ${best.entryReady ? 'YES' : 'NO'} | Reaction: ${best.zoneReaction?.confirmed ? best.zoneReaction.type : 'NONE'}
 Entry: $${best.entry.toFixed(prec)} | SL: $${best.sl.toFixed(prec)} | TP1: $${best.tp1.toFixed(prec)} | RR: 1:${best.rrUsed}
 
-RULES: If entryReady is NO, return "wait_for_reaction". If HTF not validated, consider "skip". If CONFLICT, "skip".
+RULES: If entryReady is NO, return "wait_for_reaction". If HTF not validated, consider "skip". If CONFLICT, "skip". Use ADXR stability and HA direction as extra confirmation.
 Return ONLY JSON with execution_decision.`;
 
     try {
@@ -875,8 +943,8 @@ async function runAutoScan() {
                         trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)${best.mtf.strength >= 3 ? ' - STRONG' : ''}`,
                         volatility_level: `${best.volatility.level} - ${best.volatility.desc}`,
                         market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, zone_reaction: best.zoneReaction, zone_touches: best.zoneTouches, entry_ready: best.entryReady, htf_validated: best.htfValidation?.passed || false, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level },
-                        indicator_confluence: { macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A', adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'} (RR:1:${rr})` : 'N/A', stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A', cci: best.twelveIndicators.cci || 'N/A', williams_r: best.twelveIndicators.williams_r || 'N/A', sar: best.twelveIndicators.sar ? `$${best.twelveIndicators.sar}` : 'N/A', ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A' },
-                        technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ATR(API): ${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`, `OB: ${best.obsAll ? best.obsAll.length : 0}`],
+                        indicator_confluence: { macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A', adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'} (RR:1:${rr})` : 'N/A', adxr: best.twelveIndicators.adxr ? `${best.twelveIndicators.adxr.toFixed(1)} (${best.twelveIndicators.adxr > (best.twelveIndicators.adx||0) * 0.7 ? 'Stable' : 'Unstable'})` : 'N/A', ha: best.twelveIndicators.ha_close ? `${best.twelveIndicators.ha_close > best.twelveIndicators.ha_open ? 'Bullish' : 'Bearish'}` : 'N/A', stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A', cci: best.twelveIndicators.cci || 'N/A', williams_r: best.twelveIndicators.williams_r || 'N/A', sar: best.twelveIndicators.sar ? `$${best.twelveIndicators.sar}` : 'N/A', ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A' },
+                        technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ADXR: ${best.twelveIndicators.adxr || 'N/A'}`, `ATR(API): ${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`, `HA: ${best.twelveIndicators.ha_close ? (best.twelveIndicators.ha_close > best.twelveIndicators.ha_open ? 'Bull' : 'Bear') : 'N/A'}`, `WClose: ${best.twelveIndicators.wclprice || 'N/A'}`, `HLC3: ${best.twelveIndicators.hlc3 || 'N/A'}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`, `OB: ${best.obsAll ? best.obsAll.length : 0}`],
                         reasoning: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}] | HTF:${best.htfValidation?.passed ? 'YES' : 'NO'} | Magnet:${best.magnetism.magnetism} | Confluence:${htfConfluence.level} | EntryReady:${best.entryReady ? 'YES' : 'NO'} | React:${best.zoneReaction?.type || 'None'} | Touch#${best.zoneTouches}`
                     }
                 }
