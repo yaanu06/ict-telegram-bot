@@ -94,18 +94,42 @@ async function getQuote(tfStr){
     return null;
 }
 
-// Get current candle direction from quote endpoint (most accurate)
-async function getQuoteDirection(tfStr){
-    const q = await getQuote(tfStr);
-    if(q && q.close > q.open) return 'BULLISH';
-    if(q && q.close < q.open) return 'BEARISH';
-    // Fallback to time_series if quote fails
-    const d = await getHistory(tfStr);
-    if(d && d.length >= 1){
-        const last = d[d.length-1];
-        if(last.c > last.o) return 'BULLISH';
-        if(last.c < last.o) return 'BEARISH';
+// FIXED: Get current candle direction using hybrid approach
+// For 1D: uses quote endpoint (reliable)
+// For 5M,15M,1H,4H: uses current price vs candle open (accurate live direction)
+async function getQuoteDirection(tfStr) {
+    // For 1D - use quote endpoint (reliable for daily)
+    if (tfStr === '1D') {
+        try {
+            const r = await fetch(`${TWELVE_DATA_BASE}/quote?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=1day&apikey=${TWELVE_DATA_KEY}`);
+            const d = await r.json();
+            if (d.close && d.open) {
+                if (d.close > d.open) return 'BULLISH';
+                if (d.close < d.open) return 'BEARISH';
+                return 'NEUTRAL';
+            }
+        } catch(e) {}
     }
+    
+    // For 5M, 15M, 1H, 4H - use time_series with current price comparison
+    try {
+        const data = await getHistory(tfStr);
+        if (data && data.length >= 1) {
+            const latestCandle = data[data.length - 1];
+            const currentPrice = await getPrice();
+            
+            if (currentPrice && latestCandle.o) {
+                // LIVE direction based on current price vs candle open
+                if (currentPrice > latestCandle.o) return 'BULLISH';
+                if (currentPrice < latestCandle.o) return 'BEARISH';
+            }
+            
+            // Fallback to closed candle direction
+            if (latestCandle.c > latestCandle.o) return 'BULLISH';
+            if (latestCandle.c < latestCandle.o) return 'BEARISH';
+        }
+    } catch(e) {}
+    
     return 'NEUTRAL';
 }
 
@@ -443,7 +467,7 @@ function score(data,price,twelveIndicators){
 }
 
 // ============================================
-// MULTI-TF DISPLAY - USES QUOTE ENDPOINT
+// MULTI-TF DISPLAY - USES QUOTE ENDPOINT (FIXED)
 // ============================================
 async function updateMTFDisplay(){
     const tfs=['5M','15M','1H','4H','1D'];
@@ -467,7 +491,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
         const sig = score(entryData, price, twelveIndicators);
         
-        // TREND COUNTING - uses quote endpoint for accuracy
+        // TREND COUNTING - uses quote endpoint for accuracy (FIXED)
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         let bullCount = 0, bearCount = 0;
         const trends = {};
@@ -649,7 +673,7 @@ async function runAutoScan() {
         const price = await getPrice();
         if (!price) throw new Error('No price');
         
-        // MTF trends from quote endpoint
+        // MTF trends from quote endpoint (FIXED)
         const mtfTrendsData = {};
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         for (let t of tfs) {
