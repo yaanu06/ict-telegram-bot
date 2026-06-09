@@ -26,15 +26,16 @@ const ALL_TIMEFRAMES = ['5M', '15M', '1H', '4H', '1D'];
 const TF_WEIGHT = { '1D': 5, '4H': 4, '1H': 3, '15M': 2, '5M': 1 };
 
 // ============================================
-// TIMEFRAME ALIGNMENT HIERARCHY
+// TIMEFRAME ALIGNMENT HIERARCHY - FIXED
+// Now lower timeframes look UP to higher timeframes
 // ============================================
 function getTimeframeHierarchy(selectedTF) {
     const hierarchy = {
         '1D': ['1D', '4H', '1H', '15M'],
         '4H': ['4H', '1H', '15M', '5M'],
         '1H': ['1H', '15M', '5M', '5M'],
-        '15M': ['15M', '5M', '5M', '5M'],
-        '5M': ['5M', '5M', '5M', '5M']
+        '15M': ['1H', '15M', '5M', '5M'],   // FIXED: Trend uses 1H (was 15M)
+        '5M': ['15M', '5M', '5M', '5M']     // FIXED: Trend uses 15M (was 5M)
     };
     return hierarchy[selectedTF] || ['4H', '1H', '15M', '5M'];
 }
@@ -95,7 +96,6 @@ async function getQuote(tfStr){
 }
 
 // FIXED: Get current candle direction using hybrid approach
-// ONLY THIS FUNCTION WAS CHANGED - EVERYTHING ELSE IS ORIGINAL
 async function getQuoteDirection(tfStr) {
     // For 1D - use quote endpoint (reliable for daily)
     if (tfStr === '1D') {
@@ -118,12 +118,10 @@ async function getQuoteDirection(tfStr) {
             const currentPrice = await getPrice();
             
             if (currentPrice && latestCandle.o) {
-                // LIVE direction based on current price vs candle open
                 if (currentPrice > latestCandle.o) return 'BULLISH';
                 if (currentPrice < latestCandle.o) return 'BEARISH';
             }
             
-            // Fallback to closed candle direction
             if (latestCandle.c > latestCandle.o) return 'BULLISH';
             if (latestCandle.c < latestCandle.o) return 'BEARISH';
         }
@@ -136,7 +134,7 @@ async function getHistory(tfStr){if(!TWELVE_DATA_KEY)return null;try{const r=awa
 async function getTechnicalIndicators(tfUsed){if(!TWELVE_DATA_KEY)return{};const symbol=encodeURIComponent(SYMBOLS[pair]);const interval=TF_MAP[tfUsed];const ind={};try{const r=await fetch(`${TWELVE_DATA_BASE}/rsi?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.rsi=parseFloat(d.values[0].rsi);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/macd?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.macd=parseFloat(d.values[0].macd);ind.macd_signal=parseFloat(d.values[0].macd_signal);ind.macd_hist=parseFloat(d.values[0].macd_hist);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/adx?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.adx=parseFloat(d.values[0].adx);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/bbands?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.bb_upper=parseFloat(d.values[0].upper_band);ind.bb_middle=parseFloat(d.values[0].middle_band);ind.bb_lower=parseFloat(d.values[0].lower_band);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/stoch?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.stoch_k=parseFloat(d.values[0].slow_k);ind.stoch_d=parseFloat(d.values[0].slow_d);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/cci?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.cci=parseFloat(d.values[0].cci);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/atr?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.atr_api=parseFloat(d.values[0].atr);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/williams?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.williams_r=parseFloat(d.values[0].williams);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/sar?symbol=${symbol}&interval=${interval}&acceleration=0.02&maximum=0.2&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.sar=parseFloat(d.values[0].sar);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/ichimoku?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.ichimoku_tenkan=parseFloat(d.values[0].tenkan_sen);ind.ichimoku_kijun=parseFloat(d.values[0].kijun_sen);ind.ichimoku_senkou_a=parseFloat(d.values[0].senkou_span_a);ind.ichimoku_senkou_b=parseFloat(d.values[0].senkou_span_b);calls++;}}catch(e){}return ind;}
 
 // ============================================
-// TECHNICALS (ALL ORIGINAL - UNCHANGED)
+// TECHNICALS
 // ============================================
 const ema=(p,n)=>{const m=2/(n+1);let e=[p[0]];for(let i=1;i<p.length;i++)e.push((p[i]-e[i-1])*m+e[i-1]);return e;};
 const rsi=(p,n=14)=>{let g=0,l=0;for(let i=p.length-n;i<p.length;i++){let c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;return al===0?100:100-(100/(1+ag/al));};
@@ -710,7 +708,7 @@ async function runAutoScan() {
         }
         
         // ============================================
-        // FIXED: FORCE HIGHER TIMEFRAME PRIORITY
+        // FORCE HIGHER TIMEFRAME PRIORITY
         // 1D > 4H > 1H > 15M > 5M
         // ============================================
         const tfPriority = { '1D': 5, '4H': 4, '1H': 3, '15M': 2, '5M': 1 };
