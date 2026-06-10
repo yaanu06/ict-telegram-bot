@@ -216,7 +216,7 @@ function isZoneWithinHTFArray(entryZone, htfArrays) {
 function detectDisplacement(data,direction){if(data.length<5)return{detected:false};const lc=data.slice(-5);const bodies=lc.map(c=>Math.abs(c.c-c.o));const avg=bodies.reduce((a,b)=>a+b,0)/bodies.length;const lb=bodies[bodies.length-1];if(direction==='BUY'&&lb>avg*2.5&&lc[4].c>lc[4].o)return{detected:true};if(direction==='SELL'&&lb>avg*2.5&&lc[4].c<lc[4].o)return{detected:true};return{detected:false};}
 async function checkSniperRejection(zone,direction,sniperTF){const dSn=await getHistory(sniperTF);if(!dSn||dSn.length<3)return{confirmed:false};const lc=dSn[dSn.length-1];const body=Math.abs(lc.c-lc.o);if(direction==='BUY'){const wick=Math.min(lc.o,lc.c)-lc.l;const t=lc.l<=zone.high&&lc.l>=zone.low;if(t&&wick>body*2&&lc.c>lc.o)return{confirmed:true};}else{const wick=lc.h-Math.max(lc.o,lc.c);const t=lc.h>=zone.low&&lc.h<=zone.high;if(t&&wick>body*2&&lc.c<lc.o)return{confirmed:true};}return{confirmed:false};}
 function getVolatilityLevel(atrValue,price){const pct=(atrValue/price)*100;if(pct>0.8)return{level:'High - Impulsive',desc:'Large candles'};if(pct>0.4)return{level:'Moderate - Control',desc:'Normal'};return{level:'Low - Consolidation',desc:'Tight ranges'};}
-function detectLiquiditySweeps(data,currentPrice){const sweeps=[];const a=atr(data,14);const maxDistance=a*3;const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);for(let i=10;i<data.length-3;i++){const rH=highs.slice(i-5,i);const maxH=Math.max(...rH);if(rH.filter(h=>Math.abs(h-maxH)<=maxH*0.001).length>=2&&Math.abs(maxH-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.h>maxH*1.001)&&closes[i+3]<maxH)sweeps.push({type:'BUY_SIDE',level:maxH,distance:Math.abs(maxH-currentPrice),direction:'BEARISH'});}const rL=lows.slice(i-5,i);const minL=Math.min(...rL);if(rL.filter(l=>Math.abs(l-minL)<=minL*0.001).length>=2&&Math.abs(minL-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.l<minL*0.999)&&closes[i+3]>minL)sweeps.push({type:'SELL_SIDE',level:minL,distance:Math.abs(minL-currentPrice),direction:'BULLISH'});}}return sweeps.sort((a,b)=>a.distance-b.distance);}
+function detectLiquiditySweeps(data,currentPrice){const sweeps=[];const a=atr(data,14);const maxDistance=a*3;const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);for(let i=10;i<data.length-3;i++){const rH=highs.slice(i-5,i);const maxH=Math.max(...rH);if(rH.filter(h=>Math.abs(h-maxH)<=maxH*0.001).length>=2&&Math.abs(maxH-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.h>maxH*1.001)&&closes[i+3]<maxH)sweeps.push({type:'BUY_SIDE',level:maxH,distance:Math.abs(maxH-currentPrice),direction:'BEARISH'});}const rL=lows.slice(i-5,i);const minL=Math.min(...rL);if(rL.filter(l=>Math.abs(l-minL)<=minL*0.001).length>=2&&Math.abs(minL-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.l<minL*0.999)&&closes[i+3]>minL)sweeps.push({type:'SELL_SIDE',level:minL,distance:Math.abs(minL-currentPrice),direction:'BULLISH'});}        }return sweeps.sort((a,b)=>a.distance-b.distance);}
 function findImbalances(data){const im=[];for(let i=1;i<data.length-1;i++){if(data[i-1].l>data[i+1].h)im.push({type:'BULLISH',low:data[i+1].h,high:data[i-1].l});if(data[i-1].h<data[i+1].l)im.push({type:'BEARISH',low:data[i-1].h,high:data[i+1].l});}return im.slice(-5);}
 function detectTurtleSoup(data){if(data.length<15)return{detected:false,type:null};const rd=data.slice(-15);const highs=rd.map(c=>c.h),lows=rd.map(c=>c.l),closes=rd.map(c=>c.c),opens=rd.map(c=>c.o);const keyLow=Math.min(...lows.slice(0,-4));const recentLow=lows[lows.length-4];const cc=closes[closes.length-1];const co=opens[opens.length-1];if(recentLow<keyLow*0.999&&cc>keyLow&&cc>co)return{detected:true,type:'BUY',keyLevel:keyLow,sweptLevel:recentLow};const keyHigh=Math.max(...highs.slice(0,-4));const recentHigh=highs[highs.length-4];if(recentHigh>keyHigh*1.001&&cc<keyHigh&&cc<co)return{detected:true,type:'SELL',keyLevel:keyHigh,sweptLevel:recentHigh};return{detected:false,type:null};}
 function detectCRT(data,direction){if(data.length<10)return{detected:false};const lc=data.slice(-5);const ranges=lc.map(c=>c.h-c.l);const avgRange=ranges.reduce((a,b)=>a+b,0)/ranges.length;const lastRange=ranges[ranges.length-1];const expanding=lastRange>avgRange*1.5;const contracting=lastRange<avgRange*0.5;return{detected:expanding||contracting,pattern:expanding?'Expanding':(contracting?'Contracting':'Neutral'),rangeRatio:(lastRange/avgRange).toFixed(2),signal:expanding?(direction==='BUY'?'Bullish momentum':'Bearish momentum'):(contracting?'Consolidation':'Neutral')};}
@@ -629,11 +629,16 @@ async function askAIWithAllResults(allResults, price, htfData) {
     const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
     
     const prompt = `You are TheGhostMachine. Decide if we should enter NOW.
+CRITICAL: You MUST strictly prioritize higher timeframes (1D, 4H, 1H) over lower ones (15M, 5M). 
+If a high timeframe has a setup, focus on it completely. Only analyze lower timeframes if higher timeframes show zero valid conditions.
 
 PAIR: ${pair} | PRICE: $${price.toFixed(prec)}
 HTF: 1D=${dailyDir} 4H=${h4Dir} | Confluence: ${htfConfluence.level}
 
-TOP SETUP (${best.timeframe}):
+ALL SCANNED TIMEFRAMES IN ORDER OF PRIORITY:
+${tfSummary}
+
+TOP PRIORITY TIMEFRAME CHOSEN BY SCANNER (${best.timeframe}):
 Direction: ${best.direction} | Zone: $${best.zone.low.toFixed(prec)}-$${best.zone.high.toFixed(prec)} (${best.zone.src} Q:${best.zone.quality})
 HTF Validated: ${best.htfValidation ? (best.htfValidation.passed ? 'YES' : 'NO') : 'N/A'}
 Entry Ready: ${best.entryReady ? 'YES' : 'NO'} | Reaction: ${best.zoneReaction?.confirmed ? best.zoneReaction.type : 'NONE'}
@@ -643,7 +648,7 @@ RULES: If entryReady is NO, return "wait_for_reaction". If HTF not validated, co
 Return ONLY JSON with execution_decision.`;
 
     try {
-        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are a strict ICT execution coach. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:1000})});
+        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are a strict ICT execution coach. You strictly enforce higher timeframe dominance. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:1000})});
         const d = await r.json();
         if (d.choices?.[0]) { const m = d.choices[0].message.content.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); }
     } catch(e) { console.error('AI fetch:', e); }
@@ -707,30 +712,22 @@ async function runAutoScan() {
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
-        // ============================================
-        // FORCE HIGHER TIMEFRAME PRIORITY
+        // =========================================================
+        // FIXED: STRICT HIGHER TIMEFRAME SELECTION PREFERENCE
         // 1D > 4H > 1H > 15M > 5M
-        // ============================================
+        // If a higher timeframe has a setup, lower ones are discarded.
+        // =========================================================
         const tfPriority = { '1D': 5, '4H': 4, '1H': 3, '15M': 2, '5M': 1 };
         
         results.sort((a, b) => {
             const tfA = tfPriority[a.timeframe] || 0;
             const tfB = tfPriority[b.timeframe] || 0;
-            if (tfA !== tfB) return tfB - tfA;
+            if (tfA !== tfB) return tfB - tfA; // Sort explicitly descending by priority
             return b.confidence - a.confidence;
         });
         
-        const tfOrder = ['1D', '4H', '1H', '15M', '5M'];
-        let bestTimeframe = null;
-        for (let tf of tfOrder) {
-            if (results.some(r => r.timeframe === tf)) {
-                bestTimeframe = tf;
-                break;
-            }
-        }
-        
-        const bestTimeframeResults = results.filter(r => r.timeframe === bestTimeframe);
-        const best = bestTimeframeResults[0];
+        // Pick the absolute highest available priority timeframe setup found
+        const best = results[0];
         
         scanText.innerHTML = '🤖 AI strict execution decision...';
         const aiResult = await askAIWithAllResults(results, price, htfData);
