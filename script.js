@@ -26,16 +26,16 @@ const ALL_TIMEFRAMES = ['5M', '15M', '1H', '4H', '1D'];
 const TF_WEIGHT = { '1D': 5, '4H': 4, '1H': 3, '15M': 2, '5M': 1 };
 
 // ============================================
-// TIMEFRAME ALIGNMENT HIERARCHY - FIXED
-// Now lower timeframes look UP to higher timeframes
+// TIMEFRAME ALIGNMENT HIERARCHY
+// Lower timeframes look UP to higher timeframes for validation
 // ============================================
 function getTimeframeHierarchy(selectedTF) {
     const hierarchy = {
         '1D': ['1D', '4H', '1H', '15M'],
         '4H': ['4H', '1H', '15M', '5M'],
         '1H': ['1H', '15M', '5M', '5M'],
-        '15M': ['1H', '15M', '5M', '5M'],   // FIXED: Trend uses 1H (was 15M)
-        '5M': ['15M', '5M', '5M', '5M']     // FIXED: Trend uses 15M (was 5M)
+        '15M': ['1H', '15M', '5M', '5M'],
+        '5M': ['15M', '5M', '5M', '5M']
     };
     return hierarchy[selectedTF] || ['4H', '1H', '15M', '5M'];
 }
@@ -74,8 +74,6 @@ function init(){updateTime();setInterval(updateTime,1000);document.getElementByI
 function updateTime(){const n=new Date();document.getElementById('liveTime').innerHTML=`${n.toLocaleDateString('en-US',{month:'short',day:'numeric'})} ${n.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;}
 function updatePairs(cat){const p={crypto:['BTC/USD'],forex:['EUR/USD','GBP/USD','USD/JPY','AUD/USD','USD/CAD','USD/CHF','NZD/USD','EUR/GBP','EUR/JPY','GBP/JPY'],metals:['XAU/USD','XAG/USD']};document.getElementById('pairSelect').innerHTML=p[cat].map(x=>`<option value="${x}">${getPairDisplayName(x)}</option>`).join('');pair=p[cat][0];}
 function getPairDisplayName(p){const icons={'BTC/USD':'₿ BTC/USD','EUR/USD':'€ EUR/USD','GBP/USD':'£ GBP/USD','USD/JPY':'💴 USD/JPY','AUD/USD':'🇦🇺 AUD/USD','USD/CAD':'🇨🇦 USD/CAD','USD/CHF':'🇨🇭 USD/CHF','NZD/USD':'🇳🇿 NZD/USD','EUR/GBP':'€/£ EUR/GBP','EUR/JPY':'€/¥ EUR/JPY','GBP/JPY':'£/¥ GBP/JPY','XAU/USD':'👑 XAU/USD','XAG/USD':'🥈 XAG/USD'};return icons[p]||'📊 '+p;}
-function isGold(p){return p.includes('XAU');}
-function isForex(p){return['EUR/USD','GBP/USD','USD/JPY','AUD/USD','USD/CAD','USD/CHF','NZD/USD','EUR/GBP','EUR/JPY','GBP/JPY'].includes(p);}
 function getPrec(p){const s=getMarketSettings(p);return s.prec;}
 
 // ============================================
@@ -83,21 +81,7 @@ function getPrec(p){const s=getMarketSettings(p);return s.prec;}
 // ============================================
 async function getPrice(){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(SYMBOLS[pair])}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.price){calls++;document.getElementById('apiSource').innerHTML='📡 Live';return +d.price;}}catch(e){}return null;}
 
-// NEW: Get quote data for accurate current candle direction
-async function getQuote(tfStr){
-    if(!TWELVE_DATA_KEY)return null;
-    const interval = QUOTE_INTERVAL_MAP[tfStr] || '1day';
-    try{
-        const r=await fetch(`${TWELVE_DATA_BASE}/quote?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);
-        const d=await r.json();
-        if(d.open && d.close){calls++;return{open:+d.open,close:+d.close,is_market_open:d.is_market_open};}
-    }catch(e){}
-    return null;
-}
-
-// FIXED: Get current candle direction using hybrid approach
 async function getQuoteDirection(tfStr) {
-    // For 1D - use quote endpoint (reliable for daily)
     if (tfStr === '1D') {
         try {
             const r = await fetch(`${TWELVE_DATA_BASE}/quote?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=1day&apikey=${TWELVE_DATA_KEY}`);
@@ -110,7 +94,6 @@ async function getQuoteDirection(tfStr) {
         } catch(e) {}
     }
     
-    // For 5M, 15M, 1H, 4H - use time_series with current price comparison
     try {
         const data = await getHistory(tfStr);
         if (data && data.length >= 1) {
@@ -182,10 +165,8 @@ function countZoneTouches(data, zone, direction) {
     return touches;
 }
 
-function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
-
 // ============================================
-// FIND PD ARRAYS FOR A TIMEFRAME (FVG + OB + BREAKER)
+// FIND PD ARRAYS FOR A TIMEFRAME
 // ============================================
 function findPDArrays(data, direction) {
     const arrays = [];
@@ -308,7 +289,7 @@ function checkZoneMagnetism(entryData, price, entry, direction) {
 }
 
 // ============================================
-// HTF CONFLUENCE CHECK - USES QUOTE ENDPOINT
+// HTF CONFLUENCE CHECK
 // ============================================
 async function checkHTFConfluenceAsync(dailyData, h4Data, entryDirection) {
     const dailyDir = await getQuoteDirection('1D');
@@ -372,7 +353,7 @@ function findPrecisionEntry(data,price,direction,msnr){
 function checkProbability(zone,mtf,magnetism){const checks=[];checks.push({name:'Confluence (2+)',passed:zone.cc>=2,critical:true});checks.push({name:'MTF aligned (2+)',passed:mtf.strength>=2,critical:true});checks.push({name:'Zone Magnetism',passed:magnetism.likelyToReach,critical:true});checks.push({name:'Imbalance Magnet',passed:zone.hasImbalance,critical:false});checks.push({name:'Quality A/B',passed:zone.quality==='A'||zone.quality==='B',critical:false});const cp=checks.filter(c=>c.critical).every(c=>c.passed);const tp=checks.filter(c=>c.passed).length;return{probability:cp?(tp>=4?'HIGH':(tp>=3?'MEDIUM':'LOW')):'LOW',checks,totalPassed:tp,passed:cp};}
 
 // ============================================
-// STOP LOSS - USES API ATR (ORIGINAL)
+// STOP LOSS 
 // ============================================
 function calcStopLoss(data,dir,entry,zone,msnr,tfUsed,twelveIndicators){
     const apiATR = twelveIndicators?.atr_api || atr(data, 14);
@@ -399,7 +380,7 @@ function calcStopLoss(data,dir,entry,zone,msnr,tfUsed,twelveIndicators){
 }
 
 // ============================================
-// TAKE PROFIT - ORIGINAL (USES API ATR-BASED RISK)
+// TAKE PROFIT
 // ============================================
 function calcTakeProfits(dir,entry,sl){
     const risk=Math.abs(entry-sl);
@@ -410,7 +391,7 @@ function calcTakeProfits(dir,entry,sl){
 }
 
 // ============================================
-// SCORING - ALL 10 TWELVE DATA INDICATORS
+// SCORING
 // ============================================
 function score(data,price,twelveIndicators){
     const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl);
@@ -464,7 +445,7 @@ function score(data,price,twelveIndicators){
 }
 
 // ============================================
-// MULTI-TF DISPLAY - USES QUOTE ENDPOINT (FIXED)
+// MULTI-TF DISPLAY
 // ============================================
 async function updateMTFDisplay(){
     const tfs=['5M','15M','1H','4H','1D'];
@@ -476,7 +457,7 @@ async function updateMTFDisplay(){
 }
 
 // ============================================
-// ANALYZE SINGLE TIMEFRAME (WITH HTF VALIDATION)
+// ANALYZE SINGLE TIMEFRAME
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price, htfData) {
     try {
@@ -484,11 +465,20 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const entryData = await getHistory(entryTF);
         if (!entryData?.length) return null;
         
+        // STOPS lower timeframes (15M, 5M) from fabricating standard independent structures
+        const isLTF = (tfToAnalyze === '15M' || tfToAnalyze === '5M');
+        const fvgsAll = detectFVG(entryData);
+        const obsAll = detectOrderBlocks(entryData, 'BUY').concat(detectOrderBlocks(entryData, 'SELL'));
+        
+        // If it's a lower timeframe and there are no structural footprints on it, don't run it
+        if (isLTF && fvgsAll.length === 0 && obsAll.length === 0) {
+            return null;
+        }
+
         const structureData = await getHistory(structureTF);
         const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
         const sig = score(entryData, price, twelveIndicators);
         
-        // TREND COUNTING - uses quote endpoint for accuracy (FIXED)
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         let bullCount = 0, bearCount = 0;
         const trends = {};
@@ -510,7 +500,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const zoneTouches = countZoneTouches(entryData, zone, direction);
         const zoneReaction = checkZoneReaction(entryData, zone, direction);
         
-        // HTF VALIDATION
         let htfValidation = { passed: true, parentArray: null, structureTF: structureTF };
         if (structureTF !== entryTF && structureData && structureData.length >= 20) {
             const structureArrays = findPDArrays(structureData, direction);
@@ -540,7 +529,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         if (direction === 'SELL' && entry <= price) { const na = msnr.nearestResistance || price * 1.01; entry = Math.max(zone.high, na, price * 1.005); }
         
         const magnetism = checkZoneMagnetism(entryData, price, entry, direction);
-        
         const displacement = detectDisplacement(entryData, direction);
         const sniperRej = await checkSniperRejection(zone, direction, sniperTF);
         const probCheck = checkProbability(zone, mtf, magnetism);
@@ -556,9 +544,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const crt = detectCRT(entryData, direction);
         const cl = entryData.map(c => c.c);
         const rs = rsi(cl, 14);
-        const fvgsAll = detectFVG(entryData);
         const breakersAll = detectBreakers(entryData);
-        const obsAll = detectOrderBlocks(entryData, direction);
         const invalidationPrice = direction === 'BUY' ? zone.low - apiATR * 0.5 : zone.high + apiATR * 0.5;
         
         let conf = sig.conf;
@@ -601,7 +587,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             direction, entry, sl: slResult.price, tp1: tps.tp1, tp2: tps.tp2, tp3: tps.tp3,
             confidence: conf, zone, slResult, displacement, sniperRej,
             probCheck, turtleSoup, mtf, msnr, twelveIndicators, pathCheck, tfAlign,
-            sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, obsAll, rs, apiATR, trends, magnetism,
+            sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, obsAll: (tfToAnalyze === '15M' || tfToAnalyze === '5M') ? obsAll : detectOrderBlocks(entryData, direction), rs, apiATR, trends, magnetism,
             zoneReaction, zoneTouches, entryReady, invalidationPrice, rrUsed: tps.rrUsed,
             htfValidation
         };
@@ -629,8 +615,8 @@ async function askAIWithAllResults(allResults, price, htfData) {
     const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
     
     const prompt = `You are TheGhostMachine. Decide if we should enter NOW.
-CRITICAL: You MUST strictly prioritize higher timeframes (1D, 4H, 1H) over lower ones (15M, 5M). 
-If a high timeframe has a setup, focus on it completely. Only analyze lower timeframes if higher timeframes show zero valid conditions.
+CRITICAL RISK ENFORCEMENT: We strictly trade macro higher timeframes (1D, 4H, 1H). 
+If the top priority setup displayed has a lower structural confidence rating or lacks high-timeframe validation footprints, do NOT approve it. Lower timeframes are strictly supplementary tools.
 
 PAIR: ${pair} | PRICE: $${price.toFixed(prec)}
 HTF: 1D=${dailyDir} 4H=${h4Dir} | Confluence: ${htfConfluence.level}
@@ -644,11 +630,11 @@ HTF Validated: ${best.htfValidation ? (best.htfValidation.passed ? 'YES' : 'NO')
 Entry Ready: ${best.entryReady ? 'YES' : 'NO'} | Reaction: ${best.zoneReaction?.confirmed ? best.zoneReaction.type : 'NONE'}
 Entry: $${best.entry.toFixed(prec)} | SL: $${best.sl.toFixed(prec)} | TP1: $${best.tp1.toFixed(prec)} | RR: 1:${best.rrUsed}
 
-RULES: If entryReady is NO, return "wait_for_reaction". If HTF not validated, consider "skip". If CONFLICT, "skip".
+RULES: If entryReady is NO, return "wait_for_reaction". If HTF structure is vague or validation is missing, enforce a low conviction skip decision.
 Return ONLY JSON with execution_decision.`;
 
     try {
-        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are a strict ICT execution coach. You strictly enforce higher timeframe dominance. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:1000})});
+        const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are a strict macro ICT execution coach. You strictly penalize low structural confidence on major charts. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:1000})});
         const d = await r.json();
         if (d.choices?.[0]) { const m = d.choices[0].message.content.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); }
     } catch(e) { console.error('AI fetch:', e); }
@@ -669,13 +655,12 @@ async function runAutoScan() {
     
     if (!TWELVE_DATA_KEY) { showSetup(); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
     
-    showNotif('🔍 Scanning for HTF-validated setups...', 'info');
+    showNotif('🔍 Scanning for HTF-dominated setups...', 'info');
     
     try {
         const price = await getPrice();
         if (!price) throw new Error('No price');
         
-        // MTF trends from quote endpoint (FIXED)
         const mtfTrendsData = {};
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         for (let t of tfs) {
@@ -712,23 +697,52 @@ async function runAutoScan() {
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
-        // =========================================================
-        // FIXED: STRICT HIGHER TIMEFRAME SELECTION PREFERENCE
-        // 1D > 4H > 1H > 15M > 5M
-        // If a higher timeframe has a setup, lower ones are discarded.
-        // =========================================================
-        const tfPriority = { '1D': 5, '4H': 4, '1H': 3, '15M': 2, '5M': 1 };
+        // =========================================================================
+        // STRICT MACRO HIERARCHY FILTER (1D > 4H > 1H)
+        // Checks higher timeframes sequentially. Isolates the highest macro setup.
+        // =========================================================================
+        const macroOrder = ['1D', '4H', '1H'];
+        let selectedSetup = null;
         
-        results.sort((a, b) => {
-            const tfA = tfPriority[a.timeframe] || 0;
-            const tfB = tfPriority[b.timeframe] || 0;
-            if (tfA !== tfB) return tfB - tfA; // Sort explicitly descending by priority
-            return b.confidence - a.confidence;
-        });
+        for (let tf of macroOrder) {
+            let match = results.find(r => r.timeframe === tf);
+            if (match) {
+                selectedSetup = match;
+                break;
+            }
+        }
         
-        // Pick the absolute highest available priority timeframe setup found
-        const best = results[0];
+        // =========================================================================
+        // DYNAMIC STRUCTURAL SLASHING RISK ALGORITHM
+        // If no higher timeframe setup printed, fallback to LTF data FOR INFORMATION ONLY
+        // Caps confidence rating at 15% and locks out terminal order executions.
+        // =========================================================================
+        let ltfInfoMode = false;
+        if (!selectedSetup) {
+            const ltfOrder = ['15M', '5M'];
+            for (let tf of ltfOrder) {
+                let match = results.find(r => r.timeframe === tf);
+                if (match) {
+                    selectedSetup = match;
+                    ltfInfoMode = true;
+                    break;
+                }
+            }
+        }
         
+        const best = selectedSetup || results[0];
+        
+        // Drastically slash baseline calculation score if locked inside LTF market noise
+        if (ltfInfoMode) {
+            best.confidence = Math.min(Math.round(best.confidence * 0.25), 15);
+        } else {
+            // Apply strict macro penalties directly to weak high-timeframe conditions
+            if (best.zone && best.zone.quality === 'C') best.confidence = Math.max(best.confidence - 25, 20);
+            if (best.probCheck && best.probCheck.probability === 'LOW') best.confidence = Math.max(best.confidence - 20, 15);
+            if (best.magnetism && best.magnetism.magnetism === 'WEAK') best.confidence = Math.max(best.confidence - 15, 10);
+        }
+        // =========================================================================
+
         scanText.innerHTML = '🤖 AI strict execution decision...';
         const aiResult = await askAIWithAllResults(results, price, htfData);
         scanStatus.classList.add('hidden');
@@ -740,7 +754,9 @@ async function runAutoScan() {
         const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
         
         const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
-        best.confidence = Math.max(best.confidence - htfConfluence.penalty, 10);
+        if (!ltfInfoMode) {
+            best.confidence = Math.max(best.confidence - htfConfluence.penalty, 10);
+        }
         
         let aiConviction = 'MEDIUM', aiApproved = true, aiConfAdj = 0, executionDecision = best.entryReady ? 'enter_now' : 'wait_for_reaction', waitCondition = 'Wait for engulf/pinbar at zone', aiInvalidation = best.invalidationPrice;
         let finalEntry = best.entry, finalZoneLow = best.zone.low, finalZoneHigh = best.zone.high;
@@ -770,8 +786,17 @@ async function runAutoScan() {
             aiRiskWarning = ts.analysis?.risk_warning || '';
             aiOutcomes = ts.analysis?.possible_outcomes || [];
             
-            if (aiApproved) best.confidence = Math.min(Math.max(best.confidence + aiConfAdj, 10), 98);
-            else best.confidence = Math.max(best.confidence - 25, 5);
+            if (aiApproved && !ltfInfoMode) best.confidence = Math.min(Math.max(best.confidence + aiConfAdj, 10), 98);
+            else if (!aiApproved) best.confidence = Math.max(best.confidence - 25, 5);
+        }
+        
+        // Override execution paths completely if locked inside structural info mode
+        if (ltfInfoMode) {
+            aiApproved = false;
+            executionDecision = 'skip_ltf_noise';
+            aiConviction = 'SKIP';
+            waitCondition = 'Wait for higher macro timeframes (1D, 4H, 1H) to print structural layouts';
+            aiRiskWarning = 'Macro charts are flat. Lower timeframe layout prints are displayed strictly for informational context.';
         }
         
         const out = {
@@ -807,12 +832,12 @@ async function runAutoScan() {
                     dynamic_rr: '1:' + rr,
                     confidence: best.confidence,
                     conviction: aiConviction,
-                    entry_source: aiResult ? 'AI-Refined' : 'Rule-Based',
+                    entry_source: ltfInfoMode ? 'LTF-Informational' : (aiResult ? 'AI-Refined' : 'Rule-Based'),
                     ai_used: !!aiResult,
                     ai_risk_warning: aiRiskWarning || null,
-                    entry_reasoning: aiEntryLogic || `${best.zone.src} zone with ${best.zone.confluence}`,
+                    entry_reasoning: ltfInfoMode ? 'Macro ranges are flat. Displaying local price boundaries for info tracking.' : (aiEntryLogic || `${best.zone.src} zone with ${best.zone.confluence}`),
                     sl_reasoning: aiSlLogic || best.slResult.reason,
-                    key_reason: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}]`,
+                    key_reason: ltfInfoMode ? 'INFORMATIONAL ONLY - NO MACD/HTF STRUCTURE EXIST' : (aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}]`),
                     possible_outcomes: aiOutcomes.length > 0 ? aiOutcomes : [`Enter at zone after reaction`, `Sweep then reverse`, `SL hit invalidates`],
                     zone_quality: best.zone.quality,
                     zone_source: best.zone.src,
@@ -827,7 +852,7 @@ async function runAutoScan() {
                         checks: best.magnetism.checks
                     },
                     path_clearance: { clear: best.pathCheck.clear, obstacles: best.pathCheck.obstacles },
-                    probability: best.probCheck.probability,
+                    probability: ltfInfoMode ? 'NONE (LTF Noise)' : best.probCheck.probability,
                     timeframe_alignment: {
                         trend_tf: best.trendTF, structure_tf: best.structureTF, entry_tf: best.entryTF, sniper_tf: best.sniperTF,
                         alignment: best.tfAlign,
@@ -851,7 +876,7 @@ async function runAutoScan() {
                         market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, zone_reaction: best.zoneReaction, zone_touches: best.zoneTouches, entry_ready: best.entryReady, htf_validated: best.htfValidation?.passed || false, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level },
                         indicator_confluence: { macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A', adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'} (RR:1:${rr})` : 'N/A', stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A', cci: best.twelveIndicators.cci || 'N/A', williams_r: best.twelveIndicators.williams_r || 'N/A', sar: best.twelveIndicators.sar ? `$${best.twelveIndicators.sar}` : 'N/A', ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A' },
                         technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ATR(API): ${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`, `OB: ${best.obsAll ? best.obsAll.length : 0}`],
-                        reasoning: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}] | HTF:${best.htfValidation?.passed ? 'YES' : 'NO'} | Magnet:${best.magnetism.magnetism} | Confluence:${htfConfluence.level} | EntryReady:${best.entryReady ? 'YES' : 'NO'} | React:${best.zoneReaction?.type || 'None'} | Touch#${best.zoneTouches}`
+                        reasoning: ltfInfoMode ? 'NO MACRO SETUP. Lower timeframes visible strictly for monitoring intraday margins.' : (aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}] | HTF:${best.htfValidation?.passed ? 'YES' : 'NO'} | Magnet:${best.magnetism.magnetism} | Confluence:${htfConfluence.level} | EntryReady:${best.entryReady ? 'YES' : 'NO'} | React:${best.zoneReaction?.type || 'None'} | Touch#${best.zoneTouches}`)
                     }
                 }
             }
@@ -859,7 +884,13 @@ async function runAutoScan() {
         
         document.getElementById('jsonOutput').innerHTML = JSON.stringify(out, null, 2);
         analysis = { signalType: st, idealEntry: finalEntry, currentPrice: price, stopLoss: best.sl, takeProfit1: best.tp1, takeProfit2: best.tp2, takeProfit3: best.tp3, confidence: best.confidence, entryZoneLow: finalZoneLow, entryZoneHigh: finalZoneHigh, entryReady: best.entryReady, executionDecision, invalidationPrice: aiInvalidation };
-        document.getElementById('executeBtn').disabled = false;
+        
+        // Deactivate execution triggers if running in informational view
+        if (executionDecision === 'skip_ltf_noise') {
+            document.getElementById('executeBtn').disabled = true;
+        } else {
+            document.getElementById('executeBtn').disabled = false;
+        }
         
         const magLabel = best.magnetism.magnetism === 'STRONG' ? '🧲' : (best.magnetism.magnetism === 'MODERATE' ? '🔗' : '⚠️');
         const aiLabel = aiResult ? (aiApproved ? '🤖✅' : '🤖❌') : '';
@@ -881,6 +912,6 @@ function clearLimit(){limitOrder=null;localStorage.removeItem('limitOrder');if(p
 function cancelLimit(){clearLimit();showNotif('❌ Cancelled','warning');}
 function updateLimitUI(){const t=document.getElementById('limitOrderText'),c=document.getElementById('cancelLimitBtn');if(limitOrder){const prec=getPrec(pair);t.innerHTML=`⏳ ${limitOrder.signalType} LIMIT @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)}`;t.className='active';c.classList.remove('hidden');document.getElementById('executeBtn').innerHTML='⏳ Waiting...';document.getElementById('executeBtn').style.background='linear-gradient(135deg, #ff9f0a, #ff6b00)';}else{t.innerHTML='No active limit order';t.className='';c.classList.add('hidden');document.getElementById('executeBtn').innerHTML='⚡ Place Limit Order';document.getElementById('executeBtn').style.background='linear-gradient(135deg, #34c759, #28a745)';}}
 function startMonitor(){if(priceTimer)clearInterval(priceTimer);priceTimer=setInterval(async()=>{if(!limitOrder){clearInterval(priceTimer);return;}const p=await getPrice();if(!p)return;const prec=getPrec(pair);document.getElementById('currentPrice').innerHTML=`$${p.toFixed(prec)}`;if((limitOrder.signalType==='LONG'&&p<=limitOrder.idealEntry)||(limitOrder.signalType==='SHORT'&&p>=limitOrder.idealEntry)){clearLimit();showNotif(`✅ FILLED! ${limitOrder.signalType} @ $${p.toFixed(prec)}`,'success');try{new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play();}catch(e){}}},2000);}
-function handleLimit(){if(!analysis||analysis.signalType==='NEUTRAL'){showNotif('No signal','error');return;}if(limitOrder){cancelLimit();return;}const o={id:Date.now(),pair,signalType:analysis.signalType,idealEntry:analysis.idealEntry,stopLoss:analysis.stopLoss,takeProfit1:analysis.takeProfit1,takeProfit2:analysis.takeProfit2,takeProfit3:analysis.takeProfit3,confidence:analysis.confidence,entryZoneLow:analysis.entryZoneLow,entryZoneHigh:analysis.entryZoneHigh,entryReady:analysis.entryReady,executionDecision:analysis.executionDecision,invalidationPrice:analysis.invalidationPrice,createdAt:new Date().toISOString()};saveLimit(o);startMonitor();showNotif(`📝 Limit @ $${o.idealEntry.toFixed(getPrec(pair))}`,'info');}
+function handleLimit(){if(!analysis||analysis.signalType==='NEUTRAL'||analysis.executionDecision==='skip_ltf_noise'){showNotif('No valid macro signal','error');return;}if(limitOrder){cancelLimit();return;}const o={id:Date.now(),pair,signalType:analysis.signalType,idealEntry:analysis.idealEntry,stopLoss:analysis.stopLoss,takeProfit1:analysis.takeProfit1,takeProfit2:analysis.takeProfit2,takeProfit3:analysis.takeProfit3,confidence:analysis.confidence,entryZoneLow:analysis.entryZoneLow,entryZoneHigh:analysis.entryZoneHigh,entryReady:analysis.entryReady,executionDecision:analysis.executionDecision,invalidationPrice:analysis.invalidationPrice,createdAt:new Date().toISOString()};saveLimit(o);startMonitor();showNotif(`📝 Limit @ $${o.idealEntry.toFixed(getPrec(pair))}`,'info');}
 function copyJson(){const t=document.getElementById('jsonOutput').innerHTML;if(t.includes('Click')){showNotif('Run analysis first','warning');return;}navigator.clipboard.writeText(t).then(()=>showNotif('📋 Copied!','success')).catch(()=>showNotif('Failed','error'));}
 function showNotif(m,t){const n=document.getElementById('notification');n.innerHTML=m;n.className=`notification ${t}`;n.classList.remove('hidden');setTimeout(()=>n.classList.add('hidden'),3000);}
