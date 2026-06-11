@@ -123,7 +123,7 @@ const ema=(p,n)=>{const m=2/(n+1);let e=[p[0]];for(let i=1;i<p.length;i++)e.push
 const rsi=(p,n=14)=>{let g=0,l=0;for(let i=p.length-n;i<p.length;i++){let c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;return al===0?100:100-(100/(1+ag/al));};
 const atr=(d,n=14)=>{let t=[];for(let i=1;i<d.length;i++)t.push(Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c)));return t.slice(-n).reduce((a,b)=>a+b,0)/n;};
 
-// FIXED: Institutional Partial Mitigation Tracking Engine
+// Institutional Partial Mitigation Tracking Engine
 function detectFVG(d){
     let f=[];
     for(let i=1;i<d.length-1;i++){
@@ -158,7 +158,7 @@ function findSwings(d,lb=3){let H=[],L=[],h=d.map(c=>c.h),l=d.map(c=>c.l);for(le
 function detectMSS(d){let h=d.map(c=>c.h),l=d.map(c=>c.l),c=d.map(c=>c.c),rH=Math.max(...h.slice(-20)),rL=Math.min(...l.slice(-20)),cP=c[c.length-1];if(cP>rH)return{type:'BULL',level:rH};if(cP<rL)return{type:'BEAR',level:rL};return null;}
 function detectBreakers(d){let b=[],s=findSwings(d);for(let i=5;i<d.length-5;i++){let c=d[i];if(c.c>c.o){let r=s.H.find(h=>h.i<i&&h.p<c.c);if(r)b.push({type:'BULL',p:r.p});}if(c.c<c.o){let sp=s.L.find(l=>l.i<i&&l.p>c.c);if(sp)b.push({type:'BEAR',p:sp.p});}}return b;}
 
-// FIXED: Adaptive Volume-Backed Cluster Order Block Detection
+// Adaptive Volume-Backed Cluster Order Block Detection
 function detectOrderBlocks(data, direction) {
     const obs = [];
     if (data.length < 5) return obs;
@@ -167,14 +167,11 @@ function detectOrderBlocks(data, direction) {
         const c1 = data[i];
         const c2 = data[i+1];
         
-        // Dynamic Range expansion context
         const body1 = Math.abs(c1.c - c1.o);
         const body2 = Math.abs(c2.c - c2.o);
         
         if (direction === 'BUY') {
-            // Body-To-Body expansion closure (standard institutional footprint)
             const isBodyEngulf = (c2.c > c2.o && c1.c < c1.o && c2.c >= c1.o);
-            // Multi-candle consolidation breakout alternative layout
             const isClusterBreakout = (c2.c > c2.o && c2.c > data[i-1].h && c2.c > data[i-2].h && body2 > body1 * 1.5);
             
             if (isBodyEngulf || isClusterBreakout) {
@@ -629,7 +626,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             direction, entry, sl: slResult.price, tp1: tps.tp1, tp2: tps.tp2, tp3: tps.tp3,
             confidence: conf, zone, slResult, displacement, sniperRej,
             probCheck, turtleSoup, mtf, msnr, twelveIndicators, pathCheck, tfAlign,
-            sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, obsAll: (tfToAnalyze === '15M' || tfToAnalyze === '5M') ? obsAll : detectOrderBlocks(entryData, direction), rs, apiATR, trends, magnetism,
+            sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, obsAll, rs, apiATR, trends, magnetism,
             zoneReaction, zoneTouches, entryReady, invalidationPrice, rrUsed: tps.rrUsed,
             htfValidation
         };
@@ -892,7 +889,7 @@ async function runAutoScan() {
                     },
                     turtle_soup: best.turtleSoup,
                     crt_analysis: best.crt,
-                    order_blocks_found: fvgsAll.length + breakersAll.length,
+                    order_blocks_found: best.obsAll ? best.obsAll.length : 0,
                     twelve_data_indicators: best.twelveIndicators,
                     msnr_levels: {
                         pivot: best.msnr.pivot.toFixed(prec),
