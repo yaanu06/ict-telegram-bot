@@ -27,7 +27,6 @@ const TF_WEIGHT = { '1D': 5, '4H': 4, '1H': 3, '15M': 2, '5M': 1 };
 
 // ============================================
 // TIMEFRAME ALIGNMENT HIERARCHY
-// Lower timeframes look UP to higher timeframes for validation
 // ============================================
 function getTimeframeHierarchy(selectedTF) {
     const hierarchy = {
@@ -127,11 +126,9 @@ const atr=(d,n=14)=>{let t=[];for(let i=1;i<d.length;i++)t.push(Math.max(d[i].h-
 function detectFVG(d){
     let f=[];
     for(let i=1;i<d.length-1;i++){
-        // Bullish Imbalance
         if(d[i-1].h < d[i+1].l && (d[i+1].l - d[i-1].h) > d[i+1].c * 0.0003){
             let midpoint = (d[i-1].h + d[i+1].l) / 2;
             let completelyViolated = false;
-            // Check if any candle body actually closes past the midpoint boundary
             for(let j=i+2; j<d.length; j++){
                 if(d[j].c <= midpoint) { completelyViolated = true; break; }
             }
@@ -139,7 +136,6 @@ function detectFVG(d){
                 f.push({type:'bull', l:d[i-1].h, h:d[i+1].l, m:midpoint, fresh:true});
             }
         }
-        // Bearish Imbalance
         if(d[i-1].l > d[i+1].h && (d[i-1].l - d[i+1].h) > d[i+1].c * 0.0003){
             let midpoint = (d[i-1].l + d[i+1].h) / 2;
             let completelyViolated = false;
@@ -240,7 +236,7 @@ async function checkSniperRejection(zone,direction,sniperTF){const dSn=await get
 function getVolatilityLevel(atrValue,price){const pct=(atrValue/price)*100;if(pct>0.8)return{level:'High - Impulsive',desc:'Large candles'};if(pct>0.4)return{level:'Moderate - Control',desc:'Normal'};return{level:'Low - Consolidation',desc:'Tight ranges'};}
 function detectLiquiditySweeps(data,currentPrice){const sweeps=[];const a=atr(data,14);const maxDistance=a*3;const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);for(let i=10;i<data.length-3;i++){const rH=highs.slice(i-5,i);const maxH=Math.max(...rH);if(rH.filter(h=>Math.abs(h-maxH)<=maxH*0.001).length>=2&&Math.abs(maxH-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.h>maxH*1.001)&&closes[i+3]<maxH)sweeps.push({type:'BUY_SIDE',level:maxH,distance:Math.abs(maxH-currentPrice),direction:'BEARISH'});}const rL=lows.slice(i-5,i);const minL=Math.min(...rL);if(rL.filter(l=>Math.abs(l-minL)<=minL*0.001).length>=2&&Math.abs(minL-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.l<minL*0.999)&&closes[i+3]>minL)sweeps.push({type:'SELL_SIDE',level:minL,distance:Math.abs(minL-currentPrice),direction:'BULLISH'});}        }return sweeps.sort((a,b)=>a.distance-b.distance);}
 function findImbalances(data){const im=[];for(let i=1;i<data.length-1;i++){if(data[i-1].l>data[i+1].h)im.push({type:'BULLISH',low:data[i+1].h,high:data[i-1].l});if(data[i-1].h<data[i+1].l)im.push({type:'BEARISH',low:data[i-1].h,high:data[i+1].l});}return im.slice(-5);}
-function detectTurtleSoup(data){if(data.length<15)return{detected:false,type:null};const rd=data.slice(-15);const highs=rd.map(c=>c.h),lows=rd.map(c=>c.l),closes=rd.map(c=>c.c),opens=rd.map(c=>c.o);const keyLow=Math.min(...lows.slice(0,-4));const recentLow=lows[lows.length-4];const cc=closes[closes.length-1];const co=opens[opens.length-1];if(recentLow<keyLow*0.999&&cc>keyLow&&cc>co)return{detected:true,type:'BUY',keyLevel:keyLow,sweptLevel:recentLow};const keyHigh=Math.max(...highs.slice(0,-4));const recentHigh=highs[recentHigh.length-4];if(recentHigh>keyHigh*1.001&&cc<keyHigh&&cc<co)return{detected:true,type:'SELL',keyLevel:keyHigh,sweptLevel:recentHigh};return{detected:false,type:null};}
+function detectTurtleSoup(data){if(data.length<15)return{detected:false,type:null};const rd=data.slice(-15);const highs=rd.map(c=>c.h),lows=rd.map(c=>c.l),closes=rd.map(c=>c.c),opens=rd.map(c=>c.o);const keyLow=Math.min(...lows.slice(0,-4));const recentLow=lows[lows.length-4];const cc=closes[closes.length-1];const co=opens[opens.length-1];if(recentLow<keyLow*0.999&&cc>keyLow&&cc>co)return{detected:true,type:'BUY',keyLevel:keyLow,sweptLevel:recentLow};const keyHigh=Math.max(...highs.slice(0,-4));const recentHigh=highs[highs.length-4];if(recentHigh>keyHigh*1.001&&cc<keyHigh&&cc<co)return{detected:true,type:'SELL',keyLevel:keyHigh,sweptLevel:recentHigh};return{detected:false,type:null};}
 function detectCRT(data,direction){if(data.length<10)return{detected:false};const lc=data.slice(-5);const ranges=lc.map(c=>c.h-c.l);const avgRange=ranges.reduce((a,b)=>a+b,0)/ranges.length;const lastRange=ranges[ranges.length-1];const expanding=lastRange>avgRange*1.5;const contracting=lastRange<avgRange*0.5;return{detected:expanding||contracting,pattern:expanding?'Expanding':(contracting?'Contracting':'Neutral'),rangeRatio:(lastRange/avgRange).toFixed(2),signal:expanding?(direction==='BUY'?'Bullish momentum':'Bearish momentum'):(contracting?'Consolidation':'Neutral')};}
 function checkPathClearance(entryData,entry,tp,direction){const obstacles=[];const fvgs=detectFVG(entryData);const swings=findSwings(entryData,3);if(direction==='BUY'){const bearFVGs=fvgs.filter(f=>f.type==='bear'&&f.l>entry&&f.l<tp);if(bearFVGs.length>0)obstacles.push('Bearish FVG');const swingHighs=swings.H.filter(s=>s.p>entry&&s.p<tp);if(swingHighs.length>0)obstacles.push('Swing high');}else{const bullFVGs=fvgs.filter(f=>f.type==='bull'&&f.h>tp&&f.h<entry);if(bullFVGs.length>0)obstacles.push('Bullish FVG');const swingLows=swings.L.filter(s=>s.p>tp&&s.p<entry);if(swingLows.length>0)obstacles.push('Swing low');}return{clear:obstacles.length===0,obstacles,count:obstacles.length};}
 
@@ -350,6 +346,7 @@ function calculateMSNR(data,currentPrice){const highs=data.map(c=>c.h),lows=data
 
 // ============================================
 // PRECISION ENTRY ZONE WITH ORDER BLOCKS
+// FIXED: Bi-directional fallback structural optimization
 // ============================================
 function findPrecisionEntry(data,price,direction,msnr){
     const a=atr(data,14),fvgs=detectFVG(data),breakers=detectBreakers(data),swings=findSwings(data,4);
@@ -376,6 +373,25 @@ function findPrecisionEntry(data,price,direction,msnr){
     if(allZones.length>0){
         const b=allZones[0];
         return {low:b.low,high:b.high,p:(b.low+b.high)/2,src:b.src,confluence:b.confluence,cc:b.cc,quality:b.quality,hasImbalance:b.hasImbalance};
+    }
+    
+    // BI-DIRECTIONAL OPTIMIZATION RETEST LOOKUP: Check if retracement structures exist in opposite path context
+    const oppositeDir = direction === 'BUY' ? 'SELL' : 'BUY';
+    const altObs = detectOrderBlocks(data, oppositeDir);
+    const altFvgs = detectFVG(data);
+    let altZones = [];
+    
+    if (oppositeDir === 'BUY') {
+        altFvgs.filter(f => f.type === 'bull').forEach(f => altZones.push({low:f.l, high:f.h, p:(f.l+f.h)/2, src:'Retracement-FVG', score:55, confluence:'Alt-FVG', cc:2, quality:'B', hasImbalance:true}));
+        altObs.forEach(ob => altZones.push({low:ob.low, high:ob.high, p:(ob.low+ob.high)/2, src:'Retracement-OB', score:60, confluence:'Alt-OB', cc:2, quality:'B', hasImbalance:false}));
+    } else {
+        altFvgs.filter(f => f.type === 'bear').forEach(f => altZones.push({low:f.l, high:f.h, p:(f.l+f.h)/2, src:'Retracement-FVG', score:55, confluence:'Alt-FVG', cc:2, quality:'B', hasImbalance:true}));
+        altObs.forEach(ob => altZones.push({low:ob.low, high:ob.high, p:(ob.low+ob.high)/2, src:'Retracement-OB', score:60, confluence:'Alt-OB', cc:2, quality:'B', hasImbalance:false}));
+    }
+    
+    if (altZones.length > 0) {
+        altZones.sort((x,y) => y.score - x.score);
+        return altZones[0];
     }
     
     const rH=Math.max(...data.slice(-20).map(c=>c.h)),rL=Math.min(...data.slice(-20).map(c=>c.l)),r=rH-rL;
