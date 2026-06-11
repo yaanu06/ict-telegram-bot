@@ -122,26 +122,70 @@ async function getTechnicalIndicators(tfUsed){if(!TWELVE_DATA_KEY)return{};const
 const ema=(p,n)=>{const m=2/(n+1);let e=[p[0]];for(let i=1;i<p.length;i++)e.push((p[i]-e[i-1])*m+e[i-1]);return e;};
 const rsi=(p,n=14)=>{let g=0,l=0;for(let i=p.length-n;i<p.length;i++){let c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;return al===0?100:100-(100/(1+ag/al));};
 const atr=(d,n=14)=>{let t=[];for(let i=1;i<d.length;i++)t.push(Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c)));return t.slice(-n).reduce((a,b)=>a+b,0)/n;};
-function detectFVG(d){let f=[];for(let i=1;i<d.length-1;i++){if(d[i-1].h<d[i+1].l&&d[i+1].l-d[i-1].h>d[i+1].c*0.0005){let m=false;for(let j=i+2;j<d.length;j++){if(d[j].l<=d[i+1].l&&d[j].l>=d[i-1].h){m=true;break;}}f.push({type:'bull',l:d[i-1].h,h:d[i+1].l,m:(d[i-1].h+d[i+1].l)/2,fresh:!m});}if(d[i-1].l>d[i+1].h&&d[i-1].l-d[i+1].h>d[i+1].c*0.0005){let m=false;for(let j=i+2;j<d.length;j++){if(d[j].h>=d[i+1].h&&d[j].h<=d[i-1].l){m=true;break;}}f.push({type:'bear',l:d[i+1].h,h:d[i-1].l,m:(d[i+1].h+d[i-1].l)/2,fresh:!m});}}return f;}
+
+// FIXED: Institutional Partial Mitigation Tracking Engine
+function detectFVG(d){
+    let f=[];
+    for(let i=1;i<d.length-1;i++){
+        // Bullish Imbalance
+        if(d[i-1].h < d[i+1].l && (d[i+1].l - d[i-1].h) > d[i+1].c * 0.0003){
+            let midpoint = (d[i-1].h + d[i+1].l) / 2;
+            let completelyViolated = false;
+            // Check if any candle body actually closes past the midpoint boundary
+            for(let j=i+2; j<d.length; j++){
+                if(d[j].c <= midpoint) { completelyViolated = true; break; }
+            }
+            if(!completelyViolated) {
+                f.push({type:'bull', l:d[i-1].h, h:d[i+1].l, m:midpoint, fresh:true});
+            }
+        }
+        // Bearish Imbalance
+        if(d[i-1].l > d[i+1].h && (d[i-1].l - d[i+1].h) > d[i+1].c * 0.0003){
+            let midpoint = (d[i-1].l + d[i+1].h) / 2;
+            let completelyViolated = false;
+            for(let j=i+2; j<d.length; j++){
+                if(d[j].c >= midpoint) { completelyViolated = true; break; }
+            }
+            if(!completelyViolated) {
+                f.push({type:'bear', l:d[i+1].h, h:d[i-1].l, m:midpoint, fresh:true});
+            }
+        }
+    }
+    return f;
+}
+
 function findSwings(d,lb=3){let H=[],L=[],h=d.map(c=>c.h),l=d.map(c=>c.l);for(let i=lb;i<h.length-lb;i++){let iH=true,iL=true;for(let j=1;j<=lb;j++){if(h[i]<=h[i-j]||h[i]<=h[i+j])iH=false;if(l[i]>=l[i-j]||l[i]>=l[i+j])iL=false;}if(iH)H.push({p:h[i],i});if(iL)L.push({p:l[i],i});}return{H,L};}
 function detectMSS(d){let h=d.map(c=>c.h),l=d.map(c=>c.l),c=d.map(c=>c.c),rH=Math.max(...h.slice(-20)),rL=Math.min(...l.slice(-20)),cP=c[c.length-1];if(cP>rH)return{type:'BULL',level:rH};if(cP<rL)return{type:'BEAR',level:rL};return null;}
 function detectBreakers(d){let b=[],s=findSwings(d);for(let i=5;i<d.length-5;i++){let c=d[i];if(c.c>c.o){let r=s.H.find(h=>h.i<i&&h.p<c.c);if(r)b.push({type:'BULL',p:r.p});}if(c.c<c.o){let sp=s.L.find(l=>l.i<i&&l.p>c.c);if(sp)b.push({type:'BEAR',p:sp.p});}}return b;}
 
-// ============================================
-// ORDER BLOCK DETECTION
-// ============================================
+// FIXED: Adaptive Volume-Backed Cluster Order Block Detection
 function detectOrderBlocks(data, direction) {
     const obs = [];
-    for (let i = 2; i < data.length - 1; i++) {
+    if (data.length < 5) return obs;
+    
+    for (let i = 2; i < data.length - 2; i++) {
+        const c1 = data[i];
+        const c2 = data[i+1];
+        
+        // Dynamic Range expansion context
+        const body1 = Math.abs(c1.c - c1.o);
+        const body2 = Math.abs(c2.c - c2.o);
+        
         if (direction === 'BUY') {
-            if (data[i].c < data[i].o && data[i+1].c > data[i+1].o && 
-                data[i+1].h > data[i].h && data[i+1].c > data[i].h) {
-                obs.push({ type: 'BULL_OB', high: data[i].h, low: data[i].l, close: data[i].c, open: data[i].o, index: i });
+            // Body-To-Body expansion closure (standard institutional footprint)
+            const isBodyEngulf = (c2.c > c2.o && c1.c < c1.o && c2.c >= c1.o);
+            // Multi-candle consolidation breakout alternative layout
+            const isClusterBreakout = (c2.c > c2.o && c2.c > data[i-1].h && c2.c > data[i-2].h && body2 > body1 * 1.5);
+            
+            if (isBodyEngulf || isClusterBreakout) {
+                obs.push({ type: 'BULL_OB', high: Math.max(c1.h, c1.o), low: c1.l, close: c1.c, open: c1.o, index: i });
             }
         } else {
-            if (data[i].c > data[i].o && data[i+1].c < data[i+1].o && 
-                data[i+1].l < data[i].l && data[i+1].c < data[i].l) {
-                obs.push({ type: 'BEAR_OB', high: data[i].h, low: data[i].l, close: data[i].c, open: data[i].o, index: i });
+            const isBodyEngulf = (c2.c < c2.o && c1.c > c1.o && c2.c <= c1.o);
+            const isClusterBreakout = (c2.c < c2.o && c2.c < data[i-1].l && c2.c < data[i-2].l && body2 > body1 * 1.5);
+            
+            if (isBodyEngulf || isClusterBreakout) {
+                obs.push({ type: 'BEAR_OB', high: c1.h, low: Math.min(c1.l, c1.o), close: c1.c, open: c1.o, index: i });
             }
         }
     }
@@ -317,13 +361,13 @@ function findPrecisionEntry(data,price,direction,msnr){
     let allZones=[];
     
     if(direction==='BUY'){
-        fvgs.filter(f=>f.type==='bull'&&f.l<price&&f.fresh).forEach(f=>{let s=30;let cf=['FVG'];if(breakers.find(b=>b.type==='BULL'&&Math.abs(b.p-f.l)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.L.find(x=>Math.abs(x.p-f.l)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport&&Math.abs(msnr.nearestSupport-f.l)<f.l*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-f.l)<f.l*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
+        fvgs.filter(f=>f.type=='bull').forEach(f=>{let s=30;let cf=['FVG'];if(breakers.find(b=>b.type==='BULL'&&Math.abs(b.p-f.l)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.L.find(x=>Math.abs(x.p-f.l)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport&&Math.abs(msnr.nearestSupport-f.l)<f.l*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-f.l)<f.l*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         
         orderBlocks.forEach(ob=>{let s=35;let cf=['OrderBlock'];if(swings.L.find(x=>Math.abs(x.p-ob.low)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport&&Math.abs(msnr.nearestSupport-ob.low)<ob.low*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-ob.low)<ob.low*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:ob.low,high:ob.high,p:(ob.low+ob.high)/2,src:'OB',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         
         if(msnr.nearestSupport&&msnr.nearestSupport<price){let s=25;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bull'&&Math.abs(f.l-msnr.nearestSupport)<msnr.nearestSupport*0.003)){s+=25;cf.push('FVG');}if(swings.L.find(x=>Math.abs(x.p-msnr.nearestSupport)<msnr.nearestSupport*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-msnr.nearestSupport)<msnr.nearestSupport*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:msnr.nearestSupport*0.998,high:msnr.nearestSupport*1.002,p:msnr.nearestSupport,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}
     } else {
-        fvgs.filter(f=>f.type==='bear'&&f.h>price&&f.fresh).forEach(f=>{let s=30;let cf=['FVG'];if(breakers.find(b=>b.type==='BEAR'&&Math.abs(b.p-f.h)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.H.find(x=>Math.abs(x.p-f.h)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance&&Math.abs(msnr.nearestResistance-f.h)<f.h*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-f.h)<f.h*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
+        fvgs.filter(f=>f.type=='bear').forEach(f=>{let s=30;let cf=['FVG'];if(breakers.find(b=>b.type==='BEAR'&&Math.abs(b.p-f.h)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.H.find(x=>Math.abs(x.p-f.h)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance&&Math.abs(msnr.nearestResistance-f.h)<f.h*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-f.h)<f.h*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         
         orderBlocks.forEach(ob=>{let s=35;let cf=['OrderBlock'];if(swings.H.find(x=>Math.abs(x.p-ob.high)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance&&Math.abs(msnr.nearestResistance-ob.high)<ob.high*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-ob.high)<ob.high*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:ob.low,high:ob.high,p:(ob.low+ob.high)/2,src:'OB',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         
@@ -465,12 +509,10 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const entryData = await getHistory(entryTF);
         if (!entryData?.length) return null;
         
-        // STOPS lower timeframes (15M, 5M) from fabricating standard independent structures
         const isLTF = (tfToAnalyze === '15M' || tfToAnalyze === '5M');
         const fvgsAll = detectFVG(entryData);
         const obsAll = detectOrderBlocks(entryData, 'BUY').concat(detectOrderBlocks(entryData, 'SELL'));
         
-        // If it's a lower timeframe and there are no structural footprints on it, don't run it
         if (isLTF && fvgsAll.length === 0 && obsAll.length === 0) {
             return null;
         }
@@ -697,10 +739,7 @@ async function runAutoScan() {
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
-        // =========================================================================
-        // STRICT MACRO HIERARCHY FILTER (1D > 4H > 1H)
-        // Checks higher timeframes sequentially. Isolates the highest macro setup.
-        // =========================================================================
+        // SEQUENCE PARSING
         const macroOrder = ['1D', '4H', '1H'];
         let selectedSetup = null;
         
@@ -712,11 +751,6 @@ async function runAutoScan() {
             }
         }
         
-        // =========================================================================
-        // DYNAMIC STRUCTURAL SLASHING RISK ALGORITHM
-        // If no higher timeframe setup printed, fallback to LTF data FOR INFORMATION ONLY
-        // Caps confidence rating at 15% and locks out terminal order executions.
-        // =========================================================================
         let ltfInfoMode = false;
         if (!selectedSetup) {
             const ltfOrder = ['15M', '5M'];
@@ -732,16 +766,13 @@ async function runAutoScan() {
         
         const best = selectedSetup || results[0];
         
-        // Drastically slash baseline calculation score if locked inside LTF market noise
         if (ltfInfoMode) {
             best.confidence = Math.min(Math.round(best.confidence * 0.25), 15);
         } else {
-            // Apply strict macro penalties directly to weak high-timeframe conditions
             if (best.zone && best.zone.quality === 'C') best.confidence = Math.max(best.confidence - 25, 20);
             if (best.probCheck && best.probCheck.probability === 'LOW') best.confidence = Math.max(best.confidence - 20, 15);
             if (best.magnetism && best.magnetism.magnetism === 'WEAK') best.confidence = Math.max(best.confidence - 15, 10);
         }
-        // =========================================================================
 
         scanText.innerHTML = '🤖 AI strict execution decision...';
         const aiResult = await askAIWithAllResults(results, price, htfData);
@@ -790,7 +821,6 @@ async function runAutoScan() {
             else if (!aiApproved) best.confidence = Math.max(best.confidence - 25, 5);
         }
         
-        // Override execution paths completely if locked inside structural info mode
         if (ltfInfoMode) {
             aiApproved = false;
             executionDecision = 'skip_ltf_noise';
@@ -862,7 +892,7 @@ async function runAutoScan() {
                     },
                     turtle_soup: best.turtleSoup,
                     crt_analysis: best.crt,
-                    order_blocks_found: best.obsAll ? best.obsAll.length : 0,
+                    order_blocks_found: fvgsAll.length + breakersAll.length,
                     twelve_data_indicators: best.twelveIndicators,
                     msnr_levels: {
                         pivot: best.msnr.pivot.toFixed(prec),
@@ -885,7 +915,6 @@ async function runAutoScan() {
         document.getElementById('jsonOutput').innerHTML = JSON.stringify(out, null, 2);
         analysis = { signalType: st, idealEntry: finalEntry, currentPrice: price, stopLoss: best.sl, takeProfit1: best.tp1, takeProfit2: best.tp2, takeProfit3: best.tp3, confidence: best.confidence, entryZoneLow: finalZoneLow, entryZoneHigh: finalZoneHigh, entryReady: best.entryReady, executionDecision, invalidationPrice: aiInvalidation };
         
-        // Deactivate execution triggers if running in informational view
         if (executionDecision === 'skip_ltf_noise') {
             document.getElementById('executeBtn').disabled = true;
         } else {
