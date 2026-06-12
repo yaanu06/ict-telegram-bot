@@ -27,15 +27,14 @@ const TF_WEIGHT = { '1D': 5, '4H': 4, '1H': 3, '15M': 2, '5M': 1 };
 
 // ============================================
 // TIMEFRAME ALIGNMENT HIERARCHY - FIXED
-// Now lower timeframes look UP to higher timeframes
 // ============================================
 function getTimeframeHierarchy(selectedTF) {
     const hierarchy = {
         '1D': ['1D', '4H', '1H', '15M'],
         '4H': ['4H', '1H', '15M', '5M'],
         '1H': ['1H', '15M', '5M', '5M'],
-        '15M': ['1H', '15M', '5M', '5M'],   // FIXED: Trend uses 1H (was 15M)
-        '5M': ['15M', '5M', '5M', '5M']     // FIXED: Trend uses 15M (was 5M)
+        '15M': ['1H', '15M', '5M', '5M'],
+        '5M': ['15M', '5M', '5M', '5M']
     };
     return hierarchy[selectedTF] || ['4H', '1H', '15M', '5M'];
 }
@@ -83,7 +82,6 @@ function getPrec(p){const s=getMarketSettings(p);return s.prec;}
 // ============================================
 async function getPrice(){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(SYMBOLS[pair])}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.price){calls++;document.getElementById('apiSource').innerHTML='📡 Live';return +d.price;}}catch(e){}return null;}
 
-// NEW: Get quote data for accurate current candle direction
 async function getQuote(tfStr){
     if(!TWELVE_DATA_KEY)return null;
     const interval = QUOTE_INTERVAL_MAP[tfStr] || '1day';
@@ -95,9 +93,7 @@ async function getQuote(tfStr){
     return null;
 }
 
-// FIXED: Get current candle direction using hybrid approach
 async function getQuoteDirection(tfStr) {
-    // For 1D - use quote endpoint (reliable for daily)
     if (tfStr === '1D') {
         try {
             const r = await fetch(`${TWELVE_DATA_BASE}/quote?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=1day&apikey=${TWELVE_DATA_KEY}`);
@@ -110,7 +106,6 @@ async function getQuoteDirection(tfStr) {
         } catch(e) {}
     }
     
-    // For 5M, 15M, 1H, 4H - use time_series with current price comparison
     try {
         const data = await getHistory(tfStr);
         if (data && data.length >= 1) {
@@ -308,7 +303,7 @@ function checkZoneMagnetism(entryData, price, entry, direction) {
 }
 
 // ============================================
-// HTF CONFLUENCE CHECK - USES QUOTE ENDPOINT
+// HTF CONFLUENCE CHECK
 // ============================================
 async function checkHTFConfluenceAsync(dailyData, h4Data, entryDirection) {
     const dailyDir = await getQuoteDirection('1D');
@@ -372,7 +367,7 @@ function findPrecisionEntry(data,price,direction,msnr){
 function checkProbability(zone,mtf,magnetism){const checks=[];checks.push({name:'Confluence (2+)',passed:zone.cc>=2,critical:true});checks.push({name:'MTF aligned (2+)',passed:mtf.strength>=2,critical:true});checks.push({name:'Zone Magnetism',passed:magnetism.likelyToReach,critical:true});checks.push({name:'Imbalance Magnet',passed:zone.hasImbalance,critical:false});checks.push({name:'Quality A/B',passed:zone.quality==='A'||zone.quality==='B',critical:false});const cp=checks.filter(c=>c.critical).every(c=>c.passed);const tp=checks.filter(c=>c.passed).length;return{probability:cp?(tp>=4?'HIGH':(tp>=3?'MEDIUM':'LOW')):'LOW',checks,totalPassed:tp,passed:cp};}
 
 // ============================================
-// STOP LOSS - USES API ATR (ORIGINAL)
+// STOP LOSS
 // ============================================
 function calcStopLoss(data,dir,entry,zone,msnr,tfUsed,twelveIndicators){
     const apiATR = twelveIndicators?.atr_api || atr(data, 14);
@@ -399,7 +394,7 @@ function calcStopLoss(data,dir,entry,zone,msnr,tfUsed,twelveIndicators){
 }
 
 // ============================================
-// TAKE PROFIT - ORIGINAL (USES API ATR-BASED RISK)
+// TAKE PROFIT
 // ============================================
 function calcTakeProfits(dir,entry,sl){
     const risk=Math.abs(entry-sl);
@@ -410,7 +405,7 @@ function calcTakeProfits(dir,entry,sl){
 }
 
 // ============================================
-// SCORING - ALL 10 TWELVE DATA INDICATORS
+// SCORING
 // ============================================
 function score(data,price,twelveIndicators){
     const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl);
@@ -464,7 +459,7 @@ function score(data,price,twelveIndicators){
 }
 
 // ============================================
-// MULTI-TF DISPLAY - USES QUOTE ENDPOINT (FIXED)
+// MULTI-TF DISPLAY
 // ============================================
 async function updateMTFDisplay(){
     const tfs=['5M','15M','1H','4H','1D'];
@@ -476,7 +471,7 @@ async function updateMTFDisplay(){
 }
 
 // ============================================
-// ANALYZE SINGLE TIMEFRAME (WITH HTF VALIDATION)
+// ANALYZE SINGLE TIMEFRAME
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price, htfData) {
     try {
@@ -488,7 +483,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
         const sig = score(entryData, price, twelveIndicators);
         
-        // TREND COUNTING - uses quote endpoint for accuracy (FIXED)
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         let bullCount = 0, bearCount = 0;
         const trends = {};
@@ -510,7 +504,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const zoneTouches = countZoneTouches(entryData, zone, direction);
         const zoneReaction = checkZoneReaction(entryData, zone, direction);
         
-        // HTF VALIDATION
         let htfValidation = { passed: true, parentArray: null, structureTF: structureTF };
         if (structureTF !== entryTF && structureData && structureData.length >= 20) {
             const structureArrays = findPDArrays(structureData, direction);
@@ -540,11 +533,9 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         if (direction === 'SELL' && entry <= price) { const na = msnr.nearestResistance || price * 1.01; entry = Math.max(zone.high, na, price * 1.005); }
         
         const magnetism = checkZoneMagnetism(entryData, price, entry, direction);
-        
         const displacement = detectDisplacement(entryData, direction);
         const sniperRej = await checkSniperRejection(zone, direction, sniperTF);
         const probCheck = checkProbability(zone, mtf, magnetism);
-        
         const slResult = calcStopLoss(entryData, direction, entry, zone, msnr, tfToAnalyze, twelveIndicators);
         const tps = calcTakeProfits(direction, entry, slResult.price);
         const pathCheck = checkPathClearance(entryData, entry, tps.tp1, direction);
@@ -651,7 +642,7 @@ Return ONLY JSON with execution_decision.`;
 }
 
 // ============================================
-// AUTO SCAN
+// AUTO SCAN - FIXED: Only 1D, 4H, or 1H setups as tradable signals
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
@@ -670,7 +661,6 @@ async function runAutoScan() {
         const price = await getPrice();
         if (!price) throw new Error('No price');
         
-        // MTF trends from quote endpoint (FIXED)
         const mtfTrendsData = {};
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
         for (let t of tfs) {
@@ -708,32 +698,76 @@ async function runAutoScan() {
         }
         
         // ============================================
-        // FORCE HIGHER TIMEFRAME PRIORITY
-        // 1D > 4H > 1H > 15M > 5M
+        // FIXED: ONLY allow 1D, 4H, or 1H as tradable signals
+        // 15M and 5M are for INFORMATION ONLY (shown in MTF grid)
         // ============================================
-        const tfPriority = { '1D': 5, '4H': 4, '1H': 3, '15M': 2, '5M': 1 };
         
-        results.sort((a, b) => {
+        // Filter to ONLY higher timeframes for trading
+        const tradingTimeframes = ['1D', '4H', '1H'];
+        let tradableResults = results.filter(r => tradingTimeframes.includes(r.timeframe));
+        
+        // If no higher timeframe setups exist, show message but still display JSON for info
+        if (tradableResults.length === 0) {
+            // Still show the best lower timeframe setup in JSON for INFORMATION only
+            const lowerResults = results.filter(r => ['15M', '5M'].includes(r.timeframe));
+            if (lowerResults.length > 0) {
+                const bestLower = lowerResults[0];
+                showNotif('⚠️ No 1D/4H/1H setups. Lower TF setups for INFO only (not tradable)', 'warning');
+                
+                // Display JSON with lower timeframe for reference only
+                document.getElementById('jsonOutput').innerHTML = JSON.stringify({
+                    auto_scan_result: {
+                        date: new Date().toISOString().split('T')[0],
+                        time: new Date().toISOString().split('T')[1].split('.')[0],
+                        pair,
+                        current_price: price,
+                        status: 'LOW_TIMEFRAME_ONLY',
+                        message: 'No 1D/4H/1H setups found. Lower timeframe setups below are for INFORMATION only - NOT a tradable signal.',
+                        lower_timeframe_info_only: {
+                            best_timeframe: bestLower.timeframe,
+                            direction: bestLower.direction,
+                            confidence: bestLower.confidence,
+                            entry_zone: bestLower.zone
+                        },
+                        multi_timeframe_trends: mtfTrendsData
+                    }
+                }, null, 2);
+                analysis = null;
+                document.getElementById('executeBtn').disabled = true;
+                btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden');
+                return;
+            } else {
+                showNotif('⚠️ No valid setups found', 'warning');
+                document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}, null, 2);
+                btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden');
+                return;
+            }
+        }
+        
+        // Sort tradable results by priority (1D > 4H > 1H)
+        const tfPriority = { '1D': 5, '4H': 4, '1H': 3 };
+        tradableResults.sort((a, b) => {
             const tfA = tfPriority[a.timeframe] || 0;
             const tfB = tfPriority[b.timeframe] || 0;
             if (tfA !== tfB) return tfB - tfA;
             return b.confidence - a.confidence;
         });
         
-        const tfOrder = ['1D', '4H', '1H', '15M', '5M'];
+        // Get the best higher timeframe setup
+        const tfOrder = ['1D', '4H', '1H'];
         let bestTimeframe = null;
         for (let tf of tfOrder) {
-            if (results.some(r => r.timeframe === tf)) {
+            if (tradableResults.some(r => r.timeframe === tf)) {
                 bestTimeframe = tf;
                 break;
             }
         }
         
-        const bestTimeframeResults = results.filter(r => r.timeframe === bestTimeframe);
+        const bestTimeframeResults = tradableResults.filter(r => r.timeframe === bestTimeframe);
         const best = bestTimeframeResults[0];
         
         scanText.innerHTML = '🤖 AI strict execution decision...';
-        const aiResult = await askAIWithAllResults(results, price, htfData);
+        const aiResult = await askAIWithAllResults(tradableResults, price, htfData);
         scanStatus.classList.add('hidden');
         
         const prec = getPrec(pair);
@@ -785,6 +819,7 @@ async function runAutoScan() {
                 multi_timeframe_trends: mtfTrendsData,
                 best_timeframe: best.timeframe,
                 total_setups_found: results.length,
+                tradable_setups_found: tradableResults.length,
                 ai_verified: !!aiResult,
                 ai_approved: aiApproved,
                 execution_decision: executionDecision,
