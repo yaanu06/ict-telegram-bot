@@ -26,7 +26,7 @@ const ALL_TIMEFRAMES = ['5M', '15M', '1H', '4H', '1D'];
 const TF_WEIGHT = { '1D': 5, '4H': 4, '1H': 3, '15M': 2, '5M': 1 };
 
 // ============================================
-// TIMEFRAME ALIGNMENT HIERARCHY - FIXED
+// TIMEFRAME ALIGNMENT HIERARCHY
 // ============================================
 function getTimeframeHierarchy(selectedTF) {
     const hierarchy = {
@@ -642,7 +642,7 @@ Return ONLY JSON with execution_decision.`;
 }
 
 // ============================================
-// AUTO SCAN - FIXED: Only 1D, 4H, or 1H setups as tradable signals
+// AUTO SCAN - FINAL FIX: Prioritize higher timeframes, lower TFs only when no higher exist
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
@@ -673,7 +673,7 @@ async function runAutoScan() {
         lastPrice = price;
         
         const results = [];
-        const timeframesToScan = ['5M', '15M', '1H', '4H', '1D'];
+        const timeframesToScan = ['1D', '4H', '1H', '15M', '5M'];
         
         const htfData = {};
         scanText.innerHTML = 'Loading HTF context...';
@@ -698,76 +698,52 @@ async function runAutoScan() {
         }
         
         // ============================================
-        // FIXED: ONLY allow 1D, 4H, or 1H as tradable signals
-        // 15M and 5M are for INFORMATION ONLY (shown in MTF grid)
+        // CRITICAL FIX: Separate higher and lower timeframes
+        // Higher = 1D, 4H, 1H (TRADABLE)
+        // Lower = 15M, 5M (INFO ONLY - shown only if no higher exist)
         // ============================================
+        const higherTimeframes = ['1D', '4H', '1H'];
+        const lowerTimeframes = ['15M', '5M'];
         
-        // Filter to ONLY higher timeframes for trading
-        const tradingTimeframes = ['1D', '4H', '1H'];
-        let tradableResults = results.filter(r => tradingTimeframes.includes(r.timeframe));
+        const higherResults = results.filter(r => higherTimeframes.includes(r.timeframe));
+        const lowerResults = results.filter(r => lowerTimeframes.includes(r.timeframe));
         
-        // If no higher timeframe setups exist, show message but still display JSON for info
-        if (tradableResults.length === 0) {
-            // Still show the best lower timeframe setup in JSON for INFORMATION only
-            const lowerResults = results.filter(r => ['15M', '5M'].includes(r.timeframe));
-            if (lowerResults.length > 0) {
-                const bestLower = lowerResults[0];
-                showNotif('⚠️ No 1D/4H/1H setups. Lower TF setups for INFO only (not tradable)', 'warning');
-                
-                // Display JSON with lower timeframe for reference only
-                document.getElementById('jsonOutput').innerHTML = JSON.stringify({
-                    auto_scan_result: {
-                        date: new Date().toISOString().split('T')[0],
-                        time: new Date().toISOString().split('T')[1].split('.')[0],
-                        pair,
-                        current_price: price,
-                        status: 'LOW_TIMEFRAME_ONLY',
-                        message: 'No 1D/4H/1H setups found. Lower timeframe setups below are for INFORMATION only - NOT a tradable signal.',
-                        lower_timeframe_info_only: {
-                            best_timeframe: bestLower.timeframe,
-                            direction: bestLower.direction,
-                            confidence: bestLower.confidence,
-                            entry_zone: bestLower.zone
-                        },
-                        multi_timeframe_trends: mtfTrendsData
-                    }
-                }, null, 2);
-                analysis = null;
-                document.getElementById('executeBtn').disabled = true;
-                btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden');
-                return;
-            } else {
-                showNotif('⚠️ No valid setups found', 'warning');
-                document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}, null, 2);
-                btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden');
-                return;
-            }
+        let best;
+        let isLowerTF = false;
+        
+        if (higherResults.length > 0) {
+            // Sort higher timeframes by priority
+            const tfPriority = { '1D': 5, '4H': 4, '1H': 3 };
+            higherResults.sort((a, b) => {
+                const tfA = tfPriority[a.timeframe] || 0;
+                const tfB = tfPriority[b.timeframe] || 0;
+                if (tfA !== tfB) return tfB - tfA;
+                return b.confidence - a.confidence;
+            });
+            best = higherResults[0];
+            isLowerTF = false;
+        } else if (lowerResults.length > 0) {
+            // ONLY show lower timeframes if NO higher timeframes have setups
+            const tfPriority = { '15M': 2, '5M': 1 };
+            lowerResults.sort((a, b) => {
+                const tfA = tfPriority[a.timeframe] || 0;
+                const tfB = tfPriority[b.timeframe] || 0;
+                if (tfA !== tfB) return tfB - tfA;
+                return b.confidence - a.confidence;
+            });
+            best = lowerResults[0];
+            isLowerTF = true;
+            // Apply heavy confidence penalty for lower timeframes
+            best.confidence = Math.max(best.confidence - 30, 20);
+            showNotif(`⚠️ NO HIGHER TIMEFRAME SETUPS. ${best.timeframe} setup shown (reduced confidence ${best.confidence}%) - Consider higher risk`, 'warning');
+        } else {
+            showNotif('⚠️ No valid setups found', 'warning');
+            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}, null, 2);
+            btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
-        
-        // Sort tradable results by priority (1D > 4H > 1H)
-        const tfPriority = { '1D': 5, '4H': 4, '1H': 3 };
-        tradableResults.sort((a, b) => {
-            const tfA = tfPriority[a.timeframe] || 0;
-            const tfB = tfPriority[b.timeframe] || 0;
-            if (tfA !== tfB) return tfB - tfA;
-            return b.confidence - a.confidence;
-        });
-        
-        // Get the best higher timeframe setup
-        const tfOrder = ['1D', '4H', '1H'];
-        let bestTimeframe = null;
-        for (let tf of tfOrder) {
-            if (tradableResults.some(r => r.timeframe === tf)) {
-                bestTimeframe = tf;
-                break;
-            }
-        }
-        
-        const bestTimeframeResults = tradableResults.filter(r => r.timeframe === bestTimeframe);
-        const best = bestTimeframeResults[0];
         
         scanText.innerHTML = '🤖 AI strict execution decision...';
-        const aiResult = await askAIWithAllResults(tradableResults, price, htfData);
+        const aiResult = await askAIWithAllResults(results, price, htfData);
         scanStatus.classList.add('hidden');
         
         const prec = getPrec(pair);
@@ -819,7 +795,10 @@ async function runAutoScan() {
                 multi_timeframe_trends: mtfTrendsData,
                 best_timeframe: best.timeframe,
                 total_setups_found: results.length,
-                tradable_setups_found: tradableResults.length,
+                higher_timeframe_setups_found: higherResults.length,
+                lower_timeframe_setups_available: lowerResults.length,
+                is_lower_timeframe_signal: isLowerTF,
+                signal_quality: isLowerTF ? 'LOWER_TF_ONLY_REDUCED_CONFIDENCE' : 'HIGHER_TF_TRADABLE',
                 ai_verified: !!aiResult,
                 ai_approved: aiApproved,
                 execution_decision: executionDecision,
@@ -904,7 +883,8 @@ async function runAutoScan() {
         const htfLabel = htfConfluence.level === 'FULL' ? '💪' : (htfConfluence.level === 'CONFLICT' ? '⚠️' : '');
         const htfValLabel = best.htfValidation?.passed ? '🏗️' : '';
         const execLabel = executionDecision === 'enter_now' ? '🟢ENTER' : (executionDecision === 'wait_for_reaction' ? '🟡WAIT' : '🔴SKIP');
-        showNotif(`${aiLabel}${magLabel}${htfLabel}${htfValLabel} ${execLabel} ${best.timeframe} ${st} ${best.confidence}% | 1:${rrDisplay}`, 'success');
+        const tfWarning = isLowerTF ? '⚠️LOWER TF ONLY⚠️ ' : '✅HIGHER TF✅ ';
+        showNotif(`${tfWarning}${aiLabel}${magLabel}${htfLabel}${htfValLabel} ${execLabel} ${best.timeframe} ${st} ${best.confidence}% | 1:${rrDisplay}`, 'success');
         
     } catch (e) { console.error(e); showNotif('Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
     finally { btn.classList.remove('loading'); btn.disabled = false; }
