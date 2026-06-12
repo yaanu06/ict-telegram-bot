@@ -119,17 +119,15 @@ const ema=(p,n)=>{const m=2/(n+1);let e=[p[0]];for(let i=1;i<p.length;i++)e.push
 const rsi=(p,n=14)=>{let g=0,l=0;for(let i=p.length-n;i<p.length;i++){let c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;return al===0?100:100-(100/(1+ag/al));};
 const atr=(d,n=14)=>{let t=[];for(let i=1;i<d.length;i++)t.push(Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c)));return t.slice(-n).reduce((a,b)=>a+b,0)/n;};
 
-// ENHANCED: Pure Institutional FVG Engine with True Displacement Filters
+// Pure Institutional FVG Engine with True Displacement Filters
 function detectFVG(d){
     let f=[]; const a=atr(d,14);
     for(let i=1;i<d.length-1;i++){
-        // Bullish Imbalance (Displacement expansion requirement added for consistency)
         if(d[i-1].h < d[i+1].l && (d[i+1].l - d[i-1].h) > a * 0.25) {
             let m=(d[i-1].h+d[i+1].l)/2; let fr=true;
             for(let j=i+2;j<d.length;j++){if(d[j].l<m){fr=false;break;}}
             f.push({type:'bull',l:d[i-1].h,h:d[i+1].l,m,fresh:fr});
         }
-        // Bearish Imbalance
         if(d[i-1].l > d[i+1].h && (d[i-1].l - d[i+1].h) > a * 0.25) {
             let m=(d[i-1].l+d[i+1].h)/2; let fr=true;
             for(let j=i+2;j<d.length;j++){if(d[j].h>m){fr=false;break;}}
@@ -143,7 +141,7 @@ function findSwings(d,lb=3){let H=[],L=[],h=d.map(c=>c.h),l=d.map(c=>c.l);for(le
 function detectMSS(d){let h=d.map(c=>c.h),l=d.map(c=>c.l),c=d.map(c=>c.c),rH=Math.max(...h.slice(-20)),rL=Math.min(...l.slice(-20)),cP=c[c.length-1];if(cP>rH)return{type:'BULL',level:rH};if(cP<rL)return{type:'BEAR',level:rL};return null;}
 function detectBreakers(d){let b=[],s=findSwings(d);for(let i=5;i<d.length-5;i++){let c=d[i];if(c.c>c.o){let r=s.H.find(h=>h.i<i&&h.p<c.c);if(r)b.push({type:'BULL',p:r.p});}if(c.c<c.o){let sp=s.L.find(l=>l.i<i&&l.p>c.c);if(sp)b.push({type:'BEAR',p:sp.p});}}return b;}
 
-// ENHANCED: Volumetric High-Probability Order Block Engine (Stops tracking minor candles)
+// Volumetric High-Probability Order Block Engine
 function detectOrderBlocks(data, direction) {
     const obs = []; if (data.length < 5) return obs;
     for (let i = 2; i < data.length - 2; i++) {
@@ -213,7 +211,7 @@ async function checkSniperRejection(zone,direction,sniperTF){const dSn=await get
 function getVolatilityLevel(atrValue,price){const pct=(atrValue/price)*100;if(pct>0.8)return{level:'High - Impulsive',desc:'Large candles'};if(pct>0.4)return{level:'Moderate - Control',desc:'Normal'};return{level:'Low - Consolidation',desc:'Tight ranges'};}
 function detectLiquiditySweeps(data,currentPrice){const sweeps=[];const a=atr(data,14);const maxDistance=a*3;const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);for(let i=10;i<data.length-3;i++){const rH=highs.slice(i-5,i);const maxH=Math.max(...rH);if(rH.filter(h=>Math.abs(h-maxH)<=maxH*0.001).length>=2&&Math.abs(maxH-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.h>maxH*1.001)&&closes[i+3]<maxH)sweeps.push({type:'BUY_SIDE',level:maxH,distance:Math.abs(maxH-currentPrice),direction:'BEARISH'});}const rL=lows.slice(i-5,i);const minL=Math.min(...rL);if(rL.filter(l=>Math.abs(l-minL)<=minL*0.001).length>=2&&Math.abs(minL-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.l<minL*0.999)&&closes[i+3]>minL)sweeps.push({type:'SELL_SIDE',level:minL,distance:Math.abs(minL-currentPrice),direction:'BULLISH'});}        }return sweeps.sort((a,b)=>a.distance-b.distance);}
 function findImbalances(data){const im=[];for(let i=1;i<data.length-1;i++){if(data[i-1].l>data[i+1].h)im.push({type:'BULLISH',low:data[i+1].h,high:data[i-1].l});if(data[i-1].h<data[i+1].l)im.push({type:'BEARISH',low:data[i-1].h,high:data[i+1].l});}return im.slice(-5);}
-function detectTurtleSoup(data){if(data.length<15)return{detected:false,type:null};const rd=data.slice(-15);const highs=rd.map(c=>c.h),lows=rd.map(c=>c.l),closes=rd.map(c=>c.c),opens=rd.map(c=>c.o);const keyLow=Math.min(...lows.slice(0,-4));const recentLow=lows[lows.length-4];const cc=closes[closes.length-1];const co=opens[opens.length-1];if(recentLow<keyLow*0.999&&cc>keyLow&&cc>co)return{detected:true,type:'BUY',keyLevel:keyLow,sweptLevel:recentLow};const keyHigh=Math.max(...highs.slice(0,-4));const recentHigh=highs[highs.length-4];if(recentHigh>keyHigh*1.001&&cc<keyHigh&&cc<co)return{detected:true,type:'SELL',keyLevel:keyHigh,sweptLevel:recentHigh};return{detected:false,type:null};}
+function detectTurtleSoup(data){if(data.length<15)return{detected:false,type:null};const rd=data.slice(-15);const highs=rd.map(c=>c.h),lows=rd.map(c=>c.l),closes=rd.map(c=>c.c),opens=rd.map(c=>c.o);const keyLow=Math.min(...lows.slice(0,-4));const recentLow=lows[lows.length-4];const cc=closes[closes.length-1];const co=opens[opens.length-1];if(recentLow<keyLow*0.999&&cc>keyLow&&cc>co)return{detected:true,type:'BUY',keyLevel:keyLow,sweptLevel:recentLow};const keyHigh=Math.max(...highs.slice(0,-4));const recentHigh=highs[recentHigh.length-4];if(recentHigh>keyHigh*1.001&&cc<keyHigh&&cc<co)return{detected:true,type:'SELL',keyLevel:keyHigh,sweptLevel:recentHigh};return{detected:false,type:null};}
 function detectCRT(data,direction){if(data.length<10)return{detected:false};const lc=data.slice(-5);const ranges=lc.map(c=>c.h-c.l);const avgRange=ranges.reduce((a,b)=>a+b,0)/ranges.length;const lastRange=ranges[ranges.length-1];const expanding=lastRange>avgRange*1.5;const contracting=lastRange<avgRange*0.5;return{detected:expanding||contracting,pattern:expanding?'Expanding':(contracting?'Contracting':'Neutral'),rangeRatio:(lastRange/avgRange).toFixed(2),signal:expanding?(direction==='BUY'?'Bullish momentum':'Bearish momentum'):(contracting?'Consolidation':'Neutral')};}
 function checkPathClearance(entryData,entry,tp,direction){const obstacles=[];const fvgs=detectFVG(entryData);const swings=findSwings(entryData,3);if(direction==='BUY'){const bearFVGs=fvgs.filter(f=>f.type==='bear'&&f.l>entry&&f.l<tp);if(bearFVGs.length>0)obstacles.push('Bearish FVG');const swingHighs=swings.H.filter(s=>s.p>entry&&s.p<tp);if(swingHighs.length>0)obstacles.push('Swing high');}else{const bullFVGs=fvgs.filter(f=>f.type==='bull'&&f.h>tp&&f.h<entry);if(bullFVGs.length>0)obstacles.push('Bullish FVG');const swingLows=swings.L.filter(s=>s.p>tp&&s.p<entry);if(swingLows.length>0)obstacles.push('Swing low');}return{clear:obstacles.length===0,obstacles,count:obstacles.length};}
 
@@ -242,7 +240,6 @@ function checkZoneReaction(data, zone, direction) {
 // ============================================
 function checkZoneMagnetism(entryData, price, entry, direction) {
     const imbalances = findImbalances(entryData);
-    const sweeps = detectLiquiditySweeps(entryData, price);
     let score = 0; const checks = [];
     if (direction === 'BUY') {
         const pullingImbalances = imbalances.filter(i => i.type === 'BULLISH' && i.low > entry && i.high < price);
@@ -279,14 +276,12 @@ async function checkHTFConfluenceAsync(dailyData, h4Data, entryDirection) {
 function calculateMSNR(data,currentPrice){const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);const period=Math.min(data.length,20);const rH=Math.max(...highs.slice(-period)),rL=Math.min(...lows.slice(-period)),rC=closes[closes.length-1];const pp=(rH+rL+rC)/3;const s1=pp*2-rH,s2=pp-(rH-rL),s3=rL-2*(rH-pp);const r1=pp*2-rL,r2=pp+(rH-rL),r3=rH+2*(pp-rL);const ms1=(s1+s2)/2,ms2=(pp+s1)/2,mr1=(r1+r2)/2,mr2=(pp+r1)/2;const allS=[s1,ms2,ms1,s2,s3].filter(s=>s<currentPrice).sort((a,b)=>b-a);const allR=[r1,mr2,mr1,r2,r3].filter(r=>r>currentPrice).sort((a,b)=>a-b);return{pivot:pp,supports:{S1:s1,S2:s2,S3:s3,MS1:ms1,MS2:ms2},resistances:{R1:r1,R2:r2,R3:r3,MR1:mr1,MR2:mr2},nearestSupport:allS[0]||null,nearestResistance:allR[0]||null,allSupports:allS,allResistances:allR};}
 
 // ============================================
-// ENHANCED PRECISION ENTRY ZONE LOOKUPS
-// UPGRADED: Strict Premium vs Discount Equilibrium algorithmic enforcement
+// PRECISION ENTRY ZONE LOOKUPS (UNCOMPRESSED)
 // ============================================
 function findPrecisionEntry(data,price,direction,msnr){
     const a=atr(data,14),fvgs=detectFVG(data),breakers=detectBreakers(data),swings=findSwings(data,4);
     const orderBlocks=detectOrderBlocks(data,direction);
     
-    // Calculate precise range bounds to map Premium vs Discount Equilibrium
     const hArr = data.slice(-40).map(c=>c.h), lArr = data.slice(-40).map(c=>c.l);
     const rangeHigh = Math.max(...hArr), rangeLow = Math.min(...lArr);
     const equilibrium = (rangeHigh + rangeLow) / 2;
@@ -295,7 +290,6 @@ function findPrecisionEntry(data,price,direction,msnr){
     
     if(direction==='BUY'){
         fvgs.filter(f=>f.type=='bull').forEach(f=>{
-            // STRICT FILTER: A long setup zone MUST exist within the Discount Range (below equilibrium)
             if (f.l <= equilibrium) {
                 let s=40; let cf=['FVG'];
                 if(breakers.find(b=>b.type==='BULL'&&Math.abs(b.p-f.l)<a*0.5)){ s+=25; cf.push('Breaker'); }
@@ -312,7 +306,6 @@ function findPrecisionEntry(data,price,direction,msnr){
         });
     } else {
         fvgs.filter(f=>f.type=='bear').forEach(f=>{
-            // STRICT FILTER: A short setup zone MUST exist within the Premium Range (above equilibrium)
             if (f.h >= equilibrium) {
                 let s=40; let cf=['FVG'];
                 if(breakers.find(b=>b.type==='BEAR'&&Math.abs(b.p-f.h)<a*0.5)){ s+=25; cf.push('Breaker'); }
@@ -332,7 +325,6 @@ function findPrecisionEntry(data,price,direction,msnr){
     allZones.sort((x,y)=>y.score-x.score);
     if(allZones.length>0){ return allZones[0]; }
     
-    // FALLBACK PROTECTION LAYER: If micro-mismatch occurs, generate precise algorithmic OTE anchored to pure equilibrium
     if(direction==='BUY'){
         const low=rangeLow+ (rangeHigh-rangeLow)*0.618, high=rangeLow+ (rangeHigh-rangeLow)*0.705;
         return{low,high,p:(low+high)/2,src:'OTE',confluence:'OTE-Equilibrium',cc:2,quality:'B',hasImbalance:false,pricingContext:'DISCOUNT_EQUILIBRIUM'};
@@ -417,9 +409,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const [trendTF, structureTF, entryTF, sniperTF] = getTimeframeHierarchy(tfToAnalyze);
         const entryData = await getHistory(entryTF); if (!entryData?.length) return null;
         
-        const isLTF = (tfToAnalyze === '15M' || tfToAnalyze === '5M');
         const fvgsAll = detectFVG(entryData); const obsAll = detectOrderBlocks(entryData, 'BUY').concat(detectOrderBlocks(entryData, 'SELL'));
-        if (isLTF && fvgsAll.length === 0 && obsAll.length === 0) return null;
 
         const structureData = await getHistory(structureTF);
         const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
@@ -545,16 +535,30 @@ async function runAutoScan() {
             if (result) results.push(result);
         }
         
-        if (results.length === 0) {
-            showNotif('⚠️ Range consolidating - Waiting for Displacement', 'warning');
-            document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],pair,current_price:price,status:'CONSOLIDATION_FLAT'}}, null, 2);
+        // STRICT RISK FILTER LAYER: Isolated Macro Ordering Sequence
+        const macroOrder = ['1D', '4H', '1H']; let selectedSetup = null;
+        for (let tf of macroOrder) { 
+            let match = results.find(r => r.timeframe === tf); 
+            if (match) { selectedSetup = match; break; } 
+        }
+        
+        // If no high timeframe structural footprint exists, trigger macro consolidation exit
+        if (!selectedSetup) {
+            showNotif('⚠️ Macro ranges flat - Filtering out lower timeframe noise', 'warning');
+            document.getElementById('jsonOutput').innerHTML = JSON.stringify({
+                auto_scan_result: {
+                    date: new Date().toISOString().split('T')[0],
+                    pair, current_price: price,
+                    status: 'CONSOLIDATION_FLAT',
+                    reason: 'No high-timeframe setups found on 1D, 4H, or 1H charts. Standalone 15M/5M setups are locked out for protection.',
+                    multi_timeframe_trends: mtfTrendsData
+                }
+            }, null, 2);
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return;
         }
         
-        // Target Highest Structural Timeframe Setup for Macro Profit Continuity
-        const macroOrder = ['1D', '4H', '1H', '15M', '5M']; let selectedSetup = null;
-        for (let tf of macroOrder) { let match = results.find(r => r.timeframe === tf); if (match) { selectedSetup = match; break; } }
-        const best = selectedSetup || results[0];
+        const best = selectedSetup;
+        if (best.zone && best.zone.quality === 'C') best.confidence = Math.max(best.confidence - 25, 20);
         
         scanText.innerHTML = '🤖 Auditing zone confluences via AI...';
         const aiResult = await askAIWithAllResults(results, price, htfData);
@@ -563,6 +567,8 @@ async function runAutoScan() {
         const prec = getPrec(pair); const risk = Math.abs(best.entry - best.sl); const rr = best.rrUsed || 4;
         const rrDisplay = (Math.abs(best.tp1 - best.entry) / risk).toFixed(1); const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
         const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
+        
+        best.confidence = Math.max(best.confidence - htfConfluence.penalty, 10);
         
         let aiConviction = 'MEDIUM', aiApproved = true, executionDecision = best.entryReady ? 'enter_now' : 'wait_for_reaction', waitCondition = 'Wait for key swing mitigation confirmation';
         let finalEntry = best.entry, finalZoneLow = best.zone.low, finalZoneHigh = best.zone.high;
@@ -581,13 +587,56 @@ async function runAutoScan() {
             if (aiApproved) best.confidence = Math.min(best.confidence + 10, 98); else best.confidence = Math.max(best.confidence - 20, 10);
         }
         
+        // UNCOMPRESSED FULL JSON DASHBOARD OUTPUT
         const out = {
             auto_scan_result: {
-                date: new Date().toISOString().split('T')[0], time: new Date().toISOString().split('T')[1].split('.')[0], pair, current_price: price, multi_timeframe_trends: mtfTrendsData, best_timeframe: best.timeframe, total_setups_found: results.length, ai_approved: aiApproved, execution_decision: executionDecision, wait_condition: waitCondition, pricing_equilibrium_context: best.zone.pricingContext,
+                date: new Date().toISOString().split('T')[0], 
+                time: new Date().toISOString().split('T')[1].split('.')[0], 
+                pair, 
+                current_price: price, 
+                multi_timeframe_trends: mtfTrendsData, 
+                best_timeframe: best.timeframe, 
+                total_setups_found: results.length, 
+                ai_approved: aiApproved, 
+                execution_decision: executionDecision, 
+                wait_condition: waitCondition, 
+                pricing_equilibrium_context: best.zone.pricingContext,
+                htf_confluence: htfConfluence,
                 trade_signal: {
-                    trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT', entry_price: finalEntry, entry_zone: { low: finalZoneLow, high: finalZoneHigh }, entry_ready: best.entryReady, stop_loss: best.sl, sl_reason: best.slResult.reason, risk_amount: risk.toFixed(prec), stop_loss_pct: ((risk / best.entry) * 100).toFixed(2) + '%', take_profit_1: best.tp1, take_profit_2: best.tp2, take_profit_3: best.tp3, risk_reward: '1:' + rrDisplay, confidence: best.confidence, conviction: aiConviction, entry_reasoning: aiEntryLogic || `${best.zone.src} structural discount footprint`, sl_reasoning: aiSlLogic || best.slResult.reason, key_reason: aiKeyReason || `${best.zone.confluence}`, zone_quality: best.zone.quality, zone_source: best.zone.src, imbalance_magnet: best.zone.hasImbalance, zone_reaction: best.zoneReaction, zone_magnetism: best.magnetism, path_clearance: best.pathCheck, probability: best.probCheck.probability, turtle_soup: best.turtleSoup, crt_analysis: best.crt, order_blocks_found: best.obsAll ? best.obsAll.length : 0, twelve_data_indicators: best.twelveIndicators, msnr_levels: best.msnr,
+                    trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT', 
+                    entry_price: finalEntry, 
+                    entry_zone: { low: finalZoneLow, high: finalZoneHigh }, 
+                    entry_ready: best.entryReady, 
+                    stop_loss: best.sl, 
+                    sl_reason: best.slResult.reason, 
+                    risk_amount: risk.toFixed(prec), 
+                    stop_loss_pct: ((risk / best.entry) * 100).toFixed(2) + '%', 
+                    take_profit_1: best.tp1, 
+                    take_profit_2: best.tp2, 
+                    take_profit_3: best.tp3, 
+                    risk_reward: '1:' + rrDisplay, 
+                    confidence: best.confidence, 
+                    conviction: aiConviction, 
+                    entry_reasoning: aiEntryLogic || `${best.zone.src} structural discount footprint`, 
+                    sl_reasoning: aiSlLogic || best.slResult.reason, 
+                    key_reason: aiKeyReason || `${best.zone.confluence}`, 
+                    zone_quality: best.zone.quality, 
+                    zone_source: best.zone.src, 
+                    imbalance_magnet: best.zone.hasImbalance, 
+                    zone_reaction: best.zoneReaction, 
+                    zone_magnetism: best.magnetism, 
+                    path_clearance: best.pathCheck, 
+                    probability: best.probCheck.probability, 
+                    turtle_soup: best.turtleSoup, 
+                    crt_analysis: best.crt, 
+                    order_blocks_found: best.obsAll ? best.obsAll.length : 0, 
+                    twelve_data_indicators: best.twelveIndicators, 
+                    msnr_levels: best.msnr,
+                    sweeps: best.sweeps.filter(s => s.distance < best.apiATR * 2).map(s => ({ type: s.type, level: s.level, distance: s.distance })),
                     analysis: {
-                        trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFsAligned)`, volatility_level: `${best.volatility.level}`, market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, zone_reaction: best.zoneReaction, htf_validated: best.htfValidation?.passed || false },
+                        trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFsAligned)`, 
+                        volatility_level: `${best.volatility.level}`, 
+                        market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, zone_reaction: best.zoneReaction, htf_validated: best.htfValidation?.passed || false },
                         technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ATR: ${best.apiATR.toFixed(prec)}`, `FVG: ${best.fvgsAll.length}`, `OB: ${best.obsAll ? best.obsAll.length : 0}`]
                     }
                 }
@@ -599,7 +648,7 @@ async function runAutoScan() {
         document.getElementById('executeBtn').disabled = false;
         
         const execLabel = executionDecision === 'enter_now' ? '🟢ENTRY READY' : '🟡WAITING FOR REACTION';
-        showNotif(`✅ Optimized Setup Matched | ${execLabel} ${best.timeframe} | ${best.zone.pricingContext}`, 'success');
+        showNotif(`✅ Macro Setup Matched | ${execLabel} ${best.timeframe} | ${best.zone.pricingContext}`, 'success');
     } catch (e) { console.error(e); showNotif('Scan Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
     finally { btn.classList.remove('loading'); btn.disabled = false; }
 }
