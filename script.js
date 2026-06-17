@@ -68,6 +68,12 @@ function showSetup() { const ex=document.getElementById('setupOverlay'); if(ex)e
 // STATE
 // ============================================
 let pair='XAU/USD',analysis=null,calls=0,lastPrice=null,limitOrder=null,priceTimer=null;
+
+// Cached price for rate limiting
+let cachedPrice = null;
+let priceCacheTime = 0;
+const PRICE_CACHE_DURATION = 5000; // 5 seconds
+
 document.addEventListener('DOMContentLoaded',async()=>{await loadKeys();updateKeyStatus();if(!TWELVE_DATA_KEY&&!DEEPSEEK_API_KEY)setTimeout(showSetup,500);init();});
 function init(){updateTime();setInterval(updateTime,1000);document.getElementById('analyzeBtn').addEventListener('click',runAutoScan);document.getElementById('executeBtn').addEventListener('click',handleLimit);document.getElementById('cancelLimitBtn').addEventListener('click',cancelLimit);document.getElementById('copyJsonBtn').addEventListener('click',copyJson);document.getElementById('updateKeysBtn').addEventListener('click',showSetup);document.getElementById('pairSelect').addEventListener('change',e=>pair=e.target.value);document.querySelectorAll('.category-btn').forEach(b=>b.addEventListener('click',function(){document.querySelectorAll('.category-btn').forEach(x=>x.classList.remove('active'));this.classList.add('active');updatePairs(this.dataset.category);}));loadLimitOrder();}
 function updateTime(){const n=new Date();document.getElementById('liveTime').innerHTML=`${n.toLocaleDateString('en-US',{month:'short',day:'numeric'})} ${n.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;}
@@ -78,9 +84,32 @@ function isForex(p){return['EUR/USD','GBP/USD','USD/JPY','AUD/USD','USD/CAD','US
 function getPrec(p){const s=getMarketSettings(p);return s.prec;}
 
 // ============================================
-// API
+// API - FIXED WITH CACHING
 // ============================================
-async function getPrice(){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(SYMBOLS[pair])}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.price){calls++;document.getElementById('apiSource').innerHTML='📡 Live';return +d.price;}}catch(e){}return null;}
+async function getPrice() {
+    // Return cached price if within 5 seconds
+    const now = Date.now();
+    if (cachedPrice !== null && (now - priceCacheTime) < PRICE_CACHE_DURATION) {
+        return cachedPrice;
+    }
+    
+    if (!TWELVE_DATA_KEY) return null;
+    try {
+        const r = await fetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(SYMBOLS[pair])}&apikey=${TWELVE_DATA_KEY}`);
+        const d = await r.json();
+        if (d.price) {
+            calls++;
+            document.getElementById('apiSource').innerHTML = '📡 Live';
+            cachedPrice = +d.price;
+            priceCacheTime = now;
+            return cachedPrice;
+        }
+    } catch(e) {
+        console.warn('Price fetch failed, using cached:', e);
+        if (cachedPrice !== null) return cachedPrice;
+    }
+    return null;
+}
 
 async function getQuote(tfStr){
     if(!TWELVE_DATA_KEY)return null;
@@ -471,6 +500,68 @@ async function updateMTFDisplay(){
 }
 
 // ============================================
+// SETUP QUALITY SCORE - NEW INTELLIGENT FEATURE
+// ============================================
+function calculateSetupQuality(result, price) {
+    let score = 0;
+    const prec = getPrec(pair);
+    const risk = Math.abs(result.entry - result.sl);
+    const riskPct = (risk / price) * 100;
+    
+    // Timeframe weight (higher is better)
+    const tfWeights = { '1D': 100, '4H': 80, '1H': 60, '15M': 30, '5M': 10 };
+    score += tfWeights[result.timeframe] || 0;
+    
+    // Confidence score (0-50)
+    score += (result.confidence / 100) * 50;
+    
+    // Zone quality bonus
+    if (result.zone.quality === 'A') score += 20;
+    else if (result.zone.quality === 'B') score += 10;
+    
+    // Confluence bonus (multiple indicators)
+    score += Math.min(result.zone.cc * 5, 20);
+    
+    // HTF validation bonus
+    if (result.htfValidation?.passed) score += 15;
+    
+    // Zone reaction bonus
+    if (result.zoneReaction?.confirmed) {
+        if (result.zoneReaction.strength === 'STRONG') score += 15;
+        else if (result.zoneReaction.strength === 'MODERATE') score += 8;
+    }
+    
+    // Magnetism bonus
+    if (result.magnetism.magnetism === 'STRONG') score += 10;
+    else if (result.magnetism.magnetism === 'MODERATE') score += 5;
+    
+    // Entry ready bonus
+    if (result.entryReady) score += 10;
+    
+    // Risk penalty (too tight or too wide SL)
+    if (riskPct < 0.1) score -= 10;
+    if (riskPct > 2.0) score -= 10;
+    
+    // Probability check
+    if (result.probCheck.probability === 'HIGH') score += 10;
+    else if (result.probCheck.probability === 'LOW') score -= 10;
+    
+    // Displacement bonus
+    if (result.displacement.detected) score += 5;
+    
+    // CRT pattern bonus
+    if (result.crt.detected && result.crt.pattern === 'Expanding') score += 5;
+    
+    // Path clearance bonus
+    if (result.pathCheck.clear) score += 5;
+    
+    // Turtle soup bonus
+    if (result.turtleSoup.detected) score += 8;
+    
+    return Math.max(0, Math.min(100, score));
+}
+
+// ============================================
 // ANALYZE SINGLE TIMEFRAME
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price, htfData) {
@@ -642,7 +733,7 @@ Return ONLY JSON with execution_decision.`;
 }
 
 // ============================================
-// AUTO SCAN - FINAL FIX: Prioritize higher timeframes, lower TFs only when no higher exist
+// AUTO SCAN - INTELLIGENT SELECTION
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
@@ -698,44 +789,59 @@ async function runAutoScan() {
         }
         
         // ============================================
-        // CRITICAL FIX: Separate higher and lower timeframes
-        // Higher = 1D, 4H, 1H (TRADABLE)
-        // Lower = 15M, 5M (INFO ONLY - shown only if no higher exist)
+        // INTELLIGENT SELECTION WITH QUALITY SCORE
         // ============================================
+        
+        // Calculate quality score for ALL results
+        for (let result of results) {
+            result.qualityScore = calculateSetupQuality(result, price);
+        }
+        
         const higherTimeframes = ['1D', '4H', '1H'];
         const lowerTimeframes = ['15M', '5M'];
         
         const higherResults = results.filter(r => higherTimeframes.includes(r.timeframe));
         const lowerResults = results.filter(r => lowerTimeframes.includes(r.timeframe));
         
-        let best;
+        let best = null;
         let isLowerTF = false;
         
         if (higherResults.length > 0) {
-            // Sort higher timeframes by priority
-            const tfPriority = { '1D': 5, '4H': 4, '1H': 3 };
-            higherResults.sort((a, b) => {
-                const tfA = tfPriority[a.timeframe] || 0;
-                const tfB = tfPriority[b.timeframe] || 0;
-                if (tfA !== tfB) return tfB - tfA;
-                return b.confidence - a.confidence;
-            });
+            // Sort higher by quality score
+            higherResults.sort((a, b) => b.qualityScore - a.qualityScore);
             best = higherResults[0];
             isLowerTF = false;
+            showNotif(`✅ ${best.timeframe} setup found - Quality: ${best.qualityScore}%`, 'success');
         } else if (lowerResults.length > 0) {
-            // ONLY show lower timeframes if NO higher timeframes have setups
-            const tfPriority = { '15M': 2, '5M': 1 };
-            lowerResults.sort((a, b) => {
-                const tfA = tfPriority[a.timeframe] || 0;
-                const tfB = tfPriority[b.timeframe] || 0;
-                if (tfA !== tfB) return tfB - tfA;
-                return b.confidence - a.confidence;
-            });
-            best = lowerResults[0];
-            isLowerTF = true;
-            // Apply heavy confidence penalty for lower timeframes
-            best.confidence = Math.max(best.confidence - 30, 20);
-            showNotif(`⚠️ NO HIGHER TIMEFRAME SETUPS. ${best.timeframe} setup shown (reduced confidence ${best.confidence}%) - Consider higher risk`, 'warning');
+            // Filter lower by quality threshold (minimum 40 to be considered)
+            const filteredLower = lowerResults.filter(r => r.qualityScore > 40);
+            if (filteredLower.length > 0) {
+                filteredLower.sort((a, b) => b.qualityScore - a.qualityScore);
+                best = filteredLower[0];
+                isLowerTF = true;
+                // Heavy confidence penalty for lower TFs
+                best.confidence = Math.max(best.confidence - 30, 20);
+                showNotif(`⚠️ ONLY LOWER TF SETUP (${best.timeframe}) - Quality: ${best.qualityScore}% - REDUCED CONFIDENCE`, 'warning');
+            } else {
+                showNotif('⚠️ Lower timeframe setups found but quality too low (<40%)', 'warning');
+                document.getElementById('jsonOutput').innerHTML = JSON.stringify({
+                    auto_scan_result: {
+                        date: new Date().toISOString().split('T')[0],
+                        time: new Date().toISOString().split('T')[1].split('.')[0],
+                        pair,
+                        current_price: price,
+                        status: 'LOW_QUALITY_SETUPS_ONLY',
+                        message: 'Only low quality lower timeframe setups found. Not tradable.',
+                        multi_timeframe_trends: mtfTrendsData,
+                        lower_setups_found: lowerResults.length,
+                        best_quality: Math.max(...lowerResults.map(r => r.qualityScore))
+                    }
+                }, null, 2);
+                analysis = null;
+                document.getElementById('executeBtn').disabled = true;
+                btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden');
+                return;
+            }
         } else {
             showNotif('⚠️ No valid setups found', 'warning');
             document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}, null, 2);
@@ -794,6 +900,7 @@ async function runAutoScan() {
                 pair, current_price: price,
                 multi_timeframe_trends: mtfTrendsData,
                 best_timeframe: best.timeframe,
+                quality_score: best.qualityScore,
                 total_setups_found: results.length,
                 higher_timeframe_setups_found: higherResults.length,
                 lower_timeframe_setups_available: lowerResults.length,
@@ -884,7 +991,7 @@ async function runAutoScan() {
         const htfValLabel = best.htfValidation?.passed ? '🏗️' : '';
         const execLabel = executionDecision === 'enter_now' ? '🟢ENTER' : (executionDecision === 'wait_for_reaction' ? '🟡WAIT' : '🔴SKIP');
         const tfWarning = isLowerTF ? '⚠️LOWER TF ONLY⚠️ ' : '✅HIGHER TF✅ ';
-        showNotif(`${tfWarning}${aiLabel}${magLabel}${htfLabel}${htfValLabel} ${execLabel} ${best.timeframe} ${st} ${best.confidence}% | 1:${rrDisplay}`, 'success');
+        showNotif(`${tfWarning}${aiLabel}${magLabel}${htfLabel}${htfValLabel} ${execLabel} ${best.timeframe} ${st} ${best.confidence}% | Quality:${best.qualityScore}% | 1:${rrDisplay}`, 'success');
         
     } catch (e) { console.error(e); showNotif('Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
     finally { btn.classList.remove('loading'); btn.disabled = false; }
