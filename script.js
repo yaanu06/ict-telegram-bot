@@ -154,19 +154,404 @@ async function getQuoteDirection(tfStr) {
     return 'NEUTRAL';
 }
 
-async function getHistory(tfStr){if(!TWELVE_DATA_KEY)return null;try{const r=await fetch(`${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${TF_MAP[tfStr]}&outputsize=100&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){calls++;return d.values.map(c=>({t:c.datetime,o:+c.open,h:+c.high,l:+c.low,c:+c.close,v:+c.volume||1e6})).reverse();}}catch(e){}return null;}
-async function getTechnicalIndicators(tfUsed){if(!TWELVE_DATA_KEY)return{};const symbol=encodeURIComponent(SYMBOLS[pair]);const interval=TF_MAP[tfUsed];const ind={};try{const r=await fetch(`${TWELVE_DATA_BASE}/rsi?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.rsi=parseFloat(d.values[0].rsi);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/macd?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.macd=parseFloat(d.values[0].macd);ind.macd_signal=parseFloat(d.values[0].macd_signal);ind.macd_hist=parseFloat(d.values[0].macd_hist);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/adx?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.adx=parseFloat(d.values[0].adx);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/bbands?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.bb_upper=parseFloat(d.values[0].upper_band);ind.bb_middle=parseFloat(d.values[0].middle_band);ind.bb_lower=parseFloat(d.values[0].lower_band);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/stoch?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.stoch_k=parseFloat(d.values[0].slow_k);ind.stoch_d=parseFloat(d.values[0].slow_d);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/cci?symbol=${symbol}&interval=${interval}&time_period=20&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.cci=parseFloat(d.values[0].cci);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/atr?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.atr_api=parseFloat(d.values[0].atr);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/williams?symbol=${symbol}&interval=${interval}&time_period=14&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.williams_r=parseFloat(d.values[0].williams);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/sar?symbol=${symbol}&interval=${interval}&acceleration=0.02&maximum=0.2&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.sar=parseFloat(d.values[0].sar);calls++;}}catch(e){}try{const r=await fetch(`${TWELVE_DATA_BASE}/ichimoku?symbol=${symbol}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);const d=await r.json();if(d.values){ind.ichimoku_tenkan=parseFloat(d.values[0].tenkan_sen);ind.ichimoku_kijun=parseFloat(d.values[0].kijun_sen);ind.ichimoku_senkou_a=parseFloat(d.values[0].senkou_span_a);ind.ichimoku_senkou_b=parseFloat(d.values[0].senkou_span_b);calls++;}}catch(e){}return ind;}
+const historyCache = {};
+const HISTORY_CACHE_DURATION = 30000; // 30 seconds cache
+
+async function getHistory(tfStr) {
+    if (!TWELVE_DATA_KEY) return null;
+    const now = Date.now();
+    const cacheKey = `${pair}_${tfStr}`;
+    if (historyCache[cacheKey] && (now - historyCache[cacheKey].timestamp) < HISTORY_CACHE_DURATION) {
+        return historyCache[cacheKey].data;
+    }
+    
+    try {
+        const r = await fetch(`${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${TF_MAP[tfStr]}&outputsize=100&apikey=${TWELVE_DATA_KEY}`);
+        const d = await r.json();
+        if (d.values) {
+            calls++;
+            const data = d.values.map(c => ({ t: c.datetime, o: +c.open, h: +c.high, l: +c.low, c: +c.close, v: +c.volume || 1e6 })).reverse();
+            historyCache[cacheKey] = { timestamp: now, data };
+            return data;
+        }
+    } catch (e) {
+        console.error('History fetch failed:', e);
+    }
+    return null;
+}
+
+// Local mathematical indicator calculations
+function calculateLocalRSI(closes, period = 14) {
+    if (closes.length < period + 1) return 50;
+    let gains = 0, losses = 0;
+    for (let i = 1; i <= period; i++) {
+        let diff = closes[closes.length - 1 - period + i] - closes[closes.length - 2 - period + i];
+        if (diff >= 0) gains += diff; else losses -= diff;
+    }
+    let avgGain = gains / period;
+    let avgLoss = losses / period;
+    
+    for (let i = closes.length - period; i < closes.length; i++) {
+        let diff = closes[i] - closes[i - 1];
+        if (diff >= 0) {
+            avgGain = (avgGain * 13 + diff) / 14;
+            avgLoss = (avgLoss * 13) / 14;
+        } else {
+            avgGain = (avgGain * 13) / 14;
+            avgLoss = (avgLoss * 13 - diff) / 14;
+        }
+    }
+    if (avgLoss === 0) return 100;
+    const rs = avgGain / avgLoss;
+    return 100 - (100 / (1 + rs));
+}
+
+function calculateLocalEMA(values, period) {
+    if (values.length < period) return values[values.length - 1] || 0;
+    const k = 2 / (period + 1);
+    let emaVal = values[0];
+    for (let i = 1; i < values.length; i++) {
+        emaVal = (values[i] - emaVal) * k + emaVal;
+    }
+    return emaVal;
+}
+
+function calculateLocalEMAArray(values, period) {
+    if (values.length === 0) return [];
+    const k = 2 / (period + 1);
+    const emaArr = [values[0]];
+    for (let i = 1; i < values.length; i++) {
+        emaArr.push((values[i] - emaArr[i - 1]) * k + emaArr[i - 1]);
+    }
+    return emaArr;
+}
+
+// Local master indicator loader
+function getLocalIndicators(data) {
+    if (!data || data.length < 52) return {};
+    const closes = data.map(c => c.c);
+    const rsi = calculateLocalRSI(closes, 14);
+    const macd = calculateLocalMACD(closes);
+    const bbands = calculateLocalBBands(closes, 20, 2);
+    const stoch = calculateLocalStochastic(data, 14, 3);
+    const williams_r = calculateLocalWilliamsR(data, 14);
+    const cci = calculateLocalCCI(data, 20);
+    const atr_api = calculateLocalATR(data, 14);
+    const sar = calculateLocalSAR(data, 0.02, 0.2);
+    const ichi = calculateLocalIchimoku(data);
+    
+    return {
+        rsi,
+        macd: macd.macd,
+        macd_signal: macd.macd_signal,
+        macd_hist: macd.macd_hist,
+        bb_upper: bbands.bb_upper,
+        bb_middle: bbands.bb_middle,
+        bb_lower: bbands.bb_lower,
+        stoch_k: stoch.stoch_k,
+        stoch_d: stoch.stoch_d,
+        williams_r,
+        cci,
+        atr_api,
+        sar,
+        ...ichi
+    };
+}
+
+function calculateLocalMACD(closes) {
+    if (closes.length < 26) return { macd: 0, macd_signal: 0, macd_hist: 0 };
+    const ema12 = calculateLocalEMAArray(closes, 12);
+    const ema26 = calculateLocalEMAArray(closes, 26);
+    
+    const macdLine = [];
+    for (let i = 0; i < closes.length; i++) {
+        macdLine.push(ema12[i] - ema26[i]);
+    }
+    const signalLine = calculateLocalEMAArray(macdLine, 9);
+    
+    const macd = macdLine[macdLine.length - 1];
+    const macd_signal = signalLine[signalLine.length - 1];
+    const macd_hist = macd - macd_signal;
+    return { macd, macd_signal, macd_hist };
+}
+
+function calculateLocalBBands(closes, period = 20, stdDevMult = 2) {
+    if (closes.length < period) return { bb_upper: closes[closes.length - 1], bb_middle: closes[closes.length - 1], bb_lower: closes[closes.length - 1] };
+    const slice = closes.slice(-period);
+    const middle = slice.reduce((a, b) => a + b, 0) / period;
+    const variance = slice.reduce((sum, val) => sum + Math.pow(val - middle, 2), 0) / period;
+    const stdDev = Math.sqrt(variance);
+    return {
+        bb_upper: middle + stdDevMult * stdDev,
+        bb_middle: middle,
+        bb_lower: middle - stdDevMult * stdDev
+    };
+}
+
+function calculateLocalStochastic(data, period = 14, dPeriod = 3) {
+    if (data.length < period) return { stoch_k: 50, stoch_d: 50 };
+    
+    const kValues = [];
+    for (let idx = data.length - period - dPeriod; idx < data.length; idx++) {
+        if (idx < period) continue;
+        const sub = data.slice(idx - period + 1, idx + 1);
+        const closes = sub.map(c => c.c);
+        const highs = sub.map(c => c.h);
+        const lows = sub.map(c => c.l);
+        
+        const highestHigh = Math.max(...highs);
+        const lowestLow = Math.min(...lows);
+        const currentClose = closes[closes.length - 1];
+        
+        const denom = highestHigh - lowestLow;
+        const k = denom === 0 ? 50 : ((currentClose - lowestLow) / denom) * 100;
+        kValues.push(k);
+    }
+    
+    const stoch_k = kValues[kValues.length - 1] || 50;
+    const dSlice = kValues.slice(-dPeriod);
+    const stoch_d = dSlice.length ? dSlice.reduce((a, b) => a + b, 0) / dSlice.length : 50;
+    return { stoch_k, stoch_d };
+}
+
+function calculateLocalWilliamsR(data, period = 14) {
+    if (data.length < period) return -50;
+    const sub = data.slice(-period);
+    const highestHigh = Math.max(...sub.map(c => c.h));
+    const lowestLow = Math.min(...sub.map(c => c.l));
+    const currentClose = sub[sub.length - 1].c;
+    const denom = highestHigh - lowestLow;
+    return denom === 0 ? -50 : ((highestHigh - currentClose) / denom) * -100;
+}
+
+function calculateLocalCCI(data, period = 20) {
+    if (data.length < period) return 0;
+    
+    const typicalPrices = data.map(c => (c.h + c.l + c.c) / 3);
+    const smaTP = typicalPrices.slice(-period).reduce((a, b) => a + b, 0) / period;
+    
+    let meanDev = 0;
+    for (let i = typicalPrices.length - period; i < typicalPrices.length; i++) {
+        meanDev += Math.abs(typicalPrices[i] - smaTP);
+    }
+    meanDev = meanDev / period;
+    
+    const currentTP = typicalPrices[typicalPrices.length - 1];
+    if (meanDev === 0) return 0;
+    return (currentTP - smaTP) / (0.015 * meanDev);
+}
+
+function calculateLocalATR(data, period = 14) {
+    if (data.length < 2) return 0;
+    let trs = [];
+    for (let i = 1; i < data.length; i++) {
+        const h_l = data[i].h - data[i].l;
+        const h_pc = Math.abs(data[i].h - data[i-1].c);
+        const l_pc = Math.abs(data[i].l - data[i-1].c);
+        trs.push(Math.max(h_l, h_pc, l_pc));
+    }
+    return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+}
+
+function calculateLocalIchimoku(data) {
+    if (data.length < 52) {
+        const last = data[data.length - 1]?.c || 0;
+        return { ichimoku_tenkan: last, ichimoku_kijun: last, ichimoku_senkou_a: last, ichimoku_senkou_b: last };
+    }
+    
+    const getMinMax = (slice) => {
+        const highs = slice.map(c => c.h);
+        const lows = slice.map(c => c.l);
+        return { max: Math.max(...highs), min: Math.min(...lows) };
+    };
+    
+    const tSlice = data.slice(-9);
+    const tMM = getMinMax(tSlice);
+    const tenkan = (tMM.max + tMM.min) / 2;
+    
+    const kSlice = data.slice(-26);
+    const kMM = getMinMax(kSlice);
+    const kijun = (kMM.max + kMM.min) / 2;
+    
+    const senkouA = (tenkan + kijun) / 2;
+    
+    const sBSlice = data.slice(-52);
+    const sBMM = getMinMax(sBSlice);
+    const senkouB = (sBMM.max + sBMM.min) / 2;
+    
+    return {
+        ichimoku_tenkan: tenkan,
+        ichimoku_kijun: kijun,
+        ichimoku_senkou_a: senkouA,
+        ichimoku_senkou_b: senkouB
+    };
+}
+
+function calculateLocalSAR(data, step = 0.02, maxStep = 0.2) {
+    if (data.length < 5) return data[data.length - 1]?.c || 0;
+    
+    let sar = data[0].l;
+    let ep = data[0].h;
+    let af = step;
+    let isLong = true;
+    
+    for (let i = 1; i < data.length; i++) {
+        const prevSar = sar;
+        if (isLong) {
+            sar = prevSar + af * (ep - prevSar);
+            sar = Math.min(sar, data[i-1].l, data[Math.max(0, i-2)].l);
+            if (data[i].l < sar) {
+                isLong = false;
+                sar = ep;
+                ep = data[i].l;
+                af = step;
+            } else {
+                if (data[i].h > ep) {
+                    ep = data[i].h;
+                    af = Math.min(af + step, maxStep);
+                }
+            }
+        } else {
+            sar = prevSar + af * (ep - prevSar);
+            sar = Math.max(sar, data[i-1].h, data[Math.max(0, i-2)].h);
+            if (data[i].h > sar) {
+                isLong = true;
+                sar = ep;
+                ep = data[i].h;
+                af = step;
+            } else {
+                if (data[i].l < ep) {
+                    ep = data[i].l;
+                    af = Math.min(af + step, maxStep);
+                }
+            }
+        }
+    }
+    return sar;
+}
+
+async function getTechnicalIndicators(tfUsed, preloadedData = null) {
+    let data = preloadedData;
+    if (!data) {
+        data = await getHistory(tfUsed);
+    }
+    if (!data || data.length < 20) return {};
+    return getLocalIndicators(data);
+}
 
 // ============================================
 // TECHNICALS
 // ============================================
-const ema=(p,n)=>{const m=2/(n+1);let e=[p[0]];for(let i=1;i<p.length;i++)e.push((p[i]-e[i-1])*m+e[i-1]);return e;};
-const rsi=(p,n=14)=>{let g=0,l=0;for(let i=p.length-n;i<p.length;i++){let c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;return al===0?100:100-(100/(1+ag/al));};
-const atr=(d,n=14)=>{let t=[];for(let i=1;i<d.length;i++)t.push(Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c)));return t.slice(-n).reduce((a,b)=>a+b,0)/n;};
-function detectFVG(d){let f=[];for(let i=1;i<d.length-1;i++){if(d[i-1].h<d[i+1].l&&d[i+1].l-d[i-1].h>d[i+1].c*0.0005){let m=false;for(let j=i+2;j<d.length;j++){if(d[j].l<=d[i+1].l&&d[j].l>=d[i-1].h){m=true;break;}}f.push({type:'bull',l:d[i-1].h,h:d[i+1].l,m:(d[i-1].h+d[i+1].l)/2,fresh:!m});}if(d[i-1].l>d[i+1].h&&d[i-1].l-d[i+1].h>d[i+1].c*0.0005){let m=false;for(let j=i+2;j<d.length;j++){if(d[j].h>=d[i+1].h&&d[j].h<=d[i-1].l){m=true;break;}}f.push({type:'bear',l:d[i+1].h,h:d[i-1].l,m:(d[i+1].h+d[i-1].l)/2,fresh:!m});}}return f;}
-function findSwings(d,lb=3){let H=[],L=[],h=d.map(c=>c.h),l=d.map(c=>c.l);for(let i=lb;i<h.length-lb;i++){let iH=true,iL=true;for(let j=1;j<=lb;j++){if(h[i]<=h[i-j]||h[i]<=h[i+j])iH=false;if(l[i]>=l[i-j]||l[i]>=l[i+j])iL=false;}if(iH)H.push({p:h[i],i});if(iL)L.push({p:l[i],i});}return{H,L};}
-function detectMSS(d){let h=d.map(c=>c.h),l=d.map(c=>c.l),c=d.map(c=>c.c),rH=Math.max(...h.slice(-20)),rL=Math.min(...l.slice(-20)),cP=c[c.length-1];if(cP>rH)return{type:'BULL',level:rH};if(cP<rL)return{type:'BEAR',level:rL};return null;}
-function detectBreakers(d){let b=[],s=findSwings(d);for(let i=5;i<d.length-5;i++){let c=d[i];if(c.c>c.o){let r=s.H.find(h=>h.i<i&&h.p<c.c);if(r)b.push({type:'BULL',p:r.p});}if(c.c<c.o){let sp=s.L.find(l=>l.i<i&&l.p>c.c);if(sp)b.push({type:'BEAR',p:sp.p});}}return b;}
+const ema = (p, n) => {
+    const m = 2 / (n + 1);
+    let e = [p[0]];
+    for (let i = 1; i < p.length; i++) e.push((p[i] - e[i - 1]) * m + e[i - 1]);
+    return e;
+};
+
+const rsi = (p, n = 14) => {
+    let g = 0, l = 0;
+    for (let i = p.length - n; i < p.length; i++) {
+        let c = p[i] - p[i - 1];
+        c >= 0 ? g += c : l -= c;
+    }
+    let ag = g / n, al = l / n;
+    return al === 0 ? 100 : 100 - (100 / (1 + ag / al));
+};
+
+const atr = (d, n = 14) => {
+    let t = [];
+    for (let i = 1; i < d.length; i++) t.push(Math.max(d[i].h - d[i].l, Math.abs(d[i].h - d[i - 1].c), Math.abs(d[i].l - d[i - 1].c)));
+    return t.slice(-n).reduce((a, b) => a + b, 0) / n;
+};
+
+function detectFVG(d) {
+    let f = [];
+    for (let i = 1; i < d.length - 1; i++) {
+        // Bullish FVG
+        if (d[i - 1].h < d[i + 1].l && d[i + 1].l - d[i - 1].h > d[i + 1].c * 0.0005) {
+            let touched = false;
+            let invalidated = false;
+            for (let j = i + 2; j < d.length; j++) {
+                if (d[j].l <= d[i + 1].l) {
+                    touched = true;
+                }
+                if (d[j].c < d[i - 1].h) {
+                    invalidated = true;
+                }
+            }
+            f.push({ type: 'bull', l: d[i - 1].h, h: d[i + 1].l, m: (d[i - 1].h + d[i + 1].l) / 2, fresh: !touched, invalidated });
+        }
+        // Bearish FVG
+        if (d[i - 1].l > d[i + 1].h && d[i - 1].l - d[i + 1].h > d[i + 1].c * 0.0005) {
+            let touched = false;
+            let invalidated = false;
+            for (let j = i + 2; j < d.length; j++) {
+                if (d[j].h >= d[i + 1].h) {
+                    touched = true;
+                }
+                if (d[j].c > d[i - 1].l) {
+                    invalidated = true;
+                }
+            }
+            f.push({ type: 'bear', l: d[i + 1].h, h: d[i - 1].l, m: (d[i + 1].h + d[i - 1].l) / 2, fresh: !touched, invalidated });
+        }
+    }
+    return f;
+}
+
+function findSwings(d, lb = 3) {
+    let H = [], L = [], h = d.map(c => c.h), l = d.map(c => c.l);
+    for (let i = lb; i < h.length - lb; i++) {
+        let iH = true, iL = true;
+        for (let j = 1; j <= lb; j++) {
+            if (h[i] <= h[i - j] || h[i] <= h[i + j]) iH = false;
+            if (l[i] >= l[i - j] || l[i] >= l[i + j]) iL = false;
+        }
+        if (iH) H.push({ p: h[i], i: i });
+        if (iL) L.push({ p: l[i], i: i });
+    }
+    return { H, L };
+}
+
+function detectMSS(d) {
+    if (d.length < 21) return null;
+    let h = d.map(c => c.h), l = d.map(c => c.l), c = d.map(c => c.c);
+    const rH = Math.max(...h.slice(-21, -1));
+    const rL = Math.min(...l.slice(-21, -1));
+    const cP = c[c.length - 1];
+    if (cP > rH) return { type: 'BULL', level: rH };
+    if (cP < rL) return { type: 'BEAR', level: rL };
+    return null;
+}
+
+function detectBreakers(d) {
+    let b = [], s = findSwings(d);
+    for (let i = 5; i < d.length - 5; i++) {
+        let c = d[i];
+        if (c.c > c.o) {
+            let r = s.H.find(h => h.i < i && h.p < c.c);
+            if (r) {
+                let invalidated = false;
+                for (let j = i + 1; j < d.length; j++) {
+                    if (d[j].c < r.p * 0.99) invalidated = true;
+                }
+                if (!invalidated) b.push({ type: 'BULL', p: r.p, invalidated });
+            }
+        }
+        if (c.c < c.o) {
+            let sp = s.L.find(l => l.i < i && l.p > c.c);
+            if (sp) {
+                let invalidated = false;
+                for (let j = i + 1; j < d.length; j++) {
+                    if (d[j].c > sp.p * 1.01) invalidated = true;
+                }
+                if (!invalidated) b.push({ type: 'BEAR', p: sp.p, invalidated });
+            }
+        }
+    }
+    return b;
+}
 
 // ============================================
 // ORDER BLOCK DETECTION
@@ -177,12 +562,26 @@ function detectOrderBlocks(data, direction) {
         if (direction === 'BUY') {
             if (data[i].c < data[i].o && data[i+1].c > data[i+1].o && 
                 data[i+1].h > data[i].h && data[i+1].c > data[i].h) {
-                obs.push({ type: 'BULL_OB', high: data[i].h, low: data[i].l, close: data[i].c, open: data[i].o, index: i });
+                
+                let touched = false;
+                let invalidated = false;
+                for (let j = i + 2; j < data.length; j++) {
+                    if (data[j].l <= data[i].h) touched = true;
+                    if (data[j].c < data[i].l) invalidated = true;
+                }
+                obs.push({ type: 'BULL_OB', high: data[i].h, low: data[i].l, close: data[i].c, open: data[i].o, index: i, fresh: !touched, invalidated });
             }
         } else {
             if (data[i].c > data[i].o && data[i+1].c < data[i+1].o && 
                 data[i+1].l < data[i].l && data[i+1].c < data[i].l) {
-                obs.push({ type: 'BEAR_OB', high: data[i].h, low: data[i].l, close: data[i].c, open: data[i].o, index: i });
+                
+                let touched = false;
+                let invalidated = false;
+                for (let j = i + 2; j < data.length; j++) {
+                    if (data[j].h >= data[i].l) touched = true;
+                    if (data[j].c > data[i].h) invalidated = true;
+                }
+                obs.push({ type: 'BEAR_OB', high: data[i].h, low: data[i].l, close: data[i].c, open: data[i].o, index: i, fresh: !touched, invalidated });
             }
         }
     }
@@ -256,7 +655,7 @@ function checkZoneReaction(data, zone, direction) {
     const prev2 = data[data.length - 3];
     
     if (direction === 'BUY') {
-        const wickedIntoZone = last.l <= zone.high && last.l >= zone.low;
+        const wickedIntoZone = last.l <= zone.high && last.c >= zone.low;
         const closedAbove = last.c > zone.high;
         const bullishEngulf = last.c > last.o && prev.c < prev.o && last.c > prev.h;
         const bullishPinbar = (last.c - last.l) > Math.abs(last.c - last.o) * 2 && last.c > last.o;
@@ -270,7 +669,7 @@ function checkZoneReaction(data, zone, direction) {
         if (last.c > prev.c && last.c > prev2.c && last.c > last.o) return { confirmed: true, type: 'momentum shift', strength: 'WEAK' };
         return { confirmed: false, type: 'none', strength: 'NONE' };
     } else {
-        const wickedIntoZone = last.h >= zone.low && last.h <= zone.high;
+        const wickedIntoZone = last.h >= zone.low && last.c <= zone.high;
         const closedBelow = last.c < zone.low;
         const bearishEngulf = last.c < last.o && prev.c > prev.o && last.c < prev.l;
         const bearishPinbar = (last.h - last.c) > Math.abs(last.c - last.o) * 2 && last.c < last.o;
@@ -360,17 +759,17 @@ function findPrecisionEntry(data,price,direction,msnr){
     let allZones=[];
     
     if(direction==='BUY'){
-        fvgs.filter(f=>f.type==='bull'&&f.l<price&&f.fresh).forEach(f=>{let s=30;let cf=['FVG'];if(breakers.find(b=>b.type==='BULL'&&Math.abs(b.p-f.l)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.L.find(x=>Math.abs(x.p-f.l)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport&&Math.abs(msnr.nearestSupport-f.l)<f.l*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-f.l)<f.l*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
+        fvgs.filter(f=>f.type==='bull'&&f.l<price&&!f.invalidated).forEach(f=>{let s=f.fresh?30:15;let cf=['FVG'];if(breakers.find(b=>b.type==='BULL'&&!b.invalidated&&Math.abs(b.p-f.l)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.L.find(x=>Math.abs(x.p-f.l)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport&&Math.abs(msnr.nearestSupport-f.l)<f.l*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-f.l)<f.l*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         
-        orderBlocks.forEach(ob=>{let s=35;let cf=['OrderBlock'];if(swings.L.find(x=>Math.abs(x.p-ob.low)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport&&Math.abs(msnr.nearestSupport-ob.low)<ob.low*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-ob.low)<ob.low*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:ob.low,high:ob.high,p:(ob.low+ob.high)/2,src:'OB',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
+        orderBlocks.filter(ob=>!ob.invalidated).forEach(ob=>{let s=ob.fresh?35:20;let cf=['OrderBlock'];if(swings.L.find(x=>Math.abs(x.p-ob.low)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport&&Math.abs(msnr.nearestSupport-ob.low)<ob.low*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-ob.low)<ob.low*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:ob.low,high:ob.high,p:(ob.low+ob.high)/2,src:'OB',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         
-        if(msnr.nearestSupport&&msnr.nearestSupport<price){let s=25;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bull'&&Math.abs(f.l-msnr.nearestSupport)<msnr.nearestSupport*0.003)){s+=25;cf.push('FVG');}if(swings.L.find(x=>Math.abs(x.p-msnr.nearestSupport)<msnr.nearestSupport*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-msnr.nearestSupport)<msnr.nearestSupport*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:msnr.nearestSupport*0.998,high:msnr.nearestSupport*1.002,p:msnr.nearestSupport,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}
+        if(msnr.nearestSupport&&msnr.nearestSupport<price){let s=25;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bull'&&!f.invalidated&&Math.abs(f.l-msnr.nearestSupport)<msnr.nearestSupport*0.003)){s+=25;cf.push('FVG');}if(swings.L.find(x=>Math.abs(x.p-msnr.nearestSupport)<msnr.nearestSupport*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BULLISH'&&Math.abs((i.low+i.high)/2-msnr.nearestSupport)<msnr.nearestSupport*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:msnr.nearestSupport*0.998,high:msnr.nearestSupport*1.002,p:msnr.nearestSupport,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}
     } else {
-        fvgs.filter(f=>f.type==='bear'&&f.h>price&&f.fresh).forEach(f=>{let s=30;let cf=['FVG'];if(breakers.find(b=>b.type==='BEAR'&&Math.abs(b.p-f.h)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.H.find(x=>Math.abs(x.p-f.h)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance&&Math.abs(msnr.nearestResistance-f.h)<f.h*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-f.h)<f.h*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
+        fvgs.filter(f=>f.type==='bear'&&f.h>price&&!f.invalidated).forEach(f=>{let s=f.fresh?30:15;let cf=['FVG'];if(breakers.find(b=>b.type==='BEAR'&&!b.invalidated&&Math.abs(b.p-f.h)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.H.find(x=>Math.abs(x.p-f.h)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance&&Math.abs(msnr.nearestResistance-f.h)<f.h*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-f.h)<f.h*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         
-        orderBlocks.forEach(ob=>{let s=35;let cf=['OrderBlock'];if(swings.H.find(x=>Math.abs(x.p-ob.high)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance&&Math.abs(msnr.nearestResistance-ob.high)<ob.high*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-ob.high)<ob.high*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:ob.low,high:ob.high,p:(ob.low+ob.high)/2,src:'OB',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
+        orderBlocks.filter(ob=>!ob.invalidated).forEach(ob=>{let s=ob.fresh?35:20;let cf=['OrderBlock'];if(swings.H.find(x=>Math.abs(x.p-ob.high)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance&&Math.abs(msnr.nearestResistance-ob.high)<ob.high*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-ob.high)<ob.high*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:ob.low,high:ob.high,p:(ob.low+ob.high)/2,src:'OB',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         
-        if(msnr.nearestResistance&&msnr.nearestResistance>price){let s=25;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bear'&&Math.abs(f.h-msnr.nearestResistance)<msnr.nearestResistance*0.003)){s+=25;cf.push('FVG');}if(swings.H.find(x=>Math.abs(x.p-msnr.nearestResistance)<msnr.nearestResistance*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-msnr.nearestResistance)<msnr.nearestResistance*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:msnr.nearestResistance*0.998,high:msnr.nearestResistance*1.002,p:msnr.nearestResistance,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}
+        if(msnr.nearestResistance&&msnr.nearestResistance>price){let s=25;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bear'&&!f.invalidated&&Math.abs(f.h-msnr.nearestResistance)<msnr.nearestResistance*0.003)){s+=25;cf.push('FVG');}if(swings.H.find(x=>Math.abs(x.p-msnr.nearestResistance)<msnr.nearestResistance*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BEARISH'&&Math.abs((i.low+i.high)/2-msnr.nearestResistance)<msnr.nearestResistance*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:msnr.nearestResistance*0.998,high:msnr.nearestResistance*1.002,p:msnr.nearestResistance,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}
     }
     
     allZones.sort((x,y)=>y.score-x.score);
@@ -490,12 +889,12 @@ function score(data,price,twelveIndicators){
 // ============================================
 // MULTI-TF DISPLAY
 // ============================================
-async function updateMTFDisplay(){
-    const tfs=['5M','15M','1H','4H','1D'];
-    for(let t of tfs){
-        let tr = await getQuoteDirection(t);
-        let el=document.getElementById(`trend${t}`);
-        if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}
+async function updateMTFDisplay(preloadedTrends = null) {
+    const tfs = ['5M', '15M', '1H', '4H', '1D'];
+    for (let t of tfs) {
+        let tr = preloadedTrends ? preloadedTrends[t] : await getQuoteDirection(t);
+        let el = document.getElementById(`trend${t}`);
+        if (el) { el.innerHTML = tr === 'BULLISH' ? '🟢 Bull' : (tr === 'BEARISH' ? '🔴 Bear' : '⚪ Neut'); el.className = `mtf-trend ${tr.toLowerCase()}`; }
     }
 }
 
@@ -571,7 +970,19 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         if (!entryData?.length) return null;
         
         const structureData = await getHistory(structureTF);
-        const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
+        
+        let tfData = null;
+        if (tfToAnalyze === structureTF && structureData) {
+            tfData = structureData;
+        } else if (tfToAnalyze === entryTF && entryData) {
+            tfData = entryData;
+        } else if (htfData && htfData[tfToAnalyze]) {
+            tfData = htfData[tfToAnalyze];
+        } else {
+            tfData = await getHistory(tfToAnalyze);
+        }
+        
+        const twelveIndicators = await getTechnicalIndicators(tfToAnalyze, tfData);
         const sig = score(entryData, price, twelveIndicators);
         
         const tfs = ['5M', '15M', '1H', '4H', '1D'];
@@ -606,6 +1017,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             }
         }
         
+        const apiATR = twelveIndicators?.atr_api || atr(entryData, 14);
+        
         let entry = null;
         let entryReady = false;
         if (zoneReaction.confirmed && (zoneReaction.strength === 'STRONG' || zoneReaction.strength === 'MODERATE')) {
@@ -620,8 +1033,14 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         if (!entryReady) {
             entry = (zone.low + zone.high) / 2;
         }
-        if (direction === 'BUY' && entry >= price) { const nb = msnr.nearestSupport || price * 0.99; entry = Math.min(zone.low, nb, price * 0.995); }
-        if (direction === 'SELL' && entry <= price) { const na = msnr.nearestResistance || price * 1.01; entry = Math.max(zone.high, na, price * 1.005); }
+        if (direction === 'BUY' && entry >= price) { 
+            const nb = msnr.nearestSupport || price - apiATR; 
+            entry = Math.min(zone.low, nb, price - apiATR * 0.1); 
+        }
+        if (direction === 'SELL' && entry <= price) { 
+            const na = msnr.nearestResistance || price + apiATR; 
+            entry = Math.max(zone.high, na, price + apiATR * 0.1); 
+        }
         
         const magnetism = checkZoneMagnetism(entryData, price, entry, direction);
         const displacement = detectDisplacement(entryData, direction);
@@ -630,7 +1049,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const slResult = calcStopLoss(entryData, direction, entry, zone, msnr, tfToAnalyze, twelveIndicators);
         const tps = calcTakeProfits(direction, entry, slResult.price);
         const pathCheck = checkPathClearance(entryData, entry, tps.tp1, direction);
-        const apiATR = twelveIndicators?.atr_api || atr(entryData, 14);
         const sweeps = detectLiquiditySweeps(entryData, price);
         const imbalances = findImbalances(entryData);
         const mss = detectMSS(entryData);
@@ -700,7 +1118,7 @@ async function askAIWithAllResults(allResults, price, htfData) {
     let tfSummary = '';
     for (const r of allResults) {
         const htfStatus = r.htfValidation ? (r.htfValidation.passed ? 'In HTF' : 'No HTF') : 'N/A';
-        tfSummary += `${r.timeframe}: ${r.direction} | Zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | EntryReady: ${r.entryReady ? 'YES' : 'NO'} | React: ${r.zoneReaction?.confirmed ? r.zoneReaction.type : 'None'} | HTF: ${htfStatus} | Touches: ${r.zoneTouches} | Conf:${r.confidence}% | RR:1:${r.rrUsed}\n`;
+        tfSummary += `${r.timeframe}: ${r.direction} | Zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | EntryReady: ${r.entryReady ? 'YES' : 'NO'} | React: ${r.zoneReaction?.confirmed ? r.zoneReaction.type : 'None'} | HTF: ${tfStatus} | Touches: ${r.zoneTouches} | Conf:${r.confidence}% | RR:1:${r.rrUsed}\n`;
     }
     
     const best = allResults[0];
@@ -758,7 +1176,7 @@ async function runAutoScan() {
             mtfTrendsData[t] = await getQuoteDirection(t);
         }
         
-        await updateMTFDisplay();
+        await updateMTFDisplay(mtfTrendsData);
         document.getElementById('currentPrice').innerHTML = `$${price.toFixed(getPrec(pair))}`;
         if (lastPrice) { const ch = ((price - lastPrice) / lastPrice * 100).toFixed(2); const ce = document.getElementById('priceChange'); ce.innerHTML = `${ch >= 0 ? '▲' : '▼'} ${Math.abs(ch)}%`; ce.className = `price-change ${ch >= 0 ? 'up' : 'down'}`; }
         lastPrice = price;
