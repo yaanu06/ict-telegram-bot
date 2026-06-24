@@ -81,11 +81,11 @@ document.addEventListener('DOMContentLoaded',async()=>{await loadKeys();updateKe
 function init(){ 
     updateTime(); setInterval(updateTime,1000); 
     const el = (id) => document.getElementById(id);
-    if(el('analyzeBtn')) el('analyzeBtn').addEventListener('click',()=>{ if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium'); runAutoScan(); }); 
-    if(el('executeBtn')) el('executeBtn').addEventListener('click',()=>{ if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('rigid'); handleLimit(); }); 
-    if(el('cancelLimitBtn')) el('cancelLimitBtn').addEventListener('click',()=>{ if(tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('warning'); cancelLimit(); }); 
-    if(el('copyJsonBtn')) el('copyJsonBtn').addEventListener('click',()=>{ if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light'); copyJson(); }); 
-    if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click',()=>{ if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium'); showSetup(); }); 
+    if(el('analyzeBtn')) el('analyzeBtn').addEventListener('click',runAutoScan); 
+    if(el('executeBtn')) el('executeBtn').addEventListener('click',handleLimit); 
+    if(el('cancelLimitBtn')) el('cancelLimitBtn').addEventListener('click',cancelLimit); 
+    if(el('copyJsonBtn')) el('copyJsonBtn').addEventListener('click',copyJson); 
+    if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click',showSetup); 
     if(el('pairSelect')) el('pairSelect').addEventListener('change',e=>pair=e.target.value); 
     document.querySelectorAll('.category-btn').forEach(b=>b.addEventListener('click',function(){document.querySelectorAll('.category-btn').forEach(x=>x.classList.remove('active'));this.classList.add('active');updatePairs(this.dataset.category);})); 
     loadLimitOrder(); 
@@ -122,7 +122,7 @@ async function getQuote(tfStr){
     }catch(e){ console.error(`Quote error (${tfStr}):`, e); } 
     return null; 
 } 
-script.js (Part 2 of 3)
+ 
 // 🟢 LIVE CANDLE DIRECTION (FOR UI DASHBOARD ONLY) 
 async function getLiveCandleDirection(tfStr, cachedData = null) { 
     try { 
@@ -227,7 +227,6 @@ function findPDArrays(data, direction) {
 function isZoneWithinHTFArray(entryZone, htfArrays) { for (const arr of htfArrays) { if (entryZone.low >= arr.low && entryZone.high <= arr.high) return { contained: true, parentArray: arr }; if (entryZone.low <= arr.high && entryZone.high >= arr.low) return { contained: true, parentArray: arr, partial: true }; } return { contained: false, parentArray: null }; } 
 function detectDisplacement(data,direction){if(data.length<5)return{detected:false};const lc=data.slice(-5);const bodies=lc.map(c=>Math.abs(c.c-c.o));const avg=bodies.reduce((a,b)=>a+b,0)/bodies.length;const lb=bodies[bodies.length-1];if(direction==='BUY' && lb>avg*2.5 && lc[4].c>lc[4].o)return{detected:true};if(direction==='SELL' && lb>avg*2.5 && lc[4].c<lc[4].o)return{detected:true};return{detected:false};} 
 async function checkSniperRejection(zone,direction,sniperTF,cachedData=null){const dSn=cachedData||await getHistory(sniperTF);if(!dSn||dSn.length<3)return{confirmed:false};const lc=dSn[dSn.length-1];const body=Math.abs(lc.c-lc.o);if(direction==='BUY'){const wick=Math.min(lc.o,lc.c)-lc.l;const t=lc.l<=zone.high && lc.l>=zone.low;if(t && wick>body*2 && lc.c>lc.o)return{confirmed:true};}else{const wick=lc.h-Math.max(lc.o,lc.c);const t=lc.h>=zone.low && lc.h<=zone.high;if(t && wick>body*2 && lc.c<lc.o)return{confirmed:true};}return{confirmed:false};} 
-script.js (Part 3 of 3)
 function getVolatilityLevel(atrValue,price){const pct=(atrValue/price)*100;if(pct>0.8)return{level:'High - Impulsive',desc:'Large candles'};if(pct>0.4)return{level:'Moderate - Control',desc:'Normal'};return{level:'Low - Consolidation',desc:'Tight ranges'};} 
 function detectLiquiditySweeps(data,currentPrice){const sweeps=[];const a=atr(data,14);const maxDistance=a*3;const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);for(let i=10;i<data.length-3;i++){const rH=highs.slice(i-5,i);const maxH=Math.max(...rH);if(rH.filter(h=>Math.abs(h-maxH)<=maxH*0.001).length>=2 && Math.abs(maxH-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.h>maxH*1.001) && closes[i+3]<maxH)sweeps.push({type:'BUY_SIDE',level:maxH,distance:Math.abs(maxH-currentPrice),direction:'BEARISH'});}const rL=lows.slice(i-5,i);const minL=Math.min(...rL);if(rL.filter(l=>Math.abs(l-minL)<=minL*0.001).length>=2 && Math.abs(minL-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.l<minL*0.999) && closes[i+3]>minL)sweeps.push({type:'SELL_SIDE',level:minL,distance:Math.abs(minL-currentPrice),direction:'BULLISH'});}}return sweeps.sort((a,b)=>a.distance-b.distance);} 
 function findImbalances(data){const im=[];for(let i=1;i<data.length-1;i++){if(data[i-1].l>data[i+1].h)im.push({type:'BULLISH',low:data[i+1].h,high:data[i-1].l});if(data[i-1].h<data[i+1].l)im.push({type:'BEARISH',low:data[i-1].h,high:data[i+1].l});}return im.slice(-5);} 
@@ -420,15 +419,12 @@ function isHTFPremiumDiscount(htfData, direction) {
 } 
 function getSession() { 
     const now = new Date(); const hour = now.getUTCHours(); const min = now.getUTCMinutes(); const time = hour + min / 60; 
-    let s = { session: 'OFF-HOURS', multiplier: 0.6, emoji: '🌙', isKillzone: false, isSilverBullet: false }; 
-    if (time >= 0 && time < 4) s = { session: 'ASIA KZ', multiplier: 0.85, emoji: '🌏', isKillzone: true }; 
-    else if (time >= 7 && time < 10) s = { session: 'LONDON KZ', multiplier: 1.3, emoji: '🇬🇧', isKillzone: true }; 
-    else if (time >= 12 && time < 15) s = { session: 'NEW_YORK KZ', multiplier: 1.3, emoji: '🇺🇸', isKillzone: true }; 
-    else if (time >= 15 && time < 17) s = { session: 'LON-CLOSE KZ', multiplier: 1.0, emoji: '🌆', isKillzone: true }; 
-    if ((time >= 8 && time < 9) || (time >= 15 && time < 16) || (time >= 19 && time < 20)) { 
-        s.isSilverBullet = true; s.multiplier += 0.25; s.emoji = '🏹'; 
-        if (!s.session.includes('SB')) s.session += ' + SB'; 
-    } 
+    let s = { session: 'OFF-HOURS', multiplier: 0.5, emoji: '🌙', isKillzone: false, isSilverBullet: false }; 
+    if (time >= 0 && time < 4) s = { session: 'ASIA KZ', multiplier: 0.8, emoji: '🌏', isKillzone: true }; 
+    else if (time >= 7 && time < 10) s = { session: 'LONDON KZ', multiplier: 1.1, emoji: '🇬🇧', isKillzone: true }; 
+    else if (time >= 12 && time < 15) s = { session: 'NEW_YORK KZ', multiplier: 1.2, emoji: '🇺🇸', isKillzone: true }; 
+    else if (time >= 15 && time < 17) s = { session: 'LON-CLOSE KZ', multiplier: 0.9, emoji: '🌆', isKillzone: true }; 
+    if ((time >= 8 && time < 9) || (time >= 15 && time < 16) || (time >= 19 && time < 20)) { s.isSilverBullet = true; s.multiplier += 0.2; s.emoji = '🏹'; s.session += ' + SB'; } 
     return s; 
 } 
 function validateBreakerBlock(data, level, direction) { if (data.length < 25) return false; const moveAway = data.slice(-25).find(c => direction === 'BUY' ? c.c > level * 1.005 : c.c < level * 0.995); if (!moveAway) return false; const recent = data.slice(-5), touched = recent.some(c => direction === 'BUY' ? c.l <= level : c.h >= level), last = recent[recent.length - 1], rejected = direction === 'BUY' ? last.c > level : last.c < level; return touched && rejected; } 
@@ -507,21 +503,21 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 } 
 function calculateSetupQuality(result, price) { 
     let score = 0; const prec = getPrec(pair), risk = Math.abs(result.entry - result.sl), riskPct = (risk / price) * 100; 
-    const tfWeights = { '1D': 100, '4H': 90, '1H': 70, '15M': 40, '5M': 20 }; score += tfWeights[result.timeframe] || 0; 
-    score += (result.confidence / 100) * 60; if (result.zone.quality === 'A') score += 25; else if (result.zone.quality === 'B') score += 12; 
-    score += Math.min(result.zone.cc * 6, 25); if (result.htfValidation?.passed) score += 20; 
-    if (result.zoneReaction?.confirmed) { if (result.zoneReaction.strength === 'STRONG') score += 20; else if (result.zoneReaction.strength === 'MODERATE') score += 10; } 
-    if (result.magnetism.magnetism === 'STRONG') score += 12; else if (result.magnetism.magnetism === 'MODERATE') score += 6; 
-    if (result.entryReady) score += 15; if (riskPct < 0.05) score -= 15; if (riskPct > 2.5) score -= 15; 
-    if (result.probCheck.probability === 'HIGH') score += 15; else if (result.probCheck.probability === 'LOW') score -= 12; 
-    if (result.displacement.detected) score += 8; if (result.crt.detected && result.crt.pattern === 'Expanding') score += 8; 
-    if (result.pathCheck.clear) score += 8; if (result.turtleSoup.detected) score += 12; 
-    if (result.freshness?.fresh) score += 20; else if (result.freshness?.partiallyUsed) score += 8; else if (result.freshness?.used) score -= 15; 
-    if (result.premiumDiscount?.inPremiumDiscount) score += 15; else score -= 10; 
-    if (result.session?.isKillzone) score += 25; if (result.session?.isSilverBullet) score += 35; 
-    if (result.session?.multiplier >= 1.0) score += 15; else score -= 10; if (result.breakerValid) score += 12; 
-    if (result.amd?.phase === 'MANIPULATION') score += 20; 
-    if (!result.hasSweep) score -= 20; else score += 15; 
+    const tfWeights = { '1D': 100, '4H': 80, '1H': 60, '15M': 30, '5M': 10 }; score += tfWeights[result.timeframe] || 0; 
+    score += (result.confidence / 100) * 50; if (result.zone.quality === 'A') score += 20; else if (result.zone.quality === 'B') score += 10; 
+    score += Math.min(result.zone.cc * 5, 20); if (result.htfValidation?.passed) score += 15; 
+    if (result.zoneReaction?.confirmed) { if (result.zoneReaction.strength === 'STRONG') score += 15; else if (result.zoneReaction.strength === 'MODERATE') score += 8; } 
+    if (result.magnetism.magnetism === 'STRONG') score += 10; else if (result.magnetism.magnetism === 'MODERATE') score += 5; 
+    if (result.entryReady) score += 10; if (riskPct < 0.1) score -= 10; if (riskPct > 2.0) score -= 10; 
+    if (result.probCheck.probability === 'HIGH') score += 10; else if (result.probCheck.probability === 'LOW') score -= 10; 
+    if (result.displacement.detected) score += 5; if (result.crt.detected && result.crt.pattern === 'Expanding') score += 5; 
+    if (result.pathCheck.clear) score += 5; if (result.turtleSoup.detected) score += 8; 
+    if (result.freshness?.fresh) score += 15; else if (result.freshness?.partiallyUsed) score += 5; else if (result.freshness?.used) score -= 10; 
+    if (result.premiumDiscount?.inPremiumDiscount) score += 10; else score -= 5; 
+    if (result.session?.isKillzone) score += 15; if (result.session?.isSilverBullet) score += 20; 
+    if (result.session?.multiplier >= 1.0) score += 10; else score -= 10; if (result.breakerValid) score += 8; 
+    if (result.amd?.phase === 'MANIPULATION') score += 15; 
+    if (!result.hasSweep) score -= 15; else score += 10; 
     return Math.max(0, Math.min(100, score)); 
 } 
 async function askAIWithAllResults(allResults, price, htfData) { 
@@ -575,45 +571,10 @@ async function runAutoScan() {
 
         const mtfTrendsData = {}; for (let t of tfs) mtfTrendsData[t] = await getQuoteDirection(t, historyCache[t]); 
         await updateMTFDisplay(historyCache); document.getElementById('currentPrice').innerHTML = `$${price.toFixed(getPrec(pair))}`; 
-        
-        const currentSession = getSession();
-        const kzBadge = document.getElementById('kzBadge');
-        if (kzBadge) {
-            kzBadge.style.visibility = 'visible';
-            kzBadge.innerHTML = currentSession.emoji + ' ' + currentSession.session;
-            kzBadge.className = 'status-badge ' + (currentSession.isKillzone ? 'active' : 'inactive');
-        }
-
-        const dailyData = historyCache['1D'] || await getHistory('1D');
-        const currentAMD = analyzeAMD(dailyData);
-        const amdBadge = document.getElementById('amdBadge');
-        if (amdBadge) {
-            amdBadge.style.visibility = 'visible';
-            amdBadge.innerHTML = 'Phase: ' + currentAMD.phase;
-            amdBadge.className = 'status-badge ' + (currentAMD.phase === 'MANIPULATION' ? 'active' : 'inactive');
-        }
         if (lastPrice) { const ch = ((price - lastPrice) / lastPrice * 100).toFixed(2); const ce = document.getElementById('priceChange'); ce.innerHTML = `${ch >= 0 ? '▲' : '▼'} ${Math.abs(ch)}%`; ce.className = `price-change ${ch >= 0 ? 'up' : 'down'}`; } lastPrice = price; 
         const results = [], timeframesToScan = ['1D', '4H', '1H', '15M', '5M'], htfData = historyCache; 
         for (let i = 0; i < timeframesToScan.length; i++) { const tfScan = timeframesToScan[i]; scanText.innerHTML = `Scanning ${tfScan}... (${i + 1}/${timeframesToScan.length})`; scanFill.style.width = ((i + 1) / timeframesToScan.length * 100) + '%'; const result = await analyzeTimeframe(tfScan, price, htfData); if (result) results.push(result); } 
-        if (results.length === 0) { 
-            showNotif('⚠️ No setups found. Waiting for Killzone reaction.', 'warning'); 
-            const noSetupJson = {
-                auto_scan_result: {
-                    date: new Date().toISOString().split('T')[0],
-                    time: new Date().toISOString().split('T')[1].split('.')[0],
-                    pair,
-                    current_price: price,
-                    status: 'NO_SETUP_DETECTED',
-                    reason: 'Market currently in accumulation or lacking displacement.',
-                    session: currentSession,
-                    amd_phase: currentAMD.phase,
-                    multi_timeframe_trends: mtfTrendsData,
-                    timeframes_scanned: timeframesToScan.length
-                }
-            };
-            document.getElementById('jsonOutput').innerHTML = JSON.stringify(noSetupJson, null, 2); 
-            btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; 
-        } 
+        if (results.length === 0) { showNotif('⚠️ No valid setups found', 'warning'); document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}, null, 2); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; } 
         for (let result of results) result.qualityScore = calculateSetupQuality(result, price); 
         const higherTimeframes = ['1D', '4H', '1H'], lowerTimeframes = ['15M', '5M']; 
         const higherResults = results.filter(r => higherTimeframes.includes(r.timeframe)), lowerResults = results.filter(r => lowerTimeframes.includes(r.timeframe)); 
@@ -645,14 +606,4 @@ function updateLimitUI(){const t=document.getElementById('limitOrderText'),c=doc
 function startMonitor(){if(priceTimer)clearInterval(priceTimer);priceTimer=setInterval(async()=>{if(!limitOrder){clearInterval(priceTimer);return;}const p=await getPrice();if(!p)return;const prec=getPrec(pair);document.getElementById('currentPrice').innerHTML=`$${p.toFixed(prec)}`;if((limitOrder.signalType==='LONG' && p<=limitOrder.idealEntry)||(limitOrder.signalType==='SHORT' && p>=limitOrder.idealEntry)){clearLimit();showNotif(`✅ FILLED! ${limitOrder.signalType} @ $${p.toFixed(prec)}`,'success');try{new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play();}catch(e){}}},2000);} 
 function handleLimit(){if(!analysis||analysis.signalType==='NEUTRAL'){showNotif('No signal','error');return;}if(limitOrder){cancelLimit();return;}const o={id:Date.now(),pair,signalType:analysis.signalType,idealEntry:analysis.idealEntry,stopLoss:analysis.stopLoss,takeProfit1:analysis.takeProfit1,takeProfit2:analysis.takeProfit2,takeProfit3:analysis.takeProfit3,confidence:analysis.confidence,entryZoneLow:analysis.entryZoneLow,entryZoneHigh:analysis.entryZoneHigh,entryReady:analysis.entryReady,executionDecision:analysis.executionDecision,invalidationPrice:analysis.invalidationPrice,createdAt:new Date().toISOString()};saveLimit(o);startMonitor();showNotif(`📝 Limit @ $${o.idealEntry.toFixed(getPrec(pair))}`,'info');} 
 function copyJson(){const t=document.getElementById('jsonOutput').innerHTML;if(t.includes('Click')){showNotif('Run analysis first','warning');return;}navigator.clipboard.writeText(t).then(()=>showNotif('📋 Copied!','success')).catch(()=>showNotif('Failed','error'));} 
-function showNotif(m,t){ 
-    const n=document.getElementById('notification'); if(!n) return;
-    n.innerHTML=m; n.className=`notification ${t} show`; 
-    n.classList.remove('hidden');
-    if (tg.HapticFeedback) {
-        if (t === 'success') tg.HapticFeedback.notificationOccurred('success');
-        else if (t === 'warning' || t === 'error') tg.HapticFeedback.notificationOccurred('error');
-        else tg.HapticFeedback.impactOccurred('light');
-    }
-    setTimeout(()=>{ n.classList.remove('show'); setTimeout(()=>n.classList.add('hidden'), 400); }, 3000);
-}
+function showNotif(m,t){const n=document.getElementById('notification');n.innerHTML=m;n.className=`notification ${t}`;n.classList.remove('hidden');setTimeout(()=>n.classList.add('hidden'),3000);}
