@@ -3,14 +3,12 @@
     padding: 0;
     box-sizing: border-box;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    -webkit-tap-highlight-color: transparent;
 }
 
 body {
     background-color: #0f0f11;
     color: #ffffff;
     padding: 12px;
-    overflow-x: hidden;
 }
 
 .container {
@@ -54,7 +52,6 @@ body {
     padding: 14px;
     margin-bottom: 10px;
     border: 1px solid #2c2c2e;
-    transition: transform 0.2s ease;
 }
 
 .section h3 {
@@ -84,17 +81,15 @@ body {
 }
 
 .status-badge {
-    padding: 4px 12px;
+    padding: 3px 10px;
     border-radius: 12px;
     font-size: 11px;
     font-weight: bold;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .status-badge.active {
     background: rgba(52, 199, 89, 0.2);
     color: #34c759;
-    box-shadow: 0 0 10px rgba(52, 199, 89, 0.1);
 }
 
 .status-badge.inactive {
@@ -102,9 +97,14 @@ body {
     color: #ff3b30;
 }
 
+.status-badge.checking {
+    background: rgba(255, 159, 10, 0.2);
+    color: #ff9f0a;
+}
+
 .settings-btn {
     width: 100%;
-    padding: 12px;
+    padding: 10px;
     border: 1px solid #ff9f0a;
     border-radius: 10px;
     background: transparent;
@@ -112,12 +112,11 @@ body {
     font-size: 13px;
     cursor: pointer;
     font-weight: bold;
-    transition: all 0.2s ease;
+    transition: all 0.2s;
 }
 
-.settings-btn:active {
+.settings-btn:hover {
     background: rgba(255, 159, 10, 0.1);
-    transform: scale(0.98);
 }
 
 .btn-group {
@@ -134,17 +133,12 @@ body {
     color: #8e8e93;
     font-size: 13px;
     cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: all 0.2s;
 }
 
 .category-btn.active, .tf-btn.active {
     background: #3390ec;
     color: white;
-    box-shadow: 0 4px 12px rgba(51, 144, 236, 0.3);
-}
-
-.category-btn:active, .tf-btn:active {
-    transform: scale(0.95);
 }
 
 .input-field {
@@ -156,35 +150,37 @@ body {
     color: white;
     font-size: 15px;
     cursor: pointer;
-    transition: border-color 0.2s;
-}
-
-.input-field:focus {
-    border-color: #3390ec;
-    outline: none;
 }
 
 .price-section {
     text-align: center;
-    position: relative;
 }
 
 .current-price {
-    font-size: 42px;
+    font-size: 38px;
     font-weight: bold;
     color: #3390ec;
     font-family: monospace;
-    transition: color 0.3s ease;
 }
 
 .price-change {
-    font-size: 14px;
+    font-size: 13px;
     margin-top: 4px;
-    font-weight: 500;
 }
 
 .price-change.up { color: #34c759; }
 .price-change.down { color: #ff3b30; }
+
+.timeframe-btns {
+    display: flex;
+    gap: 6px;
+}
+
+.tf-btn {
+    flex: 1;
+    padding: 10px 6px;
+    font-size: 12px;
+}
 
 .mtf-grid {
     display: grid;
@@ -197,7 +193,6 @@ body {
     border-radius: 10px;
     padding: 10px 6px;
     text-align: center;
-    transition: background 0.3s;
 }
 
 .mtf-header {
@@ -217,39 +212,31 @@ body {
 
 .analyze-btn {
     width: 100%;
-    padding: 18px;
+    padding: 16px;
     border: none;
-    border-radius: 14px;
+    border-radius: 12px;
     background: linear-gradient(135deg, #3390ec, #0055cc);
     color: white;
     font-size: 16px;
     font-weight: bold;
     cursor: pointer;
-    margin-bottom: 12px;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 4px 15px rgba(0, 85, 204, 0.3);
+    margin-bottom: 10px;
 }
 
-.analyze-btn:active { 
-    transform: scale(0.96);
-    box-shadow: 0 2px 8px rgba(0, 85, 204, 0.2);
-}
-
-.analyze-btn:disabled { 
-    opacity: 0.6;
-    filter: grayscale(0.5);
-}
+.analyze-btn:active { transform: scale(0.98); }
+.analyze-btn:disabled { opacity: 0.5; }
 
 .analyze-btn.loading {
-    color: transparent;
+    pointer-events: none;
+    position: relative;
 }
 
 .analyze-btn.loading::after {
     content: '';
     position: absolute;
     top: 50%; left: 50%;
-    width: 24px; height: 24px;
-    border: 3px solid rgba(255,255,255,0.3);
+    width: 20px; height: 20px;
+    border: 2px solid transparent;
     border-top-color: white;
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
@@ -259,53 +246,142 @@ body {
 @keyframes spin { to { transform: translate(-50%, -50%) rotate(360deg); } }
 
 .scan-status {
-    background: rgba(28, 28, 30, 0.8);
-    backdrop-filter: blur(10px);
-    border-radius: 14px;
-    padding: 16px;
-    margin-bottom: 12px;
-    border: 1px solid rgba(51, 144, 236, 0.5);
-    animation: slideDown 0.3s ease;
+    background: #1c1c1e;
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 10px;
+    border: 1px solid #3390ec;
 }
 
-@keyframes slideDown { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.scan-progress span {
+    display: block;
+    font-size: 13px;
+    color: #3390ec;
+    margin-bottom: 8px;
+    text-align: center;
+}
 
 .progress-bar {
     width: 100%;
-    height: 8px;
+    height: 6px;
     background: #2c2c2e;
-    border-radius: 4px;
+    border-radius: 3px;
     overflow: hidden;
-    margin-top: 10px;
 }
 
 .progress-fill {
     height: 100%;
     background: linear-gradient(90deg, #3390ec, #af52de);
+    border-radius: 3px;
     width: 0%;
-    transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: width 0.3s;
+}
+
+.json-section {
+    border: 2px solid #af52de;
+    background: #0a0a0f;
+}
+
+.json-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.json-header h3 {
+    margin-bottom: 0;
+    color: #af52de;
+}
+
+.copy-json-btn {
+    background: #af52de;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 12px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.copy-json-btn:hover { background: #8e44ad; }
+
+.json-output {
+    background: #050508;
+    border-radius: 10px;
+    padding: 16px;
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    color: #34c759;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 450px;
+    overflow-y: auto;
+    line-height: 1.5;
+    border: 1px solid #1c1c1e;
+}
+
+.limit-box {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px;
+    background: #2c2c2e;
+    border-radius: 10px;
+    margin-bottom: 10px;
+    font-size: 13px;
+}
+
+#limitOrderText { color: #8e8e93; }
+#limitOrderText.active { color: #ff9f0a; }
+
+.cancel-btn {
+    background: #ff3b30;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.cancel-btn.hidden { display: none; }
+
+.execute-btn {
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #34c759, #28a745);
+    color: white;
+    font-size: 15px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.execute-btn:active { transform: scale(0.98); }
+.execute-btn:disabled {
+    background: #2c2c2e;
+    cursor: not-allowed;
+    opacity: 0.5;
 }
 
 .notification {
     position: fixed;
-    bottom: 30px;
+    bottom: 20px;
     left: 50%;
-    transform: translateX(-50%) translateY(100px);
-    opacity: 0;
-    padding: 14px 24px;
-    border-radius: 16px;
+    transform: translateX(-50%);
+    padding: 12px 20px;
+    border-radius: 12px;
     color: white;
-    font-size: 14px;
-    font-weight: 500;
-    z-index: 10000;
+    font-size: 13px;
+    z-index: 1000;
     max-width: 90%;
     text-align: center;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-    transition: all 0.4s cubic-bezier(0.18, 0.89, 0.32, 1.28);
-    pointer-events: none;
 }
 
-.notification.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+.notification.hidden { display: none; }
 .notification.success { background: #34c759; }
 .notification.error { background: #ff3b30; }
 .notification.warning { background: #ff9f0a; color: black; }
@@ -315,46 +391,60 @@ body {
 .setup-overlay {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.8);
-    backdrop-filter: blur(8px);
+    background: rgba(0,0,0,0.85);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 9999;
-    animation: fadeIn 0.3s ease;
 }
 
 .setup-modal {
     background: #1c1c1e;
-    border-radius: 24px;
-    padding: 28px;
-    max-width: 380px;
-    width: 92%;
-    border: 1px solid #2c2c2e;
-    box-shadow: 0 20px 40px rgba(0,0,0,0.5);
-    animation: scaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+    border-radius: 16px;
+    padding: 24px;
+    max-width: 360px;
+    width: 90%;
+    border: 1px solid #3390ec;
 }
 
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-@keyframes scaleIn { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.setup-modal h3 { color: #3390ec; margin-bottom: 8px; font-size: 17px; }
+.setup-desc { color: #8e8e93; font-size: 12px; margin-bottom: 14px; }
+.setup-modal label { color: white; font-size: 12px; display: block; margin-bottom: 4px; }
+.setup-note { color: #ff9f0a; font-size: 11px; margin-bottom: 14px; }
+
+.setup-input {
+    width: 100%;
+    padding: 12px;
+    border-radius: 10px;
+    border: 1px solid #2c2c2e;
+    background: #0f0f11;
+    color: white;
+    font-size: 13px;
+    margin-bottom: 14px;
+    font-family: monospace;
+}
+
+.setup-buttons { display: flex; gap: 8px; }
 
 .setup-btn {
-    transition: all 0.2s ease;
+    flex: 1;
+    padding: 12px;
+    border: none;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
 }
-.setup-btn:active { transform: scale(0.95); }
 
-.json-output {
-    background: #050508;
-    border-radius: 12px;
-    padding: 16px;
-    font-family: 'Fira Code', 'Courier New', monospace;
-    font-size: 11px;
-    color: #34c759;
-    border: 1px solid #1c1c1e;
-    transition: all 0.3s ease;
-}
+.setup-btn.primary { background: #3390ec; color: white; }
+.setup-btn.secondary { background: #2c2c2e; color: #8e8e93; }
+.setup-btn.danger { background: #ff3b30; color: white; }
+
+.hidden { display: none; }
 
 @media (max-width: 480px) {
+    body { padding: 8px; }
+    .current-price { font-size: 32px; }
+    .json-output { font-size: 10px; max-height: 350px; }
     .mtf-grid { grid-template-columns: repeat(3, 1fr); }
-    .current-price { font-size: 36px; }
 }
