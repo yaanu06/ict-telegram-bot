@@ -100,12 +100,64 @@ function getPrec(p){const s=getMarketSettings(p);return s.prec;}
 // ============================================ 
 // API FUNCTIONS 
 // ============================================ 
+let lastApiCallTime = 0;
+let apiQueue = [];
+let isProcessingQueue = false;
+
+function rateLimitedFetch(url, options = {}, timeout = 10000) {
+    return new Promise((resolve, reject) => {
+        apiQueue.push({ url, options, resolve, reject, timeout });
+        processApiQueue();
+    });
+}
+
+async function processApiQueue() {
+    if (isProcessingQueue) return;
+    isProcessingQueue = true;
+    while (apiQueue.length > 0) {
+        const { url, options, resolve, reject, timeout } = apiQueue[0];
+        const now = Date.now();
+        const timeSinceLastCall = now - lastApiCallTime;
+        if (timeSinceLastCall < 1000) {
+            await new Promise(r => setTimeout(r, 1000 - timeSinceLastCall));
+        }
+        try {
+            lastApiCallTime = Date.now();
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), timeout);
+            const response = await fetch(url, { ...options, signal: controller.signal });
+            clearTimeout(id);
+
+            if (response.status === 429) {
+                lastApiCallTime = Date.now() + 60000;
+                continue;
+            }
+
+            const clone = response.clone();
+            try {
+                const data = await clone.json();
+                if (data.code === 429) {
+                    lastApiCallTime = Date.now() + 60000;
+                    continue;
+                }
+            } catch(e) {}
+
+            apiQueue.shift();
+            resolve(response);
+        } catch (error) {
+            apiQueue.shift();
+            reject(error);
+        }
+    }
+    isProcessingQueue = false;
+}
+
 async function getPrice() { 
     const now = Date.now(); 
     if (cachedPrice !== null && (now - priceCacheTime) < PRICE_CACHE_DURATION) return cachedPrice; 
     if (!TWELVE_DATA_KEY) return null; 
     try { 
-        const r = await fetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(SYMBOLS[pair])}&apikey=${TWELVE_DATA_KEY}`); 
+        const r = await rateLimitedFetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(SYMBOLS[pair])}&apikey=${TWELVE_DATA_KEY}`);
         const d = await r.json(); 
         if (d.price) { calls++; document.getElementById('apiSource').innerHTML = '📡 Live'; cachedPrice = +d.price; priceCacheTime = now; return cachedPrice; } 
     } catch(e) { if (cachedPrice !== null) return cachedPrice; } 
@@ -115,7 +167,7 @@ async function getQuote(tfStr){
     if(!TWELVE_DATA_KEY)return null; 
     const interval = QUOTE_INTERVAL_MAP[tfStr] || '1day'; 
     try{ 
-        const r=await fetch(`${TWELVE_DATA_BASE}/quote?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`); 
+        const r=await rateLimitedFetch(`${TWELVE_DATA_BASE}/quote?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);
         const d=await r.json(); 
         if(d.code && d.code !== 200) throw new Error(d.message || 'API Error');
         if(d.open && d.close){calls++;return{open:+d.open,close:+d.close,is_market_open:d.is_market_open};} 
@@ -154,7 +206,7 @@ async function getQuoteDirection(tfStr, cachedData = null) {
 async function getHistory(tfStr){ 
     if(!TWELVE_DATA_KEY)return null; 
     try{ 
-        const r=await fetch(`${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${TF_MAP[tfStr]}&outputsize=100&apikey=${TWELVE_DATA_KEY}`); 
+        const r=await rateLimitedFetch(`${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${TF_MAP[tfStr]}&outputsize=100&apikey=${TWELVE_DATA_KEY}`);
         const d=await r.json(); 
         if(d.code && d.code !== 200) throw new Error(d.message || 'API Error');
         if(d.values){calls++;return d.values.map(c=>({t:c.datetime,o:+c.open,h:+c.high,l:+c.low,c:+c.close,v:+c.volume||1e6})).reverse();} 
@@ -178,7 +230,7 @@ async function getTechnicalIndicators(tfUsed){
     ];
     await Promise.all(endpoints.map(async (e) => {
         try {
-            const r = await fetch(`${TWELVE_DATA_BASE}${e.url}&apikey=${TWELVE_DATA_KEY}`);
+            const r = await rateLimitedFetch(`${TWELVE_DATA_BASE}${e.url}&apikey=${TWELVE_DATA_KEY}`);
             const d = await r.json();
             if (!d.values) return;
             calls++;
@@ -201,8 +253,8 @@ async function getTechnicalIndicators(tfUsed){
 // ============================================ 
 // TECHNICALS MATH 
 // ============================================ 
-const ema=(p,n)=>{const m=2/(n+1);let e=[p[0]];for(let i=1;i<p.length;i++)e.push((p[i]-e[i-1])*m+e[i-1]);return e;}; 
-const rsi=(p,n=14)=>{let g=0,l=0;for(let i=p.length-n;i<p.length;i++){let c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;return al===0?100:100-(100/(1+ag/al));}; 
+const ema=(p,n)=>{const m=2/(n+1);let sma=p.slice(0,n).reduce((a,b)=>a+b,0)/n;let e=Array(n-1).fill(null);e.push(sma);for(let i=n;i<p.length;i++)e.push((p[i]-e[i-1])*m+e[i-1]);return e;};
+const rsi=(p,n=14)=>{if(p.length<=n)return 50;let g=0,l=0;for(let i=1;i<=n;i++){let c=p[i]-p[i-1];if(c>0)g+=c;else l-=c;}let ag=g/n,al=l/n;for(let i=n+1;i<p.length;i++){let c=p[i]-p[i-1];let cg=c>0?c:0,cl=c<0?-c:0;ag=(ag*(n-1)+cg)/n;al=(al*(n-1)+cl)/n;}return al===0?100:100-(100/(1+ag/al));};
 const atr=(d,n=14)=>{let t=[];for(let i=1;i<d.length;i++)t.push(Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c)));return t.slice(-n).reduce((a,b)=>a+b,0)/n;}; 
 function detectFVG(d){let f=[];for(let i=1;i<d.length-1;i++){if(d[i-1].h<d[i+1].l && d[i+1].l-d[i-1].h>d[i+1].c*0.0005){let m=false;for(let j=i+2;j<d.length;j++){if(d[j].l<=d[i+1].l && d[j].l>=d[i-1].h){m=true;break;}}f.push({type:'bull',l:d[i-1].h,h:d[i+1].l,m:(d[i-1].h+d[i+1].l)/2,fresh:!m});}if(d[i-1].l>d[i+1].h && d[i-1].l-d[i+1].h>d[i+1].c*0.0005){let m=false;for(let j=i+2;j<d.length;j++){if(d[j].h>=d[i+1].h && d[j].h<=d[i-1].l){m=true;break;}}f.push({type:'bear',l:d[i+1].h,h:d[i-1].l,m:(d[i+1].h+d[i+1].l)/2,fresh:!m});}}return f;} 
 function findSwings(d,lb=3){let H=[],L=[],h=d.map(c=>c.h),l=d.map(c=>c.l);for(let i=lb;i<h.length-lb;i++){let iH=true,iL=true;for(let j=1;j<=lb;j++){if(h[i]<=h[i-j]||h[i]<=h[i+j])iH=false;if(l[i]>=l[i-j]||l[i]>=l[i+j])iL=false;}if(iH)H.push({p:h[i],i});if(iL)L.push({p:l[i],i});}return{H,L};} 
@@ -421,7 +473,7 @@ function getSession() {
     const now = new Date(); const hour = now.getUTCHours(); const min = now.getUTCMinutes(); const time = hour + min / 60; 
     let s = { session: 'OFF-HOURS', multiplier: 0.5, emoji: '🌙', isKillzone: false, isSilverBullet: false }; 
     if (time >= 0 && time < 4) s = { session: 'ASIA KZ', multiplier: 0.8, emoji: '🌏', isKillzone: true }; 
-    else if (time >= 7 && time < 10) s = { session: 'LONDON KZ', multiplier: 1.1, emoji: '🇬🇧', isKillzone: true }; 
+    else if (time >= 7 && time < 10) s = { session: 'LONDON KZ', multiplier: 0.8, emoji: '🇬🇧', isKillzone: true };
     else if (time >= 12 && time < 15) s = { session: 'NEW_YORK KZ', multiplier: 1.2, emoji: '🇺🇸', isKillzone: true }; 
     else if (time >= 15 && time < 17) s = { session: 'LON-CLOSE KZ', multiplier: 0.9, emoji: '🌆', isKillzone: true }; 
     if ((time >= 8 && time < 9) || (time >= 15 && time < 16) || (time >= 19 && time < 20)) { s.isSilverBullet = true; s.multiplier += 0.2; s.emoji = '🏹'; s.session += ' + SB'; } 
