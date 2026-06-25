@@ -567,9 +567,9 @@ function calculateSetupQuality(result, price) {
     if (result.freshness?.fresh) score += 15; else if (result.freshness?.partiallyUsed) score += 5; else if (result.freshness?.used) score -= 10; 
     if (result.premiumDiscount?.inPremiumDiscount) score += 10; else score -= 5; 
     if (result.session?.isKillzone) score += 15; if (result.session?.isSilverBullet) score += 20; 
-    if (result.session?.multiplier >= 1.0) score += 10; else score -= 5; if (result.breakerValid) score += 8;
+    if (result.session?.multiplier >= 1.0) score += 10; else score -= 0; if (result.breakerValid) score += 8;
     if (result.amd?.phase === 'MANIPULATION') score += 15; 
-    if (!result.hasSweep) score -= 5; else score += 10;
+    if (!result.hasSweep) score -= 0; else score += 10;
     return Math.max(0, Math.min(100, score)); 
 } 
 async function askAIWithAllResults(allResults, price, htfData) { 
