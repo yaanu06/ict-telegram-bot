@@ -118,8 +118,8 @@ async function processApiQueue() {
         const { url, options, resolve, reject, timeout } = apiQueue[0];
         const now = Date.now();
         const timeSinceLastCall = now - lastApiCallTime;
-        if (timeSinceLastCall < 1000) {
-            await new Promise(r => setTimeout(r, 1000 - timeSinceLastCall));
+        if (timeSinceLastCall < 125) {
+            await new Promise(r => setTimeout(r, 125 - timeSinceLastCall));
         }
         try {
             lastApiCallTime = Date.now();
@@ -535,20 +535,20 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         if (probCheck.probability === 'HIGH') conf = Math.min(conf + 5, 98); if (turtleSoup.detected) conf = Math.min(conf + 12, 98); 
         if (amd.phase === 'MANIPULATION') { if (direction === 'BUY' && amd.manipulated === 'DOWN') conf = Math.min(conf + 15, 98); if (direction === 'SELL' && amd.manipulated === 'UP') conf = Math.min(conf + 15, 98); } 
         if (crt.detected && crt.pattern === 'Expanding') conf = Math.min(conf + 5, 98); if (zone.hasImbalance) conf = Math.min(conf + 8, 98); 
-        if (pathCheck.clear) conf = Math.min(conf + 5, 98); if (!zone.hasImbalance) conf = Math.max(conf - 10, 30); 
-        if (magnetism.magnetism === 'STRONG') conf = Math.min(conf + 10, 98); else if (magnetism.magnetism === 'WEAK') conf = Math.max(conf - 15, 25); 
+        if (pathCheck.clear) conf = Math.min(conf + 5, 98); if (!zone.hasImbalance) conf = Math.max(conf - 5, 30);
+        if (magnetism.magnetism === 'STRONG') conf = Math.min(conf + 10, 98); else if (magnetism.magnetism === 'WEAK') conf = Math.max(conf - 5, 25);
         if (!freshness.fresh && freshness.partiallyUsed) conf = Math.max(conf - 10, 10); if (freshness.used) conf = Math.max(conf - 20, 10); 
-        if (premiumDiscount.inPremiumDiscount) conf = Math.min(conf + 10, 98); else conf = Math.max(conf - 10, 10); 
+        if (premiumDiscount.inPremiumDiscount) conf = Math.min(conf + 10, 98); else conf = Math.max(conf - 5, 10);
         let sessionMult = session.multiplier; if (session.isSilverBullet) sessionMult *= 1.2; 
         conf = Math.min(conf * sessionMult, 98); if (breakerValid) conf = Math.min(conf + 8, 98); 
         if (session.isKillzone) conf = Math.min(conf + 10, 98); 
-        if (htfValidation.passed) conf = Math.min(conf + 15, 98); else if (structureTF !== entryTF) conf = Math.max(conf - 20, 10); 
-        if (zoneReaction.confirmed && (zoneReaction.strength === 'STRONG' || zoneReaction.strength === 'MODERATE')) conf = Math.min(conf + 20, 98); else if (!zoneReaction.confirmed) conf = Math.max(conf - 20, 10); 
-        if (zoneTouches >= 5 && !zoneReaction.confirmed) conf = Math.max(conf - 20, 10); if (zoneTouches >= 2 && zoneReaction.confirmed) conf = Math.min(conf + 10, 98); 
+        if (htfValidation.passed) conf = Math.min(conf + 15, 98); else if (structureTF !== entryTF) conf = Math.max(conf - 5, 10);
+        if (zoneReaction.confirmed && (zoneReaction.strength === 'STRONG' || zoneReaction.strength === 'MODERATE')) conf = Math.min(conf + 20, 98); else if (!zoneReaction.confirmed) conf = Math.max(conf - 5, 10);
+        if (zoneTouches >= 5 && !zoneReaction.confirmed) conf = Math.max(conf - 10, 10); if (zoneTouches >= 2 && zoneReaction.confirmed) conf = Math.min(conf + 10, 98);
         if (twelveIndicators.macd_hist && direction === 'BUY' && twelveIndicators.macd > twelveIndicators.macd_signal) conf = Math.min(conf + 5, 98); 
         if (twelveIndicators.macd_hist && direction === 'SELL' && twelveIndicators.macd < twelveIndicators.macd_signal) conf = Math.min(conf + 5, 98); 
         if (twelveIndicators.adx && twelveIndicators.adx > 25) conf = Math.min(conf + 5, 98); 
-        if (!hasSweep) conf = Math.max(conf - 20, 10); else conf = Math.min(conf + 10, 98); 
+        if (!hasSweep) conf = Math.max(conf - 5, 10); else conf = Math.min(conf + 10, 98);
         const tfAlign = `Trend:${trendTF}→Structure:${structureTF}→Entry:${entryTF}→Sniper:${sniperTF}`; 
         return { timeframe: tfToAnalyze, trendTF, structureTF, entryTF, sniperTF, direction, entry, sl: slResult.price, tp1: tps.tp1, tp2: tps.tp2, tp3: tps.tp3, confidence: conf, zone, slResult, displacement, sniperRej, probCheck, turtleSoup, mtf, msnr, twelveIndicators, pathCheck, tfAlign, sweeps, imbalances, mss, volatility, crt, fvgsAll, breakersAll, obsAll, rs, apiATR, trends, magnetism, zoneReaction, zoneTouches, entryReady, invalidationPrice, rrUsed: tps.rrUsed, htfValidation, freshness, premiumDiscount, session, breakerValid, hasSweep, amd }; 
     } catch (e) { console.error(`Error ${tfToAnalyze}:`, e); return null; } 
@@ -567,9 +567,9 @@ function calculateSetupQuality(result, price) {
     if (result.freshness?.fresh) score += 15; else if (result.freshness?.partiallyUsed) score += 5; else if (result.freshness?.used) score -= 10; 
     if (result.premiumDiscount?.inPremiumDiscount) score += 10; else score -= 5; 
     if (result.session?.isKillzone) score += 15; if (result.session?.isSilverBullet) score += 20; 
-    if (result.session?.multiplier >= 1.0) score += 10; else score -= 10; if (result.breakerValid) score += 8; 
+    if (result.session?.multiplier >= 1.0) score += 10; else score -= 5; if (result.breakerValid) score += 8;
     if (result.amd?.phase === 'MANIPULATION') score += 15; 
-    if (!result.hasSweep) score -= 15; else score += 10; 
+    if (!result.hasSweep) score -= 5; else score += 10;
     return Math.max(0, Math.min(100, score)); 
 } 
 async function askAIWithAllResults(allResults, price, htfData) { 
@@ -632,7 +632,7 @@ async function runAutoScan() {
         const higherResults = results.filter(r => higherTimeframes.includes(r.timeframe)), lowerResults = results.filter(r => lowerTimeframes.includes(r.timeframe)); 
         let best = null, isLowerTF = false; 
         if (higherResults.length > 0) { higherResults.sort((a, b) => b.qualityScore - a.qualityScore); best = higherResults[0]; isLowerTF = false; showNotif(`✅ ${best.timeframe} setup found - Quality: ${best.qualityScore}%`, 'success'); }  
-        else if (lowerResults.length > 0) { const filteredLower = lowerResults.filter(r => r.qualityScore > 40); if (filteredLower.length > 0) { filteredLower.sort((a, b) => b.qualityScore - a.qualityScore); best = filteredLower[0]; isLowerTF = true; best.confidence = Math.max(best.confidence - 30, 20); showNotif(`⚠️ ONLY LOWER TF SETUP (${best.timeframe}) - Quality: ${best.qualityScore}% - REDUCED CONFIDENCE`, 'warning'); } else { showNotif('⚠️ Lower timeframe setups found but quality too low (<40%)', 'warning'); document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'LOW_QUALITY_SETUPS_ONLY',message:'Only low quality lower timeframe setups found. Not tradable.',multi_timeframe_trends:mtfTrendsData,lower_setups_found:lowerResults.length,best_quality:Math.max(...lowerResults.map(r=>r.qualityScore))}}, null, 2); analysis = null; document.getElementById('executeBtn').disabled = true; btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; } }  
+        else if (lowerResults.length > 0) { const filteredLower = lowerResults.filter(r => r.qualityScore > 40); if (filteredLower.length > 0) { filteredLower.sort((a, b) => b.qualityScore - a.qualityScore); best = filteredLower[0]; isLowerTF = true; best.confidence = Math.max(best.confidence - 5, 20); showNotif(`⚠️ ONLY LOWER TF SETUP (${best.timeframe}) - Quality: ${best.qualityScore}% - REDUCED CONFIDENCE`, 'warning'); } else { showNotif('⚠️ Lower timeframe setups found but quality too low (<40%)', 'warning'); document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'LOW_QUALITY_SETUPS_ONLY',message:'Only low quality lower timeframe setups found. Not tradable.',multi_timeframe_trends:mtfTrendsData,lower_setups_found:lowerResults.length,best_quality:Math.max(...lowerResults.map(r=>r.qualityScore))}}, null, 2); analysis = null; document.getElementById('executeBtn').disabled = true; btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; } }
         else { showNotif('⚠️ No valid setups found', 'warning'); document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}, null, 2); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; } 
         scanText.innerHTML = '🤖 AI strict execution decision...'; const aiResult = await askAIWithAllResults(results, price, htfData); scanStatus.classList.add('hidden'); 
         const prec = getPrec(pair), risk = Math.abs(best.entry - best.sl), rr = best.rrUsed || 4, rrDisplay = (Math.abs(best.tp1 - best.entry) / risk).toFixed(1), st = best.direction === 'BUY' ? 'LONG' : 'SHORT'; 
