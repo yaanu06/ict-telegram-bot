@@ -572,16 +572,16 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const cl = entryData.map(c => c.c), rs = rsi(cl, 14), fvgsAll = detectFVG(entryData), breakersAll = detectBreakers(entryData), obsAll = detectOrderBlocks(entryData, direction); 
         const invalidationPrice = direction === 'BUY' ? zone.low - apiATR * 0.5 : zone.high + apiATR * 0.5, hasSweep = sweeps.length > 0 || turtleSoup.detected; 
         let conf = sig.conf; 
-        if (mtf.direction === direction) conf = Math.min(conf + 10, 95); else conf = Math.max(conf - 15, 30); 
+        if (mtf.direction === direction) conf = Math.min(conf + 10, 95); else conf = Math.max(conf - 5, 40);
         if (zone.quality === 'A') conf = Math.min(conf + 15, 98); else if (zone.quality === 'B') conf = Math.min(conf + 8, 95); 
         if (displacement.detected) conf = Math.min(conf + 15, 98); if (sniperRej.confirmed) conf = Math.min(conf + 10, 98); 
         if (probCheck.probability === 'HIGH') conf = Math.min(conf + 15, 98); if (turtleSoup.detected) conf = Math.min(conf + 20, 98);
         if (volumeContext.strongVolume) conf = Math.min(conf + 15, 98);
         if (structureContext.state === 'TRENDING_UP' && direction === 'BUY') conf = Math.min(conf + 15, 98);
         if (structureContext.state === 'TRENDING_DOWN' && direction === 'SELL') conf = Math.min(conf + 15, 98);
-        if (structureContext.state === 'TRENDING_UP' && direction === 'SELL') conf = Math.max(conf - 20, 5);
-        if (structureContext.state === 'TRENDING_DOWN' && direction === 'BUY') conf = Math.max(conf - 20, 5);
-        if (structureContext.state === 'RANGING') conf = Math.max(conf - 10, 10);
+        if (structureContext.state === 'TRENDING_UP' && direction === 'SELL') conf = Math.max(conf - 10, 20);
+        if (structureContext.state === 'TRENDING_DOWN' && direction === 'BUY') conf = Math.max(conf - 10, 20);
+        if (structureContext.state === 'RANGING') conf = Math.max(conf - 5, 30);
         if (amd.phase === 'MANIPULATION') { if (direction === 'BUY' && amd.manipulated === 'DOWN') conf = Math.min(conf + 15, 98); if (direction === 'SELL' && amd.manipulated === 'UP') conf = Math.min(conf + 15, 98); } 
         if (crt.detected && crt.pattern === 'Expanding') conf = Math.min(conf + 5, 98); if (zone.hasImbalance) conf = Math.min(conf + 8, 98); 
         if (pathCheck.clear) conf = Math.min(conf + 5, 98); if (!zone.hasImbalance) conf = Math.max(conf - 5, 30);
