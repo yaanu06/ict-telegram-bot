@@ -439,16 +439,15 @@ function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, cu
     } 
  
     // Fallback: Strict ATR-based stop (1.0x ATR) 
-    const finalDist = Math.min(apiATR * 1.0, maxSLD); 
+    const finalDist = Math.min(apiATR * 1.5, maxSLD);
     const finalSL = dir === 'BUY' ? entry - finalDist : entry + finalDist; 
     return { price: finalSL, reason: 'ATR Baseline', distance: finalDist }; 
 } 
  
-function calcTakeProfits(dir,entry,sl){ 
-    const risk = Math.abs(entry - sl); 
+function calcTakeProfits(dir,entry,sl,apiATR){
     const rr1 = 1.5, rr2 = 3.0, rr3 = 5.0; 
-    if(dir === 'BUY') return { tp1: entry + risk * rr1, tp2: entry + risk * rr2, tp3: entry + risk * rr3, rrUsed: rr1 }; 
-    else return { tp1: entry - risk * rr1, tp2: entry - risk * rr2, tp3: entry - risk * rr3, rrUsed: rr1 }; 
+    if(dir === 'BUY') return { tp1: entry + apiATR * rr1, tp2: entry + apiATR * rr2, tp3: entry + apiATR * rr3, rrUsed: rr1 };
+    else return { tp1: entry - apiATR * rr1, tp2: entry - apiATR * rr2, tp3: entry - apiATR * rr3, rrUsed: rr1 };
 } 
 function score(data,price,twelveIndicators){ 
     const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl),fv=detectFVG(data),ms=detectMSS(data),bk=detectBreakers(data); 
@@ -566,22 +565,23 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         if (direction === 'BUY' && entry >= price) { const nb = msnr.nearestSupport || price * 0.99; entry = Math.min(zone.low, nb, price * 0.995); } 
         if (direction === 'SELL' && entry <= price) { const na = msnr.nearestResistance || price * 1.01; entry = Math.max(zone.high, na, price * 1.005); } 
         const magnetism = checkZoneMagnetism(entryData, price, entry, direction), displacement = detectDisplacement(entryData, direction), sniperRej = await checkSniperRejection(zone, direction, sniperTF, htfData[sniperTF]); 
-        const probCheck = checkProbability(zone, mtf, magnetism), slResult = calcStopLoss(entryData, direction, entry, zone, msnr, tfToAnalyze, twelveIndicators, pair), tps = calcTakeProfits(direction, entry, slResult.price); 
-        const pathCheck = checkPathClearance(entryData, entry, tps.tp1, direction), apiATR = twelveIndicators?.atr_api || atr(entryData, 14); 
+        const apiATR = twelveIndicators?.atr_api || atr(entryData, 14);
+        const probCheck = checkProbability(zone, mtf, magnetism), slResult = calcStopLoss(entryData, direction, entry, zone, msnr, tfToAnalyze, twelveIndicators, pair), tps = calcTakeProfits(direction, entry, slResult.price, apiATR);
+        const pathCheck = checkPathClearance(entryData, entry, tps.tp1, direction);
         const sweeps = detectLiquiditySweeps(entryData, price), imbalances = findImbalances(entryData), mss = detectMSS(entryData), volatility = getVolatilityLevel(apiATR, price), crt = detectCRT(entryData, direction); 
         const cl = entryData.map(c => c.c), rs = rsi(cl, 14), fvgsAll = detectFVG(entryData), breakersAll = detectBreakers(entryData), obsAll = detectOrderBlocks(entryData, direction); 
         const invalidationPrice = direction === 'BUY' ? zone.low - apiATR * 0.5 : zone.high + apiATR * 0.5, hasSweep = sweeps.length > 0 || turtleSoup.detected; 
         let conf = sig.conf; 
-        if (mtf.direction === direction) conf = Math.min(conf + 10, 95); else conf = Math.max(conf - 15, 30); 
+        if (mtf.direction === direction) conf = Math.min(conf + 10, 95); else conf = Math.max(conf - 5, 40);
         if (zone.quality === 'A') conf = Math.min(conf + 15, 98); else if (zone.quality === 'B') conf = Math.min(conf + 8, 95); 
         if (displacement.detected) conf = Math.min(conf + 15, 98); if (sniperRej.confirmed) conf = Math.min(conf + 10, 98); 
         if (probCheck.probability === 'HIGH') conf = Math.min(conf + 15, 98); if (turtleSoup.detected) conf = Math.min(conf + 20, 98);
         if (volumeContext.strongVolume) conf = Math.min(conf + 15, 98);
         if (structureContext.state === 'TRENDING_UP' && direction === 'BUY') conf = Math.min(conf + 15, 98);
         if (structureContext.state === 'TRENDING_DOWN' && direction === 'SELL') conf = Math.min(conf + 15, 98);
-        if (structureContext.state === 'TRENDING_UP' && direction === 'SELL') conf = Math.max(conf - 20, 5);
-        if (structureContext.state === 'TRENDING_DOWN' && direction === 'BUY') conf = Math.max(conf - 20, 5);
-        if (structureContext.state === 'RANGING') conf = Math.max(conf - 10, 10);
+        if (structureContext.state === 'TRENDING_UP' && direction === 'SELL') conf = Math.max(conf - 10, 20);
+        if (structureContext.state === 'TRENDING_DOWN' && direction === 'BUY') conf = Math.max(conf - 10, 20);
+        if (structureContext.state === 'RANGING') conf = Math.max(conf - 5, 30);
         if (amd.phase === 'MANIPULATION') { if (direction === 'BUY' && amd.manipulated === 'DOWN') conf = Math.min(conf + 15, 98); if (direction === 'SELL' && amd.manipulated === 'UP') conf = Math.min(conf + 15, 98); } 
         if (crt.detected && crt.pattern === 'Expanding') conf = Math.min(conf + 5, 98); if (zone.hasImbalance) conf = Math.min(conf + 8, 98); 
         if (pathCheck.clear) conf = Math.min(conf + 5, 98); if (!zone.hasImbalance) conf = Math.max(conf - 5, 30);
