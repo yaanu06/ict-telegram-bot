@@ -1,1 +1,15 @@
-Nothing should be ignored in this case, as the changes only include source/config files (.md and .js) without any build artifacts, dependencies, or temporary files.
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# dotenv environment variables file
+.env
+
+# Tests
+coverage/
