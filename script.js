@@ -413,7 +413,12 @@ function checkZoneFreshness(data, zone, direction) {
 } 
 function isHTFPremiumDiscount(htfData, direction) { 
     if (!htfData || htfData.length < 10) return { inPremiumDiscount: false, value: 'neutral', pct: 0 }; 
-    const range = Math.max(...htfData.map(c => c.h)) - Math.min(...htfData.map(c => c.l)), current = htfData[htfData.length - 1].c, low = Math.min(...htfData.map(c => c.l)), mid = range / 2 + low; 
+    let high = -Infinity, low = Infinity;
+    for (let i = 0; i < htfData.length; i++) {
+        if (htfData[i].h > high) high = htfData[i].h;
+        if (htfData[i].l < low) low = htfData[i].l;
+    }
+    const range = high - low, current = htfData[htfData.length - 1].c, mid = range / 2 + low;
     if (direction === 'BUY') { const inDiscount = current < mid, discountPct = ((mid - current) / range * 100); return { inPremiumDiscount: inDiscount, value: 'discount', pct: Math.max(0, discountPct) }; }  
     else { const inPremium = current > mid, premiumPct = ((current - mid) / range * 100); return { inPremiumDiscount: inPremium, value: 'premium', pct: Math.max(0, premiumPct) }; } 
 } 
