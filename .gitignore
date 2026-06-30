@@ -1,1 +1,2 @@
-Nothing should be ignored in this case, as the changes only include source/config files (.md and .js) without any build artifacts, dependencies, or temporary files.
+# Ignore node_modules
+node_modules/
