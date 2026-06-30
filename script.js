@@ -228,7 +228,64 @@ function isZoneWithinHTFArray(entryZone, htfArrays) { for (const arr of htfArray
 function detectDisplacement(data,direction){if(data.length<5)return{detected:false};const lc=data.slice(-5);const bodies=lc.map(c=>Math.abs(c.c-c.o));const avg=bodies.reduce((a,b)=>a+b,0)/bodies.length;const lb=bodies[bodies.length-1];if(direction==='BUY' && lb>avg*2.5 && lc[4].c>lc[4].o)return{detected:true};if(direction==='SELL' && lb>avg*2.5 && lc[4].c<lc[4].o)return{detected:true};return{detected:false};} 
 async function checkSniperRejection(zone,direction,sniperTF,cachedData=null){const dSn=cachedData||await getHistory(sniperTF);if(!dSn||dSn.length<3)return{confirmed:false};const lc=dSn[dSn.length-1];const body=Math.abs(lc.c-lc.o);if(direction==='BUY'){const wick=Math.min(lc.o,lc.c)-lc.l;const t=lc.l<=zone.high && lc.l>=zone.low;if(t && wick>body*2 && lc.c>lc.o)return{confirmed:true};}else{const wick=lc.h-Math.max(lc.o,lc.c);const t=lc.h>=zone.low && lc.h<=zone.high;if(t && wick>body*2 && lc.c<lc.o)return{confirmed:true};}return{confirmed:false};} 
 function getVolatilityLevel(atrValue,price){const pct=(atrValue/price)*100;if(pct>0.8)return{level:'High - Impulsive',desc:'Large candles'};if(pct>0.4)return{level:'Moderate - Control',desc:'Normal'};return{level:'Low - Consolidation',desc:'Tight ranges'};} 
-function detectLiquiditySweeps(data,currentPrice){const sweeps=[];const a=atr(data,14);const maxDistance=a*3;const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);for(let i=10;i<data.length-3;i++){const rH=highs.slice(i-5,i);const maxH=Math.max(...rH);if(rH.filter(h=>Math.abs(h-maxH)<=maxH*0.001).length>=2 && Math.abs(maxH-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.h>maxH*1.001) && closes[i+3]<maxH)sweeps.push({type:'BUY_SIDE',level:maxH,distance:Math.abs(maxH-currentPrice),direction:'BEARISH'});}const rL=lows.slice(i-5,i);const minL=Math.min(...rL);if(rL.filter(l=>Math.abs(l-minL)<=minL*0.001).length>=2 && Math.abs(minL-currentPrice)<=maxDistance){if(data.slice(i,i+4).some(c=>c.l<minL*0.999) && closes[i+3]>minL)sweeps.push({type:'SELL_SIDE',level:minL,distance:Math.abs(minL-currentPrice),direction:'BULLISH'});}}return sweeps.sort((a,b)=>a.distance-b.distance);} 
+function detectLiquiditySweeps(data, currentPrice) {
+    const sweeps = [];
+    const a = atr(data, 14);
+    const maxDistance = a * 3;
+    const len = data.length;
+
+    for (let i = 10; i < len - 3; i++) {
+        let maxH = data[i - 5].h;
+        let minL = data[i - 5].l;
+        for (let j = i - 4; j < i; j++) {
+            if (data[j].h > maxH) maxH = data[j].h;
+            if (data[j].l < minL) minL = data[j].l;
+        }
+
+        if (Math.abs(maxH - currentPrice) <= maxDistance) {
+            let countH = 0;
+            const threshH = maxH * 0.001;
+            for (let j = i - 5; j < i; j++) {
+                if (Math.abs(data[j].h - maxH) <= threshH) countH++;
+            }
+            if (countH >= 2) {
+                let hasSweep = false;
+                const targetH = maxH * 1.001;
+                for (let j = i; j < i + 4; j++) {
+                    if (data[j].h > targetH) {
+                        hasSweep = true;
+                        break;
+                    }
+                }
+                if (hasSweep && data[i + 3].c < maxH) {
+                    sweeps.push({ type: 'BUY_SIDE', level: maxH, distance: Math.abs(maxH - currentPrice), direction: 'BEARISH' });
+                }
+            }
+        }
+
+        if (Math.abs(minL - currentPrice) <= maxDistance) {
+            let countL = 0;
+            const threshL = minL * 0.001;
+            for (let j = i - 5; j < i; j++) {
+                if (Math.abs(data[j].l - minL) <= threshL) countL++;
+            }
+            if (countL >= 2) {
+                let hasSweepL = false;
+                const targetL = minL * 0.999;
+                for (let j = i; j < i + 4; j++) {
+                    if (data[j].l < targetL) {
+                        hasSweepL = true;
+                        break;
+                    }
+                }
+                if (hasSweepL && data[i + 3].c > minL) {
+                    sweeps.push({ type: 'SELL_SIDE', level: minL, distance: Math.abs(minL - currentPrice), direction: 'BULLISH' });
+                }
+            }
+        }
+    }
+    return sweeps.sort((a, b) => a.distance - b.distance);
+}
 function findImbalances(data){const im=[];for(let i=1;i<data.length-1;i++){if(data[i-1].l>data[i+1].h)im.push({type:'BULLISH',low:data[i+1].h,high:data[i-1].l});if(data[i-1].h<data[i+1].l)im.push({type:'BEARISH',low:data[i-1].h,high:data[i+1].l});}return im.slice(-5);} 
 function detectTurtleSoup(data){if(data.length<15)return{detected:false,type:null};const rd=data.slice(-15);const highs=rd.map(c=>c.h),lows=rd.map(c=>c.l),closes=rd.map(c=>c.c),opens=rd.map(c=>c.o);const keyLow=Math.min(...lows.slice(0,-4));const recentLow=lows[lows.length-4];const cc=closes[closes.length-1];const co=opens[opens.length-1];if(recentLow<keyLow*0.999 && cc>keyLow && cc>co)return{detected:true,type:'BUY',keyLevel:keyLow,sweptLevel:recentLow};const keyHigh=Math.max(...highs.slice(0,-4));const recentHigh=highs[highs.length-4];if(recentHigh>keyHigh*1.001 && cc<keyHigh && cc<co)return{detected:true,type:'SELL',keyLevel:keyHigh,sweptLevel:recentHigh};return{detected:false,type:null};} 
 function detectCRT(data,direction){if(data.length<10)return{detected:false};const lc=data.slice(-5);const ranges=lc.map(c=>c.h-c.l);const avgRange=ranges.reduce((a,b)=>a+b,0)/ranges.length;const lastRange=ranges[ranges.length-1];const expanding=lastRange>avgRange*1.5;const contracting=lastRange<avgRange*0.5;return{detected:expanding||contracting,pattern:expanding?'Expanding':(contracting?'Contracting':'Neutral'),rangeRatio:(lastRange/avgRange).toFixed(2),signal:expanding?(direction==='BUY'?'Bullish momentum':'Bearish momentum'):(contracting?'Consolidation':'Neutral')};}
