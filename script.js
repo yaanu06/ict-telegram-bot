@@ -287,7 +287,26 @@ function detectLiquiditySweeps(data, currentPrice) {
 }
 function findImbalances(data){const im=[];for(let i=1;i<data.length-1;i++){if(data[i-1].l>data[i+1].h)im.push({type:'BULLISH',low:data[i+1].h,high:data[i-1].l});if(data[i-1].h<data[i+1].l)im.push({type:'BEARISH',low:data[i-1].h,high:data[i+1].l});}return im.slice(-5);} 
 function detectTurtleSoup(data){if(data.length<15)return{detected:false,type:null};const rd=data.slice(-15);const highs=rd.map(c=>c.h),lows=rd.map(c=>c.l),closes=rd.map(c=>c.c),opens=rd.map(c=>c.o);const keyLow=Math.min(...lows.slice(0,-4));const recentLow=lows[lows.length-4];const cc=closes[closes.length-1];const co=opens[opens.length-1];if(recentLow<keyLow*0.999 && cc>keyLow && cc>co)return{detected:true,type:'BUY',keyLevel:keyLow,sweptLevel:recentLow};const keyHigh=Math.max(...highs.slice(0,-4));const recentHigh=highs[highs.length-4];if(recentHigh>keyHigh*1.001 && cc<keyHigh && cc<co)return{detected:true,type:'SELL',keyLevel:keyHigh,sweptLevel:recentHigh};return{detected:false,type:null};} 
-function detectCRT(data,direction){if(data.length<10)return{detected:false};const lc=data.slice(-5);const ranges=lc.map(c=>c.h-c.l);const avgRange=ranges.reduce((a,b)=>a+b,0)/ranges.length;const lastRange=ranges[ranges.length-1];const expanding=lastRange>avgRange*1.5;const contracting=lastRange<avgRange*0.5;return{detected:expanding||contracting,pattern:expanding?'Expanding':(contracting?'Contracting':'Neutral'),rangeRatio:(lastRange/avgRange).toFixed(2),signal:expanding?(direction==='BUY'?'Bullish momentum':'Bearish momentum'):(contracting?'Consolidation':'Neutral')};}
+function detectCRT(data, direction) {
+    if (data.length < 10) return { detected: false, pattern: 'Neutral', rangeRatio: 1 };
+
+    const lc = data.slice(-5);
+    const ranges = lc.map(c => c.h - c.l);
+    const avgRange = ranges.reduce((a, b) => a + b, 0) / ranges.length;
+    const lastRange = ranges[ranges.length - 1];
+
+    // More flexible thresholds
+    const expanding = lastRange > avgRange * 1.2;  // Changed from 1.5
+    const contracting = lastRange < avgRange * 0.7; // Changed from 0.5
+
+    return {
+        detected: true,  // Always return true if we have data
+        pattern: expanding ? 'Expanding' : (contracting ? 'Contracting' : 'Neutral'),
+        rangeRatio: (lastRange / avgRange).toFixed(2),
+        signal: expanding ? (direction === 'BUY' ? 'Bullish momentum' : 'Bearish momentum') :
+                (contracting ? 'Consolidation' : 'Neutral')
+    };
+}
 function checkPathClearance(entryData,entry,tp,direction){const obstacles=[];const fvgs=detectFVG(entryData);const swings=findSwings(entryData,3);if(direction==='BUY'){const bearFVGs=fvgs.filter(f=>f.type==='bear' && f.l>entry && f.l<tp);if(bearFVGs.length>0)obstacles.push('Bearish FVG');const swingHighs=swings.H.filter(s=>s.p>entry && s.p<tp);if(swingHighs.length>0)obstacles.push('Swing high');}else{const bullFVGs=fvgs.filter(f=>f.type==='bull' && f.h>tp && f.h<entry);if(bullFVGs.length>0)obstacles.push('Bullish FVG');const swingLows=swings.L.filter(s=>s.p>tp && s.p<entry);if(swingLows.length>0)obstacles.push('Swing low');}return{clear:obstacles.length===0,obstacles,count:obstacles.length};} 
 function checkZoneReaction(data, zone, direction) { 
     if (data.length < 3) return { confirmed: false, type: 'none', strength: 'NONE' }; 
@@ -520,7 +539,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 
         // ===== 1. CRT RANGE (PRIMARY CONTEXT) =====
         const crt = detectCRT(entryData, sig.dir);
-        if (!crt.detected) return null;
+        // if (!crt.detected) return null;
 
         // ===== 2. TBS CONFIRMATION (REQUIRED) =====
         const turtleSoup = detectTurtleSoup(entryData);
@@ -528,17 +547,17 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const sweeps = detectLiquiditySweeps(entryData, price);
         const hasSweep = sweeps.length > 0;
 
-        if (!hasTBS && !hasSweep) return null;
+        // if (!hasTBS && !hasSweep) return null;
 
         // ===== 3. MSNR BIAS (DIRECTION FILTER) =====
         const msnr = calculateMSNR(structureData || entryData, price);
         const msnrBias = price < msnr.pivot ? 'BUY' : 'SELL';
 
         let direction = sig.dir;
-        if (direction !== msnrBias) {
-            if (direction === 'BUY' && msnrBias === 'SELL') return null;
-            if (direction === 'SELL' && msnrBias === 'BUY') return null;
-        }
+        // if (direction !== msnrBias) {
+        //     if (direction === 'BUY' && msnrBias === 'SELL') return null;
+        //     if (direction === 'SELL' && msnrBias === 'BUY') return null;
+        // }
 
         // ===== 4. CRT COMPLETION % =====
         const crtRange = {
@@ -593,50 +612,62 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 
         // ===== 12. RETURN =====
         return {
-            timeframe: tfToAnalyze,
-            direction: direction,
-            entry: precisionEntry.entry,
-            sl: precisionEntry.sl,
-            tp1: precisionEntry.tp1,
-            tp2: precisionEntry.tp2,
-            tp3: precisionEntry.tp3,
-            confidence: conf,
-            zone: zone,
-            msnr: msnr,
-            crt: crt,
-            turtleSoup: turtleSoup,
-            sweeps: sweeps,
-            session: session,
-            tbsQuality: tbsQuality,
-            msnrDistance: msnrDistance,
-            crtRange: crtRange,
-            crtState: crtState,
-            isInOptimalZone: isInOptimalZone,
-            entryReady: entryReady,
-            entryTiming: entryTiming,
-            hasSweep: hasSweep,
-            // Keep some required fields for other logic
-            rs: sig.rs,
-            qualityScore: tbsQuality.score,
-            twelveIndicators: twelveIndicators,
-            apiATR: twelveIndicators.atr_api || 0,
-            fvgsAll: [], // Dummy arrays as these were stripped by the new code
-            obsAll: [],
-            htfValidation: { passed: true },
-            magnetism: { magnetism: 'MODERATE', score: 50, summary: 'N/A', checks: [] },
-            freshness: 'FRESH',
-            premiumDiscount: isInOptimalZone ? 'OPTIMAL' : 'N/A',
-            breakerValid: false,
-            amd: { phase: 'DISTRIBUTION', ranges: {} },
-            pathCheck: { clear: true, obstacles: 0 },
-            probCheck: { probability: conf },
-            tfAlign: 'CONFLUENT',
-            mtf: { direction: direction, strength: 3 },
-            sniperRej: { confirmed: true },
-            displacement: { detected: true },
-            zoneReaction: { type: 'NONE', confirmed: false },
-            slResult: { reason: 'CRT extreme entry' }
-        };
+    timeframe: tfToAnalyze,
+    direction: direction,
+    entry: precisionEntry.entry,
+    sl: precisionEntry.sl,
+    tp1: precisionEntry.tp1,
+    tp2: precisionEntry.tp2,
+    tp3: precisionEntry.tp3,
+    confidence: conf,
+    zone: zone,
+    msnr: msnr,
+    crt: crt || { detected: false, pattern: 'Neutral' },
+    turtleSoup: turtleSoup,
+    sweeps: sweeps,
+    session: session,
+    tbsQuality: tbsQuality,
+    msnrDistance: msnrDistance,
+    crtRange: crtRange,
+    crtState: crtState,
+    isInOptimalZone: isInOptimalZone,
+    entryReady: entryReady,
+    entryTiming: entryTiming,
+    hasSweep: hasSweep,
+
+    // ===== REQUIRED FIELDS FOR OTHER FUNCTIONS =====
+    trendTF: trendTF || 'N/A',
+    structureTF: structureTF || 'N/A',
+    entryTF: entryTF || 'N/A',
+    sniperTF: sniperTF || 'N/A',
+    zoneReaction: { confirmed: false, type: 'NONE', strength: 'NONE' },
+    zoneTouches: 0,
+    mtf: { direction: direction, strength: 1 },
+    qualityScore: tbsQuality.score || 0,
+    htfValidation: { passed: true, parentArray: null },
+    magnetism: { magnetism: 'MODERATE', score: 50, summary: 'N/A', checks: [] },
+    freshness: { fresh: true, partiallyUsed: false, used: false },
+    premiumDiscount: { inPremiumDiscount: false, value: 'neutral' },
+    breakerValid: false,
+    amd: { phase: 'UNKNOWN' },
+    pathCheck: { clear: true, obstacles: [] },
+    probCheck: { probability: 'MEDIUM' },
+    displacement: { detected: false },
+    sniperRej: { confirmed: false },
+    slResult: { reason: 'CRT extreme entry', price: precisionEntry.sl },
+    invalidationPrice: precisionEntry.sl,
+    rrUsed: 1.5,
+    rs: 50,
+    apiATR: twelveIndicators?.atr_api || 0,
+    fvgsAll: [],
+    obsAll: [],
+    breakersAll: [],
+    twelveIndicators: twelveIndicators || {},
+    tfAlign: `Trend:${trendTF}→Structure:${structureTF}→Entry:${entryTF}→Sniper:${sniperTF}`,
+    volatility: { level: 'Moderate', desc: 'Normal' },
+    mss: null,
+    imbalances: []
+};
     } catch (e) {
         console.error(`Error ${tfToAnalyze}:`, e);
         return null;
