@@ -528,36 +528,36 @@ function analyzeAMD(dailyData) {
 } 
  
 async function analyzeTimeframe(tfToAnalyze, price, htfData) {
+    console.log(`🔍 Analyzing ${tfToAnalyze}...`);
     try {
         const [trendTF, structureTF, entryTF, sniperTF] = getTimeframeHierarchy(tfToAnalyze);
+        console.log(`  → Trend: ${trendTF}, Structure: ${structureTF}, Entry: ${entryTF}, Sniper: ${sniperTF}`);
+
         const entryData = htfData[entryTF] || await getHistory(entryTF);
-        if (!entryData?.length) return null;
+        if (!entryData?.length) {
+            console.log(`  ❌ No entry data for ${entryTF}`);
+            return null;
+        }
+        console.log(`  ✅ Entry data loaded: ${entryData.length} candles`);
 
         const structureData = htfData[structureTF] || await getHistory(structureTF);
         const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
         const sig = score(entryData, price, twelveIndicators);
+        console.log(`  → Score: direction=${sig.dir}, confidence=${sig.conf}`);
 
-        // ===== 1. CRT RANGE (PRIMARY CONTEXT) =====
+        // ===== 1. CRT RANGE =====
         const crt = detectCRT(entryData, sig.dir);
-        // if (!crt.detected) return null;
+        console.log(`  → CRT: detected=${crt.detected}, pattern=${crt.pattern}`);
 
-        // ===== 2. TBS CONFIRMATION (REQUIRED) =====
+        // ===== 2. TBS CONFIRMATION =====
         const turtleSoup = detectTurtleSoup(entryData);
-        const hasTBS = turtleSoup.detected;
         const sweeps = detectLiquiditySweeps(entryData, price);
         const hasSweep = sweeps.length > 0;
+        console.log(`  → TBS: ${turtleSoup.detected ? '✅' : '❌'}, Sweeps: ${sweeps.length}`);
 
-        // if (!hasTBS && !hasSweep) return null;
-
-        // ===== 3. MSNR BIAS (DIRECTION FILTER) =====
+        // ===== 3. MSNR BIAS =====
         const msnr = calculateMSNR(structureData || entryData, price);
-        const msnrBias = price < msnr.pivot ? 'BUY' : 'SELL';
-
-        let direction = sig.dir;
-        // if (direction !== msnrBias) {
-        //     if (direction === 'BUY' && msnrBias === 'SELL') return null;
-        //     if (direction === 'SELL' && msnrBias === 'BUY') return null;
-        // }
+        console.log(`  → MSNR pivot: ${msnr.pivot}, price: ${price}`);
 
         // ===== 4. CRT COMPLETION % =====
         const crtRange = {
@@ -567,27 +567,36 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const range = crtRange.high - crtRange.low;
         const pricePosition = ((price - crtRange.low) / range) * 100;
         const isInOptimalZone = pricePosition > 40 && pricePosition < 60;
+        console.log(`  → CRT completion: ${pricePosition.toFixed(1)}%, in optimal zone: ${isInOptimalZone}`);
 
         // ===== 5. TBS TRAP QUALITY =====
         const tbsQuality = gradeTBS(turtleSoup, sweeps, entryData);
+        console.log(`  → TBS quality: ${tbsQuality.grade} (${tbsQuality.score})`);
 
         // ===== 6. MSNR DISTANCE =====
         const msnrDistance = Math.abs(price - msnr.pivot) / price * 100;
         const isNearMSNR = msnrDistance < 0.2;
+        console.log(`  → MSNR distance: ${msnrDistance.toFixed(2)}%, near: ${isNearMSNR}`);
 
         // ===== 7. CRT EXPANSION/CONTRACTION =====
         const crtState = getCRTState(entryData);
+        console.log(`  → CRT state: ${crtState.state}, momentum: ${crtState.momentum}`);
 
         // ===== 8. SESSION ALIGNMENT =====
         const session = getSession();
+        console.log(`  → Session: ${session.session}, multiplier: ${session.multiplier}`);
 
-        // ===== 9. FIND PRECISION ENTRY (FVG/OB) =====
-        const zone = findPrecisionEntry(entryData, price, direction, msnr);
-        const precisionEntry = getPrecisionEntryCRT(entryData, zone, direction, crtRange);
+        // ===== 9. FIND PRECISION ENTRY =====
+        const zone = findPrecisionEntry(entryData, price, sig.dir, msnr);
+        console.log(`  → Zone: ${zone.src}, quality: ${zone.quality}, low: ${zone.low}, high: ${zone.high}`);
+
+        const precisionEntry = getPrecisionEntryCRT(entryData, zone, sig.dir, crtRange);
+        console.log(`  → Precision entry: ${precisionEntry.entry}, SL: ${precisionEntry.sl}`);
 
         // ===== 10. ENTRY READY =====
-        const entryTiming = checkEntryTiming(entryData, precisionEntry.entry, direction);
+        const entryTiming = checkEntryTiming(entryData, precisionEntry.entry, sig.dir);
         const entryReady = entryTiming.valid && isInOptimalZone;
+        console.log(`  → Entry ready: ${entryReady}, timing valid: ${entryTiming.valid}`);
 
         // ===== 11. CONFIDENCE =====
         let conf = calculateCRTConfidence({
@@ -601,75 +610,77 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             entryReady: entryReady,
             hasSweep: hasSweep,
             turtleSoup: turtleSoup,
-            direction: direction,
+            direction: sig.dir,
             price: price,
             msnr: msnr,
             isInOptimalZone: isInOptimalZone
         });
 
         conf = Math.min(conf, 98);
-        if (conf < 50) return null;
+        console.log(`  → Confidence: ${conf}%`);
+        if (conf < 50) {
+            console.log(`  ❌ Confidence below 50%`);
+            return null;
+        }
 
-        // ===== 12. RETURN =====
+        console.log(`  ✅ ${tfToAnalyze} PASSED!`);
         return {
-    timeframe: tfToAnalyze,
-    direction: direction,
-    entry: precisionEntry.entry,
-    sl: precisionEntry.sl,
-    tp1: precisionEntry.tp1,
-    tp2: precisionEntry.tp2,
-    tp3: precisionEntry.tp3,
-    confidence: conf,
-    zone: zone,
-    msnr: msnr,
-    crt: crt || { detected: false, pattern: 'Neutral' },
-    turtleSoup: turtleSoup,
-    sweeps: sweeps,
-    session: session,
-    tbsQuality: tbsQuality,
-    msnrDistance: msnrDistance,
-    crtRange: crtRange,
-    crtState: crtState,
-    isInOptimalZone: isInOptimalZone,
-    entryReady: entryReady,
-    entryTiming: entryTiming,
-    hasSweep: hasSweep,
-
-    // ===== REQUIRED FIELDS FOR OTHER FUNCTIONS =====
-    trendTF: trendTF || 'N/A',
-    structureTF: structureTF || 'N/A',
-    entryTF: entryTF || 'N/A',
-    sniperTF: sniperTF || 'N/A',
-    zoneReaction: { confirmed: false, type: 'NONE', strength: 'NONE' },
-    zoneTouches: 0,
-    mtf: { direction: direction, strength: 1, trends: {} },
-    qualityScore: tbsQuality.score || 0,
-    htfValidation: { passed: true, parentArray: null },
-    magnetism: { magnetism: 'MODERATE', score: 50, summary: 'N/A', checks: [] },
-    freshness: { fresh: true, partiallyUsed: false, used: false },
-    premiumDiscount: { inPremiumDiscount: false, value: 'neutral' },
-    breakerValid: false,
-    amd: { phase: 'UNKNOWN' },
-    pathCheck: { clear: true, obstacles: [] },
-    probCheck: { probability: 'MEDIUM' },
-    displacement: { detected: false },
-    sniperRej: { confirmed: false },
-    slResult: { reason: 'CRT extreme entry', price: precisionEntry.sl },
-    invalidationPrice: precisionEntry.sl,
-    rrUsed: 1.5,
-    rs: 50,
-    apiATR: twelveIndicators?.atr_api || 0,
-    fvgsAll: [],
-    obsAll: [],
-    breakersAll: [],
-    twelveIndicators: twelveIndicators || {},
-    tfAlign: `Trend:${trendTF}→Structure:${structureTF}→Entry:${entryTF}→Sniper:${sniperTF}`,
-    volatility: { level: 'Moderate', desc: 'Normal' },
-    mss: null,
-    imbalances: []
-};
+            timeframe: tfToAnalyze,
+            direction: sig.dir,
+            entry: precisionEntry.entry,
+            sl: precisionEntry.sl,
+            tp1: precisionEntry.tp1,
+            tp2: precisionEntry.tp2,
+            tp3: precisionEntry.tp3,
+            confidence: conf,
+            zone: zone,
+            msnr: msnr,
+            crt: crt || { detected: false, pattern: 'Neutral' },
+            turtleSoup: turtleSoup,
+            sweeps: sweeps,
+            session: session,
+            tbsQuality: tbsQuality,
+            msnrDistance: msnrDistance,
+            crtRange: crtRange,
+            crtState: crtState,
+            isInOptimalZone: isInOptimalZone,
+            entryReady: entryReady,
+            entryTiming: entryTiming,
+            hasSweep: hasSweep,
+            trendTF: trendTF || 'N/A',
+            structureTF: structureTF || 'N/A',
+            entryTF: entryTF || 'N/A',
+            sniperTF: sniperTF || 'N/A',
+            zoneReaction: { confirmed: false, type: 'NONE', strength: 'NONE' },
+            zoneTouches: 0,
+            mtf: { direction: sig.dir, strength: 1, trends: {} },
+            qualityScore: tbsQuality.score || 0,
+            htfValidation: { passed: true, parentArray: null },
+            magnetism: { magnetism: 'MODERATE', score: 50, summary: 'N/A', checks: [] },
+            freshness: { fresh: true, partiallyUsed: false, used: false },
+            premiumDiscount: { inPremiumDiscount: false, value: 'neutral' },
+            breakerValid: false,
+            amd: { phase: 'UNKNOWN' },
+            pathCheck: { clear: true, obstacles: [] },
+            probCheck: { probability: 'MEDIUM' },
+            displacement: { detected: false },
+            sniperRej: { confirmed: false },
+            slResult: { reason: 'CRT extreme entry', price: precisionEntry.sl },
+            invalidationPrice: precisionEntry.sl,
+            rrUsed: 1.5,
+            rs: 50,
+            apiATR: twelveIndicators?.atr_api || 0,
+            fvgsAll: [],
+            obsAll: [],
+            breakersAll: [],
+            twelveIndicators: twelveIndicators || {},
+            tfAlign: `Trend:${trendTF}→Structure:${structureTF}→Entry:${entryTF}→Sniper:${sniperTF}`,
+            volatility: { level: 'Moderate', desc: 'Normal' },
+            mss: null,
+            imbalances: []
+        };
     } catch (e) {
-        console.error(`Error ${tfToAnalyze}:`, e);
+        console.error(`❌ Error in ${tfToAnalyze}:`, e);
         return null;
     }
 }
