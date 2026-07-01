@@ -327,54 +327,81 @@ function findPrecisionEntry(data,price,direction,msnr){
 function checkProbability(zone,mtf,magnetism){const checks=[];checks.push({name:'Confluence (2+)',passed:zone.cc>=2,critical:true});checks.push({name:'MTF aligned (2+)',passed:mtf.strength>=2,critical:true});checks.push({name:'Zone Magnetism',passed:magnetism.likelyToReach,critical:true});checks.push({name:'Imbalance Magnet',passed:zone.hasImbalance,critical:false});checks.push({name:'Quality A/B',passed:zone.quality==='A'||zone.quality==='B',critical:false});const cp=checks.filter(c=>c.critical).every(c=>c.passed);const tp=checks.filter(c=>c.passed).length;return{probability:cp?(tp>=4?'HIGH':(tp>=3?'MEDIUM':'LOW')):'LOW',checks,totalPassed:tp,passed:cp};} 
  
 // 🛡️ TIGHTER ATR-DRIVEN STOP LOSS 
-function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, currentPair) { 
-    const apiATR = twelveIndicators?.atr_api || atr(data, 14); 
-    const s = getMarketSettings(currentPair || pair); 
-    const maxSLD = entry * s.maxSLPct; 
-    const slBuf = getSLBufferForTF(apiATR, tfUsed, currentPair || pair); 
- 
-    const swings = findSwings(data, 3); 
-    const fvgs = detectFVG(data); 
-    const obs = detectOrderBlocks(data, dir); 
- 
-    let candidates = []; 
-    const addCand = (price, reason) => { 
-        const dist = dir === 'BUY' ? entry - price : price - entry; 
-        // Only accept structural stops within a tight ATR window (0.6x to 1.4x ATR) and maxSLPct 
-        if (dist > 0 && dist <= maxSLD && dist <= apiATR * 1.4 && dist >= apiATR * 0.6) { 
-            candidates.push({ price, reason, dist }); 
-        } 
-    }; 
- 
-    if (dir === 'BUY') { 
-        if (zone && zone.low < entry) addCand(zone.low - slBuf, 'Below Zone'); 
-        swings.L.filter(x => x.p < entry).forEach(x => addCand(x.p - slBuf, 'Below Swing')); 
-        obs.filter(ob => ob.low < entry).forEach(ob => addCand(ob.low - slBuf, 'Below OB')); 
-        fvgs.filter(f => f.type === 'bull' && f.l < entry).forEach(f => addCand(f.l - slBuf * 0.5, 'Below FVG')); 
-    } else { 
-        if (zone && zone.high > entry) addCand(zone.high + slBuf, 'Above Zone'); 
-        swings.H.filter(x => x.p > entry).forEach(x => addCand(x.p + slBuf, 'Above Swing')); 
-        obs.filter(ob => ob.high > entry).forEach(ob => addCand(ob.high + slBuf, 'Above OB')); 
-        fvgs.filter(f => f.type === 'bear' && f.h > entry).forEach(f => addCand(f.h + slBuf * 0.5, 'Above FVG')); 
-    } 
- 
-    if (candidates.length > 0) { 
-        candidates.sort((a, b) => b.dist - a.dist); // Pick safest within tight window 
-        const best = candidates[0]; 
-        return { price: best.price, reason: best.reason, distance: best.dist }; 
-    } 
- 
-    // Fallback: Strict ATR-based stop (1.0x ATR) 
+function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, currentPair) {
+    // Use Twelve Data ATR if available, otherwise calculate
+    const apiATR = twelveIndicators?.atr_api || atr(data, 14);
+    const s = getMarketSettings(currentPair || pair);
+    const maxSLD = entry * s.maxSLPct;
+    const slBuf = getSLBufferForTF(apiATR, tfUsed, currentPair || pair);
+
+    const swings = findSwings(data, 3);
+    const fvgs = detectFVG(data);
+    const obs = detectOrderBlocks(data, dir);
+
+    let candidates = [];
+    const addCand = (price, reason) => {
+        const dist = dir === 'BUY' ? entry - price : price - entry;
+        // Allow up to 2x ATR for structural stops
+        if (dist > 0 && dist <= maxSLD && dist <= apiATR * 2.0) {
+            candidates.push({ price, reason, dist });
+        }
+    };
+
+    if (dir === 'BUY') {
+        // ZONE IS PRIMARY (moved to top)
+        if (zone && zone.low < entry) addCand(zone.low - slBuf * 0.5, 'Below Zone');
+        // Then structural levels
+        swings.L.filter(x => x.p < entry).forEach(x => addCand(x.p - slBuf, 'Below Swing'));
+        obs.filter(ob => ob.low < entry).forEach(ob => addCand(ob.low - slBuf, 'Below OB'));
+        fvgs.filter(f => f.type === 'bull' && f.l < entry).forEach(f => addCand(f.l - slBuf * 0.5, 'Below FVG'));
+        // MSNR last (as alternative)
+        if (msnr && msnr.allSupports) {
+            msnr.allSupports.filter(x => x < entry).forEach(x => addCand(x - slBuf, 'Below MSNR'));
+        }
+    } else {
+        if (zone && zone.high > entry) addCand(zone.high + slBuf * 0.5, 'Above Zone');
+        swings.H.filter(x => x.p > entry).forEach(x => addCand(x.p + slBuf, 'Above Swing'));
+        obs.filter(ob => ob.high > entry).forEach(ob => addCand(ob.high + slBuf, 'Above OB'));
+        fvgs.filter(f => f.type === 'bear' && f.h > entry).forEach(f => addCand(f.h + slBuf * 0.5, 'Above FVG'));
+        if (msnr && msnr.allResistances) {
+            msnr.allResistances.filter(x => x > entry).forEach(x => addCand(x + slBuf, 'Above MSNR'));
+        }
+    }
+
+    if (candidates.length > 0) {
+        // Sort by distance (closest first = tightest SL)
+        candidates.sort((a, b) => a.dist - b.dist);
+        const best = candidates[0];
+        return { price: best.price, reason: best.reason, distance: best.dist };
+    }
+
+    // Fallback: ATR-based stop
     const finalDist = Math.min(apiATR * 1.0, maxSLD);
-    const finalSL = dir === 'BUY' ? entry - finalDist : entry + finalDist; 
-    return { price: finalSL, reason: 'ATR Baseline', distance: finalDist }; 
+    const finalSL = dir === 'BUY' ? entry - finalDist : entry + finalDist;
+    return { price: finalSL, reason: 'ATR Baseline', distance: finalDist };
 } 
  
-function calcTakeProfits(dir,entry,sl){
+function calcTakeProfits(dir, entry, sl) {
     const risk = Math.abs(entry - sl);
-    const rr1 = 1.5, rr2 = 3.0, rr3 = 5.0; 
-    if(dir === 'BUY') return { tp1: entry + risk * rr1, tp2: entry + risk * rr2, tp3: entry + risk * rr3, rrUsed: rr1 };
-    else return { tp1: entry - risk * rr1, tp2: entry - risk * rr2, tp3: entry - risk * rr3, rrUsed: rr1 };
+    const settings = getMarketSettings(pair);
+    const rr = settings.targetRR || 4;
+    const rr1 = rr, rr2 = rr + 1, rr3 = rr + 2;
+
+    if (dir === 'BUY') {
+        return {
+            tp1: entry + risk * rr1,
+            tp2: entry + risk * rr2,
+            tp3: entry + risk * rr3,
+            rrUsed: rr1
+        };
+    } else {
+        return {
+            tp1: entry - risk * rr1,
+            tp2: entry - risk * rr2,
+            tp3: entry - risk * rr3,
+            rrUsed: rr1
+        };
+    }
 } 
 function score(data,price,twelveIndicators){ 
     const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl),fv=detectFVG(data),ms=detectMSS(data),bk=detectBreakers(data); 
@@ -529,7 +556,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const zone = findPrecisionEntry(entryData, price, sig.dir, msnr);
         console.log(`  → Zone: ${zone.src}, quality: ${zone.quality}, low: ${zone.low}, high: ${zone.high}`);
 
-        const precisionEntry = getPrecisionEntryCRT(entryData, zone, sig.dir, crtRange);
+        const apiATR = twelveIndicators?.atr_api || 0;
+        const precisionEntry = getPrecisionEntryCRT(entryData, zone, sig.dir, crtRange, apiATR);
         console.log(`  → Precision entry: ${precisionEntry.entry}, SL: ${precisionEntry.sl}`);
 
         // ===== 10. ENTRY READY =====
@@ -714,7 +742,7 @@ function getCRTState(data) {
 }
 
 // ===== FUNCTION 3: PRECISION ENTRY WITH CRT =====
-function getPrecisionEntryCRT(candles, zone, direction, crtRange) {
+function getPrecisionEntryCRT(candles, zone, direction, crtRange, apiATR) {
     const last = candles[candles.length - 1];
     if (!last) {
         return {
@@ -722,26 +750,36 @@ function getPrecisionEntryCRT(candles, zone, direction, crtRange) {
             sl: null,
             tp1: null,
             tp2: null,
-            tp3: null
+            tp3: null,
+            reason: 'Default entry'
         };
     }
+
+    // Use Twelve Data ATR if available
+    const atrValue = apiATR || atr(candles, 14);
+    const prec = getPrec(pair);
+    const buffer = Math.max(atrValue * 0.3, 0.5); // Minimum 0.5 pips buffer
 
     let entry, sl, tp1, tp2, tp3;
 
     if (direction === 'BUY') {
-        entry = crtRange.low * 1.0002;
-        sl = crtRange.low * 0.998;
+        entry = Math.min(crtRange.low + buffer, zone.high);
+        sl = crtRange.low - buffer * 0.5;
         const risk = entry - sl;
-        tp1 = entry + risk * 1.5;
-        tp2 = entry + risk * 3.0;
-        tp3 = entry + risk * 5.0;
+        const settings = getMarketSettings(pair);
+        const rr = settings.targetRR || 4;
+        tp1 = entry + risk * rr;
+        tp2 = entry + risk * (rr + 1);
+        tp3 = entry + risk * (rr + 2);
     } else {
-        entry = crtRange.high * 0.9998;
-        sl = crtRange.high * 1.002;
+        entry = Math.max(crtRange.high - buffer, zone.low);
+        sl = crtRange.high + buffer * 0.5;
         const risk = sl - entry;
-        tp1 = entry - risk * 1.5;
-        tp2 = entry - risk * 3.0;
-        tp3 = entry - risk * 5.0;
+        const settings = getMarketSettings(pair);
+        const rr = settings.targetRR || 4;
+        tp1 = entry - risk * rr;
+        tp2 = entry - risk * (rr + 1);
+        tp3 = entry - risk * (rr + 2);
     }
 
     return {
@@ -750,7 +788,7 @@ function getPrecisionEntryCRT(candles, zone, direction, crtRange) {
         tp1: tp1,
         tp2: tp2,
         tp3: tp3,
-        reason: 'CRT extreme entry'
+        reason: `ATR-adjusted CRT entry (buffer: ${(buffer).toFixed(prec)})`
     };
 }
 
@@ -995,6 +1033,12 @@ async function runAutoScan() {
 
 
         analysis = { signalType: st, idealEntry: finalEntry, currentPrice: price, stopLoss: best.sl, takeProfit1: best.tp1, takeProfit2: best.tp2, takeProfit3: best.tp3, confidence: best.confidence, entryZoneLow: finalZoneLow, entryZoneHigh: finalZoneHigh, entryReady: best.entryReady, executionDecision, invalidationPrice: aiInvalidation }; 
+        // Check if setup is still valid
+        if (!isSetupStillValid(best, price)) {
+            showNotif(`⚠️ Setup invalidated at current price: ${price}`, 'warning');
+            document.getElementById('executeBtn').disabled = true;
+            return;
+        }
         document.getElementById('executeBtn').disabled = false; 
         const magLabel = best.magnetism.magnetism === 'STRONG' ? '🧲' : (best.magnetism.magnetism === 'MODERATE' ? '🔗' : '⚠️'), aiLabel = aiResult ? (aiApproved ? '🤖✅' : '🤖❌') : '', htfLabel = htfConfluence.level === 'FULL' ? '💪' : (htfConfluence.level === 'CONFLICT' ? '⚠️' : ''), htfValLabel = best.htfValidation?.passed ? '🏗️' : '', execLabel = executionDecision === 'enter_now' ? '🟢ENTER' : (executionDecision === 'wait_for_reaction' ? '🟡WAIT' : '🔴SKIP'), tfWarning = isLowerTF ? '⚠️LOWER TF ONLY⚠️ ' : '✅HIGHER TF✅ ', sessionLabel = `${best.session?.emoji || ''}${best.session?.session || ''}`, freshnessLabel = best.freshness?.fresh ? '🆕' : (best.freshness?.partiallyUsed ? '📌' : '🔴'), amdLabel = best.amd.phase === 'MANIPULATION' ? '🎭' : ''; 
         showNotif(`${tfWarning}${aiLabel}${magLabel}${htfLabel}${htfValLabel}${freshnessLabel}${amdLabel} ${sessionLabel} ${execLabel} ${best.timeframe} ${st} ${best.confidence}% | Quality:${best.qualityScore}% | 1:${rrDisplay}`, 'success'); 
@@ -1031,4 +1075,21 @@ function checkEntryTiming(data, entryPrice, direction) {
         valid: valid,
         reason: valid ? 'Price near entry' : 'Waiting for optimal price'
     };
+}
+
+function isSetupStillValid(setup, currentPrice) {
+    if (!setup || !setup.direction) return false;
+
+    if (setup.direction === 'BUY') {
+        // If price drops below invalidation, setup is invalid
+        if (currentPrice < setup.invalidationPrice) return false;
+        // If price breaks above zone high, setup may be invalid
+        if (currentPrice > setup.zone.high * 1.005) return false;
+    } else {
+        // If price rises above invalidation, setup is invalid
+        if (currentPrice > setup.invalidationPrice) return false;
+        // If price breaks below zone low, setup may be invalid
+        if (currentPrice < setup.zone.low * 0.995) return false;
+    }
+    return true;
 }
