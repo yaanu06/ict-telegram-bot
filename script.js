@@ -652,6 +652,55 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         }
 
         console.log(`  ✅ ${tfToAnalyze} PASSED!`);
+        // ===== PRECISION TRADER PRO INTEGRATION =====
+        // Build market context
+        const context = buildMarketContext({
+            trendBias: sig.dir,
+            marketPhase: crtState?.state || 'CONSOLIDATION',
+            rangeHigh: crtRange?.high || 0,
+            rangeLow: crtRange?.low || 0,
+            zoneType: zone.quality === 'A' ? (sig.dir === 'BUY' ? 'DISCOUNT' : 'PREMIUM') : 'MID_RANGE',
+            bosConfirmed: false, // assuming displacement exists but not defined here, setting default false
+            chochDetected: false,
+            validOrderBlocks: [], // placeholder, logic expects this
+            validFvgs: [],
+            liquiditySweeps: sweeps || []
+        }, {
+            pullbackIntoZone: entryTiming.valid || false,
+            displacementCandle: false,
+            compressionDetected: crtState?.isConsolidating || false
+        }, { ltfData: { currentPrice: price } });
+
+        // Calculate setup score (1-10)
+        const setupScore = calculateSetupScore(sig.dir, context);
+
+        // Build entry info based on direction
+        let entryInfo = null;
+        if (sig.dir === 'BUY') {
+            entryInfo = findBuyEntryLevel(context, { ltfData: { currentPrice: price } });
+        } else {
+            entryInfo = findSellEntryLevel(context, { ltfData: { currentPrice: price } });
+        }
+
+        // If no entry info, fallback to existing logic
+        if (!entryInfo) {
+            // Use existing logic as fallback
+            entryInfo = {
+                entry: precisionEntry.entry,
+                stopLoss: precisionEntry.sl,
+                takeProfit: precisionEntry.tp1,
+                partialTP: precisionEntry.tp2,
+                invalidation: precisionEntry.sl * 0.998,
+                breakevenLevel: (precisionEntry.entry + precisionEntry.tp1) / 2,
+                pattern: zone.src,
+                rrRatio: 4.0
+            };
+        }
+
+        // Calculate win probability and expected value
+        const winProb = calculateWinProbability({ action: sig.dir, setupScore: setupScore, confidence: conf }, context, sig.dir);
+        const expectedValue = calculateExpectedValue(winProb, entryInfo.rrRatio || 4.0);
+
         return {
             timeframe: tfToAnalyze,
             direction: sig.dir,
@@ -705,7 +754,25 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             tfAlign: `Trend:${trendTF}→Structure:${structureTF}→Entry:${entryTF}→Sniper:${sniperTF}`,
             volatility: { level: 'Moderate', desc: 'Normal' },
             mss: null,
-            imbalances: []
+            imbalances: [],
+            // NEW: Precision Trader Pro fields
+            setupScore: setupScore,
+            winProbability: winProb,
+            expectedValue: expectedValue,
+            signalGrade: getSignalGrade(conf),
+            entryInfo: entryInfo,
+            context: context,
+            tradeLevels: {
+                entry: entryInfo.entry,
+                stopLoss: entryInfo.stopLoss,
+                takeProfit: entryInfo.takeProfit,
+                partialTP: entryInfo.partialTP,
+                invalidation: entryInfo.invalidation,
+                breakeven: entryInfo.breakevenLevel,
+                pipsRisk: Math.abs(entryInfo.entry - entryInfo.stopLoss) / 0.0001,
+                pipsReward: Math.abs(entryInfo.takeProfit - entryInfo.entry) / 0.0001,
+                riskReward: entryInfo.rrRatio || 4.0
+            }
         };
     } catch (e) {
         console.error(`❌ Error in ${tfToAnalyze}:`, e);
@@ -1087,6 +1154,32 @@ async function runAutoScan() {
                         valid: best.entryTiming?.valid || false,
                         reason: best.entryTiming?.reason || 'N/A',
                         in_optimal_zone: best.isInOptimalZone || false
+                    },
+                    "precision_trader_pro": {
+                        "setup_score": best.setupScore || 0,
+                        "win_probability": best.winProbability || 70,
+                        "expected_value": best.expectedValue || 0,
+                        "signal_grade": best.signalGrade || 'C',
+                        "htf_bias": best.context?.htfTrendBias || 'NEUTRAL',
+                        "market_phase": best.context?.htfMarketPhase || 'CONSOLIDATION',
+                        "zone_type": best.context?.htfZoneType || 'MID_RANGE',
+                        "bos_confirmed": best.context?.htfBosConfirmed || false,
+                        "choch_detected": best.context?.htfChochDetected || false,
+                        "liquidity_sweeps": best.context?.liquiditySweeps?.length || 0,
+                        "valid_order_blocks": best.context?.validOrderBlocks?.length || 0,
+                        "ltf_compression": best.context?.ltfCompressionDetected || false,
+                        "session_valid": best.context?.sessionValid || false
+                    },
+                    "trade_levels": {
+                        "entry": best.tradeLevels?.entry || best.entry,
+                        "stop_loss": best.tradeLevels?.stopLoss || best.sl,
+                        "take_profit": best.tradeLevels?.takeProfit || best.tp1,
+                        "partial_tp": best.tradeLevels?.partialTP || best.tp2,
+                        "invalidation": best.tradeLevels?.invalidation || best.invalidationPrice,
+                        "breakeven": best.tradeLevels?.breakeven || ((best.entry + best.tp1) / 2),
+                        "pips_risk": best.tradeLevels?.pipsRisk || 0,
+                        "pips_reward": best.tradeLevels?.pipsReward || 0,
+                        "risk_reward": best.tradeLevels?.riskReward || best.rrUsed || 4
                     }
 
 } } };
@@ -1153,4 +1246,231 @@ function isSetupStillValid(setup, currentPrice) {
         if (currentPrice < setup.zone.low * 0.995) return false;
     }
     return true;
+}
+
+// ===== NEW: SETUP QUALITY SCORING (1-10) =====
+function calculateSetupScore(direction, context) {
+    let score = 0;
+
+    // 1. HTF bias alignment
+    if ((direction === 'BUY' && context.htfTrendBias === 'BULLISH') ||
+        (direction === 'SELL' && context.htfTrendBias === 'BEARISH')) score += 1;
+
+    // 2. Zone alignment (Discount for BUY, Premium for SELL)
+    if ((direction === 'BUY' && context.htfZoneType === 'DISCOUNT') ||
+        (direction === 'SELL' && context.htfZoneType === 'PREMIUM')) score += 1;
+
+    // 3. BOS confirmation
+    if (context.htfBosConfirmed) score += 1;
+
+    // 4. No CHoCH (Change of Character)
+    if (!context.htfChochDetected) score += 1;
+
+    // 5. Valid order blocks exist
+    if (context.validOrderBlocks && context.validOrderBlocks.length > 0) score += 1;
+
+    // 6. Liquidity sweep happened
+    if (context.liquiditySweeps && context.liquiditySweeps.length > 0) score += 1;
+
+    // 7. FVG validation
+    if (context.validFvgs && context.validFvgs.length > 0) score += 1;
+
+    // 8. LTF pullback into zone
+    if (context.ltfPullbackIntoZone) score += 1;
+
+    // 9. LTF displacement candle
+    if (context.ltfDisplacementCandle) score += 1;
+
+    // 10. Session valid
+    if (context.sessionValid) score += 1;
+
+    return score; // 1-10
+}
+
+// ===== NEW: SIGNAL GRADE =====
+function getSignalGrade(confidence) {
+    if (confidence >= 90) return 'A';
+    if (confidence >= 85) return 'B';
+    if (confidence >= 80) return 'C';
+    return 'D';
+}
+
+// ===== NEW: WIN PROBABILITY CALCULATION =====
+function calculateWinProbability(signal, context, direction) {
+    let base = 70.0;
+
+    base += signal.setupScore * 2.0;
+
+    if ((direction === 'BUY' && context.htfTrendBias === 'BULLISH') ||
+        (direction === 'SELL' && context.htfTrendBias === 'BEARISH')) base += 10.0;
+
+    if ((direction === 'BUY' && context.htfZoneType === 'DISCOUNT') ||
+        (direction === 'SELL' && context.htfZoneType === 'PREMIUM')) base += 8.0;
+
+    if (context.htfBosConfirmed) base += 7.0;
+    if (context.liquiditySweeps && context.liquiditySweeps.length > 0) base += 5.0;
+    if (context.ltfCompressionDetected) base += 4.0;
+
+    return Math.min(base, 95.0);
+}
+
+// ===== NEW: EXPECTED VALUE =====
+function calculateExpectedValue(winProbability, rrRatio) {
+    const winRate = winProbability / 100.0;
+    const lossRate = 1.0 - winRate;
+    return (winRate * rrRatio) - (lossRate * 1.0);
+}
+
+// ===== NEW: MARKET CONTEXT BUILDER =====
+function buildMarketContext(htfAnalysis, ltfAnalysis, chartData) {
+    return {
+        htfTrendBias: htfAnalysis.trendBias || 'NEUTRAL',
+        htfMarketPhase: htfAnalysis.marketPhase || 'CONSOLIDATION',
+        htfRangeHigh: htfAnalysis.rangeHigh || 0,
+        htfRangeLow: htfAnalysis.rangeLow || 0,
+        htfZoneType: htfAnalysis.zoneType || 'MID_RANGE',
+        htfBosConfirmed: htfAnalysis.bosConfirmed || false,
+        htfChochDetected: htfAnalysis.chochDetected || false,
+        validOrderBlocks: htfAnalysis.validOrderBlocks || [],
+        validFvgs: htfAnalysis.validFvgs || [],
+        liquiditySweeps: htfAnalysis.liquiditySweeps || [],
+        ltfPullbackIntoZone: ltfAnalysis.pullbackIntoZone || false,
+        ltfDisplacementCandle: ltfAnalysis.displacementCandle || false,
+        ltfCompressionDetected: ltfAnalysis.compressionDetected || false,
+        sessionValid: validateTradingSession()
+    };
+}
+
+// ===== NEW: SESSION VALIDATION =====
+function validateTradingSession() {
+    const hour = new Date().getUTCHours();
+    // London: 8-16 UTC, NY: 13-22 UTC
+    return (hour >= 8 && hour <= 22);
+}
+
+// ===== NEW: FIND NEXT HTF RESISTANCE =====
+function findNextHTFResistance(price, resistanceLevels) {
+    if (!resistanceLevels || resistanceLevels.length === 0) return null;
+    const above = resistanceLevels.filter(l => l.price > price);
+    if (above.length === 0) return null;
+    return Math.min(...above.map(l => l.price));
+}
+
+// ===== NEW: FIND NEXT HTF SUPPORT =====
+function findNextHTFSupport(price, supportLevels) {
+    if (!supportLevels || supportLevels.length === 0) return null;
+    const below = supportLevels.filter(l => l.price < price);
+    if (below.length === 0) return null;
+    return Math.max(...below.map(l => l.price));
+}
+
+// ===== NEW: POSITION SIZE CALCULATOR =====
+function calculatePositionSize(pipsRisk, accountBalance, riskPercent) {
+    if (pipsRisk === 0) return 0.01;
+    const riskAmount = accountBalance * (riskPercent / 100.0);
+    const pipValue = 10.0;
+    const lotSize = riskAmount / (pipsRisk * pipValue);
+    return Math.round(Math.max(Math.min(lotSize, 10.0), 0.01) * 100) / 100;
+}
+
+// ===== NEW: ENTRY LEVEL FINDER (BUY) =====
+function findBuyEntryLevel(context, chartData) {
+    const ltfPrice = chartData.ltfData?.currentPrice || 0;
+
+    // Find nearest valid bullish order block
+    const validBullishOBs = (context.validOrderBlocks || [])
+        .filter(ob => ob.type === 'BULLISH' && ob.isValid && ob.low < ltfPrice);
+
+    if (validBullishOBs.length === 0) return null;
+
+    const ob = validBullishOBs[validBullishOBs.length - 1];
+    const entry = ob.high + 0.0005;
+    const stopLoss = ob.low - 0.0010;
+    const risk = entry - stopLoss;
+
+    // Find next HTF resistance for TP
+    const nextResistance = findNextHTFResistance(entry, context.htfResistanceLevels || []);
+    const takeProfit = nextResistance || (entry + risk * 4.0);
+    const partialTP = entry + risk * 2.0;
+    const invalidation = ob.low - 0.0005;
+    const breakevenLevel = entry + risk;
+
+    return {
+        entry, stopLoss, takeProfit, partialTP, invalidation, breakevenLevel,
+        pattern: 'BULLISH_ORDER_BLOCK',
+        rrRatio: (takeProfit - entry) / risk
+    };
+}
+
+// ===== NEW: ENTRY LEVEL FINDER (SELL) =====
+function findSellEntryLevel(context, chartData) {
+    const ltfPrice = chartData.ltfData?.currentPrice || 0;
+
+    const validBearishOBs = (context.validOrderBlocks || [])
+        .filter(ob => ob.type === 'BEARISH' && ob.isValid && ob.high > ltfPrice);
+
+    if (validBearishOBs.length === 0) return null;
+
+    const ob = validBearishOBs[validBearishOBs.length - 1];
+    const entry = ob.low - 0.0005;
+    const stopLoss = ob.high + 0.0010;
+    const risk = stopLoss - entry;
+
+    const nextSupport = findNextHTFSupport(entry, context.htfSupportLevels || []);
+    const takeProfit = nextSupport || (entry - risk * 4.0);
+    const partialTP = entry - risk * 2.0;
+    const invalidation = ob.high + 0.0005;
+    const breakevenLevel = entry - risk;
+
+    return {
+        entry, stopLoss, takeProfit, partialTP, invalidation, breakevenLevel,
+        pattern: 'BEARISH_ORDER_BLOCK',
+        rrRatio: (entry - takeProfit) / risk
+    };
+}
+
+// ===== NEW: COMPLETE SIGNAL OUTPUT BUILDER =====
+function buildCompleteSignalOutput(signal, context, chartData, entryInfo) {
+    const direction = signal.action;
+    const rrRatio = entryInfo.rrRatio || 0;
+    const winProb = calculateWinProbability(signal, context, direction);
+    const expectedValue = calculateExpectedValue(winProb, rrRatio);
+    const grade = getSignalGrade(signal.confidence);
+
+    return {
+        signal: {
+            action: signal.action,
+            pattern: entryInfo.pattern,
+            grade: grade,
+            confidence: Math.round(signal.confidence * 10) / 10,
+            winProbability: Math.round(winProb * 10) / 10,
+            expectedValue: Math.round(expectedValue * 100) / 100,
+            setupScore: signal.setupScore || 0,
+            filtersPassed: signal.filtersPassed || 0,
+            reason: signal.reason || 'Setup validated by multiple filters',
+            htfBias: context.htfTrendBias,
+            marketPhase: context.htfMarketPhase,
+            zoneType: context.htfZoneType
+        },
+        tradeLevels: {
+            entry: Math.round(signal.entry * 100000) / 100000,
+            stopLoss: Math.round(signal.stopLoss * 100000) / 100000,
+            takeProfit: Math.round(signal.takeProfit * 100000) / 100000,
+            partialTP: Math.round(entryInfo.partialTP * 100000) / 100000,
+            invalidation: Math.round(entryInfo.invalidation * 100000) / 100000,
+            breakeven: Math.round(entryInfo.breakevenLevel * 100000) / 100000,
+            pipsRisk: Math.round(Math.abs(signal.entry - signal.stopLoss) / 0.0001 * 10) / 10,
+            pipsReward: Math.round(Math.abs(signal.takeProfit - signal.entry) / 0.0001 * 10) / 10,
+            riskReward: Math.round(rrRatio * 100) / 100
+        },
+        executionRules: {
+            entryCondition: 'After candle CLOSE only',
+            noMidCandle: true,
+            noLateHTFCandle: true,
+            noMidRange: true,
+            requireLiquiditySweep: true,
+            requireHTFBias: true,
+            requireBOSorSweep: true
+        }
+    };
 }
