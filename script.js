@@ -581,7 +581,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
     sniperTF: sniperTF || 'N/A',
     zoneReaction: { confirmed: false, type: 'NONE', strength: 'NONE' },
     zoneTouches: 0,
-    mtf: { direction: direction, strength: 1 },
+    mtf: { direction: direction, strength: 1, trends: {} },
     qualityScore: tbsQuality.score || 0,
     htfValidation: { passed: true, parentArray: null },
     magnetism: { magnetism: 'MODERATE', score: 50, summary: 'N/A', checks: [] },
@@ -787,24 +787,82 @@ function calculateCRTConfidence(data) {
     return Math.max(0, Math.min(100, score));
 }
 function calculateSetupQuality(result, price) {
-    let score = 0; const prec = getPrec(pair), risk = Math.abs(result.entry - result.sl), riskPct = (risk / price) * 100;
-    const tfWeights = { '1D': 100, '4H': 80, '1H': 60, '15M': 30, '5M': 10 }; score += tfWeights[result.timeframe] || 0;
-    score += (result.confidence / 100) * 50; if (result.zone.quality === 'A') score += 30; else if (result.zone.quality === 'B') score += 15;
-    score += Math.min(result.zone.cc * 5, 20); if (result.htfValidation?.passed) score += 15;
-    if (result.zoneReaction?.confirmed) { if (result.zoneReaction.strength === 'STRONG') score += 15; else if (result.zoneReaction.strength === 'MODERATE') score += 8; }
-    if (result.magnetism.magnetism === 'STRONG') score += 10; else if (result.magnetism.magnetism === 'MODERATE') score += 5;
-    if (result.entryReady) score += 10; if (riskPct < 0.1) score -= 10; if (riskPct > 2.0) score -= 10;
-    if (result.probCheck.probability === 'HIGH') score += 10; else if (result.probCheck.probability === 'LOW') score -= 10;
-    if (result.displacement.detected) score += 5; if (result.crt.detected && result.crt.pattern === 'Expanding') score += 5;
-    if (result.pathCheck.clear) score += 5; if (result.turtleSoup.detected) score += 8;
-    if (result.freshness?.fresh) score += 15; else if (result.freshness?.partiallyUsed) score += 5; else if (result.freshness?.used) score -= 10;
-    if (result.premiumDiscount?.inPremiumDiscount) score += 10; else score -= 5;
-    if (result.session?.isKillzone) score += 15; if (result.session?.isSilverBullet) score += 20;
-    if (result.session?.multiplier >= 1.0) score += 10; else score -= 10; if (result.breakerValid) score += 8;
-    if (result.amd?.phase === 'MANIPULATION') score += 15;
-    if (!result.hasSweep) score -= 0; else score += 10;
+    let score = 0;
+    const prec = getPrec(pair);
+    const risk = Math.abs(result.entry - result.sl);
+    const riskPct = (risk / price) * 100;
+
+    // Safe defaults for ALL fields
+    const zoneQuality = result.zone?.quality || 'C';
+    const zoneCC = result.zone?.cc || 1;
+    const htfPassed = result.htfValidation?.passed || false;
+    const zoneReactionConfirmed = result.zoneReaction?.confirmed || false;
+    const zoneReactionStrength = result.zoneReaction?.strength || 'NONE';
+    const magnetismStrength = result.magnetism?.magnetism || 'WEAK';
+    const entryReady = result.entryReady || false;
+    const probCheck = result.probCheck?.probability || 'LOW';
+    const displacementDetected = result.displacement?.detected || false;
+    const crtDetected = result.crt?.detected || false;
+    const crtPattern = result.crt?.pattern || 'Neutral';
+    const pathClear = result.pathCheck?.clear || false;
+    const turtleSoupDetected = result.turtleSoup?.detected || false;
+    const freshness = result.freshness || { fresh: false, partiallyUsed: false, used: true };
+    const premiumDiscount = result.premiumDiscount?.inPremiumDiscount || false;
+    const session = result.session || { isKillzone: false, isSilverBullet: false, multiplier: 0.5 };
+    const breakerValid = result.breakerValid || false;
+    const amdPhase = result.amd?.phase || 'UNKNOWN';
+    const hasSweep = result.hasSweep || false;
+
+    const tfWeights = { '1D': 100, '4H': 80, '1H': 60, '15M': 30, '5M': 10 };
+    score += tfWeights[result.timeframe] || 10;
+    score += (result.confidence / 100) * 50;
+
+    if (zoneQuality === 'A') score += 30;
+    else if (zoneQuality === 'B') score += 15;
+    else score += 5;
+
+    score += Math.min(zoneCC * 5, 20);
+    if (htfPassed) score += 15;
+
+    if (zoneReactionConfirmed) {
+        if (zoneReactionStrength === 'STRONG') score += 15;
+        else if (zoneReactionStrength === 'MODERATE') score += 8;
+    }
+
+    if (magnetismStrength === 'STRONG') score += 10;
+    else if (magnetismStrength === 'MODERATE') score += 5;
+
+    if (entryReady) score += 10;
+    if (riskPct < 0.1) score -= 10;
+    if (riskPct > 2.0) score -= 10;
+
+    if (probCheck === 'HIGH') score += 10;
+    else if (probCheck === 'LOW') score -= 10;
+
+    if (displacementDetected) score += 5;
+    if (crtDetected && crtPattern === 'Expanding') score += 5;
+    if (pathClear) score += 5;
+    if (turtleSoupDetected) score += 8;
+
+    if (freshness.fresh) score += 15;
+    else if (freshness.partiallyUsed) score += 5;
+    else if (freshness.used) score -= 10;
+
+    if (premiumDiscount) score += 10;
+    else score -= 5;
+
+    if (session.isKillzone) score += 15;
+    if (session.isSilverBullet) score += 20;
+    if (session.multiplier >= 1.0) score += 10;
+    else score -= 10;
+
+    if (breakerValid) score += 8;
+    if (amdPhase === 'MANIPULATION') score += 15;
+    if (hasSweep) score += 10;
+
     return Math.max(0, Math.min(100, score));
 }
+
 async function askAIWithAllResults(allResults, price, htfData) { 
     if (!DEEPSEEK_API_KEY || allResults.length === 0) return null; showNotif('🤖 AI strict execution check...', 'info'); 
     let tfSummary = ''; for (const r of allResults) { const htfStatus = r.htfValidation ? (r.htfValidation.passed ? 'In HTF' : 'No HTF') : 'N/A'; tfSummary += `${r.timeframe}: ${r.direction} | Zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | EntryReady: ${r.entryReady ? 'YES' : 'NO'} | React: ${r.zoneReaction?.confirmed ? r.zoneReaction.type : 'None'} | HTF: ${htfStatus} | Touches: ${r.zoneTouches} | Conf:${r.confidence}% | RR:1:${r.rrUsed}\n`; } 
@@ -859,8 +917,22 @@ async function runAutoScan() {
         if (lastPrice) { const ch = ((price - lastPrice) / lastPrice * 100).toFixed(2); const ce = document.getElementById('priceChange'); ce.innerHTML = `${ch >= 0 ? '▲' : '▼'} ${Math.abs(ch)}%`; ce.className = `price-change ${ch >= 0 ? 'up' : 'down'}`; } lastPrice = price; 
         const results = [], timeframesToScan = ['1D', '4H', '1H', '15M', '5M'], htfData = historyCache; 
         for (let i = 0; i < timeframesToScan.length; i++) { const tfScan = timeframesToScan[i]; scanText.innerHTML = `Scanning ${tfScan}... (${i + 1}/${timeframesToScan.length})`; scanFill.style.width = ((i + 1) / timeframesToScan.length * 100) + '%'; const result = await analyzeTimeframe(tfScan, price, htfData); if (result) results.push(result); } 
+
+        console.log('=== SCAN RESULTS ===');
+        console.log('Results found:', results.length);
+        for (let r of results) {
+            console.log('TF:', r.timeframe, '| Direction:', r.direction, '| Confidence:', r.confidence);
+        }
+
         if (results.length === 0) { showNotif('⚠️ No valid setups found', 'warning'); document.getElementById('jsonOutput').innerHTML = JSON.stringify({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}, null, 2); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; } 
-        for (let result of results) result.qualityScore = calculateSetupQuality(result, price);
+        for (let result of results) {
+            try {
+                result.qualityScore = calculateSetupQuality(result, price);
+            } catch(e) {
+                console.error('Error calculating quality score:', e);
+                result.qualityScore = 0;
+            }
+        }
         const higherTimeframes = ['1D', '4H', '1H'], lowerTimeframes = ['15M', '5M']; 
         const higherResults = results.filter(r => higherTimeframes.includes(r.timeframe)), lowerResults = results.filter(r => lowerTimeframes.includes(r.timeframe)); 
         let best = null, isLowerTF = false; 
