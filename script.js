@@ -652,29 +652,65 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         }
 
         console.log(`  ✅ ${tfToAnalyze} PASSED!`);
-        // ===== PRECISION TRADER PRO INTEGRATION =====
-        // Build market context
+        // ===== PRECISION TRADER PRO INTEGRATION (POPULATED WITH REAL DATA) =====
+
+        // === 1. GENERATE THE DATA THAT ALREADY EXISTS ===
+
+        // Get order blocks with validity
+        const obsAll = detectOrderBlocks(entryData, sig.dir);
+        const validOrderBlocks = obsAll.map(ob => ({
+            ...ob,
+            isValid: true,
+            type: sig.dir === 'BUY' ? 'BULLISH' : 'BEARISH'
+        }));
+
+        // Get FVGs with validity
+        const fvgsAll = detectFVG(entryData);
+        const validFvgs = fvgsAll.map(fvg => ({
+            ...fvg,
+            isValid: true
+        }));
+
+        // Check BOS using MSS detection
+        const mssData = detectMSS(entryData); // detectMSS returns {detected: true/false, type:...}
+        const bosConfirmed = mssData !== null && mssData.displaced === true;
+
+        // Check displacement
+        const displacement = detectDisplacement(entryData, sig.dir);
+        const hasDisplacement = displacement.detected;
+
+        // Check CHoCH (Change of Character)
+        const chochDetected = checkCHoCH(entryData);
+
+        // Get support/resistance levels from swings
+        const swingsData = findSwings(entryData, 4);
+        const htfSupportLevels = swingsData.L.map(s => ({ price: s.p, strength: 3 }));
+        const htfResistanceLevels = swingsData.H.map(s => ({ price: s.p, strength: 3 }));
+
+        // === 2. BUILD CONTEXT WITH REAL DATA ===
         const context = buildMarketContext({
-            trendBias: sig.dir,
+            trendBias: sig.dir === 'BUY' ? 'BULLISH' : 'BEARISH',
             marketPhase: crtState?.state || 'CONSOLIDATION',
-            rangeHigh: crtRange?.high || 0,
-            rangeLow: crtRange?.low || 0,
+            rangeHigh: crtRange?.high || price * 1.01,
+            rangeLow: crtRange?.low || price * 0.99,
             zoneType: zone.quality === 'A' ? (sig.dir === 'BUY' ? 'DISCOUNT' : 'PREMIUM') : 'MID_RANGE',
-            bosConfirmed: false, // assuming displacement exists but not defined here, setting default false
-            chochDetected: false,
-            validOrderBlocks: [], // placeholder, logic expects this
-            validFvgs: [],
-            liquiditySweeps: sweeps || []
+            bosConfirmed: bosConfirmed,
+            chochDetected: chochDetected,
+            validOrderBlocks: validOrderBlocks,
+            validFvgs: validFvgs,
+            liquiditySweeps: sweeps || [],
+            htfSupportLevels: htfSupportLevels,
+            htfResistanceLevels: htfResistanceLevels
         }, {
             pullbackIntoZone: entryTiming.valid || false,
-            displacementCandle: false,
+            displacementCandle: hasDisplacement,
             compressionDetected: crtState?.isConsolidating || false
         }, { ltfData: { currentPrice: price } });
 
-        // Calculate setup score (1-10)
+        // === 3. CALCULATE SETUP SCORE ===
         const setupScore = calculateSetupScore(sig.dir, context);
 
-        // Build entry info based on direction
+        // === 4. FIND ENTRY LEVEL ===
         let entryInfo = null;
         if (sig.dir === 'BUY') {
             entryInfo = findBuyEntryLevel(context, { ltfData: { currentPrice: price } });
@@ -682,9 +718,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             entryInfo = findSellEntryLevel(context, { ltfData: { currentPrice: price } });
         }
 
-        // If no entry info, fallback to existing logic
+        // === 5. FALLBACK IF NEEDED ===
         if (!entryInfo) {
-            // Use existing logic as fallback
             entryInfo = {
                 entry: precisionEntry.entry,
                 stopLoss: precisionEntry.sl,
@@ -697,9 +732,23 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             };
         }
 
-        // Calculate win probability and expected value
+        // === 6. CALCULATE METRICS ===
         const winProb = calculateWinProbability({ action: sig.dir, setupScore: setupScore, confidence: conf }, context, sig.dir);
         const expectedValue = calculateExpectedValue(winProb, entryInfo.rrRatio || 4.0);
+        const signalGrade = getSignalGrade(conf);
+
+        // === 7. TRADE LEVELS ===
+        const tradeLevels = {
+            entry: entryInfo.entry,
+            stopLoss: entryInfo.stopLoss,
+            takeProfit: entryInfo.takeProfit,
+            partialTP: entryInfo.partialTP,
+            invalidation: entryInfo.invalidation,
+            breakeven: entryInfo.breakevenLevel,
+            pipsRisk: Math.abs(entryInfo.entry - entryInfo.stopLoss) / 0.0001,
+            pipsReward: Math.abs(entryInfo.takeProfit - entryInfo.entry) / 0.0001,
+            riskReward: entryInfo.rrRatio || 4.0
+        };
 
         return {
             timeframe: tfToAnalyze,
@@ -755,24 +804,14 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             volatility: { level: 'Moderate', desc: 'Normal' },
             mss: null,
             imbalances: [],
-            // NEW: Precision Trader Pro fields
-            setupScore: setupScore,
-            winProbability: winProb,
-            expectedValue: expectedValue,
-            signalGrade: getSignalGrade(conf),
-            entryInfo: entryInfo,
-            context: context,
-            tradeLevels: {
-                entry: entryInfo.entry,
-                stopLoss: entryInfo.stopLoss,
-                takeProfit: entryInfo.takeProfit,
-                partialTP: entryInfo.partialTP,
-                invalidation: entryInfo.invalidation,
-                breakeven: entryInfo.breakevenLevel,
-                pipsRisk: Math.abs(entryInfo.entry - entryInfo.stopLoss) / 0.0001,
-                pipsReward: Math.abs(entryInfo.takeProfit - entryInfo.entry) / 0.0001,
-                riskReward: entryInfo.rrRatio || 4.0
-            }
+            // NEW: Precision Trader Pro fields (now populated with real data)
+            setupScore: setupScore || 0,
+            winProbability: winProb || 70,
+            expectedValue: expectedValue || 0,
+            signalGrade: signalGrade || 'C',
+            context: context || {},
+            entryInfo: entryInfo || {},
+            tradeLevels: tradeLevels || {}
         };
     } catch (e) {
         console.error(`❌ Error in ${tfToAnalyze}:`, e);
@@ -1473,4 +1512,17 @@ function buildCompleteSignalOutput(signal, context, chartData, entryInfo) {
             requireBOSorSweep: true
         }
     };
+}
+
+// ===== CHECK CHoCH (Change of Character) =====
+function checkCHoCH(data) {
+    if (data.length < 3) return false;
+    const last = data[data.length - 1];
+    const prev = data[data.length - 2];
+
+    // Bullish CHoCH: bearish candle followed by bullish engulfing
+    if (prev.c < prev.o && last.c > last.o && last.c > prev.h) return true;
+    // Bearish CHoCH: bullish candle followed by bearish engulfing
+    if (prev.c > prev.o && last.c < last.o && last.c < prev.l) return true;
+    return false;
 }
