@@ -646,10 +646,11 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 
         conf = Math.min(conf, 98);
         console.log(`  → Confidence: ${conf}%`);
-        if (conf < 50) {
-            console.log(`  ❌ Confidence below 50%`);
-            return null;
-        }
+        // REMOVED: Let Precision Trader Pro handle filtering instead
+        // if (conf < 50) {
+        //     console.log(`  ❌ Confidence below 50%`);
+        //     return null;
+        // }
 
         console.log(`  ✅ ${tfToAnalyze} PASSED!`);
         // ===== PRECISION TRADER PRO INTEGRATION (POPULATED WITH REAL DATA) =====
@@ -749,6 +750,13 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             pipsReward: Math.abs(entryInfo.takeProfit - entryInfo.entry) / 0.0001,
             riskReward: entryInfo.rrRatio || 4.0
         };
+
+        // === FINAL VALIDATION ===
+        // Only reject if both confidence AND setupScore are too low
+        if (conf < 30 && setupScore < 3) {
+            console.log(`  ❌ Rejected: Confidence ${conf}% and Setup Score ${setupScore}/10 both too low`);
+            return null;
+        }
 
         return {
             timeframe: tfToAnalyze,
