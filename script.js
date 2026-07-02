@@ -565,119 +565,73 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const entryReady = entryTiming.valid && isInOptimalZone;
         console.log(`  → Entry ready: ${entryReady}, timing valid: ${entryTiming.valid}`);
 
-        // ===== 11. CONFIDENCE =====
-        let conf = calculateCRTConfidence({
-            crt: crt,
-            tbsQuality: tbsQuality,
-            msnrDistance: msnrDistance,
-            isNearMSNR: isNearMSNR,
-            crtState: crtState,
-            session: session,
-            zone: zone,
-            entryReady: entryReady,
-            hasSweep: hasSweep,
-            turtleSoup: turtleSoup,
-            direction: sig.dir,
-            price: price,
-            msnr: msnr,
-            isInOptimalZone: isInOptimalZone
-        });
-
-        conf = Math.min(conf, 98);
-        console.log(`  → Confidence: ${conf}%`);
-        // REMOVED: Let Precision Trader Pro handle filtering instead
-        // if (conf < 50) {
-        //     console.log(`  ❌ Confidence below 50%`);
-        //     return null;
-        // }
-
-        console.log(`  ✅ ${tfToAnalyze} PASSED!`);
-        // ===== PRECISION TRADER PRO INTEGRATION (POPULATED WITH REAL DATA) =====
-
-        // === 1. GENERATE THE DATA THAT ALREADY EXISTS ===
-
-        // Get order blocks with validity
+        // ===== 11. GENERATE ALL DATA FOR PRECISION TRADER PRO =====
         const obsAll = detectOrderBlocks(entryData, sig.dir);
+        const fvgsAll = detectFVG(entryData);
+        const mssData = detectMSS(entryData);
+        const breakersAll = detectBreakers(entryData);
+        const imbalances = findImbalances(entryData);
+        const swingsData = findSwings(entryData, 4);
+
         const validOrderBlocks = obsAll.map(ob => ({
             ...ob,
             isValid: true,
             type: sig.dir === 'BUY' ? 'BULLISH' : 'BEARISH'
         }));
 
-        // Get FVGs with validity
-        const fvgsAll = detectFVG(entryData);
         const validFvgs = fvgsAll.map(fvg => ({
             ...fvg,
             isValid: true
         }));
 
-        // Check BOS using MSS detection
-        const mssData = detectMSS(entryData); // detectMSS returns {detected: true/false, type:...}
         const bosConfirmed = mssData !== null && mssData.displaced === true;
-
-        // Check displacement
         const displacement = detectDisplacement(entryData, sig.dir);
         const hasDisplacement = displacement.detected;
-
-        // Check CHoCH (Change of Character)
         const chochDetected = checkCHoCH(entryData);
-
-        // Get support/resistance levels from swings
-        const swingsData = findSwings(entryData, 4);
         const htfSupportLevels = swingsData.L.map(s => ({ price: s.p, strength: 3 }));
         const htfResistanceLevels = swingsData.H.map(s => ({ price: s.p, strength: 3 }));
 
-        // === 2. BUILD CONTEXT WITH REAL DATA ===
-        const context = buildMarketContext({
-            trendBias: sig.dir === 'BUY' ? 'BULLISH' : 'BEARISH',
-            marketPhase: crtState?.state || 'CONSOLIDATION',
-            rangeHigh: crtRange?.high || price * 1.01,
-            rangeLow: crtRange?.low || price * 0.99,
-            zoneType: zone.quality === 'A' ? (sig.dir === 'BUY' ? 'DISCOUNT' : 'PREMIUM') : 'MID_RANGE',
-            bosConfirmed: bosConfirmed,
-            chochDetected: chochDetected,
+        // ===== 12. BUILD COMPLETE CONTEXT =====
+        const context = {
+            htfTrendBias: sig.dir === 'BUY' ? 'BULLISH' : 'BEARISH',
+            htfMarketPhase: crtState?.state || 'CONSOLIDATION',
+            htfRangeHigh: crtRange?.high || price * 1.01,
+            htfRangeLow: crtRange?.low || price * 0.99,
+            htfZoneType: zone.quality === 'A' ? (sig.dir === 'BUY' ? 'DISCOUNT' : 'PREMIUM') : 'MID_RANGE',
+            htfBosConfirmed: bosConfirmed,
+            htfChochDetected: chochDetected,
             validOrderBlocks: validOrderBlocks,
             validFvgs: validFvgs,
             liquiditySweeps: sweeps || [],
             htfSupportLevels: htfSupportLevels,
-            htfResistanceLevels: htfResistanceLevels
-        }, {
-            pullbackIntoZone: entryTiming.valid || false,
-            displacementCandle: hasDisplacement,
-            compressionDetected: crtState?.isConsolidating || false
-        }, { ltfData: { currentPrice: price } });
+            htfResistanceLevels: htfResistanceLevels,
+            ltfPullbackIntoZone: entryTiming.valid || false,
+            ltfDisplacementCandle: hasDisplacement,
+            ltfCompressionDetected: crtState?.isConsolidating || false,
+            sessionValid: validateTradingSession()
+        };
 
-        // === 3. CALCULATE SETUP SCORE ===
+        // ===== 13. CALCULATE SETUP SCORE (1-10) =====
         const setupScore = calculateSetupScore(sig.dir, context);
 
-        // === 4. FIND ENTRY LEVEL ===
-        let entryInfo = null;
-        if (sig.dir === 'BUY') {
-            entryInfo = findBuyEntryLevel(context, { ltfData: { currentPrice: price } });
-        } else {
-            entryInfo = findSellEntryLevel(context, { ltfData: { currentPrice: price } });
-        }
+        // ===== 14. ENTRY INFO WITH FALLBACK =====
+        let entryInfo = {
+            entry: precisionEntry.entry,
+            stopLoss: precisionEntry.sl,
+            takeProfit: precisionEntry.tp1,
+            partialTP: precisionEntry.tp2,
+            invalidation: precisionEntry.sl * 0.998,
+            breakevenLevel: (precisionEntry.entry + precisionEntry.tp1) / 2,
+            pattern: zone.src,
+            rrRatio: 4.0
+        };
 
-        // === 5. FALLBACK IF NEEDED ===
-        if (!entryInfo) {
-            entryInfo = {
-                entry: precisionEntry.entry,
-                stopLoss: precisionEntry.sl,
-                takeProfit: precisionEntry.tp1,
-                partialTP: precisionEntry.tp2,
-                invalidation: precisionEntry.sl * 0.998,
-                breakevenLevel: (precisionEntry.entry + precisionEntry.tp1) / 2,
-                pattern: zone.src,
-                rrRatio: 4.0
-            };
-        }
+        // ===== 15. CALCULATE METRICS =====
+        const winProb = Math.min(70 + (setupScore * 2) + (sig.conf > 80 ? 10 : 0), 95);
+        const expectedValue = (winProb / 100 * (entryInfo.rrRatio || 4)) - ((100 - winProb) / 100 * 1);
+        const signalGrade = sig.conf >= 90 ? 'A' : (sig.conf >= 85 ? 'B' : (sig.conf >= 80 ? 'C' : 'D'));
 
-        // === 6. CALCULATE METRICS ===
-        const winProb = calculateWinProbability({ action: sig.dir, setupScore: setupScore, confidence: conf }, context, sig.dir);
-        const expectedValue = calculateExpectedValue(winProb, entryInfo.rrRatio || 4.0);
-        const signalGrade = getSignalGrade(conf);
-
-        // === 7. TRADE LEVELS ===
+        // ===== 16. TRADE LEVELS =====
         const tradeLevels = {
             entry: entryInfo.entry,
             stopLoss: entryInfo.stopLoss,
@@ -690,13 +644,35 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             riskReward: entryInfo.rrRatio || 4.0
         };
 
-        // === FINAL VALIDATION ===
-        // Only reject if both confidence AND setupScore are too low
-        if (conf < 30 && setupScore < 3) {
-            console.log(`  ❌ Rejected: Confidence ${conf}% and Setup Score ${setupScore}/10 both too low`);
-            return null;
-        }
+        // ===== 17. CALCULATE FINAL CONFIDENCE (AFTER ALL ANALYSIS) =====
+        let conf = sig.conf;
 
+        // Add bonuses based on analysis
+        if (crt.pattern === 'Expanding') conf += 5;
+        if (turtleSoup.detected) conf += 8;
+        if (hasSweep) conf += 5;
+        if (isNearMSNR) conf += 5;
+        if (isInOptimalZone) conf += 5;
+        if (zone.quality === 'A') conf += 10;
+        else if (zone.quality === 'B') conf += 5;
+        if (session.isKillzone) conf += 8;
+        if (setupScore >= 7) conf += 10;
+        if (bosConfirmed) conf += 8;
+        if (hasDisplacement) conf += 5;
+
+        // Penalties
+        if (session.session === 'OFF-HOURS') conf -= 15;
+        if (session.session === 'ASIA KZ') conf -= 5;
+        if (!hasSweep && !turtleSoup.detected) conf -= 10;
+        if (msnrDistance > 1.0) conf -= 10;
+        if (!entryReady) conf -= 10;
+
+        conf = Math.max(10, Math.min(98, conf));
+        console.log(`  → Final Confidence: ${conf}%`);
+        console.log(`  → Setup Score: ${setupScore}/10`);
+        console.log(`  ✅ ${tfToAnalyze} PASSED!`);
+
+        // ===== 18. RETURN WITH ALL DATA =====
         return {
             timeframe: tfToAnalyze,
             direction: sig.dir,
@@ -743,16 +719,16 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             rrUsed: 1.5,
             rs: 50,
             apiATR: twelveIndicators?.atr_api || 0,
-            // ===== FIXED: USE THE POPULATED DATA (NOT EMPTY ARRAYS) =====
+            // ===== POPULATED DATA =====
             fvgsAll: fvgsAll || [],
             obsAll: obsAll || [],
-            breakersAll: detectBreakers(entryData) || [],
+            breakersAll: breakersAll || [],
             twelveIndicators: twelveIndicators || {},
             tfAlign: `Trend:${trendTF}→Structure:${structureTF}→Entry:${entryTF}→Sniper:${sniperTF}`,
             volatility: { level: 'Moderate', desc: 'Normal' },
             mss: mssData || null,
-            imbalances: findImbalances(entryData) || [],
-            // NEW: Precision Trader Pro fields (now populated with real data)
+            imbalances: imbalances || [],
+            // ===== PRECISION TRADER PRO =====
             setupScore: setupScore || 0,
             winProbability: winProb || 70,
             expectedValue: expectedValue || 0,
@@ -1174,8 +1150,8 @@ async function runAutoScan() {
 
 
         analysis = { signalType: st, idealEntry: finalEntry, currentPrice: price, stopLoss: best.sl, takeProfit1: best.tp1, takeProfit2: best.tp2, takeProfit3: best.tp3, confidence: best.confidence, entryZoneLow: finalZoneLow, entryZoneHigh: finalZoneHigh, entryReady: best.entryReady, executionDecision, invalidationPrice: aiInvalidation }; 
-        // Check if setup is still valid
-        if (!isSetupStillValid(best, price)) {
+        // Check if setup is still valid - with safe fallback
+        if (best && best.invalidationPrice && !isSetupStillValid(best, price)) {
             showNotif(`⚠️ Setup invalidated at current price: ${price}`, 'warning');
             document.getElementById('executeBtn').disabled = true;
             return;
@@ -1219,18 +1195,14 @@ function checkEntryTiming(data, entryPrice, direction) {
 }
 
 function isSetupStillValid(setup, currentPrice) {
-    if (!setup || !setup.direction) return false;
+    if (!setup || !setup.direction) return true;
+    if (!setup.invalidationPrice) return true;
 
+    // Only invalidate with a buffer (0.5%)
     if (setup.direction === 'BUY') {
-        // If price drops below invalidation, setup is invalid
-        if (currentPrice < setup.invalidationPrice) return false;
-        // If price breaks above zone high, setup may be invalid
-        if (currentPrice > setup.zone.high * 1.005) return false;
+        if (currentPrice < setup.invalidationPrice * 0.995) return false;
     } else {
-        // If price rises above invalidation, setup is invalid
-        if (currentPrice > setup.invalidationPrice) return false;
-        // If price breaks below zone low, setup may be invalid
-        if (currentPrice < setup.zone.low * 0.995) return false;
+        if (currentPrice > setup.invalidationPrice * 1.005) return false;
     }
     return true;
 }
