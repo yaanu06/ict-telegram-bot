@@ -907,32 +907,55 @@ function getPrecisionEntryCRT(candles, zone, direction, crtRange, apiATR) {
         };
     }
 
-    // Use Twelve Data ATR if available
+    // Use Twelve Data ATR if available, otherwise calculate
     const atrValue = apiATR || atr(candles, 14);
-    const prec = getPrec(pair);
-    const buffer = Math.max(atrValue * 0.3, 0.5); // Minimum 0.5 pips buffer
+    const settings = getMarketSettings(pair);
+    const prec = settings.prec || 5;
+
+    // === CRITICAL: Use ATR directly - it's already in price units ===
+    // For AUD/USD at 0.6895, ATR might be 0.0005 (5 pips)
+    // For XAU/USD at 3300, ATR might be 15 (15 dollars)
+    const entryBuffer = Math.max(atrValue * 0.3, 0.0002);
+    const slBufferValue = Math.max(atrValue * 0.5, 0.0003);
 
     let entry, sl, tp1, tp2, tp3;
+    const rr = settings.targetRR || 4;
 
     if (direction === 'BUY') {
-        entry = Math.min(crtRange.low + buffer, zone.high);
-        sl = crtRange.low - buffer * 0.5;
+        entry = Math.min(zone.low + entryBuffer, zone.high);
+        sl = Math.min(zone.low - slBufferValue, crtRange.low - slBufferValue);
+        if (sl >= entry) sl = entry - slBufferValue;
         const risk = entry - sl;
-        const settings = getMarketSettings(pair);
-        const rr = settings.targetRR || 4;
-        tp1 = entry + risk * rr;
-        tp2 = entry + risk * (rr + 1);
-        tp3 = entry + risk * (rr + 2);
+        if (risk <= 0) sl = entry - 0.0010;
+        const actualRisk = entry - sl;
+        tp1 = entry + actualRisk * rr;
+        tp2 = entry + actualRisk * (rr + 1);
+        tp3 = entry + actualRisk * (rr + 2);
     } else {
-        entry = Math.max(crtRange.high - buffer, zone.low);
-        sl = crtRange.high + buffer * 0.5;
+        entry = Math.max(zone.high - entryBuffer, zone.low);
+        sl = Math.max(zone.high + slBufferValue, crtRange.high + slBufferValue);
+        if (sl <= entry) sl = entry + slBufferValue;
         const risk = sl - entry;
-        const settings = getMarketSettings(pair);
-        const rr = settings.targetRR || 4;
-        tp1 = entry - risk * rr;
-        tp2 = entry - risk * (rr + 1);
-        tp3 = entry - risk * (rr + 2);
+        if (risk <= 0) sl = entry + 0.0010;
+        const actualRisk = sl - entry;
+        tp1 = entry - actualRisk * rr;
+        tp2 = entry - actualRisk * (rr + 1);
+        tp3 = entry - actualRisk * (rr + 2);
     }
+
+    const factor = Math.pow(10, prec);
+    entry = Math.round(entry * factor) / factor;
+    sl = Math.round(sl * factor) / factor;
+    tp1 = Math.round(tp1 * factor) / factor;
+    tp2 = Math.round(tp2 * factor) / factor;
+    tp3 = Math.round(tp3 * factor) / factor;
+
+    // Debug log
+    console.log('=== getPrecisionEntryCRT ===');
+    console.log('Pair:', pair, 'Direction:', direction);
+    console.log('ATR:', atrValue, 'Entry Buffer:', entryBuffer, 'SL Buffer:', slBufferValue);
+    console.log('Entry:', entry, 'SL:', sl, 'TP1:', tp1);
+    console.log('Risk:', Math.abs(entry - sl), 'RR:', rr);
 
     return {
         entry: entry,
@@ -940,7 +963,7 @@ function getPrecisionEntryCRT(candles, zone, direction, crtRange, apiATR) {
         tp1: tp1,
         tp2: tp2,
         tp3: tp3,
-        reason: `ATR-adjusted CRT entry (buffer: ${(buffer).toFixed(prec)})`
+        reason: `ATR-adjusted entry (buffer: ${(entryBuffer * 10000).toFixed(1)} pips)`
     };
 }
 
