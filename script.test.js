@@ -67,6 +67,102 @@ describe('rsi (Wilder smoothing)', () => {
     });
 });
 
+describe('checkSniperEntry', () => {
+    const context = getContext();
+    // trending-up candles with no sweep/MSS pattern
+    const flat = Array.from({ length: 60 }, (_, i) => {
+        const o = 100 + i * 0.1;
+        return { t: new Date(2026, 0, 1, i).toISOString(), o, h: o + 0.3, l: o - 0.3, c: o + 0.1, v: 1e6 };
+    });
+    const zone = { low: 99, high: 100, confluence: 'FVG+OTE' };
+
+    it('is not sniper when no sweep or MSS exists', () => {
+        const res = context.checkSniperEntry(flat, 106, 'BUY', zone, { isKillzone: true });
+        expect(res.isSniper).toBe(false);
+    });
+
+    it('scores OTE and killzone components', () => {
+        const res = context.checkSniperEntry(flat, 106, 'BUY', zone, { isKillzone: true });
+        const ote = res.checks.find(c => c.name === 'Zone in OTE band');
+        const kz = res.checks.find(c => c.name === 'Killzone session');
+        expect(ote.passed).toBe(true);
+        expect(kz.passed).toBe(true);
+    });
+
+    it('reports all five checks with critical flags', () => {
+        const res = context.checkSniperEntry(flat, 106, 'BUY', zone, null);
+        expect(res.checks).toHaveLength(5);
+        expect(res.checks.filter(c => c.critical)).toHaveLength(3);
+        expect(res.score).toBeGreaterThanOrEqual(0);
+        expect(res.score).toBeLessThanOrEqual(100);
+    });
+});
+
+describe('validateAIResult', () => {
+    const context = getContext();
+    const best = { direction: 'BUY', entry: 100, zone: { low: 99, high: 101 } };
+    const price = 105;
+    const mk = (ts) => ({ trade_signal_Theghostmachine: ts });
+
+    it('returns null for a malformed response', () => {
+        expect(context.validateAIResult({}, best, price)).toBeNull();
+        expect(context.validateAIResult(null, best, price)).toBeNull();
+    });
+
+    it('clamps confidence_adjustment to +-25', () => {
+        const r = context.validateAIResult(mk({ confidence_adjustment: 80 }), best, price);
+        expect(r.trade_signal_Theghostmachine.confidence_adjustment).toBe(25);
+        const r2 = context.validateAIResult(mk({ confidence_adjustment: -99 }), best, price);
+        expect(r2.trade_signal_Theghostmachine.confidence_adjustment).toBe(-25);
+    });
+
+    it('drops an entry refinement on the wrong side of price', () => {
+        // BUY refinement above current price would fill instantly at a worse level
+        const r = context.validateAIResult(mk({ entry_refinement: { low: 106, high: 107 } }), best, price);
+        expect(r.trade_signal_Theghostmachine.entry_refinement).toBeUndefined();
+    });
+
+    it('drops an entry refinement far from the original zone', () => {
+        const r = context.validateAIResult(mk({ entry_refinement: { low: 50, high: 52 } }), best, price);
+        expect(r.trade_signal_Theghostmachine.entry_refinement).toBeUndefined();
+    });
+
+    it('keeps a sane entry refinement', () => {
+        const r = context.validateAIResult(mk({ entry_refinement: { low: 99.5, high: 100.5 } }), best, price);
+        expect(r.trade_signal_Theghostmachine.entry_refinement).toEqual({ low: 99.5, high: 100.5 });
+    });
+
+    it('drops an invalidation price on the wrong side of entry', () => {
+        // for a BUY, invalidation must be below entry
+        const r = context.validateAIResult(mk({ invalidation_price: 103 }), best, price);
+        expect(r.trade_signal_Theghostmachine.invalidation_price).toBeUndefined();
+        const r2 = context.validateAIResult(mk({ invalidation_price: 97 }), best, price);
+        expect(r2.trade_signal_Theghostmachine.invalidation_price).toBe(97);
+    });
+
+    it('drops selected_timeframe when not in the allowed list', () => {
+        const r = context.validateAIResult(mk({ selected_timeframe: '3M' }), best, price, ['1H', '4H']);
+        expect(r.trade_signal_Theghostmachine.selected_timeframe).toBeUndefined();
+        const r2 = context.validateAIResult(mk({ selected_timeframe: '4H' }), best, price, ['1H', '4H']);
+        expect(r2.trade_signal_Theghostmachine.selected_timeframe).toBe('4H');
+    });
+
+    it('drops rule_checks when not an array', () => {
+        const r = context.validateAIResult(mk({ rule_checks: 'all good' }), best, price);
+        expect(r.trade_signal_Theghostmachine.rule_checks).toBeUndefined();
+        const checks = [{ rule: 1, verdict: 'PASS', note: 'ok' }];
+        const r2 = context.validateAIResult(mk({ rule_checks: checks }), best, price);
+        expect(r2.trade_signal_Theghostmachine.rule_checks).toEqual(checks);
+    });
+
+    it('removes an unknown execution_decision so the caller falls back', () => {
+        const r = context.validateAIResult(mk({ execution_decision: 'yolo_full_send' }), best, price);
+        expect(r.trade_signal_Theghostmachine.execution_decision).toBeUndefined();
+        const r2 = context.validateAIResult(mk({ execution_decision: 'skip' }), best, price);
+        expect(r2.trade_signal_Theghostmachine.execution_decision).toBe('skip');
+    });
+});
+
 describe('getLiveCandleDirection', () => {
     let context;
 
