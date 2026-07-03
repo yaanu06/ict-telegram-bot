@@ -67,6 +67,37 @@ describe('rsi (Wilder smoothing)', () => {
     });
 });
 
+describe('checkSniperEntry', () => {
+    const context = getContext();
+    // trending-up candles with no sweep/MSS pattern
+    const flat = Array.from({ length: 60 }, (_, i) => {
+        const o = 100 + i * 0.1;
+        return { t: new Date(2026, 0, 1, i).toISOString(), o, h: o + 0.3, l: o - 0.3, c: o + 0.1, v: 1e6 };
+    });
+    const zone = { low: 99, high: 100, confluence: 'FVG+OTE' };
+
+    it('is not sniper when no sweep or MSS exists', () => {
+        const res = context.checkSniperEntry(flat, 106, 'BUY', zone, { isKillzone: true });
+        expect(res.isSniper).toBe(false);
+    });
+
+    it('scores OTE and killzone components', () => {
+        const res = context.checkSniperEntry(flat, 106, 'BUY', zone, { isKillzone: true });
+        const ote = res.checks.find(c => c.name === 'Zone in OTE band');
+        const kz = res.checks.find(c => c.name === 'Killzone session');
+        expect(ote.passed).toBe(true);
+        expect(kz.passed).toBe(true);
+    });
+
+    it('reports all five checks with critical flags', () => {
+        const res = context.checkSniperEntry(flat, 106, 'BUY', zone, null);
+        expect(res.checks).toHaveLength(5);
+        expect(res.checks.filter(c => c.critical)).toHaveLength(3);
+        expect(res.score).toBeGreaterThanOrEqual(0);
+        expect(res.score).toBeLessThanOrEqual(100);
+    });
+});
+
 describe('getLiveCandleDirection', () => {
     let context;
 

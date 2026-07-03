@@ -17,6 +17,9 @@
 //   --conf       Minimum signal confidence to take a trade (default 60)
 //   --quality    Minimum zone quality: A, B or C (default C = take all)
 //   --expiry     Bars before an unfilled limit order expires (default 50)
+//   --sniper     Only take trades passing the sniper gate (sweep -> displaced
+//                MSS -> fresh zone); without it, all trades are taken and the
+//                report breaks results down by sniper vs normal
 //   --file       Read candles from a JSON file instead of the API
 //                (array of {t,o,h,l,c,v}, oldest first)
 
@@ -43,7 +46,7 @@ function loadBot(pairName) {
     // Top-level const/let (ema, rsi, atr, pair) live in the script's lexical
     // scope, so export what we need from the same script run.
     const bot = vm.runInContext(
-        code + '\n;pair = ' + JSON.stringify(pairName) + ';({ ema, rsi, atr, score, calculateMSNR, findPrecisionEntry, calcStopLoss, calcTakeProfits, getMarketSettings, checkZoneFreshness, detectTrend });',
+        code + '\n;pair = ' + JSON.stringify(pairName) + ';({ ema, rsi, atr, score, calculateMSNR, findPrecisionEntry, calcStopLoss, calcTakeProfits, getMarketSettings, checkZoneFreshness, detectTrend, checkSniperEntry });',
         context
     );
     return bot;
@@ -109,13 +112,20 @@ function runBacktest(bot, candles, opts) {
         const qualityRank = { A: 3, B: 2, C: 1 };
         if (qualityRank[zone.quality] < qualityRank[opts.quality]) continue;
 
+        // sniper gate: killzone derived from the candle's own timestamp, not wall-clock
+        const utcHour = new Date(bar.t).getUTCHours();
+        const session = { isKillzone: (utcHour >= 7 && utcHour < 10) || (utcHour >= 12 && utcHour < 15) };
+        let sniperRes = { isSniper: false, score: 0 };
+        try { sniperRes = bot.checkSniperEntry(window, price, sig.dir, zone, session); } catch (e) {}
+        if (opts.sniper && !sniperRes.isSniper) continue;
+
         const entry = zone.p;
         const risk = Math.abs(entry - slRes.price);
         if (risk <= 0) continue;
         const rr = opts.rr || Math.abs(tps.tp1 - entry) / risk;
         const tp1 = opts.rr ? (sig.dir === 'BUY' ? entry + risk * opts.rr : entry - risk * opts.rr) : tps.tp1;
 
-        pending = { dir: sig.dir, entry, sl: slRes.price, tp1, rr, signalBar: i, conf: sig.conf, quality: zone.quality, src: zone.src };
+        pending = { dir: sig.dir, entry, sl: slRes.price, tp1, rr, signalBar: i, conf: sig.conf, quality: zone.quality, src: zone.src, sniper: sniperRes.isSniper ? 'SNIPER' : 'normal' };
     }
     if (open) trades.push({ ...open, outcome: 'OPEN_AT_END', r: 0 });
     if (pending) trades.push({ ...pending, outcome: 'EXPIRED', r: 0 });
@@ -158,7 +168,7 @@ function report(trades, opts, candles) {
     console.log(`Max drawdown:       ${maxDD.toFixed(1)}R`);
     console.log(`Worst loss streak:  ${worstStreak}`);
 
-    for (const key of ['quality', 'dir', 'src']) {
+    for (const key of ['quality', 'dir', 'src', 'sniper']) {
         const groups = {};
         for (const t of closed) (groups[t[key]] ||= []).push(t);
         const lines = Object.entries(groups).map(([k, g]) => {
@@ -198,6 +208,7 @@ async function main() {
         quality: get('quality', 'C').toUpperCase(),
         expiry: +get('expiry', 50),
         file: get('file', null),
+        sniper: args.includes('--sniper'),
     };
     const apiKey = get('key', process.env.TWELVE_DATA_KEY);
 
