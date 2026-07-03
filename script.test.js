@@ -140,6 +140,21 @@ describe('validateAIResult', () => {
         expect(r2.trade_signal_Theghostmachine.invalidation_price).toBe(97);
     });
 
+    it('drops selected_timeframe when not in the allowed list', () => {
+        const r = context.validateAIResult(mk({ selected_timeframe: '3M' }), best, price, ['1H', '4H']);
+        expect(r.trade_signal_Theghostmachine.selected_timeframe).toBeUndefined();
+        const r2 = context.validateAIResult(mk({ selected_timeframe: '4H' }), best, price, ['1H', '4H']);
+        expect(r2.trade_signal_Theghostmachine.selected_timeframe).toBe('4H');
+    });
+
+    it('drops rule_checks when not an array', () => {
+        const r = context.validateAIResult(mk({ rule_checks: 'all good' }), best, price);
+        expect(r.trade_signal_Theghostmachine.rule_checks).toBeUndefined();
+        const checks = [{ rule: 1, verdict: 'PASS', note: 'ok' }];
+        const r2 = context.validateAIResult(mk({ rule_checks: checks }), best, price);
+        expect(r2.trade_signal_Theghostmachine.rule_checks).toEqual(checks);
+    });
+
     it('removes an unknown execution_decision so the caller falls back', () => {
         const r = context.validateAIResult(mk({ execution_decision: 'yolo_full_send' }), best, price);
         expect(r.trade_signal_Theghostmachine.execution_decision).toBeUndefined();
