@@ -1086,25 +1086,70 @@ function calculateSetupQuality(result, price) {
     return Math.max(0, Math.min(100, score));
 }
 
+// FIX #12: the AI response is validated before use — a hallucinated entry zone
+// on the wrong side of price, a nonsense invalidation level, or an extreme
+// confidence adjustment previously flowed straight into the trade signal.
+function validateAIResult(ai, best, price) {
+    const ts = ai?.trade_signal_Theghostmachine;
+    if (!ts || typeof ts !== 'object') return null;
+    if (!['enter_now', 'wait_for_reaction', 'skip'].includes(ts.execution_decision)) delete ts.execution_decision;
+    ts.confidence_adjustment = Math.max(-25, Math.min(25, +ts.confidence_adjustment || 0));
+    if (ts.entry_refinement) {
+        const { low, high } = ts.entry_refinement;
+        const zoneWidth = best.zone.high - best.zone.low;
+        const nearOriginal = typeof low === 'number' && typeof high === 'number' && low < high &&
+            Math.abs(low - best.zone.low) <= zoneWidth * 1.5 && Math.abs(high - best.zone.high) <= zoneWidth * 1.5;
+        const correctSide = best.direction === 'BUY' ? high < price : low > price;
+        if (!nearOriginal || !correctSide) delete ts.entry_refinement;
+    }
+    if (typeof ts.invalidation_price === 'number') {
+        const validInval = best.direction === 'BUY' ? ts.invalidation_price < best.entry : ts.invalidation_price > best.entry;
+        if (!validInval) delete ts.invalidation_price;
+    } else delete ts.invalidation_price;
+    return ai;
+}
+
 async function askAIWithAllResults(allResults, price, htfData) {
     if (!DEEPSEEK_API_KEY || allResults.length === 0) return null; showNotif('🤖 AI strict execution check...', 'info');
     let tfSummary = ''; for (const r of allResults) { const htfStatus = r.htfValidation ? (r.htfValidation.passed ? 'In HTF' : 'No HTF') : 'N/A'; tfSummary += `${r.timeframe}: ${r.direction} | Zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | EntryReady: ${r.entryReady ? 'YES' : 'NO'} | React: ${r.zoneReaction?.confirmed ? r.zoneReaction.type : 'None'} | HTF: ${htfStatus} | Touches: ${r.zoneTouches} | Conf:${r.confidence}% | RR:1:${r.rrUsed}\n`; }
     const best = allResults[0], prec = getPrec(pair), dailyDir = await getQuoteDirection('1D', htfData['1D']), h4Dir = await getQuoteDirection('4H', htfData['4H']), htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
-    const prompt = `You are TheGhostMachine. Decide if we should enter NOW.
-PAIR: HIDDEN_ASSET | PRICE: $${price.toFixed(prec)}
+    // FIX #12: the model now sees the actual market context — recent candles, key
+    // levels, sweeps, and the sniper-sequence breakdown — instead of one summary
+    // line per timeframe, so its decision can add information rather than echo flags.
+    const entryData = htfData[best.entryTF] || [];
+    const recentCandles = entryData.slice(-12).map(c => `${c.t}: O${c.o.toFixed(prec)} H${c.h.toFixed(prec)} L${c.l.toFixed(prec)} C${c.c.toFixed(prec)}`).join('\n');
+    const sweepLines = (best.sweeps || []).slice(0, 4).map(s => `${s.type} @ $${s.level.toFixed(prec)} (${s.direction})`).join('; ') || 'none';
+    const sniperLines = (best.sniperEntry?.checks || []).map(c => `${c.name}: ${c.passed ? 'PASS' : 'FAIL'}${c.critical ? ' (critical)' : ''}`).join('; ');
+    const prompt = `You are TheGhostMachine, a strict ICT execution auditor. Your job is to find reasons NOT to take this trade; approve only if the setup survives every check.
+PAIR: HIDDEN_ASSET | PRICE: $${price.toFixed(prec)} | ATR: ${best.apiATR?.toFixed(prec) || 'n/a'} | Volatility: ${best.volatility?.level || 'n/a'}
 HTF: 1D=${dailyDir} 4H=${h4Dir} | Confluence: ${htfConfluence.level}
-PRECISION: Session=${best.session.session} | Killzone=${best.session.isKillzone} | SilverBullet=${best.session.isSilverBullet} | AMD=${best.amd.phase}
+SESSION: ${best.session.session} | Killzone=${best.session.isKillzone} | SilverBullet=${best.session.isSilverBullet} | AMD=${best.amd.phase}
+KEY LEVELS: Pivot $${best.msnr.pivot.toFixed(prec)} | Support $${best.msnr.nearestSupport?.toFixed(prec) || 'n/a'} | Resistance $${best.msnr.nearestResistance?.toFixed(prec) || 'n/a'}
+LIQUIDITY SWEEPS: ${sweepLines}
+SNIPER SEQUENCE: ${best.sniperEntry?.isSniper ? 'COMPLETE' : 'INCOMPLETE'} (${sniperLines})
+PATH TO TP: ${best.pathCheck?.clear ? 'clear' : 'obstacles: ' + (best.pathCheck?.obstacles || []).join(', ')}
+ZONE: fresh=${best.freshness?.fresh} touches=${best.zoneTouches} magnetism=${best.magnetism?.magnetism} (${best.magnetism?.score}/100)
 ALL TIMEFRAMES:
 ${tfSummary}
 TOP SETUP (${best.timeframe}):
-Direction: ${best.direction} | Zone: $${best.zone.low.toFixed(prec)}-$${best.zone.high.toFixed(prec)} (${best.zone.src} Q:${best.zone.quality})
+Direction: ${best.direction} | Zone: $${best.zone.low.toFixed(prec)}-$${best.zone.high.toFixed(prec)} (${best.zone.src} Q:${best.zone.quality}, confluence: ${best.zone.confluence})
 HTF Validated: ${best.htfValidation ? (best.htfValidation.passed ? 'YES' : 'NO') : 'N/A'}
 Entry Ready: ${best.entryReady ? 'YES' : 'NO'} | Reaction: ${best.zoneReaction?.confirmed ? best.zoneReaction.type : 'NONE'}
 Entry: $${best.entry.toFixed(prec)} | SL: $${best.sl.toFixed(prec)} | TP1: $${best.tp1.toFixed(prec)} | RR: 1:${best.rrUsed}
+RECENT ${best.entryTF} CANDLES (oldest first):
+${recentCandles || 'n/a'}
 
-RULES: If entryReady is NO, return "wait_for_reaction". If HTF not validated, consider "skip". If CONFLICT, "skip".
+HARD RULES (apply in order):
+1. HTF Confluence CONFLICT -> "skip".
+2. entryReady NO and no zone reaction -> "wait_for_reaction" with a concrete wait_condition.
+3. HTF not validated AND sniper sequence INCOMPLETE -> "skip".
+4. Path to TP has obstacles AND RR < 3 -> "skip".
+5. Sniper sequence COMPLETE + killzone + fresh zone -> lean "enter_now".
+Confidence_adjustment must stay within -25..+25 and reflect how many checks the setup failed.
+entry_refinement (optional) must stay inside or overlap the given zone and be on the correct side of current price.
+invalidation_price must be beyond the stop loss side of entry (below entry for BUY, above for SELL).
 
-Return ONLY JSON in this format:
+Return ONLY JSON in this exact format:
 {
   "trade_signal_Theghostmachine": {
     "approved": boolean,
@@ -1121,7 +1166,21 @@ Return ONLY JSON in this format:
     },
     "entry_refinement": { "low": number, "high": number }
   }
-}`; try { const r = await fetch(DEEPSEEK_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${DEEPSEEK_API_KEY}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'system',content:'You are a strict ICT execution coach. Return ONLY valid JSON.'},{role:'user',content:prompt}],temperature:0.1,max_tokens:1000})}); const d = await r.json(); if (d.choices?.[0]) { const m = d.choices[0].message.content.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); } } catch(e) { console.error('AI fetch:', e); }
+}`;
+    // FIX #12: 30s abort timeout, native JSON mode instead of regex extraction,
+    // and enough tokens that the JSON can't be truncated mid-object.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    try {
+        const r = await fetch(DEEPSEEK_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` }, signal: ctrl.signal, body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: 'You are a strict ICT execution auditor. Return ONLY valid JSON.' }, { role: 'user', content: prompt }], temperature: 0.1, max_tokens: 1600, response_format: { type: 'json_object' } }) });
+        const d = await r.json();
+        const content = d.choices?.[0]?.message?.content;
+        if (content) {
+            let parsed = null;
+            try { parsed = JSON.parse(content); } catch (e) { const m = content.match(/\{[\s\S]*\}/); if (m) parsed = JSON.parse(m[0]); }
+            if (parsed) return validateAIResult(parsed, best, price);
+        }
+    } catch (e) { console.error('AI fetch:', e); } finally { clearTimeout(timer); }
     return null;
 }
 

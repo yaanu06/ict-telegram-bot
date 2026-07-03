@@ -98,6 +98,56 @@ describe('checkSniperEntry', () => {
     });
 });
 
+describe('validateAIResult', () => {
+    const context = getContext();
+    const best = { direction: 'BUY', entry: 100, zone: { low: 99, high: 101 } };
+    const price = 105;
+    const mk = (ts) => ({ trade_signal_Theghostmachine: ts });
+
+    it('returns null for a malformed response', () => {
+        expect(context.validateAIResult({}, best, price)).toBeNull();
+        expect(context.validateAIResult(null, best, price)).toBeNull();
+    });
+
+    it('clamps confidence_adjustment to +-25', () => {
+        const r = context.validateAIResult(mk({ confidence_adjustment: 80 }), best, price);
+        expect(r.trade_signal_Theghostmachine.confidence_adjustment).toBe(25);
+        const r2 = context.validateAIResult(mk({ confidence_adjustment: -99 }), best, price);
+        expect(r2.trade_signal_Theghostmachine.confidence_adjustment).toBe(-25);
+    });
+
+    it('drops an entry refinement on the wrong side of price', () => {
+        // BUY refinement above current price would fill instantly at a worse level
+        const r = context.validateAIResult(mk({ entry_refinement: { low: 106, high: 107 } }), best, price);
+        expect(r.trade_signal_Theghostmachine.entry_refinement).toBeUndefined();
+    });
+
+    it('drops an entry refinement far from the original zone', () => {
+        const r = context.validateAIResult(mk({ entry_refinement: { low: 50, high: 52 } }), best, price);
+        expect(r.trade_signal_Theghostmachine.entry_refinement).toBeUndefined();
+    });
+
+    it('keeps a sane entry refinement', () => {
+        const r = context.validateAIResult(mk({ entry_refinement: { low: 99.5, high: 100.5 } }), best, price);
+        expect(r.trade_signal_Theghostmachine.entry_refinement).toEqual({ low: 99.5, high: 100.5 });
+    });
+
+    it('drops an invalidation price on the wrong side of entry', () => {
+        // for a BUY, invalidation must be below entry
+        const r = context.validateAIResult(mk({ invalidation_price: 103 }), best, price);
+        expect(r.trade_signal_Theghostmachine.invalidation_price).toBeUndefined();
+        const r2 = context.validateAIResult(mk({ invalidation_price: 97 }), best, price);
+        expect(r2.trade_signal_Theghostmachine.invalidation_price).toBe(97);
+    });
+
+    it('removes an unknown execution_decision so the caller falls back', () => {
+        const r = context.validateAIResult(mk({ execution_decision: 'yolo_full_send' }), best, price);
+        expect(r.trade_signal_Theghostmachine.execution_decision).toBeUndefined();
+        const r2 = context.validateAIResult(mk({ execution_decision: 'skip' }), best, price);
+        expect(r2.trade_signal_Theghostmachine.execution_decision).toBe('skip');
+    });
+});
+
 describe('getLiveCandleDirection', () => {
     let context;
 
