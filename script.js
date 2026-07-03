@@ -110,6 +110,26 @@ function getPrec(p){const s=getMarketSettings(p);return s.prec;}
 // ============================================
 // API FUNCTIONS
 // ============================================
+// FIX #10: all Twelve Data requests go through fetchTD — 10s timeout so a hung
+// request can't stall the scan, and rate-limit responses (code 429) surface to
+// the user instead of failing silently as "No valid setups".
+let rateLimitNotified = 0;
+async function fetchTD(pathAndQuery, timeoutMs = 10000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+        const r = await fetch(`${TWELVE_DATA_BASE}${pathAndQuery}&apikey=${TWELVE_DATA_KEY}`, { signal: ctrl.signal });
+        const d = await r.json();
+        if (d.code === 429) {
+            const src = document.getElementById('apiSource');
+            if (src) src.innerHTML = '🔴 Rate limited';
+            if (Date.now() - rateLimitNotified > 30000) { rateLimitNotified = Date.now(); showNotif('⏳ Twelve Data rate limit hit - wait a minute and rescan', 'warning'); }
+            throw new Error('Rate limited');
+        }
+        if (d.code && d.code !== 200) throw new Error(d.message || 'API Error');
+        return d;
+    } finally { clearTimeout(timer); }
+}
 // FIX #2/#3: getPrice now accepts an explicit pair (used by the limit-order monitor)
 async function getPrice(forPair) {
     const p = forPair || pair;
@@ -117,8 +137,7 @@ async function getPrice(forPair) {
     if (cachedPrice !== null && cachedPricePair === p && (now - priceCacheTime) < PRICE_CACHE_DURATION) return cachedPrice;
     if (!TWELVE_DATA_KEY) return null;
     try {
-        const r = await fetch(`${TWELVE_DATA_BASE}/price?symbol=${encodeURIComponent(SYMBOLS[p])}&apikey=${TWELVE_DATA_KEY}`);
-        const d = await r.json();
+        const d = await fetchTD(`/price?symbol=${encodeURIComponent(SYMBOLS[p])}`);
         if (d.price) { calls++; document.getElementById('apiSource').innerHTML = '📡 Live'; cachedPrice = +d.price; priceCacheTime = now; cachedPricePair = p; return cachedPrice; }
     } catch(e) { if (cachedPrice !== null && cachedPricePair === p) return cachedPrice; }
     return null;
@@ -127,9 +146,7 @@ async function getQuote(tfStr){
     if(!TWELVE_DATA_KEY)return null;
     const interval = QUOTE_INTERVAL_MAP[tfStr] || '1day';
     try{
-        const r=await fetch(`${TWELVE_DATA_BASE}/quote?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${interval}&apikey=${TWELVE_DATA_KEY}`);
-        const d=await r.json();
-        if(d.code && d.code !== 200) throw new Error(d.message || 'API Error');
+        const d=await fetchTD(`/quote?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${interval}`);
         if(d.open && d.close){calls++;return{open:+d.open,close:+d.close,is_market_open:d.is_market_open};}
     }catch(e){ console.error(`Quote error (${tfStr}):`, e); }
     return null;
@@ -166,9 +183,7 @@ async function getQuoteDirection(tfStr, cachedData = null) {
 async function getHistory(tfStr){
     if(!TWELVE_DATA_KEY)return null;
     try{
-        const r=await fetch(`${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${TF_MAP[tfStr]}&outputsize=100&apikey=${TWELVE_DATA_KEY}`);
-        const d=await r.json();
-        if(d.code && d.code !== 200) throw new Error(d.message || 'API Error');
+        const d=await fetchTD(`/time_series?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${TF_MAP[tfStr]}&outputsize=100`);
         if(d.values){calls++;return d.values.map(c=>({t:c.datetime,o:+c.open,h:+c.high,l:+c.low,c:+c.close,v:+c.volume||1e6})).reverse();}
     }catch(e){ console.error(`History error (${tfStr}):`, e); }
     return null;
@@ -190,8 +205,7 @@ async function getTechnicalIndicators(tfUsed){
     ];
     await Promise.all(endpoints.map(async (e) => {
         try {
-            const r = await fetch(`${TWELVE_DATA_BASE}${e.url}&apikey=${TWELVE_DATA_KEY}`);
-            const d = await r.json();
+            const d = await fetchTD(e.url);
             if (!d.values) return;
             calls++;
             const v = d.values[0];
@@ -213,8 +227,12 @@ async function getTechnicalIndicators(tfUsed){
 // ============================================
 // TECHNICALS MATH
 // ============================================
-const ema=(p,n)=>{const m=2/(n+1);let e=[p[0]];for(let i=1;i<p.length;i++)e.push((p[i]-e[i-1])*m+e[i-1]);return e;};
-const rsi=(p,n=14)=>{let g=0,l=0;for(let i=p.length-n;i<p.length;i++){let c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;return al===0?100:100-(100/(1+ag/al));};
+// FIX #11: EMA now seeds from the SMA of the first n periods (standard method);
+// the first n-1 slots hold the running average so callers' indexing is unchanged.
+const ema=(p,n)=>{const m=2/(n+1);let e=[],sum=0;for(let i=0;i<p.length;i++){if(i<n){sum+=p[i];e.push(sum/(i+1));}else e.push((p[i]-e[i-1])*m+e[i-1]);}return e;};
+// FIX #11: RSI now uses Wilder's smoothing (SMA seed, then exponential smoothing)
+// to match TradingView/MT4 instead of a plain average of the last n changes.
+const rsi=(p,n=14)=>{if(p.length<n+1)return 50;let g=0,l=0;for(let i=1;i<=n;i++){const c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;for(let i=n+1;i<p.length;i++){const c=p[i]-p[i-1];ag=(ag*(n-1)+(c>0?c:0))/n;al=(al*(n-1)+(c<0?-c:0))/n;}return al===0?100:100-(100/(1+ag/al));};
 const atr=(d,n=14)=>{let t=[];for(let i=1;i<d.length;i++)t.push(Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c)));return t.slice(-n).reduce((a,b)=>a+b,0)/n;};
 // FIX #8: bear FVG midpoint was (next.h+next.l)/2 — a bear gap spans next.h..prev.l, so midpoint is (next.h+prev.l)/2
 function detectFVG(d){let f=[],active=[];const len=d.length;for(let i=1;i<len-1;i++){const next=d[i+1];if(active.length>0){let keep=0;for(let k=0;k<active.length;k++){let g=active[k];if(g.type==='bull'){if(next.l<=g.h && next.l>=g.l)g.fresh=false;else active[keep++]=g;}else{if(next.h>=g.l && next.h<=g.h)g.fresh=false;else active[keep++]=g;}}active.length=keep;}const prev=d[i-1];const thresh=next.c*0.0005;if(prev.h<next.l && next.l-prev.h>thresh){let g={type:'bull',l:prev.h,h:next.l,m:(prev.h+next.l)/2,fresh:true};f.push(g);active.push(g);}if(prev.l>next.h && prev.l-next.h>thresh){let g={type:'bear',l:next.h,h:prev.l,m:(next.h+prev.l)/2,fresh:true};f.push(g);active.push(g);}}return f;}
