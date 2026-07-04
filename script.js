@@ -97,6 +97,11 @@ function init(){
     if(el('cancelLimitBtn')) el('cancelLimitBtn').addEventListener('click',cancelLimit);
     if(el('copyJsonBtn')) el('copyJsonBtn').addEventListener('click',copyJson);
     if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click',showSetup);
+    if(el('journalBtn')) el('journalBtn').addEventListener('click',recordToJournal);
+    if(el('clearRecentBtn')) el('clearRecentBtn').addEventListener('click',clearRecentSetup);
+    if(el('journalList')) el('journalList').addEventListener('click',handleJournalClick);
+    loadRecentSetup();
+    renderJournal();
     if(el('pairSelect')) el('pairSelect').addEventListener('change',e=>{pair=e.target.value;resetPairState();});
     document.querySelectorAll('.category-btn').forEach(b=>b.addEventListener('click',function(){document.querySelectorAll('.category-btn').forEach(x=>x.classList.remove('active'));this.classList.add('active');updatePairs(this.dataset.category);}));
     loadLimitOrder();
@@ -1385,6 +1390,8 @@ async function runAutoScan() {
 
 } } };
         setJsonOutput(out);
+        hideRecentBanner(); // a fresh scan supersedes the restored setup
+        saveRecentSetup(out, buildSetupSummary(best, st, finalEntry, price));
 
         analysis = { signalType: st, idealEntry: finalEntry, currentPrice: price, stopLoss: best.sl, takeProfit1: best.tp1, takeProfit2: best.tp2, takeProfit3: best.tp3, confidence: best.confidence, entryZoneLow: finalZoneLow, entryZoneHigh: finalZoneHigh, entryReady: best.entryReady, executionDecision, invalidationPrice: aiInvalidation };
         if (best && best.invalidationPrice && !isSetupStillValid(best, price)) {
@@ -1397,6 +1404,100 @@ async function runAutoScan() {
         showNotif(`${tfWarning}${sniperLabel}${aiLabel}${magLabel}${htfLabel}${htfValLabel}${freshnessLabel}${amdLabel} ${sessionLabel} ${execLabel} ${best.timeframe} ${st} ${best.confidence}% | Quality:${best.qualityScore}% | 1:${rrDisplay}`, 'success');
     } catch (e) { console.error(e); showNotif('Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
     finally { btn.classList.remove('loading'); btn.disabled = false; }
+}
+
+// ============================================
+// 💾 RECENT SETUP (auto-saved) + 📒 TRADE JOURNAL (deliberate record)
+// Recent: every completed scan is persisted automatically so an accidental
+// app close doesn't lose the setup - it's restored read-only on next open
+// and can be cleared. Journal: separate, explicit "Record" action for setups
+// worth tracking; each entry can later be marked WIN/LOSS or deleted.
+// ============================================
+let lastSetupSummary = null;
+
+function buildSetupSummary(best, st, finalEntry, price) {
+    return {
+        id: Date.now(),
+        pair, timeframe: best.timeframe, direction: st,
+        entry: finalEntry, sl: best.sl, tp1: best.tp1,
+        confidence: best.confidence, quality: best.zone?.quality || '?',
+        sniper: !!best.sniperEntry?.isSniper, priceAtScan: price
+    };
+}
+
+function saveRecentSetup(out, summary) {
+    lastSetupSummary = summary;
+    try { localStorage.setItem('ict_recent_setup', JSON.stringify({ savedAt: new Date().toISOString(), summary, out })); } catch (e) {}
+}
+function loadRecentSetup() {
+    const s = localStorage.getItem('ict_recent_setup');
+    if (!s) return;
+    try {
+        const saved = JSON.parse(s);
+        if (!saved?.out) return;
+        setJsonOutput(saved.out);
+        lastSetupSummary = saved.summary || null;
+        const banner = document.getElementById('recentBanner'), txt = document.getElementById('recentText');
+        if (banner && txt) {
+            const when = saved.savedAt ? new Date(saved.savedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+            txt.innerHTML = `📂 Restored: ${saved.summary?.pair || ''} ${saved.summary?.direction || ''} (${when}) - rescan before trading`;
+            banner.classList.remove('hidden');
+        }
+    } catch (e) {}
+}
+function clearRecentSetup() {
+    localStorage.removeItem('ict_recent_setup');
+    lastSetupSummary = null;
+    const banner = document.getElementById('recentBanner');
+    if (banner) banner.classList.add('hidden');
+    setJsonOutput({});
+    showNotif('🗑️ Recent setup cleared', 'warning');
+}
+function hideRecentBanner() { const b = document.getElementById('recentBanner'); if (b) b.classList.add('hidden'); }
+
+const JOURNAL_KEY = 'ict_journal', JOURNAL_CAP = 30;
+function getJournal() { try { const j = JSON.parse(localStorage.getItem(JOURNAL_KEY)); return Array.isArray(j) ? j : []; } catch (e) { return []; } }
+function setJournal(j) { try { localStorage.setItem(JOURNAL_KEY, JSON.stringify(j.slice(0, JOURNAL_CAP))); } catch (e) {} }
+function recordToJournal() {
+    if (!lastSetupSummary) { showNotif('⚠️ No setup to record - run a scan first', 'warning'); return; }
+    const journal = getJournal();
+    if (journal.some(e => e.id === lastSetupSummary.id)) { showNotif('📒 Already recorded', 'info'); return; }
+    journal.unshift({ ...lastSetupSummary, recordedAt: new Date().toISOString(), status: 'PENDING' });
+    setJournal(journal);
+    renderJournal();
+    showNotif('📒 Recorded to journal', 'success');
+}
+function setJournalStatus(id, status) { const j = getJournal(); const e = j.find(x => x.id === id); if (e) { e.status = status; setJournal(j); renderJournal(); } }
+function deleteJournalEntry(id) { setJournal(getJournal().filter(x => x.id !== id)); renderJournal(); showNotif('🗑️ Entry deleted', 'warning'); }
+function renderJournal() {
+    const list = document.getElementById('journalList'), stats = document.getElementById('journalStats');
+    if (!list) return;
+    const journal = getJournal();
+    if (stats) {
+        const w = journal.filter(e => e.status === 'WIN').length, l = journal.filter(e => e.status === 'LOSS').length, p = journal.length - w - l;
+        const wr = (w + l) > 0 ? ` | ${(100 * w / (w + l)).toFixed(0)}% WR` : '';
+        stats.innerHTML = journal.length ? `✅${w} ❌${l} ⏳${p}${wr}` : '';
+    }
+    if (journal.length === 0) { list.innerHTML = '<span class="journal-empty">No recorded setups yet — hit 📒 Record on a setup you want to track</span>'; return; }
+    list.innerHTML = journal.map(e => {
+        const prec = getPrec(e.pair || 'XAU/USD');
+        const when = e.recordedAt ? new Date(e.recordedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+        const badge = e.status === 'WIN' ? '✅ WIN' : (e.status === 'LOSS' ? '❌ LOSS' : '⏳ PENDING');
+        return `<div class="journal-entry ${e.status.toLowerCase()}">
+            <div class="journal-head"><span>${e.sniper ? '🎯 ' : ''}${e.pair} ${e.direction} ${e.timeframe} Q:${e.quality} ${e.confidence}%</span><span>${badge}</span></div>
+            <div class="journal-levels">E $${(+e.entry).toFixed(prec)} | SL $${(+e.sl).toFixed(prec)} | TP $${(+e.tp1).toFixed(prec)} | ${when}</div>
+            <div class="journal-actions">${e.status === 'PENDING' ? `<button class="jw-win" data-action="win" data-id="${e.id}">✅ Win</button><button class="jw-loss" data-action="loss" data-id="${e.id}">❌ Loss</button>` : `<button class="jw-del" data-action="pending" data-id="${e.id}">↩︎ Reopen</button>`}<button class="jw-del" data-action="del" data-id="${e.id}">🗑️</button></div>
+        </div>`;
+    }).join('');
+}
+function handleJournalClick(ev) {
+    const btn = ev.target.closest('button[data-action]');
+    if (!btn) return;
+    const id = +btn.dataset.id, action = btn.dataset.action;
+    if (action === 'del') deleteJournalEntry(id);
+    else if (action === 'win') setJournalStatus(id, 'WIN');
+    else if (action === 'loss') setJournalStatus(id, 'LOSS');
+    else if (action === 'pending') setJournalStatus(id, 'PENDING');
 }
 
 function loadLimitOrder(){const s=localStorage.getItem('limitOrder');if(s){try{limitOrder=JSON.parse(s);updateLimitUI();startMonitor();}catch(e){}}}

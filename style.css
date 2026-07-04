@@ -448,3 +448,59 @@ body {
     .json-output { font-size: 10px; max-height: 350px; }
     .mtf-grid { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* ===== Recent setup banner + Trade journal ===== */
+.json-actions { display: flex; gap: 6px; }
+.journal-btn { background: #ff9f0a; }
+.journal-btn:hover { background: #e08900; }
+.recent-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(255, 159, 10, 0.12);
+    border: 1px solid rgba(255, 159, 10, 0.4);
+    border-radius: 8px;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: #ff9f0a;
+}
+.recent-banner.hidden { display: none; }
+.recent-clear-btn {
+    background: transparent;
+    border: 1px solid rgba(255, 159, 10, 0.5);
+    color: #ff9f0a;
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+}
+.journal-stats { font-size: 12px; color: #8e8e93; }
+.journal-list { display: flex; flex-direction: column; gap: 8px; }
+.journal-empty { font-size: 12px; color: #8e8e93; }
+.journal-entry {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.journal-entry.win { border-left: 3px solid #34c759; }
+.journal-entry.loss { border-left: 3px solid #ff3b30; }
+.journal-entry.pending { border-left: 3px solid #ff9f0a; }
+.journal-head { display: flex; justify-content: space-between; font-weight: bold; }
+.journal-levels { color: #8e8e93; }
+.journal-actions { display: flex; gap: 6px; margin-top: 4px; }
+.journal-actions button {
+    border: none;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    color: white;
+}
+.jw-win { background: #34c759; }
+.jw-loss { background: #ff3b30; }
+.jw-del { background: #48484a; }
