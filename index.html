@@ -91,9 +91,25 @@
         <div class="section json-section">
             <div class="json-header">
                 <h3>📋 Best Setup Found</h3>
-                <button id="copyJsonBtn" class="copy-json-btn">📋 Copy</button>
+                <div class="json-actions">
+                    <button id="journalBtn" class="copy-json-btn journal-btn">📒 Record</button>
+                    <button id="copyJsonBtn" class="copy-json-btn">📋 Copy</button>
+                </div>
+            </div>
+            <div id="recentBanner" class="recent-banner hidden">
+                <span id="recentText">📂 Restored last setup</span>
+                <button id="clearRecentBtn" class="recent-clear-btn">✕ Clear</button>
             </div>
             <pre id="jsonOutput" class="json-output">{}</pre>
+        </div>
+
+        <!-- Trade Journal -->
+        <div class="section">
+            <div class="json-header">
+                <h3>📒 Trade Journal</h3>
+                <span id="journalStats" class="journal-stats"></span>
+            </div>
+            <div id="journalList" class="journal-list"><span class="journal-empty">No recorded setups yet — hit 📒 Record on a setup you want to track</span></div>
         </div>
 
         <!-- Limit Order Status -->

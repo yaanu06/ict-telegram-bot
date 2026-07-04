@@ -3,16 +3,18 @@ const vm = require('vm');
 
 const code = fs.readFileSync('script.js', 'utf8');
 
-const getContext = () => {
+const getContext = (overrides = {}) => {
     const context = {
         window: { Telegram: { WebApp: null } },
         document: {
-            getElementById: () => ({ addEventListener: () => {}, classList: { add: () => {}, remove: () => {} }, style: {} }),
+            getElementById: () => ({ addEventListener: () => {}, classList: { add: () => {}, remove: () => {} }, style: {}, innerHTML: '' }),
             addEventListener: () => {}
         },
         console: { log: () => {}, error: () => {} },
         fetch: jest.fn(),
-        localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} }
+        setTimeout: () => 0,
+        localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+        ...overrides
     };
     vm.createContext(context);
     // Top-level const arrow functions (ema, rsi, atr) live in the script's lexical
@@ -64,6 +66,59 @@ describe('rsi (Wilder smoothing)', () => {
         const v = context.rsi(p, 14);
         expect(v).toBeGreaterThan(57);
         expect(v).toBeLessThan(63);
+    });
+});
+
+describe('trade journal storage', () => {
+    let context, store;
+
+    beforeEach(() => {
+        store = {};
+        context = getContext({
+            localStorage: {
+                getItem: k => (k in store ? store[k] : null),
+                setItem: (k, v) => { store[k] = String(v); },
+                removeItem: k => { delete store[k]; }
+            }
+        });
+    });
+
+    it('returns an empty journal when storage is empty or corrupted', () => {
+        expect(context.getJournal()).toEqual([]);
+        store['ict_journal'] = 'not valid json{';
+        expect(context.getJournal()).toEqual([]);
+    });
+
+    it('caps the journal at 30 entries', () => {
+        context.setJournal(Array.from({ length: 45 }, (_, i) => ({ id: i })));
+        expect(context.getJournal()).toHaveLength(30);
+        expect(context.getJournal()[0].id).toBe(0);
+    });
+
+    it('marks an entry WIN and back to PENDING', () => {
+        context.setJournal([{ id: 7, pair: 'XAU/USD', direction: 'LONG', timeframe: '1H', quality: 'A', confidence: 80, entry: 2400, sl: 2390, tp1: 2440, status: 'PENDING' }]);
+        context.setJournalStatus(7, 'WIN');
+        expect(context.getJournal()[0].status).toBe('WIN');
+        context.setJournalStatus(7, 'PENDING');
+        expect(context.getJournal()[0].status).toBe('PENDING');
+    });
+
+    it('deletes only the targeted entry', () => {
+        context.setJournal([
+            { id: 1, pair: 'XAU/USD', direction: 'LONG', timeframe: '1H', quality: 'A', confidence: 80, entry: 1, sl: 1, tp1: 1, status: 'PENDING' },
+            { id: 2, pair: 'BTC/USD', direction: 'SHORT', timeframe: '4H', quality: 'B', confidence: 70, entry: 1, sl: 1, tp1: 1, status: 'WIN' }
+        ]);
+        context.deleteJournalEntry(1);
+        const j = context.getJournal();
+        expect(j).toHaveLength(1);
+        expect(j[0].id).toBe(2);
+    });
+
+    it('persists and clears the recent setup', () => {
+        context.saveRecentSetup({ some: 'output' }, { id: 1, pair: 'XAU/USD', direction: 'LONG' });
+        expect(JSON.parse(store['ict_recent_setup']).out).toEqual({ some: 'output' });
+        context.clearRecentSetup();
+        expect(store['ict_recent_setup']).toBeUndefined();
     });
 });
 
