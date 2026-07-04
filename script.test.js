@@ -67,6 +67,62 @@ describe('rsi (Wilder smoothing)', () => {
     });
 });
 
+describe('calcVolumeProfile', () => {
+    const context = getContext();
+    // 30 candles ranging 100-124, with heavy volume concentrated around 110-112
+    const candles = [];
+    for (let i = 0; i < 30; i++) {
+        const base = 100 + (i % 12) * 2;
+        const heavy = base >= 110 && base <= 112;
+        candles.push({ o: base, h: base + 2, l: base, c: base + 1, v: heavy ? 10000 : 1000 });
+    }
+
+    it('returns null when there is not enough data', () => {
+        expect(context.calcVolumeProfile([])).toBeNull();
+        expect(context.calcVolumeProfile(candles.slice(0, 5))).toBeNull();
+    });
+
+    it('puts the POC inside the heavy-volume area', () => {
+        const vp = context.calcVolumeProfile(candles);
+        expect(vp.poc).toBeGreaterThanOrEqual(109);
+        expect(vp.poc).toBeLessThanOrEqual(114);
+    });
+
+    it('keeps VAL <= POC <= VAH within the data range', () => {
+        const vp = context.calcVolumeProfile(candles);
+        expect(vp.val).toBeLessThanOrEqual(vp.poc);
+        expect(vp.vah).toBeGreaterThanOrEqual(vp.poc);
+        expect(vp.low).toBe(100);
+        expect(vp.high).toBe(124);
+    });
+
+    it('finds low-volume nodes away from the concentration', () => {
+        const vp = context.calcVolumeProfile(candles);
+        expect(vp.lvns.length).toBeGreaterThan(0);
+        // heavy candles open at 110-112 and span two points, so bins from
+        // 110 up to ~115 carry the concentration; LVNs must sit outside it
+        expect(vp.lvns.every(p => p < 110 || p > 115)).toBe(true);
+    });
+});
+
+describe('calcDeltaProxy', () => {
+    const context = getContext();
+
+    it('is bullish when up-candle volume dominates', () => {
+        const up = Array.from({ length: 20 }, () => ({ o: 100, c: 101, h: 101, l: 100, v: 500 }));
+        expect(context.calcDeltaProxy(up).direction).toBe('BULLISH');
+    });
+
+    it('is bearish when down-candle volume dominates', () => {
+        const down = Array.from({ length: 20 }, () => ({ o: 101, c: 100, h: 101, l: 100, v: 500 }));
+        expect(context.calcDeltaProxy(down).direction).toBe('BEARISH');
+    });
+
+    it('is always labeled as a proxy', () => {
+        expect(context.calcDeltaProxy([]).proxy).toBe(true);
+    });
+});
+
 describe('checkSniperEntry', () => {
     const context = getContext();
     // trending-up candles with no sweep/MSS pattern

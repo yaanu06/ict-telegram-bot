@@ -549,6 +549,57 @@ function getSession() {
     return s;
 }
 // ============================================
+// 📊 VOLUME / MARKET PROFILE
+// Distributes each candle's volume across its high-low range into price bins.
+// Returns POC (highest-volume bin), 70% value area (VAH/VAL), and HVN/LVN
+// levels. When the feed has no real volume (Twelve Data forex/metals often
+// doesn't), every candle carries the same default volume and this naturally
+// degrades to a time-at-price (TPO/market) profile.
+// ============================================
+function calcVolumeProfile(data, binCount = 24) {
+    if (!data || data.length < 20) return null;
+    let hi = -Infinity, lo = Infinity;
+    for (const c of data) { if (c.h > hi) hi = c.h; if (c.l < lo) lo = c.l; }
+    if (!(hi > lo)) return null;
+    const binSize = (hi - lo) / binCount;
+    const bins = new Array(binCount).fill(0);
+    for (const c of data) {
+        const from = Math.max(0, Math.min(binCount - 1, Math.floor((c.l - lo) / binSize)));
+        const to = Math.max(from, Math.min(binCount - 1, Math.floor((c.h - lo) / binSize)));
+        const per = (c.v || 1) / (to - from + 1);
+        for (let j = from; j <= to; j++) bins[j] += per;
+    }
+    const total = bins.reduce((a, b) => a + b, 0);
+    let pocIdx = 0;
+    for (let i = 1; i < binCount; i++) if (bins[i] > bins[pocIdx]) pocIdx = i;
+    // expand the value area around the POC until it holds 70% of volume
+    let vaVol = bins[pocIdx], loIdx = pocIdx, hiIdx = pocIdx;
+    while (vaVol < total * 0.7 && (loIdx > 0 || hiIdx < binCount - 1)) {
+        const below = loIdx > 0 ? bins[loIdx - 1] : -1;
+        const above = hiIdx < binCount - 1 ? bins[hiIdx + 1] : -1;
+        if (above >= below) { hiIdx++; vaVol += bins[hiIdx]; } else { loIdx--; vaVol += bins[loIdx]; }
+    }
+    const priceAt = i => lo + binSize * (i + 0.5);
+    const avg = total / binCount;
+    const hvns = [], lvns = [];
+    for (let i = 0; i < binCount; i++) {
+        if (bins[i] > avg * 1.5) hvns.push(priceAt(i));
+        if (bins[i] < avg * 0.5) lvns.push(priceAt(i));
+    }
+    return { poc: priceAt(pocIdx), vah: lo + binSize * (hiIdx + 1), val: lo + binSize * loIdx, hvns, lvns, binSize, high: hi, low: lo };
+}
+
+// Order-flow approximation from candles: cumulative signed volume over the
+// last n bars. NOT real order flow (that needs tick/L2 data the feed doesn't
+// provide) - a momentum-confirmation proxy only, and labeled as such.
+function calcDeltaProxy(data, n = 20) {
+    if (!data || data.length < 3) return { cvd: 0, direction: 'NEUTRAL', proxy: true };
+    let cvd = 0;
+    for (const c of data.slice(-n)) cvd += (c.c > c.o ? 1 : (c.c < c.o ? -1 : 0)) * (c.v || 1);
+    return { cvd, direction: cvd > 0 ? 'BULLISH' : (cvd < 0 ? 'BEARISH' : 'NEUTRAL'), proxy: true };
+}
+
+// ============================================
 // 🎯 SNIPER ENTRY MODEL
 // Enforces the ICT sniper sequence as a unit instead of loose score nudges:
 //   1. liquidity sweep (or turtle soup) in the trade's favor
@@ -701,6 +752,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const amd = analyzeAMD(htfData['1H'] || entryData);
         const breakerValid = validateBreakerBlock(entryData, zone.p, sig.dir);
         const volatility = getVolatilityLevel(apiATR, price);
+        const volumeProfile = calcVolumeProfile(entryData);
+        const deltaProxy = calcDeltaProxy(entryData);
 
         // Real MTF alignment from cached data (no extra API calls)
         const mtfTrends = {};
@@ -794,6 +847,16 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         // 🎯 sniper sequence complete (sweep -> displaced MSS -> fresh zone) outweighs any single nudge
         if (sniperEntry.isSniper) conf += 12;
         else if (sniperEntry.score < 40) conf -= 8;
+        // 📊 profile confluence: zone in a low-volume node (price travels fast through
+        // thin areas) and near the value-area edge for a responsive entry
+        if (volumeProfile) {
+            const zoneInLVN = volumeProfile.lvns.some(p => p >= zone.low && p <= zone.high);
+            const nearVAEdge = sig.dir === 'BUY' ? Math.abs(zone.p - volumeProfile.val) < apiATR : Math.abs(zone.p - volumeProfile.vah) < apiATR;
+            if (zoneInLVN) conf += 5;
+            if (nearVAEdge) conf += 5;
+        }
+        if (deltaProxy.direction === (sig.dir === 'BUY' ? 'BULLISH' : 'BEARISH')) conf += 4;
+        else if (deltaProxy.direction !== 'NEUTRAL') conf -= 4;
 
         if (session.session === 'OFF-HOURS') conf -= 15;
         if (session.session === 'ASIA KZ') conf -= 5;
@@ -830,7 +893,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             zoneReaction, zoneTouches, mtf,
             qualityScore: 0, // set by calculateSetupQuality in runAutoScan
             htfValidation, magnetism, freshness, premiumDiscount, breakerValid, amd,
-            pathCheck, probCheck, displacement, sniperRej, sniperEntry,
+            pathCheck, probCheck, displacement, sniperRej, sniperEntry, volumeProfile, deltaProxy,
             slResult, invalidationPrice,
             rrUsed, rs, apiATR,
             fvgsAll: fvgsAll || [],
@@ -1127,6 +1190,7 @@ PAIR: HIDDEN_ASSET | PRICE: $${price.toFixed(prec)} | ATR: ${best.apiATR?.toFixe
 HTF: 1D=${dailyDir} 4H=${h4Dir} | Confluence: ${htfConfluence.level}
 SESSION: ${best.session.session} | Killzone=${best.session.isKillzone} | SilverBullet=${best.session.isSilverBullet} | AMD=${best.amd.phase}
 KEY LEVELS: Pivot $${best.msnr.pivot.toFixed(prec)} | Support $${best.msnr.nearestSupport?.toFixed(prec) || 'n/a'} | Resistance $${best.msnr.nearestResistance?.toFixed(prec) || 'n/a'}
+VOLUME PROFILE: ${best.volumeProfile ? `POC $${best.volumeProfile.poc.toFixed(prec)} | VAH $${best.volumeProfile.vah.toFixed(prec)} | VAL $${best.volumeProfile.val.toFixed(prec)} | zone in LVN: ${best.volumeProfile.lvns.some(p => p >= best.zone.low && p <= best.zone.high) ? 'YES' : 'no'}` : 'n/a'} | Delta proxy(20): ${best.deltaProxy?.direction || 'n/a'}
 LIQUIDITY SWEEPS: ${sweepLines}
 SNIPER SEQUENCE: ${best.sniperEntry?.isSniper ? 'COMPLETE' : 'INCOMPLETE'} (${sniperLines})
 PATH TO TP: ${best.pathCheck?.clear ? 'clear' : 'obstacles: ' + (best.pathCheck?.obstacles || []).join(', ')}
@@ -1260,7 +1324,7 @@ async function runAutoScan() {
 
         // FIX #7 (duplicate key): the old object had crt_analysis twice inside trade_signal —
         // JS silently dropped the first. Only the detailed one is kept now.
-        const out = { auto_scan_result: { date: new Date().toISOString().split('T')[0], time: new Date().toISOString().split('T')[1].split('.')[0], pair, current_price: price, multi_timeframe_trends: mtfTrendsData, best_timeframe: best.timeframe, quality_score: best.qualityScore, total_setups_found: results.length, higher_timeframe_setups_found: higherResults.length, lower_timeframe_setups_available: lowerResults.length, is_lower_timeframe_signal: isLowerTF, signal_quality: isLowerTF ? 'LOWER_TF_ONLY_REDUCED_CONFIDENCE' : 'HIGHER_TF_TRADABLE', session: session.session, session_emoji: session.emoji, session_multiplier: session.multiplier, premium_discount: best.premiumDiscount, zone_freshness: best.freshness, breaker_validated: best.breakerValid, ai_verified: !!aiResult, ai_approved: aiApproved, ai_model: aiResult?.trade_signal_Theghostmachine?.model_used || null, ai_rule_checks: aiResult?.trade_signal_Theghostmachine?.rule_checks || null, ai_selected_timeframe: aiSelectedTF || null, execution_decision: executionDecision, wait_condition: waitCondition || null, htf_confluence: htfConfluence, trade_signal: { trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT', entry_price: finalEntry, entry_zone: { low: finalZoneLow, high: finalZoneHigh }, entry_ready: best.entryReady, zone_touches: best.zoneTouches, htf_validated: best.htfValidation ? best.htfValidation.passed : null, htf_parent_structure: best.htfValidation?.parentArray ? `${best.htfValidation.parentArray.src} @ ${best.htfValidation.parentArray.structureTF}` : null, stop_loss: best.sl, sl_reason: best.slResult.reason, invalidation_price: aiInvalidation, risk_amount: risk.toFixed(prec), stop_loss_pct: ((risk / best.entry) * 100).toFixed(2) + '%', take_profit_1: best.tp1, take_profit_2: best.tp2, take_profit_3: best.tp3, risk_reward: '1:' + rrDisplay, dynamic_rr: '1:' + rr, confidence: best.confidence, conviction: aiConviction, entry_source: aiResult ? 'AI-Refined' : 'Rule-Based', ai_used: !!aiResult, ai_risk_warning: aiRiskWarning || null, entry_reasoning: aiEntryLogic || `${best.zone.src} zone with ${best.zone.confluence}`, sl_reasoning: aiSlLogic || best.slResult.reason, key_reason: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}]`, possible_outcomes: aiOutcomes.length > 0 ? aiOutcomes : [`Enter at zone after reaction`, `Sweep then reverse`, `SL hit invalidates`], zone_quality: best.zone.quality, zone_source: best.zone.src, zone_confluence: best.zone.confluence, confluence_count: best.zone.cc, imbalance_magnet: best.zone.hasImbalance, zone_reaction: best.zoneReaction, zone_magnetism: { strength: best.magnetism.magnetism, score: best.magnetism.score, summary: best.magnetism.summary, checks: best.magnetism.checks }, path_clearance: { clear: best.pathCheck.clear, obstacles: best.pathCheck.obstacles }, probability: best.probCheck.probability, sniper_entry: { is_sniper: best.sniperEntry.isSniper, score: best.sniperEntry.score, grade: best.sniperEntry.grade, checks: best.sniperEntry.checks }, timeframe_alignment: { trend_tf: best.trendTF, structure_tf: best.structureTF, entry_tf: best.entryTF, sniper_tf: best.sniperTF, alignment: best.tfAlign, trend_direction: best.mtf.direction, trend_strength: best.mtf.strength + '/5 TFs', sniper_confirmation: best.sniperRej.confirmed ? '✅ Confirmed' : '⚠️ No rejection', htf_confluence: htfConfluence }, turtle_soup: best.turtleSoup, order_blocks_found: best.obsAll ? best.obsAll.length : 0, twelve_data_indicators: best.twelveIndicators, msnr_levels: { pivot: best.msnr.pivot.toFixed(prec), supports: { S1: best.msnr.supports.S1?.toFixed(prec), S2: best.msnr.supports.S2?.toFixed(prec), S3: best.msnr.supports.S3?.toFixed(prec) }, resistances: { R1: best.msnr.resistances.R1?.toFixed(prec), R2: best.msnr.resistances.R2?.toFixed(prec), R3: best.msnr.resistances.R3?.toFixed(prec) } }, sweeps: best.sweeps.filter(s => s.distance < best.apiATR * 2).map(s => ({ type: s.type, level: s.level, distance: s.distance })), analysis: { trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)${best.mtf.strength >= 3 ? ' - STRONG' : ''}`, volatility_level: `${best.volatility.level} - ${best.volatility.desc}`, market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, zone_reaction: best.zoneReaction, zone_touches: best.zoneTouches, entry_ready: best.entryReady, htf_validated: best.htfValidation?.passed || false, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level, zone_freshness: best.freshness, premium_discount: best.premiumDiscount, session: best.session, breaker_validated: best.breakerValid }, indicator_confluence: { macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A', adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'} (RR:1:${rr})` : 'N/A', stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A', cci: best.twelveIndicators.cci || 'N/A', williams_r: best.twelveIndicators.williams_r || 'N/A', sar: best.twelveIndicators.sar ? `${best.twelveIndicators.sar}` : 'N/A', ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A' }, technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ATR(API): ${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`, `OB: ${best.obsAll ? best.obsAll.length : 0}`], reasoning: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}] | HTF:${best.htfValidation?.passed ? 'YES' : 'NO'} | Magnet:${best.magnetism.magnetism} | Confluence:${htfConfluence.level} | EntryReady:${best.entryReady ? 'YES' : 'NO'} | React:${best.zoneReaction?.type || 'None'} | Touch#${best.zoneTouches} | ${best.session?.emoji || ''}${best.session?.session || ''}` } ,
+        const out = { auto_scan_result: { date: new Date().toISOString().split('T')[0], time: new Date().toISOString().split('T')[1].split('.')[0], pair, current_price: price, multi_timeframe_trends: mtfTrendsData, best_timeframe: best.timeframe, quality_score: best.qualityScore, total_setups_found: results.length, higher_timeframe_setups_found: higherResults.length, lower_timeframe_setups_available: lowerResults.length, is_lower_timeframe_signal: isLowerTF, signal_quality: isLowerTF ? 'LOWER_TF_ONLY_REDUCED_CONFIDENCE' : 'HIGHER_TF_TRADABLE', session: session.session, session_emoji: session.emoji, session_multiplier: session.multiplier, premium_discount: best.premiumDiscount, zone_freshness: best.freshness, breaker_validated: best.breakerValid, ai_verified: !!aiResult, ai_approved: aiApproved, ai_model: aiResult?.trade_signal_Theghostmachine?.model_used || null, ai_rule_checks: aiResult?.trade_signal_Theghostmachine?.rule_checks || null, ai_selected_timeframe: aiSelectedTF || null, execution_decision: executionDecision, wait_condition: waitCondition || null, htf_confluence: htfConfluence, trade_signal: { trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT', entry_price: finalEntry, entry_zone: { low: finalZoneLow, high: finalZoneHigh }, entry_ready: best.entryReady, zone_touches: best.zoneTouches, htf_validated: best.htfValidation ? best.htfValidation.passed : null, htf_parent_structure: best.htfValidation?.parentArray ? `${best.htfValidation.parentArray.src} @ ${best.htfValidation.parentArray.structureTF}` : null, stop_loss: best.sl, sl_reason: best.slResult.reason, invalidation_price: aiInvalidation, risk_amount: risk.toFixed(prec), stop_loss_pct: ((risk / best.entry) * 100).toFixed(2) + '%', take_profit_1: best.tp1, take_profit_2: best.tp2, take_profit_3: best.tp3, risk_reward: '1:' + rrDisplay, dynamic_rr: '1:' + rr, confidence: best.confidence, conviction: aiConviction, entry_source: aiResult ? 'AI-Refined' : 'Rule-Based', ai_used: !!aiResult, ai_risk_warning: aiRiskWarning || null, entry_reasoning: aiEntryLogic || `${best.zone.src} zone with ${best.zone.confluence}`, sl_reasoning: aiSlLogic || best.slResult.reason, key_reason: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}]`, possible_outcomes: aiOutcomes.length > 0 ? aiOutcomes : [`Enter at zone after reaction`, `Sweep then reverse`, `SL hit invalidates`], zone_quality: best.zone.quality, zone_source: best.zone.src, zone_confluence: best.zone.confluence, confluence_count: best.zone.cc, imbalance_magnet: best.zone.hasImbalance, zone_reaction: best.zoneReaction, zone_magnetism: { strength: best.magnetism.magnetism, score: best.magnetism.score, summary: best.magnetism.summary, checks: best.magnetism.checks }, path_clearance: { clear: best.pathCheck.clear, obstacles: best.pathCheck.obstacles }, probability: best.probCheck.probability, sniper_entry: { is_sniper: best.sniperEntry.isSniper, score: best.sniperEntry.score, grade: best.sniperEntry.grade, checks: best.sniperEntry.checks }, timeframe_alignment: { trend_tf: best.trendTF, structure_tf: best.structureTF, entry_tf: best.entryTF, sniper_tf: best.sniperTF, alignment: best.tfAlign, trend_direction: best.mtf.direction, trend_strength: best.mtf.strength + '/5 TFs', sniper_confirmation: best.sniperRej.confirmed ? '✅ Confirmed' : '⚠️ No rejection', htf_confluence: htfConfluence }, turtle_soup: best.turtleSoup, order_blocks_found: best.obsAll ? best.obsAll.length : 0, twelve_data_indicators: best.twelveIndicators, volume_profile: best.volumeProfile ? { poc: best.volumeProfile.poc.toFixed(prec), value_area_high: best.volumeProfile.vah.toFixed(prec), value_area_low: best.volumeProfile.val.toFixed(prec), hvn_count: best.volumeProfile.hvns.length, lvn_count: best.volumeProfile.lvns.length, zone_in_lvn: best.volumeProfile.lvns.some(p => p >= best.zone.low && p <= best.zone.high), note: 'time-at-price profile when feed lacks real volume' } : null, delta_proxy: { cvd: best.deltaProxy?.cvd || 0, direction: best.deltaProxy?.direction || 'NEUTRAL', note: 'candle-based approximation, not true order flow' }, msnr_levels: { pivot: best.msnr.pivot.toFixed(prec), supports: { S1: best.msnr.supports.S1?.toFixed(prec), S2: best.msnr.supports.S2?.toFixed(prec), S3: best.msnr.supports.S3?.toFixed(prec) }, resistances: { R1: best.msnr.resistances.R1?.toFixed(prec), R2: best.msnr.resistances.R2?.toFixed(prec), R3: best.msnr.resistances.R3?.toFixed(prec) } }, sweeps: best.sweeps.filter(s => s.distance < best.apiATR * 2).map(s => ({ type: s.type, level: s.level, distance: s.distance })), analysis: { trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)${best.mtf.strength >= 3 ? ' - STRONG' : ''}`, volatility_level: `${best.volatility.level} - ${best.volatility.desc}`, market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, zone_reaction: best.zoneReaction, zone_touches: best.zoneTouches, entry_ready: best.entryReady, htf_validated: best.htfValidation?.passed || false, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level, zone_freshness: best.freshness, premium_discount: best.premiumDiscount, session: best.session, breaker_validated: best.breakerValid }, indicator_confluence: { macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A', adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'} (RR:1:${rr})` : 'N/A', stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A', cci: best.twelveIndicators.cci || 'N/A', williams_r: best.twelveIndicators.williams_r || 'N/A', sar: best.twelveIndicators.sar ? `${best.twelveIndicators.sar}` : 'N/A', ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A' }, technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ATR(API): ${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`, `OB: ${best.obsAll ? best.obsAll.length : 0}`], reasoning: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}] | HTF:${best.htfValidation?.passed ? 'YES' : 'NO'} | Magnet:${best.magnetism.magnetism} | Confluence:${htfConfluence.level} | EntryReady:${best.entryReady ? 'YES' : 'NO'} | React:${best.zoneReaction?.type || 'None'} | Touch#${best.zoneTouches} | ${best.session?.emoji || ''}${best.session?.session || ''}` } ,
                 crt_analysis: {
                     detected: best.crt?.detected || false,
                     pattern: best.crt?.pattern || 'Neutral',
