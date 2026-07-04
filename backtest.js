@@ -46,7 +46,7 @@ function loadBot(pairName) {
     // Top-level const/let (ema, rsi, atr, pair) live in the script's lexical
     // scope, so export what we need from the same script run.
     const bot = vm.runInContext(
-        code + '\n;pair = ' + JSON.stringify(pairName) + ';({ ema, rsi, atr, score, calculateMSNR, findPrecisionEntry, calcStopLoss, calcTakeProfits, getMarketSettings, checkZoneFreshness, detectTrend, checkSniperEntry });',
+        code + '\n;pair = ' + JSON.stringify(pairName) + ';({ ema, rsi, atr, score, calculateMSNR, findPrecisionEntry, calcStopLoss, calcTakeProfits, getMarketSettings, checkZoneFreshness, detectTrend, checkSniperEntry, calcVolumeProfile, calcDeltaProxy });',
         context
     );
     return bot;
