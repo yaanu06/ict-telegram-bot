@@ -112,6 +112,8 @@ function runBacktest(bot, candles, opts) {
 
         const qualityRank = { A: 3, B: 2, C: 1 };
         if (qualityRank[zone.quality] < qualityRank[opts.quality]) continue;
+        // mirrors the app's high-probability gate: single-confluence zones don't trade
+        if ((zone.cc || 1) < 2) continue;
 
         // sniper gate: killzone derived from the candle's own timestamp, not wall-clock
         const utcHour = new Date(bar.t).getUTCHours();
@@ -206,7 +208,7 @@ async function main() {
         bars: +get('bars', 5000),
         rr: get('rr', null) ? +get('rr') : null,
         conf: +get('conf', 60),
-        quality: get('quality', 'C').toUpperCase(),
+        quality: get('quality', 'B').toUpperCase(),
         expiry: +get('expiry', 50),
         file: get('file', null),
         sniper: args.includes('--sniper'),
