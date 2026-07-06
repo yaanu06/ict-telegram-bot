@@ -138,6 +138,34 @@ describe('trade journal storage', () => {
     });
 });
 
+describe('checkHTFConfluenceAsync PARTIAL asymmetry', () => {
+    const context = getContext();
+    const trend = (up) => Array.from({ length: 60 }, (_, i) => {
+        const c = up ? 100 + i : 160 - i;
+        return { o: c - 0.5, h: c + 1, l: c - 1, c, v: 1e6 };
+    });
+
+    it('penalizes less when the 1D agrees and only 4H opposes', async () => {
+        const r = await context.checkHTFConfluenceAsync(trend(true), trend(false), 'BUY');
+        expect(r.level).toBe('PARTIAL');
+        expect(r.alignedTF).toBe('1D');
+        expect(r.penalty).toBe(8);
+    });
+
+    it('penalizes more when only the 4H agrees', async () => {
+        const r = await context.checkHTFConfluenceAsync(trend(false), trend(true), 'BUY');
+        expect(r.level).toBe('PARTIAL');
+        expect(r.alignedTF).toBe('4H');
+        expect(r.penalty).toBe(15);
+    });
+
+    it('still skips-worthy on full conflict', async () => {
+        const r = await context.checkHTFConfluenceAsync(trend(false), trend(false), 'BUY');
+        expect(r.level).toBe('CONFLICT');
+        expect(r.penalty).toBe(30);
+    });
+});
+
 describe('OTE band orientation', () => {
     const context = getContext();
     // clean range: 40 candles spanning exactly 100..120, price mid-range
