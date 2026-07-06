@@ -103,8 +103,9 @@ function runBacktest(bot, candles, opts) {
             zone = bot.findPrecisionEntry(window, price, sig.dir, msnr);
             const entry = zone.p;
             // skip zones on the wrong side of price (limit order would fill instantly at worse price)
-            if (sig.dir === 'BUY' && entry >= price) continue;
-            if (sig.dir === 'SELL' && entry <= price) continue;
+            // and zones closer than 0.2 ATR (a market order in disguise) - mirrors the app
+            const dist = sig.dir === 'BUY' ? price - entry : entry - price;
+            if (dist <= 0 || dist < bot.atr(window, 14) * 0.2) continue;
             slRes = bot.calcStopLoss(window, sig.dir, entry, zone, msnr, opts.tf, null, opts.pair);
             tps = bot.calcTakeProfits(sig.dir, entry, slRes.price);
         } catch (e) { continue; }

@@ -138,6 +138,24 @@ describe('trade journal storage', () => {
     });
 });
 
+describe('findPrecisionEntry zone side', () => {
+    const context = getContext();
+    // downtrend then sharp rally: bullish OBs form near the top, above where
+    // price sits after a pullback - those must NOT be offered as BUY zones
+    const candles = [];
+    let p = 120;
+    for (let i = 0; i < 40; i++) { candles.push({ o: p, h: p + 1, l: p - 2, c: p - 1.5, v: 1e6 }); p -= 1.5; }
+    for (let i = 0; i < 10; i++) { candles.push({ o: p, h: p + 3.5, l: p - 0.5, c: p + 3, v: 1e6 }); p += 3; }
+
+    it('never returns a BUY zone at or above current price', () => {
+        const price = candles[candles.length - 1].c - 5; // price pulled back below the rally
+        const msnr = context.calculateMSNR(candles, price);
+        const zone = context.findPrecisionEntry(candles, price, 'BUY', msnr);
+        // OB/FVG/MSNR zones must sit below price; only the OTE fallback may straddle
+        if (zone.src !== 'OTE') expect(zone.high).toBeLessThan(price);
+    });
+});
+
 describe('calcVolumeProfile', () => {
     const context = getContext();
     // 30 candles ranging 100-124, with heavy volume concentrated around 110-112
