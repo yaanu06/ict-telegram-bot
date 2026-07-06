@@ -395,7 +395,7 @@ function checkZoneMagnetism(entryData, price, entry, direction) {
     const magnetism = score >= 60 ? 'STRONG' : (score >= 35 ? 'MODERATE' : 'WEAK');
     return { magnetism, score, maxScore: 100, checks, likelyToReach: score >= 35, summary: `Zone magnetism: ${magnetism} (${score}/100)` };
 }
-async function checkHTFConfluenceAsync(dailyData, h4Data, entryDirection) { const dailyDir = await getQuoteDirection('1D', dailyData), h4Dir = await getQuoteDirection('4H', h4Data), entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH'; if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 }; if (dailyDir === entryDir || h4Dir === entryDir) return { level: 'PARTIAL', daily: dailyDir, h4: h4Dir, penalty: 15 }; if (dailyDir === 'NEUTRAL' && h4Dir === 'NEUTRAL') return { level: 'NEUTRAL', daily: dailyDir, h4: h4Dir, penalty: 5 }; return { level: 'CONFLICT', daily: dailyDir, h4: h4Dir, penalty: 30 }; }
+async function checkHTFConfluenceAsync(dailyData, h4Data, entryDirection) { const dailyDir = await getQuoteDirection('1D', dailyData), h4Dir = await getQuoteDirection('4H', h4Data), entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH'; if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 }; if (dailyDir === entryDir || h4Dir === entryDir) return { level: 'PARTIAL', daily: dailyDir, h4: h4Dir, penalty: dailyDir === entryDir ? 8 : 15, alignedTF: dailyDir === entryDir ? '1D' : '4H' }; if (dailyDir === 'NEUTRAL' && h4Dir === 'NEUTRAL') return { level: 'NEUTRAL', daily: dailyDir, h4: h4Dir, penalty: 5 }; return { level: 'CONFLICT', daily: dailyDir, h4: h4Dir, penalty: 30 }; }
 function calculateMSNR(data,currentPrice){const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);const period=Math.min(data.length,20);const rH=Math.max(...highs.slice(-period)),rL=Math.min(...lows.slice(-period)),rC=closes[closes.length-1];const pp=(rH+rL+rC)/3;const s1=pp*2-rH,s2=pp-(rH-rL),s3=rL-2*(rH-pp);const r1=pp*2-rL,r2=pp+(rH-rL),r3=rH+2*(pp-rL);const ms1=(s1+s2)/2,ms2=(pp+s1)/2,mr1=(r1+r2)/2,mr2=(pp+r1)/2;const allS=[s1,ms2,ms1,s2,s3].filter(s=>s<currentPrice).sort((a,b)=>b-a);const allR=[r1,mr2,mr1,r2,r3].filter(r=>r>currentPrice).sort((a,b)=>a-b);return{pivot:pp,supports:{S1:s1,S2:s2,S3:s3,MS1:ms1,MS2:ms2},resistances:{R1:r1,R2:r2,R3:r3,MR1:mr1,MR2:mr2},nearestSupport:allS[0]||null,nearestResistance:allR[0]||null,allSupports:allS,allResistances:allR};}
 function findPrecisionEntry(data,price,direction,msnr){
     const a=atr(data,14),fvgs=detectFVG(data),breakers=detectBreakers(data),swings=findSwings(data,4),imbalances=findImbalances(data),orderBlocks=detectOrderBlocks(data,direction);
@@ -887,7 +887,13 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             if (session.session === 'ASIA KZ') bump(-5, 'Asia session (lower liquidity)');
             if (!hasSweep && !turtleSoup.detected) bump(-10, 'No liquidity sweep or turtle soup');
             if (msnrDistance > 1.0) bump(-10, `Far from MSNR pivot (${msnrDistance.toFixed(1)}%)`);
-            if (!entryReady) bump(-10, 'Entry not ready (no zone reaction yet)');
+            // FIX #19: a pending limit sitting a full ATR+ away cannot have a zone
+            // reaction yet - price hasn't arrived. Only penalize a missing reaction
+            // when price is close enough that one should have happened.
+            if (!entryReady) {
+                if (entryDistanceATR < 1.0) bump(-10, 'Entry not ready (no zone reaction yet)');
+                else confLog.push({ adj: 0, reason: 'Pending zone - reaction will be checked when price arrives (no penalty)' });
+            }
             if (freshness.used) bump(-10, `Zone already used (${freshness.touches} touches)`);
             if (!pathCheck.clear) bump(-8, `Path to TP blocked (${pathCheck.obstacles.join(', ')})`);
             if (probCheck.probability === 'LOW') bump(-8, 'Probability check LOW');
@@ -1249,12 +1255,13 @@ Direction: ${best.direction} | Zone: $${best.zone.low.toFixed(prec)}-$${best.zon
 HTF Validated: ${best.htfValidation ? (best.htfValidation.passed ? 'YES' : 'NO') : 'N/A'}
 Entry Ready: ${best.entryReady ? 'YES' : 'NO'} | Reaction: ${best.zoneReaction?.confirmed ? best.zoneReaction.type : 'NONE'}
 Entry: $${best.entry.toFixed(prec)} | SL: $${best.sl.toFixed(prec)} | TP1: $${best.tp1.toFixed(prec)} | RR: 1:${best.rrUsed}
+DISTANCE TO ENTRY: ${(best.entryDistancePct ?? 0).toFixed(2)}% (${(best.entryDistanceATR ?? 0).toFixed(1)}x ATR) - this is a PENDING limit order; price has NOT reached the zone yet
 RECENT ${best.entryTF} CANDLES (oldest first):
 ${recentCandles || 'n/a'}
 
 HARD RULES (evaluate EVERY rule and report a verdict for each in rule_checks):
-1. HTF Confluence CONFLICT -> "skip".
-2. entryReady NO and no zone reaction -> "wait_for_reaction" with a concrete wait_condition.
+1. HTF Confluence level CONFLICT (BOTH 1D and 4H oppose the trade) -> "skip". PARTIAL is NOT conflict - one HTF agreeing (especially 1D) is acceptable; never skip solely for PARTIAL.
+2. This is a pending limit order: if price has NOT reached the zone yet (see DISTANCE TO ENTRY), a missing zone reaction is EXPECTED and is NOT a defect - do not fail this rule or reject for it; "wait_for_reaction" is the natural decision. Only fail if price already tested the zone and failed to react.
 3. HTF not validated AND sniper sequence INCOMPLETE -> "skip".
 4. Path to TP has obstacles AND RR < 3 -> "skip".
 5. Sniper sequence COMPLETE + killzone + fresh zone -> lean "enter_now".
