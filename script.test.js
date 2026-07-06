@@ -138,6 +138,41 @@ describe('trade journal storage', () => {
     });
 });
 
+describe('OTE band orientation', () => {
+    const context = getContext();
+    // clean range: 40 candles spanning exactly 100..120, price mid-range
+    const candles = Array.from({ length: 40 }, (_, i) => {
+        const o = 105 + (i % 5);
+        return { o, h: Math.min(o + 8, 120), l: Math.max(o - 8, 100), c: o + 1, v: 1e6 };
+    });
+    candles[10] = { o: 100, h: 120, l: 100, c: 119, v: 1e6 }; // pin the extremes
+
+    it('BUY fallback OTE zone sits in discount (lower half of the range)', () => {
+        const price = 110;
+        const msnr = context.calculateMSNR(candles, price);
+        // force the fallback by asking in a structure-free window
+        const flat = Array.from({ length: 25 }, () => ({ o: 110, h: 120, l: 100, c: 110, v: 1e6 }));
+        const zone = context.findPrecisionEntry(flat, price, 'BUY', msnr);
+        if (zone.src === 'OTE') {
+            const mid = 110; // range midpoint of 100..120
+            expect(zone.high).toBeLessThan(mid);   // discount side
+            expect(zone.low).toBeGreaterThanOrEqual(100);
+        }
+    });
+
+    it('SELL fallback OTE zone sits in premium (upper half of the range)', () => {
+        const price = 110;
+        const msnr = context.calculateMSNR(candles, price);
+        const flat = Array.from({ length: 25 }, () => ({ o: 110, h: 120, l: 100, c: 110, v: 1e6 }));
+        const zone = context.findPrecisionEntry(flat, price, 'SELL', msnr);
+        if (zone.src === 'OTE') {
+            const mid = 110;
+            expect(zone.low).toBeGreaterThan(mid); // premium side
+            expect(zone.high).toBeLessThanOrEqual(120);
+        }
+    });
+});
+
 describe('findPrecisionEntry zone side', () => {
     const context = getContext();
     // downtrend then sharp rally: bullish OBs form near the top, above where
