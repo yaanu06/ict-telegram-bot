@@ -887,12 +887,13 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             if (session.session === 'ASIA KZ') bump(-5, 'Asia session (lower liquidity)');
             if (!hasSweep && !turtleSoup.detected) bump(-10, 'No liquidity sweep or turtle soup');
             if (msnrDistance > 1.0) bump(-10, `Far from MSNR pivot (${msnrDistance.toFixed(1)}%)`);
-            // FIX #19: a pending limit sitting a full ATR+ away cannot have a zone
-            // reaction yet - price hasn't arrived. Only penalize a missing reaction
-            // when price is close enough that one should have happened.
+            // FIX #19b: a pending zone price has never tested cannot have a reaction -
+            // the direct evidence is zoneTouches, not distance (a 1D ATR window is so
+            // wide that "near" still means untouched). Only penalize a missing
+            // reaction when price actually tested the zone and failed to react.
             if (!entryReady) {
-                if (entryDistanceATR < 1.0) bump(-10, 'Entry not ready (no zone reaction yet)');
-                else confLog.push({ adj: 0, reason: 'Pending zone - reaction will be checked when price arrives (no penalty)' });
+                if (zoneTouches > 0) bump(-10, `Zone tested ${zoneTouches}x with no confirmed reaction`);
+                else confLog.push({ adj: 0, reason: 'Pending zone untouched - reaction checked when price arrives (no penalty)' });
             }
             if (freshness.used) bump(-10, `Zone already used (${freshness.touches} touches)`);
             if (!pathCheck.clear) bump(-8, `Path to TP blocked (${pathCheck.obstacles.join(', ')})`);
@@ -1373,7 +1374,24 @@ async function runAutoScan() {
         const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction); best.confidence = Math.max(best.confidence - htfConfluence.penalty, 10); if (htfConfluence.penalty) best.confBreakdown?.push({ adj: -htfConfluence.penalty, reason: `HTF confluence ${htfConfluence.level} (1D=${htfConfluence.daily}, 4H=${htfConfluence.h4})` });
         let aiConviction = 'MEDIUM', aiApproved = true, aiConfAdj = 0, executionDecision = best.entryReady ? 'enter_now' : 'wait_for_reaction', waitCondition = 'Wait for engulf/pinbar at zone', aiInvalidation = best.invalidationPrice;
         let finalEntry = best.entry, finalZoneLow = best.zone.low, finalZoneHigh = best.zone.high, aiEntryLogic = '', aiSlLogic = '', aiKeyReason = '', aiRiskWarning = '', aiOutcomes = [];
-        if (aiResult && aiResult.trade_signal_Theghostmachine) { const ts = aiResult.trade_signal_Theghostmachine; aiApproved = ts.approved !== false; aiConfAdj = ts.confidence_adjustment || 0; executionDecision = ts.execution_decision || executionDecision; waitCondition = ts.wait_condition || waitCondition; if (ts.invalidation_price) aiInvalidation = ts.invalidation_price; if (executionDecision === 'enter_now') aiConviction = 'HIGH'; else if (executionDecision === 'wait_for_reaction') aiConviction = 'WAIT'; else aiConviction = 'SKIP'; if (ts.entry_refinement && ts.entry_refinement.low && ts.entry_refinement.high) { finalZoneLow = ts.entry_refinement.low; finalZoneHigh = ts.entry_refinement.high; finalEntry = (finalZoneLow + finalZoneHigh) / 2; } aiEntryLogic = ts.analysis?.entry_logic || ''; aiSlLogic = ts.analysis?.sl_logic || ''; aiKeyReason = ts.analysis?.key_reason || ''; aiRiskWarning = ts.analysis?.risk_warning || ''; aiOutcomes = ts.analysis?.possible_outcomes || []; if (aiApproved) { best.confidence = Math.min(Math.max(best.confidence + aiConfAdj, 10), 98); if (aiConfAdj) best.confBreakdown?.push({ adj: aiConfAdj, reason: `AI (${ts.model_used || 'deepseek'}) adjustment: ${aiKeyReason || 'approved'}` }); } else { best.confidence = Math.max(best.confidence - 25, 5); best.confBreakdown?.push({ adj: -25, reason: `🤖 AI REJECTED: ${aiKeyReason || aiRiskWarning || 'setup failed audit'}` }); } }
+        if (aiResult && aiResult.trade_signal_Theghostmachine) { const ts = aiResult.trade_signal_Theghostmachine; aiApproved = ts.approved !== false; aiConfAdj = ts.confidence_adjustment || 0; executionDecision = ts.execution_decision || executionDecision; waitCondition = ts.wait_condition || waitCondition; if (ts.invalidation_price) aiInvalidation = ts.invalidation_price; if (executionDecision === 'enter_now') aiConviction = 'HIGH'; else if (executionDecision === 'wait_for_reaction') aiConviction = 'WAIT'; else aiConviction = 'SKIP'; if (ts.entry_refinement && ts.entry_refinement.low && ts.entry_refinement.high) { finalZoneLow = ts.entry_refinement.low; finalZoneHigh = ts.entry_refinement.high; finalEntry = (finalZoneLow + finalZoneHigh) / 2; } aiEntryLogic = ts.analysis?.entry_logic || ''; aiSlLogic = ts.analysis?.sl_logic || ''; aiKeyReason = ts.analysis?.key_reason || ''; aiRiskWarning = ts.analysis?.risk_warning || ''; aiOutcomes = ts.analysis?.possible_outcomes || []; if (aiApproved) { best.confidence = Math.min(Math.max(best.confidence + aiConfAdj, 10), 98); if (aiConfAdj) best.confBreakdown?.push({ adj: aiConfAdj, reason: `AI (${ts.model_used || 'deepseek'}) adjustment: ${aiKeyReason || 'approved'}` }); }
+            else {
+                // FIX #20: deterministic guard - the AI repeatedly calls PARTIAL HTF
+                // alignment a "conflict" and skips. Only true CONFLICT (both 1D and 4H
+                // opposing) authorizes that skip, and the code knows the real level, so
+                // a rejection whose stated reason is HTF conflict while the level is
+                // PARTIAL gets downgraded to WAIT (-10) instead of a -25 kill.
+                const rule1Note = (ts.rule_checks?.find(r => r.rule === 1)?.note || '') + ' ' + (aiKeyReason || '');
+                const misreadPartial = htfConfluence.level === 'PARTIAL' && executionDecision === 'skip' && /conflict/i.test(rule1Note);
+                if (misreadPartial) {
+                    executionDecision = 'wait_for_reaction'; aiConviction = 'WAIT';
+                    best.confidence = Math.max(best.confidence - 10, 10);
+                    best.confBreakdown?.push({ adj: -10, reason: `🤖 AI wait (rejection downgraded: HTF is PARTIAL with ${htfConfluence.alignedTF || '1D'} aligned, not CONFLICT)` });
+                } else {
+                    best.confidence = Math.max(best.confidence - 25, 5);
+                    best.confBreakdown?.push({ adj: -25, reason: `🤖 AI REJECTED: ${aiKeyReason || aiRiskWarning || 'setup failed audit'}` });
+                }
+            } }
         const session = getSession();
 
         // FIX #7 (duplicate key): the old object had crt_analysis twice inside trade_signal —
