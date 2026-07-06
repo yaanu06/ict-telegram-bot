@@ -726,6 +726,14 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const entryDistanceATR = entryDistance / apiATR;
         const entryDistancePct = (entryDistance / price) * 100;
 
+        // FIX #16: high-probability zone gate. A weak zone used to flow through and
+        // just show up with a low % - now C-grade or single-confluence zones produce
+        // no setup at all. Only zones with real stacked confluence qualify.
+        if (zone.quality === 'C' || zone.cc < 2) {
+            console.log(`  ❌ ${tfToAnalyze}: zone not high-probability (quality ${zone.quality}, ${zone.cc} confluence${zone.cc === 1 ? '' : 's'}: ${zone.confluence}) - skipping`);
+            return null;
+        }
+
         // FIX: use the structural stop-loss engine (previously dead code), then rebuild TPs from it
         const slResult = calcStopLoss(entryData, sig.dir, precisionEntry.entry, zone, msnr, tfToAnalyze, twelveIndicators, pair);
         const finalSL = slResult.price;
@@ -760,6 +768,13 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const zoneReaction = checkZoneReaction(entryData, zone, sig.dir);
         const zoneTouches = countZoneTouches(entryData, zone, sig.dir);
         const magnetism = checkZoneMagnetism(entryData, price, precisionEntry.entry, sig.dir);
+        // FIX #16: if nothing is pulling price toward the zone (no imbalance magnet,
+        // no supporting sweeps, no aligned momentum), the limit likely never fills -
+        // that's not a high-probability setup, so don't give it.
+        if (!magnetism.likelyToReach) {
+            console.log(`  ❌ ${tfToAnalyze}: zone unlikely to be reached (magnetism ${magnetism.score}/100) - skipping`);
+            return null;
+        }
         const freshness = checkZoneFreshness(entryData, zone, sig.dir);
         const premiumDiscount = isHTFPremiumDiscount(structureData || entryData, sig.dir);
         const pathCheck = checkPathClearance(entryData, precisionEntry.entry, tps.tp1, sig.dir);
@@ -1321,7 +1336,7 @@ async function runAutoScan() {
             console.log('TF:', r.timeframe, '| Direction:', r.direction, '| Confidence:', r.confidence);
         }
 
-        if (results.length === 0) { showNotif('⚠️ No valid setups found', 'warning'); setJsonOutput({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
+        if (results.length === 0) { showNotif('🎯 No high-probability zones right now - patience, wait for price to build one', 'warning'); setJsonOutput({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_HIGH_PROBABILITY_SETUP',note:'Only A/B-quality zones with 2+ confluences that price is likely to reach are given. Nothing qualified this scan - rescan later rather than forcing a weak zone.',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
         for (let result of results) {
             try { result.qualityScore = calculateSetupQuality(result, price); }
             catch(e) { console.error('Error calculating quality score:', e); result.qualityScore = 0; }
@@ -1331,7 +1346,7 @@ async function runAutoScan() {
         let best = null, isLowerTF = false;
         if (higherResults.length > 0) { higherResults.sort((a, b) => b.qualityScore - a.qualityScore); best = higherResults[0]; isLowerTF = false; showNotif(`✅ ${best.timeframe} setup found - Quality: ${best.qualityScore}%`, 'success'); }
         else if (lowerResults.length > 0) { const filteredLower = lowerResults.filter(r => r.qualityScore > 40); if (filteredLower.length > 0) { filteredLower.sort((a, b) => b.qualityScore - a.qualityScore); best = filteredLower[0]; isLowerTF = true; best.confidence = Math.max(best.confidence - 30, 20); best.confBreakdown?.push({ adj: -30, reason: 'Lower timeframe setup only' }); showNotif(`⚠️ ONLY LOWER TF SETUP (${best.timeframe}) - Quality: ${best.qualityScore}% - REDUCED CONFIDENCE`, 'warning'); } else { showNotif('⚠️ Lower timeframe setups found but quality too low (<40%)', 'warning'); setJsonOutput({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'LOW_QUALITY_SETUPS_ONLY',message:'Only low quality lower timeframe setups found. Not tradable.',multi_timeframe_trends:mtfTrendsData,lower_setups_found:lowerResults.length,best_quality:Math.max(...lowerResults.map(r=>r.qualityScore))}}); analysis = null; document.getElementById('executeBtn').disabled = true; btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; } }
-        else { showNotif('⚠️ No valid setups found', 'warning'); setJsonOutput({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
+        else { showNotif('🎯 No high-probability zones right now - patience, wait for price to build one', 'warning'); setJsonOutput({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_HIGH_PROBABILITY_SETUP',note:'Only A/B-quality zones with 2+ confluences that price is likely to reach are given. Nothing qualified this scan - rescan later rather than forcing a weak zone.',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
         scanText.innerHTML = '🤖 AI strict execution decision...'; const aiResult = await askAIWithAllResults(results.slice().sort((a,b)=>b.qualityScore-a.qualityScore), price, htfData); scanStatus.classList.add('hidden');
         // FIX #13: the AI may pick a different candidate setup, but only within the
         // same tier already chosen (never a lower-TF setup when higher-TF ones exist)
