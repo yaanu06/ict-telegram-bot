@@ -185,10 +185,12 @@ async function getQuoteDirection(tfStr, cachedData = null) {
     return 'NEUTRAL';
 }
 
-async function getHistory(tfStr){
+// FIX #21: accepts an explicit pair so the limit-order fill check can fetch the
+// ORDER's pair even when a different pair is selected in the UI.
+async function getHistory(tfStr, forPair){
     if(!TWELVE_DATA_KEY)return null;
     try{
-        const d=await fetchTD(`/time_series?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${TF_MAP[tfStr]}&outputsize=100`);
+        const d=await fetchTD(`/time_series?symbol=${encodeURIComponent(SYMBOLS[forPair || pair])}&interval=${TF_MAP[tfStr]}&outputsize=100`);
         if(d.values){calls++;return d.values.map(c=>({t:c.datetime,o:+c.open,h:+c.high,l:+c.low,c:+c.close,v:+c.volume||1e6})).reverse();}
     }catch(e){ console.error(`History error (${tfStr}):`, e); }
     return null;
@@ -1584,13 +1586,58 @@ function handleJournalClick(ev) {
     if (btn && btn.dataset.action === 'del') deleteJournalEntry(+btn.dataset.id);
 }
 
-function loadLimitOrder(){const s=localStorage.getItem('limitOrder');if(s){try{limitOrder=JSON.parse(s);updateLimitUI();startMonitor();}catch(e){}}}
+// ============================================
+// FIX #21: MISSED-FILL DETECTION
+// The live monitor only runs while the app is open - price can travel into the
+// zone and back out while the app is closed (or spike between 5s price polls)
+// and the trigger was silently lost. Candle highs/lows since the order was
+// created can't miss a spike, so the fill check replays them on every app
+// open and every ~2.5 minutes while running.
+// ============================================
+function parseCandleTimeUTC(t) {
+    if (typeof t !== 'string') return NaN;
+    // Twelve Data forex/metals candles are UTC but come without a timezone
+    // marker - normalize so they don't get parsed as device-local time.
+    const iso = t.includes('T') ? t : t.replace(' ', 'T');
+    return new Date(/Z|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + 'Z').getTime();
+}
+function orderCrossedInCandles(order, candles) {
+    if (!order?.idealEntry || !candles?.length) return false;
+    const created = new Date(order.createdAt).getTime();
+    if (isNaN(created)) return false;
+    return candles.some(c => {
+        const t = parseCandleTimeUTC(c.t);
+        // 5-minute slack: the candle containing the creation moment still counts
+        if (isNaN(t) || t < created - 5 * 60 * 1000) return false;
+        return order.signalType === 'LONG' ? c.l <= order.idealEntry : c.h >= order.idealEntry;
+    });
+}
+async function checkMissedFill() {
+    if (!limitOrder) return;
+    try {
+        const candles = await getHistory('5M', limitOrder.pair || pair);
+        if (candles && orderCrossedInCandles(limitOrder, candles)) {
+            const filled = limitOrder;
+            clearLimit();
+            const prec = getPrec(filled.pair || pair);
+            showNotif(`✅ FILLED (while away)! ${filled.pair || ''} ${filled.signalType} limit @ $${filled.idealEntry.toFixed(prec)} was reached - check your broker position!`, 'success');
+            try { new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play(); } catch (e) {}
+        }
+    } catch (e) { console.error('Missed-fill check:', e); }
+}
+
+function loadLimitOrder(){const s=localStorage.getItem('limitOrder');if(s){try{limitOrder=JSON.parse(s);updateLimitUI();startMonitor();checkMissedFill();}catch(e){}}}
 function saveLimit(o){limitOrder=o;localStorage.setItem('limitOrder',JSON.stringify(o));updateLimitUI();}
 function clearLimit(){limitOrder=null;localStorage.removeItem('limitOrder');if(priceTimer)clearInterval(priceTimer);updateLimitUI();}
 function cancelLimit(){clearLimit();showNotif('❌ Cancelled','warning');}
 // FIX #3: limit UI + monitor now use the ORDER's pair, not whatever pair is currently selected
 function updateLimitUI(){const t=document.getElementById('limitOrderText'),c=document.getElementById('cancelLimitBtn');if(limitOrder){const prec=getPrec(limitOrder.pair||pair);t.innerHTML=`⏳ ${limitOrder.pair||''} ${limitOrder.signalType} LIMIT @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)}`;t.className='active';c.classList.remove('hidden');document.getElementById('executeBtn').innerHTML='⏳ Waiting...';document.getElementById('executeBtn').style.background='linear-gradient(135deg, #ff9f0a, #ff6b00)';}else{t.innerHTML='No active limit order';t.className='';c.classList.add('hidden');document.getElementById('executeBtn').innerHTML='⚡ Place Limit Order';document.getElementById('executeBtn').style.background='linear-gradient(135deg, #34c759, #28a745)';}}
-function startMonitor(){if(priceTimer)clearInterval(priceTimer);priceTimer=setInterval(async()=>{if(!limitOrder){clearInterval(priceTimer);return;}const orderPair=limitOrder.pair||pair;const p=await getPrice(orderPair);if(!p)return;const prec=getPrec(orderPair);if(orderPair===pair)document.getElementById('currentPrice').innerHTML=`$${p.toFixed(prec)}`;if((limitOrder.signalType==='LONG' && p<=limitOrder.idealEntry)||(limitOrder.signalType==='SHORT' && p>=limitOrder.idealEntry)){const filled=limitOrder;clearLimit();showNotif(`✅ FILLED! ${filled.pair||''} ${filled.signalType} @ $${p.toFixed(prec)}`,'success');try{new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play();}catch(e){}}},2000);}
+let monitorTicks = 0;
+function startMonitor(){if(priceTimer)clearInterval(priceTimer);monitorTicks=0;priceTimer=setInterval(async()=>{if(!limitOrder){clearInterval(priceTimer);return;}
+    // FIX #21: every ~2.5 min also replay candle highs/lows - a spike through the
+    // zone between 5s price polls would otherwise be missed.
+    if(++monitorTicks%75===0){checkMissedFill();return;}
+    const orderPair=limitOrder.pair||pair;const p=await getPrice(orderPair);if(!p)return;const prec=getPrec(orderPair);if(orderPair===pair)document.getElementById('currentPrice').innerHTML=`$${p.toFixed(prec)}`;if((limitOrder.signalType==='LONG' && p<=limitOrder.idealEntry)||(limitOrder.signalType==='SHORT' && p>=limitOrder.idealEntry)){const filled=limitOrder;clearLimit();showNotif(`✅ FILLED! ${filled.pair||''} ${filled.signalType} @ $${p.toFixed(prec)}`,'success');try{new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play();}catch(e){}}},2000);}
 function handleLimit(){if(!analysis||analysis.signalType==='NEUTRAL'){showNotif('No signal','error');return;}if(limitOrder){cancelLimit();return;}const o={id:Date.now(),pair,signalType:analysis.signalType,idealEntry:analysis.idealEntry,stopLoss:analysis.stopLoss,takeProfit1:analysis.takeProfit1,takeProfit2:analysis.takeProfit2,takeProfit3:analysis.takeProfit3,confidence:analysis.confidence,entryZoneLow:analysis.entryZoneLow,entryZoneHigh:analysis.entryZoneHigh,entryReady:analysis.entryReady,executionDecision:analysis.executionDecision,invalidationPrice:analysis.invalidationPrice,createdAt:new Date().toISOString()};saveLimit(o);startMonitor();showNotif(`📝 Limit @ $${o.idealEntry.toFixed(getPrec(pair))}`,'info');}
 // FIX #9: copy uses textContent (was innerHTML — copied HTML-escaped text), and the
 // empty-check actually works now (old check looked for 'Click' which never matched '{}')
