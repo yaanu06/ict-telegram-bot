@@ -138,6 +138,39 @@ describe('trade journal storage', () => {
     });
 });
 
+describe('orderCrossedInCandles (missed-fill detection)', () => {
+    const context = getContext();
+    const mkCandle = (minsAgo, l, h) => ({ t: new Date(Date.now() - minsAgo * 60000).toISOString(), o: (l + h) / 2, h, l, c: (l + h) / 2, v: 1e6 });
+    const longOrder = { signalType: 'LONG', idealEntry: 4100, createdAt: new Date(Date.now() - 60 * 60000).toISOString() };
+    const shortOrder = { signalType: 'SHORT', idealEntry: 4180, createdAt: new Date(Date.now() - 60 * 60000).toISOString() };
+
+    it('detects a LONG fill when a candle low pierced the entry after creation', () => {
+        const candles = [mkCandle(50, 4120, 4130), mkCandle(30, 4095, 4125), mkCandle(10, 4110, 4140)];
+        expect(context.orderCrossedInCandles(longOrder, candles)).toBe(true);
+    });
+
+    it('detects a SHORT fill when a candle high pierced the entry', () => {
+        const candles = [mkCandle(40, 4150, 4185), mkCandle(20, 4140, 4160)];
+        expect(context.orderCrossedInCandles(shortOrder, candles)).toBe(true);
+    });
+
+    it('ignores candles from before the order existed', () => {
+        const candles = [mkCandle(120, 4090, 4130), mkCandle(20, 4110, 4130)];
+        expect(context.orderCrossedInCandles(longOrder, candles)).toBe(false);
+    });
+
+    it('returns false when price never reached the entry', () => {
+        const candles = [mkCandle(40, 4110, 4150), mkCandle(20, 4105, 4140)];
+        expect(context.orderCrossedInCandles(longOrder, candles)).toBe(false);
+    });
+
+    it('parses timezone-less Twelve Data timestamps as UTC', () => {
+        const utcNoZ = new Date(Date.now() - 20 * 60000).toISOString().replace('T', ' ').slice(0, 19);
+        const candles = [{ t: utcNoZ, o: 4105, h: 4110, l: 4095, c: 4100, v: 1e6 }];
+        expect(context.orderCrossedInCandles(longOrder, candles)).toBe(true);
+    });
+});
+
 describe('checkHTFConfluenceAsync PARTIAL asymmetry', () => {
     const context = getContext();
     const trend = (up) => Array.from({ length: 60 }, (_, i) => {
