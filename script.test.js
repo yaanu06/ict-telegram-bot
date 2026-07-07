@@ -138,6 +138,31 @@ describe('trade journal storage', () => {
     });
 });
 
+describe('checkSniperEntry MSNR+TBS alternative path', () => {
+    const context = getContext();
+    // 15 candles: flat lows at 100, a sweep candle (idx 11) pierces to 98.9,
+    // last candle closes back above the key level -> turtle soup BUY
+    const candles = Array.from({ length: 15 }, (_, i) => ({
+        o: 100.4, h: 101.2, l: 100.0, c: 100.8, v: 1e6
+    }));
+    candles[11] = { o: 100.3, h: 100.9, l: 98.9, c: 100.4, v: 1e6 };
+    candles[14] = { o: 100.2, h: 101.4, l: 100.1, c: 101.0, v: 1e6 };
+
+    it('qualifies an aligned turtle soup at a fresh MSNR zone as sniper', () => {
+        const zone = { low: 99.0, high: 99.6, p: 99.3, src: 'MSNR', confluence: 'MSNR+Swing' };
+        const res = context.checkSniperEntry(candles, 101, 'BUY', zone, null);
+        expect(res.isSniper).toBe(true);
+        expect(res.path).toBe('MSNR+TBS');
+        expect(res.checks.find(c => c.name === 'TBS at MSNR level (alt path)').passed).toBe(true);
+    });
+
+    it('does not qualify when the zone has no MSNR confluence', () => {
+        const zone = { low: 99.0, high: 99.6, p: 99.3, src: 'FVG', confluence: 'FVG' };
+        const res = context.checkSniperEntry(candles, 101, 'BUY', zone, null);
+        expect(res.checks.find(c => c.name === 'TBS at MSNR level (alt path)').passed).toBe(false);
+    });
+});
+
 describe('getPrecisionEntryCRT CE placement', () => {
     const context = getContext();
     const candles = [{ o: 110, h: 112, l: 108, c: 111, v: 1e6 }];
@@ -354,9 +379,9 @@ describe('checkSniperEntry', () => {
         expect(kz.passed).toBe(true);
     });
 
-    it('reports all five checks with critical flags', () => {
+    it('reports all six checks with critical flags', () => {
         const res = context.checkSniperEntry(flat, 106, 'BUY', zone, null);
-        expect(res.checks).toHaveLength(5);
+        expect(res.checks).toHaveLength(6);
         expect(res.checks.filter(c => c.critical)).toHaveLength(3);
         expect(res.score).toBeGreaterThanOrEqual(0);
         expect(res.score).toBeLessThanOrEqual(100);
