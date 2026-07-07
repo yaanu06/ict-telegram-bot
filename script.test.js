@@ -138,6 +138,30 @@ describe('trade journal storage', () => {
     });
 });
 
+describe('getPrecisionEntryCRT CE placement', () => {
+    const context = getContext();
+    const candles = [{ o: 110, h: 112, l: 108, c: 111, v: 1e6 }];
+    const crtRange = { low: 95, high: 125 };
+    const zone = { low: 100, high: 102 };
+
+    it('places the BUY entry at the zone midpoint (CE)', () => {
+        const r = context.getPrecisionEntryCRT(candles, zone, 'BUY', crtRange, 1);
+        expect(r.entry).toBeCloseTo(101);
+    });
+
+    it('places the SELL entry at the zone midpoint (CE)', () => {
+        const r = context.getPrecisionEntryCRT(candles, { low: 118, high: 120 }, 'SELL', crtRange, 1);
+        expect(r.entry).toBeCloseTo(119);
+    });
+
+    it('keeps the SL beyond the zone on the correct side', () => {
+        const buy = context.getPrecisionEntryCRT(candles, zone, 'BUY', crtRange, 1);
+        expect(buy.sl).toBeLessThan(zone.low);
+        const sell = context.getPrecisionEntryCRT(candles, { low: 118, high: 120 }, 'SELL', crtRange, 1);
+        expect(sell.sl).toBeGreaterThan(120);
+    });
+});
+
 describe('orderCrossedInCandles (missed-fill detection)', () => {
     const context = getContext();
     const mkCandle = (minsAgo, l, h) => ({ t: new Date(Date.now() - minsAgo * 60000).toISOString(), o: (l + h) / 2, h, l, c: (l + h) / 2, v: 1e6 });

@@ -734,6 +734,13 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 
         // ===== SHARED (zone-independent) ANALYSIS =====
         const apiATR = twelveIndicators?.atr_api || atr(entryData, 14);
+        // FIX #22: zones come from the ENTRY timeframe (e.g. 1H for a "1D" scan) but
+        // apiATR is the SCAN timeframe's ATR (a 1D ATR on gold is ~9x the 1H ATR).
+        // Using it for entry geometry inflated the minimum-distance gate to ~15
+        // points (rejecting every fillable zone) and made entry buffers wider than
+        // the zones themselves. All zone geometry now uses the entry TF's own ATR;
+        // apiATR remains for scan-TF context (volatility label, indicator report).
+        const entryATR = atr(entryData, 14);
         const obsAll = detectOrderBlocks(entryData, sig.dir);
         const fvgsAll = detectFVG(entryData);
         const mssData = detectMSS(entryData);
@@ -783,16 +790,19 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         }
 
         const evaluateZone = async (zone) => {
-            const precisionEntry = getPrecisionEntryCRT(entryData, zone, sig.dir, crtRange, apiATR);
+            const precisionEntry = getPrecisionEntryCRT(entryData, zone, sig.dir, crtRange, entryATR);
 
-            // FIX #15: pending-order semantics - entry on the retrace side of price,
-            // far enough away that price must travel into the zone to trigger.
+            // FIX #15/#22: pending-order semantics - entry on the retrace side of
+            // price, far enough away that price must travel into the zone to trigger.
+            // Distances are measured in ENTRY-TF ATR so the gate stays proportional.
             const entryDistance = sig.dir === 'BUY' ? price - precisionEntry.entry : precisionEntry.entry - price;
-            if (entryDistance <= 0 || entryDistance < apiATR * 0.2) return null;
-            const entryDistanceATR = entryDistance / apiATR;
+            if (entryDistance <= 0 || entryDistance < entryATR * 0.2) return null;
+            const entryDistanceATR = entryDistance / entryATR;
             const entryDistancePct = (entryDistance / price) * 100;
 
-            const slResult = calcStopLoss(entryData, sig.dir, precisionEntry.entry, zone, msnr, tfToAnalyze, twelveIndicators, pair);
+            // FIX #22: the SL engine also anchors its buffers to the entry-TF ATR
+            // (TF-keyed base buffers keep the scan-TF character of the stop).
+            const slResult = calcStopLoss(entryData, sig.dir, precisionEntry.entry, zone, msnr, tfToAnalyze, { ...(twelveIndicators || {}), atr_api: entryATR }, pair);
             const finalSL = slResult.price;
             const tps = calcTakeProfits(sig.dir, precisionEntry.entry, finalSL);
             const rrUsed = tps.rrUsed;
@@ -879,7 +889,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             else if (sniperEntry.score < 40) bump(-8, `Sniper sequence weak (${sniperEntry.score}/100)`);
             if (volumeProfile) {
                 const zoneInLVN = volumeProfile.lvns.some(p => p >= zone.low && p <= zone.high);
-                const nearVAEdge = sig.dir === 'BUY' ? Math.abs(zone.p - volumeProfile.val) < apiATR : Math.abs(zone.p - volumeProfile.vah) < apiATR;
+                const nearVAEdge = sig.dir === 'BUY' ? Math.abs(zone.p - volumeProfile.val) < entryATR : Math.abs(zone.p - volumeProfile.vah) < entryATR;
                 if (zoneInLVN) bump(5, 'Zone in low-volume node');
                 if (nearVAEdge) bump(5, 'Zone at value-area edge');
             }
@@ -926,7 +936,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 htfValidation, magnetism, freshness, premiumDiscount, breakerValid, amd,
                 pathCheck, probCheck, displacement, sniperRej, sniperEntry, volumeProfile, deltaProxy,
                 slResult, invalidationPrice, confBreakdown: confLog,
-                entryDistanceATR, entryDistancePct,
+                entryDistanceATR, entryDistancePct, entryATR,
                 rrUsed, rs, apiATR,
                 fvgsAll: fvgsAll || [],
                 obsAll: obsAll || [],
@@ -1059,8 +1069,13 @@ function getPrecisionEntryCRT(candles, zone, direction, crtRange, apiATR) {
     let entry, sl, tp1, tp2, tp3;
     const rr = settings.targetRR || 4;
 
+    // FIX #22: enter at the zone's CE (consequent encroachment - the 50% midpoint),
+    // the ICT convention and what the backtester already simulates. The old
+    // zone.low+buffer placement sat at the DEEP edge, so price had to cut through
+    // nearly the whole zone before the limit filled - a major reason orders never
+    // triggered (worse still when the buffer used a scan-TF ATR wider than the zone).
     if (direction === 'BUY') {
-        entry = Math.min(zone.low + entryBuffer, zone.high);
+        entry = (zone.low + zone.high) / 2;
         sl = Math.min(zone.low - slBufferValue, crtRange.low - slBufferValue);
         if (sl >= entry) sl = entry - slBufferValue;
         const risk = entry - sl;
@@ -1070,7 +1085,7 @@ function getPrecisionEntryCRT(candles, zone, direction, crtRange, apiATR) {
         tp2 = entry + actualRisk * (rr + 1);
         tp3 = entry + actualRisk * (rr + 2);
     } else {
-        entry = Math.max(zone.high - entryBuffer, zone.low);
+        entry = (zone.low + zone.high) / 2;
         sl = Math.max(zone.high + slBufferValue, crtRange.high + slBufferValue);
         if (sl <= entry) sl = entry + slBufferValue;
         const risk = sl - entry;
