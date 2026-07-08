@@ -465,12 +465,40 @@ function isHTFPremiumDiscount(htfData, direction) {
 } 
 function getSession() { 
     const now = new Date(); const hour = now.getUTCHours(); const min = now.getUTCMinutes(); const time = hour + min / 60; 
-    let s = { session: 'OFF-HOURS', multiplier: 0.5, emoji: '🌙', isKillzone: false, isSilverBullet: false }; 
-    if (time >= 0 && time < 4) s = { session: 'ASIA KZ', multiplier: 0.8, emoji: '🌏', isKillzone: true }; 
-    else if (time >= 7 && time < 10) s = { session: 'LONDON KZ', multiplier: 1.1, emoji: '🇬🇧', isKillzone: true };
-    else if (time >= 12 && time < 15) s = { session: 'NEW_YORK KZ', multiplier: 1.2, emoji: '🇺🇸', isKillzone: true }; 
-    else if (time >= 15 && time < 17) s = { session: 'LON-CLOSE KZ', multiplier: 0.9, emoji: '🌆', isKillzone: true }; 
-    if ((time >= 8 && time < 9) || (time >= 15 && time < 16) || (time >= 19 && time < 20)) { s.isSilverBullet = true; s.multiplier += 0.2; s.emoji = '🏹'; s.session += ' + SB'; } 
+
+    // Convert to EST (UTC-4 or UTC-5). We'll roughly use UTC-4 for EST/EDT proxy.
+    let estHour = hour - 4;
+    if (estHour < 0) estHour += 24;
+
+    let s = { session: 'OFF-HOURS', multiplier: 0.5, emoji: '🌙', isKillzone: false, isSilverBullet: false, isMacro: false };
+
+    // Killzones (Using approximate UTC times to keep existing logic)
+    if (time >= 0 && time < 4) s = { ...s, session: 'ASIA KZ', multiplier: 0.8, emoji: '🌏', isKillzone: true };
+    else if (time >= 7 && time < 10) s = { ...s, session: 'LONDON KZ', multiplier: 1.1, emoji: '🇬🇧', isKillzone: true };
+    else if (time >= 12 && time < 15) s = { ...s, session: 'NEW_YORK KZ', multiplier: 1.2, emoji: '🇺🇸', isKillzone: true };
+    else if (time >= 15 && time < 17) s = { ...s, session: 'LON-CLOSE KZ', multiplier: 0.9, emoji: '🌆', isKillzone: true };
+
+    // Silver Bullets (UTC roughly matching NY times: 10AM EST, 3PM EST, 3AM EST)
+    if ((time >= 8 && time < 9) || (time >= 15 && time < 16) || (time >= 19 && time < 20)) {
+        s.isSilverBullet = true; s.multiplier += 0.2; s.emoji = '🏹'; s.session += ' + SB';
+    }
+
+    // THE TRADING GEEK MACROS: High probability algorithmic windows
+    // EST Times: 9:50-10:10 AM, 10:50-11:10 AM, 11:50-12:10 PM, 1:10-1:50 PM, 3:15-3:45 PM
+    const estTime = estHour + min / 60;
+    const isAM_Macro1 = (estTime >= 9.83 && estTime <= 10.16);   // 9:50 - 10:10
+    const isAM_Macro2 = (estTime >= 10.83 && estTime <= 11.16);  // 10:50 - 11:10
+    const isPM_Macro1 = (estTime >= 11.83 && estTime <= 12.16);  // 11:50 - 12:10
+    const isPM_Macro2 = (estTime >= 13.16 && estTime <= 13.83);  // 13:10 - 13:50
+    const isClose_Macro = (estTime >= 15.25 && estTime <= 15.75); // 15:15 - 15:45
+
+    if (isAM_Macro1 || isAM_Macro2 || isPM_Macro1 || isPM_Macro2 || isClose_Macro) {
+        s.isMacro = true;
+        s.multiplier += 0.3; // Huge multiplier for trading geek macros
+        s.emoji = '🔥';
+        s.session += ' (MACRO)';
+    }
+
     return s; 
 } 
 function validateBreakerBlock(data, level, direction) { if (data.length < 25) return false; const moveAway = data.slice(-25).find(c => direction === 'BUY' ? c.c > level * 1.005 : c.c < level * 0.995); if (!moveAway) return false; const recent = data.slice(-5), touched = recent.some(c => direction === 'BUY' ? c.l <= level : c.h >= level), last = recent[recent.length - 1], rejected = direction === 'BUY' ? last.c > level : last.c < level; return touched && rejected; } 
@@ -587,7 +615,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const bosConfirmed = mssData !== null && mssData.displaced === true;
         const displacement = detectDisplacement(entryData, sig.dir);
         const hasDisplacement = displacement.detected;
-        const chochDetected = checkCHoCH(entryData);
+        const chochDetected = checkCHoCH(entryData, zone.low, zone.high);
+        const inducementSwept = detectInducement(entryData, zone.low, zone.high, sig.dir);
         const htfSupportLevels = swingsData.L.map(s => ({ price: s.p, strength: 3 }));
         const htfResistanceLevels = swingsData.H.map(s => ({ price: s.p, strength: 3 }));
 
@@ -608,7 +637,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             ltfPullbackIntoZone: entryTiming.valid || false,
             ltfDisplacementCandle: hasDisplacement,
             ltfCompressionDetected: crtState?.isConsolidating || false,
-            sessionValid: validateTradingSession()
+            sessionValid: validateTradingSession(),
+            inducementSwept: inducementSwept
         };
 
         // ===== 13. CALCULATE SETUP SCORE (1-10) =====
@@ -1266,6 +1296,12 @@ function calculateSetupScore(direction, context) {
     // 10. Session valid
     if (context.sessionValid) score += 1;
 
+    // TRADING GEEK: Heavy weighting for Macro & Inducement
+    const sessionData = getSession();
+    if (sessionData.isMacro) score += 3;
+    if (context.inducementSwept) score += 3;
+    if (context.ltfDisplacementCandle && context.ltfPullbackIntoZone) score += 2; // CISD confirmation
+
     return score; // 1-10
 }
 
@@ -1458,14 +1494,62 @@ function buildCompleteSignalOutput(signal, context, chartData, entryInfo) {
 }
 
 // ===== CHECK CHoCH (Change of Character) =====
-function checkCHoCH(data) {
-    if (data.length < 3) return false;
+function checkCHoCH(data, zoneLow, zoneHigh) {
+    if (data.length < 5) return false;
+
+    // TRADING GEEK RULE: CHoCH is only valid if it happens AFTER price taps the HTF POI zone.
+
+    // 1. Check if price recently tapped the zone
+    const last5 = data.slice(-5);
+    const zoneTapped = last5.some(c => (c.l <= zoneHigh && c.h >= zoneLow));
+    if (!zoneTapped) return false; // Invalid CHoCH context
+
     const last = data[data.length - 1];
     const prev = data[data.length - 2];
 
-    // Bullish CHoCH: bearish candle followed by bullish engulfing
+    // Bullish CHoCH: bearish candle followed by bullish engulfing (CISD)
     if (prev.c < prev.o && last.c > last.o && last.c > prev.h) return true;
-    // Bearish CHoCH: bullish candle followed by bearish engulfing
+
+    // Bearish CHoCH: bullish candle followed by bearish engulfing (CISD)
     if (prev.c > prev.o && last.c < last.o && last.c < prev.l) return true;
+
     return false;
+}
+
+// ===== THE TRADING GEEK: INDUCEMENT FILTER =====
+function detectInducement(data, zoneLow, zoneHigh, direction) {
+    // Looks for a short-term swing high/low that was swept just prior to or directly inside the HTF POI.
+    // This is the core of the 1% Club strategy: Don't take the first FVG, wait for Inducement (liquidity) to be swept.
+    if (data.length < 20) return false;
+
+    // Find swings
+    const swings = findSwings(data, 3);
+
+    if (direction === 'BUY') {
+        // We want to see a recent Swing Low (Inducement) that was swept (price went below it)
+        // AND that sweep happened right above or inside our Zone.
+
+        // Find recent swing lows that are near our zone
+        const recentLows = swings.L.filter(s => s.p > zoneLow && s.p < zoneHigh * 1.01);
+        if (recentLows.length === 0) return false; // No inducement built
+
+        // Check if the lowest point of the last 5 candles swept that swing
+        const lastCandles = data.slice(-10);
+        const lowestRecent = Math.min(...lastCandles.map(c => c.l));
+
+        // If price went below the recent swing low, it's an inducement sweep
+        const inducementSwept = recentLows.some(s => lowestRecent < s.p);
+        return inducementSwept;
+
+    } else {
+        // We want to see a recent Swing High (Inducement) that was swept (price went above it)
+        const recentHighs = swings.H.filter(s => s.p < zoneHigh && s.p > zoneLow * 0.99);
+        if (recentHighs.length === 0) return false;
+
+        const lastCandles = data.slice(-10);
+        const highestRecent = Math.max(...lastCandles.map(c => c.h));
+
+        const inducementSwept = recentHighs.some(s => highestRecent > s.p);
+        return inducementSwept;
+    }
 }
