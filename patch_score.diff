@@ -1,0 +1,10 @@
+--- script.js
++++ script.js
+@@ -1784,3 +1784,7 @@
+     if (context.sessionValid) score += 1;
++    const sessionData = getSession();
++    if (sessionData.isMacro) score += 3;
++    if (context.inducementSwept) score += 3;
++    if (context.ltfDisplacementCandle && context.ltfPullbackIntoZone) score += 2;
+     return score;
+ }

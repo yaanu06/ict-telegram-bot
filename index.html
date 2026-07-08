@@ -91,9 +91,29 @@
         <div class="section json-section">
             <div class="json-header">
                 <h3>📋 Best Setup Found</h3>
-                <button id="copyJsonBtn" class="copy-json-btn">📋 Copy</button>
+                <div class="json-actions">
+                    <button id="saveSetupBtn" class="copy-json-btn journal-btn">💾 Save</button>
+                    <button id="copyJsonBtn" class="copy-json-btn">📋 Copy</button>
+                </div>
             </div>
             <pre id="jsonOutput" class="json-output">{}</pre>
+        </div>
+
+        <!-- Recent Saved Setups -->
+        <div class="section">
+            <div class="json-header">
+                <h3>💾 Recent Saved</h3>
+            </div>
+            <div id="recentList" class="journal-list"><span class="journal-empty">No saved setups — hit 💾 Save after a scan to keep one here</span></div>
+        </div>
+
+        <!-- Trade Journal -->
+        <div class="section">
+            <div class="json-header">
+                <h3>📒 Trade Journal</h3>
+                <span id="journalStats" class="journal-stats"></span>
+            </div>
+            <div id="journalList" class="journal-list"><span class="journal-empty">Journal is empty — mark a saved setup Win/Loss, then press 📒 Journal</span></div>
         </div>
 
         <!-- Limit Order Status -->

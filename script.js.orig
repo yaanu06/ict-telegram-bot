@@ -1783,10 +1783,6 @@ function calculateSetupScore(direction, context) {
     if (context.ltfPullbackIntoZone) score += 1;
     if (context.ltfDisplacementCandle) score += 1;
     if (context.sessionValid) score += 1;
-    const sessionData = getSession();
-    if (sessionData.isMacro) score += 3;
-    if (context.inducementSwept) score += 3;
-    if (context.ltfDisplacementCandle && context.ltfPullbackIntoZone) score += 2;
     return score;
 }
 
