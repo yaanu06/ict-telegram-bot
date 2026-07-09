@@ -248,6 +248,28 @@ describe('checkHTFConfluenceAsync PARTIAL asymmetry', () => {
     });
 });
 
+describe('checkZoneMagnetism primary-method zones', () => {
+    const context = getContext();
+    const trend = Array.from({ length: 60 }, (_, i) => {
+        const base = 100 + i * 0.2;
+        return { o: base, h: base + 0.4, l: base - 0.2, c: base + 0.1, v: 1e6 };
+    });
+
+    it('keeps a nearby MSNR multi-confluence zone reachable even without a sweep magnet', () => {
+        const zone = { src: 'MSNR', confluence: 'MSNR+Swing', quality: 'A', cc: 2 };
+        const res = context.checkZoneMagnetism(trend, 112.56, 112.0, 'BUY', zone);
+        expect(res.score).toBeGreaterThanOrEqual(35);
+        expect(res.likelyToReach).toBe(true);
+    });
+
+    it('does not promote a generic single-confluence zone on the same price action', () => {
+        const zone = { src: 'FVG', confluence: 'FVG', quality: 'C', cc: 1 };
+        const res = context.checkZoneMagnetism(trend, 112.56, 112.0, 'BUY', zone);
+        expect(res.score).toBeLessThan(35);
+        expect(res.likelyToReach).toBe(false);
+    });
+});
+
 describe('OTE band orientation', () => {
     const context = getContext();
     // clean range: 40 candles spanning exactly 100..120, price mid-range
