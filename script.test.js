@@ -206,7 +206,7 @@ describe('recomputeTradeLevels', () => {
     };
 
     it('keeps a refined SELL stop above the refined entry', () => {
-        const r = context.recomputeTradeLevels({ ...base, twelveIndicators: { atr_api: 2 } }, 4134.97, 4136.46, 4123.8814, 'XAU/USD');
+        const r = context.recomputeTradeLevels({ ...base, twelveIndicators: { atr_api: 2 } }, 4134.97, 4136.46, 4123.8814, 'XAU/USD', base.entryData);
         expect(r.entry).toBe(4135.72);
         expect(r.sl).toBeGreaterThan(r.entry);
         expect(r.sl).toBe(4137.46);
@@ -214,8 +214,8 @@ describe('recomputeTradeLevels', () => {
     });
 
     it('prefers Twelve Data ATR over the wider local ATR when recalculating the stop', () => {
-        const withApiAtr = context.recomputeTradeLevels({ ...base, twelveIndicators: { atr_api: 2 } }, 4134.97, 4136.46, 4123.8814, 'XAU/USD');
-        const withoutApiAtr = context.recomputeTradeLevels({ ...base, twelveIndicators: {} }, 4134.97, 4136.46, 4123.8814, 'XAU/USD');
+        const withApiAtr = context.recomputeTradeLevels({ ...base, twelveIndicators: { atr_api: 2 } }, 4134.97, 4136.46, 4123.8814, 'XAU/USD', base.entryData);
+        const withoutApiAtr = context.recomputeTradeLevels({ ...base, twelveIndicators: {} }, 4134.97, 4136.46, 4123.8814, 'XAU/USD', base.entryData);
         expect(withApiAtr.sl).toBe(4137.46);
         expect(withoutApiAtr.sl).toBe(4139.46);
     });

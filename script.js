@@ -18,6 +18,7 @@ const TF_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day','1W':
 const QUOTE_INTERVAL_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day' };
 const ALL_TIMEFRAMES = ['5M', '15M', '1H', '4H', '1D'];
 const TF_WEIGHT = { '1D': 5, '4H': 4, '1H': 3, '15M': 2, '5M': 1 };
+const DEFAULT_ATR_PERIOD = 14;
 
 function getTimeframeHierarchy(selectedTF) {
     const hierarchy = {
@@ -535,14 +536,14 @@ function calcTakeProfits(dir, entry, sl) {
     }
 }
 
-function recomputeTradeLevels(best, zoneLow, zoneHigh, price, currentPair) {
+function recomputeTradeLevels(best, zoneLow, zoneHigh, price, currentPair, candles = []) {
     const settings = getMarketSettings(currentPair || pair);
     const prec = settings.prec || 5;
     const factor = Math.pow(10, prec);
     const entry = Math.round((((zoneLow + zoneHigh) / 2) * factor)) / factor;
     const zone = { ...(best.zone || {}), low: zoneLow, high: zoneHigh, p: entry };
-    const stopATR = best?.twelveIndicators?.atr_api || best?.entryATR || (best?.entryData?.length ? atr(best.entryData, 14) : 0);
-    const slResult = calcStopLoss(best.entryData || [], best.direction, entry, zone, best.msnr, best.timeframe || best.entryTF, { ...(best.twelveIndicators || {}), atr_api: stopATR }, currentPair || pair);
+    const stopATR = best?.twelveIndicators?.atr_api || best?.entryATR || (candles.length ? atr(candles, DEFAULT_ATR_PERIOD) : 0);
+    const slResult = calcStopLoss(candles, best.direction, entry, zone, best.msnr, best.timeframe || best.entryTF, { ...(best.twelveIndicators || {}), atr_api: stopATR }, currentPair || pair);
     const tps = calcTakeProfits(best.direction, entry, slResult.price);
     const risk = Math.abs(entry - slResult.price);
     const rrDisplay = risk > 0 ? (Math.abs(tps.tp1 - entry) / risk).toFixed(1) : '0.0';
@@ -1057,7 +1058,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 slResult, invalidationPrice, confBreakdown: confLog,
                 entryDistanceATR, entryDistancePct, entryATR,
                 rrUsed, rs, apiATR,
-                entryData,
                 fvgsAll: fvgsAll || [],
                 obsAll: obsAll || [],
                 breakersAll: breakersAll || [],
@@ -1551,14 +1551,14 @@ async function runAutoScan() {
                 }
             } }
         if (finalEntry !== best.entry || finalZoneLow !== best.zone.low || finalZoneHigh !== best.zone.high) {
-            const recomputed = recomputeTradeLevels(best, finalZoneLow, finalZoneHigh, price, pair);
+            const recomputed = recomputeTradeLevels(best, finalZoneLow, finalZoneHigh, price, pair, htfData[best.entryTF] || []);
             finalEntry = recomputed.entry;
             finalZoneLow = recomputed.zone.low;
             finalZoneHigh = recomputed.zone.high;
             best = { ...best, ...recomputed };
             if (!aiResult?.trade_signal_Theghostmachine?.invalidation_price) aiInvalidation = recomputed.invalidationPrice;
         }
-        const risk = Math.abs(best.entry - best.sl), rr = best.rrUsed || 4, rrDisplay = risk > 0 ? (Math.abs(best.tp1 - best.entry) / risk).toFixed(1) : '0.0';
+        const risk = Math.abs(best.entry - best.sl), rrDisplay = risk > 0 ? (Math.abs(best.tp1 - best.entry) / risk).toFixed(1) : '0.0';
         const session = getSession();
 
         // FIX #27: a signal below the bar is analysis, not a trade. The JSON still
