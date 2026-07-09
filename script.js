@@ -353,10 +353,14 @@ function checkZoneReaction(data, zone, direction) {
         const wickedIntoZone = last.l <= zone.high && last.l >= zone.low, closedAbove = last.c > zone.high;
         const bullishEngulf = last.c > last.o && prev.c < prev.o && last.c > prev.h;
         const bullishPinbar = (last.c - last.l) > Math.abs(last.c - last.o) * 2 && last.c > last.o;
-        const rejectionInZone = wickedIntoZone && (closedAbove || bullishPinbar || last.c > last.o);
+        // MSNR Fakeout / Sweep
+        const msnrFakeout = last.l < zone.low && last.c > zone.low && bullishPinbar;
+        const rejectionInZone = (wickedIntoZone && (closedAbove || bullishPinbar || last.c > last.o)) || msnrFakeout;
         const followThrough = last.c > prev.c && prev.c > prev2.c && last.c > last.o;
+        if (msnrFakeout && followThrough) return { confirmed: true, type: 'MSNR fakeout + momentum', strength: 'STRONG' };
         if (bullishEngulf && followThrough) return { confirmed: true, type: 'bullish engulf + momentum', strength: 'STRONG' };
         if (bullishEngulf) return { confirmed: true, type: 'bullish engulf', strength: 'STRONG' };
+        if (msnrFakeout) return { confirmed: true, type: 'MSNR fakeout sweep', strength: 'STRONG' };
         if (rejectionInZone && followThrough) return { confirmed: true, type: 'zone rejection + momentum', strength: 'MODERATE' };
         if (rejectionInZone) return { confirmed: true, type: 'zone rejection wick' , strength: 'MODERATE' };
         if (last.c > prev.c && last.c > prev2.c && last.c > last.o) return { confirmed: true, type: 'momentum shift', strength: 'WEAK' };
@@ -365,10 +369,14 @@ function checkZoneReaction(data, zone, direction) {
         const wickedIntoZone = last.h >= zone.low && last.h <= zone.high, closedBelow = last.c < zone.low;
         const bearishEngulf = last.c < last.o && prev.c > prev.o && last.c < prev.l;
         const bearishPinbar = (last.h - last.c) > Math.abs(last.c - last.o) * 2 && last.c < last.o;
-        const rejectionInZone = wickedIntoZone && (closedBelow || bearishPinbar || last.c < last.o);
+        // MSNR Fakeout / Sweep
+        const msnrFakeout = last.h > zone.high && last.c < zone.high && bearishPinbar;
+        const rejectionInZone = (wickedIntoZone && (closedBelow || bearishPinbar || last.c < last.o)) || msnrFakeout;
         const followThrough = last.c < prev.c && prev.c < prev2.c && last.c < last.o;
+        if (msnrFakeout && followThrough) return { confirmed: true, type: 'MSNR fakeout + momentum', strength: 'STRONG' };
         if (bearishEngulf && followThrough) return { confirmed: true, type: 'bearish engulf + momentum', strength: 'STRONG' };
         if (bearishEngulf) return { confirmed: true, type: 'bearish engulf', strength: 'STRONG' };
+        if (msnrFakeout) return { confirmed: true, type: 'MSNR fakeout sweep', strength: 'STRONG' };
         if (rejectionInZone && followThrough) return { confirmed: true, type: 'zone rejection + momentum', strength: 'MODERATE' };
         if (rejectionInZone) return { confirmed: true, type: 'zone rejection wick' , strength: 'MODERATE' };
         if (last.c < prev.c && last.c < prev2.c && last.c < last.o) return { confirmed: true, type: 'momentum shift', strength: 'WEAK' };
@@ -1167,9 +1175,14 @@ function calculateCRTConfidence(data) {
     else if (data.tbsQuality.grade === 'C') score += 10;
     else score += 5;
 
-    if (data.isNearMSNR) score += 15;
+    if (data.isNearMSNR) score += 20;
     else if (data.msnrDistance < 0.5) score += 10;
     else score += 5;
+
+    // Alchemist specific MSNR Reaction Score
+    if (data.zoneReaction && data.zoneReaction.type.includes('MSNR fakeout')) {
+        score += 20; // Massive confidence boost for identifying fakeouts / sweeps in MSNR
+    }
 
     if (data.session.session === 'LONDON KZ' || data.session.session === 'NEW_YORK KZ') score += 15;
     else if (data.session.isKillzone) score += 10;
