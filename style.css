@@ -376,7 +376,7 @@ body {
     border-radius: 12px;
     color: white;
     font-size: 13px;
-    z-index: 1000;
+    z-index: 10001;
     max-width: 90%;
     text-align: center;
 }
