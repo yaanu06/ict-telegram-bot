@@ -577,12 +577,23 @@ function isHTFPremiumDiscount(htfData, direction) {
 }
 function getSession() {
     const now = new Date(); const hour = now.getUTCHours(); const min = now.getUTCMinutes(); const time = hour + min / 60;
-    let s = { session: 'OFF-HOURS', multiplier: 0.5, emoji: '🌙', isKillzone: false, isSilverBullet: false };
-    if (time >= 0 && time < 4) s = { session: 'ASIA KZ', multiplier: 0.8, emoji: '🌏', isKillzone: true };
-    else if (time >= 7 && time < 10) s = { session: 'LONDON KZ', multiplier: 1.1, emoji: '🇬🇧', isKillzone: true };
-    else if (time >= 12 && time < 15) s = { session: 'NEW_YORK KZ', multiplier: 1.2, emoji: '🇺🇸', isKillzone: true };
-    else if (time >= 15 && time < 17) s = { session: 'LON-CLOSE KZ', multiplier: 0.9, emoji: '🌆', isKillzone: true };
+    let estHour = hour - 4;
+    if (estHour < 0) estHour += 24;
+    let s = { session: 'OFF-HOURS', multiplier: 0.5, emoji: '🌙', isKillzone: false, isSilverBullet: false, isMacro: false };
+    if (time >= 0 && time < 4) s = { ...s, session: 'ASIA KZ', multiplier: 0.8, emoji: '🌏', isKillzone: true };
+    else if (time >= 7 && time < 10) s = { ...s, session: 'LONDON KZ', multiplier: 1.3, emoji: '🇬🇧', isKillzone: true };
+    else if (time >= 12 && time < 15) s = { ...s, session: 'NEW_YORK KZ', multiplier: 1.2, emoji: '🇺🇸', isKillzone: true };
+    else if (time >= 15 && time < 17) s = { ...s, session: 'LON-CLOSE KZ', multiplier: 0.9, emoji: '🌆', isKillzone: true };
     if ((time >= 8 && time < 9) || (time >= 15 && time < 16) || (time >= 19 && time < 20)) { s.isSilverBullet = true; s.multiplier += 0.2; s.emoji = '🏹'; s.session += ' + SB'; }
+    const estTime = estHour + min / 60;
+    const isAM_Macro1 = (estTime >= 9.83 && estTime <= 10.16);
+    const isAM_Macro2 = (estTime >= 10.83 && estTime <= 11.16);
+    const isPM_Macro1 = (estTime >= 11.83 && estTime <= 12.16);
+    const isPM_Macro2 = (estTime >= 13.16 && estTime <= 13.83);
+    const isClose_Macro = (estTime >= 15.25 && estTime <= 15.75);
+    if (isAM_Macro1 || isAM_Macro2 || isPM_Macro1 || isPM_Macro2 || isClose_Macro) {
+        s.isMacro = true; s.multiplier += 0.3; s.emoji = '🔥'; s.session += ' (MACRO)';
+    }
     return s;
 }
 // ============================================
@@ -771,7 +782,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const bosConfirmed = mssData !== null && mssData.displaced === true;
         const displacement = detectDisplacement(entryData, sig.dir);
         const hasDisplacement = displacement.detected;
-        const chochDetected = checkCHoCH(entryData);
         const htfSupportLevels = swingsData.L.map(sw => ({ price: sw.p, strength: 3 }));
         const htfResistanceLevels = swingsData.H.map(sw => ({ price: sw.p, strength: 3 }));
         const amd = analyzeAMD(htfData['1H'] || entryData);
@@ -818,6 +828,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         }
 
         const evaluateZone = async (zone) => {
+            const chochDetected = checkCHoCH(entryData, zone.low, zone.high);
+            const inducementSwept = detectInducement(entryData, zone.low, zone.high, sig.dir);
             const precisionEntry = getPrecisionEntryCRT(entryData, zone, sig.dir, crtRange, entryATR);
 
             // FIX #15/#22: pending-order semantics - entry on the retrace side of
@@ -867,7 +879,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 ltfPullbackIntoZone: entryTiming.valid || false,
                 ltfDisplacementCandle: hasDisplacement,
                 ltfCompressionDetected: crtState?.isContracting || false,
-                sessionValid: validateTradingSession()
+                sessionValid: getSession().isKillzone || getSession().isMacro || false,
+                inducementSwept: inducementSwept
             };
             const setupScore = calculateSetupScore(sig.dir, context);
             const entryInfo = {
@@ -1770,6 +1783,10 @@ function calculateSetupScore(direction, context) {
     if (context.ltfPullbackIntoZone) score += 1;
     if (context.ltfDisplacementCandle) score += 1;
     if (context.sessionValid) score += 1;
+    const sessionData = getSession();
+    if (sessionData.isMacro) score += 3;
+    if (context.inducementSwept) score += 3;
+    if (context.ltfDisplacementCandle && context.ltfPullbackIntoZone) score += 2;
     return score;
 }
 
@@ -1854,11 +1871,40 @@ function calculatePositionSize(pipsRisk, accountBalance, riskPercent) {
 }
 
 // ===== CHECK CHoCH (Change of Character) =====
-function checkCHoCH(data) {
-    if (data.length < 3) return false;
+function checkCHoCH(data, zoneLow, zoneHigh) {
+    if (data.length < 5) return false;
+    if (!zoneLow || !zoneHigh) {
+        const last = data[data.length - 1];
+        const prev = data[data.length - 2];
+        if (prev.c < prev.o && last.c > last.o && last.c > prev.h) return true;
+        if (prev.c > prev.o && last.c < last.o && last.c < prev.l) return true;
+        return false;
+    }
+    const last5 = data.slice(-5);
+    const zoneTapped = last5.some(c => (c.l <= zoneHigh && c.h >= zoneLow));
+    if (!zoneTapped) return false;
     const last = data[data.length - 1];
     const prev = data[data.length - 2];
     if (prev.c < prev.o && last.c > last.o && last.c > prev.h) return true;
     if (prev.c > prev.o && last.c < last.o && last.c < prev.l) return true;
     return false;
+}
+
+// ===== THE TRADING GEEK: INDUCEMENT FILTER =====
+function detectInducement(data, zoneLow, zoneHigh, direction) {
+    if (!data || data.length < 15) return true;
+    const swings = findSwings(data, 2);
+    if (direction === 'BUY') {
+        const recentLows = swings.L.filter(s => s.p >= zoneLow * 0.999 && s.p <= zoneHigh * 1.015);
+        if (recentLows.length === 0) return true;
+        const lastCandles = data.slice(-5);
+        const lowestRecent = Math.min(...lastCandles.map(c => c.l));
+        return recentLows.some(s => lowestRecent <= s.p + (s.p * 0.0005));
+    } else {
+        const recentHighs = swings.H.filter(s => s.p <= zoneHigh * 1.001 && s.p >= zoneLow * 0.985);
+        if (recentHighs.length === 0) return true;
+        const lastCandles = data.slice(-5);
+        const highestRecent = Math.max(...lastCandles.map(c => c.h));
+        return recentHighs.some(s => highestRecent >= s.p - (s.p * 0.0005));
+    }
 }
