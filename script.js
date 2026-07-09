@@ -534,6 +534,48 @@ function calcTakeProfits(dir, entry, sl) {
         return { tp1: entry - risk * rr1, tp2: entry - risk * rr2, tp3: entry - risk * rr3, rrUsed: rr1 };
     }
 }
+
+function recomputeTradeLevels(best, zoneLow, zoneHigh, price, currentPair) {
+    const settings = getMarketSettings(currentPair || pair);
+    const prec = settings.prec || 5;
+    const factor = Math.pow(10, prec);
+    const entry = Math.round((((zoneLow + zoneHigh) / 2) * factor)) / factor;
+    const zone = { ...(best.zone || {}), low: zoneLow, high: zoneHigh, p: entry };
+    const stopATR = best?.twelveIndicators?.atr_api || best?.entryATR || (best?.entryData?.length ? atr(best.entryData, 14) : 0);
+    const slResult = calcStopLoss(best.entryData || [], best.direction, entry, zone, best.msnr, best.timeframe || best.entryTF, { ...(best.twelveIndicators || {}), atr_api: stopATR }, currentPair || pair);
+    const tps = calcTakeProfits(best.direction, entry, slResult.price);
+    const risk = Math.abs(entry - slResult.price);
+    const rrDisplay = risk > 0 ? (Math.abs(tps.tp1 - entry) / risk).toFixed(1) : '0.0';
+    const invalidationPrice = best.direction === 'BUY' ? slResult.price * 0.998 : slResult.price * 1.002;
+    const entryATR = best?.entryATR || stopATR || 1;
+    const entryDistance = best.direction === 'BUY' ? price - entry : entry - price;
+    return {
+        entry,
+        zone,
+        sl: slResult.price,
+        tp1: tps.tp1,
+        tp2: tps.tp2,
+        tp3: tps.tp3,
+        rrUsed: tps.rrUsed,
+        slResult,
+        invalidationPrice,
+        risk,
+        rrDisplay,
+        entryDistanceATR: entryDistance / entryATR,
+        entryDistancePct: (entryDistance / price) * 100,
+        tradeLevels: {
+            entry,
+            stopLoss: slResult.price,
+            takeProfit: tps.tp1,
+            partialTP: tps.tp2,
+            invalidation: invalidationPrice,
+            breakeven: entry,
+            pipsRisk: +((risk / settings.pipSize).toFixed(1)),
+            pipsReward: +((Math.abs(tps.tp1 - entry) / settings.pipSize).toFixed(1)),
+            riskReward: tps.rrUsed
+        }
+    };
+}
 function score(data,price,twelveIndicators){
     const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl),fv=detectFVG(data),ms=detectMSS(data),bk=detectBreakers(data);
     const e20=ema(cl,20),e50=ema(cl,50),cE20=e20[e20.length-1],cE50=e50[e50.length-1];
@@ -870,9 +912,10 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const entryDistanceATR = entryDistance / entryATR;
             const entryDistancePct = (entryDistance / price) * 100;
 
-            // FIX #22: the SL engine also anchors its buffers to the entry-TF ATR
-            // (TF-keyed base buffers keep the scan-TF character of the stop).
-            const slResult = calcStopLoss(entryData, sig.dir, precisionEntry.entry, zone, msnr, tfToAnalyze, { ...(twelveIndicators || {}), atr_api: entryATR }, pair);
+            // Use Twelve Data ATR for stop placement when available; fall back to the
+            // local entry-TF ATR only if the API value is missing.
+            const stopATR = twelveIndicators?.atr_api || entryATR;
+            const slResult = calcStopLoss(entryData, sig.dir, precisionEntry.entry, zone, msnr, tfToAnalyze, { ...(twelveIndicators || {}), atr_api: stopATR }, pair);
             const finalSL = slResult.price;
             const tps = calcTakeProfits(sig.dir, precisionEntry.entry, finalSL);
             const rrUsed = tps.rrUsed;
@@ -1014,6 +1057,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 slResult, invalidationPrice, confBreakdown: confLog,
                 entryDistanceATR, entryDistancePct, entryATR,
                 rrUsed, rs, apiATR,
+                entryData,
                 fvgsAll: fvgsAll || [],
                 obsAll: obsAll || [],
                 breakersAll: breakersAll || [],
@@ -1478,7 +1522,7 @@ async function runAutoScan() {
             const candidate = tier.find(r => r.timeframe === aiSelectedTF);
             if (candidate) { best = candidate; showNotif(`🤖 AI selected ${aiSelectedTF} setup over ${higherResults.concat(lowerResults)[0]?.timeframe || ''}`, 'info'); }
         }
-        const prec = getPrec(pair), risk = Math.abs(best.entry - best.sl), rr = best.rrUsed || 4, rrDisplay = (Math.abs(best.tp1 - best.entry) / risk).toFixed(1), st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
+        const prec = getPrec(pair), st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
         const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction); best.confidence = Math.max(best.confidence - htfConfluence.penalty, 10); if (htfConfluence.penalty) best.confBreakdown?.push({ adj: -htfConfluence.penalty, reason: `HTF confluence ${htfConfluence.level} (1D=${htfConfluence.daily}, 4H=${htfConfluence.h4})` });
         let aiConviction = 'MEDIUM', aiApproved = true, aiConfAdj = 0, executionDecision = best.entryReady ? 'enter_now' : 'wait_for_reaction', waitCondition = 'Wait for engulf/pinbar at zone', aiInvalidation = best.invalidationPrice;
         let finalEntry = best.entry, finalZoneLow = best.zone.low, finalZoneHigh = best.zone.high, aiEntryLogic = '', aiSlLogic = '', aiKeyReason = '', aiRiskWarning = '', aiOutcomes = [];
@@ -1506,6 +1550,15 @@ async function runAutoScan() {
                     best.confBreakdown?.push({ adj: -25, reason: `\ud83e\udd16 AI REJECTED: ${aiKeyReason || aiRiskWarning || 'setup failed audit'}` });
                 }
             } }
+        if (finalEntry !== best.entry || finalZoneLow !== best.zone.low || finalZoneHigh !== best.zone.high) {
+            const recomputed = recomputeTradeLevels(best, finalZoneLow, finalZoneHigh, price, pair);
+            finalEntry = recomputed.entry;
+            finalZoneLow = recomputed.zone.low;
+            finalZoneHigh = recomputed.zone.high;
+            best = { ...best, ...recomputed };
+            if (!aiResult?.trade_signal_Theghostmachine?.invalidation_price) aiInvalidation = recomputed.invalidationPrice;
+        }
+        const risk = Math.abs(best.entry - best.sl), rr = best.rrUsed || 4, rrDisplay = risk > 0 ? (Math.abs(best.tp1 - best.entry) / risk).toFixed(1) : '0.0';
         const session = getSession();
 
         // FIX #27: a signal below the bar is analysis, not a trade. The JSON still

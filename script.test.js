@@ -187,6 +187,40 @@ describe('getPrecisionEntryCRT CE placement', () => {
     });
 });
 
+describe('recomputeTradeLevels', () => {
+    const context = getContext();
+    const base = {
+        direction: 'SELL',
+        zone: { low: 4130, high: 4131, p: 4130.5, src: 'MSNR', confluence: 'x', cc: 2, quality: 'A', hasImbalance: true },
+        msnr: { allResistances: [] },
+        timeframe: '5M',
+        entryTF: '5M',
+        entryATR: 20,
+        entryData: [
+            { o: 4120, h: 4121, l: 4119, c: 4120 },
+            { o: 4121, h: 4122, l: 4120, c: 4121 },
+            { o: 4122, h: 4123, l: 4121, c: 4122 },
+            { o: 4123, h: 4124, l: 4122, c: 4123 },
+            { o: 4124, h: 4125, l: 4123, c: 4124 }
+        ]
+    };
+
+    it('keeps a refined SELL stop above the refined entry', () => {
+        const r = context.recomputeTradeLevels({ ...base, twelveIndicators: { atr_api: 2 } }, 4134.97, 4136.46, 4123.8814, 'XAU/USD');
+        expect(r.entry).toBe(4135.72);
+        expect(r.sl).toBeGreaterThan(r.entry);
+        expect(r.sl).toBe(4137.46);
+        expect(r.slResult.reason).toBe('Above Zone');
+    });
+
+    it('prefers Twelve Data ATR over the wider local ATR when recalculating the stop', () => {
+        const withApiAtr = context.recomputeTradeLevels({ ...base, twelveIndicators: { atr_api: 2 } }, 4134.97, 4136.46, 4123.8814, 'XAU/USD');
+        const withoutApiAtr = context.recomputeTradeLevels({ ...base, twelveIndicators: {} }, 4134.97, 4136.46, 4123.8814, 'XAU/USD');
+        expect(withApiAtr.sl).toBe(4137.46);
+        expect(withoutApiAtr.sl).toBe(4139.46);
+    });
+});
+
 describe('orderCrossedInCandles (missed-fill detection)', () => {
     const context = getContext();
     const mkCandle = (minsAgo, l, h) => ({ t: new Date(Date.now() - minsAgo * 60000).toISOString(), o: (l + h) / 2, h, l, c: (l + h) / 2, v: 1e6 });
