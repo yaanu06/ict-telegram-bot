@@ -383,7 +383,7 @@ function checkZoneReaction(data, zone, direction) {
         return { confirmed: false, type: 'none', strength: 'NONE' };
     }
 }
-function checkZoneMagnetism(entryData, price, entry, direction) {
+function checkZoneMagnetism(entryData, price, entry, direction, zone = null) {
     const imbalances = findImbalances(entryData), sweeps = detectLiquiditySweeps(entryData, price);
     let score = 0; const checks = [];
     if (direction === 'BUY') { const pullingImbalances = imbalances.filter(i => i.type === 'BEARISH' && i.low > entry && i.high < price); if (pullingImbalances.length > 0) { score += 30; checks.push({name: 'Imbalance pulling toward zone', passed: true, detail: `${pullingImbalances.length} bearish imbalance(s) magnet`}); } else { checks.push({name: 'Imbalance pulling toward zone', passed: false, detail: 'No imbalance magnet'}); } }
@@ -400,6 +400,22 @@ function checkZoneMagnetism(entryData, price, entry, direction) {
     else if (distancePct < 0.8) { score += 10; checks.push({name: 'Zone proximity', passed: true, detail: `Reachable (${distancePct.toFixed(2)}%)`}); }
     else if (distancePct < 2.0) { score += 5; checks.push({name: 'Zone proximity', passed: true, detail: `Extended (${distancePct.toFixed(2)}%)`}); }
     else { checks.push({name: 'Zone proximity', passed: false, detail: `Very far (${distancePct.toFixed(2)}%)`}); }
+    if (zone) {
+        const zoneConfluence = typeof zone.confluence === 'string' ? zone.confluence : '';
+        const isPrimaryMethodZone = zone.src === 'MSNR' || zoneConfluence.includes('MSNR');
+        if (isPrimaryMethodZone && zone.cc >= 2) {
+            score += 15;
+            checks.push({name: 'Primary-method zone', passed: true, detail: `${zone.src} ${zoneConfluence}`});
+        } else if (zone.quality === 'A') {
+            score += 8;
+            checks.push({name: 'High-quality zone', passed: true, detail: 'A-grade zone nearby'});
+        } else if (zone.quality === 'B' && zone.cc >= 2) {
+            score += 5;
+            checks.push({name: 'High-quality zone', passed: true, detail: 'B-grade multi-confluence zone nearby'});
+        } else {
+            checks.push({name: 'High-quality zone', passed: false, detail: 'Single-confluence or weak zone'});
+        }
+    }
     const displacement = detectDisplacement(entryData, direction);
     if (displacement.detected) { score += 10; checks.push({name: 'Displacement momentum', passed: true, detail: 'Detected'}); } else { checks.push({name: 'Displacement momentum', passed: false, detail: 'None'}); }
     const magnetism = score >= 60 ? 'STRONG' : (score >= 35 ? 'MODERATE' : 'WEAK');
@@ -864,7 +880,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const entryTiming = checkEntryTiming(entryData, precisionEntry.entry, sig.dir);
             const zoneReaction = checkZoneReaction(entryData, zone, sig.dir);
             const zoneTouches = countZoneTouches(entryData, zone, sig.dir);
-            const magnetism = checkZoneMagnetism(entryData, price, precisionEntry.entry, sig.dir);
+            const magnetism = checkZoneMagnetism(entryData, price, precisionEntry.entry, sig.dir, zone);
             // FIX #16: nothing pulling price toward the zone -> limit never fills -> skip
             if (!magnetism.likelyToReach) return null;
             const freshness = checkZoneFreshness(entryData, zone, sig.dir);
