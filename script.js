@@ -249,7 +249,12 @@ const ema=(p,n)=>{const m=2/(n+1);let e=[],sum=0;for(let i=0;i<p.length;i++){if(
 const rsi=(p,n=14)=>{if(p.length<n+1)return 50;let g=0,l=0;for(let i=1;i<=n;i++){const c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;for(let i=n+1;i<p.length;i++){const c=p[i]-p[i-1];ag=(ag*(n-1)+(c>0?c:0))/n;al=(al*(n-1)+(c<0?-c:0))/n;}return al===0?100:100-(100/(1+ag/al));};
 const atr=(d,n=14)=>{let t=[];for(let i=1;i<d.length;i++)t.push(Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c)));return t.slice(-n).reduce((a,b)=>a+b,0)/n;};
 // FIX #8: bear FVG midpoint was (next.h+next.l)/2 — a bear gap spans next.h..prev.l, so midpoint is (next.h+prev.l)/2
-function detectFVG(d){let f=[],active=[];const len=d.length;for(let i=1;i<len-1;i++){const next=d[i+1];if(active.length>0){let keep=0;for(let k=0;k<active.length;k++){let g=active[k];if(g.type==='bull'){if(next.l<=g.h && next.l>=g.l)g.fresh=false;else active[keep++]=g;}else{if(next.h>=g.l && next.h<=g.h)g.fresh=false;else active[keep++]=g;}}active.length=keep;}const prev=d[i-1];const thresh=next.c*0.0005;if(prev.h<next.l && next.l-prev.h>thresh){let g={type:'bull',l:prev.h,h:next.l,m:(prev.h+next.l)/2,fresh:true};f.push(g);active.push(g);}if(prev.l>next.h && prev.l-next.h>thresh){let g={type:'bear',l:next.h,h:prev.l,m:(next.h+prev.l)/2,fresh:true};f.push(g);active.push(g);}}return f;}
+// FIX: bull FVG is only mitigated when a candle CLOSES below its bottom (g.l);
+// a wick that enters the gap but closes above is a valid ICT test, not mitigation.
+// Similarly a bear FVG is mitigated only when a close is above its top (g.h).
+// The old code marked FVGs stale on any wick touch, so a zone that price was
+// testing (the expected entry signal) was immediately excluded.
+function detectFVG(d){let f=[],active=[];const len=d.length;for(let i=1;i<len-1;i++){const next=d[i+1];if(active.length>0){let keep=0;for(let k=0;k<active.length;k++){let g=active[k];if(g.type==='bull'){if(next.c<g.l)g.fresh=false;else active[keep++]=g;}else{if(next.c>g.h)g.fresh=false;else active[keep++]=g;}}active.length=keep;}const prev=d[i-1];const thresh=next.c*0.0005;if(prev.h<next.l && next.l-prev.h>thresh){let g={type:'bull',l:prev.h,h:next.l,m:(prev.h+next.l)/2,fresh:true};f.push(g);active.push(g);}if(prev.l>next.h && prev.l-next.h>thresh){let g={type:'bear',l:next.h,h:prev.l,m:(next.h+prev.l)/2,fresh:true};f.push(g);active.push(g);}}return f;}
 function findSwings(d,lb=3){let H=[],L=[],h=d.map(c=>c.h),l=d.map(c=>c.l);for(let i=lb;i<h.length-lb;i++){let iH=true,iL=true;for(let j=1;j<=lb;j++){if(h[i]<=h[i-j]||h[i]<=h[i+j])iH=false;if(l[i]>=l[i-j]||l[i]>=l[i+j])iL=false;}if(iH)H.push({p:h[i],i});if(iL)L.push({p:l[i],i});}return{H,L};}
 function detectMSS(d){if(d.length<21)return null;let h=d.map(c=>c.h),l=d.map(c=>c.l),c=d.map(c=>c.c),rH=Math.max(...h.slice(-21,-1)),rL=Math.min(...l.slice(-21,-1)),cP=c[c.length-1],dis=detectDisplacement(d,cP>rH?'BUY':'SELL');if(cP>rH && dis.detected)return{type:'BULL',level:rH,displaced:true};if(cP<rL && dis.detected)return{type:'BEAR',level:rL,displaced:true};if(cP>rH)return{type:'BULL',level:rH,displaced:false};if(cP<rL)return{type:'BEAR',level:rL,displaced:false};return null;}
 function detectBreakers(d){let b=[],s=findSwings(d);for(let i=5;i<d.length-5;i++){let c=d[i];if(c.c>c.o){let r=s.H.find(h=>h.i<i && h.p<c.c);if(r)b.push({type:'BULL',p:r.p});}if(c.c<c.o){let sp=s.L.find(l=>l.i<i && l.p>c.c);if(sp)b.push({type:'BEAR',p:sp.p});}}return b;}
@@ -411,13 +416,21 @@ function checkZoneMagnetism(entryData, price, entry, direction, zone = null) {
         const zoneConfluence = typeof zone.confluence === 'string' ? zone.confluence : '';
         const isPrimaryMethodZone = zone.src === 'MSNR' || zoneConfluence.includes('MSNR');
         if (isPrimaryMethodZone && zone.cc >= 2) {
-            score += 15;
+            // FIX: raised from +15 to +25 so MSNR primary-method zones are at least
+            // as reachable as A-quality FVG/OB zones. Previously MSNR got +15 while
+            // A-quality got +25, meaning MSNR zones failed the 35 likelyToReach gate
+            // in ranging markets (no EMA alignment or sweeps to add points) even
+            // though MSNR is the primary methodology of the strategy.
+            score += 25;
             checks.push({name: 'Primary-method zone', passed: true, detail: `${zone.src} ${zoneConfluence}`});
         } else if (zone.quality === 'A') {
-            score += 8;
+            // FIX: raised from +8 to +25 so A-grade FVG/OB zones reach likelyToReach
+            // even in ranging markets where EMA and sweeps don't add points.
+            score += 25;
             checks.push({name: 'High-quality zone', passed: true, detail: 'A-grade zone nearby'});
         } else if (zone.quality === 'B' && zone.cc >= 2) {
-            score += 5;
+            // FIX: raised from +5 to +25 (same reasoning as A-grade above).
+            score += 25;
             checks.push({name: 'High-quality zone', passed: true, detail: 'B-grade multi-confluence zone nearby'});
         } else {
             checks.push({name: 'High-quality zone', passed: false, detail: 'Single-confluence or weak zone'});
@@ -428,7 +441,12 @@ function checkZoneMagnetism(entryData, price, entry, direction, zone = null) {
     const magnetism = score >= 60 ? 'STRONG' : (score >= 35 ? 'MODERATE' : 'WEAK');
     return { magnetism, score, maxScore: 100, checks, likelyToReach: score >= 35, summary: `Zone magnetism: ${magnetism} (${score}/100)` };
 }
-async function checkHTFConfluenceAsync(dailyData, h4Data, entryDirection) { const dailyDir = await getQuoteDirection('1D', dailyData), h4Dir = await getQuoteDirection('4H', h4Data), entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH'; if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 }; if (dailyDir === entryDir || h4Dir === entryDir) return { level: 'PARTIAL', daily: dailyDir, h4: h4Dir, penalty: dailyDir === entryDir ? 8 : 15, alignedTF: dailyDir === entryDir ? '1D' : '4H' }; if (dailyDir === 'NEUTRAL' && h4Dir === 'NEUTRAL') return { level: 'NEUTRAL', daily: dailyDir, h4: h4Dir, penalty: 5 }; return { level: 'CONFLICT', daily: dailyDir, h4: h4Dir, penalty: 30 }; }
+async function checkHTFConfluenceAsync(dailyData, h4Data, entryDirection) { const dailyDir = await getQuoteDirection('1D', dailyData), h4Dir = await getQuoteDirection('4H', h4Data), entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH', againstDir = entryDirection === 'BUY' ? 'BEARISH' : 'BULLISH'; if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 }; if (dailyDir === entryDir || h4Dir === entryDir) return { level: 'PARTIAL', daily: dailyDir, h4: h4Dir, penalty: dailyDir === entryDir ? 8 : 15, alignedTF: dailyDir === entryDir ? '1D' : '4H' }; if (dailyDir === 'NEUTRAL' && h4Dir === 'NEUTRAL') return { level: 'NEUTRAL', daily: dailyDir, h4: h4Dir, penalty: 5 }; // FIX: one NEUTRAL + one opposing is not a full CONFLICT. True CONFLICT requires
+// BOTH 1D and 4H to actively oppose the trade direction. When one TF is NEUTRAL
+// (e.g. from an API failure/rate-limit that returned no data), penalise moderately
+// as PARTIAL (-12) instead of the full CONFLICT penalty (-30) that was killing valid
+// setups whenever the daily data fetch failed mid-scan.
+if ((dailyDir === 'NEUTRAL' && h4Dir === againstDir) || (dailyDir === againstDir && h4Dir === 'NEUTRAL')) return { level: 'PARTIAL', daily: dailyDir, h4: h4Dir, penalty: 12, alignedTF: null }; return { level: 'CONFLICT', daily: dailyDir, h4: h4Dir, penalty: 30 }; }
 function calculateMSNR(data,currentPrice){const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);const period=Math.min(data.length,20);const rH=Math.max(...highs.slice(-period)),rL=Math.min(...lows.slice(-period)),rC=closes[closes.length-1];const pp=(rH+rL+rC)/3;const s1=pp*2-rH,s2=pp-(rH-rL),s3=rL-2*(rH-pp);const r1=pp*2-rL,r2=pp+(rH-rL),r3=rH+2*(pp-rL);const ms1=(s1+s2)/2,ms2=(pp+s1)/2,mr1=(r1+r2)/2,mr2=(pp+r1)/2;const allS=[s1,ms2,ms1,s2,s3].filter(s=>s<currentPrice).sort((a,b)=>b-a);const allR=[r1,mr2,mr1,r2,r3].filter(r=>r>currentPrice).sort((a,b)=>a-b);return{pivot:pp,supports:{S1:s1,S2:s2,S3:s3,MS1:ms1,MS2:ms2},resistances:{R1:r1,R2:r2,R3:r3,MR1:mr1,MR2:mr2},nearestSupport:allS[0]||null,nearestResistance:allR[0]||null,allSupports:allS,allResistances:allR};}
 function findPrecisionEntry(data,price,direction,msnr){
     const a=atr(data,14),fvgs=detectFVG(data),breakers=detectBreakers(data),swings=findSwings(data,4),imbalances=findImbalances(data),orderBlocks=detectOrderBlocks(data,direction);
