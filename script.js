@@ -542,7 +542,7 @@ function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, cu
         return { price: best.price, reason: best.reason, distance: best.dist };
     }
 
-    const finalDist = Math.min(apiATR * 1.0, maxSLD);
+    const finalDist = Math.min(apiATR * 0.6, maxSLD);
     const finalSL = dir === 'BUY' ? entry - finalDist : entry + finalDist;
     return { price: finalSL, reason: 'ATR Baseline', distance: finalDist };
 }
@@ -940,6 +940,10 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             if (entryDistance <= 0 || entryDistance < entryATR * 0.2) return null;
             const entryDistanceATR = entryDistance / entryATR;
             const entryDistancePct = (entryDistance / price) * 100;
+            if (entryDistance > entryATR * 3.0) {
+                console.log(`  ❌ Zone too far (${entryDistanceATR.toFixed(1)}x ATR) - skipping`);
+                return null;
+            }
 
             // Use Twelve Data ATR for stop placement when available; fall back to the
             // local entry-TF ATR only if the API value is missing.
@@ -952,10 +956,18 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const entryTiming = checkEntryTiming(entryData, precisionEntry.entry, sig.dir);
             const zoneReaction = checkZoneReaction(entryData, zone, sig.dir);
             const zoneTouches = countZoneTouches(entryData, zone, sig.dir);
+            if (zoneTouches > 0 && !zoneReaction.confirmed) {
+                console.log(`  ⚠️ Zone touched ${zoneTouches}x but no reaction - watch for invalidation`);
+            }
+            const freshness = checkZoneFreshness(entryData, zone, sig.dir);
+            const zoneValid = freshness.fresh || (freshness.partiallyUsed && freshness.violations === 0);
+            if (!zoneValid) {
+                console.log(`  ❌ Zone invalid - used (${freshness.touches} touches, ${freshness.violations} violations)`);
+                return null;
+            }
             const magnetism = checkZoneMagnetism(entryData, price, precisionEntry.entry, sig.dir, zone);
             // FIX #16: nothing pulling price toward the zone -> limit never fills -> skip
             if (!magnetism.likelyToReach) return null;
-            const freshness = checkZoneFreshness(entryData, zone, sig.dir);
             const pathCheck = checkPathClearance(entryData, precisionEntry.entry, tps.tp1, sig.dir);
             const sniperRej = await checkSniperRejection(zone, sig.dir, sniperTF, htfData[sniperTF]);
             const sniperEntry = checkSniperEntry(entryData, price, sig.dir, zone, session);
