@@ -659,6 +659,9 @@ function checkZoneFreshness(data, zone, direction) {
     const fresh = touches <= 2 && violations === 0, partiallyUsed = touches <= 5 && violations <= 1, used = touches > 5 || violations > 1;
     return { fresh, partiallyUsed, used, touches, violations };
 }
+function isZoneValid(freshness) {
+    return freshness.fresh || (freshness.partiallyUsed && freshness.violations === 0);
+}
 function isHTFPremiumDiscount(htfData, direction) {
     if (!htfData || htfData.length < 10) return { inPremiumDiscount: false, value: 'neutral', pct: 0 };
     let high = -Infinity, low = Infinity;
@@ -960,13 +963,13 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 console.log(`  ⚠️ Zone touched ${zoneTouches}x but no reaction - watch for invalidation`);
             }
             const freshness = checkZoneFreshness(entryData, zone, sig.dir);
-            const zoneValid = freshness.fresh || (freshness.partiallyUsed && freshness.violations === 0);
+            const zoneValid = isZoneValid(freshness);
             if (!zoneValid) {
                 console.log(`  ❌ Zone invalid - used (${freshness.touches} touches, ${freshness.violations} violations)`);
                 return null;
             }
             const magnetism = checkZoneMagnetism(entryData, price, precisionEntry.entry, sig.dir, zone);
-            // FIX #16: nothing pulling price toward the zone -> limit never fills -> skip
+            // Reachability gate: nothing pulling price toward the zone -> limit may never fill.
             if (!magnetism.likelyToReach) return null;
             const pathCheck = checkPathClearance(entryData, precisionEntry.entry, tps.tp1, sig.dir);
             const sniperRej = await checkSniperRejection(zone, sig.dir, sniperTF, htfData[sniperTF]);
