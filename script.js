@@ -26,6 +26,8 @@ const SELL_INVALIDATION_FACTOR = 1.002;
 // below 0.1 ATR is typically noise-level proximity; above 5 ATR is usually too far to fill soon.
 const MIN_ENTRY_DISTANCE_ATR_MULTIPLIER = 0.1;
 const MAX_ENTRY_DISTANCE_ATR_MULTIPLIER = 5.0;
+const MAX_ZONE_CANDIDATES_TO_EVALUATE = 6; // Relaxed from 4 while diagnosing over-filtered setup discovery.
+const MAX_ALLOWED_ZONE_VIOLATIONS = 1; // Allow lightly used zones; reject only after repeated invalidating breaches.
 const ANALYSIS_DEBUG_LOGS = true;
 const ENABLE_MAGNETISM_REJECTION = false; // TODO: Set true after gate diagnostics confirm stable fill quality.
 
@@ -668,6 +670,9 @@ function checkZoneFreshness(data, zone, direction) {
 function isZoneValid(freshness) {
     return freshness.fresh || (freshness.partiallyUsed && freshness.violations === 0);
 }
+function isZoneHeavilyViolated(freshness) {
+    return freshness.used && freshness.violations > MAX_ALLOWED_ZONE_VIOLATIONS;
+}
 function isHTFPremiumDiscount(htfData, direction) {
     if (!htfData || htfData.length < 10) return { inPremiumDiscount: false, value: 'neutral', pct: 0 };
     let high = -Infinity, low = Infinity;
@@ -903,14 +908,14 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         }
         const mtf = { direction: sig.dir, strength: alignedCount, trends: mtfTrends };
 
-        // FIX #27: directional bias gate. A setup that fights BOTH the 1D and 4H
-        // trends is dead on arrival - professionals do not fade the full HTF bias.
-        // Rejected here, before zone scoring and before the AI is even consulted.
+        // FIX #27 (TEMP DISABLED): directional bias gate is disabled for diagnostics
+        // to allow setups through even when 1D + 4H trends oppose the signal.
+        // TODO: Re-enable after reviewing relaxed-gate telemetry confirms adequate setup flow.
         const againstDir = sig.dir === 'BUY' ? 'BEARISH' : 'BULLISH';
-        if (mtfTrends['1D'] === againstDir && mtfTrends['4H'] === againstDir) {
-            console.log(`  ❌ ${tfToAnalyze}: ${sig.dir} fights both 1D and 4H (${againstDir}) - no trading against full HTF bias`);
-            return null;
-        }
+        // if (mtfTrends['1D'] === againstDir && mtfTrends['4H'] === againstDir) {
+        //     console.log(`  ❌ ${tfToAnalyze}: ${sig.dir} fights both 1D and 4H...`);
+        //     return null;
+        // }
         const htfArrays = structureData ? findPDArrays(structureData, sig.dir) : [];
         const settings = getMarketSettings(pair);
         const pipSize = settings.pipSize || 0.0001;
@@ -924,17 +929,21 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         // highest-confidence zone wins.
         const topZone = findPrecisionEntry(entryData, price, sig.dir, msnr);
         const allCandidates = (topZone.candidates?.length ? topZone.candidates : [topZone]);
-        let zoneCandidates = allCandidates.filter(z => z.quality !== 'C' && z.cc >= 2).slice(0, 4);
-        if (zoneCandidates.length === 0) {
-            // Fallback: allow any zone with at least 1 confluence so standalone MSNR
-            // levels and lone OBs can be evaluated. The confidence calculation will
-            // naturally score these low (no quality bonus, LOW probability penalty),
-            // so a NO_TRADE result is shown with reasoning rather than silent "no setup".
-            zoneCandidates = allCandidates.filter(z => z.cc >= 1).slice(0, 4);
-        }
+        // Allow ANY zone with at least 1 confluence (more permissive)
+        const minimalConfluenceZones = allCandidates.filter(z => z.cc >= 1);
+        // Fallback: include C-quality/all remaining zones only when no cc>=1 zones exist.
+        const zoneCandidates = (minimalConfluenceZones.length > 0 ? minimalConfluenceZones : allCandidates)
+            .slice(0, MAX_ZONE_CANDIDATES_TO_EVALUATE);
         if (zoneCandidates.length === 0) {
             console.log(`  ❌ ${tfToAnalyze}: no zones found in any direction`);
             return null;
+        }
+        if (ANALYSIS_DEBUG_LOGS) {
+            console.log(`  → All candidates: ${allCandidates.length}`);
+            for (const z of allCandidates) {
+                const candidatePrice = typeof z.p === 'number' ? z.p.toFixed(2) : 'N/A';
+                console.log(`    ${z.src} ${z.confluence} Q:${z.quality} cc:${z.cc} @ ${candidatePrice}`);
+            }
         }
         if (ANALYSIS_DEBUG_LOGS) {
             console.log(`  → Zone candidates: ${zoneCandidates.length}`);
@@ -980,11 +989,11 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 console.log(`  ⚠️ Zone touched ${zoneTouches}x but no reaction - watch for invalidation`);
             }
             const freshness = checkZoneFreshness(entryData, zone, sig.dir);
-            const zoneValid = isZoneValid(freshness);
             if (ANALYSIS_DEBUG_LOGS) {
-                console.log(`  → Zone ${zone.src}: freshness=${freshness.fresh}, partiallyUsed=${freshness.partiallyUsed}, violations=${freshness.violations}, valid=${zoneValid}`);
+                console.log(`  → Zone ${zone.src}: freshness=${freshness.fresh}, partiallyUsed=${freshness.partiallyUsed}, used=${freshness.used}, violations=${freshness.violations}`);
             }
-            if (!zoneValid) {
+            // Only reject if completely used with violations
+            if (isZoneHeavilyViolated(freshness)) {
                 console.log(`  ❌ Zone invalid - used (${freshness.touches} touches, ${freshness.violations} violations)`);
                 return null;
             }
