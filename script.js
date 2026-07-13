@@ -22,6 +22,8 @@ const DEFAULT_ATR_PERIOD = 14;
 const DEFAULT_PRECISION = 5;
 const BUY_INVALIDATION_FACTOR = 0.998;
 const SELL_INVALIDATION_FACTOR = 1.002;
+// Relaxed bounds for pending-entry distance while debugging over-filtering:
+// below 0.1 ATR is typically noise-level proximity; above 5 ATR is usually too far to fill soon.
 const MIN_ENTRY_DISTANCE_ATR_MULTIPLIER = 0.1;
 const MAX_ENTRY_DISTANCE_ATR_MULTIPLIER = 5.0;
 const ANALYSIS_DEBUG_LOGS = true;
