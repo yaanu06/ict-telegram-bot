@@ -25,7 +25,7 @@ const SELL_INVALIDATION_FACTOR = 1.002;
 const MIN_ENTRY_DISTANCE_ATR_MULTIPLIER = 0.1;
 const MAX_ENTRY_DISTANCE_ATR_MULTIPLIER = 5.0;
 const ANALYSIS_DEBUG_LOGS = true;
-const DISABLE_MAGNETISM_REJECTION = true; // TODO: Re-enable after gate diagnostics confirm stable fill quality.
+const ENABLE_MAGNETISM_REJECTION = false; // TODO: Set true after gate diagnostics confirm stable fill quality.
 
 function getTimeframeHierarchy(selectedTF) {
     const hierarchy = {
@@ -937,7 +937,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         if (ANALYSIS_DEBUG_LOGS) {
             console.log(`  → Zone candidates: ${zoneCandidates.length}`);
             for (const z of zoneCandidates) {
-                console.log(`    ${z.src} ${z.confluence} quality:${z.quality} confluenceCount:${z.cc} @ ${z.p.toFixed(2)}`);
+                console.log(`    src:${z.src}, confluence:${z.confluence}, quality:${z.quality}, confluenceCount:${z.cc}, price:${z.p.toFixed(2)}`);
             }
         }
 
@@ -991,7 +991,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 console.log(`  → Zone ${zone.src}: magnetism=${magnetism.score}, likelyToReach=${magnetism.likelyToReach}`);
             }
             // Reachability gate: nothing pulling price toward the zone -> limit may never fill.
-            if (!DISABLE_MAGNETISM_REJECTION && !magnetism.likelyToReach) return null;
+            if (ENABLE_MAGNETISM_REJECTION && !magnetism.likelyToReach) return null;
             const pathCheck = checkPathClearance(entryData, precisionEntry.entry, tps.tp1, sig.dir);
             const sniperRej = await checkSniperRejection(zone, sig.dir, sniperTF, htfData[sniperTF]);
             const sniperEntry = checkSniperEntry(entryData, price, sig.dir, zone, session);
