@@ -937,7 +937,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         if (ANALYSIS_DEBUG_LOGS) {
             console.log(`  → Zone candidates: ${zoneCandidates.length}`);
             for (const z of zoneCandidates) {
-                console.log(`    ${z.src} ${z.confluence} Q:${z.quality} cc:${z.cc} @ ${z.p.toFixed(2)}`);
+                console.log(`    ${z.src} ${z.confluence} quality:${z.quality} confluenceCount:${z.cc} @ ${z.p.toFixed(2)}`);
             }
         }
 
@@ -950,13 +950,15 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             // price, far enough away that price must travel into the zone to trigger.
             // Distances are measured in ENTRY-TF ATR so the gate stays proportional.
             const entryDistance = sig.dir === 'BUY' ? price - precisionEntry.entry : precisionEntry.entry - price;
+            const minGate = entryATR * MIN_ENTRY_DISTANCE_ATR_MULTIPLIER;
+            const maxGate = entryATR * MAX_ENTRY_DISTANCE_ATR_MULTIPLIER;
             if (ANALYSIS_DEBUG_LOGS) {
-                console.log(`  → Zone ${zone.src}: entryDistance=${entryDistance.toFixed(4)}, minGate=${(entryATR * MIN_ENTRY_DISTANCE_ATR_MULTIPLIER).toFixed(4)}, maxGate=${(entryATR * MAX_ENTRY_DISTANCE_ATR_MULTIPLIER).toFixed(4)}`);
+                console.log(`  → Zone ${zone.src}: entryDistance=${entryDistance.toFixed(4)}, minGate=${minGate.toFixed(4)}, maxGate=${maxGate.toFixed(4)}`);
             }
-            if (entryDistance <= 0 || entryDistance < entryATR * MIN_ENTRY_DISTANCE_ATR_MULTIPLIER) return null;
+            if (entryDistance <= 0 || entryDistance < minGate) return null;
             const entryDistanceATR = entryDistance / entryATR;
             const entryDistancePct = (entryDistance / price) * 100;
-            if (entryDistance > entryATR * MAX_ENTRY_DISTANCE_ATR_MULTIPLIER) {
+            if (entryDistance > maxGate) {
                 console.log(`  ❌ Zone too far (${entryDistanceATR.toFixed(1)}x ATR) - skipping`);
                 return null;
             }
