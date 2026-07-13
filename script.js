@@ -22,6 +22,7 @@ const DEFAULT_ATR_PERIOD = 14;
 const DEFAULT_PRECISION = 5;
 const BUY_INVALIDATION_FACTOR = 0.998;
 const SELL_INVALIDATION_FACTOR = 1.002;
+const DISABLE_MAGNETISM_REJECTION = true; // Temporary debugging toggle
 
 function getTimeframeHierarchy(selectedTF) {
     const hierarchy = {
@@ -977,8 +978,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const magnetism = checkZoneMagnetism(entryData, price, precisionEntry.entry, sig.dir, zone);
             console.log(`  → Zone ${zone.src}: magnetism=${magnetism.score}, likelyToReach=${magnetism.likelyToReach}`);
             // Reachability gate: nothing pulling price toward the zone -> limit may never fill.
-            // Temporarily disabled to allow wider candidate evaluation:
-            // if (!magnetism.likelyToReach) return null;
+            if (!DISABLE_MAGNETISM_REJECTION && !magnetism.likelyToReach) return null;
             const pathCheck = checkPathClearance(entryData, precisionEntry.entry, tps.tp1, sig.dir);
             const sniperRej = await checkSniperRejection(zone, sig.dir, sniperTF, htfData[sniperTF]);
             const sniperEntry = checkSniperEntry(entryData, price, sig.dir, zone, session);
