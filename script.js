@@ -22,7 +22,10 @@ const DEFAULT_ATR_PERIOD = 14;
 const DEFAULT_PRECISION = 5;
 const BUY_INVALIDATION_FACTOR = 0.998;
 const SELL_INVALIDATION_FACTOR = 1.002;
-const DISABLE_MAGNETISM_REJECTION = true; // Temporary debugging toggle
+const MIN_ENTRY_DISTANCE_ATR_MULTIPLIER = 0.1;
+const MAX_ENTRY_DISTANCE_ATR_MULTIPLIER = 5.0;
+const ANALYSIS_DEBUG_LOGS = true;
+const DISABLE_MAGNETISM_REJECTION = true; // TODO: Re-enable after gate diagnostics confirm stable fill quality.
 
 function getTimeframeHierarchy(selectedTF) {
     const hierarchy = {
@@ -931,9 +934,11 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             console.log(`  ❌ ${tfToAnalyze}: no zones found in any direction`);
             return null;
         }
-        console.log(`  → Zone candidates: ${zoneCandidates.length}`);
-        for (const z of zoneCandidates) {
-            console.log(`    ${z.src} ${z.confluence} Q:${z.quality} cc:${z.cc} @ ${z.p.toFixed(2)}`);
+        if (ANALYSIS_DEBUG_LOGS) {
+            console.log(`  → Zone candidates: ${zoneCandidates.length}`);
+            for (const z of zoneCandidates) {
+                console.log(`    ${z.src} ${z.confluence} Q:${z.quality} cc:${z.cc} @ ${z.p.toFixed(2)}`);
+            }
         }
 
         const evaluateZone = async (zone) => {
@@ -945,11 +950,13 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             // price, far enough away that price must travel into the zone to trigger.
             // Distances are measured in ENTRY-TF ATR so the gate stays proportional.
             const entryDistance = sig.dir === 'BUY' ? price - precisionEntry.entry : precisionEntry.entry - price;
-            console.log(`  → Zone ${zone.src}: entryDistance=${entryDistance.toFixed(4)}, minGate=${(entryATR * 0.1).toFixed(4)}, maxGate=${(entryATR * 5.0).toFixed(4)}`);
-            if (entryDistance <= 0 || entryDistance < entryATR * 0.1) return null;
+            if (ANALYSIS_DEBUG_LOGS) {
+                console.log(`  → Zone ${zone.src}: entryDistance=${entryDistance.toFixed(4)}, minGate=${(entryATR * MIN_ENTRY_DISTANCE_ATR_MULTIPLIER).toFixed(4)}, maxGate=${(entryATR * MAX_ENTRY_DISTANCE_ATR_MULTIPLIER).toFixed(4)}`);
+            }
+            if (entryDistance <= 0 || entryDistance < entryATR * MIN_ENTRY_DISTANCE_ATR_MULTIPLIER) return null;
             const entryDistanceATR = entryDistance / entryATR;
             const entryDistancePct = (entryDistance / price) * 100;
-            if (entryDistance > entryATR * 5.0) {
+            if (entryDistance > entryATR * MAX_ENTRY_DISTANCE_ATR_MULTIPLIER) {
                 console.log(`  ❌ Zone too far (${entryDistanceATR.toFixed(1)}x ATR) - skipping`);
                 return null;
             }
@@ -970,13 +977,17 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             }
             const freshness = checkZoneFreshness(entryData, zone, sig.dir);
             const zoneValid = isZoneValid(freshness);
-            console.log(`  → Zone ${zone.src}: freshness=${freshness.fresh}, partiallyUsed=${freshness.partiallyUsed}, violations=${freshness.violations}, valid=${zoneValid}`);
+            if (ANALYSIS_DEBUG_LOGS) {
+                console.log(`  → Zone ${zone.src}: freshness=${freshness.fresh}, partiallyUsed=${freshness.partiallyUsed}, violations=${freshness.violations}, valid=${zoneValid}`);
+            }
             if (!zoneValid) {
                 console.log(`  ❌ Zone invalid - used (${freshness.touches} touches, ${freshness.violations} violations)`);
                 return null;
             }
             const magnetism = checkZoneMagnetism(entryData, price, precisionEntry.entry, sig.dir, zone);
-            console.log(`  → Zone ${zone.src}: magnetism=${magnetism.score}, likelyToReach=${magnetism.likelyToReach}`);
+            if (ANALYSIS_DEBUG_LOGS) {
+                console.log(`  → Zone ${zone.src}: magnetism=${magnetism.score}, likelyToReach=${magnetism.likelyToReach}`);
+            }
             // Reachability gate: nothing pulling price toward the zone -> limit may never fill.
             if (!DISABLE_MAGNETISM_REJECTION && !magnetism.likelyToReach) return null;
             const pathCheck = checkPathClearance(entryData, precisionEntry.entry, tps.tp1, sig.dir);
