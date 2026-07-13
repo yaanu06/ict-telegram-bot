@@ -930,6 +930,10 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             console.log(`  ❌ ${tfToAnalyze}: no zones found in any direction`);
             return null;
         }
+        console.log(`  → Zone candidates: ${zoneCandidates.length}`);
+        for (const z of zoneCandidates) {
+            console.log(`    ${z.src} ${z.confluence} Q:${z.quality} cc:${z.cc} @ ${z.p.toFixed(2)}`);
+        }
 
         const evaluateZone = async (zone) => {
             const chochDetected = checkCHoCH(entryData, zone.low, zone.high);
@@ -940,10 +944,11 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             // price, far enough away that price must travel into the zone to trigger.
             // Distances are measured in ENTRY-TF ATR so the gate stays proportional.
             const entryDistance = sig.dir === 'BUY' ? price - precisionEntry.entry : precisionEntry.entry - price;
-            if (entryDistance <= 0 || entryDistance < entryATR * 0.2) return null;
+            console.log(`  → Zone ${zone.src}: entryDistance=${entryDistance.toFixed(4)}, minGate=${(entryATR * 0.1).toFixed(4)}, maxGate=${(entryATR * 5.0).toFixed(4)}`);
+            if (entryDistance <= 0 || entryDistance < entryATR * 0.1) return null;
             const entryDistanceATR = entryDistance / entryATR;
             const entryDistancePct = (entryDistance / price) * 100;
-            if (entryDistance > entryATR * 3.0) {
+            if (entryDistance > entryATR * 5.0) {
                 console.log(`  ❌ Zone too far (${entryDistanceATR.toFixed(1)}x ATR) - skipping`);
                 return null;
             }
@@ -964,13 +969,16 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             }
             const freshness = checkZoneFreshness(entryData, zone, sig.dir);
             const zoneValid = isZoneValid(freshness);
+            console.log(`  → Zone ${zone.src}: freshness=${freshness.fresh}, partiallyUsed=${freshness.partiallyUsed}, violations=${freshness.violations}, valid=${zoneValid}`);
             if (!zoneValid) {
                 console.log(`  ❌ Zone invalid - used (${freshness.touches} touches, ${freshness.violations} violations)`);
                 return null;
             }
             const magnetism = checkZoneMagnetism(entryData, price, precisionEntry.entry, sig.dir, zone);
+            console.log(`  → Zone ${zone.src}: magnetism=${magnetism.score}, likelyToReach=${magnetism.likelyToReach}`);
             // Reachability gate: nothing pulling price toward the zone -> limit may never fill.
-            if (!magnetism.likelyToReach) return null;
+            // Temporarily disabled to allow wider candidate evaluation:
+            // if (!magnetism.likelyToReach) return null;
             const pathCheck = checkPathClearance(entryData, precisionEntry.entry, tps.tp1, sig.dir);
             const sniperRej = await checkSniperRejection(zone, sig.dir, sniperTF, htfData[sniperTF]);
             const sniperEntry = checkSniperEntry(entryData, price, sig.dir, zone, session);
