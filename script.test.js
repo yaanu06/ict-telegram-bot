@@ -24,6 +24,18 @@ const getContext = (overrides = {}) => {
     return context;
 };
 
+const mockDate = (iso) => {
+    const RealDate = Date;
+    return class extends RealDate {
+        constructor(...args) {
+            return args.length ? new RealDate(...args) : new RealDate(iso);
+        }
+        static now() { return new RealDate(iso).getTime(); }
+        static parse(value) { return RealDate.parse(value); }
+        static UTC(...args) { return RealDate.UTC(...args); }
+    };
+};
+
 describe('ema (SMA-seeded)', () => {
     const context = getContext();
 
@@ -251,6 +263,76 @@ describe('orderCrossedInCandles (missed-fill detection)', () => {
         const utcNoZ = new Date(Date.now() - 20 * 60000).toISOString().replace('T', ' ').slice(0, 19);
         const candles = [{ t: utcNoZ, o: 4105, h: 4110, l: 4095, c: 4100, v: 1e6 }];
         expect(context.orderCrossedInCandles(longOrder, candles)).toBe(true);
+    });
+});
+
+describe('Ghost Machine hard rules', () => {
+    const context = getContext();
+
+    it('accepts a fully aligned Silver Bullet BUY setup', () => {
+        const rules = context.getGhostHardRules(
+            'BUY',
+            [{ direction: 'BULLISH' }],
+            { detected: false, type: 'BUY' },
+            { type: 'BULL', displaced: true },
+            { isKillzone: false, isSilverBullet: true },
+            { fresh: false, partiallyUsed: true, violations: 0 },
+            { quality: 'A' }
+        );
+        expect(rules).toEqual({
+            hasSweep: true,
+            hasMSS: true,
+            hasKillzone: true,
+            zoneFresh: true,
+            zoneQuality: true
+        });
+    });
+
+    it('rejects a C-quality zone even when the other rules pass', () => {
+        const rules = context.getGhostHardRules(
+            'SELL',
+            [{ direction: 'BEARISH' }],
+            { detected: false, type: 'SELL' },
+            { type: 'BEAR', displaced: true },
+            { isKillzone: true, isSilverBullet: false },
+            { fresh: true, partiallyUsed: false, violations: 0 },
+            { quality: 'C' }
+        );
+        expect(rules.zoneQuality).toBe(false);
+    });
+});
+
+describe('getSession Silver Bullet timing', () => {
+    it('does not mark 08:15 UTC as Silver Bullet', () => {
+        const context = getContext({ Date: mockDate('2026-01-01T08:15:00Z') });
+        expect(context.getSession().isSilverBullet).toBe(false);
+    });
+
+    it('marks 08:30 UTC as Silver Bullet', () => {
+        const context = getContext({ Date: mockDate('2026-01-01T08:30:00Z') });
+        expect(context.getSession().isSilverBullet).toBe(true);
+    });
+});
+
+describe('loadLimitOrder persistence', () => {
+    it('restores an order without auto-cancelling it', () => {
+        const removeItem = jest.fn();
+        const context = getContext({
+            localStorage: {
+                getItem: () => JSON.stringify({
+                    id: 1,
+                    pair: 'XAU/USD',
+                    signalType: 'LONG',
+                    idealEntry: 2400,
+                    stopLoss: 2390,
+                    createdAt: '2026-01-01T00:00:00Z'
+                }),
+                setItem: jest.fn(),
+                removeItem
+            }
+        });
+        context.loadLimitOrder();
+        expect(removeItem).not.toHaveBeenCalled();
     });
 });
 
