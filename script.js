@@ -1494,6 +1494,7 @@ DISTANCE TO ENTRY: ${(best.entryDistancePct ?? 0).toFixed(2)}% (${(best.entryDis
 RECENT ${best.entryTF} CANDLES (oldest first):
 ${recentCandles || 'n/a'}
 
+WORKING PRINCIPLE: treat the liquidity sweep + order block + FVG sequence as a contextual framework, not a rigid rule to force every setup.
 HARD RULES (evaluate EVERY rule and report a verdict for each in rule_checks):
 1. HTF Confluence level CONFLICT (BOTH 1D and 4H oppose the trade) -> "skip". PARTIAL is NOT conflict - one HTF agreeing (especially 1D) is acceptable; never skip solely for PARTIAL.
 2. This is a pending limit order: if price has NOT reached the zone yet (see DISTANCE TO ENTRY), a missing zone reaction is EXPECTED and is NOT a defect - do not fail this rule or reject for it; "wait_for_reaction" is the natural decision. Only fail if price already tested the zone and failed to react.
