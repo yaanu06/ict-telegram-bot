@@ -677,6 +677,8 @@ function isZoneValid(freshness) {
 function isZoneHeavilyViolated(freshness) {
     return freshness.used && freshness.violations > MAX_ALLOWED_ZONE_VIOLATIONS;
 }
+// HTF premium/discount check for the current scan price. When currentPrice is
+// omitted, the latest candle close is used so existing callers keep working.
 function isHTFPremiumDiscount(htfData, direction, currentPrice) {
     if (!htfData || htfData.length < 10) return { inPremiumDiscount: false, value: 'neutral', pct: 0 };
     let high = -Infinity, low = Infinity;
@@ -688,6 +690,8 @@ function isHTFPremiumDiscount(htfData, direction, currentPrice) {
     if (direction === 'BUY') { const inDiscount = current < mid, discountPct = ((mid - current) / range * 100); return { inPremiumDiscount: inDiscount, value: 'discount', pct: Math.max(0, discountPct) }; }
     else { const inPremium = current > mid, premiumPct = ((current - mid) / range * 100); return { inPremiumDiscount: inPremium, value: 'premium', pct: Math.max(0, premiumPct) }; }
 }
+// Ghost Machine hard-rule gate: every setup must show aligned liquidity,
+// displacement/MSS, valid session timing, and a fresh A/B zone or it is rejected.
 function getGhostHardRules(direction, sweeps, turtleSoup, mss, session, freshness, zone) {
     const wantSweepDir = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
     const turtleSoupAligned = turtleSoup?.detected && turtleSoup.type === direction;
