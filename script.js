@@ -686,9 +686,17 @@ function isHTFPremiumDiscount(htfData, direction, currentPrice) {
         if (htfData[i].h > high) high = htfData[i].h;
         if (htfData[i].l < low) low = htfData[i].l;
     }
-    const range = high - low, current = typeof currentPrice === 'number' ? currentPrice : htfData[htfData.length - 1].c, mid = range / 2 + low;
-    if (direction === 'BUY') { const inDiscount = current < mid, discountPct = ((mid - current) / range * 100); return { inPremiumDiscount: inDiscount, value: 'discount', pct: Math.max(0, discountPct) }; }
-    else { const inPremium = current > mid, premiumPct = ((current - mid) / range * 100); return { inPremiumDiscount: inPremium, value: 'premium', pct: Math.max(0, premiumPct) }; }
+    const range = high - low;
+    const current = typeof currentPrice === 'number' ? currentPrice : htfData[htfData.length - 1].c;
+    const mid = range / 2 + low;
+    if (direction === 'BUY') {
+        const inDiscount = current < mid;
+        const discountPct = ((mid - current) / range * 100);
+        return { inPremiumDiscount: inDiscount, value: 'discount', pct: Math.max(0, discountPct) };
+    }
+    const inPremium = current > mid;
+    const premiumPct = ((current - mid) / range * 100);
+    return { inPremiumDiscount: inPremium, value: 'premium', pct: Math.max(0, premiumPct) };
 }
 // Ghost Machine hard-rule gate: every setup must show aligned liquidity,
 // displacement/MSS, valid session timing, and a fresh A/B zone or it is rejected.
@@ -704,6 +712,15 @@ function getGhostHardRules(direction, sweeps, turtleSoup, mss, session, freshnes
         zoneQuality: zone?.quality === 'A' || zone?.quality === 'B'
     };
 }
+const BASE_GHOST_RULES_CONFIDENCE = 82;
+const A_GRADE_GHOST_CONFIDENCE_BONUS = 6;
+const SILVER_BULLET_GHOST_CONFIDENCE_BONUS = 5;
+const SNIPER_GHOST_CONFIDENCE_BONUS = 3;
+const HTF_VALIDATION_GHOST_CONFIDENCE_BONUS = 2;
+const FULL_RISK_RULES_REQUIRED = 5;
+const PARTIAL_RISK_RULES_REQUIRED = 3;
+const FULL_RISK_PERCENT = 1.0;
+const PARTIAL_RISK_PERCENT = 0.5;
 function getSession() {
     const now = new Date(); const hour = now.getUTCHours(); const min = now.getUTCMinutes(); const time = hour + min / 60;
     let estHour = hour - 4;
@@ -1086,17 +1103,17 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 riskReward: rrUsed
             };
 
-            const conf = Math.min(98, 82
-                + (zone.quality === 'A' ? 6 : 0)
-                + (session.isSilverBullet ? 5 : 0)
-                + (sniperEntry.isSniper ? 3 : 0)
-                + (htfValidation.passed ? 2 : 0));
+            const conf = Math.min(98, BASE_GHOST_RULES_CONFIDENCE
+                + (zone.quality === 'A' ? A_GRADE_GHOST_CONFIDENCE_BONUS : 0)
+                + (session.isSilverBullet ? SILVER_BULLET_GHOST_CONFIDENCE_BONUS : 0)
+                + (sniperEntry.isSniper ? SNIPER_GHOST_CONFIDENCE_BONUS : 0)
+                + (htfValidation.passed ? HTF_VALIDATION_GHOST_CONFIDENCE_BONUS : 0));
             const confLog = [
-                { adj: 82, reason: 'Ghost hard rules passed' },
-                ...(zone.quality === 'A' ? [{ adj: 6, reason: 'A-grade zone' }] : []),
-                ...(session.isSilverBullet ? [{ adj: 5, reason: 'Silver Bullet timing' }] : []),
-                ...(sniperEntry.isSniper ? [{ adj: 3, reason: 'Sniper sequence confirmed' }] : []),
-                ...(htfValidation.passed ? [{ adj: 2, reason: 'HTF structure validated' }] : [])
+                { adj: BASE_GHOST_RULES_CONFIDENCE, reason: 'Ghost hard rules passed' },
+                ...(zone.quality === 'A' ? [{ adj: A_GRADE_GHOST_CONFIDENCE_BONUS, reason: 'A-grade zone' }] : []),
+                ...(session.isSilverBullet ? [{ adj: SILVER_BULLET_GHOST_CONFIDENCE_BONUS, reason: 'Silver Bullet timing' }] : []),
+                ...(sniperEntry.isSniper ? [{ adj: SNIPER_GHOST_CONFIDENCE_BONUS, reason: 'Sniper sequence confirmed' }] : []),
+                ...(htfValidation.passed ? [{ adj: HTF_VALIDATION_GHOST_CONFIDENCE_BONUS, reason: 'HTF structure validated' }] : [])
             ];
 
             return {
@@ -1638,7 +1655,7 @@ async function runAutoScan() {
             { rule: '5. Asymmetric risk:reward (>= 1:2)', passed: (best.rrUsed || 0) >= 2 }
         ];
         const goldenPassed = goldenRules.filter(r => r.passed).length;
-        const riskPercent = goldenPassed === 5 ? 1.0 : (goldenPassed >= 3 ? 0.5 : 0);
+        const riskPercent = goldenPassed === FULL_RISK_RULES_REQUIRED ? FULL_RISK_PERCENT : (goldenPassed >= PARTIAL_RISK_RULES_REQUIRED ? PARTIAL_RISK_PERCENT : 0);
         console.log(`Risk: ${riskPercent}% (${goldenPassed}/5 rules pass)`);
         const tradeable = best.confidence >= 45 && executionDecision !== 'skip' && riskPercent > 0;
         const noTradeReason = tradeable ? null : (executionDecision === 'skip' ? `AI execution decision: skip (confidence ${best.confidence}%)` : (riskPercent === 0 ? `Only ${goldenPassed}/5 golden rules passed` : `Final confidence ${best.confidence}% below the 45% minimum`));
