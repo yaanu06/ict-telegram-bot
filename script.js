@@ -698,8 +698,9 @@ function isHTFPremiumDiscount(htfData, direction, currentPrice) {
     const premiumPct = ((current - mid) / range * 100);
     return { inPremiumDiscount: inPremium, value: 'premium', pct: Math.max(0, premiumPct) };
 }
-// Ghost Machine hard-rule gate: every setup must show aligned liquidity,
-// displacement/MSS, valid session timing, and a fresh A/B zone or it is rejected.
+// Ghost Machine hard-rule gate. Inputs are the trade direction plus the already
+// detected liquidity, MSS, session, freshness, and zone data for one setup.
+// Every returned boolean must be true before the setup is allowed through.
 function getGhostHardRules(direction, sweeps, turtleSoup, mss, session, freshness, zone) {
     const wantSweepDir = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
     const turtleSoupAligned = turtleSoup?.detected && turtleSoup.type === direction;
@@ -712,11 +713,15 @@ function getGhostHardRules(direction, sweeps, turtleSoup, mss, session, freshnes
         zoneQuality: zone?.quality === 'A' || zone?.quality === 'B'
     };
 }
+// Confidence is no longer a broad scorecard; these constants only separate
+// already-valid Ghost Machine setups for display/ranking in the UI.
 const BASE_GHOST_RULES_CONFIDENCE = 82;
 const A_GRADE_GHOST_CONFIDENCE_BONUS = 6;
 const SILVER_BULLET_GHOST_CONFIDENCE_BONUS = 5;
 const SNIPER_GHOST_CONFIDENCE_BONUS = 3;
 const HTF_VALIDATION_GHOST_CONFIDENCE_BONUS = 2;
+// Risk sizing follows the requested golden-rules model: full size only when
+// all five pass, half size when at least three pass, otherwise no trade.
 const FULL_RISK_RULES_REQUIRED = 5;
 const PARTIAL_RISK_RULES_REQUIRED = 3;
 const FULL_RISK_PERCENT = 1.0;
