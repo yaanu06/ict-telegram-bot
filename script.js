@@ -1090,8 +1090,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             
             const confLog = [
                 { adj: 70, reason: 'Base' },
-                ...(hasSweepAligned && mssDisplaced ? [{ adj: 10, reason: 'Sweep + MSS' }] : []),
-                ...(hasSweepAligned || mssDisplaced ? [{ adj: 5, reason: 'Sweep or MSS' }] : []),
+                ...(hasSweepAligned && mssDisplaced ? [{ adj: 10, reason: 'Sweep + MSS' }] : (hasSweepAligned || mssDisplaced ? [{ adj: 5, reason: 'Sweep or MSS' }] : [])),
                 ...(zone.quality === 'A' ? [{ adj: 10, reason: 'A-grade zone' }] : []),
                 ...(zone.quality === 'B' ? [{ adj: 5, reason: 'B-grade zone' }] : []),
                 ...(session.isSilverBullet ? [{ adj: 5, reason: 'Silver Bullet' }] : []),
