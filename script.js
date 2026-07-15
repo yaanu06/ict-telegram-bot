@@ -719,6 +719,7 @@ const A_GRADE_GHOST_CONFIDENCE_BONUS = 6;
 const SILVER_BULLET_GHOST_CONFIDENCE_BONUS = 5;
 const SNIPER_GHOST_CONFIDENCE_BONUS = 3;
 const HTF_VALIDATION_GHOST_CONFIDENCE_BONUS = 2;
+const GHOST_MACHINE_ZONE_REACTION = { confirmed: true, type: 'PATTERN_MATCH', strength: 'STRONG' };
 // Risk sizing follows the requested golden-rules model: full size only when
 // all five pass, half size when at least three pass, otherwise no trade.
 const FULL_RISK_RULES_REQUIRED = 5;
@@ -1002,7 +1003,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const chochDetected = checkCHoCH(entryData, zone.low, zone.high);
         const inducementSwept = detectInducement(entryData, zone.low, zone.high, sig.dir);
         const entryTiming = checkEntryTiming(entryData, entry, sig.dir);
-        const zoneReaction = { confirmed: true, type: 'PATTERN_MATCH', strength: 'STRONG' };
+        const zoneReaction = { ...GHOST_MACHINE_ZONE_REACTION };
         const zoneTouches = freshness.touches || 0;
         const magnetism = checkZoneMagnetism(entryData, price, entry, sig.dir, zone);
         const pathCheck = checkPathClearance(entryData, entry, tp1, sig.dir);
@@ -1011,7 +1012,14 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const breakerValid = validateBreakerBlock(entryData, zone.p, sig.dir);
         const htfCheck = isZoneWithinHTFArray(zone, structureData ? findPDArrays(structureData, sig.dir) : []);
         const htfValidation = { passed: true, parentArray: htfCheck.parentArray ? { ...htfCheck.parentArray, structureTF } : null, partial: htfCheck.partial || false };
-        const probCheck = { probability: 'HIGH', checks: [], totalPassed: 0, passed: true };
+        const probChecks = [
+            { name: 'Sweep or Turtle Soup', passed: hasSweep || hasTBS, critical: true },
+            { name: 'Displaced MSS', passed: !!mssData?.displaced, critical: true },
+            { name: 'Fresh zone', passed: zoneFresh, critical: true },
+            { name: 'Confirmation candle', passed: confirmed, critical: true },
+            { name: 'Silver Bullet session', passed: session.isSilverBullet, critical: true }
+        ];
+        const probCheck = { probability: 'HIGH', checks: probChecks, totalPassed: probChecks.filter(check => check.passed).length, passed: probChecks.every(check => check.passed) };
         const ghostRules = getGhostHardRules(sig.dir, sweeps, turtleSoup, mssData, session, freshness, zone);
         const confBreakdown = [
             { adj: 20, reason: 'Sweep or Turtle Soup aligned' },
