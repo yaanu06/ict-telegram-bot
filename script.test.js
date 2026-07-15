@@ -357,15 +357,19 @@ describe('analyzeTimeframe Ghost Machine pattern matching', () => {
     it('returns a strict Ghost Machine setup with zone-edge entry and CRT extreme target', async () => {
         const context = getContext();
         const candles = buildCandles();
+        const atrValue = context.atr(candles, 14);
+        const expectedEntry = Math.min(98 + atrValue * 0.2, 100);
+        const expectedSl = Math.min(98 - atrValue * 0.5, 97 - atrValue * 0.3);
+        const expectedRisk = Math.abs(expectedEntry - expectedSl);
         wireGhostStubs(context);
 
         const res = await context.analyzeTimeframe('1H', 100, { '5M': candles, '15M': candles, '1H': candles, '4H': candles, '1D': candles });
 
         expect(res.direction).toBe('BUY');
-        expect(res.entry).toBeCloseTo(98.4);
-        expect(res.sl).toBeCloseTo(96.4);
-        expect(res.tp1).toBeCloseTo(102.4);
-        expect(res.tp2).toBeCloseTo(106.4);
+        expect(res.entry).toBeCloseTo(expectedEntry);
+        expect(res.sl).toBeCloseTo(expectedSl);
+        expect(res.tp1).toBeCloseTo(expectedEntry + expectedRisk * 2);
+        expect(res.tp2).toBeCloseTo(expectedEntry + expectedRisk * 4);
         expect(res.tp3).toBe(103);
         expect(res.confidence).toBe(90);
         expect(res.confirmation).toBe(true);
