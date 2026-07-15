@@ -960,7 +960,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 
         allSetups.sort((a, b) => b.pts - a.pts);
         const best = allSetups[0];
-        const { dir, pts: setupScore, entry, sl, tp1, tp2, tp3, risk, sweeps, turtleSoup, hasSweep, hasTBS, mss, hasMSS, hasDisplacement, bosCount, zone, isUnmet, freshness, isValidZone, brokenLevel, session, entryDistance, htfTrends, htfAgree, reasons, confBreakdown, slResult, entryATR } = best;
+        const { dir, pts: setupScore, entry, sl, tp1, tp2, tp3, risk, sweeps, turtleSoup, hasSweep, hasTBS, mss, hasMSS, hasDisplacement, bosCount, zone, isUnmet, freshness, isValidZone, brokenLevel, session, entryDistance, htfTrends, htfAgree, reasons, confBreakdown, slResult } = best;
 
         const apiATR = twelveIndicators?.atr_api || entryATR;
         const volatility = getVolatilityLevel(apiATR, price);
