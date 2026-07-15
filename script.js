@@ -28,6 +28,7 @@ const MIN_ENTRY_DISTANCE_ATR_MULTIPLIER = 0.1;
 const MAX_ENTRY_DISTANCE_ATR_MULTIPLIER = 5.0;
 const MAX_ZONE_CANDIDATES_TO_EVALUATE = 6; // Relaxed from 4 while diagnosing over-filtered setup discovery.
 const MAX_ALLOWED_ZONE_VIOLATIONS = 1; // Allow lightly used zones; reject only after repeated invalidating breaches.
+const GHOST_MACHINE_CONFLICT_CONFIDENCE_FLOOR = 75;
 const ANALYSIS_DEBUG_LOGS = true;
 const ENABLE_MAGNETISM_REJECTION = false; // TODO: Set true after gate diagnostics confirm stable fill quality.
 
@@ -1574,8 +1575,7 @@ async function runAutoScan() {
         }
         const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
         const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
-        const conflictConfidenceFloor = 75;
-        if (htfConfluence.level === 'CONFLICT') { best.confidence = Math.max(best.confidence - 15, conflictConfidenceFloor); best.confBreakdown?.push({ adj: -15, reason: `HTF conflict (1D=${htfConfluence.daily}, 4H=${htfConfluence.h4})` }); showNotif(`⚠️ HTF conflict: 1D=${htfConfluence.daily}, 4H=${htfConfluence.h4} - confidence reduced`, 'warning'); }
+        if (htfConfluence.level === 'CONFLICT') { best.confidence = Math.max(best.confidence - 15, GHOST_MACHINE_CONFLICT_CONFIDENCE_FLOOR); best.confBreakdown?.push({ adj: -15, reason: `HTF conflict (1D=${htfConfluence.daily}, 4H=${htfConfluence.h4})` }); showNotif(`⚠️ HTF conflict: 1D=${htfConfluence.daily}, 4H=${htfConfluence.h4} - confidence reduced`, 'warning'); }
         let aiConviction = 'MEDIUM', aiApproved = true, aiConfAdj = 0, executionDecision = best.entryReady ? 'enter_now' : 'wait_for_reaction', waitCondition = 'Wait for engulf/pinbar at zone', aiInvalidation = best.invalidationPrice;
         let finalEntry = best.entry, finalZoneLow = best.zone.low, finalZoneHigh = best.zone.high, aiEntryLogic = '', aiSlLogic = '', aiKeyReason = '', aiRiskWarning = '', aiOutcomes = [];
         if (aiResult && aiResult.trade_signal_Theghostmachine) { const ts = aiResult.trade_signal_Theghostmachine; aiApproved = ts.approved !== false; aiConfAdj = ts.confidence_adjustment || 0; executionDecision = ts.execution_decision || executionDecision; waitCondition = ts.wait_condition || waitCondition; if (ts.invalidation_price) aiInvalidation = ts.invalidation_price; if (executionDecision === 'enter_now') aiConviction = 'HIGH'; else if (executionDecision === 'wait_for_reaction') aiConviction = 'WAIT'; else aiConviction = 'SKIP'; if (ts.entry_refinement && ts.entry_refinement.low && ts.entry_refinement.high) { finalZoneLow = ts.entry_refinement.low; finalZoneHigh = ts.entry_refinement.high; finalEntry = (finalZoneLow + finalZoneHigh) / 2; } aiEntryLogic = ts.analysis?.entry_logic || ''; aiSlLogic = ts.analysis?.sl_logic || ''; aiKeyReason = ts.analysis?.key_reason || ''; aiRiskWarning = ts.analysis?.risk_warning || ''; aiOutcomes = ts.analysis?.possible_outcomes || []; if (aiApproved) { best.confidence = Math.min(Math.max(best.confidence + aiConfAdj, 10), 98); if (aiConfAdj) best.confBreakdown?.push({ adj: aiConfAdj, reason: `AI (${ts.model_used || 'deepseek'}) adjustment: ${aiKeyReason || 'approved'}` }); }
@@ -1713,7 +1713,7 @@ async function runAutoScan() {
             return;
         }
         document.getElementById('executeBtn').disabled = false;
-        showNotif(`🎯 GHOST MACHINE ${best.timeframe} ${st} ${best.confidence}% | ${goldenPassed}/5 Ghost Machine rules | Risk: ${riskPercent * 100}% | 1:${rrDisplay}`, 'success');
+        showNotif(`🎯 GHOST MACHINE ${best.timeframe} ${st} ${best.confidence}% | ${goldenPassed}/5 Ghost Machine rules | Risk: ${riskPercent}% | 1:${rrDisplay}`, 'success');
     } catch (e) { console.error(e); showNotif('Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
     finally { btn.classList.remove('loading'); btn.disabled = false; }
 }
