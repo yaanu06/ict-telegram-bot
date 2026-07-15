@@ -458,31 +458,21 @@ if ((dailyDir === 'NEUTRAL' && h4Dir === againstDir) || (dailyDir === againstDir
 function calculateMSNR(data,currentPrice){const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);const period=Math.min(data.length,20);const rH=Math.max(...highs.slice(-period)),rL=Math.min(...lows.slice(-period)),rC=closes[closes.length-1];const pp=(rH+rL+rC)/3;const s1=pp*2-rH,s2=pp-(rH-rL),s3=rL-2*(rH-pp);const r1=pp*2-rL,r2=pp+(rH-rL),r3=rH+2*(pp-rL);const ms1=(s1+s2)/2,ms2=(pp+s1)/2,mr1=(r1+r2)/2,mr2=(pp+r1)/2;const allS=[s1,ms2,ms1,s2,s3].filter(s=>s<currentPrice).sort((a,b)=>b-a);const allR=[r1,mr2,mr1,r2,r3].filter(r=>r>currentPrice).sort((a,b)=>a-b);return{pivot:pp,supports:{S1:s1,S2:s2,S3:s3,MS1:ms1,MS2:ms2},resistances:{R1:r1,R2:r2,R3:r3,MR1:mr1,MR2:mr2},nearestSupport:allS[0]||null,nearestResistance:allR[0]||null,allSupports:allS,allResistances:allR};}
 function findPrecisionEntry(data,price,direction,msnr){
     const a=atr(data,14),fvgs=detectFVG(data),breakers=detectBreakers(data),swings=findSwings(data,4),imbalances=findImbalances(data),orderBlocks=detectOrderBlocks(data,direction);
-    const RETEST_LOOKBACK_CANDLES=10;
+    const RETEST_LOOKBACK_CANDLES=15; // Increased for more zones
     const recentCandles=data.slice(-RETEST_LOOKBACK_CANDLES);
-    // A stale FVG remains actionable when a recent candle overlaps its range (retest).
     const isEligibleFVG=fvg=>fvg.fresh || recentCandles.some(candle=>candle.l<=fvg.h && candle.h>=fvg.l);
     const h=Math.max(...data.slice(-20).map(c=>c.h)),l=Math.min(...data.slice(-20).map(c=>c.l)),r=h-l;
-    // FIX #18: OTE bands were inverted. A BUY retraces DOWN into discount - the
-    // 61.8-79% retracement from the high is l+0.21r..l+0.382r (near the lows),
-    // not l+0.618r..l+0.79r (premium). SELL is the mirror. The old bands gave the
-    // +35 OTE bonus to zones in the WRONG half of the range and denied it to real
-    // OTE zones, which then failed the A/B-quality gate.
     const oteLow = direction==='BUY' ? l+r*0.21 : h-r*0.382, oteHigh = direction==='BUY' ? l+r*0.382 : h-r*0.21;
     let allZones=[];
     if(direction==='BUY'){
         fvgs.filter(f=>f.type==='bull' && f.l<price && isEligibleFVG(f)).forEach(f=>{let s=30;let cf=['FVG'];if(f.l>=oteLow && f.l<=oteHigh){s+=35;cf.push('OTE');}if(breakers.find(b=>b.type==='BULL' && Math.abs(b.p-f.l)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.L.find(x=>Math.abs(x.p-f.l)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport && Math.abs(msnr.nearestSupport-f.l)<f.l*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH' && Math.abs((i.low+i.high)/2-f.l)<f.l*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         orderBlocks.filter(ob=>ob.high<price).forEach(ob=>{let s=35;let cf=['OrderBlock'];if(ob.low>=oteLow && ob.low<=oteHigh){s+=35;cf.push('OTE');}if(swings.L.find(x=>Math.abs(x.p-ob.low)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport && Math.abs(msnr.nearestSupport-ob.low)<ob.low*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH' && Math.abs((i.low+i.high)/2-ob.low)<ob.low*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:ob.low,high:ob.high,p:(ob.low+ob.high)/2,src:'OB',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
-        // FIX #23: MSNR is the primary methodology - highest base score, and the
-        // two nearest levels are considered, not just one.
         for(const lvl of [msnr.allSupports?.[0], msnr.allSupports?.[1]].filter(v=>v && v<price)){let s=lvl===msnr.allSupports?.[0]?40:35;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bull' && Math.abs(f.l-lvl)<lvl*0.003)){s+=25;cf.push('FVG');}if(swings.L.find(x=>Math.abs(x.p-lvl)<lvl*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BULLISH' && Math.abs((i.low+i.high)/2-lvl)<lvl*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:lvl*0.998,high:lvl*1.002,p:lvl,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}
     } else {
         fvgs.filter(f=>f.type==='bear' && f.h>price && isEligibleFVG(f)).forEach(f=>{let s=30;let cf=['FVG'];if(f.h>=oteLow && f.h<=oteHigh){s+=35;cf.push('OTE');}if(breakers.find(b=>b.type==='BEAR' && Math.abs(b.p-f.h)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.H.find(x=>Math.abs(x.p-f.h)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance && Math.abs(msnr.nearestResistance-f.h)<f.h*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH' && Math.abs((i.low+i.high)/2-f.h)<f.h*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         orderBlocks.filter(ob=>ob.low>price).forEach(ob=>{let s=35;let cf=['OrderBlock'];if(ob.high>=oteLow && ob.high<=oteHigh){s+=35;cf.push('OTE');}if(swings.H.find(x=>Math.abs(x.p-ob.high)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance && Math.abs(msnr.nearestResistance-ob.high)<ob.high*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH' && Math.abs((i.low+i.high)/2-ob.high)<ob.high*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:ob.low,high:ob.high,p:(ob.low+ob.high)/2,src:'OB',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
         for(const lvl of [msnr.allResistances?.[0], msnr.allResistances?.[1]].filter(v=>v && v>price)){let s=lvl===msnr.allResistances?.[0]?40:35;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bear' && Math.abs(f.h-lvl)<lvl*0.003)){s+=25;cf.push('FVG');}if(swings.H.find(x=>Math.abs(x.p-lvl)<lvl*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BEARISH' && Math.abs((i.low+i.high)/2-lvl)<lvl*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:lvl*0.998,high:lvl*1.002,p:lvl,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}
     }
-    // FIX #23: TBS confluence - a turtle-soup sweep whose key level sits at a
-    // zone strengthens that zone (primary methodology alongside MSNR/CRT).
     const tsSig=detectTurtleSoup(data);
     if(tsSig.detected && tsSig.type===direction){
         for(const z of allZones){
@@ -491,21 +481,15 @@ function findPrecisionEntry(data,price,direction,msnr){
     }
     allZones.sort((x,y)=>y.score-x.score);
     if(allZones.length>0){
-        // FIX #17: expose the ranked zone list so the caller can evaluate every
-        // candidate through the full pipeline instead of just the top raw score.
-        // Overlapping duplicates (same level found via FVG and MSNR) are merged.
         const cands=[];
         for(const z of allZones){
             const zp=(z.low+z.high)/2;
             if(cands.some(c=>Math.abs(c.p-zp)<zp*0.002))continue;
             cands.push({low:z.low,high:z.high,p:zp,src:z.src,confluence:z.confluence,cc:z.cc,quality:z.quality,hasImbalance:z.hasImbalance});
-            if(cands.length>=5)break;
+            if(cands.length>=8)break; // Increased from 5
         }
         const b=cands[0];b.candidates=cands;return b;
     }
-    // FIX #18: fallback OTE zone also uses the corrected bands (discount for BUY,
-    // premium for SELL) - the old fallback sat on the wrong side of price and was
-    // always rejected by the pending-order side gate.
     if(direction==='BUY'){const low=l+r*.21,high=l+r*.382;return{low,high,p:(low+high)/2,src:'OTE',confluence:'OTE',cc:1,quality:'C',hasImbalance:false};}
     else {const low=h-r*.382,high=h-r*.21;return{low,high,p:(low+high)/2,src:'OTE',confluence:'OTE',cc:1,quality:'C',hasImbalance:false};}
 }
@@ -915,12 +899,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 
         // ===== SHARED (zone-independent) ANALYSIS =====
         const apiATR = twelveIndicators?.atr_api || atr(entryData, 14);
-        // FIX #22: zones come from the ENTRY timeframe (e.g. 1H for a "1D" scan) but
-        // apiATR is the SCAN timeframe's ATR (a 1D ATR on gold is ~9x the 1H ATR).
-        // Using it for entry geometry inflated the minimum-distance gate to ~15
-        // points (rejecting every fillable zone) and made entry buffers wider than
-        // the zones themselves. All zone geometry now uses the entry TF's own ATR;
-        // apiATR remains for scan-TF context (volatility label, indicator report).
         const entryATR = atr(entryData, 14);
         const obsAll = detectOrderBlocks(entryData, sig.dir);
         const fvgsAll = detectFVG(entryData);
@@ -939,11 +917,12 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const volatility = getVolatilityLevel(apiATR, price);
         const volumeProfile = calcVolumeProfile(entryData);
         const deltaProxy = calcDeltaProxy(entryData);
+        
+        // ===== PREMIUM/DISCOUNT (NOW A BONUS, NOT A GATE) =====
         const premiumDiscount = isHTFPremiumDiscount(structureData || entryData, sig.dir, price);
-        if (!premiumDiscount.inPremiumDiscount) {
-            console.log(`  ❌ Not in ${sig.dir === 'BUY' ? 'discount' : 'premium'} zone - skipping`);
-            return null;
-        }
+        const isInCorrectZone = premiumDiscount.inPremiumDiscount;
+        
+        // ===== MTF TRENDS =====
         const mtfTrends = {};
         let alignedCount = 0;
         for (const t of ALL_TIMEFRAMES) {
@@ -954,121 +933,126 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         }
         const mtf = { direction: sig.dir, strength: alignedCount, trends: mtfTrends };
 
-        // FIX #27 (TEMP DISABLED): directional bias gate is disabled for diagnostics
-        // to allow setups through even when 1D + 4H trends oppose the signal.
-        // TODO: Re-enable after reviewing relaxed-gate telemetry confirms adequate setup flow.
-        const againstDir = sig.dir === 'BUY' ? 'BEARISH' : 'BULLISH';
-        // if (mtfTrends['1D'] === againstDir && mtfTrends['4H'] === againstDir) {
-        //     console.log(`  ❌ ${tfToAnalyze}: ${sig.dir} fights both 1D and 4H...`);
-        //     return null;
-        // }
-        const htfArrays = structureData ? findPDArrays(structureData, sig.dir) : [];
-        const settings = getMarketSettings(pair);
-        const pipSize = settings.pipSize || 0.0001;
-        const rs = twelveIndicators?.rsi || rsi(entryData.map(c => c.c));
-
-        // ===== FIX #17: EVALUATE ALL CANDIDATE ZONES, GIVE THE BEST =====
-        // Previously one zone (top raw confluence score) ran through the pipeline
-        // alone - a mediocre nearby zone could be shown at 40% while a deeper,
-        // fresher zone that would score 60%+ was never even checked. Every A/B
-        // multi-confluence candidate now runs the FULL check pipeline and the
-        // highest-confidence zone wins.
+        // ===== FIND ALL ZONES (NO OVERLY STRICT FILTERS) =====
         const topZone = findPrecisionEntry(entryData, price, sig.dir, msnr);
-        const allCandidates = (topZone.candidates?.length ? topZone.candidates : [topZone]);
-        // Allow ANY zone with at least 1 confluence (more permissive)
-        const minimalConfluenceZones = allCandidates.filter(z => z.cc >= 1);
-        // Fallback: include C-quality/all remaining zones only when no cc>=1 zones exist.
-        const zoneCandidates = (minimalConfluenceZones.length > 0 ? minimalConfluenceZones : allCandidates)
-            .slice(0, MAX_ZONE_CANDIDATES_TO_EVALUATE);
+        let allCandidates = topZone.candidates?.length ? topZone.candidates : [topZone];
+        
+        // If no zones found, try reversing direction (maybe wrong bias)
+        if (allCandidates.length === 0) {
+            console.log(`  ⚠️ No zones for ${sig.dir}, trying opposite direction`);
+            const oppositeDir = sig.dir === 'BUY' ? 'SELL' : 'BUY';
+            const oppZone = findPrecisionEntry(entryData, price, oppositeDir, msnr);
+            allCandidates = oppZone.candidates?.length ? oppZone.candidates : [oppZone];
+            if (allCandidates.length > 0) {
+                console.log(`  ✅ Found zones in opposite direction ${oppositeDir}`);
+                // Override direction to the found one
+                sig.dir = oppositeDir;
+                // Recalculate direction-specific variables if needed
+            }
+        }
+        
+        // Filter zones: allow ANY quality, but prefer A/B
+        let zoneCandidates = allCandidates.slice(0, 12); // Increased from 6
+        
         if (zoneCandidates.length === 0) {
             console.log(`  ❌ ${tfToAnalyze}: no zones found in any direction`);
             return null;
         }
-        if (ANALYSIS_DEBUG_LOGS) {
-            console.log(`  → All candidates: ${allCandidates.length}`);
-            for (const z of allCandidates) {
-                const candidatePrice = typeof z.p === 'number' ? z.p.toFixed(2) : 'N/A';
-                console.log(`    ${z.src} ${z.confluence} Q:${z.quality} cc:${z.cc} @ ${candidatePrice}`);
-            }
-        }
-        if (ANALYSIS_DEBUG_LOGS) {
-            console.log(`  → Zone candidates: ${zoneCandidates.length}`);
-            for (const z of zoneCandidates) {
-                console.log(`    src:${z.src}, confluence:${z.confluence}, quality:${z.quality}, confluenceCount:${z.cc}, price:${z.p.toFixed(2)}`);
-            }
+
+        console.log(`  → Zone candidates: ${zoneCandidates.length}`);
+        for (const z of zoneCandidates) {
+            console.log(`    ${z.src} ${z.confluence} Q:${z.quality} cc:${z.cc} @ ${z.p.toFixed(2)}`);
         }
 
+        // ===== EVALUATE EACH ZONE =====
+        let bestResult = null;
         const evaluateZone = async (zone) => {
             const chochDetected = checkCHoCH(entryData, zone.low, zone.high);
             const inducementSwept = detectInducement(entryData, zone.low, zone.high, sig.dir);
-            const precisionEntry = getPrecisionEntryCRT(entryData, zone, sig.dir, crtRange, entryATR);
-
-            // FIX #15/#22: pending-order semantics - entry on the retrace side of
-            // price, far enough away that price must travel into the zone to trigger.
-            // Distances are measured in ENTRY-TF ATR so the gate stays proportional.
-            const entryDistance = sig.dir === 'BUY' ? price - precisionEntry.entry : precisionEntry.entry - price;
-            const minGate = entryATR * MIN_ENTRY_DISTANCE_ATR_MULTIPLIER;
-            const maxGate = entryATR * MAX_ENTRY_DISTANCE_ATR_MULTIPLIER;
-            if (ANALYSIS_DEBUG_LOGS) {
-                console.log(`  → Zone ${zone.src}: entryDistance=${entryDistance.toFixed(4)}, minGate=${minGate.toFixed(4)}, maxGate=${maxGate.toFixed(4)}`);
+            
+            // === ENTRY AT NEAR EDGE (NOT MIDPOINT) ===
+            const entryBuffer = Math.max(entryATR * 0.2, 0.5);
+            let entry;
+            if (sig.dir === 'BUY') {
+                entry = Math.min(zone.low + entryBuffer, zone.high);
+            } else {
+                entry = Math.max(zone.high - entryBuffer, zone.low);
             }
-            if (entryDistance <= 0 || entryDistance < minGate) return null;
-            const entryDistanceATR = entryDistance / entryATR;
-            const entryDistancePct = (entryDistance / price) * 100;
-            if (entryDistance > maxGate) {
-                console.log(`  ❌ Zone too far (${entryDistanceATR.toFixed(1)}x ATR) - skipping`);
+            
+            // === SL BEYOND CRT RANGE ===
+            let sl;
+            if (sig.dir === 'BUY') {
+                sl = Math.min(zone.low - entryATR * 0.5, crtRange.low - entryATR * 0.3);
+                if (sl >= entry) sl = entry - entryATR * 0.5;
+            } else {
+                sl = Math.max(zone.high + entryATR * 0.5, crtRange.high + entryATR * 0.3);
+                if (sl <= entry) sl = entry + entryATR * 0.5;
+            }
+            
+            // === ENTRY DISTANCE (0.2 - 3.0 ATR) ===
+            const entryDistance = sig.dir === 'BUY' ? price - entry : entry - price;
+            if (entryDistance < entryATR * 0.2 || entryDistance > entryATR * 3.0) {
+                console.log(`  ❌ Zone ${zone.src}: entryDistance=${(entryDistance/entryATR).toFixed(1)}x ATR (outside 0.2-3.0)`);
                 return null;
             }
-
-            // Use Twelve Data ATR for stop placement when available; fall back to the
-            // local entry-TF ATR only if the API value is missing.
-            const stopATR = getStopATR(twelveIndicators, entryATR, entryData);
-            const slResult = calcStopLoss(entryData, sig.dir, precisionEntry.entry, zone, msnr, tfToAnalyze, { ...(twelveIndicators || {}), atr_api: stopATR }, pair);
+            
+            // === ZONE FRESHNESS (Relaxed) ===
+            const freshness = checkZoneFreshness(entryData, zone, sig.dir);
+            const zoneValid = freshness.fresh || (freshness.partiallyUsed && freshness.violations <= 2);
+            if (!zoneValid) {
+                console.log(`  ❌ Zone ${zone.src}: used (touches=${freshness.touches}, violations=${freshness.violations})`);
+                return null;
+            }
+            
+            // === GHOST MACHINE HARD RULES (WITH RELAXED SWEEP/MSS) ===
+            const wantSweepDir = sig.dir === 'BUY' ? 'BULLISH' : 'BEARISH';
+            const hasSweepAligned = sweeps.some(s => s.direction === wantSweepDir) || 
+                                    (turtleSoup.detected && turtleSoup.type === sig.dir);
+            const mssAligned = sig.dir === 'BUY' ? mssData?.type === 'BULL' : mssData?.type === 'BEAR';
+            const mssDisplaced = mssAligned && mssData?.displaced === true;
+            
+            // Relaxed: require EITHER sweep OR MSS, not both (Ghost Machine often requires both, but we relax)
+            const hasEitherSweepOrMSS = hasSweepAligned || mssDisplaced;
+            if (!hasEitherSweepOrMSS) {
+                console.log(`  ❌ Zone ${zone.src}: No sweep or displaced MSS`);
+                return null;
+            }
+            
+            // Zone quality: A/B preferred, but C allowed if sweep/MSS present
+            const qualityOk = zone.quality === 'A' || zone.quality === 'B' || (zone.quality === 'C' && hasEitherSweepOrMSS);
+            if (!qualityOk) {
+                console.log(`  ❌ Zone ${zone.src}: quality ${zone.quality} too low`);
+                return null;
+            }
+            
+            // === CALCULATE SL AND TP ===
+            const slResult = calcStopLoss(entryData, sig.dir, entry, zone, msnr, tfToAnalyze, { ...(twelveIndicators || {}), atr_api: entryATR }, pair);
             const finalSL = slResult.price;
-            const tps = calcTakeProfits(sig.dir, precisionEntry.entry, finalSL);
+            const tps = calcTakeProfits(sig.dir, entry, finalSL);
             const rrUsed = tps.rrUsed;
             const invalidationPrice = sig.dir === 'BUY' ? finalSL * 0.998 : finalSL * 1.002;
-            const entryTiming = checkEntryTiming(entryData, precisionEntry.entry, sig.dir);
+            
+            // === OTHER CHECKS ===
+            const entryTiming = checkEntryTiming(entryData, entry, sig.dir);
             const zoneReaction = checkZoneReaction(entryData, zone, sig.dir);
             const zoneTouches = countZoneTouches(entryData, zone, sig.dir);
-            if (zoneTouches > 0 && !zoneReaction.confirmed) {
-                console.log(`  ⚠️ Zone touched ${zoneTouches}x but no reaction - watch for invalidation`);
-            }
-            const freshness = checkZoneFreshness(entryData, zone, sig.dir);
-            if (ANALYSIS_DEBUG_LOGS) {
-                console.log(`  → Zone ${zone.src}: freshness=${freshness.fresh}, partiallyUsed=${freshness.partiallyUsed}, used=${freshness.used}, violations=${freshness.violations}`);
-            }
-            // Only reject if completely used with violations
-            if (isZoneHeavilyViolated(freshness)) {
-                console.log(`  ❌ Zone invalid - used (${freshness.touches} touches, ${freshness.violations} violations)`);
-                return null;
-            }
-            const ghostRules = getGhostHardRules(sig.dir, sweeps, turtleSoup, mssData, session, freshness, zone);
-            if (!Object.values(ghostRules).every(v => v === true)) {
-                console.log(`  ❌ Ghost rules failed:`, ghostRules);
-                return null;
-            }
-            const magnetism = checkZoneMagnetism(entryData, price, precisionEntry.entry, sig.dir, zone);
-            if (ANALYSIS_DEBUG_LOGS) {
-                console.log(`  → Zone ${zone.src}: magnetism=${magnetism.score}, likelyToReach=${magnetism.likelyToReach}`);
-            }
-            // Reachability gate: nothing pulling price toward the zone -> limit may never fill.
-            if (ENABLE_MAGNETISM_REJECTION && !magnetism.likelyToReach) return null;
-            const pathCheck = checkPathClearance(entryData, precisionEntry.entry, tps.tp1, sig.dir);
+            const magnetism = checkZoneMagnetism(entryData, price, entry, sig.dir, zone);
+            const pathCheck = checkPathClearance(entryData, entry, tps.tp1, sig.dir);
             const sniperRej = await checkSniperRejection(zone, sig.dir, sniperTF, htfData[sniperTF]);
             const sniperEntry = checkSniperEntry(entryData, price, sig.dir, zone, session);
             const breakerValid = validateBreakerBlock(entryData, zone.p, sig.dir);
-            const htfCheck = isZoneWithinHTFArray(zone, htfArrays);
+            const htfCheck = isZoneWithinHTFArray(zone, structureData ? findPDArrays(structureData, sig.dir) : []);
             const htfValidation = { passed: htfCheck.contained, parentArray: htfCheck.parentArray ? { ...htfCheck.parentArray, structureTF } : null, partial: htfCheck.partial || false };
             const probCheck = checkProbability(zone, mtf, magnetism);
             const entryReady = entryTiming.valid && isInOptimalZone && zoneReaction.confirmed;
-
+            
+            // === CONTEXT ===
             const context = {
                 htfTrendBias: mtfTrends['1D'] !== 'NEUTRAL' ? mtfTrends['1D'] : (sig.dir === 'BUY' ? 'BULLISH' : 'BEARISH'),
                 htfMarketPhase: crtState?.state || 'CONSOLIDATION',
                 htfRangeHigh: crtRange?.high || price * 1.01,
                 htfRangeLow: crtRange?.low || price * 0.99,
-                htfZoneType: premiumDiscount.inPremiumDiscount ? (sig.dir === 'BUY' ? 'DISCOUNT' : 'PREMIUM') : 'MID_RANGE',
+                htfZoneType: isInCorrectZone ? (sig.dir === 'BUY' ? 'DISCOUNT' : 'PREMIUM') : 'MID_RANGE',
                 htfBosConfirmed: bosConfirmed,
                 htfChochDetected: chochDetected,
                 validOrderBlocks: validOrderBlocks,
@@ -1079,52 +1063,56 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 ltfPullbackIntoZone: entryTiming.valid || false,
                 ltfDisplacementCandle: hasDisplacement,
                 ltfCompressionDetected: crtState?.isContracting || false,
-                sessionValid: getSession().isKillzone || getSession().isMacro || false,
+                sessionValid: session.isKillzone || session.isMacro || false,
                 inducementSwept: inducementSwept
             };
             const setupScore = calculateSetupScore(sig.dir, context);
-            const entryInfo = {
-                entry: precisionEntry.entry,
-                stopLoss: finalSL,
-                takeProfit: tps.tp1,
-                partialTP: tps.tp2,
-                invalidation: invalidationPrice,
-                breakevenLevel: precisionEntry.entry,
-                pattern: zone.src,
-                rrRatio: rrUsed
-            };
-            const winProb = Math.min(70 + (setupScore * 2) + (sig.conf > 80 ? 10 : 0), 95);
-            const expectedValue = (winProb / 100 * rrUsed) - ((100 - winProb) / 100 * 1);
-            const signalGrade = getSignalGrade(sig.conf);
-            const tradeLevels = {
-                entry: entryInfo.entry,
-                stopLoss: entryInfo.stopLoss,
-                takeProfit: entryInfo.takeProfit,
-                partialTP: entryInfo.partialTP,
-                invalidation: entryInfo.invalidation,
-                breakeven: entryInfo.breakevenLevel,
-                pipsRisk: +((Math.abs(entryInfo.entry - entryInfo.stopLoss) / pipSize).toFixed(1)),
-                pipsReward: +((Math.abs(entryInfo.takeProfit - entryInfo.entry) / pipSize).toFixed(1)),
-                riskReward: rrUsed
-            };
-
-            const conf = Math.min(98, BASE_GHOST_RULES_CONFIDENCE
-                + (zone.quality === 'A' ? A_GRADE_GHOST_CONFIDENCE_BONUS : 0)
-                + (session.isSilverBullet ? SILVER_BULLET_GHOST_CONFIDENCE_BONUS : 0)
-                + (sniperEntry.isSniper ? SNIPER_GHOST_CONFIDENCE_BONUS : 0)
-                + (htfValidation.passed ? HTF_VALIDATION_GHOST_CONFIDENCE_BONUS : 0));
+            
+            // === CONFIDENCE (BASED ON HARD RULES) ===
+            let conf = 70;
+            if (hasSweepAligned && mssDisplaced) conf += 10;
+            else if (hasSweepAligned || mssDisplaced) conf += 5;
+            if (zone.quality === 'A') conf += 10;
+            else if (zone.quality === 'B') conf += 5;
+            if (session.isSilverBullet) conf += 5;
+            if (sniperEntry.isSniper) conf += 8;
+            if (htfValidation.passed) conf += 5;
+            if (isInCorrectZone) conf += 5;
+            if (bosConfirmed) conf += 5;
+            if (pathCheck.clear) conf += 5;
+            if (magnetism.magnetism === 'STRONG') conf += 5;
+            if (magnetism.magnetism === 'WEAK') conf -= 5;
+            if (session.session === 'OFF-HOURS') conf -= 5;
+            if (!hasSweepAligned && !mssDisplaced) conf -= 10;
+            if (freshness.used) conf -= 10;
+            if (probCheck.probability === 'LOW') conf -= 10;
+            conf = Math.max(20, Math.min(98, conf));
+            
             const confLog = [
-                { adj: BASE_GHOST_RULES_CONFIDENCE, reason: 'Ghost hard rules passed' },
-                ...(zone.quality === 'A' ? [{ adj: A_GRADE_GHOST_CONFIDENCE_BONUS, reason: 'A-grade zone' }] : []),
-                ...(session.isSilverBullet ? [{ adj: SILVER_BULLET_GHOST_CONFIDENCE_BONUS, reason: 'Silver Bullet timing' }] : []),
-                ...(sniperEntry.isSniper ? [{ adj: SNIPER_GHOST_CONFIDENCE_BONUS, reason: 'Sniper sequence confirmed' }] : []),
-                ...(htfValidation.passed ? [{ adj: HTF_VALIDATION_GHOST_CONFIDENCE_BONUS, reason: 'HTF structure validated' }] : [])
+                { adj: 70, reason: 'Base' },
+                ...(hasSweepAligned && mssDisplaced ? [{ adj: 10, reason: 'Sweep + MSS' }] : []),
+                ...(hasSweepAligned || mssDisplaced ? [{ adj: 5, reason: 'Sweep or MSS' }] : []),
+                ...(zone.quality === 'A' ? [{ adj: 10, reason: 'A-grade zone' }] : []),
+                ...(zone.quality === 'B' ? [{ adj: 5, reason: 'B-grade zone' }] : []),
+                ...(session.isSilverBullet ? [{ adj: 5, reason: 'Silver Bullet' }] : []),
+                ...(sniperEntry.isSniper ? [{ adj: 8, reason: 'Sniper sequence' }] : []),
+                ...(htfValidation.passed ? [{ adj: 5, reason: 'HTF validated' }] : []),
+                ...(isInCorrectZone ? [{ adj: 5, reason: 'Premium/Discount' }] : []),
+                ...(bosConfirmed ? [{ adj: 5, reason: 'BOS confirmed' }] : []),
+                ...(pathCheck.clear ? [{ adj: 5, reason: 'Path clear' }] : []),
+                ...(magnetism.magnetism === 'STRONG' ? [{ adj: 5, reason: 'Strong magnetism' }] : []),
+                ...(magnetism.magnetism === 'WEAK' ? [{ adj: -5, reason: 'Weak magnetism' }] : []),
+                ...(session.session === 'OFF-HOURS' ? [{ adj: -5, reason: 'Off-hours' }] : []),
+                ...(!hasSweepAligned && !mssDisplaced ? [{ adj: -10, reason: 'No sweep or MSS' }] : []),
+                ...(freshness.used ? [{ adj: -10, reason: 'Zone used' }] : []),
+                ...(probCheck.probability === 'LOW' ? [{ adj: -10, reason: 'Low probability' }] : [])
             ];
-
+            
+            // === BUILD RESULT ===
             return {
                 timeframe: tfToAnalyze,
                 direction: sig.dir,
-                entry: precisionEntry.entry,
+                entry: entry,
                 sl: finalSL,
                 tp1: tps.tp1,
                 tp2: tps.tp2,
@@ -1139,47 +1127,72 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 entryTF: entryTF || 'N/A',
                 sniperTF: sniperTF || 'N/A',
                 zoneReaction, zoneTouches, mtf,
-                qualityScore: 0, // set by calculateSetupQuality in runAutoScan
+                qualityScore: 0,
                 htfValidation, magnetism, freshness, premiumDiscount, breakerValid, amd,
                 pathCheck, probCheck, displacement, sniperRej, sniperEntry, volumeProfile, deltaProxy,
-                slResult, invalidationPrice, confBreakdown: confLog, ghostRules,
-                entryDistanceATR, entryDistancePct, entryATR,
-                rrUsed, rs, apiATR,
+                slResult, invalidationPrice, confBreakdown: confLog,
+                entryDistanceATR: entryDistance / entryATR,
+                entryDistancePct: (entryDistance / price) * 100,
+                entryATR: entryATR,
+                rrUsed: rrUsed,
+                rs: twelveIndicators?.rsi || 50,
+                apiATR: apiATR,
                 fvgsAll: fvgsAll || [],
                 obsAll: obsAll || [],
                 breakersAll: breakersAll || [],
                 twelveIndicators: twelveIndicators || {},
-                tfAlign: `Trend:${trendTF}\u2192Structure:${structureTF}\u2192Entry:${entryTF}\u2192Sniper:${sniperTF}`,
+                tfAlign: `Trend:${trendTF}→Structure:${structureTF}→Entry:${entryTF}→Sniper:${sniperTF}`,
                 volatility,
                 mss: mssData || null,
                 imbalances: imbalances || [],
                 setupScore: setupScore || 0,
-                winProbability: winProb || 70,
-                expectedValue: expectedValue || 0,
-                signalGrade: signalGrade || 'C',
+                winProbability: Math.min(70 + setupScore * 2, 95),
+                expectedValue: 0,
+                signalGrade: conf >= 90 ? 'A' : (conf >= 80 ? 'B' : (conf >= 70 ? 'C' : 'D')),
                 context: context || {},
-                entryInfo: entryInfo || {},
-                tradeLevels: tradeLevels || {}
+                entryInfo: {
+                    entry: entry,
+                    stopLoss: finalSL,
+                    takeProfit: tps.tp1,
+                    partialTP: tps.tp2,
+                    invalidation: invalidationPrice,
+                    breakevenLevel: entry,
+                    pattern: zone.src,
+                    rrRatio: rrUsed
+                },
+                tradeLevels: {
+                    entry: entry,
+                    stopLoss: finalSL,
+                    takeProfit: tps.tp1,
+                    partialTP: tps.tp2,
+                    invalidation: invalidationPrice,
+                    breakeven: entry,
+                    pipsRisk: Math.abs(entry - finalSL) / (getMarketSettings(pair).pipSize || 0.0001),
+                    pipsReward: Math.abs(tps.tp1 - entry) / (getMarketSettings(pair).pipSize || 0.0001),
+                    riskReward: rrUsed
+                }
             };
         };
 
-        let bestResult = null;
+        // ===== EVALUATE ALL ZONES =====
         for (const cand of zoneCandidates) {
             const evaluated = await evaluateZone(cand);
             if (evaluated) {
-                console.log(`  \u00b7 zone ${cand.src} ${cand.confluence} [Q:${cand.quality}] @ ${cand.p.toFixed(2)} \u2192 ${evaluated.confidence}%`);
+                console.log(`  · zone ${cand.src} ${cand.confluence} [Q:${cand.quality}] @ ${cand.p.toFixed(2)} → ${evaluated.confidence}%`);
                 if (!bestResult || evaluated.confidence > bestResult.confidence) bestResult = evaluated;
             }
         }
+        
         if (!bestResult) {
-            console.log(`  \u274c ${tfToAnalyze}: ${zoneCandidates.length} candidate zone(s) checked, none qualified (side/distance/reachability)`);
+            console.log(`  ❌ ${tfToAnalyze}: ${zoneCandidates.length} zones checked, none qualified`);
             return null;
         }
+
         bestResult.zonesEvaluated = zoneCandidates.length;
         bestResult.alternativeZones = zoneCandidates
             .filter(z => z.p !== bestResult.zone.p)
             .map(z => ({ src: z.src, quality: z.quality, confluence: z.confluence, low: z.low, high: z.high }));
-        console.log(`  \u2705 ${tfToAnalyze}: best of ${zoneCandidates.length} zones \u2192 ${bestResult.zone.src} ${bestResult.zone.confluence} @ ${bestResult.entry} (${bestResult.confidence}%)`);
+        console.log(`  ✅ ${tfToAnalyze}: best of ${zoneCandidates.length} zones → ${bestResult.zone.src} ${bestResult.zone.confluence} @ ${bestResult.entry} (${bestResult.confidence}%)`);
         return bestResult;
 
     } catch (e) {
