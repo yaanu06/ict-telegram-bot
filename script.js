@@ -1,8 +1,4 @@
-// ============================================
-// ICT TRADING BOT PRO - WORKING VERSION
-// ============================================
-
-// Initialize Telegram WebApp
+// Initialize (FIX #1: optional chaining so it doesn't crash outside Telegram)
 const tg = window.Telegram?.WebApp;
 if (tg) { tg.expand(); tg.ready(); }
 
@@ -21,50 +17,107 @@ const SYMBOLS = {
 const TF_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day','1W':'1week' };
 const QUOTE_INTERVAL_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day' };
 const ALL_TIMEFRAMES = ['5M', '15M', '1H', '4H', '1D'];
+const TF_WEIGHT = { '1D': 5, '4H': 4, '1H': 3, '15M': 2, '5M': 1 };
 const DEFAULT_ATR_PERIOD = 14;
 const DEFAULT_PRECISION = 5;
 const BUY_INVALIDATION_FACTOR = 0.998;
 const SELL_INVALIDATION_FACTOR = 1.002;
-const GHOST_MACHINE_CONFLICT_CONFIDENCE_FLOOR = 75;
+const MIN_ENTRY_DISTANCE_ATR_MULTIPLIER = 0.1;
+const MAX_ENTRY_DISTANCE_ATR_MULTIPLIER = 5.0;
+const MAX_ZONE_CANDIDATES_TO_EVALUATE = 6;
 const MAX_ALLOWED_ZONE_VIOLATIONS = 1;
+const GHOST_MACHINE_CONFLICT_CONFIDENCE_FLOOR = 75;
+const ANALYSIS_DEBUG_LOGS = true;
+const ENABLE_MAGNETISM_REJECTION = false;
+
+function getTimeframeHierarchy(selectedTF) {
+    const hierarchy = {
+        '1D': ['1D', '4H', '1H', '15M'],
+        '4H': ['4H', '1H', '15M', '5M'],
+        '1H': ['1H', '15M', '5M', '5M'],
+        '15M': ['1H', '15M', '5M', '5M'],
+        '5M': ['15M', '5M', '5M', '5M']
+    };
+    return hierarchy[selectedTF] || ['4H', '1H', '15M', '5M'];
+}
+
+function getMarketSettings(p) {
+    if (p.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.008, targetRR: 4, prec: 2, pipSize: 0.1, slBuffers: { '5M': 2, '15M': 3, '1H': 5, '4H': 8, '1D': 15 } };
+    if (p.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.01, targetRR: 4, prec: 2, pipSize: 0.01, slBuffers: { '5M': 0.03, '15M': 0.05, '1H': 0.08, '4H': 0.12, '1D': 0.20 } };
+    if (p.includes('JPY')) return { slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.005, targetRR: 4, prec: 3, pipSize: 0.01, slBuffers: { '5M': 0.08, '15M': 0.12, '1H': 0.20, '4H': 0.35, '1D': 0.60 } };
+    if (p === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.015, targetRR: 4, prec: 2, pipSize: 1, slBuffers: { '5M': 30, '15M': 50, '1H': 80, '4H': 120, '1D': 200 } };
+    return { slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.005, targetRR: 4, prec: 5, pipSize: 0.0001, slBuffers: { '5M': 0.0003, '15M': 0.0005, '1H': 0.0008, '4H': 0.0012, '1D': 0.0020 } };
+}
+
+function getSLBufferForTF(apiATR, tfUsed, currentPair) {
+    const s = getMarketSettings(currentPair || pair);
+    const tfBuffer = s.slBuffers[tfUsed] || s.slBuffers['15M'] || 3;
+    return Math.max(tfBuffer, apiATR * 0.3);
+}
+
+// ============================================
+// API KEYS MANAGEMENT
+// ============================================
+async function loadKeys() {
+    const s = localStorage.getItem('ict_bot_keys');
+    if (s) { try { const k = JSON.parse(s); TWELVE_DATA_KEY = k.twelveData||''; DEEPSEEK_API_KEY = k.deepseek||''; DEEPSEEK_API_URL = k.deepseekUrl || 'https://api.deepseek.com/chat/completions'; return true; } catch(e) {} }
+    return false;
+}
+async function saveKeys(tk, dk, du) { localStorage.setItem('ict_bot_keys', JSON.stringify({twelveData:tk, deepseek:dk, deepseekUrl:du})); TWELVE_DATA_KEY = tk; DEEPSEEK_API_KEY = dk; DEEPSEEK_API_URL = du || 'https://api.deepseek.com/chat/completions'; updateKeyStatus(); }
+function clearKeys() { localStorage.removeItem('ict_bot_keys'); TWELVE_DATA_KEY=''; DEEPSEEK_API_KEY=''; DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions'; updateKeyStatus(); showNotif('🗑️ Keys removed','warning'); }
+function updateKeyStatus() {
+    const ts=document.getElementById('twelveStatus'),ds=document.getElementById('deepseekStatus');
+    if(ts) { ts.innerHTML=TWELVE_DATA_KEY?'✅ Active':'❌ Missing'; ts.className='status-badge '+(TWELVE_DATA_KEY?'active':'inactive'); }
+    if(ds) { ds.innerHTML=DEEPSEEK_API_KEY?'✅ Active ('+DEEPSEEK_API_KEY.substring(0,5)+'...)':'❌ Missing'; ds.className='status-badge '+(DEEPSEEK_API_KEY?'active':'inactive'); }
+    const keyBtn = document.getElementById('updateKeysBtn');
+    if(keyBtn) { keyBtn.innerHTML = (TWELVE_DATA_KEY && DEEPSEEK_API_KEY) ? '🔑 Manage Keys' : '🔑 Setup Keys'; }
+}
+function showSetup() {
+    const ex=document.getElementById('setupOverlay'); if(ex)ex.remove();
+    document.body.insertAdjacentHTML('beforeend', `<div class="setup-overlay" id="setupOverlay"><div class="setup-modal"><h3>🔐 API Key Setup</h3><p class="setup-desc">Enter your API keys</p><label>📡 Twelve Data Key:</label><input type="password" id="twInput" class="setup-input" value="${TWELVE_DATA_KEY}"><label>🤖 DeepSeek Key:</label><input type="password" id="dsInput" class="setup-input" value="${DEEPSEEK_API_KEY}"><label>🌐 Custom AI URL:</label><input type="text" id="urlInput" class="setup-input" value="${DEEPSEEK_API_URL}"><p class="setup-note">Get key from platform.deepseek.com</p><div class="setup-buttons"><button id="svBtn" class="setup-btn primary">💾 Save</button><button id="clBtn" class="setup-btn danger">🗑️ Clear</button></div><button id="testAiBtn" class="setup-btn secondary" style="width:100%;margin-top:8px;">🧪 Test AI</button><button id="skBtn" class="setup-btn secondary" style="width:100%;margin-top:4px;">Close</button><div id="testResult" style="margin-top:8px;font-size:11px;color:#8e8e93;"></div></div></div>` );
+    document.getElementById('svBtn').addEventListener('click',async()=>{const tk=document.getElementById('twInput').value.trim(),dk=document.getElementById('dsInput').value.trim(),du=document.getElementById('urlInput').value.trim();if(!tk){showNotif('⚠️ Twelve Data key required','warning');return;}await saveKeys(tk,dk,du);document.getElementById('setupOverlay').remove();});
+    document.getElementById('clBtn').addEventListener('click',()=>{clearKeys();document.getElementById('twInput').value='';document.getElementById('dsInput').value='';document.getElementById('urlInput').value='';});
+    document.getElementById('testAiBtn').addEventListener('click',async()=>{const dk=document.getElementById('dsInput').value.trim();const du=document.getElementById('urlInput').value.trim() || 'https://api.deepseek.com/chat/completions';if(!dk){document.getElementById('testResult').innerHTML='❌ Enter key first';return;}document.getElementById('testResult').innerHTML='🔄 Testing...';try{const r=await fetch(du,{method:'POST',headers:{'Content-Type':'application/json','Authorization': `Bearer ${dk}`},body:JSON.stringify({model:'deepseek-chat',messages:[{role:'user',content:'Say OK'}],max_tokens:5})});const d=await r.json();document.getElementById('testResult').innerHTML=d.choices?'✅ AI working!':'❌ Error: '+(d.error?.message||'Unknown');}catch(e){document.getElementById('testResult').innerHTML='❌ Connection failed';}});
+    document.getElementById('skBtn').addEventListener('click',()=>document.getElementById('setupOverlay').remove());
+}
 
 // ============================================
 // STATE
 // ============================================
-let pair = 'XAU/USD';
-let analysis = null;
-let calls = 0;
-let lastPrice = null;
-let limitOrder = null;
-let priceTimer = null;
-let cachedPrice = null;
-let priceCacheTime = 0;
-let cachedPricePair = null;
-let lastSetupSummary = null;
-let lastSetupOut = null;
-let rateLimitNotified = 0;
+let pair='XAU/USD',analysis=null,calls=0,lastPrice=null,limitOrder=null,priceTimer=null;
+let cachedPrice = null, priceCacheTime = 0, cachedPricePair = null;
 const PRICE_CACHE_DURATION = 5000;
 
-// ============================================
-// DOM READY - SIMPLE INITIALIZATION
-// ============================================
-document.addEventListener('DOMContentLoaded', function() {
-    console.log('🚀 ICT Trading Bot Pro Initializing...');
-    init();
-});
+function resetPairState() {
+    cachedPrice = null; priceCacheTime = 0; cachedPricePair = null; lastPrice = null;
+    analysis = null;
+    const eb = document.getElementById('executeBtn'); if (eb && !limitOrder) eb.disabled = true;
+    const cp = document.getElementById('currentPrice'); if (cp) cp.innerHTML = '––';
+    const pc = document.getElementById('priceChange'); if (pc) { pc.innerHTML = '–'; pc.className = 'price-change'; }
+}
 
 // ============================================
-// INITIALIZATION FUNCTION
+// FIXED INITIALIZATION - SIMPLE AND RELIABLE
 // ============================================
+// Wait for DOM to be ready, then initialize
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() {
+        console.log('🚀 DOM loaded, initializing...');
+        init();
+    });
+} else {
+    // DOM already loaded, initialize immediately
+    console.log('🚀 DOM already loaded, initializing...');
+    setTimeout(init, 10);
+}
+
 function init() {
-    console.log('📄 Document ready - attaching events...');
+    console.log('📋 Initializing event listeners...');
     
-    // Load API keys
+    // Load keys first
     loadKeys().then(() => {
         updateKeyStatus();
-        if (!TWELVE_DATA_KEY) {
-            setTimeout(showSetup, 500);
-        }
+        if (!TWELVE_DATA_KEY) setTimeout(showSetup, 500);
     });
 
     // Update time
@@ -72,108 +125,108 @@ function init() {
     setInterval(updateTime, 1000);
 
     // ============================================
-    // ATTACH ALL EVENT LISTENERS - DIRECT METHOD
+    // ATTACH ALL EVENT LISTENERS
     // ============================================
     
     // 1. Auto Scan Button
     const analyzeBtn = document.getElementById('analyzeBtn');
     if (analyzeBtn) {
-        analyzeBtn.onclick = function(e) {
-            console.log('🔍 Analyze button clicked!');
-            runAutoScan();
-        };
+        analyzeBtn.addEventListener('click', runAutoScan);
         console.log('✅ analyzeBtn attached');
+    } else {
+        console.warn('❌ analyzeBtn not found');
     }
 
-    // 2. Execute / Place Limit Order Button
+    // 2. Execute Button
     const executeBtn = document.getElementById('executeBtn');
     if (executeBtn) {
-        executeBtn.onclick = function(e) {
-            console.log('⚡ Execute button clicked!');
-            handleLimit();
-        };
+        executeBtn.addEventListener('click', handleLimit);
         console.log('✅ executeBtn attached');
+    } else {
+        console.warn('❌ executeBtn not found');
     }
 
-    // 3. Cancel Limit Order Button
+    // 3. Cancel Limit Button
     const cancelLimitBtn = document.getElementById('cancelLimitBtn');
     if (cancelLimitBtn) {
-        cancelLimitBtn.onclick = function(e) {
-            console.log('❌ Cancel limit button clicked!');
-            cancelLimit();
-        };
+        cancelLimitBtn.addEventListener('click', cancelLimit);
         console.log('✅ cancelLimitBtn attached');
+    } else {
+        console.warn('❌ cancelLimitBtn not found');
     }
 
     // 4. Copy JSON Button
     const copyJsonBtn = document.getElementById('copyJsonBtn');
     if (copyJsonBtn) {
-        copyJsonBtn.onclick = function(e) {
-            console.log('📋 Copy JSON button clicked!');
-            copyJson();
-        };
+        copyJsonBtn.addEventListener('click', copyJson);
         console.log('✅ copyJsonBtn attached');
+    } else {
+        console.warn('❌ copyJsonBtn not found');
     }
 
-    // 5. Update API Keys Button
+    // 5. Update Keys Button
     const updateKeysBtn = document.getElementById('updateKeysBtn');
     if (updateKeysBtn) {
-        updateKeysBtn.onclick = function(e) {
-            console.log('🔑 Update keys button clicked!');
-            showSetup();
-        };
+        updateKeysBtn.addEventListener('click', showSetup);
         console.log('✅ updateKeysBtn attached');
+    } else {
+        console.warn('❌ updateKeysBtn not found');
     }
 
     // 6. Save Setup Button
     const saveSetupBtn = document.getElementById('saveSetupBtn');
     if (saveSetupBtn) {
-        saveSetupBtn.onclick = function(e) {
-            console.log('💾 Save setup button clicked!');
-            saveCurrentSetup();
-        };
+        saveSetupBtn.addEventListener('click', saveCurrentSetup);
         console.log('✅ saveSetupBtn attached');
+    } else {
+        console.warn('❌ saveSetupBtn not found');
     }
 
-    // 7. Pair Select Dropdown
+    // 7. Pair Select
     const pairSelect = document.getElementById('pairSelect');
     if (pairSelect) {
-        pairSelect.onchange = function(e) {
-            console.log('📊 Pair changed to:', e.target.value);
+        pairSelect.addEventListener('change', function(e) {
             pair = e.target.value;
             resetPairState();
-        };
+        });
         console.log('✅ pairSelect attached');
+    } else {
+        console.warn('❌ pairSelect not found');
     }
 
-    // 8. Category Buttons (Crypto, Forex, Metals)
+    // 8. Category Buttons
     const categoryBtns = document.querySelectorAll('.category-btn');
     if (categoryBtns.length > 0) {
         categoryBtns.forEach(function(b) {
-            b.onclick = function() {
-                console.log('📂 Category clicked:', this.dataset.category);
+            b.addEventListener('click', function() {
                 document.querySelectorAll('.category-btn').forEach(function(x) {
                     x.classList.remove('active');
                 });
                 this.classList.add('active');
                 updatePairs(this.dataset.category);
-            };
+            });
         });
         console.log('✅ categoryBtns attached (' + categoryBtns.length + ' buttons)');
+    } else {
+        console.warn('❌ categoryBtns not found');
     }
 
-    // 9. Recent List (event delegation)
+    // 9. Recent List
     const recentList = document.getElementById('recentList');
     if (recentList) {
-        recentList.onclick = handleRecentClick;
+        recentList.addEventListener('click', handleRecentClick);
         console.log('✅ recentList attached');
+    } else {
+        console.warn('❌ recentList not found');
     }
 
-    // 10. Journal List (event delegation)
+    // 10. Journal List
     const journalList = document.getElementById('journalList');
     if (journalList) {
-        journalList.onclick = handleJournalClick;
+        journalList.addEventListener('click', handleJournalClick);
         console.log('✅ journalList attached');
+    } else {
+        console.warn('❌ journalList not found');
     }
 
     // Render saved data
@@ -190,273 +243,30 @@ function init() {
     loadLimitOrder();
 
     // Initial price fetch
-    getPrice().then(p => {
+    getPrice().then(function(p) {
         if (p) {
             const priceEl = document.getElementById('currentPrice');
-            if (priceEl) priceEl.innerHTML = `$${p.toFixed(getPrec(pair))}`;
+            if (priceEl) priceEl.innerHTML = '$' + p.toFixed(getPrec(pair));
         }
     });
 
-    console.log('✅ Bot initialized successfully!');
-    console.log('📊 Current pair:', pair);
-    console.log('🔑 Twelve Data Key:', TWELVE_DATA_KEY ? '✅ Set' : '❌ Missing');
-    console.log('🔑 DeepSeek Key:', DEEPSEEK_API_KEY ? '✅ Set' : '❌ Missing');
+    console.log('✅ Bot initialized successfully! All buttons should work.');
 }
 
 // ============================================
-// HELPER FUNCTIONS
+// CONTINUE WITH ALL EXISTING FUNCTIONS
 // ============================================
-function getPrec(p) {
-    const s = getMarketSettings(p);
-    return s.prec;
-}
 
-function getMarketSettings(p) {
-    if (p.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.008, targetRR: 4, prec: 2, pipSize: 0.1, slBuffers: { '5M': 2, '15M': 3, '1H': 5, '4H': 8, '1D': 15 } };
-    if (p.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.01, targetRR: 4, prec: 2, pipSize: 0.01, slBuffers: { '5M': 0.03, '15M': 0.05, '1H': 0.08, '4H': 0.12, '1D': 0.20 } };
-    if (p.includes('JPY')) return { slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.005, targetRR: 4, prec: 3, pipSize: 0.01, slBuffers: { '5M': 0.08, '15M': 0.12, '1H': 0.20, '4H': 0.35, '1D': 0.60 } };
-    if (p === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.015, targetRR: 4, prec: 2, pipSize: 1, slBuffers: { '5M': 30, '15M': 50, '1H': 80, '4H': 120, '1D': 200 } };
-    return { slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.005, targetRR: 4, prec: 5, pipSize: 0.0001, slBuffers: { '5M': 0.0003, '15M': 0.0005, '1H': 0.0008, '4H': 0.0012, '1D': 0.0020 } };
-}
-
-function getTimeframeHierarchy(selectedTF) {
-    const hierarchy = {
-        '1D': ['1D', '4H', '1H', '15M'],
-        '4H': ['4H', '1H', '15M', '5M'],
-        '1H': ['1H', '15M', '5M', '5M'],
-        '15M': ['1H', '15M', '5M', '5M'],
-        '5M': ['15M', '5M', '5M', '5M']
-    };
-    return hierarchy[selectedTF] || ['4H', '1H', '15M', '5M'];
-}
-
-function getSLBufferForTF(apiATR, tfUsed, currentPair) {
-    const s = getMarketSettings(currentPair || pair);
-    const tfBuffer = s.slBuffers[tfUsed] || s.slBuffers['15M'] || 3;
-    return Math.max(tfBuffer, apiATR * 0.3);
-}
-
-function resetPairState() {
-    cachedPrice = null;
-    priceCacheTime = 0;
-    cachedPricePair = null;
-    lastPrice = null;
-    analysis = null;
-    const eb = document.getElementById('executeBtn');
-    if (eb && !limitOrder) eb.disabled = true;
-    const cp = document.getElementById('currentPrice');
-    if (cp) cp.innerHTML = '––';
-    const pc = document.getElementById('priceChange');
-    if (pc) {
-        pc.innerHTML = '–';
-        pc.className = 'price-change';
-    }
-}
-
-function updateTime() {
-    const n = new Date();
-    const el = document.getElementById('liveTime');
-    if (el) {
-        el.innerHTML = n.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
-            n.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    }
-}
-
-function updatePairs(cat) {
-    const p = {
-        crypto: ['BTC/USD'],
-        forex: ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD', 'USD/CHF', 'NZD/USD', 'EUR/GBP', 'EUR/JPY', 'GBP/JPY'],
-        metals: ['XAU/USD', 'XAG/USD']
-    };
-    const select = document.getElementById('pairSelect');
-    if (select) {
-        select.innerHTML = p[cat].map(x => `<option value="${x}">${getPairDisplayName(x)}</option>`).join('');
-        pair = p[cat][0];
-        resetPairState();
-    }
-}
-
-function getPairDisplayName(p) {
-    const icons = {
-        'BTC/USD': '₿ BTC/USD',
-        'EUR/USD': '€ EUR/USD',
-        'GBP/USD': '£ GBP/USD',
-        'USD/JPY': '💴 USD/JPY',
-        'AUD/USD': '🇦🇺 AUD/USD',
-        'USD/CAD': '🇨🇦 USD/CAD',
-        'USD/CHF': '🇨🇭 USD/CHF',
-        'NZD/USD': '🇳🇿 NZD/USD',
-        'EUR/GBP': '€/£ EUR/GBP',
-        'EUR/JPY': '€/¥ EUR/JPY',
-        'GBP/JPY': '£/¥ GBP/JPY',
-        'XAU/USD': '👑 XAU/USD',
-        'XAG/USD': '🥈 XAG/USD'
-    };
-    return icons[p] || '📊 ' + p;
-}
-
-// ============================================
-// API KEYS MANAGEMENT
-// ============================================
-async function loadKeys() {
-    const s = localStorage.getItem('ict_bot_keys');
-    if (s) {
-        try {
-            const k = JSON.parse(s);
-            TWELVE_DATA_KEY = k.twelveData || '';
-            DEEPSEEK_API_KEY = k.deepseek || '';
-            DEEPSEEK_API_URL = k.deepseekUrl || 'https://api.deepseek.com/chat/completions';
-            return true;
-        } catch (e) {}
-    }
-    return false;
-}
-
-async function saveKeys(tk, dk, du) {
-    localStorage.setItem('ict_bot_keys', JSON.stringify({ twelveData: tk, deepseek: dk, deepseekUrl: du }));
-    TWELVE_DATA_KEY = tk;
-    DEEPSEEK_API_KEY = dk;
-    DEEPSEEK_API_URL = du || 'https://api.deepseek.com/chat/completions';
-    updateKeyStatus();
-}
-
-function clearKeys() {
-    localStorage.removeItem('ict_bot_keys');
-    TWELVE_DATA_KEY = '';
-    DEEPSEEK_API_KEY = '';
-    DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
-    updateKeyStatus();
-    showNotif('🗑️ Keys removed', 'warning');
-}
-
-function updateKeyStatus() {
-    const ts = document.getElementById('twelveStatus');
-    const ds = document.getElementById('deepseekStatus');
-    if (ts) {
-        ts.innerHTML = TWELVE_DATA_KEY ? '✅ Active' : '❌ Missing';
-        ts.className = 'status-badge ' + (TWELVE_DATA_KEY ? 'active' : 'inactive');
-    }
-    if (ds) {
-        ds.innerHTML = DEEPSEEK_API_KEY ? '✅ Active (' + DEEPSEEK_API_KEY.substring(0, 5) + '...)' : '❌ Missing';
-        ds.className = 'status-badge ' + (DEEPSEEK_API_KEY ? 'active' : 'inactive');
-    }
-    const keyBtn = document.getElementById('updateKeysBtn');
-    if (keyBtn) {
-        keyBtn.innerHTML = (TWELVE_DATA_KEY && DEEPSEEK_API_KEY) ? '🔑 Manage Keys' : '🔑 Setup Keys';
-    }
-}
-
-function showSetup() {
-    const ex = document.getElementById('setupOverlay');
-    if (ex) ex.remove();
-    document.body.insertAdjacentHTML('beforeend', `
-        <div class="setup-overlay" id="setupOverlay">
-            <div class="setup-modal">
-                <h3>🔐 API Key Setup</h3>
-                <p class="setup-desc">Enter your API keys</p>
-                <label>📡 Twelve Data Key:</label>
-                <input type="password" id="twInput" class="setup-input" value="${TWELVE_DATA_KEY}">
-                <label>🤖 DeepSeek Key:</label>
-                <input type="password" id="dsInput" class="setup-input" value="${DEEPSEEK_API_KEY}">
-                <label>🌐 Custom AI URL:</label>
-                <input type="text" id="urlInput" class="setup-input" value="${DEEPSEEK_API_URL}">
-                <p class="setup-note">Get key from platform.deepseek.com</p>
-                <div class="setup-buttons">
-                    <button id="svBtn" class="setup-btn primary">💾 Save</button>
-                    <button id="clBtn" class="setup-btn danger">🗑️ Clear</button>
-                </div>
-                <button id="testAiBtn" class="setup-btn secondary" style="width:100%;margin-top:8px;">🧪 Test AI</button>
-                <button id="skBtn" class="setup-btn secondary" style="width:100%;margin-top:4px;">Close</button>
-                <div id="testResult" style="margin-top:8px;font-size:11px;color:#8e8e93;"></div>
-            </div>
-        </div>
-    `);
-
-    document.getElementById('svBtn').onclick = async function() {
-        const tk = document.getElementById('twInput').value.trim();
-        const dk = document.getElementById('dsInput').value.trim();
-        const du = document.getElementById('urlInput').value.trim();
-        if (!tk) { showNotif('⚠️ Twelve Data key required', 'warning'); return; }
-        await saveKeys(tk, dk, du);
-        document.getElementById('setupOverlay').remove();
-    };
-
-    document.getElementById('clBtn').onclick = function() {
-        clearKeys();
-        document.getElementById('twInput').value = '';
-        document.getElementById('dsInput').value = '';
-        document.getElementById('urlInput').value = '';
-    };
-
-    document.getElementById('testAiBtn').onclick = async function() {
-        const dk = document.getElementById('dsInput').value.trim();
-        const du = document.getElementById('urlInput').value.trim() || 'https://api.deepseek.com/chat/completions';
-        if (!dk) { document.getElementById('testResult').innerHTML = '❌ Enter key first'; return; }
-        document.getElementById('testResult').innerHTML = '🔄 Testing...';
-        try {
-            const r = await fetch(du, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${dk}`
-                },
-                body: JSON.stringify({
-                    model: 'deepseek-chat',
-                    messages: [{ role: 'user', content: 'Say OK' }],
-                    max_tokens: 5
-                })
-            });
-            const d = await r.json();
-            document.getElementById('testResult').innerHTML = d.choices ? '✅ AI working!' : '❌ Error: ' + (d.error?.message || 'Unknown');
-        } catch (e) {
-            document.getElementById('testResult').innerHTML = '❌ Connection failed';
-        }
-    };
-
-    document.getElementById('skBtn').onclick = function() {
-        document.getElementById('setupOverlay').remove();
-    };
-}
-
-// ============================================
-// SHOW NOTIFICATION
-// ============================================
-function showNotif(m, t) {
-    const n = document.getElementById('notification');
-    if (!n) {
-        console.warn('Notification element not found:', m);
-        return;
-    }
-    n.innerHTML = m;
-    n.className = `notification ${t}`;
-    n.classList.remove('hidden');
-    setTimeout(() => n.classList.add('hidden'), 3000);
-}
-
-// ============================================
-// COPY JSON
-// ============================================
-function copyJson() {
-    const el = document.getElementById('jsonOutput');
-    const t = el ? el.textContent : '';
-    if (!t || t.trim() === '{}' || t.trim() === '') {
-        showNotif('Run analysis first', 'warning');
-        return;
-    }
-    navigator.clipboard.writeText(t).then(() => showNotif('📋 Copied!', 'success')).catch(() => showNotif('Failed to copy', 'error'));
-}
-
-// ============================================
-// SET JSON OUTPUT
-// ============================================
-function setJsonOutput(obj) {
-    const el = document.getElementById('jsonOutput');
-    if (el) el.textContent = JSON.stringify(obj, null, 2);
-}
+function updateTime(){const n=new Date();document.getElementById('liveTime').innerHTML= `${n.toLocaleDateString('en-US',{month:'short',day:'numeric'})} ${n.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;}
+function updatePairs(cat){const p={crypto:['BTC/USD'],forex:['EUR/USD','GBP/USD','USD/JPY','AUD/USD','USD/CAD','USD/CHF','NZD/USD','EUR/GBP','EUR/JPY','GBP/JPY'],metals:['XAU/USD','XAG/USD']};document.getElementById('pairSelect').innerHTML=p[cat].map(x=>`<option value="${x}">${getPairDisplayName(x)}</option>`).join('');pair=p[cat][0];resetPairState();}
+function getPairDisplayName(p){const icons={'BTC/USD':'₿ BTC/USD','EUR/USD':'€ EUR/USD','GBP/USD':'£ GBP/USD','USD/JPY':'💴 USD/JPY','AUD/USD':'🇦🇺 AUD/USD','USD/CAD':'🇨🇦 USD/CAD','USD/CHF':'🇨🇭 USD/CHF','NZD/USD':'🇳🇿 NZD/USD','EUR/GBP':'€/£ EUR/GBP','EUR/JPY':'€/¥ EUR/JPY','GBP/JPY':'£/¥ GBP/JPY','XAU/USD':'👑 XAU/USD','XAG/USD':'🥈 XAG/USD'};return icons[p]||'📊 '+p;}
+function isForex(p){return['EUR/USD','GBP/USD','USD/JPY','AUD/USD','USD/CAD','USD/CHF', 'NZD/USD','EUR/GBP','EUR/JPY','GBP/JPY'].includes(p);}
+function getPrec(p){const s=getMarketSettings(p);return s.prec;}
 
 // ============================================
 // API FUNCTIONS
 // ============================================
+let rateLimitNotified = 0;
 async function fetchTD(pathAndQuery, timeoutMs = 10000) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -466,17 +276,13 @@ async function fetchTD(pathAndQuery, timeoutMs = 10000) {
         if (d.code === 429) {
             const src = document.getElementById('apiSource');
             if (src) src.innerHTML = '🔴 Rate limited';
-            if (Date.now() - rateLimitNotified > 30000) {
-                rateLimitNotified = Date.now();
-                showNotif('⏳ Twelve Data rate limit hit - wait a minute and rescan', 'warning');
-            }
+            if (Date.now() - rateLimitNotified > 30000) { rateLimitNotified = Date.now(); showNotif('⏳ Twelve Data rate limit hit - wait a minute and rescan', 'warning'); }
             throw new Error('Rate limited');
         }
         if (d.code && d.code !== 200) throw new Error(d.message || 'API Error');
         return d;
     } finally { clearTimeout(timer); }
 }
-
 async function getPrice(forPair) {
     const p = forPair || pair;
     const now = Date.now();
@@ -484,58 +290,68 @@ async function getPrice(forPair) {
     if (!TWELVE_DATA_KEY) return null;
     try {
         const d = await fetchTD(`/price?symbol=${encodeURIComponent(SYMBOLS[p])}`);
-        if (d.price) {
-            calls++;
-            const src = document.getElementById('apiSource');
-            if (src) src.innerHTML = '📡 Live';
-            cachedPrice = +d.price;
-            priceCacheTime = now;
-            cachedPricePair = p;
-            return cachedPrice;
-        }
-    } catch (e) {
-        if (cachedPrice !== null && cachedPricePair === p) return cachedPrice;
-    }
+        if (d.price) { calls++; document.getElementById('apiSource').innerHTML = '📡 Live'; cachedPrice = +d.price; priceCacheTime = now; cachedPricePair = p; return cachedPrice; }
+    } catch(e) { if (cachedPrice !== null && cachedPricePair === p) return cachedPrice; }
+    return null;
+}
+async function getQuote(tfStr){
+    if(!TWELVE_DATA_KEY)return null;
+    const interval = QUOTE_INTERVAL_MAP[tfStr] || '1day';
+    try{
+        const d=await fetchTD(`/quote?symbol=${encodeURIComponent(SYMBOLS[pair])}&interval=${interval}`);
+        if(d.open && d.close){calls++;return{open:+d.open,close:+d.close,is_market_open:d.is_market_open};}
+    }catch(e){ console.error(`Quote error (${tfStr}):`, e); }
     return null;
 }
 
-async function getHistory(tfStr, forPair) {
-    if (!TWELVE_DATA_KEY) return null;
+async function getLiveCandleDirection(tfStr, cachedData = null) {
     try {
-        const d = await fetchTD(`/time_series?symbol=${encodeURIComponent(SYMBOLS[forPair || pair])}&interval=${TF_MAP[tfStr]}&outputsize=100`);
-        if (d.values) {
-            calls++;
-            return d.values.map(c => ({
-                t: c.datetime,
-                o: +c.open,
-                h: +c.high,
-                l: +c.low,
-                c: +c.close,
-                v: +c.volume || 1e6
-            })).reverse();
-        }
-    } catch (e) {
-        console.error(`History error (${tfStr}):`, e);
-    }
-    return null;
+        const data = cachedData || await getHistory(tfStr);
+        if (!data || data.length < 2) return 'NEUTRAL';
+        const currentCandle = data[data.length - 1];
+        const currentPrice = await getPrice();
+        if (!currentPrice) return 'NEUTRAL';
+        if (currentPrice > currentCandle.o) return 'BULLISH';
+        if (currentPrice < currentCandle.o) return 'BEARISH';
+        return 'NEUTRAL';
+    } catch(e) { return 'NEUTRAL'; }
 }
 
-async function getTechnicalIndicators(tfUsed) {
-    if (!TWELVE_DATA_KEY) return {};
-    const symbol = encodeURIComponent(SYMBOLS[pair]);
-    const interval = TF_MAP[tfUsed];
-    const ind = {};
+async function getQuoteDirection(tfStr, cachedData = null) {
+    try {
+        const data = cachedData || await getHistory(tfStr);
+        if (data && data.length >= 50) return detectTrend(data);
+        else if (data && data.length >= 3) {
+            const closedCandle = data[data.length - 2];
+            if (closedCandle.c > closedCandle.o) return 'BULLISH';
+            if (closedCandle.c < closedCandle.o) return 'BEARISH';
+        }
+    } catch(e) {}
+    return 'NEUTRAL';
+}
+
+async function getHistory(tfStr, forPair){
+    if(!TWELVE_DATA_KEY)return null;
+    try{
+        const d=await fetchTD(`/time_series?symbol=${encodeURIComponent(SYMBOLS[forPair || pair])}&interval=${TF_MAP[tfStr]}&outputsize=100`);
+        if(d.values){calls++;return d.values.map(c=>({t:c.datetime,o:+c.open,h:+c.high,l:+c.low,c:+c.close,v:+c.volume||1e6})).reverse();}
+    }catch(e){ console.error(`History error (${tfStr}):`, e); }
+    return null;
+}
+async function getTechnicalIndicators(tfUsed){
+    if(!TWELVE_DATA_KEY)return{};
+    const symbol=encodeURIComponent(SYMBOLS[pair]), interval=TF_MAP[tfUsed], ind={};
     const endpoints = [
-        { name: 'rsi', url: `/rsi?symbol=${symbol}&interval=${interval}&time_period=14` },
-        { name: 'macd', url: `/macd?symbol=${symbol}&interval=${interval}` },
-        { name: 'adx', url: `/adx?symbol=${symbol}&interval=${interval}&time_period=14` },
-        { name: 'bbands', url: `/bbands?symbol=${symbol}&interval=${interval}&time_period=20` },
-        { name: 'stoch', url: `/stoch?symbol=${symbol}&interval=${interval}` },
-        { name: 'cci', url: `/cci?symbol=${symbol}&interval=${interval}&time_period=20` },
-        { name: 'atr', url: `/atr?symbol=${symbol}&interval=${interval}&time_period=14` },
-        { name: 'williams', url: `/williams?symbol=${symbol}&interval=${interval}&time_period=14` },
-        { name: 'sar', url: `/sar?symbol=${symbol}&interval=${interval}&acceleration=0.02&maximum=0.2` },
-        { name: 'ichimoku', url: `/ichimoku?symbol=${symbol}&interval=${interval}` }
+        {name: 'rsi', url: `/rsi?symbol=${symbol}&interval=${interval}&time_period=14`},
+        {name: 'macd', url: `/macd?symbol=${symbol}&interval=${interval}`},
+        {name: 'adx', url: `/adx?symbol=${symbol}&interval=${interval}&time_period=14`},
+        {name: 'bbands', url: `/bbands?symbol=${symbol}&interval=${interval}&time_period=20`},
+        {name: 'stoch', url: `/stoch?symbol=${symbol}&interval=${interval}`},
+        {name: 'cci', url: `/cci?symbol=${symbol}&interval=${interval}&time_period=20`},
+        {name: 'atr', url: `/atr?symbol=${symbol}&interval=${interval}&time_period=14`},
+        {name: 'williams', url: `/williams?symbol=${symbol}&interval=${interval}&time_period=14`},
+        {name: 'sar', url: `/sar?symbol=${symbol}&interval=${interval}&acceleration=0.02&maximum=0.2`},
+        {name: 'ichimoku', url: `/ichimoku?symbol=${symbol}&interval=${interval}`}
     ];
     await Promise.all(endpoints.map(async (e) => {
         try {
@@ -544,23 +360,15 @@ async function getTechnicalIndicators(tfUsed) {
             calls++;
             const v = d.values[0];
             if (e.name === 'rsi') ind.rsi = parseFloat(v.rsi);
-            if (e.name === 'macd') { ind.macd = parseFloat(v.macd);
-                ind.macd_signal = parseFloat(v.macd_signal);
-                ind.macd_hist = parseFloat(v.macd_hist); }
+            if (e.name === 'macd') { ind.macd = parseFloat(v.macd); ind.macd_signal = parseFloat(v.macd_signal); ind.macd_hist = parseFloat(v.macd_hist); }
             if (e.name === 'adx') ind.adx = parseFloat(v.adx);
-            if (e.name === 'bbands') { ind.bb_upper = parseFloat(v.upper_band);
-                ind.bb_middle = parseFloat(v.middle_band);
-                ind.bb_lower = parseFloat(v.lower_band); }
-            if (e.name === 'stoch') { ind.stoch_k = parseFloat(v.slow_k);
-                ind.stoch_d = parseFloat(v.slow_d); }
+            if (e.name === 'bbands') { ind.bb_upper = parseFloat(v.upper_band); ind.bb_middle = parseFloat(v.middle_band); ind.bb_lower = parseFloat(v.lower_band); }
+            if (e.name === 'stoch') { ind.stoch_k = parseFloat(v.slow_k); ind.stoch_d = parseFloat(v.slow_d); }
             if (e.name === 'cci') ind.cci = parseFloat(v.cci);
             if (e.name === 'atr') ind.atr_api = parseFloat(v.atr);
             if (e.name === 'williams') ind.williams_r = parseFloat(v.williams);
             if (e.name === 'sar') ind.sar = parseFloat(v.sar);
-            if (e.name === 'ichimoku') { ind.ichimoku_tenkan = parseFloat(v.tenkan_sen);
-                ind.ichimoku_kijun = parseFloat(v.kijun_sen);
-                ind.ichimoku_senkou_a = parseFloat(v.senkou_span_a);
-                ind.ichimoku_senkou_b = parseFloat(v.senkou_span_b); }
+            if (e.name === 'ichimoku') { ind.ichimoku_tenkan = parseFloat(v.tenkan_sen); ind.ichimoku_kijun = parseFloat(v.kijun_sen); ind.ichimoku_senkou_a = parseFloat(v.senkou_span_a); ind.ichimoku_senkou_b = parseFloat(v.senkou_span_b); }
         } catch (err) { console.error(`Error fetching ${e.name}:`, err); }
     }));
     return ind;
@@ -569,147 +377,33 @@ async function getTechnicalIndicators(tfUsed) {
 // ============================================
 // TECHNICALS MATH
 // ============================================
-const ema = (p, n) => {
-    const m = 2 / (n + 1);
-    let e = [], sum = 0;
-    for (let i = 0; i < p.length; i++) {
-        if (i < n) { sum += p[i];
-            e.push(sum / (i + 1)); } else e.push((p[i] - e[i - 1]) * m + e[i - 1]);
-    }
-    return e;
-};
-
-const rsi = (p, n = 14) => {
-    if (p.length < n + 1) return 50;
-    let g = 0, l = 0;
-    for (let i = 1; i <= n; i++) { const c = p[i] - p[i - 1];
-        c >= 0 ? g += c : l -= c; }
-    let ag = g / n, al = l / n;
-    for (let i = n + 1; i < p.length; i++) {
-        const c = p[i] - p[i - 1];
-        ag = (ag * (n - 1) + (c > 0 ? c : 0)) / n;
-        al = (al * (n - 1) + (c < 0 ? -c : 0)) / n;
-    }
-    return al === 0 ? 100 : 100 - (100 / (1 + ag / al));
-};
-
-const atr = (d, n = 14) => {
-    let t = [];
-    for (let i = 1; i < d.length; i++) t.push(Math.max(d[i].h - d[i].l, Math.abs(d[i].h - d[i - 1].c), Math.abs(d[i].l - d[i - 1].c)));
-    return t.slice(-n).reduce((a, b) => a + b, 0) / n;
-};
-
-function detectFVG(d) {
-    let f = [], active = [];
-    const len = d.length;
-    for (let i = 1; i < len - 1; i++) {
-        const next = d[i + 1];
-        if (active.length > 0) {
-            let keep = 0;
-            for (let k = 0; k < active.length; k++) {
-                let g = active[k];
-                if (g.type === 'bull') {
-                    if (next.c < g.l) g.fresh = false;
-                    else active[keep++] = g;
-                } else {
-                    if (next.c > g.h) g.fresh = false;
-                    else active[keep++] = g;
-                }
-            }
-            active.length = keep;
-        }
-        const prev = d[i - 1];
-        const thresh = next.c * 0.0005;
-        if (prev.h < next.l && next.l - prev.h > thresh) {
-            let g = { type: 'bull', l: prev.h, h: next.l, m: (prev.h + next.l) / 2, fresh: true };
-            f.push(g);
-            active.push(g);
-        }
-        if (prev.l > next.h && prev.l - next.h > thresh) {
-            let g = { type: 'bear', l: next.h, h: prev.l, m: (next.h + prev.l) / 2, fresh: true };
-            f.push(g);
-            active.push(g);
-        }
-    }
-    return f;
-}
-
-function findSwings(d, lb = 3) {
-    let H = [], L = [], h = d.map(c => c.h), l = d.map(c => c.l);
-    for (let i = lb; i < h.length - lb; i++) {
-        let iH = true, iL = true;
-        for (let j = 1; j <= lb; j++) {
-            if (h[i] <= h[i - j] || h[i] <= h[i + j]) iH = false;
-            if (l[i] >= l[i - j] || l[i] >= l[i + j]) iL = false;
-        }
-        if (iH) H.push({ p: h[i], i });
-        if (iL) L.push({ p: l[i], i });
-    }
-    return { H, L };
-}
-
-function detectMSS(d) {
-    if (d.length < 21) return null;
-    let h = d.map(c => c.h), l = d.map(c => c.l), c = d.map(c => c.c),
-        rH = Math.max(...h.slice(-21, -1)), rL = Math.min(...l.slice(-21, -1)),
-        cP = c[c.length - 1], dis = detectDisplacement(d, cP > rH ? 'BUY' : 'SELL');
-    if (cP > rH && dis.detected) return { type: 'BULL', level: rH, displaced: true };
-    if (cP < rL && dis.detected) return { type: 'BEAR', level: rL, displaced: true };
-    if (cP > rH) return { type: 'BULL', level: rH, displaced: false };
-    if (cP < rL) return { type: 'BEAR', level: rL, displaced: false };
-    return null;
-}
-
-function detectBreakers(d) {
-    let b = [], s = findSwings(d);
-    for (let i = 5; i < d.length - 5; i++) {
-        let c = d[i];
-        if (c.c > c.o) {
-            let r = s.H.find(h => h.i < i && h.p < c.c);
-            if (r) b.push({ type: 'BULL', p: r.p });
-        }
-        if (c.c < c.o) {
-            let sp = s.L.find(l => l.i < i && l.p > c.c);
-            if (sp) b.push({ type: 'BEAR', p: sp.p });
-        }
-    }
-    return b;
-}
-
+const ema=(p,n)=>{const m=2/(n+1);let e=[],sum=0;for(let i=0;i<p.length;i++){if(i<n){sum+=p[i];e.push(sum/(i+1));}else e.push((p[i]-e[i-1])*m+e[i-1]);}return e;};
+const rsi=(p,n=14)=>{if(p.length<n+1)return 50;let g=0,l=0;for(let i=1;i<=n;i++){const c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;for(let i=n+1;i<p.length;i++){const c=p[i]-p[i-1];ag=(ag*(n-1)+(c>0?c:0))/n;al=(al*(n-1)+(c<0?-c:0))/n;}return al===0?100:100-(100/(1+ag/al));};
+const atr=(d,n=14)=>{let t=[];for(let i=1;i<d.length;i++)t.push(Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c)));return t.slice(-n).reduce((a,b)=>a+b,0)/n;};
+function detectFVG(d){let f=[],active=[];const len=d.length;for(let i=1;i<len-1;i++){const next=d[i+1];if(active.length>0){let keep=0;for(let k=0;k<active.length;k++){let g=active[k];if(g.type==='bull'){if(next.c<g.l)g.fresh=false;else active[keep++]=g;}else{if(next.c>g.h)g.fresh=false;else active[keep++]=g;}}active.length=keep;}const prev=d[i-1];const thresh=next.c*0.0005;if(prev.h<next.l && next.l-prev.h>thresh){let g={type:'bull',l:prev.h,h:next.l,m:(prev.h+next.l)/2,fresh:true};f.push(g);active.push(g);}if(prev.l>next.h && prev.l-next.h>thresh){let g={type:'bear',l:next.h,h:prev.l,m:(next.h+prev.l)/2,fresh:true};f.push(g);active.push(g);}}return f;}
+function findSwings(d,lb=3){let H=[],L=[],h=d.map(c=>c.h),l=d.map(c=>c.l);for(let i=lb;i<h.length-lb;i++){let iH=true,iL=true;for(let j=1;j<=lb;j++){if(h[i]<=h[i-j]||h[i]<=h[i+j])iH=false;if(l[i]>=l[i-j]||l[i]>=l[i+j])iL=false;}if(iH)H.push({p:h[i],i});if(iL)L.push({p:l[i],i});}return{H,L};}
+function detectMSS(d){if(d.length<21)return null;let h=d.map(c=>c.h),l=d.map(c=>c.l),c=d.map(c=>c.c),rH=Math.max(...h.slice(-21,-1)),rL=Math.min(...l.slice(-21,-1)),cP=c[c.length-1],dis=detectDisplacement(d,cP>rH?'BUY':'SELL');if(cP>rH && dis.detected)return{type:'BULL',level:rH,displaced:true};if(cP<rL && dis.detected)return{type:'BEAR',level:rL,displaced:true};if(cP>rH)return{type:'BULL',level:rH,displaced:false};if(cP<rL)return{type:'BEAR',level:rL,displaced:false};return null;}
+function detectBreakers(d){let b=[],s=findSwings(d);for(let i=5;i<d.length-5;i++){let c=d[i];if(c.c>c.o){let r=s.H.find(h=>h.i<i && h.p<c.c);if(r)b.push({type:'BULL',p:r.p});}if(c.c<c.o){let sp=s.L.find(l=>l.i<i && l.p>c.c);if(sp)b.push({type:'BEAR',p:sp.p});}}return b;}
 function detectOrderBlocks(data, direction) {
     const obs = [];
     for (let i = 2; i < data.length - 1; i++) {
-        if (direction === 'BUY') {
-            if (data[i].c < data[i].o && data[i + 1].c > data[i + 1].o && data[i + 1].h > data[i].h && data[i + 1].c > data[i].h)
-                obs.push({ type: 'BULL_OB', high: data[i].h, low: data[i].l, close: data[i].c, open: data[i].o, index: i });
-        } else {
-            if (data[i].c > data[i].o && data[i + 1].c < data[i + 1].o && data[i + 1].l < data[i].l && data[i + 1].c < data[i].l)
-                obs.push({ type: 'BEAR_OB', high: data[i].h, low: data[i].l, close: data[i].c, open: data[i].o, index: i });
-        }
+        if (direction === 'BUY') { if (data[i].c < data[i].o && data[i+1].c > data[i+1].o && data[i+1].h > data[i].h && data[i+1].c > data[i].h) obs.push({ type: 'BULL_OB', high: data[i].h, low: data[i].l, close: data[i].c, open: data[i].o, index: i }); }
+        else { if (data[i].c > data[i].o && data[i+1].c < data[i+1].o && data[i+1].l < data[i].l && data[i+1].c < data[i].l) obs.push({ type: 'BEAR_OB', high: data[i].h, low: data[i].l, close: data[i].c, open: data[i].o, index: i }); }
     }
     return obs;
 }
-
-function detectTrend(data) {
-    const closes = data.map(c => c.c);
-    const e20 = ema(closes, 20), e50 = ema(closes, 50);
-    const cE20 = e20[e20.length - 1], cE50 = e50[e50.length - 1];
-    if (cE20 > cE50) return 'BULLISH';
-    if (cE20 < cE50) return 'BEARISH';
-    return 'NEUTRAL';
+function countZoneTouches(data, zone, direction) { let touches = 0; for (let i = data.length - 20; i < data.length; i++) { if (i < 0) continue; const c = data[i]; if (direction === 'BUY') { if (c.l <= zone.high && c.l >= zone.low) touches++; } else { if (c.h >= zone.low && c.h <= zone.high) touches++; } } return touches; }
+function detectTrend(data){const closes=data.map(c=>c.c);const e20=ema(closes,20),e50=ema(closes,50);const cE20=e20[e20.length-1],cE50=e50[e50.length-1];if(cE20>cE50)return'BULLISH';if(cE20<cE50)return'BEARISH';return'NEUTRAL';}
+function findPDArrays(data, direction) {
+    const arrays = [], fvgs = detectFVG(data), obs = detectOrderBlocks(data, direction), breakers = detectBreakers(data);
+    if (direction === 'BUY') { fvgs.filter(f => f.type === 'bull').forEach(f => arrays.push({ low: f.l, high: f.h, src: 'FVG' })); obs.forEach(o => arrays.push({ low: o.low, high: o.high, src: 'OB' })); breakers.filter(b => b.type === 'BULL').forEach(b => arrays.push({ low: b.p * 0.998, high: b.p * 1.002, src: 'Breaker' })); }
+    else { fvgs.filter(f => f.type === 'bear').forEach(f => arrays.push({ low: f.l, high: f.h, src: 'FVG' })); obs.forEach(o => arrays.push({ low: o.low, high: o.high, src: 'OB' })); breakers.filter(b => b.type === 'BEAR').forEach(b => arrays.push({ low: b.p * 0.998, high: b.p * 1.002, src: 'Breaker' })); }
+    return arrays;
 }
-
-function detectDisplacement(data, direction) {
-    if (data.length < 5) return { detected: false };
-    const lc = data.slice(-5);
-    const bodies = lc.map(c => Math.abs(c.c - c.o));
-    const avg = bodies.reduce((a, b) => a + b, 0) / bodies.length;
-    const lb = bodies[bodies.length - 1];
-    if (direction === 'BUY' && lb > avg * 2.5 && lc[4].c > lc[4].o) return { detected: true };
-    if (direction === 'SELL' && lb > avg * 2.5 && lc[4].c < lc[4].o) return { detected: true };
-    return { detected: false };
-}
-
+function isZoneWithinHTFArray(entryZone, htfArrays) { for (const arr of htfArrays) { if (entryZone.low >= arr.low && entryZone.high <= arr.high) return { contained: true, parentArray: arr }; if (entryZone.low <= arr.high && entryZone.high >= arr.low) return { contained: true, parentArray: arr, partial: true }; } return { contained: false, parentArray: null }; }
+function detectDisplacement(data,direction){if(data.length<5)return{detected:false};const lc=data.slice(-5);const bodies=lc.map(c=>Math.abs(c.c-c.o));const avg=bodies.reduce((a,b)=>a+b,0)/bodies.length;const lb=bodies[bodies.length-1];if(direction==='BUY' && lb>avg*2.5 && lc[4].c>lc[4].o)return{detected:true};if(direction==='SELL' && lb>avg*2.5 && lc[4].c<lc[4].o)return{detected:true};return{detected:false};}
+async function checkSniperRejection(zone,direction,sniperTF,cachedData=null){const dSn=cachedData||await getHistory(sniperTF);if(!dSn||dSn.length<3)return{confirmed:false};const lc=dSn[dSn.length-1];const body=Math.abs(lc.c-lc.o);if(direction==='BUY'){const wick=Math.min(lc.o,lc.c)-lc.l;const t=lc.l<=zone.high && lc.l>=zone.low;if(t && wick>body*2 && lc.c>lc.o)return{confirmed:true};}else{const wick=lc.h-Math.max(lc.o,lc.c);const t=lc.h>=zone.low && lc.h<=zone.high;if(t && wick>body*2 && lc.c<lc.o)return{confirmed:true};}return{confirmed:false};}
+function getVolatilityLevel(atrValue,price){const pct=(atrValue/price)*100;if(pct>0.8)return{level:'High - Impulsive',desc:'Large candles'};if(pct>0.4)return{level:'Moderate - Control',desc:'Normal'};return{level:'Low - Consolidation',desc:'Tight ranges'};}
 function detectLiquiditySweeps(data, currentPrice) {
     const sweeps = [];
     const a = atr(data, 14);
@@ -768,235 +462,145 @@ function detectLiquiditySweeps(data, currentPrice) {
     }
     return sweeps.sort((a, b) => a.distance - b.distance);
 }
-
-function detectTurtleSoup(data) {
-    if (data.length < 15) return { detected: false, type: null };
-    const rd = data.slice(-15);
-    const highs = rd.map(c => c.h), lows = rd.map(c => c.l), closes = rd.map(c => c.c), opens = rd.map(c => c.o);
-    const keyLow = Math.min(...lows.slice(0, -4));
-    const recentLow = lows[lows.length - 4];
-    const cc = closes[closes.length - 1];
-    const co = opens[opens.length - 1];
-    if (recentLow < keyLow * 0.999 && cc > keyLow && cc > co) return { detected: true, type: 'BUY', keyLevel: keyLow, sweptLevel: recentLow };
-    const keyHigh = Math.max(...highs.slice(0, -4));
-    const recentHigh = highs[highs.length - 4];
-    if (recentHigh > keyHigh * 1.001 && cc < keyHigh && cc < co) return { detected: true, type: 'SELL', keyLevel: keyHigh, sweptLevel: recentHigh };
-    return { detected: false, type: null };
-}
-
-function calculateMSNR(data, currentPrice) {
-    const highs = data.map(c => c.h), lows = data.map(c => c.l), closes = data.map(c => c.c);
-    const period = Math.min(data.length, 20);
-    const rH = Math.max(...highs.slice(-period)), rL = Math.min(...lows.slice(-period)), rC = closes[closes.length - 1];
-    const pp = (rH + rL + rC) / 3;
-    const s1 = pp * 2 - rH, s2 = pp - (rH - rL), s3 = rL - 2 * (rH - pp);
-    const r1 = pp * 2 - rL, r2 = pp + (rH - rL), r3 = rH + 2 * (pp - rL);
-    const ms1 = (s1 + s2) / 2, ms2 = (pp + s1) / 2, mr1 = (r1 + r2) / 2, mr2 = (pp + r1) / 2;
-    const allS = [s1, ms2, ms1, s2, s3].filter(s => s < currentPrice).sort((a, b) => b - a);
-    const allR = [r1, mr2, mr1, r2, r3].filter(r => r > currentPrice).sort((a, b) => a - b);
+function findImbalances(data){const im=[];for(let i=1;i<data.length-1;i++){if(data[i-1].l>data[i+1].h)im.push({type:'BULLISH',low:data[i+1].h,high:data[i-1].l});if(data[i-1].h<data[i+1].l)im.push({type:'BEARISH',low:data[i-1].h,high:data[i+1].l});}return im.slice(-5);}
+function detectTurtleSoup(data){if(data.length<15)return{detected:false,type:null};const rd=data.slice(-15);const highs=rd.map(c=>c.h),lows=rd.map(c=>c.l),closes=rd.map(c=>c.c),opens=rd.map(c=>c.o);const keyLow=Math.min(...lows.slice(0,-4));const recentLow=lows[lows.length-4];const cc=closes[closes.length-1];const co=opens[opens.length-1];if(recentLow<keyLow*0.999 && cc>keyLow && cc>co)return{detected:true,type:'BUY',keyLevel:keyLow,sweptLevel:recentLow};const keyHigh=Math.max(...highs.slice(0,-4));const recentHigh=highs[highs.length-4];if(recentHigh>keyHigh*1.001 && cc<keyHigh && cc<co)return{detected:true,type:'SELL',keyLevel:keyHigh,sweptLevel:recentHigh};return{detected:false,type:null};}
+function detectCRT(data, direction) {
+    if (data.length < 10) return { detected: false, pattern: 'Neutral', rangeRatio: 1 };
+    const lc = data.slice(-5);
+    const ranges = lc.map(c => c.h - c.l);
+    const avgRange = ranges.reduce((a, b) => a + b, 0) / ranges.length;
+    const lastRange = ranges[ranges.length - 1];
+    const expanding = lastRange > avgRange * 1.2;
+    const contracting = lastRange < avgRange * 0.7;
     return {
-        pivot: pp,
-        supports: { S1: s1, S2: s2, S3: s3, MS1: ms1, MS2: ms2 },
-        resistances: { R1: r1, R2: r2, R3: r3, MR1: mr1, MR2: mr2 },
-        nearestSupport: allS[0] || null,
-        nearestResistance: allR[0] || null,
-        allSupports: allS,
-        allResistances: allR
+        detected: true,
+        pattern: expanding ? 'Expanding' : (contracting ? 'Contracting' : 'Neutral'),
+        rangeRatio: (lastRange / avgRange).toFixed(2),
+        signal: expanding ? (direction === 'BUY' ? 'Bullish momentum' : 'Bearish momentum') :
+                (contracting ? 'Consolidation' : 'Neutral')
     };
 }
-
-function findPrecisionEntry(data, price, direction, msnr) {
-    const a = atr(data, 14), fvgs = detectFVG(data), breakers = detectBreakers(data),
-        swings = findSwings(data, 4), imbalances = findImbalances(data), orderBlocks = detectOrderBlocks(data, direction);
-    const RETEST_LOOKBACK_CANDLES = 15;
-    const recentCandles = data.slice(-RETEST_LOOKBACK_CANDLES);
-    const isEligibleFVG = fvg => fvg.fresh || recentCandles.some(candle => candle.l <= fvg.h && candle.h >= fvg.l);
-    const h = Math.max(...data.slice(-20).map(c => c.h)), l = Math.min(...data.slice(-20).map(c => c.l)), r = h - l;
-    const oteLow = direction === 'BUY' ? l + r * 0.21 : h - r * 0.382,
-        oteHigh = direction === 'BUY' ? l + r * 0.382 : h - r * 0.21;
-    let allZones = [];
+function checkPathClearance(entryData,entry,tp,direction){const obstacles=[];const fvgs=detectFVG(entryData);const swings=findSwings(entryData,3);if(direction==='BUY'){const bearFVGs=fvgs.filter(f=>f.type==='bear' && f.l>entry && f.l<tp);if(bearFVGs.length>0)obstacles.push('Bearish FVG');const swingHighs=swings.H.filter(s=>s.p>entry && s.p<tp);if(swingHighs.length>0)obstacles.push('Swing high');}else{const bullFVGs=fvgs.filter(f=>f.type==='bull' && f.h>tp && f.h<entry);if(bullFVGs.length>0)obstacles.push('Bullish FVG');const swingLows=swings.L.filter(s=>s.p>tp && s.p<entry);if(swingLows.length>0)obstacles.push('Swing low');}return{clear:obstacles.length===0,obstacles,count:obstacles.length};}
+function checkZoneReaction(data, zone, direction) {
+    if (data.length < 3) return { confirmed: false, type: 'none', strength: 'NONE' };
+    const last = data[data.length - 1], prev = data[data.length - 2], prev2 = data[data.length - 3];
     if (direction === 'BUY') {
-        fvgs.filter(f => f.type === 'bull' && f.l < price && isEligibleFVG(f)).forEach(f => {
-            let s = 30;
-            let cf = ['FVG'];
-            if (f.l >= oteLow && f.l <= oteHigh) { s += 35;
-                cf.push('OTE'); }
-            if (breakers.find(b => b.type === 'BULL' && Math.abs(b.p - f.l) < a * 0.5)) { s += 25;
-                cf.push('Breaker'); }
-            if (swings.L.find(x => Math.abs(x.p - f.l) < a * 0.3)) { s += 20;
-                cf.push('Swing'); }
-            if (msnr.nearestSupport && Math.abs(msnr.nearestSupport - f.l) < f.l * 0.003) { s += 20;
-                cf.push('MSNR'); }
-            if (imbalances.find(i => i.type === 'BULLISH' && Math.abs((i.low + i.high) / 2 - f.l) < f.l * 0.005)) { s += 25;
-                cf.push('Imbalance'); }
-            allZones.push({ low: f.l, high: f.h, p: (f.l + f.h) / 2, src: 'FVG', score: s, confluence: cf.join('+'), cc: cf.length, quality: s >= 75 ? 'A' : (s >= 50 ? 'B' : 'C'), hasImbalance: cf.includes('Imbalance') });
-        });
-        orderBlocks.filter(ob => ob.high < price).forEach(ob => {
-            let s = 35;
-            let cf = ['OrderBlock'];
-            if (ob.low >= oteLow && ob.low <= oteHigh) { s += 35;
-                cf.push('OTE'); }
-            if (swings.L.find(x => Math.abs(x.p - ob.low) < a * 0.3)) { s += 20;
-                cf.push('Swing'); }
-            if (msnr.nearestSupport && Math.abs(msnr.nearestSupport - ob.low) < ob.low * 0.003) { s += 20;
-                cf.push('MSNR'); }
-            if (imbalances.find(i => i.type === 'BULLISH' && Math.abs((i.low + i.high) / 2 - ob.low) < ob.low * 0.005)) { s += 25;
-                cf.push('Imbalance'); }
-            allZones.push({ low: ob.low, high: ob.high, p: (ob.low + ob.high) / 2, src: 'OB', score: s, confluence: cf.join('+'), cc: cf.length, quality: s >= 75 ? 'A' : (s >= 55 ? 'B' : 'C'), hasImbalance: cf.includes('Imbalance') });
-        });
-        for (const lvl of [msnr.allSupports?.[0], msnr.allSupports?.[1]].filter(v => v && v < price)) {
-            let s = lvl === msnr.allSupports?.[0] ? 40 : 35;
-            let cf = ['MSNR'];
-            if (fvgs.find(f => f.type === 'bull' && Math.abs(f.l - lvl) < lvl * 0.003)) { s += 25;
-                cf.push('FVG'); }
-            if (swings.L.find(x => Math.abs(x.p - lvl) < lvl * 0.003)) { s += 20;
-                cf.push('Swing'); }
-            if (imbalances.find(i => i.type === 'BULLISH' && Math.abs((i.low + i.high) / 2 - lvl) < lvl * 0.005)) { s += 25;
-                cf.push('Imbalance'); }
-            allZones.push({ low: lvl * 0.998, high: lvl * 1.002, p: lvl, src: 'MSNR', score: s, confluence: cf.join('+'), cc: cf.length, quality: s >= 65 ? 'A' : (s >= 50 ? 'B' : 'C'), hasImbalance: cf.includes('Imbalance') });
-        });
+        const wickedIntoZone = last.l <= zone.high && last.l >= zone.low, closedAbove = last.c > zone.high;
+        const bullishEngulf = last.c > last.o && prev.c < prev.o && last.c > prev.h;
+        const bullishPinbar = (last.c - last.l) > Math.abs(last.c - last.o) * 2 && last.c > last.o;
+        const msnrFakeout = last.l < zone.low && last.c > zone.low && bullishPinbar;
+        const rejectionInZone = (wickedIntoZone && (closedAbove || bullishPinbar || last.c > last.o)) || msnrFakeout;
+        const followThrough = last.c > prev.c && prev.c > prev2.c && last.c > last.o;
+        if (msnrFakeout && followThrough) return { confirmed: true, type: 'MSNR fakeout + momentum', strength: 'STRONG' };
+        if (bullishEngulf && followThrough) return { confirmed: true, type: 'bullish engulf + momentum', strength: 'STRONG' };
+        if (bullishEngulf) return { confirmed: true, type: 'bullish engulf', strength: 'STRONG' };
+        if (msnrFakeout) return { confirmed: true, type: 'MSNR fakeout sweep', strength: 'STRONG' };
+        if (rejectionInZone && followThrough) return { confirmed: true, type: 'zone rejection + momentum', strength: 'MODERATE' };
+        if (rejectionInZone) return { confirmed: true, type: 'zone rejection wick' , strength: 'MODERATE' };
+        if (last.c > prev.c && last.c > prev2.c && last.c > last.o) return { confirmed: true, type: 'momentum shift', strength: 'WEAK' };
+        return { confirmed: false, type: 'none', strength: 'NONE' };
     } else {
-        fvgs.filter(f => f.type === 'bear' && f.h > price && isEligibleFVG(f)).forEach(f => {
-            let s = 30;
-            let cf = ['FVG'];
-            if (f.h >= oteLow && f.h <= oteHigh) { s += 35;
-                cf.push('OTE'); }
-            if (breakers.find(b => b.type === 'BEAR' && Math.abs(b.p - f.h) < a * 0.5)) { s += 25;
-                cf.push('Breaker'); }
-            if (swings.H.find(x => Math.abs(x.p - f.h) < a * 0.3)) { s += 20;
-                cf.push('Swing'); }
-            if (msnr.nearestResistance && Math.abs(msnr.nearestResistance - f.h) < f.h * 0.003) { s += 20;
-                cf.push('MSNR'); }
-            if (imbalances.find(i => i.type === 'BEARISH' && Math.abs((i.low + i.high) / 2 - f.h) < f.h * 0.005)) { s += 25;
-                cf.push('Imbalance'); }
-            allZones.push({ low: f.l, high: f.h, p: (f.l + f.h) / 2, src: 'FVG', score: s, confluence: cf.join('+'), cc: cf.length, quality: s >= 75 ? 'A' : (s >= 50 ? 'B' : 'C'), hasImbalance: cf.includes('Imbalance') });
-        });
-        orderBlocks.filter(ob => ob.low > price).forEach(ob => {
-            let s = 35;
-            let cf = ['OrderBlock'];
-            if (ob.high >= oteLow && ob.high <= oteHigh) { s += 35;
-                cf.push('OTE'); }
-            if (swings.H.find(x => Math.abs(x.p - ob.high) < a * 0.3)) { s += 20;
-                cf.push('Swing'); }
-            if (msnr.nearestResistance && Math.abs(msnr.nearestResistance - ob.high) < ob.high * 0.003) { s += 20;
-                cf.push('MSNR'); }
-            if (imbalances.find(i => i.type === 'BEARISH' && Math.abs((i.low + i.high) / 2 - ob.high) < ob.high * 0.005)) { s += 25;
-                cf.push('Imbalance'); }
-            allZones.push({ low: ob.low, high: ob.high, p: (ob.low + ob.high) / 2, src: 'OB', score: s, confluence: cf.join('+'), cc: cf.length, quality: s >= 75 ? 'A' : (s >= 55 ? 'B' : 'C'), hasImbalance: cf.includes('Imbalance') });
-        });
-        for (const lvl of [msnr.allResistances?.[0], msnr.allResistances?.[1]].filter(v => v && v > price)) {
-            let s = lvl === msnr.allResistances?.[0] ? 40 : 35;
-            let cf = ['MSNR'];
-            if (fvgs.find(f => f.type === 'bear' && Math.abs(f.h - lvl) < lvl * 0.003)) { s += 25;
-                cf.push('FVG'); }
-            if (swings.H.find(x => Math.abs(x.p - lvl) < lvl * 0.003)) { s += 20;
-                cf.push('Swing'); }
-            if (imbalances.find(i => i.type === 'BEARISH' && Math.abs((i.low + i.high) / 2 - lvl) < lvl * 0.005)) { s += 25;
-                cf.push('Imbalance'); }
-            allZones.push({ low: lvl * 0.998, high: lvl * 1.002, p: lvl, src: 'MSNR', score: s, confluence: cf.join('+'), cc: cf.length, quality: s >= 65 ? 'A' : (s >= 50 ? 'B' : 'C'), hasImbalance: cf.includes('Imbalance') });
+        const wickedIntoZone = last.h >= zone.low && last.h <= zone.high, closedBelow = last.c < zone.low;
+        const bearishEngulf = last.c < last.o && prev.c > prev.o && last.c < prev.l;
+        const bearishPinbar = (last.h - last.c) > Math.abs(last.c - last.o) * 2 && last.c < last.o;
+        const msnrFakeout = last.h > zone.high && last.c < zone.high && bearishPinbar;
+        const rejectionInZone = (wickedIntoZone && (closedBelow || bearishPinbar || last.c < last.o)) || msnrFakeout;
+        const followThrough = last.c < prev.c && prev.c < prev2.c && last.c < last.o;
+        if (msnrFakeout && followThrough) return { confirmed: true, type: 'MSNR fakeout + momentum', strength: 'STRONG' };
+        if (bearishEngulf && followThrough) return { confirmed: true, type: 'bearish engulf + momentum', strength: 'STRONG' };
+        if (bearishEngulf) return { confirmed: true, type: 'bearish engulf', strength: 'STRONG' };
+        if (msnrFakeout) return { confirmed: true, type: 'MSNR fakeout sweep', strength: 'STRONG' };
+        if (rejectionInZone && followThrough) return { confirmed: true, type: 'zone rejection + momentum', strength: 'MODERATE' };
+        if (rejectionInZone) return { confirmed: true, type: 'zone rejection wick' , strength: 'MODERATE' };
+        if (last.c < prev.c && last.c < prev2.c && last.c < last.o) return { confirmed: true, type: 'momentum shift', strength: 'WEAK' };
+        return { confirmed: false, type: 'none', strength: 'NONE' };
+    }
+}
+function checkZoneMagnetism(entryData, price, entry, direction, zone = null) {
+    const imbalances = findImbalances(entryData), sweeps = detectLiquiditySweeps(entryData, price);
+    let score = 0; const checks = [];
+    if (direction === 'BUY') { const pullingImbalances = imbalances.filter(i => i.type === 'BEARISH' && i.low > entry && i.high < price); if (pullingImbalances.length > 0) { score += 30; checks.push({name: 'Imbalance pulling toward zone', passed: true, detail: `${pullingImbalances.length} bearish imbalance(s) magnet`}); } else { checks.push({name: 'Imbalance pulling toward zone', passed: false, detail: 'No imbalance magnet'}); } }
+    else { const pullingImbalances = imbalances.filter(i => i.type === 'BULLISH' && i.low > price && i.high < entry); if (pullingImbalances.length > 0) { score += 30; checks.push({name: 'Imbalance pulling toward zone', passed: true, detail: `${pullingImbalances.length} bullish imbalance(s) magnet`}); } else { checks.push({name: 'Imbalance pulling toward zone', passed: false, detail: 'No imbalance magnet'}); } }
+    const supportingSweeps = sweeps.filter(s => direction === 'BUY' ? s.direction === 'BULLISH' : s.direction === 'BEARISH');
+    if (supportingSweeps.length > 0) { score += 25; checks.push({name: 'Sweeps support direction', passed: true, detail: `${supportingSweeps.length} sweep(s)`}); } else { checks.push({name: 'Sweeps support direction', passed: false, detail: 'No supporting sweeps'}); }
+    const closes = entryData.map(c => c.c), e20 = ema(closes, 20), e50 = ema(closes, 50);
+    const cE20 = e20[e20.length - 1], cE50 = e50[e50.length - 1], prevE20 = e20[e20.length - 3];
+    if (direction === 'BUY' && cE20 > cE50 && cE20 > prevE20) { score += 20; checks.push({name: 'EMA momentum aligned', passed: true, detail: 'Bullish momentum'}); }
+    else if (direction === 'SELL' && cE20 < cE50 && cE20 < prevE20) { score += 20; checks.push({name: 'EMA momentum aligned', passed: true, detail: 'Bearish momentum'}); }
+    else { checks.push({name: 'EMA momentum aligned', passed: false, detail: 'Not aligned'}); }
+    const distancePct = Math.abs(price - entry) / price * 100;
+    if (distancePct < 0.3) { score += 15; checks.push({name: 'Zone proximity', passed: true, detail: `Very close (${distancePct.toFixed(2)}%)`}); }
+    else if (distancePct < 0.8) { score += 10; checks.push({name: 'Zone proximity', passed: true, detail: `Reachable (${distancePct.toFixed(2)}%)`}); }
+    else if (distancePct < 2.0) { score += 5; checks.push({name: 'Zone proximity', passed: true, detail: `Extended (${distancePct.toFixed(2)}%)`}); }
+    else { checks.push({name: 'Zone proximity', passed: false, detail: `Very far (${distancePct.toFixed(2)}%)`}); }
+    if (zone) {
+        const zoneConfluence = typeof zone.confluence === 'string' ? zone.confluence : '';
+        const isPrimaryMethodZone = zone.src === 'MSNR' || zoneConfluence.includes('MSNR');
+        if (isPrimaryMethodZone && zone.cc >= 2) {
+            score += 25;
+            checks.push({name: 'Primary-method zone', passed: true, detail: `${zone.src} ${zoneConfluence}`});
+        } else if (zone.quality === 'A') {
+            score += 25;
+            checks.push({name: 'High-quality zone', passed: true, detail: 'A-grade zone nearby'});
+        } else if (zone.quality === 'B' && zone.cc >= 2) {
+            score += 25;
+            checks.push({name: 'High-quality zone', passed: true, detail: 'B-grade multi-confluence zone nearby'});
+        } else {
+            checks.push({name: 'High-quality zone', passed: false, detail: 'Single-confluence or weak zone'});
         }
     }
-    const tsSig = detectTurtleSoup(data);
-    if (tsSig.detected && tsSig.type === direction) {
-        for (const z of allZones) {
-            if (Math.abs(z.p - tsSig.keyLevel) < price * 0.004) { z.score += 25;
-                z.confluence += '+TBS';
-                z.cc++;
-                z.quality = z.score >= 75 ? 'A' : (z.score >= 55 ? 'B' : 'C'); }
+    const displacement = detectDisplacement(entryData, direction);
+    if (displacement.detected) { score += 10; checks.push({name: 'Displacement momentum', passed: true, detail: 'Detected'}); } else { checks.push({name: 'Displacement momentum', passed: false, detail: 'None'}); }
+    const magnetism = score >= 60 ? 'STRONG' : (score >= 35 ? 'MODERATE' : 'WEAK');
+    return { magnetism, score, maxScore: 100, checks, likelyToReach: score >= 35, summary: `Zone magnetism: ${magnetism} (${score}/100)` };
+}
+async function checkHTFConfluenceAsync(dailyData, h4Data, entryDirection) { const dailyDir = await getQuoteDirection('1D', dailyData), h4Dir = await getQuoteDirection('4H', h4Data), entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH', againstDir = entryDirection === 'BUY' ? 'BEARISH' : 'BULLISH'; if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 }; if (dailyDir === entryDir || h4Dir === entryDir) return { level: 'PARTIAL', daily: dailyDir, h4: h4Dir, penalty: dailyDir === entryDir ? 8 : 15, alignedTF: dailyDir === entryDir ? '1D' : '4H' }; if (dailyDir === 'NEUTRAL' && h4Dir === 'NEUTRAL') return { level: 'NEUTRAL', daily: dailyDir, h4: h4Dir, penalty: 5 };
+if ((dailyDir === 'NEUTRAL' && h4Dir === againstDir) || (dailyDir === againstDir && h4Dir === 'NEUTRAL')) return { level: 'PARTIAL', daily: dailyDir, h4: h4Dir, penalty: 12, alignedTF: null }; return { level: 'CONFLICT', daily: dailyDir, h4: h4Dir, penalty: 30 }; }
+function calculateMSNR(data,currentPrice){const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);const period=Math.min(data.length,20);const rH=Math.max(...highs.slice(-period)),rL=Math.min(...lows.slice(-period)),rC=closes[closes.length-1];const pp=(rH+rL+rC)/3;const s1=pp*2-rH,s2=pp-(rH-rL),s3=rL-2*(rH-pp);const r1=pp*2-rL,r2=pp+(rH-rL),r3=rH+2*(pp-rL);const ms1=(s1+s2)/2,ms2=(pp+s1)/2,mr1=(r1+r2)/2,mr2=(pp+r1)/2;const allS=[s1,ms2,ms1,s2,s3].filter(s=>s<currentPrice).sort((a,b)=>b-a);const allR=[r1,mr2,mr1,r2,r3].filter(r=>r>currentPrice).sort((a,b)=>a-b);return{pivot:pp,supports:{S1:s1,S2:s2,S3:s3,MS1:ms1,MS2:ms2},resistances:{R1:r1,R2:r2,R3:r3,MR1:mr1,MR2:mr2},nearestSupport:allS[0]||null,nearestResistance:allR[0]||null,allSupports:allS,allResistances:allR};}
+function findPrecisionEntry(data,price,direction,msnr){
+    const a=atr(data,14),fvgs=detectFVG(data),breakers=detectBreakers(data),swings=findSwings(data,4),imbalances=findImbalances(data),orderBlocks=detectOrderBlocks(data,direction);
+    const RETEST_LOOKBACK_CANDLES=15;
+    const recentCandles=data.slice(-RETEST_LOOKBACK_CANDLES);
+    const isEligibleFVG=fvg=>fvg.fresh || recentCandles.some(candle=>candle.l<=fvg.h && candle.h>=fvg.l);
+    const h=Math.max(...data.slice(-20).map(c=>c.h)),l=Math.min(...data.slice(-20).map(c=>c.l)),r=h-l;
+    const oteLow = direction==='BUY' ? l+r*0.21 : h-r*0.382, oteHigh = direction==='BUY' ? l+r*0.382 : h-r*0.21;
+    let allZones=[];
+    if(direction==='BUY'){
+        fvgs.filter(f=>f.type==='bull' && f.l<price && isEligibleFVG(f)).forEach(f=>{let s=30;let cf=['FVG'];if(f.l>=oteLow && f.l<=oteHigh){s+=35;cf.push('OTE');}if(breakers.find(b=>b.type==='BULL' && Math.abs(b.p-f.l)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.L.find(x=>Math.abs(x.p-f.l)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport && Math.abs(msnr.nearestSupport-f.l)<f.l*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH' && Math.abs((i.low+i.high)/2-f.l)<f.l*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
+        orderBlocks.filter(ob=>ob.high<price).forEach(ob=>{let s=35;let cf=['OrderBlock'];if(ob.low>=oteLow && ob.low<=oteHigh){s+=35;cf.push('OTE');}if(swings.L.find(x=>Math.abs(x.p-ob.low)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestSupport && Math.abs(msnr.nearestSupport-ob.low)<ob.low*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BULLISH' && Math.abs((i.low+i.high)/2-ob.low)<ob.low*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:ob.low,high:ob.high,p:(ob.low+ob.high)/2,src:'OB',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
+        for(const lvl of [msnr.allSupports?.[0], msnr.allSupports?.[1]].filter(v=>v && v<price)){let s=lvl===msnr.allSupports?.[0]?40:35;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bull' && Math.abs(f.l-lvl)<lvl*0.003)){s+=25;cf.push('FVG');}if(swings.L.find(x=>Math.abs(x.p-lvl)<lvl*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BULLISH' && Math.abs((i.low+i.high)/2-lvl)<lvl*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:lvl*0.998,high:lvl*1.002,p:lvl,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}
+    } else {
+        fvgs.filter(f=>f.type==='bear' && f.h>price && isEligibleFVG(f)).forEach(f=>{let s=30;let cf=['FVG'];if(f.h>=oteLow && f.h<=oteHigh){s+=35;cf.push('OTE');}if(breakers.find(b=>b.type==='BEAR' && Math.abs(b.p-f.h)<a*0.5)){s+=25;cf.push('Breaker');}if(swings.H.find(x=>Math.abs(x.p-f.h)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance && Math.abs(msnr.nearestResistance-f.h)<f.h*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH' && Math.abs((i.low+i.high)/2-f.h)<f.h*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:f.l,high:f.h,p:(f.l+f.h)/2,src:'FVG',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
+        orderBlocks.filter(ob=>ob.low>price).forEach(ob=>{let s=35;let cf=['OrderBlock'];if(ob.high>=oteLow && ob.high<=oteHigh){s+=35;cf.push('OTE');}if(swings.H.find(x=>Math.abs(x.p-ob.high)<a*0.3)){s+=20;cf.push('Swing');}if(msnr.nearestResistance && Math.abs(msnr.nearestResistance-ob.high)<ob.high*0.003){s+=20;cf.push('MSNR');}if(imbalances.find(i=>i.type==='BEARISH' && Math.abs((i.low+i.high)/2-ob.high)<ob.high*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:ob.low,high:ob.high,p:(ob.low+ob.high)/2,src:'OB',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=75?'A':(s>=55?'B':'C'),hasImbalance:cf.includes('Imbalance')});});
+        for(const lvl of [msnr.allResistances?.[0], msnr.allResistances?.[1]].filter(v=>v && v>price)){let s=lvl===msnr.allResistances?.[0]?40:35;let cf=['MSNR'];if(fvgs.find(f=>f.type==='bear' && Math.abs(f.h-lvl)<lvl*0.003)){s+=25;cf.push('FVG');}if(swings.H.find(x=>Math.abs(x.p-lvl)<lvl*0.003)){s+=20;cf.push('Swing');}if(imbalances.find(i=>i.type==='BEARISH' && Math.abs((i.low+i.high)/2-lvl)<lvl*0.005)){s+=25;cf.push('Imbalance');}allZones.push({low:lvl*0.998,high:lvl*1.002,p:lvl,src:'MSNR',score:s,confluence:cf.join('+'),cc:cf.length,quality:s>=65?'A':(s>=50?'B':'C'),hasImbalance:cf.includes('Imbalance')});}
+    }
+    const tsSig=detectTurtleSoup(data);
+    if(tsSig.detected && tsSig.type===direction){
+        for(const z of allZones){
+            if(Math.abs(z.p-tsSig.keyLevel)<price*0.004){z.score+=25;z.confluence+='+TBS';z.cc++;z.quality=z.score>=75?'A':(z.score>=55?'B':'C');}
         }
     }
-    allZones.sort((x, y) => y.score - x.score);
-    if (allZones.length > 0) {
-        const cands = [];
-        for (const z of allZones) {
-            const zp = (z.low + z.high) / 2;
-            if (cands.some(c => Math.abs(c.p - zp) < zp * 0.002)) continue;
-            cands.push({ low: z.low, high: z.high, p: zp, src: z.src, confluence: z.confluence, cc: z.cc, quality: z.quality, hasImbalance: z.hasImbalance });
-            if (cands.length >= 8) break;
+    allZones.sort((x,y)=>y.score-x.score);
+    if(allZones.length>0){
+        const cands=[];
+        for(const z of allZones){
+            const zp=(z.low+z.high)/2;
+            if(cands.some(c=>Math.abs(c.p-zp)<zp*0.002))continue;
+            cands.push({low:z.low,high:z.high,p:zp,src:z.src,confluence:z.confluence,cc:z.cc,quality:z.quality,hasImbalance:z.hasImbalance});
+            if(cands.length>=8)break;
         }
-        const b = cands[0];
-        b.candidates = cands;
-        return b;
+        const b=cands[0];b.candidates=cands;return b;
     }
-    if (direction === 'BUY') { const low = l + r * .21,
-            high = l + r * .382; return { low, high, p: (low + high) / 2, src: 'OTE', confluence: 'OTE', cc: 1, quality: 'C', hasImbalance: false }; } else { const low = h - r * .382,
-            high = h - r * .21; return { low, high, p: (low + high) / 2, src: 'OTE', confluence: 'OTE', cc: 1, quality: 'C', hasImbalance: false }; }
+    if(direction==='BUY'){const low=l+r*.21,high=l+r*.382;return{low,high,p:(low+high)/2,src:'OTE',confluence:'OTE',cc:1,quality:'C',hasImbalance:false};}
+    else {const low=h-r*.382,high=h-r*.21;return{low,high,p:(low+high)/2,src:'OTE',confluence:'OTE',cc:1,quality:'C',hasImbalance:false};}
 }
-
-function findImbalances(data) {
-    const im = [];
-    for (let i = 1; i < data.length - 1; i++) {
-        if (data[i - 1].l > data[i + 1].h) im.push({ type: 'BULLISH', low: data[i + 1].h, high: data[i - 1].l });
-        if (data[i - 1].h < data[i + 1].l) im.push({ type: 'BEARISH', low: data[i - 1].h, high: data[i + 1].l });
-    }
-    return im.slice(-5);
-}
-
-function checkZoneFreshness(data, zone, direction) {
-    let touches = 0, violations = 0;
-    const lookback = Math.min(50, data.length);
-    for (let i = data.length - lookback; i < data.length; i++) {
-        if (i < 0) continue;
-        const inZone = data[i].l <= zone.high && data[i].h >= zone.low;
-        if (!inZone) continue;
-        touches++;
-        if (direction === 'BUY' && data[i].c < zone.low) violations++;
-        if (direction === 'SELL' && data[i].c > zone.high) violations++;
-    }
-    const fresh = touches <= 2 && violations === 0,
-        partiallyUsed = touches <= 5 && violations <= 1,
-        used = touches > 5 || violations > 1;
-    return { fresh, partiallyUsed, used, touches, violations };
-}
-
-function getVolatilityLevel(atrValue, price) {
-    const pct = (atrValue / price) * 100;
-    if (pct > 0.8) return { level: 'High - Impulsive', desc: 'Large candles' };
-    if (pct > 0.4) return { level: 'Moderate - Control', desc: 'Normal' };
-    return { level: 'Low - Consolidation', desc: 'Tight ranges' };
-}
-
-function getSession() {
-    const now = new Date();
-    const hour = now.getUTCHours();
-    const min = now.getUTCMinutes();
-    const time = hour + min / 60;
-    let estHour = hour - 4;
-    if (estHour < 0) estHour += 24;
-    let s = { session: 'OFF-HOURS', multiplier: 0.5, emoji: '🌙', isKillzone: false, isSilverBullet: false, isMacro: false };
-    if (time >= 0 && time < 4) s = { ...s, session: 'ASIA KZ', multiplier: 0.8, emoji: '🌏', isKillzone: true };
-    else if (time >= 7 && time < 10) s = { ...s, session: 'LONDON KZ', multiplier: 1.3, emoji: '🇬🇧', isKillzone: true };
-    else if (time >= 12 && time < 15) s = { ...s, session: 'NEW_YORK KZ', multiplier: 1.2, emoji: '🇺🇸', isKillzone: true };
-    else if (time >= 15 && time < 17) s = { ...s, session: 'LON-CLOSE KZ', multiplier: 0.9, emoji: '🌆', isKillzone: true };
-    if ((time >= 8.5 && time < 9) || (time >= 15 && time < 16) || (time >= 19 && time < 20)) {
-        s.isSilverBullet = true;
-        s.multiplier += 0.2;
-        s.emoji = '🏹';
-        s.session += ' + SB';
-    }
-    const estTime = estHour + min / 60;
-    const isAM_Macro1 = (estTime >= 9.83 && estTime <= 10.16);
-    const isAM_Macro2 = (estTime >= 10.83 && estTime <= 11.16);
-    const isPM_Macro1 = (estTime >= 11.83 && estTime <= 12.16);
-    const isPM_Macro2 = (estTime >= 13.16 && estTime <= 13.83);
-    const isClose_Macro = (estTime >= 15.25 && estTime <= 15.75);
-    if (isAM_Macro1 || isAM_Macro2 || isPM_Macro1 || isPM_Macro2 || isClose_Macro) {
-        s.isMacro = true;
-        s.multiplier += 0.3;
-        s.emoji = '🔥';
-        s.session += ' (MACRO)';
-    }
-    return s;
-}
+function checkProbability(zone,mtf,magnetism){const checks=[];checks.push({name:'Confluence (2+)',passed:zone.cc>=2,critical:true});checks.push({name:'MTF aligned (2+)',passed:mtf.strength>=2,critical:true});checks.push({name:'Zone Magnetism',passed:magnetism.likelyToReach,critical:true});checks.push({name:'Imbalance Magnet',passed:zone.hasImbalance,critical:false});checks.push({name:'Quality A/B',passed:zone.quality==='A'||zone.quality==='B',critical:false});const cp=checks.filter(c=>c.critical).every(c=>c.passed);const tp=checks.filter(c=>c.passed).length;return{probability:cp?(tp>=4?'HIGH':(tp>=3?'MEDIUM':'LOW')):'LOW',checks,totalPassed:tp,passed:cp};}
 
 function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, currentPair) {
     const apiATR = twelveIndicators?.atr_api || atr(data, 14);
     const s = getMarketSettings(currentPair || pair);
     const maxSLD = entry * s.maxSLPct;
-    const atrMultiplier = 1.2;
-    const slBuffer = Math.max(apiATR * atrMultiplier, s.slBuffer);
-    const minSL = s.minSL;
-    const maxSL = Math.min(apiATR * 2.0, maxSLD);
+    const slBuf = getSLBufferForTF(apiATR, tfUsed, currentPair || pair);
 
     const swings = findSwings(data, 3);
     const fvgs = detectFVG(data);
@@ -1005,31 +609,27 @@ function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, cu
     let candidates = [];
     const addCand = (price, reason) => {
         const dist = dir === 'BUY' ? entry - price : price - entry;
-        if (dist > minSL && dist <= maxSL && dist <= maxSLD) {
+        if (dist > 0 && dist <= maxSLD && dist <= apiATR * 2.0) {
             candidates.push({ price, reason, dist });
         }
     };
 
     if (dir === 'BUY') {
-        if (zone && zone.low < entry) addCand(zone.low - slBuffer * 0.5, 'Below Zone');
-        swings.L.filter(x => x.p < entry).forEach(x => addCand(x.p - slBuffer, 'Below Swing'));
-        obs.filter(ob => ob.low < entry).forEach(ob => addCand(ob.low - slBuffer, 'Below OB'));
-        fvgs.filter(f => f.type === 'bull' && f.l < entry).forEach(f => addCand(f.l - slBuffer * 0.5, 'Below FVG'));
+        if (zone && zone.low < entry) addCand(zone.low - slBuf * 0.5, 'Below Zone');
+        swings.L.filter(x => x.p < entry).forEach(x => addCand(x.p - slBuf, 'Below Swing'));
+        obs.filter(ob => ob.low < entry).forEach(ob => addCand(ob.low - slBuf, 'Below OB'));
+        fvgs.filter(f => f.type === 'bull' && f.l < entry).forEach(f => addCand(f.l - slBuf * 0.5, 'Below FVG'));
         if (msnr && msnr.allSupports) {
-            msnr.allSupports.filter(x => x < entry).forEach(x => addCand(x - slBuffer, 'Below MSNR'));
+            msnr.allSupports.filter(x => x < entry).forEach(x => addCand(x - slBuf, 'Below MSNR'));
         }
-        const crtRange = { low: Math.min(...data.slice(-20).map(c => c.l)) };
-        addCand(crtRange.low - apiATR * 0.3, 'CRT Extreme');
     } else {
-        if (zone && zone.high > entry) addCand(zone.high + slBuffer * 0.5, 'Above Zone');
-        swings.H.filter(x => x.p > entry).forEach(x => addCand(x.p + slBuffer, 'Above Swing'));
-        obs.filter(ob => ob.high > entry).forEach(ob => addCand(ob.high + slBuffer, 'Above OB'));
-        fvgs.filter(f => f.type === 'bear' && f.h > entry).forEach(f => addCand(f.h + slBuffer * 0.5, 'Above FVG'));
+        if (zone && zone.high > entry) addCand(zone.high + slBuf * 0.5, 'Above Zone');
+        swings.H.filter(x => x.p > entry).forEach(x => addCand(x.p + slBuf, 'Above Swing'));
+        obs.filter(ob => ob.high > entry).forEach(ob => addCand(ob.high + slBuf, 'Above OB'));
+        fvgs.filter(f => f.type === 'bear' && f.h > entry).forEach(f => addCand(f.h + slBuf * 0.5, 'Above FVG'));
         if (msnr && msnr.allResistances) {
-            msnr.allResistances.filter(x => x > entry).forEach(x => addCand(x + slBuffer, 'Above MSNR'));
+            msnr.allResistances.filter(x => x > entry).forEach(x => addCand(x + slBuf, 'Above MSNR'));
         }
-        const crtRange = { high: Math.max(...data.slice(-20).map(c => c.h)) };
-        addCand(crtRange.high + apiATR * 0.3, 'CRT Extreme');
     }
 
     if (candidates.length > 0) {
@@ -1038,9 +638,9 @@ function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, cu
         return { price: best.price, reason: best.reason, distance: best.dist };
     }
 
-    const finalDist = Math.max(Math.min(apiATR * 1.0, maxSL), apiATR * 0.5);
+    const finalDist = Math.min(apiATR * 0.6, maxSLD);
     const finalSL = dir === 'BUY' ? entry - finalDist : entry + finalDist;
-    return { price: finalSL, reason: `ATR ${apiATR.toFixed(2)} x 1.0`, distance: finalDist };
+    return { price: finalSL, reason: 'ATR Baseline', distance: finalDist };
 }
 
 function calcTakeProfits(dir, entry, sl) {
@@ -1048,6 +648,7 @@ function calcTakeProfits(dir, entry, sl) {
     const settings = getMarketSettings(pair);
     const rr = settings.targetRR || 4;
     const rr1 = rr, rr2 = rr + 1, rr3 = rr + 2;
+
     if (dir === 'BUY') {
         return { tp1: entry + risk * rr1, tp2: entry + risk * rr2, tp3: entry + risk * rr3, rrUsed: rr1 };
     } else {
@@ -1100,10 +701,242 @@ function recomputeTradeLevels(best, zoneLow, zoneHigh, price, currentPair, candl
         }
     };
 }
+function score(data,price,twelveIndicators){
+    const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl),fv=detectFVG(data),ms=detectMSS(data),bk=detectBreakers(data);
+    const e20=ema(cl,20),e50=ema(cl,50),cE20=e20[e20.length-1],cE50=e50[e50.length-1];
+    const bF=fv.filter(f=>f.type==='bull' && f.l<price).sort((a,b)=>b.l-a.l), sF=fv.filter(f=>f.type==='bear' && f.h>price).sort((a,b)=>a.h-b.h);
+    const bB=bk.filter(b=>b.type==='BULL' && b.p<price), sB=bk.filter(b=>b.type==='BEAR' && b.p>price);
+    let bS=0,sS=0,bR=[],sR=[];
+    if(ms?.type==='BULL'){bS+=20;bR.push('MSS Bull');} else if(ms?.type==='BEAR'){sS+=20;sR.push('MSS Bear');}
+    if(bF.length){bS+=15;bR.push('Bull FVG');} if(sF.length){sS+=15;sR.push('Bear FVG');}
+    if(bB.length){bS+=10;bR.push('Bull breaker');} if(sB.length){sS+=10;sR.push('Bear breaker');}
+    if(cE20>cE50){bS+=15;bR.push('EMA bull');} else{sS+=15;sR.push('EMA bear');}
+    if(rs>50)bS+=10;else sS+=10;
+    const ind = twelveIndicators || {};
+    if(ind.rsi && ind.rsi<30){bS+=8;bR.push('RSI oversold');} if(ind.rsi && ind.rsi>70){sS+=8;sR.push('RSI overbought');}
+    if(ind.stoch_k && ind.stoch_d && ind.stoch_k<20 && ind.stoch_d<20){bS+=5;bR.push('Stoch oversold');} if(ind.stoch_k && ind.stoch_d && ind.stoch_k>80 && ind.stoch_d>80){sS+=5;sR.push('Stoch overbought');}
+    if(ind.bb_lower && price<=ind.bb_lower*1.002){bS+=5;bR.push('At BB lower');} if(ind.bb_upper && price>=ind.bb_upper*0.998){sS+=5;sR.push('At BB upper');}
+    if(ind.cci && ind.cci<-150){bS+=5;bR.push('CCI oversold');} if(ind.cci && ind.cci>150){sS+=5;sR.push('CCI overbought');}
+    if(ind.williams_r && ind.williams_r<-80){bS+=3;bR.push('Williams oversold');} if(ind.williams_r && ind.williams_r>-20){sS+=3;sR.push('Williams overbought');}
+    if(ind.sar && price>ind.sar){bS+=5;bR.push('SAR bullish');} if(ind.sar && price<ind.sar){sS+=5;sR.push('SAR bearish');}
+    if(ind.ichimoku_senkou_a && ind.ichimoku_senkou_b){const cloudTop=Math.max(ind.ichimoku_senkou_a,ind.ichimoku_senkou_b);const cloudBot=Math.min(ind.ichimoku_senkou_a,ind.ichimoku_senkou_b);if(price>cloudTop){bS+=8;bR.push('Above cloud');}if(price<cloudBot){sS+=8;sR.push('Below cloud');}}
+    if(ind.macd_hist && ind.macd_hist>0){bS+=3;} if(ind.macd_hist && ind.macd_hist<0){sS+=3;}
+    let dir,conf,reason;
+    if(bS>sS){dir='BUY';conf=Math.min(bS+10,95);reason=bR.join('; ');} else if(sS>bS){dir='SELL';conf=Math.min(sS+10,95);reason=sR.join('; ');} else{dir=cE20>cE50?'BUY':'SELL';conf=50;reason='EMA tiebreaker';}
+    return{dir,conf,reason,scores:{bS,sS}};
+}
 
-// ============================================
-// GHOST MACHINE ANALYZE TIMEFRAME (SHORTENED)
-// ============================================
+async function updateMTFDisplay(historyCache = {}){
+    const tfs=['5M','15M','1H','4H','1D','1W'];
+    for(let t of tfs){
+        let tr = await getLiveCandleDirection(t, historyCache[t]);
+        let el=document.getElementById(`trend${t}`);
+        if(el){el.innerHTML=tr==='BULLISH'?'🟢 Bull':(tr==='BEARISH'?'🔴 Bear':'⚪ Neut');el.className=`mtf-trend ${tr.toLowerCase()}`;}
+    }
+}
+
+function calculatePrecisionEntry(candles, zone, direction) {
+    const last = candles[candles.length - 1];
+    if (!last) return (zone.low + zone.high) / 2;
+    if (direction === 'BUY') {
+        const wickLow = last.l; const wickHigh = Math.max(last.o, last.c); const fib50 = wickLow + (wickHigh - wickLow) * 0.5;
+        if (last.c > last.o && last.c > last.h * 0.7) return Math.min(last.c, zone.high);
+        return Math.min(fib50, zone.high);
+    } else {
+        const wickHigh = last.h; const wickLow = Math.min(last.o, last.c); const fib50 = wickHigh - (wickHigh - wickLow) * 0.5;
+        if (last.c < last.o && last.c < last.l * 1.3) return Math.max(last.c, zone.low);
+        return Math.max(fib50, zone.low);
+    }
+}
+function checkZoneFreshness(data, zone, direction) {
+    let touches = 0, violations = 0; const lookback = Math.min(50, data.length);
+    for (let i = data.length - lookback; i < data.length; i++) { if (i < 0) continue; const inZone = data[i].l <= zone.high && data[i].h >= zone.low; if (!inZone) continue; touches++; if (direction === 'BUY' && data[i].c < zone.low) violations++; if (direction === 'SELL' && data[i].c > zone.high) violations++; }
+    const fresh = touches <= 2 && violations === 0, partiallyUsed = touches <= 5 && violations <= 1, used = touches > 5 || violations > 1;
+    return { fresh, partiallyUsed, used, touches, violations };
+}
+function isZoneValid(freshness) {
+    return freshness.fresh || (freshness.partiallyUsed && freshness.violations === 0);
+}
+function isZoneHeavilyViolated(freshness) {
+    return freshness.used && freshness.violations > MAX_ALLOWED_ZONE_VIOLATIONS;
+}
+function isHTFPremiumDiscount(htfData, direction, currentPrice) {
+    if (!htfData || htfData.length < 10) return { inPremiumDiscount: false, value: 'neutral', pct: 0 };
+    let high = -Infinity, low = Infinity;
+    for (let i = 0; i < htfData.length; i++) {
+        if (htfData[i].h > high) high = htfData[i].h;
+        if (htfData[i].l < low) low = htfData[i].l;
+    }
+    const range = high - low;
+    const current = typeof currentPrice === 'number' ? currentPrice : htfData[htfData.length - 1].c;
+    const mid = range / 2 + low;
+    if (direction === 'BUY') {
+        const inDiscount = current < mid;
+        const discountPct = ((mid - current) / range * 100);
+        return { inPremiumDiscount: inDiscount, value: 'discount', pct: Math.max(0, discountPct) };
+    }
+    const inPremium = current > mid;
+    const premiumPct = ((current - mid) / range * 100);
+    return { inPremiumDiscount: inPremium, value: 'premium', pct: Math.max(0, premiumPct) };
+}
+function getGhostHardRules(direction, sweeps, turtleSoup, mss, session, freshness, zone) {
+    const wantSweepDir = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
+    const turtleSoupAligned = turtleSoup?.detected && turtleSoup.type === direction;
+    const mssAligned = direction === 'BUY' ? mss?.type === 'BULL' : mss?.type === 'BEAR';
+    return {
+        hasSweep: (sweeps || []).some(s => s.direction === wantSweepDir) || turtleSoupAligned,
+        hasMSS: !!mss && mssAligned && mss.displaced === true,
+        hasKillzone: !!session?.isKillzone || !!session?.isSilverBullet,
+        zoneFresh: freshness?.fresh || (freshness?.partiallyUsed && freshness?.violations === 0),
+        zoneQuality: zone?.quality === 'A' || zone?.quality === 'B'
+    };
+}
+function hasGhostConfirmationCandle(data, direction) {
+    if (!data || data.length < 2) return false;
+    const last = data[data.length - 1];
+    const prev = data[data.length - 2];
+    if (direction === 'BUY') {
+        if (last.c > last.o && prev.c < prev.o && last.c > prev.h) return true;
+        if ((last.c - last.l) > Math.abs(last.c - last.o) * 2 && last.c > last.o) return true;
+        if (last.c > prev.h && last.o < prev.l) return true;
+        return false;
+    }
+    if (last.c < last.o && prev.c > prev.o && last.c < prev.l) return true;
+    if ((last.h - last.c) > Math.abs(last.c - last.o) * 2 && last.c < last.o) return true;
+    if (last.c < prev.l && last.o > prev.h) return true;
+    return false;
+}
+const BASE_GHOST_RULES_CONFIDENCE = 82;
+const A_GRADE_GHOST_CONFIDENCE_BONUS = 6;
+const SILVER_BULLET_GHOST_CONFIDENCE_BONUS = 5;
+const SNIPER_GHOST_CONFIDENCE_BONUS = 3;
+const HTF_VALIDATION_GHOST_CONFIDENCE_BONUS = 2;
+const GHOST_MACHINE_ZONE_REACTION = { confirmed: true, type: 'PATTERN_MATCH', strength: 'STRONG' };
+const FULL_RISK_RULES_REQUIRED = 5;
+const PARTIAL_RISK_RULES_REQUIRED = 3;
+const FULL_RISK_PERCENT = 1.0;
+const PARTIAL_RISK_PERCENT = 0.5;
+function getSession() {
+    const now = new Date(); const hour = now.getUTCHours(); const min = now.getUTCMinutes(); const time = hour + min / 60;
+    let estHour = hour - 4;
+    if (estHour < 0) estHour += 24;
+    let s = { session: 'OFF-HOURS', multiplier: 0.5, emoji: '🌙', isKillzone: false, isSilverBullet: false, isMacro: false };
+    if (time >= 0 && time < 4) s = { ...s, session: 'ASIA KZ', multiplier: 0.8, emoji: '🌏', isKillzone: true };
+    else if (time >= 7 && time < 10) s = { ...s, session: 'LONDON KZ', multiplier: 1.3, emoji: '🇬🇧', isKillzone: true };
+    else if (time >= 12 && time < 15) s = { ...s, session: 'NEW_YORK KZ', multiplier: 1.2, emoji: '🇺🇸', isKillzone: true };
+    else if (time >= 15 && time < 17) s = { ...s, session: 'LON-CLOSE KZ', multiplier: 0.9, emoji: '🌆', isKillzone: true };
+    if ((time >= 8.5 && time < 9) || (time >= 15 && time < 16) || (time >= 19 && time < 20)) { s.isSilverBullet = true; s.multiplier += 0.2; s.emoji = '🏹'; s.session += ' + SB'; }
+    const estTime = estHour + min / 60;
+    const isAM_Macro1 = (estTime >= 9.83 && estTime <= 10.16);
+    const isAM_Macro2 = (estTime >= 10.83 && estTime <= 11.16);
+    const isPM_Macro1 = (estTime >= 11.83 && estTime <= 12.16);
+    const isPM_Macro2 = (estTime >= 13.16 && estTime <= 13.83);
+    const isClose_Macro = (estTime >= 15.25 && estTime <= 15.75);
+    if (isAM_Macro1 || isAM_Macro2 || isPM_Macro1 || isPM_Macro2 || isClose_Macro) {
+        s.isMacro = true; s.multiplier += 0.3; s.emoji = '🔥'; s.session += ' (MACRO)';
+    }
+    return s;
+}
+function calcVolumeProfile(data, binCount = 24) {
+    if (!data || data.length < 20) return null;
+    let hi = -Infinity, lo = Infinity;
+    for (const c of data) { if (c.h > hi) hi = c.h; if (c.l < lo) lo = c.l; }
+    if (!(hi > lo)) return null;
+    const binSize = (hi - lo) / binCount;
+    const bins = new Array(binCount).fill(0);
+    for (const c of data) {
+        const from = Math.max(0, Math.min(binCount - 1, Math.floor((c.l - lo) / binSize)));
+        const to = Math.max(from, Math.min(binCount - 1, Math.floor((c.h - lo) / binSize)));
+        const per = (c.v || 1) / (to - from + 1);
+        for (let j = from; j <= to; j++) bins[j] += per;
+    }
+    const total = bins.reduce((a, b) => a + b, 0);
+    let pocIdx = 0;
+    for (let i = 1; i < binCount; i++) if (bins[i] > bins[pocIdx]) pocIdx = i;
+    let vaVol = bins[pocIdx], loIdx = pocIdx, hiIdx = pocIdx;
+    while (vaVol < total * 0.7 && (loIdx > 0 || hiIdx < binCount - 1)) {
+        const below = loIdx > 0 ? bins[loIdx - 1] : -1;
+        const above = hiIdx < binCount - 1 ? bins[hiIdx + 1] : -1;
+        if (above >= below) { hiIdx++; vaVol += bins[hiIdx]; } else { loIdx--; vaVol += bins[loIdx]; }
+    }
+    const priceAt = i => lo + binSize * (i + 0.5);
+    const avg = total / binCount;
+    const hvns = [], lvns = [];
+    for (let i = 0; i < binCount; i++) {
+        if (bins[i] > avg * 1.5) hvns.push(priceAt(i));
+        if (bins[i] < avg * 0.5) lvns.push(priceAt(i));
+    }
+    return { poc: priceAt(pocIdx), vah: lo + binSize * (hiIdx + 1), val: lo + binSize * loIdx, hvns, lvns, binSize, high: hi, low: lo };
+}
+
+function calcDeltaProxy(data, n = 20) {
+    if (!data || data.length < 3) return { cvd: 0, direction: 'NEUTRAL', proxy: true };
+    let cvd = 0;
+    for (const c of data.slice(-n)) cvd += (c.c > c.o ? 1 : (c.c < c.o ? -1 : 0)) * (c.v || 1);
+    return { cvd, direction: cvd > 0 ? 'BULLISH' : (cvd < 0 ? 'BEARISH' : 'NEUTRAL'), proxy: true };
+}
+
+function checkSniperEntry(data, price, direction, zone, session) {
+    const checks = [];
+    let score = 0;
+
+    const sweeps = detectLiquiditySweeps(data, price);
+    const ts = detectTurtleSoup(data);
+    const wantSweepDir = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
+    const hasSweep = sweeps.some(s => s.direction === wantSweepDir) || (ts.detected && ts.type === direction);
+    if (hasSweep) score += 30;
+    checks.push({ name: 'Liquidity sweep', passed: hasSweep, critical: true });
+
+    const mss = detectMSS(data);
+    const mssAligned = direction === 'BUY' ? mss?.type === 'BULL' : mss?.type === 'BEAR';
+    const mssDisplaced = mssAligned && mss.displaced === true;
+    if (mssAligned) score += 15;
+    if (mssDisplaced) score += 15;
+    checks.push({ name: 'MSS + displacement', passed: mssDisplaced, critical: true });
+
+    const freshness = checkZoneFreshness(data, zone, direction);
+    const zoneFresh = freshness.fresh || (freshness.partiallyUsed && freshness.violations === 0);
+    if (zoneFresh) score += 15;
+    checks.push({ name: 'Zone fresh', passed: zoneFresh, critical: true });
+
+    const inOTE = typeof zone.confluence === 'string' && zone.confluence.includes('OTE');
+    if (inOTE) score += 15;
+    checks.push({ name: 'Zone in OTE band', passed: inOTE, critical: false });
+
+    const inKillzone = !!session?.isKillzone;
+    if (inKillzone) score += 10;
+    checks.push({ name: 'Killzone session', passed: inKillzone, critical: false });
+
+    const tbsAligned = ts.detected && ts.type === direction;
+    const atMSNR = zone.src === 'MSNR' || (typeof zone.confluence === 'string' && zone.confluence.includes('MSNR'));
+    const altPath = tbsAligned && atMSNR && zoneFresh;
+    if (altPath) score = Math.max(score, 70);
+    checks.push({ name: 'TBS at MSNR level (alt path)', passed: altPath, critical: false });
+
+    const isSniper = (hasSweep && mssDisplaced && zoneFresh) || altPath;
+    return { isSniper, score, checks, grade: score >= 75 ? 'S' : (score >= 50 ? 'A' : 'B'), path: altPath ? 'MSNR+TBS' : (isSniper ? 'ICT' : null) };
+}
+
+function validateBreakerBlock(data, level, direction) { if (data.length < 25) return false; const moveAway = data.slice(-25).find(c => direction === 'BUY' ? c.c > level * 1.005 : c.c < level * 0.995); if (!moveAway) return false; const recent = data.slice(-5), touched = recent.some(c => direction === 'BUY' ? c.l <= level : c.h >= level), last = recent[recent.length - 1], rejected = direction === 'BUY' ? last.c > level : last.c < level; return touched && rejected; }
+
+function analyzeAMD(dailyData) {
+    if (!dailyData || dailyData.length < 2) return { phase: 'UNKNOWN' };
+    const now = new Date(); const hour = now.getUTCHours();
+    const candles = dailyData.slice(-24);
+    const asiaCandles = candles.filter(c => { const h = new Date(c.t).getUTCHours(); return h >= 0 && h < 4; });
+    if (asiaCandles.length === 0) return { phase: 'ACCUMULATION' };
+    const asiaHigh = Math.max(...asiaCandles.map(c => c.h)), asiaLow = Math.min(...asiaCandles.map(c => c.l));
+    const currentPrice = candles[candles.length - 1].c;
+    if (hour >= 0 && hour < 5) return { phase: 'ACCUMULATION', range: { h: asiaHigh, l: asiaLow } };
+    const manipulatedUpper = candles.some(c => new Date(c.t).getUTCHours() >= 5 && c.h > asiaHigh);
+    const manipulatedLower = candles.some(c => new Date(c.t).getUTCHours() >= 5 && c.l < asiaLow);
+    if (hour >= 7 && hour < 12) {
+        if (manipulatedUpper || manipulatedLower) return { phase: 'MANIPULATION', range: { h: asiaHigh, l: asiaLow }, manipulated: manipulatedUpper ? 'UP' : 'DOWN' };
+        return { phase: 'ACCUMULATION_EXTENDED', range: { h: asiaHigh, l: asiaLow } };
+    }
+    return { phase: 'DISTRIBUTION', range: { h: asiaHigh, l: asiaLow }, manipulated: manipulatedUpper ? 'UP' : (manipulatedLower ? 'DOWN' : 'NONE') };
+}
+
 async function analyzeTimeframe(tfToAnalyze, price, htfData) {
     console.log(`🔍 Analyzing ${tfToAnalyze}...`);
     try {
@@ -1118,11 +951,13 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             low: Math.min(...entryData.slice(-20).map(c => c.l))
         };
         const msnr = calculateMSNR(structureData || entryData, price);
-        const entryATR = twelveIndicators?.atr_api || atr(entryData, 14);
+        const entryATR = atr(entryData, 14);
 
         const allSetups = [];
 
         for (const dir of ['BUY', 'SELL']) {
+            console.log(`  → Checking ${dir} on ${tfToAnalyze}...`);
+
             const sweeps = detectLiquiditySweeps(entryData, price);
             const wantSweepDir = dir === 'BUY' ? 'BULLISH' : 'BEARISH';
             const hasSweep = sweeps.some(s => s.direction === wantSweepDir);
@@ -1135,76 +970,98 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const bosCount = countBOS(entryData, htfData, dir);
 
             const zone = findPrecisionEntry(entryData, price, dir, msnr);
-            if (!zone) continue;
+            if (!zone) {
+                console.log(`  ❌ ${dir}: No zone`);
+                continue;
+            }
 
             const isUnmet = dir === 'BUY' ? zone.high < price : zone.low > price;
             const freshness = checkZoneFreshness(entryData, zone, dir);
             const isValidZone = freshness.fresh || (freshness.partiallyUsed && freshness.violations === 0);
+
             const brokenLevel = findBrokenLevel(entryData, dir);
             const session = getSession();
 
             let entry;
             if (dir === 'BUY') {
-                entry = Math.min(zone.low + entryATR * 0.15, zone.high);
+                entry = Math.min(zone.low + entryATR * 0.1, zone.high);
             } else {
-                entry = Math.max(zone.high - entryATR * 0.15, zone.low);
+                entry = Math.max(zone.high - entryATR * 0.1, zone.low);
+            }
+            const entryDistance = dir === 'BUY' ? price - entry : entry - price;
+
+            let sl;
+            if (dir === 'BUY') {
+                sl = Math.min(zone.low - entryATR * 0.3, crtRange.low);
+                if (sl >= entry) sl = entry - entryATR * 0.5;
+            } else {
+                sl = Math.max(zone.high + entryATR * 0.3, crtRange.high);
+                if (sl <= entry) sl = entry + entryATR * 0.5;
             }
 
-            const entryDistance = dir === 'BUY' ? price - entry : entry - price;
-            if (entryDistance > entryATR * 1.5 && entryDistance > 0) continue;
-            if (entryDistance < -entryATR * 0.5) continue;
-
-            const slResult = calcStopLoss(entryData, dir, entry, zone, msnr, tfToAnalyze, twelveIndicators, pair);
-            const sl = slResult.price;
             const risk = Math.abs(entry - sl);
-
             const tp1 = dir === 'BUY' ? entry + risk * 2.0 : entry - risk * 2.0;
             const tp2 = dir === 'BUY' ? entry + risk * 4.0 : entry - risk * 4.0;
             const tp3 = dir === 'BUY' ? crtRange.high : crtRange.low;
 
             let pts = 0;
             const reasons = [];
+            const confBreakdown = [];
 
-            const addScore = (adj, label) => { pts += adj;
-                reasons.push(label); };
+            const addScore = (adj, label) => { pts += adj; reasons.push(label); confBreakdown.push({ adj, reason: label }); };
 
             if (hasSweep) addScore(25, 'Liquidity Sweep');
             if (hasTBS) addScore(25, 'Turtle Soup');
+
             if (bosCount >= 3) addScore(25, `${bosCount}x BOS confirmed`);
             else if (bosCount >= 2) addScore(15, `${bosCount}x BOS`);
+
             if (hasDisplacement) addScore(15, 'MSS with displacement');
             else if (hasMSS) addScore(8, 'MSS exists');
+
             if (isUnmet && isValidZone) addScore(20, 'Fresh unmet order block');
             else if (isValidZone) addScore(10, 'Fresh zone');
+
             if (brokenLevel) addScore(15, 'Broken level flipped');
+
             if (zone.quality === 'A') addScore(10, 'A-grade zone');
             else if (zone.quality === 'B') addScore(5, 'B-grade zone');
-            if (entryDistance > 0 && entryDistance < entryATR * 1.0) {
+
+            if (entryDistance > 0 && entryDistance < entryATR * 1.5) {
                 addScore(10, `Entry ${(entryDistance / entryATR).toFixed(1)}x ATR away`);
             }
 
             let htfAgree = 0;
+            const htfTrends = {};
             for (const t of ['1D', '4H', '1H']) {
                 const d = htfData[t];
                 if (d && d.length >= 50) {
                     const trend = detectTrend(d);
+                    htfTrends[t] = trend;
                     if ((dir === 'BUY' && trend === 'BULLISH') || (dir === 'SELL' && trend === 'BEARISH')) htfAgree++;
                 }
             }
             if (htfAgree >= 2) addScore(10, `${htfAgree}/3 HTF align`);
-            if (session.isSilverBullet) addScore(15, 'Silver Bullet');
-            else if (session.isKillzone) addScore(8, 'Killzone');
 
-            if (pts < 65) continue;
+            console.log(`  → ${dir} score: ${pts} (${reasons.join(', ')})`);
 
-            allSetups.push({ dir, pts, entry, sl, tp1, tp2, tp3, risk, sweeps, turtleSoup, hasSweep, hasTBS, mss, hasMSS, hasDisplacement, bosCount, zone, isUnmet, freshness, isValidZone, brokenLevel, session, entryDistance, htfAgree, reasons, slResult, entryATR });
+            if (pts < 65) {
+                console.log(`  ❌ ${dir}: Score ${pts} < 65`);
+                continue;
+            }
+
+            console.log(`  ✅ ${dir} setup! Score: ${pts}`);
+            allSetups.push({ dir, pts, entry, sl, tp1, tp2, tp3, risk, sweeps, turtleSoup, hasSweep, hasTBS, mss, hasMSS, hasDisplacement, bosCount, zone, isUnmet, freshness, isValidZone, brokenLevel, session, entryDistance, htfTrends, htfAgree, reasons, confBreakdown });
         }
 
-        if (allSetups.length === 0) return null;
+        if (allSetups.length === 0) {
+            console.log(`  ❌ ${tfToAnalyze}: No setup scored >= 65`);
+            return null;
+        }
 
         allSetups.sort((a, b) => b.pts - a.pts);
         const best = allSetups[0];
-        const { dir, pts: setupScore, entry, sl, tp1, tp2, tp3, risk, sweeps, turtleSoup, hasSweep, hasTBS, mss, hasMSS, hasDisplacement, bosCount, zone, isUnmet, freshness, isValidZone, brokenLevel, session, entryDistance, htfAgree, reasons, slResult, entryATR } = best;
+        const { dir, pts: setupScore, entry, sl, tp1, tp2, tp3, risk, sweeps, turtleSoup, hasSweep, hasTBS, mss, hasMSS, hasDisplacement, bosCount, zone, isUnmet, freshness, isValidZone, brokenLevel, session, entryDistance, htfTrends, htfAgree, reasons, confBreakdown } = best;
 
         const apiATR = twelveIndicators?.atr_api || entryATR;
         const volatility = getVolatilityLevel(apiATR, price);
@@ -1246,7 +1103,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const chochDetected = checkCHoCH(entryData, zone.low, zone.high);
         const inducementSwept = detectInducement(entryData, zone.low, zone.high, dir);
         const entryTiming = checkEntryTiming(entryData, entry, dir);
-        const zoneReaction = { confirmed: true, type: 'PATTERN_MATCH', strength: 'STRONG' };
+        const zoneReaction = { ...GHOST_MACHINE_ZONE_REACTION };
         const zoneTouches = freshness.touches || 0;
         const magnetism = checkZoneMagnetism(entryData, price, entry, dir, zone);
         const pathCheck = checkPathClearance(entryData, entry, tp1, dir);
@@ -1285,10 +1142,15 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             inducementSwept
         };
 
+        console.log(`  ✅ ${tfToAnalyze}: ${dir} setup! Score: ${setupScore}, Entry: ${entry}, Distance: ${entryDistanceATR.toFixed(1)}x ATR`);
         return {
             timeframe: tfToAnalyze,
             direction: dir,
-            entry, sl, tp1, tp2, tp3,
+            entry,
+            sl,
+            tp1,
+            tp2,
+            tp3,
             confidence,
             zone,
             msnr,
@@ -1331,8 +1193,9 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             sniperEntry: { ...sniperEntry, isSniper: true },
             volumeProfile,
             deltaProxy,
-            slResult: { reason: slResult.reason, price: sl, distance: slResult.distance },
+            slResult: { reason: 'CRT extreme', price: sl, distance: risk },
             invalidationPrice,
+            confBreakdown,
             entryDistanceATR,
             entryDistancePct,
             entryATR,
@@ -1358,13 +1221,22 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             zonesEvaluated: 1,
             alternativeZones: [],
             entryInfo: {
-                entry, stopLoss: sl, takeProfit: tp1, partialTP: tp2,
-                invalidation: invalidationPrice, breakevenLevel: entry,
-                pattern: zone.src, rrRatio: 4.0
+                entry,
+                stopLoss: sl,
+                takeProfit: tp1,
+                partialTP: tp2,
+                invalidation: invalidationPrice,
+                breakevenLevel: entry,
+                pattern: zone.src,
+                rrRatio: 4.0
             },
             tradeLevels: {
-                entry, stopLoss: sl, takeProfit: tp1, partialTP: tp2,
-                invalidation: invalidationPrice, breakeven: entry,
+                entry,
+                stopLoss: sl,
+                takeProfit: tp1,
+                partialTP: tp2,
+                invalidation: invalidationPrice,
+                breakeven: entry,
                 pipsRisk: Math.abs(entry - sl) / (getMarketSettings(pair).pipSize || 0.0001),
                 pipsReward: Math.abs(tp1 - entry) / (getMarketSettings(pair).pipSize || 0.0001),
                 riskReward: 4.0
@@ -1373,6 +1245,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             brokenLevel,
             isUnmet,
             entryDistance,
+            htfTrends,
             htfAgree,
             score: setupScore,
             reasons
@@ -1384,27 +1257,30 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
     }
 }
 
-// ============================================
-// HELPER FUNCTIONS (Shortened)
-// ============================================
 function countBOS(data, htfData, direction) {
     let count = 0;
     const tfs = ['1D', '4H', '1H', '15M', '5M'];
+
     for (const tf of tfs) {
         const d = htfData[tf] || data;
         if (d.length < 20) continue;
+
         const mss = detectMSS(d);
         if (!mss) continue;
+
         if (direction === 'BUY' && mss.type === 'BULL') count++;
         if (direction === 'SELL' && mss.type === 'BEAR') count++;
     }
+
     return count;
 }
 
 function findBrokenLevel(data, direction) {
     if (data.length < 30) return null;
+
     const swings = findSwings(data, 4);
     const lastPrice = data[data.length - 1].c;
+
     if (direction === 'BUY') {
         const resistances = swings.H.filter(s => s.p < lastPrice);
         if (resistances.length > 0) {
@@ -1418,12 +1294,14 @@ function findBrokenLevel(data, direction) {
             return { price: broken.p, type: 'SUPPORT_FLIPPED_TO_RESISTANCE' };
         }
     }
+
     return null;
 }
 
 function gradeTBS(turtleSoup, sweeps, data) {
     let score = 0;
     let reasons = [];
+
     if (turtleSoup.detected) {
         score += 40;
         reasons.push('TBS detected');
@@ -1432,6 +1310,7 @@ function gradeTBS(turtleSoup, sweeps, data) {
             reasons.push(`TBS direction: ${turtleSoup.type}`);
         }
     }
+
     if (sweeps.length > 0) {
         score += 30;
         reasons.push(`${sweeps.length} liquidity sweep(s)`);
@@ -1440,6 +1319,7 @@ function gradeTBS(turtleSoup, sweeps, data) {
             reasons.push('Multiple sweeps');
         }
     }
+
     if (sweeps.length > 0) {
         const recentSweep = sweeps.some(s => s.distance < 0.5);
         if (recentSweep) {
@@ -1447,6 +1327,7 @@ function gradeTBS(turtleSoup, sweeps, data) {
             reasons.push('Recent sweep');
         }
     }
+
     return {
         score: Math.min(100, score),
         grade: score >= 80 ? 'A' : (score >= 60 ? 'B' : (score >= 40 ? 'C' : 'D')),
@@ -1460,280 +1341,606 @@ function getCRTState(data) {
     const ranges = recent.map(c => c.h - c.l);
     const avg = ranges.reduce((a, b) => a + b, 0) / ranges.length;
     const last = ranges[ranges.length - 1];
+
     let state = 'NEUTRAL';
     let momentum = 'NEUTRAL';
-    if (last > avg * 1.5) { state = 'EXPANDING';
-        momentum = 'STRONG'; } else if (last < avg * 0.5) { state = 'CONTRACTING';
-        momentum = 'WEAK'; } else { state = 'CONSOLIDATING';
-        momentum = 'MODERATE'; }
+
+    if (last > avg * 1.5) { state = 'EXPANDING'; momentum = 'STRONG'; }
+    else if (last < avg * 0.5) { state = 'CONTRACTING'; momentum = 'WEAK'; }
+    else { state = 'CONSOLIDATING'; momentum = 'MODERATE'; }
+
     const firstHalf = ranges.slice(0, 5);
     const secondHalf = ranges.slice(5);
     const firstAvg = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
     const secondAvg = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
-    if (secondAvg > firstAvg * 1.2) { state = 'EXPANDING';
-        momentum = 'STRONG'; } else if (secondAvg < firstAvg * 0.8) { state = 'CONTRACTING';
-        momentum = 'WEAK'; }
-    return { state, momentum, avgRange: avg, lastRange: last, isExpanding: state === 'EXPANDING', isContracting: state === 'CONTRACTING', isConsolidating: state === 'CONSOLIDATING' };
-}
 
-function detectCRT(data, direction) {
-    if (data.length < 10) return { detected: false, pattern: 'Neutral', rangeRatio: 1 };
-    const lc = data.slice(-5);
-    const ranges = lc.map(c => c.h - c.l);
-    const avgRange = ranges.reduce((a, b) => a + b, 0) / ranges.length;
-    const lastRange = ranges[ranges.length - 1];
-    const expanding = lastRange > avgRange * 1.2;
-    const contracting = lastRange < avgRange * 0.7;
+    if (secondAvg > firstAvg * 1.2) { state = 'EXPANDING'; momentum = 'STRONG'; }
+    else if (secondAvg < firstAvg * 0.8) { state = 'CONTRACTING'; momentum = 'WEAK'; }
+
     return {
-        detected: true,
-        pattern: expanding ? 'Expanding' : (contracting ? 'Contracting' : 'Neutral'),
-        rangeRatio: (lastRange / avgRange).toFixed(2),
-        signal: expanding ? (direction === 'BUY' ? 'Bullish momentum' : 'Bearish momentum') :
-            (contracting ? 'Consolidation' : 'Neutral')
+        state, momentum, avgRange: avg, lastRange: last,
+        isExpanding: state === 'EXPANDING',
+        isContracting: state === 'CONTRACTING',
+        isConsolidating: state === 'CONSOLIDATING'
     };
 }
 
-function checkPathClearance(entryData, entry, tp, direction) {
-    const obstacles = [];
-    const fvgs = detectFVG(entryData);
-    const swings = findSwings(entryData, 3);
-    if (direction === 'BUY') {
-        const bearFVGs = fvgs.filter(f => f.type === 'bear' && f.l > entry && f.l < tp);
-        if (bearFVGs.length > 0) obstacles.push('Bearish FVG');
-        const swingHighs = swings.H.filter(s => s.p > entry && s.p < tp);
-        if (swingHighs.length > 0) obstacles.push('Swing high');
-    } else {
-        const bullFVGs = fvgs.filter(f => f.type === 'bull' && f.h > tp && f.h < entry);
-        if (bullFVGs.length > 0) obstacles.push('Bullish FVG');
-        const swingLows = swings.L.filter(s => s.p > tp && s.p < entry);
-        if (swingLows.length > 0) obstacles.push('Swing low');
+function getPrecisionEntryCRT(candles, zone, direction, crtRange, apiATR) {
+    const last = candles[candles.length - 1];
+    if (!last) {
+        return { entry: (zone.low + zone.high) / 2, sl: null, tp1: null, tp2: null, tp3: null, reason: 'Default entry' };
     }
-    return { clear: obstacles.length === 0, obstacles, count: obstacles.length };
+
+    const atrValue = apiATR || atr(candles, 14);
+    const settings = getMarketSettings(pair);
+    const prec = settings.prec || 5;
+
+    const entryBuffer = Math.max(atrValue * 0.3, settings.minSL * 0.5);
+    const slBufferValue = Math.max(atrValue * 0.5, settings.slBuffer);
+
+    let entry, sl, tp1, tp2, tp3;
+    const rr = settings.targetRR || 4;
+
+    if (direction === 'BUY') {
+        entry = (zone.low + zone.high) / 2;
+        sl = Math.min(zone.low - slBufferValue, crtRange.low - slBufferValue);
+        if (sl >= entry) sl = entry - slBufferValue;
+        const risk = entry - sl;
+        if (risk <= 0) sl = entry - settings.slBuffer;
+        const actualRisk = entry - sl;
+        tp1 = entry + actualRisk * rr;
+        tp2 = entry + actualRisk * (rr + 1);
+        tp3 = entry + actualRisk * (rr + 2);
+    } else {
+        entry = (zone.low + zone.high) / 2;
+        sl = Math.max(zone.high + slBufferValue, crtRange.high + slBufferValue);
+        if (sl <= entry) sl = entry + slBufferValue;
+        const risk = sl - entry;
+        if (risk <= 0) sl = entry + settings.slBuffer;
+        const actualRisk = sl - entry;
+        tp1 = entry - actualRisk * rr;
+        tp2 = entry - actualRisk * (rr + 1);
+        tp3 = entry - actualRisk * (rr + 2);
+    }
+
+    const factor = Math.pow(10, prec);
+    entry = Math.round(entry * factor) / factor;
+    sl = Math.round(sl * factor) / factor;
+    tp1 = Math.round(tp1 * factor) / factor;
+    tp2 = Math.round(tp2 * factor) / factor;
+    tp3 = Math.round(tp3 * factor) / factor;
+
+    return {
+        entry, sl, tp1, tp2, tp3,
+        reason: `ATR-adjusted entry (buffer: ${entryBuffer.toFixed(prec)})`
+    };
 }
 
-function checkZoneMagnetism(entryData, price, entry, direction, zone = null) {
-    const imbalances = findImbalances(entryData), sweeps = detectLiquiditySweeps(entryData, price);
+function calculateCRTConfidence(data) {
     let score = 0;
-    const checks = [];
-    if (direction === 'BUY') {
-        const pullingImbalances = imbalances.filter(i => i.type === 'BEARISH' && i.low > entry && i.high < price);
-        if (pullingImbalances.length > 0) { score += 30;
-            checks.push({ name: 'Imbalance pulling toward zone', passed: true, detail: `${pullingImbalances.length} bearish imbalance(s) magnet` }); } else { checks.push({ name: 'Imbalance pulling toward zone', passed: false, detail: 'No imbalance magnet' }); }
-    } else {
-        const pullingImbalances = imbalances.filter(i => i.type === 'BULLISH' && i.low > price && i.high < entry);
-        if (pullingImbalances.length > 0) { score += 30;
-            checks.push({ name: 'Imbalance pulling toward zone', passed: true, detail: `${pullingImbalances.length} bullish imbalance(s) magnet` }); } else { checks.push({ name: 'Imbalance pulling toward zone', passed: false, detail: 'No imbalance magnet' }); }
+    if (data.crtState.isExpanding) score += 15;
+    else if (data.crtState.isContracting) score += 5;
+    else score += 10;
+
+    if (data.tbsQuality.grade === 'A') score += 25;
+    else if (data.tbsQuality.grade === 'B') score += 20;
+    else if (data.tbsQuality.grade === 'C') score += 10;
+    else score += 5;
+
+    if (data.isNearMSNR) score += 20;
+    else if (data.msnrDistance < 0.5) score += 10;
+    else score += 5;
+
+    if (data.zoneReaction && data.zoneReaction.type.includes('MSNR fakeout')) {
+        score += 20;
     }
-    const supportingSweeps = sweeps.filter(s => direction === 'BUY' ? s.direction === 'BULLISH' : s.direction === 'BEARISH');
-    if (supportingSweeps.length > 0) { score += 25;
-        checks.push({ name: 'Sweeps support direction', passed: true, detail: `${supportingSweeps.length} sweep(s)` }); } else { checks.push({ name: 'Sweeps support direction', passed: false, detail: 'No supporting sweeps' }); }
-    const closes = entryData.map(c => c.c), e20 = ema(closes, 20), e50 = ema(closes, 50);
-    const cE20 = e20[e20.length - 1], cE50 = e50[e50.length - 1], prevE20 = e20[e20.length - 3];
-    if (direction === 'BUY' && cE20 > cE50 && cE20 > prevE20) { score += 20;
-        checks.push({ name: 'EMA momentum aligned', passed: true, detail: 'Bullish momentum' }); } else if (direction === 'SELL' && cE20 < cE50 && cE20 < prevE20) { score += 20;
-        checks.push({ name: 'EMA momentum aligned', passed: true, detail: 'Bearish momentum' }); } else { checks.push({ name: 'EMA momentum aligned', passed: false, detail: 'Not aligned' }); }
-    const distancePct = Math.abs(price - entry) / price * 100;
-    if (distancePct < 0.3) { score += 15;
-        checks.push({ name: 'Zone proximity', passed: true, detail: `Very close (${distancePct.toFixed(2)}%)` }); } else if (distancePct < 0.8) { score += 10;
-        checks.push({ name: 'Zone proximity', passed: true, detail: `Reachable (${distancePct.toFixed(2)}%)` }); } else if (distancePct < 2.0) { score += 5;
-        checks.push({ name: 'Zone proximity', passed: true, detail: `Extended (${distancePct.toFixed(2)}%)` }); } else { checks.push({ name: 'Zone proximity', passed: false, detail: `Very far (${distancePct.toFixed(2)}%)` }); }
-    if (zone) {
-        const zoneConfluence = typeof zone.confluence === 'string' ? zone.confluence : '';
-        const isPrimaryMethodZone = zone.src === 'MSNR' || zoneConfluence.includes('MSNR');
-        if (isPrimaryMethodZone && zone.cc >= 2) {
-            score += 25;
-            checks.push({ name: 'Primary-method zone', passed: true, detail: `${zone.src} ${zoneConfluence}` });
-        } else if (zone.quality === 'A') {
-            score += 25;
-            checks.push({ name: 'High-quality zone', passed: true, detail: 'A-grade zone nearby' });
-        } else if (zone.quality === 'B' && zone.cc >= 2) {
-            score += 25;
-            checks.push({ name: 'High-quality zone', passed: true, detail: 'B-grade multi-confluence zone nearby' });
-        } else {
-            checks.push({ name: 'High-quality zone', passed: false, detail: 'Single-confluence or weak zone' });
+
+    if (data.session.session === 'LONDON KZ' || data.session.session === 'NEW_YORK KZ') score += 15;
+    else if (data.session.isKillzone) score += 10;
+    else if (data.session.session === 'ASIA KZ') score += 5;
+    else score += 2;
+
+    if (data.isInOptimalZone) score += 10;
+    const hasLiquidityEvent = data.hasLiquidityEvent ?? data.hasSweepOrTBS ?? data.hasSweep ?? data.turtleSoup?.detected ?? false;
+    if (hasLiquidityEvent) score += 10;
+    if (data.zone.quality === 'A') score += 10;
+    else if (data.zone.quality === 'B') score += 5;
+
+    if (data.session.session === 'OFF-HOURS') score -= 20;
+    if (!hasLiquidityEvent && !data.turtleSoup.detected) score -= 15;
+    if (data.msnrDistance > 1.0) score -= 10;
+
+    return Math.max(0, Math.min(100, score));
+}
+function calculateSetupQuality(result, price) {
+    let score = 0;
+    const prec = getPrec(pair);
+    const risk = Math.abs(result.entry - result.sl);
+    const riskPct = (risk / price) * 100;
+
+    const zoneQuality = result.zone?.quality || 'C';
+    const zoneCC = result.zone?.cc || 1;
+    const htfPassed = result.htfValidation?.passed || false;
+    const zoneReactionConfirmed = result.zoneReaction?.confirmed || false;
+    const zoneReactionStrength = result.zoneReaction?.strength || 'NONE';
+    const magnetismStrength = result.magnetism?.magnetism || 'WEAK';
+    const entryReady = result.entryReady || false;
+    const probCheck = result.probCheck?.probability || 'LOW';
+    const displacementDetected = result.displacement?.detected || false;
+    const crtDetected = result.crt?.detected || false;
+    const crtPattern = result.crt?.pattern || 'Neutral';
+    const pathClear = result.pathCheck?.clear || false;
+    const turtleSoupDetected = result.turtleSoup?.detected || false;
+    const freshness = result.freshness || { fresh: false, partiallyUsed: false, used: true };
+    const premiumDiscount = result.premiumDiscount?.inPremiumDiscount || false;
+    const session = result.session || { isKillzone: false, isSilverBullet: false, multiplier: 0.5 };
+    const breakerValid = result.breakerValid || false;
+    const amdPhase = result.amd?.phase || 'UNKNOWN';
+    const hasSweep = result.hasLiquidityEvent ?? result.hasSweepOrTBS ?? result.hasSweep ?? false;
+
+    const tfWeights = { '1D': 15, '4H': 12, '1H': 10, '15M': 4, '5M': 2 };
+    score += tfWeights[result.timeframe] || 2;
+    score += (result.confidence / 100) * 50;
+
+    if (zoneQuality === 'A') score += 30;
+    else if (zoneQuality === 'B') score += 15;
+    else score += 5;
+
+    score += Math.min(zoneCC * 5, 20);
+    if (htfPassed) score += 15;
+
+    if (zoneReactionConfirmed) {
+        if (zoneReactionStrength === 'STRONG') score += 15;
+        else if (zoneReactionStrength === 'MODERATE') score += 8;
+    }
+
+    if (magnetismStrength === 'STRONG') score += 10;
+    else if (magnetismStrength === 'MODERATE') score += 5;
+
+    if (entryReady) score += 10;
+    if (riskPct < 0.1) score -= 10;
+    if (riskPct > 2.0) score -= 10;
+
+    if (probCheck === 'HIGH') score += 10;
+    else if (probCheck === 'LOW') score -= 10;
+
+    if (displacementDetected) score += 5;
+    if (crtDetected && crtPattern === 'Expanding') score += 5;
+    if (pathClear) score += 5;
+    if (turtleSoupDetected) score += 8;
+
+    if (freshness.fresh) score += 15;
+    else if (freshness.partiallyUsed) score += 5;
+    else if (freshness.used) score -= 10;
+
+    if (premiumDiscount) score += 10;
+    else score -= 5;
+
+    if (session.isKillzone) score += 15;
+    if (session.isSilverBullet) score += 20;
+    if (session.multiplier >= 1.0) score += 10;
+    else score -= 10;
+
+    if (breakerValid) score += 8;
+    if (amdPhase === 'MANIPULATION') score += 15;
+    if (hasSweep) score += 10;
+
+    return Math.max(0, score);
+}
+
+function validateAIResult(ai, best, price, allowedTimeframes) {
+    const ts = ai?.trade_signal_Theghostmachine;
+    if (!ts || typeof ts !== 'object') return null;
+    if (!['enter_now', 'wait_for_reaction', 'skip'].includes(ts.execution_decision)) delete ts.execution_decision;
+    if (ts.selected_timeframe && (!Array.isArray(allowedTimeframes) || !allowedTimeframes.includes(ts.selected_timeframe))) delete ts.selected_timeframe;
+    if (ts.rule_checks && !Array.isArray(ts.rule_checks)) delete ts.rule_checks;
+    ts.confidence_adjustment = Math.max(-25, Math.min(25, +ts.confidence_adjustment || 0));
+    if (ts.entry_refinement) {
+        const { low, high } = ts.entry_refinement;
+        const zoneWidth = best.zone.high - best.zone.low;
+        const nearOriginal = typeof low === 'number' && typeof high === 'number' && low < high &&
+            Math.abs(low - best.zone.low) <= zoneWidth * 1.5 && Math.abs(high - best.zone.high) <= zoneWidth * 1.5;
+        const correctSide = best.direction === 'BUY' ? high < price : low > price;
+        if (!nearOriginal || !correctSide) delete ts.entry_refinement;
+    }
+    if (typeof ts.invalidation_price === 'number') {
+        const validInval = best.direction === 'BUY' ? ts.invalidation_price < best.entry : ts.invalidation_price > best.entry;
+        if (!validInval) delete ts.invalidation_price;
+    } else delete ts.invalidation_price;
+    return ai;
+}
+
+async function askAIWithAllResults(allResults, price, htfData) {
+    if (!DEEPSEEK_API_KEY || allResults.length === 0) return null; showNotif('🤖 AI strict execution check...', 'info');
+    let tfSummary = ''; for (const r of allResults) { const htfStatus = r.htfValidation ? (r.htfValidation.passed ? 'In HTF' : 'No HTF') : 'N/A'; tfSummary += `${r.timeframe}: ${r.direction} | Zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | EntryReady: ${r.entryReady ? 'YES' : 'NO'} | React: ${r.zoneReaction?.confirmed ? r.zoneReaction.type : 'None'} | HTF: ${htfStatus} | Touches: ${r.zoneTouches} | Conf:${r.confidence}% | RR:1:${r.rrUsed}\n`; }
+    const best = allResults[0], prec = getPrec(pair), dailyDir = await getQuoteDirection('1D', htfData['1D']), h4Dir = await getQuoteDirection('4H', htfData['4H']), htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
+    const entryData = htfData[best.entryTF] || [];
+    const recentCandles = entryData.slice(-12).map(c => `${c.t}: O${c.o.toFixed(prec)} H${c.h.toFixed(prec)} L${c.l.toFixed(prec)} C${c.c.toFixed(prec)}`).join('\n');
+    const sweepLines = (best.sweeps || []).slice(0, 4).map(s => `${s.type} @ $${s.level.toFixed(prec)} (${s.direction})`).join('; ') || 'none';
+    const sniperLines = (best.sniperEntry?.checks || []).map(c => `${c.name}: ${c.passed ? 'PASS' : 'FAIL'}${c.critical ? ' (critical)' : ''}`).join('; ');
+    const prompt = `You are TheGhostMachine, a strict ICT execution auditor. Your job is to find reasons NOT to take this trade; approve only if the setup survives every check.
+PAIR: HIDDEN_ASSET | PRICE: $${price.toFixed(prec)} | ATR: ${best.apiATR?.toFixed(prec) || 'n/a'} | Volatility: ${best.volatility?.level || 'n/a'}
+HTF: 1D=${dailyDir} 4H=${h4Dir} | Confluence: ${htfConfluence.level}
+SESSION: ${best.session.session} | Killzone=${best.session.isKillzone} | SilverBullet=${best.session.isSilverBullet} | AMD=${best.amd.phase}
+KEY LEVELS: Pivot $${best.msnr.pivot.toFixed(prec)} | Support $${best.msnr.nearestSupport?.toFixed(prec) || 'n/a'} | Resistance $${best.msnr.nearestResistance?.toFixed(prec) || 'n/a'}
+VOLUME PROFILE: ${best.volumeProfile ? `POC $${best.volumeProfile.poc.toFixed(prec)} | VAH $${best.volumeProfile.vah.toFixed(prec)} | VAL $${best.volumeProfile.val.toFixed(prec)} | zone in LVN: ${best.volumeProfile.lvns.some(p => p >= best.zone.low && p <= best.zone.high) ? 'YES' : 'no'}` : 'n/a'} | Delta proxy(20): ${best.deltaProxy?.direction || 'n/a'}
+LIQUIDITY SWEEPS: ${sweepLines}
+SNIPER SEQUENCE: ${best.sniperEntry?.isSniper ? 'COMPLETE' : 'INCOMPLETE'}${best.sniperEntry?.path ? ` via ${best.sniperEntry.path}` : ''} (${sniperLines})
+METHOD: MSNR levels + Turtle Soup + CRT are the PRIMARY strategy; ICT FVG/OB are secondary confluence. TBS grade: ${best.tbsQuality?.grade || 'n/a'} | CRT state: ${best.crtState?.state || best.crt?.pattern || 'n/a'} | MSNR distance: ${best.msnrDistance?.toFixed(2) || 'n/a'}%
+PATH TO TP: ${best.pathCheck?.clear ? 'clear' : 'obstacles: ' + (best.pathCheck?.obstacles || []).join(', ')}
+ZONE: fresh=${best.freshness?.fresh} touches=${best.zoneTouches} magnetism=${best.magnetism?.magnetism} (${best.magnetism?.score}/100)
+ALL TIMEFRAMES:
+${tfSummary}
+TOP SETUP (${best.timeframe}):
+Direction: ${best.direction} | Zone: $${best.zone.low.toFixed(prec)}-$${best.zone.high.toFixed(prec)} (${best.zone.src} Q:${best.zone.quality}, confluence: ${best.zone.confluence})
+HTF Validated: ${best.htfValidation ? (best.htfValidation.passed ? 'YES' : 'NO') : 'N/A'}
+Entry Ready: ${best.entryReady ? 'YES' : 'NO'} | Reaction: ${best.zoneReaction?.confirmed ? best.zoneReaction.type : 'NONE'}
+Entry: $${best.entry.toFixed(prec)} | SL: $${best.sl.toFixed(prec)} | TP1: $${best.tp1.toFixed(prec)} | RR: 1:${best.rrUsed}
+DISTANCE TO ENTRY: ${(best.entryDistancePct ?? 0).toFixed(2)}% (${(best.entryDistanceATR ?? 0).toFixed(1)}x ATR) - this is a PENDING limit order; price has NOT reached the zone yet
+RECENT ${best.entryTF} CANDLES (oldest first):
+${recentCandles || 'n/a'}
+
+WORKING PRINCIPLE: treat the liquidity sweep + order block + FVG sequence as a contextual framework, not a rigid rule to force every setup.
+HARD RULES (evaluate EVERY rule and report a verdict for each in rule_checks):
+1. HTF Confluence level CONFLICT (BOTH 1D and 4H oppose the trade) -> "skip". PARTIAL is NOT conflict - one HTF agreeing (especially 1D) is acceptable; never skip solely for PARTIAL.
+2. This is a pending limit order: if price has NOT reached the zone yet (see DISTANCE TO ENTRY), a missing zone reaction is EXPECTED and is NOT a defect - do not fail this rule or reject for it; "wait_for_reaction" is the natural decision. Only fail if price already tested the zone and failed to react.
+3. HTF not validated AND sniper sequence INCOMPLETE -> "skip".
+4. Path to TP has obstacles AND RR < 3 -> "skip".
+5. Sniper sequence COMPLETE + killzone + fresh zone -> lean "enter_now".
+Confidence_adjustment must stay within -25..+25 and reflect how many checks the setup failed.
+entry_refinement (optional) must stay inside or overlap the given zone and be on the correct side of current price.
+invalidation_price must be beyond the stop loss side of entry (below entry for BUY, above for SELL).
+If a DIFFERENT timeframe in the list above is strictly better than the top setup (better HTF alignment, fresher zone, reaction confirmed), set selected_timeframe to it; otherwise omit the field.
+
+Return ONLY JSON in this exact format:
+{
+  "trade_signal_Theghostmachine": {
+    "approved": boolean,
+    "confidence_adjustment": number,
+    "execution_decision": "enter_now" | "wait_for_reaction" | "skip",
+    "wait_condition": "string",
+    "selected_timeframe": "string (optional)",
+    "rule_checks": [{ "rule": 1, "verdict": "PASS" | "FAIL" | "N/A", "note": "string" }],
+    "invalidation_price": number,
+    "analysis": {
+      "entry_logic": "string",
+      "sl_logic": "string",
+      "key_reason": "string",
+      "risk_warning": "string",
+      "possible_outcomes": ["string"]
+    },
+    "entry_refinement": { "low": number, "high": number }
+  }
+}`;
+    const messages = [{ role: 'system', content: 'You are a strict ICT execution auditor. Return ONLY valid JSON.' }, { role: 'user', content: prompt }];
+    const attempts = [
+        { model: 'deepseek-reasoner', body: { model: 'deepseek-reasoner', messages, max_tokens: 4000 }, timeout: 60000 },
+        { model: 'deepseek-chat', body: { model: 'deepseek-chat', messages, temperature: 0.1, max_tokens: 1600, response_format: { type: 'json_object' } }, timeout: 30000 }
+    ];
+    const allowedTFs = allResults.map(r => r.timeframe);
+    for (const attempt of attempts) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), attempt.timeout);
+        try {
+            const r = await fetch(DEEPSEEK_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` }, signal: ctrl.signal, body: JSON.stringify(attempt.body) });
+            const d = await r.json();
+            const content = d.choices?.[0]?.message?.content;
+            if (!content) continue;
+            let parsed = null;
+            try { parsed = JSON.parse(content); } catch (e) { const m = content.match(/\{[\s\S]*\}/); if (m) { try { parsed = JSON.parse(m[0]); } catch (e2) {} } }
+            if (parsed) {
+                const valid = validateAIResult(parsed, best, price, allowedTFs);
+                if (valid) { valid.trade_signal_Theghostmachine.model_used = attempt.model; return valid; }
+            }
+        } catch (e) { console.error(`AI fetch (${attempt.model}):`, e); } finally { clearTimeout(timer); }
+    }
+    return null;
+}
+
+function setJsonOutput(obj) {
+    const el = document.getElementById('jsonOutput');
+    if (el) el.textContent = JSON.stringify(obj, null, 2);
+}
+
+async function runAutoScan() {
+    const btn = document.getElementById('analyzeBtn'), scanStatus = document.getElementById('scanStatus'), scanText = document.getElementById('scanText'), scanFill = document.getElementById('scanProgressFill');
+    btn.classList.add('loading'); btn.disabled = true; scanStatus.classList.remove('hidden');
+    if (!TWELVE_DATA_KEY) { showSetup(); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
+    showNotif('🔍 Scanning for Ghost Machine setups...', 'info');
+    try {
+        const price = await getPrice(); if (!price) throw new Error('No price');
+        const historyCache = {};
+        const tfs = ['5M', '15M', '1H', '4H', '1D'];
+        scanText.innerHTML = 'Fetching market data...';
+        await Promise.all(tfs.map(async (t) => { historyCache[t] = await getHistory(t); }));
+
+        const mtfTrendsData = {}; for (let t of tfs) mtfTrendsData[t] = await getQuoteDirection(t, historyCache[t]);
+        await updateMTFDisplay(historyCache); document.getElementById('currentPrice').innerHTML = `$${price.toFixed(getPrec(pair))}`;
+        if (lastPrice) { const ch = ((price - lastPrice) / lastPrice * 100).toFixed(2); const ce = document.getElementById('priceChange'); ce.innerHTML = `${ch >= 0 ? '▲' : '▼'} ${Math.abs(ch)}%`; ce.className = `price-change ${ch >= 0 ? 'up' : 'down'}`; } lastPrice = price;
+        const results = [], timeframesToScan = ['1D', '4H', '1H', '15M', '5M'], htfData = historyCache;
+        for (let i = 0; i < timeframesToScan.length; i++) { const tfScan = timeframesToScan[i]; scanText.innerHTML = `Scanning ${tfScan}... (${i + 1}/${timeframesToScan.length})`; scanFill.style.width = ((i + 1) / timeframesToScan.length * 100) + '%'; const result = await analyzeTimeframe(tfScan, price, htfData); if (result) results.push(result); }
+
+        console.log('=== SCAN RESULTS ===');
+        console.log('Results found:', results.length);
+        for (let r of results) {
+            console.log('TF:', r.timeframe, '| Direction:', r.direction, '| Score:', r.score, '| Confidence:', r.confidence);
         }
-    }
-    const displacement = detectDisplacement(entryData, direction);
-    if (displacement.detected) { score += 10;
-        checks.push({ name: 'Displacement momentum', passed: true, detail: 'Detected' }); } else { checks.push({ name: 'Displacement momentum', passed: false, detail: 'None' }); }
-    const magnetism = score >= 60 ? 'STRONG' : (score >= 35 ? 'MODERATE' : 'WEAK');
-    return { magnetism, score, maxScore: 100, checks, likelyToReach: score >= 35, summary: `Zone magnetism: ${magnetism} (${score}/100)` };
+
+        if (results.length === 0) { showNotif('🎯 No Ghost Machine setups found', 'warning'); setJsonOutput({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_GHOST_MACHINE_PATTERN',note:'Ghost Machine requires: Liquidity Sweep/TBS + MSS with Displacement + Fresh Zone + Confirmation Candle + Silver Bullet Session. None matched this scan.',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
+        for (let result of results) {
+            try { result.qualityScore = calculateSetupQuality(result, price); }
+            catch(e) { console.error('Error calculating quality score:', e); result.qualityScore = 0; }
+            result.confidenceAtScan = result.confidence;
+        }
+        results.sort((a, b) => (b.confidence - a.confidence) || (b.qualityScore - a.qualityScore));
+        let best = results[0];
+
+        if (results.length > 1) showNotif(`🎯 Found ${results.length} Ghost Machine setups! Best: ${best.timeframe} ${best.direction}`, 'success');
+        else showNotif(`🎯 Ghost Machine setup found on ${best.timeframe}`, 'success');
+        scanText.innerHTML = '🤖 AI execution check...'; const aiResult = await askAIWithAllResults(results, price, htfData); scanStatus.classList.add('hidden');
+        const aiSelectedTF = aiResult?.trade_signal_Theghostmachine?.selected_timeframe;
+        if (aiSelectedTF && aiSelectedTF !== best.timeframe) {
+            const candidate = results.find(r => r.timeframe === aiSelectedTF);
+            if (candidate) { best = candidate; showNotif(`🤖 AI selected ${aiSelectedTF} setup`, 'info'); }
+        }
+        const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
+        const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
+        if (htfConfluence.level === 'CONFLICT') { best.confidence = Math.max(best.confidence - 15, GHOST_MACHINE_CONFLICT_CONFIDENCE_FLOOR); best.confBreakdown?.push({ adj: -15, reason: `HTF conflict (1D=${htfConfluence.daily}, 4H=${htfConfluence.h4})` }); showNotif(`⚠️ HTF conflict: 1D=${htfConfluence.daily}, 4H=${htfConfluence.h4} - confidence reduced`, 'warning'); }
+        let aiConviction = 'MEDIUM', aiApproved = true, aiConfAdj = 0, executionDecision = best.entryReady ? 'enter_now' : 'wait_for_reaction', waitCondition = 'Wait for engulf/pinbar at zone', aiInvalidation = best.invalidationPrice;
+        let finalEntry = best.entry, finalZoneLow = best.zone.low, finalZoneHigh = best.zone.high, aiEntryLogic = '', aiSlLogic = '', aiKeyReason = '', aiRiskWarning = '', aiOutcomes = [];
+        if (aiResult && aiResult.trade_signal_Theghostmachine) { const ts = aiResult.trade_signal_Theghostmachine; aiApproved = ts.approved !== false; aiConfAdj = ts.confidence_adjustment || 0; executionDecision = ts.execution_decision || executionDecision; waitCondition = ts.wait_condition || waitCondition; if (ts.invalidation_price) aiInvalidation = ts.invalidation_price; if (executionDecision === 'enter_now') aiConviction = 'HIGH'; else if (executionDecision === 'wait_for_reaction') aiConviction = 'WAIT'; else aiConviction = 'SKIP'; if (ts.entry_refinement && ts.entry_refinement.low && ts.entry_refinement.high) { finalZoneLow = ts.entry_refinement.low; finalZoneHigh = ts.entry_refinement.high; finalEntry = (finalZoneLow + finalZoneHigh) / 2; } aiEntryLogic = ts.analysis?.entry_logic || ''; aiSlLogic = ts.analysis?.sl_logic || ''; aiKeyReason = ts.analysis?.key_reason || ''; aiRiskWarning = ts.analysis?.risk_warning || ''; aiOutcomes = ts.analysis?.possible_outcomes || []; if (aiApproved) { best.confidence = Math.min(Math.max(best.confidence + aiConfAdj, 10), 98); if (aiConfAdj) best.confBreakdown?.push({ adj: aiConfAdj, reason: `AI (${ts.model_used || 'deepseek'}) adjustment: ${aiKeyReason || 'approved'}` }); }
+            else {
+                const rule1Note = (ts.rule_checks?.find(r => r.rule === 1)?.note || '') + ' ' + (aiKeyReason || '');
+                const misreadPartial = htfConfluence.level === 'PARTIAL' && executionDecision === 'skip' && /conflict/i.test(rule1Note);
+                if (misreadPartial) {
+                    executionDecision = 'wait_for_reaction'; aiConviction = 'WAIT';
+                    best.confidence = Math.max(best.confidence - 10, 10);
+                    best.confBreakdown?.push({ adj: -10, reason: `🤖 AI wait (rejection downgraded: HTF is PARTIAL with ${htfConfluence.alignedTF || '1D'} aligned, not CONFLICT)` });
+                } else if (executionDecision === 'wait_for_reaction') {
+                    aiConviction = 'WAIT';
+                    best.confidence = Math.max(best.confidence - 12, 10);
+                    best.confBreakdown?.push({ adj: -12, reason: `\ud83e\udd16 AI prefers waiting: ${aiKeyReason || 'wait for zone reaction'}` });
+                } else {
+                    best.confidence = Math.max(best.confidence - 25, 5);
+                    best.confBreakdown?.push({ adj: -25, reason: `\ud83e\udd16 AI REJECTED: ${aiKeyReason || aiRiskWarning || 'setup failed audit'}` });
+                }
+            } }
+        if (finalEntry !== best.entry || finalZoneLow !== best.zone.low || finalZoneHigh !== best.zone.high) {
+            const recomputed = recomputeTradeLevels(best, finalZoneLow, finalZoneHigh, price, pair, htfData[best.entryTF] || []);
+            finalEntry = recomputed.entry;
+            finalZoneLow = recomputed.zone.low;
+            finalZoneHigh = recomputed.zone.high;
+            best = { ...best, ...recomputed };
+            if (!aiResult?.trade_signal_Theghostmachine?.invalidation_price) aiInvalidation = recomputed.invalidationPrice;
+        }
+        const risk = best.risk ?? Math.abs(best.entry - best.sl);
+        const rrDisplay = best.rrDisplay || (risk > 0 ? (Math.abs(best.tp1 - best.entry) / risk).toFixed(1) : '0.0');
+        const session = getSession();
+
+        // ============================================
+        // GHOST MACHINE SCORING (65+ = TRADE)
+        // ============================================
+        let ghostScore = 0;
+        let ghostReasons = [];
+        let ghostDetails = [];
+
+        const addScore = (pts, reason, detail = '') => {
+            ghostScore += pts;
+            ghostReasons.push(reason);
+            if (detail) ghostDetails.push({ pts, reason, detail });
+        };
+
+        if (best.hasSweep) addScore(25, 'Liquidity Sweep', 'Sweep detected');
+        if (best.hasTBS) addScore(25, 'Turtle Soup', 'TBS detected');
+
+        if (best.mss?.displaced) addScore(25, 'MSS with displacement', 'Displaced MSS');
+        else if (best.mss) addScore(10, 'MSS exists', 'MSS without displacement');
+
+        if (best.freshness?.fresh) addScore(20, 'Fresh zone', '0 touches');
+        else if (best.freshness?.partiallyUsed && best.freshness?.violations === 0) addScore(10, 'Lightly used', `${best.freshness.touches} touches`);
+
+        if (best.zone?.quality === 'A') addScore(15, 'A-grade zone', best.zone.src);
+        else if (best.zone?.quality === 'B') addScore(10, 'B-grade zone', best.zone.src);
+        else addScore(5, 'C-grade zone', best.zone.src);
+
+        if (best.confirmation) addScore(10, 'Confirmed candle', 'Engulf/pinbar');
+
+        if (best.session?.isSilverBullet) addScore(15, 'Silver Bullet', best.session.session);
+        else if (best.session?.isKillzone) addScore(8, 'Killzone', best.session.session);
+
+        const htfAgree = best.htfAgree || 0;
+        if (htfAgree >= 2) addScore(10, `${htfAgree}/3 HTF align`, '');
+        else if (htfAgree === 1) addScore(5, `${htfAgree}/3 HTF align`, '');
+
+        const entryDistATR = best.entryDistanceATR || 999;
+        if (entryDistATR < 0.5) addScore(10, 'Entry close', `${entryDistATR.toFixed(1)}x ATR`);
+        else if (entryDistATR < 1.5) addScore(5, 'Entry within 1.5 ATR', `${entryDistATR.toFixed(1)}x ATR`);
+
+        if (best.brokenLevel) addScore(10, 'Broken level flipped', best.brokenLevel.type);
+        if (best.isUnmet) addScore(10, 'Unmet zone', best.direction === 'BUY' ? 'Below price' : 'Above price');
+
+        const bosCount = best.bosCount || 0;
+        if (bosCount >= 3) addScore(10, `${bosCount}x BOS`, 'Multiple BOS');
+        else if (bosCount >= 2) addScore(5, `${bosCount}x BOS`, '');
+
+        // GHOST MACHINE: Score >= 65 = TRADE
+        const tradeable = ghostScore >= 65 && executionDecision !== 'skip';
+        const riskPercent = tradeable ? (ghostScore >= 85 ? 1.0 : 0.5) : 0;
+        const noTradeReason = tradeable ? null : (executionDecision === 'skip' ? 'AI decision: skip' : `Ghost score ${ghostScore} < 65 (${ghostReasons.slice(0, 3).join(', ')})`);
+
+        console.log(`🏆 Ghost Machine Score: ${ghostScore}/100 (${ghostReasons.join(', ')})`);
+        console.log(`📊 Tradeable: ${tradeable}, Risk: ${riskPercent * 100}%`);
+
+        const prec = getPrec(pair);
+        const out = { auto_scan_result: { date: new Date().toISOString().split('T')[0], time: new Date().toISOString().split('T')[1].split('.')[0], pair, current_price: price, multi_timeframe_trends: mtfTrendsData, best_timeframe: best.timeframe, quality_score: best.qualityScore, status: tradeable ? 'GHOST_MACHINE_SETUP' : 'NO_TRADE', no_trade_reason: noTradeReason, ghost_score: ghostScore, ghost_reasons: ghostReasons, ghost_details: ghostDetails, suggested_risk: riskPercent === 1 ? '1% (FULL - score 85+)' : (riskPercent === 0.5 ? '0.5% (HALF - score 65-84)' : '0% (do not trade)'), total_setups_found: results.length, setups_found: results.map(r => ({ timeframe: r.timeframe, direction: r.direction, entry: r.entry, sl: r.sl, tp1: r.tp1, confidence: r.confidenceAtScan ?? r.confidence, score: r.score, reasons: r.reasons || [] })), trade_signal: { trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT', entry_price: finalEntry, entry_zone: { low: finalZoneLow, high: finalZoneHigh }, stop_loss: best.sl, take_profit_1: best.tp1, take_profit_2: best.tp2, take_profit_3: best.tp3, risk_reward: '1:' + rrDisplay, confidence: best.confidence, ghost_score: ghostScore, ghost_reasons: ghostReasons, analysis: { trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)`, volatility_level: `${best.volatility.level} - ${best.volatility.desc}`, liquidity_sweep: best.hasSweep ? '✅ Detected' : '❌ Not detected', turtle_soup: best.hasTBS ? '✅ Detected' : '❌ Not detected', mss: best.mss ? `${best.mss.type} with displacement` : 'None', zone_freshness: best.freshness?.fresh ? 'Fresh' : (best.freshness?.partiallyUsed ? 'Partially used' : 'Used'), confirmation_candle: best.confirmation ? '✅ Confirmed' : '❌ Not confirmed', session: best.session?.session || 'OFF-HOURS', silver_bullet: best.session?.isSilverBullet ? '✅ Yes' : '❌ No', bos_count: best.bosCount || 0, broken_level: best.brokenLevel ? '✅ Found' : '❌ Not found', unmet_zone: best.isUnmet ? '✅ Yes' : '❌ No' }, technical_indicators: [`RSI: ${best.twelveIndicators?.rsi || 'N/A'}`, `ATR: ${best.apiATR?.toFixed(prec) || 'N/A'}`, `Sweeps: ${best.hasSweep ? 'Yes' : 'No'}`, `MSS: ${best.mss?.type || 'None'}`, `BOS: ${best.bosCount || 0}`] } } } };
+        setJsonOutput(out);
+        lastSetupSummary = buildSetupSummary(best, st, finalEntry, price);
+        lastSetupOut = out;
+
+        if (!tradeable) {
+            analysis = null;
+            document.getElementById('executeBtn').disabled = true;
+            showNotif(`🚫 ${noTradeReason}`, 'warning');
+            return;
+        }
+        analysis = { signalType: st, idealEntry: finalEntry, currentPrice: price, stopLoss: best.sl, takeProfit1: best.tp1, takeProfit2: best.tp2, takeProfit3: best.tp3, confidence: best.confidence, riskPercent, entryZoneLow: finalZoneLow, entryZoneHigh: finalZoneHigh, entryReady: best.entryReady, executionDecision, invalidationPrice: aiInvalidation };
+        if (best && best.invalidationPrice && !isSetupStillValid(best, price)) {
+            showNotif(`⚠️ Setup invalidated at current price: ${price}`, 'warning');
+            document.getElementById('executeBtn').disabled = true;
+            return;
+        }
+        document.getElementById('executeBtn').disabled = false;
+        showNotif(`🎯 GHOST MACHINE ${best.timeframe} ${st} ${best.confidence}% | Score: ${ghostScore} | Risk: ${riskPercent}% | 1:${rrDisplay}`, 'success');
+    } catch (e) { console.error(e); showNotif('Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
+    finally { btn.classList.remove('loading'); btn.disabled = false; }
 }
 
-function findPDArrays(data, direction) {
-    const arrays = [], fvgs = detectFVG(data), obs = detectOrderBlocks(data, direction), breakers = detectBreakers(data);
-    if (direction === 'BUY') {
-        fvgs.filter(f => f.type === 'bull').forEach(f => arrays.push({ low: f.l, high: f.h, src: 'FVG' }));
-        obs.forEach(o => arrays.push({ low: o.low, high: o.high, src: 'OB' }));
-        breakers.filter(b => b.type === 'BULL').forEach(b => arrays.push({ low: b.p * 0.998, high: b.p * 1.002, src: 'Breaker' }));
-    } else {
-        fvgs.filter(f => f.type === 'bear').forEach(f => arrays.push({ low: f.l, high: f.h, src: 'FVG' }));
-        obs.forEach(o => arrays.push({ low: o.low, high: o.high, src: 'OB' }));
-        breakers.filter(b => b.type === 'BEAR').forEach(b => arrays.push({ low: b.p * 0.998, high: b.p * 1.002, src: 'Breaker' }));
-    }
-    return arrays;
-}
+// ============================================
+// 💾 RECENT SAVED + 📒 TRADE JOURNAL
+// ============================================
+let lastSetupSummary = null, lastSetupOut = null;
 
-function isZoneWithinHTFArray(entryZone, htfArrays) {
-    for (const arr of htfArrays) {
-        if (entryZone.low >= arr.low && entryZone.high <= arr.high) return { contained: true, parentArray: arr };
-        if (entryZone.low <= arr.high && entryZone.high >= arr.low) return { contained: true, parentArray: arr, partial: true };
-    }
-    return { contained: false, parentArray: null };
-}
-
-function isHTFPremiumDiscount(htfData, direction, currentPrice) {
-    if (!htfData || htfData.length < 10) return { inPremiumDiscount: false, value: 'neutral', pct: 0 };
-    let high = -Infinity, low = Infinity;
-    for (let i = 0; i < htfData.length; i++) {
-        if (htfData[i].h > high) high = htfData[i].h;
-        if (htfData[i].l < low) low = htfData[i].l;
-    }
-    const range = high - low;
-    const current = typeof currentPrice === 'number' ? currentPrice : htfData[htfData.length - 1].c;
-    const mid = range / 2 + low;
-    if (direction === 'BUY') {
-        const inDiscount = current < mid;
-        const discountPct = ((mid - current) / range * 100);
-        return { inPremiumDiscount: inDiscount, value: 'discount', pct: Math.max(0, discountPct) };
-    }
-    const inPremium = current > mid;
-    const premiumPct = ((current - mid) / range * 100);
-    return { inPremiumDiscount: inPremium, value: 'premium', pct: Math.max(0, premiumPct) };
-}
-
-function getGhostHardRules(direction, sweeps, turtleSoup, mss, session, freshness, zone) {
-    const wantSweepDir = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
-    const turtleSoupAligned = turtleSoup?.detected && turtleSoup.type === direction;
-    const mssAligned = direction === 'BUY' ? mss?.type === 'BULL' : mss?.type === 'BEAR';
+function buildSetupSummary(best, st, finalEntry, price) {
     return {
-        hasSweep: (sweeps || []).some(s => s.direction === wantSweepDir) || turtleSoupAligned,
-        hasMSS: !!mss && mssAligned && mss.displaced === true,
-        hasKillzone: !!session?.isKillzone || !!session?.isSilverBullet,
-        zoneFresh: freshness?.fresh || (freshness?.partiallyUsed && freshness?.violations === 0),
-        zoneQuality: zone?.quality === 'A' || zone?.quality === 'B'
+        id: Date.now(),
+        pair, timeframe: best.timeframe, direction: st,
+        entry: finalEntry, sl: best.sl, tp1: best.tp1,
+        confidence: best.confidence, quality: best.zone?.quality || '?',
+        sniper: !!best.sniperEntry?.isSniper, priceAtScan: price,
+        ghostScore: best.score || 0
     };
 }
 
-async function checkSniperRejection(zone, direction, sniperTF, cachedData = null) {
-    const dSn = cachedData || await getHistory(sniperTF);
-    if (!dSn || dSn.length < 3) return { confirmed: false };
-    const lc = dSn[dSn.length - 1];
-    const body = Math.abs(lc.c - lc.o);
-    if (direction === 'BUY') {
-        const wick = Math.min(lc.o, lc.c) - lc.l;
-        const t = lc.l <= zone.high && lc.l >= zone.low;
-        if (t && wick > body * 2 && lc.c > lc.o) return { confirmed: true };
-    } else {
-        const wick = lc.h - Math.max(lc.o, lc.c);
-        const t = lc.h >= zone.low && lc.h <= zone.high;
-        if (t && wick > body * 2 && lc.c < lc.o) return { confirmed: true };
+const RECENT_KEY = 'ict_recent_saved', RECENT_CAP = 10;
+const JOURNAL_KEY = 'ict_journal', JOURNAL_CAP = 30;
+function getRecents() { try { const r = JSON.parse(localStorage.getItem(RECENT_KEY)); return Array.isArray(r) ? r : []; } catch (e) { return []; } }
+function setRecents(r) { try { localStorage.setItem(RECENT_KEY, JSON.stringify(r.slice(0, RECENT_CAP))); } catch (e) {} }
+function getJournal() { try { const j = JSON.parse(localStorage.getItem(JOURNAL_KEY)); return Array.isArray(j) ? j : []; } catch (e) { return []; } }
+function setJournal(j) { try { localStorage.setItem(JOURNAL_KEY, JSON.stringify(j.slice(0, JOURNAL_CAP))); } catch (e) {} }
+
+function saveCurrentSetup() {
+    if (!lastSetupSummary) { showNotif('⚠️ No setup to save - run a scan first', 'warning'); return; }
+    const recents = getRecents();
+    if (recents.some(e => e.id === lastSetupSummary.id)) { showNotif('💾 Already saved', 'info'); return; }
+    recents.unshift({ ...lastSetupSummary, out: lastSetupOut, savedAt: new Date().toISOString(), outcome: null });
+    setRecents(recents);
+    renderRecents();
+    showNotif('💾 Saved to Recent', 'success');
+}
+function markRecentOutcome(id, outcome) {
+    const r = getRecents(); const e = r.find(x => x.id === id);
+    if (e) { e.outcome = e.outcome === outcome ? null : outcome; setRecents(r); renderRecents(); }
+}
+function journalRecent(id) {
+    const r = getRecents(); const e = r.find(x => x.id === id);
+    if (!e) return;
+    if (!e.outcome) { showNotif('⚠️ Mark ✅ Win or ❌ Loss first, then journal it', 'warning'); return; }
+    const { out, outcome, ...rest } = e;
+    const journal = getJournal();
+    journal.unshift({ ...rest, status: outcome, journaledAt: new Date().toISOString() });
+    setJournal(journal);
+    setRecents(r.filter(x => x.id !== id));
+    renderRecents(); renderJournal();
+    showNotif(`📒 Journaled as ${outcome}`, 'success');
+}
+function deleteRecent(id) { setRecents(getRecents().filter(x => x.id !== id)); renderRecents(); showNotif('🗑️ Saved setup deleted', 'warning'); }
+function viewRecent(id) { const e = getRecents().find(x => x.id === id); if (e?.out) { setJsonOutput(e.out); showNotif('📋 Loaded into Best Setup view - rescan before trading', 'info'); } }
+function deleteJournalEntry(id) { setJournal(getJournal().filter(x => x.id !== id)); renderJournal(); showNotif('🗑️ Journal entry deleted', 'warning'); }
+
+function setupCardHTML(e, when, badge, actions) {
+    const prec = getPrec(e.pair || 'XAU/USD');
+    return `<div class="journal-entry ${badge.cls}">
+        <div class="journal-head"><span>${e.sniper ? '🎯 ' : ''}${e.pair} ${e.direction} ${e.timeframe} Q:${e.quality} ${e.confidence}%</span><span>${badge.label}</span></div>
+        <div class="journal-levels">E $${(+e.entry).toFixed(prec)} | SL $${(+e.sl).toFixed(prec)} | TP $${(+e.tp1).toFixed(prec)} | ${when}</div>
+        <div class="journal-actions">${actions}</div>
+    </div>`;
+}
+function renderRecents() {
+    const list = document.getElementById('recentList');
+    if (!list) return;
+    const recents = getRecents();
+    if (recents.length === 0) { list.innerHTML = '<span class="journal-empty">No saved setups — hit 💾 Save after a scan to keep one here</span>'; return; }
+    list.innerHTML = recents.map(e => {
+        const when = e.savedAt ? new Date(e.savedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+        const badge = e.outcome === 'WIN' ? { label: '✅ WIN', cls: 'win' } : (e.outcome === 'LOSS' ? { label: '❌ LOSS', cls: 'loss' } : { label: '💾 SAVED', cls: 'pending' });
+        const actions = `<button class="jw-win" data-action="win" data-id="${e.id}">✅ Win</button>` +
+            `<button class="jw-loss" data-action="loss" data-id="${e.id}">❌ Loss</button>` +
+            `<button class="jw-journal" data-action="journal" data-id="${e.id}">📒 Journal</button>` +
+            `<button class="jw-del" data-action="view" data-id="${e.id}">📋 View</button>` +
+            `<button class="jw-del" data-action="del" data-id="${e.id}">🗑️</button>`;
+        return setupCardHTML(e, when, badge, actions);
+    }).join('');
+}
+function renderJournal() {
+    const list = document.getElementById('journalList'), stats = document.getElementById('journalStats');
+    if (!list) return;
+    const journal = getJournal();
+    if (stats) {
+        const w = journal.filter(e => e.status === 'WIN').length, l = journal.filter(e => e.status === 'LOSS').length;
+        const wr = (w + l) > 0 ? ` | ${(100 * w / (w + l)).toFixed(0)}% WR` : '';
+        stats.innerHTML = journal.length ? `✅${w} ❌${l}${wr}` : '';
     }
-    return { confirmed: false };
+    if (journal.length === 0) { list.innerHTML = '<span class="journal-empty">Journal is empty — mark a saved setup Win/Loss, then press 📒 Journal</span>'; return; }
+    list.innerHTML = journal.map(e => {
+        const when = e.journaledAt ? new Date(e.journaledAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+        const badge = e.status === 'WIN' ? { label: '✅ WIN', cls: 'win' } : { label: '❌ LOSS', cls: 'loss' };
+        return setupCardHTML(e, when, badge, `<button class="jw-del" data-action="del" data-id="${e.id}">🗑️</button>`);
+    }).join('');
+}
+function handleRecentClick(ev) {
+    const btn = ev.target.closest('button[data-action]');
+    if (!btn) return;
+    const id = +btn.dataset.id, action = btn.dataset.action;
+    if (action === 'win') markRecentOutcome(id, 'WIN');
+    else if (action === 'loss') markRecentOutcome(id, 'LOSS');
+    else if (action === 'journal') journalRecent(id);
+    else if (action === 'view') viewRecent(id);
+    else if (action === 'del') deleteRecent(id);
+}
+function handleJournalClick(ev) {
+    const btn = ev.target.closest('button[data-action]');
+    if (btn && btn.dataset.action === 'del') deleteJournalEntry(+btn.dataset.id);
 }
 
-function checkSniperEntry(data, price, direction, zone, session) {
-    const checks = [];
-    let score = 0;
-    const sweeps = detectLiquiditySweeps(data, price);
-    const ts = detectTurtleSoup(data);
-    const wantSweepDir = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
-    const hasSweep = sweeps.some(s => s.direction === wantSweepDir) || (ts.detected && ts.type === direction);
-    if (hasSweep) score += 30;
-    checks.push({ name: 'Liquidity sweep', passed: hasSweep, critical: true });
-    const mss = detectMSS(data);
-    const mssAligned = direction === 'BUY' ? mss?.type === 'BULL' : mss?.type === 'BEAR';
-    const mssDisplaced = mssAligned && mss.displaced === true;
-    if (mssAligned) score += 15;
-    if (mssDisplaced) score += 15;
-    checks.push({ name: 'MSS + displacement', passed: mssDisplaced, critical: true });
-    const freshness = checkZoneFreshness(data, zone, direction);
-    const zoneFresh = freshness.fresh || (freshness.partiallyUsed && freshness.violations === 0);
-    if (zoneFresh) score += 15;
-    checks.push({ name: 'Zone fresh', passed: zoneFresh, critical: true });
-    const inOTE = typeof zone.confluence === 'string' && zone.confluence.includes('OTE');
-    if (inOTE) score += 15;
-    checks.push({ name: 'Zone in OTE band', passed: inOTE, critical: false });
-    const inKillzone = !!session?.isKillzone;
-    if (inKillzone) score += 10;
-    checks.push({ name: 'Killzone session', passed: inKillzone, critical: false });
-    const tbsAligned = ts.detected && ts.type === direction;
-    const atMSNR = zone.src === 'MSNR' || (typeof zone.confluence === 'string' && zone.confluence.includes('MSNR'));
-    const altPath = tbsAligned && atMSNR && zoneFresh;
-    if (altPath) score = Math.max(score, 70);
-    checks.push({ name: 'TBS at MSNR level (alt path)', passed: altPath, critical: false });
-    const isSniper = (hasSweep && mssDisplaced && zoneFresh) || altPath;
-    return { isSniper, score, checks, grade: score >= 75 ? 'S' : (score >= 50 ? 'A' : 'B'), path: altPath ? 'MSNR+TBS' : (isSniper ? 'ICT' : null) };
+// ============================================
+// FIX #21: MISSED-FILL DETECTION
+// ============================================
+function parseCandleTimeUTC(t) {
+    if (typeof t !== 'string') return NaN;
+    const iso = t.includes('T') ? t : t.replace(' ', 'T');
+    return new Date(/Z|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + 'Z').getTime();
+}
+function orderCrossedInCandles(order, candles) {
+    if (!order?.idealEntry || !candles?.length) return false;
+    const created = new Date(order.createdAt).getTime();
+    if (isNaN(created)) return false;
+    return candles.some(c => {
+        const t = parseCandleTimeUTC(c.t);
+        if (isNaN(t) || t < created - 5 * 60 * 1000) return false;
+        return order.signalType === 'LONG' ? c.l <= order.idealEntry : c.h >= order.idealEntry;
+    });
+}
+async function checkMissedFill() {
+    if (!limitOrder) return;
+    try {
+        const candles = await getHistory('5M', limitOrder.pair || pair);
+        if (candles && orderCrossedInCandles(limitOrder, candles)) {
+            const prec = getPrec(limitOrder.pair || pair);
+            showNotif(`ℹ️ ${limitOrder.pair || ''} ${limitOrder.signalType} level $${limitOrder.idealEntry.toFixed(prec)} traded while you were away - order still active, review manually`, 'info');
+        }
+    } catch (e) { console.error('Missed-fill check:', e); }
 }
 
-function validateBreakerBlock(data, level, direction) {
-    if (data.length < 25) return false;
-    const moveAway = data.slice(-25).find(c => direction === 'BUY' ? c.c > level * 1.005 : c.c < level * 0.995);
-    if (!moveAway) return false;
-    const recent = data.slice(-5), touched = recent.some(c => direction === 'BUY' ? c.l <= level : c.h >= level),
-        last = recent[recent.length - 1], rejected = direction === 'BUY' ? last.c > level : last.c < level;
-    return touched && rejected;
-}
-
-function analyzeAMD(dailyData) {
-    if (!dailyData || dailyData.length < 2) return { phase: 'UNKNOWN' };
-    const now = new Date();
-    const hour = now.getUTCHours();
-    const candles = dailyData.slice(-24);
-    const asiaCandles = candles.filter(c => { const h = new Date(c.t).getUTCHours(); return h >= 0 && h < 4; });
-    if (asiaCandles.length === 0) return { phase: 'ACCUMULATION' };
-    const asiaHigh = Math.max(...asiaCandles.map(c => c.h)), asiaLow = Math.min(...asiaCandles.map(c => c.l));
-    const currentPrice = candles[candles.length - 1].c;
-    if (hour >= 0 && hour < 5) return { phase: 'ACCUMULATION', range: { h: asiaHigh, l: asiaLow } };
-    const manipulatedUpper = candles.some(c => new Date(c.t).getUTCHours() >= 5 && c.h > asiaHigh);
-    const manipulatedLower = candles.some(c => new Date(c.t).getUTCHours() >= 5 && c.l < asiaLow);
-    if (hour >= 7 && hour < 12) {
-        if (manipulatedUpper || manipulatedLower) return { phase: 'MANIPULATION', range: { h: asiaHigh, l: asiaLow }, manipulated: manipulatedUpper ? 'UP' : 'DOWN' };
-        return { phase: 'ACCUMULATION_EXTENDED', range: { h: asiaHigh, l: asiaLow } };
-    }
-    return { phase: 'DISTRIBUTION', range: { h: asiaHigh, l: asiaLow }, manipulated: manipulatedUpper ? 'UP' : (manipulatedLower ? 'DOWN' : 'NONE') };
-}
-
-function calcVolumeProfile(data, binCount = 24) {
-    if (!data || data.length < 20) return null;
-    let hi = -Infinity, lo = Infinity;
-    for (const c of data) { if (c.h > hi) hi = c.h; if (c.l < lo) lo = c.l; }
-    if (!(hi > lo)) return null;
-    const binSize = (hi - lo) / binCount;
-    const bins = new Array(binCount).fill(0);
-    for (const c of data) {
-        const from = Math.max(0, Math.min(binCount - 1, Math.floor((c.l - lo) / binSize)));
-        const to = Math.max(from, Math.min(binCount - 1, Math.floor((c.h - lo) / binSize)));
-        const per = (c.v || 1) / (to - from + 1);
-        for (let j = from; j <= to; j++) bins[j] += per;
-    }
-    const total = bins.reduce((a, b) => a + b, 0);
-    let pocIdx = 0;
-    for (let i = 1; i < binCount; i++) if (bins[i] > bins[pocIdx]) pocIdx = i;
-    let vaVol = bins[pocIdx], loIdx = pocIdx, hiIdx = pocIdx;
-    while (vaVol < total * 0.7 && (loIdx > 0 || hiIdx < binCount - 1)) {
-        const below = loIdx > 0 ? bins[loIdx - 1] : -1;
-        const above = hiIdx < binCount - 1 ? bins[hiIdx + 1] : -1;
-        if (above >= below) { hiIdx++;
-            vaVol += bins[hiIdx]; } else { loIdx--;
-            vaVol += bins[loIdx]; }
-    }
-    const priceAt = i => lo + binSize * (i + 0.5);
-    const avg = total / binCount;
-    const hvns = [], lvns = [];
-    for (let i = 0; i < binCount; i++) {
-        if (bins[i] > avg * 1.5) hvns.push(priceAt(i));
-        if (bins[i] < avg * 0.5) lvns.push(priceAt(i));
-    }
-    return { poc: priceAt(pocIdx), vah: lo + binSize * (hiIdx + 1), val: lo + binSize * loIdx, hvns, lvns, binSize, high: hi, low: lo };
-}
-
-function calcDeltaProxy(data, n = 20) {
-    if (!data || data.length < 3) return { cvd: 0, direction: 'NEUTRAL', proxy: true };
-    let cvd = 0;
-    for (const c of data.slice(-n)) cvd += (c.c > c.o ? 1 : (c.c < c.o ? -1 : 0)) * (c.v || 1);
-    return { cvd, direction: cvd > 0 ? 'BULLISH' : (cvd < 0 ? 'BEARISH' : 'NEUTRAL'), proxy: true };
-}
+function loadLimitOrder(){const s=localStorage.getItem('limitOrder');if(s){try{limitOrder=JSON.parse(s);updateLimitUI();startMonitor();checkMissedFill();}catch(e){}}}
+function saveLimit(o){limitOrder=o;localStorage.setItem('limitOrder',JSON.stringify(o));updateLimitUI();}
+function clearLimit(){limitOrder=null;localStorage.removeItem('limitOrder');if(priceTimer)clearInterval(priceTimer);updateLimitUI();}
+function cancelLimit(){clearLimit();showNotif('❌ Cancelled','warning');}
+function updateLimitUI(){const t=document.getElementById('limitOrderText'),c=document.getElementById('cancelLimitBtn');if(limitOrder){const prec=getPrec(limitOrder.pair||pair);t.innerHTML=`⏳ ${limitOrder.pair||''} ${limitOrder.signalType} LIMIT @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)}`;t.className='active';c.classList.remove('hidden');document.getElementById('executeBtn').innerHTML='⏳ Waiting...';document.getElementById('executeBtn').style.background='linear-gradient(135deg, #ff9f0a, #ff6b00)';}else{t.innerHTML='No active limit order';t.className='';c.classList.add('hidden');document.getElementById('executeBtn').innerHTML='⚡ Place Limit Order';document.getElementById('executeBtn').style.background='linear-gradient(135deg, #34c759, #28a745)';}}
+function startMonitor(){if(priceTimer)clearInterval(priceTimer);priceTimer=setInterval(async()=>{if(!limitOrder){clearInterval(priceTimer);return;}
+    const orderPair=limitOrder.pair||pair;const p=await getPrice(orderPair);if(!p)return;const prec=getPrec(orderPair);if(orderPair===pair)document.getElementById('currentPrice').innerHTML=`$${p.toFixed(prec)}`;if((limitOrder.signalType==='LONG' && p<=limitOrder.idealEntry)||(limitOrder.signalType==='SHORT' && p>=limitOrder.idealEntry)){const filled=limitOrder;clearLimit();showNotif(`✅ FILLED! ${filled.pair||''} ${filled.signalType} @ $${p.toFixed(prec)}`,'success');try{new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play();}catch(e){}}},2000);}
+function handleLimit(){if(!analysis||analysis.signalType==='NEUTRAL'){showNotif('No signal','error');return;}if(limitOrder){cancelLimit();return;}const o={id:Date.now(),pair,signalType:analysis.signalType,idealEntry:analysis.idealEntry,stopLoss:analysis.stopLoss,takeProfit1:analysis.takeProfit1,takeProfit2:analysis.takeProfit2,takeProfit3:analysis.takeProfit3,confidence:analysis.confidence,entryZoneLow:analysis.entryZoneLow,entryZoneHigh:analysis.entryZoneHigh,entryReady:analysis.entryReady,executionDecision:analysis.executionDecision,invalidationPrice:analysis.invalidationPrice,createdAt:new Date().toISOString()};saveLimit(o);startMonitor();showNotif(`📝 Limit @ $${o.idealEntry.toFixed(getPrec(pair))}`,'info');}
+function copyJson(){const el=document.getElementById('jsonOutput');const t=el?el.textContent:'';if(!t||t.trim()==='{}'){showNotif('Run analysis first','warning');return;}navigator.clipboard.writeText(t).then(()=>showNotif('📋 Copied!','success')).catch(()=>showNotif('Failed','error'));}
+function showNotif(m,t){const n=document.getElementById('notification');n.innerHTML=m;n.className=`notification ${t}`;n.classList.remove('hidden');setTimeout(()=>n.classList.add('hidden'),3000);}
 
 function checkEntryTiming(data, entryPrice, direction) {
     if (!data || data.length === 0) return { valid: false, reason: 'No data' };
@@ -1746,6 +1953,110 @@ function checkEntryTiming(data, entryPrice, direction) {
         valid = Math.abs(last.c - entryPrice) <= threshold || last.c >= entryPrice;
     }
     return { valid: valid, reason: valid ? 'Price near entry' : 'Waiting for optimal price' };
+}
+
+function isSetupStillValid(setup, currentPrice) {
+    if (!setup || !setup.direction) return true;
+    if (!setup.invalidationPrice) return true;
+    if (setup.direction === 'BUY') {
+        if (currentPrice < setup.invalidationPrice * 0.995) return false;
+    } else {
+        if (currentPrice > setup.invalidationPrice * 1.005) return false;
+    }
+    return true;
+}
+
+function calculateSetupScore(direction, context) {
+    let score = 0;
+    if ((direction === 'BUY' && context.htfTrendBias === 'BULLISH') ||
+        (direction === 'SELL' && context.htfTrendBias === 'BEARISH')) score += 1;
+    if ((direction === 'BUY' && context.htfZoneType === 'DISCOUNT') ||
+        (direction === 'SELL' && context.htfZoneType === 'PREMIUM')) score += 1;
+    if (context.htfBosConfirmed) score += 1;
+    if (!context.htfChochDetected) score += 1;
+    if (context.validOrderBlocks && context.validOrderBlocks.length > 0) score += 1;
+    if (context.liquiditySweeps && context.liquiditySweeps.length > 0) score += 1;
+    if (context.validFvgs && context.validFvgs.length > 0) score += 1;
+    if (context.ltfPullbackIntoZone) score += 1;
+    if (context.ltfDisplacementCandle) score += 1;
+    if (context.sessionValid) score += 1;
+    const sessionData = getSession();
+    if (sessionData.isMacro) score += 3;
+    if (context.inducementSwept) score += 3;
+    if (context.ltfDisplacementCandle && context.ltfPullbackIntoZone) score += 2;
+    return score;
+}
+
+function getSignalGrade(confidence) {
+    if (confidence >= 90) return 'A';
+    if (confidence >= 85) return 'B';
+    if (confidence >= 80) return 'C';
+    return 'D';
+}
+
+function calculateWinProbability(signal, context, direction) {
+    let base = 70.0;
+    base += signal.setupScore * 2.0;
+    if ((direction === 'BUY' && context.htfTrendBias === 'BULLISH') ||
+        (direction === 'SELL' && context.htfTrendBias === 'BEARISH')) base += 10.0;
+    if ((direction === 'BUY' && context.htfZoneType === 'DISCOUNT') ||
+        (direction === 'SELL' && context.htfZoneType === 'PREMIUM')) base += 8.0;
+    if (context.htfBosConfirmed) base += 7.0;
+    if (context.liquiditySweeps && context.liquiditySweeps.length > 0) base += 5.0;
+    if (context.ltfCompressionDetected) base += 4.0;
+    return Math.min(base, 95.0);
+}
+
+function calculateExpectedValue(winProbability, rrRatio) {
+    const winRate = winProbability / 100.0;
+    const lossRate = 1.0 - winRate;
+    return (winRate * rrRatio) - (lossRate * 1.0);
+}
+
+function buildMarketContext(htfAnalysis, ltfAnalysis, chartData) {
+    return {
+        htfTrendBias: htfAnalysis.trendBias || 'NEUTRAL',
+        htfMarketPhase: htfAnalysis.marketPhase || 'CONSOLIDATION',
+        htfRangeHigh: htfAnalysis.rangeHigh || 0,
+        htfRangeLow: htfAnalysis.rangeLow || 0,
+        htfZoneType: htfAnalysis.zoneType || 'MID_RANGE',
+        htfBosConfirmed: htfAnalysis.bosConfirmed || false,
+        htfChochDetected: htfAnalysis.chochDetected || false,
+        validOrderBlocks: htfAnalysis.validOrderBlocks || [],
+        validFvgs: htfAnalysis.validFvgs || [],
+        liquiditySweeps: htfAnalysis.liquiditySweeps || [],
+        ltfPullbackIntoZone: ltfAnalysis.pullbackIntoZone || false,
+        ltfDisplacementCandle: ltfAnalysis.displacementCandle || false,
+        ltfCompressionDetected: ltfAnalysis.compressionDetected || false,
+        sessionValid: validateTradingSession()
+    };
+}
+
+function validateTradingSession() {
+    const hour = new Date().getUTCHours();
+    return (hour >= 8 && hour <= 22);
+}
+
+function findNextHTFResistance(price, resistanceLevels) {
+    if (!resistanceLevels || resistanceLevels.length === 0) return null;
+    const above = resistanceLevels.filter(l => l.price > price);
+    if (above.length === 0) return null;
+    return Math.min(...above.map(l => l.price));
+}
+
+function findNextHTFSupport(price, supportLevels) {
+    if (!supportLevels || supportLevels.length === 0) return null;
+    const below = supportLevels.filter(l => l.price < price);
+    if (below.length === 0) return null;
+    return Math.max(...below.map(l => l.price));
+}
+
+function calculatePositionSize(pipsRisk, accountBalance, riskPercent) {
+    if (pipsRisk === 0) return 0.01;
+    const riskAmount = accountBalance * (riskPercent / 100.0);
+    const pipValue = 10.0;
+    const lotSize = riskAmount / (pipsRisk * pipValue);
+    return Math.round(Math.max(Math.min(lotSize, 10.0), 0.01) * 100) / 100;
 }
 
 function checkCHoCH(data, zoneLow, zoneHigh) {
@@ -1784,700 +2095,3 @@ function detectInducement(data, zoneLow, zoneHigh, direction) {
         return recentHighs.some(s => highestRecent >= s.p - (s.p * 0.0005));
     }
 }
-
-// ============================================
-// RUN AUTO SCAN
-// ============================================
-async function runAutoScan() {
-    const btn = document.getElementById('analyzeBtn');
-    const scanStatus = document.getElementById('scanStatus');
-    const scanText = document.getElementById('scanText');
-    const scanFill = document.getElementById('scanProgressFill');
-
-    if (!btn) return;
-    btn.classList.add('loading');
-    btn.disabled = true;
-    if (scanStatus) scanStatus.classList.remove('hidden');
-
-    if (!TWELVE_DATA_KEY) {
-        showSetup();
-        btn.classList.remove('loading');
-        btn.disabled = false;
-        if (scanStatus) scanStatus.classList.add('hidden');
-        return;
-    }
-
-    showNotif('🔍 Scanning for Ghost Machine setups...', 'info');
-
-    try {
-        const price = await getPrice();
-        if (!price) throw new Error('No price');
-
-        const historyCache = {};
-        const tfs = ['5M', '15M', '1H', '4H', '1D'];
-        if (scanText) scanText.innerHTML = 'Fetching market data...';
-        await Promise.all(tfs.map(async (t) => { historyCache[t] = await getHistory(t); }));
-
-        const mtfTrendsData = {};
-        for (let t of tfs) mtfTrendsData[t] = await getQuoteDirection(t, historyCache[t]);
-        await updateMTFDisplay(historyCache);
-
-        const priceEl = document.getElementById('currentPrice');
-        if (priceEl) priceEl.innerHTML = `$${price.toFixed(getPrec(pair))}`;
-
-        if (lastPrice) {
-            const ch = ((price - lastPrice) / lastPrice * 100).toFixed(2);
-            const ce = document.getElementById('priceChange');
-            if (ce) {
-                ce.innerHTML = `${ch >= 0 ? '▲' : '▼'} ${Math.abs(ch)}%`;
-                ce.className = `price-change ${ch >= 0 ? 'up' : 'down'}`;
-            }
-        }
-        lastPrice = price;
-
-        const results = [];
-        const timeframesToScan = ['1D', '4H', '1H', '15M', '5M'];
-        const htfData = historyCache;
-
-        for (let i = 0; i < timeframesToScan.length; i++) {
-            const tfScan = timeframesToScan[i];
-            if (scanText) scanText.innerHTML = `Scanning ${tfScan}... (${i + 1}/${timeframesToScan.length})`;
-            if (scanFill) scanFill.style.width = ((i + 1) / timeframesToScan.length * 100) + '%';
-            const result = await analyzeTimeframe(tfScan, price, htfData);
-            if (result) results.push(result);
-        }
-
-        console.log('=== SCAN RESULTS ===');
-        console.log('Results found:', results.length);
-        for (let r of results) {
-            console.log('TF:', r.timeframe, '| Direction:', r.direction, '| Score:', r.score, '| Entry:', r.entry, '| SL:', r.sl);
-        }
-
-        if (results.length === 0) {
-            showNotif('🎯 No Ghost Machine setups found', 'warning');
-            setJsonOutput({
-                auto_scan_result: {
-                    date: new Date().toISOString().split('T')[0],
-                    time: new Date().toISOString().split('T')[1].split('.')[0],
-                    pair,
-                    current_price: price,
-                    status: 'NO_GHOST_MACHINE_PATTERN',
-                    note: 'Ghost Machine requires: Liquidity Sweep/TBS + MSS with Displacement + Fresh Zone + Confirmation Candle + Silver Bullet Session. None matched this scan.',
-                    multi_timeframe_trends: mtfTrendsData,
-                    timeframes_scanned: timeframesToScan.length
-                }
-            });
-            btn.classList.remove('loading');
-            btn.disabled = false;
-            if (scanStatus) scanStatus.classList.add('hidden');
-            return;
-        }
-
-        for (let result of results) {
-            try { result.qualityScore = calculateSetupQuality(result, price); } catch (e) { console.error(e);
-                result.qualityScore = 0; }
-            result.confidenceAtScan = result.confidence;
-        }
-
-        results.sort((a, b) => (b.confidence - a.confidence) || (b.qualityScore - a.qualityScore));
-        let best = results[0];
-
-        if (results.length > 1) showNotif(`🎯 Found ${results.length} Ghost Machine setups! Best: ${best.timeframe} ${best.direction}`, 'success');
-        else showNotif(`🎯 Ghost Machine setup found on ${best.timeframe}`, 'success');
-
-        if (scanText) scanText.innerHTML = '🤖 AI execution check...';
-        const aiResult = await askAIWithAllResults(results, price, htfData);
-        if (scanStatus) scanStatus.classList.add('hidden');
-
-        const aiSelectedTF = aiResult?.trade_signal_Theghostmachine?.selected_timeframe;
-        if (aiSelectedTF && aiSelectedTF !== best.timeframe) {
-            const candidate = results.find(r => r.timeframe === aiSelectedTF);
-            if (candidate) { best = candidate;
-                showNotif(`🤖 AI selected ${aiSelectedTF} setup`, 'info'); }
-        }
-
-        const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
-        const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
-        if (htfConfluence.level === 'CONFLICT') {
-            best.confidence = Math.max(best.confidence - 15, GHOST_MACHINE_CONFLICT_CONFIDENCE_FLOOR);
-            showNotif(`⚠️ HTF conflict: 1D=${htfConfluence.daily}, 4H=${htfConfluence.h4} - confidence reduced`, 'warning');
-        }
-
-        let aiConviction = 'MEDIUM', aiApproved = true, aiConfAdj = 0,
-            executionDecision = best.entryReady ? 'enter_now' : 'wait_for_reaction',
-            waitCondition = 'Wait for engulf/pinbar at zone', aiInvalidation = best.invalidationPrice;
-        let finalEntry = best.entry, finalZoneLow = best.zone.low, finalZoneHigh = best.zone.high,
-            aiEntryLogic = '', aiSlLogic = '', aiKeyReason = '', aiRiskWarning = '', aiOutcomes = [];
-
-        if (aiResult && aiResult.trade_signal_Theghostmachine) {
-            const ts = aiResult.trade_signal_Theghostmachine;
-            aiApproved = ts.approved !== false;
-            aiConfAdj = ts.confidence_adjustment || 0;
-            executionDecision = ts.execution_decision || executionDecision;
-            waitCondition = ts.wait_condition || waitCondition;
-            if (ts.invalidation_price) aiInvalidation = ts.invalidation_price;
-            if (executionDecision === 'enter_now') aiConviction = 'HIGH';
-            else if (executionDecision === 'wait_for_reaction') aiConviction = 'WAIT';
-            else aiConviction = 'SKIP';
-            if (ts.entry_refinement && ts.entry_refinement.low && ts.entry_refinement.high) {
-                finalZoneLow = ts.entry_refinement.low;
-                finalZoneHigh = ts.entry_refinement.high;
-                finalEntry = (finalZoneLow + finalZoneHigh) / 2;
-            }
-            aiEntryLogic = ts.analysis?.entry_logic || '';
-            aiSlLogic = ts.analysis?.sl_logic || '';
-            aiKeyReason = ts.analysis?.key_reason || '';
-            aiRiskWarning = ts.analysis?.risk_warning || '';
-            aiOutcomes = ts.analysis?.possible_outcomes || [];
-            if (aiApproved) {
-                best.confidence = Math.min(Math.max(best.confidence + aiConfAdj, 10), 98);
-            } else {
-                const rule1Note = (ts.rule_checks?.find(r => r.rule === 1)?.note || '') + ' ' + (aiKeyReason || '');
-                const misreadPartial = htfConfluence.level === 'PARTIAL' && executionDecision === 'skip' && /conflict/i.test(rule1Note);
-                if (misreadPartial) {
-                    executionDecision = 'wait_for_reaction';
-                    aiConviction = 'WAIT';
-                    best.confidence = Math.max(best.confidence - 10, 10);
-                } else if (executionDecision === 'wait_for_reaction') {
-                    aiConviction = 'WAIT';
-                    best.confidence = Math.max(best.confidence - 12, 10);
-                } else {
-                    best.confidence = Math.max(best.confidence - 25, 5);
-                }
-            }
-        }
-
-        if (finalEntry !== best.entry || finalZoneLow !== best.zone.low || finalZoneHigh !== best.zone.high) {
-            const recomputed = recomputeTradeLevels(best, finalZoneLow, finalZoneHigh, price, pair, htfData[best.entryTF] || []);
-            finalEntry = recomputed.entry;
-            finalZoneLow = recomputed.zone.low;
-            finalZoneHigh = recomputed.zone.high;
-            best = { ...best, ...recomputed };
-            if (!aiResult?.trade_signal_Theghostmachine?.invalidation_price) aiInvalidation = recomputed.invalidationPrice;
-        }
-
-        const risk = best.risk ?? Math.abs(best.entry - best.sl);
-        const rrDisplay = best.rrDisplay || (risk > 0 ? (Math.abs(best.tp1 - best.entry) / risk).toFixed(1) : '0.0');
-
-        // GHOST MACHINE SCORING
-        let ghostScore = 0;
-        let ghostReasons = [];
-
-        const addScore = (pts, reason) => { ghostScore += pts;
-            ghostReasons.push(reason); };
-
-        if (best.hasSweep) addScore(25, 'Liquidity Sweep');
-        if (best.hasTBS) addScore(25, 'Turtle Soup');
-        if (best.mss?.displaced) addScore(25, 'MSS with displacement');
-        else if (best.mss) addScore(10, 'MSS exists');
-        if (best.freshness?.fresh) addScore(20, 'Fresh zone');
-        else if (best.freshness?.partiallyUsed && best.freshness?.violations === 0) addScore(10, 'Lightly used');
-        if (best.zone?.quality === 'A') addScore(15, 'A-grade zone');
-        else if (best.zone?.quality === 'B') addScore(10, 'B-grade zone');
-        else addScore(5, 'C-grade zone');
-        if (best.confirmation) addScore(10, 'Confirmed candle');
-        if (best.session?.isSilverBullet) addScore(15, 'Silver Bullet');
-        else if (best.session?.isKillzone) addScore(8, 'Killzone');
-        const htfAgree = best.htfAgree || 0;
-        if (htfAgree >= 2) addScore(10, `${htfAgree}/3 HTF align`);
-        else if (htfAgree === 1) addScore(5, `${htfAgree}/3 HTF align`);
-        const entryDistATR = best.entryDistanceATR || 999;
-        if (entryDistATR < 0.5) addScore(10, 'Entry close');
-        else if (entryDistATR < 1.5) addScore(5, 'Entry within 1.5 ATR');
-        if (best.brokenLevel) addScore(10, 'Broken level flipped');
-        if (best.isUnmet) addScore(10, 'Unmet zone');
-        const bosCount = best.bosCount || 0;
-        if (bosCount >= 3) addScore(10, `${bosCount}x BOS`);
-        else if (bosCount >= 2) addScore(5, `${bosCount}x BOS`);
-
-        const tradeable = ghostScore >= 65 && executionDecision !== 'skip';
-        const riskPercent = tradeable ? (ghostScore >= 85 ? 1.0 : 0.5) : 0;
-        const noTradeReason = tradeable ? null : (executionDecision === 'skip' ? 'AI decision: skip' : `Ghost score ${ghostScore} < 65`);
-
-        console.log(`🏆 Ghost Machine Score: ${ghostScore}/100 (${ghostReasons.join(', ')})`);
-        console.log(`📊 Tradeable: ${tradeable}, Risk: ${riskPercent * 100}%`);
-
-        const prec = getPrec(pair);
-        const out = {
-            auto_scan_result: {
-                date: new Date().toISOString().split('T')[0],
-                time: new Date().toISOString().split('T')[1].split('.')[0],
-                pair,
-                current_price: price,
-                multi_timeframe_trends: mtfTrendsData,
-                best_timeframe: best.timeframe,
-                quality_score: best.qualityScore,
-                status: tradeable ? 'GHOST_MACHINE_SETUP' : 'NO_TRADE',
-                no_trade_reason: noTradeReason,
-                ghost_score: ghostScore,
-                ghost_reasons: ghostReasons,
-                sl_distance: best.slResult?.distance || 'N/A',
-                sl_reason: best.slResult?.reason || 'N/A',
-                htf_alignment: `${htfAgree}/3 timeframes aligned`,
-                htf_confluence: htfConfluence.level,
-                suggested_risk: riskPercent === 1 ? '1% (FULL - score 85+)' : (riskPercent === 0.5 ? '0.5% (HALF - score 65-84)' : '0% (do not trade)'),
-                total_setups_found: results.length,
-                setups_found: results.map(r => ({
-                    timeframe: r.timeframe,
-                    direction: r.direction,
-                    entry: r.entry,
-                    sl: r.sl,
-                    tp1: r.tp1,
-                    confidence: r.confidenceAtScan ?? r.confidence,
-                    score: r.score,
-                    sl_distance: r.slResult?.distance || 'N/A',
-                    htf_align: r.htfAgree || 0,
-                    reasons: r.reasons || []
-                })),
-                trade_signal: {
-                    trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT',
-                    entry_price: finalEntry,
-                    entry_zone: { low: finalZoneLow, high: finalZoneHigh },
-                    stop_loss: best.sl,
-                    sl_reason: best.slResult?.reason || 'N/A',
-                    sl_distance: best.slResult?.distance || 'N/A',
-                    take_profit_1: best.tp1,
-                    take_profit_2: best.tp2,
-                    take_profit_3: best.tp3,
-                    risk_reward: '1:' + rrDisplay,
-                    confidence: best.confidence,
-                    ghost_score: ghostScore,
-                    ghost_reasons: ghostReasons,
-                    htf_alignment: `${htfAgree}/3 HTF aligned`,
-                    htf_confluence: htfConfluence.level,
-                    analysis: {
-                        trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)`,
-                        volatility_level: `${best.volatility.level} - ${best.volatility.desc}`,
-                        liquidity_sweep: best.hasSweep ? '✅ Detected' : '❌ Not detected',
-                        turtle_soup: best.hasTBS ? '✅ Detected' : '❌ Not detected',
-                        mss: best.mss ? `${best.mss.type} with displacement` : 'None',
-                        zone_freshness: best.freshness?.fresh ? 'Fresh' : (best.freshness?.partiallyUsed ? 'Partially used' : 'Used'),
-                        session: best.session?.session || 'OFF-HOURS',
-                        silver_bullet: best.session?.isSilverBullet ? '✅ Yes' : '❌ No',
-                        bos_count: best.bosCount || 0,
-                        broken_level: best.brokenLevel ? '✅ Found' : '❌ Not found',
-                        unmet_zone: best.isUnmet ? '✅ Yes' : '❌ No',
-                        htf_confluence: htfConfluence.level
-                    },
-                    technical_indicators: [
-                        `RSI: ${best.twelveIndicators?.rsi || 'N/A'}`,
-                        `ATR: ${best.apiATR?.toFixed(prec) || 'N/A'}`,
-                        `Sweeps: ${best.hasSweep ? 'Yes' : 'No'}`,
-                        `MSS: ${best.mss?.type || 'None'}`,
-                        `BOS: ${best.bosCount || 0}`,
-                        `HTF Align: ${htfAgree}/3`
-                    ]
-                }
-            }
-        };
-
-        setJsonOutput(out);
-        lastSetupSummary = buildSetupSummary(best, st, finalEntry, price);
-        lastSetupOut = out;
-
-        if (!tradeable) {
-            analysis = null;
-            const execBtn = document.getElementById('executeBtn');
-            if (execBtn) execBtn.disabled = true;
-            showNotif(`🚫 ${noTradeReason}`, 'warning');
-            return;
-        }
-
-        analysis = {
-            signalType: st,
-            idealEntry: finalEntry,
-            currentPrice: price,
-            stopLoss: best.sl,
-            takeProfit1: best.tp1,
-            takeProfit2: best.tp2,
-            takeProfit3: best.tp3,
-            confidence: best.confidence,
-            riskPercent,
-            entryZoneLow: finalZoneLow,
-            entryZoneHigh: finalZoneHigh,
-            entryReady: best.entryReady,
-            executionDecision,
-            invalidationPrice: aiInvalidation
-        };
-
-        if (best && best.invalidationPrice && !isSetupStillValid(best, price)) {
-            showNotif(`⚠️ Setup invalidated at current price: ${price}`, 'warning');
-            const execBtn = document.getElementById('executeBtn');
-            if (execBtn) execBtn.disabled = true;
-            return;
-        }
-
-        const execBtn = document.getElementById('executeBtn');
-        if (execBtn) execBtn.disabled = false;
-        showNotif(`🎯 GHOST MACHINE ${best.timeframe} ${st} ${best.confidence}% | Score: ${ghostScore} | SL: ${best.slResult?.distance?.toFixed(2) || 'N/A'} pts | Risk: ${riskPercent}% | 1:${rrDisplay}`, 'success');
-
-    } catch (e) {
-        console.error(e);
-        showNotif('Error: ' + e.message, 'error');
-    } finally {
-        if (btn) {
-            btn.classList.remove('loading');
-            btn.disabled = false;
-        }
-        if (scanStatus) scanStatus.classList.add('hidden');
-    }
-}
-
-// ============================================
-// RECENT SAVED + TRADE JOURNAL
-// ============================================
-function buildSetupSummary(best, st, finalEntry, price) {
-    return {
-        id: Date.now(),
-        pair,
-        timeframe: best.timeframe,
-        direction: st,
-        entry: finalEntry,
-        sl: best.sl,
-        tp1: best.tp1,
-        confidence: best.confidence,
-        quality: best.zone?.quality || '?',
-        sniper: !!best.sniperEntry?.isSniper,
-        priceAtScan: price,
-        ghostScore: best.score || 0,
-        slDistance: best.slResult?.distance || 'N/A'
-    };
-}
-
-const RECENT_KEY = 'ict_recent_saved', RECENT_CAP = 10;
-const JOURNAL_KEY = 'ict_journal', JOURNAL_CAP = 30;
-
-function getRecents() { try { const r = JSON.parse(localStorage.getItem(RECENT_KEY)); return Array.isArray(r) ? r : []; } catch (e) { return []; } }
-function setRecents(r) { try { localStorage.setItem(RECENT_KEY, JSON.stringify(r.slice(0, RECENT_CAP))); } catch (e) {} }
-function getJournal() { try { const j = JSON.parse(localStorage.getItem(JOURNAL_KEY)); return Array.isArray(j) ? j : []; } catch (e) { return []; } }
-function setJournal(j) { try { localStorage.setItem(JOURNAL_KEY, JSON.stringify(j.slice(0, JOURNAL_CAP))); } catch (e) {} }
-
-function saveCurrentSetup() {
-    if (!lastSetupSummary) { showNotif('⚠️ No setup to save - run a scan first', 'warning'); return; }
-    const recents = getRecents();
-    if (recents.some(e => e.id === lastSetupSummary.id)) { showNotif('💾 Already saved', 'info'); return; }
-    recents.unshift({ ...lastSetupSummary, out: lastSetupOut, savedAt: new Date().toISOString(), outcome: null });
-    setRecents(recents);
-    renderRecents();
-    showNotif('💾 Saved to Recent', 'success');
-}
-
-function markRecentOutcome(id, outcome) {
-    const r = getRecents();
-    const e = r.find(x => x.id === id);
-    if (e) { e.outcome = e.outcome === outcome ? null : outcome;
-        setRecents(r);
-        renderRecents(); }
-}
-
-function journalRecent(id) {
-    const r = getRecents();
-    const e = r.find(x => x.id === id);
-    if (!e) return;
-    if (!e.outcome) { showNotif('⚠️ Mark ✅ Win or ❌ Loss first, then journal it', 'warning'); return; }
-    const { out, outcome, ...rest } = e;
-    const journal = getJournal();
-    journal.unshift({ ...rest, status: outcome, journaledAt: new Date().toISOString() });
-    setJournal(journal);
-    setRecents(r.filter(x => x.id !== id));
-    renderRecents();
-    renderJournal();
-    showNotif(`📒 Journaled as ${outcome}`, 'success');
-}
-
-function deleteRecent(id) { setRecents(getRecents().filter(x => x.id !== id));
-    renderRecents();
-    showNotif('🗑️ Saved setup deleted', 'warning'); }
-
-function viewRecent(id) { const e = getRecents().find(x => x.id === id); if (e?.out) { setJsonOutput(e.out);
-        showNotif('📋 Loaded into Best Setup view - rescan before trading', 'info'); } }
-
-function deleteJournalEntry(id) { setJournal(getJournal().filter(x => x.id !== id));
-    renderJournal();
-    showNotif('🗑️ Journal entry deleted', 'warning'); }
-
-function setupCardHTML(e, when, badge, actions) {
-    const prec = getPrec(e.pair || 'XAU/USD');
-    return `<div class="journal-entry ${badge.cls}">
-        <div class="journal-head"><span>${e.sniper ? '🎯 ' : ''}${e.pair} ${e.direction} ${e.timeframe} Q:${e.quality} ${e.confidence}%</span><span>${badge.label}</span></div>
-        <div class="journal-levels">E $${(+e.entry).toFixed(prec)} | SL $${(+e.sl).toFixed(prec)} | TP $${(+e.tp1).toFixed(prec)} | ${when}</div>
-        <div class="journal-actions">${actions}</div>
-    </div>`;
-}
-
-function renderRecents() {
-    const list = document.getElementById('recentList');
-    if (!list) return;
-    const recents = getRecents();
-    if (recents.length === 0) {
-        list.innerHTML = '<span class="journal-empty">No saved setups — hit 💾 Save after a scan to keep one here</span>';
-        return;
-    }
-    list.innerHTML = recents.map(e => {
-        const when = e.savedAt ? new Date(e.savedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-        const badge = e.outcome === 'WIN' ? { label: '✅ WIN', cls: 'win' } : (e.outcome === 'LOSS' ? { label: '❌ LOSS', cls: 'loss' } : { label: '💾 SAVED', cls: 'pending' });
-        const actions = `<button class="jw-win" data-action="win" data-id="${e.id}">✅ Win</button>` +
-            `<button class="jw-loss" data-action="loss" data-id="${e.id}">❌ Loss</button>` +
-            `<button class="jw-journal" data-action="journal" data-id="${e.id}">📒 Journal</button>` +
-            `<button class="jw-del" data-action="view" data-id="${e.id}">📋 View</button>` +
-            `<button class="jw-del" data-action="del" data-id="${e.id}">🗑️</button>`;
-        return setupCardHTML(e, when, badge, actions);
-    }).join('');
-}
-
-function renderJournal() {
-    const list = document.getElementById('journalList');
-    const stats = document.getElementById('journalStats');
-    if (!list) return;
-    const journal = getJournal();
-    if (stats) {
-        const w = journal.filter(e => e.status === 'WIN').length,
-            l = journal.filter(e => e.status === 'LOSS').length;
-        const wr = (w + l) > 0 ? ` | ${(100 * w / (w + l)).toFixed(0)}% WR` : '';
-        stats.innerHTML = journal.length ? `✅${w} ❌${l}${wr}` : '';
-    }
-    if (journal.length === 0) {
-        list.innerHTML = '<span class="journal-empty">Journal is empty — mark a saved setup Win/Loss, then press 📒 Journal</span>';
-        return;
-    }
-    list.innerHTML = journal.map(e => {
-        const when = e.journaledAt ? new Date(e.journaledAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-        const badge = e.status === 'WIN' ? { label: '✅ WIN', cls: 'win' } : { label: '❌ LOSS', cls: 'loss' };
-        return setupCardHTML(e, when, badge, `<button class="jw-del" data-action="del" data-id="${e.id}">🗑️</button>`);
-    }).join('');
-}
-
-function handleRecentClick(ev) {
-    const btn = ev.target.closest('button[data-action]');
-    if (!btn) return;
-    const id = +btn.dataset.id,
-        action = btn.dataset.action;
-    if (action === 'win') markRecentOutcome(id, 'WIN');
-    else if (action === 'loss') markRecentOutcome(id, 'LOSS');
-    else if (action === 'journal') journalRecent(id);
-    else if (action === 'view') viewRecent(id);
-    else if (action === 'del') deleteRecent(id);
-}
-
-function handleJournalClick(ev) {
-    const btn = ev.target.closest('button[data-action]');
-    if (btn && btn.dataset.action === 'del') deleteJournalEntry(+btn.dataset.id);
-}
-
-// ============================================
-// LIMIT ORDER FUNCTIONS
-// ============================================
-function loadLimitOrder() {
-    const s = localStorage.getItem('limitOrder');
-    if (s) { try { limitOrder = JSON.parse(s);
-            updateLimitUI();
-            startMonitor();
-            checkMissedFill(); } catch (e) {} }
-}
-
-function saveLimit(o) { limitOrder = o;
-    localStorage.setItem('limitOrder', JSON.stringify(o));
-    updateLimitUI(); }
-
-function clearLimit() { limitOrder = null;
-    localStorage.removeItem('limitOrder');
-    if (priceTimer) clearInterval(priceTimer);
-    updateLimitUI(); }
-
-function cancelLimit() { clearLimit();
-    showNotif('❌ Cancelled', 'warning'); }
-
-function updateLimitUI() {
-    const t = document.getElementById('limitOrderText');
-    const c = document.getElementById('cancelLimitBtn');
-    const execBtn = document.getElementById('executeBtn');
-    if (limitOrder) {
-        const prec = getPrec(limitOrder.pair || pair);
-        if (t) {
-            t.innerHTML = `⏳ ${limitOrder.pair || ''} ${limitOrder.signalType} LIMIT @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)}`;
-            t.className = 'active';
-        }
-        if (c) c.classList.remove('hidden');
-        if (execBtn) {
-            execBtn.innerHTML = '⏳ Waiting...';
-            execBtn.style.background = 'linear-gradient(135deg, #ff9f0a, #ff6b00)';
-        }
-    } else {
-        if (t) { t.innerHTML = 'No active limit order';
-            t.className = ''; }
-        if (c) c.classList.add('hidden');
-        if (execBtn) {
-            execBtn.innerHTML = '⚡ Place Limit Order';
-            execBtn.style.background = 'linear-gradient(135deg, #34c759, #28a745)';
-        }
-    }
-}
-
-function startMonitor() {
-    if (priceTimer) clearInterval(priceTimer);
-    priceTimer = setInterval(async () => {
-        if (!limitOrder) { clearInterval(priceTimer); return; }
-        const orderPair = limitOrder.pair || pair;
-        const p = await getPrice(orderPair);
-        if (!p) return;
-        const prec = getPrec(orderPair);
-        const priceEl = document.getElementById('currentPrice');
-        if (orderPair === pair && priceEl) priceEl.innerHTML = `$${p.toFixed(prec)}`;
-        if ((limitOrder.signalType === 'LONG' && p <= limitOrder.idealEntry) ||
-            (limitOrder.signalType === 'SHORT' && p >= limitOrder.idealEntry)) {
-            const filled = limitOrder;
-            clearLimit();
-            showNotif(`✅ FILLED! ${filled.pair || ''} ${filled.signalType} @ $${p.toFixed(prec)}`, 'success');
-            try { new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play(); } catch (e) {}
-        }
-    }, 2000);
-}
-
-function handleLimit() {
-    if (!analysis || analysis.signalType === 'NEUTRAL') { showNotif('No signal', 'error'); return; }
-    if (limitOrder) { cancelLimit(); return; }
-    const o = {
-        id: Date.now(),
-        pair,
-        signalType: analysis.signalType,
-        idealEntry: analysis.idealEntry,
-        stopLoss: analysis.stopLoss,
-        takeProfit1: analysis.takeProfit1,
-        takeProfit2: analysis.takeProfit2,
-        takeProfit3: analysis.takeProfit3,
-        confidence: analysis.confidence,
-        entryZoneLow: analysis.entryZoneLow,
-        entryZoneHigh: analysis.entryZoneHigh,
-        entryReady: analysis.entryReady,
-        executionDecision: analysis.executionDecision,
-        invalidationPrice: analysis.invalidationPrice,
-        createdAt: new Date().toISOString()
-    };
-    saveLimit(o);
-    startMonitor();
-    showNotif(`📝 Limit @ $${o.idealEntry.toFixed(getPrec(pair))}`, 'info');
-}
-
-// ============================================
-// MISSED FILL DETECTION
-// ============================================
-function parseCandleTimeUTC(t) {
-    if (typeof t !== 'string') return NaN;
-    const iso = t.includes('T') ? t : t.replace(' ', 'T');
-    return new Date(/Z|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + 'Z').getTime();
-}
-
-function orderCrossedInCandles(order, candles) {
-    if (!order?.idealEntry || !candles?.length) return false;
-    const created = new Date(order.createdAt).getTime();
-    if (isNaN(created)) return false;
-    return candles.some(c => {
-        const t = parseCandleTimeUTC(c.t);
-        if (isNaN(t) || t < created - 5 * 60 * 1000) return false;
-        return order.signalType === 'LONG' ? c.l <= order.idealEntry : c.h >= order.idealEntry;
-    });
-}
-
-async function checkMissedFill() {
-    if (!limitOrder) return;
-    try {
-        const candles = await getHistory('5M', limitOrder.pair || pair);
-        if (candles && orderCrossedInCandles(limitOrder, candles)) {
-            const prec = getPrec(limitOrder.pair || pair);
-            showNotif(`ℹ️ ${limitOrder.pair || ''} ${limitOrder.signalType} level $${limitOrder.idealEntry.toFixed(prec)} traded while you were away - order still active, review manually`, 'info');
-        }
-    } catch (e) { console.error('Missed-fill check:', e); }
-}
-
-// ============================================
-// MTF DISPLAY
-// ============================================
-async function updateMTFDisplay(historyCache = {}) {
-    const tfs = ['5M', '15M', '1H', '4H', '1D', '1W'];
-    for (let t of tfs) {
-        let tr = await getLiveCandleDirection(t, historyCache[t]);
-        let el = document.getElementById(`trend${t}`);
-        if (el) {
-            el.innerHTML = tr === 'BULLISH' ? '🟢 Bull' : (tr === 'BEARISH' ? '🔴 Bear' : '⚪ Neut');
-            el.className = `mtf-trend ${tr.toLowerCase()}`;
-        }
-    }
-}
-
-async function getLiveCandleDirection(tfStr, cachedData = null) {
-    try {
-        const data = cachedData || await getHistory(tfStr);
-        if (!data || data.length < 2) return 'NEUTRAL';
-        const currentCandle = data[data.length - 1];
-        const currentPrice = await getPrice();
-        if (!currentPrice) return 'NEUTRAL';
-        if (currentPrice > currentCandle.o) return 'BULLISH';
-        if (currentPrice < currentCandle.o) return 'BEARISH';
-        return 'NEUTRAL';
-    } catch (e) { return 'NEUTRAL'; }
-}
-
-async function getQuoteDirection(tfStr, cachedData = null) {
-    try {
-        const data = cachedData || await getHistory(tfStr);
-        if (data && data.length >= 50) return detectTrend(data);
-        else if (data && data.length >= 3) {
-            const closedCandle = data[data.length - 2];
-            if (closedCandle.c > closedCandle.o) return 'BULLISH';
-            if (closedCandle.c < closedCandle.o) return 'BEARISH';
-        }
-    } catch (e) {}
-    return 'NEUTRAL';
-}
-
-// ============================================
-// ASK AI (Simplified)
-// ============================================
-async function askAIWithAllResults(allResults, price, htfData) {
-    if (!DEEPSEEK_API_KEY || allResults.length === 0) return null;
-    return {
-        trade_signal_Theghostmachine: {
-            approved: true,
-            confidence_adjustment: 0,
-            execution_decision: 'enter_now',
-            wait_condition: null,
-            invalidation_price: allResults[0]?.invalidationPrice || null,
-            analysis: {
-                entry_logic: 'Ghost Machine pattern detected',
-                sl_logic: 'ATR-based stop loss',
-                key_reason: 'Valid Ghost Machine setup',
-                risk_warning: 'Standard risk management applies',
-                possible_outcomes: ['Reach TP1', 'Reach TP2', 'SL hit']
-            }
-        }
-    };
-}
-
-async function checkHTFConfluenceAsync(dailyData, h4Data, entryDirection) {
-    const dailyDir = await getQuoteDirection('1D', dailyData),
-        h4Dir = await getQuoteDirection('4H', h4Data),
-        entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH',
-        againstDir = entryDirection === 'BUY' ? 'BEARISH' : 'BULLISH';
-    if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 };
-    if (dailyDir === entryDir || h4Dir === entryDir) return { level: 'PARTIAL', daily: dailyDir, h4: h4Dir, penalty: dailyDir === entryDir ? 8 : 15, alignedTF: dailyDir === entryDir ? '1D' : '4H' };
-    if (dailyDir === 'NEUTRAL' && h4Dir === 'NEUTRAL') return { level: 'NEUTRAL', daily: dailyDir, h4: h4Dir, penalty: 5 };
-    if ((dailyDir === 'NEUTRAL' && h4Dir === againstDir) || (dailyDir === againstDir && h4Dir === 'NEUTRAL')) return { level: 'PARTIAL', daily: dailyDir, h4: h4Dir, penalty: 12, alignedTF: null };
-    return { level: 'CONFLICT', daily: dailyDir, h4: h4Dir, penalty: 30 };
-}
-
-function isSetupStillValid(setup, currentPrice) {
-    if (!setup || !setup.direction) return true;
-    if (!setup.invalidationPrice) return true;
-    if (setup.direction === 'BUY') {
-        if (currentPrice < setup.invalidationPrice * 0.995) return false;
-    } else {
-        if (currentPrice > setup.invalidationPrice * 1.005) return false;
-    }
-    return true;
-}
-
-function calculateSetupQuality(result, price) {
-    return result.confidence || 50;
-}
-
-console.log('✅ ICT Trading Bot Pro script loaded successfully!');
