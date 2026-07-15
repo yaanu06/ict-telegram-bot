@@ -302,6 +302,90 @@ describe('Ghost Machine hard rules', () => {
     });
 });
 
+describe('analyzeTimeframe Ghost Machine pattern matching', () => {
+    const mkCandle = (o, h, l, c) => ({ o, h, l, c, v: 1e6, t: '2026-01-01T08:30:00Z' });
+    const buildCandles = () => ([
+        ...Array.from({ length: 18 }, () => mkCandle(100, 101, 99, 100)),
+        mkCandle(101, 101, 99, 100),
+        mkCandle(98, 103, 97, 102)
+    ]);
+
+    const wireGhostStubs = (context, session = { session: 'LONDON KZ + SB', multiplier: 1.5, emoji: '🏹', isKillzone: true, isSilverBullet: true, isMacro: false }) => {
+        context.atr = () => 2;
+        context.getTechnicalIndicators = jest.fn().mockResolvedValue({ rsi: 55 });
+        context.score = jest.fn(() => ({ dir: 'BUY', conf: 10 }));
+        context.detectTurtleSoup = jest.fn(() => ({ detected: false, type: null }));
+        context.detectLiquiditySweeps = jest.fn(() => [{ direction: 'BULLISH', distance: 1 }]);
+        context.detectMSS = jest.fn(() => ({ type: 'BULL', displaced: true }));
+        context.calculateMSNR = jest.fn(() => ({
+            pivot: 100,
+            supports: { S1: 95, S2: 94, S3: 93 },
+            resistances: { R1: 105, R2: 106, R3: 107 },
+            allSupports: [99, 98],
+            allResistances: [101, 102]
+        }));
+        context.findPrecisionEntry = jest.fn(() => ({ low: 98, high: 100, p: 99, src: 'MSNR', confluence: 'MSNR', cc: 1, quality: 'C', hasImbalance: false }));
+        context.checkZoneFreshness = jest.fn(() => ({ fresh: true, partiallyUsed: false, used: false, touches: 0, violations: 0 }));
+        context.getSession = jest.fn(() => session);
+        context.detectCRT = jest.fn(() => ({ detected: true, pattern: 'CRT' }));
+        context.gradeTBS = jest.fn(() => ({ grade: 'A', score: 80 }));
+        context.getCRTState = jest.fn(() => ({ state: 'EXPANDING', momentum: 'STRONG', isContracting: false }));
+        context.detectOrderBlocks = jest.fn(() => []);
+        context.detectFVG = jest.fn(() => []);
+        context.detectBreakers = jest.fn(() => []);
+        context.findImbalances = jest.fn(() => []);
+        context.findSwings = jest.fn(() => ({ L: [], H: [] }));
+        context.detectDisplacement = jest.fn(() => ({ detected: true }));
+        context.analyzeAMD = jest.fn(() => ({ phase: 'UNKNOWN' }));
+        context.getVolatilityLevel = jest.fn(() => ({ level: 'High', desc: 'Large candles' }));
+        context.calcVolumeProfile = jest.fn(() => null);
+        context.calcDeltaProxy = jest.fn(() => ({ cvd: 0, direction: 'NEUTRAL' }));
+        context.isHTFPremiumDiscount = jest.fn(() => ({ inPremiumDiscount: false }));
+        context.detectTrend = jest.fn(() => 'BULLISH');
+        context.checkCHoCH = jest.fn(() => true);
+        context.detectInducement = jest.fn(() => true);
+        context.checkEntryTiming = jest.fn(() => ({ valid: true }));
+        context.checkZoneMagnetism = jest.fn(() => ({ magnetism: 'STRONG', score: 80, summary: 'Strong', checks: [], likelyToReach: true }));
+        context.checkPathClearance = jest.fn(() => ({ clear: true, obstacles: [] }));
+        context.checkSniperRejection = jest.fn().mockResolvedValue({ confirmed: true });
+        context.checkSniperEntry = jest.fn(() => ({ isSniper: true, path: 'ICT', score: 80, grade: 'S', checks: [] }));
+        context.validateBreakerBlock = jest.fn(() => false);
+        context.findPDArrays = jest.fn(() => []);
+        context.isZoneWithinHTFArray = jest.fn(() => ({ contained: false, partial: false, parentArray: null }));
+    };
+
+    it('returns a strict Ghost Machine setup with zone-edge entry and CRT extreme target', async () => {
+        const context = getContext();
+        const candles = buildCandles();
+        wireGhostStubs(context);
+
+        const res = await context.analyzeTimeframe('1H', 100, { '5M': candles, '15M': candles, '1H': candles, '4H': candles, '1D': candles });
+
+        expect(res.direction).toBe('BUY');
+        expect(res.entry).toBeCloseTo(98.4);
+        expect(res.sl).toBeCloseTo(96.4);
+        expect(res.tp1).toBeCloseTo(102.4);
+        expect(res.tp2).toBeCloseTo(106.4);
+        expect(res.tp3).toBe(103);
+        expect(res.confidence).toBe(90);
+        expect(res.confirmation).toBe(true);
+        expect(res.hasSweep).toBe(true);
+        expect(res.session.isSilverBullet).toBe(true);
+        expect(res.rrUsed).toBe(4);
+        expect(res.confBreakdown).toEqual([{ adj: 90, reason: 'Pattern match: sweep/TBS + displaced MSS + fresh zone + confirmation + Silver Bullet' }]);
+    });
+
+    it('rejects setups outside Silver Bullet sessions', async () => {
+        const context = getContext();
+        const candles = buildCandles();
+        wireGhostStubs(context, { session: 'LONDON KZ', multiplier: 1.3, emoji: '🇬🇧', isKillzone: true, isSilverBullet: false, isMacro: false });
+
+        const res = await context.analyzeTimeframe('1H', 100, { '5M': candles, '15M': candles, '1H': candles, '4H': candles, '1D': candles });
+
+        expect(res).toBeNull();
+    });
+});
+
 describe('getSession Silver Bullet timing', () => {
     it('does not mark 08:15 UTC as Silver Bullet', () => {
         const context = getContext({ Date: mockDate('2026-01-01T08:15:00Z') });
