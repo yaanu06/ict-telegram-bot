@@ -1573,7 +1573,9 @@ async function runAutoScan() {
             if (candidate) { best = candidate; isLowerTF = lowerTimeframes.includes(candidate.timeframe); showNotif(`🤖 AI selected ${aiSelectedTF} setup`, 'info'); }
         }
         const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
-        const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction); if (htfConfluence.level === 'CONFLICT') { best.confidence = Math.max(best.confidence - 15, 75); best.confBreakdown?.push({ adj: -15, reason: `HTF conflict (1D=${htfConfluence.daily}, 4H=${htfConfluence.h4})` }); showNotif(`⚠️ HTF conflict: 1D=${htfConfluence.daily}, 4H=${htfConfluence.h4} - confidence reduced`, 'warning'); }
+        const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
+        const conflictConfidenceFloor = 75;
+        if (htfConfluence.level === 'CONFLICT') { best.confidence = Math.max(best.confidence - 15, conflictConfidenceFloor); best.confBreakdown?.push({ adj: -15, reason: `HTF conflict (1D=${htfConfluence.daily}, 4H=${htfConfluence.h4})` }); showNotif(`⚠️ HTF conflict: 1D=${htfConfluence.daily}, 4H=${htfConfluence.h4} - confidence reduced`, 'warning'); }
         let aiConviction = 'MEDIUM', aiApproved = true, aiConfAdj = 0, executionDecision = best.entryReady ? 'enter_now' : 'wait_for_reaction', waitCondition = 'Wait for engulf/pinbar at zone', aiInvalidation = best.invalidationPrice;
         let finalEntry = best.entry, finalZoneLow = best.zone.low, finalZoneHigh = best.zone.high, aiEntryLogic = '', aiSlLogic = '', aiKeyReason = '', aiRiskWarning = '', aiOutcomes = [];
         if (aiResult && aiResult.trade_signal_Theghostmachine) { const ts = aiResult.trade_signal_Theghostmachine; aiApproved = ts.approved !== false; aiConfAdj = ts.confidence_adjustment || 0; executionDecision = ts.execution_decision || executionDecision; waitCondition = ts.wait_condition || waitCondition; if (ts.invalidation_price) aiInvalidation = ts.invalidation_price; if (executionDecision === 'enter_now') aiConviction = 'HIGH'; else if (executionDecision === 'wait_for_reaction') aiConviction = 'WAIT'; else aiConviction = 'SKIP'; if (ts.entry_refinement && ts.entry_refinement.low && ts.entry_refinement.high) { finalZoneLow = ts.entry_refinement.low; finalZoneHigh = ts.entry_refinement.high; finalEntry = (finalZoneLow + finalZoneHigh) / 2; } aiEntryLogic = ts.analysis?.entry_logic || ''; aiSlLogic = ts.analysis?.sl_logic || ''; aiKeyReason = ts.analysis?.key_reason || ''; aiRiskWarning = ts.analysis?.risk_warning || ''; aiOutcomes = ts.analysis?.possible_outcomes || []; if (aiApproved) { best.confidence = Math.min(Math.max(best.confidence + aiConfAdj, 10), 98); if (aiConfAdj) best.confBreakdown?.push({ adj: aiConfAdj, reason: `AI (${ts.model_used || 'deepseek'}) adjustment: ${aiKeyReason || 'approved'}` }); }
@@ -1616,11 +1618,11 @@ async function runAutoScan() {
         // shows everything, but it is flagged NO_TRADE and the execute button stays
         // locked - a 5% "signal" must never look tradeable.
         const goldenRules = [
-            { rule: '1. Liquidity Sweep/TBS detected', passed: best.hasSweep || false },
-            { rule: '2. MSS with Displacement', passed: best.mss?.displaced || false },
-            { rule: '3. Fresh Zone (0 violations)', passed: best.freshness?.fresh || (best.freshness?.partiallyUsed && best.freshness?.violations === 0) || false },
-            { rule: '4. Confirmation Candle', passed: best.confirmation || false },
-            { rule: '5. Silver Bullet Session', passed: best.session?.isSilverBullet || false }
+            { rule: '1. Liquidity Sweep/TBS detected', passed: Boolean(best.hasSweep) },
+            { rule: '2. MSS with Displacement', passed: Boolean(best.mss?.displaced) },
+            { rule: '3. Fresh Zone (0 violations)', passed: Boolean(best.freshness?.fresh || (best.freshness?.partiallyUsed && best.freshness?.violations === 0)) },
+            { rule: '4. Confirmation Candle', passed: Boolean(best.confirmation) },
+            { rule: '5. Silver Bullet Session', passed: Boolean(best.session?.isSilverBullet) }
         ];
         const goldenPassed = goldenRules.filter(r => r.passed).length;
         const riskPercent = goldenPassed === 5 ? 1.0 : (goldenPassed >= 4 ? 0.5 : 0);
