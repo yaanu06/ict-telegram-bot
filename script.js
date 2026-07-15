@@ -719,7 +719,6 @@ const A_GRADE_GHOST_CONFIDENCE_BONUS = 6;
 const SILVER_BULLET_GHOST_CONFIDENCE_BONUS = 5;
 const SNIPER_GHOST_CONFIDENCE_BONUS = 3;
 const HTF_VALIDATION_GHOST_CONFIDENCE_BONUS = 2;
-const GHOST_MACHINE_PATTERN_CONFIDENCE = 90;
 // Risk sizing follows the requested golden-rules model: full size only when
 // all five pass, half size when at least three pass, otherwise no trade.
 const FULL_RISK_RULES_REQUIRED = 5;
@@ -1014,6 +1013,14 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const htfValidation = { passed: true, parentArray: htfCheck.parentArray ? { ...htfCheck.parentArray, structureTF } : null, partial: htfCheck.partial || false };
         const probCheck = { probability: 'HIGH', checks: [], totalPassed: 0, passed: true };
         const ghostRules = getGhostHardRules(sig.dir, sweeps, turtleSoup, mssData, session, freshness, zone);
+        const confBreakdown = [
+            { adj: 20, reason: 'Sweep or Turtle Soup aligned' },
+            { adj: 20, reason: 'Displaced MSS aligned' },
+            { adj: 15, reason: 'Fresh entry zone' },
+            { adj: 15, reason: 'Confirmation candle' },
+            { adj: 20, reason: 'Silver Bullet session' }
+        ];
+        const confidence = confBreakdown.reduce((sum, item) => sum + item.adj, 0);
         const context = {
             htfTrendBias: mtfTrends['1D'] !== 'NEUTRAL' ? mtfTrends['1D'] : (sig.dir === 'BUY' ? 'BULLISH' : 'BEARISH'),
             htfMarketPhase: crtState?.state || 'CONSOLIDATION',
@@ -1043,7 +1050,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             tp1,
             tp2,
             tp3,
-            confidence: GHOST_MACHINE_PATTERN_CONFIDENCE,
+            confidence,
             zone,
             msnr,
             crt: crt || { detected: false, pattern: 'Neutral' },
@@ -1066,8 +1073,9 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             zoneReaction,
             zoneTouches,
             confirmation: confirmed,
+            hasConfirmationCandle: confirmed,
             mtf,
-            qualityScore: GHOST_MACHINE_PATTERN_CONFIDENCE,
+            qualityScore: confidence,
             htfValidation,
             magnetism: { magnetism: 'STRONG', score: 80, summary: magnetism.summary, checks: magnetism.checks, likelyToReach: magnetism.likelyToReach },
             freshness,
@@ -1083,13 +1091,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             deltaProxy,
             slResult: { reason: 'CRT extreme', price: sl, distance: risk },
             invalidationPrice,
-            confBreakdown: [
-                { adj: 20, reason: 'Sweep or Turtle Soup aligned' },
-                { adj: 20, reason: 'Displaced MSS aligned' },
-                { adj: 15, reason: 'Fresh entry zone' },
-                { adj: 15, reason: 'Confirmation candle' },
-                { adj: 20, reason: 'Silver Bullet session' }
-            ],
+            confBreakdown,
             entryDistanceATR: entryDistance / (entryATR || 1),
             entryDistancePct: (entryDistance / price) * 100,
             entryATR,
