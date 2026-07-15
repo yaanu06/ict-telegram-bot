@@ -97,27 +97,18 @@ function resetPairState() {
 }
 
 // ============================================
-// FIXED INITIALIZATION - THIS IS THE ONLY CHANGE
+// PROVEN WORKING INITIALIZATION - DO NOT CHANGE
 // ============================================
-async function bootApp() {
+document.addEventListener('DOMContentLoaded', async () => {
     await loadKeys();
     updateKeyStatus();
     if (!TWELVE_DATA_KEY) setTimeout(showSetup, 500);
-}
-
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function() {
-        bootApp();
-        init();
-    });
-} else {
-    bootApp();
     init();
-}
+});
 
 function init() {
     console.log('📋 Initializing event listeners...');
-    updateTime(); 
+    updateTime();
     setInterval(updateTime, 1000);
     
     const el = (id) => document.getElementById(id);
@@ -196,7 +187,6 @@ async function getQuote(tfStr){
     }catch(e){ console.error(`Quote error (${tfStr}):`, e); }
     return null;
 }
-
 async function getLiveCandleDirection(tfStr, cachedData = null) {
     try {
         const data = cachedData || await getHistory(tfStr);
@@ -209,7 +199,6 @@ async function getLiveCandleDirection(tfStr, cachedData = null) {
         return 'NEUTRAL';
     } catch(e) { return 'NEUTRAL'; }
 }
-
 async function getQuoteDirection(tfStr, cachedData = null) {
     try {
         const data = cachedData || await getHistory(tfStr);
@@ -222,7 +211,6 @@ async function getQuoteDirection(tfStr, cachedData = null) {
     } catch(e) {}
     return 'NEUTRAL';
 }
-
 async function getHistory(tfStr, forPair){
     if(!TWELVE_DATA_KEY)return null;
     try{
@@ -493,7 +481,6 @@ function checkProbability(zone,mtf,magnetism){const checks=[];checks.push({name:
 // STOP LOSS - FIXED WITH TWELVE DATA ATR
 // ============================================
 function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, currentPair) {
-    // PRIORITY: Use Twelve Data ATR first (more accurate)
     const apiATR = twelveIndicators?.atr_api || atr(data, 14);
     const s = getMarketSettings(currentPair || pair);
     const maxSLD = entry * s.maxSLPct;
@@ -879,7 +866,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const brokenLevel = findBrokenLevel(entryData, dir);
             const session = getSession();
 
-            // ENTRY AT ZONE EDGE USING ATR
             let entry;
             if (dir === 'BUY') {
                 entry = Math.min(zone.low + entryATR * 0.15, zone.high);
@@ -888,7 +874,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             }
             const entryDistance = dir === 'BUY' ? price - entry : entry - price;
 
-            // SL USING TWELVE DATA ATR
             const slResult = calcStopLoss(entryData, dir, entry, zone, msnr, tfToAnalyze, twelveIndicators, pair);
             const sl = slResult.price;
             const risk = Math.abs(entry - sl);
@@ -936,7 +921,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             }
             if (htfAgree >= 2) addScore(10, `${htfAgree}/3 HTF align`);
 
-            // Session bonus
             if (session.isSilverBullet) addScore(15, 'Silver Bullet');
             else if (session.isKillzone) addScore(8, 'Killzone');
 
@@ -1620,58 +1604,92 @@ async function runAutoScan() {
         // ============================================
         let ghostScore = 0;
         let ghostReasons = [];
-        let ghostDetails = [];
 
-        const addScore = (pts, reason, detail = '') => {
+        const addScore = (pts, reason) => {
             ghostScore += pts;
             ghostReasons.push(reason);
-            if (detail) ghostDetails.push({ pts, reason, detail });
         };
 
-        if (best.hasSweep) addScore(25, 'Liquidity Sweep', 'Sweep detected');
-        if (best.hasTBS) addScore(25, 'Turtle Soup', 'TBS detected');
+        if (best.hasSweep) addScore(25, 'Liquidity Sweep');
+        if (best.hasTBS) addScore(25, 'Turtle Soup');
 
-        if (best.mss?.displaced) addScore(25, 'MSS with displacement', 'Displaced MSS');
-        else if (best.mss) addScore(10, 'MSS exists', 'MSS without displacement');
+        if (best.mss?.displaced) addScore(25, 'MSS with displacement');
+        else if (best.mss) addScore(10, 'MSS exists');
 
-        if (best.freshness?.fresh) addScore(20, 'Fresh zone', '0 touches');
-        else if (best.freshness?.partiallyUsed && best.freshness?.violations === 0) addScore(10, 'Lightly used', `${best.freshness.touches} touches`);
+        if (best.freshness?.fresh) addScore(20, 'Fresh zone');
+        else if (best.freshness?.partiallyUsed && best.freshness?.violations === 0) addScore(10, 'Lightly used');
 
-        if (best.zone?.quality === 'A') addScore(15, 'A-grade zone', best.zone.src);
-        else if (best.zone?.quality === 'B') addScore(10, 'B-grade zone', best.zone.src);
-        else addScore(5, 'C-grade zone', best.zone.src);
+        if (best.zone?.quality === 'A') addScore(15, 'A-grade zone');
+        else if (best.zone?.quality === 'B') addScore(10, 'B-grade zone');
+        else addScore(5, 'C-grade zone');
 
-        if (best.confirmation) addScore(10, 'Confirmed candle', 'Engulf/pinbar');
+        if (best.confirmation) addScore(10, 'Confirmed candle');
 
-        if (best.session?.isSilverBullet) addScore(15, 'Silver Bullet', best.session.session);
-        else if (best.session?.isKillzone) addScore(8, 'Killzone', best.session.session);
+        if (best.session?.isSilverBullet) addScore(15, 'Silver Bullet');
+        else if (best.session?.isKillzone) addScore(8, 'Killzone');
 
         const htfAgree = best.htfAgree || 0;
-        if (htfAgree >= 2) addScore(10, `${htfAgree}/3 HTF align`, '');
-        else if (htfAgree === 1) addScore(5, `${htfAgree}/3 HTF align`, '');
+        if (htfAgree >= 2) addScore(10, `${htfAgree}/3 HTF align`);
+        else if (htfAgree === 1) addScore(5, `${htfAgree}/3 HTF align`);
 
         const entryDistATR = best.entryDistanceATR || 999;
-        if (entryDistATR < 0.5) addScore(10, 'Entry close', `${entryDistATR.toFixed(1)}x ATR`);
-        else if (entryDistATR < 1.5) addScore(5, 'Entry within 1.5 ATR', `${entryDistATR.toFixed(1)}x ATR`);
+        if (entryDistATR < 0.5) addScore(10, 'Entry close');
+        else if (entryDistATR < 1.5) addScore(5, 'Entry within 1.5 ATR');
 
-        if (best.brokenLevel) addScore(10, 'Broken level flipped', best.brokenLevel.type);
-        if (best.isUnmet) addScore(10, 'Unmet zone', best.direction === 'BUY' ? 'Below price' : 'Above price');
+        if (best.brokenLevel) addScore(10, 'Broken level flipped');
+        if (best.isUnmet) addScore(10, 'Unmet zone');
 
         const bosCount = best.bosCount || 0;
-        if (bosCount >= 3) addScore(10, `${bosCount}x BOS`, 'Multiple BOS');
-        else if (bosCount >= 2) addScore(5, `${bosCount}x BOS`, '');
+        if (bosCount >= 3) addScore(10, `${bosCount}x BOS`);
+        else if (bosCount >= 2) addScore(5, `${bosCount}x BOS`);
 
-        // GHOST MACHINE: Score >= 65 = TRADE
         const tradeable = ghostScore >= 65 && executionDecision !== 'skip';
         const riskPercent = tradeable ? (ghostScore >= 85 ? 1.0 : 0.5) : 0;
-        const noTradeReason = tradeable ? null : (executionDecision === 'skip' ? 'AI decision: skip' : `Ghost score ${ghostScore} < 65 (${ghostReasons.slice(0, 3).join(', ')})`);
+        const noTradeReason = tradeable ? null : (executionDecision === 'skip' ? 'AI decision: skip' : `Ghost score ${ghostScore} < 65`);
 
         console.log(`🏆 Ghost Machine Score: ${ghostScore}/100 (${ghostReasons.join(', ')})`);
         console.log(`📊 Tradeable: ${tradeable}, Risk: ${riskPercent * 100}%`);
         console.log(`📊 SL Distance: ${best.slResult?.distance || 'N/A'} points (ATR-based)`);
 
         const prec = getPrec(pair);
-        const out = { auto_scan_result: { date: new Date().toISOString().split('T')[0], time: new Date().toISOString().split('T')[1].split('.')[0], pair, current_price: price, multi_timeframe_trends: mtfTrendsData, best_timeframe: best.timeframe, quality_score: best.qualityScore, status: tradeable ? 'GHOST_MACHINE_SETUP' : 'NO_TRADE', no_trade_reason: noTradeReason, ghost_score: ghostScore, ghost_reasons: ghostReasons, ghost_details: ghostDetails, sl_distance: best.slResult?.distance || 'N/A', sl_reason: best.slResult?.reason || 'N/A', htf_alignment: `${htfAgree}/3 timeframes aligned`, htf_confluence: htfConfluence.level, suggested_risk: riskPercent === 1 ? '1% (FULL - score 85+)' : (riskPercent === 0.5 ? '0.5% (HALF - score 65-84)' : '0% (do not trade)'), total_setups_found: results.length, setups_found: results.map(r => ({ timeframe: r.timeframe, direction: r.direction, entry: r.entry, sl: r.sl, tp1: r.tp1, confidence: r.confidenceAtScan ?? r.confidence, score: r.score, sl_distance: r.slResult?.distance || 'N/A', sl_reason: r.slResult?.reason || 'N/A', htf_align: r.htfAgree || 0, reasons: r.reasons || [] })), trade_signal: { trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT', entry_price: finalEntry, entry_zone: { low: finalZoneLow, high: finalZoneHigh }, stop_loss: best.sl, sl_reason: best.slResult?.reason || 'N/A', sl_distance: best.slResult?.distance || 'N/A', take_profit_1: best.tp1, take_profit_2: best.tp2, take_profit_3: best.tp3, risk_reward: '1:' + rrDisplay, confidence: best.confidence, ghost_score: ghostScore, ghost_reasons: ghostReasons, htf_alignment: `${htfAgree}/3 HTF aligned`, htf_confluence: htfConfluence.level, analysis: { trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)`, volatility_level: `${best.volatility.level} - ${best.volatility.desc}`, liquidity_sweep: best.hasSweep ? '✅ Detected' : '❌ Not detected', turtle_soup: best.hasTBS ? '✅ Detected' : '❌ Not detected', mss: best.mss ? `${best.mss.type} with displacement` : 'None', zone_freshness: best.freshness?.fresh ? 'Fresh' : (best.freshness?.partiallyUsed ? 'Partially used' : 'Used'), session: best.session?.session || 'OFF-HOURS', silver_bullet: best.session?.isSilverBullet ? '✅ Yes' : '❌ No', bos_count: best.bosCount || 0, broken_level: best.brokenLevel ? '✅ Found' : '❌ Not found', unmet_zone: best.isUnmet ? '✅ Yes' : '❌ No', htf_confluence: htfConfluence.level }, technical_indicators: [`RSI: ${best.twelveIndicators?.rsi || 'N/A'}`, `ATR: ${best.apiATR?.toFixed(prec) || 'N/A'}`, `Sweeps: ${best.hasSweep ? 'Yes' : 'No'}`, `MSS: ${best.mss?.type || 'None'}`, `BOS: ${best.bosCount || 0}`, `HTF Align: ${htfAgree}/3`] } } } };
+
+        const out = {
+            trade_signal_Theghostmachine: {
+                date: new Date().toISOString().split('T')[0],
+                current_price: price,
+                pair: pair,
+                trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT',
+                entry_price: finalEntry,
+                stop_loss: best.sl,
+                take_profit: best.tp1,
+                ghost_score: ghostScore,
+                ghost_reasons: ghostReasons,
+                analysis: {
+                    trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)`,
+                    volatility_level: `${best.volatility.level} - ${best.volatility.desc}`,
+                    liquidity_sweep: best.hasSweep ? '✅ Detected' : '❌ Not detected',
+                    turtle_soup: best.hasTBS ? '✅ Detected' : '❌ Not detected',
+                    mss: best.mss ? `${best.mss.type} with displacement` : 'None',
+                    zone_freshness: best.freshness?.fresh ? 'Fresh' : (best.freshness?.partiallyUsed ? 'Partially used' : 'Used'),
+                    session: best.session?.session || 'OFF-HOURS',
+                    silver_bullet: best.session?.isSilverBullet ? '✅ Yes' : '❌ No',
+                    bos_count: best.bosCount || 0,
+                    broken_level: best.brokenLevel ? '✅ Found' : '❌ Not found',
+                    unmet_zone: best.isUnmet ? '✅ Yes' : '❌ No',
+                    htf_alignment: `${best.htfAgree || 0}/3 HTF aligned`,
+                    sl_distance: best.slResult?.distance?.toFixed(2) || 'N/A',
+                    risk_reward: '1:' + rrDisplay
+                },
+                technical_indicators: {
+                    rsi: best.twelveIndicators?.rsi || 'N/A',
+                    atr: best.apiATR?.toFixed(prec) || 'N/A',
+                    sweeps: best.hasSweep ? 'Yes' : 'No',
+                    mss_type: best.mss?.type || 'None',
+                    bos: best.bosCount || 0
+                }
+            }
+        };
+
         setJsonOutput(out);
         lastSetupSummary = buildSetupSummary(best, st, finalEntry, price);
         lastSetupOut = out;
