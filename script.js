@@ -719,6 +719,7 @@ const A_GRADE_GHOST_CONFIDENCE_BONUS = 6;
 const SILVER_BULLET_GHOST_CONFIDENCE_BONUS = 5;
 const SNIPER_GHOST_CONFIDENCE_BONUS = 3;
 const HTF_VALIDATION_GHOST_CONFIDENCE_BONUS = 2;
+const GHOST_MACHINE_PATTERN_CONFIDENCE = 90;
 // Risk sizing follows the requested golden-rules model: full size only when
 // all five pass, half size when at least three pass, otherwise no trade.
 const FULL_RISK_RULES_REQUIRED = 5;
@@ -1042,7 +1043,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             tp1,
             tp2,
             tp3,
-            confidence: 90,
+            confidence: GHOST_MACHINE_PATTERN_CONFIDENCE,
             zone,
             msnr,
             crt: crt || { detected: false, pattern: 'Neutral' },
@@ -1065,8 +1066,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             zoneReaction,
             zoneTouches,
             confirmation: confirmed,
-            mtf: { direction: sig.dir, strength: 1, trends: mtfTrends },
-            qualityScore: 90,
+            mtf,
+            qualityScore: GHOST_MACHINE_PATTERN_CONFIDENCE,
             htfValidation,
             magnetism: { magnetism: 'STRONG', score: 80, summary: magnetism.summary, checks: magnetism.checks, likelyToReach: magnetism.likelyToReach },
             freshness,
@@ -1082,7 +1083,13 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             deltaProxy,
             slResult: { reason: 'CRT extreme', price: sl, distance: risk },
             invalidationPrice,
-            confBreakdown: [{ adj: 90, reason: 'Pattern match: sweep/TBS + displaced MSS + fresh zone + confirmation + Silver Bullet' }],
+            confBreakdown: [
+                { adj: 20, reason: 'Sweep or Turtle Soup aligned' },
+                { adj: 20, reason: 'Displaced MSS aligned' },
+                { adj: 15, reason: 'Fresh entry zone' },
+                { adj: 15, reason: 'Confirmation candle' },
+                { adj: 20, reason: 'Silver Bullet session' }
+            ],
             entryDistanceATR: entryDistance / (entryATR || 1),
             entryDistancePct: (entryDistance / price) * 100,
             entryATR,

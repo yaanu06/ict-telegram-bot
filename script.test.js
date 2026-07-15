@@ -376,7 +376,13 @@ describe('analyzeTimeframe Ghost Machine pattern matching', () => {
         expect(res.hasSweep).toBe(true);
         expect(res.session.isSilverBullet).toBe(true);
         expect(res.rrUsed).toBe(4);
-        expect(res.confBreakdown).toEqual([{ adj: 90, reason: 'Pattern match: sweep/TBS + displaced MSS + fresh zone + confirmation + Silver Bullet' }]);
+        expect(res.confBreakdown).toEqual([
+            { adj: 20, reason: 'Sweep or Turtle Soup aligned' },
+            { adj: 20, reason: 'Displaced MSS aligned' },
+            { adj: 15, reason: 'Fresh entry zone' },
+            { adj: 15, reason: 'Confirmation candle' },
+            { adj: 20, reason: 'Silver Bullet session' }
+        ]);
     });
 
     it('rejects setups outside Silver Bullet sessions', async () => {
