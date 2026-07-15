@@ -891,7 +891,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const wantSweepDir = sig.dir === 'BUY' ? 'BULLISH' : 'BEARISH';
         const hasSweep = sweeps.some(s => s.direction === wantSweepDir);
         const hasTBS = turtleSoup.detected && turtleSoup.type === sig.dir;
-        if (!hasSweep && !hasTBS) {
+        const hasLiquidityEvent = hasSweep || hasTBS;
+        if (!hasLiquidityEvent) {
             console.log(`  ❌ ${tfToAnalyze}: No sweep or TBS`);
             return null;
         }
@@ -1013,7 +1014,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const htfCheck = isZoneWithinHTFArray(zone, structureData ? findPDArrays(structureData, sig.dir) : []);
         const htfValidation = { passed: true, parentArray: htfCheck.parentArray ? { ...htfCheck.parentArray, structureTF } : null, partial: htfCheck.partial || false };
         const probChecks = [
-            { name: 'Sweep or Turtle Soup', passed: hasSweep || hasTBS, critical: true },
+            { name: 'Sweep or Turtle Soup', passed: hasLiquidityEvent, critical: true },
             { name: 'Displaced MSS', passed: !!mssData?.displaced, critical: true },
             { name: 'Fresh zone', passed: zoneFresh, critical: true },
             { name: 'Confirmation candle', passed: confirmed, critical: true },
@@ -1073,7 +1074,9 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             isNearMSNR,
             entryReady: confirmed && entryTiming.valid,
             entryTiming,
-            hasSweep: hasSweep || hasTBS,
+            hasSweep,
+            hasSweepOrTBS: hasLiquidityEvent,
+            hasLiquidityEvent,
             trendTF: trendTF || 'N/A',
             structureTF: structureTF || 'N/A',
             entryTF: entryTF || 'N/A',
@@ -1308,12 +1311,13 @@ function calculateCRTConfidence(data) {
     else score += 2;
 
     if (data.isInOptimalZone) score += 10;
-    if (data.hasSweep) score += 10;
+    const hasLiquidityEvent = data.hasLiquidityEvent ?? data.hasSweepOrTBS ?? data.hasSweep ?? data.turtleSoup?.detected ?? false;
+    if (hasLiquidityEvent) score += 10;
     if (data.zone.quality === 'A') score += 10;
     else if (data.zone.quality === 'B') score += 5;
 
     if (data.session.session === 'OFF-HOURS') score -= 20;
-    if (!data.hasSweep && !data.turtleSoup.detected) score -= 15;
+    if (!hasLiquidityEvent && !data.turtleSoup.detected) score -= 15;
     if (data.msnrDistance > 1.0) score -= 10;
 
     return Math.max(0, Math.min(100, score));
@@ -1342,7 +1346,7 @@ function calculateSetupQuality(result, price) {
     const session = result.session || { isKillzone: false, isSilverBullet: false, multiplier: 0.5 };
     const breakerValid = result.breakerValid || false;
     const amdPhase = result.amd?.phase || 'UNKNOWN';
-    const hasSweep = result.hasSweep || false;
+    const hasSweep = result.hasLiquidityEvent ?? result.hasSweepOrTBS ?? result.hasSweep ?? false;
 
     // FIX #15: TF preference is a mild tiebreaker, not a fiat. The old weights
     // (1D:100, 4H:80...) pushed 1D setups straight to the 100-point cap before a
