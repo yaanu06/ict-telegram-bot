@@ -354,13 +354,20 @@ describe('analyzeTimeframe Ghost Machine pattern matching', () => {
         context.isZoneWithinHTFArray = jest.fn(() => ({ contained: false, partial: false, parentArray: null }));
     };
 
-    it('returns a strict Ghost Machine setup with zone-edge entry and CRT extreme target', async () => {
+    it('returns a Ghost Machine BUY setup using score-based dual-direction analysis', async () => {
         const context = getContext();
         const candles = buildCandles();
+        // Use the real atr (called before stubs override context.atr) to match
+        // the value analyzeTimeframe computes internally from the lexical atr binding.
         const atrValue = context.atr(candles, 14);
-        const expectedEntry = Math.min(98 + atrValue * 0.2, 100);
-        const expectedSl = Math.min(98 - atrValue * 0.5, 97 - atrValue * 0.3);
+        // Entry: zone.low + ATR*0.1 (zone.low=98)
+        const expectedEntry = Math.min(98 + atrValue * 0.1, 100);
+        // SL: min(zone.low - ATR*0.3, crtRange.low) where crtRange.low = min of candle lows = 97
+        const crtLow = Math.min(...candles.slice(-20).map(c => c.l));
+        const expectedSl = Math.min(98 - atrValue * 0.3, crtLow);
         const expectedRisk = Math.abs(expectedEntry - expectedSl);
+        // Entry-distance label is computed inside analyzeTimeframe using the same atr
+        const entryDistanceLabel = `Entry ${((100 - expectedEntry) / atrValue).toFixed(1)}x ATR away`;
         wireGhostStubs(context);
 
         const res = await context.analyzeTimeframe('1H', 100, { '5M': candles, '15M': candles, '1H': candles, '4H': candles, '1D': candles });
@@ -371,28 +378,31 @@ describe('analyzeTimeframe Ghost Machine pattern matching', () => {
         expect(res.tp1).toBeCloseTo(expectedEntry + expectedRisk * 2);
         expect(res.tp2).toBeCloseTo(expectedEntry + expectedRisk * 4);
         expect(res.tp3).toBe(103);
-        expect(res.confidence).toBe(90);
-        expect(res.confirmation).toBe(true);
+        expect(res.confidence).toBe(95);
+        expect(res.confirmation).toBe(false);
         expect(res.hasSweep).toBe(true);
-        expect(res.session.isSilverBullet).toBe(true);
         expect(res.rrUsed).toBe(4);
+        expect(res.score).toBe(85);
         expect(res.confBreakdown).toEqual([
-            { adj: 20, reason: 'Sweep or Turtle Soup aligned' },
-            { adj: 20, reason: 'Displaced MSS aligned' },
-            { adj: 15, reason: 'Fresh entry zone' },
-            { adj: 15, reason: 'Confirmation candle' },
-            { adj: 20, reason: 'Silver Bullet session' }
+            { adj: 25, reason: 'Liquidity Sweep' },
+            { adj: 25, reason: '5x BOS confirmed' },
+            { adj: 15, reason: 'MSS with displacement' },
+            { adj: 10, reason: 'Fresh zone' },
+            { adj: 10, reason: entryDistanceLabel }
         ]);
     });
 
-    it('rejects setups outside Silver Bullet sessions', async () => {
+    it('finds a setup regardless of session (Silver Bullet gate removed)', async () => {
         const context = getContext();
         const candles = buildCandles();
         wireGhostStubs(context, { session: 'LONDON KZ', multiplier: 1.3, emoji: '🇬🇧', isKillzone: true, isSilverBullet: false, isMacro: false });
 
         const res = await context.analyzeTimeframe('1H', 100, { '5M': candles, '15M': candles, '1H': candles, '4H': candles, '1D': candles });
 
-        expect(res).toBeNull();
+        expect(res).not.toBeNull();
+        expect(res.direction).toBe('BUY');
+        expect(res.score).toBeGreaterThanOrEqual(65);
+        expect(res.session.isSilverBullet).toBe(false);
     });
 });
 

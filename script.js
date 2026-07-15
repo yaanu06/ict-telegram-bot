@@ -886,175 +886,243 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         if (!entryData?.length) return null;
         const structureData = htfData[structureTF] || await getHistory(structureTF);
         const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
-        const sig = score(entryData, price, twelveIndicators);
-        const turtleSoup = detectTurtleSoup(entryData);
-        const sweeps = detectLiquiditySweeps(entryData, price);
-        const wantSweepDir = sig.dir === 'BUY' ? 'BULLISH' : 'BEARISH';
-        const hasSweep = sweeps.some(s => s.direction === wantSweepDir);
-        const hasTBS = turtleSoup.detected && turtleSoup.type === sig.dir;
-        const hasLiquidityEvent = hasSweep || hasTBS;
-        if (!hasLiquidityEvent) {
-            console.log(`  ❌ ${tfToAnalyze}: No sweep or TBS`);
-            return null;
-        }
 
-        const mssData = detectMSS(entryData);
-        const mssAligned = sig.dir === 'BUY' ? mssData?.type === 'BULL' : mssData?.type === 'BEAR';
-        if (!mssData || !mssData.displaced || !mssAligned) {
-            console.log(`  ❌ ${tfToAnalyze}: No displaced MSS`);
-            return null;
-        }
-
-        const msnr = calculateMSNR(structureData || entryData, price);
-        const zone = findPrecisionEntry(entryData, price, sig.dir, msnr);
-        if (!zone) {
-            console.log(`  ❌ ${tfToAnalyze}: No zone found`);
-            return null;
-        }
-
-        const freshness = checkZoneFreshness(entryData, zone, sig.dir);
-        const zoneFresh = freshness.fresh || (freshness.partiallyUsed && freshness.violations === 0);
-        if (!zoneFresh) {
-            console.log(`  ❌ ${tfToAnalyze}: Zone not fresh (touches=${freshness.touches}, violations=${freshness.violations})`);
-            return null;
-        }
-
-        const confirmed = hasGhostConfirmationCandle(entryData, sig.dir);
-        if (!confirmed) {
-            console.log(`  ❌ ${tfToAnalyze}: No confirmation candle`);
-            return null;
-        }
-
-        const session = getSession();
-        if (!session.isSilverBullet) {
-            console.log(`  ❌ ${tfToAnalyze}: Not Silver Bullet session`);
-            return null;
-        }
-
+        // ============================================
+        // CRT RANGE (20-period high/low)
+        // ============================================
         const crtRange = {
             high: Math.max(...entryData.slice(-20).map(c => c.h)),
             low: Math.min(...entryData.slice(-20).map(c => c.l))
         };
-        const range = crtRange.high - crtRange.low;
-        const pricePosition = range > 0 ? ((price - crtRange.low) / range) * 100 : 50;
-        const isInOptimalZone = pricePosition > 40 && pricePosition < 60;
-        const crt = detectCRT(entryData, sig.dir);
-        const tbsQuality = gradeTBS(turtleSoup, sweeps, entryData);
-        const msnrDistance = Math.abs(price - msnr.pivot) / price * 100;
-        const isNearMSNR = msnrDistance < 0.2;
-        const crtState = getCRTState(entryData);
-
-        // ===== SHARED (zone-independent) ANALYSIS =====
-        const apiATR = twelveIndicators?.atr_api || atr(entryData, 14);
+        const msnr = calculateMSNR(structureData || entryData, price);
         const entryATR = atr(entryData, 14);
-        const obsAll = detectOrderBlocks(entryData, sig.dir);
-        const fvgsAll = detectFVG(entryData);
-        const breakersAll = detectBreakers(entryData);
-        const imbalances = findImbalances(entryData);
-        const swingsData = findSwings(entryData, 4);
-        const validOrderBlocks = obsAll.map(ob => ({ ...ob, isValid: true, type: sig.dir === 'BUY' ? 'BULLISH' : 'BEARISH' }));
-        const validFvgs = fvgsAll.map(fvg => ({ ...fvg, isValid: true }));
-        const bosConfirmed = mssData !== null && mssData.displaced === true;
-        const displacement = detectDisplacement(entryData, sig.dir);
-        const hasDisplacement = displacement.detected;
-        const htfSupportLevels = swingsData.L.map(sw => ({ price: sw.p, strength: 3 }));
-        const htfResistanceLevels = swingsData.H.map(sw => ({ price: sw.p, strength: 3 }));
-        const amd = analyzeAMD(htfData['1H'] || entryData);
+
+        // ============================================
+        // CHECK BOTH DIRECTIONS - GHOST MACHINE FINDS BOTH
+        // ============================================
+        const allSetups = [];
+
+        for (const dir of ['BUY', 'SELL']) {
+            console.log(`  → Checking ${dir} on ${tfToAnalyze}...`);
+
+            // ============================================
+            // 1. LIQUIDITY FLOW ASSESSMENT
+            // ============================================
+            const sweeps = detectLiquiditySweeps(entryData, price);
+            const wantSweepDir = dir === 'BUY' ? 'BULLISH' : 'BEARISH';
+            const hasSweep = sweeps.some(s => s.direction === wantSweepDir);
+            const turtleSoup = detectTurtleSoup(entryData);
+            const hasTBS = turtleSoup.detected && turtleSoup.type === dir;
+
+            // ============================================
+            // 2. MARKET STRUCTURE SHIFT (BOS)
+            // ============================================
+            const mss = detectMSS(entryData);
+            const hasMSS = mss !== null;
+            const hasDisplacement = mss?.displaced === true;
+            const bosCount = countBOS(entryData, htfData, dir);
+
+            // ============================================
+            // 3. FRESH ORDER BLOCK (unmet / below price)
+            // ============================================
+            const zone = findPrecisionEntry(entryData, price, dir, msnr);
+            if (!zone) {
+                console.log(`  ❌ ${dir}: No zone`);
+                continue;
+            }
+
+            const isUnmet = dir === 'BUY' ? zone.high < price : zone.low > price;
+            const freshness = checkZoneFreshness(entryData, zone, dir);
+            const isValidZone = freshness.fresh || (freshness.partiallyUsed && freshness.violations === 0);
+
+            // ============================================
+            // 4. BROKEN RESISTANCE FLIPPED TO SUPPORT
+            // ============================================
+            const brokenLevel = findBrokenLevel(entryData, dir);
+
+            // ============================================
+            // 5. SESSION (Ghost Machine scans anytime)
+            // ============================================
+            const session = getSession();
+
+            // ============================================
+            // 6. CALCULATE ENTRY (Ghost Machine: pending order below price)
+            // ============================================
+            let entry;
+            if (dir === 'BUY') {
+                entry = Math.min(zone.low + entryATR * 0.1, zone.high);
+            } else {
+                entry = Math.max(zone.high - entryATR * 0.1, zone.low);
+            }
+            const entryDistance = dir === 'BUY' ? price - entry : entry - price;
+
+            // SL: Tight stop at zone edge + CRT extreme
+            let sl;
+            if (dir === 'BUY') {
+                sl = Math.min(zone.low - entryATR * 0.3, crtRange.low);
+                if (sl >= entry) sl = entry - entryATR * 0.5;
+            } else {
+                sl = Math.max(zone.high + entryATR * 0.3, crtRange.high);
+                if (sl <= entry) sl = entry + entryATR * 0.5;
+            }
+
+            const risk = Math.abs(entry - sl);
+            const tp1 = dir === 'BUY' ? entry + risk * 2.0 : entry - risk * 2.0;
+            const tp2 = dir === 'BUY' ? entry + risk * 4.0 : entry - risk * 4.0;
+            const tp3 = dir === 'BUY' ? crtRange.high : crtRange.low;
+
+            // ============================================
+            // 7. GHOST MACHINE SCORING
+            // ============================================
+            let pts = 0;
+            const reasons = [];
+            const confBreakdown = [];
+
+            const addScore = (adj, label) => { pts += adj; reasons.push(label); confBreakdown.push({ adj, reason: label }); };
+
+            if (hasSweep) addScore(25, 'Liquidity Sweep');
+            if (hasTBS) addScore(25, 'Turtle Soup');
+
+            if (bosCount >= 3) addScore(25, `${bosCount}x BOS confirmed`);
+            else if (bosCount >= 2) addScore(15, `${bosCount}x BOS`);
+
+            if (hasDisplacement) addScore(15, 'MSS with displacement');
+            else if (hasMSS) addScore(8, 'MSS exists');
+
+            if (isUnmet && isValidZone) addScore(20, 'Fresh unmet order block');
+            else if (isValidZone) addScore(10, 'Fresh zone');
+
+            if (brokenLevel) addScore(15, 'Broken level flipped');
+
+            if (zone.quality === 'A') addScore(10, 'A-grade zone');
+            else if (zone.quality === 'B') addScore(5, 'B-grade zone');
+
+            if (entryDistance > 0 && entryDistance < entryATR * 1.5) {
+                addScore(10, `Entry ${(entryDistance / entryATR).toFixed(1)}x ATR away`);
+            }
+
+            // HTF alignment (bonus)
+            let htfAgree = 0;
+            const htfTrends = {};
+            for (const t of ['1D', '4H', '1H']) {
+                const d = htfData[t];
+                if (d && d.length >= 50) {
+                    const trend = detectTrend(d);
+                    htfTrends[t] = trend;
+                    if ((dir === 'BUY' && trend === 'BULLISH') || (dir === 'SELL' && trend === 'BEARISH')) htfAgree++;
+                }
+            }
+            if (htfAgree >= 2) addScore(10, `${htfAgree}/3 HTF align`);
+
+            console.log(`  → ${dir} score: ${pts} (${reasons.join(', ')})`);
+
+            // ============================================
+            // 8. GHOST MACHINE: Score >= 65 = TRADE
+            // ============================================
+            if (pts < 65) {
+                console.log(`  ❌ ${dir}: Score ${pts} < 65`);
+                continue;
+            }
+
+            console.log(`  ✅ ${dir} setup! Score: ${pts}`);
+            allSetups.push({ dir, pts, entry, sl, tp1, tp2, tp3, risk, sweeps, turtleSoup, hasSweep, hasTBS, mss, hasMSS, hasDisplacement, bosCount, zone, isUnmet, freshness, isValidZone, brokenLevel, session, entryDistance, htfTrends, htfAgree, reasons, confBreakdown });
+        }
+
+        // ============================================
+        // 9. RETURN THE BEST SETUP
+        // ============================================
+        if (allSetups.length === 0) {
+            console.log(`  ❌ ${tfToAnalyze}: No setup scored >= 65`);
+            return null;
+        }
+
+        allSetups.sort((a, b) => b.pts - a.pts);
+        const best = allSetups[0];
+        const { dir, pts: setupScore, entry, sl, tp1, tp2, tp3, risk, sweeps, turtleSoup, hasSweep, hasTBS, mss, hasMSS, hasDisplacement, bosCount, zone, isUnmet, freshness, isValidZone, brokenLevel, session, entryDistance, htfTrends, htfAgree, reasons, confBreakdown } = best;
+
+        const apiATR = twelveIndicators?.atr_api || entryATR;
         const volatility = getVolatilityLevel(apiATR, price);
-        const volumeProfile = calcVolumeProfile(entryData);
-        const deltaProxy = calcDeltaProxy(entryData);
-        
-        // ===== PREMIUM/DISCOUNT (NOW A BONUS, NOT A GATE) =====
-        const premiumDiscount = isHTFPremiumDiscount(structureData || entryData, sig.dir, price);
-        const isInCorrectZone = premiumDiscount.inPremiumDiscount;
-        
-        // ===== MTF TRENDS =====
+        const confidence = Math.min(setupScore + 15, 95);
+        const invalidationPrice = dir === 'BUY' ? sl * 0.995 : sl * 1.005;
+        const entryDistanceATR = entryDistance / (entryATR || 1);
+        const entryDistancePct = (entryDistance / price) * 100;
+
         const mtfTrends = {};
         let alignedCount = 0;
         for (const t of ALL_TIMEFRAMES) {
             const d = htfData[t];
             const tr = (d && d.length >= 50) ? detectTrend(d) : 'NEUTRAL';
             mtfTrends[t] = tr;
-            if ((sig.dir === 'BUY' && tr === 'BULLISH') || (sig.dir === 'SELL' && tr === 'BEARISH')) alignedCount++;
+            if ((dir === 'BUY' && tr === 'BULLISH') || (dir === 'SELL' && tr === 'BEARISH')) alignedCount++;
         }
-        const mtf = { direction: sig.dir, strength: alignedCount, trends: mtfTrends };
+        const mtf = { direction: dir, strength: alignedCount, trends: mtfTrends };
 
-        let entry;
-        if (sig.dir === 'BUY') {
-            entry = Math.min(zone.low + entryATR * 0.2, zone.high);
-        } else {
-            entry = Math.max(zone.high - entryATR * 0.2, zone.low);
-        }
-
-        let sl;
-        if (sig.dir === 'BUY') {
-            sl = Math.min(zone.low - entryATR * 0.5, crtRange.low - entryATR * 0.3);
-            if (sl >= entry) sl = entry - entryATR * 0.5;
-        } else {
-            sl = Math.max(zone.high + entryATR * 0.5, crtRange.high + entryATR * 0.3);
-            if (sl <= entry) sl = entry + entryATR * 0.5;
-        }
-
-        const risk = Math.abs(entry - sl);
-        const tp1 = sig.dir === 'BUY' ? entry + risk * 2.0 : entry - risk * 2.0;
-        const tp2 = sig.dir === 'BUY' ? entry + risk * 4.0 : entry - risk * 4.0;
-        const tp3 = sig.dir === 'BUY' ? crtRange.high : crtRange.low;
-        const invalidationPrice = sig.dir === 'BUY' ? sl * 0.995 : sl * 1.005;
-        const entryDistance = sig.dir === 'BUY' ? price - entry : entry - price;
-
+        const crtState = getCRTState(entryData);
+        const range = crtRange.high - crtRange.low;
+        const pricePosition = range > 0 ? ((price - crtRange.low) / range) * 100 : 50;
+        const isInOptimalZone = pricePosition > 40 && pricePosition < 60;
+        const msnrDistance = Math.abs(price - msnr.pivot) / price * 100;
+        const isNearMSNR = msnrDistance < 0.2;
+        const crt = detectCRT(entryData, dir);
+        const tbsQuality = gradeTBS(turtleSoup, sweeps, entryData);
+        const swingsData = findSwings(entryData, 4);
+        const obsAll = detectOrderBlocks(entryData, dir);
+        const fvgsAll = detectFVG(entryData);
+        const breakersAll = detectBreakers(entryData);
+        const imbalances = findImbalances(entryData);
+        const displacement = detectDisplacement(entryData, dir);
+        const htfSupportLevels = swingsData.L.map(sw => ({ price: sw.p, strength: 3 }));
+        const htfResistanceLevels = swingsData.H.map(sw => ({ price: sw.p, strength: 3 }));
+        const amd = analyzeAMD(htfData['1H'] || entryData);
+        const volumeProfile = calcVolumeProfile(entryData);
+        const deltaProxy = calcDeltaProxy(entryData);
+        const premiumDiscount = isHTFPremiumDiscount(structureData || entryData, dir, price);
         const chochDetected = checkCHoCH(entryData, zone.low, zone.high);
-        const inducementSwept = detectInducement(entryData, zone.low, zone.high, sig.dir);
-        const entryTiming = checkEntryTiming(entryData, entry, sig.dir);
+        const inducementSwept = detectInducement(entryData, zone.low, zone.high, dir);
+        const entryTiming = checkEntryTiming(entryData, entry, dir);
         const zoneReaction = { ...GHOST_MACHINE_ZONE_REACTION };
         const zoneTouches = freshness.touches || 0;
-        const magnetism = checkZoneMagnetism(entryData, price, entry, sig.dir, zone);
-        const pathCheck = checkPathClearance(entryData, entry, tp1, sig.dir);
-        const sniperRej = await checkSniperRejection(zone, sig.dir, sniperTF, htfData[sniperTF]);
-        const sniperEntry = checkSniperEntry(entryData, price, sig.dir, zone, session);
-        const breakerValid = validateBreakerBlock(entryData, zone.p, sig.dir);
-        const htfCheck = isZoneWithinHTFArray(zone, structureData ? findPDArrays(structureData, sig.dir) : []);
+        const magnetism = checkZoneMagnetism(entryData, price, entry, dir, zone);
+        const pathCheck = checkPathClearance(entryData, entry, tp1, dir);
+        const sniperRej = await checkSniperRejection(zone, dir, sniperTF, htfData[sniperTF]);
+        const sniperEntry = checkSniperEntry(entryData, price, dir, zone, session);
+        const breakerValid = validateBreakerBlock(entryData, zone.p, dir);
+        const htfCheck = isZoneWithinHTFArray(zone, structureData ? findPDArrays(structureData, dir) : []);
         const htfValidation = { passed: true, parentArray: htfCheck.parentArray ? { ...htfCheck.parentArray, structureTF } : null, partial: htfCheck.partial || false };
+        const ghostRules = getGhostHardRules(dir, sweeps, turtleSoup, mss, session, freshness, zone);
+
         const probChecks = [
-            { name: 'Sweep or Turtle Soup', passed: hasLiquidityEvent, critical: true },
-            { name: 'Displaced MSS', passed: !!mssData?.displaced, critical: true },
-            { name: 'Fresh zone', passed: zoneFresh, critical: true },
-            { name: 'Confirmation candle', passed: confirmed, critical: true },
-            { name: 'Silver Bullet session', passed: session.isSilverBullet, critical: true }
+            { name: 'Sweep or Turtle Soup', passed: hasSweep || hasTBS, critical: true },
+            { name: 'MSS with displacement', passed: hasDisplacement, critical: false },
+            { name: 'Fresh zone', passed: isValidZone, critical: true },
+            { name: 'Score >= 65', passed: setupScore >= 65, critical: true }
         ];
-        const probCheck = { probability: 'HIGH', checks: probChecks, totalPassed: probChecks.filter(check => check.passed).length, passed: probChecks.every(check => check.passed) };
-        const ghostRules = getGhostHardRules(sig.dir, sweeps, turtleSoup, mssData, session, freshness, zone);
-        const confBreakdown = [
-            { adj: 20, reason: 'Sweep or Turtle Soup aligned' },
-            { adj: 20, reason: 'Displaced MSS aligned' },
-            { adj: 15, reason: 'Fresh entry zone' },
-            { adj: 15, reason: 'Confirmation candle' },
-            { adj: 20, reason: 'Silver Bullet session' }
-        ];
-        const confidence = confBreakdown.reduce((sum, item) => sum + item.adj, 0);
-        const context = {
-            htfTrendBias: mtfTrends['1D'] !== 'NEUTRAL' ? mtfTrends['1D'] : (sig.dir === 'BUY' ? 'BULLISH' : 'BEARISH'),
+        const probCheck = { probability: setupScore >= 75 ? 'HIGH' : 'MEDIUM', checks: probChecks, totalPassed: probChecks.filter(c => c.passed).length, passed: probChecks.filter(c => c.critical).every(c => c.passed) };
+
+        const contextObj = {
+            htfTrendBias: mtfTrends['1D'] !== 'NEUTRAL' ? mtfTrends['1D'] : (dir === 'BUY' ? 'BULLISH' : 'BEARISH'),
             htfMarketPhase: crtState?.state || 'CONSOLIDATION',
             htfRangeHigh: crtRange?.high || price * 1.01,
             htfRangeLow: crtRange?.low || price * 0.99,
-            htfZoneType: isInCorrectZone ? (sig.dir === 'BUY' ? 'DISCOUNT' : 'PREMIUM') : 'MID_RANGE',
-            htfBosConfirmed: bosConfirmed,
+            htfZoneType: premiumDiscount.inPremiumDiscount ? (dir === 'BUY' ? 'DISCOUNT' : 'PREMIUM') : 'MID_RANGE',
+            htfBosConfirmed: hasDisplacement,
             htfChochDetected: chochDetected,
-            validOrderBlocks,
-            validFvgs,
+            validOrderBlocks: obsAll.map(ob => ({ ...ob, isValid: true, type: dir === 'BUY' ? 'BULLISH' : 'BEARISH' })),
+            validFvgs: fvgsAll.map(fvg => ({ ...fvg, isValid: true })),
             liquiditySweeps: sweeps || [],
             htfSupportLevels,
             htfResistanceLevels,
             ltfPullbackIntoZone: entryTiming.valid || false,
-            ltfDisplacementCandle: hasDisplacement,
+            ltfDisplacementCandle: displacement.detected,
             ltfCompressionDetected: crtState?.isContracting || false,
             sessionValid: session.isSilverBullet,
             inducementSwept
         };
 
-        console.log(`  ✅ ${tfToAnalyze}: ${sig.dir} setup found!`);
+        console.log(`  ✅ ${tfToAnalyze}: ${dir} setup! Score: ${setupScore}, Entry: ${entry}, Distance: ${entryDistanceATR.toFixed(1)}x ATR`);
         return {
             timeframe: tfToAnalyze,
-            direction: sig.dir,
+            direction: dir,
             entry,
             sl,
             tp1,
@@ -1073,19 +1141,20 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             crtState,
             isInOptimalZone,
             isNearMSNR,
-            entryReady: confirmed && entryTiming.valid,
+            entryReady: entryTiming.valid,
             entryTiming,
             hasSweep,
-            hasSweepOrTBS: hasLiquidityEvent,
-            hasLiquidityEvent,
+            hasTBS,
+            hasSweepOrTBS: hasSweep || hasTBS,
+            hasLiquidityEvent: hasSweep || hasTBS,
             trendTF: trendTF || 'N/A',
             structureTF: structureTF || 'N/A',
             entryTF: entryTF || 'N/A',
             sniperTF: sniperTF || 'N/A',
             zoneReaction,
             zoneTouches,
-            confirmation: confirmed,
-            hasConfirmationCandle: confirmed,
+            confirmation: false,
+            hasConfirmationCandle: false,
             mtf,
             qualityScore: confidence,
             htfValidation,
@@ -1096,7 +1165,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             amd: { phase: 'UNKNOWN' },
             pathCheck: { clear: true, obstacles: pathCheck.obstacles || [] },
             probCheck,
-            displacement: { detected: true },
+            displacement: { detected: displacement.detected },
             sniperRej: { confirmed: true, ...sniperRej },
             sniperEntry: { ...sniperEntry, isSniper: true },
             volumeProfile,
@@ -1104,26 +1173,26 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             slResult: { reason: 'CRT extreme', price: sl, distance: risk },
             invalidationPrice,
             confBreakdown,
-            entryDistanceATR: entryDistance / (entryATR || 1),
-            entryDistancePct: (entryDistance / price) * 100,
+            entryDistanceATR,
+            entryDistancePct,
             entryATR,
             rrUsed: 4.0,
             rs: twelveIndicators?.rsi || 50,
-            apiATR: entryATR,
+            apiATR,
             fvgsAll: fvgsAll || [],
             obsAll: obsAll || [],
             breakersAll: breakersAll || [],
             twelveIndicators: twelveIndicators || {},
             tfAlign: `Pattern:${tfToAnalyze}`,
             volatility,
-            mss: mssData || null,
+            mss,
             imbalances: imbalances || [],
-            setupScore: 9,
-            winProbability: 85,
+            setupScore,
+            winProbability: Math.min(setupScore, 95),
             expectedValue: 3.4,
-            signalGrade: 'A',
+            signalGrade: setupScore >= 80 ? 'A' : 'B',
             ghostRules,
-            context,
+            context: contextObj,
             risk,
             rrDisplay: '2.0',
             zonesEvaluated: 1,
@@ -1143,18 +1212,75 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 stopLoss: sl,
                 takeProfit: tp1,
                 partialTP: tp2,
-                invalidation: invalidationPrice,
+                invalidation: dir === 'BUY' ? sl * 0.998 : sl * 1.002,
                 breakeven: entry,
                 pipsRisk: Math.abs(entry - sl) / (getMarketSettings(pair).pipSize || 0.0001),
                 pipsReward: Math.abs(tp1 - entry) / (getMarketSettings(pair).pipSize || 0.0001),
                 riskReward: 4.0
-            }
+            },
+            bosCount,
+            brokenLevel,
+            isUnmet,
+            entryDistance,
+            htfTrends,
+            htfAgree,
+            score: setupScore,
+            reasons
         };
 
     } catch (e) {
         console.error(`❌ Error in ${tfToAnalyze}:`, e);
         return null;
     }
+}
+
+// ============================================
+// HELPER: Count BOS (Break of Structure) on multiple timeframes
+// ============================================
+function countBOS(data, htfData, direction) {
+    let count = 0;
+    const tfs = ['1D', '4H', '1H', '15M', '5M'];
+
+    for (const tf of tfs) {
+        const d = htfData[tf] || data;
+        if (d.length < 20) continue;
+
+        const mss = detectMSS(d);
+        if (!mss) continue;
+
+        if (direction === 'BUY' && mss.type === 'BULL') count++;
+        if (direction === 'SELL' && mss.type === 'BEAR') count++;
+    }
+
+    return count;
+}
+
+// ============================================
+// HELPER: Find broken resistance flipped to support
+// ============================================
+function findBrokenLevel(data, direction) {
+    if (data.length < 30) return null;
+
+    const swings = findSwings(data, 4);
+    const lastPrice = data[data.length - 1].c;
+
+    if (direction === 'BUY') {
+        // Find resistance that was broken and is now support
+        const resistances = swings.H.filter(s => s.p < lastPrice);
+        if (resistances.length > 0) {
+            const broken = resistances[resistances.length - 1];
+            return { price: broken.p, type: 'RESISTANCE_FLIPPED_TO_SUPPORT' };
+        }
+    } else {
+        // Find support that was broken and is now resistance
+        const supports = swings.L.filter(s => s.p > lastPrice);
+        if (supports.length > 0) {
+            const broken = supports[supports.length - 1];
+            return { price: broken.p, type: 'SUPPORT_FLIPPED_TO_RESISTANCE' };
+        }
+    }
+
+    return null;
 }
 
 // ===== FUNCTION 1: TBS QUALITY GRADING =====
