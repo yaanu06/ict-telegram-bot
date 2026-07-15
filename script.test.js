@@ -396,6 +396,144 @@ describe('analyzeTimeframe Ghost Machine pattern matching', () => {
     });
 });
 
+describe('runAutoScan Ghost Machine timeframe handling', () => {
+    const makeElements = () => {
+        const mk = () => ({ addEventListener: () => {}, classList: { add: () => {}, remove: () => {} }, style: {}, innerHTML: '', className: '', disabled: true });
+        return {
+            analyzeBtn: mk(),
+            scanStatus: mk(),
+            scanText: mk(),
+            scanProgressFill: mk(),
+            currentPrice: mk(),
+            priceChange: mk(),
+            executeBtn: mk()
+        };
+    };
+
+    const makeSetup = (timeframe, confidence, extra = {}) => ({
+        timeframe,
+        direction: 'BUY',
+        entry: 100,
+        sl: 99,
+        tp1: 102,
+        tp2: 104,
+        tp3: 106,
+        confidence,
+        zone: { low: 99.5, high: 100.5, p: 100, src: 'MSNR', confluence: 'MSNR', cc: 1, quality: 'A', hasImbalance: false },
+        slResult: { reason: 'Below Zone' },
+        risk: 1,
+        rrDisplay: '2.0',
+        rrUsed: 2,
+        premiumDiscount: false,
+        ghostRules: null,
+        breakerValid: false,
+        freshness: { fresh: true, partiallyUsed: false, violations: 0 },
+        confirmation: true,
+        hasSweep: true,
+        mss: { type: 'BULL', displaced: true },
+        session: { session: 'LONDON KZ + SB', emoji: '🏹', multiplier: 1.5, isSilverBullet: true },
+        mtf: { direction: 'BULLISH', strength: 5 },
+        volatility: { level: 'High', desc: 'Large candles' },
+        entryTF: timeframe,
+        trendTF: '1D',
+        structureTF: '1H',
+        sniperTF: timeframe,
+        tfAlign: 'ALIGNED',
+        entryReady: true,
+        invalidationPrice: 98,
+        zoneTouches: 0,
+        htfValidation: { passed: true, parentArray: null },
+        alternativeZones: [],
+        zonesEvaluated: 1,
+        magnetism: { magnetism: 'STRONG', score: 80, summary: 'Strong', checks: [] },
+        pathCheck: { clear: true, obstacles: [] },
+        probCheck: { probability: 'HIGH' },
+        sniperEntry: { isSniper: true, path: 'ICT', score: 80, grade: 'S', checks: [] },
+        sniperRej: { confirmed: true },
+        turtleSoup: { detected: false, type: 'NONE' },
+        obsAll: [],
+        fvgsAll: [],
+        twelveIndicators: { rsi: 55, atr_api: 1.2 },
+        volumeProfile: null,
+        deltaProxy: { cvd: 0, direction: 'NEUTRAL' },
+        msnr: { pivot: 100, supports: {}, resistances: {} },
+        sweeps: [{ type: 'BULLISH', level: 99, distance: 0.5 }],
+        apiATR: 1.2,
+        displacement: { detected: true },
+        crt: { detected: true, pattern: 'CRT' },
+        crtState: { state: 'EXPANDING', momentum: 'STRONG', isExpanding: true },
+        crtRange: { high: 106, low: 98 },
+        isInOptimalZone: true,
+        tbsQuality: { grade: 'A', score: 80 },
+        msnrDistance: 0,
+        isNearMSNR: false,
+        entryTiming: { valid: true, reason: 'OK' },
+        setupScore: 80,
+        winProbability: 70,
+        expectedValue: 1,
+        signalGrade: 'A',
+        context: {},
+        tradeLevels: { stopLoss: 99, takeProfit: 102, partialTP: 104, invalidation: 98, pipsRisk: 10, pipsReward: 20, riskReward: 2 },
+        zoneReaction: { type: 'Bounce' },
+        amd: { phase: 'ACCUMULATION' },
+        confBreakdown: [],
+        ...extra
+    });
+
+    const setupScanContext = (analyzeTimeframe, qualityFor = r => r.mockQuality ?? 0) => {
+        const elements = makeElements();
+        let jsonOut = null;
+        const context = getContext({
+            document: {
+                getElementById: id => elements[id] || (elements[id] = { addEventListener: () => {}, classList: { add: () => {}, remove: () => {} }, style: {}, innerHTML: '', className: '', disabled: true }),
+                addEventListener: () => {}
+            }
+        });
+        vm.runInContext("TWELVE_DATA_KEY = 'demo-key';", context);
+        context.getPrice = jest.fn().mockResolvedValue(100);
+        context.getHistory = jest.fn().mockResolvedValue([{ o: 100, h: 101, l: 99, c: 100, v: 1e6, t: '2026-01-01T08:30:00Z' }]);
+        context.getQuoteDirection = jest.fn().mockResolvedValue('BULLISH');
+        context.updateMTFDisplay = jest.fn().mockResolvedValue();
+        context.analyzeTimeframe = jest.fn(analyzeTimeframe);
+        context.calculateSetupQuality = jest.fn(qualityFor);
+        context.askAIWithAllResults = jest.fn().mockResolvedValue(null);
+        context.checkHTFConfluenceAsync = jest.fn().mockResolvedValue({ level: 'FULL', daily: 'BULLISH', h4: 'BULLISH', penalty: 0 });
+        context.setJsonOutput = jest.fn(out => { jsonOut = out; });
+        context.showNotif = jest.fn();
+        context.isSetupStillValid = jest.fn(() => true);
+        context.getSession = jest.fn(() => ({ session: 'LONDON KZ + SB', emoji: '🏹', multiplier: 1.5, isSilverBullet: true }));
+        return { context, elements, getJson: () => jsonOut };
+    };
+
+    it('keeps a lower timeframe Ghost Machine setup when it outranks a higher timeframe one', async () => {
+        const day = makeSetup('1D', 80, { mockQuality: 95 });
+        const five = makeSetup('5M', 90, { mockQuality: 10 });
+        const { context, elements, getJson } = setupScanContext(async tf => ({ '1D': day, '5M': five }[tf] || null), r => r.mockQuality);
+
+        await context.runAutoScan();
+
+        const out = getJson().auto_scan_result;
+        expect(out.best_timeframe).toBe('5M');
+        expect(out.total_setups_found).toBe(2);
+        expect(out.trade_signal.confidence).toBe(90);
+        expect(out.status).toBe('GHOST_MACHINE_SETUP');
+        expect(elements.executeBtn.disabled).toBe(false);
+    });
+
+    it('does not reject a valid lower timeframe setup because of a low quality score', async () => {
+        const five = makeSetup('5M', 90, { mockQuality: 12 });
+        const { context, getJson } = setupScanContext(async tf => (tf === '5M' ? five : null), r => r.mockQuality);
+
+        await context.runAutoScan();
+
+        const out = getJson().auto_scan_result;
+        expect(out.best_timeframe).toBe('5M');
+        expect(out.quality_score).toBe(12);
+        expect(out.status).toBe('GHOST_MACHINE_SETUP');
+        expect(out.trade_signal.confidence).toBe(90);
+    });
+});
+
 describe('getSession Silver Bullet timing', () => {
     it('does not mark 08:15 UTC as Silver Bullet', () => {
         const context = getContext({ Date: mockDate('2026-01-01T08:15:00Z') });
