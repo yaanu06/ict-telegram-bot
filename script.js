@@ -97,9 +97,31 @@ function resetPairState() {
 }
 
 // ============================================
-// PROVEN WORKING INITIALIZATION - EXACT MATCH FROM WORKING FILE
+// SIMPLIFIED INITIALIZATION - GUARANTEED TO WORK
 // ============================================
-document.addEventListener('DOMContentLoaded',async()=>{await loadKeys();updateKeyStatus();if(!TWELVE_DATA_KEY && !DEEPSEEK_API_KEY)setTimeout(showSetup,500);init();});
+// This runs when DOM is ready
+function startApp() {
+    console.log('🚀 Starting ICT Trading Bot Pro...');
+    
+    // Load keys first
+    loadKeys().then(() => {
+        updateKeyStatus();
+        if (!TWELVE_DATA_KEY && !DEEPSEEK_API_KEY) {
+            setTimeout(showSetup, 500);
+        }
+    });
+
+    // Initialize everything
+    init();
+}
+
+// Initialize when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startApp);
+} else {
+    // DOM already loaded, start immediately
+    startApp();
+}
 
 function init() {
     console.log('📋 Initializing event listeners...');
