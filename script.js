@@ -960,7 +960,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 
         allSetups.sort((a, b) => b.pts - a.pts);
         const best = allSetups[0];
-        const { dir, pts: setupScore, entry, sl, tp1, tp2, tp3, risk, sweeps, turtleSoup, hasSweep, hasTBS, mss, hasMSS, hasDisplacement, bosCount, zone, isUnmet, freshness, isValidZone, brokenLevel, session, entryDistance, htfTrends, htfAgree, reasons, confBreakdown, slResult, entryATR } = best;
+        const { dir, pts: setupScore, entry, sl, tp1, tp2, tp3, risk, sweeps, turtleSoup, hasSweep, hasTBS, mss, hasMSS, hasDisplacement, bosCount, zone, isUnmet, freshness, isValidZone, brokenLevel, session, entryDistance, htfTrends, htfAgree, reasons, confBreakdown, slResult } = best;
 
         const apiATR = twelveIndicators?.atr_api || entryATR;
         const volatility = getVolatilityLevel(apiATR, price);
@@ -1717,39 +1717,7 @@ async function runAutoScan() {
             showNotif(`🚫 ${noTradeReason}`, 'warning');
             return;
         }
-        
-        // ============================================
-        // CRITICAL FIX: analysis object with ALL take profits
-        // ============================================
-        analysis = { 
-            signalType: st, 
-            idealEntry: finalEntry, 
-            currentPrice: price, 
-            stopLoss: best.sl, 
-            takeProfit1: best.tp1,
-            takeProfit2: best.tp2,
-            takeProfit3: best.tp3,
-            confidence: best.confidence, 
-            riskPercent, 
-            entryZoneLow: finalZoneLow, 
-            entryZoneHigh: finalZoneHigh, 
-            entryReady: best.entryReady, 
-            executionDecision, 
-            invalidationPrice: aiInvalidation,
-            // Additional trade levels for display
-            tradeLevels: {
-                entry: finalEntry,
-                stopLoss: best.sl,
-                takeProfit: best.tp1,
-                partialTP: best.tp2,
-                invalidation: aiInvalidation,
-                breakeven: finalEntry,
-                pipsRisk: Math.abs(finalEntry - best.sl) / (getMarketSettings(pair).pipSize || 0.0001),
-                pipsReward: Math.abs(best.tp1 - finalEntry) / (getMarketSettings(pair).pipSize || 0.0001),
-                riskReward: 4.0
-            }
-        };
-        
+        analysis = { signalType: st, idealEntry: finalEntry, currentPrice: price, stopLoss: best.sl, takeProfit1: best.tp1, takeProfit2: best.tp2, takeProfit3: best.tp3, confidence: best.confidence, riskPercent, entryZoneLow: finalZoneLow, entryZoneHigh: finalZoneHigh, entryReady: best.entryReady, executionDecision, invalidationPrice: aiInvalidation };
         if (best && best.invalidationPrice && !isSetupStillValid(best, price)) {
             showNotif(`⚠️ Setup invalidated at current price: ${price}`, 'warning');
             document.getElementById('executeBtn').disabled = true;
@@ -1771,8 +1739,6 @@ function buildSetupSummary(best, st, finalEntry, price) {
         id: Date.now(),
         pair, timeframe: best.timeframe, direction: st,
         entry: finalEntry, sl: best.sl, tp1: best.tp1,
-        tp2: best.tp2,
-        tp3: best.tp3,
         confidence: best.confidence, quality: best.zone?.quality || '?',
         sniper: !!best.sniperEntry?.isSniper, priceAtScan: price,
         ghostScore: best.score || 0,
