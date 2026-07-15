@@ -22,15 +22,13 @@ const DEFAULT_ATR_PERIOD = 14;
 const DEFAULT_PRECISION = 5;
 const BUY_INVALIDATION_FACTOR = 0.998;
 const SELL_INVALIDATION_FACTOR = 1.002;
-// Relaxed bounds for pending-entry distance while debugging over-filtering:
-// below 0.1 ATR is typically noise-level proximity; above 5 ATR is usually too far to fill soon.
 const MIN_ENTRY_DISTANCE_ATR_MULTIPLIER = 0.1;
 const MAX_ENTRY_DISTANCE_ATR_MULTIPLIER = 5.0;
-const MAX_ZONE_CANDIDATES_TO_EVALUATE = 6; // Relaxed from 4 while diagnosing over-filtered setup discovery.
-const MAX_ALLOWED_ZONE_VIOLATIONS = 1; // Allow lightly used zones; reject only after repeated invalidating breaches.
+const MAX_ZONE_CANDIDATES_TO_EVALUATE = 6;
+const MAX_ALLOWED_ZONE_VIOLATIONS = 1;
 const GHOST_MACHINE_CONFLICT_CONFIDENCE_FLOOR = 75;
 const ANALYSIS_DEBUG_LOGS = true;
-const ENABLE_MAGNETISM_REJECTION = false; // TODO: Set true after gate diagnostics confirm stable fill quality.
+const ENABLE_MAGNETISM_REJECTION = false;
 
 function getTimeframeHierarchy(selectedTF) {
     const hierarchy = {
@@ -43,7 +41,6 @@ function getTimeframeHierarchy(selectedTF) {
     return hierarchy[selectedTF] || ['4H', '1H', '15M', '5M'];
 }
 
-// FIX #6: added pipSize per market so pips are correct for gold/JPY/BTC (not hardcoded 0.0001)
 function getMarketSettings(p) {
     if (p.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.008, targetRR: 4, prec: 2, pipSize: 0.1, slBuffers: { '5M': 2, '15M': 3, '1H': 5, '4H': 8, '1D': 15 } };
     if (p.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.01, targetRR: 4, prec: 2, pipSize: 0.01, slBuffers: { '5M': 0.03, '15M': 0.05, '1H': 0.08, '4H': 0.12, '1D': 0.20 } };
@@ -88,11 +85,9 @@ function showSetup() {
 // STATE
 // ============================================
 let pair='XAU/USD',analysis=null,calls=0,lastPrice=null,limitOrder=null,priceTimer=null;
-// FIX #2: cache is now keyed to the pair it was fetched for
 let cachedPrice = null, priceCacheTime = 0, cachedPricePair = null;
 const PRICE_CACHE_DURATION = 5000;
 
-// FIX #2: switching pairs resets price cache + % change baseline + disables stale signal
 function resetPairState() {
     cachedPrice = null; priceCacheTime = 0; cachedPricePair = null; lastPrice = null;
     analysis = null;
@@ -117,7 +112,6 @@ function init(){
     renderJournal();
     if(el('pairSelect')) el('pairSelect').addEventListener('change',e=>{pair=e.target.value;resetPairState();});
     document.querySelectorAll('.category-btn').forEach(b=>b.addEventListener('click',function(){document.querySelectorAll('.category-btn').forEach(x=>x.classList.remove('active'));this.classList.add('active');updatePairs(this.dataset.category);}));
-    // Sync pairSelect with the initially active category button
     const activeBtn = document.querySelector('.category-btn.active');
     if(activeBtn) updatePairs(activeBtn.dataset.category);
     loadLimitOrder();
@@ -131,9 +125,6 @@ function getPrec(p){const s=getMarketSettings(p);return s.prec;}
 // ============================================
 // API FUNCTIONS
 // ============================================
-// FIX #10: all Twelve Data requests go through fetchTD — 10s timeout so a hung
-// request can't stall the scan, and rate-limit responses (code 429) surface to
-// the user instead of failing silently as "No valid setups".
 let rateLimitNotified = 0;
 async function fetchTD(pathAndQuery, timeoutMs = 10000) {
     const ctrl = new AbortController();
@@ -151,7 +142,6 @@ async function fetchTD(pathAndQuery, timeoutMs = 10000) {
         return d;
     } finally { clearTimeout(timer); }
 }
-// FIX #2/#3: getPrice now accepts an explicit pair (used by the limit-order monitor)
 async function getPrice(forPair) {
     const p = forPair || pair;
     const now = Date.now();
@@ -173,12 +163,11 @@ async function getQuote(tfStr){
     return null;
 }
 
-// 🟢 LIVE CANDLE DIRECTION (FOR UI DASHBOARD ONLY)
 async function getLiveCandleDirection(tfStr, cachedData = null) {
     try {
         const data = cachedData || await getHistory(tfStr);
         if (!data || data.length < 2) return 'NEUTRAL';
-        const currentCandle = data[data.length - 1]; // Live/unclosed
+        const currentCandle = data[data.length - 1];
         const currentPrice = await getPrice();
         if (!currentPrice) return 'NEUTRAL';
         if (currentPrice > currentCandle.o) return 'BULLISH';
@@ -187,7 +176,6 @@ async function getLiveCandleDirection(tfStr, cachedData = null) {
     } catch(e) { return 'NEUTRAL'; }
 }
 
-// 🔵 CLOSED CANDLE/EMA DIRECTION (FOR ANALYSIS & SCORING ONLY)
 async function getQuoteDirection(tfStr, cachedData = null) {
     try {
         const data = cachedData || await getHistory(tfStr);
@@ -201,8 +189,6 @@ async function getQuoteDirection(tfStr, cachedData = null) {
     return 'NEUTRAL';
 }
 
-// FIX #21: accepts an explicit pair so the limit-order fill check can fetch the
-// ORDER's pair even when a different pair is selected in the UI.
 async function getHistory(tfStr, forPair){
     if(!TWELVE_DATA_KEY)return null;
     try{
@@ -250,19 +236,9 @@ async function getTechnicalIndicators(tfUsed){
 // ============================================
 // TECHNICALS MATH
 // ============================================
-// FIX #11: EMA now seeds from the SMA of the first n periods (standard method);
-// the first n-1 slots hold the running average so callers' indexing is unchanged.
 const ema=(p,n)=>{const m=2/(n+1);let e=[],sum=0;for(let i=0;i<p.length;i++){if(i<n){sum+=p[i];e.push(sum/(i+1));}else e.push((p[i]-e[i-1])*m+e[i-1]);}return e;};
-// FIX #11: RSI now uses Wilder's smoothing (SMA seed, then exponential smoothing)
-// to match TradingView/MT4 instead of a plain average of the last n changes.
 const rsi=(p,n=14)=>{if(p.length<n+1)return 50;let g=0,l=0;for(let i=1;i<=n;i++){const c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;for(let i=n+1;i<p.length;i++){const c=p[i]-p[i-1];ag=(ag*(n-1)+(c>0?c:0))/n;al=(al*(n-1)+(c<0?-c:0))/n;}return al===0?100:100-(100/(1+ag/al));};
 const atr=(d,n=14)=>{let t=[];for(let i=1;i<d.length;i++)t.push(Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c)));return t.slice(-n).reduce((a,b)=>a+b,0)/n;};
-// FIX #8: bear FVG midpoint was (next.h+next.l)/2 — a bear gap spans next.h..prev.l, so midpoint is (next.h+prev.l)/2
-// FIX: bull FVG is only mitigated when a candle CLOSES below its bottom (g.l);
-// a wick that enters the gap but closes above is a valid ICT test, not mitigation.
-// Similarly a bear FVG is mitigated only when a close is above its top (g.h).
-// The old code marked FVGs stale on any wick touch, so a zone that price was
-// testing (the expected entry signal) was immediately excluded.
 function detectFVG(d){let f=[],active=[];const len=d.length;for(let i=1;i<len-1;i++){const next=d[i+1];if(active.length>0){let keep=0;for(let k=0;k<active.length;k++){let g=active[k];if(g.type==='bull'){if(next.c<g.l)g.fresh=false;else active[keep++]=g;}else{if(next.c>g.h)g.fresh=false;else active[keep++]=g;}}active.length=keep;}const prev=d[i-1];const thresh=next.c*0.0005;if(prev.h<next.l && next.l-prev.h>thresh){let g={type:'bull',l:prev.h,h:next.l,m:(prev.h+next.l)/2,fresh:true};f.push(g);active.push(g);}if(prev.l>next.h && prev.l-next.h>thresh){let g={type:'bear',l:next.h,h:prev.l,m:(next.h+prev.l)/2,fresh:true};f.push(g);active.push(g);}}return f;}
 function findSwings(d,lb=3){let H=[],L=[],h=d.map(c=>c.h),l=d.map(c=>c.l);for(let i=lb;i<h.length-lb;i++){let iH=true,iL=true;for(let j=1;j<=lb;j++){if(h[i]<=h[i-j]||h[i]<=h[i+j])iH=false;if(l[i]>=l[i-j]||l[i]>=l[i+j])iL=false;}if(iH)H.push({p:h[i],i});if(iL)L.push({p:l[i],i});}return{H,L};}
 function detectMSS(d){if(d.length<21)return null;let h=d.map(c=>c.h),l=d.map(c=>c.l),c=d.map(c=>c.c),rH=Math.max(...h.slice(-21,-1)),rL=Math.min(...l.slice(-21,-1)),cP=c[c.length-1],dis=detectDisplacement(d,cP>rH?'BUY':'SELL');if(cP>rH && dis.detected)return{type:'BULL',level:rH,displaced:true};if(cP<rL && dis.detected)return{type:'BEAR',level:rL,displaced:true};if(cP>rH)return{type:'BULL',level:rH,displaced:false};if(cP<rL)return{type:'BEAR',level:rL,displaced:false};return null;}
@@ -349,15 +325,12 @@ function findImbalances(data){const im=[];for(let i=1;i<data.length-1;i++){if(da
 function detectTurtleSoup(data){if(data.length<15)return{detected:false,type:null};const rd=data.slice(-15);const highs=rd.map(c=>c.h),lows=rd.map(c=>c.l),closes=rd.map(c=>c.c),opens=rd.map(c=>c.o);const keyLow=Math.min(...lows.slice(0,-4));const recentLow=lows[lows.length-4];const cc=closes[closes.length-1];const co=opens[opens.length-1];if(recentLow<keyLow*0.999 && cc>keyLow && cc>co)return{detected:true,type:'BUY',keyLevel:keyLow,sweptLevel:recentLow};const keyHigh=Math.max(...highs.slice(0,-4));const recentHigh=highs[highs.length-4];if(recentHigh>keyHigh*1.001 && cc<keyHigh && cc<co)return{detected:true,type:'SELL',keyLevel:keyHigh,sweptLevel:recentHigh};return{detected:false,type:null};}
 function detectCRT(data, direction) {
     if (data.length < 10) return { detected: false, pattern: 'Neutral', rangeRatio: 1 };
-
     const lc = data.slice(-5);
     const ranges = lc.map(c => c.h - c.l);
     const avgRange = ranges.reduce((a, b) => a + b, 0) / ranges.length;
     const lastRange = ranges[ranges.length - 1];
-
     const expanding = lastRange > avgRange * 1.2;
     const contracting = lastRange < avgRange * 0.7;
-
     return {
         detected: true,
         pattern: expanding ? 'Expanding' : (contracting ? 'Contracting' : 'Neutral'),
@@ -374,7 +347,6 @@ function checkZoneReaction(data, zone, direction) {
         const wickedIntoZone = last.l <= zone.high && last.l >= zone.low, closedAbove = last.c > zone.high;
         const bullishEngulf = last.c > last.o && prev.c < prev.o && last.c > prev.h;
         const bullishPinbar = (last.c - last.l) > Math.abs(last.c - last.o) * 2 && last.c > last.o;
-        // MSNR Fakeout / Sweep
         const msnrFakeout = last.l < zone.low && last.c > zone.low && bullishPinbar;
         const rejectionInZone = (wickedIntoZone && (closedAbove || bullishPinbar || last.c > last.o)) || msnrFakeout;
         const followThrough = last.c > prev.c && prev.c > prev2.c && last.c > last.o;
@@ -390,7 +362,6 @@ function checkZoneReaction(data, zone, direction) {
         const wickedIntoZone = last.h >= zone.low && last.h <= zone.high, closedBelow = last.c < zone.low;
         const bearishEngulf = last.c < last.o && prev.c > prev.o && last.c < prev.l;
         const bearishPinbar = (last.h - last.c) > Math.abs(last.c - last.o) * 2 && last.c < last.o;
-        // MSNR Fakeout / Sweep
         const msnrFakeout = last.h > zone.high && last.c < zone.high && bearishPinbar;
         const rejectionInZone = (wickedIntoZone && (closedBelow || bearishPinbar || last.c < last.o)) || msnrFakeout;
         const followThrough = last.c < prev.c && prev.c < prev2.c && last.c < last.o;
@@ -425,20 +396,12 @@ function checkZoneMagnetism(entryData, price, entry, direction, zone = null) {
         const zoneConfluence = typeof zone.confluence === 'string' ? zone.confluence : '';
         const isPrimaryMethodZone = zone.src === 'MSNR' || zoneConfluence.includes('MSNR');
         if (isPrimaryMethodZone && zone.cc >= 2) {
-            // FIX: raised from +15 to +25 so MSNR primary-method zones are at least
-            // as reachable as A-quality FVG/OB zones. Previously MSNR got +15 while
-            // A-quality got +25, meaning MSNR zones failed the 35 likelyToReach gate
-            // in ranging markets (no EMA alignment or sweeps to add points) even
-            // though MSNR is the primary methodology of the strategy.
             score += 25;
             checks.push({name: 'Primary-method zone', passed: true, detail: `${zone.src} ${zoneConfluence}`});
         } else if (zone.quality === 'A') {
-            // FIX: raised from +8 to +25 so A-grade FVG/OB zones reach likelyToReach
-            // even in ranging markets where EMA and sweeps don't add points.
             score += 25;
             checks.push({name: 'High-quality zone', passed: true, detail: 'A-grade zone nearby'});
         } else if (zone.quality === 'B' && zone.cc >= 2) {
-            // FIX: raised from +5 to +25 (same reasoning as A-grade above).
             score += 25;
             checks.push({name: 'High-quality zone', passed: true, detail: 'B-grade multi-confluence zone nearby'});
         } else {
@@ -450,16 +413,12 @@ function checkZoneMagnetism(entryData, price, entry, direction, zone = null) {
     const magnetism = score >= 60 ? 'STRONG' : (score >= 35 ? 'MODERATE' : 'WEAK');
     return { magnetism, score, maxScore: 100, checks, likelyToReach: score >= 35, summary: `Zone magnetism: ${magnetism} (${score}/100)` };
 }
-async function checkHTFConfluenceAsync(dailyData, h4Data, entryDirection) { const dailyDir = await getQuoteDirection('1D', dailyData), h4Dir = await getQuoteDirection('4H', h4Data), entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH', againstDir = entryDirection === 'BUY' ? 'BEARISH' : 'BULLISH'; if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 }; if (dailyDir === entryDir || h4Dir === entryDir) return { level: 'PARTIAL', daily: dailyDir, h4: h4Dir, penalty: dailyDir === entryDir ? 8 : 15, alignedTF: dailyDir === entryDir ? '1D' : '4H' }; if (dailyDir === 'NEUTRAL' && h4Dir === 'NEUTRAL') return { level: 'NEUTRAL', daily: dailyDir, h4: h4Dir, penalty: 5 }; // FIX: one NEUTRAL + one opposing is not a full CONFLICT. True CONFLICT requires
-// BOTH 1D and 4H to actively oppose the trade direction. When one TF is NEUTRAL
-// (e.g. from an API failure/rate-limit that returned no data), penalise moderately
-// as PARTIAL (-12) instead of the full CONFLICT penalty (-30) that was killing valid
-// setups whenever the daily data fetch failed mid-scan.
+async function checkHTFConfluenceAsync(dailyData, h4Data, entryDirection) { const dailyDir = await getQuoteDirection('1D', dailyData), h4Dir = await getQuoteDirection('4H', h4Data), entryDir = entryDirection === 'BUY' ? 'BULLISH' : 'BEARISH', againstDir = entryDirection === 'BUY' ? 'BEARISH' : 'BULLISH'; if (dailyDir === entryDir && h4Dir === entryDir) return { level: 'FULL', daily: dailyDir, h4: h4Dir, penalty: 0 }; if (dailyDir === entryDir || h4Dir === entryDir) return { level: 'PARTIAL', daily: dailyDir, h4: h4Dir, penalty: dailyDir === entryDir ? 8 : 15, alignedTF: dailyDir === entryDir ? '1D' : '4H' }; if (dailyDir === 'NEUTRAL' && h4Dir === 'NEUTRAL') return { level: 'NEUTRAL', daily: dailyDir, h4: h4Dir, penalty: 5 };
 if ((dailyDir === 'NEUTRAL' && h4Dir === againstDir) || (dailyDir === againstDir && h4Dir === 'NEUTRAL')) return { level: 'PARTIAL', daily: dailyDir, h4: h4Dir, penalty: 12, alignedTF: null }; return { level: 'CONFLICT', daily: dailyDir, h4: h4Dir, penalty: 30 }; }
 function calculateMSNR(data,currentPrice){const highs=data.map(c=>c.h),lows=data.map(c=>c.l),closes=data.map(c=>c.c);const period=Math.min(data.length,20);const rH=Math.max(...highs.slice(-period)),rL=Math.min(...lows.slice(-period)),rC=closes[closes.length-1];const pp=(rH+rL+rC)/3;const s1=pp*2-rH,s2=pp-(rH-rL),s3=rL-2*(rH-pp);const r1=pp*2-rL,r2=pp+(rH-rL),r3=rH+2*(pp-rL);const ms1=(s1+s2)/2,ms2=(pp+s1)/2,mr1=(r1+r2)/2,mr2=(pp+r1)/2;const allS=[s1,ms2,ms1,s2,s3].filter(s=>s<currentPrice).sort((a,b)=>b-a);const allR=[r1,mr2,mr1,r2,r3].filter(r=>r>currentPrice).sort((a,b)=>a-b);return{pivot:pp,supports:{S1:s1,S2:s2,S3:s3,MS1:ms1,MS2:ms2},resistances:{R1:r1,R2:r2,R3:r3,MR1:mr1,MR2:mr2},nearestSupport:allS[0]||null,nearestResistance:allR[0]||null,allSupports:allS,allResistances:allR};}
 function findPrecisionEntry(data,price,direction,msnr){
     const a=atr(data,14),fvgs=detectFVG(data),breakers=detectBreakers(data),swings=findSwings(data,4),imbalances=findImbalances(data),orderBlocks=detectOrderBlocks(data,direction);
-    const RETEST_LOOKBACK_CANDLES=15; // Increased for more zones
+    const RETEST_LOOKBACK_CANDLES=15;
     const recentCandles=data.slice(-RETEST_LOOKBACK_CANDLES);
     const isEligibleFVG=fvg=>fvg.fresh || recentCandles.some(candle=>candle.l<=fvg.h && candle.h>=fvg.l);
     const h=Math.max(...data.slice(-20).map(c=>c.h)),l=Math.min(...data.slice(-20).map(c=>c.l)),r=h-l;
@@ -487,7 +446,7 @@ function findPrecisionEntry(data,price,direction,msnr){
             const zp=(z.low+z.high)/2;
             if(cands.some(c=>Math.abs(c.p-zp)<zp*0.002))continue;
             cands.push({low:z.low,high:z.high,p:zp,src:z.src,confluence:z.confluence,cc:z.cc,quality:z.quality,hasImbalance:z.hasImbalance});
-            if(cands.length>=8)break; // Increased from 5
+            if(cands.length>=8)break;
         }
         const b=cands[0];b.candidates=cands;return b;
     }
@@ -496,7 +455,6 @@ function findPrecisionEntry(data,price,direction,msnr){
 }
 function checkProbability(zone,mtf,magnetism){const checks=[];checks.push({name:'Confluence (2+)',passed:zone.cc>=2,critical:true});checks.push({name:'MTF aligned (2+)',passed:mtf.strength>=2,critical:true});checks.push({name:'Zone Magnetism',passed:magnetism.likelyToReach,critical:true});checks.push({name:'Imbalance Magnet',passed:zone.hasImbalance,critical:false});checks.push({name:'Quality A/B',passed:zone.quality==='A'||zone.quality==='B',critical:false});const cp=checks.filter(c=>c.critical).every(c=>c.passed);const tp=checks.filter(c=>c.passed).length;return{probability:cp?(tp>=4?'HIGH':(tp>=3?'MEDIUM':'LOW')):'LOW',checks,totalPassed:tp,passed:cp};}
 
-// 🛡️ TIGHTER ATR-DRIVEN STOP LOSS
 function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, currentPair) {
     const apiATR = twelveIndicators?.atr_api || atr(data, 14);
     const s = getMarketSettings(currentPair || pair);
@@ -627,7 +585,6 @@ function score(data,price,twelveIndicators){
     return{dir,conf,reason,scores:{bS,sS}};
 }
 
-// 🟢 UI DASHBOARD USES LIVE CANDLE DIRECTION (FIX #11: now also updates 1W card)
 async function updateMTFDisplay(historyCache = {}){
     const tfs=['5M','15M','1H','4H','1D','1W'];
     for(let t of tfs){
@@ -662,8 +619,6 @@ function isZoneValid(freshness) {
 function isZoneHeavilyViolated(freshness) {
     return freshness.used && freshness.violations > MAX_ALLOWED_ZONE_VIOLATIONS;
 }
-// HTF premium/discount check for the current scan price. When currentPrice is
-// omitted, the latest candle close is used so existing callers keep working.
 function isHTFPremiumDiscount(htfData, direction, currentPrice) {
     if (!htfData || htfData.length < 10) return { inPremiumDiscount: false, value: 'neutral', pct: 0 };
     let high = -Infinity, low = Infinity;
@@ -683,9 +638,6 @@ function isHTFPremiumDiscount(htfData, direction, currentPrice) {
     const premiumPct = ((current - mid) / range * 100);
     return { inPremiumDiscount: inPremium, value: 'premium', pct: Math.max(0, premiumPct) };
 }
-// Ghost Machine hard-rule gate. Inputs are the trade direction plus the already
-// detected liquidity, MSS, session, freshness, and zone data for one setup.
-// Every returned boolean must be true before the setup is allowed through.
 function getGhostHardRules(direction, sweeps, turtleSoup, mss, session, freshness, zone) {
     const wantSweepDir = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
     const turtleSoupAligned = turtleSoup?.detected && turtleSoup.type === direction;
@@ -713,16 +665,12 @@ function hasGhostConfirmationCandle(data, direction) {
     if (last.c < prev.l && last.o > prev.h) return true;
     return false;
 }
-// Confidence is no longer a broad scorecard; these constants only separate
-// already-valid Ghost Machine setups for display/ranking in the UI.
 const BASE_GHOST_RULES_CONFIDENCE = 82;
 const A_GRADE_GHOST_CONFIDENCE_BONUS = 6;
 const SILVER_BULLET_GHOST_CONFIDENCE_BONUS = 5;
 const SNIPER_GHOST_CONFIDENCE_BONUS = 3;
 const HTF_VALIDATION_GHOST_CONFIDENCE_BONUS = 2;
 const GHOST_MACHINE_ZONE_REACTION = { confirmed: true, type: 'PATTERN_MATCH', strength: 'STRONG' };
-// Risk sizing follows the requested golden-rules model: full size only when
-// all five pass, half size when at least three pass, otherwise no trade.
 const FULL_RISK_RULES_REQUIRED = 5;
 const PARTIAL_RISK_RULES_REQUIRED = 3;
 const FULL_RISK_PERCENT = 1.0;
@@ -748,14 +696,6 @@ function getSession() {
     }
     return s;
 }
-// ============================================
-// 📊 VOLUME / MARKET PROFILE
-// Distributes each candle's volume across its high-low range into price bins.
-// Returns POC (highest-volume bin), 70% value area (VAH/VAL), and HVN/LVN
-// levels. When the feed has no real volume (Twelve Data forex/metals often
-// doesn't), every candle carries the same default volume and this naturally
-// degrades to a time-at-price (TPO/market) profile.
-// ============================================
 function calcVolumeProfile(data, binCount = 24) {
     if (!data || data.length < 20) return null;
     let hi = -Infinity, lo = Infinity;
@@ -772,7 +712,6 @@ function calcVolumeProfile(data, binCount = 24) {
     const total = bins.reduce((a, b) => a + b, 0);
     let pocIdx = 0;
     for (let i = 1; i < binCount; i++) if (bins[i] > bins[pocIdx]) pocIdx = i;
-    // expand the value area around the POC until it holds 70% of volume
     let vaVol = bins[pocIdx], loIdx = pocIdx, hiIdx = pocIdx;
     while (vaVol < total * 0.7 && (loIdx > 0 || hiIdx < binCount - 1)) {
         const below = loIdx > 0 ? bins[loIdx - 1] : -1;
@@ -789,9 +728,6 @@ function calcVolumeProfile(data, binCount = 24) {
     return { poc: priceAt(pocIdx), vah: lo + binSize * (hiIdx + 1), val: lo + binSize * loIdx, hvns, lvns, binSize, high: hi, low: lo };
 }
 
-// Order-flow approximation from candles: cumulative signed volume over the
-// last n bars. NOT real order flow (that needs tick/L2 data the feed doesn't
-// provide) - a momentum-confirmation proxy only, and labeled as such.
 function calcDeltaProxy(data, n = 20) {
     if (!data || data.length < 3) return { cvd: 0, direction: 'NEUTRAL', proxy: true };
     let cvd = 0;
@@ -799,16 +735,6 @@ function calcDeltaProxy(data, n = 20) {
     return { cvd, direction: cvd > 0 ? 'BULLISH' : (cvd < 0 ? 'BEARISH' : 'NEUTRAL'), proxy: true };
 }
 
-// ============================================
-// 🎯 SNIPER ENTRY MODEL
-// Enforces the ICT sniper sequence as a unit instead of loose score nudges:
-//   1. liquidity sweep (or turtle soup) in the trade's favor
-//   2. market structure shift WITH displacement, aligned with direction
-//   3. fresh (unmitigated) entry zone
-//   4. zone sits in the OTE band (0.618-0.79 retrace)
-//   5. killzone session (bonus - sharpens but not required)
-// isSniper is only true when 1-3 all hold; 4-5 raise the score.
-// ============================================
 function checkSniperEntry(data, price, direction, zone, session) {
     const checks = [];
     let score = 0;
@@ -840,9 +766,6 @@ function checkSniperEntry(data, price, direction, zone, session) {
     if (inKillzone) score += 10;
     checks.push({ name: 'Killzone session', passed: inKillzone, critical: false });
 
-    // FIX #23: alternative qualifying path for the MSNR/TBS/CRT methodology -
-    // an aligned turtle soup at an MSNR-confluent fresh zone is also a sniper
-    // setup, independent of the ICT sweep->MSS->displacement sequence.
     const tbsAligned = ts.detected && ts.type === direction;
     const atMSNR = zone.src === 'MSNR' || (typeof zone.confluence === 'string' && zone.confluence.includes('MSNR'));
     const altPath = tbsAligned && atMSNR && zoneFresh;
@@ -873,11 +796,6 @@ function analyzeAMD(dailyData) {
     return { phase: 'DISTRIBUTION', range: { h: asiaHigh, l: asiaLow }, manipulated: manipulatedUpper ? 'UP' : (manipulatedLower ? 'DOWN' : 'NONE') };
 }
 
-// ============================================
-// FIX #4 (MAIN FIX): analyzeTimeframe now calls the REAL analysis functions
-// instead of returning hardcoded stub values. Every field in the returned
-// object is now computed from actual market data.
-// ============================================
 async function analyzeTimeframe(tfToAnalyze, price, htfData) {
     console.log(`🔍 Analyzing ${tfToAnalyze}...`);
     try {
@@ -887,9 +805,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const structureData = htfData[structureTF] || await getHistory(structureTF);
         const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
 
-        // ============================================
-        // CRT RANGE (20-period high/low)
-        // ============================================
         const crtRange = {
             high: Math.max(...entryData.slice(-20).map(c => c.h)),
             low: Math.min(...entryData.slice(-20).map(c => c.l))
@@ -897,34 +812,22 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const msnr = calculateMSNR(structureData || entryData, price);
         const entryATR = atr(entryData, 14);
 
-        // ============================================
-        // CHECK BOTH DIRECTIONS - GHOST MACHINE FINDS BOTH
-        // ============================================
         const allSetups = [];
 
         for (const dir of ['BUY', 'SELL']) {
             console.log(`  → Checking ${dir} on ${tfToAnalyze}...`);
 
-            // ============================================
-            // 1. LIQUIDITY FLOW ASSESSMENT
-            // ============================================
             const sweeps = detectLiquiditySweeps(entryData, price);
             const wantSweepDir = dir === 'BUY' ? 'BULLISH' : 'BEARISH';
             const hasSweep = sweeps.some(s => s.direction === wantSweepDir);
             const turtleSoup = detectTurtleSoup(entryData);
             const hasTBS = turtleSoup.detected && turtleSoup.type === dir;
 
-            // ============================================
-            // 2. MARKET STRUCTURE SHIFT (BOS)
-            // ============================================
             const mss = detectMSS(entryData);
             const hasMSS = mss !== null;
             const hasDisplacement = mss?.displaced === true;
             const bosCount = countBOS(entryData, htfData, dir);
 
-            // ============================================
-            // 3. FRESH ORDER BLOCK (unmet / below price)
-            // ============================================
             const zone = findPrecisionEntry(entryData, price, dir, msnr);
             if (!zone) {
                 console.log(`  ❌ ${dir}: No zone`);
@@ -935,19 +838,9 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const freshness = checkZoneFreshness(entryData, zone, dir);
             const isValidZone = freshness.fresh || (freshness.partiallyUsed && freshness.violations === 0);
 
-            // ============================================
-            // 4. BROKEN RESISTANCE FLIPPED TO SUPPORT
-            // ============================================
             const brokenLevel = findBrokenLevel(entryData, dir);
-
-            // ============================================
-            // 5. SESSION (Ghost Machine scans anytime)
-            // ============================================
             const session = getSession();
 
-            // ============================================
-            // 6. CALCULATE ENTRY (Ghost Machine: pending order below price)
-            // ============================================
             let entry;
             if (dir === 'BUY') {
                 entry = Math.min(zone.low + entryATR * 0.1, zone.high);
@@ -956,7 +849,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             }
             const entryDistance = dir === 'BUY' ? price - entry : entry - price;
 
-            // SL: Tight stop at zone edge + CRT extreme
             let sl;
             if (dir === 'BUY') {
                 sl = Math.min(zone.low - entryATR * 0.3, crtRange.low);
@@ -971,9 +863,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const tp2 = dir === 'BUY' ? entry + risk * 4.0 : entry - risk * 4.0;
             const tp3 = dir === 'BUY' ? crtRange.high : crtRange.low;
 
-            // ============================================
-            // 7. GHOST MACHINE SCORING
-            // ============================================
             let pts = 0;
             const reasons = [];
             const confBreakdown = [];
@@ -1001,7 +890,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 addScore(10, `Entry ${(entryDistance / entryATR).toFixed(1)}x ATR away`);
             }
 
-            // HTF alignment (bonus)
             let htfAgree = 0;
             const htfTrends = {};
             for (const t of ['1D', '4H', '1H']) {
@@ -1016,9 +904,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 
             console.log(`  → ${dir} score: ${pts} (${reasons.join(', ')})`);
 
-            // ============================================
-            // 8. GHOST MACHINE: Score >= 65 = TRADE
-            // ============================================
             if (pts < 65) {
                 console.log(`  ❌ ${dir}: Score ${pts} < 65`);
                 continue;
@@ -1028,9 +913,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             allSetups.push({ dir, pts, entry, sl, tp1, tp2, tp3, risk, sweeps, turtleSoup, hasSweep, hasTBS, mss, hasMSS, hasDisplacement, bosCount, zone, isUnmet, freshness, isValidZone, brokenLevel, session, entryDistance, htfTrends, htfAgree, reasons, confBreakdown });
         }
 
-        // ============================================
-        // 9. RETURN THE BEST SETUP
-        // ============================================
         if (allSetups.length === 0) {
             console.log(`  ❌ ${tfToAnalyze}: No setup scored >= 65`);
             return null;
@@ -1234,9 +1116,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
     }
 }
 
-// ============================================
-// HELPER: Count BOS (Break of Structure) on multiple timeframes
-// ============================================
 function countBOS(data, htfData, direction) {
     let count = 0;
     const tfs = ['1D', '4H', '1H', '15M', '5M'];
@@ -1255,9 +1134,6 @@ function countBOS(data, htfData, direction) {
     return count;
 }
 
-// ============================================
-// HELPER: Find broken resistance flipped to support
-// ============================================
 function findBrokenLevel(data, direction) {
     if (data.length < 30) return null;
 
@@ -1265,14 +1141,12 @@ function findBrokenLevel(data, direction) {
     const lastPrice = data[data.length - 1].c;
 
     if (direction === 'BUY') {
-        // Find resistance that was broken and is now support
         const resistances = swings.H.filter(s => s.p < lastPrice);
         if (resistances.length > 0) {
             const broken = resistances[resistances.length - 1];
             return { price: broken.p, type: 'RESISTANCE_FLIPPED_TO_SUPPORT' };
         }
     } else {
-        // Find support that was broken and is now resistance
         const supports = swings.L.filter(s => s.p > lastPrice);
         if (supports.length > 0) {
             const broken = supports[supports.length - 1];
@@ -1283,7 +1157,6 @@ function findBrokenLevel(data, direction) {
     return null;
 }
 
-// ===== FUNCTION 1: TBS QUALITY GRADING =====
 function gradeTBS(turtleSoup, sweeps, data) {
     let score = 0;
     let reasons = [];
@@ -1322,7 +1195,6 @@ function gradeTBS(turtleSoup, sweeps, data) {
     };
 }
 
-// ===== FUNCTION 2: CRT STATE =====
 function getCRTState(data) {
     const recent = data.slice(-10);
     const ranges = recent.map(c => c.h - c.l);
@@ -1352,9 +1224,6 @@ function getCRTState(data) {
     };
 }
 
-// ===== FUNCTION 3: PRECISION ENTRY WITH CRT =====
-// FIX #10: buffers now come from getMarketSettings (were hardcoded forex values
-// like 0.0002/0.0010 — meaningless for gold and BTC)
 function getPrecisionEntryCRT(candles, zone, direction, crtRange, apiATR) {
     const last = candles[candles.length - 1];
     if (!last) {
@@ -1371,11 +1240,6 @@ function getPrecisionEntryCRT(candles, zone, direction, crtRange, apiATR) {
     let entry, sl, tp1, tp2, tp3;
     const rr = settings.targetRR || 4;
 
-    // FIX #22: enter at the zone's CE (consequent encroachment - the 50% midpoint),
-    // the ICT convention and what the backtester already simulates. The old
-    // zone.low+buffer placement sat at the DEEP edge, so price had to cut through
-    // nearly the whole zone before the limit filled - a major reason orders never
-    // triggered (worse still when the buffer used a scan-TF ATR wider than the zone).
     if (direction === 'BUY') {
         entry = (zone.low + zone.high) / 2;
         sl = Math.min(zone.low - slBufferValue, crtRange.low - slBufferValue);
@@ -1411,7 +1275,6 @@ function getPrecisionEntryCRT(candles, zone, direction, crtRange, apiATR) {
     };
 }
 
-// ===== FUNCTION 4: CRT-BASED CONFIDENCE =====
 function calculateCRTConfidence(data) {
     let score = 0;
     if (data.crtState.isExpanding) score += 15;
@@ -1427,9 +1290,8 @@ function calculateCRTConfidence(data) {
     else if (data.msnrDistance < 0.5) score += 10;
     else score += 5;
 
-    // Alchemist specific MSNR Reaction Score
     if (data.zoneReaction && data.zoneReaction.type.includes('MSNR fakeout')) {
-        score += 20; // Massive confidence boost for identifying fakeouts / sweeps in MSNR
+        score += 20;
     }
 
     if (data.session.session === 'LONDON KZ' || data.session.session === 'NEW_YORK KZ') score += 15;
@@ -1475,9 +1337,6 @@ function calculateSetupQuality(result, price) {
     const amdPhase = result.amd?.phase || 'UNKNOWN';
     const hasSweep = result.hasLiquidityEvent ?? result.hasSweepOrTBS ?? result.hasSweep ?? false;
 
-    // FIX #15: TF preference is a mild tiebreaker, not a fiat. The old weights
-    // (1D:100, 4H:80...) pushed 1D setups straight to the 100-point cap before a
-    // single quality check ran, so 1D won every scan regardless of setup merit.
     const tfWeights = { '1D': 15, '4H': 12, '1H': 10, '15M': 4, '5M': 2 };
     score += tfWeights[result.timeframe] || 2;
     score += (result.confidence / 100) * 50;
@@ -1525,16 +1384,9 @@ function calculateSetupQuality(result, price) {
     if (amdPhase === 'MANIPULATION') score += 15;
     if (hasSweep) score += 10;
 
-    // FIX #24: no 100 cap. Good setups accumulate 120-180 raw points, so the old
-    // Math.min(100, ...) made every decent setup tie at exactly 100 - and stable
-    // sort then resolved the tie by scan order, which starts at 1D. That is why
-    // the 1D setup won every scan regardless of merit. Raw scores differentiate.
     return Math.max(0, score);
 }
 
-// FIX #12: the AI response is validated before use — a hallucinated entry zone
-// on the wrong side of price, a nonsense invalidation level, or an extreme
-// confidence adjustment previously flowed straight into the trade signal.
 function validateAIResult(ai, best, price, allowedTimeframes) {
     const ts = ai?.trade_signal_Theghostmachine;
     if (!ts || typeof ts !== 'object') return null;
@@ -1561,9 +1413,6 @@ async function askAIWithAllResults(allResults, price, htfData) {
     if (!DEEPSEEK_API_KEY || allResults.length === 0) return null; showNotif('🤖 AI strict execution check...', 'info');
     let tfSummary = ''; for (const r of allResults) { const htfStatus = r.htfValidation ? (r.htfValidation.passed ? 'In HTF' : 'No HTF') : 'N/A'; tfSummary += `${r.timeframe}: ${r.direction} | Zone: $${r.zone.low.toFixed(2)}-$${r.zone.high.toFixed(2)} | EntryReady: ${r.entryReady ? 'YES' : 'NO'} | React: ${r.zoneReaction?.confirmed ? r.zoneReaction.type : 'None'} | HTF: ${htfStatus} | Touches: ${r.zoneTouches} | Conf:${r.confidence}% | RR:1:${r.rrUsed}\n`; }
     const best = allResults[0], prec = getPrec(pair), dailyDir = await getQuoteDirection('1D', htfData['1D']), h4Dir = await getQuoteDirection('4H', htfData['4H']), htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
-    // FIX #12: the model now sees the actual market context — recent candles, key
-    // levels, sweeps, and the sniper-sequence breakdown — instead of one summary
-    // line per timeframe, so its decision can add information rather than echo flags.
     const entryData = htfData[best.entryTF] || [];
     const recentCandles = entryData.slice(-12).map(c => `${c.t}: O${c.o.toFixed(prec)} H${c.h.toFixed(prec)} L${c.l.toFixed(prec)} C${c.c.toFixed(prec)}`).join('\n');
     const sweepLines = (best.sweeps || []).slice(0, 4).map(s => `${s.type} @ $${s.level.toFixed(prec)} (${s.direction})`).join('; ') || 'none';
@@ -1622,10 +1471,6 @@ Return ONLY JSON in this exact format:
     "entry_refinement": { "low": number, "high": number }
   }
 }`;
-    // FIX #13: try DeepSeek's reasoning model (R1) first - it deliberates over the
-    // rule list before answering, which chat-tier models are weak at. Falls back to
-    // deepseek-chat with native JSON mode if the reasoner fails or returns bad JSON.
-    // FIX #12: abort timeouts and generous token budgets so JSON can't truncate.
     const messages = [{ role: 'system', content: 'You are a strict ICT execution auditor. Return ONLY valid JSON.' }, { role: 'user', content: prompt }];
     const attempts = [
         { model: 'deepseek-reasoner', body: { model: 'deepseek-reasoner', messages, max_tokens: 4000 }, timeout: 60000 },
@@ -1651,7 +1496,6 @@ Return ONLY JSON in this exact format:
     return null;
 }
 
-// FIX #9: helper — write JSON via textContent (safe, and copy works correctly)
 function setJsonOutput(obj) {
     const el = document.getElementById('jsonOutput');
     if (el) el.textContent = JSON.stringify(obj, null, 2);
@@ -1678,26 +1522,25 @@ async function runAutoScan() {
         console.log('=== SCAN RESULTS ===');
         console.log('Results found:', results.length);
         for (let r of results) {
-            console.log('TF:', r.timeframe, '| Direction:', r.direction, '| Confidence:', r.confidence);
+            console.log('TF:', r.timeframe, '| Direction:', r.direction, '| Score:', r.score, '| Confidence:', r.confidence);
         }
 
-        if (results.length === 0) { showNotif('🎯 No Ghost Machine pattern found - waiting for Sweep + MSS + Silver Bullet', 'warning'); setJsonOutput({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_GHOST_MACHINE_PATTERN',note:'Ghost Machine requires: Liquidity Sweep/TBS + MSS with Displacement + Fresh Zone + Confirmation Candle + Silver Bullet Session. None matched this scan.',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
+        if (results.length === 0) { showNotif('🎯 No Ghost Machine setups found', 'warning'); setJsonOutput({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_GHOST_MACHINE_PATTERN',note:'Ghost Machine requires: Liquidity Sweep/TBS + MSS with Displacement + Fresh Zone + Confirmation Candle + Silver Bullet Session. None matched this scan.',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
         for (let result of results) {
             try { result.qualityScore = calculateSetupQuality(result, price); }
             catch(e) { console.error('Error calculating quality score:', e); result.qualityScore = 0; }
-            result.confidenceAtScan = result.confidence; // snapshot before HTF/AI adjustments mutate the winner
+            result.confidenceAtScan = result.confidence;
         }
-        const higherTimeframes = ['1D', '4H', '1H'], lowerTimeframes = ['15M', '5M'];
-        const higherResults = results.filter(r => higherTimeframes.includes(r.timeframe)), lowerResults = results.filter(r => lowerTimeframes.includes(r.timeframe));
         results.sort((a, b) => (b.confidence - a.confidence) || (b.qualityScore - a.qualityScore));
-        let best = results[0], isLowerTF = lowerTimeframes.includes(results[0].timeframe);
+        let best = results[0];
+
         if (results.length > 1) showNotif(`🎯 Found ${results.length} Ghost Machine setups! Best: ${best.timeframe} ${best.direction}`, 'success');
         else showNotif(`🎯 Ghost Machine setup found on ${best.timeframe}`, 'success');
         scanText.innerHTML = '🤖 AI execution check...'; const aiResult = await askAIWithAllResults(results, price, htfData); scanStatus.classList.add('hidden');
         const aiSelectedTF = aiResult?.trade_signal_Theghostmachine?.selected_timeframe;
         if (aiSelectedTF && aiSelectedTF !== best.timeframe) {
             const candidate = results.find(r => r.timeframe === aiSelectedTF);
-            if (candidate) { best = candidate; isLowerTF = lowerTimeframes.includes(candidate.timeframe); showNotif(`🤖 AI selected ${aiSelectedTF} setup`, 'info'); }
+            if (candidate) { best = candidate; showNotif(`🤖 AI selected ${aiSelectedTF} setup`, 'info'); }
         }
         const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
         const htfConfluence = await checkHTFConfluenceAsync(htfData['1D'], htfData['4H'], best.direction);
@@ -1706,11 +1549,6 @@ async function runAutoScan() {
         let finalEntry = best.entry, finalZoneLow = best.zone.low, finalZoneHigh = best.zone.high, aiEntryLogic = '', aiSlLogic = '', aiKeyReason = '', aiRiskWarning = '', aiOutcomes = [];
         if (aiResult && aiResult.trade_signal_Theghostmachine) { const ts = aiResult.trade_signal_Theghostmachine; aiApproved = ts.approved !== false; aiConfAdj = ts.confidence_adjustment || 0; executionDecision = ts.execution_decision || executionDecision; waitCondition = ts.wait_condition || waitCondition; if (ts.invalidation_price) aiInvalidation = ts.invalidation_price; if (executionDecision === 'enter_now') aiConviction = 'HIGH'; else if (executionDecision === 'wait_for_reaction') aiConviction = 'WAIT'; else aiConviction = 'SKIP'; if (ts.entry_refinement && ts.entry_refinement.low && ts.entry_refinement.high) { finalZoneLow = ts.entry_refinement.low; finalZoneHigh = ts.entry_refinement.high; finalEntry = (finalZoneLow + finalZoneHigh) / 2; } aiEntryLogic = ts.analysis?.entry_logic || ''; aiSlLogic = ts.analysis?.sl_logic || ''; aiKeyReason = ts.analysis?.key_reason || ''; aiRiskWarning = ts.analysis?.risk_warning || ''; aiOutcomes = ts.analysis?.possible_outcomes || []; if (aiApproved) { best.confidence = Math.min(Math.max(best.confidence + aiConfAdj, 10), 98); if (aiConfAdj) best.confBreakdown?.push({ adj: aiConfAdj, reason: `AI (${ts.model_used || 'deepseek'}) adjustment: ${aiKeyReason || 'approved'}` }); }
             else {
-                // FIX #20: deterministic guard - the AI repeatedly calls PARTIAL HTF
-                // alignment a "conflict" and skips. Only true CONFLICT (both 1D and 4H
-                // opposing) authorizes that skip, and the code knows the real level, so
-                // a rejection whose stated reason is HTF conflict while the level is
-                // PARTIAL gets downgraded to WAIT (-10) instead of a -25 kill.
                 const rule1Note = (ts.rule_checks?.find(r => r.rule === 1)?.note || '') + ' ' + (aiKeyReason || '');
                 const misreadPartial = htfConfluence.level === 'PARTIAL' && executionDecision === 'skip' && /conflict/i.test(rule1Note);
                 if (misreadPartial) {
@@ -1718,8 +1556,6 @@ async function runAutoScan() {
                     best.confidence = Math.max(best.confidence - 10, 10);
                     best.confBreakdown?.push({ adj: -10, reason: `🤖 AI wait (rejection downgraded: HTF is PARTIAL with ${htfConfluence.alignedTF || '1D'} aligned, not CONFLICT)` });
                 } else if (executionDecision === 'wait_for_reaction') {
-                    // FIX #25: "wait for the zone reaction" is patience, not rejection -
-                    // it should not cost as much as a hard skip.
                     aiConviction = 'WAIT';
                     best.confidence = Math.max(best.confidence - 12, 10);
                     best.confBreakdown?.push({ adj: -12, reason: `\ud83e\udd16 AI prefers waiting: ${aiKeyReason || 'wait for zone reaction'}` });
@@ -1740,89 +1576,63 @@ async function runAutoScan() {
         const rrDisplay = best.rrDisplay || (risk > 0 ? (Math.abs(best.tp1 - best.entry) / risk).toFixed(1) : '0.0');
         const session = getSession();
 
-        // FIX #27: a signal below the bar is analysis, not a trade. The JSON still
-        // shows everything, but it is flagged NO_TRADE and the execute button stays
-        // locked - a 5% "signal" must never look tradeable.
-        const goldenRules = [
-            { rule: '1. Liquidity Sweep/TBS detected', passed: Boolean(best.hasSweep) },
-            { rule: '2. MSS with Displacement', passed: Boolean(best.mss?.displaced) },
-            { rule: '3. Fresh Zone (0 violations)', passed: Boolean(best.freshness?.fresh || (best.freshness?.partiallyUsed && best.freshness?.violations === 0)) },
-            { rule: '4. Confirmation Candle', passed: Boolean(best.confirmation) },
-            { rule: '5. Silver Bullet Session', passed: Boolean(best.session?.isSilverBullet) }
-        ];
-        const goldenPassed = goldenRules.filter(r => r.passed).length;
-        const riskPercent = goldenPassed === 5 ? 1.0 : (goldenPassed >= 4 ? 0.5 : 0);
-        console.log(`Risk: ${riskPercent}% (${goldenPassed}/5 rules pass)`);
-        const tradeable = goldenPassed >= 4 && executionDecision !== 'skip';
-        const noTradeReason = tradeable ? null : (executionDecision === 'skip' ? 'AI decision: skip' : `Only ${goldenPassed}/5 Ghost Machine rules passed`);
-        const setupGrade = !tradeable ? 'NO-TRADE' : (goldenPassed === 5 ? 'A+' : 'A');
-        const suggestedRisk = riskPercent === 1 ? '1% (FULL - all 5 rules pass)' : (riskPercent === 0.5 ? '0.5% (HALF - 4/5 rules)' : '0% (do not trade)');
+        // ============================================
+        // GHOST MACHINE SCORING (65+ = TRADE)
+        // ============================================
+        let ghostScore = 0;
+        let ghostReasons = [];
+        let ghostDetails = [];
+
+        const addScore = (pts, reason, detail = '') => {
+            ghostScore += pts;
+            ghostReasons.push(reason);
+            if (detail) ghostDetails.push({ pts, reason, detail });
+        };
+
+        if (best.hasSweep) addScore(25, 'Liquidity Sweep', 'Sweep detected');
+        if (best.hasTBS) addScore(25, 'Turtle Soup', 'TBS detected');
+
+        if (best.mss?.displaced) addScore(25, 'MSS with displacement', 'Displaced MSS');
+        else if (best.mss) addScore(10, 'MSS exists', 'MSS without displacement');
+
+        if (best.freshness?.fresh) addScore(20, 'Fresh zone', '0 touches');
+        else if (best.freshness?.partiallyUsed && best.freshness?.violations === 0) addScore(10, 'Lightly used', `${best.freshness.touches} touches`);
+
+        if (best.zone?.quality === 'A') addScore(15, 'A-grade zone', best.zone.src);
+        else if (best.zone?.quality === 'B') addScore(10, 'B-grade zone', best.zone.src);
+        else addScore(5, 'C-grade zone', best.zone.src);
+
+        if (best.confirmation) addScore(10, 'Confirmed candle', 'Engulf/pinbar');
+
+        if (best.session?.isSilverBullet) addScore(15, 'Silver Bullet', best.session.session);
+        else if (best.session?.isKillzone) addScore(8, 'Killzone', best.session.session);
+
+        const htfAgree = best.htfAgree || 0;
+        if (htfAgree >= 2) addScore(10, `${htfAgree}/3 HTF align`, '');
+        else if (htfAgree === 1) addScore(5, `${htfAgree}/3 HTF align`, '');
+
+        const entryDistATR = best.entryDistanceATR || 999;
+        if (entryDistATR < 0.5) addScore(10, 'Entry close', `${entryDistATR.toFixed(1)}x ATR`);
+        else if (entryDistATR < 1.5) addScore(5, 'Entry within 1.5 ATR', `${entryDistATR.toFixed(1)}x ATR`);
+
+        if (best.brokenLevel) addScore(10, 'Broken level flipped', best.brokenLevel.type);
+        if (best.isUnmet) addScore(10, 'Unmet zone', best.direction === 'BUY' ? 'Below price' : 'Above price');
+
+        const bosCount = best.bosCount || 0;
+        if (bosCount >= 3) addScore(10, `${bosCount}x BOS`, 'Multiple BOS');
+        else if (bosCount >= 2) addScore(5, `${bosCount}x BOS`, '');
+
+        // GHOST MACHINE: Score >= 65 = TRADE
+        const tradeable = ghostScore >= 65 && executionDecision !== 'skip';
+        const riskPercent = tradeable ? (ghostScore >= 85 ? 1.0 : 0.5) : 0;
+        const noTradeReason = tradeable ? null : (executionDecision === 'skip' ? 'AI decision: skip' : `Ghost score ${ghostScore} < 65 (${ghostReasons.slice(0, 3).join(', ')})`);
+
+        console.log(`🏆 Ghost Machine Score: ${ghostScore}/100 (${ghostReasons.join(', ')})`);
+        console.log(`📊 Tradeable: ${tradeable}, Risk: ${riskPercent * 100}%`);
 
         const prec = getPrec(pair);
-        // FIX #7 (duplicate key): the old object had crt_analysis twice inside trade_signal —
-        // JS silently dropped the first. Only the detailed one is kept now.
-        const out = { auto_scan_result: { date: new Date().toISOString().split('T')[0], time: new Date().toISOString().split('T')[1].split('.')[0], pair, current_price: price, multi_timeframe_trends: mtfTrendsData, best_timeframe: best.timeframe, quality_score: best.qualityScore, status: tradeable ? 'GHOST_MACHINE_SETUP' : 'NO_TRADE', no_trade_reason: noTradeReason, setup_grade: setupGrade, golden_rules: { passed: goldenPassed, of: 5, checklist: goldenRules }, ghost_rules_passed: goldenPassed, suggested_risk: suggestedRisk, risk_percent: riskPercent, total_setups_found: results.length, higher_timeframe_setups_found: higherResults.length, lower_timeframe_setups_available: lowerResults.length, is_lower_timeframe_signal: isLowerTF, signal_quality: 'ALL_GHOST_MACHINE_SETUPS_VALID', session: session.session, session_emoji: session.emoji, session_multiplier: session.multiplier, premium_discount: best.premiumDiscount, ghost_rules: best.ghostRules || null, zone_freshness: best.freshness, breaker_validated: best.breakerValid, ai_verified: !!aiResult, ai_approved: aiApproved, ai_model: aiResult?.trade_signal_Theghostmachine?.model_used || null, ai_rule_checks: aiResult?.trade_signal_Theghostmachine?.rule_checks || null, ai_selected_timeframe: aiSelectedTF || null, execution_decision: executionDecision, wait_condition: waitCondition || null, htf_confluence: htfConfluence, scoreboard_note: 'All Ghost Machine matches are valid; trade_signal shows the top-ranked setup while setups_scoreboard keeps the full scan audit trail.', setups_scoreboard: results.map(r => ({ timeframe: r.timeframe, quality: r.qualityScore, confidence: r.confidenceAtScan ?? r.confidence, direction: r.direction, zone: `${r.zone.src} ${r.zone.confluence} [Q:${r.zone.quality}]`, entry: r.entry, chosen: r === best })), setups_found: results.map(r => ({ timeframe: r.timeframe, direction: r.direction, entry: r.entry, sl: r.sl, tp1: r.tp1, confidence: r.confidenceAtScan ?? r.confidence, rules_passed: [r.hasSweep ? '✅ Sweep' : '❌ Sweep', r.mss?.displaced ? '✅ MSS' : '❌ MSS', r.freshness?.fresh || (r.freshness?.partiallyUsed && r.freshness?.violations === 0) ? '✅ Fresh' : '❌ Fresh', r.confirmation ? '✅ Confirmation' : '❌ Confirmation', r.session?.isSilverBullet ? '✅ Silver Bullet' : '❌ Silver Bullet'].join(' | ') })), trade_signal: { trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT', entry_price: finalEntry, entry_zone: { low: finalZoneLow, high: finalZoneHigh }, distance_to_entry: { pct: (best.entryDistancePct ?? 0).toFixed(2) + '%', atr_multiple: (best.entryDistanceATR ?? 0).toFixed(1) + 'x ATR', note: 'price must travel this far to trigger the limit order' }, zones_evaluated: best.zonesEvaluated || 1, alternative_zones: best.alternativeZones || [], entry_ready: best.entryReady, zone_touches: best.zoneTouches, htf_validated: best.htfValidation ? best.htfValidation.passed : null, htf_parent_structure: best.htfValidation?.parentArray ? `${best.htfValidation.parentArray.src} @ ${best.htfValidation.parentArray.structureTF}` : null, stop_loss: best.sl, sl_reason: best.slResult.reason, invalidation_price: aiInvalidation, risk_amount: risk.toFixed(prec), stop_loss_pct: ((risk / best.entry) * 100).toFixed(2) + '%', take_profit_1: best.tp1, take_profit_2: best.tp2, take_profit_3: best.tp3, risk_reward: '1:' + rrDisplay, dynamic_rr: '1:' + (best.rrUsed ?? rrDisplay), confidence: best.confidence, confidence_breakdown: (best.confBreakdown || []).map(b => `${b.adj > 0 ? '+' : ''}${b.adj} ${b.reason}`), conviction: aiConviction, entry_source: aiResult ? 'AI-Refined' : 'Rule-Based', ai_used: !!aiResult, ai_risk_warning: aiRiskWarning || null, entry_reasoning: aiEntryLogic || `${best.zone.src} zone with ${best.zone.confluence}`, sl_reasoning: aiSlLogic || best.slResult.reason, key_reason: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}]`, possible_outcomes: aiOutcomes.length > 0 ? aiOutcomes : [`Enter at zone after reaction`, `Sweep then reverse`, `SL hit invalidates`], zone_quality: best.zone.quality, zone_source: best.zone.src, zone_confluence: best.zone.confluence, confluence_count: best.zone.cc, imbalance_magnet: best.zone.hasImbalance, zone_reaction: best.zoneReaction, zone_magnetism: { strength: best.magnetism.magnetism, score: best.magnetism.score, summary: best.magnetism.summary, checks: best.magnetism.checks }, path_clearance: { clear: best.pathCheck.clear, obstacles: best.pathCheck.obstacles }, probability: best.probCheck.probability, sniper_entry: { is_sniper: best.sniperEntry.isSniper, path: best.sniperEntry.path || null, score: best.sniperEntry.score, grade: best.sniperEntry.grade, checks: best.sniperEntry.checks }, timeframe_alignment: { trend_tf: best.trendTF, structure_tf: best.structureTF, entry_tf: best.entryTF, sniper_tf: best.sniperTF, alignment: best.tfAlign, trend_direction: best.mtf.direction, trend_strength: best.mtf.strength + '/5 TFs', sniper_confirmation: best.sniperRej.confirmed ? '✅ Confirmed' : '⚠️ No rejection', htf_confluence: htfConfluence }, turtle_soup: best.turtleSoup, order_blocks_found: best.obsAll ? best.obsAll.length : 0, twelve_data_indicators: best.twelveIndicators, volume_profile: best.volumeProfile ? { poc: best.volumeProfile.poc.toFixed(prec), value_area_high: best.volumeProfile.vah.toFixed(prec), value_area_low: best.volumeProfile.val.toFixed(prec), hvn_count: best.volumeProfile.hvns.length, lvn_count: best.volumeProfile.lvns.length, zone_in_lvn: best.volumeProfile.lvns.some(p => p >= best.zone.low && p <= best.zone.high), note: 'time-at-price profile when feed lacks real volume' } : null, delta_proxy: { cvd: best.deltaProxy?.cvd || 0, direction: best.deltaProxy?.direction || 'NEUTRAL', note: 'candle-based approximation, not true order flow' }, msnr_levels: { pivot: best.msnr.pivot.toFixed(prec), supports: { S1: best.msnr.supports.S1?.toFixed(prec), S2: best.msnr.supports.S2?.toFixed(prec), S3: best.msnr.supports.S3?.toFixed(prec) }, resistances: { R1: best.msnr.resistances.R1?.toFixed(prec), R2: best.msnr.resistances.R2?.toFixed(prec), R3: best.msnr.resistances.R3?.toFixed(prec) } }, sweeps: best.sweeps.filter(s => s.distance < best.apiATR * 2).map(s => ({ type: s.type, level: s.level, distance: s.distance })), analysis: { trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)${best.mtf.strength >= 3 ? ' - STRONG' : ''}`, volatility_level: `${best.volatility.level} - ${best.volatility.desc}`, market_structure: { mss: best.mss ? best.mss.type : 'None', displacement: best.displacement.detected, sniper_rejection: best.sniperRej.confirmed, turtle_soup: best.turtleSoup.detected, crt_pattern: best.crt.pattern, zone_reaction: best.zoneReaction, zone_touches: best.zoneTouches, entry_ready: best.entryReady, htf_validated: best.htfValidation?.passed || false, imbalance_magnet: best.zone.hasImbalance, zone_magnetism: best.magnetism.magnetism, htf_confluence: htfConfluence.level, zone_freshness: best.freshness, premium_discount: best.premiumDiscount, ghost_rules: best.ghostRules || null, session: best.session, breaker_validated: best.breakerValid }, indicator_confluence: { macd: best.twelveIndicators.macd ? `${best.twelveIndicators.macd > best.twelveIndicators.macd_signal ? 'Bullish' : 'Bearish'}` : 'N/A', adx: best.twelveIndicators.adx ? `${best.twelveIndicators.adx > 25 ? 'Trending' : 'Ranging'} (RR:1:${best.rrUsed ?? rrDisplay})` : 'N/A', stochastic: best.twelveIndicators.stoch_k ? `K:${best.twelveIndicators.stoch_k} D:${best.twelveIndicators.stoch_d}` : 'N/A', cci: best.twelveIndicators.cci || 'N/A', williams_r: best.twelveIndicators.williams_r || 'N/A', sar: best.twelveIndicators.sar ? `${best.twelveIndicators.sar}` : 'N/A', ichimoku: best.twelveIndicators.ichimoku_tenkan ? `TK:${best.twelveIndicators.ichimoku_tenkan}/${best.twelveIndicators.ichimoku_kijun}` : 'N/A' }, technical_indicators: [`RSI: ${best.twelveIndicators.rsi || best.rs.toFixed(1)}`, `MACD: ${best.twelveIndicators.macd || 'N/A'}`, `ADX: ${best.twelveIndicators.adx || 'N/A'}`, `ATR(API): ${best.twelveIndicators.atr_api?.toFixed(prec) || best.apiATR.toFixed(prec)}`, `BB: ${best.twelveIndicators.bb_upper || 'N/A'}/${best.twelveIndicators.bb_lower || 'N/A'}`, `FVG: ${best.fvgsAll.length} (${best.fvgsAll.filter(f => f.fresh).length} fresh)`, `OB: ${best.obsAll ? best.obsAll.length : 0}`], reasoning: aiKeyReason || `${best.zone.confluence} [Q:${best.zone.quality}] | HTF:${best.htfValidation?.passed ? 'YES' : 'NO'} | Magnet:${best.magnetism.magnetism} | Confluence:${htfConfluence.level} | EntryReady:${best.entryReady ? 'YES' : 'NO'} | React:${best.zoneReaction?.type || 'None'} | Touch#${best.zoneTouches} | ${best.session?.emoji || ''}${best.session?.session || ''}` } ,
-                crt_analysis: {
-                    detected: best.crt?.detected || false,
-                    pattern: best.crt?.pattern || 'Neutral',
-                    state: best.crtState?.state || 'NEUTRAL',
-                    momentum: best.crtState?.momentum || 'NEUTRAL',
-                    is_expanding: best.crtState?.isExpanding || false,
-                    range: {
-                        high: best.crtRange?.high || null,
-                        low: best.crtRange?.low || null,
-                        completion_percent: best.isInOptimalZone ? '50% COMPLETED' : 'WAITING'
-                    }
-                },
-                tbs_analysis: {
-                    detected: best.turtleSoup?.detected || false,
-                    type: best.turtleSoup?.type || 'NONE',
-                    quality: best.tbsQuality?.grade || 'N/A',
-                    score: best.tbsQuality?.score || 0,
-                    sweeps_found: best.sweeps?.length || 0
-                },
-                msnr_analysis: {
-                    pivot: best.msnr?.pivot || null,
-                    distance_percent: best.msnrDistance || 0,
-                    is_near: best.isNearMSNR || false,
-                    bias: best.direction === 'BUY' ? 'BELOW_MSNR' : 'ABOVE_MSNR'
-                },
-                entry_timing: {
-                    valid: best.entryTiming?.valid || false,
-                    reason: best.entryTiming?.reason || 'N/A',
-                    in_optimal_zone: best.isInOptimalZone || false
-                },
-                "precision_trader_pro": {
-                    "setup_score": best.setupScore || 0,
-                    "win_probability_note": "heuristic estimate, NOT backtested statistics",
-                    "win_probability": best.winProbability || 70,
-                    "expected_value": best.expectedValue || 0,
-                    "signal_grade": best.signalGrade || 'C',
-                    "htf_bias": best.context?.htfTrendBias || 'NEUTRAL',
-                    "market_phase": best.context?.htfMarketPhase || 'CONSOLIDATION',
-                    "zone_type": best.context?.htfZoneType || 'MID_RANGE',
-                    "bos_confirmed": best.context?.htfBosConfirmed || false,
-                    "choch_detected": best.context?.htfChochDetected || false,
-                    "liquidity_sweeps": best.context?.liquiditySweeps?.length || 0,
-                    "valid_order_blocks": best.context?.validOrderBlocks?.length || 0,
-                    "ltf_compression": best.context?.ltfCompressionDetected || false,
-                    "session_valid": best.context?.sessionValid || false
-                },
-                "trade_levels": {
-                    "entry": finalEntry,
-                    "stop_loss": best.tradeLevels?.stopLoss || best.sl,
-                    "take_profit": best.tradeLevels?.takeProfit || best.tp1,
-                    "partial_tp": best.tradeLevels?.partialTP || best.tp2,
-                    "invalidation": best.tradeLevels?.invalidation || best.invalidationPrice,
-                    "breakeven": finalEntry,
-                    "pips_risk": best.tradeLevels?.pipsRisk || 0,
-                    "pips_reward": best.tradeLevels?.pipsReward || 0,
-                    "risk_reward": best.tradeLevels?.riskReward || best.rrUsed || 4
-                }
-
-} } };
+        const out = { auto_scan_result: { date: new Date().toISOString().split('T')[0], time: new Date().toISOString().split('T')[1].split('.')[0], pair, current_price: price, multi_timeframe_trends: mtfTrendsData, best_timeframe: best.timeframe, quality_score: best.qualityScore, status: tradeable ? 'GHOST_MACHINE_SETUP' : 'NO_TRADE', no_trade_reason: noTradeReason, ghost_score: ghostScore, ghost_reasons: ghostReasons, ghost_details: ghostDetails, suggested_risk: riskPercent === 1 ? '1% (FULL - score 85+)' : (riskPercent === 0.5 ? '0.5% (HALF - score 65-84)' : '0% (do not trade)'), total_setups_found: results.length, setups_found: results.map(r => ({ timeframe: r.timeframe, direction: r.direction, entry: r.entry, sl: r.sl, tp1: r.tp1, confidence: r.confidenceAtScan ?? r.confidence, score: r.score, reasons: r.reasons || [] })), trade_signal: { trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT', entry_price: finalEntry, entry_zone: { low: finalZoneLow, high: finalZoneHigh }, stop_loss: best.sl, take_profit_1: best.tp1, take_profit_2: best.tp2, take_profit_3: best.tp3, risk_reward: '1:' + rrDisplay, confidence: best.confidence, ghost_score: ghostScore, ghost_reasons: ghostReasons, analysis: { trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)`, volatility_level: `${best.volatility.level} - ${best.volatility.desc}`, liquidity_sweep: best.hasSweep ? '✅ Detected' : '❌ Not detected', turtle_soup: best.hasTBS ? '✅ Detected' : '❌ Not detected', mss: best.mss ? `${best.mss.type} with displacement` : 'None', zone_freshness: best.freshness?.fresh ? 'Fresh' : (best.freshness?.partiallyUsed ? 'Partially used' : 'Used'), confirmation_candle: best.confirmation ? '✅ Confirmed' : '❌ Not confirmed', session: best.session?.session || 'OFF-HOURS', silver_bullet: best.session?.isSilverBullet ? '✅ Yes' : '❌ No', bos_count: best.bosCount || 0, broken_level: best.brokenLevel ? '✅ Found' : '❌ Not found', unmet_zone: best.isUnmet ? '✅ Yes' : '❌ No' }, technical_indicators: [`RSI: ${best.twelveIndicators?.rsi || 'N/A'}`, `ATR: ${best.apiATR?.toFixed(prec) || 'N/A'}`, `Sweeps: ${best.hasSweep ? 'Yes' : 'No'}`, `MSS: ${best.mss?.type || 'None'}`, `BOS: ${best.bosCount || 0}`] } } } };
         setJsonOutput(out);
-        // no auto-save: the user decides what to keep via the Save button
         lastSetupSummary = buildSetupSummary(best, st, finalEntry, price);
         lastSetupOut = out;
 
@@ -1839,17 +1649,13 @@ async function runAutoScan() {
             return;
         }
         document.getElementById('executeBtn').disabled = false;
-        showNotif(`🎯 GHOST MACHINE ${best.timeframe} ${st} ${best.confidence}% | ${goldenPassed}/5 Ghost Machine rules | Risk: ${riskPercent}% | 1:${rrDisplay}`, 'success');
+        showNotif(`🎯 GHOST MACHINE ${best.timeframe} ${st} ${best.confidence}% | Score: ${ghostScore} | Risk: ${riskPercent}% | 1:${rrDisplay}`, 'success');
     } catch (e) { console.error(e); showNotif('Error: ' + e.message, 'error'); scanStatus.classList.add('hidden'); }
     finally { btn.classList.remove('loading'); btn.disabled = false; }
 }
 
 // ============================================
-// 💾 RECENT SAVED (manual save) + 📒 TRADE JOURNAL
-// Flow: scan -> press Save -> setup lands in Recent Saved (persisted, so it
-// survives closing the app). When the trade plays out, mark it Win or Loss
-// on the saved card, then press Journal to move the whole entry into the
-// permanent journal. Both lists support delete.
+// 💾 RECENT SAVED + 📒 TRADE JOURNAL
 // ============================================
 let lastSetupSummary = null, lastSetupOut = null;
 
@@ -1859,7 +1665,8 @@ function buildSetupSummary(best, st, finalEntry, price) {
         pair, timeframe: best.timeframe, direction: st,
         entry: finalEntry, sl: best.sl, tp1: best.tp1,
         confidence: best.confidence, quality: best.zone?.quality || '?',
-        sniper: !!best.sniperEntry?.isSniper, priceAtScan: price
+        sniper: !!best.sniperEntry?.isSniper, priceAtScan: price,
+        ghostScore: best.score || 0
     };
 }
 
@@ -1956,16 +1763,9 @@ function handleJournalClick(ev) {
 
 // ============================================
 // FIX #21: MISSED-FILL DETECTION
-// The live monitor only runs while the app is open - price can travel into the
-// zone and back out while the app is closed (or spike between 5s price polls)
-// and the trigger was silently lost. Candle highs/lows since the order was
-// created can't miss a spike, so the fill check replays them on every app
-// open and every ~2.5 minutes while running.
 // ============================================
 function parseCandleTimeUTC(t) {
     if (typeof t !== 'string') return NaN;
-    // Twelve Data forex/metals candles are UTC but come without a timezone
-    // marker - normalize so they don't get parsed as device-local time.
     const iso = t.includes('T') ? t : t.replace(' ', 'T');
     return new Date(/Z|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + 'Z').getTime();
 }
@@ -1975,14 +1775,10 @@ function orderCrossedInCandles(order, candles) {
     if (isNaN(created)) return false;
     return candles.some(c => {
         const t = parseCandleTimeUTC(c.t);
-        // 5-minute slack: the candle containing the creation moment still counts
         if (isNaN(t) || t < created - 5 * 60 * 1000) return false;
         return order.signalType === 'LONG' ? c.l <= order.idealEntry : c.h >= order.idealEntry;
     });
 }
-// Per user request the fill check NEVER auto-clears the order - it only
-// informs. The order stays active until it live-triggers or is cancelled
-// manually.
 async function checkMissedFill() {
     if (!limitOrder) return;
     try {
@@ -1998,17 +1794,13 @@ function loadLimitOrder(){const s=localStorage.getItem('limitOrder');if(s){try{l
 function saveLimit(o){limitOrder=o;localStorage.setItem('limitOrder',JSON.stringify(o));updateLimitUI();}
 function clearLimit(){limitOrder=null;localStorage.removeItem('limitOrder');if(priceTimer)clearInterval(priceTimer);updateLimitUI();}
 function cancelLimit(){clearLimit();showNotif('❌ Cancelled','warning');}
-// FIX #3: limit UI + monitor now use the ORDER's pair, not whatever pair is currently selected
 function updateLimitUI(){const t=document.getElementById('limitOrderText'),c=document.getElementById('cancelLimitBtn');if(limitOrder){const prec=getPrec(limitOrder.pair||pair);t.innerHTML=`⏳ ${limitOrder.pair||''} ${limitOrder.signalType} LIMIT @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)}`;t.className='active';c.classList.remove('hidden');document.getElementById('executeBtn').innerHTML='⏳ Waiting...';document.getElementById('executeBtn').style.background='linear-gradient(135deg, #ff9f0a, #ff6b00)';}else{t.innerHTML='No active limit order';t.className='';c.classList.add('hidden');document.getElementById('executeBtn').innerHTML='⚡ Place Limit Order';document.getElementById('executeBtn').style.background='linear-gradient(135deg, #34c759, #28a745)';}}
 function startMonitor(){if(priceTimer)clearInterval(priceTimer);priceTimer=setInterval(async()=>{if(!limitOrder){clearInterval(priceTimer);return;}
     const orderPair=limitOrder.pair||pair;const p=await getPrice(orderPair);if(!p)return;const prec=getPrec(orderPair);if(orderPair===pair)document.getElementById('currentPrice').innerHTML=`$${p.toFixed(prec)}`;if((limitOrder.signalType==='LONG' && p<=limitOrder.idealEntry)||(limitOrder.signalType==='SHORT' && p>=limitOrder.idealEntry)){const filled=limitOrder;clearLimit();showNotif(`✅ FILLED! ${filled.pair||''} ${filled.signalType} @ $${p.toFixed(prec)}`,'success');try{new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play();}catch(e){}}},2000);}
 function handleLimit(){if(!analysis||analysis.signalType==='NEUTRAL'){showNotif('No signal','error');return;}if(limitOrder){cancelLimit();return;}const o={id:Date.now(),pair,signalType:analysis.signalType,idealEntry:analysis.idealEntry,stopLoss:analysis.stopLoss,takeProfit1:analysis.takeProfit1,takeProfit2:analysis.takeProfit2,takeProfit3:analysis.takeProfit3,confidence:analysis.confidence,entryZoneLow:analysis.entryZoneLow,entryZoneHigh:analysis.entryZoneHigh,entryReady:analysis.entryReady,executionDecision:analysis.executionDecision,invalidationPrice:analysis.invalidationPrice,createdAt:new Date().toISOString()};saveLimit(o);startMonitor();showNotif(`📝 Limit @ $${o.idealEntry.toFixed(getPrec(pair))}`,'info');}
-// FIX #9: copy uses textContent (was innerHTML — copied HTML-escaped text), and the
-// empty-check actually works now (old check looked for 'Click' which never matched '{}')
 function copyJson(){const el=document.getElementById('jsonOutput');const t=el?el.textContent:'';if(!t||t.trim()==='{}'){showNotif('Run analysis first','warning');return;}navigator.clipboard.writeText(t).then(()=>showNotif('📋 Copied!','success')).catch(()=>showNotif('Failed','error'));}
 function showNotif(m,t){const n=document.getElementById('notification');n.innerHTML=m;n.className=`notification ${t}`;n.classList.remove('hidden');setTimeout(()=>n.classList.add('hidden'),3000);}
 
-// ===== FUNCTION 5: ENTRY TIMING =====
 function checkEntryTiming(data, entryPrice, direction) {
     if (!data || data.length === 0) return { valid: false, reason: 'No data' };
     const last = data[data.length - 1];
@@ -2033,7 +1825,6 @@ function isSetupStillValid(setup, currentPrice) {
     return true;
 }
 
-// ===== SETUP QUALITY SCORING (1-10) =====
 function calculateSetupScore(direction, context) {
     let score = 0;
     if ((direction === 'BUY' && context.htfTrendBias === 'BULLISH') ||
@@ -2055,7 +1846,6 @@ function calculateSetupScore(direction, context) {
     return score;
 }
 
-// ===== SIGNAL GRADE =====
 function getSignalGrade(confidence) {
     if (confidence >= 90) return 'A';
     if (confidence >= 85) return 'B';
@@ -2063,7 +1853,6 @@ function getSignalGrade(confidence) {
     return 'D';
 }
 
-// ===== WIN PROBABILITY (heuristic — not backtested statistics) =====
 function calculateWinProbability(signal, context, direction) {
     let base = 70.0;
     base += signal.setupScore * 2.0;
@@ -2077,14 +1866,12 @@ function calculateWinProbability(signal, context, direction) {
     return Math.min(base, 95.0);
 }
 
-// ===== EXPECTED VALUE =====
 function calculateExpectedValue(winProbability, rrRatio) {
     const winRate = winProbability / 100.0;
     const lossRate = 1.0 - winRate;
     return (winRate * rrRatio) - (lossRate * 1.0);
 }
 
-// ===== MARKET CONTEXT BUILDER =====
 function buildMarketContext(htfAnalysis, ltfAnalysis, chartData) {
     return {
         htfTrendBias: htfAnalysis.trendBias || 'NEUTRAL',
@@ -2104,13 +1891,11 @@ function buildMarketContext(htfAnalysis, ltfAnalysis, chartData) {
     };
 }
 
-// ===== SESSION VALIDATION =====
 function validateTradingSession() {
     const hour = new Date().getUTCHours();
     return (hour >= 8 && hour <= 22);
 }
 
-// ===== FIND NEXT HTF RESISTANCE =====
 function findNextHTFResistance(price, resistanceLevels) {
     if (!resistanceLevels || resistanceLevels.length === 0) return null;
     const above = resistanceLevels.filter(l => l.price > price);
@@ -2118,7 +1903,6 @@ function findNextHTFResistance(price, resistanceLevels) {
     return Math.min(...above.map(l => l.price));
 }
 
-// ===== FIND NEXT HTF SUPPORT =====
 function findNextHTFSupport(price, supportLevels) {
     if (!supportLevels || supportLevels.length === 0) return null;
     const below = supportLevels.filter(l => l.price < price);
@@ -2126,7 +1910,6 @@ function findNextHTFSupport(price, supportLevels) {
     return Math.max(...below.map(l => l.price));
 }
 
-// ===== POSITION SIZE CALCULATOR =====
 function calculatePositionSize(pipsRisk, accountBalance, riskPercent) {
     if (pipsRisk === 0) return 0.01;
     const riskAmount = accountBalance * (riskPercent / 100.0);
@@ -2135,7 +1918,6 @@ function calculatePositionSize(pipsRisk, accountBalance, riskPercent) {
     return Math.round(Math.max(Math.min(lotSize, 10.0), 0.01) * 100) / 100;
 }
 
-// ===== CHECK CHoCH (Change of Character) =====
 function checkCHoCH(data, zoneLow, zoneHigh) {
     if (data.length < 5) return false;
     if (!zoneLow || !zoneHigh) {
@@ -2155,7 +1937,6 @@ function checkCHoCH(data, zoneLow, zoneHigh) {
     return false;
 }
 
-// ===== THE TRADING GEEK: INDUCEMENT FILTER =====
 function detectInducement(data, zoneLow, zoneHigh, direction) {
     if (!data || data.length < 15) return true;
     const swings = findSwings(data, 2);
