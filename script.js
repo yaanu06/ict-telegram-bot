@@ -1212,7 +1212,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 stopLoss: sl,
                 takeProfit: tp1,
                 partialTP: tp2,
-                invalidation: dir === 'BUY' ? sl * 0.998 : sl * 1.002,
+                invalidation: invalidationPrice,
                 breakeven: entry,
                 pipsRisk: Math.abs(entry - sl) / (getMarketSettings(pair).pipSize || 0.0001),
                 pipsReward: Math.abs(tp1 - entry) / (getMarketSettings(pair).pipSize || 0.0001),
