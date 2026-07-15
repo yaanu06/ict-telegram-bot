@@ -268,7 +268,7 @@ async function getTechnicalIndicators(tfUsed){
 }
 
 // ============================================
-// TECHNICALS MATH (ALL FUNCTIONS - KEPT EXACTLY AS THEY WERE)
+// TECHNICALS MATH
 // ============================================
 const ema=(p,n)=>{const m=2/(n+1);let e=[],sum=0;for(let i=0;i<p.length;i++){if(i<n){sum+=p[i];e.push(sum/(i+1));}else e.push((p[i]-e[i-1])*m+e[i-1]);}return e;};
 const rsi=(p,n=14)=>{if(p.length<n+1)return 50;let g=0,l=0;for(let i=1;i<=n;i++){const c=p[i]-p[i-1];c>=0?g+=c:l-=c;}let ag=g/n,al=l/n;for(let i=n+1;i<p.length;i++){const c=p[i]-p[i-1];ag=(ag*(n-1)+(c>0?c:0))/n;al=(al*(n-1)+(c<0?-c:0))/n;}return al===0?100:100-(100/(1+ag/al));};
@@ -1620,95 +1620,58 @@ async function runAutoScan() {
         // ============================================
         let ghostScore = 0;
         let ghostReasons = [];
+        let ghostDetails = [];
 
-        const addScore = (pts, reason) => {
+        const addScore = (pts, reason, detail = '') => {
             ghostScore += pts;
             ghostReasons.push(reason);
+            if (detail) ghostDetails.push({ pts, reason, detail });
         };
 
-        if (best.hasSweep) addScore(25, 'Liquidity Sweep');
-        if (best.hasTBS) addScore(25, 'Turtle Soup');
+        if (best.hasSweep) addScore(25, 'Liquidity Sweep', 'Sweep detected');
+        if (best.hasTBS) addScore(25, 'Turtle Soup', 'TBS detected');
 
-        if (best.mss?.displaced) addScore(25, 'MSS with displacement');
-        else if (best.mss) addScore(10, 'MSS exists');
+        if (best.mss?.displaced) addScore(25, 'MSS with displacement', 'Displaced MSS');
+        else if (best.mss) addScore(10, 'MSS exists', 'MSS without displacement');
 
-        if (best.freshness?.fresh) addScore(20, 'Fresh zone');
-        else if (best.freshness?.partiallyUsed && best.freshness?.violations === 0) addScore(10, 'Lightly used');
+        if (best.freshness?.fresh) addScore(20, 'Fresh zone', '0 touches');
+        else if (best.freshness?.partiallyUsed && best.freshness?.violations === 0) addScore(10, 'Lightly used', `${best.freshness.touches} touches`);
 
-        if (best.zone?.quality === 'A') addScore(15, 'A-grade zone');
-        else if (best.zone?.quality === 'B') addScore(10, 'B-grade zone');
-        else addScore(5, 'C-grade zone');
+        if (best.zone?.quality === 'A') addScore(15, 'A-grade zone', best.zone.src);
+        else if (best.zone?.quality === 'B') addScore(10, 'B-grade zone', best.zone.src);
+        else addScore(5, 'C-grade zone', best.zone.src);
 
-        if (best.confirmation) addScore(10, 'Confirmed candle');
+        if (best.confirmation) addScore(10, 'Confirmed candle', 'Engulf/pinbar');
 
-        if (best.session?.isSilverBullet) addScore(15, 'Silver Bullet');
-        else if (best.session?.isKillzone) addScore(8, 'Killzone');
+        if (best.session?.isSilverBullet) addScore(15, 'Silver Bullet', best.session.session);
+        else if (best.session?.isKillzone) addScore(8, 'Killzone', best.session.session);
 
         const htfAgree = best.htfAgree || 0;
-        if (htfAgree >= 2) addScore(10, `${htfAgree}/3 HTF align`);
-        else if (htfAgree === 1) addScore(5, `${htfAgree}/3 HTF align`);
+        if (htfAgree >= 2) addScore(10, `${htfAgree}/3 HTF align`, '');
+        else if (htfAgree === 1) addScore(5, `${htfAgree}/3 HTF align`, '');
 
         const entryDistATR = best.entryDistanceATR || 999;
-        if (entryDistATR < 0.5) addScore(10, 'Entry close');
-        else if (entryDistATR < 1.5) addScore(5, 'Entry within 1.5 ATR');
+        if (entryDistATR < 0.5) addScore(10, 'Entry close', `${entryDistATR.toFixed(1)}x ATR`);
+        else if (entryDistATR < 1.5) addScore(5, 'Entry within 1.5 ATR', `${entryDistATR.toFixed(1)}x ATR`);
 
-        if (best.brokenLevel) addScore(10, 'Broken level flipped');
-        if (best.isUnmet) addScore(10, 'Unmet zone');
+        if (best.brokenLevel) addScore(10, 'Broken level flipped', best.brokenLevel.type);
+        if (best.isUnmet) addScore(10, 'Unmet zone', best.direction === 'BUY' ? 'Below price' : 'Above price');
 
         const bosCount = best.bosCount || 0;
-        if (bosCount >= 3) addScore(10, `${bosCount}x BOS`);
-        else if (bosCount >= 2) addScore(5, `${bosCount}x BOS`);
+        if (bosCount >= 3) addScore(10, `${bosCount}x BOS`, 'Multiple BOS');
+        else if (bosCount >= 2) addScore(5, `${bosCount}x BOS`, '');
 
+        // GHOST MACHINE: Score >= 65 = TRADE
         const tradeable = ghostScore >= 65 && executionDecision !== 'skip';
         const riskPercent = tradeable ? (ghostScore >= 85 ? 1.0 : 0.5) : 0;
-        const noTradeReason = tradeable ? null : (executionDecision === 'skip' ? 'AI decision: skip' : `Ghost score ${ghostScore} < 65`);
+        const noTradeReason = tradeable ? null : (executionDecision === 'skip' ? 'AI decision: skip' : `Ghost score ${ghostScore} < 65 (${ghostReasons.slice(0, 3).join(', ')})`);
 
         console.log(`🏆 Ghost Machine Score: ${ghostScore}/100 (${ghostReasons.join(', ')})`);
         console.log(`📊 Tradeable: ${tradeable}, Risk: ${riskPercent * 100}%`);
         console.log(`📊 SL Distance: ${best.slResult?.distance || 'N/A'} points (ATR-based)`);
 
         const prec = getPrec(pair);
-
-        // ============================================
-        // CLEAN JSON OUTPUT - GHOST MACHINE STYLE
-        // ============================================
-        const out = {
-            trade_signal_Theghostmachine: {
-                date: new Date().toISOString().split('T')[0],
-                current_price: price,
-                pair: pair,
-                trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT',
-                entry_price: finalEntry,
-                stop_loss: best.sl,
-                take_profit: best.tp1,
-                ghost_score: ghostScore,
-                ghost_reasons: ghostReasons,
-                analysis: {
-                    trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)`,
-                    volatility_level: `${best.volatility.level} - ${best.volatility.desc}`,
-                    liquidity_sweep: best.hasSweep ? '✅ Detected' : '❌ Not detected',
-                    turtle_soup: best.hasTBS ? '✅ Detected' : '❌ Not detected',
-                    mss: best.mss ? `${best.mss.type} with displacement` : 'None',
-                    zone_freshness: best.freshness?.fresh ? 'Fresh' : (best.freshness?.partiallyUsed ? 'Partially used' : 'Used'),
-                    session: best.session?.session || 'OFF-HOURS',
-                    silver_bullet: best.session?.isSilverBullet ? '✅ Yes' : '❌ No',
-                    bos_count: best.bosCount || 0,
-                    broken_level: best.brokenLevel ? '✅ Found' : '❌ Not found',
-                    unmet_zone: best.isUnmet ? '✅ Yes' : '❌ No',
-                    htf_alignment: `${best.htfAgree || 0}/3 HTF aligned`,
-                    sl_distance: best.slResult?.distance?.toFixed(2) || 'N/A',
-                    risk_reward: '1:' + rrDisplay
-                },
-                technical_indicators: {
-                    rsi: best.twelveIndicators?.rsi || 'N/A',
-                    atr: best.apiATR?.toFixed(prec) || 'N/A',
-                    sweeps: best.hasSweep ? 'Yes' : 'No',
-                    mss_type: best.mss?.type || 'None',
-                    bos: best.bosCount || 0
-                }
-            }
-        };
-
+        const out = { auto_scan_result: { date: new Date().toISOString().split('T')[0], time: new Date().toISOString().split('T')[1].split('.')[0], pair, current_price: price, multi_timeframe_trends: mtfTrendsData, best_timeframe: best.timeframe, quality_score: best.qualityScore, status: tradeable ? 'GHOST_MACHINE_SETUP' : 'NO_TRADE', no_trade_reason: noTradeReason, ghost_score: ghostScore, ghost_reasons: ghostReasons, ghost_details: ghostDetails, sl_distance: best.slResult?.distance || 'N/A', sl_reason: best.slResult?.reason || 'N/A', htf_alignment: `${htfAgree}/3 timeframes aligned`, htf_confluence: htfConfluence.level, suggested_risk: riskPercent === 1 ? '1% (FULL - score 85+)' : (riskPercent === 0.5 ? '0.5% (HALF - score 65-84)' : '0% (do not trade)'), total_setups_found: results.length, setups_found: results.map(r => ({ timeframe: r.timeframe, direction: r.direction, entry: r.entry, sl: r.sl, tp1: r.tp1, confidence: r.confidenceAtScan ?? r.confidence, score: r.score, sl_distance: r.slResult?.distance || 'N/A', sl_reason: r.slResult?.reason || 'N/A', htf_align: r.htfAgree || 0, reasons: r.reasons || [] })), trade_signal: { trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT', entry_price: finalEntry, entry_zone: { low: finalZoneLow, high: finalZoneHigh }, stop_loss: best.sl, sl_reason: best.slResult?.reason || 'N/A', sl_distance: best.slResult?.distance || 'N/A', take_profit_1: best.tp1, take_profit_2: best.tp2, take_profit_3: best.tp3, risk_reward: '1:' + rrDisplay, confidence: best.confidence, ghost_score: ghostScore, ghost_reasons: ghostReasons, htf_alignment: `${htfAgree}/3 HTF aligned`, htf_confluence: htfConfluence.level, analysis: { trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)`, volatility_level: `${best.volatility.level} - ${best.volatility.desc}`, liquidity_sweep: best.hasSweep ? '✅ Detected' : '❌ Not detected', turtle_soup: best.hasTBS ? '✅ Detected' : '❌ Not detected', mss: best.mss ? `${best.mss.type} with displacement` : 'None', zone_freshness: best.freshness?.fresh ? 'Fresh' : (best.freshness?.partiallyUsed ? 'Partially used' : 'Used'), session: best.session?.session || 'OFF-HOURS', silver_bullet: best.session?.isSilverBullet ? '✅ Yes' : '❌ No', bos_count: best.bosCount || 0, broken_level: best.brokenLevel ? '✅ Found' : '❌ Not found', unmet_zone: best.isUnmet ? '✅ Yes' : '❌ No', htf_confluence: htfConfluence.level }, technical_indicators: [`RSI: ${best.twelveIndicators?.rsi || 'N/A'}`, `ATR: ${best.apiATR?.toFixed(prec) || 'N/A'}`, `Sweeps: ${best.hasSweep ? 'Yes' : 'No'}`, `MSS: ${best.mss?.type || 'None'}`, `BOS: ${best.bosCount || 0}`, `HTF Align: ${htfAgree}/3`] } } } };
         setJsonOutput(out);
         lastSetupSummary = buildSetupSummary(best, st, finalEntry, price);
         lastSetupOut = out;
