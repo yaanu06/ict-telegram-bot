@@ -97,18 +97,13 @@ function resetPairState() {
 }
 
 // ============================================
-// PROVEN WORKING INITIALIZATION - DO NOT CHANGE
+// PROVEN WORKING INITIALIZATION - KEEP EXACTLY AS IS
 // ============================================
-document.addEventListener('DOMContentLoaded', async () => {
-    await loadKeys();
-    updateKeyStatus();
-    if (!TWELVE_DATA_KEY) setTimeout(showSetup, 500);
-    init();
-});
+document.addEventListener('DOMContentLoaded',async()=>{await loadKeys();updateKeyStatus();if(!TWELVE_DATA_KEY)setTimeout(showSetup,500);init();});
 
 function init() {
     console.log('📋 Initializing event listeners...');
-    updateTime();
+    updateTime(); 
     setInterval(updateTime, 1000);
     
     const el = (id) => document.getElementById(id);
