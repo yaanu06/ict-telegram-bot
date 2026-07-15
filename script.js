@@ -1670,6 +1670,7 @@ async function runAutoScan() {
 
         const prec = getPrec(pair);
 
+        // Build the output with full confidence, TP2, TP3 and trade levels
         const out = {
             trade_signal_Theghostmachine: {
                 date: new Date().toISOString().split('T')[0],
@@ -1679,6 +1680,9 @@ async function runAutoScan() {
                 entry_price: finalEntry,
                 stop_loss: best.sl,
                 take_profit: best.tp1,
+                take_profit_2: best.tp2,  // Added TP2
+                take_profit_3: best.tp3,  // Added TP3
+                confidence: best.confidence,  // Added confidence
                 ghost_score: ghostScore,
                 ghost_reasons: ghostReasons,
                 analysis: {
@@ -1703,6 +1707,16 @@ async function runAutoScan() {
                     sweeps: best.hasSweep ? 'Yes' : 'No',
                     mss_type: best.mss?.type || 'None',
                     bos: best.bosCount || 0
+                },
+                // Added trade levels section for clarity
+                trade_levels: {
+                    entry: finalEntry,
+                    stop_loss: best.sl,
+                    take_profit_1: best.tp1,
+                    take_profit_2: best.tp2,
+                    take_profit_3: best.tp3,
+                    invalidation: best.invalidationPrice,
+                    risk_reward_ratio: parseFloat(rrDisplay) || 2.0
                 }
             }
         };
