@@ -30,6 +30,10 @@ const GHOST_MACHINE_CONFLICT_CONFIDENCE_FLOOR = 75;
 const ANALYSIS_DEBUG_LOGS = true;
 const ENABLE_MAGNETISM_REJECTION = false;
 
+// FIX: Lower threshold from 65 to 55
+const MIN_SETUP_SCORE = 55;
+const MIN_FVG_SCORE = 50; // FVG-only setups need lower threshold
+
 function getTimeframeHierarchy(selectedTF) {
     const hierarchy = {
         '1D': ['1D', '4H', '1H', '15M'],
@@ -883,11 +887,12 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const brokenLevel = findBrokenLevel(entryData, dir);
             const session = getSession();
 
+            // FIX: Lower entry distance requirement
             let entry;
             if (dir === 'BUY') {
-                entry = Math.min(zone.low + entryATR * 0.15, zone.high);
+                entry = Math.min(zone.low + entryATR * 0.3, zone.high); // Was 0.15
             } else {
-                entry = Math.max(zone.high - entryATR * 0.15, zone.low);
+                entry = Math.max(zone.high - entryATR * 0.3, zone.low); // Was 0.15
             }
             const entryDistance = dir === 'BUY' ? price - entry : entry - price;
 
@@ -905,27 +910,36 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 
             const addScore = (adj, label) => { pts += adj; reasons.push(label); confBreakdown.push({ adj, reason: label }); };
 
-            if (hasSweep) addScore(25, 'Liquidity Sweep');
-            if (hasTBS) addScore(25, 'Turtle Soup');
+            // FIX: More generous scoring
+            if (hasSweep) addScore(20, 'Liquidity Sweep'); // Was 25
+            if (hasTBS) addScore(20, 'Turtle Soup'); // Was 25
 
-            if (bosCount >= 3) addScore(25, `${bosCount}x BOS confirmed`);
-            else if (bosCount >= 2) addScore(15, `${bosCount}x BOS`);
+            if (bosCount >= 2) addScore(15, `${bosCount}x BOS`); // Was 3+
+            else if (bosCount >= 1) addScore(8, `${bosCount}x BOS`);
 
-            if (hasDisplacement) addScore(15, 'MSS with displacement');
-            else if (hasMSS) addScore(8, 'MSS exists');
+            if (hasDisplacement) addScore(12, 'MSS with displacement'); // Was 15
+            else if (hasMSS) addScore(6, 'MSS exists');
 
-            if (isUnmet && isValidZone) addScore(20, 'Fresh unmet order block');
-            else if (isValidZone) addScore(10, 'Fresh zone');
+            // FIX: Zone scoring more generous
+            if (isUnmet && isValidZone) addScore(15, 'Fresh unmet zone'); // Was 20
+            else if (isValidZone) addScore(8, 'Fresh zone'); // Was 10
+            else if (!freshness.used) addScore(4, 'Lightly used zone');
 
-            if (brokenLevel) addScore(15, 'Broken level flipped');
+            if (brokenLevel) addScore(10, 'Broken level flipped'); // Was 15
 
-            if (zone.quality === 'A') addScore(10, 'A-grade zone');
-            else if (zone.quality === 'B') addScore(5, 'B-grade zone');
+            // FIX: Zone quality scoring more generous
+            if (zone.quality === 'A') addScore(8, 'A-grade zone'); // Was 10
+            else if (zone.quality === 'B') addScore(4, 'B-grade zone'); // Was 5
+            else if (zone.quality === 'C') addScore(2, 'C-grade zone');
 
-            if (entryDistance > 0 && entryDistance < entryATR * 1.5) {
-                addScore(10, `Entry ${(entryDistance / entryATR).toFixed(1)}x ATR away`);
+            // FIX: Entry distance more forgiving
+            if (entryDistance > 0 && entryDistance < entryATR * 2.0) { // Was 1.5
+                addScore(8, `Entry ${(entryDistance / entryATR).toFixed(1)}x ATR away`);
+            } else if (entryDistance > 0 && entryDistance < entryATR * 3.0) {
+                addScore(4, `Entry ${(entryDistance / entryATR).toFixed(1)}x ATR away`);
             }
 
+            // FIX: HTF alignment more forgiving
             let htfAgree = 0;
             const htfTrends = {};
             for (const t of ['1D', '4H', '1H']) {
@@ -936,16 +950,32 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                     if ((dir === 'BUY' && trend === 'BULLISH') || (dir === 'SELL' && trend === 'BEARISH')) htfAgree++;
                 }
             }
-            if (htfAgree >= 2) addScore(10, `${htfAgree}/3 HTF align`);
+            if (htfAgree >= 2) addScore(8, `${htfAgree}/3 HTF align`); // Was 10
+            else if (htfAgree >= 1) addScore(4, `${htfAgree}/3 HTF align`);
 
-            if (session.isSilverBullet) addScore(15, 'Silver Bullet');
-            else if (session.isKillzone) addScore(8, 'Killzone');
+            // FIX: Session scoring more generous
+            if (session.isSilverBullet) addScore(10, 'Silver Bullet'); // Was 15
+            else if (session.isKillzone) addScore(5, 'Killzone'); // Was 8
+            else if (session.isMacro) addScore(3, 'Macro session');
+
+            // NEW: Add score for FVG specifically
+            if (zone.src === 'FVG') {
+                addScore(5, 'FVG zone');
+                // Extra if FVG is fresh
+                if (freshness.fresh) addScore(5, 'Fresh FVG');
+            }
+
+            // NEW: Add score for proximity to price
+            if (entryDistance > 0 && entryDistance < price * 0.005) {
+                addScore(5, 'Price near zone');
+            }
 
             console.log(`  → ${dir} score: ${pts} (${reasons.join(', ')})`);
             console.log(`  → Entry: ${entry}, SL: ${sl}, Distance: ${(entryDistance/entryATR).toFixed(1)}x ATR`);
 
-            if (pts < 65) {
-                console.log(`  ❌ ${dir}: Score ${pts} < 65`);
+            // FIX: Lower threshold from 65 to 55
+            if (pts < MIN_SETUP_SCORE) {
+                console.log(`  ❌ ${dir}: Score ${pts} < ${MIN_SETUP_SCORE}`);
                 continue;
             }
 
@@ -954,7 +984,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         }
 
         if (allSetups.length === 0) {
-            console.log(`  ❌ ${tfToAnalyze}: No setup scored >= 65`);
+            console.log(`  ❌ ${tfToAnalyze}: No setup scored >= ${MIN_SETUP_SCORE}`);
             return null;
         }
 
@@ -982,9 +1012,9 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const crtState = getCRTState(entryData);
         const range = crtRange.high - crtRange.low;
         const pricePosition = range > 0 ? ((price - crtRange.low) / range) * 100 : 50;
-        const isInOptimalZone = pricePosition > 40 && pricePosition < 60;
+        const isInOptimalZone = pricePosition > 30 && pricePosition < 70; // Was 40-60
         const msnrDistance = Math.abs(price - msnr.pivot) / price * 100;
-        const isNearMSNR = msnrDistance < 0.2;
+        const isNearMSNR = msnrDistance < 0.3; // Was 0.2
         const crt = detectCRT(entryData, dir);
         const tbsQuality = gradeTBS(turtleSoup, sweeps, entryData);
         const swingsData = findSwings(entryData, 4);
@@ -1017,9 +1047,9 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             { name: 'Sweep or Turtle Soup', passed: hasSweep || hasTBS, critical: true },
             { name: 'MSS with displacement', passed: hasDisplacement, critical: false },
             { name: 'Fresh zone', passed: isValidZone, critical: true },
-            { name: 'Score >= 65', passed: setupScore >= 65, critical: true }
+            { name: 'Score >= ' + MIN_SETUP_SCORE, passed: setupScore >= MIN_SETUP_SCORE, critical: true }
         ];
-        const probCheck = { probability: setupScore >= 75 ? 'HIGH' : 'MEDIUM', checks: probChecks, totalPassed: probChecks.filter(c => c.passed).length, passed: probChecks.filter(c => c.critical).every(c => c.passed) };
+        const probCheck = { probability: setupScore >= 70 ? 'HIGH' : (setupScore >= MIN_SETUP_SCORE ? 'MEDIUM' : 'LOW'), checks: probChecks, totalPassed: probChecks.filter(c => c.passed).length, passed: probChecks.filter(c => c.critical).every(c => c.passed) };
 
         const contextObj = {
             htfTrendBias: mtfTrends['1D'] !== 'NEUTRAL' ? mtfTrends['1D'] : (dir === 'BUY' ? 'BULLISH' : 'BEARISH'),
@@ -1112,7 +1142,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             setupScore,
             winProbability: Math.min(setupScore, 95),
             expectedValue: 3.4,
-            signalGrade: setupScore >= 80 ? 'A' : 'B',
+            signalGrade: setupScore >= 75 ? 'A' : 'B',
             ghostRules,
             context: contextObj,
             risk,
@@ -1345,9 +1375,9 @@ function calculateCRTConfidence(data) {
     if (data.zone.quality === 'A') score += 10;
     else if (data.zone.quality === 'B') score += 5;
 
-    if (data.session.session === 'OFF-HOURS') score -= 20;
-    if (!hasLiquidityEvent && !data.turtleSoup.detected) score -= 15;
-    if (data.msnrDistance > 1.0) score -= 10;
+    if (data.session.session === 'OFF-HOURS') score -= 15; // Was -20
+    if (!hasLiquidityEvent && !data.turtleSoup.detected) score -= 10; // Was -15
+    if (data.msnrDistance > 1.0) score -= 5; // Was -10
 
     return Math.max(0, Math.min(100, score));
 }
@@ -1617,7 +1647,7 @@ async function runAutoScan() {
         const session = getSession();
 
         // ============================================
-        // GHOST MACHINE SCORING (65+ = TRADE)
+        // GHOST MACHINE SCORING (55+ = TRADE) - FIXED
         // ============================================
         let ghostScore = 0;
         let ghostReasons = [];
@@ -1627,42 +1657,54 @@ async function runAutoScan() {
             ghostReasons.push(reason);
         };
 
-        if (best.hasSweep) addScore(25, 'Liquidity Sweep');
-        if (best.hasTBS) addScore(25, 'Turtle Soup');
+        // FIX: More generous scoring
+        if (best.hasSweep) addScore(20, 'Liquidity Sweep'); // Was 25
+        if (best.hasTBS) addScore(20, 'Turtle Soup'); // Was 25
 
-        if (best.mss?.displaced) addScore(25, 'MSS with displacement');
-        else if (best.mss) addScore(10, 'MSS exists');
+        if (best.mss?.displaced) addScore(20, 'MSS with displacement'); // Was 25
+        else if (best.mss) addScore(8, 'MSS exists'); // Was 10
 
-        if (best.freshness?.fresh) addScore(20, 'Fresh zone');
-        else if (best.freshness?.partiallyUsed && best.freshness?.violations === 0) addScore(10, 'Lightly used');
+        if (best.freshness?.fresh) addScore(15, 'Fresh zone'); // Was 20
+        else if (best.freshness?.partiallyUsed && best.freshness?.violations === 0) addScore(8, 'Lightly used'); // Was 10
 
-        if (best.zone?.quality === 'A') addScore(15, 'A-grade zone');
-        else if (best.zone?.quality === 'B') addScore(10, 'B-grade zone');
-        else addScore(5, 'C-grade zone');
+        // FIX: Zone quality more generous
+        if (best.zone?.quality === 'A') addScore(12, 'A-grade zone'); // Was 15
+        else if (best.zone?.quality === 'B') addScore(8, 'B-grade zone'); // Was 10
+        else addScore(4, 'C-grade zone'); // Was 5
 
-        if (best.confirmation) addScore(10, 'Confirmed candle');
+        // NEW: FVG bonus
+        if (best.zone?.src === 'FVG') {
+            addScore(5, 'FVG zone');
+            if (best.freshness?.fresh) addScore(5, 'Fresh FVG');
+        }
 
-        if (best.session?.isSilverBullet) addScore(15, 'Silver Bullet');
-        else if (best.session?.isKillzone) addScore(8, 'Killzone');
+        if (best.confirmation) addScore(8, 'Confirmed candle'); // Was 10
+
+        // FIX: Session scoring more generous
+        if (best.session?.isSilverBullet) addScore(12, 'Silver Bullet'); // Was 15
+        else if (best.session?.isKillzone) addScore(6, 'Killzone'); // Was 8
+        else if (best.session?.isMacro) addScore(4, 'Macro session');
 
         const htfAgree = best.htfAgree || 0;
-        if (htfAgree >= 2) addScore(10, `${htfAgree}/3 HTF align`);
-        else if (htfAgree === 1) addScore(5, `${htfAgree}/3 HTF align`);
+        if (htfAgree >= 2) addScore(8, `${htfAgree}/3 HTF align`); // Was 10
+        else if (htfAgree === 1) addScore(4, `${htfAgree}/3 HTF align`); // Was 5
 
+        // FIX: Entry distance more forgiving
         const entryDistATR = best.entryDistanceATR || 999;
-        if (entryDistATR < 0.5) addScore(10, 'Entry close');
-        else if (entryDistATR < 1.5) addScore(5, 'Entry within 1.5 ATR');
+        if (entryDistATR < 0.8) addScore(8, 'Entry close'); // Was 10
+        else if (entryDistATR < 2.0) addScore(4, 'Entry within 2 ATR'); // Was 1.5
 
-        if (best.brokenLevel) addScore(10, 'Broken level flipped');
-        if (best.isUnmet) addScore(10, 'Unmet zone');
+        if (best.brokenLevel) addScore(8, 'Broken level flipped'); // Was 10
+        if (best.isUnmet) addScore(8, 'Unmet zone'); // Was 10
 
         const bosCount = best.bosCount || 0;
-        if (bosCount >= 3) addScore(10, `${bosCount}x BOS`);
-        else if (bosCount >= 2) addScore(5, `${bosCount}x BOS`);
+        if (bosCount >= 2) addScore(8, `${bosCount}x BOS`); // Was 3+
+        else if (bosCount >= 1) addScore(4, `${bosCount}x BOS`);
 
-        const tradeable = ghostScore >= 65 && executionDecision !== 'skip';
-        const riskPercent = tradeable ? (ghostScore >= 85 ? 1.0 : 0.5) : 0;
-        const noTradeReason = tradeable ? null : (executionDecision === 'skip' ? 'AI decision: skip' : `Ghost score ${ghostScore} < 65`);
+        // FIX: Lower threshold from 65 to 55
+        const tradeable = ghostScore >= MIN_SETUP_SCORE && executionDecision !== 'skip';
+        const riskPercent = tradeable ? (ghostScore >= 75 ? 1.0 : 0.5) : 0;
+        const noTradeReason = tradeable ? null : (executionDecision === 'skip' ? 'AI decision: skip' : `Ghost score ${ghostScore} < ${MIN_SETUP_SCORE}`);
 
         console.log(`🏆 Ghost Machine Score: ${ghostScore}/100 (${ghostReasons.join(', ')})`);
         console.log(`📊 Tradeable: ${tradeable}, Risk: ${riskPercent * 100}%`);
@@ -1680,9 +1722,9 @@ async function runAutoScan() {
                 entry_price: finalEntry,
                 stop_loss: best.sl,
                 take_profit: best.tp1,
-                take_profit_2: best.tp2,  // Added TP2
-                take_profit_3: best.tp3,  // Added TP3
-                confidence: best.confidence,  // Added confidence
+                take_profit_2: best.tp2,
+                take_profit_3: best.tp3,
+                confidence: best.confidence,
                 ghost_score: ghostScore,
                 ghost_reasons: ghostReasons,
                 analysis: {
@@ -1699,7 +1741,8 @@ async function runAutoScan() {
                     unmet_zone: best.isUnmet ? '✅ Yes' : '❌ No',
                     htf_alignment: `${best.htfAgree || 0}/3 HTF aligned`,
                     sl_distance: best.slResult?.distance?.toFixed(2) || 'N/A',
-                    risk_reward: '1:' + rrDisplay
+                    risk_reward: '1:' + rrDisplay,
+                    zone_type: best.zone?.src || 'Unknown'
                 },
                 technical_indicators: {
                     rsi: best.twelveIndicators?.rsi || 'N/A',
@@ -1708,7 +1751,6 @@ async function runAutoScan() {
                     mss_type: best.mss?.type || 'None',
                     bos: best.bosCount || 0
                 },
-                // Added trade levels section for clarity
                 trade_levels: {
                     entry: finalEntry,
                     stop_loss: best.sl,
@@ -1756,7 +1798,8 @@ function buildSetupSummary(best, st, finalEntry, price) {
         confidence: best.confidence, quality: best.zone?.quality || '?',
         sniper: !!best.sniperEntry?.isSniper, priceAtScan: price,
         ghostScore: best.score || 0,
-        slDistance: best.slResult?.distance || 'N/A'
+        slDistance: best.slResult?.distance || 'N/A',
+        zoneType: best.zone?.src || 'Unknown'
     };
 }
 
@@ -1799,7 +1842,7 @@ function deleteJournalEntry(id) { setJournal(getJournal().filter(x => x.id !== i
 function setupCardHTML(e, when, badge, actions) {
     const prec = getPrec(e.pair || 'XAU/USD');
     return `<div class="journal-entry ${badge.cls}">
-        <div class="journal-head"><span>${e.sniper ? '🎯 ' : ''}${e.pair} ${e.direction} ${e.timeframe} Q:${e.quality} ${e.confidence}%</span><span>${badge.label}</span></div>
+        <div class="journal-head"><span>${e.sniper ? '🎯 ' : ''}${e.pair} ${e.direction} ${e.timeframe} ${e.zoneType||''} Q:${e.quality} ${e.confidence}%</span><span>${badge.label}</span></div>
         <div class="journal-levels">E $${(+e.entry).toFixed(prec)} | SL $${(+e.sl).toFixed(prec)} | TP $${(+e.tp1).toFixed(prec)} | ${when}</div>
         <div class="journal-actions">${actions}</div>
     </div>`;
@@ -2104,3 +2147,7 @@ async function checkMissedFill() {
 }
 
 console.log('✅ ICT Trading Bot Pro script loaded successfully!');
+console.log(`✅ Setup threshold lowered to ${MIN_SETUP_SCORE} (was 65)`);
+console.log('✅ FVG now scores as primary with +5 bonus');
+console.log('✅ Entry distance more forgiving (2x ATR vs 1.5x)`);
+console.log('✅ Session penalties reduced');
