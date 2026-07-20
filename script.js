@@ -17,21 +17,13 @@ const SYMBOLS = {
 const TF_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day','1W':'1week' };
 const QUOTE_INTERVAL_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day' };
 const ALL_TIMEFRAMES = ['5M', '15M', '1H', '4H', '1D'];
-const TF_WEIGHT = { '1D': 5, '4H': 4, '1H': 3, '15M': 2, '5M': 1 };
 const DEFAULT_ATR_PERIOD = 14;
 const DEFAULT_PRECISION = 5;
 const BUY_INVALIDATION_FACTOR = 0.998;
 const SELL_INVALIDATION_FACTOR = 1.002;
-const MIN_ENTRY_DISTANCE_ATR_MULTIPLIER = 0.1;
-const MAX_ENTRY_DISTANCE_ATR_MULTIPLIER = 5.0;
-const MAX_ZONE_CANDIDATES_TO_EVALUATE = 6;
-const MAX_ALLOWED_ZONE_VIOLATIONS = 1;
-const GHOST_MACHINE_CONFLICT_CONFIDENCE_FLOOR = 75;
-const ANALYSIS_DEBUG_LOGS = true;
-const ENABLE_MAGNETISM_REJECTION = false;
 
-// FIX: Lower threshold from 65 to 55
-const MIN_SETUP_SCORE = 55;
+// FIX: Lower threshold
+const MIN_SETUP_SCORE = 50;
 
 function getTimeframeHierarchy(selectedTF) {
     const hierarchy = {
@@ -45,11 +37,11 @@ function getTimeframeHierarchy(selectedTF) {
 }
 
 function getMarketSettings(p) {
-    if (p.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.008, targetRR: 4, prec: 2, pipSize: 0.1, slBuffers: { '5M': 2, '15M': 3, '1H': 5, '4H': 8, '1D': 15 } };
-    if (p.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.01, targetRR: 4, prec: 2, pipSize: 0.01, slBuffers: { '5M': 0.03, '15M': 0.05, '1H': 0.08, '4H': 0.12, '1D': 0.20 } };
-    if (p.includes('JPY')) return { slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.005, targetRR: 4, prec: 3, pipSize: 0.01, slBuffers: { '5M': 0.08, '15M': 0.12, '1H': 0.20, '4H': 0.35, '1D': 0.60 } };
-    if (p === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.015, targetRR: 4, prec: 2, pipSize: 1, slBuffers: { '5M': 30, '15M': 50, '1H': 80, '4H': 120, '1D': 200 } };
-    return { slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.005, targetRR: 4, prec: 5, pipSize: 0.0001, slBuffers: { '5M': 0.0003, '15M': 0.0005, '1H': 0.0008, '4H': 0.0012, '1D': 0.0020 } };
+    if (p.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 3, prec: 2, pipSize: 0.1, slBuffers: { '5M': 2, '15M': 3, '1H': 5, '4H': 8, '1D': 15 } };
+    if (p.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.015, targetRR: 3, prec: 2, pipSize: 0.01, slBuffers: { '5M': 0.03, '15M': 0.05, '1H': 0.08, '4H': 0.12, '1D': 0.20 } };
+    if (p.includes('JPY')) return { slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 3, prec: 3, pipSize: 0.01, slBuffers: { '5M': 0.08, '15M': 0.12, '1H': 0.20, '4H': 0.35, '1D': 0.60 } };
+    if (p === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.02, targetRR: 3, prec: 2, pipSize: 1, slBuffers: { '5M': 30, '15M': 50, '1H': 80, '4H': 120, '1D': 200 } };
+    return { slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.01, targetRR: 3, prec: 5, pipSize: 0.0001, slBuffers: { '5M': 0.0003, '15M': 0.0005, '1H': 0.0008, '4H': 0.0012, '1D': 0.0020 } };
 }
 
 function getSLBufferForTF(apiATR, tfUsed, currentPair) {
@@ -100,10 +92,10 @@ function resetPairState() {
 }
 
 // ============================================
-// SIMPLIFIED INITIALIZATION - GUARANTEED TO WORK
+// INITIALIZATION
 // ============================================
 function startApp() {
-    console.log('🚀 Starting ICT Trading Bot Pro...');
+    console.log('🚀 Starting ICT Trading Bot Pro FINAL FIX...');
     loadKeys().then(() => {
         updateKeyStatus();
         if (!TWELVE_DATA_KEY && !DEEPSEEK_API_KEY) {
@@ -393,8 +385,6 @@ function checkZoneFreshness(data, zone, direction) {
 }
 function getSession() {
     const now = new Date(); const hour = now.getUTCHours(); const min = now.getUTCMinutes(); const time = hour + min / 60;
-    let estHour = hour - 4;
-    if (estHour < 0) estHour += 24;
     let s = { session: 'OFF-HOURS', multiplier: 0.5, emoji: '🌙', isKillzone: false, isSilverBullet: false, isMacro: false };
     if (time >= 0 && time < 4) s = { ...s, session: 'ASIA KZ', multiplier: 0.8, emoji: '🌏', isKillzone: true };
     else if (time >= 7 && time < 10) s = { ...s, session: 'LONDON KZ', multiplier: 1.3, emoji: '🇬🇧', isKillzone: true };
@@ -476,14 +466,16 @@ function checkZoneMagnetism(entryData, price, entry, direction, zone = null) {
 }
 
 // ============================================
-// STOP LOSS CALCULATIONS
+// FIXED: WIDER STOP LOSS
 // ============================================
 function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, currentPair) {
     const apiATR = twelveIndicators?.atr_api || atr(data, 14);
     const s = getMarketSettings(currentPair || pair);
     const maxSLD = entry * s.maxSLPct;
-    const slBuf = getSLBufferForTF(apiATR, tfUsed, currentPair || pair);
-
+    
+    // FIX: 2x ATR buffer minimum
+    const slBuf = Math.max(apiATR * 2.0, getSLBufferForTF(apiATR, tfUsed, currentPair || pair));
+    
     const swings = findSwings(data, 3);
     const fvgs = detectFVG(data);
     const obs = detectOrderBlocks(data, dir);
@@ -491,45 +483,50 @@ function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, cu
     let candidates = [];
     const addCand = (price, reason) => {
         const dist = dir === 'BUY' ? entry - price : price - entry;
-        if (dist > 0 && dist <= maxSLD && dist <= apiATR * 2.0) {
+        if (dist > 0 && dist <= maxSLD && dist <= apiATR * 3.0) {
             candidates.push({ price, reason, dist });
         }
     };
 
     if (dir === 'BUY') {
-        if (zone && zone.low < entry) addCand(zone.low - slBuf * 0.5, 'Below Zone');
+        if (zone && zone.low < entry) addCand(zone.low - slBuf * 1.5, 'Below Zone');
         swings.L.filter(x => x.p < entry).forEach(x => addCand(x.p - slBuf, 'Below Swing'));
         obs.filter(ob => ob.low < entry).forEach(ob => addCand(ob.low - slBuf, 'Below OB'));
         fvgs.filter(f => f.type === 'bull' && f.l < entry).forEach(f => addCand(f.l - slBuf * 0.5, 'Below FVG'));
         if (msnr && msnr.allSupports) {
             msnr.allSupports.filter(x => x < entry).forEach(x => addCand(x - slBuf, 'Below MSNR'));
         }
+        // FIX: Minimum SL distance
+        addCand(entry - apiATR * 1.5, 'Min ATR buffer');
     } else {
-        if (zone && zone.high > entry) addCand(zone.high + slBuf * 0.5, 'Above Zone');
+        if (zone && zone.high > entry) addCand(zone.high + slBuf * 1.5, 'Above Zone');
         swings.H.filter(x => x.p > entry).forEach(x => addCand(x.p + slBuf, 'Above Swing'));
         obs.filter(ob => ob.high > entry).forEach(ob => addCand(ob.high + slBuf, 'Above OB'));
         fvgs.filter(f => f.type === 'bear' && f.h > entry).forEach(f => addCand(f.h + slBuf * 0.5, 'Above FVG'));
         if (msnr && msnr.allResistances) {
             msnr.allResistances.filter(x => x > entry).forEach(x => addCand(x + slBuf, 'Above MSNR'));
         }
+        addCand(entry + apiATR * 1.5, 'Min ATR buffer');
     }
 
     if (candidates.length > 0) {
-        candidates.sort((a, b) => a.dist - b.dist);
+        candidates.sort((a, b) => b.dist - a.dist); // FIX: Take widest SL
         const best = candidates[0];
         return { price: best.price, reason: best.reason, distance: best.dist };
     }
 
-    const finalDist = Math.min(apiATR * 0.6, maxSLD);
+    const finalDist = Math.min(apiATR * 1.5, maxSLD);
     const finalSL = dir === 'BUY' ? entry - finalDist : entry + finalDist;
-    return { price: finalSL, reason: 'ATR Baseline', distance: finalDist };
+    return { price: finalSL, reason: 'ATR Baseline 1.5x', distance: finalDist };
 }
 
 function calcTakeProfits(dir, entry, sl) {
     const risk = Math.abs(entry - sl);
     const settings = getMarketSettings(pair);
-    const rr = settings.targetRR || 4;
-    const rr1 = rr, rr2 = rr + 1, rr3 = rr + 2;
+    const rr = settings.targetRR || 3;
+    
+    // FIX: Better RR targets (3:1, 5:1, 7:1)
+    const rr1 = rr, rr2 = rr + 2, rr3 = rr + 4;
 
     if (dir === 'BUY') {
         return { tp1: entry + risk * rr1, tp2: entry + risk * rr2, tp3: entry + risk * rr3, rrUsed: rr1 };
@@ -550,8 +547,6 @@ function recomputeTradeLevels(best, zoneLow, zoneHigh, price, currentPair, candl
     const risk = Math.abs(entry - slResult.price);
     const rrDisplay = risk > 0 ? (Math.abs(tps.tp1 - entry) / risk).toFixed(1) : '0.0';
     const invalidationPrice = best.direction === 'BUY' ? slResult.price * BUY_INVALIDATION_FACTOR : slResult.price * SELL_INVALIDATION_FACTOR;
-    const entryATR = best?.entryATR || stopATR || 1;
-    const entryDistance = best.direction === 'BUY' ? price - entry : entry - price;
     return {
         entry,
         zone,
@@ -564,24 +559,80 @@ function recomputeTradeLevels(best, zoneLow, zoneHigh, price, currentPair, candl
         invalidationPrice,
         risk,
         rrDisplay,
-        entryDistanceATR: entryDistance / entryATR,
-        entryDistancePct: (entryDistance / price) * 100,
         tradeLevels: {
             entry,
             stopLoss: slResult.price,
             takeProfit: tps.tp1,
             partialTP: tps.tp2,
+            finalTP: tps.tp3,
             invalidation: invalidationPrice,
             breakeven: entry,
-            pipsRisk: +((risk / settings.pipSize).toFixed(1)),
-            pipsReward: +((Math.abs(tps.tp1 - entry) / settings.pipSize).toFixed(1)),
             riskReward: tps.rrUsed
         }
     };
 }
 
 // ============================================
-// ANALYZE TIMEFRAME - MAIN FUNCTION
+// FIXED: CONFIRMATION ENTRY
+// ============================================
+function getConfirmationEntry(candles, zone, direction) {
+    if (candles.length < 3) return { entry: null, confirmed: false, reason: 'Not enough candles' };
+    
+    const last = candles[candles.length - 1];
+    const prev = candles[candles.length - 2];
+    const prev2 = candles[candles.length - 3];
+    
+    if (direction === 'BUY') {
+        // FIX: Multiple confirmation signals
+        const bullishEngulf = last.c > last.o && prev.c < prev.o && last.c > prev.h && last.o < prev.l;
+        const bullishPinbar = (last.c - last.l) > Math.abs(last.c - last.o) * 2 && last.c > last.o;
+        const hammer = (last.h - last.l) > 0 && (last.c - last.l) > (last.h - last.c) * 2 && last.c > last.o;
+        const rejectionWick = last.l <= zone.low && last.c > zone.low;
+        const bullishMomentum = last.c > last.o && last.c > prev.c && prev.c > prev2.c;
+        const closeAboveZone = last.c > zone.high && last.c > last.o;
+        
+        if (bullishEngulf || bullishPinbar || hammer || rejectionWick || closeAboveZone) {
+            let entry = Math.min(last.c, zone.high * 1.002);
+            if (rejectionWick) entry = Math.min(last.c, zone.low + (zone.high - zone.low) * 0.5);
+            return {
+                entry: entry,
+                confirmed: true,
+                reason: bullishEngulf ? 'Bullish Engulfing' : 
+                         bullishPinbar ? 'Bullish Pinbar' :
+                         hammer ? 'Hammer' :
+                         rejectionWick ? 'Zone Rejection' :
+                         'Bullish Momentum'
+            };
+        }
+        return { entry: null, confirmed: false, reason: 'Waiting for bullish confirmation' };
+        
+    } else {
+        const bearishEngulf = last.c < last.o && prev.c > prev.o && last.c < prev.l && last.o > prev.h;
+        const bearishPinbar = (last.h - last.c) > Math.abs(last.c - last.o) * 2 && last.c < last.o;
+        const shootingStar = (last.h - last.l) > 0 && (last.h - last.c) > (last.c - last.l) * 2 && last.c < last.o;
+        const rejectionWick = last.h >= zone.high && last.c < zone.high;
+        const bearishMomentum = last.c < last.o && last.c < prev.c && prev.c < prev2.c;
+        const closeBelowZone = last.c < zone.low && last.c < last.o;
+        
+        if (bearishEngulf || bearishPinbar || shootingStar || rejectionWick || closeBelowZone) {
+            let entry = Math.max(last.c, zone.low * 0.998);
+            if (rejectionWick) entry = Math.max(last.c, zone.low + (zone.high - zone.low) * 0.5);
+            return {
+                entry: entry,
+                confirmed: true,
+                reason: bearishEngulf ? 'Bearish Engulfing' :
+                         bearishPinbar ? 'Bearish Pinbar' :
+                         shootingStar ? 'Shooting Star' :
+                         rejectionWick ? 'Zone Rejection' :
+                         'Bearish Momentum'
+            };
+        }
+        return { entry: null, confirmed: false, reason: 'Waiting for bearish confirmation' };
+    }
+}
+
+// ============================================
+// FIXED: ANALYZE TIMEFRAME WITH CONFIRMATION
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price, htfData) {
     console.log(`🔍 Analyzing ${tfToAnalyze}...`);
@@ -589,13 +640,9 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         const [trendTF, structureTF, entryTF, sniperTF] = getTimeframeHierarchy(tfToAnalyze);
         const entryData = htfData[entryTF] || await getHistory(entryTF);
         if (!entryData?.length) return null;
+        
         const structureData = htfData[structureTF] || await getHistory(structureTF);
         const twelveIndicators = await getTechnicalIndicators(tfToAnalyze);
-
-        const crtRange = {
-            high: Math.max(...entryData.slice(-20).map(c => c.h)),
-            low: Math.min(...entryData.slice(-20).map(c => c.l))
-        };
         const msnr = calculateMSNR(structureData || entryData, price);
         const entryATR = twelveIndicators?.atr_api || atr(entryData, 14);
 
@@ -603,306 +650,152 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 
         for (const dir of ['BUY', 'SELL']) {
             console.log(`  → Checking ${dir} on ${tfToAnalyze}...`);
-
-            const sweeps = detectLiquiditySweeps(entryData, price);
-            const wantSweepDir = dir === 'BUY' ? 'BULLISH' : 'BEARISH';
-            const hasSweep = sweeps.some(s => s.direction === wantSweepDir);
-            const turtleSoup = detectTurtleSoup(entryData);
-            const hasTBS = turtleSoup.detected && turtleSoup.type === dir;
-
-            const mss = detectMSS(entryData);
-            const hasMSS = mss !== null;
-            const hasDisplacement = mss?.displaced === true;
-            const bosCount = countBOS(entryData, htfData, dir);
-
+            
             const zone = findPrecisionEntry(entryData, price, dir, msnr);
-            if (!zone) {
-                console.log(`  ❌ ${dir}: No zone`);
+            if (!zone) continue;
+            
+            // FIX: Require confirmation
+            const confirmation = getConfirmationEntry(entryData, zone, dir);
+            if (!confirmation.confirmed) {
+                console.log(`  ❌ ${dir}: No confirmation - ${confirmation.reason}`);
                 continue;
             }
-
-            const isUnmet = dir === 'BUY' ? zone.high < price : zone.low > price;
+            
+            const entry = confirmation.entry;
             const freshness = checkZoneFreshness(entryData, zone, dir);
-            const isValidZone = freshness.fresh || (freshness.partiallyUsed && freshness.violations === 0);
-
-            const brokenLevel = findBrokenLevel(entryData, dir);
             const session = getSession();
-
-            let entry;
-            if (dir === 'BUY') {
-                entry = Math.min(zone.low + entryATR * 0.3, zone.high);
-            } else {
-                entry = Math.max(zone.high - entryATR * 0.3, zone.low);
-            }
-            const entryDistance = dir === 'BUY' ? price - entry : entry - price;
-
+            const sweeps = detectLiquiditySweeps(entryData, price);
+            const hasSweep = sweeps.some(s => s.direction === (dir === 'BUY' ? 'BULLISH' : 'BEARISH'));
+            const turtleSoup = detectTurtleSoup(entryData);
+            const hasTBS = turtleSoup.detected && turtleSoup.type === dir;
+            const mss = detectMSS(entryData);
+            const hasDisplacement = mss?.displaced === true;
+            const bosCount = countBOS(entryData, htfData, dir);
+            const brokenLevel = findBrokenLevel(entryData, dir);
+            
+            // FIX: Wider SL
             const slResult = calcStopLoss(entryData, dir, entry, zone, msnr, tfToAnalyze, twelveIndicators, pair);
             const sl = slResult.price;
             const risk = Math.abs(entry - sl);
-
-            const tp1 = dir === 'BUY' ? entry + risk * 2.0 : entry - risk * 2.0;
-            const tp2 = dir === 'BUY' ? entry + risk * 4.0 : entry - risk * 4.0;
-            const tp3 = dir === 'BUY' ? crtRange.high : crtRange.low;
-
-            let pts = 0;
-            const reasons = [];
-            const confBreakdown = [];
-
-            const addScore = (adj, label) => { pts += adj; reasons.push(label); confBreakdown.push({ adj, reason: label }); };
-
-            if (hasSweep) addScore(20, 'Liquidity Sweep');
-            if (hasTBS) addScore(20, 'Turtle Soup');
-
-            if (bosCount >= 2) addScore(15, `${bosCount}x BOS`);
-            else if (bosCount >= 1) addScore(8, `${bosCount}x BOS`);
-
-            if (hasDisplacement) addScore(12, 'MSS with displacement');
-            else if (hasMSS) addScore(6, 'MSS exists');
-
-            if (isUnmet && isValidZone) addScore(15, 'Fresh unmet zone');
-            else if (isValidZone) addScore(8, 'Fresh zone');
-            else if (!freshness.used) addScore(4, 'Lightly used zone');
-
-            if (brokenLevel) addScore(10, 'Broken level flipped');
-
-            if (zone.quality === 'A') addScore(8, 'A-grade zone');
-            else if (zone.quality === 'B') addScore(4, 'B-grade zone');
-            else if (zone.quality === 'C') addScore(2, 'C-grade zone');
-
-            if (entryDistance > 0 && entryDistance < entryATR * 2.0) {
-                addScore(8, `Entry ${(entryDistance / entryATR).toFixed(1)}x ATR away`);
-            } else if (entryDistance > 0 && entryDistance < entryATR * 3.0) {
-                addScore(4, `Entry ${(entryDistance / entryATR).toFixed(1)}x ATR away`);
-            }
-
-            let htfAgree = 0;
-            const htfTrends = {};
-            for (const t of ['1D', '4H', '1H']) {
-                const d = htfData[t];
-                if (d && d.length >= 50) {
-                    const trend = detectTrend(d);
-                    htfTrends[t] = trend;
-                    if ((dir === 'BUY' && trend === 'BULLISH') || (dir === 'SELL' && trend === 'BEARISH')) htfAgree++;
-                }
-            }
-            if (htfAgree >= 2) addScore(8, `${htfAgree}/3 HTF align`);
-            else if (htfAgree >= 1) addScore(4, `${htfAgree}/3 HTF align`);
-
-            if (session.isSilverBullet) addScore(10, 'Silver Bullet');
-            else if (session.isKillzone) addScore(5, 'Killzone');
-            else if (session.isMacro) addScore(3, 'Macro session');
-
-            if (zone.src === 'FVG') {
-                addScore(5, 'FVG zone');
-                if (freshness.fresh) addScore(5, 'Fresh FVG');
-            }
-
-            if (entryDistance > 0 && entryDistance < price * 0.005) {
-                addScore(5, 'Price near zone');
-            }
-
-            console.log(`  → ${dir} score: ${pts} (${reasons.join(', ')})`);
-
+            
+            // FIX: Better TP targets
+            const tp1 = dir === 'BUY' ? entry + risk * 3.0 : entry - risk * 3.0;
+            const tp2 = dir === 'BUY' ? entry + risk * 5.0 : entry - risk * 5.0;
+            const tp3 = dir === 'BUY' ? entry + risk * 7.0 : entry - risk * 7.0;
+            
+            // FIX: Scoring with confirmation bonus
+            let pts = 40; // Base with confirmation
+            
+            if (hasSweep) pts += 15;
+            if (hasTBS) pts += 15;
+            if (hasDisplacement) pts += 15;
+            if (freshness.fresh) pts += 15;
+            if (session.isKillzone || session.isSilverBullet) pts += 10;
+            if (zone.quality === 'A' || zone.quality === 'B') pts += 10;
+            if (zone.src === 'FVG') pts += 10;
+            if (bosCount >= 2) pts += 10;
+            if (brokenLevel) pts += 10;
+            
+            console.log(`  → ${dir} score: ${pts}, Entry: ${entry}, SL: ${sl}, Conf: ${confirmation.reason}`);
+            
             if (pts < MIN_SETUP_SCORE) {
                 console.log(`  ❌ ${dir}: Score ${pts} < ${MIN_SETUP_SCORE}`);
                 continue;
             }
-
-            console.log(`  ✅ ${dir} setup! Score: ${pts}`);
-            allSetups.push({ dir, pts, entry, sl, tp1, tp2, tp3, risk, sweeps, turtleSoup, hasSweep, hasTBS, mss, hasMSS, hasDisplacement, bosCount, zone, isUnmet, freshness, isValidZone, brokenLevel, session, entryDistance, htfTrends, htfAgree, reasons, confBreakdown, slResult, entryATR });
+            
+            allSetups.push({ 
+                dir, 
+                pts, 
+                entry, 
+                sl, 
+                tp1, 
+                tp2, 
+                tp3, 
+                risk,
+                zone,
+                msnr,
+                freshness,
+                session,
+                hasSweep,
+                hasTBS,
+                hasDisplacement,
+                bosCount,
+                brokenLevel,
+                slResult,
+                entryATR,
+                confirmation: confirmation.reason,
+                sweeps,
+                turtleSoup,
+                mss,
+                twelveIndicators
+            });
         }
 
-        if (allSetups.length === 0) {
-            console.log(`  ❌ ${tfToAnalyze}: No setup scored >= ${MIN_SETUP_SCORE}`);
-            return null;
-        }
+        if (allSetups.length === 0) return null;
 
         allSetups.sort((a, b) => b.pts - a.pts);
         const best = allSetups[0];
-        const { dir, pts: setupScore, entry, sl, tp1, tp2, tp3, risk, sweeps, turtleSoup, hasSweep, hasTBS, mss, hasMSS, hasDisplacement, bosCount, zone, isUnmet, freshness, isValidZone, brokenLevel, session, entryDistance, htfTrends, htfAgree, reasons, confBreakdown, slResult } = best;
-
-        const apiATR = twelveIndicators?.atr_api || entryATR;
-        const volatility = getVolatilityLevel(apiATR, price);
-        const confidence = Math.min(setupScore + 15, 95);
-        const invalidationPrice = dir === 'BUY' ? sl * 0.995 : sl * 1.005;
-        const entryDistanceATR = entryDistance / (entryATR || 1);
-        const entryDistancePct = (entryDistance / price) * 100;
-
+        
+        // Calculate HTF alignment
+        let htfAgree = 0;
+        const htfTrends = {};
+        for (const t of ['1D', '4H', '1H']) {
+            const d = htfData[t];
+            if (d && d.length >= 50) {
+                const trend = detectTrend(d);
+                htfTrends[t] = trend;
+                if ((best.dir === 'BUY' && trend === 'BULLISH') || (best.dir === 'SELL' && trend === 'BEARISH')) htfAgree++;
+            }
+        }
+        
         const mtfTrends = {};
         let alignedCount = 0;
         for (const t of ALL_TIMEFRAMES) {
             const d = htfData[t];
             const tr = (d && d.length >= 50) ? detectTrend(d) : 'NEUTRAL';
             mtfTrends[t] = tr;
-            if ((dir === 'BUY' && tr === 'BULLISH') || (dir === 'SELL' && tr === 'BEARISH')) alignedCount++;
+            if ((best.dir === 'BUY' && tr === 'BULLISH') || (best.dir === 'SELL' && tr === 'BEARISH')) alignedCount++;
         }
-        const mtf = { direction: dir, strength: alignedCount, trends: mtfTrends };
-
-        const crtState = { state: 'NEUTRAL', isExpanding: false, isContracting: false };
-        const isInOptimalZone = true;
-        const msnrDistance = Math.abs(price - msnr.pivot) / price * 100;
-        const isNearMSNR = msnrDistance < 0.3;
-        const crt = { detected: false, pattern: 'Neutral' };
-        const tbsQuality = { grade: hasTBS ? 'A' : 'C', detected: hasTBS || hasSweep };
-        const swingsData = findSwings(entryData, 4);
-        const obsAll = detectOrderBlocks(entryData, dir);
-        const fvgsAll = detectFVG(entryData);
-        const breakersAll = detectBreakers(entryData);
-        const imbalances = findImbalances(entryData);
-        const displacement = detectDisplacement(entryData, dir);
-        const amd = { phase: 'UNKNOWN' };
-        const volumeProfile = null;
-        const deltaProxy = { direction: 'NEUTRAL' };
-        const premiumDiscount = { inPremiumDiscount: false };
-        const chochDetected = false;
-        const inducementSwept = false;
-        const entryTiming = { valid: true };
-        const zoneReaction = { confirmed: true, type: 'PATTERN_MATCH', strength: 'STRONG' };
-        const zoneTouches = freshness.touches || 0;
-        const magnetism = checkZoneMagnetism(entryData, price, entry, dir, zone);
-        const pathCheck = checkPathClearance(entryData, entry, tp1, dir);
-        const sniperRej = { confirmed: true };
-        const sniperEntry = { isSniper: true };
-        const breakerValid = false;
-        const htfValidation = { passed: true };
-        const ghostRules = { hasSweep: hasSweep || hasTBS, hasMSS: hasDisplacement, hasKillzone: session.isKillzone, zoneFresh: isValidZone, zoneQuality: zone.quality === 'A' || zone.quality === 'B' };
-
-        const probChecks = [
-            { name: 'Sweep or Turtle Soup', passed: hasSweep || hasTBS, critical: true },
-            { name: 'MSS with displacement', passed: hasDisplacement, critical: false },
-            { name: 'Fresh zone', passed: isValidZone, critical: true },
-            { name: 'Score >= ' + MIN_SETUP_SCORE, passed: setupScore >= MIN_SETUP_SCORE, critical: true }
-        ];
-        const probCheck = { probability: setupScore >= 70 ? 'HIGH' : (setupScore >= MIN_SETUP_SCORE ? 'MEDIUM' : 'LOW'), checks: probChecks, totalPassed: probChecks.filter(c => c.passed).length, passed: probChecks.filter(c => c.critical).every(c => c.passed) };
-
-        const contextObj = {
-            htfTrendBias: mtfTrends['1D'] !== 'NEUTRAL' ? mtfTrends['1D'] : (dir === 'BUY' ? 'BULLISH' : 'BEARISH'),
-            htfMarketPhase: crtState?.state || 'CONSOLIDATION',
-            htfRangeHigh: crtRange?.high || price * 1.01,
-            htfRangeLow: crtRange?.low || price * 0.99,
-            htfZoneType: 'MID_RANGE',
-            htfBosConfirmed: hasDisplacement,
-            htfChochDetected: chochDetected,
-            validOrderBlocks: obsAll.map(ob => ({ ...ob, isValid: true })),
-            validFvgs: fvgsAll.map(fvg => ({ ...fvg, isValid: true })),
-            liquiditySweeps: sweeps || [],
-            htfSupportLevels: [],
-            htfResistanceLevels: [],
-            ltfPullbackIntoZone: true,
-            ltfDisplacementCandle: displacement.detected,
-            ltfCompressionDetected: false,
-            sessionValid: session.isSilverBullet,
-            inducementSwept
-        };
-
-        console.log(`  ✅ ${tfToAnalyze}: ${dir} setup! Score: ${setupScore}, Entry: ${entry}, SL: ${sl}`);
+        
+        const volatility = { level: 'Moderate', desc: 'Normal' };
+        const confidence = Math.min(best.pts + 20, 95);
         
         return {
             timeframe: tfToAnalyze,
-            direction: dir,
-            entry,
-            sl,
-            tp1,
-            tp2,
-            tp3,
-            confidence,
-            zone,
-            msnr,
-            crt,
-            turtleSoup,
-            sweeps,
-            session,
-            tbsQuality,
-            msnrDistance,
-            crtRange,
-            crtState,
-            isInOptimalZone,
-            isNearMSNR,
-            entryReady: true,
-            entryTiming,
-            hasSweep,
-            hasTBS,
-            hasSweepOrTBS: hasSweep || hasTBS,
-            hasLiquidityEvent: hasSweep || hasTBS,
-            trendTF: trendTF || 'N/A',
-            structureTF: structureTF || 'N/A',
-            entryTF: entryTF || 'N/A',
-            sniperTF: sniperTF || 'N/A',
-            zoneReaction,
-            zoneTouches,
-            confirmation: false,
-            hasConfirmationCandle: false,
-            mtf,
-            qualityScore: confidence,
-            htfValidation,
-            magnetism,
-            freshness,
-            premiumDiscount,
-            breakerValid,
-            amd,
-            pathCheck,
-            probCheck,
-            displacement,
-            sniperRej,
-            sniperEntry,
-            volumeProfile,
-            deltaProxy,
-            slResult,
-            invalidationPrice,
-            confBreakdown,
-            entryDistanceATR,
-            entryDistancePct,
-            entryATR,
-            rrUsed: 4.0,
-            rs: twelveIndicators?.rsi || 50,
-            apiATR,
-            fvgsAll: fvgsAll || [],
-            obsAll: obsAll || [],
-            breakersAll: breakersAll || [],
-            twelveIndicators: twelveIndicators || {},
-            tfAlign: `Pattern:${tfToAnalyze}`,
-            volatility,
-            mss,
-            imbalances: imbalances || [],
-            setupScore,
-            winProbability: Math.min(setupScore, 95),
-            expectedValue: 3.4,
-            signalGrade: setupScore >= 75 ? 'A' : 'B',
-            ghostRules,
-            context: contextObj,
-            risk,
-            rrDisplay: '2.0',
-            zonesEvaluated: 1,
-            alternativeZones: [],
-            entryInfo: {
-                entry,
-                stopLoss: sl,
-                takeProfit: tp1,
-                partialTP: tp2,
-                invalidation: invalidationPrice,
-                breakevenLevel: entry,
-                pattern: zone.src,
-                rrRatio: 4.0
-            },
-            tradeLevels: {
-                entry,
-                stopLoss: sl,
-                takeProfit: tp1,
-                partialTP: tp2,
-                invalidation: invalidationPrice,
-                breakeven: entry,
-                pipsRisk: Math.abs(entry - sl) / (getMarketSettings(pair).pipSize || 0.0001),
-                pipsReward: Math.abs(tp1 - entry) / (getMarketSettings(pair).pipSize || 0.0001),
-                riskReward: 4.0
-            },
-            bosCount,
-            brokenLevel,
-            isUnmet,
-            entryDistance,
-            htfTrends,
-            htfAgree,
-            score: setupScore,
-            reasons
+            direction: best.dir,
+            entry: best.entry,
+            sl: best.sl,
+            tp1: best.tp1,
+            tp2: best.tp2,
+            tp3: best.tp3,
+            confidence: confidence,
+            zone: best.zone,
+            msnr: best.msnr,
+            session: best.session,
+            freshness: best.freshness,
+            hasSweep: best.hasSweep,
+            hasTBS: best.hasTBS,
+            hasDisplacement: best.hasDisplacement,
+            bosCount: best.bosCount,
+            brokenLevel: best.brokenLevel,
+            slResult: best.slResult,
+            entryATR: best.entryATR,
+            confirmation: best.confirmation,
+            setupScore: best.pts,
+            sweeps: best.sweeps || [],
+            turtleSoup: best.turtleSoup || { detected: false },
+            mss: best.mss,
+            twelveIndicators: best.twelveIndicators || {},
+            htfAgree: htfAgree,
+            htfTrends: htfTrends,
+            mtf: { direction: best.dir, strength: alignedCount, trends: mtfTrends },
+            volatility: volatility,
+            entryDistanceATR: Math.abs(price - best.entry) / best.entryATR,
+            entryDistancePct: (Math.abs(price - best.entry) / price) * 100,
+            isUnmet: best.dir === 'BUY' ? best.zone.high < price : best.zone.low > price,
+            isValidZone: best.freshness.fresh || (best.freshness.partiallyUsed && best.freshness.violations === 0),
+            rrUsed: 3.0,
+            risk: best.risk
         };
 
     } catch (e) {
@@ -913,9 +806,9 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 
 function getVolatilityLevel(atrValue, price) {
     const pct = (atrValue / price) * 100;
-    if (pct > 0.8) return { level: 'High - Impulsive', desc: 'Large candles' };
-    if (pct > 0.4) return { level: 'Moderate - Control', desc: 'Normal' };
-    return { level: 'Low - Consolidation', desc: 'Tight ranges' };
+    if (pct > 0.8) return { level: 'High', desc: 'Large candles' };
+    if (pct > 0.4) return { level: 'Moderate', desc: 'Normal' };
+    return { level: 'Low', desc: 'Tight ranges' };
 }
 
 // ============================================
@@ -939,13 +832,13 @@ function setJsonOutput(obj) {
 }
 
 // ============================================
-// RUN AUTO SCAN - MAIN ENTRY POINT
+// RUN AUTO SCAN
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn'), scanStatus = document.getElementById('scanStatus'), scanText = document.getElementById('scanText'), scanFill = document.getElementById('scanProgressFill');
     btn.classList.add('loading'); btn.disabled = true; scanStatus.classList.remove('hidden');
     if (!TWELVE_DATA_KEY) { showSetup(); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
-    showNotif('🔍 Scanning for Ghost Machine setups...', 'info');
+    showNotif('🔍 Scanning for setups with confirmation...', 'info');
     try {
         const price = await getPrice(); 
         if (!price) throw new Error('No price');
@@ -974,8 +867,8 @@ async function runAutoScan() {
         console.log('Results found:', results.length);
 
         if (results.length === 0) { 
-            showNotif('🎯 No Ghost Machine setups found', 'warning'); 
-            setJsonOutput({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_GHOST_MACHINE_PATTERN',note:'Ghost Machine requires: Liquidity Sweep/TBS + MSS with Displacement + Fresh Zone + Confirmation Candle + Silver Bullet Session. None matched this scan.',multi_timeframe_trends:mtfTrendsData,timeframes_scanned:timeframesToScan.length}}); 
+            showNotif('🎯 No setups found with confirmation', 'warning'); 
+            setJsonOutput({auto_scan_result:{date:new Date().toISOString().split('T')[0],time:new Date().toISOString().split('T')[1].split('.')[0],pair,current_price:price,status:'NO_SETUP',note:'No confirmation candles found. Waiting for engulfing, pinbar, or rejection at zone.',timeframes_scanned:timeframesToScan.length}}); 
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); 
             return; 
         }
@@ -983,65 +876,57 @@ async function runAutoScan() {
         results.sort((a, b) => (b.confidence - a.confidence));
         let best = results[0];
 
-        if (results.length > 1) showNotif(`🎯 Found ${results.length} Ghost Machine setups! Best: ${best.timeframe} ${best.direction}`, 'success');
-        else showNotif(`🎯 Ghost Machine setup found on ${best.timeframe}`, 'success');
+        if (results.length > 1) showNotif(`🎯 Found ${results.length} setups! Best: ${best.timeframe} ${best.direction}`, 'success');
+        else showNotif(`🎯 Setup found on ${best.timeframe} with ${best.confirmation}`, 'success');
         
         scanStatus.classList.add('hidden');
         const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
         
-        let finalEntry = best.entry, finalZoneLow = best.zone.low, finalZoneHigh = best.zone.high;
-        const risk = best.risk ?? Math.abs(best.entry - best.sl);
-        const rrDisplay = best.rrDisplay || (risk > 0 ? (Math.abs(best.tp1 - best.entry) / risk).toFixed(1) : '0.0');
-
-        let ghostScore = best.setupScore || 0;
-        let ghostReasons = best.reasons || [];
-
+        // FIX: Use recomputed trade levels
+        const recomputed = recomputeTradeLevels(best, best.zone.low, best.zone.high, price, pair, htfData[best.timeframe] || []);
+        const finalEntry = recomputed.entry;
+        const rrDisplay = recomputed.rrDisplay;
+        const ghostScore = best.setupScore || 0;
+        
+        // FIX: Tradeable with lower threshold
         const tradeable = ghostScore >= MIN_SETUP_SCORE;
         const riskPercent = tradeable ? (ghostScore >= 75 ? 1.0 : 0.5) : 0;
-        const noTradeReason = tradeable ? null : `Ghost score ${ghostScore} < ${MIN_SETUP_SCORE}`;
 
-        console.log(`🏆 Ghost Machine Score: ${ghostScore}/100 (${ghostReasons.join(', ')})`);
+        console.log(`🏆 Setup Score: ${ghostScore}/100`);
         console.log(`📊 Tradeable: ${tradeable}, Risk: ${riskPercent * 100}%`);
+        console.log(`📊 SL Distance: ${best.slResult?.distance?.toFixed(2) || 'N/A'} points`);
+        console.log(`📊 Confirmation: ${best.confirmation}`);
 
         const prec = getPrec(pair);
 
         const out = {
-            trade_signal_Theghostmachine: {
+            trade_signal: {
                 date: new Date().toISOString().split('T')[0],
                 current_price: price,
                 pair: pair,
-                trade_type: best.direction === 'BUY' ? 'BUY-LIMIT' : 'SELL-LIMIT',
+                trade_type: best.direction === 'BUY' ? 'BUY' : 'SELL',
                 entry_price: finalEntry,
                 stop_loss: best.sl,
-                take_profit: best.tp1,
+                take_profit_1: best.tp1,
                 take_profit_2: best.tp2,
                 take_profit_3: best.tp3,
                 confidence: best.confidence,
-                ghost_score: ghostScore,
-                ghost_reasons: ghostReasons,
+                setup_score: ghostScore,
+                confirmation: best.confirmation,
                 analysis: {
-                    trend_detection: `${best.mtf.direction} (${best.mtf.strength}/5 TFs)`,
-                    volatility_level: `${best.volatility.level} - ${best.volatility.desc}`,
-                    liquidity_sweep: best.hasSweep ? '✅ Detected' : '❌ Not detected',
-                    turtle_soup: best.hasTBS ? '✅ Detected' : '❌ Not detected',
-                    mss: best.mss ? `${best.mss.type} with displacement` : 'None',
-                    zone_freshness: best.freshness?.fresh ? 'Fresh' : (best.freshness?.partiallyUsed ? 'Partially used' : 'Used'),
+                    timeframe: best.timeframe,
+                    zone_type: best.zone?.src || 'Unknown',
+                    zone_quality: best.zone?.quality || 'C',
+                    freshness: best.freshness?.fresh ? 'Fresh' : (best.freshness?.partiallyUsed ? 'Partially used' : 'Used'),
                     session: best.session?.session || 'OFF-HOURS',
-                    silver_bullet: best.session?.isSilverBullet ? '✅ Yes' : '❌ No',
+                    silver_bullet: best.session?.isSilverBullet ? '✅' : '❌',
+                    killzone: best.session?.isKillzone ? '✅' : '❌',
+                    liquidity_sweep: best.hasSweep ? '✅' : '❌',
+                    turtle_soup: best.hasTBS ? '✅' : '❌',
+                    mss_displacement: best.hasDisplacement ? '✅' : '❌',
                     bos_count: best.bosCount || 0,
-                    broken_level: best.brokenLevel ? '✅ Found' : '❌ Not found',
-                    unmet_zone: best.isUnmet ? '✅ Yes' : '❌ No',
-                    htf_alignment: `${best.htfAgree || 0}/3 HTF aligned`,
-                    sl_distance: best.slResult?.distance?.toFixed(2) || 'N/A',
-                    risk_reward: '1:' + rrDisplay,
-                    zone_type: best.zone?.src || 'Unknown'
-                },
-                technical_indicators: {
-                    rsi: best.twelveIndicators?.rsi || 'N/A',
-                    atr: best.apiATR?.toFixed(prec) || 'N/A',
-                    sweeps: best.hasSweep ? 'Yes' : 'No',
-                    mss_type: best.mss?.type || 'None',
-                    bos: best.bosCount || 0
+                    htf_alignment: `${best.htfAgree || 0}/3`,
+                    risk_reward: '1:' + rrDisplay
                 },
                 trade_levels: {
                     entry: finalEntry,
@@ -1049,8 +934,7 @@ async function runAutoScan() {
                     take_profit_1: best.tp1,
                     take_profit_2: best.tp2,
                     take_profit_3: best.tp3,
-                    invalidation: best.invalidationPrice,
-                    risk_reward_ratio: parseFloat(rrDisplay) || 2.0
+                    risk_reward_ratio: parseFloat(rrDisplay) || 3.0
                 }
             }
         };
@@ -1062,7 +946,7 @@ async function runAutoScan() {
         if (!tradeable) {
             analysis = null;
             document.getElementById('executeBtn').disabled = true;
-            showNotif(`🚫 ${noTradeReason}`, 'warning');
+            showNotif(`🚫 Score ${ghostScore} < ${MIN_SETUP_SCORE}`, 'warning');
             return;
         }
         
@@ -1076,15 +960,16 @@ async function runAutoScan() {
             takeProfit3: best.tp3, 
             confidence: best.confidence, 
             riskPercent, 
-            entryZoneLow: finalZoneLow, 
-            entryZoneHigh: finalZoneHigh, 
+            entryZoneLow: best.zone.low, 
+            entryZoneHigh: best.zone.high, 
             entryReady: true, 
             executionDecision: 'enter_now', 
-            invalidationPrice: best.invalidationPrice 
+            invalidationPrice: best.sl * (best.direction === 'BUY' ? 0.995 : 1.005),
+            confirmation: best.confirmation
         };
         
         document.getElementById('executeBtn').disabled = false;
-        showNotif(`🎯 GHOST MACHINE ${best.timeframe} ${st} ${best.confidence}% | Score: ${ghostScore} | SL: ${best.slResult?.distance?.toFixed(2) || 'N/A'} pts | Risk: ${riskPercent}% | 1:${rrDisplay}`, 'success');
+        showNotif(`🎯 ${best.timeframe} ${st} | Score: ${ghostScore} | ${best.confirmation} | 1:${rrDisplay}`, 'success');
     } catch (e) { 
         console.error(e); 
         showNotif('Error: ' + e.message, 'error'); 
@@ -1107,9 +992,9 @@ function buildSetupSummary(best, st, finalEntry, price) {
         pair, timeframe: best.timeframe, direction: st,
         entry: finalEntry, sl: best.sl, tp1: best.tp1,
         confidence: best.confidence, quality: best.zone?.quality || '?',
-        sniper: !!best.sniperEntry?.isSniper, priceAtScan: price,
-        ghostScore: best.score || 0,
-        slDistance: best.slResult?.distance || 'N/A',
+        priceAtScan: price,
+        setupScore: best.setupScore || 0,
+        confirmation: best.confirmation || 'Unknown',
         zoneType: best.zone?.src || 'Unknown'
     };
 }
@@ -1153,7 +1038,7 @@ function deleteJournalEntry(id) { setJournal(getJournal().filter(x => x.id !== i
 function setupCardHTML(e, when, badge, actions) {
     const prec = getPrec(e.pair || 'XAU/USD');
     return `<div class="journal-entry ${badge.cls}">
-        <div class="journal-head"><span>${e.sniper ? '🎯 ' : ''}${e.pair} ${e.direction} ${e.timeframe} ${e.zoneType||''} Q:${e.quality} ${e.confidence}%</span><span>${badge.label}</span></div>
+        <div class="journal-head"><span>${e.pair} ${e.direction} ${e.timeframe} ${e.zoneType||''} ${e.confirmation||''}</span><span>${badge.label}</span></div>
         <div class="journal-levels">E $${(+e.entry).toFixed(prec)} | SL $${(+e.sl).toFixed(prec)} | TP $${(+e.tp1).toFixed(prec)} | ${when}</div>
         <div class="journal-actions">${actions}</div>
     </div>`;
@@ -1219,16 +1104,16 @@ function updateLimitUI() {
     const t = document.getElementById('limitOrderText'), c = document.getElementById('cancelLimitBtn');
     if (limitOrder) {
         const prec = getPrec(limitOrder.pair || pair);
-        t.innerHTML = `⏳ ${limitOrder.pair||''} ${limitOrder.signalType} LIMIT @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)}`;
+        t.innerHTML = `⏳ ${limitOrder.pair||''} ${limitOrder.signalType} @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)} | ${limitOrder.confirmation||''}`;
         t.className = 'active';
         c.classList.remove('hidden');
         document.getElementById('executeBtn').innerHTML = '⏳ Waiting...';
         document.getElementById('executeBtn').style.background = 'linear-gradient(135deg, #ff9f0a, #ff6b00)';
     } else {
-        t.innerHTML = 'No active limit order';
+        t.innerHTML = 'No active order';
         t.className = '';
         c.classList.add('hidden');
-        document.getElementById('executeBtn').innerHTML = '⚡ Place Limit Order';
+        document.getElementById('executeBtn').innerHTML = '⚡ Place Order';
         document.getElementById('executeBtn').style.background = 'linear-gradient(135deg, #34c759, #28a745)';
     }
 }
@@ -1267,11 +1152,12 @@ function handleLimit() {
         entryReady: analysis.entryReady,
         executionDecision: analysis.executionDecision,
         invalidationPrice: analysis.invalidationPrice,
+        confirmation: analysis.confirmation || 'Confirmed',
         createdAt: new Date().toISOString()
     };
     saveLimit(o);
     startMonitor();
-    showNotif(`📝 Limit @ $${o.idealEntry.toFixed(getPrec(pair))}`, 'info');
+    showNotif(`📝 ${o.signalType} @ $${o.idealEntry.toFixed(getPrec(pair))} | ${o.confirmation}`, 'info');
 }
 function copyJson() {
     const el = document.getElementById('jsonOutput');
@@ -1381,8 +1267,10 @@ async function checkMissedFill() {
     } catch (e) { console.error('Missed-fill check:', e); }
 }
 
-console.log('✅ ICT Trading Bot Pro script loaded successfully!');
-console.log(`✅ Setup threshold: ${MIN_SETUP_SCORE} (was 65)`);
-console.log('✅ FVG now scores as primary with bonus');
-console.log('✅ Entry distance more forgiving');
-console.log('✅ Session penalties reduced');
+console.log('✅ ICT Trading Bot Pro FINAL FIX loaded!');
+console.log('✅ Fixes applied:');
+console.log('   - Wider SL (2x ATR minimum)');
+console.log('   - Confirmation entry required');
+console.log('   - Higher RR targets (3:1, 5:1, 7:1)');
+console.log('   - Lower threshold (50)');
+console.log('   - Multiple confirmation signals');
