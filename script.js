@@ -35,11 +35,11 @@ function getTimeframeHierarchy(selectedTF) {
 }
 
 function getMarketSettings(p) {
-    if (p.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 3, prec: 2, pipSize: 0.1, slBuffers: { '5M': 2, '15M': 3, '1H': 5, '4H': 8, '1D': 15 } };
-    if (p.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.015, targetRR: 3, prec: 2, pipSize: 0.01, slBuffers: { '5M': 0.03, '15M': 0.05, '1H': 0.08, '4H': 0.12, '1D': 0.20 } };
-    if (p.includes('JPY')) return { slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 3, prec: 3, pipSize: 0.01, slBuffers: { '5M': 0.08, '15M': 0.12, '1H': 0.20, '4H': 0.35, '1D': 0.60 } };
-    if (p === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.02, targetRR: 3, prec: 2, pipSize: 1, slBuffers: { '5M': 30, '15M': 50, '1H': 80, '4H': 120, '1D': 200 } };
-    return { slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.01, targetRR: 3, prec: 5, pipSize: 0.0001, slBuffers: { '5M': 0.0003, '15M': 0.0005, '1H': 0.0008, '4H': 0.0012, '1D': 0.0020 } };
+    if (p.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.1, slBuffers: { '5M': 2, '15M': 3, '1H': 5, '4H': 8, '1D': 15 } };
+    if (p.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.01, slBuffers: { '5M': 0.03, '15M': 0.05, '1H': 0.08, '4H': 0.12, '1D': 0.20 } };
+    if (p.includes('JPY')) return { slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01, slBuffers: { '5M': 0.08, '15M': 0.12, '1H': 0.20, '4H': 0.35, '1D': 0.60 } };
+    if (p === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.02, targetRR: 2.5, prec: 2, pipSize: 1, slBuffers: { '5M': 30, '15M': 50, '1H': 80, '4H': 120, '1D': 200 } };
+    return { slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.01, targetRR: 2.5, prec: 5, pipSize: 0.0001, slBuffers: { '5M': 0.0003, '15M': 0.0005, '1H': 0.0008, '4H': 0.0012, '1D': 0.0020 } };
 }
 
 function getSLBufferForTF(apiATR, tfUsed, currentPair) {
@@ -258,7 +258,7 @@ async function getTechnicalIndicators(tfUsed){
 }
 
 // ============================================
-// TECHNICALS MATH (SHORT VERSION - ALL FUNCTIONS EXIST)
+// TECHNICALS MATH
 // ============================================
 const ema=(p,n)=>{const m=2/(n+1);let e=[p[0]];for(let i=1;i<p.length;i++)e.push((p[i]-e[i-1])*m+e[i-1]);return e;};
 const atr=(d,n=14)=>{let t=[];for(let i=1;i<d.length;i++)t.push(Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c)));return t.slice(-n).reduce((a,b)=>a+b,0)/n;};
@@ -472,17 +472,98 @@ function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, cu
     return { price: finalSL, reason: 'ATR Baseline 1.5x', distance: finalDist };
 }
 
-function calcTakeProfits(dir, entry, sl) {
+// ============================================
+// FIXED: SMARTER TAKE PROFIT CALCULATION
+// ============================================
+function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
     const risk = Math.abs(entry - sl);
     const settings = getMarketSettings(pair);
-    const rr = settings.targetRR || 3;
-    const rr1 = rr, rr2 = rr + 2, rr3 = rr + 4;
-
-    if (dir === 'BUY') {
-        return { tp1: entry + risk * rr1, tp2: entry + risk * rr2, tp3: entry + risk * rr3, rrUsed: rr1 };
-    } else {
-        return { tp1: entry - risk * rr1, tp2: entry - risk * rr2, tp3: entry - risk * rr3, rrUsed: rr1 };
+    
+    // Get ATR from Twelve Data
+    const apiATR = twelveIndicators?.atr_api || atr(data, 14);
+    
+    // Calculate average daily range from recent data
+    let avgRange = 0;
+    if (data && data.length > 20) {
+        const recent = data.slice(-20);
+        const ranges = recent.map(c => c.h - c.l);
+        avgRange = ranges.reduce((a, b) => a + b, 0) / ranges.length;
     }
+    
+    // FIX: Dynamic RR based on ATR and market conditions
+    // If risk is already large (>= 2x ATR), use smaller RR
+    const riskInATR = risk / apiATR;
+    
+    let rr1, rr2, rr3;
+    
+    if (riskInATR >= 2.0) {
+        // SL is already wide, use conservative RR
+        rr1 = 1.5;
+        rr2 = 2.5;
+        rr3 = 3.5;
+    } else if (riskInATR >= 1.5) {
+        // SL is moderate
+        rr1 = 2.0;
+        rr2 = 3.0;
+        rr3 = 4.0;
+    } else {
+        // SL is tight, use standard RR
+        rr1 = 2.5;
+        rr2 = 4.0;
+        rr3 = 5.5;
+    }
+    
+    // Cap RR based on average daily range
+    // Don't set TP beyond 80% of average daily range
+    const maxTPDistance = avgRange > 0 ? avgRange * 0.8 : apiATR * 2.0;
+    
+    let tp1 = dir === 'BUY' ? entry + risk * rr1 : entry - risk * rr1;
+    let tp2 = dir === 'BUY' ? entry + risk * rr2 : entry - risk * rr2;
+    let tp3 = dir === 'BUY' ? entry + risk * rr3 : entry - risk * rr3;
+    
+    // Ensure TPs are capped by average daily range
+    if (dir === 'BUY') {
+        const maxTP = entry + maxTPDistance;
+        const minTP = entry + (apiATR * 0.5);
+        
+        tp1 = Math.min(tp1, maxTP);
+        tp1 = Math.max(tp1, minTP);
+        
+        tp2 = Math.min(tp2, maxTP * 1.2);
+        tp3 = Math.min(tp3, maxTP * 1.5);
+    } else {
+        const maxTP = entry - maxTPDistance;
+        const minTP = entry - (apiATR * 0.5);
+        
+        tp1 = Math.max(tp1, maxTP);
+        tp1 = Math.min(tp1, minTP);
+        
+        tp2 = Math.max(tp2, maxTP * 1.2);
+        tp3 = Math.max(tp3, maxTP * 1.5);
+    }
+    
+    // Ensure TP1 is at least 1x ATR away
+    if (Math.abs(tp1 - entry) < apiATR * 0.5) {
+        tp1 = dir === 'BUY' ? entry + apiATR * 0.5 : entry - apiATR * 0.5;
+    }
+    
+    // Calculate actual RR
+    const actualRR1 = Math.abs(tp1 - entry) / risk;
+    const actualRR2 = Math.abs(tp2 - entry) / risk;
+    const actualRR3 = Math.abs(tp3 - entry) / risk;
+    
+    return {
+        tp1: tp1,
+        tp2: tp2,
+        tp3: tp3,
+        rrUsed: actualRR1,
+        rr2Used: actualRR2,
+        rr3Used: actualRR3,
+        riskInATR: riskInATR,
+        avgRange: avgRange,
+        atr: apiATR,
+        maxTPDistance: maxTPDistance
+    };
 }
 
 function recomputeTradeLevels(best, zoneLow, zoneHigh, price, currentPair, candles = []) {
@@ -492,11 +573,17 @@ function recomputeTradeLevels(best, zoneLow, zoneHigh, price, currentPair, candl
     const entry = Math.round(((zoneLow + zoneHigh) / 2) * factor) / factor;
     const zone = { ...(best.zone || {}), low: zoneLow, high: zoneHigh, p: entry };
     const stopATR = best?.entryATR || 1;
-    const slResult = calcStopLoss(candles, best.direction, entry, zone, best.msnr, best.timeframe || best.entryTF, { atr_api: stopATR }, currentPair || pair);
-    const tps = calcTakeProfits(best.direction, entry, slResult.price);
+    const twelveIndicators = best?.twelveIndicators || {};
+    
+    const slResult = calcStopLoss(candles, best.direction, entry, zone, best.msnr, best.timeframe || best.entryTF, { atr_api: stopATR, ...twelveIndicators }, currentPair || pair);
+    
+    // FIX: Use smarter TP calculation with ATR and average range
+    const tps = calcTakeProfits(best.direction, entry, slResult.price, candles, { atr_api: stopATR, ...twelveIndicators });
+    
     const risk = Math.abs(entry - slResult.price);
     const rrDisplay = risk > 0 ? (Math.abs(tps.tp1 - entry) / risk).toFixed(1) : '0.0';
     const invalidationPrice = best.direction === 'BUY' ? slResult.price * BUY_INVALIDATION_FACTOR : slResult.price * SELL_INVALIDATION_FACTOR;
+    
     return {
         entry,
         zone,
@@ -505,10 +592,16 @@ function recomputeTradeLevels(best, zoneLow, zoneHigh, price, currentPair, candl
         tp2: tps.tp2,
         tp3: tps.tp3,
         rrUsed: tps.rrUsed,
+        rr2Used: tps.rr2Used,
+        rr3Used: tps.rr3Used,
         slResult,
         invalidationPrice,
         risk,
-        rrDisplay
+        rrDisplay,
+        riskInATR: tps.riskInATR,
+        avgRange: tps.avgRange,
+        atr: tps.atr,
+        maxTPDistance: tps.maxTPDistance
     };
 }
 
@@ -563,10 +656,9 @@ function getConfirmationEntry(candles, zone, direction) {
 }
 
 // ============================================
-// SIMPLIFIED AI DECISION - FIXED
+// SIMPLIFIED AI DECISION
 // ============================================
 async function getAIExecutionDecision(best, price, htfData) {
-    // If no API key, use smart fallback
     if (!DEEPSEEK_API_KEY) {
         return getSmartFallbackDecision(best, price);
     }
@@ -576,7 +668,6 @@ async function getAIExecutionDecision(best, price, htfData) {
     const dailyDir = await getQuoteDirection('1D', htfData['1D']);
     const h4Dir = await getQuoteDirection('4H', htfData['4H']);
     
-    // SIMPLIFIED PROMPT - clear and direct
     const prompt = `ICT TRADE EXECUTION DECISION
 
 Setup Score: ${best.setupScore}/100
@@ -637,18 +728,15 @@ Return ONLY JSON:
                     skip_reason: decision === 'skip' ? parsed.reason || 'Setup failed AI criteria' : null
                 };
             } catch (e) {
-                console.log('AI parse error, using fallback');
                 return getSmartFallbackDecision(best, price);
             }
         }
         return getSmartFallbackDecision(best, price);
     } catch (error) {
-        console.log('AI error, using fallback:', error);
         return getSmartFallbackDecision(best, price);
     }
 }
 
-// SMART FALLBACK DECISION - FIXED
 function getSmartFallbackDecision(best, price) {
     const score = best.setupScore || 0;
     const hasConfirmation = !!best.confirmation;
@@ -657,10 +745,8 @@ function getSmartFallbackDecision(best, price) {
     const htfAgree = best.htfAgree || 0;
     const isFresh = best.freshness?.fresh || false;
     const zoneQuality = best.zone?.quality || 'C';
-    const distancePct = best.entryDistancePct || 100;
     const isFVG = best.zone?.src === 'FVG';
     
-    // ENTER NOW conditions
     if (score >= 70 && hasConfirmation && isGoodSession && htfAgree >= 1 && isFresh) {
         return {
             decision: 'enter_now',
@@ -674,7 +760,6 @@ function getSmartFallbackDecision(best, price) {
         };
     }
     
-    // ENTER NOW for FVG with good conditions
     if (isFVG && score >= 60 && hasConfirmation && isFresh) {
         return {
             decision: 'enter_now',
@@ -688,7 +773,6 @@ function getSmartFallbackDecision(best, price) {
         };
     }
     
-    // WAIT FOR REACTION conditions
     if (score >= 55 && hasConfirmation) {
         return {
             decision: 'wait_for_reaction',
@@ -702,7 +786,6 @@ function getSmartFallbackDecision(best, price) {
         };
     }
     
-    // WAIT FOR REACTION for FVG
     if (isFVG && score >= 50) {
         return {
             decision: 'wait_for_reaction',
@@ -716,7 +799,6 @@ function getSmartFallbackDecision(best, price) {
         };
     }
     
-    // SKIP conditions
     if (score < 45) {
         return {
             decision: 'skip',
@@ -743,7 +825,6 @@ function getSmartFallbackDecision(best, price) {
         };
     }
     
-    // Default - wait
     return {
         decision: 'wait_for_reaction',
         confidence: 55,
@@ -801,9 +882,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const sl = slResult.price;
             const risk = Math.abs(entry - sl);
             
-            const tp1 = dir === 'BUY' ? entry + risk * 3.0 : entry - risk * 3.0;
-            const tp2 = dir === 'BUY' ? entry + risk * 5.0 : entry - risk * 5.0;
-            const tp3 = dir === 'BUY' ? entry + risk * 7.0 : entry - risk * 7.0;
+            // FIX: Use smarter TP calculation
+            const tps = calcTakeProfits(dir, entry, sl, entryData, twelveIndicators);
             
             let pts = 40;
             if (hasSweep) pts += 15;
@@ -816,7 +896,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             if (bosCount >= 2) pts += 10;
             if (brokenLevel) pts += 10;
             
-            console.log(`  → ${dir} score: ${pts}, Entry: ${entry}, SL: ${sl}, Conf: ${confirmation.reason}`);
+            console.log(`  → ${dir} score: ${pts}, Entry: ${entry}, SL: ${sl}, TP1: ${tps.tp1}, Conf: ${confirmation.reason}`);
             
             if (pts < MIN_SETUP_SCORE) {
                 console.log(`  ❌ ${dir}: Score ${pts} < ${MIN_SETUP_SCORE}`);
@@ -828,9 +908,9 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 pts, 
                 entry, 
                 sl, 
-                tp1, 
-                tp2, 
-                tp3, 
+                tp1: tps.tp1,
+                tp2: tps.tp2,
+                tp3: tps.tp3,
                 risk,
                 zone,
                 msnr,
@@ -850,7 +930,14 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 twelveIndicators,
                 entryDistance: Math.abs(price - entry),
                 entryDistanceATR: Math.abs(price - entry) / entryATR,
-                entryDistancePct: (Math.abs(price - entry) / price) * 100
+                entryDistancePct: (Math.abs(price - entry) / price) * 100,
+                rrUsed: tps.rrUsed,
+                rr2Used: tps.rr2Used,
+                rr3Used: tps.rr3Used,
+                riskInATR: tps.riskInATR,
+                avgRange: tps.avgRange,
+                atr: tps.atr,
+                maxTPDistance: tps.maxTPDistance
             });
         }
 
@@ -915,7 +1002,13 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             entryDistancePct: best.entryDistancePct,
             isUnmet: best.dir === 'BUY' ? best.zone.high < price : best.zone.low > price,
             isValidZone: best.freshness.fresh || (best.freshness.partiallyUsed && best.freshness.violations === 0),
-            rrUsed: 3.0,
+            rrUsed: best.rrUsed,
+            rr2Used: best.rr2Used,
+            rr3Used: best.rr3Used,
+            riskInATR: best.riskInATR,
+            avgRange: best.avgRange,
+            atr: best.atr,
+            maxTPDistance: best.maxTPDistance,
             risk: best.risk
         };
 
@@ -946,7 +1039,7 @@ function setJsonOutput(obj) {
 }
 
 // ============================================
-// RUN AUTO SCAN WITH AI
+// RUN AUTO SCAN
 // ============================================
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn'), scanStatus = document.getElementById('scanStatus'), scanText = document.getElementById('scanText'), scanFill = document.getElementById('scanProgressFill');
@@ -988,19 +1081,22 @@ async function runAutoScan() {
         results.sort((a, b) => (b.confidence - a.confidence));
         let best = results[0];
         
-        // Get AI execution decision
         scanText.innerHTML = '🤖 AI analyzing execution...';
         const aiDecision = await getAIExecutionDecision(best, price, htfData);
         scanStatus.classList.add('hidden');
 
         const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
         
+        // FIX: Use recomputed levels with smarter TPs
         const recomputed = recomputeTradeLevels(best, best.zone.low, best.zone.high, price, pair, htfData[best.timeframe] || []);
         const finalEntry = recomputed.entry;
+        const finalSL = recomputed.sl;
+        const finalTP1 = recomputed.tp1;
+        const finalTP2 = recomputed.tp2;
+        const finalTP3 = recomputed.tp3;
         const rrDisplay = recomputed.rrDisplay;
         const ghostScore = best.setupScore || 0;
         
-        // Determine if tradeable
         const tradeable = aiDecision.decision !== 'skip' && ghostScore >= MIN_SETUP_SCORE;
         const riskPercent = tradeable ? (aiDecision.risk_adjustment || 1.0) * (ghostScore >= 75 ? 1.0 : 0.5) : 0;
         const noTradeReason = aiDecision.decision === 'skip' ? aiDecision.skip_reason : (ghostScore < MIN_SETUP_SCORE ? `Score ${ghostScore} < ${MIN_SETUP_SCORE}` : null);
@@ -1008,7 +1104,9 @@ async function runAutoScan() {
         console.log(`🏆 Setup Score: ${ghostScore}/100`);
         console.log(`🤖 AI Decision: ${aiDecision.decision} (${aiDecision.confidence}%)`);
         console.log(`📊 Risk: ${riskPercent * 100}%`);
-        console.log(`📊 AI Reasoning: ${aiDecision.reasoning}`);
+        console.log(`📊 RR: 1:${rrDisplay}`);
+        console.log(`📊 TP1: ${finalTP1} (${Math.abs(finalTP1 - finalEntry).toFixed(2)} points away)`);
+        console.log(`📊 Risk in ATR: ${recomputed.riskInATR?.toFixed(1) || 'N/A'}x`);
 
         const prec = getPrec(pair);
 
@@ -1020,10 +1118,10 @@ async function runAutoScan() {
                 current_price: price,
                 trade_type: best.direction === 'BUY' ? 'BUY' : 'SELL',
                 entry_price: finalEntry,
-                stop_loss: best.sl,
-                take_profit_1: best.tp1,
-                take_profit_2: best.tp2,
-                take_profit_3: best.tp3,
+                stop_loss: finalSL,
+                take_profit_1: finalTP1,
+                take_profit_2: finalTP2,
+                take_profit_3: finalTP3,
                 confidence: best.confidence,
                 setup_score: ghostScore,
                 confirmation: best.confirmation || 'None',
@@ -1052,7 +1150,14 @@ async function runAutoScan() {
                     htf_alignment: `${best.htfAgree || 0}/3`,
                     entry_distance_pct: (best.entryDistancePct || 0).toFixed(2) + '%',
                     entry_distance_atr: (best.entryDistanceATR || 0).toFixed(1) + 'x ATR',
-                    risk_reward: '1:' + rrDisplay
+                    risk_in_atr: (recomputed.riskInATR || 0).toFixed(1) + 'x ATR',
+                    avg_daily_range: (recomputed.avgRange || 0).toFixed(2),
+                    risk_reward: '1:' + rrDisplay,
+                    tp_distances: {
+                        tp1: (Math.abs(finalTP1 - finalEntry)).toFixed(2) + ' points',
+                        tp2: (Math.abs(finalTP2 - finalEntry)).toFixed(2) + ' points',
+                        tp3: (Math.abs(finalTP3 - finalEntry)).toFixed(2) + ' points'
+                    }
                 },
                 msnr_levels: best.msnr ? {
                     pivot: best.msnr.pivot,
@@ -1069,13 +1174,18 @@ async function runAutoScan() {
                     nearest_support: best.msnr.nearestSupport,
                     nearest_resistance: best.msnr.nearestResistance
                 } : null,
+                technical_indicators: {
+                    rsi: best.twelveIndicators?.rsi || 'N/A',
+                    atr: best.atr?.toFixed(prec) || 'N/A',
+                    adx: best.twelveIndicators?.adx || 'N/A'
+                },
                 trade_levels: {
                     entry: finalEntry,
-                    stop_loss: best.sl,
-                    take_profit_1: best.tp1,
-                    take_profit_2: best.tp2,
-                    take_profit_3: best.tp3,
-                    risk_reward_ratio: parseFloat(rrDisplay) || 3.0
+                    stop_loss: finalSL,
+                    take_profit_1: finalTP1,
+                    take_profit_2: finalTP2,
+                    take_profit_3: finalTP3,
+                    risk_reward_ratio: parseFloat(rrDisplay) || 2.0
                 }
             }
         };
@@ -1095,26 +1205,27 @@ async function runAutoScan() {
             signalType: st, 
             idealEntry: finalEntry, 
             currentPrice: price, 
-            stopLoss: best.sl, 
-            takeProfit1: best.tp1, 
-            takeProfit2: best.tp2, 
-            takeProfit3: best.tp3, 
+            stopLoss: finalSL, 
+            takeProfit1: finalTP1, 
+            takeProfit2: finalTP2, 
+            takeProfit3: finalTP3, 
             confidence: best.confidence, 
             riskPercent: riskPercent, 
             entryZoneLow: best.zone.low, 
             entryZoneHigh: best.zone.high, 
             entryReady: aiDecision.decision === 'enter_now',
             executionDecision: aiDecision.decision,
-            invalidationPrice: best.sl * (best.direction === 'BUY' ? 0.995 : 1.005),
+            invalidationPrice: finalSL * (best.direction === 'BUY' ? 0.995 : 1.005),
             confirmation: best.confirmation,
             aiDecision: aiDecision,
-            riskAdjustment: aiDecision.risk_adjustment || 1.0
+            riskAdjustment: aiDecision.risk_adjustment || 1.0,
+            rrUsed: parseFloat(rrDisplay) || 2.0
         };
         
         document.getElementById('executeBtn').disabled = false;
         
         const decisionEmoji = aiDecision.decision === 'enter_now' ? '✅' : (aiDecision.decision === 'wait_for_reaction' ? '⏳' : '🚫');
-        showNotif(`🎯 ${best.timeframe} ${st} ${decisionEmoji} ${aiDecision.decision} | Score: ${ghostScore} | ${aiDecision.confidence}% AI confidence`, 'success');
+        showNotif(`🎯 ${best.timeframe} ${st} ${decisionEmoji} ${aiDecision.decision} | Score: ${ghostScore} | RR: 1:${rrDisplay} | ${aiDecision.confidence}% AI`, 'success');
         
     } catch (e) { 
         console.error(e); 
@@ -1251,7 +1362,7 @@ function updateLimitUI() {
     if (limitOrder) {
         const prec = getPrec(limitOrder.pair || pair);
         const aiLabel = limitOrder.aiDecision ? `🤖 ${limitOrder.aiDecision.decision}` : '';
-        t.innerHTML = `⏳ ${limitOrder.pair||''} ${limitOrder.signalType} @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)} | ${aiLabel}`;
+        t.innerHTML = `⏳ ${limitOrder.pair||''} ${limitOrder.signalType} @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)} | RR: 1:${limitOrder.rrUsed || '?'} | ${aiLabel}`;
         t.className = 'active';
         c.classList.remove('hidden');
         document.getElementById('executeBtn').innerHTML = '⏳ Waiting...';
@@ -1302,12 +1413,13 @@ function handleLimit() {
         confirmation: analysis.confirmation || 'Confirmed',
         aiDecision: analysis.aiDecision || null,
         riskAdjustment: analysis.riskAdjustment || 1.0,
+        rrUsed: analysis.rrUsed || 2.0,
         createdAt: new Date().toISOString()
     };
     saveLimit(o);
     startMonitor();
     const aiLabel = o.aiDecision ? `🤖 ${o.aiDecision.decision}` : '';
-    showNotif(`📝 ${o.signalType} @ $${o.idealEntry.toFixed(getPrec(pair))} | ${o.confirmation} ${aiLabel}`, 'info');
+    showNotif(`📝 ${o.signalType} @ $${o.idealEntry.toFixed(getPrec(pair))} | RR: 1:${o.rrUsed} | ${o.confirmation} ${aiLabel}`, 'info');
 }
 function copyJson() {
     const el = document.getElementById('jsonOutput');
@@ -1353,9 +1465,8 @@ async function checkMissedFill() {
 }
 
 console.log('✅ ICT Trading Bot Pro FINAL FIX loaded!');
-console.log('✅ Root cause fixed: AI decision making simplified');
-console.log('✅ Smart fallback decision logic added');
-console.log('✅ AI decision included in JSON output');
-console.log('✅ All technical indicators working');
-console.log('✅ MSNR levels included');
-console.log('✅ Wider SL and confirmation entry');
+console.log('✅ FIXED: Smart TP based on ATR and average daily range');
+console.log('✅ TP distances now realistic for each pair');
+console.log('✅ Risk in ATR displayed in output');
+console.log('✅ Average daily range displayed');
+console.log('✅ TP distances shown in analysis');
