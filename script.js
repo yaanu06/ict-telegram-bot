@@ -35,11 +35,56 @@ function getTimeframeHierarchy(selectedTF) {
 }
 
 function getMarketSettings(p) {
-    if (p.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.1, slBuffers: { '5M': 2, '15M': 3, '1H': 5, '4H': 8, '1D': 15 } };
-    if (p.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.01, slBuffers: { '5M': 0.03, '15M': 0.05, '1H': 0.08, '4H': 0.12, '1D': 0.20 } };
-    if (p.includes('JPY')) return { slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01, slBuffers: { '5M': 0.08, '15M': 0.12, '1H': 0.20, '4H': 0.35, '1D': 0.60 } };
-    if (p === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.02, targetRR: 2.5, prec: 2, pipSize: 1, slBuffers: { '5M': 30, '15M': 50, '1H': 80, '4H': 120, '1D': 200 } };
-    return { slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.01, targetRR: 2.5, prec: 5, pipSize: 0.0001, slBuffers: { '5M': 0.0003, '15M': 0.0005, '1H': 0.0008, '4H': 0.0012, '1D': 0.0020 } };
+    // XAU/USD (Gold)
+    if (p.includes('XAU')) return { 
+        slBuffer: 3, 
+        minSL: 3, 
+        maxSLPct: 0.015, 
+        targetRR: 2.5, 
+        prec: 2, 
+        pipSize: 0.1, 
+        slBuffers: { '5M': 2, '15M': 3, '1H': 5, '4H': 8, '1D': 15 } 
+    };
+    // XAG/USD (Silver)
+    if (p.includes('XAG')) return { 
+        slBuffer: 0.05, 
+        minSL: 0.03, 
+        maxSLPct: 0.015, 
+        targetRR: 2.5, 
+        prec: 2, 
+        pipSize: 0.01, 
+        slBuffers: { '5M': 0.03, '15M': 0.05, '1H': 0.08, '4H': 0.12, '1D': 0.20 } 
+    };
+    // JPY pairs (USD/JPY, EUR/JPY, GBP/JPY)
+    if (p.includes('JPY')) return { 
+        slBuffer: 0.15, 
+        minSL: 0.10, 
+        maxSLPct: 0.01, 
+        targetRR: 2.5, 
+        prec: 3, 
+        pipSize: 0.01, 
+        slBuffers: { '5M': 0.08, '15M': 0.12, '1H': 0.20, '4H': 0.35, '1D': 0.60 } 
+    };
+    // BTC/USD
+    if (p === 'BTC/USD') return { 
+        slBuffer: 50, 
+        minSL: 30, 
+        maxSLPct: 0.02, 
+        targetRR: 2.5, 
+        prec: 2, 
+        pipSize: 1, 
+        slBuffers: { '5M': 30, '15M': 50, '1H': 80, '4H': 120, '1D': 200 } 
+    };
+    // Default for Forex (non-JPY)
+    return { 
+        slBuffer: 0.0005, 
+        minSL: 0.0003, 
+        maxSLPct: 0.01, 
+        targetRR: 2.5, 
+        prec: 5, 
+        pipSize: 0.0001, 
+        slBuffers: { '5M': 0.0003, '15M': 0.0005, '1H': 0.0008, '4H': 0.0012, '1D': 0.0020 } 
+    };
 }
 
 function getSLBufferForTF(apiATR, tfUsed, currentPair) {
@@ -421,7 +466,7 @@ function findBrokenLevel(data, direction) {
 }
 
 // ============================================
-// FIXED: WIDER STOP LOSS
+// STOP LOSS CALCULATION
 // ============================================
 function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, currentPair) {
     const apiATR = twelveIndicators?.atr_api || atr(data, 14);
@@ -473,12 +518,11 @@ function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, cu
 }
 
 // ============================================
-// FIXED: SMARTER TAKE PROFIT CALCULATION - BUG FIXED
+// TAKE PROFIT CALCULATION - FIXED FOR ALL PAIRS
 // ============================================
 function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
     const risk = Math.abs(entry - sl);
     const settings = getMarketSettings(pair);
-    
     const apiATR = twelveIndicators?.atr_api || atr(data, 14);
     const riskInATR = risk / apiATR;
     
@@ -490,29 +534,29 @@ function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
         avgRange = ranges.reduce((a, b) => a + b, 0) / ranges.length;
     }
     
-    // FIX: Correct RR calculation based on riskInATR
+    // RR based on risk in ATR
     let rr1, rr2, rr3;
     
     if (riskInATR >= 2.0) {
         rr1 = 1.5;
-        rr2 = 2.0;  // FIX: Was 2.5 - causing insane TPs
-        rr3 = 2.5;  // FIX: Was 3.5 - causing insane TPs
+        rr2 = 2.0;
+        rr3 = 2.5;
     } else if (riskInATR >= 1.5) {
         rr1 = 2.0;
-        rr2 = 2.5;  // FIX: Was 3.0
-        rr3 = 3.0;  // FIX: Was 4.0
+        rr2 = 2.5;
+        rr3 = 3.0;
     } else {
         rr1 = 2.5;
-        rr2 = 3.0;  // FIX: Was 4.0
-        rr3 = 3.5;  // FIX: Was 5.5
+        rr2 = 3.0;
+        rr3 = 3.5;
     }
     
-    // Calculate TPs correctly using risk * RR
+    // Calculate TPs using risk * RR
     let tp1 = dir === 'BUY' ? entry + (risk * rr1) : entry - (risk * rr1);
     let tp2 = dir === 'BUY' ? entry + (risk * rr2) : entry - (risk * rr2);
     let tp3 = dir === 'BUY' ? entry + (risk * rr3) : entry - (risk * rr3);
     
-    // Cap by average daily range (don't set unrealistic targets)
+    // Cap by average daily range (80% of daily range or 1.5x ATR)
     const maxTPDistance = Math.max(avgRange * 0.8, apiATR * 1.5);
     
     if (dir === 'BUY') {
@@ -527,7 +571,7 @@ function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
         tp3 = Math.max(tp3, maxTP * 1.6);
     }
     
-    // Ensure TP1 is at least 0.5x ATR away
+    // Ensure minimum distance (0.5x ATR)
     const minDistance = apiATR * 0.5;
     if (dir === 'BUY') {
         if (tp1 - entry < minDistance) tp1 = entry + minDistance;
@@ -539,12 +583,20 @@ function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
         if (entry - tp3 < minDistance * 2) tp3 = entry - minDistance * 2;
     }
     
+    // Round to correct precision for the pair
+    const prec = settings.prec;
+    const factor = Math.pow(10, prec);
+    tp1 = Math.round(tp1 * factor) / factor;
+    tp2 = Math.round(tp2 * factor) / factor;
+    tp3 = Math.round(tp3 * factor) / factor;
+    
     // Log for debugging
-    console.log(`📊 TP Calculation: Risk=${risk.toFixed(2)}, ATR=${apiATR.toFixed(2)}, RiskInATR=${riskInATR.toFixed(1)}x`);
-    console.log(`📊 RR: ${rr1}, ${rr2}, ${rr3}`);
-    console.log(`📊 TP1: ${tp1.toFixed(2)} (${Math.abs(tp1 - entry).toFixed(2)} pts away)`);
-    console.log(`📊 TP2: ${tp2.toFixed(2)} (${Math.abs(tp2 - entry).toFixed(2)} pts away)`);
-    console.log(`📊 TP3: ${tp3.toFixed(2)} (${Math.abs(tp3 - entry).toFixed(2)} pts away)`);
+    console.log(`📊 TP Calculation for ${pair}:`);
+    console.log(`   Risk: ${risk.toFixed(prec)}, ATR: ${apiATR.toFixed(prec)}, RiskInATR: ${riskInATR.toFixed(1)}x`);
+    console.log(`   RR: ${rr1}, ${rr2}, ${rr3}`);
+    console.log(`   TP1: ${tp1.toFixed(prec)} (${Math.abs(tp1 - entry).toFixed(prec)} pts away)`);
+    console.log(`   TP2: ${tp2.toFixed(prec)} (${Math.abs(tp2 - entry).toFixed(prec)} pts away)`);
+    console.log(`   TP3: ${tp3.toFixed(prec)} (${Math.abs(tp3 - entry).toFixed(prec)} pts away)`);
     
     return {
         tp1: tp1,
@@ -616,6 +668,9 @@ function getConfirmationEntry(candles, zone, direction) {
         if (bullishEngulf || bullishPinbar || hammer || rejectionWick) {
             let entry = Math.min(last.c, zone.high * 1.002);
             if (rejectionWick) entry = Math.min(last.c, zone.low + (zone.high - zone.low) * 0.5);
+            const settings = getMarketSettings(pair);
+            const factor = Math.pow(10, settings.prec);
+            entry = Math.round(entry * factor) / factor;
             return {
                 entry: entry,
                 confirmed: true,
@@ -635,6 +690,9 @@ function getConfirmationEntry(candles, zone, direction) {
         if (bearishEngulf || bearishPinbar || shootingStar || rejectionWick) {
             let entry = Math.max(last.c, zone.low * 0.998);
             if (rejectionWick) entry = Math.max(last.c, zone.low + (zone.high - zone.low) * 0.5);
+            const settings = getMarketSettings(pair);
+            const factor = Math.pow(10, settings.prec);
+            entry = Math.round(entry * factor) / factor;
             return {
                 entry: entry,
                 confirmed: true,
@@ -806,7 +864,7 @@ function getSmartFallbackDecision(best, price) {
 // ANALYZE TIMEFRAME
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price, htfData) {
-    console.log(`🔍 Analyzing ${tfToAnalyze}...`);
+    console.log(`🔍 Analyzing ${tfToAnalyze} on ${pair}...`);
     try {
         const [trendTF, structureTF, entryTF, sniperTF] = getTimeframeHierarchy(tfToAnalyze);
         const entryData = htfData[entryTF] || await getHistory(entryTF);
@@ -845,7 +903,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             
             const slResult = calcStopLoss(entryData, dir, entry, zone, msnr, tfToAnalyze, twelveIndicators, pair);
             const sl = slResult.price;
-            const risk = Math.abs(entry - sl);
             
             // Use smarter TP calculation
             const tps = calcTakeProfits(dir, entry, sl, entryData, twelveIndicators);
@@ -861,7 +918,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             if (bosCount >= 2) pts += 10;
             if (brokenLevel) pts += 10;
             
-            console.log(`  → ${dir} score: ${pts}, Entry: ${entry}, SL: ${sl}, TP1: ${tps.tp1.toFixed(2)} (${Math.abs(tps.tp1 - entry).toFixed(2)} pts away)`);
+            const settings = getMarketSettings(pair);
+            console.log(`  → ${dir} score: ${pts}, Entry: ${entry.toFixed(settings.prec)}, SL: ${sl.toFixed(settings.prec)}, TP1: ${tps.tp1.toFixed(settings.prec)} (${Math.abs(tps.tp1 - entry).toFixed(settings.prec)} pts away)`);
             
             if (pts < MIN_SETUP_SCORE) {
                 console.log(`  ❌ ${dir}: Score ${pts} < ${MIN_SETUP_SCORE}`);
@@ -876,7 +934,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 tp1: tps.tp1,
                 tp2: tps.tp2,
                 tp3: tps.tp3,
-                risk,
                 zone,
                 msnr,
                 freshness,
@@ -965,16 +1022,13 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             entryDistance: best.entryDistance,
             entryDistanceATR: best.entryDistanceATR,
             entryDistancePct: best.entryDistancePct,
-            isUnmet: best.dir === 'BUY' ? best.zone.high < price : best.zone.low > price,
-            isValidZone: best.freshness.fresh || (best.freshness.partiallyUsed && best.freshness.violations === 0),
             rrUsed: best.rrUsed,
             rr2Used: best.rr2Used,
             rr3Used: best.rr3Used,
             riskInATR: best.riskInATR,
             avgRange: best.avgRange,
             atr: best.atr,
-            maxTPDistance: best.maxTPDistance,
-            risk: best.risk
+            maxTPDistance: best.maxTPDistance
         };
 
     } catch (e) {
@@ -1020,7 +1074,8 @@ async function runAutoScan() {
         await Promise.all(tfs.map(async (t) => { historyCache[t] = await getHistory(t); }));
 
         await updateMTFDisplay(historyCache); 
-        document.getElementById('currentPrice').innerHTML = `$${price.toFixed(getPrec(pair))}`;
+        const settings = getMarketSettings(pair);
+        document.getElementById('currentPrice').innerHTML = `$${price.toFixed(settings.prec)}`;
         if (lastPrice) { const ch = ((price - lastPrice) / lastPrice * 100).toFixed(2); const ce = document.getElementById('priceChange'); ce.innerHTML = `${ch >= 0 ? '▲' : '▼'} ${Math.abs(ch)}%`; ce.className = `price-change ${ch >= 0 ? 'up' : 'down'}`; } 
         lastPrice = price;
         
@@ -1069,11 +1124,11 @@ async function runAutoScan() {
         console.log(`🤖 AI Decision: ${aiDecision.decision} (${aiDecision.confidence}%)`);
         console.log(`📊 Risk: ${riskPercent * 100}%`);
         console.log(`📊 RR: 1:${rrDisplay}`);
-        console.log(`📊 TP1: ${finalTP1.toFixed(2)} (${Math.abs(finalTP1 - finalEntry).toFixed(2)} pts away)`);
-        console.log(`📊 TP2: ${finalTP2.toFixed(2)} (${Math.abs(finalTP2 - finalEntry).toFixed(2)} pts away)`);
-        console.log(`📊 TP3: ${finalTP3.toFixed(2)} (${Math.abs(finalTP3 - finalEntry).toFixed(2)} pts away)`);
+        console.log(`📊 TP1: ${finalTP1.toFixed(settings.prec)} (${Math.abs(finalTP1 - finalEntry).toFixed(settings.prec)} pts away)`);
+        console.log(`📊 TP2: ${finalTP2.toFixed(settings.prec)} (${Math.abs(finalTP2 - finalEntry).toFixed(settings.prec)} pts away)`);
+        console.log(`📊 TP3: ${finalTP3.toFixed(settings.prec)} (${Math.abs(finalTP3 - finalEntry).toFixed(settings.prec)} pts away)`);
 
-        const prec = getPrec(pair);
+        const prec = settings.prec;
 
         const out = {
             trade_signal: {
@@ -1116,12 +1171,12 @@ async function runAutoScan() {
                     entry_distance_pct: (best.entryDistancePct || 0).toFixed(2) + '%',
                     entry_distance_atr: (best.entryDistanceATR || 0).toFixed(1) + 'x ATR',
                     risk_in_atr: (recomputed.riskInATR || 0).toFixed(1) + 'x ATR',
-                    avg_daily_range: (recomputed.avgRange || 0).toFixed(2),
+                    avg_daily_range: (recomputed.avgRange || 0).toFixed(prec),
                     risk_reward: '1:' + rrDisplay,
                     tp_distances: {
-                        tp1: Math.abs(finalTP1 - finalEntry).toFixed(2) + ' points',
-                        tp2: Math.abs(finalTP2 - finalEntry).toFixed(2) + ' points',
-                        tp3: Math.abs(finalTP3 - finalEntry).toFixed(2) + ' points'
+                        tp1: Math.abs(finalTP1 - finalEntry).toFixed(prec) + ' points',
+                        tp2: Math.abs(finalTP2 - finalEntry).toFixed(prec) + ' points',
+                        tp3: Math.abs(finalTP3 - finalEntry).toFixed(prec) + ' points'
                     }
                 },
                 msnr_levels: best.msnr ? {
@@ -1347,12 +1402,12 @@ function startMonitor() {
         const orderPair = limitOrder.pair || pair;
         const p = await getPrice(orderPair);
         if (!p) return;
-        const prec = getPrec(orderPair);
-        if (orderPair === pair) document.getElementById('currentPrice').innerHTML = `$${p.toFixed(prec)}`;
+        const settings = getMarketSettings(orderPair);
+        if (orderPair === pair) document.getElementById('currentPrice').innerHTML = `$${p.toFixed(settings.prec)}`;
         if ((limitOrder.signalType === 'LONG' && p <= limitOrder.idealEntry) || (limitOrder.signalType === 'SHORT' && p >= limitOrder.idealEntry)) {
             const filled = limitOrder;
             clearLimit();
-            showNotif(`✅ FILLED! ${filled.pair||''} ${filled.signalType} @ $${p.toFixed(prec)}`, 'success');
+            showNotif(`✅ FILLED! ${filled.pair||''} ${filled.signalType} @ $${p.toFixed(settings.prec)}`, 'success');
             try { new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play(); } catch (e) {}
         }
     }, 2000);
@@ -1384,7 +1439,8 @@ function handleLimit() {
     saveLimit(o);
     startMonitor();
     const aiLabel = o.aiDecision ? `🤖 ${o.aiDecision.decision}` : '';
-    showNotif(`📝 ${o.signalType} @ $${o.idealEntry.toFixed(getPrec(pair))} | RR: 1:${o.rrUsed} | ${o.confirmation} ${aiLabel}`, 'info');
+    const prec = getPrec(pair);
+    showNotif(`📝 ${o.signalType} @ $${o.idealEntry.toFixed(prec)} | RR: 1:${o.rrUsed} | ${o.confirmation} ${aiLabel}`, 'info');
 }
 function copyJson() {
     const el = document.getElementById('jsonOutput');
@@ -1430,8 +1486,12 @@ async function checkMissedFill() {
 }
 
 console.log('✅ ICT Trading Bot Pro FINAL FIX loaded!');
-console.log('✅ FIXED: TP2 and TP3 calculation bug fixed');
-console.log('✅ TP distances now realistic for each pair');
-console.log('✅ Risk in ATR displayed in output');
-console.log('✅ Average daily range displayed');
-console.log('✅ All patterns: FVG, OB, MSNR, TBS, Sweeps working');
+console.log('✅ All pairs configured correctly:');
+console.log('   - XAU/USD: prec=2, pipSize=0.1');
+console.log('   - XAG/USD: prec=2, pipSize=0.01');
+console.log('   - BTC/USD: prec=2, pipSize=1');
+console.log('   - JPY pairs: prec=3, pipSize=0.01');
+console.log('   - Forex: prec=5, pipSize=0.0001');
+console.log('✅ TP calculation uses Twelve Data ATR for all pairs');
+console.log('✅ Risk-based RR (1.5x-2.5x based on risk in ATR)');
+console.log('✅ TP capped by average daily range');
