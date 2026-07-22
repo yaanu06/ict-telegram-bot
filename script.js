@@ -35,56 +35,11 @@ function getTimeframeHierarchy(selectedTF) {
 }
 
 function getMarketSettings(p) {
-    // XAU/USD (Gold)
-    if (p.includes('XAU')) return { 
-        slBuffer: 3, 
-        minSL: 3, 
-        maxSLPct: 0.015, 
-        targetRR: 2.5, 
-        prec: 2, 
-        pipSize: 0.1, 
-        slBuffers: { '5M': 2, '15M': 3, '1H': 5, '4H': 8, '1D': 15 } 
-    };
-    // XAG/USD (Silver)
-    if (p.includes('XAG')) return { 
-        slBuffer: 0.05, 
-        minSL: 0.03, 
-        maxSLPct: 0.015, 
-        targetRR: 2.5, 
-        prec: 2, 
-        pipSize: 0.01, 
-        slBuffers: { '5M': 0.03, '15M': 0.05, '1H': 0.08, '4H': 0.12, '1D': 0.20 } 
-    };
-    // JPY pairs (USD/JPY, EUR/JPY, GBP/JPY)
-    if (p.includes('JPY')) return { 
-        slBuffer: 0.15, 
-        minSL: 0.10, 
-        maxSLPct: 0.01, 
-        targetRR: 2.5, 
-        prec: 3, 
-        pipSize: 0.01, 
-        slBuffers: { '5M': 0.08, '15M': 0.12, '1H': 0.20, '4H': 0.35, '1D': 0.60 } 
-    };
-    // BTC/USD
-    if (p === 'BTC/USD') return { 
-        slBuffer: 50, 
-        minSL: 30, 
-        maxSLPct: 0.02, 
-        targetRR: 2.5, 
-        prec: 2, 
-        pipSize: 1, 
-        slBuffers: { '5M': 30, '15M': 50, '1H': 80, '4H': 120, '1D': 200 } 
-    };
-    // Default for Forex (non-JPY)
-    return { 
-        slBuffer: 0.0005, 
-        minSL: 0.0003, 
-        maxSLPct: 0.01, 
-        targetRR: 2.5, 
-        prec: 5, 
-        pipSize: 0.0001, 
-        slBuffers: { '5M': 0.0003, '15M': 0.0005, '1H': 0.0008, '4H': 0.0012, '1D': 0.0020 } 
-    };
+    if (p.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.1, slBuffers: { '5M': 2, '15M': 3, '1H': 5, '4H': 8, '1D': 15 } };
+    if (p.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.01, slBuffers: { '5M': 0.03, '15M': 0.05, '1H': 0.08, '4H': 0.12, '1D': 0.20 } };
+    if (p.includes('JPY')) return { slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01, slBuffers: { '5M': 0.08, '15M': 0.12, '1H': 0.20, '4H': 0.35, '1D': 0.60 } };
+    if (p === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.02, targetRR: 2.5, prec: 2, pipSize: 1, slBuffers: { '5M': 30, '15M': 50, '1H': 80, '4H': 120, '1D': 200 } };
+    return { slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.01, targetRR: 2.5, prec: 5, pipSize: 0.0001, slBuffers: { '5M': 0.0003, '15M': 0.0005, '1H': 0.0008, '4H': 0.0012, '1D': 0.0020 } };
 }
 
 function getSLBufferForTF(apiATR, tfUsed, currentPair) {
@@ -518,7 +473,7 @@ function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators, cu
 }
 
 // ============================================
-// TAKE PROFIT CALCULATION - FIXED FOR ALL PAIRS
+// TAKE PROFIT CALCULATION
 // ============================================
 function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
     const risk = Math.abs(entry - sl);
@@ -526,7 +481,6 @@ function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
     const apiATR = twelveIndicators?.atr_api || atr(data, 14);
     const riskInATR = risk / apiATR;
     
-    // Calculate average daily range
     let avgRange = 0;
     if (data && data.length > 20) {
         const recent = data.slice(-20);
@@ -534,7 +488,6 @@ function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
         avgRange = ranges.reduce((a, b) => a + b, 0) / ranges.length;
     }
     
-    // RR based on risk in ATR
     let rr1, rr2, rr3;
     
     if (riskInATR >= 2.0) {
@@ -551,12 +504,10 @@ function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
         rr3 = 3.5;
     }
     
-    // Calculate TPs using risk * RR
     let tp1 = dir === 'BUY' ? entry + (risk * rr1) : entry - (risk * rr1);
     let tp2 = dir === 'BUY' ? entry + (risk * rr2) : entry - (risk * rr2);
     let tp3 = dir === 'BUY' ? entry + (risk * rr3) : entry - (risk * rr3);
     
-    // Cap by average daily range (80% of daily range or 1.5x ATR)
     const maxTPDistance = Math.max(avgRange * 0.8, apiATR * 1.5);
     
     if (dir === 'BUY') {
@@ -571,7 +522,6 @@ function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
         tp3 = Math.max(tp3, maxTP * 1.6);
     }
     
-    // Ensure minimum distance (0.5x ATR)
     const minDistance = apiATR * 0.5;
     if (dir === 'BUY') {
         if (tp1 - entry < minDistance) tp1 = entry + minDistance;
@@ -583,20 +533,11 @@ function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
         if (entry - tp3 < minDistance * 2) tp3 = entry - minDistance * 2;
     }
     
-    // Round to correct precision for the pair
     const prec = settings.prec;
     const factor = Math.pow(10, prec);
     tp1 = Math.round(tp1 * factor) / factor;
     tp2 = Math.round(tp2 * factor) / factor;
     tp3 = Math.round(tp3 * factor) / factor;
-    
-    // Log for debugging
-    console.log(`📊 TP Calculation for ${pair}:`);
-    console.log(`   Risk: ${risk.toFixed(prec)}, ATR: ${apiATR.toFixed(prec)}, RiskInATR: ${riskInATR.toFixed(1)}x`);
-    console.log(`   RR: ${rr1}, ${rr2}, ${rr3}`);
-    console.log(`   TP1: ${tp1.toFixed(prec)} (${Math.abs(tp1 - entry).toFixed(prec)} pts away)`);
-    console.log(`   TP2: ${tp2.toFixed(prec)} (${Math.abs(tp2 - entry).toFixed(prec)} pts away)`);
-    console.log(`   TP3: ${tp3.toFixed(prec)} (${Math.abs(tp3 - entry).toFixed(prec)} pts away)`);
     
     return {
         tp1: tp1,
@@ -861,7 +802,7 @@ function getSmartFallbackDecision(best, price) {
 }
 
 // ============================================
-// ANALYZE TIMEFRAME
+// ANALYZE TIMEFRAME - MAIN FIX APPLIED HERE
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price, htfData) {
     console.log(`🔍 Analyzing ${tfToAnalyze} on ${pair}...`);
@@ -889,7 +830,30 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 continue;
             }
             
-            const entry = confirmation.entry;
+            // ============================================
+            // FIX: ENTRY NEAR CURRENT PRICE
+            // ============================================
+            let entry = confirmation.entry;
+            const settings = getMarketSettings(pair);
+            const factor = Math.pow(10, settings.prec);
+            
+            // If price is already above the zone for BUY, enter near current price
+            if (dir === 'BUY' && price > zone.high) {
+                entry = price - (entryATR * 0.2);
+                entry = Math.round(entry * factor) / factor;
+                console.log(`  → Price above zone, adjusting BUY entry to ${entry} (was ${confirmation.entry})`);
+            } 
+            // If price is already below the zone for SELL, enter near current price
+            else if (dir === 'SELL' && price < zone.low) {
+                entry = price + (entryATR * 0.2);
+                entry = Math.round(entry * factor) / factor;
+                console.log(`  → Price below zone, adjusting SELL entry to ${entry} (was ${confirmation.entry})`);
+            }
+            // Otherwise use the confirmation entry
+            else {
+                entry = confirmation.entry;
+            }
+            
             const freshness = checkZoneFreshness(entryData, zone, dir);
             const session = getSession();
             const sweeps = detectLiquiditySweeps(entryData, price);
@@ -904,7 +868,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const slResult = calcStopLoss(entryData, dir, entry, zone, msnr, tfToAnalyze, twelveIndicators, pair);
             const sl = slResult.price;
             
-            // Use smarter TP calculation
             const tps = calcTakeProfits(dir, entry, sl, entryData, twelveIndicators);
             
             let pts = 40;
@@ -918,7 +881,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             if (bosCount >= 2) pts += 10;
             if (brokenLevel) pts += 10;
             
-            const settings = getMarketSettings(pair);
             console.log(`  → ${dir} score: ${pts}, Entry: ${entry.toFixed(settings.prec)}, SL: ${sl.toFixed(settings.prec)}, TP1: ${tps.tp1.toFixed(settings.prec)} (${Math.abs(tps.tp1 - entry).toFixed(settings.prec)} pts away)`);
             
             if (pts < MIN_SETUP_SCORE) {
@@ -1486,12 +1448,7 @@ async function checkMissedFill() {
 }
 
 console.log('✅ ICT Trading Bot Pro FINAL FIX loaded!');
-console.log('✅ All pairs configured correctly:');
-console.log('   - XAU/USD: prec=2, pipSize=0.1');
-console.log('   - XAG/USD: prec=2, pipSize=0.01');
-console.log('   - BTC/USD: prec=2, pipSize=1');
-console.log('   - JPY pairs: prec=3, pipSize=0.01');
-console.log('   - Forex: prec=5, pipSize=0.0001');
-console.log('✅ TP calculation uses Twelve Data ATR for all pairs');
+console.log('✅ FIXED: Entry now near current price when price has moved past zone');
+console.log('✅ All pairs configured correctly');
+console.log('✅ TP calculation uses Twelve Data ATR');
 console.log('✅ Risk-based RR (1.5x-2.5x based on risk in ATR)');
-console.log('✅ TP capped by average daily range');
