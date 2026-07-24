@@ -21,7 +21,9 @@ const DEFAULT_ATR_PERIOD = 14;
 const DEFAULT_PRECISION = 5;
 const BUY_INVALIDATION_FACTOR = 0.998;
 const SELL_INVALIDATION_FACTOR = 1.002;
-const MIN_SETUP_SCORE = 50;
+const MIN_SETUP_SCORE = 55;
+const MAX_ZONE_TOUCHES = 5;
+const MAX_USED_ZONE_TOUCHES = 3;
 
 function getTimeframeHierarchy(selectedTF) {
     const hierarchy = {
@@ -93,7 +95,7 @@ function resetPairState() {
 // INITIALIZATION
 // ============================================
 function startApp() {
-    console.log('🚀 Starting ICT Trading Bot Pro FINAL FIX...');
+    console.log('🚀 Starting ICT Trading Bot Pro HIGH PROBABILITY FIX...');
     loadKeys().then(() => {
         updateKeyStatus();
         if (!TWELVE_DATA_KEY && !DEEPSEEK_API_KEY) {
@@ -670,13 +672,13 @@ Silver Bullet: ${session.isSilverBullet}
 HTF Alignment: ${best.htfAgree}/3
 Zone Fresh: ${best.freshness?.fresh}
 Zone Quality: ${best.zone?.quality}
+Zone Touches: ${best.freshness?.touches || 0}
 Distance to Entry: ${(best.entryDistancePct || 0).toFixed(2)}%
 
 DECISION RULES:
-- Score >= 70 + Confirmation + Killzone = ENTER NOW
-- Score >= 60 + Confirmation = WAIT FOR REACTION
-- Score < 50 = SKIP
-- HTF Conflict (0/3) = SKIP
+- Score >= 70 + Fresh Zone + Confirmation + Killzone = ENTER NOW
+- Score >= 60 + Fresh Zone + Confirmation = WAIT FOR REACTION
+- Score < 55 OR Zone Touches > 5 = SKIP
 
 Return ONLY JSON:
 {"decision":"enter_now|wait_for_reaction|skip","confidence":0-100,"reason":"brief reason"}`;
@@ -691,7 +693,7 @@ Return ONLY JSON:
             body: JSON.stringify({
                 model: 'deepseek-chat',
                 messages: [
-                    { role: 'system', content: 'You are an ICT trading execution expert. Return ONLY valid JSON.' },
+                    { role: 'system', content: 'You are an ICT trading execution expert. Return ONLY valid JSON. Fresh zones are critical.' },
                     { role: 'user', content: prompt }
                 ],
                 temperature: 0.1,
@@ -735,13 +737,30 @@ function getSmartFallbackDecision(best, price) {
     const isGoodSession = session.isKillzone || session.isSilverBullet;
     const htfAgree = best.htfAgree || 0;
     const isFresh = best.freshness?.fresh || false;
+    const touches = best.freshness?.touches || 0;
     const isFVG = best.zone?.src === 'FVG';
+    const entryDistancePct = best.entryDistancePct || 100;
     
-    if (score >= 70 && hasConfirmation && isGoodSession && htfAgree >= 1 && isFresh) {
+    // REJECT old zones
+    if (touches > MAX_ZONE_TOUCHES) {
+        return {
+            decision: 'skip',
+            confidence: 20,
+            reasoning: `Zone has ${touches} touches (max ${MAX_ZONE_TOUCHES})`,
+            risk_adjustment: 0,
+            entry_adjustment: 0,
+            stop_adjustment: 0,
+            wait_condition: null,
+            skip_reason: `Zone touched ${touches} times - too old`
+        };
+    }
+    
+    // ENTER NOW: Fresh zone + good score + confirmation
+    if (isFresh && score >= 70 && hasConfirmation && isGoodSession && htfAgree >= 1 && entryDistancePct < 1.0) {
         return {
             decision: 'enter_now',
             confidence: 85,
-            reasoning: `High score ${score}, confirmed, good session`,
+            reasoning: `Fresh zone, score ${score}, confirmed, good session`,
             risk_adjustment: 1.0,
             entry_adjustment: 0,
             stop_adjustment: 1.0,
@@ -750,11 +769,12 @@ function getSmartFallbackDecision(best, price) {
         };
     }
     
-    if (isFVG && score >= 60 && hasConfirmation && isFresh) {
+    // ENTER NOW: FVG + fresh + good score
+    if (isFVG && isFresh && score >= 65 && hasConfirmation && entryDistancePct < 1.0) {
         return {
             decision: 'enter_now',
-            confidence: 75,
-            reasoning: `FVG setup with score ${score}, confirmed, fresh`,
+            confidence: 80,
+            reasoning: `Fresh FVG setup with score ${score}, confirmed`,
             risk_adjustment: 1.0,
             entry_adjustment: 0,
             stop_adjustment: 1.0,
@@ -763,11 +783,12 @@ function getSmartFallbackDecision(best, price) {
         };
     }
     
-    if (score >= 55 && hasConfirmation) {
+    // WAIT: Good setup but needs confirmation
+    if (score >= 60 && hasConfirmation && entryDistancePct < 2.0 && touches <= 3) {
         return {
             decision: 'wait_for_reaction',
             confidence: 70,
-            reasoning: `Good setup ${score}, waiting for optimal entry`,
+            reasoning: `Good setup score ${score}, ${touches} touches, waiting for optimal entry`,
             risk_adjustment: 0.8,
             entry_adjustment: 0,
             stop_adjustment: 1.0,
@@ -776,23 +797,39 @@ function getSmartFallbackDecision(best, price) {
         };
     }
     
-    if (score < 45) {
+    // WAIT: FVG with moderate touches
+    if (isFVG && score >= 55 && touches <= 3) {
+        return {
+            decision: 'wait_for_reaction',
+            confidence: 65,
+            reasoning: `FVG setup score ${score}, ${touches} touches, waiting for confirmation`,
+            risk_adjustment: 0.7,
+            entry_adjustment: 0,
+            stop_adjustment: 1.0,
+            wait_condition: 'Wait for price to reach FVG with confirmation',
+            skip_reason: null
+        };
+    }
+    
+    // SKIP: Score too low or too many touches
+    if (score < 55 || touches > 4) {
         return {
             decision: 'skip',
             confidence: 30,
-            reasoning: `Score ${score} too low, skipping`,
+            reasoning: score < 55 ? `Score ${score} too low` : `${touches} touches too many`,
             risk_adjustment: 0,
             entry_adjustment: 0,
             stop_adjustment: 0,
             wait_condition: null,
-            skip_reason: `Setup score ${score} below minimum (45)`
+            skip_reason: score < 55 ? `Setup score ${score} below minimum (55)` : `Zone touched ${touches} times`
         };
     }
     
+    // Default
     return {
         decision: 'wait_for_reaction',
-        confidence: 55,
-        reasoning: `Default wait decision for score ${score}`,
+        confidence: 50,
+        reasoning: `Default wait for score ${score}, touches ${touches}`,
         risk_adjustment: 0.5,
         entry_adjustment: 0,
         stop_adjustment: 1.0,
@@ -802,7 +839,7 @@ function getSmartFallbackDecision(best, price) {
 }
 
 // ============================================
-// ANALYZE TIMEFRAME - MAIN FIX APPLIED HERE
+// ANALYZE TIMEFRAME - HIGH PROBABILITY FIX
 // ============================================
 async function analyzeTimeframe(tfToAnalyze, price, htfData) {
     console.log(`🔍 Analyzing ${tfToAnalyze} on ${pair}...`);
@@ -830,31 +867,40 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 continue;
             }
             
-            // ============================================
-            // FIX: ENTRY NEAR CURRENT PRICE
-            // ============================================
             let entry = confirmation.entry;
             const settings = getMarketSettings(pair);
             const factor = Math.pow(10, settings.prec);
             
-            // If price is already above the zone for BUY, enter near current price
             if (dir === 'BUY' && price > zone.high) {
                 entry = price - (entryATR * 0.2);
                 entry = Math.round(entry * factor) / factor;
-                console.log(`  → Price above zone, adjusting BUY entry to ${entry} (was ${confirmation.entry})`);
-            } 
-            // If price is already below the zone for SELL, enter near current price
-            else if (dir === 'SELL' && price < zone.low) {
+                console.log(`  → Price above zone, adjusting BUY entry to ${entry}`);
+            } else if (dir === 'SELL' && price < zone.low) {
                 entry = price + (entryATR * 0.2);
                 entry = Math.round(entry * factor) / factor;
-                console.log(`  → Price below zone, adjusting SELL entry to ${entry} (was ${confirmation.entry})`);
-            }
-            // Otherwise use the confirmation entry
-            else {
+                console.log(`  → Price below zone, adjusting SELL entry to ${entry}`);
+            } else {
                 entry = confirmation.entry;
             }
             
             const freshness = checkZoneFreshness(entryData, zone, dir);
+            
+            // ============================================
+            // HIGH PROBABILITY ZONE REQUIREMENTS
+            // ============================================
+            
+            // FIX 1: REJECT OLD ZONES (more than 5 touches)
+            if (freshness.touches > MAX_ZONE_TOUCHES) {
+                console.log(`  ❌ ${dir}: Zone has ${freshness.touches} touches (REJECTED - too old)`);
+                continue;
+            }
+            
+            // FIX 2: REJECT USED ZONES (unless partially used with <= 3 touches)
+            if (freshness.used && freshness.touches > MAX_USED_ZONE_TOUCHES) {
+                console.log(`  ❌ ${dir}: Zone is used with ${freshness.touches} touches (REJECTED)`);
+                continue;
+            }
+            
             const session = getSession();
             const sweeps = detectLiquiditySweeps(entryData, price);
             const hasSweep = sweeps.some(s => s.direction === (dir === 'BUY' ? 'BULLISH' : 'BEARISH'));
@@ -870,21 +916,39 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             
             const tps = calcTakeProfits(dir, entry, sl, entryData, twelveIndicators);
             
-            let pts = 40;
-            if (hasSweep) pts += 15;
-            if (hasTBS) pts += 15;
-            if (hasDisplacement) pts += 15;
-            if (freshness.fresh) pts += 15;
+            // ============================================
+            // FIX 3: PRIORITIZE FRESHNESS IN SCORING
+            // ============================================
+            let pts = 30; // Base score lowered
+            
+            // FRESHNESS SCORING (MOST IMPORTANT)
+            if (freshness.fresh) pts += 30;  // Fresh zone = HIGH SCORE
+            else if (freshness.partiallyUsed && freshness.touches <= 2) pts += 15;  // Lightly used
+            else if (freshness.partiallyUsed && freshness.touches <= 3) pts += 8;  // Moderately used
+            else if (freshness.used) pts -= 20;  // USED ZONE = HEAVY PENALTY
+            
+            // Other signals (less important than freshness)
+            if (hasSweep) pts += 10;
+            if (hasTBS) pts += 10;
+            if (hasDisplacement) pts += 10;
             if (session.isKillzone || session.isSilverBullet) pts += 10;
-            if (zone.quality === 'A' || zone.quality === 'B') pts += 10;
-            if (zone.src === 'FVG') pts += 10;
-            if (bosCount >= 2) pts += 10;
-            if (brokenLevel) pts += 10;
+            if (zone.quality === 'A' || zone.quality === 'B') pts += 8;
+            if (zone.src === 'FVG') pts += 5;
+            if (bosCount >= 2) pts += 5;
+            if (brokenLevel) pts += 5;
             
-            console.log(`  → ${dir} score: ${pts}, Entry: ${entry.toFixed(settings.prec)}, SL: ${sl.toFixed(settings.prec)}, TP1: ${tps.tp1.toFixed(settings.prec)} (${Math.abs(tps.tp1 - entry).toFixed(settings.prec)} pts away)`);
+            // FIX 4: ENTRY PROXIMITY BONUS
+            const entryDistancePct = (Math.abs(price - entry) / price) * 100;
+            if (entryDistancePct < 0.5) pts += 15;   // Very close
+            else if (entryDistancePct < 1.0) pts += 8;   // Close
+            else if (entryDistancePct < 2.0) pts += 3;   // Moderate
+            else if (entryDistancePct > 2.0) pts -= 10;  // Too far - PENALTY
             
+            console.log(`  → ${dir} score: ${pts}, Entry: ${entry.toFixed(settings.prec)}, SL: ${sl.toFixed(settings.prec)}, TP1: ${tps.tp1.toFixed(settings.prec)}, Touches: ${freshness.touches}`);
+            
+            // FIX 5: MINIMUM SCORE FOR TRADE
             if (pts < MIN_SETUP_SCORE) {
-                console.log(`  ❌ ${dir}: Score ${pts} < ${MIN_SETUP_SCORE}`);
+                console.log(`  ❌ ${dir}: Score ${pts} < ${MIN_SETUP_SCORE} (REJECTED)`);
                 continue;
             }
             
@@ -921,13 +985,23 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 riskInATR: tps.riskInATR,
                 avgRange: tps.avgRange,
                 atr: tps.atr,
-                maxTPDistance: tps.maxTPDistance
+                maxTPDistance: tps.maxTPDistance,
+                touches: freshness.touches,
+                isFresh: freshness.fresh
             });
         }
 
         if (allSetups.length === 0) return null;
 
-        allSetups.sort((a, b) => b.pts - a.pts);
+        // Sort by freshness first, then score
+        allSetups.sort((a, b) => {
+            // Fresh zones first
+            if (a.isFresh && !b.isFresh) return -1;
+            if (!a.isFresh && b.isFresh) return 1;
+            // Then by score
+            return b.pts - a.pts;
+        });
+        
         const best = allSetups[0];
         
         let htfAgree = 0;
@@ -990,7 +1064,9 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             riskInATR: best.riskInATR,
             avgRange: best.avgRange,
             atr: best.atr,
-            maxTPDistance: best.maxTPDistance
+            maxTPDistance: best.maxTPDistance,
+            touches: best.touches,
+            isFresh: best.isFresh
         };
 
     } catch (e) {
@@ -1026,7 +1102,7 @@ async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn'), scanStatus = document.getElementById('scanStatus'), scanText = document.getElementById('scanText'), scanFill = document.getElementById('scanProgressFill');
     btn.classList.add('loading'); btn.disabled = true; scanStatus.classList.remove('hidden');
     if (!TWELVE_DATA_KEY) { showSetup(); btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); return; }
-    showNotif('🔍 Scanning with AI execution...', 'info');
+    showNotif('🔍 Scanning for high probability setups...', 'info');
     try {
         const price = await getPrice(); 
         if (!price) throw new Error('No price');
@@ -1054,13 +1130,18 @@ async function runAutoScan() {
         console.log('Results found:', results.length);
 
         if (results.length === 0) { 
-            showNotif('🎯 No setups found', 'warning'); 
-            setJsonOutput({status:'NO_SETUP', pair: pair, current_price: price}); 
+            showNotif('🎯 No high probability setups found', 'warning'); 
+            setJsonOutput({status:'NO_SETUP', pair: pair, current_price: price, reason: 'No fresh zones found'}); 
             btn.classList.remove('loading'); btn.disabled = false; scanStatus.classList.add('hidden'); 
             return; 
         }
         
-        results.sort((a, b) => (b.confidence - a.confidence));
+        results.sort((a, b) => {
+            if (a.isFresh && !b.isFresh) return -1;
+            if (!a.isFresh && b.isFresh) return 1;
+            return (b.confidence - a.confidence);
+        });
+        
         let best = results[0];
         
         scanText.innerHTML = '🤖 AI analyzing execution...';
@@ -1084,11 +1165,10 @@ async function runAutoScan() {
 
         console.log(`🏆 Setup Score: ${ghostScore}/100`);
         console.log(`🤖 AI Decision: ${aiDecision.decision} (${aiDecision.confidence}%)`);
+        console.log(`📊 Zone Touches: ${best.touches || 0}`);
+        console.log(`📊 Zone Fresh: ${best.isFresh ? '✅' : '❌'}`);
         console.log(`📊 Risk: ${riskPercent * 100}%`);
         console.log(`📊 RR: 1:${rrDisplay}`);
-        console.log(`📊 TP1: ${finalTP1.toFixed(settings.prec)} (${Math.abs(finalTP1 - finalEntry).toFixed(settings.prec)} pts away)`);
-        console.log(`📊 TP2: ${finalTP2.toFixed(settings.prec)} (${Math.abs(finalTP2 - finalEntry).toFixed(settings.prec)} pts away)`);
-        console.log(`📊 TP3: ${finalTP3.toFixed(settings.prec)} (${Math.abs(finalTP3 - finalEntry).toFixed(settings.prec)} pts away)`);
 
         const prec = settings.prec;
 
@@ -1107,6 +1187,8 @@ async function runAutoScan() {
                 confidence: best.confidence,
                 setup_score: ghostScore,
                 confirmation: best.confirmation || 'None',
+                zone_freshness: best.isFresh ? 'FRESH' : (best.touches <= 3 ? 'LIGHTLY_USED' : 'USED'),
+                zone_touches: best.touches || 0,
                 ai_decision: {
                     decision: aiDecision.decision,
                     confidence: aiDecision.confidence,
@@ -1120,8 +1202,7 @@ async function runAutoScan() {
                     zone_type: best.zone?.src || 'Unknown',
                     zone_quality: best.zone?.quality || 'C',
                     zone_confluence: best.zone?.confluence || 'None',
-                    freshness: best.freshness?.fresh ? 'Fresh' : (best.freshness?.partiallyUsed ? 'Partially used' : 'Used'),
-                    zone_touches: best.freshness?.touches || 0,
+                    touches: best.touches || 0,
                     session: best.session?.session || 'OFF-HOURS',
                     silver_bullet: best.session?.isSilverBullet ? '✅' : '❌',
                     killzone: best.session?.isKillzone ? '✅' : '❌',
@@ -1201,13 +1282,16 @@ async function runAutoScan() {
             confirmation: best.confirmation,
             aiDecision: aiDecision,
             riskAdjustment: aiDecision.risk_adjustment || 1.0,
-            rrUsed: parseFloat(rrDisplay) || 2.0
+            rrUsed: parseFloat(rrDisplay) || 2.0,
+            touches: best.touches || 0,
+            isFresh: best.isFresh || false
         };
         
         document.getElementById('executeBtn').disabled = false;
         
         const decisionEmoji = aiDecision.decision === 'enter_now' ? '✅' : (aiDecision.decision === 'wait_for_reaction' ? '⏳' : '🚫');
-        showNotif(`🎯 ${best.timeframe} ${st} ${decisionEmoji} ${aiDecision.decision} | Score: ${ghostScore} | RR: 1:${rrDisplay} | ${aiDecision.confidence}% AI`, 'success');
+        const freshEmoji = best.isFresh ? '🌟' : '📌';
+        showNotif(`🎯 ${best.timeframe} ${st} ${freshEmoji} ${decisionEmoji} ${aiDecision.decision} | Score: ${ghostScore} | Touches: ${best.touches} | RR: 1:${rrDisplay}`, 'success');
         
     } catch (e) { 
         console.error(e); 
@@ -1234,7 +1318,9 @@ function buildSetupSummary(best, st, finalEntry, price) {
         priceAtScan: price,
         setupScore: best.setupScore || 0,
         confirmation: best.confirmation || 'Unknown',
-        zoneType: best.zone?.src || 'Unknown'
+        zoneType: best.zone?.src || 'Unknown',
+        touches: best.touches || 0,
+        isFresh: best.isFresh || false
     };
 }
 
@@ -1276,9 +1362,10 @@ function deleteJournalEntry(id) { setJournal(getJournal().filter(x => x.id !== i
 
 function setupCardHTML(e, when, badge, actions) {
     const prec = getPrec(e.pair || 'XAU/USD');
+    const freshLabel = e.isFresh ? '🌟 FRESH' : (e.touches <= 3 ? '📌 LIGHT' : '⚠️ USED');
     return `<div class="journal-entry ${badge.cls}">
-        <div class="journal-head"><span>${e.pair} ${e.direction} ${e.timeframe} ${e.zoneType||''} ${e.confirmation||''}</span><span>${badge.label}</span></div>
-        <div class="journal-levels">E $${(+e.entry).toFixed(prec)} | SL $${(+e.sl).toFixed(prec)} | TP $${(+e.tp1).toFixed(prec)} | ${when}</div>
+        <div class="journal-head"><span>${e.pair} ${e.direction} ${e.timeframe} ${e.zoneType||''} ${freshLabel} ${e.confirmation||''}</span><span>${badge.label}</span></div>
+        <div class="journal-levels">E $${(+e.entry).toFixed(prec)} | SL $${(+e.sl).toFixed(prec)} | TP $${(+e.tp1).toFixed(prec)} | Touches: ${e.touches || 0} | ${when}</div>
         <div class="journal-actions">${actions}</div>
     </div>`;
 }
@@ -1344,7 +1431,8 @@ function updateLimitUI() {
     if (limitOrder) {
         const prec = getPrec(limitOrder.pair || pair);
         const aiLabel = limitOrder.aiDecision ? `🤖 ${limitOrder.aiDecision.decision}` : '';
-        t.innerHTML = `⏳ ${limitOrder.pair||''} ${limitOrder.signalType} @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)} | RR: 1:${limitOrder.rrUsed || '?'} | ${aiLabel}`;
+        const freshLabel = limitOrder.isFresh ? '🌟' : (limitOrder.touches <= 3 ? '📌' : '⚠️');
+        t.innerHTML = `⏳ ${limitOrder.pair||''} ${limitOrder.signalType} @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)} | ${freshLabel} ${limitOrder.touches||0}t | RR: 1:${limitOrder.rrUsed || '?'} | ${aiLabel}`;
         t.className = 'active';
         c.classList.remove('hidden');
         document.getElementById('executeBtn').innerHTML = '⏳ Waiting...';
@@ -1396,13 +1484,16 @@ function handleLimit() {
         aiDecision: analysis.aiDecision || null,
         riskAdjustment: analysis.riskAdjustment || 1.0,
         rrUsed: analysis.rrUsed || 2.0,
+        touches: analysis.touches || 0,
+        isFresh: analysis.isFresh || false,
         createdAt: new Date().toISOString()
     };
     saveLimit(o);
     startMonitor();
     const aiLabel = o.aiDecision ? `🤖 ${o.aiDecision.decision}` : '';
+    const freshLabel = o.isFresh ? '🌟' : (o.touches <= 3 ? '📌' : '⚠️');
     const prec = getPrec(pair);
-    showNotif(`📝 ${o.signalType} @ $${o.idealEntry.toFixed(prec)} | RR: 1:${o.rrUsed} | ${o.confirmation} ${aiLabel}`, 'info');
+    showNotif(`📝 ${o.signalType} @ $${o.idealEntry.toFixed(prec)} | ${freshLabel} ${o.touches}t | RR: 1:${o.rrUsed} | ${o.confirmation} ${aiLabel}`, 'info');
 }
 function copyJson() {
     const el = document.getElementById('jsonOutput');
@@ -1447,8 +1538,12 @@ async function checkMissedFill() {
     } catch (e) { console.error('Missed-fill check:', e); }
 }
 
-console.log('✅ ICT Trading Bot Pro FINAL FIX loaded!');
-console.log('✅ FIXED: Entry now near current price when price has moved past zone');
+console.log('✅ ICT Trading Bot Pro HIGH PROBABILITY FIX loaded!');
+console.log('✅ FIXED: Zones with >5 touches are REJECTED');
+console.log('✅ FIXED: Fresh zones get +30 points (was 15)');
+console.log('✅ FIXED: Used zones get -20 points penalty');
+console.log('✅ FIXED: Entry proximity bonus (close = +15, far = -10)');
+console.log('✅ FIXED: Zone touches shown in JSON output');
+console.log('✅ FIXED: AI prioritizes fresh zones');
 console.log('✅ All pairs configured correctly');
 console.log('✅ TP calculation uses Twelve Data ATR');
-console.log('✅ Risk-based RR (1.5x-2.5x based on risk in ATR)');
