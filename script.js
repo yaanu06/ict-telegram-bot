@@ -1,6 +1,6 @@
 // ============================================
-// ICT TRADING BOT PRO - COMPLETE OVERHAUL
-// VERSION 3.0 - HIGH PROBABILITY SYSTEM
+// ICT TRADING BOT PRO - COMPLETE OVERHAUL FIX
+// VERSION 3.1 - HIGH PROBABILITY SYSTEM
 // ============================================
 
 // Initialize
@@ -31,11 +31,11 @@ const DEFAULT_PRECISION = 5;
 const BUY_INVALIDATION_FACTOR = 0.998;
 const SELL_INVALIDATION_FACTOR = 1.002;
 
-// HIGH PROBABILITY CONSTANTS
-const MIN_CONFIDENCE = 75;
-const MAX_ZONE_TOUCHES = 3;
-const MIN_HTF_ALIGNMENT = 2;
-const MIN_PATTERN_COUNT = 2;
+// HIGH PROBABILITY CONSTANTS - LOWERED FOR MORE SETUPS
+const MIN_CONFIDENCE = 65;  // Was 75 - lowered for more setups
+const MAX_ZONE_TOUCHES = 5; // Was 3 - more forgiving
+const MIN_HTF_ALIGNMENT = 1; // Was 2 - more forgiving
+const MIN_PATTERN_COUNT = 1; // Was 2 - more forgiving
 
 // ============================================
 // MARKET SETTINGS
@@ -205,7 +205,7 @@ function resetPairState() {
 // INITIALIZATION
 // ============================================
 function startApp() {
-    console.log('🚀 Starting ICT Trading Bot Pro v3.0 - HIGH PROBABILITY SYSTEM');
+    console.log('🚀 Starting ICT Trading Bot Pro v3.1 - HIGH PROBABILITY SYSTEM');
     loadKeys().then(() => {
         updateKeyStatus();
         if(!TWELVE_DATA_KEY && !DEEPSEEK_API_KEY) {
@@ -644,7 +644,7 @@ function detectCRT(data) {
 }
 
 // ============================================
-// SMART ENTRY SYSTEM
+// SMART ENTRY SYSTEM - FIXED
 // ============================================
 
 function findPrecisionEntryWithPatterns(data, price, direction) {
@@ -668,7 +668,7 @@ function findPrecisionEntryWithPatterns(data, price, direction) {
                     level: sup,
                     type: 'MSNR_SUPPORT',
                     priority: 10,
-                    score: 90,
+                    score: 85,
                     low: sup * 0.998,
                     high: sup * 1.002,
                     confluence: ['MSNR']
@@ -683,7 +683,7 @@ function findPrecisionEntryWithPatterns(data, price, direction) {
                     level: res,
                     type: 'MSNR_RESISTANCE',
                     priority: 10,
-                    score: 90,
+                    score: 85,
                     low: res * 0.998,
                     high: res * 1.002,
                     confluence: ['MSNR']
@@ -697,20 +697,18 @@ function findPrecisionEntryWithPatterns(data, price, direction) {
         const tbsLevel = tbs.keyLevel;
         const msnrMatch = patterns.find(p => Math.abs(p.level - tbsLevel) < tbsLevel * 0.005);
         if(msnrMatch) {
-            msnrMatch.score = 100;
+            msnrMatch.score = 95;
             msnrMatch.confluence.push('TBS');
             msnrMatch.priority = 15;
-            msnrMatch.confidence = 100;
         } else {
             patterns.push({
                 level: tbsLevel,
                 type: 'TBS',
                 priority: 12,
-                score: 95,
+                score: 90,
                 low: tbsLevel * 0.997,
                 high: tbsLevel * 1.003,
-                confluence: ['TBS'],
-                confidence: 95
+                confluence: ['TBS']
             });
         }
     }
@@ -721,7 +719,6 @@ function findPrecisionEntryWithPatterns(data, price, direction) {
         for(const p of crtPatterns) {
             p.score += 5;
             p.confluence.push('CRT_EXPANDING');
-            p.confidence = (p.confidence || 80) + 5;
         }
     }
     
@@ -732,7 +729,6 @@ function findPrecisionEntryWithPatterns(data, price, direction) {
             if(matched) {
                 matched.confluence.push('FVG');
                 matched.score += 5;
-                matched.confidence = (matched.confidence || 80) + 5;
             } else {
                 patterns.push({
                     level: fvg.m,
@@ -750,7 +746,6 @@ function findPrecisionEntryWithPatterns(data, price, direction) {
             if(matched) {
                 matched.confluence.push('FVG');
                 matched.score += 5;
-                matched.confidence = (matched.confidence || 80) + 5;
             } else {
                 patterns.push({
                     level: fvg.m,
@@ -767,15 +762,15 @@ function findPrecisionEntryWithPatterns(data, price, direction) {
     
     // 5. Order Blocks (Good confluence)
     for(const ob of obs) {
+        const obLevel = (ob.low + ob.high) / 2;
         if(direction === 'BUY' && ob.high < price) {
-            let matched = patterns.find(p => Math.abs(p.level - (ob.low + ob.high) / 2) < ob.high * 0.003);
+            let matched = patterns.find(p => Math.abs(p.level - obLevel) < ob.high * 0.003);
             if(matched) {
                 matched.confluence.push('OB');
                 matched.score += 5;
-                matched.confidence = (matched.confidence || 80) + 5;
             } else {
                 patterns.push({
-                    level: (ob.low + ob.high) / 2,
+                    level: obLevel,
                     type: 'OB',
                     priority: 5,
                     score: 70,
@@ -786,14 +781,13 @@ function findPrecisionEntryWithPatterns(data, price, direction) {
             }
         }
         if(direction === 'SELL' && ob.low > price) {
-            let matched = patterns.find(p => Math.abs(p.level - (ob.low + ob.high) / 2) < ob.low * 0.003);
+            let matched = patterns.find(p => Math.abs(p.level - obLevel) < ob.low * 0.003);
             if(matched) {
                 matched.confluence.push('OB');
                 matched.score += 5;
-                matched.confidence = (matched.confidence || 80) + 5;
             } else {
                 patterns.push({
-                    level: (ob.low + ob.high) / 2,
+                    level: obLevel,
                     type: 'OB',
                     priority: 5,
                     score: 70,
@@ -807,20 +801,13 @@ function findPrecisionEntryWithPatterns(data, price, direction) {
     
     // Score and sort patterns
     for(const p of patterns) {
-        // Base score
         let baseScore = p.score || 70;
-        
-        // Confluence bonus
         const confluences = p.confluence.length;
         if(confluences >= 4) baseScore += 20;
         else if(confluences >= 3) baseScore += 15;
         else if(confluences >= 2) baseScore += 8;
-        
-        // Priority bonus
         baseScore += (p.priority || 0) * 2;
-        
         p.finalScore = Math.min(baseScore, 100);
-        p.confidence = Math.min(p.confidence || baseScore, 100);
     }
     
     patterns.sort((a, b) => b.priority - a.priority || b.finalScore - a.finalScore);
@@ -844,7 +831,6 @@ function findPrecisionEntryWithPatterns(data, price, direction) {
         low: best.low,
         high: best.high,
         score: best.finalScore,
-        confidence: best.confidence || 80,
         confluence: best.confluence.join('+'),
         patternCount: patterns.length,
         topPatterns: patterns.slice(0, 3).map(p => p.type).join('+'),
@@ -867,11 +853,9 @@ function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators) {
     let slPrice;
     
     if(dir === 'BUY') {
-        // Place SL below the zone with buffer
         const zoneLow = zone.low || entry - apiATR;
         slPrice = Math.min(zoneLow - slBuf * 0.5, entry - apiATR * 1.5);
         
-        // Check MSNR support levels for SL placement
         if(msnr && msnr.allSupports) {
             const belowSupports = msnr.allSupports.filter(s => s < entry);
             if(belowSupports.length > 0) {
@@ -880,11 +864,9 @@ function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators) {
             }
         }
     } else {
-        // Place SL above the zone with buffer
         const zoneHigh = zone.high || entry + apiATR;
         slPrice = Math.max(zoneHigh + slBuf * 0.5, entry + apiATR * 1.5);
         
-        // Check MSNR resistance levels for SL placement
         if(msnr && msnr.allResistances) {
             const aboveResistances = msnr.allResistances.filter(r => r > entry);
             if(aboveResistances.length > 0) {
@@ -894,7 +876,6 @@ function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators) {
         }
     }
     
-    // Ensure SL is within max allowed
     const dist = Math.abs(entry - slPrice);
     if(dist > maxSLD) {
         slPrice = dir === 'BUY' ? entry - maxSLD : entry + maxSLD;
@@ -918,11 +899,9 @@ function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
     const prec = settings.prec;
     const factor = Math.pow(10, prec);
     
-    // Dynamic RR based on confidence
-    let rr1, rr2, rr3;
-    
-    // If risk is large relative to ATR, use smaller RR
     const riskInATR = risk / apiATR;
+    
+    let rr1, rr2, rr3;
     
     if(riskInATR >= 2.0) {
         rr1 = 2.0;
@@ -942,7 +921,6 @@ function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
     let tp2 = dir === 'BUY' ? entry + risk * rr2 : entry - risk * rr2;
     let tp3 = dir === 'BUY' ? entry + risk * rr3 : entry - risk * rr3;
     
-    // Round to precision
     tp1 = Math.round(tp1 * factor) / factor;
     tp2 = Math.round(tp2 * factor) / factor;
     tp3 = Math.round(tp3 * factor) / factor;
@@ -953,6 +931,230 @@ function calcTakeProfits(dir, entry, sl, data, twelveIndicators) {
         rr2Used: rr2,
         rr3Used: rr3,
         riskInATR: riskInATR
+    };
+}
+
+// ============================================
+// ZONE FRESHNESS CHECK
+// ============================================
+
+function checkZoneFreshness(data, zone, direction) {
+    let touches = 0, violations = 0;
+    const lookback = Math.min(50, data.length);
+    for(let i = data.length - lookback; i < data.length; i++) {
+        if(i < 0) continue;
+        const inZone = data[i].l <= zone.high && data[i].h >= zone.low;
+        if(!inZone) continue;
+        touches++;
+        if(direction === 'BUY' && data[i].c < zone.low) violations++;
+        if(direction === 'SELL' && data[i].c > zone.high) violations++;
+    }
+    const fresh = touches <= 2 && violations === 0;
+    const partiallyUsed = touches <= 5 && violations <= 1;
+    const used = touches > 5 || violations > 1;
+    return { fresh, partiallyUsed, used, touches, violations };
+}
+
+// ============================================
+// SESSION DETECTION
+// ============================================
+
+function getSession() {
+    const now = new Date();
+    const hour = now.getUTCHours();
+    const min = now.getUTCMinutes();
+    const time = hour + min / 60;
+    
+    let s = { session: 'OFF-HOURS', multiplier: 0.5, emoji: '🌙', isKillzone: false, isSilverBullet: false, isMacro: false };
+    
+    if(time >= 0 && time < 4) s = { ...s, session: 'ASIA KZ', multiplier: 0.8, emoji: '🌏', isKillzone: true };
+    else if(time >= 7 && time < 10) s = { ...s, session: 'LONDON KZ', multiplier: 1.3, emoji: '🇬🇧', isKillzone: true };
+    else if(time >= 12 && time < 15) s = { ...s, session: 'NEW_YORK KZ', multiplier: 1.2, emoji: '🇺🇸', isKillzone: true };
+    else if(time >= 15 && time < 17) s = { ...s, session: 'LON-CLOSE KZ', multiplier: 0.9, emoji: '🌆', isKillzone: true };
+    
+    if((time >= 8.5 && time < 9) || (time >= 15 && time < 16) || (time >= 19 && time < 20)) {
+        s.isSilverBullet = true;
+        s.multiplier += 0.2;
+        s.emoji = '🏹';
+        s.session += ' + SB';
+    }
+    
+    return s;
+}
+
+// ============================================
+// UPDATE MTF DISPLAY - FIXED
+// ============================================
+
+async function updateMTFDisplay(historyCache = {}) {
+    const tfs = ['5M', '15M', '1H', '4H', '1D', '1W'];
+    for(let t of tfs) {
+        let tr = 'NEUTRAL';
+        try {
+            const data = historyCache[t] || await getHistory(t);
+            if(data && data.length >= 2) {
+                const currentCandle = data[data.length - 1];
+                const price = await getPrice();
+                if(price) {
+                    if(price > currentCandle.o) tr = 'BULLISH';
+                    else if(price < currentCandle.o) tr = 'BEARISH';
+                } else {
+                    // Use trend detection
+                    tr = detectTrend(data);
+                }
+            }
+        } catch(e) { /* ignore */ }
+        
+        let el = document.getElementById(`trend${t}`);
+        if(el) {
+            el.innerHTML = tr === 'BULLISH' ? '🟢 Bull' : (tr === 'BEARISH' ? '🔴 Bear' : '⚪ Neut');
+            el.className = `mtf-trend ${tr.toLowerCase()}`;
+        }
+    }
+}
+
+// ============================================
+// AI EXECUTION DECISION
+// ============================================
+
+async function getAIExecutionDecision(best, price, htfData) {
+    if(!DEEPSEEK_API_KEY) {
+        return getSmartFallbackDecision(best, price);
+    }
+    
+    const session = getSession();
+    const prec = getPrec(pair);
+    
+    const prompt = `HIGH PROBABILITY ICT TRADE EXECUTION
+
+Setup Confidence: ${best.confidence}%
+Patterns: ${best.topPatterns}
+Confluence: ${best.confluence}
+Zone Touches: ${best.touches}
+Zone Fresh: ${best.isFresh}
+HTF Alignment: ${best.htfMatch}/3
+TBS: ${best.tbsDetected ? 'YES' : 'NO'}
+CRT: ${best.crtState}
+Entry Distance: ${(best.entryDistancePct || 0).toFixed(2)}%
+Session: ${session.session}
+
+DECISION RULES:
+- Confidence >= 75 + Fresh Zone = ENTER NOW
+- Confidence >= 70 + TBS or CRT = ENTER NOW
+- Confidence >= 65 = WAIT FOR REACTION
+- Confidence < 65 = SKIP
+
+Return ONLY JSON:
+{"decision":"enter_now|wait_for_reaction|skip","confidence":0-100,"reason":"brief reason"}`;
+
+    try {
+        const response = await fetch(DEEPSEEK_API_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+            },
+            body: JSON.stringify({
+                model: 'deepseek-chat',
+                messages: [
+                    { role: 'system', content: 'You are an ICT trading execution expert. Return ONLY valid JSON.' },
+                    { role: 'user', content: prompt }
+                ],
+                temperature: 0.1,
+                max_tokens: 200
+            })
+        });
+        
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content;
+        
+        if(content) {
+            try {
+                const parsed = JSON.parse(content);
+                const validDecisions = ['enter_now', 'wait_for_reaction', 'skip'];
+                const decision = validDecisions.includes(parsed.decision) ? parsed.decision : 'wait_for_reaction';
+                const confidence = Math.min(Math.max(parsed.confidence || best.confidence, 0), 100);
+                return {
+                    decision: decision,
+                    confidence: confidence,
+                    reasoning: parsed.reason || 'AI analyzed setup',
+                    risk_adjustment: decision === 'enter_now' ? 1.0 : (decision === 'wait_for_reaction' ? 0.8 : 0),
+                    wait_condition: decision === 'wait_for_reaction' ? 'Wait for confirmation' : null,
+                    skip_reason: decision === 'skip' ? parsed.reason || 'Setup failed AI criteria' : null
+                };
+            } catch(e) {
+                return getSmartFallbackDecision(best, price);
+            }
+        }
+        return getSmartFallbackDecision(best, price);
+    } catch(error) {
+        return getSmartFallbackDecision(best, price);
+    }
+}
+
+function getSmartFallbackDecision(best, price) {
+    const confidence = best.confidence || 0;
+    const isFresh = best.isFresh || false;
+    const tbsDetected = best.tbsDetected || false;
+    const touches = best.touches || 0;
+    const htfMatch = best.htfMatch || 0;
+    const entryDistance = best.entryDistancePct || 100;
+    
+    // ENTER NOW: High confidence + fresh zone
+    if(confidence >= 75 && isFresh && touches <= 3) {
+        return {
+            decision: 'enter_now',
+            confidence: confidence,
+            reasoning: `High confidence ${confidence}%, fresh zone, ${touches} touches`,
+            risk_adjustment: 1.0,
+            wait_condition: null,
+            skip_reason: null
+        };
+    }
+    
+    // ENTER NOW: TBS + Good confidence
+    if(tbsDetected && confidence >= 70 && touches <= 4) {
+        return {
+            decision: 'enter_now',
+            confidence: confidence,
+            reasoning: `TBS detected, ${confidence}% confidence, ${touches} touches`,
+            risk_adjustment: 1.0,
+            wait_condition: null,
+            skip_reason: null
+        };
+    }
+    
+    // WAIT: Good confidence
+    if(confidence >= 65) {
+        return {
+            decision: 'wait_for_reaction',
+            confidence: confidence,
+            reasoning: `Good setup ${confidence}%, waiting for optimal entry`,
+            risk_adjustment: 0.8,
+            wait_condition: 'Wait for price to reach zone with confirmation',
+            skip_reason: null
+        };
+    }
+    
+    // SKIP: Low confidence or too many touches
+    if(confidence < 65 || touches > MAX_ZONE_TOUCHES) {
+        return {
+            decision: 'skip',
+            confidence: confidence,
+            reasoning: confidence < 65 ? `Confidence ${confidence}% too low` : `${touches} touches too many`,
+            risk_adjustment: 0,
+            wait_condition: null,
+            skip_reason: confidence < 65 ? `Confidence ${confidence}% below 65%` : `Zone touched ${touches} times`
+        };
+    }
+    
+    return {
+        decision: 'wait_for_reaction',
+        confidence: confidence,
+        reasoning: `Default wait for ${confidence}% confidence`,
+        risk_adjustment: 0.5,
+        wait_condition: 'Wait for better confirmation',
+        skip_reason: null
     };
 }
 
@@ -1010,30 +1212,30 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const tps = calcTakeProfits(dir, entry, sl, entryData, twelveIndicators);
             
             // ============================================
-            // CONFIDENCE SCORING SYSTEM
+            // CONFIDENCE SCORING SYSTEM - FIXED
             // ============================================
             let confidence = 0;
             let reasons = [];
             let patternBreakdown = [];
             
-            // 1. Pattern Score (30 points max)
-            const patternScore = Math.min(patternResult.score || 70, 100) * 0.3;
+            // 1. Pattern Score (25 points max)
+            const patternScore = Math.min((patternResult.score || 70) * 0.25, 25);
             confidence += patternScore;
-            reasons.push(`Pattern: ${patternResult.topPatterns} (${patternResult.score}%)`);
-            patternBreakdown.push({ name: 'Pattern Score', score: patternScore, max: 30 });
+            reasons.push(`Pattern: ${patternResult.topPatterns}`);
+            patternBreakdown.push({ name: 'Pattern Score', score: Math.round(patternScore), max: 25 });
             
             // 2. Pattern Count (20 points max)
             const patternCountBonus = Math.min(patternResult.patternCount * 5, 20);
             confidence += patternCountBonus;
-            reasons.push(`Patterns: ${patternResult.patternCount} patterns found`);
-            patternBreakdown.push({ name: 'Pattern Count', score: patternCountBonus, max: 20 });
+            reasons.push(`${patternResult.patternCount} patterns`);
+            patternBreakdown.push({ name: 'Pattern Count', score: Math.round(patternCountBonus), max: 20 });
             
             // 3. Confluence (15 points max)
             const confluenceCount = patternResult.confluence.split('+').length;
             const confluenceBonus = Math.min(confluenceCount * 4, 15);
             confidence += confluenceBonus;
             reasons.push(`Confluence: ${patternResult.confluence}`);
-            patternBreakdown.push({ name: 'Confluence', score: confluenceBonus, max: 15 });
+            patternBreakdown.push({ name: 'Confluence', score: Math.round(confluenceBonus), max: 15 });
             
             // 4. Zone Freshness (15 points max)
             let freshnessScore = 0;
@@ -1048,7 +1250,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 reasons.push('Moderately used zone');
             }
             confidence += freshnessScore;
-            patternBreakdown.push({ name: 'Zone Freshness', score: freshnessScore, max: 15 });
+            patternBreakdown.push({ name: 'Zone Freshness', score: Math.round(freshnessScore), max: 15 });
             
             // 5. HTF Alignment (15 points max)
             let htfScore = 0;
@@ -1058,16 +1260,16 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             if(h4Dir === dirStr) htfMatch++;
             if(h1Dir === dirStr) htfMatch++;
             
-            if(htfMatch >= 3) { htfScore = 15; reasons.push('HTF full alignment (1D+4H+1H)'); }
-            else if(htfMatch >= 2) { htfScore = 10; reasons.push(`HTF partial alignment (${htfMatch}/3)`); }
-            else if(htfMatch >= 1) { htfScore = 5; reasons.push(`HTF weak alignment (${htfMatch}/3)`); }
+            if(htfMatch >= 3) { htfScore = 15; reasons.push('HTF full alignment'); }
+            else if(htfMatch >= 2) { htfScore = 10; reasons.push(`HTF ${htfMatch}/3 alignment`); }
+            else if(htfMatch >= 1) { htfScore = 5; reasons.push(`HTF ${htfMatch}/3 alignment`); }
             confidence += htfScore;
-            patternBreakdown.push({ name: 'HTF Alignment', score: htfScore, max: 15 });
+            patternBreakdown.push({ name: 'HTF Alignment', score: Math.round(htfScore), max: 15 });
             
             // 6. TBS Bonus (5 points)
             if(patternResult.tbsDetected) {
                 confidence += 5;
-                reasons.push('Turtle Soup confirmed');
+                reasons.push('TBS confirmed');
                 patternBreakdown.push({ name: 'TBS', score: 5, max: 5 });
             }
             
@@ -1086,14 +1288,22 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             else if(entryDistancePct < 1.5) { proximityScore = 4; reasons.push('Entry moderate'); }
             else if(entryDistancePct < 3.0) { proximityScore = 1; }
             confidence += proximityScore;
-            patternBreakdown.push({ name: 'Entry Proximity', score: proximityScore, max: 10 });
+            patternBreakdown.push({ name: 'Entry Proximity', score: Math.round(proximityScore), max: 10 });
+            
+            // 9. Session Bonus (5 points)
+            const session = getSession();
+            if(session.isKillzone || session.isSilverBullet) {
+                confidence += 5;
+                reasons.push('Good session');
+                patternBreakdown.push({ name: 'Session', score: 5, max: 5 });
+            }
             
             // Cap confidence at 100
             confidence = Math.min(confidence, 100);
             
             // Log the scoring
             console.log(`  → ${dir} confidence: ${confidence.toFixed(0)}% (${reasons.join(', ')})`);
-            console.log(`  → Entry: ${entry}, SL: ${sl}, TP1: ${tps.tp1}`);
+            console.log(`  → Entry: ${entry}, SL: ${sl}, TP1: ${tps.tp1}, Touches: ${freshness.touches}`);
             
             // REJECT if confidence too low
             if(confidence < MIN_CONFIDENCE) {
@@ -1178,200 +1388,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 }
 
 // ============================================
-// ZONE FRESHNESS CHECK
-// ============================================
-
-function checkZoneFreshness(data, zone, direction) {
-    let touches = 0, violations = 0;
-    const lookback = Math.min(50, data.length);
-    for(let i = data.length - lookback; i < data.length; i++) {
-        if(i < 0) continue;
-        const inZone = data[i].l <= zone.high && data[i].h >= zone.low;
-        if(!inZone) continue;
-        touches++;
-        if(direction === 'BUY' && data[i].c < zone.low) violations++;
-        if(direction === 'SELL' && data[i].c > zone.high) violations++;
-    }
-    const fresh = touches <= 2 && violations === 0;
-    const partiallyUsed = touches <= 5 && violations <= 1;
-    const used = touches > 5 || violations > 1;
-    return { fresh, partiallyUsed, used, touches, violations };
-}
-
-// ============================================
-// SESSION DETECTION
-// ============================================
-
-function getSession() {
-    const now = new Date();
-    const hour = now.getUTCHours();
-    const min = now.getUTCMinutes();
-    const time = hour + min / 60;
-    
-    let s = { session: 'OFF-HOURS', multiplier: 0.5, emoji: '🌙', isKillzone: false, isSilverBullet: false, isMacro: false };
-    
-    if(time >= 0 && time < 4) s = { ...s, session: 'ASIA KZ', multiplier: 0.8, emoji: '🌏', isKillzone: true };
-    else if(time >= 7 && time < 10) s = { ...s, session: 'LONDON KZ', multiplier: 1.3, emoji: '🇬🇧', isKillzone: true };
-    else if(time >= 12 && time < 15) s = { ...s, session: 'NEW_YORK KZ', multiplier: 1.2, emoji: '🇺🇸', isKillzone: true };
-    else if(time >= 15 && time < 17) s = { ...s, session: 'LON-CLOSE KZ', multiplier: 0.9, emoji: '🌆', isKillzone: true };
-    
-    if((time >= 8.5 && time < 9) || (time >= 15 && time < 16) || (time >= 19 && time < 20)) {
-        s.isSilverBullet = true;
-        s.multiplier += 0.2;
-        s.emoji = '🏹';
-        s.session += ' + SB';
-    }
-    
-    return s;
-}
-
-// ============================================
-// AI EXECUTION DECISION
-// ============================================
-
-async function getAIExecutionDecision(best, price, htfData) {
-    if(!DEEPSEEK_API_KEY) {
-        return getSmartFallbackDecision(best, price);
-    }
-    
-    const session = getSession();
-    const prec = getPrec(pair);
-    
-    const prompt = `HIGH PROBABILITY ICT TRADE EXECUTION
-
-Setup Confidence: ${best.confidence}%
-Patterns: ${best.topPatterns}
-Confluence: ${best.confluence}
-Zone Touches: ${best.touches}
-Zone Fresh: ${best.isFresh}
-HTF Alignment: ${best.htfMatch}/3
-TBS: ${best.tbsDetected ? 'YES' : 'NO'}
-CRT: ${best.crtState}
-Entry Distance: ${(best.entryDistancePct || 0).toFixed(2)}%
-Session: ${session.session}
-
-DECISION RULES:
-- Confidence >= 85 + Fresh Zone = ENTER NOW
-- Confidence >= 75 + TBS or CRT = ENTER NOW
-- Confidence >= 75 = WAIT FOR REACTION
-- Confidence < 75 = SKIP
-
-Return ONLY JSON:
-{"decision":"enter_now|wait_for_reaction|skip","confidence":0-100,"reason":"brief reason"}`;
-
-    try {
-        const response = await fetch(DEEPSEEK_API_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
-            },
-            body: JSON.stringify({
-                model: 'deepseek-chat',
-                messages: [
-                    { role: 'system', content: 'You are an ICT trading execution expert. Return ONLY valid JSON.' },
-                    { role: 'user', content: prompt }
-                ],
-                temperature: 0.1,
-                max_tokens: 200
-            })
-        });
-        
-        const data = await response.json();
-        const content = data.choices?.[0]?.message?.content;
-        
-        if(content) {
-            try {
-                const parsed = JSON.parse(content);
-                const validDecisions = ['enter_now', 'wait_for_reaction', 'skip'];
-                const decision = validDecisions.includes(parsed.decision) ? parsed.decision : 'wait_for_reaction';
-                const confidence = Math.min(Math.max(parsed.confidence || best.confidence, 0), 100);
-                return {
-                    decision: decision,
-                    confidence: confidence,
-                    reasoning: parsed.reason || 'AI analyzed setup',
-                    risk_adjustment: decision === 'enter_now' ? 1.0 : (decision === 'wait_for_reaction' ? 0.8 : 0),
-                    wait_condition: decision === 'wait_for_reaction' ? 'Wait for confirmation' : null,
-                    skip_reason: decision === 'skip' ? parsed.reason || 'Setup failed AI criteria' : null
-                };
-            } catch(e) {
-                return getSmartFallbackDecision(best, price);
-            }
-        }
-        return getSmartFallbackDecision(best, price);
-    } catch(error) {
-        return getSmartFallbackDecision(best, price);
-    }
-}
-
-function getSmartFallbackDecision(best, price) {
-    const confidence = best.confidence || 0;
-    const isFresh = best.isFresh || false;
-    const tbsDetected = best.tbsDetected || false;
-    const touches = best.touches || 0;
-    const htfMatch = best.htfMatch || 0;
-    const entryDistance = best.entryDistancePct || 100;
-    
-    // ENTER NOW: High confidence + fresh zone
-    if(confidence >= 85 && isFresh && touches <= 2) {
-        return {
-            decision: 'enter_now',
-            confidence: confidence,
-            reasoning: `High confidence ${confidence}%, fresh zone, ${touches} touches`,
-            risk_adjustment: 1.0,
-            wait_condition: null,
-            skip_reason: null
-        };
-    }
-    
-    // ENTER NOW: TBS + Good confidence
-    if(tbsDetected && confidence >= 75 && touches <= 3) {
-        return {
-            decision: 'enter_now',
-            confidence: confidence,
-            reasoning: `TBS detected, ${confidence}% confidence, ${touches} touches`,
-            risk_adjustment: 1.0,
-            wait_condition: null,
-            skip_reason: null
-        };
-    }
-    
-    // WAIT: Good confidence
-    if(confidence >= 75) {
-        return {
-            decision: 'wait_for_reaction',
-            confidence: confidence,
-            reasoning: `Good setup ${confidence}%, waiting for optimal entry`,
-            risk_adjustment: 0.8,
-            wait_condition: 'Wait for price to reach zone with confirmation',
-            skip_reason: null
-        };
-    }
-    
-    // SKIP: Low confidence or too many touches
-    if(confidence < 75 || touches > MAX_ZONE_TOUCHES) {
-        return {
-            decision: 'skip',
-            confidence: confidence,
-            reasoning: confidence < 75 ? `Confidence ${confidence}% too low` : `${touches} touches too many`,
-            risk_adjustment: 0,
-            wait_condition: null,
-            skip_reason: confidence < 75 ? `Confidence ${confidence}% below 75%` : `Zone touched ${touches} times`
-        };
-    }
-    
-    return {
-        decision: 'wait_for_reaction',
-        confidence: confidence,
-        reasoning: `Default wait for ${confidence}% confidence`,
-        risk_adjustment: 0.5,
-        wait_condition: 'Wait for better confirmation',
-        skip_reason: null
-    };
-}
-
-// ============================================
-// RUN AUTO SCAN
+// RUN AUTO SCAN - FIXED WITH MTF DISPLAY
 // ============================================
 
 async function runAutoScan() {
@@ -1404,6 +1421,9 @@ async function runAutoScan() {
         await Promise.all(tfs.map(async (t) => {
             historyCache[t] = await getHistory(t);
         }));
+        
+        // FIX: Update MTF Display
+        await updateMTFDisplay(historyCache);
         
         const settings = getMarketSettings(pair);
         document.getElementById('currentPrice').innerHTML = `$${price.toFixed(settings.prec)}`;
@@ -1491,7 +1511,7 @@ async function runAutoScan() {
                 take_profit_3: finalTP3,
                 confidence: best.confidence,
                 setup_score: best.confidence,
-                confirmation: best.patternResult?.topPatterns || 'Pattern Setup',
+                confirmation: best.topPatterns || 'Pattern Setup',
                 zone_freshness: best.isFresh ? 'FRESH' : (best.touches <= 2 ? 'LIGHTLY_USED' : 'USED'),
                 zone_touches: best.touches || 0,
                 patterns_detected: best.topPatterns,
@@ -1974,15 +1994,15 @@ async function checkMissedFill() {
     }
 }
 
-console.log('✅ ICT Trading Bot Pro v3.0 - HIGH PROBABILITY SYSTEM loaded!');
-console.log('✅ Key Improvements:');
+console.log('✅ ICT Trading Bot Pro v3.1 - HIGH PROBABILITY SYSTEM loaded!');
+console.log('✅ FIXES APPLIED:');
+console.log('   - MTF Display now updates correctly');
+console.log('   - Lowered confidence threshold to 65% (was 75%)');
+console.log('   - Increased max zone touches to 5 (was 3)');
+console.log('   - Lowered min HTF alignment to 1 (was 2)');
+console.log('   - Added session bonus to confidence scoring');
+console.log('   - Fixed pattern detection to find more setups');
 console.log('   - MSNR + TBS + CRT integrated as PRIMARY signals');
-console.log('   - Zones with >3 touches REJECTED');
-console.log('   - Multiple pattern alignment required');
-console.log('   - Confidence scoring system (0-100%)');
-console.log('   - AI decision uses confidence thresholds');
-console.log('   - TP1 at 2-3x risk based on volatility');
-console.log('   - Full MSNR levels in JSON output');
 console.log(`   - Minimum confidence: ${MIN_CONFIDENCE}%`);
 console.log(`   - Max zone touches: ${MAX_ZONE_TOUCHES}`);
 console.log(`   - Min HTF alignment: ${MIN_HTF_ALIGNMENT}/3`);
