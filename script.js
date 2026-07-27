@@ -729,33 +729,28 @@ function findPatternZone(data, price, direction) {
     
     const best = candidates[0];
     
-    // FIX: Entry near current price, not at the zone
+    // Calculate Entry based on the zone
+    const atrVal = atr(data, 14);
     let entry;
     if(direction === 'BUY') {
-        entry = price - (price * 0.001);
-        if(entry < best.price) {
-            entry = best.price + (best.price * 0.002);
-        }
+        entry = Math.min(best.price + atrVal * 0.1, price);
     } else {
-        entry = price + (price * 0.001);
-        if(entry > best.price) {
-            entry = best.price - (best.price * 0.002);
-        }
+        entry = Math.max(best.price - atrVal * 0.1, price);
     }
     entry = Math.round(entry * factor) / factor;
     
     // Calculate SL based on the zone
     let sl;
-    const atrVal = atr(data, 14);
+    const minStopDist = Math.max(settings.slBuffer * settings.pipSize, settings.minSL * settings.pipSize, atrVal * 0.5);
     if(direction === 'BUY') {
-        sl = best.low - (best.low * 0.001);
-        if(entry - sl < atrVal * 0.5) {
-            sl = entry - atrVal * 0.8;
+        sl = best.low - (settings.slBuffer * settings.pipSize);
+        if(entry - sl < minStopDist) {
+            sl = entry - minStopDist;
         }
     } else {
-        sl = best.high + (best.high * 0.001);
-        if(sl - entry < atrVal * 0.5) {
-            sl = entry + atrVal * 0.8;
+        sl = best.high + (settings.slBuffer * settings.pipSize);
+        if(sl - entry < minStopDist) {
+            sl = entry + minStopDist;
         }
     }
     sl = Math.round(sl * factor) / factor;

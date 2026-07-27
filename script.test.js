@@ -7,20 +7,19 @@ const getContext = (overrides = {}) => {
     const context = {
         window: { Telegram: { WebApp: null } },
         document: {
-            getElementById: () => ({ addEventListener: () => {}, classList: { add: () => {}, remove: () => {} }, style: {}, innerHTML: '' }),
-            addEventListener: () => {}
+            getElementById: () => ({ addEventListener: () => {}, querySelectorAll: () => [], querySelector: () => null, classList: { add: () => {}, remove: () => {} }, style: {}, innerHTML: '' }),
+            addEventListener: () => {}, querySelectorAll: () => [], querySelector: () => null
         },
         console: { log: () => {}, error: () => {} },
         fetch: jest.fn(),
-        setTimeout: () => 0,
+        setTimeout: () => 0, setInterval: () => 0, clearInterval: () => 0,
         localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
         ...overrides
     };
     vm.createContext(context);
     // Top-level const arrow functions (ema, rsi, atr) live in the script's lexical
     // scope, not on the context global — export them from the same script run.
-    const exported = vm.runInContext(code + '\n;({ ema, rsi, atr });', context);
-    Object.assign(context, exported);
+    vm.runInContext(code, context);
     return context;
 };
 
@@ -408,7 +407,7 @@ describe('analyzeTimeframe Ghost Machine pattern matching', () => {
 
 describe('runAutoScan Ghost Machine timeframe handling', () => {
     const makeElements = () => {
-        const mk = () => ({ addEventListener: () => {}, classList: { add: () => {}, remove: () => {} }, style: {}, innerHTML: '', className: '', disabled: true });
+        const mk = () => ({ addEventListener: () => {}, querySelectorAll: () => [], querySelector: () => null, classList: { add: () => {}, remove: () => {} }, style: {}, innerHTML: '', className: '', disabled: true });
         return {
             analyzeBtn: mk(),
             scanStatus: mk(),
@@ -495,8 +494,8 @@ describe('runAutoScan Ghost Machine timeframe handling', () => {
         let jsonOut = null;
         const context = getContext({
             document: {
-                getElementById: id => elements[id] || (elements[id] = { addEventListener: () => {}, classList: { add: () => {}, remove: () => {} }, style: {}, innerHTML: '', className: '', disabled: true }),
-                addEventListener: () => {}
+                getElementById: id => elements[id] || (elements[id] = { addEventListener: () => {}, querySelectorAll: () => [], querySelector: () => null, classList: { add: () => {}, remove: () => {} }, style: {}, innerHTML: '', className: '', disabled: true }),
+                addEventListener: () => {}, querySelectorAll: () => [], querySelector: () => null
             }
         });
         vm.runInContext("TWELVE_DATA_KEY = 'demo-key';", context);
