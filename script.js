@@ -854,8 +854,15 @@ async function getAIExecutionDecision(best, price, htfData) {
     
     const session = getSession();
     
+    const h1Trend = await getQuoteDirection('1H', htfData ? htfData['1H'] : null);
+    const h4Trend = await getQuoteDirection('4H', htfData ? htfData['4H'] : null);
+
     const prompt = `ICT TRADE EXECUTION
 
+Asset Pair: ${typeof pair !== 'undefined' ? pair : 'Unknown'}
+Current Price: ${price}
+Higher Time Frame Bias (1H): ${h1Trend}
+Higher Time Frame Bias (4H): ${h4Trend}
 Setup Confidence: ${best.confidence}%
 Direction: ${best.direction}
 Zone Type: ${best.zoneType}
@@ -863,8 +870,10 @@ Distance: ${Math.abs(best.distancePct || 0).toFixed(2)}%
 TBS: ${best.tbsDetected ? 'YES' : 'NO'}
 CRT: ${best.crtState}
 Session: ${session.session}
+Killzone Active: ${session.isKillzone ? 'YES' : 'NO'}
 
-Return ONLY JSON:
+Analyze the setup based on alignment with HTF bias, session liquidity, and zone proximity.
+Return ONLY valid JSON format:
 {"decision":"enter_now|wait_for_reaction|skip","confidence":0-100,"reason":"brief reason"}`;
 
     try {
@@ -1022,12 +1031,13 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const prec = settings.prec;
             const factor = Math.pow(10, prec);
             
-            // Dynamic RR based on risk in ATR
+            // Dynamic RR based on settings targetRR and risk in ATR
             const riskInATR = risk / entryATR;
+            const targetRR = settings.targetRR || 2.0;
             let rr1, rr2, rr3;
-            if(riskInATR >= 2.0) { rr1 = 1.5; rr2 = 2.5; rr3 = 3.5; }
-            else if(riskInATR >= 1.5) { rr1 = 2.0; rr2 = 3.0; rr3 = 4.0; }
-            else { rr1 = 2.5; rr2 = 3.5; rr3 = 4.5; }
+            if(riskInATR >= 2.0) { rr1 = Math.max(1.0, targetRR - 1.0); rr2 = targetRR; rr3 = targetRR + 1.0; }
+            else if(riskInATR >= 1.5) { rr1 = Math.max(1.5, targetRR - 0.5); rr2 = targetRR + 0.5; rr3 = targetRR + 1.5; }
+            else { rr1 = targetRR; rr2 = targetRR + 1.0; rr3 = targetRR + 2.0; }
             
             let tp1 = dir === 'BUY' ? entry + risk * rr1 : entry - risk * rr1;
             let tp2 = dir === 'BUY' ? entry + risk * rr2 : entry - risk * rr2;
