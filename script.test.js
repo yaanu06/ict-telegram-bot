@@ -7,12 +7,12 @@ const getContext = (overrides = {}) => {
     const context = {
         window: { Telegram: { WebApp: null } },
         document: {
-            getElementById: () => ({ addEventListener: () => {}, querySelectorAll: () => [], querySelector: () => null, classList: { add: () => {}, remove: () => {} }, style: {}, innerHTML: '' }),
-            addEventListener: () => {}, querySelectorAll: () => [], querySelector: () => null
+            getElementById: () => ({ addEventListener: () => {}, querySelectorAll: () => [], querySelector: () => null, querySelectorAll: () => [], querySelector: () => null, querySelectorAll: () => [], querySelector: () => null, classList: { add: () => {}, remove: () => {} }, style: {}, innerHTML: '' }),
+            addEventListener: () => {}, querySelectorAll: () => [], querySelector: () => null, querySelectorAll: () => [], querySelector: () => null, querySelectorAll: () => [], querySelector: () => null
         },
         console: { log: () => {}, error: () => {} },
         fetch: jest.fn(),
-        setTimeout: () => 0, setInterval: () => 0, clearInterval: () => 0,
+        setTimeout: () => 0, setInterval: () => 0, clearInterval: () => 0, setInterval: () => 0, clearInterval: () => 0, setInterval: () => 0, clearInterval: () => 0,
         localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
         ...overrides
     };

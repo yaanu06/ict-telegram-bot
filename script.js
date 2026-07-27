@@ -1052,19 +1052,19 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             let confidence = 0;
             let reasons = [];
             
-            // 1. Pattern Score
+            // 1. Pattern Score (Base setup quality)
             let typeScore = patternResult.zone.score || 70;
-            confidence += typeScore * 0.25;
+            confidence += typeScore * 0.40; // Increased base weight to prevent NO_SETUP failures
             reasons.push(`${patternResult.zoneType} (${typeScore}%)`);
             
             // 2. Distance bonus
             if(patternResult.distancePct < 0.5) { confidence += 15; reasons.push('Very close'); }
             else if(patternResult.distancePct < 1.0) { confidence += 10; reasons.push('Close'); }
-            else if(patternResult.distancePct < 2.0) { confidence += 5; }
+            else if(patternResult.distancePct < 2.5) { confidence += 5; } // Relaxed to 2.5%
             
             // 3. Pattern Count
             const patternCount = patternResult.patterns ? patternResult.patterns.length : 1;
-            confidence += Math.min(patternCount * 5, 15);
+            confidence += Math.min(patternCount * 8, 20); // Give more weight to confluence
             reasons.push(`${patternCount} patterns`);
             
             // 4. Freshness
@@ -1078,24 +1078,24 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             if(h4Dir === dirStr) htfMatch++;
             if(h1Dir === dirStr) htfMatch++;
             
-            if(htfMatch >= 2) { confidence += 10; reasons.push(`HTF ${htfMatch}/3`); }
-            else if(htfMatch >= 1) { confidence += 5; }
+            if(htfMatch >= 2) { confidence += 15; reasons.push(`HTF ${htfMatch}/3`); }
+            else if(htfMatch >= 1) { confidence += 10; } // Increased alignment reward
             
             // 6. TBS Bonus
             if(patternResult.tbsDetected) {
-                confidence += 10;
+                confidence += 15; // Increased TBS reward
                 reasons.push('TBS confirmed');
             }
             
             // 7. CRT Bonus
             if(patternResult.crtState === 'EXPANDING') {
-                confidence += 5;
+                confidence += 10;
                 reasons.push('CRT expanding');
             }
             
             // 8. Session Bonus
             if(session.isKillzone || session.isSilverBullet) {
-                confidence += 5;
+                confidence += 10; // Boosted session reward
                 reasons.push('Good session');
             }
             
