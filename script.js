@@ -1,6 +1,6 @@
 // ============================================
 // ICT TRADING BOT PRO - FINAL COMPLETE FIX
-// VERSION 4.0 - SIMPLE & RELIABLE
+// VERSION 5.0 - ENTRY PROXIMITY & DIRECTION FIX
 // ============================================
 
 // Initialize
@@ -31,10 +31,10 @@ const DEFAULT_PRECISION = 5;
 const BUY_INVALIDATION_FACTOR = 0.998;
 const SELL_INVALIDATION_FACTOR = 1.002;
 
-// SIMPLIFIED CONSTANTS - MUCH MORE FORGIVING
+// SIMPLIFIED CONSTANTS
 const MIN_CONFIDENCE = 55;
 const MAX_ZONE_TOUCHES = 8;
-const MIN_HTF_ALIGNMENT = 0;
+const MAX_ENTRY_DISTANCE_PCT = 0.5; // 0.5% max distance from current price
 
 // ============================================
 // MARKET SETTINGS
@@ -180,7 +180,7 @@ function resetPairState() {
 // INITIALIZATION
 // ============================================
 function startApp() {
-    console.log('🚀 Starting ICT Trading Bot Pro v4.0 - FINAL COMPLETE FIX');
+    console.log('🚀 Starting ICT Trading Bot Pro v5.0 - ENTRY PROXIMITY FIX');
     loadKeys().then(() => {
         updateKeyStatus();
         if(!TWELVE_DATA_KEY && !DEEPSEEK_API_KEY) {
@@ -379,7 +379,7 @@ async function getQuoteDirection(tfStr, cachedData = null) {
 }
 
 // ============================================
-// TECHNICAL ANALYSIS ENGINE - SIMPLIFIED
+// TECHNICAL ANALYSIS ENGINE
 // ============================================
 
 // EMA Calculation
@@ -417,7 +417,7 @@ function detectTrend(data) {
     return 'NEUTRAL';
 }
 
-// Detect FVG (Fair Value Gap) - SIMPLIFIED
+// Detect FVG
 function detectFVG(d) {
     let f = [];
     const len = d.length;
@@ -427,11 +427,9 @@ function detectFVG(d) {
         const next = d[i + 1];
         const thresh = curr.c * 0.0003;
         
-        // Bullish FVG: gap up
         if(prev.h < next.l && next.l - prev.h > thresh) {
             f.push({ type: 'bull', l: prev.h, h: next.l, m: (prev.h + next.l) / 2 });
         }
-        // Bearish FVG: gap down
         if(prev.l > next.h && prev.l - next.h > thresh) {
             f.push({ type: 'bear', l: next.h, h: prev.l, m: (next.h + prev.l) / 2 });
         }
@@ -456,7 +454,7 @@ function findSwings(d, lb = 3) {
     return { H, L };
 }
 
-// Detect MSS (Market Structure Shift)
+// Detect MSS
 function detectMSS(d) {
     if(d.length < 21) return null;
     let h = d.map(c => c.h);
@@ -470,11 +468,10 @@ function detectMSS(d) {
     return null;
 }
 
-// Detect Order Blocks - SIMPLIFIED
+// Detect Order Blocks
 function detectOrderBlocks(data, direction) {
     const obs = [];
     for(let i = 2; i < data.length - 1; i++) {
-        const prev = data[i - 1];
         const curr = data[i];
         const next = data[i + 1];
         
@@ -491,7 +488,7 @@ function detectOrderBlocks(data, direction) {
     return obs;
 }
 
-// Calculate MSNR - SIMPLIFIED
+// Calculate MSNR
 function calculateMSNR(data, currentPrice) {
     const highs = data.map(c => c.h);
     const lows = data.map(c => c.l);
@@ -520,7 +517,7 @@ function calculateMSNR(data, currentPrice) {
     };
 }
 
-// Detect Turtle Soup - SIMPLIFIED
+// Detect Turtle Soup
 function detectTurtleSoup(data) {
     if(data.length < 15) return { detected: false, type: null };
     const rd = data.slice(-15);
@@ -543,7 +540,7 @@ function detectTurtleSoup(data) {
     return { detected: false, type: null };
 }
 
-// Detect CRT - SIMPLIFIED
+// Detect CRT
 function detectCRT(data) {
     if(data.length < 20) return { state: 'NEUTRAL' };
     const recent = data.slice(-20);
@@ -562,7 +559,7 @@ function detectCRT(data) {
 }
 
 // ============================================
-// SIMPLE ZONE FINDING - GUARANTEED TO WORK
+// ZONE FINDING - WITH PROXIMITY CHECK
 // ============================================
 
 function findZone(data, price, direction) {
@@ -574,29 +571,45 @@ function findZone(data, price, direction) {
     const crt = detectCRT(data);
     
     let candidates = [];
+    const settings = getMarketSettings(pair);
+    const prec = settings.prec;
+    const factor = Math.pow(10, prec);
     
     // 1. MSNR Levels
     if(direction === 'BUY') {
         for(const sup of msnr.allSupports) {
             if(sup < price) {
+                // FIX: Check if support is near current price (within 0.5%)
+                const distPct = (price - sup) / price * 100;
+                if(distPct > MAX_ENTRY_DISTANCE_PCT * 3) {
+                    console.log(`  → Support ${sup} is ${distPct.toFixed(2)}% away (too far)`);
+                    continue;
+                }
                 candidates.push({
                     price: sup,
                     type: 'MSNR Support',
                     score: 80,
                     low: sup * 0.998,
-                    high: sup * 1.002
+                    high: sup * 1.002,
+                    distance: distPct
                 });
             }
         }
     } else {
         for(const res of msnr.allResistances) {
             if(res > price) {
+                const distPct = (res - price) / price * 100;
+                if(distPct > MAX_ENTRY_DISTANCE_PCT * 3) {
+                    console.log(`  → Resistance ${res} is ${distPct.toFixed(2)}% away (too far)`);
+                    continue;
+                }
                 candidates.push({
                     price: res,
                     type: 'MSNR Resistance',
                     score: 80,
                     low: res * 0.998,
-                    high: res * 1.002
+                    high: res * 1.002,
+                    distance: distPct
                 });
             }
         }
@@ -604,13 +617,17 @@ function findZone(data, price, direction) {
     
     // 2. FVG
     for(const fvg of fvgs) {
+        const distPct = Math.abs(price - fvg.m) / price * 100;
+        if(distPct > MAX_ENTRY_DISTANCE_PCT * 3) continue;
+        
         if(direction === 'BUY' && fvg.type === 'bull' && fvg.l < price) {
             candidates.push({
                 price: fvg.m,
                 type: 'FVG',
                 score: 75,
                 low: fvg.l,
-                high: fvg.h
+                high: fvg.h,
+                distance: distPct
             });
         }
         if(direction === 'SELL' && fvg.type === 'bear' && fvg.h > price) {
@@ -619,7 +636,8 @@ function findZone(data, price, direction) {
                 type: 'FVG',
                 score: 75,
                 low: fvg.l,
-                high: fvg.h
+                high: fvg.h,
+                distance: distPct
             });
         }
     }
@@ -627,13 +645,17 @@ function findZone(data, price, direction) {
     // 3. Order Blocks
     for(const ob of obs) {
         const mid = (ob.low + ob.high) / 2;
+        const distPct = Math.abs(price - mid) / price * 100;
+        if(distPct > MAX_ENTRY_DISTANCE_PCT * 3) continue;
+        
         if(direction === 'BUY' && ob.high < price) {
             candidates.push({
                 price: mid,
                 type: 'Order Block',
                 score: 75,
                 low: ob.low,
-                high: ob.high
+                high: ob.high,
+                distance: distPct
             });
         }
         if(direction === 'SELL' && ob.low > price) {
@@ -642,7 +664,8 @@ function findZone(data, price, direction) {
                 type: 'Order Block',
                 score: 75,
                 low: ob.low,
-                high: ob.high
+                high: ob.high,
+                distance: distPct
             });
         }
     }
@@ -651,24 +674,30 @@ function findZone(data, price, direction) {
     if(direction === 'BUY') {
         for(const low of swings.L) {
             if(low.p < price) {
+                const distPct = (price - low.p) / price * 100;
+                if(distPct > MAX_ENTRY_DISTANCE_PCT * 3) continue;
                 candidates.push({
                     price: low.p,
                     type: 'Swing Low',
                     score: 70,
                     low: low.p * 0.998,
-                    high: low.p * 1.002
+                    high: low.p * 1.002,
+                    distance: distPct
                 });
             }
         }
     } else {
         for(const high of swings.H) {
             if(high.p > price) {
+                const distPct = (high.p - price) / price * 100;
+                if(distPct > MAX_ENTRY_DISTANCE_PCT * 3) continue;
                 candidates.push({
                     price: high.p,
                     type: 'Swing High',
                     score: 70,
                     low: high.p * 0.998,
-                    high: high.p * 1.002
+                    high: high.p * 1.002,
+                    distance: distPct
                 });
             }
         }
@@ -676,22 +705,45 @@ function findZone(data, price, direction) {
     
     // 5. Turtle Soup
     if(tbs.detected && tbs.type === direction) {
-        candidates.push({
-            price: tbs.keyLevel,
-            type: 'Turtle Soup',
-            score: 90,
-            low: tbs.keyLevel * 0.997,
-            high: tbs.keyLevel * 1.003
-        });
+        const distPct = Math.abs(price - tbs.keyLevel) / price * 100;
+        if(distPct <= MAX_ENTRY_DISTANCE_PCT * 3) {
+            candidates.push({
+                price: tbs.keyLevel,
+                type: 'Turtle Soup',
+                score: 90,
+                low: tbs.keyLevel * 0.997,
+                high: tbs.keyLevel * 1.003,
+                distance: distPct
+            });
+        }
     }
     
-    // Sort by score
-    candidates.sort((a, b) => b.score - a.score);
+    // Sort by distance (closest first)
+    candidates.sort((a, b) => a.distance - b.distance || b.score - a.score);
     
     if(candidates.length === 0) return null;
     
     const best = candidates[0];
-    const entry = direction === 'BUY' ? best.high * 0.999 : best.low * 1.001;
+    
+    // FIX: Adjust entry to be near current price
+    let entry;
+    if(direction === 'BUY') {
+        // Entry is support level, but if price is already above, use current price minus small buffer
+        if(price > best.high) {
+            entry = price - (price * 0.001); // 0.1% below current price
+        } else {
+            entry = best.high * 0.999;
+        }
+    } else {
+        if(price < best.low) {
+            entry = price + (price * 0.001); // 0.1% above current price
+        } else {
+            entry = best.low * 1.001;
+        }
+    }
+    
+    // Round entry to correct precision
+    entry = Math.round(entry * factor) / factor;
     
     return {
         entry: entry,
@@ -702,7 +754,8 @@ function findZone(data, price, direction) {
         msnr: msnr,
         tbsDetected: tbs.detected && tbs.type === direction,
         crtState: crt.state,
-        allCandidates: candidates
+        allCandidates: candidates,
+        distance: best.distance
     };
 }
 
@@ -714,38 +767,42 @@ function calcStopLoss(data, dir, entry, zone, msnr, tfUsed, twelveIndicators) {
     const apiATR = twelveIndicators?.atr_api || atr(data, 14);
     const s = getMarketSettings(pair);
     const maxSLD = entry * s.maxSLPct;
+    const prec = s.prec;
+    const factor = Math.pow(10, prec);
     
     let slPrice;
     
     if(dir === 'BUY') {
-        const zoneLow = zone.low || entry - apiATR;
-        slPrice = Math.min(zoneLow - apiATR * 0.5, entry - apiATR * 1.2);
+        // FIX: SL below entry with 1.2x ATR buffer
+        slPrice = entry - apiATR * 1.2;
         
+        // Check if there's a support level below
         if(msnr && msnr.allSupports) {
             const belowSupports = msnr.allSupports.filter(s => s < entry);
             if(belowSupports.length > 0) {
-                slPrice = Math.max(slPrice, belowSupports[0] - apiATR * 0.5);
+                const nearestBelow = belowSupports[0];
+                // Place SL just below nearest support
+                slPrice = Math.max(slPrice, nearestBelow - apiATR * 0.3);
             }
         }
     } else {
-        const zoneHigh = zone.high || entry + apiATR;
-        slPrice = Math.max(zoneHigh + apiATR * 0.5, entry + apiATR * 1.2);
+        slPrice = entry + apiATR * 1.2;
         
         if(msnr && msnr.allResistances) {
             const aboveResistances = msnr.allResistances.filter(r => r > entry);
             if(aboveResistances.length > 0) {
-                slPrice = Math.min(slPrice, aboveResistances[0] + apiATR * 0.5);
+                const nearestAbove = aboveResistances[0];
+                slPrice = Math.min(slPrice, nearestAbove + apiATR * 0.3);
             }
         }
     }
     
+    // Ensure SL is within max allowed
     const dist = Math.abs(entry - slPrice);
     if(dist > maxSLD) {
         slPrice = dir === 'BUY' ? entry - maxSLD : entry + maxSLD;
     }
     
-    const prec = s.prec;
-    const factor = Math.pow(10, prec);
     slPrice = Math.round(slPrice * factor) / factor;
     
     return { 
@@ -856,7 +913,7 @@ async function updateMTFDisplay(historyCache = {}) {
 }
 
 // ============================================
-// MAIN ANALYSIS ENGINE - SIMPLIFIED
+// MAIN ANALYSIS ENGINE - WITH ENTRY PROXIMITY FIX
 // ============================================
 
 async function analyzeTimeframe(tfToAnalyze, price, htfData) {
@@ -880,23 +937,31 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         let allSetups = [];
         let session = getSession();
         
+        // Check BOTH directions
         for(const dir of ['BUY', 'SELL']) {
             console.log(`  → Checking ${dir}...`);
             
             // Find zone
             const zoneResult = findZone(entryData, price, dir);
             if(!zoneResult) {
-                console.log(`  ❌ ${dir}: No zone found`);
+                console.log(`  ❌ ${dir}: No zone found near price`);
                 continue;
             }
             
             const entry = zoneResult.entry;
             const zone = { low: zoneResult.low, high: zoneResult.high };
             
+            // FIX: Check if entry is within 0.5% of current price
+            const entryDistancePct = Math.abs(price - entry) / price * 100;
+            if(entryDistancePct > MAX_ENTRY_DISTANCE_PCT) {
+                console.log(`  ❌ ${dir}: Entry ${entry} is ${entryDistancePct.toFixed(2)}% away (max ${MAX_ENTRY_DISTANCE_PCT}%)`);
+                continue;
+            }
+            console.log(`  → Entry ${entry} is ${entryDistancePct.toFixed(2)}% from price ✅`);
+            
             // Check freshness
             const freshness = checkZoneFreshness(entryData, zone, dir);
             
-            // Reject only very old zones
             if(freshness.touches > MAX_ZONE_TOUCHES) {
                 console.log(`  ❌ ${dir}: Zone has ${freshness.touches} touches (REJECTED)`);
                 continue;
@@ -921,7 +986,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             else if(zoneResult.type.includes('MSNR')) typeScore = 80;
             else if(zoneResult.type === 'FVG') typeScore = 75;
             else if(zoneResult.type === 'Order Block') typeScore = 75;
-            else if(zoneResult.type === 'Swing') typeScore = 70;
+            else if(zoneResult.type.includes('Swing')) typeScore = 70;
             confidence += typeScore * 0.25;
             reasons.push(`${zoneResult.type} (${typeScore}%)`);
             
@@ -963,16 +1028,9 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 reasons.push('Good session');
             }
             
-            // 7. Entry Proximity
-            const entryDistancePct = (Math.abs(price - entry) / price) * 100;
-            if(entryDistancePct < 0.5) { confidence += 10; reasons.push('Entry very close'); }
-            else if(entryDistancePct < 1.0) { confidence += 5; reasons.push('Entry close'); }
-            
-            // 8. Pattern Bonus (if multiple patterns found)
-            if(zoneResult.allCandidates && zoneResult.allCandidates.length >= 2) {
-                confidence += 5;
-                reasons.push(`${zoneResult.allCandidates.length} patterns`);
-            }
+            // 7. Entry Proximity (closer = more points)
+            if(entryDistancePct < 0.2) { confidence += 10; reasons.push('Entry very close'); }
+            else if(entryDistancePct < 0.5) { confidence += 5; reasons.push('Entry close'); }
             
             // Cap at 100
             confidence = Math.min(confidence, 100);
@@ -1009,12 +1067,13 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 zoneType: zoneResult.type,
                 touches: freshness.touches,
                 isFresh: freshness.fresh,
-                patternCount: zoneResult.allCandidates ? zoneResult.allCandidates.length : 1
+                slResult: slResult
             });
         }
         
         if(allSetups.length === 0) return null;
         
+        // Sort by confidence
         allSetups.sort((a, b) => b.confidence - a.confidence);
         const best = allSetups[0];
         
@@ -1041,7 +1100,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             zoneType: best.zoneType,
             touches: best.touches,
             isFresh: best.isFresh,
-            patternCount: best.patternCount,
+            slResult: best.slResult,
             setupScore: best.confidence
         };
         
@@ -1126,19 +1185,20 @@ function getSmartFallbackDecision(best, price) {
     const isFresh = best.isFresh || false;
     const tbsDetected = best.tbsDetected || false;
     const touches = best.touches || 0;
+    const entryDistance = best.entryDistancePct || 100;
     
-    if(confidence >= 70 && isFresh && touches <= 3) {
+    if(confidence >= 70 && isFresh && touches <= 3 && entryDistance < 0.5) {
         return {
             decision: 'enter_now',
             confidence: confidence,
-            reasoning: `High confidence ${confidence}%, fresh zone`,
+            reasoning: `High confidence ${confidence}%, fresh zone, close entry`,
             risk_adjustment: 1.0,
             wait_condition: null,
             skip_reason: null
         };
     }
     
-    if(tbsDetected && confidence >= 65 && touches <= 4) {
+    if(tbsDetected && confidence >= 65 && touches <= 4 && entryDistance < 0.5) {
         return {
             decision: 'enter_now',
             confidence: confidence,
@@ -1149,13 +1209,13 @@ function getSmartFallbackDecision(best, price) {
         };
     }
     
-    if(confidence >= 60) {
+    if(confidence >= 60 && entryDistance < 0.5) {
         return {
             decision: 'wait_for_reaction',
             confidence: confidence,
-            reasoning: `Good setup ${confidence}%, waiting for optimal entry`,
+            reasoning: `Good setup ${confidence}%, waiting for confirmation`,
             risk_adjustment: 0.8,
-            wait_condition: 'Wait for confirmation',
+            wait_condition: 'Wait for confirmation candle',
             skip_reason: null
         };
     }
@@ -1163,10 +1223,10 @@ function getSmartFallbackDecision(best, price) {
     return {
         decision: 'skip',
         confidence: confidence,
-        reasoning: `Confidence ${confidence}% too low`,
+        reasoning: `Confidence ${confidence}% too low or entry ${entryDistance.toFixed(2)}% away`,
         risk_adjustment: 0,
         wait_condition: null,
-        skip_reason: `Confidence ${confidence}% below 60%`
+        skip_reason: `Confidence ${confidence}% below 60% or entry too far`
     };
 }
 
@@ -1241,7 +1301,7 @@ async function runAutoScan() {
                 status: 'NO_SETUP',
                 pair: pair,
                 current_price: price,
-                reason: 'No setups met minimum confidence requirements'
+                reason: 'No setups met minimum confidence or proximity requirements'
             });
             btn.classList.remove('loading');
             btn.disabled = false;
@@ -1271,8 +1331,10 @@ async function runAutoScan() {
         const riskPercent = tradeable ? (aiDecision.risk_adjustment || 1.0) * 0.5 : 0;
         
         console.log(`🏆 Setup Confidence: ${best.confidence}%`);
+        console.log(`📊 Direction: ${best.direction}`);
         console.log(`📊 Zone Type: ${best.zoneType}`);
         console.log(`📊 Zone Touches: ${best.touches}`);
+        console.log(`📊 Entry Distance: ${(best.entryDistancePct || 0).toFixed(2)}%`);
         console.log(`📊 AI Decision: ${aiDecision.decision}`);
         console.log(`📊 RR: 1:${rrDisplay}`);
         
@@ -1295,6 +1357,7 @@ async function runAutoScan() {
                 zone_type: best.zoneType,
                 zone_touches: best.touches || 0,
                 zone_freshness: best.isFresh ? 'FRESH' : (best.touches <= 3 ? 'LIGHTLY_USED' : 'USED'),
+                entry_distance_pct: (best.entryDistancePct || 0).toFixed(2) + '%',
                 htf_alignment: `${best.htfMatch}/3`,
                 tbs_detected: best.tbsDetected ? 'YES' : 'NO',
                 crt_state: best.crtState || 'NEUTRAL',
@@ -1309,7 +1372,6 @@ async function runAutoScan() {
                     session: getSession().session,
                     silver_bullet: getSession().isSilverBullet ? '✅' : '❌',
                     killzone: getSession().isKillzone ? '✅' : '❌',
-                    entry_distance_pct: (best.entryDistancePct || 0).toFixed(2) + '%',
                     risk_reward: '1:' + rrDisplay
                 },
                 msnr_levels: best.msnr ? {
@@ -1365,13 +1427,14 @@ async function runAutoScan() {
             riskAdjustment: aiDecision.risk_adjustment || 1.0,
             rrUsed: parseFloat(rrDisplay) || 2.0,
             touches: best.touches || 0,
-            isFresh: best.isFresh || false
+            isFresh: best.isFresh || false,
+            entryDistancePct: best.entryDistancePct || 0
         };
         
         document.getElementById('executeBtn').disabled = false;
         
         const decisionEmoji = aiDecision.decision === 'enter_now' ? '✅' : (aiDecision.decision === 'wait_for_reaction' ? '⏳' : '🚫');
-        showNotif(`🎯 ${best.timeframe} ${st} ${decisionEmoji} ${aiDecision.decision} | Conf: ${best.confidence}% | ${best.zoneType} | Touches: ${best.touches}`, 'success');
+        showNotif(`🎯 ${best.timeframe} ${st} ${decisionEmoji} ${aiDecision.decision} | Conf: ${best.confidence}% | ${best.zoneType} | ${(best.entryDistancePct || 0).toFixed(2)}% away`, 'success');
         
     } catch(e) {
         console.error(e);
@@ -1412,6 +1475,7 @@ function buildSetupSummary(best, st, finalEntry, price) {
         zoneType: best.zoneType,
         touches: best.touches || 0,
         isFresh: best.isFresh || false,
+        entryDistancePct: best.entryDistancePct || 0,
         priceAtScan: price
     };
 }
@@ -1516,7 +1580,7 @@ function setupCardHTML(e, when, badge, actions) {
     const freshLabel = e.isFresh ? '🌟 FRESH' : (e.touches <= 3 ? '📌 LIGHT' : '⚠️ USED');
     return `<div class="journal-entry ${badge.cls}">
         <div class="journal-head">
-            <span>${e.pair} ${e.direction} ${e.timeframe} ${e.zoneType||''} ${freshLabel}</span>
+            <span>${e.pair} ${e.direction} ${e.timeframe} ${e.zoneType||''} ${freshLabel} ${(e.entryDistancePct || 0).toFixed(2)}%</span>
             <span>${badge.label}</span>
         </div>
         <div class="journal-levels">
@@ -1626,7 +1690,7 @@ function updateLimitUI() {
     const c = document.getElementById('cancelLimitBtn');
     if(limitOrder) {
         const prec = getPrec(limitOrder.pair || pair);
-        t.innerHTML = `⏳ ${limitOrder.pair||''} ${limitOrder.signalType} @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)} | ${limitOrder.confirmation||''} | RR: 1:${limitOrder.rrUsed || '?'}`;
+        t.innerHTML = `⏳ ${limitOrder.pair||''} ${limitOrder.signalType} @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)} | ${limitOrder.confirmation||''} | ${(limitOrder.entryDistancePct || 0).toFixed(2)}% away`;
         t.className = 'active';
         c.classList.remove('hidden');
         document.getElementById('executeBtn').innerHTML = '⏳ Waiting...';
@@ -1696,13 +1760,14 @@ function handleLimit() {
         rrUsed: analysis.rrUsed || 2.0,
         touches: analysis.touches || 0,
         isFresh: analysis.isFresh || false,
+        entryDistancePct: analysis.entryDistancePct || 0,
         createdAt: new Date().toISOString()
     };
     saveLimit(o);
     startMonitor();
     const aiLabel = o.aiDecision ? `🤖 ${o.aiDecision.decision}` : '';
     const prec = getPrec(pair);
-    showNotif(`📝 ${o.signalType} @ $${o.idealEntry.toFixed(prec)} | ${o.confirmation} | RR: 1:${o.rrUsed} ${aiLabel}`, 'info');
+    showNotif(`📝 ${o.signalType} @ $${o.idealEntry.toFixed(prec)} | ${o.confirmation} | ${(o.entryDistancePct || 0).toFixed(2)}% away | RR: 1:${o.rrUsed} ${aiLabel}`, 'info');
 }
 
 function copyJson() {
@@ -1757,13 +1822,12 @@ async function checkMissedFill() {
     }
 }
 
-console.log('✅ ICT Trading Bot Pro v4.0 - FINAL COMPLETE FIX loaded!');
+console.log('✅ ICT Trading Bot Pro v5.0 - ENTRY PROXIMITY FIX loaded!');
 console.log('✅ Key Changes:');
-console.log(`   - Confidence threshold: ${MIN_CONFIDENCE}% (was 75%)`);
-console.log(`   - Max zone touches: ${MAX_ZONE_TOUCHES} (was 3)`);
-console.log(`   - HTF alignment: ${MIN_HTF_ALIGNMENT}/3 minimum (was 2)`);
-console.log('   - SIMPLIFIED zone finding (guaranteed to work)');
-console.log('   - MSNR, FVG, OB, Swing, TBS all detected');
+console.log(`   - Entry must be within ${MAX_ENTRY_DISTANCE_PCT}% of current price`);
+console.log('   - Bot checks BOTH BUY and SELL directions');
+console.log('   - Entry adjusted to near current price');
+console.log('   - SL placed with proper buffer');
+console.log('   - MSNR, FVG, OB, Swings, TBS all detected');
 console.log('   - MTF display updates correctly');
-console.log('   - Multiple pattern support');
-console.log('   - No more complex filtering');
+console.log('   - No more far entries (57 points away)');
