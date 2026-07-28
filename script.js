@@ -1078,6 +1078,11 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             if(h4Dir === dirStr) htfMatch++;
             if(h1Dir === dirStr) htfMatch++;
             
+            if (htfMatch === 0) {
+                console.log(`  ❌ ${dir}: Contradicts HTF biases entirely`);
+                continue;
+            }
+
             if(htfMatch >= 2) { confidence += 15; reasons.push(`HTF ${htfMatch}/3`); }
             else if(htfMatch >= 1) { confidence += 10; } // Increased alignment reward
             
