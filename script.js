@@ -32,7 +32,7 @@ const SELL_INVALIDATION_FACTOR = 1.002;
 // FIX: Increased proximity to 3%
 const MIN_CONFIDENCE = 50;
 const MAX_ENTRY_DISTANCE_PCT = 3.0;
-const MAX_ZONE_TOUCHES = 10;
+const MAX_ZONE_TOUCHES = 100;
 
 // ============================================
 // MARKET SETTINGS
