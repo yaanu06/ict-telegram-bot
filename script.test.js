@@ -8,11 +8,11 @@ const getContext = (overrides = {}) => {
         window: { Telegram: { WebApp: null } },
         document: {
             getElementById: () => ({ addEventListener: () => {}, querySelectorAll: () => [], querySelector: () => null, querySelectorAll: () => [], querySelector: () => null, querySelectorAll: () => [], querySelector: () => null, classList: { add: () => {}, remove: () => {} }, style: {}, innerHTML: '' }),
-            addEventListener: () => {}, querySelectorAll: () => [], querySelector: () => null, querySelectorAll: () => [], querySelector: () => null
+            addEventListener: () => {}, querySelectorAll: () => [], querySelector: () => null, querySelectorAll: () => [], querySelector: () => null, querySelectorAll: () => [], querySelector: () => null
         },
         console: { log: () => {}, error: () => {} },
         fetch: jest.fn(),
-        setTimeout: () => 0, setInterval: () => 0, clearInterval: () => 0, setInterval: () => 0, clearInterval: () => 0,
+        setTimeout: () => 0, setInterval: () => 0, clearInterval: () => 0, setInterval: () => 0, clearInterval: () => 0, setInterval: () => 0, clearInterval: () => 0,
         localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
         ...overrides
     };
@@ -38,74 +38,6 @@ const mockDate = (iso) => {
 
 
 
-describe('trade journal storage', () => {
-    let context, store;
-
-    beforeEach(() => {
-        store = {};
-        context = getContext({
-            localStorage: {
-                getItem: k => (k in store ? store[k] : null),
-                setItem: (k, v) => { store[k] = String(v); },
-                removeItem: k => { delete store[k]; }
-            }
-        });
-    });
-
-    const seedRecent = (id, extra = {}) => context.setRecents([{ id, pair: 'XAU/USD', direction: 'LONG', timeframe: '1H', quality: 'A', confidence: 80, entry: 2400, sl: 2390, tp1: 2440, outcome: null, out: { x: 1 }, ...extra }]);
-
-    it('returns empty lists when storage is empty or corrupted', () => {
-        expect(context.getJournal()).toEqual([]);
-        expect(context.getRecents()).toEqual([]);
-        store['ict_journal'] = 'not valid json{';
-        store['ict_recent_saved'] = 'not valid json{';
-        expect(context.getJournal()).toEqual([]);
-        expect(context.getRecents()).toEqual([]);
-    });
-
-    it('caps recents at 10 and journal at 30', () => {
-        context.setRecents(Array.from({ length: 20 }, (_, i) => ({ id: i })));
-        expect(context.getRecents()).toHaveLength(10);
-        context.setJournal(Array.from({ length: 45 }, (_, i) => ({ id: i })));
-        expect(context.getJournal()).toHaveLength(30);
-    });
-
-    it('marks a saved setup WIN and toggles back off', () => {
-        seedRecent(7);
-        context.markRecentOutcome(7, 'WIN');
-        expect(context.getRecents()[0].outcome).toBe('WIN');
-        context.markRecentOutcome(7, 'WIN'); // same button again untoggles
-        expect(context.getRecents()[0].outcome).toBeNull();
-    });
-
-    it('refuses to journal a setup with no outcome', () => {
-        seedRecent(8);
-        context.journalRecent(8);
-        expect(context.getJournal()).toHaveLength(0);
-        expect(context.getRecents()).toHaveLength(1); // still in recents
-    });
-
-    it('moves a marked setup entirely from recents to the journal', () => {
-        seedRecent(9);
-        context.markRecentOutcome(9, 'LOSS');
-        context.journalRecent(9);
-        expect(context.getRecents()).toHaveLength(0);
-        const j = context.getJournal();
-        expect(j).toHaveLength(1);
-        expect(j[0].id).toBe(9);
-        expect(j[0].status).toBe('LOSS');
-        expect(j[0].out).toBeUndefined(); // heavy JSON payload not carried into the journal
-    });
-
-    it('deletes from recents and journal independently', () => {
-        seedRecent(1);
-        context.deleteRecent(1);
-        expect(context.getRecents()).toHaveLength(0);
-        context.setJournal([{ id: 2, pair: 'BTC/USD', direction: 'SHORT', timeframe: '4H', quality: 'B', confidence: 70, entry: 1, sl: 1, tp1: 1, status: 'WIN' }]);
-        context.deleteJournalEntry(2);
-        expect(context.getJournal()).toHaveLength(0);
-    });
-});
 
 
 

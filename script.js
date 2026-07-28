@@ -998,23 +998,6 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         for(const dir of ['BUY', 'SELL']) {
             console.log(`  → Checking ${dir}...`);
             
-            const dirStr = dir === 'BUY' ? 'BULLISH' : 'BEARISH';
-
-            // STRICT TIMEFRAME ALIGNMENT
-            // Daily >> 1H; 4H >> 15M; 1H >> 5M
-            if (tfToAnalyze === '1H' && dailyDir !== dirStr && dailyDir !== 'NEUTRAL') {
-                console.log(`  ❌ ${dir}: Rejected by 1D bias (${dailyDir})`);
-                continue;
-            }
-            if (tfToAnalyze === '15M' && h4Dir !== dirStr && h4Dir !== 'NEUTRAL') {
-                console.log(`  ❌ ${dir}: Rejected by 4H bias (${h4Dir})`);
-                continue;
-            }
-            if (tfToAnalyze === '5M' && h1Dir !== dirStr && h1Dir !== 'NEUTRAL') {
-                console.log(`  ❌ ${dir}: Rejected by 1H bias (${h1Dir})`);
-                continue;
-            }
-
             // Find pattern zone
             const patternResult = findPatternZone(entryData, price, dir);
             if(!patternResult) {
@@ -1089,6 +1072,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             else if(freshness.partiallyUsed && freshness.touches <= 3) { confidence += 8; reasons.push('Lightly used'); }
             
             // 5. HTF Alignment
+            const dirStr = dir === 'BUY' ? 'BULLISH' : 'BEARISH';
             let htfMatch = 0;
             if(dailyDir === dirStr) htfMatch++;
             if(h4Dir === dirStr) htfMatch++;
