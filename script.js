@@ -1220,7 +1220,7 @@ async function runAutoScan() {
         lastPrice = price;
         
         const results = [];
-        const timeframesToScan = ['1D', '4H', '1H', '15M', '5M'];
+        const timeframesToScan = ['1D', '4H', '1H'];
         const htfData = historyCache;
         
         for(let i = 0; i < timeframesToScan.length; i++) {
