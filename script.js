@@ -32,7 +32,7 @@ const SELL_INVALIDATION_FACTOR = 1.002;
 // FIX: Increased proximity to 3%
 const MIN_CONFIDENCE = 65;
 const MAX_ENTRY_DISTANCE_PCT = 3.0;
-const MAX_ZONE_TOUCHES = 3;
+const MAX_ZONE_TOUCHES = 6;
 
 // ============================================
 // MARKET SETTINGS
@@ -729,36 +729,27 @@ function findPatternZone(data, price, direction) {
     
     const best = candidates[0];
     
-    // Calculate Entry based on the zone
-    const atrVal = atr(data, 14);
+    // FIX: Entry near current price, not at the zone
     let entry;
     if(direction === 'BUY') {
-        entry = Math.min(best.price + atrVal * 0.1, price);
+        entry = price - (price * 0.002);
     } else {
-        entry = Math.max(best.price - atrVal * 0.1, price);
+        entry = price + (price * 0.002);
     }
     entry = Math.round(entry * factor) / factor;
     
-    // Calculate Dynamic SL combining structure and ATR
+    // Calculate SL based on the zone
     let sl;
-    // Base SL buffer on ATR and minimum structural distance
-    const dynamicBuffer = Math.max(atrVal * 0.5, settings.minSL * settings.pipSize);
-
+    const atrVal = atr(data, 14);
     if(direction === 'BUY') {
-        // Place SL below structural low with buffer
-        sl = best.low - dynamicBuffer;
-
-        // Ensure minimum risk parameters
-        if (entry - sl < atrVal * 0.8) {
-            sl = entry - (atrVal * 0.8);
+        sl = best.low - (best.low * 0.001);
+        if(entry - sl < atrVal * 0.5) {
+            sl = entry - atrVal * 0.8;
         }
     } else {
-        // Place SL above structural high with buffer
-        sl = best.high + dynamicBuffer;
-
-        // Ensure minimum risk parameters
-        if (sl - entry < atrVal * 0.8) {
-            sl = entry + (atrVal * 0.8);
+        sl = best.high + (best.high * 0.001);
+        if(sl - entry < atrVal * 0.5) {
+            sl = entry + atrVal * 0.8;
         }
     }
     sl = Math.round(sl * factor) / factor;
@@ -862,15 +853,8 @@ async function getAIExecutionDecision(best, price, htfData) {
     
     const session = getSession();
     
-    const h1Trend = await getQuoteDirection('1H', htfData ? htfData['1H'] : null);
-    const h4Trend = await getQuoteDirection('4H', htfData ? htfData['4H'] : null);
-
     const prompt = `ICT TRADE EXECUTION
 
-Asset Pair: ${typeof pair !== 'undefined' ? pair : 'Unknown'}
-Current Price: ${price}
-Higher Time Frame Bias (1H): ${h1Trend}
-Higher Time Frame Bias (4H): ${h4Trend}
 Setup Confidence: ${best.confidence}%
 Direction: ${best.direction}
 Zone Type: ${best.zoneType}
@@ -878,19 +862,8 @@ Distance: ${Math.abs(best.distancePct || 0).toFixed(2)}%
 TBS: ${best.tbsDetected ? 'YES' : 'NO'}
 CRT: ${best.crtState}
 Session: ${session.session}
-Killzone Active: ${session.isKillzone ? 'YES' : 'NO'}
 
-STRATEGY FRAMEWORK:
-1. ENTRY LOGIC: Precision entry near MSNR/OB. Require CRT alignment. If price is between levels, WAIT.
-2. RISK MANAGEMENT: Position size scaling based on confidence. Max risk 1%.
-3. TRADE MANAGEMENT:
-   - TP1 (50% partial, move SL to BE)
-   - TP2 (30% partial, trail SL)
-   - TP3 (20% runner)
-4. REJECTION: Skip if confidence < 65, distance > 3%, or counter HTF trend.
-
-Analyze the setup against the framework.
-Return ONLY valid JSON format:
+Return ONLY JSON:
 {"decision":"enter_now|wait_for_reaction|skip","confidence":0-100,"reason":"brief reason"}`;
 
     try {
@@ -1048,17 +1021,27 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             const prec = settings.prec;
             const factor = Math.pow(10, prec);
             
-            // Dynamic RR based on settings targetRR and risk in ATR
+            // Dynamic RR based on risk in ATR
             const riskInATR = risk / entryATR;
-            const targetRR = settings.targetRR || 2.0;
             let rr1, rr2, rr3;
-            if(riskInATR >= 2.0) { rr1 = Math.max(1.0, targetRR - 1.0); rr2 = targetRR; rr3 = targetRR + 1.0; }
-            else if(riskInATR >= 1.5) { rr1 = Math.max(1.5, targetRR - 0.5); rr2 = targetRR + 0.5; rr3 = targetRR + 1.5; }
-            else { rr1 = targetRR; rr2 = targetRR + 1.0; rr3 = targetRR + 2.0; }
+            if(riskInATR >= 2.0) { rr1 = 1.5; rr2 = 2.5; rr3 = 3.5; }
+            else if(riskInATR >= 1.5) { rr1 = 2.0; rr2 = 3.0; rr3 = 4.0; }
+            else { rr1 = 2.5; rr2 = 3.5; rr3 = 4.5; }
             
             let tp1 = dir === 'BUY' ? entry + risk * rr1 : entry - risk * rr1;
             let tp2 = dir === 'BUY' ? entry + risk * rr2 : entry - risk * rr2;
             let tp3 = dir === 'BUY' ? entry + risk * rr3 : entry - risk * rr3;
+
+            const maxTPDist = entryATR * 3;
+            if (dir === 'BUY') {
+                tp1 = Math.min(tp1, entry + maxTPDist);
+                tp2 = Math.min(tp2, entry + maxTPDist);
+                tp3 = Math.min(tp3, entry + maxTPDist);
+            } else {
+                tp1 = Math.max(tp1, entry - maxTPDist);
+                tp2 = Math.max(tp2, entry - maxTPDist);
+                tp3 = Math.max(tp3, entry - maxTPDist);
+            }
             tp1 = Math.round(tp1 * factor) / factor;
             tp2 = Math.round(tp2 * factor) / factor;
             tp3 = Math.round(tp3 * factor) / factor;
@@ -1069,70 +1052,53 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             let confidence = 0;
             let reasons = [];
             
-            // NEW CONFIDENCE SCORING (Max 100)
-            // MSNR: 25%, TBS: 20%, FVG: 15%, HTF: 15%, Freshness: 15%, Session: 10%
+            // 1. Pattern Score
+            let typeScore = patternResult.zone.score || 70;
+            confidence += typeScore * 0.25;
+            reasons.push(`${patternResult.zoneType} (${typeScore}%)`);
             
-            // 1. MSNR / Pattern Base (up to 25/15)
-            const zoneType = patternResult.zoneType || '';
-            if (zoneType.includes('MSNR') || zoneType.includes('Turtle')) {
-                confidence += 25;
-                reasons.push('MSNR/Turtle (25%)');
-            } else if (zoneType.includes('FVG') || zoneType.includes('OB')) {
-                confidence += 15;
-                reasons.push('FVG/OB (15%)');
-            } else {
-                confidence += 10;
-                reasons.push('Basic Zone (10%)');
-            }
-
-            // 2. TBS Confirmation (up to 20)
-            if(patternResult.tbsDetected) {
-                confidence += 20;
-                reasons.push('TBS (20%)');
-            }
+            // 2. Distance bonus
+            if(patternResult.distancePct < 0.5) { confidence += 15; reasons.push('Very close'); }
+            else if(patternResult.distancePct < 1.0) { confidence += 10; reasons.push('Close'); }
+            else if(patternResult.distancePct < 2.0) { confidence += 5; }
             
-            // 3. CRT Bonus (Replacing distance/pattern count with CRT structural alignment if applicable, or merged with pattern)
-            if(patternResult.crtState === 'EXPANDING') {
-                confidence += 5; // Extra structural confirmation
-                reasons.push('CRT Expanding');
-            }
+            // 3. Pattern Count
+            const patternCount = patternResult.patterns ? patternResult.patterns.length : 1;
+            confidence += Math.min(patternCount * 5, 15);
+            reasons.push(`${patternCount} patterns`);
             
-            // 4. Freshness (up to 15)
-            if(freshness.fresh) {
-                confidence += 15;
-                reasons.push('Fresh (15%)');
-            } else if(freshness.partiallyUsed && freshness.touches <= 3) {
-                confidence += 5;
-                reasons.push('Used <=3 (5%)');
-            } else {
-                console.log(`  ❌ ${dir}: Zone has >3 touches (${freshness.touches})`);
-                continue; // Rejection Rule: max 3 touches
-            }
+            // 4. Freshness
+            if(freshness.fresh) { confidence += 15; reasons.push('Fresh zone'); }
+            else if(freshness.partiallyUsed && freshness.touches <= 3) { confidence += 8; reasons.push('Lightly used'); }
             
-            // 5. HTF Alignment (up to 15)
+            // 5. HTF Alignment
             const dirStr = dir === 'BUY' ? 'BULLISH' : 'BEARISH';
             let htfMatch = 0;
             if(dailyDir === dirStr) htfMatch++;
             if(h4Dir === dirStr) htfMatch++;
             if(h1Dir === dirStr) htfMatch++;
             
-            if (htfMatch < 2) {
-                console.log(`  ❌ ${dir}: Rejected - Insufficient HTF alignment (${htfMatch}/3)`);
-                continue; // Rejection Rule: minimum 2/3 HTF alignment
-            }
-            confidence += 15;
-            reasons.push(`HTF ${htfMatch}/3 (15%)`);
+            if(htfMatch === 3) { confidence += 15; reasons.push(`HTF 3/3`); }
+            else if(htfMatch === 2) { confidence += 10; reasons.push(`HTF 2/3 (-5)`); }
+            else if(htfMatch === 1) { confidence += 5; reasons.push(`HTF 1/3 (-10)`); }
+            else { confidence += 0; reasons.push(`HTF 0/3 (-15)`); }
             
-            // 6. Session Bonus (up to 10)
-            if(session.isKillzone || session.isSilverBullet) {
+            // 6. TBS Bonus
+            if(patternResult.tbsDetected) {
                 confidence += 10;
-                reasons.push('Session (10%)');
+                reasons.push('TBS confirmed');
             }
             
-            // Distance Check (Prevent extreme distances from passing regardless of score)
-            if(patternResult.distancePct >= MAX_ENTRY_DISTANCE_PCT) {
-                console.log(`  ❌ ${dir}: Distance ${patternResult.distancePct.toFixed(2)}% > Max`);
-                continue;
+            // 7. CRT Bonus
+            if(patternResult.crtState === 'EXPANDING') {
+                confidence += 5;
+                reasons.push('CRT expanding');
+            }
+
+            // 8. Session Bonus
+            if(session.isKillzone || session.isSilverBullet) {
+                confidence += 5;
+                reasons.push('Good session');
             }
             
             confidence = Math.min(confidence, 100);
@@ -1256,7 +1222,7 @@ async function runAutoScan() {
         lastPrice = price;
         
         const results = [];
-        const timeframesToScan = ['1D', '4H', '1H'];
+        const timeframesToScan = ['1D', '4H', '1H', '15M', '5M'];
         const htfData = historyCache;
         
         for(let i = 0; i < timeframesToScan.length; i++) {
