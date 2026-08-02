@@ -31,8 +31,8 @@ const SELL_INVALIDATION_FACTOR = 1.002;
 
 // FIX: Increased proximity to 3%
 const MIN_CONFIDENCE = 50;
-const MAX_ENTRY_DISTANCE_PCT = 5.0;
-const MAX_ZONE_TOUCHES = 8;
+const MAX_ENTRY_DISTANCE_PCT = 3.0;
+const MAX_ZONE_TOUCHES = 10;
 
 // ============================================
 // MARKET SETTINGS
@@ -491,7 +491,7 @@ function calculateMSNR(data, currentPrice) {
     const highs = data.map(c => c.h);
     const lows = data.map(c => c.l);
     const closes = data.map(c => c.c);
-    const period = Math.min(data.length, 100);
+    const period = Math.min(data.length, 20);
     const rH = Math.max(...highs.slice(-period));
     const rL = Math.min(...lows.slice(-period));
     const rC = closes[closes.length - 1];
@@ -561,7 +561,6 @@ function detectCRT(data) {
 // ============================================
 
 function findPatternZone(data, price, direction) {
-    const atrVal = atr(data, 14);
     const msnr = calculateMSNR(data, price);
     const fvgs = detectFVG(data);
     const obs = detectOrderBlocks(data, direction);
@@ -576,62 +575,36 @@ function findPatternZone(data, price, direction) {
     
     // 1. MSNR Levels
     if(direction === 'BUY') {
-        if (!msnr.allSupports || msnr.allSupports.length === 0) {
-            const fallbackPrice = price - (atrVal * 3);
-            candidates.push({
-                price: fallbackPrice,
-                type: 'MSNR Support Fallback',
-                score: 80,
-                low: fallbackPrice * 0.998,
-                high: fallbackPrice * 1.002,
-                distancePct: (price - fallbackPrice) / price * 100,
-                patterns: ['MSNR']
-            });
-        } else {
-            for(const sup of msnr.allSupports) {
-                if(sup < price) {
-                    const distPct = (price - sup) / price * 100;
-                    if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
-                        candidates.push({
-                            price: sup,
-                            type: 'MSNR Support',
-                            score: 80,
-                            low: sup * 0.998,
-                            high: sup * 1.002,
-                            distancePct: distPct,
-                            patterns: ['MSNR']
-                        });
-                    }
+        for(const sup of msnr.allSupports) {
+            if(sup < price) {
+                const distPct = (price - sup) / price * 100;
+                if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
+                    candidates.push({
+                        price: sup,
+                        type: 'MSNR Support',
+                        score: 80,
+                        low: sup * 0.998,
+                        high: sup * 1.002,
+                        distancePct: distPct,
+                        patterns: ['MSNR']
+                    });
                 }
             }
         }
     } else {
-        if (!msnr.allResistances || msnr.allResistances.length === 0) {
-            const fallbackPrice = price + (atrVal * 3);
-            candidates.push({
-                price: fallbackPrice,
-                type: 'MSNR Resistance Fallback',
-                score: 80,
-                low: fallbackPrice * 0.998,
-                high: fallbackPrice * 1.002,
-                distancePct: (fallbackPrice - price) / price * 100,
-                patterns: ['MSNR']
-            });
-        } else {
-            for(const res of msnr.allResistances) {
-                if(res > price) {
-                    const distPct = (res - price) / price * 100;
-                    if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
-                        candidates.push({
-                            price: res,
-                            type: 'MSNR Resistance',
-                            score: 80,
-                            low: res * 0.998,
-                            high: res * 1.002,
-                            distancePct: distPct,
-                            patterns: ['MSNR']
-                        });
-                    }
+        for(const res of msnr.allResistances) {
+            if(res > price) {
+                const distPct = (res - price) / price * 100;
+                if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
+                    candidates.push({
+                        price: res,
+                        type: 'MSNR Resistance',
+                        score: 80,
+                        low: res * 0.998,
+                        high: res * 1.002,
+                        distancePct: distPct,
+                        patterns: ['MSNR']
+                    });
                 }
             }
         }
@@ -749,14 +722,15 @@ function findPatternZone(data, price, direction) {
         }
     }
     
-    console.log(`[DEBUG] findPatternZone candidates for ${direction}:`, candidates.map(c => c.type));
-
     // Sort by distance (closest first)
     candidates.sort((a, b) => a.distancePct - b.distancePct || b.score - a.score);
     
     if(candidates.length === 0) return null;
     
     const best = candidates[0];
+
+    // Calculate SL based on the zone
+    const atrVal = atr(data, 14);
 
     // FIX: Entry near current price, not at the zone
     let entry;
@@ -1179,8 +1153,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 touches: freshness.touches,
                 isFresh: freshness.fresh,
                 zonePrice: patternResult.zonePrice,
-                distancePct: patternResult.distancePct,
-                entryATR: entryATR
+                distancePct: patternResult.distancePct
             });
         }
         
@@ -1214,8 +1187,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             isFresh: best.isFresh,
             zonePrice: best.zonePrice,
             distancePct: best.distancePct,
-            setupScore: best.confidence,
-            entryATR: best.entryATR
+            setupScore: best.confidence
         };
         
     } catch(e) {
@@ -1287,7 +1259,6 @@ async function runAutoScan() {
         
         console.log('=== SCAN RESULTS ===');
         console.log('Results found:', results.length);
-        console.log('[DEBUG] Setups found:', results.map(r => `${r.timeframe} ${r.direction} at ${r.entry} (Conf: ${r.confidence}%)`));
         
         if(results.length === 0) {
             showNotif('🎯 No setups found', 'warning');
