@@ -31,7 +31,7 @@ const SELL_INVALIDATION_FACTOR = 1.002;
 
 // FIX: Increased proximity to 3%
 const MIN_CONFIDENCE = 50;
-const MAX_ENTRY_DISTANCE_PCT = 3.0;
+const MAX_ENTRY_DISTANCE_PCT = 5.0;
 const MAX_ZONE_TOUCHES = 8;
 
 // ============================================
@@ -561,6 +561,7 @@ function detectCRT(data) {
 // ============================================
 
 function findPatternZone(data, price, direction) {
+    const atrVal = atr(data, 14);
     const msnr = calculateMSNR(data, price);
     const fvgs = detectFVG(data);
     const obs = detectOrderBlocks(data, direction);
@@ -575,6 +576,9 @@ function findPatternZone(data, price, direction) {
     
     // 1. MSNR Levels
     if(direction === 'BUY') {
+        if (!msnr.allSupports || msnr.allSupports.length === 0) {
+            msnr.allSupports = [price - (atrVal * 3)];
+        }
         for(const sup of msnr.allSupports) {
             if(sup < price) {
                 const distPct = (price - sup) / price * 100;
@@ -592,6 +596,9 @@ function findPatternZone(data, price, direction) {
             }
         }
     } else {
+        if (!msnr.allResistances || msnr.allResistances.length === 0) {
+            msnr.allResistances = [price + (atrVal * 3)];
+        }
         for(const res of msnr.allResistances) {
             if(res > price) {
                 const distPct = (res - price) / price * 100;
@@ -722,15 +729,14 @@ function findPatternZone(data, price, direction) {
         }
     }
     
+    console.log(`[DEBUG] findPatternZone candidates for ${direction}:`, candidates.map(c => c.type));
+
     // Sort by distance (closest first)
     candidates.sort((a, b) => a.distancePct - b.distancePct || b.score - a.score);
     
     if(candidates.length === 0) return null;
     
     const best = candidates[0];
-    
-    // Calculate SL based on the zone
-    const atrVal = atr(data, 14);
 
     // FIX: Entry near current price, not at the zone
     let entry;
