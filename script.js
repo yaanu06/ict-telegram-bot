@@ -30,9 +30,9 @@ const BUY_INVALIDATION_FACTOR = 0.998;
 const SELL_INVALIDATION_FACTOR = 1.002;
 
 // FIX: Increased proximity to 3%
-const MIN_CONFIDENCE = 65;
+const MIN_CONFIDENCE = 50;
 const MAX_ENTRY_DISTANCE_PCT = 3.0;
-const MAX_ZONE_TOUCHES = 6;
+const MAX_ZONE_TOUCHES = 8;
 
 // ============================================
 // MARKET SETTINGS
@@ -729,18 +729,26 @@ function findPatternZone(data, price, direction) {
     
     const best = candidates[0];
     
+    // Calculate SL based on the zone
+    const atrVal = atr(data, 14);
+
     // FIX: Entry near current price, not at the zone
     let entry;
+    let entryOffset = atrVal * 0.15;
+
+    // Cap the offset between 0.1% and 0.5% of price
+    const minOffset = price * 0.001;
+    const maxOffset = price * 0.005;
+    entryOffset = Math.max(minOffset, Math.min(maxOffset, entryOffset));
+
     if(direction === 'BUY') {
-        entry = price - (price * 0.002);
+        entry = price - entryOffset;
     } else {
-        entry = price + (price * 0.002);
+        entry = price + entryOffset;
     }
     entry = Math.round(entry * factor) / factor;
     
-    // Calculate SL based on the zone
     let sl;
-    const atrVal = atr(data, 14);
     if(direction === 'BUY') {
         sl = best.low - (best.low * 0.001);
         if(entry - sl < atrVal * 0.5) {
@@ -853,6 +861,15 @@ async function getAIExecutionDecision(best, price, htfData) {
     
     const session = getSession();
     
+    const riskAmount = best.entry && best.sl ? Math.abs(best.entry - best.sl) : 0;
+    const tpDistances = [
+        best.entry && best.tp1 ? Math.abs(best.tp1 - best.entry) : 0,
+        best.entry && best.tp2 ? Math.abs(best.tp2 - best.entry) : 0,
+        best.entry && best.tp3 ? Math.abs(best.tp3 - best.entry) : 0
+    ].map(d => d.toFixed(5)).join(', ');
+    const patternCount = best.patterns ? best.patterns.length : 0;
+    const atrValue = best.entryATR ? best.entryATR.toFixed(5) : 'N/A';
+
     const prompt = `ICT TRADE EXECUTION
 
 Setup Confidence: ${best.confidence}%
@@ -862,6 +879,12 @@ Distance: ${Math.abs(best.distancePct || 0).toFixed(2)}%
 TBS: ${best.tbsDetected ? 'YES' : 'NO'}
 CRT: ${best.crtState}
 Session: ${session.session}
+ATR Value: ${atrValue}
+Zone Touches: ${best.touches || 0}
+Entry Distance %: ${Math.abs(best.entryDistancePct || 0).toFixed(2)}%
+Risk Amount: ${riskAmount.toFixed(5)}
+TP Distances: ${tpDistances}
+Pattern Count: ${patternCount}
 
 Return ONLY JSON:
 {"decision":"enter_now|wait_for_reaction|skip","confidence":0-100,"reason":"brief reason"}`;
@@ -1032,7 +1055,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             let tp2 = dir === 'BUY' ? entry + risk * rr2 : entry - risk * rr2;
             let tp3 = dir === 'BUY' ? entry + risk * rr3 : entry - risk * rr3;
 
-            const maxTPDist = entryATR * 3;
+            const maxTPDist = entryATR * 3.5;
             if (dir === 'BUY') {
                 tp1 = Math.min(tp1, entry + maxTPDist);
                 tp2 = Math.min(tp2, entry + maxTPDist);
@@ -1078,10 +1101,10 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             if(h4Dir === dirStr) htfMatch++;
             if(h1Dir === dirStr) htfMatch++;
             
-            if(htfMatch === 3) { confidence += 15; reasons.push(`HTF 3/3`); }
-            else if(htfMatch === 2) { confidence += 10; reasons.push(`HTF 2/3 (-5)`); }
-            else if(htfMatch === 1) { confidence += 5; reasons.push(`HTF 1/3 (-10)`); }
-            else { confidence += 0; reasons.push(`HTF 0/3 (-15)`); }
+            if(htfMatch === 3) { confidence += 15; reasons.push(`HTF 3/3 (+15)`); }
+            else if(htfMatch === 2) { confidence += 10; reasons.push(`HTF 2/3 (+10)`); }
+            else if(htfMatch === 1) { confidence += 5; reasons.push(`HTF 1/3 (+5)`); }
+            else { confidence += 0; reasons.push(`HTF 0/3 (+0)`); }
             
             // 6. TBS Bonus
             if(patternResult.tbsDetected) {
@@ -1130,7 +1153,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 touches: freshness.touches,
                 isFresh: freshness.fresh,
                 zonePrice: patternResult.zonePrice,
-                distancePct: patternResult.distancePct
+                distancePct: patternResult.distancePct,
+                entryATR: entryATR
             });
         }
         
@@ -1164,7 +1188,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             isFresh: best.isFresh,
             zonePrice: best.zonePrice,
             distancePct: best.distancePct,
-            setupScore: best.confidence
+            setupScore: best.confidence,
+            entryATR: best.entryATR
         };
         
     } catch(e) {

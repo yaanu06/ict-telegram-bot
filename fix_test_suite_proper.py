@@ -2,6 +2,7 @@ import re
 with open("script.test.js", "r") as f:
     content = f.read()
 
+# Fix getContext to include setInterval etc. AND the missing globals
 replacement = """const getContext = (overrides = {}) => {
     const context = {
         window: { Telegram: { WebApp: null } },
@@ -12,10 +13,10 @@ replacement = """const getContext = (overrides = {}) => {
         },
         console: { log: () => {}, error: () => {} },
         fetch: jest.fn(),
-        setInterval: () => {},
-        clearInterval: () => {},
-        setTimeout: () => {},
-        clearTimeout: () => {},
+        setInterval: jest.fn(),
+        clearInterval: jest.fn(),
+        setTimeout: jest.fn(),
+        clearTimeout: jest.fn(),
         localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
         ...overrides
     };
