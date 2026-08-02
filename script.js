@@ -491,7 +491,7 @@ function calculateMSNR(data, currentPrice) {
     const highs = data.map(c => c.h);
     const lows = data.map(c => c.l);
     const closes = data.map(c => c.c);
-    const period = Math.min(data.length, 20);
+    const period = Math.min(data.length, 100);
     const rH = Math.max(...highs.slice(-period));
     const rL = Math.min(...lows.slice(-period));
     const rC = closes[closes.length - 1];
@@ -577,41 +577,61 @@ function findPatternZone(data, price, direction) {
     // 1. MSNR Levels
     if(direction === 'BUY') {
         if (!msnr.allSupports || msnr.allSupports.length === 0) {
-            msnr.allSupports = [price - (atrVal * 3)];
-        }
-        for(const sup of msnr.allSupports) {
-            if(sup < price) {
-                const distPct = (price - sup) / price * 100;
-                if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
-                    candidates.push({
-                        price: sup,
-                        type: 'MSNR Support',
-                        score: 80,
-                        low: sup * 0.998,
-                        high: sup * 1.002,
-                        distancePct: distPct,
-                        patterns: ['MSNR']
-                    });
+            const fallbackPrice = price - (atrVal * 3);
+            candidates.push({
+                price: fallbackPrice,
+                type: 'MSNR Support Fallback',
+                score: 80,
+                low: fallbackPrice * 0.998,
+                high: fallbackPrice * 1.002,
+                distancePct: (price - fallbackPrice) / price * 100,
+                patterns: ['MSNR']
+            });
+        } else {
+            for(const sup of msnr.allSupports) {
+                if(sup < price) {
+                    const distPct = (price - sup) / price * 100;
+                    if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
+                        candidates.push({
+                            price: sup,
+                            type: 'MSNR Support',
+                            score: 80,
+                            low: sup * 0.998,
+                            high: sup * 1.002,
+                            distancePct: distPct,
+                            patterns: ['MSNR']
+                        });
+                    }
                 }
             }
         }
     } else {
         if (!msnr.allResistances || msnr.allResistances.length === 0) {
-            msnr.allResistances = [price + (atrVal * 3)];
-        }
-        for(const res of msnr.allResistances) {
-            if(res > price) {
-                const distPct = (res - price) / price * 100;
-                if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
-                    candidates.push({
-                        price: res,
-                        type: 'MSNR Resistance',
-                        score: 80,
-                        low: res * 0.998,
-                        high: res * 1.002,
-                        distancePct: distPct,
-                        patterns: ['MSNR']
-                    });
+            const fallbackPrice = price + (atrVal * 3);
+            candidates.push({
+                price: fallbackPrice,
+                type: 'MSNR Resistance Fallback',
+                score: 80,
+                low: fallbackPrice * 0.998,
+                high: fallbackPrice * 1.002,
+                distancePct: (fallbackPrice - price) / price * 100,
+                patterns: ['MSNR']
+            });
+        } else {
+            for(const res of msnr.allResistances) {
+                if(res > price) {
+                    const distPct = (res - price) / price * 100;
+                    if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
+                        candidates.push({
+                            price: res,
+                            type: 'MSNR Resistance',
+                            score: 80,
+                            low: res * 0.998,
+                            high: res * 1.002,
+                            distancePct: distPct,
+                            patterns: ['MSNR']
+                        });
+                    }
                 }
             }
         }
@@ -1267,6 +1287,7 @@ async function runAutoScan() {
         
         console.log('=== SCAN RESULTS ===');
         console.log('Results found:', results.length);
+        console.log('[DEBUG] Setups found:', results.map(r => `${r.timeframe} ${r.direction} at ${r.entry} (Conf: ${r.confidence}%)`));
         
         if(results.length === 0) {
             showNotif('🎯 No setups found', 'warning');
