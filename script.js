@@ -1259,14 +1259,18 @@ async function runAutoScan() {
         
         console.log('=== SCAN RESULTS ===');
         console.log('Results found:', results.length);
+        console.log('[DEBUG] Setups found:', results.map(r => `${r.timeframe} ${r.direction} at ${r.entry} (Conf: ${r.confidence}%)`));
+
+        const htfResults = results.filter(r => ['1D', '4H', '1H'].includes(r.timeframe));
+        console.log('HTF Results found:', htfResults.length);
         
-        if(results.length === 0) {
+        if(htfResults.length === 0) {
             showNotif('🎯 No setups found', 'warning');
             setJsonOutput({
                 status: 'NO_SETUP',
                 pair: pair,
                 current_price: price,
-                reason: 'No setups met minimum confidence or proximity requirements'
+                reason: 'No HTF setups met minimum confidence or proximity requirements'
             });
             btn.classList.remove('loading');
             btn.disabled = false;
@@ -1274,8 +1278,8 @@ async function runAutoScan() {
             return;
         }
         
-        results.sort((a, b) => b.confidence - a.confidence);
-        let best = results[0];
+        htfResults.sort((a, b) => b.confidence - a.confidence);
+        let best = htfResults[0];
         
         // Get AI decision
         scanText.innerHTML = '🤖 AI analyzing execution...';

@@ -1,1 +1,1 @@
-sed -i 's/const MAX_ZONE_TOUCHES = 6;/const MAX_ZONE_TOUCHES = 8;/' script.js
+sed -i 's/const timeframesToScan = \['\''1D\'', '\''4H\'', '\''1H\'', '\''15M\'', '\''5M\''\];/const timeframesToScan = \['\''1D\'', '\''4H\'', '\''1H\'', '\''15M\'', '\''5M\''\];/' script.js
