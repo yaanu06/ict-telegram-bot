@@ -31,8 +31,11 @@ const SELL_INVALIDATION_FACTOR = 1.002;
 
 // FIX: Increased proximity to 3%
 const MIN_CONFIDENCE = 50;
-const MAX_ENTRY_DISTANCE_PCT = 3.0;
-const MAX_ZONE_TOUCHES = 10;
+const DEFAULT_MAX_ENTRY_DISTANCE_PCT = 3.0;
+function getMaxEntryDistancePct(p = pair) {
+    return p === 'BTC/USD' ? 5.0 : 3.0;
+}
+const MAX_ZONE_TOUCHES = 15;
 
 // ============================================
 // MARKET SETTINGS
@@ -491,7 +494,7 @@ function calculateMSNR(data, currentPrice) {
     const highs = data.map(c => c.h);
     const lows = data.map(c => c.l);
     const closes = data.map(c => c.c);
-    const period = Math.min(data.length, 20);
+    const period = Math.min(data.length, 100);
     const rH = Math.max(...highs.slice(-period));
     const rL = Math.min(...lows.slice(-period));
     const rC = closes[closes.length - 1];
@@ -578,7 +581,7 @@ function findPatternZone(data, price, direction) {
         for(const sup of msnr.allSupports) {
             if(sup < price) {
                 const distPct = (price - sup) / price * 100;
-                if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
+                if(distPct <= getMaxEntryDistancePct()) {
                     candidates.push({
                         price: sup,
                         type: 'MSNR Support',
@@ -595,7 +598,7 @@ function findPatternZone(data, price, direction) {
         for(const res of msnr.allResistances) {
             if(res > price) {
                 const distPct = (res - price) / price * 100;
-                if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
+                if(distPct <= getMaxEntryDistancePct()) {
                     candidates.push({
                         price: res,
                         type: 'MSNR Resistance',
@@ -613,7 +616,7 @@ function findPatternZone(data, price, direction) {
     // 2. FVG
     for(const fvg of fvgs) {
         const distPct = Math.abs(price - fvg.m) / price * 100;
-        if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
+        if(distPct <= getMaxEntryDistancePct()) {
             if(direction === 'BUY' && fvg.type === 'bull' && fvg.l < price) {
                 candidates.push({
                     price: fvg.m,
@@ -643,7 +646,7 @@ function findPatternZone(data, price, direction) {
     for(const ob of obs) {
         const mid = (ob.low + ob.high) / 2;
         const distPct = Math.abs(price - mid) / price * 100;
-        if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
+        if(distPct <= getMaxEntryDistancePct()) {
             if(direction === 'BUY' && ob.high < price) {
                 candidates.push({
                     price: mid,
@@ -674,7 +677,7 @@ function findPatternZone(data, price, direction) {
         for(const low of swings.L) {
             if(low.p < price) {
                 const distPct = (price - low.p) / price * 100;
-                if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
+                if(distPct <= getMaxEntryDistancePct()) {
                     candidates.push({
                         price: low.p,
                         type: 'Swing Low',
@@ -691,7 +694,7 @@ function findPatternZone(data, price, direction) {
         for(const high of swings.H) {
             if(high.p > price) {
                 const distPct = (high.p - price) / price * 100;
-                if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
+                if(distPct <= getMaxEntryDistancePct()) {
                     candidates.push({
                         price: high.p,
                         type: 'Swing High',
@@ -709,7 +712,7 @@ function findPatternZone(data, price, direction) {
     // 5. Turtle Soup
     if(tbs.detected && tbs.type === direction) {
         const distPct = Math.abs(price - tbs.keyLevel) / price * 100;
-        if(distPct <= MAX_ENTRY_DISTANCE_PCT) {
+        if(distPct <= getMaxEntryDistancePct()) {
             candidates.push({
                 price: tbs.keyLevel,
                 type: 'Turtle Soup',
@@ -729,35 +732,40 @@ function findPatternZone(data, price, direction) {
     
     const best = candidates[0];
 
-    // Calculate SL based on the zone
-    const atrVal = atr(data, 14);
-
     // FIX: Entry near current price, not at the zone
     let entry;
-    let entryOffset = atrVal * 0.15;
-
-    // Cap the offset between 0.1% and 0.5% of price
-    const minOffset = price * 0.001;
-    const maxOffset = price * 0.005;
-    entryOffset = Math.max(minOffset, Math.min(maxOffset, entryOffset));
-
     if(direction === 'BUY') {
-        entry = price - entryOffset;
+        entry = price - (price * 0.001);
+        if(entry < best.price) {
+            entry = best.price + (best.price * 0.002);
+        }
     } else {
-        entry = price + entryOffset;
+        entry = price + (price * 0.001);
+        if(entry > best.price) {
+            entry = best.price - (best.price * 0.002);
+        }
     }
     entry = Math.round(entry * factor) / factor;
     
+    // Calculate SL based on the zone
     let sl;
+    const atrVal = atr(data, 14);
+    const maxSLDistance = Math.min(price * 0.015, atrVal * 2.5); // Cap SL tightening
     if(direction === 'BUY') {
         sl = best.low - (best.low * 0.001);
         if(entry - sl < atrVal * 0.5) {
             sl = entry - atrVal * 0.8;
         }
+        if (entry - sl > maxSLDistance) {
+            sl = entry - maxSLDistance;
+        }
     } else {
         sl = best.high + (best.high * 0.001);
         if(sl - entry < atrVal * 0.5) {
             sl = entry + atrVal * 0.8;
+        }
+        if (sl - entry > maxSLDistance) {
+            sl = entry + maxSLDistance;
         }
     }
     sl = Math.round(sl * factor) / factor;
@@ -861,15 +869,6 @@ async function getAIExecutionDecision(best, price, htfData) {
     
     const session = getSession();
     
-    const riskAmount = best.entry && best.sl ? Math.abs(best.entry - best.sl) : 0;
-    const tpDistances = [
-        best.entry && best.tp1 ? Math.abs(best.tp1 - best.entry) : 0,
-        best.entry && best.tp2 ? Math.abs(best.tp2 - best.entry) : 0,
-        best.entry && best.tp3 ? Math.abs(best.tp3 - best.entry) : 0
-    ].map(d => d.toFixed(5)).join(', ');
-    const patternCount = best.patterns ? best.patterns.length : 0;
-    const atrValue = best.entryATR ? best.entryATR.toFixed(5) : 'N/A';
-
     const prompt = `ICT TRADE EXECUTION
 
 Setup Confidence: ${best.confidence}%
@@ -879,12 +878,6 @@ Distance: ${Math.abs(best.distancePct || 0).toFixed(2)}%
 TBS: ${best.tbsDetected ? 'YES' : 'NO'}
 CRT: ${best.crtState}
 Session: ${session.session}
-ATR Value: ${atrValue}
-Zone Touches: ${best.touches || 0}
-Entry Distance %: ${Math.abs(best.entryDistancePct || 0).toFixed(2)}%
-Risk Amount: ${riskAmount.toFixed(5)}
-TP Distances: ${tpDistances}
-Pattern Count: ${patternCount}
 
 Return ONLY JSON:
 {"decision":"enter_now|wait_for_reaction|skip","confidence":0-100,"reason":"brief reason"}`;
@@ -1024,8 +1017,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             
             // FIX: Check entry proximity (3% max)
             const entryDistancePct = Math.abs(price - entry) / price * 100;
-            if(entryDistancePct > MAX_ENTRY_DISTANCE_PCT) {
-                console.log(`  ❌ ${dir}: Entry ${entry} is ${entryDistancePct.toFixed(2)}% away (max ${MAX_ENTRY_DISTANCE_PCT}%)`);
+            if(entryDistancePct > getMaxEntryDistancePct()) {
+                console.log(`  ❌ ${dir}: Entry ${entry} is ${entryDistancePct.toFixed(2)}% away (max ${getMaxEntryDistancePct()}%)`);
                 continue;
             }
             console.log(`  → Entry ${entry} is ${entryDistancePct.toFixed(2)}% from price ✅`);
@@ -1046,28 +1039,30 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             
             // Dynamic RR based on risk in ATR
             const riskInATR = risk / entryATR;
-            let rr1, rr2, rr3;
-            if(riskInATR >= 2.0) { rr1 = 1.5; rr2 = 2.5; rr3 = 3.5; }
-            else if(riskInATR >= 1.5) { rr1 = 2.0; rr2 = 3.0; rr3 = 4.0; }
-            else { rr1 = 2.5; rr2 = 3.5; rr3 = 4.5; }
+            const msnrData2 = calculateMSNR(entryData, price);
+            let tp1, tp2, tp3;
             
-            let tp1 = dir === 'BUY' ? entry + risk * rr1 : entry - risk * rr1;
-            let tp2 = dir === 'BUY' ? entry + risk * rr2 : entry - risk * rr2;
-            let tp3 = dir === 'BUY' ? entry + risk * rr3 : entry - risk * rr3;
-
-            const maxTPDist = entryATR * 3.5;
             if (dir === 'BUY') {
-                tp1 = Math.min(tp1, entry + maxTPDist);
-                tp2 = Math.min(tp2, entry + maxTPDist);
-                tp3 = Math.min(tp3, entry + maxTPDist);
+                const resistances = msnrData2.resistances.filter(r => r > entry).sort((a, b) => a - b);
+                tp1 = resistances[0] || entry + risk * 1.5;
+                tp2 = resistances[1] || entry + risk * 2.5;
+                tp3 = resistances[2] || entry + risk * 3.5;
             } else {
-                tp1 = Math.max(tp1, entry - maxTPDist);
-                tp2 = Math.max(tp2, entry - maxTPDist);
-                tp3 = Math.max(tp3, entry - maxTPDist);
+                const supports = msnrData2.supports.filter(s => s < entry).sort((a, b) => b - a);
+                tp1 = supports[0] || entry - risk * 1.5;
+                tp2 = supports[1] || entry - risk * 2.5;
+                tp3 = supports[2] || entry - risk * 3.5;
             }
+
             tp1 = Math.round(tp1 * factor) / factor;
             tp2 = Math.round(tp2 * factor) / factor;
             tp3 = Math.round(tp3 * factor) / factor;
+
+            const actualRR = Math.abs(tp1 - entry) / risk;
+            if (actualRR < 1.2) {
+                continue;
+            }
+            const shouldTakePartials = actualRR >= 4.0;
             
             // ============================================
             // CONFIDENCE SCORING
@@ -1101,10 +1096,8 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             if(h4Dir === dirStr) htfMatch++;
             if(h1Dir === dirStr) htfMatch++;
             
-            if(htfMatch === 3) { confidence += 15; reasons.push(`HTF 3/3 (+15)`); }
-            else if(htfMatch === 2) { confidence += 10; reasons.push(`HTF 2/3 (+10)`); }
-            else if(htfMatch === 1) { confidence += 5; reasons.push(`HTF 1/3 (+5)`); }
-            else { confidence += 0; reasons.push(`HTF 0/3 (+0)`); }
+            if(htfMatch >= 2) { confidence += 10; reasons.push(`HTF ${htfMatch}/3`); }
+            else if(htfMatch >= 1) { confidence += 5; }
             
             // 6. TBS Bonus
             if(patternResult.tbsDetected) {
@@ -1133,6 +1126,9 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 console.log(`  ❌ ${dir}: Confidence ${confidence.toFixed(0)}% < ${MIN_CONFIDENCE}%`);
                 continue;
             }
+            if (shouldTakePartials) {
+                reasons.push("High RR (Take Partials)");
+            }
             
             allSetups.push({
                 dir,
@@ -1154,7 +1150,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
                 isFresh: freshness.fresh,
                 zonePrice: patternResult.zonePrice,
                 distancePct: patternResult.distancePct,
-                entryATR: entryATR
+                shouldTakePartials
             });
         }
         
@@ -1189,7 +1185,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
             zonePrice: best.zonePrice,
             distancePct: best.distancePct,
             setupScore: best.confidence,
-            entryATR: best.entryATR
+            shouldTakePartials: best.shouldTakePartials
         };
         
     } catch(e) {
@@ -1799,7 +1795,7 @@ async function checkMissedFill() {
 console.log('✅ ICT Trading Bot Pro v8.0 - FINAL WORKING FIX loaded!');
 console.log('✅ ALL PATTERNS INTACT: MSNR, FVG, OB, Swings, TBS, CRT');
 console.log('✅ FIXES APPLIED:');
-console.log(`   - Entry within ${MAX_ENTRY_DISTANCE_PCT}% of current price (was 0.5%)`);
+console.log(`   - Entry within ${getMaxEntryDistancePct()}% of current price (was 0.5%)`);
 console.log('   - Checks BOTH BUY and SELL directions');
 console.log('   - Entry adjusted to near current price');
 console.log('   - All patterns scored and used');
