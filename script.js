@@ -456,7 +456,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
         for (let t of tfs) { let tr = await getQuoteDirection(t, htfData[t]); trends[t] = tr; if (tr === 'BULLISH') bullCount++; else if (tr === 'BEARISH') bearCount++; } 
         const mtf = { direction: bullCount > bearCount ? 'BULLISH' : (bearCount > bullCount ? 'BEARISH' : 'NEUTRAL'), strength: Math.max(bullCount, bearCount), bullCount, bearCount, trends }; 
         let direction = sig.dir; if (mtf.strength >= 3) direction = mtf.direction === 'BULLISH' ? 'BUY' : 'SELL'; 
-        const turtleSoup = detectTurtleSoup(entryData); if (turtleSoup.detected) direction = turtleSoup.type; 
+        const turtleSoup = detectTurtleSoup(entryData); // TBS detected but does NOT override HTF direction 
         const msnr = calculateMSNR(structureData || entryData, price), zone = findPrecisionEntry(entryData, price, direction, msnr); 
         const zoneTouches = countZoneTouches(entryData, zone, direction), zoneReaction = checkZoneReaction(entryData, zone, direction); 
         const freshness = checkZoneFreshness(entryData, zone, direction), htfDataForPD = htfData[structureTF] || htfData['1D'], premiumDiscount = isHTFPremiumDiscount(htfDataForPD, direction);
