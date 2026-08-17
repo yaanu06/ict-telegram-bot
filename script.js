@@ -2,8 +2,8 @@
 // VERSION 9.2 - ADX confidence factor (not whole-TF kill) + EMA9/21/50/200/SuperTrend from TwelveData + stable detectTrend
 // ============================================
 
-// Initialize
-const tg = window.Telegram.WebApp;
+// Initialize (defensive: telegram-web-app.js may fail to load — never block the UI)
+const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
 if (tg) { tg.expand(); tg.ready(); }
 
 // ============================================
@@ -267,6 +267,7 @@ let priceTimer = null;
 let cachedPrice = null;
 let priceCacheTime = 0;
 let cachedPricePair = null;
+let indicatorCache = {};
 const PRICE_CACHE_DURATION = 5000;
 
 function resetPairState() {
@@ -440,7 +441,6 @@ async function getHistory(tfStr, forPair) {
     return null;
 }
 
-let indicatorCache = {};
 const INDICATOR_CACHE_TTL = 4 * 60 * 1000;
 
 async function getTechnicalIndicators(tfUsed, candleData = null) {

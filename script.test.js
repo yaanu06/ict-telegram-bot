@@ -4,66 +4,107 @@ const vm = require('vm');
 const code = fs.readFileSync('script.js', 'utf8');
 
 const getContext = () => {
+    const fakeEl = () => ({
+        addEventListener: () => {},
+        classList: { add: () => {}, remove: () => {}, contains: () => false },
+        style: {},
+        innerHTML: '',
+        textContent: '',
+        dataset: { category: 'metals' },
+        value: ''
+    });
     const context = {
-        window: { Telegram: { WebApp: null } },
+        window: { Telegram: null },
         document: {
-            getElementById: () => ({ addEventListener: () => {}, classList: { add: () => {}, remove: () => {} }, style: {} }),
-            addEventListener: () => {}
+            getElementById: () => fakeEl(),
+            addEventListener: () => {},
+            querySelector: () => fakeEl(),
+            querySelectorAll: () => [],
+            body: { insertAdjacentHTML: () => {} }
         },
         console: { log: () => {}, error: () => {} },
-        fetch: jest.fn(),
-        localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} }
+        fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
+        localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+        setTimeout: () => 0,
+        setInterval: () => 0,
+        clearInterval: () => {},
+        clearTimeout: () => {},
+        Date,
+        Math,
+        JSON,
+        btoa: (s) => Buffer.from(s, 'binary').toString('base64')
     };
     vm.createContext(context);
     vm.runInContext(code, context);
     return context;
 };
 
-describe('getLiveCandleDirection', () => {
-    let context;
+const candles = (n, start, step, dir) => {
+    const out = [];
+    let p = start;
+    for(let i = 0; i < n; i++) {
+        const o = p;
+        const c = dir === 'up' ? p + step : p - step;
+        out.push({ o, c, h: Math.max(o, c) + Math.abs(step) * 0.3, l: Math.min(o, c) - Math.abs(step) * 0.3, v: 1e6 });
+        p = c;
+    }
+    return out;
+};
 
-    beforeEach(() => {
-        context = getContext();
-        context.getHistory = jest.fn().mockResolvedValue(null);
-        context.getPrice = jest.fn().mockResolvedValue(null);
+describe('computeRSI (Wilder)', () => {
+    it('returns 100 for a straight up run', () => {
+        const ctx = getContext();
+        const closes = candles(30, 100, 1, 'up').map(c => c.c);
+        expect(ctx.computeRSI(closes, 14)).toBe(100);
     });
-
-    it('returns NEUTRAL when cachedData is null and history is empty', async () => {
-        const result = await context.getLiveCandleDirection('1H', null);
-        expect(result).toBe('NEUTRAL');
+    it('returns ~0 for a straight down run', () => {
+        const ctx = getContext();
+        const closes = candles(30, 100, 1, 'down').map(c => c.c);
+        expect(ctx.computeRSI(closes, 14)).toBe(0);
     });
+});
 
-    it('returns NEUTRAL when cachedData is an empty array', async () => {
-        const result = await context.getLiveCandleDirection('1H', []);
-        expect(result).toBe('NEUTRAL');
+describe('detectTrend', () => {
+    it('detects uptrend', () => {
+        const ctx = getContext();
+        const data = candles(80, 100, 1, 'up');
+        expect(ctx.detectTrend(data)).toBe('BULLISH');
     });
-
-    it('returns NEUTRAL when cachedData has less than 2 items', async () => {
-        const result = await context.getLiveCandleDirection('1H', [{ o: 100, c: 105 }]);
-        expect(result).toBe('NEUTRAL');
+    it('detects downtrend', () => {
+        const ctx = getContext();
+        const data = candles(80, 300, 1, 'down');
+        expect(ctx.detectTrend(data)).toBe('BEARISH');
     });
+});
 
-    it('returns BULLISH when current price > current candle open', async () => {
-        context.getPrice.mockResolvedValue(110);
-        const result = await context.getLiveCandleDirection('1H', [{ o: 90, c: 95 }, { o: 100, c: 105 }]);
-        expect(result).toBe('BULLISH');
+describe('detectCHoCH', () => {
+    it('returns false for insufficient data', () => {
+        const ctx = getContext();
+        expect(ctx.detectCHoCH(candles(10, 100, 1, 'up'), 'BUY')).toBe(false);
     });
-
-    it('returns BEARISH when current price < current candle open', async () => {
-        context.getPrice.mockResolvedValue(95);
-        const result = await context.getLiveCandleDirection('1H', [{ o: 90, c: 95 }, { o: 100, c: 105 }]);
-        expect(result).toBe('BEARISH');
+    it('returns false when no swing break happens', () => {
+        const ctx = getContext();
+        const data = candles(30, 100, 1, 'up');
+        expect(ctx.detectCHoCH(data, 'BUY')).toBe(false);
     });
+});
 
-    it('returns NEUTRAL when current price equals current candle open', async () => {
-        context.getPrice.mockResolvedValue(100);
-        const result = await context.getLiveCandleDirection('1H', [{ o: 90, c: 95 }, { o: 100, c: 105 }]);
-        expect(result).toBe('NEUTRAL');
+describe('detectFVG', () => {
+    it('finds a bullish FVG', () => {
+        const ctx = getContext();
+        const data = candles(20, 100, 1, 'up');
+        // Manufacture a gap: prev.h < next.l
+        data[10] = { o: 110, c: 111, h: 112, l: 109, v: 1e6 };
+        data[11] = { o: 120, c: 121, h: 122, l: 119, v: 1e6 };
+        const fvgs = ctx.detectFVG(data);
+        expect(fvgs.some(f => f.type === 'bull')).toBe(true);
     });
+});
 
-    it('returns NEUTRAL when currentPrice is not available', async () => {
-        context.getPrice.mockResolvedValue(null);
-        const result = await context.getLiveCandleDirection('1H', [{ o: 90, c: 95 }, { o: 100, c: 105 }]);
+describe('getQuoteDirection', () => {
+    it('returns NEUTRAL for short data (no more 1-candle guessing)', async () => {
+        const ctx = getContext();
+        const result = await ctx.getQuoteDirection('1H', candles(3, 100, 1, 'up'));
         expect(result).toBe('NEUTRAL');
     });
 });
