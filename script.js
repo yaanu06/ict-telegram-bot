@@ -76,6 +76,66 @@ function showSetup() {
 let pair='XAU/USD',analysis=null,calls=0,lastPrice=null,limitOrder=null,priceTimer=null; 
 let cachedPrice = null, priceCacheTime = 0; 
 const PRICE_CACHE_DURATION = 5000; 
+
+// Trade State & Protection Variables
+let lastTradeTime = 0, consecutiveLosses = 0, dailyPnlR = 0;
+
+// ============================================
+// TRADE STATE & PROTECTION FUNCTIONS - FIX
+// ============================================
+
+// ✅ FIX: Safe Value Checker
+function safeCheck(value) {
+    return value != null && isFinite(value);
+}
+
+// ✅ FIX: Trade Result Recording
+function recordTradeResult(isWin, riskR) {
+    lastTradeTime = Date.now();
+    if(isWin) { 
+        consecutiveLosses = 0; 
+        dailyPnlR += riskR; 
+    } else { 
+        consecutiveLosses++; 
+        dailyPnlR -= riskR; 
+    }
+    try {
+        localStorage.setItem('ict_trade_state', JSON.stringify({
+            lastTradeTime,
+            consecutiveLosses,
+            dailyPnlR
+        }));
+    } catch(e) {}
+}
+
+// ✅ FIX: Loss Protection Check
+function checkLossProtection() {
+    return consecutiveLosses < 3 && dailyPnlR > -2.0;
+}
+
+// ✅ FIX: Time Gap Check
+function checkTradeGap(minHours = 2) {
+    if(lastTradeTime > 0 && Date.now() - lastTradeTime < minHours * 3600000) {
+        return false;
+    }
+    return true;
+}
+
+// ✅ FIX: Load Trade State
+function loadTradeState() {
+    try {
+        const s = localStorage.getItem('ict_trade_state');
+        if(s) {
+            const state = JSON.parse(s);
+            lastTradeTime = state.lastTradeTime || 0;
+            consecutiveLosses = state.consecutiveLosses || 0;
+            dailyPnlR = state.dailyPnlR || 0;
+        }
+    } catch(e) {}
+}
+
+// Load trade state on init
+loadTradeState();
  
 document.addEventListener('DOMContentLoaded',async()=>{await loadKeys();updateKeyStatus();if(!TWELVE_DATA_KEY && !DEEPSEEK_API_KEY)setTimeout(showSetup,500);init();}); 
 function init(){ 
@@ -358,7 +418,11 @@ function calcTakeProfits(dir,entry,sl){
     else return { tp1: entry - risk * rr1, tp2: entry - risk * rr2, tp3: entry - risk * rr3, rrUsed: rr1 };
 } 
 function score(data,price,twelveIndicators){ 
-    const a=atr(data),cl=data.map(c=>c.c),rs=rsi(cl),fv=detectFVG(data),ms=detectMSS(data),bk=detectBreakers(data); 
+    // ✅ FIX: Add safeCheck validation for indicator values
+    const a = atr(data);
+    if (!safeCheck(a)) return { dir: 'NEUTRAL', conf: 50, reason: 'Invalid ATR', scores: { bS: 0, sS: 0 } };
+    
+    const cl=data.map(c=>c.c), rs=rsi(cl), fv=detectFVG(data), ms=detectMSS(data), bk=detectBreakers(data); 
     const e20=ema(cl,20),e50=ema(cl,50),cE20=e20[e20.length-1],cE50=e50[e50.length-1]; 
     const bF=fv.filter(f=>f.type==='bull' && f.l<price).sort((a,b)=>b.l-a.l), sF=fv.filter(f=>f.type==='bear' && f.h>price).sort((a,b)=>a.h-b.h); 
     const bB=bk.filter(b=>b.type==='BULL' && b.p<price), sB=bk.filter(b=>b.type==='BEAR' && b.p>price); 
@@ -369,14 +433,14 @@ function score(data,price,twelveIndicators){
     if(cE20>cE50){bS+=15;bR.push('EMA bull');} else{sS+=15;sR.push('EMA bear');} 
     if(rs>50)bS+=10;else sS+=10; 
     const ind = twelveIndicators || {}; 
-    if(ind.rsi && ind.rsi<30){bS+=8;bR.push('RSI oversold');} if(ind.rsi && ind.rsi>70){sS+=8;sR.push('RSI overbought');} 
-    if(ind.stoch_k && ind.stoch_d && ind.stoch_k<20 && ind.stoch_d<20){bS+=5;bR.push('Stoch oversold');} if(ind.stoch_k && ind.stoch_d && ind.stoch_k>80 && ind.stoch_d>80){sS+=5;sR.push('Stoch overbought');} 
-    if(ind.bb_lower && price<=ind.bb_lower*1.002){bS+=5;bR.push('At BB lower');} if(ind.bb_upper && price>=ind.bb_upper*0.998){sS+=5;sR.push('At BB upper');} 
-    if(ind.cci && ind.cci<-150){bS+=5;bR.push('CCI oversold');} if(ind.cci && ind.cci>150){sS+=5;sR.push('CCI overbought');} 
-    if(ind.williams_r && ind.williams_r<-80){bS+=3;bR.push('Williams oversold');} if(ind.williams_r && ind.williams_r>-20){sS+=3;sR.push('Williams overbought');} 
-    if(ind.sar && price>ind.sar){bS+=5;bR.push('SAR bullish');} if(ind.sar && price<ind.sar){sS+=5;sR.push('SAR bearish');} 
-    if(ind.ichimoku_senkou_a && ind.ichimoku_senkou_b){const cloudTop=Math.max(ind.ichimoku_senkou_a,ind.ichimoku_senkou_b);const cloudBot=Math.min(ind.ichimoku_senkou_a,ind.ichimoku_senkou_b);if(price>cloudTop){bS+=8;bR.push('Above cloud');}if(price<cloudBot){sS+=8;sR.push('Below cloud');}} 
-    if(ind.macd_hist && ind.macd_hist>0){bS+=3;} if(ind.macd_hist && ind.macd_hist<0){sS+=3;} 
+    if(ind.rsi && safeCheck(ind.rsi) && ind.rsi<30){bS+=8;bR.push('RSI oversold');} if(ind.rsi && safeCheck(ind.rsi) && ind.rsi>70){sS+=8;sR.push('RSI overbought');} 
+    if(ind.stoch_k && ind.stoch_d && safeCheck(ind.stoch_k) && safeCheck(ind.stoch_d) && ind.stoch_k<20 && ind.stoch_d<20){bS+=5;bR.push('Stoch oversold');} if(ind.stoch_k && ind.stoch_d && safeCheck(ind.stoch_k) && safeCheck(ind.stoch_d) && ind.stoch_k>80 && ind.stoch_d>80){sS+=5;sR.push('Stoch overbought');} 
+    if(ind.bb_lower && safeCheck(ind.bb_lower) && price<=ind.bb_lower*1.002){bS+=5;bR.push('At BB lower');} if(ind.bb_upper && safeCheck(ind.bb_upper) && price>=ind.bb_upper*0.998){sS+=5;sR.push('At BB upper');} 
+    if(ind.cci && safeCheck(ind.cci) && ind.cci<-150){bS+=5;bR.push('CCI oversold');} if(ind.cci && safeCheck(ind.cci) && ind.cci>150){sS+=5;sR.push('CCI overbought');} 
+    if(ind.williams_r && safeCheck(ind.williams_r) && ind.williams_r<-80){bS+=3;bR.push('Williams oversold');} if(ind.williams_r && safeCheck(ind.williams_r) && ind.williams_r>-20){sS+=3;sR.push('Williams overbought');} 
+    if(ind.sar && safeCheck(ind.sar) && price>ind.sar){bS+=5;bR.push('SAR bullish');} if(ind.sar && safeCheck(ind.sar) && price<ind.sar){sS+=5;sR.push('SAR bearish');} 
+    if(ind.ichimoku_senkou_a && ind.ichimoku_senkou_b && safeCheck(ind.ichimoku_senkou_a) && safeCheck(ind.ichimoku_senkou_b)){const cloudTop=Math.max(ind.ichimoku_senkou_a,ind.ichimoku_senkou_b);const cloudBot=Math.min(ind.ichimoku_senkou_a,ind.ichimoku_senkou_b);if(price>cloudTop){bS+=8;bR.push('Above cloud');}if(price<cloudBot){sS+=8;sR.push('Below cloud');}} 
+    if(ind.macd_hist && safeCheck(ind.macd_hist) && ind.macd_hist>0){bS+=3;} if(ind.macd_hist && safeCheck(ind.macd_hist) && ind.macd_hist<0){sS+=3;} 
     let dir,conf,reason; 
     if(bS>sS){dir='BUY';conf=Math.min(bS+10,95);reason=bR.join('; ');} else if(sS>bS){dir='SELL';conf=Math.min(sS+10,95);reason=sR.join('; ');} else{dir=cE20>cE50?'BUY':'SELL';conf=50;reason='EMA tiebreaker';} 
     return{dir,conf,reason,scores:{bS,sS}}; 
@@ -449,6 +513,10 @@ function analyzeAMD(dailyData) {
  
 async function analyzeTimeframe(tfToAnalyze, price, htfData) { 
     try { 
+        // ✅ FIX: Add protection checks at start
+        if (!checkLossProtection()) return null;
+        if (!checkTradeGap(2)) return null;
+
         const [trendTF, structureTF, entryTF, sniperTF] = getTimeframeHierarchy(tfToAnalyze); 
         const entryData = htfData[entryTF] || await getHistory(entryTF); if (!entryData?.length) return null; 
         const structureData = htfData[structureTF] || await getHistory(structureTF), twelveIndicators = await getTechnicalIndicators(tfToAnalyze), sig = score(entryData, price, twelveIndicators); 
@@ -622,3 +690,22 @@ function startMonitor(){if(priceTimer)clearInterval(priceTimer);priceTimer=setIn
 function handleLimit(){if(!analysis||analysis.signalType==='NEUTRAL'){showNotif('No signal','error');return;}if(limitOrder){cancelLimit();return;}const o={id:Date.now(),pair,signalType:analysis.signalType,idealEntry:analysis.idealEntry,stopLoss:analysis.stopLoss,takeProfit1:analysis.takeProfit1,takeProfit2:analysis.takeProfit2,takeProfit3:analysis.takeProfit3,confidence:analysis.confidence,entryZoneLow:analysis.entryZoneLow,entryZoneHigh:analysis.entryZoneHigh,entryReady:analysis.entryReady,executionDecision:analysis.executionDecision,invalidationPrice:analysis.invalidationPrice,createdAt:new Date().toISOString()};saveLimit(o);startMonitor();showNotif(`📝 Limit @ $${o.idealEntry.toFixed(getPrec(pair))}`,'info');} 
 function copyJson(){const t=document.getElementById('jsonOutput').innerHTML;if(t.includes('Click')){showNotif('Run analysis first','warning');return;}navigator.clipboard.writeText(t).then(()=>showNotif('📋 Copied!','success')).catch(()=>showNotif('Failed','error'));} 
 function showNotif(m,t){const n=document.getElementById('notification');n.innerHTML=m;n.className=`notification ${t}`;n.classList.remove('hidden');setTimeout(()=>n.classList.add('hidden'),3000);}
+
+// ============================================
+// TIMER CLEANUP & ATR FALLBACK - FIX
+// ============================================
+
+// ✅ FIX: Timer cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    if(priceTimer) clearInterval(priceTimer);
+});
+
+// ✅ FIX: ATR fallback helper
+function getATRFallback(data, tfUsed) {
+    const a = atr(data, 14);
+    if (!safeCheck(a)) {
+        const s = getMarketSettings(pair);
+        return s.slBuffer || 0.0005;
+    }
+    return a;
+}
