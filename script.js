@@ -709,3 +709,182 @@ function getATRFallback(data, tfUsed) {
     }
     return a;
 }
+
+// ============================================
+// RECENT SAVED SETUPS & TRADE JOURNAL - ADDED
+// ============================================
+
+let lastSetupSummary = null;
+let lastSetupOut = null;
+
+const RECENT_KEY = 'ict_recent_saved';
+const RECENT_CAP = 10;
+const JOURNAL_KEY = 'ict_journal';
+const JOURNAL_CAP = 30;
+
+function getRecents() {
+    try {
+        const r = JSON.parse(localStorage.getItem(RECENT_KEY));
+        return Array.isArray(r) ? r : [];
+    } catch(e) { return []; }
+}
+
+function setRecents(r) {
+    try {
+        localStorage.setItem(RECENT_KEY, JSON.stringify(r.slice(0, RECENT_CAP)));
+    } catch(e) {}
+}
+
+function getJournal() {
+    try {
+        const j = JSON.parse(localStorage.getItem(JOURNAL_KEY));
+        return Array.isArray(j) ? j : [];
+    } catch(e) { return []; }
+}
+
+function setJournal(j) {
+    try {
+        localStorage.setItem(JOURNAL_KEY, JSON.stringify(j.slice(0, JOURNAL_CAP)));
+    } catch(e) {}
+}
+
+function saveCurrentSetup() {
+    if(!lastSetupSummary) {
+        showNotif('⚠️ No setup to save - run a scan first', 'warning');
+        return;
+    }
+    const recents = getRecents();
+    if(recents.some(e => e.id === lastSetupSummary.id)) {
+        showNotif('💾 Already saved', 'info');
+        return;
+    }
+    recents.unshift({ ...lastSetupSummary, out: lastSetupOut, savedAt: new Date().toISOString(), outcome: null });
+    setRecents(recents);
+    renderRecents();
+    showNotif('💾 Saved to Recent', 'success');
+}
+
+function markRecentOutcome(id, outcome) {
+    const r = getRecents();
+    const e = r.find(x => x.id === id);
+    if(e) {
+        e.outcome = e.outcome === outcome ? null : outcome;
+        setRecents(r);
+        renderRecents();
+    }
+}
+
+function journalRecent(id) {
+    const r = getRecents();
+    const e = r.find(x => x.id === id);
+    if(!e) return;
+    if(!e.outcome) {
+        showNotif('⚠️ Mark ✅ Win or ❌ Loss first, then journal it', 'warning');
+        return;
+    }
+    const { out, outcome, ...rest } = e;
+    const journalEntry = { ...rest, status: outcome, journaledAt: new Date().toISOString() };
+    const journal = getJournal();
+    journal.unshift(journalEntry);
+    setJournal(journal);
+    setRecents(r.filter(x => x.id !== id));
+    renderRecents();
+    renderJournal();
+    showNotif(`📒 Journaled as ${outcome}`, 'success');
+}
+
+function deleteRecent(id) {
+    setRecents(getRecents().filter(x => x.id !== id));
+    renderRecents();
+    showNotif('🗑️ Saved setup deleted', 'warning');
+}
+
+function viewRecent(id) {
+    const e = getRecents().find(x => x.id === id);
+    if(e?.out) {
+        document.getElementById('jsonOutput').innerHTML = JSON.stringify(e.out, null, 2);
+        showNotif('📋 Loaded into Best Setup view - rescan before trading', 'info');
+    }
+}
+
+function deleteJournalEntry(id) {
+    setJournal(getJournal().filter(x => x.id !== id));
+    renderJournal();
+    showNotif('🗑️ Journal entry deleted', 'warning');
+}
+
+function setupCardHTML(e, when, badge, actions) {
+    const prec = getPrec(e.pair || 'XAU/USD');
+    const freshLabel = e.isFresh ? '🌟 FRESH' : (e.touches <= 3 ? '📌 LIGHT' : '⚠️ USED');
+    return `<div class="journal-entry ${badge.cls}">
+        <div class="journal-head">
+            <span>${e.pair} ${e.direction} ${e.timeframe} ${e.zoneType||''} ${e.patterns||''} ${freshLabel} ${(e.distancePct || 0).toFixed(2)}%</span>
+            <span>${badge.label}</span>
+        </div>
+        <div class="journal-levels">
+            E $${(+e.entry).toFixed(prec)} | SL $${(+e.sl).toFixed(prec)} | TP $${(+e.tp1).toFixed(prec)} | ${e.confidence}% | Touches: ${e.touches||0}
+        </div>
+        <div class="journal-actions">${actions}</div>
+    </div>`;
+}
+
+function renderRecents() {
+    const list = document.getElementById('recentList');
+    if(!list) return;
+    const recents = getRecents();
+    if(recents.length === 0) {
+        list.innerHTML = '<span class="journal-empty">No saved setups — hit 💾 Save after a scan to keep one here</span>';
+        return;
+    }
+    list.innerHTML = recents.map(e => {
+        const when = e.savedAt ? new Date(e.savedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+        const badge = e.outcome === 'WIN' ? { label: '✅ WIN', cls: 'win' } : (e.outcome === 'LOSS' ? { label: '❌ LOSS', cls: 'loss' } : { label: '💾 SAVED', cls: 'pending' });
+        const actions = `
+            <button class="jw-win" data-action="win" data-id="${e.id}">✅ Win</button>
+            <button class="jw-loss" data-action="loss" data-id="${e.id}">❌ Loss</button>
+            <button class="jw-journal" data-action="journal" data-id="${e.id}">📒 Journal</button>
+            <button class="jw-del" data-action="view" data-id="${e.id}">📋 View</button>
+            <button class="jw-del" data-action="del" data-id="${e.id}">🗑️</button>
+        `;
+        return setupCardHTML(e, when, badge, actions);
+    }).join('');
+}
+
+function renderJournal() {
+    const list = document.getElementById('journalList');
+    const stats = document.getElementById('journalStats');
+    if(!list) return;
+    const journal = getJournal();
+    if(stats) {
+        const w = journal.filter(e => e.status === 'WIN').length;
+        const l = journal.filter(e => e.status === 'LOSS').length;
+        const wr = (w + l) > 0 ? ` | ${(100 * w / (w + l)).toFixed(0)}% WR` : '';
+        stats.innerHTML = journal.length ? `✅${w} ❌${l}${wr}` : '';
+    }
+    if(journal.length === 0) {
+        list.innerHTML = '<span class="journal-empty">Journal is empty — mark a saved setup Win/Loss, then press 📒 Journal</span>';
+        return;
+    }
+    list.innerHTML = journal.map(e => {
+        const when = e.journaledAt ? new Date(e.journaledAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+        const badge = e.status === 'WIN' ? { label: '✅ WIN', cls: 'win' } : { label: '❌ LOSS', cls: 'loss' };
+        return setupCardHTML(e, when, badge, `<button class="jw-del" data-action="del" data-id="${e.id}">🗑️</button>`);
+    }).join('');
+}
+
+function handleRecentClick(ev) {
+    const btn = ev.target.closest('button[data-action]');
+    if(!btn) return;
+    const id = +btn.dataset.id;
+    const action = btn.dataset.action;
+    if(action === 'win') markRecentOutcome(id, 'WIN');
+    else if(action === 'loss') markRecentOutcome(id, 'LOSS');
+    else if(action === 'journal') journalRecent(id);
+    else if(action === 'view') viewRecent(id);
+    else if(action === 'del') deleteRecent(id);
+}
+
+function handleJournalClick(ev) {
+    const btn = ev.target.closest('button[data-action]');
+    if(btn && btn.dataset.action === 'del') deleteJournalEntry(+btn.dataset.id);
+}
