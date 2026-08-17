@@ -1,0 +1,77 @@
+{
+  "id": 1786948589673,
+  "recordedAt": "2026-08-17T06:36:29.673Z",
+  "eventType": "saved",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-17",
+    "time": "06:36:21",
+    "pair": "XAU/USD",
+    "current_price": 4395.218,
+    "trade_type": "BUY",
+    "entry_price": 4369.58,
+    "stop_loss": 4349.28,
+    "take_profit_1": 4375.6,
+    "take_profit_2": 4436.57,
+    "take_profit_3": 4471.08,
+    "confidence": 95,
+    "setup_score": 95,
+    "zone_type": "Swing Low",
+    "zone_price": 4367.39807,
+    "patterns_detected": "Swing",
+    "zone_touches": 2,
+    "zone_freshness": "FRESH",
+    "entry_distance_pct": "0.58%",
+    "htf_alignment": "3/3",
+    "entry_atr": "10.1488",
+    "adx_trend_strength": "54.4 (Strong > 25)",
+    "dynamic_risk_percent": "1%",
+    "trade_management_rules": {
+      "recommended_risk_pct": "1%",
+      "sl_to_breakeven": "Move Stop Loss to Entry price after TP1 is hit",
+      "partial_take_profits": {
+        "tp1": "Close 50% position at TP1",
+        "tp2": "Close 30% position at TP2",
+        "tp3": "Close remaining 20% position at TP3"
+      },
+      "trailing_stop_loss": "Trail SL behind 15M market structure / ATR buffer after TP1"
+    },
+    "tbs_detected": "NO",
+    "crt_state": "EXPANDING",
+    "ai_decision": {
+      "decision": "enter_now",
+      "confidence": 95,
+      "reasoning": "High confidence setup but off-hours session and expanding CRT suggest waiting for price reaction at the swing low zone to confirm entry. — AI advisory only, setup reachable & high confidence",
+      "risk_adjustment": 1,
+      "wait_condition": null,
+      "skip_reason": null
+    },
+    "analysis": {
+      "timeframe": "1H",
+      "session": "OFF-HOURS",
+      "silver_bullet": "❌",
+      "killzone": "❌",
+      "risk_reward": "1:0.3"
+    },
+    "msnr_levels": {
+      "pivot": 4373.720416666666,
+      "support_1": 4332.382373333332,
+      "support_2": 4269.275746666666,
+      "support_3": 4227.937703333332,
+      "resistance_1": 4436.827043333332,
+      "resistance_2": 4478.165086666666,
+      "resistance_3": 4541.271713333332,
+      "nearest_support": 4332.382373333332,
+      "nearest_resistance": 4436.827043333332
+    },
+    "trade_levels": {
+      "entry": 4369.58,
+      "stop_loss": 4349.28,
+      "take_profit_1": 4375.6,
+      "take_profit_2": 4436.57,
+      "take_profit_3": 4471.08,
+      "risk_reward_ratio": 0.3,
+      "use_partial_profits": "YES (RR > 4x)"
+    }
+  }
+}
