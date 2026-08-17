@@ -36,7 +36,7 @@ const MIN_CONFIDENCE = 58;
 const MAX_ZONE_TOUCHES = 10;
 const LIMIT_ORDER_EXPIRY_HOURS = 4;
 const ZONE_PROXIMITY_ALERT_PCT = 0.3;
-const LIMIT_ORDER_MAX_DIST_ATR = 3.0;
+const LIMIT_ORDER_MAX_DIST_ATR = 6.0;
 const HTF_MIN_MATCH = 1;
 const AI_ADVISORY_ONLY = true;
 
@@ -513,11 +513,10 @@ async function getQuoteDirection(tfStr, cachedData = null) {
     try {
         const data = cachedData || await getHistory(tfStr);
         if(data && data.length >= 50) return detectTrend(data);
-        else if(data && data.length >= 3) {
-            const closedCandle = data[data.length - 2];
-            if(closedCandle.c > closedCandle.o) return 'BULLISH';
-            if(closedCandle.c < closedCandle.o) return 'BEARISH';
-        }
+        // If we don't have enough data for a proper trend read, return NEUTRAL
+        // instead of guessing from one or two candles. A single candle flip
+        // used to corrupt HTF alignment and block setups.
+        return 'NEUTRAL';
     } catch(e) {}
     return 'NEUTRAL';
 }
@@ -721,14 +720,37 @@ function detectEngulfing(data, price, dir) {
     return null;
 }
 
-// CHoCH detection: strong reversal breaking prior structure
+// CHoCH detection: strong reversal breaking the prior swing structure
+// Looks at the last meaningful swing high/low and checks if price has decisively
+// broken it AGAINST the prior trend (so a BUY CHoCH means price broke below a prior
+// swing low then reversed up — only then does a directional BUY align with the CHoCH).
 function detectCHoCH(data, dir) {
-    if(data.length < 10) return false;
-    const c = data[data.length - 1];
-    const prev = data[data.length - 2];
-    if(dir === 'BUY' && prev.c < prev.o && c.c > c.o && c.c > prev.h) return true;
-    if(dir === 'SELL' && prev.c > prev.o && c.c < c.o && c.c < prev.l) return true;
-    return false;
+    if(!data || data.length < 15) return false;
+    const sw = findSwings(data.slice(0, -1), 3);
+    const last = data[data.length - 1];
+    const lastClose = last.c;
+
+    if(dir === 'BUY') {
+        const recentLows = (sw.L || []).slice(-3);
+        const recentHighs = (sw.H || []).slice(-3);
+        if(recentLows.length === 0) return false;
+        const priorSwingLow = Math.min(...recentLows.map(s => s.p));
+        const priorSwingHigh = recentHighs.length ? Math.max(...recentHighs.map(s => s.p)) : Infinity;
+        const swept = data.slice(-5).some(c => c.l < priorSwingLow);
+        const reclaimed = lastClose > priorSwingLow;
+        const brokeHigh = lastClose > priorSwingHigh;
+        return swept && reclaimed && brokeHigh;
+    } else {
+        const recentHighs = (sw.H || []).slice(-3);
+        const recentLows = (sw.L || []).slice(-3);
+        if(recentHighs.length === 0) return false;
+        const priorSwingHigh = Math.max(...recentHighs.map(s => s.p));
+        const priorSwingLow = recentLows.length ? Math.min(...recentLows.map(s => s.p)) : -Infinity;
+        const swept = data.slice(-5).some(c => c.h > priorSwingHigh);
+        const reclaimed = lastClose < priorSwingHigh;
+        const brokeLow = lastClose < priorSwingLow;
+        return swept && reclaimed && brokeLow;
+    }
 }
 
 // BOS confirmation: close beyond prior swing high/low
@@ -1407,8 +1429,11 @@ function findPatternZone(data, price, direction, customATR = null) {
     
     if(reachable.length === 0) {
         const nearestPct = Math.min(...candidates.map(c => c.distancePct)).toFixed(2);
-        console.log(`  ⚠️ All zones unreachable (nearest ${nearestPct}% > ${maxDistPct.toFixed(2)}% = ${LIMIT_ORDER_MAX_DIST_ATR}x ATR) — no fillable limit setup`);
-        return null;
+        console.log(`  ⚠️ All zones beyond ${LIMIT_ORDER_MAX_DIST_ATR}x ATR (nearest ${nearestPct}%) — using nearest zone anyway (fill probability lower)`);
+        // No longer a hard kill: price CAN reach the zone eventually; the limit
+        // monitor (4h expiry) decides. A far setup is better than NO setup.
+        const nearest = candidates.sort((a, b) => a.distancePct - b.distancePct)[0];
+        reachable.push(nearest);
     }
     
     // Sort by QUALITY SCORE within reachable zones (highest quality first)
@@ -1416,12 +1441,17 @@ function findPatternZone(data, price, direction, customATR = null) {
     
     const best = reachable[0];
 
-    // GHOST MACHINE ENTRY PLACEMENT: Use zone boundary for higher fill probability
+    // GHOST MACHINE ENTRY PLACEMENT: Use zone edge CLOSEST to current price for
+    // higher fill probability. For a BUY, price is ABOVE the zone, so the limit
+    // sits at zone.high (the first level price will touch on its way down).
+    // For a SELL, price is BELOW the zone, so the limit sits at zone.low.
     let entry;
     const distToZone = direction === 'BUY' ? price - best.price : best.price - price;
     const distPct = (distToZone / price) * 100;
-    
+
     if(distPct <= 1.0 && best.low && best.high) {
+        entry = direction === 'BUY' ? best.high : best.low;
+    } else if(distPct > 1.0 && best.low && best.high) {
         entry = direction === 'BUY' ? best.high : best.low;
     } else {
         entry = best.price;
@@ -1483,8 +1513,11 @@ function checkZoneFreshness(data, zone, direction) {
     const zoneHigh = zone.high || zone * 1.002;
     for(let i = data.length - lookback; i < data.length; i++) {
         if(i < 0) continue;
-        const inZone = data[i].l <= zoneHigh && data[i].h >= zoneLow;
-        if(!inZone) continue;
+        // Only count CLOSES inside the zone. Wick dips/spikes (h/l) often pierce
+        // a zone without real participation — counting them burns 10 touches in
+        // a week and rejects valid retest setups.
+        const closeInZone = data[i].c >= zoneLow && data[i].c <= zoneHigh;
+        if(!closeInZone) continue;
         touches++;
         if(direction === 'BUY' && data[i].c < zoneLow) violations++;
         if(direction === 'SELL' && data[i].c > zoneHigh) violations++;
@@ -1855,19 +1888,11 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             const breakoutRetest = detectBreakoutRetest(entryData, price, dir);
             const pdZone = isPremiumDiscount(entryData, price);
             
-            // HARD REJECTION #1: Fake breakout volume (spike-then-drop = retail trap)
-            if(volTruth.fake) {
-                const msg = `${tfToAnalyze} ${dir}: FAKE breakout volume (spike then drop) — retail trap`;
-                console.log(`  ❌ ${msg}`);
-                lastScanRejections.push(msg);
-                continue;
-            }
-            if(volTruth.dryUp) {
-                const msg = `${tfToAnalyze} ${dir}: Volume dried up — no institutional participation`;
-                console.log(`  ❌ ${msg}`);
-                lastScanRejections.push(msg);
-                continue;
-            }
+            // Fake / dry volume: now soft confidence penalties (used to hard-reject).
+            // Quiet tapes are still tradable in ICT; fake-volume patterns are scored
+            // down rather than killed outright.
+            const fakeVolume = volTruth.fake;
+            const dryVolume = volTruth.dryUp;
 
             // HARD REJECTION #2: CHoCH detected — trade against structure change
             const choch = detectCHoCH(entryData, dir);
@@ -1895,14 +1920,10 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             const trendStrengthLabel = dailyStrong ? 'STRONG' : 'WEAK (ranging)';
             console.log(`  → 1D direction: ${dirBias} (ADX ${dailyADX.adx.toFixed(1)} — ${trendStrengthLabel})`);
 
-            // HARD REJECTION #4: No compression — not a pullback setup
+            // Compression: SOFT signal now (was hard-reject). Trending setups are
+            // valid ICT entries; compression just means lower-confidence expansion.
+            // Tracked as a soft signal so the score can still drop on expansion setups.
             const compressed = detectCompression(entryData, 5);
-            if(!compressed) {
-                const msg = `${tfToAnalyze} ${dir}: No compression — not a pullback setup`;
-                console.log(`  ❌ ${msg}`);
-                lastScanRejections.push(msg);
-                continue;
-            }
 
             // HARD REJECTION #5: Loss protection — 3 losses or 2R daily drawdown
             if(!checkLossProtection()) {
@@ -2001,8 +2022,8 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             const totalReward = Math.abs(tp3 - entry);
             const totalRR = risk > 0 ? totalReward / risk : 0;
 
-            if(rr1 < 1.5 && totalRR < 1.5) {
-                const msg = `${tfToAnalyze} ${dir}: RR ${rr1.toFixed(2)}x < 1.5x minimum`;
+            if(rr1 < 1.2 && totalRR < 1.2) {
+                const msg = `${tfToAnalyze} ${dir}: RR ${rr1.toFixed(2)}x < 1.2x minimum`;
                 console.log(`  ❌ ${msg}`);
                 lastScanRejections.push(msg);
                 continue;
@@ -2065,13 +2086,17 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
 
             // 10. Volume Truth (institutional volume +, fake breakout -)
             if(volTruth.surge) { confidence += 10; reasons.push('Volume surge (+10)'); }
-            if(volTruth.fake) { confidence -= 12; reasons.push('FAKE breakout volume (-12)'); }
+            if(fakeVolume) { confidence -= 8; reasons.push('FAKE breakout volume (-8)'); }
+            if(dryVolume) { confidence -= 5; reasons.push('Volume dry (-5)'); }
             
             // 11. Liquidity Sweep (sweep then reclaim = institutional)
             if(sweep) {
                 confidence += 10;
                 reasons.push(`Liquidity sweep @${sweep.level.toFixed(settings.prec)} (+10)`);
             }
+
+            // 10b. Compression (soft bonus when present — pullback/continuation zone)
+            if(compressed) { confidence += 6; reasons.push('Compression (+6)'); }
             
             // 12. Displacement (strong directional body)
             if(displaced) { confidence += 8; reasons.push('Displacement (+8)'); }
@@ -2089,8 +2114,8 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             // 14. Path Clearance (obstacles between entry and TP reduce confidence)
             const clearance = checkPathClearance(entryData, entry, tp1, dir);
             if(!clearance.clear) {
-                confidence -= 8;
-                reasons.push(`${clearance.obstacles} obstacle(s) to TP (-8)`);
+                confidence -= 4;
+                reasons.push(`${clearance.obstacles} obstacle(s) to TP (-4)`);
                 // STRUCTURAL FIX: pull TP1 back to just in front of the nearest obstacle
                 const buf = (dir === 'BUY' ? 1 : -1) * (settings.pipSize * 2);
                 if(clearance.nearestLevel) {
