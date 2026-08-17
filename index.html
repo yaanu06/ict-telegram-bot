@@ -1,239 +1,152 @@
-/* GitHub Status */
-.status-badge.active {
-    background: #34c759;
-    color: white;
-    padding: 2px 10px;
-    border-radius: 12px;
-    font-size: 11px;
-}
-.status-badge.inactive {
-    background: #ff3b30;
-    color: white;
-    padding: 2px 10px;
-    border-radius: 12px;
-    font-size: 11px;
-}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>ICT Trading Bot Pro</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 ICT Trading Bot Pro</h1>
+            <p class="subtitle">AI-Powered | Multi-TF Auto Scan | Limit Orders</p>
+            <div class="status-row">
+                <span id="liveTime" class="live-time"></span>
+                <span id="apiSource" class="api-source">⚪ Ready</span>
+            </div>
+        </div>
 
-/* Action Row */
-.action-row {
-    display: flex;
-    gap: 10px;
-    margin-bottom: 12px;
-}
-.action-row .save-btn {
-    flex: 1;
-    padding: 10px 20px;
-    border: none;
-    border-radius: 10px;
-    font-weight: 600;
-    font-size: 14px;
-    cursor: pointer;
-    background: linear-gradient(135deg, #ff9f0a, #ff6b00);
-    color: white;
-    transition: all 0.3s ease;
-}
-.action-row .save-btn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 15px rgba(255, 159, 10, 0.4);
-}
-.action-row .save-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    transform: none;
-}
-.action-row .execute-btn {
-    flex: 1;
-    padding: 10px 20px;
-    border: none;
-    border-radius: 10px;
-    font-weight: 600;
-    font-size: 14px;
-    cursor: pointer;
-    background: linear-gradient(135deg, #34c759, #28a745);
-    color: white;
-    transition: all 0.3s ease;
-}
-.action-row .execute-btn:hover:not(:disabled) {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 15px rgba(52, 199, 89, 0.4);
-}
-.action-row .execute-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    transform: none;
-}
+        <!-- API Key Status -->
+        <div class="section settings-section">
+            <h3>🔑 API Status</h3>
+            <div class="settings-grid">
+                <div class="setting-item">
+                    <span>📡 Twelve Data:</span>
+                    <span id="twelveStatus" class="status-badge">Checking...</span>
+                </div>
+                <div class="setting-item">
+                    <span>🤖 DeepSeek AI:</span>
+                    <span id="deepseekStatus" class="status-badge">Checking...</span>
+                </div>
+                <div class="setting-item">
+                    <span>🐙 GitHub:</span>
+                    <span id="githubStatus" class="status-badge">⚪ Local Only</span>
+                </div>
+            </div>
+            <button id="updateKeysBtn" class="settings-btn">⚙️ Update API Keys</button>
+        </div>
 
-/* Section Header */
-.section-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 10px;
-}
-.section-header .badge {
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    padding: 2px 10px;
-    border-radius: 12px;
-    font-size: 11px;
-}
+        <!-- Market Selection -->
+        <div class="section">
+            <h3>🔄 Market</h3>
+            <div class="btn-group">
+                <button class="category-btn" data-category="crypto">💰 Crypto</button>
+                <button class="category-btn" data-category="forex">💱 Forex</button>
+                <button class="category-btn active" data-category="metals">🥇 Metals</button>
+            </div>
+        </div>
 
-/* Recent & Journal Lists */
-.recent-list, .journal-list {
-    max-height: 300px;
-    overflow-y: auto;
-    border-radius: 10px;
-    background: var(--bg-secondary);
-    padding: 4px;
-}
-.recent-list::-webkit-scrollbar,
-.journal-list::-webkit-scrollbar {
-    width: 4px;
-}
-.recent-list::-webkit-scrollbar-track,
-.journal-list::-webkit-scrollbar-track {
-    background: transparent;
-}
-.recent-list::-webkit-scrollbar-thumb,
-.journal-list::-webkit-scrollbar-thumb {
-    background: var(--bg-tertiary);
-    border-radius: 4px;
-}
+        <!-- Trading Pair -->
+        <div class="section">
+            <h3>💱 Trading Pair</h3>
+            <select id="pairSelect" class="input-field">
+                <option value="XAU/USD" selected>👑 XAU/USD</option>
+                <option value="XAG/USD">🥈 XAG/USD</option>
+                <option value="BTC/USD">₿ BTC/USD</option>
+                <option value="EUR/USD">€ EUR/USD</option>
+                <option value="GBP/USD">£ GBP/USD</option>
+                <option value="USD/JPY">💴 USD/JPY</option>
+                <option value="AUD/USD">🇦🇺 AUD/USD</option>
+                <option value="USD/CAD">🇨🇦 USD/CAD</option>
+                <option value="USD/CHF">🇨🇭 USD/CHF</option>
+                <option value="NZD/USD">🇳🇿 NZD/USD</option>
+                <option value="EUR/GBP">€/£ EUR/GBP</option>
+                <option value="EUR/JPY">€/¥ EUR/JPY</option>
+                <option value="GBP/JPY">£/¥ GBP/JPY</option>
+            </select>
+        </div>
 
-/* Journal Entry */
-.journal-entry {
-    background: var(--bg-primary);
-    padding: 8px 12px;
-    border-radius: 8px;
-    margin-bottom: 6px;
-    font-size: 12px;
-    border-left: 3px solid var(--border-color);
-    transition: all 0.2s ease;
-}
-.journal-entry:hover {
-    background: var(--bg-hover);
-}
-.journal-entry.win {
-    border-left-color: #34c759;
-}
-.journal-entry.loss {
-    border-left-color: #ff3b30;
-}
-.journal-entry.pending {
-    border-left-color: #ff9f0a;
-}
-.journal-head {
-    display: flex;
-    justify-content: space-between;
-    font-weight: 600;
-    font-size: 12px;
-}
-.journal-levels {
-    color: var(--text-secondary);
-    font-size: 10px;
-    margin: 4px 0;
-    font-family: monospace;
-}
-.journal-actions {
-    display: flex;
-    gap: 4px;
-    flex-wrap: wrap;
-    margin-top: 4px;
-}
-.journal-actions button {
-    padding: 2px 8px;
-    font-size: 10px;
-    border-radius: 4px;
-    border: none;
-    cursor: pointer;
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-    transition: all 0.2s ease;
-}
-.journal-actions button:hover {
-    transform: scale(1.05);
-}
-.journal-actions .jw-win {
-    background: #34c759;
-    color: white;
-}
-.journal-actions .jw-loss {
-    background: #ff3b30;
-    color: white;
-}
-.journal-actions .jw-journal {
-    background: #ff9f0a;
-    color: white;
-}
-.journal-actions .jw-del {
-    background: #8e8e93;
-    color: white;
-}
-.journal-actions .jw-view {
-    background: #007aff;
-    color: white;
-}
+        <!-- Live Price -->
+        <div class="section price-section">
+            <h3>📈 Live Price</h3>
+            <div id="currentPrice" class="current-price">----</div>
+            <div id="priceChange" class="price-change">--</div>
+        </div>
 
-.journal-empty {
-    color: var(--text-secondary);
-    font-size: 12px;
-    font-style: italic;
-    padding: 12px;
-    display: block;
-    text-align: center;
-}
+        <!-- Multi-Timeframe Display -->
+        <div class="section">
+            <h3>📊 Multi-Timeframe Trends</h3>
+            <div class="mtf-grid">
+                <div class="mtf-card"><div class="mtf-header">5M</div><div class="mtf-trend" id="trend5M">--</div></div>
+                <div class="mtf-card"><div class="mtf-header">15M</div><div class="mtf-trend" id="trend15M">--</div></div>
+                <div class="mtf-card"><div class="mtf-header">1H</div><div class="mtf-trend" id="trend1H">--</div></div>
+                <div class="mtf-card"><div class="mtf-header">4H</div><div class="mtf-trend" id="trend4H">--</div></div>
+                <div class="mtf-card"><div class="mtf-header">1D</div><div class="mtf-trend" id="trend1D">--</div></div>
+                <div class="mtf-card"><div class="mtf-header">1W</div><div class="mtf-trend" id="trend1W">--</div></div>
+            </div>
+        </div>
 
-/* Limit Box */
-.limit-box {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: var(--bg-secondary);
-    padding: 10px 14px;
-    border-radius: 10px;
-    margin-bottom: 10px;
-}
-.limit-box .active {
-    color: #ff9f0a;
-    font-weight: 600;
-}
-.cancel-btn {
-    background: #ff3b30;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 4px 12px;
-    font-size: 12px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-}
-.cancel-btn:hover {
-    transform: scale(1.05);
-}
-.cancel-btn.hidden {
-    display: none;
-}
+        <!-- AUTO SCAN BUTTON -->
+        <button id="analyzeBtn" class="analyze-btn">🔍 Auto-Scan All Timeframes</button>
+        
+        <!-- Scanning Status -->
+        <div id="scanStatus" class="scan-status hidden">
+            <div class="scan-progress">
+                <span id="scanText">Initializing...</span>
+                <div class="progress-bar"><div id="scanProgressFill" class="progress-fill"></div></div>
+            </div>
+        </div>
 
-/* Dark Mode Support */
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg-primary: #1c1c1e;
-        --bg-secondary: #2c2c2e;
-        --bg-tertiary: #3a3a3c;
-        --bg-hover: #3a3a3c;
-        --text-primary: #ffffff;
-        --text-secondary: #8e8e93;
-        --border-color: #3a3a3c;
-    }
-}
-@media (prefers-color-scheme: light) {
-    :root {
-        --bg-primary: #ffffff;
-        --bg-secondary: #f2f2f7;
-        --bg-tertiary: #e5e5ea;
-        --bg-hover: #e5e5ea;
-        --text-primary: #000000;
-        --text-secondary: #8e8e93;
-        --border-color: #e5e5ea;
-    }
-}
+        <!-- JSON Output -->
+        <div class="section json-section">
+            <div class="json-header">
+                <h3>📋 Best Setup Found</h3>
+                <button id="copyJsonBtn" class="copy-json-btn">📋 Copy</button>
+            </div>
+            <pre id="jsonOutput" class="json-output">{}</pre>
+        </div>
+
+        <!-- Save Setup & Limit Order -->
+        <div class="section">
+            <div class="action-row">
+                <button id="saveSetupBtn" class="save-btn">💾 Save Setup</button>
+                <button id="executeBtn" class="execute-btn" disabled>⚡ Place Limit Order</button>
+            </div>
+            <h3>📝 Limit Order</h3>
+            <div id="limitOrderBox" class="limit-box">
+                <span id="limitOrderText">No active limit order</span>
+                <button id="cancelLimitBtn" class="cancel-btn hidden">✕ Cancel</button>
+            </div>
+        </div>
+
+        <!-- Recent Setups -->
+        <div class="section">
+            <div class="section-header">
+                <h3>📋 Recent Setups</h3>
+                <span id="recentCount" class="badge">0</span>
+            </div>
+            <div id="recentList" class="recent-list">
+                <span class="journal-empty">No saved setups — hit 💾 Save after a scan to keep one here</span>
+            </div>
+        </div>
+
+        <!-- Trade Journal -->
+        <div class="section">
+            <div class="section-header">
+                <h3>📒 Trade Journal</h3>
+                <span id="journalStats" class="badge"></span>
+            </div>
+            <div id="journalList" class="journal-list">
+                <span class="journal-empty">Journal is empty — mark a saved setup Win/Loss, then press 📒 Journal</span>
+            </div>
+        </div>
+
+        <!-- Notification -->
+        <div id="notification" class="notification hidden"></div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
