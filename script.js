@@ -590,7 +590,7 @@ async function runAutoScan() {
         // Ghost Machine Core Rules (Phase 4: No Trade Rules)
         const ghostChecks = [];
         if (!best.crt.detected) ghostChecks.push("Missing CRT range context");
-        if (!best.tbs || !best.tbs.detected) ghostChecks.push("Missing TBS confirmation");
+        if (!best.turtleSoup || !best.turtleSoup.detected) ghostChecks.push("Missing TBS confirmation");
         if ((best.direction === 'BUY' && price > best.msnr.pivot) || (best.direction === 'SELL' && price < best.msnr.pivot)) ghostChecks.push("Fails MSNR directional bias");
         if (!best.zoneReaction.confirmed && best.zoneTouches > 0) ghostChecks.push("No zone reaction shown");
         if (best.session.session === 'ASIA KZ' || best.session.session === 'OFF-HOURS') ghostChecks.push("Off-hours session");
