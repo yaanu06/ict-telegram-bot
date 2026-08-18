@@ -1,0 +1,77 @@
+{
+  "id": 1787026306195,
+  "recordedAt": "2026-08-18T04:11:46.195Z",
+  "eventType": "saved",
+  "pair": "EUR/USD",
+  "setup": {
+    "date": "2026-08-18",
+    "time": "04:11:40",
+    "pair": "EUR/USD",
+    "current_price": 1.15721,
+    "trade_type": "BUY",
+    "entry_price": 1.15108,
+    "stop_loss": 1.14824,
+    "take_profit_1": 1.15239,
+    "take_profit_2": 1.16045,
+    "take_profit_3": 1.16528,
+    "confidence": 95,
+    "setup_score": 95,
+    "zone_type": "MSNR Support",
+    "zone_price": 1.1510766666666665,
+    "patterns_detected": "MSNR",
+    "zone_touches": 0,
+    "zone_freshness": "FRESH",
+    "entry_distance_pct": "0.53%",
+    "htf_alignment": "2/3",
+    "entry_atr": "0.0019",
+    "adx_trend_strength": "33.2 (Strong > 25)",
+    "dynamic_risk_percent": "1%",
+    "trade_management_rules": {
+      "recommended_risk_pct": "1%",
+      "sl_to_breakeven": "Move Stop Loss to Entry price after TP1 is hit",
+      "partial_take_profits": {
+        "tp1": "Close 50% position at TP1",
+        "tp2": "Close 30% position at TP2",
+        "tp3": "Close remaining 20% position at TP3"
+      },
+      "trailing_stop_loss": "Trail SL behind 15M market structure / ATR buffer after TP1"
+    },
+    "tbs_detected": "NO",
+    "crt_state": "EXPANDING",
+    "ai_decision": {
+      "decision": "enter_now",
+      "confidence": 95,
+      "reasoning": "Setup has high confidence but zone has 0 touches and entry distance is 0.53%, requiring price reaction confirmation before entry. — AI advisory only, setup reachable & high confidence",
+      "risk_adjustment": 1,
+      "wait_condition": null,
+      "skip_reason": null
+    },
+    "analysis": {
+      "timeframe": "4H",
+      "session": "OFF-HOURS",
+      "silver_bullet": "❌",
+      "killzone": "❌",
+      "risk_reward": "1:0.5"
+    },
+    "msnr_levels": {
+      "pivot": 1.1563433333333333,
+      "support_1": 1.1510766666666665,
+      "support_2": 1.1449133333333332,
+      "support_3": 1.1396466666666665,
+      "resistance_1": 1.1625066666666666,
+      "resistance_2": 1.1677733333333333,
+      "resistance_3": 1.1739366666666666,
+      "nearest_support": 1.1510766666666665,
+      "nearest_resistance": 1.1625066666666666
+    },
+    "trade_levels": {
+      "entry": 1.15108,
+      "stop_loss": 1.14824,
+      "take_profit_1": 1.15239,
+      "take_profit_2": 1.16045,
+      "take_profit_3": 1.16528,
+      "risk_reward_ratio": 0.5,
+      "use_partial_profits": "YES (RR > 4x)"
+    }
+  }
+}
