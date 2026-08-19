@@ -1,0 +1,42 @@
+{
+  "id": 1787112763804,
+  "recordedAt": "2026-08-19T04:12:43.804Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-19",
+    "time": "04:12:43",
+    "pair": "XAU/USD",
+    "current_price": 4354.83169,
+    "trade_type": "SELL",
+    "entry_price": 4354.83,
+    "entry_zone": {
+      "low": 4348,
+      "high": 4361.66,
+      "source": "Confluence"
+    },
+    "stop_loss": 4385.81,
+    "stop_loss_reason": "Above the 4H EMA21 and the 1H EMA9, which align with the recent swing high and the middle Bollinger Band on 4H, providing a logical invalidation point.",
+    "take_profit_1": 4316.7,
+    "take_profit_2": 4275.28,
+    "take_profit_3": 4224.89,
+    "risk_reward": "1:2.2",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "CRT (Expanding)+Bearish MACD divergence on 4H+Price below 4H EMA21 and 1H EMA9+Stochastic oversold on 4H but bearish momentum",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "The 1H trend is bearish, and the 4H shows a bearish CRT (expanding) pattern, indicating a potential continuation of the downward move. The price is below key EMAs on both 4H and 1H, and the 4H MACD histogram is deeply negative, supporting bearish momentum.",
+      "secondary": [
+        "The 4H RSI at 42.98 and 1H RSI at 40.83 show bearish momentum without being oversold, leaving room for further downside.",
+        "The 4H CCI at -134.25 indicates strong bearish pressure.",
+        "The 4H Supertrend is at 4413.20, acting as dynamic resistance, and the price is below it.",
+        "The 4H SAR is at 4423.66, also above price, confirming bearish trend."
+      ],
+      "risk_warning": "The 5M and 1D trends are bullish, which could lead to a bounce. The 4H Stochastic is oversold (K 25.59, D 13.23), suggesting a possible short-term pullback. The price is near the 4H lower Bollinger Band (4334.60), which may act as support. Off-hours session with low liquidity could cause erratic moves."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
