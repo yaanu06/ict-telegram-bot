@@ -2419,6 +2419,202 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 // RUN AUTO SCAN - FULL
 // ============================================
 
+async function askAIToFindSetup(marketData, price) {
+    if (!DEEPSEEK_API_KEY) {
+        console.error('No AI key available');
+        return null;
+    }
+    
+    try {
+        const response = await fetch(DEEPSEEK_API_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+            },
+            body: JSON.stringify({
+                model: 'deepseek-chat',
+                messages: [
+                    { 
+                        role: 'system', 
+                        content: 'You are an expert ICT trading analyst. Return ONLY valid JSON. Be precise with numbers. Never miss required fields.' 
+                    },
+                    { 
+                        role: 'user', 
+                        content: marketData 
+                    }
+                ],
+                temperature: 0.1,
+                max_tokens: 2000
+            })
+        });
+        
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content;
+        
+        if (!content) {
+            console.error('No content from AI');
+            return null;
+        }
+        
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+            console.error('No JSON found in AI response');
+            return null;
+        }
+        
+        const result = JSON.parse(jsonMatch[0]);
+        
+        const required = ['direction', 'entry', 'entry_zone', 'stop_loss', 'take_profit_1', 'take_profit_2', 'take_profit_3', 'confidence', 'reasoning'];
+        for (const field of required) {
+            if (!result[field]) {
+                console.error(`Missing required field: ${field}`);
+                return null;
+            }
+        }
+        
+        if (!result.entry_zone.low || !result.entry_zone.high) {
+            result.entry_zone = {
+                low: result.entry * 0.998,
+                high: result.entry * 1.002,
+                source: result.entry_zone?.source || 'AI Zone'
+            };
+        }
+        
+        if (!result.reasoning.primary) {
+            result.reasoning.primary = 'AI analysis completed';
+        }
+        if (!result.reasoning.secondary) {
+            result.reasoning.secondary = [];
+        }
+        if (!result.reasoning.risk_warning) {
+            result.reasoning.risk_warning = 'Normal market risk applies';
+        }
+        
+        if (!result.patterns || !Array.isArray(result.patterns)) {
+            result.patterns = [result.entry_zone.source || 'AI Identified'];
+        }
+        
+        if (!result.ai_decision) {
+            result.ai_decision = result.confidence >= 70 ? 'enter_now' : 'wait_for_reaction';
+        }
+        
+        if (!result.probability) {
+            result.probability = result.confidence >= 70 ? 'HIGH' : (result.confidence >= 55 ? 'MEDIUM' : 'LOW');
+        }
+        
+        if (!result.zone_quality) {
+            result.zone_quality = result.confidence >= 75 ? 'A' : (result.confidence >= 60 ? 'B' : 'C');
+        }
+        
+        if (!result.risk_reward) {
+            const risk = Math.abs(result.entry - result.stop_loss);
+            const reward = Math.abs(result.take_profit_1 - result.entry);
+            if (risk > 0) {
+                result.risk_reward = '1:' + (reward / risk).toFixed(1);
+            } else {
+                result.risk_reward = '1:2.0';
+            }
+        }
+        
+        if (!result.stop_loss_reason) {
+            result.stop_loss_reason = 'Structural level identified by AI';
+        }
+        
+        console.log('✅ AI Setup Generated:', result);
+        return result;
+        
+    } catch (e) {
+        console.error('AI Setup Finder Error:', e);
+        return null;
+    }
+}
+
+async function runFallbackScan(price, historyCache) {
+    console.log('🔄 Running fallback rule-based scan...');
+    showNotif('🔄 Using rule-based fallback...', 'info');
+    
+    const htfData = historyCache;
+    const results = [];
+    const timeframesToScan = ['4H', '1H'];
+    
+    for (const tf of timeframesToScan) {
+        const result = await analyzeTimeframe(tf, price, htfData);
+        if (result) results.push(result);
+    }
+    
+    if (results.length === 0) {
+        showNotif('⚠️ No setups found (fallback)', 'warning');
+        return;
+    }
+    
+    results.sort((a, b) => b.confidence - a.confidence);
+    const best = results[0];
+    
+    const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
+    const risk = Math.abs(best.entry - best.sl);
+    const rrDisplay = risk > 0 ? (Math.abs(best.tp1 - best.entry) / risk).toFixed(1) : '0.0';
+    
+    const out = {
+        trade_signal: {
+            date: new Date().toISOString().split('T')[0],
+            time: new Date().toISOString().split('T')[1].split('.')[0],
+            pair: pair,
+            current_price: price,
+            trade_type: best.direction === 'BUY' ? 'BUY' : 'SELL',
+            entry_price: best.entry,
+            entry_zone: { low: best.zone.low, high: best.zone.high, source: best.zoneType },
+            stop_loss: best.sl,
+            take_profit_1: best.tp1,
+            take_profit_2: best.tp2,
+            take_profit_3: best.tp3,
+            risk_reward: '1:' + rrDisplay,
+            confidence: best.confidence,
+            zone_quality: best.zone.quality || 'B',
+            patterns_detected: best.patterns ? best.patterns.join('+') : 'MSNR',
+            probability: best.confidence >= 70 ? 'HIGH' : (best.confidence >= 55 ? 'MEDIUM' : 'LOW'),
+            reasoning: {
+                primary: `Rule-based setup on ${best.timeframe}`,
+                secondary: [`HTF Match: ${best.htfMatch}/3`, `Freshness: ${best.isFresh}`],
+                risk_warning: 'Normal market risk applies'
+            },
+            ai_decision: best.confidence >= 70 ? 'enter_now' : 'wait_for_reaction',
+            wait_condition: best.confidence >= 70 ? null : 'Wait for confirmation',
+            source: 'Rule-Based (Fallback)'
+        }
+    };
+    
+    setJsonOutput(out);
+    lastSetupSummary = buildSetupSummary(best, st, best.entry, price);
+    lastSetupOut = out;
+    
+    analysis = {
+        signalType: st,
+        idealEntry: best.entry,
+        currentPrice: price,
+        stopLoss: best.sl,
+        takeProfit1: best.tp1,
+        takeProfit2: best.tp2,
+        takeProfit3: best.tp3,
+        confidence: best.confidence,
+        riskPercent: best.confidence >= 70 ? 0.5 : 0,
+        entryReady: best.confidence >= 70,
+        executionDecision: best.confidence >= 70 ? 'enter_now' : 'wait_for_reaction',
+        invalidationPrice: best.sl * (best.direction === 'BUY' ? 0.995 : 1.005),
+        confirmation: best.zoneType,
+        patterns: best.patterns ? best.patterns.join('+') : 'MSNR',
+        aiDecision: null,
+        riskAdjustment: best.confidence >= 70 ? 1.0 : 0.8,
+        rrUsed: parseFloat(rrDisplay) || 2.0,
+        touches: best.touches || 0,
+        isFresh: best.isFresh || false,
+        distancePct: Math.abs(best.distancePct || 0)
+    };
+    
+    document.getElementById('executeBtn').disabled = false;
+    showNotif(`🎯 ${best.timeframe} ${st} | Conf: ${best.confidence}% | ${best.zoneType}`, 'success');
+}
+
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
     const scanStatus = document.getElementById('scanStatus');
@@ -2429,7 +2625,7 @@ async function runAutoScan() {
     btn.disabled = true;
     scanStatus.classList.remove('hidden');
     
-    if(!TWELVE_DATA_KEY) {
+    if (!TWELVE_DATA_KEY) {
         showSetup();
         btn.classList.remove('loading');
         btn.disabled = false;
@@ -2437,7 +2633,7 @@ async function runAutoScan() {
         return;
     }
     
-    showNotif('🔍 Scanning for setups...', 'info');
+    showNotif('🤖 AI analyzing market data...', 'info');
     
     try {
         const price = await getPrice();
@@ -2445,7 +2641,7 @@ async function runAutoScan() {
         
         const historyCache = {};
         const tfs = ['5M', '15M', '1H', '4H', '1D', '1W'];
-        scanText.innerHTML = 'Fetching market data...';
+        scanText.innerHTML = '📊 Collecting market data...';
         await Promise.all(tfs.map(async (t) => {
             historyCache[t] = await getHistory(t);
         }));
@@ -2455,7 +2651,7 @@ async function runAutoScan() {
         const settings = getMarketSettings(pair);
         document.getElementById('currentPrice').innerHTML = `$${price.toFixed(settings.prec)}`;
         
-        if(lastPrice) {
+        if (lastPrice) {
             const ch = ((price - lastPrice) / lastPrice * 100).toFixed(2);
             const ce = document.getElementById('priceChange');
             ce.innerHTML = `${ch >= 0 ? '▲' : '▼'} ${Math.abs(ch)}%`;
@@ -2463,94 +2659,178 @@ async function runAutoScan() {
         }
         lastPrice = price;
         
-        lastScanRejections = [];
-        const results = [];
-        const timeframesToScan = ['1D', '4H', '1H', '15M', '5M'];
-        const htfData = historyCache;
-        
-        for(let i = 0; i < timeframesToScan.length; i++) {
-            const tfScan = timeframesToScan[i];
-            scanText.innerHTML = `Scanning ${tfScan}... (${i + 1}/${timeframesToScan.length})`;
-            scanFill.style.width = ((i + 1) / timeframesToScan.length * 100) + '%';
-            
-            const result = await analyzeTimeframe(tfScan, price, htfData);
-            if(result) results.push(result);
+        scanText.innerHTML = '📈 Analyzing indicators...';
+        const indicators = {};
+        for (const tf of ['4H', '1H']) {
+            indicators[tf] = await getTechnicalIndicators(tf, historyCache[tf] || null);
         }
         
-        console.log('=== SCAN RESULTS ===');
-        console.log('Results found:', results.length);
-        console.log('[DEBUG] Setups found:', results.map(r => `${r.timeframe} ${r.direction} at ${r.entry} (Conf: ${r.confidence}%)`));
-
-        // TIMEFRAME HIERARCHY (per trader preference):
-        // Tradeable setups come ONLY from 4H and 1H. 1D is direction/info ONLY
-        // (like 15M/5M) and is never traded. 1D/15M/5M are still scanned and feed
-        // the direction/bias reads via htfData, they just can't become a trade setup.
-        const htfResults = results.filter(r => ['4H', '1H'].includes(r.timeframe));
-        console.log('Tradeable setups (4H/1H) found:', htfResults.length);
+        scanText.innerHTML = '🔍 Detecting patterns...';
+        const patterns = {};
+        for (const tf of ['4H', '1H', '15M', '5M']) {
+            const data = historyCache[tf];
+            if (data && data.length >= 20) {
+                patterns[tf] = {
+                    fvg: detectFVG(data),
+                    swings: findSwings(data, 3),
+                    turtleSoup: detectTurtleSoup(data),
+                    crt: detectCRT(data),
+                    orderBlocks: detectOrderBlocks(data, 'BUY'),
+                    msnr: calculateMSNR(data, price),
+                    trend: detectTrend(data),
+                    adx: calculateADX(data, 14, tf)
+                };
+            }
+        }
         
-        if(htfResults.length === 0) {
-            const htfRejections = lastScanRejections.filter(r => r.startsWith('4H') || r.startsWith('1H'));
-            const detailedReason = htfRejections.length > 0 
-                ? `No setups found (4H, 1H). Reasons: ${htfRejections.slice(0, 4).join('; ')}`
-                : 'No setups (4H, 1H) met minimum 65% confidence or quality requirements';
+        const session = getSession();
+        const newsCheck = checkHighImpactNews(pair);
+        
+        const dailyDir = await getQuoteDirection('1D', historyCache['1D']);
+        const h4Dir = await getQuoteDirection('4H', historyCache['4H']);
+        const h1Dir = await getQuoteDirection('1H', historyCache['1H']);
+        
+        const scanTextData = `ICT TRADING BOT - COMPLETE MARKET ANALYSIS
 
-            showNotif(`🎯 ${detailedReason}`, 'warning');
-            setJsonOutput({
-                status: 'NO_SETUP',
-                pair: pair,
-                current_price: price,
-                reason: detailedReason,
-                rejection_details: htfRejections
-            });
+PAIR: ${pair}
+CURRENT PRICE: $${price.toFixed(settings.prec)}
+TIMEFRAME: ${new Date().toISOString()}
+
+═══════════════════════════════════════════
+📊 MULTI-TIMEFRAME TRENDS
+═══════════════════════════════════════════
+1D: ${dailyDir} | 4H: ${h4Dir} | 1H: ${h1Dir}
+15M: ${patterns['15M']?.trend || 'N/A'} | 5M: ${patterns['5M']?.trend || 'N/A'}
+
+═══════════════════════════════════════════
+📈 INDICATORS (4H)
+═══════════════════════════════════════════
+RSI: ${indicators['4H']?.rsi?.toFixed(2) || 'N/A'}
+MACD: ${indicators['4H']?.macd?.toFixed(2) || 'N/A'} | Signal: ${indicators['4H']?.macd_signal?.toFixed(2) || 'N/A'} | Hist: ${indicators['4H']?.macd_hist?.toFixed(2) || 'N/A'}
+ADX: ${indicators['4H']?.adx?.toFixed(2) || 'N/A'}
+Bollinger: Upper ${indicators['4H']?.bb_upper?.toFixed(2) || 'N/A'} | Middle ${indicators['4H']?.bb_middle?.toFixed(2) || 'N/A'} | Lower ${indicators['4H']?.bb_lower?.toFixed(2) || 'N/A'}
+Stochastic: K ${indicators['4H']?.stoch_k?.toFixed(2) || 'N/A'} | D ${indicators['4H']?.stoch_d?.toFixed(2) || 'N/A'}
+CCI: ${indicators['4H']?.cci?.toFixed(2) || 'N/A'}
+Williams %R: ${indicators['4H']?.williams_r?.toFixed(2) || 'N/A'}
+SAR: ${indicators['4H']?.sar?.toFixed(2) || 'N/A'}
+ATR: ${indicators['4H']?.atr_api?.toFixed(2) || 'N/A'}
+Supertrend: ${indicators['4H']?.supertrend?.toFixed(2) || 'N/A'}
+EMA9: ${indicators['4H']?.ema9?.toFixed(2) || 'N/A'} | EMA21: ${indicators['4H']?.ema21?.toFixed(2) || 'N/A'}
+EMA50: ${indicators['4H']?.ema50?.toFixed(2) || 'N/A'} | EMA200: ${indicators['4H']?.ema200?.toFixed(2) || 'N/A'}
+
+═══════════════════════════════════════════
+📈 INDICATORS (1H)
+═══════════════════════════════════════════
+RSI: ${indicators['1H']?.rsi?.toFixed(2) || 'N/A'}
+MACD: ${indicators['1H']?.macd?.toFixed(2) || 'N/A'} | Signal: ${indicators['1H']?.macd_signal?.toFixed(2) || 'N/A'} | Hist: ${indicators['1H']?.macd_hist?.toFixed(2) || 'N/A'}
+ADX: ${indicators['1H']?.adx?.toFixed(2) || 'N/A'}
+Bollinger: Upper ${indicators['1H']?.bb_upper?.toFixed(2) || 'N/A'} | Middle ${indicators['1H']?.bb_middle?.toFixed(2) || 'N/A'} | Lower ${indicators['1H']?.bb_lower?.toFixed(2) || 'N/A'}
+Stochastic: K ${indicators['1H']?.stoch_k?.toFixed(2) || 'N/A'} | D ${indicators['1H']?.stoch_d?.toFixed(2) || 'N/A'}
+CCI: ${indicators['1H']?.cci?.toFixed(2) || 'N/A'}
+ATR: ${indicators['1H']?.atr_api?.toFixed(2) || 'N/A'}
+
+═══════════════════════════════════════════
+🔍 PATTERNS DETECTED
+═══════════════════════════════════════════
+4H Patterns:
+  FVG: ${patterns['4H']?.fvg?.length || 0} (${(patterns['4H']?.fvg || []).filter(f => f.fresh).length} fresh)
+  Swings: ${patterns['4H']?.swings?.H?.length || 0} highs, ${patterns['4H']?.swings?.L?.length || 0} lows
+  Turtle Soup: ${patterns['4H']?.turtleSoup?.detected ? '✅ DETECTED (' + patterns['4H']?.turtleSoup?.type + ')' : '❌ None'}
+  CRT: ${patterns['4H']?.crt?.state || 'NEUTRAL'}
+
+1H Patterns:
+  FVG: ${patterns['1H']?.fvg?.length || 0} (${(patterns['1H']?.fvg || []).filter(f => f.fresh).length} fresh)
+  Swings: ${patterns['1H']?.swings?.H?.length || 0} highs, ${patterns['1H']?.swings?.L?.length || 0} lows
+  Turtle Soup: ${patterns['1H']?.turtleSoup?.detected ? '✅ DETECTED (' + patterns['1H']?.turtleSoup?.type + ')' : '❌ None'}
+  CRT: ${patterns['1H']?.crt?.state || 'NEUTRAL'}
+
+MSNR Levels (4H):
+  Pivot: ${patterns['4H']?.msnr?.pivot?.toFixed(2) || 'N/A'}
+  Supports: S1 ${patterns['4H']?.msnr?.supports?.S1?.toFixed(2) || 'N/A'} | S2 ${patterns['4H']?.msnr?.supports?.S2?.toFixed(2) || 'N/A'} | S3 ${patterns['4H']?.msnr?.supports?.S3?.toFixed(2) || 'N/A'}
+  Resistances: R1 ${patterns['4H']?.msnr?.resistances?.R1?.toFixed(2) || 'N/A'} | R2 ${patterns['4H']?.msnr?.resistances?.R2?.toFixed(2) || 'N/A'} | R3 ${patterns['4H']?.msnr?.resistances?.R3?.toFixed(2) || 'N/A'}
+
+═══════════════════════════════════════════
+🌐 MARKET CONTEXT
+═══════════════════════════════════════════
+Session: ${session.session} ${session.emoji}
+Killzone: ${session.isKillzone ? '✅' : '❌'}
+Silver Bullet: ${session.isSilverBullet ? '✅' : '❌'}
+Session Multiplier: ${session.multiplier}
+News: ${newsCheck?.inNewsWindow ? '⚠️ ' + newsCheck.warning : '✅ No high-impact news'}
+Volatility: ${indicators['4H']?.atr_api ? (indicators['4H'].atr_api / price * 100).toFixed(2) + '%' : 'N/A'}
+
+═══════════════════════════════════════════
+🎯 YOUR TASK
+═══════════════════════════════════════════
+
+Based on ALL the data above, you are an ICT trading expert. Analyze EVERYTHING and provide:
+
+1. DIRECTION: BUY or SELL (choose the highest probability)
+2. ENTRY PRICE: Exact price to enter
+3. ENTRY ZONE: { low, high } for the zone
+4. STOP LOSS: Exact price with reasoning
+5. TAKE PROFIT 1, 2, 3: Exact prices
+6. RISK REWARD: 1:X
+7. CONFIDENCE: 0-100%
+8. QUALITY: A, B, or C
+9. PATTERNS: Which patterns support this setup
+10. PROBABILITY: HIGH, MEDIUM, or LOW
+11. REASONING: Primary reason and secondary reasons
+12. RISK WARNING: Any specific risks
+
+Return ONLY JSON in this format:
+
+{
+  "direction": "BUY" | "SELL",
+  "entry": number,
+  "entry_zone": {
+    "low": number,
+    "high": number,
+    "source": "FVG" | "OB" | "MSNR" | "Swing" | "TBS" | "Confluence"
+  },
+  "stop_loss": number,
+  "stop_loss_reason": "string",
+  "take_profit_1": number,
+  "take_profit_2": number,
+  "take_profit_3": number,
+  "risk_reward": "1:X.X",
+  "confidence": number,
+  "zone_quality": "A" | "B" | "C",
+  "patterns": ["string"],
+  "probability": "HIGH" | "MEDIUM" | "LOW",
+  "reasoning": {
+    "primary": "string",
+    "secondary": ["string"],
+    "risk_warning": "string"
+  },
+  "ai_decision": "enter_now" | "wait_for_reaction" | "skip",
+  "wait_condition": "string or null"
+}
+
+RULES:
+- Entry must be within 3x ATR of current price
+- Stop Loss must be logical (below structure for BUY, above structure for SELL)
+- Minimum RR: 1:1.5
+- Consider ALL timeframes, indicators, patterns, session, and news
+- Be precise with numbers (use same precision as pair)
+
+IMPORTANT: You are the PRIMARY analyst. Find the BEST setup, not just any setup.`;
+
+        scanText.innerHTML = '🤖 AI analyzing all data...';
+        const aiResult = await askAIToFindSetup(scanTextData, price);
+        scanStatus.classList.add('hidden');
+        
+        if (!aiResult) {
+            showNotif('⚠️ AI analysis failed - using fallback', 'warning');
+            await runFallbackScan(price, historyCache);
             btn.classList.remove('loading');
             btn.disabled = false;
-            scanStatus.classList.add('hidden');
             return;
         }
         
-        htfResults.sort((a, b) => b.confidence - a.confidence);
-        let best = htfResults[0];
-        
-        // Get AI decision
-        scanText.innerHTML = '🤖 AI analyzing execution...';
-        const aiDecision = await getAIExecutionDecision(best, price, htfData);
-        scanStatus.classList.add('hidden');
-        
-        // AI ADVISORY MODE: AI may add reasoning, but it cannot block a high-confidence
-        // reachable setup. Only the confidence + distance gates decide entry now.
-        if(AI_ADVISORY_ONLY && aiDecision.decision !== 'enter_now' && best.confidence >= MIN_CONFIDENCE && (best.entryDistancePct || 0) <= 1.5) {
-            aiDecision.decision = 'enter_now';
-            aiDecision.reasoning = (aiDecision.reasoning || 'Setup passed all gates') + ' — AI advisory only, setup reachable & high confidence';
-            aiDecision.wait_condition = null;
-            aiDecision.skip_reason = null;
-            aiDecision.risk_adjustment = 1.0;
-        }
-        
-        const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
-        
-        const finalEntry = best.entry;
-        const finalSL = best.sl;
-        const finalTP1 = best.tp1;
-        const finalTP2 = best.tp2;
-        const finalTP3 = best.tp3;
-        const risk = Math.abs(finalEntry - finalSL);
-        const rrDisplay = risk > 0 ? (Math.abs(finalTP1 - finalEntry) / risk).toFixed(1) : '0.0';
-        
-        const tradeable = aiDecision.decision !== 'skip' && best.confidence >= MIN_CONFIDENCE;
-        const riskPercent = tradeable ? (aiDecision.risk_adjustment || 1.0) * 0.5 : 0;
-        
-        console.log(`🏆 Setup Confidence: ${best.confidence}%`);
-        console.log(`📊 Direction: ${best.direction}`);
-        console.log(`📊 Zone Type: ${best.zoneType}`);
-        console.log(`📊 Patterns: ${best.patterns ? best.patterns.join('+') : 'MSNR'}`);
-        console.log(`📊 Zone Price: ${best.zonePrice}`);
-        console.log(`📊 Distance: ${Math.abs(best.distancePct || 0).toFixed(2)}%`);
-        console.log(`📊 TBS: ${best.tbsDetected ? 'YES' : 'NO'}`);
-        console.log(`📊 CRT: ${best.crtState}`);
-        console.log(`📊 AI Decision: ${aiDecision.decision}`);
-        console.log(`📊 RR: 1:${rrDisplay}`);
-        
-        const prec = settings.prec;
+        const st = aiResult.direction === 'BUY' ? 'LONG' : 'SHORT';
+        const risk = Math.abs(aiResult.entry - aiResult.stop_loss);
+        const rrDisplay = risk > 0 ? (Math.abs(aiResult.take_profit_1 - aiResult.entry) / risk).toFixed(1) : '0.0';
         
         const out = {
             trade_signal: {
@@ -2558,110 +2838,87 @@ async function runAutoScan() {
                 time: new Date().toISOString().split('T')[1].split('.')[0],
                 pair: pair,
                 current_price: price,
-                trade_type: best.direction === 'BUY' ? 'BUY' : 'SELL',
-                entry_price: finalEntry,
-                stop_loss: finalSL,
-                take_profit_1: finalTP1,
-                take_profit_2: finalTP2,
-                take_profit_3: finalTP3,
-                confidence: best.confidence,
-                setup_score: best.confidence,
-                zone_type: best.zoneType,
-                zone_price: best.zonePrice,
-                patterns_detected: best.patterns ? best.patterns.join('+') : 'MSNR',
-                zone_touches: best.touches || 0,
-                zone_freshness: best.isFresh ? 'FRESH' : (best.touches <= 3 ? 'LIGHTLY_USED' : 'USED'),
-                entry_distance_pct: Math.abs(best.entryDistancePct || 0).toFixed(2) + '%',
-                htf_alignment: `${best.htfMatch || 0}/3`,
-                entry_atr: best.entryATR ? best.entryATR.toFixed(4) : null,
-                adx_trend_strength: `${best.adx ? best.adx.toFixed(1) : '30'} (Strong > 25)`,
-                dynamic_risk_percent: `${best.dynamicRiskPct || 0.5}%`,
-                trade_management_rules: best.tradeManagement || getTradeManagementRules(best.confidence),
-                tbs_detected: best.tbsDetected ? 'YES' : 'NO',
-                crt_state: best.crtState || 'NEUTRAL',
-                ai_decision: {
-                    decision: aiDecision.decision,
-                    confidence: aiDecision.confidence,
-                    reasoning: aiDecision.reasoning,
-                    risk_adjustment: aiDecision.risk_adjustment || 1.0,
-                    wait_condition: aiDecision.wait_condition || null,
-                    skip_reason: aiDecision.skip_reason || null
-                },
-                analysis: {
-                    timeframe: best.timeframe,
-                    session: getSession().session,
-                    silver_bullet: getSession().isSilverBullet ? '✅' : '❌',
-                    killzone: getSession().isKillzone ? '✅' : '❌',
-                    risk_reward: '1:' + rrDisplay
-                },
-                msnr_levels: best.msnr ? {
-                    pivot: best.msnr.pivot,
-                    support_1: best.msnr.supports.S1,
-                    support_2: best.msnr.supports.S2,
-                    support_3: best.msnr.supports.S3,
-                    resistance_1: best.msnr.resistances.R1,
-                    resistance_2: best.msnr.resistances.R2,
-                    resistance_3: best.msnr.resistances.R3,
-                    nearest_support: best.msnr.nearestSupport,
-                    nearest_resistance: best.msnr.nearestResistance
-                } : null,
-                trade_levels: {
-                    entry: finalEntry,
-                    stop_loss: finalSL,
-                    take_profit_1: finalTP1,
-                    take_profit_2: finalTP2,
-                    take_profit_3: finalTP3,
-                    risk_reward_ratio: parseFloat(rrDisplay) || 2.0,
-                    use_partial_profits: best.usePartialProfits ? "YES (RR > 4x)" : "NO"
-                }
+                trade_type: aiResult.direction === 'BUY' ? 'BUY' : 'SELL',
+                entry_price: aiResult.entry,
+                entry_zone: aiResult.entry_zone,
+                stop_loss: aiResult.stop_loss,
+                stop_loss_reason: aiResult.stop_loss_reason,
+                take_profit_1: aiResult.take_profit_1,
+                take_profit_2: aiResult.take_profit_2,
+                take_profit_3: aiResult.take_profit_3,
+                risk_reward: aiResult.risk_reward,
+                confidence: aiResult.confidence,
+                zone_quality: aiResult.zone_quality,
+                patterns_detected: aiResult.patterns.join('+'),
+                probability: aiResult.probability,
+                reasoning: aiResult.reasoning,
+                ai_decision: aiResult.ai_decision,
+                wait_condition: aiResult.wait_condition,
+                source: 'AI-Generated Setup'
             }
         };
         
         setJsonOutput(out);
-        lastSetupSummary = buildSetupSummary(best, st, finalEntry, price);
+        lastSetupSummary = {
+            id: Date.now(),
+            pair: pair,
+            timeframe: 'AI',
+            direction: st,
+            entry: aiResult.entry,
+            sl: aiResult.stop_loss,
+            tp1: aiResult.take_profit_1,
+            confidence: aiResult.confidence,
+            zoneType: aiResult.entry_zone.source || 'AI Zone',
+            patterns: aiResult.patterns.join('+'),
+            touches: 0,
+            isFresh: true,
+            distancePct: Math.abs(price - aiResult.entry) / price * 100,
+            priceAtScan: price
+        };
         lastSetupOut = out;
-        syncSetupToGitHub(out.trade_signal, 'scan');
+        syncSetupToGitHub(out.trade_signal, 'ai_scan');
         
-        if(!tradeable) {
-            analysis = null;
-            document.getElementById('executeBtn').disabled = true;
-            showNotif(`🚫 ${aiDecision.skip_reason || 'Setup rejected'}`, 'warning');
-            return;
-        }
+        const tradeable = aiResult.ai_decision !== 'skip' && aiResult.confidence >= 58;
         
         analysis = {
             signalType: st,
-            idealEntry: finalEntry,
+            idealEntry: aiResult.entry,
             currentPrice: price,
-            stopLoss: finalSL,
-            takeProfit1: finalTP1,
-            takeProfit2: finalTP2,
-            takeProfit3: finalTP3,
-            confidence: best.confidence,
-            riskPercent: riskPercent,
-            entryReady: aiDecision.decision === 'enter_now',
-            executionDecision: aiDecision.decision,
-            invalidationPrice: finalSL * (best.direction === 'BUY' ? 0.995 : 1.005),
-            confirmation: best.zoneType,
-            patterns: best.patterns ? best.patterns.join('+') : 'MSNR',
-            aiDecision: aiDecision,
-            riskAdjustment: aiDecision.risk_adjustment || 1.0,
+            stopLoss: aiResult.stop_loss,
+            takeProfit1: aiResult.take_profit_1,
+            takeProfit2: aiResult.take_profit_2,
+            takeProfit3: aiResult.take_profit_3,
+            confidence: aiResult.confidence,
+            riskPercent: tradeable ? 0.5 : 0,
+            entryReady: aiResult.ai_decision === 'enter_now',
+            executionDecision: aiResult.ai_decision,
+            invalidationPrice: aiResult.stop_loss * (aiResult.direction === 'BUY' ? 0.995 : 1.005),
+            confirmation: aiResult.entry_zone.source || 'AI Zone',
+            patterns: aiResult.patterns.join('+'),
+            aiDecision: aiResult,
+            riskAdjustment: aiResult.ai_decision === 'enter_now' ? 1.0 : 0.8,
             rrUsed: parseFloat(rrDisplay) || 2.0,
-            touches: best.touches || 0,
-            isFresh: best.isFresh || false,
-            distancePct: Math.abs(best.distancePct || 0)
+            touches: 0,
+            isFresh: true,
+            distancePct: Math.abs(price - aiResult.entry) / price * 100
         };
         
-        document.getElementById('executeBtn').disabled = false;
+        document.getElementById('executeBtn').disabled = !tradeable;
         
-        const decisionEmoji = aiDecision.decision === 'enter_now' ? '✅' : (aiDecision.decision === 'wait_for_reaction' ? '⏳' : '🚫');
-        const patternEmoji = best.tbsDetected ? '🐢' : (best.isFresh ? '🌟' : '📌');
-        showNotif(`🎯 ${best.timeframe} ${st} ${patternEmoji} ${decisionEmoji} ${aiDecision.decision} | Conf: ${best.confidence}% | ${best.zoneType} | ${Math.abs(best.distancePct || 0).toFixed(2)}% away`, 'success');
+        // Update button to show AI source
+        const btnExecute = document.getElementById('executeBtn');
+        if (btnExecute && analysis) {
+            btnExecute.innerHTML = `🤖 AI Setup: ${st}`;
+            btnExecute.style.background = 'linear-gradient(135deg, #5856d6, #007aff)';
+        }
+        
+        const decisionEmoji = aiResult.ai_decision === 'enter_now' ? '✅' : (aiResult.ai_decision === 'wait_for_reaction' ? '⏳' : '🚫');
+        showNotif(`🤖 AI Setup: ${st} ${decisionEmoji} | Conf: ${aiResult.confidence}% | ${aiResult.entry_zone.source} | ${aiResult.patterns.join(', ')}`, tradeable ? 'success' : 'warning');
         
     } catch(e) {
-        console.error(e);
+        console.error('AI Scan Error:', e);
         showNotif('Error: ' + e.message, 'error');
-        scanStatus.classList.add('hidden');
+        await runFallbackScan(price, historyCache);
     } finally {
         btn.classList.remove('loading');
         btn.disabled = false;
@@ -3002,13 +3259,14 @@ function handleLimit() {
         touches: analysis.touches || 0,
         isFresh: analysis.isFresh || false,
         distancePct: analysis.distancePct || 0,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        source: analysis.aiDecision ? 'AI-Generated' : 'Rule-Based'
     };
     saveLimit(o);
     startMonitor();
-    const aiLabel = o.aiDecision ? `🤖 ${o.aiDecision.decision}` : '';
+    const aiLabel = o.aiDecision ? '🤖 AI Setup' : '📊 Rule-Based';
     const prec = getPrec(pair);
-    showNotif(`📝 ${o.signalType} @ $${o.idealEntry.toFixed(prec)} | ${o.confirmation} | ${o.patterns} | ${(o.distancePct || 0).toFixed(2)}% away | RR: 1:${o.rrUsed} ${aiLabel}`, 'info');
+    showNotif(`📝 ${aiLabel}: ${o.signalType} @ $${o.idealEntry.toFixed(prec)} | ${o.confirmation} | RR: 1:${o.rrUsed}`, 'info');
 }
 
 function copyJson() {
