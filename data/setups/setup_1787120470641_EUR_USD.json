@@ -1,0 +1,42 @@
+{
+  "id": 1787120470641,
+  "recordedAt": "2026-08-19T06:21:10.642Z",
+  "eventType": "saved",
+  "pair": "EUR/USD",
+  "setup": {
+    "date": "2026-08-19",
+    "time": "06:18:03",
+    "pair": "EUR/USD",
+    "current_price": 1.15915,
+    "trade_type": "BUY",
+    "entry_price": 1.15915,
+    "entry_zone": {
+      "low": 1.1585,
+      "high": 1.1598,
+      "source": "Confluence"
+    },
+    "stop_loss": 1.1575,
+    "stop_loss_reason": "Below the recent swing low and below the Supertrend support at 1.15, providing a logical invalidation for the bullish setup.",
+    "take_profit_1": 1.1605,
+    "take_profit_2": 1.1615,
+    "take_profit_3": 1.163,
+    "risk_reward": "1:2.2",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "FVG+Swing+CRT",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "Strong bullish alignment across all timeframes (1D, 4H, 1H, 15M, 5M) with price above key EMAs and Supertrend, indicating sustained upward momentum.",
+      "secondary": [
+        "RSI on 4H (61.29) and 1H (66.29) shows bullish momentum without being overbought, leaving room for further upside.",
+        "MACD on 4H is flat but positive, while 1H MACD histogram is positive, supporting bullish continuation.",
+        "Price is near the MSNR pivot (1.16) and above S1 (1.15), with resistance at R1 (1.16) and R2 (1.17), suggesting a breakout potential.",
+        "Low volatility (0.12%) and no high-impact news reduce the risk of sudden reversals."
+      ],
+      "risk_warning": "Stochastic on 1H is overbought (K 93.90, D 96.26) and CCI (190.58) indicates overbought conditions, which could lead to a short-term pullback. Also, off-hours session with low liquidity may cause slippage."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
