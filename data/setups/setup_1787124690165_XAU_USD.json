@@ -1,0 +1,41 @@
+{
+  "id": 1787124690165,
+  "recordedAt": "2026-08-19T07:31:30.167Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-19",
+    "time": "07:31:30",
+    "pair": "XAU/USD",
+    "current_price": 4357.10862,
+    "trade_type": "BUY",
+    "entry_price": 4357.11,
+    "entry_zone": {
+      "low": 4345,
+      "high": 4365,
+      "source": "Confluence"
+    },
+    "stop_loss": 4326.84,
+    "stop_loss_reason": "Below recent swing low and below lower Bollinger Band on 4H, providing a logical invalidation for the bullish setup.",
+    "take_profit_1": 4382.47,
+    "take_profit_2": 4413.2,
+    "take_profit_3": 4433.53,
+    "risk_reward": "1:2.5",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "Turtle Soup (4H)+FVG (4H)+Bullish divergence on 1H MACD",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Turtle Soup pattern detected on 4H, indicating a potential reversal from liquidity sweep, combined with bullish divergence on 1H MACD and price near lower Bollinger Band.",
+      "secondary": [
+        "1D trend is bullish, providing higher timeframe support.",
+        "London Killzone session with no high-impact news, favoring price action moves.",
+        "RSI on 4H is near oversold (43.92) and 1H RSI is recovering (46.60), suggesting upward momentum."
+      ],
+      "risk_warning": "4H trend is neutral and 1H is bearish, so the setup may face resistance. Also, price is below EMA21 and EMA50 on 4H, indicating bearish pressure. Watch for rejection at 4H middle Bollinger Band."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
