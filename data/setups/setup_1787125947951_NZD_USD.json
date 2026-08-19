@@ -1,0 +1,41 @@
+{
+  "id": 1787125947951,
+  "recordedAt": "2026-08-19T07:52:27.954Z",
+  "eventType": "ai_scan",
+  "pair": "NZD/USD",
+  "setup": {
+    "date": "2026-08-19",
+    "time": "07:52:27",
+    "pair": "NZD/USD",
+    "current_price": 0.58695,
+    "trade_type": "SELL",
+    "entry_price": 0.58695,
+    "entry_zone": {
+      "low": 0.5865,
+      "high": 0.5874,
+      "source": "Confluence"
+    },
+    "stop_loss": 0.5885,
+    "stop_loss_reason": "Above the 4H EMA9/EMA21 and recent swing high, invalidating bearish momentum if breached.",
+    "take_profit_1": 0.5855,
+    "take_profit_2": 0.584,
+    "take_profit_3": 0.5825,
+    "risk_reward": "1:2.9",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "Bearish order flow+Lower highs on 4H+RSI bearish momentum+Stochastic oversold but not yet turning",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "Bearish alignment on 4H and 1H with price below key EMAs and bearish momentum indicators (RSI < 40, MACD negative, CCI negative).",
+      "secondary": [
+        "London killzone session provides liquidity and volatility for downside moves.",
+        "No high-impact news, allowing technicals to play out.",
+        "Price is near MSNR resistance R1 (0.59) and pivot, offering a potential rejection zone."
+      ],
+      "risk_warning": "Stochastic is oversold on 4H, which could lead to a bounce. Also, the 1D trend is bullish, so a deeper pullback could occur. The ATR is very low, indicating low volatility and potential for choppy price action."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
