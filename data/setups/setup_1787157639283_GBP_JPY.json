@@ -1,0 +1,41 @@
+{
+  "id": 1787157639283,
+  "recordedAt": "2026-08-19T16:40:39.283Z",
+  "eventType": "ai_scan",
+  "pair": "GBP/JPY",
+  "setup": {
+    "date": "2026-08-19",
+    "time": "16:40:39",
+    "pair": "GBP/JPY",
+    "current_price": 215.60449,
+    "trade_type": "SELL",
+    "entry_price": 215.604,
+    "entry_zone": {
+      "low": 215.604,
+      "high": 215.83,
+      "source": "Confluence"
+    },
+    "stop_loss": 216.17,
+    "stop_loss_reason": "Above the 4H SAR and recent swing high, also above the 4H middle Bollinger band and EMA9/21, invalidating bearish setup if broken.",
+    "take_profit_1": 215.35,
+    "take_profit_2": 215.3,
+    "take_profit_3": 215,
+    "risk_reward": "1:1.8",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "CRT EXPANDING+Bearish 1H MACD+Bearish 15M/5M trend",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Bearish alignment on lower timeframes (1H, 15M, 5M) with price below 1H middle Bollinger and bearish MACD, while 4H shows neutral-to-bearish momentum (RSI below 50, MACD histogram negative).",
+      "secondary": [
+        "Price is below 4H middle Bollinger and EMA9/21, indicating potential rejection from these dynamic resistances.",
+        "1H CCI at -101.65 suggests oversold but can continue lower; 1H MACD bearish crossover.",
+        "LON-CLOSE KZ session often brings reversals; no high-impact news to disrupt technical move."
+      ],
+      "risk_warning": "4H trend is still bullish, and price is near 4H supertrend support (215.35) which could cause a bounce. Also, 1H stochastic is near overbought, but a pullback to entry zone may occur."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
