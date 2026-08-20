@@ -1,0 +1,41 @@
+{
+  "id": 1787210019749,
+  "recordedAt": "2026-08-20T07:13:39.751Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-20",
+    "time": "07:13:39",
+    "pair": "XAU/USD",
+    "current_price": 4489.74094,
+    "trade_type": "BUY",
+    "entry_price": 4489.74,
+    "entry_zone": {
+      "low": 4475.19,
+      "high": 4494.16,
+      "source": "Confluence"
+    },
+    "stop_loss": 4451.69,
+    "stop_loss_reason": "Below 1H middle Bollinger and recent swing low, with buffer below EMA21 on 4H.",
+    "take_profit_1": 4529.68,
+    "take_profit_2": 4533.76,
+    "take_profit_3": 4668.38,
+    "risk_reward": "1:2.0",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "CRT expanding+Bullish trend on multiple timeframes+Price above key EMAs",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "Strong bullish alignment across 1D, 4H, and 1H timeframes, with price trading above key EMAs and within London killzone, suggesting continued upward momentum.",
+      "secondary": [
+        "4H MACD bullish crossover with positive histogram, RSI at 64.75 showing bullish momentum without being overbought.",
+        "Price is above 4H Supertrend and SAR, confirming bullish trend.",
+        "No high-impact news, reducing risk of sudden reversals."
+      ],
+      "risk_warning": "5M timeframe shows bearish trend, and 1H MACD histogram is negative, indicating possible short-term pullback. Also, price is near upper Bollinger bands, which could lead to a temporary retracement."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
