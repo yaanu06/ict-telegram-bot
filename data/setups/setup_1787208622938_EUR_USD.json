@@ -1,0 +1,41 @@
+{
+  "id": 1787208622938,
+  "recordedAt": "2026-08-20T06:50:22.939Z",
+  "eventType": "saved",
+  "pair": "EUR/USD",
+  "setup": {
+    "date": "2026-08-20",
+    "time": "06:48:13",
+    "pair": "EUR/USD",
+    "current_price": 1.1687,
+    "trade_type": "BUY",
+    "entry_price": 1.1687,
+    "entry_zone": {
+      "low": 1.1685,
+      "high": 1.1689,
+      "source": "Confluence"
+    },
+    "stop_loss": 1.1675,
+    "stop_loss_reason": "Below the recent swing low and the 1H EMA21, providing a logical invalidation point.",
+    "take_profit_1": 1.17,
+    "take_profit_2": 1.171,
+    "take_profit_3": 1.172,
+    "risk_reward": "1:1.5",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "FVG+Swing+CRT",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "Strong bullish alignment across all timeframes with price above key EMAs and in an expanding CRT pattern.",
+      "secondary": [
+        "RSI on 4H and 1H are overbought but momentum remains strong, suggesting continuation.",
+        "Price is above the MSNR pivot and R1, indicating bullish momentum.",
+        "No high-impact news and off-hours session reduces volatility risk."
+      ],
+      "risk_warning": "Overbought conditions may lead to a pullback; consider waiting for a retest of the entry zone."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
