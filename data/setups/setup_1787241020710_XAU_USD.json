@@ -1,0 +1,42 @@
+{
+  "id": 1787241020710,
+  "recordedAt": "2026-08-20T15:50:20.711Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-20",
+    "time": "15:50:20",
+    "pair": "XAU/USD",
+    "current_price": 4519.9783,
+    "trade_type": "BUY",
+    "entry_price": 4519.98,
+    "entry_zone": {
+      "low": 4501.78,
+      "high": 4530.14,
+      "source": "Confluence"
+    },
+    "stop_loss": 4477.83,
+    "stop_loss_reason": "Below 1H EMA21 and recent swing low, protecting against downside break.",
+    "take_profit_1": 4562.13,
+    "take_profit_2": 4596,
+    "take_profit_3": 4695.02,
+    "risk_reward": "1:2.0",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "Turtle Soup (BUY)+CRT Expanding+Bullish alignment across timeframes",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "Strong bullish alignment across all timeframes with price above key EMAs and in a killzone, supported by a Turtle Soup buy signal.",
+      "secondary": [
+        "RSI bullish but not overbought on 4H (67.33) and 1H (66.05), allowing room for upside.",
+        "MACD bullish on 4H with positive histogram, though 1H shows slight bearish crossover but price holding.",
+        "Price above Supertrend (4405.33) and SAR (4397.90) on 4H, confirming bullish momentum.",
+        "No high-impact news, low volatility, and killzone active with Silver Bullet, favoring continuation."
+      ],
+      "risk_warning": "1H MACD histogram negative and Stochastic overbought on 4H (K 88.49) may lead to short-term pullback. Also, price near upper Bollinger band on 1H could cause resistance."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
