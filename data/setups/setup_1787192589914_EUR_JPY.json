@@ -1,0 +1,41 @@
+{
+  "id": 1787192589914,
+  "recordedAt": "2026-08-20T02:23:09.915Z",
+  "eventType": "saved",
+  "pair": "EUR/JPY",
+  "setup": {
+    "date": "2026-08-20",
+    "time": "02:12:41",
+    "pair": "EUR/JPY",
+    "current_price": 185.11602,
+    "trade_type": "BUY",
+    "entry_price": 185.116,
+    "entry_zone": {
+      "low": 184.8,
+      "high": 185.12,
+      "source": "Confluence"
+    },
+    "stop_loss": 184.55,
+    "stop_loss_reason": "Below EMA9 and EMA21, and below the 4H Supertrend, protecting against a break of the bullish structure.",
+    "take_profit_1": 185.5,
+    "take_profit_2": 186,
+    "take_profit_3": 186.8,
+    "risk_reward": "1:2.0",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "Bullish trend on multiple timeframes+Price above key EMAs+MACD bullish crossover+RSI in bullish territory+Price near upper Bollinger Band",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "Strong bullish alignment across multiple timeframes (4H, 1H, 15M, 5M) with price above key EMAs and bullish momentum indicators.",
+      "secondary": [
+        "Price is trading above the 4H Supertrend and SAR, confirming bullish momentum.",
+        "MACD histogram positive and increasing, indicating strengthening bullish momentum.",
+        "No high-impact news and active Killzone session (Asia) provide favorable conditions for continuation."
+      ],
+      "risk_warning": "Overbought conditions (Stochastic K 98.35, CCI 186.58) may lead to a pullback. Watch for reversal patterns near resistance."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
