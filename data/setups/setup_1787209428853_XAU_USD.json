@@ -1,0 +1,42 @@
+{
+  "id": 1787209428853,
+  "recordedAt": "2026-08-20T07:03:48.855Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-20",
+    "time": "07:03:48",
+    "pair": "XAU/USD",
+    "current_price": 4490.5474,
+    "trade_type": "BUY",
+    "entry_price": 4490.55,
+    "entry_zone": {
+      "low": 4476.32,
+      "high": 4490.55,
+      "source": "Confluence"
+    },
+    "stop_loss": 4452.5,
+    "stop_loss_reason": "Below the 1H Bollinger middle band and the 4H Supertrend, protecting against a break of the short-term bullish structure.",
+    "take_profit_1": 4530.25,
+    "take_profit_2": 4560,
+    "take_profit_3": 4670.43,
+    "risk_reward": "1:2.0",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "FVG+CRT+Swing",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "Strong bullish alignment across multiple timeframes (1D, 4H, 1H) with price trading above key EMAs and Supertrend, and the London killzone providing liquidity.",
+      "secondary": [
+        "4H RSI at 65.16 shows bullish momentum without being overbought.",
+        "4H MACD histogram positive and expanding, confirming bullish momentum.",
+        "Price is above the 4H Bollinger middle band and near the upper band, indicating strength.",
+        "No high-impact news, allowing technicals to play out."
+      ],
+      "risk_warning": "1H MACD histogram is negative, suggesting short-term pullback risk. Stochastic on 4H is overbought, which could lead to a temporary retracement. The 1H CRT is contracting, indicating a potential breakout."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
