@@ -1,0 +1,41 @@
+{
+  "id": 1787515898817,
+  "recordedAt": "2026-08-23T20:11:38.818Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-23",
+    "time": "20:11:38",
+    "pair": "XAU/USD",
+    "current_price": 4603.62766,
+    "trade_type": "SELL",
+    "entry_price": 4603.63,
+    "entry_zone": {
+      "low": 4603.63,
+      "high": 4610.83,
+      "source": "Confluence"
+    },
+    "stop_loss": 4617.83,
+    "stop_loss_reason": "Above the 1H upper Bollinger band and recent swing high, with a buffer of 1.5x ATR (1H) to avoid false breakouts.",
+    "take_profit_1": 4588.51,
+    "take_profit_2": 4570.54,
+    "take_profit_3": 4550,
+    "risk_reward": "1:2.0",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "1H bearish RSI divergence+1H CCI extreme oversold+4H MACD bearish crossover+1H CRT expanding+15M/5M bearish trend",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Short-term bearish momentum (15M/5M) and 1H indicators (RSI 32, CCI -247) suggest a pullback from the 4H bullish trend, with price near the 1H upper Bollinger band and EMA9 resistance.",
+      "secondary": [
+        "4H MACD histogram negative and signal line below MACD line indicates weakening bullish momentum.",
+        "1H CRT expanding suggests increased volatility and potential reversal.",
+        "Off-hours session with low volatility (0.15%) and no news reduces liquidity, making price more susceptible to technical moves."
+      ],
+      "risk_warning": "Higher timeframe (1D, 4H) is strongly bullish, so this sell is counter-trend and may be limited. Price is near 4H EMA9 support; a break above 4610.83 could invalidate the setup. Low volatility may lead to slow movement."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
