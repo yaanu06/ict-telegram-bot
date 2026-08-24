@@ -1,0 +1,41 @@
+{
+  "id": 1787590323474,
+  "recordedAt": "2026-08-24T16:52:03.477Z",
+  "eventType": "ai_scan",
+  "pair": "AUD/USD",
+  "setup": {
+    "date": "2026-08-24",
+    "time": "16:52:03",
+    "pair": "AUD/USD",
+    "current_price": 0.71499,
+    "trade_type": "SELL",
+    "entry_price": 0.71499,
+    "entry_zone": {
+      "low": 0.7145,
+      "high": 0.7155,
+      "source": "Confluence"
+    },
+    "stop_loss": 0.7165,
+    "stop_loss_reason": "Above the 4H EMA9 and EMA21, and above the recent swing high, invalidating the bearish setup if breached.",
+    "take_profit_1": 0.713,
+    "take_profit_2": 0.711,
+    "take_profit_3": 0.709,
+    "risk_reward": "1:2.0",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "Turtle Soup SELL+Expanding CRT+Bearish 1H RSI+Bearish 1H Stochastic",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "The 4H Turtle Soup SELL pattern and expanding CRT indicate a liquidity grab and reversal opportunity, aligning with the bearish lower timeframe momentum.",
+      "secondary": [
+        "1H RSI at 29.35 and Stochastic K at 4.44 show oversold conditions, but the bearish trend suggests further downside.",
+        "Lower timeframes (1H, 15M, 5M) are all bearish, confirming selling pressure.",
+        "The LON-CLOSE KZ session provides a favorable environment for continuation moves."
+      ],
+      "risk_warning": "The 4H trend is bullish, so this is a counter-trend trade. A break above the 4H EMA9/21 could invalidate the setup. Also, the 1D bullish bias may limit downside."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
