@@ -1,0 +1,42 @@
+{
+  "id": 1787561837965,
+  "recordedAt": "2026-08-24T08:57:17.967Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-24",
+    "time": "08:57:17",
+    "pair": "XAU/USD",
+    "current_price": 4640.15591,
+    "trade_type": "BUY",
+    "entry_price": 4635,
+    "entry_zone": {
+      "low": 4625,
+      "high": 4645,
+      "source": "Confluence"
+    },
+    "stop_loss": 4615,
+    "stop_loss_reason": "Below the 1H EMA21 (4589.12) and the 4H Supertrend (4585.51) but more conservatively placed below the recent swing low and the 1H Bollinger middle band (4621.80) to allow for volatility, while still respecting the bullish structure.",
+    "take_profit_1": 4655.69,
+    "take_profit_2": 4670,
+    "take_profit_3": 4763.64,
+    "risk_reward": "1:2.1",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "Turtle Soup (4H)+Bullish FVG (4H)+Expanding CRT (1H)+Bullish EMA alignment",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "The 4H Turtle Soup pattern indicates a liquidity grab of the lows followed by a bullish reversal, which is a strong ICT signal. This is supported by the bullish alignment across all major timeframes (1D, 4H, 1H, 15M) and the London killzone session with Silver Bullet active, increasing the probability of a continued upward move.",
+      "secondary": [
+        "Price is above the 4H EMA9 (4618.61) and EMA21 (4589.12), confirming bullish momentum.",
+        "The 1H MACD histogram is positive (2.62) and the signal line is rising, indicating bullish momentum.",
+        "The 4H RSI at 76.39 is overbought, but in strong trends this can persist; the 1H RSI at 68.66 is not yet overbought, suggesting room for further upside.",
+        "The 4H Bollinger upper band (4647.56) is close, but the 1H upper band (4655.69) provides a near-term target, and the 4H MSNR R1 (4763.64) is a viable higher target."
+      ],
+      "risk_warning": "The 4H RSI is overbought, and the 4H MACD histogram is negative (-3.72), indicating a potential bearish divergence. Also, the 4H Bollinger upper band is nearby, which could cause a short-term pullback. The 5M trend is neutral, so a brief consolidation is possible."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
