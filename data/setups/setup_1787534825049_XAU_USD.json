@@ -1,0 +1,41 @@
+{
+  "id": 1787534825049,
+  "recordedAt": "2026-08-24T01:27:05.051Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-24",
+    "time": "01:27:05",
+    "pair": "XAU/USD",
+    "current_price": 4613.61015,
+    "trade_type": "BUY",
+    "entry_price": 4607.86,
+    "entry_zone": {
+      "low": 4607.86,
+      "high": 4613.61,
+      "source": "Confluence"
+    },
+    "stop_loss": 4596.86,
+    "stop_loss_reason": "Below the 4H SAR and below the 1H lower Bollinger band, protecting against a breakdown of the recent consolidation.",
+    "take_profit_1": 4618.04,
+    "take_profit_2": 4651.65,
+    "take_profit_3": 4733.94,
+    "risk_reward": "1:2.0",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "Bullish trend on 1D, 4H, 1H, 15M+Price above EMA9 and EMA21 on 4H+MACD histogram positive on 1H+CRT expanding on 1H",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "Strong bullish alignment across multiple timeframes (1D, 4H, 1H, 15M) with price above key EMAs and a positive MACD histogram on 1H, suggesting continued upward momentum.",
+      "secondary": [
+        "Price is near the 4H EMA9 (4607.86) which acts as dynamic support in an uptrend.",
+        "The 1H Bollinger upper band (4618.04) is the first target, with the 4H upper band (4651.65) as the second, and the MSNR R1 (4733.94) as the third.",
+        "No high-impact news and low volatility (0.13%) reduce the risk of sudden reversals."
+      ],
+      "risk_warning": "The 4H RSI is near overbought (69.85) and the 4H MACD histogram is negative, indicating a possible short-term pullback. Also, the 1H CCI is extremely overbought (255.15), which could lead to a retracement before continuation."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
