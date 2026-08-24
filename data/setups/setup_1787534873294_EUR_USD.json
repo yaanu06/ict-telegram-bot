@@ -1,0 +1,42 @@
+{
+  "id": 1787534873294,
+  "recordedAt": "2026-08-24T01:27:53.295Z",
+  "eventType": "saved",
+  "pair": "EUR/USD",
+  "setup": {
+    "date": "2026-08-24",
+    "time": "01:27:48",
+    "pair": "EUR/USD",
+    "current_price": 1.16783,
+    "trade_type": "BUY",
+    "entry_price": 1.16783,
+    "entry_zone": {
+      "low": 1.16783,
+      "high": 1.168,
+      "source": "Confluence"
+    },
+    "stop_loss": 1.167,
+    "stop_loss_reason": "Below recent swing low and below EMA9/EMA21 confluence, invalidates bullish bias.",
+    "take_profit_1": 1.1685,
+    "take_profit_2": 1.1695,
+    "take_profit_3": 1.1705,
+    "risk_reward": "1:1.5",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "FVG+Swing Low+CRT Expanding",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Higher timeframe bullish (1D, 4H) with 1H bearish as a pullback, confluence of EMA support and FVG on 4H.",
+      "secondary": [
+        "RSI on 4H at 58.26 shows bullish momentum, not overbought.",
+        "Stochastic on 4H at 63.32/63.42 indicates bullish momentum.",
+        "Price above EMA50 and EMA200 on 4H, confirming uptrend.",
+        "No high-impact news, low volatility (0.15%) allows technicals to play out."
+      ],
+      "risk_warning": "1H bearish trend and expanding CRT could lead to deeper pullback; wait for confirmation if risk-averse."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
