@@ -1,0 +1,41 @@
+{
+  "id": 1787654827381,
+  "recordedAt": "2026-08-25T10:47:07.385Z",
+  "eventType": "ai_scan",
+  "pair": "AUD/USD",
+  "setup": {
+    "date": "2026-08-25",
+    "time": "10:47:07",
+    "pair": "AUD/USD",
+    "current_price": 0.71525,
+    "trade_type": "SELL",
+    "entry_price": 0.71525,
+    "entry_zone": {
+      "low": 0.7145,
+      "high": 0.716,
+      "source": "Confluence"
+    },
+    "stop_loss": 0.7175,
+    "stop_loss_reason": "Above the 4H EMA9/EMA21 and recent swing high, invalidating bearish bias if broken.",
+    "take_profit_1": 0.713,
+    "take_profit_2": 0.71,
+    "take_profit_3": 0.707,
+    "risk_reward": "1:1.5",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "CRT EXPANDING+1H bearish trend+4H FVG (13)+1H FVG (4)",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "1H trend is bearish and price is at a confluence of resistance (4H MSNR R1, 4H EMA9/21, 4H Bollinger middle), with CRT expanding indicating potential reversal.",
+      "secondary": [
+        "4H RSI near 50 and 1H RSI below 50 suggest bearish momentum.",
+        "4H CCI at -100.65 indicates oversold but can also signal continuation.",
+        "Off-hours session with low volatility may lead to mean reversion."
+      ],
+      "risk_warning": "Higher timeframes (1D, 4H) are bullish, so this is a counter-trend sell. Low volatility and off-hours session could lead to choppy price action. News is clear, but be cautious of sudden shifts."
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for a bearish confirmation candle (e.g., 1H close below 0.71500) or a rejection from the 0.71550-0.71600 zone before entering.",
+    "source": "AI-Generated Setup"
+  }
+}
