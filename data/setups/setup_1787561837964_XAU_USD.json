@@ -1,0 +1,25 @@
+{
+  "id": 1787561837964,
+  "recordedAt": "2026-08-26T14:37:14.194Z",
+  "eventType": "journal",
+  "pair": "XAU/USD",
+  "setup": {
+    "id": 1787561837964,
+    "pair": "XAU/USD",
+    "timeframe": "AI",
+    "direction": "LONG",
+    "entry": 4635,
+    "sl": 4615,
+    "tp1": 4655.69,
+    "confidence": 75,
+    "zoneType": "Confluence",
+    "patterns": "Turtle Soup (4H)+Bullish FVG (4H)+Expanding CRT (1H)+Bullish EMA alignment",
+    "touches": 0,
+    "isFresh": true,
+    "distancePct": 0.11111501639177472,
+    "priceAtScan": 4640.15591,
+    "savedAt": "2026-08-24T08:57:21.407Z",
+    "status": "WIN",
+    "journaledAt": "2026-08-26T14:37:14.189Z"
+  }
+}
