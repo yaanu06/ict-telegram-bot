@@ -1,0 +1,25 @@
+{
+  "id": 1787732772456,
+  "recordedAt": "2026-08-26T14:37:05.900Z",
+  "eventType": "journal",
+  "pair": "XAU/USD",
+  "setup": {
+    "id": 1787732772456,
+    "pair": "XAU/USD",
+    "timeframe": "AI",
+    "direction": "SHORT",
+    "entry": 4624.49,
+    "sl": 4663.21,
+    "tp1": 4594.14,
+    "confidence": 72,
+    "zoneType": "Confluence",
+    "patterns": "CRT EXPANDING+Bearish MACD crossover on 1H+Stochastic oversold on 1H+Price below 1H EMA9 and EMA21",
+    "touches": 0,
+    "isFresh": true,
+    "distancePct": 0.000028327439987294955,
+    "priceAtScan": 4624.49131,
+    "savedAt": "2026-08-26T08:26:48.226Z",
+    "status": "WIN",
+    "journaledAt": "2026-08-26T14:37:05.892Z"
+  }
+}
