@@ -1,0 +1,25 @@
+{
+  "id": 1787718952548,
+  "recordedAt": "2026-08-26T14:37:10.045Z",
+  "eventType": "journal",
+  "pair": "XAU/USD",
+  "setup": {
+    "id": 1787718952548,
+    "pair": "XAU/USD",
+    "timeframe": "AI",
+    "direction": "SHORT",
+    "entry": 4641.88,
+    "sl": 4683.1,
+    "tp1": 4588.78,
+    "confidence": 65,
+    "zoneType": "Confluence",
+    "patterns": "CRT EXPANDING+Bearish MACD histogram+Lower timeframe bearish momentum",
+    "touches": 0,
+    "isFresh": true,
+    "distancePct": 0.000020896710012972825,
+    "priceAtScan": 4641.87903,
+    "savedAt": "2026-08-26T04:36:00.154Z",
+    "status": "WIN",
+    "journaledAt": "2026-08-26T14:37:10.040Z"
+  }
+}
