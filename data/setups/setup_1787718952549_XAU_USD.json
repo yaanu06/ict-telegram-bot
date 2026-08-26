@@ -1,0 +1,42 @@
+{
+  "id": 1787718952549,
+  "recordedAt": "2026-08-26T04:35:52.552Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-26",
+    "time": "04:35:52",
+    "pair": "XAU/USD",
+    "current_price": 4641.87903,
+    "trade_type": "SELL",
+    "entry_price": 4641.88,
+    "entry_zone": {
+      "low": 4632.97,
+      "high": 4647.74,
+      "source": "Confluence"
+    },
+    "stop_loss": 4683.1,
+    "stop_loss_reason": "Above the 4H SAR and the 4H Bollinger middle band, providing a logical invalidation point for the bearish setup.",
+    "take_profit_1": 4588.78,
+    "take_profit_2": 4549.33,
+    "take_profit_3": 4402.72,
+    "risk_reward": "1:1.5",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "CRT EXPANDING+Bearish MACD histogram+Lower timeframe bearish momentum",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "The 1H and 15M/5M timeframes are bearish, and the 4H shows bearish momentum with MACD histogram negative and price below the 4H middle Bollinger band. The CRT pattern is expanding, suggesting potential downside continuation.",
+      "secondary": [
+        "The 1H RSI is below 50, indicating bearish momentum.",
+        "The 1H MACD histogram is negative, confirming bearish pressure.",
+        "The 4H Stochastic is turning down from overbought levels, supporting a sell.",
+        "The price is below the 4H EMA9 and EMA21, which are acting as dynamic resistance."
+      ],
+      "risk_warning": "The 1D and 4H trends are bullish, so this is a counter-trend sell. The session is off-hours with low volatility, which could lead to choppy price action. The stop loss is relatively wide, and the risk-reward is only 1:1.5, which is the minimum acceptable."
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for a bearish confirmation on the 1H chart, such as a break below the 1H Bollinger middle band (4647.74) or a bearish engulfing candle, before entering the sell.",
+    "source": "AI-Generated Setup"
+  }
+}
