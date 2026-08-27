@@ -1,0 +1,43 @@
+{
+  "id": 1787825698576,
+  "recordedAt": "2026-08-27T10:14:58.580Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-27",
+    "time": "10:14:58",
+    "pair": "XAU/USD",
+    "current_price": 4580.01282,
+    "trade_type": "SELL",
+    "entry_price": 4580.01,
+    "entry_zone": {
+      "low": 4577.4,
+      "high": 4583,
+      "source": "Confluence"
+    },
+    "stop_loss": 4613.32,
+    "stop_loss_reason": "Above the 1H EMA21 and 4H EMA21, which aligns with the bearish momentum and acts as a dynamic resistance. A break above this level would invalidate the bearish thesis.",
+    "take_profit_1": 4577.4,
+    "take_profit_2": 4550,
+    "take_profit_3": 4528.86,
+    "risk_reward": "1:2.0",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "Bearish Momentum on 1H and 15M+Price below 4H EMA21 and 1H EMA21+4H MACD Histogram Negative+1H MACD Negative+4H Stochastic Oversold+1H Stochastic Oversold",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "The 1H and 15M timeframes are bearish, and price is trading below the 1H EMA21 (4613.32) and 4H EMA21 (4613.32). The 1H MACD is negative and the histogram is deepening, indicating strong bearish momentum. The current price is at the 4H lower Bollinger Band, which could act as a temporary support, but the overall momentum suggests a breakdown.",
+      "secondary": [
+        "The 4H MACD histogram is negative, confirming bearish momentum on the higher timeframe.",
+        "The 1H CCI is deeply oversold (-152.70), suggesting a potential short-term bounce, but the trend is down.",
+        "The 4H Supertrend is at 4683.71, well above price, confirming the bearish trend.",
+        "The 4H SAR is at 4642.31, also above price, supporting the bearish outlook.",
+        "The 4H RSI at 42.28 is below 50, indicating bearish momentum."
+      ],
+      "risk_warning": "The 4H Stochastic is deeply oversold (K 10.94, D 20.79), and the 1H Stochastic is also oversold (K 15.60, D 16.04). This could lead to a short-term bounce or consolidation before the next leg down. The 4H lower Bollinger Band (4577.40) may provide temporary support. The market is in off-hours with a 0.5 multiplier, which could lead to lower liquidity and wider spreads."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
