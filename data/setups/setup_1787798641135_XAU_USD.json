@@ -1,0 +1,50 @@
+{
+  "id": 1787798641135,
+  "recordedAt": "2026-08-27T02:44:01.136Z",
+  "eventType": "saved",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-27",
+    "time": "02:43:34",
+    "pair": "XAU/USD",
+    "current_price": 4625.98881,
+    "trade_type": "BUY",
+    "entry_price": 4618.62,
+    "entry_zone": {
+      "low": 4612.19,
+      "high": 4625.99,
+      "source": "Confluence"
+    },
+    "stop_loss": 4581.66,
+    "stop_loss_reason": "Below the 1H lower Bollinger Band and below the 4H EMA21, providing a logical invalidation level for the bullish setup.",
+    "take_profit_1": 4642.71,
+    "take_profit_2": 4678.96,
+    "take_profit_3": 4779.2,
+    "risk_reward": "1:4.3",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "Turtle Soup (4H)+Bullish 1H MACD crossover+Price above 4H EMA9/EMA21+Bullish multi-timeframe alignment",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "The 4H Turtle Soup pattern indicates a liquidity sweep of lows followed by a bullish reversal, aligning with the bullish bias on higher timeframes (1D, 4H, 15M, 5M).",
+      "secondary": [
+        "Price is trading above the 4H EMA9 and EMA21, confirming short-term bullish momentum.",
+        "The 1H MACD histogram is positive and rising, suggesting bullish momentum is building.",
+        "The 1H RSI is at 53, showing bullish momentum without being overbought.",
+        "The 4H RSI at 54.32 is neutral, leaving room for upside.",
+        "The 4H Stochastic is recovering from oversold territory, supporting a bullish move.",
+        "The 4H CCI at -47.23 is turning up from oversold, indicating a potential bullish reversal.",
+        "The 4H SAR is below price, confirming the bullish trend.",
+        "The 4H Supertrend is above price, but the bullish alignment on other indicators suggests a breakout attempt.",
+        "The 4H Bollinger Middle Band (4633.67) is above price, but the 1H Bollinger Middle Band (4612.19) is below price, providing support.",
+        "The 4H MSNR R1 at 4779.20 is a major resistance target, offering a high reward potential.",
+        "The session is Asia KZ with a killzone active, which often leads to liquidity grabs and reversals.",
+        "No high-impact news is scheduled, reducing the risk of unexpected volatility."
+      ],
+      "risk_warning": "The 4H Supertrend is bearish (above price), and the 4H MACD histogram is negative, indicating potential bearish pressure. The 1H RSI is approaching overbought, and the 1H Stochastic is high, suggesting a possible short-term pullback. The 4H Bollinger Upper Band is at 4678.96, which may act as resistance. The 4H ADX is N/A, so trend strength is unclear. The 1H CCI is above 100, indicating overbought conditions on the 1H timeframe."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
