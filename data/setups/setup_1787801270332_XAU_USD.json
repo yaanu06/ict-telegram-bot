@@ -1,0 +1,42 @@
+{
+  "id": 1787801270332,
+  "recordedAt": "2026-08-27T03:27:50.333Z",
+  "eventType": "saved",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-27",
+    "time": "03:27:08",
+    "pair": "XAU/USD",
+    "current_price": 4637.35856,
+    "trade_type": "BUY",
+    "entry_price": 4637.36,
+    "entry_zone": {
+      "low": 4620.65,
+      "high": 4652.88,
+      "source": "Confluence"
+    },
+    "stop_loss": 4599.97,
+    "stop_loss_reason": "Below the 4H EMA21 and the 1H lower Bollinger band, protecting against a breakdown of the recent consolidation.",
+    "take_profit_1": 4679.44,
+    "take_profit_2": 4690.84,
+    "take_profit_3": 4785.99,
+    "risk_reward": "1:2.0",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "Turtle Soup (4H)+Bullish 1D/4H trend+Price above EMA9/EMA21/EMA50/EMA200+Bullish 15M/5M momentum",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "The 4H Turtle Soup pattern indicates a liquidity grab below recent lows, which often precedes a bullish reversal. The higher timeframe trend is bullish (1D and 4H), and the current price is above key EMAs, supporting a long position.",
+      "secondary": [
+        "The 1H MACD histogram is positive and rising, indicating bullish momentum.",
+        "The 1H Stochastic is in overbought territory, but the 4H Stochastic is not, suggesting room for further upside.",
+        "The price is near the 4H middle Bollinger band, which can act as support in an uptrend.",
+        "The session is Asia KZ with a killzone active, and no high-impact news, reducing the risk of unexpected volatility."
+      ],
+      "risk_warning": "The 4H MACD histogram is negative, indicating bearish momentum on the higher timeframe. The 1H RSI is near overbought, and the 1H CCI is above 100, suggesting a possible short-term pullback. The price is below the 4H Supertrend, which could act as resistance."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
