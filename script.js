@@ -2814,6 +2814,20 @@ RULES:
 - Consider ALL timeframes, indicators, patterns, session, and news
 - Be precise with numbers (use same precision as pair)
 
+## ENTRY PRICE RULES (CRITICAL):
+You MUST set entry at ZONE PRICE, NOT current price!
+
+### BUY:
+Entry = zone.low (or zone.low + small buffer)
+Example: zone.low=4590, zone.high=4605 → entry=4590
+
+### SELL:
+Entry = zone.high (or zone.high - small buffer)
+Example: zone.low=4590, zone.high=4605 → entry=4605
+
+### Exception:
+Only use current price if it is ALREADY inside the zone
+
 IMPORTANT: You are the PRIMARY analyst. Find the BEST setup, not just any setup.`;
 
         scanText.innerHTML = '🤖 AI analyzing all data...';
