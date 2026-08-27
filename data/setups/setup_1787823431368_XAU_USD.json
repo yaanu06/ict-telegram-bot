@@ -1,0 +1,41 @@
+{
+  "id": 1787823431368,
+  "recordedAt": "2026-08-27T09:37:11.372Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-27",
+    "time": "09:37:11",
+    "pair": "XAU/USD",
+    "current_price": 4591.15743,
+    "trade_type": "SELL",
+    "entry_price": 4591.16,
+    "entry_zone": {
+      "low": 4585,
+      "high": 4595,
+      "source": "Confluence"
+    },
+    "stop_loss": 4623.07,
+    "stop_loss_reason": "Above the 1H EMA21 and the 4H SAR, providing a logical invalidation level for the bearish setup.",
+    "take_profit_1": 4560,
+    "take_profit_2": 4533.26,
+    "take_profit_3": 4500,
+    "risk_reward": "1:2.0",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "1H Bearish Order Block+4H Bearish FVG+1H Lower Highs",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Bearish momentum on lower timeframes (1H, 15M, 5M) with price trading below key EMAs and a bearish MACD crossover on 1H, suggesting continued downside.",
+      "secondary": [
+        "Price is below the 4H Supertrend and SAR, indicating bearish trend continuation.",
+        "RSI on 4H and 1H is below 50, showing bearish momentum.",
+        "London Killzone session provides liquidity and volatility for potential moves."
+      ],
+      "risk_warning": "Higher timeframe (1D, 4H) is bullish, so this is a counter-trend trade. Watch for a bounce from the 4H MSNR S1 level (4370.58) or a bullish reversal pattern."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
