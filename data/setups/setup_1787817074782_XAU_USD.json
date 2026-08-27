@@ -1,0 +1,48 @@
+{
+  "id": 1787817074782,
+  "recordedAt": "2026-08-27T07:51:14.785Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-27",
+    "time": "07:51:14",
+    "pair": "XAU/USD",
+    "current_price": 4597.06707,
+    "trade_type": "SELL",
+    "entry_price": 4597.07,
+    "entry_zone": {
+      "low": 4590,
+      "high": 4605,
+      "source": "Confluence"
+    },
+    "stop_loss": 4633.26,
+    "stop_loss_reason": "Above the 4H EMA21 and the 1H middle Bollinger band, providing a logical invalidation for the bearish setup.",
+    "take_profit_1": 4584.34,
+    "take_profit_2": 4577.04,
+    "take_profit_3": 4534.54,
+    "risk_reward": "1:2.0",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "Bearish order flow on lower timeframes+Price below 4H EMA9 and EMA21+Bearish MACD histogram on 4H+Stochastic oversold but still bearish momentum",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "The 1H and 15M timeframes are bearish, and price is trading below the 4H EMA9 and EMA21, indicating short-term bearish momentum. The 4H MACD histogram is negative, and the 1H MACD is below zero, confirming bearish pressure.",
+      "secondary": [
+        "The 4H RSI is below 50, showing bearish momentum, and the 1H RSI is also below 50.",
+        "The 4H CCI is deeply negative (-123.76), suggesting strong bearish momentum.",
+        "The 4H Supertrend is above price, acting as dynamic resistance.",
+        "The 4H Bollinger bands show price near the lower band, but the middle band (4632.21) is above price, providing resistance.",
+        "The 4H SAR is above price, indicating a downtrend.",
+        "The 1H Bollinger bands show price below the middle band, with the upper band at 4637.02 providing resistance.",
+        "The 1H MACD histogram is positive but the MACD line is below zero, suggesting a potential pullback but overall bearish trend.",
+        "The 4H MSNR pivot is at 4534.54, which is a potential downside target.",
+        "The 4H MSNR resistance R1 at 4758.46 is far above, but the pivot at 4534.54 is a key level.",
+        "The 4H FVG and swing patterns do not show fresh bullish setups, and the CRT is neutral, so no conflicting signals."
+      ],
+      "risk_warning": "The 4H trend is bullish, and the 1D trend is bullish, so this is a counter-trend trade on the higher timeframes. The 4H RSI is near oversold, and the 1H stochastic is also low, which could lead to a bounce. The 4H Bollinger lower band is at 4584.34, which may act as support. The 4H ATR is 36.19, so volatility is moderate. The London killzone is active, which could cause sharp moves. No high-impact news is expected, but the session multiplier is 1.3, so liquidity is higher."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
