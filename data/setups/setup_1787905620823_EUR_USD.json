@@ -1,0 +1,41 @@
+{
+  "id": 1787905620823,
+  "recordedAt": "2026-08-28T08:27:00.826Z",
+  "eventType": "ai_scan",
+  "pair": "EUR/USD",
+  "setup": {
+    "date": "2026-08-28",
+    "time": "08:27:00",
+    "pair": "EUR/USD",
+    "current_price": 1.16461,
+    "trade_type": "SELL",
+    "entry_price": 1.16461,
+    "entry_zone": {
+      "low": 1.16461,
+      "high": 1.165,
+      "source": "Confluence"
+    },
+    "stop_loss": 1.1665,
+    "stop_loss_reason": "Above the 4H EMA9/EMA21 and recent swing high, providing a logical invalidation for the bearish setup.",
+    "take_profit_1": 1.163,
+    "take_profit_2": 1.1615,
+    "take_profit_3": 1.16,
+    "risk_reward": "1:1.5",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "FVG+CRT+Swing",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Bearish momentum on lower timeframes (1H, 15M, 5M) with price below key EMAs and RSI below 50, suggesting continued downside.",
+      "secondary": [
+        "London killzone active with no high-impact news, allowing technicals to drive price.",
+        "4H CRT neutral but 1H CRT contracting, indicating potential for a downside move.",
+        "Price is near 4H MSNR R1 (1.17) and below, acting as resistance."
+      ],
+      "risk_warning": "4H trend is bullish, which could lead to a reversal. Also, price is near the 4H Bollinger middle band, which may act as support."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
