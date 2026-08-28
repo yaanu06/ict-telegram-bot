@@ -1,0 +1,41 @@
+{
+  "id": 1787890007240,
+  "recordedAt": "2026-08-28T04:06:47.241Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-08-28",
+    "time": "04:06:47",
+    "pair": "XAU/USD",
+    "current_price": 4579.38361,
+    "trade_type": "SELL",
+    "entry_price": 4598.97,
+    "entry_zone": {
+      "low": 4598.97,
+      "high": 4607.64,
+      "source": "Confluence"
+    },
+    "stop_loss": 4631.12,
+    "stop_loss_reason": "Above EMA21 and EMA9, and above the 4H Supertrend (4682.63) but a conservative stop above the recent swing high and EMA cluster to avoid volatility.",
+    "take_profit_1": 4565.62,
+    "take_profit_2": 4540,
+    "take_profit_3": 4471.33,
+    "risk_reward": "1:2.0",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "Bearish 1H trend+Bearish 15M and 5M trends+Price below EMA9 and EMA21 on 4H+MACD bearish on 4H and 1H+Stochastic oversold but still bearish+CCI negative on 4H and 1H",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Bearish momentum across multiple timeframes (1H, 15M, 5M) with price below key EMAs and bearish MACD on 4H and 1H, suggesting continued downside.",
+      "secondary": [
+        "4H RSI at 43.05 and 1H RSI at 41.69 indicate bearish momentum but not yet oversold, leaving room for further decline.",
+        "Price is below the 4H Supertrend (4682.63) and below the middle Bollinger Band on 4H, confirming bearish pressure.",
+        "Off-hours session with low volatility (0.70%) and no high-impact news, allowing technicals to drive price."
+      ],
+      "risk_warning": "Potential for a bounce from the 4H EMA50 (4580.07) or the lower Bollinger Band (4565.62). Also, the 4H trend is neutral, and the 1D trend is bullish, which could lead to a reversal. The stochastic is oversold, which might trigger a short-term bounce."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
