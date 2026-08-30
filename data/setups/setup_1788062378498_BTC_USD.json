@@ -1,0 +1,42 @@
+{
+  "id": 1788062378498,
+  "recordedAt": "2026-08-30T03:59:38.501Z",
+  "eventType": "ai_scan",
+  "pair": "BTC/USD",
+  "setup": {
+    "date": "2026-08-30",
+    "time": "03:59:38",
+    "pair": "BTC/USD",
+    "current_price": 78144.68,
+    "trade_type": "BUY",
+    "entry_price": 77215.87,
+    "entry_zone": {
+      "low": 77215.87,
+      "high": 77498.46,
+      "source": "Confluence"
+    },
+    "stop_loss": 76504.27,
+    "stop_loss_reason": "Below Supertrend support and recent swing low, with buffer below ATR.",
+    "take_profit_1": 78152.62,
+    "take_profit_2": 78742.72,
+    "take_profit_3": 80622.55,
+    "risk_reward": "1:1.5",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "FVG+CRT+Swing",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Bullish 4H trend with price pulling back to Supertrend support and 1H lower Bollinger band, creating a confluence demand zone.",
+      "secondary": [
+        "1H MACD bullish crossover and RSI above 50 indicate momentum shift.",
+        "4H RSI near 48.7 shows room for upside without being overbought.",
+        "No high-impact news and Asia session with killzone active supports a long.",
+        "Price near 4H EMA50 (77048) and 1H lower band (77498) adds confluence."
+      ],
+      "risk_warning": "1H trend is bearish and 4H MACD is negative, so a break below Supertrend could invalidate the setup. Also, 4H Bollinger middle (78742) may act as resistance."
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for a bullish candlestick close (e.g., hammer or engulfing) on the 1H chart within the entry zone before entering.",
+    "source": "AI-Generated Setup"
+  }
+}
