@@ -1,0 +1,41 @@
+{
+  "id": 1788153052922,
+  "recordedAt": "2026-08-31T05:10:52.925Z",
+  "eventType": "ai_scan",
+  "pair": "EUR/USD",
+  "setup": {
+    "date": "2026-08-31",
+    "time": "05:10:52",
+    "pair": "EUR/USD",
+    "current_price": 1.15892,
+    "trade_type": "SELL",
+    "entry_price": 1.15892,
+    "entry_zone": {
+      "low": 1.15892,
+      "high": 1.1595,
+      "source": "Confluence"
+    },
+    "stop_loss": 1.161,
+    "stop_loss_reason": "Above the 4H EMA9/EMA21 cluster and the 1.16 psychological resistance, invalidating the bearish setup if broken.",
+    "take_profit_1": 1.157,
+    "take_profit_2": 1.155,
+    "take_profit_3": 1.153,
+    "risk_reward": "1:2.0",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "CRT Expanding+4H Bearish Trend+1H CCI Overbought",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "The 4H timeframe shows a bearish trend with an expanding CRT pattern, while the 1H CCI is overbought, suggesting a potential downward move. The current price is at a confluence of resistance (1.16 psychological level and EMA cluster), providing a low-risk short entry.",
+      "secondary": [
+        "The 4H MACD is negative, supporting bearish momentum.",
+        "The 1D trend is bullish, but the 4H bearish trend takes precedence for this intraday setup.",
+        "The off-hours session with low volatility (0.23%) suggests a potential for a mean-reversion move to the downside."
+      ],
+      "risk_warning": "The 1D trend is bullish, which could lead to a bounce from the 1.15 support level. The 1H RSI is not overbought, limiting the downside potential. The current price is within the 1H Bollinger Bands, which could act as support."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
