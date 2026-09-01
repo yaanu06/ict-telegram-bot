@@ -1,0 +1,42 @@
+{
+  "id": 1788242614467,
+  "recordedAt": "2026-09-01T06:03:34.469Z",
+  "eventType": "saved",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-01",
+    "time": "06:01:39",
+    "pair": "XAU/USD",
+    "current_price": 4439.31457,
+    "trade_type": "SELL",
+    "entry_price": 4443.08,
+    "entry_zone": {
+      "low": 4439.31,
+      "high": 4443.08,
+      "source": "Confluence"
+    },
+    "stop_loss": 4464.6,
+    "stop_loss_reason": "Above the 4H EMA21 and the 1H EMA9, which are acting as dynamic resistance. A break above this level would invalidate the bearish momentum.",
+    "take_profit_1": 4426.58,
+    "take_profit_2": 4410,
+    "take_profit_3": 4390,
+    "risk_reward": "1:2.1",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "4H CRT EXPANDING+4H Bearish Momentum+1H Bearish Momentum",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "The 4H timeframe shows a bearish trend with price trading below the EMA21 and EMA9, and the 4H CRT pattern is expanding, indicating a potential continuation of the downward move. The 1H timeframe also shows bearish momentum, with price below the 1H EMA9 and a bearish MACD histogram.",
+      "secondary": [
+        "The 4H RSI is at 37.46, indicating bearish momentum but not yet oversold, leaving room for further downside.",
+        "The 4H CCI is at -95.52, approaching oversold territory but still supporting bearish pressure.",
+        "The 4H Supertrend is at 4496.04, well above the current price, confirming the bearish trend.",
+        "The 4H SAR is at 4486.49, also above the current price, further confirming the bearish trend."
+      ],
+      "risk_warning": "The 1D trend is bullish, which could lead to a reversal or a bounce from the 4H Bollinger lower band. The 4H MACD histogram is positive, suggesting a potential short-term bullish correction. The market is in off-hours with a low session multiplier, which could lead to lower liquidity and wider spreads."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
