@@ -1,0 +1,41 @@
+{
+  "id": 1788332428647,
+  "recordedAt": "2026-09-02T07:00:28.649Z",
+  "eventType": "saved",
+  "pair": "AUD/USD",
+  "setup": {
+    "date": "2026-09-02",
+    "time": "07:00:25",
+    "pair": "AUD/USD",
+    "current_price": 0.71396,
+    "trade_type": "SELL",
+    "entry_price": 0.714,
+    "entry_zone": {
+      "low": 0.7135,
+      "high": 0.714,
+      "source": "Confluence"
+    },
+    "stop_loss": 0.7155,
+    "stop_loss_reason": "Above the 4H EMA21 and recent swing high, invalidating bearish momentum if breached.",
+    "take_profit_1": 0.7125,
+    "take_profit_2": 0.7115,
+    "take_profit_3": 0.7105,
+    "risk_reward": "1:2.3",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "MACD Regular Bullish Divergence+Bearish Sentiment+Lower Timeframe Trend Alignment",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Bearish momentum on 4H and 1H timeframes, with price trading below key EMAs and bearish MACD, suggesting continued downside.",
+      "secondary": [
+        "Price is in a manipulation phase, likely to sweep sell-side liquidity before continuing lower.",
+        "Bearish sentiment (20/100) on both 4H and 1H supports a sell bias.",
+        "Sell into the 4H MSNR R1 resistance level, which aligns with the 1H EMA21, providing a strong confluence zone."
+      ],
+      "risk_warning": "A bullish MACD divergence is present, indicating potential for a reversal. The current price is also near the 1D bullish trend, which could provide support. High-impact news is absent, but volatility is low, which could lead to unexpected moves."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
