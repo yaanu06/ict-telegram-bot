@@ -1,0 +1,42 @@
+{
+  "id": 1788344526709,
+  "recordedAt": "2026-09-02T10:22:06.713Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-02",
+    "time": "10:22:06",
+    "pair": "XAU/USD",
+    "current_price": 4310.15904,
+    "trade_type": "SELL",
+    "entry_price": 4310.16,
+    "entry_zone": {
+      "low": 4300,
+      "high": 4310.16,
+      "source": "Confluence"
+    },
+    "stop_loss": 4343.07,
+    "stop_loss_reason": "Above the 1H EMA9 (4343.07) and the 4H SAR (4360.03), providing a logical invalidation point for the bearish thesis. A break above this level would signal a shift in momentum.",
+    "take_profit_1": 4284.5,
+    "take_profit_2": 4162.15,
+    "take_profit_3": 4016.31,
+    "risk_reward": "1:1.5",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "Hidden Bearish Divergence on RSI (4H)+Hidden Bearish Divergence on MACD (4H)+Expanding CRT (4H & 1H)+Bearish Trend on 4H, 1H, 15M, 5M",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "The confluence of a strong bearish trend across multiple timeframes (4H, 1H, 15M, 5M) with a hidden bearish divergence on the 4H RSI and MACD indicates a high-probability continuation setup. The current price is below all major EMAs (9, 21, 50, 200) on the 4H, confirming the bearish momentum.",
+      "secondary": [
+        "The 4H RSI at 18.54 is in deeply oversold territory, but the hidden bearish divergence suggests that momentum is still to the downside, and a bounce is likely to be sold.",
+        "The 4H MACD histogram is negative and expanding, indicating increasing bearish momentum.",
+        "The 4H Supertrend is bearish at 4402.52, and the price is below the 4H Bollinger Band middle (4400.98), further supporting the bearish outlook.",
+        "The 1H MACD histogram is turning positive, suggesting a minor pullback, which could provide a better entry for a short position."
+      ],
+      "risk_warning": "The 4H RSI is extremely oversold, which could lead to a sharp short-covering bounce. The current price is also below the 1H Bollinger Band lower (4285.95), indicating a potential snap-back move. The off-hours session with a 0.5 multiplier could result in lower liquidity and wider spreads."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
