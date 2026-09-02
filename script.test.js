@@ -195,3 +195,93 @@ describe('self-learning performance', () => {
         expect(perf.sampleSize).toBe(3);
     });
 });
+
+describe('shouldTradeSession', () => {
+    it('returns MAX during silver bullet 1 (8:30-9 UTC)', () => {
+        const ctx = getContext();
+        const r = ctx.shouldTradeSession(new Date(Date.UTC(2026, 0, 1, 8, 45)));
+        expect(r.priority).toBe('MAX');
+        expect(r.isSilverBullet).toBe(true);
+        expect(r.shouldTrade).toBe(true);
+    });
+    it('returns HIGH during London killzone', () => {
+        const ctx = getContext();
+        const r = ctx.shouldTradeSession(new Date(Date.UTC(2026, 0, 1, 8, 0)));
+        expect(r.priority).toBe('HIGH');
+        expect(r.shouldTrade).toBe(true);
+    });
+    it('returns LOW and shouldTrade=false during off-hours', () => {
+        const ctx = getContext();
+        const r = ctx.shouldTradeSession(new Date(Date.UTC(2026, 0, 1, 18, 0)));
+        expect(r.priority).toBe('LOW');
+        expect(r.shouldTrade).toBe(false);
+        expect(r.isOffHours).toBe(true);
+    });
+    it('returns LOW and shouldTrade=false during Asian session', () => {
+        const ctx = getContext();
+        const r = ctx.shouldTradeSession(new Date(Date.UTC(2026, 0, 1, 2, 0)));
+        expect(r.priority).toBe('LOW');
+        expect(r.shouldTrade).toBe(false);
+    });
+});
+
+describe('shouldEnterBasedOnPhase', () => {
+    it('allows entry in ACCUMULATION', () => {
+        const ctx = getContext();
+        const r = ctx.shouldEnterBasedOnPhase({ phase: 'ACCUMULATION', confidence: 70 }, 'BUY', 100, candles(60, 100, 1, 'up'));
+        expect(r.shouldEnter).toBe(true);
+    });
+    it('blocks entry in MANIPULATION without sweep', () => {
+        const ctx = getContext();
+        const r = ctx.shouldEnterBasedOnPhase({ phase: 'MANIPULATION', confidence: 70 }, 'BUY', 100, candles(60, 100, 1, 'up'));
+        expect(r.shouldEnter).toBe(false);
+        expect(r.waitFor).toBe('liquidity sweep');
+    });
+    it('permits default entry on NEUTRAL/UNKNOWN', () => {
+        const ctx = getContext();
+        const r = ctx.shouldEnterBasedOnPhase({ phase: 'NEUTRAL', confidence: 0 }, 'BUY', 100, null);
+        expect(r.shouldEnter).toBe(true);
+    });
+});
+
+describe('checkEntryConfirmation', () => {
+    it('reports isAtZone=false when price is far from zone', () => {
+        const ctx = getContext();
+        const data = candles(20, 100, 1, 'up');
+        const r = ctx.checkEntryConfirmation(data, { low: 200, high: 210 }, 'BUY');
+        expect(r.isAtZone).toBe(false);
+        expect(r.confirmed).toBe(false);
+    });
+    it('scores positively when price is inside zone with bullish momentum', () => {
+        const ctx = getContext();
+        const data = candles(20, 100, 5, 'up');
+        const zone = { low: data[data.length - 1].l - 1, high: data[data.length - 1].h + 1 };
+        const r = ctx.checkEntryConfirmation(data, zone, 'BUY');
+        expect(r.isAtZone).toBe(true);
+        expect(r.score).toBeGreaterThan(0);
+    });
+});
+
+describe('buildEntryContext', () => {
+    it('aggregates all 3 filters into a summary', () => {
+        const ctx = getContext();
+        const sc = { priority: 'HIGH', reason: 'KZ', multiplier: 1.3, isKillzone: true, isSilverBullet: false, isAsian: false, isOffHours: false, shouldTrade: true };
+        const ph = { phase: 'ACCUMULATION', confidence: 70 };
+        const pd = { shouldEnter: true, reason: 'Accumulation', multiplier: 1.0 };
+        const ec = { confirmed: true, score: 35, strength: 'MODERATE', confirmations: ['Bullish Momentum'], isAtZone: true };
+        const ctxOut = ctx.buildEntryContext(sc, ph, pd, ec);
+        expect(ctxOut.allOk).toBe(true);
+        expect(ctxOut.summary).toMatch(/ALL FILTERS PASS/);
+        expect(ctxOut.lines.length).toBeGreaterThanOrEqual(3);
+    });
+    it('blocks when session is LOW', () => {
+        const ctx = getContext();
+        const sc = { priority: 'LOW', reason: 'Off-hours', multiplier: 0.6, isKillzone: false, isSilverBullet: false, isAsian: false, isOffHours: true, shouldTrade: false };
+        const ph = { phase: 'NEUTRAL', confidence: 0 };
+        const pd = { shouldEnter: true, reason: 'Neutral', multiplier: 1.0 };
+        const ec = { confirmed: true, score: 30, strength: 'MODERATE', confirmations: [], isAtZone: true };
+        const ctxOut = ctx.buildEntryContext(sc, ph, pd, ec);
+        expect(ctxOut.allOk).toBe(false);
+        expect(ctxOut.summary).toMatch(/FILTER BLOCK/);
+    });
+});

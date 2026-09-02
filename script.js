@@ -2671,6 +2671,29 @@ async function runAutoScan() {
                 sentimentBlock: `Sentiment 4H: ${sentiment.description} | 1H: ${sentiment1h.description}`
             };
         }
+
+        // ============================================
+        // ENTRY FILTERS - session, phase, confirmation
+        // ============================================
+        const sessionCheck = shouldTradeSession();
+        const phaseData = historyCache['1H'] && historyCache['1H'].length >= 30 ? historyCache['1H'] : (historyCache['4H'] || []);
+        const marketPhase = analyzeMarketPhase(phaseData);
+        const aiDirection = lastSetupSummary?.direction === 'SHORT' ? 'SELL' : (lastSetupSummary?.direction === 'LONG' ? 'BUY' : null);
+        const tentativeZone = lastSetupOut?.trade_signal?.entry_zone || lastSetupSummary?.zoneType || null;
+        const tentativeZoneObj = tentativeZone && typeof tentativeZone === 'object' && tentativeZone.low
+            ? tentativeZone
+            : (tentativeZone && typeof tentativeZone === 'object' && tentativeZone.p
+                ? { low: tentativeZone.p * 0.998, high: tentativeZone.p * 1.002 }
+                : { low: price * 0.998, high: price * 1.002 });
+        const confirmTf = historyCache['15M'] && historyCache['15M'].length >= 3 ? '15M'
+            : (historyCache['5M'] && historyCache['5M'].length >= 3 ? '5M' : null);
+        const entryConfirmation = (confirmTf && aiDirection)
+            ? checkEntryConfirmation(historyCache[confirmTf], tentativeZoneObj, aiDirection)
+            : { confirmed: false, score: 0, strength: 'NONE', confirmations: [], shouldWait: true, reason: 'Awaiting direction/zone', isAtZone: false };
+        const phaseDecision = shouldEnterBasedOnPhase(marketPhase, aiDirection || 'BUY', price, phaseData);
+        const entryContext = buildEntryContext(sessionCheck, marketPhase, phaseDecision, entryConfirmation);
+        // eslint-disable-next-line no-console
+        console.log('🎯 Entry filters:', entryContext.summary);
         
         const settings = getMarketSettings(pair);
         document.getElementById('currentPrice').innerHTML = `$${price.toFixed(settings.prec)}`;
@@ -2792,6 +2815,21 @@ ${enhancedAnalysis ? enhancedAnalysis.macdDivBlock : 'MACD Divergence: N/A'}
 ${enhancedAnalysis ? enhancedAnalysis.liqBlock : 'Liquidity: N/A'}
 ${enhancedAnalysis ? enhancedAnalysis.volProfBlock : 'Volume Profile: N/A'}
 ${enhancedAnalysis ? enhancedAnalysis.sentimentBlock : 'Sentiment: N/A'}
+
+═══════════════════════════════════════════
+🎯 ENTRY FILTERS (SESSION / PHASE / CONFIRMATION)
+═══════════════════════════════════════════
+${entryContext.lines.join('\n')}
+
+OVERALL: ${entryContext.summary}
+
+AI RULES (apply these strictly):
+- SESSION LOW/OFF-HOURS -> ai_decision = "skip"
+- PHASE block (no sweep / no momentum) -> ai_decision = "wait_for_reaction"
+- CONFIRMATION not confirmed AND price is at zone -> wait_for_reaction
+- Only when ALL three filters pass AND patterns align -> "enter_now"
+- If entry zone exists but confirmation not yet present (price not at zone) ->
+  you may still return "enter_now" because this is a LIMIT order that triggers on arrival
 
 ═══════════════════════════════════════════
 🎯 YOUR TASK
@@ -2937,8 +2975,18 @@ IMPORTANT: You are the PRIMARY analyst. Find the BEST setup, not just any setup.
         };
         lastSetupOut = out;
         syncSetupToGitHub(out.trade_signal, 'ai_scan');
-        
-        const tradeable = aiResult.ai_decision !== 'skip' && aiResult.confidence >= 58;
+
+        const filtersBlock = !entryContext.allOk;
+        const effectiveDecision = filtersBlock && aiResult.ai_decision === 'enter_now'
+            ? 'wait_for_reaction'
+            : aiResult.ai_decision;
+        if (filtersBlock && aiResult.ai_decision === 'enter_now') {
+            aiResult.ai_decision = effectiveDecision;
+            aiResult.filterOverride = entryContext.summary;
+        }
+        const tradeable = effectiveDecision !== 'skip'
+            && aiResult.confidence >= 58
+            && sessionCheck.priority !== 'LOW';
         
         analysis = {
             signalType: st,
@@ -3234,6 +3282,227 @@ function getPatternPerformance(patterns) {
     } catch(e) {
         return { winRate: 0, confidenceAdjustment: 0, sampleSize: 0, avgConfidence: 0 };
     }
+}
+
+// ============================================
+// ENTRY FILTERS - session, phase, confirmation
+// ============================================
+
+// SESSION FILTER - canonical ICT killzones
+function shouldTradeSession(now = new Date()) {
+    const hour = now.getUTCHours();
+    const min = now.getUTCMinutes();
+    const time = hour + min / 60;
+
+    const londonKZ = time >= 7 && time < 10;
+    const newYorkKZ = time >= 12 && time < 15;
+    const lonCloseKZ = time >= 15 && time < 17;
+    const isAsian = time >= 0 && time < 4;
+
+    const silverBullet1 = time >= 8.5 && time < 9;
+    const silverBullet2 = time >= 15 && time < 16;
+    const isSilverBullet = silverBullet1 || silverBullet2;
+
+    const isKillzone = londonKZ || newYorkKZ || lonCloseKZ;
+    const isOffHours = !isKillzone && !isAsian;
+
+    let priority = 'LOW';
+    let reason = 'Off-hours - low probability';
+    let multiplier = 0.6;
+    if (isSilverBullet) {
+        priority = 'MAX';
+        reason = 'SILVER BULLET - highest probability';
+        multiplier = 1.5;
+    } else if (isKillzone) {
+        priority = 'HIGH';
+        reason = 'Killzone session - high probability';
+        multiplier = 1.3;
+    } else if (isAsian) {
+        priority = 'LOW';
+        reason = 'Asian session - low liquidity, wait for confirmation';
+        multiplier = 0.7;
+    }
+
+    return {
+        shouldTrade: priority === 'MAX' || priority === 'HIGH',
+        priority,
+        reason,
+        multiplier,
+        isKillzone,
+        isSilverBullet,
+        isAsian,
+        isOffHours
+    };
+}
+
+// PHASE-BASED ENTRY RULES (AMD)
+function shouldEnterBasedOnPhase(phase, direction, price, data) {
+    if (!phase || phase.phase === 'UNKNOWN' || phase.phase === 'NEUTRAL') {
+        return { shouldEnter: true, reason: 'Neutral phase - no restrictions', multiplier: 1.0 };
+    }
+    const sweep = data ? detectLiquiditySweep(data, price, direction) : null;
+    const hasSweep = sweep !== null;
+
+    if (phase.phase === 'ACCUMULATION') {
+        return { shouldEnter: true, reason: 'Accumulation phase - enter on pullbacks', multiplier: 1.0 };
+    }
+    if (phase.phase === 'MANIPULATION') {
+        if (!hasSweep) {
+            return {
+                shouldEnter: false,
+                reason: 'Manipulation phase - waiting for liquidity sweep',
+                waitFor: 'liquidity sweep',
+                multiplier: 0.5
+            };
+        }
+        return { shouldEnter: true, reason: 'Manipulation phase - liquidity sweep confirmed', multiplier: 1.2 };
+    }
+    if (phase.phase === 'DISTRIBUTION') {
+        const hasMomentum = data ? !!detectDisplacement(data, direction) : false;
+        if (!hasMomentum) {
+            return {
+                shouldEnter: false,
+                reason: 'Distribution phase - waiting for momentum',
+                waitFor: 'momentum candle',
+                multiplier: 0.7
+            };
+        }
+        return { shouldEnter: true, reason: 'Distribution phase - momentum confirmed', multiplier: 1.1 };
+    }
+    return { shouldEnter: true, reason: 'Default entry allowed', multiplier: 1.0 };
+}
+
+// ENTRY CONFIRMATION CHECK (price action on LTF)
+function checkEntryConfirmation(data, zone, direction) {
+    if (!data || data.length < 3) {
+        return { confirmed: false, score: 0, strength: 'NONE', confirmations: [], reason: 'Insufficient data', shouldWait: true, isAtZone: false };
+    }
+    const last = data[data.length - 1];
+    const prev = data[data.length - 2];
+    const prev2 = data[data.length - 3];
+    const closes = data.map(c => c.c);
+    const ema9 = ema(closes, 9);
+    const ema21 = ema(closes, 21);
+    const currentEma9 = ema9[ema9.length - 1];
+    const currentEma21 = ema21[ema21.length - 1];
+    const avgBody = data.slice(-10).reduce((a, c) => a + Math.abs(c.c - c.o), 0) / 10;
+    const body = Math.abs(last.c - last.o);
+    const range = last.h - last.l;
+
+    const atZone = direction === 'BUY'
+        ? last.l <= zone.high && last.h >= zone.low
+        : last.h >= zone.low && last.l <= zone.high;
+
+    if (!atZone) {
+        return {
+            confirmed: false, score: 0, strength: 'NONE', confirmations: [],
+            reason: 'Price not at zone yet - waiting', shouldWait: true, isAtZone: false
+        };
+    }
+
+    const confirmations = [];
+    let score = 0;
+
+    // Engulfing
+    if (direction === 'BUY' && prev.c < prev.o && last.c > last.o && last.o < prev.c && last.c > prev.o) {
+        confirmations.push('Bullish Engulfing'); score += 30;
+    }
+    if (direction === 'SELL' && prev.c > prev.o && last.c < last.o && last.o > prev.c && last.c < prev.o) {
+        confirmations.push('Bearish Engulfing'); score += 30;
+    }
+    // Pin bar / rejection
+    if (direction === 'BUY') {
+        const lowerWick = Math.min(last.c, last.o) - last.l;
+        if (lowerWick > body * 2 && last.c > last.o && lowerWick > range * 0.3) {
+            confirmations.push('Bullish Pin Bar'); score += 30;
+        }
+    }
+    if (direction === 'SELL') {
+        const upperWick = last.h - Math.max(last.c, last.o);
+        if (upperWick > body * 2 && last.c < last.o && upperWick > range * 0.3) {
+            confirmations.push('Bearish Pin Bar'); score += 30;
+        }
+    }
+    // Momentum
+    if (direction === 'BUY' && last.c > last.o && body > avgBody * 1.8) {
+        confirmations.push('Bullish Momentum'); score += 20;
+    }
+    if (direction === 'SELL' && last.c < last.o && body > avgBody * 1.8) {
+        confirmations.push('Bearish Momentum'); score += 20;
+    }
+    // EMA alignment
+    if (direction === 'BUY' && currentEma9 > currentEma21 && last.c > currentEma9) {
+        confirmations.push('EMA Bullish Alignment'); score += 15;
+    }
+    if (direction === 'SELL' && currentEma9 < currentEma21 && last.c < currentEma9) {
+        confirmations.push('EMA Bearish Alignment'); score += 15;
+    }
+    // Liquidity sweep (LTF)
+    const sw = findSwings(data.slice(-20), 3);
+    if (direction === 'BUY') {
+        const lows = (sw.L || []).slice(-4);
+        const swept = lows.some(l => data.slice(-5).some(c => c.l < l.p * 0.999 && c.c > l.p));
+        if (swept) { confirmations.push('Liquidity Sweep'); score += 25; }
+    }
+    if (direction === 'SELL') {
+        const highs = (sw.H || []).slice(-4);
+        const swept = highs.some(h => data.slice(-5).some(c => c.h > h.p * 1.001 && c.c < h.p));
+        if (swept) { confirmations.push('Liquidity Sweep'); score += 25; }
+    }
+    // Break of structure (LTF)
+    if (direction === 'BUY' && last.c > Math.max(prev.h, prev2.h)) {
+        confirmations.push('Break of Structure'); score += 15;
+    }
+    if (direction === 'SELL' && last.c < Math.min(prev.l, prev2.l)) {
+        confirmations.push('Break of Structure'); score += 15;
+    }
+    // Close outside zone
+    if (direction === 'BUY' && last.c > zone.high) {
+        confirmations.push('Closed Above Zone'); score += 20;
+    }
+    if (direction === 'SELL' && last.c < zone.low) {
+        confirmations.push('Closed Below Zone'); score += 20;
+    }
+    // Volume spike
+    if (data.length >= 20) {
+        const vols = data.slice(-20).map(c => c.v || 0);
+        const avgVol = vols.reduce((a, b) => a + b, 0) / vols.length;
+        const lastVol = data[data.length - 1].v || 0;
+        if (avgVol > 0 && lastVol > avgVol * 1.5) {
+            confirmations.push('Volume Spike'); score += 15;
+        }
+    }
+
+    const confirmed = score >= 25;
+    const strength = score >= 50 ? 'STRONG' : (score >= 25 ? 'MODERATE' : 'WEAK');
+    return {
+        confirmed, score, strength, confirmations, shouldWait: !confirmed,
+        reason: confirmations.length > 0
+            ? '✅ ' + confirmations.join(', ') + ' (Score: ' + score + ')'
+            : '⏳ No confirmation signals - WAITING',
+        isAtZone: atZone
+    };
+}
+
+// Aggregator: combine the 3 filters into a single context for the AI prompt
+function buildEntryContext(sessionCheck, marketPhase, phaseDecision, entryConfirmation) {
+    const lines = [];
+    lines.push('1. SESSION FILTER: ' + sessionCheck.priority + ' - ' + sessionCheck.reason + ' (mult ' + sessionCheck.multiplier + 'x)');
+    if (sessionCheck.isSilverBullet) lines.push('   🏹 SILVER BULLET ACTIVE');
+    else if (sessionCheck.isKillzone) lines.push('   ✅ Killzone active');
+    else if (sessionCheck.isOffHours) lines.push('   ⏳ Outside killzone');
+    else if (sessionCheck.isAsian) lines.push('   🌏 Asian session');
+
+    lines.push('2. MARKET PHASE: ' + marketPhase.phase + ' (' + (marketPhase.confidence || 0).toFixed(0) + '%) - ' + (phaseDecision.shouldEnter ? '✅ Entry allowed' : '⏳ ' + phaseDecision.reason));
+
+    lines.push('3. ENTRY CONFIRMATION: ' + (entryConfirmation.confirmed ? '✅ READY' : '⏳ WAITING') + ' | Score ' + entryConfirmation.score + '/100 | ' + entryConfirmation.strength + ' | ' + (entryConfirmation.confirmations.join(', ') || 'No signals'));
+    if (!entryConfirmation.isAtZone) lines.push('   ℹ️ Price not at zone yet - limit order will trigger on arrival');
+
+    const allOk = sessionCheck.priority !== 'LOW' && phaseDecision.shouldEnter && entryConfirmation.confirmed;
+    const summary = allOk
+        ? '✅ ALL FILTERS PASS - AI may enter_now'
+        : '⏳ FILTER BLOCK - AI should return wait_for_reaction or skip';
+    return { allOk, lines, summary, sessionCheck, marketPhase, phaseDecision, entryConfirmation };
 }
 
 // ============================================
