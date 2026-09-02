@@ -1,0 +1,41 @@
+{
+  "id": 1788368664362,
+  "recordedAt": "2026-09-02T17:04:24.365Z",
+  "eventType": "ai_scan",
+  "pair": "NZD/USD",
+  "setup": {
+    "date": "2026-09-02",
+    "time": "17:04:24",
+    "pair": "NZD/USD",
+    "current_price": 0.5846,
+    "trade_type": "SELL",
+    "entry_price": 0.5852,
+    "entry_zone": {
+      "low": 0.5846,
+      "high": 0.5852,
+      "source": "Confluence"
+    },
+    "stop_loss": 0.5862,
+    "stop_loss_reason": "Above the 4H EMA9/EMA21 cluster and the nearest swing high, providing a logical invalidation point for the bearish setup.",
+    "take_profit_1": 0.5835,
+    "take_profit_2": 0.582,
+    "take_profit_3": 0.58,
+    "risk_reward": "1:1.2",
+    "confidence": 25,
+    "zone_quality": "C",
+    "patterns_detected": "4H CRT Expanding+4H Bearish Order Block+4H Swing High",
+    "probability": "LOW",
+    "reasoning": {
+      "primary": "The 4H and 1H timeframes are bearish, and the price is currently in a retracement within a broader downtrend. The confluence of the 4H EMA9/EMA21 and a potential bearish order block offers a short entry point to align with the higher timeframe trend.",
+      "secondary": [
+        "4H RSI at 33.55 and CCI at -110.07 indicate bearish momentum, supporting a short position.",
+        "The 4H sentiment is bearish (20/100), confirming the bearish outlook.",
+        "The 4H CRT pattern is expanding, which can often lead to volatile moves in the direction of the trend."
+      ],
+      "risk_warning": "The market is in a NEUTRAL phase with low confidence, and the current session is off-hours with a low multiplier. The 15M and 5M timeframes are bullish, suggesting a potential short-term bounce that could hit the stop loss before the trade moves in the intended direction. The risk-reward is below the minimum threshold of 1:1.5."
+    },
+    "ai_decision": "skip",
+    "wait_condition": "Awaiting a high-probability setup during a high-probability session (e.g., London or New York killzone) with a confirmed market structure shift and a better risk-reward ratio.",
+    "source": "AI-Generated Setup"
+  }
+}
