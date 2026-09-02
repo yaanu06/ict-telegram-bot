@@ -1,0 +1,41 @@
+{
+  "id": 1788332171878,
+  "recordedAt": "2026-09-02T06:56:11.879Z",
+  "eventType": "saved",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-02",
+    "time": "06:55:14",
+    "pair": "XAU/USD",
+    "current_price": 4315.92577,
+    "trade_type": "SELL",
+    "entry_price": 4315.93,
+    "entry_zone": {
+      "low": 4298.31,
+      "high": 4332.82,
+      "source": "Confluence"
+    },
+    "stop_loss": 4379.24,
+    "stop_loss_reason": "Above the 4H SAR (4379.24) and the 1H EMA21 (4401.84), providing a logical invalidation point if the bearish momentum reverses.",
+    "take_profit_1": 4298.31,
+    "take_profit_2": 4250,
+    "take_profit_3": 4167.98,
+    "risk_reward": "1:1.5",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "Hidden Bearish RSI Divergence+Hidden Bearish MACD Divergence+Expanding CRT+Bearish 4H/1H Trend",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "The 4H and 1H timeframes are in a strong bearish trend, supported by oversold RSI on 4H (20.37) and a bearish MACD. The price is currently trading below key EMAs (EMA9, EMA21, EMA50, EMA200) on the 4H chart, indicating sustained selling pressure.",
+      "secondary": [
+        "The 4H RSI is in oversold territory, but the Hidden Bearish Divergence suggests that the current momentum is a continuation of the downtrend, not a reversal.",
+        "The 4H CRT pattern is expanding, which often precedes a strong directional move. Combined with the bearish trend, this suggests a potential downside expansion.",
+        "The price is below the 4H Supertrend (4402.52) and the 1H Bollinger Middle Band (4332.82), further confirming the bearish bias."
+      ],
+      "risk_warning": "The 5M timeframe is showing a bullish trend, which could lead to a short-term bounce. Additionally, the price is near the 4H Bollinger Lower Band (4298.31), which may act as a temporary support. The current price is also below the 1H Bollinger Lower Band, indicating a potential for a snapback rally."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
