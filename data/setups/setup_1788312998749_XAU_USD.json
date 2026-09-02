@@ -1,0 +1,41 @@
+{
+  "id": 1788312998749,
+  "recordedAt": "2026-09-02T01:36:38.751Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-02",
+    "time": "01:36:38",
+    "pair": "XAU/USD",
+    "current_price": 4309.04468,
+    "trade_type": "SELL",
+    "entry_price": 4311.91,
+    "entry_zone": {
+      "low": 4292.64,
+      "high": 4311.91,
+      "source": "Confluence"
+    },
+    "stop_loss": 4361.32,
+    "stop_loss_reason": "Above the 1H EMA9 and the 4H lower Bollinger Band, providing a logical invalidation point for the bearish setup.",
+    "take_profit_1": 4176.34,
+    "take_profit_2": 4045.53,
+    "take_profit_3": 3785.73,
+    "risk_reward": "1:1.5",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "CRT EXPANDING+Bearish Momentum+Lower Low Structure",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "Strong bearish momentum across multiple timeframes with price breaking below the 4H lower Bollinger Band and RSI at 16.08, indicating oversold conditions but continued downside pressure.",
+      "secondary": [
+        "4H and 1H MACD both negative with bearish histograms, confirming downside momentum.",
+        "Price is below all key EMAs (9, 21, 50, 200) on 4H, indicating a strong downtrend.",
+        "CRT pattern is expanding on 4H, suggesting increased volatility and potential for continuation."
+      ],
+      "risk_warning": "Oversold conditions (RSI 16.08) may lead to a short-term bounce or consolidation. The current price is near the lower Bollinger Band, which could act as support. News is clear, but the Asian session has lower liquidity, which may cause erratic moves."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
