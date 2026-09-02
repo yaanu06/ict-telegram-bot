@@ -2648,6 +2648,30 @@ async function runAutoScan() {
         
         await updateMTFDisplay(historyCache);
         
+        // ============================================
+        // ENHANCED AI INTELLIGENCE - Compute on 4H
+        // ============================================
+        let enhancedAnalysis = null;
+        if (historyCache['4H'] && historyCache['4H'].length >= 50) {
+            const phase = analyzeMarketPhase(historyCache['4H']);
+            const rsiDiv = detectDivergence(historyCache['4H'], 'rsi', 30);
+            const macdDiv = detectDivergence(historyCache['4H'], 'macd', 30);
+            const liq = mapLiquidity(historyCache['4H']);
+            const volProf = analyzeVolumeProfile(historyCache['4H']);
+            const sentiment = analyzeSentiment(historyCache['4H']);
+            const sentiment1h = historyCache['1H'] && historyCache['1H'].length >= 50
+                ? analyzeSentiment(historyCache['1H']) : { sentiment: 'N/A', score: 50, description: 'N/A' };
+            enhancedAnalysis = {
+                phase, rsiDiv, macdDiv, liq, volProf, sentiment, sentiment1h,
+                phaseBlock: `Phase: ${phase.phase} (${phase.confidence.toFixed(0)}% conf) - ${phase.description}`,
+                rsiDivBlock: `RSI Divergence: ${rsiDiv.type} (strength ${rsiDiv.strength}) - ${rsiDiv.description}`,
+                macdDivBlock: `MACD Divergence: ${macdDiv.type} (strength ${macdDiv.strength}) - ${macdDiv.description}`,
+                liqBlock: `Liquidity Above: ${liq.above.map(v => v.toFixed(2)).join(', ') || 'none'} | Below: ${liq.below.map(v => v.toFixed(2)).join(', ') || 'none'} | Equal Highs: ${liq.equalHighs.length} | Equal Lows: ${liq.equalLows.length}`,
+                volProfBlock: `Volume Profile: ${volProf.description} (POC distance: ${volProf.pocDistance.toFixed(2)}%)`,
+                sentimentBlock: `Sentiment 4H: ${sentiment.description} | 1H: ${sentiment1h.description}`
+            };
+        }
+        
         const settings = getMarketSettings(pair);
         document.getElementById('currentPrice').innerHTML = `$${price.toFixed(settings.prec)}`;
         
@@ -2760,6 +2784,16 @@ News: ${newsCheck?.inNewsWindow ? '⚠️ ' + newsCheck.warning : '✅ No high-i
 Volatility: ${indicators['4H']?.atr_api ? (indicators['4H'].atr_api / price * 100).toFixed(2) + '%' : 'N/A'}
 
 ═══════════════════════════════════════════
+🧠 ENHANCED AI INTELLIGENCE
+═══════════════════════════════════════════
+${enhancedAnalysis ? enhancedAnalysis.phaseBlock : 'Phase: N/A'}
+${enhancedAnalysis ? enhancedAnalysis.rsiDivBlock : 'RSI Divergence: N/A'}
+${enhancedAnalysis ? enhancedAnalysis.macdDivBlock : 'MACD Divergence: N/A'}
+${enhancedAnalysis ? enhancedAnalysis.liqBlock : 'Liquidity: N/A'}
+${enhancedAnalysis ? enhancedAnalysis.volProfBlock : 'Volume Profile: N/A'}
+${enhancedAnalysis ? enhancedAnalysis.sentimentBlock : 'Sentiment: N/A'}
+
+═══════════════════════════════════════════
 🎯 YOUR TASK
 ═══════════════════════════════════════════
 
@@ -2832,6 +2866,18 @@ IMPORTANT: You are the PRIMARY analyst. Find the BEST setup, not just any setup.
 
         scanText.innerHTML = '🤖 AI analyzing all data...';
         const aiResult = await askAIToFindSetup(scanTextData, price);
+
+        if (aiResult) {
+            try {
+                const perf = getPatternPerformance(aiResult.patterns || []);
+                if (perf.sampleSize >= 5 && Math.abs(perf.confidenceAdjustment) >= 1) {
+                    const adjusted = Math.max(0, Math.min(100, Math.round(aiResult.confidence + perf.confidenceAdjustment)));
+                    aiResult.confidence = adjusted;
+                    aiResult.patternPerformance = { winRate: perf.winRate, sampleSize: perf.sampleSize, adjustment: perf.confidenceAdjustment };
+                }
+            } catch(e) {}
+        }
+
         scanStatus.classList.add('hidden');
         
         if (!aiResult) {
@@ -2940,6 +2986,257 @@ IMPORTANT: You are the PRIMARY analyst. Find the BEST setup, not just any setup.
 }
 
 // ============================================
+// ENHANCED AI INTELLIGENCE FUNCTIONS
+// ============================================
+
+// 1. MARKET PHASE ANALYSIS (AMD)
+function analyzeMarketPhase(data) {
+    if (!data || data.length < 50) return { phase: 'UNKNOWN', confidence: 0, description: 'Insufficient data' };
+    const closes = data.map(c => c.c);
+    const highs = data.map(c => c.h);
+    const lows = data.map(c => c.l);
+    const range = Math.max(...highs) - Math.min(...lows);
+    const avgRange = range / data.length;
+    const recentHighs = highs.slice(-20);
+    const recentLows = lows.slice(-20);
+    const recentRange = Math.max(...recentHighs) - Math.min(...recentLows);
+    const volatility = recentRange / (avgRange || 1);
+    const volume = data.slice(-20).reduce((a, c) => a + (c.v || 0), 0) / 20;
+    const avgVolume = data.slice(-50, -20).reduce((a, c) => a + (c.v || 0), 0) / 30;
+    const volumeRatio = volume / (avgVolume || 1);
+    const sw = findSwings(data, 3);
+    const recentHighsSwings = (sw.H || []).slice(-5);
+    const recentLowsSwings = (sw.L || []).slice(-5);
+    const sweptHigh = recentHighsSwings.some(h => data.slice(-5).some(c => c.h > h.p && c.c < h.p));
+    const sweptLow = recentLowsSwings.some(l => data.slice(-5).some(c => c.l < l.p && c.c > l.p));
+    const e20 = ema(closes, 20);
+    const e50 = ema(closes, 50);
+    const e20Slope = e20.length > 5 ? e20[e20.length - 1] - e20[e20.length - 5] : 0;
+    const e50Slope = e50.length > 5 ? e50[e50.length - 1] - e50[e50.length - 5] : 0;
+    let phase = 'NEUTRAL', confidence = 0, description = '';
+    if (volatility < 0.5 && volumeRatio > 1.2 && e20Slope > 0) {
+        phase = 'ACCUMULATION';
+        confidence = 70 + Math.min(volumeRatio * 10, 20);
+        description = 'Range compression with rising volume - smart money accumulating';
+    } else if ((sweptHigh || sweptLow) && Math.abs(e20Slope) < 0.5) {
+        phase = 'MANIPULATION';
+        confidence = 65 + (sweptHigh ? 10 : 0) + (sweptLow ? 10 : 0);
+        description = 'Liquidity sweeps creating false breakouts - manipulation phase';
+    } else if (volatility > 0.8 && Math.abs(e20Slope) > 0.5) {
+        phase = 'DISTRIBUTION';
+        confidence = 60 + Math.min(Math.abs(e20Slope) * 10, 30);
+        description = 'Expansion with momentum - distribution phase';
+    } else {
+        description = 'Range-bound market - waiting for direction';
+    }
+    return { phase, confidence, description, volatility, volumeRatio, sweptHigh, sweptLow, e20Slope, e50Slope };
+}
+
+// 2. HIDDEN DIVERGENCE DETECTION
+function detectDivergence(data, indicator = 'rsi', lookback = 30) {
+    if (!data || data.length < lookback) return { type: 'none', strength: 0, description: 'Insufficient data' };
+    const closes = data.map(c => c.c);
+    const highs = data.map(c => c.h);
+    const lows = data.map(c => c.l);
+    let values = [];
+    if (indicator === 'rsi') {
+        for (let i = 14; i < data.length; i++) {
+            const slice = data.slice(0, i + 1);
+            const r = computeRSI(slice.map(c => c.c), 14);
+            values.push(r || 50);
+        }
+    } else if (indicator === 'macd') {
+        const e12 = ema(closes, 12);
+        const e26 = ema(closes, 26);
+        values = e12.slice(26).map((v, i) => v - (e26[i + 26] || 0));
+    }
+    if (values.length < lookback) return { type: 'none', strength: 0, description: 'Insufficient indicator data' };
+    const recentPrices = closes.slice(-lookback);
+    const recentValues = values.slice(-lookback);
+    let priceSwingsHigh = [], priceSwingsLow = [];
+    for (let i = 2; i < recentPrices.length - 2; i++) {
+        if (recentPrices[i] > recentPrices[i-1] && recentPrices[i] > recentPrices[i+1] &&
+            recentPrices[i] > recentPrices[i-2] && recentPrices[i] > recentPrices[i+2]) {
+            priceSwingsHigh.push({ price: recentPrices[i], value: recentValues[i], index: i });
+        }
+        if (recentPrices[i] < recentPrices[i-1] && recentPrices[i] < recentPrices[i+1] &&
+            recentPrices[i] < recentPrices[i-2] && recentPrices[i] < recentPrices[i+2]) {
+            priceSwingsLow.push({ price: recentPrices[i], value: recentValues[i], index: i });
+        }
+    }
+    let result = { type: 'none', strength: 0, description: 'No divergence detected' };
+    if (priceSwingsLow.length >= 2) {
+        const last = priceSwingsLow[priceSwingsLow.length - 1];
+        const prev = priceSwingsLow[priceSwingsLow.length - 2];
+        if (last.price < prev.price && last.value > prev.value) {
+            result = { type: 'REGULAR_BULLISH', strength: 80, description: 'Price makes lower low, indicator makes higher low - bullish reversal signal' };
+        }
+        if (last.price > prev.price && last.value < prev.value) {
+            result = { type: 'HIDDEN_BULLISH', strength: 70, description: 'Price makes higher low, indicator makes lower low - continuation signal' };
+        }
+    }
+    if (priceSwingsHigh.length >= 2 && result.type === 'none') {
+        const last = priceSwingsHigh[priceSwingsHigh.length - 1];
+        const prev = priceSwingsHigh[priceSwingsHigh.length - 2];
+        if (last.price > prev.price && last.value < prev.value) {
+            result = { type: 'REGULAR_BEARISH', strength: 80, description: 'Price makes higher high, indicator makes lower high - bearish reversal signal' };
+        }
+        if (last.price < prev.price && last.value > prev.value) {
+            result = { type: 'HIDDEN_BEARISH', strength: 70, description: 'Price makes lower high, indicator makes higher high - continuation signal' };
+        }
+    }
+    return result;
+}
+
+// 3. LIQUIDITY MAPPING
+function mapLiquidity(data) {
+    if (!data || data.length < 30) return { above: [], below: [], equalHighs: [], equalLows: [], nearestAbove: null, nearestBelow: null };
+    const closes = data.map(c => c.c);
+    const currentPrice = closes[closes.length - 1];
+    const sw = findSwings(data, 3);
+    const swingHighs = (sw.H || []).slice(-15).map(s => s.p);
+    const swingLows = (sw.L || []).slice(-15).map(s => s.p);
+    const equalHighs = [], equalLows = [];
+    for (let i = 0; i < swingHighs.length; i++) {
+        let count = 1;
+        for (let j = i + 1; j < swingHighs.length; j++) {
+            if (Math.abs(swingHighs[i] - swingHighs[j]) / swingHighs[i] < 0.001) count++;
+        }
+        if (count >= 2) equalHighs.push(swingHighs[i]);
+    }
+    for (let i = 0; i < swingLows.length; i++) {
+        let count = 1;
+        for (let j = i + 1; j < swingLows.length; j++) {
+            if (Math.abs(swingLows[i] - swingLows[j]) / swingLows[i] < 0.001) count++;
+        }
+        if (count >= 2) equalLows.push(swingLows[i]);
+    }
+    const liquidityAbove = [...new Set(swingHighs.filter(h => h > currentPrice).concat(equalHighs))].sort((a, b) => a - b);
+    const liquidityBelow = [...new Set(swingLows.filter(l => l < currentPrice).concat(equalLows))].sort((a, b) => b - a);
+    return {
+        above: liquidityAbove.slice(0, 5),
+        below: liquidityBelow.slice(0, 5),
+        equalHighs,
+        equalLows,
+        nearestAbove: liquidityAbove[0] || null,
+        nearestBelow: liquidityBelow[0] || null
+    };
+}
+
+// 4. VOLUME PROFILE ANALYSIS
+function analyzeVolumeProfile(data) {
+    if (!data || data.length < 30) return { poc: null, vah: null, val: null, pocDistance: 0, description: 'Insufficient data' };
+    const prices = data.map(c => c.c);
+    const volumes = data.map(c => c.v || 0);
+    const currentPrice = prices[prices.length - 1];
+    const priceRange = Math.max(...prices) - Math.min(...prices);
+    const binSize = Math.max(priceRange / 30, 0.01);
+    const bins = {};
+    for (let i = 0; i < prices.length; i++) {
+        const bin = Math.floor(prices[i] / binSize) * binSize;
+        if (!bins[bin]) bins[bin] = 0;
+        bins[bin] += volumes[i];
+    }
+    let maxVolume = 0, poc = null;
+    for (const [price, volume] of Object.entries(bins)) {
+        if (volume > maxVolume) {
+            maxVolume = volume;
+            poc = parseFloat(price);
+        }
+    }
+    const totalVolume = Object.values(bins).reduce((a, b) => a + b, 0);
+    const targetVolume = totalVolume * 0.7;
+    let cumulativeVolume = 0, vah = null, val = null;
+    const sortedBins = Object.entries(bins).sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]));
+    for (const [price, volume] of sortedBins) {
+        cumulativeVolume += volume;
+        if (cumulativeVolume >= targetVolume / 2 && !val) val = parseFloat(price);
+        if (cumulativeVolume >= targetVolume) { vah = parseFloat(price); break; }
+    }
+    if (!val) val = Math.min(...prices);
+    if (!vah) vah = Math.max(...prices);
+    const description = `POC: $${poc ? poc.toFixed(2) : 'N/A'} | VAH: $${vah ? vah.toFixed(2) : 'N/A'} | VAL: $${val ? val.toFixed(2) : 'N/A'}`;
+    return {
+        poc: poc || currentPrice,
+        vah: vah || currentPrice * 1.01,
+        val: val || currentPrice * 0.99,
+        pocDistance: poc ? Math.abs(poc - currentPrice) / currentPrice * 100 : 0,
+        description
+    };
+}
+
+// 5. SENTIMENT ANALYSIS
+function analyzeSentiment(data) {
+    if (!data || data.length < 50) return { sentiment: 'NEUTRAL', score: 50, description: 'Insufficient data' };
+    const closes = data.map(c => c.c);
+    const volumes = data.map(c => c.v || 0);
+    const rsi = computeRSI(closes, 14) || 50;
+    let rsiSentiment = 0;
+    if (rsi > 70) rsiSentiment = -20;
+    else if (rsi < 30) rsiSentiment = 20;
+    else if (rsi > 50) rsiSentiment = 5;
+    else rsiSentiment = -5;
+    const e20 = ema(closes, 20);
+    const trend = e20.length > 5 ? (e20[e20.length - 1] > e20[e20.length - 5] ? 1 : -1) : 0;
+    const recentVolume = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
+    const avgVolume = volumes.slice(-20, -5).reduce((a, b) => a + b, 0) / 15;
+    const volumeSentiment = (recentVolume / (avgVolume || 1)) * trend * 10;
+    const e12 = ema(closes, 12);
+    const e26 = ema(closes, 26);
+    const macd = e12.length && e26.length ? e12[e12.length - 1] - e26[e26.length - 1] : 0;
+    const macdSignal = macd && e12.length ? ema(e12.map((v, i) => v - (e26[i] || 0)), 9) : [];
+    const macdSentiment = macd && macdSignal.length && macd > macdSignal[macdSignal.length - 1] ? 15 : -15;
+    const totalScore = 50 + rsiSentiment + (isFinite(volumeSentiment) ? volumeSentiment : 0) + macdSentiment;
+    const finalScore = Math.min(Math.max(totalScore, 0), 100);
+    const sentiment = finalScore > 60 ? 'BULLISH' : (finalScore < 40 ? 'BEARISH' : 'NEUTRAL');
+    const volumeRatio = (avgVolume > 0 ? recentVolume / avgVolume : 0).toFixed(2);
+    const description = `${sentiment} (${finalScore.toFixed(0)}/100) - RSI:${rsi.toFixed(0)} Volume:${volumeRatio}x MACD:${macd > 0 ? 'Bullish' : 'Bearish'}`;
+    return { sentiment, score: finalScore, description, rsiSentiment, volumeSentiment, macdSentiment };
+}
+
+// 6. SELF-LEARNING CAPABILITY
+function trackAIPerformance(setupId, outcome, confidence, patterns, rr) {
+    try {
+        const performance = JSON.parse(localStorage.getItem('ai_performance') || '{}');
+        if (!performance[setupId]) {
+            performance[setupId] = { outcomes: [], wins: 0, losses: 0, totalRR: 0, confidence, patterns, timestamp: Date.now() };
+        }
+        performance[setupId].outcomes.push(outcome);
+        if (outcome === 'WIN') performance[setupId].wins++;
+        else performance[setupId].losses++;
+        performance[setupId].totalRR += outcome === 'WIN' ? rr : -1;
+        localStorage.setItem('ai_performance', JSON.stringify(performance));
+    } catch(e) {}
+}
+
+function getPatternPerformance(patterns) {
+    try {
+        const performance = JSON.parse(localStorage.getItem('ai_performance') || '{}');
+        let totalWins = 0, totalLosses = 0, totalConfidence = 0, count = 0;
+        for (const [id, data] of Object.entries(performance)) {
+            const patternMatch = data.patterns && patterns.some(p => data.patterns.includes(p));
+            if (patternMatch) {
+                totalWins += data.wins || 0;
+                totalLosses += data.losses || 0;
+                totalConfidence += data.confidence || 0;
+                count++;
+            }
+        }
+        const total = totalWins + totalLosses;
+        if (total === 0) return { winRate: 0, confidenceAdjustment: 0, sampleSize: 0, avgConfidence: 0 };
+        const winRate = totalWins / total;
+        return {
+            winRate,
+            confidenceAdjustment: (winRate - 0.5) * 20,
+            sampleSize: total,
+            avgConfidence: count > 0 ? totalConfidence / count : 0
+        };
+    } catch(e) {
+        return { winRate: 0, confidenceAdjustment: 0, sampleSize: 0, avgConfidence: 0 };
+    }
+}
+
+// ============================================
 // JSON OUTPUT
 // ============================================
 
@@ -3029,6 +3326,13 @@ function markRecentOutcome(id, outcome) {
         e.outcome = e.outcome === outcome ? null : outcome;
         setRecents(r);
         renderRecents();
+        if (e.outcome) {
+            try {
+                const patterns = (e.patterns || '').split('+').map(s => s.trim()).filter(Boolean);
+                const rr = parseFloat(String(e.risk_reward || '1:1').split(':')[1]) || 1.5;
+                trackAIPerformance(String(id), e.outcome, e.confidence || 0, patterns, rr);
+            } catch(err) {}
+        }
     }
 }
 
