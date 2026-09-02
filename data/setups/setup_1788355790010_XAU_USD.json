@@ -1,0 +1,42 @@
+{
+  "id": 1788355790010,
+  "recordedAt": "2026-09-02T13:29:50.013Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-02",
+    "time": "13:29:50",
+    "pair": "XAU/USD",
+    "current_price": 4356.34938,
+    "trade_type": "SELL",
+    "entry_price": 4356.35,
+    "entry_zone": {
+      "low": 4349.91,
+      "high": 4362,
+      "source": "Confluence"
+    },
+    "stop_loss": 4397.14,
+    "stop_loss_reason": "Above the 4H EMA21 and middle Bollinger Band, which aligns with the 4H bearish trend and the distribution phase. This level also represents a recent swing high and a potential liquidity pool.",
+    "take_profit_1": 4325.97,
+    "take_profit_2": 4285.66,
+    "take_profit_3": 4283.21,
+    "risk_reward": "1:1.8",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "Hidden Bearish RSI Divergence+Hidden Bearish MACD Divergence+4H Turtle Soup (BUY)+Expanding CRT",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "The 4H timeframe shows a clear bearish trend with price below key EMAs (EMA21, EMA50, EMA200) and a distribution phase. The hidden bearish divergences on RSI and MACD indicate strong selling pressure and a likely continuation of the downtrend. The current price is at a confluence zone of the 1H bullish order block and the 4H EMA9, providing a low-risk entry for a short position.",
+      "secondary": [
+        "The 4H RSI at 36.18 and MACD histogram at -1.86 confirm bearish momentum.",
+        "The 1H timeframe shows overbought conditions (Stochastic K: 98.83, CCI: 176.74), suggesting a potential pullback or reversal to the downside.",
+        "The price is below the 4H Supertrend (4402.52) and the 4H middle Bollinger Band (4397.14), further confirming the bearish bias.",
+        "The New York Killzone session is active, which often provides high liquidity and volatility, favoring a continuation move."
+      ],
+      "risk_warning": "The 15M and 5M timeframes are bullish, which could lead to a short-term bounce before the bearish move resumes. The 4H Turtle Soup pattern suggests a potential for a bullish reversal, which could invalidate this setup. The current price is also very close to the 1H upper Bollinger Band, which could act as a resistance and push price lower, but a break above the entry zone would invalidate the setup."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
