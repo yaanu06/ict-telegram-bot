@@ -1,0 +1,42 @@
+{
+  "id": 1788368532190,
+  "recordedAt": "2026-09-02T17:02:12.192Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-02",
+    "time": "17:02:12",
+    "pair": "XAU/USD",
+    "current_price": 4368.91083,
+    "trade_type": "SELL",
+    "entry_price": 4402.52,
+    "entry_zone": {
+      "low": 4390.68,
+      "high": 4402.52,
+      "source": "Confluence"
+    },
+    "stop_loss": 4438.64,
+    "stop_loss_reason": "Above EMA21 and Supertrend, near 4H order block and liquidity pool at 4435.58",
+    "take_profit_1": 4355.41,
+    "take_profit_2": 4325.97,
+    "take_profit_3": 4285.4,
+    "risk_reward": "1:2.5",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "4H CRT Expanding+1H Turtle Soup SELL+Hidden Bearish Divergence on RSI and MACD",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "4H bearish trend with hidden bearish divergence and distribution phase suggests continuation lower; price rejected from 4H EMA21/Supertrend confluence.",
+      "secondary": [
+        "1H Turtle Soup SELL pattern indicates liquidity grab above recent high, likely to reverse.",
+        "4H CRT expanding shows bearish momentum building.",
+        "Price below 4H EMA21 and EMA50, with RSI 39 supporting bearish momentum.",
+        "Off-hours session with low volatility may lead to mean reversion to downside."
+      ],
+      "risk_warning": "1H RSI bullish and CCI overbought could cause short-term bounce; price near 4H EMA9 support; low session liquidity may cause slippage."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
