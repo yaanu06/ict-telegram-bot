@@ -1,0 +1,42 @@
+{
+  "id": 1788360171182,
+  "recordedAt": "2026-09-02T14:42:51.183Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-02",
+    "time": "14:42:51",
+    "pair": "XAU/USD",
+    "current_price": 4382.8892,
+    "trade_type": "SELL",
+    "entry_price": 4402.52,
+    "entry_zone": {
+      "low": 4394.12,
+      "high": 4402.52,
+      "source": "Confluence"
+    },
+    "stop_loss": 4440.67,
+    "stop_loss_reason": "Above Supertrend (4402.52), EMA21 (4394.12), and EMA9 (4354.83) confluence zone. Stop placed above the 4H EMA21 and Supertrend to invalidate bearish thesis if price reclaims these dynamic resistance levels.",
+    "take_profit_1": 4325.97,
+    "take_profit_2": 4283.21,
+    "take_profit_3": 4211.83,
+    "risk_reward": "1:2.1",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "Turtle Soup (BUY)+Hidden Bearish RSI Divergence+Hidden Bearish MACD Divergence+Expanding CRT",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "4H trend is bearish with price trading below the EMA21 and Supertrend. The current rally into the 1H killzone is likely a retracement within a larger downtrend, offering a short entry at a confluence of dynamic resistances.",
+      "secondary": [
+        "Hidden bearish divergences on RSI and MACD on the 4H timeframe suggest continuation of the downtrend.",
+        "Price is in a distribution phase (90% confidence), indicating potential for a move lower.",
+        "The 4H sentiment is bearish (20/100), while the 1H sentiment is bullish (80/100), suggesting the 1H rally is counter-trend and may be fading.",
+        "Liquidity sits above at 4435.58 and 4470.87, which could act as magnets, but the confluence zone provides a lower-risk entry for a continuation short."
+      ],
+      "risk_warning": "The 1H RSI is at 64.34 and Stochastic is overbought (K: 87.90, D: 87.56), but the 1H MACD histogram is positive, indicating bullish momentum. A break and close above the Supertrend (4402.52) would invalidate this setup. The Turtle Soup BUY pattern is a contrarian signal that could lead to a bounce."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
