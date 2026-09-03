@@ -1,0 +1,47 @@
+{
+  "id": 1788469822658,
+  "recordedAt": "2026-09-03T21:10:22.661Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-03",
+    "time": "21:10:22",
+    "pair": "XAU/USD",
+    "current_price": 4474.07275,
+    "trade_type": "BUY",
+    "entry_price": 4472.73,
+    "entry_zone": {
+      "low": 4472.73,
+      "high": 4474.26,
+      "source": "Confluence"
+    },
+    "stop_loss": 4461,
+    "stop_loss_reason": "Below recent swing low and EMA200 on 1H, providing a logical invalidation level.",
+    "take_profit_1": 4494.23,
+    "take_profit_2": 4510.6,
+    "take_profit_3": 4527.83,
+    "risk_reward": "1:2.0",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "Bullish FVG+Bullish Order Block+Higher lows on 1H",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Bullish bias on 1D and 1H timeframes, price above key EMAs, and a strong buy score of 80 vs 30, despite off-hours session.",
+      "secondary": [
+        "Price is holding above the 1H EMA200 and recent swing lows, indicating bullish momentum.",
+        "Bullish FVG and Order Block on lower timeframes support a long entry.",
+        "Volume profile shows POC at 4451.20, with price currently above it, suggesting buyer control."
+      ],
+      "risk_warning": "Off-hours session with low liquidity may lead to wider spreads and increased volatility. Distribution phase could trigger a reversal.",
+      "why_best": "BUY chosen over SELL — higher confidence/alignment"
+    },
+    "opposite_setup": {
+      "direction": "SELL",
+      "confidence": 0,
+      "why_rejected": "Not provided by AI"
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
