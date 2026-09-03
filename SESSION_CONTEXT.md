@@ -1,4 +1,4 @@
-# Session Context — AI-First Setup Generation (2026-08-19) + Entry Filters (2026-09-03) + Direction Compare (2026-09-03)
+# Session Context — AI-First Setup Generation (2026-08-19) + Entry Filters (2026-09-03) + Direction Compare (2026-09-03) + Holistic Evidence + Raw Candles
 
 > Read this file when resuming work on this project. It records what was done
 > in the last sessions so we can pick up where we left off.
@@ -94,6 +94,55 @@ Called from `askAIToFindSetup` (script.js:~2498) after the reasoning defaults bl
 
 **File changes:** `script.js` +74, `script.test.js` +57.
 
+### 5. Holistic BUY vs SELL evidence scoring (commit `3f0f004` → pushed `5c887a9`)
+
+User reported: AI was finding one pattern (e.g. Turtle Soup) and running with it, ignoring contradictory evidence. Needed to force the AI to weigh ALL evidence first.
+
+**Two new pure functions (script.js:2437, 2559):**
+
+1. `computeHolisticEvidence({ dailyDir, h4Dir, h1Dir, candles, indicators, patterns, phase, rsiDiv, macdDiv })` — scores 10 BUY and 10 SELL signals (1D/4H/1H trend, HH/LL, above/below EMAs, FVG/OB by direction, Turtle Soup, divergence, phase). Returns `{ flags, buyScore, sellScore, diff, suggestedDirection }`. `suggestedDirection === 'NEUTRAL'` when `|diff| < 20`.
+
+2. `buildHolisticPromptBlock({ evidence, dailyDir, h4Dir, h1Dir })` — formats the exact "### BUY EVIDENCE" / "### SELL EVIDENCE" table with `✅ +pts` / `❌ 0` lines.
+
+**Scoring weights:**
+- 1D direction: 30 | 4H: 20 | 1H: 15
+- HH/LL price action: 25
+- Above/below all 4 key EMAs: 15
+- Bull/Bear FVG: 10 | Bull/Bear OB: 10
+- Turtle Soup BUY/SELL: 20
+- Bull/Bear Divergence (RSI or MACD): 15
+- Accumulation/Distribution: 10
+
+**Wired into `runAutoScan` (script.js:~2906):**
+- Computed right after the dirs.
+- New prompt section "📊 HOLISTIC EVIDENCE ANALYSIS (BUY vs SELL)" injected between entry filters and direction-compare. Tells AI: "Do NOT anchor on a single pattern."
+
+**Client-side safety net (script.js:~3166):** if `holistic.suggestedDirection === 'NEUTRAL'` but AI said `enter_now`, override to `wait_for_reaction` and set `aiResult.filterOverride = 'Holistic score too close (BUY X vs SELL Y, diff Z)'`. Execute button disabled.
+
+**Tests:** 35 → 40 passing (+5: NEUTRAL empty, BUY dominates, SELL dominates, NEUTRAL when within 20, prompt block format).
+
+**File changes:** `script.js` +213, `script.test.js` +99.
+
+### 6. Raw OHLC candle data in AI prompt (commit `d93a303` → pushed `ad66511`)
+
+User reported: AI was only seeing summarized data, not actual candles. Wanted to give the AI raw price action.
+
+**New pure function `buildCandleData(historyCache, count = 10)`** (script.js:2560) — iterates `['1D', '4H', '1H', '15M', '5M']`, skips TFs with < 10 candles, formats each as:
+```
+### 4H CANDLES (Last 10):
+  220: O:4280.50 H:4295.20 L:4278.10 C:4290.30 V:12345
+  ...
+```
+Volume included, indices are absolute (not relative), OHLC 2-decimal fixed.
+
+**Wired into `runAutoScan` (script.js:~2915):** computed right after `holistic`, then injected as new prompt section "📊 RAW CANDLE DATA (YOU CAN SEE EVERYTHING)" between holistic block and direction-compare. Includes 6-bullet guidance: engulfing, pin bars, price action at zones, momentum shifts, market structure, professional judgments.
+
+**Token budget kept at 2000** (per user). 10 candles × 5 TFs ≈ 3.5KB. Fits well in 8K context.
+
+**Tests:** 40 → 43 passing (+3: empty input, full format with 50 lines across 5 TFs, partial input where 4H too short is skipped). **Note:** I actually added 3 tests, not the planned 2 — the 3rd (partial input skip) was a freebie that caught a real edge case.
+
+**File changes:** `script.js` +50, `script.test.js` +43.
+
 ---
 
 ## Earlier session (2026-08-19) — still relevant
@@ -122,27 +171,26 @@ New functions added BEFORE `runAutoScan()`:
 
 ## Verification
 - `node --check script.js` — SYNTAX OK
-- `npx jest` — 35/35 tests pass
+- `npx jest` — 43/43 tests pass
 
 ## Git notes
 - The bot auto-pushes "🤖 Auto-record ICT setup" commits to `data/` frequently → always `git pull --rebase` (or fetch+rebase) before pushing.
-- **Current local HEAD:** `e039098` "feat: AI compares both directions, returns opposite_setup + why_best"
+- **Current local HEAD:** `ad66511` (push of `d93a303`)
 - **Recent commits this session (in order):**
   - `d610c72` — feat: enhanced AI intelligence (AMD, divergence, liquidity, volume profile, sentiment, self-learning)
   - `b259044` — feat: 4 entry filters (session, phase, confirmation, build entry context)
   - `190be6e` → `3e4cd67` — docs: update SESSION_CONTEXT
   - `e039098` — feat: AI compares both directions, returns opposite_setup + why_best
+  - `f2ea3d1` — docs: update SESSION_CONTEXT
+  - `3f0f004` → `5c887a9` — feat: holistic BUY vs SELL evidence scoring
+  - `d93a303` → `ad66511` — feat: feed raw OHLC candle data to AI
 
 ## Possible follow-ups (not done)
-- No server-side sanitization; keys stored client-side (known limitation, IMPROVEMENTS.md)
-- `scanFill` (progress bar) is fetched in new runAutoScan but no longer updated — could remove or wire up
-- Fallback `runFallbackScan` in the catch block may get undefined `price`/`historyCache` if the error happens before they're set
 - **No ground-truth trade outcomes are stored** — `data/journal/` and `data/trade_history/` don't exist. Without user marking recents as Win/Loss, self-learning never gets data. Consider adding automatic TP-hit/SL-hit detection by polling live price.
-- **Filter override is silent** — only sets `aiResult.filterOverride` field. Consider showing a UI notification "Trade blocked: Off-hours" so the user knows why the execute button is disabled.
+- **Filter override is silent** — only sets `aiResult.filterOverride` field. Consider showing a UI notification "Trade blocked: Off-hours" (or "Holistic score too close") so the user knows why the execute button is disabled.
 - **Add client-side sanity check on direction** — the AI now claims to compare, but we could cross-check `aiResult.direction` against the dominant HTF trend (1D/4H/1H) from `getQuoteDirection` and downgrade confidence if they conflict.
 - **Expose `opposite_setup` in the UI** — currently only visible in the JSON tab. Could add a "Why not the other direction?" expandable section in the analysis panel.
-- No server-side sanitization; keys stored client-side (known limitation, IMPROVEMENTS.md)
-- `scanFill` (progress bar) is fetched in new runAutoScan but no longer updated — could remove or wire up
-- Fallback `runFallbackScan` in the catch block may get undefined `price`/`historyCache` if the error happens before they're set
-- **New**: no ground-truth trade outcomes are stored — `data/journal/` and `data/trade_history/` don't exist. Without user marking recents as Win/Loss, self-learning never gets data. Consider adding automatic TP-hit/SL-hit detection by polling live price.
-- **New**: filter override is silent (only sets `aiResult.filterOverride` field). Consider showing a UI notification "Trade blocked: Off-hours" so the user knows why the execute button is disabled.
+- **Expose `holistic` scores in the UI** — currently buried in the prompt. Would help the user see WHY the AI picked (or didn't pick) a direction.
+- **No server-side sanitization**; keys stored client-side (known limitation, IMPROVEMENTS.md)
+- **`scanFill` progress bar** is fetched in new runAutoScan but no longer updated — could remove or wire up.
+- **Fallback `runFallbackScan`** in the catch block may get undefined `price`/`historyCache` if the error happens before they're set.
