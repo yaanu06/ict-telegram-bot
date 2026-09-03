@@ -1,0 +1,48 @@
+{
+  "id": 1788419743131,
+  "recordedAt": "2026-09-03T07:15:43.133Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-03",
+    "time": "07:15:43",
+    "pair": "XAU/USD",
+    "current_price": 4423.01738,
+    "trade_type": "SELL",
+    "entry_price": 4439.31,
+    "entry_zone": {
+      "low": 4436.15,
+      "high": 4439.31,
+      "source": "Swing"
+    },
+    "stop_loss": 4448,
+    "stop_loss_reason": "Above the recent 1H swing high at 4439.31 and the 1H EMA21 at 4399.27, providing a logical invalidation point for the bearish setup.",
+    "take_profit_1": 4418.72,
+    "take_profit_2": 4394.72,
+    "take_profit_3": 4381.93,
+    "risk_reward": "1:2.3",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "Hidden Bearish Divergence on RSI+Hidden Bearish Divergence on MACD+Distribution Phase+Bearish Order Block+Bearish FVG",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "The market is in a distribution phase with hidden bearish divergence on both RSI and MACD on the 4H timeframe, indicating a potential continuation of the downtrend. The current price is at a 1H swing high, providing a low-risk entry point for a short position.",
+      "secondary": [
+        "The 4H trend is bearish, and the price is below the 4H EMA50 and EMA200, suggesting selling pressure.",
+        "The 1H RSI is at 67.25, approaching overbought territory, which could lead to a pullback.",
+        "The 1H MACD histogram is positive but showing signs of slowing momentum, as seen in the recent 1H candles.",
+        "The 1H candle at index 97 shows a rejection from the 4439.31 high, forming a potential lower high."
+      ],
+      "risk_warning": "The 1D trend is bullish, and the 1H trend is also bullish, which could lead to a breakout above the 1H swing high. The London killzone session is active, which can cause increased volatility and unpredictable price movements.",
+      "why_best": "SELL chosen over BUY — higher confidence/alignment"
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 0,
+      "why_rejected": "Not provided by AI"
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
