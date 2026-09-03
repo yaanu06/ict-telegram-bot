@@ -1,0 +1,48 @@
+{
+  "id": 1788436340973,
+  "recordedAt": "2026-09-03T11:52:20.976Z",
+  "eventType": "ai_scan",
+  "pair": "GBP/JPY",
+  "setup": {
+    "date": "2026-09-03",
+    "time": "11:52:20",
+    "pair": "GBP/JPY",
+    "current_price": 210.72733,
+    "trade_type": "SELL",
+    "entry_price": 210.727,
+    "entry_zone": {
+      "low": 210.36,
+      "high": 210.77,
+      "source": "Confluence"
+    },
+    "stop_loss": 211.76,
+    "stop_loss_reason": "Above the lower Bollinger Band and recent swing high on the 4H, providing a logical invalidation for the bearish move.",
+    "take_profit_1": 210.36,
+    "take_profit_2": 209.5,
+    "take_profit_3": 208.22,
+    "risk_reward": "1:1.0",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "Bearish FVG+Bearish Order Block+Distribution Phase+Break of Structure",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Strong bearish momentum across all timeframes with price breaking below key support levels, supported by distribution phase and bearish indicators.",
+      "secondary": [
+        "Price is below all key EMAs (9, 21, 50, 200) on the 4H, confirming bearish trend.",
+        "RSI at 5.87 on 4H indicates oversold but momentum remains bearish.",
+        "MACD histogram negative and expanding, showing increasing bearish momentum.",
+        "Sell evidence score (110) far exceeds buy score (10), strongly favoring a sell."
+      ],
+      "risk_warning": "Oversold conditions may lead to a short-term bounce; off-hours session could result in low liquidity and wider spreads.",
+      "why_best": "SELL chosen over BUY — higher confidence/alignment"
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 0,
+      "why_rejected": "Not provided by AI"
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
