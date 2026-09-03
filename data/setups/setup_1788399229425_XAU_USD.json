@@ -1,0 +1,41 @@
+{
+  "id": 1788399229425,
+  "recordedAt": "2026-09-03T01:33:49.428Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-03",
+    "time": "01:33:49",
+    "pair": "XAU/USD",
+    "current_price": 4408.00494,
+    "trade_type": "SELL",
+    "entry_price": 4435.58,
+    "entry_zone": {
+      "low": 4425.5,
+      "high": 4435.58,
+      "source": "Confluence"
+    },
+    "stop_loss": 4470.87,
+    "stop_loss_reason": "Above the 1H upper Bollinger Band and the nearest liquidity pool at 4470.87, invalidating the bearish thesis if broken.",
+    "take_profit_1": 4400.1,
+    "take_profit_2": 4325.97,
+    "take_profit_3": 4289.54,
+    "risk_reward": "1:2.1",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "Hidden Bearish Divergence on RSI (4H)+Hidden Bearish Divergence on MACD (4H)+Bearish Price Action at 1H Upper Bollinger Band",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "The 4H chart shows a hidden bearish divergence on both RSI and MACD, indicating a potential continuation of the prevailing bearish trend. The price is currently in a distribution phase, and the 1H RSI is overbought at 69.11, suggesting a pullback is likely.",
+      "secondary": [
+        "The 4H trend is bearish, and the 1H chart shows a contracting CRT pattern, which often precedes a significant move.",
+        "The price is trading below the 4H EMA21 (4394.04) and EMA50 (4449.09), confirming the bearish bias.",
+        "The Asian session is typically low liquidity, and the current price is at a confluence zone of the 1H upper Bollinger Band and a liquidity pool above, providing a potential entry for a short."
+      ],
+      "risk_warning": "The 1D trend is bullish, and the 15M/5M timeframes are also bullish, which could lead to a bounce from this level. The 1H MACD is bullish, and the 1H RSI is at 69, indicating strong bullish momentum that could overpower the bearish signal."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
