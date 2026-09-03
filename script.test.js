@@ -285,3 +285,40 @@ describe('buildEntryContext', () => {
         expect(ctxOut.summary).toMatch(/FILTER BLOCK/);
     });
 });
+
+describe('normalizeOppositeSetup', () => {
+    it('fills defaults when AI omits opposite_setup entirely', () => {
+        const ctx = getContext();
+        const r = ctx.normalizeOppositeSetup(null, 'BUY');
+        expect(r.direction).toBe('SELL');
+        expect(r.confidence).toBe(0);
+        expect(r.why_rejected).toBe('Not provided by AI');
+    });
+    it('flips direction to SELL when BUY chosen and opposite is missing', () => {
+        const ctx = getContext();
+        const r = ctx.normalizeOppositeSetup(undefined, 'SELL');
+        expect(r.direction).toBe('BUY');
+    });
+    it('preserves AI-provided opposite_setup', () => {
+        const ctx = getContext();
+        const r = ctx.normalizeOppositeSetup(
+            { direction: 'BUY', confidence: 58, why_rejected: 'weaker HTF alignment' },
+            'SELL'
+        );
+        expect(r.direction).toBe('BUY');
+        expect(r.confidence).toBe(58);
+        expect(r.why_rejected).toBe('weaker HTF alignment');
+    });
+    it('fills missing fields without overwriting present ones', () => {
+        const ctx = getContext();
+        const r = ctx.normalizeOppositeSetup({ confidence: 62 }, 'BUY');
+        expect(r.direction).toBe('SELL');
+        expect(r.confidence).toBe(62);
+        expect(r.why_rejected).toBe('Not provided by AI');
+    });
+    it('coerces non-number confidence to 0', () => {
+        const ctx = getContext();
+        const r = ctx.normalizeOppositeSetup({ confidence: 'high' }, 'BUY');
+        expect(r.confidence).toBe(0);
+    });
+});

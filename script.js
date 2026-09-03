@@ -2419,6 +2419,18 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData) {
 // RUN AUTO SCAN - FULL
 // ============================================
 
+function normalizeOppositeSetup(input, chosenDirection) {
+    const fallbackDir = chosenDirection === 'BUY' ? 'SELL' : 'BUY';
+    if (!input || typeof input !== 'object') {
+        return { direction: fallbackDir, confidence: 0, why_rejected: 'Not provided by AI' };
+    }
+    return {
+        direction: input.direction || fallbackDir,
+        confidence: typeof input.confidence === 'number' ? input.confidence : 0,
+        why_rejected: input.why_rejected || 'Not provided by AI'
+    };
+}
+
 async function askAIToFindSetup(marketData, price) {
     if (!DEEPSEEK_API_KEY) {
         console.error('No AI key available');
@@ -2490,7 +2502,13 @@ async function askAIToFindSetup(marketData, price) {
         if (!result.reasoning.risk_warning) {
             result.reasoning.risk_warning = 'Normal market risk applies';
         }
-        
+
+        if (!result.reasoning.why_best) {
+            result.reasoning.why_best = `${result.direction} chosen over ${result.direction === 'BUY' ? 'SELL' : 'BUY'} — higher confidence/alignment`;
+        }
+
+        result.opposite_setup = normalizeOppositeSetup(result.opposite_setup, result.direction);
+
         if (!result.patterns || !Array.isArray(result.patterns)) {
             result.patterns = [result.entry_zone.source || 'AI Identified'];
         }
@@ -2832,6 +2850,29 @@ AI RULES (apply these strictly):
   you may still return "enter_now" because this is a LIMIT order that triggers on arrival
 
 ═══════════════════════════════════════════
+⚖️ CRITICAL: COMPARE BOTH DIRECTIONS
+═══════════════════════════════════════════
+You MUST analyze BOTH BUY and SELL setups and choose the BEST one. Do NOT just
+pick the first setup you see — comparing is mandatory.
+
+Process:
+1) Build BUY setup: entry, zone, SL, TP1-3, confidence, supporting patterns, probability.
+2) Build SELL setup: entry, zone, SL, TP1-3, confidence, supporting patterns, probability.
+3) COMPARE side-by-side:
+   - Confidence: higher wins
+   - RR: better wins
+   - Patterns: stronger/more-aligned wins
+   - HTF alignment (1D/4H/1H): more aligned wins
+   - Probability (HIGH/MED/LOW): higher wins
+4) Output ONLY the winning direction. If both < 58 confidence -> ai_decision = "skip".
+
+In your JSON you MUST include:
+- reasoning.why_best: one-sentence explanation of why this direction beats the opposite
+- opposite_setup.direction: the other direction you considered
+- opposite_setup.confidence: your confidence score for the rejected direction
+- opposite_setup.why_rejected: one-sentence reason it lost the comparison
+
+═══════════════════════════════════════════
 🎯 YOUR TASK
 ═══════════════════════════════════════════
 
@@ -2950,6 +2991,7 @@ IMPORTANT: You are the PRIMARY analyst. Find the BEST setup, not just any setup.
                 patterns_detected: aiResult.patterns.join('+'),
                 probability: aiResult.probability,
                 reasoning: aiResult.reasoning,
+                opposite_setup: aiResult.opposite_setup,
                 ai_decision: aiResult.ai_decision,
                 wait_condition: aiResult.wait_condition,
                 source: 'AI-Generated Setup'
