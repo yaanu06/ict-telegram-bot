@@ -1,0 +1,41 @@
+{
+  "id": 1788400449448,
+  "recordedAt": "2026-09-03T01:54:09.451Z",
+  "eventType": "ai_scan",
+  "pair": "NZD/USD",
+  "setup": {
+    "date": "2026-09-03",
+    "time": "01:54:09",
+    "pair": "NZD/USD",
+    "current_price": 0.58588,
+    "trade_type": "SELL",
+    "entry_price": 0.589,
+    "entry_zone": {
+      "low": 0.5885,
+      "high": 0.589,
+      "source": "Confluence"
+    },
+    "stop_loss": 0.5905,
+    "stop_loss_reason": "Above the 4H EMA/SAR/Supertrend cluster at 0.59 and the 4H MSNR pivot, invalidating the bearish structure if broken.",
+    "take_profit_1": 0.587,
+    "take_profit_2": 0.586,
+    "take_profit_3": 0.585,
+    "risk_reward": "1:2.7",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "CRT Expanding+Equal Highs+4H Bearish Trend",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "The 4H timeframe shows a bearish trend with expanding CRT, while the 1H is contracting, suggesting a potential bearish expansion. The price is below the 4H MSNR pivot and sentiment is bearish. The current 15M/5M bullish momentum is likely a retracement into the 0.58900 resistance zone (confluence of 4H EMA/SAR/Supertrend and 1H Bollinger upper band) for a short entry.",
+      "secondary": [
+        "4H RSI at 39.56 and CCI at -57.23 support bearish momentum.",
+        "Liquidity above at 0.59, 0.60, and equal highs on the 4H provide targets for a sell-side liquidity grab.",
+        "The Asian session typically offers a retracement before the London session continues the primary trend."
+      ],
+      "risk_warning": "The 1H RSI is above 50 and Stochastic is overbought, suggesting the retracement could extend further. The 15M and 5M are bullish, which could push price higher before the sell-off. The overall market phase is neutral, so this is a counter-trend trade on the lower timeframe."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
