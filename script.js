@@ -2557,6 +2557,28 @@ function buildHolisticPromptBlock({ evidence, dailyDir, h4Dir, h1Dir }) {
     return lines.join('\n');
 }
 
+function buildCandleData(historyCache, count = 10) {
+    const tfs = ['1D', '4H', '1H', '15M', '5M'];
+    let data = '';
+    for (const tf of tfs) {
+        const candles = historyCache[tf];
+        if (!candles || candles.length < count) continue;
+        data += `\n### ${tf} CANDLES (Last ${count}):\n`;
+        const slice = candles.slice(-count);
+        const startIdx = candles.length - count;
+        slice.forEach((c, i) => {
+            const idx = startIdx + i;
+            const o = (c.o || 0).toFixed(2);
+            const h = (c.h || 0).toFixed(2);
+            const l = (c.l || 0).toFixed(2);
+            const cl = (c.c || 0).toFixed(2);
+            const v = Math.round(c.v || 0);
+            data += `  ${idx}: O:${o} H:${h} L:${l} C:${cl} V:${v}\n`;
+        });
+    }
+    return data;
+}
+
 async function askAIToFindSetup(marketData, price) {
     if (!DEEPSEEK_API_KEY) {
         console.error('No AI key available');
@@ -2891,6 +2913,8 @@ async function runAutoScan() {
             macdDiv: enhancedAnalysis?.macdDiv
         });
 
+        const candleData = buildCandleData(historyCache, 10);
+
         const scanTextData = `ICT TRADING BOT - COMPLETE MARKET ANALYSIS
 
 PAIR: ${pair}
@@ -2992,6 +3016,21 @@ ${buildHolisticPromptBlock({ evidence: holistic, dailyDir, h4Dir, h1Dir })}
 
 This is the pre-computed BUY vs SELL evidence. Do NOT anchor on a single pattern
 you noticed first - weigh ALL evidence above before deciding direction.
+
+═══════════════════════════════════════════
+📊 RAW CANDLE DATA (YOU CAN SEE EVERYTHING)
+═══════════════════════════════════════════
+${candleData}
+
+Use this raw data to:
+1. Identify engulfing patterns
+2. Identify pin bars / rejection wicks
+3. See price action at zones
+4. Identify momentum shifts
+5. See actual market structure
+6. Make professional trading judgments
+
+Do NOT just rely on summarized data. Look at the actual candles!
 
 ═══════════════════════════════════════════
 ⚖️ CRITICAL: COMPARE BOTH DIRECTIONS

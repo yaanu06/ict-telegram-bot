@@ -387,3 +387,42 @@ describe('buildHolisticPromptBlock', () => {
         expect(block).toMatch(/SCORING DECISION RULE/);
     });
 });
+
+describe('buildCandleData', () => {
+    it('returns empty string when historyCache is empty or too short', () => {
+        const ctx = getContext();
+        expect(ctx.buildCandleData({})).toBe('');
+        expect(ctx.buildCandleData({ '1D': [], '4H': candles(5, 100, 1, 'up') })).toBe('');
+    });
+    it('formats last N candles per TF with O/H/L/C/V and correct index', () => {
+        const ctx = getContext();
+        const cache = {
+            '1D': candles(20, 100, 1, 'up'),
+            '4H': candles(20, 100, 1, 'up'),
+            '1H': candles(20, 100, 1, 'up'),
+            '15M': candles(20, 100, 1, 'up'),
+            '5M': candles(20, 100, 1, 'up'),
+            '1W': candles(20, 100, 1, 'up') // should be ignored (not in TF list)
+        };
+        const out = ctx.buildCandleData(cache, 10);
+        expect(out).toMatch(/### 1D CANDLES \(Last 10\):/);
+        expect(out).toMatch(/### 5M CANDLES \(Last 10\):/);
+        expect(out).not.toMatch(/### 1W CANDLES/);
+        // Each TF should produce 10 candle lines
+        const tfLines = out.split('\n').filter(l => /^\s+\d+: O:/.test(l));
+        expect(tfLines.length).toBe(50);
+        // Spot-check format on the very last candle (5M)
+        const last5m = tfLines[tfLines.length - 1];
+        expect(last5m).toMatch(/O:\d+\.\d{2} H:\d+\.\d{2} L:\d+\.\d{2} C:\d+\.\d{2} V:\d+/);
+    });
+    it('skips TFs with insufficient data without breaking others', () => {
+        const ctx = getContext();
+        const cache = {
+            '1D': candles(20, 100, 1, 'up'),
+            '4H': candles(5, 100, 1, 'up') // too short
+        };
+        const out = ctx.buildCandleData(cache, 10);
+        expect(out).toMatch(/1D CANDLES/);
+        expect(out).not.toMatch(/4H CANDLES/);
+    });
+});
