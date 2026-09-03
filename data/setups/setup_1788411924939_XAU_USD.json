@@ -1,0 +1,48 @@
+{
+  "id": 1788411924939,
+  "recordedAt": "2026-09-03T05:05:24.942Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-03",
+    "time": "05:05:24",
+    "pair": "XAU/USD",
+    "current_price": 4437.1478,
+    "trade_type": "BUY",
+    "entry_price": 4437.15,
+    "entry_zone": {
+      "low": 4437.15,
+      "high": 4451.2,
+      "source": "Confluence"
+    },
+    "stop_loss": 4400.1,
+    "stop_loss_reason": "Below the nearest liquidity pool at 4400.10, which aligns with the 1H bullish order block and provides a logical invalidation point for the buy setup.",
+    "take_profit_1": 4472.1,
+    "take_profit_2": 4527.83,
+    "take_profit_3": 4591.49,
+    "risk_reward": "1:2.4",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "Bullish FVG+Bullish Order Block+Higher Highs",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Despite the off-hours session, the confluence of a bullish 1D trend, a bullish 1H trend, a bullish order block, and a bullish FVG near the current price, combined with a higher BUY score (90 vs 65), suggests a long opportunity with a favorable risk-reward ratio.",
+      "secondary": [
+        "The 1H RSI is overbought, but this can be a sign of strength in a bullish trend and may precede a continuation.",
+        "The 1H MACD is bullish, supporting upward momentum.",
+        "The price is above the 1H EMA9 and EMA21, indicating short-term bullish momentum.",
+        "The hidden bearish divergence on the 4H is a continuation signal, which could mean the current pullback is temporary before the larger bullish trend resumes."
+      ],
+      "risk_warning": "The current session is off-hours with a low multiplier, which can lead to lower liquidity and wider spreads. The 4H trend is bearish, and the 1H RSI is extremely overbought, increasing the risk of a sharp pullback. The 4H distribution phase suggests potential selling pressure.",
+      "why_best": "BUY chosen over SELL — higher confidence/alignment"
+    },
+    "opposite_setup": {
+      "direction": "SELL",
+      "confidence": 0,
+      "why_rejected": "Not provided by AI"
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
