@@ -2431,6 +2431,132 @@ function normalizeOppositeSetup(input, chosenDirection) {
     };
 }
 
+// ============================================
+// HOLISTIC EVIDENCE - scores BUY vs SELL before
+// letting the AI decide, so the AI can't anchor
+// on the first pattern it sees.
+// ============================================
+function computeHolisticEvidence({ dailyDir, h4Dir, h1Dir, candles, indicators, patterns, phase, rsiDiv, macdDiv }) {
+    const closes = candles.map(c => c.c);
+    const isMakingHH = closes.length >= 6
+        ? closes.slice(-3).every((v, i, arr) => i === 0 || v > arr[i - 1])
+          && closes.slice(-6, -3).every((v, i, arr) => i === 0 || v > arr[i - 1])
+        : false;
+    const isMakingLL = closes.length >= 6
+        ? closes.slice(-3).every((v, i, arr) => i === 0 || v < arr[i - 1])
+          && closes.slice(-6, -3).every((v, i, arr) => i === 0 || v < arr[i - 1])
+        : false;
+    const currentPrice = closes[closes.length - 1];
+    const e9 = indicators?.ema9;
+    const e21 = indicators?.ema21;
+    const e50 = indicators?.ema50;
+    const e200 = indicators?.ema200;
+    const mas = [e9, e21, e50, e200].filter(v => typeof v === 'number' && isFinite(v));
+    const aboveEMAs = mas.length > 0 && mas.every(m => currentPrice > m);
+    const belowEMAs = mas.length > 0 && mas.every(m => currentPrice < m);
+
+    const fvgs = patterns?.fvg || [];
+    const obs = patterns?.orderBlocks || [];
+    const bullFVG = fvgs.some(f => f.type === 'bull');
+    const bearFVG = fvgs.some(f => f.type === 'bear');
+    const bullOB = obs.some(ob => ob.low < currentPrice);
+    const bearOB = obs.some(ob => ob.high > currentPrice);
+
+    const ts = patterns?.turtleSoup;
+    const tbsBuy = !!(ts && ts.detected && /BUY/i.test(ts.type || ''));
+    const tbsSell = !!(ts && ts.detected && /SELL/i.test(ts.type || ''));
+
+    const bullDiv = [rsiDiv, macdDiv].some(d => d && /BULLISH/i.test(d.type || ''));
+    const bearDiv = [rsiDiv, macdDiv].some(d => d && /BEARISH/i.test(d.type || ''));
+
+    const isAccumulation = phase && phase.phase === 'ACCUMULATION';
+    const isDistribution = phase && phase.phase === 'DISTRIBUTION';
+
+    const scoreSide = (isBull, signals) => {
+        if (!isBull) return 0;
+        return signals.reduce((a, b) => a + b, 0);
+    };
+
+    const buySignals = [
+        dailyDir === 'BULLISH' ? 30 : 0,
+        h4Dir === 'BULLISH' ? 20 : 0,
+        h1Dir === 'BULLISH' ? 15 : 0,
+        isMakingHH ? 25 : 0,
+        aboveEMAs ? 15 : 0,
+        bullFVG ? 10 : 0,
+        bullOB ? 10 : 0,
+        tbsBuy ? 20 : 0,
+        bullDiv ? 15 : 0,
+        isAccumulation ? 10 : 0
+    ];
+    const sellSignals = [
+        dailyDir === 'BEARISH' ? 30 : 0,
+        h4Dir === 'BEARISH' ? 20 : 0,
+        h1Dir === 'BEARISH' ? 15 : 0,
+        isMakingLL ? 25 : 0,
+        belowEMAs ? 15 : 0,
+        bearFVG ? 10 : 0,
+        bearOB ? 10 : 0,
+        tbsSell ? 20 : 0,
+        bearDiv ? 15 : 0,
+        isDistribution ? 10 : 0
+    ];
+    const buyScore = buySignals.reduce((a, b) => a + b, 0);
+    const sellScore = sellSignals.reduce((a, b) => a + b, 0);
+    const diff = buyScore - sellScore;
+    let suggestedDirection = 'NEUTRAL';
+    if (diff >= 20) suggestedDirection = 'BUY';
+    else if (diff <= -20) suggestedDirection = 'SELL';
+
+    const flags = {
+        isMakingHH, isMakingLL, aboveEMAs, belowEMAs,
+        bullFVG, bearFVG, bullOB, bearOB,
+        tbsBuy, tbsSell, bullDiv, bearDiv,
+        isAccumulation, isDistribution
+    };
+    return { flags, buyScore, sellScore, diff, suggestedDirection };
+}
+
+function buildHolisticPromptBlock({ evidence, dailyDir, h4Dir, h1Dir }) {
+    const { flags, buyScore, sellScore, suggestedDirection, diff } = evidence;
+    const yn = (cond, pts) => cond ? `✅ +${pts}` : '❌ 0';
+    const lines = [];
+    lines.push('### BUY EVIDENCE:');
+    lines.push(`- 1D trend: ${yn(dailyDir === 'BULLISH', 30)}`);
+    lines.push(`- 4H trend: ${yn(h4Dir === 'BULLISH', 20)}`);
+    lines.push(`- 1H trend: ${yn(h1Dir === 'BULLISH', 15)}`);
+    lines.push(`- Higher Highs: ${yn(flags.isMakingHH, 25)}`);
+    lines.push(`- Above key EMAs: ${yn(flags.aboveEMAs, 15)}`);
+    lines.push(`- Bullish FVG: ${yn(flags.bullFVG, 10)}`);
+    lines.push(`- Bullish Order Block: ${yn(flags.bullOB, 10)}`);
+    lines.push(`- Turtle Soup BUY: ${yn(flags.tbsBuy, 20)}`);
+    lines.push(`- Bullish Divergence (RSI/MACD): ${yn(flags.bullDiv, 15)}`);
+    lines.push(`- Accumulation phase: ${yn(flags.isAccumulation, 10)}`);
+    lines.push(`- BUY SCORE: ${buyScore}`);
+    lines.push('');
+    lines.push('### SELL EVIDENCE:');
+    lines.push(`- 1D trend: ${yn(dailyDir === 'BEARISH', 30)}`);
+    lines.push(`- 4H trend: ${yn(h4Dir === 'BEARISH', 20)}`);
+    lines.push(`- 1H trend: ${yn(h1Dir === 'BEARISH', 15)}`);
+    lines.push(`- Lower Lows: ${yn(flags.isMakingLL, 25)}`);
+    lines.push(`- Below key EMAs: ${yn(flags.belowEMAs, 15)}`);
+    lines.push(`- Bearish FVG: ${yn(flags.bearFVG, 10)}`);
+    lines.push(`- Bearish Order Block: ${yn(flags.bearOB, 10)}`);
+    lines.push(`- Turtle Soup SELL: ${yn(flags.tbsSell, 20)}`);
+    lines.push(`- Bearish Divergence (RSI/MACD): ${yn(flags.bearDiv, 15)}`);
+    lines.push(`- Distribution phase: ${yn(flags.isDistribution, 10)}`);
+    lines.push(`- SELL SCORE: ${sellScore}`);
+    lines.push('');
+    lines.push('### SCORING DECISION RULE:');
+    lines.push('- BUY Score > SELL Score + 20  ->  choose BUY');
+    lines.push('- SELL Score > BUY Score + 20  ->  choose SELL');
+    lines.push('- |difference| < 20  ->  NEUTRAL (wait, ai_decision = "wait_for_reaction" or "skip")');
+    lines.push('');
+    lines.push(`### PRE-COMPUTED: suggested=${suggestedDirection}, diff=${diff >= 0 ? '+' : ''}${diff}`);
+    lines.push('Align your final decision with this score. If you disagree, you MUST justify it in reasoning.why_best.');
+    return lines.join('\n');
+}
+
 async function askAIToFindSetup(marketData, price) {
     if (!DEEPSEEK_API_KEY) {
         console.error('No AI key available');
@@ -2754,7 +2880,17 @@ async function runAutoScan() {
         const dailyDir = await getQuoteDirection('1D', historyCache['1D']);
         const h4Dir = await getQuoteDirection('4H', historyCache['4H']);
         const h1Dir = await getQuoteDirection('1H', historyCache['1H']);
-        
+
+        const holistic = computeHolisticEvidence({
+            dailyDir, h4Dir, h1Dir,
+            candles: historyCache['4H'] || [],
+            indicators: indicators['4H'] || {},
+            patterns: patterns['4H'] || {},
+            phase: marketPhase,
+            rsiDiv: enhancedAnalysis?.rsiDiv,
+            macdDiv: enhancedAnalysis?.macdDiv
+        });
+
         const scanTextData = `ICT TRADING BOT - COMPLETE MARKET ANALYSIS
 
 PAIR: ${pair}
@@ -2848,6 +2984,14 @@ AI RULES (apply these strictly):
 - Only when ALL three filters pass AND patterns align -> "enter_now"
 - If entry zone exists but confirmation not yet present (price not at zone) ->
   you may still return "enter_now" because this is a LIMIT order that triggers on arrival
+
+═══════════════════════════════════════════
+📊 HOLISTIC EVIDENCE ANALYSIS (BUY vs SELL)
+═══════════════════════════════════════════
+${buildHolisticPromptBlock({ evidence: holistic, dailyDir, h4Dir, h1Dir })}
+
+This is the pre-computed BUY vs SELL evidence. Do NOT anchor on a single pattern
+you noticed first - weigh ALL evidence above before deciding direction.
 
 ═══════════════════════════════════════════
 ⚖️ CRITICAL: COMPARE BOTH DIRECTIONS
@@ -3019,12 +3163,16 @@ IMPORTANT: You are the PRIMARY analyst. Find the BEST setup, not just any setup.
         syncSetupToGitHub(out.trade_signal, 'ai_scan');
 
         const filtersBlock = !entryContext.allOk;
-        const effectiveDecision = filtersBlock && aiResult.ai_decision === 'enter_now'
+        const holisticIndecisive = holistic.suggestedDirection === 'NEUTRAL' && aiResult.ai_decision === 'enter_now';
+        const effectiveDecision = (filtersBlock || holisticIndecisive) && aiResult.ai_decision === 'enter_now'
             ? 'wait_for_reaction'
             : aiResult.ai_decision;
-        if (filtersBlock && aiResult.ai_decision === 'enter_now') {
+        const overrideReason = holisticIndecisive && !filtersBlock
+            ? `Holistic score too close (BUY ${holistic.buyScore} vs SELL ${holistic.sellScore}, diff ${holistic.diff})`
+            : entryContext.summary;
+        if ((filtersBlock || holisticIndecisive) && aiResult.ai_decision === 'enter_now') {
             aiResult.ai_decision = effectiveDecision;
-            aiResult.filterOverride = entryContext.summary;
+            aiResult.filterOverride = overrideReason;
         }
         const tradeable = effectiveDecision !== 'skip'
             && aiResult.confidence >= 58

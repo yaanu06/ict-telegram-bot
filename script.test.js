@@ -322,3 +322,68 @@ describe('normalizeOppositeSetup', () => {
         expect(r.confidence).toBe(0);
     });
 });
+
+describe('computeHolisticEvidence', () => {
+    const emptyArgs = { dailyDir: 'NEUTRAL', h4Dir: 'NEUTRAL', h1Dir: 'NEUTRAL', candles: [], indicators: {}, patterns: {}, phase: { phase: 'NEUTRAL' }, rsiDiv: { type: 'none' }, macdDiv: { type: 'none' } };
+    it('returns NEUTRAL when nothing scores', () => {
+        const ctx = getContext();
+        const r = ctx.computeHolisticEvidence(emptyArgs);
+        expect(r.suggestedDirection).toBe('NEUTRAL');
+        expect(r.buyScore).toBe(0);
+        expect(r.sellScore).toBe(0);
+    });
+    it('returns BUY when bullish evidence dominates', () => {
+        const ctx = getContext();
+        const args = { ...emptyArgs,
+            dailyDir: 'BULLISH', h4Dir: 'BULLISH', h1Dir: 'BULLISH',
+            candles: candles(60, 100, 1, 'up'),
+            indicators: { ema9: 90, ema21: 88, ema50: 85, ema200: 80 },
+            patterns: { fvg: [{ type: 'bull' }], turtleSoup: { detected: true, type: 'BUY' }, orderBlocks: [{ low: 95 }] },
+            phase: { phase: 'ACCUMULATION' },
+            rsiDiv: { type: 'HIDDEN_BULLISH' }, macdDiv: { type: 'none' }
+        };
+        const r = ctx.computeHolisticEvidence(args);
+        expect(r.buyScore).toBeGreaterThan(r.sellScore + 20);
+        expect(r.suggestedDirection).toBe('BUY');
+    });
+    it('returns SELL when bearish evidence dominates', () => {
+        const ctx = getContext();
+        const args = { ...emptyArgs,
+            dailyDir: 'BEARISH', h4Dir: 'BEARISH', h1Dir: 'BEARISH',
+            candles: candles(60, 100, 1, 'down'),
+            indicators: { ema9: 110, ema21: 112, ema50: 115, ema200: 120 },
+            patterns: { fvg: [{ type: 'bear' }], turtleSoup: { detected: true, type: 'SELL' }, orderBlocks: [{ high: 105 }] },
+            phase: { phase: 'DISTRIBUTION' },
+            rsiDiv: { type: 'REGULAR_BEARISH' }, macdDiv: { type: 'none' }
+        };
+        const r = ctx.computeHolisticEvidence(args);
+        expect(r.sellScore).toBeGreaterThan(r.buyScore + 20);
+        expect(r.suggestedDirection).toBe('SELL');
+    });
+    it('returns NEUTRAL when BUY and SELL within 20 points', () => {
+        const ctx = getContext();
+        const args = { ...emptyArgs,
+            dailyDir: 'BULLISH',
+            h1Dir: 'BEARISH',
+            candles: candles(60, 100, 0, 'up') // step 0 -> flat, no HH/LL
+        };
+        const r = ctx.computeHolisticEvidence(args);
+        expect(r.buyScore).toBe(30);
+        expect(r.sellScore).toBe(15);
+        expect(Math.abs(r.buyScore - r.sellScore)).toBeLessThan(20);
+        expect(r.suggestedDirection).toBe('NEUTRAL');
+    });
+});
+
+describe('buildHolisticPromptBlock', () => {
+    it('contains both BUY and SELL score sections', () => {
+        const ctx = getContext();
+        const evidence = { flags: {}, buyScore: 75, sellScore: 30, diff: 45, suggestedDirection: 'BUY' };
+        const block = ctx.buildHolisticPromptBlock({ evidence, dailyDir: 'BULLISH', h4Dir: 'BULLISH', h1Dir: 'BULLISH' });
+        expect(block).toMatch(/BUY EVIDENCE/);
+        expect(block).toMatch(/SELL EVIDENCE/);
+        expect(block).toMatch(/BUY SCORE: 75/);
+        expect(block).toMatch(/SELL SCORE: 30/);
+        expect(block).toMatch(/SCORING DECISION RULE/);
+    });
+});
