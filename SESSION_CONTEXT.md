@@ -1,4 +1,4 @@
-# Session Context — AI-First Setup Generation (2026-08-19) + Entry Filters (2026-09-03)
+# Session Context — AI-First Setup Generation (2026-08-19) + Entry Filters (2026-09-03) + Direction Compare (2026-09-03)
 
 > Read this file when resuming work on this project. It records what was done
 > in the last sessions so we can pick up where we left off.
@@ -67,6 +67,33 @@ User reported SL hits → asked for entry confirmation, smart SL, phase-based en
 - Both commits rebased onto auto-record commits, pushed to `origin/main`.
 - Local HEAD after session: `a99bd7c` (push of `b259044`).
 
+### 4. AI compares BOTH directions (commit `e039098`)
+
+User reported: AI was finding the first setup (e.g. Turtle Soup BUY) and outputting it without comparing to the opposite (e.g. Hidden Bearish Divergence → SELL). Missed opportunities.
+
+**Fix:** added a new prompt section "⚖️ CRITICAL: COMPARE BOTH DIRECTIONS" (script.js:~2860) right before "🎯 YOUR TASK". It tells the AI to:
+- Build a BUY setup AND a SELL setup independently
+- Compare them on confidence / RR / patterns / HTF alignment / probability
+- Output only the winner (or `skip` if both < 58 confidence)
+- Include `reasoning.why_best` and `opposite_setup.{direction,confidence,why_rejected}` in the JSON
+
+**New function `normalizeOppositeSetup(input, chosenDirection)`** (script.js:2422) — extracted to module scope for testability. Fills defaults when AI omits the field:
+- `direction` → opposite of chosen
+- `confidence` → 0 (or coerced to number if AI sent string)
+- `why_rejected` → 'Not provided by AI'
+
+Called from `askAIToFindSetup` (script.js:~2498) after the reasoning defaults block.
+
+**Wired into trade_signal output** (script.js:~2953): added `opposite_setup: aiResult.opposite_setup` to the out object, so the field is visible in the JSON tab and persisted to `data/setups/*.json` via `syncSetupToGitHub`.
+
+**NOT done (intentionally):**
+- Did NOT make `opposite_setup` required — would break the build if DeepSeek omits it.
+- Did NOT add a client-side BUY-vs-SELL re-comparison — the AI is the right place.
+
+**Tests:** 30 → **35 passing** (+5 for `normalizeOppositeSetup`: null, direction flip, partial, non-numeric confidence, full input).
+
+**File changes:** `script.js` +74, `script.test.js` +57.
+
 ---
 
 ## Earlier session (2026-08-19) — still relevant
@@ -95,12 +122,25 @@ New functions added BEFORE `runAutoScan()`:
 
 ## Verification
 - `node --check script.js` — SYNTAX OK
-- `npx jest` — 30/30 tests pass
+- `npx jest` — 35/35 tests pass
 
 ## Git notes
 - The bot auto-pushes "🤖 Auto-record ICT setup" commits to `data/` frequently → always `git pull --rebase` (or fetch+rebase) before pushing.
+- **Current local HEAD:** `e039098` "feat: AI compares both directions, returns opposite_setup + why_best"
+- **Recent commits this session (in order):**
+  - `d610c72` — feat: enhanced AI intelligence (AMD, divergence, liquidity, volume profile, sentiment, self-learning)
+  - `b259044` — feat: 4 entry filters (session, phase, confirmation, build entry context)
+  - `190be6e` → `3e4cd67` — docs: update SESSION_CONTEXT
+  - `e039098` — feat: AI compares both directions, returns opposite_setup + why_best
 
 ## Possible follow-ups (not done)
+- No server-side sanitization; keys stored client-side (known limitation, IMPROVEMENTS.md)
+- `scanFill` (progress bar) is fetched in new runAutoScan but no longer updated — could remove or wire up
+- Fallback `runFallbackScan` in the catch block may get undefined `price`/`historyCache` if the error happens before they're set
+- **No ground-truth trade outcomes are stored** — `data/journal/` and `data/trade_history/` don't exist. Without user marking recents as Win/Loss, self-learning never gets data. Consider adding automatic TP-hit/SL-hit detection by polling live price.
+- **Filter override is silent** — only sets `aiResult.filterOverride` field. Consider showing a UI notification "Trade blocked: Off-hours" so the user knows why the execute button is disabled.
+- **Add client-side sanity check on direction** — the AI now claims to compare, but we could cross-check `aiResult.direction` against the dominant HTF trend (1D/4H/1H) from `getQuoteDirection` and downgrade confidence if they conflict.
+- **Expose `opposite_setup` in the UI** — currently only visible in the JSON tab. Could add a "Why not the other direction?" expandable section in the analysis panel.
 - No server-side sanitization; keys stored client-side (known limitation, IMPROVEMENTS.md)
 - `scanFill` (progress bar) is fetched in new runAutoScan but no longer updated — could remove or wire up
 - Fallback `runFallbackScan` in the catch block may get undefined `price`/`historyCache` if the error happens before they're set
