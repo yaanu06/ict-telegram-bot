@@ -1,0 +1,47 @@
+{
+  "id": 1788436306472,
+  "recordedAt": "2026-09-03T11:51:46.474Z",
+  "eventType": "ai_scan",
+  "pair": "EUR/USD",
+  "setup": {
+    "date": "2026-09-03",
+    "time": "11:51:46",
+    "pair": "EUR/USD",
+    "current_price": 1.16131,
+    "trade_type": "BUY",
+    "entry_price": 1.16131,
+    "entry_zone": {
+      "low": 1.16131,
+      "high": 1.16131,
+      "source": "Confluence"
+    },
+    "stop_loss": 1.16031,
+    "stop_loss_reason": "Below recent swing low and key support at 1.16, providing protection against downside break.",
+    "take_profit_1": 1.16231,
+    "take_profit_2": 1.16331,
+    "take_profit_3": 1.16431,
+    "risk_reward": "1:1.0",
+    "confidence": 60,
+    "zone_quality": "B",
+    "patterns_detected": "Bullish FVG+Bullish Order Block+Higher Highs",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Strong bullish alignment across higher timeframes (1D, 1H) and a higher BUY score (80 vs 35) suggest upward momentum, despite the current off-hours session.",
+      "secondary": [
+        "Price is above key EMAs (9, 21, 50, 200), indicating a bullish trend.",
+        "Bullish FVG and Order Block patterns support a long position.",
+        "Positive RSI and CCI on the 1H timeframe show bullish momentum."
+      ],
+      "risk_warning": "Off-hours session with low volatility and a hidden bearish MACD divergence on the 4H could lead to a false breakout or consolidation.",
+      "why_best": "BUY chosen over SELL — higher confidence/alignment"
+    },
+    "opposite_setup": {
+      "direction": "SELL",
+      "confidence": 0,
+      "why_rejected": "Not provided by AI"
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
