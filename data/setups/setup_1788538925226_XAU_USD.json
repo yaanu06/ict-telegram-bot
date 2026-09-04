@@ -1,0 +1,47 @@
+{
+  "id": 1788538925226,
+  "recordedAt": "2026-09-04T16:22:05.227Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-04",
+    "time": "16:22:05",
+    "pair": "XAU/USD",
+    "current_price": 4441.87803,
+    "trade_type": "SELL",
+    "entry_price": 4449.17,
+    "entry_zone": {
+      "low": 4443.26,
+      "high": 4449.17,
+      "source": "Confluence"
+    },
+    "stop_loss": 4465.43,
+    "stop_loss_reason": "Above the recent 1H swing high at 4465.43, providing a logical invalidation point for the bearish setup.",
+    "take_profit_1": 4400.1,
+    "take_profit_2": 4368.53,
+    "take_profit_3": 4323.34,
+    "risk_reward": "1:3.1",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "Bearish Order Block+Bearish FVG+CRT Expanding+Turtle Soup BUY (Contrarian)",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "The 4H trend is bearish, and price is currently retracing into a confluence of resistance (1H bearish order block, 4H EMA9, and the 1H VAH) during the London Close killzone, offering a high-probability short entry.",
+      "secondary": [
+        "The 1H timeframe shows a bearish trend and a recent Turtle Soup BUY signal, which often acts as a liquidity grab before a continuation lower.",
+        "The 4H chart shows an expanding CRT pattern, indicating a volatile move that often resolves in the direction of the higher timeframe trend (bearish).",
+        "The holistic evidence score is nearly neutral (65 vs 50), but the bearish setup offers a better risk-to-reward ratio from the resistance zone."
+      ],
+      "risk_warning": "The 1D trend is bullish, and the 1H RSI is near oversold, which could lead to a bounce from this level. The current 1H candle is bullish, showing short-term buying pressure.",
+      "why_best": "SELL chosen over BUY — higher confidence/alignment"
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 0,
+      "why_rejected": "Not provided by AI"
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for a bearish reversal candlestick (e.g., engulfing or pin bar) on the 1H or 15M chart at the entry zone before entering.",
+    "source": "AI-Generated Setup"
+  }
+}
