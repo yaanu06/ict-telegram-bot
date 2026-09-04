@@ -3050,6 +3050,50 @@ Process:
 4) Output ONLY the winning direction. If both < 58 confidence -> ai_decision = "skip".
 
 In your JSON you MUST include:
+
+
+==========================================
+🎯 DECISION HIERARCHY - GHOST MACHINE STYLE
+==========================================
+You have ALL the data above (candles, indicators, patterns, holistic, session).
+Now follow this SIMPLE 5-step hierarchy IN ORDER. If ANY step fails → skip.
+
+1️⃣ TREND (Most Important - 1D/4H)
+   - If 1D = BULLISH & 4H = BULLISH → ONLY BUY
+   - If 1D = BEARISH & 4H = BEARISH → ONLY SELL
+   - If 1D & 4H CONFLICT → SKIP (no trade)
+
+2️⃣ ZONE (Where to enter, in trend direction)
+   - FVG, Order Block, or MSNR level
+   - Entry MUST be at zone price (low for BUY, high for SELL)
+   - Zone must be within 3x ATR of current price
+
+3️⃣ CONFIRMATION (Why enter NOW)
+   - Need at least 1 of:
+   - CRT (Expanding or Contracting)
+   - Turtle Soup (direction matching)
+   - Zone Reaction (engulfing, pin bar, momentum)
+
+4️⃣ SESSION (When to trade)
+   - Killzone or Silver Bullet = GOOD
+   - Off-hours = SKIP
+
+5️⃣ RISK/REWARD
+   - Must be > 2.5 (1:2.5 minimum)
+   - If less → SKIP
+
+==========================================
+📋 DECISION MATRIX (check each, then output)
+==========================================
+[ ] 1D & 4H aligned (BUY or SELL)
+[ ] Zone found in trend direction (within 3x ATR)
+[ ] Confirmation present (CRT / TBS / Reaction)
+[ ] Good session (Killzone / Silver Bullet)
+[ ] RR > 2.5
+
+If ALL 5 are checked → ai_decision = "enter_now"
+If ANY are missing → ai_decision = "wait_for_reaction" or "skip"
+
 - reasoning.why_best: one-sentence explanation of why this direction beats the opposite
 - opposite_setup.direction: the other direction you considered
 - opposite_setup.confidence: your confidence score for the rejected direction
@@ -3099,6 +3143,14 @@ Return ONLY JSON in this format:
     "secondary": ["string"],
     "risk_warning": "string"
   },
+  "decision_matrix": {
+    "trend_aligned": true|false,
+    "zone_found": true|false,
+    "confirmation": "CRT"|"TBS"|"Reaction"|"None",
+    "good_session": true|false,
+    "rr_good": true|false,
+    "all_conditions_pass": true|false
+  },
   "ai_decision": "enter_now" | "wait_for_reaction" | "skip",
   "wait_condition": "string or null"
 }
@@ -3106,7 +3158,7 @@ Return ONLY JSON in this format:
 RULES:
 - Entry must be within 3x ATR of current price
 - Stop Loss must be logical (below structure for BUY, above structure for SELL)
-- Minimum RR: 1:1.5
+- Minimum RR: 1:2.5 (hard rule from Decision Hierarchy step 5)
 - Consider ALL timeframes, indicators, patterns, session, and news
 - Be precise with numbers (use same precision as pair)
 
@@ -3124,7 +3176,9 @@ Example: zone.low=4590, zone.high=4605 → entry=4605
 ### Exception:
 Only use current price if it is ALREADY inside the zone
 
-IMPORTANT: You are the PRIMARY analyst. Find the BEST setup, not just any setup.`;
+IMPORTANT: You are the PRIMARY analyst. Find the BEST setup, not just any setup.
+
+BE DECISIVE: If all 5 decision-matrix conditions pass → ai_decision = "enter_now". If any fail → "wait_for_reaction" or "skip". NO "maybe" decisions.`;
 
         scanText.innerHTML = '🤖 AI analyzing all data...';
         const aiResult = await askAIToFindSetup(scanTextData, price);
