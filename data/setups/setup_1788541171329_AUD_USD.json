@@ -1,0 +1,47 @@
+{
+  "id": 1788541171329,
+  "recordedAt": "2026-09-04T16:59:31.331Z",
+  "eventType": "ai_scan",
+  "pair": "AUD/USD",
+  "setup": {
+    "date": "2026-09-04",
+    "time": "16:59:31",
+    "pair": "AUD/USD",
+    "current_price": 0.72102,
+    "trade_type": "BUY",
+    "entry_price": 0.72102,
+    "entry_zone": {
+      "low": 0.72102,
+      "high": 0.72102,
+      "source": "Confluence"
+    },
+    "stop_loss": 0.71902,
+    "stop_loss_reason": "Below the recent swing low and the lower Bollinger Band, providing a logical invalidation point for the bullish setup.",
+    "take_profit_1": 0.72302,
+    "take_profit_2": 0.72502,
+    "take_profit_3": 0.72802,
+    "risk_reward": "1:3.5",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "Bullish FVG+Bullish Order Block+CRT Expanding",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Strong bullish alignment across all major timeframes (1D, 4H, 1H) with price above key EMAs, supported by a high buy evidence score (100 vs 20), outweighing the lack of fresh patterns and immediate confirmation.",
+      "secondary": [
+        "Price is trading above the EMA200, indicating a long-term bullish trend.",
+        "The 4H RSI at 64.46 and 1H RSI at 60.13 show bullish momentum without being overbought.",
+        "The market is in a killzone session, which typically offers higher probability trading opportunities."
+      ],
+      "risk_warning": "The market phase is neutral with low volatility (0.26%), and price is currently at a pivot point. A lack of immediate confirmation could lead to a false breakout. The extremely tight Bollinger Bands suggest a potential volatility expansion, which could go either way.",
+      "why_best": "BUY chosen over SELL — higher confidence/alignment"
+    },
+    "opposite_setup": {
+      "direction": "SELL",
+      "confidence": 0,
+      "why_rejected": "Not provided by AI"
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Waiting for a bullish confirmation signal (e.g., engulfing candle, pin bar, or CRT shift) at the current price level before entering.",
+    "source": "AI-Generated Setup"
+  }
+}
