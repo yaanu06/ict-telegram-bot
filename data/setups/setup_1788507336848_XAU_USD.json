@@ -1,0 +1,47 @@
+{
+  "id": 1788507336848,
+  "recordedAt": "2026-09-04T07:35:36.851Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-04",
+    "time": "07:35:36",
+    "pair": "XAU/USD",
+    "current_price": 4474.87358,
+    "trade_type": "BUY",
+    "entry_price": 4460.3,
+    "entry_zone": {
+      "low": 4460.3,
+      "high": 4465.88,
+      "source": "Confluence"
+    },
+    "stop_loss": 4444.64,
+    "stop_loss_reason": "Below recent swing low and liquidity pool at 4444.64, providing a logical invalidation level.",
+    "take_profit_1": 4486.72,
+    "take_profit_2": 4510.6,
+    "take_profit_3": 4527.83,
+    "risk_reward": "1:2.1",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "Turtle Soup BUY+Bullish FVG+Bullish Order Block+Higher Low",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Bullish evidence outweighs bearish (80 vs 55), with 1D and 1H trends bullish, price above key EMAs, and a Turtle Soup BUY signal on 1H indicating a potential reversal from liquidity grabs.",
+      "secondary": [
+        "Price is in a London killzone with high session multiplier, increasing probability of directional moves.",
+        "1H RSI at 57.26 shows bullish momentum without being overbought, while 4H RSI at 59.11 supports upward continuation.",
+        "Recent 1H candles show a bounce from 4460.30 low, forming a higher low, and price is approaching a demand zone with confluence of FVG and OB."
+      ],
+      "risk_warning": "4H trend is neutral and market phase is distribution, which could lead to consolidation or reversal. Watch for rejection at resistance levels.",
+      "why_best": "BUY chosen over SELL — higher confidence/alignment"
+    },
+    "opposite_setup": {
+      "direction": "SELL",
+      "confidence": 0,
+      "why_rejected": "Not provided by AI"
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
