@@ -1,0 +1,48 @@
+{
+  "id": 1788694405008,
+  "recordedAt": "2026-09-06T11:33:25.010Z",
+  "eventType": "ai_scan",
+  "pair": "BTC/USD",
+  "setup": {
+    "date": "2026-09-06",
+    "time": "11:33:25",
+    "pair": "BTC/USD",
+    "current_price": 79928.27,
+    "trade_type": "BUY",
+    "entry_price": 79577,
+    "entry_zone": {
+      "low": 79577,
+      "high": 79805,
+      "source": "Swing"
+    },
+    "stop_loss": 79019.83,
+    "stop_loss_reason": "Below the 4H EMA50 and recent swing low, providing a logical invalidation point for the bullish thesis.",
+    "take_profit_1": 80200,
+    "take_profit_2": 81272.62,
+    "take_profit_3": 82300,
+    "risk_reward": "1:3.1",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "Hidden Bullish MACD Divergence+Bullish Market Structure (Higher Highs)+Price Above Key EMAs+Bullish FVG",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Despite the off-hours session, the strong bullish alignment across higher timeframes (1D, 4H, 1H) and a hidden bullish MACD divergence suggest a continuation of the prevailing uptrend, with a favorable risk-reward setup at a key support level.",
+      "secondary": [
+        "Price is trading above all major EMAs (9, 21, 50, 200) on the 4H chart, confirming the bullish trend.",
+        "The 4H chart shows a bullish market structure with higher highs and higher lows.",
+        "A hidden bullish MACD divergence indicates that the current pullback is likely a continuation pattern, not a reversal.",
+        "The entry zone is a confluence of a recent 4H swing low and the 4H EMA21, providing a strong support area."
+      ],
+      "risk_warning": "The current session is off-hours, which can lead to lower liquidity and increased volatility. The 4H MACD histogram is negative, suggesting a lack of immediate bullish momentum. A break below the 4H EMA50 would invalidate this setup.",
+      "why_best": "BUY chosen over SELL — higher confidence/alignment"
+    },
+    "opposite_setup": {
+      "direction": "SELL",
+      "confidence": 0,
+      "why_rejected": "Not provided by AI"
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for price to reach the entry zone (79577-79805) and show a bullish reaction (e.g., engulfing candle, pin bar) before entering. Also, monitor for a shift to a high-probability session (Killzone/Silver Bullet).",
+    "source": "AI-Generated Setup"
+  }
+}
