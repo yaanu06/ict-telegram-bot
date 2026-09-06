@@ -349,6 +349,15 @@ function init() {
     const activeBtn = document.querySelector('.category-btn.active');
     if(activeBtn) updatePairs(activeBtn.dataset.category);
     loadLimitOrder();
+
+    // AUTO OUTCOME DETECTION: independent poller so filled trades get resolved
+    // even when NO limit order is currently active. startMonitor's interval is
+    // torn down the moment an order fills (clearLimit → clearInterval), so it
+    // alone could never resolve the fill it just enqueued. This 60s poll + the
+    // immediate first call cover that gap.
+    checkPendingFills().catch(e => console.error('checkPendingFills (init):', e));
+    setInterval(() => { checkPendingFills().catch(e => console.error('checkPendingFills (interval):', e)); }, 60 * 1000);
+
     console.log('✅ All event listeners attached successfully!');
 }
 
@@ -2979,11 +2988,10 @@ function validateAISetup(aiResult, price, historyCache, pairArg) {
             break;
         }
     }
-    if(matchedZone) {
-        passes++;
-    } else {
-        reasons.push('AI entry does not match a real zone in 4H/1H (0.15% tolerance)');
+    if(!matchedZone) {
+        return reject(`AI entry ${aiResult.entry} does not match a real zone in 4H/1H (0.15% tolerance / within zone bounds)`);
     }
+    passes++;
 
     // --- CHECK 2: RR RECOMPUTATION (don't trust aiResult.risk_reward) ---
     checks++;
@@ -3053,9 +3061,19 @@ function validateAISetup(aiResult, price, historyCache, pairArg) {
     const factors = [];
 
     // (a) HTF alignment 0..3
-    const dailyDir = getDirectionBias(historyCache['1D'] || []);
-    const h4Dir = historyCache['4H'] ? getDirectionBias(historyCache['4H']) : 'NEUTRAL';
-    const h1Dir = historyCache['1H'] ? getDirectionBias(historyCache['1H']) : 'NEUTRAL';
+    // IMPORTANT: use detectTrend() (via the same logic as getQuoteDirection)
+    // for HTF direction — NOT getDirectionBias(). The AI prompt and evaluateSetup
+    // both derive dailyDir/h4Dir/h1Dir from getQuoteDirection() -> detectTrend().
+    // getDirectionBias() can disagree with detectTrend() on the same candles, so
+    // using it here would score/validate against a different trend read than the
+    // one the AI was shown. Keep them consistent.
+    const htfDir = (tf) => {
+        const d = historyCache[tf];
+        return (d && d.length >= 50) ? detectTrend(d) : 'NEUTRAL';
+    };
+    const dailyDir = htfDir('1D');
+    const h4Dir = htfDir('4H');
+    const h1Dir = htfDir('1H');
     const dirStr = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
     let htfMatch = 0;
     if(dailyDir === dirStr) htfMatch++;
@@ -3085,12 +3103,20 @@ function validateAISetup(aiResult, price, historyCache, pairArg) {
     factors.push(`${patternCount} patterns (+${Math.min(patternCount*4, 16)})`);
 
     // (e) MSS structure break confirmation (wire-in of previously dead detectMSS)
-    //     detectMSS returns true on the most recent swing. We accept the trade
-    //     if the MSS direction matches the AI direction.
+    //     detectMSS(d) takes ONE arg and returns { type: 'BULL' | 'BEAR' | null }
+    //     for the most recent market-structure swing. We compare that type against
+    //     the AI's direction ourselves: give +6 when they AGREE, -3 when they
+    //     disagree. The old call passed `direction` as a 2nd arg which detectMSS
+    //     ignores, so it always +6'd (and the mssOk===false branch was dead).
     if(historyCache['4H'] && historyCache['4H'].length >= 30) {
-        const mssOk = detectMSS(historyCache['4H'], direction);
-        if(mssOk) { localScore += 6; factors.push('MSS confirms direction (+6)'); }
-        else if(mssOk === false) { localScore -= 3; factors.push('MSS against direction (-3)'); }
+        const mss = detectMSS(historyCache['4H']);
+        if(mss) {
+            const mssMatches = (mss.type === 'BULL' && direction === 'BUY') || (mss.type === 'BEAR' && direction === 'SELL');
+            if(mssMatches) { localScore += 6; factors.push(`MSS ${mss.type} confirms direction (+6)`); }
+            else { localScore -= 3; factors.push(`MSS ${mss.type} against direction (-3)`); }
+        } else {
+            factors.push('No MSS (structure flat)');
+        }
     }
 
     // (f) ATR distance (entry should be reachable — within 6x ATR)
@@ -4458,7 +4484,6 @@ function updateLimitUI() {
 
 function startMonitor() {
     if(priceTimer) clearInterval(priceTimer);
-    let tickCount = 0;
     priceTimer = setInterval(async () => {
         if(!limitOrder) {
             clearInterval(priceTimer);
@@ -4498,14 +4523,6 @@ function startMonitor() {
             try {
                 new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play();
             } catch(e) {}
-        }
-
-        // Check pending fills roughly every 6 ticks (~12s) — cheap, just reads
-        // 5M candles and walks the queue. Skipped on early ticks to give the
-        // first candle after fill time to close.
-        tickCount++;
-        if(tickCount % 6 === 0) {
-            checkPendingFills().catch(e => console.error('checkPendingFills:', e));
         }
     }, 2000);
 }

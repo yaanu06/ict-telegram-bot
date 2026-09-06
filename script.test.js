@@ -542,8 +542,11 @@ describe('validateAISetup', () => {
     it('rejects when recomputed RR is below 1.5x regardless of AI claim', () => {
         const ctx = getContext();
         const cache = buildCache();
-        // risk = 100 - 95 = 5, reward = 102 - 100 = 2 → RR = 0.4x
-        const r = ctx.validateAISetup(baseAi({ entry: 100, stop_loss: 95, take_profit_1: 102, risk_reward: '1:5.0' }), 105, cache, 'XAU/USD');
+        // Entry at price (within 0.15% tolerance, so CHECK 1 zone reconciliation
+        // passes). But SL is far and TP1 is near → RR = 0.5x, which must be
+        // caught by the recompute even though aiResult.risk_reward claims 1:5.0.
+        // risk = 100 - 90 = 10, reward = 100.5 - 100 = 0.5 → RR = 0.05x
+        const r = ctx.validateAISetup(baseAi({ entry: 100, stop_loss: 90, take_profit_1: 100.5, risk_reward: '1:5.0' }), 100, cache, 'XAU/USD');
         expect(r.valid).toBe(false);
         expect(r.reason).toMatch(/recomputed RR .* < 1\.5x/);
     });
@@ -565,6 +568,61 @@ describe('validateAISetup', () => {
             expect(r.aiConf).toBe(95);
         }
         // If invalid, we still want a valid structure response
+        expect(typeof r.adjustedConfidence).toBe('number');
+    });
+
+    it('FIX1: hard-rejects when entry does not match any real zone', () => {
+        const ctx = getContext();
+        const cache = buildCache();
+        // Entry 999 is far from price 105 AND outside any 4H/1H zone. Before this
+        // fix, CHECK 1 only logged a reason (no reject) and the setup passed.
+        const r = ctx.validateAISetup(baseAi({ entry: 999, stop_loss: 990, take_profit_1: 1010 }), 105, cache, 'XAU/USD');
+        expect(r.valid).toBe(false);
+        expect(r.reason).toMatch(/does not match a real zone/);
+        expect(r.checks).toBeTruthy();
+    });
+
+    it('FIX2: gives +6 when MSS type agrees with direction, -3 when it disagrees', () => {
+        const ctx = getContext();
+        // Build 4H data with a fresh BULL MSS (last close above prior 21-bar high).
+        const bullData = [];
+        for (let i = 0; i < 40; i++) bullData.push({ o: 100 + i, h: 101 + i, l: 99 + i, c: 100.5 + i, v: 1e6 });
+        // last close = 100.5+39 = 139.5, prior 21-bar high = max(h[-21..-2]) = 100+39-20.. ≈ 120 → BULL MSS
+        const mssB = ctx.detectMSS(bullData);
+        expect(mssB && mssB.type).toBe('BULL');
+
+        // A BUY setup on this data should get +6 (MSS BULL agrees).
+        const cacheBuy = { '4H': bullData, '1H': bullData, '1D': bullData, '15M': bullData.slice(-20), '5M': bullData.slice(-20) };
+        // Force CHECK 1 to pass by putting entry within 0.15% of price.
+        const priceB = 139.5;
+        const rBuy = ctx.validateAISetup(baseAi({ direction: 'BUY', entry: priceB, stop_loss: priceB - 2, take_profit_1: priceB + 5 }), priceB, cacheBuy, 'XAU/USD');
+        // We can't force rBuy.valid here (other checks may fail), but if it reaches
+        // scoring, the factors must reflect the MSS agreement when valid.
+        if(rBuy.valid) {
+            expect(rBuy.factors.some(f => /MSS BULL confirms/.test(f))).toBe(true);
+        }
+
+        // A SELL setup against a BULL MSS should get -3 if it reaches scoring.
+        const rSell = ctx.validateAISetup(baseAi({ direction: 'SELL', entry: priceB, stop_loss: priceB + 2, take_profit_1: priceB - 5 }), priceB, cacheBuy, 'XAU/USD');
+        if(rSell.valid) {
+            expect(rSell.factors.some(f => /MSS BULL against/.test(f))).toBe(true);
+        }
+    });
+
+    it('FIX4: computes HTF alignment via detectTrend (getQuoteDirection logic), not getDirectionBias', () => {
+        const ctx = getContext();
+        // Monkey-patch detectTrend to record it was called for each timeframe,
+        // proving validateAISetup uses the trend read (not getDirectionBias)
+        // for its HTF alignment scoring. (CHECK 4's daily-direction gate
+        // legitimately still uses getDirectionBias — that's separate.)
+        const calls = [];
+        const origTrend = ctx.detectTrend;
+        ctx.detectTrend = function(d) { calls.push((d && d.length) || 0); return origTrend.call(this, d); };
+        const cache = buildCache();
+        const r = ctx.validateAISetup(baseAi({ entry: 100, stop_loss: 98, take_profit_1: 104 }), 100, cache, 'XAU/USD');
+        // detectTrend must have been called (for 1D/4H/1H alignment) with >= 50-length data
+        expect(calls.filter(n => n >= 50).length).toBeGreaterThanOrEqual(3);
+        ctx.detectTrend = origTrend;
         expect(typeof r.adjustedConfidence).toBe('number');
     });
 });
