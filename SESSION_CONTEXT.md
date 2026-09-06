@@ -1,4 +1,4 @@
-# Session Context — AI-First Setup Generation (2026-08-19) + Entry Filters (2026-09-03) + Direction Compare (2026-09-03) + Holistic Evidence + Raw Candles + Decision Hierarchy (2026-09-06)
+# Session Context — AI-First Setup Generation (2026-08-19) + Entry Filters (2026-09-03) + Direction Compare (2026-09-03) + Holistic Evidence + Raw Candles + Decision Hierarchy (2026-09-06) + AI Validation Layer (2026-09-06)
 
 > Read this file when resuming work on this project. It records what was done
 > in the last sessions so we can pick up where we left off.
@@ -176,6 +176,52 @@ If ANY missing → wait_for_reaction or skip
 **Tests:** stayed at 43 (no new tests — the hierarchy is a prompt change, not new pure functions).
 **File changes:** `script.js` +56, -2.
 
+### 8. AI Validation/Reconciliation Layer + Volume Gating + Auto Outcome Detection (commit `bf42a47` → pushed)
+
+User reported structural bug: the AI setup path (`askAIToFindSetup` / DeepSeek) was never validated against the deterministic rule engine (`evaluateSetup`'s CHoCH gate, HTF direction gate, zone freshness, loss protection, trade gap, EV gate, RR minimum). The rule engine only ran inside `runFallbackScan()`, which only fires if the AI call fails outright. So in normal operation none of the rules applied to AI setups. Plus asked for synthetic-volume gating, auto outcome detection, and minor bug fixes.
+
+**A. NEW FUNCTION: `validateAISetup(aiResult, price, historyCache, pair)` (script.js:2941)**
+Runs the deterministic rule engine against the AI's claim. 6 hard checks:
+1. **Zone reconciliation** — recompute `findPatternZone` on 4H/1H; reject if `aiResult.entry` is > 0.15% from any real zone and not within zone low/high.
+2. **RR recompute** — recompute from `aiResult.entry`/`stop_loss`/`take_profit_1`; reject if < 1.5x regardless of what `aiResult.risk_reward` claims.
+3. **CHoCH gate** — `detectCHoCH` on 4H/1H; reject if true.
+4. **1D direction gate** — `getDirectionBias` + `calculateADX`; reject if AI direction fights 1D bias with ADX > 20.
+5. **Loss protection + trade gap** — `checkLossProtection()` and `checkTradeGap(2)`.
+6. **Zone freshness** — `checkZoneFreshness` on matched zone; reject if touches > `MAX_ZONE_TOUCHES`.
+
+**Independent confidence scoring (script.js:2993):** 60% local (HTF match 0-3, ADX strength, freshness, pattern count, **detectMSS** +/-6, ATR distance, RR quality) + 40% AI claim. `aiResult.confidence` is now ONE input, not the source of truth.
+
+**Wired into `runAutoScan` (script.js:3617):** between the AI return and the tradeable gate. If invalid: `ai_decision` forced to `wait_for_reaction`, `filterOverride` set, validation block attached to JSON output, execute button disabled, notif surfaces the reason. NOT silently overwritten by `runFallbackScan`. If valid: `aiResult.confidence` replaced by `adjustedConfidence`, factors logged.
+
+**B. VOLUME GATING (`hasRealVolume`, script.js:32)**
+- New per-pair flag: `REAL_VOLUME_PAIRS = new Set(['BTC/USD'])` — Twelve Data returns synthetic volume (the `v: +c.volume || 1e6` fallback in `getHistory`) for forex/metals. Fake volume was being scored as real confirmation.
+- `analyzeVolumeTruth`, `analyzeSentiment`, `analyzeMarketPhase` all accept `realVolume` arg. When false: volumeSurge/fake/dryUp → all false; volumeSentiment → 0; volumeRatio → 1.0 (neutral, can't trigger ACCUMULATION).
+- All 3 callers in `runAutoScan`/`evaluateSetup` updated to pass `hasRealVolume(pair)`.
+
+**C. AUTO OUTCOME DETECTION (pendingFills queue)**
+- `enqueuePendingFill(order, fillPrice)` (script.js:882) — called inside `startMonitor` when a limit fills. Pushes to `localStorage['pendingFills']`.
+- `resolvePendingFill(fill, candles)` (script.js:912) — pure function for tests. Walks post-fill 5M candles, finds the earliest SL or TP1 wick. Returns `{ resolved, outcome: 'WIN'|'LOSS'|null, reason }`.
+- `checkPendingFills()` (script.js:956) — called every 6 ticks in `startMonitor` (~12s). Resolves each pending fill, calls `recordTradeResult(isWin, r)`, shows notif. Drops fills >7 days old. Keeps unresolved ones in queue.
+- The Win/Loss buttons in the Recent UI (`handleRecentClick` → `markRecentOutcome`) are still wired as a manual override.
+
+**D. MINOR BUG FIXES**
+- `calcStopLoss` (script.js:1190): `sl` was assigned without `let`/`const`. Added.
+- `findPatternZone` (script.js:1452): removed dead duplicate branch — both `distPct <= 1.0` and `distPct > 1.0` resolved to `entry = direction === 'BUY' ? best.high : best.low`. Single branch now (kept the explanatory comment).
+- `detectMSS` (script.js:632): was defined but never called. Wired into `validateAISetup` as +/-6 scoring factor based on whether the recent MSS direction matches `aiResult.direction`.
+
+**E. Tests**
+- 43 → **59 passing** (+16):
+  - `hasRealVolume` + 3 volume-gating tests (analyzeVolumeTruth surge zeroed on synth, analyzeMarketPhase ACCUMULATION blocked, analyzeSentiment volumeSentiment zeroed)
+  - `validateAISetup`: 5 cases (valid setup structure, bad direction, missing fields, low RR, blend confidence)
+  - `resolvePendingFill`: 6 cases (LOSS first, WIN first, unresolved, SHORT symmetric, empty candles, bad date)
+  - `pendingFills`: enqueue/load/clear round-trip
+- `node --check script.js` clean.
+
+**NOT done (intentionally):**
+- Did NOT make the existing Win/Loss buttons in the Recent UI more visually prominent — the user spec asked for that OR auto-detection; we did auto and kept the buttons.
+- Did NOT re-test the full `runAutoScan` flow against the real DeepSeek API (would require keys + manual UI run).
+- Did NOT add server-side rate-limiting on `syncSetupToGitHub` for the new `validation` field.
+
 ---
 
 ## Earlier session (2026-08-19) — still relevant
@@ -204,11 +250,11 @@ New functions added BEFORE `runAutoScan()`:
 
 ## Verification
 - `node --check script.js` — SYNTAX OK
-- `npx jest` — 43/43 tests pass
+- `npx jest` — 59/59 tests pass
 
 ## Git notes
 - The bot auto-pushes "🤖 Auto-record ICT setup" commits to `data/` frequently → always `git pull --rebase` (or fetch+rebase) before pushing.
-- **Current local HEAD:** `9bde799` (push of decision hierarchy)
+- **Current local HEAD:** `bf42a47` (push of AI validation layer)
 - **Recent commits this session (in order):**
   - `d610c72` — feat: enhanced AI intelligence (AMD, divergence, liquidity, volume profile, sentiment, self-learning)
   - `b259044` — feat: 4 entry filters (session, phase, confirmation, build entry context)
@@ -218,6 +264,7 @@ New functions added BEFORE `runAutoScan()`:
   - `3f0f004` → `5c887a9` — feat: holistic BUY vs SELL evidence scoring
   - `d93a303` → `ad66511` — feat: feed raw OHLC candle data to AI
   - `9bde799` — feat: simplify AI decision hierarchy (5-step ghost-machine matrix)
+  - `bf42a47` — feat: AI setup validation/reconciliation + volume gating + auto outcome detection
 
 ## Possible follow-ups (not done)
 - **No ground-truth trade outcomes are stored** — `data/journal/` and `data/trade_history/` don't exist. Without user marking recents as Win/Loss, self-learning never gets data. Consider adding automatic TP-hit/SL-hit detection by polling live price.
