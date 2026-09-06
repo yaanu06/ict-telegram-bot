@@ -1,4 +1,4 @@
-# Session Context — AI-First Setup Generation (2026-08-19) + Entry Filters (2026-09-03) + Direction Compare (2026-09-03) + Holistic Evidence + Raw Candles
+# Session Context — AI-First Setup Generation (2026-08-19) + Entry Filters (2026-09-03) + Direction Compare (2026-09-03) + Holistic Evidence + Raw Candles + Decision Hierarchy (2026-09-06)
 
 > Read this file when resuming work on this project. It records what was done
 > in the last sessions so we can pick up where we left off.
@@ -143,6 +143,39 @@ Volume included, indices are absolute (not relative), OHLC 2-decimal fixed.
 
 **File changes:** `script.js` +50, `script.test.js` +43.
 
+### 7. Decision Hierarchy - 5-Step Ghost Machine Matrix (commit `9bde799` → pushed)
+
+User reported: AI prompt was getting too long and the AI was still making inconsistent decisions. Asked for a SIMPLER, more decisive hierarchy: trend → zone → confirmation → session → RR.
+
+**Prompt section added (script.js:3058-3099)** — between `CRITICAL: COMPARE BOTH DIRECTIONS` and `🎯 YOUR TASK`:
+```
+🎯 DECISION HIERARCHY - GHOST MACHINE STYLE
+1️⃣ TREND (1D/4H) — aligned = direction, conflict = SKIP
+2️⃣ ZONE — FVG/OB/MSNR in trend direction, within 3x ATR, entry AT zone
+3️⃣ CONFIRMATION — CRT / Turtle Soup / Zone Reaction (need 1+)
+4️⃣ SESSION — Killzone/Silver Bullet = GOOD, off-hours = SKIP
+5️⃣ RISK/REWARD — must be > 2.5, else SKIP
+
+📋 DECISION MATRIX (5 checkboxes)
+If ALL 5 checked → enter_now
+If ANY missing → wait_for_reaction or skip
+```
+
+**JSON schema additions (script.js:3150-3157):** new `decision_matrix` field with self-reported booleans:
+- `trend_aligned`, `zone_found`, `confirmation` (CRT/TBS/Reaction/None), `good_session`, `rr_good`, `all_conditions_pass`.
+
+**Other changes:**
+- Bumped RR floor from `1:1.5` → `1:2.5` (script.js:3165) — hard rule from hierarchy step 5.
+- Added closing rule: "BE DECISIVE: If all 5 conditions pass → enter_now. If any fail → wait_for_reaction or skip. NO 'maybe' decisions." (script.js:3185).
+
+**Why this matters:**
+- Forces the AI to a 5-step checklist, not free-form reasoning.
+- Decision matrix field gives us a quick diagnostic: when the AI says enter_now but `all_conditions_pass: false`, we know to override client-side.
+- RR floor of 2.5 (vs 1.5) means winners cover losers with bigger buffer.
+
+**Tests:** stayed at 43 (no new tests — the hierarchy is a prompt change, not new pure functions).
+**File changes:** `script.js` +56, -2.
+
 ---
 
 ## Earlier session (2026-08-19) — still relevant
@@ -175,7 +208,7 @@ New functions added BEFORE `runAutoScan()`:
 
 ## Git notes
 - The bot auto-pushes "🤖 Auto-record ICT setup" commits to `data/` frequently → always `git pull --rebase` (or fetch+rebase) before pushing.
-- **Current local HEAD:** `ad66511` (push of `d93a303`)
+- **Current local HEAD:** `9bde799` (push of decision hierarchy)
 - **Recent commits this session (in order):**
   - `d610c72` — feat: enhanced AI intelligence (AMD, divergence, liquidity, volume profile, sentiment, self-learning)
   - `b259044` — feat: 4 entry filters (session, phase, confirmation, build entry context)
@@ -184,6 +217,7 @@ New functions added BEFORE `runAutoScan()`:
   - `f2ea3d1` — docs: update SESSION_CONTEXT
   - `3f0f004` → `5c887a9` — feat: holistic BUY vs SELL evidence scoring
   - `d93a303` → `ad66511` — feat: feed raw OHLC candle data to AI
+  - `9bde799` — feat: simplify AI decision hierarchy (5-step ghost-machine matrix)
 
 ## Possible follow-ups (not done)
 - **No ground-truth trade outcomes are stored** — `data/journal/` and `data/trade_history/` don't exist. Without user marking recents as Win/Loss, self-learning never gets data. Consider adding automatic TP-hit/SL-hit detection by polling live price.
