@@ -1,0 +1,47 @@
+{
+  "id": 1788693043327,
+  "recordedAt": "2026-09-06T11:10:43.327Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-06",
+    "time": "11:10:43",
+    "pair": "XAU/USD",
+    "current_price": 4428.95099,
+    "trade_type": "SELL",
+    "entry_price": 4429.15,
+    "entry_zone": {
+      "low": 4428.88,
+      "high": 4429.15,
+      "source": "Swing"
+    },
+    "stop_loss": 4430.57,
+    "stop_loss_reason": "Above EMA21 on 4H, which is acting as immediate resistance and aligns with the recent swing high.",
+    "take_profit_1": 4428.88,
+    "take_profit_2": 4428.88,
+    "take_profit_3": 4428.88,
+    "risk_reward": "1:0.3",
+    "confidence": 15,
+    "zone_quality": "C",
+    "patterns_detected": "Bearish Order Block+Bearish FVG",
+    "probability": "LOW",
+    "reasoning": {
+      "primary": "The market is in a tight range with extremely low volatility, and the current price is at the range high, offering a low-risk short opportunity back to the range low.",
+      "secondary": [
+        "4H and 1H trends are bearish, suggesting downward pressure.",
+        "Price is below key EMAs (EMA9, EMA21, EMA50) on the 4H timeframe.",
+        "The 4H sentiment is bearish, supporting a short bias."
+      ],
+      "risk_warning": "The 1D trend is bullish, which could lead to a breakout above the range. The current setup has a very poor risk-reward ratio and is during off-hours, increasing the risk of a false breakout.",
+      "why_best": "SELL chosen over BUY — higher confidence/alignment"
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 0,
+      "why_rejected": "Not provided by AI"
+    },
+    "ai_decision": "skip",
+    "wait_condition": "Wait for a clear breakout or breakdown from the current tight range, ideally during a high-probability trading session (Killzone/Silver Bullet).",
+    "source": "AI-Generated Setup"
+  }
+}
