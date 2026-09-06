@@ -23,6 +23,18 @@ const SYMBOLS = {
     'XAU/USD':'XAU/USD','XAG/USD':'XAG/USD'
 };
 
+// HAS_REAL_VOLUME: Twelve Data returns synthetic/sparse volume for many forex
+// and metals pairs (the v field falls back to 1e6 in getHistory). When false,
+// volume-based scoring (volumeTruth surge/fake, sentiment volume, market-phase
+// volumeRatio) must be downweighted or zeroed — fake volume is NOT confirmation.
+// Crypto pairs (BTC) have real volume; XAU/XAG and FX pairs do not (varies by
+// plan, but we default conservative).
+const REAL_VOLUME_PAIRS = new Set(['BTC/USD']);
+function hasRealVolume(p) {
+    const sym = SYMBOLS[p || pair] || (p || pair);
+    return REAL_VOLUME_PAIRS.has(sym);
+}
+
 let lastScanRejections = [];
 const TF_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day','1W':'1week' };
 const ALL_TIMEFRAMES = ['5M', '15M', '1H', '4H', '1D'];
@@ -831,6 +843,135 @@ function recordTradeResult(isWin, riskR) {
     else { consecutiveLosses++; dailyPnlR -= riskR; }
 }
 
+// ============================================
+// AUTO OUTCOME DETECTION
+// ============================================
+// When a limit order FILLS inside startMonitor(), we don't know yet whether
+// it will hit SL or TP1. We push the filled order into a localStorage queue
+// (pendingFills) and check 5M candles on the next monitor tick. If SL was
+// hit first → LOSS, if TP1 first → WIN, otherwise keep waiting.
+//
+// This replaces the requirement to manually call window.logTradeResult()
+// from the console. The Win/Loss buttons in the Recent UI are still
+// available as a manual override.
+const PENDING_FILLS_KEY = 'pendingFills';
+function loadPendingFills() {
+    try { return JSON.parse(localStorage.getItem(PENDING_FILLS_KEY) || '[]'); }
+    catch(e) { return []; }
+}
+function savePendingFills(arr) {
+    try { localStorage.setItem(PENDING_FILLS_KEY, JSON.stringify(arr)); } catch(e) {}
+}
+function enqueuePendingFill(order, fillPrice) {
+    const queue = loadPendingFills();
+    queue.push({
+        id: order.id || Date.now(),
+        pair: order.pair || pair,
+        signalType: order.signalType,
+        entry: fillPrice,
+        stopLoss: order.stopLoss,
+        takeProfit1: order.takeProfit1,
+        takeProfit2: order.takeProfit2,
+        takeProfit3: order.takeProfit3,
+        createdAt: new Date().toISOString(),
+        checkedAt: null
+    });
+    savePendingFills(queue);
+    console.log(`  📥 pendingFills: enqueued ${order.signalType} @ ${fillPrice} (queue size ${queue.length})`);
+}
+function clearPendingFill(id) {
+    const queue = loadPendingFills().filter(f => f.id !== id);
+    savePendingFills(queue);
+}
+
+// Resolve one pending fill against the candle history after the fill time.
+// Returns { resolved: true|false, outcome: 'WIN'|'LOSS'|null, reason: string }
+//   - If SL candle is BEFORE TP1 candle in the post-fill candles → LOSS
+//   - If TP1 candle is BEFORE SL candle                       → WIN
+//   - Otherwise not yet resolved (keep in queue)
+function resolvePendingFill(fill, candles) {
+    if(!fill || !candles || candles.length === 0) return { resolved: false, outcome: null, reason: 'no candles' };
+    const created = parseCandleTimeUTC(fill.createdAt);
+    if(isNaN(created)) return { resolved: false, outcome: null, reason: 'bad createdAt' };
+    // Look at candles that started AFTER the fill (the fill happened at fillPrice
+    // at fill.createdAt; subsequent candles determine outcome).
+    let slCandleIdx = -1, tpCandleIdx = -1;
+    for(let i = 0; i < candles.length; i++) {
+        const c = candles[i];
+        const t = parseCandleTimeUTC(c.t);
+        if(isNaN(t) || t < created) continue;
+        // SL hit: wick reached SL level in the wrong direction
+        if(fill.signalType === 'LONG'  && c.l <= fill.stopLoss && slCandleIdx === -1) slCandleIdx = i;
+        if(fill.signalType === 'SHORT' && c.h >= fill.stopLoss && slCandleIdx === -1) slCandleIdx = i;
+        // TP1 hit: wick reached TP1 level in the profitable direction
+        if(fill.signalType === 'LONG'  && c.h >= fill.takeProfit1 && tpCandleIdx === -1) tpCandleIdx = i;
+        if(fill.signalType === 'SHORT' && c.l <= fill.takeProfit1 && tpCandleIdx === -1) tpCandleIdx = i;
+        // Once both are found, decide
+        if(slCandleIdx !== -1 && tpCandleIdx !== -1) break;
+    }
+    if(slCandleIdx === -1 && tpCandleIdx === -1) {
+        return { resolved: false, outcome: null, reason: 'neither SL nor TP1 hit yet' };
+    }
+    if(slCandleIdx === -1) {
+        return { resolved: true, outcome: 'WIN', reason: `TP1 hit at candle ${tpCandleIdx}` };
+    }
+    if(tpCandleIdx === -1) {
+        return { resolved: true, outcome: 'LOSS', reason: `SL hit at candle ${slCandleIdx}` };
+    }
+    // Both hit — the earlier one wins
+    if(slCandleIdx < tpCandleIdx) {
+        return { resolved: true, outcome: 'LOSS', reason: `SL hit at candle ${slCandleIdx}, TP1 at ${tpCandleIdx}` };
+    }
+    return { resolved: true, outcome: 'WIN', reason: `TP1 hit at candle ${tpCandleIdx}, SL at ${slCandleIdx}` };
+}
+
+async function checkPendingFills() {
+    const queue = loadPendingFills();
+    if(queue.length === 0) return;
+    const stillPending = [];
+    for(const fill of queue) {
+        // Skip fills older than 7 days — assume manual review needed
+        const ageHours = (Date.now() - new Date(fill.createdAt).getTime()) / 3600000;
+        if(ageHours > 24 * 7) {
+            console.log(`  ⏰ pendingFills: dropping ${fill.id} (${ageHours.toFixed(0)}h old, manual review required)`);
+            continue;
+        }
+        // Wait at least one 5M candle (~5 min) before resolving to let price move
+        if(ageHours < 5 / 60) {
+            stillPending.push(fill);
+            continue;
+        }
+        try {
+            const candles = await getHistory('5M', fill.pair);
+            if(!candles || candles.length < 3) {
+                stillPending.push(fill);
+                continue;
+            }
+            const result = resolvePendingFill(fill, candles);
+            if(!result.resolved) {
+                stillPending.push(fill);
+                continue;
+            }
+            // Resolved! Record and surface to UI
+            const isWin = result.outcome === 'WIN';
+            // Risk is |entry - stopLoss|. Reward at TP1 is |TP1 - entry|. Use RR for PnL.
+            const risk = Math.abs(fill.entry - fill.stopLoss);
+            const reward = Math.abs(fill.takeProfit1 - fill.entry);
+            const r = risk > 0 ? reward / risk : 1.0;
+            recordTradeResult(isWin, r);
+            showNotif(
+                `📊 Auto-detected: ${fill.pair || ''} ${fill.signalType} → ${isWin ? '✅ WIN' : '❌ LOSS'} (${result.reason})`,
+                isWin ? 'success' : 'warning'
+            );
+            console.log(`  📊 pendingFills: resolved ${fill.id} → ${result.outcome} (${result.reason})`);
+        } catch(e) {
+            console.error('pendingFills check error:', e);
+            stillPending.push(fill);
+        }
+    }
+    savePendingFills(stillPending);
+}
+
 // Time gap between trades (hours)
 let lastTradeTime = 0;
 function checkTradeGap(minHours = 2) {
@@ -1185,6 +1326,7 @@ function calcStopLoss(data, direction, entry, zone, msnr, tf, customATR = null, 
     const maxSLDist = Math.max(minSLDist, atrVal * 2.5);
     
     let slDist;
+    let sl;
     const zoneLow = zone ? (zone.low || zone.p * 0.9995) : entry * 0.995;
     const zoneHigh = zone ? (zone.high || zone.p * 1.0005) : entry * 1.005;
 
@@ -1445,13 +1587,10 @@ function findPatternZone(data, price, direction, customATR = null) {
     // higher fill probability. For a BUY, price is ABOVE the zone, so the limit
     // sits at zone.high (the first level price will touch on its way down).
     // For a SELL, price is BELOW the zone, so the limit sits at zone.low.
+    // Note: distPct doesn't change which edge we pick — both branches resolve to
+    // the same edge. Kept as a single branch.
     let entry;
-    const distToZone = direction === 'BUY' ? price - best.price : best.price - price;
-    const distPct = (distToZone / price) * 100;
-
-    if(distPct <= 1.0 && best.low && best.high) {
-        entry = direction === 'BUY' ? best.high : best.low;
-    } else if(distPct > 1.0 && best.low && best.high) {
+    if(best.low && best.high) {
         entry = direction === 'BUY' ? best.high : best.low;
     } else {
         entry = best.price;
@@ -1703,8 +1842,11 @@ function getSimpleDecision(best, price) {
 // ============================================
 
 // Volume truth detection: sustained 200% surge = institutional; spike-then-drop = fake
-function analyzeVolumeTruth(data) {
+// `realVolume` flag: when false (forex/metals from Twelve Data), return zero signals.
+// Synthetic volume should never score as confirmation or fake — it's just noise.
+function analyzeVolumeTruth(data, realVolume = true) {
     if(!data || data.length < 20) return { surge: false, fake: false, dryUp: false };
+    if(!realVolume) return { surge: false, fake: false, dryUp: false, avg: 0, realVolume: false };
     const vols = data.slice(-20).map(c => c.v || 0);
     const avg = vols.reduce((a, b) => a + b, 0) / vols.length;
     const last4 = vols.slice(-4);
@@ -1712,7 +1854,7 @@ function analyzeVolumeTruth(data) {
     const last1 = vols[vols.length - 1], last2 = vols[vols.length - 2];
     const fake = last2 >= avg * 2 && last1 < last2 * 0.6;
     const dryUp = last4.every(v => v < avg * 0.8);
-    return { surge, fake, dryUp, avg };
+    return { surge, fake, dryUp, avg, realVolume: true };
 }
 
 // Liquidity sweep detection: price swept a recent swing high/low then closed back
@@ -1882,7 +2024,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             }
             
             // QUANTUM INTELLIGENCE CHECKS (v8/v9 strategy layer)
-            const volTruth = analyzeVolumeTruth(entryData);
+            const volTruth = analyzeVolumeTruth(entryData, hasRealVolume(pair));
             const sweep = detectLiquiditySweep(entryData, price, dir);
             const displaced = detectDisplacement(entryData, dir);
             const breakoutRetest = detectBreakoutRetest(entryData, price, dir);
@@ -2781,6 +2923,212 @@ async function runFallbackScan(price, historyCache) {
     showNotif(`🎯 ${best.timeframe} ${st} | Conf: ${best.confidence}% | ${best.zoneType}`, 'success');
 }
 
+// ============================================
+// AI SETUP VALIDATION / RECONCILIATION
+// ============================================
+// The AI (DeepSeek) is the primary analyst but it's a black box. Until this
+// function existed, the rule engine (CHoCH gate, HTF direction gate, zone
+// freshness, loss protection, trade gap, RR minimum) only ran inside
+// runFallbackScan() — which is only invoked when the AI call FAILS. So in
+// normal AI-first operation none of the rule-engine checks ever applied.
+//
+// validateAISetup() runs the same rule checks against the AI's claim and
+// returns a verdict + an INDEPENDENTLY-computed confidence (so we don't
+// trust aiResult.confidence as the source of truth). If invalid, the caller
+// treats it like a low-confidence setup: ai_decision forced to skip /
+// wait_for_reaction, execute button disabled, and the reason surfaced
+// clearly in lastScanRejections + the JSON output.
+function validateAISetup(aiResult, price, historyCache, pairArg) {
+    const pairLocal = pairArg || pair;
+    const reasons = [];
+    let checks = 0, passes = 0;
+
+    function reject(reason) {
+        const msg = `AI Setup rejected: ${reason}`;
+        console.log(`  ❌ ${msg}`);
+        lastScanRejections.push(msg);
+        return { valid: false, reason: msg, adjustedConfidence: 0, checks: { total: checks, passed: passes, failures: [...reasons, reason] } };
+    }
+
+    if(!aiResult || !aiResult.direction || !aiResult.entry || !aiResult.stop_loss || !aiResult.take_profit_1) {
+        return reject('AI result missing required fields (direction/entry/SL/TP1)');
+    }
+    if(aiResult.direction !== 'BUY' && aiResult.direction !== 'SELL') {
+        return reject(`AI direction "${aiResult.direction}" is not BUY or SELL`);
+    }
+    const direction = aiResult.direction;
+    const atr4h = (historyCache['4H'] && historyCache['4H'].length) ? atr(historyCache['4H'], 14) : 0;
+    const atr1h = (historyCache['1H'] && historyCache['1H'].length) ? atr(historyCache['1H'], 14) : 0;
+    const atrVal = atr4h || atr1h || 0;
+
+    // --- CHECK 1: ZONE VALIDATION (re-find a real zone near aiResult.entry) ---
+    checks++;
+    let matchedZone = null;
+    let matchedZoneTf = null;
+    for (const tf of ['4H', '1H']) {
+        const data = historyCache[tf];
+        if(!data || data.length < 20) continue;
+        const z = findPatternZone(data, price, direction, atrVal);
+        if(!z || !z.zone) continue;
+        const withinBounds = aiResult.entry >= z.zone.low && aiResult.entry <= z.zone.high;
+        const withinPct = price > 0 ? Math.abs(aiResult.entry - price) / price * 100 : 999;
+        // 0.15% tolerance OR within zone low/high bounds
+        if(withinBounds || withinPct <= 0.15) {
+            matchedZone = z.zone;
+            matchedZoneTf = tf;
+            break;
+        }
+    }
+    if(matchedZone) {
+        passes++;
+    } else {
+        reasons.push('AI entry does not match a real zone in 4H/1H (0.15% tolerance)');
+    }
+
+    // --- CHECK 2: RR RECOMPUTATION (don't trust aiResult.risk_reward) ---
+    checks++;
+    const risk = Math.abs(aiResult.entry - aiResult.stop_loss);
+    const reward = Math.abs(aiResult.take_profit_1 - aiResult.entry);
+    const rr1 = risk > 0 ? reward / risk : 0;
+    const HARD_RR_MIN = 1.5;
+    if(rr1 < HARD_RR_MIN) {
+        return reject(`recomputed RR ${rr1.toFixed(2)}x < ${HARD_RR_MIN}x minimum (risk ${risk.toFixed(4)}, reward ${reward.toFixed(4)})`);
+    }
+    passes++;
+
+    // --- CHECK 3: CHoCH GATE (no trading against fresh structure change) ---
+    checks++;
+    let chochHit = false;
+    for (const tf of ['4H', '1H']) {
+        const data = historyCache[tf];
+        if(!data || data.length < 20) continue;
+        if(detectCHoCH(data, direction)) { chochHit = true; break; }
+    }
+    if(chochHit) {
+        return reject('CHoCH detected on 4H or 1H — trading against fresh structure change');
+    }
+    passes++;
+
+    // --- CHECK 4: DAILY DIRECTION GATE (1D bias + ADX > 20) ---
+    checks++;
+    const dailyData = historyCache['1D'];
+    if(dailyData && dailyData.length >= 20) {
+        const dirBias = getDirectionBias(dailyData);
+        const dailyADX = calculateADX(dailyData, 14, '1D');
+        const fighting = (direction === 'BUY' && dirBias === 'BEARISH') || (direction === 'SELL' && dirBias === 'BULLISH');
+        if(fighting && dailyADX.adx > 20) {
+            return reject(`1D bias is ${dirBias} with ADX ${dailyADX.adx.toFixed(1)} (strong) — AI direction fights the daily trend`);
+        }
+    }
+    passes++;
+
+    // --- CHECK 5: LOSS PROTECTION + TRADE GAP ---
+    checks++;
+    if(!checkLossProtection()) {
+        return reject(`loss protection active (${consecutiveLosses} losses / ${dailyPnlR.toFixed(1)}R daily)`);
+    }
+    if(!checkTradeGap(2)) {
+        return reject('time gap not met — wait 2h between trades');
+    }
+    passes++;
+
+    // --- CHECK 6: ZONE FRESHNESS (touches on matched zone) ---
+    checks++;
+    let freshness = null;
+    if(matchedZone) {
+        const data = historyCache[matchedZoneTf];
+        freshness = checkZoneFreshness(data, matchedZone, direction);
+        if(freshness.touches > MAX_ZONE_TOUCHES) {
+            return reject(`matched zone has ${freshness.touches} touches (max ${MAX_ZONE_TOUCHES})`);
+        }
+    }
+    passes++;
+
+    // --- INDEPENDENT CONFIDENCE SCORING ---
+    // We do NOT trust aiResult.confidence. We compute our own score from the
+    // factors we can verify, then blend with the AI's claim (50/50). Each
+    // factor weights the local evidence; aiResult.confidence acts as an
+    // advisor only.
+    let localScore = 0;
+    const factors = [];
+
+    // (a) HTF alignment 0..3
+    const dailyDir = getDirectionBias(historyCache['1D'] || []);
+    const h4Dir = historyCache['4H'] ? getDirectionBias(historyCache['4H']) : 'NEUTRAL';
+    const h1Dir = historyCache['1H'] ? getDirectionBias(historyCache['1H']) : 'NEUTRAL';
+    const dirStr = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
+    let htfMatch = 0;
+    if(dailyDir === dirStr) htfMatch++;
+    if(h4Dir === dirStr) htfMatch++;
+    if(h1Dir === dirStr) htfMatch++;
+    localScore += htfMatch * 15; // up to 45
+    factors.push(`HTF ${htfMatch}/3 (+${htfMatch*15})`);
+
+    // (b) ADX strength on 4H
+    if(historyCache['4H'] && historyCache['4H'].length >= 30) {
+        const adx4 = calculateADX(historyCache['4H'], 14, '4H');
+        if(adx4.adx > 25) { localScore += 10; factors.push(`ADX 4H ${adx4.adx.toFixed(0)} strong (+10)`); }
+        else if(adx4.adx < 15) { localScore -= 8; factors.push(`ADX 4H ${adx4.adx.toFixed(0)} very weak (-8)`); }
+    }
+
+    // (c) Zone freshness bonus
+    if(freshness) {
+        if(freshness.fresh) { localScore += 12; factors.push('Fresh zone (+12)'); }
+        else if(freshness.touches <= 3) { localScore += 4; factors.push(`Lightly used (${freshness.touches} touches, +4)`); }
+        else if(freshness.touches <= 6) { localScore -= 2; factors.push(`Used (${freshness.touches} touches, -2)`); }
+        else { localScore -= 8; factors.push(`Stale (${freshness.touches} touches, -8)`); }
+    }
+
+    // (d) Pattern count from AI claim (light proxy — we don't re-run every pattern)
+    const patternCount = Array.isArray(aiResult.patterns) ? aiResult.patterns.length : 0;
+    localScore += Math.min(patternCount * 4, 16);
+    factors.push(`${patternCount} patterns (+${Math.min(patternCount*4, 16)})`);
+
+    // (e) MSS structure break confirmation (wire-in of previously dead detectMSS)
+    //     detectMSS returns true on the most recent swing. We accept the trade
+    //     if the MSS direction matches the AI direction.
+    if(historyCache['4H'] && historyCache['4H'].length >= 30) {
+        const mssOk = detectMSS(historyCache['4H'], direction);
+        if(mssOk) { localScore += 6; factors.push('MSS confirms direction (+6)'); }
+        else if(mssOk === false) { localScore -= 3; factors.push('MSS against direction (-3)'); }
+    }
+
+    // (f) ATR distance (entry should be reachable — within 6x ATR)
+    if(atrVal > 0) {
+        const atrDistance = Math.abs(aiResult.entry - price) / atrVal;
+        if(atrDistance > 6) { localScore -= 10; factors.push(`Entry too far (${atrDistance.toFixed(1)}x ATR, -10)`); }
+    }
+
+    // (g) RR quality bonus (above 2.0 is great, exactly 1.5 is okay)
+    if(rr1 >= 2.5) { localScore += 8; factors.push(`RR ${rr1.toFixed(1)}x strong (+8)`); }
+    else if(rr1 >= 2.0) { localScore += 4; factors.push(`RR ${rr1.toFixed(1)}x decent (+4)`); }
+
+    localScore = Math.max(0, Math.min(100, localScore));
+
+    // Blend 60% local / 40% AI
+    const aiConf = Number(aiResult.confidence) || 0;
+    const adjusted = Math.round(0.6 * localScore + 0.4 * aiConf);
+    const adjustedConfidence = Math.max(0, Math.min(100, adjusted));
+
+    console.log(`  ✅ AI Setup passed ${passes}/${checks} rule checks. localScore=${localScore} | aiConf=${aiConf} | adjusted=${adjustedConfidence}`);
+    if(factors.length) console.log(`     factors: ${factors.join(' | ')}`);
+
+    return {
+        valid: true,
+        reason: null,
+        adjustedConfidence,
+        checks: { total: checks, passed: passes, failures: reasons },
+        localScore,
+        aiConf,
+        rr1,
+        htfMatch,
+        matchedZone,
+        matchedZoneTf,
+        freshness,
+        factors
+    };
+}
+
 async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
     const scanStatus = document.getElementById('scanStatus');
@@ -2819,14 +3167,14 @@ async function runAutoScan() {
         // ============================================
         let enhancedAnalysis = null;
         if (historyCache['4H'] && historyCache['4H'].length >= 50) {
-            const phase = analyzeMarketPhase(historyCache['4H']);
+            const phase = analyzeMarketPhase(historyCache['4H'], hasRealVolume(pair));
             const rsiDiv = detectDivergence(historyCache['4H'], 'rsi', 30);
             const macdDiv = detectDivergence(historyCache['4H'], 'macd', 30);
             const liq = mapLiquidity(historyCache['4H']);
             const volProf = analyzeVolumeProfile(historyCache['4H']);
-            const sentiment = analyzeSentiment(historyCache['4H']);
+            const sentiment = analyzeSentiment(historyCache['4H'], hasRealVolume(pair));
             const sentiment1h = historyCache['1H'] && historyCache['1H'].length >= 50
-                ? analyzeSentiment(historyCache['1H']) : { sentiment: 'N/A', score: 50, description: 'N/A' };
+                ? analyzeSentiment(historyCache['1H'], hasRealVolume(pair)) : { sentiment: 'N/A', score: 50, description: 'N/A' };
             enhancedAnalysis = {
                 phase, rsiDiv, macdDiv, liq, volProf, sentiment, sentiment1h,
                 phaseBlock: `Phase: ${phase.phase} (${phase.confidence.toFixed(0)}% conf) - ${phase.description}`,
@@ -2843,7 +3191,7 @@ async function runAutoScan() {
         // ============================================
         const sessionCheck = shouldTradeSession();
         const phaseData = historyCache['1H'] && historyCache['1H'].length >= 30 ? historyCache['1H'] : (historyCache['4H'] || []);
-        const marketPhase = analyzeMarketPhase(phaseData);
+        const marketPhase = analyzeMarketPhase(phaseData, hasRealVolume(pair));
         const aiDirection = lastSetupSummary?.direction === 'SHORT' ? 'SELL' : (lastSetupSummary?.direction === 'LONG' ? 'BUY' : null);
         const tentativeZone = lastSetupOut?.trade_signal?.entry_zone || lastSetupSummary?.zoneType || null;
         const tentativeZoneObj = tentativeZone && typeof tentativeZone === 'object' && tentativeZone.low
@@ -3255,6 +3603,47 @@ BE DECISIVE: If all 5 decision-matrix conditions pass → ai_decision = "enter_n
         lastSetupOut = out;
         syncSetupToGitHub(out.trade_signal, 'ai_scan');
 
+        // ============================================
+        // AI SETUP VALIDATION — reconcile the AI claim against the
+        // deterministic rule engine. Until this point the rule engine
+        // (CHoCH, HTF, freshness, loss-protection, trade-gap, RR) only ran
+        // inside runFallbackScan(), which fires only on AI failure. So in
+        // normal AI-first operation the rules were never applied.
+        //
+        // If validation fails, the AI's claim is treated as a blocked
+        // setup (NOT silently overwritten by runFallbackScan). The reason
+        // is surfaced via filterOverride + lastScanRejections + notif.
+        // ============================================
+        const validation = validateAISetup(aiResult, price, historyCache, pair);
+        if(!validation.valid) {
+            aiResult.ai_decision = 'wait_for_reaction';
+            aiResult.filterOverride = validation.reason;
+            out.trade_signal.ai_decision = 'wait_for_reaction';
+            out.trade_signal.filterOverride = validation.reason;
+            out.trade_signal.validation = { passed: false, reason: validation.reason, checks: validation.checks };
+            setJsonOutput(out);
+            showNotif(`🚫 AI blocked: ${validation.reason}`, 'warning');
+        } else {
+            // Replace the AI's confidence with our independently-computed one
+            // (we keep the AI's number as a "blend_input" for transparency).
+            const beforeConf = aiResult.confidence;
+            aiResult.confidence = validation.adjustedConfidence;
+            aiResult.validation = {
+                passed: true,
+                localScore: validation.localScore,
+                aiConf: validation.aiConf,
+                adjustedConfidence: validation.adjustedConfidence,
+                rr1: validation.rr1,
+                htfMatch: validation.htfMatch,
+                factors: validation.factors,
+                matchedZone: validation.matchedZone ? { low: validation.matchedZone.low, high: validation.matchedZone.high, tf: validation.matchedZoneTf } : null
+            };
+            out.trade_signal.confidence = validation.adjustedConfidence;
+            out.trade_signal.validation = aiResult.validation;
+            console.log(`  🎚️ AI confidence ${beforeConf} → adjusted ${validation.adjustedConfidence} (localScore ${validation.localScore}, htfMatch ${validation.htfMatch}/3, rr ${validation.rr1.toFixed(2)}x)`);
+            setJsonOutput(out);
+        }
+
         const filtersBlock = !entryContext.allOk;
         const holisticIndecisive = holistic.suggestedDirection === 'NEUTRAL' && aiResult.ai_decision === 'enter_now';
         const effectiveDecision = (filtersBlock || holisticIndecisive) && aiResult.ai_decision === 'enter_now'
@@ -3269,7 +3658,8 @@ BE DECISIVE: If all 5 decision-matrix conditions pass → ai_decision = "enter_n
         }
         const tradeable = effectiveDecision !== 'skip'
             && aiResult.confidence >= 58
-            && sessionCheck.priority !== 'LOW';
+            && sessionCheck.priority !== 'LOW'
+            && validation.valid;
         
         analysis = {
             signalType: st,
@@ -3304,7 +3694,8 @@ BE DECISIVE: If all 5 decision-matrix conditions pass → ai_decision = "enter_n
         }
         
         const decisionEmoji = aiResult.ai_decision === 'enter_now' ? '✅' : (aiResult.ai_decision === 'wait_for_reaction' ? '⏳' : '🚫');
-        showNotif(`🤖 AI Setup: ${st} ${decisionEmoji} | Conf: ${aiResult.confidence}% | ${aiResult.entry_zone.source} | ${aiResult.patterns.join(', ')}`, tradeable ? 'success' : 'warning');
+        const validationTag = validation.valid ? '✓' : '✗';
+        showNotif(`🤖 AI Setup [val:${validationTag}] ${st} ${decisionEmoji} | Conf: ${aiResult.confidence}% | ${aiResult.entry_zone.source} | ${aiResult.patterns.join(', ')}`, tradeable ? 'success' : 'warning');
         
     } catch(e) {
         console.error('AI Scan Error:', e);
@@ -3321,7 +3712,7 @@ BE DECISIVE: If all 5 decision-matrix conditions pass → ai_decision = "enter_n
 // ============================================
 
 // 1. MARKET PHASE ANALYSIS (AMD)
-function analyzeMarketPhase(data) {
+function analyzeMarketPhase(data, realVolume = true) {
     if (!data || data.length < 50) return { phase: 'UNKNOWN', confidence: 0, description: 'Insufficient data' };
     const closes = data.map(c => c.c);
     const highs = data.map(c => c.h);
@@ -3332,9 +3723,12 @@ function analyzeMarketPhase(data) {
     const recentLows = lows.slice(-20);
     const recentRange = Math.max(...recentHighs) - Math.min(...recentLows);
     const volatility = recentRange / (avgRange || 1);
+    // Synthetic volume must NOT trigger ACCUMULATION phase. When volume is
+    // synthetic, we fall back to volatility+slope only (no volumeRatio boost).
     const volume = data.slice(-20).reduce((a, c) => a + (c.v || 0), 0) / 20;
     const avgVolume = data.slice(-50, -20).reduce((a, c) => a + (c.v || 0), 0) / 30;
-    const volumeRatio = volume / (avgVolume || 1);
+    const rawVolumeRatio = volume / (avgVolume || 1);
+    const volumeRatio = realVolume ? rawVolumeRatio : 1.0; // neutral — no fake confirmation
     const sw = findSwings(data, 3);
     const recentHighsSwings = (sw.H || []).slice(-5);
     const recentLowsSwings = (sw.L || []).slice(-5);
@@ -3360,7 +3754,7 @@ function analyzeMarketPhase(data) {
     } else {
         description = 'Range-bound market - waiting for direction';
     }
-    return { phase, confidence, description, volatility, volumeRatio, sweptHigh, sweptLow, e20Slope, e50Slope };
+    return { phase, confidence, description, volatility, volumeRatio, sweptHigh, sweptLow, e20Slope, e50Slope, realVolume };
 }
 
 // 2. HIDDEN DIVERGENCE DETECTION
@@ -3497,7 +3891,9 @@ function analyzeVolumeProfile(data) {
 }
 
 // 5. SENTIMENT ANALYSIS
-function analyzeSentiment(data) {
+// `realVolume` flag: when false, the volumeSentiment component is zeroed so
+// synthetic volume can't flip the score.
+function analyzeSentiment(data, realVolume = true) {
     if (!data || data.length < 50) return { sentiment: 'NEUTRAL', score: 50, description: 'Insufficient data' };
     const closes = data.map(c => c.c);
     const volumes = data.map(c => c.v || 0);
@@ -3511,7 +3907,9 @@ function analyzeSentiment(data) {
     const trend = e20.length > 5 ? (e20[e20.length - 1] > e20[e20.length - 5] ? 1 : -1) : 0;
     const recentVolume = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
     const avgVolume = volumes.slice(-20, -5).reduce((a, b) => a + b, 0) / 15;
-    const volumeSentiment = (recentVolume / (avgVolume || 1)) * trend * 10;
+    const rawVolumeRatio = (avgVolume > 0 ? recentVolume / avgVolume : 0);
+    // Zero the volumeSentiment component when volume is synthetic.
+    const volumeSentiment = realVolume ? rawVolumeRatio * trend * 10 : 0;
     const e12 = ema(closes, 12);
     const e26 = ema(closes, 26);
     const macd = e12.length && e26.length ? e12[e12.length - 1] - e26[e26.length - 1] : 0;
@@ -3521,8 +3919,9 @@ function analyzeSentiment(data) {
     const finalScore = Math.min(Math.max(totalScore, 0), 100);
     const sentiment = finalScore > 60 ? 'BULLISH' : (finalScore < 40 ? 'BEARISH' : 'NEUTRAL');
     const volumeRatio = (avgVolume > 0 ? recentVolume / avgVolume : 0).toFixed(2);
-    const description = `${sentiment} (${finalScore.toFixed(0)}/100) - RSI:${rsi.toFixed(0)} Volume:${volumeRatio}x MACD:${macd > 0 ? 'Bullish' : 'Bearish'}`;
-    return { sentiment, score: finalScore, description, rsiSentiment, volumeSentiment, macdSentiment };
+    const volTag = realVolume ? `${volumeRatio}x` : 'n/a (synthetic)';
+    const description = `${sentiment} (${finalScore.toFixed(0)}/100) - RSI:${rsi.toFixed(0)} Volume:${volTag} MACD:${macd > 0 ? 'Bullish' : 'Bearish'}`;
+    return { sentiment, score: finalScore, description, rsiSentiment, volumeSentiment, macdSentiment, realVolume };
 }
 
 // 6. SELF-LEARNING CAPABILITY
@@ -4059,6 +4458,7 @@ function updateLimitUI() {
 
 function startMonitor() {
     if(priceTimer) clearInterval(priceTimer);
+    let tickCount = 0;
     priceTimer = setInterval(async () => {
         if(!limitOrder) {
             clearInterval(priceTimer);
@@ -4092,9 +4492,20 @@ function startMonitor() {
             const filled = limitOrder;
             clearLimit();
             showNotif(`✅ FILLED! ${filled.pair||''} ${filled.signalType} @ $${p.toFixed(settings.prec)}`, 'success');
+            // AUTO OUTCOME DETECTION: enqueue the fill so the next monitor
+            // tick can poll 5M candles to see if SL or TP1 was hit.
+            enqueuePendingFill(filled, p);
             try {
                 new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play();
             } catch(e) {}
+        }
+
+        // Check pending fills roughly every 6 ticks (~12s) — cheap, just reads
+        // 5M candles and walks the queue. Skipped on early ticks to give the
+        // first candle after fill time to close.
+        tickCount++;
+        if(tickCount % 6 === 0) {
+            checkPendingFills().catch(e => console.error('checkPendingFills:', e));
         }
     }, 2000);
 }
