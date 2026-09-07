@@ -3340,30 +3340,29 @@ TP1 SELECTION ALGORITHM (FOLLOW EXACTLY):
   7. TP2 = next real candidate further out than TP1.
   8. TP3 = next real candidate further out than TP2.
 
-MANDATORY SELF-CHECK BEFORE OUTPUT:
+MANDATORY SELF-CHECK BEFORE OUTPUT (DO NOT SKIP):
 
-  risk = |entry - stop_loss|
-  reward1 = |TP1 - entry|
-  rr1 = reward1 / risk
+  Step 1: risk = |entry - stop_loss|
+  Step 2: min_reward = risk × 2.5
+  Step 3: List ALL candidates in order of distance from entry (nearest first)
+  Step 4: For EACH candidate, check if distance >= min_reward
+  Step 5: TP1 = the FIRST candidate that passes the check
 
-  IF rr1 < 2.5:
-    ❌ STOP — THIS SETUP IS INVALID
-    ❌ DO NOT OUTPUT this TP1
-    ✅ REQUIRED: Set take_profit_1 = entry ± (risk × 2.5)
-    ✅ REQUIRED: Recalculate rr1 = (|take_profit_1 - entry|) / risk
-    ✅ REQUIRED: Verify rr1 >= 2.5
+  EXAMPLE (if you calculated this):
+    risk = 16.87
+    min_reward = 42.18
+    Candidate 4391.36: distance = 20.92 → ❌ FAILS (20.92 < 42.18)
+    Candidate 4368.53: distance = 43.75 → ✅ PASSES (43.75 >= 42.18)
+    THEREFORE: TP1 MUST BE 4368.53
 
-  IF rr1 >= 2.5:
-    ✅ ACCEPT — Output this setup
+  CRITICAL RULE:
+    ❌ DO NOT output a candidate that FAILS the distance check
+    ✅ If the first candidate fails, move to the NEXT candidate
+    ✅ If no candidate passes, create synthetic TP1 = entry ± min_reward
+    ✅ NEVER claim risk_reward "1:2.5" when your numbers give less
 
-  IF you cannot set TP1 far enough:
-    ❌ Set confidence = 0
-    ❌ Set ai_decision = "skip"
-    ❌ Add to reasoning: "No valid TP1 found with RR >= 2.5"
-
-  CRITICAL: The TP1 and risk_reward you output MUST match your calculation.
-  If you calculate rr1 = 1.24, output "1:1.2", NOT "1:2.5".
-  If you output "1:2.5", your numbers MUST give exactly 2.5x or higher.
+  THE TP1 YOU OUTPUT MUST BE THE ONE THAT PASSES THE CHECK.
+  If you calculate 4368.53, you MUST output 4368.53.
 
 Return ONLY JSON with your setup:
 
