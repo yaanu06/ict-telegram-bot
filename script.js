@@ -3341,14 +3341,29 @@ TP1 SELECTION ALGORITHM (FOLLOW EXACTLY):
   8. TP3 = next real candidate further out than TP2.
 
 MANDATORY SELF-CHECK BEFORE OUTPUT:
+
   risk = |entry - stop_loss|
   reward1 = |TP1 - entry|
   rr1 = reward1 / risk
 
-  IF rr1 < 2.5: Go back to step 5 and pick the NEXT candidate.
-  NEVER output rr1 < 2.5. NEVER claim 2.5 when your numbers give less.
+  IF rr1 < 2.5:
+    ❌ STOP — THIS SETUP IS INVALID
+    ❌ DO NOT OUTPUT this TP1
+    ✅ REQUIRED: Set take_profit_1 = entry ± (risk × 2.5)
+    ✅ REQUIRED: Recalculate rr1 = (|take_profit_1 - entry|) / risk
+    ✅ REQUIRED: Verify rr1 >= 2.5
 
-THE TP1 YOU OUTPUT MUST MATCH YOUR CALCULATION.
+  IF rr1 >= 2.5:
+    ✅ ACCEPT — Output this setup
+
+  IF you cannot set TP1 far enough:
+    ❌ Set confidence = 0
+    ❌ Set ai_decision = "skip"
+    ❌ Add to reasoning: "No valid TP1 found with RR >= 2.5"
+
+  CRITICAL: The TP1 and risk_reward you output MUST match your calculation.
+  If you calculate rr1 = 1.24, output "1:1.2", NOT "1:2.5".
+  If you output "1:2.5", your numbers MUST give exactly 2.5x or higher.
 
 Return ONLY JSON with your setup:
 
