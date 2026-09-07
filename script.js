@@ -4466,6 +4466,75 @@ async function checkMissedFill() {
     }
 }
 
+// ============================================
+// FORCE CORRECT TP1 - AI OVERRIDE (HARD FIX)
+// ============================================
+function forceCorrectTP1(aiResult, historyCache, price) {
+    if (!aiResult || !aiResult.entry || !aiResult.stop_loss || !aiResult.take_profit_1) {
+        return aiResult;
+    }
+
+    const entry = aiResult.entry;
+    const sl = aiResult.stop_loss;
+    const risk = Math.abs(entry - sl);
+    const currentTP1 = aiResult.take_profit_1;
+    const currentReward = Math.abs(currentTP1 - entry);
+    const currentRR = risk > 0 ? currentReward / risk : 0;
+
+    // If RR is already >= 2.5, accept it
+    if (currentRR >= 2.5) {
+        return aiResult;
+    }
+
+    console.log(`⚠️ AI TP1 ${currentTP1} gives RR ${currentRR.toFixed(2)}x - FORCING CORRECTION`);
+
+    // Calculate correct TP1
+    const minReward = risk * 2.5;
+    let correctedTP1;
+    const direction = aiResult.direction;
+
+    // Get MSNR levels from 4H data
+    const fourHData = historyCache['4H'] || [];
+    const msnr = calculateMSNR(fourHData, price);
+
+    if (direction === 'SELL') {
+        // Find supports below entry, nearest first
+        const candidates = (msnr.allSupports || [])
+            .filter(s => s < entry)
+            .sort((a, b) => b - a); // nearest first (highest below entry)
+
+        correctedTP1 = candidates.find(s => (entry - s) >= minReward);
+        if (!correctedTP1) {
+            correctedTP1 = entry - minReward;
+        }
+    } else {
+        // Find resistances above entry, nearest first
+        const candidates = (msnr.allResistances || [])
+            .filter(r => r > entry)
+            .sort((a, b) => a - b); // nearest first (lowest above entry)
+
+        correctedTP1 = candidates.find(r => (r - entry) >= minReward);
+        if (!correctedTP1) {
+            correctedTP1 = entry + minReward;
+        }
+    }
+
+    const settings = getMarketSettings(pair);
+    const factor = Math.pow(10, settings.prec);
+    correctedTP1 = Math.round(correctedTP1 * factor) / factor;
+
+    // Update AI result
+    aiResult.take_profit_1 = correctedTP1;
+    const newReward = Math.abs(correctedTP1 - entry);
+    const newRR = risk > 0 ? newReward / risk : 0;
+    aiResult.risk_reward = '1:' + newRR.toFixed(1);
+    aiResult.corrected_by_bot = true;
+
+    console.log(`✅ Forced TP1: ${currentTP1} → ${correctedTP1} (RR ${newRR.toFixed(2)}x)`);
+
+    return aiResult;
+}
+
 console.log('✅ ICT Trading Bot Pro v8.0 - FINAL WORKING FIX loaded!');
 console.log('✅ ALL PATTERNS INTACT: MSNR, FVG, OB, Swings, TBS, CRT');
 console.log('✅ FIXES APPLIED:');
