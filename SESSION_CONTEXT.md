@@ -250,11 +250,11 @@ New functions added BEFORE `runAutoScan()`:
 
 ## Verification
 - `node --check script.js` — SYNTAX OK
-- `npx jest` — 59/59 tests pass
+- `npx jest` — 62/62 tests pass
 
 ## Git notes
 - The bot auto-pushes "🤖 Auto-record ICT setup" commits to `data/` frequently → always `git pull --rebase` (or fetch+rebase) before pushing.
-- **Current local HEAD:** `bf42a47` (push of AI validation layer)
+- **Current local HEAD:** `5da5317` (push of validateAISetup fixes)
 - **Recent commits this session (in order):**
   - `d610c72` — feat: enhanced AI intelligence (AMD, divergence, liquidity, volume profile, sentiment, self-learning)
   - `b259044` — feat: 4 entry filters (session, phase, confirmation, build entry context)
@@ -265,8 +265,30 @@ New functions added BEFORE `runAutoScan()`:
   - `d93a303` → `ad66511` — feat: feed raw OHLC candle data to AI
   - `9bde799` — feat: simplify AI decision hierarchy (5-step ghost-machine matrix)
   - `bf42a47` — feat: AI setup validation/reconciliation + volume gating + auto outcome detection
+  - `d561055` — docs: update SESSION_CONTEXT with validation layer
+  - `5da5317` — fix: validateAISetup zone hard-reject, MSS agreement, HTF trend consistency, independent outcome poller
 
 ## Possible follow-ups (not done)
+- **No ground-truth trade outcomes are stored** — `data/journal/` and `data/trade_history/` don't exist. Without user marking recents as Win/Loss, self-learning never gets data. Consider adding automatic TP-hit/SL-hit detection by polling live price.
+- **Filter override is silent** — only sets `aiResult.filterOverride` field. Consider showing a UI notification "Trade blocked: Off-hours" (or "Holistic score too close") so the user knows why the execute button is disabled.
+- **Add client-side sanity check on direction** — the AI now claims to compare, but we could cross-check `aiResult.direction` against the dominant HTF trend (1D/4H/1H) from `getQuoteDirection` and downgrade confidence if they conflict.
+- **Expose `opposite_setup` in the UI** — currently only visible in the JSON tab. Could add a "Why not the other direction?" expandable section in the analysis panel.
+- **Expose `holistic` scores in the UI** — currently buried in the prompt. Would help the user see WHY the AI picked (or didn't pick) a direction.
+- **No server-side sanitization**; keys stored client-side (known limitation, IMPROVEMENTS.md)
+- **`scanFill` progress bar** is fetched in new runAutoScan but no longer updated — could remove or wire up.
+- **Fallback `runFallbackScan`** in the catch block may get undefined `price`/`historyCache` if the error happens before they're set.
+
+### 9. validateAISetup 4 Corrective Fixes (commit `5da5317` -> pushed)
+
+User reported 4 issues with the validation layer added in commit `bf42a47`.
+
+**Fix 1: CHECK 1 zone reconciliation now hard-rejects.** Previously `validateAISetup` only pushed a reason to `lastScanRejections` when no zone matched, but did NOT `return reject(...)` — so the setup still passed overall. Now consistent with the RR/CHoCH/daily-direction/loss-protection checks.
+
+**Fix 2: detectMSS direction-agreement scoring.** Was called `detectMSS(historyCache['4H'], direction)` but `detectMSS(d)` only takes one arg — `direction` was silently ignored, so it always +6'd whenever any MSS existed (and `mssOk === false` was dead code since detectMSS never returns false). Now calls `detectMSS(historyCache['4H'])` and compares `mss.type` ('BULL'/'BEAR') against `aiResult.direction` ourselves: +6 when they agree, -3 when they disagree.
+
+**Fix 3: independent outcome poller.** `checkPendingFills()` was only called inside `startMonitor()`'s `setInterval`, gated behind `limitOrder` being active. But `clearLimit()` tears down the interval at the exact moment an order fills and gets enqueued — so resolution only happened if the user placed ANOTHER order. Fixed by adding an immediate call + `setInterval(..., 60000)` in `init()`. Removed the now-redundant `tickCount % 6` trigger from `startMonitor`.
+
+**Fix 4: HTF alignment uses detectTrend, not getDirectionBias.** `validateAISetup` was computing HTF alignment via `getDirectionBias()` on each timeframe, but the AI prompt and `evaluateSetup` both derive `dailyDir/h4Dir/h1Dir` via `getQuoteDirection() -> detectTrend()`. These can disagree on the same candles, so the HTF match the AI was shown could differ from the one used to score it. Now `validateAISetup` uses `detectTrend()` directly (matching `getQuoteDirection`'s logic) for consistency. (CHECK 4's daily-direction gate intentionally still uses `getDirectionBias + ADX`.)
 - **No ground-truth trade outcomes are stored** — `data/journal/` and `data/trade_history/` don't exist. Without user marking recents as Win/Loss, self-learning never gets data. Consider adding automatic TP-hit/SL-hit detection by polling live price.
 - **Filter override is silent** — only sets `aiResult.filterOverride` field. Consider showing a UI notification "Trade blocked: Off-hours" (or "Holistic score too close") so the user knows why the execute button is disabled.
 - **Add client-side sanity check on direction** — the AI now claims to compare, but we could cross-check `aiResult.direction` against the dominant HTF trend (1D/4H/1H) from `getQuoteDirection` and downgrade confidence if they conflict.
