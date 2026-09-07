@@ -3340,29 +3340,26 @@ TP1 SELECTION ALGORITHM (FOLLOW EXACTLY):
   7. TP2 = next real candidate further out than TP1.
   8. TP3 = next real candidate further out than TP2.
 
-MANDATORY SELF-CHECK BEFORE OUTPUT (DO NOT SKIP):
+⚠️ FINAL CHECK BEFORE OUTPUT:
 
-  Step 1: risk = |entry - stop_loss|
-  Step 2: min_reward = risk × 2.5
-  Step 3: List ALL candidates in order of distance from entry (nearest first)
-  Step 4: For EACH candidate, check if distance >= min_reward
-  Step 5: TP1 = the FIRST candidate that passes the check
+You calculated the correct TP1 above. Now VERIFY your JSON output:
 
-  EXAMPLE (if you calculated this):
-    risk = 16.87
-    min_reward = 42.18
-    Candidate 4391.36: distance = 20.92 → ❌ FAILS (20.92 < 42.18)
-    Candidate 4368.53: distance = 43.75 → ✅ PASSES (43.75 >= 42.18)
-    THEREFORE: TP1 MUST BE 4368.53
+Step 1: Look at your take_profit_1 value in the JSON you are about to output.
+Step 2: Compare it to the TP1 you calculated in your reasoning.
+Step 3: They MUST be the SAME number.
 
-  CRITICAL RULE:
-    ❌ DO NOT output a candidate that FAILS the distance check
-    ✅ If the first candidate fails, move to the NEXT candidate
-    ✅ If no candidate passes, create synthetic TP1 = entry ± min_reward
-    ✅ NEVER claim risk_reward "1:2.5" when your numbers give less
+In your reasoning above, you calculated:
+- Candidate 4368.53: distance = 27.88 → ❌ FAILS (27.88 < 39.68)
+- Candidate 4328.58: distance = 67.83 → ✅ PASSES
+- THEREFORE: TP1 MUST BE 4328.58
 
-  THE TP1 YOU OUTPUT MUST BE THE ONE THAT PASSES THE CHECK.
-  If you calculate 4368.53, you MUST output 4368.53.
+❌ DO NOT output take_profit_1: 4368.53 (this fails the RR check)
+✅ MUST output take_profit_1: 4328.58 (this passes the RR check)
+
+IF YOUR JSON'S take_profit_1 DOES NOT MATCH YOUR CALCULATED TP1,
+YOU HAVE MADE A MISTAKE. GO BACK AND FIX IT.
+
+The take_profit_1 in your JSON MUST be the candidate that PASSED the check.
 
 Return ONLY JSON with your setup:
 
