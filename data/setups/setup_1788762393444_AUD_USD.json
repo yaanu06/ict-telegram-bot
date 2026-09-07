@@ -1,0 +1,49 @@
+{
+  "id": 1788762393444,
+  "recordedAt": "2026-09-07T06:26:33.446Z",
+  "eventType": "ai_scan",
+  "pair": "AUD/USD",
+  "setup": {
+    "date": "2026-09-07",
+    "time": "06:26:33",
+    "pair": "AUD/USD",
+    "current_price": 0.72116,
+    "trade_type": "BUY",
+    "entry_price": 0.72116,
+    "entry_zone": {
+      "low": 0.72116,
+      "high": 0.72116,
+      "source": "Confluence"
+    },
+    "stop_loss": 0.72,
+    "stop_loss_reason": "Below S1 support and recent swing low, invalidates bullish bias",
+    "take_profit_1": 0.7241,
+    "take_profit_2": 0.725,
+    "take_profit_3": 0.726,
+    "risk_reward": "1:2.5",
+    "confidence": 65,
+    "zone_quality": "C",
+    "patterns_detected": "FVG 4H+FVG 1H+Swing low 4H",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Bullish alignment across 1D, 4H, and 1H trends, with price at support and multiple FVGs suggesting upward continuation.",
+      "secondary": [
+        "Risk = |0.72116 - 0.72000| = 0.00116",
+        "Min reward = 0.00116 * 2.5 = 0.00290",
+        "TP1 = 0.72116 + 0.00290 = 0.72406 (rounded to 0.72410)",
+        "TP2 = 0.72500 (R2 resistance)",
+        "TP3 = 0.72600 (R3 resistance)"
+      ],
+      "risk_warning": "Market is in off-hours with low volatility; spreads may widen. ADX indicates weak trend, so trade may be slow.",
+      "why_best": "Despite low volatility, the bullish trend alignment and proximity to support make a long the most favorable setup. No strong bearish signals present."
+    },
+    "opposite_setup": {
+      "direction": "SELL",
+      "confidence": 35,
+      "why_rejected": "Bearish setup lacks confluence as all higher timeframes are bullish, and price is at support rather than resistance."
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for a bullish candlestick close on the 1H chart or a clear bounce off the 0.72116 level before entering.",
+    "source": "AI-Generated Setup"
+  }
+}
