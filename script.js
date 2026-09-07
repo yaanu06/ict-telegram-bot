@@ -56,7 +56,7 @@ const AI_ADVISORY_ONLY = true;
 // MARKET SETTINGS
 // ============================================
 function getMarketSettings(p) {
-    if (p.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.1 };
+    if (p.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.1, minSLMultiplier: 2.0 };
     if (p.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.01 };
     if (p.includes('JPY')) return { slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01 };
     if (p === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.02, targetRR: 2.5, prec: 2, pipSize: 1 };
@@ -1329,10 +1329,10 @@ function calcStopLoss(data, direction, entry, zone, msnr, tf, customATR = null, 
     const prec = settings.prec;
     const factor = Math.pow(10, prec);
     
-    // Minimum SL: 2.0x ATR for XAU/USD (~50 points when ATR is ~25), 1.5x ATR for other pairs
+    // Ensure SL is at least 2x ATR away from entry (min) and 3x ATR for max
     const minMultiplier = p.includes('XAU') ? 2.0 : 1.5;
     const minSLDist = atrVal * minMultiplier;
-    const maxSLDist = Math.max(minSLDist, atrVal * 2.5);
+    const maxSLDist = Math.max(minSLDist, atrVal * 3.0);
     
     let slDist;
     let sl;
