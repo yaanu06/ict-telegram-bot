@@ -3317,57 +3317,38 @@ SESSION: ${session.session} | Killzone: ${session.isKillzone ? '✅' : '❌'}
 ${candleData}
 
 ═══════════════════════════════════════════
-🎯 YOUR TASK
+🎯 YOUR TASK — TP1 SELECTION ALGORITHM (MANDATORY)
 ═══════════════════════════════════════════
 
 Find the SINGLE BEST trade opportunity in EITHER direction.
 
-Process:
-1. Analyze ALL data above (trends, indicators, patterns, levels, candles)
-2. Identify where smart money is likely to trade today
-3. Find the best zone (FVG/OB/MSNR/Swing) with confluence
-4. Set entry at zone edge, SL beyond zone
+STEP 1 — Find the best zone (FVG/OB/MSNR/Swing) with confluence.
 
-STEP 2 — Pick entry, SL, and TP levels for your chosen direction.
+STEP 2 — Set entry, SL, and TP levels:
+- Entry = zone edge closest to current price (LIMIT order)
+- Stop Loss = beyond zone that invalidates the idea
 
-- Entry = the zone edge closest to current price (this is a LIMIT order — it does not need to be at current price).
-
-- Stop Loss = just beyond the zone / structure that invalidates the idea (below the zone for BUY, above it for SELL). Must be a real structural level.
-
-- TP1 SELECTION ALGORITHM (MANDATORY - do not skip):
+TP1 SELECTION ALGORITHM (FOLLOW EXACTLY):
   1. Compute: risk = |entry - stop_loss|
-  2. Compute: min_reward = risk × 2.5 (this is your minimum TP1 distance)
-  3. List ALL real resistance/support candidates beyond entry in your direction:
-     - For SELL: MSNR S1/S2/S3, swing lows, liquidity pools below entry
-     - For BUY: MSNR R1/R2/R3, swing highs, liquidity pools above entry
+  2. Compute: min_reward = risk × 2.5
+  3. List ALL real candidates beyond entry in your direction:
+     - SELL: MSNR S1/S2/S3, swing lows, liquidity pools below entry
+     - BUY: MSNR R1/R2/R3, swing highs, liquidity pools above entry
   4. Sort candidates by distance from entry (nearest first).
-  5. TP1 = the FIRST candidate whose distance from entry >= min_reward.
-  6. If NO candidate clears min_reward, TP1 = entry ± min_reward (synthetic level).
+  5. TP1 = the FIRST candidate whose distance >= min_reward.
+  6. If NO candidate clears min_reward, TP1 = entry ± min_reward (synthetic).
   7. TP2 = next real candidate further out than TP1.
   8. TP3 = next real candidate further out than TP2.
 
-MANDATORY SELF-CHECK BEFORE OUTPUTTING JSON:
+MANDATORY SELF-CHECK BEFORE OUTPUT:
   risk = |entry - stop_loss|
   reward1 = |TP1 - entry|
   rr1 = reward1 / risk
 
-  IF rr1 < 2.5:
-    → You made a mistake. Go back to step 5 and pick the NEXT candidate.
-    → NEVER output a TP1 that gives rr1 < 2.5.
-    → NEVER claim risk_reward "1:2.5" when your numbers give a different value.
+  IF rr1 < 2.5: Go back to step 5 and pick the NEXT candidate.
+  NEVER output rr1 < 2.5. NEVER claim 2.5 when your numbers give less.
 
-THE TP1 YOU OUTPUT MUST MATCH THE ONE YOU CALCULATED.
-If you calculate TP1 = 4368.53, you MUST output take_profit_1: 4368.53.
-Do NOT calculate 4368.53 and then output 4391.36.
-
-5. Use your professional judgment - you know markets better than rules
-
-What makes a good setup:
-- Zone at a key level with confluence
-- Good risk/reward (use your judgment, not a fixed number)
-- Logical stop loss placement
-- Session alignment (killzone preferred)
-- Fresh zone (not over-tested)
+THE TP1 YOU OUTPUT MUST MATCH YOUR CALCULATION.
 
 Return ONLY JSON with your setup:
 
@@ -3387,15 +3368,16 @@ Return ONLY JSON with your setup:
   "probability": "HIGH" | "MEDIUM" | "LOW",
   "reasoning": {
     "primary": "string",
-    "secondary": ["string"],
+    "secondary": ["string — include your risk/reward arithmetic here"],
     "risk_warning": "string",
     "why_best": "string"
   },
+  "opposite_setup": { "direction": "string", "confidence": number, "why_rejected": "string" },
   "ai_decision": "enter_now" | "wait_for_reaction" | "skip",
   "wait_condition": "string or null"
-}
+}`;
 
-BE DECISIVE. You are the expert. Trust your analysis.`;
+        scanText.innerHTML = '🤖 AI analyzing all data...';;
 
         scanText.innerHTML = '🤖 AI analyzing all data...';;
 
