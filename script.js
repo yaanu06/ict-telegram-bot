@@ -3289,11 +3289,11 @@ async function runAutoScan() {
 
         const candleData = buildCandleData(historyCache, 10);
 
-        const scanTextData = `ICT TRADING BOT - COMPLETE MARKET ANALYSIS
+        const scanTextData = `ICT TRADING BOT — DAILY OPPORTUNITY SCAN
 
 PAIR: ${pair}
 CURRENT PRICE: $${price.toFixed(settings.prec)}
-TIMEFRAME: ${new Date().toISOString()}
+TIMESTAMP: ${new Date().toISOString()}
 
 ═══════════════════════════════════════════
 📊 MULTI-TIMEFRAME TRENDS
@@ -3301,12 +3301,17 @@ TIMEFRAME: ${new Date().toISOString()}
 1D: ${dailyDir} | 4H: ${h4Dir} | 1H: ${h1Dir}
 15M: ${patterns['15M']?.trend || 'N/A'} | 5M: ${patterns['5M']?.trend || 'N/A'}
 
+NOTE: If 1D and 4H disagree, treat 4H as the primary execution-timeframe
+trend (this bot trades off 4H/1H zones). Do NOT skip the scan just because
+1D and 4H conflict — that is normal and does not by itself invalidate a
+4H-based setup. Only reduce confidence for the mismatch.
+
 ═══════════════════════════════════════════
 📈 INDICATORS (4H)
 ═══════════════════════════════════════════
 RSI: ${indicators['4H']?.rsi?.toFixed(2) || 'N/A'}
 MACD: ${indicators['4H']?.macd?.toFixed(2) || 'N/A'} | Signal: ${indicators['4H']?.macd_signal?.toFixed(2) || 'N/A'} | Hist: ${indicators['4H']?.macd_hist?.toFixed(2) || 'N/A'}
-ADX: ${indicators['4H']?.adx?.toFixed(2) || 'N/A'}
+ADX: ${patterns['4H']?.adx?.adx?.toFixed(2) || 'N/A'} (trend strength; >25 strong, <15 weak/ranging)
 Bollinger: Upper ${indicators['4H']?.bb_upper?.toFixed(2) || 'N/A'} | Middle ${indicators['4H']?.bb_middle?.toFixed(2) || 'N/A'} | Lower ${indicators['4H']?.bb_lower?.toFixed(2) || 'N/A'}
 Stochastic: K ${indicators['4H']?.stoch_k?.toFixed(2) || 'N/A'} | D ${indicators['4H']?.stoch_d?.toFixed(2) || 'N/A'}
 CCI: ${indicators['4H']?.cci?.toFixed(2) || 'N/A'}
@@ -3322,7 +3327,7 @@ EMA50: ${indicators['4H']?.ema50?.toFixed(2) || 'N/A'} | EMA200: ${indicators['4
 ═══════════════════════════════════════════
 RSI: ${indicators['1H']?.rsi?.toFixed(2) || 'N/A'}
 MACD: ${indicators['1H']?.macd?.toFixed(2) || 'N/A'} | Signal: ${indicators['1H']?.macd_signal?.toFixed(2) || 'N/A'} | Hist: ${indicators['1H']?.macd_hist?.toFixed(2) || 'N/A'}
-ADX: ${indicators['1H']?.adx?.toFixed(2) || 'N/A'}
+ADX: ${patterns['1H']?.adx?.adx?.toFixed(2) || 'N/A'}
 Bollinger: Upper ${indicators['1H']?.bb_upper?.toFixed(2) || 'N/A'} | Middle ${indicators['1H']?.bb_middle?.toFixed(2) || 'N/A'} | Lower ${indicators['1H']?.bb_lower?.toFixed(2) || 'N/A'}
 Stochastic: K ${indicators['1H']?.stoch_k?.toFixed(2) || 'N/A'} | D ${indicators['1H']?.stoch_d?.toFixed(2) || 'N/A'}
 CCI: ${indicators['1H']?.cci?.toFixed(2) || 'N/A'}
@@ -3331,35 +3336,22 @@ ATR: ${indicators['1H']?.atr_api?.toFixed(2) || 'N/A'}
 ═══════════════════════════════════════════
 🔍 PATTERNS DETECTED
 ═══════════════════════════════════════════
-4H Patterns:
-  FVG: ${patterns['4H']?.fvg?.length || 0} (${(patterns['4H']?.fvg || []).filter(f => f.fresh).length} fresh)
-  Swings: ${patterns['4H']?.swings?.H?.length || 0} highs, ${patterns['4H']?.swings?.L?.length || 0} lows
-  Turtle Soup: ${patterns['4H']?.turtleSoup?.detected ? '✅ DETECTED (' + patterns['4H']?.turtleSoup?.type + ')' : '❌ None'}
-  CRT: ${patterns['4H']?.crt?.state || 'NEUTRAL'}
+4H: FVG ${patterns['4H']?.fvg?.length || 0} | Swings ${patterns['4H']?.swings?.H?.length || 0}H/${patterns['4H']?.swings?.L?.length || 0}L | Turtle Soup ${patterns['4H']?.turtleSoup?.detected ? '✅ ' + patterns['4H']?.turtleSoup?.type : '❌'} | CRT ${patterns['4H']?.crt?.state || 'NEUTRAL'}
+1H: FVG ${patterns['1H']?.fvg?.length || 0} | Swings ${patterns['1H']?.swings?.H?.length || 0}H/${patterns['1H']?.swings?.L?.length || 0}L | Turtle Soup ${patterns['1H']?.turtleSoup?.detected ? '✅ ' + patterns['1H']?.turtleSoup?.type : '❌'} | CRT ${patterns['1H']?.crt?.state || 'NEUTRAL'}
 
-1H Patterns:
-  FVG: ${patterns['1H']?.fvg?.length || 0} (${(patterns['1H']?.fvg || []).filter(f => f.fresh).length} fresh)
-  Swings: ${patterns['1H']?.swings?.H?.length || 0} highs, ${patterns['1H']?.swings?.L?.length || 0} lows
-  Turtle Soup: ${patterns['1H']?.turtleSoup?.detected ? '✅ DETECTED (' + patterns['1H']?.turtleSoup?.type + ')' : '❌ None'}
-  CRT: ${patterns['1H']?.crt?.state || 'NEUTRAL'}
-
-MSNR Levels (4H):
-  Pivot: ${patterns['4H']?.msnr?.pivot?.toFixed(2) || 'N/A'}
+MSNR (4H): Pivot ${patterns['4H']?.msnr?.pivot?.toFixed(2) || 'N/A'}
   Supports: S1 ${patterns['4H']?.msnr?.supports?.S1?.toFixed(2) || 'N/A'} | S2 ${patterns['4H']?.msnr?.supports?.S2?.toFixed(2) || 'N/A'} | S3 ${patterns['4H']?.msnr?.supports?.S3?.toFixed(2) || 'N/A'}
   Resistances: R1 ${patterns['4H']?.msnr?.resistances?.R1?.toFixed(2) || 'N/A'} | R2 ${patterns['4H']?.msnr?.resistances?.R2?.toFixed(2) || 'N/A'} | R3 ${patterns['4H']?.msnr?.resistances?.R3?.toFixed(2) || 'N/A'}
 
 ═══════════════════════════════════════════
 🌐 MARKET CONTEXT
 ═══════════════════════════════════════════
-Session: ${session.session} ${session.emoji}
-Killzone: ${session.isKillzone ? '✅' : '❌'}
-Silver Bullet: ${session.isSilverBullet ? '✅' : '❌'}
-Session Multiplier: ${session.multiplier}
+Session: ${session.session} ${session.emoji} | Killzone: ${session.isKillzone ? '✅' : '❌'} | Silver Bullet: ${session.isSilverBullet ? '✅' : '❌'}
 News: ${newsCheck?.inNewsWindow ? '⚠️ ' + newsCheck.warning : '✅ No high-impact news'}
-Volatility: ${indicators['4H']?.atr_api ? (indicators['4H'].atr_api / price * 100).toFixed(2) + '%' : 'N/A'}
+Volatility (ATR/price): ${indicators['4H']?.atr_api ? (indicators['4H'].atr_api / price * 100).toFixed(2) + '%' : 'N/A'}
 
 ═══════════════════════════════════════════
-🧠 ENHANCED AI INTELLIGENCE
+🧠 ENHANCED INTELLIGENCE
 ═══════════════════════════════════════════
 ${enhancedAnalysis ? enhancedAnalysis.phaseBlock : 'Phase: N/A'}
 ${enhancedAnalysis ? enhancedAnalysis.rsiDivBlock : 'RSI Divergence: N/A'}
@@ -3372,136 +3364,120 @@ ${enhancedAnalysis ? enhancedAnalysis.sentimentBlock : 'Sentiment: N/A'}
 🎯 ENTRY FILTERS (SESSION / PHASE / CONFIRMATION)
 ═══════════════════════════════════════════
 ${entryContext.lines.join('\n')}
-
 OVERALL: ${entryContext.summary}
 
-AI RULES (apply these strictly):
-- SESSION LOW/OFF-HOURS -> ai_decision = "skip"
-- PHASE block (no sweep / no momentum) -> ai_decision = "wait_for_reaction"
-- CONFIRMATION not confirmed AND price is at zone -> wait_for_reaction
-- Only when ALL three filters pass AND patterns align -> "enter_now"
-- If entry zone exists but confirmation not yet present (price not at zone) ->
-  you may still return "enter_now" because this is a LIMIT order that triggers on arrival
+These filters affect ai_decision, not whether a setup exists:
+- All 3 pass → ai_decision can be "enter_now"
+- Zone valid but confirmation missing → "wait_for_reaction"
+- Session is LOW priority (dead Asian hours, no killzone) → prefer "wait_for_reaction" over "skip" unless there is truly no structure in either direction
 
 ═══════════════════════════════════════════
-📊 HOLISTIC EVIDENCE ANALYSIS (BUY vs SELL)
+📊 HOLISTIC EVIDENCE (BUY vs SELL, PRE-COMPUTED)
 ═══════════════════════════════════════════
 ${buildHolisticPromptBlock({ evidence: holistic, dailyDir, h4Dir, h1Dir })}
 
-This is the pre-computed BUY vs SELL evidence. Do NOT anchor on a single pattern
-you noticed first - weigh ALL evidence above before deciding direction.
+Use this as your PRIMARY anchor for direction — it was computed
+independently of you specifically so you cannot anchor on the first
+pattern you happen to notice in the candles. If your own reading of the
+candles disagrees with this score, you may override it, but you MUST
+say exactly why in reasoning.why_best.
 
 ═══════════════════════════════════════════
-📊 RAW CANDLE DATA (YOU CAN SEE EVERYTHING)
+📊 RAW CANDLE DATA
 ═══════════════════════════════════════════
 ${candleData}
-
-Use this raw data to:
-1. Identify engulfing patterns
-2. Identify pin bars / rejection wicks
-3. See price action at zones
-4. Identify momentum shifts
-5. See actual market structure
-6. Make professional trading judgments
-
-Do NOT just rely on summarized data. Look at the actual candles!
+Use this to confirm engulfing/pin bar patterns, exact price action at
+zones, and real market structure — don't rely on the summaries alone.
 
 ═══════════════════════════════════════════
 ⚖️ CRITICAL: COMPARE BOTH DIRECTIONS
 ═══════════════════════════════════════════
-You MUST analyze BOTH BUY and SELL setups and choose the BEST one. Do NOT just
-pick the first setup you see — comparing is mandatory.
+You MUST build a BUY setup AND a SELL setup independently, even if
+one direction feels obvious. Score each on: confidence, RR, pattern
+confluence, HTF alignment, and probability.
+Output only the winner (or "skip" if both are below 58 confidence).
+Fill in opposite_setup with the rejected direction, its confidence,
+and why it lost.
 
-Process:
-1) Build BUY setup: entry, zone, SL, TP1-3, confidence, supporting patterns, probability.
-2) Build SELL setup: entry, zone, SL, TP1-3, confidence, supporting patterns, probability.
-3) COMPARE side-by-side:
-   - Confidence: higher wins
-   - RR: better wins
-   - Patterns: stronger/more-aligned wins
-   - HTF alignment (1D/4H/1H): more aligned wins
-   - Probability (HIGH/MED/LOW): higher wins
-4) Output ONLY the winning direction. If both < 58 confidence -> ai_decision = "skip".
-
-In your JSON you MUST include:
-
-
-==========================================
+═══════════════════════════════════════════
 🎯 DECISION HIERARCHY - GHOST MACHINE STYLE
-==========================================
-You have ALL the data above (candles, indicators, patterns, holistic, session).
-Now follow this SIMPLE 5-step hierarchy IN ORDER. If ANY step fails → skip.
+═══════════════════════════════════════════
+1️⃣ TREND (1D/4H) — aligned = direction, conflict = SKIP
+2️⃣ ZONE — FVG/OB/MSNR in trend direction, within 3x ATR, entry AT zone
+3️⃣ CONFIRMATION — CRT / Turtle Soup / Zone Reaction (need 1+)
+4️⃣ SESSION — Killzone/Silver Bullet = GOOD, off-hours = SKIP
+5️⃣ RISK/REWARD — must be > 2.5, else SKIP
 
-1️⃣ TREND (Most Important - 1D/4H)
-   - If 1D = BULLISH & 4H = BULLISH → ONLY BUY
-   - If 1D = BEARISH & 4H = BEARISH → ONLY SELL
-   - If 1D & 4H CONFLICT → SKIP (no trade)
-
-2️⃣ ZONE (Where to enter, in trend direction)
-   - FVG, Order Block, or MSNR level
-   - Entry MUST be at zone price (low for BUY, high for SELL)
-   - Zone must be within 3x ATR of current price
-
-3️⃣ CONFIRMATION (Why enter NOW)
-   - Need at least 1 of:
-   - CRT (Expanding or Contracting)
-   - Turtle Soup (direction matching)
-   - Zone Reaction (engulfing, pin bar, momentum)
-
-4️⃣ SESSION (When to trade)
-   - Killzone or Silver Bullet = GOOD
-   - Off-hours = SKIP
-
-5️⃣ RISK/REWARD
-   - Must be > 2.5 (1:2.5 minimum)
-   - If less → SKIP
-
-==========================================
-📋 DECISION MATRIX (check each, then output)
-==========================================
-[ ] 1D & 4H aligned (BUY or SELL)
-[ ] Zone found in trend direction (within 3x ATR)
-[ ] Confirmation present (CRT / TBS / Reaction)
-[ ] Good session (Killzone / Silver Bullet)
-[ ] RR > 2.5
-
-If ALL 5 are checked → ai_decision = "enter_now"
-If ANY are missing → ai_decision = "wait_for_reaction" or "skip"
-
-- reasoning.why_best: one-sentence explanation of why this direction beats the opposite
-- opposite_setup.direction: the other direction you considered
-- opposite_setup.confidence: your confidence score for the rejected direction
-- opposite_setup.why_rejected: one-sentence reason it lost the comparison
+Decision Matrix:
+If ALL 5 checked → enter_now
+If ANY missing → wait_for_reaction or skip
+No "maybe" decisions. BE DECISIVE.
 
 ═══════════════════════════════════════════
-🎯 YOUR TASK
+🎯 YOUR TASK — FIND TODAY'S BEST OPPORTUNITY
 ═══════════════════════════════════════════
+You are looking for the single best trade idea available right now, in
+EITHER direction. Follow this process in order:
 
-Based on ALL the data above, you are an ICT trading expert. Analyze EVERYTHING and provide:
+STEP 1 — Build both candidates.
+For BUY: find the nearest valid demand zone (FVG / Order Block / MSNR
+support / swing low) below current price that price is likely to reach.
+For SELL: find the nearest valid supply zone above current price.
+Score each 0-100 using: HTF alignment (1D+4H+1H agreement), zone
+freshness (untested > lightly touched > well-worn), pattern confluence
+(more aligned signals = higher), and the holistic evidence score above.
 
-1. DIRECTION: BUY or SELL (choose the highest probability)
-2. ENTRY PRICE: Exact price to enter
-3. ENTRY ZONE: { low, high } for the zone
-4. STOP LOSS: Exact price with reasoning
-5. TAKE PROFIT 1, 2, 3: Exact prices
-6. RISK REWARD: 1:X
-7. CONFIDENCE: 0-100%
-8. QUALITY: A, B, or C
-9. PATTERNS: Which patterns support this setup
-10. PROBABILITY: HIGH, MEDIUM, or LOW
-11. REASONING: Primary reason and secondary reasons
-12. RISK WARNING: Any specific risks
+STEP 2 — Pick entry, SL, TP1 for your chosen direction.
+- Entry = the zone edge closest to current price (this is a LIMIT order —
+  it does not need to be at current price).
+- Stop Loss = just beyond the zone / structure that invalidates the idea
+  (below the zone for BUY, above it for SELL). Must be a real structural
+  level (swing point, EMA, opposite zone edge) — not an arbitrary distance.
+- Take Profit 1 = CALCULATED, not guessed. Do this arithmetic explicitly:
+    risk = |entry - stop_loss|
+    min_reward = risk * 2.0
+    BUY:  take_profit_1 must be >= entry + min_reward
+    SELL: take_profit_1 must be <= entry - min_reward
+  Look for a real resistance/support level (MSNR, swing, liquidity pool)
+  at or beyond that minimum distance. If none exists, set TP1 = entry ±
+  min_reward directly. NEVER report a risk_reward ratio that doesn't
+  match your own entry/SL/TP1 — that is a hard rule, not a suggestion.
+- TP2, TP3 = further real levels beyond TP1, increasingly further out.
+
+STEP 3 — Self-check before writing JSON (do this arithmetic, don't skip it).
+  risk = |entry - stop_loss|
+  reward1 = |take_profit_1 - entry|
+  rr1 = reward1 / risk
+  If rr1 < 2.5: move take_profit_1 further out and recompute. Repeat
+  until rr1 >= 2.5 or you conclude no valid setup exists in that
+  direction (in which case its confidence should be low, not its RR
+  string faked to look acceptable).
+
+STEP 4 — Compare BUY vs SELL, pick the winner.
+Higher combined score (HTF alignment + RR + pattern confluence +
+freshness + holistic evidence agreement) wins. State briefly in
+reasoning.why_best why it beat the other direction, and fill
+opposite_setup with the direction you rejected, its confidence, and why.
+
+STEP 5 — Assign ai_decision per the Decision Hierarchy above.
+- "enter_now": ALL 5 conditions in the hierarchy pass (trend aligned,
+  zone found, confirmation present, session is GOOD, RR >= 2.5).
+- "wait_for_reaction": setup valid but 1+ conditions pending
+  (price hasn't reached zone, confirmation pending, or session not ideal).
+- "skip": use ONLY when a hard invalidation exists (CHoCH, 1D direction
+  fight with strong ADX, stale zone, or cannot construct RR >= 2.5).
+  Do not skip merely because the daily trend disagrees with 4H, or
+  because confirmation hasn't arrived yet.
+
+You should almost always be able to return a candidate — "no opportunity
+today" should be rare, not the default outcome.
 
 Return ONLY JSON in this format:
 
 {
   "direction": "BUY" | "SELL",
   "entry": number,
-  "entry_zone": {
-    "low": number,
-    "high": number,
-    "source": "FVG" | "OB" | "MSNR" | "Swing" | "TBS" | "Confluence"
-  },
+  "entry_zone": { "low": number, "high": number, "source": "FVG" | "OB" | "MSNR" | "Swing" | "TBS" | "Confluence" },
   "stop_loss": number,
   "stop_loss_reason": "string",
   "take_profit_1": number,
@@ -3514,45 +3490,14 @@ Return ONLY JSON in this format:
   "probability": "HIGH" | "MEDIUM" | "LOW",
   "reasoning": {
     "primary": "string",
-    "secondary": ["string"],
-    "risk_warning": "string"
+    "secondary": ["string — include your risk/reward arithmetic here"],
+    "risk_warning": "string",
+    "why_best": "string"
   },
-  "decision_matrix": {
-    "trend_aligned": true|false,
-    "zone_found": true|false,
-    "confirmation": "CRT"|"TBS"|"Reaction"|"None",
-    "good_session": true|false,
-    "rr_good": true|false,
-    "all_conditions_pass": true|false
-  },
+  "opposite_setup": { "direction": "string", "confidence": number, "why_rejected": "string" },
   "ai_decision": "enter_now" | "wait_for_reaction" | "skip",
   "wait_condition": "string or null"
-}
-
-RULES:
-- Entry must be within 3x ATR of current price
-- Stop Loss must be logical (below structure for BUY, above structure for SELL)
-- Minimum RR: 1:2.5 (hard rule from Decision Hierarchy step 5)
-- Consider ALL timeframes, indicators, patterns, session, and news
-- Be precise with numbers (use same precision as pair)
-
-## ENTRY PRICE RULES (CRITICAL):
-You MUST set entry at ZONE PRICE, NOT current price!
-
-### BUY:
-Entry = zone.low (or zone.low + small buffer)
-Example: zone.low=4590, zone.high=4605 → entry=4590
-
-### SELL:
-Entry = zone.high (or zone.high - small buffer)
-Example: zone.low=4590, zone.high=4605 → entry=4605
-
-### Exception:
-Only use current price if it is ALREADY inside the zone
-
-IMPORTANT: You are the PRIMARY analyst. Find the BEST setup, not just any setup.
-
-BE DECISIVE: If all 5 decision-matrix conditions pass → ai_decision = "enter_now". If any fail → "wait_for_reaction" or "skip". NO "maybe" decisions.`;
+}`;
 
         scanText.innerHTML = '🤖 AI analyzing all data...';
         const aiResult = await askAIToFindSetup(scanTextData, price);
