@@ -3413,39 +3413,38 @@ Score each 0-100 using: HTF alignment (1D+4H+1H agreement), zone
 freshness (untested > lightly touched > well-worn), pattern confluence
 (more aligned signals = higher), and the holistic evidence score above.
 
-STEP 2 — Pick entry, SL, TP1 for your chosen direction.
+STEP 2 — Pick entry, SL, and TP levels for your chosen direction.
 - Entry = the zone edge closest to current price (this is a LIMIT order —
   it does not need to be at current price).
 - Stop Loss = just beyond the zone / structure that invalidates the idea
   (below the zone for BUY, above it for SELL). Must be a real structural
   level (swing point, EMA, opposite zone edge) — not an arbitrary distance.
-- Take Profit 1 = CALCULATED, not guessed. Do this arithmetic explicitly:
-    risk = |entry - stop_loss|
-    min_reward = risk * 2.0
-    BUY:  take_profit_1 must be >= entry + min_reward
-    SELL: take_profit_1 must be <= entry - min_reward
-  Look for a real resistance/support level (MSNR, swing, liquidity pool)
-  at or beyond that minimum distance. If none exists, set TP1 = entry ±
-  min_reward directly. NEVER report a risk_reward ratio that doesn't
-  match your own entry/SL/TP1 — that is a hard rule, not a suggestion.
-- TP2, TP3 = further real levels beyond TP1, increasingly further out.
+- TP1 SELECTION ALGORITHM (follow exactly, do not loop/re-guess):
+  1. List ALL real resistance/support candidates beyond entry in your
+     direction (MSNR R1/R2/R3 or S1/S2/S3, swing highs/lows, liquidity
+     pools) — you likely already have several such levels.
+  2. Compute min_reward = risk * 2.5 once.
+  3. Walk your candidate list in order of DISTANCE from entry (nearest
+     first). TP1 = the FIRST candidate whose distance from entry is >=
+     min_reward.
+  4. If NO candidate list level clears min_reward, TP1 = entry ±
+     min_reward directly (a synthetic level, no real S/R needed).
+  5. TP2 and TP3 = the NEXT real candidates further out than TP1, in
+     order.
+  Do this ONCE. Do not recompute the same failing candidate more than
+  once — if your first-choice level fails the check, move to the next
+  candidate in your list immediately, don't re-verify the same number
+  repeatedly.
+- NEVER report a risk_reward ratio that doesn't match your own
+  entry/SL/TP1 — that is a hard rule, not a suggestion.
 
-STEP 3 — Self-check before writing JSON (do this arithmetic, don't skip it).
-  risk = |entry - stop_loss|
-  reward1 = |take_profit_1 - entry|
-  rr1 = reward1 / risk
-  If rr1 < 2.5: move take_profit_1 further out and recompute. Repeat
-  until rr1 >= 2.5 or you conclude no valid setup exists in that
-  direction (in which case its confidence should be low, not its RR
-  string faked to look acceptable).
-
-STEP 4 — Compare BUY vs SELL, pick the winner.
+STEP 3 — Compare BUY vs SELL, pick the winner.
 Higher combined score (HTF alignment + RR + pattern confluence +
 freshness + holistic evidence agreement) wins. State briefly in
 reasoning.why_best why it beat the other direction, and fill
 opposite_setup with the direction you rejected, its confidence, and why.
 
-STEP 5 — Assign ai_decision per the Decision Hierarchy above.
+STEP 4 — Assign ai_decision per the Decision Hierarchy above.
 - "enter_now": ALL 5 conditions in the hierarchy pass (trend aligned,
   zone found, confirmation present, session is GOOD, RR >= 2.5).
 - "wait_for_reaction": setup valid but 1+ conditions pending
