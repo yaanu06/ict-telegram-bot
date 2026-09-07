@@ -548,7 +548,7 @@ describe('validateAISetup', () => {
         // risk = 100 - 90 = 10, reward = 100.5 - 100 = 0.5 → RR = 0.05x
         const r = ctx.validateAISetup(baseAi({ entry: 100, stop_loss: 90, take_profit_1: 100.5, risk_reward: '1:5.0' }), 100, cache, 'XAU/USD');
         expect(r.valid).toBe(false);
-        expect(r.reason).toMatch(/recomputed RR .* < 1\.5x/);
+        expect(r.reason).toMatch(/recomputed RR .* < 2\.5x/);
     });
 
     it('computes independent adjustedConfidence via blend (not trusting AI)', () => {
@@ -619,7 +619,7 @@ describe('validateAISetup', () => {
         const origTrend = ctx.detectTrend;
         ctx.detectTrend = function(d) { calls.push((d && d.length) || 0); return origTrend.call(this, d); };
         const cache = buildCache();
-        const r = ctx.validateAISetup(baseAi({ entry: 100, stop_loss: 98, take_profit_1: 104 }), 100, cache, 'XAU/USD');
+        const r = ctx.validateAISetup(baseAi({ entry: 100, stop_loss: 95, take_profit_1: 113 }), 100, cache, 'XAU/USD');
         // detectTrend must have been called (for 1D/4H/1H alignment) with >= 50-length data
         expect(calls.filter(n => n >= 50).length).toBeGreaterThanOrEqual(3);
         ctx.detectTrend = origTrend;

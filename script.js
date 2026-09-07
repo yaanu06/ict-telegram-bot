@@ -2998,7 +2998,7 @@ function validateAISetup(aiResult, price, historyCache, pairArg) {
     const risk = Math.abs(aiResult.entry - aiResult.stop_loss);
     const reward = Math.abs(aiResult.take_profit_1 - aiResult.entry);
     const rr1 = risk > 0 ? reward / risk : 0;
-    const HARD_RR_MIN = 1.5;
+    const HARD_RR_MIN = 2.5;
     if(rr1 < HARD_RR_MIN) {
         return reject(`recomputed RR ${rr1.toFixed(2)}x < ${HARD_RR_MIN}x minimum (risk ${risk.toFixed(4)}, reward ${reward.toFixed(4)})`);
     }
@@ -3398,20 +3398,6 @@ confluence, HTF alignment, and probability.
 Output only the winner (or "skip" if both are below 58 confidence).
 Fill in opposite_setup with the rejected direction, its confidence,
 and why it lost.
-
-═══════════════════════════════════════════
-🎯 DECISION HIERARCHY - GHOST MACHINE STYLE
-═══════════════════════════════════════════
-1️⃣ TREND (1D/4H) — aligned = direction, conflict = SKIP
-2️⃣ ZONE — FVG/OB/MSNR in trend direction, within 3x ATR, entry AT zone
-3️⃣ CONFIRMATION — CRT / Turtle Soup / Zone Reaction (need 1+)
-4️⃣ SESSION — Killzone/Silver Bullet = GOOD, off-hours = SKIP
-5️⃣ RISK/REWARD — must be > 2.5, else SKIP
-
-Decision Matrix:
-If ALL 5 checked → enter_now
-If ANY missing → wait_for_reaction or skip
-No "maybe" decisions. BE DECISIVE.
 
 ═══════════════════════════════════════════
 🎯 YOUR TASK — FIND TODAY'S BEST OPPORTUNITY
