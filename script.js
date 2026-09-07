@@ -3289,183 +3289,54 @@ async function runAutoScan() {
 
         const candleData = buildCandleData(historyCache, 10);
 
-        const scanTextData = `ICT TRADING BOT — DAILY OPPORTUNITY SCAN
-
-PAIR: ${pair}
-CURRENT PRICE: $${price.toFixed(settings.prec)}
-TIMESTAMP: ${new Date().toISOString()}
+        const scanTextData = `You are an expert ICT trader. Find the BEST trading opportunity for ${pair} at ${price}.
 
 ═══════════════════════════════════════════
-📊 MULTI-TIMEFRAME TRENDS
+📊 MARKET DATA
 ═══════════════════════════════════════════
+
+MULTI-TIMEFRAME TRENDS:
 1D: ${dailyDir} | 4H: ${h4Dir} | 1H: ${h1Dir}
-15M: ${patterns['15M']?.trend || 'N/A'} | 5M: ${patterns['5M']?.trend || 'N/A'}
 
-NOTE: If 1D and 4H disagree, treat 4H as the primary execution-timeframe
-trend (this bot trades off 4H/1H zones). Do NOT skip the scan just because
-1D and 4H conflict — that is normal and does not by itself invalidate a
-4H-based setup. Only reduce confidence for the mismatch.
-
-═══════════════════════════════════════════
-📈 INDICATORS (4H)
-═══════════════════════════════════════════
+INDICATORS (4H):
 RSI: ${indicators['4H']?.rsi?.toFixed(2) || 'N/A'}
-MACD: ${indicators['4H']?.macd?.toFixed(2) || 'N/A'} | Signal: ${indicators['4H']?.macd_signal?.toFixed(2) || 'N/A'} | Hist: ${indicators['4H']?.macd_hist?.toFixed(2) || 'N/A'}
-ADX: ${patterns['4H']?.adx?.adx?.toFixed(2) || 'N/A'} (trend strength; >25 strong, <15 weak/ranging)
-Bollinger: Upper ${indicators['4H']?.bb_upper?.toFixed(2) || 'N/A'} | Middle ${indicators['4H']?.bb_middle?.toFixed(2) || 'N/A'} | Lower ${indicators['4H']?.bb_lower?.toFixed(2) || 'N/A'}
-Stochastic: K ${indicators['4H']?.stoch_k?.toFixed(2) || 'N/A'} | D ${indicators['4H']?.stoch_d?.toFixed(2) || 'N/A'}
-CCI: ${indicators['4H']?.cci?.toFixed(2) || 'N/A'}
-Williams %R: ${indicators['4H']?.williams_r?.toFixed(2) || 'N/A'}
-SAR: ${indicators['4H']?.sar?.toFixed(2) || 'N/A'}
-ATR: ${indicators['4H']?.atr_api?.toFixed(2) || 'N/A'}
-Supertrend: ${indicators['4H']?.supertrend?.toFixed(2) || 'N/A'}
-EMA9: ${indicators['4H']?.ema9?.toFixed(2) || 'N/A'} | EMA21: ${indicators['4H']?.ema21?.toFixed(2) || 'N/A'}
-EMA50: ${indicators['4H']?.ema50?.toFixed(2) || 'N/A'} | EMA200: ${indicators['4H']?.ema200?.toFixed(2) || 'N/A'}
+MACD: ${indicators['4H']?.macd?.toFixed(2) || 'N/A'} | Signal: ${indicators['4H']?.macd_signal?.toFixed(2) || 'N/A'}
+ADX: ${patterns['4H']?.adx?.adx?.toFixed(2) || 'N/A'}
+Bollinger: Upper ${indicators['4H']?.bb_upper?.toFixed(2) || 'N/A'} | Lower ${indicators['4H']?.bb_lower?.toFixed(2) || 'N/A'}
 
-═══════════════════════════════════════════
-📈 INDICATORS (1H)
-═══════════════════════════════════════════
-RSI: ${indicators['1H']?.rsi?.toFixed(2) || 'N/A'}
-MACD: ${indicators['1H']?.macd?.toFixed(2) || 'N/A'} | Signal: ${indicators['1H']?.macd_signal?.toFixed(2) || 'N/A'} | Hist: ${indicators['1H']?.macd_hist?.toFixed(2) || 'N/A'}
-ADX: ${patterns['1H']?.adx?.adx?.toFixed(2) || 'N/A'}
-Bollinger: Upper ${indicators['1H']?.bb_upper?.toFixed(2) || 'N/A'} | Middle ${indicators['1H']?.bb_middle?.toFixed(2) || 'N/A'} | Lower ${indicators['1H']?.bb_lower?.toFixed(2) || 'N/A'}
-Stochastic: K ${indicators['1H']?.stoch_k?.toFixed(2) || 'N/A'} | D ${indicators['1H']?.stoch_d?.toFixed(2) || 'N/A'}
-CCI: ${indicators['1H']?.cci?.toFixed(2) || 'N/A'}
-ATR: ${indicators['1H']?.atr_api?.toFixed(2) || 'N/A'}
+PATTERNS:
+4H: FVG ${patterns['4H']?.fvg?.length || 0} | Swings ${patterns['4H']?.swings?.H?.length || 0}H/${patterns['4H']?.swings?.L?.length || 0}L
+1H: FVG ${patterns['1H']?.fvg?.length || 0} | Swings ${patterns['1H']?.swings?.H?.length || 0}H/${patterns['1H']?.swings?.L?.length || 0}L
 
-═══════════════════════════════════════════
-🔍 PATTERNS DETECTED
-═══════════════════════════════════════════
-4H: FVG ${patterns['4H']?.fvg?.length || 0} | Swings ${patterns['4H']?.swings?.H?.length || 0}H/${patterns['4H']?.swings?.L?.length || 0}L | Turtle Soup ${patterns['4H']?.turtleSoup?.detected ? '✅ ' + patterns['4H']?.turtleSoup?.type : '❌'} | CRT ${patterns['4H']?.crt?.state || 'NEUTRAL'}
-1H: FVG ${patterns['1H']?.fvg?.length || 0} | Swings ${patterns['1H']?.swings?.H?.length || 0}H/${patterns['1H']?.swings?.L?.length || 0}L | Turtle Soup ${patterns['1H']?.turtleSoup?.detected ? '✅ ' + patterns['1H']?.turtleSoup?.type : '❌'} | CRT ${patterns['1H']?.crt?.state || 'NEUTRAL'}
+MSNR LEVELS:
+Supports: S1 ${patterns['4H']?.msnr?.supports?.S1?.toFixed(2) || 'N/A'} | S2 ${patterns['4H']?.msnr?.supports?.S2?.toFixed(2) || 'N/A'} | S3 ${patterns['4H']?.msnr?.supports?.S3?.toFixed(2) || 'N/A'}
+Resistances: R1 ${patterns['4H']?.msnr?.resistances?.R1?.toFixed(2) || 'N/A'} | R2 ${patterns['4H']?.msnr?.resistances?.R2?.toFixed(2) || 'N/A'} | R3 ${patterns['4H']?.msnr?.resistances?.R3?.toFixed(2) || 'N/A'}
 
-MSNR (4H): Pivot ${patterns['4H']?.msnr?.pivot?.toFixed(2) || 'N/A'}
-  Supports: S1 ${patterns['4H']?.msnr?.supports?.S1?.toFixed(2) || 'N/A'} | S2 ${patterns['4H']?.msnr?.supports?.S2?.toFixed(2) || 'N/A'} | S3 ${patterns['4H']?.msnr?.supports?.S3?.toFixed(2) || 'N/A'}
-  Resistances: R1 ${patterns['4H']?.msnr?.resistances?.R1?.toFixed(2) || 'N/A'} | R2 ${patterns['4H']?.msnr?.resistances?.R2?.toFixed(2) || 'N/A'} | R3 ${patterns['4H']?.msnr?.resistances?.R3?.toFixed(2) || 'N/A'}
+SESSION: ${session.session} | Killzone: ${session.isKillzone ? '✅' : '❌'}
 
-═══════════════════════════════════════════
-🌐 MARKET CONTEXT
-═══════════════════════════════════════════
-Session: ${session.session} ${session.emoji} | Killzone: ${session.isKillzone ? '✅' : '❌'} | Silver Bullet: ${session.isSilverBullet ? '✅' : '❌'}
-News: ${newsCheck?.inNewsWindow ? '⚠️ ' + newsCheck.warning : '✅ No high-impact news'}
-Volatility (ATR/price): ${indicators['4H']?.atr_api ? (indicators['4H'].atr_api / price * 100).toFixed(2) + '%' : 'N/A'}
-
-═══════════════════════════════════════════
-🧠 ENHANCED INTELLIGENCE
-═══════════════════════════════════════════
-${enhancedAnalysis ? enhancedAnalysis.phaseBlock : 'Phase: N/A'}
-${enhancedAnalysis ? enhancedAnalysis.rsiDivBlock : 'RSI Divergence: N/A'}
-${enhancedAnalysis ? enhancedAnalysis.macdDivBlock : 'MACD Divergence: N/A'}
-${enhancedAnalysis ? enhancedAnalysis.liqBlock : 'Liquidity: N/A'}
-${enhancedAnalysis ? enhancedAnalysis.volProfBlock : 'Volume Profile: N/A'}
-${enhancedAnalysis ? enhancedAnalysis.sentimentBlock : 'Sentiment: N/A'}
-
-═══════════════════════════════════════════
-🎯 ENTRY FILTERS (SESSION / PHASE / CONFIRMATION)
-═══════════════════════════════════════════
-${entryContext.lines.join('\n')}
-OVERALL: ${entryContext.summary}
-
-These filters affect ai_decision, not whether a setup exists:
-- All 3 pass → ai_decision can be "enter_now"
-- Zone valid but confirmation missing → "wait_for_reaction"
-- Session is LOW priority (dead Asian hours, no killzone) → prefer "wait_for_reaction" over "skip" unless there is truly no structure in either direction
-
-═══════════════════════════════════════════
-📊 HOLISTIC EVIDENCE (BUY vs SELL, PRE-COMPUTED)
-═══════════════════════════════════════════
-${buildHolisticPromptBlock({ evidence: holistic, dailyDir, h4Dir, h1Dir })}
-
-Use this as your PRIMARY anchor for direction — it was computed
-independently of you specifically so you cannot anchor on the first
-pattern you happen to notice in the candles. If your own reading of the
-candles disagrees with this score, you may override it, but you MUST
-say exactly why in reasoning.why_best.
-
-═══════════════════════════════════════════
-📊 RAW CANDLE DATA
-═══════════════════════════════════════════
 ${candleData}
-Use this to confirm engulfing/pin bar patterns, exact price action at
-zones, and real market structure — don't rely on the summaries alone.
 
 ═══════════════════════════════════════════
-⚖️ CRITICAL: COMPARE BOTH DIRECTIONS
+🎯 YOUR TASK
 ═══════════════════════════════════════════
-You MUST build a BUY setup AND a SELL setup independently, even if
-one direction feels obvious. Score each on: confidence, RR, pattern
-confluence, HTF alignment, and probability.
-Output only the winner (or "skip" if both are below 58 confidence).
-Fill in opposite_setup with the rejected direction, its confidence,
-and why it lost.
 
-═══════════════════════════════════════════
-🎯 YOUR TASK — FIND TODAY'S BEST OPPORTUNITY
-═══════════════════════════════════════════
-You are looking for the single best trade idea available right now, in
-EITHER direction. Follow this process in order:
+Find the SINGLE BEST trade opportunity in EITHER direction.
 
-STEP 1 — Build both candidates.
-For BUY: find the nearest valid demand zone (FVG / Order Block / MSNR
-support / swing low) below current price that price is likely to reach.
-For SELL: find the nearest valid supply zone above current price.
-Score each 0-100 using: HTF alignment (1D+4H+1H agreement), zone
-freshness (untested > lightly touched > well-worn), pattern confluence
-(more aligned signals = higher), and the holistic evidence score above.
+Process:
+1. Analyze ALL data above (trends, indicators, patterns, levels, candles)
+2. Identify where smart money is likely to trade today
+3. Find the best zone (FVG/OB/MSNR/Swing) with confluence
+4. Set entry at zone edge, SL beyond zone, TP at logical levels
+5. Use your professional judgment - you know markets better than rules
 
-STEP 2 — Pick entry, SL, and TP levels for your chosen direction.
+What makes a good setup:
+- Zone at a key level with confluence
+- Good risk/reward (use your judgment, not a fixed number)
+- Logical stop loss placement
+- Session alignment (killzone preferred)
+- Fresh zone (not over-tested)
 
-- Entry = the zone edge closest to current price (this is a LIMIT order — it does not need to be at current price).
-
-- Stop Loss = just beyond the zone / structure that invalidates the idea (below the zone for BUY, above it for SELL). Must be a real structural level.
-
-- TP1 SELECTION ALGORITHM (CRITICAL - FOLLOW EXACTLY):
-  1. Compute: risk = |entry - stop_loss|
-  2. Compute: min_reward = risk × 2.5 (this is your minimum TP1 distance)
-  3. List ALL real resistance/support candidates beyond entry in your direction:
-     - For SELL: MSNR S1/S2/S3, swing lows, liquidity pools below entry
-     - For BUY: MSNR R1/R2/R3, swing highs, liquidity pools above entry
-  4. Sort candidates by distance from entry (nearest first).
-  5. TP1 = the FIRST candidate whose distance from entry >= min_reward.
-  6. If NO candidate clears min_reward, TP1 = entry ± min_reward (synthetic level).
-  7. TP2 = next real candidate further out than TP1.
-  8. TP3 = next real candidate further out than TP2.
-
-MANDATORY SELF-CHECK BEFORE OUTPUTTING JSON:
-  risk = |entry - stop_loss|
-  reward1 = |TP1 - entry|
-  rr1 = reward1 / risk
-
-  IF rr1 < 2.5:
-    → You made a mistake. Go back to step 5 and pick the NEXT candidate.
-    → If you already picked the farthest candidate and rr1 < 2.5, use synthetic TP1 = entry ± (risk × 2.5).
-    → NEVER output a TP1 that gives rr1 < 2.5.
-    → NEVER claim risk_reward "1:2.5" when your numbers give a different value.
-
-THE TP1 YOU OUTPUT MUST MATCH THE ONE YOU CALCULATED.
-If you calculate TP1 = 4368.53, you MUST output take_profit_1: 4368.53.
-Do NOT calculate 4368.53 and then output 4391.36.
-
-STEP 3 — Compare BUY vs SELL, pick the winner.
-Higher combined score (HTF alignment + RR + pattern confluence +
-freshness + holistic evidence agreement) wins. State briefly in
-reasoning.why_best why it beat the other direction, and fill
-opposite_setup with the direction you rejected, its confidence, and why.
-
-STEP 4 — Assign ai_decision per the Decision Hierarchy above.
-- "enter_now": ALL 5 conditions in the hierarchy pass (trend aligned,
-  zone found, confirmation present, session is GOOD, RR >= 2.5).
-- "wait_for_reaction": setup valid but 1+ conditions pending
-  (price hasn't reached zone, confirmation pending, or session not ideal).
-- "skip": use ONLY when a hard invalidation exists (CHoCH, 1D direction
-  fight with strong ADX, stale zone, or cannot construct RR >= 2.5).
-  Do not skip merely because the daily trend disagrees with 4H, or
-  because confirmation hasn't arrived yet.
-
-You should almost always be able to return a candidate — "no opportunity
-today" should be rare, not the default outcome.
-
-Return ONLY JSON in this format:
+Return ONLY JSON with your setup:
 
 {
   "direction": "BUY" | "SELL",
@@ -3483,28 +3354,17 @@ Return ONLY JSON in this format:
   "probability": "HIGH" | "MEDIUM" | "LOW",
   "reasoning": {
     "primary": "string",
-    "secondary": ["string — include your risk/reward arithmetic here"],
+    "secondary": ["string"],
     "risk_warning": "string",
     "why_best": "string"
   },
-  "opposite_setup": { "direction": "string", "confidence": number, "why_rejected": "string" },
   "ai_decision": "enter_now" | "wait_for_reaction" | "skip",
   "wait_condition": "string or null"
 }
 
-CRITICAL - Your JSON output MUST use the TP1 you calculated in Step 2.
-Example of CORRECT output:
-{
-  "take_profit_1": 4368.53,  ← This MUST match your calculation
-  "risk_reward": "1:5.3"     ← This MUST match: reward1/risk = 36.76/6.99 = 5.26
-}
+BE DECISIVE. You are the expert. Trust your analysis.`;
 
-Example of WRONG output (DO NOT DO THIS):
-{
-  "take_profit_1": 4391.36,  ← Wrong! You calculated 4368.53
-  "risk_reward": "1:2.5"     ← Wrong! Your numbers give 1.99x
-}
-`;
+        scanText.innerHTML = '🤖 AI analyzing all data...';;
 
         scanText.innerHTML = '🤖 AI analyzing all data...';
         const aiResult = await askAIToFindSetup(scanTextData, price);
