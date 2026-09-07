@@ -1321,6 +1321,28 @@ function calculateFibonacci(data, direction) {
     return { maxH, minL, fib50, fib618 };
 }
 
+// Dynamic SL multiplier based on session and volatility
+function getDynamicSLMultiplier(data, price, now = new Date()) {
+    const session = getSession(now);
+    const atrVal = atr(data, 14);
+    const atrPct = (atrVal / price) * 100;
+
+    let multiplier = 2.0; // Base
+
+    // Session adjustment
+    if (session.isSilverBullet) multiplier = 3.0;
+    else if (session.isKillzone) multiplier = 2.5;
+    else if (session.session === 'ASIA KZ') multiplier = 1.2;
+    else if (session.session === 'OFF-HOURS') multiplier = 1.0;
+
+    // Volatility adjustment
+    if (atrPct > 1.5) multiplier *= 1.2;
+    else if (atrPct < 0.5) multiplier *= 0.8;
+
+    // Cap
+    return Math.max(0.8, Math.min(4.0, multiplier));
+}
+
 // Precision SL calculation (XAU/USD: Minimum 2.0x ATR, Others: Minimum 1.5x ATR)
 function calcStopLoss(data, direction, entry, zone, msnr, tf, customATR = null, customPair = null) {
     const atrVal = customATR || atr(data, 14);
@@ -3324,9 +3346,53 @@ Find the SINGLE BEST trade opportunity in EITHER direction.
 
 STEP 1 — Find the best zone (FVG/OB/MSNR/Swing) with confluence.
 
-STEP 2 — Set entry, SL, and TP levels:
-- Entry = zone edge closest to current price (LIMIT order)
-- Stop Loss = beyond zone that invalidates the idea
+STEP 2 — Set entry, SL, and TP levels WITH CONTEXT:
+
+Before setting SL/TP, ANALYZE the market context:
+
+1. SESSION VOLATILITY:
+   - Silver Bullet / London/NY Killzone: HIGH volatility expected
+     → SL: 2.5-3.0x ATR, TP: 3.0-4.0x risk
+   - Asian session / Off-hours: LOW volatility expected
+     → SL: 1.0-1.5x ATR, TP: 1.5-2.0x risk
+
+2. TREND STRENGTH (ADX):
+   - ADX > 40 (Strong Trend): Let winners run
+     → TP: 3.0-5.0x risk, SL: 2.0x ATR
+   - ADX 20-40 (Moderate): Standard
+     → TP: 2.0-2.5x risk, SL: 2.0x ATR
+   - ADX < 20 (Ranging): Take quick profits
+     → TP: 1.5-2.0x risk, SL: 1.5x ATR
+
+3. VOLATILITY (ATR % of price):
+   - ATR > 1.5% of price: HIGH vol
+     → SL: 2.5-3.0x ATR
+   - ATR 0.5-1.5%: NORMAL vol
+     → SL: 2.0x ATR
+   - ATR < 0.5%: LOW vol
+     → SL: 1.0-1.5x ATR
+
+4. MARKET PHASE:
+   - MANIPULATION phase: Wider SL (liquidity sweeps)
+   - DISTRIBUTION/ACCUMULATION: Standard SL
+
+5. NEWS EVENTS:
+   - High impact news (CPI, FOMC, NFP): WIDEN SL or SKIP
+   - No news: Standard SL
+
+CRITICAL RULE:
+Your SL MUST be wide enough to survive normal volatility spikes.
+For XAU/USD during London/NY, minimum SL should be 2.0x ATR (≈30-40 points).
+Do NOT set SL that is too tight for the current market conditions.
+
+EXAMPLE CALCULATION:
+- Entry: 4415.99
+- ATR: 18 points
+- Session: London Killzone (high volatility)
+- SL = 4415.99 + (18 × 2.5) = 4460.99 (45 points risk)
+- Risk = 45 points
+- TP1 = 4415.99 - (45 × 2.0) = 4325.99 (90 points reward)
+- RR = 1:2.0 ✅
 
 TP1 SELECTION ALGORITHM (FOLLOW EXACTLY):
   1. Compute: risk = |entry - stop_loss|
@@ -3353,7 +3419,7 @@ In your reasoning above, you calculated:
 - Candidate 4328.58: distance = 67.83 → ✅ PASSES
 - THEREFORE: TP1 MUST BE 4328.58
 
-❌ DO NOT output take_profit_1: 4368.53 (this fails the RR check)
+❌ DO Not output take_profit_1: 4368.53 (this fails the RR check)
 ✅ MUST output take_profit_1: 4328.58 (this passes the RR check)
 
 IF YOUR JSON'S take_profit_1 DOES NOT MATCH YOUR CALCULATED TP1,
