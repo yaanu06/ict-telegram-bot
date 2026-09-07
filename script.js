@@ -3326,7 +3326,40 @@ Process:
 1. Analyze ALL data above (trends, indicators, patterns, levels, candles)
 2. Identify where smart money is likely to trade today
 3. Find the best zone (FVG/OB/MSNR/Swing) with confluence
-4. Set entry at zone edge, SL beyond zone, TP at logical levels
+4. Set entry at zone edge, SL beyond zone
+
+STEP 2 — Pick entry, SL, and TP levels for your chosen direction.
+
+- Entry = the zone edge closest to current price (this is a LIMIT order — it does not need to be at current price).
+
+- Stop Loss = just beyond the zone / structure that invalidates the idea (below the zone for BUY, above it for SELL). Must be a real structural level.
+
+- TP1 SELECTION ALGORITHM (MANDATORY - do not skip):
+  1. Compute: risk = |entry - stop_loss|
+  2. Compute: min_reward = risk × 2.5 (this is your minimum TP1 distance)
+  3. List ALL real resistance/support candidates beyond entry in your direction:
+     - For SELL: MSNR S1/S2/S3, swing lows, liquidity pools below entry
+     - For BUY: MSNR R1/R2/R3, swing highs, liquidity pools above entry
+  4. Sort candidates by distance from entry (nearest first).
+  5. TP1 = the FIRST candidate whose distance from entry >= min_reward.
+  6. If NO candidate clears min_reward, TP1 = entry ± min_reward (synthetic level).
+  7. TP2 = next real candidate further out than TP1.
+  8. TP3 = next real candidate further out than TP2.
+
+MANDATORY SELF-CHECK BEFORE OUTPUTTING JSON:
+  risk = |entry - stop_loss|
+  reward1 = |TP1 - entry|
+  rr1 = reward1 / risk
+
+  IF rr1 < 2.5:
+    → You made a mistake. Go back to step 5 and pick the NEXT candidate.
+    → NEVER output a TP1 that gives rr1 < 2.5.
+    → NEVER claim risk_reward "1:2.5" when your numbers give a different value.
+
+THE TP1 YOU OUTPUT MUST MATCH THE ONE YOU CALCULATED.
+If you calculate TP1 = 4368.53, you MUST output take_profit_1: 4368.53.
+Do NOT calculate 4368.53 and then output 4391.36.
+
 5. Use your professional judgment - you know markets better than rules
 
 What makes a good setup:
