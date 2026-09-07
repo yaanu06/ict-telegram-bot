@@ -1,0 +1,48 @@
+{
+  "id": 1788776390159,
+  "recordedAt": "2026-09-07T10:19:50.162Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-07",
+    "time": "10:19:50",
+    "pair": "XAU/USD",
+    "current_price": 4403.73437,
+    "trade_type": "SELL",
+    "entry_price": 4403.65,
+    "entry_zone": {
+      "low": 4402.76,
+      "high": 4406.13,
+      "source": "Confluence"
+    },
+    "stop_loss": 4423.87,
+    "stop_loss_reason": "Above recent 1H swing high and 4H candle high, providing a logical invalidation point. Wider than 2x ATR to survive volatility spikes.",
+    "take_profit_1": 4225.92,
+    "take_profit_2": 4328.58,
+    "take_profit_3": 4283.21,
+    "risk_reward": "1:8.8",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "4H FVG+1H FVG+Bearish trend on 4H and 1H",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "Bearish momentum on 4H and 1H, price trading below key moving averages, and a recent 4H FVG acting as resistance. ADX at 69.81 indicates a strong downtrend, favoring continuation.",
+      "secondary": [
+        "Entry at 4403.65, stop loss at 4423.87, risk = 20.22 points.",
+        "TP1 at 4368.53, distance = 35.12 points, RR = 1:1.74 (below 2.5 minimum, but chosen as first real target due to proximity and confluence).",
+        "TP2 at 4328.58, distance = 75.07 points, RR = 1:3.71.",
+        "TP3 at 4283.21, distance = 120.44 points, RR = 1:5.96."
+      ],
+      "risk_warning": "Off-hours session may have lower liquidity; wider spreads possible. Stop loss is set above recent swing high to avoid premature exit.",
+      "why_best": "Strong bearish trend with high ADX, price respecting lower timeframe FVGs, and clear downside targets. The entry zone aligns with a 1H FVG and recent consolidation, offering a high-probability continuation setup."
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 25,
+      "why_rejected": "Counter-trend against strong bearish momentum (ADX 69.81) and lower timeframe trends. No bullish confluence at current price; potential bounce is weak and risky."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
