@@ -1,0 +1,49 @@
+{
+  "id": 1788759103874,
+  "recordedAt": "2026-09-07T05:31:43.876Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-07",
+    "time": "05:31:43",
+    "pair": "XAU/USD",
+    "current_price": 4408.00494,
+    "trade_type": "SELL",
+    "entry_price": 4411.04,
+    "entry_zone": {
+      "low": 4408.6,
+      "high": 4411.31,
+      "source": "FVG"
+    },
+    "stop_loss": 4415.99,
+    "stop_loss_reason": "Above the recent 1H swing high and the 4H FVG, invalidating bearish momentum.",
+    "take_profit_1": 4368.53,
+    "take_profit_2": 4328.58,
+    "take_profit_3": 4283.21,
+    "risk_reward": "1:2.5",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "4H FVG+1H FVG+Bearish trend on 4H and 1H",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Bearish momentum on 4H and 1H, price rejected from a 1H FVG, with targets at swing lows and MSNR levels.",
+      "secondary": [
+        "Risk = |4411.04 - 4415.99| = 4.95",
+        "Min reward = 4.95 * 2.5 = 12.38",
+        "TP1 candidate 4368.53 distance = 42.51 >= 12.38, passes RR check",
+        "TP2 candidate 4328.58 distance = 82.46, next real target",
+        "TP3 candidate 4283.21 distance = 127.83, next real target"
+      ],
+      "risk_warning": "Market is in off-hours with low liquidity; watch for sudden reversals. 1D trend is bullish, so sell only if price respects the FVG.",
+      "why_best": "The 1H FVG aligns with the 4H bearish trend, offering a high-probability entry with clear targets and a favorable risk-reward ratio."
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 30,
+      "why_rejected": "Bullish setup lacks confluence as 4H and 1H trends are bearish, and price is below key resistances."
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for a bearish confirmation candle (e.g., close below 4408.60) before entering the sell.",
+    "source": "AI-Generated Setup"
+  }
+}
