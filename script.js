@@ -3414,29 +3414,37 @@ freshness (untested > lightly touched > well-worn), pattern confluence
 (more aligned signals = higher), and the holistic evidence score above.
 
 STEP 2 — Pick entry, SL, and TP levels for your chosen direction.
-- Entry = the zone edge closest to current price (this is a LIMIT order —
-  it does not need to be at current price).
-- Stop Loss = just beyond the zone / structure that invalidates the idea
-  (below the zone for BUY, above it for SELL). Must be a real structural
-  level (swing point, EMA, opposite zone edge) — not an arbitrary distance.
-- TP1 SELECTION ALGORITHM (follow exactly, do not loop/re-guess):
-  1. List ALL real resistance/support candidates beyond entry in your
-     direction (MSNR R1/R2/R3 or S1/S2/S3, swing highs/lows, liquidity
-     pools) — you likely already have several such levels.
-  2. Compute min_reward = risk * 2.5 once.
-  3. Walk your candidate list in order of DISTANCE from entry (nearest
-     first). TP1 = the FIRST candidate whose distance from entry is >=
-     min_reward.
-  4. If NO candidate list level clears min_reward, TP1 = entry ±
-     min_reward directly (a synthetic level, no real S/R needed).
-  5. TP2 and TP3 = the NEXT real candidates further out than TP1, in
-     order.
-  Do this ONCE. Do not recompute the same failing candidate more than
-  once — if your first-choice level fails the check, move to the next
-  candidate in your list immediately, don't re-verify the same number
-  repeatedly.
-- NEVER report a risk_reward ratio that doesn't match your own
-  entry/SL/TP1 — that is a hard rule, not a suggestion.
+
+- Entry = the zone edge closest to current price (this is a LIMIT order — it does not need to be at current price).
+
+- Stop Loss = just beyond the zone / structure that invalidates the idea (below the zone for BUY, above it for SELL). Must be a real structural level.
+
+- TP1 SELECTION ALGORITHM (CRITICAL - FOLLOW EXACTLY):
+  1. Compute: risk = |entry - stop_loss|
+  2. Compute: min_reward = risk × 2.5 (this is your minimum TP1 distance)
+  3. List ALL real resistance/support candidates beyond entry in your direction:
+     - For SELL: MSNR S1/S2/S3, swing lows, liquidity pools below entry
+     - For BUY: MSNR R1/R2/R3, swing highs, liquidity pools above entry
+  4. Sort candidates by distance from entry (nearest first).
+  5. TP1 = the FIRST candidate whose distance from entry >= min_reward.
+  6. If NO candidate clears min_reward, TP1 = entry ± min_reward (synthetic level).
+  7. TP2 = next real candidate further out than TP1.
+  8. TP3 = next real candidate further out than TP2.
+
+MANDATORY SELF-CHECK BEFORE OUTPUTTING JSON:
+  risk = |entry - stop_loss|
+  reward1 = |TP1 - entry|
+  rr1 = reward1 / risk
+
+  IF rr1 < 2.5:
+    → You made a mistake. Go back to step 5 and pick the NEXT candidate.
+    → If you already picked the farthest candidate and rr1 < 2.5, use synthetic TP1 = entry ± (risk × 2.5).
+    → NEVER output a TP1 that gives rr1 < 2.5.
+    → NEVER claim risk_reward "1:2.5" when your numbers give a different value.
+
+THE TP1 YOU OUTPUT MUST MATCH THE ONE YOU CALCULATED.
+If you calculate TP1 = 4368.53, you MUST output take_profit_1: 4368.53.
+Do NOT calculate 4368.53 and then output 4391.36.
 
 STEP 3 — Compare BUY vs SELL, pick the winner.
 Higher combined score (HTF alignment + RR + pattern confluence +
@@ -3482,7 +3490,21 @@ Return ONLY JSON in this format:
   "opposite_setup": { "direction": "string", "confidence": number, "why_rejected": "string" },
   "ai_decision": "enter_now" | "wait_for_reaction" | "skip",
   "wait_condition": "string or null"
-}`;
+}
+
+CRITICAL - Your JSON output MUST use the TP1 you calculated in Step 2.
+Example of CORRECT output:
+{
+  "take_profit_1": 4368.53,  ← This MUST match your calculation
+  "risk_reward": "1:5.3"     ← This MUST match: reward1/risk = 36.76/6.99 = 5.26
+}
+
+Example of WRONG output (DO NOT DO THIS):
+{
+  "take_profit_1": 4391.36,  ← Wrong! You calculated 4368.53
+  "risk_reward": "1:2.5"     ← Wrong! Your numbers give 1.99x
+}
+`;
 
         scanText.innerHTML = '🤖 AI analyzing all data...';
         const aiResult = await askAIToFindSetup(scanTextData, price);
