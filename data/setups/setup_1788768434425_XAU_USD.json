@@ -1,0 +1,48 @@
+{
+  "id": 1788768434425,
+  "recordedAt": "2026-09-07T08:07:14.428Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-07",
+    "time": "08:07:14",
+    "pair": "XAU/USD",
+    "current_price": 4412.6732,
+    "trade_type": "SELL",
+    "entry_price": 4413.28,
+    "entry_zone": {
+      "low": 4412.28,
+      "high": 4415.99,
+      "source": "FVG"
+    },
+    "stop_loss": 4418.13,
+    "stop_loss_reason": "Above the 1H swing high and the 4H FVG upper boundary, invalidating the bearish setup.",
+    "take_profit_1": 4368.53,
+    "take_profit_2": 4328.58,
+    "take_profit_3": 4283.21,
+    "risk_reward": "1:2.5",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "4H FVG+1H FVG+Bearish Swing Structure",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Price is trading within a 4H FVG (4412.28-4415.99) during the London killzone, aligning with the bearish 4H and 1H trend. This provides a high-probability short entry with a defined risk.",
+      "secondary": [
+        "Risk = |4413.28 - 4418.13| = 4.85",
+        "Minimum Reward = 4.85 * 2.5 = 12.13",
+        "TP1 (4368.53) distance = 44.75, which is >= 12.13, passing the RR check.",
+        "TP2 (4328.58) and TP3 (4283.21) are further real liquidity pools."
+      ],
+      "risk_warning": "The 1D trend is bullish, so this is a counter-trend trade. A break above the 4H FVG and swing high at 4418.13 would invalidate the setup and could lead to a swift rally.",
+      "why_best": "This is the best opportunity because it combines a bearish trend on the 4H and 1H with a fresh FVG in the London killzone, offering a precise entry with a tight stop and a clear path to downside targets."
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 28,
+      "why_rejected": "The 4H and 1H trends are bearish, and price is currently reacting to a 4H FVG. Buying here would be counter-trend without a confirmed reversal signal."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
