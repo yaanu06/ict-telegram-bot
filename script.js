@@ -3390,10 +3390,16 @@ Return ONLY JSON with your setup:
 
         scanText.innerHTML = '🤖 AI analyzing all data...';;
 
-        scanText.innerHTML = '🤖 AI analyzing all data...';;
-
         scanText.innerHTML = '🤖 AI analyzing all data...';
+
         const aiResult = await askAIToFindSetup(scanTextData, price);
+
+        // ============================================
+        // HARD FIX: Force correct TP1 if AI got it wrong
+        // ============================================
+        if (aiResult) {
+            forceCorrectTP1(aiResult, historyCache, price);
+        }
 
         if (aiResult) {
             try {
