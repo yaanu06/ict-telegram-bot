@@ -1,0 +1,47 @@
+{
+  "id": 1788747614584,
+  "recordedAt": "2026-09-07T02:20:14.585Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-07",
+    "time": "02:20:14",
+    "pair": "XAU/USD",
+    "current_price": 4406.45104,
+    "trade_type": "SELL",
+    "entry_price": 4412.28,
+    "entry_zone": {
+      "low": 4408,
+      "high": 4412.28,
+      "source": "Swing"
+    },
+    "stop_loss": 4422.33,
+    "stop_loss_reason": "Above the 1H EMA9 (4422.33) and the recent swing high at 4415.99, providing a logical invalidation point if price reverses.",
+    "take_profit_1": 4400.1,
+    "take_profit_2": 4391.36,
+    "take_profit_3": 4368.53,
+    "risk_reward": "1:2.5",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "Break of Structure (BOS)+Lower Highs+Bearish Order Block+Distribution Phase",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "The 4H and 1H trends are bearish, price is below key EMAs, and the market is in a distribution phase, favoring a sell on a retracement to a lower high.",
+      "secondary": [
+        "The 1H RSI at 7.64 is extremely oversold, but the strong bearish momentum and price action suggest a continuation lower after a minor pullback.",
+        "The 4H MACD histogram is deeply negative, confirming strong bearish momentum.",
+        "The recent 1H candle (index 98) shows a clear break of structure to the downside, establishing a new lower low and confirming the bearish bias."
+      ],
+      "risk_warning": "The 1D trend is bullish, which could lead to a sharp reversal. The Asian session has low liquidity, which can cause erratic price movements. The extremely oversold 1H RSI could trigger a short-covering bounce.",
+      "why_best": "SELL chosen over BUY — higher confidence/alignment"
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 0,
+      "why_rejected": "Not provided by AI"
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for a 1H candle to close below the 4400.10 liquidity level, confirming the continuation of the bearish move before entering.",
+    "source": "AI-Generated Setup"
+  }
+}
