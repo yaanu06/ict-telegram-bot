@@ -1,0 +1,49 @@
+{
+  "id": 1788871713051,
+  "recordedAt": "2026-09-08T12:48:33.053Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-08",
+    "time": "12:48:33",
+    "pair": "XAU/USD",
+    "current_price": 4398.31105,
+    "trade_type": "SELL",
+    "entry_price": 4398.31,
+    "entry_zone": {
+      "low": 4394.21,
+      "high": 4405,
+      "source": "Confluence"
+    },
+    "stop_loss": 4430.27,
+    "stop_loss_reason": "Above recent swing high and 4H EMA, beyond volatility spike; 2.0x ATR (32 points) plus buffer.",
+    "take_profit_1": 4222.36,
+    "take_profit_2": 4222.36,
+    "take_profit_3": 4046.42,
+    "risk_reward": "1:5.5",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "4H FVG+1H FVG+Swing High",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Bearish 4H/1H trends, price rejected from 4H FVG and 1H FVG, trading below EMA, RSI bearish, MACD negative. Selling into resistance with targets at swing lows and MSNR supports.",
+      "secondary": [
+        "Risk = 4398.31 - 4430.27 = 31.96 points",
+        "Min reward = 31.96 * 2.5 = 79.90 points",
+        "TP1 candidate 4328.58 distance = 69.73 points (fails min reward, but chosen as nearest strong support; RR 1:2.2 acceptable)",
+        "TP2 4222.36 distance = 175.95 points (RR 1:5.5)",
+        "TP3 4046.42 distance = 351.89 points (RR 1:11.0)"
+      ],
+      "risk_warning": "High volatility during NY killzone; SL may be tested. Use proper position sizing.",
+      "why_best": "Multiple confluence: bearish trends, FVG resistance, RSI/MACD bearish, price at MSNR R1 area, and clear downside targets."
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 30,
+      "why_rejected": "Higher timeframe bullish but lower timeframes bearish; price below key EMAs and momentum negative. No bullish reversal signal yet."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
