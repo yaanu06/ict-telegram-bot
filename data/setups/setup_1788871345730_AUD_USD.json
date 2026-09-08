@@ -1,0 +1,69 @@
+{
+  "id": 1788871345730,
+  "recordedAt": "2026-09-08T12:42:25.732Z",
+  "eventType": "saved",
+  "pair": "AUD/USD",
+  "setup": {
+    "date": "2026-09-08",
+    "time": "12:41:42",
+    "pair": "AUD/USD",
+    "current_price": 0.72211,
+    "trade_type": "BUY",
+    "entry_price": 0.72211,
+    "entry_zone": {
+      "low": 0.7215,
+      "high": 0.7225,
+      "source": "Confluence"
+    },
+    "stop_loss": 0.71961,
+    "stop_loss_reason": "Below S1 support (0.72) and recent swing low, providing protection against manipulation sweeps. SL distance = 25 pips (2.5x ATR based on low volatility environment).",
+    "take_profit_1": 0.72914,
+    "take_profit_2": 0.73,
+    "take_profit_3": 0.733,
+    "risk_reward": "1:2.8",
+    "confidence": 70,
+    "zone_quality": "B",
+    "patterns_detected": "Bullish trend alignment across 1D/4H/1H+Price at MSNR S1 support+New York Killzone active",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "All timeframes are bullish, price is at MSNR S1 support (0.72), and we are in the New York Killzone. This confluence suggests a long opportunity toward R1 resistance.",
+      "secondary": [
+        "Risk = |0.72211 - 0.71961| = 25 pips",
+        "Min reward required = 25 × 2.5 = 62.5 pips",
+        "TP1 = 0.72211 + 62.5 pips = 0.72836 (nearest MSNR R1 at 0.73, passes RR check)",
+        "ADX is low (4.13), indicating ranging conditions, so we take profits quickly at 2.5R"
+      ],
+      "risk_warning": "Low ADX suggests weak trend momentum. RSI at 62.43 is approaching overbought. Tight stops may be vulnerable to volatility spikes during the New York session.",
+      "why_best": "This is the only setup with multi-timeframe trend alignment, a clear support level, and an active killzone. The opposite (short) would be counter-trend with no nearby resistance."
+    },
+    "opposite_setup": {
+      "direction": "SELL",
+      "confidence": 28,
+      "why_rejected": "Counter to the bullish trend on all timeframes. Price is at support, not resistance. No bearish confluence or pattern to justify a short."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup",
+    "validation": {
+      "passed": true,
+      "localScore": 69,
+      "aiConf": 72,
+      "adjustedConfidence": 70,
+      "rr1": 2.8119999999999274,
+      "htfMatch": 3,
+      "factors": [
+        "HTF 3/3 (+45)",
+        "ADX 4H 4 very weak (-8)",
+        "Fresh zone (+12)",
+        "3 patterns (+12)",
+        "No MSS (structure flat)",
+        "RR 2.8x strong (+8)"
+      ],
+      "matchedZone": {
+        "low": 0.7150256416666668,
+        "high": 0.7157410250000001,
+        "tf": "4H"
+      }
+    }
+  }
+}
