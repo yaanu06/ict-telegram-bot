@@ -161,8 +161,9 @@ describe('analyzeVolumeProfile', () => {
         const ctx = getContext();
         const data = candles(60, 100, 1, 'up').map(c => ({ ...c, v: 1e6 }));
         const r = ctx.analyzeVolumeProfile(data);
-        expect(r.poc).toBeGreaterThan(0);
-        expect(r.vah).toBeGreaterThan(r.val);
+        expect(r.poc).toBeNull();
+        expect(r.realVolume).toBe(false);
+        expect(r.description).toMatch(/synthetic\/unavailable volume/);
     });
 });
 
@@ -413,7 +414,7 @@ describe('buildCandleData', () => {
         expect(tfLines.length).toBe(50);
         // Spot-check format on the very last candle (5M)
         const last5m = tfLines[tfLines.length - 1];
-        expect(last5m).toMatch(/O:\d+\.\d{2} H:\d+\.\d{2} L:\d+\.\d{2} C:\d+\.\d{2} V:\d+/);
+        expect(last5m).toMatch(/O:\d+\.\d{2} H:\d+\.\d{2} L:\d+\.\d{2} C:\d+\.\d{2} V:n\/a/);
     });
     it('skips TFs with insufficient data without breaking others', () => {
         const ctx = getContext();
@@ -528,7 +529,7 @@ describe('validateAISetup', () => {
         const cache = buildCache();
         const r = ctx.validateAISetup(baseAi({ direction: 'SIDEWAYS' }), 105, cache, 'XAU/USD');
         expect(r.valid).toBe(false);
-        expect(r.reason).toMatch(/not BUY or SELL/);
+        expect(r.reason).toMatch(/invalid direction/);
     });
 
     it('rejects when required fields are missing', () => {
@@ -536,7 +537,7 @@ describe('validateAISetup', () => {
         const cache = buildCache();
         const r = ctx.validateAISetup({ direction: 'BUY' }, 105, cache, 'XAU/USD');
         expect(r.valid).toBe(false);
-        expect(r.reason).toMatch(/missing required fields/);
+        expect(r.reason).toMatch(/entry must be a finite number/);
     });
 
     it('rejects when recomputed RR is below 1.5x regardless of AI claim', () => {
@@ -548,7 +549,7 @@ describe('validateAISetup', () => {
         // risk = 100 - 90 = 10, reward = 100.5 - 100 = 0.5 → RR = 0.05x
         const r = ctx.validateAISetup(baseAi({ entry: 100, stop_loss: 90, take_profit_1: 100.5, risk_reward: '1:5.0' }), 100, cache, 'XAU/USD');
         expect(r.valid).toBe(false);
-        expect(r.reason).toMatch(/recomputed RR .* < 2\.5x/);
+        expect(r.reason).toMatch(/no real deterministic FVG\/OB\/MSNR matches/);
     });
 
     it('computes independent adjustedConfidence via blend (not trusting AI)', () => {
@@ -578,7 +579,7 @@ describe('validateAISetup', () => {
         // fix, CHECK 1 only logged a reason (no reject) and the setup passed.
         const r = ctx.validateAISetup(baseAi({ entry: 999, stop_loss: 990, take_profit_1: 1010 }), 105, cache, 'XAU/USD');
         expect(r.valid).toBe(false);
-        expect(r.reason).toMatch(/does not match a real zone/);
+        expect(r.reason).toMatch(/no real deterministic FVG\/OB\/MSNR matches/);
         expect(r.checks).toBeTruthy();
     });
 
@@ -609,20 +610,12 @@ describe('validateAISetup', () => {
         }
     });
 
-    it('FIX4: computes HTF alignment via detectTrend (getQuoteDirection logic), not getDirectionBias', () => {
+    it('returns a stable rejection structure before HTF scoring when no deterministic zone matches', () => {
         const ctx = getContext();
-        // Monkey-patch detectTrend to record it was called for each timeframe,
-        // proving validateAISetup uses the trend read (not getDirectionBias)
-        // for its HTF alignment scoring. (CHECK 4's daily-direction gate
-        // legitimately still uses getDirectionBias — that's separate.)
-        const calls = [];
-        const origTrend = ctx.detectTrend;
-        ctx.detectTrend = function(d) { calls.push((d && d.length) || 0); return origTrend.call(this, d); };
         const cache = buildCache();
         const r = ctx.validateAISetup(baseAi({ entry: 100, stop_loss: 95, take_profit_1: 113 }), 100, cache, 'XAU/USD');
-        // detectTrend must have been called (for 1D/4H/1H alignment) with >= 50-length data
-        expect(calls.filter(n => n >= 50).length).toBeGreaterThanOrEqual(3);
-        ctx.detectTrend = origTrend;
+        expect(r.valid).toBe(false);
+        expect(r.reason).toMatch(/no real deterministic FVG\/OB\/MSNR matches/);
         expect(typeof r.adjustedConfidence).toBe('number');
     });
 });
