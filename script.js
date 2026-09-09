@@ -1252,22 +1252,38 @@ function calculateMSNR(data, currentPrice) {
     const r2 = pp + (rH - rL);
     const r3 = rH + 2 * (pp - rL);
     
-    let allS = [s1, s2, s3].filter(s => s < currentPrice).sort((a, b) => b - a);
-    let allR = [r1, r2, r3].filter(r => r > currentPrice).sort((a, b) => a - b);
+    let supportMeta = [s1, s2, s3]
+        .filter(s => s < currentPrice)
+        .sort((a, b) => b - a)
+        .map((level, index) => ({ level, origin: 'STRUCTURAL', rank: index + 1 }));
+    let resistanceMeta = [r1, r2, r3]
+        .filter(r => r > currentPrice)
+        .sort((a, b) => a - b)
+        .map((level, index) => ({ level, origin: 'STRUCTURAL', rank: index + 1 }));
     
     // Fallback: If no supports found below price or no resistances found above price,
     // generate ATR-based fallback levels so candidates are ALWAYS found.
     const atrVal = atr(data, 14);
-    if(allS.length === 0) {
+    if(supportMeta.length === 0) {
         const fallS1 = currentPrice - atrVal * 2.0;
         const fallS2 = currentPrice - atrVal * 4.0;
-        allS = [fallS1, fallS2];
+        supportMeta = [
+            { level: fallS1, origin: 'ATR_FALLBACK', rank: 1 },
+            { level: fallS2, origin: 'ATR_FALLBACK', rank: 2 }
+        ];
+        console.log("⚠️ Using ATR_FALLBACK MSNR reference", { side: 'support', currentPrice, atr: atrVal, levels: [fallS1, fallS2] });
     }
-    if(allR.length === 0) {
+    if(resistanceMeta.length === 0) {
         const fallR1 = currentPrice + atrVal * 2.0;
         const fallR2 = currentPrice + atrVal * 4.0;
-        allR = [fallR1, fallR2];
+        resistanceMeta = [
+            { level: fallR1, origin: 'ATR_FALLBACK', rank: 1 },
+            { level: fallR2, origin: 'ATR_FALLBACK', rank: 2 }
+        ];
+        console.log("⚠️ Using ATR_FALLBACK MSNR reference", { side: 'resistance', currentPrice, atr: atrVal, levels: [fallR1, fallR2] });
     }
+    const allS = supportMeta.map(x => x.level);
+    const allR = resistanceMeta.map(x => x.level);
 
     return {
         pivot: pp,
@@ -1276,7 +1292,9 @@ function calculateMSNR(data, currentPrice) {
         nearestSupport: allS[0] || null,
         nearestResistance: allR[0] || null,
         allSupports: allS,
-        allResistances: allR
+        allResistances: allR,
+        supportMeta,
+        resistanceMeta
     };
 }
 
@@ -1719,27 +1737,33 @@ function ictBuildRealZones(data, price, direction, pairLocal) {
 
     for (const fvg of detectFVG(data)) {
         if (direction === 'BUY' && fvg.type === 'bull' && fvg.l < price) {
-            zones.push({ type: 'FVG', low: fvg.l, high: fvg.h, price: fvg.m, tolerance: edgePad });
+            zones.push({ type: 'FVG', origin: 'STRUCTURAL', primary_eligible: true, low: fvg.l, high: fvg.h, price: fvg.m, tolerance: edgePad });
         }
         if (direction === 'SELL' && fvg.type === 'bear' && fvg.h > price) {
-            zones.push({ type: 'FVG', low: fvg.l, high: fvg.h, price: fvg.m, tolerance: edgePad });
+            zones.push({ type: 'FVG', origin: 'STRUCTURAL', primary_eligible: true, low: fvg.l, high: fvg.h, price: fvg.m, tolerance: edgePad });
         }
     }
 
     for (const ob of detectOrderBlocks(data, direction)) {
         if (direction === 'BUY' && ob.high < price) {
-            zones.push({ type: 'OB', low: ob.low, high: ob.high, price: (ob.low + ob.high) / 2, tolerance: edgePad });
+            zones.push({ type: 'OB', origin: 'STRUCTURAL', primary_eligible: true, low: ob.low, high: ob.high, price: (ob.low + ob.high) / 2, tolerance: edgePad });
         }
         if (direction === 'SELL' && ob.low > price) {
-            zones.push({ type: 'OB', low: ob.low, high: ob.high, price: (ob.low + ob.high) / 2, tolerance: edgePad });
+            zones.push({ type: 'OB', origin: 'STRUCTURAL', primary_eligible: true, low: ob.low, high: ob.high, price: (ob.low + ob.high) / 2, tolerance: edgePad });
         }
     }
 
     const msnr = calculateMSNR(data, price);
-    const levels = direction === 'BUY' ? (msnr.allSupports || []) : (msnr.allResistances || []);
-    for (const level of levels) {
+    const levels = direction === 'BUY' ? (msnr.supportMeta || []) : (msnr.resistanceMeta || []);
+    for (const meta of levels) {
+        const level = meta.level;
+        if (meta.origin === 'ATR_FALLBACK') {
+            console.log("⚠️ Using ATR_FALLBACK MSNR reference", { direction, level });
+        }
         zones.push({
             type: 'MSNR',
+            origin: meta.origin || 'STRUCTURAL',
+            primary_eligible: meta.origin !== 'ATR_FALLBACK',
             low: level * 0.9995,
             high: level * 1.0005,
             price: level,
@@ -2877,6 +2901,8 @@ function buildLiveZonesForTf(data, tf, price, pairLocal, atrVal, limitPerDirecti
             zones.push({
                 id: `${tf}-${direction}-${z.type}-${ictRound(z.low, prec)}-${ictRound(z.high, prec)}`,
                 type: z.type,
+                origin: z.origin || 'STRUCTURAL',
+                primary_eligible: z.primary_eligible !== false,
                 direction,
                 timeframe: tf,
                 low: ictRound(z.low, prec),
@@ -2907,23 +2933,25 @@ function buildTargetCandidates(historyCache, price, pairLocal) {
         const msnr = calculateMSNR(data, price);
         const liq = mapLiquidity(data);
         const sw = findSwings(data, 3);
-        for (const level of (msnr.allResistances || []).slice(0, 5)) {
-            candidates.push({ direction: 'BUY', timeframe: tf, source: 'MSNR_RESISTANCE', level, distance_from_price: Math.abs(level - price) });
+        for (const meta of (msnr.resistanceMeta || []).slice(0, 5)) {
+            const level = meta.level;
+            candidates.push({ direction: 'BUY', timeframe: tf, source: 'MSNR_RESISTANCE', origin: meta.origin || 'STRUCTURAL', level, distance_from_price: Math.abs(level - price) });
         }
-        for (const level of (msnr.allSupports || []).slice(0, 5)) {
-            candidates.push({ direction: 'SELL', timeframe: tf, source: 'MSNR_SUPPORT', level, distance_from_price: Math.abs(level - price) });
+        for (const meta of (msnr.supportMeta || []).slice(0, 5)) {
+            const level = meta.level;
+            candidates.push({ direction: 'SELL', timeframe: tf, source: 'MSNR_SUPPORT', origin: meta.origin || 'STRUCTURAL', level, distance_from_price: Math.abs(level - price) });
         }
         for (const level of (liq.above || []).slice(0, 5)) {
-            candidates.push({ direction: 'BUY', timeframe: tf, source: 'BUY_SIDE_LIQUIDITY', level, distance_from_price: Math.abs(level - price) });
+            candidates.push({ direction: 'BUY', timeframe: tf, source: 'BUY_SIDE_LIQUIDITY', origin: 'STRUCTURAL', level, distance_from_price: Math.abs(level - price) });
         }
         for (const level of (liq.below || []).slice(0, 5)) {
-            candidates.push({ direction: 'SELL', timeframe: tf, source: 'SELL_SIDE_LIQUIDITY', level, distance_from_price: Math.abs(level - price) });
+            candidates.push({ direction: 'SELL', timeframe: tf, source: 'SELL_SIDE_LIQUIDITY', origin: 'STRUCTURAL', level, distance_from_price: Math.abs(level - price) });
         }
         for (const s of (sw.H || []).slice(-5)) {
-            candidates.push({ direction: 'BUY', timeframe: tf, source: 'SWING_HIGH', level: s.p, distance_from_price: Math.abs(s.p - price) });
+            candidates.push({ direction: 'BUY', timeframe: tf, source: 'SWING_HIGH', origin: 'STRUCTURAL', level: s.p, distance_from_price: Math.abs(s.p - price) });
         }
         for (const s of (sw.L || []).slice(-5)) {
-            candidates.push({ direction: 'SELL', timeframe: tf, source: 'SWING_LOW', level: s.p, distance_from_price: Math.abs(s.p - price) });
+            candidates.push({ direction: 'SELL', timeframe: tf, source: 'SWING_LOW', origin: 'STRUCTURAL', level: s.p, distance_from_price: Math.abs(s.p - price) });
         }
     }
     const dedupe = new Map();
@@ -3125,6 +3153,7 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'All values in COMPUTED MARKET FACTS are generated deterministically from live market data and must be treated as authoritative.',
         'Raw candles are supplied only for additional context.',
         'Never invent an FVG, OB, MSNR, swing, MSS, BOS, CHoCH, ATR, liquidity level, or target level that is not present in COMPUTED MARKET FACTS.',
+        'STRUCTURAL zones/targets are derived from observed market structure. ATR_FALLBACK levels are deterministic synthetic fallback levels and must NOT be treated as equal-strength structural confluence.',
         'Your role is to interpret the supplied market state, identify the highest-quality valid opportunity currently available, or return NO_TRADE when conditions are insufficient.',
         'Do not force a setup. Return ONLY valid JSON.'
     ].join('\n');
@@ -3153,13 +3182,14 @@ TASK
 Analyze the current live market.
 
 1. Decide BUY, SELL, WAIT, or NO_TRADE.
-2. Select one REAL supplied zone from COMPUTED MARKET FACTS.real_ict_zones if proposing BUY or SELL.
+2. Select one REAL supplied zone from COMPUTED MARKET FACTS.real_ict_zones if proposing BUY or SELL. The selected primary zone must have primary_eligible=true.
 3. Explain why this direction has better probability than the opposite.
 4. Respect current volatility, ATR, minimum SL distance, maximum SL distance, and minimum RR constraints.
 5. Respect real structure, liquidity, premium/discount, and target candidates.
 6. Do not invent levels.
 7. Do not force a trade merely because one direction is marginally better.
 8. Today's best professional decision may be WAIT or NO_TRADE.
+9. STRUCTURAL zones/targets are derived from observed market structure. ATR_FALLBACK levels are deterministic synthetic fallback levels and must NOT be treated as equal-strength structural confluence.
 
 Use symbolic arithmetic only:
 risk = abs(entry - stop_loss)
@@ -3396,14 +3426,23 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
         const low = Number(selected.low);
         const high = Number(selected.high);
         const tf = selected.timeframe;
-        const match = zones.some(z => {
+        const baseMatches = zones.filter(z => {
             const typeOk = !source || z.type === source;
             const tfOk = !tf || z.timeframe === tf;
             const lowOk = Math.abs(Number(z.low) - low) <= Math.max(Math.abs(low) * 0.0002, 0.00001);
             const highOk = Math.abs(Number(z.high) - high) <= Math.max(Math.abs(high) * 0.0002, 0.00001);
             return typeOk && tfOk && lowOk && highOk;
         });
-        if (!match) issues.push('selected zone does not exist in supplied live market context');
+        if (baseMatches.length === 0) {
+            issues.push('selected zone does not exist in supplied live market context');
+        } else {
+            const directionMatches = baseMatches.filter(z => z.direction === direction);
+            if (directionMatches.length === 0) {
+                issues.push('selected zone direction does not match AI trade direction');
+            } else if (!directionMatches.some(z => !(z.type === 'MSNR' && (z.origin === 'ATR_FALLBACK' || z.primary_eligible === false)))) {
+                issues.push('ATR_FALLBACK MSNR cannot be selected as primary AI zone');
+            }
+        }
     }
 
     return { valid: issues.length === 0, issues };

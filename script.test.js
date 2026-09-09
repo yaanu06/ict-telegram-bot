@@ -465,6 +465,37 @@ describe('live AI market context and prompt', () => {
         expect(Array.isArray(live.target_candidates.buy)).toBe(true);
     });
 
+    it('marks structural and ATR fallback MSNR origins', () => {
+        const ctx = getContext();
+        const data = candles(80, 100, 0.5, 'up');
+        const structural = ctx.calculateMSNR(data, 140);
+        expect(structural.supportMeta.some(x => x.origin === 'STRUCTURAL')).toBe(true);
+        expect(structural.resistanceMeta.some(x => x.origin === 'STRUCTURAL')).toBe(true);
+
+        const fallback = ctx.calculateMSNR(data, 1000);
+        expect(fallback.resistanceMeta.some(x => x.origin === 'ATR_FALLBACK')).toBe(true);
+        expect(fallback.allResistances).toEqual(fallback.resistanceMeta.map(x => x.level));
+    });
+
+    it('preserves MSNR origin on live zones and target candidates', () => {
+        const ctx = getContext();
+        const historyCache = buildCache();
+        const live = ctx.buildLiveMarketContext({
+            pair: 'XAU/USD',
+            price: 1000,
+            historyCache,
+            indicators: { '4H': {} },
+            patterns: {},
+            enhancedAnalysis: {},
+            holistic: {},
+            entryContext: null
+        });
+        const fallbackZone = live.real_ict_zones.find(z => z.type === 'MSNR' && z.origin === 'ATR_FALLBACK');
+        expect(fallbackZone).toBeTruthy();
+        expect(fallbackZone.primary_eligible).toBe(false);
+        expect(live.target_candidates.buy.some(c => c.source === 'MSNR_RESISTANCE' && c.origin === 'ATR_FALLBACK')).toBe(true);
+    });
+
     it('builds a prompt that allows NO_TRADE and has no stale hard-coded price anchors', () => {
         const ctx = getContext();
         const live = {
@@ -478,7 +509,9 @@ describe('live AI market context and prompt', () => {
         };
         const prompt = ctx.buildAIPrompt(live, '### 4H CANDLES\n  0: O:1.00 H:2.00 L:0.50 C:1.50 V:n/a\n');
         expect(prompt.system).toMatch(/COMPUTED MARKET FACTS/);
+        expect(prompt.system).toMatch(/ATR_FALLBACK levels are deterministic synthetic fallback levels/);
         expect(prompt.user).toMatch(/NO_TRADE/);
+        expect(prompt.user).toMatch(/primary_eligible=true/);
         expect(prompt.user).toMatch(/risk = abs\(entry - stop_loss\)/);
         expect(prompt.user).not.toMatch(/4328\.58|4368\.53|4415\.99|4460\.99|THEREFORE|MUST output|DO Not output|Find the SINGLE BEST/);
     });
@@ -504,6 +537,48 @@ describe('live AI market context and prompt', () => {
         expect(result.valid).toBe(false);
         expect(result.issues.join(' ')).toMatch(/SELL geometry/);
         expect(result.issues.join(' ')).toMatch(/distinct/);
+    });
+
+    it('rejects selected zones whose direction does not match the AI direction', () => {
+        const ctx = getContext();
+        const result = ctx.validateAIOutputConsistency({
+            decision: 'BUY',
+            direction: 'BUY',
+            selected_zone: { type: 'FVG', timeframe: '1H', low: 100, high: 101 },
+            entry_zone: { source: 'FVG', low: 100, high: 101 },
+            entry: 101.5,
+            stop_loss: 99,
+            take_profit_1: 103,
+            take_profit_2: 104,
+            take_profit_3: 105
+        }, {
+            real_ict_zones: [
+                { type: 'FVG', timeframe: '1H', direction: 'SELL', low: 100, high: 101, origin: 'STRUCTURAL', primary_eligible: true }
+            ]
+        });
+        expect(result.valid).toBe(false);
+        expect(result.issues).toContain('selected zone direction does not match AI trade direction');
+    });
+
+    it('rejects ATR fallback MSNR as a primary AI-selected zone', () => {
+        const ctx = getContext();
+        const result = ctx.validateAIOutputConsistency({
+            decision: 'BUY',
+            direction: 'BUY',
+            selected_zone: { type: 'MSNR', timeframe: '4H', low: 99, high: 100 },
+            entry_zone: { source: 'MSNR', low: 99, high: 100 },
+            entry: 100,
+            stop_loss: 98,
+            take_profit_1: 104,
+            take_profit_2: 106,
+            take_profit_3: 108
+        }, {
+            real_ict_zones: [
+                { type: 'MSNR', timeframe: '4H', direction: 'BUY', low: 99, high: 100, origin: 'ATR_FALLBACK', primary_eligible: false }
+            ]
+        });
+        expect(result.valid).toBe(false);
+        expect(result.issues).toContain('ATR_FALLBACK MSNR cannot be selected as primary AI zone');
     });
 });
 
