@@ -1,0 +1,55 @@
+{
+  "id": 1788964399963,
+  "recordedAt": "2026-09-09T14:33:19.967Z",
+  "eventType": "ai_scan",
+  "pair": "EUR/USD",
+  "setup": {
+    "date": "2026-09-09",
+    "time": "14:33:19",
+    "pair": "EUR/USD",
+    "current_price": 1.16463,
+    "trade_type": "SELL_LIMIT",
+    "decision": "SELL_LIMIT",
+    "order_type": "LIMIT",
+    "setup_type": "PENDING_LIMIT",
+    "entry_price": 1.16736,
+    "entry_zone": {
+      "source": "MSNR",
+      "low": 1.16619,
+      "high": 1.16736
+    },
+    "stop_loss": 1.16963,
+    "stop_loss_reason": "MSNR_CLUSTER invalidation plus structural buffer",
+    "take_profit_1": 1.16129,
+    "take_profit_2": 1.16126,
+    "take_profit_3": 1.16125,
+    "risk_reward": "1:2.67",
+    "confidence": 32.46,
+    "zone_quality": "B",
+    "patterns_detected": "MSNR resistance cluster+Premium range rejection+Fresh untouched zone",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "A fresh 1H MSNR resistance zone sits in the premium side of the range (price at 91.4% of range). The adaptive candidate provides a valid SELL_LIMIT with a 2.67R reward-to-risk ratio, meeting the 2.5R minimum. The zone is fresh (0 touches) and not invalidated, offering a high-quality pending limit entry.",
+      "structure": "All timeframes (1D, 4H, 1H, 15M) are bullish, but price is currently in a premium zone (91.4% of range) and has swept sell-side liquidity at 1.16412. The 4H shows a fresh SELL OB at 1.16484-1.16558, and the 1H MSNR at 1.16619-1.16736 aligns with the 4H SELL OB cluster (1.16604-1.16721, 1.166-1.16771), creating a strong confluence of resistance levels.",
+      "liquidity": "Sell-side liquidity rests below at 1.16421, 1.1637, and 1.16224. The recent sweep of 1.16412 (sell-side) suggests manipulation, and a move down from the MSNR zone would target these resting sell-side liquidity pools. The nearest sell-side liquidity above is at 1.16515, which is below the entry zone, indicating limited upside room before hitting resistance.",
+      "volatility": "ATR_4H is 0.00133, and the minimum SL distance is 0.002. The proposed SL distance is 0.00227 (entry 1.16736 - SL 1.16963), which is above the minimum and below the maximum of 0.00533. The SL is 2.6x ATR_4H, providing adequate room to avoid noise while respecting volatility constraints.",
+      "why_best": "This is the only adaptive candidate provided. It is a fresh MSNR zone (0 touches) with a clear structural stop above the MSNR cluster. The TP1 at 1.16129 is a structural sell-side liquidity level, and the RR of 2.67 exceeds the 2.5 minimum. The zone is in the premium side of the range, favoring a sell.",
+      "why_not_opposite": "A BUY setup is not favored because price is in the premium zone (91.4% of range), far above equilibrium at 1.16102. All fresh structural zones above are SELL zones (4H SELL OBs and 1H MSNR). While the trend is bullish, buying at this premium level without a pullback to discount would be poor risk/reward. The bullish structure is better respected by waiting for a pullback to discount, not by buying at resistance.",
+      "invalidation": "The trade is invalidated if price closes above 1.16963, which is above the MSNR cluster (1.16826-1.16943) and the 4H SELL OB (1.166-1.16771). This would indicate that the resistance cluster has been broken and the bearish thesis is wrong.",
+      "secondary": [
+        "Premium range position (91.4%) supports selling",
+        "Fresh 4H SELL OBs at 1.16484-1.16558 and 1.16604-1.16721 align with the entry zone",
+        "Market regime is MANIPULATION, often preceding a move toward liquidity"
+      ],
+      "risk_warning": "Normal market risk applies"
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 20,
+      "why_rejected": "Buying at 91.4% of the range (premium) with no pullback to discount is poor risk/reward. The nearest buy-side targets are only 0.0002-0.001 away, not enough to satisfy a 2.5R requirement with a valid SL. The bullish trend is acknowledged but a buy limit should be placed at discount zones (below equilibrium 1.16102), not at premium resistance."
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for price to reach the 1H MSNR zone at 1.16619-1.16736 and show a bearish reaction (e.g., rejection wick or bearish engulfing) before entering. The limit order is placed at 1.16736.",
+    "source": "AI-Generated Setup"
+  }
+}
