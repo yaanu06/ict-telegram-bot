@@ -436,6 +436,11 @@ describe('live AI market context and prompt', () => {
         '15M': candles(40, 100, 0.1, 'up'),
         '5M': candles(40, 100, 0.05, 'up')
     });
+    const trendCache = (dir, start = 100, step = 0.5) => ({
+        '4H': candles(80, start, step, dir),
+        '1H': candles(80, start, step, dir),
+        '1D': candles(80, start, step, dir)
+    });
 
     it('builds deterministic live context from current candles and flags synthetic volume', () => {
         const ctx = getContext();
@@ -859,10 +864,10 @@ describe('live AI market context and prompt', () => {
 
     it('builds adaptive SELL candidates by skipping too-tight zone stops and nearer invalid RR targets', () => {
         const ctx = getContext();
-        const candidates = ctx.buildAdaptiveSetupCandidates({
+        const result = ctx.buildAdaptiveSetupCandidates({
             pair: 'NZD/USD',
             price: 0.58500,
-            historyCache: { '1H': [] },
+            historyCache: trendCache('down', 0.62000, 0.00045),
             zones: [
                 { type: 'FVG', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58668, high: 0.58739, freshness: 'FRESH' },
                 { type: 'OB', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58850, high: 0.58887, freshness: 'FRESH' }
@@ -880,6 +885,8 @@ describe('live AI market context and prompt', () => {
             marketRegime: { primary_regime: 'TRENDING_BEARISH' },
             structure: { '1D': { trend: 'BEARISH' }, '4H': { trend: 'BEARISH' }, '1H': { trend: 'BEARISH' } }
         });
+        const candidates = result.valid_candidates;
+        expect(result.raw_candidates.length).toBeGreaterThan(0);
         expect(candidates.length).toBeGreaterThan(0);
         expect(candidates[0].entry).toBeGreaterThanOrEqual(0.58668);
         expect(candidates[0].entry).toBeLessThanOrEqual(0.58739);
@@ -893,10 +900,10 @@ describe('live AI market context and prompt', () => {
 
     it('rejects adaptive candidates when widening the structural stop leaves no valid TP ladder', () => {
         const ctx = getContext();
-        const candidates = ctx.buildAdaptiveSetupCandidates({
+        const result = ctx.buildAdaptiveSetupCandidates({
             pair: 'NZD/USD',
             price: 0.58500,
-            historyCache: { '1H': [] },
+            historyCache: trendCache('down', 0.62000, 0.00045),
             zones: [
                 { type: 'FVG', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58668, high: 0.58739, freshness: 'FRESH' },
                 { type: 'OB', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58850, high: 0.58887, freshness: 'FRESH' }
@@ -912,15 +919,16 @@ describe('live AI market context and prompt', () => {
             marketRegime: { primary_regime: 'TRENDING_BEARISH' },
             structure: {}
         });
-        expect(candidates).toEqual([]);
+        expect(result.valid_candidates).toEqual([]);
+        expect(result.rejected_candidates.length).toBeGreaterThan(0);
     });
 
     it('uses structural stops inside the ATR range without forcing exact minimum distance', () => {
         const ctx = getContext();
-        const candidates = ctx.buildAdaptiveSetupCandidates({
+        const result = ctx.buildAdaptiveSetupCandidates({
             pair: 'EUR/USD',
-            price: 1.10500,
-            historyCache: { '1H': [] },
+            price: 1.10100,
+            historyCache: trendCache('up', 1.08000, 0.00030),
             zones: [
                 { type: 'OB', direction: 'BUY', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 1.09900, high: 1.10000, freshness: 'FRESH' }
             ],
@@ -936,6 +944,7 @@ describe('live AI market context and prompt', () => {
             marketRegime: { primary_regime: 'TRENDING_BULLISH' },
             structure: { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } }
         });
+        const candidates = result.valid_candidates;
         expect(candidates.length).toBeGreaterThan(0);
         expect(candidates[0].stop_source).toBe('ZONE_BOUNDARY');
         expect(candidates[0].risk_distance).toBeGreaterThan(0.00030);
@@ -944,10 +953,10 @@ describe('live AI market context and prompt', () => {
 
     it('rejects adaptive candidates when the only structural stop exceeds maximum risk', () => {
         const ctx = getContext();
-        const candidates = ctx.buildAdaptiveSetupCandidates({
+        const result = ctx.buildAdaptiveSetupCandidates({
             pair: 'EUR/USD',
             price: 1.10500,
-            historyCache: { '1H': [] },
+            historyCache: trendCache('up', 1.08000, 0.00030),
             zones: [
                 { type: 'OB', direction: 'BUY', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 1.09000, high: 1.10000, freshness: 'FRESH' }
             ],
@@ -963,23 +972,27 @@ describe('live AI market context and prompt', () => {
             marketRegime: { primary_regime: 'TRENDING_BULLISH' },
             structure: {}
         });
-        expect(candidates).toEqual([]);
+        expect(result.valid_candidates).toEqual([]);
+        expect(result.rejected_candidates.length).toBeGreaterThan(0);
     });
 
     it('keeps adaptive setup construction pair-scale independent', () => {
         const ctx = getContext();
         const cases = [
-            { pair: 'EUR/USD', direction: 'BUY', price: 1.10500, low: 1.09900, high: 1.10000, min: 0.00030, max: 0.01000, targets: [1.10400, 1.10500, 1.10600] },
-            { pair: 'GBP/JPY', direction: 'SELL', price: 190.000, low: 190.500, high: 190.700, min: 0.100, max: 2.000, targets: [189.900, 189.700, 189.500] },
-            { pair: 'XAU/USD', direction: 'BUY', price: 4385.00, low: 4375.00, high: 4380.00, min: 3.00, max: 30.00, targets: [4395.00, 4405.00, 4415.00] },
-            { pair: 'BTC/USD', direction: 'SELL', price: 65000, low: 65500, high: 65700, min: 30, max: 3000, targets: [64000, 63500, 63000] }
+            { pair: 'EUR/USD', direction: 'BUY', price: 1.10100, low: 1.09900, high: 1.10000, min: 0.00030, max: 0.01000, step: 0.00030, targets: [1.10400, 1.10500, 1.10600] },
+            { pair: 'GBP/JPY', direction: 'SELL', price: 190.300, low: 190.500, high: 190.700, min: 0.100, max: 2.000, step: 0.050, targets: [189.900, 189.700, 189.500] },
+            { pair: 'XAU/USD', direction: 'BUY', price: 4382.00, low: 4375.00, high: 4380.00, min: 3.00, max: 30.00, step: 1.00, targets: [4395.00, 4405.00, 4415.00] },
+            { pair: 'BTC/USD', direction: 'SELL', price: 65450, low: 65500, high: 65700, min: 30, max: 3000, step: 30, targets: [64000, 63500, 63000] }
         ];
 
         for (const c of cases) {
-            const candidates = ctx.buildAdaptiveSetupCandidates({
+            const historyCache = c.direction === 'BUY'
+                ? trendCache('up', c.price * 0.98, c.step)
+                : trendCache('down', c.price * 1.02, c.step);
+            const result = ctx.buildAdaptiveSetupCandidates({
                 pair: c.pair,
                 price: c.price,
-                historyCache: { '1H': [] },
+                historyCache,
                 zones: [{ type: 'FVG', direction: c.direction, timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: c.low, high: c.high, freshness: 'FRESH' }],
                 targetCandidates: {
                     buy: c.direction === 'BUY' ? c.targets.map(level => ({ direction: 'BUY', level, source: 'SWING_HIGH', origin: 'STRUCTURAL' })) : [],
@@ -989,12 +1002,144 @@ describe('live AI market context and prompt', () => {
                 marketRegime: { primary_regime: 'TRENDING' },
                 structure: {}
             });
+            const candidates = result.valid_candidates;
             expect(candidates.length).toBeGreaterThan(0);
             const best = candidates[0];
             expect(new Set([best.tp1, best.tp2, best.tp3]).size).toBe(3);
             if (c.direction === 'BUY') expect(best.entry < best.tp1 && best.tp1 < best.tp2 && best.tp2 < best.tp3).toBe(true);
             if (c.direction === 'SELL') expect(best.entry > best.tp1 && best.tp1 > best.tp2 && best.tp2 > best.tp3).toBe(true);
         }
+    });
+
+    it('keeps HTF-failed raw candidates out of valid candidates before AI sees them', () => {
+        const ctx = getContext();
+        const result = ctx.buildAdaptiveSetupCandidates({
+            pair: 'EUR/USD',
+            price: 1.10500,
+            historyCache: trendCache('down', 1.13000, 0.00030),
+            zones: [
+                { type: 'FVG', direction: 'BUY', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 1.10300, high: 1.10400, freshness: 'FRESH' }
+            ],
+            targetCandidates: {
+                buy: [
+                    { direction: 'BUY', level: 1.10800, source: 'SWING_HIGH', origin: 'STRUCTURAL' },
+                    { direction: 'BUY', level: 1.10900, source: 'MSNR_RESISTANCE', origin: 'PIVOT_DERIVED' },
+                    { direction: 'BUY', level: 1.11000, source: 'BUY_SIDE_LIQUIDITY', origin: 'STRUCTURAL' }
+                ],
+                sell: []
+            },
+            riskConstraints: { minimum_rr: 2.5, minimum_sl_distance: 0.00030, maximum_sl_distance: 0.01000 },
+            marketRegime: { primary_regime: 'TRENDING_BEARISH' },
+            structure: { '1D': { trend: 'BEARISH' }, '4H': { trend: 'BEARISH' }, '1H': { trend: 'BEARISH' } }
+        });
+        expect(result.raw_candidates.length).toBeGreaterThan(0);
+        expect(result.valid_candidates).toEqual([]);
+        expect(result.rejected_candidates.some(c => c.rejection_reasons.some(r => /HTF alignment 0\/3 below/.test(r)))).toBe(true);
+    });
+
+    it('requires actionable AI output to select a deterministic candidate when valid candidates exist', () => {
+        const ctx = getContext();
+        const live = {
+            adaptive_setup_candidates: [{ id: 'valid-1', zone_origin: 'STRUCTURAL', entry: 1.1, stop_loss: 1.098, tp1: 1.105, tp2: 1.106, tp3: 1.107 }],
+            risk_constraints: { minimum_rr: 2.5 },
+            real_ict_zones: [
+                { type: 'FVG', timeframe: '1H', direction: 'BUY', low: 1.09950, high: 1.10050, origin: 'STRUCTURAL', primary_eligible: true }
+            ]
+        };
+        const result = ctx.validateAIOutputConsistency({
+            decision: 'BUY_LIMIT',
+            direction: 'BUY',
+            selected_zone: { type: 'FVG', timeframe: '1H', low: 1.09950, high: 1.10050 },
+            entry_zone: { source: 'FVG', low: 1.09950, high: 1.10050 },
+            entry: 1.10000,
+            stop_loss: 1.09800,
+            take_profit_1: 1.10500,
+            take_profit_2: 1.10600,
+            take_profit_3: 1.10700
+        }, live);
+        expect(result.valid).toBe(false);
+        expect(result.issues).toContain('actionable AI setup must select a deterministic candidate ID');
+    });
+
+    it('ignores AI numeric overrides when a deterministic candidate is selected', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        ctx.fetch = jest.fn(() => Promise.resolve({
+            json: () => Promise.resolve({
+                choices: [{ message: { content: JSON.stringify({
+                    decision: 'BUY_LIMIT',
+                    selected_candidate_id: 'candidate-override',
+                    direction: 'SELL',
+                    entry: 9,
+                    stop_loss: 10,
+                    take_profit_1: 1,
+                    take_profit_2: 0.5,
+                    take_profit_3: 0.25,
+                    confidence: 70,
+                    reasoning: { primary: 'AI tried to override deterministic prices' }
+                }) } }]
+            })
+        }));
+        const result = await ctx.askAIToFindSetup('prompt', 1.101, 'system', {
+            pair: 'EUR/USD',
+            adaptive_setup_candidates: [{
+                id: 'candidate-override',
+                direction: 'BUY',
+                timeframe: '1H',
+                zone_type: 'FVG',
+                zone_origin: 'STRUCTURAL',
+                zone_low: 1.09950,
+                zone_high: 1.10050,
+                entry: 1.10000,
+                stop_loss: 1.09800,
+                stop_reason: 'SWING_LOW invalidation plus structural buffer',
+                tp1: 1.10500,
+                tp2: 1.10600,
+                tp3: 1.10700,
+                rr_tp1: 2.5
+            }]
+        });
+        expect(result.direction).toBe('BUY');
+        expect(result.entry).toBe(1.10000);
+        expect(result.stop_loss).toBe(1.09800);
+        expect(result.take_profit_1).toBe(1.10500);
+    });
+
+    it('fails closed when AI selects an unknown deterministic candidate ID', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        ctx.fetch = jest.fn(() => Promise.resolve({
+            json: () => Promise.resolve({
+                choices: [{ message: { content: JSON.stringify({
+                    decision: 'BUY_LIMIT',
+                    selected_candidate_id: 'missing-candidate',
+                    confidence: 70,
+                    reasoning: { primary: 'Unknown candidate' }
+                }) } }]
+            })
+        }));
+        const result = await ctx.askAIToFindSetup('prompt', 1.101, 'system', {
+            pair: 'EUR/USD',
+            adaptive_setup_candidates: []
+        });
+        expect(result.noTrade).toBe(true);
+        expect(result.decision).toBe('WAIT');
+        expect(result.wait_condition).toMatch(/unknown deterministic candidate/);
+    });
+
+    it('keeps liquidity labels directionally correct around current price', () => {
+        const ctx = getContext();
+        const data = [];
+        for (let i = 0; i < 40; i++) {
+            const base = 100 + Math.sin(i / 2) * 3;
+            data.push({ o: base, h: base + (i % 5 === 0 ? 5 : 1), l: base - (i % 7 === 0 ? 5 : 1), c: base, v: 1e6 });
+        }
+        data[data.length - 1].c = 100;
+        const liq = ctx.mapLiquidity(data);
+        expect(liq.above.every(level => level > 100)).toBe(true);
+        expect(liq.below.every(level => level < 100)).toBe(true);
+        expect(liq.nearestAbove == null || liq.nearestAbove > 100).toBe(true);
+        expect(liq.nearestBelow == null || liq.nearestBelow < 100).toBe(true);
     });
 
     it('enforces minimum RR for normal FX SELL and accepts a genuine 2.5R TP1', () => {
@@ -1193,7 +1338,7 @@ describe('validateAISetup', () => {
         const cache = buildCache();
         const r = ctx.validateAISetup(baseAi({ direction: 'SIDEWAYS' }), 105, cache, 'XAU/USD');
         expect(r.valid).toBe(false);
-        expect(r.reason).toMatch(/invalid direction/);
+        expect(r.reason).toMatch(/direction must be BUY or SELL/);
     });
 
     it('rejects when required fields are missing', () => {
@@ -1243,7 +1388,7 @@ describe('validateAISetup', () => {
         // fix, CHECK 1 only logged a reason (no reject) and the setup passed.
         const r = ctx.validateAISetup(baseAi({ entry: 999, stop_loss: 990, take_profit_1: 1010 }), 105, cache, 'XAU/USD');
         expect(r.valid).toBe(false);
-        expect(r.reason).toMatch(/no real deterministic FVG\/OB\/MSNR matches/);
+        expect(r.reason).toMatch(/BUY geometry|no real deterministic FVG\/OB\/MSNR matches/);
         expect(r.checks).toBeTruthy();
     });
 

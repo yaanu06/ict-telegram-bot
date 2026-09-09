@@ -3003,7 +3003,17 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const minimumRR = Number(riskConstraints?.minimum_rr) || settings.targetRR || 2.5;
     const minSLDistance = Number(riskConstraints?.minimum_sl_distance) || settings.minSL;
     const maxSLDistance = Number(riskConstraints?.maximum_sl_distance) || price * settings.maxSLPct;
-    const candidates = [];
+    const rawCandidates = [];
+    const validCandidates = [];
+    const rejectedCandidates = [];
+    const dataQuality = validateMarketDataQuality(historyCache, price);
+    if (!dataQuality.valid) {
+        const result = { raw_candidates: [], valid_candidates: [], rejected_candidates: dataQuality.reasons.map(reason => ({ id: 'DATA_QUALITY', rejection_reasons: [reason] })) };
+        console.log('RAW SETUP CANDIDATES', result.raw_candidates);
+        console.log('VALID SETUP CANDIDATES', result.valid_candidates);
+        console.log('REJECTED SETUP CANDIDATES', result.rejected_candidates);
+        return result;
+    }
 
     for (const zone of (zones || []).filter(z => z.primary_eligible !== false && !z.invalidated)) {
         if (zone.type === 'MSNR' && zone.origin === 'ATR_FALLBACK') continue;
@@ -3018,11 +3028,32 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
             const stops = getAdaptiveStopCandidates(zone, direction, entry, data, zones, safeAtr, settings, prec);
             for (const stop of stops) {
                 const risk = Math.abs(entry - stop.stop_loss);
-                if (risk + 1e-12 < minSLDistance || risk - 1e-12 > maxSLDistance) continue;
+                if (risk + 1e-12 < minSLDistance || risk - 1e-12 > maxSLDistance) {
+                    const id = `${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${rawCandidates.length + 1}`;
+                    rejectedCandidates.push({
+                        id,
+                        direction,
+                        timeframe: tf,
+                        zone_type: zone.type,
+                        rejection_reasons: [risk < minSLDistance
+                            ? `SL distance ${ictRound(risk, prec)} below minimum SL distance ${ictRound(minSLDistance, prec)}`
+                            : `SL distance ${ictRound(risk, prec)} exceeds maximum SL distance ${ictRound(maxSLDistance, prec)}`]
+                    });
+                    continue;
+                }
                 const targets = selectAdaptiveTargets(direction, entry, stop.stop_loss, targetCandidates, minimumRR, prec);
-                if (!targets) continue;
+                if (!targets) {
+                    const id = `${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${rawCandidates.length + 1}`;
+                    rejectedCandidates.push({
+                        id,
+                        direction,
+                        timeframe: tf,
+                        zone_type: zone.type,
+                        rejection_reasons: ['no real target ladder satisfies minimum RR']
+                    });
+                    continue;
+                }
                 const rr = calculateRRMetrics(direction, entry, stop.stop_loss, targets.tp1.level, minimumRR);
-                if (!rr.geometryOk || !Number.isFinite(rr.actualRR) || rr.actualRR + 1e-9 < minimumRR) continue;
                 const htfAlignment = ['1D', '4H', '1H']
                     .map(t => structure?.[t]?.trend)
                     .filter(v => v === (direction === 'BUY' ? 'BULLISH' : 'BEARISH')).length;
@@ -3031,8 +3062,8 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 const rrScore = Math.min(15, (rr.actualRR - minimumRR) * 4);
                 const distancePenalty = Math.min(10, Math.abs(entry - price) / Math.max(price, 1) * 100);
                 const score = zoneScore + freshnessScore + htfAlignment * 8 + rrScore - distancePenalty;
-                const id = `${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${candidates.length + 1}`;
-                candidates.push({
+                const id = `${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${rawCandidates.length + 1}`;
+                const candidate = {
                     id,
                     direction,
                     timeframe: tf,
@@ -3040,6 +3071,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     zone_origin: zone.origin,
                     zone_low: zone.low,
                     zone_high: zone.high,
+                    zone,
                     entry,
                     stop_loss: stop.stop_loss,
                     stop_reason: `${stop.source} invalidation plus structural buffer`,
@@ -3059,23 +3091,67 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     distance_from_current_price_atr: safeAtr > 0 ? ictRound(Math.abs(entry - price) / safeAtr, 2) : null,
                     market_regime: marketRegime?.primary_regime || 'UNKNOWN',
                     score: ictRound(score, 2)
+                };
+                rawCandidates.push(candidate);
+                const evaluation = evaluateSetupCandidate(candidate, {
+                    pair,
+                    price,
+                    historyCache,
+                    real_ict_zones: zones,
+                    risk_constraints: riskConstraints,
+                    structure
                 });
+                if (evaluation.valid) {
+                    candidate.evaluation = { checks: evaluation.checks, metrics: evaluation.metrics };
+                    validCandidates.push(candidate);
+                } else {
+                    rejectedCandidates.push({
+                        id: candidate.id,
+                        direction: candidate.direction,
+                        timeframe: candidate.timeframe,
+                        zone_type: candidate.zone_type,
+                        rejection_reasons: evaluation.reasons
+                    });
+                }
             }
         }
     }
 
-    const selected = candidates
+    const selected = validCandidates
         .sort((a, b) => b.score - a.score || b.rr_tp1 - a.rr_tp1 || a.distance_from_current_price - b.distance_from_current_price)
         .slice(0, 5);
-    console.log('ADAPTIVE SETUP CANDIDATES', selected);
-    return selected;
+    const result = {
+        raw_candidates: rawCandidates,
+        valid_candidates: selected,
+        rejected_candidates: rejectedCandidates
+    };
+    console.log('RAW SETUP CANDIDATES', rawCandidates);
+    console.log('VALID SETUP CANDIDATES', selected);
+    console.log('REJECTED SETUP CANDIDATES', rejectedCandidates);
+    console.log('AI CANDIDATES SENT', selected.map(c => c.id));
+    return result;
 }
 
 function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     const id = aiResult?.selected_candidate_id;
     if (!id) return aiResult;
     const candidate = (liveMarketContext?.adaptive_setup_candidates || []).find(c => c.id === id);
-    if (!candidate) return aiResult;
+    if (!candidate) {
+        aiResult.unknown_deterministic_candidate = true;
+        console.log('AI selected unknown deterministic candidate', { selected_candidate_id: id });
+        return aiResult;
+    }
+    console.log('AI SELECTED CANDIDATE', id);
+    const numericOverrideFields = [
+        ['entry', candidate.entry],
+        ['stop_loss', candidate.stop_loss],
+        ['take_profit_1', candidate.tp1],
+        ['take_profit_2', candidate.tp2],
+        ['take_profit_3', candidate.tp3]
+    ].filter(([field, expected]) => ictFiniteNumber(aiResult[field]) && Math.abs(Number(aiResult[field]) - Number(expected)) > Math.max(Math.abs(Number(expected)) * 0.0002, 0.00001));
+    if (numericOverrideFields.length > 0) {
+        console.log('AI numeric override ignored', { selected_candidate_id: id, fields: numericOverrideFields.map(([field]) => field) });
+    }
     aiResult.direction = candidate.direction;
     aiResult.decision = candidate.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT';
     aiResult.order_type = 'LIMIT';
@@ -3102,6 +3178,207 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
         rr: candidate.rr_tp1
     });
     return aiResult;
+}
+
+function validateMarketDataQuality(historyCache, price) {
+    const reasons = [];
+    if (!ictFiniteNumber(price) || price <= 0) reasons.push('current price is invalid');
+    for (const tf of ['4H', '1H']) {
+        const data = historyCache?.[tf];
+        if (!Array.isArray(data) || data.length < 50) {
+            reasons.push(`Insufficient ${tf} data for reliable ATR/structure analysis`);
+            continue;
+        }
+        let prevTime = null;
+        for (const c of data) {
+            if (!ictFiniteNumber(c.o) || !ictFiniteNumber(c.h) || !ictFiniteNumber(c.l) || !ictFiniteNumber(c.c)) {
+                reasons.push(`${tf} contains non-finite OHLC values`);
+                break;
+            }
+            if (c.h < Math.max(c.o, c.c) || c.l > Math.min(c.o, c.c) || c.h < c.l) {
+                reasons.push(`${tf} contains impossible OHLC geometry`);
+                break;
+            }
+            if (c.t) {
+                const t = parseCandleTimeUTC(c.t);
+                if (Number.isFinite(t)) {
+                    if (prevTime !== null && t < prevTime) {
+                        reasons.push(`${tf} timestamps are not ordered`);
+                        break;
+                    }
+                    prevTime = t;
+                }
+            }
+        }
+        const atrVal = data.length >= 15 ? atr(data, 14) : NaN;
+        if (!Number.isFinite(atrVal) || atrVal <= 0) reasons.push(`${tf} ATR is unavailable or invalid`);
+    }
+    return { valid: reasons.length === 0, reasons };
+}
+
+function candidateToAIResult(candidate) {
+    return {
+        direction: candidate.direction,
+        decision: candidate.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT',
+        selected_candidate_id: candidate.id,
+        selected_zone: { type: candidate.zone_type, timeframe: candidate.timeframe, low: candidate.zone_low, high: candidate.zone_high },
+        entry_zone: { source: candidate.zone_type, low: candidate.zone_low, high: candidate.zone_high },
+        entry: candidate.entry,
+        stop_loss: candidate.stop_loss,
+        take_profit_1: candidate.tp1,
+        take_profit_2: candidate.tp2,
+        take_profit_3: candidate.tp3,
+        confidence: candidate.confidence || 70,
+        reasoning: { primary: candidate.stop_reason || 'Deterministic candidate' },
+        patterns: [candidate.zone_type],
+        risk_reward: candidate.rr_tp1 ? `1:${candidate.rr_tp1}` : null
+    };
+}
+
+function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
+    const reasons = [];
+    const checks = {};
+    const metrics = {};
+    const historyCache = marketContext.historyCache || {};
+    const price = Number(marketContext.price ?? marketContext.current_price);
+    const pairLocal = marketContext.pair || pair;
+    const settings = getMarketSettings(pairLocal);
+    const direction = candidate?.direction;
+
+    const add = reason => { reasons.push(reason); };
+    if (!candidate || typeof candidate !== 'object') return { valid: false, checks, reasons: ['candidate missing'], metrics };
+    if (direction !== 'BUY' && direction !== 'SELL') add('direction must be BUY or SELL');
+
+    const entry = Number(candidate.entry);
+    const stopLoss = Number(candidate.stop_loss);
+    const tp1 = Number(candidate.tp1 ?? candidate.take_profit_1);
+    const tp2 = Number(candidate.tp2 ?? candidate.take_profit_2);
+    const tp3 = Number(candidate.tp3 ?? candidate.take_profit_3);
+    for (const [name, value] of [['entry', entry], ['stop_loss', stopLoss], ['take_profit_1', tp1], ['take_profit_2', tp2], ['take_profit_3', tp3]]) {
+        if (!ictFiniteNumber(value)) add(`${name} must be a finite number`);
+    }
+    if (!ictFiniteNumber(price) || price <= 0) add('current price is invalid');
+    if (reasons.length > 0) return { valid: false, checks, reasons, metrics };
+
+    if (direction === 'BUY' && !(stopLoss < entry && entry < tp1 && tp1 < tp2 && tp2 < tp3)) {
+        add('BUY geometry must be SL < entry < TP1 < TP2 < TP3');
+    }
+    if (direction === 'SELL' && !(stopLoss > entry && entry > tp1 && tp1 > tp2 && tp2 > tp3)) {
+        add('SELL geometry must be SL > entry > TP1 > TP2 > TP3');
+    }
+    if (tp1 === tp2 || tp1 === tp3 || tp2 === tp3) add('take profits must be distinct');
+    checks.geometry = reasons.length === 0;
+
+    let matchedZone = candidate.zone || null;
+    let matchedZoneTf = candidate.timeframe || null;
+    const zones = marketContext.real_ict_zones || [];
+    if (!matchedZone && zones.length > 0) {
+        matchedZone = findSelectedLiveZone(candidateToAIResult(candidate), { real_ict_zones: zones });
+        matchedZoneTf = matchedZone?.timeframe || matchedZoneTf;
+    }
+    if (!matchedZone) {
+        for (const tf of ['4H', '1H']) {
+            const data = historyCache?.[tf];
+            const candidates = ictBuildRealZones(data, price, direction, pairLocal);
+            const match = candidates.find(z => ictZoneMatchesAI(z, candidateToAIResult(candidate)));
+            if (match) {
+                matchedZone = match;
+                matchedZoneTf = tf;
+                break;
+            }
+        }
+    }
+    if (!matchedZone) add('no real deterministic FVG/OB/MSNR matches the entry and declared zone');
+    else {
+        checks.realZone = true;
+        if (matchedZone.direction && matchedZone.direction !== direction) add('selected zone direction does not match trade direction');
+        if (matchedZone.primary_eligible === false || (matchedZone.type === 'MSNR' && matchedZone.origin === 'ATR_FALLBACK')) {
+            add('ATR_FALLBACK MSNR cannot be selected as primary zone');
+        }
+        if (matchedZone.invalidated) add('matched zone is invalidated');
+        const zoneTol = Math.max(matchedZone.tolerance || 0, (matchedZone.high - matchedZone.low) * 0.1);
+        if (entry < matchedZone.low - zoneTol || entry > matchedZone.high + zoneTol) {
+            add(`entry ${entry} is outside deterministic ${matchedZone.type} ${matchedZone.low}-${matchedZone.high}`);
+        } else {
+            checks.entryInsideZone = true;
+        }
+    }
+
+    const rr = calculateRRMetrics(direction, entry, stopLoss, tp1, settings.targetRR || 2.5);
+    metrics.risk = rr.risk;
+    metrics.reward = rr.reward;
+    metrics.rr = rr.actualRR;
+    metrics.slDistance = rr.risk;
+    const minRR = Number(marketContext.risk_constraints?.minimum_rr) || settings.targetRR || 2.5;
+    if (!Number.isFinite(rr.actualRR) || rr.actualRR < minRR) add(`real RR ${Number.isFinite(rr.actualRR) ? rr.actualRR.toFixed(2) : 'invalid'} below ${minRR.toFixed(2)} minimum`);
+
+    const fourH = historyCache?.['4H'] || [];
+    const oneH = historyCache?.['1H'] || [];
+    const daily = historyCache?.['1D'] || [];
+    const atr4h = fourH.length >= 15 ? atr(fourH, 14) : 0;
+    const atr1h = oneH.length >= 15 ? atr(oneH, 14) : 0;
+    const atrVal = (ictFiniteNumber(atr4h) && atr4h > 0 ? atr4h : 0) || (ictFiniteNumber(atr1h) && atr1h > 0 ? atr1h : 0);
+    const maxSLDistance = Number(marketContext.risk_constraints?.maximum_sl_distance) || entry * settings.maxSLPct;
+    const minSLDistance = Number(marketContext.risk_constraints?.minimum_sl_distance) || settings.minSL;
+    const minATRMultiplier = pairLocal.includes('XAU') ? 2.0 : 1.5;
+    metrics.slATRMultiple = atrVal > 0 ? rr.risk / atrVal : null;
+    if (rr.risk < settings.minSL) add(`SL distance ${rr.risk.toFixed(settings.prec)} below market minimum ${settings.minSL}`);
+    if (rr.risk < minSLDistance) add(`SL distance ${rr.risk.toFixed(settings.prec)} below minimum SL distance ${minSLDistance.toFixed(settings.prec)}`);
+    if (rr.risk > maxSLDistance) add(`SL distance ${rr.risk.toFixed(settings.prec)} exceeds maximum SL distance ${maxSLDistance.toFixed(settings.prec)}`);
+    if (atrVal > 0 && rr.risk < atrVal * minATRMultiplier) add(`SL distance ${rr.risk.toFixed(settings.prec)} is below ${minATRMultiplier.toFixed(1)}x ATR (${(atrVal * minATRMultiplier).toFixed(settings.prec)})`);
+    if (atrVal > 0 && rr.risk > atrVal * 4.0) add(`SL distance ${rr.risk.toFixed(settings.prec)} exceeds 4.0x ATR`);
+    checks.stopLoss = !reasons.some(r => r.includes('SL distance'));
+
+    if (atrVal > 0) {
+        const entryDistATR = Math.abs(entry - price) / atrVal;
+        metrics.entryDistanceATR = entryDistATR;
+        if (entryDistATR > LIMIT_ORDER_MAX_DIST_ATR) add(`entry is ${entryDistATR.toFixed(2)}x ATR from price (max ${LIMIT_ORDER_MAX_DIST_ATR}x)`);
+    }
+
+    const desiredTrend = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
+    const htfDirections = {
+        '1D': daily.length >= 50 ? detectTrend(daily) : (marketContext.structure?.['1D']?.trend || 'NEUTRAL'),
+        '4H': fourH.length >= 50 ? detectTrend(fourH) : (marketContext.structure?.['4H']?.trend || 'NEUTRAL'),
+        '1H': oneH.length >= 50 ? detectTrend(oneH) : (marketContext.structure?.['1H']?.trend || 'NEUTRAL')
+    };
+    const htfMatch = Object.values(htfDirections).filter(v => v === desiredTrend).length;
+    metrics.htfMatch = htfMatch;
+    metrics.htfDirections = htfDirections;
+    if (htfMatch < HTF_MIN_MATCH) add(`HTF alignment ${htfMatch}/3 below ${HTF_MIN_MATCH}/3 minimum`);
+
+    const oppositeDirection = direction === 'BUY' ? 'SELL' : 'BUY';
+    let confirmingCHoCH = false;
+    for (const tf of ['4H', '1H']) {
+        const data = historyCache?.[tf];
+        if (!data || data.length < 20) continue;
+        if (detectCHoCH(data, oppositeDirection)) add(`opposing ${oppositeDirection} CHoCH detected on ${tf}`);
+        if (detectCHoCH(data, direction)) confirmingCHoCH = true;
+    }
+    checks.choch = confirmingCHoCH ? 'CONFIRMS' : 'NONE';
+
+    if (matchedZone && matchedZoneTf) {
+        const freshnessData = historyCache?.[matchedZoneTf];
+        const freshness = checkZoneFreshness(freshnessData, matchedZone, direction);
+        metrics.freshness = freshness;
+        if (freshness.violations > 1) add(`matched zone invalidated ${freshness.violations} times`);
+        if (freshness.touches > MAX_ZONE_TOUCHES) add(`matched zone has ${freshness.touches} touches (max ${MAX_ZONE_TOUCHES})`);
+    }
+
+    if (options.includeAccountRules !== false) {
+        if (!checkLossProtection()) add(`loss protection active (${consecutiveLosses} losses / ${dailyPnlR.toFixed(1)}R daily)`);
+        if (!checkTradeGap(2)) add('trade gap active - wait 2h from actual fill');
+    }
+    checks.lossProtection = options.includeAccountRules === false ? 'SKIPPED' : !reasons.some(r => r.includes('loss protection'));
+    checks.tradeGap = options.includeAccountRules === false ? 'SKIPPED' : !reasons.some(r => r.includes('trade gap'));
+
+    return {
+        valid: reasons.length === 0,
+        checks,
+        reasons,
+        metrics,
+        matchedZone,
+        matchedZoneTf
+    };
 }
 
 function buildStructureSnapshot(data, tf) {
@@ -3258,6 +3535,27 @@ function buildLimitOrderStageContext(zones, targetCandidates, price, atrVal, ent
     };
 }
 
+function summarizeCandidateRejections(rejectedCandidates) {
+    const counts = {};
+    for (const item of rejectedCandidates || []) {
+        for (const reason of item.rejection_reasons || []) {
+            const key = reason.includes('RR') || reason.includes('target')
+                ? 'RR_OR_TARGET'
+                : reason.includes('HTF')
+                    ? 'HTF'
+                    : reason.includes('SL distance') || reason.includes('stop')
+                        ? 'STOP_LOSS'
+                        : reason.includes('zone')
+                            ? 'ZONE'
+                            : reason.includes('data') || reason.includes('ATR')
+                                ? 'DATA_QUALITY'
+                                : 'OTHER';
+            counts[key] = (counts[key] || 0) + 1;
+        }
+    }
+    return counts;
+}
+
 function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext }) {
     const settings = getMarketSettings(pair);
     const prec = settings.prec;
@@ -3346,7 +3644,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         },
         note: `Any SL closer than ${ictRound(minSLDistance, prec)} is invalid for current ATR/settings.`
     };
-    const adaptiveSetupCandidates = buildAdaptiveSetupCandidates({
+    const adaptiveSetupResult = buildAdaptiveSetupCandidates({
         pair,
         price,
         historyCache,
@@ -3356,7 +3654,9 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         marketRegime,
         structure
     });
+    const adaptiveSetupCandidates = adaptiveSetupResult.valid_candidates;
     stageContext.limit_order_setup.adaptive_candidate_count = adaptiveSetupCandidates.length;
+    stageContext.limit_order_setup.rejection_summary = summarizeCandidateRejections(adaptiveSetupResult.rejected_candidates);
 
     return {
         pair,
@@ -3452,6 +3752,12 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         risk_constraints: riskConstraints,
         target_candidates: targetCandidates,
         adaptive_setup_candidates: adaptiveSetupCandidates,
+        setup_candidate_audit: {
+            raw_candidate_count: adaptiveSetupResult.raw_candidates.length,
+            valid_candidate_count: adaptiveSetupResult.valid_candidates.length,
+            rejected_candidate_count: adaptiveSetupResult.rejected_candidates.length,
+            rejection_summary: summarizeCandidateRejections(adaptiveSetupResult.rejected_candidates)
+        },
         entry_filters: entryContext || null
     };
 }
@@ -3644,6 +3950,17 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         }
         
         const result = applyAdaptiveCandidateToAIResult(JSON.parse(jsonMatch[0]), liveMarketContext);
+        if (result.unknown_deterministic_candidate) {
+            return {
+                decision: 'WAIT',
+                direction: 'WAIT',
+                confidence: 0,
+                reasoning: { primary: 'AI selected unknown deterministic candidate' },
+                ai_decision: 'skip',
+                wait_condition: 'AI selected unknown deterministic candidate',
+                noTrade: true
+            };
+        }
         const rawDecision = String(result.decision || result.direction || '').toUpperCase().replace('-', '_');
         if ((rawDecision === 'BUY_LIMIT' || rawDecision === 'SELL_LIMIT') && (result.direction !== 'BUY' && result.direction !== 'SELL')) {
             result.direction = rawDecision === 'BUY_LIMIT' ? 'BUY' : 'SELL';
@@ -3807,6 +4124,9 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
         }
     }
 
+    if (issues.length === 0 && (liveMarketContext?.adaptive_setup_candidates || []).length > 0 && !aiResult.selected_candidate_id) {
+        issues.push('actionable AI setup must select a deterministic candidate ID');
+    }
     if (issues.length === 0 && aiResult.selected_candidate_id) {
         const candidate = (liveMarketContext?.adaptive_setup_candidates || []).find(c => c.id === aiResult.selected_candidate_id);
         if (!candidate) {
@@ -3896,7 +4216,59 @@ async function runFallbackScan(price, historyCache) {
     }
     
     results.sort((a, b) => b.confidence - a.confidence);
-    const best = results[0];
+    let best = null;
+    let bestEvaluation = null;
+    const rejectedFallbacks = [];
+    for (const result of results) {
+        const candidate = {
+            id: `fallback-${result.timeframe}-${result.direction}`,
+            direction: result.direction,
+            timeframe: result.timeframe,
+            zone_type: ictCanonicalZoneType(result.zoneType),
+            zone_low: result.zone?.low,
+            zone_high: result.zone?.high,
+            entry: result.entry,
+            stop_loss: result.sl,
+            tp1: result.tp1,
+            tp2: result.tp2,
+            tp3: result.tp3,
+            zone: result.zone ? { ...result.zone, type: ictCanonicalZoneType(result.zoneType), direction: result.direction, timeframe: result.timeframe, primary_eligible: result.zone.primary_eligible !== false, invalidated: false } : null
+        };
+        const evaluation = evaluateSetupCandidate(candidate, { pair, price, historyCache });
+        if (evaluation.valid) {
+            best = result;
+            bestEvaluation = evaluation;
+            break;
+        }
+        rejectedFallbacks.push({ id: candidate.id, rejection_reasons: evaluation.reasons });
+    }
+    if (!best) {
+        const reason = 'No fallback setup passed hard rules';
+        console.log('REJECTED SETUP CANDIDATES', rejectedFallbacks);
+        const out = {
+            trade_signal: {
+                date: new Date().toISOString().split('T')[0],
+                time: new Date().toISOString().split('T')[1].split('.')[0],
+                pair,
+                current_price: price,
+                trade_type: 'WAIT',
+                decision: 'WAIT',
+                confidence: 0,
+                reasoning: { primary: reason },
+                ai_decision: 'skip',
+                wait_condition: reason,
+                source: 'Rule-Based (Fallback)',
+                validation: { passed: false, reason, rejected_candidates: rejectedFallbacks }
+            }
+        };
+        setJsonOutput(out);
+        lastSetupSummary = null;
+        lastSetupOut = out;
+        analysis = { signalType: 'NEUTRAL', currentPrice: price, confidence: 0, entryReady: false, executionDecision: 'skip', aiDecision: null };
+        document.getElementById('executeBtn').disabled = true;
+        showNotif(`⚠️ ${reason}`, 'warning');
+        return;
+    }
     
     const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
     const risk = Math.abs(best.entry - best.sl);
@@ -3927,7 +4299,8 @@ async function runFallbackScan(price, historyCache) {
             },
             ai_decision: best.confidence >= 70 ? 'enter_now' : 'wait_for_reaction',
             wait_condition: best.confidence >= 70 ? null : 'Wait for confirmation',
-            source: 'Rule-Based (Fallback)'
+            source: 'Rule-Based (Fallback)',
+            validation: { passed: true, evaluator: bestEvaluation }
         }
     };
     
@@ -3999,6 +4372,22 @@ function validateAISetup(aiResult, price, historyCache, pairArg) {
     }
 
     if (!aiResult || typeof aiResult !== 'object') return reject('AI result missing');
+    const sharedEvaluation = evaluateSetupCandidate({
+        id: aiResult.selected_candidate_id,
+        direction: aiResult.direction,
+        timeframe: aiResult.selected_zone?.timeframe,
+        zone_type: ictCanonicalZoneType(aiResult.selected_zone?.type || aiResult.entry_zone?.source),
+        zone_low: Number(aiResult.selected_zone?.low ?? aiResult.entry_zone?.low),
+        zone_high: Number(aiResult.selected_zone?.high ?? aiResult.entry_zone?.high),
+        entry: aiResult.entry,
+        stop_loss: aiResult.stop_loss,
+        tp1: aiResult.take_profit_1,
+        tp2: aiResult.take_profit_2,
+        tp3: aiResult.take_profit_3
+    }, { pair: pairLocal, price, historyCache });
+    console.log('FINAL CANDIDATE VALIDATION', sharedEvaluation);
+    if (!sharedEvaluation.valid) return reject(sharedEvaluation.reasons[0]);
+
     if (aiResult.direction !== 'BUY' && aiResult.direction !== 'SELL') {
         return reject(`invalid direction "${aiResult.direction}"`);
     }
@@ -4383,12 +4772,45 @@ async function runAutoScan() {
             session: liveMarketContext.session.name,
             regime: liveMarketContext.market_regime.primary_regime,
             zonesSent: liveMarketContext.real_ict_zones.length,
+            adaptiveCandidates: liveMarketContext.adaptive_setup_candidates.length,
             atr4h: liveMarketContext.volatility.atr_4h,
             atr1h: liveMarketContext.volatility.atr_1h,
             volumeAvailable: liveMarketContext.volume.volume_available
         });
 
         scanText.innerHTML = '🤖 AI analyzing live market context...';
+
+        if (liveMarketContext.adaptive_setup_candidates.length === 0) {
+            const audit = liveMarketContext.setup_candidate_audit || {};
+            const hasRaw = (audit.raw_candidate_count || 0) > 0;
+            const decision = hasRaw ? 'WAIT' : 'NO_TRADE';
+            const reason = hasRaw ? 'No raw setup combination passed all hard rules' : 'No valid setup passed hard rules';
+            const out = {
+                trade_signal: {
+                    date: new Date().toISOString().split('T')[0],
+                    time: new Date().toISOString().split('T')[1].split('.')[0],
+                    pair,
+                    current_price: price,
+                    trade_type: decision,
+                    decision,
+                    confidence: 0,
+                    reasoning: { primary: reason },
+                    ai_decision: 'skip',
+                    wait_condition: reason,
+                    source: 'Deterministic Candidate Engine',
+                    validation: { passed: false, reason, candidate_audit: audit }
+                }
+            };
+            setJsonOutput(out);
+            lastSetupSummary = null;
+            lastSetupOut = out;
+            analysis = { signalType: 'NEUTRAL', currentPrice: price, confidence: 0, entryReady: false, executionDecision: 'skip', aiDecision: null };
+            document.getElementById('executeBtn').disabled = true;
+            showNotif(`🚫 ${decision}: ${reason}`, 'warning');
+            btn.classList.remove('loading');
+            btn.disabled = false;
+            return;
+        }
 
         const aiResult = await askAIToFindSetup(aiPrompt.user, price, aiPrompt.system, liveMarketContext);
         if (aiResult) {
@@ -4541,6 +4963,13 @@ async function runAutoScan() {
             immediateConfirmation: entryContext.entryConfirmation
         });
         if(!validation.valid) {
+            if (aiResult.adaptive_candidate) {
+                console.error('VALIDATION PARITY FAILURE', {
+                    selected_candidate_id: aiResult.selected_candidate_id,
+                    validation,
+                    adaptive_candidate: aiResult.adaptive_candidate
+                });
+            }
             aiResult.ai_decision = 'wait_for_reaction';
             aiResult.filterOverride = validation.reason;
             out.trade_signal.ai_decision = 'wait_for_reaction';
