@@ -2984,17 +2984,108 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
     if (!tp1) return null;
     const farther = targets.filter(c => direction === 'BUY' ? c.level > tp1.level : c.level < tp1.level);
     const ladder = [tp1, ...farther].filter((c, i, arr) => arr.findIndex(x => x.level === c.level) === i).slice(0, 3);
-    if (ladder.length < 3) return null;
     const rr = calculateRRMetrics(direction, entry, stopLoss, ladder[0].level, minimumRR);
     return {
         tp1: ladder[0],
-        tp2: ladder[1],
-        tp3: ladder[2],
+        tp2: ladder[1] || null,
+        tp3: ladder[2] || null,
         rr_tp1: rr.actualRR,
         required_reward: requiredReward,
         minimum_valid_tp1_price: direction === 'BUY' ? ictRound(threshold, prec) : null,
         maximum_valid_tp1_price: direction === 'SELL' ? ictRound(threshold, prec) : null
     };
+}
+
+function getCandidateATRContext(candidate, historyCache, pairLocal, price) {
+    const settings = getMarketSettings(pairLocal);
+    const setupTimeframe = candidate?.timeframe || '1H';
+    const setupData = historyCache?.[setupTimeframe] || historyCache?.['1H'] || historyCache?.['4H'] || [];
+    const higherTf = setupTimeframe === '4H' ? '1D' : '4H';
+    const higherData = historyCache?.[higherTf] || [];
+    const setupAtr = setupData.length >= 15 ? atr(setupData, 14) : NaN;
+    const higherAtr = higherData.length >= 15 ? atr(higherData, 14) : NaN;
+    const fallbackAtr = historyCache?.['4H']?.length >= 15 ? atr(historyCache['4H'], 14) : NaN;
+    const atrForRule = Number.isFinite(setupAtr) && setupAtr > 0
+        ? setupAtr
+        : (Number.isFinite(fallbackAtr) && fallbackAtr > 0 ? fallbackAtr : NaN);
+    const minMultiplier = settings.minSLMultiplier || (pairLocal.includes('XAU') ? 2.0 : 1.5);
+    const minDistance = Number.isFinite(atrForRule) && atrForRule > 0
+        ? Math.max(settings.minSL, atrForRule * minMultiplier)
+        : settings.minSL;
+    const maxByAtr = Number.isFinite(atrForRule) && atrForRule > 0 ? atrForRule * 4.0 : Infinity;
+    const maxByPrice = Number(price) * settings.maxSLPct;
+    const maxDistance = Math.max(settings.minSL, Math.min(maxByPrice, maxByAtr));
+    return {
+        setup_timeframe: setupTimeframe,
+        setup_atr: Number.isFinite(setupAtr) && setupAtr > 0 ? setupAtr : null,
+        higher_timeframe: higherTf,
+        higher_timeframe_atr: Number.isFinite(higherAtr) && higherAtr > 0 ? higherAtr : null,
+        atr_rule_reference: Number.isFinite(atrForRule) && atrForRule > 0 ? atrForRule : null,
+        min_atr_multiplier: minMultiplier,
+        minimum_reasonable_distance: minDistance,
+        maximum_reasonable_distance: maxDistance
+    };
+}
+
+function evaluateStructuralStop(candidate, atrContext, pairLocal) {
+    const settings = getMarketSettings(pairLocal);
+    const direction = candidate?.direction;
+    const entry = Number(candidate?.entry);
+    const stopLoss = Number(candidate?.stop_loss);
+    if (!ictFiniteNumber(entry) || !ictFiniteNumber(stopLoss)) {
+        return { status: 'STRUCTURALLY_INVALID', reason: 'stop or entry is not finite' };
+    }
+    if (direction === 'BUY' && !(stopLoss < entry)) {
+        return { status: 'STRUCTURALLY_INVALID', reason: 'BUY stop must be below entry' };
+    }
+    if (direction === 'SELL' && !(stopLoss > entry)) {
+        return { status: 'STRUCTURALLY_INVALID', reason: 'SELL stop must be above entry' };
+    }
+    const riskDistance = Math.abs(entry - stopLoss);
+    if (riskDistance < settings.minSL) {
+        return { status: 'VOLATILITY_TOO_TIGHT', reason: `SL distance ${riskDistance.toFixed(settings.prec)} below market minimum ${settings.minSL}` };
+    }
+    if (riskDistance < atrContext.minimum_reasonable_distance) {
+        return { status: 'VOLATILITY_TOO_TIGHT', reason: `SL distance ${riskDistance.toFixed(settings.prec)} below ${atrContext.setup_timeframe} minimum reasonable distance ${atrContext.minimum_reasonable_distance.toFixed(settings.prec)}` };
+    }
+    if (riskDistance > atrContext.maximum_reasonable_distance) {
+        return { status: 'VOLATILITY_TOO_WIDE', reason: `SL distance ${riskDistance.toFixed(settings.prec)} exceeds ${atrContext.setup_timeframe} maximum reasonable distance ${atrContext.maximum_reasonable_distance.toFixed(settings.prec)}` };
+    }
+    return { status: 'VALID_STRUCTURAL_STOP', reason: 'Structural stop is valid for setup timeframe volatility', riskDistance };
+}
+
+function classifySetupArchetype(candidate, historyCache, price, structure) {
+    const direction = candidate?.direction;
+    const desiredTrend = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
+    const trends = ['1D', '4H', '1H'].map(tf => structure?.[tf]?.trend).filter(Boolean);
+    const htfMatch = trends.filter(v => v === desiredTrend).length;
+    const evidence = {
+        liquidity_sweep: false,
+        mss: false,
+        choch: false,
+        displacement: false,
+        premium_discount: false,
+        evidence_count: 0
+    };
+    for (const tf of ['4H', '1H']) {
+        const data = historyCache?.[tf];
+        if (!data || data.length < 20) continue;
+        const sweep = detectLiquiditySweep(data, price, direction);
+        if (sweep) evidence.liquidity_sweep = true;
+        const mss = detectMSS(data);
+        if (mss && ((mss.type === 'BULL' && direction === 'BUY') || (mss.type === 'BEAR' && direction === 'SELL'))) evidence.mss = true;
+        if (detectCHoCH(data, direction)) evidence.choch = true;
+        if (detectDisplacement(data, direction)) evidence.displacement = true;
+    }
+    const pdData = historyCache?.['4H']?.length >= 20 ? historyCache['4H'] : (historyCache?.['1H'] || []);
+    const pd = isPremiumDiscount(pdData, Number(candidate?.entry) || price);
+    evidence.premium_discount = (direction === 'BUY' && pd.zone === 'DISCOUNT') || (direction === 'SELL' && pd.zone === 'PREMIUM');
+    if (candidate?.reversal_evidence && Number.isFinite(candidate.reversal_evidence.evidence_count)) {
+        Object.assign(evidence, candidate.reversal_evidence);
+    }
+    evidence.evidence_count = ['liquidity_sweep', 'mss', 'choch', 'displacement', 'premium_discount'].filter(k => evidence[k]).length;
+    const setup_archetype = htfMatch >= HTF_MIN_MATCH ? 'CONTINUATION' : 'REVERSAL';
+    return { setup_archetype, reversal_evidence: evidence, htfMatch };
 }
 
 function buildRiskConstraints(pairLocal, price, historyCache) {
@@ -3004,23 +3095,21 @@ function buildRiskConstraints(pairLocal, price, historyCache) {
     const atr1h = historyCache?.['1H']?.length >= 15 ? atr(historyCache['1H'], 14) : null;
     const atr15m = historyCache?.['15M']?.length >= 15 ? atr(historyCache['15M'], 14) : null;
     const primaryAtr = Number.isFinite(atr4h) && atr4h > 0 ? atr4h : (Number.isFinite(atr1h) && atr1h > 0 ? atr1h : atr15m);
-    const minSLMultiplier = pairLocal.includes('XAU') ? 2.0 : 1.5;
-    const minSLDistance = primaryAtr > 0 ? Math.max(settings.minSL, primaryAtr * minSLMultiplier) : settings.minSL;
+    const minSLMultiplier = settings.minSLMultiplier || (pairLocal.includes('XAU') ? 2.0 : 1.5);
     const rawMaxSLDistance = primaryAtr > 0 ? Math.min(price * settings.maxSLPct, primaryAtr * 4.0) : price * settings.maxSLPct;
-    const maxSLDistance = Math.max(minSLDistance, rawMaxSLDistance);
     return {
         minimum_rr: settings.targetRR || 2.5,
-        minimum_sl_distance: ictRound(minSLDistance, prec),
-        maximum_sl_distance: ictRound(maxSLDistance, prec),
+        minimum_sl_distance: settings.minSL,
+        maximum_sl_distance: ictRound(Math.max(settings.minSL, rawMaxSLDistance), prec),
         min_sl_atr_multiplier: minSLMultiplier,
         maximum_entry_distance_atr: LIMIT_ORDER_MAX_DIST_ATR,
         atr_rule_reference: Number.isFinite(primaryAtr) && primaryAtr > 0 ? ictRound(primaryAtr, prec) : null,
+        note: 'Physical SL sanity is evaluated per candidate setup timeframe; this broad context is not a universal 4H-derived stop minimum.',
         tp1_rule: {
             formula: 'risk = abs(entry - stop_loss); required_reward = risk * minimum_rr',
             buy_minimum_valid_tp1: 'entry + required_reward',
             sell_maximum_valid_tp1: 'entry - required_reward'
-        },
-        note: `Any SL closer than ${ictRound(minSLDistance, prec)} is invalid for current ATR/settings.`
+        }
     };
 }
 
@@ -3039,8 +3128,6 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const settings = getMarketSettings(pair);
     const prec = settings.prec;
     const minimumRR = Number(riskConstraints?.minimum_rr) || settings.targetRR || 2.5;
-    const minSLDistance = Number(riskConstraints?.minimum_sl_distance) || settings.minSL;
-    const maxSLDistance = Number(riskConstraints?.maximum_sl_distance) || price * settings.maxSLPct;
     const rawCandidates = [];
     const validCandidates = [];
     const rejectedCandidates = [];
@@ -3075,6 +3162,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
             for (const stop of stops) {
                 const rawId = `${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${rawCandidates.length + 1}`;
                 const risk = Math.abs(entry - stop.stop_loss);
+                const atrContext = getCandidateATRContext({ timeframe: tf }, historyCache, pair, price);
                 const rawCandidate = {
                     id: rawId,
                     direction,
@@ -3089,9 +3177,21 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     stop_reason: `${stop.source} invalidation plus structural buffer`,
                     stop_source: stop.source,
                     risk_distance: ictRound(risk, prec),
-                    sl_atr_multiple_rule: riskConstraints?.atr_rule_reference ? ictRound(risk / riskConstraints.atr_rule_reference, 2) : null,
+                    sl_atr_multiple_rule: atrContext.atr_rule_reference ? ictRound(risk / atrContext.atr_rule_reference, 2) : null,
                     sl_atr_multiple_timeframe: safeAtr > 0 ? ictRound(risk / safeAtr, 2) : null,
-                    sl_atr_multiple: riskConstraints?.atr_rule_reference ? ictRound(risk / riskConstraints.atr_rule_reference, 2) : (safeAtr > 0 ? ictRound(risk / safeAtr, 2) : null),
+                    sl_atr_multiple: atrContext.atr_rule_reference ? ictRound(risk / atrContext.atr_rule_reference, 2) : (safeAtr > 0 ? ictRound(risk / safeAtr, 2) : null),
+                    risk_model: {
+                        structural_stop: true,
+                        status: null,
+                        risk_distance: ictRound(risk, prec),
+                        setup_timeframe: atrContext.setup_timeframe,
+                        setup_atr: atrContext.setup_atr ? ictRound(atrContext.setup_atr, prec) : null,
+                        higher_timeframe_atr: atrContext.higher_timeframe_atr ? ictRound(atrContext.higher_timeframe_atr, prec) : null,
+                        minimum_reasonable_distance: ictRound(atrContext.minimum_reasonable_distance, prec),
+                        maximum_reasonable_distance: ictRound(atrContext.maximum_reasonable_distance, prec),
+                        atr_multiple: atrContext.atr_rule_reference ? ictRound(risk / atrContext.atr_rule_reference, 2) : null,
+                        position_size_adjustment_required: true
+                    },
                     freshness: zone.freshness,
                     htf_alignment: ['1D', '4H', '1H']
                         .map(t => structure?.[t]?.trend)
@@ -3101,43 +3201,59 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     market_regime: marketRegime?.primary_regime || 'UNKNOWN'
                 };
                 rawCandidates.push(rawCandidate);
-                if (risk + 1e-12 < minSLDistance || risk - 1e-12 > maxSLDistance) {
+                const stopEvaluation = evaluateStructuralStop(rawCandidate, atrContext, pair);
+                rawCandidate.risk_model.status = stopEvaluation.status;
+                if (stopEvaluation.status !== 'VALID_STRUCTURAL_STOP') {
+                    const isTight = stopEvaluation.status === 'VOLATILITY_TOO_TIGHT';
+                    console.log(isTight ? 'CANDIDATE REJECTED - VOLATILITY' : 'CANDIDATE REJECTED - STRUCTURAL STOP', {
+                        id: rawCandidate.id,
+                        status: stopEvaluation.status,
+                        reason: stopEvaluation.reason,
+                        timeframe: tf,
+                        risk,
+                        setupAtr: atrContext.setup_atr
+                    });
                     rejectedCandidates.push({
                         id: rawCandidate.id,
                         direction,
                         timeframe: tf,
                         zone_type: zone.type,
-                        rejection_reasons: [risk < minSLDistance
-                            ? `SL distance ${ictRound(risk, prec)} below minimum SL distance ${ictRound(minSLDistance, prec)}`
-                            : `SL distance ${ictRound(risk, prec)} exceeds maximum SL distance ${ictRound(maxSLDistance, prec)}`]
+                        rejection_code: stopEvaluation.status === 'STRUCTURALLY_INVALID' ? 'STOP_STRUCTURAL_INVALID' : stopEvaluation.status,
+                        rejection_reasons: [stopEvaluation.reason]
                     });
                     continue;
                 }
                 const targets = selectAdaptiveTargets(direction, entry, stop.stop_loss, targetCandidates, minimumRR, prec);
                 if (!targets) {
+                    console.log('CANDIDATE REJECTED - NO TP1', { id: rawCandidate.id, direction, entry, stopLoss: stop.stop_loss, requiredRR: minimumRR });
                     rejectedCandidates.push({
                         id: rawCandidate.id,
                         direction,
                         timeframe: tf,
                         zone_type: zone.type,
-                        rejection_reasons: ['no real target ladder satisfies minimum RR']
+                        rejection_code: 'NO_VALID_TP1',
+                        rejection_reasons: ['no real TP1 satisfies minimum RR']
                     });
                     continue;
                 }
                 const rr = calculateRRMetrics(direction, entry, stop.stop_loss, targets.tp1.level, minimumRR);
+                const archetype = classifySetupArchetype(rawCandidate, historyCache, price, structure);
                 const htfAlignment = ['1D', '4H', '1H']
                     .map(t => structure?.[t]?.trend)
                     .filter(v => v === (direction === 'BUY' ? 'BULLISH' : 'BEARISH')).length;
                 const zoneScore = zone.type === 'FVG' ? 28 : zone.type === 'OB' ? 30 : 20;
                 const freshnessScore = zone.freshness === 'FRESH' ? 12 : zone.freshness === 'PARTIAL' ? 6 : 0;
                 const rrScore = Math.min(15, (rr.actualRR - minimumRR) * 4);
+                const reversalScore = archetype.setup_archetype === 'REVERSAL' ? archetype.reversal_evidence.evidence_count * 5 - 8 : 0;
                 const distancePenalty = Math.min(10, Math.abs(entry - price) / Math.max(price, 1) * 100);
-                const score = zoneScore + freshnessScore + htfAlignment * 8 + rrScore - distancePenalty;
+                const score = zoneScore + freshnessScore + htfAlignment * 8 + rrScore + reversalScore - distancePenalty;
                 const candidate = {
                     ...rawCandidate,
+                    setup_archetype: archetype.setup_archetype,
+                    reversal_evidence: archetype.reversal_evidence,
                     tp1: targets.tp1.level,
-                    tp2: targets.tp2.level,
-                    tp3: targets.tp3.level,
+                    tp2: targets.tp2 ? targets.tp2.level : null,
+                    tp3: targets.tp3 ? targets.tp3.level : null,
                     tp1_source: targets.tp1.source,
                     tp1_origin: targets.tp1.origin,
                     rr_tp1: ictRound(rr.actualRR, 2),
@@ -3155,11 +3271,13 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     candidate.evaluation = { checks: evaluation.checks, metrics: evaluation.metrics };
                     validCandidates.push(candidate);
                 } else {
+                    console.log('CANDIDATE REJECTED - HARD RULE', { id: candidate.id, reasons: evaluation.reasons });
                     rejectedCandidates.push({
                         id: candidate.id,
                         direction: candidate.direction,
                         timeframe: candidate.timeframe,
                         zone_type: candidate.zone_type,
+                        rejection_code: classifyRejectionDetail(evaluation.reasons[0] || ''),
                         rejection_reasons: evaluation.reasons
                     });
                 }
@@ -3177,6 +3295,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     };
     console.log('RAW SETUP CANDIDATES', rawCandidates);
     console.log('VALID SETUP CANDIDATES', selected);
+    for (const candidate of selected) console.log('VALID DETERMINISTIC CANDIDATE', { id: candidate.id, direction: candidate.direction, timeframe: candidate.timeframe, score: candidate.score, rr: candidate.rr_tp1 });
     console.log('REJECTED SETUP CANDIDATES', rejectedCandidates);
     console.log('AI CANDIDATES SENT', selected.map(c => c.id));
     return result;
@@ -3198,7 +3317,7 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
         ['take_profit_1', candidate.tp1],
         ['take_profit_2', candidate.tp2],
         ['take_profit_3', candidate.tp3]
-    ].filter(([field, expected]) => ictFiniteNumber(aiResult[field]) && Math.abs(Number(aiResult[field]) - Number(expected)) > Math.max(Math.abs(Number(expected)) * 0.0002, 0.00001));
+    ].filter(([field, expected]) => ictFiniteNumber(expected) && ictFiniteNumber(aiResult[field]) && Math.abs(Number(aiResult[field]) - Number(expected)) > Math.max(Math.abs(Number(expected)) * 0.0002, 0.00001));
     if (numericOverrideFields.length > 0) {
         console.log('AI numeric override ignored', { selected_candidate_id: id, fields: numericOverrideFields.map(([field]) => field) });
     }
@@ -3212,8 +3331,8 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.stop_loss = candidate.stop_loss;
     aiResult.stop_loss_reason = candidate.stop_reason;
     aiResult.take_profit_1 = candidate.tp1;
-    aiResult.take_profit_2 = candidate.tp2;
-    aiResult.take_profit_3 = candidate.tp3;
+    aiResult.take_profit_2 = candidate.tp2 ?? null;
+    aiResult.take_profit_3 = candidate.tp3 ?? null;
     aiResult.risk_reward = `1:${candidate.rr_tp1.toFixed(2)}`;
     aiResult.adaptive_candidate = candidate;
     console.log('SELECTED ADAPTIVE SETUP', {
@@ -3225,6 +3344,8 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
         stopLoss: candidate.stop_loss,
         slAtrMultiple: candidate.sl_atr_multiple,
         tp1: candidate.tp1,
+        tp2: candidate.tp2 ?? null,
+        tp3: candidate.tp3 ?? null,
         rr: candidate.rr_tp1
     });
     return aiResult;
@@ -3276,8 +3397,8 @@ function candidateToAIResult(candidate) {
         entry: candidate.entry,
         stop_loss: candidate.stop_loss,
         take_profit_1: candidate.tp1,
-        take_profit_2: candidate.tp2,
-        take_profit_3: candidate.tp3,
+        take_profit_2: candidate.tp2 ?? null,
+        take_profit_3: candidate.tp3 ?? null,
         confidence: candidate.confidence || 70,
         reasoning: { primary: candidate.stop_reason || 'Deterministic candidate' },
         patterns: [candidate.zone_type],
@@ -3302,21 +3423,35 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
     const entry = Number(candidate.entry);
     const stopLoss = Number(candidate.stop_loss);
     const tp1 = Number(candidate.tp1 ?? candidate.take_profit_1);
-    const tp2 = Number(candidate.tp2 ?? candidate.take_profit_2);
-    const tp3 = Number(candidate.tp3 ?? candidate.take_profit_3);
-    for (const [name, value] of [['entry', entry], ['stop_loss', stopLoss], ['take_profit_1', tp1], ['take_profit_2', tp2], ['take_profit_3', tp3]]) {
+    const rawTp2 = candidate.tp2 ?? candidate.take_profit_2;
+    const rawTp3 = candidate.tp3 ?? candidate.take_profit_3;
+    const tp2 = rawTp2 == null ? null : Number(rawTp2);
+    const tp3 = rawTp3 == null ? null : Number(rawTp3);
+    for (const [name, value] of [['entry', entry], ['stop_loss', stopLoss], ['take_profit_1', tp1]]) {
         if (!ictFiniteNumber(value)) add(`${name} must be a finite number`);
     }
+    if (rawTp2 != null && !ictFiniteNumber(tp2)) add('take_profit_2 must be a finite number when supplied');
+    if (rawTp3 != null && !ictFiniteNumber(tp3)) add('take_profit_3 must be a finite number when supplied');
     if (!ictFiniteNumber(price) || price <= 0) add('current price is invalid');
     if (reasons.length > 0) return { valid: false, checks, reasons, metrics };
 
-    if (direction === 'BUY' && !(stopLoss < entry && entry < tp1 && tp1 < tp2 && tp2 < tp3)) {
-        add('BUY geometry must be SL < entry < TP1 < TP2 < TP3');
+    if (direction === 'BUY' && !(stopLoss < entry && entry < tp1)) {
+        add('BUY geometry must be SL < entry < TP1');
     }
-    if (direction === 'SELL' && !(stopLoss > entry && entry > tp1 && tp1 > tp2 && tp2 > tp3)) {
-        add('SELL geometry must be SL > entry > TP1 > TP2 > TP3');
+    if (direction === 'SELL' && !(stopLoss > entry && entry > tp1)) {
+        add('SELL geometry must be SL > entry > TP1');
     }
-    if (tp1 === tp2 || tp1 === tp3 || tp2 === tp3) add('take profits must be distinct');
+    if (Number.isFinite(tp2)) {
+        if (direction === 'BUY' && !(tp2 > tp1)) add('BUY TP2 must be greater than TP1 when supplied');
+        if (direction === 'SELL' && !(tp2 < tp1)) add('SELL TP2 must be less than TP1 when supplied');
+    }
+    if (Number.isFinite(tp3)) {
+        const prior = Number.isFinite(tp2) ? tp2 : tp1;
+        if (direction === 'BUY' && !(tp3 > prior)) add('BUY TP3 must be greater than the prior supplied target');
+        if (direction === 'SELL' && !(tp3 < prior)) add('SELL TP3 must be less than the prior supplied target');
+    }
+    const suppliedTargets = [tp1, tp2, tp3].filter(Number.isFinite);
+    if (new Set(suppliedTargets.map(v => String(v))).size !== suppliedTargets.length) add('take profits must be distinct');
     checks.geometry = reasons.length === 0;
 
     let matchedZone = null;
@@ -3367,22 +3502,22 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
     const fourH = historyCache?.['4H'] || [];
     const oneH = historyCache?.['1H'] || [];
     const daily = historyCache?.['1D'] || [];
-    const atr4h = fourH.length >= 15 ? atr(fourH, 14) : 0;
-    const atr1h = oneH.length >= 15 ? atr(oneH, 14) : 0;
-    const atrVal = (ictFiniteNumber(atr4h) && atr4h > 0 ? atr4h : 0) || (ictFiniteNumber(atr1h) && atr1h > 0 ? atr1h : 0);
-    const maxSLDistance = Number(marketContext.risk_constraints?.maximum_sl_distance) || entry * settings.maxSLPct;
-    const minSLDistance = Number(marketContext.risk_constraints?.minimum_sl_distance) || settings.minSL;
-    const minATRMultiplier = pairLocal.includes('XAU') ? 2.0 : 1.5;
-    metrics.slATRMultiple = atrVal > 0 ? rr.risk / atrVal : null;
-    if (rr.risk < settings.minSL) add(`SL distance ${rr.risk.toFixed(settings.prec)} below market minimum ${settings.minSL}`);
-    if (rr.risk < minSLDistance) add(`SL distance ${rr.risk.toFixed(settings.prec)} below minimum SL distance ${minSLDistance.toFixed(settings.prec)}`);
-    if (rr.risk > maxSLDistance) add(`SL distance ${rr.risk.toFixed(settings.prec)} exceeds maximum SL distance ${maxSLDistance.toFixed(settings.prec)}`);
-    if (atrVal > 0 && rr.risk < atrVal * minATRMultiplier) add(`SL distance ${rr.risk.toFixed(settings.prec)} is below ${minATRMultiplier.toFixed(1)}x ATR (${(atrVal * minATRMultiplier).toFixed(settings.prec)})`);
-    if (atrVal > 0 && rr.risk > atrVal * 4.0) add(`SL distance ${rr.risk.toFixed(settings.prec)} exceeds 4.0x ATR`);
-    checks.stopLoss = !reasons.some(r => r.includes('SL distance'));
+    const atrContext = getCandidateATRContext(candidate, historyCache, pairLocal, price);
+    const stopEvaluation = evaluateStructuralStop(candidate, atrContext, pairLocal);
+    metrics.atrContext = {
+        setup_timeframe: atrContext.setup_timeframe,
+        setup_atr: atrContext.setup_atr,
+        higher_timeframe_atr: atrContext.higher_timeframe_atr,
+        minimum_reasonable_distance: atrContext.minimum_reasonable_distance,
+        maximum_reasonable_distance: atrContext.maximum_reasonable_distance
+    };
+    metrics.slATRMultiple = atrContext.atr_rule_reference ? rr.risk / atrContext.atr_rule_reference : null;
+    metrics.stopStatus = stopEvaluation.status;
+    if (stopEvaluation.status !== 'VALID_STRUCTURAL_STOP') add(stopEvaluation.reason);
+    checks.stopLoss = stopEvaluation.status === 'VALID_STRUCTURAL_STOP';
 
-    if (atrVal > 0) {
-        const entryDistATR = Math.abs(entry - price) / atrVal;
+    if (atrContext.atr_rule_reference > 0) {
+        const entryDistATR = Math.abs(entry - price) / atrContext.atr_rule_reference;
         metrics.entryDistanceATR = entryDistATR;
         if (entryDistATR > LIMIT_ORDER_MAX_DIST_ATR) add(`entry is ${entryDistATR.toFixed(2)}x ATR from price (max ${LIMIT_ORDER_MAX_DIST_ATR}x)`);
     }
@@ -3396,7 +3531,21 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
     const htfMatch = Object.values(htfDirections).filter(v => v === desiredTrend).length;
     metrics.htfMatch = htfMatch;
     metrics.htfDirections = htfDirections;
-    if (htfMatch < HTF_MIN_MATCH) add(`HTF alignment ${htfMatch}/3 below ${HTF_MIN_MATCH}/3 minimum`);
+    const archetype = classifySetupArchetype(candidate, historyCache, price, {
+        ...marketContext.structure,
+        '1D': { ...(marketContext.structure?.['1D'] || {}), trend: htfDirections['1D'] },
+        '4H': { ...(marketContext.structure?.['4H'] || {}), trend: htfDirections['4H'] },
+        '1H': { ...(marketContext.structure?.['1H'] || {}), trend: htfDirections['1H'] }
+    });
+    metrics.setup_archetype = archetype.setup_archetype;
+    metrics.reversal_evidence = archetype.reversal_evidence;
+    if (archetype.setup_archetype === 'CONTINUATION') {
+        checks.htfMatch = htfMatch;
+    } else if (archetype.reversal_evidence.evidence_count < 2) {
+        add(`reversal evidence insufficient (${archetype.reversal_evidence.evidence_count}/2) with HTF alignment ${htfMatch}/3`);
+    } else {
+        checks.htfMatch = `${htfMatch}/3 REVERSAL_ALLOWED`;
+    }
 
     const oppositeDirection = direction === 'BUY' ? 'SELL' : 'BUY';
     let confirmingCHoCH = false;
@@ -3608,6 +3757,30 @@ function summarizeCandidateRejections(rejectedCandidates) {
     return counts;
 }
 
+function classifyRejectionDetail(reason) {
+    if (/BUY stop|SELL stop|STRUCTURALLY_INVALID/i.test(reason)) return 'STOP_STRUCTURAL_INVALID';
+    if (/below .*minimum|below .*ATR|too tight/i.test(reason)) return 'STOP_VOLATILITY_TOO_TIGHT';
+    if (/exceeds .*maximum|exceeds 4\.0x ATR|too wide/i.test(reason)) return 'STOP_VOLATILITY_TOO_WIDE';
+    if (/no real target|no supplied target|no real deterministic target|target ladder/i.test(reason)) return 'NO_VALID_TP1';
+    if (/RR .*below|minimum RR|actual RR/i.test(reason)) return 'TP1_RR_TOO_LOW';
+    if (/HTF alignment/i.test(reason)) return 'CONTINUATION_HTF';
+    if (/reversal evidence insufficient/i.test(reason)) return 'REVERSAL_EVIDENCE_INSUFFICIENT';
+    if (/candidate zone|selected zone|real deterministic|invalidated|entry .*outside/i.test(reason)) return 'ZONE_INVALID';
+    if (/loss protection/i.test(reason)) return 'LOSS_PROTECTION';
+    if (/trade gap/i.test(reason)) return 'TRADE_GAP';
+    if (/data|ATR is unavailable|current price/i.test(reason)) return 'DATA_QUALITY';
+    return 'OTHER';
+}
+
+function summarizeCandidateRejectionDetails(rejectedCandidates) {
+    const counts = {};
+    for (const item of rejectedCandidates || []) {
+        const codes = item.rejection_code ? [item.rejection_code] : (item.rejection_reasons || []).map(classifyRejectionDetail);
+        for (const code of codes) counts[code] = (counts[code] || 0) + 1;
+    }
+    return counts;
+}
+
 function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext }) {
     const settings = getMarketSettings(pair);
     const prec = settings.prec;
@@ -3701,6 +3874,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const adaptiveSetupCandidates = adaptiveSetupResult.valid_candidates;
     stageContext.limit_order_setup.adaptive_candidate_count = adaptiveSetupCandidates.length;
     stageContext.limit_order_setup.rejection_summary = summarizeCandidateRejections(adaptiveSetupResult.rejected_candidates);
+    stageContext.limit_order_setup.rejection_detail = summarizeCandidateRejectionDetails(adaptiveSetupResult.rejected_candidates);
 
     const liveContext = {
         pair,
@@ -3800,7 +3974,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             raw_candidate_count: adaptiveSetupResult.raw_candidates.length,
             valid_candidate_count: adaptiveSetupResult.valid_candidates.length,
             rejected_candidate_count: adaptiveSetupResult.rejected_candidates.length,
-            rejection_summary: summarizeCandidateRejections(adaptiveSetupResult.rejected_candidates)
+            rejection_summary: summarizeCandidateRejections(adaptiveSetupResult.rejected_candidates),
+            rejection_detail: summarizeCandidateRejectionDetails(adaptiveSetupResult.rejected_candidates)
         },
         entry_filters: entryContext || null
     };
@@ -3894,8 +4069,8 @@ Return ONLY JSON using the existing application schema plus selected_zone/decisi
   "stop_loss": number,
   "stop_loss_reason": "string",
   "take_profit_1": number,
-  "take_profit_2": number,
-  "take_profit_3": number,
+  "take_profit_2": number or null,
+  "take_profit_3": number or null,
   "risk_reward": "1:X.X",
   "confidence": number,
   "zone_quality": "A" | "B" | "C",
@@ -4008,7 +4183,9 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         const hasLimitDirection = result.direction === 'BUY' || result.direction === 'SELL';
         const hasCompleteLimitSetup = hasLimitDirection
             && result.entry_zone
-            && ['entry', 'stop_loss', 'take_profit_1', 'take_profit_2', 'take_profit_3'].every(field => ictFiniteNumber(result[field]));
+            && ['entry', 'stop_loss', 'take_profit_1'].every(field => ictFiniteNumber(result[field]))
+            && (result.take_profit_2 == null || ictFiniteNumber(result.take_profit_2))
+            && (result.take_profit_3 == null || ictFiniteNumber(result.take_profit_3));
         if ((rawDecision === 'WAIT' || rawDecision === 'NO_TRADE' || rawDecision === 'SKIP') && !hasCompleteLimitSetup) {
             result.decision = rawDecision === 'SKIP' ? 'NO_TRADE' : rawDecision;
             result.direction = result.decision;
@@ -4032,7 +4209,7 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
             result.wait_condition = result.wait_condition || 'Pending limit setup valid; immediate entry confirmation is not active.';
         }
         
-        const required = ['direction', 'entry', 'entry_zone', 'stop_loss', 'take_profit_1', 'take_profit_2', 'take_profit_3', 'confidence', 'reasoning'];
+        const required = ['direction', 'entry', 'entry_zone', 'stop_loss', 'take_profit_1', 'confidence', 'reasoning'];
         for (const field of required) {
             if (!result[field]) {
                 console.error(`Missing required field: ${field}`);
@@ -4127,24 +4304,37 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
     if (decision === 'WAIT' || decision === 'NO_TRADE' || aiResult.noTrade) return { valid: true, issues: [] };
     if (aiResult.direction !== 'BUY' && aiResult.direction !== 'SELL') issues.push('direction must be BUY or SELL');
 
-    for (const field of ['entry', 'stop_loss', 'take_profit_1', 'take_profit_2', 'take_profit_3']) {
+    for (const field of ['entry', 'stop_loss', 'take_profit_1']) {
         if (!ictFiniteNumber(aiResult[field])) issues.push(`${field} must be a finite number`);
+    }
+    for (const field of ['take_profit_2', 'take_profit_3']) {
+        if (aiResult[field] != null && !ictFiniteNumber(aiResult[field])) issues.push(`${field} must be a finite number when supplied`);
     }
 
     const direction = aiResult.direction;
     const entry = aiResult.entry;
     const sl = aiResult.stop_loss;
     const tp1 = aiResult.take_profit_1;
-    const tp2 = aiResult.take_profit_2;
-    const tp3 = aiResult.take_profit_3;
+    const tp2 = aiResult.take_profit_2 == null ? null : Number(aiResult.take_profit_2);
+    const tp3 = aiResult.take_profit_3 == null ? null : Number(aiResult.take_profit_3);
     if (issues.length === 0) {
-        if (direction === 'BUY' && !(sl < entry && entry < tp1 && tp1 < tp2 && tp2 < tp3)) {
-            issues.push('BUY geometry must be SL < entry < TP1 < TP2 < TP3');
+        if (direction === 'BUY' && !(sl < entry && entry < tp1)) {
+            issues.push('BUY geometry must be SL < entry < TP1');
         }
-        if (direction === 'SELL' && !(sl > entry && entry > tp1 && tp1 > tp2 && tp2 > tp3)) {
-            issues.push('SELL geometry must be SL > entry > TP1 > TP2 > TP3');
+        if (direction === 'SELL' && !(sl > entry && entry > tp1)) {
+            issues.push('SELL geometry must be SL > entry > TP1');
         }
-        if (tp1 === tp2 || tp1 === tp3 || tp2 === tp3) issues.push('take profits must be distinct');
+        if (Number.isFinite(tp2)) {
+            if (direction === 'BUY' && !(tp2 > tp1)) issues.push('BUY TP2 must be greater than TP1 when supplied');
+            if (direction === 'SELL' && !(tp2 < tp1)) issues.push('SELL TP2 must be less than TP1 when supplied');
+        }
+        if (Number.isFinite(tp3)) {
+            const prior = Number.isFinite(tp2) ? tp2 : tp1;
+            if (direction === 'BUY' && !(tp3 > prior)) issues.push('BUY TP3 must be greater than the prior supplied target');
+            if (direction === 'SELL' && !(tp3 < prior)) issues.push('SELL TP3 must be less than the prior supplied target');
+        }
+        const suppliedTargets = [tp1, tp2, tp3].filter(Number.isFinite);
+        if (new Set(suppliedTargets.map(v => String(v))).size !== suppliedTargets.length) issues.push('take profits must be distinct');
     }
     if (issues.length === 0) {
         const minimumRR = Number(liveMarketContext?.risk_constraints?.minimum_rr) || 2.5;
@@ -4181,7 +4371,7 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
                 ['take_profit_1', tp1, candidate.tp1],
                 ['take_profit_2', tp2, candidate.tp2],
                 ['take_profit_3', tp3, candidate.tp3]
-            ].filter(([, actual, expected]) => Math.abs(Number(actual) - Number(expected)) > tol);
+            ].filter(([, actual, expected]) => expected != null && Math.abs(Number(actual) - Number(expected)) > tol);
             if (numericMatches.length > 0) {
                 issues.push(`AI numeric levels do not match selected adaptive setup candidate: ${numericMatches.map(([name]) => name).join(', ')}`);
             }
@@ -4726,7 +4916,7 @@ async function runAutoScan() {
                     trade_type: decision,
                     decision,
                     confidence: 0,
-                    reasoning: { primary: 'No deterministic candidate passed all hard rules.', rejection_summary: audit.rejection_summary || {} },
+                    reasoning: { primary: 'No deterministic candidate passed all hard rules.', rejection_summary: audit.rejection_summary || {}, rejection_detail: audit.rejection_detail || {} },
                     ai_decision: 'skip',
                     wait_condition: reason,
                     source: 'Deterministic Candidate Engine',

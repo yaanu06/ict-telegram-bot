@@ -749,7 +749,7 @@ describe('live AI market context and prompt', () => {
             take_profit_3: 4207.74
         }, live);
         expect(result.valid).toBe(false);
-        expect(result.issues.join(' ')).toMatch(/SELL geometry/);
+        expect(result.issues.join(' ')).toMatch(/SELL TP2/);
         expect(result.issues.join(' ')).toMatch(/distinct/);
     });
 
@@ -892,11 +892,12 @@ describe('live AI market context and prompt', () => {
         expect(candidates[0].entry).toBeGreaterThanOrEqual(0.58668);
         expect(candidates[0].entry).toBeLessThanOrEqual(0.58739);
         expect(candidates[0].stop_loss).toBeGreaterThan(0.58739);
-        expect(candidates[0].risk_distance).toBeGreaterThanOrEqual(0.00219);
+        expect(candidates[0].risk_distance).toBeGreaterThanOrEqual(candidates[0].risk_model.minimum_reasonable_distance);
+        expect(candidates[0].risk_distance).toBeLessThan(0.00219);
         expect(candidates[0].tp1).not.toBe(0.58366);
         expect(candidates[0].tp1).toBeLessThanOrEqual(candidates[0].entry - candidates[0].risk_distance * 2.5 + 0.00001);
-        expect(candidates[0].tp1).toBeGreaterThan(candidates[0].tp2);
-        expect(candidates[0].tp2).toBeGreaterThan(candidates[0].tp3);
+        if (candidates[0].tp2 != null) expect(candidates[0].tp1).toBeGreaterThan(candidates[0].tp2);
+        if (candidates[0].tp3 != null) expect(candidates[0].tp2).toBeGreaterThan(candidates[0].tp3);
     });
 
     it('rejects adaptive candidates when widening the structural stop leaves no valid TP ladder', () => {
@@ -913,7 +914,7 @@ describe('live AI market context and prompt', () => {
                 buy: [],
                 sell: [
                     { direction: 'SELL', level: 0.58366, source: 'SELL_SIDE_LIQUIDITY', origin: 'STRUCTURAL' },
-                    { direction: 'SELL', level: 0.58280, source: 'SWING_LOW', origin: 'STRUCTURAL' }
+                    { direction: 'SELL', level: 0.58340, source: 'SWING_LOW', origin: 'STRUCTURAL' }
                 ]
             },
             riskConstraints: { minimum_rr: 2.5, minimum_sl_distance: 0.00219, maximum_sl_distance: 0.00600 },
@@ -1006,9 +1007,15 @@ describe('live AI market context and prompt', () => {
             const candidates = result.valid_candidates;
             expect(candidates.length).toBeGreaterThan(0);
             const best = candidates[0];
-            expect(new Set([best.tp1, best.tp2, best.tp3]).size).toBe(3);
-            if (c.direction === 'BUY') expect(best.entry < best.tp1 && best.tp1 < best.tp2 && best.tp2 < best.tp3).toBe(true);
-            if (c.direction === 'SELL') expect(best.entry > best.tp1 && best.tp1 > best.tp2 && best.tp2 > best.tp3).toBe(true);
+            expect(best.tp1).toBeTruthy();
+            if (best.tp2 != null) {
+                if (c.direction === 'BUY') expect(best.tp2).toBeGreaterThan(best.tp1);
+                if (c.direction === 'SELL') expect(best.tp2).toBeLessThan(best.tp1);
+            }
+            if (best.tp3 != null) {
+                if (c.direction === 'BUY') expect(best.tp3).toBeGreaterThan(best.tp2);
+                if (c.direction === 'SELL') expect(best.tp3).toBeLessThan(best.tp2);
+            }
         }
     });
 
@@ -1035,7 +1042,7 @@ describe('live AI market context and prompt', () => {
         });
         expect(result.raw_candidates.length).toBeGreaterThan(0);
         expect(result.valid_candidates).toEqual([]);
-        expect(result.rejected_candidates.some(c => c.rejection_reasons.some(r => /HTF alignment 0\/3 below/.test(r)))).toBe(true);
+        expect(result.rejected_candidates.some(c => c.rejection_reasons.some(r => /reversal evidence insufficient/.test(r)))).toBe(true);
     });
 
     it('requires actionable AI output to select a deterministic candidate when valid candidates exist', () => {
@@ -1161,7 +1168,7 @@ describe('live AI market context and prompt', () => {
         };
         const result = ctx.evaluateSetupCandidate(candidate, {
             pair: 'EUR/USD',
-            price: 1.10100,
+            price: 1.10090,
             historyCache: {},
             real_ict_zones: [
                 { type: 'FVG', timeframe: '1H', direction: 'BUY', low: 1.09000, high: 1.09100, origin: 'STRUCTURAL', primary_eligible: true }
@@ -1181,7 +1188,7 @@ describe('live AI market context and prompt', () => {
         const structure = { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } };
         const deterministicContext = ctx.buildDeterministicValidationContext({
             pair: 'EUR/USD',
-            price: 1.10100,
+            price: 1.10070,
             historyCache,
             real_ict_zones: zones,
             risk_constraints: riskConstraints,
@@ -1189,7 +1196,7 @@ describe('live AI market context and prompt', () => {
         });
         const result = ctx.buildAdaptiveSetupCandidates({
             pair: 'EUR/USD',
-            price: 1.10100,
+            price: 1.10070,
             historyCache,
             zones,
             targetCandidates: {
@@ -1208,6 +1215,139 @@ describe('live AI market context and prompt', () => {
         for (const candidate of result.valid_candidates) {
             expect(ctx.evaluateSetupCandidate(candidate, deterministicContext).valid).toBe(true);
         }
+    });
+
+    it('accepts a 1H structural stop using 1H ATR even when smaller than the old 4H-derived minimum', () => {
+        const ctx = getContext();
+        const historyCache = {
+            '1H': candles(80, 1.08000, 0.00010, 'up'),
+            '4H': candles(80, 1.00000, 0.00100, 'up'),
+            '1D': candles(80, 1.00000, 0.00040, 'up')
+        };
+        const candidate = {
+            id: '1h-atr-context',
+            direction: 'BUY',
+            timeframe: '1H',
+            zone_type: 'FVG',
+            zone_low: 1.09950,
+            zone_high: 1.10050,
+            entry: 1.10000,
+            stop_loss: 1.09945,
+            tp1: 1.10140
+        };
+        const result = ctx.evaluateSetupCandidate(candidate, {
+            pair: 'EUR/USD',
+            price: 1.10070,
+            historyCache,
+            real_ict_zones: [{ type: 'FVG', timeframe: '1H', direction: 'BUY', low: 1.09950, high: 1.10050, origin: 'STRUCTURAL', primary_eligible: true }],
+            risk_constraints: { minimum_rr: 2.5 },
+            structure: { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } }
+        }, { includeAccountRules: false });
+        expect(result.valid).toBe(true);
+        expect(result.metrics.atrContext.setup_timeframe).toBe('1H');
+        expect(result.metrics.atrContext.minimum_reasonable_distance).toBeLessThan(0.00150);
+    });
+
+    it('rejects structurally nonsensical and volatility-invalid stops', () => {
+        const ctx = getContext();
+        const historyCache = trendCache('up', 1.08000, 0.00020);
+        const baseContext = {
+            pair: 'EUR/USD',
+            price: 1.10070,
+            historyCache,
+            real_ict_zones: [{ type: 'FVG', timeframe: '1H', direction: 'BUY', low: 1.09950, high: 1.10050, origin: 'STRUCTURAL', primary_eligible: true }],
+            risk_constraints: { minimum_rr: 2.5 },
+            structure: { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } }
+        };
+        const base = {
+            id: 'stop-test',
+            direction: 'BUY',
+            timeframe: '1H',
+            zone_type: 'FVG',
+            zone_low: 1.09950,
+            zone_high: 1.10050,
+            entry: 1.10000,
+            tp1: 1.10500
+        };
+        expect(ctx.evaluateSetupCandidate({ ...base, stop_loss: 1.10010 }, baseContext, { includeAccountRules: false }).reasons.join(' ')).toMatch(/BUY stop must be below entry/);
+        expect(ctx.evaluateSetupCandidate({ ...base, stop_loss: 1.09990 }, baseContext, { includeAccountRules: false }).reasons.join(' ')).toMatch(/below market minimum|minimum reasonable distance/);
+        expect(ctx.evaluateSetupCandidate({ ...base, stop_loss: 1.09000, tp1: 1.13000 }, baseContext, { includeAccountRules: false }).reasons.join(' ')).toMatch(/maximum reasonable distance/);
+    });
+
+    it('keeps TP1 mandatory while TP2 and TP3 are optional', () => {
+        const ctx = getContext();
+        const historyCache = trendCache('up', 1.08000, 0.00010);
+        const context = {
+            pair: 'EUR/USD',
+            price: 1.10070,
+            historyCache,
+            real_ict_zones: [{ type: 'FVG', timeframe: '1H', direction: 'BUY', low: 1.09950, high: 1.10050, origin: 'STRUCTURAL', primary_eligible: true }],
+            risk_constraints: { minimum_rr: 2.5 },
+            structure: { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } }
+        };
+        const valid = ctx.evaluateSetupCandidate({
+            id: 'tp1-only',
+            direction: 'BUY',
+            timeframe: '1H',
+            zone_type: 'FVG',
+            zone_low: 1.09950,
+            zone_high: 1.10050,
+            entry: 1.10000,
+            stop_loss: 1.09950,
+            tp1: 1.10126,
+            tp2: null,
+            tp3: null
+        }, context, { includeAccountRules: false });
+        expect(valid.valid).toBe(true);
+
+        const bad = ctx.evaluateSetupCandidate({
+            id: 'tp1-bad-rr',
+            direction: 'BUY',
+            timeframe: '1H',
+            zone_type: 'FVG',
+            zone_low: 1.09950,
+            zone_high: 1.10050,
+            entry: 1.10000,
+            stop_loss: 1.09950,
+            tp1: 1.10100
+        }, context, { includeAccountRules: false });
+        expect(bad.valid).toBe(false);
+        expect(bad.reasons.join(' ')).toMatch(/real RR .* below/);
+    });
+
+    it('requires deterministic reversal evidence before allowing a countertrend candidate', () => {
+        const ctx = getContext();
+        const historyCache = trendCache('down', 1.13000, 0.00010);
+        const context = {
+            pair: 'EUR/USD',
+            price: 1.10090,
+            historyCache,
+            real_ict_zones: [{ type: 'FVG', timeframe: '1H', direction: 'BUY', low: 1.09950, high: 1.10050, origin: 'STRUCTURAL', primary_eligible: true }],
+            risk_constraints: { minimum_rr: 2.5 },
+            structure: { '1D': { trend: 'BEARISH' }, '4H': { trend: 'BEARISH' }, '1H': { trend: 'BEARISH' } }
+        };
+        const candidate = {
+            id: 'countertrend-buy',
+            direction: 'BUY',
+            timeframe: '1H',
+            zone_type: 'FVG',
+            zone_low: 1.09950,
+            zone_high: 1.10050,
+            entry: 1.10000,
+            stop_loss: 1.09950,
+            tp1: 1.10130
+        };
+        const rejected = ctx.evaluateSetupCandidate(candidate, context, { includeAccountRules: false });
+        expect(rejected.valid).toBe(false);
+        expect(rejected.reasons.join(' ')).toMatch(/reversal evidence insufficient/);
+
+        const allowed = ctx.evaluateSetupCandidate({
+            ...candidate,
+            reversal_evidence: { liquidity_sweep: false, mss: true, choch: true, displacement: false, premium_discount: false, evidence_count: 2 }
+        }, context, { includeAccountRules: false });
+        expect(allowed.valid).toBe(true);
+        expect(allowed.metrics.setup_archetype).toBe('REVERSAL');
+        expect(allowed.metrics.reversal_evidence.evidence_count).toBeGreaterThanOrEqual(2);
     });
 
     it('builds pre-selection entry context without using a candidate zone', () => {
@@ -1481,7 +1621,7 @@ describe('validateAISetup', () => {
         const cache = buildCache();
         // Entry 999 is far from price 105 AND outside any 4H/1H zone. Before this
         // fix, CHECK 1 only logged a reason (no reject) and the setup passed.
-        const r = ctx.validateAISetup(baseAi({ entry: 999, stop_loss: 990, take_profit_1: 1010 }), 105, cache, 'XAU/USD');
+        const r = ctx.validateAISetup(baseAi({ entry: 999, stop_loss: 990, take_profit_1: 1010, take_profit_2: 1020, take_profit_3: 1030 }), 105, cache, 'XAU/USD');
         expect(r.valid).toBe(false);
         expect(r.reason).toMatch(/BUY geometry|no real deterministic FVG\/OB\/MSNR matches/);
         expect(r.checks).toBeTruthy();
