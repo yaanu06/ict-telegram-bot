@@ -1,0 +1,55 @@
+{
+  "id": 1788946015982,
+  "recordedAt": "2026-09-09T09:26:55.984Z",
+  "eventType": "ai_scan",
+  "pair": "NZD/USD",
+  "setup": {
+    "date": "2026-09-09",
+    "time": "09:26:55",
+    "pair": "NZD/USD",
+    "current_price": 0.58448,
+    "trade_type": "BUY_LIMIT",
+    "decision": "BUY_LIMIT",
+    "order_type": "LIMIT",
+    "setup_type": "PENDING_LIMIT",
+    "entry_price": 0.58225,
+    "entry_zone": {
+      "source": "MSNR",
+      "low": 0.58225,
+      "high": 0.58283
+    },
+    "stop_loss": 0.58002,
+    "stop_loss_reason": "MSNR_CLUSTER invalidation plus structural buffer",
+    "take_profit_1": 0.58809,
+    "take_profit_2": 0.58815,
+    "take_profit_3": 0.58839,
+    "risk_reward": "1:2.62",
+    "confidence": 65,
+    "zone_quality": "B",
+    "patterns_detected": "MSNR support+Discount zone+Bearish structure sweep+Fresh zone",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "A fresh 1H MSNR support zone at 0.58225-0.58283 sits in the discount side of the range (current price at 37.8% of range, below equilibrium 0.58583). The market is in a manipulation phase with a confirmed sell-side sweep of 0.58632, suggesting a potential reversal to the upside. The zone is fresh (0 touches) and provides a valid pending limit entry with a structural stop below the MSNR cluster.",
+      "structure": "Higher timeframes are bearish (4H/1H), but the 1H structure shows a recent BOS sell and CHoCH sell, indicating a sell-side liquidity sweep has occurred. The 4H buy FVG at 0.58338-0.58416 is also nearby and fresh, adding confluence to a potential bounce from the discount zone. The 1H MSNR support is a pivot-derived level that aligns with the discount side of the market.",
+      "liquidity": "The nearest sell-side liquidity on 1H is at 0.58783, and buy-side liquidity is at 0.58626/0.58632. The 1H sweep of 0.58632 (sell-side) has already occurred, indicating that sell-side liquidity was taken. The target levels (0.58809, 0.58815, 0.58839) are all above the entry and represent buy-side liquidity pools that price may target after a reversal from the discount zone.",
+      "volatility": "ATR 4H is 0.00145, and the minimum SL distance is 0.00218. The proposed stop loss at 0.58002 gives a risk distance of 0.00223, which is above the minimum and within the maximum SL distance of 0.00581. The SL is 3.68x ATR, which is a reasonable volatility-aware distance.",
+      "why_best": "This is the only adaptive setup candidate provided. It is a BUY limit at a fresh MSNR support in the discount zone, with a valid structural stop and targets that satisfy the minimum RR of 2.5 (actual RR is 2.62). The setup aligns with the manipulation phase (sell-side sweep) and the discount classification, favoring a long entry.",
+      "why_not_opposite": "A SELL setup would require selling into the discount zone (below equilibrium), which is unfavorable. The market has already swept sell-side liquidity at 0.58632, and the 4H buy FVG below current price suggests downside is limited. The holistic score strongly favors SELL (sellScore 70 vs buyScore 10), but the price is in the discount zone, making a BUY from this MSNR support a higher-probability counter-trend trade with defined risk.",
+      "invalidation": "The trade is invalidated if price closes below the stop loss at 0.58002, which is below the MSNR cluster and the 1H MSNR support at 0.58022-0.58080. A break below this level would indicate that the discount zone support has failed and the bearish trend is continuing.",
+      "secondary": [
+        "The 4H BUY FVG at 0.58338-0.58416 is fresh and lies between the entry and current price, providing additional support on the way down.",
+        "The market regime is MANIPULATION, which often precedes impulsive moves; the sell-side sweep suggests a potential shift to the upside.",
+        "The session is LONDON KZ with high volatility expectation, which may increase the probability of a reaction at the zone."
+      ],
+      "risk_warning": "Normal market risk applies"
+    },
+    "opposite_setup": {
+      "direction": "SELL",
+      "confidence": 30,
+      "why_rejected": "A SELL setup would require selling at a premium level above equilibrium, but price is currently in the discount zone (37.8% of range). The nearest valid SELL zones are above current price (e.g., 1H OBs at 0.58539-0.58632), but these are USED and not fresh. Additionally, the sell-side liquidity at 0.58632 has already been swept, reducing the probability of another sweep to the upside before a drop."
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Price has not yet reached the entry zone at 0.58225. The limit order will trigger when price arrives at the zone. Wait for price to trade into the 0.58225-0.58283 range and show a reaction (e.g., bullish rejection candle) before considering the trade active.",
+    "source": "AI-Generated Setup"
+  }
+}
