@@ -428,6 +428,85 @@ describe('buildCandleData', () => {
     });
 });
 
+describe('live AI market context and prompt', () => {
+    const buildCache = () => ({
+        '4H': candles(80, 100, 0.5, 'up'),
+        '1H': candles(80, 100, 0.3, 'up'),
+        '1D': candles(80, 100, 0.2, 'up'),
+        '15M': candles(40, 100, 0.1, 'up'),
+        '5M': candles(40, 100, 0.05, 'up')
+    });
+
+    it('builds deterministic live context from current candles and flags synthetic volume', () => {
+        const ctx = getContext();
+        const historyCache = buildCache();
+        const price = 140;
+        const patterns = {
+            '4H': { fvg: ctx.detectFVG(historyCache['4H']), swings: ctx.findSwings(historyCache['4H'], 3), msnr: ctx.calculateMSNR(historyCache['4H'], price), adx: ctx.calculateADX(historyCache['4H'], 14, '4H') },
+            '1H': { fvg: ctx.detectFVG(historyCache['1H']), swings: ctx.findSwings(historyCache['1H'], 3), msnr: ctx.calculateMSNR(historyCache['1H'], price), adx: ctx.calculateADX(historyCache['1H'], 14, '1H') }
+        };
+        const live = ctx.buildLiveMarketContext({
+            pair: 'XAU/USD',
+            price,
+            historyCache,
+            indicators: { '4H': {} },
+            patterns,
+            enhancedAnalysis: { phase: ctx.analyzeMarketPhase(historyCache['4H'], false) },
+            holistic: { suggestedDirection: 'BUY', buyScore: 60, sellScore: 10 },
+            entryContext: null
+        });
+        expect(live.current_price).toBe(price);
+        expect(live.volume.volume_available).toBe(false);
+        expect(live.volume.volume_note).toMatch(/synthetic\/unreliable/);
+        expect(live.risk_constraints.minimum_sl_distance).toBeGreaterThan(0);
+        expect(live.risk_constraints.maximum_sl_distance).toBeGreaterThanOrEqual(live.risk_constraints.minimum_sl_distance);
+        expect(live.structure['4H'].trend).toBe('BULLISH');
+        expect(Array.isArray(live.real_ict_zones)).toBe(true);
+        expect(Array.isArray(live.target_candidates.buy)).toBe(true);
+    });
+
+    it('builds a prompt that allows NO_TRADE and has no stale hard-coded price anchors', () => {
+        const ctx = getContext();
+        const live = {
+            pair: 'XAU/USD',
+            current_price: 100,
+            utc_time: '2026-01-01T00:00:00.000Z',
+            session: { name: 'OFF-HOURS' },
+            real_ict_zones: [],
+            risk_constraints: { minimum_rr: 2.5 },
+            volume: { volume_available: false }
+        };
+        const prompt = ctx.buildAIPrompt(live, '### 4H CANDLES\n  0: O:1.00 H:2.00 L:0.50 C:1.50 V:n/a\n');
+        expect(prompt.system).toMatch(/COMPUTED MARKET FACTS/);
+        expect(prompt.user).toMatch(/NO_TRADE/);
+        expect(prompt.user).toMatch(/risk = abs\(entry - stop_loss\)/);
+        expect(prompt.user).not.toMatch(/4328\.58|4368\.53|4415\.99|4460\.99|THEREFORE|MUST output|DO Not output|Find the SINGLE BEST/);
+    });
+
+    it('rejects inconsistent SELL target ordering and duplicate targets', () => {
+        const ctx = getContext();
+        const live = {
+            real_ict_zones: [
+                { type: 'MSNR', timeframe: '4H', low: 4375, high: 4377 }
+            ]
+        };
+        const result = ctx.validateAIOutputConsistency({
+            decision: 'SELL',
+            direction: 'SELL',
+            selected_zone: { type: 'MSNR', timeframe: '4H', low: 4375, high: 4377 },
+            entry_zone: { source: 'MSNR', low: 4375, high: 4377 },
+            entry: 4376.38,
+            stop_loss: 4406.38,
+            take_profit_1: 4207.74,
+            take_profit_2: 4283.21,
+            take_profit_3: 4207.74
+        }, live);
+        expect(result.valid).toBe(false);
+        expect(result.issues.join(' ')).toMatch(/SELL geometry/);
+        expect(result.issues.join(' ')).toMatch(/distinct/);
+    });
+});
+
 describe('hasRealVolume / volume gating', () => {
     it('returns true only for crypto pairs (BTC/USD)', () => {
         const ctx = getContext();
