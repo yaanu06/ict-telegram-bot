@@ -593,8 +593,66 @@ describe('live AI market context and prompt', () => {
         expect(prompt.user).toMatch(/BUY_LIMIT, SELL_LIMIT, WAIT, or NO_TRADE/);
         expect(prompt.user).toMatch(/future limit-entry geometry/);
         expect(prompt.user).toMatch(/primary_eligible=true/);
+        expect(prompt.user).toMatch(/PARTIAL=partially used\/partially mitigated/);
+        expect(prompt.user).not.toMatch(/PARTIAL=fresh/);
         expect(prompt.user).toMatch(/risk = abs\(entry - stop_loss\)/);
         expect(prompt.user).not.toMatch(/4328\.58|4368\.53|4415\.99|4460\.99|THEREFORE|MUST output|DO Not output|Find the SINGLE BEST/);
+    });
+
+    it('normalizes WAIT with a complete BUY setup into BUY_LIMIT instead of noTrade', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        ctx.fetch = jest.fn(() => Promise.resolve({
+            json: () => Promise.resolve({
+                choices: [{ message: { content: JSON.stringify({
+                    decision: 'WAIT',
+                    direction: 'BUY',
+                    entry: 101,
+                    entry_zone: { low: 100, high: 102, source: 'OB' },
+                    stop_loss: 95,
+                    take_profit_1: 120,
+                    take_profit_2: 130,
+                    take_profit_3: 140,
+                    confidence: 72,
+                    reasoning: { primary: 'Valid BUY limit exists but price has not retraced yet' },
+                    ai_decision: 'skip',
+                    wait_condition: 'Wait for price to reach 1H OB'
+                }) } }]
+            })
+        }));
+        const result = await ctx.askAIToFindSetup('prompt', 110, 'system');
+        expect(result.noTrade).not.toBe(true);
+        expect(result.decision).toBe('BUY_LIMIT');
+        expect(result.direction).toBe('BUY');
+        expect(result.ai_decision).toBe('wait_for_reaction');
+        expect(result.wait_condition).toMatch(/Wait for price/);
+    });
+
+    it('normalizes skip with a complete SELL setup into SELL_LIMIT for validation', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        ctx.fetch = jest.fn(() => Promise.resolve({
+            json: () => Promise.resolve({
+                choices: [{ message: { content: JSON.stringify({
+                    decision: 'skip',
+                    direction: 'SELL',
+                    entry: 106,
+                    entry_zone: { low: 105, high: 107, source: 'FVG' },
+                    stop_loss: 112,
+                    take_profit_1: 90,
+                    take_profit_2: 80,
+                    take_profit_3: 70,
+                    confidence: 70,
+                    reasoning: { primary: 'Valid SELL limit exists but immediate trigger is absent' },
+                    ai_decision: 'skip'
+                }) } }]
+            })
+        }));
+        const result = await ctx.askAIToFindSetup('prompt', 100, 'system');
+        expect(result.noTrade).not.toBe(true);
+        expect(result.decision).toBe('SELL_LIMIT');
+        expect(result.direction).toBe('SELL');
+        expect(result.ai_decision).toBe('wait_for_reaction');
     });
 
     it('rejects inconsistent SELL target ordering and duplicate targets', () => {

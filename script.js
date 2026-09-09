@@ -3222,6 +3222,9 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'Stage 1 asks whether a valid future pending-limit setup exists. Current price not being inside the zone, immediate confirmation score of 0, or off-hours are not by themselves reasons for NO_TRADE.',
         'Stage 2 asks whether immediate entry/fill confirmation is ready now.',
         'Your role is to interpret the supplied market state, identify the highest-quality valid pending-limit opportunity currently available, or return NO_TRADE when no future setup satisfies structure, volatility, zone, and RR requirements.',
+        'Do not return WAIT merely because price has not reached a valid future limit zone. If a future pending-limit setup already satisfies setup-stage requirements, return BUY_LIMIT or SELL_LIMIT with ai_decision:"wait_for_reaction".',
+        'Do not return skip when your own analysis concludes that a valid BUY_LIMIT or SELL_LIMIT setup already exists.',
+        'Freshness labels mean: FRESH = fresh, PARTIAL = partially used/partially mitigated, USED = used, INVALID = invalidated. Never describe PARTIAL as fresh.',
         'Do not force a setup. Return ONLY valid JSON.'
     ].join('\n');
 
@@ -3262,6 +3265,9 @@ This bot creates pending LIMIT orders at future ICT zones. A valid setup may exi
 10. Use WAIT when a valid setup concept exists but deterministic facts show it is incomplete or should wait for better fill/confirmation conditions.
 11. Today's best professional decision may still be WAIT or NO_TRADE.
 12. Zone/target origin hierarchy: STRUCTURAL = directly derived market structure such as FVG, OB, swings and structural liquidity. PIVOT_DERIVED = deterministic MSNR support/resistance calculated from pivot-based market levels. ATR_FALLBACK = synthetic deterministic fallback/reference level used when normal MSNR levels are unavailable. ATR_FALLBACK must not be treated as primary structural confluence.
+13. Do NOT return WAIT merely because price has not reached a valid future limit zone. If setup-stage requirements are satisfied, return BUY_LIMIT or SELL_LIMIT and use ai_decision:"wait_for_reaction" when immediate entry is not ready.
+14. Do NOT return skip when your own analysis concludes that a valid BUY_LIMIT or SELL_LIMIT setup already exists.
+15. Freshness labels mean FRESH=fresh, PARTIAL=partially used/partially mitigated, USED=used, INVALID=invalidated. Do not call a PARTIAL zone fresh.
 
 Use symbolic arithmetic only:
 risk = abs(entry - stop_loss)
@@ -3382,7 +3388,11 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null) {
         if ((rawDecision === 'BUY_LIMIT' || rawDecision === 'SELL_LIMIT') && (result.direction !== 'BUY' && result.direction !== 'SELL')) {
             result.direction = rawDecision === 'BUY_LIMIT' ? 'BUY' : 'SELL';
         }
-        if (rawDecision === 'WAIT' || rawDecision === 'NO_TRADE' || rawDecision === 'SKIP') {
+        const hasLimitDirection = result.direction === 'BUY' || result.direction === 'SELL';
+        const hasCompleteLimitSetup = hasLimitDirection
+            && result.entry_zone
+            && ['entry', 'stop_loss', 'take_profit_1', 'take_profit_2', 'take_profit_3'].every(field => ictFiniteNumber(result[field]));
+        if ((rawDecision === 'WAIT' || rawDecision === 'NO_TRADE' || rawDecision === 'SKIP') && !hasCompleteLimitSetup) {
             result.decision = rawDecision === 'SKIP' ? 'NO_TRADE' : rawDecision;
             result.direction = result.decision;
             result.confidence = Number(result.confidence) || 0;
@@ -3394,6 +3404,15 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null) {
             result.noTrade = true;
             console.log('✅ AI No-Trade Decision:', result);
             return result;
+        }
+        if ((rawDecision === 'WAIT' || rawDecision === 'SKIP') && hasCompleteLimitSetup) {
+            result.decision = result.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT';
+            result.ai_decision = 'wait_for_reaction';
+            result.wait_condition = result.wait_condition || 'Pending limit setup valid; immediate entry confirmation is not active.';
+        }
+        if ((rawDecision === 'BUY_LIMIT' || rawDecision === 'SELL_LIMIT') && result.ai_decision === 'skip') {
+            result.ai_decision = 'wait_for_reaction';
+            result.wait_condition = result.wait_condition || 'Pending limit setup valid; immediate entry confirmation is not active.';
         }
         
         const required = ['direction', 'entry', 'entry_zone', 'stop_loss', 'take_profit_1', 'take_profit_2', 'take_profit_3', 'confidence', 'reasoning'];
@@ -4146,7 +4165,7 @@ async function runAutoScan() {
                 time: new Date().toISOString().split('T')[1].split('.')[0],
                 pair: pair,
                 current_price: price,
-                trade_type: aiResult.direction === 'BUY' ? 'BUY' : 'SELL',
+                trade_type: aiResult.decision || (aiResult.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT'),
                 decision: aiResult.decision,
                 order_type: aiResult.order_type || 'LIMIT',
                 setup_type: aiResult.setup_type || 'PENDING_LIMIT',
@@ -4256,6 +4275,16 @@ async function runAutoScan() {
         const tradeable = effectiveDecision !== 'skip'
             && aiResult.confidence >= 58
             && validation.valid;
+        console.log("LIMIT ORDER DECISION", {
+            pair,
+            direction: aiResult.direction,
+            decision: aiResult.decision,
+            aiDecision: effectiveDecision,
+            setupValid: validation.valid,
+            immediateEntryEligible: entryContext.allOk,
+            selectedZone,
+            priceAtZone: selectedZoneStatus.insideZone
+        });
         out.trade_signal.ai_decision = effectiveDecision;
         out.trade_signal.wait_condition = effectiveDecision === 'wait_for_reaction'
             ? (aiResult.wait_condition || overrideReason)
@@ -4305,7 +4334,7 @@ async function runAutoScan() {
             btnExecute.style.background = 'linear-gradient(135deg, #5856d6, #007aff)';
         }
         
-        const decisionEmoji = aiResult.ai_decision === 'enter_now' ? '✅' : (aiResult.ai_decision === 'wait_for_reaction' ? '⏳' : '🚫');
+        const decisionEmoji = effectiveDecision === 'enter_now' ? '✅' : (effectiveDecision === 'wait_for_reaction' ? '⏳' : '🚫');
         const validationTag = validation.valid ? '✓' : '✗';
         showNotif(`🤖 AI Setup [val:${validationTag}] ${st} ${decisionEmoji} | Conf: ${aiResult.confidence}% | ${aiResult.entry_zone.source} | ${aiResult.patterns.join(', ')}`, tradeable ? 'success' : 'warning');
         
