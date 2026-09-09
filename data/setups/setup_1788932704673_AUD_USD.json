@@ -1,0 +1,55 @@
+{
+  "id": 1788932704673,
+  "recordedAt": "2026-09-09T05:45:04.675Z",
+  "eventType": "ai_scan",
+  "pair": "AUD/USD",
+  "setup": {
+    "date": "2026-09-09",
+    "time": "05:45:04",
+    "pair": "AUD/USD",
+    "current_price": 0.72294,
+    "trade_type": "BUY_LIMIT",
+    "decision": "BUY_LIMIT",
+    "order_type": "LIMIT",
+    "setup_type": "PENDING_LIMIT",
+    "entry_price": 0.72279,
+    "entry_zone": {
+      "low": 0.72267,
+      "high": 0.72291,
+      "source": "FVG"
+    },
+    "stop_loss": 0.72089,
+    "stop_loss_reason": "Below the 4H FVG and the 1H FVG (0.72089-0.72131), which is a structural support cluster. Placed below the 1H FVG low to avoid being wicked out by a sweep of the 1H sell-side liquidity at 0.72156/0.72151.",
+    "take_profit_1": 0.72451,
+    "take_profit_2": 0.72607,
+    "take_profit_3": 0.72679,
+    "risk_reward": "1:2.5",
+    "confidence": 72,
+    "zone_quality": "A",
+    "patterns_detected": "Bullish FVG+Bullish OB+Bullish BOS+Bullish trend alignment+Premium discount pullback",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "A fresh 4H bullish FVG (0.72267-0.72291) is located just below the current price, offering a high-quality pullback entry in the direction of the prevailing bullish trend. The zone is fresh, unviolated, and aligns with the bullish bias across all timeframes (1D, 4H, 1H, 15M).",
+      "structure": "The market is in a bullish trend across all timeframes, with bullish BOS on the 1D, 4H, and 15M. The 4H structure shows a sequence of HH and HL, confirming bullish momentum. The current price is in a premium zone, and a pullback to the FVG would represent a typical discount-buy opportunity within the larger bullish structure.",
+      "liquidity": "The nearest sell-side liquidity is below the entry zone at 0.72156 and 0.72151. A stop loss placed below the 1H FVG (0.72089) is positioned to absorb a potential sweep of this liquidity before the price continues its bullish trajectory. The nearest buy-side liquidity is above at 0.72307, which is a likely target for the initial move.",
+      "volatility": "The ATR(4H) is 0.00114, and the risk constraints require a minimum SL distance of 0.00172. The distance from the entry (0.72279) to the stop loss (0.72089) is 0.00190, which satisfies the minimum SL distance requirement and is within the maximum allowed distance of 0.00458.",
+      "why_best": "This is the highest-probability setup because it combines a fresh, structural FVG with a strong bullish trend and a clear liquidity target. The zone is very close to the current price, minimizing the wait time for the limit order to fill. The risk-to-reward ratio is favorable, and the stop loss is placed below a structural support cluster, making it a logical invalidation point.",
+      "why_not_opposite": "The opposite (SELL) setup is rejected because the market is in a strong bullish trend with no bearish structure (no bearish BOS or CHoCH). The sell-side zones are all PIVOT_DERIVED MSNR levels, which are not as strong as the structural FVG. Additionally, the price is in the premium zone, which is not an ideal location for a sell limit order.",
+      "invalidation": "The setup is invalidated if the price closes below the 4H FVG low at 0.72267, especially if it also breaks below the 1H FVG at 0.72089. A sustained move below this level would indicate that the bullish structure has been compromised.",
+      "secondary": [
+        "The 1H FVG (0.72261-0.72291) overlaps with the 4H FVG, adding confluence to the entry zone.",
+        "The 4H bullish OB (0.72131-0.72214) is below the entry zone, providing additional support.",
+        "The market is in a manipulation phase, which often precedes a liquidity sweep and a subsequent move in the direction of the trend."
+      ],
+      "risk_warning": "Normal market risk applies"
+    },
+    "opposite_setup": {
+      "direction": "SELL",
+      "confidence": 25,
+      "why_rejected": "The sell setup is rejected due to the strong bullish trend and lack of bearish structural confirmation. The nearest sell-side MSNR zones are PIVOT_DERIVED and lack the structural significance of the fresh FVG. Selling into a premium zone against the trend is a low-probability trade."
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for the price to drop into the 4H FVG (0.72267-0.72291) and show a bullish reaction (e.g., a bullish engulfing candle or a close back above the midpoint) before entering. The limit order is placed at the midpoint (0.72279) to get a better fill.",
+    "source": "AI-Generated Setup"
+  }
+}
