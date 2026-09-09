@@ -594,19 +594,20 @@ describe('live AI market context and prompt', () => {
         expect(prompt.system).toMatch(/COMPUTED MARKET FACTS/);
         expect(prompt.system).toMatch(/PIVOT_DERIVED = deterministic MSNR support\/resistance/);
         expect(prompt.system).toMatch(/ATR_FALLBACK = synthetic deterministic fallback\/reference level/);
-        expect(prompt.system).toMatch(/pending-limit setup exists/);
+        expect(prompt.system).toMatch(/candidate-selection layer/);
+        expect(prompt.system).toMatch(/must NEVER invent, modify, recalculate/);
+        expect(prompt.system).toMatch(/VALID_CANDIDATES = executable numerical candidates/);
         expect(prompt.system).toMatch(/rank the supplied adaptive_setup_candidates/);
         expect(prompt.system).toMatch(/adaptive_setup_candidates is empty/);
-        expect(prompt.system).toMatch(/If a structural stop is below the minimum volatility-aware stop distance/);
+        expect(prompt.system).toMatch(/Do not calculate risk, required reward, minimum TP/);
         expect(prompt.user).toMatch(/NO_TRADE/);
         expect(prompt.user).toMatch(/BUY_LIMIT, SELL_LIMIT, WAIT, or NO_TRADE/);
         expect(prompt.user).toMatch(/selected_candidate_id/);
-        expect(prompt.user).toMatch(/future limit-entry geometry/);
-        expect(prompt.user).toMatch(/primary_eligible=true/);
+        expect(prompt.user).toMatch(/Do not calculate or alter entry/);
+        expect(prompt.user).toMatch(/already passed deterministic numerical hard rules/);
         expect(prompt.user).toMatch(/Discount generally favors BUY entries; premium generally favors SELL entries/);
         expect(prompt.user).toMatch(/PARTIAL=partially used\/partially mitigated/);
         expect(prompt.user).not.toMatch(/PARTIAL=fresh/);
-        expect(prompt.user).toMatch(/risk = abs\(entry - stop_loss\)/);
         expect(prompt.user).not.toMatch(/4328\.58|4368\.53|4415\.99|4460\.99|THEREFORE|MUST output|DO Not output|Find the SINGLE BEST/);
     });
 
@@ -1140,6 +1141,100 @@ describe('live AI market context and prompt', () => {
         expect(liq.below.every(level => level < 100)).toBe(true);
         expect(liq.nearestAbove == null || liq.nearestAbove > 100).toBe(true);
         expect(liq.nearestBelow == null || liq.nearestBelow < 100).toBe(true);
+    });
+
+    it('does not allow candidate.zone to self-validate against a different current zone context', () => {
+        const ctx = getContext();
+        const candidate = {
+            id: 'fake-zone',
+            direction: 'BUY',
+            timeframe: '1H',
+            zone_type: 'FVG',
+            zone_low: 1.09950,
+            zone_high: 1.10050,
+            zone: { type: 'FVG', timeframe: '1H', direction: 'BUY', low: 1.09950, high: 1.10050, origin: 'STRUCTURAL', primary_eligible: true },
+            entry: 1.10000,
+            stop_loss: 1.09800,
+            tp1: 1.10500,
+            tp2: 1.10600,
+            tp3: 1.10700
+        };
+        const result = ctx.evaluateSetupCandidate(candidate, {
+            pair: 'EUR/USD',
+            price: 1.10100,
+            historyCache: {},
+            real_ict_zones: [
+                { type: 'FVG', timeframe: '1H', direction: 'BUY', low: 1.09000, high: 1.09100, origin: 'STRUCTURAL', primary_eligible: true }
+            ],
+            risk_constraints: { minimum_rr: 2.5, minimum_sl_distance: 0.00030, maximum_sl_distance: 0.01000 },
+            structure: { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } }
+        }, { includeAccountRules: false });
+        expect(result.valid).toBe(false);
+        expect(result.reasons).toContain('candidate zone does not exist in current deterministic market context');
+    });
+
+    it('valid candidates pass final evaluator with the same deterministic context', () => {
+        const ctx = getContext();
+        const historyCache = trendCache('up', 1.08000, 0.00030);
+        const zones = [{ type: 'FVG', direction: 'BUY', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 1.09900, high: 1.10000, freshness: 'FRESH' }];
+        const riskConstraints = { minimum_rr: 2.5, minimum_sl_distance: 0.00030, maximum_sl_distance: 0.01000, atr_rule_reference: 0.00030 };
+        const structure = { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } };
+        const deterministicContext = ctx.buildDeterministicValidationContext({
+            pair: 'EUR/USD',
+            price: 1.10100,
+            historyCache,
+            real_ict_zones: zones,
+            risk_constraints: riskConstraints,
+            structure
+        });
+        const result = ctx.buildAdaptiveSetupCandidates({
+            pair: 'EUR/USD',
+            price: 1.10100,
+            historyCache,
+            zones,
+            targetCandidates: {
+                buy: [
+                    { direction: 'BUY', level: 1.10400, source: 'SWING_HIGH', origin: 'STRUCTURAL' },
+                    { direction: 'BUY', level: 1.10500, source: 'MSNR_RESISTANCE', origin: 'PIVOT_DERIVED' },
+                    { direction: 'BUY', level: 1.10600, source: 'BUY_SIDE_LIQUIDITY', origin: 'STRUCTURAL' }
+                ],
+                sell: []
+            },
+            riskConstraints,
+            marketRegime: { primary_regime: 'TRENDING_BULLISH' },
+            structure
+        });
+        expect(result.valid_candidates.length).toBeGreaterThan(0);
+        for (const candidate of result.valid_candidates) {
+            expect(ctx.evaluateSetupCandidate(candidate, deterministicContext).valid).toBe(true);
+        }
+    });
+
+    it('builds pre-selection entry context without using a candidate zone', () => {
+        const ctx = getContext();
+        const result = ctx.buildPreSelectionEntryContext(
+            { priority: 'LOW', reason: 'Off-hours', multiplier: 0.5, isOffHours: true },
+            { phase: 'NEUTRAL', confidence: 0 }
+        );
+        expect(result.entryConfirmation.reason).toMatch(/deferred until selection/);
+        expect(result.entryConfirmation.isAtZone).toBe(false);
+    });
+
+    it('uses the current selected candidate zone for Stage-2 confirmation', () => {
+        const ctx = getContext();
+        const data = candles(12, 1.10000, 0.00010, 'up');
+        data[data.length - 1] = { o: 1.10010, h: 1.10090, l: 1.09970, c: 1.10080, v: 1e6 };
+        const result = ctx.buildSelectedCandidateEntryContext({
+            historyCache: { '15M': data },
+            sessionCheck: { priority: 'HIGH', reason: 'Killzone', multiplier: 1.0 },
+            marketPhase: { phase: 'NEUTRAL', confidence: 50 },
+            phaseData: data,
+            selectedZone: { low: 1.09950, high: 1.10050 },
+            direction: 'BUY',
+            price: 1.10100
+        });
+        expect(result.entryConfirmation.isAtZone).toBe(true);
+        expect(result.entryConfirmation.score).toBeGreaterThanOrEqual(0);
     });
 
     it('enforces minimum RR for normal FX SELL and accepts a genuine 2.5R TP1', () => {
