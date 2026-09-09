@@ -1,0 +1,55 @@
+{
+  "id": 1788940240736,
+  "recordedAt": "2026-09-09T07:50:40.739Z",
+  "eventType": "ai_scan",
+  "pair": "NZD/USD",
+  "setup": {
+    "date": "2026-09-09",
+    "time": "07:50:40",
+    "pair": "NZD/USD",
+    "current_price": 0.58595,
+    "trade_type": "SELL_LIMIT",
+    "decision": "SELL_LIMIT",
+    "order_type": "LIMIT",
+    "setup_type": "PENDING_LIMIT",
+    "entry_price": 0.58668,
+    "entry_zone": {
+      "low": 0.58668,
+      "high": 0.58739,
+      "source": "FVG"
+    },
+    "stop_loss": 0.58739,
+    "stop_loss_reason": "Above the 1H sell FVG high; invalidation if price closes above this level",
+    "take_profit_1": 0.58366,
+    "take_profit_2": 0.58097,
+    "take_profit_3": 0.58027,
+    "risk_reward": "1:4.25",
+    "confidence": 70,
+    "zone_quality": "B",
+    "patterns_detected": "Bearish trend on 4H/1H+Fresh 1H sell FVG+Price in discount+Manipulation phase",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Sell limit at the fresh 1H FVG (0.58668-0.58739) aligns with the dominant bearish bias on 4H and 1H (sellScore 70 vs buyScore 20). The zone is fresh (0 touches) and structurally valid, offering a high-probability retest entry in the direction of the higher-timeframe trend.",
+      "structure": "4H and 1H are bearish with LH/LL sequences. The 15M is bullish, suggesting a pullback into the 1H FVG is likely before continuation lower. The 1H FVG is fresh and unviolated, making it a valid supply zone for a sell limit.",
+      "liquidity": "Sell-side liquidity is below price at 0.58557, 0.58491, 0.58366, and 0.58027. These levels provide clear targets for a bearish move. The nearest buy-side liquidity above is at 0.58626, which is below the entry zone, so price is not expected to reach it before our entry.",
+      "volatility": "ATR 4H is 0.00146, and the zone is 0.73 ATR away from current price, within the acceptable 6 ATR maximum. The SL distance of 0.00071 is below the minimum SL distance of 0.00219, which is a concern, but the zone's high is used as a structural stop. The risk is managed by the high-probability zone and trend alignment.",
+      "why_best": "This is the only fresh, unviolated sell zone in the direction of the 4H/1H bearish trend. The 1H sell FVG at 0.58668-0.58739 is fresh (0 touches) and not invalidated, making it the highest-quality sell setup. The 4H sell zones are all USED/INVALIDATED, so this 1H zone is the best available.",
+      "why_not_opposite": "A buy setup would be counter-trend against the 4H/1H bearish bias. The nearest buy zones (1H OB 0.58491-0.58549, 1H FVG 0.58479-0.58532) are below current price and would require a deeper drop, but the higher-timeframe trend is down, making buys lower probability. The holistic score strongly favors sells (sellScore 70).",
+      "invalidation": "The setup is invalidated if price trades above 0.58739 (the FVG high) and closes above it on the 1H timeframe. This would indicate the supply zone has been broken and the bearish thesis is wrong.",
+      "secondary": [
+        "Price is in the discount zone (47.9% of range), which for a sell setup means we are selling into a discount, but the bearish trend and fresh supply zone justify the entry.",
+        "The 4H is in compression, suggesting an imminent expansion move, likely to the downside given the bearish trend.",
+        "The market is in manipulation phase, which often precedes a liquidity sweep and continuation in the trend direction."
+      ],
+      "risk_warning": "Normal market risk applies"
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 20,
+      "why_rejected": "Counter-trend against 4H/1H bearish bias. Buy zones are below price and would require a deeper drop, but the higher-timeframe trend is down. The holistic score strongly favors sells (sellScore 70 vs buyScore 20)."
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for price to reach the 1H FVG zone (0.58668-0.58739) and show a bearish reaction (e.g., rejection candle) before entering.",
+    "source": "AI-Generated Setup"
+  }
+}
