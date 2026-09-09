@@ -655,6 +655,30 @@ describe('live AI market context and prompt', () => {
         expect(result.ai_decision).toBe('wait_for_reaction');
     });
 
+    it('normalizes fake AI risk_reward strings from the numeric TP1 math', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        ctx.fetch = jest.fn(() => Promise.resolve({
+            json: () => Promise.resolve({
+                choices: [{ message: { content: JSON.stringify({
+                    decision: 'BUY_LIMIT',
+                    direction: 'BUY',
+                    entry: 1.10000,
+                    entry_zone: { low: 1.09950, high: 1.10050, source: 'FVG' },
+                    stop_loss: 1.09800,
+                    take_profit_1: 1.10240,
+                    take_profit_2: 1.10300,
+                    take_profit_3: 1.10400,
+                    risk_reward: '1:5.0',
+                    confidence: 70,
+                    reasoning: { primary: 'AI claimed a stronger RR than the numbers support' }
+                }) } }]
+            })
+        }));
+        const result = await ctx.askAIToFindSetup('prompt', 1.10100, 'system');
+        expect(result.risk_reward).toBe('1:1.20');
+    });
+
     it('rejects inconsistent SELL target ordering and duplicate targets', () => {
         const ctx = getContext();
         const live = {
@@ -718,6 +742,157 @@ describe('live AI market context and prompt', () => {
         });
         expect(result.valid).toBe(false);
         expect(result.issues).toContain('ATR_FALLBACK MSNR cannot be selected as primary AI zone');
+    });
+
+    it('enforces minimum RR for normal FX BUY and accepts a genuine 2.5R TP1', () => {
+        const ctx = getContext();
+        const live = {
+            risk_constraints: { minimum_rr: 2.5 },
+            real_ict_zones: [
+                { type: 'FVG', timeframe: '1H', direction: 'BUY', low: 1.09950, high: 1.10050, origin: 'STRUCTURAL', primary_eligible: true }
+            ]
+        };
+        const base = {
+            decision: 'BUY_LIMIT',
+            direction: 'BUY',
+            selected_zone: { type: 'FVG', timeframe: '1H', low: 1.09950, high: 1.10050 },
+            entry_zone: { source: 'FVG', low: 1.09950, high: 1.10050 },
+            entry: 1.10000,
+            stop_loss: 1.09800,
+            take_profit_2: 1.10600,
+            take_profit_3: 1.10700
+        };
+
+        const bad = ctx.validateAIOutputConsistency({ ...base, take_profit_1: 1.10499 }, live);
+        expect(bad.valid).toBe(false);
+        expect(bad.issues.join(' ')).toMatch(/actual RR .* below minimum 2\.50/);
+
+        const good = ctx.validateAIOutputConsistency({ ...base, take_profit_1: 1.10500 }, live);
+        expect(good.valid).toBe(true);
+    });
+
+    it('requires TP1 to use a supplied target candidate when candidates are present', () => {
+        const ctx = getContext();
+        const base = {
+            decision: 'BUY_LIMIT',
+            direction: 'BUY',
+            selected_zone: { type: 'FVG', timeframe: '1H', low: 1.09950, high: 1.10050 },
+            entry_zone: { source: 'FVG', low: 1.09950, high: 1.10050 },
+            entry: 1.10000,
+            stop_loss: 1.09800,
+            take_profit_1: 1.10500,
+            take_profit_2: 1.10600,
+            take_profit_3: 1.10700
+        };
+        const liveBase = {
+            risk_constraints: { minimum_rr: 2.5 },
+            real_ict_zones: [
+                { type: 'FVG', timeframe: '1H', direction: 'BUY', low: 1.09950, high: 1.10050, origin: 'STRUCTURAL', primary_eligible: true }
+            ]
+        };
+
+        const noValidTarget = ctx.validateAIOutputConsistency(base, {
+            ...liveBase,
+            target_candidates: { buy: [{ direction: 'BUY', level: 1.10400, source: 'SWING_HIGH', origin: 'STRUCTURAL' }], sell: [] }
+        });
+        expect(noValidTarget.valid).toBe(false);
+        expect(noValidTarget.issues).toContain('no supplied target candidate satisfies minimum RR');
+
+        const inventedTarget = ctx.validateAIOutputConsistency(base, {
+            ...liveBase,
+            target_candidates: { buy: [{ direction: 'BUY', level: 1.10600, source: 'SWING_HIGH', origin: 'STRUCTURAL' }], sell: [] }
+        });
+        expect(inventedTarget.valid).toBe(false);
+        expect(inventedTarget.issues).toContain('take_profit_1 must match a supplied target candidate that satisfies minimum RR');
+
+        const matchedTarget = ctx.validateAIOutputConsistency(base, {
+            ...liveBase,
+            target_candidates: { buy: [{ direction: 'BUY', level: 1.10500, source: 'SWING_HIGH', origin: 'STRUCTURAL' }], sell: [] }
+        });
+        expect(matchedTarget.valid).toBe(true);
+    });
+
+    it('enforces minimum RR for normal FX SELL and accepts a genuine 2.5R TP1', () => {
+        const ctx = getContext();
+        const live = {
+            risk_constraints: { minimum_rr: 2.5 },
+            real_ict_zones: [
+                { type: 'FVG', timeframe: '1H', direction: 'SELL', low: 1.09950, high: 1.10050, origin: 'STRUCTURAL', primary_eligible: true }
+            ]
+        };
+        const base = {
+            decision: 'SELL_LIMIT',
+            direction: 'SELL',
+            selected_zone: { type: 'FVG', timeframe: '1H', low: 1.09950, high: 1.10050 },
+            entry_zone: { source: 'FVG', low: 1.09950, high: 1.10050 },
+            entry: 1.10000,
+            stop_loss: 1.10200,
+            take_profit_2: 1.09400,
+            take_profit_3: 1.09300
+        };
+
+        const bad = ctx.validateAIOutputConsistency({ ...base, take_profit_1: 1.09501 }, live);
+        expect(bad.valid).toBe(false);
+        expect(bad.issues.join(' ')).toMatch(/actual RR .* below minimum 2\.50/);
+
+        const good = ctx.validateAIOutputConsistency({ ...base, take_profit_1: 1.09500 }, live);
+        expect(good.valid).toBe(true);
+    });
+
+    it('keeps RR checks scale-independent for JPY, XAU, and BTC-style prices', () => {
+        const ctx = getContext();
+        const cases = [
+            { direction: 'BUY', entry: 150.000, sl: 149.800, tp1: 150.500, tp2: 150.700, tp3: 150.900, low: 149.950, high: 150.050 },
+            { direction: 'SELL', entry: 150.000, sl: 150.200, tp1: 149.500, tp2: 149.300, tp3: 149.100, low: 149.950, high: 150.050 },
+            { direction: 'BUY', entry: 4379.00, sl: 4369.00, tp1: 4404.00, tp2: 4410.00, tp3: 4420.00, low: 4375.00, high: 4382.00 },
+            { direction: 'SELL', entry: 4379.00, sl: 4389.00, tp1: 4354.00, tp2: 4340.00, tp3: 4330.00, low: 4375.00, high: 4382.00 },
+            { direction: 'BUY', entry: 65000, sl: 64000, tp1: 67500, tp2: 69000, tp3: 70500, low: 64800, high: 65200 },
+            { direction: 'SELL', entry: 65000, sl: 66000, tp1: 62500, tp2: 61000, tp3: 59500, low: 64800, high: 65200 }
+        ];
+
+        for (const c of cases) {
+            const live = {
+                risk_constraints: { minimum_rr: 2.5 },
+                real_ict_zones: [
+                    { type: 'FVG', timeframe: '1H', direction: c.direction, low: c.low, high: c.high, origin: 'STRUCTURAL', primary_eligible: true }
+                ]
+            };
+            const result = ctx.validateAIOutputConsistency({
+                decision: `${c.direction}_LIMIT`,
+                direction: c.direction,
+                selected_zone: { type: 'FVG', timeframe: '1H', low: c.low, high: c.high },
+                entry_zone: { source: 'FVG', low: c.low, high: c.high },
+                entry: c.entry,
+                stop_loss: c.sl,
+                take_profit_1: c.tp1,
+                take_profit_2: c.tp2,
+                take_profit_3: c.tp3
+            }, live);
+            expect(result.valid).toBe(true);
+        }
+    });
+
+    it('rejects the AUD/USD live regression when claimed RR disagrees with TP1 math', () => {
+        const ctx = getContext();
+        const result = ctx.validateAIOutputConsistency({
+            decision: 'BUY_LIMIT',
+            direction: 'BUY',
+            selected_zone: { type: 'FVG', timeframe: '1H', low: 0.72250, high: 0.72300 },
+            entry_zone: { source: 'FVG', low: 0.72250, high: 0.72300 },
+            entry: 0.72279,
+            stop_loss: 0.72089,
+            take_profit_1: 0.72451,
+            take_profit_2: 0.72607,
+            take_profit_3: 0.72679,
+            risk_reward: '1:2.5'
+        }, {
+            risk_constraints: { minimum_rr: 2.5 },
+            real_ict_zones: [
+                { type: 'FVG', timeframe: '1H', direction: 'BUY', low: 0.72250, high: 0.72300, origin: 'STRUCTURAL', primary_eligible: true }
+            ]
+        });
+        expect(result.valid).toBe(false);
+        expect(result.issues.join(' ')).toMatch(/actual RR 0\.91 below minimum 2\.50/);
     });
 
     it('allows NO_TRADE consistency results without numeric trade fields', () => {

@@ -2880,6 +2880,44 @@ function getZonePriceStatus(price, zone) {
     return { insideZone: false, distanceToZone: price - high, pricePosition: 'ABOVE_ZONE' };
 }
 
+function calculateRRMetrics(direction, entry, stopLoss, tp1, minimumRR = 2.5) {
+    const risk = Math.abs(entry - stopLoss);
+    const reward = Math.abs(tp1 - entry);
+    const actualRR = risk > 0 ? reward / risk : NaN;
+    const requiredReward = risk * minimumRR;
+    return {
+        risk,
+        reward,
+        actualRR,
+        requiredRR: minimumRR,
+        required_reward: requiredReward,
+        minimum_valid_tp1_price: direction === 'BUY' ? entry + requiredReward : null,
+        maximum_valid_tp1_price: direction === 'SELL' ? entry - requiredReward : null,
+        geometryOk: direction === 'BUY'
+            ? stopLoss < entry && tp1 > entry
+            : direction === 'SELL' ? stopLoss > entry && tp1 < entry : false
+    };
+}
+
+function findTp1TargetCandidate(aiResult, liveMarketContext, rrMetrics) {
+    const direction = aiResult?.direction;
+    const side = direction === 'BUY' ? 'buy' : direction === 'SELL' ? 'sell' : null;
+    const supplied = side ? (liveMarketContext?.target_candidates?.[side] || []) : [];
+    if (supplied.length === 0) return { checked: false, hasValidCandidate: true, matched: null };
+
+    const entry = Number(aiResult.entry);
+    const tp1 = Number(aiResult.take_profit_1);
+    const validTargets = supplied
+        .filter(c => Number.isFinite(Number(c.level)))
+        .filter(c => direction === 'BUY'
+            ? Number(c.level) + 1e-9 >= rrMetrics.minimum_valid_tp1_price
+            : Number(c.level) - 1e-9 <= rrMetrics.maximum_valid_tp1_price)
+        .sort((a, b) => Math.abs(Number(a.level) - entry) - Math.abs(Number(b.level) - entry));
+    const tolerance = Math.max(Math.abs(tp1) * 0.0002, 0.00001);
+    const matched = validTargets.find(c => Math.abs(Number(c.level) - tp1) <= tolerance) || null;
+    return { checked: true, hasValidCandidate: validTargets.length > 0, matched, nearest: validTargets[0] || null };
+}
+
 function buildStructureSnapshot(data, tf) {
     if (!data || data.length < 20) {
         return { timeframe: tf, trend: 'NEUTRAL', structure_sequence: [], recent_swing_highs: [], recent_swing_lows: [] };
@@ -3205,6 +3243,11 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             maximum_sl_distance: ictRound(maxSLDistance, prec),
             min_sl_atr_multiplier: minSLMultiplier,
             maximum_entry_distance_atr: LIMIT_ORDER_MAX_DIST_ATR,
+            tp1_rule: {
+                formula: 'risk = abs(entry - stop_loss); required_reward = risk * minimum_rr',
+                buy_minimum_valid_tp1: 'entry + required_reward',
+                sell_maximum_valid_tp1: 'entry - required_reward'
+            },
             note: `Any SL closer than ${ictRound(minSLDistance, prec)} is invalid for current ATR/settings.`
         },
         target_candidates: targetCandidates,
@@ -3224,6 +3267,9 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'Your role is to interpret the supplied market state, identify the highest-quality valid pending-limit opportunity currently available, or return NO_TRADE when no future setup satisfies structure, volatility, zone, and RR requirements.',
         'Do not return WAIT merely because price has not reached a valid future limit zone. If a future pending-limit setup already satisfies setup-stage requirements, return BUY_LIMIT or SELL_LIMIT with ai_decision:"wait_for_reaction".',
         'Do not return skip when your own analysis concludes that a valid BUY_LIMIT or SELL_LIMIT setup already exists.',
+        'Your risk_reward field is not trusted unless it matches numeric entry, stop_loss, and take_profit_1. Do not claim a minimum RR unless the arithmetic actually equals or exceeds minimum_rr.',
+        'For TP1, select the nearest supplied target candidate in the trade direction that satisfies minimum_rr.',
+        'If no supplied real target satisfies minimum_rr, return WAIT or NO_TRADE rather than inventing a false RR.',
         'Freshness labels mean: FRESH = fresh, PARTIAL = partially used/partially mitigated, USED = used, INVALID = invalidated. Never describe PARTIAL as fresh.',
         'Do not force a setup. Return ONLY valid JSON.'
     ].join('\n');
@@ -3267,7 +3313,11 @@ This bot creates pending LIMIT orders at future ICT zones. A valid setup may exi
 12. Zone/target origin hierarchy: STRUCTURAL = directly derived market structure such as FVG, OB, swings and structural liquidity. PIVOT_DERIVED = deterministic MSNR support/resistance calculated from pivot-based market levels. ATR_FALLBACK = synthetic deterministic fallback/reference level used when normal MSNR levels are unavailable. ATR_FALLBACK must not be treated as primary structural confluence.
 13. Do NOT return WAIT merely because price has not reached a valid future limit zone. If setup-stage requirements are satisfied, return BUY_LIMIT or SELL_LIMIT and use ai_decision:"wait_for_reaction" when immediate entry is not ready.
 14. Do NOT return skip when your own analysis concludes that a valid BUY_LIMIT or SELL_LIMIT setup already exists.
-15. Freshness labels mean FRESH=fresh, PARTIAL=partially used/partially mitigated, USED=used, INVALID=invalidated. Do not call a PARTIAL zone fresh.
+15. Before returning JSON, calculate risk = abs(entry - stop_loss), required_reward = risk * minimum_rr, actual_reward = abs(take_profit_1 - entry), and actual_rr = actual_reward / risk.
+16. Only propose BUY_LIMIT/SELL_LIMIT if actual_rr >= minimum_rr. Do not claim 1:2.5 unless numeric entry, stop_loss, and take_profit_1 actually meet or exceed 2.5R.
+17. Select TP1 as the nearest supplied target candidate in the trade direction that satisfies minimum_rr.
+18. If no supplied real target candidate satisfies minimum_rr, return WAIT or NO_TRADE rather than inventing a false RR.
+19. Freshness labels mean FRESH=fresh, PARTIAL=partially used/partially mitigated, USED=used, INVALID=invalidated. Do not call a PARTIAL zone fresh.
 
 Use symbolic arithmetic only:
 risk = abs(entry - stop_loss)
@@ -3468,14 +3518,26 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null) {
             result.zone_quality = result.confidence >= 75 ? 'A' : (result.confidence >= 60 ? 'B' : 'C');
         }
         
-        if (!result.risk_reward) {
-            const risk = Math.abs(result.entry - result.stop_loss);
-            const reward = Math.abs(result.take_profit_1 - result.entry);
-            if (risk > 0) {
-                result.risk_reward = '1:' + (reward / risk).toFixed(1);
-            } else {
-                result.risk_reward = '1:2.0';
-            }
+        const rrMetrics = calculateRRMetrics(
+            result.direction,
+            Number(result.entry),
+            Number(result.stop_loss),
+            Number(result.take_profit_1),
+            getMarketSettings(pair).targetRR || 2.5
+        );
+        console.log('AI RR CHECK', {
+            pair,
+            direction: result.direction,
+            entry: Number(result.entry),
+            stopLoss: Number(result.stop_loss),
+            tp1: Number(result.take_profit_1),
+            risk: rrMetrics.risk,
+            reward: rrMetrics.reward,
+            actualRR: rrMetrics.actualRR,
+            requiredRR: rrMetrics.requiredRR
+        });
+        if (Number.isFinite(rrMetrics.actualRR)) {
+            result.risk_reward = '1:' + rrMetrics.actualRR.toFixed(2);
         }
         
         if (!result.stop_loss_reason) {
@@ -3516,6 +3578,23 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
             issues.push('SELL geometry must be SL > entry > TP1 > TP2 > TP3');
         }
         if (tp1 === tp2 || tp1 === tp3 || tp2 === tp3) issues.push('take profits must be distinct');
+    }
+    if (issues.length === 0) {
+        const minimumRR = Number(liveMarketContext?.risk_constraints?.minimum_rr) || 2.5;
+        const rrMetrics = calculateRRMetrics(direction, entry, sl, tp1, minimumRR);
+        if (!(rrMetrics.risk > 0)) issues.push('risk must be greater than zero');
+        if (!(rrMetrics.reward > 0)) issues.push('reward must be greater than zero');
+        if (!Number.isFinite(rrMetrics.actualRR)) {
+            issues.push('actual RR must be finite');
+        } else if (rrMetrics.actualRR + 1e-9 < minimumRR) {
+            issues.push(`actual RR ${rrMetrics.actualRR.toFixed(2)} below minimum ${minimumRR.toFixed(2)}`);
+        }
+        const tp1Candidate = findTp1TargetCandidate(aiResult, liveMarketContext, rrMetrics);
+        if (tp1Candidate.checked && !tp1Candidate.hasValidCandidate) {
+            issues.push('no supplied target candidate satisfies minimum RR');
+        } else if (tp1Candidate.checked && !tp1Candidate.matched) {
+            issues.push('take_profit_1 must match a supplied target candidate that satisfies minimum RR');
+        }
     }
 
     const selected = aiResult.selected_zone || aiResult.entry_zone;
