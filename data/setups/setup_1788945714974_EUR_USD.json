@@ -1,0 +1,55 @@
+{
+  "id": 1788945714974,
+  "recordedAt": "2026-09-09T09:21:54.976Z",
+  "eventType": "ai_scan",
+  "pair": "EUR/USD",
+  "setup": {
+    "date": "2026-09-09",
+    "time": "09:21:54",
+    "pair": "EUR/USD",
+    "current_price": 1.1633,
+    "trade_type": "SELL_LIMIT",
+    "decision": "SELL_LIMIT",
+    "order_type": "LIMIT",
+    "setup_type": "PENDING_LIMIT",
+    "entry_price": 1.166,
+    "entry_zone": {
+      "source": "OB",
+      "low": 1.166,
+      "high": 1.16771
+    },
+    "stop_loss": 1.16791,
+    "stop_loss_reason": "ZONE_BOUNDARY invalidation plus structural buffer",
+    "take_profit_1": 1.16114,
+    "take_profit_2": 1.16112,
+    "take_profit_3": 1.16085,
+    "risk_reward": "1:2.54",
+    "confidence": 42,
+    "zone_quality": "B",
+    "patterns_detected": "FRESH_4H_OB+PREMIUM_RETEST+MANIPULATION_PHASE",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "A fresh 4H supply OB at 1.16600-1.16771 provides a high-quality pending SELL limit opportunity. Price is currently in premium (81.1% of range) and the market is in a manipulation phase, suggesting a move up into this fresh supply to sweep sell-side liquidity before a reversal. The zone is fresh (0 touches), structurally valid, and offers a 2.54R reward to the nearest structural target.",
+      "structure": "The 4H OB is fresh and unmitigated, representing a strong supply level. The market is in a manipulation phase, which often precedes a liquidity sweep into such levels. The zone sits above current price, providing a logical pending limit entry for a retest and reversal.",
+      "liquidity": "The zone is positioned just above the 4H sell-side liquidity at 1.16515 and the recent equal highs at 1.16412/1.16423. A move into the OB would likely sweep these buy-side levels, creating a liquidity pool to fuel a downward move. Targets are placed at sell-side liquidity levels below (1.16114, 1.16112, 1.16085).",
+      "volatility": "The stop loss distance of 0.00191 is above the minimum required 0.00189 and within the maximum allowed 0.00503. The risk distance is 1.52x the 4H ATR, which is a valid volatility-aware stop. The current low volatility regime may precede a volatility expansion, which is favorable for this pending setup.",
+      "why_best": "This is the only adaptive setup candidate provided. It is a fresh, structural 4H OB in the premium/discount context that favors a sell. The zone is at a logical liquidity grab point, and the risk-reward ratio meets the minimum 2.5R requirement using a real structural target.",
+      "why_not_opposite": "A buy setup is not favored because price is in the premium zone (81.1% of range), which is generally unfavorable for new buys. The holistic buy score is high, but the market is in a manipulation phase, and the nearest buy-side liquidity is below current price, suggesting a move down is more probable than a continuation up. The strongest fresh zones are all sell-side OBs above price.",
+      "invalidation": "The setup is invalidated if price closes above the stop loss at 1.16791, which is beyond the zone's upper boundary and a structural buffer. This would indicate that the supply zone has been broken and the bearish thesis is wrong.",
+      "secondary": [
+        "The zone is fresh with 0 touches, increasing its potential as a reversal point.",
+        "The market regime is MANIPULATION, which often involves a final push into liquidity before a reversal.",
+        "The 4H trend is bullish, but this setup is a counter-trend pullback trade into a premium supply zone, which is a valid ICT concept."
+      ],
+      "risk_warning": "Normal market risk applies"
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 20,
+      "why_rejected": "A buy setup is rejected because price is in the premium zone (81.1% of the range), which is unfavorable for buying. The nearest buy-side liquidity is below price, and the market is in a manipulation phase that often precedes a move down. The fresh, high-quality zones are all sell-side OBs above price, not buy-side zones below."
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for price to reach the pending limit zone at 1.16600 and show a reaction (e.g., a bearish candlestick pattern or displacement) before considering the entry confirmed.",
+    "source": "AI-Generated Setup"
+  }
+}
