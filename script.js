@@ -1255,11 +1255,11 @@ function calculateMSNR(data, currentPrice) {
     let supportMeta = [s1, s2, s3]
         .filter(s => s < currentPrice)
         .sort((a, b) => b - a)
-        .map((level, index) => ({ level, origin: 'STRUCTURAL', rank: index + 1 }));
+        .map((level, index) => ({ level, origin: 'PIVOT_DERIVED', rank: index + 1 }));
     let resistanceMeta = [r1, r2, r3]
         .filter(r => r > currentPrice)
         .sort((a, b) => a - b)
-        .map((level, index) => ({ level, origin: 'STRUCTURAL', rank: index + 1 }));
+        .map((level, index) => ({ level, origin: 'PIVOT_DERIVED', rank: index + 1 }));
     
     // Fallback: If no supports found below price or no resistances found above price,
     // generate ATR-based fallback levels so candidates are ALWAYS found.
@@ -1757,12 +1757,9 @@ function ictBuildRealZones(data, price, direction, pairLocal) {
     const levels = direction === 'BUY' ? (msnr.supportMeta || []) : (msnr.resistanceMeta || []);
     for (const meta of levels) {
         const level = meta.level;
-        if (meta.origin === 'ATR_FALLBACK') {
-            console.log("⚠️ Using ATR_FALLBACK MSNR reference", { direction, level });
-        }
         zones.push({
             type: 'MSNR',
-            origin: meta.origin || 'STRUCTURAL',
+            origin: meta.origin || 'PIVOT_DERIVED',
             primary_eligible: meta.origin !== 'ATR_FALLBACK',
             low: level * 0.9995,
             high: level * 1.0005,
@@ -2901,7 +2898,7 @@ function buildLiveZonesForTf(data, tf, price, pairLocal, atrVal, limitPerDirecti
             zones.push({
                 id: `${tf}-${direction}-${z.type}-${ictRound(z.low, prec)}-${ictRound(z.high, prec)}`,
                 type: z.type,
-                origin: z.origin || 'STRUCTURAL',
+                origin: z.origin || (z.type === 'MSNR' ? 'PIVOT_DERIVED' : 'STRUCTURAL'),
                 primary_eligible: z.primary_eligible !== false,
                 direction,
                 timeframe: tf,
@@ -2935,11 +2932,11 @@ function buildTargetCandidates(historyCache, price, pairLocal) {
         const sw = findSwings(data, 3);
         for (const meta of (msnr.resistanceMeta || []).slice(0, 5)) {
             const level = meta.level;
-            candidates.push({ direction: 'BUY', timeframe: tf, source: 'MSNR_RESISTANCE', origin: meta.origin || 'STRUCTURAL', level, distance_from_price: Math.abs(level - price) });
+            candidates.push({ direction: 'BUY', timeframe: tf, source: 'MSNR_RESISTANCE', origin: meta.origin || 'PIVOT_DERIVED', level, distance_from_price: Math.abs(level - price) });
         }
         for (const meta of (msnr.supportMeta || []).slice(0, 5)) {
             const level = meta.level;
-            candidates.push({ direction: 'SELL', timeframe: tf, source: 'MSNR_SUPPORT', origin: meta.origin || 'STRUCTURAL', level, distance_from_price: Math.abs(level - price) });
+            candidates.push({ direction: 'SELL', timeframe: tf, source: 'MSNR_SUPPORT', origin: meta.origin || 'PIVOT_DERIVED', level, distance_from_price: Math.abs(level - price) });
         }
         for (const level of (liq.above || []).slice(0, 5)) {
             candidates.push({ direction: 'BUY', timeframe: tf, source: 'BUY_SIDE_LIQUIDITY', origin: 'STRUCTURAL', level, distance_from_price: Math.abs(level - price) });
@@ -3153,7 +3150,7 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'All values in COMPUTED MARKET FACTS are generated deterministically from live market data and must be treated as authoritative.',
         'Raw candles are supplied only for additional context.',
         'Never invent an FVG, OB, MSNR, swing, MSS, BOS, CHoCH, ATR, liquidity level, or target level that is not present in COMPUTED MARKET FACTS.',
-        'STRUCTURAL zones/targets are derived from observed market structure. ATR_FALLBACK levels are deterministic synthetic fallback levels and must NOT be treated as equal-strength structural confluence.',
+        'Zone/target origin hierarchy: STRUCTURAL = directly derived market structure such as FVG, OB, swings and structural liquidity. PIVOT_DERIVED = deterministic MSNR support/resistance calculated from pivot-based market levels. ATR_FALLBACK = synthetic deterministic fallback/reference level used when normal MSNR levels are unavailable. ATR_FALLBACK must not be treated as primary structural confluence.',
         'Your role is to interpret the supplied market state, identify the highest-quality valid opportunity currently available, or return NO_TRADE when conditions are insufficient.',
         'Do not force a setup. Return ONLY valid JSON.'
     ].join('\n');
@@ -3189,7 +3186,7 @@ Analyze the current live market.
 6. Do not invent levels.
 7. Do not force a trade merely because one direction is marginally better.
 8. Today's best professional decision may be WAIT or NO_TRADE.
-9. STRUCTURAL zones/targets are derived from observed market structure. ATR_FALLBACK levels are deterministic synthetic fallback levels and must NOT be treated as equal-strength structural confluence.
+9. Zone/target origin hierarchy: STRUCTURAL = directly derived market structure such as FVG, OB, swings and structural liquidity. PIVOT_DERIVED = deterministic MSNR support/resistance calculated from pivot-based market levels. ATR_FALLBACK = synthetic deterministic fallback/reference level used when normal MSNR levels are unavailable. ATR_FALLBACK must not be treated as primary structural confluence.
 
 Use symbolic arithmetic only:
 risk = abs(entry - stop_loss)

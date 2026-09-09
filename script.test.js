@@ -465,21 +465,36 @@ describe('live AI market context and prompt', () => {
         expect(Array.isArray(live.target_candidates.buy)).toBe(true);
     });
 
-    it('marks structural and ATR fallback MSNR origins', () => {
+    it('marks pivot-derived and ATR fallback MSNR origins', () => {
         const ctx = getContext();
         const data = candles(80, 100, 0.5, 'up');
-        const structural = ctx.calculateMSNR(data, 140);
-        expect(structural.supportMeta.some(x => x.origin === 'STRUCTURAL')).toBe(true);
-        expect(structural.resistanceMeta.some(x => x.origin === 'STRUCTURAL')).toBe(true);
+        const pivotDerived = ctx.calculateMSNR(data, 140);
+        expect(pivotDerived.supportMeta.some(x => x.origin === 'PIVOT_DERIVED')).toBe(true);
+        expect(pivotDerived.resistanceMeta.some(x => x.origin === 'PIVOT_DERIVED')).toBe(true);
 
         const fallback = ctx.calculateMSNR(data, 1000);
         expect(fallback.resistanceMeta.some(x => x.origin === 'ATR_FALLBACK')).toBe(true);
         expect(fallback.allResistances).toEqual(fallback.resistanceMeta.map(x => x.level));
     });
 
-    it('preserves MSNR origin on live zones and target candidates', () => {
+    it('preserves MSNR origin and eligibility on live zones and target candidates', () => {
         const ctx = getContext();
         const historyCache = buildCache();
+        const pivotLive = ctx.buildLiveMarketContext({
+            pair: 'XAU/USD',
+            price: 140,
+            historyCache,
+            indicators: { '4H': {} },
+            patterns: {},
+            enhancedAnalysis: {},
+            holistic: {},
+            entryContext: null
+        });
+        const pivotZone = pivotLive.real_ict_zones.find(z => z.type === 'MSNR' && z.origin === 'PIVOT_DERIVED');
+        expect(pivotZone).toBeTruthy();
+        expect(pivotZone.primary_eligible).toBe(true);
+        expect(pivotLive.target_candidates.buy.some(c => c.source === 'MSNR_RESISTANCE' && c.origin === 'PIVOT_DERIVED')).toBe(true);
+
         const live = ctx.buildLiveMarketContext({
             pair: 'XAU/USD',
             price: 1000,
@@ -496,6 +511,25 @@ describe('live AI market context and prompt', () => {
         expect(live.target_candidates.buy.some(c => c.source === 'MSNR_RESISTANCE' && c.origin === 'ATR_FALLBACK')).toBe(true);
     });
 
+    it('keeps FVG and OB zones marked structural', () => {
+        const ctx = getContext();
+        const data = candles(80, 100, 0.5, 'up');
+        const fvgZone = ctx.ictBuildRealZones(data, 140, 'BUY', 'XAU/USD').find(z => z.type === 'FVG');
+        expect(fvgZone).toBeTruthy();
+        expect(fvgZone.origin).toBe('STRUCTURAL');
+        expect(fvgZone.primary_eligible).toBe(true);
+
+        const obData = candles(80, 100, 0.2, 'up');
+        obData[76] = { o: 120, c: 118, h: 121, l: 117, v: 1e6 };
+        obData[77] = { o: 118, c: 122, h: 123, l: 117.5, v: 1e6 };
+        obData[78] = { o: 122, c: 125, h: 126, l: 121.5, v: 1e6 };
+        obData[79] = { o: 125, c: 128, h: 129, l: 124.5, v: 1e6 };
+        const obZone = ctx.ictBuildRealZones(obData, 140, 'BUY', 'XAU/USD').find(z => z.type === 'OB');
+        expect(obZone).toBeTruthy();
+        expect(obZone.origin).toBe('STRUCTURAL');
+        expect(obZone.primary_eligible).toBe(true);
+    });
+
     it('builds a prompt that allows NO_TRADE and has no stale hard-coded price anchors', () => {
         const ctx = getContext();
         const live = {
@@ -509,7 +543,8 @@ describe('live AI market context and prompt', () => {
         };
         const prompt = ctx.buildAIPrompt(live, '### 4H CANDLES\n  0: O:1.00 H:2.00 L:0.50 C:1.50 V:n/a\n');
         expect(prompt.system).toMatch(/COMPUTED MARKET FACTS/);
-        expect(prompt.system).toMatch(/ATR_FALLBACK levels are deterministic synthetic fallback levels/);
+        expect(prompt.system).toMatch(/PIVOT_DERIVED = deterministic MSNR support\/resistance/);
+        expect(prompt.system).toMatch(/ATR_FALLBACK = synthetic deterministic fallback\/reference level/);
         expect(prompt.user).toMatch(/NO_TRADE/);
         expect(prompt.user).toMatch(/primary_eligible=true/);
         expect(prompt.user).toMatch(/risk = abs\(entry - stop_loss\)/);
