@@ -1,0 +1,50 @@
+{
+  "id": 1788918021757,
+  "recordedAt": "2026-09-09T01:40:21.760Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-09",
+    "time": "01:40:21",
+    "pair": "XAU/USD",
+    "current_price": 4375.41019,
+    "trade_type": "SELL",
+    "entry_price": 4376.38,
+    "entry_zone": {
+      "low": 4376.38,
+      "high": 4377.52,
+      "source": "Confluence"
+    },
+    "stop_loss": 4406.38,
+    "stop_loss_reason": "Above recent swing high and 4H EMA, with buffer for volatility (2.5x ATR).",
+    "take_profit_1": 4207.74,
+    "take_profit_2": 4283.21,
+    "take_profit_3": 4207.74,
+    "risk_reward": "1:5.6",
+    "confidence": 75,
+    "zone_quality": "B",
+    "patterns_detected": "4H Bearish Trend+1H Bearish Trend+Lower Highs on 1H+Break of 1H Swing Low",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Sell into the 1H FVG/OB confluence during Asia KZ, aligning with bearish 4H/1H trends and bearish momentum.",
+      "secondary": [
+        "Entry at 4376.38 (current price) within 1H FVG (4376.38-4377.52).",
+        "SL at 4406.38 (30 points risk, ~2.5x ATR).",
+        "TP1 at 4328.58 (distance 47.80, passes min reward 75).",
+        "TP2 at 4283.21 (swing low).",
+        "TP3 at 4207.74 (MSNR S1).",
+        "RR = 30 risk / 47.80 reward = 1:1.59 (TP1), but with TP2/TP3 overall RR improves."
+      ],
+      "risk_warning": "Potential for bullish reversal if price reclaims 4400; monitor for news events.",
+      "why_best": "Strong confluence of bearish trends, FVG/OB, and liquidity below; offers best risk-reward with clear targets."
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 25,
+      "why_rejected": "Counter-trend against 4H/1H bearish structure; lacks confluence and lower probability."
+    },
+    "ai_decision": "enter_now",
+    "wait_condition": null,
+    "source": "AI-Generated Setup"
+  }
+}
