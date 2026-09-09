@@ -2902,7 +2902,9 @@ function calculateRRMetrics(direction, entry, stopLoss, tp1, minimumRR = 2.5) {
 function findTp1TargetCandidate(aiResult, liveMarketContext, rrMetrics) {
     const direction = aiResult?.direction;
     const side = direction === 'BUY' ? 'buy' : direction === 'SELL' ? 'sell' : null;
-    const supplied = side ? (liveMarketContext?.target_candidates?.[side] || []) : [];
+    const supplied = side
+        ? (liveMarketContext?.target_candidates?.all || liveMarketContext?.target_candidates?.[side] || []).filter(c => c.direction === direction)
+        : [];
     if (supplied.length === 0) return { checked: false, hasValidCandidate: true, matched: null };
 
     const entry = Number(aiResult.entry);
@@ -2916,6 +2918,190 @@ function findTp1TargetCandidate(aiResult, liveMarketContext, rrMetrics) {
     const tolerance = Math.max(Math.abs(tp1) * 0.0002, 0.00001);
     const matched = validTargets.find(c => Math.abs(Number(c.level) - tp1) <= tolerance) || null;
     return { checked: true, hasValidCandidate: validTargets.length > 0, matched, nearest: validTargets[0] || null };
+}
+
+function getAdaptiveEntryCandidates(zone, direction, prec) {
+    const low = Number(zone.low);
+    const high = Number(zone.high);
+    if (!Number.isFinite(low) || !Number.isFinite(high) || high < low) return [];
+    const entries = direction === 'BUY'
+        ? [high, (low + high) / 2, low]
+        : [low, (low + high) / 2, high];
+    return [...new Set(entries.map(v => ictRound(v, prec)))].filter(v => v >= low && v <= high);
+}
+
+function getAdaptiveStopCandidates(zone, direction, entry, data, zones, atrVal, settings, prec) {
+    const buffer = Math.max(settings.pipSize * 2, (atrVal || 0) * 0.05, entry * 0.00002);
+    const raw = [];
+    const add = (level, source, origin = 'STRUCTURAL') => {
+        const n = Number(level);
+        if (!Number.isFinite(n)) return;
+        if (direction === 'BUY' && n < entry) raw.push({ level: n, source, origin });
+        if (direction === 'SELL' && n > entry) raw.push({ level: n, source, origin });
+    };
+
+    add(direction === 'BUY' ? zone.low : zone.high, 'ZONE_BOUNDARY', zone.origin || 'STRUCTURAL');
+    const sw = findSwings(data || [], 3);
+    for (const s of direction === 'BUY' ? (sw.L || []).slice(-10) : (sw.H || []).slice(-10)) {
+        add(s.p, direction === 'BUY' ? 'SWING_LOW' : 'SWING_HIGH', 'STRUCTURAL');
+    }
+    const liq = mapLiquidity(data || []);
+    for (const level of direction === 'BUY' ? (liq.below || []) : (liq.above || [])) {
+        add(level, direction === 'BUY' ? 'SELL_SIDE_LIQUIDITY' : 'BUY_SIDE_LIQUIDITY', 'STRUCTURAL');
+    }
+    for (const z of zones || []) {
+        if (z.direction !== direction || z.invalidated || z.primary_eligible === false) continue;
+        add(direction === 'BUY' ? z.low : z.high, `${z.type}_CLUSTER`, z.origin || 'STRUCTURAL');
+    }
+
+    const dedupe = new Map();
+    for (const c of raw) {
+        const stop = direction === 'BUY' ? c.level - buffer : c.level + buffer;
+        const roundedStop = ictRound(stop, prec);
+        const key = ictRound(c.level, prec);
+        if (!dedupe.has(key)) {
+            dedupe.set(key, { ...c, stop_loss: roundedStop, buffer: ictRound(buffer, prec) });
+        }
+    }
+    return [...dedupe.values()].sort((a, b) => Math.abs(a.stop_loss - entry) - Math.abs(b.stop_loss - entry));
+}
+
+function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, minimumRR, prec) {
+    const side = direction === 'BUY' ? 'buy' : 'sell';
+    const risk = Math.abs(entry - stopLoss);
+    const requiredReward = risk * minimumRR;
+    const threshold = direction === 'BUY' ? entry + requiredReward : entry - requiredReward;
+    const sourceTargets = targetCandidates?.all
+        ? targetCandidates.all.filter(c => c.direction === direction)
+        : (targetCandidates?.[side] || []);
+    const targets = sourceTargets
+        .filter(c => Number.isFinite(Number(c.level)) && c.origin !== 'ATR_FALLBACK')
+        .map(c => ({ ...c, level: ictRound(Number(c.level), prec), distance_from_entry: ictRound(Math.abs(Number(c.level) - entry), prec) }))
+        .filter(c => direction === 'BUY' ? c.level > entry : c.level < entry)
+        .sort((a, b) => direction === 'BUY' ? a.level - b.level : b.level - a.level);
+    const valid = targets.filter(c => direction === 'BUY' ? c.level + 1e-9 >= threshold : c.level - 1e-9 <= threshold);
+    const tp1 = valid[0];
+    if (!tp1) return null;
+    const farther = targets.filter(c => direction === 'BUY' ? c.level > tp1.level : c.level < tp1.level);
+    const ladder = [tp1, ...farther].filter((c, i, arr) => arr.findIndex(x => x.level === c.level) === i).slice(0, 3);
+    if (ladder.length < 3) return null;
+    const rr = calculateRRMetrics(direction, entry, stopLoss, ladder[0].level, minimumRR);
+    return {
+        tp1: ladder[0],
+        tp2: ladder[1],
+        tp3: ladder[2],
+        rr_tp1: rr.actualRR,
+        required_reward: requiredReward,
+        minimum_valid_tp1_price: direction === 'BUY' ? ictRound(threshold, prec) : null,
+        maximum_valid_tp1_price: direction === 'SELL' ? ictRound(threshold, prec) : null
+    };
+}
+
+function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, targetCandidates, riskConstraints, marketRegime, structure }) {
+    const settings = getMarketSettings(pair);
+    const prec = settings.prec;
+    const minimumRR = Number(riskConstraints?.minimum_rr) || settings.targetRR || 2.5;
+    const minSLDistance = Number(riskConstraints?.minimum_sl_distance) || settings.minSL;
+    const maxSLDistance = Number(riskConstraints?.maximum_sl_distance) || price * settings.maxSLPct;
+    const candidates = [];
+
+    for (const zone of (zones || []).filter(z => z.primary_eligible !== false && !z.invalidated)) {
+        if (zone.type === 'MSNR' && zone.origin === 'ATR_FALLBACK') continue;
+        const direction = zone.direction;
+        const tf = zone.timeframe || '1H';
+        const data = historyCache?.[tf] || historyCache?.['1H'] || historyCache?.['4H'] || [];
+        const atrData = tf === '4H' ? (historyCache?.['4H'] || []) : (historyCache?.['1H'] || []);
+        const atrVal = atrData.length >= 15 ? atr(atrData, 14) : 0;
+        const safeAtr = Number.isFinite(atrVal) && atrVal > 0 ? atrVal : 0;
+        const entries = getAdaptiveEntryCandidates(zone, direction, prec);
+        for (const entry of entries) {
+            const stops = getAdaptiveStopCandidates(zone, direction, entry, data, zones, safeAtr, settings, prec);
+            for (const stop of stops) {
+                const risk = Math.abs(entry - stop.stop_loss);
+                if (risk + 1e-12 < minSLDistance || risk - 1e-12 > maxSLDistance) continue;
+                const targets = selectAdaptiveTargets(direction, entry, stop.stop_loss, targetCandidates, minimumRR, prec);
+                if (!targets) continue;
+                const rr = calculateRRMetrics(direction, entry, stop.stop_loss, targets.tp1.level, minimumRR);
+                if (!rr.geometryOk || !Number.isFinite(rr.actualRR) || rr.actualRR + 1e-9 < minimumRR) continue;
+                const htfAlignment = ['1D', '4H', '1H']
+                    .map(t => structure?.[t]?.trend)
+                    .filter(v => v === (direction === 'BUY' ? 'BULLISH' : 'BEARISH')).length;
+                const zoneScore = zone.type === 'FVG' ? 28 : zone.type === 'OB' ? 30 : 20;
+                const freshnessScore = zone.freshness === 'FRESH' ? 12 : zone.freshness === 'PARTIAL' ? 6 : 0;
+                const rrScore = Math.min(15, (rr.actualRR - minimumRR) * 4);
+                const distancePenalty = Math.min(10, Math.abs(entry - price) / Math.max(price, 1) * 100);
+                const score = zoneScore + freshnessScore + htfAlignment * 8 + rrScore - distancePenalty;
+                const id = `${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${candidates.length + 1}`;
+                candidates.push({
+                    id,
+                    direction,
+                    timeframe: tf,
+                    zone_type: zone.type,
+                    zone_origin: zone.origin,
+                    zone_low: zone.low,
+                    zone_high: zone.high,
+                    entry,
+                    stop_loss: stop.stop_loss,
+                    stop_reason: `${stop.source} invalidation plus structural buffer`,
+                    stop_source: stop.source,
+                    risk_distance: ictRound(risk, prec),
+                    sl_atr_multiple: safeAtr > 0 ? ictRound(risk / safeAtr, 2) : null,
+                    tp1: targets.tp1.level,
+                    tp2: targets.tp2.level,
+                    tp3: targets.tp3.level,
+                    tp1_source: targets.tp1.source,
+                    tp1_origin: targets.tp1.origin,
+                    rr_tp1: ictRound(rr.actualRR, 2),
+                    required_reward: ictRound(targets.required_reward, prec),
+                    freshness: zone.freshness,
+                    htf_alignment: htfAlignment,
+                    distance_from_current_price: ictRound(Math.abs(entry - price), prec),
+                    distance_from_current_price_atr: safeAtr > 0 ? ictRound(Math.abs(entry - price) / safeAtr, 2) : null,
+                    market_regime: marketRegime?.primary_regime || 'UNKNOWN',
+                    score: ictRound(score, 2)
+                });
+            }
+        }
+    }
+
+    const selected = candidates
+        .sort((a, b) => b.score - a.score || b.rr_tp1 - a.rr_tp1 || a.distance_from_current_price - b.distance_from_current_price)
+        .slice(0, 5);
+    console.log('ADAPTIVE SETUP CANDIDATES', selected);
+    return selected;
+}
+
+function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
+    const id = aiResult?.selected_candidate_id;
+    if (!id) return aiResult;
+    const candidate = (liveMarketContext?.adaptive_setup_candidates || []).find(c => c.id === id);
+    if (!candidate) return aiResult;
+    aiResult.direction = candidate.direction;
+    aiResult.decision = candidate.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT';
+    aiResult.order_type = 'LIMIT';
+    aiResult.setup_type = 'PENDING_LIMIT';
+    aiResult.selected_zone = { type: candidate.zone_type, timeframe: candidate.timeframe, low: candidate.zone_low, high: candidate.zone_high };
+    aiResult.entry_zone = { source: candidate.zone_type, low: candidate.zone_low, high: candidate.zone_high };
+    aiResult.entry = candidate.entry;
+    aiResult.stop_loss = candidate.stop_loss;
+    aiResult.stop_loss_reason = candidate.stop_reason;
+    aiResult.take_profit_1 = candidate.tp1;
+    aiResult.take_profit_2 = candidate.tp2;
+    aiResult.take_profit_3 = candidate.tp3;
+    aiResult.risk_reward = `1:${candidate.rr_tp1.toFixed(2)}`;
+    aiResult.adaptive_candidate = candidate;
+    console.log('SELECTED ADAPTIVE SETUP', {
+        id: candidate.id,
+        pair: liveMarketContext?.pair,
+        direction: candidate.direction,
+        zone: { type: candidate.zone_type, timeframe: candidate.timeframe, low: candidate.zone_low, high: candidate.zone_high },
+        entry: candidate.entry,
+        stopLoss: candidate.stop_loss,
+        slAtrMultiple: candidate.sl_atr_multiple,
+        tp1: candidate.tp1,
+        rr: candidate.rr_tp1
+    });
+    return aiResult;
 }
 
 function buildStructureSnapshot(data, tf) {
@@ -3021,6 +3207,7 @@ function buildTargetCandidates(historyCache, price, pairLocal) {
     }
     const all = [...dedupe.values()];
     return {
+        all: all.sort((a, b) => a.distance_from_price - b.distance_from_price).slice(0, 30),
         buy: all.filter(c => c.direction === 'BUY' && c.level > price).sort((a, b) => a.distance_from_price - b.distance_from_price).slice(0, 10),
         sell: all.filter(c => c.direction === 'SELL' && c.level < price).sort((a, b) => a.distance_from_price - b.distance_from_price).slice(0, 10)
     };
@@ -3140,6 +3327,36 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     else if (Object.values(displacement).some(Boolean)) primaryRegime = 'EXPANSION';
     else if (bullVotes >= 2) primaryRegime = 'TRENDING_BULLISH';
     else if (bearVotes >= 2) primaryRegime = 'TRENDING_BEARISH';
+    const marketRegime = {
+        primary_regime: primaryRegime,
+        phase: primaryPhase,
+        compression,
+        displacement
+    };
+    const riskConstraints = {
+        minimum_rr: settings.targetRR || 2.5,
+        minimum_sl_distance: ictRound(minSLDistance, prec),
+        maximum_sl_distance: ictRound(maxSLDistance, prec),
+        min_sl_atr_multiplier: minSLMultiplier,
+        maximum_entry_distance_atr: LIMIT_ORDER_MAX_DIST_ATR,
+        tp1_rule: {
+            formula: 'risk = abs(entry - stop_loss); required_reward = risk * minimum_rr',
+            buy_minimum_valid_tp1: 'entry + required_reward',
+            sell_maximum_valid_tp1: 'entry - required_reward'
+        },
+        note: `Any SL closer than ${ictRound(minSLDistance, prec)} is invalid for current ATR/settings.`
+    };
+    const adaptiveSetupCandidates = buildAdaptiveSetupCandidates({
+        pair,
+        price,
+        historyCache,
+        zones,
+        targetCandidates,
+        riskConstraints,
+        marketRegime,
+        structure
+    });
+    stageContext.limit_order_setup.adaptive_candidate_count = adaptiveSetupCandidates.length;
 
     return {
         pair,
@@ -3210,12 +3427,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             current_range_position_pct: ictRound(rangePositionPct, 1),
             classification: isPremiumDiscount(pdData, price).zone
         },
-        market_regime: {
-            primary_regime: primaryRegime,
-            phase: primaryPhase,
-            compression,
-            displacement
-        },
+        market_regime: marketRegime,
         momentum: {
             adx_4h: patterns?.['4H']?.adx?.adx ?? null,
             adx_1h: patterns?.['1H']?.adx?.adx ?? null,
@@ -3237,20 +3449,9 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             volume_available: realVolume,
             volume_note: realVolume ? 'Provider volume is treated as usable for this pair.' : 'Provider volume is synthetic/unreliable. Do not use volume as confirmation.'
         },
-        risk_constraints: {
-            minimum_rr: settings.targetRR || 2.5,
-            minimum_sl_distance: ictRound(minSLDistance, prec),
-            maximum_sl_distance: ictRound(maxSLDistance, prec),
-            min_sl_atr_multiplier: minSLMultiplier,
-            maximum_entry_distance_atr: LIMIT_ORDER_MAX_DIST_ATR,
-            tp1_rule: {
-                formula: 'risk = abs(entry - stop_loss); required_reward = risk * minimum_rr',
-                buy_minimum_valid_tp1: 'entry + required_reward',
-                sell_maximum_valid_tp1: 'entry - required_reward'
-            },
-            note: `Any SL closer than ${ictRound(minSLDistance, prec)} is invalid for current ATR/settings.`
-        },
+        risk_constraints: riskConstraints,
         target_candidates: targetCandidates,
+        adaptive_setup_candidates: adaptiveSetupCandidates,
         entry_filters: entryContext || null
     };
 }
@@ -3264,12 +3465,16 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'Zone/target origin hierarchy: STRUCTURAL = directly derived market structure such as FVG, OB, swings and structural liquidity. PIVOT_DERIVED = deterministic MSNR support/resistance calculated from pivot-based market levels. ATR_FALLBACK = synthetic deterministic fallback/reference level used when normal MSNR levels are unavailable. ATR_FALLBACK must not be treated as primary structural confluence.',
         'Stage 1 asks whether a valid future pending-limit setup exists. Current price not being inside the zone, immediate confirmation score of 0, or off-hours are not by themselves reasons for NO_TRADE.',
         'Stage 2 asks whether immediate entry/fill confirmation is ready now.',
-        'Your role is to interpret the supplied market state, identify the highest-quality valid pending-limit opportunity currently available, or return NO_TRADE when no future setup satisfies structure, volatility, zone, and RR requirements.',
+        'Your role is to rank the supplied adaptive_setup_candidates, identify the highest-quality valid pending-limit opportunity currently available, or return NO_TRADE when no future setup satisfies structure, volatility, zone, and RR requirements.',
         'Do not return WAIT merely because price has not reached a valid future limit zone. If a future pending-limit setup already satisfies setup-stage requirements, return BUY_LIMIT or SELL_LIMIT with ai_decision:"wait_for_reaction".',
         'Do not return skip when your own analysis concludes that a valid BUY_LIMIT or SELL_LIMIT setup already exists.',
+        'If selecting a setup, include selected_candidate_id and use the candidate entry, stop_loss, TP1, TP2, and TP3 exactly.',
+        'If adaptive_setup_candidates is empty, do not invent entry/SL/TP levels; return WAIT or NO_TRADE.',
+        'If a structural stop is below the minimum volatility-aware stop distance, you MUST NOT output that stop. Try another structurally justified invalidation level. After changing SL, recalculate risk and all target requirements. Never keep old TP values after changing SL. Never knowingly output a setup that violates supplied deterministic constraints.',
         'Your risk_reward field is not trusted unless it matches numeric entry, stop_loss, and take_profit_1. Do not claim a minimum RR unless the arithmetic actually equals or exceeds minimum_rr.',
         'For TP1, select the nearest supplied target candidate in the trade direction that satisfies minimum_rr.',
         'If no supplied real target satisfies minimum_rr, return WAIT or NO_TRADE rather than inventing a false RR.',
+        'Premium/discount context: discount generally favors BUY entries and premium generally favors SELL entries unless stronger supplied structure says otherwise.',
         'Freshness labels mean: FRESH = fresh, PARTIAL = partially used/partially mitigated, USED = used, INVALID = invalidated. Never describe PARTIAL as fresh.',
         'Do not force a setup. Return ONLY valid JSON.'
     ].join('\n');
@@ -3300,11 +3505,11 @@ Analyze the current live market.
 This bot creates pending LIMIT orders at future ICT zones. A valid setup may exist even when current price is not inside the entry zone yet.
 
 1. Decide BUY_LIMIT, SELL_LIMIT, WAIT, or NO_TRADE. If preserving direction compatibility, also set direction to BUY or SELL for limit setups.
-2. Select one REAL supplied zone from COMPUTED MARKET FACTS.real_ict_zones if proposing BUY or SELL. The selected primary zone must have primary_eligible=true.
+2. Prefer selecting one supplied COMPUTED MARKET FACTS.adaptive_setup_candidates item by selected_candidate_id. If proposing BUY or SELL, selected zone must also exist in real_ict_zones and have primary_eligible=true.
 3. Explain why this direction has better probability than the opposite.
 4. Evaluate future limit-entry geometry using your proposed entry, not current market price.
 5. Respect current volatility, ATR, minimum SL distance, maximum SL distance, and minimum RR constraints.
-6. Respect real structure, liquidity, premium/discount, and target candidates.
+6. Respect real structure, liquidity, premium/discount, adaptive setup candidates, and target candidates.
 7. Do not invent levels.
 8. Do not return NO_TRADE only because current price is not at the zone, immediate confirmation score is 0, or no immediate trigger exists yet.
 9. Return NO_TRADE only when no valid future limit-order setup satisfies structural, volatility, zone, and RR requirements.
@@ -3313,11 +3518,15 @@ This bot creates pending LIMIT orders at future ICT zones. A valid setup may exi
 12. Zone/target origin hierarchy: STRUCTURAL = directly derived market structure such as FVG, OB, swings and structural liquidity. PIVOT_DERIVED = deterministic MSNR support/resistance calculated from pivot-based market levels. ATR_FALLBACK = synthetic deterministic fallback/reference level used when normal MSNR levels are unavailable. ATR_FALLBACK must not be treated as primary structural confluence.
 13. Do NOT return WAIT merely because price has not reached a valid future limit zone. If setup-stage requirements are satisfied, return BUY_LIMIT or SELL_LIMIT and use ai_decision:"wait_for_reaction" when immediate entry is not ready.
 14. Do NOT return skip when your own analysis concludes that a valid BUY_LIMIT or SELL_LIMIT setup already exists.
-15. Before returning JSON, calculate risk = abs(entry - stop_loss), required_reward = risk * minimum_rr, actual_reward = abs(take_profit_1 - entry), and actual_rr = actual_reward / risk.
-16. Only propose BUY_LIMIT/SELL_LIMIT if actual_rr >= minimum_rr. Do not claim 1:2.5 unless numeric entry, stop_loss, and take_profit_1 actually meet or exceed 2.5R.
-17. Select TP1 as the nearest supplied target candidate in the trade direction that satisfies minimum_rr.
-18. If no supplied real target candidate satisfies minimum_rr, return WAIT or NO_TRADE rather than inventing a false RR.
-19. Freshness labels mean FRESH=fresh, PARTIAL=partially used/partially mitigated, USED=used, INVALID=invalidated. Do not call a PARTIAL zone fresh.
+15. If adaptive_setup_candidates contains valid choices, rank them and return the selected_candidate_id for the best one. Use that candidate's entry, stop_loss, take_profit_1, take_profit_2, and take_profit_3 exactly.
+16. If adaptive_setup_candidates is empty, do not invent entry/SL/TP levels; return WAIT or NO_TRADE.
+17. If a structural stop is below the minimum volatility-aware stop distance, do not output it. A wider structural invalidation changes risk, so recalculate TP requirements before output.
+18. Before returning JSON, calculate risk = abs(entry - stop_loss), required_reward = risk * minimum_rr, actual_reward = abs(take_profit_1 - entry), and actual_rr = actual_reward / risk.
+19. Only propose BUY_LIMIT/SELL_LIMIT if actual_rr >= minimum_rr. Do not claim 1:2.5 unless numeric entry, stop_loss, and take_profit_1 actually meet or exceed 2.5R.
+20. Select TP1 as the nearest supplied target candidate in the trade direction that satisfies minimum_rr.
+21. If no supplied real target candidate satisfies minimum_rr, return WAIT or NO_TRADE rather than inventing a false RR.
+22. Discount generally favors BUY entries; premium generally favors SELL entries unless stronger supplied structure says otherwise.
+23. Freshness labels mean FRESH=fresh, PARTIAL=partially used/partially mitigated, USED=used, INVALID=invalidated. Do not call a PARTIAL zone fresh.
 
 Use symbolic arithmetic only:
 risk = abs(entry - stop_loss)
@@ -3329,6 +3538,7 @@ For SELL geometry must be: stop_loss > entry > take_profit_1 > take_profit_2 > t
 Return ONLY JSON using the existing application schema plus selected_zone/decision:
 {
   "decision": "BUY_LIMIT" | "SELL_LIMIT" | "WAIT" | "NO_TRADE",
+  "selected_candidate_id": "string or null",
   "direction": "BUY" | "SELL",
   "order_type": "LIMIT",
   "setup_type": "PENDING_LIMIT",
@@ -3389,7 +3599,7 @@ function buildCandleData(historyCache, count = 10) {
     return data;
 }
 
-async function askAIToFindSetup(marketData, price, systemPrompt = null) {
+async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMarketContext = null) {
     if (!DEEPSEEK_API_KEY) {
         console.error('No AI key available');
         return null;
@@ -3433,7 +3643,7 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null) {
             return null;
         }
         
-        const result = JSON.parse(jsonMatch[0]);
+        const result = applyAdaptiveCandidateToAIResult(JSON.parse(jsonMatch[0]), liveMarketContext);
         const rawDecision = String(result.decision || result.direction || '').toUpperCase().replace('-', '_');
         if ((rawDecision === 'BUY_LIMIT' || rawDecision === 'SELL_LIMIT') && (result.direction !== 'BUY' && result.direction !== 'SELL')) {
             result.direction = rawDecision === 'BUY_LIMIT' ? 'BUY' : 'SELL';
@@ -3594,6 +3804,27 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
             issues.push('no supplied target candidate satisfies minimum RR');
         } else if (tp1Candidate.checked && !tp1Candidate.matched) {
             issues.push('take_profit_1 must match a supplied target candidate that satisfies minimum RR');
+        }
+    }
+
+    if (issues.length === 0 && aiResult.selected_candidate_id) {
+        const candidate = (liveMarketContext?.adaptive_setup_candidates || []).find(c => c.id === aiResult.selected_candidate_id);
+        if (!candidate) {
+            issues.push('selected adaptive setup candidate does not exist in supplied live market context');
+        } else if (candidate.zone_origin === 'ATR_FALLBACK') {
+            issues.push('ATR_FALLBACK adaptive setup candidate cannot be selected');
+        } else {
+            const tol = Math.max(Math.abs(entry) * 0.0002, 0.00001);
+            const numericMatches = [
+                ['entry', entry, candidate.entry],
+                ['stop_loss', sl, candidate.stop_loss],
+                ['take_profit_1', tp1, candidate.tp1],
+                ['take_profit_2', tp2, candidate.tp2],
+                ['take_profit_3', tp3, candidate.tp3]
+            ].filter(([, actual, expected]) => Math.abs(Number(actual) - Number(expected)) > tol);
+            if (numericMatches.length > 0) {
+                issues.push(`AI numeric levels do not match selected adaptive setup candidate: ${numericMatches.map(([name]) => name).join(', ')}`);
+            }
         }
     }
 
@@ -4159,7 +4390,7 @@ async function runAutoScan() {
 
         scanText.innerHTML = '🤖 AI analyzing live market context...';
 
-        const aiResult = await askAIToFindSetup(aiPrompt.user, price, aiPrompt.system);
+        const aiResult = await askAIToFindSetup(aiPrompt.user, price, aiPrompt.system, liveMarketContext);
         if (aiResult) {
             try {
                 const perf = getPatternPerformance(aiResult.patterns || []);
