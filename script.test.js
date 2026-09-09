@@ -491,6 +491,99 @@ describe('live AI market context and prompt', () => {
         expect(stage.immediate_entry.confirmation_score).toBe(0);
     });
 
+    it('keeps strong market context from creating a trade without CRT/TBS/MSNR strategy setup', () => {
+        const ctx = getContext();
+        const historyCache = trendCache('up', 1.08000, 0.00020);
+        const zone = { id: '1H-BUY-FVG-1.0995-1.1005', type: 'FVG', direction: 'BUY', timeframe: '1H', low: 1.09950, high: 1.10050, origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, freshness: 'FRESH' };
+        const structure = { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } };
+        const result = ctx.buildAdaptiveSetupCandidates({
+            pair: 'EUR/USD',
+            price: 1.10070,
+            historyCache,
+            zones: [zone],
+            targetCandidates: { buy: [{ direction: 'BUY', level: 1.10400, source: 'SWING_HIGH', origin: 'STRUCTURAL' }], sell: [] },
+            riskConstraints: { minimum_rr: 2.5 },
+            marketRegime: { primary_regime: 'TRENDING_BULLISH' },
+            structure,
+            marketContext: { directional_bias: 'BULLISH', context_score: 82 },
+            strategySetups: []
+        });
+        expect(result.raw_candidates).toEqual([]);
+        expect(result.valid_candidates).toEqual([]);
+    });
+
+    it('creates a valid strategy candidate from a deterministic MSNR setup', () => {
+        const ctx = getContext();
+        const historyCache = trendCache('up', 1.08000, 0.00020);
+        const zone = { id: '1H-BUY-MSNR-1.0995-1.1005', type: 'MSNR', direction: 'BUY', timeframe: '1H', low: 1.09950, high: 1.10050, midpoint: 1.10000, origin: 'PIVOT_DERIVED', primary_eligible: true, invalidated: false, freshness: 'FRESH' };
+        const structure = { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } };
+        const strategySetups = [{ id: 'msnr-buy', primary: 'MSNR', label: 'MSNR', direction: 'BUY', timeframe: '1H', confirmations: [], matched_zone_ids: [zone.id], evidence: { level: zone.midpoint } }];
+        const result = ctx.buildAdaptiveSetupCandidates({
+            pair: 'EUR/USD',
+            price: 1.10070,
+            historyCache,
+            zones: [zone],
+            targetCandidates: { buy: [{ direction: 'BUY', level: 1.10400, source: 'SWING_HIGH', origin: 'STRUCTURAL' }], sell: [] },
+            riskConstraints: { minimum_rr: 2.5 },
+            marketRegime: { primary_regime: 'TRENDING_BULLISH' },
+            structure,
+            marketContext: { directional_bias: 'BULLISH', context_score: 82 },
+            strategySetups
+        });
+        expect(result.valid_candidates.length).toBeGreaterThan(0);
+        expect(result.valid_candidates[0].strategy_setup.primary).toBe('MSNR');
+        expect(result.valid_candidates[0].strategy_label).toBe('MSNR');
+    });
+
+    it('rejects deterministic execution candidates without CRT/TBS/MSNR strategy backing when required', () => {
+        const ctx = getContext();
+        const historyCache = trendCache('up', 1.08000, 0.00010);
+        const zone = { type: 'FVG', direction: 'BUY', timeframe: '1H', low: 1.09950, high: 1.10050, origin: 'STRUCTURAL', primary_eligible: true };
+        const result = ctx.evaluateSetupCandidate({
+            id: 'fvg-only',
+            direction: 'BUY',
+            timeframe: '1H',
+            zone_type: 'FVG',
+            zone_low: 1.09950,
+            zone_high: 1.10050,
+            entry: 1.10000,
+            stop_loss: 1.09950,
+            tp1: 1.10130
+        }, {
+            pair: 'EUR/USD',
+            price: 1.10070,
+            historyCache,
+            real_ict_zones: [zone],
+            risk_constraints: { minimum_rr: 2.5 },
+            structure: { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } },
+            require_strategy_setup: true,
+            strategy_setups: []
+        }, { includeAccountRules: false });
+        expect(result.valid).toBe(false);
+        expect(result.reasons).toContain('candidate is not backed by a deterministic CRT/TBS/MSNR strategy setup');
+    });
+
+    it('detects deterministic bullish and bearish Turtle Soup strategy setups', () => {
+        const ctx = getContext();
+        const buyData = candles(20, 100, 0.01, 'up');
+        buyData[8].l = 99.4;
+        buyData[16].l = 99.0;
+        buyData[19].o = 99.8;
+        buyData[19].c = 100.3;
+        const buyZones = [{ id: '1H-BUY-MSNR-99.35-99.45', type: 'MSNR', direction: 'BUY', timeframe: '1H', low: 99.35, high: 99.45, origin: 'PIVOT_DERIVED', primary_eligible: true, invalidated: false }];
+        const buySetups = ctx.buildStrategySetups({ pair: 'XAU/USD', price: 100.3, historyCache: { '1H': buyData }, realZones: buyZones, marketContext: { directional_bias: 'BULLISH' } });
+        expect(buySetups.some(s => s.primary === 'TBS' && s.direction === 'BUY')).toBe(true);
+
+        const sellData = candles(20, 100, 0.01, 'down');
+        sellData[8].h = 100.6;
+        sellData[16].h = 101.0;
+        sellData[19].o = 100.2;
+        sellData[19].c = 99.7;
+        const sellZones = [{ id: '1H-SELL-MSNR-100.55-100.65', type: 'MSNR', direction: 'SELL', timeframe: '1H', low: 100.55, high: 100.65, origin: 'PIVOT_DERIVED', primary_eligible: true, invalidated: false }];
+        const sellSetups = ctx.buildStrategySetups({ pair: 'XAU/USD', price: 99.7, historyCache: { '1H': sellData }, realZones: sellZones, marketContext: { directional_bias: 'BEARISH' } });
+        expect(sellSetups.some(s => s.primary === 'TBS' && s.direction === 'SELL')).toBe(true);
+    });
+
     it('keeps future BUY limit below current price setup-eligible while immediate entry waits', () => {
         const ctx = getContext();
         const stage = ctx.buildLimitOrderStageContext([

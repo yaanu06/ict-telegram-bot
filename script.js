@@ -3079,7 +3079,8 @@ function classifySetupArchetype(candidate, historyCache, price, structure) {
     }
     const pdData = historyCache?.['4H']?.length >= 20 ? historyCache['4H'] : (historyCache?.['1H'] || []);
     const pd = isPremiumDiscount(pdData, Number(candidate?.entry) || price);
-    evidence.premium_discount = (direction === 'BUY' && pd.zone === 'DISCOUNT') || (direction === 'SELL' && pd.zone === 'PREMIUM');
+    const pdZone = String(pd.zone || '').toUpperCase();
+    evidence.premium_discount = (direction === 'BUY' && pdZone === 'DISCOUNT') || (direction === 'SELL' && pdZone === 'PREMIUM');
     if (candidate?.reversal_evidence && Number.isFinite(candidate.reversal_evidence.evidence_count)) {
         Object.assign(evidence, candidate.reversal_evidence);
     }
@@ -3113,18 +3114,194 @@ function buildRiskConstraints(pairLocal, price, historyCache) {
     };
 }
 
-function buildDeterministicValidationContext({ pair, price, historyCache, real_ict_zones, risk_constraints, structure }) {
+function buildDeterministicValidationContext({ pair, price, historyCache, real_ict_zones, risk_constraints, structure, market_context, strategy_setups, require_strategy_setup }) {
     return {
         pair,
         price,
         historyCache,
         real_ict_zones: real_ict_zones || [],
         risk_constraints,
-        structure
+        structure,
+        market_context,
+        strategy_setups: strategy_setups || [],
+        require_strategy_setup: !!require_strategy_setup
     };
 }
 
-function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, targetCandidates, riskConstraints, marketRegime, structure }) {
+function strategyZoneKey(zone) {
+    if (!zone) return null;
+    return [
+        zone.timeframe || '',
+        zone.direction || '',
+        zone.type || zone.zone_type || '',
+        ictRound(Number(zone.low ?? zone.zone_low), 8),
+        ictRound(Number(zone.high ?? zone.zone_high), 8)
+    ].join('|');
+}
+
+function buildMarketContext({ pair, price, historyCache, structure, session, sessionCheck, liquidity, premiumDiscount, marketRegime, momentum, volatility, holistic }) {
+    const bullishEvidence = [];
+    const bearishEvidence = [];
+    const conflicts = [];
+    const htfTrends = ['1D', '4H', '1H'].map(tf => structure?.[tf]?.trend).filter(Boolean);
+    const bullishCount = htfTrends.filter(v => v === 'BULLISH').length;
+    const bearishCount = htfTrends.filter(v => v === 'BEARISH').length;
+    if (bullishCount > bearishCount) bullishEvidence.push(`${bullishCount}/3 HTF trends bullish`);
+    if (bearishCount > bullishCount) bearishEvidence.push(`${bearishCount}/3 HTF trends bearish`);
+    if (bullishCount && bearishCount) conflicts.push(`HTF mixed: ${bullishCount} bullish / ${bearishCount} bearish`);
+
+    for (const tf of ['4H', '1H', '15M']) {
+        const s = structure?.[tf];
+        if (!s) continue;
+        if (s.bos_buy) bullishEvidence.push(`${tf} bullish BOS`);
+        if (s.bos_sell) bearishEvidence.push(`${tf} bearish BOS`);
+        if (s.choch_buy) bullishEvidence.push(`${tf} bullish CHoCH`);
+        if (s.choch_sell) bearishEvidence.push(`${tf} bearish CHoCH`);
+        if (s.mss?.type === 'BULL') bullishEvidence.push(`${tf} bullish MSS`);
+        if (s.mss?.type === 'BEAR') bearishEvidence.push(`${tf} bearish MSS`);
+    }
+
+    const pd = String(premiumDiscount?.classification || '').toUpperCase();
+    if (pd === 'DISCOUNT') bullishEvidence.push('price in discount');
+    if (pd === 'PREMIUM') bearishEvidence.push('price in premium');
+    if (marketRegime?.displacement?.buy_4h || marketRegime?.displacement?.buy_1h) bullishEvidence.push('bullish displacement');
+    if (marketRegime?.displacement?.sell_4h || marketRegime?.displacement?.sell_1h) bearishEvidence.push('bearish displacement');
+    if (holistic?.suggestedDirection === 'BULLISH') bullishEvidence.push('holistic context bullish');
+    if (holistic?.suggestedDirection === 'BEARISH') bearishEvidence.push('holistic context bearish');
+
+    const bullScore = bullishEvidence.length * 9 + bullishCount * 5;
+    const bearScore = bearishEvidence.length * 9 + bearishCount * 5;
+    let directionalBias = 'NEUTRAL';
+    if (Math.abs(bullScore - bearScore) < 8) directionalBias = bullScore || bearScore ? 'MIXED' : 'NEUTRAL';
+    else directionalBias = bullScore > bearScore ? 'BULLISH' : 'BEARISH';
+    const contextScore = Math.max(0, Math.min(88, 45 + Math.abs(bullScore - bearScore) - conflicts.length * 5));
+
+    return {
+        directional_bias: directionalBias,
+        context_score: contextScore,
+        bullish_evidence: bullishEvidence.slice(0, 8),
+        bearish_evidence: bearishEvidence.slice(0, 8),
+        conflicts: conflicts.slice(0, 5),
+        structure,
+        htf_alignment: {
+            bullish_count: bullishCount,
+            bearish_count: bearishCount,
+            aligned_direction: bullishCount === bearishCount ? 'MIXED' : (bullishCount > bearishCount ? 'BULLISH' : 'BEARISH')
+        },
+        bos: Object.fromEntries(['4H', '1H', '15M'].map(tf => [tf, { buy: !!structure?.[tf]?.bos_buy, sell: !!structure?.[tf]?.bos_sell }])),
+        choch: Object.fromEntries(['4H', '1H', '15M'].map(tf => [tf, { buy: !!structure?.[tf]?.choch_buy, sell: !!structure?.[tf]?.choch_sell }])),
+        mss: Object.fromEntries(['4H', '1H', '15M'].map(tf => [tf, structure?.[tf]?.mss || null])),
+        liquidity,
+        fvg: Object.fromEntries(['4H', '1H'].map(tf => [tf, (detectFVG(historyCache?.[tf] || []) || []).slice(-5)])),
+        order_blocks: Object.fromEntries(['4H', '1H'].map(tf => [tf, {
+            buy: detectOrderBlocks(historyCache?.[tf] || [], 'BUY').slice(-3),
+            sell: detectOrderBlocks(historyCache?.[tf] || [], 'SELL').slice(-3)
+        }])),
+        premium_discount: premiumDiscount,
+        displacement: marketRegime?.displacement || {},
+        session,
+        amd: { phase: marketRegime?.phase || 'UNKNOWN', regime: marketRegime?.primary_regime || 'UNKNOWN' },
+        indicators: momentum,
+        volatility
+    };
+}
+
+function buildStrategySetups({ pair, price, historyCache, realZones, marketContext }) {
+    const setups = [];
+    const zoneList = realZones || [];
+    const addSetup = (setup) => {
+        if (!setup || !setup.direction || !setup.primary) return;
+        const matchedZones = (setup.matched_zones || []).filter(Boolean);
+        if (matchedZones.length === 0) return;
+        setups.push({
+            ...setup,
+            id: setup.id || `${setup.timeframe}-${setup.primary}-${setup.direction}-${setups.length + 1}`,
+            matched_zone_ids: matchedZones.map(z => z.id || strategyZoneKey(z)),
+            matched_zones: matchedZones.map(z => ({
+                id: z.id || strategyZoneKey(z),
+                type: z.type,
+                direction: z.direction,
+                timeframe: z.timeframe,
+                low: z.low,
+                high: z.high,
+                origin: z.origin
+            }))
+        });
+    };
+
+    for (const tf of ['4H', '1H']) {
+        const data = historyCache?.[tf];
+        if (!data || data.length < 20) continue;
+        const zonesForTf = zoneList.filter(z => z.timeframe === tf && z.primary_eligible !== false && !z.invalidated);
+        for (const zone of zonesForTf.filter(z => z.type === 'MSNR')) {
+            addSetup({
+                primary: 'MSNR',
+                label: 'MSNR',
+                direction: zone.direction,
+                timeframe: tf,
+                evidence: { level: zone.midpoint, origin: zone.origin, zone_low: zone.low, zone_high: zone.high },
+                confirmations: [],
+                matched_zones: [zone]
+            });
+        }
+
+        const tbs = detectTurtleSoup(data);
+        if (tbs.detected && (tbs.type === 'BUY' || tbs.type === 'SELL')) {
+            const near = zonesForTf.filter(z => z.direction === tbs.type && (
+                z.type === 'MSNR' ||
+                (Number.isFinite(tbs.keyLevel) && tbs.keyLevel >= z.low - Math.abs(z.high - z.low) * 2 && tbs.keyLevel <= z.high + Math.abs(z.high - z.low) * 2)
+            ));
+            addSetup({
+                primary: 'TBS',
+                label: near.some(z => z.type === 'MSNR') ? 'TBS+MSNR' : 'TBS',
+                direction: tbs.type,
+                timeframe: tf,
+                evidence: { liquidity_level: tbs.keyLevel, reclaim_price: data[data.length - 1]?.c, timeframe: tf },
+                confirmations: near.some(z => z.type === 'MSNR') ? ['MSNR'] : [],
+                matched_zones: near
+            });
+        }
+
+        const crt = detectCRT(data);
+        const bias = marketContext?.directional_bias;
+        const crtDirection = bias === 'BULLISH' ? 'BUY' : (bias === 'BEARISH' ? 'SELL' : null);
+        if (crtDirection && crt.state !== 'NEUTRAL') {
+            const crtZones = zonesForTf.filter(z => z.direction === crtDirection && z.type === 'MSNR');
+            addSetup({
+                primary: 'CRT',
+                label: crtZones.some(z => z.type === 'MSNR') ? 'CRT+MSNR' : 'CRT',
+                direction: crtDirection,
+                timeframe: tf,
+                evidence: { state: crt.state, context_bias: bias, timeframe: tf },
+                confirmations: crtZones.some(z => z.type === 'MSNR') ? ['MSNR'] : [],
+                matched_zones: crtZones
+            });
+        }
+    }
+    console.log('CRT DETECTIONS', setups.filter(s => s.primary === 'CRT'));
+    console.log('TBS DETECTIONS', setups.filter(s => s.primary === 'TBS'));
+    console.log('MSNR DETECTIONS', setups.filter(s => s.primary === 'MSNR'));
+    console.log('STRATEGY SETUPS', setups);
+    return setups;
+}
+
+function getStrategySetupForZone(zone, strategySetups) {
+    const key = strategyZoneKey(zone);
+    const matches = (strategySetups || []).filter(s => (s.matched_zone_ids || []).includes(zone.id || key));
+    if (matches.length === 0) return null;
+    const primaries = [...new Set(matches.map(s => s.primary).filter(Boolean))];
+    const confirmations = [...new Set(matches.flatMap(s => s.confirmations || []).concat(primaries.filter(p => p !== primaries[0])))];
+    const label = primaries.length > 1 ? primaries.join('+') : (matches[0].label || primaries[0]);
+    return {
+        primary: primaries[0],
+        label,
+        confirmations,
+        evidence: matches.map(s => ({ strategy: s.primary, evidence: s.evidence })),
+        setup_ids: matches.map(s => s.id)
+    };
+}
+
+function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, targetCandidates, riskConstraints, marketRegime, structure, marketContext, strategySetups }) {
     const settings = getMarketSettings(pair);
     const prec = settings.prec;
     const minimumRR = Number(riskConstraints?.minimum_rr) || settings.targetRR || 2.5;
@@ -3145,11 +3322,17 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         historyCache,
         real_ict_zones: zones,
         risk_constraints: riskConstraints,
-        structure
+        structure,
+        market_context: marketContext,
+        strategy_setups: strategySetups || [],
+        require_strategy_setup: Array.isArray(strategySetups)
     });
 
-    for (const zone of (zones || []).filter(z => z.primary_eligible !== false && !z.invalidated)) {
+    const candidateZones = (zones || []).filter(z => z.primary_eligible !== false && !z.invalidated);
+    for (const zone of candidateZones) {
         if (zone.type === 'MSNR' && zone.origin === 'ATR_FALLBACK') continue;
+        const strategySetup = Array.isArray(strategySetups) ? getStrategySetupForZone(zone, strategySetups) : null;
+        if (Array.isArray(strategySetups) && !strategySetup) continue;
         const direction = zone.direction;
         const tf = zone.timeframe || '1H';
         const data = historyCache?.[tf] || historyCache?.['1H'] || historyCache?.['4H'] || [];
@@ -3200,6 +3383,11 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     distance_from_current_price_atr: safeAtr > 0 ? ictRound(Math.abs(entry - price) / safeAtr, 2) : null,
                     market_regime: marketRegime?.primary_regime || 'UNKNOWN'
                 };
+                if (strategySetup) {
+                    rawCandidate.strategy_setup = strategySetup;
+                    rawCandidate.strategy_label = strategySetup.label;
+                    rawCandidate.patterns = [strategySetup.label];
+                }
                 rawCandidates.push(rawCandidate);
                 const stopEvaluation = evaluateStructuralStop(rawCandidate, atrContext, pair);
                 rawCandidate.risk_model.status = stopEvaluation.status;
@@ -3241,16 +3429,23 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 const htfAlignment = ['1D', '4H', '1H']
                     .map(t => structure?.[t]?.trend)
                     .filter(v => v === (direction === 'BUY' ? 'BULLISH' : 'BEARISH')).length;
-                const zoneScore = zone.type === 'FVG' ? 28 : zone.type === 'OB' ? 30 : 20;
+                const zoneScore = zone.type === 'FVG' ? 18 : zone.type === 'OB' ? 20 : 24;
+                const strategyScore = strategySetup
+                    ? 18 + Math.min(14, (strategySetup.confirmations || []).length * 7 + (String(strategySetup.label).includes('+') ? 6 : 0))
+                    : 0;
                 const freshnessScore = zone.freshness === 'FRESH' ? 12 : zone.freshness === 'PARTIAL' ? 6 : 0;
                 const rrScore = Math.min(15, (rr.actualRR - minimumRR) * 4);
                 const reversalScore = archetype.setup_archetype === 'REVERSAL' ? archetype.reversal_evidence.evidence_count * 5 - 8 : 0;
                 const distancePenalty = Math.min(10, Math.abs(entry - price) / Math.max(price, 1) * 100);
-                const score = zoneScore + freshnessScore + htfAlignment * 8 + rrScore + reversalScore - distancePenalty;
+                const contextBias = marketContext?.directional_bias;
+                const contextSupport = (direction === 'BUY' && contextBias === 'BULLISH') || (direction === 'SELL' && contextBias === 'BEARISH') ? 8 : (contextBias === 'MIXED' || contextBias === 'NEUTRAL' ? 0 : -6);
+                const score = zoneScore + strategyScore + freshnessScore + htfAlignment * 8 + rrScore + reversalScore + contextSupport - distancePenalty;
                 const candidate = {
                     ...rawCandidate,
                     setup_archetype: archetype.setup_archetype,
                     reversal_evidence: archetype.reversal_evidence,
+                    strategy_setup: strategySetup || rawCandidate.strategy_setup || null,
+                    strategy_label: strategySetup?.label || rawCandidate.strategy_label || zone.type,
                     tp1: targets.tp1.level,
                     tp2: targets.tp2 ? targets.tp2.level : null,
                     tp3: targets.tp3 ? targets.tp3.level : null,
@@ -3269,9 +3464,10 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 const evaluation = evaluateSetupCandidate(candidate, deterministicValidationContext);
                 if (evaluation.valid) {
                     candidate.evaluation = { checks: evaluation.checks, metrics: evaluation.metrics };
+                    console.log('STRATEGY CANDIDATE', { id: candidate.id, strategy: candidate.strategy_label, direction: candidate.direction, score: candidate.score });
                     validCandidates.push(candidate);
                 } else {
-                    console.log('CANDIDATE REJECTED - HARD RULE', { id: candidate.id, reasons: evaluation.reasons });
+                    console.log('STRATEGY CANDIDATE REJECTED', { id: candidate.id, strategy: candidate.strategy_label, reasons: evaluation.reasons });
                     rejectedCandidates.push({
                         id: candidate.id,
                         direction: candidate.direction,
@@ -3295,6 +3491,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     };
     console.log('RAW SETUP CANDIDATES', rawCandidates);
     console.log('VALID SETUP CANDIDATES', selected);
+    console.log('VALID STRATEGY CANDIDATES', selected.map(c => ({ id: c.id, strategy: c.strategy_label || c.zone_type, direction: c.direction, score: c.score })));
     for (const candidate of selected) console.log('VALID DETERMINISTIC CANDIDATE', { id: candidate.id, direction: candidate.direction, timeframe: candidate.timeframe, score: candidate.score, rr: candidate.rr_tp1 });
     console.log('REJECTED SETUP CANDIDATES', rejectedCandidates);
     console.log('AI CANDIDATES SENT', selected.map(c => c.id));
@@ -3335,6 +3532,10 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.take_profit_3 = candidate.tp3 ?? null;
     aiResult.risk_reward = `1:${candidate.rr_tp1.toFixed(2)}`;
     aiResult.adaptive_candidate = candidate;
+    aiResult.strategy_setup = candidate.strategy_setup || null;
+    aiResult.patterns = candidate.strategy_setup
+        ? [candidate.strategy_setup.label || candidate.strategy_setup.primary].concat(candidate.strategy_setup.confirmations || [])
+        : (aiResult.patterns || [candidate.zone_type]);
     console.log('SELECTED ADAPTIVE SETUP', {
         id: candidate.id,
         pair: liveMarketContext?.pair,
@@ -3401,7 +3602,9 @@ function candidateToAIResult(candidate) {
         take_profit_3: candidate.tp3 ?? null,
         confidence: candidate.confidence || 70,
         reasoning: { primary: candidate.stop_reason || 'Deterministic candidate' },
-        patterns: [candidate.zone_type],
+        patterns: candidate.strategy_setup
+            ? [candidate.strategy_setup.label || candidate.strategy_setup.primary].concat(candidate.strategy_setup.confirmations || [])
+            : [candidate.zone_type],
         risk_reward: candidate.rr_tp1 ? `1:${candidate.rr_tp1}` : null
     };
 }
@@ -3434,6 +3637,15 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
     if (rawTp3 != null && !ictFiniteNumber(tp3)) add('take_profit_3 must be a finite number when supplied');
     if (!ictFiniteNumber(price) || price <= 0) add('current price is invalid');
     if (reasons.length > 0) return { valid: false, checks, reasons, metrics };
+
+    const strategySetup = candidate.strategy_setup || null;
+    metrics.strategy_setup = strategySetup;
+    if (marketContext.require_strategy_setup) {
+        const labels = [strategySetup?.primary, ...(strategySetup?.confirmations || [])].filter(Boolean);
+        if (!labels.some(v => ['CRT', 'TBS', 'MSNR'].includes(v))) {
+            add('candidate is not backed by a deterministic CRT/TBS/MSNR strategy setup');
+        }
+    }
 
     if (direction === 'BUY' && !(stopLoss < entry && entry < tp1)) {
         add('BUY geometry must be SL < entry < TP1');
@@ -3852,6 +4064,92 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         compression,
         displacement
     };
+    const sessionFacts = {
+        name: session.session,
+        priority: sessionCheck.priority,
+        is_killzone: !!session.isKillzone,
+        is_silver_bullet: !!session.isSilverBullet,
+        is_asia: session.session === 'ASIA KZ',
+        is_london: session.session.includes('LONDON'),
+        is_new_york: session.session.includes('NEW_YORK'),
+        is_off_hours: session.session === 'OFF-HOURS',
+        volatility_expectation: sessionCheck.priority === 'MAX' || sessionCheck.priority === 'HIGH' ? 'HIGH' : 'LOW',
+        reason: sessionCheck.reason
+    };
+    const volatilityFacts = {
+        atr_4h: ictRound(atr4h, prec),
+        atr_1h: ictRound(atr1h, prec),
+        atr_15m: ictRound(atr15m, prec),
+        atr_pct_of_price: ictRound(atrPct, 3),
+        regime: volatilityRegime
+    };
+    const liquidityFacts = {
+        '4H': {
+            nearest_buy_side: liq4h.nearestAbove,
+            nearest_sell_side: liq4h.nearestBelow,
+            buy_side_levels: liq4h.above,
+            sell_side_levels: liq4h.below,
+            equal_highs: liq4h.equalHighs,
+            equal_lows: liq4h.equalLows,
+            sweeps: [sweep4hBuy, sweep4hSell].filter(Boolean)
+        },
+        '1H': {
+            nearest_buy_side: liq1h.nearestAbove,
+            nearest_sell_side: liq1h.nearestBelow,
+            buy_side_levels: liq1h.above,
+            sell_side_levels: liq1h.below,
+            equal_highs: liq1h.equalHighs,
+            equal_lows: liq1h.equalLows,
+            sweeps: [sweep1hBuy, sweep1hSell].filter(Boolean)
+        }
+    };
+    const premiumDiscountFacts = {
+        range_high: ictRound(rangeHigh, prec),
+        range_low: ictRound(rangeLow, prec),
+        equilibrium: ictRound(equilibrium, prec),
+        current_range_position_pct: ictRound(rangePositionPct, 1),
+        classification: isPremiumDiscount(pdData, price).zone
+    };
+    const momentumFacts = {
+        adx_4h: patterns?.['4H']?.adx?.adx ?? null,
+        adx_1h: patterns?.['1H']?.adx?.adx ?? null,
+        rsi_4h: indicators?.['4H']?.rsi ?? null,
+        macd_4h: indicators?.['4H']?.macd ?? null,
+        macd_signal_4h: indicators?.['4H']?.macd_signal ?? null,
+        macd_direction_4h: Number.isFinite(indicators?.['4H']?.macd) && Number.isFinite(indicators?.['4H']?.macd_signal)
+            ? (indicators['4H'].macd > indicators['4H'].macd_signal ? 'BULLISH' : 'BEARISH')
+            : 'UNKNOWN',
+        ema_alignment_4h: {
+            ema9: indicators?.['4H']?.ema9 ?? null,
+            ema21: indicators?.['4H']?.ema21 ?? null,
+            ema50: indicators?.['4H']?.ema50 ?? null,
+            ema200: indicators?.['4H']?.ema200 ?? null
+        },
+        supertrend_4h: indicators?.['4H']?.supertrend ?? null
+    };
+    const marketContext = buildMarketContext({
+        pair,
+        price,
+        historyCache,
+        structure,
+        session: sessionFacts,
+        sessionCheck,
+        liquidity: liquidityFacts,
+        premiumDiscount: premiumDiscountFacts,
+        marketRegime,
+        momentum: momentumFacts,
+        volatility: volatilityFacts,
+        holistic
+    });
+    console.log('MARKET CONTEXT', marketContext);
+    console.log('CONTEXT BIAS', {
+        directional_bias: marketContext.directional_bias,
+        context_score: marketContext.context_score,
+        bullish_evidence: marketContext.bullish_evidence,
+        bearish_evidence: marketContext.bearish_evidence,
+        conflicts: marketContext.conflicts
+    });
+    const strategySetups = buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext });
     const riskConstraints = buildRiskConstraints(pair, price, historyCache);
     const deterministicValidationContext = buildDeterministicValidationContext({
         pair,
@@ -3859,7 +4157,10 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         historyCache,
         real_ict_zones: zones,
         risk_constraints: riskConstraints,
-        structure
+        structure,
+        market_context: marketContext,
+        strategy_setups: strategySetups,
+        require_strategy_setup: true
     });
     const adaptiveSetupResult = buildAdaptiveSetupCandidates({
         pair,
@@ -3869,10 +4170,13 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         targetCandidates,
         riskConstraints,
         marketRegime,
-        structure
+        structure,
+        marketContext,
+        strategySetups
     });
     const adaptiveSetupCandidates = adaptiveSetupResult.valid_candidates;
     stageContext.limit_order_setup.adaptive_candidate_count = adaptiveSetupCandidates.length;
+    stageContext.limit_order_setup.strategy_setup_count = strategySetups.length;
     stageContext.limit_order_setup.rejection_summary = summarizeCandidateRejections(adaptiveSetupResult.rejected_candidates);
     stageContext.limit_order_setup.rejection_detail = summarizeCandidateRejectionDetails(adaptiveSetupResult.rejected_candidates);
 
@@ -3880,25 +4184,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         pair,
         current_price: ictRound(price, prec),
         utc_time: now.toISOString(),
-        session: {
-            name: session.session,
-            priority: sessionCheck.priority,
-            is_killzone: !!session.isKillzone,
-            is_silver_bullet: !!session.isSilverBullet,
-            is_asia: session.session === 'ASIA KZ',
-            is_london: session.session.includes('LONDON'),
-            is_new_york: session.session.includes('NEW_YORK'),
-            is_off_hours: session.session === 'OFF-HOURS',
-            volatility_expectation: sessionCheck.priority === 'MAX' || sessionCheck.priority === 'HIGH' ? 'HIGH' : 'LOW',
-            reason: sessionCheck.reason
-        },
-        volatility: {
-            atr_4h: ictRound(atr4h, prec),
-            atr_1h: ictRound(atr1h, prec),
-            atr_15m: ictRound(atr15m, prec),
-            atr_pct_of_price: ictRound(atrPct, 3),
-            regime: volatilityRegime
-        },
+        session: sessionFacts,
+        volatility: volatilityFacts,
         multi_timeframe_direction: {
             trend: {
                 '1D': structure['1D'].trend,
@@ -3915,54 +4202,15 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             holistic
         },
         structure,
+        market_context: marketContext,
+        strategy_setups: strategySetups,
         real_ict_zones: zones,
         limit_order_setup: stageContext.limit_order_setup,
         immediate_entry: stageContext.immediate_entry,
-        liquidity: {
-            '4H': {
-                nearest_buy_side: liq4h.nearestAbove,
-                nearest_sell_side: liq4h.nearestBelow,
-                buy_side_levels: liq4h.above,
-                sell_side_levels: liq4h.below,
-                equal_highs: liq4h.equalHighs,
-                equal_lows: liq4h.equalLows,
-                sweeps: [sweep4hBuy, sweep4hSell].filter(Boolean)
-            },
-            '1H': {
-                nearest_buy_side: liq1h.nearestAbove,
-                nearest_sell_side: liq1h.nearestBelow,
-                buy_side_levels: liq1h.above,
-                sell_side_levels: liq1h.below,
-                equal_highs: liq1h.equalHighs,
-                equal_lows: liq1h.equalLows,
-                sweeps: [sweep1hBuy, sweep1hSell].filter(Boolean)
-            }
-        },
-        premium_discount: {
-            range_high: ictRound(rangeHigh, prec),
-            range_low: ictRound(rangeLow, prec),
-            equilibrium: ictRound(equilibrium, prec),
-            current_range_position_pct: ictRound(rangePositionPct, 1),
-            classification: isPremiumDiscount(pdData, price).zone
-        },
+        liquidity: liquidityFacts,
+        premium_discount: premiumDiscountFacts,
         market_regime: marketRegime,
-        momentum: {
-            adx_4h: patterns?.['4H']?.adx?.adx ?? null,
-            adx_1h: patterns?.['1H']?.adx?.adx ?? null,
-            rsi_4h: indicators?.['4H']?.rsi ?? null,
-            macd_4h: indicators?.['4H']?.macd ?? null,
-            macd_signal_4h: indicators?.['4H']?.macd_signal ?? null,
-            macd_direction_4h: Number.isFinite(indicators?.['4H']?.macd) && Number.isFinite(indicators?.['4H']?.macd_signal)
-                ? (indicators['4H'].macd > indicators['4H'].macd_signal ? 'BULLISH' : 'BEARISH')
-                : 'UNKNOWN',
-            ema_alignment_4h: {
-                ema9: indicators?.['4H']?.ema9 ?? null,
-                ema21: indicators?.['4H']?.ema21 ?? null,
-                ema50: indicators?.['4H']?.ema50 ?? null,
-                ema200: indicators?.['4H']?.ema200 ?? null
-            },
-            supertrend_4h: indicators?.['4H']?.supertrend ?? null
-        },
+        momentum: momentumFacts,
         volume: {
             volume_available: realVolume,
             volume_note: realVolume ? 'Provider volume is treated as usable for this pair.' : 'Provider volume is synthetic/unreliable. Do not use volume as confirmation.'
@@ -3996,6 +4244,9 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'A selected candidate numeric geometry is authoritative and immutable.',
         'VALID_CANDIDATES = executable numerical candidates that already passed all hard rules.',
         'REAL_ICT_ZONES = authoritative deterministic market structures.',
+        'MARKET_CONTEXT = deterministic market understanding only; FVG, OB, BOS, CHoCH, MSS, liquidity, premium/discount, session, AMD, indicators, and ATR describe what the market is doing.',
+        'STRATEGY_SETUPS = deterministic CRT, TBS/Turtle Soup, and MSNR detections. Actionable candidates must come from these strategy setups.',
+        'FVG and OB are confluence/context unless a supplied deterministic strategy candidate uses them. Do not treat every FVG/OB as a standalone trade strategy.',
         'RAW CANDLES = secondary context for qualitative interpretation only.',
         'IMMEDIATE_ENTRY = Stage-2 reaction/fill confirmation and is separate from pending-limit validity.',
         'Zone/target origin hierarchy: STRUCTURAL = directly derived market structure such as FVG, OB, swings and structural liquidity. PIVOT_DERIVED = deterministic MSNR support/resistance calculated from pivot-based market levels. ATR_FALLBACK = synthetic deterministic fallback/reference level used when normal MSNR levels are unavailable. ATR_FALLBACK must not be treated as primary structural confluence.',
@@ -4006,6 +4257,8 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'Do not return skip when your own analysis concludes that a valid BUY_LIMIT or SELL_LIMIT setup already exists.',
         'If selecting a setup, include selected_candidate_id and use the candidate entry, stop_loss, TP1, TP2, TP3, RR, and zone bounds exactly.',
         'If adaptive_setup_candidates is empty, do not invent entry/SL/TP levels; return WAIT or NO_TRADE.',
+        'If market_context has a strong directional bias but strategy_setups is empty, return WAIT because context alone is not a trade.',
+        'Never invent CRT, TBS/Turtle Soup, or MSNR detections. Use only supplied deterministic strategy_setups and adaptive_setup_candidates.',
         'Do not calculate risk, required reward, minimum TP, alternate stops, alternate targets, or entry geometry. You may describe the supplied candidate RR qualitatively.',
         'Premium/discount context: discount generally favors BUY entries and premium generally favors SELL entries unless stronger supplied structure says otherwise.',
         'Freshness labels mean: FRESH = fresh, PARTIAL = partially used/partially mitigated, USED = used, INVALID = invalidated. Never describe PARTIAL as fresh.',
@@ -4039,7 +4292,7 @@ This bot creates pending LIMIT orders at future ICT zones. A valid setup may exi
 
 1. Decide BUY_LIMIT, SELL_LIMIT, WAIT, or NO_TRADE. If preserving direction compatibility, also set direction to BUY or SELL for limit setups.
 2. Prefer selecting one supplied COMPUTED MARKET FACTS.adaptive_setup_candidates item by selected_candidate_id. These are VALID_CANDIDATES that already passed deterministic numerical hard rules.
-3. Explain why this direction has better probability than the opposite.
+3. Use market_context to understand bias and conditions, but only supplied strategy_setups/adaptive_setup_candidates can create trades.
 4. Do not calculate or alter entry, stop_loss, take_profit_1, take_profit_2, take_profit_3, risk_reward, or zone bounds.
 5. Respect current volatility, ATR, minimum SL distance, maximum SL distance, and minimum RR facts as already encoded in the candidates.
 6. Respect real structure, liquidity, premium/discount, adaptive setup candidates, and target candidates.
@@ -4053,6 +4306,7 @@ This bot creates pending LIMIT orders at future ICT zones. A valid setup may exi
 14. Do NOT return skip when your own analysis concludes that a valid BUY_LIMIT or SELL_LIMIT setup already exists.
 15. If adaptive_setup_candidates contains valid choices, rank them and return the selected_candidate_id for the best one. Use that candidate's entry, stop_loss, take_profit_1, take_profit_2, and take_profit_3 exactly.
 16. If adaptive_setup_candidates is empty, do not invent entry/SL/TP levels; return WAIT or NO_TRADE.
+16a. If context is bullish/bearish but CRT, TBS, and MSNR provide no supplied strategy setup, return WAIT: market context alone is not a trade.
 17. Discount generally favors BUY entries; premium generally favors SELL entries unless stronger supplied structure says otherwise.
 18. Freshness labels mean FRESH=fresh, PARTIAL=partially used/partially mitigated, USED=used, INVALID=invalidated. Do not call a PARTIAL zone fresh.
 
@@ -4462,13 +4716,53 @@ async function runFallbackScan(price, historyCache) {
         '4H': buildStructureSnapshot(historyCache?.['4H'], '4H'),
         '1H': buildStructureSnapshot(historyCache?.['1H'], '1H')
     };
+    const fallbackSession = getSession();
+    const fallbackSessionCheck = shouldTradeSession();
+    const fallbackMarketRegime = {
+        primary_regime: fallbackStructure['4H']?.trend === 'BULLISH' ? 'TRENDING_BULLISH' : (fallbackStructure['4H']?.trend === 'BEARISH' ? 'TRENDING_BEARISH' : 'RANGING'),
+        phase: 'UNKNOWN',
+        compression: {
+            '4H': detectCompression(historyCache?.['4H'] || []),
+            '1H': detectCompression(historyCache?.['1H'] || [])
+        },
+        displacement: {
+            buy_4h: detectDisplacement(historyCache?.['4H'] || [], 'BUY'),
+            sell_4h: detectDisplacement(historyCache?.['4H'] || [], 'SELL'),
+            buy_1h: detectDisplacement(historyCache?.['1H'] || [], 'BUY'),
+            sell_1h: detectDisplacement(historyCache?.['1H'] || [], 'SELL')
+        }
+    };
+    const fallbackMarketContext = buildMarketContext({
+        pair,
+        price,
+        historyCache,
+        structure: fallbackStructure,
+        session: { name: fallbackSession.session, priority: fallbackSessionCheck.priority },
+        sessionCheck: fallbackSessionCheck,
+        liquidity: {
+            '4H': mapLiquidity(historyCache?.['4H'] || []),
+            '1H': mapLiquidity(historyCache?.['1H'] || [])
+        },
+        premiumDiscount: isPremiumDiscount(historyCache?.['4H'] || historyCache?.['1H'] || [], price),
+        marketRegime: fallbackMarketRegime,
+        momentum: {},
+        volatility: {
+            atr_4h: fallbackAtr4h || null,
+            atr_1h: fallbackAtr1h || null
+        },
+        holistic: null
+    });
+    const fallbackStrategySetups = buildStrategySetups({ pair, price, historyCache, realZones: fallbackZones, marketContext: fallbackMarketContext });
     const fallbackValidationContext = buildDeterministicValidationContext({
         pair,
         price,
         historyCache,
         real_ict_zones: fallbackZones,
         risk_constraints: fallbackRiskConstraints,
-        structure: fallbackStructure
+        structure: fallbackStructure,
+        market_context: fallbackMarketContext,
+        strategy_setups: fallbackStrategySetups,
+        require_strategy_setup: true
     });
     const rejectedFallbacks = [];
     for (const result of results) {
@@ -4485,6 +4779,14 @@ async function runFallbackScan(price, historyCache) {
             tp2: result.tp2,
             tp3: result.tp3
         };
+        candidate.strategy_setup = getStrategySetupForZone({
+            id: `${candidate.timeframe}-${candidate.direction}-${candidate.zone_type}-${ictRound(candidate.zone_low, getMarketSettings(pair).prec)}-${ictRound(candidate.zone_high, getMarketSettings(pair).prec)}`,
+            type: candidate.zone_type,
+            direction: candidate.direction,
+            timeframe: candidate.timeframe,
+            low: candidate.zone_low,
+            high: candidate.zone_high
+        }, fallbackStrategySetups);
         const evaluation = evaluateSetupCandidate(candidate, fallbackValidationContext);
         if (evaluation.valid) {
             best = result;
@@ -4631,7 +4933,8 @@ function validateAISetup(aiResult, price, historyCache, pairArg, deterministicVa
         stop_loss: aiResult.stop_loss,
         tp1: aiResult.take_profit_1,
         tp2: aiResult.take_profit_2,
-        tp3: aiResult.take_profit_3
+        tp3: aiResult.take_profit_3,
+        strategy_setup: aiResult.adaptive_candidate?.strategy_setup || aiResult.strategy_setup || null
     }, validationContext);
     console.log('FINAL CANDIDATE VALIDATION', sharedEvaluation);
     if (!sharedEvaluation.valid) return reject(sharedEvaluation.reasons[0]);
@@ -4905,8 +5208,12 @@ async function runAutoScan() {
         if (liveMarketContext.adaptive_setup_candidates.length === 0) {
             const audit = liveMarketContext.setup_candidate_audit || {};
             const hasRaw = (audit.raw_candidate_count || 0) > 0;
-            const decision = hasRaw ? 'WAIT' : 'NO_TRADE';
-            const reason = hasRaw ? 'No raw setup combination passed all hard rules' : 'No valid setup passed hard rules';
+            const hasStrategySetups = (liveMarketContext.strategy_setups || []).length > 0;
+            const decision = 'WAIT';
+            const reason = !hasStrategySetups
+                ? 'Market context available, but no valid CRT/TBS/MSNR strategy setup is currently available.'
+                : (hasRaw ? 'No strategy setup execution combination passed all hard rules' : 'Strategy setup exists, but no valid execution candidate is available.');
+            const waitCode = !hasStrategySetups ? 'NO_STRATEGY_SETUP' : (hasRaw ? 'RISK_REJECTED' : 'NO_VALID_EXECUTION');
             const out = {
                 trade_signal: {
                     date: new Date().toISOString().split('T')[0],
@@ -4916,7 +5223,7 @@ async function runAutoScan() {
                     trade_type: decision,
                     decision,
                     confidence: 0,
-                    reasoning: { primary: 'No deterministic candidate passed all hard rules.', rejection_summary: audit.rejection_summary || {}, rejection_detail: audit.rejection_detail || {} },
+                    reasoning: { primary: reason, code: waitCode, rejection_summary: audit.rejection_summary || {}, rejection_detail: audit.rejection_detail || {} },
                     ai_decision: 'skip',
                     wait_condition: reason,
                     source: 'Deterministic Candidate Engine',
