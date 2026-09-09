@@ -283,7 +283,7 @@ describe('buildEntryContext', () => {
         const ec = { confirmed: true, score: 30, strength: 'MODERATE', confirmations: [], isAtZone: true };
         const ctxOut = ctx.buildEntryContext(sc, ph, pd, ec);
         expect(ctxOut.allOk).toBe(false);
-        expect(ctxOut.summary).toMatch(/FILTER BLOCK/);
+        expect(ctxOut.summary).toMatch(/IMMEDIATE ENTRY WAIT/);
     });
 });
 
@@ -458,11 +458,54 @@ describe('live AI market context and prompt', () => {
         expect(live.current_price).toBe(price);
         expect(live.volume.volume_available).toBe(false);
         expect(live.volume.volume_note).toMatch(/synthetic\/unreliable/);
+        expect(live.limit_order_setup).toBeTruthy();
+        expect(live.immediate_entry).toBeTruthy();
+        expect(live.limit_order_setup.current_price_inside_zone_required).toBe(false);
         expect(live.risk_constraints.minimum_sl_distance).toBeGreaterThan(0);
         expect(live.risk_constraints.maximum_sl_distance).toBeGreaterThanOrEqual(live.risk_constraints.minimum_sl_distance);
         expect(live.structure['4H'].trend).toBe('BULLISH');
         expect(Array.isArray(live.real_ict_zones)).toBe(true);
         expect(Array.isArray(live.target_candidates.buy)).toBe(true);
+    });
+
+    it('separates future limit setup eligibility from immediate entry confirmation', () => {
+        const ctx = getContext();
+        const stage = ctx.buildLimitOrderStageContext([
+            { type: 'FVG', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 105, high: 106, price_at_zone_now: false, distance_to_zone: 5, distance_in_atr: 2.5 }
+        ], { buy: [], sell: [{ source: 'SWING_LOW', origin: 'STRUCTURAL', level: 95 }] }, 100, 2, {
+            allOk: false,
+            summary: 'Immediate entry waiting',
+            sessionCheck: { priority: 'LOW', reason: 'Off-hours' },
+            entryConfirmation: { confirmed: false, score: 0, strength: 'NONE', isAtZone: false }
+        });
+        expect(stage.limit_order_setup.eligible).toBe(true);
+        expect(stage.limit_order_setup.future_entry_allowed).toBe(true);
+        expect(stage.limit_order_setup.current_price_inside_zone_required).toBe(false);
+        expect(stage.immediate_entry.eligible).toBe(false);
+        expect(stage.immediate_entry.confirmation_score).toBe(0);
+    });
+
+    it('keeps future BUY limit below current price setup-eligible while immediate entry waits', () => {
+        const ctx = getContext();
+        const stage = ctx.buildLimitOrderStageContext([
+            { type: 'FVG', direction: 'BUY', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 94, high: 95, price_at_zone_now: false, distance_to_zone: 5, distance_in_atr: 2.5 }
+        ], { buy: [{ source: 'SWING_HIGH', origin: 'STRUCTURAL', level: 110 }], sell: [] }, 100, 2, {
+            allOk: false,
+            summary: 'Immediate entry waiting',
+            sessionCheck: { priority: 'HIGH', reason: 'Killzone' },
+            entryConfirmation: { confirmed: false, score: 0, strength: 'NONE', isAtZone: false }
+        });
+        expect(stage.limit_order_setup.eligible).toBe(true);
+        expect(stage.limit_order_setup.nearest_eligible_zones[0].direction).toBe('BUY');
+        expect(stage.immediate_entry.eligible).toBe(false);
+    });
+
+    it('detects current price inside an XAU-style zone', () => {
+        const ctx = getContext();
+        const status = ctx.getZonePriceStatus(4378.85887, { low: 4376.37, high: 4385.77 });
+        expect(status.insideZone).toBe(true);
+        expect(status.distanceToZone).toBe(0);
+        expect(status.pricePosition).toBe('INSIDE');
     });
 
     it('marks pivot-derived and ATR fallback MSNR origins', () => {
@@ -545,7 +588,10 @@ describe('live AI market context and prompt', () => {
         expect(prompt.system).toMatch(/COMPUTED MARKET FACTS/);
         expect(prompt.system).toMatch(/PIVOT_DERIVED = deterministic MSNR support\/resistance/);
         expect(prompt.system).toMatch(/ATR_FALLBACK = synthetic deterministic fallback\/reference level/);
+        expect(prompt.system).toMatch(/pending-limit setup exists/);
         expect(prompt.user).toMatch(/NO_TRADE/);
+        expect(prompt.user).toMatch(/BUY_LIMIT, SELL_LIMIT, WAIT, or NO_TRADE/);
+        expect(prompt.user).toMatch(/future limit-entry geometry/);
         expect(prompt.user).toMatch(/primary_eligible=true/);
         expect(prompt.user).toMatch(/risk = abs\(entry - stop_loss\)/);
         expect(prompt.user).not.toMatch(/4328\.58|4368\.53|4415\.99|4460\.99|THEREFORE|MUST output|DO Not output|Find the SINGLE BEST/);
@@ -614,6 +660,17 @@ describe('live AI market context and prompt', () => {
         });
         expect(result.valid).toBe(false);
         expect(result.issues).toContain('ATR_FALLBACK MSNR cannot be selected as primary AI zone');
+    });
+
+    it('allows NO_TRADE consistency results without numeric trade fields', () => {
+        const ctx = getContext();
+        const result = ctx.validateAIOutputConsistency({
+            decision: 'NO_TRADE',
+            noTrade: true,
+            confidence: 0,
+            reasoning: { primary: 'No valid future setup' }
+        }, { real_ict_zones: [] });
+        expect(result.valid).toBe(true);
     });
 });
 
@@ -806,6 +863,48 @@ describe('validateAISetup', () => {
         expect(r.valid).toBe(false);
         expect(r.reason).toMatch(/no real deterministic FVG\/OB\/MSNR matches/);
         expect(typeof r.adjustedConfidence).toBe('number');
+    });
+
+    it('validates a future SELL limit above current price using RR from future entry', () => {
+        const ctx = getContext();
+        const data = candles(80, 4450, 1.5, 'down');
+        const cache = { '4H': data, '1H': data, '1D': data, '15M': data.slice(-20), '5M': data.slice(-20) };
+        const entry = ctx.calculateMSNR(data, 4400).nearestResistance;
+        const r = ctx.validateAISetup(baseAi({
+            direction: 'SELL',
+            decision: 'SELL_LIMIT',
+            entry,
+            entry_zone: { low: entry * 0.9995, high: entry * 1.0005, source: 'MSNR' },
+            stop_loss: entry + 7,
+            take_profit_1: entry - 21,
+            take_profit_2: entry - 35,
+            take_profit_3: entry - 49,
+            ai_decision: 'wait_for_reaction'
+        }), 4400, cache, 'XAU/USD');
+        expect(r.valid).toBe(true);
+        expect(r.rr1).toBeCloseTo(3, 1);
+        expect(r.matchedZone).toBeTruthy();
+    });
+
+    it('still rejects bad RR calculated from the future limit entry', () => {
+        const ctx = getContext();
+        const data = candles(80, 4450, 1.5, 'down');
+        const cache = { '4H': data, '1H': data, '1D': data, '15M': data.slice(-20), '5M': data.slice(-20) };
+        const entry = ctx.calculateMSNR(data, 4400).nearestResistance;
+        const r = ctx.validateAISetup(baseAi({
+            direction: 'SELL',
+            decision: 'SELL_LIMIT',
+            entry,
+            entry_zone: { low: entry * 0.9995, high: entry * 1.0005, source: 'MSNR' },
+            stop_loss: entry + 7,
+            take_profit_1: entry - 8,
+            take_profit_2: entry - 20,
+            take_profit_3: entry - 30,
+            ai_decision: 'wait_for_reaction',
+            risk_reward: '1:5.0'
+        }), 4400, cache, 'XAU/USD');
+        expect(r.valid).toBe(false);
+        expect(r.reason).toMatch(/real RR .* below/);
     });
 });
 

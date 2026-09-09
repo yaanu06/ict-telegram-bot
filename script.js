@@ -2865,6 +2865,21 @@ function classifyVolatility(atrPct) {
     return 'LOW';
 }
 
+function getZonePriceStatus(price, zone) {
+    const low = Math.min(Number(zone?.low), Number(zone?.high));
+    const high = Math.max(Number(zone?.low), Number(zone?.high));
+    if (!Number.isFinite(price) || !Number.isFinite(low) || !Number.isFinite(high)) {
+        return { insideZone: false, distanceToZone: null, pricePosition: 'UNKNOWN' };
+    }
+    if (price >= low && price <= high) {
+        return { insideZone: true, distanceToZone: 0, pricePosition: 'INSIDE' };
+    }
+    if (price < low) {
+        return { insideZone: false, distanceToZone: low - price, pricePosition: 'BELOW_ZONE' };
+    }
+    return { insideZone: false, distanceToZone: price - high, pricePosition: 'ABOVE_ZONE' };
+}
+
 function buildStructureSnapshot(data, tf) {
     if (!data || data.length < 20) {
         return { timeframe: tf, trend: 'NEUTRAL', structure_sequence: [], recent_swing_highs: [], recent_swing_lows: [] };
@@ -2895,6 +2910,7 @@ function buildLiveZonesForTf(data, tf, price, pairLocal, atrVal, limitPerDirecti
         for (const z of realZones) {
             const midpoint = z.price || (z.low + z.high) / 2;
             const freshness = checkZoneFreshness(data, z, direction);
+            const zoneStatus = getZonePriceStatus(price, z);
             zones.push({
                 id: `${tf}-${direction}-${z.type}-${ictRound(z.low, prec)}-${ictRound(z.high, prec)}`,
                 type: z.type,
@@ -2905,6 +2921,9 @@ function buildLiveZonesForTf(data, tf, price, pairLocal, atrVal, limitPerDirecti
                 low: ictRound(z.low, prec),
                 high: ictRound(z.high, prec),
                 midpoint: ictRound(midpoint, prec),
+                price_at_zone_now: zoneStatus.insideZone,
+                price_position: zoneStatus.pricePosition,
+                distance_to_zone: ictRound(zoneStatus.distanceToZone, prec),
                 distance_from_price: ictRound(Math.abs(midpoint - price), prec),
                 distance_pct: ictRound(Math.abs(midpoint - price) / price * 100, 3),
                 distance_in_atr: atrVal > 0 ? ictRound(Math.abs(midpoint - price) / atrVal, 2) : null,
@@ -2969,6 +2988,51 @@ function buildTargetCandidates(historyCache, price, pairLocal) {
     };
 }
 
+function buildLimitOrderStageContext(zones, targetCandidates, price, atrVal, entryContext) {
+    const eligibleZones = (zones || []).filter(z => z.primary_eligible !== false && !z.invalidated);
+    const zonesAtPrice = eligibleZones.filter(z => z.price_at_zone_now);
+    const nearestZones = eligibleZones
+        .slice()
+        .sort((a, b) => (a.distance_to_zone ?? a.distance_from_price ?? 0) - (b.distance_to_zone ?? b.distance_from_price ?? 0))
+        .slice(0, 6);
+    const confirmation = entryContext?.entryConfirmation || {};
+    return {
+        limit_order_setup: {
+            eligible: eligibleZones.length > 0,
+            future_entry_allowed: eligibleZones.length > 0,
+            current_price_inside_zone_required: false,
+            reason: eligibleZones.length > 0
+                ? 'Valid future pending-limit setup may exist if zone, geometry, RR, and deterministic validation pass.'
+                : 'No primary-eligible deterministic zone is currently available.',
+            eligible_zone_count: eligibleZones.length,
+            zones_at_current_price_count: zonesAtPrice.length,
+            nearest_eligible_zones: nearestZones.map(z => ({
+                type: z.type,
+                origin: z.origin,
+                direction: z.direction,
+                timeframe: z.timeframe,
+                low: z.low,
+                high: z.high,
+                price_at_zone_now: z.price_at_zone_now,
+                distance_to_zone: z.distance_to_zone,
+                distance_in_atr: z.distance_in_atr
+            })),
+            target_candidate_count: (targetCandidates?.buy?.length || 0) + (targetCandidates?.sell?.length || 0),
+            atr_reference: atrVal || null
+        },
+        immediate_entry: {
+            eligible: !!entryContext?.allOk,
+            price_at_zone_now: !!confirmation.isAtZone,
+            confirmation_score: confirmation.score || 0,
+            confirmation_strength: confirmation.strength || 'NONE',
+            session_priority: entryContext?.sessionCheck?.priority || 'UNKNOWN',
+            session_reason: entryContext?.sessionCheck?.reason || null,
+            reason: entryContext?.summary || 'Immediate entry not evaluated',
+            note: 'Immediate-entry filters do not automatically invalidate a future pending-limit setup.'
+        }
+    };
+}
+
 function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext }) {
     const settings = getMarketSettings(pair);
     const prec = settings.prec;
@@ -2998,6 +3062,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         const tfAtr = tf === '4H' ? atr4h : atr1h;
         zones.push(...buildLiveZonesForTf(data, tf, price, pair, tfAtr || primaryAtr || 0, 5));
     }
+    const targetCandidates = buildTargetCandidates(historyCache, price, pair);
+    const stageContext = buildLimitOrderStageContext(zones, targetCandidates, price, primaryAtr || 0, entryContext);
 
     const liq4h = mapLiquidity(historyCache?.['4H'] || []);
     const liq1h = mapLiquidity(historyCache?.['1H'] || []);
@@ -3077,6 +3143,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         },
         structure,
         real_ict_zones: zones,
+        limit_order_setup: stageContext.limit_order_setup,
+        immediate_entry: stageContext.immediate_entry,
         liquidity: {
             '4H': {
                 nearest_buy_side: liq4h.nearestAbove,
@@ -3139,19 +3207,21 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             maximum_entry_distance_atr: LIMIT_ORDER_MAX_DIST_ATR,
             note: `Any SL closer than ${ictRound(minSLDistance, prec)} is invalid for current ATR/settings.`
         },
-        target_candidates: buildTargetCandidates(historyCache, price, pair),
+        target_candidates: targetCandidates,
         entry_filters: entryContext || null
     };
 }
 
 function buildAIPrompt(liveMarketContext, candleData) {
     const system = [
-        'You are the discretionary reasoning layer of an ICT trading system.',
+        'You are the discretionary reasoning layer of a pending LIMIT-ORDER ICT trading system.',
         'All values in COMPUTED MARKET FACTS are generated deterministically from live market data and must be treated as authoritative.',
         'Raw candles are supplied only for additional context.',
         'Never invent an FVG, OB, MSNR, swing, MSS, BOS, CHoCH, ATR, liquidity level, or target level that is not present in COMPUTED MARKET FACTS.',
         'Zone/target origin hierarchy: STRUCTURAL = directly derived market structure such as FVG, OB, swings and structural liquidity. PIVOT_DERIVED = deterministic MSNR support/resistance calculated from pivot-based market levels. ATR_FALLBACK = synthetic deterministic fallback/reference level used when normal MSNR levels are unavailable. ATR_FALLBACK must not be treated as primary structural confluence.',
-        'Your role is to interpret the supplied market state, identify the highest-quality valid opportunity currently available, or return NO_TRADE when conditions are insufficient.',
+        'Stage 1 asks whether a valid future pending-limit setup exists. Current price not being inside the zone, immediate confirmation score of 0, or off-hours are not by themselves reasons for NO_TRADE.',
+        'Stage 2 asks whether immediate entry/fill confirmation is ready now.',
+        'Your role is to interpret the supplied market state, identify the highest-quality valid pending-limit opportunity currently available, or return NO_TRADE when no future setup satisfies structure, volatility, zone, and RR requirements.',
         'Do not force a setup. Return ONLY valid JSON.'
     ].join('\n');
 
@@ -3178,15 +3248,20 @@ TASK
 ================================================
 Analyze the current live market.
 
-1. Decide BUY, SELL, WAIT, or NO_TRADE.
+This bot creates pending LIMIT orders at future ICT zones. A valid setup may exist even when current price is not inside the entry zone yet.
+
+1. Decide BUY_LIMIT, SELL_LIMIT, WAIT, or NO_TRADE. If preserving direction compatibility, also set direction to BUY or SELL for limit setups.
 2. Select one REAL supplied zone from COMPUTED MARKET FACTS.real_ict_zones if proposing BUY or SELL. The selected primary zone must have primary_eligible=true.
 3. Explain why this direction has better probability than the opposite.
-4. Respect current volatility, ATR, minimum SL distance, maximum SL distance, and minimum RR constraints.
-5. Respect real structure, liquidity, premium/discount, and target candidates.
-6. Do not invent levels.
-7. Do not force a trade merely because one direction is marginally better.
-8. Today's best professional decision may be WAIT or NO_TRADE.
-9. Zone/target origin hierarchy: STRUCTURAL = directly derived market structure such as FVG, OB, swings and structural liquidity. PIVOT_DERIVED = deterministic MSNR support/resistance calculated from pivot-based market levels. ATR_FALLBACK = synthetic deterministic fallback/reference level used when normal MSNR levels are unavailable. ATR_FALLBACK must not be treated as primary structural confluence.
+4. Evaluate future limit-entry geometry using your proposed entry, not current market price.
+5. Respect current volatility, ATR, minimum SL distance, maximum SL distance, and minimum RR constraints.
+6. Respect real structure, liquidity, premium/discount, and target candidates.
+7. Do not invent levels.
+8. Do not return NO_TRADE only because current price is not at the zone, immediate confirmation score is 0, or no immediate trigger exists yet.
+9. Return NO_TRADE only when no valid future limit-order setup satisfies structural, volatility, zone, and RR requirements.
+10. Use WAIT when a valid setup concept exists but deterministic facts show it is incomplete or should wait for better fill/confirmation conditions.
+11. Today's best professional decision may still be WAIT or NO_TRADE.
+12. Zone/target origin hierarchy: STRUCTURAL = directly derived market structure such as FVG, OB, swings and structural liquidity. PIVOT_DERIVED = deterministic MSNR support/resistance calculated from pivot-based market levels. ATR_FALLBACK = synthetic deterministic fallback/reference level used when normal MSNR levels are unavailable. ATR_FALLBACK must not be treated as primary structural confluence.
 
 Use symbolic arithmetic only:
 risk = abs(entry - stop_loss)
@@ -3197,8 +3272,10 @@ For SELL geometry must be: stop_loss > entry > take_profit_1 > take_profit_2 > t
 
 Return ONLY JSON using the existing application schema plus selected_zone/decision:
 {
-  "decision": "BUY" | "SELL" | "WAIT" | "NO_TRADE",
+  "decision": "BUY_LIMIT" | "SELL_LIMIT" | "WAIT" | "NO_TRADE",
   "direction": "BUY" | "SELL",
+  "order_type": "LIMIT",
+  "setup_type": "PENDING_LIMIT",
   "selected_zone": { "type": "FVG" | "OB" | "MSNR", "timeframe": "4H" | "1H", "low": number, "high": number },
   "entry_zone": { "low": number, "high": number, "source": "FVG" | "OB" | "MSNR" },
   "entry": number,
@@ -3302,6 +3379,9 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null) {
         
         const result = JSON.parse(jsonMatch[0]);
         const rawDecision = String(result.decision || result.direction || '').toUpperCase().replace('-', '_');
+        if ((rawDecision === 'BUY_LIMIT' || rawDecision === 'SELL_LIMIT') && (result.direction !== 'BUY' && result.direction !== 'SELL')) {
+            result.direction = rawDecision === 'BUY_LIMIT' ? 'BUY' : 'SELL';
+        }
         if (rawDecision === 'WAIT' || rawDecision === 'NO_TRADE' || rawDecision === 'SKIP') {
             result.decision = rawDecision === 'SKIP' ? 'NO_TRADE' : rawDecision;
             result.direction = result.decision;
@@ -3354,6 +3434,11 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null) {
         
         if (!result.ai_decision) {
             result.ai_decision = result.confidence >= 70 ? 'enter_now' : 'wait_for_reaction';
+        }
+        if (!result.order_type) result.order_type = 'LIMIT';
+        if (!result.setup_type) result.setup_type = 'PENDING_LIMIT';
+        if (!result.decision || result.decision === result.direction) {
+            result.decision = result.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT';
         }
         
         if (!result.probability) {
@@ -3443,6 +3528,24 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
     }
 
     return { valid: issues.length === 0, issues };
+}
+
+function findSelectedLiveZone(aiResult, liveMarketContext) {
+    const selected = aiResult?.selected_zone || aiResult?.entry_zone;
+    const zones = liveMarketContext?.real_ict_zones || [];
+    if (!selected) return null;
+    const source = ictCanonicalZoneType(selected.type || selected.source);
+    const low = Number(selected.low);
+    const high = Number(selected.high);
+    const tf = selected.timeframe;
+    return zones.find(z => {
+        const typeOk = !source || z.type === source;
+        const tfOk = !tf || z.timeframe === tf;
+        const dirOk = !aiResult?.direction || z.direction === aiResult.direction;
+        const lowOk = Number.isFinite(low) && Math.abs(Number(z.low) - low) <= Math.max(Math.abs(low) * 0.0002, 0.00001);
+        const highOk = Number.isFinite(high) && Math.abs(Number(z.high) - high) <= Math.max(Math.abs(high) * 0.0002, 0.00001);
+        return typeOk && tfOk && dirOk && lowOk && highOk;
+    }) || null;
 }
 
 async function runFallbackScan(price, historyCache) {
@@ -4044,6 +4147,9 @@ async function runAutoScan() {
                 pair: pair,
                 current_price: price,
                 trade_type: aiResult.direction === 'BUY' ? 'BUY' : 'SELL',
+                decision: aiResult.decision,
+                order_type: aiResult.order_type || 'LIMIT',
+                setup_type: aiResult.setup_type || 'PENDING_LIMIT',
                 entry_price: aiResult.entry,
                 entry_zone: aiResult.entry_zone,
                 stop_loss: aiResult.stop_loss,
@@ -4096,6 +4202,15 @@ async function runAutoScan() {
         // is surfaced via filterOverride + lastScanRejections + notif.
         // ============================================
         const validation = validateAISetup(aiResult, price, historyCache, pair);
+        const selectedZone = findSelectedLiveZone(aiResult, liveMarketContext) || validation.matchedZone || aiResult.selected_zone || aiResult.entry_zone;
+        const selectedZoneStatus = getZonePriceStatus(price, selectedZone);
+        console.log("LIMIT ZONE STATUS", {
+            currentPrice: price,
+            selectedZone,
+            insideZone: selectedZoneStatus.insideZone,
+            distanceToZone: selectedZoneStatus.distanceToZone,
+            immediateConfirmation: entryContext.entryConfirmation
+        });
         if(!validation.valid) {
             aiResult.ai_decision = 'wait_for_reaction';
             aiResult.filterOverride = validation.reason;
@@ -4117,7 +4232,8 @@ async function runAutoScan() {
                 rr1: validation.rr1,
                 htfMatch: validation.htfMatch,
                 factors: validation.factors,
-                matchedZone: validation.matchedZone ? { low: validation.matchedZone.low, high: validation.matchedZone.high, tf: validation.matchedZoneTf } : null
+                matchedZone: validation.matchedZone ? { low: validation.matchedZone.low, high: validation.matchedZone.high, tf: validation.matchedZoneTf } : null,
+                limitZoneStatus: selectedZoneStatus
             };
             out.trade_signal.confidence = validation.adjustedConfidence;
             out.trade_signal.validation = aiResult.validation;
@@ -4125,22 +4241,37 @@ async function runAutoScan() {
             setJsonOutput(out);
         }
 
-        const filtersBlock = !entryContext.allOk;
+        const immediateEntryBlocked = !entryContext.allOk;
         const holisticIndecisive = holistic.suggestedDirection === 'NEUTRAL' && aiResult.ai_decision === 'enter_now';
-        const effectiveDecision = (filtersBlock || holisticIndecisive) && aiResult.ai_decision === 'enter_now'
+        const effectiveDecision = (immediateEntryBlocked || holisticIndecisive) && aiResult.ai_decision === 'enter_now'
             ? 'wait_for_reaction'
             : aiResult.ai_decision;
-        const overrideReason = holisticIndecisive && !filtersBlock
+        const overrideReason = holisticIndecisive && !immediateEntryBlocked
             ? `Holistic score too close (BUY ${holistic.buyScore} vs SELL ${holistic.sellScore}, diff ${holistic.diff})`
             : entryContext.summary;
-        if ((filtersBlock || holisticIndecisive) && aiResult.ai_decision === 'enter_now') {
+        if ((immediateEntryBlocked || holisticIndecisive) && aiResult.ai_decision === 'enter_now') {
             aiResult.ai_decision = effectiveDecision;
             aiResult.filterOverride = overrideReason;
         }
         const tradeable = effectiveDecision !== 'skip'
             && aiResult.confidence >= 58
-            && sessionCheck.priority !== 'LOW'
             && validation.valid;
+        out.trade_signal.ai_decision = effectiveDecision;
+        out.trade_signal.wait_condition = effectiveDecision === 'wait_for_reaction'
+            ? (aiResult.wait_condition || overrideReason)
+            : aiResult.wait_condition;
+        out.trade_signal.limit_order_setup = {
+            eligible: tradeable,
+            reason: validation.valid ? 'Future pending-limit setup passed deterministic validation' : validation.reason,
+            current_price_inside_zone_required: false,
+            selected_zone_status: selectedZoneStatus
+        };
+        out.trade_signal.immediate_entry = {
+            eligible: entryContext.allOk && effectiveDecision === 'enter_now',
+            reason: entryContext.summary,
+            confirmation: entryContext.entryConfirmation
+        };
+        setJsonOutput(out);
         
         analysis = {
             signalType: st,
@@ -4152,13 +4283,13 @@ async function runAutoScan() {
             takeProfit3: aiResult.take_profit_3,
             confidence: aiResult.confidence,
             riskPercent: tradeable ? 0.5 : 0,
-            entryReady: aiResult.ai_decision === 'enter_now',
-            executionDecision: aiResult.ai_decision,
+            entryReady: entryContext.allOk && effectiveDecision === 'enter_now',
+            executionDecision: effectiveDecision,
             invalidationPrice: aiResult.stop_loss * (aiResult.direction === 'BUY' ? 0.995 : 1.005),
             confirmation: aiResult.entry_zone.source || 'AI Zone',
             patterns: aiResult.patterns.join('+'),
             aiDecision: aiResult,
-            riskAdjustment: aiResult.ai_decision === 'enter_now' ? 1.0 : 0.8,
+            riskAdjustment: effectiveDecision === 'enter_now' ? 1.0 : 0.8,
             rrUsed: parseFloat(rrDisplay) || 2.0,
             touches: 0,
             isFresh: true,
@@ -4657,7 +4788,7 @@ function checkEntryConfirmation(data, zone, direction) {
     };
 }
 
-// Aggregator: combine the 3 filters into a single context for the AI prompt
+// Aggregator: combine Stage 2 immediate-entry filters for the AI prompt.
 function buildEntryContext(sessionCheck, marketPhase, phaseDecision, entryConfirmation) {
     const lines = [];
     lines.push('1. SESSION FILTER: ' + sessionCheck.priority + ' - ' + sessionCheck.reason + ' (mult ' + sessionCheck.multiplier + 'x)');
@@ -4674,7 +4805,7 @@ function buildEntryContext(sessionCheck, marketPhase, phaseDecision, entryConfir
     const allOk = sessionCheck.priority !== 'LOW' && phaseDecision.shouldEnter && entryConfirmation.confirmed;
     const summary = allOk
         ? '✅ ALL FILTERS PASS - AI may enter_now'
-        : '⏳ FILTER BLOCK - AI should return wait_for_reaction or skip';
+        : '⏳ IMMEDIATE ENTRY WAIT - pending limit setup may still be valid';
     return { allOk, lines, summary, sessionCheck, marketPhase, phaseDecision, entryConfirmation };
 }
 
