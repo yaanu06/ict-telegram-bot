@@ -1236,9 +1236,11 @@ function getTradeManagementRules(confidence) {
 }
 
 const STRATEGY_SPEC = {
-    CRT: { referenceLookback: 18, eventLookahead: 10, minReferenceAtr: 0.35, maxEventAgeBars: 8, minSweepAtr: 0.04 },
-    TBS: { lookback: 80, referenceMinAgeBars: 4, maxEventAgeBars: 8, minSweepAtr: 0.04, minSweepPips: 2 },
-    MSNR: { lookback: 120, maxMitigationCount: 2, breakCloseBufferAtr: 0.03, retestToleranceAtr: 0.15, zoneAtrWidth: 0.08 }
+    CRT: { referenceLookback: 18, eventLookahead: 10, minReferenceAtr: 0.35, maxEventAgeBars: 8, minSweepAtr: 0.04, dedupeAtr: 0.2 },
+    TBS: { lookback: 80, referenceMinAgeBars: 4, maxEventAgeBars: 8, minSweepAtr: 0.04, minSweepPips: 2, dedupeAtr: 0.2 },
+    MSNR: { lookback: 120, maxMitigationCount: 2, breakCloseBufferAtr: 0.03, retestToleranceAtr: 0.15, zoneAtrWidth: 0.08, minStructuralScore: 35 },
+    COMBINATION: { minScore: 60, sameTfBars: 20, crossTfHours: 18 },
+    TARGET: { maxAtrDistance: 12, firstObjectiveBonus: 14, seriousObstaclePenalty: 22, weakObstaclePenalty: 7 }
 };
 
 function isValidCandleArray(data, min = 1) {
@@ -1253,6 +1255,132 @@ function classifyEventFreshness(eventAge, maxAge, invalidated = false) {
     if (eventAge <= maxAge) return 'ACTIVE';
     if (eventAge <= maxAge * 2) return 'AGED';
     return 'EXPIRED';
+}
+
+function candleTimestamp(candle, index, timeframe = null) {
+    const parsed = parseCandleTimeUTC(candle?.t);
+    if (Number.isFinite(parsed)) return parsed;
+    const minutes = timeframe === '1D' ? 1440 : timeframe === '4H' ? 240 : timeframe === '1H' ? 60 : timeframe === '15M' ? 15 : timeframe === '5M' ? 5 : 60;
+    return index * minutes * 60000;
+}
+
+function getStrategyEventTime(setup) {
+    return setup?.event_time || setup?.reclaim_time || setup?.retest_time || setup?.break_time || setup?.source_time || null;
+}
+
+function dedupeByNarrative(items, keyFn, scoreFn) {
+    const grouped = new Map();
+    for (const item of items || []) {
+        const key = keyFn(item);
+        const current = grouped.get(key);
+        if (!current || scoreFn(item) > scoreFn(current)) grouped.set(key, item);
+    }
+    return [...grouped.values()];
+}
+
+function evaluateMSNRFormation(data, index, role, zoneLow, zoneHigh, atrVal, timeframe) {
+    const nextBars = data.slice(index + 1, Math.min(data.length, index + 6));
+    const sw = findSwings(data, 2);
+    const level = (zoneLow + zoneHigh) / 2;
+    const nearSwing = role === 'REACTION_SUPPORT'
+        ? (sw.L || []).some(s => Math.abs(s.i - index) <= 3 && Math.abs(s.p - level) <= Math.max(zoneHigh - zoneLow, atrVal * 0.2))
+        : (sw.H || []).some(s => Math.abs(s.i - index) <= 3 && Math.abs(s.p - level) <= Math.max(zoneHigh - zoneLow, atrVal * 0.2));
+    const departure = nextBars.length
+        ? (role === 'REACTION_SUPPORT'
+            ? Math.max(...nextBars.map(c => c.h)) - zoneHigh
+            : zoneLow - Math.min(...nextBars.map(c => c.l)))
+        : 0;
+    const departureAtr = atrVal > 0 ? departure / atrVal : 0;
+    const displacementConfirmed = nextBars.some(c => {
+        const body = Math.abs(c.c - c.o);
+        const range = c.h - c.l;
+        if (!(range > 0) || body / range < 0.55) return false;
+        return role === 'REACTION_SUPPORT' ? c.c > c.o : c.c < c.o;
+    });
+    let structuralScore = 0;
+    if (nearSwing) structuralScore += 18;
+    if (departureAtr >= 0.6) structuralScore += 18;
+    if (departureAtr >= 1.0) structuralScore += 10;
+    if (displacementConfirmed) structuralScore += 16;
+    if (['1D', '4H'].includes(timeframe)) structuralScore += 8;
+    return {
+        formation_quality: structuralScore >= 55 ? 'HIGH' : structuralScore >= STRATEGY_SPEC.MSNR.minStructuralScore ? 'VALID' : 'WEAK',
+        departure_distance: departure,
+        departure_atr: departureAtr,
+        swing_related: nearSwing,
+        displacement_confirmed: displacementConfirmed,
+        structural_score: structuralScore
+    };
+}
+
+function eventDedupeKey(event, atrVal, levelField, timeframe) {
+    const level = Number(event?.[levelField]);
+    const bucket = Number.isFinite(level) ? Math.round(level / Math.max((atrVal || 0) * 0.2, 0.00001)) : 'x';
+    const time = Number(event?.event_time) || 0;
+    const timeBucket = Math.round(time / (60 * 60000));
+    return `${event.direction}-${timeframe || event.timeframe}-${bucket}-${timeBucket}`;
+}
+
+function evaluateCombinationCompatibility(setup, other, settings) {
+    const sameDirection = setup.direction === other.direction;
+    const a = setup.execution_zone;
+    const b = other.execution_zone;
+    const width = Math.max(settings.pipSize * 10, Math.abs((a?.high || 0) - (a?.low || 0)), Math.abs((b?.high || 0) - (b?.low || 0)));
+    const spatiallyRelated = !!(a && b && b.high >= a.low - width * 2 && b.low <= a.high + width * 2);
+    const at = getStrategyEventTime(setup);
+    const bt = getStrategyEventTime(other);
+    const timeDiffHours = Number.isFinite(at) && Number.isFinite(bt) ? Math.abs(at - bt) / 3600000 : null;
+    const sameTf = setup.timeframe === other.timeframe;
+    const temporalLimit = sameTf ? STRATEGY_SPEC.COMBINATION.sameTfBars * 60 : STRATEGY_SPEC.COMBINATION.crossTfHours;
+    const temporallyRelated = timeDiffHours == null ? false : timeDiffHours <= temporalLimit;
+    const setupLiquidity = [setup.sweep_extreme, setup.reclaim_level, setup.evidence?.level].map(Number).find(Number.isFinite);
+    const otherLiquidity = [other.sweep_extreme, other.reclaim_level, other.evidence?.level].map(Number).find(Number.isFinite);
+    const sameLiquidityEvent = sameDirection && Number.isFinite(setupLiquidity) && Number.isFinite(otherLiquidity) && Math.abs(setupLiquidity - otherLiquidity) <= width * 2;
+    const timeframeRelationship = sameTf ? 'SAME_TIMEFRAME' : 'CROSS_TIMEFRAME';
+    const combinationScore = (sameDirection ? 25 : 0) + (spatiallyRelated ? 25 : 0) + (temporallyRelated ? 25 : 0) + (sameLiquidityEvent ? 20 : 0) + (timeframeRelationship === 'CROSS_TIMEFRAME' ? 5 : 0);
+    return { spatially_related: spatiallyRelated, temporally_related: temporallyRelated, same_liquidity_event: sameLiquidityEvent, same_direction: sameDirection, timeframe_relationship: timeframeRelationship, time_diff_hours: timeDiffHours, combination_score: combinationScore };
+}
+
+function evaluateTargetReachability({ direction, entry, stopLoss, target, historyCache, zones, liquidity, strategySetup }) {
+    const targetLevel = Number(target?.level);
+    const tf = target?.timeframe || strategySetup?.timeframe || '1H';
+    const data = historyCache?.[tf] || historyCache?.['1H'] || historyCache?.['4H'] || [];
+    const atrVal = data.length >= 15 ? atr(data, 14) : null;
+    const targetDistance = Math.abs(targetLevel - entry);
+    const targetDistanceAtr = atrVal > 0 ? targetDistance / atrVal : null;
+    const between = level => direction === 'BUY' ? level > entry && level < targetLevel : level < entry && level > targetLevel;
+    const opposingZones = (zones || []).filter(z => z.direction && z.direction !== direction && z.primary_eligible !== false && !z.invalidated)
+        .filter(z => between((Number(z.low) + Number(z.high)) / 2));
+    const serious = opposingZones.filter(z => ['MSNR', 'OB'].includes(z.type) || z.freshness === 'FRESH');
+    const liqLevels = direction === 'BUY' ? (liquidity?.above || []) : (liquidity?.below || []);
+    const interveningLiquidity = (liqLevels || []).filter(between);
+    const strategyNative = (strategySetup?.target_candidates || []).some(t => t.level === targetLevel && (t.source || t.target_type) === (target.source || target.target_type));
+    let score = Number(target.structural_priority) || 50;
+    if (strategyNative || target.strategy_native) score += STRATEGY_SPEC.TARGET.firstObjectiveBonus;
+    if (targetDistanceAtr != null) {
+        if (targetDistanceAtr <= 4) score += 12;
+        else if (targetDistanceAtr <= STRATEGY_SPEC.TARGET.maxAtrDistance) score += 4;
+        else score -= 18;
+    }
+    score -= serious.length * STRATEGY_SPEC.TARGET.seriousObstaclePenalty;
+    score -= Math.max(0, opposingZones.length - serious.length) * STRATEGY_SPEC.TARGET.weakObstaclePenalty;
+    // Liquidity maps can contain several observations of the same pool. Treat
+    // only the first two distinct intervening levels as an obstacle signal.
+    score -= Math.min(interveningLiquidity.length, 2) * 3;
+    if (['1D', '4H'].includes(target.timeframe)) score += 5;
+    if (target.freshness === 'MITIGATED' || target.consumed) score -= 18;
+    const reachabilityScore = Math.max(0, Math.min(100, Math.round(score)));
+    return {
+        reachable: reachabilityScore >= 30,
+        reachability_score: reachabilityScore,
+        target_quality: reachabilityScore >= 75 ? 'HIGH' : reachabilityScore >= 55 ? 'MEDIUM' : 'LOW',
+        target_distance: targetDistance,
+        target_distance_atr: targetDistanceAtr,
+        intervening_obstacles: opposingZones.map(z => ({ type: z.type, timeframe: z.timeframe, low: z.low, high: z.high, severity: serious.includes(z) ? 'SERIOUS' : 'WEAK' })),
+        intervening_liquidity: interveningLiquidity,
+        structural_priority: Number(target.structural_priority) || 50,
+        reason: `${opposingZones.length} opposing zones, ${interveningLiquidity.length} liquidity levels before target`
+    };
 }
 
 function buildPivotReferences(data, currentPrice) {
@@ -1330,42 +1458,72 @@ function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLoc
         const level = (bodyLow + bodyHigh) / 2;
         const zoneLow = bodyLow - pad;
         const zoneHigh = bodyHigh + pad;
+        const formation = evaluateMSNRFormation(data, i, role, zoneLow, zoneHigh, atrVal || settings.pipSize * 10, timeframe);
         let activeRole = role;
         let touch_count = 0;
         let mitigation_count = 0;
         let reaction_count = 0;
         let last_reaction_index = null;
+        let departure_confirmed_index = null;
+        let first_retest_index = null;
         let break_index = null;
         let retest_index = null;
         let broken = false;
         let flipped = false;
         let invalidated = false;
-        if (next) {
-            const reacted = role === 'REACTION_SUPPORT' ? next.c > level && next.h > curr.h : next.c < level && next.l < curr.l;
-            if (reacted) {
-                reaction_count++;
-                last_reaction_index = i + 1;
+        let wasOutsideAfterDeparture = false;
+        for (let j = i + 1; j < data.length; j++) {
+            const c = data[j];
+            const departed = role === 'REACTION_SUPPORT' ? c.c > zoneHigh + pad : c.c < zoneLow - pad;
+            if (!departure_confirmed_index && departed) {
+                departure_confirmed_index = j;
+                wasOutsideAfterDeparture = true;
+                break;
             }
         }
-        for (let j = i + 1; j < data.length; j++) {
+        for (let j = (departure_confirmed_index || i) + 1; j < data.length; j++) {
             const c = data[j];
             const wickTouch = c.h >= zoneLow && c.l <= zoneHigh;
             if (wickTouch) {
-                touch_count++;
-                mitigation_count++;
-                last_reaction_index = j;
-                if (broken && !retest_index) retest_index = j;
+                if (wasOutsideAfterDeparture) {
+                    touch_count++;
+                    mitigation_count++;
+                    first_retest_index = first_retest_index ?? j;
+                    last_reaction_index = j;
+                    const oppositeSideRetest = activeRole === 'SUPPORT_TO_RESISTANCE'
+                        ? broken && c.h >= zoneLow && c.c < zoneLow
+                        : activeRole === 'RESISTANCE_TO_SUPPORT'
+                            ? broken && c.l <= zoneHigh && c.c > zoneHigh
+                            : false;
+                    if (oppositeSideRetest && !retest_index) retest_index = j;
+                    const nextAfterTouch = data[j + 1];
+                    if (nextAfterTouch) {
+                        const rejected = activeRole === 'REACTION_SUPPORT' || activeRole === 'RESISTANCE_TO_SUPPORT'
+                            ? nextAfterTouch.c > zoneHigh
+                            : nextAfterTouch.c < zoneLow;
+                        if (rejected) reaction_count++;
+                    }
+                }
+                const closeOutside = role === 'REACTION_SUPPORT'
+                    ? c.c > zoneHigh
+                    : c.c < zoneLow;
+                wasOutsideAfterDeparture = closeOutside;
+            } else if ((activeRole === 'REACTION_SUPPORT' || activeRole === 'RESISTANCE_TO_SUPPORT') ? c.l > zoneHigh : c.h < zoneLow) {
+                wasOutsideAfterDeparture = true;
             }
-            if (activeRole === 'REACTION_SUPPORT' && c.c < zoneLow - breakBuffer) {
+            const breakDisplacement = Math.abs(c.c - c.o) > Math.max(breakBuffer, (atrVal || 0) * 0.15);
+            if (activeRole === 'REACTION_SUPPORT' && c.c < zoneLow - breakBuffer && breakDisplacement) {
                 broken = true;
                 flipped = true;
                 activeRole = 'SUPPORT_TO_RESISTANCE';
                 break_index = break_index ?? j;
-            } else if (activeRole === 'REACTION_RESISTANCE' && c.c > zoneHigh + breakBuffer) {
+                retest_index = null;
+            } else if (activeRole === 'REACTION_RESISTANCE' && c.c > zoneHigh + breakBuffer && breakDisplacement) {
                 broken = true;
                 flipped = true;
                 activeRole = 'RESISTANCE_TO_SUPPORT';
                 break_index = break_index ?? j;
+                retest_index = null;
             } else if (activeRole === 'SUPPORT_TO_RESISTANCE' && c.c > zoneHigh + breakBuffer) {
                 invalidated = true;
             } else if (activeRole === 'RESISTANCE_TO_SUPPORT' && c.c < zoneLow - breakBuffer) {
@@ -1375,27 +1533,44 @@ function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLoc
         const direction = activeRole === 'REACTION_SUPPORT' || activeRole === 'RESISTANCE_TO_SUPPORT' ? 'BUY' : 'SELL';
         const event_age_bars = data.length - 1 - (retest_index ?? last_reaction_index ?? i);
         const freshness = invalidated ? 'INVALIDATED' : (mitigation_count === 0 ? 'FRESH' : (mitigation_count <= STRATEGY_SPEC.MSNR.maxMitigationCount ? 'TESTED' : 'MITIGATED'));
+        const roleReversalQuality = flipped && retest_index ? 'CONFIRMED_RETEST' : (flipped ? 'BROKEN_NOT_RETESTED' : null);
+        const structural_score = formation.structural_score + (reaction_count > 0 ? 10 : 0) + (roleReversalQuality === 'CONFIRMED_RETEST' ? 20 : 0);
+        const standaloneQualified = structural_score >= STRATEGY_SPEC.MSNR.minStructuralScore && (!flipped || !!retest_index);
         levels.push({
             type: 'MSNR',
             origin: 'STRUCTURAL_MSNR',
-            primary_eligible: !invalidated && freshness !== 'MITIGATED',
+            primary_eligible: standaloneQualified && !invalidated && freshness !== 'MITIGATED',
             level: ictRound(level, prec),
             zone_low: ictRound(zoneLow, prec),
             zone_high: ictRound(zoneHigh, prec),
             low: ictRound(zoneLow, prec),
             high: ictRound(zoneHigh, prec),
             price: ictRound(level, prec),
+            formation_index: i,
             source_candle_index: i,
-            source_time: curr.t || null,
+            source_time: candleTimestamp(curr, i, timeframe),
+            break_time: break_index != null ? candleTimestamp(data[break_index], break_index, timeframe) : null,
+            retest_time: retest_index != null ? candleTimestamp(data[retest_index], retest_index, timeframe) : null,
+            event_time: candleTimestamp(data[retest_index ?? first_retest_index ?? departure_confirmed_index ?? i], retest_index ?? first_retest_index ?? departure_confirmed_index ?? i, timeframe),
             transition_type: transitionType,
             original_role: role,
             role: activeRole,
             direction,
             timeframe,
+            formation_quality: formation.formation_quality,
+            departure_distance: ictRound(formation.departure_distance, prec),
+            departure_atr: formation.departure_atr,
+            swing_related: formation.swing_related,
+            displacement_confirmed: formation.displacement_confirmed,
+            reaction_strength: reaction_count,
+            role_reversal_quality: roleReversalQuality,
+            structural_score,
             freshness,
             touch_count,
             mitigation_count,
             reaction_count,
+            departure_confirmed_index,
+            first_retest_index,
             last_reaction_index,
             break_index,
             retest_index,
@@ -1406,7 +1581,11 @@ function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLoc
             structural_invalidation: direction === 'BUY' ? ictRound(zoneLow, prec) : ictRound(zoneHigh, prec)
         });
     }
-    return levels.filter(l => l.reaction_count > 0 || l.flipped).sort((a, b) => Math.abs(a.level - currentPrice) - Math.abs(b.level - currentPrice));
+    const raw = levels.filter(l => l.structural_score >= STRATEGY_SPEC.MSNR.minStructuralScore || l.flipped);
+    const deduped = dedupeByNarrative(raw, l => `${l.direction}-${l.timeframe}-${Math.round(l.level / Math.max(pad, 0.00001))}`, l => (l.primary_eligible ? 100 : 0) + l.structural_score - l.event_age_bars);
+    deduped.raw_detection_count = raw.length;
+    deduped.deduped_detection_count = deduped.length;
+    return deduped.sort((a, b) => Math.abs(a.level - currentPrice) - Math.abs(b.level - currentPrice));
 }
 
 function calculateMSNR(data, currentPrice, timeframe = null, pairLocal = pair) {
@@ -1463,10 +1642,14 @@ function detectTurtleSoupEvents(data, timeframe = null, pairLocal = pair) {
                     reference_level: ref.p,
                     reference_type: ref.type,
                     reference_bar_index: ref.i,
+                    source_time: candleTimestamp(data[ref.i], ref.i, timeframe),
                     reference_age_bars: sweepIndex - ref.i,
                     reference_strength: ref.strength,
                     sweep_bar_index: sweepIndex,
+                    sweep_time: candleTimestamp(data[sweepIndex], sweepIndex, timeframe),
                     reclaim_bar_index: reclaimIndex,
+                    reclaim_time: candleTimestamp(data[reclaimIndex], reclaimIndex, timeframe),
+                    event_time: candleTimestamp(data[reclaimIndex], reclaimIndex, timeframe),
                     event_age: event_age_bars,
                     event_age_bars,
                     sweep_extreme,
@@ -1489,7 +1672,11 @@ function detectTurtleSoupEvents(data, timeframe = null, pairLocal = pair) {
             break;
         }
     }
-    return events.sort((a, b) => a.event_age_bars - b.event_age_bars || b.reference_strength - a.reference_strength);
+    const raw = events.sort((a, b) => a.event_age_bars - b.event_age_bars || b.reference_strength - a.reference_strength);
+    const deduped = dedupeByNarrative(raw, e => eventDedupeKey(e, atrVal, 'reference_level', timeframe), e => (e.detected ? 100 : 0) + e.reference_strength * 10 + (e.sweep_depth_atr || 0) - e.event_age_bars);
+    deduped.raw_detection_count = raw.length;
+    deduped.deduped_detection_count = deduped.length;
+    return deduped;
 }
 
 function detectTurtleSoup(data) {
@@ -1535,6 +1722,7 @@ function detectCRTEvents(data, timeframe = null, pairLocal = pair) {
                         timeframe,
                         reference_bar_index: refIndex,
                         reference_time: ref.t || null,
+                        source_time: candleTimestamp(ref, refIndex, timeframe),
                         range_high,
                         range_low,
                         range_mid: (range_high + range_low) / 2,
@@ -1543,8 +1731,11 @@ function detectCRTEvents(data, timeframe = null, pairLocal = pair) {
                         manipulation_side: side.manipulation_side,
                         sweep_level: side.reclaim_level,
                         sweep_extreme: side.sweep_extreme,
+                        sweep_time: candleTimestamp(data[sweepIndex], sweepIndex, timeframe),
                         reclaim_level: side.reclaim_level,
                         reclaim_bar_index: reclaimIndex,
+                        reclaim_time: candleTimestamp(data[reclaimIndex], reclaimIndex, timeframe),
+                        event_time: candleTimestamp(data[reclaimIndex], reclaimIndex, timeframe),
                         event_age: event_age_bars,
                         event_age_bars,
                         freshness,
@@ -1561,7 +1752,11 @@ function detectCRTEvents(data, timeframe = null, pairLocal = pair) {
             }
         }
     }
-    return events.sort((a, b) => a.event_age_bars - b.event_age_bars || (b.reference_atr_multiple || 0) - (a.reference_atr_multiple || 0));
+    const raw = events.sort((a, b) => a.event_age_bars - b.event_age_bars || (b.reference_atr_multiple || 0) - (a.reference_atr_multiple || 0));
+    const deduped = dedupeByNarrative(raw, e => eventDedupeKey(e, atrVal, 'reclaim_level', timeframe), e => (e.detected ? 100 : 0) + (e.reference_atr_multiple || 0) * 10 - e.event_age_bars);
+    deduped.raw_detection_count = raw.length;
+    deduped.deduped_detection_count = deduped.length;
+    return deduped;
 }
 
 function detectCRT(data) {
@@ -3210,7 +3405,7 @@ function getAdaptiveStopCandidates(zone, direction, entry, data, zones, atrVal, 
     return [...dedupe.values()].sort((a, b) => Math.abs(a.stop_loss - entry) - Math.abs(b.stop_loss - entry));
 }
 
-function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, minimumRR, prec) {
+function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, minimumRR, prec, reachabilityContext = {}) {
     const side = direction === 'BUY' ? 'buy' : 'sell';
     const risk = Math.abs(entry - stopLoss);
     const requiredReward = risk * minimumRR;
@@ -3219,14 +3414,33 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
         ? targetCandidates.all.filter(c => c.direction === direction)
         : (targetCandidates?.[side] || []);
     const targets = sourceTargets
-        .filter(c => Number.isFinite(Number(c.level)) && c.origin !== 'ATR_FALLBACK')
+        .filter(c => Number.isFinite(Number(c.level)) && !['ATR_FALLBACK', 'PIVOT_REFERENCE', 'PIVOT_DERIVED'].includes(c.origin))
         .map(c => ({ ...c, level: ictRound(Number(c.level), prec), distance_from_entry: ictRound(Math.abs(Number(c.level) - entry), prec) }))
         .filter(c => direction === 'BUY' ? c.level > entry : c.level < entry)
-        .sort((a, b) => (b.structural_priority || 0) - (a.structural_priority || 0) || (direction === 'BUY' ? a.level - b.level : b.level - a.level));
-    const valid = targets.filter(c => direction === 'BUY' ? c.level + 1e-9 >= threshold : c.level - 1e-9 <= threshold);
+        .map(c => {
+            const rr = calculateRRMetrics(direction, entry, stopLoss, c.level, minimumRR);
+            const reachability = evaluateTargetReachability({
+                direction,
+                entry,
+                stopLoss,
+                target: c,
+                historyCache: reachabilityContext.historyCache,
+                zones: reachabilityContext.zones,
+                liquidity: reachabilityContext.liquidity,
+                strategySetup: reachabilityContext.strategySetup
+            });
+            const strategyNative = !!c.strategy_native || (reachabilityContext.strategySetup?.target_candidates || []).some(t => Number(t.level) === Number(c.level) && (t.source || t.target_type) === (c.source || c.target_type));
+            const rrScore = Math.min(24, Math.max(0, (rr.actualRR - minimumRR) * 5));
+            const composite_score = (Number(c.structural_priority) || 50) + reachability.reachability_score * 0.75 + rrScore + (strategyNative ? 18 : 0) - (reachability.intervening_obstacles || []).filter(o => o.severity === 'SERIOUS').length * 12;
+            return { ...c, actual_rr: rr.actualRR, target_reachability: reachability, reachability_score: reachability.reachability_score, target_quality: reachability.target_quality, strategy_native: strategyNative, composite_score };
+        });
+    const valid = targets
+        .filter(c => direction === 'BUY' ? c.level + 1e-9 >= threshold : c.level - 1e-9 <= threshold)
+        .filter(c => c.target_reachability.reachable)
+        .sort((a, b) => b.composite_score - a.composite_score || b.reachability_score - a.reachability_score || a.distance_from_entry - b.distance_from_entry);
     const tp1 = valid[0];
     if (!tp1) return null;
-    const farther = targets.filter(c => direction === 'BUY' ? c.level > tp1.level : c.level < tp1.level);
+    const farther = valid.filter(c => direction === 'BUY' ? c.level > tp1.level : c.level < tp1.level);
     const ladder = [tp1, ...farther].filter((c, i, arr) => arr.findIndex(x => x.level === c.level) === i).slice(0, 3);
     const rr = calculateRRMetrics(direction, entry, stopLoss, ladder[0].level, minimumRR);
     return {
@@ -3290,12 +3504,11 @@ function evaluateStructuralStop(candidate, atrContext, pairLocal) {
         return { status: 'STRUCTURALLY_INVALID', reason: 'SELL stop must be above entry' };
     }
     const riskDistance = Math.abs(entry - stopLoss);
-    if (riskDistance < settings.minSL) {
-        return { status: 'EXTREME_TOO_TIGHT', hardReject: true, volatility_classification: 'EXTREME_TOO_TIGHT', reason: `SL distance ${riskDistance.toFixed(settings.prec)} below market minimum ${settings.minSL}` };
-    }
+    // Pair minimums remain diagnostic references. A structurally valid stop is
+    // not rejected solely for being slightly tighter than that reference.
     const atrMultiple = atrContext.atr_rule_reference ? riskDistance / atrContext.atr_rule_reference : null;
     if (atrContext.extreme_too_tight_distance && riskDistance < atrContext.extreme_too_tight_distance) {
-        return { status: 'EXTREME_TOO_TIGHT', hardReject: true, volatility_classification: 'EXTREME_TOO_TIGHT', reason: `SL distance ${riskDistance.toFixed(settings.prec)} is an extreme volatility anomaly for ${atrContext.setup_timeframe}` };
+        return { status: 'EXTREME_TOO_TIGHT', hardReject: true, volatility_classification: 'EXTREME_TOO_TIGHT', reason: `SL distance ${riskDistance.toFixed(settings.prec)} is below the minimum reasonable distance and is an extreme volatility anomaly for ${atrContext.setup_timeframe}` };
     }
     if (riskDistance > atrContext.maximum_reasonable_distance) {
         return { status: 'EXTREME_TOO_WIDE', hardReject: true, volatility_classification: 'EXTREME_TOO_WIDE', reason: `SL distance ${riskDistance.toFixed(settings.prec)} exceeds ${atrContext.setup_timeframe} maximum reasonable distance ${atrContext.maximum_reasonable_distance.toFixed(settings.prec)}` };
@@ -3460,6 +3673,11 @@ function buildMarketContext({ pair, price, historyCache, structure, session, ses
 
 function buildStrategySetups({ pair, price, historyCache, realZones, marketContext }) {
     const setups = [];
+    const detectionStats = {
+        CRT: { raw_count: 0, deduped_count: 0, bullish: 0, bearish: 0 },
+        TBS: { raw_count: 0, deduped_count: 0, bullish: 0, bearish: 0 },
+        MSNR: { raw_count: 0, deduped_count: 0, structural_count: 0, executable_count: 0, pivot_reference_count: 0, atr_fallback_count: 0 }
+    };
     const zoneList = realZones || [];
     const settings = getMarketSettings(pair);
     const prec = settings.prec;
@@ -3477,6 +3695,9 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
         freshness: setup.freshness || 'FRESH',
         strategy_source: setup.primary,
         entry_model: entryModel,
+        entry_region_source: setup.entry_region_source || entryModel,
+        entry_region_low: ictRound(Math.min(low, high), prec),
+        entry_region_high: ictRound(Math.max(low, high), prec),
         structural_invalidation: setup.structural_invalidation
     });
     const zonesNearRegion = (direction, tf, low, high) => {
@@ -3523,9 +3744,8 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 structural_priority: 96
             }];
         } else if (setup.primary === 'TBS') {
-            setup.target_candidates = setup.direction === 'BUY'
-                ? [{ direction: 'BUY', level: setup.liquidity_level + Math.abs(setup.liquidity_level - setup.sweep_extreme) * 3, source: 'EXTERNAL_LIQUIDITY', target_type: 'EXTERNAL_LIQUIDITY', origin: 'STRUCTURAL', timeframe: setup.timeframe, structural_priority: 80 }]
-                : [{ direction: 'SELL', level: setup.liquidity_level - Math.abs(setup.liquidity_level - setup.sweep_extreme) * 3, source: 'EXTERNAL_LIQUIDITY', target_type: 'EXTERNAL_LIQUIDITY', origin: 'STRUCTURAL', timeframe: setup.timeframe, structural_priority: 80 }];
+            setup.target_candidates = [];
+            setup.target_bias = setup.direction === 'BUY' ? 'BUY_SIDE_LIQUIDITY' : 'SELL_SIDE_LIQUIDITY';
         } else if (setup.primary === 'MSNR') {
             const opposing = zoneList
                 .filter(z => z.type === 'MSNR' && z.origin === 'STRUCTURAL_MSNR' && z.direction !== setup.direction && z.primary_eligible !== false)
@@ -3553,6 +3773,8 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
         const zonesForTf = zoneList.filter(z => z.timeframe === tf && z.primary_eligible !== false && !z.invalidated);
         for (const zone of zonesForTf.filter(z => z.type === 'MSNR')) {
             if (zone.origin !== 'STRUCTURAL_MSNR') continue;
+            detectionStats.MSNR.structural_count++;
+            detectionStats.MSNR.executable_count++;
             addSetup(addTargets({
                 primary: 'MSNR',
                 label: 'MSNR',
@@ -3564,6 +3786,7 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 structural_invalidation: zone.direction === 'BUY' ? zone.low : zone.high,
                 execution_zone: { ...zone, strategy_source: 'MSNR' },
                 entry_model: zone.role?.includes('_TO_') ? 'ROLE_REVERSAL_RETEST' : 'REACTION_ZONE_RETEST',
+                entry_region_source: zone.role?.includes('_TO_') ? 'ROLE_REVERSAL_RETEST' : 'MSNR_BODY_TRANSITION_ZONE',
                 evidence: {
                     level: zone.midpoint,
                     origin: zone.origin,
@@ -3580,7 +3803,12 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
             }));
         }
 
-        for (const tbs of detectTurtleSoupEvents(data, tf, pair).filter(e => e.detected)) {
+        const tbsEvents = detectTurtleSoupEvents(data, tf, pair);
+        detectionStats.TBS.raw_count += tbsEvents.raw_detection_count ?? tbsEvents.length;
+        detectionStats.TBS.deduped_count += tbsEvents.deduped_detection_count ?? tbsEvents.length;
+        for (const tbs of tbsEvents.filter(e => e.detected)) {
+            if (tbs.direction === 'BUY') detectionStats.TBS.bullish++;
+            if (tbs.direction === 'SELL') detectionStats.TBS.bearish++;
             const executionZone = makeExecutionZone({ ...tbs, primary: 'TBS', timeframe: tf }, tbs.reclaim_level - buffer, tbs.reclaim_level + buffer, 'TBS');
             const near = zonesNearRegion(tbs.type, tf, executionZone.low, executionZone.high);
             const confirmations = [];
@@ -3598,20 +3826,30 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 sweep_extreme: tbs.sweep_extreme,
                 reclaim_level: tbs.reclaim_level,
                 reclaim_confirmed: tbs.reclaim_confirmed,
+                source_time: tbs.source_time,
+                sweep_time: tbs.sweep_time,
+                reclaim_time: tbs.reclaim_time,
+                event_time: tbs.event_time,
                 event_age: tbs.event_age,
                 freshness: tbs.freshness,
                 structural_entry_region: { low: executionZone.low, high: executionZone.high },
                 structural_invalidation: tbs.sweep_extreme,
                 execution_zone: executionZone,
                 entry_model: tbs.entry_model,
+                entry_region_source: 'TBS_RECLAIM_RETEST',
                 evidence: { ...tbs.evidence, liquidity_level: tbs.keyLevel, sweep_extreme: tbs.sweep_extreme, reclaim_price: tbs.reclaim_price, timeframe: tf },
                 confirmations,
                 matched_zones: near
             }));
         }
 
-        for (const crt of detectCRTEvents(data, tf, pair).filter(e => e.detected)) {
+        const crtEvents = detectCRTEvents(data, tf, pair);
+        detectionStats.CRT.raw_count += crtEvents.raw_detection_count ?? crtEvents.length;
+        detectionStats.CRT.deduped_count += crtEvents.deduped_detection_count ?? crtEvents.length;
+        for (const crt of crtEvents.filter(e => e.detected)) {
             const crtDirection = crt.direction;
+            if (crtDirection === 'BUY') detectionStats.CRT.bullish++;
+            if (crtDirection === 'SELL') detectionStats.CRT.bearish++;
             const entryLevel = crt.reclaim_level || (crtDirection === 'BUY' ? crt.range_low : crt.range_high);
             const executionZone = makeExecutionZone({ ...crt, primary: 'CRT', timeframe: tf }, entryLevel - buffer, entryLevel + buffer, 'CRT');
             const crtZones = zonesNearRegion(crtDirection, tf, executionZone.low, executionZone.high);
@@ -3630,6 +3868,10 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 range_low: crt.range_low,
                 manipulation_side: crt.manipulation_side,
                 sweep_extreme: crt.sweep_extreme,
+                source_time: crt.source_time,
+                sweep_time: crt.sweep_time,
+                reclaim_time: crt.reclaim_time,
+                event_time: crt.event_time,
                 reclaim_level: crt.reclaim_level,
                 event_age: crt.event_age,
                 freshness: crt.freshness,
@@ -3637,6 +3879,7 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 structural_invalidation: crt.sweep_extreme || (crtDirection === 'BUY' ? crt.range_low : crt.range_high),
                 execution_zone: executionZone,
                 entry_model: crt.entry_model,
+                entry_region_source: 'CRT_RECLAIM_RETEST',
                 primary_objective: crt.primary_objective,
                 target_candidates: crt.target_candidates,
                 evidence: { ...crt.evidence, direction: crtDirection, range_high: crt.range_high, range_low: crt.range_low, timeframe: tf },
@@ -3645,19 +3888,21 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
             }));
         }
     }
+    const dedupedSetups = dedupeByNarrative(setups, s => `${s.primary}-${s.direction}-${s.timeframe}-${strategyZoneKey(s.execution_zone)}`, s => (s.execution_zone?.primary_eligible !== false ? 100 : 0) + (s.evidence?.structural_score || 0) - (s.event_age || 0));
+    setups.length = 0;
+    setups.push(...dedupedSetups);
     for (const setup of setups) {
-        const compatible = setups.filter(other => other !== setup
-            && other.direction === setup.direction
-            && other.execution_zone
-            && setup.execution_zone
-            && other.execution_zone.high >= setup.execution_zone.low - Math.max(settings.pipSize * 10, Math.abs(setup.execution_zone.high - setup.execution_zone.low) * 2)
-            && other.execution_zone.low <= setup.execution_zone.high + Math.max(settings.pipSize * 10, Math.abs(setup.execution_zone.high - setup.execution_zone.low) * 2)
-            && Math.abs((other.reclaim_bar_index ?? other.retest_index ?? other.source_candle_index ?? 0) - (setup.reclaim_bar_index ?? setup.retest_index ?? setup.source_candle_index ?? 0)) <= 20);
-        const strategies = [...new Set([setup.primary, ...compatible.map(s => s.primary)])];
+        const compatible = setups
+            .filter(other => other !== setup && other.primary !== setup.primary)
+            .map(other => ({ other, compatibility: evaluateCombinationCompatibility(setup, other, settings) }))
+            .filter(x => x.compatibility.combination_score >= STRATEGY_SPEC.COMBINATION.minScore)
+            .filter(x => x.compatibility.same_liquidity_event || setup.primary === 'MSNR' || x.other.primary === 'MSNR');
+        setup.combination_evidence = compatible.map(x => ({ strategy: x.other.primary, ...x.compatibility }));
+        const strategies = [...new Set([setup.primary, ...compatible.map(x => x.other.primary)])];
         if (strategies.length > 1) {
             setup.label = strategies.join('+');
             setup.confirmations = [...new Set([...(setup.confirmations || []), ...strategies.filter(s => s !== setup.primary)])];
-            for (const other of compatible) {
+            for (const { other } of compatible) {
                 setup.strategy_evidence[other.primary] = other.evidence;
                 setup.target_candidates = [...(setup.target_candidates || []), ...(other.target_candidates || [])];
             }
@@ -3668,6 +3913,7 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
     console.log('MSNR DETECTIONS', setups.filter(s => s.primary === 'MSNR'));
     console.log('STRATEGY COMBINATIONS', setups.filter(s => String(s.label || '').includes('+')).map(s => ({ id: s.id, label: s.label, direction: s.direction, timeframe: s.timeframe })));
     console.log('STRATEGY SETUPS', setups);
+    Object.defineProperty(setups, 'detection_stats', { value: detectionStats, enumerable: false, configurable: true });
     return setups;
 }
 
@@ -3844,7 +4090,12 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         [direction === 'BUY' ? 'buy' : 'sell']: [...strategyTargets, ...(targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell'] || [])]
                     }
                     : targetCandidates;
-                const targets = selectAdaptiveTargets(direction, entry, stop.stop_loss, mergedTargetCandidates, minimumRR, prec);
+                const targets = selectAdaptiveTargets(direction, entry, stop.stop_loss, mergedTargetCandidates, minimumRR, prec, {
+                    historyCache,
+                    zones: validationZones,
+                    liquidity: marketContext?.liquidity?.[tf] || mapLiquidity(data || []),
+                    strategySetup
+                });
                 console.log('TARGET EVALUATION', {
                     id: rawCandidate.id,
                     strategy: rawCandidate.strategy_label || rawCandidate.zone_type,
@@ -3893,6 +4144,8 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     tp3: targets.tp3 ? targets.tp3.level : null,
                     tp1_source: targets.tp1.source,
                     tp1_origin: targets.tp1.origin,
+                    target_reachability: targets.tp1.target_reachability,
+                    actual_rr: ictRound(rr.actualRR, 2),
                     rr_tp1: ictRound(rr.actualRR, 2),
                     required_reward: ictRound(targets.required_reward, prec),
                     freshness: zone.freshness,
@@ -3912,7 +4165,9 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         target_distance_atr: safeAtr > 0 ? ictRound(Math.abs(t.level - entry) / safeAtr, 2) : null,
                         structural_priority: t.structural_priority || 50,
                         intervening_obstacles: t.intervening_obstacles || [],
-                        reachability_score: t.reachability_score || 70
+                        reachability_score: t.reachability_score,
+                        target_reachability: t.target_reachability,
+                        actual_rr: t.actual_rr
                     })) : [],
                     score: ictRound(score, 2)
                 };
@@ -4290,7 +4545,7 @@ function buildLiveZonesForTf(data, tf, price, pairLocal, atrVal, limitPerDirecti
             zones.push({
                 id: `${tf}-${direction}-${z.type}-${ictRound(z.low, prec)}-${ictRound(z.high, prec)}`,
                 type: z.type,
-                origin: z.origin || (z.type === 'MSNR' ? 'PIVOT_DERIVED' : 'STRUCTURAL'),
+                origin: z.origin || (z.type === 'MSNR' ? 'PIVOT_REFERENCE' : 'STRUCTURAL'),
                 primary_eligible: z.primary_eligible !== false,
                 direction,
                 timeframe: tf,
@@ -4344,6 +4599,22 @@ function buildTargetCandidates(historyCache, price, pairLocal) {
         }
         for (const s of (sw.L || []).slice(-5)) {
             candidates.push({ direction: 'SELL', timeframe: tf, source: 'SWING_LOW', target_type: 'SWING_HIGH_LOW', origin: 'STRUCTURAL', level: s.p, distance_from_price: Math.abs(s.p - price), structural_priority: 76 });
+        }
+        for (const fvg of detectFVG(data)) {
+            if (fvg.type === 'bear' && fvg.l > price) {
+                candidates.push({ direction: 'BUY', timeframe: tf, source: 'OPPOSING_FVG', target_type: 'FVG', origin: 'STRUCTURAL', level: fvg.m, distance_from_price: Math.abs(fvg.m - price), structural_priority: 62 });
+            }
+            if (fvg.type === 'bull' && fvg.h < price) {
+                candidates.push({ direction: 'SELL', timeframe: tf, source: 'OPPOSING_FVG', target_type: 'FVG', origin: 'STRUCTURAL', level: fvg.m, distance_from_price: Math.abs(fvg.m - price), structural_priority: 62 });
+            }
+        }
+        for (const ob of detectOrderBlocks(data, 'SELL')) {
+            const mid = (ob.low + ob.high) / 2;
+            if (mid > price) candidates.push({ direction: 'BUY', timeframe: tf, source: 'OPPOSING_OB', target_type: 'OB', origin: 'STRUCTURAL', level: mid, distance_from_price: Math.abs(mid - price), structural_priority: 68 });
+        }
+        for (const ob of detectOrderBlocks(data, 'BUY')) {
+            const mid = (ob.low + ob.high) / 2;
+            if (mid < price) candidates.push({ direction: 'SELL', timeframe: tf, source: 'OPPOSING_OB', target_type: 'OB', origin: 'STRUCTURAL', level: mid, distance_from_price: Math.abs(mid - price), structural_priority: 68 });
         }
     }
     const dedupe = new Map();
@@ -4456,27 +4727,25 @@ function summarizeCandidateRejectionDetails(rejectedCandidates) {
 }
 
 function summarizeStrategyDetections(strategySetups) {
+    const stats = strategySetups?.detection_stats || {};
     const counts = {
-        CRT: { evaluated: true, detected: false, bullish: 0, bearish: 0, rejected_reasons: [] },
-        TBS: { evaluated: true, detected: false, bullish: 0, bearish: 0, rejected_reasons: [] },
-        MSNR: { evaluated: true, detected: false, structural_levels: 0, pivot_references: 'PIVOT_REFERENCE_ONLY', atr_fallback_references: 'REFERENCE_ONLY', executable_setups: 0 },
+        CRT: { raw_count: stats.CRT?.raw_count || 0, deduped_count: stats.CRT?.deduped_count || 0, bullish: 0, bearish: 0 },
+        TBS: { raw_count: stats.TBS?.raw_count || 0, deduped_count: stats.TBS?.deduped_count || 0, bullish: 0, bearish: 0 },
+        MSNR: { raw_count: stats.MSNR?.raw_count || 0, deduped_count: stats.MSNR?.deduped_count || 0, structural_count: 0, executable_count: 0, pivot_reference_count: stats.MSNR?.pivot_reference_count || 0, atr_fallback_count: stats.MSNR?.atr_fallback_count || 0 },
         combinations: { CRT_TBS: 0, CRT_MSNR: 0, TBS_MSNR: 0, CRT_TBS_MSNR: 0 }
     };
     for (const setup of strategySetups || []) {
         if (setup.primary === 'CRT') {
-            counts.CRT.detected = true;
             if (setup.direction === 'BUY') counts.CRT.bullish++;
             if (setup.direction === 'SELL') counts.CRT.bearish++;
         }
         if (setup.primary === 'TBS') {
-            counts.TBS.detected = true;
             if (setup.direction === 'BUY') counts.TBS.bullish++;
             if (setup.direction === 'SELL') counts.TBS.bearish++;
         }
         if (setup.primary === 'MSNR') {
-            counts.MSNR.detected = true;
-            counts.MSNR.structural_levels++;
-            if (setup.execution_zone?.primary_eligible !== false) counts.MSNR.executable_setups++;
+            counts.MSNR.structural_count++;
+            if (setup.execution_zone?.primary_eligible !== false) counts.MSNR.executable_count++;
         }
         const label = String(setup.label || '');
         if (label.includes('CRT') && label.includes('TBS') && label.includes('MSNR')) counts.combinations.CRT_TBS_MSNR++;
@@ -4490,14 +4759,29 @@ function summarizeStrategyDetections(strategySetups) {
 function buildCandidatePipelineAudit(strategySetups, rawCandidates, rejectedCandidates, validCandidates) {
     const details = summarizeCandidateRejectionDetails(rejectedCandidates);
     return {
-        strategy_setups_detected: (strategySetups || []).length,
-        raw_execution_candidates: (rawCandidates || []).length,
+        strategy_setups: (strategySetups || []).length,
+        execution_seeds: getStrategyExecutionZones(strategySetups || []).length,
+        raw_candidates: (rawCandidates || []).length,
         structural_stop_valid: (rawCandidates || []).filter(c => c.risk_model?.status === 'VALID_STRUCTURAL_STOP').length,
         volatility_rejected: (details.EXTREME_TOO_TIGHT || 0) + (details.EXTREME_TOO_WIDE || 0) + (details.STOP_VOLATILITY_TOO_TIGHT || 0) + (details.STOP_VOLATILITY_TOO_WIDE || 0),
         target_rejected: (details.NO_VALID_TP1 || 0) + (details.TP1_RR_TOO_LOW || 0),
+        consistency_rejected: details.ZONE_INVALID || 0,
         context_rejected: (details.CONTINUATION_HTF || 0) + (details.REVERSAL_EVIDENCE_INSUFFICIENT || 0),
         final_valid: (validCandidates || []).length
     };
+}
+
+function waitCodeFromRejections(audit, hasStrategySetups) {
+    const detail = audit?.rejection_detail || {};
+    if (!hasStrategySetups) return 'NO_STRATEGY_SETUP';
+    if ((audit?.raw_candidate_count || audit?.raw_candidates || 0) === 0) return 'NO_EXECUTION_GEOMETRY';
+    if (detail.STOP_STRUCTURAL_INVALID) return 'NO_STRUCTURAL_STOP';
+    if (detail.EXTREME_TOO_TIGHT || detail.EXTREME_TOO_WIDE) return 'EXTREME_VOLATILITY';
+    if (detail.NO_VALID_TP1) return 'NO_REALISTIC_TARGET';
+    if (detail.TP1_RR_TOO_LOW) return 'RR_BELOW_MINIMUM';
+    if (detail.REVERSAL_EVIDENCE_INSUFFICIENT || detail.CONTINUATION_HTF) return 'CONTEXT_QUALITY_TOO_LOW';
+    if (detail.ZONE_INVALID) return 'AI_INCONSISTENT_OUTPUT';
+    return 'NO_EXECUTION_GEOMETRY';
 }
 
 function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext }) {
@@ -4523,7 +4807,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     for (const tf of ['4H', '1H']) {
         const data = historyCache?.[tf];
         const tfAtr = tf === '4H' ? atr4h : atr1h;
-        zones.push(...buildLiveZonesForTf(data, tf, price, pair, tfAtr || primaryAtr || 0, 5));
+        const tfZones = buildLiveZonesForTf(data, tf, price, pair, tfAtr || primaryAtr || 0, 5);
+        zones.push(...tfZones);
     }
     const targetCandidates = buildTargetCandidates(historyCache, price, pair);
     const stageContext = buildLimitOrderStageContext(zones, targetCandidates, price, primaryAtr || 0, entryContext);
@@ -4657,6 +4942,15 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         conflicts: marketContext.conflicts
     });
     const strategySetups = buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext });
+    for (const tf of ['4H', '1H']) {
+        const msnr = calculateMSNR(historyCache?.[tf] || [], price, tf, pair);
+        if (strategySetups.detection_stats?.MSNR) {
+            strategySetups.detection_stats.MSNR.raw_count += msnr.structural_levels?.raw_detection_count ?? msnr.structural_levels?.length ?? 0;
+            strategySetups.detection_stats.MSNR.deduped_count += msnr.structural_levels?.deduped_detection_count ?? msnr.structural_levels?.length ?? 0;
+            strategySetups.detection_stats.MSNR.pivot_reference_count += (msnr.supportMeta || []).filter(x => x.origin === 'PIVOT_REFERENCE').length + (msnr.resistanceMeta || []).filter(x => x.origin === 'PIVOT_REFERENCE').length;
+            strategySetups.detection_stats.MSNR.atr_fallback_count += (msnr.supportMeta || []).filter(x => x.origin === 'ATR_FALLBACK').length + (msnr.resistanceMeta || []).filter(x => x.origin === 'ATR_FALLBACK').length;
+        }
+    }
     const riskConstraints = buildRiskConstraints(pair, price, historyCache);
     const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(strategySetups) : [];
     const validationZones = Array.isArray(strategySetups)
@@ -4686,6 +4980,11 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         strategySetups
     });
     const adaptiveSetupCandidates = adaptiveSetupResult.valid_candidates;
+    stageContext.limit_order_setup.eligible = adaptiveSetupCandidates.length > 0;
+    stageContext.limit_order_setup.future_entry_allowed = adaptiveSetupCandidates.length > 0;
+    stageContext.limit_order_setup.reason = adaptiveSetupCandidates.length > 0
+        ? 'Valid deterministic pending-limit candidate exists; immediate entry confirmation is separate.'
+        : 'No valid deterministic CRT/TBS/MSNR pending-limit candidate passed strategy, stop, target, RR, and consistency checks.';
     stageContext.limit_order_setup.adaptive_candidate_count = adaptiveSetupCandidates.length;
     stageContext.limit_order_setup.strategy_setup_count = strategySetups.length;
     stageContext.limit_order_setup.rejection_summary = summarizeCandidateRejections(adaptiveSetupResult.rejected_candidates);
@@ -5781,7 +6080,7 @@ async function runAutoScan() {
             const reason = !hasStrategySetups
                 ? 'Market context available, but no valid CRT/TBS/MSNR strategy setup is currently available.'
                 : (hasRaw ? 'No strategy setup execution combination passed all hard rules' : 'Strategy setup exists, but no valid execution candidate is available.');
-            const waitCode = !hasStrategySetups ? 'NO_STRATEGY_SETUP' : (hasRaw ? 'RISK_REJECTED' : 'NO_VALID_EXECUTION');
+            const waitCode = waitCodeFromRejections(audit, hasStrategySetups);
             const out = {
                 trade_signal: {
                     date: new Date().toISOString().split('T')[0],
@@ -6056,7 +6355,7 @@ async function runAutoScan() {
             ? (aiResult.wait_condition || overrideReason)
             : aiResult.wait_condition;
         out.trade_signal.limit_order_setup = {
-            eligible: tradeable,
+            eligible: validation.valid,
             reason: validation.valid ? 'Future pending-limit setup passed deterministic validation' : validation.reason,
             current_price_inside_zone_required: false,
             selected_zone_status: selectedZoneStatus

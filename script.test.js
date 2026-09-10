@@ -305,6 +305,93 @@ describe('researched CRT/TBS/MSNR strategy definitions', () => {
 });
 
 describe('strategy pipeline integration rules', () => {
+    it('does not manufacture a TBS target from sweep depth', () => {
+        const ctx = getContext();
+        const setups = ctx.buildStrategySetups({
+            pair: 'XAU/USD',
+            price: 100.2,
+            historyCache: { '1H': tbsBuyFixture() },
+            realZones: [],
+            marketContext: {}
+        });
+        const tbs = setups.find(s => s.primary === 'TBS');
+        expect(tbs).toBeTruthy();
+        expect(tbs.target_candidates).toEqual([]);
+        expect(tbs.target_bias).toBe('BUY_SIDE_LIQUIDITY');
+        expect(JSON.stringify(tbs)).not.toMatch(/sweep_depth.*3|\*\s*3/);
+    });
+
+    it('selects actual structural targets and gives reachability a deterministic score', () => {
+        const ctx = getContext();
+        const target = ctx.selectAdaptiveTargets('BUY', 100, 99, {
+            buy: [{ direction: 'BUY', level: 103, source: 'SWING_HIGH', origin: 'STRUCTURAL', structural_priority: 76 }]
+        }, 2.5, 2, {
+            historyCache: { '1H': candles(40, 80, 0.5, 'up') },
+            zones: [],
+            liquidity: { above: [], below: [] },
+            strategySetup: { target_candidates: [] }
+        });
+        expect(target.tp1.level).toBe(103);
+        expect(target.tp1.target_reachability.reachability_score).not.toBe(70);
+        expect(target.tp1.source).toBe('SWING_HIGH');
+    });
+
+    it('prefers a nearer clean objective over a blocked distant objective', () => {
+        const ctx = getContext();
+        const context = {
+            historyCache: { '1H': candles(40, 100, 1, 'up') },
+            zones: [{ type: 'MSNR', direction: 'SELL', low: 104, high: 105, primary_eligible: true, invalidated: false, freshness: 'FRESH' }],
+            liquidity: { above: [], below: [] },
+            strategySetup: { target_candidates: [{ level: 103, source: 'CRT_OPPOSITE_RANGE' }] }
+        };
+        const clean = ctx.evaluateTargetReachability({ direction: 'BUY', entry: 100, stopLoss: 99, target: { level: 103, source: 'SWING_HIGH', structural_priority: 76 }, ...context });
+        const blocked = ctx.evaluateTargetReachability({ direction: 'BUY', entry: 100, stopLoss: 99, target: { level: 109, source: 'SWING_HIGH', structural_priority: 76 }, ...context });
+        expect(clean.reachability_score).toBeGreaterThan(blocked.reachability_score);
+        expect(clean.intervening_obstacles).toHaveLength(0);
+        expect(blocked.intervening_obstacles.length).toBeGreaterThan(0);
+    });
+
+    it('requires timestamp compatibility for cross-timeframe combinations', () => {
+        const ctx = getContext();
+        const zone = { low: 99.5, high: 100.5 };
+        const base = { direction: 'BUY', execution_zone: zone, sweep_extreme: 99, reclaim_level: 99.5 };
+        const related = ctx.evaluateCombinationCompatibility({ ...base, primary: 'CRT', timeframe: '4H', event_time: Date.parse('2026-01-01T00:00:00Z') }, { ...base, primary: 'TBS', timeframe: '1H', event_time: Date.parse('2026-01-01T02:00:00Z') }, { pipSize: 0.01 });
+        const unrelated = ctx.evaluateCombinationCompatibility({ ...base, primary: 'CRT', timeframe: '4H', event_time: Date.parse('2026-01-01T00:00:00Z') }, { ...base, primary: 'TBS', timeframe: '1H', event_time: Date.parse('2026-01-02T12:00:00Z') }, { pipSize: 0.01 });
+        expect(related.temporally_related).toBe(true);
+        expect(unrelated.temporally_related).toBe(false);
+    });
+
+    it('does not qualify an ordinary weak candle transition as executable MSNR', () => {
+        const ctx = getContext();
+        const data = [];
+        for (let i = 0; i < 40; i++) {
+            const bullish = i % 2 === 0;
+            data.push(c(100, 100.01, 99.99, bullish ? 100.001 : 99.999));
+        }
+        const result = ctx.calculateMSNR(data, 100, '1H', 'EUR/USD');
+        expect(result.executable_setups).toEqual([]);
+    });
+
+    it('requires a real retest before a broken MSNR role reversal is executable', () => {
+        const ctx = getContext();
+        const data = msnrReactionFixture();
+        data[36] = c(101.3, 101.7, 101.1, 101.5);
+        data[37] = c(101.5, 102.0, 101.4, 101.9);
+        data[38] = c(101.9, 102.2, 101.0, 101.4);
+        data[39] = c(101.4, 101.5, 101.2, 101.45);
+        const levels = ctx.calculateMSNR(data, 101.45, '1H', 'XAU/USD').structural_levels;
+        for (const level of levels.filter(l => l.flipped && !l.retest_index)) expect(level.primary_eligible).toBe(false);
+    });
+
+    it('hydrates known TBS, MSNR, and combined strategy zones by candidate ID', () => {
+        const ctx = getContext();
+        for (const type of ['TBS', 'MSNR', 'CRT+TBS']) {
+            const candidate = { id: `candidate-${type}`, direction: 'BUY', timeframe: '1H', zone_type: type === 'MSNR' ? 'MSNR' : type, zone_origin: type === 'MSNR' ? 'STRUCTURAL_MSNR' : 'STRUCTURAL', zone_low: 99, zone_high: 100, entry: 99.5, stop_loss: 98, tp1: 104, tp2: null, tp3: null, rr_tp1: 3.0 };
+            const result = ctx.validateAIOutputConsistency({ selected_candidate_id: candidate.id, direction: candidate.direction, entry: candidate.entry, stop_loss: candidate.stop_loss, take_profit_1: candidate.tp1, selected_zone: { type: candidate.zone_type, timeframe: candidate.timeframe, low: candidate.zone_low, high: candidate.zone_high } }, { adaptive_setup_candidates: [candidate], real_ict_zones: [], risk_constraints: { minimum_rr: 2.5 } });
+            expect(result.valid).toBe(true);
+        }
+    });
+
     it('combines 4H CRT and 1H TBS when they describe the same sweep region', () => {
         const ctx = getContext();
         const setups = ctx.buildStrategySetups({
