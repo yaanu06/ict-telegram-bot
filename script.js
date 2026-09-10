@@ -1235,8 +1235,30 @@ function getTradeManagementRules(confidence) {
     };
 }
 
-// Calculate MSNR
-function calculateMSNR(data, currentPrice) {
+const STRATEGY_SPEC = {
+    CRT: { referenceLookback: 18, eventLookahead: 10, minReferenceAtr: 0.35, maxEventAgeBars: 8, minSweepAtr: 0.04 },
+    TBS: { lookback: 80, referenceMinAgeBars: 4, maxEventAgeBars: 8, minSweepAtr: 0.04, minSweepPips: 2 },
+    MSNR: { lookback: 120, maxMitigationCount: 2, breakCloseBufferAtr: 0.03, retestToleranceAtr: 0.15, zoneAtrWidth: 0.08 }
+};
+
+function isValidCandleArray(data, min = 1) {
+    return Array.isArray(data) && data.length >= min && data.every(c =>
+        c && ictFiniteNumber(c.o) && ictFiniteNumber(c.h) && ictFiniteNumber(c.l) && ictFiniteNumber(c.c)
+    );
+}
+
+function classifyEventFreshness(eventAge, maxAge, invalidated = false) {
+    if (invalidated) return 'INVALIDATED';
+    if (eventAge <= 2) return 'FRESH';
+    if (eventAge <= maxAge) return 'ACTIVE';
+    if (eventAge <= maxAge * 2) return 'AGED';
+    return 'EXPIRED';
+}
+
+function buildPivotReferences(data, currentPrice) {
+    if (!isValidCandleArray(data, 5)) {
+        return { pivot: null, supports: {}, resistances: {}, nearestSupport: null, nearestResistance: null, allSupports: [], allResistances: [], supportMeta: [], resistanceMeta: [] };
+    }
     const highs = data.map(c => c.h);
     const lows = data.map(c => c.l);
     const closes = data.map(c => c.c);
@@ -1251,40 +1273,21 @@ function calculateMSNR(data, currentPrice) {
     const r1 = pp * 2 - rL;
     const r2 = pp + (rH - rL);
     const r3 = rH + 2 * (pp - rL);
-    
-    let supportMeta = [s1, s2, s3]
-        .filter(s => s < currentPrice)
-        .sort((a, b) => b - a)
-        .map((level, index) => ({ level, origin: 'PIVOT_DERIVED', rank: index + 1 }));
-    let resistanceMeta = [r1, r2, r3]
-        .filter(r => r > currentPrice)
-        .sort((a, b) => a - b)
-        .map((level, index) => ({ level, origin: 'PIVOT_DERIVED', rank: index + 1 }));
-    
-    // Fallback: If no supports found below price or no resistances found above price,
-    // generate ATR-based fallback levels so candidates are ALWAYS found.
     const atrVal = atr(data, 14);
-    if(supportMeta.length === 0) {
-        const fallS1 = currentPrice - atrVal * 2.0;
-        const fallS2 = currentPrice - atrVal * 4.0;
-        supportMeta = [
-            { level: fallS1, origin: 'ATR_FALLBACK', rank: 1 },
-            { level: fallS2, origin: 'ATR_FALLBACK', rank: 2 }
-        ];
-        console.log("⚠️ Using ATR_FALLBACK MSNR reference", { side: 'support', currentPrice, atr: atrVal, levels: [fallS1, fallS2] });
-    }
-    if(resistanceMeta.length === 0) {
-        const fallR1 = currentPrice + atrVal * 2.0;
-        const fallR2 = currentPrice + atrVal * 4.0;
-        resistanceMeta = [
-            { level: fallR1, origin: 'ATR_FALLBACK', rank: 1 },
-            { level: fallR2, origin: 'ATR_FALLBACK', rank: 2 }
-        ];
-        console.log("⚠️ Using ATR_FALLBACK MSNR reference", { side: 'resistance', currentPrice, atr: atrVal, levels: [fallR1, fallR2] });
-    }
-    const allS = supportMeta.map(x => x.level);
-    const allR = resistanceMeta.map(x => x.level);
-
+    const supports = [s1, s2, s3].filter(s => s < currentPrice).sort((a, b) => b - a)
+        .map((level, index) => ({ level, origin: 'PIVOT_REFERENCE', primary_eligible: false, rank: index + 1 }));
+    const resistances = [r1, r2, r3].filter(r => r > currentPrice).sort((a, b) => a - b)
+        .map((level, index) => ({ level, origin: 'PIVOT_REFERENCE', primary_eligible: false, rank: index + 1 }));
+    const supportMeta = supports.length ? supports : [
+        { level: currentPrice - atrVal * 2.0, origin: 'ATR_FALLBACK', primary_eligible: false, rank: 1 },
+        { level: currentPrice - atrVal * 4.0, origin: 'ATR_FALLBACK', primary_eligible: false, rank: 2 }
+    ];
+    const resistanceMeta = resistances.length ? resistances : [
+        { level: currentPrice + atrVal * 2.0, origin: 'ATR_FALLBACK', primary_eligible: false, rank: 1 },
+        { level: currentPrice + atrVal * 4.0, origin: 'ATR_FALLBACK', primary_eligible: false, rank: 2 }
+    ];
+    const allS = supportMeta.map(x => x.level).filter(Number.isFinite);
+    const allR = resistanceMeta.map(x => x.level).filter(Number.isFinite);
     return {
         pivot: pp,
         supports: { S1: allS[0] || s1, S2: allS[1] || s2, S3: allS[2] || s3 },
@@ -1298,122 +1301,273 @@ function calculateMSNR(data, currentPrice) {
     };
 }
 
-// Detect Turtle Soup
-function detectTurtleSoup(data) {
-    if(!data || data.length < 15) return { detected: false, type: null };
-    const lookback = Math.min(data.length, 60);
-    const body = data.slice(-lookback, -4);
-    const recent = data.slice(-4);
-    const last = data[data.length - 1];
-    const opens = data.map(c => c.o);
-    const closes = data.map(c => c.c);
-    const fallbackLow = Math.min(...data.slice(-15, -4).map(c => c.l));
-    const fallbackHigh = Math.max(...data.slice(-15, -4).map(c => c.h));
-    const sw = findSwings(body, 2);
-    const swingLows = (sw.L || []).slice(-5);
-    const swingHighs = (sw.H || []).slice(-5);
-    const recentLow = Math.min(...recent.map(c => c.l));
-    const recentHigh = Math.max(...recent.map(c => c.h));
-    const lastBullish = last.c > last.o;
-    const lastBearish = last.c < last.o;
-
-    const buyLevel = swingLows.length ? swingLows[swingLows.length - 1].p : fallbackLow;
-    if(Number.isFinite(buyLevel) && recentLow < buyLevel && last.c > buyLevel && lastBullish) {
-        return {
-            detected: true,
-            type: 'BUY',
-            direction: 'BUY',
-            keyLevel: buyLevel,
-            liquidity_level: buyLevel,
-            sweep_extreme: recentLow,
-            reclaim_level: buyLevel,
-            reclaim_price: last.c,
-            reclaim_confirmed: true,
-            event_age: recent.findIndex(c => c.l === recentLow),
-            freshness: 'FRESH',
-            evidence: {
-                swept_sell_side: true,
-                failed_continuation: true,
-                reclaimed: true,
-                close: last.c,
-                open: last.o
+function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLocal = pair) {
+    if (!isValidCandleArray(data, 20)) return [];
+    const settings = getMarketSettings(pairLocal);
+    const prec = settings.prec;
+    const atrVal = data.length >= 15 ? atr(data, 14) : 0;
+    const pad = Math.max(settings.pipSize * 2, (atrVal || 0) * STRATEGY_SPEC.MSNR.zoneAtrWidth, currentPrice * 0.00002);
+    const breakBuffer = Math.max(settings.pipSize, (atrVal || 0) * STRATEGY_SPEC.MSNR.breakCloseBufferAtr);
+    const start = Math.max(1, data.length - STRATEGY_SPEC.MSNR.lookback);
+    const levels = [];
+    for (let i = start; i < data.length - 1; i++) {
+        const prev = data[i - 1];
+        const curr = data[i];
+        const next = data[i + 1];
+        let role = null;
+        let transitionType = null;
+        if (prev.c > prev.o && curr.c < curr.o) {
+            role = 'REACTION_RESISTANCE';
+            transitionType = 'A_LEVEL_BULLISH_TO_BEARISH';
+        } else if (prev.c < prev.o && curr.c > curr.o) {
+            role = 'REACTION_SUPPORT';
+            transitionType = 'V_LEVEL_BEARISH_TO_BULLISH';
+        } else {
+            continue;
+        }
+        const bodyLow = Math.min(prev.c, curr.o);
+        const bodyHigh = Math.max(prev.c, curr.o);
+        const level = (bodyLow + bodyHigh) / 2;
+        const zoneLow = bodyLow - pad;
+        const zoneHigh = bodyHigh + pad;
+        let activeRole = role;
+        let touch_count = 0;
+        let mitigation_count = 0;
+        let reaction_count = 0;
+        let last_reaction_index = null;
+        let break_index = null;
+        let retest_index = null;
+        let broken = false;
+        let flipped = false;
+        let invalidated = false;
+        if (next) {
+            const reacted = role === 'REACTION_SUPPORT' ? next.c > level && next.h > curr.h : next.c < level && next.l < curr.l;
+            if (reacted) {
+                reaction_count++;
+                last_reaction_index = i + 1;
             }
-        };
-    }
-    const sellLevel = swingHighs.length ? swingHighs[swingHighs.length - 1].p : fallbackHigh;
-    if(Number.isFinite(sellLevel) && recentHigh > sellLevel && last.c < sellLevel && lastBearish) {
-        return {
-            detected: true,
-            type: 'SELL',
-            direction: 'SELL',
-            keyLevel: sellLevel,
-            liquidity_level: sellLevel,
-            sweep_extreme: recentHigh,
-            reclaim_level: sellLevel,
-            reclaim_price: last.c,
-            reclaim_confirmed: true,
-            event_age: recent.findIndex(c => c.h === recentHigh),
-            freshness: 'FRESH',
-            evidence: {
-                swept_buy_side: true,
-                failed_continuation: true,
-                reclaimed: true,
-                close: last.c,
-                open: last.o
+        }
+        for (let j = i + 1; j < data.length; j++) {
+            const c = data[j];
+            const wickTouch = c.h >= zoneLow && c.l <= zoneHigh;
+            if (wickTouch) {
+                touch_count++;
+                mitigation_count++;
+                last_reaction_index = j;
+                if (broken && !retest_index) retest_index = j;
             }
-        };
+            if (activeRole === 'REACTION_SUPPORT' && c.c < zoneLow - breakBuffer) {
+                broken = true;
+                flipped = true;
+                activeRole = 'SUPPORT_TO_RESISTANCE';
+                break_index = break_index ?? j;
+            } else if (activeRole === 'REACTION_RESISTANCE' && c.c > zoneHigh + breakBuffer) {
+                broken = true;
+                flipped = true;
+                activeRole = 'RESISTANCE_TO_SUPPORT';
+                break_index = break_index ?? j;
+            } else if (activeRole === 'SUPPORT_TO_RESISTANCE' && c.c > zoneHigh + breakBuffer) {
+                invalidated = true;
+            } else if (activeRole === 'RESISTANCE_TO_SUPPORT' && c.c < zoneLow - breakBuffer) {
+                invalidated = true;
+            }
+        }
+        const direction = activeRole === 'REACTION_SUPPORT' || activeRole === 'RESISTANCE_TO_SUPPORT' ? 'BUY' : 'SELL';
+        const event_age_bars = data.length - 1 - (retest_index ?? last_reaction_index ?? i);
+        const freshness = invalidated ? 'INVALIDATED' : (mitigation_count === 0 ? 'FRESH' : (mitigation_count <= STRATEGY_SPEC.MSNR.maxMitigationCount ? 'TESTED' : 'MITIGATED'));
+        levels.push({
+            type: 'MSNR',
+            origin: 'STRUCTURAL_MSNR',
+            primary_eligible: !invalidated && freshness !== 'MITIGATED',
+            level: ictRound(level, prec),
+            zone_low: ictRound(zoneLow, prec),
+            zone_high: ictRound(zoneHigh, prec),
+            low: ictRound(zoneLow, prec),
+            high: ictRound(zoneHigh, prec),
+            price: ictRound(level, prec),
+            source_candle_index: i,
+            source_time: curr.t || null,
+            transition_type: transitionType,
+            original_role: role,
+            role: activeRole,
+            direction,
+            timeframe,
+            freshness,
+            touch_count,
+            mitigation_count,
+            reaction_count,
+            last_reaction_index,
+            break_index,
+            retest_index,
+            event_age_bars,
+            broken,
+            flipped,
+            invalidated,
+            structural_invalidation: direction === 'BUY' ? ictRound(zoneLow, prec) : ictRound(zoneHigh, prec)
+        });
     }
-    return { detected: false, type: null };
+    return levels.filter(l => l.reaction_count > 0 || l.flipped).sort((a, b) => Math.abs(a.level - currentPrice) - Math.abs(b.level - currentPrice));
 }
 
-// Calculate CRT
-function detectCRT(data) {
-    if(!data || data.length < 20) return { state: 'NEUTRAL', detected: false, direction: null };
-    const recent = data.slice(-20);
-    const ranges = recent.map(c => c.h - c.l);
-    const avg = ranges.reduce((a, b) => a + b, 0) / ranges.length;
-    const last10 = ranges.slice(-10);
-    const avg10 = last10.reduce((a, b) => a + b, 0) / last10.length;
-    const first10 = ranges.slice(0, 10);
-    const avgFirst10 = first10.reduce((a, b) => a + b, 0) / first10.length;
-    
-    let state = 'NEUTRAL';
-    if(avg10 > avgFirst10 * 1.3) state = 'EXPANDING';
-    else if(avg10 < avgFirst10 * 0.7) state = 'CONTRACTING';
-    
-    const ref = recent.slice(0, 10);
-    const rangeHigh = Math.max(...ref.map(c => c.h));
-    const rangeLow = Math.min(...ref.map(c => c.l));
-    const last = recent[recent.length - 1];
-    const recentHigh = Math.max(...last10.map(c => c.h));
-    const recentLow = Math.min(...last10.map(c => c.l));
-    let direction = null;
-    let manipulation_side = null;
-    if (recentLow < rangeLow && last.c > rangeLow && last.c > last.o) {
-        direction = 'BUY';
-        manipulation_side = 'SELL_SIDE';
-    } else if (recentHigh > rangeHigh && last.c < rangeHigh && last.c < last.o) {
-        direction = 'SELL';
-        manipulation_side = 'BUY_SIDE';
-    } else if (state === 'EXPANDING') {
-        direction = last.c > last.o ? 'BUY' : (last.c < last.o ? 'SELL' : null);
-        manipulation_side = direction === 'BUY' ? 'SELL_SIDE' : (direction === 'SELL' ? 'BUY_SIDE' : null);
-    }
-
+function calculateMSNR(data, currentPrice, timeframe = null, pairLocal = pair) {
+    const refs = buildPivotReferences(data, currentPrice);
+    const structural = buildStructuralMSNRLevels(data, currentPrice, timeframe, pairLocal);
+    const structuralSupports = structural.filter(l => l.direction === 'BUY' && l.level < currentPrice);
+    const structuralResistances = structural.filter(l => l.direction === 'SELL' && l.level > currentPrice);
     return {
-        state,
-        detected: !!direction && state !== 'NEUTRAL',
-        direction,
-        range_high: rangeHigh,
-        range_low: rangeLow,
-        manipulation_side,
-        sweep_extreme: direction === 'BUY' ? recentLow : (direction === 'SELL' ? recentHigh : null),
-        reclaim_level: direction === 'BUY' ? rangeLow : (direction === 'SELL' ? rangeHigh : null),
-        expansion_close: last.c,
-        event_age: 0,
-        freshness: state === 'EXPANDING' ? 'FRESH' : 'PARTIAL',
-        evidence: { state, avg_range: avg, recent_range_avg: avg10, reference_range_avg: avgFirst10 }
+        ...refs,
+        pivot_references: refs,
+        structural_levels: structural,
+        executable_setups: structural.filter(l => l.primary_eligible && !l.invalidated),
+        structural_supports: structuralSupports,
+        structural_resistances: structuralResistances,
+        nearestStructuralSupport: structuralSupports[0]?.level || null,
+        nearestStructuralResistance: structuralResistances[0]?.level || null
     };
+}
+
+function detectTurtleSoupEvents(data, timeframe = null, pairLocal = pair) {
+    if (!isValidCandleArray(data, 20)) return [];
+    const settings = getMarketSettings(pairLocal);
+    const atrVal = data.length >= 15 ? atr(data, 14) : 0;
+    const minSweep = Math.max(settings.pipSize * STRATEGY_SPEC.TBS.minSweepPips, (atrVal || 0) * STRATEGY_SPEC.TBS.minSweepAtr);
+    const start = Math.max(0, data.length - STRATEGY_SPEC.TBS.lookback);
+    const swings = findSwings(data.slice(start), 2);
+    const refs = [
+        ...(swings.L || []).map(s => ({ p: s.p, i: s.i + start, type: 'SWING_LOW', strength: 2 })),
+        ...(swings.H || []).map(s => ({ p: s.p, i: s.i + start, type: 'SWING_HIGH', strength: 2 }))
+    ].filter(r => data.length - 1 - r.i >= STRATEGY_SPEC.TBS.referenceMinAgeBars);
+    const events = [];
+    for (const ref of refs) {
+        const isLow = ref.type.includes('LOW');
+        const direction = isLow ? 'BUY' : 'SELL';
+        for (let sweepIndex = ref.i + STRATEGY_SPEC.TBS.referenceMinAgeBars; sweepIndex < data.length; sweepIndex++) {
+            const c = data[sweepIndex];
+            const swept = isLow ? c.l < ref.p - minSweep : c.h > ref.p + minSweep;
+            if (!swept) continue;
+            const sweep_extreme = isLow ? c.l : c.h;
+            const sweep_depth = Math.abs(sweep_extreme - ref.p);
+            for (let reclaimIndex = sweepIndex; reclaimIndex < Math.min(data.length, sweepIndex + 5); reclaimIndex++) {
+                const r = data[reclaimIndex];
+                const reclaimed = isLow ? r.c > ref.p : r.c < ref.p;
+                if (!reclaimed) continue;
+                const event_age_bars = data.length - 1 - reclaimIndex;
+                const freshness = classifyEventFreshness(event_age_bars, STRATEGY_SPEC.TBS.maxEventAgeBars);
+                const invalidated = freshness === 'EXPIRED';
+                events.push({
+                    detected: !invalidated,
+                    type: direction,
+                    direction,
+                    keyLevel: ref.p,
+                    liquidity_level: ref.p,
+                    reference_level: ref.p,
+                    reference_type: ref.type,
+                    reference_bar_index: ref.i,
+                    reference_age_bars: sweepIndex - ref.i,
+                    reference_strength: ref.strength,
+                    sweep_bar_index: sweepIndex,
+                    reclaim_bar_index: reclaimIndex,
+                    event_age: event_age_bars,
+                    event_age_bars,
+                    sweep_extreme,
+                    sweep_depth,
+                    sweep_depth_atr: atrVal > 0 ? sweep_depth / atrVal : null,
+                    sweep_quality: sweep_depth >= minSweep * 2 ? 'STRONG' : 'VALID',
+                    reclaim_level: ref.p,
+                    reclaim_price: r.c,
+                    reclaim_confirmed: true,
+                    freshness,
+                    invalidated,
+                    timeframe,
+                    entry_model: 'RECLAIM_RETEST',
+                    structural_invalidation: sweep_extreme,
+                    target_bias: isLow ? 'BUY_SIDE_LIQUIDITY' : 'SELL_SIDE_LIQUIDITY',
+                    evidence: { reference_level: ref.p, reference_type: ref.type, sweep_extreme, reclaim_level: ref.p, reclaim_bar: reclaimIndex, sweep_depth }
+                });
+                break;
+            }
+            break;
+        }
+    }
+    return events.sort((a, b) => a.event_age_bars - b.event_age_bars || b.reference_strength - a.reference_strength);
+}
+
+function detectTurtleSoup(data) {
+    const events = detectTurtleSoupEvents(data);
+    const best = events.find(e => e.detected) || null;
+    return best ? { ...best, events } : { detected: false, type: null, events };
+}
+
+function detectCRTEvents(data, timeframe = null, pairLocal = pair) {
+    if (!isValidCandleArray(data, 20)) return [];
+    const settings = getMarketSettings(pairLocal);
+    const atrVal = data.length >= 15 ? atr(data, 14) : 0;
+    const minSweep = Math.max(settings.pipSize * 2, (atrVal || 0) * STRATEGY_SPEC.CRT.minSweepAtr);
+    const start = Math.max(0, data.length - STRATEGY_SPEC.CRT.referenceLookback - STRATEGY_SPEC.CRT.eventLookahead - 4);
+    const events = [];
+    for (let refIndex = start; refIndex < data.length - 3; refIndex++) {
+        const ref = data[refIndex];
+        const range_high = ref.h;
+        const range_low = ref.l;
+        const range_size = range_high - range_low;
+        if (!(range_size > 0)) continue;
+        if (atrVal > 0 && range_size / atrVal < STRATEGY_SPEC.CRT.minReferenceAtr) continue;
+        const maxEnd = Math.min(data.length, refIndex + 1 + STRATEGY_SPEC.CRT.eventLookahead + 1);
+        for (let sweepIndex = refIndex + 1; sweepIndex < maxEnd; sweepIndex++) {
+            const c = data[sweepIndex];
+            const sides = [
+                { direction: 'BUY', swept: c.l < range_low - minSweep, sweep_extreme: c.l, reclaim_level: range_low, manipulation_side: 'SELL_SIDE', objective: range_high },
+                { direction: 'SELL', swept: c.h > range_high + minSweep, sweep_extreme: c.h, reclaim_level: range_high, manipulation_side: 'BUY_SIDE', objective: range_low }
+            ];
+            for (const side of sides.filter(s => s.swept)) {
+                for (let reclaimIndex = sweepIndex; reclaimIndex < maxEnd; reclaimIndex++) {
+                    const r = data[reclaimIndex];
+                    const reclaimed = side.direction === 'BUY' ? r.c > side.reclaim_level : r.c < side.reclaim_level;
+                    if (!reclaimed) continue;
+                    const event_age_bars = data.length - 1 - reclaimIndex;
+                    const freshness = classifyEventFreshness(event_age_bars, STRATEGY_SPEC.CRT.maxEventAgeBars);
+                    const invalidated = freshness === 'EXPIRED';
+                    events.push({
+                        state: 'SWEEP_RECLAIM',
+                        detected: !invalidated,
+                        direction: side.direction,
+                        type: side.direction,
+                        timeframe,
+                        reference_bar_index: refIndex,
+                        reference_time: ref.t || null,
+                        range_high,
+                        range_low,
+                        range_mid: (range_high + range_low) / 2,
+                        range_size,
+                        reference_atr_multiple: atrVal > 0 ? range_size / atrVal : null,
+                        manipulation_side: side.manipulation_side,
+                        sweep_level: side.reclaim_level,
+                        sweep_extreme: side.sweep_extreme,
+                        reclaim_level: side.reclaim_level,
+                        reclaim_bar_index: reclaimIndex,
+                        event_age: event_age_bars,
+                        event_age_bars,
+                        freshness,
+                        invalidated,
+                        delivery_started: !!(detectDisplacement(data.slice(reclaimIndex), side.direction) || detectMSS(data.slice(reclaimIndex))),
+                        entry_model: 'RECLAIM_RETEST',
+                        structural_invalidation: side.sweep_extreme,
+                        primary_objective: side.objective,
+                        target_candidates: [{ direction: side.direction, level: side.objective, source: 'CRT_OPPOSITE_RANGE', target_type: 'CRT_OPPOSITE_RANGE', origin: 'STRUCTURAL', timeframe, structural_priority: 96 }],
+                        evidence: { range_high, range_low, sweep_side: side.manipulation_side, sweep_extreme: side.sweep_extreme, reclaim_level: side.reclaim_level, reclaim_bar: reclaimIndex }
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    return events.sort((a, b) => a.event_age_bars - b.event_age_bars || (b.reference_atr_multiple || 0) - (a.reference_atr_multiple || 0));
+}
+
+function detectCRT(data) {
+    const events = detectCRTEvents(data);
+    const best = events.find(e => e.detected) || null;
+    return best ? { ...best, events } : { state: 'NEUTRAL', detected: false, direction: null, events };
 }
 
 // Calculate Fibonacci Retracement (0.50 & 0.618)
@@ -1832,18 +1986,28 @@ function ictBuildRealZones(data, price, direction, pairLocal) {
         }
     }
 
-    const msnr = calculateMSNR(data, price);
-    const levels = direction === 'BUY' ? (msnr.supportMeta || []) : (msnr.resistanceMeta || []);
+    const msnr = calculateMSNR(data, price, null, pairLocal);
+    const levels = (msnr.structural_levels || []).filter(level => level.direction === direction);
     for (const meta of levels) {
         const level = meta.level;
         zones.push({
             type: 'MSNR',
-            origin: meta.origin || 'PIVOT_DERIVED',
-            primary_eligible: meta.origin !== 'ATR_FALLBACK',
-            low: level * 0.9995,
-            high: level * 1.0005,
+            origin: meta.origin || 'STRUCTURAL_MSNR',
+            primary_eligible: meta.primary_eligible !== false,
+            low: meta.zone_low,
+            high: meta.zone_high,
             price: level,
-            tolerance: edgePad
+            tolerance: edgePad,
+            role: meta.role,
+            transition_type: meta.transition_type,
+            freshness: meta.freshness,
+            touch_count: meta.touch_count,
+            mitigation_count: meta.mitigation_count,
+            reaction_count: meta.reaction_count,
+            source_candle_index: meta.source_candle_index,
+            source_time: meta.source_time,
+            structural_invalidation: meta.structural_invalidation,
+            invalidated: meta.invalidated
         });
     }
 
@@ -3058,7 +3222,7 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
         .filter(c => Number.isFinite(Number(c.level)) && c.origin !== 'ATR_FALLBACK')
         .map(c => ({ ...c, level: ictRound(Number(c.level), prec), distance_from_entry: ictRound(Math.abs(Number(c.level) - entry), prec) }))
         .filter(c => direction === 'BUY' ? c.level > entry : c.level < entry)
-        .sort((a, b) => direction === 'BUY' ? a.level - b.level : b.level - a.level);
+        .sort((a, b) => (b.structural_priority || 0) - (a.structural_priority || 0) || (direction === 'BUY' ? a.level - b.level : b.level - a.level));
     const valid = targets.filter(c => direction === 'BUY' ? c.level + 1e-9 >= threshold : c.level - 1e-9 <= threshold);
     const tp1 = valid[0];
     if (!tp1) return null;
@@ -3299,7 +3463,7 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
     const zoneList = realZones || [];
     const settings = getMarketSettings(pair);
     const prec = settings.prec;
-    const makeExecutionZone = (setup, low, high, type) => ({
+    const makeExecutionZone = (setup, low, high, type, entryModel = 'RECLAIM_RETEST') => ({
         id: `${setup.timeframe}-${setup.direction}-${type}-${ictRound(low, prec)}-${ictRound(high, prec)}-${setups.length + 1}`,
         type,
         origin: 'STRUCTURAL',
@@ -3311,11 +3475,13 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
         midpoint: ictRound((low + high) / 2, prec),
         invalidated: false,
         freshness: setup.freshness || 'FRESH',
-        strategy_source: setup.primary
+        strategy_source: setup.primary,
+        entry_model: entryModel,
+        structural_invalidation: setup.structural_invalidation
     });
     const zonesNearRegion = (direction, tf, low, high) => {
         const width = Math.max(Math.abs(high - low), settings.pipSize * 5);
-        return zoneList.filter(z => z.timeframe === tf && z.direction === direction && z.primary_eligible !== false && !z.invalidated)
+        return zoneList.filter(z => z.direction === direction && z.primary_eligible !== false && !z.invalidated)
             .filter(z => z.high >= low - width * 2 && z.low <= high + width * 2);
     };
     const addSetup = (setup) => {
@@ -3340,39 +3506,93 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
         });
     };
 
-    for (const tf of ['4H', '1H']) {
+    const addStrategyEvidence = (setup) => ({
+        CRT: setup.primary === 'CRT' ? setup.evidence : null,
+        TBS: setup.primary === 'TBS' ? setup.evidence : null,
+        MSNR: setup.primary === 'MSNR' ? setup.evidence : null
+    });
+    const addTargets = (setup) => {
+        if (setup.primary === 'CRT') {
+            setup.target_candidates = setup.target_candidates || [{
+                direction: setup.direction,
+                level: setup.primary_objective,
+                source: 'CRT_OPPOSITE_RANGE',
+                target_type: 'CRT_OPPOSITE_RANGE',
+                origin: 'STRUCTURAL',
+                timeframe: setup.timeframe,
+                structural_priority: 96
+            }];
+        } else if (setup.primary === 'TBS') {
+            setup.target_candidates = setup.direction === 'BUY'
+                ? [{ direction: 'BUY', level: setup.liquidity_level + Math.abs(setup.liquidity_level - setup.sweep_extreme) * 3, source: 'EXTERNAL_LIQUIDITY', target_type: 'EXTERNAL_LIQUIDITY', origin: 'STRUCTURAL', timeframe: setup.timeframe, structural_priority: 80 }]
+                : [{ direction: 'SELL', level: setup.liquidity_level - Math.abs(setup.liquidity_level - setup.sweep_extreme) * 3, source: 'EXTERNAL_LIQUIDITY', target_type: 'EXTERNAL_LIQUIDITY', origin: 'STRUCTURAL', timeframe: setup.timeframe, structural_priority: 80 }];
+        } else if (setup.primary === 'MSNR') {
+            const opposing = zoneList
+                .filter(z => z.type === 'MSNR' && z.origin === 'STRUCTURAL_MSNR' && z.direction !== setup.direction && z.primary_eligible !== false)
+                .filter(z => setup.direction === 'BUY' ? z.low > setup.execution_zone.high : z.high < setup.execution_zone.low)
+                .sort((a, b) => Math.abs(((a.low + a.high) / 2) - price) - Math.abs(((b.low + b.high) / 2) - price));
+            setup.target_candidates = opposing.slice(0, 3).map(z => ({
+                direction: setup.direction,
+                level: ictRound((z.low + z.high) / 2, prec),
+                source: 'OPPOSING_MSNR',
+                target_type: 'OPPOSING_MSNR',
+                origin: 'STRUCTURAL_MSNR',
+                timeframe: z.timeframe,
+                structural_priority: 88
+            }));
+        }
+        setup.strategy_evidence = addStrategyEvidence(setup);
+        return setup;
+    };
+
+    for (const tf of ['4H', '1H', '15M']) {
         const data = historyCache?.[tf];
         if (!data || data.length < 20) continue;
         const atrVal = data.length >= 15 ? atr(data, 14) : 0;
-        const buffer = Math.max(settings.pipSize * 5, (atrVal || 0) * 0.1, price * 0.00003);
+        const buffer = Math.max(settings.pipSize * 2, (atrVal || 0) * 0.08, price * 0.00002);
         const zonesForTf = zoneList.filter(z => z.timeframe === tf && z.primary_eligible !== false && !z.invalidated);
         for (const zone of zonesForTf.filter(z => z.type === 'MSNR')) {
-            addSetup({
+            if (zone.origin !== 'STRUCTURAL_MSNR') continue;
+            addSetup(addTargets({
                 primary: 'MSNR',
                 label: 'MSNR',
                 direction: zone.direction,
+                setup_timeframe: tf,
+                execution_timeframe: tf === '4H' ? '1H' : tf,
                 timeframe: tf,
                 structural_entry_region: { low: zone.low, high: zone.high },
                 structural_invalidation: zone.direction === 'BUY' ? zone.low : zone.high,
                 execution_zone: { ...zone, strategy_source: 'MSNR' },
-                evidence: { level: zone.midpoint, origin: zone.origin, zone_low: zone.low, zone_high: zone.high },
+                entry_model: zone.role?.includes('_TO_') ? 'ROLE_REVERSAL_RETEST' : 'REACTION_ZONE_RETEST',
+                evidence: {
+                    level: zone.midpoint,
+                    origin: zone.origin,
+                    zone_low: zone.low,
+                    zone_high: zone.high,
+                    transition_type: zone.transition_type,
+                    role: zone.role,
+                    source_candle_index: zone.source_candle_index,
+                    touch_count: zone.touch_count,
+                    mitigation_count: zone.mitigation_count
+                },
                 confirmations: [],
                 matched_zones: [zone]
-            });
+            }));
         }
 
-        const tbs = detectTurtleSoup(data);
-        if (tbs.detected && (tbs.type === 'BUY' || tbs.type === 'SELL')) {
+        for (const tbs of detectTurtleSoupEvents(data, tf, pair).filter(e => e.detected)) {
             const executionZone = makeExecutionZone({ ...tbs, primary: 'TBS', timeframe: tf }, tbs.reclaim_level - buffer, tbs.reclaim_level + buffer, 'TBS');
             const near = zonesNearRegion(tbs.type, tf, executionZone.low, executionZone.high);
             const confirmations = [];
             if (near.some(z => z.type === 'MSNR')) confirmations.push('MSNR');
             if (near.some(z => z.type === 'FVG')) confirmations.push('FVG');
             if (near.some(z => z.type === 'OB')) confirmations.push('OB');
-            addSetup({
+            addSetup(addTargets({
                 primary: 'TBS',
                 label: confirmations.includes('MSNR') ? 'TBS+MSNR' : 'TBS',
                 direction: tbs.type,
+                setup_timeframe: tf,
+                execution_timeframe: tf === '4H' ? '1H' : tf,
                 timeframe: tf,
                 liquidity_level: tbs.liquidity_level,
                 sweep_extreme: tbs.sweep_extreme,
@@ -3383,15 +3603,15 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 structural_entry_region: { low: executionZone.low, high: executionZone.high },
                 structural_invalidation: tbs.sweep_extreme,
                 execution_zone: executionZone,
-                evidence: { ...tbs.evidence, liquidity_level: tbs.keyLevel, sweep_extreme: tbs.sweep_extreme, reclaim_price: data[data.length - 1]?.c, timeframe: tf },
+                entry_model: tbs.entry_model,
+                evidence: { ...tbs.evidence, liquidity_level: tbs.keyLevel, sweep_extreme: tbs.sweep_extreme, reclaim_price: tbs.reclaim_price, timeframe: tf },
                 confirmations,
                 matched_zones: near
-            });
+            }));
         }
 
-        const crt = detectCRT(data);
-        const crtDirection = crt.direction;
-        if (crt.detected && crtDirection) {
+        for (const crt of detectCRTEvents(data, tf, pair).filter(e => e.detected)) {
+            const crtDirection = crt.direction;
             const entryLevel = crt.reclaim_level || (crtDirection === 'BUY' ? crt.range_low : crt.range_high);
             const executionZone = makeExecutionZone({ ...crt, primary: 'CRT', timeframe: tf }, entryLevel - buffer, entryLevel + buffer, 'CRT');
             const crtZones = zonesNearRegion(crtDirection, tf, executionZone.low, executionZone.high);
@@ -3399,10 +3619,12 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
             if (crtZones.some(z => z.type === 'MSNR')) confirmations.push('MSNR');
             if (crtZones.some(z => z.type === 'FVG')) confirmations.push('FVG');
             if (crtZones.some(z => z.type === 'OB')) confirmations.push('OB');
-            addSetup({
+            addSetup(addTargets({
                 primary: 'CRT',
                 label: confirmations.includes('MSNR') ? 'CRT+MSNR' : 'CRT',
                 direction: crtDirection,
+                setup_timeframe: tf,
+                execution_timeframe: tf === '4H' ? '1H' : tf,
                 timeframe: tf,
                 range_high: crt.range_high,
                 range_low: crt.range_low,
@@ -3414,24 +3636,31 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 structural_entry_region: { low: executionZone.low, high: executionZone.high },
                 structural_invalidation: crt.sweep_extreme || (crtDirection === 'BUY' ? crt.range_low : crt.range_high),
                 execution_zone: executionZone,
+                entry_model: crt.entry_model,
+                primary_objective: crt.primary_objective,
+                target_candidates: crt.target_candidates,
                 evidence: { ...crt.evidence, direction: crtDirection, range_high: crt.range_high, range_low: crt.range_low, timeframe: tf },
                 confirmations,
                 matched_zones: crtZones
-            });
+            }));
         }
     }
     for (const setup of setups) {
         const compatible = setups.filter(other => other !== setup
             && other.direction === setup.direction
-            && other.timeframe === setup.timeframe
             && other.execution_zone
             && setup.execution_zone
-            && other.execution_zone.high >= setup.execution_zone.low
-            && other.execution_zone.low <= setup.execution_zone.high);
+            && other.execution_zone.high >= setup.execution_zone.low - Math.max(settings.pipSize * 10, Math.abs(setup.execution_zone.high - setup.execution_zone.low) * 2)
+            && other.execution_zone.low <= setup.execution_zone.high + Math.max(settings.pipSize * 10, Math.abs(setup.execution_zone.high - setup.execution_zone.low) * 2)
+            && Math.abs((other.reclaim_bar_index ?? other.retest_index ?? other.source_candle_index ?? 0) - (setup.reclaim_bar_index ?? setup.retest_index ?? setup.source_candle_index ?? 0)) <= 20);
         const strategies = [...new Set([setup.primary, ...compatible.map(s => s.primary)])];
         if (strategies.length > 1) {
             setup.label = strategies.join('+');
             setup.confirmations = [...new Set([...(setup.confirmations || []), ...strategies.filter(s => s !== setup.primary)])];
+            for (const other of compatible) {
+                setup.strategy_evidence[other.primary] = other.evidence;
+                setup.target_candidates = [...(setup.target_candidates || []), ...(other.target_candidates || [])];
+            }
         }
     }
     console.log('CRT DETECTIONS', setups.filter(s => s.primary === 'CRT'));
@@ -3510,7 +3739,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         ? strategyExecutionZones.filter(z => z.primary_eligible !== false && !z.invalidated)
         : (zones || []).filter(z => z.primary_eligible !== false && !z.invalidated);
     for (const zone of candidateZones) {
-        if (zone.type === 'MSNR' && zone.origin === 'ATR_FALLBACK') continue;
+        if (zone.type === 'MSNR' && zone.origin !== 'STRUCTURAL_MSNR') continue;
         const strategySetup = zone.strategy_setup || (Array.isArray(strategySetups) ? getStrategySetupForZone(zone, strategySetups) : null);
         if (Array.isArray(strategySetups) && !strategySetup) continue;
         const direction = zone.direction;
@@ -3607,7 +3836,15 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     });
                     continue;
                 }
-                const targets = selectAdaptiveTargets(direction, entry, stop.stop_loss, targetCandidates, minimumRR, prec);
+                const strategyTargets = (strategySetup?.target_candidates || []).filter(t => t && t.direction === direction);
+                const mergedTargetCandidates = strategyTargets.length
+                    ? {
+                        ...(targetCandidates || {}),
+                        all: [...strategyTargets, ...((targetCandidates?.all || targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell'] || []))],
+                        [direction === 'BUY' ? 'buy' : 'sell']: [...strategyTargets, ...(targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell'] || [])]
+                    }
+                    : targetCandidates;
+                const targets = selectAdaptiveTargets(direction, entry, stop.stop_loss, mergedTargetCandidates, minimumRR, prec);
                 console.log('TARGET EVALUATION', {
                     id: rawCandidate.id,
                     strategy: rawCandidate.strategy_label || rawCandidate.zone_type,
@@ -3663,6 +3900,20 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     distance_from_current_price: ictRound(Math.abs(entry - price), prec),
                     distance_from_current_price_atr: safeAtr > 0 ? ictRound(Math.abs(entry - price) / safeAtr, 2) : null,
                     market_regime: marketRegime?.primary_regime || 'UNKNOWN',
+                    entry_model: strategySetup?.entry_model || zone.entry_model || 'STRUCTURAL_LIMIT',
+                    setup_timeframe: strategySetup?.setup_timeframe || tf,
+                    execution_timeframe: strategySetup?.execution_timeframe || tf,
+                    strategy_evidence: strategySetup?.strategy_evidence || null,
+                    target_map: targets ? [targets.tp1, targets.tp2, targets.tp3].filter(Boolean).map(t => ({
+                        target_level: t.level,
+                        target_type: t.target_type || t.source,
+                        target_timeframe: t.timeframe || null,
+                        target_distance: ictRound(Math.abs(t.level - entry), prec),
+                        target_distance_atr: safeAtr > 0 ? ictRound(Math.abs(t.level - entry) / safeAtr, 2) : null,
+                        structural_priority: t.structural_priority || 50,
+                        intervening_obstacles: t.intervening_obstacles || [],
+                        reachability_score: t.reachability_score || 70
+                    })) : [],
                     score: ictRound(score, 2)
                 };
                 Object.assign(rawCandidate, candidate);
@@ -3738,6 +3989,11 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.risk_reward = `1:${candidate.rr_tp1.toFixed(2)}`;
     aiResult.adaptive_candidate = candidate;
     aiResult.strategy_setup = candidate.strategy_setup || null;
+    aiResult.strategy_evidence = candidate.strategy_evidence || candidate.strategy_setup?.strategy_evidence || null;
+    aiResult.target_map = candidate.target_map || [];
+    aiResult.entry_model = candidate.entry_model || null;
+    aiResult.setup_timeframe = candidate.setup_timeframe || candidate.timeframe;
+    aiResult.execution_timeframe = candidate.execution_timeframe || candidate.timeframe;
     aiResult.patterns = candidate.strategy_setup
         ? [candidate.strategy_setup.label || candidate.strategy_setup.primary].concat(candidate.strategy_setup.confirmations || [])
         : (aiResult.patterns || [candidate.zone_type]);
@@ -3896,8 +4152,8 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
     if (matchedZone) {
         checks.realZone = true;
         if (matchedZone.direction && matchedZone.direction !== direction) add('selected zone direction does not match trade direction');
-        if (matchedZone.primary_eligible === false || (matchedZone.type === 'MSNR' && matchedZone.origin === 'ATR_FALLBACK')) {
-            add('ATR_FALLBACK MSNR cannot be selected as primary zone');
+        if (matchedZone.primary_eligible === false || (matchedZone.type === 'MSNR' && matchedZone.origin !== 'STRUCTURAL_MSNR')) {
+            add('only STRUCTURAL_MSNR can be selected as a primary MSNR strategy zone');
         }
         if (matchedZone.invalidated) add('matched zone is invalidated');
         const zoneTol = Math.max(matchedZone.tolerance || 0, (matchedZone.high - matchedZone.low) * 0.1);
@@ -4066,28 +4322,28 @@ function buildTargetCandidates(historyCache, price, pairLocal) {
     for (const tf of ['4H', '1H']) {
         const data = historyCache?.[tf];
         if (!data || data.length < 20) continue;
-        const msnr = calculateMSNR(data, price);
+        const msnr = calculateMSNR(data, price, tf, pairLocal);
         const liq = mapLiquidity(data);
         const sw = findSwings(data, 3);
-        for (const meta of (msnr.resistanceMeta || []).slice(0, 5)) {
+        for (const meta of (msnr.structural_levels || []).filter(l => l.direction === 'SELL' && l.level > price).slice(0, 5)) {
             const level = meta.level;
-            candidates.push({ direction: 'BUY', timeframe: tf, source: 'MSNR_RESISTANCE', origin: meta.origin || 'PIVOT_DERIVED', level, distance_from_price: Math.abs(level - price) });
+            candidates.push({ direction: 'BUY', timeframe: tf, source: 'OPPOSING_MSNR', target_type: 'OPPOSING_MSNR', origin: meta.origin || 'STRUCTURAL_MSNR', level, distance_from_price: Math.abs(level - price), structural_priority: 88 });
         }
-        for (const meta of (msnr.supportMeta || []).slice(0, 5)) {
+        for (const meta of (msnr.structural_levels || []).filter(l => l.direction === 'BUY' && l.level < price).slice(0, 5)) {
             const level = meta.level;
-            candidates.push({ direction: 'SELL', timeframe: tf, source: 'MSNR_SUPPORT', origin: meta.origin || 'PIVOT_DERIVED', level, distance_from_price: Math.abs(level - price) });
+            candidates.push({ direction: 'SELL', timeframe: tf, source: 'OPPOSING_MSNR', target_type: 'OPPOSING_MSNR', origin: meta.origin || 'STRUCTURAL_MSNR', level, distance_from_price: Math.abs(level - price), structural_priority: 88 });
         }
         for (const level of (liq.above || []).slice(0, 5)) {
-            candidates.push({ direction: 'BUY', timeframe: tf, source: 'BUY_SIDE_LIQUIDITY', origin: 'STRUCTURAL', level, distance_from_price: Math.abs(level - price) });
+            candidates.push({ direction: 'BUY', timeframe: tf, source: 'BUY_SIDE_LIQUIDITY', target_type: 'EXTERNAL_LIQUIDITY', origin: 'STRUCTURAL', level, distance_from_price: Math.abs(level - price), structural_priority: 82 });
         }
         for (const level of (liq.below || []).slice(0, 5)) {
-            candidates.push({ direction: 'SELL', timeframe: tf, source: 'SELL_SIDE_LIQUIDITY', origin: 'STRUCTURAL', level, distance_from_price: Math.abs(level - price) });
+            candidates.push({ direction: 'SELL', timeframe: tf, source: 'SELL_SIDE_LIQUIDITY', target_type: 'EXTERNAL_LIQUIDITY', origin: 'STRUCTURAL', level, distance_from_price: Math.abs(level - price), structural_priority: 82 });
         }
         for (const s of (sw.H || []).slice(-5)) {
-            candidates.push({ direction: 'BUY', timeframe: tf, source: 'SWING_HIGH', origin: 'STRUCTURAL', level: s.p, distance_from_price: Math.abs(s.p - price) });
+            candidates.push({ direction: 'BUY', timeframe: tf, source: 'SWING_HIGH', target_type: 'SWING_HIGH_LOW', origin: 'STRUCTURAL', level: s.p, distance_from_price: Math.abs(s.p - price), structural_priority: 76 });
         }
         for (const s of (sw.L || []).slice(-5)) {
-            candidates.push({ direction: 'SELL', timeframe: tf, source: 'SWING_LOW', origin: 'STRUCTURAL', level: s.p, distance_from_price: Math.abs(s.p - price) });
+            candidates.push({ direction: 'SELL', timeframe: tf, source: 'SWING_LOW', target_type: 'SWING_HIGH_LOW', origin: 'STRUCTURAL', level: s.p, distance_from_price: Math.abs(s.p - price), structural_priority: 76 });
         }
     }
     const dedupe = new Map();
@@ -4200,16 +4456,33 @@ function summarizeCandidateRejectionDetails(rejectedCandidates) {
 }
 
 function summarizeStrategyDetections(strategySetups) {
-    const counts = { CRT: 0, TBS: 0, MSNR: 0, CRT_TBS: 0, CRT_MSNR: 0, TBS_MSNR: 0, CRT_TBS_MSNR: 0 };
+    const counts = {
+        CRT: { evaluated: true, detected: false, bullish: 0, bearish: 0, rejected_reasons: [] },
+        TBS: { evaluated: true, detected: false, bullish: 0, bearish: 0, rejected_reasons: [] },
+        MSNR: { evaluated: true, detected: false, structural_levels: 0, pivot_references: 'PIVOT_REFERENCE_ONLY', atr_fallback_references: 'REFERENCE_ONLY', executable_setups: 0 },
+        combinations: { CRT_TBS: 0, CRT_MSNR: 0, TBS_MSNR: 0, CRT_TBS_MSNR: 0 }
+    };
     for (const setup of strategySetups || []) {
-        if (setup.primary === 'CRT') counts.CRT++;
-        if (setup.primary === 'TBS') counts.TBS++;
-        if (setup.primary === 'MSNR') counts.MSNR++;
+        if (setup.primary === 'CRT') {
+            counts.CRT.detected = true;
+            if (setup.direction === 'BUY') counts.CRT.bullish++;
+            if (setup.direction === 'SELL') counts.CRT.bearish++;
+        }
+        if (setup.primary === 'TBS') {
+            counts.TBS.detected = true;
+            if (setup.direction === 'BUY') counts.TBS.bullish++;
+            if (setup.direction === 'SELL') counts.TBS.bearish++;
+        }
+        if (setup.primary === 'MSNR') {
+            counts.MSNR.detected = true;
+            counts.MSNR.structural_levels++;
+            if (setup.execution_zone?.primary_eligible !== false) counts.MSNR.executable_setups++;
+        }
         const label = String(setup.label || '');
-        if (label.includes('CRT') && label.includes('TBS') && label.includes('MSNR')) counts.CRT_TBS_MSNR++;
-        else if (label.includes('CRT') && label.includes('TBS')) counts.CRT_TBS++;
-        else if (label.includes('CRT') && label.includes('MSNR')) counts.CRT_MSNR++;
-        else if (label.includes('TBS') && label.includes('MSNR')) counts.TBS_MSNR++;
+        if (label.includes('CRT') && label.includes('TBS') && label.includes('MSNR')) counts.combinations.CRT_TBS_MSNR++;
+        else if (label.includes('CRT') && label.includes('TBS')) counts.combinations.CRT_TBS++;
+        else if (label.includes('CRT') && label.includes('MSNR')) counts.combinations.CRT_MSNR++;
+        else if (label.includes('TBS') && label.includes('MSNR')) counts.combinations.TBS_MSNR++;
     }
     return counts;
 }
@@ -4450,7 +4723,9 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         structure,
         market_context: marketContext,
         strategy_setups: strategySetups,
-        real_ict_zones: zones,
+        real_ict_zones: validationZones,
+        context_ict_zones: zones,
+        strategy_execution_zones: strategyExecutionZones,
         limit_order_setup: stageContext.limit_order_setup,
         immediate_entry: stageContext.immediate_entry,
         liquidity: liquidityFacts,
@@ -4497,7 +4772,7 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'FVG and OB are confluence/context unless a supplied deterministic strategy candidate uses them. Do not treat every FVG/OB as a standalone trade strategy.',
         'RAW CANDLES = secondary context for qualitative interpretation only.',
         'IMMEDIATE_ENTRY = Stage-2 reaction/fill confirmation and is separate from pending-limit validity.',
-        'Zone/target origin hierarchy: STRUCTURAL = directly derived market structure such as FVG, OB, swings and structural liquidity. PIVOT_DERIVED = deterministic MSNR support/resistance calculated from pivot-based market levels. ATR_FALLBACK = synthetic deterministic fallback/reference level used when normal MSNR levels are unavailable. ATR_FALLBACK must not be treated as primary structural confluence.',
+        'Zone/target origin hierarchy: STRUCTURAL and STRUCTURAL_MSNR = directly derived market structure. PIVOT_REFERENCE = classic pivot-derived reference only, not MSNR strategy evidence. ATR_FALLBACK = synthetic reference only. PIVOT_REFERENCE and ATR_FALLBACK must never create standalone MSNR trades.',
         'Stage 1 asks whether a valid future pending-limit setup exists. Current price not being inside the zone, immediate confirmation score of 0, or off-hours are not by themselves reasons for NO_TRADE.',
         'Stage 2 asks whether immediate entry/fill confirmation is ready now.',
         'Your role is to rank the supplied adaptive_setup_candidates, identify the highest-quality valid pending-limit opportunity currently available, or return WAIT/NO_TRADE when no valid candidate is worth selecting.',
@@ -4549,7 +4824,7 @@ This bot creates pending LIMIT orders at future ICT zones. A valid setup may exi
 9. Return NO_TRADE only when no supplied valid candidate is acceptable after qualitative market review.
 10. Use WAIT when a valid setup concept exists but deterministic facts show it is incomplete or should wait for better fill/confirmation conditions.
 11. Today's best professional decision may still be WAIT or NO_TRADE.
-12. Zone/target origin hierarchy: STRUCTURAL = directly derived market structure such as FVG, OB, swings and structural liquidity. PIVOT_DERIVED = deterministic MSNR support/resistance calculated from pivot-based market levels. ATR_FALLBACK = synthetic deterministic fallback/reference level used when normal MSNR levels are unavailable. ATR_FALLBACK must not be treated as primary structural confluence.
+12. Zone/target origin hierarchy: STRUCTURAL and STRUCTURAL_MSNR = direct market structure. PIVOT_REFERENCE = classic pivot-derived reference only, not MSNR strategy evidence. ATR_FALLBACK = synthetic reference only. PIVOT_REFERENCE and ATR_FALLBACK must never create standalone MSNR trades.
 13. Do NOT return WAIT merely because price has not reached a valid future limit zone. If setup-stage requirements are satisfied, return BUY_LIMIT or SELL_LIMIT and use ai_decision:"wait_for_reaction" when immediate entry is not ready.
 14. Do NOT return skip when your own analysis concludes that a valid BUY_LIMIT or SELL_LIMIT setup already exists.
 15. If adaptive_setup_candidates contains valid choices, rank them and return the selected_candidate_id for the best one. Use that candidate's entry, stop_loss, take_profit_1, take_profit_2, and take_profit_3 exactly.
@@ -4859,13 +5134,15 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
     if (issues.length === 0 && (liveMarketContext?.adaptive_setup_candidates || []).length > 0 && !aiResult.selected_candidate_id) {
         issues.push('actionable AI setup must select a deterministic candidate ID');
     }
+    let selectedDeterministicCandidate = null;
     if (issues.length === 0 && aiResult.selected_candidate_id) {
         const candidate = (liveMarketContext?.adaptive_setup_candidates || []).find(c => c.id === aiResult.selected_candidate_id);
         if (!candidate) {
             issues.push('selected adaptive setup candidate does not exist in supplied live market context');
-        } else if (candidate.zone_origin === 'ATR_FALLBACK') {
-            issues.push('ATR_FALLBACK adaptive setup candidate cannot be selected');
+        } else if (candidate.zone_type === 'MSNR' && candidate.zone_origin !== 'STRUCTURAL_MSNR') {
+            issues.push('only STRUCTURAL_MSNR adaptive setup candidates can be selected as MSNR');
         } else {
+            selectedDeterministicCandidate = candidate;
             const tol = Math.max(Math.abs(entry) * 0.0002, 0.00001);
             const numericMatches = [
                 ['entry', entry, candidate.entry],
@@ -4880,7 +5157,13 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
         }
     }
 
-    const selected = aiResult.selected_zone || aiResult.entry_zone;
+    if (selectedDeterministicCandidate && (!Array.isArray(liveMarketContext?.real_ict_zones) || liveMarketContext.real_ict_zones.length === 0)) {
+        return { valid: issues.length === 0, issues };
+    }
+
+    const selected = selectedDeterministicCandidate
+        ? { type: selectedDeterministicCandidate.zone_type, timeframe: selectedDeterministicCandidate.timeframe, low: selectedDeterministicCandidate.zone_low, high: selectedDeterministicCandidate.zone_high }
+        : (aiResult.selected_zone || aiResult.entry_zone);
     const zones = liveMarketContext?.real_ict_zones || [];
     if (!selected || !Number.isFinite(Number(selected.low)) || !Number.isFinite(Number(selected.high))) {
         issues.push('selected_zone/entry_zone must include low and high');
@@ -4902,8 +5185,8 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
             const directionMatches = baseMatches.filter(z => z.direction === direction);
             if (directionMatches.length === 0) {
                 issues.push('selected zone direction does not match AI trade direction');
-            } else if (!directionMatches.some(z => !(z.type === 'MSNR' && (z.origin === 'ATR_FALLBACK' || z.primary_eligible === false)))) {
-                issues.push('ATR_FALLBACK MSNR cannot be selected as primary AI zone');
+            } else if (!directionMatches.some(z => !(z.type === 'MSNR' && (z.origin !== 'STRUCTURAL_MSNR' || z.primary_eligible === false)))) {
+                issues.push('only STRUCTURAL_MSNR can be selected as primary AI MSNR zone');
             }
         }
     }
@@ -4940,11 +5223,6 @@ async function runFallbackScan(price, historyCache) {
     for (const tf of timeframesToScan) {
         const result = await analyzeTimeframe(tf, price, htfData);
         if (result) results.push(result);
-    }
-    
-    if (results.length === 0) {
-        showNotif('⚠️ No setups found (fallback)', 'warning');
-        return;
     }
     
     results.sort((a, b) => b.confidence - a.confidence);
@@ -5001,11 +5279,24 @@ async function runFallbackScan(price, historyCache) {
         holistic: null
     });
     const fallbackStrategySetups = buildStrategySetups({ pair, price, historyCache, realZones: fallbackZones, marketContext: fallbackMarketContext });
+    const fallbackTargetCandidates = buildTargetCandidates(historyCache, price, pair);
+    const fallbackCandidateResult = buildAdaptiveSetupCandidates({
+        pair,
+        price,
+        historyCache,
+        zones: fallbackZones,
+        targetCandidates: fallbackTargetCandidates,
+        riskConstraints: fallbackRiskConstraints,
+        marketRegime: fallbackMarketRegime,
+        structure: fallbackStructure,
+        marketContext: fallbackMarketContext,
+        strategySetups: fallbackStrategySetups
+    });
     const fallbackValidationContext = buildDeterministicValidationContext({
         pair,
         price,
         historyCache,
-        real_ict_zones: fallbackZones,
+        real_ict_zones: [...fallbackZones, ...getStrategyExecutionZones(fallbackStrategySetups)],
         risk_constraints: fallbackRiskConstraints,
         structure: fallbackStructure,
         market_context: fallbackMarketContext,
@@ -5013,7 +5304,29 @@ async function runFallbackScan(price, historyCache) {
         require_strategy_setup: true
     });
     const rejectedFallbacks = [];
-    for (const result of results) {
+    if ((fallbackCandidateResult.valid_candidates || []).length > 0) {
+        bestCandidate = fallbackCandidateResult.valid_candidates[0];
+        bestEvaluation = evaluateSetupCandidate(bestCandidate, fallbackValidationContext);
+        if (bestEvaluation.valid) {
+            best = {
+                timeframe: bestCandidate.timeframe,
+                direction: bestCandidate.direction,
+                entry: bestCandidate.entry,
+                sl: bestCandidate.stop_loss,
+                tp1: bestCandidate.tp1,
+                tp2: bestCandidate.tp2,
+                tp3: bestCandidate.tp3,
+                confidence: Math.max(58, Math.min(90, Math.round(bestCandidate.score || 70))),
+                zone: { low: bestCandidate.zone_low, high: bestCandidate.zone_high, quality: bestCandidate.freshness },
+                zoneType: bestCandidate.zone_type,
+                patterns: [bestCandidate.strategy_label || bestCandidate.zone_type],
+                htfMatch: bestCandidate.htf_alignment,
+                isFresh: bestCandidate.freshness,
+                distancePct: Math.abs(bestCandidate.entry - price) / price * 100
+            };
+        }
+    }
+    for (const result of best ? [] : results) {
         const candidate = {
             id: `fallback-${result.timeframe}-${result.direction}`,
             direction: result.direction,
@@ -5109,6 +5422,13 @@ async function runFallbackScan(price, historyCache) {
             validation: { passed: true, evaluator: bestEvaluation }
         }
     };
+    if (bestCandidate) {
+        out.trade_signal.strategy_evidence = bestCandidate.strategy_evidence || bestCandidate.strategy_setup?.strategy_evidence || null;
+        out.trade_signal.entry_model = bestCandidate.entry_model || null;
+        out.trade_signal.setup_timeframe = bestCandidate.setup_timeframe || bestCandidate.timeframe || best.timeframe;
+        out.trade_signal.execution_timeframe = bestCandidate.execution_timeframe || bestCandidate.timeframe || best.timeframe;
+        out.trade_signal.target_map = bestCandidate.target_map || [];
+    }
     
     setJsonOutput(out);
     lastSetupSummary = buildSetupSummary(best, st, best.entry, price);
@@ -5475,6 +5795,8 @@ async function runAutoScan() {
                     ai_decision: 'skip',
                     wait_condition: reason,
                     source: 'Deterministic Candidate Engine',
+                    strategy_detections: liveMarketContext.strategy_detections,
+                    candidate_pipeline: liveMarketContext.candidate_pipeline,
                     validation: { passed: false, reason, candidate_audit: audit }
                 }
             };
@@ -5524,6 +5846,8 @@ async function runAutoScan() {
                     ai_decision: 'skip',
                     wait_condition: aiResult.wait_condition,
                     source: 'AI-Generated Setup',
+                    strategy_detections: liveMarketContext.strategy_detections,
+                    candidate_pipeline: liveMarketContext.candidate_pipeline,
                     validation: { passed: false, reason: aiResult.wait_condition || 'AI returned no trade' }
                 }
             };
@@ -5552,6 +5876,8 @@ async function runAutoScan() {
                     ai_decision: 'skip',
                     wait_condition: reason,
                     source: 'AI-Generated Setup',
+                    strategy_detections: liveMarketContext.strategy_detections,
+                    candidate_pipeline: liveMarketContext.candidate_pipeline,
                     validation: { passed: false, reason, consistency: outputConsistency }
                 }
             };
@@ -5592,6 +5918,13 @@ async function runAutoScan() {
                 probability: aiResult.probability,
                 reasoning: aiResult.reasoning,
                 opposite_setup: aiResult.opposite_setup,
+                strategy_evidence: aiResult.strategy_evidence,
+                entry_model: aiResult.entry_model,
+                setup_timeframe: aiResult.setup_timeframe,
+                execution_timeframe: aiResult.execution_timeframe,
+                target_map: aiResult.target_map,
+                strategy_detections: liveMarketContext.strategy_detections,
+                candidate_pipeline: liveMarketContext.candidate_pipeline,
                 ai_decision: aiResult.ai_decision,
                 wait_condition: aiResult.wait_condition,
                 source: 'AI-Generated Setup'

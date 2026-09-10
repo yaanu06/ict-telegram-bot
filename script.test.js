@@ -51,6 +51,64 @@ const candles = (n, start, step, dir) => {
     return out;
 };
 
+const c = (o, h, l, close, t = null) => ({ o, h, l, c: close, v: 1e6, ...(t ? { t } : {}) });
+
+const crtBuyFixture = () => {
+    const data = candles(25, 100, 0.02, 'up');
+    for (let i = 0; i < 14; i++) data[i] = c(100, 100.4, 99.6, 100);
+    data[14] = c(100, 100.2, 99.1, 99.5);
+    data[15] = c(99.45, 100.1, 99.2, 99.75);
+    data[16] = c(99.75, 100.2, 99.7, 99.95);
+    data[17] = c(99.95, 100.8, 99.9, 100.5);
+    for (let i = 18; i < 25; i++) data[i] = c(100.45, 100.7, 100.2, 100.55);
+    return data;
+};
+
+const crtSellFixture = () => {
+    const data = candles(25, 100, 0.02, 'down');
+    for (let i = 0; i < 14; i++) data[i] = c(100, 100.4, 99.6, 100);
+    data[14] = c(100, 100.9, 99.8, 100.5);
+    data[15] = c(100.55, 100.8, 99.9, 100.25);
+    data[16] = c(100.25, 100.3, 99.8, 100.05);
+    data[17] = c(100.05, 100.1, 99.2, 99.5);
+    for (let i = 18; i < 25; i++) data[i] = c(99.55, 99.8, 99.3, 99.45);
+    return data;
+};
+
+const tbsBuyFixture = (extraBars = 0) => {
+    const data = candles(35 + extraBars, 100, 0.02, 'up');
+    data[8] = c(100.1, 100.3, 99.0, 100.15);
+    data[9] = c(100.15, 100.4, 99.8, 100.25);
+    data[26] = c(100.3, 100.4, 98.6, 99.4);
+    data[27] = c(99.4, 100.2, 99.1, 99.35);
+    data[28] = c(99.35, 100.4, 99.3, 100.1);
+    for (let i = 29; i < data.length; i++) data[i] = c(100.1, 100.5, 99.9, 100.2);
+    return data;
+};
+
+const tbsSellFixture = () => {
+    const data = candles(35, 100, 0.02, 'down');
+    data[8] = c(99.9, 101.0, 99.7, 99.85);
+    data[9] = c(99.85, 100.2, 99.6, 99.75);
+    data[26] = c(99.7, 101.35, 99.6, 100.6);
+    data[27] = c(100.6, 100.9, 99.8, 100.65);
+    data[28] = c(100.65, 100.7, 99.5, 99.9);
+    for (let i = 29; i < data.length; i++) data[i] = c(99.9, 100.1, 99.5, 99.8);
+    return data;
+};
+
+const msnrReactionFixture = () => {
+    const data = [];
+    for (let i = 0; i < 30; i++) data.push(c(100, 100.3, 99.7, 100.05));
+    data[30] = c(100.0, 100.2, 99.4, 99.6);
+    data[31] = c(99.6, 100.4, 99.5, 100.25);
+    data[32] = c(100.25, 101.2, 100.1, 101.0);
+    data[33] = c(101.0, 101.3, 100.7, 101.1);
+    data[34] = c(101.1, 101.4, 100.8, 101.2);
+    data[35] = c(101.2, 101.5, 100.9, 101.3);
+    return data;
+};
+
 describe('computeRSI (Wilder)', () => {
     it('returns 100 for a straight up run', () => {
         const ctx = getContext();
@@ -74,6 +132,313 @@ describe('detectTrend', () => {
         const ctx = getContext();
         const data = candles(80, 300, 1, 'down');
         expect(ctx.detectTrend(data)).toBe('BEARISH');
+    });
+});
+
+describe('researched CRT/TBS/MSNR strategy definitions', () => {
+    it('detects bullish CRT only after reference range low is raided and reclaimed', () => {
+        const ctx = getContext();
+        const result = ctx.detectCRT(crtBuyFixture());
+        expect(result.detected).toBe(true);
+        expect(result.direction).toBe('BUY');
+        expect(result.manipulation_side).toBe('SELL_SIDE');
+        expect(result.sweep_level).toBe(result.range_low);
+        expect(result.sweep_extreme).toBeLessThan(result.range_low);
+        expect(result.reclaim_level).toBe(result.range_low);
+    });
+
+    it('detects bearish CRT only after reference range high is raided and reclaimed', () => {
+        const ctx = getContext();
+        const result = ctx.detectCRT(crtSellFixture());
+        expect(result.detected).toBe(true);
+        expect(result.direction).toBe('SELL');
+        expect(result.manipulation_side).toBe('BUY_SIDE');
+        expect(result.sweep_level).toBe(result.range_high);
+        expect(result.sweep_extreme).toBeGreaterThan(result.range_high);
+    });
+
+    it('does not classify range expansion alone as CRT', () => {
+        const ctx = getContext();
+        const data = candles(30, 100, 0.2, 'up');
+        expect(ctx.detectCRT(data).detected).toBe(false);
+    });
+
+    it('does not classify a bullish candle without a range raid as CRT', () => {
+        const ctx = getContext();
+        const data = candles(30, 100, 0.02, 'up');
+        data[29] = c(100.5, 101.0, 100.4, 100.9);
+        expect(ctx.detectCRT(data).detected).toBe(false);
+    });
+
+    it('generates the opposite side of the CRT reference range as target evidence', () => {
+        const ctx = getContext();
+        const result = ctx.detectCRT(crtBuyFixture());
+        expect(result.target_candidates[0].source).toBe('CRT_OPPOSITE_RANGE');
+        expect(result.target_candidates[0].level).toBe(result.range_high);
+    });
+
+    it('does not regress numeric arrays into candle-range access', () => {
+        const ctx = getContext();
+        expect(ctx.detectCRT([1, 2, 3, 4, 5])).toMatchObject({ detected: false });
+        expect(ctx.calculateMSNR([1, 2, 3], 100).structural_levels).toEqual([]);
+    });
+
+    it('detects bullish TBS from a meaningful old swing-low sweep and reclaim', () => {
+        const ctx = getContext();
+        const result = ctx.detectTurtleSoup(tbsBuyFixture());
+        expect(result.detected).toBe(true);
+        expect(result.direction).toBe('BUY');
+        expect(result.reference_type).toBe('SWING_LOW');
+        expect(result.sweep_extreme).toBeLessThan(result.reference_level);
+        expect(result.reclaim_price).toBeGreaterThan(result.reference_level);
+    });
+
+    it('detects bearish TBS from a meaningful old swing-high sweep and reclaim', () => {
+        const ctx = getContext();
+        const result = ctx.detectTurtleSoup(tbsSellFixture());
+        expect(result.detected).toBe(true);
+        expect(result.direction).toBe('SELL');
+        expect(result.reference_type).toBe('SWING_HIGH');
+        expect(result.sweep_extreme).toBeGreaterThan(result.reference_level);
+        expect(result.reclaim_price).toBeLessThan(result.reference_level);
+    });
+
+    it('rejects tiny random wick noise as TBS', () => {
+        const ctx = getContext();
+        const data = candles(35, 100, 0.01, 'up');
+        data[30].l = data[29].l - 0.001;
+        data[31].c = data[29].l + 0.01;
+        expect(ctx.detectTurtleSoup(data).detected).toBe(false);
+    });
+
+    it('keeps a TBS event active for the configured fresh window', () => {
+        const ctx = getContext();
+        const result = ctx.detectTurtleSoup(tbsBuyFixture());
+        expect(result.detected).toBe(true);
+        expect(['FRESH', 'ACTIVE']).toContain(result.freshness);
+    });
+
+    it('expires stale TBS events', () => {
+        const ctx = getContext();
+        const result = ctx.detectTurtleSoup(tbsBuyFixture(25));
+        expect(result.detected).toBe(false);
+        expect(result.events.some(e => e.freshness === 'EXPIRED')).toBe(true);
+    });
+
+    it('uses the TBS sweep extreme as structural invalidation', () => {
+        const ctx = getContext();
+        const result = ctx.detectTurtleSoup(tbsBuyFixture());
+        expect(result.structural_invalidation).toBe(result.sweep_extreme);
+    });
+
+    it('identifies structural MSNR reaction support from body transition', () => {
+        const ctx = getContext();
+        const levels = ctx.calculateMSNR(msnrReactionFixture(), 101, '1H', 'XAU/USD').structural_levels;
+        expect(levels.some(l => l.role === 'REACTION_SUPPORT' && l.transition_type === 'V_LEVEL_BEARISH_TO_BULLISH')).toBe(true);
+    });
+
+    it('identifies structural MSNR reaction resistance from body transition', () => {
+        const ctx = getContext();
+        const data = msnrReactionFixture();
+        data[36] = c(101.2, 101.6, 101.0, 101.45);
+        data[37] = c(101.45, 101.5, 100.8, 101.0);
+        data[38] = c(101.0, 101.1, 99.8, 100.1);
+        const levels = ctx.calculateMSNR(data, 100.2, '1H', 'XAU/USD').structural_levels;
+        expect(levels.some(l => l.role === 'REACTION_RESISTANCE' && l.transition_type === 'A_LEVEL_BULLISH_TO_BEARISH')).toBe(true);
+    });
+
+    it('classifies resistance broken and retested from above as RBS', () => {
+        const ctx = getContext();
+        const data = msnrReactionFixture();
+        data[36] = c(101.3, 101.7, 101.1, 101.5);
+        data[37] = c(101.5, 102.0, 101.4, 101.9);
+        data[38] = c(101.9, 102.2, 101.0, 101.4);
+        const levels = ctx.calculateMSNR(data, 101.5, '1H', 'XAU/USD').structural_levels;
+        expect(levels.some(l => l.role === 'RESISTANCE_TO_SUPPORT' && l.flipped)).toBe(true);
+    });
+
+    it('classifies support broken and retested from below as SBR', () => {
+        const ctx = getContext();
+        const data = msnrReactionFixture();
+        data[36] = c(101.3, 101.4, 99.0, 99.2);
+        data[37] = c(99.2, 99.6, 98.7, 99.0);
+        data[38] = c(99.0, 100.0, 98.9, 99.5);
+        const levels = ctx.calculateMSNR(data, 99.4, '1H', 'XAU/USD').structural_levels;
+        expect(levels.some(l => l.role === 'SUPPORT_TO_RESISTANCE' && l.flipped)).toBe(true);
+    });
+
+    it('reduces MSNR freshness after excessive mitigation', () => {
+        const ctx = getContext();
+        const data = msnrReactionFixture();
+        data.push(c(101.2, 101.3, 99.55, 101.0), c(101, 101.2, 99.55, 100.8), c(100.8, 101.1, 99.55, 100.7));
+        const levels = ctx.calculateMSNR(data, 101, '1H', 'XAU/USD').structural_levels;
+        expect(levels.some(l => l.freshness === 'MITIGATED' && l.primary_eligible === false)).toBe(true);
+    });
+
+    it('does not let pivot references generate standalone MSNR strategy setups', () => {
+        const ctx = getContext();
+        const data = candles(80, 100, 0.5, 'up');
+        const msnr = ctx.calculateMSNR(data, 140);
+        const setups = ctx.buildStrategySetups({ pair: 'XAU/USD', price: 140, historyCache: { '1H': data }, realZones: [], marketContext: {} });
+        expect(msnr.supportMeta.some(x => x.origin === 'PIVOT_REFERENCE')).toBe(true);
+        expect(setups.some(s => s.primary === 'MSNR')).toBe(false);
+    });
+
+    it('does not let ATR fallback references generate standalone MSNR strategy setups', () => {
+        const ctx = getContext();
+        const data = candles(80, 100, 0.5, 'up');
+        const msnr = ctx.calculateMSNR(data, 1000);
+        const setups = ctx.buildStrategySetups({ pair: 'XAU/USD', price: 1000, historyCache: { '1H': data }, realZones: [], marketContext: {} });
+        expect(msnr.resistanceMeta.some(x => x.origin === 'ATR_FALLBACK')).toBe(true);
+        expect(setups.some(s => s.primary === 'MSNR')).toBe(false);
+    });
+
+    it('places MSNR entries inside the actual price-action zone', () => {
+        const ctx = getContext();
+        const data = msnrReactionFixture();
+        const zones = ctx.buildLiveZonesForTf(data, '1H', 101, 'XAU/USD', 1, 5);
+        const msnrZone = zones.find(z => z.type === 'MSNR' && z.origin === 'STRUCTURAL_MSNR');
+        expect(msnrZone).toBeTruthy();
+        const entries = ctx.getAdaptiveEntryCandidates(msnrZone, msnrZone.direction, 2);
+        expect(entries.every(e => e >= msnrZone.low && e <= msnrZone.high)).toBe(true);
+    });
+});
+
+describe('strategy pipeline integration rules', () => {
+    it('combines 4H CRT and 1H TBS when they describe the same sweep region', () => {
+        const ctx = getContext();
+        const setups = ctx.buildStrategySetups({
+            pair: 'XAU/USD',
+            price: 100.2,
+            historyCache: { '4H': crtBuyFixture(), '1H': tbsBuyFixture() },
+            realZones: [],
+            marketContext: {}
+        });
+        expect(setups.some(s => s.label && s.label.includes('CRT') && s.label.includes('TBS'))).toBe(true);
+    });
+
+    it('does not combine unrelated opposite-direction strategy events', () => {
+        const ctx = getContext();
+        const setups = ctx.buildStrategySetups({
+            pair: 'XAU/USD',
+            price: 100.2,
+            historyCache: { '4H': crtBuyFixture(), '1H': tbsSellFixture() },
+            realZones: [],
+            marketContext: {}
+        });
+        expect(setups.some(s => s.label && s.label.includes('CRT') && s.label.includes('TBS'))).toBe(false);
+    });
+
+    it('allows a strategy-created candidate zone to survive post-AI consistency validation', () => {
+        const ctx = getContext();
+        const candidate = {
+            id: 'crt-candidate',
+            direction: 'BUY',
+            timeframe: '4H',
+            zone_type: 'CRT',
+            zone_origin: 'STRUCTURAL',
+            zone_low: 99.55,
+            zone_high: 99.75,
+            entry: 99.7,
+            stop_loss: 98.5,
+            tp1: 103.0,
+            tp2: 104.0,
+            tp3: 105.0
+        };
+        const result = ctx.validateAIOutputConsistency({
+            decision: 'BUY_LIMIT',
+            selected_candidate_id: candidate.id,
+            direction: 'BUY',
+            selected_zone: { type: 'CRT', timeframe: '4H', low: 99.55, high: 99.75 },
+            entry_zone: { source: 'CRT', low: 99.55, high: 99.75 },
+            entry: 99.7,
+            stop_loss: 98.5,
+            take_profit_1: 103.0,
+            take_profit_2: 104.0,
+            take_profit_3: 105.0
+        }, { adaptive_setup_candidates: [candidate], risk_constraints: { minimum_rr: 2.5 }, real_ict_zones: [] });
+        expect(result.valid).toBe(true);
+    });
+
+    it('keeps pending-limit setup eligible when current price is outside the selected zone', () => {
+        const ctx = getContext();
+        const stage = ctx.buildLimitOrderStageContext([
+            { type: 'CRT', direction: 'BUY', timeframe: '4H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 99.5, high: 99.7, price_at_zone_now: false, distance_to_zone: 1.2 }
+        ], { buy: [{ direction: 'BUY', level: 103, source: 'CRT_OPPOSITE_RANGE', origin: 'STRUCTURAL' }], sell: [] }, 100.9, 1, {
+            allOk: false,
+            summary: 'Immediate entry waiting',
+            entryConfirmation: { isAtZone: false, score: 0 }
+        });
+        expect(stage.limit_order_setup.eligible).toBe(true);
+        expect(stage.immediate_entry.eligible).toBe(false);
+        expect(stage.limit_order_setup.current_price_inside_zone_required).toBe(false);
+    });
+
+    it('hydrates selected candidates and ignores AI numeric mutations', () => {
+        const ctx = getContext();
+        const candidate = {
+            id: 'fixed-geometry',
+            direction: 'SELL',
+            timeframe: '1H',
+            zone_type: 'TBS',
+            zone_origin: 'STRUCTURAL',
+            zone_low: 100.8,
+            zone_high: 101.0,
+            entry: 100.85,
+            stop_loss: 101.4,
+            stop_reason: 'TBS sweep extreme invalidation plus structural buffer',
+            tp1: 99.2,
+            tp2: 98.8,
+            tp3: 98.4,
+            rr_tp1: 3
+        };
+        const ai = ctx.applyAdaptiveCandidateToAIResult({
+            selected_candidate_id: 'fixed-geometry',
+            direction: 'BUY',
+            entry: 1,
+            stop_loss: 2,
+            take_profit_1: 3
+        }, { adaptive_setup_candidates: [candidate] });
+        expect(ai.direction).toBe('SELL');
+        expect(ai.entry).toBe(candidate.entry);
+        expect(ai.stop_loss).toBe(candidate.stop_loss);
+        expect(ai.take_profit_1).toBe(candidate.tp1);
+    });
+
+    it('rejects candidate construction when no structural TP1 can satisfy minimum RR', () => {
+        const ctx = getContext();
+        const zone = { id: 'crt-buy', type: 'CRT', direction: 'BUY', timeframe: '1H', low: 1.0995, high: 1.1, origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, freshness: 'FRESH', structural_invalidation: 1.099 };
+        const setup = { id: 'crt-buy', primary: 'CRT', label: 'CRT', direction: 'BUY', timeframe: '1H', execution_zone: zone, structural_invalidation: 1.099, strategy_evidence: { CRT: { range_high: 1.1005, range_low: 1.0995 } }, target_candidates: [{ direction: 'BUY', level: 1.1005, source: 'CRT_OPPOSITE_RANGE', origin: 'STRUCTURAL' }] };
+        const result = ctx.buildAdaptiveSetupCandidates({
+            pair: 'EUR/USD',
+            price: 1.101,
+            historyCache: { '4H': candles(80, 1.08, 0.0002, 'up'), '1H': candles(80, 1.08, 0.0002, 'up'), '1D': candles(80, 1.08, 0.0002, 'up') },
+            zones: [zone],
+            targetCandidates: { buy: [], sell: [] },
+            riskConstraints: { minimum_rr: 2.5 },
+            marketRegime: {},
+            structure: { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } },
+            strategySetups: [setup]
+        });
+        expect(result.valid_candidates).toEqual([]);
+        expect(result.rejected_candidates.some(r => r.rejection_code === 'NO_VALID_TP1')).toBe(true);
+    });
+
+    it('produces zero valid deterministic candidates when no strategy setup exists', () => {
+        const ctx = getContext();
+        const result = ctx.buildAdaptiveSetupCandidates({
+            pair: 'XAU/USD',
+            price: 101,
+            historyCache: { '4H': candles(80, 100, 0.1, 'up'), '1H': candles(80, 100, 0.1, 'up') },
+            zones: [],
+            targetCandidates: { buy: [], sell: [] },
+            riskConstraints: { minimum_rr: 2.5 },
+            marketRegime: {},
+            structure: {},
+            strategySetups: []
+        });
+        expect(result.valid_candidates).toEqual([]);
+        expect(result.raw_candidates).toEqual([]);
     });
 });
 
@@ -515,7 +880,7 @@ describe('live AI market context and prompt', () => {
     it('creates a valid strategy candidate from a deterministic MSNR setup', () => {
         const ctx = getContext();
         const historyCache = trendCache('up', 1.08000, 0.00020);
-        const zone = { id: '1H-BUY-MSNR-1.0995-1.1005', type: 'MSNR', direction: 'BUY', timeframe: '1H', low: 1.09950, high: 1.10050, midpoint: 1.10000, origin: 'PIVOT_DERIVED', primary_eligible: true, invalidated: false, freshness: 'FRESH' };
+        const zone = { id: '1H-BUY-MSNR-1.0995-1.1005', type: 'MSNR', direction: 'BUY', timeframe: '1H', low: 1.09950, high: 1.10050, midpoint: 1.10000, origin: 'STRUCTURAL_MSNR', primary_eligible: true, invalidated: false, freshness: 'FRESH' };
         const structure = { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } };
         const strategySetups = [{
             id: 'msnr-buy',
@@ -695,8 +1060,8 @@ describe('live AI market context and prompt', () => {
         const ctx = getContext();
         const data = candles(80, 100, 0.5, 'up');
         const pivotDerived = ctx.calculateMSNR(data, 140);
-        expect(pivotDerived.supportMeta.some(x => x.origin === 'PIVOT_DERIVED')).toBe(true);
-        expect(pivotDerived.resistanceMeta.some(x => x.origin === 'PIVOT_DERIVED')).toBe(true);
+        expect(pivotDerived.supportMeta.some(x => x.origin === 'PIVOT_REFERENCE')).toBe(true);
+        expect(pivotDerived.resistanceMeta.some(x => x.origin === 'PIVOT_REFERENCE')).toBe(true);
 
         const fallback = ctx.calculateMSNR(data, 1000);
         expect(fallback.resistanceMeta.some(x => x.origin === 'ATR_FALLBACK')).toBe(true);
@@ -716,10 +1081,9 @@ describe('live AI market context and prompt', () => {
             holistic: {},
             entryContext: null
         });
-        const pivotZone = pivotLive.real_ict_zones.find(z => z.type === 'MSNR' && z.origin === 'PIVOT_DERIVED');
-        expect(pivotZone).toBeTruthy();
-        expect(pivotZone.primary_eligible).toBe(true);
-        expect(pivotLive.target_candidates.buy.some(c => c.source === 'MSNR_RESISTANCE' && c.origin === 'PIVOT_DERIVED')).toBe(true);
+        const pivotZone = pivotLive.real_ict_zones.find(z => z.type === 'MSNR' && z.origin === 'PIVOT_REFERENCE');
+        expect(pivotZone).toBeFalsy();
+        expect(pivotLive.target_candidates.buy.some(c => c.origin === 'PIVOT_REFERENCE')).toBe(false);
 
         const live = ctx.buildLiveMarketContext({
             pair: 'XAU/USD',
@@ -732,9 +1096,8 @@ describe('live AI market context and prompt', () => {
             entryContext: null
         });
         const fallbackZone = live.real_ict_zones.find(z => z.type === 'MSNR' && z.origin === 'ATR_FALLBACK');
-        expect(fallbackZone).toBeTruthy();
-        expect(fallbackZone.primary_eligible).toBe(false);
-        expect(live.target_candidates.buy.some(c => c.source === 'MSNR_RESISTANCE' && c.origin === 'ATR_FALLBACK')).toBe(true);
+        expect(fallbackZone).toBeFalsy();
+        expect(live.target_candidates.buy.some(c => c.origin === 'ATR_FALLBACK')).toBe(false);
     });
 
     it('keeps FVG and OB zones marked structural', () => {
@@ -769,8 +1132,8 @@ describe('live AI market context and prompt', () => {
         };
         const prompt = ctx.buildAIPrompt(live, '### 4H CANDLES\n  0: O:1.00 H:2.00 L:0.50 C:1.50 V:n/a\n');
         expect(prompt.system).toMatch(/COMPUTED MARKET FACTS/);
-        expect(prompt.system).toMatch(/PIVOT_DERIVED = deterministic MSNR support\/resistance/);
-        expect(prompt.system).toMatch(/ATR_FALLBACK = synthetic deterministic fallback\/reference level/);
+        expect(prompt.system).toMatch(/PIVOT_REFERENCE = classic pivot-derived reference only/);
+        expect(prompt.system).toMatch(/ATR_FALLBACK = synthetic reference only/);
         expect(prompt.system).toMatch(/candidate-selection layer/);
         expect(prompt.system).toMatch(/must NEVER invent, modify, recalculate/);
         expect(prompt.system).toMatch(/VALID_CANDIDATES = executable numerical candidates/);
@@ -969,7 +1332,7 @@ describe('live AI market context and prompt', () => {
             ]
         });
         expect(result.valid).toBe(false);
-        expect(result.issues).toContain('ATR_FALLBACK MSNR cannot be selected as primary AI zone');
+        expect(result.issues).toContain('only STRUCTURAL_MSNR can be selected as primary AI MSNR zone');
     });
 
     it('enforces minimum RR for normal FX BUY and accepts a genuine 2.5R TP1', () => {
@@ -1870,18 +2233,32 @@ describe('validateAISetup', () => {
         const ctx = getContext();
         const data = candles(80, 4450, 1.5, 'down');
         const cache = { '4H': data, '1H': data, '1D': data, '15M': data.slice(-20), '5M': data.slice(-20) };
-        const entry = ctx.calculateMSNR(data, 4400).nearestResistance;
+        const entry = 4410;
+        const zone = { type: 'TBS', timeframe: '1H', direction: 'SELL', low: 4409, high: 4411, origin: 'STRUCTURAL', primary_eligible: true, freshness: 'FRESH' };
+        const validationContext = ctx.buildDeterministicValidationContext({
+            pair: 'XAU/USD',
+            price: 4400,
+            historyCache: cache,
+            real_ict_zones: [zone],
+            risk_constraints: { minimum_rr: 2.5 },
+            structure: { '1D': { trend: 'BEARISH' }, '4H': { trend: 'BEARISH' }, '1H': { trend: 'BEARISH' } },
+            strategy_setups: [{ primary: 'TBS', label: 'TBS', direction: 'SELL', execution_zone: zone }],
+            require_strategy_setup: true
+        });
         const r = ctx.validateAISetup(baseAi({
             direction: 'SELL',
             decision: 'SELL_LIMIT',
             entry,
-            entry_zone: { low: entry * 0.9995, high: entry * 1.0005, source: 'MSNR' },
+            selected_candidate_id: 'sell-limit',
+            selected_zone: { low: zone.low, high: zone.high, type: 'TBS', timeframe: '1H' },
+            entry_zone: { low: zone.low, high: zone.high, source: 'TBS' },
             stop_loss: entry + 7,
             take_profit_1: entry - 21,
             take_profit_2: entry - 35,
             take_profit_3: entry - 49,
-            ai_decision: 'wait_for_reaction'
-        }), 4400, cache, 'XAU/USD');
+            ai_decision: 'wait_for_reaction',
+            strategy_setup: { primary: 'TBS', label: 'TBS' }
+        }), 4400, cache, 'XAU/USD', validationContext);
         expect(r.valid).toBe(true);
         expect(r.rr1).toBeCloseTo(3, 1);
         expect(r.matchedZone).toBeTruthy();
@@ -1891,19 +2268,33 @@ describe('validateAISetup', () => {
         const ctx = getContext();
         const data = candles(80, 4450, 1.5, 'down');
         const cache = { '4H': data, '1H': data, '1D': data, '15M': data.slice(-20), '5M': data.slice(-20) };
-        const entry = ctx.calculateMSNR(data, 4400).nearestResistance;
+        const entry = 4410;
+        const zone = { type: 'TBS', timeframe: '1H', direction: 'SELL', low: 4409, high: 4411, origin: 'STRUCTURAL', primary_eligible: true, freshness: 'FRESH' };
+        const validationContext = ctx.buildDeterministicValidationContext({
+            pair: 'XAU/USD',
+            price: 4400,
+            historyCache: cache,
+            real_ict_zones: [zone],
+            risk_constraints: { minimum_rr: 2.5 },
+            structure: { '1D': { trend: 'BEARISH' }, '4H': { trend: 'BEARISH' }, '1H': { trend: 'BEARISH' } },
+            strategy_setups: [{ primary: 'TBS', label: 'TBS', direction: 'SELL', execution_zone: zone }],
+            require_strategy_setup: true
+        });
         const r = ctx.validateAISetup(baseAi({
             direction: 'SELL',
             decision: 'SELL_LIMIT',
             entry,
-            entry_zone: { low: entry * 0.9995, high: entry * 1.0005, source: 'MSNR' },
+            selected_candidate_id: 'sell-limit',
+            selected_zone: { low: zone.low, high: zone.high, type: 'TBS', timeframe: '1H' },
+            entry_zone: { low: zone.low, high: zone.high, source: 'TBS' },
             stop_loss: entry + 7,
             take_profit_1: entry - 8,
             take_profit_2: entry - 20,
             take_profit_3: entry - 30,
             ai_decision: 'wait_for_reaction',
-            risk_reward: '1:5.0'
-        }), 4400, cache, 'XAU/USD');
+            risk_reward: '1:5.0',
+            strategy_setup: { primary: 'TBS', label: 'TBS' }
+        }), 4400, cache, 'XAU/USD', validationContext);
         expect(r.valid).toBe(false);
         expect(r.reason).toMatch(/real RR .* below/);
     });
