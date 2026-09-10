@@ -1,0 +1,195 @@
+{
+  "id": 1789043848710,
+  "recordedAt": "2026-09-10T12:37:28.714Z",
+  "eventType": "ai_scan",
+  "pair": "AUD/USD",
+  "setup": {
+    "date": "2026-09-10",
+    "time": "12:37:28",
+    "pair": "AUD/USD",
+    "current_price": 0.71636,
+    "trade_type": "SELL_LIMIT",
+    "decision": "SELL_LIMIT",
+    "order_type": "LIMIT",
+    "setup_type": "PENDING_LIMIT",
+    "entry_price": 0.72287,
+    "entry_zone": {
+      "source": "TBS",
+      "low": 0.72287,
+      "high": 0.72327
+    },
+    "stop_loss": 0.72327,
+    "stop_loss_reason": "SWING_HIGH invalidation plus structural buffer",
+    "take_profit_1": 0.71907,
+    "take_profit_2": null,
+    "take_profit_3": null,
+    "risk_reward": "1:9.50",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "TBS+CRT+CRT",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Highest-scoring valid pending-limit candidate (score 85.35) is a 4H TBS+CRT sell at the 0.72287-0.72327 reclaim-retest zone, aligned with the dominant bearish structure (4H/1H/15M bearish BOS and MSS) and bearish displacement.",
+      "structure": "4H bearish MSS at 0.71979, 1H bearish MSS at 0.71904, 15M bearish MSS at 0.7177 with sell-side displacement across all execution timeframes; the TBS zone sits at the swing-high liquidity that was swept (0.72381) and reclaimed, making it a logical premium retest for continuation lower.",
+      "liquidity": "Buy-side liquidity above 0.72236-0.72307 was swept and reclaimed; sell-side targets at 0.72054/0.72083/0.71907 remain unmitigated, supporting a draw on liquidity toward the 4H CRT opposite range at 0.71907.",
+      "volatility": "ATR regime LOW (4H ATR 0.00169); candidate SL distance 0.0004 is within the 0.0003-0.00677 band and target distance ~2.24 ATR is reachable, though 7 opposing zones (one SERIOUS 4H CRT at 0.72109-0.72149) sit between entry and TP1.",
+      "why_best": "Among the five valid candidates, this one has the best combination of freshness (ACTIVE, not AGED), structural origin (STRUCTURAL TBS), strong TBS+CRT confluence (combination scores 95), and a clean 1:9.5 RR to a structural 4H CRT target, while remaining directionally aligned with the bearish HTF bias.",
+      "why_not_opposite": "The BUY-side candidates (4H-CRT-BUY-9, 1H-TBS-BUY-11) are counter-trend against the dominant 4H/1H/15M bearish BOS/MSS and bearish displacement; discount positioning alone is insufficient to override the stronger supplied bearish structure.",
+      "invalidation": "A 4H close above 0.72327 (or acceptance above the 0.72381 sweep extreme) invalidates the TBS reclaim thesis and voids the pending sell limit.",
+      "secondary": [
+        "New York killzone active (HIGH priority, 1.3x multiplier) supports execution quality",
+        "Market phase MANIPULATION with swept low and negative EMA slopes favors continuation of the bearish leg",
+        "Immediate entry not ready (confirmation score 0, price not at zone) - pending limit is the correct instrument"
+      ],
+      "risk_warning": "Normal market risk applies"
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 35,
+      "why_rejected": "Bullish CRT/TBS candidates (e.g. 4H-CRT-BUY-9 at 0.72109-0.72149) are counter-trend to the dominant bearish 4H/1H/15M BOS and MSS plus bearish displacement; discount context alone does not outweigh the stronger supplied bearish structure."
+    },
+    "strategy_evidence": {
+      "CRT": {
+        "range_high": 0.72154,
+        "range_low": 0.71907,
+        "sweep_side": "BUY_SIDE",
+        "sweep_extreme": 0.72245,
+        "reclaim_level": 0.72154,
+        "reclaim_bar": 86,
+        "direction": "SELL",
+        "timeframe": "4H"
+      },
+      "TBS": {
+        "reference_level": 0.72307,
+        "reference_type": "SWING_HIGH",
+        "sweep_extreme": 0.72381,
+        "reclaim_level": 0.72307,
+        "reclaim_bar": 92,
+        "sweep_depth": 0.0007399999999999629,
+        "liquidity_level": 0.72307,
+        "reclaim_price": 0.72236,
+        "timeframe": "4H"
+      },
+      "MSNR": null
+    },
+    "entry_model": "RECLAIM_RETEST",
+    "setup_timeframe": "4H",
+    "execution_timeframe": "1H",
+    "target_map": [
+      {
+        "target_level": 0.71907,
+        "target_type": "CRT_OPPOSITE_RANGE",
+        "target_timeframe": "4H",
+        "target_distance": 0.0038,
+        "target_distance_atr": 2.24,
+        "structural_priority": 96,
+        "intervening_obstacles": [],
+        "reachability_score": 63,
+        "target_reachability": {
+          "reachable": true,
+          "reachability_score": 63,
+          "target_quality": "MEDIUM",
+          "target_distance": 0.0038000000000000256,
+          "target_distance_atr": 2.2447257383966135,
+          "intervening_obstacles": [
+            {
+              "type": "CRT",
+              "timeframe": "4H",
+              "low": 0.72109,
+              "high": 0.72149,
+              "severity": "SERIOUS"
+            },
+            {
+              "type": "TBS",
+              "timeframe": "1H",
+              "low": 0.72077,
+              "high": 0.72117,
+              "severity": "WEAK"
+            },
+            {
+              "type": "CRT",
+              "timeframe": "1H",
+              "low": 0.72132,
+              "high": 0.72172,
+              "severity": "WEAK"
+            },
+            {
+              "type": "CRT",
+              "timeframe": "1H",
+              "low": 0.72105,
+              "high": 0.72145,
+              "severity": "WEAK"
+            },
+            {
+              "type": "CRT",
+              "timeframe": "1H",
+              "low": 0.72123,
+              "high": 0.72163,
+              "severity": "WEAK"
+            },
+            {
+              "type": "CRT",
+              "timeframe": "1H",
+              "low": 0.72129,
+              "high": 0.72169,
+              "severity": "WEAK"
+            },
+            {
+              "type": "CRT",
+              "timeframe": "15M",
+              "low": 0.72088,
+              "high": 0.72128,
+              "severity": "WEAK"
+            }
+          ],
+          "intervening_liquidity": [],
+          "structural_priority": 96,
+          "reason": "7 opposing zones, 0 liquidity levels before target"
+        },
+        "actual_rr": 9.50000000000111
+      }
+    ],
+    "strategy_detections": {
+      "CRT": {
+        "raw_count": 214,
+        "deduped_count": 80,
+        "bullish": 6,
+        "bearish": 5
+      },
+      "TBS": {
+        "raw_count": 30,
+        "deduped_count": 28,
+        "bullish": 1,
+        "bearish": 2
+      },
+      "MSNR": {
+        "raw_count": 93,
+        "deduped_count": 57,
+        "structural_count": 0,
+        "executable_count": 0,
+        "pivot_reference_count": 12,
+        "atr_fallback_count": 0
+      },
+      "combinations": {
+        "CRT_TBS": 14,
+        "CRT_MSNR": 0,
+        "TBS_MSNR": 0,
+        "CRT_TBS_MSNR": 0
+      }
+    },
+    "candidate_pipeline": {
+      "strategy_setups": 14,
+      "execution_seeds": 14,
+      "raw_candidates": 267,
+      "structural_stop_valid": 242,
+      "volatility_rejected": 25,
+      "target_rejected": 131,
+      "consistency_rejected": 47,
+      "context_rejected": 0,
+      "final_valid": 5
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for price to rally into 0.72287-0.72327 and print a bearish reclaim/retest rejection before the pending sell limit fills; do not enter at market.",
+    "source": "AI-Generated Setup"
+  }
+}
