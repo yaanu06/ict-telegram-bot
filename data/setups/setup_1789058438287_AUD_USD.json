@@ -1,0 +1,150 @@
+{
+  "id": 1789058438287,
+  "recordedAt": "2026-09-10T16:40:38.288Z",
+  "eventType": "ai_scan",
+  "pair": "AUD/USD",
+  "setup": {
+    "date": "2026-09-10",
+    "time": "16:40:38",
+    "pair": "AUD/USD",
+    "current_price": 0.71659,
+    "trade_type": "SELL_LIMIT",
+    "decision": "SELL_LIMIT",
+    "order_type": "LIMIT",
+    "setup_type": "PENDING_LIMIT",
+    "entry_price": 0.71713,
+    "entry_zone": {
+      "source": "CRT",
+      "low": 0.71673,
+      "high": 0.71713
+    },
+    "stop_loss": 0.71747,
+    "stop_loss_reason": "STRATEGY_INVALIDATION invalidation plus structural buffer",
+    "take_profit_1": 0.71623,
+    "take_profit_2": null,
+    "take_profit_3": null,
+    "risk_reward": "1:2.65",
+    "confidence": 72,
+    "zone_quality": "B",
+    "patterns_detected": "CRT+FVG+OB",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Fresh 1H CRT sell: buy-side liquidity swept at 0.71727, price reclaimed below 0.71693, and the reclaim-retest zone 0.71673-0.71713 is untouched. This is the only deterministic candidate that passed all hard rules (RR 2.65, valid structural stop, valid TP1).",
+      "structure": "1H and 15M are bearish with 1H bearish BOS; 4H printed a bearish BOS though its trend is neutral. 1D remains bullish, so this is a counter-HTF swing trade taken with the intraday bearish structure.",
+      "liquidity": "Buy-side liquidity at 0.71687/0.71705/0.71755 sits just above the zone and was already swept at 0.71727, supporting a sell-the-retest. Sell-side targets at 0.71588/0.71581/0.71559 align with the CRT opposite-range TP1 at 0.71623.",
+      "volatility": "ATR regime LOW (4H ATR 0.00172, 15M compression true). SL distance 0.00034 is above the 0.0003 minimum and well within the 0.00687 maximum; RR 2.65 exceeds the 2.5 minimum.",
+      "why_best": "Only one adaptive candidate survived the pipeline (354 raw -> 1 valid). It is FRESH, entry not consumed, TP1 not reached, and it carries FVG+OB confluence with a structural stop and a 2.65 RR.",
+      "why_not_opposite": "The 4H MSNR BUY zone 0.71645-0.71687 is PARTIAL (already mitigated once) and sits directly in the path of the sell-side liquidity the CRT targets; buying into a partially used zone against 1H/15M bearish BOS and a fresh CRT sell is lower quality. The 1H TBS BUY at 0.72077-0.72117 is far above price and counter to the immediate bearish structure.",
+      "invalidation": "1H close above 0.71747 (above the 0.71727 sweep extreme) invalidates the CRT reclaim; TP1 at 0.71623 may be slowed by the 4H MSNR 0.71645-0.71687 obstacle noted in target reachability.",
+      "secondary": [
+        "Session is LON-CLOSE killzone (HIGH priority, 1.3x multiplier) - favorable for execution.",
+        "Price is in discount (37.7% of range), which is a mild headwind for a sell; the fresh structural CRT and bearish 1H/15M BOS outweigh it.",
+        "Immediate entry confirmation score is 0 and price is not yet in the zone - this is a pending limit, not an immediate entry."
+      ],
+      "risk_warning": "Normal market risk applies"
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 35,
+      "why_rejected": "4H MSNR BUY 0.71645-0.71687 is PARTIAL (mitigation_count 1) and sits inside the CRT sell's target path; no fresh bullish structural confirmation exists against the 1H/15M bearish BOS."
+    },
+    "strategy_evidence": {
+      "CRT": {
+        "range_high": 0.71693,
+        "range_low": 0.71577,
+        "sweep_side": "BUY_SIDE",
+        "sweep_extreme": 0.71727,
+        "reclaim_level": 0.71693,
+        "reclaim_bar": 99,
+        "direction": "SELL",
+        "timeframe": "1H"
+      },
+      "TBS": null,
+      "MSNR": null
+    },
+    "entry_model": "RECLAIM_RETEST",
+    "setup_timeframe": "1H",
+    "execution_timeframe": "1H",
+    "target_map": [
+      {
+        "target_level": 0.71623,
+        "target_type": "OB",
+        "target_timeframe": "4H",
+        "target_distance": 0.0009,
+        "target_distance_atr": 0.97,
+        "structural_priority": 68,
+        "intervening_obstacles": [],
+        "reachability_score": 41,
+        "target_reachability": {
+          "reachable": true,
+          "reachability_score": 41,
+          "target_quality": "LOW",
+          "target_distance": 0.0009000000000000119,
+          "target_distance_atr": 0.5243445692883941,
+          "intervening_obstacles": [
+            {
+              "type": "MSNR",
+              "timeframe": "4H",
+              "low": 0.71645,
+              "high": 0.71687,
+              "severity": "SERIOUS"
+            },
+            {
+              "type": "MSNR",
+              "timeframe": "4H",
+              "low": 0.71645,
+              "high": 0.71687,
+              "severity": "SERIOUS"
+            }
+          ],
+          "intervening_liquidity": [],
+          "structural_priority": 68,
+          "reason": "2 opposing zones, 0 liquidity levels before target"
+        },
+        "actual_rr": 2.6470588235293926
+      }
+    ],
+    "strategy_detections": {
+      "CRT": {
+        "raw_count": 217,
+        "deduped_count": 83,
+        "bullish": 4,
+        "bearish": 10
+      },
+      "TBS": {
+        "raw_count": 27,
+        "deduped_count": 25,
+        "bullish": 1,
+        "bearish": 3
+      },
+      "MSNR": {
+        "raw_count": 91,
+        "deduped_count": 55,
+        "structural_count": 1,
+        "executable_count": 1,
+        "pivot_reference_count": 12,
+        "atr_fallback_count": 0
+      },
+      "combinations": {
+        "CRT_TBS": 0,
+        "CRT_MSNR": 2,
+        "TBS_MSNR": 0,
+        "CRT_TBS_MSNR": 0
+      }
+    },
+    "candidate_pipeline": {
+      "strategy_setups": 19,
+      "execution_seeds": 19,
+      "raw_candidates": 354,
+      "structural_stop_valid": 24,
+      "volatility_rejected": 0,
+      "target_rejected": 23,
+      "consistency_rejected": 0,
+      "context_rejected": 0,
+      "final_valid": 1
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for price to trade up into 0.71673-0.71713 and print a bearish rejection/reclaim-retest confirmation before the limit fills; skip if 1H closes above 0.71747.",
+    "source": "AI-Generated Setup"
+  }
+}
