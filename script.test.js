@@ -686,6 +686,35 @@ describe('Analyze scan lifecycle', () => {
 });
 
 describe('DeepSeek request settlement', () => {
+    it.each(['headers', 'body'])('enforces the deadline when %s never settle and abort is ignored', async stage => {
+        jest.useFakeTimers();
+        try {
+            const { context: ctx } = getScanContext();
+            ctx.setTimeout = setTimeout;
+            ctx.clearTimeout = clearTimeout;
+            const pending = new Promise(() => {});
+            ctx.fetch = jest.fn(() => stage === 'headers' ? pending : Promise.resolve({ ok: true, json: () => pending }));
+            const request = ctx.requestAIJson('https://example.invalid', {}, 45000);
+            const assertion = expect(request).rejects.toMatchObject({ name: 'AbortError' });
+            await jest.advanceTimersByTimeAsync(45000);
+            await assertion;
+            expect(jest.getTimerCount()).toBe(0);
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    it('keeps dense combination target propagation linear in original targets', () => {
+        const ctx = getContext();
+        const original = ctx.detectTurtleSoupEvents;
+        ctx.detectTurtleSoupEvents = () => Array.from({ length: 8 }, (_, i) => ({ detected: true, direction: 'BUY', type: 'BUY', reclaim_level: 99 + i * 0.01, sweep_extreme: 98, event_time: 100000, evidence: {}, freshness: 'FRESH' }));
+        ctx.detectCRTEvents = () => Array.from({ length: 8 }, (_, i) => ({ detected: true, direction: 'BUY', reclaim_level: 99 + i * 0.01, sweep_extreme: 98, event_time: 100000, evidence: {}, freshness: 'FRESH', target_candidates: [{ direction: 'BUY', timeframe: '1H', source: 'CRT_OPPOSITE_RANGE', level: 105 + i }] }));
+        const setups = ctx.buildStrategySetups({ pair: 'EUR/USD', price: 100, historyCache: { '1H': candles(100, 100, 0.1, 'up'), '4H': candles(100, 100, 0.1, 'up') }, realZones: [], marketContext: {} });
+        expect(setups.some(s => s.combination_evidence.length > 0)).toBe(true);
+        expect(setups.every(s => s.target_candidates.length <= 8)).toBe(true);
+        expect(setups.reduce((sum, s) => sum + s.target_candidates.length, 0)).toBeLessThanOrEqual(192);
+        ctx.detectTurtleSoupEvents = original;
+    });
     it('settles timeout, HTTP failure, and invalid JSON as finite AI failures', async () => {
         for (const failure of [
             Object.assign(new Error('aborted'), { name: 'AbortError' }),

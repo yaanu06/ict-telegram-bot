@@ -29,14 +29,26 @@ async function requestAIJson(url, options = {}, timeoutMs = AI_REQUEST_TIMEOUT_M
     const controller = typeof AbortController === 'function'
         ? new AbortController()
         : { signal: undefined, abort() {} };
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    let timeoutId;
+    const deadline = new Promise((resolve, reject) => {
+        timeoutId = setTimeout(() => {
+            const error = new Error('AI request deadline exceeded');
+            error.name = 'AbortError';
+            reject(error);
+            controller.abort();
+        }, timeoutMs);
+    });
     try {
         const requestOptions = controller.signal === undefined
             ? { ...options }
             : { ...options, signal: controller.signal };
-        const response = await fetch(url, requestOptions);
-        const data = await response.json();
-        return { response, data };
+        return await Promise.race([deadline, (async () => {
+            const response = await fetch(url, requestOptions);
+            console.log('[SCAN] DeepSeek response received', { status: response.status });
+            if (response.ok === false) throw new Error(`DeepSeek HTTP ${response.status}`);
+            const data = await response.json();
+            return { response, data };
+        })()]);
     } finally {
         clearTimeout(timeoutId);
     }
@@ -3954,6 +3966,7 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
     detectionStats.strategy_setup_raw_count = rawSetupCount;
     detectionStats.strategy_setup_deduped_count = dedupedSetups.length;
     detectionStats.strategy_setup_bounded_count = boundedSetups.length;
+    const nativeTargets = new Map(setups.map(setup => [setup, [...(setup.target_candidates || [])]]));
     for (const setup of setups) {
         const compatible = setups
             .filter(other => other !== setup && other.primary !== setup.primary)
@@ -3967,8 +3980,8 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
             setup.confirmations = [...new Set([...(setup.confirmations || []), ...strategies.filter(s => s !== setup.primary)])];
             for (const { other } of compatible) {
                 setup.strategy_evidence[other.primary] = other.evidence;
-                setup.target_candidates = [...(setup.target_candidates || []), ...(other.target_candidates || [])];
             }
+            setup.target_candidates = mergeStrategyTargets([nativeTargets.get(setup), ...compatible.map(({ other }) => nativeTargets.get(other))]);
         }
     }
     console.log('CRT DETECTIONS', setups.filter(s => s.primary === 'CRT'));
@@ -3978,6 +3991,18 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
     console.log('STRATEGY SETUPS', setups);
     Object.defineProperty(setups, 'detection_stats', { value: detectionStats, enumerable: false, configurable: true });
     return setups;
+}
+
+function mergeStrategyTargets(targetLists) {
+    const targets = new Map();
+    for (const list of targetLists) {
+        for (const target of list || []) {
+            const key = JSON.stringify([target.direction, target.timeframe, target.source || target.target_type, target.level]);
+            const existing = targets.get(key);
+            if (!existing || (target.structural_priority || 0) > (existing.structural_priority || 0)) targets.set(key, target);
+        }
+    }
+    return [...targets.values()];
 }
 
 function getStrategySetupForZone(zone, strategySetups) {
@@ -5433,7 +5458,6 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         if (response && response.ok === false) {
             throw new Error(`DeepSeek HTTP ${response.status || 'error'}`);
         }
-        console.log('[SCAN] DeepSeek response received', { elapsed_ms: Math.round((scanClock() - requestStartedAt) * 100) / 100 });
         console.log('[SCAN] DeepSeek parsed', { elapsed_ms: Math.round((scanClock() - requestStartedAt) * 100) / 100 });
         const content = data.choices?.[0]?.message?.content;
         
@@ -6333,7 +6357,6 @@ async function runAutoScan() {
             return;
         }
 
-        scanTrace('AI consistency complete', scanStartedAt, { decision: aiResult.decision, selected_candidate_id: aiResult.selected_candidate_id || null });
 
         if (aiResult.noTrade) {
             const out = {
@@ -6364,6 +6387,7 @@ async function runAutoScan() {
         }
 
         const outputConsistency = validateAIOutputConsistency(aiResult, liveMarketContext);
+        scanTrace('AI consistency complete', scanStartedAt, { valid: outputConsistency.valid, selected_candidate_id: aiResult.selected_candidate_id || null });
         if (!outputConsistency.valid) {
             const reason = `AI output inconsistent: ${outputConsistency.issues.join('; ')}`;
             console.log('❌ AI OUTPUT CONSISTENCY REJECTED', outputConsistency);
