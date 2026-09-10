@@ -1,0 +1,234 @@
+{
+  "id": 1789057188154,
+  "recordedAt": "2026-09-10T16:19:48.155Z",
+  "eventType": "saved",
+  "pair": "EUR/USD",
+  "setup": {
+    "date": "2026-09-10",
+    "time": "16:19:28",
+    "pair": "EUR/USD",
+    "current_price": 1.16248,
+    "trade_type": "BUY_LIMIT",
+    "decision": "BUY_LIMIT",
+    "order_type": "LIMIT",
+    "setup_type": "PENDING_LIMIT",
+    "entry_price": 1.16005,
+    "entry_zone": {
+      "source": "TBS",
+      "low": 1.15965,
+      "high": 1.16005
+    },
+    "stop_loss": 1.15965,
+    "stop_loss_reason": "SWING_LOW invalidation plus structural buffer",
+    "take_profit_1": 1.16286,
+    "take_profit_2": null,
+    "take_profit_3": null,
+    "risk_reward": "1:7.03",
+    "confidence": 68,
+    "zone_quality": "B",
+    "patterns_detected": "TBS+CRT+CRT",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Highest-ranked valid pending-limit candidate (score 97.79): a 4H TBS+CRT BUY at the 1.15965-1.16005 reclaim-retest zone, where sell-side liquidity at 1.15935 was swept and reclaimed. Entry is a future limit; price is not yet at the zone, so this is a wait-for-reaction pending order.",
+      "structure": "1D and 4H trends are bullish (2/3 HTF bullish), and the setup aligns with that higher-timeframe direction. The 1H/15M bearish reads are the short-term manipulation leg that produced the sweep, not the dominant structure.",
+      "liquidity": "Sell-side liquidity at 1.15935 was swept (4H sweep flagged), and the TBS reclaim at 1.15985 with CRT reclaim at 1.16156 confirms the reversal intent. Buy-side targets at 1.16286 (1H CRT opposite range) and 1.16534 (4H) remain the draw.",
+      "volatility": "ATR regime is LOW (4H ATR 0.00182). The candidate stop distance of 0.0004 sits within the min/max SL band and the target is ~1.5x ATR away, consistent with a low-volatility continuation toward the range high.",
+      "why_best": "Among the five valid candidates, this one carries the top deterministic score (97.79) with a FRESH 4H TBS zone, clean structural stop, and the highest RR (1:7.0). The alternate entries in the same zone (140/147/133/141) offer worse RR or wider stops for the same target.",
+      "why_not_opposite": "The SELL-side candidates (4H-MSNR-SELL-1, 1H/15M CRT sells) are counter to the 1D/4H bullish structure and sit in premium only because of the current manipulation leg; their targets are close-range and the 4H MSNR zone at 1.16422-1.16469 is 1.08 ATR away with no immediate confirmation. The bullish TBS reclaim is the cleaner structural trade.",
+      "invalidation": "A 4H close below 1.15935 (the swept low) invalidates the TBS reclaim and the pending limit; the structural stop at 1.15965 caps risk before that level.",
+      "secondary": [
+        "Session is LON-CLOSE KZ (HIGH priority, 1.3x multiplier) - favorable for limit fills.",
+        "Immediate entry confirmation is 0/NONE because price is not at the zone; this does not invalidate the pending limit.",
+        "Target reachability is flagged LOW (6 opposing zones before 1.16286), so partial management at TP1 is prudent."
+      ],
+      "risk_warning": "Normal market risk applies"
+    },
+    "opposite_setup": {
+      "direction": "SELL",
+      "confidence": 40,
+      "why_rejected": "Counter to 1D/4H bullish structure; the 4H MSNR sell zone at 1.16422-1.16469 is 1.08 ATR away with no immediate confirmation, and the 1H/15M CRT sells are short-term manipulation-leg setups with limited structural backing."
+    },
+    "strategy_evidence": {
+      "CRT": {
+        "range_high": 1.16286,
+        "range_low": 1.16156,
+        "sweep_side": "SELL_SIDE",
+        "sweep_extreme": 1.15935,
+        "reclaim_level": 1.16156,
+        "reclaim_bar": 97,
+        "direction": "BUY",
+        "timeframe": "1H"
+      },
+      "TBS": {
+        "reference_level": 1.15985,
+        "reference_type": "SWING_LOW",
+        "sweep_extreme": 1.15935,
+        "reclaim_level": 1.15985,
+        "reclaim_bar": 98,
+        "sweep_depth": 0.0004999999999999449,
+        "liquidity_level": 1.15985,
+        "reclaim_price": 1.16049,
+        "timeframe": "4H"
+      },
+      "MSNR": null
+    },
+    "entry_model": "RECLAIM_RETEST",
+    "setup_timeframe": "4H",
+    "execution_timeframe": "1H",
+    "target_map": [
+      {
+        "target_level": 1.16286,
+        "target_type": "CRT_OPPOSITE_RANGE",
+        "target_timeframe": "1H",
+        "target_distance": 0.00281,
+        "target_distance_atr": 1.54,
+        "structural_priority": 96,
+        "intervening_obstacles": [],
+        "reachability_score": 50,
+        "target_reachability": {
+          "reachable": true,
+          "reachability_score": 50,
+          "target_quality": "LOW",
+          "target_distance": 0.002809999999999979,
+          "target_distance_atr": 2.656313301823035,
+          "intervening_obstacles": [
+            {
+              "type": "CRT",
+              "timeframe": "1H",
+              "low": 1.16262,
+              "high": 1.16302,
+              "severity": "SERIOUS"
+            },
+            {
+              "type": "CRT",
+              "timeframe": "15M",
+              "low": 1.16227,
+              "high": 1.16267,
+              "severity": "SERIOUS"
+            },
+            {
+              "type": "TBS",
+              "timeframe": "15M",
+              "low": 1.16251,
+              "high": 1.16291,
+              "severity": "WEAK"
+            },
+            {
+              "type": "TBS",
+              "timeframe": "15M",
+              "low": 1.16262,
+              "high": 1.16302,
+              "severity": "WEAK"
+            },
+            {
+              "type": "CRT",
+              "timeframe": "15M",
+              "low": 1.16262,
+              "high": 1.16302,
+              "severity": "WEAK"
+            },
+            {
+              "type": "CRT",
+              "timeframe": "15M",
+              "low": 1.16225,
+              "high": 1.16265,
+              "severity": "WEAK"
+            }
+          ],
+          "intervening_liquidity": [],
+          "structural_priority": 96,
+          "reason": "6 opposing zones, 0 liquidity levels before target"
+        },
+        "actual_rr": 7.025000000000722
+      }
+    ],
+    "strategy_detections": {
+      "CRT": {
+        "raw_count": 284,
+        "deduped_count": 91,
+        "bullish": 4,
+        "bearish": 7
+      },
+      "TBS": {
+        "raw_count": 31,
+        "deduped_count": 27,
+        "bullish": 7,
+        "bearish": 5
+      },
+      "MSNR": {
+        "raw_count": 86,
+        "deduped_count": 56,
+        "structural_count": 1,
+        "executable_count": 1,
+        "pivot_reference_count": 12,
+        "atr_fallback_count": 0
+      },
+      "combinations": {
+        "CRT_TBS": 11,
+        "CRT_MSNR": 0,
+        "TBS_MSNR": 0,
+        "CRT_TBS_MSNR": 13
+      }
+    },
+    "candidate_pipeline": {
+      "strategy_setups": 24,
+      "execution_seeds": 24,
+      "raw_candidates": 509,
+      "structural_stop_valid": 492,
+      "volatility_rejected": 17,
+      "target_rejected": 431,
+      "consistency_rejected": 18,
+      "context_rejected": 0,
+      "final_valid": 5
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for price to trade down into the 1.15965-1.16005 TBS reclaim-retest zone and print a bullish reaction/reclaim before the limit fills; invalidate on a 4H close below 1.15935.",
+    "source": "AI-Generated Setup",
+    "validation": {
+      "passed": true,
+      "localScore": 68,
+      "aiConf": 62,
+      "adjustedConfidence": 68,
+      "rr1": 7.025000000000722,
+      "htfMatch": 2,
+      "factors": [
+        "HTF 2/3 (+24)",
+        "Fresh zone (+12)",
+        "RR 7.03 (+12)"
+      ],
+      "matchedZone": {
+        "low": 1.15965,
+        "high": 1.16005,
+        "tf": "4H"
+      },
+      "limitZoneStatus": {
+        "insideZone": false,
+        "distanceToZone": 0.002429999999999932,
+        "pricePosition": "ABOVE_ZONE"
+      }
+    },
+    "limit_order_setup": {
+      "eligible": true,
+      "reason": "Future pending-limit setup passed deterministic validation",
+      "current_price_inside_zone_required": false,
+      "selected_zone_status": {
+        "insideZone": false,
+        "distanceToZone": 0.002429999999999932,
+        "pricePosition": "ABOVE_ZONE"
+      }
+    },
+    "immediate_entry": {
+      "eligible": false,
+      "reason": "⏳ IMMEDIATE ENTRY WAIT - pending limit setup may still be valid",
+      "confirmation": {
+        "confirmed": false,
+        "score": 0,
+        "strength": "NONE",
+        "confirmations": [],
+        "reason": "Price not at zone yet - waiting",
+        "shouldWait": true,
+        "isAtZone": false
+      }
+    }
+  }
+}
