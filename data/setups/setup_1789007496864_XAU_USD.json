@@ -1,0 +1,55 @@
+{
+  "id": 1789007496864,
+  "recordedAt": "2026-09-10T02:31:36.867Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-10",
+    "time": "02:31:36",
+    "pair": "XAU/USD",
+    "current_price": 4416.16588,
+    "trade_type": "SELL_LIMIT",
+    "decision": "SELL_LIMIT",
+    "order_type": "LIMIT",
+    "setup_type": "PENDING_LIMIT",
+    "entry_price": 4456.69,
+    "entry_zone": {
+      "source": "MSNR",
+      "low": 4456.69,
+      "high": 4461.15
+    },
+    "stop_loss": 4461.98,
+    "stop_loss_reason": "STRATEGY_INVALIDATION invalidation plus structural buffer",
+    "take_profit_1": 4403.35,
+    "take_profit_2": 4400.1,
+    "take_profit_3": 4397.63,
+    "risk_reward": "1:10.08",
+    "confidence": 68,
+    "zone_quality": "B",
+    "patterns_detected": "MSNR",
+    "probability": "MEDIUM",
+    "reasoning": {
+      "primary": "Selecting the fresh 1H MSNR sell zone at 4456.69-4461.15 (candidate 1H-MSNR-SELL-4456.69-4461.15-1). Price is in premium (57.6% of range, above equilibrium 4398.66), market regime is DISTRIBUTION, and the zone is FRESH with 0 touches and 0 violations. The candidate passed all deterministic hard rules with RR ~10.1 to structural sell-side liquidity TP1.",
+      "structure": "HTF is mixed (1D bullish, 4H bearish, 1H/15M bullish) with no BOS/CHoCH/MSS confirmed on any timeframe. The 4H trend is bearish and price sits in premium, which supports a sell-side reaction from a pivot-derived MSNR resistance. The zone is PIVOT_DERIVED, so it is a valid deterministic MSNR level but not a structural FVG/OB confluence.",
+      "liquidity": "TP1 4403.35 is 1H sell-side liquidity, TP2 4400.10 is 4H sell-side liquidity/swing low, TP3 4397.63 is 1H sell-side liquidity. Buy-side liquidity above at 4432.62/4434.89/4443.20 remains unswept, which is a risk for a sell from 4456.69 if price runs higher first.",
+      "volatility": "ATR 1H 16.62, ATR 4H 32.49, regime NORMAL. Candidate SL distance 5.29 is classified TIGHT_BUT_STRUCTURAL (0.32x 1H ATR), below the 8.31 minimum reasonable distance, so position size adjustment is required. Entry is 2.44x ATR from current price, within the 6x maximum entry distance.",
+      "why_best": "Only two valid adaptive candidates exist and both are the same 1H MSNR sell zone. Candidate -1 uses the zone low entry (4456.69) giving the wider structural stop (5.29) and the better risk-adjusted geometry; candidate -2 uses the midpoint (4458.92) with a tighter 3.06 stop that is more vulnerable to noise. Candidate -1 is preferred for its more robust stop placement while still offering ~10.1 RR to structural TP1.",
+      "why_not_opposite": "The only BUY strategy setup is the 1H TBS at 4391.82-4395.14, which is a counter-trend buy against the 4H bearish trend and premium positioning, and it has no adaptive candidate attached. The 4H BUY FVG at 4415.21-4417.55 is USED/invalidated context, not a valid strategy candidate. No valid BUY_LIMIT candidate exists.",
+      "invalidation": "Sell setup invalidates on a 1H close above 4461.98 (structural invalidation 4461.15 plus buffer). A clean break and hold above the zone would signal the MSNR resistance failed and the 4H bearish thesis is compromised.",
+      "secondary": [
+        "Asia KZ session is LOW priority with low liquidity; immediate entry confirmation score is 0/100, so this is a pending limit, not an immediate entry.",
+        "Zone is FRESH with 0 touches and 0 violations, but PIVOT_DERIVED origin means it lacks structural FVG/OB confluence.",
+        "Buy-side liquidity at 4432.62/4434.89/4443.20 is unswept and could be targeted before any sustained sell-off."
+      ],
+      "risk_warning": "Normal market risk applies"
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 30,
+      "why_rejected": "The 1H TBS buy at 4391.82-4395.14 is counter to the 4H bearish trend and premium positioning, and it has no adaptive candidate. The 4H BUY FVG at 4415.21-4417.55 is USED/invalidated. No valid BUY_LIMIT candidate passed deterministic rules."
+    },
+    "ai_decision": "wait_for_reaction",
+    "wait_condition": "Wait for price to reach the 4456.69-4461.15 MSNR zone and show a bearish reaction/rejection (e.g., 1H bearish close or lower-timeframe CHoCH) before treating the limit as filled; do not enter at market from current price.",
+    "source": "AI-Generated Setup"
+  }
+}
