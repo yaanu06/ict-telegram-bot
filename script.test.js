@@ -39,6 +39,53 @@ const getContext = () => {
     return context;
 };
 
+const getScanContext = () => {
+    const elements = new Map();
+    const makeElement = () => {
+        const classes = new Set();
+        return {
+        addEventListener: () => {},
+        classList: { add: c => classes.add(c), remove: c => classes.delete(c), contains: c => classes.has(c) },
+        style: {},
+        innerHTML: '',
+        textContent: '',
+        dataset: { category: 'metals' },
+        value: '',
+        disabled: false
+        };
+    };
+    const getElement = id => {
+        if (!elements.has(id)) elements.set(id, makeElement());
+        return elements.get(id);
+    };
+    const context = {
+        window: { Telegram: null },
+        document: {
+            readyState: 'loading',
+            getElementById: getElement,
+            addEventListener: () => {},
+            querySelector: getElement,
+            querySelectorAll: () => [],
+            body: { insertAdjacentHTML: () => {} }
+        },
+        console: { log: () => {}, error: () => {}, warn: () => {} },
+        fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
+        localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+        setTimeout: () => 0,
+        setInterval: () => 0,
+        clearInterval,
+        clearTimeout,
+        Date,
+        Math,
+        JSON,
+        performance,
+        btoa: s => Buffer.from(s, 'binary').toString('base64')
+    };
+    vm.createContext(context);
+    vm.runInContext(code, context);
+    return { context, elements };
+};
+
 const candles = (n, start, step, dir) => {
     const out = [];
     let p = start;
@@ -526,6 +573,135 @@ describe('strategy pipeline integration rules', () => {
         });
         expect(result.valid_candidates).toEqual([]);
         expect(result.raw_candidates).toEqual([]);
+    });
+});
+
+describe('Analyze scan lifecycle', () => {
+    const historyFixture = () => candles(60, 100, 0.1, 'up');
+    const baseLiveContext = candidates => ({
+        session: { name: 'TEST' },
+        market_regime: { primary_regime: 'RANGING' },
+        volatility: {},
+        volume: { volume_available: false },
+        real_ict_zones: [],
+        adaptive_setup_candidates: candidates,
+        strategy_setups: candidates.length ? [{ primary: 'TBS' }] : [],
+        strategy_detections: {},
+        candidate_pipeline: {},
+        setup_candidate_audit: { raw_candidate_count: candidates.length, rejection_summary: {}, rejection_detail: {} },
+        limit_order_setup: {},
+        immediate_entry: {}
+    });
+
+    function prepareScan({ candidates = [], aiResult = null, fallback = null } = {}) {
+        const { context, elements } = getScanContext();
+        context.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        const spies = {
+            getPrice: jest.fn(() => Promise.resolve(100)),
+            getHistory: jest.fn(() => Promise.resolve(historyFixture())),
+            getTechnicalIndicators: jest.fn(() => Promise.resolve({})),
+            updateMTFDisplay: jest.fn(() => Promise.resolve()),
+            getQuoteDirection: jest.fn(() => Promise.resolve('NEUTRAL')),
+            buildLiveMarketContext: jest.fn(() => baseLiveContext(candidates)),
+            buildAIPrompt: jest.fn(() => ({ system: 'system', user: 'user' })),
+            askAIToFindSetup: jest.fn(() => Promise.resolve(aiResult)),
+            runFallbackScan: jest.fn(() => fallback ? fallback() : Promise.resolve())
+        };
+        context.testScanSpies = spies;
+        vm.runInContext(`
+            getPrice = (...args) => testScanSpies.getPrice(...args);
+            getHistory = (...args) => testScanSpies.getHistory(...args);
+            getTechnicalIndicators = (...args) => testScanSpies.getTechnicalIndicators(...args);
+            updateMTFDisplay = (...args) => testScanSpies.updateMTFDisplay(...args);
+            getQuoteDirection = (...args) => testScanSpies.getQuoteDirection(...args);
+            buildLiveMarketContext = (...args) => testScanSpies.buildLiveMarketContext(...args);
+            buildAIPrompt = (...args) => testScanSpies.buildAIPrompt(...args);
+            askAIToFindSetup = (...args) => testScanSpies.askAIToFindSetup(...args);
+            runFallbackScan = (...args) => testScanSpies.runFallbackScan(...args);
+        `, context);
+        return { context, elements, spies };
+    }
+
+    it('clears loading state on deterministic WAIT without calling DeepSeek', async () => {
+        const { context, elements, spies } = prepareScan();
+        await context.runAutoScan();
+        expect(spies.askAIToFindSetup).not.toHaveBeenCalled();
+        expect(elements.get('analyzeBtn').disabled).toBe(false);
+        expect(elements.get('scanStatus').classList.contains('hidden')).toBe(true);
+    });
+
+    it('clears loading state after an AI WAIT response', async () => {
+        const { context, elements, spies } = prepareScan({ candidates: [{ id: 'candidate', direction: 'BUY' }], aiResult: { noTrade: true, decision: 'WAIT', confidence: 0, reasoning: { primary: 'No trade' }, wait_condition: 'No setup' } });
+        await context.runAutoScan();
+        expect(spies.askAIToFindSetup).toHaveBeenCalledTimes(1);
+        expect(elements.get('analyzeBtn').disabled).toBe(false);
+        expect(elements.get('scanStatus').classList.contains('hidden')).toBe(true);
+    });
+
+    it('prevents overlapping Analyze calls and re-enables the button after completion', async () => {
+        let release;
+        const pending = new Promise(resolve => { release = resolve; });
+        const { context, elements } = prepareScan();
+        context.testScanSpies.getPrice = jest.fn(() => pending);
+        const first = context.runAutoScan();
+        const second = context.runAutoScan();
+        release(100);
+        await Promise.all([first, second]);
+        expect(context.testScanSpies.getPrice).toHaveBeenCalledTimes(1);
+        expect(elements.get('analyzeBtn').disabled).toBe(false);
+    });
+
+    it('clears loading state when fallback completes or fails', async () => {
+        const success = prepareScan({ candidates: [{ id: 'candidate', direction: 'BUY' }], aiResult: null });
+        await success.context.runAutoScan();
+        expect(success.elements.get('analyzeBtn').disabled).toBe(false);
+
+        const failure = prepareScan({ candidates: [{ id: 'candidate', direction: 'BUY' }], aiResult: null, fallback: () => Promise.reject(new Error('fallback failed')) });
+        await failure.context.runAutoScan();
+        expect(failure.elements.get('analyzeBtn').disabled).toBe(false);
+        expect(failure.elements.get('scanStatus').classList.contains('hidden')).toBe(true);
+    });
+
+    it('keeps strategy event and setup counts bounded on realistic candle windows', () => {
+        const ctx = getContext();
+        const data = candles(100, 100, 0.2, 'up');
+        for (let i = 20; i < data.length; i += 2) {
+            data[i] = c(100 + i * 0.2, 100 + i * 0.2 + 0.1, 100 + i * 0.2 - 0.2, 100 + i * 0.2 - 0.05);
+        }
+        const tbs = ctx.detectTurtleSoupEvents(data, '1H', 'XAU/USD');
+        const crt = ctx.detectCRTEvents(data, '1H', 'XAU/USD');
+        const msnr = ctx.calculateMSNR(data, 120, '1H', 'XAU/USD').structural_levels;
+        const setups = ctx.buildStrategySetups({
+            pair: 'XAU/USD',
+            price: 120,
+            historyCache: { '4H': data, '1H': data, '15M': data },
+            realZones: [],
+            marketContext: {}
+        });
+        expect(tbs.length).toBeLessThanOrEqual(8);
+        expect(crt.length).toBeLessThanOrEqual(8);
+        expect(msnr.length).toBeLessThanOrEqual(12);
+        expect(setups.length).toBeLessThanOrEqual(24);
+    });
+});
+
+describe('DeepSeek request settlement', () => {
+    it('settles timeout, HTTP failure, and invalid JSON as finite AI failures', async () => {
+        for (const failure of [
+            Object.assign(new Error('aborted'), { name: 'AbortError' }),
+            Object.assign(new Error('server'), { http: true }),
+            Object.assign(new Error('invalid json'), { json: true })
+        ]) {
+            const ctx = getContext();
+            await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+            ctx.fetch = jest.fn(() => {
+                if (failure.http) return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) });
+                if (failure.json) return Promise.resolve({ ok: true, json: () => Promise.reject(failure) });
+                return Promise.reject(failure);
+            });
+            const result = await ctx.askAIToFindSetup('prompt', 100, 'system', { adaptive_setup_candidates: [] });
+            expect(result).toBeNull();
+        }
     });
 });
 

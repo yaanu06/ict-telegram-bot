@@ -13,6 +13,34 @@ let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
 let GITHUB_PAT = '', GITHUB_REPO = 'yaanu06/ict-telegram-bot';
+const AI_REQUEST_TIMEOUT_MS = 45000;
+let scanInProgress = false;
+let lastAIRequestError = null;
+
+function scanClock() {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+}
+
+function scanTrace(stage, startedAt, details = {}) {
+    console.log(`[SCAN] ${stage}`, { elapsed_ms: Math.round((scanClock() - startedAt) * 100) / 100, ...details });
+}
+
+async function requestAIJson(url, options = {}, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
+    const controller = typeof AbortController === 'function'
+        ? new AbortController()
+        : { signal: undefined, abort() {} };
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const requestOptions = controller.signal === undefined
+            ? { ...options }
+            : { ...options, signal: controller.signal };
+        const response = await fetch(url, requestOptions);
+        const data = await response.json();
+        return { response, data };
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
 
 const SYMBOLS = {
     'BTC/USD':'BTC/USD',
@@ -1236,10 +1264,11 @@ function getTradeManagementRules(confidence) {
 }
 
 const STRATEGY_SPEC = {
-    CRT: { referenceLookback: 18, eventLookahead: 10, minReferenceAtr: 0.35, maxEventAgeBars: 8, minSweepAtr: 0.04, dedupeAtr: 0.2 },
-    TBS: { lookback: 80, referenceMinAgeBars: 4, maxEventAgeBars: 8, minSweepAtr: 0.04, minSweepPips: 2, dedupeAtr: 0.2 },
-    MSNR: { lookback: 120, maxMitigationCount: 2, breakCloseBufferAtr: 0.03, retestToleranceAtr: 0.15, zoneAtrWidth: 0.08, minStructuralScore: 35 },
-    COMBINATION: { minScore: 60, sameTfBars: 20, crossTfHours: 18 },
+    CRT: { referenceLookback: 18, eventLookahead: 10, minReferenceAtr: 0.35, maxEventAgeBars: 8, minSweepAtr: 0.04, dedupeAtr: 0.2, maxEventsPerTimeframe: 8 },
+    TBS: { lookback: 80, referenceMinAgeBars: 4, maxEventAgeBars: 8, minSweepAtr: 0.04, minSweepPips: 2, dedupeAtr: 0.2, maxEventsPerTimeframe: 8 },
+    MSNR: { lookback: 120, maxMitigationCount: 2, breakCloseBufferAtr: 0.03, retestToleranceAtr: 0.15, zoneAtrWidth: 0.08, minStructuralScore: 35, maxLevelsPerTimeframe: 12 },
+    COMBINATION: { minScore: 60, sameTfBars: 20, crossTfHours: 18, maxSetups: 24 },
+    EXECUTION: { maxStopsPerZone: 8, maxTargetsPerEvaluation: 20 },
     TARGET: { maxAtrDistance: 12, firstObjectiveBonus: 14, seriousObstaclePenalty: 22, weakObstaclePenalty: 7 }
 };
 
@@ -1585,7 +1614,16 @@ function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLoc
     const deduped = dedupeByNarrative(raw, l => `${l.direction}-${l.timeframe}-${Math.round(l.level / Math.max(pad, 0.00001))}`, l => (l.primary_eligible ? 100 : 0) + l.structural_score - l.event_age_bars);
     deduped.raw_detection_count = raw.length;
     deduped.deduped_detection_count = deduped.length;
-    return deduped.sort((a, b) => Math.abs(a.level - currentPrice) - Math.abs(b.level - currentPrice));
+    const bounded = deduped
+        .slice()
+        .sort((a, b) => (b.primary_eligible - a.primary_eligible) || (b.structural_score - a.structural_score) || (a.event_age_bars - b.event_age_bars) || (Math.abs(a.level - currentPrice) - Math.abs(b.level - currentPrice)))
+        .slice(0, STRATEGY_SPEC.MSNR.maxLevelsPerTimeframe)
+        .sort((a, b) => Math.abs(a.level - currentPrice) - Math.abs(b.level - currentPrice));
+    bounded.raw_detection_count = raw.length;
+    bounded.deduped_detection_count = deduped.length;
+    bounded.bounded_detection_count = bounded.length;
+    bounded.qualified_count = raw.length;
+    return bounded;
 }
 
 function calculateMSNR(data, currentPrice, timeframe = null, pairLocal = pair) {
@@ -1676,7 +1714,14 @@ function detectTurtleSoupEvents(data, timeframe = null, pairLocal = pair) {
     const deduped = dedupeByNarrative(raw, e => eventDedupeKey(e, atrVal, 'reference_level', timeframe), e => (e.detected ? 100 : 0) + e.reference_strength * 10 + (e.sweep_depth_atr || 0) - e.event_age_bars);
     deduped.raw_detection_count = raw.length;
     deduped.deduped_detection_count = deduped.length;
-    return deduped;
+    const bounded = deduped
+        .slice()
+        .sort((a, b) => (b.detected - a.detected) || ((b.sweep_depth_atr || 0) - (a.sweep_depth_atr || 0)) || (a.event_age_bars - b.event_age_bars))
+        .slice(0, STRATEGY_SPEC.TBS.maxEventsPerTimeframe);
+    bounded.raw_detection_count = raw.length;
+    bounded.deduped_detection_count = deduped.length;
+    bounded.bounded_detection_count = bounded.length;
+    return bounded;
 }
 
 function detectTurtleSoup(data) {
@@ -1756,7 +1801,14 @@ function detectCRTEvents(data, timeframe = null, pairLocal = pair) {
     const deduped = dedupeByNarrative(raw, e => eventDedupeKey(e, atrVal, 'reclaim_level', timeframe), e => (e.detected ? 100 : 0) + (e.reference_atr_multiple || 0) * 10 - e.event_age_bars);
     deduped.raw_detection_count = raw.length;
     deduped.deduped_detection_count = deduped.length;
-    return deduped;
+    const bounded = deduped
+        .slice()
+        .sort((a, b) => (b.detected - a.detected) || ((b.reference_atr_multiple || 0) - (a.reference_atr_multiple || 0)) || (a.event_age_bars - b.event_age_bars))
+        .slice(0, STRATEGY_SPEC.CRT.maxEventsPerTimeframe);
+    bounded.raw_detection_count = raw.length;
+    bounded.deduped_detection_count = deduped.length;
+    bounded.bounded_detection_count = bounded.length;
+    return bounded;
 }
 
 function detectCRT(data) {
@@ -2348,7 +2400,7 @@ Return ONLY JSON:
 {"decision":"enter_now|wait_for_reaction|skip","confidence":0-100,"reason":"brief reason"}`;
 
     try {
-        const response = await fetch(DEEPSEEK_API_URL, {
+        const { response, data } = await requestAIJson(DEEPSEEK_API_URL, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -2365,7 +2417,6 @@ Return ONLY JSON:
             })
         });
         
-        const data = await response.json();
         const content = data.choices?.[0]?.message?.content;
         
         if(content) {
@@ -3803,7 +3854,9 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
             }));
         }
 
+        const tbsStartedAt = scanClock();
         const tbsEvents = detectTurtleSoupEvents(data, tf, pair);
+        console.log('[PERF] TBS detection', { timeframe: tf, elapsed_ms: Math.round((scanClock() - tbsStartedAt) * 100) / 100, raw_events: tbsEvents.raw_detection_count || 0, deduped_events: tbsEvents.deduped_detection_count || tbsEvents.length });
         detectionStats.TBS.raw_count += tbsEvents.raw_detection_count ?? tbsEvents.length;
         detectionStats.TBS.deduped_count += tbsEvents.deduped_detection_count ?? tbsEvents.length;
         for (const tbs of tbsEvents.filter(e => e.detected)) {
@@ -3843,7 +3896,9 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
             }));
         }
 
+        const crtStartedAt = scanClock();
         const crtEvents = detectCRTEvents(data, tf, pair);
+        console.log('[PERF] CRT detection', { timeframe: tf, elapsed_ms: Math.round((scanClock() - crtStartedAt) * 100) / 100, raw_events: crtEvents.raw_detection_count || 0, deduped_events: crtEvents.deduped_detection_count || crtEvents.length });
         detectionStats.CRT.raw_count += crtEvents.raw_detection_count ?? crtEvents.length;
         detectionStats.CRT.deduped_count += crtEvents.deduped_detection_count ?? crtEvents.length;
         for (const crt of crtEvents.filter(e => e.detected)) {
@@ -3888,9 +3943,17 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
             }));
         }
     }
+    const rawSetupCount = setups.length;
     const dedupedSetups = dedupeByNarrative(setups, s => `${s.primary}-${s.direction}-${s.timeframe}-${strategyZoneKey(s.execution_zone)}`, s => (s.execution_zone?.primary_eligible !== false ? 100 : 0) + (s.evidence?.structural_score || 0) - (s.event_age || 0));
+    const boundedSetups = dedupedSetups
+        .slice()
+        .sort((a, b) => (b.execution_zone?.primary_eligible !== false) - (a.execution_zone?.primary_eligible !== false) || (b.evidence?.structural_score || 0) - (a.evidence?.structural_score || 0) || (a.event_age || 0) - (b.event_age || 0))
+        .slice(0, STRATEGY_SPEC.COMBINATION.maxSetups);
     setups.length = 0;
-    setups.push(...dedupedSetups);
+    setups.push(...boundedSetups);
+    detectionStats.strategy_setup_raw_count = rawSetupCount;
+    detectionStats.strategy_setup_deduped_count = dedupedSetups.length;
+    detectionStats.strategy_setup_bounded_count = boundedSetups.length;
     for (const setup of setups) {
         const compatible = setups
             .filter(other => other !== setup && other.primary !== setup.primary)
@@ -3996,7 +4059,8 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         const safeAtr = Number.isFinite(atrVal) && atrVal > 0 ? atrVal : 0;
         const entries = getAdaptiveEntryCandidates(zone, direction, prec);
         for (const entry of entries) {
-            const stops = getAdaptiveStopCandidates(zone, direction, entry, data, zones, safeAtr, settings, prec);
+            const stops = getAdaptiveStopCandidates(zone, direction, entry, data, zones, safeAtr, settings, prec)
+                .slice(0, STRATEGY_SPEC.EXECUTION.maxStopsPerZone);
             for (const stop of stops) {
                 const rawId = `${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${rawCandidates.length + 1}`;
                 const risk = Math.abs(entry - stop.stop_loss);
@@ -4807,8 +4871,10 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     for (const tf of ['4H', '1H']) {
         const data = historyCache?.[tf];
         const tfAtr = tf === '4H' ? atr4h : atr1h;
+        const zoneStartedAt = scanClock();
         const tfZones = buildLiveZonesForTf(data, tf, price, pair, tfAtr || primaryAtr || 0, 5);
         zones.push(...tfZones);
+        console.log('[PERF] MSNR/ICT zone construction', { timeframe: tf, elapsed_ms: Math.round((scanClock() - zoneStartedAt) * 100) / 100, zones: tfZones.length, msnr_levels: tfZones.filter(z => z.type === 'MSNR').length });
     }
     const targetCandidates = buildTargetCandidates(historyCache, price, pair);
     const stageContext = buildLimitOrderStageContext(zones, targetCandidates, price, primaryAtr || 0, entryContext);
@@ -4941,7 +5007,14 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         bearish_evidence: marketContext.bearish_evidence,
         conflicts: marketContext.conflicts
     });
+    const strategyStartedAt = scanClock();
     const strategySetups = buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext });
+    console.log('[PERF] strategy setup building', {
+        elapsed_ms: Math.round((scanClock() - strategyStartedAt) * 100) / 100,
+        strategy_setups: strategySetups.length,
+        detection_stats: strategySetups.detection_stats || null
+    });
+    console.log('[SCAN] strategy detection complete', { strategy_setups: strategySetups.length, detection_stats: strategySetups.detection_stats || null });
     for (const tf of ['4H', '1H']) {
         const msnr = calculateMSNR(historyCache?.[tf] || [], price, tf, pair);
         if (strategySetups.detection_stats?.MSNR) {
@@ -4967,6 +5040,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         strategy_setups: strategySetups,
         require_strategy_setup: true
     });
+    const candidateStartedAt = scanClock();
     const adaptiveSetupResult = buildAdaptiveSetupCandidates({
         pair,
         price,
@@ -4979,6 +5053,13 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         marketContext,
         strategySetups
     });
+    console.log('[PERF] adaptive candidate construction', {
+        elapsed_ms: Math.round((scanClock() - candidateStartedAt) * 100) / 100,
+        raw_candidates: adaptiveSetupResult.raw_candidates.length,
+        valid_candidates: adaptiveSetupResult.valid_candidates.length,
+        rejected_candidates: adaptiveSetupResult.rejected_candidates.length
+    });
+    console.log('[SCAN] candidate construction complete', { raw_candidates: adaptiveSetupResult.raw_candidates.length, valid_candidates: adaptiveSetupResult.valid_candidates.length, rejected_candidates: adaptiveSetupResult.rejected_candidates.length });
     const adaptiveSetupCandidates = adaptiveSetupResult.valid_candidates;
     stageContext.limit_order_setup.eligible = adaptiveSetupCandidates.length > 0;
     stageContext.limit_order_setup.future_entry_allowed = adaptiveSetupCandidates.length > 0;
@@ -5057,6 +5138,114 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     return liveContext;
 }
 
+function compactAIContext(liveMarketContext) {
+    const compactZone = z => z ? {
+        id: z.id,
+        type: z.type,
+        origin: z.origin,
+        direction: z.direction,
+        timeframe: z.timeframe,
+        low: z.low,
+        high: z.high,
+        midpoint: z.midpoint,
+        freshness: z.freshness,
+        primary_eligible: z.primary_eligible,
+        strategy_source: z.strategy_source,
+        entry_model: z.entry_model,
+        entry_region_source: z.entry_region_source
+    } : null;
+    const compactCandidate = c => c ? {
+        id: c.id,
+        strategy_label: c.strategy_label,
+        strategy_evidence: c.strategy_evidence,
+        direction: c.direction,
+        timeframe: c.timeframe,
+        setup_timeframe: c.setup_timeframe,
+        execution_timeframe: c.execution_timeframe,
+        zone_type: c.zone_type,
+        zone_origin: c.zone_origin,
+        zone_low: c.zone_low,
+        zone_high: c.zone_high,
+        entry: c.entry,
+        stop_loss: c.stop_loss,
+        tp1: c.tp1,
+        tp2: c.tp2,
+        tp3: c.tp3,
+        rr_tp1: c.rr_tp1,
+        actual_rr: c.actual_rr,
+        entry_model: c.entry_model,
+        entry_region_source: c.zone?.entry_region_source || c.entry_region_source,
+        stop_source: c.stop_source,
+        freshness: c.freshness,
+        target_map: c.target_map,
+        target_reachability: c.target_reachability,
+        score: c.score
+    } : null;
+    const structure = Object.fromEntries(Object.entries(liveMarketContext?.structure || {}).map(([tf, s]) => [tf, {
+        timeframe: s.timeframe,
+        trend: s.trend,
+        bias: s.bias,
+        mss: s.mss,
+        bos_buy: s.bos_buy,
+        bos_sell: s.bos_sell,
+        choch_buy: s.choch_buy,
+        choch_sell: s.choch_sell
+    }]));
+    const marketContext = liveMarketContext?.market_context || {};
+    return {
+        pair: liveMarketContext?.pair,
+        current_price: liveMarketContext?.current_price,
+        utc_time: liveMarketContext?.utc_time,
+        session: liveMarketContext?.session,
+        market_context: {
+            directional_bias: marketContext.directional_bias,
+            context_score: marketContext.context_score,
+            bullish_evidence: marketContext.bullish_evidence,
+            bearish_evidence: marketContext.bearish_evidence,
+            conflicts: marketContext.conflicts,
+            htf_alignment: marketContext.htf_alignment,
+            premium_discount: liveMarketContext?.premium_discount || marketContext.premium_discount,
+            volatility: liveMarketContext?.volatility || marketContext.volatility,
+            market_regime: liveMarketContext?.market_regime || marketContext.amd,
+            liquidity: liveMarketContext?.liquidity || marketContext.liquidity,
+            structure
+        },
+        strategy_detections: liveMarketContext?.strategy_detections,
+        strategy_setups: (liveMarketContext?.strategy_setups || []).slice(0, STRATEGY_SPEC.COMBINATION.maxSetups).map(s => ({
+            id: s.id,
+            label: s.label,
+            primary: s.primary,
+            confirmations: s.confirmations,
+            direction: s.direction,
+            timeframe: s.timeframe,
+            setup_timeframe: s.setup_timeframe,
+            execution_timeframe: s.execution_timeframe,
+            event_time: s.event_time,
+            freshness: s.freshness,
+            entry_model: s.entry_model,
+            entry_region_source: s.entry_region_source,
+            execution_zone: compactZone(s.execution_zone),
+            strategy_evidence: s.strategy_evidence,
+            combination_evidence: s.combination_evidence,
+            target_bias: s.target_bias,
+            target_candidates: (s.target_candidates || []).slice(0, STRATEGY_SPEC.EXECUTION.maxTargetsPerEvaluation)
+        })),
+        real_ict_zones: (liveMarketContext?.real_ict_zones || []).slice(0, 40).map(compactZone),
+        strategy_execution_zones: (liveMarketContext?.strategy_execution_zones || []).slice(0, STRATEGY_SPEC.COMBINATION.maxSetups).map(compactZone),
+        adaptive_setup_candidates: (liveMarketContext?.adaptive_setup_candidates || []).map(compactCandidate),
+        target_candidates: {
+            buy: (liveMarketContext?.target_candidates?.buy || []).slice(0, STRATEGY_SPEC.EXECUTION.maxTargetsPerEvaluation),
+            sell: (liveMarketContext?.target_candidates?.sell || []).slice(0, STRATEGY_SPEC.EXECUTION.maxTargetsPerEvaluation)
+        },
+        limit_order_setup: liveMarketContext?.limit_order_setup,
+        immediate_entry: liveMarketContext?.immediate_entry,
+        risk_constraints: liveMarketContext?.risk_constraints,
+        candidate_pipeline: liveMarketContext?.candidate_pipeline,
+        setup_candidate_audit: liveMarketContext?.setup_candidate_audit,
+        entry_filters: liveMarketContext?.entry_filters
+    };
+}
+
 function buildAIPrompt(liveMarketContext, candleData) {
     const system = [
         'You are the discretionary candidate-selection layer of an ICT pending-limit trading system.',
@@ -5087,6 +5276,15 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'Do not force a setup. Return ONLY valid JSON.'
     ].join('\n');
 
+    const compactContext = compactAIContext(liveMarketContext);
+    const compactFacts = JSON.stringify(compactContext, null, 2);
+    console.log('[AI] prompt characters', {
+        system: system.length,
+        computed_facts: compactFacts.length,
+        candle_context: String(candleData || '').length,
+        total: system.length + compactFacts.length + String(candleData || '').length,
+        candidate_count: compactContext.adaptive_setup_candidates.length
+    });
     const user = `================================================
 LIVE MARKET SNAPSHOT
 ================================================
@@ -5098,7 +5296,7 @@ session: ${liveMarketContext.session.name}
 ================================================
 COMPUTED MARKET FACTS
 ================================================
-${JSON.stringify(liveMarketContext, null, 2)}
+${compactFacts}
 
 ================================================
 RAW CANDLE DATA
@@ -5199,11 +5397,18 @@ function buildCandleData(historyCache, count = 10) {
 async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMarketContext = null) {
     if (!DEEPSEEK_API_KEY) {
         console.error('No AI key available');
+        lastAIRequestError = { code: 'NO_AI_KEY', message: 'No DeepSeek API key available' };
         return null;
     }
-    
+    const requestStartedAt = scanClock();
+    lastAIRequestError = null;
+    console.log('[SCAN] DeepSeek request start', {
+        timeout_ms: AI_REQUEST_TIMEOUT_MS,
+        prompt_characters: String(marketData || '').length,
+        candidate_count: liveMarketContext?.adaptive_setup_candidates?.length || 0
+    });
     try {
-        const response = await fetch(DEEPSEEK_API_URL, {
+        const { response, data } = await requestAIJson(DEEPSEEK_API_URL, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -5225,8 +5430,11 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
                 max_tokens: 2000
             })
         });
-        
-        const data = await response.json();
+        if (response && response.ok === false) {
+            throw new Error(`DeepSeek HTTP ${response.status || 'error'}`);
+        }
+        console.log('[SCAN] DeepSeek response received', { elapsed_ms: Math.round((scanClock() - requestStartedAt) * 100) / 100 });
+        console.log('[SCAN] DeepSeek parsed', { elapsed_ms: Math.round((scanClock() - requestStartedAt) * 100) / 100 });
         const content = data.choices?.[0]?.message?.content;
         
         if (!content) {
@@ -5368,7 +5576,13 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         return result;
         
     } catch (e) {
-        console.error('AI Setup Finder Error:', e);
+        const timedOut = e?.name === 'AbortError';
+        lastAIRequestError = {
+            code: timedOut ? 'AI_TIMEOUT' : 'AI_REQUEST_FAILED',
+            message: timedOut ? `DeepSeek request timed out after ${AI_REQUEST_TIMEOUT_MS}ms` : (e?.message || 'DeepSeek request failed'),
+            stack: e?.stack
+        };
+        console.error('[SCAN] FAILED', { stage: timedOut ? 'DeepSeek request timeout' : 'DeepSeek request', error: lastAIRequestError.message, stack: e?.stack });
         return null;
     }
 }
@@ -5512,19 +5726,11 @@ function findSelectedLiveZone(aiResult, liveMarketContext) {
 }
 
 async function runFallbackScan(price, historyCache) {
+    const fallbackStartedAt = scanClock();
+    console.log('[SCAN] fallback start', { pair, timestamp: new Date().toISOString() });
     console.log('🔄 Running fallback rule-based scan...');
     showNotif('🔄 Using rule-based fallback...', 'info');
     
-    const htfData = historyCache;
-    const results = [];
-    const timeframesToScan = ['4H', '1H'];
-    
-    for (const tf of timeframesToScan) {
-        const result = await analyzeTimeframe(tf, price, htfData);
-        if (result) results.push(result);
-    }
-    
-    results.sort((a, b) => b.confidence - a.confidence);
     let best = null;
     let bestEvaluation = null;
     let bestCandidate = null;
@@ -5602,7 +5808,11 @@ async function runFallbackScan(price, historyCache) {
         strategy_setups: fallbackStrategySetups,
         require_strategy_setup: true
     });
-    const rejectedFallbacks = [];
+    const rejectedFallbacks = (fallbackCandidateResult.rejected_candidates || []).map(rejection => ({
+        id: rejection.id,
+        rejection_code: rejection.rejection_code,
+        rejection_reasons: rejection.rejection_reasons
+    }));
     if ((fallbackCandidateResult.valid_candidates || []).length > 0) {
         bestCandidate = fallbackCandidateResult.valid_candidates[0];
         bestEvaluation = evaluateSetupCandidate(bestCandidate, fallbackValidationContext);
@@ -5624,37 +5834,6 @@ async function runFallbackScan(price, historyCache) {
                 distancePct: Math.abs(bestCandidate.entry - price) / price * 100
             };
         }
-    }
-    for (const result of best ? [] : results) {
-        const candidate = {
-            id: `fallback-${result.timeframe}-${result.direction}`,
-            direction: result.direction,
-            timeframe: result.timeframe,
-            zone_type: ictCanonicalZoneType(result.zoneType),
-            zone_low: result.zone?.low,
-            zone_high: result.zone?.high,
-            entry: result.entry,
-            stop_loss: result.sl,
-            tp1: result.tp1,
-            tp2: result.tp2,
-            tp3: result.tp3
-        };
-        candidate.strategy_setup = getStrategySetupForZone({
-            id: `${candidate.timeframe}-${candidate.direction}-${candidate.zone_type}-${ictRound(candidate.zone_low, getMarketSettings(pair).prec)}-${ictRound(candidate.zone_high, getMarketSettings(pair).prec)}`,
-            type: candidate.zone_type,
-            direction: candidate.direction,
-            timeframe: candidate.timeframe,
-            low: candidate.zone_low,
-            high: candidate.zone_high
-        }, fallbackStrategySetups);
-        const evaluation = evaluateSetupCandidate(candidate, fallbackValidationContext);
-        if (evaluation.valid) {
-            best = result;
-            bestEvaluation = evaluation;
-            bestCandidate = candidate;
-            break;
-        }
-        rejectedFallbacks.push({ id: candidate.id, rejection_reasons: evaluation.reasons });
     }
     if (!best) {
         const reason = 'No fallback setup passed hard rules';
@@ -5681,6 +5860,7 @@ async function runFallbackScan(price, historyCache) {
         analysis = { signalType: 'NEUTRAL', currentPrice: price, confidence: 0, entryReady: false, executionDecision: 'skip', aiDecision: null };
         document.getElementById('executeBtn').disabled = true;
         showNotif(`⚠️ ${reason}`, 'warning');
+        scanTrace('fallback complete', fallbackStartedAt, { result: 'WAIT', rejected_candidates: rejectedFallbacks.length });
         return;
     }
     
@@ -5758,6 +5938,7 @@ async function runFallbackScan(price, historyCache) {
     
     document.getElementById('executeBtn').disabled = false;
     showNotif(`🎯 ${best.timeframe} ${st} | Conf: ${best.confidence}% | ${best.zoneType}`, 'success');
+    scanTrace('fallback complete', fallbackStartedAt, { result: best.direction, selected_candidate_id: bestCandidate?.id || null });
 }
 
 // ============================================
@@ -5927,6 +6108,15 @@ function validateAISetup(aiResult, price, historyCache, pairArg, deterministicVa
 }
 
 async function runAutoScan() {
+    if (scanInProgress) {
+        console.warn('[SCAN] IGNORE overlapping Analyze request');
+        return;
+    }
+    scanInProgress = true;
+    const scanStartedAt = scanClock();
+    let scanStage = 'initializing';
+    let price = null;
+    let historyCache = {};
     const btn = document.getElementById('analyzeBtn');
     const scanStatus = document.getElementById('scanStatus');
     const scanText = document.getElementById('scanText');
@@ -5935,28 +6125,28 @@ async function runAutoScan() {
     btn.classList.add('loading');
     btn.disabled = true;
     scanStatus.classList.remove('hidden');
-    
-    if (!TWELVE_DATA_KEY) {
-        showSetup();
-        btn.classList.remove('loading');
-        btn.disabled = false;
-        scanStatus.classList.add('hidden');
-        return;
-    }
-    
-    showNotif('🤖 AI analyzing market data...', 'info');
+    scanTrace('START', scanStartedAt, { pair, timestamp: new Date().toISOString() });
     
     try {
-        const price = await getPrice();
+        if (!TWELVE_DATA_KEY) {
+            scanStage = 'missing Twelve Data key';
+            showSetup();
+            return;
+        }
+
+        showNotif('🤖 AI analyzing market data...', 'info');
+        scanStage = 'price request';
+        price = await getPrice();
         if(!price) throw new Error('No price');
         
-        const historyCache = {};
         const tfs = ['5M', '15M', '1H', '4H', '1D', '1W'];
         scanText.innerHTML = '📊 Collecting market data...';
+        scanStage = 'history requests';
         await Promise.all(tfs.map(async (t) => {
             historyCache[t] = await getHistory(t);
         }));
-        
+        scanTrace('history loaded', scanStartedAt, { timeframes: Object.fromEntries(tfs.map(tf => [tf, historyCache[tf]?.length || 0])) });
+        scanStage = 'MTF display';
         await updateMTFDisplay(historyCache);
         
         // ============================================
@@ -6045,6 +6235,9 @@ async function runAutoScan() {
             macdDiv: enhancedAnalysis?.macdDiv
         });
 
+        scanStage = 'market context construction';
+        const contextStartedAt = scanClock();
+        console.log('[SCAN] market context start');
         const liveMarketContext = buildLiveMarketContext({
             pair,
             price,
@@ -6055,8 +6248,12 @@ async function runAutoScan() {
             holistic,
             entryContext
         });
-        const candleData = buildCandleData(historyCache, 10);
-        const aiPrompt = buildAIPrompt(liveMarketContext, candleData);
+        scanTrace('market context complete', contextStartedAt, {
+            strategy_setups: liveMarketContext.strategy_setups?.length || 0,
+            strategy_detections: liveMarketContext.strategy_detections,
+            raw_candidates: liveMarketContext.setup_candidate_audit?.raw_candidate_count || 0,
+            valid_candidates: liveMarketContext.adaptive_setup_candidates?.length || 0
+        });
         console.log('LIVE MARKET CONTEXT', liveMarketContext);
         console.log('AI INPUT SUMMARY', {
             pair,
@@ -6069,8 +6266,6 @@ async function runAutoScan() {
             atr1h: liveMarketContext.volatility.atr_1h,
             volumeAvailable: liveMarketContext.volume.volume_available
         });
-
-        scanText.innerHTML = '🤖 AI analyzing live market context...';
 
         if (liveMarketContext.adaptive_setup_candidates.length === 0) {
             const audit = liveMarketContext.setup_candidate_audit || {};
@@ -6105,11 +6300,15 @@ async function runAutoScan() {
             analysis = { signalType: 'NEUTRAL', currentPrice: price, confidence: 0, entryReady: false, executionDecision: 'skip', aiDecision: null };
             document.getElementById('executeBtn').disabled = true;
             showNotif(`🚫 ${decision}: ${reason}`, 'warning');
-            btn.classList.remove('loading');
-            btn.disabled = false;
+            scanTrace('no valid deterministic candidate', scanStartedAt, { wait_code: waitCode, candidate_pipeline: liveMarketContext.candidate_pipeline });
             return;
         }
 
+        scanStage = 'prompt construction';
+        const candleData = buildCandleData(historyCache, 10);
+        const aiPrompt = buildAIPrompt(liveMarketContext, candleData);
+        scanText.innerHTML = '🤖 AI analyzing live market context...';
+        scanStage = 'DeepSeek request';
         const aiResult = await askAIToFindSetup(aiPrompt.user, price, aiPrompt.system, liveMarketContext);
         if (aiResult) {
             try {
@@ -6122,15 +6321,19 @@ async function runAutoScan() {
             } catch(e) {}
         }
 
-        scanStatus.classList.add('hidden');
-        
         if (!aiResult) {
-            showNotif('⚠️ AI analysis failed - using fallback', 'warning');
-            await runFallbackScan(price, historyCache);
-            btn.classList.remove('loading');
-            btn.disabled = false;
+            scanStage = lastAIRequestError?.code === 'AI_TIMEOUT' ? 'DeepSeek timeout fallback' : 'DeepSeek failure fallback';
+            showNotif(`⚠️ ${lastAIRequestError?.message || 'AI analysis failed'} - using fallback`, 'warning');
+            try {
+                await runFallbackScan(price, historyCache);
+            } catch (fallbackError) {
+                console.error('[SCAN] FAILED', { stage: 'fallback', error: fallbackError?.message, stack: fallbackError?.stack });
+                showNotif(`Fallback failed: ${fallbackError?.message || 'unknown error'}`, 'error');
+            }
             return;
         }
+
+        scanTrace('AI consistency complete', scanStartedAt, { decision: aiResult.decision, selected_candidate_id: aiResult.selected_candidate_id || null });
 
         if (aiResult.noTrade) {
             const out = {
@@ -6156,6 +6359,7 @@ async function runAutoScan() {
             analysis = { signalType: 'NEUTRAL', currentPrice: price, confidence: aiResult.confidence, entryReady: false, executionDecision: 'skip', aiDecision: aiResult };
             document.getElementById('executeBtn').disabled = true;
             showNotif(`🤖 AI ${aiResult.decision}: ${aiResult.wait_condition || 'No valid setup'}`, 'warning');
+            scanTrace('final result rendered', scanStartedAt, { result: 'WAIT/NO_TRADE' });
             return;
         }
 
@@ -6186,6 +6390,7 @@ async function runAutoScan() {
             analysis = { signalType: 'NEUTRAL', currentPrice: price, confidence: 0, entryReady: false, executionDecision: 'skip', aiDecision: aiResult };
             document.getElementById('executeBtn').disabled = true;
             showNotif(`🚫 AI output rejected: ${outputConsistency.issues[0]}`, 'warning');
+            scanTrace('final result rendered', scanStartedAt, { result: 'AI_INCONSISTENT_OUTPUT' });
             return;
         }
         
@@ -6402,14 +6607,28 @@ async function runAutoScan() {
         const decisionEmoji = effectiveDecision === 'enter_now' ? '✅' : (effectiveDecision === 'wait_for_reaction' ? '⏳' : '🚫');
         const validationTag = validation.valid ? '✓' : '✗';
         showNotif(`🤖 AI Setup [val:${validationTag}] ${st} ${decisionEmoji} | Conf: ${aiResult.confidence}% | ${aiResult.entry_zone.source} | ${aiResult.patterns.join(', ')}`, tradeable ? 'success' : 'warning');
+        scanTrace('final result rendered', scanStartedAt, { result: tradeable ? aiResult.decision : 'WAIT/VALIDATION_BLOCKED', validation: validation.valid });
         
     } catch(e) {
-        console.error('AI Scan Error:', e);
-        showNotif('Error: ' + e.message, 'error');
-        await runFallbackScan(price, historyCache);
+        console.error('[SCAN] FAILED', { stage: scanStage, error: e?.message, stack: e?.stack });
+        showNotif('Error: ' + (e?.message || 'scan failed'), 'error');
+        if (price && Object.keys(historyCache).length > 0) {
+            try {
+                scanStage = 'fallback after scan failure';
+                await runFallbackScan(price, historyCache);
+            } catch (fallbackError) {
+                console.error('[SCAN] FAILED', { stage: 'fallback after scan failure', error: fallbackError?.message, stack: fallbackError?.stack });
+                showNotif(`Fallback failed: ${fallbackError?.message || 'unknown error'}`, 'error');
+            }
+        }
     } finally {
         btn.classList.remove('loading');
         btn.disabled = false;
+        scanStatus.classList.add('hidden');
+        if (scanText) scanText.textContent = 'Scan complete';
+        if (scanFill) scanFill.style.width = '100%';
+        scanInProgress = false;
+        scanTrace('COMPLETE', scanStartedAt, { stage: scanStage });
     }
 }
 
