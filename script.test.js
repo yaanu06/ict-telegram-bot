@@ -156,6 +156,80 @@ const msnrReactionFixture = () => {
     return data;
 };
 
+describe('strategy entry lifecycle', () => {
+    const fixture = (primary = 'CRT', later = []) => {
+        const bars = [c(1.161, 1.1613, 1.159, 1.1604), ...later];
+        return {
+            candidate: { direction: 'BUY', entry: 1.16005, zone_low: 1.16, zone_high: 1.1601,
+                stop_loss: 1.159, tp1: 1.16286, immediate_entry: { eligible: false },
+                strategy_setup: { primary, timeframe: '1H', reclaim_bar_index: 0,
+                    departure_confirmed_index: 0, entry_model: 'REACTION_ZONE_RETEST' } },
+            market: { price: 1.161, historyCache: { '1H': bars } }
+        };
+    };
+    it.each(['CRT', 'TBS', 'MSNR'])('%s cannot reopen its consumed first entry', primary => {
+        const ctx = getContext();
+        const { candidate, market } = fixture(primary, [c(1.1604, 1.16253, 1.16005, 1.16253)]);
+        market.price = 1.16253;
+        const result = ctx.evaluateSetupLifecycle(candidate, market);
+        expect(result.rejection_code).toBe('ENTRY_ALREADY_CONSUMED');
+        expect(result.entry_consumed).toBe(true);
+        expect(result.entry_first_touch_index).toBe(1);
+        expect(result.entry_touch_count_after_signal).toBe(1);
+        expect(result.remaining_reward_fraction).toBeCloseTo(0.11744, 4);
+        expect(ctx.evaluateSetupCandidate(candidate, market).reasons).toEqual(['ENTRY_ALREADY_CONSUMED']);
+    });
+    it('rejects a completed TP1 even when the entry was also consumed', () => {
+        const { candidate, market } = fixture('TBS', [c(1.1601, 1.163, 1.16, 1.162)]);
+        const result = getContext().evaluateSetupLifecycle(candidate, market);
+        expect(result.rejection_code).toBe('SETUP_ALREADY_COMPLETED');
+        expect(result.tp1_first_reached_index).toBe(1);
+    });
+    it('rejects advanced delivery without inventing a historical entry touch', () => {
+        const { candidate, market } = fixture('CRT', [c(1.161, 1.1626, 1.1605, 1.16253)]);
+        market.price = 1.16253;
+        expect(getContext().evaluateSetupLifecycle(candidate, market).rejection_code).toBe('SETUP_DELIVERY_ALREADY_ADVANCED');
+    });
+    it('keeps an untouched outside-zone entry fresh despite immediate_entry=false', () => {
+        const { candidate, market } = fixture('CRT', [c(1.1605, 1.1612, 1.1604, 1.161)]);
+        const result = getContext().evaluateSetupLifecycle(candidate, market);
+        expect(result.rejection_code).toBeNull();
+        expect(result.entry_touch_count_after_signal).toBe(0);
+        expect(result.entry_freshness).toBe('FRESH');
+    });
+    it('does not count the reclaim candle itself', () => {
+        const { candidate, market } = fixture();
+        expect(getContext().evaluateSetupLifecycle(candidate, market).entry_consumed).toBe(false);
+    });
+    it('expires old and untraceable events even if their zones still exist', () => {
+        const ctx = getContext();
+        const { candidate, market } = fixture('MSNR', Array.from({ length: 9 }, () => c(1.161, 1.1612, 1.1605, 1.161)));
+        expect(ctx.evaluateSetupLifecycle(candidate, market).rejection_code).toBe('SETUP_EXPIRED');
+        delete candidate.strategy_setup.departure_confirmed_index;
+        expect(ctx.evaluateSetupLifecycle(candidate, market).rejection_code).toBe('SETUP_EXPIRED');
+    });
+    it('does not reset a role reversal at its already consumed retest', () => {
+        const { candidate, market } = fixture('MSNR', [c(1.1604, 1.161, 1.16, 1.1608)]);
+        Object.assign(candidate.strategy_setup, { entry_model: 'ROLE_REVERSAL_RETEST', break_index: 0, retest_index: 1 });
+        expect(getContext().evaluateSetupLifecycle(candidate, market).rejection_code).toBe('ENTRY_ALREADY_CONSUMED');
+    });
+    it('resolves event timestamps after a rolling history shifts indexes', () => {
+        const { candidate, market } = fixture('MSNR', [c(1.1604, 1.161, 1.16, 1.1608)]);
+        market.historyCache['1H'][0].t = '2026-09-10 08:00:00';
+        candidate.strategy_setup.event_time = Date.parse('2026-09-10T08:00:00Z');
+        candidate.strategy_setup.departure_confirmed_index = 50;
+        const result = getContext().evaluateSetupLifecycle(candidate, market);
+        expect(result.rejection_code).toBe('ENTRY_ALREADY_CONSUMED');
+        market.historyCache['1H'].shift();
+        expect(getContext().evaluateSetupLifecycle(candidate, market).rejection_code).toBe('SETUP_EXPIRED');
+    });
+    it('uses identical overlap rules for SELL', () => {
+        const { candidate, market } = fixture('TBS', [c(1.1604, 1.161, 1.16, 1.1608)]);
+        Object.assign(candidate, { direction: 'SELL', tp1: 1.157, stop_loss: 1.162 });
+        expect(getContext().evaluateSetupLifecycle(candidate, market).rejection_code).toBe('ENTRY_ALREADY_CONSUMED');
+    });
+});
+
 describe('computeRSI (Wilder)', () => {
     it('returns 100 for a straight up run', () => {
         const ctx = getContext();
@@ -441,14 +515,28 @@ describe('strategy pipeline integration rules', () => {
 
     it('combines 4H CRT and 1H TBS when they describe the same sweep region', () => {
         const ctx = getContext();
+        ctx.detectCRTEvents = () => [{ detected: true, direction: 'BUY', reclaim_level: 99,
+            sweep_extreme: 98.6, reclaim_bar_index: 24, evidence: {}, primary_objective: 103 }];
+        ctx.detectTurtleSoupEvents = () => [{ detected: true, type: 'BUY', direction: 'BUY', reclaim_level: 99,
+            sweep_extreme: 98.6, reclaim_bar_index: 34, evidence: {} }];
+        const crtData = crtBuyFixture();
+        const tbsData = tbsBuyFixture();
+        crtData[24].t = tbsData[34].t = '2026-09-10 08:00:00';
         const setups = ctx.buildStrategySetups({
             pair: 'XAU/USD',
             price: 100.2,
-            historyCache: { '4H': crtBuyFixture(), '1H': tbsBuyFixture() },
+            historyCache: { '4H': crtData, '1H': tbsData },
             realZones: [],
             marketContext: {}
         });
         expect(setups.some(s => s.label && s.label.includes('CRT') && s.label.includes('TBS'))).toBe(true);
+    });
+
+    it('does not combine already consumed CRT and TBS events from real detectors', () => {
+        const setups = getContext().buildStrategySetups({ pair: 'XAU/USD', price: 100.2,
+            historyCache: { '4H': crtBuyFixture(), '1H': tbsBuyFixture() }, realZones: [], marketContext: {} });
+        expect(setups.some(s => s.entry_consumed)).toBe(true);
+        expect(setups.filter(s => s.entry_consumed).every(s => s.combination_evidence.length === 0)).toBe(true);
     });
 
     it('does not combine unrelated opposite-direction strategy events', () => {
@@ -543,6 +631,7 @@ describe('strategy pipeline integration rules', () => {
         const ctx = getContext();
         const zone = { id: 'crt-buy', type: 'CRT', direction: 'BUY', timeframe: '1H', low: 1.0995, high: 1.1, origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, freshness: 'FRESH', structural_invalidation: 1.099 };
         const setup = { id: 'crt-buy', primary: 'CRT', label: 'CRT', direction: 'BUY', timeframe: '1H', execution_zone: zone, structural_invalidation: 1.099, strategy_evidence: { CRT: { range_high: 1.1005, range_low: 1.0995 } }, target_candidates: [{ direction: 'BUY', level: 1.1005, source: 'CRT_OPPOSITE_RANGE', origin: 'STRUCTURAL' }] };
+        setup.reclaim_bar_index = 79;
         const result = ctx.buildAdaptiveSetupCandidates({
             pair: 'EUR/USD',
             price: 1.101,
@@ -707,8 +796,8 @@ describe('DeepSeek request settlement', () => {
     it('keeps dense combination target propagation linear in original targets', () => {
         const ctx = getContext();
         const original = ctx.detectTurtleSoupEvents;
-        ctx.detectTurtleSoupEvents = () => Array.from({ length: 8 }, (_, i) => ({ detected: true, direction: 'BUY', type: 'BUY', reclaim_level: 99 + i * 0.01, sweep_extreme: 98, event_time: 100000, evidence: {}, freshness: 'FRESH' }));
-        ctx.detectCRTEvents = () => Array.from({ length: 8 }, (_, i) => ({ detected: true, direction: 'BUY', reclaim_level: 99 + i * 0.01, sweep_extreme: 98, event_time: 100000, evidence: {}, freshness: 'FRESH', target_candidates: [{ direction: 'BUY', timeframe: '1H', source: 'CRT_OPPOSITE_RANGE', level: 105 + i }] }));
+        ctx.detectTurtleSoupEvents = () => Array.from({ length: 8 }, (_, i) => ({ detected: true, direction: 'BUY', type: 'BUY', reclaim_level: 99 + i * 0.01, sweep_extreme: 98, reclaim_bar_index: 99, evidence: {}, freshness: 'FRESH' }));
+        ctx.detectCRTEvents = () => Array.from({ length: 8 }, (_, i) => ({ detected: true, direction: 'BUY', reclaim_level: 99 + i * 0.01, sweep_extreme: 98, reclaim_bar_index: 99, evidence: {}, freshness: 'FRESH', target_candidates: [{ direction: 'BUY', timeframe: '1H', source: 'CRT_OPPOSITE_RANGE', level: 105 + i }] }));
         const setups = ctx.buildStrategySetups({ pair: 'EUR/USD', price: 100, historyCache: { '1H': candles(100, 100, 0.1, 'up'), '4H': candles(100, 100, 0.1, 'up') }, realZones: [], marketContext: {} });
         expect(setups.some(s => s.combination_evidence.length > 0)).toBe(true);
         expect(setups.every(s => s.target_candidates.length <= 8)).toBe(true);
@@ -1176,6 +1265,7 @@ describe('live AI market context and prompt', () => {
         const structure = { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } };
         const strategySetups = [{
             id: 'msnr-buy',
+            departure_confirmed_index: historyCache['1H'].length - 1,
             primary: 'MSNR',
             label: 'MSNR',
             direction: 'BUY',
@@ -1202,6 +1292,17 @@ describe('live AI market context and prompt', () => {
         expect(result.valid_candidates.length).toBeGreaterThan(0);
         expect(result.valid_candidates[0].strategy_setup.primary).toBe('MSNR');
         expect(result.valid_candidates[0].strategy_label).toBe('MSNR');
+        expect(result.valid_candidates.every(c => c.setup_lifecycle_status === 'FRESH')).toBe(true);
+        historyCache['1H'].push(c(1.1007, 1.101, 1.0998, 1.1008));
+        const consumed = ctx.buildAdaptiveSetupCandidates({
+            pair: 'EUR/USD', price: 1.1008, historyCache, zones: [zone], strategySetups,
+            targetCandidates: { buy: [{ direction: 'BUY', level: 1.104, source: 'SWING_HIGH', origin: 'STRUCTURAL' }], sell: [] },
+            riskConstraints: { minimum_rr: 2.5 }, structure
+        });
+        expect(consumed.valid_candidates).toEqual([]);
+        expect(consumed.rejected_candidates.every(c => c.rejection_code === 'ENTRY_ALREADY_CONSUMED')).toBe(true);
+        const payload = ctx.compactAIContext({ adaptive_setup_candidates: consumed.valid_candidates });
+        expect(payload.adaptive_setup_candidates).toEqual([]);
     });
 
     it('rejects deterministic execution candidates without CRT/TBS/MSNR strategy backing when required', () => {
@@ -1701,6 +1802,7 @@ describe('live AI market context and prompt', () => {
         const obZone = { id: '1H-SELL-OB-0.58850-0.58887', type: 'OB', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58850, high: 0.58887, freshness: 'FRESH' };
         const strategySetups = [{
             id: 'tbs-sell-fvg',
+            reclaim_bar_index: 79,
             primary: 'TBS',
             label: 'TBS',
             direction: 'SELL',
@@ -2549,7 +2651,7 @@ describe('validateAISetup', () => {
             take_profit_2: entry - 35,
             take_profit_3: entry - 49,
             ai_decision: 'wait_for_reaction',
-            strategy_setup: { primary: 'TBS', label: 'TBS' }
+            strategy_setup: { primary: 'TBS', label: 'TBS', timeframe: '1H', reclaim_bar_index: 79 }
         }), 4400, cache, 'XAU/USD', validationContext);
         expect(r.valid).toBe(true);
         expect(r.rr1).toBeCloseTo(3, 1);
@@ -2585,8 +2687,8 @@ describe('validateAISetup', () => {
             take_profit_3: entry - 30,
             ai_decision: 'wait_for_reaction',
             risk_reward: '1:5.0',
-            strategy_setup: { primary: 'TBS', label: 'TBS' }
-        }), 4400, cache, 'XAU/USD', validationContext);
+            strategy_setup: { primary: 'TBS', label: 'TBS', timeframe: '1H', reclaim_bar_index: 79 }
+        }), 4405, cache, 'XAU/USD', { ...validationContext, price: 4405 });
         expect(r.valid).toBe(false);
         expect(r.reason).toMatch(/real RR .* below/);
     });
