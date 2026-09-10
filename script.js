@@ -1300,30 +1300,75 @@ function calculateMSNR(data, currentPrice) {
 
 // Detect Turtle Soup
 function detectTurtleSoup(data) {
-    if(data.length < 15) return { detected: false, type: null };
-    const rd = data.slice(-15);
-    const lows = rd.map(c => c.l);
-    const highs = rd.map(c => c.h);
-    const closes = rd.map(c => c.c);
-    const opens = rd.map(c => c.o);
-    const keyLow = Math.min(...lows.slice(0, -4));
-    const recentLow = lows[lows.length - 4];
-    const cc = closes[closes.length - 1];
-    const co = opens[opens.length - 1];
-    if(recentLow < keyLow && cc > keyLow && cc > co) {
-        return { detected: true, type: 'BUY', keyLevel: keyLow };
+    if(!data || data.length < 15) return { detected: false, type: null };
+    const lookback = Math.min(data.length, 60);
+    const body = data.slice(-lookback, -4);
+    const recent = data.slice(-4);
+    const last = data[data.length - 1];
+    const opens = data.map(c => c.o);
+    const closes = data.map(c => c.c);
+    const fallbackLow = Math.min(...data.slice(-15, -4).map(c => c.l));
+    const fallbackHigh = Math.max(...data.slice(-15, -4).map(c => c.h));
+    const sw = findSwings(body, 2);
+    const swingLows = (sw.L || []).slice(-5);
+    const swingHighs = (sw.H || []).slice(-5);
+    const recentLow = Math.min(...recent.map(c => c.l));
+    const recentHigh = Math.max(...recent.map(c => c.h));
+    const lastBullish = last.c > last.o;
+    const lastBearish = last.c < last.o;
+
+    const buyLevel = swingLows.length ? swingLows[swingLows.length - 1].p : fallbackLow;
+    if(Number.isFinite(buyLevel) && recentLow < buyLevel && last.c > buyLevel && lastBullish) {
+        return {
+            detected: true,
+            type: 'BUY',
+            direction: 'BUY',
+            keyLevel: buyLevel,
+            liquidity_level: buyLevel,
+            sweep_extreme: recentLow,
+            reclaim_level: buyLevel,
+            reclaim_price: last.c,
+            reclaim_confirmed: true,
+            event_age: recent.findIndex(c => c.l === recentLow),
+            freshness: 'FRESH',
+            evidence: {
+                swept_sell_side: true,
+                failed_continuation: true,
+                reclaimed: true,
+                close: last.c,
+                open: last.o
+            }
+        };
     }
-    const keyHigh = Math.max(...highs.slice(0, -4));
-    const recentHigh = highs[highs.length - 4];
-    if(recentHigh > keyHigh && cc < keyHigh && cc < co) {
-        return { detected: true, type: 'SELL', keyLevel: keyHigh };
+    const sellLevel = swingHighs.length ? swingHighs[swingHighs.length - 1].p : fallbackHigh;
+    if(Number.isFinite(sellLevel) && recentHigh > sellLevel && last.c < sellLevel && lastBearish) {
+        return {
+            detected: true,
+            type: 'SELL',
+            direction: 'SELL',
+            keyLevel: sellLevel,
+            liquidity_level: sellLevel,
+            sweep_extreme: recentHigh,
+            reclaim_level: sellLevel,
+            reclaim_price: last.c,
+            reclaim_confirmed: true,
+            event_age: recent.findIndex(c => c.h === recentHigh),
+            freshness: 'FRESH',
+            evidence: {
+                swept_buy_side: true,
+                failed_continuation: true,
+                reclaimed: true,
+                close: last.c,
+                open: last.o
+            }
+        };
     }
     return { detected: false, type: null };
 }
 
 // Calculate CRT
 function detectCRT(data) {
-    if(data.length < 20) return { state: 'NEUTRAL' };
+    if(!data || data.length < 20) return { state: 'NEUTRAL', detected: false, direction: null };
     const recent = data.slice(-20);
     const ranges = recent.map(c => c.h - c.l);
     const avg = ranges.reduce((a, b) => a + b, 0) / ranges.length;
@@ -1336,7 +1381,39 @@ function detectCRT(data) {
     if(avg10 > avgFirst10 * 1.3) state = 'EXPANDING';
     else if(avg10 < avgFirst10 * 0.7) state = 'CONTRACTING';
     
-    return { state };
+    const ref = recent.slice(0, 10);
+    const rangeHigh = Math.max(...ref.map(c => c.h));
+    const rangeLow = Math.min(...ref.map(c => c.l));
+    const last = recent[recent.length - 1];
+    const recentHigh = Math.max(...last10.map(c => c.h));
+    const recentLow = Math.min(...last10.map(c => c.l));
+    let direction = null;
+    let manipulation_side = null;
+    if (recentLow < rangeLow && last.c > rangeLow && last.c > last.o) {
+        direction = 'BUY';
+        manipulation_side = 'SELL_SIDE';
+    } else if (recentHigh > rangeHigh && last.c < rangeHigh && last.c < last.o) {
+        direction = 'SELL';
+        manipulation_side = 'BUY_SIDE';
+    } else if (state === 'EXPANDING') {
+        direction = last.c > last.o ? 'BUY' : (last.c < last.o ? 'SELL' : null);
+        manipulation_side = direction === 'BUY' ? 'SELL_SIDE' : (direction === 'SELL' ? 'BUY_SIDE' : null);
+    }
+
+    return {
+        state,
+        detected: !!direction && state !== 'NEUTRAL',
+        direction,
+        range_high: rangeHigh,
+        range_low: rangeLow,
+        manipulation_side,
+        sweep_extreme: direction === 'BUY' ? recentLow : (direction === 'SELL' ? recentHigh : null),
+        reclaim_level: direction === 'BUY' ? rangeLow : (direction === 'SELL' ? rangeHigh : null),
+        expansion_close: last.c,
+        event_age: 0,
+        freshness: state === 'EXPANDING' ? 'FRESH' : 'PARTIAL',
+        evidence: { state, avg_range: avg, recent_range_avg: avg10, reference_range_avg: avgFirst10 }
+    };
 }
 
 // Calculate Fibonacci Retracement (0.50 & 0.618)
@@ -1725,6 +1802,8 @@ function ictCanonicalZoneType(value) {
     if (!s || s === 'CONFLUENCE' || s === 'AI ZONE' || s === 'AI IDENTIFIED') return null;
     if (s.includes('FVG') || s.includes('FAIR VALUE')) return 'FVG';
     if (s === 'OB' || s.includes('ORDER BLOCK')) return 'OB';
+    if (s.includes('TBS') || s.includes('TURTLE')) return 'TBS';
+    if (s.includes('CRT')) return 'CRT';
     if (s.includes('MSNR') || s.includes('SUPPORT') || s.includes('RESISTANCE')) return 'MSNR';
     return null;
 }
@@ -2940,6 +3019,7 @@ function getAdaptiveStopCandidates(zone, direction, entry, data, zones, atrVal, 
         if (direction === 'SELL' && n > entry) raw.push({ level: n, source, origin });
     };
 
+    add(zone.structural_invalidation, 'STRATEGY_INVALIDATION', zone.origin || 'STRUCTURAL');
     add(direction === 'BUY' ? zone.low : zone.high, 'ZONE_BOUNDARY', zone.origin || 'STRUCTURAL');
     const sw = findSwings(data || [], 3);
     for (const s of direction === 'BUY' ? (sw.L || []).slice(-10) : (sw.H || []).slice(-10)) {
@@ -3009,10 +3089,13 @@ function getCandidateATRContext(candidate, historyCache, pairLocal, price) {
         ? setupAtr
         : (Number.isFinite(fallbackAtr) && fallbackAtr > 0 ? fallbackAtr : NaN);
     const minMultiplier = settings.minSLMultiplier || (pairLocal.includes('XAU') ? 2.0 : 1.5);
-    const minDistance = Number.isFinite(atrForRule) && atrForRule > 0
-        ? Math.max(settings.minSL, atrForRule * minMultiplier)
+    const minimumReasonable = Number.isFinite(atrForRule) && atrForRule > 0
+        ? Math.max(settings.minSL, atrForRule * 0.5)
         : settings.minSL;
-    const maxByAtr = Number.isFinite(atrForRule) && atrForRule > 0 ? atrForRule * 4.0 : Infinity;
+    const extremeTooTight = Number.isFinite(atrForRule) && atrForRule > 0
+        ? Math.max(settings.minSL, atrForRule * 0.15)
+        : settings.minSL;
+    const maxByAtr = Number.isFinite(atrForRule) && atrForRule > 0 ? atrForRule * 10.0 : Infinity;
     const maxByPrice = Number(price) * settings.maxSLPct;
     const maxDistance = Math.max(settings.minSL, Math.min(maxByPrice, maxByAtr));
     return {
@@ -3022,7 +3105,8 @@ function getCandidateATRContext(candidate, historyCache, pairLocal, price) {
         higher_timeframe_atr: Number.isFinite(higherAtr) && higherAtr > 0 ? higherAtr : null,
         atr_rule_reference: Number.isFinite(atrForRule) && atrForRule > 0 ? atrForRule : null,
         min_atr_multiplier: minMultiplier,
-        minimum_reasonable_distance: minDistance,
+        minimum_reasonable_distance: minimumReasonable,
+        extreme_too_tight_distance: extremeTooTight,
         maximum_reasonable_distance: maxDistance
     };
 }
@@ -3043,15 +3127,19 @@ function evaluateStructuralStop(candidate, atrContext, pairLocal) {
     }
     const riskDistance = Math.abs(entry - stopLoss);
     if (riskDistance < settings.minSL) {
-        return { status: 'VOLATILITY_TOO_TIGHT', reason: `SL distance ${riskDistance.toFixed(settings.prec)} below market minimum ${settings.minSL}` };
+        return { status: 'EXTREME_TOO_TIGHT', hardReject: true, volatility_classification: 'EXTREME_TOO_TIGHT', reason: `SL distance ${riskDistance.toFixed(settings.prec)} below market minimum ${settings.minSL}` };
     }
-    if (riskDistance < atrContext.minimum_reasonable_distance) {
-        return { status: 'VOLATILITY_TOO_TIGHT', reason: `SL distance ${riskDistance.toFixed(settings.prec)} below ${atrContext.setup_timeframe} minimum reasonable distance ${atrContext.minimum_reasonable_distance.toFixed(settings.prec)}` };
+    const atrMultiple = atrContext.atr_rule_reference ? riskDistance / atrContext.atr_rule_reference : null;
+    if (atrContext.extreme_too_tight_distance && riskDistance < atrContext.extreme_too_tight_distance) {
+        return { status: 'EXTREME_TOO_TIGHT', hardReject: true, volatility_classification: 'EXTREME_TOO_TIGHT', reason: `SL distance ${riskDistance.toFixed(settings.prec)} is an extreme volatility anomaly for ${atrContext.setup_timeframe}` };
     }
     if (riskDistance > atrContext.maximum_reasonable_distance) {
-        return { status: 'VOLATILITY_TOO_WIDE', reason: `SL distance ${riskDistance.toFixed(settings.prec)} exceeds ${atrContext.setup_timeframe} maximum reasonable distance ${atrContext.maximum_reasonable_distance.toFixed(settings.prec)}` };
+        return { status: 'EXTREME_TOO_WIDE', hardReject: true, volatility_classification: 'EXTREME_TOO_WIDE', reason: `SL distance ${riskDistance.toFixed(settings.prec)} exceeds ${atrContext.setup_timeframe} maximum reasonable distance ${atrContext.maximum_reasonable_distance.toFixed(settings.prec)}` };
     }
-    return { status: 'VALID_STRUCTURAL_STOP', reason: 'Structural stop is valid for setup timeframe volatility', riskDistance };
+    const volatilityClassification = Number.isFinite(atrMultiple)
+        ? (atrMultiple < 0.75 ? 'TIGHT_BUT_STRUCTURAL' : (atrMultiple > 6 ? 'WIDE_BUT_STRUCTURAL' : 'NORMAL'))
+        : 'NORMAL';
+    return { status: 'VALID_STRUCTURAL_STOP', hardReject: false, volatility_classification: volatilityClassification, reason: `Structural stop is ${volatilityClassification}`, riskDistance, atrMultiple };
 }
 
 function classifySetupArchetype(candidate, historyCache, price, structure) {
@@ -3209,10 +3297,32 @@ function buildMarketContext({ pair, price, historyCache, structure, session, ses
 function buildStrategySetups({ pair, price, historyCache, realZones, marketContext }) {
     const setups = [];
     const zoneList = realZones || [];
+    const settings = getMarketSettings(pair);
+    const prec = settings.prec;
+    const makeExecutionZone = (setup, low, high, type) => ({
+        id: `${setup.timeframe}-${setup.direction}-${type}-${ictRound(low, prec)}-${ictRound(high, prec)}-${setups.length + 1}`,
+        type,
+        origin: 'STRUCTURAL',
+        primary_eligible: true,
+        direction: setup.direction,
+        timeframe: setup.timeframe,
+        low: ictRound(Math.min(low, high), prec),
+        high: ictRound(Math.max(low, high), prec),
+        midpoint: ictRound((low + high) / 2, prec),
+        invalidated: false,
+        freshness: setup.freshness || 'FRESH',
+        strategy_source: setup.primary
+    });
+    const zonesNearRegion = (direction, tf, low, high) => {
+        const width = Math.max(Math.abs(high - low), settings.pipSize * 5);
+        return zoneList.filter(z => z.timeframe === tf && z.direction === direction && z.primary_eligible !== false && !z.invalidated)
+            .filter(z => z.high >= low - width * 2 && z.low <= high + width * 2);
+    };
     const addSetup = (setup) => {
         if (!setup || !setup.direction || !setup.primary) return;
         const matchedZones = (setup.matched_zones || []).filter(Boolean);
-        if (matchedZones.length === 0) return;
+        const executionZone = setup.execution_zone || (matchedZones[0] ? { ...matchedZones[0], strategy_source: setup.primary } : null);
+        if (!executionZone) return;
         setups.push({
             ...setup,
             id: setup.id || `${setup.timeframe}-${setup.primary}-${setup.direction}-${setups.length + 1}`,
@@ -3225,13 +3335,16 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 low: z.low,
                 high: z.high,
                 origin: z.origin
-            }))
+            })),
+            execution_zone: executionZone
         });
     };
 
     for (const tf of ['4H', '1H']) {
         const data = historyCache?.[tf];
         if (!data || data.length < 20) continue;
+        const atrVal = data.length >= 15 ? atr(data, 14) : 0;
+        const buffer = Math.max(settings.pipSize * 5, (atrVal || 0) * 0.1, price * 0.00003);
         const zonesForTf = zoneList.filter(z => z.timeframe === tf && z.primary_eligible !== false && !z.invalidated);
         for (const zone of zonesForTf.filter(z => z.type === 'MSNR')) {
             addSetup({
@@ -3239,6 +3352,9 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 label: 'MSNR',
                 direction: zone.direction,
                 timeframe: tf,
+                structural_entry_region: { low: zone.low, high: zone.high },
+                structural_invalidation: zone.direction === 'BUY' ? zone.low : zone.high,
+                execution_zone: { ...zone, strategy_source: 'MSNR' },
                 evidence: { level: zone.midpoint, origin: zone.origin, zone_low: zone.low, zone_high: zone.high },
                 confirmations: [],
                 matched_zones: [zone]
@@ -3247,47 +3363,92 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
 
         const tbs = detectTurtleSoup(data);
         if (tbs.detected && (tbs.type === 'BUY' || tbs.type === 'SELL')) {
-            const near = zonesForTf.filter(z => z.direction === tbs.type && (
-                z.type === 'MSNR' ||
-                (Number.isFinite(tbs.keyLevel) && tbs.keyLevel >= z.low - Math.abs(z.high - z.low) * 2 && tbs.keyLevel <= z.high + Math.abs(z.high - z.low) * 2)
-            ));
+            const executionZone = makeExecutionZone({ ...tbs, primary: 'TBS', timeframe: tf }, tbs.reclaim_level - buffer, tbs.reclaim_level + buffer, 'TBS');
+            const near = zonesNearRegion(tbs.type, tf, executionZone.low, executionZone.high);
+            const confirmations = [];
+            if (near.some(z => z.type === 'MSNR')) confirmations.push('MSNR');
+            if (near.some(z => z.type === 'FVG')) confirmations.push('FVG');
+            if (near.some(z => z.type === 'OB')) confirmations.push('OB');
             addSetup({
                 primary: 'TBS',
-                label: near.some(z => z.type === 'MSNR') ? 'TBS+MSNR' : 'TBS',
+                label: confirmations.includes('MSNR') ? 'TBS+MSNR' : 'TBS',
                 direction: tbs.type,
                 timeframe: tf,
-                evidence: { liquidity_level: tbs.keyLevel, reclaim_price: data[data.length - 1]?.c, timeframe: tf },
-                confirmations: near.some(z => z.type === 'MSNR') ? ['MSNR'] : [],
+                liquidity_level: tbs.liquidity_level,
+                sweep_extreme: tbs.sweep_extreme,
+                reclaim_level: tbs.reclaim_level,
+                reclaim_confirmed: tbs.reclaim_confirmed,
+                event_age: tbs.event_age,
+                freshness: tbs.freshness,
+                structural_entry_region: { low: executionZone.low, high: executionZone.high },
+                structural_invalidation: tbs.sweep_extreme,
+                execution_zone: executionZone,
+                evidence: { ...tbs.evidence, liquidity_level: tbs.keyLevel, sweep_extreme: tbs.sweep_extreme, reclaim_price: data[data.length - 1]?.c, timeframe: tf },
+                confirmations,
                 matched_zones: near
             });
         }
 
         const crt = detectCRT(data);
-        const bias = marketContext?.directional_bias;
-        const crtDirection = bias === 'BULLISH' ? 'BUY' : (bias === 'BEARISH' ? 'SELL' : null);
-        if (crtDirection && crt.state !== 'NEUTRAL') {
-            const crtZones = zonesForTf.filter(z => z.direction === crtDirection && z.type === 'MSNR');
+        const crtDirection = crt.direction;
+        if (crt.detected && crtDirection) {
+            const entryLevel = crt.reclaim_level || (crtDirection === 'BUY' ? crt.range_low : crt.range_high);
+            const executionZone = makeExecutionZone({ ...crt, primary: 'CRT', timeframe: tf }, entryLevel - buffer, entryLevel + buffer, 'CRT');
+            const crtZones = zonesNearRegion(crtDirection, tf, executionZone.low, executionZone.high);
+            const confirmations = [];
+            if (crtZones.some(z => z.type === 'MSNR')) confirmations.push('MSNR');
+            if (crtZones.some(z => z.type === 'FVG')) confirmations.push('FVG');
+            if (crtZones.some(z => z.type === 'OB')) confirmations.push('OB');
             addSetup({
                 primary: 'CRT',
-                label: crtZones.some(z => z.type === 'MSNR') ? 'CRT+MSNR' : 'CRT',
+                label: confirmations.includes('MSNR') ? 'CRT+MSNR' : 'CRT',
                 direction: crtDirection,
                 timeframe: tf,
-                evidence: { state: crt.state, context_bias: bias, timeframe: tf },
-                confirmations: crtZones.some(z => z.type === 'MSNR') ? ['MSNR'] : [],
+                range_high: crt.range_high,
+                range_low: crt.range_low,
+                manipulation_side: crt.manipulation_side,
+                sweep_extreme: crt.sweep_extreme,
+                reclaim_level: crt.reclaim_level,
+                event_age: crt.event_age,
+                freshness: crt.freshness,
+                structural_entry_region: { low: executionZone.low, high: executionZone.high },
+                structural_invalidation: crt.sweep_extreme || (crtDirection === 'BUY' ? crt.range_low : crt.range_high),
+                execution_zone: executionZone,
+                evidence: { ...crt.evidence, direction: crtDirection, range_high: crt.range_high, range_low: crt.range_low, timeframe: tf },
+                confirmations,
                 matched_zones: crtZones
             });
+        }
+    }
+    for (const setup of setups) {
+        const compatible = setups.filter(other => other !== setup
+            && other.direction === setup.direction
+            && other.timeframe === setup.timeframe
+            && other.execution_zone
+            && setup.execution_zone
+            && other.execution_zone.high >= setup.execution_zone.low
+            && other.execution_zone.low <= setup.execution_zone.high);
+        const strategies = [...new Set([setup.primary, ...compatible.map(s => s.primary)])];
+        if (strategies.length > 1) {
+            setup.label = strategies.join('+');
+            setup.confirmations = [...new Set([...(setup.confirmations || []), ...strategies.filter(s => s !== setup.primary)])];
         }
     }
     console.log('CRT DETECTIONS', setups.filter(s => s.primary === 'CRT'));
     console.log('TBS DETECTIONS', setups.filter(s => s.primary === 'TBS'));
     console.log('MSNR DETECTIONS', setups.filter(s => s.primary === 'MSNR'));
+    console.log('STRATEGY COMBINATIONS', setups.filter(s => String(s.label || '').includes('+')).map(s => ({ id: s.id, label: s.label, direction: s.direction, timeframe: s.timeframe })));
     console.log('STRATEGY SETUPS', setups);
     return setups;
 }
 
 function getStrategySetupForZone(zone, strategySetups) {
     const key = strategyZoneKey(zone);
-    const matches = (strategySetups || []).filter(s => (s.matched_zone_ids || []).includes(zone.id || key));
+    const matches = (strategySetups || []).filter(s =>
+        (s.matched_zone_ids || []).includes(zone.id || key) ||
+        s.execution_zone?.id === zone.id ||
+        strategyZoneKey(s.execution_zone) === key
+    );
     if (matches.length === 0) return null;
     const primaries = [...new Set(matches.map(s => s.primary).filter(Boolean))];
     const confirmations = [...new Set(matches.flatMap(s => s.confirmations || []).concat(primaries.filter(p => p !== primaries[0])))];
@@ -3299,6 +3460,17 @@ function getStrategySetupForZone(zone, strategySetups) {
         evidence: matches.map(s => ({ strategy: s.primary, evidence: s.evidence })),
         setup_ids: matches.map(s => s.id)
     };
+}
+
+function getStrategyExecutionZones(strategySetups) {
+    return (strategySetups || [])
+        .filter(s => s.execution_zone)
+        .map(s => ({
+            ...s.execution_zone,
+            strategy_setup: s,
+            structural_invalidation: s.structural_invalidation,
+            freshness: s.freshness || s.execution_zone.freshness || 'FRESH'
+        }));
 }
 
 function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, targetCandidates, riskConstraints, marketRegime, structure, marketContext, strategySetups }) {
@@ -3316,11 +3488,17 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         console.log('REJECTED SETUP CANDIDATES', result.rejected_candidates);
         return result;
     }
+    const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(strategySetups) : [];
+    const validationZones = Array.isArray(strategySetups)
+        ? [...(zones || []), ...strategyExecutionZones]
+        : (zones || []);
     const deterministicValidationContext = buildDeterministicValidationContext({
         pair,
         price,
         historyCache,
-        real_ict_zones: zones,
+        real_ict_zones: validationZones,
+        context_ict_zones: zones,
+        strategy_execution_zones: strategyExecutionZones,
         risk_constraints: riskConstraints,
         structure,
         market_context: marketContext,
@@ -3328,10 +3506,12 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         require_strategy_setup: Array.isArray(strategySetups)
     });
 
-    const candidateZones = (zones || []).filter(z => z.primary_eligible !== false && !z.invalidated);
+    const candidateZones = Array.isArray(strategySetups)
+        ? strategyExecutionZones.filter(z => z.primary_eligible !== false && !z.invalidated)
+        : (zones || []).filter(z => z.primary_eligible !== false && !z.invalidated);
     for (const zone of candidateZones) {
         if (zone.type === 'MSNR' && zone.origin === 'ATR_FALLBACK') continue;
-        const strategySetup = Array.isArray(strategySetups) ? getStrategySetupForZone(zone, strategySetups) : null;
+        const strategySetup = zone.strategy_setup || (Array.isArray(strategySetups) ? getStrategySetupForZone(zone, strategySetups) : null);
         if (Array.isArray(strategySetups) && !strategySetup) continue;
         const direction = zone.direction;
         const tf = zone.timeframe || '1H';
@@ -3391,10 +3571,26 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 rawCandidates.push(rawCandidate);
                 const stopEvaluation = evaluateStructuralStop(rawCandidate, atrContext, pair);
                 rawCandidate.risk_model.status = stopEvaluation.status;
+                rawCandidate.risk_model.volatility_classification = stopEvaluation.volatility_classification;
+                console.log('STRUCTURAL STOP EVALUATION', {
+                    id: rawCandidate.id,
+                    strategy: rawCandidate.strategy_label || rawCandidate.zone_type,
+                    timeframe: tf,
+                    direction,
+                    entry,
+                    structural_invalidation: zone.structural_invalidation || (direction === 'BUY' ? zone.low : zone.high),
+                    stopLoss: stop.stop_loss,
+                    risk,
+                    setupAtr: atrContext.setup_atr,
+                    riskAtr: stopEvaluation.atrMultiple || rawCandidate.sl_atr_multiple,
+                    volatility_classification: stopEvaluation.volatility_classification,
+                    hardReject: !!stopEvaluation.hardReject
+                });
                 if (stopEvaluation.status !== 'VALID_STRUCTURAL_STOP') {
-                    const isTight = stopEvaluation.status === 'VOLATILITY_TOO_TIGHT';
-                    console.log(isTight ? 'CANDIDATE REJECTED - VOLATILITY' : 'CANDIDATE REJECTED - STRUCTURAL STOP', {
+                    const isVolatility = /TIGHT|WIDE/i.test(stopEvaluation.status);
+                    console.log(isVolatility ? 'CANDIDATE REJECTED - VOLATILITY' : 'CANDIDATE REJECTED - STRUCTURAL STOP', {
                         id: rawCandidate.id,
+                        strategy: rawCandidate.strategy_label || rawCandidate.zone_type,
                         status: stopEvaluation.status,
                         reason: stopEvaluation.reason,
                         timeframe: tf,
@@ -3412,6 +3608,15 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     continue;
                 }
                 const targets = selectAdaptiveTargets(direction, entry, stop.stop_loss, targetCandidates, minimumRR, prec);
+                console.log('TARGET EVALUATION', {
+                    id: rawCandidate.id,
+                    strategy: rawCandidate.strategy_label || rawCandidate.zone_type,
+                    direction,
+                    entry,
+                    stopLoss: stop.stop_loss,
+                    requiredRR: minimumRR,
+                    foundTp1: targets?.tp1?.level || null
+                });
                 if (!targets) {
                     console.log('CANDIDATE REJECTED - NO TP1', { id: rawCandidate.id, direction, entry, stopLoss: stop.stop_loss, requiredRR: minimumRR });
                     rejectedCandidates.push({
@@ -3725,6 +3930,7 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
     };
     metrics.slATRMultiple = atrContext.atr_rule_reference ? rr.risk / atrContext.atr_rule_reference : null;
     metrics.stopStatus = stopEvaluation.status;
+    metrics.volatilityClassification = stopEvaluation.volatility_classification || null;
     if (stopEvaluation.status !== 'VALID_STRUCTURAL_STOP') add(stopEvaluation.reason);
     checks.stopLoss = stopEvaluation.status === 'VALID_STRUCTURAL_STOP';
 
@@ -3971,8 +4177,8 @@ function summarizeCandidateRejections(rejectedCandidates) {
 
 function classifyRejectionDetail(reason) {
     if (/BUY stop|SELL stop|STRUCTURALLY_INVALID/i.test(reason)) return 'STOP_STRUCTURAL_INVALID';
-    if (/below .*minimum|below .*ATR|too tight/i.test(reason)) return 'STOP_VOLATILITY_TOO_TIGHT';
-    if (/exceeds .*maximum|exceeds 4\.0x ATR|too wide/i.test(reason)) return 'STOP_VOLATILITY_TOO_WIDE';
+    if (/EXTREME_TOO_TIGHT|extreme volatility anomaly|below .*minimum|below .*ATR|too tight/i.test(reason)) return 'EXTREME_TOO_TIGHT';
+    if (/EXTREME_TOO_WIDE|exceeds .*maximum|too wide/i.test(reason)) return 'EXTREME_TOO_WIDE';
     if (/no real target|no supplied target|no real deterministic target|target ladder/i.test(reason)) return 'NO_VALID_TP1';
     if (/RR .*below|minimum RR|actual RR/i.test(reason)) return 'TP1_RR_TOO_LOW';
     if (/HTF alignment/i.test(reason)) return 'CONTINUATION_HTF';
@@ -3991,6 +4197,34 @@ function summarizeCandidateRejectionDetails(rejectedCandidates) {
         for (const code of codes) counts[code] = (counts[code] || 0) + 1;
     }
     return counts;
+}
+
+function summarizeStrategyDetections(strategySetups) {
+    const counts = { CRT: 0, TBS: 0, MSNR: 0, CRT_TBS: 0, CRT_MSNR: 0, TBS_MSNR: 0, CRT_TBS_MSNR: 0 };
+    for (const setup of strategySetups || []) {
+        if (setup.primary === 'CRT') counts.CRT++;
+        if (setup.primary === 'TBS') counts.TBS++;
+        if (setup.primary === 'MSNR') counts.MSNR++;
+        const label = String(setup.label || '');
+        if (label.includes('CRT') && label.includes('TBS') && label.includes('MSNR')) counts.CRT_TBS_MSNR++;
+        else if (label.includes('CRT') && label.includes('TBS')) counts.CRT_TBS++;
+        else if (label.includes('CRT') && label.includes('MSNR')) counts.CRT_MSNR++;
+        else if (label.includes('TBS') && label.includes('MSNR')) counts.TBS_MSNR++;
+    }
+    return counts;
+}
+
+function buildCandidatePipelineAudit(strategySetups, rawCandidates, rejectedCandidates, validCandidates) {
+    const details = summarizeCandidateRejectionDetails(rejectedCandidates);
+    return {
+        strategy_setups_detected: (strategySetups || []).length,
+        raw_execution_candidates: (rawCandidates || []).length,
+        structural_stop_valid: (rawCandidates || []).filter(c => c.risk_model?.status === 'VALID_STRUCTURAL_STOP').length,
+        volatility_rejected: (details.EXTREME_TOO_TIGHT || 0) + (details.EXTREME_TOO_WIDE || 0) + (details.STOP_VOLATILITY_TOO_TIGHT || 0) + (details.STOP_VOLATILITY_TOO_WIDE || 0),
+        target_rejected: (details.NO_VALID_TP1 || 0) + (details.TP1_RR_TOO_LOW || 0),
+        context_rejected: (details.CONTINUATION_HTF || 0) + (details.REVERSAL_EVIDENCE_INSUFFICIENT || 0),
+        final_valid: (validCandidates || []).length
+    };
 }
 
 function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext }) {
@@ -4151,11 +4385,15 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     });
     const strategySetups = buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext });
     const riskConstraints = buildRiskConstraints(pair, price, historyCache);
+    const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(strategySetups) : [];
+    const validationZones = Array.isArray(strategySetups)
+        ? [...(zones || []), ...strategyExecutionZones]
+        : (zones || []);
     const deterministicValidationContext = buildDeterministicValidationContext({
         pair,
         price,
         historyCache,
-        real_ict_zones: zones,
+        real_ict_zones: validationZones,
         risk_constraints: riskConstraints,
         structure,
         market_context: marketContext,
@@ -4179,6 +4417,14 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     stageContext.limit_order_setup.strategy_setup_count = strategySetups.length;
     stageContext.limit_order_setup.rejection_summary = summarizeCandidateRejections(adaptiveSetupResult.rejected_candidates);
     stageContext.limit_order_setup.rejection_detail = summarizeCandidateRejectionDetails(adaptiveSetupResult.rejected_candidates);
+    const strategyDetectionSummary = summarizeStrategyDetections(strategySetups);
+    const candidatePipelineAudit = buildCandidatePipelineAudit(strategySetups, adaptiveSetupResult.raw_candidates, adaptiveSetupResult.rejected_candidates, adaptiveSetupResult.valid_candidates);
+    console.log('FINAL REJECTION SUMMARY', {
+        strategy_detections: strategyDetectionSummary,
+        candidate_pipeline: candidatePipelineAudit,
+        rejection_summary: stageContext.limit_order_setup.rejection_summary,
+        rejection_detail: stageContext.limit_order_setup.rejection_detail
+    });
 
     const liveContext = {
         pair,
@@ -4218,6 +4464,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         risk_constraints: riskConstraints,
         target_candidates: targetCandidates,
         adaptive_setup_candidates: adaptiveSetupCandidates,
+        strategy_detections: strategyDetectionSummary,
+        candidate_pipeline: candidatePipelineAudit,
         setup_candidate_audit: {
             raw_candidate_count: adaptiveSetupResult.raw_candidates.length,
             valid_candidate_count: adaptiveSetupResult.valid_candidates.length,
@@ -4317,8 +4565,8 @@ Return ONLY JSON using the existing application schema plus selected_zone/decisi
   "direction": "BUY" | "SELL",
   "order_type": "LIMIT",
   "setup_type": "PENDING_LIMIT",
-  "selected_zone": { "type": "FVG" | "OB" | "MSNR", "timeframe": "4H" | "1H", "low": number, "high": number },
-  "entry_zone": { "low": number, "high": number, "source": "FVG" | "OB" | "MSNR" },
+  "selected_zone": { "type": "CRT" | "TBS" | "FVG" | "OB" | "MSNR", "timeframe": "4H" | "1H", "low": number, "high": number },
+  "entry_zone": { "low": number, "high": number, "source": "CRT" | "TBS" | "FVG" | "OB" | "MSNR" },
   "entry": number,
   "stop_loss": number,
   "stop_loss_reason": "string",

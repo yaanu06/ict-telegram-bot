@@ -517,7 +517,19 @@ describe('live AI market context and prompt', () => {
         const historyCache = trendCache('up', 1.08000, 0.00020);
         const zone = { id: '1H-BUY-MSNR-1.0995-1.1005', type: 'MSNR', direction: 'BUY', timeframe: '1H', low: 1.09950, high: 1.10050, midpoint: 1.10000, origin: 'PIVOT_DERIVED', primary_eligible: true, invalidated: false, freshness: 'FRESH' };
         const structure = { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } };
-        const strategySetups = [{ id: 'msnr-buy', primary: 'MSNR', label: 'MSNR', direction: 'BUY', timeframe: '1H', confirmations: [], matched_zone_ids: [zone.id], evidence: { level: zone.midpoint } }];
+        const strategySetups = [{
+            id: 'msnr-buy',
+            primary: 'MSNR',
+            label: 'MSNR',
+            direction: 'BUY',
+            timeframe: '1H',
+            confirmations: [],
+            matched_zone_ids: [zone.id],
+            matched_zones: [zone],
+            execution_zone: { ...zone, strategy_source: 'MSNR' },
+            structural_invalidation: zone.low,
+            evidence: { level: zone.midpoint }
+        }];
         const result = ctx.buildAdaptiveSetupCandidates({
             pair: 'EUR/USD',
             price: 1.10070,
@@ -573,6 +585,11 @@ describe('live AI market context and prompt', () => {
         const buyZones = [{ id: '1H-BUY-MSNR-99.35-99.45', type: 'MSNR', direction: 'BUY', timeframe: '1H', low: 99.35, high: 99.45, origin: 'PIVOT_DERIVED', primary_eligible: true, invalidated: false }];
         const buySetups = ctx.buildStrategySetups({ pair: 'XAU/USD', price: 100.3, historyCache: { '1H': buyData }, realZones: buyZones, marketContext: { directional_bias: 'BULLISH' } });
         expect(buySetups.some(s => s.primary === 'TBS' && s.direction === 'BUY')).toBe(true);
+        const standaloneBuySetups = ctx.buildStrategySetups({ pair: 'XAU/USD', price: 100.3, historyCache: { '1H': buyData }, realZones: [], marketContext: { directional_bias: 'NEUTRAL' } });
+        const standaloneTbs = standaloneBuySetups.find(s => s.primary === 'TBS' && s.direction === 'BUY');
+        expect(standaloneTbs).toBeTruthy();
+        expect(standaloneTbs.matched_zones).toEqual([]);
+        expect(standaloneTbs.execution_zone.type).toBe('TBS');
 
         const sellData = candles(20, 100, 0.01, 'down');
         sellData[8].h = 100.6;
@@ -582,6 +599,73 @@ describe('live AI market context and prompt', () => {
         const sellZones = [{ id: '1H-SELL-MSNR-100.55-100.65', type: 'MSNR', direction: 'SELL', timeframe: '1H', low: 100.55, high: 100.65, origin: 'PIVOT_DERIVED', primary_eligible: true, invalidated: false }];
         const sellSetups = ctx.buildStrategySetups({ pair: 'XAU/USD', price: 99.7, historyCache: { '1H': sellData }, realZones: sellZones, marketContext: { directional_bias: 'BEARISH' } });
         expect(sellSetups.some(s => s.primary === 'TBS' && s.direction === 'SELL')).toBe(true);
+    });
+
+    it('derives CRT direction from CRT evidence instead of market context bias', () => {
+        const ctx = getContext();
+        const data = candles(20, 100, 0.01, 'up');
+        for (let i = 0; i < 10; i++) {
+            data[i].o = 100.0;
+            data[i].h = 100.10;
+            data[i].l = 99.90;
+            data[i].c = 100.0;
+        }
+        for (let i = 10; i < 19; i++) {
+            data[i].o = 100.0;
+            data[i].h = 100.25;
+            data[i].l = 99.55;
+            data[i].c = 99.85;
+        }
+        data[19].o = 99.80;
+        data[19].h = 100.35;
+        data[19].l = 99.60;
+        data[19].c = 100.20;
+        const setups = ctx.buildStrategySetups({ pair: 'XAU/USD', price: 100.2, historyCache: { '1H': data }, realZones: [], marketContext: { directional_bias: 'BEARISH' } });
+        expect(setups.some(s => s.primary === 'CRT' && s.direction === 'BUY')).toBe(true);
+        expect(setups.some(s => s.primary === 'CRT' && s.direction === 'SELL')).toBe(false);
+    });
+
+    it('keeps structural stops below the old fixed ATR band when they are not anomalous', () => {
+        const ctx = getContext();
+        const atrContext = {
+            setup_timeframe: '1H',
+            atr_rule_reference: 0.00050,
+            minimum_reasonable_distance: 0.00020,
+            extreme_too_tight_distance: 0.00006,
+            maximum_reasonable_distance: 0.00400
+        };
+        const result = ctx.evaluateStructuralStop({ direction: 'BUY', entry: 1.10000, stop_loss: 1.09965 }, atrContext, 'EUR/USD');
+        expect(result.status).toBe('VALID_STRUCTURAL_STOP');
+        expect(result.volatility_classification).toBe('TIGHT_BUT_STRUCTURAL');
+    });
+
+    it('keeps wider structural stops valid when structure and maximum risk allow them', () => {
+        const ctx = getContext();
+        const atrContext = {
+            setup_timeframe: '1H',
+            atr_rule_reference: 0.00040,
+            minimum_reasonable_distance: 0.00020,
+            extreme_too_tight_distance: 0.00006,
+            maximum_reasonable_distance: 0.00400
+        };
+        const result = ctx.evaluateStructuralStop({ direction: 'SELL', entry: 1.10000, stop_loss: 1.10100 }, atrContext, 'EUR/USD');
+        expect(result.status).toBe('VALID_STRUCTURAL_STOP');
+        expect(result.volatility_classification).toBe('NORMAL');
+    });
+
+    it('rejects genuinely extreme structural stop anomalies', () => {
+        const ctx = getContext();
+        const atrContext = {
+            setup_timeframe: '1H',
+            atr_rule_reference: 0.00040,
+            minimum_reasonable_distance: 0.00020,
+            extreme_too_tight_distance: 0.00006,
+            maximum_reasonable_distance: 0.00400
+        };
+        const tooTight = ctx.evaluateStructuralStop({ direction: 'BUY', entry: 1.10000, stop_loss: 1.09998 }, atrContext, 'EUR/USD');
+        const tooWide = ctx.evaluateStructuralStop({ direction: 'SELL', entry: 1.10000, stop_loss: 1.10500 }, atrContext, 'EUR/USD');
+        expect(tooTight.status).toBe('EXTREME_TOO_TIGHT');
+        expect(tooWide.status).toBe('EXTREME_TOO_WIDE');
     });
 
     it('keeps future BUY limit below current price setup-eligible while immediate entry waits', () => {
@@ -958,18 +1042,30 @@ describe('live AI market context and prompt', () => {
 
     it('builds adaptive SELL candidates by skipping too-tight zone stops and nearer invalid RR targets', () => {
         const ctx = getContext();
+        const fvgZone = { id: '1H-SELL-FVG-0.58668-0.58739', type: 'FVG', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58668, high: 0.58739, freshness: 'FRESH' };
+        const obZone = { id: '1H-SELL-OB-0.58850-0.58887', type: 'OB', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58850, high: 0.58887, freshness: 'FRESH' };
+        const strategySetups = [{
+            id: 'tbs-sell-fvg',
+            primary: 'TBS',
+            label: 'TBS',
+            direction: 'SELL',
+            timeframe: '1H',
+            confirmations: ['FVG'],
+            matched_zone_ids: [fvgZone.id],
+            matched_zones: [fvgZone],
+            execution_zone: { ...fvgZone, type: 'TBS', id: '1H-SELL-TBS-0.58668-0.58739', strategy_source: 'TBS' },
+            structural_invalidation: fvgZone.high,
+            evidence: { liquidity_level: fvgZone.high, sweep_extreme: fvgZone.high }
+        }];
         const result = ctx.buildAdaptiveSetupCandidates({
             pair: 'NZD/USD',
             price: 0.58500,
             historyCache: trendCache('down', 0.62000, 0.00045),
-            zones: [
-                { type: 'FVG', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58668, high: 0.58739, freshness: 'FRESH' },
-                { type: 'OB', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58850, high: 0.58887, freshness: 'FRESH' }
-            ],
+            zones: [fvgZone, obZone],
             targetCandidates: {
                 buy: [],
                 sell: [
-                    { direction: 'SELL', level: 0.58366, source: 'SELL_SIDE_LIQUIDITY', origin: 'STRUCTURAL' },
+                    { direction: 'SELL', level: 0.58590, source: 'SELL_SIDE_LIQUIDITY', origin: 'STRUCTURAL' },
                     { direction: 'SELL', level: 0.58040, source: 'SWING_LOW', origin: 'STRUCTURAL' },
                     { direction: 'SELL', level: 0.57950, source: 'MSNR_SUPPORT', origin: 'PIVOT_DERIVED' },
                     { direction: 'SELL', level: 0.57800, source: 'SELL_SIDE_LIQUIDITY', origin: 'STRUCTURAL' }
@@ -977,7 +1073,8 @@ describe('live AI market context and prompt', () => {
             },
             riskConstraints: { minimum_rr: 2.5, minimum_sl_distance: 0.00219, maximum_sl_distance: 0.00600 },
             marketRegime: { primary_regime: 'TRENDING_BEARISH' },
-            structure: { '1D': { trend: 'BEARISH' }, '4H': { trend: 'BEARISH' }, '1H': { trend: 'BEARISH' } }
+            structure: { '1D': { trend: 'BEARISH' }, '4H': { trend: 'BEARISH' }, '1H': { trend: 'BEARISH' } },
+            strategySetups
         });
         const candidates = result.valid_candidates;
         expect(result.raw_candidates.length).toBeGreaterThan(0);
@@ -987,7 +1084,7 @@ describe('live AI market context and prompt', () => {
         expect(candidates[0].stop_loss).toBeGreaterThan(0.58739);
         expect(candidates[0].risk_distance).toBeGreaterThanOrEqual(candidates[0].risk_model.minimum_reasonable_distance);
         expect(candidates[0].risk_distance).toBeLessThan(0.00219);
-        expect(candidates[0].tp1).not.toBe(0.58366);
+        expect(candidates[0].tp1).not.toBe(0.58590);
         expect(candidates[0].tp1).toBeLessThanOrEqual(candidates[0].entry - candidates[0].risk_distance * 2.5 + 0.00001);
         if (candidates[0].tp2 != null) expect(candidates[0].tp1).toBeGreaterThan(candidates[0].tp2);
         if (candidates[0].tp3 != null) expect(candidates[0].tp2).toBeGreaterThan(candidates[0].tp3);
@@ -995,24 +1092,37 @@ describe('live AI market context and prompt', () => {
 
     it('rejects adaptive candidates when widening the structural stop leaves no valid TP ladder', () => {
         const ctx = getContext();
+        const fvgZone = { id: '1H-SELL-FVG-0.58668-0.58739', type: 'FVG', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58668, high: 0.58739, freshness: 'FRESH' };
+        const obZone = { id: '1H-SELL-OB-0.58850-0.58887', type: 'OB', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58850, high: 0.58887, freshness: 'FRESH' };
+        const strategySetups = [{
+            id: 'tbs-sell-no-tp',
+            primary: 'TBS',
+            label: 'TBS',
+            direction: 'SELL',
+            timeframe: '1H',
+            confirmations: ['FVG'],
+            matched_zone_ids: [fvgZone.id],
+            matched_zones: [fvgZone],
+            execution_zone: { ...fvgZone, type: 'TBS', id: '1H-SELL-TBS-0.58668-0.58739', strategy_source: 'TBS' },
+            structural_invalidation: fvgZone.high,
+            evidence: { liquidity_level: fvgZone.high, sweep_extreme: fvgZone.high }
+        }];
         const result = ctx.buildAdaptiveSetupCandidates({
             pair: 'NZD/USD',
             price: 0.58500,
             historyCache: trendCache('down', 0.62000, 0.00045),
-            zones: [
-                { type: 'FVG', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58668, high: 0.58739, freshness: 'FRESH' },
-                { type: 'OB', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58850, high: 0.58887, freshness: 'FRESH' }
-            ],
+            zones: [fvgZone, obZone],
             targetCandidates: {
                 buy: [],
                 sell: [
-                    { direction: 'SELL', level: 0.58366, source: 'SELL_SIDE_LIQUIDITY', origin: 'STRUCTURAL' },
-                    { direction: 'SELL', level: 0.58340, source: 'SWING_LOW', origin: 'STRUCTURAL' }
+                    { direction: 'SELL', level: 0.58600, source: 'SELL_SIDE_LIQUIDITY', origin: 'STRUCTURAL' },
+                    { direction: 'SELL', level: 0.58595, source: 'SWING_LOW', origin: 'STRUCTURAL' }
                 ]
             },
             riskConstraints: { minimum_rr: 2.5, minimum_sl_distance: 0.00219, maximum_sl_distance: 0.00600 },
             marketRegime: { primary_regime: 'TRENDING_BEARISH' },
-            structure: {}
+            structure: {},
+            strategySetups
         });
         expect(result.valid_candidates).toEqual([]);
         expect(result.rejected_candidates.length).toBeGreaterThan(0);
