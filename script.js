@@ -1275,7 +1275,10 @@ function getTradeManagementRules(confidence) {
     };
 }
 
+const STRATEGY_SPEC_VERSION = '1.0.0';
 const STRATEGY_SPEC = {
+    VERSION: STRATEGY_SPEC_VERSION,
+    TIME: { futureToleranceMs: 2 * 60 * 1000, candleMatchToleranceMs: 5 * 60 * 1000 },
     LIFECYCLE: { maxEntryTouches: 0, minRemainingRewardFraction: 0.50, maxMSNREventAgeBars: 8 },
     FRESHNESS: {
         max15mEventAgeHours: 12,
@@ -1477,20 +1480,22 @@ function buildFreshExecutionZones(narrative, historyCache = {}, existingZones = 
 
 function evaluateStrategyNarrative(narrative, historyCache = {}, price) {
     const executionTf = narrative.execution_timeframe || narrative.timeframe || '1H';
-    const data = historyCache?.[executionTf] || historyCache?.[narrative.timeframe] || [];
+    const data = closedStructureCandles(historyCache?.[executionTf] || historyCache?.[narrative.timeframe] || []);
     const index = narrativeEventIndex(narrative, data);
     const eventTime = getStrategyEventTime(narrative) || (index >= 0 ? candleTimestamp(data[index], index, executionTf) : null);
     const maxAgeHours = narrative.timeframe === '15M' ? STRATEGY_SPEC.FRESHNESS.max15mEventAgeHours : narrative.timeframe === '4H' ? STRATEGY_SPEC.FRESHNESS.max4hEventAgeHours : STRATEGY_SPEC.FRESHNESS.max1hEventAgeHours;
     const latest = latestCandleTimestamp(data, executionTf);
-    const ageHours = Number.isFinite(eventTime) && Number.isFinite(latest) ? Math.max(0, (latest - eventTime) / 3600000) : null;
+    const rawAgeHours = Number.isFinite(eventTime) && Number.isFinite(latest) ? (latest - eventTime) / 3600000 : null;
+    const futureEvent = Number.isFinite(eventTime) && Number.isFinite(latest) && eventTime > latest + STRATEGY_SPEC.TIME.futureToleranceMs;
+    const ageHours = rawAgeHours;
     const invalidation = Number(narrative.structural_invalidation);
     const objective = Number(narrative.primary_objective ?? narrative.target_candidates?.[0]?.level);
     const post = index >= 0 ? data.slice(index + 1) : [];
     const invalidated = Number.isFinite(invalidation) && ((narrative.direction === 'BUY' && ((Number(price) <= invalidation) || post.some(c => c.c <= invalidation))) || (narrative.direction === 'SELL' && ((Number(price) >= invalidation) || post.some(c => c.c >= invalidation))));
     const targetCompleted = Number.isFinite(objective) && ((narrative.direction === 'BUY' && ((Number(price) >= objective) || post.some(c => c.h >= objective))) || (narrative.direction === 'SELL' && ((Number(price) <= objective) || post.some(c => c.l <= objective))));
     const stale = !Number.isFinite(ageHours) || ageHours > maxAgeHours;
-    const state = invalidated ? 'INVALIDATED' : targetCompleted ? 'TARGET_COMPLETED' : stale ? 'STALE_NARRATIVE' : 'ACTIVE';
-    return { state, event_time: eventTime, event_age_hours: ageHours, event_index: index, structural_invalidation: invalidation, primary_objective: objective, original_entry_consumed: !!narrative.entry_consumed };
+    const state = futureEvent ? 'INVALIDATED' : invalidated ? 'INVALIDATED' : targetCompleted ? 'TARGET_COMPLETED' : stale ? 'STALE_NARRATIVE' : 'ACTIVE';
+    return { state, rejection_code: futureEvent ? 'DATA_TIME_INCONSISTENT' : null, event_time: eventTime, event_time_utc: Number.isFinite(eventTime) ? new Date(eventTime).toISOString() : null, event_age_hours: ageHours, event_index: index, timestamp_source: timestampSource(eventTime, index >= 0 ? data[index] : null), structural_invalidation: invalidation, primary_objective: objective, original_entry_consumed: !!narrative.entry_consumed };
 }
 
 function isValidCandleArray(data, min = 1) {
@@ -1513,6 +1518,18 @@ function candleTimestamp(candle, index, timeframe = null) {
     const minutes = timeframe === '1D' ? 1440 : timeframe === '4H' ? 240 : timeframe === '1H' ? 60 : timeframe === '15M' ? 15 : timeframe === '5M' ? 5 : 60;
     // Use an unambiguous millisecond epoch for synthetic/no-timestamp fixtures.
     return Date.UTC(2000, 0, 3) + index * minutes * 60000;
+}
+
+function timestampSource(value, candle = null) {
+    if (candle && (candle.t != null || candle.time != null || candle.datetime != null)) {
+        const raw = candle.t ?? candle.time ?? candle.datetime;
+        return typeof raw === 'number' || raw instanceof Date ? 'PROVIDER' : 'NORMALIZED_PROVIDER';
+    }
+    return value == null ? 'SYNTHETIC_FALLBACK' : 'NORMALIZED_PROVIDER';
+}
+
+function closedStructureCandles(data) {
+    return (Array.isArray(data) ? data : []).filter(c => c && c.closed !== false && c.is_forming !== true && c.forming !== true);
 }
 
 function getStrategyEventTime(setup) {
@@ -1610,7 +1627,7 @@ function evaluateTargetReachability({ direction, entry, stopLoss, target, histor
         if (!prior || z.freshness === 'FRESH') obstacleMap.set(key, z);
     }
     const opposingZones = [...obstacleMap.values()];
-    const serious = opposingZones.filter(z => ['MSNR', 'OB'].includes(z.type) || z.freshness === 'FRESH');
+    const serious = opposingZones.filter(z => z.hard_blocking === true || z.blocks_direction === true);
     const liqLevels = direction === 'BUY' ? (liquidity?.above || []) : (liquidity?.below || []);
     const interveningLiquidity = (liqLevels || []).filter(between);
     const strategyNative = (strategySetup?.target_candidates || []).some(t => t.level === targetLevel && (t.source || t.target_type) === (target.source || target.target_type));
@@ -1629,16 +1646,18 @@ function evaluateTargetReachability({ direction, entry, stopLoss, target, histor
     if (['1D', '4H'].includes(target.timeframe)) score += 5;
     if (target.freshness === 'MITIGATED' || target.consumed) score -= 18;
     const reachabilityScore = Math.max(0, Math.min(100, Math.round(score)));
-    const hardUnreachable = !!target.hard_unreachable || !!target.invalidated || !!target.consumed || reachabilityScore < 15;
+    const hardUnreachable = !!target.hard_unreachable || !!target.invalidated || !!target.consumed || serious.some(z => z.hard_blocking === true);
+    const reachabilityClass = hardUnreachable ? 'HARD_UNREACHABLE' : reachabilityScore >= 75 ? 'HIGH' : reachabilityScore >= 55 ? 'MEDIUM' : reachabilityScore >= 35 ? 'LOW' : 'VERY_LOW';
     return {
         reachable: !hardUnreachable,
         hard_unreachable: hardUnreachable,
         reachability_score: reachabilityScore,
-        target_quality: reachabilityScore >= 75 ? 'HIGH' : reachabilityScore >= 55 ? 'MEDIUM' : 'LOW',
+        target_quality: reachabilityClass,
+        reachability_class: reachabilityClass,
         target_distance: targetDistance,
         target_distance_atr: targetDistanceAtr,
         target_distance_atr_timeframe: tf,
-        intervening_obstacles: opposingZones.map(z => ({ type: z.type, timeframe: z.timeframe, low: z.low, high: z.high, severity: serious.includes(z) ? 'SERIOUS' : 'WEAK' })),
+        intervening_obstacles: opposingZones.map(z => ({ type: z.type, direction_or_role: z.direction || z.role || null, timeframe: z.timeframe, low: z.low, high: z.high, severity: serious.includes(z) ? 'SERIOUS' : 'WEAK', blocks_direction: z.hard_blocking === true, reason: z.hard_blocking === true ? 'Opposing structure is explicitly blocking' : 'Opposing structure is a quality obstacle only' })),
         intervening_liquidity: interveningLiquidity,
         structural_priority: Number(target.structural_priority) || 50,
         reason: `${opposingZones.length} opposing zones, ${interveningLiquidity.length} liquidity levels before target`
@@ -1702,6 +1721,7 @@ function buildPivotReferences(data, currentPrice) {
 }
 
 function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLocal = pair) {
+    data = closedStructureCandles(data);
     if (!isValidCandleArray(data, 20)) return [];
     const settings = getMarketSettings(pairLocal);
     const prec = settings.prec;
@@ -1887,6 +1907,7 @@ function calculateMSNR(data, currentPrice, timeframe = null, pairLocal = pair) {
 }
 
 function detectTurtleSoupEvents(data, timeframe = null, pairLocal = pair) {
+    data = closedStructureCandles(data);
     if (!isValidCandleArray(data, 20)) return [];
     const settings = getMarketSettings(pairLocal);
     const atrVal = data.length >= 15 ? atr(data, 14) : 0;
@@ -1974,6 +1995,7 @@ function detectTurtleSoup(data) {
 }
 
 function detectCRTEvents(data, timeframe = null, pairLocal = pair) {
+    data = closedStructureCandles(data);
     if (!isValidCandleArray(data, 20)) return [];
     const settings = getMarketSettings(pairLocal);
     const atrVal = data.length >= 15 ? atr(data, 14) : 0;
@@ -3615,6 +3637,9 @@ function getAdaptiveEntryCandidates(zone, direction, prec) {
 
 function getAuthoritativeStructuralInvalidation(zone, strategySetup = null) {
     const setup = strategySetup || zone?.strategy_setup || {};
+    if (setup.structural_invalidation_detail && Number.isFinite(Number(setup.structural_invalidation_detail.level))) {
+        return { ...setup.structural_invalidation_detail, level: Number(setup.structural_invalidation_detail.level) };
+    }
     const direction = zone?.direction || setup.direction;
     const primary = setup.primary || zone?.strategy_source;
     let level = Number(setup.structural_invalidation_anchor ?? zone?.structural_invalidation_anchor);
@@ -4029,6 +4054,17 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
     };
     const addSetup = (setup) => {
         if (!setup || !setup.direction || !setup.primary) return;
+        const invalidationLevel = Number(setup.structural_invalidation);
+        if (Number.isFinite(invalidationLevel)) {
+            setup.structural_invalidation_detail = {
+                strategy: setup.primary,
+                direction: setup.direction,
+                level: invalidationLevel,
+                source: setup.primary === 'TBS' ? 'TBS_SWEEP_EXTREME' : setup.primary === 'CRT' ? 'CRT_SWEEP_EXTREME' : 'MSNR_ZONE_INVALIDATION',
+                timeframe: setup.execution_timeframe || setup.timeframe || null,
+                source_time: setup.sweep_time || setup.retest_time || setup.source_time || setup.event_time || null
+            };
+        }
         const matchedZones = (setup.matched_zones || []).filter(Boolean);
         const executionZone = setup.execution_zone || (matchedZones[0] ? { ...matchedZones[0], strategy_source: setup.primary } : null);
         if (!executionZone) return;
@@ -4756,9 +4792,22 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         htf_alignment: htfAlignment
                     });
                     rawCandidate.setup_confidence = rawCandidate.confidence_breakdown.final_score;
+                    rawCandidate.quality = {
+                        final_confidence: rawCandidate.confidence_breakdown.final_score,
+                        quality_breakdown: rawCandidate.confidence_breakdown.quality_breakdown
+                    };
                     candidate.confidence_breakdown = rawCandidate.confidence_breakdown;
                     candidate.setup_confidence = rawCandidate.setup_confidence;
+                    candidate.quality = rawCandidate.quality;
+                    candidate.score = candidate.setup_confidence;
                     candidate.evaluation = { checks: evaluation.checks, metrics: evaluation.metrics };
+                    candidate.strategy_version = STRATEGY_SPEC_VERSION;
+                    const invariant = validateExecutableCandidateInvariant(candidate, deterministicValidationContext);
+                    if (!invariant.valid) {
+                        failSeed(seed, 'ENGINE_INVARIANT_FAILURE', invariant.invariant_code);
+                        rejectedCandidates.push({ id: candidate.id, rejection_code: 'ENGINE_INVARIANT_FAILURE', invariant_code: invariant.invariant_code, rejection_reasons: invariant.failures });
+                        continue;
+                    }
                     console.log('STRATEGY CANDIDATE', { id: candidate.id, strategy: candidate.strategy_label, direction: candidate.direction, score: candidate.score });
                     validCandidates.push(candidate);
                 } else {
@@ -5049,9 +5098,13 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const resolvedEventTime = Number.isFinite(normalizedEventTime)
         ? normalizedEventTime
         : (Number.isInteger(index) && (executionData[index] || data[index]) ? candleTimestamp(executionData[index] || data[index], index, executionEventTime ? executionTf : setupTf) : null);
-    const eventAgeHours = hasExplicitTimes && Number.isFinite(asOfTime) && Number.isFinite(resolvedEventTime)
-        ? Math.max(0, (asOfTime - resolvedEventTime) / 3600000)
+    const rawEventAgeHours = hasExplicitTimes && Number.isFinite(asOfTime) && Number.isFinite(resolvedEventTime)
+        ? (asOfTime - resolvedEventTime) / 3600000
         : (Number.isInteger(index) ? Math.max(0, data.length - 1 - index) * (({ '15M': 15, '1H': 60, '4H': 240, '1D': 1440 }[setupTf] || 60) / 60) : null);
+    const timestampInFuture = hasExplicitTimes && Number.isFinite(asOfTime) && Number.isFinite(resolvedEventTime) && resolvedEventTime > asOfTime + STRATEGY_SPEC.TIME.futureToleranceMs;
+    const zoneCreatedTime = normalizeTimestampUTC(candidate.execution_zone_created_time ?? setup.execution_zone_created_time ?? setup.execution_zone?.created_time);
+    const zoneTimeInFuture = hasExplicitTimes && Number.isFinite(asOfTime) && Number.isFinite(zoneCreatedTime) && zoneCreatedTime > asOfTime + STRATEGY_SPEC.TIME.futureToleranceMs;
+    const eventAgeHours = rawEventAgeHours;
     const barMinutes = { '15M': 15, '1H': 60, '4H': 240, '1D': 1440 }[setupTf] || 60;
     const eventAgeBars = Number.isFinite(eventAgeHours) ? Math.round(eventAgeHours * 60 / barMinutes) : (Number.isInteger(index) ? data.length - 1 - index : null);
     const maxEventAgeHours = setupTf === '15M'
@@ -5084,6 +5137,13 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const marketClosed = [0, 6].includes(sessionClock.getUTCDay());
     const result = {
         event_time: resolvedEventTime,
+        event_time_utc: Number.isFinite(resolvedEventTime) ? new Date(resolvedEventTime).toISOString() : null,
+        as_of_time_utc: Number.isFinite(asOfTime) ? new Date(asOfTime).toISOString() : null,
+        zone_created_time_utc: Number.isFinite(zoneCreatedTime) ? new Date(zoneCreatedTime).toISOString() : null,
+        source_candle_time_utc: Number.isInteger(index) && (executionData[index] || data[index])
+            ? new Date(candleTimestamp(executionData[index] || data[index], index, executionEventTime ? executionTf : setupTf)).toISOString() : null,
+        timestamp_source: timestampSource(resolvedEventTime, Number.isInteger(index) ? (executionData[index] || data[index]) : null),
+        structure_data_cutoff: Number.isFinite(latestTimestamp) ? latestTimestamp : null,
         event_age_hours: eventAgeHours,
         event_age_bars: eventAgeBars,
         current_session: currentSession,
@@ -5096,7 +5156,9 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         entry_consumed: false, entry_first_touch_index: null, entry_first_touch_time: null,
         entry_touch_count_after_signal: 0, entry_freshness: 'FRESH',
         tp1_already_reached: false, tp1_first_reached_index: null, tp1_first_reached_time: null,
-        remaining_reward_fraction: Number.isFinite(tp1) && Math.abs(tp1 - entry) > 0 ? Math.abs(tp1 - price) / Math.abs(tp1 - entry) : null,
+        nominal_reward_after_fill: Number.isFinite(tp1) && Number.isFinite(entry) ? Math.abs(tp1 - entry) : null,
+        entry_retracement_distance: Number.isFinite(entry) && Number.isFinite(price) ? Math.abs(price - entry) : null,
+        remaining_reward_fraction: Number.isFinite(tp1) && Math.abs(tp1 - entry) > 0 ? Math.max(0, Math.min(1, Math.abs(tp1 - price) / Math.abs(tp1 - entry))) : null,
         progress_to_tp1_fraction: Number.isFinite(tp1) && Number.isFinite(entry) && Math.abs(tp1 - entry) > 0
             ? Math.max(0, Math.min(1, candidate.direction === 'BUY' ? (price - entry) / (tp1 - entry) : (entry - price) / (entry - tp1)))
             : null,
@@ -5154,9 +5216,10 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const staleByAge = !Number.isFinite(eventAgeHours) || eventAgeHours > maxEventAgeHours;
     const deliveryAdvanced = result.remaining_reward_fraction != null && result.remaining_reward_fraction < freshnessSpec.minRemainingRewardFraction;
     const entryTooFarForToday = !result.entry_reachable_today;
-    result.still_actionable_today = !expired && !staleByAge && !result.entry_consumed && !result.tp1_already_reached &&
+    result.timestamp_consistent = !timestampInFuture && !zoneTimeInFuture && !(hasExplicitTimes && Number.isFinite(eventAgeHours) && eventAgeHours < -(STRATEGY_SPEC.TIME.futureToleranceMs / 3600000));
+    result.still_actionable_today = result.timestamp_consistent && !expired && !staleByAge && !result.entry_consumed && !result.tp1_already_reached &&
         !deliveryAdvanced && !entryTooFarForToday && !marketClosed;
-    result.rejection_code = expired ? 'SETUP_EXPIRED'
+    result.rejection_code = !result.timestamp_consistent ? 'DATA_TIME_INCONSISTENT' : expired ? 'SETUP_EXPIRED'
         : result.tp1_already_reached ? 'SETUP_ALREADY_COMPLETED'
         : result.entry_consumed ? 'ENTRY_ALREADY_CONSUMED'
         : deliveryAdvanced ? 'SETUP_DELIVERY_ALREADY_ADVANCED'
@@ -5203,11 +5266,26 @@ function calculateCandidateConfidence(candidate, context = {}) {
         .filter(obstacle => obstacle.severity === 'SERIOUS').length;
     if (seriousObstacles > 0) add(`Serious target obstacles ${seriousObstacles}`, seriousObstacles * spec.seriousObstaclePenalty);
     const finalScore = Math.max(0, Math.min(100, Math.round(score)));
+    const qualityBand = finalScore >= spec.highQualityMinimum ? 'HIGH' : finalScore >= spec.mediumQualityMinimum ? 'MEDIUM' : 'LOW';
+    const qualityBreakdown = {
+        base: spec.baseScore,
+        strategy_adjustment: adjustments.filter(a => /Fresh|confluence/i.test(a.label)).reduce((s, a) => s + a.value, 0),
+        htf_adjustment: adjustments.filter(a => /HTF/i.test(a.label)).reduce((s, a) => s + a.value, 0),
+        execution_freshness_adjustment: adjustments.filter(a => /Entry reachability|reward/i.test(a.label)).reduce((s, a) => s + a.value, 0),
+        target_reachability_adjustment: adjustments.filter(a => /Target reachability/i.test(a.label)).reduce((s, a) => s + a.value, 0),
+        obstacle_adjustment: adjustments.filter(a => /obstacle/i.test(a.label)).reduce((s, a) => s + a.value, 0),
+        delivery_progress_adjustment: adjustments.filter(a => /reward/i.test(a.label)).reduce((s, a) => s + a.value, 0),
+        session_adjustment: 0,
+        stop_quality_adjustment: 0,
+        final_confidence: finalScore,
+        quality_band: qualityBand
+    };
     return {
         base_score: spec.baseScore,
         adjustments,
         final_score: finalScore,
-        quality: finalScore >= spec.highQualityMinimum ? 'HIGH' : finalScore >= spec.mediumQualityMinimum ? 'MEDIUM' : 'LOW'
+        quality: qualityBand,
+        quality_breakdown: qualityBreakdown
     };
 }
 
@@ -6143,7 +6221,9 @@ function compactAIContext(liveMarketContext) {
             execution_timeframe: s.execution_timeframe,
             event_time: s.event_time,
             narrative_state: s.narrative_state,
+            strategy_version: STRATEGY_SPEC_VERSION,
             narrative_event_time: s.narrative_event_time,
+            structural_invalidation: s.structural_invalidation_detail || null,
             original_strategy_entry_consumed: !!s.original_strategy_entry_consumed,
             freshness: s.freshness,
             execution_model: s.execution_model,
@@ -6658,6 +6738,34 @@ function findSelectedLiveZone(aiResult, liveMarketContext) {
     }) || null;
 }
 
+function validateExecutableCandidateInvariant(candidate, marketState = {}) {
+    const failures = [];
+    if (!candidate || typeof candidate !== 'object') return { valid: false, invariant_code: 'CANDIDATE_MISSING', failures: ['candidate missing'] };
+    for (const field of ['entry', 'stop_loss', 'tp1']) if (!Number.isFinite(Number(candidate[field]))) failures.push(`${field}_NOT_FINITE`);
+    const direction = candidate.direction;
+    const entry = Number(candidate.entry), stop = Number(candidate.stop_loss), tp1 = Number(candidate.tp1 ?? candidate.take_profit_1);
+    if (direction === 'BUY' && !(stop < entry && tp1 > entry)) failures.push('BUY_GEOMETRY_INVALID');
+    if (direction === 'SELL' && !(stop > entry && tp1 < entry)) failures.push('SELL_GEOMETRY_INVALID');
+    const invalidation = candidate.structural_invalidation && typeof candidate.structural_invalidation === 'object' ? candidate.structural_invalidation : null;
+    if (invalidation && Number.isFinite(Number(invalidation.level))) {
+        if (direction === 'BUY' && !(stop < Number(invalidation.level))) failures.push('SL_INSIDE_STRUCTURAL_INVALIDATION');
+        if (direction === 'SELL' && !(stop > Number(invalidation.level))) failures.push('SL_INSIDE_STRUCTURAL_INVALIDATION');
+    }
+    const eventTime = normalizeTimestampUTC(candidate.event_time ?? candidate.narrative_event_time ?? candidate.execution_zone_created_time);
+    const asOf = normalizeTimestampUTC(marketState.as_of_time ?? marketState.utc_time ?? marketState.scan_time);
+    if (Number.isFinite(eventTime) && Number.isFinite(asOf) && eventTime > asOf + STRATEGY_SPEC.TIME.futureToleranceMs) failures.push('DATA_TIME_INCONSISTENT');
+    if (candidate.execution_zone_created_time != null && Number.isFinite(asOf) && normalizeTimestampUTC(candidate.execution_zone_created_time) > asOf + STRATEGY_SPEC.TIME.futureToleranceMs) failures.push('ZONE_TIME_INCONSISTENT');
+    if (candidate.entry_consumed === true) failures.push('ENTRY_ALREADY_CONSUMED');
+    if (candidate.tp1_already_reached === true) failures.push('SETUP_ALREADY_COMPLETED');
+    if (candidate.opportunity_status && !['FRESH_NOW', 'FRESH_PENDING_TODAY'].includes(candidate.opportunity_status)) failures.push('LIFECYCLE_NOT_SELECTABLE');
+    if (candidate.target_map && candidate.target_map.length && !candidate.target_map[0].primary_target_source) failures.push('TARGET_PROVENANCE_INVALID');
+    const rr = Math.abs(tp1 - entry) / Math.abs(entry - stop);
+    if (!Number.isFinite(rr)) failures.push('RR_NOT_FINITE');
+    if (Number.isFinite(candidate.actual_rr) && Math.abs(Number(candidate.actual_rr) - rr) > 0.02) failures.push('RR_MISMATCH');
+    if (candidate.quality?.final_confidence != null && candidate.confidence_breakdown?.final_score != null && candidate.quality.final_confidence !== candidate.confidence_breakdown.final_score) failures.push('CONFIDENCE_MUTATED');
+    return { valid: failures.length === 0, invariant_code: failures[0] || null, failures, recomputed_rr: rr };
+}
+
 function validateFinalSignalConsistency(signal, liveMarketContext = {}) {
     const issues = [];
     const isLimit = signal?.trade_type === 'BUY_LIMIT' || signal?.trade_type === 'SELL_LIMIT';
@@ -6691,6 +6799,10 @@ function validateFinalSignalConsistency(signal, liveMarketContext = {}) {
         if (candidate) {
             const stopCheck = evaluateStructuralStop(candidate, getCandidateATRContext(candidate, liveMarketContext.historyCache || {}, liveMarketContext.pair || pair, liveMarketContext.current_price), liveMarketContext.pair || pair);
             if (stopCheck.status === 'SL_INSIDE_STRUCTURAL_INVALIDATION') issues.push('selected stop is inside authoritative strategy invalidation');
+            if (candidate.strategy_setup || candidate.structural_invalidation) {
+                const invariant = validateExecutableCandidateInvariant(candidate, liveMarketContext);
+                if (!invariant.valid) issues.push(`ENGINE_INVARIANT_FAILURE:${invariant.invariant_code}`);
+            }
         }
     }
     if (tp2 != null && !Number.isFinite(tp2)) issues.push('TP2 is not finite');

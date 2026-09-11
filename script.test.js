@@ -3238,3 +3238,48 @@ describe('pendingFills queue (localStorage)', () => {
         expect(queue.length).toBe(0);
     });
 });
+
+describe('production invariant contracts', () => {
+    it('rejects a future-dated strategy event without clamping its age', () => {
+        const ctx = getContext();
+        const asOf = Date.parse('2026-09-11T10:00:00Z');
+        const future = Date.parse('2026-09-11T12:00:00Z');
+        const result = ctx.evaluateSetupLifecycle({ direction: 'BUY', entry: 100, zone_low: 99.9, zone_high: 100.1, tp1: 104,
+            strategy_setup: { primary: 'CRT', timeframe: '1H', reclaim_time: future } }, {
+            price: 101, as_of_time: asOf,
+            historyCache: { '1H': [c(100, 101, 99, 100, '2026-09-11T09:00:00Z'), c(100, 101, 99, 100, '2026-09-11T10:00:00Z')] }
+        });
+        expect(result.event_age_hours).toBeLessThan(0);
+        expect(result.rejection_code).toBe('DATA_TIME_INCONSISTENT');
+    });
+
+    it('does not use explicitly forming candles for strategy detection', () => {
+        const ctx = getContext();
+        const data = Array.from({ length: 20 }, (_, i) => c(100, 101, 99, 100, `2026-09-11T${String(i).padStart(2, '0')}:00:00Z`));
+        data[data.length - 1].closed = false;
+        expect(ctx.detectCRTEvents(data, '1H', 'EUR/USD').every(e => e.reclaim_bar_index !== data.length - 1)).toBe(true);
+        expect(ctx.detectTurtleSoupEvents(data, '1H', 'EUR/USD').every(e => e.reclaim_bar_index !== data.length - 1)).toBe(true);
+    });
+
+    it('returns directional obstacle metadata without treating same-direction zones as blockers', () => {
+        const ctx = getContext();
+        const result = ctx.evaluateTargetReachability({ direction: 'SELL', entry: 110, stopLoss: 112,
+            target: { level: 100, source: 'SWING_LOW', timeframe: '1H' },
+            historyCache: { '1H': candles(40, 110, 1, 'down') },
+            zones: [{ type: 'OB', direction: 'BUY', low: 104, high: 105 }, { type: 'OB', direction: 'SELL', low: 106, high: 107 }],
+            liquidity: { above: [], below: [] }, strategySetup: { target_candidates: [] }
+        });
+        expect(result.intervening_obstacles).toHaveLength(1);
+        expect(result.intervening_obstacles[0].blocks_direction).toBe(false);
+        expect(result.intervening_obstacles[0].direction_or_role).toBe('BUY');
+    });
+
+    it('blocks executable geometry that violates strategy invalidation', () => {
+        const ctx = getContext();
+        const result = ctx.validateExecutableCandidateInvariant({ direction: 'SELL', entry: 207.8, stop_loss: 207.84, tp1: 207.618,
+            opportunity_status: 'FRESH_PENDING_TODAY', structural_invalidation: { level: 207.85753, source: 'TBS_SWEEP_EXTREME' },
+            target_map: [{ primary_target_source: 'SWING_LOW' }] });
+        expect(result.valid).toBe(false);
+        expect(result.invariant_code).toBe('SL_INSIDE_STRUCTURAL_INVALIDATION');
+    });
+});
