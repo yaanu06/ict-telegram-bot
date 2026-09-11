@@ -1277,6 +1277,15 @@ function getTradeManagementRules(confidence) {
 
 const STRATEGY_SPEC = {
     LIFECYCLE: { maxEntryTouches: 0, minRemainingRewardFraction: 0.35, maxMSNREventAgeBars: 8 },
+    FRESHNESS: {
+        max15mEventAgeHours: 12,
+        max1hEventAgeHours: 30,
+        max4hEventAgeHours: 72,
+        maxPendingDistanceAtr: 3,
+        minRemainingRewardFraction: 0.35,
+        lowEntryReachabilityScore: 40,
+        mediumEntryReachabilityScore: 70
+    },
     CRT: { referenceLookback: 18, eventLookahead: 10, minReferenceAtr: 0.35, maxEventAgeBars: 8, minSweepAtr: 0.04, dedupeAtr: 0.2, maxEventsPerTimeframe: 8 },
     TBS: { lookback: 80, referenceMinAgeBars: 4, maxEventAgeBars: 8, minSweepAtr: 0.04, minSweepPips: 2, dedupeAtr: 0.2, maxEventsPerTimeframe: 8 },
     MSNR: { lookback: 120, maxMitigationCount: 2, breakCloseBufferAtr: 0.03, retestToleranceAtr: 0.15, zoneAtrWidth: 0.08, minStructuralScore: 35, maxLevelsPerTimeframe: 12 },
@@ -3761,6 +3770,7 @@ function buildMarketContext({ pair, price, historyCache, structure, session, ses
         premium_discount: premiumDiscount,
         displacement: marketRegime?.displacement || {},
         session,
+        as_of_time: new Date().toISOString(),
         amd: { phase: marketRegime?.phase || 'UNKNOWN', regime: marketRegime?.primary_regime || 'UNKNOWN' },
         indicators: momentum,
         volatility
@@ -3934,9 +3944,9 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 reclaim_confirmed: tbs.reclaim_confirmed,
                 source_time: tbs.source_time,
                 sweep_time: tbs.sweep_time,
-                reclaim_time: tbs.reclaim_time,
+                reclaim_time: tbs.reclaim_time ?? (Number.isInteger(tbs.reclaim_bar_index) ? candleTimestamp(data[tbs.reclaim_bar_index], tbs.reclaim_bar_index, tf) : null),
                 reclaim_bar_index: tbs.reclaim_bar_index,
-                event_time: tbs.event_time,
+                event_time: tbs.event_time ?? tbs.reclaim_time ?? (Number.isInteger(tbs.reclaim_bar_index) ? candleTimestamp(data[tbs.reclaim_bar_index], tbs.reclaim_bar_index, tf) : null),
                 event_age: tbs.event_age,
                 freshness: tbs.freshness,
                 structural_entry_region: { low: executionZone.low, high: executionZone.high },
@@ -3979,9 +3989,9 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 sweep_extreme: crt.sweep_extreme,
                 source_time: crt.source_time,
                 sweep_time: crt.sweep_time,
-                reclaim_time: crt.reclaim_time,
+                reclaim_time: crt.reclaim_time ?? (Number.isInteger(crt.reclaim_bar_index) ? candleTimestamp(data[crt.reclaim_bar_index], crt.reclaim_bar_index, tf) : null),
                 reclaim_bar_index: crt.reclaim_bar_index,
-                event_time: crt.event_time,
+                event_time: crt.event_time ?? crt.reclaim_time ?? (Number.isInteger(crt.reclaim_bar_index) ? candleTimestamp(data[crt.reclaim_bar_index], crt.reclaim_bar_index, tf) : null),
                 reclaim_level: crt.reclaim_level,
                 event_age: crt.event_age,
                 freshness: crt.freshness,
@@ -4338,6 +4348,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         target_reachability: compactTargetReachabilityForOutput(t.target_reachability),
                         actual_rr: t.actual_rr
                     })) : [],
+                    setup_confidence: Math.max(0, Math.min(100, Math.round(score))),
                     score: ictRound(score, 2)
                 };
                 Object.assign(rawCandidate, candidate);
@@ -4387,12 +4398,16 @@ function buildDeterministicOrderDescription(candidate) {
     const type = target?.target_type || source;
     const confluence = target?.target_confluence || [];
     const invalidation = candidate.strategy_setup?.structural_invalidation ?? candidate.stop_loss;
+    const lifecycle = candidate.evaluation?.metrics?.setup_lifecycle || candidate;
+    const age = Number.isFinite(lifecycle.event_age_hours) ? `${lifecycle.event_age_hours.toFixed(1)} hours ago` : 'recently';
+    const freshness = lifecycle.opportunity_status === 'FRESH_NOW' ? 'fresh and actionable now' : 'fresh and actionable later today';
     const wait = `Pending ${candidate.direction}_LIMIT at ${candidate.entry} remains valid while structural invalidation ${invalidation} is not breached. The limit fills when market price trades at the order price.`;
     return {
         primary_target_source: source, target_type: type, target_confluence: confluence,
         wait_condition: wait,
         reasoning: {
             primary: `${candidate.strategy_label || candidate.strategy_setup?.label || candidate.zone_type} ${candidate.direction}_LIMIT at ${candidate.entry}. TP1 ${candidate.tp1}: ${source} (${type}).`,
+            freshness: `Fresh ${candidate.setup_timeframe || candidate.timeframe || 'intraday'} opportunity from ${age}; ${freshness}. ${Number.isFinite(lifecycle.remaining_reward_fraction) ? `${Math.round(lifecycle.remaining_reward_fraction * 100)}% of the original reward path remains.` : 'The original reward path remains structurally valid.'}`,
             why_best: `Selected deterministic candidate ${candidate.id}; target confluence: ${confluence.map(t => `${t.source} ${t.timeframe || ''}`.trim()).join(', ') || 'none'}.`,
             risk_warning: 'Structural invalidation and market execution risk apply.'
         }
@@ -4434,6 +4449,14 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.risk_reward = `1:${candidate.rr_tp1.toFixed(2)}`;
     aiResult.adaptive_candidate = candidate;
     aiResult.setup_lifecycle = candidate.evaluation?.metrics?.setup_lifecycle || null;
+    aiResult.opportunity_status = candidate.opportunity_status || aiResult.setup_lifecycle?.opportunity_status || null;
+    aiResult.event_time = candidate.event_time || aiResult.setup_lifecycle?.event_time || null;
+    aiResult.event_age_hours = candidate.event_age_hours ?? aiResult.setup_lifecycle?.event_age_hours ?? null;
+    aiResult.still_actionable_today = candidate.still_actionable_today ?? aiResult.setup_lifecycle?.still_actionable_today ?? false;
+    aiResult.pending_entry_quality = candidate.pending_entry_quality || aiResult.setup_lifecycle?.pending_entry_quality || null;
+    aiResult.distance_to_entry_atr = candidate.distance_to_entry_atr ?? aiResult.setup_lifecycle?.distance_to_entry_atr ?? null;
+    aiResult.remaining_reward_fraction = candidate.remaining_reward_fraction ?? aiResult.setup_lifecycle?.remaining_reward_fraction ?? null;
+    aiResult.setup_confidence = candidate.setup_confidence ?? candidate.score ?? null;
     aiResult.strategy_setup = candidate.strategy_setup || null;
     aiResult.strategy_evidence = candidate.strategy_evidence || candidate.strategy_setup?.strategy_evidence || null;
     aiResult.target_map = candidate.target_map || [];
@@ -4519,9 +4542,12 @@ function candidateToAIResult(candidate) {
 
 function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const setup = candidate.strategy_setup || candidate;
-    const tf = setup.setup_timeframe || setup.timeframe || candidate.timeframe;
-    const data = marketContext.historyCache?.[tf] || [];
+    const setupTf = setup.setup_timeframe || setup.timeframe || candidate.timeframe;
+    const executionTf = setup.execution_timeframe || candidate.execution_timeframe || setupTf;
+    const data = marketContext.historyCache?.[setupTf] || [];
+    const executionData = marketContext.historyCache?.[executionTf] || data;
     const spec = STRATEGY_SPEC.LIFECYCLE;
+    const freshnessSpec = STRATEGY_SPEC.FRESHNESS;
     // A reaction retest is the entry, not a new signal that resets its consumption.
     // A role reversal becomes actionable at the confirmed break, before its first retest.
     let index = setup.primary === 'MSNR'
@@ -4529,7 +4555,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         : (setup.reclaim_bar_index ?? setup.reclaim_index ?? setup.evidence?.reclaim_bar);
     const eventTime = setup.primary === 'MSNR' ? setup.event_time : (setup.reclaim_time ?? setup.event_time);
     if (eventTime != null) {
-        const matched = data.findIndex((bar, i) => candleTimestamp(bar, i, tf) === eventTime);
+        const matched = data.findIndex((bar, i) => candleTimestamp(bar, i, setupTf) === eventTime);
         index = matched >= 0 ? matched : null;
     }
     const low = candidate.entry_region_low ?? candidate.zone_low ?? setup.structural_entry_region?.low;
@@ -4537,33 +4563,103 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const entry = candidate.entry ?? setup.execution_zone?.midpoint;
     const tp1 = candidate.tp1 ?? candidate.take_profit_1;
     const price = Number(marketContext.price ?? marketContext.current_price);
+    const suppliedAsOf = marketContext.as_of_time || marketContext.utc_time || marketContext.scan_time || marketContext.market_context?.as_of_time;
+    const hasExplicitTimes = [...data, ...executionData].some(bar => Number.isFinite(parseCandleTimeUTC(bar?.t)));
+    const latestTimestamp = [...data, ...executionData]
+        .map((bar, i) => candleTimestamp(bar, i, setupTf))
+        .filter(Number.isFinite)
+        .reduce((max, value) => Math.max(max, value), -Infinity);
+    const asOfTime = Number.isFinite(Date.parse(suppliedAsOf || ''))
+        ? Date.parse(suppliedAsOf)
+        : (Number.isFinite(latestTimestamp) ? latestTimestamp : null);
+    const resolvedEventTime = Number.isFinite(eventTime)
+        ? eventTime
+        : (Number.isInteger(index) && data[index] ? candleTimestamp(data[index], index, setupTf) : null);
+    const eventAgeHours = hasExplicitTimes && Number.isFinite(asOfTime) && Number.isFinite(resolvedEventTime)
+        ? Math.max(0, (asOfTime - resolvedEventTime) / 3600000)
+        : (Number.isInteger(index) ? Math.max(0, data.length - 1 - index) * (({ '15M': 15, '1H': 60, '4H': 240, '1D': 1440 }[setupTf] || 60) / 60) : null);
+    const barMinutes = { '15M': 15, '1H': 60, '4H': 240, '1D': 1440 }[setupTf] || 60;
+    const eventAgeBars = Number.isFinite(eventAgeHours) ? Math.round(eventAgeHours * 60 / barMinutes) : (Number.isInteger(index) ? data.length - 1 - index : null);
+    const maxEventAgeHours = setupTf === '15M'
+        ? freshnessSpec.max15mEventAgeHours
+        : setupTf === '1H'
+            ? freshnessSpec.max1hEventAgeHours
+            : setupTf === '4H'
+                ? freshnessSpec.max4hEventAgeHours
+                : freshnessSpec.max1hEventAgeHours;
+    const atrData = executionData.length >= 15 ? executionData : data;
+    const executionAtr = atrData.length >= 15 ? atr(atrData, 14) : null;
+    const distanceToEntry = Number.isFinite(entry) && Number.isFinite(price) ? Math.abs(entry - price) : null;
+    const distanceToEntryAtr = Number.isFinite(distanceToEntry) && Number.isFinite(executionAtr) && executionAtr > 0
+        ? distanceToEntry / executionAtr
+        : null;
+    const entryReachabilityScore = Number.isFinite(distanceToEntryAtr)
+        ? Math.max(0, Math.round(100 - distanceToEntryAtr * 22))
+        : null;
+    const pendingEntryQuality = !Number.isFinite(entryReachabilityScore)
+        ? 'LOW'
+        : entryReachabilityScore >= freshnessSpec.mediumEntryReachabilityScore
+            ? 'HIGH'
+            : entryReachabilityScore >= freshnessSpec.lowEntryReachabilityScore
+                ? 'MEDIUM'
+                : 'LOW';
+    const currentSession = marketContext.session?.name || marketContext.session || marketContext.market_context?.session?.name || null;
+    const eventSession = Number.isFinite(resolvedEventTime) ? getSession(new Date(resolvedEventTime)).session : null;
     const result = {
-        event_time: Number.isInteger(index) && data[index] ? candleTimestamp(data[index], index, tf) : eventTime,
+        event_time: resolvedEventTime,
+        event_age_hours: eventAgeHours,
+        event_age_bars: eventAgeBars,
+        current_session: currentSession,
+        event_session: eventSession,
+        expected_entry_window: currentSession ? `CURRENT_SESSION_OR_NEXT_VALID_${executionTf}_WINDOW` : null,
+        still_actionable_today: false,
         entry_region_low: low, entry_region_high: high,
         entry_consumed: false, entry_first_touch_index: null, entry_first_touch_time: null,
         entry_touch_count_after_signal: 0, entry_freshness: 'FRESH',
         tp1_already_reached: false, tp1_first_reached_index: null, tp1_first_reached_time: null,
         remaining_reward_fraction: Number.isFinite(tp1) && Math.abs(tp1 - entry) > 0 ? Math.abs(tp1 - price) / Math.abs(tp1 - entry) : null,
+        progress_to_tp1_fraction: Number.isFinite(tp1) && Number.isFinite(entry) && Math.abs(tp1 - entry) > 0
+            ? Math.max(0, Math.min(1, candidate.direction === 'BUY' ? (price - entry) / (tp1 - entry) : (entry - price) / (entry - tp1)))
+            : null,
+        distance_to_entry: distanceToEntry,
+        distance_to_entry_atr: distanceToEntryAtr,
+        distance_to_entry_pips: Number.isFinite(distanceToEntry) && Number.isFinite(marketContext.pipSize) ? distanceToEntry / marketContext.pipSize : null,
+        expected_retrace_quality: pendingEntryQuality,
+        entry_reachable_today: Number.isFinite(distanceToEntryAtr) ? distanceToEntryAtr <= freshnessSpec.maxPendingDistanceAtr : true,
+        entry_reachability_score: entryReachabilityScore,
+        pending_entry_quality: pendingEntryQuality,
+        opportunity_status: 'STALE',
         setup_lifecycle_status: 'FRESH', rejection_code: null
     };
     const maxAge = STRATEGY_SPEC[setup.primary]?.maxEventAgeBars ?? spec.maxMSNREventAgeBars;
     const expired = !Number.isInteger(index) || index < 0 || index >= data.length ||
         data.length - 1 - index > maxAge || !Number.isFinite(low) || !Number.isFinite(high);
-    if (Number.isInteger(index) && index >= 0 && index < data.length) {
-        for (let i = index + 1; i < data.length; i++) {
-            const bar = data[i];
+    const hasExplicitExecutionTimes = executionData.some(bar => Number.isFinite(parseCandleTimeUTC(bar?.t)));
+    const eventCutoff = Number.isFinite(resolvedEventTime) && hasExplicitExecutionTimes ? resolvedEventTime : null;
+    if ((Number.isInteger(index) && index >= 0 && index < data.length) || eventCutoff != null) {
+        for (let i = 0; i < executionData.length; i++) {
+            const bar = executionData[i];
+            const barHasExplicitTime = Number.isFinite(parseCandleTimeUTC(bar?.t));
+            const barTime = candleTimestamp(bar, i, executionTf);
+            if (eventCutoff != null) {
+                if (barHasExplicitTime && barTime <= eventCutoff) continue;
+                if (!barHasExplicitTime && executionTf === setupTf && Number.isInteger(index) && i <= index) continue;
+                if (!barHasExplicitTime && executionTf !== setupTf && hasExplicitExecutionTimes) continue;
+            } else if (Number.isInteger(index) && i <= index) {
+                continue;
+            }
             if (bar.l <= high && bar.h >= low) {
                 result.entry_touch_count_after_signal++;
                 if (result.entry_first_touch_index == null) {
                     result.entry_first_touch_index = i;
-                    result.entry_first_touch_time = candleTimestamp(bar, i, tf);
+                    result.entry_first_touch_time = barTime;
                 }
             }
             if (Number.isFinite(tp1) && (candidate.direction === 'BUY' ? bar.h >= tp1 : bar.l <= tp1)) {
                 result.tp1_already_reached = true;
                 if (result.tp1_first_reached_index == null) {
                     result.tp1_first_reached_index = i;
-                    result.tp1_first_reached_time = candleTimestamp(bar, i, tf);
+                    result.tp1_first_reached_time = barTime;
                 }
             }
         }
@@ -4571,11 +4667,21 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     result.entry_consumed = result.entry_touch_count_after_signal > spec.maxEntryTouches;
     const currentReached = Number.isFinite(tp1) && (candidate.direction === 'BUY' ? price >= tp1 : price <= tp1);
     result.tp1_already_reached ||= currentReached;
+    // A distant untouched limit is still a valid pending opportunity; reachability
+    // lowers its quality and confidence but does not silently convert it to stale.
+    const staleByAge = !Number.isFinite(eventAgeHours) || eventAgeHours > maxEventAgeHours;
+    result.still_actionable_today = !expired && !staleByAge && !result.entry_consumed && !result.tp1_already_reached &&
+        (result.remaining_reward_fraction == null || result.remaining_reward_fraction >= freshnessSpec.minRemainingRewardFraction);
     result.rejection_code = expired ? 'SETUP_EXPIRED'
         : result.tp1_already_reached ? 'SETUP_ALREADY_COMPLETED'
         : result.entry_consumed ? 'ENTRY_ALREADY_CONSUMED'
-        : result.remaining_reward_fraction != null && result.remaining_reward_fraction < spec.minRemainingRewardFraction ? 'SETUP_DELIVERY_ALREADY_ADVANCED' : null;
+        : result.remaining_reward_fraction != null && result.remaining_reward_fraction < freshnessSpec.minRemainingRewardFraction ? 'SETUP_DELIVERY_ALREADY_ADVANCED'
+        : staleByAge ? 'SETUP_STALE' : null;
     result.entry_freshness = expired ? 'EXPIRED' : result.entry_consumed ? 'CONSUMED' : result.entry_touch_count_after_signal ? 'TOUCHED' : 'FRESH';
+    result.opportunity_status = result.rejection_code === 'SETUP_ALREADY_COMPLETED' ? 'COMPLETED'
+        : result.rejection_code === 'SETUP_EXPIRED' ? 'EXPIRED'
+            : result.rejection_code ? 'STALE'
+                : (getZonePriceStatus(price, { low, high }).insideZone ? 'FRESH_NOW' : 'FRESH_PENDING_TODAY');
     result.setup_lifecycle_status = result.rejection_code || 'FRESH';
     return result;
 }
@@ -4949,7 +5055,7 @@ function summarizeCandidateRejections(rejectedCandidates) {
 }
 
 function classifyRejectionDetail(reason) {
-    if (/^(ENTRY_ALREADY_CONSUMED|SETUP_ALREADY_COMPLETED|SETUP_DELIVERY_ALREADY_ADVANCED|SETUP_EXPIRED)$/.test(reason)) return reason;
+    if (/^(ENTRY_ALREADY_CONSUMED|SETUP_ALREADY_COMPLETED|SETUP_DELIVERY_ALREADY_ADVANCED|SETUP_EXPIRED|SETUP_STALE)$/.test(reason)) return reason;
     if (/BUY stop|SELL stop|STRUCTURALLY_INVALID/i.test(reason)) return 'STOP_STRUCTURAL_INVALID';
     if (/EXTREME_TOO_TIGHT|extreme volatility anomaly|below .*minimum|below .*ATR|too tight/i.test(reason)) return 'EXTREME_TOO_TIGHT';
     if (/EXTREME_TOO_WIDE|exceeds .*maximum|too wide/i.test(reason)) return 'EXTREME_TOO_WIDE';
@@ -5034,6 +5140,7 @@ function waitCodeFromRejections(audit, hasStrategySetups) {
     if (detail.EXTREME_TOO_TIGHT || detail.EXTREME_TOO_WIDE) return 'EXTREME_VOLATILITY';
     if (detail.NO_VALID_TP1) return 'NO_REALISTIC_TARGET';
     if (detail.TP1_RR_TOO_LOW) return 'RR_BELOW_MINIMUM';
+    if (detail.SETUP_STALE || detail.SETUP_EXPIRED || detail.SETUP_ALREADY_COMPLETED || detail.ENTRY_ALREADY_CONSUMED || detail.SETUP_DELIVERY_ALREADY_ADVANCED) return 'NO_FRESH_OPPORTUNITY';
     if (detail.REVERSAL_EVIDENCE_INSUFFICIENT || detail.CONTINUATION_HTF) return 'CONTEXT_QUALITY_TOO_LOW';
     if (detail.ZONE_INVALID) return 'AI_INCONSISTENT_OUTPUT';
     return 'NO_EXECUTION_GEOMETRY';
@@ -5350,6 +5457,7 @@ function compactAIContext(liveMarketContext) {
         strategy_label: c.strategy_label,
         strategy_evidence: c.strategy_evidence,
         setup_lifecycle: c.evaluation?.metrics?.setup_lifecycle || null,
+        entry_region: { low: c.entry_region_low ?? c.zone_low, high: c.entry_region_high ?? c.zone_high },
         direction: c.direction,
         timeframe: c.timeframe,
         setup_timeframe: c.setup_timeframe,
@@ -5365,6 +5473,23 @@ function compactAIContext(liveMarketContext) {
         tp3: c.tp3,
         rr_tp1: c.rr_tp1,
         actual_rr: c.actual_rr,
+        event_time: c.event_time,
+        event_age_hours: c.event_age_hours,
+        current_session: c.current_session,
+        event_session: c.event_session,
+        still_actionable_today: c.still_actionable_today,
+        opportunity_status: c.opportunity_status,
+        entry_consumed: c.entry_consumed,
+        entry_first_touch_time: c.entry_first_touch_time,
+        entry_touch_count_after_signal: c.entry_touch_count_after_signal,
+        tp1_already_reached: c.tp1_already_reached,
+        tp1_first_reached_time: c.tp1_first_reached_time,
+        remaining_reward_fraction: c.remaining_reward_fraction,
+        progress_to_tp1_fraction: c.progress_to_tp1_fraction,
+        distance_to_entry_atr: c.distance_to_entry_atr,
+        pending_entry_quality: c.pending_entry_quality,
+        entry_reachability_score: c.entry_reachability_score,
+        setup_confidence: c.setup_confidence,
         entry_model: c.entry_model,
         entry_region_source: c.zone?.entry_region_source || c.entry_region_source,
         stop_source: c.stop_source,
@@ -5424,7 +5549,9 @@ function compactAIContext(liveMarketContext) {
         })),
         real_ict_zones: (liveMarketContext?.real_ict_zones || []).slice(0, 40).map(compactZone),
         strategy_execution_zones: (liveMarketContext?.strategy_execution_zones || []).slice(0, STRATEGY_SPEC.COMBINATION.maxSetups).map(compactZone),
-        adaptive_setup_candidates: (liveMarketContext?.adaptive_setup_candidates || []).map(compactCandidate),
+        adaptive_setup_candidates: (liveMarketContext?.adaptive_setup_candidates || [])
+            .filter(c => !c.opportunity_status || ['FRESH_NOW', 'FRESH_PENDING_TODAY'].includes(c.opportunity_status))
+            .map(compactCandidate),
         target_candidates: {
             buy: (liveMarketContext?.target_candidates?.buy || []).slice(0, STRATEGY_SPEC.EXECUTION.maxTargetsPerEvaluation),
             sell: (liveMarketContext?.target_candidates?.sell || []).slice(0, STRATEGY_SPEC.EXECUTION.maxTargetsPerEvaluation)
@@ -5458,6 +5585,9 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'Your role is to rank the supplied adaptive_setup_candidates, identify the highest-quality valid pending-limit opportunity currently available, or return WAIT/NO_TRADE when no valid candidate is worth selecting.',
         'Do not return WAIT merely because price has not reached a valid future limit zone. If a future pending-limit setup already satisfies setup-stage requirements, return BUY_LIMIT or SELL_LIMIT. If immediate entry is not ready, ai_decision:"wait_for_reaction" means Stage-2 is waiting only; it is NOT confirmation required before a true LIMIT fill.',
         'Do not return skip when your own analysis concludes that a valid BUY_LIMIT or SELL_LIMIT setup already exists.',
+        'Select the best FRESH deterministic opportunity that remains actionable now or later in the current trading day. If none exists, return WAIT.',
+        'Never select a setup merely because its historical pattern was valid. Reject any candidate with opportunity_status STALE, COMPLETED, or EXPIRED, entry_consumed true, tp1_already_reached true, insufficient remaining_reward_fraction, or still_actionable_today false.',
+        'A true pending BUY_LIMIT or SELL_LIMIT does not require current price to be inside the zone or reaction confirmation before the limit fills. Use pending_entry_quality and entry_reachability_score to compare future entries, not to relabel a valid limit as a confirmation entry.',
         'If selecting a setup, include selected_candidate_id and use the candidate entry, stop_loss, TP1, TP2, TP3, RR, and zone bounds exactly.',
         'When discussing TP1, use the supplied candidate target_map primary_target_source, target_type, and target_confluence. Never reinterpret an OB target as CRT or a CRT target as OB unless target_confluence explicitly contains both.',
         'If adaptive_setup_candidates is empty, do not invent entry/SL/TP levels; return WAIT or NO_TRADE.',
@@ -6621,6 +6751,14 @@ async function runAutoScan() {
                 entry_model: aiResult.entry_model,
                 setup_timeframe: aiResult.setup_timeframe,
                 execution_timeframe: aiResult.execution_timeframe,
+                opportunity_status: aiResult.opportunity_status,
+                event_time: aiResult.event_time,
+                event_age_hours: aiResult.event_age_hours,
+                still_actionable_today: aiResult.still_actionable_today,
+                pending_entry_quality: aiResult.pending_entry_quality,
+                distance_to_entry_atr: aiResult.distance_to_entry_atr,
+                remaining_reward_fraction: aiResult.remaining_reward_fraction,
+                setup_confidence: aiResult.setup_confidence,
                 target_map: aiResult.target_map,
                 primary_target_source: aiResult.primary_target_source,
                 target_type: aiResult.target_type,

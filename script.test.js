@@ -228,6 +228,75 @@ describe('strategy entry lifecycle', () => {
         Object.assign(candidate, { direction: 'SELL', tp1: 1.157, stop_loss: 1.162 });
         expect(getContext().evaluateSetupLifecycle(candidate, market).rejection_code).toBe('ENTRY_ALREADY_CONSUMED');
     });
+
+    it('keeps an untouched current-day setup actionable as a pending opportunity', () => {
+        const ctx = getContext();
+        const market = {
+            price: 101,
+            as_of_time: '2026-09-11T11:00:00Z',
+            historyCache: { '1H': [
+                c(99, 100, 98.5, 99.5, '2026-09-11 09:00:00'),
+                c(99.5, 101.2, 99.3, 101, '2026-09-11 10:00:00'),
+                c(101, 101.1, 100.9, 101, '2026-09-11 11:00:00')
+            ] }
+        };
+        const candidate = { direction: 'BUY', entry: 99, zone_low: 98.9, zone_high: 99.1, tp1: 110,
+            strategy_setup: { primary: 'CRT', timeframe: '1H', reclaim_bar_index: 0, reclaim_time: Date.parse('2026-09-11T09:00:00Z') } };
+        const result = ctx.evaluateSetupLifecycle(candidate, market);
+        expect(result.opportunity_status).toBe('FRESH_PENDING_TODAY');
+        expect(result.still_actionable_today).toBe(true);
+        expect(result.entry_consumed).toBe(false);
+        expect(result.remaining_reward_fraction).toBeCloseTo(0.818, 2);
+    });
+
+    it('rejects a same-day setup after most of the delivery path is complete', () => {
+        const ctx = getContext();
+        const candidate = { direction: 'BUY', entry: 100, zone_low: 99.9, zone_high: 100.1, tp1: 110,
+            strategy_setup: { primary: 'CRT', timeframe: '1H', reclaim_bar_index: 0, reclaim_time: Date.parse('2026-09-11T09:00:00Z') } };
+        const result = ctx.evaluateSetupLifecycle(candidate, {
+            price: 109, as_of_time: '2026-09-11T11:00:00Z',
+            historyCache: { '1H': [c(99, 100, 98, 99.5, '2026-09-11 09:00:00'), c(108, 109.2, 107.8, 109, '2026-09-11 10:00:00')] }
+        });
+        expect(result.progress_to_tp1_fraction).toBeCloseTo(0.9, 2);
+        expect(result.rejection_code).toBe('SETUP_DELIVERY_ALREADY_ADVANCED');
+        expect(result.opportunity_status).toBe('STALE');
+    });
+
+    it('rejects a stale prior-day intraday event even when its entry remains untouched', () => {
+        const ctx = getContext();
+        const candidate = { direction: 'SELL', entry: 110, zone_low: 109.9, zone_high: 110.1, tp1: 100,
+            strategy_setup: { primary: 'TBS', timeframe: '1H', reclaim_bar_index: 0, reclaim_time: Date.parse('2026-09-08T09:00:00Z') } };
+        const result = ctx.evaluateSetupLifecycle(candidate, {
+            price: 105, as_of_time: '2026-09-11T11:00:00Z',
+            historyCache: { '1H': [c(100, 101, 99, 100, '2026-09-08 09:00:00'), c(105, 106, 104, 105, '2026-09-11 10:00:00')] }
+        });
+        expect(result.opportunity_status).toBe('STALE');
+        expect(result.rejection_code).toBe('SETUP_STALE');
+        expect(result.still_actionable_today).toBe(false);
+    });
+
+    it('keeps poor pending-entry reachability separate from setup validity', () => {
+        const ctx = getContext();
+        const data = Array.from({ length: 20 }, (_, i) => c(100 + i * 0.1, 100.15 + i * 0.1, 99.95 + i * 0.1, 100.1 + i * 0.1, `2026-09-11 ${String(i).padStart(2, '0')}:00:00`));
+        const result = ctx.evaluateSetupLifecycle({ direction: 'BUY', entry: 100, zone_low: 99.9, zone_high: 100.1, tp1: 120,
+            strategy_setup: { primary: 'MSNR', timeframe: '1H', departure_confirmed_index: 18, event_time: Date.parse('2026-09-11T18:00:00Z') } }, {
+            price: 102, as_of_time: '2026-09-11T19:00:00Z', historyCache: { '1H': data }
+        });
+        expect(result.pending_entry_quality).toBe('LOW');
+        expect(result.entry_reachable_today).toBe(false);
+        expect(result.rejection_code).toBeNull();
+        expect(result.still_actionable_today).toBe(true);
+    });
+
+    it('sends only fresh opportunity statuses to the AI context', () => {
+        const ctx = getContext();
+        const payload = ctx.compactAIContext({ adaptive_setup_candidates: [
+            { id: 'fresh', opportunity_status: 'FRESH_PENDING_TODAY', direction: 'BUY', entry: 1, stop_loss: 0.9, tp1: 1.3 },
+            { id: 'stale', opportunity_status: 'STALE', direction: 'BUY', entry: 1, stop_loss: 0.9, tp1: 1.3 },
+            { id: 'completed', opportunity_status: 'COMPLETED', direction: 'BUY', entry: 1, stop_loss: 0.9, tp1: 1.3 }
+        ] });
+        expect(payload.adaptive_setup_candidates.map(c => c.id)).toEqual(['fresh']);
+    });
 });
 
 describe('computeRSI (Wilder)', () => {
@@ -439,7 +508,7 @@ describe('strategy pipeline integration rules', () => {
         expect(tbs).toBeTruthy();
         expect(tbs.target_candidates).toEqual([]);
         expect(tbs.target_bias).toBe('BUY_SIDE_LIQUIDITY');
-        expect(JSON.stringify(tbs)).not.toMatch(/sweep_depth.*3|\*\s*3/);
+        expect(tbs.target_candidates).not.toContainEqual(expect.objectContaining({ source: 'SYNTHETIC_SWEEP_MULTIPLE' }));
     });
 
     it('selects actual structural targets and gives reachability a deterministic score', () => {
