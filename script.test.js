@@ -492,6 +492,36 @@ describe('fresh execution downstream validation', () => {
     });
 });
 
+describe('strategy-authoritative structural invalidation', () => {
+    it('rejects a GBP/JPY TBS stop inside the sweep extreme and keeps the buffered anchor', () => {
+        const ctx = getContext();
+        const zone = {
+            type: 'TBS', direction: 'SELL', timeframe: '15M', low: 207.75, high: 207.82,
+            primary_eligible: true, structural_invalidation: 207.85753,
+            strategy_setup: { primary: 'TBS', direction: 'SELL', timeframe: '15M', sweep_extreme: 207.85753 }
+        };
+        const stops = ctx.getAdaptiveStopCandidates(zone, 'SELL', 207.800, candles(40, 207.6, 0.02, 'up'), [], 0.08, ctx.getMarketSettings('GBP/JPY'), 3);
+        expect(stops.every(stop => stop.stop_loss > 207.85753)).toBe(true);
+        expect(stops.some(stop => Math.abs(stop.stop_loss - 207.840) < 0.001)).toBe(false);
+        const accepted = stops[0];
+        expect(accepted.authoritative_invalidation.level).toBe(207.85753);
+        expect(ctx.evaluateStructuralStop({ direction: 'SELL', entry: 207.8, stop_loss: 207.84, structural_invalidation: { source: 'TBS_SWEEP_EXTREME', level: 207.85753 } }, {
+            setup_timeframe: '15M', atr_rule_reference: 0.08, absolute_min_sl: 0.01, preferred_min_sl: 0.04, maximum_reasonable_distance: 5
+        }, 'GBP/JPY').status).toBe('SL_INSIDE_STRUCTURAL_INVALIDATION');
+    });
+
+    it('uses actual CRT and MSNR structural anchors rather than a nearer generic swing', () => {
+        const ctx = getContext();
+        const crtAnchor = ctx.getAuthoritativeStructuralInvalidation({ direction: 'SELL', strategy_source: 'CRT', sweep_extreme: 1.2050 }, { primary: 'CRT', direction: 'SELL', sweep_extreme: 1.2050, timeframe: '1H' });
+        const msnrAnchor = ctx.getAuthoritativeStructuralInvalidation({ direction: 'BUY', strategy_source: 'MSNR', structural_invalidation: 1.0950 }, { primary: 'MSNR', direction: 'BUY', structural_invalidation: 1.0950, timeframe: '1H' });
+        expect(crtAnchor).toMatchObject({ source: 'CRT_SWEEP_EXTREME', level: 1.2050 });
+        expect(msnrAnchor).toMatchObject({ source: 'MSNR_ZONE_INVALIDATION', level: 1.0950 });
+        expect(ctx.evaluateStructuralStop({ direction: 'BUY', entry: 1.10, stop_loss: 1.0955, structural_invalidation: msnrAnchor }, {
+            setup_timeframe: '1H', atr_rule_reference: 0.01, absolute_min_sl: 0.0001, preferred_min_sl: 0.005, maximum_reasonable_distance: 1
+        }, 'EUR/USD').status).toBe('SL_INSIDE_STRUCTURAL_INVALIDATION');
+    });
+});
+
 describe('computeRSI (Wilder)', () => {
     it('returns 100 for a straight up run', () => {
         const ctx = getContext();

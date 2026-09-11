@@ -3613,17 +3613,39 @@ function getAdaptiveEntryCandidates(zone, direction, prec) {
     return [...new Set(entries.map(v => ictRound(v, prec)))].filter(v => v >= low && v <= high);
 }
 
+function getAuthoritativeStructuralInvalidation(zone, strategySetup = null) {
+    const setup = strategySetup || zone?.strategy_setup || {};
+    const direction = zone?.direction || setup.direction;
+    const primary = setup.primary || zone?.strategy_source;
+    let level = Number(setup.structural_invalidation_anchor ?? zone?.structural_invalidation_anchor);
+    let source = setup.structural_invalidation_source || zone?.structural_invalidation_source;
+    if (primary === 'TBS') {
+        level = Number(setup.sweep_extreme ?? zone?.sweep_extreme ?? level);
+        source = 'TBS_SWEEP_EXTREME';
+    } else if (primary === 'CRT') {
+        level = Number(setup.sweep_extreme ?? zone?.sweep_extreme ?? setup.structural_invalidation ?? level);
+        source = 'CRT_SWEEP_EXTREME';
+    } else if (primary === 'MSNR') {
+        level = Number(setup.structural_invalidation ?? zone?.structural_invalidation ?? level);
+        source = 'MSNR_ZONE_INVALIDATION';
+    }
+    if (!Number.isFinite(level)) return null;
+    return { source: source || 'STRATEGY_INVALIDATION', level, strategy: primary || null, timeframe: setup.execution_timeframe || setup.timeframe || zone?.timeframe || null };
+}
+
 function getAdaptiveStopCandidates(zone, direction, entry, data, zones, atrVal, settings, prec) {
     const buffer = Math.max(settings.pipSize * 2, (atrVal || 0) * 0.05, entry * 0.00002);
+    const authoritative = getAuthoritativeStructuralInvalidation(zone, zone.strategy_setup);
     const raw = [];
-    const add = (level, source, origin = 'STRUCTURAL') => {
+    const add = (level, source, origin = 'STRUCTURAL', authoritativeSource = false) => {
         const n = Number(level);
         if (!Number.isFinite(n)) return;
-        if (direction === 'BUY' && n < entry) raw.push({ level: n, source, origin });
-        if (direction === 'SELL' && n > entry) raw.push({ level: n, source, origin });
+        if (direction === 'BUY' && n < entry) raw.push({ level: n, source, origin, authoritative: authoritativeSource });
+        if (direction === 'SELL' && n > entry) raw.push({ level: n, source, origin, authoritative: authoritativeSource });
     };
 
-    add(zone.structural_invalidation, 'STRATEGY_INVALIDATION', zone.origin || 'STRUCTURAL');
+    if (authoritative) add(authoritative.level, authoritative.source, zone.origin || 'STRUCTURAL', true);
+    else add(zone.structural_invalidation, 'STRATEGY_INVALIDATION', zone.origin || 'STRUCTURAL', true);
     add(direction === 'BUY' ? zone.low : zone.high, 'ZONE_BOUNDARY', zone.origin || 'STRUCTURAL');
     const sw = findSwings(data || [], 3);
     for (const s of direction === 'BUY' ? (sw.L || []).slice(-10) : (sw.H || []).slice(-10)) {
@@ -3643,8 +3665,13 @@ function getAdaptiveStopCandidates(zone, direction, entry, data, zones, atrVal, 
         const stop = direction === 'BUY' ? c.level - buffer : c.level + buffer;
         const roundedStop = ictRound(stop, prec);
         const key = ictRound(c.level, prec);
+        const anchorTolerance = Math.max(settings.pipSize * 0.1, Math.abs(authoritative?.level || 0) * 1e-9);
+        const beyondAnchor = !authoritative || (direction === 'BUY'
+            ? roundedStop < authoritative.level - anchorTolerance
+            : roundedStop > authoritative.level + anchorTolerance);
+        if (!beyondAnchor) continue;
         if (!dedupe.has(key)) {
-            dedupe.set(key, { ...c, stop_loss: roundedStop, buffer: ictRound(buffer, prec) });
+            dedupe.set(key, { ...c, stop_loss: roundedStop, buffer: ictRound(buffer, prec), authoritative_invalidation: authoritative });
         }
     }
     return [...dedupe.values()].sort((a, b) => Math.abs(a.stop_loss - entry) - Math.abs(b.stop_loss - entry));
@@ -3784,6 +3811,16 @@ function evaluateStructuralStop(candidate, atrContext, pairLocal) {
     }
     if (direction === 'SELL' && !(stopLoss > entry)) {
         return { status: 'STRUCTURALLY_INVALID', reason: 'SELL stop must be above entry' };
+    }
+    const invalidation = candidate?.structural_invalidation && typeof candidate.structural_invalidation === 'object'
+        ? candidate.structural_invalidation
+        : (candidate?.structural_invalidation_anchor != null && Number.isFinite(Number(candidate.structural_invalidation_anchor)) ? { level: Number(candidate.structural_invalidation_anchor), source: candidate.structural_invalidation_source || 'STRATEGY_INVALIDATION' } : null);
+    if (invalidation && Number.isFinite(Number(invalidation.level))) {
+        const tolerance = Math.max(settings.pipSize * 0.1, Math.abs(Number(invalidation.level)) * 1e-9);
+        const inside = direction === 'BUY' ? stopLoss >= Number(invalidation.level) - tolerance : stopLoss <= Number(invalidation.level) + tolerance;
+        if (inside) {
+            return { status: 'SL_INSIDE_STRUCTURAL_INVALIDATION', hardReject: true, volatility_classification: 'STRUCTURAL_INVALIDATION_FAILURE', reason: `${direction} stop ${stopLoss} is inside ${invalidation.source || 'strategy'} invalidation ${invalidation.level}` };
+        }
     }
     const riskDistance = Math.abs(entry - stopLoss);
     // Pair minimums remain diagnostic references. A structurally valid stop is
@@ -4473,6 +4510,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 const rawId = `${seedPrefix}${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${createdKey || zone.created_index || rawCandidates.length + 1}-${rawCandidates.length + 1}`;
                 const risk = Math.abs(entry - stop.stop_loss);
                 const atrContext = getCandidateATRContext({ timeframe: tf }, historyCache, pair, price);
+                const authoritativeInvalidation = getAuthoritativeStructuralInvalidation(zone, strategySetup);
                 const rawCandidate = {
                     id: rawId,
                     direction,
@@ -4484,8 +4522,15 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     zone,
                     entry,
                     stop_loss: stop.stop_loss,
-                    stop_reason: `${stop.source} invalidation plus structural buffer`,
+                    stop_reason: authoritativeInvalidation
+                        ? `${authoritativeInvalidation.source} invalidation ${authoritativeInvalidation.level} plus structural buffer`
+                        : `${stop.source} invalidation plus structural buffer`,
                     stop_source: stop.source,
+                    stop_buffer: stop.buffer,
+                    stop_distance: ictRound(risk, prec),
+                    structural_invalidation: authoritativeInvalidation,
+                    structural_invalidation_anchor: authoritativeInvalidation?.level ?? null,
+                    structural_invalidation_source: authoritativeInvalidation?.source || stop.source,
                     risk_distance: ictRound(risk, prec),
                     sl_atr_multiple_rule: atrContext.atr_rule_reference ? ictRound(risk / atrContext.atr_rule_reference, 2) : null,
                     sl_atr_multiple_timeframe: safeAtr > 0 ? ictRound(risk / safeAtr, 2) : null,
@@ -4543,7 +4588,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     timeframe: tf,
                     direction,
                     entry,
-                    structural_invalidation: zone.structural_invalidation || (direction === 'BUY' ? zone.low : zone.high),
+                    structural_invalidation: authoritativeInvalidation?.level || zone.structural_invalidation || (direction === 'BUY' ? zone.low : zone.high),
                     stopLoss: stop.stop_loss,
                     risk,
                     setupAtr: atrContext.setup_atr,
@@ -4755,7 +4800,7 @@ function buildDeterministicOrderDescription(candidate) {
     const source = target?.primary_target_source || target?.target_type || candidate.tp1_source || 'STRUCTURAL_TARGET';
     const type = target?.target_type || source;
     const confluence = target?.target_confluence || [];
-    const invalidation = candidate.strategy_setup?.structural_invalidation ?? candidate.stop_loss;
+    const invalidation = candidate.structural_invalidation?.level ?? candidate.strategy_setup?.structural_invalidation ?? candidate.stop_loss;
     const lifecycle = candidate.evaluation?.metrics?.setup_lifecycle || candidate;
     const age = Number.isFinite(lifecycle.event_age_hours) ? `${lifecycle.event_age_hours.toFixed(1)} hours ago` : 'recently';
     const freshness = lifecycle.opportunity_status === 'FRESH_NOW' ? 'fresh and actionable now' : 'fresh and actionable later today';
@@ -4801,6 +4846,9 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.entry = candidate.entry;
     aiResult.stop_loss = candidate.stop_loss;
     aiResult.stop_loss_reason = candidate.stop_reason;
+    aiResult.structural_invalidation = candidate.structural_invalidation || null;
+    aiResult.stop_buffer = candidate.stop_buffer ?? null;
+    aiResult.stop_distance = candidate.stop_distance ?? candidate.risk_distance ?? null;
     aiResult.take_profit_1 = candidate.tp1;
     aiResult.take_profit_2 = candidate.tp2 ?? null;
     aiResult.take_profit_3 = candidate.tp3 ?? null;
@@ -5533,6 +5581,7 @@ function summarizeCandidateRejections(rejectedCandidates) {
 
 function classifyRejectionDetail(reason) {
     if (/^(ENTRY_ALREADY_CONSUMED|SETUP_ALREADY_COMPLETED|SETUP_DELIVERY_ALREADY_ADVANCED|SETUP_EXPIRED|SETUP_STALE|ENTRY_NOT_REACHABLE_TODAY)$/.test(reason)) return reason;
+    if (/SL_INSIDE_STRUCTURAL_INVALIDATION|authoritative strategy invalidation/i.test(reason)) return 'SL_INSIDE_STRUCTURAL_INVALIDATION';
     if (/BUY stop|SELL stop|STRUCTURALLY_INVALID/i.test(reason)) return 'STOP_STRUCTURAL_INVALID';
     if (/EXTREME_TOO_TIGHT|extreme volatility anomaly|below .*minimum|below .*ATR|too tight/i.test(reason)) return 'EXTREME_TOO_TIGHT';
     if (/EXTREME_TOO_WIDE|exceeds .*maximum|too wide/i.test(reason)) return 'EXTREME_TOO_WIDE';
@@ -5670,7 +5719,7 @@ function waitCodeFromRejections(audit, hasStrategySetups) {
     }
     if (fresh?.seeds === 0 && (audit?.strategy_setups || 0) > 0) return 'NO_FRESH_EXECUTION_ZONE';
     if ((audit?.raw_candidate_count || audit?.raw_candidates || 0) === 0) return 'NO_EXECUTION_GEOMETRY';
-    if (detail.STOP_STRUCTURAL_INVALID) return 'NO_STRUCTURAL_STOP';
+    if (detail.STOP_STRUCTURAL_INVALID || detail.SL_INSIDE_STRUCTURAL_INVALIDATION) return 'NO_STRUCTURAL_STOP';
     if (detail.EXTREME_TOO_TIGHT || detail.EXTREME_TOO_WIDE) return 'EXTREME_VOLATILITY';
     if (detail.NO_VALID_TP1) return 'NO_REALISTIC_TARGET';
     if (detail.TP1_RR_TOO_LOW) return 'RR_BELOW_MINIMUM';
@@ -6549,6 +6598,8 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
             if (numericMatches.length > 0) {
                 issues.push(`AI numeric levels do not match selected adaptive setup candidate: ${numericMatches.map(([name]) => name).join(', ')}`);
             }
+            const stopCheck = evaluateStructuralStop(candidate, getCandidateATRContext(candidate, liveMarketContext.historyCache || {}, liveMarketContext.pair || pair, liveMarketContext.current_price), liveMarketContext.pair || pair);
+            if (stopCheck.status === 'SL_INSIDE_STRUCTURAL_INVALIDATION') issues.push('selected candidate stop is inside authoritative strategy invalidation');
         }
     }
 
@@ -6637,6 +6688,10 @@ function validateFinalSignalConsistency(signal, liveMarketContext = {}) {
         if (signal.source === 'AI-Generated Setup') issues.push('selected deterministic geometry has an untruthful AI source');
         if (signal.direction === 'BUY' && !(stop < entry && entry < tp1)) issues.push('BUY geometry is inconsistent');
         if (signal.direction === 'SELL' && !(stop > entry && entry > tp1)) issues.push('SELL geometry is inconsistent');
+        if (candidate) {
+            const stopCheck = evaluateStructuralStop(candidate, getCandidateATRContext(candidate, liveMarketContext.historyCache || {}, liveMarketContext.pair || pair, liveMarketContext.current_price), liveMarketContext.pair || pair);
+            if (stopCheck.status === 'SL_INSIDE_STRUCTURAL_INVALIDATION') issues.push('selected stop is inside authoritative strategy invalidation');
+        }
     }
     if (tp2 != null && !Number.isFinite(tp2)) issues.push('TP2 is not finite');
     if (tp3 != null && !Number.isFinite(tp3)) issues.push('TP3 is not finite');
@@ -6841,6 +6896,13 @@ async function runFallbackScan(price, historyCache) {
         Object.assign(out.trade_signal, buildDeterministicOrderDescription(bestCandidate));
         out.trade_signal.ai_decision = 'pending_limit';
         out.trade_signal.strategy_evidence = bestCandidate.strategy_evidence || bestCandidate.strategy_setup?.strategy_evidence || null;
+        out.trade_signal.structural_invalidation = bestCandidate.structural_invalidation || null;
+        out.trade_signal.stop_loss_reason = bestCandidate.stop_reason || null;
+        out.trade_signal.stop_buffer = bestCandidate.stop_buffer ?? null;
+        out.trade_signal.stop_distance = bestCandidate.stop_distance ?? bestCandidate.risk_distance ?? null;
+        out.trade_signal.execution_model = bestCandidate.execution_model || bestCandidate.entry_model || null;
+        out.trade_signal.original_strategy_entry_consumed = !!bestCandidate.original_strategy_entry_consumed;
+        out.trade_signal.execution_zone_consumed = !!bestCandidate.execution_zone_consumed;
         out.trade_signal.entry_model = bestCandidate.entry_model || null;
         out.trade_signal.setup_timeframe = bestCandidate.setup_timeframe || bestCandidate.timeframe || best.timeframe;
         out.trade_signal.execution_timeframe = bestCandidate.execution_timeframe || bestCandidate.timeframe || best.timeframe;
