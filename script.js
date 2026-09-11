@@ -14,6 +14,7 @@ const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
 let GITHUB_PAT = '', GITHUB_REPO = 'yaanu06/ict-telegram-bot';
 const AI_REQUEST_TIMEOUT_MS = 45000;
+const TIMEFRAME_MS = { '5M': 5 * 60000, '15M': 15 * 60000, '1H': 60 * 60000, '4H': 240 * 60000, '1D': 1440 * 60000, '1W': 10080 * 60000 };
 let scanInProgress = false;
 let lastAIRequestError = null;
 
@@ -488,17 +489,25 @@ async function getPrice(forPair) {
 async function getHistory(tfStr, forPair) {
     if(!TWELVE_DATA_KEY) return null;
     try {
-        const d = await fetchTD(`/time_series?symbol=${encodeURIComponent(SYMBOLS[forPair || pair])}&interval=${TF_MAP[tfStr]}&outputsize=100`);
+        const d = await fetchTD(`/time_series?symbol=${encodeURIComponent(SYMBOLS[forPair || pair])}&interval=${TF_MAP[tfStr]}&outputsize=100&timezone=UTC`);
         if(d.values) {
             calls++;
-            return d.values.map(c => ({
-                t: c.datetime,
+            const values = d.values.map(c => ({
+                t: normalizeTimestampUTC(c.datetime),
                 o: +c.open,
                 h: +c.high,
                 l: +c.low,
                 c: +c.close,
-                v: +c.volume || 1e6
-            })).reverse();
+                v: +c.volume || 1e6,
+                timeframe: tfStr,
+                source: 'TWELVE_DATA',
+                timestamp_source: 'PROVIDER',
+                is_closed: true
+            }));
+            if (values.some(c => !Number.isFinite(c.t))) throw new Error(`Invalid provider timestamp for ${tfStr}`);
+            values.reverse();
+            Object.defineProperty(values, 'provider_metadata', { value: { provider: 'TWELVE_DATA', provider_timezone: d.meta?.timezone || 'UTC', requested_timezone: 'UTC', timeframe: tfStr, symbol: SYMBOLS[forPair || pair] }, enumerable: false });
+            return values;
         }
     } catch(e) { console.error(`History error (${tfStr}):`, e); }
     return null;
@@ -613,6 +622,7 @@ const atr = (d, n = 14) => {
 
 // Detect Trend
 function detectTrend(data) {
+    data = closedStructureCandles(data);
     const closes = data.map(c => c.c);
     const e20 = ema(closes, 20);
     const e50 = ema(closes, 50);
@@ -649,6 +659,7 @@ function detectTrend(data) {
 
 // Detect FVG
 function detectFVG(d) {
+    d = closedStructureCandles(d);
     let f = [];
     const len = d.length;
     for(let i = 1; i < len - 1; i++) {
@@ -669,6 +680,7 @@ function detectFVG(d) {
 
 // Find Swings
 function findSwings(d, lb = 3) {
+    d = closedStructureCandles(d);
     let H = [], L = [];
     let h = d.map(c => c.h);
     let l = d.map(c => c.l);
@@ -686,6 +698,7 @@ function findSwings(d, lb = 3) {
 
 // Detect MSS
 function detectMSS(d) {
+    d = closedStructureCandles(d);
     if(d.length < 21) return null;
     let h = d.map(c => c.h);
     let l = d.map(c => c.l);
@@ -788,6 +801,7 @@ function detectEngulfing(data, price, dir) {
 // broken it AGAINST the prior trend (so a BUY CHoCH means price broke below a prior
 // swing low then reversed up — only then does a directional BUY align with the CHoCH).
 function detectCHoCH(data, dir) {
+    data = closedStructureCandles(data);
     if(!data || data.length < 15) return false;
     const sw = findSwings(data.slice(0, -1), 3);
     const last = data[data.length - 1];
@@ -818,6 +832,7 @@ function detectCHoCH(data, dir) {
 
 // BOS confirmation: close beyond prior swing high/low
 function detectBOS(data, dir) {
+    data = closedStructureCandles(data);
     if(data.length < 20) return false;
     const highs = data.slice(-20).map(c => c.h);
     const lows = data.slice(-20).map(c => c.l);
@@ -831,6 +846,7 @@ function detectBOS(data, dir) {
 
 // HH/HL/LH/LL structure sequence
 function analyzeMarketStructure(data) {
+    data = closedStructureCandles(data);
     if(data.length < 20) return [];
     const swings = findSwings(data, 2);
     const seq = [];
@@ -849,6 +865,7 @@ function analyzeMarketStructure(data) {
 
 // Equal highs/lows liquidity pools
 function detectLiquidityPools(data) {
+    data = closedStructureCandles(data);
     if(data.length < 15) return { equalHighs: [], equalLows: [] };
     const highs = data.slice(-15).map((c, i) => ({ p: c.h, i: data.length - 15 + i }));
     const lows = data.slice(-15).map((c, i) => ({ p: c.l, i: data.length - 15 + i }));
@@ -873,6 +890,7 @@ function detectLiquidityPools(data) {
 
 // Compression: last N candles contracting range
 function detectCompression(data, n = 5) {
+    data = closedStructureCandles(data);
     if(data.length < n + 5) return false;
     const recent = data.slice(-n);
     const ranges = recent.map(c => c.h - c.l);
@@ -942,9 +960,18 @@ function enqueuePendingFill(order, fillPrice) {
         takeProfit2: order.takeProfit2,
         takeProfit3: order.takeProfit3,
         confidence: order.confidence || 0,
+        candidate_id: order.candidate_id || order.aiDecision?.selected_candidate_id || null,
+        strategy_version: order.strategy_version || STRATEGY_SPEC_VERSION,
+        strategy: order.strategy || order.patterns || null,
+        entry_model: order.entry_model || null,
+        structural_invalidation: order.structural_invalidation || null,
+        quality_breakdown: order.quality_breakdown || null,
+        fill_price_source: order.fill_price_source || 'LIMIT_ORDER_PRICE',
         patterns: order.patterns || '',
         rrUsed: order.rrUsed || 0,
         source: order.source || null,
+        fill_time_ms: fillTime,
+        fill_time: new Date(fillTime).toISOString(),
         createdAt: new Date(fillTime).toISOString(),
         checkedAt: null
     });
@@ -1498,6 +1525,22 @@ function evaluateStrategyNarrative(narrative, historyCache = {}, price) {
     return { state, rejection_code: futureEvent ? 'DATA_TIME_INCONSISTENT' : null, event_time: eventTime, event_time_utc: Number.isFinite(eventTime) ? new Date(eventTime).toISOString() : null, event_age_hours: ageHours, event_index: index, timestamp_source: timestampSource(eventTime, index >= 0 ? data[index] : null), structural_invalidation: invalidation, primary_objective: objective, original_entry_consumed: !!narrative.entry_consumed };
 }
 
+function canonicalizeHistory(candles, timeframe, asOfMs) {
+    const duration = TIMEFRAME_MS[timeframe] || 60 * 60000;
+    const normalized = (Array.isArray(candles) ? candles : []).map(c => ({
+        ...c,
+        t: normalizeTimestampUTC(c?.t),
+        timeframe,
+        source: c?.source || 'TWELVE_DATA',
+        timestamp_source: c?.timestamp_source || 'PROVIDER',
+        is_closed: Number.isFinite(normalizeTimestampUTC(c?.t)) && Number.isFinite(asOfMs)
+            ? normalizeTimestampUTC(c.t) + duration <= asOfMs + STRATEGY_SPEC.TIME.futureToleranceMs
+            : c?.is_closed !== false
+    })).filter(c => Number.isFinite(c.t) && [c.o, c.h, c.l, c.c].every(Number.isFinite));
+    Object.defineProperty(normalized, 'provider_metadata', { value: candles?.provider_metadata || { provider: 'UNKNOWN', requested_timezone: 'UTC', timeframe }, enumerable: false });
+    return normalized;
+}
+
 function isValidCandleArray(data, min = 1) {
     return Array.isArray(data) && data.length >= min && data.every(c =>
         c && ictFiniteNumber(c.o) && ictFiniteNumber(c.h) && ictFiniteNumber(c.l) && ictFiniteNumber(c.c)
@@ -1529,7 +1572,7 @@ function timestampSource(value, candle = null) {
 }
 
 function closedStructureCandles(data) {
-    return (Array.isArray(data) ? data : []).filter(c => c && c.closed !== false && c.is_forming !== true && c.forming !== true);
+    return (Array.isArray(data) ? data : []).filter(c => c && c.is_closed !== false && c.closed !== false && c.is_forming !== true && c.forming !== true);
 }
 
 function getStrategyEventTime(setup) {
@@ -2771,6 +2814,7 @@ function detectLiquiditySweep(data, price, dir) {
 
 // Displacement: current candle body >= 2.5x average body in direction
 function detectDisplacement(data, dir) {
+    data = closedStructureCandles(data);
     if(!data || data.length < 10) return false;
     const last = data[data.length - 1];
     const avgBody = data.slice(-10).reduce((a, c) => a + Math.abs(c.c - c.o), 0) / 10;
@@ -2829,6 +2873,7 @@ function checkPathClearance(entryData, entry, tp, dir) {
 
 // Premium/discount on the entry timeframe (below midpoint = discount for BUY)
 function isPremiumDiscount(data, price) {
+    data = closedStructureCandles(data);
     if(!data || data.length < 20) return { zone: null };
     const highs = data.slice(-50).map(c => c.h);
     const lows = data.slice(-50).map(c => c.l);
@@ -3659,8 +3704,18 @@ function getAuthoritativeStructuralInvalidation(zone, strategySetup = null) {
 }
 
 function getAdaptiveStopCandidates(zone, direction, entry, data, zones, atrVal, settings, prec) {
-    const buffer = Math.max(settings.pipSize * 2, (atrVal || 0) * 0.05, entry * 0.00002);
     const authoritative = getAuthoritativeStructuralInvalidation(zone, zone.strategy_setup);
+    const bufferComponents = {
+        pip_or_tick_buffer: settings.pipSize,
+        spread_buffer: settings.pipSize * 0.5,
+        volatility_noise_buffer: (atrVal || 0) * 0.05
+    };
+    const buffer = Math.max(bufferComponents.pip_or_tick_buffer + bufferComponents.spread_buffer, bufferComponents.volatility_noise_buffer, entry * 0.00002);
+    if (authoritative) {
+        const stopLoss = ictRound(direction === 'BUY' ? authoritative.level - buffer : authoritative.level + buffer, prec);
+        return [{ level: authoritative.level, source: authoritative.source, origin: 'STRUCTURAL', authoritative: true,
+            stop_loss: stopLoss, buffer: ictRound(buffer, prec), buffer_components: { ...bufferComponents, final_buffer: ictRound(buffer, prec) }, authoritative_invalidation: authoritative }];
+    }
     const raw = [];
     const add = (level, source, origin = 'STRUCTURAL', authoritativeSource = false) => {
         const n = Number(level);
@@ -4045,6 +4100,12 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
         entry_region_source: setup.entry_region_source || entryModel,
         entry_region_low: ictRound(Math.min(low, high), prec),
         entry_region_high: ictRound(Math.max(low, high), prec),
+        created_time_ms: normalizeTimestampUTC(setup.event_time) || null,
+        created_time_utc: normalizeTimestampUTC(setup.event_time) ? new Date(normalizeTimestampUTC(setup.event_time)).toISOString() : null,
+        created_index_timeframe: setup.timeframe || null,
+        zone_timeframe: setup.timeframe || null,
+        parent_event_time_ms: normalizeTimestampUTC(setup.event_time) || null,
+        parent_strategy_timeframe: setup.setup_timeframe || setup.timeframe || null,
         structural_invalidation: setup.structural_invalidation
     });
     const zonesNearRegion = (direction, tf, low, high) => {
@@ -4563,6 +4624,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         : `${stop.source} invalidation plus structural buffer`,
                     stop_source: stop.source,
                     stop_buffer: stop.buffer,
+                    stop_buffer_components: stop.buffer_components || null,
                     stop_distance: ictRound(risk, prec),
                     structural_invalidation: authoritativeInvalidation,
                     structural_invalidation_anchor: authoritativeInvalidation?.level ?? null,
@@ -4749,6 +4811,12 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     original_strategy_entry_consumed: !!(strategySetup?.original_strategy_entry_consumed || rawCandidate.original_strategy_entry_consumed),
                     execution_zone_consumed: !!(zone.execution_zone_consumed || rawCandidate.execution_zone_consumed),
                     execution_zone_created_time: zone.created_time || rawCandidate.execution_zone_created_time || null,
+                    execution_zone_created_time_ms: normalizeTimestampUTC(zone.created_time || rawCandidate.execution_zone_created_time || null),
+                    execution_zone_created_time_utc: normalizeTimestampUTC(zone.created_time || rawCandidate.execution_zone_created_time || null) ? new Date(normalizeTimestampUTC(zone.created_time || rawCandidate.execution_zone_created_time || null)).toISOString() : null,
+                    created_index_timeframe: zone.timeframe || tf,
+                    zone_timeframe: zone.timeframe || tf,
+                    parent_event_time_ms: normalizeTimestampUTC(strategySetup?.narrative_event_time || strategySetup?.event_time || null),
+                    parent_strategy_timeframe: strategySetup?.setup_timeframe || strategySetup?.timeframe || tf,
                     execution_zone_created_index: zone.created_index ?? rawCandidate.execution_zone_created_index ?? null,
                     strategy_narrative: {
                         state: strategySetup?.narrative_state || rawCandidate.narrative_state || 'ACTIVE',
@@ -4808,6 +4876,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         rejectedCandidates.push({ id: candidate.id, rejection_code: 'ENGINE_INVARIANT_FAILURE', invariant_code: invariant.invariant_code, rejection_reasons: invariant.failures });
                         continue;
                     }
+                    Object.freeze(candidate);
                     console.log('STRATEGY CANDIDATE', { id: candidate.id, strategy: candidate.strategy_label, direction: candidate.direction, score: candidate.score });
                     validCandidates.push(candidate);
                 } else {
@@ -4897,6 +4966,7 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.stop_loss_reason = candidate.stop_reason;
     aiResult.structural_invalidation = candidate.structural_invalidation || null;
     aiResult.stop_buffer = candidate.stop_buffer ?? null;
+    aiResult.stop_buffer_components = candidate.stop_buffer_components || null;
     aiResult.stop_distance = candidate.stop_distance ?? candidate.risk_distance ?? null;
     aiResult.take_profit_1 = candidate.tp1;
     aiResult.take_profit_2 = candidate.tp2 ?? null;
@@ -4916,7 +4986,7 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.entry_reachable_today = candidate.entry_reachable_today ?? aiResult.setup_lifecycle?.entry_reachable_today ?? false;
     aiResult.distance_to_entry_atr = candidate.distance_to_entry_atr ?? aiResult.setup_lifecycle?.distance_to_entry_atr ?? null;
     aiResult.remaining_reward_fraction = candidate.remaining_reward_fraction ?? aiResult.setup_lifecycle?.remaining_reward_fraction ?? null;
-    aiResult.setup_confidence = candidate.setup_confidence ?? candidate.score ?? null;
+    aiResult.setup_confidence = getDeterministicCandidateConfidence(candidate);
     aiResult.strategy_setup = candidate.strategy_setup || null;
     aiResult.strategy_narrative = {
         state: candidate.narrative_state || candidate.strategy_setup?.narrative_state || 'ACTIVE',
@@ -4933,6 +5003,13 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     };
     aiResult.strategy_evidence = candidate.strategy_evidence || candidate.strategy_setup?.strategy_evidence || null;
     aiResult.target_map = candidate.target_map || [];
+    if (candidate.target_map?.[0]) {
+        aiResult.primary_target_source = candidate.target_map[0].primary_target_source;
+        aiResult.target_type = candidate.target_map[0].target_type;
+        aiResult.target_confluence = candidate.target_map[0].target_confluence;
+    }
+    aiResult.strategy_version = candidate.strategy_version || STRATEGY_SPEC_VERSION;
+    aiResult.quality = candidate.quality || null;
     aiResult.entry_model = candidate.entry_model || null;
     aiResult.execution_model = candidate.execution_model || candidate.entry_model || null;
     aiResult.entry_region_source = candidate.entry_region_source || candidate.zone_type || null;
@@ -5041,7 +5118,7 @@ function candidateToAIResult(candidate) {
         take_profit_1: candidate.tp1,
         take_profit_2: candidate.tp2 ?? null,
         take_profit_3: candidate.tp3 ?? null,
-        confidence: candidate.confidence || 70,
+        confidence: getDeterministicCandidateConfidence(candidate),
         reasoning: { primary: candidate.stop_reason || 'Deterministic candidate' },
         patterns: candidate.strategy_setup
             ? [candidate.strategy_setup.label || candidate.strategy_setup.primary].concat(candidate.strategy_setup.confirmations || [])
@@ -5073,13 +5150,15 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         : (setup.reclaim_bar_index ?? setup.reclaim_index ?? setup.evidence?.reclaim_bar);
     const eventTime = setup.primary === 'MSNR' ? setup.event_time : (setup.reclaim_time ?? setup.event_time);
     const normalizedEventTime = Number.isFinite(executionEventTime) ? executionEventTime : normalizeTimestampUTC(eventTime);
-    if (Number.isFinite(executionEventTime)) {
-        const matched = findEventCandleIndex(executionData, executionEventTime, executionTf);
-        index = matched >= 0 ? matched : executionEventIndex;
-    } else if (Number.isFinite(normalizedEventTime)) {
-        const matched = findEventCandleIndex(data, normalizedEventTime, setupTf);
-        index = matched >= 0 ? matched : (Number.isInteger(index) ? index : null);
+    let strategyEventIndex = Number.isInteger(index) ? index : null;
+    let executionEventIndexResolved = executionEventIndex;
+    if (Number.isFinite(normalizedEventTime)) {
+        const matchedStrategy = findEventCandleIndex(data, normalizedEventTime, setupTf);
+        strategyEventIndex = matchedStrategy >= 0 ? matchedStrategy : strategyEventIndex;
+        const matchedExecution = findEventCandleIndex(executionData, normalizedEventTime, executionTf);
+        executionEventIndexResolved = matchedExecution >= 0 ? matchedExecution : executionEventIndexResolved;
     }
+    index = Number.isFinite(executionEventTime) ? executionEventIndexResolved : strategyEventIndex;
     const low = candidate.entry_region_low ?? candidate.zone_low ?? setup.structural_entry_region?.low;
     const high = candidate.entry_region_high ?? candidate.zone_high ?? setup.structural_entry_region?.high;
     const entry = candidate.entry ?? setup.execution_zone?.midpoint;
@@ -5097,7 +5176,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         : (Number.isFinite(latestTimestamp) ? latestTimestamp : null);
     const resolvedEventTime = Number.isFinite(normalizedEventTime)
         ? normalizedEventTime
-        : (Number.isInteger(index) && (executionData[index] || data[index]) ? candleTimestamp(executionData[index] || data[index], index, executionEventTime ? executionTf : setupTf) : null);
+        : (Number.isInteger(index) ? candleTimestamp((executionEventTime ? executionData : data)[index], index, executionEventTime ? executionTf : setupTf) : null);
     const rawEventAgeHours = hasExplicitTimes && Number.isFinite(asOfTime) && Number.isFinite(resolvedEventTime)
         ? (asOfTime - resolvedEventTime) / 3600000
         : (Number.isInteger(index) ? Math.max(0, data.length - 1 - index) * (({ '15M': 15, '1H': 60, '4H': 240, '1D': 1440 }[setupTf] || 60) / 60) : null);
@@ -5140,9 +5219,9 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         event_time_utc: Number.isFinite(resolvedEventTime) ? new Date(resolvedEventTime).toISOString() : null,
         as_of_time_utc: Number.isFinite(asOfTime) ? new Date(asOfTime).toISOString() : null,
         zone_created_time_utc: Number.isFinite(zoneCreatedTime) ? new Date(zoneCreatedTime).toISOString() : null,
-        source_candle_time_utc: Number.isInteger(index) && (executionData[index] || data[index])
-            ? new Date(candleTimestamp(executionData[index] || data[index], index, executionEventTime ? executionTf : setupTf)).toISOString() : null,
-        timestamp_source: timestampSource(resolvedEventTime, Number.isInteger(index) ? (executionData[index] || data[index]) : null),
+        source_candle_time_utc: Number.isInteger(index) && (executionEventTime ? executionData[index] : data[index])
+            ? new Date(candleTimestamp((executionEventTime ? executionData : data)[index], index, executionEventTime ? executionTf : setupTf)).toISOString() : null,
+        timestamp_source: timestampSource(resolvedEventTime, Number.isInteger(index) ? (executionEventTime ? executionData : data)[index] : null),
         structure_data_cutoff: Number.isFinite(latestTimestamp) ? latestTimestamp : null,
         event_age_hours: eventAgeHours,
         event_age_bars: eventAgeBars,
@@ -5175,13 +5254,28 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         opportunity_status: 'STALE',
         setup_lifecycle_status: 'FRESH', rejection_code: null
     };
+    result.time_integrity = {
+        as_of_time_ms: asOfTime,
+        as_of_time_utc: result.as_of_time_utc,
+        event_time_ms: resolvedEventTime,
+        event_time_utc: result.event_time_utc,
+        zone_created_time_ms: zoneCreatedTime,
+        zone_created_time_utc: result.zone_created_time_utc,
+        event_delta_ms: Number.isFinite(asOfTime) && Number.isFinite(resolvedEventTime) ? asOfTime - resolvedEventTime : null,
+        zone_delta_ms: Number.isFinite(asOfTime) && Number.isFinite(zoneCreatedTime) ? asOfTime - zoneCreatedTime : null,
+        strategy_timeframe: setupTf,
+        execution_timeframe: executionTf,
+        event_timestamp_source: result.timestamp_source,
+        zone_timestamp_source: timestampSource(zoneCreatedTime, setup.execution_zone || candidate.zone),
+        failure: timestampInFuture ? 'EVENT_IN_FUTURE' : zoneTimeInFuture ? 'ZONE_IN_FUTURE' : (hasExplicitTimes && Number.isFinite(eventAgeHours) && eventAgeHours < 0 ? 'NEGATIVE_EVENT_AGE' : null)
+    };
     const maxAge = STRATEGY_SPEC[setup.primary]?.maxEventAgeBars ?? spec.maxMSNREventAgeBars;
     const lifecycleData = executionEventTime ? executionData : data;
     const expired = !Number.isInteger(index) || index < 0 || index >= lifecycleData.length ||
         lifecycleData.length - 1 - index > maxAge || !Number.isFinite(low) || !Number.isFinite(high);
     const hasExplicitExecutionTimes = executionData.some(bar => Number.isFinite(parseCandleTimeUTC(bar?.t)));
     const eventCutoff = Number.isFinite(resolvedEventTime) && hasExplicitExecutionTimes ? resolvedEventTime : null;
-    if ((Number.isInteger(index) && index >= 0 && index < data.length) || eventCutoff != null) {
+    if ((Number.isInteger(index) && index >= 0 && index < lifecycleData.length) || eventCutoff != null) {
         for (let i = 0; i < executionData.length; i++) {
             const bar = executionData[i];
             const barHasExplicitTime = Number.isFinite(parseCandleTimeUTC(bar?.t));
@@ -5287,6 +5381,11 @@ function calculateCandidateConfidence(candidate, context = {}) {
         quality: qualityBand,
         quality_breakdown: qualityBreakdown
     };
+}
+
+function getDeterministicCandidateConfidence(candidate) {
+    const value = Number(candidate?.quality?.final_confidence ?? candidate?.confidence_breakdown?.final_score);
+    return Number.isFinite(value) ? value : NaN;
 }
 
 function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
@@ -5808,10 +5907,10 @@ function waitCodeFromRejections(audit, hasStrategySetups) {
     return 'NO_EXECUTION_GEOMETRY';
 }
 
-function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext }) {
+function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext, as_of_ms = null }) {
     const settings = getMarketSettings(pair);
     const prec = settings.prec;
-    const now = new Date();
+    const now = new Date(Number.isFinite(as_of_ms) ? as_of_ms : Date.now());
     const session = getSession(now);
     const sessionCheck = shouldTradeSession(now);
     const realVolume = hasRealVolume(pair);
@@ -6042,6 +6141,11 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const liveContext = {
         pair,
         current_price: ictRound(price, prec),
+        as_of_time: now.getTime(),
+        as_of_time_utc: now.toISOString(),
+        provider_metadata: Object.fromEntries(Object.entries(historyCache || {}).map(([tf, data]) => [tf, data?.provider_metadata || null])),
+        last_closed_candle_time: Object.fromEntries(Object.entries(historyCache || {}).map(([tf, data]) => [tf, data?.filter(c => c.is_closed !== false).at(-1)?.t || null])),
+        structure_data_cutoff: now.getTime(),
         utc_time: now.toISOString(),
         session: sessionFacts,
         volatility: volatilityFacts,
@@ -6116,6 +6220,7 @@ function compactAIContext(liveMarketContext) {
     } : null;
     const compactCandidate = c => c ? {
         id: c.id,
+        strategy_version: c.strategy_version || STRATEGY_SPEC_VERSION,
         strategy_label: c.strategy_label,
         strategy_evidence: c.strategy_evidence,
         strategy_narrative: c.strategy_narrative || {
@@ -6129,6 +6234,9 @@ function compactAIContext(liveMarketContext) {
         confluence_score: c.confluence_score || c.strategy_setup?.confluence_score || 1,
         execution_model: c.execution_model || c.entry_model,
         execution_zone_created_time: c.execution_zone_created_time || c.zone?.created_time || null,
+        execution_zone_created_time_ms: c.execution_zone_created_time_ms || normalizeTimestampUTC(c.execution_zone_created_time || c.zone?.created_time),
+        execution_zone_created_time_utc: c.execution_zone_created_time_utc || null,
+        structural_invalidation: c.structural_invalidation || null,
         execution_zone_consumed: !!c.execution_zone_consumed,
         setup_lifecycle: c.evaluation?.metrics?.setup_lifecycle || null,
         lifecycle_state: c.lifecycle_state || c.opportunity_status || null,
@@ -6171,6 +6279,8 @@ function compactAIContext(liveMarketContext) {
         entry_reachability_score: c.entry_reachability_score,
         setup_confidence: c.setup_confidence,
         confidence_breakdown: c.confidence_breakdown,
+        quality: c.quality || null,
+        time_integrity: c.evaluation?.metrics?.setup_lifecycle?.time_integrity || null,
         entry_model: c.entry_model,
         entry_region_source: c.zone?.entry_region_source || c.entry_region_source,
         stop_source: c.stop_source,
@@ -6256,6 +6366,7 @@ function compactAIContext(liveMarketContext) {
 function buildAIPrompt(liveMarketContext, candleData) {
     const system = [
         'You are the discretionary candidate-selection layer of an ICT pending-limit trading system.',
+        'Return only {"decision":"SELECT"|"WAIT","selected_candidate_id":"string or null","reasoning":"qualitative text"}. Do not return trade geometry or confidence.',
         'The deterministic engine has already calculated and validated every numeric trade level in COMPUTED MARKET FACTS.adaptive_setup_candidates.',
         'You must NEVER invent, modify, recalculate, improve, widen, tighten, or replace entry, stop_loss, TP1, TP2, TP3, RR, or zone bounds.',
         'Your job is only to select the best candidate ID using the supplied live market context, or return WAIT/NO_TRADE for qualitative market reasons.',
@@ -6276,7 +6387,7 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'Select the best FRESH deterministic opportunity that remains actionable now or later in the current trading day. If none exists, return WAIT.',
         'Never select a setup merely because its historical pattern was valid. Reject any candidate with opportunity_status STALE, COMPLETED, or EXPIRED, entry_consumed true, tp1_already_reached true, insufficient remaining_reward_fraction, or still_actionable_today false.',
         'A true pending BUY_LIMIT or SELL_LIMIT does not require current price to be inside the zone or reaction confirmation before the limit fills. Use pending_entry_quality and entry_reachability_score to compare future entries, not to relabel a valid limit as a confirmation entry.',
-        'If selecting a setup, include selected_candidate_id and use the candidate entry, stop_loss, TP1, TP2, TP3, RR, and zone bounds exactly.',
+        'If selecting a setup, include only selected_candidate_id; the application hydrates all geometry and confidence from that deterministic candidate.',
         'When discussing TP1, use the supplied candidate target_map primary_target_source, target_type, and target_confluence. Never reinterpret an OB target as CRT or a CRT target as OB unless target_confluence explicitly contains both.',
         'If adaptive_setup_candidates is empty, do not invent entry/SL/TP levels; return WAIT or NO_TRADE.',
         'If market_context has a strong directional bias but strategy_setups is empty, return WAIT because context alone is not a trade.',
@@ -6459,7 +6570,30 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
             return null;
         }
         
-        const result = applyAdaptiveCandidateToAIResult(JSON.parse(jsonMatch[0]), liveMarketContext);
+        const selector = JSON.parse(jsonMatch[0]);
+        const productionSelector = liveMarketContext && Array.isArray(liveMarketContext.adaptive_setup_candidates);
+        if (productionSelector) {
+            const selectedId = typeof selector.selected_candidate_id === 'string' ? selector.selected_candidate_id : null;
+            if (!selectedId || ['WAIT', 'NO_TRADE'].includes(String(selector.decision || '').toUpperCase())) {
+                return { decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
+                    reasoning: typeof selector.reasoning === 'object' ? selector.reasoning : { primary: selector.reasoning || 'No deterministic candidate selected' },
+                    ai_decision: 'skip', noTrade: true, wait_condition: selector.reasoning || 'No deterministic candidate selected' };
+            }
+            const selected = applyAdaptiveCandidateToAIResult({ selected_candidate_id: selectedId, reasoning: selector.reasoning }, liveMarketContext);
+            if (selected.unknown_deterministic_candidate) return { decision: 'WAIT', direction: 'WAIT', selected_candidate_id: selectedId, confidence: 0, reasoning: { primary: 'AI selected unknown deterministic candidate' }, ai_decision: 'skip', noTrade: true, wait_condition: 'AI selected unknown deterministic candidate' };
+            const deterministicConfidence = getDeterministicCandidateConfidence(selected.adaptive_candidate);
+            selected.confidence = Number.isFinite(deterministicConfidence) ? deterministicConfidence : null;
+            selected.quality = selected.adaptive_candidate.quality;
+            const target = selected.adaptive_candidate.target_map?.[0];
+            if (target) {
+                selected.primary_target_source = target.primary_target_source;
+                selected.target_type = target.target_type;
+                selected.target_confluence = target.target_confluence;
+            }
+            selected.reasoning = { ...(selected.reasoning || {}), ...buildDeterministicOrderDescription(selected.adaptive_candidate).reasoning };
+            return selected;
+        }
+        const result = applyAdaptiveCandidateToAIResult(selector, liveMarketContext);
         if (result.unknown_deterministic_candidate) {
             return {
                 decision: 'WAIT',
@@ -6927,7 +7061,7 @@ async function runFallbackScan(price, historyCache) {
                 tp1: bestCandidate.tp1,
                 tp2: bestCandidate.tp2,
                 tp3: bestCandidate.tp3,
-                confidence: Math.max(58, Math.min(90, Math.round(bestCandidate.score || 70))),
+                confidence: getDeterministicCandidateConfidence(bestCandidate),
                 zone: { low: bestCandidate.zone_low, high: bestCandidate.zone_high, quality: bestCandidate.freshness },
                 zoneType: bestCandidate.zone_type,
                 patterns: [bestCandidate.strategy_label || bestCandidate.zone_type],
@@ -7098,7 +7232,7 @@ async function runFallbackScan(price, historyCache) {
 // validateAISetup() is a thin wrapper around evaluateSetupCandidate().
 // The shared evaluator owns hard pass/fail rules; this wrapper only computes
 // deterministic confidence after the hard-rule contract passes.
-function validateAISetup(aiResult, price, historyCache, pairArg, deterministicValidationContext = null) {
+function validateAISetupLegacy(aiResult, price, historyCache, pairArg, deterministicValidationContext = null) {
     const pairLocal = pairArg || pair;
     const checks = {};
     const factors = [];
@@ -7258,12 +7392,30 @@ function validateAISetup(aiResult, price, historyCache, pairArg, deterministicVa
     };
 }
 
+// Final AI validation is deliberately a contract check. Confidence belongs to
+// the deterministic candidate engine and is never recomputed from AI output.
+function validateAISetup(aiResult, price, historyCache, pairArg, deterministicValidationContext = null) {
+    const candidate = aiResult?.adaptive_candidate;
+    const checks = {};
+    if (!aiResult || typeof aiResult !== 'object') return { valid: false, reason: 'AI Setup rejected: AI result missing', adjustedConfidence: 0, deterministicConfidence: 0, checks, factors: [] };
+    // Legacy/manual callers without a selected deterministic candidate still
+    // receive the historical diagnostics. The live scan never reaches this
+    // branch because selector output is hydrated from a supplied candidate ID.
+    if (!candidate) return validateAISetupLegacy(aiResult, price, historyCache, pairArg, deterministicValidationContext);
+    const invariant = validateExecutableCandidateInvariant(candidate, deterministicValidationContext || { pair: pairArg || pair, price, historyCache });
+    if (!invariant.valid) return { valid: false, reason: `AI Setup rejected: ENGINE_INVARIANT_FAILURE:${invariant.invariant_code}`, adjustedConfidence: 0, deterministicConfidence: 0, checks, factors: [] };
+    const confidence = getDeterministicCandidateConfidence(candidate);
+    if (!Number.isFinite(confidence)) return { valid: false, reason: 'AI Setup rejected: DETERMINISTIC_CONFIDENCE_MISSING', adjustedConfidence: 0, deterministicConfidence: 0, checks, factors: [] };
+    return { valid: true, reason: null, adjustedConfidence: confidence, deterministicConfidence: confidence, localScore: confidence, aiConf: Number(aiResult.confidence), checks: { invariant: true }, factors: [], candidate, rr1: candidate.rr_tp1, htfMatch: candidate.htf_alignment || 0 };
+}
+
 async function runAutoScan() {
     if (scanInProgress) {
         console.warn('[SCAN] IGNORE overlapping Analyze request');
         return;
     }
     scanInProgress = true;
+    const scanAsOfMs = Date.now();
     const scanStartedAt = scanClock();
     let scanStage = 'initializing';
     let price = null;
@@ -7296,6 +7448,7 @@ async function runAutoScan() {
         await Promise.all(tfs.map(async (t) => {
             historyCache[t] = await getHistory(t);
         }));
+        for (const tf of tfs) historyCache[tf] = canonicalizeHistory(historyCache[tf], tf, scanAsOfMs);
         scanTrace('history loaded', scanStartedAt, { timeframes: Object.fromEntries(tfs.map(tf => [tf, historyCache[tf]?.length || 0])) });
         scanStage = 'MTF display';
         await updateMTFDisplay(historyCache);
@@ -7397,7 +7550,8 @@ async function runAutoScan() {
             patterns,
             enhancedAnalysis,
             holistic,
-            entryContext
+            entryContext,
+            as_of_ms: scanAsOfMs
         });
         scanTrace('market context complete', contextStartedAt, {
             strategy_setups: liveMarketContext.strategy_setups?.length || 0,
@@ -7461,17 +7615,6 @@ async function runAutoScan() {
         scanText.innerHTML = '🤖 AI analyzing live market context...';
         scanStage = 'DeepSeek request';
         const aiResult = await askAIToFindSetup(aiPrompt.user, price, aiPrompt.system, liveMarketContext);
-        if (aiResult) {
-            try {
-                const perf = getPatternPerformance(aiResult.patterns || []);
-                if (perf.sampleSize >= 5 && Math.abs(perf.confidenceAdjustment) >= 1) {
-                    const adjusted = Math.max(0, Math.min(100, Math.round(aiResult.confidence + perf.confidenceAdjustment)));
-                    aiResult.confidence = adjusted;
-                    aiResult.patternPerformance = { winRate: perf.winRate, sampleSize: perf.sampleSize, adjustment: perf.confidenceAdjustment };
-                }
-            } catch(e) {}
-        }
-
         if (!aiResult) {
             scanStage = lastAIRequestError?.code === 'AI_TIMEOUT' ? 'DeepSeek timeout fallback' : 'DeepSeek failure fallback';
             showNotif(`⚠️ ${lastAIRequestError?.message || 'AI analysis failed'} - using fallback`, 'warning');
@@ -7558,12 +7701,17 @@ async function runAutoScan() {
                 trade_type: aiResult.decision || (aiResult.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT'),
                 decision: aiResult.decision,
                 selected_candidate_id: aiResult.selected_candidate_id,
+                strategy: aiResult.strategy_label || aiResult.strategy_setup?.label || null,
+                strategy_version: aiResult.strategy_version || STRATEGY_SPEC_VERSION,
                 order_type: aiResult.order_type || 'LIMIT',
                 setup_type: aiResult.setup_type || 'PENDING_LIMIT',
                 entry_price: aiResult.entry,
                 entry_zone: aiResult.entry_zone,
                 stop_loss: aiResult.stop_loss,
                 stop_loss_reason: aiResult.stop_loss_reason,
+                structural_invalidation: aiResult.structural_invalidation,
+                stop_buffer: aiResult.stop_buffer,
+                stop_buffer_components: aiResult.stop_buffer_components || aiResult.adaptive_candidate?.stop_buffer_components || null,
                 take_profit_1: aiResult.take_profit_1,
                 take_profit_2: aiResult.take_profit_2,
                 take_profit_3: aiResult.take_profit_3,
@@ -7591,6 +7739,8 @@ async function runAutoScan() {
                 distance_to_entry_atr: aiResult.distance_to_entry_atr,
                 remaining_reward_fraction: aiResult.remaining_reward_fraction,
                 setup_confidence: aiResult.setup_confidence,
+                quality: aiResult.quality,
+                time_integrity: aiResult.setup_lifecycle?.time_integrity || null,
                 target_map: aiResult.target_map,
                 primary_target_source: aiResult.primary_target_source,
                 target_type: aiResult.target_type,
@@ -7743,6 +7893,10 @@ async function runAutoScan() {
         out.trade_signal.entry_consumed = aiResult.adaptive_candidate?.entry_consumed || false;
         out.trade_signal.tp1_already_reached = aiResult.adaptive_candidate?.tp1_already_reached || false;
         const finalConsistency = validateFinalSignalConsistency(out.trade_signal, liveMarketContext);
+        out.trade_signal.invariants = {
+            passed: finalConsistency.valid,
+            checks: finalConsistency.issues.length ? finalConsistency.issues : ['deterministic candidate geometry, lifecycle, target, RR, and pending-limit semantics passed']
+        };
         out.trade_signal.validation.final_consistency = finalConsistency;
         if (!finalConsistency.valid) {
             const reason = `INTERNAL_CONSISTENCY_FAILURE: ${finalConsistency.issues.join('; ')}`;
@@ -7928,6 +8082,7 @@ function detectDivergence(data, indicator = 'rsi', lookback = 30) {
 
 // 3. LIQUIDITY MAPPING
 function mapLiquidity(data) {
+    data = closedStructureCandles(data);
     if (!data || data.length < 30) return { above: [], below: [], equalHighs: [], equalLows: [], nearestAbove: null, nearestBelow: null };
     const closes = data.map(c => c.c);
     const currentPrice = closes[closes.length - 1];
@@ -8649,7 +8804,7 @@ function startMonitor() {
             showNotif(`✅ FILLED! ${filled.pair||''} ${filled.signalType} @ $${p.toFixed(settings.prec)}`, 'success');
             // AUTO OUTCOME DETECTION: enqueue the fill so the next monitor
             // tick can poll 5M candles to see if SL or TP1 was hit.
-            enqueuePendingFill(filled, p);
+            enqueuePendingFill(filled, filled.idealEntry);
             try {
                 new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play();
             } catch(e) {}
@@ -8688,7 +8843,14 @@ function handleLimit() {
         isFresh: analysis.isFresh || false,
         distancePct: analysis.distancePct || 0,
         createdAt: new Date().toISOString(),
-        source: analysis.aiDecision ? 'AI-Generated' : 'Rule-Based'
+        source: 'Deterministic Candidate Engine + AI Selector',
+        candidate_id: analysis.aiDecision?.selected_candidate_id || null,
+        strategy_version: analysis.aiDecision?.strategy_version || STRATEGY_SPEC_VERSION,
+        strategy: analysis.aiDecision?.strategy_label || analysis.patterns || null,
+        entry_model: analysis.aiDecision?.entry_model || null,
+        structural_invalidation: analysis.aiDecision?.structural_invalidation || null,
+        quality_breakdown: analysis.aiDecision?.quality?.breakdown || analysis.aiDecision?.quality?.quality_breakdown || null,
+        fill_price_source: 'LIMIT_ORDER_PRICE'
     };
     saveLimit(o);
     startMonitor();

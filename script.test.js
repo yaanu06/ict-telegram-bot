@@ -3240,6 +3240,23 @@ describe('pendingFills queue (localStorage)', () => {
 });
 
 describe('production invariant contracts', () => {
+    it('canonicalizes provider candles once and calculates closure from scan time', () => {
+        const ctx = getContext();
+        const scan = Date.parse('2026-09-11T10:02:00Z');
+        const result = ctx.canonicalizeHistory([{ t: '2026-09-11T10:00:00Z', o: 1, h: 2, l: 0.5, c: 1.5, v: 10 }], '1H', scan);
+        expect(result[0].t).toBe(Date.parse('2026-09-11T10:00:00Z'));
+        expect(result[0].timeframe).toBe('1H');
+        expect(result[0].timestamp_source).toBe('PROVIDER');
+        expect(result[0].is_closed).toBe(false);
+    });
+
+    it('canonicalizes timezone-bearing provider timestamps without device-time dependence', () => {
+        const ctx = getContext();
+        const result = ctx.canonicalizeHistory([{ t: '2026-09-11T15:00:00+05:00', o: 1, h: 2, l: 0.5, c: 1.5 }], '1H', Date.parse('2026-09-11T11:00:00Z'));
+        expect(result[0].t).toBe(Date.parse('2026-09-11T10:00:00Z'));
+        expect(result[0].is_closed).toBe(true);
+    });
+
     it('rejects a future-dated strategy event without clamping its age', () => {
         const ctx = getContext();
         const asOf = Date.parse('2026-09-11T10:00:00Z');
@@ -3281,5 +3298,16 @@ describe('production invariant contracts', () => {
             target_map: [{ primary_target_source: 'SWING_LOW' }] });
         expect(result.valid).toBe(false);
         expect(result.invariant_code).toBe('SL_INSIDE_STRUCTURAL_INVALIDATION');
+    });
+
+    it('uses the exact pending limit price as the recorded fill price', () => {
+        const ctx = getContext();
+        const store = {};
+        ctx.localStorage.getItem = key => store[key] || '[]';
+        ctx.localStorage.setItem = (key, value) => { store[key] = value; };
+        ctx.enqueuePendingFill({ id: 'limit', pair: 'EUR/USD', signalType: 'SHORT', idealEntry: 1.1, stopLoss: 1.11, takeProfit1: 1.07 }, 1.1);
+        const saved = JSON.parse(store.pendingFills)[0];
+        expect(saved.entry).toBe(1.1);
+        expect(saved.fill_price_source).toBe('LIMIT_ORDER_PRICE');
     });
 });
