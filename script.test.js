@@ -259,7 +259,7 @@ describe('strategy entry lifecycle', () => {
         });
         expect(result.progress_to_tp1_fraction).toBeCloseTo(0.9, 2);
         expect(result.rejection_code).toBe('SETUP_DELIVERY_ALREADY_ADVANCED');
-        expect(result.opportunity_status).toBe('STALE');
+        expect(result.opportunity_status).toBe('DELIVERY_ADVANCED');
     });
 
     it('rejects a stale prior-day intraday event even when its entry remains untouched', () => {
@@ -270,7 +270,7 @@ describe('strategy entry lifecycle', () => {
             price: 105, as_of_time: '2026-09-11T11:00:00Z',
             historyCache: { '1H': [c(100, 101, 99, 100, '2026-09-08 09:00:00'), c(105, 106, 104, 105, '2026-09-11 10:00:00')] }
         });
-        expect(result.opportunity_status).toBe('STALE');
+        expect(result.opportunity_status).toBe('INVALID');
         expect(result.rejection_code).toBe('SETUP_STALE');
         expect(result.still_actionable_today).toBe(false);
     });
@@ -284,8 +284,9 @@ describe('strategy entry lifecycle', () => {
         });
         expect(result.pending_entry_quality).toBe('LOW');
         expect(result.entry_reachable_today).toBe(false);
-        expect(result.rejection_code).toBeNull();
-        expect(result.still_actionable_today).toBe(true);
+        expect(result.rejection_code).toBe('ENTRY_NOT_REACHABLE_TODAY');
+        expect(result.opportunity_status).toBe('FRESH_PENDING_LATER');
+        expect(result.still_actionable_today).toBe(false);
     });
 
     it('sends only fresh opportunity statuses to the AI context', () => {
@@ -296,6 +297,75 @@ describe('strategy entry lifecycle', () => {
             { id: 'completed', opportunity_status: 'COMPLETED', direction: 'BUY', entry: 1, stop_loss: 0.9, tp1: 1.3 }
         ] });
         expect(payload.adaptive_setup_candidates.map(c => c.id)).toEqual(['fresh']);
+    });
+
+    it('normalizes epoch seconds, epoch milliseconds, ISO, text, Date, and timezone timestamps identically', () => {
+        const ctx = getContext();
+        const iso = '2026-09-11T00:00:00Z';
+        const ms = Date.parse(iso);
+        expect(ctx.normalizeTimestampUTC(ms)).toBe(ms);
+        expect(ctx.normalizeTimestampUTC(Math.floor(ms / 1000))).toBe(ms);
+        expect(ctx.normalizeTimestampUTC(iso)).toBe(ms);
+        expect(ctx.normalizeTimestampUTC('2026-09-11 00:00:00')).toBe(ms);
+        expect(ctx.normalizeTimestampUTC(new Date(ms))).toBe(ms);
+        expect(ctx.normalizeTimestampUTC('2026-09-11T05:00:00+05:00')).toBe(ms);
+    });
+
+    it('uses execution-timeframe timestamps for an older 4H narrative with fresh 1H execution', () => {
+        const ctx = getContext();
+        const result = ctx.evaluateSetupLifecycle({ direction: 'BUY', entry: 99, zone_low: 98.9, zone_high: 99.1, tp1: 110,
+            strategy_setup: { primary: 'CRT', setup_timeframe: '4H', execution_timeframe: '1H', reclaim_bar_index: 0, reclaim_time: Math.floor(Date.parse('2026-09-11T08:00:00Z') / 1000) } }, {
+            price: 101, as_of_time: Date.parse('2026-09-11T10:00:00Z'),
+            historyCache: {
+                '4H': [c(100, 101, 99.5, 100, '2026-09-11 08:00:00')],
+                '1H': [c(100, 100.5, 99.5, 100, '2026-09-11T08:00:00Z'), c(100, 101.2, 100.8, 101, '2026-09-11T09:00:00Z')]
+            }
+        });
+        expect(result.event_time).toBe(Date.parse('2026-09-11T08:00:00Z'));
+        expect(result.event_age_hours).toBe(2);
+        expect(result.opportunity_status).toBe('FRESH_PENDING_TODAY');
+        expect(result.still_actionable_today).toBe(true);
+    });
+
+    it('rejects the AUD-style SELL setup with only 40% reward remaining', () => {
+        const ctx = getContext();
+        const result = ctx.evaluateSetupLifecycle({ direction: 'SELL', entry: 0.71713, zone_low: 0.71710, zone_high: 0.71716, tp1: 0.71623,
+            strategy_setup: { primary: 'TBS', timeframe: '1H', reclaim_bar_index: 0, reclaim_time: '2026-09-11T09:00:00Z' } }, {
+            price: 0.71659, as_of_time: '2026-09-11T10:00:00Z',
+            historyCache: { '1H': [c(0.718, 0.7182, 0.7175, 0.718, '2026-09-11T09:00:00Z'), c(0.7169, 0.7170, 0.7165, 0.71659, '2026-09-11T10:00:00Z')] }
+        });
+        expect(result.remaining_reward_fraction).toBeCloseTo(0.4, 2);
+        expect(result.progress_to_tp1_fraction).toBeCloseTo(0.6, 2);
+        expect(result.rejection_code).toBe('SETUP_DELIVERY_ALREADY_ADVANCED');
+        expect(result.opportunity_status).toBe('DELIVERY_ADVANCED');
+    });
+
+    it('penalizes partial delivery without making a limit order automatically low confidence', () => {
+        const ctx = getContext();
+        const normal = ctx.calculateCandidateConfidence({ direction: 'BUY', opportunity_status: 'FRESH_PENDING_TODAY', remaining_reward_fraction: 0.8, entry_reachability_score: 85, htf_alignment: 3, strategy_setup: { confirmations: ['TBS'] }, target_reachability: { reachability_score: 85 } });
+        const partial = ctx.calculateCandidateConfidence({ direction: 'BUY', opportunity_status: 'FRESH_PENDING_TODAY', remaining_reward_fraction: 0.6, entry_reachability_score: 85, htf_alignment: 3, strategy_setup: { confirmations: ['TBS'] }, target_reachability: { reachability_score: 85 } });
+        const poor = ctx.calculateCandidateConfidence({ direction: 'BUY', opportunity_status: 'FRESH_PENDING_TODAY', remaining_reward_fraction: 0.6, entry_reachability_score: 20, htf_alignment: 0, strategy_setup: { confirmations: [] }, target_reachability: { reachability_score: 30, intervening_obstacles: [{ severity: 'SERIOUS' }] } });
+        expect(normal.quality).toBe('HIGH');
+        expect(partial.final_score).toBeLessThan(normal.final_score);
+        expect(poor.final_score).toBeLessThan(partial.final_score);
+    });
+
+    it('blocks contradictory final limit output and permits a valid pending limit outside the zone', () => {
+        const ctx = getContext();
+        const candidate = { id: 'fresh-limit', direction: 'SELL', entry: 110, stop_loss: 112, tp1: 104, tp2: null, tp3: null,
+            opportunity_status: 'FRESH_PENDING_TODAY', lifecycle_state: 'FRESH_PENDING_TODAY', still_actionable_today: true,
+            entry_consumed: false, tp1_already_reached: false, remaining_reward_fraction: 0.8 };
+        const invalid = ctx.validateFinalSignalConsistency({ trade_type: 'SELL_LIMIT', direction: 'SELL', selected_candidate_id: candidate.id,
+            entry_price: 110, stop_loss: 112, take_profit_1: 104, opportunity_status: candidate.opportunity_status, still_actionable_today: true,
+            remaining_reward_fraction: 0.8, limit_order_setup: { eligible: true }, immediate_entry: { eligible: true, confirmation: { isAtZone: true } },
+            limitZoneStatus: { insideZone: false }, source: 'Deterministic Candidate Engine + AI Selector' }, { adaptive_setup_candidates: [candidate] });
+        expect(invalid.valid).toBe(false);
+        expect(invalid.issues).toContain('immediate confirmation claims at-zone while current price is outside zone');
+        const valid = ctx.validateFinalSignalConsistency({ trade_type: 'SELL_LIMIT', direction: 'SELL', selected_candidate_id: candidate.id,
+            entry_price: 110, stop_loss: 112, take_profit_1: 104, opportunity_status: candidate.opportunity_status, still_actionable_today: true,
+            remaining_reward_fraction: 0.8, entry_reachable_today: true, ai_decision: 'pending_limit', limit_order_setup: { eligible: true }, immediate_entry: { eligible: false, confirmation: { isAtZone: false } },
+            limitZoneStatus: { insideZone: false }, source: 'Deterministic Candidate Engine + AI Selector' }, { adaptive_setup_candidates: [candidate] });
+        expect(valid.valid).toBe(true);
     });
 });
 
@@ -855,7 +925,7 @@ describe('strategy pipeline integration rules', () => {
         setup.reclaim_bar_index = 79;
         const result = ctx.buildAdaptiveSetupCandidates({
             pair: 'EUR/USD',
-            price: 1.101,
+            price: 1.1002,
             historyCache: { '4H': candles(80, 1.08, 0.0002, 'up'), '1H': candles(80, 1.08, 0.0002, 'up'), '1D': candles(80, 1.08, 0.0002, 'up') },
             zones: [zone],
             targetCandidates: { buy: [], sell: [] },
@@ -1513,7 +1583,7 @@ describe('live AI market context and prompt', () => {
         expect(result.valid_candidates.length).toBeGreaterThan(0);
         expect(result.valid_candidates[0].strategy_setup.primary).toBe('MSNR');
         expect(result.valid_candidates[0].strategy_label).toBe('MSNR');
-        expect(result.valid_candidates.every(c => c.setup_lifecycle_status === 'FRESH')).toBe(true);
+        expect(result.valid_candidates.every(c => ['FRESH_NOW', 'FRESH_PENDING_TODAY'].includes(c.lifecycle_state))).toBe(true);
         historyCache['1H'].push(c(1.1007, 1.101, 1.0998, 1.1008));
         const consumed = ctx.buildAdaptiveSetupCandidates({
             pair: 'EUR/USD', price: 1.1008, historyCache, zones: [zone], strategySetups,
@@ -2877,9 +2947,8 @@ describe('validateAISetup', () => {
             ai_decision: 'wait_for_reaction',
             strategy_setup: { primary: 'TBS', label: 'TBS', timeframe: '1H', reclaim_bar_index: 79 }
         }), 4400, cache, 'XAU/USD', validationContext);
-        expect(r.valid).toBe(true);
-        expect(r.rr1).toBeCloseTo(3, 1);
-        expect(r.matchedZone).toBeTruthy();
+        expect(r.valid).toBe(false);
+        expect(r.reason).toContain('ENTRY_NOT_REACHABLE_TODAY');
     });
 
     it('still rejects bad RR calculated from the future limit entry', () => {
@@ -2914,7 +2983,7 @@ describe('validateAISetup', () => {
             strategy_setup: { primary: 'TBS', label: 'TBS', timeframe: '1H', reclaim_bar_index: 79 }
         }), 4405, cache, 'XAU/USD', { ...validationContext, price: 4405 });
         expect(r.valid).toBe(false);
-        expect(r.reason).toMatch(/real RR .* below/);
+        expect(r.reason).toContain('SETUP_DELIVERY_ALREADY_ADVANCED');
     });
 });
 
