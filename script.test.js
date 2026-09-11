@@ -1956,7 +1956,7 @@ describe('live AI market context and prompt', () => {
         expect(obZone.primary_eligible).toBe(true);
     });
 
-    it('builds a prompt that allows NO_TRADE and has no stale hard-coded price anchors', () => {
+    it('builds a selector-only prompt allowing WAIT without stale hard-coded price anchors', () => {
         const ctx = getContext();
         const live = {
             pair: 'XAU/USD',
@@ -1974,16 +1974,15 @@ describe('live AI market context and prompt', () => {
         expect(prompt.system).toMatch(/candidate-selection layer/);
         expect(prompt.system).toMatch(/must NEVER invent, modify, recalculate/);
         expect(prompt.system).toMatch(/VALID_CANDIDATES = executable numerical candidates/);
-        expect(prompt.system).toMatch(/rank the supplied adaptive_setup_candidates/);
+        expect(prompt.system).toMatch(/Rank the supplied adaptive_setup_candidates/);
         expect(prompt.system).toMatch(/adaptive_setup_candidates is empty/);
         expect(prompt.system).toMatch(/Do not calculate risk, required reward, minimum TP/);
-        expect(prompt.user).toMatch(/NO_TRADE/);
-        expect(prompt.user).toMatch(/BUY_LIMIT, SELL_LIMIT, WAIT, or NO_TRADE/);
+        expect(prompt.user).toMatch(/"decision": "SELECT" \| "WAIT"/);
         expect(prompt.user).toMatch(/selected_candidate_id/);
-        expect(prompt.user).toMatch(/Do not calculate or alter entry/);
-        expect(prompt.user).toMatch(/already passed deterministic numerical hard rules/);
-        expect(prompt.user).toMatch(/Discount generally favors BUY entries; premium generally favors SELL entries/);
-        expect(prompt.user).toMatch(/PARTIAL=partially used\/partially mitigated/);
+        expect(prompt.user).toMatch(/application owns direction, order type, all geometry and confidence/);
+        expect(prompt.user).toMatch(/Use only supplied evidence/);
+        expect(prompt.system).toMatch(/discount generally favors BUY entries and premium generally favors SELL entries/);
+        expect(prompt.system).toMatch(/PARTIAL = partially used\/partially mitigated/);
         expect(prompt.user).not.toMatch(/PARTIAL=fresh/);
         expect(prompt.user).not.toMatch(/4328\.58|4368\.53|4415\.99|4460\.99|THEREFORE|MUST output|DO Not output|Find the SINGLE BEST/);
     });
@@ -3287,7 +3286,7 @@ describe('production invariant contracts', () => {
             liquidity: { above: [], below: [] }, strategySetup: { target_candidates: [] }
         });
         expect(result.intervening_obstacles).toHaveLength(1);
-        expect(result.intervening_obstacles[0].blocks_direction).toBe(false);
+        expect(result.intervening_obstacles[0].blocks_direction).toBe(true);
         expect(result.intervening_obstacles[0].direction_or_role).toBe('BUY');
     });
 
@@ -3309,5 +3308,241 @@ describe('production invariant contracts', () => {
         const saved = JSON.parse(store.pendingFills)[0];
         expect(saved.entry).toBe(1.1);
         expect(saved.fill_price_source).toBe('LIMIT_ORDER_PRICE');
+    });
+});
+
+describe('engine contract completion', () => {
+    function narrative(data) {
+        return { primary: 'CRT', label: 'CRT', direction: 'BUY', timeframe: '1H',
+            execution_timeframe: '1H', reclaim_bar_index: 10, reclaim_time: data[10].t,
+            structural_invalidation: 98, original_strategy_entry_consumed: true };
+    }
+
+    it('confirms fresh FVG only after its third candle closes', () => {
+        const ctx = getContext();
+        const data = freshExecutionFixture().slice(0, 18);
+        data[17].is_closed = false;
+        const build = () => ctx.buildFreshExecutionZonesForNarrative(narrative(data), { '1H': data }, [], 'XAU/USD', 101.4);
+        const matches = z => z.type === 'FVG' && z.low === 100.4 && z.high === 101;
+        expect(build().filter(matches)).toHaveLength(0);
+        data[17].is_closed = true;
+        expect(build().filter(matches)).toHaveLength(1);
+    });
+
+    it('confirms fresh OB only after its displacement candle closes', () => {
+        const ctx = getContext();
+        const data = freshExecutionFixture().slice(0, 17);
+        data[16].is_closed = false;
+        const build = () => ctx.buildFreshExecutionZonesForNarrative(narrative(data), { '1H': data }, [], 'XAU/USD', 101.4);
+        const matches = z => z.type === 'OB' && z.low === 100 && z.high === 100.4;
+        expect(build().filter(matches)).toHaveLength(0);
+        data[16].is_closed = true;
+        expect(build().filter(matches)).toHaveLength(1);
+    });
+
+    it('still consumes an existing FVG when a later forming candle trades through it', () => {
+        const ctx = getContext();
+        const data = freshExecutionFixture().slice(0, 18);
+        data.push({ ...c(101.4, 101.6, 100.6, 101.3, '2026-09-10 09:00:00'), is_closed: false });
+        const zones = ctx.buildFreshExecutionZonesForNarrative(narrative(data), { '1H': data }, [], 'XAU/USD', 101.3);
+        expect(zones.some(z => z.type === 'FVG' && z.low === 100.4 && z.high === 101)).toBe(false);
+        expect(zones.execution_zone_stats.consumed).toBeGreaterThan(0);
+    });
+
+    it('does not import a structural MSNR zone whose source candle is forming', () => {
+        const ctx = getContext();
+        const data = freshExecutionFixture().slice(0, 18);
+        data[17].is_closed = false;
+        const zone = { type: 'MSNR', origin: 'STRUCTURAL_MSNR', direction: 'BUY', timeframe: '1H',
+            low: 100.5, high: 100.6, midpoint: 100.55, source_candle_index: 17, source_time: data[17].t };
+        const zones = ctx.buildFreshExecutionZonesForNarrative(narrative(data), { '1H': data }, [zone], 'XAU/USD', 101.4);
+        expect(zones.some(z => z.type === 'MSNR')).toBe(false);
+    });
+
+    it.each([
+        ['detectFVG', []], ['findSwings', [2]], ['detectMSS', []],
+        ['detectBOS', ['BUY']], ['detectCHoCH', ['BUY']], ['detectTrend', []],
+        ['detectLiquiditySweep', [101, 'BUY']], ['detectOrderBlocks', ['BUY']],
+        ['mapLiquidity', []], ['detectDisplacement', ['BUY']],
+        ['isPremiumDiscount', [101]], ['getDirectionBias', []],
+        ['detectCompression', []], ['detectEngulfing', [101, 'BUY']],
+        ['detectPinBar', [101, 'BUY', 1]], ['detectBreakoutRetest', [101, 'BUY']]
+    ])('%s ignores unconfirmed candles', (name, args) => {
+        const ctx = getContext();
+        const data = candles(80, 100, 0.5, 'up');
+        const raw = [...data, { ...c(140, 300, 1, 290), is_closed: false }];
+        expect(ctx[name](raw, ...args)).toEqual(ctx[name](data, ...args));
+    });
+
+    it('target construction and structural ATR ignore a forming departure', () => {
+        const ctx = getContext();
+        const data = candles(80, 100, 0.5, 'up');
+        const raw = [...data, { ...c(140, 300, 1, 290), is_closed: false }];
+        const closedCache = { '4H': data, '1H': data };
+        const rawCache = { '4H': raw, '1H': raw };
+        expect(ctx.buildTargetCandidates(rawCache, 141, 'XAU/USD')).toEqual(ctx.buildTargetCandidates(closedCache, 141, 'XAU/USD'));
+        expect(ctx.getCandidateATRContext({ timeframe: '1H' }, rawCache, 'XAU/USD', 141))
+            .toEqual(ctx.getCandidateATRContext({ timeframe: '1H' }, closedCache, 'XAU/USD', 141));
+        expect(ctx.buildRiskConstraints('XAU/USD', 141, rawCache)).toEqual(ctx.buildRiskConstraints('XAU/USD', 141, closedCache));
+    });
+
+    it.each([['SELL', 'BUY'], ['BUY', 'SELL']])('%s delivery recognizes opposing %s structures', (trade, zoneDirection) => {
+        const ctx = getContext();
+        const obstacle = ctx.classifyDeliveryObstacle({ type: 'OB', direction: zoneDirection, timeframe: '4H',
+            low: 104, high: 105, freshness: 'FRESH' }, trade);
+        expect(obstacle.blocks_direction).toBe(true);
+        expect(obstacle.hard_blocking).toBe(false);
+        expect(obstacle.severity).toBe('SERIOUS');
+    });
+
+    it('same-direction zones do not oppose delivery even with stale legacy flags', () => {
+        const ctx = getContext();
+        const obstacle = ctx.classifyDeliveryObstacle({ type: 'OB', direction: 'SELL', blocks_direction: true,
+            hard_blocking: true, low: 104, high: 105 }, 'SELL');
+        expect(obstacle.blocks_direction).toBe(false);
+        expect(obstacle.hard_blocking).toBe(false);
+    });
+
+    it('classifies support and role-reversal zones without requiring a direction flag', () => {
+        const ctx = getContext();
+        for (const role of ['REACTION_SUPPORT', 'RESISTANCE_TO_SUPPORT', 'DEMAND']) {
+            expect(ctx.classifyDeliveryObstacle({ role, low: 104, high: 105 }, 'SELL').blocks_direction).toBe(true);
+        }
+        expect(ctx.classifyDeliveryObstacle({ role: 'SUPPORT_TO_RESISTANCE', low: 104, high: 105 }, 'BUY').blocks_direction).toBe(true);
+    });
+
+    it('fresh higher-timeframe demand lowers GOLD-style SELL reachability without hard invalidation', () => {
+        const ctx = getContext();
+        const input = { direction: 'SELL', entry: 110, stopLoss: 112,
+            target: { level: 100, source: 'SWING_LOW', timeframe: '1H', structural_priority: 82 },
+            historyCache: { '1H': candles(40, 110, 1, 'down') }, liquidity: { below: [] }, strategySetup: {} };
+        const zones = [
+            { type: 'OB', direction: 'BUY', timeframe: '4H', low: 104, high: 105, freshness: 'FRESH' },
+            { type: 'FVG', direction: 'BUY', timeframe: '4H', low: 106, high: 107, freshness: 'FRESH' }
+        ];
+        const clean = ctx.evaluateTargetReachability({ ...input, zones: [] });
+        const blocked = ctx.evaluateTargetReachability({ ...input, zones });
+        const mitigated = ctx.evaluateTargetReachability({ ...input, zones: zones.map(z => ({ ...z, freshness: 'MITIGATED' })) });
+        const lowerTf = ctx.evaluateTargetReachability({ ...input, zones: zones.map(z => ({ ...z, timeframe: '15M' })) });
+        expect(blocked.reachable).toBe(true);
+        expect(blocked.hard_unreachable).toBe(false);
+        expect(blocked.intervening_obstacles).toHaveLength(2);
+        expect(blocked.reachability_score).toBeLessThan(clean.reachability_score - 20);
+        expect(blocked.reachability_score).toBeLessThan(mitigated.reachability_score);
+        expect(blocked.reachability_score).toBeLessThan(lowerTf.reachability_score);
+        expect(ctx.evaluateTargetReachability({ ...input, zones: [...zones, { ...zones[0], id: 'duplicate' }] }))
+            .toEqual(blocked);
+    });
+
+    it('one zone and model have one midpoint entry, independent of direction or RR', () => {
+        const ctx = getContext();
+        for (const direction of ['BUY', 'SELL']) {
+            expect(ctx.getAdaptiveEntryCandidates({ low: 1.1, high: 1.101 }, direction, 5)).toEqual([1.1005]);
+        }
+    });
+
+    it('semantic entry honors explicit execution evidence in priority order and within bounds', () => {
+        const ctx = getContext();
+        const zone = { low: 1.1, high: 1.101, entry_model: 'RECLAIM_RETEST', semantic_entry: 1.1007 };
+        const setup = { entry: 1.1002, reclaim_level: 1.1003 };
+        expect(ctx.getSemanticEntryCandidate(zone, setup, 'BUY', 5)).toBe(1.1002);
+        expect(ctx.getSemanticEntryCandidate(zone, { reclaim_level: 1.1003 }, 'BUY', 5)).toBe(1.1003);
+        expect(ctx.getSemanticEntryCandidate(zone, { entry: 9, reclaim_level: 8 }, 'BUY', 5)).toBe(1.1007);
+        expect(ctx.getSemanticEntryCandidate({ low: 1.1, high: 1.101, price: 1.1004 }, {}, 'BUY', 5)).toBe(1.1004);
+        expect(ctx.getSemanticEntryCandidate({ low: 1.1, high: 1.101, execution_model: 'FRESH_RETRACEMENT_LIMIT' },
+            { reclaim_level: 1.1001 }, 'BUY', 5)).toBe(1.1005);
+        expect(ctx.getAdaptiveEntryCandidates({ low: NaN, high: 1.101 }, 'BUY', 5)).toEqual([]);
+    });
+
+    it('reports semantic entry counts rather than low/mid/high permutations', () => {
+        const ctx = getContext();
+        const entry = ctx.getAdaptiveEntryCandidates({ low: 1.1, high: 1.101 }, 'BUY', 5);
+        const raw = { entry: entry[0], stop_loss: 1.099, tp1: 1.105, rr_tp1: 3, minimum_rr: 2.5,
+            direction: 'BUY', target_map: [{ target_level: 1.105 }], risk_model: { status: 'VALID_STRUCTURAL_STOP' } };
+        const audit = ctx.buildCandidatePipelineAudit([], [raw], [], [raw],
+            [{ seed_id: 'one-zone', raw_candidates: 1, semantic_entries: entry.length, failure_reasons: [] }]);
+        expect(audit.execution_opportunities).toBe(1);
+        expect(audit.semantic_entries).toBe(1);
+        expect(audit.structural_stops_valid).toBe(1);
+        expect(audit.target_valid).toBe(1);
+        expect(audit.rr_valid).toBe(1);
+        expect(audit.final_valid).toBe(1);
+    });
+
+    it('constructs only one numerical candidate for one execution opportunity end to end', () => {
+        const ctx = getContext();
+        const data = candles(80, 1.08, 0.0003, 'up');
+        const result = ctx.buildAdaptiveSetupCandidates({
+            pair: 'EUR/USD', price: 1.102, historyCache: { '4H': data, '1H': data, '1D': data, '15M': data, '5M': data },
+            zones: [{ type: 'FVG', direction: 'BUY', timeframe: '1H', origin: 'STRUCTURAL',
+                low: 1.1, high: 1.101, freshness: 'FRESH', primary_eligible: true }],
+            targetCandidates: { buy: [{ direction: 'BUY', level: 1.11, source: 'SWING_HIGH', origin: 'STRUCTURAL' }] },
+            riskConstraints: { minimum_rr: 2.5 },
+            structure: { '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } }
+        });
+        expect(result.seed_diagnostics).toHaveLength(1);
+        expect(result.seed_diagnostics[0].semantic_entries).toBe(1);
+        expect(result.raw_candidates).toHaveLength(1);
+        expect(result.raw_candidates[0].entry).toBe(1.1005);
+    });
+
+    it('reports dominant data time failure before stale entries or missing geometry', () => {
+        const ctx = getContext();
+        const audit = { raw_candidate_count: 436, rejection_detail: {
+            DATA_TIME_INCONSISTENT: 324, SETUP_EXPIRED: 95, ENTRY_ALREADY_CONSUMED: 17 } };
+        expect(ctx.waitCodeFromRejections(audit, true)).toBe('DATA_TIME_INCONSISTENT');
+        expect(ctx.waitCodeFromRejections({ raw_candidates: 0, seed_failure_counts: { DATA_TIME_INCONSISTENT: 19 } }, true))
+            .toBe('DATA_TIME_INCONSISTENT');
+        expect(ctx.classifyRejectionDetail('DATA_TIME_INCONSISTENT: EVENT_IN_FUTURE')).toBe('DATA_TIME_INCONSISTENT');
+    });
+
+    it('reports engine invariant failures as engine faults, not market WAIT', () => {
+        const ctx = getContext();
+        expect(ctx.waitCodeFromRejections({ rejection_detail: {
+            ENGINE_INVARIANT_FAILURE: 12, NO_VALID_TP1: 2 } }, true)).toBe('ENGINE_INVARIANT_FAILURE');
+    });
+
+    it('healthy stale or consumed opportunities still report NO_FRESH_OPPORTUNITY', () => {
+        const ctx = getContext();
+        expect(ctx.waitCodeFromRejections({ raw_candidates: 436, rejection_detail: {
+            SETUP_EXPIRED: 324, ENTRY_ALREADY_CONSUMED: 112 } }, true)).toBe('NO_FRESH_OPPORTUNITY');
+        expect(ctx.waitCodeFromRejections({ raw_candidates: 0, seed_failure_counts: { ENTRY_ALREADY_CONSUMED: 19 } }, true))
+            .toBe('NO_FRESH_OPPORTUNITY');
+    });
+
+    it('requests exactly three selector output fields, never geometry or confidence', () => {
+        const ctx = getContext();
+        const prompt = ctx.buildAIPrompt({ pair: 'EUR/USD', current_price: 1.101, utc_time: '2026-09-11T10:00:00Z',
+            session: { name: 'LONDON' }, adaptive_setup_candidates: [] }, '');
+        const schema = prompt.user.split('Return ONLY this selector JSON')[1];
+        expect([...schema.matchAll(/"([a-z_]+)":/g)].map(m => m[1]))
+            .toEqual(['decision', 'selected_candidate_id', 'reasoning']);
+        expect(schema).toContain('"SELECT" | "WAIT"');
+        expect(prompt.system).not.toMatch(/return BUY_LIMIT|return SELL_LIMIT|ai_decision:|reaction\/fill confirmation/);
+    });
+
+    it.each([false, true])('hydrates SELECT exclusively from the candidate (legacy mutation=%s)', async mutate => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        const candidate = { id: 'abc', direction: 'BUY', timeframe: '1H', zone_type: 'FVG', zone_origin: 'STRUCTURAL',
+            zone_low: 1.0995, zone_high: 1.1005, entry: 1.1, stop_loss: 1.098,
+            tp1: 1.105, tp2: null, tp3: null, rr_tp1: 2.5,
+            quality: { final_confidence: 64 }, stop_reason: 'Authoritative strategy invalidation',
+            opportunity_status: 'FRESH_PENDING_TODAY', still_actionable_today: true,
+            entry_consumed: false, tp1_already_reached: false };
+        const before = JSON.stringify(candidate);
+        const selection = { decision: 'SELECT', selected_candidate_id: 'abc', reasoning: 'Best supplied fresh opportunity' };
+        if (mutate) Object.assign(selection, { entry: 999, stop_loss: 1000, take_profit_1: 1, confidence: 99 });
+        ctx.fetch = jest.fn(async () => ({ ok: true,
+            json: async () => ({ choices: [{ message: { content: JSON.stringify(selection) } }] }) }));
+        const result = await ctx.askAIToFindSetup('prompt', 1.101, 'system', {
+            pair: 'EUR/USD', adaptive_setup_candidates: [candidate] });
+        expect(result.selected_candidate_id).toBe('abc');
+        expect(result.decision).toBe('BUY_LIMIT');
+        expect(result.entry).toBe(candidate.entry);
+        expect(result.stop_loss).toBe(candidate.stop_loss);
+        expect(result.take_profit_1).toBe(candidate.tp1);
+        expect(result.confidence).toBe(64);
+        expect(JSON.stringify(candidate)).toBe(before);
     });
 });
