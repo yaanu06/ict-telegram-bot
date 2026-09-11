@@ -457,6 +457,43 @@ describe('strategy pipeline integration rules', () => {
         expect(target.tp1.source).toBe('SWING_HIGH');
     });
 
+    it('deduplicates identical structural target obstacles before scoring', () => {
+        const ctx = getContext();
+        const sharedZone = { type: 'MSNR', timeframe: '4H', direction: 'SELL', low: 104, high: 105, primary_eligible: true, invalidated: false, freshness: 'FRESH' };
+        const base = {
+            direction: 'BUY',
+            entry: 100,
+            stopLoss: 99,
+            target: { level: 109, source: 'SWING_HIGH', structural_priority: 76, timeframe: '1H' },
+            historyCache: { '1H': candles(40, 100, 1, 'up') },
+            liquidity: { above: [], below: [] },
+            strategySetup: { target_candidates: [] }
+        };
+        const single = ctx.evaluateTargetReachability({ ...base, zones: [sharedZone] });
+        const duplicate = ctx.evaluateTargetReachability({ ...base, zones: [sharedZone, { ...sharedZone, id: 'duplicate-source' }] });
+        expect(duplicate.intervening_obstacles).toHaveLength(1);
+        expect(duplicate.reachability_score).toBe(single.reachability_score);
+    });
+
+    it('exposes one canonical target ATR distance in candidate target maps', () => {
+        const ctx = getContext();
+        const reachability = ctx.evaluateTargetReachability({
+            direction: 'BUY',
+            entry: 100,
+            stopLoss: 99,
+            target: { level: 103, source: 'SWING_HIGH', structural_priority: 76, timeframe: '1H' },
+            historyCache: { '1H': candles(40, 100, 1, 'up') },
+            zones: [],
+            liquidity: { above: [], below: [] },
+            strategySetup: { target_candidates: [] }
+        });
+        const compact = ctx.compactTargetReachabilityForOutput(reachability);
+        expect(reachability.target_distance_atr).toBeGreaterThan(0);
+        expect(compact.target_distance_atr).toBeUndefined();
+        expect(compact.target_distance).toBeUndefined();
+        expect(compact.target_distance_atr_timeframe).toBe('1H');
+    });
+
     it('prefers a nearer clean objective over a blocked distant objective', () => {
         const ctx = getContext();
         const context = {
@@ -594,6 +631,121 @@ describe('strategy pipeline integration rules', () => {
         expect(stage.limit_order_setup.eligible).toBe(true);
         expect(stage.immediate_entry.eligible).toBe(false);
         expect(stage.limit_order_setup.current_price_inside_zone_required).toBe(false);
+    });
+
+    it('keeps a valid SELL_LIMIT outside the zone eligible without immediate confirmation', () => {
+        const ctx = getContext();
+        const stage = ctx.buildLimitOrderStageContext([
+            { type: 'TBS', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.71700, high: 0.71720, price_at_zone_now: false, distance_to_zone: 0.0015 }
+        ], { buy: [], sell: [{ direction: 'SELL', level: 0.71400, source: 'SWING_LOW', origin: 'STRUCTURAL' }] }, 0.71550, 0.0005, {
+            allOk: false,
+            summary: 'Current price is outside the selected entry zone',
+            entryConfirmation: { isAtZone: false, confirmed: false, score: 0 }
+        });
+        expect(stage.limit_order_setup.eligible).toBe(true);
+        expect(stage.limit_order_setup.current_price_inside_zone_required).toBe(false);
+        expect(stage.immediate_entry.eligible).toBe(false);
+    });
+
+    it('reports specific zero-candidate seed diagnostics instead of catch-all data quality', () => {
+        const ctx = getContext();
+        const strategySetups = Array.from({ length: 19 }, (_, i) => ({
+            id: `setup-${i}`,
+            label: 'CRT',
+            primary: 'CRT',
+            direction: 'BUY',
+            timeframe: '1H',
+            execution_zone: { id: `zone-${i}`, type: 'CRT', timeframe: '1H', direction: 'BUY', low: 99.5 + i * 0.01, high: 99.7 + i * 0.01 }
+        }));
+        const seedDiagnostics = strategySetups.map((s, i) => ({
+            seed_id: s.execution_zone.id,
+            timeframe: '1H',
+            raw_candidates: 0,
+            failure_reasons: [i % 2 === 0 ? 'INVALID_ENTRY_REGION' : 'NO_TARGET_POOL'],
+            details: []
+        }));
+        const audit = ctx.buildCandidatePipelineAudit(strategySetups, [], [], [], seedDiagnostics);
+        expect(audit.strategy_setups).toBe(19);
+        expect(audit.execution_seeds).toBe(19);
+        expect(audit.raw_candidates).toBe(0);
+        expect(audit.zero_candidate_seeds).toBe(19);
+        expect(audit.seed_failure_counts.INVALID_ENTRY_REGION).toBe(10);
+        expect(audit.seed_failure_counts.NO_TARGET_POOL).toBe(9);
+        expect(audit.seed_failure_counts.DATA_QUALITY).toBeUndefined();
+    });
+
+    it('uses DATA_QUALITY only for genuine data-quality failures', () => {
+        const ctx = getContext();
+        expect(ctx.classifyRejectionDetail('Insufficient 1H data for reliable ATR/structure analysis')).toBe('DATA_QUALITY');
+        expect(ctx.classifyRejectionDetail('context quality too low')).toBe('CONTEXT_QUALITY_TOO_LOW');
+        expect(ctx.classifyRejectionDetail('no real TP1 satisfies minimum RR')).toBe('NO_VALID_TP1');
+    });
+
+    it('describes pending limits without requiring confirmation before fill', () => {
+        const ctx = getContext();
+        const candidate = {
+            id: 'sell-limit-output',
+            direction: 'SELL',
+            entry: 0.71713,
+            stop_loss: 0.71747,
+            tp1: 0.71400,
+            strategy_label: 'TBS',
+            target_map: [{
+                target_level: 0.71400,
+                primary_target_source: 'SWING_LOW',
+                target_type: 'SWING_HIGH_LOW',
+                target_confluence: [{ source: 'SWING_LOW', timeframe: '1H' }]
+            }]
+        };
+        const description = ctx.buildDeterministicOrderDescription(candidate);
+        expect(description.wait_condition).toMatch(/Pending SELL_LIMIT at 0\.71713 remains valid/);
+        expect(description.wait_condition).toMatch(/fills when market price trades at the order price/);
+        expect(description.wait_condition).not.toMatch(/confirmation before|wait for bearish|wait for bullish/i);
+    });
+
+    it('preserves target source and confluence through deterministic candidate hydration', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        ctx.fetch = jest.fn(() => Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({
+                choices: [{ message: { content: JSON.stringify({
+                    decision: 'SELL_LIMIT',
+                    selected_candidate_id: 'source-truth',
+                    confidence: 62,
+                    reasoning: { primary: 'Select the supplied candidate' }
+                }) } }]
+            })
+        }));
+        const result = await ctx.askAIToFindSetup('prompt', 0.71500, 'system', {
+            pair: 'AUD/USD',
+            adaptive_setup_candidates: [{
+                id: 'source-truth',
+                direction: 'SELL',
+                timeframe: '1H',
+                zone_type: 'TBS',
+                zone_origin: 'STRUCTURAL',
+                zone_low: 0.71700,
+                zone_high: 0.71720,
+                entry: 0.71713,
+                stop_loss: 0.71747,
+                stop_reason: 'TBS sweep invalidation plus structural buffer',
+                tp1: 0.71400,
+                tp2: null,
+                tp3: null,
+                rr_tp1: 9.2,
+                target_map: [{
+                    target_level: 0.71400,
+                    primary_target_source: 'OB',
+                    target_type: 'OB',
+                    target_confluence: [{ source: 'OB', timeframe: '4H' }, { source: 'CRT_OPPOSITE_RANGE', timeframe: '4H' }]
+                }]
+            }]
+        });
+        expect(result.primary_target_source).toBe('OB');
+        expect(result.target_type).toBe('OB');
+        expect(result.target_confluence.map(t => t.source)).toEqual(['OB', 'CRT_OPPOSITE_RANGE']);
+        expect(result.reasoning.primary).toMatch(/TP1 0\.714: OB \(OB\)/);
     });
 
     it('hydrates selected candidates and ignores AI numeric mutations', () => {
@@ -2333,7 +2485,10 @@ describe('live AI market context and prompt', () => {
             direction: 'BUY',
             price: 1.10100
         });
-        expect(result.entryConfirmation.isAtZone).toBe(true);
+        expect(result.entryConfirmation.isAtZone).toBe(false);
+        expect(result.entryConfirmation.confirmed).toBe(false);
+        expect(result.allOk).toBe(false);
+        expect(result.summary).toMatch(/Current price is outside/);
         expect(result.entryConfirmation.score).toBeGreaterThanOrEqual(0);
     });
 

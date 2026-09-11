@@ -1391,8 +1391,16 @@ function evaluateTargetReachability({ direction, entry, stopLoss, target, histor
     const targetDistance = Math.abs(targetLevel - entry);
     const targetDistanceAtr = atrVal > 0 ? targetDistance / atrVal : null;
     const between = level => direction === 'BUY' ? level > entry && level < targetLevel : level < entry && level > targetLevel;
-    const opposingZones = (zones || []).filter(z => z.direction && z.direction !== direction && z.primary_eligible !== false && !z.invalidated)
-        .filter(z => between((Number(z.low) + Number(z.high)) / 2));
+    const obstacleMap = new Map();
+    for (const z of zones || []) {
+        if (!z.direction || z.direction === direction || z.primary_eligible === false || z.invalidated) continue;
+        if (!between((Number(z.low) + Number(z.high)) / 2)) continue;
+        // Generic and strategy-zone IDs may differ for the same physical structure.
+        const key = JSON.stringify([z.type, z.timeframe, Number(Number(z.low).toPrecision(12)), Number(Number(z.high).toPrecision(12))]);
+        const prior = obstacleMap.get(key);
+        if (!prior || z.freshness === 'FRESH') obstacleMap.set(key, z);
+    }
+    const opposingZones = [...obstacleMap.values()];
     const serious = opposingZones.filter(z => ['MSNR', 'OB'].includes(z.type) || z.freshness === 'FRESH');
     const liqLevels = direction === 'BUY' ? (liquidity?.above || []) : (liquidity?.below || []);
     const interveningLiquidity = (liqLevels || []).filter(between);
@@ -1418,11 +1426,22 @@ function evaluateTargetReachability({ direction, entry, stopLoss, target, histor
         target_quality: reachabilityScore >= 75 ? 'HIGH' : reachabilityScore >= 55 ? 'MEDIUM' : 'LOW',
         target_distance: targetDistance,
         target_distance_atr: targetDistanceAtr,
+        target_distance_atr_timeframe: tf,
         intervening_obstacles: opposingZones.map(z => ({ type: z.type, timeframe: z.timeframe, low: z.low, high: z.high, severity: serious.includes(z) ? 'SERIOUS' : 'WEAK' })),
         intervening_liquidity: interveningLiquidity,
         structural_priority: Number(target.structural_priority) || 50,
         reason: `${opposingZones.length} opposing zones, ${interveningLiquidity.length} liquidity levels before target`
     };
+}
+
+function compactTargetReachabilityForOutput(reachability) {
+    if (!reachability) return null;
+    const {
+        target_distance,
+        target_distance_atr,
+        ...rest
+    } = reachability;
+    return rest;
 }
 
 function buildPivotReferences(data, currentPrice) {
@@ -2446,7 +2465,7 @@ Return ONLY JSON:
                     confidence: Math.min(Math.max(parsed.confidence || best.confidence, 0), 100),
                     reasoning: parsed.reason || 'AI analyzed setup',
                     risk_adjustment: decision === 'enter_now' ? 1.0 : 0.8,
-                    wait_condition: decision === 'wait_for_reaction' ? 'Wait for confirmation' : null,
+                    wait_condition: decision === 'wait_for_reaction' ? 'Pending limit remains valid; immediate execution is not active.' : null,
                     skip_reason: decision === 'skip' ? parsed.reason || 'Setup failed AI criteria' : null
                 };
             } catch(e) {
@@ -3502,6 +3521,15 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
             const composite_score = (Number(c.structural_priority) || 50) + reachability.reachability_score * 0.75 + rrScore + (strategyNative ? 18 : 0) - (reachability.intervening_obstacles || []).filter(o => o.severity === 'SERIOUS').length * 12;
             return { ...c, actual_rr: rr.actualRR, target_reachability: reachability, reachability_score: reachability.reachability_score, target_quality: reachability.target_quality, strategy_native: strategyNative, composite_score };
         });
+    for (const target of targets) {
+        target.primary_target_source = target.source || target.target_type;
+        target.target_type = target.target_type || target.source;
+        target.target_confluence = [...new Map(targets.filter(t => t.level === target.level)
+            .map(t => {
+                const item = { source: t.source || t.target_type, target_type: t.target_type || t.source, timeframe: t.timeframe || null, level: t.level };
+                return [JSON.stringify(item), item];
+            })).values()];
+    }
     const valid = targets
         .filter(c => direction === 'BUY' ? c.level + 1e-9 >= threshold : c.level - 1e-9 <= threshold)
         .filter(c => c.target_reachability.reachable)
@@ -4058,15 +4086,25 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const rawCandidates = [];
     const validCandidates = [];
     const rejectedCandidates = [];
+    const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(strategySetups) : [];
+    const seedZones = Array.isArray(strategySetups) ? strategyExecutionZones : (zones || []);
+    const seedDiagnostics = seedZones.map((z, i) => ({ seed_id: z.id || `seed-${i + 1}`, timeframe: z.timeframe || '1H', raw_candidates: 0, failure_reasons: [], details: [] }));
+    const failSeed = (seed, code, detail) => {
+        if (!seed.failure_reasons.includes(code)) seed.failure_reasons.push(code);
+        if (detail && !seed.details.includes(detail)) seed.details.push(detail);
+    };
     const dataQuality = validateMarketDataQuality(historyCache, price);
     if (!dataQuality.valid) {
-        const result = { raw_candidates: [], valid_candidates: [], rejected_candidates: dataQuality.reasons.map(reason => ({ id: 'DATA_QUALITY', rejection_reasons: [reason] })) };
+        for (const seed of seedDiagnostics) {
+            for (const reason of dataQuality.reasons) failSeed(seed, /missing|insufficient/i.test(reason) ? 'MISSING_TIMEFRAME_DATA' : 'INVALID_MARKET_DATA', reason);
+        }
+        const result = { raw_candidates: [], valid_candidates: [], seed_diagnostics: seedDiagnostics,
+            rejected_candidates: dataQuality.reasons.map(reason => ({ id: 'DATA_QUALITY', rejection_code: 'DATA_QUALITY', rejection_reasons: [reason] })) };
         console.log('RAW SETUP CANDIDATES', result.raw_candidates);
         console.log('VALID SETUP CANDIDATES', result.valid_candidates);
         console.log('REJECTED SETUP CANDIDATES', result.rejected_candidates);
         return result;
     }
-    const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(strategySetups) : [];
     const validationZones = Array.isArray(strategySetups)
         ? [...(zones || []), ...strategyExecutionZones]
         : (zones || []);
@@ -4084,24 +4122,34 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         require_strategy_setup: Array.isArray(strategySetups)
     });
 
-    const candidateZones = Array.isArray(strategySetups)
-        ? strategyExecutionZones.filter(z => z.primary_eligible !== false && !z.invalidated)
-        : (zones || []).filter(z => z.primary_eligible !== false && !z.invalidated);
-    for (const zone of candidateZones) {
-        if (zone.type === 'MSNR' && zone.origin !== 'STRUCTURAL_MSNR') continue;
+    for (const [seedIndex, zone] of seedZones.entries()) {
+        const seed = seedDiagnostics[seedIndex];
+        if (zone.primary_eligible === false || zone.invalidated || (zone.type === 'MSNR' && zone.origin !== 'STRUCTURAL_MSNR')) {
+            failSeed(seed, 'INVALID_ENTRY_REGION', 'Execution zone is invalidated or not primary eligible');
+            continue;
+        }
         const strategySetup = zone.strategy_setup || (Array.isArray(strategySetups) ? getStrategySetupForZone(zone, strategySetups) : null);
-        if (Array.isArray(strategySetups) && !strategySetup) continue;
+        if (Array.isArray(strategySetups) && !strategySetup) { failSeed(seed, 'NO_STRATEGY_SETUP'); continue; }
         const direction = zone.direction;
         const tf = zone.timeframe || '1H';
         const data = historyCache?.[tf] || historyCache?.['1H'] || historyCache?.['4H'] || [];
+        if (!data.length) { failSeed(seed, 'MISSING_TIMEFRAME_DATA'); continue; }
+        if (!Number.isFinite(zone.low) || !Number.isFinite(zone.high) || zone.high < zone.low) {
+            failSeed(seed, 'INVALID_ENTRY_REGION'); continue;
+        }
         const atrData = tf === '4H' ? (historyCache?.['4H'] || []) : (historyCache?.['1H'] || []);
         const atrVal = atrData.length >= 15 ? atr(atrData, 14) : 0;
         const safeAtr = Number.isFinite(atrVal) && atrVal > 0 ? atrVal : 0;
         const entries = getAdaptiveEntryCandidates(zone, direction, prec);
+        if (!entries.length) failSeed(seed, 'NO_VALID_ENTRY_PRICE');
         for (const entry of entries) {
             const stops = getAdaptiveStopCandidates(zone, direction, entry, data, zones, safeAtr, settings, prec)
                 .slice(0, STRATEGY_SPEC.EXECUTION.maxStopsPerZone);
+            if (!stops.length) failSeed(seed, 'NO_STRUCTURAL_STOP');
             for (const stop of stops) {
+                if (!Number.isFinite(entry) || !Number.isFinite(stop.stop_loss)) {
+                    failSeed(seed, 'INVALID_NUMERIC_GEOMETRY'); continue;
+                }
                 const rawId = `${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${rawCandidates.length + 1}`;
                 const risk = Math.abs(entry - stop.stop_loss);
                 const atrContext = getCandidateATRContext({ timeframe: tf }, historyCache, pair, price);
@@ -4148,10 +4196,12 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     rawCandidate.patterns = [strategySetup.label];
                 }
                 rawCandidates.push(rawCandidate);
+                seed.raw_candidates++;
                 if (strategySetup) {
                     const lifecycle = evaluateSetupLifecycle(rawCandidate, deterministicValidationContext);
                     Object.assign(rawCandidate, lifecycle);
                     if (lifecycle.rejection_code) {
+                        failSeed(seed, 'LIFECYCLE_REJECTED', lifecycle.rejection_code);
                         rejectedCandidates.push({ id: rawCandidate.id, rejection_code: lifecycle.rejection_code,
                             rejection_reasons: [lifecycle.rejection_code], setup_lifecycle: lifecycle });
                         continue;
@@ -4175,6 +4225,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     hardReject: !!stopEvaluation.hardReject
                 });
                 if (stopEvaluation.status !== 'VALID_STRUCTURAL_STOP') {
+                    failSeed(seed, /TIGHT|WIDE/i.test(stopEvaluation.status) ? 'EXTREME_VOLATILITY' : 'NO_STRUCTURAL_STOP', stopEvaluation.reason);
                     const isVolatility = /TIGHT|WIDE/i.test(stopEvaluation.status);
                     console.log(isVolatility ? 'CANDIDATE REJECTED - VOLATILITY' : 'CANDIDATE REJECTED - STRUCTURAL STOP', {
                         id: rawCandidate.id,
@@ -4219,6 +4270,8 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     foundTp1: targets?.tp1?.level || null
                 });
                 if (!targets) {
+                    const pool = mergedTargetCandidates?.all || mergedTargetCandidates?.[direction === 'BUY' ? 'buy' : 'sell'] || [];
+                    failSeed(seed, pool.length ? 'NO_VALID_TP1' : 'NO_TARGET_POOL');
                     console.log('CANDIDATE REJECTED - NO TP1', { id: rawCandidate.id, direction, entry, stopLoss: stop.stop_loss, requiredRR: minimumRR });
                     rejectedCandidates.push({
                         id: rawCandidate.id,
@@ -4273,13 +4326,16 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     target_map: targets ? [targets.tp1, targets.tp2, targets.tp3].filter(Boolean).map(t => ({
                         target_level: t.level,
                         target_type: t.target_type || t.source,
+                        primary_target_source: t.primary_target_source,
+                        target_confluence: t.target_confluence,
                         target_timeframe: t.timeframe || null,
                         target_distance: ictRound(Math.abs(t.level - entry), prec),
-                        target_distance_atr: safeAtr > 0 ? ictRound(Math.abs(t.level - entry) / safeAtr, 2) : null,
+                        target_distance_atr: t.target_reachability.target_distance_atr,
+                        target_distance_atr_timeframe: t.target_reachability.target_distance_atr_timeframe,
                         structural_priority: t.structural_priority || 50,
-                        intervening_obstacles: t.intervening_obstacles || [],
+                        intervening_obstacles: t.target_reachability.intervening_obstacles,
                         reachability_score: t.reachability_score,
-                        target_reachability: t.target_reachability,
+                        target_reachability: compactTargetReachabilityForOutput(t.target_reachability),
                         actual_rr: t.actual_rr
                     })) : [],
                     score: ictRound(score, 2)
@@ -4313,6 +4369,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const result = {
         raw_candidates: rawCandidates,
         valid_candidates: selected,
+        seed_diagnostics: seedDiagnostics,
         rejected_candidates: rejectedCandidates
     };
     console.log('RAW SETUP CANDIDATES', rawCandidates);
@@ -4322,6 +4379,24 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     console.log('REJECTED SETUP CANDIDATES', rejectedCandidates);
     console.log('AI CANDIDATES SENT', selected.map(c => c.id));
     return result;
+}
+
+function buildDeterministicOrderDescription(candidate) {
+    const target = (candidate.target_map || []).find(t => t.target_level === candidate.tp1);
+    const source = target?.primary_target_source || target?.target_type || candidate.tp1_source || 'STRUCTURAL_TARGET';
+    const type = target?.target_type || source;
+    const confluence = target?.target_confluence || [];
+    const invalidation = candidate.strategy_setup?.structural_invalidation ?? candidate.stop_loss;
+    const wait = `Pending ${candidate.direction}_LIMIT at ${candidate.entry} remains valid while structural invalidation ${invalidation} is not breached. The limit fills when market price trades at the order price.`;
+    return {
+        primary_target_source: source, target_type: type, target_confluence: confluence,
+        wait_condition: wait,
+        reasoning: {
+            primary: `${candidate.strategy_label || candidate.strategy_setup?.label || candidate.zone_type} ${candidate.direction}_LIMIT at ${candidate.entry}. TP1 ${candidate.tp1}: ${source} (${type}).`,
+            why_best: `Selected deterministic candidate ${candidate.id}; target confluence: ${confluence.map(t => `${t.source} ${t.timeframe || ''}`.trim()).join(', ') || 'none'}.`,
+            risk_warning: 'Structural invalidation and market execution risk apply.'
+        }
+    };
 }
 
 function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
@@ -4365,6 +4440,7 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.entry_model = candidate.entry_model || null;
     aiResult.setup_timeframe = candidate.setup_timeframe || candidate.timeframe;
     aiResult.execution_timeframe = candidate.execution_timeframe || candidate.timeframe;
+    Object.assign(aiResult, buildDeterministicOrderDescription(candidate));
     aiResult.patterns = candidate.strategy_setup
         ? [candidate.strategy_setup.label || candidate.strategy_setup.primary].concat(candidate.strategy_setup.confirmations || [])
         : (aiResult.patterns || [candidate.zone_type]);
@@ -4869,24 +4945,7 @@ function buildLimitOrderStageContext(zones, targetCandidates, price, atrVal, ent
 }
 
 function summarizeCandidateRejections(rejectedCandidates) {
-    const counts = {};
-    for (const item of rejectedCandidates || []) {
-        for (const reason of item.rejection_reasons || []) {
-            const key = reason.includes('RR') || reason.includes('target')
-                ? 'RR_OR_TARGET'
-                : reason.includes('HTF')
-                    ? 'HTF'
-                    : reason.includes('SL distance') || reason.includes('stop')
-                        ? 'STOP_LOSS'
-                        : reason.includes('zone')
-                            ? 'ZONE'
-                            : reason.includes('data') || reason.includes('ATR')
-                                ? 'DATA_QUALITY'
-                                : 'OTHER';
-            counts[key] = (counts[key] || 0) + 1;
-        }
-    }
-    return counts;
+    return summarizeCandidateRejectionDetails(rejectedCandidates);
 }
 
 function classifyRejectionDetail(reason) {
@@ -4894,14 +4953,15 @@ function classifyRejectionDetail(reason) {
     if (/BUY stop|SELL stop|STRUCTURALLY_INVALID/i.test(reason)) return 'STOP_STRUCTURAL_INVALID';
     if (/EXTREME_TOO_TIGHT|extreme volatility anomaly|below .*minimum|below .*ATR|too tight/i.test(reason)) return 'EXTREME_TOO_TIGHT';
     if (/EXTREME_TOO_WIDE|exceeds .*maximum|too wide/i.test(reason)) return 'EXTREME_TOO_WIDE';
-    if (/no real target|no supplied target|no real deterministic target|target ladder/i.test(reason)) return 'NO_VALID_TP1';
+    if (/no real target|no real TP1|no supplied target|no real deterministic target|target ladder/i.test(reason)) return 'NO_VALID_TP1';
     if (/RR .*below|minimum RR|actual RR/i.test(reason)) return 'TP1_RR_TOO_LOW';
     if (/HTF alignment/i.test(reason)) return 'CONTINUATION_HTF';
     if (/reversal evidence insufficient/i.test(reason)) return 'REVERSAL_EVIDENCE_INSUFFICIENT';
+    if (/context quality/i.test(reason)) return 'CONTEXT_QUALITY_TOO_LOW';
     if (/candidate zone|selected zone|real deterministic|invalidated|entry .*outside/i.test(reason)) return 'ZONE_INVALID';
     if (/loss protection/i.test(reason)) return 'LOSS_PROTECTION';
     if (/trade gap/i.test(reason)) return 'TRADE_GAP';
-    if (/data|ATR is unavailable|current price/i.test(reason)) return 'DATA_QUALITY';
+    if (/Insufficient .* data|non-finite OHLC|impossible OHLC|timestamps are not ordered|ATR is unavailable or invalid|current price is invalid/i.test(reason)) return 'DATA_QUALITY';
     return 'OTHER';
 }
 
@@ -4944,12 +5004,19 @@ function summarizeStrategyDetections(strategySetups) {
     return counts;
 }
 
-function buildCandidatePipelineAudit(strategySetups, rawCandidates, rejectedCandidates, validCandidates) {
+function buildCandidatePipelineAudit(strategySetups, rawCandidates, rejectedCandidates, validCandidates, seedDiagnostics = []) {
     const details = summarizeCandidateRejectionDetails(rejectedCandidates);
+    const seedFailureCounts = {};
+    for (const seed of seedDiagnostics) {
+        for (const reason of seed.failure_reasons) seedFailureCounts[reason] = (seedFailureCounts[reason] || 0) + 1;
+    }
     return {
         strategy_setups: (strategySetups || []).length,
         execution_seeds: getStrategyExecutionZones(strategySetups || []).length,
         raw_candidates: (rawCandidates || []).length,
+        zero_candidate_seeds: seedDiagnostics.filter(s => s.raw_candidates === 0).length,
+        seed_failure_counts: seedFailureCounts,
+        seed_diagnostics: seedDiagnostics,
         structural_stop_valid: (rawCandidates || []).filter(c => c.risk_model?.status === 'VALID_STRUCTURAL_STOP').length,
         volatility_rejected: (details.EXTREME_TOO_TIGHT || 0) + (details.EXTREME_TOO_WIDE || 0) + (details.STOP_VOLATILITY_TOO_TIGHT || 0) + (details.STOP_VOLATILITY_TOO_WIDE || 0),
         target_rejected: (details.NO_VALID_TP1 || 0) + (details.TP1_RR_TOO_LOW || 0),
@@ -5195,7 +5262,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     stageContext.limit_order_setup.rejection_summary = summarizeCandidateRejections(adaptiveSetupResult.rejected_candidates);
     stageContext.limit_order_setup.rejection_detail = summarizeCandidateRejectionDetails(adaptiveSetupResult.rejected_candidates);
     const strategyDetectionSummary = summarizeStrategyDetections(strategySetups);
-    const candidatePipelineAudit = buildCandidatePipelineAudit(strategySetups, adaptiveSetupResult.raw_candidates, adaptiveSetupResult.rejected_candidates, adaptiveSetupResult.valid_candidates);
+    const candidatePipelineAudit = buildCandidatePipelineAudit(strategySetups, adaptiveSetupResult.raw_candidates, adaptiveSetupResult.rejected_candidates, adaptiveSetupResult.valid_candidates, adaptiveSetupResult.seed_diagnostics);
     console.log('FINAL REJECTION SUMMARY', {
         strategy_detections: strategyDetectionSummary,
         candidate_pipeline: candidatePipelineAudit,
@@ -5303,7 +5370,7 @@ function compactAIContext(liveMarketContext) {
         stop_source: c.stop_source,
         freshness: c.freshness,
         target_map: c.target_map,
-        target_reachability: c.target_reachability,
+        target_reachability: compactTargetReachabilityForOutput(c.target_reachability),
         score: c.score
     } : null;
     const structure = Object.fromEntries(Object.entries(liveMarketContext?.structure || {}).map(([tf, s]) => [tf, {
@@ -5389,9 +5456,10 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'Stage 1 asks whether a valid future pending-limit setup exists. Current price not being inside the zone, immediate confirmation score of 0, or off-hours are not by themselves reasons for NO_TRADE.',
         'Stage 2 asks whether immediate entry/fill confirmation is ready now.',
         'Your role is to rank the supplied adaptive_setup_candidates, identify the highest-quality valid pending-limit opportunity currently available, or return WAIT/NO_TRADE when no valid candidate is worth selecting.',
-        'Do not return WAIT merely because price has not reached a valid future limit zone. If a future pending-limit setup already satisfies setup-stage requirements, return BUY_LIMIT or SELL_LIMIT with ai_decision:"wait_for_reaction".',
+        'Do not return WAIT merely because price has not reached a valid future limit zone. If a future pending-limit setup already satisfies setup-stage requirements, return BUY_LIMIT or SELL_LIMIT. If immediate entry is not ready, ai_decision:"wait_for_reaction" means Stage-2 is waiting only; it is NOT confirmation required before a true LIMIT fill.',
         'Do not return skip when your own analysis concludes that a valid BUY_LIMIT or SELL_LIMIT setup already exists.',
         'If selecting a setup, include selected_candidate_id and use the candidate entry, stop_loss, TP1, TP2, TP3, RR, and zone bounds exactly.',
+        'When discussing TP1, use the supplied candidate target_map primary_target_source, target_type, and target_confluence. Never reinterpret an OB target as CRT or a CRT target as OB unless target_confluence explicitly contains both.',
         'If adaptive_setup_candidates is empty, do not invent entry/SL/TP levels; return WAIT or NO_TRADE.',
         'If market_context has a strong directional bias but strategy_setups is empty, return WAIT because context alone is not a trade.',
         'Never invent CRT, TBS/Turtle Soup, or MSNR detections. Use only supplied deterministic strategy_setups and adaptive_setup_candidates.',
@@ -5447,9 +5515,10 @@ This bot creates pending LIMIT orders at future ICT zones. A valid setup may exi
 10. Use WAIT when a valid setup concept exists but deterministic facts show it is incomplete or should wait for better fill/confirmation conditions.
 11. Today's best professional decision may still be WAIT or NO_TRADE.
 12. Zone/target origin hierarchy: STRUCTURAL and STRUCTURAL_MSNR = direct market structure. PIVOT_REFERENCE = classic pivot-derived reference only, not MSNR strategy evidence. ATR_FALLBACK = synthetic reference only. PIVOT_REFERENCE and ATR_FALLBACK must never create standalone MSNR trades.
-13. Do NOT return WAIT merely because price has not reached a valid future limit zone. If setup-stage requirements are satisfied, return BUY_LIMIT or SELL_LIMIT and use ai_decision:"wait_for_reaction" when immediate entry is not ready.
+13. Do NOT return WAIT merely because price has not reached a valid future limit zone. If setup-stage requirements are satisfied, return BUY_LIMIT or SELL_LIMIT. If immediate entry is not ready, ai_decision:"wait_for_reaction" describes Stage-2 only and must not be worded as confirmation required before a true LIMIT fills.
 14. Do NOT return skip when your own analysis concludes that a valid BUY_LIMIT or SELL_LIMIT setup already exists.
 15. If adaptive_setup_candidates contains valid choices, rank them and return the selected_candidate_id for the best one. Use that candidate's entry, stop_loss, take_profit_1, take_profit_2, and take_profit_3 exactly.
+15a. Describe TP1 using the selected candidate's target_map fields: primary_target_source, target_type, and target_confluence. Do not relabel target provenance in prose.
 16. If adaptive_setup_candidates is empty, do not invent entry/SL/TP levels; return WAIT or NO_TRADE.
 16a. If context is bullish/bearish but CRT, TBS, and MSNR provide no supplied strategy setup, return WAIT: market context alone is not a trade.
 17. Discount generally favors BUY entries; premium generally favors SELL entries unless stronger supplied structure says otherwise.
@@ -5610,11 +5679,11 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         if ((rawDecision === 'WAIT' || rawDecision === 'SKIP') && hasCompleteLimitSetup) {
             result.decision = result.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT';
             result.ai_decision = 'wait_for_reaction';
-            result.wait_condition = result.wait_condition || 'Pending limit setup valid; immediate entry confirmation is not active.';
+            result.wait_condition = result.wait_condition || 'Pending limit setup valid; immediate entry is not active. The limit fills when market price trades at the order price.';
         }
         if ((rawDecision === 'BUY_LIMIT' || rawDecision === 'SELL_LIMIT') && result.ai_decision === 'skip') {
             result.ai_decision = 'wait_for_reaction';
-            result.wait_condition = result.wait_condition || 'Pending limit setup valid; immediate entry confirmation is not active.';
+            result.wait_condition = result.wait_condition || 'Pending limit setup valid; immediate entry is not active. The limit fills when market price trades at the order price.';
         }
         
         const required = ['direction', 'entry', 'entry_zone', 'stop_loss', 'take_profit_1', 'confidence', 'reasoning'];
@@ -6026,6 +6095,8 @@ async function runFallbackScan(price, historyCache) {
         }
     };
     if (bestCandidate) {
+        Object.assign(out.trade_signal, buildDeterministicOrderDescription(bestCandidate));
+        out.trade_signal.ai_decision = 'pending_limit';
         out.trade_signal.strategy_evidence = bestCandidate.strategy_evidence || bestCandidate.strategy_setup?.strategy_evidence || null;
         out.trade_signal.entry_model = bestCandidate.entry_model || null;
         out.trade_signal.setup_timeframe = bestCandidate.setup_timeframe || bestCandidate.timeframe || best.timeframe;
@@ -6551,6 +6622,9 @@ async function runAutoScan() {
                 setup_timeframe: aiResult.setup_timeframe,
                 execution_timeframe: aiResult.execution_timeframe,
                 target_map: aiResult.target_map,
+                primary_target_source: aiResult.primary_target_source,
+                target_type: aiResult.target_type,
+                target_confluence: aiResult.target_confluence,
                 strategy_detections: liveMarketContext.strategy_detections,
                 candidate_pipeline: liveMarketContext.candidate_pipeline,
                 ai_decision: aiResult.ai_decision,
@@ -6577,7 +6651,6 @@ async function runAutoScan() {
             priceAtScan: price
         };
         lastSetupOut = out;
-        syncSetupToGitHub(out.trade_signal, 'ai_scan');
 
         // ============================================
         // AI SETUP VALIDATION — reconcile the AI claim against the
@@ -6679,8 +6752,10 @@ async function runAutoScan() {
             selectedZone,
             priceAtZone: selectedZoneStatus.insideZone
         });
-        out.trade_signal.ai_decision = effectiveDecision;
-        out.trade_signal.wait_condition = effectiveDecision === 'wait_for_reaction'
+        out.trade_signal.ai_decision = validation.valid ? 'pending_limit' : effectiveDecision;
+        out.trade_signal.wait_condition = validation.valid && aiResult.adaptive_candidate
+            ? buildDeterministicOrderDescription(aiResult.adaptive_candidate).wait_condition
+            : effectiveDecision === 'wait_for_reaction'
             ? (aiResult.wait_condition || overrideReason)
             : aiResult.wait_condition;
         out.trade_signal.limit_order_setup = {
@@ -6695,6 +6770,7 @@ async function runAutoScan() {
             confirmation: selectedEntryContext.entryConfirmation
         };
         setJsonOutput(out);
+        syncSetupToGitHub(out.trade_signal, 'ai_scan');
         
         analysis = {
             signalType: st,
@@ -6728,7 +6804,7 @@ async function runAutoScan() {
             btnExecute.style.background = 'linear-gradient(135deg, #5856d6, #007aff)';
         }
         
-        const decisionEmoji = effectiveDecision === 'enter_now' ? '✅' : (effectiveDecision === 'wait_for_reaction' ? '⏳' : '🚫');
+        const decisionEmoji = effectiveDecision === 'enter_now' ? '✅' : (['wait_for_reaction', 'pending_limit'].includes(effectiveDecision) ? '⏳' : '🚫');
         const validationTag = validation.valid ? '✓' : '✗';
         showNotif(`🤖 AI Setup [val:${validationTag}] ${st} ${decisionEmoji} | Conf: ${aiResult.confidence}% | ${aiResult.entry_zone.source} | ${aiResult.patterns.join(', ')}`, tradeable ? 'success' : 'warning');
         scanTrace('final result rendered', scanStartedAt, { result: tradeable ? aiResult.decision : 'WAIT/VALIDATION_BLOCKED', validation: validation.valid });
@@ -7239,7 +7315,7 @@ function buildEntryContext(sessionCheck, marketPhase, phaseDecision, entryConfir
     lines.push('3. ENTRY CONFIRMATION: ' + (entryConfirmation.confirmed ? '✅ READY' : '⏳ WAITING') + ' | Score ' + entryConfirmation.score + '/100 | ' + entryConfirmation.strength + ' | ' + (entryConfirmation.confirmations.join(', ') || 'No signals'));
     if (!entryConfirmation.isAtZone) lines.push('   ℹ️ Price not at zone yet - limit order will trigger on arrival');
 
-    const allOk = sessionCheck.priority !== 'LOW' && phaseDecision.shouldEnter && entryConfirmation.confirmed;
+    const allOk = sessionCheck.priority !== 'LOW' && phaseDecision.shouldEnter && entryConfirmation.confirmed && entryConfirmation.isAtZone;
     const summary = allOk
         ? '✅ ALL FILTERS PASS - AI may enter_now'
         : '⏳ IMMEDIATE ENTRY WAIT - pending limit setup may still be valid';
@@ -7261,8 +7337,16 @@ function buildSelectedCandidateEntryContext({ historyCache, sessionCheck, market
     const entryConfirmation = (confirmTf && selectedZone && direction)
         ? checkEntryConfirmation(historyCache[confirmTf], selectedZone, direction)
         : { confirmed: false, score: 0, strength: 'NONE', confirmations: [], shouldWait: true, reason: 'Awaiting selected zone/direction', isAtZone: false };
+    const zoneStatus = getZonePriceStatus(price, selectedZone);
+    entryConfirmation.isAtZone = zoneStatus.insideZone;
+    if (!zoneStatus.insideZone) {
+        Object.assign(entryConfirmation, { confirmed: false, shouldWait: true,
+            reason: 'Current price is outside the selected entry zone' });
+    }
     const phaseDecision = shouldEnterBasedOnPhase(marketPhase, direction || 'BUY', price, phaseData);
-    return buildEntryContext(sessionCheck, marketPhase, phaseDecision, entryConfirmation);
+    const context = buildEntryContext(sessionCheck, marketPhase, phaseDecision, entryConfirmation);
+    if (!zoneStatus.insideZone) context.summary = 'Current price is outside the selected entry zone; pending limit fills at its order price';
+    return context;
 }
 
 // ============================================
