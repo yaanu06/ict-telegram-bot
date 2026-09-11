@@ -156,6 +156,24 @@ const msnrReactionFixture = () => {
     return data;
 };
 
+const freshExecutionFixture = () => {
+    const data = [];
+    for (let i = 0; i < 30; i++) {
+        const t = `2026-09-10 ${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}:00`;
+        data.push(c(100 + i * 0.02, 100.05 + i * 0.02, 99.95 + i * 0.02, 100.02 + i * 0.02, t));
+    }
+    // Signal/reclaim at index 10, then a real bullish displacement and FVG.
+    data[10] = c(100.2, 100.3, 99.7, 100.25, '2026-09-10 05:00:00');
+    data[15] = c(100.3, 100.4, 100.0, 100.1, '2026-09-10 07:30:00');
+    data[16] = c(100.1, 101.2, 100.05, 101.1, '2026-09-10 08:00:00');
+    data[17] = c(101.1, 101.5, 101.0, 101.4, '2026-09-10 08:30:00');
+    for (let i = 18; i < data.length; i++) {
+        const p = data[i - 1].c;
+        data[i] = c(p, p + 0.05, p - 0.03, p + 0.03, `2026-09-10 ${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}:00`);
+    }
+    return data;
+};
+
 describe('strategy entry lifecycle', () => {
     const fixture = (primary = 'CRT', later = []) => {
         const bars = [c(1.161, 1.1613, 1.159, 1.1604), ...later];
@@ -366,6 +384,70 @@ describe('strategy entry lifecycle', () => {
             remaining_reward_fraction: 0.8, entry_reachable_today: true, ai_decision: 'pending_limit', limit_order_setup: { eligible: true }, immediate_entry: { eligible: false, confirmation: { isAtZone: false } },
             limitZoneStatus: { insideZone: false }, source: 'Deterministic Candidate Engine + AI Selector' }, { adaptive_setup_candidates: [candidate] });
         expect(valid.valid).toBe(true);
+    });
+});
+
+describe('active narrative fresh execution zones', () => {
+    it('keeps a consumed CRT entry recorded while creating a fresh post-signal FVG opportunity', () => {
+        const ctx = getContext();
+        const history = freshExecutionFixture();
+        const narrative = {
+            primary: 'CRT', direction: 'BUY', timeframe: '1H', execution_timeframe: '1H',
+            event_time: '2026-09-10 05:00:00', reclaim_time: '2026-09-10 05:00:00',
+            reclaim_bar_index: 10, structural_invalidation: 98, primary_objective: 105,
+            entry_consumed: true, execution_zone: { low: 99.7, high: 100.0 },
+            evidence: { reclaim_bar: 10 }
+        };
+        const narrativeState = ctx.evaluateStrategyNarrative(narrative, { '1H': history }, 102);
+        const zones = ctx.buildFreshExecutionZonesForNarrative(narrative, { '1H': history }, [], 'EUR/USD', 102);
+        expect(narrativeState.state).toBe('ACTIVE');
+        expect(zones.some(z => z.type === 'FVG')).toBe(true);
+        expect(zones.every(z => z.created_index > 10)).toBe(true);
+        expect(zones.every(z => z.freshness === 'FRESH')).toBe(true);
+        expect(narrative.entry_consumed).toBe(true);
+    });
+
+    it('does not resurrect a consumed zone and does not accept a pre-signal zone as re-entry', () => {
+        const ctx = getContext();
+        const history = freshExecutionFixture();
+        const narrative = {
+            primary: 'TBS', direction: 'BUY', timeframe: '1H', execution_timeframe: '1H',
+            event_time: '2026-09-10 05:00:00', reclaim_time: '2026-09-10 05:00:00', reclaim_bar_index: 10,
+            structural_invalidation: 98, primary_objective: 105, entry_consumed: true
+        };
+        history[19] = c(101.4, 101.6, 100.8, 101.2, '2026-09-10 09:30:00');
+        history[20] = c(101.2, 101.3, 100.4, 100.5, '2026-09-10 10:00:00');
+        history[21] = c(100.5, 101.8, 100.45, 101.7, '2026-09-10 10:30:00');
+        const zones = ctx.buildFreshExecutionZonesForNarrative(narrative, { '1H': history }, [
+            { type: 'FVG', direction: 'BUY', timeframe: '1H', low: 99.9, high: 100.0, source_candle_index: 8, origin: 'STRUCTURAL_MSNR', primary_eligible: true }
+        ], 'EUR/USD', 102);
+        expect(zones.every(z => z.created_index > 10)).toBe(true);
+        const consumed = ctx.zoneWasTouchedAfter(history, zones[0].low, zones[0].high, zones[0].created_index);
+        expect(consumed.touched).toBe(false);
+    });
+
+    it('rejects fresh-zone generation after the narrative target or invalidation is complete', () => {
+        const ctx = getContext();
+        const history = freshExecutionFixture();
+        const completed = { primary: 'CRT', direction: 'BUY', timeframe: '1H', execution_timeframe: '1H', event_time: '2026-09-10 05:00:00', reclaim_bar_index: 10, structural_invalidation: 98, primary_objective: 101.5 };
+        const invalidated = { ...completed, primary_objective: 105, structural_invalidation: 100.8 };
+        expect(ctx.evaluateStrategyNarrative(completed, { '1H': history }, 102).state).toBe('TARGET_COMPLETED');
+        expect(ctx.evaluateStrategyNarrative(invalidated, { '1H': history }, 102).state).toBe('INVALIDATED');
+    });
+
+    it('requires displacement for post-signal FVG execution zones', () => {
+        const ctx = getContext();
+        const history = freshExecutionFixture();
+        history[15] = c(100.3, 100.35, 100.25, 100.31, '2026-09-10 07:30:00');
+        history[16] = c(100.1, 100.25, 100.05, 100.12, '2026-09-10 08:00:00');
+        history[17] = c(100.12, 100.28, 100.08, 100.14, '2026-09-10 08:30:00');
+        for (let i = 18; i < history.length; i++) {
+            const p = history[i - 1].c;
+            history[i] = c(p, p + 0.08, p - 0.04, p + 0.02, `2026-09-10 ${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}:00`);
+        }
+        const narrative = { primary: 'CRT', direction: 'BUY', timeframe: '1H', execution_timeframe: '1H', event_time: '2026-09-10 05:00:00', reclaim_bar_index: 10, structural_invalidation: 98, primary_objective: 105 };
+        const zones = ctx.buildFreshExecutionZonesForNarrative(narrative, { '1H': history }, [], 'EUR/USD', 102);
+        expect(zones.filter(z => z.type === 'FVG')).toEqual([]);
     });
 });
 
