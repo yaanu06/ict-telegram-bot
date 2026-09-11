@@ -451,6 +451,47 @@ describe('active narrative fresh execution zones', () => {
     });
 });
 
+describe('fresh execution downstream validation', () => {
+    it('keeps a structurally valid 2.1 pip FX stop as tight quality, not extreme', () => {
+        const ctx = getContext();
+        const result = ctx.evaluateStructuralStop({ direction: 'BUY', entry: 1.16000, stop_loss: 1.15979 }, {
+            setup_timeframe: '1H', atr_rule_reference: 0.00100, absolute_min_sl: 0.00010,
+            preferred_min_sl: 0.00050, maximum_reasonable_distance: 0.01000
+        }, 'EUR/USD');
+        expect(result.status).toBe('VALID_STRUCTURAL_STOP');
+        expect(result.volatility_classification).toBe('TIGHT_BUT_STRUCTURAL');
+    });
+
+    it('hard rejects only an FX stop at or below the absolute execution floor', () => {
+        const ctx = getContext();
+        const result = ctx.evaluateStructuralStop({ direction: 'BUY', entry: 1.16000, stop_loss: 1.15991 }, {
+            setup_timeframe: '1H', atr_rule_reference: 0.00100, absolute_min_sl: 0.00010,
+            preferred_min_sl: 0.00050, maximum_reasonable_distance: 0.01000
+        }, 'EUR/USD');
+        expect(result.status).toBe('EXTREME_TOO_TIGHT');
+    });
+
+    it('selects the nearest real RR-qualified objective before a farther high-score target', () => {
+        const ctx = getContext();
+        const result = ctx.selectAdaptiveTargets('BUY', 100, 99, {
+            buy: [
+                { direction: 'BUY', level: 102.5, source: 'SWING_HIGH', origin: 'STRUCTURAL', timeframe: '1H', structural_priority: 70 },
+                { direction: 'BUY', level: 110, source: 'BUY_SIDE_LIQUIDITY', origin: 'STRUCTURAL', timeframe: '4H', structural_priority: 99 }
+            ], sell: []
+        }, 2.5, 2, { historyCache: { '1H': candles(40, 100, 1, 'up') }, zones: [], liquidity: { above: [], below: [] }, strategySetup: { target_candidates: [] } });
+        expect(result.tp1.level).toBe(102.5);
+    });
+
+    it('exposes explicit target failure diagnostics instead of one generic TP failure', () => {
+        const ctx = getContext();
+        const diagnostics = {};
+        const result = ctx.selectAdaptiveTargets('BUY', 100, 99, { buy: [{ direction: 'BUY', level: 100.5, source: 'SWING_HIGH', origin: 'STRUCTURAL' }], sell: [] }, 2.5, 2, { historyCache: { '1H': candles(40, 100, 1, 'up') }, zones: [], liquidity: { above: [], below: [] }, strategySetup: { target_candidates: [] }, targetDiagnostics: diagnostics });
+        expect(result).toBeNull();
+        expect(ctx.selectAdaptiveTargets.lastDiagnostics.failure_code).toBe('TARGETS_EXIST_BUT_RR_TOO_LOW');
+        expect(ctx.selectAdaptiveTargets.lastDiagnostics.directional_target_count).toBe(1);
+    });
+});
+
 describe('computeRSI (Wilder)', () => {
     it('returns 100 for a straight up run', () => {
         const ctx = getContext();

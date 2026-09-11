@@ -1365,6 +1365,7 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
     const fvgZones = [];
     const obZones = [];
     const msnrZones = [];
+    const executionZoneStats = { discovered: 0, fresh: 0, consumed: 0, invalidated: 0, pre_signal: 0, wrong_side: 0 };
     const direction = narrative.direction;
     const price = Number(currentPrice ?? historyCache.current_price ?? historyCache.price ?? narrative.current_price);
 
@@ -1384,9 +1385,10 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
             low = next.h; high = prev.l;
         }
         if (low == null || high == null) continue;
+        executionZoneStats.discovered++;
         const touch = zoneWasTouchedAfter(data, low, high, createdIndex, executionTf);
         const zone = {
-            id: `${executionTf}-${direction}-FVG-${ictRound(low, prec)}-${ictRound(high, prec)}-${createdIndex}`,
+            id: `FRESH-${executionTf}-${direction}-FVG-${ictRound(low, prec)}-${ictRound(high, prec)}-${normalizeTimestampUTC(candleTimestamp(data[createdIndex], createdIndex, executionTf)) || createdIndex}`,
             type: 'FVG', origin: 'STRUCTURAL', primary_eligible: !touch.touched, invalidated: false,
             direction, timeframe: executionTf, low: ictRound(low, prec), high: ictRound(high, prec),
             midpoint: ictRound((low + high) / 2, prec), created_index: createdIndex,
@@ -1401,6 +1403,7 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
             structural_invalidation: narrative.structural_invalidation
         };
         if (!touch.touched) fvgZones.push(zone);
+        else executionZoneStats.consumed++;
     }
 
     for (let i = signalIndex + 1; i < data.length - 1; i++) {
@@ -1416,9 +1419,10 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
         const low = base.l;
         const high = base.h;
         const touch = zoneWasTouchedAfter(data, low, high, i + 1, executionTf);
-        if (touch.touched) continue;
+        executionZoneStats.discovered++;
+        if (touch.touched) { executionZoneStats.consumed++; continue; }
         obZones.push({
-            id: `${executionTf}-${direction}-OB-${ictRound(low, prec)}-${ictRound(high, prec)}-${i}`,
+            id: `FRESH-${executionTf}-${direction}-OB-${ictRound(low, prec)}-${ictRound(high, prec)}-${normalizeTimestampUTC(candleTimestamp(data[i + 1], i + 1, executionTf)) || i}`,
             type: 'OB', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false,
             direction, timeframe: executionTf, low: ictRound(low, prec), high: ictRound(high, prec),
             midpoint: ictRound((low + high) / 2, prec), created_index: i + 1,
@@ -1438,10 +1442,13 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
         let sourceIndex = Number(zone.source_candle_index ?? zone.created_index);
         if (!Number.isInteger(sourceIndex) && Number.isFinite(sourceTime)) sourceIndex = findEventCandleIndex(data, sourceTime, executionTf);
         const afterSignal = (Number.isInteger(sourceIndex) && sourceIndex > signalIndex) || (Number.isFinite(sourceTime) && sourceTime >= signalTime);
-        if (zone.type !== 'MSNR' || zone.origin !== 'STRUCTURAL_MSNR' || zone.direction !== direction || !afterSignal || zone.primary_eligible === false || zone.invalidated) continue;
+        if (zone.type !== 'MSNR' || zone.origin !== 'STRUCTURAL_MSNR' || zone.direction !== direction) continue;
+        executionZoneStats.discovered++;
+        if (!afterSignal) { executionZoneStats.pre_signal++; continue; }
+        if (zone.primary_eligible === false || zone.invalidated) { executionZoneStats.invalidated++; continue; }
         const touch = zoneWasTouchedAfter(data, zone.low, zone.high, sourceIndex, executionTf);
-        if (touch.touched) continue;
-        msnrZones.push({ ...zone, execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT', entry_region_source: 'MSNR', strategy_source: narrative.primary, created_index: sourceIndex, created_time: sourceTime || candleTimestamp(data[sourceIndex], sourceIndex, executionTf), signal_time: signalTime, first_touch_after_creation: null, first_touch_time: null, touch_count: 0, mitigated: false, freshness: 'FRESH' });
+        if (touch.touched) { executionZoneStats.consumed++; continue; }
+        msnrZones.push({ ...zone, id: `FRESH-${executionTf}-${direction}-MSNR-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${normalizeTimestampUTC(sourceTime || candleTimestamp(data[sourceIndex], sourceIndex, executionTf)) || sourceIndex}`, execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT', entry_region_source: 'MSNR', strategy_source: narrative.primary, created_index: sourceIndex, created_time: sourceTime || candleTimestamp(data[sourceIndex], sourceIndex, executionTf), signal_time: signalTime, first_touch_after_creation: null, first_touch_time: null, touch_count: 0, mitigated: false, freshness: 'FRESH' });
     }
 
     const dedupe = new Map();
@@ -1453,10 +1460,15 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
             prior.confluence = [...new Set([...(prior.confluence || []), zone.type])];
         } else dedupe.set(key, { ...zone, confluence: [zone.type] });
     }
-    return [...dedupe.values()]
-        .filter(zone => direction === 'BUY' ? (!Number.isFinite(price) || zone.midpoint <= price) : (!Number.isFinite(price) || zone.midpoint >= price))
+    const dedupedZones = [...dedupe.values()];
+    const directionalZones = dedupedZones.filter(zone => direction === 'BUY' ? (!Number.isFinite(price) || zone.midpoint <= price) : (!Number.isFinite(price) || zone.midpoint >= price));
+    executionZoneStats.wrong_side = dedupedZones.length - directionalZones.length;
+    const result = directionalZones
         .sort((a, b) => (b.displacement_confirmed - a.displacement_confirmed) || ((b.departure_strength || 0) - (a.departure_strength || 0)) || (b.created_index - a.created_index))
         .slice(0, STRATEGY_SPEC.EXECUTION.maxFreshExecutionZones);
+    executionZoneStats.fresh = result.length;
+    Object.defineProperty(result, 'execution_zone_stats', { value: executionZoneStats, enumerable: false, configurable: true });
+    return result;
 }
 
 function buildFreshExecutionZones(narrative, historyCache = {}, existingZones = [], pairLocal = pair, currentPrice = null) {
@@ -1617,8 +1629,10 @@ function evaluateTargetReachability({ direction, entry, stopLoss, target, histor
     if (['1D', '4H'].includes(target.timeframe)) score += 5;
     if (target.freshness === 'MITIGATED' || target.consumed) score -= 18;
     const reachabilityScore = Math.max(0, Math.min(100, Math.round(score)));
+    const hardUnreachable = !!target.hard_unreachable || !!target.invalidated || !!target.consumed || reachabilityScore < 15;
     return {
-        reachable: reachabilityScore >= 30,
+        reachable: !hardUnreachable,
+        hard_unreachable: hardUnreachable,
         reachability_score: reachabilityScore,
         target_quality: reachabilityScore >= 75 ? 'HIGH' : reachabilityScore >= 55 ? 'MEDIUM' : 'LOW',
         target_distance: targetDistance,
@@ -3641,11 +3655,23 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
     const risk = Math.abs(entry - stopLoss);
     const requiredReward = risk * minimumRR;
     const threshold = direction === 'BUY' ? entry + requiredReward : entry - requiredReward;
-    const sourceTargets = targetCandidates?.all
+    const rawSourceTargets = targetCandidates?.all
         ? targetCandidates.all.filter(c => c.direction === direction)
         : (targetCandidates?.[side] || []);
+    const provenanceValid = rawSourceTargets.filter(c => Number.isFinite(Number(c.level)) && !['ATR_FALLBACK', 'PIVOT_REFERENCE', 'PIVOT_DERIVED'].includes(c.origin));
+    const targetMap = new Map();
+    for (const candidate of provenanceValid) {
+        const level = ictRound(Number(candidate.level), prec);
+        const key = `${candidate.direction}|${candidate.timeframe || ''}|${level}`;
+        const prior = targetMap.get(key);
+        if (!prior) targetMap.set(key, { ...candidate, level, target_confluence: [{ source: candidate.source || candidate.target_type, target_type: candidate.target_type || candidate.source, timeframe: candidate.timeframe || null, level }] });
+        else {
+            prior.target_confluence = [...new Map([...(prior.target_confluence || []), { source: candidate.source || candidate.target_type, target_type: candidate.target_type || candidate.source, timeframe: candidate.timeframe || null, level }].map(x => [JSON.stringify(x), x])).values()];
+            if ((candidate.structural_priority || 0) > (prior.structural_priority || 0)) Object.assign(prior, candidate, { level, target_confluence: prior.target_confluence });
+        }
+    }
+    const sourceTargets = [...targetMap.values()];
     const targets = sourceTargets
-        .filter(c => Number.isFinite(Number(c.level)) && !['ATR_FALLBACK', 'PIVOT_REFERENCE', 'PIVOT_DERIVED'].includes(c.origin))
         .map(c => ({ ...c, level: ictRound(Number(c.level), prec), distance_from_entry: ictRound(Math.abs(Number(c.level) - entry), prec) }))
         .filter(c => direction === 'BUY' ? c.level > entry : c.level < entry)
         .map(c => {
@@ -3665,19 +3691,32 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
             const composite_score = (Number(c.structural_priority) || 50) + reachability.reachability_score * 0.75 + rrScore + (strategyNative ? 18 : 0) - (reachability.intervening_obstacles || []).filter(o => o.severity === 'SERIOUS').length * 12;
             return { ...c, actual_rr: rr.actualRR, target_reachability: reachability, reachability_score: reachability.reachability_score, target_quality: reachability.target_quality, strategy_native: strategyNative, composite_score };
         });
+    const directionalTargets = targets.length;
+    const rrQualifiedTargets = targets.filter(c => direction === 'BUY' ? c.level + 1e-9 >= threshold : c.level - 1e-9 <= threshold);
+    const reachableTargets = rrQualifiedTargets.filter(c => !c.target_reachability.hard_unreachable);
+    const diagnosticBest = [...reachableTargets, ...rrQualifiedTargets, ...targets].sort((a, b) => a.distance_from_entry - b.distance_from_entry)[0];
+    const diagnostics = {
+        target_pool_count: rawSourceTargets.length,
+        provenance_valid_count: provenanceValid.length,
+        directional_target_count: directionalTargets,
+        rr_qualified_count: rrQualifiedTargets.length,
+        reachable_target_count: reachableTargets.length,
+        best_target_level: diagnosticBest?.level || null,
+        best_target_rr: diagnosticBest?.actual_rr || null,
+        best_target_reachability_score: diagnosticBest?.reachability_score || null,
+        failure_code: !rawSourceTargets.length ? 'TARGET_POOL_EMPTY' : !provenanceValid.length ? 'TARGET_PROVENANCE_INVALID' : !directionalTargets ? 'NO_TARGETS_DIRECTIONALLY_AHEAD' : !rrQualifiedTargets.length ? 'TARGETS_EXIST_BUT_RR_TOO_LOW' : !reachableTargets.length ? (rrQualifiedTargets.some(t => (t.target_reachability.intervening_obstacles || []).some(o => o.severity === 'SERIOUS')) ? 'TARGETS_BLOCKED_BY_STRUCTURE' : 'TARGETS_EXIST_BUT_UNREACHABLE') : null
+    };
+    selectAdaptiveTargets.lastDiagnostics = diagnostics;
+    reachabilityContext.targetDiagnostics = diagnostics;
     for (const target of targets) {
         target.primary_target_source = target.source || target.target_type;
         target.target_type = target.target_type || target.source;
-        target.target_confluence = [...new Map(targets.filter(t => t.level === target.level)
-            .map(t => {
-                const item = { source: t.source || t.target_type, target_type: t.target_type || t.source, timeframe: t.timeframe || null, level: t.level };
-                return [JSON.stringify(item), item];
-            })).values()];
+        target.target_confluence = target.target_confluence || [{ source: target.source || target.target_type, target_type: target.target_type || target.source, timeframe: target.timeframe || null, level: target.level }];
     }
     const valid = targets
         .filter(c => direction === 'BUY' ? c.level + 1e-9 >= threshold : c.level - 1e-9 <= threshold)
-        .filter(c => c.target_reachability.reachable)
-        .sort((a, b) => b.composite_score - a.composite_score || b.reachability_score - a.reachability_score || a.distance_from_entry - b.distance_from_entry);
+        .filter(c => !c.target_reachability.hard_unreachable)
+        .sort((a, b) => a.distance_from_entry - b.distance_from_entry || Number(b.strategy_native) - Number(a.strategy_native) || (b.structural_priority || 0) - (a.structural_priority || 0) || b.reachability_score - a.reachability_score);
     const tp1 = valid[0];
     if (!tp1) return null;
     const farther = valid.filter(c => direction === 'BUY' ? c.level > tp1.level : c.level < tp1.level);
@@ -3710,12 +3749,13 @@ function getCandidateATRContext(candidate, historyCache, pairLocal, price) {
     const minimumReasonable = Number.isFinite(atrForRule) && atrForRule > 0
         ? Math.max(settings.minSL, atrForRule * 0.5)
         : settings.minSL;
-    const extremeTooTight = Number.isFinite(atrForRule) && atrForRule > 0
-        ? Math.max(settings.minSL, atrForRule * 0.15)
-        : settings.minSL;
+    const absoluteMinSL = Math.max(settings.pipSize, Number.isFinite(atrForRule) && atrForRule > 0 ? atrForRule * 0.10 : settings.pipSize);
+    const preferredMinSL = Number.isFinite(atrForRule) && atrForRule > 0
+        ? Math.max(settings.pipSize * 2, atrForRule * 0.5)
+        : settings.pipSize * 2;
     const maxByAtr = Number.isFinite(atrForRule) && atrForRule > 0 ? atrForRule * 10.0 : Infinity;
     const maxByPrice = Number(price) * settings.maxSLPct;
-    const maxDistance = Math.max(settings.minSL, Math.min(maxByPrice, maxByAtr));
+    const maxDistance = Math.max(absoluteMinSL, Math.min(maxByPrice, maxByAtr));
     return {
         setup_timeframe: setupTimeframe,
         setup_atr: Number.isFinite(setupAtr) && setupAtr > 0 ? setupAtr : null,
@@ -3724,7 +3764,9 @@ function getCandidateATRContext(candidate, historyCache, pairLocal, price) {
         atr_rule_reference: Number.isFinite(atrForRule) && atrForRule > 0 ? atrForRule : null,
         min_atr_multiplier: minMultiplier,
         minimum_reasonable_distance: minimumReasonable,
-        extreme_too_tight_distance: extremeTooTight,
+        absolute_min_sl: absoluteMinSL,
+        preferred_min_sl: preferredMinSL,
+        extreme_too_tight_distance: absoluteMinSL,
         maximum_reasonable_distance: maxDistance
     };
 }
@@ -3747,16 +3789,17 @@ function evaluateStructuralStop(candidate, atrContext, pairLocal) {
     // Pair minimums remain diagnostic references. A structurally valid stop is
     // not rejected solely for being slightly tighter than that reference.
     const atrMultiple = atrContext.atr_rule_reference ? riskDistance / atrContext.atr_rule_reference : null;
-    if (atrContext.extreme_too_tight_distance && riskDistance < atrContext.extreme_too_tight_distance) {
-        return { status: 'EXTREME_TOO_TIGHT', hardReject: true, volatility_classification: 'EXTREME_TOO_TIGHT', reason: `SL distance ${riskDistance.toFixed(settings.prec)} is below the minimum reasonable distance and is an extreme volatility anomaly for ${atrContext.setup_timeframe}` };
+    const absoluteMinSL = atrContext.absolute_min_sl ?? atrContext.extreme_too_tight_distance;
+    if (absoluteMinSL && riskDistance <= absoluteMinSL) {
+        return { status: 'EXTREME_TOO_TIGHT', hardReject: true, volatility_classification: 'EXTREME_TOO_TIGHT', reason: `SL distance ${riskDistance.toFixed(settings.prec)} is below absolute execution floor ${absoluteMinSL.toFixed(settings.prec)} and below minimum reasonable distance for ${atrContext.setup_timeframe}` };
     }
     if (riskDistance > atrContext.maximum_reasonable_distance) {
         return { status: 'EXTREME_TOO_WIDE', hardReject: true, volatility_classification: 'EXTREME_TOO_WIDE', reason: `SL distance ${riskDistance.toFixed(settings.prec)} exceeds ${atrContext.setup_timeframe} maximum reasonable distance ${atrContext.maximum_reasonable_distance.toFixed(settings.prec)}` };
     }
     const volatilityClassification = Number.isFinite(atrMultiple)
-        ? (atrMultiple < 0.75 ? 'TIGHT_BUT_STRUCTURAL' : (atrMultiple > 6 ? 'WIDE_BUT_STRUCTURAL' : 'NORMAL'))
+        ? (riskDistance < (atrContext.preferred_min_sl || (atrMultiple < 0.75 ? atrContext.atr_rule_reference * 0.75 : 0)) ? 'TIGHT_BUT_STRUCTURAL' : (atrMultiple > 6 ? 'WIDE_BUT_STRUCTURAL' : 'NORMAL'))
         : 'NORMAL';
-    return { status: 'VALID_STRUCTURAL_STOP', hardReject: false, volatility_classification: volatilityClassification, reason: `Structural stop is ${volatilityClassification}`, riskDistance, atrMultiple };
+    return { status: 'VALID_STRUCTURAL_STOP', hardReject: false, volatility_classification: volatilityClassification, reason: `Structural stop is ${volatilityClassification}`, riskDistance, atrMultiple, quality_warning: volatilityClassification === 'TIGHT_BUT_STRUCTURAL' };
 }
 
 function classifySetupArchetype(candidate, historyCache, price, structure) {
@@ -3801,13 +3844,14 @@ function buildRiskConstraints(pairLocal, price, historyCache) {
     const atr1h = historyCache?.['1H']?.length >= 15 ? atr(historyCache['1H'], 14) : null;
     const atr15m = historyCache?.['15M']?.length >= 15 ? atr(historyCache['15M'], 14) : null;
     const primaryAtr = Number.isFinite(atr4h) && atr4h > 0 ? atr4h : (Number.isFinite(atr1h) && atr1h > 0 ? atr1h : atr15m);
-    const minSLMultiplier = settings.minSLMultiplier || (pairLocal.includes('XAU') ? 2.0 : 1.5);
+    const absoluteMinSL = Math.max(settings.pipSize, Number.isFinite(primaryAtr) && primaryAtr > 0 ? primaryAtr * 0.10 : settings.pipSize);
     const rawMaxSLDistance = primaryAtr > 0 ? Math.min(price * settings.maxSLPct, primaryAtr * 4.0) : price * settings.maxSLPct;
     return {
         minimum_rr: settings.targetRR || 2.5,
-        minimum_sl_distance: settings.minSL,
-        maximum_sl_distance: ictRound(Math.max(settings.minSL, rawMaxSLDistance), prec),
-        min_sl_atr_multiplier: minSLMultiplier,
+        minimum_sl_distance: ictRound(absoluteMinSL, prec),
+        absolute_min_sl: ictRound(absoluteMinSL, prec),
+        preferred_min_sl: ictRound(Math.max(settings.pipSize * 2, (primaryAtr || 0) * 0.5), prec),
+        maximum_sl_distance: ictRound(Math.max(absoluteMinSL, rawMaxSLDistance), prec),
         maximum_entry_distance_atr: LIMIT_ORDER_MAX_DIST_ATR,
         atr_rule_reference: Number.isFinite(primaryAtr) && primaryAtr > 0 ? ictRound(primaryAtr, prec) : null,
         note: 'Physical SL sanity is evaluated per candidate setup timeframe; this broad context is not a universal 4H-derived stop minimum.',
@@ -4156,6 +4200,7 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
     detectionStats.strategy_setup_bounded_count = boundedSetups.length;
     const originalNarratives = [...setups];
     const freshExecutionSetups = [];
+    const freshZoneStats = { discovered: 0, fresh: 0, consumed: 0, invalidated: 0, pre_signal: 0, wrong_side: 0 };
     let activeNarratives = 0;
     let invalidatedNarratives = 0;
     let completedNarratives = 0;
@@ -4172,6 +4217,7 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
         if (narrativeState.state !== 'ACTIVE') continue;
         activeNarratives++;
         const freshZones = buildFreshExecutionZonesForNarrative(narrative, historyCache, zoneList, pair, price);
+        for (const key of Object.keys(freshZoneStats)) freshZoneStats[key] += freshZones.execution_zone_stats?.[key] || 0;
         for (const zone of freshZones) {
             const freshSetup = {
                 ...narrative,
@@ -4210,18 +4256,44 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
         }
     }
     const rawFreshExecutionSetupCount = freshExecutionSetups.length;
-    freshExecutionSetups.sort((a, b) => (b.execution_zone?.created_index || 0) - (a.execution_zone?.created_index || 0));
-    freshExecutionSetups.splice(STRATEGY_SPEC.EXECUTION.maxFreshExecutionSetups);
-    setups.push(...freshExecutionSetups);
+    const freshByPhysicalZone = new Map();
+    for (const freshSetup of freshExecutionSetups) {
+        const zone = freshSetup.execution_zone;
+        const key = `${zone.direction}|${zone.timeframe}|${ictRound(zone.low, prec)}|${ictRound(zone.high, prec)}|${normalizeTimestampUTC(zone.created_time) || zone.created_index}`;
+        const prior = freshByPhysicalZone.get(key);
+        if (!prior) {
+            freshSetup.strategy_confluence = [freshSetup.label || freshSetup.primary];
+            freshSetup.narrative_ids = [freshSetup.id];
+            freshSetup.confluence_score = 1;
+            freshByPhysicalZone.set(key, freshSetup);
+        } else {
+            prior.strategy_confluence = [...new Set([...(prior.strategy_confluence || []), freshSetup.label || freshSetup.primary])];
+            prior.narrative_ids = [...new Set([...(prior.narrative_ids || []), freshSetup.id])];
+            prior.confirmations = [...new Set([...(prior.confirmations || []), ...(freshSetup.confirmations || []), freshSetup.primary])];
+            prior.label = [...new Set([...(String(prior.label || '').split('+')), ...(String(freshSetup.label || freshSetup.primary).split('+'))])].filter(Boolean).join('+');
+            prior.target_candidates = mergeStrategyTargets([prior.target_candidates, freshSetup.target_candidates]);
+            prior.confluence_score = prior.strategy_confluence.length;
+        }
+    }
+    const dedupedFreshExecutionSetups = [...freshByPhysicalZone.values()];
+    dedupedFreshExecutionSetups.sort((a, b) => (b.confluence_score - a.confluence_score) || ((b.execution_zone?.created_index || 0) - (a.execution_zone?.created_index || 0)));
+    dedupedFreshExecutionSetups.splice(STRATEGY_SPEC.EXECUTION.maxFreshExecutionSetups);
+    setups.push(...dedupedFreshExecutionSetups);
     detectionStats.strategy_narratives = originalNarratives.length;
     detectionStats.active_narratives = activeNarratives;
     detectionStats.invalidated_narratives = invalidatedNarratives;
     detectionStats.completed_narratives = completedNarratives;
     detectionStats.stale_narratives = staleNarratives;
-    detectionStats.fresh_execution_zones = freshExecutionSetups.length;
+    detectionStats.fresh_execution_zones_discovered = rawFreshExecutionSetupCount;
+    detectionStats.fresh_execution_zones = dedupedFreshExecutionSetups.length;
     detectionStats.fresh_execution_zones_raw = rawFreshExecutionSetupCount;
-    detectionStats.consumed_execution_zones = 0;
-    detectionStats.expired_execution_zones = 0;
+    detectionStats.execution_zones_discovered = freshZoneStats.discovered;
+    detectionStats.execution_zones_fresh = freshZoneStats.fresh;
+    detectionStats.consumed_execution_zones = freshZoneStats.consumed;
+    detectionStats.invalidated_execution_zones = freshZoneStats.invalidated;
+    detectionStats.pre_signal_execution_zones = freshZoneStats.pre_signal;
+    detectionStats.wrong_side_execution_zones = freshZoneStats.wrong_side;
+    detectionStats.expired_execution_zones = staleNarratives;
     const nativeTargets = new Map(setups.map(setup => [setup, [...(setup.target_candidates || [])]]));
     for (const setup of setups) {
         const compatible = setups
@@ -4283,6 +4355,36 @@ function getStrategySetupForZone(zone, strategySetups) {
     };
 }
 
+function mergeFreshExecutionTargetPool({ direction, entry, strategySetup, targetCandidates, historyCache, zones, price, pairLocal }) {
+    const base = [
+        ...(targetCandidates?.all || []),
+        ...(targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell'] || []),
+        ...(strategySetup?.target_candidates || [])
+    ];
+    const current = buildTargetCandidates(historyCache, price, pairLocal).all || [];
+    const structuralZones = (zones || []).flatMap(zone => {
+        if (zone.primary_eligible === false || zone.invalidated || !Number.isFinite(Number(zone.low)) || !Number.isFinite(Number(zone.high))) return [];
+        const level = direction === 'BUY' ? Number(zone.low) : Number(zone.high);
+        const ahead = direction === 'BUY' ? level > entry : level < entry;
+        if (!ahead || !['MSNR', 'OB', 'FVG'].includes(zone.type)) return [];
+        return [{ direction, level, timeframe: zone.timeframe, source: zone.type === 'MSNR' ? 'OPPOSING_MSNR' : `OPPOSING_${zone.type}`, target_type: zone.type, origin: zone.origin || 'STRUCTURAL', structural_priority: zone.type === 'MSNR' ? 88 : 68, strategy_native: false }];
+    });
+    const all = [...base, ...current, ...structuralZones].filter(t => t && t.direction === direction);
+    const deduped = new Map();
+    for (const target of all) {
+        const level = Number(target.level);
+        if (!Number.isFinite(level)) continue;
+        const key = `${direction}|${target.timeframe || ''}|${ictRound(level, getMarketSettings(pairLocal).prec)}`;
+        const prior = deduped.get(key);
+        if (!prior) deduped.set(key, { ...target, level });
+        else {
+            prior.target_confluence = [...new Set([...(prior.target_confluence || []), target.source || target.target_type])];
+            if ((target.structural_priority || 0) > (prior.structural_priority || 0)) Object.assign(prior, target, { level, target_confluence: prior.target_confluence });
+        }
+    }
+    return { all: [...deduped.values()], buy: [...deduped.values()].filter(t => t.direction === 'BUY'), sell: [...deduped.values()].filter(t => t.direction === 'SELL') };
+}
+
 function getStrategyExecutionZones(strategySetups) {
     return (strategySetups || [])
         .filter(s => s.execution_zone)
@@ -4303,7 +4405,8 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const rejectedCandidates = [];
     const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(strategySetups) : [];
     const seedZones = Array.isArray(strategySetups) ? strategyExecutionZones : (zones || []);
-    const seedDiagnostics = seedZones.map((z, i) => ({ seed_id: z.id || `seed-${i + 1}`, timeframe: z.timeframe || '1H', raw_candidates: 0, failure_reasons: [], details: [] }));
+    const seedDiagnostics = seedZones.map((z, i) => ({ seed_id: z.id || `seed-${i + 1}`, execution_model: z.execution_model || z.entry_model || 'STRUCTURAL_LIMIT', zone_source: z.entry_region_source || z.type, timeframe: z.timeframe || '1H', raw_candidates: 0, failure_reasons: [], details: [] }));
+    const freshTargetPoolCache = new Map();
     const failSeed = (seed, code, detail) => {
         if (!seed.failure_reasons.includes(code)) seed.failure_reasons.push(code);
         if (detail && !seed.details.includes(detail)) seed.details.push(detail);
@@ -4365,7 +4468,9 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 if (!Number.isFinite(entry) || !Number.isFinite(stop.stop_loss)) {
                     failSeed(seed, 'INVALID_NUMERIC_GEOMETRY'); continue;
                 }
-                const rawId = `${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${rawCandidates.length + 1}`;
+                const seedPrefix = zone.execution_model === 'FRESH_RETRACEMENT_LIMIT' ? 'FRESH-' : '';
+                const createdKey = normalizeTimestampUTC(zone.created_time);
+                const rawId = `${seedPrefix}${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${createdKey || zone.created_index || rawCandidates.length + 1}-${rawCandidates.length + 1}`;
                 const risk = Math.abs(entry - stop.stop_loss);
                 const atrContext = getCandidateATRContext({ timeframe: tf }, historyCache, pair, price);
                 const rawCandidate = {
@@ -4469,19 +4574,30 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     continue;
                 }
                 const strategyTargets = (strategySetup?.target_candidates || []).filter(t => t && t.direction === direction);
-                const mergedTargetCandidates = strategyTargets.length
-                    ? {
-                        ...(targetCandidates || {}),
-                        all: [...strategyTargets, ...((targetCandidates?.all || targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell'] || []))],
-                        [direction === 'BUY' ? 'buy' : 'sell']: [...strategyTargets, ...(targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell'] || [])]
-                    }
-                    : targetCandidates;
+                let mergedTargetCandidates;
+                if (zone.execution_model === 'FRESH_RETRACEMENT_LIMIT' || strategySetup?.execution_model === 'FRESH_RETRACEMENT_LIMIT') {
+                    const poolKey = `${direction}|${tf}|${strategySetup?.id || 'fresh'}`;
+                    if (!freshTargetPoolCache.has(poolKey)) freshTargetPoolCache.set(poolKey, mergeFreshExecutionTargetPool({ direction, entry, strategySetup, targetCandidates, historyCache, zones: validationZones, price, pairLocal: pair }));
+                    mergedTargetCandidates = freshTargetPoolCache.get(poolKey);
+                } else {
+                    mergedTargetCandidates = strategyTargets.length
+                        ? {
+                            ...(targetCandidates || {}),
+                            all: [...strategyTargets, ...((targetCandidates?.all || targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell'] || []))],
+                            [direction === 'BUY' ? 'buy' : 'sell']: [...strategyTargets, ...(targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell'] || [])]
+                        }
+                        : targetCandidates;
+                }
                 const targets = selectAdaptiveTargets(direction, entry, stop.stop_loss, mergedTargetCandidates, minimumRR, prec, {
                     historyCache,
                     zones: validationZones,
                     liquidity: marketContext?.liquidity?.[tf] || mapLiquidity(data || []),
                     strategySetup
                 });
+                const targetDiagnostics = {
+                    ...(selectAdaptiveTargets.lastDiagnostics || {}),
+                    ...(strategySetup?.target_diagnostics || {})
+                };
                 console.log('TARGET EVALUATION', {
                     id: rawCandidate.id,
                     strategy: rawCandidate.strategy_label || rawCandidate.zone_type,
@@ -4489,19 +4605,24 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     entry,
                     stopLoss: stop.stop_loss,
                     requiredRR: minimumRR,
-                    foundTp1: targets?.tp1?.level || null
+                    foundTp1: targets?.tp1?.level || null,
+                    target_diagnostics: targetDiagnostics
                 });
                 if (!targets) {
                     const pool = mergedTargetCandidates?.all || mergedTargetCandidates?.[direction === 'BUY' ? 'buy' : 'sell'] || [];
-                    failSeed(seed, pool.length ? 'NO_VALID_TP1' : 'NO_TARGET_POOL');
+                    const targetFailure = zone.execution_model === 'FRESH_RETRACEMENT_LIMIT'
+                        ? (targetDiagnostics.failure_code || (pool.length ? 'TARGETS_EXIST_BUT_RR_TOO_LOW' : 'TARGET_POOL_EMPTY'))
+                        : 'NO_VALID_TP1';
+                    failSeed(seed, targetFailure, JSON.stringify(targetDiagnostics));
                     console.log('CANDIDATE REJECTED - NO TP1', { id: rawCandidate.id, direction, entry, stopLoss: stop.stop_loss, requiredRR: minimumRR });
                     rejectedCandidates.push({
                         id: rawCandidate.id,
                         direction,
                         timeframe: tf,
                         zone_type: zone.type,
-                        rejection_code: 'NO_VALID_TP1',
-                        rejection_reasons: ['no real TP1 satisfies minimum RR']
+                        rejection_code: targetFailure,
+                        rejection_reasons: [targetFailure, JSON.stringify(targetDiagnostics)],
+                        target_diagnostics: targetDiagnostics
                     });
                     continue;
                 }
@@ -4554,6 +4675,9 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         event_time: strategySetup?.narrative_event_time || rawCandidate.narrative_event_time || null,
                         original_entry_consumed: !!(strategySetup?.original_strategy_entry_consumed || rawCandidate.original_strategy_entry_consumed)
                     },
+                    strategy_confluence: strategySetup?.strategy_confluence || [],
+                    narrative_ids: strategySetup?.narrative_ids || [],
+                    confluence_score: strategySetup?.confluence_score || 1,
                     setup_timeframe: strategySetup?.setup_timeframe || tf,
                     execution_timeframe: strategySetup?.execution_timeframe || tf,
                     strategy_evidence: strategySetup?.strategy_evidence || null,
@@ -4574,6 +4698,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         target_reachability: compactTargetReachabilityForOutput(t.target_reachability),
                         actual_rr: t.actual_rr
                     })) : [],
+                    target_diagnostics: targetDiagnostics,
                     setup_confidence: Math.max(0, Math.min(100, Math.round(score))),
                     score: ictRound(score, 2)
                 };
@@ -5411,7 +5536,14 @@ function classifyRejectionDetail(reason) {
     if (/BUY stop|SELL stop|STRUCTURALLY_INVALID/i.test(reason)) return 'STOP_STRUCTURAL_INVALID';
     if (/EXTREME_TOO_TIGHT|extreme volatility anomaly|below .*minimum|below .*ATR|too tight/i.test(reason)) return 'EXTREME_TOO_TIGHT';
     if (/EXTREME_TOO_WIDE|exceeds .*maximum|too wide/i.test(reason)) return 'EXTREME_TOO_WIDE';
-    if (/no real target|no real TP1|no supplied target|no real deterministic target|target ladder/i.test(reason)) return 'NO_VALID_TP1';
+    if (/no real TP1 satisfies minimum RR/i.test(reason)) return 'NO_VALID_TP1';
+    if (/TARGET_POOL_EMPTY|no target pool/i.test(reason)) return 'TARGET_POOL_EMPTY';
+    if (/NO_TARGETS_DIRECTIONALLY_AHEAD|directionally ahead/i.test(reason)) return 'NO_TARGETS_DIRECTIONALLY_AHEAD';
+    if (/TARGETS_EXIST_BUT_RR_TOO_LOW|no real TP1|minimum RR/i.test(reason)) return 'TARGETS_EXIST_BUT_RR_TOO_LOW';
+    if (/TARGETS_EXIST_BUT_UNREACHABLE|unreachable target/i.test(reason)) return 'TARGETS_EXIST_BUT_UNREACHABLE';
+    if (/TARGETS_BLOCKED_BY_STRUCTURE|blocked by structure/i.test(reason)) return 'TARGETS_BLOCKED_BY_STRUCTURE';
+    if (/TARGET_PROVENANCE_INVALID|target provenance/i.test(reason)) return 'TARGET_PROVENANCE_INVALID';
+    if (/no real target|no supplied target|no real deterministic target|target ladder/i.test(reason)) return 'NO_VALID_TP1';
     if (/RR .*below|minimum RR|actual RR/i.test(reason)) return 'TP1_RR_TOO_LOW';
     if (/HTF alignment/i.test(reason)) return 'CONTINUATION_HTF';
     if (/reversal evidence insufficient/i.test(reason)) return 'REVERSAL_EVIDENCE_INSUFFICIENT';
@@ -5447,9 +5579,14 @@ function summarizeStrategyDetections(strategySetups) {
             stale_narratives: stats.stale_narratives || 0
         },
         execution_zones: {
+            execution_zones_discovered: stats.execution_zones_discovered || 0,
+            execution_zones_fresh: stats.execution_zones_fresh || 0,
             fresh_execution_zones: stats.fresh_execution_zones || 0,
             fresh_execution_zones_raw: stats.fresh_execution_zones_raw || 0,
             consumed_execution_zones: stats.consumed_execution_zones || 0,
+            invalidated_execution_zones: stats.invalidated_execution_zones || 0,
+            pre_signal_execution_zones: stats.pre_signal_execution_zones || 0,
+            wrong_side_execution_zones: stats.wrong_side_execution_zones || 0,
             expired_execution_zones: stats.expired_execution_zones || 0
         }
     };
@@ -5481,6 +5618,12 @@ function buildCandidatePipelineAudit(strategySetups, rawCandidates, rejectedCand
     for (const seed of seedDiagnostics) {
         for (const reason of seed.failure_reasons) seedFailureCounts[reason] = (seedFailureCounts[reason] || 0) + 1;
     }
+    const freshSeeds = seedDiagnostics.filter(s => s.execution_model === 'FRESH_RETRACEMENT_LIMIT');
+    const originalSeeds = seedDiagnostics.filter(s => s.execution_model !== 'FRESH_RETRACEMENT_LIMIT');
+    const freshRejected = (rejectedCandidates || []).filter(c => c.execution_model === 'FRESH_RETRACEMENT_LIMIT' || String(c.id || '').startsWith('FRESH-'));
+    const freshValid = (validCandidates || []).filter(c => c.execution_model === 'FRESH_RETRACEMENT_LIMIT');
+    const freshFailureCounts = {};
+    for (const seed of freshSeeds) for (const reason of seed.failure_reasons || []) freshFailureCounts[reason] = (freshFailureCounts[reason] || 0) + 1;
     return {
         strategy_setups: (strategySetups || []).length,
         execution_seeds: getStrategyExecutionZones(strategySetups || []).length,
@@ -5490,16 +5633,42 @@ function buildCandidatePipelineAudit(strategySetups, rawCandidates, rejectedCand
         seed_diagnostics: seedDiagnostics,
         structural_stop_valid: (rawCandidates || []).filter(c => c.risk_model?.status === 'VALID_STRUCTURAL_STOP').length,
         volatility_rejected: (details.EXTREME_TOO_TIGHT || 0) + (details.EXTREME_TOO_WIDE || 0) + (details.STOP_VOLATILITY_TOO_TIGHT || 0) + (details.STOP_VOLATILITY_TOO_WIDE || 0),
-        target_rejected: (details.NO_VALID_TP1 || 0) + (details.TP1_RR_TOO_LOW || 0),
+        target_rejected: (details.NO_VALID_TP1 || 0) + (details.TP1_RR_TOO_LOW || 0) + (details.TARGET_POOL_EMPTY || 0) + (details.NO_TARGETS_DIRECTIONALLY_AHEAD || 0) + (details.TARGETS_EXIST_BUT_RR_TOO_LOW || 0) + (details.TARGETS_BLOCKED_BY_STRUCTURE || 0) + (details.TARGETS_EXIST_BUT_UNREACHABLE || 0),
         consistency_rejected: details.ZONE_INVALID || 0,
         context_rejected: (details.CONTINUATION_HTF || 0) + (details.REVERSAL_EVIDENCE_INSUFFICIENT || 0),
-        final_valid: (validCandidates || []).length
+        final_valid: (validCandidates || []).length,
+        original_execution_pipeline: {
+            seeds: originalSeeds.length,
+            candidates: (rawCandidates || []).filter(c => c.execution_model !== 'FRESH_RETRACEMENT_LIMIT').length,
+            consumed: details.ENTRY_ALREADY_CONSUMED || 0,
+            expired: (details.SETUP_EXPIRED || 0) + (details.SETUP_STALE || 0),
+            completed: details.SETUP_ALREADY_COMPLETED || 0
+        },
+        fresh_execution_pipeline: {
+            seeds: freshSeeds.length,
+            candidates: (rawCandidates || []).filter(c => c.execution_model === 'FRESH_RETRACEMENT_LIMIT').length,
+            stop_valid: (rawCandidates || []).filter(c => c.execution_model === 'FRESH_RETRACEMENT_LIMIT' && c.risk_model?.status === 'VALID_STRUCTURAL_STOP').length,
+            target_valid: freshRejected.filter(c => !['TARGET_POOL_EMPTY', 'NO_TARGETS_DIRECTIONALLY_AHEAD', 'TARGETS_EXIST_BUT_RR_TOO_LOW', 'TARGETS_BLOCKED_BY_STRUCTURE', 'TARGETS_EXIST_BUT_UNREACHABLE', 'TARGET_PROVENANCE_INVALID', 'NO_VALID_TP1'].includes(c.rejection_code)).length + freshValid.length,
+            rr_valid: freshValid.filter(c => Number(c.rr_tp1) > 0).length,
+            final_valid: freshValid.length,
+            failure_counts: freshFailureCounts
+        }
     };
 }
 
 function waitCodeFromRejections(audit, hasStrategySetups) {
     const detail = audit?.rejection_detail || {};
     if (!hasStrategySetups) return 'NO_STRATEGY_SETUP';
+    const fresh = audit?.fresh_execution_pipeline;
+    if (fresh?.seeds > 0 && fresh.final_valid === 0) {
+        const failures = fresh.failure_counts || {};
+        const ordered = ['TARGET_POOL_EMPTY', 'NO_TARGETS_DIRECTIONALLY_AHEAD', 'TARGETS_EXIST_BUT_RR_TOO_LOW', 'TARGETS_BLOCKED_BY_STRUCTURE', 'TARGETS_EXIST_BUT_UNREACHABLE', 'NO_STRUCTURAL_STOP', 'EXTREME_VOLATILITY', 'ENTRY_ALREADY_CONSUMED', 'SETUP_ALREADY_COMPLETED', 'SETUP_DELIVERY_ALREADY_ADVANCED', 'ENTRY_NOT_REACHABLE_TODAY'];
+        const dominant = ordered.find(code => failures[code]);
+        if (dominant === 'TARGET_POOL_EMPTY' || dominant === 'NO_TARGETS_DIRECTIONALLY_AHEAD' || dominant === 'TARGETS_EXIST_BUT_RR_TOO_LOW' || dominant === 'TARGETS_EXIST_BUT_UNREACHABLE') return 'NO_REALISTIC_TARGET';
+        if (dominant === 'EXTREME_VOLATILITY') return 'EXTREME_VOLATILITY';
+        if (dominant) return dominant === 'NO_STRUCTURAL_STOP' ? 'NO_STRUCTURAL_STOP' : 'NO_FRESH_EXECUTION_ZONE';
+    }
+    if (fresh?.seeds === 0 && (audit?.strategy_setups || 0) > 0) return 'NO_FRESH_EXECUTION_ZONE';
     if ((audit?.raw_candidate_count || audit?.raw_candidates || 0) === 0) return 'NO_EXECUTION_GEOMETRY';
     if (detail.STOP_STRUCTURAL_INVALID) return 'NO_STRUCTURAL_STOP';
     if (detail.EXTREME_TOO_TIGHT || detail.EXTREME_TOO_WIDE) return 'EXTREME_VOLATILITY';
@@ -5828,6 +5997,9 @@ function compactAIContext(liveMarketContext) {
             event_time: c.narrative_event_time || null,
             original_entry_consumed: !!c.original_strategy_entry_consumed
         },
+        strategy_confluence: c.strategy_confluence || c.strategy_setup?.strategy_confluence || [],
+        narrative_ids: c.narrative_ids || c.strategy_setup?.narrative_ids || [],
+        confluence_score: c.confluence_score || c.strategy_setup?.confluence_score || 1,
         execution_model: c.execution_model || c.entry_model,
         execution_zone_created_time: c.execution_zone_created_time || c.zone?.created_time || null,
         execution_zone_consumed: !!c.execution_zone_consumed,
@@ -5877,6 +6049,7 @@ function compactAIContext(liveMarketContext) {
         stop_source: c.stop_source,
         freshness: c.freshness,
         target_map: c.target_map,
+        target_diagnostics: c.target_diagnostics || null,
         target_reachability: compactTargetReachabilityForOutput(c.target_reachability),
         score: c.score
     } : null;
