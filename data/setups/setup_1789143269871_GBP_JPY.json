@@ -1,0 +1,828 @@
+{
+  "id": 1789143269871,
+  "recordedAt": "2026-09-11T16:14:29.872Z",
+  "eventType": "ai_scan",
+  "pair": "GBP/JPY",
+  "setup": {
+    "date": "2026-09-11",
+    "time": "16:14:29",
+    "pair": "GBP/JPY",
+    "current_price": 207.84021,
+    "trade_type": "SELL_LIMIT",
+    "decision": "SELL_LIMIT",
+    "selected_candidate_id": "15M-TBS-SELL-207.8-207.84-49-49",
+    "order_type": "LIMIT",
+    "setup_type": "PENDING_LIMIT",
+    "entry_price": 207.8,
+    "entry_zone": {
+      "source": "TBS",
+      "low": 207.8,
+      "high": 207.84
+    },
+    "stop_loss": 207.84,
+    "stop_loss_reason": "SWING_HIGH invalidation plus structural buffer",
+    "take_profit_1": 207.618,
+    "take_profit_2": 207.617,
+    "take_profit_3": 207.612,
+    "risk_reward": "1:4.55",
+    "confidence": 86,
+    "zone_quality": "B",
+    "patterns_detected": "TBS",
+    "probability": "HIGH",
+    "reasoning": {
+      "primary": "TBS SELL_LIMIT at 207.8. TP1 207.618: SELL_SIDE_LIQUIDITY (EXTERNAL_LIQUIDITY).",
+      "freshness": "Fresh 15M opportunity from 0.0 hours ago; fresh and actionable later today. 122% of the original reward path remains.",
+      "why_best": "Selected deterministic candidate 15M-TBS-SELL-207.8-207.84-49-49; target confluence: SELL_SIDE_LIQUIDITY 1H.",
+      "risk_warning": "Structural invalidation and market execution risk apply.",
+      "secondary": []
+    },
+    "opposite_setup": {
+      "direction": "BUY",
+      "confidence": 30,
+      "why_rejected": "No valid BUY candidate survived deterministic rules. 4H-BUY-TBS-207.382-207.467-2 failed NO_VALID_TP1/EXTREME_VOLATILITY; 1H BUY TBS/MSNR candidates were rejected as ENTRY_ALREADY_CONSUMED or SETUP_EXPIRED. A buy also conflicts with 3/3 HTF bearish alignment and the 1H bearish BOS."
+    },
+    "strategy_evidence": {
+      "CRT": null,
+      "TBS": {
+        "reference_level": 207.82021,
+        "reference_type": "SWING_HIGH",
+        "sweep_extreme": 207.85753,
+        "reclaim_level": 207.82021,
+        "reclaim_bar": 99,
+        "sweep_depth": 0.037319999999994025,
+        "liquidity_level": 207.82021,
+        "reclaim_price": 207.81228,
+        "timeframe": "15M"
+      },
+      "MSNR": null
+    },
+    "entry_model": "RECLAIM_RETEST",
+    "setup_timeframe": "15M",
+    "execution_timeframe": "15M",
+    "opportunity_status": "FRESH_PENDING_TODAY",
+    "event_time": 1789178400000,
+    "event_age_hours": 0,
+    "current_session": "LON-CLOSE KZ",
+    "event_session": "ASIA KZ",
+    "expected_entry_window": "CURRENT_SESSION_OR_NEXT_VALID_15M_WINDOW",
+    "hours_remaining_in_relevant_session": 0.7666666666666657,
+    "still_actionable_today": true,
+    "pending_entry_quality": "HIGH",
+    "entry_reachable_today": true,
+    "distance_to_entry_atr": 0.2325381580849835,
+    "remaining_reward_fraction": 1.2209340659340562,
+    "setup_confidence": 77,
+    "target_map": [
+      {
+        "target_level": 207.618,
+        "target_type": "EXTERNAL_LIQUIDITY",
+        "primary_target_source": "SELL_SIDE_LIQUIDITY",
+        "target_confluence": [
+          {
+            "source": "SELL_SIDE_LIQUIDITY",
+            "target_type": "EXTERNAL_LIQUIDITY",
+            "timeframe": "1H",
+            "level": 207.618
+          }
+        ],
+        "target_timeframe": "1H",
+        "target_distance": 0.182,
+        "target_distance_atr": 0.5585477757830163,
+        "target_distance_atr_timeframe": "1H",
+        "structural_priority": 82,
+        "intervening_obstacles": [
+          {
+            "type": "TBS",
+            "timeframe": "1H",
+            "low": 207.748,
+            "high": 207.8,
+            "severity": "SERIOUS"
+          },
+          {
+            "type": "CRT",
+            "timeframe": "15M",
+            "low": 207.604,
+            "high": 207.644,
+            "severity": "WEAK"
+          }
+        ],
+        "intervening_liquidity": [],
+        "reachability_score": 65,
+        "target_quality": "MEDIUM",
+        "target_reachability": {
+          "reachable": true,
+          "hard_unreachable": false,
+          "reachability_score": 65,
+          "target_quality": "MEDIUM",
+          "target_distance_atr_timeframe": "1H",
+          "intervening_obstacles": [
+            {
+              "type": "TBS",
+              "timeframe": "1H",
+              "low": 207.748,
+              "high": 207.8,
+              "severity": "SERIOUS"
+            },
+            {
+              "type": "CRT",
+              "timeframe": "15M",
+              "low": 207.604,
+              "high": 207.644,
+              "severity": "WEAK"
+            }
+          ],
+          "intervening_liquidity": [],
+          "structural_priority": 82,
+          "reason": "2 opposing zones, 0 liquidity levels before target"
+        },
+        "actual_rr": 4.550000000001314
+      },
+      {
+        "target_level": 207.617,
+        "target_type": "OPPOSING_MSNR",
+        "primary_target_source": "OPPOSING_MSNR",
+        "target_confluence": [
+          {
+            "source": "OPPOSING_MSNR",
+            "target_type": "OPPOSING_MSNR",
+            "timeframe": "1H",
+            "level": 207.617
+          }
+        ],
+        "target_timeframe": "1H",
+        "target_distance": 0.183,
+        "target_distance_atr": 0.5616167196060142,
+        "target_distance_atr_timeframe": "1H",
+        "structural_priority": 88,
+        "intervening_obstacles": [
+          {
+            "type": "TBS",
+            "timeframe": "1H",
+            "low": 207.748,
+            "high": 207.8,
+            "severity": "SERIOUS"
+          },
+          {
+            "type": "TBS",
+            "timeframe": "1H",
+            "low": 207.592,
+            "high": 207.644,
+            "severity": "WEAK"
+          },
+          {
+            "type": "CRT",
+            "timeframe": "15M",
+            "low": 207.604,
+            "high": 207.644,
+            "severity": "WEAK"
+          }
+        ],
+        "intervening_liquidity": [],
+        "reachability_score": 64,
+        "target_quality": "MEDIUM",
+        "target_reachability": {
+          "reachable": true,
+          "hard_unreachable": false,
+          "reachability_score": 64,
+          "target_quality": "MEDIUM",
+          "target_distance_atr_timeframe": "1H",
+          "intervening_obstacles": [
+            {
+              "type": "TBS",
+              "timeframe": "1H",
+              "low": 207.748,
+              "high": 207.8,
+              "severity": "SERIOUS"
+            },
+            {
+              "type": "TBS",
+              "timeframe": "1H",
+              "low": 207.592,
+              "high": 207.644,
+              "severity": "WEAK"
+            },
+            {
+              "type": "CRT",
+              "timeframe": "15M",
+              "low": 207.604,
+              "high": 207.644,
+              "severity": "WEAK"
+            }
+          ],
+          "intervening_liquidity": [],
+          "structural_priority": 88,
+          "reason": "3 opposing zones, 0 liquidity levels before target"
+        },
+        "actual_rr": 4.575000000001439
+      },
+      {
+        "target_level": 207.612,
+        "target_type": "EXTERNAL_LIQUIDITY",
+        "primary_target_source": "SELL_SIDE_LIQUIDITY",
+        "target_confluence": [
+          {
+            "source": "SELL_SIDE_LIQUIDITY",
+            "target_type": "EXTERNAL_LIQUIDITY",
+            "timeframe": "1H",
+            "level": 207.612
+          }
+        ],
+        "target_timeframe": "1H",
+        "target_distance": 0.188,
+        "target_distance_atr": 0.576961438720917,
+        "target_distance_atr_timeframe": "1H",
+        "structural_priority": 82,
+        "intervening_obstacles": [
+          {
+            "type": "MSNR",
+            "timeframe": "1H",
+            "low": 207.582,
+            "high": 207.651,
+            "severity": "SERIOUS"
+          },
+          {
+            "type": "TBS",
+            "timeframe": "1H",
+            "low": 207.748,
+            "high": 207.8,
+            "severity": "SERIOUS"
+          },
+          {
+            "type": "TBS",
+            "timeframe": "1H",
+            "low": 207.592,
+            "high": 207.644,
+            "severity": "WEAK"
+          },
+          {
+            "type": "CRT",
+            "timeframe": "15M",
+            "low": 207.604,
+            "high": 207.644,
+            "severity": "WEAK"
+          }
+        ],
+        "intervening_liquidity": [],
+        "reachability_score": 36,
+        "target_quality": "LOW",
+        "target_reachability": {
+          "reachable": true,
+          "hard_unreachable": false,
+          "reachability_score": 36,
+          "target_quality": "LOW",
+          "target_distance_atr_timeframe": "1H",
+          "intervening_obstacles": [
+            {
+              "type": "MSNR",
+              "timeframe": "1H",
+              "low": 207.582,
+              "high": 207.651,
+              "severity": "SERIOUS"
+            },
+            {
+              "type": "TBS",
+              "timeframe": "1H",
+              "low": 207.748,
+              "high": 207.8,
+              "severity": "SERIOUS"
+            },
+            {
+              "type": "TBS",
+              "timeframe": "1H",
+              "low": 207.592,
+              "high": 207.644,
+              "severity": "WEAK"
+            },
+            {
+              "type": "CRT",
+              "timeframe": "15M",
+              "low": 207.604,
+              "high": 207.644,
+              "severity": "WEAK"
+            }
+          ],
+          "intervening_liquidity": [],
+          "structural_priority": 82,
+          "reason": "4 opposing zones, 0 liquidity levels before target"
+        },
+        "actual_rr": 4.70000000000135
+      }
+    ],
+    "primary_target_source": "SELL_SIDE_LIQUIDITY",
+    "target_type": "EXTERNAL_LIQUIDITY",
+    "target_confluence": [
+      {
+        "source": "SELL_SIDE_LIQUIDITY",
+        "target_type": "EXTERNAL_LIQUIDITY",
+        "timeframe": "1H",
+        "level": 207.618
+      }
+    ],
+    "strategy_detections": {
+      "CRT": {
+        "raw_count": 360,
+        "deduped_count": 137,
+        "bullish": 8,
+        "bearish": 4
+      },
+      "TBS": {
+        "raw_count": 36,
+        "deduped_count": 31,
+        "bullish": 7,
+        "bearish": 4
+      },
+      "MSNR": {
+        "raw_count": 99,
+        "deduped_count": 69,
+        "structural_count": 2,
+        "executable_count": 2,
+        "pivot_reference_count": 12,
+        "atr_fallback_count": 0
+      },
+      "combinations": {
+        "CRT_TBS": 5,
+        "CRT_MSNR": 2,
+        "TBS_MSNR": 1,
+        "CRT_TBS_MSNR": 0
+      },
+      "narratives": {
+        "strategy_narratives": 24,
+        "active_narratives": 10,
+        "invalidated_narratives": 9,
+        "completed_narratives": 5,
+        "stale_narratives": 0
+      },
+      "execution_zones": {
+        "execution_zones_discovered": 23,
+        "execution_zones_fresh": 2,
+        "fresh_execution_zones": 1,
+        "fresh_execution_zones_raw": 2,
+        "consumed_execution_zones": 0,
+        "invalidated_execution_zones": 2,
+        "pre_signal_execution_zones": 19,
+        "wrong_side_execution_zones": 0,
+        "expired_execution_zones": 0
+      }
+    },
+    "candidate_pipeline": {
+      "strategy_setups": 25,
+      "execution_seeds": 25,
+      "raw_candidates": 480,
+      "zero_candidate_seeds": 0,
+      "seed_failure_counts": {
+        "LIFECYCLE_REJECTED": 19,
+        "NO_VALID_TP1": 6,
+        "EXTREME_VOLATILITY": 2
+      },
+      "seed_diagnostics": [
+        {
+          "seed_id": "4H-SELL-MSNR-208.859-208.957",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "MSNR",
+          "timeframe": "4H",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_NOT_REACHABLE_TODAY"
+          ]
+        },
+        {
+          "seed_id": "4H-BUY-TBS-207.382-207.467-2",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 10,
+          "failure_reasons": [
+            "NO_VALID_TP1",
+            "EXTREME_VOLATILITY"
+          ],
+          "details": [
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":13,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.938423645320184,\"best_target_reachability_score\":22,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "SL distance 0.027 is below absolute execution floor 0.053 and below minimum reasonable distance for 4H"
+          ]
+        },
+        {
+          "seed_id": "1H-BUY-MSNR-207.582-207.651",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "MSNR",
+          "timeframe": "1H",
+          "raw_candidates": 14,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "SETUP_EXPIRED"
+          ]
+        },
+        {
+          "seed_id": "15M-SELL-TBS-207.8-207.84-29",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "NO_VALID_TP1"
+          ],
+          "details": [
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":9,\"rr_qualified_count\":2,\"reachable_target_count\":0,\"best_target_level\":207.78,\"best_target_rr\":0.2564102564104713,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_BLOCKED_BY_STRUCTURE\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":9,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.78,\"best_target_rr\":0.037243947858493595,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":9,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.78,\"best_target_rr\":0.031948881789154934,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":9,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.78,\"best_target_rr\":0.025380710659912025,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":9,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.78,\"best_target_rr\":0.025125628140716616,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":9,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.78,\"best_target_rr\":0.02227171492206049,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":10,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.804,\"best_target_rr\":0.030947775628609786,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":10,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.804,\"best_target_rr\":0.026402640264012008,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":10,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.804,\"best_target_rr\":0.02083333333332177,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":10,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.804,\"best_target_rr\":0.02061855670101922,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":10,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.804,\"best_target_rr\":0.01822323462413539,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":10,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.804,\"best_target_rr\":0.07243460764588008,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":10,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.804,\"best_target_rr\":0.06143344709898008,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":10,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.804,\"best_target_rr\":0.048128342245991745,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":10,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.804,\"best_target_rr\":0.04761904761904941,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":10,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.804,\"best_target_rr\":0.04195804195804335,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":10,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.804,\"best_target_rr\":0.037151702786379345,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":16,\"provenance_valid_count\":16,\"directional_target_count\":10,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.804,\"best_target_rr\":0.036998972250772796,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}"
+          ]
+        },
+        {
+          "seed_id": "1H-BUY-TBS-207.822-207.874-12",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_ALREADY_CONSUMED"
+          ]
+        },
+        {
+          "seed_id": "1H-BUY-TBS-207.748-207.8-13",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 23,
+          "failure_reasons": [
+            "NO_VALID_TP1",
+            "EXTREME_VOLATILITY"
+          ],
+          "details": [
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":14,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.16271186440677704,\"best_target_reachability_score\":58,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":14,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.12121212121212122,\"best_target_reachability_score\":58,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":14,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.08921933085502017,\"best_target_reachability_score\":58,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "SL distance 0.020 is below absolute execution floor 0.033 and below minimum reasonable distance for 1H",
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":14,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.27509293680301405,\"best_target_reachability_score\":58,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":14,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.20000000000003074,\"best_target_reachability_score\":58,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":14,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.14453125000002384,\"best_target_reachability_score\":58,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":14,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.2906976744186757,\"best_target_reachability_score\":58,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":14,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.205761316872479,\"best_target_reachability_score\":58,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":14,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.14705882352944988,\"best_target_reachability_score\":58,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}"
+          ]
+        },
+        {
+          "seed_id": "1H-SELL-CRT-207.696-207.749-24",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_ALREADY_CONSUMED"
+          ]
+        },
+        {
+          "seed_id": "1H-BUY-TBS-207.398-207.451-14",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 9,
+          "failure_reasons": [
+            "NO_VALID_TP1"
+          ],
+          "details": [
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":13,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":1.0365535248042796,\"best_target_reachability_score\":22,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}"
+          ]
+        },
+        {
+          "seed_id": "1H-BUY-CRT-207.499-207.552-19",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 11,
+          "failure_reasons": [
+            "NO_VALID_TP1"
+          ],
+          "details": [
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":13,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.6115702479339518,\"best_target_reachability_score\":22,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":13,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.7067833698030898,\"best_target_reachability_score\":22,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":13,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.8097447795824398,\"best_target_reachability_score\":22,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}"
+          ]
+        },
+        {
+          "seed_id": "15M-SELL-CRT-207.703-207.743-36",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_ALREADY_CONSUMED"
+          ]
+        },
+        {
+          "seed_id": "1H-BUY-TBS-207.592-207.644-15",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 21,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_ALREADY_CONSUMED"
+          ]
+        },
+        {
+          "seed_id": "15M-BUY-CRT-207.604-207.644-30",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 11,
+          "failure_reasons": [
+            "NO_VALID_TP1"
+          ],
+          "details": [
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":14,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.5340314136125787,\"best_target_reachability_score\":26,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":14,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.6187845303867989,\"best_target_reachability_score\":19,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}",
+            "{\"target_pool_count\":15,\"provenance_valid_count\":15,\"directional_target_count\":14,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":207.848,\"best_target_rr\":0.7134502923976331,\"best_target_reachability_score\":19,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}"
+          ]
+        },
+        {
+          "seed_id": "1H-BUY-TBS-207.942-207.994-18",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_ALREADY_CONSUMED"
+          ]
+        },
+        {
+          "seed_id": "4H-BUY-CRT-208.056-208.142-8",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 14,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_ALREADY_CONSUMED"
+          ]
+        },
+        {
+          "seed_id": "1H-BUY-TBS-208.082-208.134-17",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_ALREADY_CONSUMED"
+          ]
+        },
+        {
+          "seed_id": "1H-BUY-CRT-208.1-208.152-23",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_ALREADY_CONSUMED"
+          ]
+        },
+        {
+          "seed_id": "1H-BUY-CRT-208.387-208.44-20",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "SETUP_EXPIRED"
+          ]
+        },
+        {
+          "seed_id": "15M-BUY-CRT-207.505-207.545-34",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 8,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "SETUP_EXPIRED"
+          ]
+        },
+        {
+          "seed_id": "15M-SELL-CRT-207.611-207.651-33",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "SETUP_EXPIRED"
+          ]
+        },
+        {
+          "seed_id": "4H-BUY-CRT-207.927-208.013-4",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 14,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "SETUP_EXPIRED"
+          ]
+        },
+        {
+          "seed_id": "4H-BUY-CRT-207.535-207.62-7",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 9,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "SETUP_EXPIRED"
+          ]
+        },
+        {
+          "seed_id": "1H-SELL-CRT-208.509-208.561-25",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "SETUP_EXPIRED"
+          ]
+        },
+        {
+          "seed_id": "15M-SELL-TBS-208.132-208.172-27",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "SETUP_EXPIRED"
+          ]
+        },
+        {
+          "seed_id": "15M-SELL-TBS-208.297-208.337-28",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "SETUP_EXPIRED"
+          ]
+        },
+        {
+          "seed_id": "FRESH-15M-SELL-MSNR-208.859-208.957-1789124400000",
+          "execution_model": "FRESH_RETRACEMENT_LIMIT",
+          "zone_source": "MSNR",
+          "timeframe": "4H",
+          "raw_candidates": 24,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "SETUP_EXPIRED"
+          ]
+        }
+      ],
+      "structural_stop_valid": 86,
+      "volatility_rejected": 2,
+      "target_rejected": 35,
+      "consistency_rejected": 0,
+      "context_rejected": 0,
+      "final_valid": 5,
+      "original_execution_pipeline": {
+        "seeds": 24,
+        "candidates": 456,
+        "consumed": 179,
+        "expired": 189,
+        "completed": 21
+      },
+      "fresh_execution_pipeline": {
+        "seeds": 1,
+        "candidates": 24,
+        "stop_valid": 0,
+        "target_valid": 24,
+        "rr_valid": 0,
+        "final_valid": 0,
+        "failure_counts": {
+          "LIFECYCLE_REJECTED": 1
+        }
+      }
+    },
+    "ai_decision": "pending_limit",
+    "wait_condition": "Pending SELL_LIMIT at 207.8 remains valid while structural invalidation 207.85753 is not breached. The limit fills when market price trades at the order price.",
+    "source": "Deterministic Candidate Engine + AI Selector",
+    "validation": {
+      "passed": true,
+      "localScore": 86,
+      "aiConf": 77,
+      "adjustedConfidence": 86,
+      "rr1": 4.550000000001314,
+      "htfMatch": 3,
+      "factors": [
+        "HTF 3/3 (+36)",
+        "Partially used zone (2 touches, +6)",
+        "RR 4.55 (+12)",
+        "BOS 1/2 (+6)",
+        "ADX 4H 35.1 (+6)"
+      ],
+      "matchedZone": {
+        "low": 207.8,
+        "high": 207.84,
+        "tf": "15M"
+      },
+      "limitZoneStatus": {
+        "insideZone": false,
+        "distanceToZone": 0.00021000000000981345,
+        "pricePosition": "ABOVE_ZONE"
+      },
+      "final_consistency": {
+        "valid": true,
+        "issues": [],
+        "candidate_id": "15M-TBS-SELL-207.8-207.84-49-49"
+      }
+    },
+    "limit_order_setup": {
+      "eligible": true,
+      "reason": "Future pending-limit setup passed deterministic validation",
+      "current_price_inside_zone_required": false,
+      "selected_zone_status": {
+        "insideZone": false,
+        "distanceToZone": 0.00021000000000981345,
+        "pricePosition": "ABOVE_ZONE"
+      }
+    },
+    "immediate_entry": {
+      "eligible": false,
+      "reason": "Current price is outside the selected entry zone; pending limit fills at its order price",
+      "confirmation": {
+        "confirmed": false,
+        "score": 30,
+        "strength": "MODERATE",
+        "confirmations": [
+          "Bearish Pin Bar"
+        ],
+        "shouldWait": true,
+        "reason": "Current price is outside the selected entry zone",
+        "isAtZone": false
+      }
+    },
+    "limitZoneStatus": {
+      "insideZone": false,
+      "distanceToZone": 0.00021000000000981345,
+      "pricePosition": "ABOVE_ZONE"
+    },
+    "entry_consumed": false,
+    "tp1_already_reached": false
+  }
+}
