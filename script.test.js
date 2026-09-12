@@ -3546,3 +3546,153 @@ describe('engine contract completion', () => {
         expect(JSON.stringify(candidate)).toBe(before);
     });
 });
+
+describe('provider, calendar, lifecycle, and public output contracts', () => {
+    it('requests enough bounded history for configured MSNR lookback and keeps intraday UTC', async () => {
+        const ctx = getContext();
+        ctx.console.warn = () => {};
+        await ctx.saveKeys('tw', '', '', '', '');
+        let requestedUrl = '';
+        ctx.fetch = jest.fn(async url => {
+            requestedUrl = url;
+            return { ok: true, json: async () => ({ values: [{ datetime: '2026-09-11 10:00:00', open: '1', high: '2', low: '0.5', close: '1.5', volume: '1' }] }) };
+        });
+        const result = await ctx.getHistory('1H', 'EUR/USD');
+        expect(result).toHaveLength(1);
+        expect(Number(new URL(requestedUrl).searchParams.get('outputsize'))).toBeGreaterThanOrEqual(ctx.getRequiredHistoryOutputSize());
+        expect(requestedUrl).toContain('timezone=UTC');
+        expect(result.provider_metadata.requested_timezone).toBe('UTC');
+        expect(result.provider_metadata.timestamp_contract).toBe('INTRADAY_UTC');
+        const daily = await ctx.getHistory('1D', 'EUR/USD');
+        expect(daily.provider_metadata.timestamp_contract).toBe('PERIOD_BUCKET');
+    });
+
+    it('does not let device timezone affect canonical timestamps', () => {
+        const ctx = getContext();
+        const value = '2026-09-11T10:00:00Z';
+        expect(ctx.normalizeTimestampUTC(value)).toBe(Date.parse(value));
+        expect(ctx.normalizeTimestampUTC('2026-09-11 10:00:00')).toBe(Date.parse(value));
+    });
+
+    it.each([
+        ['BTC/USD', 6, true],
+        ['BTC/USD', 0, true],
+        ['EUR/USD', 6, false],
+        ['XAU/USD', 6, false]
+    ])('uses asset-aware weekend calendar for %s', (instrument, day, open) => {
+        const ctx = getContext();
+        const saturday = Date.parse('2026-09-12T12:00:00Z');
+        const sunday = Date.parse('2026-09-13T12:00:00Z');
+        const timestamp = day === 0 ? sunday : saturday;
+        const state = ctx.getMarketOpenState(instrument, { as_of_ms: timestamp });
+        expect(state.is_market_open).toBe(open);
+        expect(state.source).toBe('ASSET_CALENDAR');
+    });
+
+    it('uses reliable provider market-open state over calendar fallback', () => {
+        const ctx = getContext();
+        const saturday = Date.parse('2026-09-12T12:00:00Z');
+        expect(ctx.getMarketOpenState('EUR/USD', { as_of_ms: saturday, is_market_open: true }).is_market_open).toBe(true);
+        expect(ctx.getMarketOpenState('BTC/USD', { as_of_ms: saturday, is_market_open: false }).is_market_open).toBe(false);
+    });
+
+    it('keeps MARKET_CLOSED separate from entry reachability and chooses dominant lifecycle wait', () => {
+        const ctx = getContext();
+        expect(ctx.evaluateSetupLifecycle({ direction: 'BUY', entry: 100, zone_low: 99, zone_high: 101, tp1: 110,
+            strategy_setup: { primary: 'CRT', timeframe: '1H', reclaim_bar_index: 0, reclaim_time: '2026-09-12T09:00:00Z' } }, {
+            pair: 'EUR/USD', price: 100, as_of_time: '2026-09-12T12:00:00Z',
+            historyCache: { '1H': [c(99, 101, 98, 100, '2026-09-12T09:00:00Z')] }
+        }).rejection_code).toBe('MARKET_CLOSED');
+        expect(ctx.waitCodeFromRejections({ rejection_detail: { SETUP_EXPIRED: 14, ENTRY_ALREADY_CONSUMED: 9, ENTRY_NOT_REACHABLE_TODAY: 3 } }, true))
+            .toBe('NO_FRESH_OPPORTUNITY');
+        expect(ctx.waitCodeFromRejections({ market_open: false, rejection_detail: {} }, true)).toBe('MARKET_CLOSED');
+        expect(ctx.waitCodeFromRejections({ market_open: false, rejection_detail: {} }, false)).toBe('MARKET_CLOSED');
+        expect(ctx.waitCodeFromRejections({ market_open: true, rejection_detail: { ENTRY_NOT_REACHABLE_TODAY: 1 } }, true))
+            .toBe('ENTRY_NOT_REACHABLE_TODAY');
+    });
+
+    it('uses execution-zone age for a fresh 1H zone under an older active 4H narrative', () => {
+        const ctx = getContext();
+        const parentTime = Date.parse('2026-09-10T12:00:00Z');
+        const zoneTime = Date.parse('2026-09-11T09:00:00Z');
+        const asOf = Date.parse('2026-09-11T10:00:00Z');
+        const result = ctx.evaluateSetupLifecycle({
+            direction: 'BUY', entry: 100, zone_low: 99.9, zone_high: 100.1, tp1: 110,
+            execution_event_time: zoneTime, execution_event_index: 1,
+            strategy_setup: { primary: 'CRT', setup_timeframe: '4H', execution_timeframe: '1H',
+                reclaim_time: parentTime, reclaim_bar_index: 0 }
+        }, { pair: 'EUR/USD', price: 101, as_of_time: asOf, historyCache: {
+            '4H': [c(100, 101, 99, 100, '2026-09-10T12:00:00Z')],
+            '1H': [c(99, 100, 98, 99.5, '2026-09-11T08:00:00Z'), c(99.5, 101, 99.3, 100.8, '2026-09-11T09:00:00Z')]
+        }});
+        expect(result.parent_event_age_hours).toBe(22);
+        expect(result.event_age_hours).toBe(1);
+        expect(result.rejection_code).toBeNull();
+        expect(result.opportunity_status).toBe('FRESH_PENDING_TODAY');
+    });
+
+    it('does not revive a genuinely stale 4H narrative with a new execution zone', () => {
+        const ctx = getContext();
+        const parentTime = Date.parse('2026-09-07T12:00:00Z');
+        const zoneTime = Date.parse('2026-09-11T09:00:00Z');
+        const result = ctx.evaluateSetupLifecycle({
+            direction: 'BUY', entry: 100, zone_low: 99.9, zone_high: 100.1, tp1: 110,
+            execution_event_time: zoneTime, execution_event_index: 1,
+            strategy_setup: { primary: 'CRT', setup_timeframe: '4H', execution_timeframe: '1H',
+                reclaim_time: parentTime, reclaim_bar_index: 0 }
+        }, { pair: 'EUR/USD', price: 101, as_of_time: Date.parse('2026-09-11T10:00:00Z'), historyCache: {
+            '4H': [c(100, 101, 99, 100, '2026-09-07T12:00:00Z')],
+            '1H': [c(99, 100, 98, 99.5, '2026-09-11T08:00:00Z'), c(99.5, 101, 99.3, 100.8, '2026-09-11T09:00:00Z')]
+        }});
+        expect(result.rejection_code).toBe('SETUP_STALE');
+        expect(result.opportunity_status).toBe('INVALID');
+    });
+
+    it('keeps closed MSNR/FVG/OB structural data separate from live market state', () => {
+        const ctx = getContext();
+        const raw = candles(80, 100, 0.5, 'up');
+        raw[79] = { ...raw[79], is_closed: false };
+        const closed = raw.slice(0, 79);
+        expect(ctx.buildTargetCandidates({ '4H': raw, '1H': raw }, 140, 'XAU/USD'))
+            .toEqual(ctx.buildTargetCandidates({ '4H': closed, '1H': closed }, 140, 'XAU/USD'));
+    });
+
+    it('produces compact public BUY_LIMIT and WAIT signals while retaining debug fields separately', () => {
+        const ctx = getContext();
+        const full = { trade_signal: {
+            date: '2026-09-11', time: '10:00:00', pair: 'XAU/USD', current_price: 4402.84,
+            decision: 'BUY_LIMIT', trade_type: 'BUY_LIMIT', strategy: 'CRT+MSNR', execution_timeframe: '1H',
+            entry_price: 4387, entry_zone: { low: 4384.5, high: 4389.2, source: 'FVG' },
+            stop_loss: 4365, take_profit_1: 4430, take_profit_2: null, take_profit_3: null,
+            risk_reward: '1:2.05', confidence: 72, opportunity_status: 'FRESH_PENDING_TODAY',
+            strategy_detections: { huge: true }, candidate_pipeline: { huge: true }, seed_diagnostics: [{ huge: true }],
+            reasoning: { primary: 'CRT reclaim aligned with MSNR', structure: 'Bullish displacement', liquidity: 'Opposite liquidity above', invalidation: 'Below sweep', secondary: ['fresh'] }
+        }};
+        const publicSignal = ctx.buildPublicTradeSignal(full.trade_signal);
+        expect(publicSignal.entry).toBe(4387);
+        expect(publicSignal.tp1).toBe(4430);
+        expect(publicSignal.rr_tp1).toBe(2.05);
+        expect(publicSignal.analysis.bias).toBe('NEUTRAL');
+        expect(publicSignal).not.toHaveProperty('candidate_pipeline');
+        expect(publicSignal).not.toHaveProperty('seed_diagnostics');
+        expect(ctx.buildDebugDiagnostics(full).candidate_pipeline).toEqual({ huge: true });
+        const wait = ctx.buildPublicTradeSignal({ date: '2026-09-11', time: '10:00:00', pair: 'EUR/USD',
+            current_price: 1.15982, decision: 'WAIT', confidence: 0, market_open: true,
+            reasoning: { code: 'NO_FRESH_OPPORTUNITY', primary: 'No fresh actionable CRT, TBS or MSNR execution opportunity' } });
+        expect(wait.reason.code).toBe('NO_FRESH_OPPORTUNITY');
+        expect(wait.market_open).toBe(true);
+    });
+
+    it('uses one immutable scan quote snapshot with safe price fallback', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        ctx.fetch = jest.fn(async url => String(url).includes('/quote?')
+            ? { ok: true, json: async () => ({ price: '1.25', timestamp: '2026-09-11T10:00:00Z', is_market_open: 'open' }) }
+            : { ok: true, json: async () => ({}) });
+        const quote = await ctx.getMarketQuoteSnapshot('EUR/USD');
+        expect(quote.price).toBe(1.25);
+        expect(quote.provider_timestamp_utc).toBe('2026-09-11T10:00:00.000Z');
+        expect(quote.is_market_open).toBe(true);
+        expect(quote.quote_source).toBe('QUOTE');
+    });
+});

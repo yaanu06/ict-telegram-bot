@@ -439,7 +439,9 @@ function getPairDisplayName(p) {
 // ============================================
 let rateLimitNotified = 0;
 async function fetchTD(pathAndQuery, timeoutMs = 10000, retries = 2) {
-    const ctrl = new AbortController();
+    const ctrl = typeof AbortController === 'function'
+        ? new AbortController()
+        : { signal: undefined, abort: () => {} };
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
         const r = await fetch(`${TWELVE_DATA_BASE}${pathAndQuery}&apikey=${TWELVE_DATA_KEY}`, { signal: ctrl.signal });
@@ -486,10 +488,86 @@ async function getPrice(forPair) {
     return null;
 }
 
+function getRequiredHistoryOutputSize() {
+    // Keep the provider request bounded while covering every configured lookback.
+    const spec = typeof STRATEGY_SPEC === 'object' ? STRATEGY_SPEC : {};
+    return Math.max(200, spec.MSNR?.lookback || 0, spec.TBS?.lookback || 0,
+        spec.CRT?.referenceLookback || 0, 60);
+}
+
+function getAssetClass(forPair = pair) {
+    const normalized = String(forPair || '').toUpperCase().replace(/\s/g, '');
+    if (/^(BTC|ETH|SOL|XRP)\//.test(normalized) || normalized.endsWith('/USDT')) return 'CRYPTO';
+    if (normalized === 'XAU/USD' || normalized === 'XAG/USD' || normalized.startsWith('XAU') || normalized.startsWith('XAG')) return 'METAL';
+    return 'FOREX';
+}
+
+function parseProviderMarketOpen(value) {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number' && (value === 0 || value === 1)) return value === 1;
+    if (typeof value === 'string') {
+        if (/^(true|yes|open|opened|trading)$/i.test(value.trim())) return true;
+        if (/^(false|no|closed|close|not[_ -]?trading)$/i.test(value.trim())) return false;
+    }
+    return null;
+}
+
+function getMarketOpenState(forPair = pair, scanSnapshot = {}) {
+    const providerState = parseProviderMarketOpen(scanSnapshot.is_market_open ?? scanSnapshot.market_open);
+    if (providerState !== null) {
+        return { is_market_open: providerState, market_open: providerState, source: 'PROVIDER', asset_class: getAssetClass(forPair) };
+    }
+    const assetClass = scanSnapshot.asset_class || getAssetClass(forPair);
+    if (assetClass === 'CRYPTO') {
+        return { is_market_open: true, market_open: true, source: 'ASSET_CALENDAR', asset_class: assetClass };
+    }
+    const asOf = normalizeTimestampUTC(scanSnapshot.as_of_ms ?? scanSnapshot.as_of_time ?? scanSnapshot.provider_timestamp) || Date.now();
+    const day = new Date(asOf).getUTCDay();
+    const open = ![0, 6].includes(day);
+    return { is_market_open: open, market_open: open, source: 'ASSET_CALENDAR', asset_class: assetClass };
+}
+
+async function getMarketQuoteSnapshot(forPair = pair) {
+    const p = forPair || pair;
+    const assetClass = getAssetClass(p);
+    try {
+        const quote = await fetchTD('/quote?symbol=' + encodeURIComponent(SYMBOLS[p]));
+        const quotePrice = Number(quote.price ?? quote.close);
+        const providerTimestamp = normalizeTimestampUTC(quote.timestamp ?? quote.datetime ?? quote.last_update);
+        const providerOpen = parseProviderMarketOpen(quote.is_market_open ?? quote.market_open ?? quote.market_status);
+        if (Number.isFinite(quotePrice)) {
+            calls++;
+            return {
+                pair: p,
+                price: quotePrice,
+                provider_timestamp: providerTimestamp,
+                provider_timestamp_utc: Number.isFinite(providerTimestamp) ? new Date(providerTimestamp).toISOString() : null,
+                is_market_open: providerOpen,
+                asset_class: assetClass,
+                source: 'TWELVE_DATA',
+                quote_source: 'QUOTE'
+            };
+        }
+    } catch (error) {
+        if (typeof console?.warn === 'function') console.warn('Quote snapshot unavailable; falling back to price endpoint', error?.message || error);
+    }
+    const fallbackPrice = await getPrice(p);
+    return {
+        pair: p,
+        price: Number.isFinite(Number(fallbackPrice)) ? Number(fallbackPrice) : null,
+        provider_timestamp: null,
+        provider_timestamp_utc: null,
+        is_market_open: null,
+        asset_class: assetClass,
+        source: 'TWELVE_DATA',
+        quote_source: 'PRICE_FALLBACK'
+    };
+}
+
 async function getHistory(tfStr, forPair) {
     if(!TWELVE_DATA_KEY) return null;
     try {
-        const d = await fetchTD(`/time_series?symbol=${encodeURIComponent(SYMBOLS[forPair || pair])}&interval=${TF_MAP[tfStr]}&outputsize=100&timezone=UTC`);
+        const d = await fetchTD('/time_series?symbol=' + encodeURIComponent(SYMBOLS[forPair || pair]) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + '&timezone=UTC');
         if(d.values) {
             calls++;
             const values = d.values.map(c => ({
@@ -506,7 +584,14 @@ async function getHistory(tfStr, forPair) {
             }));
             if (values.some(c => !Number.isFinite(c.t))) throw new Error(`Invalid provider timestamp for ${tfStr}`);
             values.reverse();
-            Object.defineProperty(values, 'provider_metadata', { value: { provider: 'TWELVE_DATA', provider_timezone: d.meta?.timezone || 'UTC', requested_timezone: 'UTC', timeframe: tfStr, symbol: SYMBOLS[forPair || pair] }, enumerable: false });
+            Object.defineProperty(values, 'provider_metadata', { value: {
+                provider: 'TWELVE_DATA',
+                provider_timezone: d.meta?.timezone || 'UTC',
+                requested_timezone: 'UTC',
+                timeframe: tfStr,
+                symbol: SYMBOLS[forPair || pair],
+                timestamp_contract: ['1D', '1W'].includes(tfStr) ? 'PERIOD_BUCKET' : 'INTRADAY_UTC'
+            }, enumerable: false });
             return values;
         }
     } catch(e) { console.error(`History error (${tfStr}):`, e); }
@@ -4041,7 +4126,7 @@ function buildRiskConstraints(pairLocal, price, historyCache) {
     };
 }
 
-function buildDeterministicValidationContext({ pair, price, historyCache, real_ict_zones, risk_constraints, structure, market_context, strategy_setups, require_strategy_setup }) {
+function buildDeterministicValidationContext({ pair, price, historyCache, real_ict_zones, risk_constraints, structure, market_context, strategy_setups, require_strategy_setup, market_open = null, quote_snapshot = null }) {
     return {
         pair,
         price,
@@ -4050,6 +4135,8 @@ function buildDeterministicValidationContext({ pair, price, historyCache, real_i
         risk_constraints,
         structure,
         market_context,
+        market_open,
+        quote_snapshot,
         strategy_setups: strategy_setups || [],
         require_strategy_setup: !!require_strategy_setup
     };
@@ -5242,6 +5329,9 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const resolvedEventTime = Number.isFinite(normalizedEventTime)
         ? normalizedEventTime
         : (Number.isInteger(index) ? candleTimestamp((executionEventTime ? executionData : data)[index], index, executionEventTime ? executionTf : setupTf) : null);
+    const parentEventTime = normalizeTimestampUTC(eventTime ?? getStrategyEventTime(setup));
+    const parentEventAgeHours = Number.isFinite(asOfTime) && Number.isFinite(parentEventTime)
+        ? (asOfTime - parentEventTime) / 3600000 : null;
     const rawEventAgeHours = hasExplicitTimes && Number.isFinite(asOfTime) && Number.isFinite(resolvedEventTime)
         ? (asOfTime - resolvedEventTime) / 3600000
         : (Number.isInteger(index) ? Math.max(0, data.length - 1 - index) * (({ '15M': 15, '1H': 60, '4H': 240, '1D': 1440 }[setupTf] || 60) / 60) : null);
@@ -5249,13 +5339,15 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const zoneCreatedTime = normalizeTimestampUTC(candidate.execution_zone_created_time ?? setup.execution_zone_created_time ?? setup.execution_zone?.created_time);
     const zoneTimeInFuture = hasExplicitTimes && Number.isFinite(asOfTime) && Number.isFinite(zoneCreatedTime) && zoneCreatedTime > asOfTime + STRATEGY_SPEC.TIME.futureToleranceMs;
     const eventAgeHours = rawEventAgeHours;
-    const barMinutes = { '15M': 15, '1H': 60, '4H': 240, '1D': 1440 }[setupTf] || 60;
-    const eventAgeBars = Number.isFinite(eventAgeHours) ? Math.round(eventAgeHours * 60 / barMinutes) : (Number.isInteger(index) ? data.length - 1 - index : null);
-    const maxEventAgeHours = setupTf === '15M'
+    const ageTimeframe = Number.isFinite(executionEventTime) ? executionTf : setupTf;
+    const barMinutes = { '15M': 15, '1H': 60, '4H': 240, '1D': 1440 }[ageTimeframe] || 60;
+    const eventAgeBars = Number.isFinite(eventAgeHours) ? Math.round(eventAgeHours * 60 / barMinutes)
+        : (Number.isInteger(index) ? (executionEventTime ? executionData.length : data.length) - 1 - index : null);
+    const maxEventAgeHours = ageTimeframe === '15M'
         ? freshnessSpec.max15mEventAgeHours
-        : setupTf === '1H'
+        : ageTimeframe === '1H'
             ? freshnessSpec.max1hEventAgeHours
-            : setupTf === '4H'
+            : ageTimeframe === '4H'
                 ? freshnessSpec.max4hEventAgeHours
                 : freshnessSpec.max1hEventAgeHours;
     const atrData = executionData.length >= 15 ? executionData : data;
@@ -5278,7 +5370,12 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const sessionFacts = getSession(sessionClock);
     const currentSession = marketContext.session?.name || marketContext.session || marketContext.market_context?.session?.name || sessionFacts.session;
     const eventSession = Number.isFinite(resolvedEventTime) ? getSession(new Date(resolvedEventTime)).session : null;
-    const marketClosed = [0, 6].includes(sessionClock.getUTCDay());
+    const marketState = getMarketOpenState(marketContext.pair || pair, {
+        ...(marketContext.quote_snapshot || {}),
+        as_of_ms: asOfTime,
+        market_open: marketContext.market_open
+    });
+    const marketClosed = marketState.is_market_open === false;
     const result = {
         event_time: resolvedEventTime,
         event_time_utc: Number.isFinite(resolvedEventTime) ? new Date(resolvedEventTime).toISOString() : null,
@@ -5290,11 +5387,17 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         structure_data_cutoff: Number.isFinite(latestTimestamp) ? latestTimestamp : null,
         event_age_hours: eventAgeHours,
         event_age_bars: eventAgeBars,
+        parent_event_time: parentEventTime,
+        parent_event_time_utc: Number.isFinite(parentEventTime) ? new Date(parentEventTime).toISOString() : null,
+        parent_event_age_hours: parentEventAgeHours,
         current_session: currentSession,
         event_session: eventSession,
         expected_entry_window: currentSession ? `CURRENT_SESSION_OR_NEXT_VALID_${executionTf}_WINDOW` : null,
         hours_remaining_in_relevant_session: hoursRemainingInSession(sessionClock),
         market_closed: marketClosed,
+        market_open: marketState.is_market_open,
+        market_open_source: marketState.source,
+        asset_class: marketState.asset_class,
         still_actionable_today: false,
         entry_region_low: low, entry_region_high: high,
         entry_consumed: false, entry_first_touch_index: null, entry_first_touch_time: null,
@@ -5336,8 +5439,23 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     };
     const maxAge = STRATEGY_SPEC[setup.primary]?.maxEventAgeBars ?? spec.maxMSNREventAgeBars;
     const lifecycleData = executionEventTime ? executionData : data;
+    const executionOwnAgeExpired = Number.isFinite(executionEventTime)
+        ? (!Number.isFinite(eventAgeHours) || eventAgeHours > maxEventAgeHours)
+        : false;
+    const parentMaxAgeHours = setupTf === '15M'
+        ? freshnessSpec.max15mEventAgeHours
+        : setupTf === '1H'
+            ? freshnessSpec.max1hEventAgeHours
+            : setupTf === '4H'
+                ? freshnessSpec.max4hEventAgeHours
+                : freshnessSpec.max1hEventAgeHours;
+    const parentAgeExpired = Number.isFinite(parentEventAgeHours)
+        ? parentEventAgeHours > parentMaxAgeHours
+        : false;
+    const indexAgeExpired = !Number.isFinite(executionEventTime)
+        && (lifecycleData.length - 1 - index > maxAge);
     const expired = !Number.isInteger(index) || index < 0 || index >= lifecycleData.length ||
-        lifecycleData.length - 1 - index > maxAge || !Number.isFinite(low) || !Number.isFinite(high);
+        indexAgeExpired || !Number.isFinite(low) || !Number.isFinite(high);
     const hasExplicitExecutionTimes = executionData.some(bar => Number.isFinite(parseCandleTimeUTC(bar?.t)));
     const eventCutoff = Number.isFinite(resolvedEventTime) && hasExplicitExecutionTimes ? resolvedEventTime : null;
     if ((Number.isInteger(index) && index >= 0 && index < lifecycleData.length) || eventCutoff != null) {
@@ -5372,7 +5490,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     result.execution_zone_consumed = result.entry_consumed;
     const currentReached = Number.isFinite(tp1) && (candidate.direction === 'BUY' ? price >= tp1 : price <= tp1);
     result.tp1_already_reached ||= currentReached;
-    const staleByAge = !Number.isFinite(eventAgeHours) || eventAgeHours > maxEventAgeHours;
+    const staleByAge = !Number.isFinite(eventAgeHours) || eventAgeHours > maxEventAgeHours || parentAgeExpired;
     const deliveryAdvanced = result.remaining_reward_fraction != null && result.remaining_reward_fraction < freshnessSpec.minRemainingRewardFraction;
     const entryTooFarForToday = !result.entry_reachable_today;
     result.timestamp_consistent = !timestampInFuture && !zoneTimeInFuture && !(hasExplicitTimes && Number.isFinite(eventAgeHours) && eventAgeHours < -(STRATEGY_SPEC.TIME.futureToleranceMs / 3600000));
@@ -5383,13 +5501,15 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         : result.entry_consumed ? 'ENTRY_ALREADY_CONSUMED'
         : deliveryAdvanced ? 'SETUP_DELIVERY_ALREADY_ADVANCED'
         : staleByAge ? 'SETUP_STALE'
-        : entryTooFarForToday || marketClosed ? 'ENTRY_NOT_REACHABLE_TODAY' : null;
+        : marketClosed ? 'MARKET_CLOSED'
+            : entryTooFarForToday ? 'ENTRY_NOT_REACHABLE_TODAY' : null;
     result.entry_freshness = expired ? 'EXPIRED' : result.entry_consumed ? 'CONSUMED' : result.entry_touch_count_after_signal ? 'TOUCHED' : 'FRESH';
     result.opportunity_status = result.rejection_code === 'SETUP_ALREADY_COMPLETED' ? 'COMPLETED'
         : result.rejection_code === 'SETUP_EXPIRED' ? 'EXPIRED'
             : result.rejection_code === 'ENTRY_ALREADY_CONSUMED' ? 'CONSUMED'
                 : result.rejection_code === 'SETUP_DELIVERY_ALREADY_ADVANCED' ? 'DELIVERY_ADVANCED'
-                    : result.rejection_code === 'ENTRY_NOT_REACHABLE_TODAY' ? 'FRESH_PENDING_LATER'
+                    : result.rejection_code === 'MARKET_CLOSED' ? 'FRESH_PENDING_LATER'
+                        : result.rejection_code === 'ENTRY_NOT_REACHABLE_TODAY' ? 'FRESH_PENDING_LATER'
                         : result.rejection_code ? 'INVALID'
                             : (getZonePriceStatus(price, { low, high }).insideZone ? 'FRESH_NOW' : 'FRESH_PENDING_TODAY');
     result.setup_lifecycle_status = result.lifecycle_state = result.opportunity_status;
@@ -5826,7 +5946,7 @@ function summarizeCandidateRejections(rejectedCandidates) {
 function classifyRejectionDetail(reason) {
     const integrityCode = String(reason).match(/\b(ENGINE_INVARIANT_FAILURE|DATA_TIME_INCONSISTENT|DETERMINISTIC_CONFIDENCE_MISSING)\b/);
     if (integrityCode) return integrityCode[1];
-    if (/^(ENTRY_ALREADY_CONSUMED|SETUP_ALREADY_COMPLETED|SETUP_DELIVERY_ALREADY_ADVANCED|SETUP_EXPIRED|SETUP_STALE|ENTRY_NOT_REACHABLE_TODAY)$/.test(reason)) return reason;
+    if (/^(ENTRY_ALREADY_CONSUMED|SETUP_ALREADY_COMPLETED|SETUP_DELIVERY_ALREADY_ADVANCED|SETUP_EXPIRED|SETUP_STALE|MARKET_CLOSED|ENTRY_NOT_REACHABLE_TODAY)$/.test(reason)) return reason;
     if (/SL_INSIDE_STRUCTURAL_INVALIDATION|authoritative strategy invalidation/i.test(reason)) return 'SL_INSIDE_STRUCTURAL_INVALIDATION';
     if (/BUY stop|SELL stop|STRUCTURALLY_INVALID/i.test(reason)) return 'STOP_STRUCTURAL_INVALID';
     if (/EXTREME_TOO_TIGHT|extreme volatility anomaly|below .*minimum|below .*ATR|too tight/i.test(reason)) return 'EXTREME_TOO_TIGHT';
@@ -5975,31 +6095,36 @@ function waitCodeFromRejections(audit, hasStrategySetups) {
         if (integrity === 'DETERMINISTIC_CONFIDENCE_MISSING') return 'ENGINE_INVARIANT_FAILURE';
         return integrity;
     }
+    if (audit?.market_open === false) return 'MARKET_CLOSED';
     if (!hasStrategySetups) return 'NO_STRATEGY_SETUP';
     // Once fresh opportunities exist, their terminal failures own market WAIT.
     const detail = fresh?.seeds > 0 && fresh.final_valid === 0
         ? (fresh.failure_counts || {}) : allDetails;
-    if (detail.ENTRY_NOT_REACHABLE_TODAY) return 'ENTRY_NOT_REACHABLE_TODAY';
-    if (['SETUP_STALE', 'SETUP_EXPIRED', 'SETUP_ALREADY_COMPLETED', 'ENTRY_ALREADY_CONSUMED',
-        'SETUP_DELIVERY_ALREADY_ADVANCED', 'NARRATIVE_EXPIRED', 'EXECUTION_ZONE_EXPIRED'].some(code => detail[code])) return 'NO_FRESH_OPPORTUNITY';
+    const lifecycleCodes = ['SETUP_STALE', 'SETUP_EXPIRED', 'SETUP_ALREADY_COMPLETED', 'ENTRY_ALREADY_CONSUMED',
+        'SETUP_DELIVERY_ALREADY_ADVANCED', 'NARRATIVE_EXPIRED', 'EXECUTION_ZONE_EXPIRED'];
+    const lifecycleCount = lifecycleCodes.reduce((sum, code) => sum + (Number(detail[code]) || 0), 0);
+    const unreachableCount = Number(detail.ENTRY_NOT_REACHABLE_TODAY) || 0;
+    if (lifecycleCount > unreachableCount && lifecycleCount > 0) return 'NO_FRESH_OPPORTUNITY';
     if (detail.NO_STRUCTURAL_STOP || detail.STOP_STRUCTURAL_INVALID || detail.SL_INSIDE_STRUCTURAL_INVALIDATION) return 'NO_STRUCTURAL_STOP';
     if (detail.EXTREME_TOO_TIGHT || detail.EXTREME_TOO_WIDE || detail.EXTREME_VOLATILITY) return 'EXTREME_VOLATILITY';
     if (['NO_VALID_TP1', 'TARGET_POOL_EMPTY', 'NO_TARGETS_DIRECTIONALLY_AHEAD',
         'TARGETS_EXIST_BUT_UNREACHABLE', 'TARGETS_BLOCKED_BY_STRUCTURE', 'TARGET_PROVENANCE_INVALID'].some(code => detail[code])) return 'NO_REALISTIC_TARGET';
     if (detail.TP1_RR_TOO_LOW || detail.TARGETS_EXIST_BUT_RR_TOO_LOW) return 'RR_BELOW_MINIMUM';
     if (detail.ONLY_MARGINAL_SETUPS) return 'ONLY_MARGINAL_SETUPS';
+    if (unreachableCount > 0) return 'ENTRY_NOT_REACHABLE_TODAY';
     if (detail.REVERSAL_EVIDENCE_INSUFFICIENT || detail.CONTINUATION_HTF || detail.CONTEXT_QUALITY_TOO_LOW) return 'CONTEXT_QUALITY_TOO_LOW';
     if (detail.ZONE_INVALID) return 'AI_INCONSISTENT_OUTPUT';
     if (fresh?.seeds === 0 && (audit?.strategy_setups || 0) > 0) return 'NO_FRESH_EXECUTION_ZONE';
     return 'NO_EXECUTION_GEOMETRY';
 }
 
-function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext, as_of_ms = null }) {
+function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext, as_of_ms = null, quote_snapshot = null }) {
     const settings = getMarketSettings(pair);
     const prec = settings.prec;
     const now = new Date(Number.isFinite(as_of_ms) ? as_of_ms : Date.now());
     const session = getSession(now);
     const sessionCheck = shouldTradeSession(now);
+    const marketState = getMarketOpenState(pair, { ...(quote_snapshot || {}), as_of_ms });
     const realVolume = hasRealVolume(pair);
     const closed4h = getClosedHistory(historyCache, '4H');
     const closed1h = getClosedHistory(historyCache, '1H');
@@ -6187,7 +6312,9 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         structure,
         market_context: marketContext,
         strategy_setups: strategySetups,
-        require_strategy_setup: true
+        require_strategy_setup: true,
+        market_open: marketState.is_market_open,
+        quote_snapshot
     });
     const candidateStartedAt = scanClock();
     const adaptiveSetupResult = buildAdaptiveSetupCandidates({
@@ -6233,6 +6360,12 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         current_price: ictRound(price, prec),
         as_of_time: now.getTime(),
         as_of_time_utc: now.toISOString(),
+        quote_snapshot: quote_snapshot || null,
+        provider_timestamp: quote_snapshot?.provider_timestamp || null,
+        provider_timestamp_utc: quote_snapshot?.provider_timestamp_utc || null,
+        asset_class: marketState.asset_class,
+        market_open: marketState.is_market_open,
+        market_open_source: marketState.source,
         provider_metadata: Object.fromEntries(Object.entries(historyCache || {}).map(([tf, data]) => [tf, data?.provider_metadata || null])),
         last_closed_candle_time: Object.fromEntries(Object.entries(historyCache || {}).map(([tf, data]) => [tf, data?.filter(c => c.is_closed !== false).at(-1)?.t || null])),
         structure_data_cutoff: now.getTime(),
@@ -6280,7 +6413,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             valid_candidate_count: adaptiveSetupResult.valid_candidates.length,
             rejected_candidate_count: adaptiveSetupResult.rejected_candidates.length,
             rejection_summary: summarizeCandidateRejections(adaptiveSetupResult.rejected_candidates),
-            rejection_detail: summarizeCandidateRejectionDetails(adaptiveSetupResult.rejected_candidates)
+            rejection_detail: summarizeCandidateRejectionDetails(adaptiveSetupResult.rejected_candidates),
+            market_open: marketState.is_market_open
         },
         entry_filters: entryContext || null
     };
@@ -7458,6 +7592,7 @@ async function runAutoScan() {
     const scanStartedAt = scanClock();
     let scanStage = 'initializing';
     let price = null;
+    let quoteSnapshot = null;
     let historyCache = {};
     const btn = document.getElementById('analyzeBtn');
     const scanStatus = document.getElementById('scanStatus');
@@ -7478,7 +7613,8 @@ async function runAutoScan() {
 
         showNotif('🤖 AI analyzing market data...', 'info');
         scanStage = 'price request';
-        price = await getPrice();
+        quoteSnapshot = await getMarketQuoteSnapshot(pair);
+        price = quoteSnapshot?.price;
         if(!price) throw new Error('No price');
         
         const tfs = ['5M', '15M', '1H', '4H', '1D', '1W'];
@@ -7519,7 +7655,7 @@ async function runAutoScan() {
         // ============================================
         // ENTRY FILTERS - session, phase, confirmation
         // ============================================
-        const sessionCheck = shouldTradeSession();
+        const sessionCheck = shouldTradeSession(new Date(scanAsOfMs));
         const phaseData = historyCache['1H'] && historyCache['1H'].length >= 30 ? historyCache['1H'] : (historyCache['4H'] || []);
         const marketPhase = analyzeMarketPhase(phaseData, hasRealVolume(pair));
         const entryContext = buildPreSelectionEntryContext(sessionCheck, marketPhase);
@@ -7561,7 +7697,7 @@ async function runAutoScan() {
             }
         }
         
-        const session = getSession();
+        const session = getSession(new Date(scanAsOfMs));
         const newsCheck = checkHighImpactNews(pair);
         
         const dailyDir = await getQuoteDirection('1D', historyCache['1D']);
@@ -7590,7 +7726,8 @@ async function runAutoScan() {
             enhancedAnalysis,
             holistic,
             entryContext,
-            as_of_ms: scanAsOfMs
+            as_of_ms: scanAsOfMs,
+            quote_snapshot: quoteSnapshot
         });
         scanTrace('market context complete', contextStartedAt, {
             strategy_setups: liveMarketContext.strategy_setups?.length || 0,
@@ -7619,7 +7756,7 @@ async function runAutoScan() {
             const reason = !hasStrategySetups
                 ? 'Market context available, but no valid CRT/TBS/MSNR strategy setup is currently available.'
                 : (hasRaw ? 'No strategy setup execution combination passed all hard rules' : 'Strategy setup exists, but no valid execution candidate is available.');
-            const waitCode = waitCodeFromRejections(audit, hasStrategySetups);
+            const waitCode = waitCodeFromRejections({ ...audit, market_open: liveMarketContext.market_open }, hasStrategySetups);
             const out = {
                 trade_signal: {
                     date: new Date().toISOString().split('T')[0],
@@ -7629,6 +7766,7 @@ async function runAutoScan() {
                     trade_type: decision,
                     decision,
                     confidence: 0,
+                    market_open: liveMarketContext.market_open,
                     reasoning: { primary: reason, code: waitCode, rejection_summary: audit.rejection_summary || {}, rejection_detail: audit.rejection_detail || {} },
                     ai_decision: 'skip',
                     wait_condition: reason,
@@ -7676,6 +7814,7 @@ async function runAutoScan() {
                     current_price: price,
                     trade_type: aiResult.decision,
                     confidence: aiResult.confidence,
+                    market_open: liveMarketContext.market_open,
                     reasoning: aiResult.reasoning,
                     ai_decision: 'skip',
                     wait_condition: aiResult.wait_condition,
@@ -7708,6 +7847,7 @@ async function runAutoScan() {
                     current_price: price,
                     trade_type: 'WAIT',
                     confidence: 0,
+                    market_open: liveMarketContext.market_open,
                     reasoning: { primary: reason },
                     ai_decision: 'skip',
                     wait_condition: reason,
@@ -7737,6 +7877,7 @@ async function runAutoScan() {
                 time: new Date().toISOString().split('T')[1].split('.')[0],
                 pair: pair,
                 current_price: price,
+                direction: aiResult.direction,
                 trade_type: aiResult.decision || (aiResult.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT'),
                 decision: aiResult.decision,
                 selected_candidate_id: aiResult.selected_candidate_id,
@@ -8535,9 +8676,78 @@ function buildSelectedCandidateEntryContext({ historyCache, sessionCheck, market
 // JSON OUTPUT
 // ============================================
 
+function buildPublicTradeSignal(signal = {}) {
+    const isWait = signal.decision === 'WAIT' || signal.trade_type === 'WAIT';
+    const parseRR = value => {
+        if (Number.isFinite(Number(value))) return Number(value);
+        const match = String(value ?? '').match(/(?:1\s*:\s*)?([0-9]+(?:\.[0-9]+)?)\s*$/);
+        return match ? Number(match[1]) : null;
+    };
+    if (isWait) {
+        const reason = signal.reason || {
+            code: signal.reasoning?.code || signal.wait_code || 'NO_FRESH_OPPORTUNITY',
+            message: signal.reasoning?.primary || signal.wait_condition || 'No fresh actionable CRT, TBS or MSNR execution opportunity'
+        };
+        return {
+            date: signal.date,
+            time: signal.time,
+            pair: signal.pair,
+            current_price: signal.current_price,
+            decision: 'WAIT',
+            confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
+            reason: { code: reason.code, message: reason.message },
+            market_open: signal.market_open ?? null
+        };
+    }
+    const reasoning = signal.reasoning || {};
+    const strategy = signal.strategy || signal.strategy_label || signal.strategy_setup?.label || null;
+    return {
+        date: signal.date,
+        time: signal.time,
+        pair: signal.pair,
+        current_price: signal.current_price,
+        decision: signal.decision || signal.trade_type,
+        strategy,
+        timeframe: signal.timeframe || signal.execution_timeframe || signal.setup_timeframe || null,
+        entry: signal.entry ?? signal.entry_price,
+        entry_zone: signal.entry_zone ? {
+            low: signal.entry_zone.low,
+            high: signal.entry_zone.high
+        } : null,
+        stop_loss: signal.stop_loss,
+        tp1: signal.tp1 ?? signal.take_profit_1,
+        tp2: signal.tp2 ?? signal.take_profit_2 ?? null,
+        tp3: signal.tp3 ?? signal.take_profit_3 ?? null,
+        rr_tp1: signal.rr_tp1 ?? parseRR(signal.risk_reward),
+        confidence: signal.confidence,
+        status: signal.status || signal.opportunity_status || signal.lifecycle_state || null,
+        analysis: {
+            bias: signal.analysis?.bias || (signal.direction === 'BUY' ? 'BULLISH' : signal.direction === 'SELL' ? 'BEARISH' : 'NEUTRAL'),
+            setup: signal.analysis?.setup || (typeof reasoning === 'string' ? reasoning : reasoning.primary) || '',
+            structure: signal.analysis?.structure || reasoning.structure || '',
+            liquidity: signal.analysis?.liquidity || reasoning.liquidity || '',
+            invalidation: signal.analysis?.invalidation || reasoning.invalidation || signal.stop_loss_reason || '',
+            notes: signal.analysis?.notes || (Array.isArray(reasoning.secondary) ? reasoning.secondary.slice(0, 3) : [])
+        }
+    };
+}
+
+function buildDebugDiagnostics(output = {}, context = null) {
+    const signal = output.trade_signal || output;
+    return {
+        strategy_detections: context?.strategy_detections || signal.strategy_detections || null,
+        candidate_pipeline: context?.candidate_pipeline || signal.candidate_pipeline || null,
+        validation: signal.validation || null,
+        rejection_summary: signal.rejection_summary || context?.setup_candidate_audit?.rejection_summary || null,
+        rejection_detail: signal.rejection_detail || context?.setup_candidate_audit?.rejection_detail || null,
+        selected_candidate: signal.selected_candidate_id ? (context?.adaptive_setup_candidates || []).find(c => c.id === signal.selected_candidate_id) || null : null,
+        data_integrity: signal.time_integrity || context?.time_integrity || null
+    };
+}
+
 function setJsonOutput(obj) {
     const el = document.getElementById('jsonOutput');
-    if(el) el.textContent = JSON.stringify(obj, null, 2);
+    if(el) el.textContent = JSON.stringify({ trade_signal: buildPublicTradeSignal(obj?.trade_signal || obj) }, null, 2);
 }
 
 // ============================================
