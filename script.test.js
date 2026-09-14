@@ -521,6 +521,34 @@ describe('market-thesis opportunity invariants', () => {
         expect(result.reason_code).toBe('LTF_ISOLATED_WATCH');
         expect(result.reason).not.toMatch(/valid strategy narrative remains actionable/i);
     });
+
+    it('treats neutral daily bias as neutral context for both directions', () => {
+        const ctx = getContext();
+        for (const direction of ['BUY', 'SELL']) {
+            const quality = ctx.buildOpportunityQuality({ direction, opportunity_thesis: { htf_narrative: { classification: 'HTF_ALIGNED_CONTINUATION' } } }, { target: { structural_priority: 80 }, zone: { type: 'FVG' }, execution_model: 'PENDING_LIMIT', metrics: { opportunity_reachable_today: true } }, { daily_bias: { direction: 'NEUTRAL' } }, { classification: 'HTF_ALIGNED_CONTINUATION' });
+            expect(quality.daily_bias_relationship).toBe('NEUTRAL_CONTEXT');
+        }
+    });
+
+    it('uses fresh classification over a stale stored thesis classification', () => {
+        const ctx = getContext();
+        const quality = ctx.buildOpportunityQuality({ direction: 'BUY', opportunity_thesis: { htf_narrative: { classification: 'LTF_ISOLATED' } } }, { target: { structural_priority: 90 }, zone: { type: 'DEMAND' }, execution_model: 'CONFIRMATION_ENTRY', metrics: { opportunity_reachable_today: true } }, { daily_bias: { direction: 'SELL' }, timeframe_context: {} }, { classification: 'HTF_VERIFIED_REVERSAL' });
+        expect(quality.classification).toBe('HTF_VERIFIED_REVERSAL');
+        expect(quality.previous_classification).toBe('LTF_ISOLATED');
+        expect(quality.classification_changed).toBe(true);
+        expect(quality.daily_bias_relationship).toBe('VERIFIED_COUNTERTREND');
+    });
+
+    it('lets primary continuation and reversal scenarios compete on quality, not fixed class tier', () => {
+        const ctx = getContext();
+        const plan = { target: { structural_priority: 80 }, zone: { type: 'FVG' }, execution_model: 'PENDING_LIMIT', metrics: { opportunity_reachable_today: true } };
+        const continuation = ctx.buildOpportunityQuality({ direction: 'BUY', structural_evidence_ids: ['a'] }, plan, { daily_bias: { direction: 'BUY' } }, { classification: 'HTF_ALIGNED_CONTINUATION' });
+        const reversal = ctx.buildOpportunityQuality({ direction: 'SELL', structural_evidence_ids: ['a'] }, plan, { daily_bias: { direction: 'SELL' } }, { classification: 'HTF_VERIFIED_REVERSAL' });
+        expect(continuation.rank_tier).toBe(reversal.rank_tier);
+        expect(Math.abs(continuation.rank_score - reversal.rank_score)).toBeLessThan(100);
+        const strongReversal = ctx.buildOpportunityQuality({ direction: 'BUY', structural_evidence_ids: ['a', 'b', 'c', 'd'] }, { target: { structural_priority: 95 }, zone: { type: 'DEMAND', freshness: 'FRESH' }, execution_model: 'EXECUTION_AVAILABLE', metrics: { opportunity_reachable_today: true } }, { daily_bias: { direction: 'SELL' } }, { classification: 'HTF_VERIFIED_REVERSAL' });
+        expect(strongReversal.rank_score).toBeGreaterThan(continuation.rank_score);
+    });
 });
 
 describe('top-down trade context', () => {

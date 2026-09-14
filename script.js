@@ -6648,24 +6648,40 @@ function evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal = pair, cur
 }
 
 function buildOpportunityQuality(setup, plan, marketContext = {}, topDown = {}) {
-    const classification = setup?.opportunity_thesis?.htf_narrative?.classification || setup?.trade_context_classification ||
-        (marketContext?.timeframe_context ? topDown.classification : 'HTF_ALIGNED_CONTINUATION');
+    const previousClassification = setup?.opportunity_thesis?.htf_narrative?.classification || setup?.trade_context_classification || null;
+    const classification = marketContext?.timeframe_context
+        ? (topDown?.classification || previousClassification || 'LTF_ISOLATED')
+        : (previousClassification || 'HTF_ALIGNED_CONTINUATION');
     const biasDirection = marketContext?.daily_bias?.direction;
-    const dailyBiasRelationship = biasDirection === setup?.direction ? 'ALIGNED' : biasDirection ? 'CONFLICTING_UNVERIFIED' : 'NEUTRAL_CONTEXT';
+    const dailyBiasRelationship = !biasDirection || biasDirection === 'NEUTRAL' ? 'NEUTRAL_CONTEXT'
+        : biasDirection === setup?.direction ? 'ALIGNED'
+            : classification === 'HTF_VERIFIED_REVERSAL' ? 'VERIFIED_COUNTERTREND' : 'CONFLICTING_UNVERIFIED';
     const location = plan?.zone || setup?.opportunity_narrative?.location || setup?.execution_zone;
     const locationType = String(location?.type || '').toUpperCase();
     const locationScore = location ? (['DEMAND', 'SUPPLY', 'FLIP', 'MSNR'].includes(locationType) ? 24 : 14) : 0;
     const liquidityScore = plan?.target ? ((plan.target.structural_priority || 0) >= 85 ? 22 : 12) : 0;
     const executionState = !plan?.zone ? 'AWAITING_EXECUTION' : plan.execution_model === 'CONFIRMATION_ENTRY' && !setup?.opportunity_thesis?.execution_confirmed ? 'AWAITING_CONFIRMATION' : 'EXECUTION_AVAILABLE';
-    const tier = classification === 'HTF_VERIFIED_REVERSAL' ? 3 : classification === 'HTF_ALIGNED_CONTINUATION' ? 2 : 1;
+    const primaryEligible = ['HTF_VERIFIED_REVERSAL', 'HTF_ALIGNED_CONTINUATION'].includes(classification);
+    const tier = primaryEligible ? 2 : 1;
     const evidenceStrength = (setup?.opportunity_thesis?.evidence_ids || setup?.structural_evidence_ids || []).length;
-    const rankScore = tier * 100 + locationScore + liquidityScore + evidenceStrength * 2 + (plan?.metrics?.opportunity_reachable_today ? 10 : 0);
-    return { classification, daily_bias_relationship: dailyBiasRelationship, direction_quality: tier > 1 ? 'SUPPORTED' : 'LOCAL_ONLY',
+    const executionScore = executionState === 'EXECUTION_AVAILABLE' ? 16 : executionState === 'AWAITING_CONFIRMATION' ? 10 : 5;
+    const classAdjustment = classification === 'HTF_VERIFIED_REVERSAL' ? 4 : classification === 'HTF_ALIGNED_CONTINUATION' ? 3 : 0;
+    const dailyAdjustment = dailyBiasRelationship === 'ALIGNED' ? 6 : dailyBiasRelationship === 'VERIFIED_COUNTERTREND' ? 2 : dailyBiasRelationship === 'CONFLICTING_UNVERIFIED' ? -8 : 0;
+    const rankScore = tier * 100 + classAdjustment + dailyAdjustment + locationScore + liquidityScore + executionScore + evidenceStrength * 2 + (plan?.metrics?.opportunity_reachable_today ? 10 : 0);
+    const rankReasons = [primaryEligible ? 'PRIMARY_ELIGIBLE' : 'WATCH_ONLY'];
+    if (dailyBiasRelationship === 'ALIGNED') rankReasons.push('DAILY_BIAS_ALIGNED');
+    if (dailyBiasRelationship === 'VERIFIED_COUNTERTREND') rankReasons.push('VERIFIED_COUNTERTREND');
+    if (locationScore >= 24) rankReasons.push('HTF_LOCATION');
+    if (liquidityScore >= 22) rankReasons.push('EXTERNAL_LIQUIDITY');
+    if (executionState === 'EXECUTION_AVAILABLE') rankReasons.push('EXECUTION_AVAILABLE');
+    if (plan?.target) rankReasons.push('REAL_TARGET');
+    return { classification, previous_classification: previousClassification, classification_changed: !!previousClassification && previousClassification !== classification,
+        daily_bias_relationship: dailyBiasRelationship, direction_quality: tier > 1 ? 'SUPPORTED' : 'LOCAL_ONLY',
         location_quality: locationScore, liquidity_quality: liquidityScore, execution_state: executionState,
         freshness: setup?.freshness || location?.freshness || null, target_quality: plan?.target ? 'REAL_AHEAD' : 'MISSING',
         lifecycle_quality: setup?.narrative_state === 'ACTIVE' ? 'ACTIVE' : 'TERMINAL', evidence_strength: evidenceStrength,
-        watch_only: classification === 'LTF_ISOLATED', authorization_state: classification === 'LTF_ISOLATED' ? 'WATCH_ONLY' : 'PRIMARY_ELIGIBLE',
-        rank_tier: tier, rank_score: rankScore, event_time: normalizeTimestampUTC(setup?.event_time ?? setup?.execution_event_time ?? location?.created_time),
+        watch_only: !primaryEligible, authorization_state: primaryEligible ? 'PRIMARY_ELIGIBLE' : 'WATCH_ONLY',
+        rank_tier: tier, rank_score: rankScore, rank_reasons: rankReasons, event_time: normalizeTimestampUTC(setup?.event_time ?? setup?.execution_event_time ?? location?.created_time),
         rejection_codes: setup?.opportunity_thesis?.rejection_codes || [] };
 }
 
