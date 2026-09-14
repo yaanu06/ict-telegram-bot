@@ -493,6 +493,26 @@ describe('top-down trade context', () => {
         expect(prompt.user).toContain(tf['4H'].structural_evidence_ids[0]);
         expect(prompt.system).toContain('HTF_VERIFIED_REVERSAL');
     });
+
+    it('verifies an AI market-mechanics hypothesis without a CRT/TBS/MSNR event', () => {
+        const ctx = getContext();
+        const zone = { id: 'FVG-1H-BUY', type: 'FVG', direction: 'BUY', timeframe: '1H', low: 99, high: 100, primary_eligible: true, invalidated: false, created_time: Date.parse('2026-09-14T08:00:00Z') };
+        const tf = { '1H': { bias: 'BULLISH', structural_trend: 'BULLISH', structure: { recent_swing_lows: [{ level: 97 }] }, structural_evidence_ids: ['SHIFT:1H:BUY'], evidence: [{ id: 'SHIFT:1H:BUY', kind: 'MSS', direction: 'BUY' }] } };
+        const result = ctx.verifyAiStrategyHypothesis({ strategy: 'ICT', direction: 'BUY', setup_timeframe: '1H', execution_timeframe: '15M', hypothesis_id: 'AI-I1', preferred_execution_zone_ids: [zone.id] }, {
+            timeframe_context: tf, execution_zones: [zone], target_candidates: { buy: [{ direction: 'BUY', level: 110, source: 'BUY_SIDE_LIQUIDITY' }] }
+        }, { pair: 'XAU/USD', current_price: 101 });
+        expect(result.verified).toBe(true);
+        expect(result.setup.primary).toBe('ICT');
+        expect(result.setup.execution_zone.id).toBe(zone.id);
+    });
+
+    it('blocks an isolated strategy-backed candidate from executable authorization', () => {
+        const ctx = getContext();
+        const result = ctx.validateExecutableCandidateInvariant({ direction: 'BUY', entry: 100, stop_loss: 98, tp1: 106,
+            strategy_setup: { primary: 'CRT' }, trade_context_classification: 'LTF_ISOLATED' }, { as_of_time: Date.now() });
+        expect(result.valid).toBe(false);
+        expect(result.failures).toContain('LTF_ISOLATED');
+    });
 });
 
 describe('daily opportunity planning', () => {
