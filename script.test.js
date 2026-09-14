@@ -3696,3 +3696,135 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(quote.quote_source).toBe('QUOTE');
     });
 });
+
+describe('AI market analyst contract', () => {
+    function evidence() {
+        return {
+            pair: 'EUR/USD',
+            current_price: 1.1,
+            strategy_events: [],
+            crt_events: [{
+                id: 'CRT-1', strategy: 'CRT', direction: 'BUY', timeframe: '4H',
+                event_time: '2026-09-11T08:00:00Z', reclaim_time: '2026-09-11T08:00:00Z',
+                range_high: 1.12, range_low: 1.09, sweep_extreme: 1.085,
+                source: { primary: 'CRT', label: 'CRT', direction: 'BUY', timeframe: '4H',
+                    execution_timeframe: '1H', event_time: '2026-09-11T08:00:00Z',
+                    reclaim_level: 1.09, structural_invalidation: 1.085,
+                    target_candidates: [{ direction: 'BUY', level: 1.12, source: 'CRT_OPPOSITE_RANGE', origin: 'STRUCTURAL' }] }
+            }],
+            tbs_events: [{
+                id: 'TBS-1', strategy: 'TBS', direction: 'BUY', timeframe: '1H',
+                event_time: '2026-09-11T09:00:00Z', reclaim_time: '2026-09-11T09:00:00Z',
+                reference_level: 1.09, sweep_extreme: 1.085,
+                source: { primary: 'TBS', label: 'TBS', direction: 'BUY', timeframe: '1H',
+                    execution_timeframe: '1H', event_time: '2026-09-11T09:00:00Z',
+                    reclaim_level: 1.09, structural_invalidation: 1.085 }
+            }],
+            msnr_levels: [{
+                id: 'MSNR-1', strategy: 'MSNR', direction: 'BUY', origin: 'STRUCTURAL_MSNR',
+                primary_eligible: true, invalidated: false, low: 1.088, high: 1.092,
+                source: { primary: 'MSNR', label: 'MSNR', direction: 'BUY', timeframe: '1H',
+                    execution_timeframe: '1H', event_time: '2026-09-11T09:00:00Z',
+                    structural_invalidation: 1.088,
+                    execution_zone: { type: 'MSNR', origin: 'STRUCTURAL_MSNR', direction: 'BUY', timeframe: '1H', low: 1.088, high: 1.092 } }
+            }],
+            execution_zones: []
+        };
+    }
+
+    it('verifies CRT, TBS, and structural MSNR hypotheses by supplied IDs', () => {
+        const ctx = getContext();
+        const cat = evidence();
+        for (const h of [
+            { hypothesis_id: 'H-CRT', strategy: 'CRT', direction: 'BUY', setup_timeframe: '4H', execution_timeframe: '1H', crt_event_ids: ['CRT-1'] },
+            { hypothesis_id: 'H-TBS', strategy: 'TBS', direction: 'BUY', setup_timeframe: '1H', execution_timeframe: '1H', tbs_event_ids: ['TBS-1'] },
+            { hypothesis_id: 'H-M', strategy: 'MSNR', direction: 'BUY', setup_timeframe: '1H', execution_timeframe: '1H', msnr_level_ids: ['MSNR-1'] }
+        ]) {
+            expect(ctx.verifyAiStrategyHypothesis(h, cat, { pair: 'EUR/USD', strategy_setups: [] }).verified).toBe(true);
+        }
+    });
+
+    it('rejects nonexistent IDs, unsupported MSNR origins, and incompatible combinations', () => {
+        const ctx = getContext();
+        const cat = evidence();
+        expect(ctx.verifyAiStrategyHypothesis({ strategy: 'CRT', direction: 'BUY', setup_timeframe: '4H', execution_timeframe: '1H', crt_event_ids: ['missing'] }, cat).reason_code).toBe('CRT_EVIDENCE_MISSING');
+        const pivot = { ...cat, msnr_levels: [{ ...cat.msnr_levels[0], origin: 'PIVOT_REFERENCE' }] };
+        expect(ctx.verifyAiStrategyHypothesis({ strategy: 'MSNR', direction: 'BUY', setup_timeframe: '1H', execution_timeframe: '1H', msnr_level_ids: ['MSNR-1'] }, pivot).reason_code).toBe('MSNR_RULES_UNVERIFIED');
+        expect(ctx.verifyAiStrategyHypothesis({ strategy: 'CRT+TBS', direction: 'SELL', setup_timeframe: '4H', execution_timeframe: '1H', crt_event_ids: ['CRT-1'], tbs_event_ids: ['TBS-1'] }, cat).reason_code).toMatch(/EVIDENCE_INVALID/);
+    });
+
+    it('normalizes analyst output without preserving AI numeric geometry', () => {
+        const ctx = getContext();
+        const result = ctx.normalizeAiMarketAnalysis({
+            market_view: { bias: 'BULLISH', market_narrative: 'supported' },
+            hypotheses: [{ hypothesis_id: 'H', strategy: 'CRT', direction: 'BUY', setup_timeframe: '4H', execution_timeframe: '1H',
+                entry: 999, stop_loss: 1000, tp1: 1, reasoning: 'range reclaim', crt_event_ids: ['CRT-1'] }]
+        });
+        expect(result.hypotheses[0]).not.toHaveProperty('entry');
+        expect(result.hypotheses[0]).not.toHaveProperty('stop_loss');
+        expect(result.hypotheses[0]).not.toHaveProperty('tp1');
+    });
+
+    it('analyst API failure is non-fatal and valid response is verified', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        const cat = evidence();
+        const live = { pair: 'EUR/USD', strategy_setups: [], adaptive_setup_candidates: [] };
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({
+            choices: [{ message: { content: JSON.stringify({ market_view: { bias: 'BULLISH' }, hypotheses: [{
+                hypothesis_id: 'H-CRT', strategy: 'CRT', direction: 'BUY', setup_timeframe: '4H', execution_timeframe: '1H',
+                crt_event_ids: ['CRT-1'], preferred_execution_types: ['RECLAIM_RETEST']
+            }] }) } }]
+        }) }));
+        const ok = await ctx.runAiMarketAnalyst(cat, live, '');
+        expect(ok.diagnostics.analyst_status).toBe('OK');
+        expect(ok.diagnostics.hypotheses_verified).toBe(1);
+        ctx.fetch = jest.fn(async () => { throw new Error('network down'); });
+        const failed = await ctx.runAiMarketAnalyst(cat, live, '');
+        expect(failed.diagnostics.analyst_status).toBe('ERROR');
+        expect(failed.verified_setups).toEqual([]);
+    });
+
+    it('merges a verified AI setup into the ordinary setup representation and deduplicates it', () => {
+        const ctx = getContext();
+        const setup = { id: 'normal', primary: 'CRT', direction: 'BUY', event_time: '2026-09-11T08:00:00Z',
+            execution_zone: { timeframe: '1H', direction: 'BUY', type: 'CRT', low: 1.09, high: 1.091 } };
+        const live = { strategy_setups: [setup] };
+        const verified = { ...setup, ai_verified: true, ai_hypothesis_id: 'H-1' };
+        const duplicate = ctx.mergeVerifiedAiSetups(live, [verified]);
+        expect(duplicate.added).toBe(0);
+        expect(duplicate.duplicates).toBe(1);
+        expect(live.strategy_setups[0].ai_hypothesis_id).toBe('H-1');
+        const added = ctx.mergeVerifiedAiSetups({ strategy_setups: [setup] }, [{
+            ...verified, id: 'ai-new', event_time: '2026-09-11T12:00:00Z',
+            execution_zone: { timeframe: '1H', direction: 'BUY', type: 'FVG', low: 1.095, high: 1.096 }
+        }]);
+        expect(added.added).toBe(1);
+    });
+
+    it('accepts an analyst response with zero hypotheses as a normal non-trade analysis', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({
+            choices: [{ message: { content: JSON.stringify({ market_view: { bias: 'MIXED', risk_notes: ['No clean event'] }, hypotheses: [] }) } }]
+        }) }));
+        const result = await ctx.runAiMarketAnalyst({ pair: 'EUR/USD', strategy_events: [] }, { pair: 'EUR/USD' }, '');
+        expect(result.diagnostics.analyst_status).toBe('OK');
+        expect(result.diagnostics.hypotheses_received).toBe(0);
+        expect(result.verified_setups).toEqual([]);
+    });
+
+    it('analyst prompt is hypothesis-only and final selector prompt remains geometry-free', () => {
+        const ctx = getContext();
+        const prompt = ctx.buildAiMarketAnalystPrompt(evidence(), '');
+        expect(prompt.system).toMatch(/MARKET ANALYST/);
+        expect(prompt.system).toMatch(/never invent IDs/i);
+        expect(prompt.system).toMatch(/Do not return entry, entry_zone, stop_loss, TP prices/);
+        expect(prompt.user).not.toMatch(/"entry"\s*:/);
+        expect(prompt.user).not.toMatch(/"stop_loss"\s*:/);
+        expect(prompt.user).not.toMatch(/"tp1"\s*:/);
+        expect(prompt.user).toContain('CRT-1');
+        const finalPrompt = ctx.buildAIPrompt({ pair: 'EUR/USD', current_price: 1.1, utc_time: '2026-09-11T10:00:00Z', session: { name: 'LONDON' }, adaptive_setup_candidates: [] }, '');
+        expect(finalPrompt.user).toMatch(/selected_candidate_id/);
+    });
+});
