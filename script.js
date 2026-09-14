@@ -4371,17 +4371,27 @@ function buildOpportunityThesis(setup, marketContext, price) {
 
 function prepareOpportunitySetups(setups, marketContext, price) {
     for (const setup of setups) setup.opportunity_thesis = buildOpportunityThesis(setup, marketContext, price);
+    const terminalCodes = new Set(['SETUP_DELIVERY_ALREADY_ADVANCED', 'SETUP_ALREADY_COMPLETED', 'ENTRY_ALREADY_CONSUMED', 'SETUP_EXPIRED', 'SETUP_STALE']);
+    const rejectionCounts = setups.reduce((counts, setup) => {
+        for (const code of setup.opportunity_thesis.rejection_codes || []) counts[code] = (counts[code] || 0) + 1;
+        return counts;
+    }, {});
     marketContext.opportunity_funnel = {
         raw_market_opportunities: setups.length,
         direction_supported: setups.filter(s => s.opportunity_thesis.htf_narrative.classification !== 'LTF_ISOLATED').length,
+        liquidity_draw_found: setups.filter(s => !!s.opportunity_thesis.liquidity_draw).length,
         poi_found: setups.filter(s => s.opportunity_thesis.location).length,
         at_poi: setups.filter(s => s.execution_zone && price >= s.execution_zone.low && price <= s.execution_zone.high).length,
         execution_waiting: setups.filter(s => s.opportunity_thesis.state !== 'EXECUTION_VALID').length,
         execution_confirmed: setups.filter(s => s.opportunity_thesis.state === 'EXECUTION_VALID').length,
-        rejection_counts: setups.reduce((counts, s) => {
-            for (const code of s.opportunity_thesis.rejection_codes) counts[code] = (counts[code] || 0) + 1;
-            return counts;
-        }, {})
+        structural_stop_valid: setups.filter(s => !!s.opportunity_thesis.structural_invalidation_intent).length,
+        target_valid: setups.filter(s => !!s.opportunity_thesis.target_intent).length,
+        rr_valid: 0,
+        lifecycle_valid: setups.filter(s => !terminalCodes.has(s.rejection_code)).length,
+        trade_ready: 0,
+        old_terminal_opportunities: setups.filter(s => terminalCodes.has(s.rejection_code) || s.original_strategy_entry_consumed).length,
+        fresh_current_market_opportunities: setups.filter(s => !terminalCodes.has(s.rejection_code) && (s.market_mechanics_verified || isTodayFreshContinuation(s, s.execution_zone))).length,
+        rejection_counts: rejectionCounts
     };
     return setups;
 }
@@ -5048,7 +5058,9 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     rawCandidate.narrative_state = strategySetup.narrative_state || 'ACTIVE';
                     rawCandidate.narrative_event_time = strategySetup.narrative_event_time || strategySetup.event_time || null;
                     rawCandidate.original_strategy_entry_consumed = !!strategySetup.original_strategy_entry_consumed;
-                    rawCandidate.execution_model = strategySetup.execution_model || strategySetup.entry_model || zone.execution_model || 'STRUCTURAL_LIMIT';
+                    rawCandidate.execution_model = strategySetup.opportunity_thesis?.execution_model
+                        || strategySetup.execution_model || strategySetup.entry_model || zone.execution_model || 'STRUCTURAL_LIMIT';
+                    rawCandidate.entry_model = rawCandidate.execution_model;
                     rawCandidate.execution_zone_created_time = zone.created_time || strategySetup.execution_zone_created_time || null;
                     rawCandidate.execution_zone_created_index = zone.created_index ?? strategySetup.execution_zone_created_index ?? null;
                     rawCandidate.execution_zone_consumed = !!zone.execution_zone_consumed;
@@ -5315,12 +5327,15 @@ function buildDeterministicOrderDescription(candidate) {
     const lifecycle = candidate.evaluation?.metrics?.setup_lifecycle || candidate;
     const age = Number.isFinite(lifecycle.event_age_hours) ? `${lifecycle.event_age_hours.toFixed(1)} hours ago` : 'recently';
     const freshness = lifecycle.opportunity_status === 'FRESH_NOW' ? 'fresh and actionable now' : 'fresh and actionable later today';
-    const wait = `Pending ${candidate.direction}_LIMIT at ${candidate.entry} remains valid while structural invalidation ${invalidation} is not breached. The limit fills when market price trades at the order price.`;
+    const confirmation = String(candidate.execution_model || candidate.entry_model || '').toUpperCase() === 'CONFIRMATION_ENTRY';
+    const wait = confirmation
+        ? `Confirmation ${candidate.direction} at ${candidate.entry} requires the deterministic confirmation trigger at the supplied POI; structural invalidation ${invalidation} must remain intact.`
+        : `Pending ${candidate.direction}_LIMIT at ${candidate.entry} remains valid while structural invalidation ${invalidation} is not breached. The limit fills when market price trades at the order price.`;
     return {
         primary_target_source: source, target_type: type, target_confluence: confluence,
         wait_condition: wait,
         reasoning: {
-            primary: `${candidate.strategy_label || candidate.strategy_setup?.label || candidate.zone_type} ${candidate.direction}_LIMIT at ${candidate.entry}. TP1 ${candidate.tp1}: ${source} (${type}).`,
+            primary: `${candidate.strategy_label || candidate.strategy_setup?.label || candidate.zone_type} ${confirmation ? candidate.direction + ' confirmation entry' : candidate.direction + '_LIMIT'} at ${candidate.entry}. TP1 ${candidate.tp1}: ${source} (${type}).`,
             freshness: `Fresh ${candidate.setup_timeframe || candidate.timeframe || 'intraday'} opportunity from ${age}; ${freshness}. ${Number.isFinite(lifecycle.remaining_reward_fraction) ? `${Math.round(lifecycle.remaining_reward_fraction * 100)}% of the original reward path remains.` : 'The original reward path remains structurally valid.'}`,
             why_best: `Selected deterministic candidate ${candidate.id}; target confluence: ${confluence.map(t => `${t.source} ${t.timeframe || ''}`.trim()).join(', ') || 'none'}.`,
             risk_warning: 'Structural invalidation and market execution risk apply.'
@@ -5349,9 +5364,11 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
         console.log('AI numeric override ignored', { selected_candidate_id: id, fields: numericOverrideFields.map(([field]) => field) });
     }
     aiResult.direction = candidate.direction;
-    aiResult.decision = candidate.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT';
-    aiResult.order_type = 'LIMIT';
-    aiResult.setup_type = 'PENDING_LIMIT';
+    const confirmationEntry = String(candidate.execution_model || candidate.entry_model || '').toUpperCase() === 'CONFIRMATION_ENTRY';
+    aiResult.decision = confirmationEntry ? candidate.direction : (candidate.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT');
+    aiResult.order_type = confirmationEntry ? 'MARKET_AFTER_CONFIRMATION' : 'LIMIT';
+    aiResult.setup_type = confirmationEntry ? 'CONFIRMATION_ENTRY' : 'PENDING_LIMIT';
+    aiResult.ai_decision = confirmationEntry ? 'enter_after_confirmation' : 'pending_limit';
     aiResult.selected_zone = { type: candidate.zone_type, timeframe: candidate.timeframe, low: candidate.zone_low, high: candidate.zone_high };
     aiResult.entry_zone = { source: candidate.zone_type, low: candidate.zone_low, high: candidate.zone_high };
     aiResult.entry = candidate.entry;
@@ -6083,6 +6100,12 @@ function buildLiveZonesForTf(data, tf, price, pairLocal, atrVal, limitPerDirecti
 function buildTargetCandidates(historyCache, price, pairLocal) {
     const prec = getMarketSettings(pairLocal).prec;
     const candidates = [];
+    const daily = getClosedHistory(historyCache, '1D');
+    const previousDay = daily.at(-1);
+    if (previousDay) {
+        if (Number.isFinite(previousDay.h) && previousDay.h > price) candidates.push({ id: `PDH:${previousDay.t}`, direction: 'BUY', timeframe: '1D', source: 'PDH', target_type: 'PREVIOUS_DAY_HIGH', origin: 'CLOSED_DAILY', level: ictRound(previousDay.h, prec), distance_from_price: Math.abs(previousDay.h - price), structural_priority: 92 });
+        if (Number.isFinite(previousDay.l) && previousDay.l < price) candidates.push({ id: `PDL:${previousDay.t}`, direction: 'SELL', timeframe: '1D', source: 'PDL', target_type: 'PREVIOUS_DAY_LOW', origin: 'CLOSED_DAILY', level: ictRound(previousDay.l, prec), distance_from_price: Math.abs(previousDay.l - price), structural_priority: 92 });
+    }
     for (const tf of ['4H', '1H']) {
         const data = getClosedHistory(historyCache, tf);
         if (!data || data.length < 20) continue;
@@ -6382,9 +6405,14 @@ function getTodayOpportunityExecutionModel(setup, zone) {
 }
 
 function isTodayFreshContinuation(setup, zone) {
+    if (!setup || !zone) return false;
+    if (setup.market_mechanics_verified === true) return true;
+    const zoneTime = normalizeTimestampUTC(zone.created_time ?? zone.created_time_ms);
+    const parentTime = normalizeTimestampUTC(setup.event_time ?? setup.narrative_event_time);
+    if (Number.isFinite(zoneTime) && Number.isFinite(parentTime) && zoneTime > parentTime) return true;
     const models = [setup?.execution_model, setup?.entry_model, zone?.execution_model, zone?.entry_model]
         .filter(Boolean).map(value => String(value).toUpperCase());
-    return models.includes('FRESH_RETRACEMENT_LIMIT') || models.includes('FRESH_CONTINUATION') || String(zone?.id || '').startsWith('FRESH-');
+    return models.includes('FRESH_CONTINUATION');
 }
 
 function getTodayOpportunityTargetPool({ setup, zone, targetCandidates, direction, currentPrice }) {
@@ -6483,7 +6511,8 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         execution_model: null, activation_conditions: [], cancellation_conditions: [], target_intent: null, expected_window: 'REMAINDER_OF_TODAY',
         delivery_progress: null, remaining_reward_fraction: null, distance_to_area_atr: null, entry_reachable_today: false, opportunity_reachable_today: false,
         target_viable: false, structural_invalidation: null, reason_code: 'NO_TRADE_TODAY', reason: 'No defensible fresh or developing opportunity remains for today.',
-        rejected_reason: null, rejected_opportunities: [], missed_opportunities: [], completed_opportunities: [], fresh_continuation_opportunities: []
+        rejected_reason: null, rejected_opportunities: [], missed_opportunities: [], completed_opportunities: [], fresh_continuation_opportunities: [],
+        terminal_parent_opportunities: [], fresh_current_market_opportunities: []
     };
     if (marketOpen === false) { state.reason_code = 'MARKET_CLOSED'; state.reason = 'The instrument is currently closed for the current scan.'; return state; }
     const bestCandidate = (validCandidates || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
@@ -6509,13 +6538,22 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
     });
     for (const setup of strategySetups || []) {
         if (setup.narrative_state === 'STALE_NARRATIVE' || setup.narrative_state === 'TARGET_COMPLETED') state.completed_opportunities.push(setup.id || setup.primary);
-        if (setup.original_strategy_entry_consumed && !isTodayFreshContinuation(setup, getTodayOpportunityZone(setup, executionZones))) state.missed_opportunities.push(setup.id || setup.primary);
+        const setupZone = getTodayOpportunityZone(setup, executionZones);
+        if (setup.original_strategy_entry_consumed && !isTodayFreshContinuation(setup, setupZone)) state.missed_opportunities.push(setup.id || setup.primary);
+        if (['SETUP_DELIVERY_ALREADY_ADVANCED', 'SETUP_ALREADY_COMPLETED', 'ENTRY_ALREADY_CONSUMED', 'SETUP_EXPIRED', 'SETUP_STALE'].includes(setup.rejection_code)) {
+            state.terminal_parent_opportunities.push({ id: setup.id || setup.primary, status: setup.rejection_code });
+        }
     }
     const plans = [];
     for (const setup of active) {
         const zone = getTodayOpportunityZone(setup, executionZones);
         const plan = evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal, currentPrice, scanAsOfMs, histories, targetCandidates, marketOpen, candidateDiagnostics });
-        if (!plan.valid) { state.rejected_opportunities.push({ narrative_id: setup.id || null, execution_zone_id: zone?.id || null, reason_code: plan.reason_code, reason: plan.reason, metrics: plan.metrics }); continue; }
+        if (!plan.valid) {
+            const terminalParent = ['SETUP_DELIVERY_ALREADY_ADVANCED', 'SETUP_ALREADY_COMPLETED', 'ENTRY_ALREADY_CONSUMED', 'SETUP_EXPIRED', 'SETUP_STALE'].includes(plan.reason_code);
+            state.rejected_opportunities.push({ narrative_id: setup.id || null, execution_zone_id: zone?.id || null, reason_code: plan.reason_code, reason: plan.reason, metrics: plan.metrics, terminal_parent: terminalParent });
+            if (terminalParent) state.terminal_parent_opportunities.push({ id: setup.id || setup.primary, status: plan.reason_code });
+            continue;
+        }
         const inside = currentPrice >= Number(zone.low) && currentPrice <= Number(zone.high);
         const source = zone.entry_region_source || zone.type || setup.entry_region_source || setup.primary;
         const executionTimeframe = setup.execution_timeframe || setup.timeframe || zone.timeframe || '1H';
@@ -6534,12 +6572,18 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             reason_code: plan.execution_model === 'PENDING_LIMIT' ? 'WAITING_FOR_RETRACE' : (inside ? 'WAITING_FOR_CONFIRMATION' : 'WAITING_FOR_RETRACE'),
             reason: plan.execution_model === 'PENDING_LIMIT' ? 'A deterministic pending limit remains valid for the remainder of today.' : (inside ? 'A valid strategy area is active, but deterministic confirmation is not yet present.' : 'A valid strategy narrative remains actionable today; wait for price to reach the deterministic area and activate it.'),
             setup_timeframe: setup.setup_timeframe || setup.timeframe, execution_timeframe: executionTimeframe, confidence: Number.isFinite(Number(setup.setup_confidence)) ? Number(setup.setup_confidence) : 0 });
+        state.fresh_current_market_opportunities.push(setup.id || setup.primary);
     }
     const bestPlan = plans.sort((a, b) => (b.confidence - a.confidence) || (a.area_of_interest?.low || 0) - (b.area_of_interest?.low || 0))[0];
     if (bestPlan) { Object.assign(state, bestPlan); state.fresh_continuation_opportunities = plans.slice(1).map(candidate => candidate.narrative_id); return state; }
     const dominant = state.rejected_opportunities.reduce((counts, item) => { counts[item.reason_code] = (counts[item.reason_code] || 0) + 1; return counts; }, {});
     state.rejected_reason = Object.entries(dominant).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
-    if (state.rejected_reason === 'SETUP_DELIVERY_ALREADY_ADVANCED') { state.reason_code = 'DELIVERY_ALREADY_ADVANCED'; state.reason = 'Existing strategy delivery is too advanced and no fresh continuation remains today.'; }
+    const terminalReasonMap = { SETUP_DELIVERY_ALREADY_ADVANCED: 'DELIVERY_ADVANCED', SETUP_ALREADY_COMPLETED: 'COMPLETED', ENTRY_ALREADY_CONSUMED: 'CONSUMED', SETUP_EXPIRED: 'EXPIRED', SETUP_STALE: 'STALE_NARRATIVE' };
+    if (terminalReasonMap[state.rejected_reason] && state.fresh_current_market_opportunities.length === 0) {
+        state.reason_code = 'NO_TRADE_TODAY';
+        state.reason = 'The previous opportunity is terminal; no fresh current-market opportunity passed validation today.';
+        state.previous_opportunity_status = terminalReasonMap[state.rejected_reason];
+    }
     else if (state.rejected_reason === 'ENTRY_NOT_REACHABLE_TODAY') { state.reason_code = 'ENTRY_NOT_REACHABLE_TODAY'; state.reason = 'No remaining deterministic execution area is realistically reachable today.'; }
     else if (state.rejected_reason === 'NO_REMAINING_TARGET') { state.reason_code = 'NO_REMAINING_TARGET'; state.reason = 'No real structural objective remains in the trade direction.'; }
     else if (state.rejected_reason) { state.reason_code = state.rejected_reason; state.reason = 'No developing opportunity passed the deterministic planning contracts.'; }
@@ -6752,6 +6796,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const strategySetups = buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext });
     strategySetups.push(...mechanicsSetups);
     marketContext.timeframe_context = buildTimeframeContext({ historyCache, structure, price, strategySetups, zones, liquidity: liquidityFacts });
+    marketContext.daily_bias = buildDailyTradingBias(marketContext.timeframe_context, targetCandidates, price, now.getTime());
     prepareOpportunitySetups(strategySetups, marketContext, price);
     console.log('[PERF] strategy setup building', {
         elapsed_ms: Math.round((scanClock() - strategyStartedAt) * 100) / 100,
@@ -7444,6 +7489,13 @@ function rebuildCandidatesWithAiSetups(liveMarketContext, strategySetups) {
             price: liveMarketContext.current_price, strategySetups,
             zones: liveMarketContext.context_ict_zones || [], liquidity: liveMarketContext.liquidity
         });
+        liveMarketContext.market_context.daily_bias = buildDailyTradingBias(
+            liveMarketContext.market_context.timeframe_context,
+            liveMarketContext.target_candidates,
+            liveMarketContext.current_price,
+            liveMarketContext.as_of_time
+        );
+        liveMarketContext.daily_bias = liveMarketContext.market_context.daily_bias;
         prepareOpportunitySetups(strategySetups, liveMarketContext.market_context, liveMarketContext.current_price);
     }
     const result = buildAdaptiveSetupCandidates({
@@ -8061,6 +8113,13 @@ function validateFinalSignalConsistency(signal, liveMarketContext = {}) {
     if (signal.direction === 'BUY' && Number.isFinite(tp2) && Number.isFinite(tp3) && tp3 < tp2) issues.push('BUY TP3 is behind TP2');
     if (signal.direction === 'SELL' && Number.isFinite(tp1) && Number.isFinite(tp2) && tp2 > tp1) issues.push('SELL TP2 is behind TP1');
     if (signal.direction === 'SELL' && Number.isFinite(tp2) && Number.isFinite(tp3) && tp3 > tp2) issues.push('SELL TP3 is behind TP2');
+    if (!isLimit && candidate && candidate.strategy_setup) {
+        const invariant = validateExecutableCandidateInvariant(candidate, liveMarketContext);
+        if (!invariant.valid) issues.push(`ENGINE_INVARIANT_FAILURE:${invariant.invariant_code}`);
+        if (String(candidate.execution_model || '').toUpperCase() === 'CONFIRMATION_ENTRY' && signal.setup_type !== 'CONFIRMATION_ENTRY') {
+            issues.push('confirmation candidate has non-confirmation output model');
+        }
+    }
     const insideZone = signal.immediate_entry?.confirmation?.isAtZone;
     if (signal.limitZoneStatus?.insideZone === false && insideZone === true) issues.push('immediate confirmation claims at-zone while current price is outside zone');
     if (signal.immediate_entry?.eligible === true && insideZone !== true) issues.push('immediate entry is eligible without current-zone confirmation');
@@ -8733,7 +8792,9 @@ async function runAutoScan() {
                 : (hasRaw ? 'No strategy setup execution combination passed all hard rules' : 'Strategy setup exists, but no valid execution candidate is available.');
             const waitCode = waitCodeFromRejections({ ...audit, market_open: liveMarketContext.market_open }, hasStrategySetups);
             const today = liveMarketContext.today_opportunity;
-            if (today.state === 'NO_TRADE_TODAY' && today.reason_code === 'NO_TRADE_TODAY') today.reason_code = waitCode === 'NO_EXECUTION_GEOMETRY' ? 'NO_TRADE_TODAY' : waitCode;
+            if (today.state === 'NO_TRADE_TODAY' && today.reason_code === 'NO_TRADE_TODAY' && !today.previous_opportunity_status) {
+                today.reason_code = waitCode === 'NO_EXECUTION_GEOMETRY' ? 'NO_TRADE_TODAY' : waitCode;
+            }
             if (today.state === 'NO_TRADE_TODAY' && today.reason === 'No defensible fresh or developing opportunity remains for today.') today.reason = reason;
             const out = buildTodayOpportunityOutput(today, pair, price, scanAsOfMs, liveMarketContext.market_open);
             out.trade_signal.trade_type = decision;
@@ -9670,6 +9731,12 @@ function buildPublicTradeSignal(signal = {}) {
         const match = String(value ?? '').match(/(?:1\s*:\s*)?([0-9]+(?:\.[0-9]+)?)\s*$/);
         return match ? Number(match[1]) : null;
     };
+    const structural = signal.structural_context || signal.top_down_context?.higher_timeframe || null;
+    const structureSummary = signal.analysis?.structure || (structural && typeof structural === 'object'
+        ? Object.entries(structural).map(([tf, value]) => `${tf} ${value}`).join('; ')
+        : (typeof structural === 'string' ? structural : null));
+    const draw = signal.daily_bias?.liquidity_draw || signal.daily_bias?.target_type || signal.target_type || signal.primary_target_source;
+    const liquiditySummary = signal.analysis?.liquidity || (draw ? `${draw}${signal.daily_bias?.target_level != null ? ' at ' + signal.daily_bias.target_level : ''}` : null);
     if (isWait) {
         if (signal.status === 'TODAY_OPPORTUNITY') {
             return {
@@ -9745,8 +9812,8 @@ function buildPublicTradeSignal(signal = {}) {
             } : null,
             execution: (signal.execution_timeframe || signal.timeframe || 'Selected timeframe') + ': ' + (signal.execution_model || signal.setup_type || 'PENDING_LIMIT'),
             setup: signal.analysis?.setup || (typeof reasoning === 'string' ? reasoning : reasoning.primary) || '',
-            structure: signal.analysis?.structure || reasoning.structure || '',
-            liquidity: signal.analysis?.liquidity || reasoning.liquidity || '',
+            structure: structureSummary || reasoning.structure || null,
+            liquidity: liquiditySummary || reasoning.liquidity || null,
             invalidation: signal.analysis?.invalidation || reasoning.invalidation || signal.stop_loss_reason || '',
             notes: signal.analysis?.notes || (Array.isArray(reasoning.secondary) ? reasoning.secondary.slice(0, 3) : [])
         }

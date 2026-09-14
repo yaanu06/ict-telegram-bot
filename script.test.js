@@ -516,6 +516,35 @@ describe('top-down trade context', () => {
 });
 
 describe('daily opportunity planning', () => {
+    it('does not let an advanced parent setup suppress a fresh current-market opportunity', () => {
+        const ctx = getContext();
+        const tf = Object.fromEntries(['1D', '4H', '1H', '15M'].map(timeframe => [timeframe, { bias: 'BULLISH', structural_trend: 'BULLISH', evidence: [], structural_evidence_ids: [] }]));
+        const oldSetup = { id: 'old-buy', primary: 'CRT', direction: 'BUY', narrative_state: 'ACTIVE', timeframe: '1H', event_time: Date.parse('2026-09-14T01:00:00Z'), execution_zone: { id: 'old-zone', low: 99, high: 100, midpoint: 99.5, timeframe: '1H', entry_reachable_today: true }, target_candidates: [{ level: 100, source: 'CRT_OPPOSITE_RANGE' }] };
+        const freshSetup = { id: 'fresh-buy', primary: 'ICT', label: 'ICT', direction: 'BUY', narrative_state: 'ACTIVE', market_mechanics_verified: true, timeframe: '15M', execution_timeframe: '15M', event_time: Date.parse('2026-09-14T09:00:00Z'), execution_model: 'FRESH_RETRACEMENT_LIMIT', execution_zone: { id: 'fresh-zone', low: 101, high: 102, midpoint: 101.5, timeframe: '15M', created_time: Date.parse('2026-09-14T09:15:00Z'), freshness: 'FRESH', entry_reachable_today: true, opportunity_reachable_today: true, structural_invalidation: { level: 99, source: 'ICT_SWING' } }, target_candidates: [{ level: 112, source: 'BUY_SIDE_LIQUIDITY' }] };
+        const result = ctx.buildTodayOpportunity({ pair: 'GBP/JPY', currentPrice: 103, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true, marketContext: { timeframe_context: tf, daily_bias: { direction: 'BUY' } }, strategySetups: [oldSetup, freshSetup], executionZones: [], histories: {} });
+        expect(result.reason_code).not.toBe('DELIVERY_ALREADY_ADVANCED');
+        expect(result.fresh_current_market_opportunities).toContain('fresh-buy');
+    });
+
+    it('propagates verified reversal confirmation execution through the selected result', () => {
+        const ctx = getContext();
+        const candidate = { id: 'reversal-confirmation', direction: 'BUY', entry: 100, stop_loss: 98, tp1: 106, rr_tp1: 3, entry_zone: { low: 99, high: 101 },
+            execution_model: 'CONFIRMATION_ENTRY', entry_model: 'CONFIRMATION_ENTRY', trade_context_classification: 'HTF_VERIFIED_REVERSAL',
+            strategy_setup: { primary: 'CRT' }, quality: { final_confidence: 70 }, target_map: [{ target_level: 106, primary_target_source: 'CRT_OPPOSITE_RANGE' }] };
+        const result = ctx.applyAdaptiveCandidateToAIResult({ selected_candidate_id: candidate.id }, { adaptive_setup_candidates: [candidate] });
+        expect(result.execution_model).toBe('CONFIRMATION_ENTRY');
+        expect(result.setup_type).toBe('CONFIRMATION_ENTRY');
+        expect(result.decision).toBe('BUY');
+    });
+
+    it('adds a closed previous-day high and low as deterministic liquidity targets', () => {
+        const ctx = getContext();
+        const day = t => ({ t, o: 100, h: 110, l: 90, c: 105, is_closed: true });
+        const targets = ctx.buildTargetCandidates({ '1D': [day(Date.parse('2026-09-12T00:00:00Z'))] }, 100, 'EUR/USD');
+        expect(targets.buy.some(target => target.source === 'PDH' && target.level === 110)).toBe(true);
+        expect(targets.sell.some(target => target.source === 'PDL' && target.level === 90)).toBe(true);
+    });
+
     it('uses the actual timeframe duration for same-timeframe combination windows', () => {
         const ctx = getContext();
         const zone = { low: 99.5, high: 100.5 };
@@ -602,7 +631,8 @@ describe('daily opportunity planning', () => {
         const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.02, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
             strategySetups: [{ id: 'advanced', primary: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', entry: 1.1, execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.09, high: 1.11, entry_reachable_today: true, structural_invalidation: { level: 1.13, source: 'CRT_SWEEP_EXTREME' } }, target_candidates: [{ level: 1.01, source: 'CRT_OPPOSITE_RANGE' }] }] });
         expect(result.state).toBe('NO_TRADE_TODAY');
-        expect(result.reason_code).toBe('DELIVERY_ALREADY_ADVANCED');
+        expect(result.reason_code).toBe('NO_TRADE_TODAY');
+        expect(result.previous_opportunity_status).toBe('DELIVERY_ADVANCED');
     });
 
     it('rejects completed targets and target-bias-only narratives', () => {
