@@ -4072,7 +4072,7 @@ function evaluateStructuralStop(candidate, atrContext, pairLocal) {
 function classifySetupArchetype(candidate, historyCache, price, structure) {
     const direction = candidate?.direction;
     const desiredTrend = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
-    const trends = ['1D', '4H', '1H'].map(tf => structure?.[tf]?.trend).filter(Boolean);
+    const trends = ['1D', '4H', '1H'].map(tf => structure?.[tf]?.effective_trend || structure?.[tf]?.structural_trend || structure?.[tf]?.trend).filter(Boolean);
     const htfMatch = trends.filter(v => v === desiredTrend).length;
     const evidence = {
         liquidity_sweep: false,
@@ -4177,6 +4177,7 @@ function buildTimeframeContext({ historyCache = {}, structure = {}, price, strat
             evidence.push({ id, kind, direction, timeframe: tf, value });
         };
         const structuralTrend = snapshot.structural_trend || snapshot.trend;
+        const effectiveTrend = snapshot.effective_trend || structuralTrend;
         const bias = ['BULLISH', 'BEARISH', 'MIXED'].includes(structuralTrend) ? structuralTrend : 'NEUTRAL';
         if (['BULLISH', 'BEARISH'].includes(bias)) add('TREND', bias === 'BULLISH' ? 'BUY' : 'SELL', bias);
         for (const direction of ['BUY', 'SELL']) {
@@ -4198,7 +4199,7 @@ function buildTimeframeContext({ historyCache = {}, structure = {}, price, strat
         const majorLiquidity = liquidity[tf] || mapLiquidity(data);
         return [tf, {
             role: { '1D': 'MACRO_CONTEXT', '4H': 'PRIMARY_NARRATIVE', '1H': 'INTRADAY_STRUCTURE', '15M': 'EXECUTION_SETUP' }[tf],
-            bias, structural_trend: bias, structure: snapshot, mss: snapshot.mss || null,
+            bias, structural_trend: structuralTrend, momentum_trend: snapshot.momentum_trend || 'NEUTRAL', effective_trend: effectiveTrend, structure: snapshot, mss: snapshot.mss || null,
             bos: { buy: !!snapshot.bos_buy, sell: !!snapshot.bos_sell },
             choch: { buy: !!snapshot.choch_buy, sell: !!snapshot.choch_sell },
             liquidity_draw: bias === 'BULLISH' ? 'BUY_SIDE_LIQUIDITY' : bias === 'BEARISH' ? 'SELL_SIDE_LIQUIDITY' : 'UNRESOLVED',
@@ -4218,7 +4219,8 @@ function buildTimeframeContext({ historyCache = {}, structure = {}, price, strat
 function classifyTopDownTrade(candidate, timeframeContext = {}) {
     const direction = candidate.direction;
     const wanted = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
-    const supports = tf => timeframeContext[tf]?.bias === wanted;
+    const supports = tf => [timeframeContext[tf]?.effective_trend, timeframeContext[tf]?.structural_trend, timeframeContext[tf]?.bias]
+        .some(value => value === wanted || value === `${wanted}_TRANSITION`);
     // 4H leads; daily support may coexist with a 1H pullback.
     const aligned = supports('4H') && (supports('1D') || supports('1H'));
     const higherEvidence = ['1D', '4H'].flatMap(tf => timeframeContext[tf]?.evidence || []);
@@ -4235,7 +4237,7 @@ function classifyTopDownTrade(candidate, timeframeContext = {}) {
         higher_timeframe: Object.fromEntries([['daily', '1D'], ['four_hour', '4H'], ['one_hour', '1H']].map(([key, tf]) => {
             const context = timeframeContext[tf];
             const signals = (context?.evidence || []).filter(e => e.kind !== 'TREND' && e.direction === direction).map(e => e.kind);
-            return [key, tf + ': ' + (context?.bias || 'UNAVAILABLE') + (signals.length ? '; ' + [...new Set(signals)].join(', ') + ' supports ' + direction : '')];
+            return [key, tf + ': ' + (context?.effective_trend || context?.bias || 'UNAVAILABLE') + (signals.length ? '; ' + [...new Set(signals)].join(', ') + ' supports ' + direction : '')];
         })),
         reason: aligned ? '4H direction is supported by daily or 1H structure.' : verifiedReversal
             ? 'Higher-timeframe liquidity reversal evidence is confirmed by a 4H or 1H structure shift.'
@@ -4338,7 +4340,7 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
                 const mss = detectMSS(prefix);
                 const shift = (mss?.type === (direction === 'BUY' ? 'BULL' : 'BEAR')) || detectCHoCH(prefix, direction)
                     || (detectBOS(prefix, direction) && detectDisplacement(prefix, direction));
-                if (!shift || !detectDisplacement(prefix, direction)) continue;
+                if (!shift) continue;
                 discovery[direction === 'BUY' ? 'discovery_buy_events' : 'discovery_sell_events']++;
                 discovery.discovery_structure_shifts++;
                 const eventTime = candleTimestamp(data[i], i, tf);
@@ -4364,7 +4366,7 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
                 const narrative = { id: `ICT:${tf}:${direction}:${eventTime}`, primary: 'ICT', label: 'ICT', direction,
                     timeframe: tf, setup_timeframe: tf, execution_timeframe: tf, event_time: eventTime,
                     reclaim_index: i, structural_invalidation: anchor, target_candidates: targetPool,
-                    primary_objective: targetPool[0]?.level ?? null, confirmations: [], evidence: { shift: true, displacement: true },
+                    primary_objective: targetPool[0]?.level ?? null, confirmations: [], evidence: { shift: true, displacement: detectDisplacement(prefix, direction) },
                     opportunity_narrative: { id: `NARRATIVE:${tf}:${direction}:${eventTime}`, state: 'DEVELOPING', location: location || null,
                         liquidity_event_ids: (timeframeContext?.[tf]?.evidence || []).filter(e => e.kind === 'LIQUIDITY_SWEEP').map(e => e.id),
                         structural_shift_ids: [`SHIFT:${tf}:${direction}:${eventTime}`], evidence_ids: [...classification.evidence_ids],
@@ -4380,12 +4382,12 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
                 }
                 for (const zone of freshZones) {
                     setups.push({ ...narrative, id: `${narrative.id}:${zone.id}`, narrative_state: 'ACTIVE',
-                        execution_zone: zone, execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT',
+                        execution_zone: zone, execution_model: classification.classification === 'HTF_VERIFIED_REVERSAL' ? 'CONFIRMATION_ENTRY' : 'FRESH_RETRACEMENT_LIMIT', entry_model: classification.classification === 'HTF_VERIFIED_REVERSAL' ? 'CONFIRMATION_ENTRY' : 'FRESH_RETRACEMENT_LIMIT',
                         execution_event_time: zone.created_time, execution_event_index: zone.created_index,
                         execution_zone_created_time: zone.created_time, execution_zone_created_index: zone.created_index,
                         structural_invalidation_detail: { level: anchor, source: 'ICT_SHIFT_ORIGIN_SWING', strategy: 'ICT', timeframe: tf, source_time: eventTime },
                         structural_entry_region: { low: zone.low, high: zone.high },
-                        market_mechanics_verified: true, execution_confirmed: true,
+                        market_mechanics_verified: true, execution_confirmed: classification.classification !== 'HTF_VERIFIED_REVERSAL',
                         structural_evidence_ids: [...classification.evidence_ids, `SHIFT:${tf}:${direction}:${eventTime}`, zone.id],
                         freshness: 'FRESH', original_strategy_entry_consumed: false });
                 }
@@ -4464,7 +4466,7 @@ function buildMarketContext({ pair, price, historyCache, structure, session, ses
     const bullishEvidence = [];
     const bearishEvidence = [];
     const conflicts = [];
-    const htfTrends = ['1D', '4H', '1H'].map(tf => structure?.[tf]?.trend).filter(Boolean);
+    const htfTrends = ['1D', '4H', '1H'].map(tf => structure?.[tf]?.effective_trend || structure?.[tf]?.structural_trend).filter(Boolean);
     const bullishCount = htfTrends.filter(v => v === 'BULLISH').length;
     const bearishCount = htfTrends.filter(v => v === 'BEARISH').length;
     if (bullishCount > bearishCount) bullishEvidence.push(`${bullishCount}/3 HTF trends bullish`);
@@ -5111,7 +5113,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     },
                     freshness: zone.freshness,
                     htf_alignment: ['1D', '4H', '1H']
-                        .map(t => structure?.[t]?.trend)
+                        .map(t => structure?.[t]?.effective_trend || structure?.[t]?.structural_trend || structure?.[t]?.trend)
                         .filter(v => v === (direction === 'BUY' ? 'BULLISH' : 'BEARISH')).length,
                     distance_from_current_price: ictRound(Math.abs(entry - price), prec),
                     distance_from_current_price_atr: safeAtr > 0 ? ictRound(Math.abs(entry - price) / safeAtr, 2) : null,
@@ -6097,7 +6099,7 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
 function buildStructureSnapshot(data, tf) {
     data = closedStructureCandles(data);
     if (!data || data.length < 20) {
-        return { timeframe: tf, trend: 'NEUTRAL', structure_sequence: [], recent_swing_highs: [], recent_swing_lows: [] };
+        return { timeframe: tf, structural_trend: 'NEUTRAL', momentum_trend: 'NEUTRAL', effective_trend: 'NEUTRAL', trend_confidence: 'LOW', structure_state: 'INSUFFICIENT', trend: 'NEUTRAL', structure_sequence: [], recent_swing_highs: [], recent_swing_lows: [] };
     }
     const sw = findSwings(data, 3);
     const mss = detectMSS(data);
@@ -6106,10 +6108,23 @@ function buildStructureSnapshot(data, tf) {
         ? highs[1].p > highs[0].p && lows[1].p > lows[0].p ? 'BULLISH'
             : highs[1].p < highs[0].p && lows[1].p < lows[0].p ? 'BEARISH' : 'MIXED'
         : 'NEUTRAL';
+    const momentumTrend = detectTrend(data) || 'NEUTRAL';
+    const directionalShift = mss?.type === 'BULL' || mss?.type === 'BEAR' || detectBOS(data, 'BUY') || detectBOS(data, 'SELL') || detectCHoCH(data, 'BUY') || detectCHoCH(data, 'SELL');
+    const effectiveTrend = structuralTrend === 'BULLISH' || structuralTrend === 'BEARISH'
+        ? structuralTrend
+        : structuralTrend === 'NEUTRAL' && ['BULLISH', 'BEARISH'].includes(momentumTrend)
+            ? momentumTrend
+            : directionalShift
+                ? (mss?.type === 'BULL' || detectBOS(data, 'BUY') || detectCHoCH(data, 'BUY') ? 'BULLISH_TRANSITION' : 'BEARISH_TRANSITION')
+                : 'NEUTRAL';
     return {
         timeframe: tf,
         structural_trend: structuralTrend,
-        trend: detectTrend(data),
+        momentum_trend: momentumTrend,
+        effective_trend: effectiveTrend,
+        trend_confidence: effectiveTrend === structuralTrend && effectiveTrend !== 'NEUTRAL' ? 'HIGH' : effectiveTrend !== 'NEUTRAL' ? 'MEDIUM' : 'LOW',
+        structure_state: structuralTrend === 'NEUTRAL' ? (directionalShift ? 'TRANSITION' : 'INSUFFICIENT') : structuralTrend === 'MIXED' ? 'CONFLICTING' : 'CONFIRMED',
+        trend: effectiveTrend,
         bias: getDirectionBias(data),
         mss: mss ? { type: mss.type, level: mss.level } : null,
         bos_buy: detectBOS(data, 'BUY'),
@@ -6169,8 +6184,8 @@ function buildTargetCandidates(historyCache, price, pairLocal) {
     const daily = getClosedHistory(historyCache, '1D');
     const previousDay = daily.at(-1);
     if (previousDay) {
-        if (Number.isFinite(previousDay.h) && previousDay.h > price) candidates.push({ id: `PDH:${previousDay.t}`, direction: 'BUY', timeframe: '1D', source: 'PDH', target_type: 'PREVIOUS_DAY_HIGH', origin: 'CLOSED_DAILY', level: ictRound(previousDay.h, prec), distance_from_price: Math.abs(previousDay.h - price), structural_priority: 92 });
-        if (Number.isFinite(previousDay.l) && previousDay.l < price) candidates.push({ id: `PDL:${previousDay.t}`, direction: 'SELL', timeframe: '1D', source: 'PDL', target_type: 'PREVIOUS_DAY_LOW', origin: 'CLOSED_DAILY', level: ictRound(previousDay.l, prec), distance_from_price: Math.abs(previousDay.l - price), structural_priority: 92 });
+        if (Number.isFinite(previousDay.h)) candidates.push({ id: `PDH:${previousDay.t}`, direction: 'BUY', timeframe: '1D', source: 'PDH', target_type: 'PREVIOUS_DAY_HIGH', origin: 'CLOSED_DAILY', level: ictRound(previousDay.h, prec), distance_from_price: Math.abs(previousDay.h - price), structural_priority: 92 });
+        if (Number.isFinite(previousDay.l)) candidates.push({ id: `PDL:${previousDay.t}`, direction: 'SELL', timeframe: '1D', source: 'PDL', target_type: 'PREVIOUS_DAY_LOW', origin: 'CLOSED_DAILY', level: ictRound(previousDay.l, prec), distance_from_price: Math.abs(previousDay.l - price), structural_priority: 92 });
     }
     for (const tf of ['4H', '1H']) {
         const data = getClosedHistory(historyCache, tf);
@@ -6199,20 +6214,20 @@ function buildTargetCandidates(historyCache, price, pairLocal) {
             candidates.push({ direction: 'SELL', timeframe: tf, source: 'SWING_LOW', target_type: 'SWING_HIGH_LOW', origin: 'STRUCTURAL', level: s.p, distance_from_price: Math.abs(s.p - price), structural_priority: 76 });
         }
         for (const fvg of detectFVG(data)) {
-            if (fvg.type === 'bear' && fvg.l > price) {
+            if (fvg.type === 'bear') {
                 candidates.push({ direction: 'BUY', timeframe: tf, source: 'OPPOSING_FVG', target_type: 'FVG', origin: 'STRUCTURAL', level: fvg.m, distance_from_price: Math.abs(fvg.m - price), structural_priority: 62 });
             }
-            if (fvg.type === 'bull' && fvg.h < price) {
+            if (fvg.type === 'bull') {
                 candidates.push({ direction: 'SELL', timeframe: tf, source: 'OPPOSING_FVG', target_type: 'FVG', origin: 'STRUCTURAL', level: fvg.m, distance_from_price: Math.abs(fvg.m - price), structural_priority: 62 });
             }
         }
         for (const ob of detectOrderBlocks(data, 'SELL')) {
             const mid = (ob.low + ob.high) / 2;
-            if (mid > price) candidates.push({ direction: 'BUY', timeframe: tf, source: 'OPPOSING_OB', target_type: 'OB', origin: 'STRUCTURAL', level: mid, distance_from_price: Math.abs(mid - price), structural_priority: 68 });
+            candidates.push({ direction: 'BUY', timeframe: tf, source: 'OPPOSING_OB', target_type: 'OB', origin: 'STRUCTURAL', level: mid, distance_from_price: Math.abs(mid - price), structural_priority: 68 });
         }
         for (const ob of detectOrderBlocks(data, 'BUY')) {
             const mid = (ob.low + ob.high) / 2;
-            if (mid < price) candidates.push({ direction: 'SELL', timeframe: tf, source: 'OPPOSING_OB', target_type: 'OB', origin: 'STRUCTURAL', level: mid, distance_from_price: Math.abs(mid - price), structural_priority: 68 });
+            candidates.push({ direction: 'SELL', timeframe: tf, source: 'OPPOSING_OB', target_type: 'OB', origin: 'STRUCTURAL', level: mid, distance_from_price: Math.abs(mid - price), structural_priority: 68 });
         }
     }
     const dedupe = new Map();
@@ -6221,6 +6236,12 @@ function buildTargetCandidates(historyCache, price, pairLocal) {
         const key = `${c.direction}-${c.timeframe}-${c.source}-${ictRound(c.level, prec)}`;
         dedupe.set(key, {
             ...c,
+            id: c.id || `TARGET:${c.direction}:${c.timeframe}:${c.source}:${ictRound(c.level, prec)}`,
+            created_time: c.created_time || null,
+            reached: !!c.reached, consumed: !!c.consumed, invalidated: !!c.invalidated,
+            ahead_of_current_price: c.direction === 'BUY' ? c.level > price : c.level < price,
+            ahead_of_entry: null, reachability: c.reachability ?? null,
+            evidence_ids: Array.isArray(c.evidence_ids) ? c.evidence_ids : [c.id || `${c.source}:${c.timeframe}:${c.level}`],
             level: ictRound(c.level, prec),
             distance_from_price: ictRound(c.distance_from_price, prec),
             distance_pct: ictRound(Math.abs(c.level - price) / price * 100, 3)
@@ -6228,7 +6249,7 @@ function buildTargetCandidates(historyCache, price, pairLocal) {
     }
     const all = [...dedupe.values()];
     return {
-        all: all.sort((a, b) => a.distance_from_price - b.distance_from_price).slice(0, 30),
+        all: all.sort((a, b) => (b.structural_priority || 0) - (a.structural_priority || 0) || a.distance_from_price - b.distance_from_price).slice(0, 60),
         buy: all.filter(c => c.direction === 'BUY' && c.level > price).sort((a, b) => a.distance_from_price - b.distance_from_price).slice(0, 10),
         sell: all.filter(c => c.direction === 'SELL' && c.level < price).sort((a, b) => a.distance_from_price - b.distance_from_price).slice(0, 10)
     };
@@ -6828,6 +6849,43 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
     return { trade_signal: signal };
 }
 
+function buildCanonicalMarketTheses(strategySetups, marketContext, targetCandidates, price) {
+    return Object.fromEntries(['BUY', 'SELL'].map(direction => {
+        const setups = (strategySetups || []).filter(setup => setup.direction === direction);
+        const ranked = setups.slice().sort((a, b) => {
+            const aq = a.opportunity_quality?.rank_score ?? a.opportunity_thesis?.quality?.rank_score ?? 0;
+            const bq = b.opportunity_quality?.rank_score ?? b.opportunity_thesis?.quality?.rank_score ?? 0;
+            return bq - aq;
+        });
+        const setup = ranked[0] || null;
+        const thesis = setup?.opportunity_thesis || null;
+        const targets = (targetCandidates?.[direction.toLowerCase()] || targetCandidates?.all || [])
+            .filter(target => target.direction === direction && Number.isFinite(target.level));
+        return [direction.toLowerCase(), {
+            direction,
+            structural_context: ['1D', '4H', '1H'].map(tf => ({
+                timeframe: tf,
+                structural_trend: marketContext?.timeframe_context?.[tf]?.structural_trend || 'NEUTRAL',
+                effective_trend: marketContext?.timeframe_context?.[tf]?.effective_trend || 'NEUTRAL'
+            })),
+            daily_bias_relationship: thesis?.daily_bias?.direction === 'NEUTRAL' ? 'NEUTRAL_CONTEXT' :
+                thesis?.daily_bias?.direction === direction ? 'ALIGNED' : thesis ? 'CONFLICTING_UNVERIFIED' : 'UNKNOWN',
+            classification: thesis?.htf_narrative?.classification || setup?.trade_context_classification || 'LTF_ISOLATED',
+            location: thesis?.location || setup?.location || null,
+            liquidity_event: thesis?.liquidity_draw || null,
+            execution_evidence: setup?.execution_zone || null,
+            invalidation: thesis?.structural_invalidation_intent || setup?.structural_invalidation_detail || null,
+            target_candidates: targets,
+            selected_target: targets.find(target => direction === 'BUY' ? target.level > price : target.level < price) || null,
+            execution_model: thesis?.execution_model || setup?.execution_model || null,
+            lifecycle: setup?.lifecycle || setup?.narrative_state || null,
+            quality: setup?.opportunity_quality || null,
+            state: thesis?.state || (setup ? 'DEVELOPING' : 'NO_THESIS'),
+            rejection_codes: thesis?.rejection_codes || []
+        }];
+    }));
+}
+
 function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext, as_of_ms = null, quote_snapshot = null }) {
     const settings = getMarketSettings(pair);
     const prec = settings.prec;
@@ -6891,7 +6949,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         sell_1h: detectDisplacement(historyCache?.['1H'] || [], 'SELL')
     };
     const primaryPhase = enhancedAnalysis?.phase?.phase || 'UNKNOWN';
-    const trendVotes = ['1D', '4H', '1H'].map(tf => structure[tf]?.trend).filter(Boolean);
+    const trendVotes = ['1D', '4H', '1H'].map(tf => structure[tf]?.effective_trend || structure[tf]?.structural_trend).filter(Boolean);
     const bullVotes = trendVotes.filter(v => v === 'BULLISH').length;
     const bearVotes = trendVotes.filter(v => v === 'BEARISH').length;
     let primaryRegime = 'RANGING';
@@ -7002,6 +7060,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     marketContext.timeframe_context = buildTimeframeContext({ historyCache, structure, price, strategySetups, zones, liquidity: liquidityFacts });
     marketContext.daily_bias = buildDailyTradingBias(marketContext.timeframe_context, targetCandidates, price, now.getTime());
     prepareOpportunitySetups(strategySetups, marketContext, price);
+    const canonicalMarketTheses = buildCanonicalMarketTheses(strategySetups, marketContext, targetCandidates, price);
     console.log('[PERF] strategy setup building', {
         elapsed_ms: Math.round((scanClock() - strategyStartedAt) * 100) / 100,
         strategy_setups: strategySetups.length,
@@ -7030,6 +7089,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         risk_constraints: riskConstraints,
         structure,
         market_context: marketContext,
+        market_theses: canonicalMarketTheses,
         strategy_setups: strategySetups,
         require_strategy_setup: true,
         market_open: marketState.is_market_open,
@@ -7104,10 +7164,10 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         volatility: volatilityFacts,
         multi_timeframe_direction: {
             trend: {
-                '1D': structure['1D'].trend,
-                '4H': structure['4H'].trend,
-                '1H': structure['1H'].trend,
-                '15M': structure['15M'].trend
+                '1D': structure['1D'].effective_trend,
+                '4H': structure['4H'].effective_trend,
+                '1H': structure['1H'].effective_trend,
+                '15M': structure['15M'].effective_trend
             },
             bias: {
                 '1D': structure['1D'].bias,

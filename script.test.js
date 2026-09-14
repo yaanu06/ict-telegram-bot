@@ -2074,6 +2074,26 @@ describe('live AI market context and prompt', () => {
         '1D': candles(80, start, step, dir)
     });
 
+    it('exposes separate structural, momentum, and effective timeframe trends', () => {
+        const ctx = getContext();
+        const cache = trendCache('up', 100, 0.5);
+        const snapshot = ctx.buildStructureSnapshot(cache['4H'], '4H');
+        expect(snapshot).toHaveProperty('structural_trend');
+        expect(snapshot).toHaveProperty('momentum_trend');
+        expect(snapshot).toHaveProperty('effective_trend');
+        expect(snapshot.trend).toBe(snapshot.effective_trend);
+    });
+
+    it('retains PDH and PDL in the discovered target catalog before directional validation', () => {
+        const ctx = getContext();
+        const day = (t, h, l) => ({ t, o: l + 1, h, l, c: l + 2, v: 1, is_closed: true });
+        const targets = ctx.buildTargetCandidates({ '1D': [day('2026-09-13T00:00:00Z', 110, 90)] }, 100, 'EUR/USD');
+        expect(targets.all).toEqual(expect.arrayContaining([
+            expect.objectContaining({ source: 'PDH', direction: 'BUY', ahead_of_current_price: true }),
+            expect.objectContaining({ source: 'PDL', direction: 'SELL', ahead_of_current_price: true })
+        ]));
+    });
+
     it('builds deterministic live context from current candles and flags synthetic volume', () => {
         const ctx = getContext();
         const historyCache = buildCache();
