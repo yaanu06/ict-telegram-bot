@@ -387,6 +387,114 @@ describe('strategy entry lifecycle', () => {
     });
 });
 
+describe('top-down trade context', () => {
+    function context(ctx, daily, fourH, oneH, reversal = false) {
+        const structure = Object.fromEntries([['1D', daily], ['4H', fourH], ['1H', oneH], ['15M', 'BULLISH']]
+            .map(([tf, trend]) => [tf, { trend }]));
+        if (reversal) structure['1H'].mss = { type: 'BULL', level: 101 };
+        return ctx.buildTimeframeContext({ structure, price: 100,
+            liquidity: reversal ? { '4H': { sweeps: [{ type: 'BUY', swept: true, level: 99 }] } } : {} });
+    }
+
+    it.each([
+        ['BULLISH', 'BULLISH', 'BULLISH', 'HTF_ALIGNED_CONTINUATION'],
+        ['BEARISH', 'BEARISH', 'BEARISH', 'LTF_ISOLATED'],
+        ['BULLISH', 'BULLISH', 'BEARISH', 'HTF_ALIGNED_CONTINUATION'],
+        ['NEUTRAL', 'BULLISH', 'BULLISH', 'HTF_ALIGNED_CONTINUATION'],
+        ['BEARISH', 'BEARISH', 'MIXED', 'LTF_ISOLATED']
+    ])('classifies daily %s / 4H %s / 1H %s as %s', (daily, fourH, oneH, expected) => {
+        const ctx = getContext();
+        expect(ctx.classifyTopDownTrade({ direction: 'BUY' }, context(ctx, daily, fourH, oneH)).classification).toBe(expected);
+    });
+
+    it('verifies a reversal with HTF sweep and 1H shift despite bearish HTF trends', () => {
+        const ctx = getContext();
+        const tf = context(ctx, 'BEARISH', 'BEARISH', 'BEARISH', true);
+        const result = ctx.classifyTopDownTrade({ direction: 'BUY' }, tf);
+        expect(result.classification).toBe('HTF_VERIFIED_REVERSAL');
+        expect(result.evidence_ids.some(id => id.includes('4H:LIQUIDITY_SWEEP'))).toBe(true);
+        expect(result.evidence_ids.some(id => id.includes('1H:MSS'))).toBe(true);
+        expect(ctx.verifyTopDownTradeClassification({ direction: 'BUY', trade_context_classification: result.classification, top_down_evidence_ids: result.evidence_ids }, tf).verified).toBe(true);
+    });
+
+    it('rejects fake evidence and an unsupported AI continuation claim', () => {
+        const ctx = getContext();
+        const tf = context(ctx, 'BEARISH', 'BEARISH', 'BEARISH');
+        expect(ctx.verifyTopDownTradeClassification({ direction: 'BUY', trade_context_classification: 'HTF_VERIFIED_REVERSAL', top_down_evidence_ids: ['fake'] }, tf).reason_code).toBe('TOP_DOWN_EVIDENCE_UNKNOWN');
+        expect(ctx.verifyAiStrategyHypothesis({ direction: 'BUY', trade_context_classification: 'HTF_ALIGNED_CONTINUATION', top_down_evidence_ids: [] }, { timeframe_context: tf }).reason_code).toBe('TOP_DOWN_CLASSIFICATION_UNSUPPORTED');
+    });
+
+    it('requires both a higher-timeframe raid and a structure shift for reversal', () => {
+        const ctx = getContext();
+        const tf = context(ctx, 'BEARISH', 'BEARISH', 'BEARISH', true);
+        tf['4H'].evidence = [];
+        expect(ctx.classifyTopDownTrade({ direction: 'BUY' }, tf).classification).toBe('LTF_ISOLATED');
+    });
+
+    it('penalizes isolated quality with a bounded adjustment and keeps confidence immutable after selection', () => {
+        const ctx = getContext();
+        const candidate = { id: 'top-down', direction: 'BUY', entry: 100, stop_loss: 99, tp1: 103, rr_tp1: 3, zone_low: 99.5, zone_high: 100.5,
+            trade_context_classification: 'LTF_ISOLATED', htf_alignment: 3 };
+        const isolated = ctx.calculateCandidateConfidence(candidate);
+        const aligned = ctx.calculateCandidateConfidence({ ...candidate, trade_context_classification: 'HTF_ALIGNED_CONTINUATION' });
+        expect(isolated.final_score).toBeLessThan(aligned.final_score);
+        expect(aligned.final_score - isolated.final_score).toBe(10);
+        expect(isolated.quality).not.toBe('HIGH');
+        candidate.quality = { final_confidence: isolated.final_score };
+        candidate.top_down_context = ctx.classifyTopDownTrade(candidate, context(ctx, 'BEARISH', 'BEARISH', 'BEARISH'));
+        const ai = ctx.applyAdaptiveCandidateToAIResult({ selected_candidate_id: candidate.id, confidence: 99, trade_context_classification: 'HTF_VERIFIED_REVERSAL' }, { adaptive_setup_candidates: [candidate] });
+        expect(ai.trade_context_classification).toBe('LTF_ISOLATED');
+        expect(ai.quality.final_confidence).toBe(isolated.final_score);
+    });
+
+    it('keeps forming-candle evidence out and produces stable evidence IDs', () => {
+        const ctx = getContext();
+        const data = candles(30, 100, 1, 'up');
+        const input = { historyCache: { '1H': data }, price: 110 };
+        const first = ctx.buildTimeframeContext(input);
+        const second = ctx.buildTimeframeContext({ ...input, historyCache: { '1H': [...data, { o: 200, h: 300, l: 1, c: 299, is_closed: false }] } });
+        expect(second['1H']).toEqual(first['1H']);
+        expect(first['1H'].structural_evidence_ids).toEqual(ctx.buildTimeframeContext(input)['1H'].structural_evidence_ids);
+        expect(first).not.toHaveProperty('5M');
+    });
+
+    it('exposes compact top-down truth without changing the selected execution timeframe', () => {
+        const ctx = getContext();
+        const top = ctx.classifyTopDownTrade({ direction: 'BUY' }, context(ctx, 'BULLISH', 'BULLISH', 'BULLISH'));
+        const signal = ctx.buildPublicTradeSignal({ decision: 'BUY_LIMIT', direction: 'BUY', timeframe: '15M', entry: 100, stop_loss: 99, tp1: 103,
+            trade_context_classification: top.classification, top_down_context: top });
+        expect(signal.timeframe).toBe('15M');
+        expect(signal.analysis.trade_context).toBe('HTF_ALIGNED_CONTINUATION');
+        expect(signal.analysis.higher_timeframe.daily).toContain('BULLISH');
+        expect(signal).not.toHaveProperty('timeframe_context');
+        const wait = ctx.buildPublicTradeSignal({ decision: 'WAIT', status: 'TODAY_OPPORTUNITY', trade_context_classification: top.classification, top_down_context: top });
+        expect(wait.trade_context).toBe(top.classification);
+    });
+
+    it('carries reversal classification through the planner and analyst evidence catalog without changing entry models', () => {
+        const ctx = getContext();
+        const tf = context(ctx, 'BEARISH', 'BEARISH', 'MIXED', true);
+        const setup = { id: 'crt-15m', primary: 'CRT', direction: 'BUY', narrative_state: 'ACTIVE', timeframe: '15M',
+            execution_model: 'RECLAIM_RETEST', target_candidates: [{ level: 110, source: 'CRT_OPPOSITE_RANGE' }],
+            execution_zone: { id: 'zone-15m', type: 'CRT', timeframe: '15M', low: 99.5, high: 100.5, midpoint: 100,
+                entry_reachable_today: true, opportunity_reachable_today: true, structural_invalidation: { level: 98, source: 'CRT_SWEEP_EXTREME' } } };
+        const input = { pair: 'XAU/USD', currentPrice: 101, marketOpen: true, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'),
+            marketContext: { timeframe_context: tf }, strategySetups: [setup] };
+        const pending = ctx.buildTodayOpportunity(input);
+        expect(pending.state).toBe('TODAY_OPPORTUNITY');
+        expect(pending.trade_context_classification).toBe('HTF_VERIFIED_REVERSAL');
+        expect(pending.execution_model).toBe('PENDING_LIMIT');
+        const confirmation = ctx.buildTodayOpportunity({ ...input, strategySetups: [{ ...setup, execution_model: 'CONFIRMATION_ENTRY' }] });
+        expect(confirmation.execution_model).toBe('CONFIRMATION_ENTRY');
+        expect(confirmation.trade_context_classification).toBe(pending.trade_context_classification);
+        const catalog = ctx.buildAiMarketEvidenceCatalog({ market_context: { timeframe_context: tf } });
+        expect(catalog.timeframe_context).toEqual(tf);
+        const prompt = ctx.buildAiMarketAnalystPrompt(catalog);
+        expect(prompt.user).toContain(tf['4H'].structural_evidence_ids[0]);
+        expect(prompt.system).toContain('HTF_VERIFIED_REVERSAL');
+    });
+});
+
 describe('daily opportunity planning', () => {
     it('uses the actual timeframe duration for same-timeframe combination windows', () => {
         const ctx = getContext();
