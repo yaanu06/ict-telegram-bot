@@ -476,6 +476,19 @@ describe('market-thesis opportunity invariants', () => {
         expect(result.verified).toBe(false);
         expect(result.reason_code).toBe('MARKET_MECHANICS_EXECUTION_INVALID');
     });
+
+    it('surfaces a proven developing narrative before an execution zone exists', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({ pair: 'AUD/USD', currentPrice: 0.7145, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            strategySetups: [{ id: 'developing-buy', primary: 'ICT', direction: 'BUY', narrative_state: 'ACTIVE', timeframe: '15M', execution_timeframe: '15M',
+                execution_model: 'CONFIRMATION_ENTRY', opportunity_narrative: { state: 'DEVELOPING', location: { id: 'D-1', type: 'DEMAND', timeframe: '4H', low: 0.713, high: 0.715 }, opportunity_reachable_today: true },
+                structural_invalidation_detail: { level: 0.71, source: 'DEMAND_INVALIDATION' }, structural_invalidation: 0.71,
+                target_candidates: [{ level: 0.72, source: 'BUY_SIDE_LIQUIDITY' }] }] });
+        expect(result.state).toBe('TODAY_OPPORTUNITY');
+        expect(result.reason_code).toBe('WAITING_FOR_EXECUTION');
+        expect(result.execution_model).toBe('CONFIRMATION_ENTRY');
+        expect(result.execution_zone_id).toBeNull();
+    });
 });
 
 describe('top-down trade context', () => {
