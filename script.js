@@ -6119,138 +6119,175 @@ function waitCodeFromRejections(audit, hasStrategySetups) {
     return 'NO_EXECUTION_GEOMETRY';
 }
 
+function getTodayOpportunityZone(setup, executionZones = []) {
+    return setup?.execution_zone || (executionZones || []).find(zone =>
+        zone?.strategy_setup?.id === setup?.id || zone?.parent_narrative_id === setup?.id || zone?.narrative_id === setup?.id
+    ) || null;
+}
+
+function getTodayOpportunityExecutionModel(setup, zone) {
+    const explicit = String(setup?.execution_model || setup?.entry_model || zone?.execution_model || zone?.entry_model || '').toUpperCase();
+    if (['CONFIRMATION_ENTRY', 'CONFIRMATION', 'CONFIRMATION_RETEST'].includes(explicit) || setup?.requires_confirmation === true || zone?.requires_confirmation === true) return 'CONFIRMATION_ENTRY';
+    return 'PENDING_LIMIT';
+}
+
+function isTodayFreshContinuation(setup, zone) {
+    const models = [setup?.execution_model, setup?.entry_model, zone?.execution_model, zone?.entry_model]
+        .filter(Boolean).map(value => String(value).toUpperCase());
+    return models.includes('FRESH_RETRACEMENT_LIMIT') || models.includes('FRESH_CONTINUATION') || String(zone?.id || '').startsWith('FRESH-');
+}
+
+function getTodayOpportunityTargetPool({ setup, zone, targetCandidates, direction, currentPrice }) {
+    const candidates = [
+        ...(Array.isArray(setup?.target_candidates) ? setup.target_candidates : []),
+        ...(Array.isArray(targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell']) ? targetCandidates[direction === 'BUY' ? 'buy' : 'sell'] : [])
+    ];
+    const native = Number(setup?.primary_objective ?? setup?.target_level ?? setup?.target);
+    if (Number.isFinite(native)) candidates.push({ level: native, source: setup?.target_bias || 'STRUCTURAL_OBJECTIVE', strategy_native: true });
+    const entryReference = Number(zone?.entry ?? zone?.midpoint ?? setup?.entry ?? currentPrice);
+    const seen = new Set();
+    return candidates.filter(target => {
+        const level = Number(target?.level ?? target?.target_level ?? target?.price);
+        if (!Number.isFinite(level) || !Number.isFinite(entryReference)) return false;
+        if (target?.consumed || target?.invalidated || target?.reached) return false;
+        if (direction === 'BUY' ? level <= entryReference : level >= entryReference) return false;
+        const key = String(level);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    }).sort((a, b) => Math.abs(Number(a.level ?? a.target_level) - entryReference) - Math.abs(Number(b.level ?? b.target_level) - entryReference));
+}
+
+function evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal = pair, currentPrice, scanAsOfMs, histories = {}, targetCandidates = {}, marketOpen = true, candidateDiagnostics = {} } = {}) {
+    const fail = (reason_code, reason, metrics = {}) => ({ valid: false, reason_code, reason, metrics, zone, execution_model: getTodayOpportunityExecutionModel(setup, zone) });
+    const direction = setup?.direction;
+    const executionTimeframe = setup?.execution_timeframe || setup?.timeframe || zone?.timeframe;
+    const model = getTodayOpportunityExecutionModel(setup, zone);
+    const lifecycle = setup?.evaluation?.metrics?.setup_lifecycle || setup?.setup_lifecycle || {};
+    const state = setup?.narrative_state || setup?.narrativeState || setup?.strategy_state;
+    const hardDataCodes = ['DATA_TIME_INCONSISTENT', 'DATA_QUALITY', 'INVALID_MARKET_DATA', 'MISSING_TIMEFRAME_DATA', 'ENGINE_INVARIANT_FAILURE'];
+    const detail = { ...(candidateDiagnostics?.rejection_detail || {}), ...(candidateDiagnostics?.seed_failure_counts || {}) };
+    const hardDataFailure = hardDataCodes.find(code => Number(detail[code]) > 0);
+    if (hardDataFailure) return fail(hardDataFailure, 'The scan contains a hard market-data or engine-integrity failure.');
+    if (marketOpen === false || lifecycle.market_closed === true) return fail('MARKET_CLOSED', 'The instrument is closed for the current scan.');
+    if (!direction || !['BUY', 'SELL'].includes(direction)) return fail('INVALID_STRATEGY_NARRATIVE', 'The developing narrative has no valid direction.');
+    if (['INVALIDATED', 'TARGET_COMPLETED', 'STALE_NARRATIVE', 'EXPIRED'].includes(state)) return fail(state === 'TARGET_COMPLETED' ? 'SETUP_ALREADY_COMPLETED' : state === 'STALE_NARRATIVE' ? 'SETUP_STALE' : 'SETUP_EXPIRED', 'The strategy narrative is no longer active.');
+    if (!zone || zone.primary_eligible === false || zone.invalidated || zone.expired === true || zone.consumed === true || zone.entry_consumed === true || ['CONSUMED', 'INVALIDATED', 'EXPIRED'].includes(String(zone.freshness || '').toUpperCase()) || ['EXPIRED', 'INVALIDATED'].includes(String(zone.execution_state || '').toUpperCase())) return fail(zone?.consumed || zone?.entry_consumed ? 'ENTRY_ALREADY_CONSUMED' : zone?.expired || String(zone?.freshness || '').toUpperCase() === 'EXPIRED' ? 'EXECUTION_ZONE_EXPIRED' : 'INVALID_EXECUTION_ZONE', 'The proposed execution area is not fresh and valid.');
+    const low = Number(zone.low);
+    const high = Number(zone.high);
+    if (!Number.isFinite(low) || !Number.isFinite(high) || low >= high) return fail('INVALID_EXECUTION_ZONE', 'The area of interest has invalid numeric bounds.');
+    const invalidation = Number(setup?.structural_invalidation?.level ?? setup?.structural_invalidation ?? zone?.structural_invalidation?.level ?? zone?.structural_invalidation ?? setup?.sweep_extreme ?? setup?.invalidation);
+    if (!Number.isFinite(invalidation) || /PIVOT|ATR_FALLBACK/i.test(String(setup?.structural_invalidation?.source || zone?.origin || ''))) return fail('INVALID_STRUCTURAL_ZONE', 'No authoritative structural invalidation supports this plan.', { structural_invalidation: null });
+    const zoneCreated = normalizeTimestampUTC(zone.created_time ?? zone.created_time_ms ?? zone.created_at);
+    const parentTime = normalizeTimestampUTC(setup.event_time ?? setup.reclaim_time ?? setup.source_time);
+    if (Number.isFinite(zoneCreated) && Number.isFinite(scanAsOfMs) && zoneCreated > scanAsOfMs + STRATEGY_SPEC.TIME.futureToleranceMs) return fail('DATA_TIME_INCONSISTENT', 'The execution area is dated after the scan.', { zone_created_time: zoneCreated });
+    const freshContinuation = isTodayFreshContinuation(setup, zone);
+    if (freshContinuation && !Number.isFinite(zoneCreated)) return fail('INVALID_EXECUTION_ZONE', 'A fresh continuation area has no canonical creation time.');
+    if (Number.isFinite(zoneCreated) && Number.isFinite(parentTime) && zoneCreated < parentTime && freshContinuation) return fail('PRE_SIGNAL_EXECUTION_ZONE', 'The proposed continuation area predates its parent narrative.');
+    if (['SETUP_ALREADY_COMPLETED', 'SETUP_DELIVERY_ALREADY_ADVANCED', 'SETUP_EXPIRED', 'SETUP_STALE', 'ENTRY_ALREADY_CONSUMED', 'DATA_TIME_INCONSISTENT'].includes(lifecycle.rejection_code) && !freshContinuation) return fail(lifecycle.rejection_code, 'The execution opportunity has a terminal lifecycle rejection.');
+    const targetPool = getTodayOpportunityTargetPool({ setup, zone, targetCandidates, direction, currentPrice });
+    const target = targetPool[0];
+    const targetLevel = Number(target?.level ?? target?.target_level);
+    const entry = Number(zone.entry ?? zone.midpoint ?? setup.entry ?? ((low + high) / 2));
+    if (!target || !Number.isFinite(targetLevel)) return fail('NO_REMAINING_TARGET', 'No real structural objective remains in the trade direction.', { target_available: false });
+    if (target.hard_unreachable === true || target.reachability?.quality === 'HARD_UNREACHABLE' || target.reachability?.hard_unreachable === true) return fail('NO_REMAINING_TARGET', 'The remaining structural objective has a hard-unreachable path.', { target_available: false, target_level: targetLevel });
+    if (direction === 'BUY' ? targetLevel <= currentPrice : targetLevel >= currentPrice) return fail('NO_REMAINING_TARGET', 'The remaining structural objective has already been delivered or is not ahead of price.', { target_available: false, target_level: targetLevel });
+    const executionData = getClosedHistory(histories, executionTimeframe);
+    const executionAtr = executionData.length >= 15 ? atr(executionData, 14) : null;
+    const distanceToArea = currentPrice < low ? low - currentPrice : currentPrice > high ? currentPrice - high : 0;
+    const distanceToAreaAtr = Number.isFinite(executionAtr) && executionAtr > 0 ? distanceToArea / executionAtr : null;
+    const calculatedReachable = Number.isFinite(distanceToAreaAtr) ? distanceToAreaAtr <= STRATEGY_SPEC.FRESHNESS.pendingLaterDistanceAtr : null;
+    const explicitReachable = model === 'PENDING_LIMIT'
+        ? (typeof zone.entry_reachable_today === 'boolean' ? zone.entry_reachable_today : typeof lifecycle.entry_reachable_today === 'boolean' ? lifecycle.entry_reachable_today : null)
+        : (typeof zone.opportunity_reachable_today === 'boolean' ? zone.opportunity_reachable_today : typeof lifecycle.opportunity_reachable_today === 'boolean' ? lifecycle.opportunity_reachable_today : null);
+    const reachable = explicitReachable ?? calculatedReachable;
+    const metrics = {
+        distance_to_area: distanceToArea,
+        distance_to_area_atr: distanceToAreaAtr,
+        opportunity_reachable_today: reachable === true,
+        delivery_progress: null,
+        remaining_reward_fraction: null,
+        target_available: true,
+        target_level: targetLevel,
+        target_source: target.source || target.target_type || 'STRUCTURAL_OBJECTIVE',
+        execution_model: model,
+        structural_invalidation: { level: invalidation, source: setup?.structural_invalidation?.source || zone?.structural_invalidation?.source || (setup.primary || 'STRATEGY') + '_INVALIDATION', timeframe: setup?.setup_timeframe || setup?.timeframe || executionTimeframe }
+    };
+    if (reachable !== true) return fail('ENTRY_NOT_REACHABLE_TODAY', 'The area is not demonstrably reachable during the remaining trading window.', metrics);
+    const rewardDistance = Math.abs(targetLevel - entry);
+    const remainingDistance = Math.abs(targetLevel - currentPrice);
+    const rawProgress = rewardDistance > 0 ? (direction === 'BUY' ? (currentPrice - entry) / rewardDistance : (entry - currentPrice) / rewardDistance) : null;
+    metrics.delivery_progress = Number.isFinite(rawProgress) ? Math.max(0, Math.min(1, rawProgress)) : null;
+    metrics.remaining_reward_fraction = rewardDistance > 0 ? Math.max(0, Math.min(1, remainingDistance / rewardDistance)) : null;
+    if (Number.isFinite(metrics.remaining_reward_fraction) && metrics.remaining_reward_fraction < STRATEGY_SPEC.FRESHNESS.minRemainingRewardFraction) return fail('SETUP_DELIVERY_ALREADY_ADVANCED', 'The original delivery is too advanced to stalk as a new plan.', metrics);
+    if (Number.isFinite(metrics.delivery_progress) && metrics.delivery_progress >= 1) return fail('SETUP_ALREADY_COMPLETED', 'The structural objective has already been delivered.', metrics);
+    return { valid: true, reason_code: null, reason: 'The narrative, fresh area, reachability, delivery, target, and invalidation contracts pass.', metrics, zone, target, execution_model: model, entry, target_pool: targetPool };
+}
+
 function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfMs, histories, marketContext = {}, strategySetups = [], aiAnalysis = null, executionZones = [], candidateDiagnostics = {}, validCandidates = [], targetCandidates = {}, marketOpen = true } = {}) {
     const state = {
-        state: 'NO_TRADE_TODAY',
-        bias: marketContext.directional_bias || aiAnalysis?.market_view?.bias || 'NEUTRAL',
-        strategy: null,
-        direction: null,
-        narrative_id: null,
-        source: 'DETERMINISTIC_MARKET_FACTS',
-        ai_supported: false,
-        deterministic_supported: false,
-        area_of_interest: null,
-        execution_model: null,
-        activation_conditions: [],
-        cancellation_conditions: [],
-        target_intent: null,
-        expected_window: 'REMAINDER_OF_TODAY',
-        delivery_progress: null,
-        entry_reachable_today: false,
-        opportunity_reachable_today: false,
-        reason_code: 'NO_TRADE_TODAY',
-        reason: 'No defensible fresh or developing opportunity remains for today.',
-        missed_opportunities: [],
-        completed_opportunities: [],
-        fresh_continuation_opportunities: []
+        state: 'NO_TRADE_TODAY', bias: marketContext.directional_bias || aiAnalysis?.market_view?.bias || 'NEUTRAL', strategy: null, direction: null, narrative_id: null,
+        execution_zone_id: null, source: 'DETERMINISTIC_MARKET_FACTS', ai_supported: false, deterministic_supported: false, area_of_interest: null,
+        execution_model: null, activation_conditions: [], cancellation_conditions: [], target_intent: null, expected_window: 'REMAINDER_OF_TODAY',
+        delivery_progress: null, remaining_reward_fraction: null, distance_to_area_atr: null, entry_reachable_today: false, opportunity_reachable_today: false,
+        target_viable: false, structural_invalidation: null, reason_code: 'NO_TRADE_TODAY', reason: 'No defensible fresh or developing opportunity remains for today.',
+        rejected_reason: null, rejected_opportunities: [], missed_opportunities: [], completed_opportunities: [], fresh_continuation_opportunities: []
     };
-    if (marketOpen === false) {
-        state.reason_code = 'MARKET_CLOSED';
-        state.reason = 'The instrument is currently closed; no opportunity can be executed today.';
-        return state;
-    }
+    if (marketOpen === false) { state.reason_code = 'MARKET_CLOSED'; state.reason = 'The instrument is currently closed for the current scan.'; return state; }
     const bestCandidate = (validCandidates || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
     if (bestCandidate) {
-        const zone = bestCandidate.zone || {
-            low: bestCandidate.zone_low,
-            high: bestCandidate.zone_high,
-            type: bestCandidate.zone_type,
-            timeframe: bestCandidate.execution_timeframe || bestCandidate.timeframe
-        };
-        state.state = 'TRADE_READY';
-        state.strategy = bestCandidate.strategy_label || bestCandidate.zone_type || null;
-        state.direction = bestCandidate.direction;
-        state.narrative_id = bestCandidate.strategy_setup?.id || bestCandidate.id;
-        state.source = 'DETERMINISTIC_CANDIDATE' + (bestCandidate.ai_verified ? '+VERIFIED_AI_ANALYST' : '');
-        state.ai_supported = !!bestCandidate.ai_verified;
-        state.deterministic_supported = true;
-        state.area_of_interest = zone ? { low: zone.low, high: zone.high, source: zone.entry_region_source || zone.type || 'STRUCTURAL' } : null;
-        state.execution_model = bestCandidate.execution_model || bestCandidate.entry_model || 'PENDING_LIMIT';
-        state.activation_conditions = ['All deterministic entry, structural stop, target, RR, and lifecycle conditions are satisfied'];
-        state.cancellation_conditions = ['Structural invalidation is breached', 'TP1 is completed before order execution', 'Pending opportunity expires'];
-        state.target_intent = bestCandidate.target_bias || bestCandidate.strategy_setup?.target_bias || null;
-        state.delivery_progress = bestCandidate.progress_to_tp1_fraction ?? bestCandidate.narrative_delivery_progress ?? null;
-        state.entry_reachable_today = bestCandidate.entry_reachable_today !== false;
-        state.opportunity_reachable_today = state.entry_reachable_today;
-        state.reason_code = 'TRADE_READY';
-        state.reason = 'A deterministic opportunity is executable under the current market state.';
+        const zone = bestCandidate.zone || { low: bestCandidate.zone_low, high: bestCandidate.zone_high, type: bestCandidate.zone_type, timeframe: bestCandidate.execution_timeframe || bestCandidate.timeframe, id: bestCandidate.zone_id };
+        state.state = 'TRADE_READY'; state.strategy = bestCandidate.strategy_label || bestCandidate.zone_type || null; state.direction = bestCandidate.direction;
+        state.narrative_id = bestCandidate.strategy_setup?.id || bestCandidate.id; state.execution_zone_id = zone?.id || bestCandidate.id;
+        state.source = 'DETERMINISTIC_CANDIDATE' + (bestCandidate.ai_verified ? '+VERIFIED_AI_ANALYST' : ''); state.ai_supported = !!bestCandidate.ai_verified; state.deterministic_supported = true;
+        state.area_of_interest = zone ? { low: zone.low, high: zone.high, source: zone.entry_region_source || zone.type || 'STRUCTURAL', timeframe: zone.timeframe, zone_id: zone.id || bestCandidate.id } : null;
+        state.execution_model = bestCandidate.execution_model || bestCandidate.entry_model || 'PENDING_LIMIT'; state.activation_conditions = ['All deterministic entry, structural stop, target, RR, and lifecycle conditions are satisfied'];
+        state.cancellation_conditions = ['Structural invalidation is breached', 'TP1 is completed before order execution', 'Pending opportunity expires']; state.target_intent = bestCandidate.target_bias || bestCandidate.strategy_setup?.target_bias || null;
+        state.delivery_progress = bestCandidate.progress_to_tp1_fraction ?? bestCandidate.narrative_delivery_progress ?? null; state.remaining_reward_fraction = bestCandidate.remaining_reward_fraction ?? null;
+        state.entry_reachable_today = bestCandidate.entry_reachable_today === true; state.opportunity_reachable_today = state.entry_reachable_today; state.target_viable = true;
+        state.structural_invalidation = bestCandidate.structural_invalidation || null; state.reason_code = 'TRADE_READY'; state.reason = 'A deterministic opportunity is executable under the current market state.';
         return state;
     }
-
     const active = (strategySetups || []).filter(setup => {
-        if (!setup?.direction || setup.narrative_state === 'INVALIDATED' || setup.narrative_state === 'TARGET_COMPLETED' || setup.narrative_state === 'STALE_NARRATIVE') return false;
-        const lifecycle = setup.evaluation?.metrics?.setup_lifecycle || setup;
-        if (['SETUP_EXPIRED', 'SETUP_STALE', 'SETUP_ALREADY_COMPLETED', 'ENTRY_ALREADY_CONSUMED', 'SETUP_DELIVERY_ALREADY_ADVANCED'].includes(lifecycle.rejection_code)) return false;
-        if (setup.original_strategy_entry_consumed && setup.execution_model !== 'FRESH_RETRACEMENT_LIMIT') return false;
-        return true;
+        const zone = getTodayOpportunityZone(setup, executionZones);
+        return setup?.direction && !['INVALIDATED', 'TARGET_COMPLETED', 'STALE_NARRATIVE', 'EXPIRED'].includes(setup.narrative_state)
+            && !(setup.original_strategy_entry_consumed && !isTodayFreshContinuation(setup, zone));
     });
     for (const setup of strategySetups || []) {
         if (setup.narrative_state === 'STALE_NARRATIVE' || setup.narrative_state === 'TARGET_COMPLETED') state.completed_opportunities.push(setup.id || setup.primary);
-        if (setup.original_strategy_entry_consumed && setup.execution_model !== 'FRESH_RETRACEMENT_LIMIT') state.missed_opportunities.push(setup.id || setup.primary);
+        if (setup.original_strategy_entry_consumed && !isTodayFreshContinuation(setup, getTodayOpportunityZone(setup, executionZones))) state.missed_opportunities.push(setup.id || setup.primary);
     }
-    const candidates = [];
+    const plans = [];
     for (const setup of active) {
-        const zone = setup.execution_zone || (executionZones || []).find(candidateZone =>
-            candidateZone?.strategy_setup?.id === setup.id || candidateZone?.parent_narrative_id === setup.id || candidateZone?.narrative_id === setup.id
-        );
-        if (!zone || zone.primary_eligible === false || zone.invalidated || zone.consumed === true || zone.entry_consumed === true || zone.freshness === 'CONSUMED' || zone.freshness === 'INVALIDATED') continue;
-        const lifecycle = setup.evaluation?.metrics?.setup_lifecycle || setup;
-        if (lifecycle.entry_reachable_today === false || lifecycle.market_closed === true) continue;
-        const targetPool = [
-            ...(setup.target_candidates || []),
-            ...(targetCandidates?.[setup.direction === 'BUY' ? 'buy' : 'sell'] || [])
-        ].filter(target => {
-            const level = Number(target?.level ?? target?.target_level);
-            const reference = Number(zone.midpoint ?? currentPrice);
-            return Number.isFinite(level) && (setup.direction === 'BUY' ? level > reference : level < reference) && !target.consumed && !target.invalidated;
-        });
-        if (targetPool.length === 0 && !setup.primary_objective && !setup.target_bias) continue;
-        const inside = Number.isFinite(Number(currentPrice)) && Number.isFinite(Number(zone.low)) && Number.isFinite(Number(zone.high))
-            && currentPrice >= zone.low && currentPrice <= zone.high;
+        const zone = getTodayOpportunityZone(setup, executionZones);
+        const plan = evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal, currentPrice, scanAsOfMs, histories, targetCandidates, marketOpen, candidateDiagnostics });
+        if (!plan.valid) { state.rejected_opportunities.push({ narrative_id: setup.id || null, execution_zone_id: zone?.id || null, reason_code: plan.reason_code, reason: plan.reason, metrics: plan.metrics }); continue; }
+        const inside = currentPrice >= Number(zone.low) && currentPrice <= Number(zone.high);
         const source = zone.entry_region_source || zone.type || setup.entry_region_source || setup.primary;
-        const executionTimeframe = setup.execution_timeframe || setup.timeframe || '1H';
-        const strategy = setup.label || setup.primary;
-        candidates.push({
-            state: 'TODAY_OPPORTUNITY',
-            bias: setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH',
-            strategy,
-            direction: setup.direction,
-            narrative_id: setup.id || null,
-            source: setup.ai_verified ? 'VERIFIED_AI_HYPOTHESIS' : 'DETERMINISTIC_NARRATIVE',
-            ai_supported: !!setup.ai_verified || !!aiAnalysis?.verified_hypotheses?.some(h => h.hypothesis_id === setup.ai_hypothesis_id),
-            deterministic_supported: true,
-            area_of_interest: { low: zone.low, high: zone.high, source },
-            execution_model: 'CONFIRMATION_ENTRY',
-            activation_conditions: inside
-                ? [executionTimeframe + ' area is reached; wait for deterministic 15M MSS, CHoCH, BOS, or directional displacement confirmation']
-                : ['Price retraces into the ' + source + ' area', 'After the area is reached, wait for deterministic 15M MSS, CHoCH, BOS, or directional displacement confirmation'],
-            cancellation_conditions: ['Structural invalidation is breached', 'Primary target delivery completes before entry', 'The opportunity expires or market context materially changes'],
-            target_intent: setup.target_bias || aiAnalysis?.verified_hypotheses?.find(h => h.hypothesis_id === setup.ai_hypothesis_id)?.target_intent || null,
-            expected_window: 'REMAINDER_OF_TODAY',
-            delivery_progress: lifecycle.progress_to_tp1_fraction ?? lifecycle.progress_to_tp1_fraction_raw ?? null,
-            entry_reachable_today: lifecycle.entry_reachable_today !== false,
-            opportunity_reachable_today: lifecycle.entry_reachable_today !== false,
-            reason_code: inside ? 'WAITING_FOR_CONFIRMATION' : 'WAITING_FOR_RETRACE',
-            reason: inside
-                ? 'A valid strategy area is active, but deterministic confirmation is not yet present.'
-                : 'A valid strategy narrative remains actionable today; wait for price to reach the deterministic area and activate it.',
-            setup_timeframe: setup.setup_timeframe || setup.timeframe,
-            execution_timeframe: executionTimeframe,
-            confidence: Number.isFinite(Number(setup.setup_confidence)) ? Number(setup.setup_confidence) : 0
-        });
+        const executionTimeframe = setup.execution_timeframe || setup.timeframe || zone.timeframe || '1H';
+        const aiHypothesis = aiAnalysis?.verified_hypotheses?.find(h => h.hypothesis_id === setup.ai_hypothesis_id);
+        const targetIntent = setup.target_bias || setup.ai_target_intent || aiHypothesis?.target_intent || plan.target?.source || 'OPPOSING_STRUCTURE';
+        plans.push({ state: 'TODAY_OPPORTUNITY', bias: setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH', strategy: setup.label || setup.primary, direction: setup.direction,
+            narrative_id: setup.id || null, execution_zone_id: zone.id || null, source: setup.ai_verified ? 'VERIFIED_AI_HYPOTHESIS' : 'DETERMINISTIC_NARRATIVE',
+            ai_supported: !!setup.ai_verified || !!aiHypothesis, deterministic_supported: true, area_of_interest: { low: Number(zone.low), high: Number(zone.high), source, timeframe: zone.timeframe || executionTimeframe, zone_id: zone.id || null },
+            execution_model: plan.execution_model, activation_conditions: plan.execution_model === 'PENDING_LIMIT'
+                ? (inside ? ['Price is at the deterministic limit area; the order fills on touch at its limit price'] : ['Price retraces into the deterministic limit area; no confirmation is required after touch'])
+                : (inside ? [executionTimeframe + ' area is reached; wait for deterministic 15M MSS, CHoCH, BOS, or directional displacement confirmation'] : ['Price retraces into the ' + source + ' area', 'After the area is reached, wait for deterministic confirmation before constructing the entry']),
+            cancellation_conditions: ['Structural invalidation is breached', 'The structural target is completed before entry', 'The opportunity expires or market context materially changes'], target_intent: targetIntent, expected_window: 'REMAINDER_OF_TODAY',
+            delivery_progress: plan.metrics.delivery_progress, remaining_reward_fraction: plan.metrics.remaining_reward_fraction, distance_to_area_atr: plan.metrics.distance_to_area_atr,
+            entry_reachable_today: true, opportunity_reachable_today: plan.metrics.opportunity_reachable_today, target_viable: plan.metrics.target_available, structural_invalidation: plan.metrics.structural_invalidation,
+            reason_code: plan.execution_model === 'PENDING_LIMIT' ? 'WAITING_FOR_RETRACE' : (inside ? 'WAITING_FOR_CONFIRMATION' : 'WAITING_FOR_RETRACE'),
+            reason: plan.execution_model === 'PENDING_LIMIT' ? 'A deterministic pending limit remains valid for the remainder of today.' : (inside ? 'A valid strategy area is active, but deterministic confirmation is not yet present.' : 'A valid strategy narrative remains actionable today; wait for price to reach the deterministic area and activate it.'),
+            setup_timeframe: setup.setup_timeframe || setup.timeframe, execution_timeframe: executionTimeframe, confidence: Number.isFinite(Number(setup.setup_confidence)) ? Number(setup.setup_confidence) : 0 });
     }
-    const bestPlan = candidates.sort((a, b) => (b.confidence - a.confidence) || (a.area_of_interest?.low || 0) - (b.area_of_interest?.low || 0))[0];
-    if (bestPlan) {
-        Object.assign(state, bestPlan);
-        state.fresh_continuation_opportunities = candidates.slice(1).map(candidate => candidate.narrative_id);
-        return state;
-    }
-    const rejectionDetails = candidateDiagnostics?.rejection_detail || {};
-    if (rejectionDetails.SETUP_DELIVERY_ALREADY_ADVANCED || rejectionDetails.SETUP_ALREADY_COMPLETED) {
-        state.reason = 'Existing strategy moves have already delivered too far; no fresh executable continuation remains today.';
-    } else if (rejectionDetails.ENTRY_ALREADY_CONSUMED || rejectionDetails.SETUP_EXPIRED || rejectionDetails.SETUP_STALE) {
-        state.reason = 'Existing entries are consumed or stale and no new deterministic execution area remains today.';
-    }
+    const bestPlan = plans.sort((a, b) => (b.confidence - a.confidence) || (a.area_of_interest?.low || 0) - (b.area_of_interest?.low || 0))[0];
+    if (bestPlan) { Object.assign(state, bestPlan); state.fresh_continuation_opportunities = plans.slice(1).map(candidate => candidate.narrative_id); return state; }
+    const dominant = state.rejected_opportunities.reduce((counts, item) => { counts[item.reason_code] = (counts[item.reason_code] || 0) + 1; return counts; }, {});
+    state.rejected_reason = Object.entries(dominant).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+    if (state.rejected_reason === 'SETUP_DELIVERY_ALREADY_ADVANCED') { state.reason_code = 'DELIVERY_ALREADY_ADVANCED'; state.reason = 'Existing strategy delivery is too advanced and no fresh continuation remains today.'; }
+    else if (state.rejected_reason === 'ENTRY_NOT_REACHABLE_TODAY') { state.reason_code = 'ENTRY_NOT_REACHABLE_TODAY'; state.reason = 'No remaining deterministic execution area is realistically reachable today.'; }
+    else if (state.rejected_reason === 'NO_REMAINING_TARGET') { state.reason_code = 'NO_REMAINING_TARGET'; state.reason = 'No real structural objective remains in the trade direction.'; }
+    else if (state.rejected_reason) { state.reason_code = state.rejected_reason; state.reason = 'No developing opportunity passed the deterministic planning contracts.'; }
     return state;
 }
 
@@ -6875,6 +6912,9 @@ function buildAiMarketAnalystPrompt(evidenceCatalog = {}, candleData = '') {
     };
     const system = [
         'You are the MARKET ANALYST stage of a deterministic ICT trading engine.',
+        'Identify the highest-quality trading opportunity still available from the current market state for the remainder of today.',
+        'Assess the dominant current narrative, meaningful liquidity, whether price is extended, whether retracement or continuation is realistic, whether the original move already delivered too far, and whether no defensible opportunity remains today.',
+        'You may return zero hypotheses or describe NO_VALID_OPPORTUNITY_TODAY through the market_view when the evidence does not support a plan.',
         'Interpret only the supplied deterministic market evidence and propose zero or more strategy hypotheses for later code verification.',
         'Return strict JSON only with market_view and hypotheses.',
         'You may reference supplied CRT, TBS/Turtle Soup, MSNR, liquidity, FVG, OB, and execution-zone IDs, but you must never invent IDs.',
@@ -8361,12 +8401,26 @@ async function runAutoScan() {
 
 
         if (aiResult.noTrade) {
-            const today = liveMarketContext.today_opportunity;
+            let today = liveMarketContext.today_opportunity;
             if (today.state === 'TRADE_READY') {
-                today.state = 'TODAY_OPPORTUNITY';
-                today.execution_model = 'PENDING_LIMIT';
-                today.reason_code = 'AI_SKIPPED_VALID_CANDIDATES';
-                today.reason = 'A deterministic opportunity is available, but the final selector chose WAIT; monitor the supplied area without changing its geometry.';
+                today = buildTodayOpportunity({
+                    pair,
+                    currentPrice: price,
+                    scanAsOfMs,
+                    histories: historyCache,
+                    marketContext: liveMarketContext.market_context,
+                    strategySetups: liveMarketContext.strategy_setups,
+                    aiAnalysis: liveMarketContext.ai_analysis,
+                    executionZones: liveMarketContext.strategy_execution_zones,
+                    candidateDiagnostics: liveMarketContext.setup_candidate_audit,
+                    validCandidates: [],
+                    targetCandidates: liveMarketContext.target_candidates,
+                    marketOpen: liveMarketContext.market_open
+                });
+                if (today.state === 'TODAY_OPPORTUNITY') {
+                    today.reason_code = 'AI_SKIPPED_VALID_CANDIDATES';
+                    today.reason = 'The deterministic developing plan remains valid, but the final selector chose WAIT.';
+                }
             }
             const out = buildTodayOpportunityOutput(today, pair, price, scanAsOfMs, liveMarketContext.market_open);
             out.trade_signal.trade_type = 'WAIT';

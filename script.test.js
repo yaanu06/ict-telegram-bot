@@ -411,17 +411,17 @@ describe('daily opportunity planning', () => {
     it('returns a useful WAITING_FOR_RETRACE plan for an active developing narrative', () => {
         const ctx = getContext();
         const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.2, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
-            strategySetups: [{ id: 'S-1', primary: 'CRT', strategy_label: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', execution_timeframe: '15M', execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.1, high: 1.11, timeframe: '15M', direction: 'SELL', freshness: 'FRESH', consumed: false }, target_candidates: [{ level: 1.05, source: 'CRT_OPPOSITE_RANGE' }], setup_confidence: 68 }] });
+            strategySetups: [{ id: 'S-1', primary: 'CRT', strategy_label: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', execution_timeframe: '15M', execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.1, high: 1.11, timeframe: '15M', direction: 'SELL', freshness: 'FRESH', consumed: false, entry_reachable_today: true, structural_invalidation: { level: 1.25, source: 'CRT_SWEEP_EXTREME' } }, target_candidates: [{ level: 1.05, source: 'CRT_OPPOSITE_RANGE' }], setup_confidence: 68 }] });
         expect(result.state).toBe('TODAY_OPPORTUNITY');
         expect(result.reason_code).toBe('WAITING_FOR_RETRACE');
-        expect(result.execution_model).toBe('CONFIRMATION_ENTRY');
+        expect(result.execution_model).toBe('PENDING_LIMIT');
         expect(result.area_of_interest.low).toBe(1.1);
     });
 
     it('returns WAITING_FOR_CONFIRMATION when price is in the developing area', () => {
         const ctx = getContext();
         const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.105, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
-            strategySetups: [{ id: 'S-2', primary: 'TBS', strategy_label: 'TBS', direction: 'SELL', narrative_state: 'ACTIVE', execution_timeframe: '15M', execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.1, high: 1.11, timeframe: '15M', direction: 'SELL', freshness: 'FRESH', consumed: false }, target_candidates: [{ level: 1.05, source: 'TBS_LIQUIDITY' }] }] });
+            strategySetups: [{ id: 'S-2', primary: 'TBS', strategy_label: 'TBS', direction: 'SELL', narrative_state: 'ACTIVE', execution_timeframe: '15M', execution_model: 'CONFIRMATION_ENTRY', requires_confirmation: true, execution_zone: { low: 1.1, high: 1.11, timeframe: '15M', direction: 'SELL', freshness: 'FRESH', consumed: false, opportunity_reachable_today: true, structural_invalidation: { level: 1.25, source: 'TBS_SWEEP_EXTREME' } }, target_candidates: [{ level: 1.05, source: 'TBS_LIQUIDITY' }] }] });
         expect(result.state).toBe('TODAY_OPPORTUNITY');
         expect(result.reason_code).toBe('WAITING_FOR_CONFIRMATION');
     });
@@ -431,7 +431,7 @@ describe('daily opportunity planning', () => {
         const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.2, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
             strategySetups: [
                 { id: 'old', primary: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', original_strategy_entry_consumed: true, execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.1, high: 1.11, consumed: true }, target_candidates: [{ level: 1.05 }] },
-                { id: 'new', primary: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', original_strategy_entry_consumed: true, execution_model: 'FRESH_RETRACEMENT_LIMIT', execution_zone: { low: 1.15, high: 1.16, freshness: 'FRESH', consumed: false }, target_candidates: [{ level: 1.05, source: 'CRT_OPPOSITE_RANGE' }] }
+                { id: 'new', primary: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', event_time: '2026-09-14T08:00:00Z', original_strategy_entry_consumed: true, execution_model: 'FRESH_RETRACEMENT_LIMIT', execution_zone: { id: 'FRESH-NEW', low: 1.15, high: 1.16, created_time: '2026-09-14T09:00:00Z', freshness: 'FRESH', consumed: false, entry_reachable_today: true, structural_invalidation: { level: 1.25, source: 'CRT_SWEEP_EXTREME' } }, target_candidates: [{ level: 1.05, source: 'CRT_OPPOSITE_RANGE' }] }
             ] });
         expect(result.state).toBe('TODAY_OPPORTUNITY');
         expect(result.narrative_id).toBe('new');
@@ -452,6 +452,56 @@ describe('daily opportunity planning', () => {
         expect(result.opportunity.execution_model).toBe('CONFIRMATION_ENTRY');
         expect(result).not.toHaveProperty('candidate_pipeline');
         expect(result).not.toHaveProperty('seed_diagnostics');
+    });
+
+    it('does not infer reachability when a raw setup omits reachability data', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.2, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            strategySetups: [{ id: 'unknown-reach', primary: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.1, high: 1.11, structural_invalidation: { level: 1.25, source: 'CRT_SWEEP_EXTREME' } }, target_candidates: [{ level: 1.05, source: 'CRT_OPPOSITE_RANGE' }] }] });
+        expect(result.state).toBe('NO_TRADE_TODAY');
+        expect(result.reason_code).toBe('ENTRY_NOT_REACHABLE_TODAY');
+    });
+
+    it('rejects an area that is explicitly unreachable today', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.2, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            strategySetups: [{ id: 'far', primary: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.1, high: 1.11, entry_reachable_today: false, structural_invalidation: { level: 1.25, source: 'CRT_SWEEP_EXTREME' } }, target_candidates: [{ level: 1.05 }] }] });
+        expect(result.reason_code).toBe('ENTRY_NOT_REACHABLE_TODAY');
+    });
+
+    it('rejects a narrative whose target delivery is already materially advanced', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.02, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            strategySetups: [{ id: 'advanced', primary: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', entry: 1.1, execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.09, high: 1.11, entry_reachable_today: true, structural_invalidation: { level: 1.13, source: 'CRT_SWEEP_EXTREME' } }, target_candidates: [{ level: 1.01, source: 'CRT_OPPOSITE_RANGE' }] }] });
+        expect(result.state).toBe('NO_TRADE_TODAY');
+        expect(result.reason_code).toBe('DELIVERY_ALREADY_ADVANCED');
+    });
+
+    it('rejects completed targets and target-bias-only narratives', () => {
+        const ctx = getContext();
+        const completed = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.0, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            strategySetups: [{ id: 'completed', primary: 'TBS', direction: 'SELL', narrative_state: 'ACTIVE', execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.09, high: 1.11, entry_reachable_today: true, structural_invalidation: { level: 1.13, source: 'TBS_SWEEP_EXTREME' } }, target_candidates: [{ level: 1.01, source: 'TBS_LIQUIDITY' }] }] });
+        expect(completed.reason_code).toBe('NO_REMAINING_TARGET');
+        const intentOnly = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.2, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            strategySetups: [{ id: 'intent-only', primary: 'CRT', direction: 'SELL', target_bias: 'SELL_SIDE_LIQUIDITY', narrative_state: 'ACTIVE', execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.1, high: 1.11, entry_reachable_today: true, structural_invalidation: { level: 1.25, source: 'CRT_SWEEP_EXTREME' } } }] });
+        expect(intentOnly.state).toBe('NO_TRADE_TODAY');
+    });
+
+    it('does not leak a hard data-integrity rejection into planning', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.2, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true, candidateDiagnostics: { rejection_detail: { DATA_TIME_INCONSISTENT: 4 } },
+            strategySetups: [{ id: 'bad-time', primary: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.1, high: 1.11, entry_reachable_today: true, structural_invalidation: { level: 1.25, source: 'CRT_SWEEP_EXTREME' } }, target_candidates: [{ level: 1.05 }] }] });
+        expect(result.state).toBe('NO_TRADE_TODAY');
+        expect(result.reason_code).toBe('DATA_TIME_INCONSISTENT');
+    });
+
+    it('requires explicit confirmation only for confirmation-entry models', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.105, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            strategySetups: [{ id: 'confirm', primary: 'MSNR', direction: 'SELL', narrative_state: 'ACTIVE', execution_model: 'CONFIRMATION_ENTRY', requires_confirmation: true, execution_zone: { low: 1.1, high: 1.11, opportunity_reachable_today: true, structural_invalidation: { level: 1.13, source: 'MSNR_RESISTANCE_INVALIDATION' } }, target_candidates: [{ level: 1.05, source: 'STRUCTURAL_MSNR' }] }] });
+        expect(result.state).toBe('TODAY_OPPORTUNITY');
+        expect(result.execution_model).toBe('CONFIRMATION_ENTRY');
+        expect(result.reason_code).toBe('WAITING_FOR_CONFIRMATION');
     });
 });
 
@@ -3886,6 +3936,8 @@ describe('AI market analyst contract', () => {
         const ctx = getContext();
         const prompt = ctx.buildAiMarketAnalystPrompt(evidence(), '');
         expect(prompt.system).toMatch(/MARKET ANALYST/);
+        expect(prompt.system).toMatch(/remainder of today/i);
+        expect(prompt.system).toMatch(/original move already delivered too far/i);
         expect(prompt.system).toMatch(/never invent IDs/i);
         expect(prompt.system).toMatch(/Do not return entry, entry_zone, stop_loss, TP prices/);
         expect(prompt.user).not.toMatch(/"entry"\s*:/);
