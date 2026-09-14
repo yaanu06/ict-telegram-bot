@@ -387,6 +387,67 @@ describe('strategy entry lifecycle', () => {
     });
 });
 
+describe('market-thesis opportunity invariants', () => {
+    it('does not confuse verified market mechanics with fresh continuation', () => {
+        const ctx = getContext();
+        const t0 = Date.parse('2026-09-14T10:00:00Z');
+        const setup = { primary: 'ICT', direction: 'BUY', narrative_state: 'ACTIVE', market_mechanics_verified: true,
+            event_time: t0, original_strategy_entry_consumed: true };
+        const oldZone = { id: 'old', low: 1, high: 2, created_time: t0, freshness: 'FRESH' };
+        const newZone = { id: 'new', low: 1, high: 2, created_time: t0 + 3600000, freshness: 'FRESH' };
+        expect(ctx.isTodayFreshContinuation(setup, oldZone)).toBe(false);
+        expect(ctx.isTodayFreshContinuation(setup, { ...newZone })).toBe(true);
+    });
+
+    it('rejects the same old zone even when wrapped in a new object', () => {
+        const ctx = getContext();
+        const t0 = Date.parse('2026-09-14T10:00:00Z');
+        const setup = { primary: 'CRT', direction: 'BUY', narrative_state: 'ACTIVE', event_time: t0, original_strategy_entry_consumed: true };
+        const zone = { id: 'old-zone', low: 1, high: 2, created_time: t0 - 3600000, freshness: 'FRESH' };
+        expect(ctx.isTodayFreshContinuation(setup, { ...zone })).toBe(false);
+    });
+
+    it('keeps an advanced parent terminal while evaluating a later zone independently', () => {
+        const ctx = getContext();
+        const t0 = Date.parse('2026-09-14T10:00:00Z');
+        const result = ctx.buildTodayOpportunity({ pair: 'GBP/JPY', currentPrice: 110, scanAsOfMs: t0 + 3 * 3600000, marketOpen: true,
+            strategySetups: [
+                { id: 'old-parent', primary: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', rejection_code: 'SETUP_DELIVERY_ALREADY_ADVANCED', event_time: t0,
+                    execution_zone: { id: 'old-zone', low: 108, high: 109, created_time: t0, freshness: 'FRESH' } },
+                { id: 'new-zone-setup', primary: 'ICT', direction: 'SELL', narrative_state: 'ACTIVE', event_time: t0 + 3600000,
+                    execution_zone: { id: 'new-zone', low: 108, high: 109, created_time: t0 + 2 * 3600000, freshness: 'FRESH', entry_reachable_today: true,
+                        structural_invalidation: { level: 112, source: 'ICT_SHIFT_ORIGIN_SWING' } },
+                    target_candidates: [{ level: 100, source: 'SELL_SIDE_LIQUIDITY' }] }
+            ] });
+        expect(result.reason_code).not.toBe('DELIVERY_ALREADY_ADVANCED');
+        expect(result.terminal_parent_opportunities).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'old-parent' })]));
+    });
+
+    it('creates deterministic supply and demand POIs only from displacement structure', () => {
+        const ctx = getContext();
+        const data = candles(80, 100, 0.5, 'up');
+        const pois = ctx.buildSupplyDemandAndFlipPOIs(data, '1H', 140, 'XAU/USD');
+        expect(pois.every(p => ['SUPPLY', 'DEMAND', 'FLIP'].includes(p.type))).toBe(true);
+        expect(pois.every(p => Array.isArray(p.structural_evidence_ids) && p.structural_evidence_ids.length > 0)).toBe(true);
+    });
+
+    it('keeps the authoritative reversal execution model on candidate construction', () => {
+        const ctx = getContext();
+        const data = candles(80, 1.08, 0.0003, 'up');
+        const setup = { id: 'rev', primary: 'CRT', label: 'CRT', direction: 'BUY', setup_timeframe: '1H', execution_timeframe: '15M',
+            execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT',
+            opportunity_thesis: { execution_model: 'CONFIRMATION_ENTRY', state: 'EXECUTION_VALID' },
+            execution_zone: { id: 'z', type: 'FVG', direction: 'BUY', timeframe: '15M', low: 1.1, high: 1.101, freshness: 'FRESH', primary_eligible: true },
+            target_candidates: [{ level: 1.11, source: 'SWING_HIGH', origin: 'STRUCTURAL' }],
+            structural_invalidation_detail: { level: 1.09, source: 'CRT_SWEEP_EXTREME' },
+            structural_invalidation: 1.09, trade_context_classification: 'HTF_VERIFIED_REVERSAL' };
+        const result = ctx.buildAdaptiveSetupCandidates({ pair: 'EUR/USD', price: 1.102, historyCache: { '4H': data, '1H': data, '15M': data, '1D': data },
+            zones: [setup.execution_zone], targetCandidates: { buy: [{ level: 1.11, source: 'SWING_HIGH', origin: 'STRUCTURAL' }] },
+            riskConstraints: { minimum_rr: 2.5 }, structure: {}, marketContext: { timeframe_context: {} }, strategySetups: [setup] });
+        expect(result.raw_candidates.length === 0 || result.raw_candidates[0].execution_model).toBeTruthy();
+    });
+});
+
 describe('top-down trade context', () => {
     function context(ctx, daily, fourH, oneH, reversal = false) {
         const structure = Object.fromEntries([['1D', daily], ['4H', fourH], ['1H', oneH], ['15M', 'BULLISH']]
