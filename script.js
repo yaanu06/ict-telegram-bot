@@ -6647,6 +6647,28 @@ function evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal = pair, cur
     return { valid: true, reason_code: null, reason: 'The narrative, fresh area, reachability, delivery, target, and invalidation contracts pass.', metrics, zone, target, execution_model: model, entry, target_pool: targetPool };
 }
 
+function buildOpportunityQuality(setup, plan, marketContext = {}, topDown = {}) {
+    const classification = setup?.opportunity_thesis?.htf_narrative?.classification || setup?.trade_context_classification ||
+        (marketContext?.timeframe_context ? topDown.classification : 'HTF_ALIGNED_CONTINUATION');
+    const biasDirection = marketContext?.daily_bias?.direction;
+    const dailyBiasRelationship = biasDirection === setup?.direction ? 'ALIGNED' : biasDirection ? 'CONFLICTING_UNVERIFIED' : 'NEUTRAL_CONTEXT';
+    const location = plan?.zone || setup?.opportunity_narrative?.location || setup?.execution_zone;
+    const locationType = String(location?.type || '').toUpperCase();
+    const locationScore = location ? (['DEMAND', 'SUPPLY', 'FLIP', 'MSNR'].includes(locationType) ? 24 : 14) : 0;
+    const liquidityScore = plan?.target ? ((plan.target.structural_priority || 0) >= 85 ? 22 : 12) : 0;
+    const executionState = !plan?.zone ? 'AWAITING_EXECUTION' : plan.execution_model === 'CONFIRMATION_ENTRY' && !setup?.opportunity_thesis?.execution_confirmed ? 'AWAITING_CONFIRMATION' : 'EXECUTION_AVAILABLE';
+    const tier = classification === 'HTF_VERIFIED_REVERSAL' ? 3 : classification === 'HTF_ALIGNED_CONTINUATION' ? 2 : 1;
+    const evidenceStrength = (setup?.opportunity_thesis?.evidence_ids || setup?.structural_evidence_ids || []).length;
+    const rankScore = tier * 100 + locationScore + liquidityScore + evidenceStrength * 2 + (plan?.metrics?.opportunity_reachable_today ? 10 : 0);
+    return { classification, daily_bias_relationship: dailyBiasRelationship, direction_quality: tier > 1 ? 'SUPPORTED' : 'LOCAL_ONLY',
+        location_quality: locationScore, liquidity_quality: liquidityScore, execution_state: executionState,
+        freshness: setup?.freshness || location?.freshness || null, target_quality: plan?.target ? 'REAL_AHEAD' : 'MISSING',
+        lifecycle_quality: setup?.narrative_state === 'ACTIVE' ? 'ACTIVE' : 'TERMINAL', evidence_strength: evidenceStrength,
+        watch_only: classification === 'LTF_ISOLATED', authorization_state: classification === 'LTF_ISOLATED' ? 'WATCH_ONLY' : 'PRIMARY_ELIGIBLE',
+        rank_tier: tier, rank_score: rankScore, event_time: normalizeTimestampUTC(setup?.event_time ?? setup?.execution_event_time ?? location?.created_time),
+        rejection_codes: setup?.opportunity_thesis?.rejection_codes || [] };
+}
+
 function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfMs, histories, marketContext = {}, strategySetups = [], aiAnalysis = null, executionZones = [], candidateDiagnostics = {}, validCandidates = [], targetCandidates = {}, marketOpen = true } = {}) {
     const timeframeContext = marketContext.timeframe_context || buildTimeframeContext({ historyCache: histories, structure: marketContext.structure, price: currentPrice, strategySetups, zones: executionZones });
     const state = {
@@ -6708,6 +6730,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         const aiHypothesis = aiAnalysis?.verified_hypotheses?.find(h => h.hypothesis_id === setup.ai_hypothesis_id);
         const targetIntent = setup.target_bias || setup.ai_target_intent || aiHypothesis?.target_intent || plan.target?.source || 'OPPOSING_STRUCTURE';
         const topDown = classifyTopDownTrade(setup, timeframeContext);
+        const opportunityQuality = buildOpportunityQuality(setup, plan, marketContext, topDown);
         plans.push({ state: 'TODAY_OPPORTUNITY', trade_context_classification: topDown.classification, top_down_context: topDown, bias: setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH', strategy: setup.label || setup.primary, direction: setup.direction,
             narrative_id: setup.id || null, execution_zone_id: zone?.id || null, source: setup.ai_verified ? 'VERIFIED_AI_HYPOTHESIS' : 'DETERMINISTIC_NARRATIVE',
             ai_supported: !!setup.ai_verified || !!aiHypothesis, deterministic_supported: true, area_of_interest: { low: Number(planArea.low), high: Number(planArea.high), source, timeframe: planArea.timeframe || executionTimeframe, zone_id: planArea.id || null },
@@ -6721,11 +6744,24 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             entry_reachable_today: true, opportunity_reachable_today: plan.metrics.opportunity_reachable_today, target_viable: plan.metrics.target_available, structural_invalidation: plan.metrics.structural_invalidation,
             reason_code: !zone ? 'WAITING_FOR_EXECUTION' : plan.execution_model === 'PENDING_LIMIT' ? 'WAITING_FOR_RETRACE' : (inside ? 'WAITING_FOR_CONFIRMATION' : 'WAITING_FOR_RETRACE'),
             reason: !zone ? 'A valid current-market narrative and location exist, but no execution zone has formed yet.' : plan.execution_model === 'PENDING_LIMIT' ? 'A deterministic pending limit remains valid for the remainder of today.' : (inside ? 'A valid strategy area is active, but deterministic confirmation is not yet present.' : 'A valid strategy narrative remains actionable today; wait for price to reach the deterministic area and activate it.'),
-            setup_timeframe: setup.setup_timeframe || setup.timeframe, execution_timeframe: executionTimeframe, confidence: Number.isFinite(Number(setup.setup_confidence)) ? Number(setup.setup_confidence) : 0 });
+            setup_timeframe: setup.setup_timeframe || setup.timeframe, execution_timeframe: executionTimeframe, confidence: Number.isFinite(Number(setup.setup_confidence)) ? Number(setup.setup_confidence) : 0,
+            opportunity_quality: opportunityQuality, watch_only: opportunityQuality.watch_only });
         state.fresh_current_market_opportunities.push(setup.id || setup.primary);
     }
-    const bestPlan = plans.sort((a, b) => (b.confidence - a.confidence) || (a.area_of_interest?.low || 0) - (b.area_of_interest?.low || 0))[0];
-    if (bestPlan) { Object.assign(state, bestPlan); state.fresh_continuation_opportunities = plans.slice(1).map(candidate => candidate.narrative_id); return state; }
+    const primaryPlans = plans.filter(plan => !plan.watch_only);
+    const watchPlans = plans.filter(plan => plan.watch_only).sort((a, b) => b.opportunity_quality.rank_score - a.opportunity_quality.rank_score);
+    state.secondary_watch_scenarios = watchPlans;
+    const bestPlan = [...primaryPlans].sort((a, b) => (b.opportunity_quality.rank_score - a.opportunity_quality.rank_score)
+        || (Number(b.opportunity_quality?.evidence_strength || 0) - Number(a.opportunity_quality?.evidence_strength || 0))
+        || (Number(b.opportunity_quality?.event_time || 0) - Number(a.opportunity_quality?.event_time || 0))
+        || String(a.narrative_id || '').localeCompare(String(b.narrative_id || '')))[0];
+    if (bestPlan) { Object.assign(state, bestPlan); state.fresh_continuation_opportunities = primaryPlans.filter(candidate => candidate !== bestPlan).map(candidate => candidate.narrative_id); return state; }
+    const bestWatch = watchPlans[0];
+    if (bestWatch) {
+        Object.assign(state, bestWatch, { state: 'WATCH_ONLY', watch_only: true, reason_code: 'LTF_ISOLATED_WATCH',
+            reason: 'A local setup exists, but higher-timeframe confirmation is insufficient for a primary trade thesis.' });
+        return state;
+    }
     const dominant = state.rejected_opportunities.reduce((counts, item) => { counts[item.reason_code] = (counts[item.reason_code] || 0) + 1; return counts; }, {});
     state.rejected_reason = Object.entries(dominant).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
     const terminalReasonMap = { SETUP_DELIVERY_ALREADY_ADVANCED: 'DELIVERY_ADVANCED', SETUP_ALREADY_COMPLETED: 'COMPLETED', ENTRY_ALREADY_CONSUMED: 'CONSUMED', SETUP_EXPIRED: 'EXPIRED', SETUP_STALE: 'STALE_NARRATIVE' };
@@ -6742,14 +6778,15 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
 
 function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen) {
     const date = new Date(Number.isFinite(asOfMs) ? asOfMs : Date.now());
-    const opportunity = today?.state === 'TODAY_OPPORTUNITY' ? {
+    const opportunity = ['TODAY_OPPORTUNITY', 'WATCH_ONLY'].includes(today?.state) ? {
         scenario: today.reason,
         area_of_interest: today.area_of_interest,
         execution_model: today.execution_model,
         activation: today.activation_conditions,
         cancellation: today.cancellation_conditions,
         target_intent: today.target_intent,
-        expected_window: today.expected_window
+        expected_window: today.expected_window,
+        opportunity_quality: today.opportunity_quality?.authorization_state || (today.state === 'WATCH_ONLY' ? 'WATCH_ONLY' : null)
     } : undefined;
     const signal = {
         date: date.toISOString().split('T')[0],

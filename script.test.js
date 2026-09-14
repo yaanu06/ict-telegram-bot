@@ -489,6 +489,38 @@ describe('market-thesis opportunity invariants', () => {
         expect(result.execution_model).toBe('CONFIRMATION_ENTRY');
         expect(result.execution_zone_id).toBeNull();
     });
+
+    it('keeps an isolated local setup watch-only and lets aligned continuation win', () => {
+        const ctx = getContext();
+        const context = { daily_bias: { direction: 'SELL' }, timeframe_context: {
+            '1D': { bias: 'BEARISH', structural_trend: 'BEARISH', evidence: [] },
+            '4H': { bias: 'BEARISH', structural_trend: 'BEARISH', evidence: [{ id: 'T4', kind: 'TREND', direction: 'SELL' }] },
+            '1H': { bias: 'BEARISH', structural_trend: 'BEARISH', evidence: [{ id: 'T1', kind: 'TREND', direction: 'SELL' }] },
+            '15M': { bias: 'MIXED', structural_trend: 'MIXED', evidence: [] }
+        } };
+        const common = { narrative_state: 'ACTIVE', execution_timeframe: '15M', entry_reachable_today: true };
+        const result = ctx.buildTodayOpportunity({ currentPrice: 110, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true, marketContext: context,
+            strategySetups: [
+                { ...common, id: 'isolated-buy', primary: 'CRT', label: 'CRT+TBS', direction: 'BUY', setup_confidence: 99, event_time: '2026-09-14T09:00:00Z',
+                    execution_model: 'CONFIRMATION_ENTRY', execution_zone: { id: 'buy-zone', type: 'CRT', low: 108, high: 109, freshness: 'FRESH', opportunity_reachable_today: true, structural_invalidation: { level: 107 } }, target_candidates: [{ level: 120, source: 'BUY_SIDE_LIQUIDITY' }] },
+                { ...common, id: 'aligned-sell', primary: 'ICT', label: 'ICT', direction: 'SELL', setup_confidence: 0, event_time: '2026-09-14T09:30:00Z',
+                    execution_zone: { id: 'sell-zone', type: 'SUPPLY', low: 111, high: 112, freshness: 'FRESH', entry_reachable_today: true, structural_invalidation: { level: 114 } }, target_candidates: [{ level: 100, source: 'SELL_SIDE_LIQUIDITY' }] }
+            ] });
+        expect(result.state).toBe('TODAY_OPPORTUNITY');
+        expect(result.narrative_id).toBe('aligned-sell');
+        expect(result.secondary_watch_scenarios[0].watch_only).toBe(true);
+    });
+
+    it('does not present an isolated setup as an actionable retrace plan', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({ currentPrice: 110, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            marketContext: { daily_bias: { direction: 'NEUTRAL' }, timeframe_context: { '1D': { bias: 'MIXED' }, '4H': { bias: 'BEARISH' }, '1H': { bias: 'MIXED' }, '15M': { bias: 'BULLISH' } } },
+            strategySetups: [{ id: 'isolated', primary: 'CRT', direction: 'BUY', narrative_state: 'ACTIVE', execution_model: 'CONFIRMATION_ENTRY',
+                execution_zone: { low: 108, high: 109, freshness: 'FRESH', opportunity_reachable_today: true, structural_invalidation: { level: 107 } }, target_candidates: [{ level: 120, source: 'BUY_SIDE_LIQUIDITY' }] }] });
+        expect(result.state).toBe('WATCH_ONLY');
+        expect(result.reason_code).toBe('LTF_ISOLATED_WATCH');
+        expect(result.reason).not.toMatch(/valid strategy narrative remains actionable/i);
+    });
 });
 
 describe('top-down trade context', () => {
