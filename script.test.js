@@ -387,6 +387,74 @@ describe('strategy entry lifecycle', () => {
     });
 });
 
+describe('daily opportunity planning', () => {
+    it('uses the actual timeframe duration for same-timeframe combination windows', () => {
+        const ctx = getContext();
+        const zone = { low: 99.5, high: 100.5 };
+        for (const [timeframe, hours] of [['15M', 0.25], ['1H', 1], ['4H', 4]]) {
+            const first = { primary: 'CRT', direction: 'BUY', timeframe, execution_zone: zone, event_time: Date.parse('2026-01-01T00:00:00Z') };
+            const inside = { primary: 'TBS', direction: 'BUY', timeframe, execution_zone: zone, event_time: Date.parse('2026-01-01T00:00:00Z') + (20 * hours - 0.01) * 3600000 };
+            const outside = { ...inside, event_time: Date.parse('2026-01-01T00:00:00Z') + (20 * hours + 0.01) * 3600000 };
+            expect(ctx.evaluateCombinationCompatibility(first, inside, { pipSize: 0.01 }).temporally_related).toBe(true);
+            expect(ctx.evaluateCombinationCompatibility(first, outside, { pipSize: 0.01 }).temporally_related).toBe(false);
+        }
+    });
+
+    it('returns TRADE_READY for an already validated deterministic candidate', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.1, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            validCandidates: [{ id: 'C-1', strategy_label: 'CRT', direction: 'BUY', execution_timeframe: '1H', execution_model: 'PENDING_LIMIT', entry: 1.1, zone_low: 1.09, zone_high: 1.11, stop_loss: 1.08, tp1: 1.14, rr_tp1: 3, target_bias: 'BUY_SIDE_LIQUIDITY', lifecycle: { state: 'FRESH_PENDING_TODAY' }, entry_reachable_today: true }] });
+        expect(result.state).toBe('TRADE_READY');
+        expect(result.execution_model).toBe('PENDING_LIMIT');
+    });
+
+    it('returns a useful WAITING_FOR_RETRACE plan for an active developing narrative', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.2, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            strategySetups: [{ id: 'S-1', primary: 'CRT', strategy_label: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', execution_timeframe: '15M', execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.1, high: 1.11, timeframe: '15M', direction: 'SELL', freshness: 'FRESH', consumed: false }, target_candidates: [{ level: 1.05, source: 'CRT_OPPOSITE_RANGE' }], setup_confidence: 68 }] });
+        expect(result.state).toBe('TODAY_OPPORTUNITY');
+        expect(result.reason_code).toBe('WAITING_FOR_RETRACE');
+        expect(result.execution_model).toBe('CONFIRMATION_ENTRY');
+        expect(result.area_of_interest.low).toBe(1.1);
+    });
+
+    it('returns WAITING_FOR_CONFIRMATION when price is in the developing area', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.105, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            strategySetups: [{ id: 'S-2', primary: 'TBS', strategy_label: 'TBS', direction: 'SELL', narrative_state: 'ACTIVE', execution_timeframe: '15M', execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.1, high: 1.11, timeframe: '15M', direction: 'SELL', freshness: 'FRESH', consumed: false }, target_candidates: [{ level: 1.05, source: 'TBS_LIQUIDITY' }] }] });
+        expect(result.state).toBe('TODAY_OPPORTUNITY');
+        expect(result.reason_code).toBe('WAITING_FOR_CONFIRMATION');
+    });
+
+    it('does not resurrect a consumed original entry, but allows a fresh continuation zone', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.2, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            strategySetups: [
+                { id: 'old', primary: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', original_strategy_entry_consumed: true, execution_model: 'RECLAIM_RETEST', execution_zone: { low: 1.1, high: 1.11, consumed: true }, target_candidates: [{ level: 1.05 }] },
+                { id: 'new', primary: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', original_strategy_entry_consumed: true, execution_model: 'FRESH_RETRACEMENT_LIMIT', execution_zone: { low: 1.15, high: 1.16, freshness: 'FRESH', consumed: false }, target_candidates: [{ level: 1.05, source: 'CRT_OPPOSITE_RANGE' }] }
+            ] });
+        expect(result.state).toBe('TODAY_OPPORTUNITY');
+        expect(result.narrative_id).toBe('new');
+    });
+
+    it('returns NO_TRADE_TODAY when no active narrative has a defensible target', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.2, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            strategySetups: [{ id: 'stale', primary: 'MSNR', direction: 'BUY', narrative_state: 'STALE_NARRATIVE', execution_zone: { low: 1.1, high: 1.11 } }] });
+        expect(result.state).toBe('NO_TRADE_TODAY');
+        expect(result.reason_code).toBe('NO_TRADE_TODAY');
+    });
+
+    it('keeps the public planning output compact and separate from diagnostics', () => {
+        const ctx = getContext();
+        const result = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', price: 1.2, decision: 'WAIT', status: 'TODAY_OPPORTUNITY', confidence: 68, strategy: 'CRT', bias: 'BEARISH', opportunity: { area_of_interest: { low: 1.1, high: 1.11 }, execution_model: 'CONFIRMATION_ENTRY' }, reason: { code: 'WAITING_FOR_RETRACE', message: 'Wait for price to return to the area.' }, market_open: true });
+        expect(result.status).toBe('TODAY_OPPORTUNITY');
+        expect(result.opportunity.execution_model).toBe('CONFIRMATION_ENTRY');
+        expect(result).not.toHaveProperty('candidate_pipeline');
+        expect(result).not.toHaveProperty('seed_diagnostics');
+    });
+});
+
 describe('active narrative fresh execution zones', () => {
     it('keeps a consumed CRT entry recorded while creating a fresh post-signal FVG opportunity', () => {
         const ctx = getContext();
