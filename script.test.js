@@ -2357,6 +2357,58 @@ describe('live AI market context and prompt', () => {
         expect(matchedTarget.valid).toBe(true);
     });
 
+    it('validates selected CRT-native TP1 from the candidate target_map without global target injection', () => {
+        const ctx = getContext();
+        const candidate = {
+            id: 'crt-native-target', direction: 'BUY', zone_type: 'CRT', zone_origin: 'STRUCTURAL', timeframe: '1H', zone_low: 1.0995, zone_high: 1.1005,
+            entry: 1.1000, stop_loss: 1.0980, tp1: 1.1050, tp2: null, tp3: null,
+            target_map: [{ target_level: 1.1050, primary_target_source: 'CRT_OPPOSITE_RANGE', target_type: 'CRT_OPPOSITE_RANGE', target_confluence: [] }]
+        };
+        const result = ctx.validateAIOutputConsistency({ selected_candidate_id: candidate.id, decision: 'BUY_LIMIT', direction: 'BUY', entry: candidate.entry, stop_loss: candidate.stop_loss, take_profit_1: candidate.tp1, selected_zone: { type: 'CRT', timeframe: '1H', low: candidate.zone_low, high: candidate.zone_high } }, {
+            adaptive_setup_candidates: [candidate], target_candidates: { buy: [], sell: [] }, risk_constraints: { minimum_rr: 2.5 }, real_ict_zones: [{ type: 'CRT', timeframe: '1H', direction: 'BUY', low: candidate.zone_low, high: candidate.zone_high, origin: 'STRUCTURAL', primary_eligible: true }]
+        });
+        expect(result.valid).toBe(true);
+    });
+
+    it('validates selected OPPOSING_MSNR TP1 from the candidate target_map', () => {
+        const ctx = getContext();
+        const candidate = {
+            id: 'msnr-native-target', direction: 'SELL', zone_type: 'MSNR', zone_origin: 'STRUCTURAL_MSNR', timeframe: '1H', zone_low: 1.0995, zone_high: 1.1005,
+            entry: 1.1000, stop_loss: 1.1020, tp1: 1.0950, tp2: null, tp3: null,
+            target_map: [{ target_level: 1.0950, primary_target_source: 'OPPOSING_MSNR', target_type: 'STRUCTURAL_MSNR', target_confluence: [] }]
+        };
+        const result = ctx.validateAIOutputConsistency({ selected_candidate_id: candidate.id, decision: 'SELL_LIMIT', direction: 'SELL', entry: candidate.entry, stop_loss: candidate.stop_loss, take_profit_1: candidate.tp1, selected_zone: { type: 'MSNR', timeframe: '1H', low: candidate.zone_low, high: candidate.zone_high } }, {
+            adaptive_setup_candidates: [candidate], target_candidates: { buy: [], sell: [] }, risk_constraints: { minimum_rr: 2.5 }, real_ict_zones: [{ type: 'MSNR', timeframe: '1H', direction: 'SELL', low: candidate.zone_low, high: candidate.zone_high, origin: 'STRUCTURAL_MSNR', primary_eligible: true }]
+        });
+        expect(result.valid).toBe(true);
+    });
+
+    it('classifies selected candidate TP1 provenance mismatch as an engine invariant failure', () => {
+        const ctx = getContext();
+        const candidate = { id: 'bad-target-map', direction: 'BUY', zone_type: 'CRT', zone_origin: 'STRUCTURAL', timeframe: '1H', zone_low: 1.0995, zone_high: 1.1005, entry: 1.1000, stop_loss: 1.0980, tp1: 1.1050, target_map: [{ target_level: 1.1060, primary_target_source: 'CRT_OPPOSITE_RANGE', target_type: 'CRT_OPPOSITE_RANGE' }] };
+        const result = ctx.validateAIOutputConsistency({ selected_candidate_id: candidate.id, decision: 'BUY_LIMIT', direction: 'BUY', entry: candidate.entry, stop_loss: candidate.stop_loss, take_profit_1: candidate.tp1, selected_zone: { type: 'CRT', timeframe: '1H', low: candidate.zone_low, high: candidate.zone_high } }, { adaptive_setup_candidates: [candidate], target_candidates: { buy: [], sell: [] }, risk_constraints: { minimum_rr: 2.5 }, real_ict_zones: [{ type: 'CRT', timeframe: '1H', direction: 'BUY', low: candidate.zone_low, high: candidate.zone_high, origin: 'STRUCTURAL' }] });
+        expect(result.valid).toBe(false);
+        expect(result.failure_code).toBe('ENGINE_INVARIANT_FAILURE');
+        expect(result.issues).toContain('candidate TP1 does not match its authoritative target_map');
+    });
+
+    it('classifies selected candidate RR below minimum as an engine invariant failure', () => {
+        const ctx = getContext();
+        const candidate = { id: 'bad-candidate-rr', direction: 'BUY', zone_type: 'CRT', zone_origin: 'STRUCTURAL', timeframe: '1H', zone_low: 1.0995, zone_high: 1.1005, entry: 1.1000, stop_loss: 1.0980, tp1: 1.1040, target_map: [{ target_level: 1.1040, primary_target_source: 'CRT_OPPOSITE_RANGE', target_type: 'CRT_OPPOSITE_RANGE' }] };
+        const result = ctx.validateAIOutputConsistency({ selected_candidate_id: candidate.id, decision: 'BUY_LIMIT', direction: 'BUY', entry: candidate.entry, stop_loss: candidate.stop_loss, take_profit_1: candidate.tp1, selected_zone: { type: 'CRT', timeframe: '1H', low: candidate.zone_low, high: candidate.zone_high } }, { adaptive_setup_candidates: [candidate], target_candidates: { buy: [], sell: [] }, risk_constraints: { minimum_rr: 2.5 }, real_ict_zones: [{ type: 'CRT', timeframe: '1H', direction: 'BUY', low: candidate.zone_low, high: candidate.zone_high, origin: 'STRUCTURAL' }] });
+        expect(result.valid).toBe(false);
+        expect(result.failure_code).toBe('ENGINE_INVARIANT_FAILURE');
+        expect(result.issues.join(' ')).toMatch(/actual RR .* below minimum/);
+    });
+
+    it('classifies an unknown selected candidate ID as an AI selection failure', () => {
+        const ctx = getContext();
+        const result = ctx.validateAIOutputConsistency({ selected_candidate_id: 'missing', decision: 'BUY_LIMIT', direction: 'BUY', entry: 1.1, stop_loss: 1.098, take_profit_1: 1.105 }, { adaptive_setup_candidates: [], target_candidates: { buy: [], sell: [] }, risk_constraints: { minimum_rr: 2.5 }, real_ict_zones: [] });
+        expect(result.valid).toBe(false);
+        expect(result.failure_code).toBe('AI_SELECTION_FAILURE');
+        expect(result.issues).toContain('selected adaptive setup candidate does not exist in supplied live market context');
+    });
+
     it('builds adaptive SELL candidates by skipping too-tight zone stops and nearer invalid RR targets', () => {
         const ctx = getContext();
         const fvgZone = { id: '1H-SELL-FVG-0.58668-0.58739', type: 'FVG', direction: 'SELL', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 0.58668, high: 0.58739, freshness: 'FRESH' };

@@ -3781,24 +3781,30 @@ function calculateRRMetrics(direction, entry, stopLoss, tp1, minimumRR = 2.5) {
     };
 }
 
-function findTp1TargetCandidate(aiResult, liveMarketContext, rrMetrics) {
-    const direction = aiResult?.direction;
+function findTp1TargetCandidate(aiResult, liveMarketContext, rrMetrics, authoritativeCandidate = null) {
+    const source = authoritativeCandidate || aiResult;
+    const direction = source?.direction;
     const side = direction === 'BUY' ? 'buy' : direction === 'SELL' ? 'sell' : null;
-    const supplied = side
-        ? (liveMarketContext?.target_candidates?.all || liveMarketContext?.target_candidates?.[side] || []).filter(c => c.direction === direction)
-        : [];
+    const candidateMap = authoritativeCandidate?.target_map;
+    const hasCandidateMap = Array.isArray(candidateMap) && candidateMap.length > 0;
+    const supplied = authoritativeCandidate && hasCandidateMap
+        ? candidateMap
+        : side
+            ? (liveMarketContext?.target_candidates?.all || liveMarketContext?.target_candidates?.[side] || []).filter(c => c.direction === direction)
+            : [];
     if (supplied.length === 0) return { checked: false, hasValidCandidate: true, matched: null };
 
-    const entry = Number(aiResult.entry);
-    const tp1 = Number(aiResult.take_profit_1);
+    const entry = Number(source.entry);
+    const tp1 = Number(source.take_profit_1 ?? source.tp1);
     const validTargets = supplied
-        .filter(c => Number.isFinite(Number(c.level)))
+        .filter(c => Number.isFinite(Number(c.level ?? c.target_level)))
+        .filter(c => !c.direction || c.direction === direction)
         .filter(c => direction === 'BUY'
-            ? Number(c.level) + 1e-9 >= rrMetrics.minimum_valid_tp1_price
-            : Number(c.level) - 1e-9 <= rrMetrics.maximum_valid_tp1_price)
-        .sort((a, b) => Math.abs(Number(a.level) - entry) - Math.abs(Number(b.level) - entry));
+            ? Number(c.level ?? c.target_level) + 1e-9 >= rrMetrics.minimum_valid_tp1_price
+            : Number(c.level ?? c.target_level) - 1e-9 <= rrMetrics.maximum_valid_tp1_price)
+        .sort((a, b) => Math.abs(Number(a.level ?? a.target_level) - entry) - Math.abs(Number(b.level ?? b.target_level) - entry));
     const tolerance = Math.max(Math.abs(tp1) * 0.0002, 0.00001);
-    const matched = validTargets.find(c => Math.abs(Number(c.level) - tp1) <= tolerance) || null;
+    const matched = validTargets.find(c => Math.abs(Number(c.level ?? c.target_level) - tp1) <= tolerance) || null;
     return { checked: true, hasValidCandidate: validTargets.length > 0, matched, nearest: validTargets[0] || null };
 }
 
@@ -7487,6 +7493,16 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
     const tp1 = aiResult.take_profit_1;
     const tp2 = aiResult.take_profit_2 == null ? null : Number(aiResult.take_profit_2);
     const tp3 = aiResult.take_profit_3 == null ? null : Number(aiResult.take_profit_3);
+    let selectedDeterministicCandidate = null;
+    let deterministicCandidateInvariantFailure = false;
+    if (aiResult.selected_candidate_id) {
+        selectedDeterministicCandidate = (liveMarketContext?.adaptive_setup_candidates || []).find(c => c.id === aiResult.selected_candidate_id) || null;
+        if (!selectedDeterministicCandidate) {
+            issues.push('selected adaptive setup candidate does not exist in supplied live market context');
+        } else if (selectedDeterministicCandidate.zone_type === 'MSNR' && selectedDeterministicCandidate.zone_origin !== 'STRUCTURAL_MSNR') {
+            issues.push('only STRUCTURAL_MSNR adaptive setup candidates can be selected as MSNR');
+        }
+    }
     if (issues.length === 0) {
         if (direction === 'BUY' && !(sl < entry && entry < tp1)) {
             issues.push('BUY geometry must be SL < entry < TP1');
@@ -7508,26 +7524,39 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
     }
     if (issues.length === 0) {
         const minimumRR = Number(liveMarketContext?.risk_constraints?.minimum_rr) || 2.5;
-        const rrMetrics = calculateRRMetrics(direction, entry, sl, tp1, minimumRR);
-        if (!(rrMetrics.risk > 0)) issues.push('risk must be greater than zero');
-        if (!(rrMetrics.reward > 0)) issues.push('reward must be greater than zero');
+        const authoritative = selectedDeterministicCandidate || null;
+        const authoritativeDirection = authoritative?.direction || direction;
+        const authoritativeEntry = Number(authoritative?.entry ?? entry);
+        const authoritativeStop = Number(authoritative?.stop_loss ?? sl);
+        const authoritativeTp1 = Number(authoritative?.tp1 ?? tp1);
+        const rrMetrics = calculateRRMetrics(authoritativeDirection, authoritativeEntry, authoritativeStop, authoritativeTp1, minimumRR);
+        if (!(rrMetrics.risk > 0)) { deterministicCandidateInvariantFailure = !!authoritative; issues.push('risk must be greater than zero'); }
+        if (!(rrMetrics.reward > 0)) { deterministicCandidateInvariantFailure = !!authoritative; issues.push('reward must be greater than zero'); }
         if (!Number.isFinite(rrMetrics.actualRR)) {
+            deterministicCandidateInvariantFailure = !!authoritative;
             issues.push('actual RR must be finite');
         } else if (rrMetrics.actualRR + 1e-9 < minimumRR) {
+            deterministicCandidateInvariantFailure = !!authoritative;
             issues.push(`actual RR ${rrMetrics.actualRR.toFixed(2)} below minimum ${minimumRR.toFixed(2)}`);
         }
-        const tp1Candidate = findTp1TargetCandidate(aiResult, liveMarketContext, rrMetrics);
+        const globalTargets = authoritative ? (liveMarketContext?.target_candidates?.all || liveMarketContext?.target_candidates?.[authoritativeDirection === 'BUY' ? 'buy' : 'sell'] || []) : [];
+        if (authoritative && (!Array.isArray(authoritative.target_map) || authoritative.target_map.length === 0) && globalTargets.length > 0) {
+            deterministicCandidateInvariantFailure = true;
+            issues.push('selected deterministic candidate has no authoritative target_map');
+        }
+        const tp1Candidate = findTp1TargetCandidate(aiResult, liveMarketContext, rrMetrics, authoritative);
         if (tp1Candidate.checked && !tp1Candidate.hasValidCandidate) {
-            issues.push('no supplied target candidate satisfies minimum RR');
+            deterministicCandidateInvariantFailure = !!authoritative;
+            issues.push(authoritative ? 'candidate target_map has no target satisfying minimum RR' : 'no supplied target candidate satisfies minimum RR');
         } else if (tp1Candidate.checked && !tp1Candidate.matched) {
-            issues.push('take_profit_1 must match a supplied target candidate that satisfies minimum RR');
+            deterministicCandidateInvariantFailure = !!authoritative;
+            issues.push(authoritative ? 'candidate TP1 does not match its authoritative target_map' : 'take_profit_1 must match a supplied target candidate that satisfies minimum RR');
         }
     }
 
     if (issues.length === 0 && (liveMarketContext?.adaptive_setup_candidates || []).length > 0 && !aiResult.selected_candidate_id) {
         issues.push('actionable AI setup must select a deterministic candidate ID');
     }
-    let selectedDeterministicCandidate = null;
     if (issues.length === 0 && aiResult.selected_candidate_id) {
         const candidate = (liveMarketContext?.adaptive_setup_candidates || []).find(c => c.id === aiResult.selected_candidate_id);
         if (!candidate) {
@@ -7545,15 +7574,26 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
                 ['take_profit_3', tp3, candidate.tp3]
             ].filter(([, actual, expected]) => expected != null && Math.abs(Number(actual) - Number(expected)) > tol);
             if (numericMatches.length > 0) {
+                deterministicCandidateInvariantFailure = true;
                 issues.push(`AI numeric levels do not match selected adaptive setup candidate: ${numericMatches.map(([name]) => name).join(', ')}`);
             }
             const stopCheck = evaluateStructuralStop(candidate, getCandidateATRContext(candidate, liveMarketContext.historyCache || {}, liveMarketContext.pair || pair, liveMarketContext.current_price), liveMarketContext.pair || pair);
-            if (stopCheck.status === 'SL_INSIDE_STRUCTURAL_INVALIDATION') issues.push('selected candidate stop is inside authoritative strategy invalidation');
+            if (stopCheck.status === 'SL_INSIDE_STRUCTURAL_INVALIDATION') {
+                deterministicCandidateInvariantFailure = true;
+                issues.push('selected candidate stop is inside authoritative strategy invalidation');
+            }
         }
     }
 
     if (selectedDeterministicCandidate && (!Array.isArray(liveMarketContext?.real_ict_zones) || liveMarketContext.real_ict_zones.length === 0)) {
-        return { valid: issues.length === 0, issues };
+        return {
+            valid: issues.length === 0,
+            issues,
+            failure_code: deterministicCandidateInvariantFailure
+                ? 'ENGINE_INVARIANT_FAILURE'
+                : null,
+            invariant_code: deterministicCandidateInvariantFailure ? 'DETERMINISTIC_CANDIDATE_TARGET_PROVENANCE' : null
+        };
     }
 
     const selected = selectedDeterministicCandidate
@@ -7586,7 +7626,14 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
         }
     }
 
-    return { valid: issues.length === 0, issues };
+    return {
+        valid: issues.length === 0,
+        issues,
+        failure_code: deterministicCandidateInvariantFailure
+            ? 'ENGINE_INVARIANT_FAILURE'
+            : (aiResult.selected_candidate_id && !selectedDeterministicCandidate ? 'AI_SELECTION_FAILURE' : null),
+        invariant_code: deterministicCandidateInvariantFailure ? 'DETERMINISTIC_CANDIDATE_TARGET_PROVENANCE' : null
+    };
 }
 
 function findSelectedLiveZone(aiResult, liveMarketContext) {
@@ -8443,7 +8490,9 @@ async function runAutoScan() {
         const outputConsistency = validateAIOutputConsistency(aiResult, liveMarketContext);
         scanTrace('AI consistency complete', scanStartedAt, { valid: outputConsistency.valid, selected_candidate_id: aiResult.selected_candidate_id || null });
         if (!outputConsistency.valid) {
-            const reason = `AI output inconsistent: ${outputConsistency.issues.join('; ')}`;
+            const reason = outputConsistency.failure_code === 'ENGINE_INVARIANT_FAILURE'
+                ? `ENGINE_INVARIANT_FAILURE: ${outputConsistency.issues.join('; ')}`
+                : `AI output inconsistent: ${outputConsistency.issues.join('; ')}`;
             console.log('❌ AI OUTPUT CONSISTENCY REJECTED', outputConsistency);
             const out = {
                 trade_signal: {
