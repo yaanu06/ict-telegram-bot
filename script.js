@@ -4326,21 +4326,27 @@ function buildDailyTradingBias(timeframeContext, targets, price, asOfTime) {
 
 function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias, targets, zones, pair: pairLocal, price }) {
     const setups = [];
+    const discovery = { discovery_buy_events: 0, discovery_sell_events: 0, discovery_structure_shifts: 0,
+        discovery_liquidity_events: 0, discovery_pois: 0, discovery_reversal_candidates: 0, discovery_continuation_candidates: 0 };
     // A closed structure shift is the signal. Only later, qualified fresh zones can execute it.
     for (const tf of ['1H', '15M']) {
         const data = getClosedHistory(historyCache, tf);
         for (const direction of ['BUY', 'SELL']) {
             const classification = classifyTopDownTrade({ direction }, timeframeContext);
-            if (classification.classification === 'LTF_ISOLATED' || dailyBias.direction !== direction) continue;
             for (let i = Math.max(20, data.length - STRATEGY_SPEC.EXECUTION.maxFreshExecutionZones - 8); i < data.length - 2; i++) {
                 const prefix = data.slice(0, i + 1);
                 const mss = detectMSS(prefix);
                 const shift = (mss?.type === (direction === 'BUY' ? 'BULL' : 'BEAR')) || detectCHoCH(prefix, direction)
                     || (detectBOS(prefix, direction) && detectDisplacement(prefix, direction));
                 if (!shift || !detectDisplacement(prefix, direction)) continue;
+                discovery[direction === 'BUY' ? 'discovery_buy_events' : 'discovery_sell_events']++;
+                discovery.discovery_structure_shifts++;
+                if (classification.classification === 'HTF_VERIFIED_REVERSAL') discovery.discovery_reversal_candidates++;
+                if (classification.classification === 'HTF_ALIGNED_CONTINUATION') discovery.discovery_continuation_candidates++;
                 const swing = findSwings(prefix, 3);
                 const anchor = (direction === 'BUY' ? swing.L : swing.H)?.at(-1)?.p;
                 if (!Number.isFinite(anchor)) continue;
+                discovery.discovery_pois++;
                 const eventTime = candleTimestamp(data[i], i, tf);
                 const targetPool = (targets?.all || []).filter(t => t.direction === direction);
                 const narrative = { id: `ICT:${tf}:${direction}:${eventTime}`, primary: 'ICT', label: 'ICT', direction,
@@ -4368,7 +4374,9 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
         const key = strategyZoneKey(setup.execution_zone);
         if (!physical.has(key)) physical.set(key, setup);
     }
-    return [...physical.values()];
+    const result = [...physical.values()];
+    result.discovery = discovery;
+    return result;
 }
 
 function buildOpportunityThesis(setup, marketContext, price) {
@@ -6480,9 +6488,12 @@ function buildSupplyDemandAndFlipPOIs(data, tf, price, pairLocal) {
                 : departure.c < Math.min(...prior, Infinity);
             if (!brokeStructure) continue;
             const type = direction === 'BUY' ? 'DEMAND' : 'SUPPLY';
+            const lifecycle = checkZoneFreshness(data, { low: ob.low, high: ob.high, source_candle_index: index + 1 }, direction);
+            const freshness = lifecycle.violations > 0 ? 'INVALIDATED' : lifecycle.touches === 0 ? 'FRESH' : lifecycle.touches > 1 ? 'CONSUMED' : 'TOUCHED';
             pois.push({ id: makeId(type, index, ob.low, ob.high), type, direction, timeframe: tf,
                 low: ictRound(ob.low, prec), high: ictRound(ob.high, prec), created_time: candleTimestamp(departure, index + 1, tf),
-                freshness: 'FRESH', touch_count: 0, invalidated: false, primary_eligible: false,
+                freshness, touch_count: lifecycle.touches || 0, mitigated: (lifecycle.touches || 0) > 0,
+                consumed: freshness === 'CONSUMED', invalidated: freshness === 'INVALIDATED', primary_eligible: false,
                 structural_evidence_ids: [`OB:${tf}:${index}`, `DISPLACEMENT:${tf}:${index + 1}`],
                 location_only: true, source: 'STRUCTURAL_DISPLACEMENT' });
         }
@@ -6881,6 +6892,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     marketContext.daily_bias = buildDailyTradingBias(marketContext.timeframe_context, targetCandidates, price, now.getTime());
     const mechanicsSetups = buildMarketMechanicsSetups({ historyCache, timeframeContext: marketContext.timeframe_context,
         dailyBias: marketContext.daily_bias, targets: targetCandidates, zones, pair, price });
+    marketContext.discovery_funnel = { ...(mechanicsSetups.discovery || {}) };
     const strategySetups = buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext });
     strategySetups.push(...mechanicsSetups);
     marketContext.timeframe_context = buildTimeframeContext({ historyCache, structure, price, strategySetups, zones, liquidity: liquidityFacts });
@@ -7335,6 +7347,7 @@ function buildAiMarketAnalystPrompt(evidenceCatalog = {}, candleData = '') {
         'Interpret only the supplied deterministic market evidence and propose zero or more strategy hypotheses for later code verification.',
         'Return strict JSON only with market_view and hypotheses.',
         'You may reference supplied CRT, TBS/Turtle Soup, MSNR, ICT market-mechanics, liquidity, FVG, OB, and execution-zone IDs, but you must never invent IDs.',
+        'Location is not execution: use preferred_location_zone_ids for supply, demand, flip, or other POI context, and preferred_execution_zone_ids only for a separately executable trigger. A location-only POI cannot authorize a trade by itself.',
         'Do not return entry, entry_zone, stop_loss, TP prices, RR, confidence numbers, or arbitrary price levels. Those fields are ignored.',
         'Hypotheses are observations, not proof. Code will independently verify every referenced event and reject unsupported claims.',
         'For combinations every component must be independently supported and temporally/spatially compatible.',
@@ -7366,6 +7379,7 @@ function normalizeAiMarketAnalysis(raw) {
         msnr_level_ids: Array.isArray(h?.msnr_level_ids) ? h.msnr_level_ids.filter(x => typeof x === 'string').slice(0, 5) : [],
         liquidity_event_ids: Array.isArray(h?.liquidity_event_ids) ? h.liquidity_event_ids.filter(x => typeof x === 'string').slice(0, 5) : [],
         preferred_execution_zone_ids: Array.isArray(h?.preferred_execution_zone_ids) ? h.preferred_execution_zone_ids.filter(x => typeof x === 'string').slice(0, 5) : [],
+        preferred_location_zone_ids: Array.isArray(h?.preferred_location_zone_ids) ? h.preferred_location_zone_ids.filter(x => typeof x === 'string').slice(0, 5) : [],
         preferred_execution_types: Array.isArray(h?.preferred_execution_types) ? h.preferred_execution_types.filter(x => ['FVG', 'OB', 'MSNR', 'SUPPLY', 'DEMAND', 'FLIP', 'RECLAIM_RETEST'].includes(x)).slice(0, 4) : [],
         target_intent: ['BUY_SIDE_LIQUIDITY', 'SELL_SIDE_LIQUIDITY', 'CRT_OPPOSITE_RANGE', 'OPPOSING_STRUCTURE'].includes(h?.target_intent) ? h.target_intent : null,
         invalidation_thesis: typeof h?.invalidation_thesis === 'string' ? h.invalidation_thesis.slice(0, 300) : ''
@@ -7427,12 +7441,23 @@ async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData
 }
 
 function verifyAiMarketMechanicsHypothesis(hypothesis, evidenceCatalog = {}, liveMarketContext = {}) {
-    const zones = (hypothesis.preferred_execution_zone_ids || []).map(id =>
-        (evidenceCatalog.execution_zones || []).find(zone => zone.id === id)).filter(Boolean);
-    if (!zones.length) return { verified: false, reason_code: 'MARKET_MECHANICS_POI_MISSING', reason: 'No supplied deterministic FVG, OB, or execution POI was referenced.' };
-    if (zones.some(zone => zone.direction && zone.direction !== hypothesis.direction || zone.invalidated || zone.primary_eligible === false)) {
-        return { verified: false, reason_code: 'MARKET_MECHANICS_POI_INVALID', reason: 'The supplied market-mechanics POI is invalid or directionally incompatible.' };
+    const catalogZones = [...(evidenceCatalog.execution_zones || []), ...(evidenceCatalog.poi_zones || [])];
+    const findZones = ids => (ids || []).map(id => catalogZones.find(zone => zone.id === id)).filter(Boolean);
+    const locationIds = hypothesis.preferred_location_zone_ids || [];
+    const executionIds = hypothesis.preferred_execution_zone_ids || [];
+    if (locationIds.length !== findZones(locationIds).length || executionIds.length !== findZones(executionIds).length) {
+        return { verified: false, reason_code: 'MARKET_MECHANICS_POI_MISSING', reason: 'A referenced deterministic location or execution POI does not exist.' };
     }
+    const locations = findZones(locationIds);
+    const zones = findZones(executionIds);
+    if (!locations.length && !zones.length) return { verified: false, reason_code: 'MARKET_MECHANICS_POI_MISSING', reason: 'No supplied deterministic location or execution POI was referenced.' };
+    const invalid = zone => zone.direction && zone.direction !== hypothesis.direction || zone.invalidated || zone.expired === true ||
+        ['CONSUMED', 'MITIGATED', 'INVALIDATED', 'EXPIRED'].includes(String(zone.freshness || '').toUpperCase());
+    if (locations.some(invalid)) return { verified: false, reason_code: 'MARKET_MECHANICS_LOCATION_INVALID', reason: 'The supplied location POI is invalid, consumed, or directionally incompatible.' };
+    if (zones.some(zone => invalid(zone) || zone.location_only === true || zone.primary_eligible === false)) {
+        return { verified: false, reason_code: 'MARKET_MECHANICS_EXECUTION_INVALID', reason: 'The supplied execution POI is not deterministically executable.' };
+    }
+    if (!zones.length) return { verified: false, reason_code: 'MARKET_MECHANICS_EXECUTION_MISSING', reason: 'A location POI requires separate executable evidence.' };
     const knownTopDown = new Set(Object.values(evidenceCatalog.timeframe_context || {}).flatMap(tf => tf.structural_evidence_ids || []));
     const suppliedTopDown = hypothesis.top_down_evidence_ids || [];
     if (suppliedTopDown.some(id => !knownTopDown.has(id))) return { verified: false, reason_code: 'TOP_DOWN_EVIDENCE_UNKNOWN', reason: 'Market-mechanics hypothesis references unknown top-down evidence.' };
@@ -7461,6 +7486,8 @@ function verifyAiMarketMechanicsHypothesis(hypothesis, evidenceCatalog = {}, liv
         market_mechanics_verified: true, execution_confirmed: false, ai_verified: true,
         ai_hypothesis_id: hypothesis.hypothesis_id, ai_reasoning: hypothesis.reasoning
     };
+    setup.location = locations[0] ? { zone_id: locations[0].id, type: locations[0].type, timeframe: locations[0].timeframe, evidence_ids: locations[0].structural_evidence_ids || [] } : null;
+    setup.execution = { zone_id: zone.id, type: zone.type, timeframe: zone.timeframe, evidence_ids: zone.structural_evidence_ids || [], confirmation_state: setup.execution_confirmed ? 'CONFIRMED' : 'PENDING' };
     return { verified: true, reason_code: null, reason: 'POI, directional shift, target, and structural invalidation are deterministic.', setup };
 }
 

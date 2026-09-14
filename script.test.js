@@ -446,6 +446,36 @@ describe('market-thesis opportunity invariants', () => {
             riskConstraints: { minimum_rr: 2.5 }, structure: {}, marketContext: { timeframe_context: {} }, strategySetups: [setup] });
         expect(result.raw_candidates.length === 0 || result.raw_candidates[0].execution_model).toBeTruthy();
     });
+
+    it('verifies location-only demand separately from executable FVG evidence', () => {
+        const ctx = getContext();
+        const base = { timeframe_context: { '1H': { evidence: [{ id: 'MSS-1', kind: 'MSS', direction: 'BUY' }], structure: { recent_swing_lows: [{ level: 98 }] } } },
+            execution_zones: [{ id: 'FVG-1', type: 'FVG', direction: 'BUY', timeframe: '15M', low: 100, high: 101, primary_eligible: true }],
+            poi_zones: [{ id: 'D-1', type: 'DEMAND', direction: 'BUY', timeframe: '4H', low: 99, high: 100, location_only: true, primary_eligible: false, freshness: 'FRESH', structural_evidence_ids: ['D-EVIDENCE'] }],
+            target_candidates: { buy: [{ level: 110, source: 'BUY_SIDE_LIQUIDITY' }] }, current_price: 102, pair: 'EUR/USD' };
+        const result = ctx.verifyAiMarketMechanicsHypothesis({ hypothesis_id: 'H1', strategy: 'ICT', direction: 'BUY', setup_timeframe: '1H', execution_timeframe: '15M', preferred_location_zone_ids: ['D-1'], preferred_execution_zone_ids: ['FVG-1'] }, base, base);
+        expect(result.verified).toBe(true);
+        expect(result.setup.location.type).toBe('DEMAND');
+        expect(result.setup.execution.zone_id).toBe('FVG-1');
+    });
+
+    it('rejects a location-only demand when no executable evidence is supplied', () => {
+        const ctx = getContext();
+        const evidence = { timeframe_context: { '1H': { evidence: [{ id: 'MSS-1', kind: 'MSS', direction: 'BUY' }], structure: { recent_swing_lows: [{ level: 98 }] } } },
+            poi_zones: [{ id: 'D-1', type: 'DEMAND', direction: 'BUY', location_only: true, primary_eligible: false, freshness: 'FRESH' }], target_candidates: { buy: [{ level: 110 }] }, current_price: 102, pair: 'EUR/USD' };
+        const result = ctx.verifyAiMarketMechanicsHypothesis({ hypothesis_id: 'H2', strategy: 'ICT', direction: 'BUY', setup_timeframe: '1H', execution_timeframe: '15M', preferred_location_zone_ids: ['D-1'] }, evidence, evidence);
+        expect(result.verified).toBe(false);
+        expect(result.reason_code).toBe('MARKET_MECHANICS_EXECUTION_MISSING');
+    });
+
+    it('rejects a location-only POI placed in the execution field', () => {
+        const ctx = getContext();
+        const evidence = { timeframe_context: { '1H': { evidence: [{ id: 'MSS-1', kind: 'MSS', direction: 'BUY' }], structure: { recent_swing_lows: [{ level: 98 }] } } },
+            execution_zones: [{ id: 'D-1', type: 'DEMAND', direction: 'BUY', location_only: true, primary_eligible: false, freshness: 'FRESH', low: 99, high: 100 }], target_candidates: { buy: [{ level: 110 }] }, current_price: 102, pair: 'EUR/USD' };
+        const result = ctx.verifyAiMarketMechanicsHypothesis({ hypothesis_id: 'H3', strategy: 'ICT', direction: 'BUY', setup_timeframe: '1H', execution_timeframe: '15M', preferred_execution_zone_ids: ['D-1'] }, evidence, evidence);
+        expect(result.verified).toBe(false);
+        expect(result.reason_code).toBe('MARKET_MECHANICS_EXECUTION_INVALID');
+    });
 });
 
 describe('top-down trade context', () => {
