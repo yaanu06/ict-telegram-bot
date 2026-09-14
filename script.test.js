@@ -955,6 +955,7 @@ describe('strategy pipeline integration rules', () => {
         const ctx = getContext();
         for (const type of ['TBS', 'MSNR', 'CRT+TBS']) {
             const candidate = { id: `candidate-${type}`, direction: 'BUY', timeframe: '1H', zone_type: type === 'MSNR' ? 'MSNR' : type, zone_origin: type === 'MSNR' ? 'STRUCTURAL_MSNR' : 'STRUCTURAL', zone_low: 99, zone_high: 100, entry: 99.5, stop_loss: 98, tp1: 104, tp2: null, tp3: null, rr_tp1: 3.0 };
+            candidate.target_map = [{ target_level: 104, primary_target_source: 'SWING_HIGH' }];
             const result = ctx.validateAIOutputConsistency({ selected_candidate_id: candidate.id, direction: candidate.direction, entry: candidate.entry, stop_loss: candidate.stop_loss, take_profit_1: candidate.tp1, selected_zone: { type: candidate.zone_type, timeframe: candidate.timeframe, low: candidate.zone_low, high: candidate.zone_high } }, { adaptive_setup_candidates: [candidate], real_ict_zones: [], risk_constraints: { minimum_rr: 2.5 } });
             expect(result.valid).toBe(true);
         }
@@ -1012,7 +1013,8 @@ describe('strategy pipeline integration rules', () => {
             stop_loss: 98.5,
             tp1: 103.0,
             tp2: 104.0,
-            tp3: 105.0
+            tp3: 105.0,
+            target_map: [{ target_level: 103.0, primary_target_source: 'CRT_OPPOSITE_RANGE' }]
         };
         const result = ctx.validateAIOutputConsistency({
             decision: 'BUY_LIMIT',
@@ -2355,6 +2357,27 @@ describe('live AI market context and prompt', () => {
             target_candidates: { buy: [{ direction: 'BUY', level: 1.10500, source: 'SWING_HIGH', origin: 'STRUCTURAL' }], sell: [] }
         });
         expect(matchedTarget.valid).toBe(true);
+    });
+
+    it.each([[], undefined])('rejects missing candidate provenance even with an empty global target pool (%j)', targetMap => {
+        const ctx = getContext();
+        const candidate = {
+            id: 'missing-target-provenance', direction: 'BUY', zone_type: 'CRT', zone_origin: 'STRUCTURAL',
+            timeframe: '1H', zone_low: 1.0995, zone_high: 1.1005,
+            entry: 1.1000, stop_loss: 1.0980, tp1: 1.1050, tp2: null, tp3: null, target_map: targetMap
+        };
+        const result = ctx.validateAIOutputConsistency({
+            selected_candidate_id: candidate.id, direction: candidate.direction,
+            entry: candidate.entry, stop_loss: candidate.stop_loss, take_profit_1: candidate.tp1
+        }, {
+            adaptive_setup_candidates: [candidate],
+            target_candidates: { buy: [], sell: [], all: [] },
+            risk_constraints: { minimum_rr: 2.5 }
+        });
+        expect(result.valid).toBe(false);
+        expect(result.failure_code).toBe('ENGINE_INVARIANT_FAILURE');
+        expect(result.invariant_code).toBe('DETERMINISTIC_CANDIDATE_TARGET_PROVENANCE');
+        expect(result.issues).toContain('selected deterministic candidate has no authoritative target_map');
     });
 
     it('validates selected CRT-native TP1 from the candidate target_map without global target injection', () => {

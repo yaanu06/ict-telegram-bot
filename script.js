@@ -7539,8 +7539,7 @@ function validateAIOutputConsistency(aiResult, liveMarketContext) {
             deterministicCandidateInvariantFailure = !!authoritative;
             issues.push(`actual RR ${rrMetrics.actualRR.toFixed(2)} below minimum ${minimumRR.toFixed(2)}`);
         }
-        const globalTargets = authoritative ? (liveMarketContext?.target_candidates?.all || liveMarketContext?.target_candidates?.[authoritativeDirection === 'BUY' ? 'buy' : 'sell'] || []) : [];
-        if (authoritative && (!Array.isArray(authoritative.target_map) || authoritative.target_map.length === 0) && globalTargets.length > 0) {
+        if (authoritative && (!Array.isArray(authoritative.target_map) || authoritative.target_map.length === 0)) {
             deterministicCandidateInvariantFailure = true;
             issues.push('selected deterministic candidate has no authoritative target_map');
         }
