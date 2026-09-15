@@ -423,6 +423,28 @@ describe('market-thesis opportunity invariants', () => {
         expect(result.terminal_parent_opportunities).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'old-parent' })]));
     });
 
+    it('returns a fresh market-mechanics opportunity after an old delivery advances', () => {
+        const ctx = getContext();
+        const t0 = Date.parse('2026-09-15T05:00:00Z');
+        const result = ctx.buildTodayOpportunity({ pair: 'GBP/JPY', currentPrice: 208.42657, scanAsOfMs: t0 + 3600000, marketOpen: true,
+            marketContext: { daily_bias: { direction: 'SELL' }, timeframe_context: {
+                '1D': { effective_trend: 'BEARISH', evidence: [{ id: 'D-BEAR', kind: 'TREND', direction: 'SELL' }] },
+                '4H': { effective_trend: 'BEARISH', evidence: [{ id: '4H-BEAR', kind: 'TREND', direction: 'SELL' }] },
+                '1H': { effective_trend: 'BEARISH', evidence: [{ id: '1H-BEAR', kind: 'TREND', direction: 'SELL' }] }
+            } },
+            strategySetups: [
+                { id: 'old-delivered', primary: 'ICT', direction: 'SELL', narrative_state: 'ACTIVE', rejection_code: 'SETUP_DELIVERY_ALREADY_ADVANCED', event_time: t0 - 7200000,
+                    execution_zone: { id: 'old-zone', type: 'SUPPLY', low: 208, high: 208.1, created_time: t0 - 7200000, freshness: 'FRESH' }, target_candidates: [{ level: 207, source: 'PDL' }] },
+                { id: 'fresh-continuation', primary: 'ICT', label: 'MARKET_MECHANICS', direction: 'SELL', narrative_state: 'ACTIVE', event_time: t0,
+                    execution_model: 'PENDING_LIMIT', execution_zone: { id: 'fresh-zone', type: 'SUPPLY', low: 209, high: 209.2, created_time: t0 + 1800000, freshness: 'FRESH', entry_reachable_today: true, primary_eligible: true },
+                    structural_invalidation: { level: 209.6, source: 'ICT_STRUCTURE' }, target_candidates: [{ level: 207, source: 'SELL_SIDE_LIQUIDITY' }] }
+            ] });
+        expect(result.state).toBe('TODAY_OPPORTUNITY');
+        expect(result.primary_opportunity.id).toBe('fresh-continuation');
+        expect(result.terminal_parent_opportunities).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'old-delivered' })]));
+        expect(result.reason_code).not.toBe('SETUP_DELIVERY_ALREADY_ADVANCED');
+    });
+
     it('does not blame an old terminal parent when a current setup reaches planning and is rejected separately', () => {
         const ctx = getContext();
         const t0 = Date.parse('2026-09-15T05:00:00Z');
@@ -2317,6 +2339,18 @@ describe('live AI market context and prompt', () => {
         expect(result.valid_candidates).toHaveLength(1);
         expect(result.valid_candidates[0].market_mechanics_verified).toBe(true);
         expect(result.valid_candidates[0].strategy_setup).toBeNull();
+    });
+
+    it('requires coherent HTF continuation or raid plus shift proof for generic zones', () => {
+        const ctx = getContext();
+        const zone = { type: 'FVG', direction: 'BUY', timeframe: '15M', low: 99, high: 100, primary_eligible: true };
+        const target = { buy: [{ level: 105 }], sell: [] };
+        expect(ctx.hasDeterministicMarketMechanicsProof(zone, 'BUY', { '15M': { evidence: [{ kind: 'MSS', direction: 'BUY' }] } }, target, 101)).toBe(false);
+        expect(ctx.hasDeterministicMarketMechanicsProof(zone, 'BUY', { '4H': { effective_trend: 'BULLISH' } }, target, 101)).toBe(true);
+        expect(ctx.hasDeterministicMarketMechanicsProof({ ...zone, direction: 'BUY' }, 'BUY', {
+            '4H': { effective_trend: 'BEARISH', evidence: [{ kind: 'LIQUIDITY_SWEEP', direction: 'BUY' }] },
+            '1H': { evidence: [{ kind: 'MSS', direction: 'BUY' }] }
+        }, target, 101)).toBe(true);
     });
 
     it('creates a valid strategy candidate from a deterministic MSNR setup', () => {

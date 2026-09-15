@@ -5010,13 +5010,19 @@ function hasDeterministicMarketMechanicsProof(zone, direction, timeframeContext 
     const wanted = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
     const supports = ['1D', '4H', '1H'].some(tf => [timeframeContext[tf]?.effective_trend, timeframeContext[tf]?.structural_trend, timeframeContext[tf]?.bias]
         .some(value => value === wanted || value === `${wanted}_TRANSITION`));
-    const events = ['4H', '1H', '15M'].flatMap(tf => timeframeContext[tf]?.evidence || [])
-        .some(event => event.direction === direction && ['BOS', 'CHOCH', 'MSS', 'DISPLACEMENT', 'LIQUIDITY_SWEEP'].includes(event.kind));
+    const htfEvents = ['4H', '1H'].flatMap(tf => timeframeContext[tf]?.evidence || []);
+    const localEvents = (timeframeContext['15M']?.evidence || []).concat(timeframeContext['5M']?.evidence || []);
+    const continuationEvent = htfEvents.some(event => event.direction === direction && ['BOS', 'CHOCH', 'MSS', 'DISPLACEMENT'].includes(event.kind));
+    const raid = htfEvents.some(event => event.direction === direction && ['LIQUIDITY_SWEEP', 'CRT', 'TBS'].includes(event.kind));
+    const shiftAfterRaid = localEvents.some(event => event.direction === direction && ['BOS', 'CHOCH', 'MSS', 'DISPLACEMENT'].includes(event.kind))
+        || htfEvents.some(event => event.direction === direction && ['BOS', 'CHOCH', 'MSS', 'DISPLACEMENT'].includes(event.kind));
     const targets = (targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell'] || [])
         .some(target => Number.isFinite(Number(target.level)) && (direction === 'BUY' ? Number(target.level) > Number(price) : Number(target.level) < Number(price)));
     const location = ['FVG', 'OB', 'SUPPLY', 'DEMAND', 'FLIP', 'MSNR', 'CRT', 'TBS'].includes(String(zone.type || '').toUpperCase())
         && Number.isFinite(Number(zone.low)) && Number.isFinite(Number(zone.high));
-    return location && targets && (supports || events);
+    const continuation = supports && (continuationEvent || !raid);
+    const reversal = raid && shiftAfterRaid && !supports;
+    return location && targets && (continuation || reversal);
 }
 
 function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, targetCandidates, riskConstraints, marketRegime, structure, marketContext, strategySetups }) {
