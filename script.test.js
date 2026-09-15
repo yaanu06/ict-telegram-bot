@@ -4638,4 +4638,27 @@ describe('AI market analyst contract', () => {
         }, { historyCache: { '4H': candles }, price: 93.2, pair: 'EUR/USD', as_of_time: candles.at(-1).t, market_open: true });
         expect(lifecycle.rejection_code).not.toBe('SETUP_EXPIRED');
     });
+
+    it('uses a fresh execution zone timestamp when the parent setup is old', () => {
+        const ctx = getContext();
+        const start = Date.parse('2026-09-15T00:00:00Z');
+        const candles = Array.from({ length: 60 }, (_, i) => ({
+            t: start + i * 3600000, o: 100, h: 100.5, l: 99.5, c: 100, is_closed: true
+        }));
+        const freshZoneTime = candles.at(-2).t;
+        const lifecycle = ctx.evaluateSetupLifecycle({
+            strategy_setup: {
+                primary: 'MSNR', timeframe: '1H', setup_timeframe: '1H', execution_timeframe: '1H',
+                direction: 'SELL', event_time: start, entry_model: 'STRUCTURAL_LIMIT'
+            },
+            direction: 'SELL', entry: 101, tp1: 95,
+            entry_region_low: 100.8, entry_region_high: 101.2,
+            execution_zone_created_time: freshZoneTime,
+            execution_zone_created_index: candles.length - 2
+        }, {
+            historyCache: { '1H': candles }, price: 100, pair: 'EUR/USD',
+            as_of_time: candles.at(-1).t, market_open: true
+        });
+        expect(lifecycle.rejection_code).not.toBe('SETUP_EXPIRED');
+    });
 });

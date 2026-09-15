@@ -5753,7 +5753,11 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const executionData = marketContext.historyCache?.[executionTf] || data;
     const spec = STRATEGY_SPEC.LIFECYCLE;
     const freshnessSpec = STRATEGY_SPEC.FRESHNESS;
-    const executionEventTime = normalizeTimestampUTC(candidate.execution_event_time ?? setup.execution_event_time ?? setup.execution_zone_created_time ?? setup.execution_zone?.created_time);
+    // Fresh execution zones have their own lifecycle. Prefer their creation
+    // timestamp when the parent narrative did not provide a separate
+    // execution event; otherwise an MSNR/FVG zone is aged from the old
+    // narrative index and expires while the zone is still actionable.
+    const executionEventTime = normalizeTimestampUTC(candidate.execution_event_time ?? candidate.execution_zone_created_time ?? setup.execution_event_time ?? setup.execution_zone_created_time ?? setup.execution_zone?.created_time);
     const executionEventIndex = Number.isInteger(candidate.execution_event_index)
         ? candidate.execution_event_index
         : Number.isInteger(setup.execution_event_index)
