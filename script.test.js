@@ -721,6 +721,13 @@ describe('top-down trade context', () => {
         expect(code).not.toContain("getElementById('scanReplayBtn')");
     });
 
+    it('keeps replay export hidden behind the existing Copy action', () => {
+        expect(code).toContain('event?.altKey && window.__ICT_LAST_SCAN_REPLAY__');
+        const html = fs.readFileSync('index.html', 'utf8');
+        expect(html).toContain('id="copyJsonBtn"');
+        expect(html).not.toContain('Scan Replay</button>');
+    });
+
     it('carries reversal classification through the planner and analyst evidence catalog without changing entry models', () => {
         const ctx = getContext();
         const tf = context(ctx, 'BEARISH', 'BEARISH', 'MIXED', true);

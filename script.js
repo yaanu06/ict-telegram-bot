@@ -11045,7 +11045,14 @@ function handleLimit() {
     showNotif(`📝 ${aiLabel}: ${o.signalType} @ $${o.idealEntry.toFixed(prec)} | ${o.confirmation} | RR: 1:${o.rrUsed}`, 'info');
 }
 
-function copyJson() {
+function copyJson(event = null) {
+    if (event?.altKey && window.__ICT_LAST_SCAN_REPLAY__) {
+        const replayText = JSON.stringify(window.__ICT_LAST_SCAN_REPLAY__, null, 2);
+        navigator.clipboard.writeText(replayText)
+            .then(() => showNotif('📋 Scan replay copied', 'success'))
+            .catch(() => showNotif('Failed', 'error'));
+        return;
+    }
     const el = document.getElementById('jsonOutput');
     const t = el ? el.textContent : '';
     if(!t || t.trim() === '{}') {
