@@ -528,7 +528,7 @@ describe('market-thesis opportunity invariants', () => {
         expect(result.narrative_id).toBe('aligned-sell');
         expect(result.secondary_watch_scenarios[0].watch_only).toBe(true);
         expect(result.primary_opportunity.id).toBe('aligned-sell');
-        expect(result.active_setups).toEqual([]);
+        expect(result.active_setups).toEqual([expect.objectContaining({ id: 'aligned-sell' })]);
         expect(result.watch_setups.map(setup => setup.id)).toEqual(['isolated-buy']);
     });
 
@@ -557,8 +557,7 @@ describe('market-thesis opportunity invariants', () => {
             ] });
         expect(result.state).toBe('TODAY_OPPORTUNITY');
         expect(result.primary_opportunity).toBeTruthy();
-        expect(result.active_setups).toHaveLength(1);
-        expect(result.active_setups[0].id).not.toBe(result.primary_opportunity.id);
+        expect(result.active_setups).toEqual([expect.objectContaining({ id: result.primary_opportunity.id })]);
         expect(result.watch_setups).toEqual([]);
     });
 
@@ -673,6 +672,22 @@ describe('top-down trade context', () => {
         expect(signal).not.toHaveProperty('timeframe_context');
         const wait = ctx.buildPublicTradeSignal({ decision: 'WAIT', status: 'TODAY_OPPORTUNITY', trade_context_classification: top.classification, top_down_context: top });
         expect(wait.trade_context).toBe(top.classification);
+    });
+
+    it('keeps the selected developing setup in the public signal contract', () => {
+        const ctx = getContext();
+        const signal = ctx.buildPublicTradeSignal({ date: '2026-09-15', time: '10:00:00', pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY',
+            primary_opportunity: { id: 'MM-1', direction: 'SELL', state: 'WAITING_FOR_LOCATION' }, active_setups: [], watch_setups: [],
+            reason: { code: 'WAITING_FOR_LOCATION', message: 'Price has not reached the validated area.' } });
+        expect(signal.primary_opportunity).toMatchObject({ id: 'MM-1', state: 'WAITING_FOR_LOCATION' });
+        expect(signal.active_setups).toEqual([]);
+    });
+
+    it('removes the replay action while retaining the copy action', () => {
+        const html = fs.readFileSync('index.html', 'utf8');
+        expect(html).toContain('id="copyJsonBtn"');
+        expect(html).not.toContain('id="scanReplayBtn"');
+        expect(code).not.toContain("getElementById('scanReplayBtn')");
     });
 
     it('carries reversal classification through the planner and analyst evidence catalog without changing entry models', () => {
@@ -2281,7 +2296,7 @@ describe('live AI market context and prompt', () => {
         expect(stage.immediate_entry.confirmation_score).toBe(0);
     });
 
-    it('keeps strong market context from creating a trade without CRT/TBS/MSNR strategy setup', () => {
+    it('creates a deterministic market-mechanics candidate without CRT/TBS/MSNR labels', () => {
         const ctx = getContext();
         const historyCache = trendCache('up', 1.08000, 0.00020);
         const zone = { id: '1H-BUY-FVG-1.0995-1.1005', type: 'FVG', direction: 'BUY', timeframe: '1H', low: 1.09950, high: 1.10050, origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, freshness: 'FRESH' };
@@ -2298,8 +2313,10 @@ describe('live AI market context and prompt', () => {
             marketContext: { directional_bias: 'BULLISH', context_score: 82 },
             strategySetups: []
         });
-        expect(result.raw_candidates).toEqual([]);
-        expect(result.valid_candidates).toEqual([]);
+        expect(result.raw_candidates).toHaveLength(1);
+        expect(result.valid_candidates).toHaveLength(1);
+        expect(result.valid_candidates[0].market_mechanics_verified).toBe(true);
+        expect(result.valid_candidates[0].strategy_setup).toBeNull();
     });
 
     it('creates a valid strategy candidate from a deterministic MSNR setup', () => {
@@ -2374,7 +2391,7 @@ describe('live AI market context and prompt', () => {
             strategy_setups: []
         }, { includeAccountRules: false });
         expect(result.valid).toBe(false);
-        expect(result.reasons).toContain('candidate is not backed by a deterministic CRT/TBS/MSNR strategy setup');
+        expect(result.reasons).toContain('candidate is not backed by a deterministic market-mechanics narrative');
     });
 
     it('detects deterministic bullish and bearish Turtle Soup strategy setups', () => {

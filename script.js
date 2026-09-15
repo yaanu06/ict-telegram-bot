@@ -370,7 +370,6 @@ function init() {
     if(el('executeBtn')) el('executeBtn').addEventListener('click', handleLimit);
     if(el('cancelLimitBtn')) el('cancelLimitBtn').addEventListener('click', cancelLimit);
     if(el('copyJsonBtn')) el('copyJsonBtn').addEventListener('click', copyJson);
-    if(el('scanReplayBtn')) el('scanReplayBtn').addEventListener('click', downloadScanReplay);
     if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click', showSetup);
     if(el('saveSetupBtn')) el('saveSetupBtn').addEventListener('click', saveCurrentSetup);
     if(el('recentList')) el('recentList').addEventListener('click', handleRecentClick);
@@ -5002,6 +5001,24 @@ function getStrategyExecutionZones(strategySetups) {
         }));
 }
 
+// A structural zone may be executable without a CRT/TBS/MSNR label when the
+// existing timeframe context proves direction and a real objective is ahead.
+// This is discovery provenance, not a bypass of stop, target, RR, or lifecycle
+// validation.
+function hasDeterministicMarketMechanicsProof(zone, direction, timeframeContext = {}, targetCandidates = {}, price) {
+    if (!zone || !['BUY', 'SELL'].includes(direction) || zone.primary_eligible === false || zone.invalidated) return false;
+    const wanted = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
+    const supports = ['1D', '4H', '1H'].some(tf => [timeframeContext[tf]?.effective_trend, timeframeContext[tf]?.structural_trend, timeframeContext[tf]?.bias]
+        .some(value => value === wanted || value === `${wanted}_TRANSITION`));
+    const events = ['4H', '1H', '15M'].flatMap(tf => timeframeContext[tf]?.evidence || [])
+        .some(event => event.direction === direction && ['BOS', 'CHOCH', 'MSS', 'DISPLACEMENT', 'LIQUIDITY_SWEEP'].includes(event.kind));
+    const targets = (targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell'] || [])
+        .some(target => Number.isFinite(Number(target.level)) && (direction === 'BUY' ? Number(target.level) > Number(price) : Number(target.level) < Number(price)));
+    const location = ['FVG', 'OB', 'SUPPLY', 'DEMAND', 'FLIP', 'MSNR', 'CRT', 'TBS'].includes(String(zone.type || '').toUpperCase())
+        && Number.isFinite(Number(zone.low)) && Number.isFinite(Number(zone.high));
+    return location && targets && (supports || events);
+}
+
 function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, targetCandidates, riskConstraints, marketRegime, structure, marketContext, strategySetups }) {
     const timeframeContext = marketContext?.timeframe_context || buildTimeframeContext({ historyCache, structure, price, strategySetups, zones });
     const settings = getMarketSettings(pair);
@@ -5012,7 +5029,10 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const rejectedCandidates = [];
     const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(strategySetups) : [];
     const poiZones = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pair));
-    const seedZones = Array.isArray(strategySetups) ? strategyExecutionZones : (zones || []);
+    const labeledZoneKeys = new Set(strategyExecutionZones.map(strategyZoneKey));
+    const genericMarketZones = (zones || []).filter(zone => !labeledZoneKeys.has(strategyZoneKey(zone))
+        && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price));
+    const seedZones = Array.isArray(strategySetups) ? [...strategyExecutionZones, ...genericMarketZones] : (zones || []);
     const seedDiagnostics = seedZones.map((z, i) => ({ seed_id: z.id || `seed-${i + 1}`, execution_model: z.execution_model || z.entry_model || 'STRUCTURAL_LIMIT', zone_source: z.entry_region_source || z.type, timeframe: z.timeframe || '1H', raw_candidates: 0, failure_reasons: [], details: [] }));
     const freshTargetPoolCache = new Map();
     const failSeed = (seed, code, detail) => {
@@ -5056,8 +5076,9 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
             continue;
         }
         const strategySetup = zone.strategy_setup || (Array.isArray(strategySetups) ? getStrategySetupForZone(zone, strategySetups) : null);
-        if (Array.isArray(strategySetups) && !strategySetup) { failSeed(seed, 'NO_STRATEGY_SETUP'); continue; }
-        if (strategySetup?.opportunity_thesis?.state !== 'EXECUTION_VALID' && marketContext?.daily_bias) {
+        const marketMechanicsVerified = !strategySetup && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price);
+        if (Array.isArray(strategySetups) && !strategySetup && !marketMechanicsVerified) { failSeed(seed, 'NO_MARKET_MECHANICS_PROOF'); continue; }
+        if (strategySetup && strategySetup.opportunity_thesis?.state !== 'EXECUTION_VALID' && marketContext?.daily_bias) {
             for (const code of strategySetup?.opportunity_thesis?.rejection_codes || ['NO_DIRECTION_THESIS']) failSeed(seed, code);
             continue;
         }
@@ -5148,6 +5169,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     rawCandidate.execution_zone_created_index = zone.created_index ?? strategySetup.execution_zone_created_index ?? null;
                     rawCandidate.execution_zone_consumed = !!zone.execution_zone_consumed;
                 }
+                rawCandidate.market_mechanics_verified = marketMechanicsVerified;
                 rawCandidates.push(rawCandidate);
                 seed.raw_candidates++;
                 if (strategySetup) {
@@ -5958,8 +5980,10 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
     }
     if (marketContext.require_strategy_setup) {
         const labels = [strategySetup?.primary, ...(strategySetup?.confirmations || [])].filter(Boolean);
-        if (!labels.some(v => ['CRT', 'TBS', 'MSNR'].includes(v)) && !(strategySetup?.market_mechanics_verified && strategySetup?.opportunity_thesis?.state === 'EXECUTION_VALID')) {
-            add('candidate is not backed by a deterministic CRT/TBS/MSNR strategy setup');
+        const marketMechanicsVerified = candidate.market_mechanics_verified === true
+            || (strategySetup?.market_mechanics_verified && strategySetup?.opportunity_thesis?.state === 'EXECUTION_VALID');
+        if (!labels.some(v => ['CRT', 'TBS', 'MSNR'].includes(v)) && !marketMechanicsVerified) {
+            add('candidate is not backed by a deterministic market-mechanics narrative');
         }
     }
 
@@ -6796,11 +6820,12 @@ function compareOpportunityDisplayPlans(a, b) {
 function buildOpportunityDisplayStack(plans = [], currentPrice = null, selected = null) {
     const sorted = plans.slice().sort(compareOpportunityDisplayPlans);
     const primaryPlan = (selected && !selected.watch_only) ? selected : sorted.find(plan => !plan.watch_only);
-    const primaryId = primaryPlan?.narrative_id || primaryPlan?.id || null;
     return {
         primary_opportunity: primaryPlan ? buildOpportunityDisplayScenario(primaryPlan, currentPrice, primaryPlan.state === 'TRADE_READY' ? 'TRADE_READY' : 'PRIMARY_AUTHORIZED') : null,
-        active_setups: sorted.filter(plan => !plan.watch_only && (plan.narrative_id || plan.id) !== primaryId)
-            .map(plan => buildOpportunityDisplayScenario(plan, currentPrice, 'SECONDARY_AUTHORIZED')),
+        // Public output intentionally exposes one best setup.  Keep the
+        // selected setup in active_setups so the two public views cannot
+        // disagree; lower-ranked plans remain in diagnostics.
+        active_setups: primaryPlan ? [buildOpportunityDisplayScenario(primaryPlan, currentPrice, primaryPlan.state === 'TRADE_READY' ? 'TRADE_READY' : 'PRIMARY_AUTHORIZED')] : [],
         watch_setups: sorted.filter(plan => plan.watch_only).map(plan => buildOpportunityDisplayScenario(plan, currentPrice, 'WATCH_ONLY'))
     };
 }
@@ -7536,23 +7561,6 @@ function replayCapturedScan(replay) {
     const finalOutput = buildTodayOpportunityOutput(today, replay.pair, price, asOfMs, live.market_open);
     return { replay_matches_live: compareScanReplayOutput(replay.final_output, finalOutput).replay_matches_live,
         differences: compareScanReplayOutput(replay.final_output, finalOutput).differences, replay_output: finalOutput, production_trace: live.production_trace };
-}
-
-function downloadScanReplay() {
-    try {
-        const replay = window.__ICT_LAST_SCAN_REPLAY__;
-        if (!replay) throw new Error('Run a scan before capturing replay');
-        const json = JSON.stringify(replay, null, 2);
-        if (navigator.clipboard?.writeText) navigator.clipboard.writeText(json).then(() => showNotif('🧪 Scan replay copied', 'success')).catch(() => downloadReplayFile(json));
-        else downloadReplayFile(json);
-    } catch (error) { showNotif(`Replay unavailable: ${error.message}`, 'warning'); }
-}
-
-function downloadReplayFile(json) {
-    const blob = new Blob([json], { type: 'application/json' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob); link.download = `ict-scan-replay-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-    link.click(); URL.revokeObjectURL(link.href);
 }
 
 window.replayCapturedScan = replayCapturedScan;
@@ -10515,12 +10523,10 @@ function renderOpportunityStack(signal = {}) {
     const el = document.getElementById('opportunityStack');
     if (!el) return;
     const primary = signal.primary_opportunity;
-    const active = Array.isArray(signal.active_setups) ? signal.active_setups : [];
-    const watches = Array.isArray(signal.watch_setups) ? signal.watch_setups : [];
-    if (!primary && !active.length && !watches.length) { el.innerHTML = ''; return; }
-    el.innerHTML = renderOpportunityCard(primary, 'PRIMARY OPPORTUNITY')
-        + (active.length ? `<div class="opportunity-stack-heading">OTHER ACTIVE SETUPS</div>${active.map(item => renderOpportunityCard(item, 'AUTHORIZED')).join('')}` : '')
-        + (watches.length ? `<div class="opportunity-stack-heading">LOW-PRIORITY WATCHES</div>${watches.map(item => renderOpportunityCard(item, 'WATCH ONLY')).join('')}` : '');
+    if (!primary) { el.innerHTML = ''; return; }
+    // The normal card is deliberately limited to the selected public setup.
+    // Watch candidates remain available in JSON/debug output.
+    el.innerHTML = renderOpportunityCard(primary, 'PRIMARY OPPORTUNITY');
 }
 
 // ============================================
