@@ -6906,6 +6906,11 @@ function buildOpportunityDisplayScenario(plan = {}, currentPrice = null, tier = 
         location,
         area_of_interest: location,
         current_price: currentPrice,
+        entry_price: plan.entry ?? plan.entry_price ?? null,
+        stop_loss: plan.stop_loss ?? null,
+        take_profit_1: plan.tp1 ?? plan.take_profit_1 ?? null,
+        take_profit_2: plan.tp2 ?? plan.take_profit_2 ?? null,
+        take_profit_3: plan.tp3 ?? plan.take_profit_3 ?? null,
         execution_zone: plan.execution_zone || null,
         execution_model: plan.execution_model || null,
         lifecycle_state: plan.lifecycle_state || plan.narrative_state || plan.state || null,
@@ -7038,6 +7043,32 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         const targetIntent = setup.target_bias || setup.ai_target_intent || aiHypothesis?.target_intent || plan.target?.source || 'OPPOSING_STRUCTURE';
         const topDown = classifyTopDownTrade(setup, timeframeContext);
         const opportunityQuality = buildOpportunityQuality(setup, plan, marketContext, topDown);
+        // A pending limit is already a complete deterministic order when its
+        // zone, structural invalidation, target, and RR pass. Keep the exact
+        // geometry on the developing plan so the public projection does not
+        // describe an order while leaving entry/SL empty.
+        let pendingGeometry = null;
+        if (zone && plan.execution_model === 'PENDING_LIMIT') {
+            const settings = getMarketSettings(pairLocal);
+            const executionData = getClosedHistory(histories, executionTimeframe);
+            const executionAtr = executionData.length >= 15 ? atr(executionData, 14) : 0;
+            const geometryZone = { ...zone, strategy_setup: setup };
+            const entry = getSemanticEntryCandidate(geometryZone, setup, setup.direction, settings.prec);
+            const stops = entry == null ? [] : getAdaptiveStopCandidates(geometryZone, setup.direction, entry, executionData, executionZones, executionAtr, settings, settings.prec);
+            const stop = stops.find(candidate => Number.isFinite(candidate.stop_loss));
+            if (Number.isFinite(entry) && stop) {
+                const minimumRR = Number(marketContext?.risk_constraints?.minimum_rr) || settings.targetRR || 2.5;
+                const pool = {
+                    all: [...(setup.target_candidates || []), ...(targetCandidates?.all || [])],
+                    buy: [...(setup.target_candidates || []), ...(targetCandidates?.buy || [])],
+                    sell: [...(setup.target_candidates || []), ...(targetCandidates?.sell || [])]
+                };
+                const selectedTargets = selectAdaptiveTargets(setup.direction, entry, stop.stop_loss, pool, minimumRR, settings.prec, { currentPrice });
+                if (selectedTargets?.tp1) pendingGeometry = { entry, stop_loss: stop.stop_loss, tp1: selectedTargets.tp1.level,
+                    tp2: selectedTargets.tp2?.level ?? null, tp3: selectedTargets.tp3?.level ?? null,
+                    target: selectedTargets.tp1, rr: selectedTargets.tp1.rr };
+            }
+        }
         plans.push({ state: 'TODAY_OPPORTUNITY', trade_context_classification: topDown.classification, top_down_context: topDown, bias: setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH', strategy: setup.label || setup.primary, direction: setup.direction,
             narrative_id: setup.id || null, execution_zone_id: zone?.id || null, source: setup.ai_verified ? 'VERIFIED_AI_HYPOTHESIS' : 'DETERMINISTIC_NARRATIVE',
             ai_supported: !!setup.ai_verified || !!aiHypothesis, deterministic_supported: true, area_of_interest: { low: Number(planArea.low), high: Number(planArea.high), source, timeframe: planArea.timeframe || executionTimeframe, zone_id: planArea.id || null },
@@ -7055,7 +7086,8 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             reason_code: !zone ? 'WAITING_FOR_EXECUTION' : plan.execution_model === 'PENDING_LIMIT' ? 'WAITING_FOR_RETRACE' : (inside ? 'WAITING_FOR_CONFIRMATION' : 'WAITING_FOR_RETRACE'),
             reason: !zone ? 'A valid current-market narrative and location exist, but no execution zone has formed yet.' : plan.execution_model === 'PENDING_LIMIT' ? 'A deterministic pending limit remains valid for the remainder of today.' : (inside ? 'A valid strategy area is active, but deterministic confirmation is not yet present.' : 'A valid strategy narrative remains actionable today; wait for price to reach the deterministic area and activate it.'),
             setup_timeframe: setup.setup_timeframe || setup.timeframe, execution_timeframe: executionTimeframe,
-            confidence: Number.isFinite(Number(setup.setup_confidence)) ? Number(setup.setup_confidence) : opportunityQuality.deterministic_confidence,
+            entry: pendingGeometry?.entry ?? null, stop_loss: pendingGeometry?.stop_loss ?? null, tp1: pendingGeometry?.tp1 ?? null, tp2: pendingGeometry?.tp2 ?? null, tp3: pendingGeometry?.tp3 ?? null,
+            rr: pendingGeometry?.rr ?? null, confidence: Number.isFinite(Number(setup.setup_confidence)) ? Number(setup.setup_confidence) : opportunityQuality.deterministic_confidence,
             opportunity_quality: opportunityQuality, watch_only: opportunityQuality.watch_only });
         if (!currentSetupIds.has(setup.id || setup.primary)) state.fresh_current_market_opportunities.push(setup.id || setup.primary);
     }
@@ -10543,11 +10575,11 @@ function buildPublicTradeSignal(signal = {}) {
                 current_price: signal.current_price,
                 decision: 'WAIT',
                 trade_type: 'WAIT',
-                entry_price: null,
-                stop_loss: null,
-                take_profit_1: null,
-                take_profit_2: null,
-                take_profit_3: null,
+                entry_price: compactPrimary?.entry_price ?? null,
+                stop_loss: compactPrimary?.stop_loss ?? null,
+                take_profit_1: compactPrimary?.take_profit_1 ?? null,
+                take_profit_2: compactPrimary?.take_profit_2 ?? null,
+                take_profit_3: compactPrimary?.take_profit_3 ?? null,
                 confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
                 status: 'TODAY_OPPORTUNITY',
                 trade_context: signal.trade_context_classification || null,
