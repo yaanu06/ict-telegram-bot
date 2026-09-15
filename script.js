@@ -11046,7 +11046,7 @@ function handleLimit() {
 }
 
 function copyJson(event = null) {
-    if (event?.altKey && window.__ICT_LAST_SCAN_REPLAY__) {
+    if ((event?.altKey || event?.shiftKey || event?.detail >= 2) && window.__ICT_LAST_SCAN_REPLAY__) {
         const replay = window.__ICT_LAST_SCAN_REPLAY__;
         const diagnosticReplay = {
             schema_version: replay.schema_version,
