@@ -3932,9 +3932,11 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
         }
     }
     const sourceTargets = [...targetMap.values()];
+    const currentPrice = Number(reachabilityContext.currentPrice);
     const targets = sourceTargets
         .map(c => ({ ...c, level: ictRound(Number(c.level), prec), distance_from_entry: ictRound(Math.abs(Number(c.level) - entry), prec) }))
         .filter(c => direction === 'BUY' ? c.level > entry : c.level < entry)
+        .filter(c => !Number.isFinite(currentPrice) || (direction === 'BUY' ? c.level > currentPrice : c.level < currentPrice))
         .map(c => {
             const rr = calculateRRMetrics(direction, entry, stopLoss, c.level, minimumRR);
             const reachability = evaluateTargetReachability({
@@ -5297,6 +5299,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 }
                 const targets = selectAdaptiveTargets(direction, entry, stop.stop_loss, mergedTargetCandidates, minimumRR, prec, {
                     historyCache,
+                    currentPrice: price,
                     zones: validationZones,
                     liquidity: marketContext?.liquidity?.[tf] || mapLiquidity(data || []),
                     strategySetup
@@ -6231,21 +6234,34 @@ function buildStructureSnapshot(data, tf) {
             : highs[1].p < highs[0].p && lows[1].p < lows[0].p ? 'BEARISH' : 'MIXED'
         : 'NEUTRAL';
     const momentumTrend = detectTrend(data) || 'NEUTRAL';
+    const directionalBias = getDirectionBias(data);
+    const structureSequence = analyzeMarketStructure(data);
+    const sequenceBullish = structureSequence.includes('HH') && structureSequence.includes('HL');
+    const sequenceBearish = structureSequence.includes('LH') && structureSequence.includes('LL');
+    const sequenceMixed = (structureSequence.includes('HH') && structureSequence.includes('LL'))
+        || (structureSequence.includes('LH') && structureSequence.includes('HL'));
+    const inferredStructuralTrend = structuralTrend === 'NEUTRAL'
+        ? sequenceBullish ? 'BULLISH'
+            : sequenceBearish ? 'BEARISH'
+                : sequenceMixed ? 'MIXED' : 'NEUTRAL'
+        : structuralTrend;
     const directionalShift = mss?.type === 'BULL' || mss?.type === 'BEAR' || detectBOS(data, 'BUY') || detectBOS(data, 'SELL') || detectCHoCH(data, 'BUY') || detectCHoCH(data, 'SELL');
-    const effectiveTrend = structuralTrend === 'BULLISH' || structuralTrend === 'BEARISH'
-        ? structuralTrend
-        : structuralTrend === 'NEUTRAL' && ['BULLISH', 'BEARISH'].includes(momentumTrend)
+    const effectiveTrend = inferredStructuralTrend === 'BULLISH' || inferredStructuralTrend === 'BEARISH'
+        ? inferredStructuralTrend
+        : inferredStructuralTrend === 'NEUTRAL' && ['BULLISH', 'BEARISH'].includes(momentumTrend)
             ? momentumTrend
+            : inferredStructuralTrend === 'NEUTRAL' && ['BULLISH', 'BEARISH'].includes(directionalBias)
+                ? directionalBias
             : directionalShift
                 ? (mss?.type === 'BULL' || detectBOS(data, 'BUY') || detectCHoCH(data, 'BUY') ? 'BULLISH_TRANSITION' : 'BEARISH_TRANSITION')
                 : 'NEUTRAL';
     return {
         timeframe: tf,
-        structural_trend: structuralTrend,
+        structural_trend: inferredStructuralTrend,
         momentum_trend: momentumTrend,
         effective_trend: effectiveTrend,
-        trend_confidence: effectiveTrend === structuralTrend && effectiveTrend !== 'NEUTRAL' ? 'HIGH' : effectiveTrend !== 'NEUTRAL' ? 'MEDIUM' : 'LOW',
-        structure_state: structuralTrend === 'NEUTRAL' ? (directionalShift ? 'TRANSITION' : 'INSUFFICIENT') : structuralTrend === 'MIXED' ? 'CONFLICTING' : 'CONFIRMED',
+        trend_confidence: effectiveTrend === inferredStructuralTrend && effectiveTrend !== 'NEUTRAL' ? 'HIGH' : effectiveTrend !== 'NEUTRAL' ? 'MEDIUM' : 'LOW',
+        structure_state: inferredStructuralTrend === 'NEUTRAL' ? (directionalShift ? 'TRANSITION' : 'INSUFFICIENT') : inferredStructuralTrend === 'MIXED' ? 'CONFLICTING' : 'CONFIRMED',
         trend: effectiveTrend,
         bias: getDirectionBias(data),
         mss: mss ? { type: mss.type, level: mss.level } : null,
