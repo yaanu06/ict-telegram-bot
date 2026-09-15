@@ -2765,7 +2765,8 @@ async function updateMTFDisplay(historyCache = {}) {
         try {
             const data = historyCache[t] || await getHistory(t);
             if(data && data.length >= 2) {
-                tr = detectTrend(data);
+                const snapshot = buildStructureSnapshot(data, t);
+                tr = snapshot.effective_trend || snapshot.structural_trend || 'NEUTRAL';
             }
         } catch(e) { /* ignore */ }
         
@@ -4221,8 +4222,13 @@ function classifyTopDownTrade(candidate, timeframeContext = {}) {
     const wanted = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
     const supports = tf => [timeframeContext[tf]?.effective_trend, timeframeContext[tf]?.structural_trend, timeframeContext[tf]?.bias]
         .some(value => value === wanted || value === `${wanted}_TRANSITION`);
-    // 4H leads; daily support may coexist with a 1H pullback.
-    const aligned = supports('4H') && (supports('1D') || supports('1H'));
+    // 4H leads. Daily/1H agreement strengthens the thesis, but a validated
+    // 4H/1H location and real objective are enough to describe a developing
+    // continuation when the higher timeframe is neutral or consolidating.
+    const location = candidate?.opportunity_narrative?.location || candidate?.location || candidate?.execution_zone;
+    const hasValidatedLocation = !!location && ['4H', '1H'].includes(location.timeframe)
+        && Array.isArray(candidate?.target_candidates) && candidate.target_candidates.length > 0;
+    const aligned = supports('4H') && (supports('1D') || supports('1H') || hasValidatedLocation);
     const higherEvidence = ['1D', '4H'].flatMap(tf => timeframeContext[tf]?.evidence || []);
     const shifts = ['4H', '1H'].flatMap(tf => timeframeContext[tf]?.evidence || [])
         .filter(e => e.direction === direction && (['MSS', 'CHOCH'].includes(e.kind)
@@ -4331,6 +4337,39 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
     const discovery = { discovery_buy_events: 0, discovery_sell_events: 0, discovery_structure_shifts: 0,
         discovery_liquidity_events: 0, discovery_pois: 0, discovery_reversal_candidates: 0, discovery_continuation_candidates: 0, discovery_events: [] };
     const locationPois = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pairLocal));
+    // Build the pending-limit narrative from the current HTF map first. A
+    // confirmation shift is required only by confirmation-entry models; it
+    // must not be required before a valid future limit location can be shown.
+    for (const direction of ['BUY', 'SELL']) {
+        const wanted = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
+        const lead = timeframeContext?.['4H'];
+        const leadTrend = lead?.effective_trend || lead?.structural_trend || lead?.bias;
+        if (leadTrend !== wanted && leadTrend !== `${wanted}_TRANSITION`) continue;
+        const location = [...(zones || []), ...locationPois]
+            .filter(zone => zone.direction === direction && ['4H', '1H'].includes(zone.timeframe)
+                && zone.primary_eligible !== false && !zone.invalidated
+                && !['CONSUMED', 'USED', 'INVALIDATED', 'EXPIRED'].includes(String(zone.freshness || '').toUpperCase()))
+            .sort((a, b) => (Number(b.timeframe === '4H') - Number(a.timeframe === '4H'))
+                || (Number(a.low <= price && price <= a.high) - Number(b.low <= price && price <= b.high))
+                || Math.abs(((a.low + a.high) / 2) - price) - Math.abs(((b.low + b.high) / 2) - price))[0];
+        const targetPool = (targets?.all || []).filter(target => target.direction === direction && Number.isFinite(target.level)
+            && (direction === 'BUY' ? target.level > price : target.level < price));
+        const swings = direction === 'BUY' ? lead?.structure?.recent_swing_lows : lead?.structure?.recent_swing_highs;
+        const anchor = (swings || []).filter(s => Number.isFinite(s.level)
+            && (direction === 'BUY' ? s.level < Number(location?.low) : s.level > Number(location?.high))).at(-1);
+        if (!location || !targetPool.length || !anchor) continue;
+        const eventTime = location.created_time || location.created_time_ms || lead?.structure?.last_closed_candle_time || null;
+        const id = `ICT:CONTINUATION:${direction}:${location.id || strategyZoneKey(location)}`;
+        setups.push({ id, primary: 'ICT', label: 'MARKET_MECHANICS', direction,
+            timeframe: location.timeframe, setup_timeframe: location.timeframe, execution_timeframe: location.timeframe === '4H' ? '1H' : '15M',
+            event_time: eventTime, narrative_state: 'ACTIVE', execution_zone: null, execution_model: 'PENDING_LIMIT', entry_model: 'PENDING_LIMIT',
+            structural_invalidation: anchor.level, structural_invalidation_detail: { level: anchor.level, source: 'HTF_STRUCTURE', timeframe: '4H' },
+            target_candidates: targetPool, primary_objective: targetPool[0].level,
+            opportunity_narrative: { id: `NARRATIVE:${id}`, state: 'DEVELOPING', location,
+                liquidity_event_ids: [], structural_shift_ids: [], evidence_ids: (lead?.structural_evidence_ids || []).slice(),
+                target_intent: targetPool[0].source, invalidation_intent: anchor.level, execution_requirement: 'RETRACE_TO_LOCATION' },
+            market_mechanics_verified: true, execution_confirmed: false, structural_evidence_ids: lead?.structural_evidence_ids || [], freshness: 'DEVELOPING', original_strategy_entry_consumed: false });
+    }
     // A closed structure shift is the signal. Only later, qualified fresh zones can execute it.
     for (const tf of ['1H', '15M']) {
         const data = getClosedHistory(historyCache, tf);
@@ -4419,9 +4458,10 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
 }
 
 function buildOpportunityThesis(setup, marketContext, price) {
-    const zone = setup.execution_zone;
+    const zone = setup.execution_zone || setup.opportunity_narrative?.location || null;
+    const executionZone = setup.execution_zone;
     const topDown = classifyTopDownTrade(setup, marketContext.timeframe_context);
-    const invalidation = getAuthoritativeStructuralInvalidation(zone, setup);
+    const invalidation = getAuthoritativeStructuralInvalidation(executionZone || zone, setup);
     const target = (setup.target_candidates || []).find(t => Number.isFinite(t.level)
         && (setup.direction === 'BUY' ? t.level > price : t.level < price));
     const model = setup.execution_model === 'CONFIRMATION_ENTRY' || setup.entry_model === 'CONFIRMATION_ENTRY'
@@ -4435,7 +4475,7 @@ function buildOpportunityThesis(setup, marketContext, price) {
     if (!invalidation) failures.push('NO_STRUCTURAL_INVALIDATION');
     if (!target) failures.push('NO_REAL_TARGET');
     if (topDown.classification === 'LTF_ISOLATED') failures.push('LTF_ISOLATED');
-    if (model === 'CONFIRMATION_ENTRY' && !confirmation) failures.push('EXECUTION_NOT_CONFIRMED');
+    if (model === 'CONFIRMATION_ENTRY' && executionZone && !confirmation) failures.push('EXECUTION_NOT_CONFIRMED');
     return { id: `THESIS:${setup.id}`, direction: setup.direction, daily_bias: marketContext.daily_bias,
         htf_narrative: topDown, liquidity_draw: target?.source || null,
         location: zone ? { id: zone.id, type: zone.type, timeframe: zone.timeframe, low: zone.low, high: zone.high,

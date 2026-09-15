@@ -613,6 +613,14 @@ describe('market-thesis opportunity invariants', () => {
 });
 
 describe('top-down trade context', () => {
+    it('renders the canonical effective trend instead of the legacy EMA-only trend', async () => {
+        const { context: ctx, elements } = getScanContext();
+        const history = candles(80, 100, 0.1, 'up');
+        await ctx.updateMTFDisplay({ '1D': history, '15M': history });
+        expect(elements.get('trend1D').className).toContain('bullish');
+        expect(elements.get('trend15M').className).toContain('bullish');
+    });
+
     function context(ctx, daily, fourH, oneH, reversal = false) {
         const structure = Object.fromEntries([['1D', daily], ['4H', fourH], ['1H', oneH], ['15M', 'BULLISH']]
             .map(([tf, trend]) => [tf, { trend }]));
@@ -2351,6 +2359,27 @@ describe('live AI market context and prompt', () => {
             '4H': { effective_trend: 'BEARISH', evidence: [{ kind: 'LIQUIDITY_SWEEP', direction: 'BUY' }] },
             '1H': { evidence: [{ kind: 'MSS', direction: 'BUY' }] }
         }, target, 101)).toBe(true);
+    });
+
+    it('discovers an HTF continuation limit narrative before a new LTF shift', () => {
+        const ctx = getContext();
+        const history = candles(40, 0.712, 0.0001, 'down');
+        const supply = { id: '4H-SUPPLY', type: 'SUPPLY', direction: 'SELL', timeframe: '4H', low: 0.7162, high: 0.71655, freshness: 'FRESH', primary_eligible: true };
+        const result = ctx.buildMarketMechanicsSetups({ pair: 'AUD/USD', price: 0.71253,
+            historyCache: { '4H': history, '1H': history, '15M': history },
+            timeframeContext: { '4H': { effective_trend: 'BEARISH', structural_trend: 'BEARISH', structural_evidence_ids: ['4H-TREND'], structure: { recent_swing_highs: [{ level: 0.7182 }] } } },
+            targets: { all: [{ direction: 'SELL', level: 0.71085, source: 'PDL' }] }, zones: [supply] });
+        expect(result.some(setup => setup.primary === 'ICT' && setup.direction === 'SELL' && setup.execution_model === 'PENDING_LIMIT')).toBe(true);
+    });
+
+    it('keeps a validated narrative location when its execution zone is not formed', () => {
+        const ctx = getContext();
+        const setup = { id: 'MM-LOCATION', direction: 'SELL', execution_model: 'PENDING_LIMIT', narrative_state: 'ACTIVE',
+            opportunity_narrative: { location: { id: 'SUPPLY-1', type: 'SUPPLY', timeframe: '4H', low: 0.7162, high: 0.71655 }, target_intent: 'PDL' },
+            structural_invalidation: { level: 0.7182, source: 'HTF_STRUCTURE' }, target_candidates: [{ level: 0.71085, source: 'PDL' }] };
+        const thesis = ctx.buildOpportunityThesis(setup, { timeframe_context: { '4H': { effective_trend: 'BEARISH' } }, daily_bias: { direction: 'SELL' } }, 0.71253);
+        expect(thesis.location).toMatchObject({ id: 'SUPPLY-1', timeframe: '4H' });
+        expect(thesis.rejection_codes).not.toContain('NO_MEANINGFUL_POI');
     });
 
     it('creates a valid strategy candidate from a deterministic MSNR setup', () => {
