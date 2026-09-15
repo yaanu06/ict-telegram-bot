@@ -10480,6 +10480,27 @@ function buildPublicTradeSignal(signal = {}) {
     if (isWait) {
         if (signal.status === 'TODAY_OPPORTUNITY' || signal.status === 'WATCH_ONLY') {
             const primary = signal.primary_opportunity || null;
+            const compactPrimary = primary ? {
+                id: primary.id || null,
+                direction: primary.direction || null,
+                strategy: primary.strategy || null,
+                trade_context: primary.trade_context_classification || null,
+                setup_timeframe: primary.setup_timeframe || null,
+                execution_timeframe: primary.execution_timeframe || null,
+                entry_price: primary.entry_price ?? primary.entry ?? null,
+                entry_zone: primary.entry_zone || primary.execution_zone || null,
+                stop_loss: primary.stop_loss ?? null,
+                take_profit_1: primary.take_profit_1 ?? primary.tp1 ?? primary.target_level ?? null,
+                take_profit_2: primary.take_profit_2 ?? primary.tp2 ?? null,
+                take_profit_3: primary.take_profit_3 ?? primary.tp3 ?? null,
+                execution_model: primary.execution_model || null,
+                state: primary.state || primary.lifecycle_state || null,
+                target: primary.target || (primary.target_level != null ? { level: primary.target_level, source: primary.target_intent || null } : null),
+                structural_invalidation: primary.structural_invalidation || null,
+                confidence: primary.confidence ?? null,
+                reason: primary.reason || null,
+                next_requirement: primary.next_requirement || []
+            } : null;
             return {
                 date: signal.date,
                 pair: signal.pair,
@@ -10500,11 +10521,8 @@ function buildPublicTradeSignal(signal = {}) {
                     target_intent: signal.opportunity.target_intent || null,
                     state: signal.opportunity.state || null
                 } : null,
-                primary_opportunity: primary,
-                // The normal response is intentionally a single selected
-                // setup. Full candidate/watch diagnostics remain available
-                // through the internal scan trace and replay object.
-                active_setups: primary ? [primary] : [],
+                primary_opportunity: compactPrimary,
+                active_setups: compactPrimary ? [compactPrimary] : [],
                 watch_setups: [],
                 reason: signal.reason || { code: 'DEVELOPING_SETUP', message: 'A valid developing opportunity remains for today.' },
                 analysis: {
@@ -10512,7 +10530,7 @@ function buildPublicTradeSignal(signal = {}) {
                     volatility_level: signal.volatility?.regime || signal.analysis?.volatility || null,
                     technical_indicators: signal.indicators || signal.analysis?.indicators || null,
                     type: signal.strategy || signal.trade_context_classification || null,
-                    setup: primary || signal.opportunity || null
+                    setup: compactPrimary || signal.opportunity || null
                 },
                 market_open: signal.market_open ?? null
             };
