@@ -7277,7 +7277,11 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         const data = historyCache?.[tf];
         const tfAtr = tf === '4H' ? atr4h : atr1h;
         const zoneStartedAt = scanClock();
-        const tfZones = buildLiveZonesForTf(data, tf, price, pair, tfAtr || primaryAtr || 0, 5);
+        // Preserve enough deterministic HTF structure for opportunity
+        // discovery. The previous five-zone cap could remove the valid 4H
+        // FVG/OB before the market-mechanics narrative was built, leaving an
+        // isolated 15M FLIP as the only visible result.
+        const tfZones = buildLiveZonesForTf(data, tf, price, pair, tfAtr || primaryAtr || 0, 20);
         zones.push(...tfZones);
         console.log('[PERF] MSNR/ICT zone construction', { timeframe: tf, elapsed_ms: Math.round((scanClock() - zoneStartedAt) * 100) / 100, zones: tfZones.length, msnr_levels: tfZones.filter(z => z.type === 'MSNR').length });
     }
