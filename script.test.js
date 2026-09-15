@@ -701,7 +701,7 @@ describe('top-down trade context', () => {
         expect(signal.analysis.higher_timeframe.daily).toContain('BULLISH');
         expect(signal).not.toHaveProperty('timeframe_context');
         const wait = ctx.buildPublicTradeSignal({ decision: 'WAIT', status: 'TODAY_OPPORTUNITY', trade_context_classification: top.classification, top_down_context: top });
-        expect(wait.trade_context).toBe(top.classification);
+        expect(wait.analysis.type).toBe(top.classification);
     });
 
     it('keeps the selected developing setup in the public signal contract', () => {
@@ -709,9 +709,9 @@ describe('top-down trade context', () => {
         const signal = ctx.buildPublicTradeSignal({ date: '2026-09-15', time: '10:00:00', pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY',
             primary_opportunity: { id: 'MM-1', direction: 'SELL', state: 'WAITING_FOR_LOCATION' }, active_setups: [], watch_setups: [],
             reason: { code: 'WAITING_FOR_LOCATION', message: 'Price has not reached the validated area.' } });
-        expect(signal.primary_opportunity).toMatchObject({ id: 'MM-1', state: 'WAITING_FOR_LOCATION' });
-        expect(signal.active_setups).toEqual([signal.primary_opportunity]);
-        expect(signal.watch_setups).toEqual([]);
+        expect(signal).not.toHaveProperty('primary_opportunity');
+        expect(signal).not.toHaveProperty('active_setups');
+        expect(signal).not.toHaveProperty('watch_setups');
     });
 
     it('removes the replay action while retaining the copy action', () => {
@@ -884,7 +884,8 @@ describe('daily opportunity planning', () => {
         const ctx = getContext();
         const result = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', price: 1.2, decision: 'WAIT', status: 'TODAY_OPPORTUNITY', confidence: 68, strategy: 'CRT', bias: 'BEARISH', opportunity: { area_of_interest: { low: 1.1, high: 1.11 }, execution_model: 'CONFIRMATION_ENTRY' }, reason: { code: 'WAITING_FOR_RETRACE', message: 'Wait for price to return to the area.' }, market_open: true });
         expect(result.status).toBe('TODAY_OPPORTUNITY');
-        expect(result.opportunity.execution_model).toBe('CONFIRMATION_ENTRY');
+        expect(result.analysis.type).toBe('CRT');
+        expect(result).not.toHaveProperty('opportunity');
         expect(result).not.toHaveProperty('candidate_pipeline');
         expect(result).not.toHaveProperty('seed_diagnostics');
     });

@@ -5153,7 +5153,8 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         const strategySetup = zone.strategy_setup || (Array.isArray(strategySetups) ? getStrategySetupForZone(zone, strategySetups) : null);
         const marketMechanicsVerified = !strategySetup && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price);
         if (Array.isArray(strategySetups) && !strategySetup && !marketMechanicsVerified) { failSeed(seed, 'NO_MARKET_MECHANICS_PROOF'); continue; }
-        if (strategySetup && strategySetup.opportunity_thesis?.state !== 'EXECUTION_VALID' && marketContext?.daily_bias) {
+        const setupModel = String(strategySetup?.opportunity_thesis?.execution_model || strategySetup?.execution_model || strategySetup?.entry_model || zone.execution_model || '').toUpperCase();
+        if (strategySetup && setupModel !== 'PENDING_LIMIT' && strategySetup.opportunity_thesis?.state !== 'EXECUTION_VALID' && marketContext?.daily_bias) {
             for (const code of strategySetup?.opportunity_thesis?.rejection_codes || ['NO_DIRECTION_THESIS']) failSeed(seed, code);
             continue;
         }
@@ -6082,7 +6083,7 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
         const labels = [strategySetup?.primary, ...(strategySetup?.confirmations || [])].filter(Boolean);
         const marketMechanicsVerified = candidate.market_mechanics_verified === true
             || (strategySetup?.market_mechanics_verified && strategySetup?.opportunity_thesis?.state === 'EXECUTION_VALID');
-        if (!labels.some(v => ['CRT', 'TBS', 'MSNR'].includes(v)) && !marketMechanicsVerified) {
+        if (!labels.some(v => ['CRT', 'TBS', 'MSNR', 'ICT', 'MARKET_MECHANICS'].includes(String(v).toUpperCase())) && !marketMechanicsVerified) {
             add('candidate is not backed by a deterministic market-mechanics narrative');
         }
     }
@@ -8829,7 +8830,8 @@ function validateExecutableCandidateInvariant(candidate, marketState = {}) {
         && String(candidate.execution_model || candidate.entry_model || '').toUpperCase() !== 'CONFIRMATION_ENTRY') {
         failures.push('REVERSAL_REQUIRES_CONFIRMATION_ENTRY');
     }
-    if (candidate.opportunity_thesis && candidate.opportunity_thesis.state !== 'EXECUTION_VALID') failures.push('EXECUTION_NOT_CONFIRMED');
+    const candidateModel = String(candidate.execution_model || candidate.entry_model || '').toUpperCase();
+    if (candidate.opportunity_thesis && candidate.opportunity_thesis.state !== 'EXECUTION_VALID' && candidateModel !== 'PENDING_LIMIT') failures.push('EXECUTION_NOT_CONFIRMED');
     for (const field of ['entry', 'stop_loss', 'tp1']) if (!Number.isFinite(Number(candidate[field]))) failures.push(`${field}_NOT_FINITE`);
     const direction = candidate.direction;
     const entry = Number(candidate.entry), stop = Number(candidate.stop_loss), tp1 = Number(candidate.tp1 ?? candidate.take_profit_1);
@@ -10569,12 +10571,14 @@ function buildPublicTradeSignal(signal = {}) {
                 reason: primary.reason || null,
                 next_requirement: primary.next_requirement || []
             } : null;
+            const orderType = compactPrimary?.entry_price != null && compactPrimary?.direction
+                ? `${compactPrimary.direction}_LIMIT` : 'WAIT';
             return {
                 date: signal.date,
                 pair: signal.pair,
                 current_price: signal.current_price,
                 decision: 'WAIT',
-                trade_type: 'WAIT',
+                trade_type: orderType,
                 entry_price: compactPrimary?.entry_price ?? null,
                 stop_loss: compactPrimary?.stop_loss ?? null,
                 take_profit_1: compactPrimary?.take_profit_1 ?? null,
@@ -10582,23 +10586,12 @@ function buildPublicTradeSignal(signal = {}) {
                 take_profit_3: compactPrimary?.take_profit_3 ?? null,
                 confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
                 status: 'TODAY_OPPORTUNITY',
-                trade_context: signal.trade_context_classification || null,
-                opportunity: signal.opportunity ? {
-                    area_of_interest: signal.opportunity.area_of_interest || null,
-                    execution_model: signal.opportunity.execution_model || null,
-                    target_intent: signal.opportunity.target_intent || null,
-                    state: signal.opportunity.state || null
-                } : null,
-                primary_opportunity: compactPrimary,
-                active_setups: compactPrimary ? [compactPrimary] : [],
-                watch_setups: [],
                 reason: signal.reason || { code: 'DEVELOPING_SETUP', message: 'A valid developing opportunity remains for today.' },
                 analysis: {
                     trend_detection: signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
                     volatility_level: signal.volatility?.regime || signal.analysis?.volatility || null,
                     technical_indicators: signal.indicators || signal.analysis?.indicators || null,
-                    type: signal.strategy || signal.trade_context_classification || null,
-                    setup: compactPrimary || signal.opportunity || null
+                    type: signal.strategy || signal.trade_context_classification || null
                 },
                 market_open: signal.market_open ?? null
             };
