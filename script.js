@@ -11047,7 +11047,36 @@ function handleLimit() {
 
 function copyJson(event = null) {
     if (event?.altKey && window.__ICT_LAST_SCAN_REPLAY__) {
-        const replayText = JSON.stringify(window.__ICT_LAST_SCAN_REPLAY__, null, 2);
+        const replay = window.__ICT_LAST_SCAN_REPLAY__;
+        const diagnosticReplay = {
+            schema_version: replay.schema_version,
+            pair: replay.pair,
+            quote: replay.quote,
+            history: Object.fromEntries(Object.entries(replay.history || {}).map(([tf, candles]) => [tf, {
+                count: candles.length,
+                first_closed: candles[0]?.t || null,
+                last_closed: candles.at(-1)?.t || null
+            }])),
+            structure: Object.fromEntries(Object.entries(replay.structure || {}).map(([tf, value]) => [tf, {
+                structural_trend: value.structural_trend,
+                momentum_trend: value.momentum_trend,
+                effective_trend: value.effective_trend,
+                structure_state: value.structure_state,
+                bos_buy: !!value.bos_buy,
+                bos_sell: !!value.bos_sell,
+                choch_buy: !!value.choch_buy,
+                choch_sell: !!value.choch_sell,
+                mss: value.mss || null
+            }])),
+            daily_bias: replay.daily_bias,
+            target_catalog: replay.production_trace?.target_catalog || null,
+            setup_trace: replay.production_trace?.setup_trace || [],
+            funnel: replay.production_trace?.funnel || null,
+            discovery_events: replay.production_trace?.discovery_events || [],
+            candidate_pipeline_audit: replay.candidate_pipeline_audit || null,
+            final_output: replay.final_output
+        };
+        const replayText = JSON.stringify(diagnosticReplay, null, 2);
         navigator.clipboard.writeText(replayText)
             .then(() => showNotif('📋 Scan replay copied', 'success'))
             .catch(() => showNotif('Failed', 'error'));
