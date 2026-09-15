@@ -423,6 +423,21 @@ describe('market-thesis opportunity invariants', () => {
         expect(result.terminal_parent_opportunities).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'old-parent' })]));
     });
 
+    it('does not blame an old terminal parent when a current setup reaches planning and is rejected separately', () => {
+        const ctx = getContext();
+        const t0 = Date.parse('2026-09-15T05:00:00Z');
+        const result = ctx.buildTodayOpportunity({ pair: 'XAU/USD', currentPrice: 4296.82519, scanAsOfMs: t0 + 3600000, marketOpen: true,
+            histories: { '1H': Array.from({ length: 40 }, (_, i) => c(4296 + i * 0.01, 4296.1 + i * 0.01, 4295.9 + i * 0.01, 4296 + i * 0.01, new Date(t0 + i * 3600000).toISOString())) },
+            strategySetups: [
+                { id: 'old-terminal', primary: 'CRT', direction: 'SELL', narrative_state: 'ACTIVE', rejection_code: 'SETUP_ALREADY_COMPLETED', event_time: t0 - 7200000,
+                    execution_zone: { id: 'old-zone', low: 4297, high: 4298, created_time: t0 - 7200000, freshness: 'FRESH' }, target_candidates: [{ level: 4280, source: 'PDL' }] },
+                { id: 'current-setup', primary: 'ICT', direction: 'SELL', narrative_state: 'ACTIVE', event_time: t0, execution_zone: { id: 'current-zone', low: 4298, high: 4300, created_time: t0 + 1800000, freshness: 'FRESH', primary_eligible: true }, structural_invalidation: 4302, structural_invalidation_detail: { level: 4302, source: 'ICT_SHIFT_ORIGIN_SWING' }, target_candidates: [] }
+            ] });
+        expect(result.fresh_current_market_opportunities).toContain('current-setup');
+        expect(result.reason_code).toBe('NO_REMAINING_TARGET');
+        expect(result.previous_opportunity_status).toBeUndefined();
+    });
+
     it('creates deterministic supply and demand POIs only from displacement structure', () => {
         const ctx = getContext();
         const data = candles(80, 100, 0.5, 'up');
@@ -2124,6 +2139,75 @@ describe('live AI market context and prompt', () => {
         expect(Array.isArray(live.real_ict_zones)).toBe(true);
         expect(Array.isArray(live.target_candidates.buy)).toBe(true);
         expect(Array.isArray(live.adaptive_setup_candidates)).toBe(true);
+    });
+
+    it('traces the production funnel from raw candle histories', () => {
+        const ctx = getContext();
+        const historyCache = buildCache();
+        const price = 140;
+        const patterns = Object.fromEntries(['4H', '1H', '15M', '5M'].map(tf => [tf, {
+            fvg: ctx.detectFVG(historyCache[tf]), swings: ctx.findSwings(historyCache[tf], 3),
+            turtleSoup: ctx.detectTurtleSoup(historyCache[tf]), crt: ctx.detectCRT(historyCache[tf]),
+            orderBlocks: ctx.detectOrderBlocks(historyCache[tf], 'BUY'), msnr: ctx.calculateMSNR(historyCache[tf], price),
+            trend: ctx.detectTrend(historyCache[tf]), adx: ctx.calculateADX(historyCache[tf], 14, tf)
+        }]));
+        const live = ctx.buildLiveMarketContext({ pair: 'XAU/USD', price, historyCache, indicators: { '4H': {}, '1H': {} }, patterns,
+            enhancedAnalysis: { phase: ctx.analyzeMarketPhase(historyCache['4H'], false) }, holistic: { suggestedDirection: 'BUY', buyScore: 60, sellScore: 10 }, entryContext: null,
+            as_of_ms: Date.now() });
+        expect(live).toHaveProperty('production_trace');
+        expect(live.production_trace.timeframes['4H'].closed_candle_count).toBe(80);
+        expect(live.production_trace.timeframes['4H']).toHaveProperty('structural_trend');
+        expect(live.production_trace).toHaveProperty('buy_thesis');
+        expect(live.production_trace).toHaveProperty('sell_thesis');
+        expect(live.production_trace.target_catalog).toHaveProperty('buy');
+        expect(live.production_trace.funnel).toEqual(expect.objectContaining({ raw_setups: 0, exact_candidates: 0, selector_candidates: 0 }));
+    });
+
+    it('discovers a structural shift on the newest closed candle', () => {
+        const ctx = getContext();
+        const data = candles(30, 100, 0.1, 'up');
+        data[data.length - 1] = c(102.9, 105, 102.8, 104.5);
+        const result = ctx.buildMarketMechanicsSetups({ historyCache: { '1H': data }, timeframeContext: { '1H': { effective_trend: 'BULLISH', structural_trend: 'BULLISH', bias: 'BULLISH', evidence: [] } }, targets: { all: [] }, zones: [], pair: 'XAU/USD', price: 104.5 });
+        expect(result.discovery.discovery_buy_events).toBeGreaterThan(0);
+    });
+
+    it('runs raw candle histories through discovery and planner without prebuilt setups', () => {
+        const ctx = getContext();
+        const base = tbsBuyFixture(15);
+        const scanAsOfMs = Date.parse('2026-09-15T12:00:00Z');
+        const dated = base.map((bar, index) => ({ ...bar, t: new Date(scanAsOfMs - (base.length - index) * 3600000).toISOString(), is_closed: true }));
+        const historyCache = { '1D': dated, '4H': dated, '1H': dated, '15M': dated, '5M': dated };
+        const patterns = Object.fromEntries(['4H', '1H', '15M', '5M'].map(tf => [tf, {
+            fvg: ctx.detectFVG(base), swings: ctx.findSwings(base, 3), turtleSoup: ctx.detectTurtleSoup(base), crt: ctx.detectCRT(base),
+            orderBlocks: ctx.detectOrderBlocks(base, 'BUY'), msnr: ctx.calculateMSNR(base, 100.2), trend: ctx.detectTrend(base), adx: ctx.calculateADX(base, 14, tf)
+        }]));
+        const live = ctx.buildLiveMarketContext({ pair: 'EUR/USD', price: 100.2, historyCache, indicators: { '4H': {}, '1H': {} }, patterns,
+            enhancedAnalysis: { phase: ctx.analyzeMarketPhase(base, false) }, holistic: { suggestedDirection: 'BUY', buyScore: 60, sellScore: 10 }, entryContext: null,
+            as_of_ms: scanAsOfMs });
+        const output = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 100.2, scanAsOfMs, histories: historyCache,
+            marketContext: live.market_context, strategySetups: live.strategy_setups, executionZones: live.strategy_execution_zones,
+            candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, targetCandidates: live.target_candidates, marketOpen: true });
+        expect(live.strategy_setups.length).toBeGreaterThan(0);
+        expect(live.production_trace.funnel.raw_setups).toBe(live.strategy_setups.length);
+        expect(output.state).toBe('NO_TRADE_TODAY');
+        expect(output.reason_code).toBe('NO_TRADE_TODAY');
+    });
+
+    it('returns a safe no-opportunity result through the same raw-history production path', () => {
+        const ctx = getContext();
+        const historyCache = buildCache();
+        const patterns = Object.fromEntries(['4H', '1H', '15M', '5M'].map(tf => [tf, {
+            fvg: ctx.detectFVG(historyCache[tf]), swings: ctx.findSwings(historyCache[tf], 3), turtleSoup: ctx.detectTurtleSoup(historyCache[tf]), crt: ctx.detectCRT(historyCache[tf]),
+            orderBlocks: ctx.detectOrderBlocks(historyCache[tf], 'BUY'), msnr: ctx.calculateMSNR(historyCache[tf], 140), trend: ctx.detectTrend(historyCache[tf]), adx: ctx.calculateADX(historyCache[tf], 14, tf)
+        }]));
+        const live = ctx.buildLiveMarketContext({ pair: 'XAU/USD', price: 140, historyCache, indicators: { '4H': {}, '1H': {} }, patterns,
+            enhancedAnalysis: { phase: ctx.analyzeMarketPhase(historyCache['4H'], false) }, holistic: { suggestedDirection: 'NEUTRAL', buyScore: 0, sellScore: 0 }, entryContext: null,
+            as_of_ms: Date.parse('2026-09-15T12:00:00Z') });
+        const output = ctx.buildTodayOpportunity({ pair: 'XAU/USD', currentPrice: 140, scanAsOfMs: Date.parse('2026-09-15T12:00:00Z'), histories: historyCache,
+            marketContext: live.market_context, strategySetups: live.strategy_setups, executionZones: live.strategy_execution_zones,
+            candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, targetCandidates: live.target_candidates, marketOpen: true });
+        expect(live.production_trace.funnel.raw_setups).toBe(0);
+        expect(output.state).toBe('NO_TRADE_TODAY');
     });
 
     it('separates future limit setup eligibility from immediate entry confirmation', () => {
