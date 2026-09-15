@@ -2163,6 +2163,35 @@ describe('live AI market context and prompt', () => {
         expect(live.production_trace.funnel).toEqual(expect.objectContaining({ raw_setups: 0, exact_candidates: 0, selector_candidates: 0 }));
     });
 
+    it('captures canonical histories safely and replays production deterministically', () => {
+        const ctx = getContext();
+        const historyCache = buildCache();
+        const price = 140;
+        const asOfMs = Date.parse('2026-09-15T12:00:00Z');
+        const patterns = Object.fromEntries(['4H', '1H', '15M', '5M'].map(tf => [tf, {
+            fvg: ctx.detectFVG(historyCache[tf]), swings: ctx.findSwings(historyCache[tf], 3), turtleSoup: ctx.detectTurtleSoup(historyCache[tf]), crt: ctx.detectCRT(historyCache[tf]),
+            orderBlocks: ctx.detectOrderBlocks(historyCache[tf], 'BUY'), msnr: ctx.calculateMSNR(historyCache[tf], price), trend: ctx.detectTrend(historyCache[tf]), adx: ctx.calculateADX(historyCache[tf], 14, tf)
+        }]));
+        const live = ctx.buildLiveMarketContext({ pair: 'XAU/USD', price, historyCache, indicators: { '4H': {}, '1H': {} }, patterns,
+            enhancedAnalysis: { phase: ctx.analyzeMarketPhase(historyCache['4H'], false) }, holistic: { suggestedDirection: 'NEUTRAL', buyScore: 0, sellScore: 0 }, entryContext: null, as_of_ms: asOfMs });
+        const finalOutput = ctx.buildTodayOpportunityOutput(ctx.buildTodayOpportunity({ pair: 'XAU/USD', currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
+            marketContext: live.market_context, strategySetups: live.strategy_setups, executionZones: live.strategy_execution_zones,
+            candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, targetCandidates: live.target_candidates, marketOpen: true }), 'XAU/USD', price, asOfMs, true);
+        live.indicators = { '4H': {}, '1H': {} };
+        live.holistic = { suggestedDirection: 'NEUTRAL', buyScore: 0, sellScore: 0 };
+        const replay = ctx.createScanReplay(live, finalOutput);
+        const json = JSON.stringify(replay);
+        expect(replay.history['4H']).toHaveLength(80);
+        expect(replay.history['4H'].every(candle => candle.is_closed !== false)).toBe(true);
+        expect(json).not.toMatch(/TWELVE_DATA_KEY|DEEPSEEK_API_KEY|GITHUB_PAT|authorization|api_key|token/i);
+        const first = ctx.replayCapturedScan(replay);
+        const second = ctx.replayCapturedScan(replay);
+        expect(first.replay_output).toEqual(second.replay_output);
+        expect(first).toHaveProperty('replay_matches_live');
+        expect(first).toHaveProperty('differences');
+        expect(first.production_trace).toHaveProperty('discovery_events');
+    });
+
     it('discovers a structural shift on the newest closed candle', () => {
         const ctx = getContext();
         const data = candles(30, 100, 0.1, 'up');

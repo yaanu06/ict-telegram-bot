@@ -370,6 +370,7 @@ function init() {
     if(el('executeBtn')) el('executeBtn').addEventListener('click', handleLimit);
     if(el('cancelLimitBtn')) el('cancelLimitBtn').addEventListener('click', cancelLimit);
     if(el('copyJsonBtn')) el('copyJsonBtn').addEventListener('click', copyJson);
+    if(el('scanReplayBtn')) el('scanReplayBtn').addEventListener('click', downloadScanReplay);
     if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click', showSetup);
     if(el('saveSetupBtn')) el('saveSetupBtn').addEventListener('click', saveCurrentSetup);
     if(el('recentList')) el('recentList').addEventListener('click', handleRecentClick);
@@ -4329,7 +4330,7 @@ function buildDailyTradingBias(timeframeContext, targets, price, asOfTime) {
 function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias, targets, zones, pair: pairLocal, price }) {
     const setups = [];
     const discovery = { discovery_buy_events: 0, discovery_sell_events: 0, discovery_structure_shifts: 0,
-        discovery_liquidity_events: 0, discovery_pois: 0, discovery_reversal_candidates: 0, discovery_continuation_candidates: 0 };
+        discovery_liquidity_events: 0, discovery_pois: 0, discovery_reversal_candidates: 0, discovery_continuation_candidates: 0, discovery_events: [] };
     const locationPois = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pairLocal));
     // A closed structure shift is the signal. Only later, qualified fresh zones can execute it.
     for (const tf of ['1H', '15M']) {
@@ -4342,12 +4343,18 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
             for (let i = Math.max(20, data.length - STRATEGY_SPEC.EXECUTION.maxFreshExecutionZones - 8); i < data.length; i++) {
                 const prefix = data.slice(0, i + 1);
                 const mss = detectMSS(prefix);
-                const shift = (mss?.type === (direction === 'BUY' ? 'BULL' : 'BEAR')) || detectCHoCH(prefix, direction)
-                    || (detectBOS(prefix, direction) && detectDisplacement(prefix, direction));
-                if (!shift) continue;
+                const choch = detectCHoCH(prefix, direction);
+                const bos = detectBOS(prefix, direction);
+                const displacement = detectDisplacement(prefix, direction);
+                const shift = (mss?.type === (direction === 'BUY' ? 'BULL' : 'BEAR')) || choch || (bos && displacement);
+                const eventTime = candleTimestamp(data[i], i, tf);
+                const discoveryEvent = { timeframe: tf, bar_index: i, bar_timestamp: eventTime, direction,
+                    mss: mss?.type === (direction === 'BUY' ? 'BULL' : 'BEAR'), choch, bos, displacement,
+                    shift_detected: !!shift, narrative_created: false, failure_reason: null };
+                discovery.discovery_events.push(discoveryEvent);
+                if (!shift) { discoveryEvent.failure_reason = 'NO_STRUCTURE_SHIFT'; continue; }
                 discovery[direction === 'BUY' ? 'discovery_buy_events' : 'discovery_sell_events']++;
                 discovery.discovery_structure_shifts++;
-                const eventTime = candleTimestamp(data[i], i, tf);
                 const eventContext = Object.fromEntries(Object.entries(timeframeContext || {}).map(([key, value]) => [key, {
                     ...value, evidence: [...(value?.evidence || [])].concat(key === tf ? [
                         { id: `SHIFT:${tf}:${direction}:${eventTime}`, kind: 'MSS', direction, timeframe: tf }
@@ -4358,15 +4365,17 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
                 if (classification.classification === 'HTF_ALIGNED_CONTINUATION') discovery.discovery_continuation_candidates++;
                 const swing = findSwings(prefix, 3);
                 const anchor = (direction === 'BUY' ? swing.L : swing.H)?.at(-1)?.p;
-                if (!Number.isFinite(anchor)) continue;
+                if (!Number.isFinite(anchor)) { discoveryEvent.failure_reason = 'NO_STRUCTURAL_INVALIDATION'; continue; }
                 const location = locationPois.filter(zone => zone.direction === direction && !zone.invalidated &&
                     ['FRESH', 'TOUCHED', 'TESTED'].includes(String(zone.freshness || '').toUpperCase()))
                     .sort((a, b) => Math.abs((a.low + a.high) / 2 - price) - Math.abs((b.low + b.high) / 2 - price))[0]
                     || (zones || []).filter(zone => zone.direction === direction && !zone.invalidated && zone.primary_eligible !== false)
                         .sort((a, b) => Math.abs((a.low + a.high) / 2 - price) - Math.abs((b.low + b.high) / 2 - price))[0];
                 if (location) discovery.discovery_pois++;
+                if (!location) discoveryEvent.failure_reason = 'NO_LOCATION_POI';
                 const targetPool = (targets?.all || []).filter(t => t.direction === direction && Number.isFinite(t.level)
                     && (direction === 'BUY' ? t.level > price : t.level < price));
+                if (!targetPool.length && !discoveryEvent.failure_reason) discoveryEvent.failure_reason = 'NO_TARGET_POOL';
                 const narrative = { id: `ICT:${tf}:${direction}:${eventTime}`, primary: 'ICT', label: 'ICT', direction,
                     timeframe: tf, setup_timeframe: tf, execution_timeframe: tf, event_time: eventTime,
                     reclaim_index: i, structural_invalidation: anchor, target_candidates: targetPool,
@@ -4376,13 +4385,14 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
                         structural_shift_ids: [`SHIFT:${tf}:${direction}:${eventTime}`], evidence_ids: [...classification.evidence_ids],
                         target_intent: targetPool[0]?.source || null, invalidation_intent: anchor, execution_requirement: 'FRESH_EXECUTION_ZONE' } };
                 const life = evaluateStrategyNarrative(narrative, historyCache, price);
-                if (life.state !== 'ACTIVE') continue;
+                if (life.state !== 'ACTIVE') { discoveryEvent.failure_reason = life.rejection_code || life.state || 'NARRATIVE_NOT_ACTIVE'; continue; }
                 const freshZones = buildFreshExecutionZonesForNarrative(narrative, historyCache, zones, pairLocal, price);
                 if (freshZones.length === 0) {
                     setups.push({ ...narrative, narrative_state: 'ACTIVE', execution_zone: null, execution_model: classification.classification === 'HTF_VERIFIED_REVERSAL' ? 'CONFIRMATION_ENTRY' : 'PENDING_LIMIT',
                         entry_model: classification.classification === 'HTF_VERIFIED_REVERSAL' ? 'CONFIRMATION_ENTRY' : 'PENDING_LIMIT',
                         trade_context_classification: classification.classification, structural_invalidation_detail: { level: anchor, source: 'ICT_SHIFT_ORIGIN_SWING', strategy: 'ICT', timeframe: tf, source_time: eventTime },
                         market_mechanics_verified: true, execution_confirmed: false, structural_evidence_ids: [...classification.evidence_ids, `SHIFT:${tf}:${direction}:${eventTime}`], freshness: 'DEVELOPING', original_strategy_entry_consumed: false });
+                    discoveryEvent.narrative_created = true;
                 }
                 for (const zone of freshZones) {
                     setups.push({ ...narrative, id: `${narrative.id}:${zone.id}`, narrative_state: 'ACTIVE',
@@ -4394,6 +4404,7 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
                         market_mechanics_verified: true, execution_confirmed: classification.classification !== 'HTF_VERIFIED_REVERSAL',
                         structural_evidence_ids: [...classification.evidence_ids, `SHIFT:${tf}:${direction}:${eventTime}`, zone.id],
                         freshness: 'FRESH', original_strategy_entry_consumed: false });
+                    discoveryEvent.narrative_created = true;
                 }
             }
         }
@@ -6911,7 +6922,7 @@ function buildCanonicalMarketTheses(strategySetups, marketContext, targetCandida
     }));
 }
 
-function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure, timeframeContext, liquidity, zones, targetCandidates, strategySetups, candidatePipeline, opportunityFunnel }) {
+function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure, timeframeContext, liquidity, zones, targetCandidates, strategySetups, candidatePipeline, candidateRejections = [], validCandidates = [], discoveryEvents = [], opportunityFunnel }) {
     const timeframe = {};
     for (const tf of ['1D', '4H', '1H', '15M']) {
         const data = getClosedHistory(historyCache, tf);
@@ -6971,10 +6982,22 @@ function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure
             selector_candidates: candidatePipeline?.final_valid || 0,
             opportunity_funnel: opportunityFunnel || null
         },
-        target_catalog: {
-            buy: (targetCandidates?.buy || []).map(target => ({ id: target.id, level: target.level, source: target.source, timeframe: target.timeframe, reached: !!target.reached, consumed: !!target.consumed, invalidated: !!target.invalidated, ahead_of_current_price: !!target.ahead_of_current_price, ahead_of_entry: target.ahead_of_entry, reachability: target.reachability, structural_priority: target.structural_priority })),
-            sell: (targetCandidates?.sell || []).map(target => ({ id: target.id, level: target.level, source: target.source, timeframe: target.timeframe, reached: !!target.reached, consumed: !!target.consumed, invalidated: !!target.invalidated, ahead_of_current_price: !!target.ahead_of_current_price, ahead_of_entry: target.ahead_of_entry, reachability: target.reachability, structural_priority: target.structural_priority }))
-        }
+        discovery_events: discoveryEvents,
+        target_catalog: Object.fromEntries(['BUY', 'SELL'].map(direction => [direction.toLowerCase(), (targetCandidates?.all || []).filter(target => target.direction === direction).map(target => {
+            const level = Number(target.level);
+            const accepted = validCandidates.some(candidate => candidate.target_map?.some(selected => Number(selected.target_level ?? selected.level) === level));
+            const rejected = candidateRejections.filter(item => item.target_diagnostics && Number(item.target_diagnostics.best_target_level) === level)
+                .map(item => item.rejection_code || item.target_diagnostics.failure_code).filter(Boolean);
+            if (target.reached) rejected.push('ALREADY_REACHED');
+            if (target.consumed) rejected.push('CONSUMED');
+            if (target.invalidated) rejected.push('INVALIDATED');
+            if (target.ahead_of_current_price === false) rejected.push('BEHIND_CURRENT_PRICE');
+            return { id: target.id, direction: target.direction, level: target.level, source: target.source, timeframe: target.timeframe,
+                structural_priority: target.structural_priority, created_time: target.created_time || null, reached: !!target.reached,
+                consumed: !!target.consumed, invalidated: !!target.invalidated, ahead_of_current_price: !!target.ahead_of_current_price,
+                ahead_of_entry: target.ahead_of_entry, reachability: target.reachability, accepted,
+                rejected: !accepted && rejected.length > 0, rejection_reasons: [...new Set(rejected)] };
+        })]))
     };
 }
 
@@ -7304,7 +7327,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     };
     liveContext.production_trace = buildProductionScanTrace({ pair, price, asOfMs: as_of_ms, historyCache, structure,
         timeframeContext: marketContext.timeframe_context, liquidity: liquidityFacts, zones, targetCandidates,
-        strategySetups, candidatePipeline: candidatePipelineAudit, opportunityFunnel: marketContext.opportunity_funnel });
+        strategySetups, candidatePipeline: candidatePipelineAudit, candidateRejections: adaptiveSetupResult.rejected_candidates,
+        validCandidates: adaptiveSetupResult.valid_candidates, discoveryEvents: mechanicsSetups.discovery || [], opportunityFunnel: marketContext.opportunity_funnel });
     liveContext.production_trace.daily_bias = liveContext.daily_bias;
     liveContext.production_trace.buy_thesis = canonicalMarketTheses.buy;
     liveContext.production_trace.sell_thesis = canonicalMarketTheses.sell;
@@ -7320,6 +7344,123 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     });
     return liveContext;
 }
+
+const REPLAY_SECRET_KEY_PATTERN = /(api[_-]?key|authorization|bearer|token|password|secret|pat|credential|twilio|telegram[_-]?(user|session|auth))/i;
+const REPLAY_SECRET_TEXT_PATTERN = /(TWELVE_DATA_KEY|DEEPSEEK_API_KEY|GITHUB_PAT|authorization\s*[:=]|bearer\s+[A-Za-z0-9._-]+|[?&](?:apikey|api_key|token|key)=)/i;
+
+function sanitizeScanReplayValue(value, key = '') {
+    if (REPLAY_SECRET_KEY_PATTERN.test(key)) return undefined;
+    if (typeof value === 'string') return REPLAY_SECRET_TEXT_PATTERN.test(value) ? '[REDACTED]' : value;
+    if (Array.isArray(value)) return value.map(item => sanitizeScanReplayValue(item)).filter(item => item !== undefined);
+    if (!value || typeof value !== 'object') return value;
+    const result = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+        const safe = sanitizeScanReplayValue(childValue, childKey);
+        if (safe !== undefined) result[childKey] = safe;
+    }
+    return result;
+}
+
+function assertScanReplaySafe(value, path = 'replay') {
+    if (REPLAY_SECRET_KEY_PATTERN.test(path)) throw new Error(`Replay contains a credential-like field at ${path}`);
+    if (typeof value === 'string') {
+        if (REPLAY_SECRET_TEXT_PATTERN.test(value)) throw new Error(`Replay contains credential-like text at ${path}`);
+        return;
+    }
+    if (Array.isArray(value)) return value.forEach((item, index) => assertScanReplaySafe(item, `${path}[${index}]`));
+    if (value && typeof value === 'object') for (const [key, child] of Object.entries(value)) assertScanReplaySafe(child, `${path}.${key}`);
+}
+
+function createScanReplay(liveMarketContext, finalOutput = null) {
+    if (!liveMarketContext?.pair || !liveMarketContext.historyCache) throw new Error('No completed live scan is available for replay capture');
+    const replay = sanitizeScanReplayValue({
+        schema_version: 1,
+        pair: liveMarketContext.pair,
+        captured_at: new Date().toISOString(),
+        scan_as_of: liveMarketContext.as_of_time_utc,
+        quote: { price: liveMarketContext.current_price, quote_time: liveMarketContext.quote_snapshot?.timestamp || liveMarketContext.provider_timestamp_utc || liveMarketContext.as_of_time_utc },
+        history: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, (liveMarketContext.historyCache[tf] || []).filter(c => c && c.is_closed !== false)])),
+        indicators: liveMarketContext.indicators || {},
+        holistic: liveMarketContext.holistic || liveMarketContext.multi_timeframe_direction?.holistic || {},
+        structure: liveMarketContext.structure || {},
+        timeframe_context: liveMarketContext.market_context?.timeframe_context || {},
+        liquidity: liveMarketContext.liquidity || {},
+        poi_zones: liveMarketContext.poi_zones || [],
+        target_candidates: liveMarketContext.target_candidates || {},
+        daily_bias: liveMarketContext.daily_bias || null,
+        market_regime: liveMarketContext.market_regime || null,
+        strategy_setups: liveMarketContext.strategy_setups || [],
+        canonical_market_theses: liveMarketContext.market_theses || {},
+        opportunity_funnel: liveMarketContext.opportunity_funnel || liveMarketContext.market_context?.opportunity_funnel || null,
+        candidate_pipeline_audit: liveMarketContext.setup_candidate_audit || liveMarketContext.candidate_pipeline || null,
+        valid_candidates: liveMarketContext.adaptive_setup_candidates || [],
+        production_trace: liveMarketContext.production_trace || null,
+        runtime_state: { market_open: liveMarketContext.market_open, market_open_source: liveMarketContext.market_open_source, quote_snapshot: liveMarketContext.quote_snapshot ? { timestamp: liveMarketContext.quote_snapshot.timestamp, price: liveMarketContext.quote_snapshot.price } : null },
+        final_output: finalOutput
+    });
+    assertScanReplaySafe(replay);
+    return replay;
+}
+
+function buildReplayPatterns(history, price) {
+    return Object.fromEntries(['4H', '1H', '15M', '5M'].map(tf => [tf, {
+        fvg: detectFVG(history[tf] || []), swings: findSwings(history[tf] || [], 3), turtleSoup: detectTurtleSoup(history[tf] || []),
+        crt: detectCRT(history[tf] || []), orderBlocks: detectOrderBlocks(history[tf] || [], 'BUY'), msnr: calculateMSNR(history[tf] || [], price, tf),
+        trend: detectTrend(history[tf] || []), adx: calculateADX(history[tf] || [], 14, tf)
+    }]));
+}
+
+function compareScanReplayOutput(captured, replayed) {
+    const differences = [];
+    const left = captured?.trade_signal || captured || {};
+    const right = replayed?.trade_signal || replayed || {};
+    for (const field of ['pair', 'current_price', 'status', 'decision', 'direction', 'selected_candidate_id']) {
+        if (String(left[field] ?? '') !== String(right[field] ?? '')) differences.push({ field, captured: left[field] ?? null, replayed: right[field] ?? null });
+    }
+    const capturedReason = left.reason?.code || null;
+    const replayedReason = right.reason?.code || null;
+    if (capturedReason !== replayedReason) differences.push({ field: 'reason.code', captured: capturedReason, replayed: replayedReason });
+    return { replay_matches_live: differences.length === 0, differences };
+}
+
+function replayCapturedScan(replay) {
+    if (!replay || replay.schema_version !== 1) throw new Error('Unsupported scan replay schema');
+    assertScanReplaySafe(replay);
+    const price = Number(replay.quote?.price);
+    const asOfMs = normalizeTimestampUTC(replay.scan_as_of);
+    if (!replay.pair || !Number.isFinite(price) || !Number.isFinite(asOfMs)) throw new Error('Replay pair, price, and scan_as_of are required');
+    const historyCache = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, (replay.history?.[tf] || []).filter(c => c && c.is_closed !== false).map(c => ({ ...c }))]));
+    const patterns = buildReplayPatterns(historyCache, price);
+    const live = buildLiveMarketContext({ pair: replay.pair, price, historyCache, indicators: replay.indicators || {}, patterns,
+        enhancedAnalysis: { phase: { phase: replay.market_regime?.phase || 'UNKNOWN' } }, holistic: replay.holistic || {}, entryContext: null,
+        as_of_ms: asOfMs, quote_snapshot: replay.runtime_state?.quote_snapshot || null });
+    const today = buildTodayOpportunity({ pair: replay.pair, currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
+        marketContext: live.market_context, strategySetups: live.strategy_setups, executionZones: live.strategy_execution_zones,
+        candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, targetCandidates: live.target_candidates,
+        marketOpen: live.market_open });
+    const finalOutput = buildTodayOpportunityOutput(today, replay.pair, price, asOfMs, live.market_open);
+    return { replay_matches_live: compareScanReplayOutput(replay.final_output, finalOutput).replay_matches_live,
+        differences: compareScanReplayOutput(replay.final_output, finalOutput).differences, replay_output: finalOutput, production_trace: live.production_trace };
+}
+
+function downloadScanReplay() {
+    try {
+        const replay = window.__ICT_LAST_SCAN_REPLAY__;
+        if (!replay) throw new Error('Run a scan before capturing replay');
+        const json = JSON.stringify(replay, null, 2);
+        if (navigator.clipboard?.writeText) navigator.clipboard.writeText(json).then(() => showNotif('🧪 Scan replay copied', 'success')).catch(() => downloadReplayFile(json));
+        else downloadReplayFile(json);
+    } catch (error) { showNotif(`Replay unavailable: ${error.message}`, 'warning'); }
+}
+
+function downloadReplayFile(json) {
+    const blob = new Blob([json], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob); link.download = `ict-scan-replay-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    link.click(); URL.revokeObjectURL(link.href);
+}
+
+window.replayCapturedScan = replayCapturedScan;
 
 function compactAIContext(liveMarketContext) {
     const compactZone = z => z ? {
@@ -9112,6 +9253,9 @@ async function runAutoScan() {
             as_of_ms: scanAsOfMs,
             quote_snapshot: quoteSnapshot
         });
+        liveMarketContext.indicators = indicators;
+        liveMarketContext.holistic = holistic;
+        lastLiveMarketContextForReplay = liveMarketContext;
         scanTrace('market context complete', contextStartedAt, {
             strategy_setups: liveMarketContext.strategy_setups?.length || 0,
             strategy_detections: liveMarketContext.strategy_detections,
@@ -10230,6 +10374,13 @@ function buildDebugDiagnostics(output = {}, context = null) {
 function setJsonOutput(obj) {
     const el = document.getElementById('jsonOutput');
     if(el) el.textContent = JSON.stringify({ trade_signal: buildPublicTradeSignal(obj?.trade_signal || obj) }, null, 2);
+    if (lastLiveMarketContextForReplay) {
+        try {
+            window.__ICT_LAST_SCAN_REPLAY__ = createScanReplay(lastLiveMarketContextForReplay, obj);
+            console.log('SCAN_REPLAY_JSON', JSON.stringify(window.__ICT_LAST_SCAN_REPLAY__));
+        } catch (error) { console.error('[REPLAY] capture failed', error); }
+        lastLiveMarketContextForReplay = null;
+    }
 }
 
 // ============================================
@@ -10238,6 +10389,7 @@ function setJsonOutput(obj) {
 
 let lastSetupSummary = null;
 let lastSetupOut = null;
+let lastLiveMarketContextForReplay = null;
 
 function buildSetupSummary(best, st, finalEntry, price) {
     return {
