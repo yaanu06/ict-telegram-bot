@@ -754,10 +754,14 @@ function detectFVG(d) {
         const thresh = curr.c * 0.0003;
         
         if(prev.h < next.l && next.l - prev.h > thresh) {
-            f.push({ type: 'bull', l: prev.h, h: next.l, m: (prev.h + next.l) / 2 });
+            // The gap is confirmed by `next`. Keep its source index so the
+            // market map can give the zone a canonical creation time. Without
+            // this provenance a fresh FVG is indistinguishable from a stale
+            // setup and the lifecycle checker expires it.
+            f.push({ type: 'bull', l: prev.h, h: next.l, m: (prev.h + next.l) / 2, source_index: i + 1 });
         }
         if(prev.l > next.h && prev.l - next.h > thresh) {
-            f.push({ type: 'bear', l: next.h, h: prev.l, m: (next.h + prev.l) / 2 });
+            f.push({ type: 'bear', l: next.h, h: prev.l, m: (next.h + prev.l) / 2, source_index: i + 1 });
         }
     }
     return f;
@@ -1194,11 +1198,11 @@ function detectOrderBlocks(data, direction) {
         
         if(direction === 'BUY') {
             if(curr.c < curr.o && next.c > next.o && next.h > curr.h) {
-                obs.push({ high: curr.h, low: curr.l });
+                obs.push({ high: curr.h, low: curr.l, source_index: i + 1 });
             }
         } else {
             if(curr.c > curr.o && next.c < next.o && next.l < curr.l) {
-                obs.push({ high: curr.h, low: curr.l });
+                obs.push({ high: curr.h, low: curr.l, source_index: i + 1 });
             }
         }
     }
@@ -2615,7 +2619,7 @@ function ictCanonicalZoneType(value) {
     return null;
 }
 
-function ictBuildRealZones(data, price, direction, pairLocal) {
+function ictBuildRealZones(data, price, direction, pairLocal, timeframe = null) {
     data = closedStructureCandles(data);
     if (!data || data.length < 20) return [];
     const zones = [];
@@ -2624,19 +2628,29 @@ function ictBuildRealZones(data, price, direction, pairLocal) {
 
     for (const fvg of detectFVG(data)) {
         if (direction === 'BUY' && fvg.type === 'bull' && fvg.l < price) {
-            zones.push({ type: 'FVG', origin: 'STRUCTURAL', primary_eligible: true, low: fvg.l, high: fvg.h, price: fvg.m, tolerance: edgePad });
+                const sourceIndex = Number.isInteger(fvg.source_index) ? fvg.source_index : null;
+                zones.push({ type: 'FVG', origin: 'STRUCTURAL', primary_eligible: true, low: fvg.l, high: fvg.h, price: fvg.m, tolerance: edgePad,
+                    source_candle_index: sourceIndex, created_index: sourceIndex,
+                    created_time: sourceIndex != null ? candleTimestamp(data[sourceIndex], sourceIndex, timeframe) : null });
         }
         if (direction === 'SELL' && fvg.type === 'bear' && fvg.h > price) {
-            zones.push({ type: 'FVG', origin: 'STRUCTURAL', primary_eligible: true, low: fvg.l, high: fvg.h, price: fvg.m, tolerance: edgePad });
+            const sourceIndex = Number.isInteger(fvg.source_index) ? fvg.source_index : null;
+            zones.push({ type: 'FVG', origin: 'STRUCTURAL', primary_eligible: true, low: fvg.l, high: fvg.h, price: fvg.m, tolerance: edgePad,
+                source_candle_index: sourceIndex, created_index: sourceIndex,
+                created_time: sourceIndex != null ? candleTimestamp(data[sourceIndex], sourceIndex, timeframe) : null });
         }
     }
 
     for (const ob of detectOrderBlocks(data, direction)) {
         if (direction === 'BUY' && ob.high < price) {
-            zones.push({ type: 'OB', origin: 'STRUCTURAL', primary_eligible: true, low: ob.low, high: ob.high, price: (ob.low + ob.high) / 2, tolerance: edgePad });
+            zones.push({ type: 'OB', origin: 'STRUCTURAL', primary_eligible: true, low: ob.low, high: ob.high, price: (ob.low + ob.high) / 2, tolerance: edgePad,
+                source_candle_index: ob.source_index, created_index: ob.source_index,
+                created_time: Number.isInteger(ob.source_index) ? candleTimestamp(data[ob.source_index], ob.source_index, timeframe) : null });
         }
         if (direction === 'SELL' && ob.low > price) {
-            zones.push({ type: 'OB', origin: 'STRUCTURAL', primary_eligible: true, low: ob.low, high: ob.high, price: (ob.low + ob.high) / 2, tolerance: edgePad });
+            zones.push({ type: 'OB', origin: 'STRUCTURAL', primary_eligible: true, low: ob.low, high: ob.high, price: (ob.low + ob.high) / 2, tolerance: edgePad,
+                source_candle_index: ob.source_index, created_index: ob.source_index,
+                created_time: Number.isInteger(ob.source_index) ? candleTimestamp(data[ob.source_index], ob.source_index, timeframe) : null });
         }
     }
 
@@ -6104,7 +6118,7 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
     if (!matchedZone && !hasContextZones) {
         for (const tf of ['4H', '1H']) {
             const data = historyCache?.[tf];
-            const candidates = ictBuildRealZones(data, price, direction, pairLocal);
+            const candidates = ictBuildRealZones(data, price, direction, pairLocal, tf);
             const match = candidates.find(z => ictZoneMatchesAI(z, candidateToAIResult(candidate)));
             if (match) {
                 matchedZone = match;
@@ -6281,7 +6295,7 @@ function buildLiveZonesForTf(data, tf, price, pairLocal, atrVal, limitPerDirecti
     const prec = getMarketSettings(pairLocal).prec;
     const zones = [];
     for (const direction of ['BUY', 'SELL']) {
-        const realZones = ictBuildRealZones(data, price, direction, pairLocal);
+        const realZones = ictBuildRealZones(data, price, direction, pairLocal, tf);
         for (const z of realZones) {
             const midpoint = z.price || (z.low + z.high) / 2;
             const freshness = checkZoneFreshness(data, z, direction);
@@ -6289,6 +6303,8 @@ function buildLiveZonesForTf(data, tf, price, pairLocal, atrVal, limitPerDirecti
             zones.push({
                 id: `${tf}-${direction}-${z.type}-${ictRound(z.low, prec)}-${ictRound(z.high, prec)}`,
                 ...z,
+                created_index: z.created_index ?? z.source_candle_index ?? null,
+                created_time: z.created_time ?? (Number.isInteger(z.created_index) ? candleTimestamp(data[z.created_index], z.created_index, tf) : null),
                 type: z.type,
                 origin: z.origin || (z.type === 'MSNR' ? 'PIVOT_REFERENCE' : 'STRUCTURAL'),
                 primary_eligible: z.primary_eligible !== false,

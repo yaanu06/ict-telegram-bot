@@ -4611,4 +4611,30 @@ describe('AI market analyst contract', () => {
         const finalPrompt = ctx.buildAIPrompt({ pair: 'EUR/USD', current_price: 1.1, utc_time: '2026-09-11T10:00:00Z', session: { name: 'LONDON' }, adaptive_setup_candidates: [] }, '');
         expect(finalPrompt.user).toMatch(/selected_candidate_id/);
     });
+
+    it('preserves FVG source time so a fresh market mechanics limit is not expired', () => {
+        const ctx = getContext();
+        const start = Date.parse('2026-09-15T00:00:00Z');
+        const candles = Array.from({ length: 60 }, (_, i) => {
+            const close = 100 - i * 0.1;
+            return { t: start + i * 3600000, o: close + 0.05, h: close + 0.1, l: close - 0.1, c: close, is_closed: true };
+        });
+        // Confirmed bearish gap: prior low is above the next candle high.
+        candles[56] = { t: start + 56 * 3600000, o: 95, h: 95.2, l: 94.8, c: 95, is_closed: true };
+        candles[57] = { t: start + 57 * 3600000, o: 94.9, h: 94.95, l: 94.7, c: 94.75, is_closed: true };
+        candles[58] = { t: start + 58 * 3600000, o: 93.5, h: 93.6, l: 93.0, c: 93.2, is_closed: true };
+        const fvgs = ctx.detectFVG(candles);
+        const bear = fvgs.find(fvg => fvg.type === 'bear');
+        expect(bear).toEqual(expect.objectContaining({ source_index: 58 }));
+        const zones = ctx.ictBuildRealZones(candles, 93.2, 'SELL', 'EUR/USD', '4H');
+        const zone = zones.find(candidate => candidate.type === 'FVG' && candidate.high > 93.2);
+        expect(zone).toEqual(expect.objectContaining({ created_index: 58, created_time: start + 58 * 3600000 }));
+        const lifecycle = ctx.evaluateSetupLifecycle({
+            strategy_setup: { primary: 'ICT', timeframe: '4H', setup_timeframe: '4H', execution_timeframe: '4H', direction: 'SELL' },
+            direction: 'SELL', entry: zone.price, tp1: 90, entry_region_low: zone.low, entry_region_high: zone.high,
+            execution_event_time: zone.created_time, execution_event_index: zone.created_index,
+            execution_zone_created_time: zone.created_time, execution_zone_created_index: zone.created_index
+        }, { historyCache: { '4H': candles }, price: 93.2, pair: 'EUR/USD', as_of_time: candles.at(-1).t, market_open: true });
+        expect(lifecycle.rejection_code).not.toBe('SETUP_EXPIRED');
+    });
 });
