@@ -5604,6 +5604,30 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     return aiResult;
 }
 
+// DeepSeek is a narrative selector. It cannot veto a candidate that the
+// deterministic planner has already proved executable. This promotion is
+// intentionally limited to TRADE_READY; developing and watch-only plans
+// continue through the normal WAIT output path.
+function preserveDeterministicCandidateAfterAiNoTrade(aiResult, today, liveMarketContext) {
+    if (!aiResult?.noTrade || today?.state !== 'TRADE_READY') return false;
+    const candidate = (liveMarketContext?.adaptive_setup_candidates || [])
+        .slice()
+        .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+    if (!candidate?.id) return false;
+    const selected = applyAdaptiveCandidateToAIResult({
+        selected_candidate_id: candidate.id,
+        reasoning: { primary: 'Deterministic candidate preserved after selector declined to choose.' }
+    }, liveMarketContext);
+    if (selected?.unknown_deterministic_candidate) return false;
+    Object.assign(aiResult, selected, {
+        noTrade: false,
+        selected_candidate_id: candidate.id,
+        ai_decision: 'deterministic_candidate_preserved',
+        reasoning: { primary: 'The deterministic engine proved this candidate executable; selector WAIT cannot override it.' }
+    });
+    return true;
+}
+
 function timeframeDurationMs(timeframe) {
     return ({ '5M': 5, '15M': 15, '1H': 60, '4H': 240, '1D': 1440 }[timeframe] || 60) * 60000;
 }
@@ -9520,6 +9544,10 @@ async function runAutoScan() {
         }
 
 
+        if (aiResult.noTrade && preserveDeterministicCandidateAfterAiNoTrade(aiResult, liveMarketContext.today_opportunity, liveMarketContext)) {
+            liveMarketContext.ai_analysis.selected_candidate_id = aiResult.selected_candidate_id;
+            console.log('[SCAN] preserved deterministic candidate after selector WAIT', aiResult.selected_candidate_id);
+        }
         if (aiResult.noTrade) {
             let today = liveMarketContext.today_opportunity;
             if (today.state === 'TRADE_READY') {
@@ -10424,6 +10452,7 @@ function buildPublicTradeSignal(signal = {}) {
     const liquiditySummary = signal.analysis?.liquidity || (draw ? `${draw}${signal.daily_bias?.target_level != null ? ' at ' + signal.daily_bias.target_level : ''}` : null);
     if (isWait) {
         if (signal.status === 'TODAY_OPPORTUNITY' || signal.status === 'WATCH_ONLY') {
+            const primary = signal.primary_opportunity || null;
             return {
                 date: signal.date,
                 time: signal.time,
@@ -10443,9 +10472,12 @@ function buildPublicTradeSignal(signal = {}) {
                 strategy: signal.strategy || null,
                 bias: signal.bias || (signal.direction === 'BUY' ? 'BULLISH' : signal.direction === 'SELL' ? 'BEARISH' : 'NEUTRAL'),
                 opportunity: signal.opportunity || null,
-                primary_opportunity: signal.primary_opportunity || null,
-                active_setups: Array.isArray(signal.active_setups) ? signal.active_setups : [],
-                watch_setups: Array.isArray(signal.watch_setups) ? signal.watch_setups : [],
+                primary_opportunity: primary,
+                // The normal response is intentionally a single selected
+                // setup. Full candidate/watch diagnostics remain available
+                // through the internal scan trace and replay object.
+                active_setups: primary ? [primary] : [],
+                watch_setups: [],
                 reason: signal.reason || { code: 'DEVELOPING_SETUP', message: 'A valid developing opportunity remains for today.' },
                 market_open: signal.market_open ?? null
             };

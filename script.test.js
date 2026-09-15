@@ -710,7 +710,8 @@ describe('top-down trade context', () => {
             primary_opportunity: { id: 'MM-1', direction: 'SELL', state: 'WAITING_FOR_LOCATION' }, active_setups: [], watch_setups: [],
             reason: { code: 'WAITING_FOR_LOCATION', message: 'Price has not reached the validated area.' } });
         expect(signal.primary_opportunity).toMatchObject({ id: 'MM-1', state: 'WAITING_FOR_LOCATION' });
-        expect(signal.active_setups).toEqual([]);
+        expect(signal.active_setups).toEqual([signal.primary_opportunity]);
+        expect(signal.watch_setups).toEqual([]);
     });
 
     it('removes the replay action while retaining the copy action', () => {
@@ -812,6 +813,27 @@ describe('daily opportunity planning', () => {
             validCandidates: [{ id: 'C-1', strategy_label: 'CRT', direction: 'BUY', execution_timeframe: '1H', execution_model: 'PENDING_LIMIT', entry: 1.1, zone_low: 1.09, zone_high: 1.11, stop_loss: 1.08, tp1: 1.14, rr_tp1: 3, target_bias: 'BUY_SIDE_LIQUIDITY', lifecycle: { state: 'FRESH_PENDING_TODAY' }, entry_reachable_today: true }] });
         expect(result.state).toBe('TRADE_READY');
         expect(result.execution_model).toBe('PENDING_LIMIT');
+    });
+
+    it('does not let an AI WAIT veto a deterministic TRADE_READY candidate', () => {
+        const ctx = getContext();
+        const candidate = {
+            id: 'MM-SELL-1', direction: 'SELL', zone_type: 'FVG', timeframe: '4H',
+            zone_low: 1.1552, zone_high: 1.1563, entry: 1.1558, stop_loss: 1.161,
+            tp1: 1.1523, rr_tp1: 2.1, quality: { final_confidence: 78 }, score: 300,
+            strategy_label: 'MARKET_MECHANICS', execution_model: 'PENDING_LIMIT',
+            target_map: [{ primary_target_source: 'PDL', target_type: 'LIQUIDITY', target_confluence: [] }]
+        };
+        const aiResult = { noTrade: true, decision: 'WAIT', wait_condition: 'selector declined' };
+        const preserved = ctx.preserveDeterministicCandidateAfterAiNoTrade(aiResult,
+            { state: 'TRADE_READY' }, { adaptive_setup_candidates: [candidate] });
+        expect(preserved).toBe(true);
+        expect(aiResult.noTrade).toBe(false);
+        expect(aiResult.selected_candidate_id).toBe('MM-SELL-1');
+        expect(aiResult.decision).toBe('SELL_LIMIT');
+        expect(aiResult.entry).toBe(1.1558);
+        expect(aiResult.stop_loss).toBe(1.161);
+        expect(aiResult.take_profit_1).toBe(1.1523);
     });
 
     it('returns a useful WAITING_FOR_RETRACE plan for an active developing narrative', () => {
