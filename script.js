@@ -2773,7 +2773,11 @@ async function updateMTFDisplay(historyCache = {}) {
         let el = document.getElementById(`trend${t}`);
         if(el) {
             el.innerHTML = tr === 'BULLISH' ? '🟢 Bull' : (tr === 'BEARISH' ? '🔴 Bear' : '⚪ Neut');
-            el.className = `mtf-trend ${tr.toLowerCase()}`;
+            const bullish = ['BULLISH', 'BULLISH_TRANSITION'].includes(tr);
+            const bearish = ['BEARISH', 'BEARISH_TRANSITION'].includes(tr);
+            const mixed = tr === 'MIXED';
+            el.innerHTML = bullish ? 'Bull' : bearish ? 'Bear' : mixed ? 'Mixed' : 'Neut';
+            el.className = `mtf-trend ${bullish ? 'bullish' : bearish ? 'bearish' : mixed ? 'mixed' : 'neutral'}`;
         }
     }
 }
