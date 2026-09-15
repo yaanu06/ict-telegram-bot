@@ -4351,7 +4351,10 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
         if (leadTrend !== wanted && leadTrend !== `${wanted}_TRANSITION`) continue;
         const location = [...(zones || []), ...locationPois]
             .filter(zone => zone.direction === direction && ['4H', '1H'].includes(zone.timeframe)
-                && zone.primary_eligible !== false && !zone.invalidated
+                // location_only POIs are valid narrative locations. They are
+                // not executable geometry until the candidate planner proves
+                // an entry zone, stop, target, RR, and lifecycle.
+                && (zone.primary_eligible !== false || zone.location_only === true) && !zone.invalidated
                 && !['CONSUMED', 'USED', 'INVALIDATED', 'EXPIRED'].includes(String(zone.freshness || '').toUpperCase()))
             .sort((a, b) => (Number(b.timeframe === '4H') - Number(a.timeframe === '4H'))
                 || (Number(a.low <= price && price <= a.high) - Number(b.low <= price && price <= b.high))
@@ -6823,12 +6826,17 @@ function buildOpportunityQuality(setup, plan, marketContext = {}, topDown = {}) 
     if (liquidityScore >= 22) rankReasons.push('EXTERNAL_LIQUIDITY');
     if (executionState === 'EXECUTION_AVAILABLE') rankReasons.push('EXECUTION_AVAILABLE');
     if (plan?.target) rankReasons.push('REAL_TARGET');
+    const deterministicConfidence = Math.min(95, Math.max(0, Math.round(
+        (tier > 1 ? 25 : 8) + locationScore + liquidityScore
+        + (plan?.target ? 20 : 0) + executionScore + evidenceStrength * 3
+    )));
     return { classification, previous_classification: previousClassification, classification_changed: !!previousClassification && previousClassification !== classification,
         daily_bias_relationship: dailyBiasRelationship, direction_quality: tier > 1 ? 'SUPPORTED' : 'LOCAL_ONLY',
         location_quality: locationScore, liquidity_quality: liquidityScore, execution_state: executionState,
         freshness: setup?.freshness || location?.freshness || null, target_quality: plan?.target ? 'REAL_AHEAD' : 'MISSING',
         lifecycle_quality: setup?.narrative_state === 'ACTIVE' ? 'ACTIVE' : 'TERMINAL', evidence_strength: evidenceStrength,
         watch_only: !primaryEligible, authorization_state: primaryEligible ? 'PRIMARY_ELIGIBLE' : 'WATCH_ONLY',
+        deterministic_confidence: deterministicConfidence,
         rank_tier: tier, rank_score: rankScore, rank_reasons: rankReasons, event_time: normalizeTimestampUTC(setup?.event_time ?? setup?.execution_event_time ?? location?.created_time),
         rejection_codes: setup?.opportunity_thesis?.rejection_codes || [] };
 }
@@ -7004,7 +7012,8 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             lifecycle_state: setup.narrative_state || setup.strategy_state || 'ACTIVE', freshness: setup.freshness || planArea.freshness || null,
             reason_code: !zone ? 'WAITING_FOR_EXECUTION' : plan.execution_model === 'PENDING_LIMIT' ? 'WAITING_FOR_RETRACE' : (inside ? 'WAITING_FOR_CONFIRMATION' : 'WAITING_FOR_RETRACE'),
             reason: !zone ? 'A valid current-market narrative and location exist, but no execution zone has formed yet.' : plan.execution_model === 'PENDING_LIMIT' ? 'A deterministic pending limit remains valid for the remainder of today.' : (inside ? 'A valid strategy area is active, but deterministic confirmation is not yet present.' : 'A valid strategy narrative remains actionable today; wait for price to reach the deterministic area and activate it.'),
-            setup_timeframe: setup.setup_timeframe || setup.timeframe, execution_timeframe: executionTimeframe, confidence: Number.isFinite(Number(setup.setup_confidence)) ? Number(setup.setup_confidence) : 0,
+            setup_timeframe: setup.setup_timeframe || setup.timeframe, execution_timeframe: executionTimeframe,
+            confidence: Number.isFinite(Number(setup.setup_confidence)) ? Number(setup.setup_confidence) : opportunityQuality.deterministic_confidence,
             opportunity_quality: opportunityQuality, watch_only: opportunityQuality.watch_only });
         if (!currentSetupIds.has(setup.id || setup.primary)) state.fresh_current_market_opportunities.push(setup.id || setup.primary);
     }
@@ -7049,7 +7058,7 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         expected_window: today.expected_window,
         opportunity_quality: today.opportunity_quality?.authorization_state || (today.state === 'WATCH_ONLY' ? 'WATCH_ONLY' : null)
     } : undefined;
-    const signal = {
+        const signal = {
         date: date.toISOString().split('T')[0],
         time: date.toISOString().split('T')[1].split('.')[0],
         pair: pairLocal,
@@ -7064,9 +7073,12 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         top_down_context: today?.top_down_context || null,
         daily_bias: today?.daily_bias || null,
         strategy: today?.strategy || null,
-        direction: today?.direction || null,
-        bias: today?.bias || 'NEUTRAL',
-        opportunity,
+            direction: today?.direction || null,
+            bias: today?.bias || 'NEUTRAL',
+            trend_detection: today?.trend_detection || null,
+            volatility: today?.volatility || null,
+            indicators: today?.indicators || null,
+            opportunity,
         primary_opportunity: today?.primary_opportunity || null,
         active_setups: Array.isArray(today?.active_setups) ? today.active_setups : [],
         watch_setups: Array.isArray(today?.watch_setups) ? today.watch_setups : [],
@@ -9489,6 +9501,11 @@ async function runAutoScan() {
             targetCandidates: liveMarketContext.target_candidates,
             marketOpen: liveMarketContext.market_open
         });
+        // Keep the public projection small while retaining the deterministic
+        // market summary the user needs to understand a WAIT or limit setup.
+        liveMarketContext.today_opportunity.trend_detection = liveMarketContext.multi_timeframe_direction?.trend || null;
+        liveMarketContext.today_opportunity.volatility = liveMarketContext.volatility || null;
+        liveMarketContext.today_opportunity.indicators = liveMarketContext.momentum || null;
         console.log('[SCAN] today opportunity', liveMarketContext.today_opportunity);
 
         if (liveMarketContext.adaptive_setup_candidates.length === 0) {
@@ -10455,23 +10472,24 @@ function buildPublicTradeSignal(signal = {}) {
             const primary = signal.primary_opportunity || null;
             return {
                 date: signal.date,
-                time: signal.time,
                 pair: signal.pair,
                 current_price: signal.current_price,
                 decision: 'WAIT',
+                trade_type: 'WAIT',
+                entry_price: null,
+                stop_loss: null,
+                take_profit_1: null,
+                take_profit_2: null,
+                take_profit_3: null,
                 confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
                 status: 'TODAY_OPPORTUNITY',
                 trade_context: signal.trade_context_classification || null,
-                higher_timeframe: signal.top_down_context?.higher_timeframe || null,
-                daily_bias: signal.daily_bias ? {
-                    direction: signal.daily_bias.direction,
-                    target: signal.daily_bias.target_level,
-                    invalidation: signal.daily_bias.invalidation_level,
-                    reason: signal.daily_bias.reason
+                opportunity: signal.opportunity ? {
+                    area_of_interest: signal.opportunity.area_of_interest || null,
+                    execution_model: signal.opportunity.execution_model || null,
+                    target_intent: signal.opportunity.target_intent || null,
+                    state: signal.opportunity.state || null
                 } : null,
-                strategy: signal.strategy || null,
-                bias: signal.bias || (signal.direction === 'BUY' ? 'BULLISH' : signal.direction === 'SELL' ? 'BEARISH' : 'NEUTRAL'),
-                opportunity: signal.opportunity || null,
                 primary_opportunity: primary,
                 // The normal response is intentionally a single selected
                 // setup. Full candidate/watch diagnostics remain available
@@ -10479,6 +10497,13 @@ function buildPublicTradeSignal(signal = {}) {
                 active_setups: primary ? [primary] : [],
                 watch_setups: [],
                 reason: signal.reason || { code: 'DEVELOPING_SETUP', message: 'A valid developing opportunity remains for today.' },
+                analysis: {
+                    trend_detection: signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
+                    volatility_level: signal.volatility?.regime || signal.analysis?.volatility || null,
+                    technical_indicators: signal.indicators || signal.analysis?.indicators || null,
+                    type: signal.strategy || signal.trade_context_classification || null,
+                    setup: primary || signal.opportunity || null
+                },
                 market_open: signal.market_open ?? null
             };
         }
@@ -10492,6 +10517,12 @@ function buildPublicTradeSignal(signal = {}) {
             pair: signal.pair,
             current_price: signal.current_price,
             decision: 'WAIT',
+            trade_type: 'WAIT',
+            entry_price: null,
+            stop_loss: null,
+            take_profit_1: null,
+            take_profit_2: null,
+            take_profit_3: null,
             confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
             reason: { code: reason.code, message: reason.message },
             market_open: signal.market_open ?? null
