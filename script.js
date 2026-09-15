@@ -4367,9 +4367,15 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
         if (!location || !targetPool.length || !anchor) continue;
         const eventTime = location.created_time || location.created_time_ms || lead?.structure?.last_closed_candle_time || null;
         const id = `ICT:CONTINUATION:${direction}:${location.id || strategyZoneKey(location)}`;
+        const pendingLimitZone = location.location_only ? null : {
+            ...location,
+            execution_model: 'PENDING_LIMIT',
+            entry_model: 'PENDING_LIMIT',
+            entry_reachable_today: true
+        };
         setups.push({ id, primary: 'ICT', label: 'MARKET_MECHANICS', direction,
             timeframe: location.timeframe, setup_timeframe: location.timeframe, execution_timeframe: location.timeframe === '4H' ? '1H' : '15M',
-            event_time: eventTime, narrative_state: 'ACTIVE', execution_zone: null, execution_model: 'PENDING_LIMIT', entry_model: 'PENDING_LIMIT',
+            event_time: eventTime, narrative_state: 'ACTIVE', execution_zone: pendingLimitZone, execution_model: 'PENDING_LIMIT', entry_model: 'PENDING_LIMIT',
             structural_invalidation: anchor.level, structural_invalidation_detail: { level: anchor.level, source: 'HTF_STRUCTURE', timeframe: '4H' },
             target_candidates: targetPool, primary_objective: targetPool[0].level,
             opportunity_narrative: { id: `NARRATIVE:${id}`, state: 'DEVELOPING', location,
@@ -6699,6 +6705,10 @@ function getTodayOpportunityTargetPool({ setup, zone, targetCandidates, directio
         const level = Number(target?.level ?? target?.target_level ?? target?.price);
         if (!Number.isFinite(level) || !Number.isFinite(entryReference)) return false;
         if (target?.consumed || target?.invalidated || target?.reached) return false;
+        // A target already passed by price cannot be the objective of a
+        // future pending-limit entry. Continue through the catalog to the
+        // next real structural objective.
+        if (direction === 'BUY' ? level <= Number(currentPrice) : level >= Number(currentPrice)) return false;
         if (direction === 'BUY' ? level <= entryReference : level >= entryReference) return false;
         const key = String(level);
         if (seen.has(key)) return false;
