@@ -81,3 +81,13 @@
 .api-source {
     font-weight: 600;
 }
+
+.opportunity-stack { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.opportunity-stack-heading { color: #8e8e93; font-size: 11px; font-weight: bold; letter-spacing: .04em; margin-top: 4px; }
+.opportunity-card { background: rgba(51, 144, 236, .10); border: 1px solid rgba(51, 144, 236, .45); border-radius: 10px; padding: 10px; font-size: 11px; line-height: 1.5; }
+.opportunity-card.watch { background: rgba(255, 159, 10, .08); border-color: rgba(255, 159, 10, .45); }
+.opportunity-card-heading { color: #3390ec; font-size: 10px; font-weight: bold; margin-bottom: 3px; }
+.opportunity-card.watch .opportunity-card-heading { color: #ff9f0a; }
+.opportunity-meta { color: #8e8e93; margin: 2px 0 4px; }
+.opportunity-reason { color: #d1d1d6; margin-top: 4px; }
+.opportunity-next { color: #8e8e93; margin-top: 4px; display: flex; flex-direction: column; }

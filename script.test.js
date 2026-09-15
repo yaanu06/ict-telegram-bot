@@ -495,6 +495,7 @@ describe('market-thesis opportunity invariants', () => {
     it('surfaces a proven developing narrative before an execution zone exists', () => {
         const ctx = getContext();
         const result = ctx.buildTodayOpportunity({ pair: 'AUD/USD', currentPrice: 0.7145, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            marketContext: { timeframe_context: { '1D': { effective_trend: 'BULLISH', evidence: [{ id: 'D-TREND', kind: 'TREND', direction: 'BUY' }] }, '4H': { effective_trend: 'BULLISH', evidence: [{ id: '4H-TREND', kind: 'TREND', direction: 'BUY' }] }, '1H': { effective_trend: 'BULLISH', evidence: [{ id: '1H-TREND', kind: 'TREND', direction: 'BUY' }] } } },
             strategySetups: [{ id: 'developing-buy', primary: 'ICT', direction: 'BUY', narrative_state: 'ACTIVE', timeframe: '15M', execution_timeframe: '15M',
                 execution_model: 'CONFIRMATION_ENTRY', opportunity_narrative: { state: 'DEVELOPING', location: { id: 'D-1', type: 'DEMAND', timeframe: '4H', low: 0.713, high: 0.715 }, opportunity_reachable_today: true },
                 structural_invalidation_detail: { level: 0.71, source: 'DEMAND_INVALIDATION' }, structural_invalidation: 0.71,
@@ -503,6 +504,8 @@ describe('market-thesis opportunity invariants', () => {
         expect(result.reason_code).toBe('WAITING_FOR_EXECUTION');
         expect(result.execution_model).toBe('CONFIRMATION_ENTRY');
         expect(result.execution_zone_id).toBeNull();
+        expect(result.primary_opportunity).toEqual(expect.objectContaining({ id: 'developing-buy', state: 'WAITING_FOR_EXECUTION', watch_only: false }));
+        expect(result.primary_opportunity.execution_zone).toBeNull();
     });
 
     it('keeps an isolated local setup watch-only and lets aligned continuation win', () => {
@@ -524,6 +527,9 @@ describe('market-thesis opportunity invariants', () => {
         expect(result.state).toBe('TODAY_OPPORTUNITY');
         expect(result.narrative_id).toBe('aligned-sell');
         expect(result.secondary_watch_scenarios[0].watch_only).toBe(true);
+        expect(result.primary_opportunity.id).toBe('aligned-sell');
+        expect(result.active_setups).toEqual([]);
+        expect(result.watch_setups.map(setup => setup.id)).toEqual(['isolated-buy']);
     });
 
     it('does not present an isolated setup as an actionable retrace plan', () => {
@@ -535,6 +541,25 @@ describe('market-thesis opportunity invariants', () => {
         expect(result.state).toBe('WATCH_ONLY');
         expect(result.reason_code).toBe('LTF_ISOLATED_WATCH');
         expect(result.reason).not.toMatch(/valid strategy narrative remains actionable/i);
+        expect(result.primary_opportunity).toBeNull();
+        expect(result.watch_setups).toEqual([expect.objectContaining({ id: 'isolated', authorization_state: 'WATCH_ONLY', watch_only: true })]);
+    });
+
+    it('exposes multiple authorized developing setups without changing WAIT semantics', () => {
+        const ctx = getContext();
+        const common = { narrative_state: 'ACTIVE', execution_model: 'CONFIRMATION_ENTRY', entry_reachable_today: true, opportunity_reachable_today: true };
+        const result = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.1, scanAsOfMs: Date.parse('2026-09-14T10:00:00Z'), marketOpen: true,
+            marketContext: { daily_bias: { direction: 'NEUTRAL' }, timeframe_context: { '1D': { bias: 'BEARISH', evidence: [{ id: 'd-sell', kind: 'TREND', direction: 'SELL' }] }, '4H': { bias: 'BEARISH', evidence: [{ id: 'h4-sell', kind: 'TREND', direction: 'SELL' }, { id: 'sweep', kind: 'LIQUIDITY_SWEEP', direction: 'BUY' }] }, '1H': { bias: 'BEARISH', evidence: [{ id: 'h1-sell', kind: 'TREND', direction: 'SELL' }, { id: 'mss', kind: 'MSS', direction: 'BUY' }] } } },
+            targetCandidates: { buy: [{ level: 1.15, source: 'PDH', structural_priority: 80 }], sell: [{ level: 1.05, source: 'PDL', structural_priority: 80 }] },
+            strategySetups: [
+                { ...common, id: 'continuation', primary: 'ICT', label: 'ICT', direction: 'SELL', setup_confidence: 50, execution_zone: { id: 'supply-a', type: 'SUPPLY', low: 1.11, high: 1.12, entry_reachable_today: true, opportunity_reachable_today: true, structural_invalidation: { level: 1.13 } }, target_candidates: [{ level: 1.05, source: 'PDL' }] },
+                { ...common, id: 'reversal', primary: 'ICT', label: 'ICT', direction: 'BUY', setup_confidence: 50, trade_context_classification: 'HTF_VERIFIED_REVERSAL', execution_zone: { id: 'demand-b', type: 'DEMAND', low: 1.08, high: 1.09, entry_reachable_today: true, opportunity_reachable_today: true, structural_invalidation: { level: 1.07 } }, target_candidates: [{ level: 1.15, source: 'PDH' }] }
+            ] });
+        expect(result.state).toBe('TODAY_OPPORTUNITY');
+        expect(result.primary_opportunity).toBeTruthy();
+        expect(result.active_setups).toHaveLength(1);
+        expect(result.active_setups[0].id).not.toBe(result.primary_opportunity.id);
+        expect(result.watch_setups).toEqual([]);
     });
 
     it('treats neutral daily bias as neutral context for both directions', () => {

@@ -6735,6 +6735,76 @@ function buildOpportunityQuality(setup, plan, marketContext = {}, topDown = {}) 
         rejection_codes: setup?.opportunity_thesis?.rejection_codes || [] };
 }
 
+// Presentation projection only.  Execution authorization continues to be owned
+// by the candidate planner; this object lets the UI describe a thesis while it
+// is waiting for retracement, confirmation, or an execution zone.
+function buildOpportunityDisplayScenario(plan = {}, currentPrice = null, tier = null) {
+    const quality = plan.opportunity_quality || {};
+    const classification = plan.trade_context_classification || quality.classification || null;
+    const watchOnly = plan.watch_only === true || classification === 'LTF_ISOLATED';
+    const location = plan.area_of_interest || null;
+    const target = plan.target || null;
+    const targetLevel = plan.target_level ?? target?.level ?? null;
+    const invalidation = plan.structural_invalidation?.level ?? plan.structural_invalidation ?? null;
+    return {
+        id: plan.narrative_id || plan.id || null,
+        direction: plan.direction || null,
+        strategy: plan.strategy || plan.label || null,
+        trade_context_classification: classification,
+        authorization_state: tier || (watchOnly ? 'WATCH_ONLY' : 'AUTHORIZED_DEVELOPING'),
+        watch_only: watchOnly,
+        setup_timeframe: plan.setup_timeframe || plan.timeframe || null,
+        execution_timeframe: plan.execution_timeframe || null,
+        location,
+        area_of_interest: location,
+        current_price: currentPrice,
+        execution_zone: plan.execution_zone || null,
+        execution_model: plan.execution_model || null,
+        lifecycle_state: plan.lifecycle_state || plan.narrative_state || plan.state || null,
+        state: plan.reason_code || plan.state || null,
+        freshness: quality.freshness || plan.freshness || location?.freshness || null,
+        liquidity_context: plan.liquidity_context || plan.liquidity_event || null,
+        target_intent: plan.target_intent || target?.source || null,
+        target_level: targetLevel,
+        target: target ? { level: target.level, source: target.source || target.target_type || null, id: target.id || null } : (targetLevel != null ? { level: targetLevel, source: plan.target_intent || null } : null),
+        structural_invalidation: invalidation,
+        evidence_ids: plan.evidence_ids || plan.structural_evidence_ids || plan.opportunity_thesis?.evidence_ids || [],
+        next_requirement: plan.activation_conditions || [],
+        cancellation_conditions: plan.cancellation_conditions || [],
+        reason: plan.reason || null,
+        confidence: Number.isFinite(Number(plan.confidence)) ? Number(plan.confidence) : 0,
+        opportunity_quality: quality,
+        rejection_codes: quality.rejection_codes || plan.rejection_codes || [],
+        rank_reasons: quality.rank_reasons || []
+    };
+}
+
+function compareOpportunityDisplayPlans(a, b) {
+    const aq = a?.opportunity_quality || {}, bq = b?.opportunity_quality || {};
+    const tier = value => value?.watch_only ? 0 : (value?.authorization_state === 'TRADE_READY' ? 3 : 2);
+    return (tier(b) - tier(a))
+        || (Number(bq.rank_tier || 0) - Number(aq.rank_tier || 0))
+        || (Number(bq.location_quality || 0) - Number(aq.location_quality || 0))
+        || (Number(bq.liquidity_quality || 0) - Number(aq.liquidity_quality || 0))
+        || (Number(bq.target_quality === 'REAL_AHEAD') - Number(aq.target_quality === 'REAL_AHEAD'))
+        || (Number(bq.execution_state === 'EXECUTION_AVAILABLE') - Number(aq.execution_state === 'EXECUTION_AVAILABLE'))
+        || (Number(bq.evidence_strength || 0) - Number(aq.evidence_strength || 0))
+        || (Number(bq.event_time || 0) - Number(aq.event_time || 0))
+        || String(a?.narrative_id || a?.id || '').localeCompare(String(b?.narrative_id || b?.id || ''));
+}
+
+function buildOpportunityDisplayStack(plans = [], currentPrice = null, selected = null) {
+    const sorted = plans.slice().sort(compareOpportunityDisplayPlans);
+    const primaryPlan = (selected && !selected.watch_only) ? selected : sorted.find(plan => !plan.watch_only);
+    const primaryId = primaryPlan?.narrative_id || primaryPlan?.id || null;
+    return {
+        primary_opportunity: primaryPlan ? buildOpportunityDisplayScenario(primaryPlan, currentPrice, primaryPlan.state === 'TRADE_READY' ? 'TRADE_READY' : 'PRIMARY_AUTHORIZED') : null,
+        active_setups: sorted.filter(plan => !plan.watch_only && (plan.narrative_id || plan.id) !== primaryId)
+            .map(plan => buildOpportunityDisplayScenario(plan, currentPrice, 'SECONDARY_AUTHORIZED')),
+        watch_setups: sorted.filter(plan => plan.watch_only).map(plan => buildOpportunityDisplayScenario(plan, currentPrice, 'WATCH_ONLY'))
+    };
+}
+
 function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfMs, histories, marketContext = {}, strategySetups = [], aiAnalysis = null, executionZones = [], candidateDiagnostics = {}, validCandidates = [], targetCandidates = {}, marketOpen = true } = {}) {
     const timeframeContext = marketContext.timeframe_context || buildTimeframeContext({ historyCache: histories, structure: marketContext.structure, price: currentPrice, strategySetups, zones: executionZones });
     const state = {
@@ -6762,6 +6832,21 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.delivery_progress = bestCandidate.progress_to_tp1_fraction ?? bestCandidate.narrative_delivery_progress ?? null; state.remaining_reward_fraction = bestCandidate.remaining_reward_fraction ?? null;
         state.entry_reachable_today = bestCandidate.entry_reachable_today === true; state.opportunity_reachable_today = state.entry_reachable_today; state.target_viable = true;
         state.structural_invalidation = bestCandidate.structural_invalidation || null; state.reason_code = 'TRADE_READY'; state.reason = 'A deterministic opportunity is executable under the current market state.';
+        const candidatePlans = (validCandidates || []).map(candidate => ({
+            ...candidate,
+            state: 'TRADE_READY', narrative_id: candidate.strategy_setup?.id || candidate.id,
+            direction: candidate.direction, strategy: candidate.strategy_label || candidate.zone_type || null,
+            trade_context_classification: candidate.top_down_context?.classification || candidate.trade_context_classification,
+            area_of_interest: candidate.zone ? { low: candidate.zone.low, high: candidate.zone.high, source: candidate.zone.type, timeframe: candidate.zone.timeframe, zone_id: candidate.zone.id } : null,
+            execution_zone: candidate.zone, target: candidate.target_map?.[0] || candidate.target || null,
+            target_level: candidate.tp1 || candidate.take_profit_1 || candidate.target_map?.[0]?.level,
+            structural_invalidation: candidate.structural_invalidation,
+            opportunity_quality: candidate.quality || { rank_tier: 2, rank_score: candidate.score || 0, target_quality: 'REAL_AHEAD' },
+            confidence: candidate.confidence || candidate.score || 0,
+            reason: 'A deterministic opportunity is executable under the current market state.'
+        }));
+        const stack = buildOpportunityDisplayStack(candidatePlans, currentPrice, candidatePlans.find(candidate => candidate.id === (bestCandidate.strategy_setup?.id || bestCandidate.id)) || candidatePlans[0]);
+        Object.assign(state, stack);
         return state;
     }
     const active = (strategySetups || []).filter(setup => {
@@ -6815,6 +6900,9 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             cancellation_conditions: ['Structural invalidation is breached', 'The structural target is completed before entry', 'The opportunity expires or market context materially changes'], target_intent: targetIntent, expected_window: 'REMAINDER_OF_TODAY',
             delivery_progress: plan.metrics.delivery_progress, remaining_reward_fraction: plan.metrics.remaining_reward_fraction, distance_to_area_atr: plan.metrics.distance_to_area_atr,
             entry_reachable_today: true, opportunity_reachable_today: plan.metrics.opportunity_reachable_today, target_viable: plan.metrics.target_available, structural_invalidation: plan.metrics.structural_invalidation,
+            target: plan.target, target_level: plan.metrics.target_level, liquidity_context: plan.target ? { source: plan.target.source || plan.target.target_type || 'STRUCTURAL_OBJECTIVE', level: plan.metrics.target_level } : null,
+            evidence_ids: [...new Set([...(topDown.evidence_ids || []), ...(setup.structural_evidence_ids || []), ...(setup.opportunity_thesis?.evidence_ids || [])])],
+            lifecycle_state: setup.narrative_state || setup.strategy_state || 'ACTIVE', freshness: setup.freshness || planArea.freshness || null,
             reason_code: !zone ? 'WAITING_FOR_EXECUTION' : plan.execution_model === 'PENDING_LIMIT' ? 'WAITING_FOR_RETRACE' : (inside ? 'WAITING_FOR_CONFIRMATION' : 'WAITING_FOR_RETRACE'),
             reason: !zone ? 'A valid current-market narrative and location exist, but no execution zone has formed yet.' : plan.execution_model === 'PENDING_LIMIT' ? 'A deterministic pending limit remains valid for the remainder of today.' : (inside ? 'A valid strategy area is active, but deterministic confirmation is not yet present.' : 'A valid strategy narrative remains actionable today; wait for price to reach the deterministic area and activate it.'),
             setup_timeframe: setup.setup_timeframe || setup.timeframe, execution_timeframe: executionTimeframe, confidence: Number.isFinite(Number(setup.setup_confidence)) ? Number(setup.setup_confidence) : 0,
@@ -6822,16 +6910,17 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         if (!currentSetupIds.has(setup.id || setup.primary)) state.fresh_current_market_opportunities.push(setup.id || setup.primary);
     }
     const primaryPlans = plans.filter(plan => !plan.watch_only);
-    const watchPlans = plans.filter(plan => plan.watch_only).sort((a, b) => b.opportunity_quality.rank_score - a.opportunity_quality.rank_score);
+    const watchPlans = plans.filter(plan => plan.watch_only).sort(compareOpportunityDisplayPlans);
     state.secondary_watch_scenarios = watchPlans;
-    const bestPlan = [...primaryPlans].sort((a, b) => (b.opportunity_quality.rank_score - a.opportunity_quality.rank_score)
-        || (Number(b.opportunity_quality?.evidence_strength || 0) - Number(a.opportunity_quality?.evidence_strength || 0))
-        || (Number(b.opportunity_quality?.event_time || 0) - Number(a.opportunity_quality?.event_time || 0))
-        || String(a.narrative_id || '').localeCompare(String(b.narrative_id || '')))[0];
-    if (bestPlan) { Object.assign(state, bestPlan); state.fresh_continuation_opportunities = primaryPlans.filter(candidate => candidate !== bestPlan).map(candidate => candidate.narrative_id); return state; }
+    const bestPlan = primaryPlans.slice().sort(compareOpportunityDisplayPlans)[0];
+    if (bestPlan) {
+        Object.assign(state, bestPlan, buildOpportunityDisplayStack(plans, currentPrice, bestPlan));
+        state.fresh_continuation_opportunities = primaryPlans.filter(candidate => candidate !== bestPlan).map(candidate => candidate.narrative_id);
+        return state;
+    }
     const bestWatch = watchPlans[0];
     if (bestWatch) {
-        Object.assign(state, bestWatch, { state: 'WATCH_ONLY', watch_only: true, reason_code: 'LTF_ISOLATED_WATCH',
+        Object.assign(state, bestWatch, buildOpportunityDisplayStack(plans, currentPrice, bestWatch), { state: 'WATCH_ONLY', watch_only: true, reason_code: 'LTF_ISOLATED_WATCH',
             reason: 'A local setup exists, but higher-timeframe confirmation is insufficient for a primary trade thesis.' });
         return state;
     }
@@ -6868,7 +6957,10 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         current_price: price,
         decision: 'WAIT',
         confidence: today?.state === 'TODAY_OPPORTUNITY' ? today.confidence || 0 : 0,
-        status: today?.state || 'NO_TRADE_TODAY',
+        // Keep the public API's developing state stable.  WATCH_ONLY is a
+        // display tier inside the opportunity stack, not a new top-level trade
+        // decision contract.
+        status: today?.state === 'WATCH_ONLY' ? 'TODAY_OPPORTUNITY' : (today?.state || 'NO_TRADE_TODAY'),
         trade_context_classification: today?.trade_context_classification || null,
         top_down_context: today?.top_down_context || null,
         daily_bias: today?.daily_bias || null,
@@ -6876,6 +6968,9 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         direction: today?.direction || null,
         bias: today?.bias || 'NEUTRAL',
         opportunity,
+        primary_opportunity: today?.primary_opportunity || null,
+        active_setups: Array.isArray(today?.active_setups) ? today.active_setups : [],
+        watch_setups: Array.isArray(today?.watch_setups) ? today.watch_setups : [],
         reason: {
             code: today?.reason_code || 'NO_TRADE_TODAY',
             message: today?.reason || 'No defensible fresh or developing opportunity remains for today.'
@@ -10270,7 +10365,7 @@ function buildPublicTradeSignal(signal = {}) {
     const draw = signal.daily_bias?.liquidity_draw || signal.daily_bias?.target_type || signal.target_type || signal.primary_target_source;
     const liquiditySummary = signal.analysis?.liquidity || (draw ? `${draw}${signal.daily_bias?.target_level != null ? ' at ' + signal.daily_bias.target_level : ''}` : null);
     if (isWait) {
-        if (signal.status === 'TODAY_OPPORTUNITY') {
+        if (signal.status === 'TODAY_OPPORTUNITY' || signal.status === 'WATCH_ONLY') {
             return {
                 date: signal.date,
                 time: signal.time,
@@ -10290,6 +10385,9 @@ function buildPublicTradeSignal(signal = {}) {
                 strategy: signal.strategy || null,
                 bias: signal.bias || (signal.direction === 'BUY' ? 'BULLISH' : signal.direction === 'SELL' ? 'BEARISH' : 'NEUTRAL'),
                 opportunity: signal.opportunity || null,
+                primary_opportunity: signal.primary_opportunity || null,
+                active_setups: Array.isArray(signal.active_setups) ? signal.active_setups : [],
+                watch_setups: Array.isArray(signal.watch_setups) ? signal.watch_setups : [],
                 reason: signal.reason || { code: 'DEVELOPING_SETUP', message: 'A valid developing opportunity remains for today.' },
                 market_open: signal.market_open ?? null
             };
@@ -10331,6 +10429,9 @@ function buildPublicTradeSignal(signal = {}) {
         rr_tp1: signal.rr_tp1 ?? parseRR(signal.risk_reward),
         confidence: signal.confidence,
         status: signal.status || signal.opportunity_status || signal.lifecycle_state || null,
+        primary_opportunity: signal.primary_opportunity || null,
+        active_setups: Array.isArray(signal.active_setups) ? signal.active_setups : [],
+        watch_setups: Array.isArray(signal.watch_setups) ? signal.watch_setups : [],
         analysis: {
             bias: signal.analysis?.bias || (signal.direction === 'BUY' ? 'BULLISH' : signal.direction === 'SELL' ? 'BEARISH' : 'NEUTRAL'),
             trade_context: signal.trade_context_classification || signal.adaptive_candidate?.trade_context_classification || null,
@@ -10373,7 +10474,9 @@ function buildDebugDiagnostics(output = {}, context = null) {
 
 function setJsonOutput(obj) {
     const el = document.getElementById('jsonOutput');
-    if(el) el.textContent = JSON.stringify({ trade_signal: buildPublicTradeSignal(obj?.trade_signal || obj) }, null, 2);
+    const publicSignal = buildPublicTradeSignal(obj?.trade_signal || obj);
+    if(el) el.textContent = JSON.stringify({ trade_signal: publicSignal }, null, 2);
+    renderOpportunityStack(publicSignal);
     if (lastLiveMarketContextForReplay) {
         try {
             window.__ICT_LAST_SCAN_REPLAY__ = createScanReplay(lastLiveMarketContextForReplay, obj);
@@ -10381,6 +10484,43 @@ function setJsonOutput(obj) {
         } catch (error) { console.error('[REPLAY] capture failed', error); }
         lastLiveMarketContextForReplay = null;
     }
+}
+
+function escapeOpportunityHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+}
+
+function formatOpportunityLevel(value) {
+    return value == null ? '—' : escapeOpportunityHtml(value);
+}
+
+function renderOpportunityCard(setup, heading) {
+    if (!setup) return '';
+    const location = setup.location || setup.area_of_interest;
+    const target = setup.target || {};
+    const next = Array.isArray(setup.next_requirement) ? setup.next_requirement : [];
+    return `<div class="opportunity-card ${setup.watch_only ? 'watch' : ''}">
+        <div class="opportunity-card-heading">${escapeOpportunityHtml(heading)}</div>
+        <strong>${formatOpportunityLevel(setup.direction)} — ${escapeOpportunityHtml(setup.trade_context_classification || setup.strategy || 'MARKET THESIS')}</strong>
+        <div class="opportunity-meta">${escapeOpportunityHtml(setup.setup_timeframe || 'TF unknown')} → ${escapeOpportunityHtml(setup.execution_timeframe || 'execution TF unknown')} · ${escapeOpportunityHtml(setup.state || setup.lifecycle_state || 'DEVELOPING')}</div>
+        ${location ? `<div>Location: ${formatOpportunityLevel(location.low)} – ${formatOpportunityLevel(location.high)} · ${escapeOpportunityHtml(location.source || location.type || 'STRUCTURAL')}</div>` : ''}
+        ${target.level != null || setup.target_level != null ? `<div>Target: ${formatOpportunityLevel(target.level ?? setup.target_level)}${target.source || setup.target_intent ? ` · ${escapeOpportunityHtml(target.source || setup.target_intent)}` : ''}</div>` : ''}
+        ${setup.structural_invalidation != null ? `<div>Invalidation: ${formatOpportunityLevel(setup.structural_invalidation)}</div>` : ''}
+        <div class="opportunity-reason">${escapeOpportunityHtml(setup.reason || 'Waiting for deterministic execution evidence.')}</div>
+        ${next.length ? `<div class="opportunity-next">Next: ${next.slice(0, 3).map(item => `<span>• ${escapeOpportunityHtml(item)}</span>`).join('')}</div>` : ''}
+    </div>`;
+}
+
+function renderOpportunityStack(signal = {}) {
+    const el = document.getElementById('opportunityStack');
+    if (!el) return;
+    const primary = signal.primary_opportunity;
+    const active = Array.isArray(signal.active_setups) ? signal.active_setups : [];
+    const watches = Array.isArray(signal.watch_setups) ? signal.watch_setups : [];
+    if (!primary && !active.length && !watches.length) { el.innerHTML = ''; return; }
+    el.innerHTML = renderOpportunityCard(primary, 'PRIMARY OPPORTUNITY')
+        + (active.length ? `<div class="opportunity-stack-heading">OTHER ACTIVE SETUPS</div>${active.map(item => renderOpportunityCard(item, 'AUTHORIZED')).join('')}` : '')
+        + (watches.length ? `<div class="opportunity-stack-heading">LOW-PRIORITY WATCHES</div>${watches.map(item => renderOpportunityCard(item, 'WATCH ONLY')).join('')}` : '');
 }
 
 // ============================================
