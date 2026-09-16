@@ -2782,6 +2782,8 @@ function getCanonicalDisplayedTrend(snapshot = {}) {
     const effective = snapshot.effective_trend || 'NEUTRAL';
     // A conflicting structure is meaningful information. Do not flatten it
     // to NEUTRAL just because momentum has not chosen a side yet.
+    if (effective === 'NEUTRAL' && ['BULLISH', 'BEARISH'].includes(snapshot.momentum_trend)) return snapshot.momentum_trend;
+    if (effective === 'NEUTRAL' && ['BULLISH', 'BEARISH'].includes(snapshot.bias)) return snapshot.bias;
     if (effective === 'NEUTRAL' && snapshot.structural_trend === 'MIXED') return 'MIXED';
     return effective;
 }
@@ -6281,6 +6283,10 @@ function buildStructureSnapshot(data, tf) {
     const directionalShift = mss?.type === 'BULL' || mss?.type === 'BEAR' || detectBOS(data, 'BUY') || detectBOS(data, 'SELL') || detectCHoCH(data, 'BUY') || detectCHoCH(data, 'SELL');
     const effectiveTrend = inferredStructuralTrend === 'BULLISH' || inferredStructuralTrend === 'BEARISH'
         ? inferredStructuralTrend
+        : inferredStructuralTrend === 'MIXED' && ['BULLISH', 'BEARISH'].includes(momentumTrend)
+            ? momentumTrend
+        : inferredStructuralTrend === 'MIXED' && ['BULLISH', 'BEARISH'].includes(directionalBias)
+            ? directionalBias
         : inferredStructuralTrend === 'NEUTRAL' && ['BULLISH', 'BEARISH'].includes(momentumTrend)
             ? momentumTrend
             : inferredStructuralTrend === 'NEUTRAL' && ['BULLISH', 'BEARISH'].includes(directionalBias)

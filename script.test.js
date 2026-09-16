@@ -1870,7 +1870,8 @@ describe('getQuoteDirection', () => {
 
     it('displays mixed structure instead of flattening it to neutral', () => {
         const ctx = getContext();
-        expect(ctx.getCanonicalDisplayedTrend({ effective_trend: 'NEUTRAL', structural_trend: 'MIXED' })).toBe('MIXED');
+        expect(ctx.getCanonicalDisplayedTrend({ effective_trend: 'NEUTRAL', structural_trend: 'MIXED', momentum_trend: 'BULLISH' })).toBe('BULLISH');
+        expect(ctx.getCanonicalDisplayedTrend({ effective_trend: 'NEUTRAL', structural_trend: 'MIXED', momentum_trend: 'NEUTRAL' })).toBe('MIXED');
         expect(ctx.getCanonicalDisplayedTrend({ effective_trend: 'BULLISH_TRANSITION', structural_trend: 'MIXED' })).toBe('BULLISH_TRANSITION');
     });
 
