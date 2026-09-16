@@ -727,6 +727,22 @@ describe('top-down trade context', () => {
         expect(signal).not.toHaveProperty('watch_setups');
     });
 
+    it('exposes the best watch zone in a WAIT response', () => {
+        const ctx = getContext();
+        const signal = ctx.buildPublicTradeSignal({
+            date: '2026-09-16', pair: 'AUD/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY',
+            reason: { code: 'LTF_ISOLATED_WATCH', message: 'Higher-timeframe confirmation is pending.' },
+            watch_setups: [{ id: 'ICT-15M-BUY-1', direction: 'BUY', strategy: 'ICT',
+                setup_timeframe: '15M', execution_timeframe: '15M',
+                location: { low: 0.7100, high: 0.7110, source: 'FVG', timeframe: '15M' },
+                execution_model: 'CONFIRMATION_ENTRY', state: 'WAITING_FOR_EXECUTION',
+                target_intent: 'OPPOSING_MSNR', next_requirement: ['Confirmation candle'] }]
+        });
+        expect(signal.opportunity.area_of_interest).toEqual(expect.objectContaining({ low: 0.7100, high: 0.7110 }));
+        expect(signal.opportunity.execution_model).toBe('CONFIRMATION_ENTRY');
+        expect(signal.opportunity.direction).toBe('BUY');
+    });
+
     it('removes the replay action while retaining the copy action', () => {
         const html = fs.readFileSync('index.html', 'utf8');
         expect(html).toContain('id="copyJsonBtn"');
@@ -898,7 +914,10 @@ describe('daily opportunity planning', () => {
         const result = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', price: 1.2, decision: 'WAIT', status: 'TODAY_OPPORTUNITY', confidence: 68, strategy: 'CRT', bias: 'BEARISH', opportunity: { area_of_interest: { low: 1.1, high: 1.11 }, execution_model: 'CONFIRMATION_ENTRY' }, reason: { code: 'WAITING_FOR_RETRACE', message: 'Wait for price to return to the area.' }, market_open: true });
         expect(result.status).toBe('TODAY_OPPORTUNITY');
         expect(result.analysis.type).toBe('CRT');
-        expect(result).not.toHaveProperty('opportunity');
+        expect(result.opportunity).toEqual(expect.objectContaining({
+            area_of_interest: { low: 1.1, high: 1.11 },
+            execution_model: 'CONFIRMATION_ENTRY'
+        }));
         expect(result).not.toHaveProperty('candidate_pipeline');
         expect(result).not.toHaveProperty('seed_diagnostics');
     });

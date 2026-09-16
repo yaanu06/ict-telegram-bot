@@ -10629,6 +10629,7 @@ function buildPublicTradeSignal(signal = {}) {
     if (isWait) {
         if (signal.status === 'TODAY_OPPORTUNITY' || signal.status === 'WATCH_ONLY') {
             const primary = signal.primary_opportunity || null;
+            const watch = Array.isArray(signal.watch_setups) && signal.watch_setups.length ? signal.watch_setups[0] : null;
             const compactPrimary = primary ? {
                 id: primary.id || null,
                 direction: primary.direction || null,
@@ -10650,6 +10651,24 @@ function buildPublicTradeSignal(signal = {}) {
                 reason: primary.reason || null,
                 next_requirement: primary.next_requirement || []
             } : null;
+            const plan = compactPrimary || (watch ? {
+                id: watch.id || null,
+                direction: watch.direction || null,
+                strategy: watch.strategy || null,
+                trade_context: watch.trade_context_classification || null,
+                setup_timeframe: watch.setup_timeframe || null,
+                execution_timeframe: watch.execution_timeframe || null,
+                entry_price: watch.entry_price ?? watch.entry ?? null,
+                entry_zone: watch.entry_zone || watch.execution_zone || watch.area_of_interest || watch.location || null,
+                execution_model: watch.execution_model || null,
+                state: watch.state || watch.lifecycle_state || null,
+                target_intent: watch.target_intent || null,
+                target: watch.target || (watch.target_level != null ? { level: watch.target_level, source: watch.target_intent || null } : null),
+                structural_invalidation: watch.structural_invalidation || null,
+                confidence: watch.confidence ?? null,
+                reason: watch.reason || null,
+                next_requirement: watch.next_requirement || []
+            } : null);
             const orderType = compactPrimary?.entry_price != null && compactPrimary?.direction
                 ? `${compactPrimary.direction}_LIMIT` : 'WAIT';
             return {
@@ -10665,6 +10684,22 @@ function buildPublicTradeSignal(signal = {}) {
                 take_profit_3: compactPrimary?.take_profit_3 ?? null,
                 confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
                 status: 'TODAY_OPPORTUNITY',
+                opportunity: plan ? {
+                    id: plan.id,
+                    direction: plan.direction,
+                    strategy: plan.strategy,
+                    trade_context: plan.trade_context,
+                    setup_timeframe: plan.setup_timeframe,
+                    execution_timeframe: plan.execution_timeframe,
+                    area_of_interest: plan.entry_zone,
+                    execution_model: plan.execution_model,
+                    target_intent: plan.target_intent || plan.target?.source || null,
+                    target: plan.target,
+                    state: plan.state,
+                    confidence: plan.confidence,
+                    reason: plan.reason,
+                    next_requirement: plan.next_requirement
+                } : (signal.opportunity || null),
                 reason: signal.reason || { code: 'DEVELOPING_SETUP', message: 'A valid developing opportunity remains for today.' },
                 analysis: {
                     trend_detection: signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
