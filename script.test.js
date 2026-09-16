@@ -1868,6 +1868,12 @@ describe('getQuoteDirection', () => {
         expect(result).toBe('NEUTRAL');
     });
 
+    it('displays mixed structure instead of flattening it to neutral', () => {
+        const ctx = getContext();
+        expect(ctx.getCanonicalDisplayedTrend({ effective_trend: 'NEUTRAL', structural_trend: 'MIXED' })).toBe('MIXED');
+        expect(ctx.getCanonicalDisplayedTrend({ effective_trend: 'BULLISH_TRANSITION', structural_trend: 'MIXED' })).toBe('BULLISH_TRANSITION');
+    });
+
     it('uses the canonical structure snapshot used by the timeframe display', async () => {
         const ctx = getContext();
         const data = candles(80, 100, 0.5, 'up');

@@ -2778,6 +2778,14 @@ function hoursRemainingInSession(now = new Date()) {
 // UPDATE MTF DISPLAY
 // ============================================
 
+function getCanonicalDisplayedTrend(snapshot = {}) {
+    const effective = snapshot.effective_trend || 'NEUTRAL';
+    // A conflicting structure is meaningful information. Do not flatten it
+    // to NEUTRAL just because momentum has not chosen a side yet.
+    if (effective === 'NEUTRAL' && snapshot.structural_trend === 'MIXED') return 'MIXED';
+    return effective;
+}
+
 async function updateMTFDisplay(historyCache = {}) {
     const tfs = ['5M', '15M', '1H', '4H', '1D', '1W'];
     for(let t of tfs) {
@@ -2786,7 +2794,7 @@ async function updateMTFDisplay(historyCache = {}) {
             const data = historyCache[t] || await getHistory(t);
             if(data && data.length >= 2) {
                 const snapshot = buildStructureSnapshot(data, t);
-                tr = snapshot.effective_trend || snapshot.structural_trend || 'NEUTRAL';
+                tr = getCanonicalDisplayedTrend(snapshot);
             }
         } catch(e) { /* ignore */ }
         
