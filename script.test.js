@@ -704,6 +704,19 @@ describe('top-down trade context', () => {
         expect(wait.analysis.type).toBe(top.classification);
     });
 
+    it('shows a valid low-confidence setup while keeping execution disabled', () => {
+        const ctx = getContext();
+        const signal = ctx.buildPublicTradeSignal({
+            date: '2026-09-16', pair: 'XAU/USD', decision: 'BUY', status: 'SETUP_AVAILABLE',
+            direction: 'BUY', entry: 100, stop_loss: 95, tp1: 110, confidence: 30,
+            execution_allowed: false, setup_state: 'SETUP_AVAILABLE', entry_zone: { low: 99, high: 101, source: 'ICT' }
+        });
+        expect(signal.status).toBe('SETUP_AVAILABLE');
+        expect(signal.setup_state).toBe('SETUP_AVAILABLE');
+        expect(signal.execution_allowed).toBe(false);
+        expect(signal.entry).toBe(100);
+    });
+
     it('keeps the selected developing setup in the public signal contract', () => {
         const ctx = getContext();
         const signal = ctx.buildPublicTradeSignal({ date: '2026-09-15', time: '10:00:00', pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY',

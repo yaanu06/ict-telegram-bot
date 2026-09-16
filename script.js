@@ -9946,8 +9946,9 @@ async function runAutoScan() {
             checks: finalConsistency.issues.length ? finalConsistency.issues : ['deterministic candidate geometry, lifecycle, target, RR, and pending-limit semantics passed']
         };
         out.trade_signal.validation.final_consistency = finalConsistency;
-        const publishableTrade = tradeable && finalConsistency.valid;
-        if (!publishableTrade) {
+        const displayableSetup = validation.valid && finalConsistency.valid;
+        const publishableTrade = tradeable && displayableSetup;
+        if (!displayableSetup) {
             const reason = !finalConsistency.valid
                 ? `INTERNAL_CONSISTENCY_FAILURE: ${finalConsistency.issues.join('; ')}`
                 : !validation.valid
@@ -9968,6 +9969,18 @@ async function runAutoScan() {
             out.trade_signal.source = 'Deterministic Candidate Engine';
             console.error('[SCAN] final signal consistency rejected', finalConsistency);
             showNotif(`⚠️ ${reason}`, 'warning');
+        }
+        if (displayableSetup && !tradeable) {
+            // Keep a valid AI setup visible for the user's decision. The
+            // execute action remains disabled until confidence and entry
+            // conditions pass independently.
+            out.trade_signal.status = 'SETUP_AVAILABLE';
+            out.trade_signal.setup_state = 'SETUP_AVAILABLE';
+            out.trade_signal.execution_allowed = false;
+            out.trade_signal.reason = {
+                code: 'SETUP_AVAILABLE_USER_DECISION',
+                message: `Valid ${aiResult.direction} setup displayed for user decision; automatic execution is disabled below ${MIN_CONFIDENCE}% confidence or before confirmation.`
+            };
         }
         setJsonOutput(out);
         if (publishableTrade) syncSetupToGitHub(out.trade_signal, 'ai_scan');
@@ -10659,6 +10672,8 @@ function buildPublicTradeSignal(signal = {}) {
         rr_tp1: signal.rr_tp1 ?? parseRR(signal.risk_reward),
         confidence: signal.confidence,
         status: signal.status || signal.opportunity_status || signal.lifecycle_state || null,
+        setup_state: signal.setup_state || (signal.status === 'TRADE_READY' ? 'TRADE_READY' : null),
+        execution_allowed: signal.execution_allowed ?? (signal.status === 'TRADE_READY'),
         primary_opportunity: signal.primary_opportunity || null,
         active_setups: Array.isArray(signal.active_setups) ? signal.active_setups : [],
         watch_setups: Array.isArray(signal.watch_setups) ? signal.watch_setups : [],
