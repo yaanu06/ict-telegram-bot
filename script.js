@@ -438,7 +438,33 @@ function getPairDisplayName(p) {
 // API FUNCTIONS
 // ============================================
 let rateLimitNotified = 0;
+const TD_REQUEST_BUDGET = 50;
+const TD_REQUEST_WINDOW_MS = 60000;
+const tdRequestTimes = [];
+const historyResponseCache = new Map();
+const HISTORY_CACHE_TTL_MS = Object.freeze({
+    '5M': 60000,
+    '15M': 60000,
+    '1H': 120000,
+    '4H': 300000,
+    '1D': 900000,
+    '1W': 900000
+});
+
+async function reserveTwelveDataRequest() {
+    while (true) {
+        const now = Date.now();
+        while (tdRequestTimes.length && now - tdRequestTimes[0] >= TD_REQUEST_WINDOW_MS) tdRequestTimes.shift();
+        if (tdRequestTimes.length < TD_REQUEST_BUDGET) {
+            tdRequestTimes.push(now);
+            return;
+        }
+        await new Promise(resolve => setTimeout(resolve, Math.min(1000, TD_REQUEST_WINDOW_MS - (now - tdRequestTimes[0]))));
+    }
+}
+
 async function fetchTD(pathAndQuery, timeoutMs = 10000, retries = 2) {
+    await reserveTwelveDataRequest();
     const ctrl = typeof AbortController === 'function'
         ? new AbortController()
         : { signal: undefined, abort: () => {} };
@@ -566,8 +592,13 @@ async function getMarketQuoteSnapshot(forPair = pair) {
 
 async function getHistory(tfStr, forPair) {
     if(!TWELVE_DATA_KEY) return null;
+    const requestedPair = forPair || pair;
+    const cacheKey = `${requestedPair}|${tfStr}`;
+    const cached = historyResponseCache.get(cacheKey);
+    const cacheTtl = HISTORY_CACHE_TTL_MS[tfStr] || 60000;
+    if (cached && Date.now() - cached.ts < cacheTtl) return cached.data;
     try {
-        const d = await fetchTD('/time_series?symbol=' + encodeURIComponent(SYMBOLS[forPair || pair]) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + '&timezone=UTC');
+        const d = await fetchTD('/time_series?symbol=' + encodeURIComponent(SYMBOLS[requestedPair]) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + '&timezone=UTC');
         if(d.values) {
             calls++;
             const values = d.values.map(c => ({
@@ -589,9 +620,10 @@ async function getHistory(tfStr, forPair) {
                 provider_timezone: d.meta?.timezone || 'UTC',
                 requested_timezone: 'UTC',
                 timeframe: tfStr,
-                symbol: SYMBOLS[forPair || pair],
+                symbol: SYMBOLS[requestedPair],
                 timestamp_contract: ['1D', '1W'].includes(tfStr) ? 'PERIOD_BUCKET' : 'INTRADAY_UTC'
             }, enumerable: false });
+            historyResponseCache.set(cacheKey, { data: values, ts: Date.now() });
             return values;
         }
     } catch(e) { console.error(`History error (${tfStr}):`, e); }
