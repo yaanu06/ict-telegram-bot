@@ -1854,6 +1854,15 @@ describe('getQuoteDirection', () => {
         const result = await ctx.getQuoteDirection('1H', candles(3, 100, 1, 'up'));
         expect(result).toBe('NEUTRAL');
     });
+
+    it('uses the canonical structure snapshot used by the timeframe display', async () => {
+        const ctx = getContext();
+        const data = candles(80, 100, 0.5, 'up');
+        const snapshot = ctx.buildStructureSnapshot(data, '1H');
+        const expected = snapshot.effective_trend === 'BULLISH_TRANSITION' ? 'BULLISH'
+            : snapshot.effective_trend === 'BEARISH_TRANSITION' ? 'BEARISH' : snapshot.effective_trend;
+        expect(await ctx.getQuoteDirection('1H', data)).toBe(expected);
+    });
 });
 
 describe('analyzeMarketPhase (AMD)', () => {

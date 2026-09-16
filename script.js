@@ -669,7 +669,13 @@ async function getTechnicalIndicators(tfUsed, candleData = null) {
 async function getQuoteDirection(tfStr, cachedData = null) {
     try {
         const data = cachedData || await getHistory(tfStr);
-        if(data && data.length >= 50) return detectTrend(data);
+        if (data && data.length >= 50) {
+            // Keep AI scoring on the same structure snapshot used by the
+            // displayed multi-timeframe trend.
+            const effective = buildStructureSnapshot(data, tfStr).effective_trend || 'NEUTRAL';
+            return effective === 'BULLISH_TRANSITION' ? 'BULLISH'
+                : effective === 'BEARISH_TRANSITION' ? 'BEARISH' : effective;
+        }
         // If we don't have enough data for a proper trend read, return NEUTRAL
         // instead of guessing from one or two candles. A single candle flip
         // used to corrupt HTF alignment and block setups.
@@ -9940,12 +9946,22 @@ async function runAutoScan() {
             checks: finalConsistency.issues.length ? finalConsistency.issues : ['deterministic candidate geometry, lifecycle, target, RR, and pending-limit semantics passed']
         };
         out.trade_signal.validation.final_consistency = finalConsistency;
-        if (!finalConsistency.valid) {
-            const reason = `INTERNAL_CONSISTENCY_FAILURE: ${finalConsistency.issues.join('; ')}`;
+        const publishableTrade = tradeable && finalConsistency.valid;
+        if (!publishableTrade) {
+            const reason = !finalConsistency.valid
+                ? `INTERNAL_CONSISTENCY_FAILURE: ${finalConsistency.issues.join('; ')}`
+                : !validation.valid
+                    ? `AI_VALIDATION_BLOCKED: ${validation.reason}`
+                    : `CONFIDENCE_BELOW_MINIMUM: ${aiResult.confidence}% < ${MIN_CONFIDENCE}%`;
             out.trade_signal.trade_type = 'WAIT';
             out.trade_signal.decision = 'WAIT';
             out.trade_signal.ai_decision = 'skip';
             out.trade_signal.confidence = 0;
+            out.trade_signal.status = 'TODAY_OPPORTUNITY';
+            out.trade_signal.reason = {
+                code: !finalConsistency.valid ? 'INTERNAL_CONSISTENCY_FAILURE' : !validation.valid ? 'AI_VALIDATION_BLOCKED' : 'CONFIDENCE_BELOW_MINIMUM',
+                message: reason
+            };
             out.trade_signal.wait_condition = reason;
             out.trade_signal.limit_order_setup.eligible = false;
             out.trade_signal.immediate_entry.eligible = false;
@@ -9954,7 +9970,7 @@ async function runAutoScan() {
             showNotif(`⚠️ ${reason}`, 'warning');
         }
         setJsonOutput(out);
-        if (finalConsistency.valid) syncSetupToGitHub(out.trade_signal, 'ai_scan');
+        if (publishableTrade) syncSetupToGitHub(out.trade_signal, 'ai_scan');
         
         analysis = {
             signalType: st,
