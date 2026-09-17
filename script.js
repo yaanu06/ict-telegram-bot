@@ -9240,6 +9240,47 @@ async function runFallbackScan(price, historyCache) {
         out.trade_signal.wait_condition = reason;
         out.trade_signal.limit_order_setup.eligible = false;
         out.trade_signal.source = 'Deterministic Candidate Engine';
+
+        // A fallback candidate can fail the final invariant after selection
+        // because it was consumed or aged during the scan. Keep that order
+        // rejected, but expose the fallback planner's current opportunity.
+        const fallbackToday = buildTodayOpportunity({
+            pair,
+            currentPrice: price,
+            scanAsOfMs: Date.now(),
+            histories: historyCache,
+            marketContext: fallbackMarketContext,
+            strategySetups: fallbackStrategySetups,
+            executionZones: getStrategyExecutionZones(fallbackStrategySetups),
+            candidateDiagnostics: {
+                raw_candidate_count: fallbackCandidateResult.raw_candidates?.length || 0,
+                valid_candidate_count: fallbackCandidateResult.valid_candidates?.length || 0,
+                rejected_candidate_count: fallbackCandidateResult.rejected_candidates?.length || 0
+            },
+            validCandidates: (fallbackCandidateResult.valid_candidates || []).filter(candidate => candidate.id !== bestCandidate?.id),
+            targetCandidates: fallbackTargetCandidates,
+            marketOpen: true
+        });
+        if (fallbackToday.state === 'TODAY_OPPORTUNITY' || fallbackToday.state === 'WATCH_ONLY') {
+            const recovery = buildTodayOpportunityOutput(fallbackToday, pair, price, Date.now(), true);
+            Object.assign(out.trade_signal, recovery.trade_signal, {
+                selected_candidate_id: null,
+                trade_type: 'WAIT',
+                decision: 'WAIT',
+                ai_decision: 'skip',
+                reason: {
+                    code: 'STALE_SELECTION_RECOVERED',
+                    message: 'The selected fallback candidate was rejected as stale; the current opportunity remains available for your decision.'
+                },
+                validation: {
+                    passed: false,
+                    reason: 'Fallback selection rejected by final consistency checks; current opportunity recovered.',
+                    rejected_selection: fallbackConsistency,
+                    current_opportunity: fallbackToday
+                },
+                source: 'Deterministic Opportunity Planner (Fallback)'
+            });
+        }
     }
     
     setJsonOutput(out);
