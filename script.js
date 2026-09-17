@@ -3928,9 +3928,18 @@ function getAdaptiveStopCandidates(zone, direction, entry, data, zones, atrVal, 
     };
     const buffer = Math.max(bufferComponents.pip_or_tick_buffer + bufferComponents.spread_buffer, bufferComponents.volatility_noise_buffer, entry * 0.00002);
     if (authoritative) {
-        const stopLoss = ictRound(direction === 'BUY' ? authoritative.level - buffer : authoritative.level + buffer, prec);
+        // Keep the authoritative invalidation as the anchor, while giving the
+        // stop enough room for normal setup-timeframe noise. A microscopic
+        // anchor buffer can otherwise produce a technically valid but fragile
+        // stop, especially on gold and other volatile instruments.
+        const anchorRisk = direction === 'BUY' ? entry - (authoritative.level - buffer) : (authoritative.level + buffer) - entry;
+        const preferredRisk = Number.isFinite(Number(atrVal)) && atrVal > 0
+            ? Math.max(settings.pipSize * 2, atrVal * 0.5)
+            : settings.pipSize * 2;
+        const riskDistance = Math.max(anchorRisk, preferredRisk);
+        const stopLoss = ictRound(direction === 'BUY' ? entry - riskDistance : entry + riskDistance, prec);
         return [{ level: authoritative.level, source: authoritative.source, origin: 'STRUCTURAL', authoritative: true,
-            stop_loss: stopLoss, buffer: ictRound(buffer, prec), buffer_components: { ...bufferComponents, final_buffer: ictRound(buffer, prec) }, authoritative_invalidation: authoritative }];
+            stop_loss: stopLoss, buffer: ictRound(buffer, prec), buffer_components: { ...bufferComponents, final_buffer: ictRound(buffer, prec), preferred_noise_distance: ictRound(preferredRisk, prec), anchor_risk_distance: ictRound(anchorRisk, prec) }, authoritative_invalidation: authoritative }];
     }
     const raw = [];
     const add = (level, source, origin = 'STRUCTURAL', authoritativeSource = false) => {
@@ -8093,6 +8102,16 @@ function buildAiMarketAnalystPrompt(evidenceCatalog = {}, candleData = '') {
     const system = [
         'You are the MARKET ANALYST stage of a deterministic ICT trading engine.',
         'Use timeframe_context: 1D macro context, 4H primary narrative, 1H intraday structure, and 15M execution. 5M is optional confirmation only for CONFIRMATION_ENTRY.',
+        'Derive every conclusion from the supplied closed OHLCV and computed evidence. Never assume a level, price, trend, regime, bias, or reversal.',
+        'Classify the 4H regime as RANGING, BULL_TREND, BEAR_TREND, or TRANSITION using recent swing structure and recent BOS/MSS evidence.',
+        'A BOS requires a candle close beyond the opposing swing. An MSS requires a valid BOS followed by a retrace that holds inside the prior range. A wick alone is not a structure break.',
+        'For 1D, 4H, and 1H, report the derived directional structure as bullish, bearish, or neutral only when the supplied evidence supports it; identify any conflict between timeframes.',
+        'A liquidity sweep requires a wick through an identifiable equal high, equal low, session level, or structural liquidity level followed by a close back inside. Do not call ordinary volatility a sweep.',
+        'BUY is continuation-eligible only when 4H is bullish or bullish transition and 1H confirms BUY. SELL is continuation-eligible only when 4H is bearish or bearish transition and 1H confirms SELL.',
+        'When 1D conflicts with 4H, reduce conviction and require one additional independent confirmation such as a valid sweep plus BOS/MSS, displacement, or a fresh execution zone. Keep the setup available for user choice when that evidence exists.',
+        'A reversal is distinct from continuation: a local 15M reversal cannot be labelled higher-timeframe verified unless 4H or 1H structure shift evidence is supplied.',
+        'A limit plan must use a supplied derived retracement, FVG, OB, MSNR, flip, or liquidity zone and supplied structural invalidation. If the zone, invalidation, or target cannot be derived, return no hypothesis.',
+        'Require at least three independent confluences for a preferred hypothesis: 4H direction, 1H alignment, valid liquidity sweep, and a clear executable entry zone. List the evidence IDs used.',
         'For each hypothesis you may propose trade_context_classification: HTF_ALIGNED_CONTINUATION, HTF_VERIFIED_REVERSAL, or LTF_ISOLATED, with top_down_evidence_ids from the supplied catalog. Code verifies the label and IDs. A local 15M pattern alone cannot prove an HTF reversal.',
         'Identify the highest-quality trading opportunity still available from the current market state for the remainder of today.',
         'Assess the dominant current narrative, meaningful liquidity, whether price is extended, whether retracement or continuation is realistic, whether the original move already delivered too far, and whether no defensible opportunity remains today.',
