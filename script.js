@@ -6304,7 +6304,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
             : null,
         distance_to_entry: distanceToEntry,
         distance_to_entry_atr: distanceToEntryAtr,
-        distance_to_entry_pips: Number.isFinite(distanceToEntry) ? distanceToEntry / (Number(marketContext.pipSize) || getMarketSettings(marketContext.pair || pair).pipSize) : null,
+        distance_to_entry_pips: Number.isFinite(distanceToEntry) ? distanceToEntry / (Number(marketContext.pipSize) || getMarketSettings(marketContext.pair || pair, marketContext.symbol_metadata || {}).pipSize) : null,
         expected_retrace_quality: pendingEntryQuality,
         entry_reachable_today: Number.isFinite(distanceToEntryAtr) ? distanceToEntryAtr <= freshnessSpec.pendingLaterDistanceAtr : true,
         entry_reachability_score: entryReachabilityScore,
@@ -8430,7 +8430,7 @@ function buildAiMarketEvidenceCatalog(liveMarketContext = {}, historyCache = {})
             Object.defineProperty(record, 'source', { value: event, enumerable: false });
             strategyEvents.push(record);
         }
-        const levels = calculateMSNR(data, Number(liveMarketContext.current_price), timeframe, liveMarketContext.pair || pair).structural_levels || [];
+        const levels = calculateMSNR(data, Number(liveMarketContext.current_price), timeframe, liveMarketContext.pair || pair, liveMarketContext.symbol_metadata || {}).structural_levels || [];
         for (const level of levels.slice(0, STRATEGY_SPEC.MSNR.maxLevelsPerTimeframe)) {
             const record = { ...level, id: level.id || idFor('MSNR', level, strategyEvents.length), strategy: 'MSNR', setup_id: null };
             Object.defineProperty(record, 'source', { value: level, enumerable: false });
@@ -8749,7 +8749,7 @@ function verifyAiStrategyHypothesis(hypothesis, evidenceCatalog = {}, liveMarket
         const timeDiffHours = componentTimes.length === componentRecords.length
             ? (Math.max(...componentTimes) - Math.min(...componentTimes)) / 3600000 : Infinity;
         const componentLevels = componentRecords.map(event => Number(event.reclaim_level ?? event.reference_level ?? event.level ?? event.midpoint)).filter(Number.isFinite);
-        const settings = getMarketSettings(liveMarketContext.pair || pair);
+        const settings = getMarketSettings(liveMarketContext.pair || pair, liveMarketContext.symbol_metadata || {});
         const zoneWidths = zones.map(zone => Math.abs(Number(zone.high) - Number(zone.low))).filter(Number.isFinite);
         const spatialWidth = Math.max(settings.pipSize * 10, ...zoneWidths, Math.abs(Number(liveMarketContext.current_price) || 0) * 0.0005);
         const spatiallyRelated = componentLevels.length === componentRecords.length && Math.max(...componentLevels) - Math.min(...componentLevels) <= spatialWidth * 4;
@@ -8777,7 +8777,7 @@ function verifyAiStrategyHypothesis(hypothesis, evidenceCatalog = {}, liveMarket
         const sourceEvent = allEvidence[0].source || allEvidence[0];
         const level = Number(sourceEvent.reclaim_level ?? sourceEvent.level ?? sourceEvent.midpoint);
         if (Number.isFinite(level)) {
-            const settings = getMarketSettings(liveMarketContext.pair || pair);
+            const settings = getMarketSettings(liveMarketContext.pair || pair, liveMarketContext.symbol_metadata || {});
             const width = Math.max(settings.pipSize * 2, Math.abs(level) * 0.00002);
             base.execution_zone = {
                 id: 'AI-' + hypothesis.hypothesis_id + '-RECLAIM',
