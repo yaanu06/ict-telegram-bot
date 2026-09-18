@@ -8130,7 +8130,7 @@ function buildReplayPatterns(history, price) {
     return Object.fromEntries(['4H', '1H', '15M', '5M'].map(tf => [tf, {
         fvg: detectFVG(history[tf] || []), swings: findSwings(history[tf] || [], 3), turtleSoup: detectTurtleSoup(history[tf] || []),
         crt: detectCRT(history[tf] || []), orderBlocks: detectOrderBlocks(history[tf] || [], 'BUY'), msnr: calculateMSNR(history[tf] || [], price, tf),
-        trend: detectTrend(history[tf] || []), adx: calculateADX(history[tf] || [], 14, tf)
+        trend: getCanonicalTimeframeTrend(history[tf] || [], tf), adx: calculateADX(history[tf] || [], 14, tf)
     }]));
 }
 
@@ -10051,7 +10051,7 @@ async function runAutoScan() {
                     crt: detectCRT(data),
                     orderBlocks: detectOrderBlocks(data, 'BUY'),
                     msnr: calculateMSNR(data, price),
-                    trend: detectTrend(data),
+                    trend: getCanonicalTimeframeTrend(data, tf),
                     adx: calculateADX(data, 14, tf)
                 };
             }
