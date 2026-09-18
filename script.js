@@ -9631,6 +9631,13 @@ function findSelectedLiveZone(aiResult, liveMarketContext) {
 function validateExecutableCandidateInvariant(candidate, marketState = {}) {
     const failures = [];
     if (!candidate || typeof candidate !== 'object') return { valid: false, invariant_code: 'CANDIDATE_MISSING', failures: ['candidate missing'] };
+    const timeframeContext = marketState.timeframe_context || marketState.market_context?.timeframe_context;
+    if (candidate.trade_context_classification && timeframeContext && candidate.direction) {
+        const actualTopDown = classifyTopDownTrade(candidate, timeframeContext);
+        if (candidate.trade_context_classification !== actualTopDown.classification) {
+            failures.push('TOP_DOWN_CLASSIFICATION_MISMATCH');
+        }
+    }
     if (candidate.strategy_setup && candidate.trade_context_classification === 'LTF_ISOLATED') failures.push('LTF_ISOLATED');
     if (candidate.strategy_setup && candidate.trade_context_classification === 'HTF_VERIFIED_REVERSAL'
         && String(candidate.execution_model || candidate.entry_model || '').toUpperCase() !== 'CONFIRMATION_ENTRY') {

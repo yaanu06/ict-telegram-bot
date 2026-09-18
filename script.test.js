@@ -3332,6 +3332,29 @@ describe('live AI market context and prompt', () => {
         expect(result.issues.join(' ')).toMatch(/actual RR .* below minimum/);
     });
 
+    it('rejects a candidate whose stored top-down classification disagrees with current timeframe context', () => {
+        const ctx = getContext();
+        const tf = {
+            '1D': { displayed_trend: 'BEARISH', evidence: [] },
+            '4H': { displayed_trend: 'BEARISH', evidence: [] },
+            '1H': { displayed_trend: 'BULLISH', evidence: [] }
+        };
+        const candidate = {
+            id: 'classification-drift', direction: 'SELL',
+            trade_context_classification: 'HTF_ALIGNED_CONTINUATION',
+            entry: 110, stop_loss: 112, tp1: 105,
+            actual_rr: 2.5,
+            quality: { final_confidence: 70 },
+            confidence_breakdown: { final_score: 70 }
+        };
+        const result = ctx.validateExecutableCandidateInvariant(candidate, {
+            timeframe_context: tf,
+            as_of_time: Date.parse('2026-09-19T12:00:00Z')
+        });
+        expect(result.valid).toBe(false);
+        expect(result.failures).toContain('TOP_DOWN_CLASSIFICATION_MISMATCH');
+    });
+
     it('classifies an unknown selected candidate ID as an AI selection failure', () => {
         const ctx = getContext();
         const result = ctx.validateAIOutputConsistency({ selected_candidate_id: 'missing', decision: 'BUY_LIMIT', direction: 'BUY', entry: 1.1, stop_loss: 1.098, take_profit_1: 1.105 }, { adaptive_setup_candidates: [], target_candidates: { buy: [], sell: [] }, risk_constraints: { minimum_rr: 2.5 }, real_ict_zones: [] });
