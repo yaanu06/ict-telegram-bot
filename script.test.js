@@ -3749,6 +3749,7 @@ describe('hasRealVolume / volume gating', () => {
         expect(ctx.hasRealVolume('ETH/USD')).toBe(true);
         expect(ctx.hasRealVolume('AAPL')).toBe(true);
         expect(ctx.hasRealVolume('ETH/USD', { volume_reliable: false })).toBe(false);
+        expect(ctx.getSymbolMetadata('ETH/USD', { volume_reliable: false }).volume_reliable).toBe(false);
     });
 
     it('analyzeVolumeTruth returns all-false for synthetic volume even with surgey data', () => {

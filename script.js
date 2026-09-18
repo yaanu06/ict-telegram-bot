@@ -7731,7 +7731,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const sessionCheck = shouldTradeSession(now);
     const marketState = getMarketOpenState(pair, { ...(quote_snapshot || {}), as_of_ms });
     const dataQuality = validateMarketDataQuality(historyCache, price, quote_snapshot, as_of_ms || Date.now());
-    const realVolume = hasRealVolume(pair);
+    const realVolume = hasRealVolume(pair, symbolMetadata);
     const closed4h = getClosedHistory(historyCache, '4H');
     const closed1h = getClosedHistory(historyCache, '1H');
     const closed15m = getClosedHistory(historyCache, '15M');
@@ -8914,9 +8914,9 @@ Return ONLY this selector JSON (no additional fields):
     return { system, user };
 }
 
-function buildCandleData(historyCache, count = 10) {
+function buildCandleData(historyCache, count = 10, symbolMetadata = {}) {
     const tfs = ['1D', '4H', '1H', '15M', '5M'];
-    const realVolume = hasRealVolume(pair);
+    const realVolume = hasRealVolume(pair, symbolMetadata);
     let data = '';
     for (const tf of tfs) {
         const candles = historyCache[tf];
@@ -10018,14 +10018,15 @@ async function runAutoScan() {
         // ============================================
         let enhancedAnalysis = null;
         if (historyCache['4H'] && historyCache['4H'].length >= 50) {
-            const phase = analyzeMarketPhase(historyCache['4H'], hasRealVolume(pair));
+            const volumeMetadata = quoteSnapshot?.symbol_metadata || {};
+            const phase = analyzeMarketPhase(historyCache['4H'], hasRealVolume(pair, volumeMetadata));
             const rsiDiv = detectDivergence(historyCache['4H'], 'rsi', 30);
             const macdDiv = detectDivergence(historyCache['4H'], 'macd', 30);
             const liq = mapLiquidity(historyCache['4H']);
             const volProf = analyzeVolumeProfile(historyCache['4H']);
-            const sentiment = analyzeSentiment(historyCache['4H'], hasRealVolume(pair));
+            const sentiment = analyzeSentiment(historyCache['4H'], hasRealVolume(pair, volumeMetadata));
             const sentiment1h = historyCache['1H'] && historyCache['1H'].length >= 50
-                ? analyzeSentiment(historyCache['1H'], hasRealVolume(pair)) : { sentiment: 'N/A', score: 50, description: 'N/A' };
+                ? analyzeSentiment(historyCache['1H'], hasRealVolume(pair, volumeMetadata)) : { sentiment: 'N/A', score: 50, description: 'N/A' };
             enhancedAnalysis = {
                 phase, rsiDiv, macdDiv, liq, volProf, sentiment, sentiment1h,
                 phaseBlock: `Phase: ${phase.phase} (${phase.confidence.toFixed(0)}% conf) - ${phase.description}`,
@@ -10042,7 +10043,7 @@ async function runAutoScan() {
         // ============================================
         const sessionCheck = shouldTradeSession(new Date(scanAsOfMs));
         const phaseData = historyCache['1H'] && historyCache['1H'].length >= 30 ? historyCache['1H'] : (historyCache['4H'] || []);
-        const marketPhase = analyzeMarketPhase(phaseData, hasRealVolume(pair));
+        const marketPhase = analyzeMarketPhase(phaseData, hasRealVolume(pair, quoteSnapshot?.symbol_metadata || {}));
         const entryContext = buildPreSelectionEntryContext(sessionCheck, marketPhase);
         // eslint-disable-next-line no-console
         console.log('🎯 Entry filters:', entryContext.summary);
@@ -10141,7 +10142,7 @@ async function runAutoScan() {
         scanStage = 'AI market analyst';
         const analystStartedAt = scanClock();
         const analystEvidence = buildAiMarketEvidenceCatalog(liveMarketContext, historyCache);
-        const analystResult = await runAiMarketAnalyst(analystEvidence, liveMarketContext, buildCandleData(historyCache, 10));
+        const analystResult = await runAiMarketAnalyst(analystEvidence, liveMarketContext, buildCandleData(historyCache, 10, quoteSnapshot?.symbol_metadata || {}));
         const aiMerge = mergeVerifiedAiSetups(liveMarketContext, analystResult.verified_setups, analystEvidence);
         analystResult.diagnostics.deterministic_duplicates = aiMerge.duplicates;
         analystResult.diagnostics.setups_added_from_ai = aiMerge.added;
@@ -10218,7 +10219,7 @@ async function runAutoScan() {
 
         liveMarketContext.ai_analysis.final_selector_called = true;
         scanStage = 'prompt construction';
-        const candleData = buildCandleData(historyCache, 10);
+        const candleData = buildCandleData(historyCache, 10, quoteSnapshot?.symbol_metadata || {});
         const aiPrompt = buildAIPrompt(liveMarketContext, candleData);
         scanText.innerHTML = '🤖 AI analyzing live market context...';
         scanStage = 'DeepSeek request';
