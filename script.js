@@ -11155,6 +11155,11 @@ function simulatePendingLimitBacktest({ signals = [], candles = [], spread = 0, 
             trades.push({ status: 'REJECTED', reason: 'INVALID_SIGNAL_GEOMETRY', signal_id: signal.id || null });
             continue;
         }
+        const requestedFillFraction = Number(signal.fill_fraction ?? signal.fillFraction ?? 1);
+        if (!Number.isFinite(requestedFillFraction) || requestedFillFraction <= 0 || requestedFillFraction > 1) {
+            trades.push({ status: 'REJECTED', reason: 'INVALID_FILL_FRACTION', signal_id: signal.id || null });
+            continue;
+        }
         const buy = direction === 'BUY' || direction === 'LONG';
         if ((buy && !(stop < entry && target > entry)) || (!buy && !(stop > entry && target < entry))) {
             trades.push({ status: 'REJECTED', reason: 'INVALID_SIGNAL_GEOMETRY', signal_id: signal.id || null });
@@ -11169,7 +11174,7 @@ function simulatePendingLimitBacktest({ signals = [], candles = [], spread = 0, 
             if ((buy && low <= entry) || (!buy && high >= entry)) {
                 const adverse = Math.abs(Number(slippage) || 0) + Math.abs(Number(spread) || 0) / 2;
                 const fillPrice = buy ? entry + adverse : entry - adverse;
-                filled = { bar, fillPrice };
+            filled = { bar, fillPrice, fillFraction: requestedFillFraction };
                 break;
             }
         }
@@ -11193,12 +11198,12 @@ function simulatePendingLimitBacktest({ signals = [], candles = [], spread = 0, 
             if (outcome) { exitTime = bar.time; break; }
         }
         if (!outcome) {
-            trades.push({ status: 'OPEN', reason: 'NO_EXIT_IN_DATA', signal_id: signal.id || null, fill_price: filled.fillPrice, risk, reward });
+            trades.push({ status: 'OPEN', reason: 'NO_EXIT_IN_DATA', signal_id: signal.id || null, fill_fraction: filled.fillFraction, fill_price: filled.fillPrice, risk, reward });
             continue;
         }
-        const grossR = outcome === 'WIN' ? reward / risk : -1;
+        const grossR = (outcome === 'WIN' ? reward / risk : -1) * filled.fillFraction;
         const netR = grossR - (Number.isFinite(Number(feeR)) ? Number(feeR) : 0);
-        trades.push({ status: 'CLOSED', outcome, reason, signal_id: signal.id || null, fill_time: filled.bar.time, exit_time: exitTime, duration_ms: Math.max(0, exitTime - filled.bar.time), fill_price: filled.fillPrice, exit_price: exitPrice, risk, reward, rr: risk > 0 ? reward / risk : null, grossR, netR });
+        trades.push({ status: 'CLOSED', outcome, reason, signal_id: signal.id || null, fill_fraction: filled.fillFraction, fill_time: filled.bar.time, exit_time: exitTime, duration_ms: Math.max(0, exitTime - filled.bar.time), fill_price: filled.fillPrice, exit_price: exitPrice, risk, reward, rr: risk > 0 ? reward / risk : null, grossR, netR });
     }
     const closed = trades.filter(t => t.status === 'CLOSED');
     const wins = closed.filter(t => t.outcome === 'WIN');
@@ -11218,6 +11223,7 @@ function simulatePendingLimitBacktest({ signals = [], candles = [], spread = 0, 
     const durations = closed.map(t => Number(t.duration_ms)).filter(Number.isFinite);
     const rejectedCount = trades.filter(t => t.status === 'REJECTED').length;
     const expiredCount = trades.filter(t => t.status === 'EXPIRED').length;
+    const partialFillCount = trades.filter(t => Number.isFinite(Number(t.fill_fraction)) && Number(t.fill_fraction) < 1).length;
     return {
         trades,
         metrics: {
@@ -11234,6 +11240,8 @@ function simulatePendingLimitBacktest({ signals = [], candles = [], spread = 0, 
             average_time_in_trade_ms: durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : 0,
             cancel_rate: orderedSignals.length ? expiredCount / orderedSignals.length : 0,
             rejection_rate: orderedSignals.length ? rejectedCount / orderedSignals.length : 0,
+            partial_fills: partialFillCount,
+            partial_fill_rate: orderedSignals.length ? partialFillCount / orderedSignals.length : 0,
             win_rate: closed.length ? wins.length / closed.length : 0,
             net_R: equityR - (Number.isFinite(Number(initialR)) ? Number(initialR) : 0),
             profit_factor: grossLosses > 0 ? grossWins / grossLosses : (grossWins > 0 ? Infinity : 0),
