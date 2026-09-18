@@ -30,3 +30,9 @@ There is no backend service, database, broker adapter, server-side secret store,
 
 The browser implementation still needs a server-side data/AI proxy, encrypted secret storage, persistent database-backed audit records, authenticated user approvals, and a separately reviewed broker adapter before live execution could be considered. The current code intentionally does not submit broker orders.
 
+## Recent operational safeguards
+
+- Optional `1M` history is supported by the normalized timeframe registry but is excluded from the default scan to preserve the Twelve Data 55-credit budget.
+- Live quotes and candles require usable timestamps; stale, future-dated, undated, or expired cached price data is blocked.
+- Supplied symbol metadata and quote bid/ask conditions are preserved through the live context and public signal.
+- A known excessive spread rejects candidate construction before AI selection and is exposed as `RISK_BLOCKED`.
