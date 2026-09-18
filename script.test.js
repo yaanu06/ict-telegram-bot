@@ -4523,6 +4523,7 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         const badSide = ctx.validateLocalLimitOrderInput({ signalType: 'SHORT', currentPrice: 100, idealEntry: 99, stopLoss: 103, takeProfit1: 95 }, 'EUR/USD');
         expect(badSide.valid).toBe(false);
         expect(badSide.issues.join(' ')).toMatch(/above current price/);
+        expect(ctx.validateLocalLimitOrderInput({ signalType: 'SHORT', currentPrice: 100, idealEntry: 101, stopLoss: 103, takeProfit1: 95 }, 'EUR/USD', { minimum_rr: 3.1 }).valid).toBe(false);
     });
 
     it('requires explicit cancellation before replacing a pending paper order', () => {

@@ -10677,6 +10677,7 @@ async function runAutoScan() {
         
         analysis = {
             signalType: st,
+            symbol_metadata: liveMarketContext.symbol_metadata,
             idealEntry: aiResult.entry,
             currentPrice: price,
             stopLoss: aiResult.stop_loss,
@@ -12276,7 +12277,7 @@ function updateLimitUI() {
     const t = document.getElementById('limitOrderText');
     const c = document.getElementById('cancelLimitBtn');
     if(limitOrder) {
-        const prec = getPrec(limitOrder.pair || pair);
+        const prec = getMarketSettings(limitOrder.pair || pair, limitOrder.symbol_metadata || {}).prec;
         t.innerHTML = `⏳ ${limitOrder.pair||''} ${limitOrder.signalType} @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)} | ${limitOrder.confirmation||''} | ${(limitOrder.distancePct || 0).toFixed(2)}% away`;
         t.className = 'active';
         c.classList.remove('hidden');
@@ -12291,14 +12292,14 @@ function updateLimitUI() {
     }
 }
 
-function validateLocalLimitOrderInput(signal = {}, pairLocal = pair) {
+function validateLocalLimitOrderInput(signal = {}, pairLocal = pair, symbolMetadata = signal.symbol_metadata || {}) {
     const issues = [];
     const direction = signal.signalType === 'LONG' ? 'BUY' : signal.signalType === 'SHORT' ? 'SELL' : null;
     const current = Number(signal.currentPrice);
     const entry = Number(signal.idealEntry);
     const stop = Number(signal.stopLoss);
     const tp1 = Number(signal.takeProfit1);
-    const minimumRR = Number(getMarketSettings(pairLocal).targetRR) || 2.5;
+    const minimumRR = Number(getMarketSettings(pairLocal, symbolMetadata).targetRR) || 2.5;
     if (!direction) issues.push('direction is missing');
     if (![current, entry, stop, tp1].every(Number.isFinite)) issues.push('order geometry is not finite');
     if (direction === 'BUY' && !(stop < entry && entry < tp1)) issues.push('BUY geometry is invalid');
@@ -12352,7 +12353,7 @@ function startMonitor() {
         const orderPair = limitOrder.pair || pair;
         const p = await getPrice(orderPair);
         if(!p) return;
-        const settings = getMarketSettings(orderPair);
+        const settings = getMarketSettings(orderPair, limitOrder.symbol_metadata || {});
         if(orderPair === pair) {
             document.getElementById('currentPrice').innerHTML = `$${p.toFixed(settings.prec)}`;
         }
@@ -12425,7 +12426,7 @@ function handleLimit() {
         console.error('[ORDER] execution mode rejected', executionMode);
         return;
     }
-    const safety = validateLocalLimitOrderInput(analysis, pair);
+    const safety = validateLocalLimitOrderInput(analysis, pair, analysis.symbol_metadata || {});
     if (!safety.valid) {
         showNotif(`⛔ Order rejected: ${safety.issues.join('; ')}`, 'error');
         console.error('[ORDER] local safety validation rejected', safety);
@@ -12455,6 +12456,7 @@ function handleLimit() {
         distancePct: analysis.distancePct || 0,
         createdAt: new Date().toISOString(),
         source: 'Deterministic Candidate Engine + AI Selector',
+        symbol_metadata: analysis.symbol_metadata || getSymbolMetadata(pair),
         candidate_id: analysis.aiDecision?.selected_candidate_id || null,
         strategy_version: analysis.aiDecision?.strategy_version || STRATEGY_SPEC_VERSION,
         strategy: analysis.aiDecision?.strategy_label || analysis.patterns || null,
@@ -12575,7 +12577,7 @@ async function checkMissedFill() {
     try {
         const candles = await getHistory('5M', limitOrder.pair || pair);
         if(candles && orderCrossedInCandles(limitOrder, candles)) {
-            const prec = getPrec(limitOrder.pair || pair);
+            const prec = getMarketSettings(limitOrder.pair || pair, limitOrder.symbol_metadata || {}).prec;
             showNotif(`ℹ️ ${limitOrder.pair || ''} ${limitOrder.signalType} level $${limitOrder.idealEntry.toFixed(prec)} traded while you were away - order still active, review manually`, 'info');
         }
     } catch(e) {
