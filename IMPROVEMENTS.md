@@ -44,6 +44,10 @@
 - Pending paper orders now have deterministic touch, expiry, invalidation, and fill evaluation.
 - Order lifecycle events are retained in a bounded local audit queue, including user cancellation and the original candidate ID.
 
+### 1i. **Persisted Order Validation**
+- Reloaded local orders are validated for paper-only mode, finite geometry, direction, ordering, and creation time before monitoring.
+- Direct calls to the order handler now respect the final scan execution permission even if the UI button state is bypassed.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

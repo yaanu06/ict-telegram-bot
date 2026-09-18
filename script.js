@@ -10440,6 +10440,7 @@ async function runAutoScan() {
             takeProfit3: aiResult.take_profit_3,
             confidence: aiResult.confidence,
             riskPercent: tradeable ? 0.5 : 0,
+            execution_allowed: tradeable && finalConsistency.valid,
             entryReady: selectedEntryContext.allOk && effectiveDecision === 'enter_now',
             executionDecision: finalConsistency.valid ? effectiveDecision : 'skip',
             invalidationPrice: aiResult.stop_loss * (aiResult.direction === 'BUY' ? 0.995 : 1.005),
@@ -11691,11 +11692,31 @@ function handleJournalClick(ev) {
 // LIMIT ORDER FUNCTIONS
 // ============================================
 
+function validatePersistedPaperOrder(order = {}) {
+    const issues = [];
+    if (!['LONG', 'SHORT'].includes(order.signalType)) issues.push('signalType must be LONG or SHORT');
+    if (String(order.execution_mode || 'PAPER').toUpperCase() !== 'PAPER') issues.push('execution mode is not PAPER');
+    if (!Number.isFinite(Number(order.id))) issues.push('order id is invalid');
+    if (!Number.isFinite(Number(order.idealEntry)) || !Number.isFinite(Number(order.stopLoss)) || !Number.isFinite(Number(order.takeProfit1))) issues.push('order geometry is incomplete');
+    if (order.signalType === 'LONG' && !(Number(order.stopLoss) < Number(order.idealEntry) && Number(order.idealEntry) < Number(order.takeProfit1))) issues.push('LONG geometry is invalid');
+    if (order.signalType === 'SHORT' && !(Number(order.stopLoss) > Number(order.idealEntry) && Number(order.idealEntry) > Number(order.takeProfit1))) issues.push('SHORT geometry is invalid');
+    if (!Number.isFinite(normalizeTimestampUTC(order.createdAt))) issues.push('createdAt is invalid');
+    return { valid: issues.length === 0, issues };
+}
+
 function loadLimitOrder() {
     const s = localStorage.getItem('limitOrder');
     if(s) {
         try {
-            limitOrder = JSON.parse(s);
+            const parsed = JSON.parse(s);
+            const validation = validatePersistedPaperOrder(parsed);
+            if (!validation.valid) {
+                console.warn('[ORDER] discarded invalid persisted paper order', validation.issues);
+                localStorage.removeItem('limitOrder');
+                limitOrder = null;
+                return;
+            }
+            limitOrder = parsed;
             updateLimitUI();
             startMonitor();
             checkMissedFill();
@@ -11867,6 +11888,11 @@ function handleLimit() {
     }
     if(limitOrder) {
         cancelLimit();
+        return;
+    }
+    if (analysis.execution_allowed === false) {
+        showNotif('⛔ Order rejected: final execution permission is disabled', 'error');
+        console.error('[ORDER] execution permission rejected');
         return;
     }
     const executionMode = validateExecutionMode(analysis.execution_mode || 'PAPER');

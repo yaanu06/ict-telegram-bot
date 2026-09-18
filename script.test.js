@@ -4558,6 +4558,15 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(stored).not.toMatch(/api|token|authorization|secret/i);
     });
 
+    it('rejects malformed or non-paper persisted orders before monitoring', () => {
+        const ctx = getContext();
+        const valid = { id: 1, execution_mode: 'PAPER', signalType: 'LONG', idealEntry: 100, stopLoss: 95, takeProfit1: 110, createdAt: '2026-09-18T10:00:00Z' };
+        expect(ctx.validatePersistedPaperOrder(valid).valid).toBe(true);
+        expect(ctx.validatePersistedPaperOrder({ ...valid, execution_mode: 'LIVE' }).issues).toContain('execution mode is not PAPER');
+        expect(ctx.validatePersistedPaperOrder({ ...valid, stopLoss: 105 }).valid).toBe(false);
+        expect(ctx.validatePersistedPaperOrder({ ...valid, createdAt: 'bad' }).valid).toBe(false);
+    });
+
     it('rejects duplicate timestamps and explicitly open candles in required histories', () => {
         const ctx = getContext();
         const baseStart = Date.parse('2026-09-01T00:00:00Z');
