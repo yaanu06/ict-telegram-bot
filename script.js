@@ -1794,7 +1794,7 @@ function zoneWasTouchedAfter(data, low, high, createdIndex, timeframe = null) {
     };
 }
 
-function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, existingZones = [], pairLocal = pair, currentPrice = null) {
+function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, existingZones = [], pairLocal = pair, currentPrice = null, symbolMetadata = {}) {
     if (!narrative?.direction) return [];
     const executionTf = narrative.execution_timeframe || narrative.timeframe || '1H';
     const data = getClosedHistory(historyCache, executionTf);
@@ -1806,7 +1806,7 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
     const signalIndex = narrativeEventIndex(narrative, data);
     if (signalIndex < 0 || signalIndex >= data.length - 2) return [];
     const signalTime = getStrategyEventTime(narrative) || candleTimestamp(data[signalIndex], signalIndex, executionTf);
-    const settings = getMarketSettings(pairLocal);
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
     const prec = settings.prec;
     const atrValue = data.length >= 15 ? atr(data, 14) : 0;
     const minGap = Math.max(settings.pipSize * 2, (atrValue || 0) * 0.04);
@@ -1925,8 +1925,8 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
     return result;
 }
 
-function buildFreshExecutionZones(narrative, historyCache = {}, existingZones = [], pairLocal = pair, currentPrice = null) {
-    return buildFreshExecutionZonesForNarrative(narrative, historyCache, existingZones, pairLocal, currentPrice);
+function buildFreshExecutionZones(narrative, historyCache = {}, existingZones = [], pairLocal = pair, currentPrice = null, symbolMetadata = {}) {
+    return buildFreshExecutionZonesForNarrative(narrative, historyCache, existingZones, pairLocal, currentPrice, symbolMetadata);
 }
 
 function evaluateStrategyNarrative(narrative, historyCache = {}, price) {
@@ -2402,10 +2402,10 @@ function calculateMSNR(data, currentPrice, timeframe = null, pairLocal = pair, s
     };
 }
 
-function detectTurtleSoupEvents(data, timeframe = null, pairLocal = pair) {
+function detectTurtleSoupEvents(data, timeframe = null, pairLocal = pair, symbolMetadata = {}) {
     data = closedStructureCandles(data);
     if (!isValidCandleArray(data, 20)) return [];
-    const settings = getMarketSettings(pairLocal);
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
     const atrVal = data.length >= 15 ? atr(data, 14) : 0;
     const minSweep = Math.max(settings.pipSize * STRATEGY_SPEC.TBS.minSweepPips, (atrVal || 0) * STRATEGY_SPEC.TBS.minSweepAtr);
     const start = Math.max(0, data.length - STRATEGY_SPEC.TBS.lookback);
@@ -2484,16 +2484,16 @@ function detectTurtleSoupEvents(data, timeframe = null, pairLocal = pair) {
     return bounded;
 }
 
-function detectTurtleSoup(data) {
-    const events = detectTurtleSoupEvents(data);
+function detectTurtleSoup(data, pairLocal = pair, symbolMetadata = {}) {
+    const events = detectTurtleSoupEvents(data, null, pairLocal, symbolMetadata);
     const best = events.find(e => e.detected) || null;
     return best ? { ...best, events } : { detected: false, type: null, events };
 }
 
-function detectCRTEvents(data, timeframe = null, pairLocal = pair) {
+function detectCRTEvents(data, timeframe = null, pairLocal = pair, symbolMetadata = {}) {
     data = closedStructureCandles(data);
     if (!isValidCandleArray(data, 20)) return [];
-    const settings = getMarketSettings(pairLocal);
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
     const atrVal = data.length >= 15 ? atr(data, 14) : 0;
     const minSweep = Math.max(settings.pipSize * 2, (atrVal || 0) * STRATEGY_SPEC.CRT.minSweepAtr);
     const start = Math.max(0, data.length - STRATEGY_SPEC.CRT.referenceLookback - STRATEGY_SPEC.CRT.eventLookahead - 4);
@@ -2572,8 +2572,8 @@ function detectCRTEvents(data, timeframe = null, pairLocal = pair) {
     return bounded;
 }
 
-function detectCRT(data) {
-    const events = detectCRTEvents(data);
+function detectCRT(data, pairLocal = pair, symbolMetadata = {}) {
+    const events = detectCRTEvents(data, null, pairLocal, symbolMetadata);
     const best = events.find(e => e.detected) || null;
     return best ? { ...best, events } : { state: 'NEUTRAL', detected: false, direction: null, events };
 }
@@ -4815,7 +4815,7 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
                         target_intent: targetPool[0]?.source || null, invalidation_intent: anchor, execution_requirement: 'FRESH_EXECUTION_ZONE' } };
                 const life = evaluateStrategyNarrative(narrative, historyCache, price);
                 if (life.state !== 'ACTIVE') { discoveryEvent.failure_reason = life.rejection_code || life.state || 'NARRATIVE_NOT_ACTIVE'; continue; }
-                const freshZones = buildFreshExecutionZonesForNarrative(narrative, historyCache, zones, pairLocal, price);
+                const freshZones = buildFreshExecutionZonesForNarrative(narrative, historyCache, zones, pairLocal, price, symbolMetadata);
                 if (freshZones.length === 0) {
                     setups.push({ ...narrative, narrative_state: 'ACTIVE', execution_zone: null, execution_model: classification.classification === 'HTF_VERIFIED_REVERSAL' ? 'CONFIRMATION_ENTRY' : 'PENDING_LIMIT',
                         entry_model: classification.classification === 'HTF_VERIFIED_REVERSAL' ? 'CONFIRMATION_ENTRY' : 'PENDING_LIMIT',
@@ -5133,7 +5133,7 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
         }
 
         const tbsStartedAt = scanClock();
-        const tbsEvents = detectTurtleSoupEvents(data, tf, pair);
+        const tbsEvents = detectTurtleSoupEvents(data, tf, pair, symbolMetadata || {});
         console.log('[PERF] TBS detection', { timeframe: tf, elapsed_ms: Math.round((scanClock() - tbsStartedAt) * 100) / 100, raw_events: tbsEvents.raw_detection_count || 0, deduped_events: tbsEvents.deduped_detection_count || tbsEvents.length });
         detectionStats.TBS.raw_count += tbsEvents.raw_detection_count ?? tbsEvents.length;
         detectionStats.TBS.deduped_count += tbsEvents.deduped_detection_count ?? tbsEvents.length;
@@ -5176,7 +5176,7 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
         }
 
         const crtStartedAt = scanClock();
-        const crtEvents = detectCRTEvents(data, tf, pair);
+        const crtEvents = detectCRTEvents(data, tf, pair, symbolMetadata || {});
         console.log('[PERF] CRT detection', { timeframe: tf, elapsed_ms: Math.round((scanClock() - crtStartedAt) * 100) / 100, raw_events: crtEvents.raw_detection_count || 0, deduped_events: crtEvents.deduped_detection_count || crtEvents.length });
         detectionStats.CRT.raw_count += crtEvents.raw_detection_count ?? crtEvents.length;
         detectionStats.CRT.deduped_count += crtEvents.deduped_detection_count ?? crtEvents.length;
@@ -5252,7 +5252,7 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
         if (narrativeState.state === 'STALE_NARRATIVE') staleNarratives++;
         if (narrativeState.state !== 'ACTIVE') continue;
         activeNarratives++;
-        const freshZones = buildFreshExecutionZonesForNarrative(narrative, historyCache, zoneList, pair, price);
+        const freshZones = buildFreshExecutionZonesForNarrative(narrative, historyCache, zoneList, pair, price, symbolMetadata || {});
         for (const key of Object.keys(freshZoneStats)) freshZoneStats[key] += freshZones.execution_zone_stats?.[key] || 0;
         for (const zone of freshZones) {
             const freshSetup = {
@@ -8173,10 +8173,10 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
     return replay;
 }
 
-function buildReplayPatterns(history, price) {
+function buildReplayPatterns(history, price, pairLocal = pair, symbolMetadata = {}) {
     return Object.fromEntries(['4H', '1H', '15M', '5M'].map(tf => [tf, {
-        fvg: detectFVG(history[tf] || []), swings: findSwings(history[tf] || [], 3), turtleSoup: detectTurtleSoup(history[tf] || []),
-        crt: detectCRT(history[tf] || []), orderBlocks: detectOrderBlocks(history[tf] || [], 'BUY'), msnr: calculateMSNR(history[tf] || [], price, tf),
+        fvg: detectFVG(history[tf] || []), swings: findSwings(history[tf] || [], 3), turtleSoup: detectTurtleSoup(history[tf] || [], pairLocal, symbolMetadata),
+        crt: detectCRT(history[tf] || [], pairLocal, symbolMetadata), orderBlocks: detectOrderBlocks(history[tf] || [], 'BUY'), msnr: calculateMSNR(history[tf] || [], price, tf, pairLocal, symbolMetadata),
         trend: getCanonicalTimeframeTrend(history[tf] || [], tf), adx: calculateADX(history[tf] || [], 14, tf)
     }]));
 }
@@ -8201,7 +8201,8 @@ function replayCapturedScan(replay) {
     const asOfMs = normalizeTimestampUTC(replay.scan_as_of);
     if (!replay.pair || !Number.isFinite(price) || !Number.isFinite(asOfMs)) throw new Error('Replay pair, price, and scan_as_of are required');
     const historyCache = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, (replay.history?.[tf] || []).filter(c => c && c.is_closed !== false).map(c => ({ ...c }))]));
-    const patterns = buildReplayPatterns(historyCache, price);
+    const symbolMetadata = replay.quote?.symbol_metadata || replay.runtime_state?.quote_snapshot?.symbol_metadata || {};
+    const patterns = buildReplayPatterns(historyCache, price, replay.pair, symbolMetadata);
     const live = buildLiveMarketContext({ pair: replay.pair, price, historyCache, indicators: replay.indicators || {}, patterns,
         enhancedAnalysis: { phase: { phase: replay.market_regime?.phase || 'UNKNOWN' } }, holistic: replay.holistic || {}, entryContext: null,
         as_of_ms: asOfMs, quote_snapshot: replay.runtime_state?.quote_snapshot || null });
@@ -8419,12 +8420,12 @@ function buildAiMarketEvidenceCatalog(liveMarketContext = {}, historyCache = {})
     }
     for (const timeframe of ['4H', '1H', '15M']) {
         const data = getClosedHistory(historyCache, timeframe);
-        for (const event of detectCRTEvents(data, timeframe, liveMarketContext.pair || pair).slice(0, STRATEGY_SPEC.CRT.maxEventsPerTimeframe)) {
+        for (const event of detectCRTEvents(data, timeframe, liveMarketContext.pair || pair, liveMarketContext.symbol_metadata || {}).slice(0, STRATEGY_SPEC.CRT.maxEventsPerTimeframe)) {
             const record = { ...event, id: event.id || idFor('CRT', event, strategyEvents.length), strategy: 'CRT', setup_id: null };
             Object.defineProperty(record, 'source', { value: event, enumerable: false });
             strategyEvents.push(record);
         }
-        for (const event of detectTurtleSoupEvents(data, timeframe, liveMarketContext.pair || pair).slice(0, STRATEGY_SPEC.TBS.maxEventsPerTimeframe)) {
+        for (const event of detectTurtleSoupEvents(data, timeframe, liveMarketContext.pair || pair, liveMarketContext.symbol_metadata || {}).slice(0, STRATEGY_SPEC.TBS.maxEventsPerTimeframe)) {
             const record = { ...event, id: event.id || idFor('TBS', event, strategyEvents.length), strategy: 'TBS', setup_id: null };
             Object.defineProperty(record, 'source', { value: event, enumerable: false });
             strategyEvents.push(record);
