@@ -8155,6 +8155,7 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         liquidity: liveMarketContext.liquidity || {},
         poi_zones: liveMarketContext.poi_zones || [],
         target_candidates: liveMarketContext.target_candidates || {},
+        provider_metadata: liveMarketContext.provider_metadata || null,
         daily_bias: liveMarketContext.daily_bias || null,
         market_regime: liveMarketContext.market_regime || null,
         strategy_setups: liveMarketContext.strategy_setups || [],
@@ -8164,9 +8165,13 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         valid_candidates: liveMarketContext.adaptive_setup_candidates || [],
         production_trace: liveMarketContext.production_trace || null,
         runtime_state: { market_open: liveMarketContext.market_open, market_open_source: liveMarketContext.market_open_source, quote_snapshot: liveMarketContext.quote_snapshot ? {
-            timestamp: liveMarketContext.quote_snapshot.timestamp, price: liveMarketContext.quote_snapshot.price,
+            provider_timestamp: liveMarketContext.quote_snapshot.provider_timestamp ?? null,
+            provider_timestamp_utc: liveMarketContext.quote_snapshot.provider_timestamp_utc || null,
+            timestamp: liveMarketContext.quote_snapshot.timestamp || liveMarketContext.quote_snapshot.provider_timestamp_utc || null,
+            price: liveMarketContext.quote_snapshot.price,
             bid: liveMarketContext.quote_snapshot.bid ?? null, ask: liveMarketContext.quote_snapshot.ask ?? null,
-            spread: liveMarketContext.quote_snapshot.spread ?? null, symbol_metadata: liveMarketContext.symbol_metadata || liveMarketContext.quote_snapshot.symbol_metadata || null
+            spread: liveMarketContext.quote_snapshot.spread ?? null, is_market_open: liveMarketContext.quote_snapshot.is_market_open ?? null,
+            symbol_metadata: liveMarketContext.symbol_metadata || liveMarketContext.quote_snapshot.symbol_metadata || null
         } : null },
         final_output: finalOutput
     });
@@ -8206,7 +8211,11 @@ function replayCapturedScan(replay) {
     const patterns = buildReplayPatterns(historyCache, price, replay.pair, symbolMetadata);
     const live = buildLiveMarketContext({ pair: replay.pair, price, historyCache, indicators: replay.indicators || {}, patterns,
         enhancedAnalysis: { phase: { phase: replay.market_regime?.phase || 'UNKNOWN' } }, holistic: replay.holistic || {}, entryContext: null,
-        as_of_ms: asOfMs, quote_snapshot: replay.runtime_state?.quote_snapshot || null });
+        as_of_ms: asOfMs, quote_snapshot: replay.runtime_state?.quote_snapshot ? {
+            ...replay.runtime_state.quote_snapshot,
+            provider_timestamp: replay.runtime_state.quote_snapshot.provider_timestamp ?? normalizeTimestampUTC(replay.runtime_state.quote_snapshot.provider_timestamp_utc),
+            provider_timestamp_utc: replay.runtime_state.quote_snapshot.provider_timestamp_utc || replay.runtime_state.quote_snapshot.timestamp || null
+        } : null });
     const today = buildTodayOpportunity({ pair: replay.pair, currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
         marketContext: live.market_context, strategySetups: live.strategy_setups, executionZones: live.strategy_execution_zones,
         candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, targetCandidates: live.target_candidates,
