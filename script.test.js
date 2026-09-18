@@ -1902,6 +1902,20 @@ describe('getQuoteDirection', () => {
             : snapshot.effective_trend === 'BEARISH_TRANSITION' ? 'BEARISH' : snapshot.effective_trend;
         expect(await ctx.getQuoteDirection('1H', data)).toBe(expected);
     });
+
+    it('uses the canonical effective direction when raw structure is mixed', () => {
+        const ctx = getContext();
+        const input = {
+            '1D': { effective_trend: 'BEARISH', structural_trend: 'BEARISH', momentum_trend: 'BEARISH' },
+            '4H': { effective_trend: 'BULLISH', structural_trend: 'MIXED', momentum_trend: 'BULLISH' },
+            '1H': { effective_trend: 'BULLISH_TRANSITION', structural_trend: 'MIXED', momentum_trend: 'BULLISH' },
+            '15M': { effective_trend: 'NEUTRAL', structural_trend: 'MIXED', momentum_trend: 'NEUTRAL' }
+        };
+        const result = ctx.buildTimeframeContext({ structure: input, historyCache: {}, price: 100 });
+        expect(result['4H']).toMatchObject({ displayed_trend: 'BULLISH', bias: 'BULLISH' });
+        expect(result['1H']).toMatchObject({ displayed_trend: 'BULLISH_TRANSITION', bias: 'BULLISH' });
+        expect(result['15M'].displayed_trend).toBe('MIXED');
+    });
 });
 
 describe('analyzeMarketPhase (AMD)', () => {

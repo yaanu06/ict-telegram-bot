@@ -4262,7 +4262,17 @@ function buildTimeframeContext({ historyCache = {}, structure = {}, price, strat
         };
         const structuralTrend = snapshot.structural_trend || snapshot.trend;
         const effectiveTrend = snapshot.effective_trend || structuralTrend;
-        const bias = ['BULLISH', 'BEARISH', 'MIXED'].includes(structuralTrend) ? structuralTrend : 'NEUTRAL';
+        // Keep the UI, bias evidence, and setup classifier on one canonical
+        // directional read. Raw structural_trend remains available for
+        // diagnostics, but MIXED must not hide a confirmed effective trend.
+        const displayedTrend = getCanonicalDisplayedTrend({
+            ...snapshot,
+            structural_trend: structuralTrend,
+            effective_trend: effectiveTrend
+        });
+        const bias = ['BULLISH', 'BEARISH'].includes(displayedTrend) ? displayedTrend :
+            displayedTrend === 'BULLISH_TRANSITION' ? 'BULLISH' :
+            displayedTrend === 'BEARISH_TRANSITION' ? 'BEARISH' : 'NEUTRAL';
         if (['BULLISH', 'BEARISH'].includes(bias)) add('TREND', bias === 'BULLISH' ? 'BUY' : 'SELL', bias);
         for (const direction of ['BUY', 'SELL']) {
             const side = direction.toLowerCase();
@@ -4283,7 +4293,7 @@ function buildTimeframeContext({ historyCache = {}, structure = {}, price, strat
         const majorLiquidity = liquidity[tf] || mapLiquidity(data);
         return [tf, {
             role: { '1D': 'MACRO_CONTEXT', '4H': 'PRIMARY_NARRATIVE', '1H': 'INTRADAY_STRUCTURE', '15M': 'EXECUTION_SETUP' }[tf],
-            bias, structural_trend: structuralTrend, momentum_trend: snapshot.momentum_trend || 'NEUTRAL', effective_trend: effectiveTrend, structure: snapshot, mss: snapshot.mss || null,
+            bias, structural_trend: structuralTrend, momentum_trend: snapshot.momentum_trend || 'NEUTRAL', effective_trend: effectiveTrend, displayed_trend: displayedTrend, structure: snapshot, mss: snapshot.mss || null,
             bos: { buy: !!snapshot.bos_buy, sell: !!snapshot.bos_sell },
             choch: { buy: !!snapshot.choch_buy, sell: !!snapshot.choch_sell },
             liquidity_draw: bias === 'BULLISH' ? 'BUY_SIDE_LIQUIDITY' : bias === 'BEARISH' ? 'SELL_SIDE_LIQUIDITY' : 'UNRESOLVED',
@@ -7674,7 +7684,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         utc_time: now.toISOString(),
         session: sessionFacts,
         daily_bias: marketContext.daily_bias,
-        structural_context: Object.fromEntries(['1D', '4H', '1H'].map(tf => [tf, marketContext.timeframe_context?.[tf]?.structural_trend || marketContext.timeframe_context?.[tf]?.bias || 'NEUTRAL'])),
+        structural_context: Object.fromEntries(['1D', '4H', '1H'].map(tf => [tf, marketContext.timeframe_context?.[tf]?.displayed_trend || getCanonicalDisplayedTrend(marketContext.timeframe_context?.[tf] || {})])),
         volatility: volatilityFacts,
         multi_timeframe_direction: {
             trend: {
