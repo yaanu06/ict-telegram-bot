@@ -58,6 +58,23 @@ describe('market and AI proxy boundary', () => {
         }
     });
 
+    test('bounds a hung upstream request with the configured timeout', async () => {
+        const server = createProxyServer({
+            env: { TWELVE_DATA_API_KEY: 'provider-secret', PROXY_MAX_REQUESTS: '20', PROXY_UPSTREAM_TIMEOUT_MS: '10' },
+            fetchImpl: jest.fn((url, options = {}) => new Promise((resolve, reject) => {
+                options.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+            }))
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const response = await request(server, 'GET', '/api/twelve/quote?symbol=EUR%2FUSD');
+            expect(response.status).toBe(502);
+            expect(response.body.error).toBe('upstream request failed');
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
     test('does not expose unconfigured providers or unauthenticated audit reads', async () => {
         const server = createProxyServer({ env: { PROXY_MAX_REQUESTS: '20' }, fetchImpl: jest.fn() });
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

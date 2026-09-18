@@ -80,12 +80,18 @@ function upstreamHeaders(apiKey) {
     return { 'Accept': 'application/json', 'User-Agent': 'ict-telegram-bot-proxy/1.0', 'X-Proxy-Request': 'server' };
 }
 
-async function proxyJson(fetchImpl, url, options = {}) {
-    const response = await fetchImpl(url, options);
-    const text = await response.text();
-    let payload;
-    try { payload = text ? JSON.parse(text) : {}; } catch { payload = { error: 'upstream returned invalid JSON' }; }
-    return { status: response.status, payload };
+async function proxyJson(fetchImpl, url, options = {}, timeoutMs = 10_000) {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = setTimeout(() => controller?.abort(), Math.max(1, Number(timeoutMs) || 10_000));
+    try {
+        const response = await fetchImpl(url, controller ? { ...options, signal: options.signal || controller.signal } : options);
+        const text = await response.text();
+        let payload;
+        try { payload = text ? JSON.parse(text) : {}; } catch { payload = { error: 'upstream returned invalid JSON' }; }
+        return { status: response.status, payload };
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, now = () => Date.now(), auditStore = null } = {}) {
@@ -96,6 +102,7 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
     const deepSeekKey = String(env.DEEPSEEK_API_KEY || '').trim();
     const twelveBase = String(env.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com').replace(/\/$/, '');
     const deepSeekUrl = String(env.DEEPSEEK_API_URL || 'https://api.deepseek.com/chat/completions');
+    const upstreamTimeoutMs = Math.max(1, Number(env.PROXY_UPSTREAM_TIMEOUT_MS) || 10_000);
     const origin = configuredOrigin(env);
     const configuredAuditToken = String(env.AUDIT_WRITE_TOKEN || '').trim();
     const configuredAuditReadToken = String(env.AUDIT_READ_TOKEN || '').trim();
@@ -128,7 +135,7 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                 if (validation.outputsize) upstream.searchParams.set('outputsize', String(validation.outputsize));
                 upstream.searchParams.set('timezone', 'UTC');
                 upstream.searchParams.set('apikey', twelveKey);
-                const result = await proxyJson(fetchImpl, upstream, { headers: upstreamHeaders(twelveKey) });
+                const result = await proxyJson(fetchImpl, upstream, { headers: upstreamHeaders(twelveKey) }, upstreamTimeoutMs);
                 return jsonResponse(res, result.status, result.payload, origin);
             }
             if (req.method === 'POST' && requestUrl.pathname === '/api/deepseek/chat') {
@@ -141,7 +148,7 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepSeekKey}`, 'User-Agent': 'ict-telegram-bot-proxy/1.0' },
                     body: JSON.stringify({ ...body, stream: false })
-                });
+                }, upstreamTimeoutMs);
                 return jsonResponse(res, result.status, result.payload, origin);
             }
             if ((req.method === 'POST' || req.method === 'GET') && requestUrl.pathname === '/api/audit') {
