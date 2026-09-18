@@ -717,8 +717,11 @@ async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
         bid: null,
         ask: null,
         spread: null,
-        provider_timestamp: Number.isFinite(Number(fallbackPrice)) && cachedPricePair === p && Number.isFinite(priceCacheTime) ? priceCacheTime : null,
-        provider_timestamp_utc: Number.isFinite(Number(fallbackPrice)) && cachedPricePair === p && Number.isFinite(priceCacheTime) ? new Date(priceCacheTime).toISOString() : null,
+        // The price endpoint does not provide a provider timestamp. The
+        // local receipt time is not market-data time and must never be used
+        // to make an unknown quote appear fresh.
+        provider_timestamp: null,
+        provider_timestamp_utc: null,
         is_market_open: null,
         asset_class: assetClass,
         symbol_metadata: symbolMetadata,

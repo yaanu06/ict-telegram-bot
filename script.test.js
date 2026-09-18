@@ -5469,7 +5469,7 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', reason: { code: 'SPREAD_TOO_WIDE', message: 'spread too wide' } }).status_code).toBe('RISK_BLOCKED');
     });
 
-    it('timestamps a live price fallback and never reuses an expired cached price after a provider error', async () => {
+    it('keeps a price fallback timestamp unknown and never reuses an expired cached price after a provider error', async () => {
         const ctx = getContext();
         await ctx.saveKeys('tw', '', '', '', '');
         ctx.fetch = jest.fn(async url => String(url).includes('/quote?')
@@ -5478,8 +5478,8 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         const quote = await ctx.getMarketQuoteSnapshot('EUR/USD');
         expect(quote.price).toBe(1.26);
         expect(quote.quote_source).toBe('PRICE_FALLBACK');
-        expect(quote.provider_timestamp).toEqual(expect.any(Number));
-        expect(quote.provider_timestamp_utc).toEqual(expect.any(String));
+        expect(quote.provider_timestamp).toBeNull();
+        expect(quote.provider_timestamp_utc).toBeNull();
     });
 });
 
