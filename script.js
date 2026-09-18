@@ -10870,6 +10870,116 @@ function buildAccountRiskGate({ mode = 'PAPER', account = null, risk_percent = n
     return { mode: normalizedMode, status: 'RISK_READY', execution_allowed: true, position_size: positionSize, risk_amount: riskAmount, issues: [], reason: 'Account and symbol risk constraints passed.' };
 }
 
+/**
+ * Deterministic pending-limit backtest. It consumes already-derived signals
+ * and closed candles; it never derives future structure or uses candles before
+ * a signal's creation time. Results are expressed in R so the simulator is
+ * independent of asset class, contract size, and account currency.
+ */
+function simulatePendingLimitBacktest({ signals = [], candles = [], spread = 0, slippage = 0, feeR = 0, initialR = 0 } = {}) {
+    const orderedSignals = (Array.isArray(signals) ? signals : []).map((signal, index) => ({ signal, index,
+        created: normalizeTimestampUTC(signal?.created_at ?? signal?.created_time ?? signal?.time),
+        expires: normalizeTimestampUTC(signal?.expires_at ?? signal?.expiration_time ?? signal?.expiry)
+    })).filter(item => item.signal && Number.isFinite(item.created))
+        .sort((a, b) => a.created - b.created || a.index - b.index);
+    const orderedCandles = (Array.isArray(candles) ? candles : []).map((c, index) => ({ candle: c, index,
+        time: normalizeTimestampUTC(c?.t ?? c?.timestamp ?? c?.time)
+    })).filter(item => Number.isFinite(item.time) && cIsClosed(item.candle))
+        .sort((a, b) => a.time - b.time || a.index - b.index);
+    const trades = [];
+    for (const item of orderedSignals) {
+        const signal = item.signal;
+        const direction = String(signal.direction || signal.signalType || '').toUpperCase();
+        const entry = Number(signal.entry ?? signal.entry_price);
+        const stop = Number(signal.stop_loss ?? signal.stopLoss);
+        const target = Number(signal.tp1 ?? signal.take_profit_1 ?? signal.takeProfit1);
+        if (!['BUY', 'SELL', 'LONG', 'SHORT'].includes(direction) || ![entry, stop, target].every(Number.isFinite)) {
+            trades.push({ status: 'REJECTED', reason: 'INVALID_SIGNAL_GEOMETRY', signal_id: signal.id || null });
+            continue;
+        }
+        const buy = direction === 'BUY' || direction === 'LONG';
+        if ((buy && !(stop < entry && target > entry)) || (!buy && !(stop > entry && target < entry))) {
+            trades.push({ status: 'REJECTED', reason: 'INVALID_SIGNAL_GEOMETRY', signal_id: signal.id || null });
+            continue;
+        }
+        let filled = null;
+        for (const bar of orderedCandles) {
+            if (bar.time <= item.created) continue;
+            if (Number.isFinite(item.expires) && bar.time > item.expires) break;
+            const high = Number(bar.candle.h), low = Number(bar.candle.l);
+            if (!Number.isFinite(high) || !Number.isFinite(low)) continue;
+            if ((buy && low <= entry) || (!buy && high >= entry)) {
+                const adverse = Math.abs(Number(slippage) || 0) + Math.abs(Number(spread) || 0) / 2;
+                const fillPrice = buy ? entry + adverse : entry - adverse;
+                filled = { bar, fillPrice };
+                break;
+            }
+        }
+        if (!filled) {
+            trades.push({ status: 'EXPIRED', reason: 'LIMIT_NOT_FILLED', signal_id: signal.id || null });
+            continue;
+        }
+        const risk = Math.abs(filled.fillPrice - stop);
+        const reward = Math.abs(target - filled.fillPrice);
+        let outcome = null, exitPrice = null, exitTime = null, reason = null;
+        for (const bar of orderedCandles) {
+            if (bar.time < filled.bar.time) continue;
+            const high = Number(bar.candle.h), low = Number(bar.candle.l);
+            if (!Number.isFinite(high) || !Number.isFinite(low)) continue;
+            const stopHit = buy ? low <= stop : high >= stop;
+            const targetHit = buy ? high >= target : low <= target;
+            // Same-candle ordering is unknowable from OHLC; use the
+            // conservative stop-first assumption.
+            if (stopHit) { outcome = 'LOSS'; exitPrice = stop; reason = targetHit ? 'STOP_AND_TARGET_SAME_CANDLE' : 'STOP_LOSS'; }
+            else if (targetHit) { outcome = 'WIN'; exitPrice = target; reason = 'TAKE_PROFIT_1'; }
+            if (outcome) { exitTime = bar.time; break; }
+        }
+        if (!outcome) {
+            trades.push({ status: 'OPEN', reason: 'NO_EXIT_IN_DATA', signal_id: signal.id || null, fill_price: filled.fillPrice, risk, reward });
+            continue;
+        }
+        const grossR = outcome === 'WIN' ? reward / risk : -1;
+        const netR = grossR - (Number.isFinite(Number(feeR)) ? Number(feeR) : 0);
+        trades.push({ status: 'CLOSED', outcome, reason, signal_id: signal.id || null, fill_time: filled.bar.time, exit_time: exitTime, fill_price: filled.fillPrice, exit_price: exitPrice, risk, reward, grossR, netR });
+    }
+    const closed = trades.filter(t => t.status === 'CLOSED');
+    const wins = closed.filter(t => t.outcome === 'WIN');
+    const losses = closed.filter(t => t.outcome === 'LOSS');
+    let equityR = Number.isFinite(Number(initialR)) ? Number(initialR) : 0;
+    let peakR = equityR, maxDrawdownR = 0, consecutiveLosses = 0, maxConsecutiveLosses = 0;
+    for (const trade of closed) {
+        equityR += trade.netR;
+        peakR = Math.max(peakR, equityR);
+        maxDrawdownR = Math.max(maxDrawdownR, peakR - equityR);
+        consecutiveLosses = trade.outcome === 'LOSS' ? consecutiveLosses + 1 : 0;
+        maxConsecutiveLosses = Math.max(maxConsecutiveLosses, consecutiveLosses);
+    }
+    const grossWins = wins.reduce((sum, t) => sum + t.netR, 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + t.netR, 0));
+    return {
+        trades,
+        metrics: {
+            total_signals: orderedSignals.length,
+            closed_trades: closed.length,
+            wins: wins.length,
+            losses: losses.length,
+            expired: trades.filter(t => t.status === 'EXPIRED').length,
+            rejected: trades.filter(t => t.status === 'REJECTED').length,
+            open: trades.filter(t => t.status === 'OPEN').length,
+            fill_rate: orderedSignals.length ? (closed.length + trades.filter(t => t.status === 'OPEN').length) / orderedSignals.length : 0,
+            win_rate: closed.length ? wins.length / closed.length : 0,
+            net_R: equityR - (Number.isFinite(Number(initialR)) ? Number(initialR) : 0),
+            profit_factor: grossLosses > 0 ? grossWins / grossLosses : (grossWins > 0 ? Infinity : 0),
+            max_drawdown_R: maxDrawdownR,
+            max_consecutive_losses: maxConsecutiveLosses
+        }
+    };
+}
+
+function cIsClosed(candle) {
+    return !!candle && candle.is_closed !== false;
+}
+
 function buildPublicTradeSignal(signal = {}) {
     const isWait = signal.decision === 'WAIT' || signal.trade_type === 'WAIT';
     const parseRR = value => {

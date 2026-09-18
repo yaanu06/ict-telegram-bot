@@ -4447,6 +4447,26 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ready.position_size).toBeGreaterThan(0);
     });
 
+    it('backtests pending limits without lookahead and uses conservative same-candle exits', () => {
+        const ctx = getContext();
+        const t0 = Date.parse('2026-01-01T00:00:00Z');
+        const bar = (offset, high, low) => ({ t: new Date(t0 + offset * 3600000).toISOString(), o: 100, h: high, l: low, c: 100, is_closed: true });
+        const result = ctx.simulatePendingLimitBacktest({
+            signals: [
+                { id: 'win', direction: 'BUY', entry: 100, stop_loss: 95, tp1: 104, created_at: t0, expires_at: t0 + 5 * 3600000 },
+                { id: 'same-bar', direction: 'SELL', entry: 100, stop_loss: 102, tp1: 96, created_at: t0, expires_at: t0 + 5 * 3600000 },
+                { id: 'expired', direction: 'BUY', entry: 90, stop_loss: 88, tp1: 94, created_at: t0, expires_at: t0 + 2 * 3600000 }
+            ],
+            candles: [bar(1, 101, 99), bar(2, 104, 96), bar(3, 105, 95)],
+            feeR: 0.1
+        });
+        expect(result.metrics.total_signals).toBe(3);
+        expect(result.metrics.wins).toBe(1);
+        expect(result.metrics.losses).toBe(1);
+        expect(result.metrics.expired).toBe(1);
+        expect(result.trades.find(t => t.signal_id === 'same-bar')).toMatchObject({ outcome: 'LOSS', reason: 'STOP_AND_TARGET_SAME_CANDLE' });
+    });
+
     it('rejects duplicate timestamps and explicitly open candles in required histories', () => {
         const ctx = getContext();
         const baseStart = Date.parse('2026-09-01T00:00:00Z');
