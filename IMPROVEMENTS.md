@@ -83,7 +83,7 @@
 
 ### 1o. **Optional 1M Timeframe Support**
 - The normalized timeframe registry now supports Twelve Data's `1min` interval with its own cache and candle duration.
-- The regular scan does not fetch 1M by default, preserving the 55-credit budget; it is available to explicit callers and an optional UI element.
+- The regular scan does not fetch optional 1M or 1W data by default, preserving the 55-credit budget; both remain available to explicit callers and display as Data until supplied.
 
 ### 1p. **Asset Metadata and Quote Conditions**
 - Symbol metadata now preserves supplied tick value, contract size, order-size, price-distance, spread, commission, slippage, leverage, session, and trading permissions.

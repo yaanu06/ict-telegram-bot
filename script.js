@@ -3189,8 +3189,12 @@ function getCanonicalTimeframeTrend(data, tf, fallback = 'NEUTRAL') {
 }
 
 async function updateMTFDisplay(historyCache = {}) {
-    const tfs = ['5M', '15M', '1H', '4H', '1D', '1W'];
-    if (document.getElementById('trend1M')) tfs.unshift('1M');
+    // Optional 1M/1W cards may display explicitly supplied data, but a
+    // routine scan must not trigger hidden provider calls just to populate
+    // them. Missing optional data is shown as Data until explicitly fetched.
+    const tfs = ['5M', '15M', '1H', '4H', '1D'];
+    if (Array.isArray(historyCache['1W'])) tfs.push('1W');
+    if (Array.isArray(historyCache['1M'])) tfs.unshift('1M');
     for(let t of tfs) {
         let tr = 'UNAVAILABLE';
         try {

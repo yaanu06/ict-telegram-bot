@@ -628,6 +628,14 @@ describe('top-down trade context', () => {
         expect(elements.get('trend1D').className).toContain('neutral');
     });
 
+    it('does not fetch optional weekly or one-minute data during a normal display refresh', async () => {
+        const { context: ctx } = getScanContext();
+        const historySpy = jest.fn(() => Promise.reject(new Error('unexpected provider request')));
+        ctx.getHistory = historySpy;
+        await ctx.updateMTFDisplay({ '1D': candles(10, 100, 0.1, 'up') });
+        expect(historySpy.mock.calls.map(call => call[0])).not.toEqual(expect.arrayContaining(['1W', '1M']));
+    });
+
     function context(ctx, daily, fourH, oneH, reversal = false) {
         const structure = Object.fromEntries([['1D', daily], ['4H', fourH], ['1H', oneH], ['15M', 'BULLISH']]
             .map(([tf, trend]) => [tf, { trend }]));
