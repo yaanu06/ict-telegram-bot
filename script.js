@@ -14,7 +14,7 @@ const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
 let GITHUB_PAT = '', GITHUB_REPO = 'yaanu06/ict-telegram-bot';
 const AI_REQUEST_TIMEOUT_MS = 45000;
-const TIMEFRAME_MS = { '5M': 5 * 60000, '15M': 15 * 60000, '1H': 60 * 60000, '4H': 240 * 60000, '1D': 1440 * 60000, '1W': 10080 * 60000 };
+const TIMEFRAME_MS = { '1M': 60000, '5M': 5 * 60000, '15M': 15 * 60000, '1H': 60 * 60000, '4H': 240 * 60000, '1D': 1440 * 60000, '1W': 10080 * 60000 };
 let scanInProgress = false;
 let lastAIRequestError = null;
 
@@ -89,8 +89,8 @@ const FIAT_CURRENCY_CODES = new Set(['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', '
 const CRYPTO_BASE_CODES = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'ADA', 'DOGE', 'LTC', 'BCH', 'BNB', 'AVAX', 'DOT', 'LINK']);
 
 let lastScanRejections = [];
-const TF_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day','1W':'1week' };
-const ALL_TIMEFRAMES = ['5M', '15M', '1H', '4H', '1D'];
+const TF_MAP = { '1M':'1min','5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day','1W':'1week' };
+const ALL_TIMEFRAMES = ['1M', '5M', '15M', '1H', '4H', '1D', '1W'];
 const DEFAULT_ATR_PERIOD = 14;
 const BUY_INVALIDATION_FACTOR = 0.998;
 const SELL_INVALIDATION_FACTOR = 1.002;
@@ -460,6 +460,7 @@ const TD_REQUEST_WINDOW_MS = 60000;
 const tdRequestTimes = [];
 const historyResponseCache = new Map();
 const HISTORY_CACHE_TTL_MS = Object.freeze({
+    '1M': 30000,
     '5M': 60000,
     '15M': 60000,
     '1H': 120000,
@@ -640,6 +641,7 @@ async function getMarketQuoteSnapshot(forPair = pair) {
 
 async function getHistory(tfStr, forPair) {
     if(!TWELVE_DATA_KEY) return null;
+    if (!TF_MAP[tfStr]) throw new Error(`Unsupported timeframe: ${tfStr}`);
     const requestedPair = forPair || pair;
     const cacheKey = `${requestedPair}|${tfStr}`;
     const cached = historyResponseCache.get(cacheKey);
@@ -2964,6 +2966,7 @@ function getCanonicalDisplayedTrend(snapshot = {}) {
 
 async function updateMTFDisplay(historyCache = {}) {
     const tfs = ['5M', '15M', '1H', '4H', '1D', '1W'];
+    if (document.getElementById('trend1M')) tfs.unshift('1M');
     for(let t of tfs) {
         let tr = 'NEUTRAL';
         try {
@@ -5915,7 +5918,7 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
     if (Number.isFinite(quoteAgeMs) && quoteAgeMs > 60 * 60 * 1000) reasons.push('quote data is stale');
     if (Number.isFinite(quoteAgeMs) && quoteAgeMs < -5 * 60 * 1000) reasons.push('quote timestamp is in the future');
     const requiredTimeframes = ['4H', '1H'];
-    const availableTimeframes = ['1D', '4H', '1H', '15M', '5M', '1W'].filter(tf => Array.isArray(historyCache?.[tf]));
+    const availableTimeframes = ['1W', '1D', '4H', '1H', '15M', '5M', '1M'].filter(tf => Array.isArray(historyCache?.[tf]));
     for (const tf of [...new Set([...requiredTimeframes, ...availableTimeframes])]) {
         const data = historyCache?.[tf];
         const required = requiredTimeframes.includes(tf);

@@ -4662,6 +4662,9 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(result.provider_metadata.timestamp_contract).toBe('INTRADAY_UTC');
         const daily = await ctx.getHistory('1D', 'EUR/USD');
         expect(daily.provider_metadata.timestamp_contract).toBe('PERIOD_BUCKET');
+        const minute = await ctx.getHistory('1M', 'EUR/USD');
+        expect(minute.provider_metadata.timeframe).toBe('1M');
+        expect(requestedUrl).toContain('interval=1min');
     });
 
     it('filters the currently forming provider candle before structure analysis', async () => {

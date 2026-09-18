@@ -68,6 +68,10 @@
 ### 1n. **Provider HTTP Failure Handling**
 - Non-success Twelve Data HTTP responses now enter the normal fallback/error path instead of being parsed as valid market data.
 
+### 1o. **Optional 1M Timeframe Support**
+- The normalized timeframe registry now supports Twelve Data's `1min` interval with its own cache and candle duration.
+- The regular scan does not fetch 1M by default, preserving the 55-credit budget; it is available to explicit callers and an optional UI element.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:
