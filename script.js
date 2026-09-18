@@ -11637,6 +11637,7 @@ function buildPublicTradeSignal(signal = {}) {
         confidence: signal.confidence,
         status: signal.status || signal.opportunity_status || signal.lifecycle_state || null,
         setup_state: signal.setup_state || (signal.status === 'TRADE_READY' ? 'TRADE_READY' : null),
+        reason: signal.reason || (reasoning.primary ? { code: 'SETUP_CONTEXT', message: reasoning.primary } : null),
         execution_allowed: getPublicExecutionAllowed(signal, publicRiskGate),
         primary_opportunity: signal.primary_opportunity || null,
         active_setups: Array.isArray(signal.active_setups) ? signal.active_setups : [],
@@ -11668,7 +11669,8 @@ function buildPublicTradeSignal(signal = {}) {
         market_conditions: signal.market_conditions || null,
         status_code: getPublicStatusCode(signal, !!signal.primary_opportunity, Number.isFinite(Number(signal.entry ?? signal.entry_price))),
         execution_mode: signal.execution_mode || DEFAULT_EXECUTION_MODE,
-        risk_gate: publicRiskGate
+        risk_gate: publicRiskGate,
+        market_open: signal.market_open ?? null
     };
 }
 
