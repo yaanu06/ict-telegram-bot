@@ -10635,6 +10635,8 @@ async function runAutoScan() {
                 message: `Valid ${aiResult.direction} setup displayed for user decision; automatic execution is disabled below ${MIN_CONFIDENCE}% confidence or before confirmation.`
             };
         }
+        const manualTrackingAllowed = DEFAULT_EXECUTION_MODE === 'MANUAL' && displayableSetup;
+        out.trade_signal.manual_tracking_allowed = manualTrackingAllowed;
         setJsonOutput(out);
         if (publishableTrade) syncSetupToGitHub(out.trade_signal, 'ai_scan');
         
@@ -10649,6 +10651,7 @@ async function runAutoScan() {
             confidence: aiResult.confidence,
             riskPercent: tradeable ? 0.5 : 0,
             execution_allowed: tradeable && finalConsistency.valid,
+            manual_tracking_allowed: manualTrackingAllowed,
             entryReady: selectedEntryContext.allOk && effectiveDecision === 'enter_now',
             executionDecision: finalConsistency.valid ? effectiveDecision : 'skip',
             invalidationPrice: aiResult.stop_loss * (aiResult.direction === 'BUY' ? 0.995 : 1.005),
@@ -10662,7 +10665,7 @@ async function runAutoScan() {
             distancePct: Math.abs(price - aiResult.entry) / price * 100
         };
         
-        document.getElementById('executeBtn').disabled = !tradeable || !finalConsistency.valid;
+        document.getElementById('executeBtn').disabled = !tradeable && !manualTrackingAllowed;
         
         // Update button to show AI source
         const btnExecute = document.getElementById('executeBtn');
@@ -11638,6 +11641,7 @@ function buildPublicTradeSignal(signal = {}) {
         status: signal.status || signal.opportunity_status || signal.lifecycle_state || null,
         setup_state: signal.setup_state || (signal.status === 'TRADE_READY' ? 'TRADE_READY' : null),
         reason: signal.reason || (reasoning.primary ? { code: 'SETUP_CONTEXT', message: reasoning.primary } : null),
+        manual_tracking_allowed: signal.manual_tracking_allowed === true,
         execution_allowed: getPublicExecutionAllowed(signal, publicRiskGate),
         primary_opportunity: signal.primary_opportunity || null,
         active_setups: Array.isArray(signal.active_setups) ? signal.active_setups : [],
@@ -12308,7 +12312,7 @@ function handleLimit() {
         console.warn('[ORDER] paper risk gate rejected order', riskGate);
         return;
     }
-    if (analysis.execution_allowed === false) {
+    if (analysis.execution_allowed === false && analysis.manual_tracking_allowed !== true) {
         showNotif('⛔ Order rejected: final execution permission is disabled', 'error');
         console.error('[ORDER] execution permission rejected');
         return;

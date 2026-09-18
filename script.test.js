@@ -714,6 +714,7 @@ describe('top-down trade context', () => {
         expect(signal.status).toBe('SETUP_AVAILABLE');
         expect(signal.setup_state).toBe('SETUP_AVAILABLE');
         expect(signal.execution_allowed).toBe(false);
+        expect(signal.manual_tracking_allowed).toBe(false);
         expect(signal.entry).toBe(100);
         expect(signal.decision).toBe('BUY_LIMIT');
     });
