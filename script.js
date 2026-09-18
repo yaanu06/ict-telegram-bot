@@ -7390,7 +7390,7 @@ function buildOpportunityDisplayStack(plans = [], currentPrice = null, selected 
     };
 }
 
-function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfMs, histories, marketContext = {}, strategySetups = [], aiAnalysis = null, executionZones = [], candidateDiagnostics = {}, validCandidates = [], targetCandidates = {}, marketOpen = true } = {}) {
+function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfMs, histories, marketContext = {}, strategySetups = [], aiAnalysis = null, executionZones = [], candidateDiagnostics = {}, validCandidates = [], targetCandidates = {}, marketOpen = true, symbolMetadata = null } = {}) {
     const timeframeContext = marketContext.timeframe_context || buildTimeframeContext({ historyCache: histories, structure: marketContext.structure, price: currentPrice, strategySetups, zones: executionZones });
     const state = {
         state: 'NO_TRADE_TODAY', bias: marketContext.directional_bias || aiAnalysis?.market_view?.bias || 'NEUTRAL', strategy: null, direction: null, narrative_id: null,
@@ -7480,7 +7480,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         // describe an order while leaving entry/SL empty.
         let pendingGeometry = null;
         if (zone && plan.execution_model === 'PENDING_LIMIT') {
-            const settings = getMarketSettings(pairLocal);
+            const settings = getMarketSettings(pairLocal, symbolMetadata || {});
             const executionData = getClosedHistory(histories, executionTimeframe);
             const executionAtr = executionData.length >= 15 ? atr(executionData, 14) : 0;
             const geometryZone = { ...zone, strategy_setup: setup };
@@ -8201,6 +8201,7 @@ function replayCapturedScan(replay) {
     const today = buildTodayOpportunity({ pair: replay.pair, currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
         marketContext: live.market_context, strategySetups: live.strategy_setups, executionZones: live.strategy_execution_zones,
         candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, targetCandidates: live.target_candidates,
+        symbolMetadata: live.symbol_metadata,
         marketOpen: live.market_open });
     const finalOutput = buildTodayOpportunityOutput(today, replay.pair, price, asOfMs, live.market_open);
     return { replay_matches_live: compareScanReplayOutput(replay.final_output, finalOutput).replay_matches_live,
@@ -9743,6 +9744,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
             },
             validCandidates: (fallbackCandidateResult.valid_candidates || []).filter(candidate => candidate.id !== bestCandidate?.id),
             targetCandidates: fallbackTargetCandidates,
+            symbolMetadata: quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair),
             marketOpen: true
         });
         if (fallbackToday.state === 'TODAY_OPPORTUNITY' || fallbackToday.state === 'WATCH_ONLY') {
@@ -10202,6 +10204,7 @@ async function runAutoScan() {
             candidateDiagnostics: liveMarketContext.setup_candidate_audit,
             validCandidates: liveMarketContext.adaptive_setup_candidates,
             targetCandidates: liveMarketContext.target_candidates,
+            symbolMetadata: liveMarketContext.symbol_metadata,
             marketOpen: liveMarketContext.market_open
         });
         // Keep the public projection small while retaining the deterministic
@@ -10285,6 +10288,7 @@ async function runAutoScan() {
                     candidateDiagnostics: liveMarketContext.setup_candidate_audit,
                     validCandidates: [],
                     targetCandidates: liveMarketContext.target_candidates,
+                    symbolMetadata: liveMarketContext.symbol_metadata,
                     marketOpen: liveMarketContext.market_open
                 });
                 if (today.state === 'TODAY_OPPORTUNITY') {
