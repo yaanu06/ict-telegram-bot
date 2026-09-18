@@ -2535,7 +2535,7 @@ function getDynamicSLMultiplier(data, price, now = new Date()) {
     return Math.max(0.8, Math.min(4.0, multiplier));
 }
 
-// Precision SL calculation (XAU/USD: Minimum 2.0x ATR, Others: Minimum 1.5x ATR)
+// Precision SL calculation uses the asset-aware settings for the supplied pair.
 function calcStopLoss(data, direction, entry, zone, msnr, tf, customATR = null, customPair = null) {
     const atrVal = customATR || atr(data, 14);
     const p = customPair || pair;
@@ -2544,7 +2544,7 @@ function calcStopLoss(data, direction, entry, zone, msnr, tf, customATR = null, 
     const factor = Math.pow(10, prec);
     
     // Ensure SL is at least 2x ATR away from entry (min) and 3x ATR for max
-    const minMultiplier = p.includes('XAU') ? 2.0 : 1.5;
+    const minMultiplier = settings.minSLMultiplier || 1.5;
     const minSLDist = atrVal * minMultiplier;
     const maxSLDist = Math.max(minSLDist, atrVal * 3.0);
     
@@ -4273,7 +4273,7 @@ function getCandidateATRContext(candidate, historyCache, pairLocal, price) {
     const atrForRule = Number.isFinite(setupAtr) && setupAtr > 0
         ? setupAtr
         : (Number.isFinite(fallbackAtr) && fallbackAtr > 0 ? fallbackAtr : NaN);
-    const minMultiplier = settings.minSLMultiplier || (pairLocal.includes('XAU') ? 2.0 : 1.5);
+    const minMultiplier = settings.minSLMultiplier || 1.5;
     const minimumReasonable = Number.isFinite(atrForRule) && atrForRule > 0
         ? Math.max(settings.minSL, atrForRule * 0.5)
         : settings.minSL;
