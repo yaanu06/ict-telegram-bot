@@ -4437,6 +4437,15 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(badSide.issues.join(' ')).toMatch(/above current price/);
     });
 
+    it('requires explicit cancellation before replacing a pending paper order', () => {
+        const ctx = getContext();
+        expect(ctx.validateDuplicatePaperOrder(null)).toMatchObject({ valid: true });
+        expect(ctx.validateDuplicatePaperOrder({ id: 7, pair: 'EUR/USD' })).toMatchObject({
+            valid: false,
+            reason: 'DUPLICATE_ACTIVE_PAPER_ORDER'
+        });
+    });
+
     it('records a safe audit summary without secrets', () => {
         const ctx = getContext();
         let raw = null;

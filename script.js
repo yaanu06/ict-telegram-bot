@@ -12006,6 +12006,15 @@ function validateExecutionMode(mode = 'PAPER') {
     return { valid: false, mode: normalized, reason: `${normalized} execution is unavailable in this client; broker submission is disabled.` };
 }
 
+function validateDuplicatePaperOrder(existingOrder = null) {
+    if (!existingOrder) return { valid: true, reason: null };
+    return {
+        valid: false,
+        reason: 'DUPLICATE_ACTIVE_PAPER_ORDER',
+        message: 'A paper limit order is already pending; cancel it explicitly before creating another order.'
+    };
+}
+
 function evaluatePendingPaperOrder(order = {}, currentPrice, nowMs = Date.now()) {
     const price = Number(currentPrice);
     const createdMs = normalizeTimestampUTC(order.createdAt);
@@ -12078,8 +12087,10 @@ function handleLimit() {
         showNotif('No signal', 'error');
         return;
     }
-    if(limitOrder) {
-        cancelLimit();
+    const duplicate = validateDuplicatePaperOrder(limitOrder);
+    if (!duplicate.valid) {
+        showNotif(`â›” Order rejected: ${duplicate.message}`, 'warning');
+        console.warn('[ORDER] duplicate paper order rejected', duplicate);
         return;
     }
     if (analysis.execution_allowed === false) {
