@@ -4877,6 +4877,17 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(result[0].v).toBeNull();
     });
 
+    it('rejects malformed provider OHLC and duplicate timestamps at the data boundary', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        ctx.console.error = () => {};
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ values: [
+            { datetime: '2026-09-11 10:00:00', open: '1', high: '2', low: '0.5', close: '1.5' },
+            { datetime: '2026-09-11 10:00:00', open: 'bad', high: '2', low: '0.5', close: '1.5' }
+        ] }) }));
+        await expect(ctx.getHistory('1H', 'GBP/USD')).resolves.toBeNull();
+    });
+
     it('derives supported indicators locally without spending provider indicator requests', async () => {
         const ctx = getContext();
         await ctx.saveKeys('tw', '', '', '', '');

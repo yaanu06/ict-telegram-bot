@@ -726,7 +726,12 @@ async function getHistory(tfStr, forPair) {
             const values = rawValues.filter(c => c.is_closed);
             if (!values.length) throw new Error(`No closed provider candles available for ${tfStr}`);
             if (values.some(c => !Number.isFinite(c.t))) throw new Error(`Invalid provider timestamp for ${tfStr}`);
+            if (values.some(c => ![c.o, c.h, c.l, c.c].every(Number.isFinite))) throw new Error(`Invalid provider OHLC values for ${tfStr}`);
+            if (values.some(c => c.h < Math.max(c.o, c.c) || c.l > Math.min(c.o, c.c) || c.h < c.l)) throw new Error(`Impossible provider OHLC geometry for ${tfStr}`);
             values.reverse();
+            for (let i = 1; i < values.length; i++) {
+                if (values[i].t <= values[i - 1].t) throw new Error(`Duplicate or unordered provider timestamps for ${tfStr}`);
+            }
             Object.defineProperty(values, 'provider_metadata', { value: {
                 provider: 'TWELVE_DATA',
                 provider_timezone: d.meta?.timezone || 'UTC',
