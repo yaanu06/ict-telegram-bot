@@ -159,6 +159,10 @@ Added actual detection algorithms for:
 - A supplied `maximum_spread` overrides the derived volatility-based spread ceiling for that symbol.
 - Excessive quote spread blocks candidate selection and account-risk approval instead of allowing a setup with unsafe fill costs.
 
+### 5d. **Complete No-Trade Market Context**
+- No-opportunity responses preserve the calculated timeframe trends, volatility, indicators, data-quality verdict, and news-risk status.
+- A rejected or unavailable setup no longer causes the public analysis panel to lose the market facts used to reach that decision.
+
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:
 1. First choice: FVG midpoint

@@ -1995,6 +1995,41 @@ describe('getQuoteDirection', () => {
         expect(signal.analysis.trend_detection).toEqual({ '1D': 'BEARISH', '4H': 'BULLISH', '1H': 'BULLISH' });
     });
 
+    it('keeps deterministic market facts in a no-opportunity output', () => {
+        const ctx = getContext();
+        const today = ctx.buildTodayOpportunity({
+            pair: 'AUD/USD', currentPrice: 0.711, scanAsOfMs: Date.parse('2026-09-19T10:00:00Z'),
+            histories: {}, marketOpen: true,
+            marketContext: {
+                directional_bias: 'MIXED',
+                structure: {
+                    '1D': { effective_trend: 'BEARISH' },
+                    '4H': { effective_trend: 'BULLISH_TRANSITION' },
+                    '1H': { effective_trend: 'BULLISH' },
+                    '15M': { structural_trend: 'MIXED' }
+                },
+                timeframe_context: {
+                    '1D': { displayed_trend: 'BEARISH' },
+                    '4H': { displayed_trend: 'BULLISH_TRANSITION' },
+                    '1H': { displayed_trend: 'BULLISH' },
+                    '15M': { displayed_trend: 'MIXED' }
+                },
+                volatility: { regime: 'LOW', atr_1h: 0.001 },
+                indicators: { adx_4h: 21.8, rsi_4h: 39.3 },
+                data_quality: { valid: true, reasons: [] },
+                news_risk: { status: 'UNKNOWN', available: false }
+            }
+        });
+        const raw = ctx.buildTodayOpportunityOutput(today, 'AUD/USD', 0.711, Date.parse('2026-09-19T10:00:00Z'), true);
+        expect(raw.trade_signal).toMatchObject({
+            trend_detection: { '1D': 'BEARISH', '4H': 'BULLISH_TRANSITION', '1H': 'BULLISH', '15M': 'MIXED' },
+            volatility: { regime: 'LOW' },
+            indicators: { adx_4h: 21.8 },
+            data_quality: { valid: true },
+            news_risk: { status: 'UNKNOWN' }
+        });
+    });
+
     it('preserves a failed market-data verdict for the public status mapper', () => {
         const ctx = getContext();
         const raw = ctx.buildTodayOpportunityOutput({

@@ -7458,6 +7458,16 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
     const state = {
         state: 'NO_TRADE_TODAY', bias: marketContext.directional_bias || aiAnalysis?.market_view?.bias || 'NEUTRAL', strategy: null, direction: null, narrative_id: null,
         daily_bias: marketContext.daily_bias || null,
+        trend_detection: Object.fromEntries(['1D', '4H', '1H', '15M'].map(tf => [tf,
+            marketContext.timeframe_context?.[tf]?.displayed_trend
+            || marketContext.timeframe_context?.[tf]?.effective_trend
+            || marketContext.structure?.[tf]?.effective_trend
+            || marketContext.structure?.[tf]?.structural_trend
+            || 'NEUTRAL'])),
+        volatility: marketContext.volatility || null,
+        indicators: marketContext.indicators || null,
+        data_quality: marketContext.data_quality || null,
+        news_risk: marketContext.news_risk || { status: 'UNKNOWN', available: false },
         execution_zone_id: null, source: 'DETERMINISTIC_MARKET_FACTS', ai_supported: false, deterministic_supported: false, area_of_interest: null,
         execution_model: null, activation_conditions: [], cancellation_conditions: [], target_intent: null, expected_window: 'REMAINDER_OF_TODAY',
         delivery_progress: null, remaining_reward_fraction: null, distance_to_area_atr: null, entry_reachable_today: false, opportunity_reachable_today: false,
