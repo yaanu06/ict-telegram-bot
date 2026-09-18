@@ -4528,6 +4528,13 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(blocked.status_code).toBe('NEWS_BLOCKED');
     });
 
+    it('defaults public error and wait signals to manual execution mode', () => {
+        const ctx = getContext();
+        const signal = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'DATA_BLOCKED' });
+        expect(signal.execution_mode).toBe('MANUAL');
+        expect(signal.risk_gate).toMatchObject({ mode: 'MANUAL', status: 'MANUAL', execution_allowed: true });
+    });
+
     it('keeps account risk deterministic and blocks live sizing without metadata', () => {
         const ctx = getContext();
         expect(ctx.buildAccountRiskGate({ mode: 'PAPER' })).toMatchObject({ status: 'PAPER', execution_allowed: true, position_size: null });

@@ -10321,7 +10321,8 @@ async function runAutoScan() {
                     strategy_detections: liveMarketContext.strategy_detections,
                     candidate_pipeline: liveMarketContext.candidate_pipeline,
                     opportunity_funnel: liveMarketContext.opportunity_funnel || null,
-                    risk_gate: buildAccountRiskGate({ mode: 'PAPER' }),
+                    execution_mode: DEFAULT_EXECUTION_MODE,
+                    risk_gate: getDefaultRiskGate(DEFAULT_EXECUTION_MODE),
                     validation: { passed: false, reason, consistency: outputConsistency }
                 }
             };
