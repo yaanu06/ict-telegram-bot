@@ -11744,6 +11744,7 @@ function validatePublicTradeSignal(signal = {}) {
     const entry = Number(signal?.entry ?? signal?.entry_price);
     const stop = Number(signal?.stop_loss);
     const target = Number(signal?.tp1 ?? signal?.take_profit_1);
+    if (signal?.status_code === 'SETUP_READY' && !Number.isFinite(Number(signal.current_price))) issues.push('ready setup current_price is unavailable');
     if (signal?.status_code === 'SETUP_READY' && [entry, stop, target].some(value => !Number.isFinite(value))) issues.push('ready setup geometry is incomplete');
     if (signal?.decision === 'BUY_LIMIT' && !(stop < entry && entry < target)) issues.push('BUY_LIMIT geometry is invalid');
     if (signal?.decision === 'SELL_LIMIT' && !(stop > entry && entry > target)) issues.push('SELL_LIMIT geometry is invalid');
