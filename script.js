@@ -18,6 +18,30 @@ const TIMEFRAME_MS = { '1M': 60000, '5M': 5 * 60000, '15M': 15 * 60000, '1H': 60
 let scanInProgress = false;
 let lastAIRequestError = null;
 
+function getProxyBaseUrl() {
+    const configured = typeof window !== 'undefined' ? window.__ICT_PROXY_BASE_URL__ : null;
+    return String(configured || '').trim().replace(/\/$/, '');
+}
+
+function hasMarketDataAccess() {
+    return !!TWELVE_DATA_KEY || !!getProxyBaseUrl();
+}
+
+function hasAiAccess() {
+    return !!DEEPSEEK_API_KEY || !!getProxyBaseUrl();
+}
+
+function getDeepSeekEndpoint() {
+    const proxy = getProxyBaseUrl();
+    return proxy ? `${proxy}/api/deepseek/chat` : DEEPSEEK_API_URL;
+}
+
+function getDeepSeekHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    if (!getProxyBaseUrl() && DEEPSEEK_API_KEY) headers.Authorization = `Bearer ${DEEPSEEK_API_KEY}`;
+    return headers;
+}
+
 function scanClock() {
     return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
 }
@@ -364,7 +388,7 @@ function startApp() {
     console.log('🚀 Starting ICT Trading Bot Pro v8.0 - FINAL WORKING FIX');
     loadKeys().then(() => {
         updateKeyStatus();
-        if(!TWELVE_DATA_KEY && !DEEPSEEK_API_KEY) {
+        if(!hasMarketDataAccess() && !hasAiAccess()) {
             setTimeout(showSetup, 500);
         }
     });
@@ -488,7 +512,11 @@ async function fetchTD(pathAndQuery, timeoutMs = 10000, retries = 2) {
         : { signal: undefined, abort: () => {} };
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-        const r = await fetch(`${TWELVE_DATA_BASE}${pathAndQuery}&apikey=${TWELVE_DATA_KEY}`, { signal: ctrl.signal });
+        const proxy = getProxyBaseUrl();
+        const endpoint = proxy
+            ? `${proxy}/api/twelve${pathAndQuery}`
+            : `${TWELVE_DATA_BASE}${pathAndQuery}&apikey=${TWELVE_DATA_KEY}`;
+        const r = await fetch(endpoint, { signal: ctrl.signal });
         if (r.ok === false) throw new Error(`Twelve Data HTTP ${r.status || 'error'}`);
         const d = await r.json();
         if(d.code === 429) {
@@ -516,7 +544,7 @@ async function getPrice(forPair) {
     if(cachedPrice !== null && cachedPricePair === p && (now - priceCacheTime) < PRICE_CACHE_DURATION) {
         return cachedPrice;
     }
-    if(!TWELVE_DATA_KEY) return null;
+    if(!hasMarketDataAccess()) return null;
     try {
         const d = await fetchTD(`/price?symbol=${encodeURIComponent(getProviderSymbol(p))}`);
         if(d.price) {
@@ -657,7 +685,7 @@ async function getMarketQuoteSnapshot(forPair = pair) {
 }
 
 async function getHistory(tfStr, forPair) {
-    if(!TWELVE_DATA_KEY) return null;
+    if(!hasMarketDataAccess()) return null;
     if (!TF_MAP[tfStr]) throw new Error(`Unsupported timeframe: ${tfStr}`);
     const requestedPair = forPair || pair;
     const cacheKey = `${requestedPair}|${tfStr}`;
@@ -812,7 +840,7 @@ function localIndicatorSnapshot(candleData = []) {
 }
 
 async function getTechnicalIndicators(tfUsed, candleData = null) {
-    if(!TWELVE_DATA_KEY) return {};
+    if(!hasMarketDataAccess()) return {};
     const cacheKey = `${pair}|${tfUsed}`;
     const cachedHit = indicatorCache[cacheKey];
     if(cachedHit && Date.now() - cachedHit.ts < INDICATOR_CACHE_TTL) return cachedHit.data;
@@ -3011,7 +3039,7 @@ async function updateMTFDisplay(historyCache = {}) {
 // ============================================
 
 async function getAIExecutionDecision(best, price, htfData) {
-    if(!DEEPSEEK_API_KEY) {
+    if(!hasAiAccess()) {
         return getSimpleDecision(best, price);
     }
     
@@ -3046,12 +3074,9 @@ Return ONLY JSON:
 {"decision":"enter_now|wait_for_reaction|skip","confidence":0-100,"reason":"brief reason"}`;
 
     try {
-        const { response, data } = await requestAIJson(DEEPSEEK_API_URL, {
+        const { response, data } = await requestAIJson(getDeepSeekEndpoint(), {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
-            },
+            headers: getDeepSeekHeaders(),
             body: JSON.stringify({
                 model: 'deepseek-chat',
                 messages: [
@@ -8451,7 +8476,7 @@ function validateAiSelectorResponse(value, candidates = []) {
 
 async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData = '', retryCount = 0) {
     const diagnostics = { analyst_called: false, analyst_status: 'SKIPPED', attempts: retryCount + 1, market_view: null, hypotheses_received: 0, hypotheses_verified: 0, hypotheses_rejected: 0, verified_hypotheses: [], rejected_hypotheses: [], deterministic_duplicates: 0, setups_added_from_ai: 0, final_selector_called: false, selected_candidate_id: null };
-    if (!DEEPSEEK_API_KEY) { diagnostics.analyst_status = 'NO_API_KEY'; return { diagnostics, analysis: null, verified_setups: [] }; }
+    if (!hasAiAccess()) { diagnostics.analyst_status = 'NO_API_KEY'; return { diagnostics, analysis: null, verified_setups: [] }; }
     diagnostics.analyst_called = true;
     const prompt = buildAiMarketAnalystPrompt(evidenceCatalog, candleData);
     const retryAnalyst = reason => retryCount < 1
@@ -8459,9 +8484,9 @@ async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData
             `${candleData}\n\nCORRECTION: The previous analyst response was invalid (${reason}). Return only the exact market_view and hypotheses JSON contract.`, retryCount + 1)
         : null;
     try {
-        const { data } = await requestAIJson(DEEPSEEK_API_URL, {
+        const { data } = await requestAIJson(getDeepSeekEndpoint(), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + DEEPSEEK_API_KEY },
+            headers: getDeepSeekHeaders(),
             body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }], temperature: 0.1, max_tokens: 1800 })
         });
         const rawAnalysis = parseAiJsonContent(data?.choices?.[0]?.message?.content);
@@ -8818,7 +8843,7 @@ function buildCandleData(historyCache, count = 10) {
 }
 
 async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMarketContext = null, retryCount = 0) {
-    if (!DEEPSEEK_API_KEY) {
+    if (!hasAiAccess()) {
         console.error('No AI key available');
         lastAIRequestError = { code: 'NO_AI_KEY', message: 'No DeepSeek API key available' };
         return null;
@@ -8843,12 +8868,9 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         candidate_count: liveMarketContext?.adaptive_setup_candidates?.length || 0
     });
     try {
-        const { response, data } = await requestAIJson(DEEPSEEK_API_URL, {
+        const { response, data } = await requestAIJson(getDeepSeekEndpoint(), {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
-            },
+            headers: getDeepSeekHeaders(),
             body: JSON.stringify({
                 model: 'deepseek-chat',
                 messages: [
@@ -9850,7 +9872,7 @@ async function runAutoScan() {
     scanTrace('START', scanStartedAt, { pair, timestamp: new Date().toISOString() });
     
     try {
-        if (!TWELVE_DATA_KEY) {
+        if (!hasMarketDataAccess()) {
             scanStage = 'missing Twelve Data key';
             showSetup();
             setJsonOutput({ trade_signal: {

@@ -4426,6 +4426,16 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.getProviderSymbol('XAU/USD')).toBe('XAU/USD');
         expect(ctx.getMarketSettings()).toBeDefined();
     });
+
+    it('supports an optional server proxy without requiring browser provider credentials', () => {
+        const ctx = getContext();
+        ctx.window.__ICT_PROXY_BASE_URL__ = 'https://proxy.example/';
+        expect(ctx.getProxyBaseUrl()).toBe('https://proxy.example');
+        expect(ctx.hasMarketDataAccess()).toBe(true);
+        expect(ctx.hasAiAccess()).toBe(true);
+        expect(ctx.getDeepSeekEndpoint()).toBe('https://proxy.example/api/deepseek/chat');
+        expect(ctx.getDeepSeekHeaders()).toEqual({ 'Content-Type': 'application/json' });
+    });
     it('rechecks local pending-limit safety at user approval time', () => {
         const ctx = getContext();
         expect(ctx.validateExecutionMode('PAPER')).toMatchObject({ valid: true, mode: 'PAPER' });

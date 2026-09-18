@@ -4,7 +4,7 @@
 
 This repository is a browser Telegram Mini App. `index.html` and `style.css` provide the UI; `script.js` contains the current application, data, analysis, AI, validation, paper-order, audit, and replay logic; `script.test.js` runs the deterministic test suite. `data/setups/` contains recorded setup artifacts.
 
-There is no backend service, database, broker adapter, server-side secret store, or live order endpoint in this repository. The application is therefore paper-only. API keys are currently entered into the browser and stored in local storage; this remains a production security limitation.
+The repository remains paper-only and has no database, broker adapter, or live order endpoint. It now includes an optional dependency-free Node 20 proxy in `server/proxy.js` for server-held Twelve Data and DeepSeek credentials. Without that proxy, the browser compatibility path still accepts keys in local storage; production deployments should configure `window.__ICT_PROXY_BASE_URL__` and keep provider keys only in the proxy environment.
 
 ## Runtime flow
 
@@ -33,6 +33,8 @@ The browser implementation still needs a server-side data/AI proxy, encrypted se
 Account risk limits are evaluated by one shared deterministic gate when account state is supplied. It supports open risk, daily loss, weekly loss, consecutive losses, active-order count, and per-symbol exposure. The browser cannot infer omitted account state, so live sizing remains blocked without equity, risk, and symbol tick metadata; paper mode remains available unless an explicitly supplied limit is breached.
 
 ## Recent operational safeguards
+
+- The optional `server/proxy.js` isolates Twelve Data and DeepSeek credentials, validates proxy inputs, limits clients and request bodies, and exposes no order route. Persistent storage, authenticated approvals, and a broker adapter remain outside this paper-only repository.
 
 - Optional `1M` history is supported by the normalized timeframe registry but is excluded from the default scan to preserve the Twelve Data 55-credit budget.
 - Live quotes and candles require usable timestamps; stale, future-dated, undated, or expired cached price data is blocked.

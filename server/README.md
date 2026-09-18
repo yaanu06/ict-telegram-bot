@@ -1,0 +1,23 @@
+# Server-side market and AI proxy
+
+This optional Node 20 service keeps Twelve Data and DeepSeek credentials outside the browser. It does not place orders.
+
+## Run
+
+```powershell
+$env:TWELVE_DATA_API_KEY = '...'
+$env:DEEPSEEK_API_KEY = '...'
+$env:PROXY_CORS_ORIGIN = 'https://your-mini-app.example'
+npm run proxy
+```
+
+Routes:
+
+- `GET /health`
+- `GET /api/twelve/quote?symbol=EUR%2FUSD`
+- `GET /api/twelve/time_series?symbol=EUR%2FUSD&interval=1h&outputsize=200`
+- `POST /api/deepseek/chat`
+
+The proxy validates symbols, intervals, output size, request bodies, provider configuration, and per-client rate limits. It never returns provider credentials and has no broker or order route.
+
+To use it from the Mini App, set `window.__ICT_PROXY_BASE_URL__` before `script.js` loads. The client then calls `/api/twelve/*` and `/api/deepseek/chat` and does not send provider keys.
