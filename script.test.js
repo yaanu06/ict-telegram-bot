@@ -1976,6 +1976,20 @@ describe('getQuoteDirection', () => {
         });
         expect(signal.analysis.trend_detection).toEqual({ '1D': 'BEARISH', '4H': 'BULLISH', '1H': 'BULLISH' });
     });
+
+    it('preserves a failed market-data verdict for the public status mapper', () => {
+        const ctx = getContext();
+        const raw = ctx.buildTodayOpportunityOutput({
+            state: 'NO_TRADE_TODAY',
+            reason_code: 'NO_TRADE_TODAY',
+            reason: 'Provider data is stale.',
+            data_quality: { valid: false, reasons: ['quote data is stale'] }
+        }, 'EUR/USD', 1.1, Date.parse('2026-09-19T10:00:00Z'), true);
+        const signal = ctx.buildPublicTradeSignal(raw.trade_signal);
+        expect(signal.data_quality).toMatchObject({ valid: false });
+        expect(signal.status_code).toBe('DATA_BLOCKED');
+        expect(signal.execution_allowed).toBe(false);
+    });
 });
 
 describe('analyzeMarketPhase (AMD)', () => {

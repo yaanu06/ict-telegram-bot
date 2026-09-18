@@ -10213,6 +10213,8 @@ async function runAutoScan() {
         liveMarketContext.today_opportunity.volatility = liveMarketContext.volatility || null;
         liveMarketContext.today_opportunity.indicators = liveMarketContext.momentum || null;
         liveMarketContext.today_opportunity.news_risk = liveMarketContext.news_risk;
+        liveMarketContext.today_opportunity.data_quality = liveMarketContext.data_quality;
+        liveMarketContext.today_opportunity.symbol_metadata = liveMarketContext.symbol_metadata;
         liveMarketContext.today_opportunity.market_conditions = liveMarketContext.market_conditions;
         console.log('[SCAN] today opportunity', liveMarketContext.today_opportunity);
 
