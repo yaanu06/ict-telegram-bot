@@ -627,6 +627,7 @@ function getSymbolMetadata(forPair = pair, overrides = {}) {
         spread: Number.isFinite(Number(overrides.spread)) ? Number(overrides.spread) : null,
         commission_per_unit: Number.isFinite(Number(overrides.commission_per_unit)) ? Number(overrides.commission_per_unit) : null,
         slippage_estimate: Number.isFinite(Number(overrides.slippage_estimate)) ? Number(overrides.slippage_estimate) : null,
+        maximum_slippage: Number.isFinite(Number(overrides.maximum_slippage)) ? Number(overrides.maximum_slippage) : null,
         volume_reliable: typeof overrides.volume_reliable === 'boolean' ? overrides.volume_reliable : null,
         leverage: Number.isFinite(Number(overrides.leverage)) ? Number(overrides.leverage) : null,
         trading_permissions: overrides.trading_permissions ?? null,
@@ -4527,6 +4528,8 @@ function buildRiskConstraints(pairLocal, price, historyCache, quoteSnapshot = nu
     const rawMaxSLDistance = primaryAtr > 0 ? Math.min(price * settings.maxSLPct, primaryAtr * 4.0) : price * settings.maxSLPct;
     const currentSpread = Number(quoteSnapshot?.spread);
     const maximumSpread = Math.max(settings.pipSize * 10, Number.isFinite(primaryAtr) && primaryAtr > 0 ? primaryAtr * 0.15 : settings.pipSize * 10);
+    const slippageEstimate = Number(symbolMetadata?.slippage_estimate);
+    const maximumSlippage = Number(symbolMetadata?.maximum_slippage);
     return {
         minimum_rr: settings.targetRR || 2.5,
         minimum_sl_distance: ictRound(absoluteMinSL, prec),
@@ -4538,6 +4541,10 @@ function buildRiskConstraints(pairLocal, price, historyCache, quoteSnapshot = nu
         maximum_spread: ictRound(maximumSpread, prec),
         spread_status: Number.isFinite(currentSpread) ? (currentSpread <= maximumSpread ? 'VALID' : 'TOO_WIDE') : 'UNKNOWN',
         spread_valid: Number.isFinite(currentSpread) ? currentSpread <= maximumSpread : null,
+        slippage_estimate: Number.isFinite(slippageEstimate) ? slippageEstimate : null,
+        maximum_slippage: Number.isFinite(maximumSlippage) ? maximumSlippage : null,
+        slippage_status: Number.isFinite(slippageEstimate) && Number.isFinite(maximumSlippage) ? (slippageEstimate <= maximumSlippage ? 'VALID' : 'TOO_WIDE') : 'UNKNOWN',
+        slippage_valid: Number.isFinite(slippageEstimate) && Number.isFinite(maximumSlippage) ? slippageEstimate <= maximumSlippage : null,
         atr_rule_reference: Number.isFinite(primaryAtr) && primaryAtr > 0 ? ictRound(primaryAtr, prec) : null,
         note: 'Physical SL sanity is evaluated per candidate setup timeframe; this broad context is not a universal 4H-derived stop minimum.',
         tp1_rule: {
@@ -5533,6 +5540,14 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         return {
             raw_candidates: [], valid_candidates: [], seed_diagnostics: seedDiagnostics,
             rejected_candidates: [{ id: 'SPREAD_TOO_WIDE', rejection_code: 'SPREAD_TOO_WIDE', rejection_reasons: [detail] }]
+        };
+    }
+    if (riskConstraints?.slippage_valid === false) {
+        const detail = `Estimated slippage ${riskConstraints.slippage_estimate} exceeds maximum ${riskConstraints.maximum_slippage}`;
+        for (const seed of seedDiagnostics) failSeed(seed, 'SLIPPAGE_TOO_WIDE', detail);
+        return {
+            raw_candidates: [], valid_candidates: [], seed_diagnostics: seedDiagnostics,
+            rejected_candidates: [{ id: 'SLIPPAGE_TOO_WIDE', rejection_code: 'SLIPPAGE_TOO_WIDE', rejection_reasons: [detail] }]
         };
     }
     const dataQuality = marketContext?.data_quality || validateMarketDataQuality(historyCache, price);
@@ -11443,11 +11458,13 @@ function buildAccountRiskGate({ mode = 'PAPER', account = null, risk_percent = n
     const spread = Number(symbol_metadata?.spread);
     const slippage = Number(symbol_metadata?.slippage_estimate);
     const commission = Number(symbol_metadata?.commission_per_unit);
+    const maximumSlippage = Number(symbol_metadata?.maximum_slippage);
     const issues = [];
     if (!Number.isFinite(equity) || equity <= 0) issues.push('account equity is unavailable');
     if (!Number.isFinite(riskPct) || riskPct <= 0) issues.push('risk percentage is unavailable');
     if (!Number.isFinite(tickValue) || tickValue <= 0 || !Number.isFinite(tickSize) || tickSize <= 0) issues.push('symbol tick metadata is unavailable');
     if (!Number.isFinite(riskDistance) || riskDistance <= 0) issues.push('risk distance is unavailable');
+    if (Number.isFinite(maximumSlippage) && maximumSlippage >= 0 && Number.isFinite(slippage) && slippage > maximumSlippage) issues.push('estimated slippage exceeds symbol maximum');
     if (issues.length) return { mode: normalizedMode, status: 'RISK_BLOCKED', execution_allowed: false, position_size: null, risk_amount: null, issues, reason: issues.join('; ') };
     const riskAmount = equity * riskPct / 100;
     const costDistance = (Number.isFinite(spread) && spread > 0 ? spread : 0)

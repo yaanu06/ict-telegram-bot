@@ -151,6 +151,10 @@ Added actual detection algorithms for:
 - Symbol minimum order size is enforced deterministically.
 - The risk gate reports its cost assumptions and effective per-unit risk for auditability.
 
+### 5b. **Maximum Slippage Gate**
+- A supplied `maximum_slippage` is enforced before candidate selection and live sizing.
+- Excessive estimated slippage produces `SLIPPAGE_TOO_WIDE` and blocks execution rather than silently reducing the position size.
+
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:
 1. First choice: FVG midpoint
