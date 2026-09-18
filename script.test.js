@@ -4583,6 +4583,22 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(daily.provider_metadata.timestamp_contract).toBe('PERIOD_BUCKET');
     });
 
+    it('derives supported indicators locally without spending provider indicator requests', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        const data = candles(80, 100, 0.25, 'up').map((bar, index) => ({ ...bar, is_closed: true, timeframe: '1H', t: index }));
+        ctx.fetch = jest.fn(() => { throw new Error('indicator endpoint must not be called'); });
+        const indicators = await ctx.getTechnicalIndicators('1H', data);
+        expect(indicators.indicator_source).toBe('LOCAL_OHLCV');
+        expect(Number.isFinite(indicators.rsi)).toBe(true);
+        expect(Number.isFinite(indicators.macd)).toBe(true);
+        expect(Number.isFinite(indicators.stoch_k)).toBe(true);
+        expect(Number.isFinite(indicators.cci)).toBe(true);
+        expect(Number.isFinite(indicators.williams_r)).toBe(true);
+        expect(Number.isFinite(indicators.supertrend)).toBe(true);
+        expect(ctx.fetch).not.toHaveBeenCalled();
+    });
+
     it('does not let device timezone affect canonical timestamps', () => {
         const ctx = getContext();
         const value = '2026-09-11T10:00:00Z';

@@ -8,6 +8,12 @@
 - Added proper error handling for API rate limit responses
 - Prevents bot from failing when API limits are reached
 
+### 1a. **Local Indicator Budget Control**
+- Indicator values are now calculated from the already-fetched closed OHLCV candles.
+- Removed seven redundant Twelve Data indicator requests per timeframe.
+- The scan keeps the provider budget for quotes and candle history, which is safer for the Twelve Data Grow 55 plan.
+- Indicator output includes `indicator_source: LOCAL_OHLCV` so the origin is auditable.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

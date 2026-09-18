@@ -644,15 +644,114 @@ async function getHistory(tfStr, forPair) {
 
 const INDICATOR_CACHE_TTL = 4 * 60 * 1000;
 
+function localIndicatorSnapshot(candleData = []) {
+    const data = Array.isArray(candleData) ? candleData.filter(c => c && c.is_closed !== false) : [];
+    const closes = data.map(c => Number(c.c)).filter(Number.isFinite);
+    const highs = data.map(c => Number(c.h));
+    const lows = data.map(c => Number(c.l));
+    const ind = { indicator_source: 'LOCAL_OHLCV', indicator_timeframe: data[0]?.timeframe || null };
+    const last = closes.length - 1;
+    const finite = value => Number.isFinite(value) ? value : null;
+    const windowMean = (values, length) => values.length >= length
+        ? values.slice(-length).reduce((sum, value) => sum + value, 0) / length : null;
+    const trueRanges = [];
+    for (let i = 0; i < data.length; i++) {
+        if (i === 0) trueRanges.push(highs[i] - lows[i]);
+        else trueRanges.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - Number(data[i - 1].c)), Math.abs(lows[i] - Number(data[i - 1].c))));
+    }
+    const rollingATR = (length, end = trueRanges.length) => {
+        if (end < length) return null;
+        return windowMean(trueRanges.slice(0, end), length);
+    };
+    if (closes.length >= 15) ind.rsi = finite(computeRSI(closes, 14));
+    if (data.length >= 15) ind.atr_api = finite(rollingATR(14));
+    if (closes.length >= 9) ind.ema9 = finite(ema(closes, 9).at(-1));
+    if (closes.length >= 21) ind.ema21 = finite(ema(closes, 21).at(-1));
+    if (closes.length >= 50) ind.ema50 = finite(ema(closes, 50).at(-1));
+    if (closes.length >= 100) ind.ema200 = finite(ema(closes, 200).at(-1));
+    if (closes.length >= 20) {
+        const win = closes.slice(-20);
+        const mid = windowMean(win, win.length);
+        const sd = Math.sqrt(win.reduce((sum, value) => sum + Math.pow(value - mid, 2), 0) / win.length);
+        ind.bb_upper = finite(mid + 2 * sd); ind.bb_middle = finite(mid); ind.bb_lower = finite(mid - 2 * sd);
+    }
+    if (closes.length >= 26) {
+        const fast = ema(closes, 12), slow = ema(closes, 26);
+        const macdSeries = fast.map((value, index) => value - slow[index]).slice(25);
+        const signalSeries = ema(macdSeries, 9);
+        ind.macd = finite(macdSeries.at(-1));
+        ind.macd_signal = finite(signalSeries.at(-1));
+        ind.macd_hist = finite(ind.macd - ind.macd_signal);
+    }
+    if (data.length >= 14 && closes.length) {
+        const high14 = Math.max(...highs.slice(-14)), low14 = Math.min(...lows.slice(-14));
+        ind.stoch_k = finite((closes.at(-1) - low14) / ((high14 - low14) || 1) * 100);
+        const kSeries = [];
+        for (let i = 13; i < data.length; i++) {
+            const hi = Math.max(...highs.slice(i - 13, i + 1)), lo = Math.min(...lows.slice(i - 13, i + 1));
+            kSeries.push((closes[i] - lo) / ((hi - lo) || 1) * 100);
+        }
+        ind.stoch_d = finite(windowMean(kSeries, Math.min(3, kSeries.length)));
+        ind.williams_r = finite((high14 - closes.at(-1)) / ((high14 - low14) || 1) * -100);
+    }
+    if (data.length >= 20) {
+        const typical = data.map(c => (Number(c.h) + Number(c.l) + Number(c.c)) / 3);
+        const tp = typical.at(-1), mean = windowMean(typical, 20);
+        const deviation = typical.slice(-20).reduce((sum, value) => sum + Math.abs(value - mean), 0) / 20;
+        ind.cci = finite((tp - mean) / (0.015 * (deviation || 1)));
+    }
+    if (data.length >= 26) {
+        const hi9 = Math.max(...highs.slice(-9)), lo9 = Math.min(...lows.slice(-9));
+        const hi26 = Math.max(...highs.slice(-26)), lo26 = Math.min(...lows.slice(-26));
+        const hi52 = Math.max(...highs.slice(-52)), lo52 = Math.min(...lows.slice(-52));
+        ind.ichimoku_tenkan = finite((hi9 + lo9) / 2);
+        ind.ichimoku_kijun = finite((hi26 + lo26) / 2);
+        ind.ichimoku_senkou_a = finite((ind.ichimoku_tenkan + ind.ichimoku_kijun) / 2);
+        ind.ichimoku_senkou_b = data.length >= 52 ? finite((hi52 + lo52) / 2) : null;
+    }
+    if (data.length >= 11) {
+        let direction = 1, extreme = highs[0], sar = lows[0], acceleration = 0.02;
+        for (let i = 1; i < data.length; i++) {
+            sar = sar + acceleration * (extreme - sar);
+            if (direction > 0) {
+                sar = Math.min(sar, lows[i - 1], i > 1 ? lows[i - 2] : lows[i - 1]);
+                if (lows[i] < sar) { direction = -1; sar = extreme; extreme = lows[i]; acceleration = 0.02; }
+                else if (highs[i] > extreme) { extreme = highs[i]; acceleration = Math.min(0.2, acceleration + 0.02); }
+            } else {
+                sar = Math.max(sar, highs[i - 1], i > 1 ? highs[i - 2] : highs[i - 1]);
+                if (highs[i] > sar) { direction = 1; sar = extreme; extreme = highs[i]; acceleration = 0.02; }
+                else if (lows[i] < extreme) { extreme = lows[i]; acceleration = Math.min(0.2, acceleration + 0.02); }
+            }
+        }
+        ind.sar = finite(sar);
+    }
+    if (data.length >= 11) {
+        const factor = 3, period = 10;
+        let finalUpper = 0, finalLower = 0, trend = 1, supertrend = null;
+        for (let i = 0; i < data.length; i++) {
+            const atrValue = rollingATR(period, i + 1);
+            if (!Number.isFinite(atrValue)) continue;
+            const mid = (highs[i] + lows[i]) / 2;
+            const upper = mid + factor * atrValue, lower = mid - factor * atrValue;
+            if (i === 0 || !Number.isFinite(supertrend)) { finalUpper = upper; finalLower = lower; supertrend = lower; continue; }
+            finalUpper = closes[i - 1] <= finalUpper ? Math.min(upper, finalUpper) : upper;
+            finalLower = closes[i - 1] >= finalLower ? Math.max(lower, finalLower) : lower;
+            if (trend < 0 && closes[i] > finalUpper) trend = 1;
+            else if (trend > 0 && closes[i] < finalLower) trend = -1;
+            supertrend = trend > 0 ? finalLower : finalUpper;
+        }
+        ind.supertrend = finite(supertrend);
+    }
+    return ind;
+}
+
 async function getTechnicalIndicators(tfUsed, candleData = null) {
     if(!TWELVE_DATA_KEY) return {};
     const cacheKey = `${pair}|${tfUsed}`;
     const cachedHit = indicatorCache[cacheKey];
     if(cachedHit && Date.now() - cachedHit.ts < INDICATOR_CACHE_TTL) return cachedHit.data;
 
-    const symbol = encodeURIComponent(getProviderSymbol(pair));
-    const interval = TF_MAP[tfUsed];
-    const ind = {};
+    const ind = localIndicatorSnapshot(candleData || []);
     const closes = (candleData || []).map(c => c.c);
 
     // Computed LOCALLY from candles already fetched — saves API credits
@@ -681,31 +780,9 @@ async function getTechnicalIndicators(tfUsed, candleData = null) {
         ind.bb_lower = mid - 2 * sd;
     }
 
-    // Fetched from the API only where there is no local equivalent (7 calls per TF)
-    const endpoints = [
-        {name: 'macd', url: `/macd?symbol=${symbol}&interval=${interval}`},
-        {name: 'stoch', url: `/stoch?symbol=${symbol}&interval=${interval}`},
-        {name: 'cci', url: `/cci?symbol=${symbol}&interval=${interval}&time_period=20`},
-        {name: 'williams', url: `/williams?symbol=${symbol}&interval=${interval}&time_period=14`},
-        {name: 'sar', url: `/sar?symbol=${symbol}&interval=${interval}&acceleration=0.02&maximum=0.2`},
-        {name: 'ichimoku', url: `/ichimoku?symbol=${symbol}&interval=${interval}`},
-        {name: 'supertrend', url: `/supertrend?symbol=${symbol}&interval=${interval}&time_period=10&multiplier=3`}
-    ];
-    await Promise.all(endpoints.map(async (e) => {
-        try {
-            const d = await fetchTD(e.url);
-            if(!d.values) return;
-            calls++;
-            const v = d.values[0];
-            if(e.name === 'macd') { ind.macd = parseFloat(v.macd); ind.macd_signal = parseFloat(v.macd_signal); ind.macd_hist = parseFloat(v.macd_hist); }
-            if(e.name === 'stoch') { ind.stoch_k = parseFloat(v.slow_k); ind.stoch_d = parseFloat(v.slow_d); }
-            if(e.name === 'cci') ind.cci = parseFloat(v.cci);
-            if(e.name === 'williams') ind.williams_r = parseFloat(v.williams);
-            if(e.name === 'sar') ind.sar = parseFloat(v.sar);
-            if(e.name === 'ichimoku') { ind.ichimoku_tenkan = parseFloat(v.tenkan_sen); ind.ichimoku_kijun = parseFloat(v.kijun_sen); ind.ichimoku_senkou_a = parseFloat(v.senkou_span_a); ind.ichimoku_senkou_b = parseFloat(v.senkou_span_b); }
-            if(e.name === 'supertrend') ind.supertrend = parseFloat(v.supertrend);
-        } catch (err) { console.error(`Error fetching ${e.name}:`, err); }
-    }));
+    // All supported indicators are derived locally from the already-fetched
+    // closed candles. This removes seven provider calls per timeframe and
+    // keeps the signal internally consistent with the structure engine.
     indicatorCache[cacheKey] = { data: ind, ts: Date.now() };
     return ind;
 }
