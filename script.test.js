@@ -4591,8 +4591,10 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(watch.execution_allowed).toBe(false);
         expect(watch.execution_mode).toBe('MANUAL');
         expect(watch.symbol_metadata.asset_class).toBe('FOREX');
-        const ready = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: true, entry: 1, stop_loss: 0.99, take_profit_1: 1.03 });
-        expect(ready.status_code).toBe('SETUP_READY');
+    const ready = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: true, entry: 1, stop_loss: 0.99, take_profit_1: 1.03 });
+    expect(ready.status_code).toBe('SETUP_READY');
+    const manualReview = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: false, manual_tracking_allowed: true, validation: { passed: true }, entry: 1, stop_loss: 0.99, take_profit_1: 1.03 });
+    expect(manualReview.status_code).toBe('SETUP_READY');
         expect(ready).toHaveProperty('market_open', null);
         expect(ready.reason).toBeNull();
         const blocked = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'DATA_BLOCKED', reason: { code: 'DATA_BLOCKED', message: 'price unavailable' } });

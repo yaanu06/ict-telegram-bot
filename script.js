@@ -11346,7 +11346,13 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
     if (signal.market_open === false) return 'MARKET_CLOSED';
     if (signal.status === 'INVALIDATED' || reasonCode.includes('INVALIDATED')) return 'INVALIDATED';
     if (signal.status === 'EXPIRED' || reasonCode.includes('EXPIRED')) return 'EXPIRED';
-    if ((signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') && signal.execution_allowed === false) return 'RISK_BLOCKED';
+    if ((signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') && signal.execution_allowed === false) {
+        // Manual execution is user-controlled. A deterministic setup may be
+        // shown for the user's decision even when automatic execution is off.
+        // Data, news, and explicit risk blocks above still override this.
+        if (signal.manual_tracking_allowed === true && signal.validation?.passed !== false) return 'SETUP_READY';
+        return 'RISK_BLOCKED';
+    }
     if (signal.execution_allowed === false && signal.setup_state === 'SETUP_AVAILABLE') return 'SETUP_READY';
     if (signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') return 'SETUP_READY';
     if (hasOpportunity && hasEntry) return 'SETUP_READY';
