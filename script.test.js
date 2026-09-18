@@ -715,6 +715,7 @@ describe('top-down trade context', () => {
         expect(signal.setup_state).toBe('SETUP_AVAILABLE');
         expect(signal.execution_allowed).toBe(false);
         expect(signal.entry).toBe(100);
+        expect(signal.decision).toBe('BUY_LIMIT');
     });
 
     it('keeps the selected developing setup in the public signal contract', () => {
@@ -4691,6 +4692,7 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
     it('validates the final public signal contract and rejects malformed ready geometry', () => {
         const ctx = getContext();
         expect(ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status_code: 'WATCH', current_price: 1.1 }).valid).toBe(true);
+        expect(ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY', status_code: 'SETUP_READY', entry: 100, stop_loss: 99, tp1: 103 }).valid).toBe(false);
         const invalid = ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status_code: 'SETUP_READY', entry: 100, stop_loss: 101, tp1: 99 });
         expect(invalid.valid).toBe(false);
         expect(invalid.issues.join(' ')).toMatch(/BUY_LIMIT geometry/);

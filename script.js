@@ -11561,13 +11561,17 @@ function buildPublicTradeSignal(signal = {}) {
     }
     const reasoning = signal.reasoning || {};
     const strategy = signal.strategy || signal.strategy_label || signal.strategy_setup?.label || null;
+    const requestedDecision = String(signal.decision || signal.trade_type || 'WAIT').toUpperCase();
+    const publicDecision = requestedDecision === 'BUY' ? 'BUY_LIMIT'
+        : requestedDecision === 'SELL' ? 'SELL_LIMIT'
+        : ['BUY_LIMIT', 'SELL_LIMIT', 'WAIT'].includes(requestedDecision) ? requestedDecision : 'WAIT';
     return {
         date: signal.date,
         time: signal.time,
         pair: signal.pair,
         current_price: signal.current_price,
         symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
-        decision: signal.decision || signal.trade_type,
+        decision: publicDecision,
         strategy,
         timeframe: signal.timeframe || signal.execution_timeframe || signal.setup_timeframe || null,
         entry: signal.entry ?? signal.entry_price,
@@ -11681,7 +11685,7 @@ function recordAnalysisAudit(signal = {}) {
 
 function validatePublicTradeSignal(signal = {}) {
     const issues = [];
-    const decisions = new Set(['WAIT', 'BUY_LIMIT', 'SELL_LIMIT', 'BUY', 'SELL']);
+    const decisions = new Set(['WAIT', 'BUY_LIMIT', 'SELL_LIMIT']);
     const statuses = new Set(['SETUP_READY', 'WATCH', 'ORDER_PENDING', 'NO_TRADE', 'DATA_BLOCKED', 'NEWS_BLOCKED', 'RISK_BLOCKED', 'MARKET_CLOSED']);
     if (!signal || typeof signal !== 'object' || Array.isArray(signal)) issues.push('signal must be an object');
     if (!String(signal?.pair || '').trim()) issues.push('pair is required');
