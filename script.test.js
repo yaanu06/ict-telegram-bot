@@ -4352,6 +4352,14 @@ describe('engine contract completion', () => {
         expect(prompt.system).not.toMatch(/return BUY_LIMIT|return SELL_LIMIT|ai_decision:|reaction\/fill confirmation/);
     });
 
+    it('validates production selector JSON against supplied candidates', () => {
+        const ctx = getContext();
+        const candidates = [{ id: 'candidate-1' }];
+        expect(ctx.validateAiSelectorResponse({ decision: 'SELECT', selected_candidate_id: 'candidate-1', reasoning: 'best' }, candidates).valid).toBe(true);
+        expect(ctx.validateAiSelectorResponse({ decision: 'SELECT', selected_candidate_id: 'invented', reasoning: 'best' }, candidates).valid).toBe(true);
+        expect(ctx.validateAiSelectorResponse({ decision: 'WAIT', selected_candidate_id: null, reasoning: 'no valid setup' }, candidates).valid).toBe(true);
+    });
+
     it.each([false, true])('hydrates SELECT exclusively from the candidate (legacy mutation=%s)', async mutate => {
         const ctx = getContext();
         await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
@@ -4379,6 +4387,23 @@ describe('engine contract completion', () => {
 });
 
 describe('provider, calendar, lifecycle, and public output contracts', () => {
+    it('rejects duplicate timestamps and explicitly open candles in required histories', () => {
+        const ctx = getContext();
+        const baseStart = Date.parse('2026-09-01T00:00:00Z');
+        const base = candles(50, 100, 0.1, 'up').map((bar, index) => ({ ...bar, t: new Date(baseStart + index * 3600000).toISOString() }));
+        const duplicate = base.map(bar => ({ ...bar }));
+        duplicate[1].t = duplicate[0].t;
+        const duplicateResult = ctx.validateMarketDataQuality({ '4H': duplicate, '1H': base }, 105);
+        expect(duplicateResult.valid).toBe(false);
+        expect(duplicateResult.reasons.join(' ')).toMatch(/duplicate candle timestamps/);
+
+        const open = base.map(bar => ({ ...bar }));
+        open[open.length - 1].is_closed = false;
+        const openResult = ctx.validateMarketDataQuality({ '4H': open, '1H': base }, 105);
+        expect(openResult.valid).toBe(false);
+        expect(openResult.reasons.join(' ')).toMatch(/open candle/);
+    });
+
     it('requests enough bounded history for configured MSNR lookback and keeps intraday UTC', async () => {
         const ctx = getContext();
         ctx.console.warn = () => {};

@@ -5748,13 +5748,18 @@ function latestCandleTimestamp(data, timeframe) {
 function validateMarketDataQuality(historyCache, price) {
     const reasons = [];
     if (!ictFiniteNumber(price) || price <= 0) reasons.push('current price is invalid');
-    for (const tf of ['4H', '1H']) {
+    const requiredTimeframes = ['4H', '1H'];
+    const availableTimeframes = ['1D', '4H', '1H', '15M', '5M', '1W'].filter(tf => Array.isArray(historyCache?.[tf]));
+    for (const tf of [...new Set([...requiredTimeframes, ...availableTimeframes])]) {
         const data = historyCache?.[tf];
-        if (!Array.isArray(data) || data.length < 50) {
+        const required = requiredTimeframes.includes(tf);
+        if (!Array.isArray(data) || (required && data.length < 50)) {
+            if (!required && !data) continue;
             reasons.push(`Insufficient ${tf} data for reliable ATR/structure analysis`);
             continue;
         }
         let prevTime = null;
+        const seenTimes = new Set();
         for (const c of data) {
             if (!ictFiniteNumber(c.o) || !ictFiniteNumber(c.h) || !ictFiniteNumber(c.l) || !ictFiniteNumber(c.c)) {
                 reasons.push(`${tf} contains non-finite OHLC values`);
@@ -5767,18 +5772,29 @@ function validateMarketDataQuality(historyCache, price) {
             if (c.t) {
                 const t = parseCandleTimeUTC(c.t);
                 if (Number.isFinite(t)) {
-                    if (prevTime !== null && t < prevTime) {
+                    if (seenTimes.has(t)) {
+                        reasons.push(`${tf} contains duplicate candle timestamps`);
+                        break;
+                    }
+                    seenTimes.add(t);
+                    if (prevTime !== null && t <= prevTime) {
                         reasons.push(`${tf} timestamps are not ordered`);
                         break;
                     }
                     prevTime = t;
                 }
             }
+            if (c.is_closed === false) {
+                reasons.push(`${tf} latest structure data contains an open candle`);
+                break;
+            }
         }
-        const atrVal = data.length >= 15 ? atr(data, 14) : NaN;
-        if (!Number.isFinite(atrVal) || atrVal <= 0) reasons.push(`${tf} ATR is unavailable or invalid`);
+        if (required) {
+            const atrVal = data.length >= 15 ? atr(data, 14) : NaN;
+            if (!Number.isFinite(atrVal) || atrVal <= 0) reasons.push(`${tf} ATR is unavailable or invalid`);
+        }
     }
-    return { valid: reasons.length === 0, reasons };
+    return { valid: reasons.length === 0, reasons: [...new Set(reasons)], checked_timeframes: availableTimeframes };
 }
 
 function candidateToAIResult(candidate) {
@@ -8175,6 +8191,26 @@ function parseAiJsonContent(content) {
     try { return JSON.parse(match[0]); } catch (error) { return null; }
 }
 
+function validateAiSelectorResponse(value, candidates = []) {
+    const issues = [];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) issues.push('response must be an object');
+    const rawDecision = String(value?.decision || '').toUpperCase();
+    // BUY_LIMIT/SELL_LIMIT are accepted only as a backwards-compatible
+    // selector alias; geometry still comes exclusively from the candidate.
+    const decision = ['BUY_LIMIT', 'SELL_LIMIT'].includes(rawDecision) ? 'SELECT' : rawDecision;
+    if (!['SELECT', 'WAIT'].includes(decision)) issues.push('decision must be SELECT or WAIT');
+    const selectedId = value?.selected_candidate_id;
+    if (decision === 'SELECT') {
+        if (typeof selectedId !== 'string' || !selectedId.trim()) issues.push('SELECT requires selected_candidate_id');
+    } else if (selectedId != null && typeof selectedId !== 'string') {
+        issues.push('selected_candidate_id must be a string or null');
+    }
+    if (typeof value?.reasoning !== 'string' && (!value?.reasoning || typeof value.reasoning !== 'object' || Array.isArray(value.reasoning))) {
+        issues.push('reasoning must be text or an object');
+    }
+    return { valid: issues.length === 0, issues, decision, selected_candidate_id: typeof selectedId === 'string' ? selectedId : null };
+}
+
 async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData = '') {
     const diagnostics = { analyst_called: false, analyst_status: 'SKIPPED', market_view: null, hypotheses_received: 0, hypotheses_verified: 0, hypotheses_rejected: 0, verified_hypotheses: [], rejected_hypotheses: [], deterministic_duplicates: 0, setups_added_from_ai: 0, final_selector_called: false, selected_candidate_id: null };
     if (!DEEPSEEK_API_KEY) { diagnostics.analyst_status = 'NO_API_KEY'; return { diagnostics, analysis: null, verified_setups: [] }; }
@@ -8584,6 +8620,17 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         const selector = JSON.parse(jsonMatch[0]);
         const productionSelector = liveMarketContext && Array.isArray(liveMarketContext.adaptive_setup_candidates);
         if (productionSelector) {
+            const selectorContract = validateAiSelectorResponse(selector, liveMarketContext.adaptive_setup_candidates);
+            if (!selectorContract.valid) {
+                console.error('[AI] selector schema rejected', selectorContract.issues);
+                return {
+                    decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
+                    reasoning: { primary: `AI selector schema rejected: ${selectorContract.issues.join('; ')}` },
+                    ai_decision: 'skip', noTrade: true,
+                    wait_condition: `AI selector schema rejected: ${selectorContract.issues.join('; ')}`,
+                    schema_validation: selectorContract
+                };
+            }
             const selectedId = typeof selector.selected_candidate_id === 'string' ? selector.selected_candidate_id : null;
             if (!selectedId || ['WAIT', 'NO_TRADE'].includes(String(selector.decision || '').toUpperCase())) {
                 return { decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
@@ -8657,12 +8704,9 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
             }
         }
         
-        if (!result.entry_zone.low || !result.entry_zone.high) {
-            result.entry_zone = {
-                low: result.entry * 0.998,
-                high: result.entry * 1.002,
-                source: result.entry_zone?.source || 'AI Zone'
-            };
+        if (!ictFiniteNumber(result.entry_zone.low) || !ictFiniteNumber(result.entry_zone.high) || result.entry_zone.high < result.entry_zone.low) {
+            console.error('AI entry zone is missing or invalid; refusing to invent geometry');
+            return null;
         }
         
         if (!result.reasoning.primary) {
