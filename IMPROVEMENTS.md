@@ -84,6 +84,7 @@
 ### 1r. **Backtest Performance Metrics**
 - Pending-limit backtests now report average reward-to-risk, expectancy in R, average time in trade, cancellation rate, and rejection rate.
 - Backtests accept a deterministic `fill_fraction` from 0 to 1 and scale normalized R results for partial fills.
+- Closed-trade results are also grouped by symbol, timeframe, market regime, and session.
 
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)

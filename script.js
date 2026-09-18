@@ -11203,7 +11203,7 @@ function simulatePendingLimitBacktest({ signals = [], candles = [], spread = 0, 
         }
         const grossR = (outcome === 'WIN' ? reward / risk : -1) * filled.fillFraction;
         const netR = grossR - (Number.isFinite(Number(feeR)) ? Number(feeR) : 0);
-        trades.push({ status: 'CLOSED', outcome, reason, signal_id: signal.id || null, fill_fraction: filled.fillFraction, fill_time: filled.bar.time, exit_time: exitTime, duration_ms: Math.max(0, exitTime - filled.bar.time), fill_price: filled.fillPrice, exit_price: exitPrice, risk, reward, rr: risk > 0 ? reward / risk : null, grossR, netR });
+        trades.push({ status: 'CLOSED', outcome, reason, signal_id: signal.id || null, symbol: signal.symbol || signal.pair || 'UNKNOWN', timeframe: signal.timeframe || signal.execution_timeframe || 'UNKNOWN', regime: signal.regime || signal.market_regime || 'UNKNOWN', session: signal.session || signal.market_session || 'UNKNOWN', fill_fraction: filled.fillFraction, fill_time: filled.bar.time, exit_time: exitTime, duration_ms: Math.max(0, exitTime - filled.bar.time), fill_price: filled.fillPrice, exit_price: exitPrice, risk, reward, rr: risk > 0 ? reward / risk : null, grossR, netR });
     }
     const closed = trades.filter(t => t.status === 'CLOSED');
     const wins = closed.filter(t => t.outcome === 'WIN');
@@ -11224,6 +11224,12 @@ function simulatePendingLimitBacktest({ signals = [], candles = [], spread = 0, 
     const rejectedCount = trades.filter(t => t.status === 'REJECTED').length;
     const expiredCount = trades.filter(t => t.status === 'EXPIRED').length;
     const partialFillCount = trades.filter(t => Number.isFinite(Number(t.fill_fraction)) && Number(t.fill_fraction) < 1).length;
+    const summarizeGroup = field => Object.fromEntries([...new Set(closed.map(trade => String(trade[field] || 'UNKNOWN')))].map(key => {
+        const group = closed.filter(trade => String(trade[field] || 'UNKNOWN') === key);
+        const groupWins = group.filter(trade => trade.outcome === 'WIN').length;
+        const groupNet = group.reduce((sum, trade) => sum + trade.netR, 0);
+        return [key, { closed_trades: group.length, wins: groupWins, losses: group.length - groupWins, win_rate: group.length ? groupWins / group.length : 0, net_R: groupNet, expectancy_R: group.length ? groupNet / group.length : 0 }];
+    }));
     return {
         trades,
         metrics: {
@@ -11242,6 +11248,10 @@ function simulatePendingLimitBacktest({ signals = [], candles = [], spread = 0, 
             rejection_rate: orderedSignals.length ? rejectedCount / orderedSignals.length : 0,
             partial_fills: partialFillCount,
             partial_fill_rate: orderedSignals.length ? partialFillCount / orderedSignals.length : 0,
+            by_symbol: summarizeGroup('symbol'),
+            by_timeframe: summarizeGroup('timeframe'),
+            by_regime: summarizeGroup('regime'),
+            by_session: summarizeGroup('session'),
             win_rate: closed.length ? wins.length / closed.length : 0,
             net_R: equityR - (Number.isFinite(Number(initialR)) ? Number(initialR) : 0),
             profit_factor: grossLosses > 0 ? grossWins / grossLosses : (grossWins > 0 ? Infinity : 0),

@@ -4542,13 +4542,17 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(result.trades.find(t => t.signal_id === 'same-bar')).toMatchObject({ outcome: 'LOSS', reason: 'STOP_AND_TARGET_SAME_CANDLE' });
 
         const partial = ctx.simulatePendingLimitBacktest({
-            signals: [{ id: 'partial', direction: 'BUY', entry: 100, stop_loss: 95, tp1: 104, fill_fraction: 0.5, created_at: t0 }],
+            signals: [{ id: 'partial', symbol: 'EUR/USD', timeframe: '1H', regime: 'TREND_UP', session: 'LONDON', direction: 'BUY', entry: 100, stop_loss: 95, tp1: 104, fill_fraction: 0.5, created_at: t0 }],
             candles: [bar(1, 101, 99), bar(2, 104, 96)]
         });
         expect(partial.trades[0]).toMatchObject({ status: 'CLOSED', outcome: 'WIN', fill_fraction: 0.5 });
         expect(partial.metrics.partial_fills).toBe(1);
         expect(partial.metrics.partial_fill_rate).toBe(1);
         expect(partial.trades[0].grossR).toBeCloseTo(0.4, 8);
+        expect(partial.metrics.by_symbol['EUR/USD']).toMatchObject({ closed_trades: 1, wins: 1 });
+        expect(partial.metrics.by_timeframe['1H'].closed_trades).toBe(1);
+        expect(partial.metrics.by_regime['TREND_UP'].closed_trades).toBe(1);
+        expect(partial.metrics.by_session.LONDON.closed_trades).toBe(1);
     });
 
     it('keeps pending paper-order lifecycle deterministic for touch, expiry, and invalidation', () => {
