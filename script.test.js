@@ -1932,6 +1932,16 @@ describe('getQuoteDirection', () => {
             momentum_trend: 'NEUTRAL'
         })).toBe('MIXED');
     });
+
+    it('normalizes public trend output from raw snapshot arrays and maps', () => {
+        const ctx = getContext();
+        expect(ctx.normalizePublicTrendMap([
+            { timeframe: '4H', structural_trend: 'MIXED', effective_trend: 'BULLISH_TRANSITION' },
+            { timeframe: '1H', structural_trend: 'MIXED', effective_trend: 'NEUTRAL', momentum_trend: 'BULLISH' }
+        ])).toEqual({ '4H': 'BULLISH_TRANSITION', '1H': 'BULLISH' });
+        expect(ctx.normalizePublicTrendMap({ '1D': 'BEARISH', '15M': { structural_trend: 'MIXED', effective_trend: 'NEUTRAL', momentum_trend: 'NEUTRAL' } }))
+            .toEqual({ '1D': 'BEARISH', '15M': 'MIXED' });
+    });
 });
 
 describe('analyzeMarketPhase (AMD)', () => {

@@ -11480,6 +11480,28 @@ function cIsClosed(candle) {
     return !!candle && candle.is_closed !== false;
 }
 
+function normalizePublicTrendMap(value) {
+    if (!value) return null;
+    const output = {};
+    const add = (tf, snapshot) => {
+        if (!['1D', '4H', '1H', '15M', '5M', '1W', '1M'].includes(tf)) return;
+        if (typeof snapshot === 'string') {
+            output[tf] = snapshot;
+            return;
+        }
+        if (snapshot && typeof snapshot === 'object') {
+            const trend = snapshot.displayed_trend || getCanonicalDisplayedTrend(snapshot);
+            if (trend) output[tf] = trend;
+        }
+    };
+    if (Array.isArray(value)) {
+        value.forEach(item => add(String(item?.timeframe || '').toUpperCase(), item));
+    } else if (typeof value === 'object') {
+        Object.entries(value).forEach(([tf, snapshot]) => add(String(tf).toUpperCase(), snapshot));
+    }
+    return Object.keys(output).length ? output : null;
+}
+
 function buildPublicTradeSignal(signal = {}) {
     const isWait = signal.decision === 'WAIT' || signal.trade_type === 'WAIT';
     const parseRR = value => {
@@ -11488,9 +11510,10 @@ function buildPublicTradeSignal(signal = {}) {
         return match ? Number(match[1]) : null;
     };
     const structural = signal.structural_context || signal.top_down_context?.higher_timeframe || null;
+    const publicTrendMap = normalizePublicTrendMap(signal.trend_detection || structural);
     const publicRiskGate = signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE);
-    const structureSummary = signal.analysis?.structure || (structural && typeof structural === 'object'
-        ? Object.entries(structural).map(([tf, value]) => `${tf} ${value}`).join('; ')
+    const structureSummary = signal.analysis?.structure || (publicTrendMap
+        ? Object.entries(publicTrendMap).map(([tf, value]) => `${tf} ${value}`).join('; ')
         : (typeof structural === 'string' ? structural : null));
     const draw = signal.daily_bias?.liquidity_draw || signal.daily_bias?.target_type || signal.target_type || signal.primary_target_source;
     const liquiditySummary = signal.analysis?.liquidity || (draw ? `${draw}${signal.daily_bias?.target_level != null ? ' at ' + signal.daily_bias.target_level : ''}` : null);
@@ -11571,7 +11594,7 @@ function buildPublicTradeSignal(signal = {}) {
                 } : (signal.opportunity || null),
                 reason: signal.reason || { code: 'DEVELOPING_SETUP', message: 'A valid developing opportunity remains for today.' },
                 analysis: {
-                    trend_detection: signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
+                    trend_detection: publicTrendMap || signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
                     volatility_level: signal.volatility?.regime || signal.analysis?.volatility || null,
                     technical_indicators: signal.indicators || signal.analysis?.indicators || null,
                     type: signal.strategy || signal.trade_context_classification || null
@@ -11657,7 +11680,7 @@ function buildPublicTradeSignal(signal = {}) {
             bias: signal.analysis?.bias || (signal.direction === 'BUY' ? 'BULLISH' : signal.direction === 'SELL' ? 'BEARISH' : 'NEUTRAL'),
             trade_context: signal.trade_context_classification || signal.adaptive_candidate?.trade_context_classification || null,
             higher_timeframe: signal.top_down_context?.higher_timeframe || null,
-            structural_context: signal.structural_context || null,
+            structural_context: publicTrendMap || signal.structural_context || null,
             daily_bias: signal.daily_bias ? {
                 direction: signal.daily_bias.direction,
                 target: signal.daily_bias.target_level,
