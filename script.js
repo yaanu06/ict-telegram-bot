@@ -108,11 +108,9 @@ function getProviderSymbol(value) {
 // volumeRatio) must be downweighted or zeroed — fake volume is NOT confirmation.
 // Crypto pairs (BTC) have real volume; XAU/XAG and FX pairs do not (varies by
 // plan, but we default conservative).
-const REAL_VOLUME_PAIRS = new Set(['BTC/USD']);
 function hasRealVolume(p, metadata = {}) {
     if (typeof metadata.volume_reliable === 'boolean') return metadata.volume_reliable;
     const sym = normalizeSymbolInput(p || pair);
-    if (REAL_VOLUME_PAIRS.has(sym)) return true;
     const assetClass = metadata.asset_class || getAssetClass(sym);
     return ['CRYPTO', 'EQUITY', 'INDEX'].includes(assetClass);
 }
