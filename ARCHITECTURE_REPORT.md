@@ -40,6 +40,7 @@ Account risk limits are evaluated by one shared deterministic gate when account 
 - Optional `1M` and `1W` history are supported by the normalized timeframe registry but are excluded from the default opportunity scan to preserve the Twelve Data 55-credit budget. The default scan requests one quote plus closed `5M`, `15M`, `1H`, `4H`, and `1D` candles; weekly or one-minute data is fetched only when explicitly requested.
 - Live quotes and candles require usable timestamps; stale, future-dated, undated, or expired cached price data is blocked.
 - Supplied symbol metadata and quote bid/ask conditions are preserved through the live context and public signal.
+- When supplied, symbol-session metadata (`open_days`, `open_utc`, and `close_utc`) is evaluated before the generic asset calendar; provider market-open state remains authoritative.
 - A known excessive spread rejects candidate construction before AI selection and is exposed as `RISK_BLOCKED`.
 - Paper orders carry deterministic idempotency keys, and persisted keys are checked against the stored order geometry before monitoring. Manual tracking records use a separate `MANUAL:` key namespace so they cannot be confused with simulated orders.
 - Backtest reports include partial-fill scaling and grouped performance by symbol, timeframe, regime, and session.
