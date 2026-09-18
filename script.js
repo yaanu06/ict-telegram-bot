@@ -11440,6 +11440,9 @@ function buildAccountRiskGate({ mode = 'PAPER', account = null, risk_percent = n
     const tickValue = Number(symbol_metadata?.tick_value);
     const tickSize = Number(symbol_metadata?.tick_size);
     const riskDistance = Number(account?.risk_distance);
+    const spread = Number(symbol_metadata?.spread);
+    const slippage = Number(symbol_metadata?.slippage_estimate);
+    const commission = Number(symbol_metadata?.commission_per_unit);
     const issues = [];
     if (!Number.isFinite(equity) || equity <= 0) issues.push('account equity is unavailable');
     if (!Number.isFinite(riskPct) || riskPct <= 0) issues.push('risk percentage is unavailable');
@@ -11447,9 +11450,22 @@ function buildAccountRiskGate({ mode = 'PAPER', account = null, risk_percent = n
     if (!Number.isFinite(riskDistance) || riskDistance <= 0) issues.push('risk distance is unavailable');
     if (issues.length) return { mode: normalizedMode, status: 'RISK_BLOCKED', execution_allowed: false, position_size: null, risk_amount: null, issues, reason: issues.join('; ') };
     const riskAmount = equity * riskPct / 100;
-    const positionSize = riskAmount / ((riskDistance / tickSize) * tickValue);
+    const costDistance = (Number.isFinite(spread) && spread > 0 ? spread : 0)
+        + (Number.isFinite(slippage) && slippage > 0 ? slippage * 2 : 0);
+    const effectiveRiskDistance = riskDistance + costDistance;
+    const priceRiskPerUnit = (effectiveRiskDistance / tickSize) * tickValue;
+    const riskPerUnit = priceRiskPerUnit + (Number.isFinite(commission) && commission > 0 ? commission : 0);
+    const positionSize = riskAmount / riskPerUnit;
     if (!Number.isFinite(positionSize) || positionSize <= 0) return { mode: normalizedMode, status: 'RISK_BLOCKED', execution_allowed: false, position_size: null, risk_amount: riskAmount, issues: ['position size calculation is invalid'], reason: 'Deterministic position size calculation failed.' };
-    return { mode: normalizedMode, status: 'RISK_READY', execution_allowed: true, position_size: positionSize, risk_amount: riskAmount, issues: [], reason: 'Account and symbol risk constraints passed.' };
+    const minimumOrderSize = Number(symbol_metadata?.minimum_order_size);
+    if (Number.isFinite(minimumOrderSize) && minimumOrderSize > 0 && positionSize < minimumOrderSize) {
+        return { mode: normalizedMode, status: 'RISK_BLOCKED', execution_allowed: false, position_size: positionSize, risk_amount: riskAmount,
+            issues: ['calculated position size is below the symbol minimum order size'], reason: 'Risk budget is too small for the symbol minimum order size.' };
+    }
+    return { mode: normalizedMode, status: 'RISK_READY', execution_allowed: true, position_size: positionSize, risk_amount: riskAmount,
+        effective_risk_distance: effectiveRiskDistance, risk_per_unit: riskPerUnit,
+        cost_assumptions: { spread: Number.isFinite(spread) && spread > 0 ? spread : 0, slippage_round_trip: Number.isFinite(slippage) && slippage > 0 ? slippage * 2 : 0, commission_per_unit: Number.isFinite(commission) && commission > 0 ? commission : 0 },
+        issues: [], reason: 'Account and symbol risk constraints passed.' };
 }
 
 function buildManualExecutionGate() {

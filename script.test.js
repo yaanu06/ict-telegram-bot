@@ -4688,6 +4688,21 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ready.position_size).toBeGreaterThan(0);
     });
 
+    it('includes spread, slippage, commission, and minimum order size in live sizing', () => {
+        const ctx = getContext();
+        const baseline = ctx.buildAccountRiskGate({ mode: 'LIVE', account: { equity: 10000, risk_distance: 0.01 }, risk_percent: 1,
+            symbol_metadata: { tick_size: 0.0001, tick_value: 1 } });
+        const costed = ctx.buildAccountRiskGate({ mode: 'LIVE', account: { equity: 10000, risk_distance: 0.01 }, risk_percent: 1,
+            symbol_metadata: { tick_size: 0.0001, tick_value: 1, spread: 0.0002, slippage_estimate: 0.0001, commission_per_unit: 0.5 } });
+        expect(costed.status).toBe('RISK_READY');
+        expect(costed.position_size).toBeLessThan(baseline.position_size);
+        expect(costed.effective_risk_distance).toBeCloseTo(0.0104, 8);
+        expect(costed.cost_assumptions).toEqual({ spread: 0.0002, slippage_round_trip: 0.0002, commission_per_unit: 0.5 });
+        const belowMinimum = ctx.buildAccountRiskGate({ mode: 'LIVE', account: { equity: 100, risk_distance: 0.01 }, risk_percent: 1,
+            symbol_metadata: { tick_size: 0.0001, tick_value: 1, minimum_order_size: 1000 } });
+        expect(belowMinimum.status).toBe('RISK_BLOCKED');
+    });
+
     it('enforces configured loss, order-count, and symbol-exposure limits in every mode', () => {
         const ctx = getContext();
         const blocked = ctx.buildAccountRiskGate({

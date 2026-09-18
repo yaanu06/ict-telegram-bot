@@ -146,6 +146,11 @@ Added actual detection algorithms for:
 - **Conservative confidence cap**: 95% max (was 98%)
 - **Deterministic account-limit gate**: weekly loss, consecutive losses, active-order count, and per-symbol exposure are checked alongside open risk and daily loss. An explicitly breached limit blocks both paper and live order creation.
 
+### 5a. **Cost-Aware Live Position Sizing**
+- Live sizing now includes supplied spread, round-trip slippage, and per-unit commission in the effective risk distance.
+- Symbol minimum order size is enforced deterministically.
+- The risk gate reports its cost assumptions and effective per-unit risk for auditability.
+
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:
 1. First choice: FVG midpoint
