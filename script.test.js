@@ -1990,6 +1990,17 @@ describe('getQuoteDirection', () => {
         expect(signal.status_code).toBe('DATA_BLOCKED');
         expect(signal.execution_allowed).toBe(false);
     });
+
+    it('preserves supplied symbol and provider metadata in no-trade output', () => {
+        const ctx = getContext();
+        const raw = ctx.buildTodayOpportunityOutput({
+            state: 'NO_TRADE_TODAY', reason_code: 'NO_TRADE_TODAY', reason: 'No fresh setup.'
+        }, 'XAU/USD', 2300, Date.parse('2026-09-19T10:00:00Z'), true,
+        { symbol: 'XAU/USD', asset_class: 'METAL', price_precision: 2 },
+        { '4H': { provider: 'TWELVE_DATA' } });
+        expect(raw.trade_signal.symbol_metadata).toMatchObject({ asset_class: 'METAL', price_precision: 2 });
+        expect(raw.trade_signal.provider_metadata).toEqual({ '4H': { provider: 'TWELVE_DATA' } });
+    });
 });
 
 describe('analyzeMarketPhase (AMD)', () => {

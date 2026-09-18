@@ -7551,7 +7551,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
     return state;
 }
 
-function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen) {
+function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen, symbolMetadata = null, providerMetadata = null) {
     const date = new Date(Number.isFinite(asOfMs) ? asOfMs : Date.now());
     const opportunity = ['TODAY_OPPORTUNITY', 'WATCH_ONLY'].includes(today?.state) ? {
         scenario: today.reason,
@@ -7578,7 +7578,8 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         top_down_context: today?.top_down_context || null,
         daily_bias: today?.daily_bias || null,
         news_risk: today?.news_risk || { status: 'UNKNOWN', available: false },
-        symbol_metadata: getSymbolMetadata(pairLocal),
+        symbol_metadata: symbolMetadata || getSymbolMetadata(pairLocal),
+        provider_metadata: providerMetadata || today?.provider_metadata || null,
         data_quality: today?.data_quality || null,
         strategy: today?.strategy || null,
             direction: today?.direction || null,
@@ -8211,7 +8212,7 @@ function replayCapturedScan(replay) {
         candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, targetCandidates: live.target_candidates,
         symbolMetadata: live.symbol_metadata,
         marketOpen: live.market_open });
-    const finalOutput = buildTodayOpportunityOutput(today, replay.pair, price, asOfMs, live.market_open);
+    const finalOutput = buildTodayOpportunityOutput(today, replay.pair, price, asOfMs, live.market_open, live.symbol_metadata, live.provider_metadata);
     return { replay_matches_live: compareScanReplayOutput(replay.final_output, finalOutput).replay_matches_live,
         differences: compareScanReplayOutput(replay.final_output, finalOutput).differences, replay_output: finalOutput, production_trace: live.production_trace };
 }
@@ -9757,7 +9758,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
             marketOpen: getMarketOpenState(pair, quoteSnapshot || {}).is_market_open
         });
         if (fallbackToday.state === 'TODAY_OPPORTUNITY' || fallbackToday.state === 'WATCH_ONLY') {
-            const recovery = buildTodayOpportunityOutput(fallbackToday, pair, price, Date.now(), true);
+            const recovery = buildTodayOpportunityOutput(fallbackToday, pair, price, Date.now(), getMarketOpenState(pair, quoteSnapshot || {}).is_market_open, fallbackMetadata, null);
             Object.assign(out.trade_signal, recovery.trade_signal, {
                 selected_candidate_id: null,
                 trade_type: 'WAIT',
@@ -10241,7 +10242,7 @@ async function runAutoScan() {
                 today.reason_code = waitCode === 'NO_EXECUTION_GEOMETRY' ? 'NO_TRADE_TODAY' : waitCode;
             }
             if (today.state === 'NO_TRADE_TODAY' && today.reason === 'No defensible fresh or developing opportunity remains for today.') today.reason = reason;
-            const out = buildTodayOpportunityOutput(today, pair, price, scanAsOfMs, liveMarketContext.market_open);
+            const out = buildTodayOpportunityOutput(today, pair, price, scanAsOfMs, liveMarketContext.market_open, liveMarketContext.symbol_metadata, liveMarketContext.provider_metadata);
             out.trade_signal.trade_type = decision;
             out.trade_signal.ai_decision = 'skip';
             out.trade_signal.wait_condition = reason;
@@ -10307,7 +10308,7 @@ async function runAutoScan() {
                     today.reason = 'The deterministic developing plan remains valid, but the final selector chose WAIT.';
                 }
             }
-            const out = buildTodayOpportunityOutput(today, pair, price, scanAsOfMs, liveMarketContext.market_open);
+            const out = buildTodayOpportunityOutput(today, pair, price, scanAsOfMs, liveMarketContext.market_open, liveMarketContext.symbol_metadata, liveMarketContext.provider_metadata);
             out.trade_signal.trade_type = 'WAIT';
             out.trade_signal.ai_decision = 'skip';
             out.trade_signal.wait_condition = aiResult.wait_condition;
@@ -10338,7 +10339,7 @@ async function runAutoScan() {
                     time: new Date().toISOString().split('T')[1].split('.')[0],
                     pair: pair,
                     current_price: price,
-                    symbol_metadata: getSymbolMetadata(pair),
+                    symbol_metadata: liveMarketContext.symbol_metadata || getSymbolMetadata(pair),
                     market_conditions: liveMarketContext.market_conditions || null,
                     trade_context_classification: liveMarketContext.trade_context_classification || null,
                     top_down_context: liveMarketContext.top_down_context || null,
@@ -10639,7 +10640,7 @@ async function runAutoScan() {
                     { pair, currentPrice: price, scanAsOfMs, histories: historyCache }
                 );
                 if (recoveryToday?.state === 'TODAY_OPPORTUNITY' || recoveryToday?.state === 'WATCH_ONLY') {
-                    const recovery = buildTodayOpportunityOutput(recoveryToday, pair, price, scanAsOfMs, liveMarketContext.market_open);
+                    const recovery = buildTodayOpportunityOutput(recoveryToday, pair, price, scanAsOfMs, liveMarketContext.market_open, liveMarketContext.symbol_metadata, liveMarketContext.provider_metadata);
                     Object.assign(out.trade_signal, recovery.trade_signal, {
                         selected_candidate_id: null,
                         trade_type: 'WAIT',
