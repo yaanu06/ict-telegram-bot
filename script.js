@@ -5907,6 +5907,7 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
     const reasons = [];
     if (!ictFiniteNumber(price) || price <= 0) reasons.push('current price is invalid');
     const quoteTime = normalizeTimestampUTC(quoteSnapshot?.provider_timestamp ?? quoteSnapshot?.provider_timestamp_utc);
+    if (quoteSnapshot && ictFiniteNumber(price) && !Number.isFinite(quoteTime)) reasons.push('quote timestamp is unavailable');
     const quoteAgeMs = Number.isFinite(quoteTime) ? Number(asOfMs) - quoteTime : null;
     // A provider quote older than one hour cannot safely support a current
     // limit plan. Unknown timestamps remain unknown instead of being called fresh.

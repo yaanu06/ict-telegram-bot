@@ -61,6 +61,10 @@
 - Price-endpoint fallbacks now carry the cache/fetch timestamp into the scan snapshot.
 - Expired cached prices are rejected after provider errors instead of being presented as current quotes.
 
+### 1m. **Quote Timestamp Requirement**
+- A live quote with a numeric price but no provider timestamp is now data-blocked.
+- This prevents an undated provider response from being treated as current market state.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

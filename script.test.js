@@ -4619,6 +4619,13 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(future.reasons.join(' ')).toMatch(/future candle/);
     });
 
+    it('requires a timestamp when a live quote snapshot supplies a price', () => {
+        const ctx = getContext();
+        const result = ctx.validateMarketDataQuality({ '4H': candles(50, 100, 0.1, 'up'), '1H': candles(50, 100, 0.1, 'up') }, 105, { price: 105 }, Date.now());
+        expect(result.valid).toBe(false);
+        expect(result.reasons).toContain('quote timestamp is unavailable');
+    });
+
     it('hard-blocks candidate construction during supplied high-impact news risk', () => {
         const ctx = getContext();
         const result = ctx.buildAdaptiveSetupCandidates({
