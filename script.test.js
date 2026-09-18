@@ -5233,6 +5233,15 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(refreshed.ema9).not.toBe(first.ema9);
     });
 
+    it('keeps indicator cache entries isolated by symbol', async () => {
+        const ctx = getContext();
+        const data = candles(80, 100, 0.25, 'up').map((bar, index) => ({ ...bar, is_closed: true, timeframe: '1H', t: index }));
+        const first = await ctx.getTechnicalIndicators('1H', data, 'EUR/USD');
+        const second = await ctx.getTechnicalIndicators('1H', data, 'AUD/USD');
+        expect(second).not.toBe(first);
+        expect(second.ema9).toBe(first.ema9);
+    });
+
     it('does not let device timezone affect canonical timestamps', () => {
         const ctx = getContext();
         const value = '2026-09-11T10:00:00Z';

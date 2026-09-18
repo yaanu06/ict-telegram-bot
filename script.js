@@ -925,12 +925,12 @@ function localIndicatorSnapshot(candleData = []) {
     return ind;
 }
 
-async function getTechnicalIndicators(tfUsed, candleData = null) {
+async function getTechnicalIndicators(tfUsed, candleData = null, pairLocal = pair) {
     const latest = Array.isArray(candleData) && candleData.length ? candleData[candleData.length - 1] : null;
     const datasetKey = latest
         ? `${candleData.length}:${latest.t ?? latest.timestamp ?? ''}:${latest.c ?? latest.close ?? ''}`
         : 'NO_CANDLES';
-    const cacheKey = `${pair}|${tfUsed}|${datasetKey}`;
+    const cacheKey = `${pairLocal || pair}|${tfUsed}|${datasetKey}`;
     const cachedHit = indicatorCache[cacheKey];
     if(cachedHit && Date.now() - cachedHit.ts < INDICATOR_CACHE_TTL) return cachedHit.data;
 
@@ -4027,7 +4027,7 @@ async function analyzeTimeframe(tfToAnalyze, price, htfData, pairLocal = pair, s
     // Indicators are derived locally from the already-fetched candles, so
     // analysis remains reproducible when provider credentials are unavailable.
     const tradeable = ['4H', '1H'].includes(tfToAnalyze);
-    const twelveIndicators = tradeable ? await getTechnicalIndicators(tfToAnalyze, htfData[tfToAnalyze] || null) : {};
+    const twelveIndicators = tradeable ? await getTechnicalIndicators(tfToAnalyze, htfData[tfToAnalyze] || null, pairLocal) : {};
     return evaluateSetup(tfToAnalyze, price, htfData, twelveIndicators, new Date(), pairLocal, symbolMetadata);
 }
 
@@ -10298,7 +10298,7 @@ async function runAutoScan() {
         scanText.innerHTML = '📈 Analyzing indicators...';
         const indicators = {};
         for (const tf of ['4H', '1H']) {
-            indicators[tf] = await getTechnicalIndicators(tf, historyCache[tf] || null);
+            indicators[tf] = await getTechnicalIndicators(tf, historyCache[tf] || null, pair);
         }
         
         scanText.innerHTML = '🔍 Detecting patterns...';
