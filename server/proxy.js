@@ -1,7 +1,9 @@
 'use strict';
 
 const http = require('node:http');
+const path = require('node:path');
 const { URL } = require('node:url');
+const { createAuditStore } = require('./audit-store');
 
 const TIMEFRAME_INTERVALS = new Set(['1min', '5min', '15min', '1h', '4h', '1day', '1week']);
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -85,7 +87,7 @@ async function proxyJson(fetchImpl, url, options = {}) {
     return { status: response.status, payload };
 }
 
-function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, now = () => Date.now() } = {}) {
+function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, now = () => Date.now(), auditStore = null } = {}) {
     if (typeof fetchImpl !== 'function') throw new Error('a fetch implementation is required');
     const allow = createRateLimiter({ now, maxRequests: Number(env.PROXY_MAX_REQUESTS || DEFAULT_MAX_REQUESTS) });
     const twelveKey = String(env.TWELVE_DATA_API_KEY || '').trim();
@@ -93,6 +95,8 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
     const twelveBase = String(env.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com').replace(/\/$/, '');
     const deepSeekUrl = String(env.DEEPSEEK_API_URL || 'https://api.deepseek.com/chat/completions');
     const origin = configuredOrigin(env);
+    const configuredAuditToken = String(env.AUDIT_WRITE_TOKEN || '').trim();
+    const store = auditStore || (configuredAuditToken ? createAuditStore({ filePath: env.AUDIT_FILE_PATH || path.join(__dirname, 'data', 'audit.jsonl') }) : null);
 
     return http.createServer(async (req, res) => {
         const requestUrl = new URL(req.url || '/', 'http://proxy.local');
@@ -133,6 +137,15 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                     body: JSON.stringify({ ...body, stream: false })
                 });
                 return jsonResponse(res, result.status, result.payload, origin);
+            }
+            if ((req.method === 'POST' || req.method === 'GET') && requestUrl.pathname === '/api/audit') {
+                if (!store || !configuredAuditToken || req.headers['x-audit-token'] !== configuredAuditToken) return jsonResponse(res, 401, { error: 'audit authentication required' }, origin);
+                if (req.method === 'GET') return jsonResponse(res, 200, { records: store.recent(requestUrl.searchParams.get('limit') || 100) }, origin);
+                const raw = await readBody(req);
+                let record;
+                try { record = JSON.parse(raw || '{}'); } catch { return jsonResponse(res, 400, { error: 'audit body must be valid JSON' }, origin); }
+                const saved = store.append(record);
+                return jsonResponse(res, 201, { saved: true, request_id: saved.request_id }, origin);
             }
             return jsonResponse(res, 404, { error: 'route not found' }, origin);
         } catch (error) {
