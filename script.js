@@ -894,9 +894,10 @@ async function getQuoteDirection(tfStr, cachedData = null) {
         if (data && data.length >= 50) {
             // Keep AI scoring on the same structure snapshot used by the
             // displayed multi-timeframe trend.
-            const effective = buildStructureSnapshot(data, tfStr).effective_trend || 'NEUTRAL';
-            return effective === 'BULLISH_TRANSITION' ? 'BULLISH'
-                : effective === 'BEARISH_TRANSITION' ? 'BEARISH' : effective;
+            const snapshot = buildStructureSnapshot(data, tfStr);
+            const displayed = getCanonicalDisplayedTrend(snapshot);
+            return displayed === 'BULLISH_TRANSITION' ? 'BULLISH'
+                : displayed === 'BEARISH_TRANSITION' ? 'BEARISH' : displayed;
         }
         // If we don't have enough data for a proper trend read, return NEUTRAL
         // instead of guessing from one or two candles. A single candle flip
@@ -3079,6 +3080,13 @@ function getCanonicalDisplayedTrend(snapshot = {}) {
     if (effective === 'NEUTRAL' && ['BULLISH', 'BEARISH'].includes(snapshot.bias)) return snapshot.bias;
     if (effective === 'NEUTRAL' && snapshot.structural_trend === 'MIXED') return 'MIXED';
     return effective;
+}
+
+function getCanonicalTimeframeTrend(data, tf, fallback = 'NEUTRAL') {
+    const closed = closedStructureCandles(data || []);
+    if (closed.length >= 20) return getCanonicalDisplayedTrend(buildStructureSnapshot(closed, tf));
+    if (fallback && typeof fallback === 'object') return getCanonicalDisplayedTrend(fallback);
+    return fallback || 'NEUTRAL';
 }
 
 async function updateMTFDisplay(historyCache = {}) {
@@ -6560,9 +6568,9 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
 
     const desiredTrend = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
     const htfDirections = {
-        '1D': daily.length >= 50 ? detectTrend(daily) : (marketContext.structure?.['1D']?.trend || 'NEUTRAL'),
-        '4H': fourH.length >= 50 ? detectTrend(fourH) : (marketContext.structure?.['4H']?.trend || 'NEUTRAL'),
-        '1H': oneH.length >= 50 ? detectTrend(oneH) : (marketContext.structure?.['1H']?.trend || 'NEUTRAL')
+        '1D': getCanonicalTimeframeTrend(daily, '1D', marketContext.structure?.['1D']),
+        '4H': getCanonicalTimeframeTrend(fourH, '4H', marketContext.structure?.['4H']),
+        '1H': getCanonicalTimeframeTrend(oneH, '1H', marketContext.structure?.['1H'])
     };
     const htfMatch = Object.values(htfDirections).filter(v => v === desiredTrend).length;
     metrics.htfMatch = htfMatch;
@@ -7995,10 +8003,10 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         volatility: volatilityFacts,
         multi_timeframe_direction: {
             trend: {
-                '1D': structure['1D'].effective_trend,
-                '4H': structure['4H'].effective_trend,
-                '1H': structure['1H'].effective_trend,
-                '15M': structure['15M'].effective_trend
+                '1D': marketContext.timeframe_context?.['1D']?.displayed_trend || getCanonicalDisplayedTrend(structure['1D']),
+                '4H': marketContext.timeframe_context?.['4H']?.displayed_trend || getCanonicalDisplayedTrend(structure['4H']),
+                '1H': marketContext.timeframe_context?.['1H']?.displayed_trend || getCanonicalDisplayedTrend(structure['1H']),
+                '15M': marketContext.timeframe_context?.['15M']?.displayed_trend || getCanonicalDisplayedTrend(structure['15M'])
             },
             bias: {
                 '1D': structure['1D'].bias,

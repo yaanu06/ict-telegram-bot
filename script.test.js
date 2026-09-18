@@ -1917,6 +1917,20 @@ describe('getQuoteDirection', () => {
         expect(result['1H']).toMatchObject({ displayed_trend: 'BULLISH_TRANSITION', bias: 'BULLISH' });
         expect(result['15M'].displayed_trend).toBe('MIXED');
     });
+
+    it('uses the same canonical trend when validating a timeframe as when displaying it', () => {
+        const ctx = getContext();
+        expect(ctx.getCanonicalTimeframeTrend([], '4H', {
+            effective_trend: 'BULLISH',
+            structural_trend: 'MIXED',
+            momentum_trend: 'BULLISH'
+        })).toBe('BULLISH');
+        expect(ctx.getCanonicalTimeframeTrend([], '4H', {
+            effective_trend: 'NEUTRAL',
+            structural_trend: 'MIXED',
+            momentum_trend: 'NEUTRAL'
+        })).toBe('MIXED');
+    });
 });
 
 describe('analyzeMarketPhase (AMD)', () => {
