@@ -4355,8 +4355,8 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
     };
 }
 
-function getCandidateATRContext(candidate, historyCache, pairLocal, price) {
-    const settings = getMarketSettings(pairLocal);
+function getCandidateATRContext(candidate, historyCache, pairLocal, price, symbolMetadata = null) {
+    const settings = getMarketSettings(pairLocal, symbolMetadata || {});
     const setupTimeframe = candidate?.timeframe || '1H';
     const setupData = closedStructureCandles(historyCache?.[setupTimeframe] || historyCache?.['1H'] || historyCache?.['4H'] || []);
     const higherTf = setupTimeframe === '4H' ? '1D' : '4H';
@@ -4394,8 +4394,8 @@ function getCandidateATRContext(candidate, historyCache, pairLocal, price) {
     };
 }
 
-function evaluateStructuralStop(candidate, atrContext, pairLocal) {
-    const settings = getMarketSettings(pairLocal);
+function evaluateStructuralStop(candidate, atrContext, pairLocal, symbolMetadata = null) {
+    const settings = getMarketSettings(pairLocal, symbolMetadata || {});
     const direction = candidate?.direction;
     const entry = Number(candidate?.entry);
     const stopLoss = Number(candidate?.stop_loss);
@@ -4470,8 +4470,8 @@ function classifySetupArchetype(candidate, historyCache, price, structure) {
     return { setup_archetype, reversal_evidence: evidence, htfMatch };
 }
 
-function buildRiskConstraints(pairLocal, price, historyCache, quoteSnapshot = null) {
-    const settings = getMarketSettings(pairLocal);
+function buildRiskConstraints(pairLocal, price, historyCache, quoteSnapshot = null, symbolMetadata = null) {
+    const settings = getMarketSettings(pairLocal, symbolMetadata || quoteSnapshot?.symbol_metadata || {});
     const prec = settings.prec;
     const closed4h = getClosedHistory(historyCache, '4H');
     const closed1h = getClosedHistory(historyCache, '1H');
@@ -5456,9 +5456,9 @@ function hasDeterministicMarketMechanicsProof(zone, direction, timeframeContext 
     return location && targets && (continuation || reversal);
 }
 
-function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, targetCandidates, riskConstraints, marketRegime, structure, marketContext, strategySetups }) {
+function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, targetCandidates, riskConstraints, marketRegime, structure, marketContext, strategySetups, symbolMetadata = null }) {
     const timeframeContext = marketContext?.timeframe_context || buildTimeframeContext({ historyCache, structure, price, strategySetups, zones });
-    const settings = getMarketSettings(pair);
+    const settings = getMarketSettings(pair, symbolMetadata || {});
     const prec = settings.prec;
     const minimumRR = Number(riskConstraints?.minimum_rr) || settings.targetRR || 2.5;
     const rawCandidates = [];
@@ -5561,7 +5561,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 const createdKey = normalizeTimestampUTC(zone.created_time);
                 const rawId = `${seedPrefix}${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${createdKey || zone.created_index || rawCandidates.length + 1}-${rawCandidates.length + 1}`;
                 const risk = Math.abs(entry - stop.stop_loss);
-                const atrContext = getCandidateATRContext({ timeframe: tf }, historyCache, pair, price);
+                const atrContext = getCandidateATRContext({ timeframe: tf }, historyCache, pair, price, symbolMetadata);
                 const authoritativeInvalidation = getAuthoritativeStructuralInvalidation(zone, strategySetup);
                 const rawCandidate = {
                     id: rawId,
@@ -5636,7 +5636,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         continue;
                     }
                 }
-                const stopEvaluation = evaluateStructuralStop(rawCandidate, atrContext, pair);
+                const stopEvaluation = evaluateStructuralStop(rawCandidate, atrContext, pair, symbolMetadata);
                 rawCandidate.risk_model.status = stopEvaluation.status;
                 rawCandidate.risk_model.volatility_classification = stopEvaluation.volatility_classification;
                 console.log('STRUCTURAL STOP EVALUATION', {
@@ -7745,7 +7745,7 @@ function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure
 
 function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext, as_of_ms = null, quote_snapshot = null }) {
     const symbolMetadata = getSymbolMetadata(pair, quote_snapshot?.symbol_metadata || {});
-    const settings = getMarketSettings(pair);
+    const settings = getMarketSettings(pair, symbolMetadata);
     const prec = settings.prec;
     const now = new Date(Number.isFinite(as_of_ms) ? as_of_ms : Date.now());
     const session = getSession(now);
@@ -7943,7 +7943,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             strategySetups.detection_stats.MSNR.atr_fallback_count += (msnr.supportMeta || []).filter(x => x.origin === 'ATR_FALLBACK').length + (msnr.resistanceMeta || []).filter(x => x.origin === 'ATR_FALLBACK').length;
         }
     }
-    const riskConstraints = buildRiskConstraints(pair, price, historyCache, quote_snapshot);
+    const riskConstraints = buildRiskConstraints(pair, price, historyCache, quote_snapshot, symbolMetadata);
     const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(strategySetups) : [];
     const validationZones = Array.isArray(strategySetups)
         ? [...(zones || []), ...strategyExecutionZones]
@@ -7974,7 +7974,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         marketRegime,
         structure,
         marketContext,
-        strategySetups
+        strategySetups,
+        symbolMetadata
     });
     console.log('[PERF] adaptive candidate construction', {
         elapsed_ms: Math.round((scanClock() - candidateStartedAt) * 100) / 100,
@@ -8836,7 +8837,8 @@ function rebuildCandidatesWithAiSetups(liveMarketContext, strategySetups) {
         marketRegime: liveMarketContext.market_regime,
         structure: liveMarketContext.structure,
         marketContext: liveMarketContext.market_context,
-        strategySetups
+        strategySetups,
+        symbolMetadata: liveMarketContext.symbol_metadata || null
     });
     liveMarketContext.strategy_setups = strategySetups;
     if (liveMarketContext.deterministic_validation_context) {
@@ -9490,7 +9492,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
         const tfAtr = tf === '4H' ? fallbackAtr4h : fallbackAtr1h;
         fallbackZones.push(...buildLiveZonesForTf(historyCache?.[tf], tf, price, pair, tfAtr || fallbackAtr4h || fallbackAtr1h || 0, 5));
     }
-    const fallbackRiskConstraints = buildRiskConstraints(pair, price, historyCache, quoteSnapshot);
+    const fallbackRiskConstraints = buildRiskConstraints(pair, price, historyCache, quoteSnapshot, quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair));
     const fallbackStructure = {
         '1D': buildStructureSnapshot(historyCache?.['1D'], '1D'),
         '4H': buildStructureSnapshot(historyCache?.['4H'], '4H'),
@@ -9544,7 +9546,8 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
         marketRegime: fallbackMarketRegime,
         structure: fallbackStructure,
         marketContext: fallbackMarketContext,
-        strategySetups: fallbackStrategySetups
+        strategySetups: fallbackStrategySetups,
+        symbolMetadata: quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair)
     });
     const fallbackValidationContext = buildDeterministicValidationContext({
         pair,
