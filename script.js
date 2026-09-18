@@ -162,7 +162,7 @@ function getMarketSettings(p, metadata = {}) {
     return withMetadata({ slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.01, targetRR: 2.5, prec: 5, pipSize: 0.0001 });
 }
 
-function getPrec(p) { return getMarketSettings(p).prec; }
+function getPrec(p, metadata = {}) { return getMarketSettings(p, metadata).prec; }
 
 // ============================================
 // API KEYS & GITHUB MANAGEMENT
@@ -1627,12 +1627,12 @@ function evaluateZoneIndicators(data, zone, direction) {
 // if the LTF zone doesn't align or isn't close, we keep the original 4H/1H entry.
 // When it works it times the entry better (a tighter 15M/5M level) and the caller
 // adds a confidence bonus. SL is recomputed against the refined entry for consistency.
-function refineEntryWithLTF(htfData, dir, price, baseResult, baseEntry) {
+function refineEntryWithLTF(htfData, dir, price, baseResult, baseEntry, pairLocal = pair, symbolMetadata = {}) {
     const ltfData = (htfData && (htfData['15M'] || htfData['5M'] || htfData['1H'])) || null;
     if(!ltfData || ltfData.length < 20) return { refined: false };
     try {
         const ltfATR = atr(ltfData, 14);
-        const ltf = findPatternZone(ltfData, price, dir, ltfATR);
+        const ltf = findPatternZone(ltfData, price, dir, ltfATR, pairLocal, symbolMetadata);
         if(!ltf || !ltf.entry || !ltf.sl) return { refined: false };
         // Only nudge when the LTF zone is on the same side and reasonably close
         // to the 4H/1H entry (so the trade doesn't change character).
@@ -2652,10 +2652,10 @@ function getDynamicSLMultiplier(data, price, now = new Date()) {
 }
 
 // Precision SL calculation uses the asset-aware settings for the supplied pair.
-function calcStopLoss(data, direction, entry, zone, msnr, tf, customATR = null, customPair = null) {
+function calcStopLoss(data, direction, entry, zone, msnr, tf, customATR = null, customPair = null, symbolMetadata = {}) {
     const atrVal = customATR || atr(data, 14);
     const p = customPair || pair;
-    const settings = getMarketSettings(p);
+    const settings = getMarketSettings(p, symbolMetadata);
     const prec = settings.prec;
     const factor = Math.pow(10, prec);
     
@@ -2683,8 +2683,8 @@ function calcStopLoss(data, direction, entry, zone, msnr, tf, customATR = null, 
 }
 
 // MSNR-based Take Profit calculation (TP1 minimum 2.0x risk)
-function calcTakeProfits(direction, entry, slPrice, msnrData = null) {
-    const prec = getPrec(pair);
+function calcTakeProfits(direction, entry, slPrice, msnrData = null, customPair = pair, symbolMetadata = {}) {
+    const prec = getPrec(customPair, symbolMetadata);
     const risk = Math.abs(entry - slPrice);
     const minTP1Dist = risk * 2.0;
     const source = direction === 'BUY' ? (msnrData?.allResistances || []) : (msnrData?.allSupports || []);
@@ -2698,15 +2698,15 @@ function calcTakeProfits(direction, entry, slPrice, msnrData = null) {
 // PATTERN-BASED ZONE FINDING - PRECISION ENHANCED
 // ============================================
 
-function findPatternZone(data, price, direction, customATR = null) {
-    const msnr = calculateMSNR(data, price);
+function findPatternZone(data, price, direction, customATR = null, pairLocal = pair, symbolMetadata = {}) {
+    const msnr = calculateMSNR(data, price, null, pairLocal, symbolMetadata);
     const fvgs = detectFVG(data);
     const obs = detectOrderBlocks(data, direction);
     const swings = findSwings(data, 3);
-    const tbs = detectTurtleSoup(data);
-    const crt = detectCRT(data);
+    const tbs = detectTurtleSoup(data, pairLocal, symbolMetadata);
+    const crt = detectCRT(data, pairLocal, symbolMetadata);
     const fib = calculateFibonacci(data, direction);
-    const settings = getMarketSettings(pair);
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
     const prec = settings.prec;
     const factor = Math.pow(10, prec);
     
@@ -2923,7 +2923,7 @@ function findPatternZone(data, price, direction, customATR = null) {
     entry = Math.round(entry * factor) / factor;
     
     // STOP LOSS PRECISION: Keep current SL (1.5% max, 2.5x ATR max, DO NOT WIDEN SL)
-    const slRes = calcStopLoss(data, direction, entry, best, msnr, null, atrVal, pair);
+    const slRes = calcStopLoss(data, direction, entry, best, msnr, null, atrVal, pairLocal, symbolMetadata);
     const sl = slRes.price;
     
     // ZONE-LEVEL INDICATOR IDENTIFICATION: does the zone sit at an oversold/overbought/discount/premium extreme?
@@ -3402,8 +3402,8 @@ function isPremiumDiscount(data, price) {
 // MAIN ANALYSIS ENGINE - ALL PATTERNS
 // ============================================
 
-async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now = new Date()) {
-    console.log(`🔍 Analyzing ${tfToAnalyze} on ${pair}...`);
+async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now = new Date(), pairLocal = pair, symbolMetadata = {}) {
+    console.log(`🔍 Analyzing ${tfToAnalyze} on ${pairLocal}...`);
     
     try {
         const entryData = htfData[tfToAnalyze] || await getHistory(tfToAnalyze);
@@ -3426,7 +3426,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
         const sessionCheck = checkTradeSession(now);
 
         // 3. High Impact News Warning Check (FOMC, NFP, CPI)
-        const newsCheck = checkHighImpactNews(pair);
+        const newsCheck = checkHighImpactNews(pairLocal);
         if(newsCheck.inNewsWindow && newsCheck.warning) {
             console.log(`  ⚠️ ${tfToAnalyze}: ${newsCheck.warning}`);
         }
@@ -3450,7 +3450,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             const candleCheck = checkConfirmationCandle(entryData, dir);
 
             // Find pattern zone with Twelve Data API entryATR
-            const patternResult = findPatternZone(entryData, price, dir, entryATR);
+            const patternResult = findPatternZone(entryData, price, dir, entryATR, pairLocal, symbolMetadata);
             if(!patternResult) {
                 console.log(`  ❌ ${dir}: No pattern zone found`);
                 continue;
@@ -3463,7 +3463,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             // LTF ENTRY TIMING (15M/5M): refine the entry level within the 4H/1H setup.
             // SOFT — never blocks the setup; when the LTF zone aligns & is close it times
             // the entry better (tighter LTF level). SL recomputed consistently.
-            const ltfRefine = refineEntryWithLTF(htfData, dir, price, patternResult, entry);
+            const ltfRefine = refineEntryWithLTF(htfData, dir, price, patternResult, entry, pairLocal, symbolMetadata);
             if(ltfRefine.refined) {
                 entry = ltfRefine.entry;
                 sl = ltfRefine.sl;
@@ -3471,7 +3471,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             }
             
             // QUANTUM INTELLIGENCE CHECKS (v8/v9 strategy layer)
-            const volTruth = analyzeVolumeTruth(entryData, hasRealVolume(pair));
+            const volTruth = analyzeVolumeTruth(entryData, hasRealVolume(pairLocal, symbolMetadata));
             const sweep = detectLiquiditySweep(entryData, price, dir);
             const displaced = detectDisplacement(entryData, dir);
             const breakoutRetest = detectBreakoutRetest(entryData, price, dir);
@@ -3577,11 +3577,11 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             
             // Calculate TP using MSNR levels
             const risk = Math.abs(entry - sl);
-            const settings = getMarketSettings(pair);
+            const settings = getMarketSettings(pairLocal, symbolMetadata);
             const prec = settings.prec;
             const factor = Math.pow(10, prec);
             
-            const tps = calcTakeProfits(dir, entry, sl, patternResult.msnr);
+            const tps = calcTakeProfits(dir, entry, sl, patternResult.msnr, pairLocal, symbolMetadata);
             let tp1 = tps.tp1;
             let tp2 = tps.tp2;
             let tp3 = tps.tp3;
@@ -3967,13 +3967,13 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
     }
 }
 
-async function analyzeTimeframe(tfToAnalyze, price, htfData) {
+async function analyzeTimeframe(tfToAnalyze, price, htfData, pairLocal = pair, symbolMetadata = {}) {
     // Grow 55 = 55 credits/min. Only 4H/1H are tradeable, so indicator API calls
     // happen ONLY for those (7 each, cached 4 min). 5M/15M/1D scan indicator-free —
     // every indicator check in evaluateSetup is defensive (skips when missing).
     const tradeable = ['4H', '1H'].includes(tfToAnalyze);
     const twelveIndicators = tradeable ? await getTechnicalIndicators(tfToAnalyze, htfData[tfToAnalyze] || null) : {};
-    return evaluateSetup(tfToAnalyze, price, htfData, twelveIndicators);
+    return evaluateSetup(tfToAnalyze, price, htfData, twelveIndicators, new Date(), pairLocal, symbolMetadata);
 }
 
 // ============================================
@@ -10151,10 +10151,10 @@ async function runAutoScan() {
                 patterns[tf] = {
                     fvg: detectFVG(data),
                     swings: findSwings(data, 3),
-                    turtleSoup: detectTurtleSoup(data),
-                    crt: detectCRT(data),
+                    turtleSoup: detectTurtleSoup(data, pair, quoteSnapshot?.symbol_metadata || {}),
+                    crt: detectCRT(data, pair, quoteSnapshot?.symbol_metadata || {}),
                     orderBlocks: detectOrderBlocks(data, 'BUY'),
-                    msnr: calculateMSNR(data, price),
+                    msnr: calculateMSNR(data, price, tf, pair, quoteSnapshot?.symbol_metadata || {}),
                     trend: getCanonicalTimeframeTrend(data, tf),
                     adx: calculateADX(data, 14, tf)
                 };
