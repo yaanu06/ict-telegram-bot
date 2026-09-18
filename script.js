@@ -1007,15 +1007,17 @@ function detectTrend(data) {
 }
 
 // Detect FVG
-function detectFVG(d) {
+function detectFVG(d, pairLocal = pair, symbolMetadata = {}) {
     d = closedStructureCandles(d);
     let f = [];
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
+    const atrVal = d.length >= 15 ? atr(d, 14) : 0;
     const len = d.length;
     for(let i = 1; i < len - 1; i++) {
         const prev = d[i - 1];
         const curr = d[i];
         const next = d[i + 1];
-        const thresh = curr.c * 0.0003;
+    const thresh = Math.max(settings.pipSize, atrVal * 0.02, Math.abs(curr.c) * 0.00005);
         
         if(prev.h < next.l && next.l - prev.h > thresh) {
             // The gap is confirmed by `next`. Keep its source index so the
@@ -2700,7 +2702,7 @@ function calcTakeProfits(direction, entry, slPrice, msnrData = null, customPair 
 
 function findPatternZone(data, price, direction, customATR = null, pairLocal = pair, symbolMetadata = {}) {
     const msnr = calculateMSNR(data, price, null, pairLocal, symbolMetadata);
-    const fvgs = detectFVG(data);
+    const fvgs = detectFVG(data, pairLocal, symbolMetadata);
     const obs = detectOrderBlocks(data, direction);
     const swings = findSwings(data, 3);
     const tbs = detectTurtleSoup(data, pairLocal, symbolMetadata);
@@ -2975,7 +2977,7 @@ function ictBuildRealZones(data, price, direction, pairLocal, timeframe = null, 
     const settings = getMarketSettings(pairLocal, symbolMetadata);
     const edgePad = Math.max(settings.pipSize * 2, price * 0.000001);
 
-    for (const fvg of detectFVG(data)) {
+    for (const fvg of detectFVG(data, pairLocal, symbolMetadata)) {
         if (direction === 'BUY' && fvg.type === 'bull' && fvg.l < price) {
                 const sourceIndex = Number.isInteger(fvg.source_index) ? fvg.source_index : null;
                 zones.push({ type: 'FVG', origin: 'STRUCTURAL', primary_eligible: true, low: fvg.l, high: fvg.h, price: fvg.m, tolerance: edgePad,
@@ -4936,7 +4938,7 @@ function prepareOpportunitySetups(setups, marketContext, price) {
     return setups;
 }
 
-function buildMarketContext({ pair, price, historyCache, structure, session, sessionCheck, liquidity, premiumDiscount, marketRegime, momentum, volatility, holistic }) {
+function buildMarketContext({ pair, price, historyCache, structure, session, sessionCheck, liquidity, premiumDiscount, marketRegime, momentum, volatility, holistic, symbolMetadata = {} }) {
     const bullishEvidence = [];
     const bearishEvidence = [];
     const conflicts = [];
@@ -4989,7 +4991,7 @@ function buildMarketContext({ pair, price, historyCache, structure, session, ses
         choch: Object.fromEntries(['4H', '1H', '15M'].map(tf => [tf, { buy: !!structure?.[tf]?.choch_buy, sell: !!structure?.[tf]?.choch_sell }])),
         mss: Object.fromEntries(['4H', '1H', '15M'].map(tf => [tf, structure?.[tf]?.mss || null])),
         liquidity,
-        fvg: Object.fromEntries(['4H', '1H'].map(tf => [tf, (detectFVG(historyCache?.[tf] || []) || []).slice(-5)])),
+        fvg: Object.fromEntries(['4H', '1H'].map(tf => [tf, (detectFVG(historyCache?.[tf] || [], pair, symbolMetadata) || []).slice(-5)])),
         order_blocks: Object.fromEntries(['4H', '1H'].map(tf => [tf, {
             buy: detectOrderBlocks(historyCache?.[tf] || [], 'BUY').slice(-3),
             sell: detectOrderBlocks(historyCache?.[tf] || [], 'SELL').slice(-3)
@@ -6804,7 +6806,7 @@ function buildTargetCandidates(historyCache, price, pairLocal, symbolMetadata = 
         const data = getClosedHistory(historyCache, tf);
         if (!data || data.length < 20) continue;
         const msnr = calculateMSNR(data, price, tf, pairLocal, symbolMetadata);
-        const liq = mapLiquidity(data);
+        const liq = mapLiquidity(data, pairLocal, symbolMetadata);
         const sw = findSwings(data, 3);
         for (const meta of (msnr.structural_levels || []).filter(l => l.direction === 'SELL' && l.level > price).slice(0, 5)) {
             const level = meta.level;
@@ -6826,7 +6828,7 @@ function buildTargetCandidates(historyCache, price, pairLocal, symbolMetadata = 
         for (const s of (sw.L || []).slice(-5)) {
             candidates.push({ direction: 'SELL', timeframe: tf, source: 'SWING_LOW', target_type: 'SWING_HIGH_LOW', origin: 'STRUCTURAL', level: s.p, distance_from_price: Math.abs(s.p - price), structural_priority: 76 });
         }
-        for (const fvg of detectFVG(data)) {
+        for (const fvg of detectFVG(data, pairLocal, symbolMetadata)) {
             if (fvg.type === 'bear') {
                 candidates.push({ direction: 'BUY', timeframe: tf, source: 'OPPOSING_FVG', target_type: 'FVG', origin: 'STRUCTURAL', level: fvg.m, distance_from_price: Math.abs(fvg.m - price), structural_priority: 62 });
             }
@@ -7816,8 +7818,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const targetCandidates = buildTargetCandidates(historyCache, price, pair, symbolMetadata);
     const stageContext = buildLimitOrderStageContext(zones, targetCandidates, price, primaryAtr || 0, entryContext);
 
-    const liq4h = mapLiquidity(historyCache?.['4H'] || []);
-    const liq1h = mapLiquidity(historyCache?.['1H'] || []);
+    const liq4h = mapLiquidity(historyCache?.['4H'] || [], pair, symbolMetadata);
+    const liq1h = mapLiquidity(historyCache?.['1H'] || [], pair, symbolMetadata);
     const sweep4hBuy = detectLiquiditySweep(historyCache?.['4H'], price, 'BUY');
     const sweep4hSell = detectLiquiditySweep(historyCache?.['4H'], price, 'SELL');
     const sweep1hBuy = detectLiquiditySweep(historyCache?.['1H'], price, 'BUY');
@@ -7934,7 +7936,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         marketRegime,
         momentum: momentumFacts,
         volatility: volatilityFacts,
-        holistic
+        holistic,
+        symbolMetadata
     });
     marketContext.news_risk = checkHighImpactNews(quote_snapshot?.news_risk || null);
     marketContext.symbol_metadata = symbolMetadata;
@@ -9575,8 +9578,8 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
         session: { name: fallbackSession.session, priority: fallbackSessionCheck.priority },
         sessionCheck: fallbackSessionCheck,
         liquidity: {
-            '4H': mapLiquidity(historyCache?.['4H'] || []),
-            '1H': mapLiquidity(historyCache?.['1H'] || [])
+            '4H': mapLiquidity(historyCache?.['4H'] || [], pair, quoteSnapshot?.symbol_metadata || {}),
+            '1H': mapLiquidity(historyCache?.['1H'] || [], pair, quoteSnapshot?.symbol_metadata || {})
         },
         premiumDiscount: isPremiumDiscount(historyCache?.['4H'] || historyCache?.['1H'] || [], price),
         marketRegime: fallbackMarketRegime,
@@ -9585,7 +9588,8 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
             atr_4h: fallbackAtr4h || null,
             atr_1h: fallbackAtr1h || null
         },
-        holistic: null
+        holistic: null,
+        symbolMetadata: quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair)
     });
     const fallbackMetadata = quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair);
     const fallbackStrategySetups = buildStrategySetups({ pair, price, historyCache, realZones: fallbackZones, marketContext: { ...fallbackMarketContext, symbol_metadata: fallbackMetadata }, symbolMetadata: fallbackMetadata });
@@ -10151,7 +10155,7 @@ async function runAutoScan() {
             const data = historyCache[tf];
             if (data && data.length >= 20) {
                 patterns[tf] = {
-                    fvg: detectFVG(data),
+                    fvg: detectFVG(data, pair, quoteSnapshot?.symbol_metadata || {}),
                     swings: findSwings(data, 3),
                     turtleSoup: detectTurtleSoup(data, pair, quoteSnapshot?.symbol_metadata || {}),
                     crt: detectCRT(data, pair, quoteSnapshot?.symbol_metadata || {}),
@@ -10909,26 +10913,29 @@ function detectDivergence(data, indicator = 'rsi', lookback = 30) {
 }
 
 // 3. LIQUIDITY MAPPING
-function mapLiquidity(data) {
+function mapLiquidity(data, pairLocal = pair, symbolMetadata = {}) {
     data = closedStructureCandles(data);
     if (!data || data.length < 30) return { above: [], below: [], equalHighs: [], equalLows: [], nearestAbove: null, nearestBelow: null };
     const closes = data.map(c => c.c);
     const currentPrice = closes[closes.length - 1];
     const sw = findSwings(data, 3);
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
+    const atrVal = data.length >= 15 ? atr(data, 14) : 0;
+    const equalTolerance = Math.max(settings.pipSize * 2, atrVal * 0.1, Math.abs(currentPrice) * 0.00005);
     const swingHighs = (sw.H || []).slice(-15).map(s => s.p);
     const swingLows = (sw.L || []).slice(-15).map(s => s.p);
     const equalHighs = [], equalLows = [];
     for (let i = 0; i < swingHighs.length; i++) {
         let count = 1;
         for (let j = i + 1; j < swingHighs.length; j++) {
-            if (Math.abs(swingHighs[i] - swingHighs[j]) / swingHighs[i] < 0.001) count++;
+            if (Math.abs(swingHighs[i] - swingHighs[j]) <= equalTolerance) count++;
         }
         if (count >= 2) equalHighs.push(swingHighs[i]);
     }
     for (let i = 0; i < swingLows.length; i++) {
         let count = 1;
         for (let j = i + 1; j < swingLows.length; j++) {
-            if (Math.abs(swingLows[i] - swingLows[j]) / swingLows[i] < 0.001) count++;
+            if (Math.abs(swingLows[i] - swingLows[j]) <= equalTolerance) count++;
         }
         if (count >= 2) equalLows.push(swingLows[i]);
     }
