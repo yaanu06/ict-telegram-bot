@@ -2320,6 +2320,12 @@ describe('buildCandleData', () => {
         expect(out).toMatch(/1D CANDLES/);
         expect(out).not.toMatch(/4H CANDLES/);
     });
+    it('uses supplied symbol precision when serializing AI candle evidence', () => {
+        const ctx = getContext();
+        const cache = { '1D': [{ t: 1, o: 0.12345678, h: 0.22345678, l: 0.02345678, c: 0.17345678, v: 1 }] };
+        const out = ctx.buildCandleData(cache, 1, { asset_class: 'CRYPTO', price_precision: 8 }, 'BTC/USD');
+        expect(out).toContain('O:0.12345678 H:0.22345678 L:0.02345678 C:0.17345678 V:1');
+    });
 });
 
 describe('live AI market context and prompt', () => {

@@ -8991,6 +8991,8 @@ Return ONLY this selector JSON (no additional fields):
 function buildCandleData(historyCache, count = 10, symbolMetadata = {}, pairLocal = pair) {
     const tfs = ['1D', '4H', '1H', '15M', '5M'];
     const realVolume = hasRealVolume(pairLocal, symbolMetadata);
+    const precision = getMarketSettings(pairLocal, symbolMetadata).prec;
+    const formatPrice = value => Number.isFinite(Number(value)) ? Number(value).toFixed(precision) : 'n/a';
     let data = '';
     for (const tf of tfs) {
         const candles = historyCache[tf];
@@ -9000,10 +9002,10 @@ function buildCandleData(historyCache, count = 10, symbolMetadata = {}, pairLoca
         const startIdx = candles.length - count;
         slice.forEach((c, i) => {
             const idx = startIdx + i;
-            const o = (c.o || 0).toFixed(2);
-            const h = (c.h || 0).toFixed(2);
-            const l = (c.l || 0).toFixed(2);
-            const cl = (c.c || 0).toFixed(2);
+            const o = formatPrice(c.o);
+            const h = formatPrice(c.h);
+            const l = formatPrice(c.l);
+            const cl = formatPrice(c.c);
             const volumeText = realVolume ? ` V:${Math.round(c.v || 0)}` : ' V:n/a';
             data += `  ${idx}: O:${o} H:${h} L:${l} C:${cl}${volumeText}\n`;
         });
