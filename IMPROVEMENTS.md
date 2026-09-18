@@ -192,6 +192,10 @@ Added actual detection algorithms for:
 - Public signals and audit records now expose a compact AI diagnostic section with analyst status, schema state, market view, verified and rejected hypothesis counts, and selector choice.
 - This makes AI participation auditable without exposing credentials or allowing AI output to bypass deterministic validation.
 
+### 5l. **Manual Tracking Permission Boundary**
+- Manual tracking remains available only for a deterministic, validated limit setup.
+- Data-quality, news, risk, market-session, invalidation, expiry, and final-consistency failures continue to block tracking even when an AI response exists.
+
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:
 1. First choice: FVG midpoint
