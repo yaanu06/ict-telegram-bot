@@ -5053,6 +5053,29 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(metadata.metadata_complete).toBe(true);
     });
 
+    it('uses explicit symbol metadata for market precision and risk distances', () => {
+        const ctx = getContext();
+        const metadata = ctx.getSymbolMetadata('EUR/USD', {
+            tick_size: 0.01,
+            price_precision: 2,
+            minimum_price_distance: 0.25,
+            stop_buffer: 0.4,
+            max_stop_pct: 0.03,
+            minimum_rr: 3,
+            min_sl_atr_multiplier: 2.25,
+        });
+        expect(metadata).toMatchObject({ tick_size: 0.01, price_precision: 2 });
+        expect(ctx.getMarketSettings('EUR/USD', metadata)).toMatchObject({
+            pipSize: 0.01,
+            prec: 2,
+            minSL: 0.25,
+            slBuffer: 0.4,
+            maxSLPct: 0.03,
+            targetRR: 3,
+            minSLMultiplier: 2.25
+        });
+    });
+
     it('marks known excessive quote spread as a deterministic candidate rejection', () => {
         const ctx = getContext();
         const data = candles(60, 1.1, 0.0002, 'up');

@@ -140,17 +140,27 @@ const ICT_FIVE_MIN_MS = 5 * 60 * 1000;
 // ============================================
 // MARKET SETTINGS
 // ============================================
-function getMarketSettings(p) {
+function getMarketSettings(p, metadata = {}) {
     const symbol = normalizeSymbolInput(p);
-    if (symbol.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.1, minSLMultiplier: 2.0 };
-    if (symbol.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.01 };
-    if (symbol.includes('JPY')) return { slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01 };
-    if (symbol === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.02, targetRR: 2.5, prec: 2, pipSize: 1 };
+    const withMetadata = settings => ({
+        ...settings,
+        pipSize: Number.isFinite(Number(metadata.tick_size)) && Number(metadata.tick_size) > 0 ? Number(metadata.tick_size) : settings.pipSize,
+        prec: Number.isInteger(Number(metadata.price_precision)) && Number(metadata.price_precision) >= 0 ? Number(metadata.price_precision) : settings.prec,
+        minSL: Number.isFinite(Number(metadata.minimum_price_distance)) && Number(metadata.minimum_price_distance) > 0 ? Number(metadata.minimum_price_distance) : settings.minSL,
+        slBuffer: Number.isFinite(Number(metadata.stop_buffer)) && Number(metadata.stop_buffer) >= 0 ? Number(metadata.stop_buffer) : settings.slBuffer,
+        maxSLPct: Number.isFinite(Number(metadata.max_stop_pct)) && Number(metadata.max_stop_pct) > 0 ? Number(metadata.max_stop_pct) : settings.maxSLPct,
+        targetRR: Number.isFinite(Number(metadata.minimum_rr)) && Number(metadata.minimum_rr) > 0 ? Number(metadata.minimum_rr) : settings.targetRR,
+        minSLMultiplier: Number.isFinite(Number(metadata.min_sl_atr_multiplier)) && Number(metadata.min_sl_atr_multiplier) > 0 ? Number(metadata.min_sl_atr_multiplier) : settings.minSLMultiplier
+    });
+    if (symbol.includes('XAU')) return withMetadata({ slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.1, minSLMultiplier: 2.0 });
+    if (symbol.includes('XAG')) return withMetadata({ slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.01 });
+    if (symbol.includes('JPY')) return withMetadata({ slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01 });
+    if (symbol === 'BTC/USD') return withMetadata({ slBuffer: 50, minSL: 30, maxSLPct: 0.02, targetRR: 2.5, prec: 2, pipSize: 1 });
     const assetClass = getAssetClass(symbol);
-    if (assetClass === 'CRYPTO') return { slBuffer: 0, minSL: 0, maxSLPct: 0.25, targetRR: 2.5, prec: 8, pipSize: 0.00000001, minSLMultiplier: 2.0 };
-    if (assetClass === 'EQUITY' || assetClass === 'INDEX') return { slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 4, pipSize: 0.01, minSLMultiplier: 1.5 };
-    if (assetClass === 'UNKNOWN') return { slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 6, pipSize: 0.000001, minSLMultiplier: 1.5 };
-    return { slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.01, targetRR: 2.5, prec: 5, pipSize: 0.0001 };
+    if (assetClass === 'CRYPTO') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.25, targetRR: 2.5, prec: 8, pipSize: 0.00000001, minSLMultiplier: 2.0 });
+    if (assetClass === 'EQUITY' || assetClass === 'INDEX') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 4, pipSize: 0.01, minSLMultiplier: 1.5 });
+    if (assetClass === 'UNKNOWN') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 6, pipSize: 0.000001, minSLMultiplier: 1.5 });
+    return withMetadata({ slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.01, targetRR: 2.5, prec: 5, pipSize: 0.0001 });
 }
 
 function getPrec(p) { return getMarketSettings(p).prec; }
@@ -597,7 +607,7 @@ function getAssetClass(forPair = pair) {
 function getSymbolMetadata(forPair = pair, overrides = {}) {
     const symbol = normalizeSymbolInput(forPair);
     const assetClass = overrides.asset_class || getAssetClass(symbol);
-    const settings = getMarketSettings(symbol);
+    const settings = getMarketSettings(symbol, overrides);
     return {
         symbol,
         asset_class: assetClass,
@@ -607,6 +617,10 @@ function getSymbolMetadata(forPair = pair, overrides = {}) {
         contract_size: Number.isFinite(Number(overrides.contract_size)) ? Number(overrides.contract_size) : null,
         minimum_order_size: Number.isFinite(Number(overrides.minimum_order_size)) ? Number(overrides.minimum_order_size) : null,
         minimum_price_distance: Number.isFinite(Number(overrides.minimum_price_distance)) ? Number(overrides.minimum_price_distance) : null,
+        stop_buffer: Number.isFinite(Number(overrides.stop_buffer)) ? Number(overrides.stop_buffer) : null,
+        max_stop_pct: Number.isFinite(Number(overrides.max_stop_pct)) ? Number(overrides.max_stop_pct) : null,
+        minimum_rr: Number.isFinite(Number(overrides.minimum_rr)) ? Number(overrides.minimum_rr) : null,
+        min_sl_atr_multiplier: Number.isFinite(Number(overrides.min_sl_atr_multiplier)) ? Number(overrides.min_sl_atr_multiplier) : null,
         spread: Number.isFinite(Number(overrides.spread)) ? Number(overrides.spread) : null,
         commission_per_unit: Number.isFinite(Number(overrides.commission_per_unit)) ? Number(overrides.commission_per_unit) : null,
         slippage_estimate: Number.isFinite(Number(overrides.slippage_estimate)) ? Number(overrides.slippage_estimate) : null,
