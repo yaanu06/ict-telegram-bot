@@ -4492,6 +4492,18 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(openResult.reasons.join(' ')).toMatch(/open candle/);
     });
 
+    it('blocks stale or future-dated provider quotes when timestamps are available', () => {
+        const ctx = getContext();
+        const now = Date.parse('2026-09-18T12:00:00Z');
+        const data = candles(50, 100, 0.1, 'up').map((bar, index) => ({ ...bar, t: new Date(now - (50 - index) * 3600000).toISOString() }));
+        const stale = ctx.validateMarketDataQuality({ '4H': data, '1H': data }, 105, { provider_timestamp: now - 2 * 3600000 }, now);
+        expect(stale.valid).toBe(false);
+        expect(stale.reasons.join(' ')).toMatch(/quote data is stale/);
+        const future = ctx.validateMarketDataQuality({ '4H': data, '1H': data }, 105, { provider_timestamp: now + 10 * 60000 }, now);
+        expect(future.valid).toBe(false);
+        expect(future.reasons.join(' ')).toMatch(/future/);
+    });
+
     it('marks news risk unknown when no calendar data is supplied', () => {
         const ctx = getContext();
         expect(ctx.checkHighImpactNews()).toMatchObject({ status: 'UNKNOWN', available: false, high_impact_event: null });

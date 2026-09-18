@@ -5199,7 +5199,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         if (!seed.failure_reasons.includes(code)) seed.failure_reasons.push(code);
         if (detail && !seed.details.includes(detail)) seed.details.push(detail);
     };
-    const dataQuality = validateMarketDataQuality(historyCache, price);
+    const dataQuality = marketContext?.data_quality || validateMarketDataQuality(historyCache, price);
     if (!dataQuality.valid) {
         for (const seed of seedDiagnostics) {
             for (const reason of dataQuality.reasons) failSeed(seed, /missing|insufficient/i.test(reason) ? 'MISSING_TIMEFRAME_DATA' : 'INVALID_MARKET_DATA', reason);
@@ -5773,9 +5773,15 @@ function latestCandleTimestamp(data, timeframe) {
     return data.reduce((latest, candle, index) => Math.max(latest, candleTimestamp(candle, index, timeframe)), -Infinity);
 }
 
-function validateMarketDataQuality(historyCache, price) {
+function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, asOfMs = Date.now()) {
     const reasons = [];
     if (!ictFiniteNumber(price) || price <= 0) reasons.push('current price is invalid');
+    const quoteTime = normalizeTimestampUTC(quoteSnapshot?.provider_timestamp ?? quoteSnapshot?.provider_timestamp_utc);
+    const quoteAgeMs = Number.isFinite(quoteTime) ? Number(asOfMs) - quoteTime : null;
+    // A provider quote older than one hour cannot safely support a current
+    // limit plan. Unknown timestamps remain unknown instead of being called fresh.
+    if (Number.isFinite(quoteAgeMs) && quoteAgeMs > 60 * 60 * 1000) reasons.push('quote data is stale');
+    if (Number.isFinite(quoteAgeMs) && quoteAgeMs < -5 * 60 * 1000) reasons.push('quote timestamp is in the future');
     const requiredTimeframes = ['4H', '1H'];
     const availableTimeframes = ['1D', '4H', '1H', '15M', '5M', '1W'].filter(tf => Array.isArray(historyCache?.[tf]));
     for (const tf of [...new Set([...requiredTimeframes, ...availableTimeframes])]) {
@@ -7425,6 +7431,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const session = getSession(now);
     const sessionCheck = shouldTradeSession(now);
     const marketState = getMarketOpenState(pair, { ...(quote_snapshot || {}), as_of_ms });
+    const dataQuality = validateMarketDataQuality(historyCache, price, quote_snapshot, as_of_ms || Date.now());
     const realVolume = hasRealVolume(pair);
     const closed4h = getClosedHistory(historyCache, '4H');
     const closed1h = getClosedHistory(historyCache, '1H');
@@ -7577,6 +7584,9 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         volatility: volatilityFacts,
         holistic
     });
+    // Candidate construction consumes this same quality verdict so a stale
+    // quote cannot be replaced by a fresh-looking fallback candidate.
+    marketContext.data_quality = dataQuality;
     console.log('MARKET CONTEXT', marketContext);
     console.log('CONTEXT BIAS', {
         directional_bias: marketContext.directional_bias,
@@ -7629,6 +7639,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         strategy_setups: strategySetups,
         require_strategy_setup: true,
         market_open: marketState.is_market_open,
+        data_quality: dataQuality,
         quote_snapshot
     });
     const candidateStartedAt = scanClock();
@@ -7688,6 +7699,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         provider_timestamp: quote_snapshot?.provider_timestamp || null,
         provider_timestamp_utc: quote_snapshot?.provider_timestamp_utc || null,
         asset_class: marketState.asset_class,
+        data_quality: dataQuality,
         market_open: marketState.is_market_open,
         market_open_source: marketState.source,
         provider_metadata: Object.fromEntries(Object.entries(historyCache || {}).map(([tf, data]) => [tf, data?.provider_metadata || null])),
@@ -10285,7 +10297,7 @@ async function runAutoScan() {
     } catch(e) {
         console.error('[SCAN] FAILED', { stage: scanStage, error: e?.message, stack: e?.stack });
         showNotif('Error: ' + (e?.message || 'scan failed'), 'error');
-        if (!Number.isFinite(Number(price))) {
+        if (!Number.isFinite(Number(price)) || /^DATA_BLOCKED:/i.test(String(e?.message || ''))) {
             setJsonOutput({ trade_signal: {
                 date: new Date(scanAsOfMs).toISOString().slice(0, 10),
                 pair,
