@@ -4714,11 +4714,11 @@ function buildDailyTradingBias(timeframeContext, targets, price, asOfTime) {
     };
 }
 
-function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias, targets, zones, pair: pairLocal, price }) {
+function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias, targets, zones, pair: pairLocal, price, symbolMetadata = {} }) {
     const setups = [];
     const discovery = { discovery_buy_events: 0, discovery_sell_events: 0, discovery_structure_shifts: 0,
         discovery_liquidity_events: 0, discovery_pois: 0, discovery_reversal_candidates: 0, discovery_continuation_candidates: 0, discovery_events: [] };
-    const locationPois = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pairLocal));
+    const locationPois = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pairLocal, symbolMetadata));
     // Build the pending-limit narrative from the current HTF map first. A
     // confirmation shift is required only by confirmation-entry models; it
     // must not be required before a valid future limit location can be shown.
@@ -5391,13 +5391,13 @@ function getStrategySetupForZone(zone, strategySetups) {
     };
 }
 
-function mergeFreshExecutionTargetPool({ direction, entry, strategySetup, targetCandidates, historyCache, zones, price, pairLocal }) {
+function mergeFreshExecutionTargetPool({ direction, entry, strategySetup, targetCandidates, historyCache, zones, price, pairLocal, symbolMetadata = {} }) {
     const base = [
         ...(targetCandidates?.all || []),
         ...(targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell'] || []),
         ...(strategySetup?.target_candidates || [])
     ];
-    const current = buildTargetCandidates(historyCache, price, pairLocal).all || [];
+    const current = buildTargetCandidates(historyCache, price, pairLocal, symbolMetadata).all || [];
     const structuralZones = (zones || []).flatMap(zone => {
         if (zone.primary_eligible === false || zone.invalidated || !Number.isFinite(Number(zone.low)) || !Number.isFinite(Number(zone.high))) return [];
         const level = direction === 'BUY' ? Number(zone.low) : Number(zone.high);
@@ -5410,7 +5410,7 @@ function mergeFreshExecutionTargetPool({ direction, entry, strategySetup, target
     for (const target of all) {
         const level = Number(target.level);
         if (!Number.isFinite(level)) continue;
-        const key = `${direction}|${target.timeframe || ''}|${ictRound(level, getMarketSettings(pairLocal).prec)}`;
+        const key = `${direction}|${target.timeframe || ''}|${ictRound(level, getMarketSettings(pairLocal, symbolMetadata).prec)}`;
         const prior = deduped.get(key);
         if (!prior) deduped.set(key, { ...target, level });
         else {
@@ -5465,7 +5465,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const validCandidates = [];
     const rejectedCandidates = [];
     const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(strategySetups) : [];
-    const poiZones = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pair));
+    const poiZones = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pair, symbolMetadata || {}));
     const labeledZoneKeys = new Set(strategyExecutionZones.map(strategyZoneKey));
     const genericMarketZones = (zones || []).filter(zone => !labeledZoneKeys.has(strategyZoneKey(zone))
         && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price));
@@ -5680,7 +5680,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 let mergedTargetCandidates;
                 if (zone.execution_model === 'FRESH_RETRACEMENT_LIMIT' || strategySetup?.execution_model === 'FRESH_RETRACEMENT_LIMIT') {
                     const poolKey = `${direction}|${tf}|${strategySetup?.id || 'fresh'}`;
-                    if (!freshTargetPoolCache.has(poolKey)) freshTargetPoolCache.set(poolKey, mergeFreshExecutionTargetPool({ direction, entry, strategySetup, targetCandidates, historyCache, zones: validationZones, price, pairLocal: pair }));
+                    if (!freshTargetPoolCache.has(poolKey)) freshTargetPoolCache.set(poolKey, mergeFreshExecutionTargetPool({ direction, entry, strategySetup, targetCandidates, historyCache, zones: validationZones, price, pairLocal: pair, symbolMetadata: symbolMetadata || {} }));
                     mergedTargetCandidates = freshTargetPoolCache.get(poolKey);
                 } else {
                     mergedTargetCandidates = strategyTargets.length
@@ -7113,10 +7113,10 @@ function isCurrentDevelopingOpportunity(setup, histories = {}) {
     return latest - eventTime <= maxAgeHours * 3600000;
 }
 
-function buildSupplyDemandAndFlipPOIs(data, tf, price, pairLocal) {
+function buildSupplyDemandAndFlipPOIs(data, tf, price, pairLocal, symbolMetadata = {}) {
     data = getClosedHistory({ [tf]: data }, tf);
     if (!data || data.length < 20) return [];
-    const settings = getMarketSettings(pairLocal);
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
     const prec = settings.prec;
     const pois = [];
     const makeId = (type, index, low, high) => `${tf}-${type}-${ictRound(low, prec)}-${ictRound(high, prec)}-${normalizeTimestampUTC(candleTimestamp(data[index], index, tf)) || index}`;
@@ -7141,7 +7141,7 @@ function buildSupplyDemandAndFlipPOIs(data, tf, price, pairLocal) {
                 location_only: true, source: 'STRUCTURAL_DISPLACEMENT' });
         }
     }
-    const msnr = calculateMSNR(data, price, tf, pairLocal);
+    const msnr = calculateMSNR(data, price, tf, pairLocal, symbolMetadata);
     for (const level of msnr.structural_levels || []) {
         if (level.role_reversal_quality !== 'CONFIRMED_RETEST' || !level.retest_time || level.invalidated) continue;
         const direction = level.role === 'RESISTANCE_TO_SUPPORT' ? 'BUY' : level.role === 'SUPPORT_TO_RESISTANCE' ? 'SELL' : null;
@@ -7923,7 +7923,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     marketContext.timeframe_context = buildTimeframeContext({ historyCache, structure, price, zones, liquidity: liquidityFacts });
     marketContext.daily_bias = buildDailyTradingBias(marketContext.timeframe_context, targetCandidates, price, now.getTime());
     const mechanicsSetups = buildMarketMechanicsSetups({ historyCache, timeframeContext: marketContext.timeframe_context,
-        dailyBias: marketContext.daily_bias, targets: targetCandidates, zones, pair, price });
+        dailyBias: marketContext.daily_bias, targets: targetCandidates, zones, pair, price, symbolMetadata });
     marketContext.discovery_funnel = { ...(mechanicsSetups.discovery || {}) };
     const strategySetups = buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext, symbolMetadata });
     strategySetups.push(...mechanicsSetups);
@@ -7938,7 +7938,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     });
     console.log('[SCAN] strategy detection complete', { strategy_setups: strategySetups.length, detection_stats: strategySetups.detection_stats || null });
     for (const tf of ['4H', '1H']) {
-        const msnr = calculateMSNR(historyCache?.[tf] || [], price, tf, pair);
+        const msnr = calculateMSNR(historyCache?.[tf] || [], price, tf, pair, symbolMetadata);
         if (strategySetups.detection_stats?.MSNR) {
             strategySetups.detection_stats.MSNR.raw_count += msnr.structural_levels?.raw_detection_count ?? msnr.structural_levels?.length ?? 0;
             strategySetups.detection_stats.MSNR.deduped_count += msnr.structural_levels?.deduped_detection_count ?? msnr.structural_levels?.length ?? 0;
@@ -8062,7 +8062,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         strategy_setups: strategySetups,
         real_ict_zones: validationZones,
         context_ict_zones: zones,
-        poi_zones: ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pair)),
+        poi_zones: ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pair, symbolMetadata || {})),
         strategy_execution_zones: strategyExecutionZones,
         limit_order_setup: stageContext.limit_order_setup,
         immediate_entry: stageContext.immediate_entry,
@@ -8143,7 +8143,9 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         pair: liveMarketContext.pair,
         captured_at: new Date().toISOString(),
         scan_as_of: liveMarketContext.as_of_time_utc,
-        quote: { price: liveMarketContext.current_price, quote_time: liveMarketContext.quote_snapshot?.timestamp || liveMarketContext.provider_timestamp_utc || liveMarketContext.as_of_time_utc },
+        quote: { price: liveMarketContext.current_price, quote_time: liveMarketContext.quote_snapshot?.timestamp || liveMarketContext.provider_timestamp_utc || liveMarketContext.as_of_time_utc,
+            bid: liveMarketContext.quote_snapshot?.bid ?? null, ask: liveMarketContext.quote_snapshot?.ask ?? null,
+            spread: liveMarketContext.quote_snapshot?.spread ?? null, symbol_metadata: liveMarketContext.symbol_metadata || liveMarketContext.quote_snapshot?.symbol_metadata || null },
         history: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, (liveMarketContext.historyCache[tf] || []).filter(c => c && c.is_closed !== false)])),
         indicators: liveMarketContext.indicators || {},
         holistic: liveMarketContext.holistic || liveMarketContext.multi_timeframe_direction?.holistic || {},
@@ -8160,7 +8162,11 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         candidate_pipeline_audit: liveMarketContext.setup_candidate_audit || liveMarketContext.candidate_pipeline || null,
         valid_candidates: liveMarketContext.adaptive_setup_candidates || [],
         production_trace: liveMarketContext.production_trace || null,
-        runtime_state: { market_open: liveMarketContext.market_open, market_open_source: liveMarketContext.market_open_source, quote_snapshot: liveMarketContext.quote_snapshot ? { timestamp: liveMarketContext.quote_snapshot.timestamp, price: liveMarketContext.quote_snapshot.price } : null },
+        runtime_state: { market_open: liveMarketContext.market_open, market_open_source: liveMarketContext.market_open_source, quote_snapshot: liveMarketContext.quote_snapshot ? {
+            timestamp: liveMarketContext.quote_snapshot.timestamp, price: liveMarketContext.quote_snapshot.price,
+            bid: liveMarketContext.quote_snapshot.bid ?? null, ask: liveMarketContext.quote_snapshot.ask ?? null,
+            spread: liveMarketContext.quote_snapshot.spread ?? null, symbol_metadata: liveMarketContext.symbol_metadata || liveMarketContext.quote_snapshot.symbol_metadata || null
+        } : null },
         final_output: finalOutput
     });
     assertScanReplaySafe(replay);
@@ -9162,7 +9168,7 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
             Number(result.entry),
             Number(result.stop_loss),
             Number(result.take_profit_1),
-            getMarketSettings(pair).targetRR || 2.5
+            getMarketSettings(pair, liveMarketContext?.symbol_metadata || {}).targetRR || 2.5
         );
         console.log('AI RR CHECK', {
             pair,
@@ -9539,8 +9545,9 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
         },
         holistic: null
     });
-    const fallbackStrategySetups = buildStrategySetups({ pair, price, historyCache, realZones: fallbackZones, marketContext: fallbackMarketContext });
-    const fallbackTargetCandidates = buildTargetCandidates(historyCache, price, pair, quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair));
+    const fallbackMetadata = quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair);
+    const fallbackStrategySetups = buildStrategySetups({ pair, price, historyCache, realZones: fallbackZones, marketContext: { ...fallbackMarketContext, symbol_metadata: fallbackMetadata }, symbolMetadata: fallbackMetadata });
+    const fallbackTargetCandidates = buildTargetCandidates(historyCache, price, pair, fallbackMetadata);
     const fallbackCandidateResult = buildAdaptiveSetupCandidates({
         pair,
         price,
@@ -9552,7 +9559,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
         structure: fallbackStructure,
         marketContext: fallbackMarketContext,
         strategySetups: fallbackStrategySetups,
-        symbolMetadata: quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair)
+        symbolMetadata: fallbackMetadata
     });
     const fallbackValidationContext = buildDeterministicValidationContext({
         pair,
@@ -10079,7 +10086,7 @@ async function runAutoScan() {
         // eslint-disable-next-line no-console
         console.log('🎯 Entry filters:', entryContext.summary);
         
-        const settings = getMarketSettings(pair);
+        const settings = getMarketSettings(pair, quoteSnapshot?.symbol_metadata || {});
         document.getElementById('currentPrice').innerHTML = `$${price.toFixed(settings.prec)}`;
         
         if (lastPrice) {

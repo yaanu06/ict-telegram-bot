@@ -2409,7 +2409,8 @@ describe('live AI market context and prompt', () => {
             orderBlocks: ctx.detectOrderBlocks(historyCache[tf], 'BUY'), msnr: ctx.calculateMSNR(historyCache[tf], price), trend: ctx.detectTrend(historyCache[tf]), adx: ctx.calculateADX(historyCache[tf], 14, tf)
         }]));
         const live = ctx.buildLiveMarketContext({ pair: 'XAU/USD', price, historyCache, indicators: { '4H': {}, '1H': {} }, patterns,
-            enhancedAnalysis: { phase: ctx.analyzeMarketPhase(historyCache['4H'], false) }, holistic: { suggestedDirection: 'NEUTRAL', buyScore: 0, sellScore: 0 }, entryContext: null, as_of_ms: asOfMs });
+            enhancedAnalysis: { phase: ctx.analyzeMarketPhase(historyCache['4H'], false) }, holistic: { suggestedDirection: 'NEUTRAL', buyScore: 0, sellScore: 0 }, entryContext: null,
+            quote_snapshot: { timestamp: new Date(asOfMs).toISOString(), price, symbol_metadata: { asset_class: 'METAL', tick_size: 0.01, precision: 2 } }, as_of_ms: asOfMs });
         const finalOutput = ctx.buildTodayOpportunityOutput(ctx.buildTodayOpportunity({ pair: 'XAU/USD', currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
             marketContext: live.market_context, strategySetups: live.strategy_setups, executionZones: live.strategy_execution_zones,
             candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, targetCandidates: live.target_candidates, marketOpen: true }), 'XAU/USD', price, asOfMs, true);
@@ -2419,6 +2420,8 @@ describe('live AI market context and prompt', () => {
         const json = JSON.stringify(replay);
         expect(replay.history['4H']).toHaveLength(80);
         expect(replay.history['4H'].every(candle => candle.is_closed !== false)).toBe(true);
+        expect(replay.quote.symbol_metadata).toMatchObject({ asset_class: 'METAL' });
+        expect(replay.runtime_state.quote_snapshot.symbol_metadata).toMatchObject({ asset_class: 'METAL' });
         expect(json).not.toMatch(/TWELVE_DATA_KEY|DEEPSEEK_API_KEY|GITHUB_PAT|authorization|api_key|token/i);
         const first = ctx.replayCapturedScan(replay);
         const second = ctx.replayCapturedScan(replay);
