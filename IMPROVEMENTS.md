@@ -76,6 +76,10 @@
 - Symbol metadata now preserves supplied tick value, contract size, order-size, price-distance, spread, commission, slippage, leverage, session, and trading permissions.
 - Quote snapshots expose bid, ask, and spread when the provider supplies them; unknown broker values remain `null`.
 
+### 1q. **Deterministic Spread Gate**
+- Known excessive quote spread now rejects candidate construction before AI selection and applies to the fallback planner too.
+- The public signal carries bid, ask, and spread conditions for audit and UI display.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

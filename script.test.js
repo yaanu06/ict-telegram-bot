@@ -4838,6 +4838,14 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(metadata.metadata_complete).toBe(true);
     });
 
+    it('marks known excessive quote spread as a deterministic candidate rejection', () => {
+        const ctx = getContext();
+        const data = candles(60, 1.1, 0.0002, 'up');
+        const constraints = ctx.buildRiskConstraints('EUR/USD', 1.11, { '4H': data, '1H': data, '15M': data }, { spread: 0.01 });
+        expect(constraints.spread_status).toBe('TOO_WIDE');
+        expect(constraints.spread_valid).toBe(false);
+    });
+
     it('timestamps a live price fallback and never reuses an expired cached price after a provider error', async () => {
         const ctx = getContext();
         await ctx.saveKeys('tw', '', '', '', '');

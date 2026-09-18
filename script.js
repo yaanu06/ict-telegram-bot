@@ -4344,7 +4344,7 @@ function classifySetupArchetype(candidate, historyCache, price, structure) {
     return { setup_archetype, reversal_evidence: evidence, htfMatch };
 }
 
-function buildRiskConstraints(pairLocal, price, historyCache) {
+function buildRiskConstraints(pairLocal, price, historyCache, quoteSnapshot = null) {
     const settings = getMarketSettings(pairLocal);
     const prec = settings.prec;
     const closed4h = getClosedHistory(historyCache, '4H');
@@ -4356,6 +4356,8 @@ function buildRiskConstraints(pairLocal, price, historyCache) {
     const primaryAtr = Number.isFinite(atr4h) && atr4h > 0 ? atr4h : (Number.isFinite(atr1h) && atr1h > 0 ? atr1h : atr15m);
     const absoluteMinSL = Math.max(settings.pipSize, Number.isFinite(primaryAtr) && primaryAtr > 0 ? primaryAtr * 0.10 : settings.pipSize);
     const rawMaxSLDistance = primaryAtr > 0 ? Math.min(price * settings.maxSLPct, primaryAtr * 4.0) : price * settings.maxSLPct;
+    const currentSpread = Number(quoteSnapshot?.spread);
+    const maximumSpread = Math.max(settings.pipSize * 10, Number.isFinite(primaryAtr) && primaryAtr > 0 ? primaryAtr * 0.15 : settings.pipSize * 10);
     return {
         minimum_rr: settings.targetRR || 2.5,
         minimum_sl_distance: ictRound(absoluteMinSL, prec),
@@ -4363,6 +4365,10 @@ function buildRiskConstraints(pairLocal, price, historyCache) {
         preferred_min_sl: ictRound(Math.max(settings.pipSize * 2, (primaryAtr || 0) * 0.5), prec),
         maximum_sl_distance: ictRound(Math.max(absoluteMinSL, rawMaxSLDistance), prec),
         maximum_entry_distance_atr: LIMIT_ORDER_MAX_DIST_ATR,
+        current_spread: Number.isFinite(currentSpread) ? ictRound(currentSpread, prec) : null,
+        maximum_spread: ictRound(maximumSpread, prec),
+        spread_status: Number.isFinite(currentSpread) ? (currentSpread <= maximumSpread ? 'VALID' : 'TOO_WIDE') : 'UNKNOWN',
+        spread_valid: Number.isFinite(currentSpread) ? currentSpread <= maximumSpread : null,
         atr_rule_reference: Number.isFinite(primaryAtr) && primaryAtr > 0 ? ictRound(primaryAtr, prec) : null,
         note: 'Physical SL sanity is evaluated per candidate setup timeframe; this broad context is not a universal 4H-derived stop minimum.',
         tp1_rule: {
@@ -5348,6 +5354,14 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         return {
             raw_candidates: [], valid_candidates: [], seed_diagnostics: seedDiagnostics,
             rejected_candidates: [{ id: 'NEWS_BLOCKED', rejection_code: 'NEWS_BLOCKED', rejection_reasons: [marketContext.news_risk.warning || 'High-impact news risk blocks new setup selection'] }]
+        };
+    }
+    if (riskConstraints?.spread_valid === false) {
+        const detail = `Current spread ${riskConstraints.current_spread} exceeds maximum ${riskConstraints.maximum_spread}`;
+        for (const seed of seedDiagnostics) failSeed(seed, 'SPREAD_TOO_WIDE', detail);
+        return {
+            raw_candidates: [], valid_candidates: [], seed_diagnostics: seedDiagnostics,
+            rejected_candidates: [{ id: 'SPREAD_TOO_WIDE', rejection_code: 'SPREAD_TOO_WIDE', rejection_reasons: [detail] }]
         };
     }
     const dataQuality = marketContext?.data_quality || validateMarketDataQuality(historyCache, price);
@@ -7439,7 +7453,8 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
             code: today?.reason_code || 'NO_TRADE_TODAY',
             message: today?.reason || 'No defensible fresh or developing opportunity remains for today.'
         },
-        market_open: marketOpen
+        market_open: marketOpen,
+        market_conditions: today?.market_conditions || null
     };
     return { trade_signal: signal };
 }
@@ -7786,7 +7801,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             strategySetups.detection_stats.MSNR.atr_fallback_count += (msnr.supportMeta || []).filter(x => x.origin === 'ATR_FALLBACK').length + (msnr.resistanceMeta || []).filter(x => x.origin === 'ATR_FALLBACK').length;
         }
     }
-    const riskConstraints = buildRiskConstraints(pair, price, historyCache);
+    const riskConstraints = buildRiskConstraints(pair, price, historyCache, quote_snapshot);
     const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(strategySetups) : [];
     const validationZones = Array.isArray(strategySetups)
         ? [...(zones || []), ...strategyExecutionZones]
@@ -9320,7 +9335,7 @@ function validateFinalSignalConsistency(signal, liveMarketContext = {}) {
     return { valid: issues.length === 0, issues, candidate_id: candidate?.id || null };
 }
 
-async function runFallbackScan(price, historyCache) {
+async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
     const fallbackStartedAt = scanClock();
     console.log('[SCAN] fallback start', { pair, timestamp: new Date().toISOString() });
     console.log('🔄 Running fallback rule-based scan...');
@@ -9336,7 +9351,7 @@ async function runFallbackScan(price, historyCache) {
         const tfAtr = tf === '4H' ? fallbackAtr4h : fallbackAtr1h;
         fallbackZones.push(...buildLiveZonesForTf(historyCache?.[tf], tf, price, pair, tfAtr || fallbackAtr4h || fallbackAtr1h || 0, 5));
     }
-    const fallbackRiskConstraints = buildRiskConstraints(pair, price, historyCache);
+    const fallbackRiskConstraints = buildRiskConstraints(pair, price, historyCache, quoteSnapshot);
     const fallbackStructure = {
         '1D': buildStructureSnapshot(historyCache?.['1D'], '1D'),
         '4H': buildStructureSnapshot(historyCache?.['4H'], '4H'),
@@ -10038,6 +10053,7 @@ async function runAutoScan() {
         liveMarketContext.today_opportunity.volatility = liveMarketContext.volatility || null;
         liveMarketContext.today_opportunity.indicators = liveMarketContext.momentum || null;
         liveMarketContext.today_opportunity.news_risk = liveMarketContext.news_risk;
+        liveMarketContext.today_opportunity.market_conditions = liveMarketContext.market_conditions;
         console.log('[SCAN] today opportunity', liveMarketContext.today_opportunity);
 
         if (liveMarketContext.adaptive_setup_candidates.length === 0) {
@@ -10084,7 +10100,7 @@ async function runAutoScan() {
             scanStage = lastAIRequestError?.code === 'AI_TIMEOUT' ? 'DeepSeek timeout fallback' : 'DeepSeek failure fallback';
             showNotif(`⚠️ ${lastAIRequestError?.message || 'AI analysis failed'} - using fallback`, 'warning');
             try {
-                await runFallbackScan(price, historyCache);
+                await runFallbackScan(price, historyCache, quoteSnapshot);
             } catch (fallbackError) {
                 console.error('[SCAN] FAILED', { stage: 'fallback', error: fallbackError?.message, stack: fallbackError?.stack });
                 showNotif(`Fallback failed: ${fallbackError?.message || 'unknown error'}`, 'error');
@@ -10183,6 +10199,7 @@ async function runAutoScan() {
                 pair: pair,
                 current_price: price,
                 symbol_metadata: getSymbolMetadata(pair),
+                market_conditions: liveMarketContext.market_conditions,
                 direction: aiResult.direction,
                 trade_type: aiResult.decision || (aiResult.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT'),
                 decision: aiResult.decision,
@@ -10524,7 +10541,7 @@ async function runAutoScan() {
         if (price && Object.keys(historyCache).length > 0) {
             try {
                 scanStage = 'fallback after scan failure';
-                await runFallbackScan(price, historyCache);
+                await runFallbackScan(price, historyCache, quoteSnapshot);
             } catch (fallbackError) {
                 console.error('[SCAN] FAILED', { stage: 'fallback after scan failure', error: fallbackError?.message, stack: fallbackError?.stack });
                 showNotif(`Fallback failed: ${fallbackError?.message || 'unknown error'}`, 'error');
