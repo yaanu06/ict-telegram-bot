@@ -64,6 +64,15 @@ const SYMBOLS = {
     'XAU/USD':'XAU/USD','XAG/USD':'XAG/USD'
 };
 
+function normalizeSymbolInput(value) {
+    return String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+}
+
+function getProviderSymbol(value) {
+    const normalized = normalizeSymbolInput(value);
+    return SYMBOLS[normalized] || normalized;
+}
+
 // HAS_REAL_VOLUME: Twelve Data returns synthetic/sparse volume for many forex
 // and metals pairs (the v field falls back to 1e6 in getHistory). When false,
 // volume-based scoring (volumeTruth surge/fake, sentiment volume, market-phase
@@ -99,10 +108,11 @@ const ICT_FIVE_MIN_MS = 5 * 60 * 1000;
 // MARKET SETTINGS
 // ============================================
 function getMarketSettings(p) {
-    if (p.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.1, minSLMultiplier: 2.0 };
-    if (p.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.01 };
-    if (p.includes('JPY')) return { slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01 };
-    if (p === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.02, targetRR: 2.5, prec: 2, pipSize: 1 };
+    const symbol = normalizeSymbolInput(p);
+    if (symbol.includes('XAU')) return { slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.1, minSLMultiplier: 2.0 };
+    if (symbol.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.01 };
+    if (symbol.includes('JPY')) return { slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01 };
+    if (symbol === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.02, targetRR: 2.5, prec: 2, pipSize: 1 };
     return { slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.01, targetRR: 2.5, prec: 5, pipSize: 0.0001 };
 }
 
@@ -499,7 +509,7 @@ async function getPrice(forPair) {
     }
     if(!TWELVE_DATA_KEY) return null;
     try {
-        const d = await fetchTD(`/price?symbol=${encodeURIComponent(SYMBOLS[p])}`);
+        const d = await fetchTD(`/price?symbol=${encodeURIComponent(getProviderSymbol(p))}`);
         if(d.price) {
             calls++;
             document.getElementById('apiSource').innerHTML = '📡 Live';
@@ -557,7 +567,7 @@ async function getMarketQuoteSnapshot(forPair = pair) {
     const p = forPair || pair;
     const assetClass = getAssetClass(p);
     try {
-        const quote = await fetchTD('/quote?symbol=' + encodeURIComponent(SYMBOLS[p]));
+        const quote = await fetchTD('/quote?symbol=' + encodeURIComponent(getProviderSymbol(p)));
         const quotePrice = Number(quote.price ?? quote.close);
         const providerTimestamp = normalizeTimestampUTC(quote.timestamp ?? quote.datetime ?? quote.last_update);
         const providerOpen = parseProviderMarketOpen(quote.is_market_open ?? quote.market_open ?? quote.market_status);
@@ -598,7 +608,9 @@ async function getHistory(tfStr, forPair) {
     const cacheTtl = HISTORY_CACHE_TTL_MS[tfStr] || 60000;
     if (cached && Date.now() - cached.ts < cacheTtl) return cached.data;
     try {
-        const d = await fetchTD('/time_series?symbol=' + encodeURIComponent(SYMBOLS[requestedPair]) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + '&timezone=UTC');
+        const providerSymbol = getProviderSymbol(requestedPair);
+        if (!providerSymbol) throw new Error('Market symbol is missing');
+        const d = await fetchTD('/time_series?symbol=' + encodeURIComponent(providerSymbol) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + '&timezone=UTC');
         if(d.values) {
             calls++;
             const values = d.values.map(c => ({
@@ -620,7 +632,7 @@ async function getHistory(tfStr, forPair) {
                 provider_timezone: d.meta?.timezone || 'UTC',
                 requested_timezone: 'UTC',
                 timeframe: tfStr,
-                symbol: SYMBOLS[requestedPair],
+                symbol: providerSymbol,
                 timestamp_contract: ['1D', '1W'].includes(tfStr) ? 'PERIOD_BUCKET' : 'INTRADAY_UTC'
             }, enumerable: false });
             historyResponseCache.set(cacheKey, { data: values, ts: Date.now() });
@@ -638,7 +650,7 @@ async function getTechnicalIndicators(tfUsed, candleData = null) {
     const cachedHit = indicatorCache[cacheKey];
     if(cachedHit && Date.now() - cachedHit.ts < INDICATOR_CACHE_TTL) return cachedHit.data;
 
-    const symbol = encodeURIComponent(SYMBOLS[pair]);
+    const symbol = encodeURIComponent(getProviderSymbol(pair));
     const interval = TF_MAP[tfUsed];
     const ind = {};
     const closes = (candleData || []).map(c => c.c);

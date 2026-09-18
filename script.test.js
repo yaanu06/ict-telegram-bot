@@ -4401,6 +4401,12 @@ describe('engine contract completion', () => {
 });
 
 describe('provider, calendar, lifecycle, and public output contracts', () => {
+    it('passes unknown symbols through to the provider without hardcoding the instrument list', () => {
+        const ctx = getContext();
+        expect(ctx.getProviderSymbol(' custom/asset ')).toBe('CUSTOM/ASSET');
+        expect(ctx.getProviderSymbol('XAU/USD')).toBe('XAU/USD');
+        expect(ctx.getMarketSettings()).toBeDefined();
+    });
     it('rechecks local pending-limit safety at user approval time', () => {
         const ctx = getContext();
         expect(ctx.validateExecutionMode('PAPER')).toMatchObject({ valid: true, mode: 'PAPER' });
