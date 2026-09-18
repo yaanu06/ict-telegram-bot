@@ -32,6 +32,10 @@
 - Compact public signals now expose data-quality and provider metadata for UI/audit consumers.
 - Invalid data quality is a hard `DATA_BLOCKED` status even when a planner has a developing opportunity.
 
+### 1f. **Hard Status Precedence**
+- `NEWS_BLOCKED`, `DATA_BLOCKED`, `RISK_BLOCKED`, and `MARKET_CLOSED` now override ready/watch labels in the public status mapper.
+- A status cannot advertise a ready setup while its risk gate or execution permission rejects it.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

@@ -4464,6 +4464,10 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(blocked.status_code).toBe('DATA_BLOCKED');
         const invalidQuality = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY', data_quality: { valid: false, reasons: ['stale quote'] }, opportunity: { area_of_interest: { low: 1, high: 1.1 } } });
         expect(invalidQuality.status_code).toBe('DATA_BLOCKED');
+        const riskBlocked = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: true, entry: 1, stop_loss: 0.99, tp1: 1.03, risk_gate: { status: 'RISK_BLOCKED', execution_allowed: false } });
+        expect(riskBlocked.status_code).toBe('RISK_BLOCKED');
+        const closed = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY', market_open: false });
+        expect(closed.status_code).toBe('MARKET_CLOSED');
     });
 
     it('exposes a hard news block even when the planner omitted execution_allowed', () => {
