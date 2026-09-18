@@ -14,6 +14,10 @@
 - The scan keeps the provider budget for quotes and candle history, which is safer for the Twelve Data Grow 55 plan.
 - Indicator output includes `indicator_source: LOCAL_OHLCV` so the origin is auditable.
 
+### 1a.1 **Short-Lived Quote Cache**
+- Recent quote snapshots are reused per symbol for five seconds, while in-flight requests remain deduplicated.
+- Quote timestamps still pass through the normal freshness gate, so caching reduces provider calls without presenting stale data as current.
+
 ### 1b. **Closed-Candle Contract**
 - Provider history now identifies candle completion from the timeframe bucket.
 - The current forming bucket is filtered before structure, trend, indicator, or setup analysis.

@@ -502,6 +502,8 @@ const tdRequestTimes = [];
 const historyResponseCache = new Map();
 const historyInFlightCache = new Map();
 const quoteInFlightCache = new Map();
+const quoteResponseCache = new Map();
+const QUOTE_CACHE_TTL_MS = 5000;
 const HISTORY_CACHE_TTL_MS = Object.freeze({
     '1M': 30000,
     '5M': 60000,
@@ -710,12 +712,16 @@ async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
 
 async function getMarketQuoteSnapshot(forPair = pair) {
     const requestedPair = forPair || pair;
+    const cached = quoteResponseCache.get(requestedPair);
+    if (cached && Date.now() - cached.ts < QUOTE_CACHE_TTL_MS) return cached.data;
     const existing = quoteInFlightCache.get(requestedPair);
     if (existing) return existing;
     const request = fetchMarketQuoteSnapshotUncached(requestedPair);
     quoteInFlightCache.set(requestedPair, request);
     try {
-        return await request;
+        const data = await request;
+        if (data && Number.isFinite(Number(data.price))) quoteResponseCache.set(requestedPair, { data, ts: Date.now() });
+        return data;
     } finally {
         if (quoteInFlightCache.get(requestedPair) === request) quoteInFlightCache.delete(requestedPair);
     }

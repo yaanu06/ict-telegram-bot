@@ -4993,6 +4993,16 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.fetch).toHaveBeenCalledTimes(2);
     });
 
+    it('reuses a recent quote across sequential scans within the quote cache window', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ price: '1.25', timestamp: '2026-09-19T10:00:00Z' }) }));
+        const first = await ctx.getMarketQuoteSnapshot('EUR/USD');
+        const second = await ctx.getMarketQuoteSnapshot('EUR/USD');
+        expect(second).toEqual(first);
+        expect(ctx.fetch).toHaveBeenCalledTimes(1);
+    });
+
     it('filters the currently forming provider candle before structure analysis', async () => {
         const ctx = getContext();
         await ctx.saveKeys('tw', '', '', '', '');
