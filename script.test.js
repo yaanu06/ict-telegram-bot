@@ -4934,6 +4934,17 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(result.reasons).toContain('quote timestamp is unavailable');
     });
 
+    it('enforces the live scan history contract for every used timeframe', () => {
+        const ctx = getContext();
+        const base = candles(50, 100, 0.1, 'up');
+        const result = ctx.validateMarketDataQuality({
+            '1D': base, '4H': base, '1H': base,
+            '15M': candles(19, 100, 0.1, 'up'), '5M': candles(20, 100, 0.1, 'up')
+        }, 105, { provider_timestamp: Date.now() }, Date.now(), ['1D', '4H', '1H', '15M', '5M']);
+        expect(result.valid).toBe(false);
+        expect(result.reasons.join(' ')).toMatch(/Insufficient 15M data/);
+    });
+
     it('hard-blocks candidate construction during supplied high-impact news risk', () => {
         const ctx = getContext();
         const result = ctx.buildAdaptiveSetupCandidates({

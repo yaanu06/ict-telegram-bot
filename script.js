@@ -6121,7 +6121,7 @@ function latestCandleTimestamp(data, timeframe) {
     return data.reduce((latest, candle, index) => Math.max(latest, candleTimestamp(candle, index, timeframe)), -Infinity);
 }
 
-function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, asOfMs = Date.now()) {
+function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, asOfMs = Date.now(), requiredTimeframes = ['4H', '1H']) {
     const reasons = [];
     if (!ictFiniteNumber(price) || price <= 0) reasons.push('current price is invalid');
     const quoteTime = normalizeTimestampUTC(quoteSnapshot?.provider_timestamp ?? quoteSnapshot?.provider_timestamp_utc);
@@ -6131,14 +6131,15 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
     // limit plan. Unknown timestamps remain unknown instead of being called fresh.
     if (Number.isFinite(quoteAgeMs) && quoteAgeMs > 60 * 60 * 1000) reasons.push('quote data is stale');
     if (Number.isFinite(quoteAgeMs) && quoteAgeMs < -5 * 60 * 1000) reasons.push('quote timestamp is in the future');
-    const requiredTimeframes = ['4H', '1H'];
+    const requiredSet = new Set(Array.isArray(requiredTimeframes) ? requiredTimeframes : ['4H', '1H']);
+    const minimumCandles = tf => ['1D', '4H', '1H'].includes(tf) ? 50 : 20;
     const availableTimeframes = ['1W', '1D', '4H', '1H', '15M', '5M', '1M'].filter(tf => Array.isArray(historyCache?.[tf]));
-    for (const tf of [...new Set([...requiredTimeframes, ...availableTimeframes])]) {
+    for (const tf of [...new Set([...requiredSet, ...availableTimeframes])]) {
         const data = historyCache?.[tf];
-        const required = requiredTimeframes.includes(tf);
-        if (!Array.isArray(data) || (required && data.length < 50)) {
+        const required = requiredSet.has(tf);
+        if (!Array.isArray(data) || (required && data.length < minimumCandles(tf))) {
             if (!required && !data) continue;
-            reasons.push(`Insufficient ${tf} data for reliable ATR/structure analysis`);
+            reasons.push(`Insufficient ${tf} data for reliable ATR/structure analysis (minimum ${minimumCandles(tf)} closed candles)`);
             continue;
         }
         let prevTime = null;
@@ -7799,7 +7800,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const session = getSession(now);
     const sessionCheck = shouldTradeSession(now);
     const marketState = getMarketOpenState(pair, { ...(quote_snapshot || {}), as_of_ms });
-    const dataQuality = validateMarketDataQuality(historyCache, price, quote_snapshot, as_of_ms || Date.now());
+    const dataQuality = validateMarketDataQuality(historyCache, price, quote_snapshot, as_of_ms || Date.now(), ['1D', '4H', '1H', '15M', '5M']);
     const realVolume = hasRealVolume(pair, symbolMetadata);
     const closed4h = getClosedHistory(historyCache, '4H');
     const closed1h = getClosedHistory(historyCache, '1H');

@@ -61,6 +61,11 @@
 - History is rejected when the latest candle is too old for that timeframe or is dated in the future.
 - This prevents stale cached candles from silently changing structure, trend, or setup output.
 
+### 1k.1 **Live Scan History Contract**
+- The live scan now requires all timeframes it actually analyzes: 1D, 4H, 1H, 15M, and 5M.
+- Higher timeframes require 50 closed candles; execution timeframes require 20.
+- Short or missing execution history is reported as a data-quality block instead of producing partial multi-timeframe conclusions.
+
 ### 1l. **Timestamped Quote Fallbacks**
 - Price-endpoint fallbacks now carry the cache/fetch timestamp into the scan snapshot.
 - Expired cached prices are rejected after provider errors instead of being presented as current quotes.
