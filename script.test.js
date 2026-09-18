@@ -5083,6 +5083,16 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.getMarketSettings('VENUE_ASSET', metadata)).toMatchObject({ pipSize: 0.25, prec: 2, minSLMultiplier: 1.5 });
     });
 
+    it('carries supplied metadata into deterministic risk constraints', () => {
+        const ctx = getContext();
+        const data = candles(40, 100, 0.5, 'up');
+        const metadata = ctx.getSymbolMetadata('EUR/USD', { tick_size: 0.01, price_precision: 2, minimum_rr: 3, max_stop_pct: 0.03 });
+        const constraints = ctx.buildRiskConstraints('EUR/USD', 100, { '4H': data, '1H': data, '15M': data }, { spread: 0.02 }, metadata);
+        expect(constraints.minimum_rr).toBe(3);
+        expect(constraints.maximum_spread).toBeGreaterThanOrEqual(0.02);
+        expect(constraints.minimum_sl_distance).toBeGreaterThanOrEqual(0.01);
+    });
+
     it('marks known excessive quote spread as a deterministic candidate rejection', () => {
         const ctx = getContext();
         const data = candles(60, 1.1, 0.0002, 'up');

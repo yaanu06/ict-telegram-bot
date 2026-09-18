@@ -4505,7 +4505,7 @@ function buildRiskConstraints(pairLocal, price, historyCache, quoteSnapshot = nu
     };
 }
 
-function buildDeterministicValidationContext({ pair, price, historyCache, real_ict_zones, risk_constraints, structure, market_context, strategy_setups, require_strategy_setup, market_open = null, quote_snapshot = null }) {
+function buildDeterministicValidationContext({ pair, price, historyCache, real_ict_zones, risk_constraints, structure, market_context, strategy_setups, require_strategy_setup, market_open = null, quote_snapshot = null, symbol_metadata = null }) {
     return {
         pair,
         price,
@@ -4516,6 +4516,7 @@ function buildDeterministicValidationContext({ pair, price, historyCache, real_i
         market_context,
         market_open,
         quote_snapshot,
+        symbol_metadata: symbol_metadata || quote_snapshot?.symbol_metadata || null,
         strategy_setups: strategy_setups || [],
         require_strategy_setup: !!require_strategy_setup
     };
@@ -5518,7 +5519,8 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         structure,
         market_context: marketContext,
         strategy_setups: strategySetups || [],
-        require_strategy_setup: Array.isArray(strategySetups)
+        require_strategy_setup: Array.isArray(strategySetups),
+        symbol_metadata: symbolMetadata
     });
 
     for (const [seedIndex, zone] of seedZones.entries()) {
@@ -6471,7 +6473,8 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
     const historyCache = marketContext.historyCache || {};
     const price = Number(marketContext.price ?? marketContext.current_price);
     const pairLocal = marketContext.pair || pair;
-    const settings = getMarketSettings(pairLocal);
+    const symbolMetadata = options.symbol_metadata || marketContext.symbol_metadata || marketContext.market_context?.symbol_metadata || null;
+    const settings = getMarketSettings(pairLocal, symbolMetadata || {});
     const direction = candidate?.direction;
 
     const add = reason => { reasons.push(reason); };
@@ -6578,8 +6581,8 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
     const fourH = historyCache?.['4H'] || [];
     const oneH = historyCache?.['1H'] || [];
     const daily = historyCache?.['1D'] || [];
-    const atrContext = getCandidateATRContext(candidate, historyCache, pairLocal, price);
-    const stopEvaluation = evaluateStructuralStop(candidate, atrContext, pairLocal);
+    const atrContext = getCandidateATRContext(candidate, historyCache, pairLocal, price, symbolMetadata);
+    const stopEvaluation = evaluateStructuralStop(candidate, atrContext, pairLocal, symbolMetadata);
     metrics.atrContext = {
         setup_timeframe: atrContext.setup_timeframe,
         setup_atr: atrContext.setup_atr,
@@ -7961,7 +7964,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         require_strategy_setup: true,
         market_open: marketState.is_market_open,
         data_quality: dataQuality,
-        quote_snapshot
+        quote_snapshot,
+        symbol_metadata: symbolMetadata
     });
     const candidateStartedAt = scanClock();
     const adaptiveSetupResult = buildAdaptiveSetupCandidates({
@@ -9558,7 +9562,8 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
         structure: fallbackStructure,
         market_context: fallbackMarketContext,
         strategy_setups: fallbackStrategySetups,
-        require_strategy_setup: true
+        require_strategy_setup: true,
+        symbol_metadata: quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair)
     });
     const rejectedFallbacks = (fallbackCandidateResult.rejected_candidates || []).map(rejection => ({
         id: rejection.id,
@@ -10475,7 +10480,8 @@ async function runAutoScan() {
             historyCache,
             real_ict_zones: liveMarketContext.real_ict_zones,
             risk_constraints: liveMarketContext.risk_constraints,
-            structure: liveMarketContext.structure
+            structure: liveMarketContext.structure,
+            symbol_metadata: liveMarketContext.symbol_metadata || null
         });
         const validation = validateAISetup(aiResult, price, historyCache, pair, validationContext);
         const selectedZone = findSelectedLiveZone(aiResult, liveMarketContext) || validation.matchedZone || aiResult.selected_zone || aiResult.entry_zone;
