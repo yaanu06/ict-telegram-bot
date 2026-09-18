@@ -167,6 +167,10 @@ Added actual detection algorithms for:
 - A candidate that becomes stale during final validation is always converted into a complete deterministic wait response.
 - If a fresh replacement exists it remains visible; otherwise the user receives `NO_TRADE_TODAY` with the rejection reason and full market context.
 
+### 5f. **Custom Asset Symbols**
+- The Mini App now accepts validated provider symbols outside the preset dropdown, including equities, indices, crypto, and additional forex pairs.
+- Custom symbols use the existing asset metadata, normalization, data-quality, analysis, AI-selection, and manual-tracking pipeline without instrument-specific price assumptions.
+
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:
 1. First choice: FVG midpoint

@@ -4619,6 +4619,14 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.getMarketSettings()).toBeDefined();
     });
 
+    it('validates custom provider symbols without restricting the asset list', () => {
+        const ctx = getContext();
+        expect(ctx.validateSymbolInput(' nasdaq:aapl ')).toMatchObject({ valid: true, symbol: 'NASDAQ:AAPL' });
+        expect(ctx.validateSymbolInput('ETH/USD')).toMatchObject({ valid: true, symbol: 'ETH/USD' });
+        expect(ctx.validateSymbolInput('bad symbol!').valid).toBe(false);
+        expect(ctx.validateSymbolInput('').valid).toBe(false);
+    });
+
     it('supports an optional server proxy without requiring browser provider credentials', () => {
         const ctx = getContext();
         ctx.window.__ICT_PROXY_BASE_URL__ = 'https://proxy.example/';

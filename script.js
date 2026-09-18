@@ -97,6 +97,16 @@ function normalizeSymbolInput(value) {
     return String(value || '').trim().toUpperCase().replace(/\s+/g, '');
 }
 
+function validateSymbolInput(value) {
+    const symbol = normalizeSymbolInput(value);
+    if (!symbol) return { valid: false, symbol: '', reason: 'Symbol is required.' };
+    if (symbol.length > 32) return { valid: false, symbol, reason: 'Symbol is too long.' };
+    if (!/^[A-Z0-9][A-Z0-9._:-]*(?:\/[A-Z0-9][A-Z0-9._:-]*)?$/.test(symbol)) {
+        return { valid: false, symbol, reason: 'Use a provider symbol such as EUR/USD, AAPL, or BTC/USD.' };
+    }
+    return { valid: true, symbol, reason: null };
+}
+
 function getProviderSymbol(value) {
     const normalized = normalizeSymbolInput(value);
     return SYMBOLS[normalized] || normalized;
@@ -438,6 +448,7 @@ function init() {
         pair = e.target.value;
         resetPairState();
     });
+    if(el('applyCustomPairBtn')) el('applyCustomPairBtn').addEventListener('click', applyCustomPair);
     document.querySelectorAll('.category-btn').forEach(function(b) {
         b.addEventListener('click', function() {
             document.querySelectorAll('.category-btn').forEach(function(x) {
@@ -710,6 +721,27 @@ async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
         source: 'TWELVE_DATA',
         quote_source: 'PRICE_FALLBACK'
     };
+}
+
+function applyCustomPair() {
+    const input = document.getElementById('customPairInput');
+    const result = validateSymbolInput(input?.value);
+    if (!result.valid) {
+        showNotif(result.reason, 'warning');
+        return;
+    }
+    pair = result.symbol;
+    const select = document.getElementById('pairSelect');
+    if (select) {
+        const existing = [...select.options].find(option => option.value === pair);
+        if (existing) select.value = pair;
+        else {
+            select.innerHTML = `<option value="${pair.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">${getPairDisplayName(pair)}</option>`;
+            select.value = pair;
+        }
+    }
+    resetPairState();
+    showNotif(`Using ${pair}`, 'info');
 }
 
 async function getMarketQuoteSnapshot(forPair = pair) {
