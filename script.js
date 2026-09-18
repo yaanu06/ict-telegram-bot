@@ -11748,6 +11748,11 @@ function validatePublicTradeSignal(signal = {}) {
     if (signal?.status_code === 'SETUP_READY' && [entry, stop, target].some(value => !Number.isFinite(value))) issues.push('ready setup geometry is incomplete');
     if (signal?.decision === 'BUY_LIMIT' && !(stop < entry && entry < target)) issues.push('BUY_LIMIT geometry is invalid');
     if (signal?.decision === 'SELL_LIMIT' && !(stop > entry && entry > target)) issues.push('SELL_LIMIT geometry is invalid');
+    const currentPrice = Number(signal?.current_price);
+    if (signal?.status_code === 'SETUP_READY' && Number.isFinite(currentPrice) && Number.isFinite(entry)) {
+        if (signal.decision === 'BUY_LIMIT' && entry >= currentPrice) issues.push('BUY_LIMIT entry must be below current price');
+        if (signal.decision === 'SELL_LIMIT' && entry <= currentPrice) issues.push('SELL_LIMIT entry must be above current price');
+    }
     return { valid: issues.length === 0, issues };
 }
 

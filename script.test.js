@@ -4720,6 +4720,10 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         const missingPrice = ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status_code: 'SETUP_READY', entry: 100, stop_loss: 99, tp1: 103 });
         expect(missingPrice.valid).toBe(false);
         expect(missingPrice.issues).toContain('ready setup current_price is unavailable');
+        const wrongSide = ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status_code: 'SETUP_READY', current_price: 100, entry: 101, stop_loss: 99, tp1: 103 });
+        expect(wrongSide.valid).toBe(false);
+        expect(wrongSide.issues).toContain('BUY_LIMIT entry must be below current price');
+        expect(ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'SELL_LIMIT', status_code: 'SETUP_READY', current_price: 100, entry: 101, stop_loss: 103, tp1: 99 }).valid).toBe(true);
         const invalid = ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status_code: 'SETUP_READY', entry: 100, stop_loss: 101, tp1: 99 });
         expect(invalid.valid).toBe(false);
         expect(invalid.issues.join(' ')).toMatch(/BUY_LIMIT geometry/);
