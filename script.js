@@ -567,8 +567,16 @@ function getSymbolMetadata(forPair = pair, overrides = {}) {
         asset_class: assetClass,
         tick_size: Number.isFinite(Number(overrides.tick_size)) ? Number(overrides.tick_size) : settings.pipSize,
         price_precision: Number.isInteger(Number(overrides.price_precision)) ? Number(overrides.price_precision) : settings.prec,
+        tick_value: Number.isFinite(Number(overrides.tick_value)) ? Number(overrides.tick_value) : null,
         contract_size: Number.isFinite(Number(overrides.contract_size)) ? Number(overrides.contract_size) : null,
         minimum_order_size: Number.isFinite(Number(overrides.minimum_order_size)) ? Number(overrides.minimum_order_size) : null,
+        minimum_price_distance: Number.isFinite(Number(overrides.minimum_price_distance)) ? Number(overrides.minimum_price_distance) : null,
+        spread: Number.isFinite(Number(overrides.spread)) ? Number(overrides.spread) : null,
+        commission_per_unit: Number.isFinite(Number(overrides.commission_per_unit)) ? Number(overrides.commission_per_unit) : null,
+        slippage_estimate: Number.isFinite(Number(overrides.slippage_estimate)) ? Number(overrides.slippage_estimate) : null,
+        leverage: Number.isFinite(Number(overrides.leverage)) ? Number(overrides.leverage) : null,
+        trading_permissions: overrides.trading_permissions ?? null,
+        session: overrides.session ?? null,
         metadata_source: Object.keys(overrides).length ? 'PROVIDER_OR_USER' : 'HEURISTIC',
         metadata_complete: Number.isFinite(Number(overrides.tick_size)) && Number.isFinite(Number(overrides.contract_size))
     };
@@ -606,6 +614,9 @@ async function getMarketQuoteSnapshot(forPair = pair) {
     try {
         const quote = await fetchTD('/quote?symbol=' + encodeURIComponent(getProviderSymbol(p)));
         const quotePrice = Number(quote.price ?? quote.close);
+        const bid = Number(quote.bid);
+        const ask = Number(quote.ask);
+        const spread = Number.isFinite(bid) && Number.isFinite(ask) && ask >= bid ? ask - bid : null;
         const providerTimestamp = normalizeTimestampUTC(quote.timestamp ?? quote.datetime ?? quote.last_update);
         const providerOpen = parseProviderMarketOpen(quote.is_market_open ?? quote.market_open ?? quote.market_status);
         if (Number.isFinite(quotePrice)) {
@@ -613,6 +624,9 @@ async function getMarketQuoteSnapshot(forPair = pair) {
             return {
                 pair: p,
                 price: quotePrice,
+                bid: Number.isFinite(bid) ? bid : null,
+                ask: Number.isFinite(ask) ? ask : null,
+                spread,
                 provider_timestamp: providerTimestamp,
                 provider_timestamp_utc: Number.isFinite(providerTimestamp) ? new Date(providerTimestamp).toISOString() : null,
                 is_market_open: providerOpen,
@@ -629,6 +643,9 @@ async function getMarketQuoteSnapshot(forPair = pair) {
     return {
         pair: p,
         price: Number.isFinite(Number(fallbackPrice)) ? Number(fallbackPrice) : null,
+        bid: null,
+        ask: null,
+        spread: null,
         provider_timestamp: Number.isFinite(Number(fallbackPrice)) && cachedPricePair === p && Number.isFinite(priceCacheTime) ? priceCacheTime : null,
         provider_timestamp_utc: Number.isFinite(Number(fallbackPrice)) && cachedPricePair === p && Number.isFinite(priceCacheTime) ? new Date(priceCacheTime).toISOString() : null,
         is_market_open: null,
@@ -7846,6 +7863,11 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         quote_snapshot: quote_snapshot || null,
         provider_timestamp: quote_snapshot?.provider_timestamp || null,
         provider_timestamp_utc: quote_snapshot?.provider_timestamp_utc || null,
+        market_conditions: {
+            bid: Number.isFinite(Number(quote_snapshot?.bid)) ? Number(quote_snapshot.bid) : null,
+            ask: Number.isFinite(Number(quote_snapshot?.ask)) ? Number(quote_snapshot.ask) : null,
+            spread: Number.isFinite(Number(quote_snapshot?.spread)) ? Number(quote_snapshot.spread) : null
+        },
         asset_class: marketState.asset_class,
         data_quality: dataQuality,
         market_open: marketState.is_market_open,
@@ -11296,6 +11318,7 @@ function buildPublicTradeSignal(signal = {}) {
                 news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
                 data_quality: signal.data_quality || null,
                 provider_metadata: signal.provider_metadata || null,
+                market_conditions: signal.market_conditions || null,
                 status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity, !!compactPrimary?.entry_price),
                 execution_mode: signal.execution_mode || 'PAPER',
                 risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' }),
@@ -11325,6 +11348,7 @@ function buildPublicTradeSignal(signal = {}) {
             news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
             data_quality: signal.data_quality || null,
             provider_metadata: signal.provider_metadata || null,
+            market_conditions: signal.market_conditions || null,
             status_code: getPublicStatusCode(signal, false, false),
             execution_mode: signal.execution_mode || 'PAPER',
             risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' }),
@@ -11380,6 +11404,7 @@ function buildPublicTradeSignal(signal = {}) {
         news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
         data_quality: signal.data_quality || null,
         provider_metadata: signal.provider_metadata || null,
+        market_conditions: signal.market_conditions || null,
         status_code: getPublicStatusCode(signal, !!signal.primary_opportunity, Number.isFinite(Number(signal.entry ?? signal.entry_price))),
         execution_mode: signal.execution_mode || 'PAPER',
         risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' })
@@ -11416,6 +11441,7 @@ function recordAnalysisAudit(signal = {}) {
         symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
         current_price: Number.isFinite(Number(signal.current_price)) ? Number(signal.current_price) : null,
         provider_timestamp: signal.provider_timestamp || signal.quote_snapshot?.provider_timestamp || null,
+        market_conditions: signal.market_conditions || null,
         data_quality: signal.data_quality || null,
         decision: signal.decision || signal.trade_type || 'WAIT',
         status: signal.status || signal.opportunity_status || null,

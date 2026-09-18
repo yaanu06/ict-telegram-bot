@@ -72,6 +72,10 @@
 - The normalized timeframe registry now supports Twelve Data's `1min` interval with its own cache and candle duration.
 - The regular scan does not fetch 1M by default, preserving the 55-credit budget; it is available to explicit callers and an optional UI element.
 
+### 1p. **Asset Metadata and Quote Conditions**
+- Symbol metadata now preserves supplied tick value, contract size, order-size, price-distance, spread, commission, slippage, leverage, session, and trading permissions.
+- Quote snapshots expose bid, ask, and spread when the provider supplies them; unknown broker values remain `null`.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

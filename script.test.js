@@ -4819,13 +4819,23 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         const ctx = getContext();
         await ctx.saveKeys('tw', '', '', '', '');
         ctx.fetch = jest.fn(async url => String(url).includes('/quote?')
-            ? { ok: true, json: async () => ({ price: '1.25', timestamp: '2026-09-11T10:00:00Z', is_market_open: 'open' }) }
+            ? { ok: true, json: async () => ({ price: '1.25', bid: '1.2499', ask: '1.2501', timestamp: '2026-09-11T10:00:00Z', is_market_open: 'open' }) }
             : { ok: true, json: async () => ({}) });
         const quote = await ctx.getMarketQuoteSnapshot('EUR/USD');
         expect(quote.price).toBe(1.25);
         expect(quote.provider_timestamp_utc).toBe('2026-09-11T10:00:00.000Z');
         expect(quote.is_market_open).toBe(true);
+        expect(quote).toMatchObject({ bid: 1.2499, ask: 1.2501 });
+        expect(quote.spread).toBeCloseTo(0.0002, 8);
         expect(quote.quote_source).toBe('QUOTE');
+    });
+
+    it('preserves supplied asset metadata without inventing missing broker values', () => {
+        const ctx = getContext();
+        const metadata = ctx.getSymbolMetadata('EUR/USD', { tick_size: 0.0001, tick_value: 1, contract_size: 100000, minimum_order_size: 1000, leverage: 30, trading_permissions: ['PAPER'] });
+        expect(metadata).toMatchObject({ tick_size: 0.0001, tick_value: 1, contract_size: 100000, minimum_order_size: 1000, leverage: 30, trading_permissions: ['PAPER'] });
+        expect(metadata.spread).toBeNull();
+        expect(metadata.metadata_complete).toBe(true);
     });
 
     it('timestamps a live price fallback and never reuses an expired cached price after a provider error', async () => {
