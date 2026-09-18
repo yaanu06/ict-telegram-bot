@@ -11965,8 +11965,10 @@ function buildDebugDiagnostics(output = {}, context = null) {
 
 const ANALYSIS_AUDIT_KEY = 'ict_analysis_audit';
 const ANALYSIS_AUDIT_CAP = 200;
+const ANALYSIS_REPLAY_KEY = 'ict_analysis_replay_store';
+const ANALYSIS_REPLAY_CAP = 5;
 
-function recordAnalysisAudit(signal = {}) {
+function recordAnalysisAudit(signal = {}, replay = null) {
     const record = {
         request_id: `scan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         recorded_at: new Date().toISOString(),
@@ -11987,7 +11989,10 @@ function recordAnalysisAudit(signal = {}) {
         news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
         risk_gate: signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE),
         selected_candidate_id: signal.selected_candidate_id || null,
-        validation: signal.validation?.passed ?? signal.validation?.final_consistency?.valid ?? null
+        validation: signal.validation?.passed ?? signal.validation?.final_consistency?.valid ?? null,
+        replay_available: !!replay,
+        replay_schema_version: replay?.schema_version || null,
+        replay_captured_at: replay?.captured_at || null
     };
     try {
         const previous = JSON.parse(localStorage.getItem(ANALYSIS_AUDIT_KEY) || '[]');
@@ -11996,13 +12001,22 @@ function recordAnalysisAudit(signal = {}) {
     } catch (error) {
         console.warn('[AUDIT] unable to persist analysis record', error?.message || error);
     }
+    if (replay) {
+        try {
+            const previous = JSON.parse(localStorage.getItem(ANALYSIS_REPLAY_KEY) || '[]');
+            const entries = Array.isArray(previous) ? previous : [];
+            localStorage.setItem(ANALYSIS_REPLAY_KEY, JSON.stringify([{ request_id: record.request_id, replay }, ...entries].slice(0, ANALYSIS_REPLAY_CAP)));
+        } catch (error) {
+            console.warn('[AUDIT] unable to persist local replay', error?.message || error);
+        }
+    }
     const proxy = getProxyBaseUrl();
     const auditToken = getAuditWriteToken();
     if (proxy && auditToken && typeof fetch === 'function') {
         fetch(`${proxy}/api/audit`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Audit-Token': auditToken },
-            body: JSON.stringify(record),
+            body: JSON.stringify(replay ? { ...record, replay } : record),
             keepalive: true
         }).catch(error => console.warn('[AUDIT] proxy persistence unavailable', error?.message || error));
     }
@@ -12071,16 +12085,20 @@ function setJsonOutput(obj) {
         };
     }
     renderSignalStatus(publicSignal);
-    recordAnalysisAudit(publicSignal);
-    if(el) el.textContent = JSON.stringify({ trade_signal: publicSignal }, null, 2);
-    renderOpportunityStack(publicSignal);
+    let replay = null;
     if (lastLiveMarketContextForReplay) {
         try {
-            window.__ICT_LAST_SCAN_REPLAY__ = createScanReplay(lastLiveMarketContextForReplay, obj);
-            console.log('SCAN_REPLAY_JSON', JSON.stringify(window.__ICT_LAST_SCAN_REPLAY__));
+            replay = createScanReplay(lastLiveMarketContextForReplay, obj);
+            console.log('SCAN_REPLAY_JSON', JSON.stringify(replay));
         } catch (error) { console.error('[REPLAY] capture failed', error); }
-        lastLiveMarketContextForReplay = null;
     }
+    recordAnalysisAudit(publicSignal, replay);
+    if(el) el.textContent = JSON.stringify({ trade_signal: publicSignal }, null, 2);
+    renderOpportunityStack(publicSignal);
+    if (replay) {
+        window.__ICT_LAST_SCAN_REPLAY__ = replay;
+    }
+    if (lastLiveMarketContextForReplay) lastLiveMarketContextForReplay = null;
 }
 
 function escapeOpportunityHtml(value) {

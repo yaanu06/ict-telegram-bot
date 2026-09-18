@@ -4674,6 +4674,19 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(JSON.stringify(stored)).not.toMatch(/apikey|authorization|secret|token/i);
     });
 
+    it('persists a bounded sanitized replay alongside the audit summary', () => {
+        const ctx = getContext();
+        const storage = new Map();
+        ctx.localStorage.getItem = key => storage.get(key) || null;
+        ctx.localStorage.setItem = (key, value) => storage.set(key, value);
+        const replay = { schema_version: 1, captured_at: '2026-09-19T10:00:00Z', pair: 'EUR/USD', history: { '1H': [] } };
+        const record = ctx.recordAnalysisAudit({ pair: 'EUR/USD', decision: 'WAIT', status: 'NO_TRADE_TODAY' }, replay);
+        expect(record).toMatchObject({ replay_available: true, replay_schema_version: 1, replay_captured_at: replay.captured_at });
+        const stored = JSON.parse(storage.get('ict_analysis_replay_store'));
+        expect(stored).toHaveLength(1);
+        expect(stored[0]).toMatchObject({ request_id: record.request_id, replay });
+    });
+
     it('exposes explicit public status codes without removing legacy status fields', () => {
         const ctx = getContext();
         const watch = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY', opportunity: { area_of_interest: { low: 1, high: 1.1 } }, reason: { code: 'WAITING', message: 'watch' } });

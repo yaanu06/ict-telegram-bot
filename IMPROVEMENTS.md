@@ -172,6 +172,10 @@ Added actual detection algorithms for:
 - Custom symbols use the existing asset metadata, normalization, data-quality, analysis, AI-selection, and manual-tracking pipeline without instrument-specific price assumptions.
 - The server proxy uses the same symbol grammar, including provider exchange-qualified forms such as `NASDAQ:AAPL`.
 
+### 5g. **Reproducible Analysis Audit**
+- Each completed scan records its decision summary together with a bounded sanitized replay locally.
+- When authenticated proxy auditing is configured, the exact replay used for the decision is sent with the audit record so the analysis can be reproduced later.
+
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:
 1. First choice: FVG midpoint
