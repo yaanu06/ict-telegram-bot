@@ -28,6 +28,10 @@
 - The DeepSeek market-analyst stage now retries one malformed, schema-invalid, or failed response with a correction request.
 - A second failure remains a safe schema/error result with attempt diagnostics and no verified setups.
 
+### 1e. **Public Data-Quality Contract**
+- Compact public signals now expose data-quality and provider metadata for UI/audit consumers.
+- Invalid data quality is a hard `DATA_BLOCKED` status even when a planner has a developing opportunity.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

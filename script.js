@@ -7391,6 +7391,8 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         top_down_context: today?.top_down_context || null,
         daily_bias: today?.daily_bias || null,
         news_risk: today?.news_risk || { status: 'UNKNOWN', available: false },
+        symbol_metadata: getSymbolMetadata(pairLocal),
+        data_quality: today?.data_quality || null,
         strategy: today?.strategy || null,
             direction: today?.direction || null,
             bias: today?.bias || 'NEUTRAL',
@@ -11028,7 +11030,7 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
     // News risk is a hard execution lock. It must take precedence over a
     // paper-mode risk gate or any stale execution_allowed value.
     if (signal.news_risk?.status === 'HIGH_IMPACT') return 'NEWS_BLOCKED';
-    if (reasonCode.includes('DATA') || reasonCode.includes('PRICE_UNAVAILABLE')) return 'DATA_BLOCKED';
+    if (signal.data_quality?.valid === false || reasonCode.includes('DATA') || reasonCode.includes('PRICE_UNAVAILABLE')) return 'DATA_BLOCKED';
     if (signal.execution_allowed === false && signal.setup_state === 'SETUP_AVAILABLE') return 'SETUP_READY';
     if (signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') return 'SETUP_READY';
     if (hasOpportunity && hasEntry) return 'SETUP_READY';
@@ -11273,6 +11275,8 @@ function buildPublicTradeSignal(signal = {}) {
                     type: signal.strategy || signal.trade_context_classification || null
                 },
                 news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
+                data_quality: signal.data_quality || null,
+                provider_metadata: signal.provider_metadata || null,
                 status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity, !!compactPrimary?.entry_price),
                 execution_mode: signal.execution_mode || 'PAPER',
                 risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' }),
@@ -11300,6 +11304,8 @@ function buildPublicTradeSignal(signal = {}) {
             status: signal.status || null,
             reason: { code: reason.code, message: reason.message },
             news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
+            data_quality: signal.data_quality || null,
+            provider_metadata: signal.provider_metadata || null,
             status_code: getPublicStatusCode(signal, false, false),
             execution_mode: signal.execution_mode || 'PAPER',
             risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' }),
@@ -11353,6 +11359,8 @@ function buildPublicTradeSignal(signal = {}) {
             notes: signal.analysis?.notes || (Array.isArray(reasoning.secondary) ? reasoning.secondary.slice(0, 3) : [])
         },
         news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
+        data_quality: signal.data_quality || null,
+        provider_metadata: signal.provider_metadata || null,
         status_code: getPublicStatusCode(signal, !!signal.primary_opportunity, Number.isFinite(Number(signal.entry ?? signal.entry_price))),
         execution_mode: signal.execution_mode || 'PAPER',
         risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' })
