@@ -926,7 +926,11 @@ function localIndicatorSnapshot(candleData = []) {
 }
 
 async function getTechnicalIndicators(tfUsed, candleData = null) {
-    const cacheKey = `${pair}|${tfUsed}`;
+    const latest = Array.isArray(candleData) && candleData.length ? candleData[candleData.length - 1] : null;
+    const datasetKey = latest
+        ? `${candleData.length}:${latest.t ?? latest.timestamp ?? ''}:${latest.c ?? latest.close ?? ''}`
+        : 'NO_CANDLES';
+    const cacheKey = `${pair}|${tfUsed}|${datasetKey}`;
     const cachedHit = indicatorCache[cacheKey];
     if(cachedHit && Date.now() - cachedHit.ts < INDICATOR_CACHE_TTL) return cachedHit.data;
 

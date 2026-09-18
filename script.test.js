@@ -5222,6 +5222,17 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(Number.isFinite(indicators.ema21)).toBe(true);
     });
 
+    it('does not reuse a cached indicator snapshot for a refreshed candle dataset', async () => {
+        const ctx = getContext();
+        const firstData = candles(80, 100, 0.25, 'up').map((bar, index) => ({ ...bar, is_closed: true, timeframe: '1H', t: index }));
+        const refreshedData = firstData.map((bar, index) => index === firstData.length - 1
+            ? { ...bar, c: bar.c + 20, h: bar.h + 20 }
+            : bar);
+        const first = await ctx.getTechnicalIndicators('1H', firstData);
+        const refreshed = await ctx.getTechnicalIndicators('1H', refreshedData);
+        expect(refreshed.ema9).not.toBe(first.ema9);
+    });
+
     it('does not let device timezone affect canonical timestamps', () => {
         const ctx = getContext();
         const value = '2026-09-11T10:00:00Z';
