@@ -4713,6 +4713,22 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status_code: 'DATA_BLOCKED', execution_allowed: 'yes' }).valid).toBe(false);
     });
 
+    it('preserves stop quality warnings for manual review', () => {
+        const ctx = getContext();
+        const signal = ctx.buildPublicTradeSignal({
+            pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: true,
+            entry: 1.1000, stop_loss: 1.0997, take_profit_1: 1.1010,
+            stop_quality: {
+                status: 'VALID_STRUCTURAL_STOP',
+                volatility_classification: 'TIGHT_BUT_STRUCTURAL',
+                atr_multiple: 0.6,
+                warning: 'Stop is structurally valid but tighter than the preferred volatility distance.'
+            }
+        });
+        expect(signal.stop_quality).toMatchObject({ volatility_classification: 'TIGHT_BUT_STRUCTURAL', atr_multiple: 0.6 });
+        expect(signal.analysis.notes).toContain('Stop is structurally valid but tighter than the preferred volatility distance.');
+    });
+
     it('rejects duplicate timestamps and explicitly open candles in required histories', () => {
         const ctx = getContext();
         const baseStart = Date.parse('2026-09-01T00:00:00Z');

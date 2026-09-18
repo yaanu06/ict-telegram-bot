@@ -5576,6 +5576,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         minimum_reasonable_distance: ictRound(atrContext.minimum_reasonable_distance, prec),
                         maximum_reasonable_distance: ictRound(atrContext.maximum_reasonable_distance, prec),
                         atr_multiple: atrContext.atr_rule_reference ? ictRound(risk / atrContext.atr_rule_reference, 2) : null,
+                        preferred_minimum_distance: ictRound(atrContext.preferred_min_sl, prec),
                         position_size_adjustment_required: true
                     },
                     freshness: zone.freshness,
@@ -5914,6 +5915,16 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.structural_invalidation = candidate.structural_invalidation || null;
     aiResult.stop_buffer = candidate.stop_buffer ?? null;
     aiResult.stop_buffer_components = candidate.stop_buffer_components || null;
+    aiResult.stop_quality = candidate.risk_model ? {
+        status: candidate.risk_model.status || null,
+        volatility_classification: candidate.risk_model.volatility_classification || null,
+        risk_distance: candidate.risk_model.risk_distance ?? candidate.risk_distance ?? null,
+        atr_multiple: candidate.risk_model.atr_multiple ?? candidate.sl_atr_multiple ?? null,
+        minimum_reasonable_distance: candidate.risk_model.minimum_reasonable_distance ?? null,
+        preferred_minimum_distance: candidate.risk_model.preferred_minimum_distance ?? null,
+        warning: candidate.risk_model.volatility_classification === 'TIGHT_BUT_STRUCTURAL'
+            ? 'Stop is structurally valid but tighter than the preferred volatility distance.' : null
+    } : null;
     aiResult.stop_distance = candidate.stop_distance ?? candidate.risk_distance ?? null;
     aiResult.take_profit_1 = candidate.tp1;
     aiResult.take_profit_2 = candidate.tp2 ?? null;
@@ -9596,6 +9607,16 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
             entry_price: best.entry,
             entry_zone: { low: best.zone.low, high: best.zone.high, source: best.zoneType },
             stop_loss: best.sl,
+            stop_quality: bestCandidate?.risk_model ? {
+                status: bestCandidate.risk_model.status || null,
+                volatility_classification: bestCandidate.risk_model.volatility_classification || null,
+                risk_distance: bestCandidate.risk_model.risk_distance ?? bestCandidate.risk_distance ?? null,
+                atr_multiple: bestCandidate.risk_model.atr_multiple ?? bestCandidate.sl_atr_multiple ?? null,
+                minimum_reasonable_distance: bestCandidate.risk_model.minimum_reasonable_distance ?? null,
+                preferred_minimum_distance: bestCandidate.risk_model.preferred_minimum_distance ?? null,
+                warning: bestCandidate.risk_model.volatility_classification === 'TIGHT_BUT_STRUCTURAL'
+                    ? 'Stop is structurally valid but tighter than the preferred volatility distance.' : null
+            } : null,
             take_profit_1: best.tp1,
             take_profit_2: best.tp2,
             take_profit_3: best.tp3,
@@ -10342,6 +10363,7 @@ async function runAutoScan() {
                 entry_price: aiResult.entry,
                 entry_zone: aiResult.entry_zone,
                 stop_loss: aiResult.stop_loss,
+                stop_quality: aiResult.stop_quality || aiResult.adaptive_candidate?.risk_model || null,
                 stop_loss_reason: aiResult.stop_loss_reason,
                 structural_invalidation: aiResult.structural_invalidation,
                 stop_buffer: aiResult.stop_buffer,
@@ -11588,6 +11610,7 @@ function buildPublicTradeSignal(signal = {}) {
             high: signal.entry_zone.high
         } : null,
         stop_loss: signal.stop_loss,
+        stop_quality: signal.stop_quality || signal.adaptive_candidate?.risk_model || null,
         tp1: signal.tp1 ?? signal.take_profit_1,
         tp2: signal.tp2 ?? signal.take_profit_2 ?? null,
         tp3: signal.tp3 ?? signal.take_profit_3 ?? null,
@@ -11615,7 +11638,10 @@ function buildPublicTradeSignal(signal = {}) {
             structure: structureSummary || reasoning.structure || null,
             liquidity: liquiditySummary || reasoning.liquidity || null,
             invalidation: signal.analysis?.invalidation || reasoning.invalidation || signal.stop_loss_reason || '',
-            notes: signal.analysis?.notes || (Array.isArray(reasoning.secondary) ? reasoning.secondary.slice(0, 3) : [])
+            notes: signal.analysis?.notes || [
+                ...(Array.isArray(reasoning.secondary) ? reasoning.secondary.slice(0, 3) : []),
+                ...(signal.stop_quality?.warning ? [signal.stop_quality.warning] : [])
+            ]
         },
         news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
         data_quality: signal.data_quality || null,
