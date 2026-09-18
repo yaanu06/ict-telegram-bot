@@ -10893,10 +10893,9 @@ function buildSelectedCandidateEntryContext({ historyCache, sessionCheck, market
 
 function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = false) {
     const reasonCode = String(signal.reason?.code || '').toUpperCase();
-    // News risk is a hard execution lock.  Some planner paths intentionally
-    // omit execution_allowed while returning a developing opportunity, so the
-    // public status must derive the block from the authoritative news state.
-    if (signal.news_risk?.status === 'HIGH_IMPACT' && signal.execution_allowed !== true) return 'NEWS_BLOCKED';
+    // News risk is a hard execution lock. It must take precedence over a
+    // paper-mode risk gate or any stale execution_allowed value.
+    if (signal.news_risk?.status === 'HIGH_IMPACT') return 'NEWS_BLOCKED';
     if (reasonCode.includes('DATA') || reasonCode.includes('PRICE_UNAVAILABLE')) return 'DATA_BLOCKED';
     if (signal.execution_allowed === false && signal.setup_state === 'SETUP_AVAILABLE') return 'SETUP_READY';
     if (signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') return 'SETUP_READY';

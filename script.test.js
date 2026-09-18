@@ -4475,6 +4475,16 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(blocked.status_code).toBe('NEWS_BLOCKED');
     });
 
+    it('keeps a high-impact news block authoritative over a stale execution permission', () => {
+        const ctx = getContext();
+        const blocked = ctx.buildPublicTradeSignal({
+            pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY',
+            execution_allowed: true, entry: 1, stop_loss: 0.99, tp1: 1.03,
+            news_risk: { status: 'HIGH_IMPACT', available: true, event_name: 'CPI' }
+        });
+        expect(blocked.status_code).toBe('NEWS_BLOCKED');
+    });
+
     it('keeps account risk deterministic and blocks live sizing without metadata', () => {
         const ctx = getContext();
         expect(ctx.buildAccountRiskGate({ mode: 'PAPER' })).toMatchObject({ status: 'PAPER', execution_allowed: true, position_size: null });
