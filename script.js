@@ -526,7 +526,9 @@ async function getPrice(forPair) {
             return cachedPrice;
         }
     } catch(e) {
-        if(cachedPrice !== null && cachedPricePair === p) return cachedPrice;
+        // Never turn an expired quote cache into a live-looking price. The
+        // caller must receive null so the data-quality gate can block the scan.
+        if(cachedPrice !== null && cachedPricePair === p && (Date.now() - priceCacheTime) < PRICE_CACHE_DURATION) return cachedPrice;
     }
     return null;
 }
@@ -625,8 +627,8 @@ async function getMarketQuoteSnapshot(forPair = pair) {
     return {
         pair: p,
         price: Number.isFinite(Number(fallbackPrice)) ? Number(fallbackPrice) : null,
-        provider_timestamp: null,
-        provider_timestamp_utc: null,
+        provider_timestamp: Number.isFinite(Number(fallbackPrice)) && cachedPricePair === p && Number.isFinite(priceCacheTime) ? priceCacheTime : null,
+        provider_timestamp_utc: Number.isFinite(Number(fallbackPrice)) && cachedPricePair === p && Number.isFinite(priceCacheTime) ? new Date(priceCacheTime).toISOString() : null,
         is_market_open: null,
         asset_class: assetClass,
         symbol_metadata: symbolMetadata,

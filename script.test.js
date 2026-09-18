@@ -4817,6 +4817,19 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(quote.is_market_open).toBe(true);
         expect(quote.quote_source).toBe('QUOTE');
     });
+
+    it('timestamps a live price fallback and never reuses an expired cached price after a provider error', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        ctx.fetch = jest.fn(async url => String(url).includes('/quote?')
+            ? { ok: false, json: async () => ({}) }
+            : { ok: true, json: async () => ({ price: '1.26' }) });
+        const quote = await ctx.getMarketQuoteSnapshot('EUR/USD');
+        expect(quote.price).toBe(1.26);
+        expect(quote.quote_source).toBe('PRICE_FALLBACK');
+        expect(quote.provider_timestamp).toEqual(expect.any(Number));
+        expect(quote.provider_timestamp_utc).toEqual(expect.any(String));
+    });
 });
 
 describe('AI market analyst contract', () => {

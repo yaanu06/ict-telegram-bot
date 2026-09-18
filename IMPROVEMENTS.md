@@ -57,6 +57,10 @@
 - History is rejected when the latest candle is too old for that timeframe or is dated in the future.
 - This prevents stale cached candles from silently changing structure, trend, or setup output.
 
+### 1l. **Timestamped Quote Fallbacks**
+- Price-endpoint fallbacks now carry the cache/fetch timestamp into the scan snapshot.
+- Expired cached prices are rejected after provider errors instead of being presented as current quotes.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:
