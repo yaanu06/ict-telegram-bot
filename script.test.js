@@ -4735,6 +4735,9 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         const askSide = ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status_code: 'SETUP_READY', current_price: 100, market_conditions: { ask: 100.2 }, entry: 100.3, stop_loss: 99, tp1: 103 });
         expect(askSide.valid).toBe(false);
         expect(askSide.issues).toContain('BUY_LIMIT entry must be below current quote');
+        const outsideZone = ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status_code: 'SETUP_READY', current_price: 100, entry: 98, entry_zone: { low: 99, high: 99.5 }, stop_loss: 97, tp1: 103 });
+        expect(outsideZone.valid).toBe(false);
+        expect(outsideZone.issues).toContain('ready entry is outside entry zone');
         const invalid = ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status_code: 'SETUP_READY', entry: 100, stop_loss: 101, tp1: 99 });
         expect(invalid.valid).toBe(false);
         expect(invalid.issues.join(' ')).toMatch(/BUY_LIMIT geometry/);

@@ -11768,6 +11768,12 @@ function validatePublicTradeSignal(signal = {}) {
         if (signal.decision === 'BUY_LIMIT' && entry >= referencePrice) issues.push('BUY_LIMIT entry must be below current quote');
         if (signal.decision === 'SELL_LIMIT' && entry <= referencePrice) issues.push('SELL_LIMIT entry must be above current quote');
     }
+    if (signal?.status_code === 'SETUP_READY' && signal.entry_zone != null) {
+        const zoneLow = Number(signal.entry_zone.low);
+        const zoneHigh = Number(signal.entry_zone.high);
+        if (!Number.isFinite(zoneLow) || !Number.isFinite(zoneHigh) || zoneHigh < zoneLow) issues.push('ready entry zone is invalid');
+        else if (Number.isFinite(entry) && (entry < zoneLow || entry > zoneHigh)) issues.push('ready entry is outside entry zone');
+    }
     return { valid: issues.length === 0, issues };
 }
 
