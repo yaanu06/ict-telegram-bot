@@ -371,6 +371,7 @@ let priceCacheTime = 0;
 let cachedPricePair = null;
 let indicatorCache = {};
 const PRICE_CACHE_DURATION = 5000;
+const DEFAULT_EXECUTION_MODE = 'MANUAL';
 
 function resetPairState() {
     cachedPrice = null;
@@ -10630,7 +10631,7 @@ async function runAutoScan() {
         // Update button to show AI source
         const btnExecute = document.getElementById('executeBtn');
         if (btnExecute && analysis) {
-            btnExecute.innerHTML = `🤖 AI Setup: ${st}`;
+            btnExecute.innerHTML = `Track Manual ${st}`;
             btnExecute.style.background = 'linear-gradient(135deg, #5856d6, #007aff)';
         }
         
@@ -11270,6 +11271,21 @@ function buildAccountRiskGate({ mode = 'PAPER', account = null, risk_percent = n
     return { mode: normalizedMode, status: 'RISK_READY', execution_allowed: true, position_size: positionSize, risk_amount: riskAmount, issues: [], reason: 'Account and symbol risk constraints passed.' };
 }
 
+function buildManualExecutionGate() {
+    return {
+        mode: 'MANUAL', status: 'MANUAL', execution_allowed: true,
+        position_size: null, risk_amount: null, issues: [],
+        reason: 'Manual execution is user-controlled; this app does not submit broker orders.'
+    };
+}
+
+function getDefaultRiskGate(mode = DEFAULT_EXECUTION_MODE) {
+    const normalizedMode = String(mode || DEFAULT_EXECUTION_MODE).toUpperCase();
+    if (normalizedMode === 'MANUAL') return buildManualExecutionGate();
+    if (normalizedMode === 'PAPER') return buildPaperOrderRiskGate();
+    return buildAccountRiskGate({ mode: normalizedMode });
+}
+
 /**
  * Deterministic pending-limit backtest. It consumes already-derived signals
  * and closed candles; it never derives future structure or uses candles before
@@ -11507,8 +11523,8 @@ function buildPublicTradeSignal(signal = {}) {
                 provider_metadata: signal.provider_metadata || null,
                 market_conditions: signal.market_conditions || null,
                 status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity, !!compactPrimary?.entry_price),
-                execution_mode: signal.execution_mode || 'PAPER',
-                risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' }),
+                execution_mode: signal.execution_mode || DEFAULT_EXECUTION_MODE,
+                risk_gate: signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE),
                 market_open: signal.market_open ?? null
             };
         }
@@ -11537,8 +11553,8 @@ function buildPublicTradeSignal(signal = {}) {
             provider_metadata: signal.provider_metadata || null,
             market_conditions: signal.market_conditions || null,
             status_code: getPublicStatusCode(signal, false, false),
-            execution_mode: signal.execution_mode || 'PAPER',
-            risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' }),
+            execution_mode: signal.execution_mode || DEFAULT_EXECUTION_MODE,
+            risk_gate: signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE),
             market_open: signal.market_open ?? null
         };
     }
@@ -11593,8 +11609,8 @@ function buildPublicTradeSignal(signal = {}) {
         provider_metadata: signal.provider_metadata || null,
         market_conditions: signal.market_conditions || null,
         status_code: getPublicStatusCode(signal, !!signal.primary_opportunity, Number.isFinite(Number(signal.entry ?? signal.entry_price))),
-        execution_mode: signal.execution_mode || 'PAPER',
-        risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' })
+        execution_mode: signal.execution_mode || DEFAULT_EXECUTION_MODE,
+        risk_gate: signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE)
     };
 }
 
@@ -11638,7 +11654,7 @@ function recordAnalysisAudit(signal = {}) {
         confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
         reason: signal.reason || null,
         news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
-        risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' }),
+        risk_gate: signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE),
         selected_candidate_id: signal.selected_candidate_id || null,
         validation: signal.validation?.passed ?? signal.validation?.final_consistency?.valid ?? null
     };
@@ -11701,7 +11717,7 @@ function setJsonOutput(obj) {
             reason: { code: 'PUBLIC_SIGNAL_SCHEMA_INVALID', message: publicValidation.issues.join('; ') },
             data_quality: { valid: false, reasons: publicValidation.issues },
             news_risk: publicSignal?.news_risk || { status: 'UNKNOWN', available: false },
-            risk_gate: publicSignal?.risk_gate || buildAccountRiskGate({ mode: 'PAPER' })
+            risk_gate: publicSignal?.risk_gate || getDefaultRiskGate(publicSignal?.execution_mode || DEFAULT_EXECUTION_MODE)
         };
     }
     recordAnalysisAudit(publicSignal);
@@ -11971,8 +11987,9 @@ function handleJournalClick(ev) {
 
 function validatePersistedPaperOrder(order = {}) {
     const issues = [];
+    const persistedMode = String(order.execution_mode || 'PAPER').toUpperCase();
     if (!['LONG', 'SHORT'].includes(order.signalType)) issues.push('signalType must be LONG or SHORT');
-    if (String(order.execution_mode || 'PAPER').toUpperCase() !== 'PAPER') issues.push('execution mode is not PAPER');
+    if (!['PAPER', 'MANUAL'].includes(persistedMode)) issues.push('execution mode is not PAPER or MANUAL');
     if (!Number.isFinite(Number(order.id))) issues.push('order id is invalid');
     if (!Number.isFinite(Number(order.idealEntry)) || !Number.isFinite(Number(order.stopLoss)) || !Number.isFinite(Number(order.takeProfit1))) issues.push('order geometry is incomplete');
     if (order.signalType === 'LONG' && !(Number(order.stopLoss) < Number(order.idealEntry) && Number(order.idealEntry) < Number(order.takeProfit1))) issues.push('LONG geometry is invalid');
@@ -11980,7 +11997,7 @@ function validatePersistedPaperOrder(order = {}) {
     if (!Number.isFinite(normalizeTimestampUTC(order.createdAt))) issues.push('createdAt is invalid');
     if (order.idempotency_key != null && (typeof order.idempotency_key !== 'string' || !order.idempotency_key.trim())) issues.push('idempotency key is invalid');
     if (typeof order.idempotency_key === 'string' && order.idempotency_key.trim() && order.pair) {
-        const expectedKey = buildPaperOrderIdempotencyKey({ signalType: order.signalType, candidate_id: order.candidate_id, idealEntry: order.idealEntry, stopLoss: order.stopLoss, takeProfit1: order.takeProfit1 }, order.pair);
+        const expectedKey = buildTrackedOrderIdempotencyKey({ signalType: order.signalType, candidate_id: order.candidate_id, idealEntry: order.idealEntry, stopLoss: order.stopLoss, takeProfit1: order.takeProfit1 }, order.pair, persistedMode);
         if (order.idempotency_key !== expectedKey) issues.push('idempotency key does not match order geometry');
     }
     return { valid: issues.length === 0, issues };
@@ -11996,6 +12013,19 @@ function buildPaperOrderIdempotencyKey(signal = {}, pairLocal = pair) {
         signal.takeProfit1 ?? signal.tp1 ?? signal.take_profit_1 ?? ''
     ].map(value => String(value).trim());
     return `PAPER:${values.join('|')}`;
+}
+
+function buildTrackedOrderIdempotencyKey(signal = {}, pairLocal = pair, mode = DEFAULT_EXECUTION_MODE) {
+    const prefix = String(mode || DEFAULT_EXECUTION_MODE).toUpperCase() === 'PAPER' ? 'PAPER' : 'MANUAL';
+    const values = [
+        normalizeSymbolInput(pairLocal),
+        signal.signalType || signal.direction || '',
+        signal.candidate_id || signal.selected_candidate_id || '',
+        signal.idealEntry ?? signal.entry ?? signal.entry_price ?? '',
+        signal.stopLoss ?? signal.stop_loss ?? '',
+        signal.takeProfit1 ?? signal.tp1 ?? signal.take_profit_1 ?? ''
+    ].map(value => String(value).trim());
+    return `${prefix}:${values.join('|')}`;
 }
 
 function loadLimitOrder() {
@@ -12072,13 +12102,13 @@ function updateLimitUI() {
         t.innerHTML = `⏳ ${limitOrder.pair||''} ${limitOrder.signalType} @ $${limitOrder.idealEntry.toFixed(prec)} | SL: $${limitOrder.stopLoss.toFixed(prec)} | ${limitOrder.confirmation||''} | ${(limitOrder.distancePct || 0).toFixed(2)}% away`;
         t.className = 'active';
         c.classList.remove('hidden');
-        document.getElementById('executeBtn').innerHTML = '⏳ Waiting...';
+        document.getElementById('executeBtn').innerHTML = '⏳ Manual tracking active';
         document.getElementById('executeBtn').style.background = 'linear-gradient(135deg, #ff9f0a, #ff6b00)';
     } else {
         t.innerHTML = 'No active order';
         t.className = '';
         c.classList.add('hidden');
-        document.getElementById('executeBtn').innerHTML = '⚡ Place Order';
+        document.getElementById('executeBtn').innerHTML = '⚡ Track Manual Limit';
         document.getElementById('executeBtn').style.background = 'linear-gradient(135deg, #34c759, #28a745)';
     }
 }
@@ -12103,8 +12133,9 @@ function validateLocalLimitOrderInput(signal = {}, pairLocal = pair) {
     return { valid: issues.length === 0, issues, direction, minimum_rr: minimumRR };
 }
 
-function validateExecutionMode(mode = 'PAPER') {
-    const normalized = String(mode || 'PAPER').toUpperCase();
+function validateExecutionMode(mode = DEFAULT_EXECUTION_MODE) {
+    const normalized = String(mode || DEFAULT_EXECUTION_MODE).toUpperCase();
+    if (normalized === 'MANUAL') return { valid: true, mode: normalized, reason: 'Manual execution is user-controlled; this app only tracks the setup.' };
     if (normalized === 'PAPER') return { valid: true, mode: normalized, reason: 'Local paper pending-order simulation is enabled.' };
     return { valid: false, mode: normalized, reason: `${normalized} execution is unavailable in this client; broker submission is disabled.` };
 }
@@ -12196,7 +12227,10 @@ function handleLimit() {
         console.warn('[ORDER] duplicate paper order rejected', duplicate);
         return;
     }
-    const riskGate = buildPaperOrderRiskGate();
+    const requestedMode = String(analysis.execution_mode || DEFAULT_EXECUTION_MODE).toUpperCase();
+    const riskGate = requestedMode === 'PAPER'
+        ? buildPaperOrderRiskGate()
+        : { mode: 'MANUAL', status: 'MANUAL', execution_allowed: true, position_size: null, risk_amount: null, issues: [], reason: 'Manual execution is user-controlled; this app only tracks the setup.' };
     if (!riskGate.execution_allowed) {
         showNotif(`⛔ Order rejected: ${riskGate.reason}`, 'warning');
         console.warn('[ORDER] paper risk gate rejected order', riskGate);
@@ -12207,7 +12241,7 @@ function handleLimit() {
         console.error('[ORDER] execution permission rejected');
         return;
     }
-    const executionMode = validateExecutionMode(analysis.execution_mode || 'PAPER');
+    const executionMode = validateExecutionMode(requestedMode);
     if (!executionMode.valid) {
         showNotif(`⛔ Order rejected: ${executionMode.reason}`, 'error');
         console.error('[ORDER] execution mode rejected', executionMode);
@@ -12222,7 +12256,7 @@ function handleLimit() {
     const o = {
         id: Date.now(),
         pair: pair,
-        execution_mode: 'PAPER',
+        execution_mode: executionMode.mode,
         signalType: analysis.signalType,
         idealEntry: analysis.idealEntry,
         stopLoss: analysis.stopLoss,
@@ -12250,10 +12284,10 @@ function handleLimit() {
         structural_invalidation: analysis.aiDecision?.structural_invalidation || null,
         quality_breakdown: analysis.aiDecision?.quality?.breakdown || analysis.aiDecision?.quality?.quality_breakdown || null,
         fill_price_source: 'LIMIT_ORDER_PRICE',
-        idempotency_key: buildPaperOrderIdempotencyKey({ ...analysis, candidate_id: analysis.aiDecision?.selected_candidate_id || null }, pair)
+        idempotency_key: buildTrackedOrderIdempotencyKey({ ...analysis, candidate_id: analysis.aiDecision?.selected_candidate_id || null }, pair, executionMode.mode)
     };
     saveLimit(o);
-    recordPaperOrderEvent(o, 'ORDER_PENDING', 'USER_APPROVED_PAPER_ORDER');
+    recordPaperOrderEvent(o, 'ORDER_PENDING', executionMode.mode === 'MANUAL' ? 'USER_APPROVED_MANUAL_TRACKING' : 'USER_APPROVED_PAPER_ORDER');
     startMonitor();
     const aiLabel = o.aiDecision ? '🤖 AI Setup' : '📊 Rule-Based';
     const prec = getPrec(pair);

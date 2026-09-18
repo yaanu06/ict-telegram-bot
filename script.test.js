@@ -4467,7 +4467,7 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(stored[0]).toMatchObject({ pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY' });
         expect(stored[0]).toMatchObject({ status_code: 'NO_TRADE', provider_timestamp: '2026-09-18T10:00:00Z', data_quality: { valid: true } });
         expect(stored[0].symbol_metadata).toMatchObject({ symbol: 'EUR/USD', asset_class: 'FOREX' });
-        expect(stored[0].risk_gate).toMatchObject({ mode: 'PAPER', status: 'PAPER', execution_allowed: true });
+        expect(stored[0].risk_gate).toMatchObject({ mode: 'MANUAL', status: 'MANUAL', execution_allowed: true });
         expect(JSON.stringify(stored)).not.toMatch(/apikey|authorization|secret|token/i);
     });
 
@@ -4476,7 +4476,7 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         const watch = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY', opportunity: { area_of_interest: { low: 1, high: 1.1 } }, reason: { code: 'WAITING', message: 'watch' } });
         expect(watch.status).toBe('TODAY_OPPORTUNITY');
         expect(watch.status_code).toBe('WATCH');
-        expect(watch.execution_mode).toBe('PAPER');
+        expect(watch.execution_mode).toBe('MANUAL');
         expect(watch.symbol_metadata.asset_class).toBe('FOREX');
         const ready = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: true, entry: 1, stop_loss: 0.99, take_profit_1: 1.03 });
         expect(ready.status_code).toBe('SETUP_READY');
@@ -4671,7 +4671,8 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         const ctx = getContext();
         const valid = { id: 1, execution_mode: 'PAPER', signalType: 'LONG', idealEntry: 100, stopLoss: 95, takeProfit1: 110, createdAt: '2026-09-18T10:00:00Z' };
         expect(ctx.validatePersistedPaperOrder(valid).valid).toBe(true);
-        expect(ctx.validatePersistedPaperOrder({ ...valid, execution_mode: 'LIVE' }).issues).toContain('execution mode is not PAPER');
+        expect(ctx.validatePersistedPaperOrder({ ...valid, execution_mode: 'LIVE' }).issues).toContain('execution mode is not PAPER or MANUAL');
+        expect(ctx.validateExecutionMode('MANUAL')).toMatchObject({ valid: true, mode: 'MANUAL' });
         expect(ctx.validatePersistedPaperOrder({ ...valid, stopLoss: 105 }).valid).toBe(false);
         expect(ctx.validatePersistedPaperOrder({ ...valid, createdAt: 'bad' }).valid).toBe(false);
         expect(ctx.validatePersistedPaperOrder({ ...valid, idempotency_key: '' }).issues).toContain('idempotency key is invalid');
