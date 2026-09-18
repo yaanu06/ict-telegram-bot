@@ -10531,6 +10531,10 @@ async function runAutoScan() {
                 ? `ENGINE_INVARIANT_FAILURE: ${outputConsistency.issues.join('; ')}`
                 : `AI output inconsistent: ${outputConsistency.issues.join('; ')}`;
             console.log('❌ AI OUTPUT CONSISTENCY REJECTED', outputConsistency);
+            const rejectedMarketContext = liveMarketContext.market_context || {};
+            const rejectedTimeframeContext = liveMarketContext.timeframe_context || rejectedMarketContext.timeframe_context || null;
+            const rejectedVolatility = liveMarketContext.volatility || rejectedMarketContext.volatility || null;
+            const rejectedIndicators = liveMarketContext.indicators || rejectedMarketContext.indicators || null;
             const out = {
                 trade_signal: {
                     date: new Date().toISOString().split('T')[0],
@@ -10540,7 +10544,7 @@ async function runAutoScan() {
                     symbol_metadata: liveMarketContext.symbol_metadata || getSymbolMetadata(pair),
                     market_conditions: liveMarketContext.market_conditions || null,
                     trade_context_classification: liveMarketContext.trade_context_classification || null,
-                    top_down_context: liveMarketContext.top_down_context || null,
+                    top_down_context: liveMarketContext.top_down_context || rejectedMarketContext.top_down_context || null,
                     daily_bias: liveMarketContext.daily_bias || null,
                     structural_context: liveMarketContext.structural_context || null,
                     trade_type: 'WAIT',
@@ -10548,17 +10552,17 @@ async function runAutoScan() {
                     confidence: 0,
                     status: 'NO_TRADE',
                     status_code: 'NO_TRADE',
-                    market_open: liveMarketContext.market_open,
+                    market_open: liveMarketContext.market_open ?? liveMarketContext.quote_snapshot?.is_market_open ?? null,
                     news_risk: liveMarketContext.news_risk || { status: 'UNKNOWN', available: false },
                     data_quality: liveMarketContext.data_quality || null,
                     provider_metadata: liveMarketContext.provider_metadata || null,
                     analysis: {
                         bias: liveMarketContext.daily_bias?.direction === 'BUY' ? 'BULLISH' : liveMarketContext.daily_bias?.direction === 'SELL' ? 'BEARISH' : 'NEUTRAL',
                         trade_context: liveMarketContext.trade_context_classification || null,
-                        higher_timeframe: liveMarketContext.timeframe_context || null,
+                        higher_timeframe: rejectedTimeframeContext,
                         structural_context: liveMarketContext.structural_context || null,
-                        volatility_level: liveMarketContext.volatility?.regime || null,
-                        technical_indicators: liveMarketContext.indicators || null,
+                        volatility_level: rejectedVolatility?.regime || null,
+                        technical_indicators: rejectedIndicators,
                         type: 'DETERMINISTIC_VALIDATION'
                     },
                     reasoning: { primary: reason },
