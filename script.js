@@ -2216,10 +2216,10 @@ function buildPivotReferences(data, currentPrice) {
     };
 }
 
-function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLocal = pair) {
+function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLocal = pair, symbolMetadata = {}) {
     data = closedStructureCandles(data);
     if (!isValidCandleArray(data, 20)) return [];
-    const settings = getMarketSettings(pairLocal);
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
     const prec = settings.prec;
     const atrVal = data.length >= 15 ? atr(data, 14) : 0;
     const pad = Math.max(settings.pipSize * 2, (atrVal || 0) * STRATEGY_SPEC.MSNR.zoneAtrWidth, currentPrice * 0.00002);
@@ -2385,9 +2385,9 @@ function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLoc
     return bounded;
 }
 
-function calculateMSNR(data, currentPrice, timeframe = null, pairLocal = pair) {
+function calculateMSNR(data, currentPrice, timeframe = null, pairLocal = pair, symbolMetadata = {}) {
     const refs = buildPivotReferences(data, currentPrice);
-    const structural = buildStructuralMSNRLevels(data, currentPrice, timeframe, pairLocal);
+    const structural = buildStructuralMSNRLevels(data, currentPrice, timeframe, pairLocal, symbolMetadata);
     const structuralSupports = structural.filter(l => l.direction === 'BUY' && l.level < currentPrice);
     const structuralResistances = structural.filter(l => l.direction === 'SELL' && l.level > currentPrice);
     return {
@@ -2939,11 +2939,11 @@ function ictCanonicalZoneType(value) {
     return null;
 }
 
-function ictBuildRealZones(data, price, direction, pairLocal, timeframe = null) {
+function ictBuildRealZones(data, price, direction, pairLocal, timeframe = null, symbolMetadata = {}) {
     data = closedStructureCandles(data);
     if (!data || data.length < 20) return [];
     const zones = [];
-    const settings = getMarketSettings(pairLocal);
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
     const edgePad = Math.max(settings.pipSize * 2, price * 0.000001);
 
     for (const fvg of detectFVG(data)) {
@@ -2974,7 +2974,7 @@ function ictBuildRealZones(data, price, direction, pairLocal, timeframe = null) 
         }
     }
 
-    const msnr = calculateMSNR(data, price, null, pairLocal);
+    const msnr = calculateMSNR(data, price, null, pairLocal, symbolMetadata);
     const levels = (msnr.structural_levels || []).filter(level => level.direction === direction);
     for (const meta of levels) {
         const level = meta.level;
@@ -4975,7 +4975,7 @@ function buildMarketContext({ pair, price, historyCache, structure, session, ses
     };
 }
 
-function buildStrategySetups({ pair, price, historyCache, realZones, marketContext }) {
+function buildStrategySetups({ pair, price, historyCache, realZones, marketContext, symbolMetadata = null }) {
     const setups = [];
     const detectionStats = {
         CRT: { raw_count: 0, deduped_count: 0, bullish: 0, bearish: 0 },
@@ -4983,7 +4983,7 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
         MSNR: { raw_count: 0, deduped_count: 0, structural_count: 0, executable_count: 0, pivot_reference_count: 0, atr_fallback_count: 0 }
     };
     const zoneList = realZones || [];
-    const settings = getMarketSettings(pair);
+    const settings = getMarketSettings(pair, symbolMetadata || marketContext?.symbol_metadata || {});
     const prec = settings.prec;
     const makeExecutionZone = (setup, low, high, type, entryModel = 'RECLAIM_RETEST') => ({
         id: `${setup.timeframe}-${setup.direction}-${type}-${ictRound(low, prec)}-${ictRound(high, prec)}-${setups.length + 1}`,
@@ -6719,13 +6719,13 @@ function buildStructureSnapshot(data, tf) {
     };
 }
 
-function buildLiveZonesForTf(data, tf, price, pairLocal, atrVal, limitPerDirection = 5) {
+function buildLiveZonesForTf(data, tf, price, pairLocal, atrVal, limitPerDirection = 5, symbolMetadata = {}) {
     data = closedStructureCandles(data);
     if (!data || data.length < 20) return [];
-    const prec = getMarketSettings(pairLocal).prec;
+    const prec = getMarketSettings(pairLocal, symbolMetadata).prec;
     const zones = [];
     for (const direction of ['BUY', 'SELL']) {
-        const realZones = ictBuildRealZones(data, price, direction, pairLocal, tf);
+        const realZones = ictBuildRealZones(data, price, direction, pairLocal, tf, symbolMetadata);
         for (const z of realZones) {
             const midpoint = z.price || (z.low + z.high) / 2;
             const freshness = checkZoneFreshness(data, z, direction);
@@ -6762,8 +6762,8 @@ function buildLiveZonesForTf(data, tf, price, pairLocal, atrVal, limitPerDirecti
         .slice(0, limitPerDirection));
 }
 
-function buildTargetCandidates(historyCache, price, pairLocal) {
-    const prec = getMarketSettings(pairLocal).prec;
+function buildTargetCandidates(historyCache, price, pairLocal, symbolMetadata = {}) {
+    const prec = getMarketSettings(pairLocal, symbolMetadata).prec;
     const candidates = [];
     const daily = getClosedHistory(historyCache, '1D');
     const previousDay = daily.at(-1);
@@ -6774,7 +6774,7 @@ function buildTargetCandidates(historyCache, price, pairLocal) {
     for (const tf of ['4H', '1H']) {
         const data = getClosedHistory(historyCache, tf);
         if (!data || data.length < 20) continue;
-        const msnr = calculateMSNR(data, price, tf, pairLocal);
+        const msnr = calculateMSNR(data, price, tf, pairLocal, symbolMetadata);
         const liq = mapLiquidity(data);
         const sw = findSwings(data, 3);
         for (const meta of (msnr.structural_levels || []).filter(l => l.direction === 'SELL' && l.level > price).slice(0, 5)) {
@@ -7779,11 +7779,11 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         // discovery. The previous five-zone cap could remove the valid 4H
         // FVG/OB before the market-mechanics narrative was built, leaving an
         // isolated 15M FLIP as the only visible result.
-        const tfZones = buildLiveZonesForTf(data, tf, price, pair, tfAtr || primaryAtr || 0, 20);
+        const tfZones = buildLiveZonesForTf(data, tf, price, pair, tfAtr || primaryAtr || 0, 20, symbolMetadata);
         zones.push(...tfZones);
         console.log('[PERF] MSNR/ICT zone construction', { timeframe: tf, elapsed_ms: Math.round((scanClock() - zoneStartedAt) * 100) / 100, zones: tfZones.length, msnr_levels: tfZones.filter(z => z.type === 'MSNR').length });
     }
-    const targetCandidates = buildTargetCandidates(historyCache, price, pair);
+    const targetCandidates = buildTargetCandidates(historyCache, price, pair, symbolMetadata);
     const stageContext = buildLimitOrderStageContext(zones, targetCandidates, price, primaryAtr || 0, entryContext);
 
     const liq4h = mapLiquidity(historyCache?.['4H'] || []);
@@ -7907,6 +7907,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         holistic
     });
     marketContext.news_risk = checkHighImpactNews(quote_snapshot?.news_risk || null);
+    marketContext.symbol_metadata = symbolMetadata;
     // Candidate construction consumes this same quality verdict so a stale
     // quote cannot be replaced by a fresh-looking fallback candidate.
     marketContext.data_quality = dataQuality;
@@ -7924,7 +7925,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const mechanicsSetups = buildMarketMechanicsSetups({ historyCache, timeframeContext: marketContext.timeframe_context,
         dailyBias: marketContext.daily_bias, targets: targetCandidates, zones, pair, price });
     marketContext.discovery_funnel = { ...(mechanicsSetups.discovery || {}) };
-    const strategySetups = buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext });
+    const strategySetups = buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext, symbolMetadata });
     strategySetups.push(...mechanicsSetups);
     marketContext.timeframe_context = buildTimeframeContext({ historyCache, structure, price, strategySetups, zones, liquidity: liquidityFacts });
     marketContext.daily_bias = buildDailyTradingBias(marketContext.timeframe_context, targetCandidates, price, now.getTime());
@@ -9494,7 +9495,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
     const fallbackAtr1h = historyCache?.['1H']?.length >= 15 ? atr(historyCache['1H'], 14) : 0;
     for (const tf of ['4H', '1H']) {
         const tfAtr = tf === '4H' ? fallbackAtr4h : fallbackAtr1h;
-        fallbackZones.push(...buildLiveZonesForTf(historyCache?.[tf], tf, price, pair, tfAtr || fallbackAtr4h || fallbackAtr1h || 0, 5));
+        fallbackZones.push(...buildLiveZonesForTf(historyCache?.[tf], tf, price, pair, tfAtr || fallbackAtr4h || fallbackAtr1h || 0, 5, quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair)));
     }
     const fallbackRiskConstraints = buildRiskConstraints(pair, price, historyCache, quoteSnapshot, quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair));
     const fallbackStructure = {
@@ -9539,7 +9540,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
         holistic: null
     });
     const fallbackStrategySetups = buildStrategySetups({ pair, price, historyCache, realZones: fallbackZones, marketContext: fallbackMarketContext });
-    const fallbackTargetCandidates = buildTargetCandidates(historyCache, price, pair);
+    const fallbackTargetCandidates = buildTargetCandidates(historyCache, price, pair, quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair));
     const fallbackCandidateResult = buildAdaptiveSetupCandidates({
         pair,
         price,
