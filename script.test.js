@@ -621,6 +621,13 @@ describe('top-down trade context', () => {
         expect(elements.get('trend15M').className).toContain('bullish');
     });
 
+    it('shows unavailable data instead of a false neutral trend', async () => {
+        const { context: ctx, elements } = getScanContext();
+        await ctx.updateMTFDisplay({ '1D': candles(10, 100, 0.1, 'up') });
+        expect(elements.get('trend1D').innerHTML).toBe('Data');
+        expect(elements.get('trend1D').className).toContain('neutral');
+    });
+
     function context(ctx, daily, fourH, oneH, reversal = false) {
         const structure = Object.fromEntries([['1D', daily], ['4H', fourH], ['1H', oneH], ['15M', 'BULLISH']]
             .map(([tf, trend]) => [tf, { trend }]));

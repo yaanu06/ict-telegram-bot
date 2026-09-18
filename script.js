@@ -3145,10 +3145,13 @@ async function updateMTFDisplay(historyCache = {}) {
     const tfs = ['5M', '15M', '1H', '4H', '1D', '1W'];
     if (document.getElementById('trend1M')) tfs.unshift('1M');
     for(let t of tfs) {
-        let tr = 'NEUTRAL';
+        let tr = 'UNAVAILABLE';
         try {
             const data = historyCache[t] || await getHistory(t);
-            if(data && data.length >= 2) {
+            // Keep the display on the same minimum history contract as the
+            // signal direction reader. Short data must be visible as missing,
+            // never misrepresented as a neutral market trend.
+            if(data && data.length >= 50) {
                 const snapshot = buildStructureSnapshot(data, t);
                 tr = getCanonicalDisplayedTrend(snapshot);
             }
@@ -3160,7 +3163,7 @@ async function updateMTFDisplay(historyCache = {}) {
             const bullish = ['BULLISH', 'BULLISH_TRANSITION'].includes(tr);
             const bearish = ['BEARISH', 'BEARISH_TRANSITION'].includes(tr);
             const mixed = tr === 'MIXED';
-            el.innerHTML = bullish ? 'Bull' : bearish ? 'Bear' : mixed ? 'Mixed' : 'Neut';
+            el.innerHTML = bullish ? 'Bull' : bearish ? 'Bear' : mixed ? 'Mixed' : tr === 'UNAVAILABLE' ? 'Data' : 'Neut';
             el.className = `mtf-trend ${bullish ? 'bullish' : bearish ? 'bearish' : mixed ? 'mixed' : 'neutral'}`;
         }
     }
