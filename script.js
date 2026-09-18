@@ -42,6 +42,11 @@ function getDeepSeekHeaders() {
     return headers;
 }
 
+function getAuditWriteToken() {
+    const configured = typeof window !== 'undefined' ? window.__ICT_AUDIT_WRITE_TOKEN__ : null;
+    return String(configured || '').trim();
+}
+
 function scanClock() {
     return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
 }
@@ -11577,6 +11582,16 @@ function recordAnalysisAudit(signal = {}) {
         localStorage.setItem(ANALYSIS_AUDIT_KEY, JSON.stringify([record, ...entries].slice(0, ANALYSIS_AUDIT_CAP)));
     } catch (error) {
         console.warn('[AUDIT] unable to persist analysis record', error?.message || error);
+    }
+    const proxy = getProxyBaseUrl();
+    const auditToken = getAuditWriteToken();
+    if (proxy && auditToken && typeof fetch === 'function') {
+        fetch(`${proxy}/api/audit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Audit-Token': auditToken },
+            body: JSON.stringify(record),
+            keepalive: true
+        }).catch(error => console.warn('[AUDIT] proxy persistence unavailable', error?.message || error));
     }
     return record;
 }

@@ -96,6 +96,7 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
     const deepSeekUrl = String(env.DEEPSEEK_API_URL || 'https://api.deepseek.com/chat/completions');
     const origin = configuredOrigin(env);
     const configuredAuditToken = String(env.AUDIT_WRITE_TOKEN || '').trim();
+    const configuredAuditReadToken = String(env.AUDIT_READ_TOKEN || '').trim();
     const store = auditStore || (configuredAuditToken ? createAuditStore({ filePath: env.AUDIT_FILE_PATH || path.join(__dirname, 'data', 'audit.jsonl') }) : null);
 
     return http.createServer(async (req, res) => {
@@ -139,7 +140,8 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                 return jsonResponse(res, result.status, result.payload, origin);
             }
             if ((req.method === 'POST' || req.method === 'GET') && requestUrl.pathname === '/api/audit') {
-                if (!store || !configuredAuditToken || req.headers['x-audit-token'] !== configuredAuditToken) return jsonResponse(res, 401, { error: 'audit authentication required' }, origin);
+                const expectedToken = req.method === 'GET' ? configuredAuditReadToken : configuredAuditToken;
+                if (!store || !expectedToken || req.headers['x-audit-token'] !== expectedToken) return jsonResponse(res, 401, { error: 'audit authentication required' }, origin);
                 if (req.method === 'GET') return jsonResponse(res, 200, { records: store.recent(requestUrl.searchParams.get('limit') || 100) }, origin);
                 const raw = await readBody(req);
                 let record;

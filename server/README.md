@@ -18,8 +18,8 @@ Routes:
 - `GET /api/twelve/time_series?symbol=EUR%2FUSD&interval=1h&outputsize=200`
 - `POST /api/deepseek/chat`
 - `POST /api/audit` (requires `AUDIT_WRITE_TOKEN` and `X-Audit-Token`)
-- `GET /api/audit?limit=100` (same authentication)
+- `GET /api/audit?limit=100` (requires the separate `AUDIT_READ_TOKEN`)
 
 The proxy validates symbols, intervals, output size, request bodies, provider configuration, and per-client rate limits. Authenticated audit records are appended to `AUDIT_FILE_PATH` as JSON Lines with credential-like fields removed. It never returns provider credentials and has no broker or order route.
 
-To use it from the Mini App, set `window.__ICT_PROXY_BASE_URL__` before `script.js` loads. The client then calls `/api/twelve/*` and `/api/deepseek/chat` and does not send provider keys.
+To use it from the Mini App, set `window.__ICT_PROXY_BASE_URL__` before `script.js` loads. The client then calls `/api/twelve/*` and `/api/deepseek/chat` and does not send provider keys. Set `window.__ICT_AUDIT_WRITE_TOKEN__` only if you want the browser's sanitized analysis records forwarded to the proxy; keep `AUDIT_READ_TOKEN` private.

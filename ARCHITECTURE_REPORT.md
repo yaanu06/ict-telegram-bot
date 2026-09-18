@@ -35,6 +35,7 @@ Account risk limits are evaluated by one shared deterministic gate when account 
 ## Recent operational safeguards
 
 - The optional `server/proxy.js` isolates Twelve Data and DeepSeek credentials, validates proxy inputs, limits clients and request bodies, and exposes no order route. Persistent storage, authenticated approvals, and a broker adapter remain outside this paper-only repository.
+- When configured with `window.__ICT_PROXY_BASE_URL__` and a write-only audit token, the browser forwards sanitized analysis records to the persistent audit store; audit reads require a separate server-only token.
 
 - Optional `1M` history is supported by the normalized timeframe registry but is excluded from the default scan to preserve the Twelve Data 55-credit budget.
 - Live quotes and candles require usable timestamps; stale, future-dated, undated, or expired cached price data is blocked.
