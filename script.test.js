@@ -4844,6 +4844,7 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         const constraints = ctx.buildRiskConstraints('EUR/USD', 1.11, { '4H': data, '1H': data, '15M': data }, { spread: 0.01 });
         expect(constraints.spread_status).toBe('TOO_WIDE');
         expect(constraints.spread_valid).toBe(false);
+        expect(ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', reason: { code: 'SPREAD_TOO_WIDE', message: 'spread too wide' } }).status_code).toBe('RISK_BLOCKED');
     });
 
     it('timestamps a live price fallback and never reuses an expired cached price after a provider error', async () => {

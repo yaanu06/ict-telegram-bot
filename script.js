@@ -6901,6 +6901,7 @@ function waitCodeFromRejections(audit, hasStrategySetups) {
         return integrity;
     }
     if (audit?.market_open === false) return 'MARKET_CLOSED';
+    if (allDetails.SPREAD_TOO_WIDE) return 'SPREAD_TOO_WIDE';
     if (!hasStrategySetups) return 'NO_STRATEGY_SETUP';
     // Once fresh opportunities exist, their terminal failures own market WAIT.
     const detail = fresh?.seeds > 0 && fresh.final_valid === 0
@@ -11086,7 +11087,7 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
     // paper-mode risk gate or any stale execution_allowed value.
     if (signal.news_risk?.status === 'HIGH_IMPACT') return 'NEWS_BLOCKED';
     if (signal.data_quality?.valid === false || reasonCode.includes('DATA') || reasonCode.includes('PRICE_UNAVAILABLE')) return 'DATA_BLOCKED';
-    if (signal.risk_gate?.status === 'RISK_BLOCKED' || reasonCode.includes('RISK_BLOCKED')) return 'RISK_BLOCKED';
+    if (signal.risk_gate?.status === 'RISK_BLOCKED' || reasonCode.includes('RISK_BLOCKED') || reasonCode.includes('SPREAD_TOO_WIDE')) return 'RISK_BLOCKED';
     if (signal.market_open === false) return 'MARKET_CLOSED';
     if ((signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') && signal.execution_allowed === false) return 'RISK_BLOCKED';
     if (signal.execution_allowed === false && signal.setup_state === 'SETUP_AVAILABLE') return 'SETUP_READY';

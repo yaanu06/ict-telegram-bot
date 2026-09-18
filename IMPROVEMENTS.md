@@ -79,6 +79,7 @@
 ### 1q. **Deterministic Spread Gate**
 - Known excessive quote spread now rejects candidate construction before AI selection and applies to the fallback planner too.
 - The public signal carries bid, ask, and spread conditions for audit and UI display.
+- Excessive spread is surfaced as `RISK_BLOCKED` rather than an ambiguous generic WAIT.
 
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
