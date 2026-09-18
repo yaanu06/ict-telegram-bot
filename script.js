@@ -11827,6 +11827,10 @@ function validatePersistedPaperOrder(order = {}) {
     if (order.signalType === 'SHORT' && !(Number(order.stopLoss) > Number(order.idealEntry) && Number(order.idealEntry) > Number(order.takeProfit1))) issues.push('SHORT geometry is invalid');
     if (!Number.isFinite(normalizeTimestampUTC(order.createdAt))) issues.push('createdAt is invalid');
     if (order.idempotency_key != null && (typeof order.idempotency_key !== 'string' || !order.idempotency_key.trim())) issues.push('idempotency key is invalid');
+    if (typeof order.idempotency_key === 'string' && order.idempotency_key.trim() && order.pair) {
+        const expectedKey = buildPaperOrderIdempotencyKey({ signalType: order.signalType, candidate_id: order.candidate_id, idealEntry: order.idealEntry, stopLoss: order.stopLoss, takeProfit1: order.takeProfit1 }, order.pair);
+        if (order.idempotency_key !== expectedKey) issues.push('idempotency key does not match order geometry');
+    }
     return { valid: issues.length === 0, issues };
 }
 

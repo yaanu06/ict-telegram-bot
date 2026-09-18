@@ -4584,8 +4584,10 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.validatePersistedPaperOrder({ ...valid, stopLoss: 105 }).valid).toBe(false);
         expect(ctx.validatePersistedPaperOrder({ ...valid, createdAt: 'bad' }).valid).toBe(false);
         expect(ctx.validatePersistedPaperOrder({ ...valid, idempotency_key: '' }).issues).toContain('idempotency key is invalid');
-        expect(ctx.buildPaperOrderIdempotencyKey({ signalType: 'LONG', candidate_id: 'C-1', idealEntry: 100, stopLoss: 95, takeProfit1: 110 }, 'EUR/USD'))
-            .toBe('PAPER:EUR/USD|LONG|C-1|100|95|110');
+        const key = ctx.buildPaperOrderIdempotencyKey({ signalType: 'LONG', candidate_id: 'C-1', idealEntry: 100, stopLoss: 95, takeProfit1: 110 }, 'EUR/USD');
+        expect(key).toBe('PAPER:EUR/USD|LONG|C-1|100|95|110');
+        expect(ctx.validatePersistedPaperOrder({ ...valid, pair: 'EUR/USD', candidate_id: 'C-1', idempotency_key: key }).valid).toBe(true);
+        expect(ctx.validatePersistedPaperOrder({ ...valid, pair: 'EUR/USD', candidate_id: 'C-1', idempotency_key: `${key}-tampered` }).issues).toContain('idempotency key does not match order geometry');
     });
 
     it('validates the final public signal contract and rejects malformed ready geometry', () => {

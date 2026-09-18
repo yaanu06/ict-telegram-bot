@@ -89,6 +89,7 @@
 ### 1s. **Paper-Order Idempotency**
 - Every newly approved paper order receives a deterministic key derived from symbol, direction, candidate, entry, stop, and TP1.
 - Persisted orders and lifecycle audit events preserve that key; malformed keys are rejected without breaking older orders that predate the field.
+- Persisted keys are recomputed from the stored order and rejected when tampered or inconsistent.
 
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
