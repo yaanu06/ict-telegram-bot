@@ -11855,7 +11855,7 @@ function buildPublicTradeSignal(signal = {}) {
     const draw = signal.daily_bias?.liquidity_draw || signal.daily_bias?.target_type || signal.target_type || signal.primary_target_source;
     const liquiditySummary = signal.analysis?.liquidity || (draw ? `${draw}${signal.daily_bias?.target_level != null ? ' at ' + signal.daily_bias.target_level : ''}` : null);
     if (isWait) {
-        if (signal.status === 'TODAY_OPPORTUNITY' || signal.status === 'WATCH_ONLY') {
+        if (['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(signal.status)) {
             const primary = signal.primary_opportunity || null;
             const watch = Array.isArray(signal.watch_setups) && signal.watch_setups.length ? signal.watch_setups[0] : null;
             const compactPrimary = primary ? {
@@ -11912,7 +11912,7 @@ function buildPublicTradeSignal(signal = {}) {
                 take_profit_2: compactPrimary?.take_profit_2 ?? null,
                 take_profit_3: compactPrimary?.take_profit_3 ?? null,
                 confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
-                status: 'TODAY_OPPORTUNITY',
+                status: signal.status === 'TRADE_READY' ? 'TRADE_READY' : 'TODAY_OPPORTUNITY',
                 opportunity: plan ? {
                     id: plan.id,
                     direction: plan.direction,

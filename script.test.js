@@ -2102,6 +2102,19 @@ describe('getQuoteDirection', () => {
         expect(raw.trade_signal.opportunity).toMatchObject({ execution_model: 'PENDING_LIMIT' });
     });
 
+    it('preserves a TRADE_READY planner opportunity when the public decision remains WAIT', () => {
+        const ctx = getContext();
+        const raw = ctx.buildTodayOpportunityOutput({
+            state: 'TRADE_READY', confidence: 82, reason: 'A deterministic setup remains available.', reason_code: 'TRADE_READY',
+            primary_opportunity: { id: 'candidate-1', direction: 'BUY', strategy: 'CRT', setup_timeframe: '1H', execution_timeframe: '15M',
+                entry: 100, entry_zone: { low: 99.5, high: 100.5 }, stop_loss: 98, tp1: 105, execution_model: 'PENDING_LIMIT', state: 'TRADE_READY' }
+        }, 'EUR/USD', 102, Date.parse('2026-09-19T10:00:00Z'), true);
+        const publicSignal = ctx.buildPublicTradeSignal(raw.trade_signal);
+        expect(publicSignal.decision).toBe('WAIT');
+        expect(publicSignal.status).toBe('TRADE_READY');
+        expect(publicSignal.opportunity).toMatchObject({ id: 'candidate-1', direction: 'BUY', execution_model: 'PENDING_LIMIT' });
+    });
+
     it('converts a stale selector rejection into a complete wait result when no replacement exists', () => {
         const ctx = getContext();
         const signal = ctx.buildRejectedSelectionWaitOutput({
