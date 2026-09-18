@@ -5331,6 +5331,16 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(metadata.metadata_complete).toBe(true);
     });
 
+    it('classifies exchange-qualified provider symbols by underlying instrument', () => {
+        const ctx = getContext();
+        expect(ctx.getAssetClass('NASDAQ:AAPL')).toBe('EQUITY');
+        expect(ctx.getAssetClass('NASDAQ:US30')).toBe('INDEX');
+        expect(ctx.getAssetClass('BINANCE:BTC/USD')).toBe('CRYPTO');
+        expect(ctx.getAssetClass('OANDA:EUR/USD')).toBe('FOREX');
+        expect(ctx.getAssetClass('OANDA:XAU/USD')).toBe('METAL');
+        expect(ctx.getSymbolMetadata('NASDAQ:AAPL').asset_class).toBe('EQUITY');
+    });
+
     it('uses explicit symbol metadata for market precision and risk distances', () => {
         const ctx = getContext();
         const metadata = ctx.getSymbolMetadata('EUR/USD', {

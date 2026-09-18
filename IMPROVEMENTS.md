@@ -188,6 +188,9 @@ Added actual detection algorithms for:
 - The analyst receives the calculated canonical regime, symbol metadata, provider metadata, data-quality verdict, news state, timeframe structure, liquidity, zones, targets, and candidate references explicitly.
 - The model still cannot supply or modify order geometry; deterministic validation remains the authority for any displayed setup.
 
+### 5l. **Qualified Symbol Classification**
+- Exchange-qualified provider symbols are classified from their underlying instrument, so qualified equities, indices, crypto, forex, and metals use the same asset metadata and risk rules as unqualified symbols.
+
 ### 5k. **AI Decision Diagnostics**
 - Public signals and audit records now expose a compact AI diagnostic section with analyst status, schema state, market view, verified and rejected hypothesis counts, and selector choice.
 - This makes AI participation auditable without exposing credentials or allowing AI output to bypass deterministic validation.

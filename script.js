@@ -604,15 +604,19 @@ function getRequiredHistoryOutputSize() {
 
 function getAssetClass(forPair = pair) {
     const normalized = String(forPair || '').toUpperCase().replace(/\s/g, '');
-    const [base, quote] = normalized.split('/');
-    if (CRYPTO_BASE_CODES.has(base) || normalized.endsWith('/USDT')) return 'CRYPTO';
-    if (normalized === 'XAU/USD' || normalized === 'XAG/USD' || normalized.startsWith('XAU') || normalized.startsWith('XAG')) return 'METAL';
+    // Twelve Data accepts exchange-qualified symbols such as NASDAQ:AAPL
+    // and BINANCE:BTC/USD. Classification must use the instrument portion,
+    // while the original qualified symbol remains the provider symbol.
+    const instrument = normalized.includes(':') ? normalized.split(':').pop() : normalized;
+    const [base, quote] = instrument.split('/');
+    if (CRYPTO_BASE_CODES.has(base) || instrument.endsWith('/USDT')) return 'CRYPTO';
+    if (instrument === 'XAU/USD' || instrument === 'XAG/USD' || instrument.startsWith('XAU') || instrument.startsWith('XAG')) return 'METAL';
     if (base && quote && base.length === 3 && quote.length === 3) {
         if (FIAT_CURRENCY_CODES.has(base) && FIAT_CURRENCY_CODES.has(quote)) return 'FOREX';
         return 'UNKNOWN';
     }
-    if (/^[A-Z][A-Z0-9._-]{0,11}$/.test(normalized)) {
-        if (/\d/.test(normalized) || /^(US30|NAS100|SPX500|GER40|UK100|JP225)$/.test(normalized)) return 'INDEX';
+    if (/^[A-Z][A-Z0-9._-]{0,11}$/.test(instrument)) {
+        if (/\d/.test(instrument) || /^(US30|NAS100|SPX500|GER40|UK100|JP225)$/.test(instrument)) return 'INDEX';
         return 'EQUITY';
     }
     return 'UNKNOWN';
