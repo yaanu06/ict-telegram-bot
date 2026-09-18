@@ -200,13 +200,14 @@ function updateKeyStatus() {
     const ts = document.getElementById('twelveStatus');
     const ds = document.getElementById('deepseekStatus');
     const gs = document.getElementById('githubStatus');
-    if(ts) { 
-        ts.innerHTML = TWELVE_DATA_KEY ? '✅ Active' : '❌ Missing'; 
-        ts.className = 'status-badge ' + (TWELVE_DATA_KEY ? 'active' : 'inactive'); 
+    const proxy = !!getProxyBaseUrl();
+    if(ts) {
+        ts.innerHTML = TWELVE_DATA_KEY ? '✅ Direct' : proxy ? '✅ Proxy' : '❌ Missing';
+        ts.className = 'status-badge ' + (hasMarketDataAccess() ? 'active' : 'inactive');
     }
-    if(ds) { 
-        ds.innerHTML = DEEPSEEK_API_KEY ? '✅ Active' : '❌ Missing'; 
-        ds.className = 'status-badge ' + (DEEPSEEK_API_KEY ? 'active' : 'inactive'); 
+    if(ds) {
+        ds.innerHTML = DEEPSEEK_API_KEY ? '✅ Direct' : proxy ? '✅ Proxy' : '❌ Missing';
+        ds.className = 'status-badge ' + (hasAiAccess() ? 'active' : 'inactive');
     }
     if(gs) {
         gs.innerHTML = GITHUB_PAT ? '✅ Connected' : '⚪ Local Only';
@@ -263,13 +264,13 @@ function showSetup() {
     });
     document.getElementById('testAiBtn').addEventListener('click', async () => {
         const dk = document.getElementById('dsInput').value.trim();
-        const du = document.getElementById('urlInput').value.trim() || 'https://api.deepseek.com/chat/completions';
-        if(!dk) { document.getElementById('testResult').innerHTML = '❌ Enter key first'; return; }
+        const du = getProxyBaseUrl() ? getDeepSeekEndpoint() : (document.getElementById('urlInput').value.trim() || 'https://api.deepseek.com/chat/completions');
+        if(!dk && !getProxyBaseUrl()) { document.getElementById('testResult').innerHTML = '❌ Enter key first'; return; }
         document.getElementById('testResult').innerHTML = '🔄 Testing...';
         try {
             const r = await fetch(du, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${dk}` },
+                headers: getProxyBaseUrl() ? getDeepSeekHeaders() : { 'Content-Type': 'application/json', 'Authorization': `Bearer ${dk}` },
                 body: JSON.stringify({ model: 'deepseek-chat', messages: [{role:'user',content:'Say OK'}], max_tokens: 5 })
             });
             const d = await r.json();
