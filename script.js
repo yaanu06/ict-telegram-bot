@@ -5922,6 +5922,7 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
         }
         let prevTime = null;
         const seenTimes = new Set();
+        let latestTimedCandle = null;
         for (const c of data) {
             if (!ictFiniteNumber(c.o) || !ictFiniteNumber(c.h) || !ictFiniteNumber(c.l) || !ictFiniteNumber(c.c)) {
                 reasons.push(`${tf} contains non-finite OHLC values`);
@@ -5944,12 +5945,19 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
                         break;
                     }
                     prevTime = t;
+                    latestTimedCandle = t;
                 }
             }
             if (c.is_closed === false) {
                 reasons.push(`${tf} latest structure data contains an open candle`);
                 break;
             }
+        }
+        if (Number.isFinite(latestTimedCandle)) {
+            const timeframeMs = timeframeDurationMs(tf);
+            if (latestTimedCandle > Number(asOfMs) + 5 * 60 * 1000) reasons.push(`${tf} contains a future candle timestamp`);
+            const staleLimit = ['1D', '1W'].includes(tf) ? 3 * 24 * 60 * 60 * 1000 : timeframeMs * 3;
+            if (Number(asOfMs) - latestTimedCandle > staleLimit) reasons.push(`${tf} candle data is stale`);
         }
         if (required) {
             const atrVal = data.length >= 15 ? atr(data, 14) : NaN;

@@ -4605,6 +4605,20 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(future.reasons.join(' ')).toMatch(/future/);
     });
 
+    it('blocks stale or future-dated candle history when timestamps are available', () => {
+        const ctx = getContext();
+        const now = Date.parse('2026-09-18T12:00:00Z');
+        const staleData = candles(50, 100, 0.1, 'up').map((bar, index) => ({ ...bar, t: new Date(now - (50 - index + 8) * 3600000).toISOString(), is_closed: true }));
+        const stale = ctx.validateMarketDataQuality({ '4H': staleData, '1H': staleData }, 105, null, now);
+        expect(stale.valid).toBe(false);
+        expect(stale.reasons.join(' ')).toMatch(/candle data is stale/);
+        const futureData = staleData.map((bar, index) => ({ ...bar, t: new Date(now - (49 - index) * 3600000).toISOString() }));
+        futureData[futureData.length - 1].t = new Date(now + 10 * 60000).toISOString();
+        const future = ctx.validateMarketDataQuality({ '4H': futureData, '1H': futureData }, 105, null, now);
+        expect(future.valid).toBe(false);
+        expect(future.reasons.join(' ')).toMatch(/future candle/);
+    });
+
     it('hard-blocks candidate construction during supplied high-impact news risk', () => {
         const ctx = getContext();
         const result = ctx.buildAdaptiveSetupCandidates({

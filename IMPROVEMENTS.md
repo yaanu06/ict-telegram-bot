@@ -52,6 +52,11 @@
 - The final compact signal is schema-checked before it reaches the UI, audit, replay, or opportunity renderer.
 - Malformed public geometry or status is converted to a safe `WAIT` / `DATA_BLOCKED` signal.
 
+### 1k. **Timeframe-Aware Candle Freshness**
+- Market-data validation checks the latest candle timestamp in every supplied timeframe.
+- History is rejected when the latest candle is too old for that timeframe or is dated in the future.
+- This prevents stale cached candles from silently changing structure, trend, or setup output.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:
