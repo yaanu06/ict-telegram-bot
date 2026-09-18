@@ -804,8 +804,18 @@ describe('top-down trade context', () => {
         const confirmation = ctx.buildTodayOpportunity({ ...input, strategySetups: [{ ...setup, execution_model: 'CONFIRMATION_ENTRY' }] });
         expect(confirmation.execution_model).toBe('CONFIRMATION_ENTRY');
         expect(confirmation.trade_context_classification).toBe(pending.trade_context_classification);
-        const catalog = ctx.buildAiMarketEvidenceCatalog({ market_context: { timeframe_context: tf } });
+        const catalog = ctx.buildAiMarketEvidenceCatalog({
+            pair: 'XAU/USD', current_price: 100, market_open: true,
+            symbol_metadata: { asset_class: 'METAL' },
+            data_quality: { valid: true },
+            provider_metadata: { provider: 'TWELVE_DATA' },
+            market_regime: { regime: 'TRANSITION', volatility_regime: 'NORMAL' },
+            market_context: { timeframe_context: tf }
+        });
         expect(catalog.timeframe_context).toEqual(tf);
+        expect(catalog.market_regime.regime).toBe('TRANSITION');
+        expect(catalog.symbol_metadata.asset_class).toBe('METAL');
+        expect(catalog.data_quality.valid).toBe(true);
         const prompt = ctx.buildAiMarketAnalystPrompt(catalog);
         expect(prompt.user).toContain(tf['4H'].structural_evidence_ids[0]);
         expect(prompt.system).toContain('HTF_VERIFIED_REVERSAL');

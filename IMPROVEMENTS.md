@@ -184,6 +184,10 @@ Added actual detection algorithms for:
 - Live market context now exposes stable regime values: `TREND_UP`, `TREND_DOWN`, `RANGE`, `TRANSITION`, `HIGH_VOLATILITY`, `LOW_VOLATILITY`, or `UNKNOWN`.
 - The older `primary_regime` field remains available for existing strategy consumers, while `volatility_regime` makes volatility classification explicit.
 
+### 5j. **Complete AI Evidence Envelope**
+- The analyst receives the calculated canonical regime, symbol metadata, provider metadata, data-quality verdict, news state, timeframe structure, liquidity, zones, targets, and candidate references explicitly.
+- The model still cannot supply or modify order geometry; deterministic validation remains the authority for any displayed setup.
+
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:
 1. First choice: FVG midpoint
