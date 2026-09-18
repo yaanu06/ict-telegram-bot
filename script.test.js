@@ -4746,6 +4746,16 @@ describe('AI market analyst contract', () => {
         expect(result.hypotheses[0]).not.toHaveProperty('tp1');
     });
 
+    it('rejects malformed analyst top-level output instead of inventing neutral analysis', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ bias: 'BULLISH' }) } }] }) }));
+        const result = await ctx.runAiMarketAnalyst({ pair: 'EUR/USD', strategy_events: [] }, { pair: 'EUR/USD' }, '');
+        expect(result.diagnostics.analyst_status).toBe('ANALYST_SCHEMA_INVALID');
+        expect(result.analysis).toBeNull();
+        expect(result.verified_setups).toEqual([]);
+    });
+
     it('analyst API failure is non-fatal and valid response is verified', async () => {
         const ctx = getContext();
         await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');

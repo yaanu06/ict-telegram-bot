@@ -8233,6 +8233,16 @@ function parseAiJsonContent(content) {
     try { return JSON.parse(match[0]); } catch (error) { return null; }
 }
 
+function validateAiMarketAnalystResponse(value) {
+    const issues = [];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) issues.push('response must be an object');
+    if (!value?.market_view || typeof value.market_view !== 'object' || Array.isArray(value.market_view)) issues.push('market_view must be an object');
+    if (!Array.isArray(value?.hypotheses)) issues.push('hypotheses must be an array');
+    const bias = value?.market_view?.bias;
+    if (bias != null && !['BULLISH', 'BEARISH', 'MIXED', 'NEUTRAL'].includes(bias)) issues.push('market_view.bias is invalid');
+    return { valid: issues.length === 0, issues };
+}
+
 function validateAiSelectorResponse(value, candidates = []) {
     const issues = [];
     if (!value || typeof value !== 'object' || Array.isArray(value)) issues.push('response must be an object');
@@ -8264,7 +8274,14 @@ async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + DEEPSEEK_API_KEY },
             body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }], temperature: 0.1, max_tokens: 1800 })
         });
-        const analysis = normalizeAiMarketAnalysis(parseAiJsonContent(data?.choices?.[0]?.message?.content));
+        const rawAnalysis = parseAiJsonContent(data?.choices?.[0]?.message?.content);
+        const schema = validateAiMarketAnalystResponse(rawAnalysis);
+        if (!schema.valid) {
+            diagnostics.analyst_status = 'ANALYST_SCHEMA_INVALID';
+            diagnostics.schema_validation = schema;
+            return { diagnostics, analysis: null, verified_setups: [] };
+        }
+        const analysis = normalizeAiMarketAnalysis(rawAnalysis);
         if (!analysis) { diagnostics.analyst_status = 'INVALID_JSON'; return { diagnostics, analysis: null, verified_setups: [] }; }
         diagnostics.analyst_status = 'OK';
         diagnostics.market_view = analysis.market_view;
