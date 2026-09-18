@@ -59,6 +59,24 @@ describe('market and AI proxy boundary', () => {
         }
     });
 
+    test('enforces the Twelve Data account budget across different clients', async () => {
+        const fetchImpl = jest.fn(async () => ({ status: 200, text: async () => JSON.stringify({ price: '1.25' }) }));
+        const server = createProxyServer({
+            env: { TWELVE_DATA_API_KEY: 'provider-secret', PROXY_MAX_REQUESTS: '20', PROXY_TWELVE_MAX_REQUESTS: '20', PROXY_TWELVE_GLOBAL_MAX_REQUESTS: '1' },
+            fetchImpl
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            expect((await request(server, 'GET', '/api/twelve/quote?symbol=EUR%2FUSD', { 'x-forwarded-for': 'client-a' })).status).toBe(200);
+            const second = await request(server, 'GET', '/api/twelve/quote?symbol=GBP%2FUSD', { 'x-forwarded-for': 'client-b' });
+            expect(second.status).toBe(429);
+            expect(second.body.error).toMatch(/account request budget/);
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
     test('bounds a hung upstream request with the configured timeout', async () => {
         const server = createProxyServer({
             env: { TWELVE_DATA_API_KEY: 'provider-secret', PROXY_MAX_REQUESTS: '20', PROXY_UPSTREAM_TIMEOUT_MS: '10' },
