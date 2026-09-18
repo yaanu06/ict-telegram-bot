@@ -4463,6 +4463,18 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(blocked.status_code).toBe('DATA_BLOCKED');
     });
 
+    it('exposes a hard news block even when the planner omitted execution_allowed', () => {
+        const ctx = getContext();
+        const blocked = ctx.buildPublicTradeSignal({
+            pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY',
+            news_risk: { status: 'HIGH_IMPACT', available: true, event_name: 'CPI' },
+            opportunity: { area_of_interest: { low: 1, high: 1.1 } },
+            reason: { code: 'NEWS_BLOCKED', message: 'CPI window blocks new orders' }
+        });
+        expect(blocked.status).toBe('TODAY_OPPORTUNITY');
+        expect(blocked.status_code).toBe('NEWS_BLOCKED');
+    });
+
     it('keeps account risk deterministic and blocks live sizing without metadata', () => {
         const ctx = getContext();
         expect(ctx.buildAccountRiskGate({ mode: 'PAPER' })).toMatchObject({ status: 'PAPER', execution_allowed: true, position_size: null });
