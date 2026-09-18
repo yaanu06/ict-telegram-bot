@@ -86,6 +86,10 @@
 - Backtests accept a deterministic `fill_fraction` from 0 to 1 and scale normalized R results for partial fills.
 - Closed-trade results are also grouped by symbol, timeframe, market regime, and session.
 
+### 1s. **Paper-Order Idempotency**
+- Every newly approved paper order receives a deterministic key derived from symbol, direction, candidate, entry, stop, and TP1.
+- Persisted orders and lifecycle audit events preserve that key; malformed keys are rejected without breaking older orders that predate the field.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

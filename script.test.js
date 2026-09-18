@@ -4583,6 +4583,9 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.validatePersistedPaperOrder({ ...valid, execution_mode: 'LIVE' }).issues).toContain('execution mode is not PAPER');
         expect(ctx.validatePersistedPaperOrder({ ...valid, stopLoss: 105 }).valid).toBe(false);
         expect(ctx.validatePersistedPaperOrder({ ...valid, createdAt: 'bad' }).valid).toBe(false);
+        expect(ctx.validatePersistedPaperOrder({ ...valid, idempotency_key: '' }).issues).toContain('idempotency key is invalid');
+        expect(ctx.buildPaperOrderIdempotencyKey({ signalType: 'LONG', candidate_id: 'C-1', idealEntry: 100, stopLoss: 95, takeProfit1: 110 }, 'EUR/USD'))
+            .toBe('PAPER:EUR/USD|LONG|C-1|100|95|110');
     });
 
     it('validates the final public signal contract and rejects malformed ready geometry', () => {

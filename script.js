@@ -11826,7 +11826,20 @@ function validatePersistedPaperOrder(order = {}) {
     if (order.signalType === 'LONG' && !(Number(order.stopLoss) < Number(order.idealEntry) && Number(order.idealEntry) < Number(order.takeProfit1))) issues.push('LONG geometry is invalid');
     if (order.signalType === 'SHORT' && !(Number(order.stopLoss) > Number(order.idealEntry) && Number(order.idealEntry) > Number(order.takeProfit1))) issues.push('SHORT geometry is invalid');
     if (!Number.isFinite(normalizeTimestampUTC(order.createdAt))) issues.push('createdAt is invalid');
+    if (order.idempotency_key != null && (typeof order.idempotency_key !== 'string' || !order.idempotency_key.trim())) issues.push('idempotency key is invalid');
     return { valid: issues.length === 0, issues };
+}
+
+function buildPaperOrderIdempotencyKey(signal = {}, pairLocal = pair) {
+    const values = [
+        normalizeSymbolInput(pairLocal),
+        signal.signalType || signal.direction || '',
+        signal.candidate_id || signal.selected_candidate_id || '',
+        signal.idealEntry ?? signal.entry ?? signal.entry_price ?? '',
+        signal.stopLoss ?? signal.stop_loss ?? '',
+        signal.takeProfit1 ?? signal.tp1 ?? signal.take_profit_1 ?? ''
+    ].map(value => String(value).trim());
+    return `PAPER:${values.join('|')}`;
 }
 
 function loadLimitOrder() {
@@ -11876,7 +11889,8 @@ function recordPaperOrderEvent(order = {}, status, reason, price = null) {
         ideal_entry: Number.isFinite(Number(order.idealEntry)) ? Number(order.idealEntry) : null,
         stop_loss: Number.isFinite(Number(order.stopLoss)) ? Number(order.stopLoss) : null,
         take_profit_1: Number.isFinite(Number(order.takeProfit1)) ? Number(order.takeProfit1) : null,
-        candidate_id: order.candidate_id || null
+        candidate_id: order.candidate_id || null,
+        idempotency_key: order.idempotency_key || null
     };
     try {
         const previous = JSON.parse(localStorage.getItem(PAPER_ORDER_AUDIT_KEY) || '[]');
@@ -12062,7 +12076,8 @@ function handleLimit() {
         entry_model: analysis.aiDecision?.entry_model || null,
         structural_invalidation: analysis.aiDecision?.structural_invalidation || null,
         quality_breakdown: analysis.aiDecision?.quality?.breakdown || analysis.aiDecision?.quality?.quality_breakdown || null,
-        fill_price_source: 'LIMIT_ORDER_PRICE'
+        fill_price_source: 'LIMIT_ORDER_PRICE',
+        idempotency_key: buildPaperOrderIdempotencyKey({ ...analysis, candidate_id: analysis.aiDecision?.selected_candidate_id || null }, pair)
     };
     saveLimit(o);
     recordPaperOrderEvent(o, 'ORDER_PENDING', 'USER_APPROVED_PAPER_ORDER');
