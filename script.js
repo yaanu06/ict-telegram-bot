@@ -4708,13 +4708,10 @@ function classifyTopDownTrade(candidate, timeframeContext = {}) {
     const wanted = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
     const supports = tf => [timeframeContext[tf]?.displayed_trend, timeframeContext[tf]?.effective_trend, timeframeContext[tf]?.structural_trend, timeframeContext[tf]?.bias]
         .some(value => value === wanted || value === `${wanted}_TRANSITION`);
-    // 4H leads. Daily/1H agreement strengthens the thesis, but a validated
-    // 4H/1H location and real objective are enough to describe a developing
-    // continuation when the higher timeframe is neutral or consolidating.
-    const location = candidate?.opportunity_narrative?.location || candidate?.location || candidate?.execution_zone;
-    const hasValidatedLocation = !!location && ['4H', '1H'].includes(location.timeframe)
-        && Array.isArray(candidate?.target_candidates) && candidate.target_candidates.length > 0;
-    const aligned = supports('4H') && (supports('1D') || supports('1H') || hasValidatedLocation);
+    // Continuation requires the primary 4H narrative and intraday 1H
+    // structure to agree. Daily conflict lowers conviction, but cannot be
+    // used to bypass a conflicting 1H direction.
+    const aligned = supports('4H') && supports('1H');
     const higherEvidence = ['1D', '4H'].flatMap(tf => timeframeContext[tf]?.evidence || []);
     const shifts = ['4H', '1H'].flatMap(tf => timeframeContext[tf]?.evidence || [])
         .filter(e => e.direction === direction && (['MSS', 'CHOCH'].includes(e.kind)

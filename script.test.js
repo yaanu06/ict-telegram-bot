@@ -639,7 +639,7 @@ describe('top-down trade context', () => {
     it.each([
         ['BULLISH', 'BULLISH', 'BULLISH', 'HTF_ALIGNED_CONTINUATION'],
         ['BEARISH', 'BEARISH', 'BEARISH', 'LTF_ISOLATED'],
-        ['BULLISH', 'BULLISH', 'BEARISH', 'HTF_ALIGNED_CONTINUATION'],
+        ['BULLISH', 'BULLISH', 'BEARISH', 'LTF_ISOLATED'],
         ['NEUTRAL', 'BULLISH', 'BULLISH', 'HTF_ALIGNED_CONTINUATION'],
         ['BEARISH', 'BEARISH', 'MIXED', 'LTF_ISOLATED']
     ])('classifies daily %s / 4H %s / 1H %s as %s', (daily, fourH, oneH, expected) => {
