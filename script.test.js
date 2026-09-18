@@ -4523,6 +4523,19 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(future.reasons.join(' ')).toMatch(/future/);
     });
 
+    it('hard-blocks candidate construction during supplied high-impact news risk', () => {
+        const ctx = getContext();
+        const result = ctx.buildAdaptiveSetupCandidates({
+            pair: 'EUR/USD', price: 1.1,
+            historyCache: { '4H': candles(80, 1.08, 0.0002, 'up'), '1H': candles(80, 1.08, 0.0002, 'up') },
+            zones: [{ id: 'zone', type: 'FVG', direction: 'BUY', timeframe: '1H', low: 1.099, high: 1.1 }],
+            targetCandidates: { buy: [], sell: [] }, riskConstraints: { minimum_rr: 2.5 }, marketRegime: {}, structure: {},
+            marketContext: { news_risk: { status: 'HIGH_IMPACT', warning: 'CPI window' } }, strategySetups: []
+        });
+        expect(result.valid_candidates).toEqual([]);
+        expect(result.rejected_candidates[0].rejection_code).toBe('NEWS_BLOCKED');
+    });
+
     it('marks news risk unknown when no calendar data is supplied', () => {
         const ctx = getContext();
         expect(ctx.checkHighImpactNews()).toMatchObject({ status: 'UNKNOWN', available: false, high_impact_event: null });

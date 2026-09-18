@@ -5199,6 +5199,13 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         if (!seed.failure_reasons.includes(code)) seed.failure_reasons.push(code);
         if (detail && !seed.details.includes(detail)) seed.details.push(detail);
     };
+    if (marketContext?.news_risk?.status === 'HIGH_IMPACT') {
+        for (const seed of seedDiagnostics) failSeed(seed, 'NEWS_BLOCKED', marketContext.news_risk.warning || 'High-impact news risk blocks new setup selection');
+        return {
+            raw_candidates: [], valid_candidates: [], seed_diagnostics: seedDiagnostics,
+            rejected_candidates: [{ id: 'NEWS_BLOCKED', rejection_code: 'NEWS_BLOCKED', rejection_reasons: [marketContext.news_risk.warning || 'High-impact news risk blocks new setup selection'] }]
+        };
+    }
     const dataQuality = marketContext?.data_quality || validateMarketDataQuality(historyCache, price);
     if (!dataQuality.valid) {
         for (const seed of seedDiagnostics) {
@@ -7584,6 +7591,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         volatility: volatilityFacts,
         holistic
     });
+    marketContext.news_risk = checkHighImpactNews(quote_snapshot?.news_risk || null);
     // Candidate construction consumes this same quality verdict so a stale
     // quote cannot be replaced by a fresh-looking fallback candidate.
     marketContext.data_quality = dataQuality;
@@ -9793,7 +9801,8 @@ async function runAutoScan() {
             as_of_ms: scanAsOfMs,
             quote_snapshot: quoteSnapshot
         });
-        liveMarketContext.news_risk = checkHighImpactNews();
+        liveMarketContext.news_risk = checkHighImpactNews(quoteSnapshot?.news_risk || null);
+        if (liveMarketContext.market_context) liveMarketContext.market_context.news_risk = liveMarketContext.news_risk;
         liveMarketContext.indicators = indicators;
         liveMarketContext.holistic = holistic;
         lastLiveMarketContextForReplay = liveMarketContext;
