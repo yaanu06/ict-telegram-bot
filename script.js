@@ -109,9 +109,12 @@ function getProviderSymbol(value) {
 // Crypto pairs (BTC) have real volume; XAU/XAG and FX pairs do not (varies by
 // plan, but we default conservative).
 const REAL_VOLUME_PAIRS = new Set(['BTC/USD']);
-function hasRealVolume(p) {
-    const sym = SYMBOLS[p || pair] || (p || pair);
-    return REAL_VOLUME_PAIRS.has(sym);
+function hasRealVolume(p, metadata = {}) {
+    if (typeof metadata.volume_reliable === 'boolean') return metadata.volume_reliable;
+    const sym = normalizeSymbolInput(p || pair);
+    if (REAL_VOLUME_PAIRS.has(sym)) return true;
+    const assetClass = metadata.asset_class || getAssetClass(sym);
+    return ['CRYPTO', 'EQUITY', 'INDEX'].includes(assetClass);
 }
 
 const FIAT_CURRENCY_CODES = new Set(['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD', 'HKD', 'SGD', 'NOK', 'SEK', 'CNH', 'CNY', 'MXN', 'ZAR', 'TRY', 'PLN']);
@@ -609,6 +612,7 @@ function getSymbolMetadata(forPair = pair, overrides = {}) {
         spread: Number.isFinite(Number(overrides.spread)) ? Number(overrides.spread) : null,
         commission_per_unit: Number.isFinite(Number(overrides.commission_per_unit)) ? Number(overrides.commission_per_unit) : null,
         slippage_estimate: Number.isFinite(Number(overrides.slippage_estimate)) ? Number(overrides.slippage_estimate) : null,
+        volume_reliable: typeof overrides.volume_reliable === 'boolean' ? overrides.volume_reliable : null,
         leverage: Number.isFinite(Number(overrides.leverage)) ? Number(overrides.leverage) : null,
         trading_permissions: overrides.trading_permissions ?? null,
         session: overrides.session ?? null,

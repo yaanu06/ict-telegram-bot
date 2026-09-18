@@ -3746,6 +3746,9 @@ describe('hasRealVolume / volume gating', () => {
         expect(ctx.hasRealVolume('EUR/USD')).toBe(false);
         expect(ctx.hasRealVolume('GBP/JPY')).toBe(false);
         expect(ctx.hasRealVolume('XAG/USD')).toBe(false);
+        expect(ctx.hasRealVolume('ETH/USD')).toBe(true);
+        expect(ctx.hasRealVolume('AAPL')).toBe(true);
+        expect(ctx.hasRealVolume('ETH/USD', { volume_reliable: false })).toBe(false);
     });
 
     it('analyzeVolumeTruth returns all-false for synthetic volume even with surgey data', () => {
