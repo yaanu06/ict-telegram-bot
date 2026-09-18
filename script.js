@@ -11276,6 +11276,8 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
     if (signal.data_quality?.valid === false || reasonCode.includes('DATA') || reasonCode.includes('PRICE_UNAVAILABLE')) return 'DATA_BLOCKED';
     if (riskGate.status === 'RISK_BLOCKED' || reasonCode.includes('RISK_BLOCKED') || reasonCode.includes('SPREAD_TOO_WIDE')) return 'RISK_BLOCKED';
     if (signal.market_open === false) return 'MARKET_CLOSED';
+    if (signal.status === 'INVALIDATED' || reasonCode.includes('INVALIDATED')) return 'INVALIDATED';
+    if (signal.status === 'EXPIRED' || reasonCode.includes('EXPIRED')) return 'EXPIRED';
     if ((signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') && signal.execution_allowed === false) return 'RISK_BLOCKED';
     if (signal.execution_allowed === false && signal.setup_state === 'SETUP_AVAILABLE') return 'SETUP_READY';
     if (signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') return 'SETUP_READY';
@@ -11292,6 +11294,8 @@ function getPublicExecutionAllowed(signal = {}, riskGate = null) {
         || signal.data_quality?.valid === false || signal.market_open === false
         || reasonCode.includes('DATA_BLOCKED') || reasonCode.includes('PRICE_UNAVAILABLE')
         || reasonCode.includes('RISK_BLOCKED') || reasonCode.includes('NEWS_BLOCKED')) return false;
+    if (['INVALIDATED', 'EXPIRED'].includes(String(signal.status || '').toUpperCase())
+        || reasonCode.includes('INVALIDATED') || reasonCode.includes('EXPIRED')) return false;
     return signal.execution_allowed ?? (signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY');
 }
 
@@ -11798,7 +11802,7 @@ function recordAnalysisAudit(signal = {}) {
 function validatePublicTradeSignal(signal = {}) {
     const issues = [];
     const decisions = new Set(['WAIT', 'BUY_LIMIT', 'SELL_LIMIT']);
-    const statuses = new Set(['SETUP_READY', 'WATCH', 'ORDER_PENDING', 'NO_TRADE', 'DATA_BLOCKED', 'NEWS_BLOCKED', 'RISK_BLOCKED', 'MARKET_CLOSED']);
+    const statuses = new Set(['SETUP_READY', 'WATCH', 'ORDER_PENDING', 'NO_TRADE', 'DATA_BLOCKED', 'NEWS_BLOCKED', 'RISK_BLOCKED', 'MARKET_CLOSED', 'INVALIDATED', 'EXPIRED']);
     if (!signal || typeof signal !== 'object' || Array.isArray(signal)) issues.push('signal must be an object');
     if (!String(signal?.pair || '').trim()) issues.push('pair is required');
     if (!decisions.has(String(signal?.decision || ''))) issues.push('decision is invalid');

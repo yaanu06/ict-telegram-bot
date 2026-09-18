@@ -4523,6 +4523,12 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(riskBlocked.execution_allowed).toBe(false);
         const closed = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY', market_open: false });
         expect(closed.status_code).toBe('MARKET_CLOSED');
+        const invalidated = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'INVALIDATED', reason: { code: 'SETUP_INVALIDATED', message: 'structure broke' }, execution_allowed: true });
+        expect(invalidated.status_code).toBe('INVALIDATED');
+        expect(invalidated.execution_allowed).toBe(false);
+        const expired = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'EXPIRED', reason: { code: 'SETUP_EXPIRED', message: 'window ended' }, execution_allowed: true });
+        expect(expired.status_code).toBe('EXPIRED');
+        expect(expired.execution_allowed).toBe(false);
     });
 
     it('exposes a hard news block even when the planner omitted execution_allowed', () => {
