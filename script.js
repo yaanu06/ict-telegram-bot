@@ -11900,10 +11900,13 @@ function renderOpportunityStack(signal = {}) {
     const el = document.getElementById('opportunityStack');
     if (!el) return;
     const primary = signal.primary_opportunity;
-    if (!primary) { el.innerHTML = ''; return; }
-    // The normal card is deliberately limited to the selected public setup.
-    // Watch candidates remain available in JSON/debug output.
-    el.innerHTML = renderOpportunityCard(primary, 'PRIMARY OPPORTUNITY');
+    const watch = Array.isArray(signal.watch_setups) ? signal.watch_setups[0] : null;
+    const setup = primary || watch;
+    if (!setup) { el.innerHTML = ''; return; }
+    // A watch opportunity is still useful to the manual trader: it shows the
+    // validated location and the exact condition needed before a limit setup
+    // can become actionable. It remains visibly separate from a primary setup.
+    el.innerHTML = renderOpportunityCard(setup, primary ? 'PRIMARY OPPORTUNITY' : 'WATCH OPPORTUNITY');
 }
 
 // ============================================

@@ -745,6 +745,18 @@ describe('top-down trade context', () => {
         expect(signal.opportunity.direction).toBe('BUY');
     });
 
+    it('renders a watch opportunity when no primary setup exists', () => {
+        const { context, elements } = getScanContext();
+        context.renderOpportunityStack({
+            watch_setups: [{ direction: 'BUY', strategy: 'ICT', setup_timeframe: '15M', execution_timeframe: '15M',
+                location: { low: 0.71, high: 0.711, source: 'FLIP' }, state: 'WAITING_FOR_EXECUTION',
+                target: { level: 0.715, source: 'LIQUIDITY' }, reason: 'Awaiting confirmation', next_requirement: ['Confirmation candle'] }]
+        });
+        expect(elements.get('opportunityStack').innerHTML).toContain('WATCH OPPORTUNITY');
+        expect(elements.get('opportunityStack').innerHTML).toContain('Awaiting confirmation');
+        expect(elements.get('opportunityStack').innerHTML).toContain('0.71');
+    });
+
     it('removes the replay action while retaining the copy action', () => {
         const html = fs.readFileSync('index.html', 'utf8');
         expect(html).toContain('id="copyJsonBtn"');
