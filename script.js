@@ -10806,6 +10806,36 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
     return 'NO_TRADE';
 }
 
+function buildAccountRiskGate({ mode = 'PAPER', account = null, risk_percent = null, symbol_metadata = null, open_risk = 0, daily_loss = 0 } = {}) {
+    const normalizedMode = String(mode || 'PAPER').toUpperCase();
+    if (normalizedMode === 'PAPER') {
+        return {
+            mode: 'PAPER', status: 'PAPER', execution_allowed: true,
+            position_size: null, risk_amount: null,
+            reason: 'Paper execution does not submit broker orders or calculate live position size.'
+        };
+    }
+    const equity = Number(account?.equity ?? account?.balance);
+    const riskPct = Number(risk_percent);
+    const tickValue = Number(symbol_metadata?.tick_value);
+    const tickSize = Number(symbol_metadata?.tick_size);
+    const riskDistance = Number(account?.risk_distance);
+    const maxOpenRisk = Number(account?.max_open_risk);
+    const maxDailyLoss = Number(account?.max_daily_loss);
+    const issues = [];
+    if (!Number.isFinite(equity) || equity <= 0) issues.push('account equity is unavailable');
+    if (!Number.isFinite(riskPct) || riskPct <= 0) issues.push('risk percentage is unavailable');
+    if (!Number.isFinite(tickValue) || tickValue <= 0 || !Number.isFinite(tickSize) || tickSize <= 0) issues.push('symbol tick metadata is unavailable');
+    if (!Number.isFinite(riskDistance) || riskDistance <= 0) issues.push('risk distance is unavailable');
+    if (Number.isFinite(maxOpenRisk) && Number(open_risk) >= maxOpenRisk) issues.push('maximum open risk reached');
+    if (Number.isFinite(maxDailyLoss) && Number(daily_loss) >= maxDailyLoss) issues.push('maximum daily loss reached');
+    if (issues.length) return { mode: normalizedMode, status: 'RISK_BLOCKED', execution_allowed: false, position_size: null, risk_amount: null, issues, reason: issues.join('; ') };
+    const riskAmount = equity * riskPct / 100;
+    const positionSize = riskAmount / ((riskDistance / tickSize) * tickValue);
+    if (!Number.isFinite(positionSize) || positionSize <= 0) return { mode: normalizedMode, status: 'RISK_BLOCKED', execution_allowed: false, position_size: null, risk_amount: riskAmount, issues: ['position size calculation is invalid'], reason: 'Deterministic position size calculation failed.' };
+    return { mode: normalizedMode, status: 'RISK_READY', execution_allowed: true, position_size: positionSize, risk_amount: riskAmount, issues: [], reason: 'Account and symbol risk constraints passed.' };
+}
+
 function buildPublicTradeSignal(signal = {}) {
     const isWait = signal.decision === 'WAIT' || signal.trade_type === 'WAIT';
     const parseRR = value => {
@@ -10903,6 +10933,7 @@ function buildPublicTradeSignal(signal = {}) {
                 news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
                 status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity, !!compactPrimary?.entry_price),
                 execution_mode: signal.execution_mode || 'PAPER',
+                risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' }),
                 market_open: signal.market_open ?? null
             };
         }
@@ -10927,6 +10958,7 @@ function buildPublicTradeSignal(signal = {}) {
             news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
             status_code: getPublicStatusCode(signal, false, false),
             execution_mode: signal.execution_mode || 'PAPER',
+            risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' }),
             market_open: signal.market_open ?? null
         };
     }
@@ -10975,9 +11007,10 @@ function buildPublicTradeSignal(signal = {}) {
             invalidation: signal.analysis?.invalidation || reasoning.invalidation || signal.stop_loss_reason || '',
             notes: signal.analysis?.notes || (Array.isArray(reasoning.secondary) ? reasoning.secondary.slice(0, 3) : [])
         },
-        news_risk: signal.news_risk || { status: 'UNKNOWN', available: false }
-        ,status_code: getPublicStatusCode(signal, !!signal.primary_opportunity, Number.isFinite(Number(signal.entry ?? signal.entry_price)))
-        ,execution_mode: signal.execution_mode || 'PAPER'
+        news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
+        status_code: getPublicStatusCode(signal, !!signal.primary_opportunity, Number.isFinite(Number(signal.entry ?? signal.entry_price))),
+        execution_mode: signal.execution_mode || 'PAPER',
+        risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' })
     };
 }
 
@@ -11016,6 +11049,7 @@ function recordAnalysisAudit(signal = {}) {
         confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
         reason: signal.reason || null,
         news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
+        risk_gate: signal.risk_gate || buildAccountRiskGate({ mode: signal.execution_mode || 'PAPER' }),
         selected_candidate_id: signal.selected_candidate_id || null,
         validation: signal.validation?.passed ?? signal.validation?.final_consistency?.valid ?? null
     };

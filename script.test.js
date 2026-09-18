@@ -4405,6 +4405,7 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(record.request_id).toMatch(/^scan-/);
         const stored = JSON.parse(raw);
         expect(stored[0]).toMatchObject({ pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY' });
+        expect(stored[0].risk_gate).toMatchObject({ mode: 'PAPER', status: 'PAPER', execution_allowed: true });
         expect(JSON.stringify(stored)).not.toMatch(/apikey|authorization|secret|token/i);
     });
 
@@ -4416,6 +4417,17 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(watch.execution_mode).toBe('PAPER');
         const ready = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: true, entry: 1, stop_loss: 0.99, take_profit_1: 1.03 });
         expect(ready.status_code).toBe('SETUP_READY');
+    });
+
+    it('keeps account risk deterministic and blocks live sizing without metadata', () => {
+        const ctx = getContext();
+        expect(ctx.buildAccountRiskGate({ mode: 'PAPER' })).toMatchObject({ status: 'PAPER', execution_allowed: true, position_size: null });
+        const blocked = ctx.buildAccountRiskGate({ mode: 'LIVE', account: { equity: 10000 }, risk_percent: 1 });
+        expect(blocked.status).toBe('RISK_BLOCKED');
+        expect(blocked.execution_allowed).toBe(false);
+        const ready = ctx.buildAccountRiskGate({ mode: 'LIVE', account: { equity: 10000, risk_distance: 0.01 }, risk_percent: 1, symbol_metadata: { tick_size: 0.0001, tick_value: 1 } });
+        expect(ready.status).toBe('RISK_READY');
+        expect(ready.position_size).toBeGreaterThan(0);
     });
 
     it('rejects duplicate timestamps and explicitly open candles in required histories', () => {
