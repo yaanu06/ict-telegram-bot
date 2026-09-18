@@ -4867,6 +4867,16 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(result.provider_metadata).toMatchObject({ raw_count: 2, closed_count: 1, open_candles_filtered: 1 });
     });
 
+    it('preserves missing provider volume instead of inventing a value', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ values: [
+            { datetime: '2026-09-11 10:00:00', open: '1', high: '2', low: '0.5', close: '1.5' }
+        ] }) }));
+        const result = await ctx.getHistory('1H', 'EUR/USD');
+        expect(result[0].v).toBeNull();
+    });
+
     it('derives supported indicators locally without spending provider indicator requests', async () => {
         const ctx = getContext();
         await ctx.saveKeys('tw', '', '', '', '');

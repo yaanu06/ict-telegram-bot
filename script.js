@@ -713,7 +713,7 @@ async function getHistory(tfStr, forPair) {
                 h: +c.high,
                 l: +c.low,
                 c: +c.close,
-                v: +c.volume || 1e6,
+                v: Number.isFinite(Number(c.volume)) ? Number(c.volume) : null,
                 timeframe: tfStr,
                 source: 'TWELVE_DATA',
                 timestamp_source: 'PROVIDER',
