@@ -176,6 +176,10 @@ Added actual detection algorithms for:
 - Each completed scan records its decision summary together with a bounded sanitized replay locally.
 - When authenticated proxy auditing is configured, the exact replay used for the decision is sent with the audit record so the analysis can be reproduced later.
 
+### 5h. **Complete Failure Output**
+- A failed AI or consistency pass now clears the previous scan context before starting.
+- If the deterministic fallback also fails, the UI still receives a complete `NO_TRADE` result with the current price, market status, available context, and explicit `ANALYSIS_FAILURE` reason.
+
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:
 1. First choice: FVG midpoint
