@@ -4583,6 +4583,22 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(daily.provider_metadata.timestamp_contract).toBe('PERIOD_BUCKET');
     });
 
+    it('filters the currently forming provider candle before structure analysis', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        const now = Date.now();
+        const bucket = Math.floor(now / 3600000) * 3600000;
+        const iso = ms => new Date(ms).toISOString().replace('T', ' ').replace('.000Z', '');
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ values: [
+            { datetime: iso(bucket), open: '2', high: '3', low: '1', close: '2.5', volume: '1' },
+            { datetime: iso(bucket - 3600000), open: '1', high: '2', low: '0.5', close: '1.5', volume: '1' }
+        ] }) }));
+        const result = await ctx.getHistory('1H', 'EUR/USD');
+        expect(result).toHaveLength(1);
+        expect(result[0].is_closed).toBe(true);
+        expect(result.provider_metadata).toMatchObject({ raw_count: 2, closed_count: 1, open_candles_filtered: 1 });
+    });
+
     it('derives supported indicators locally without spending provider indicator requests', async () => {
         const ctx = getContext();
         await ctx.saveKeys('tw', '', '', '', '');

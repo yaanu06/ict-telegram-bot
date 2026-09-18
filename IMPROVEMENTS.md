@@ -14,6 +14,11 @@
 - The scan keeps the provider budget for quotes and candle history, which is safer for the Twelve Data Grow 55 plan.
 - Indicator output includes `indicator_source: LOCAL_OHLCV` so the origin is auditable.
 
+### 1b. **Closed-Candle Contract**
+- Provider history now identifies candle completion from the timeframe bucket.
+- The current forming bucket is filtered before structure, trend, indicator, or setup analysis.
+- Provider metadata records raw, closed, and filtered candle counts for audit and debugging.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

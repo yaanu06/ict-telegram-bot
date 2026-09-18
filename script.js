@@ -613,7 +613,7 @@ async function getHistory(tfStr, forPair) {
         const d = await fetchTD('/time_series?symbol=' + encodeURIComponent(providerSymbol) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + '&timezone=UTC');
         if(d.values) {
             calls++;
-            const values = d.values.map(c => ({
+            const rawValues = d.values.map(c => ({
                 t: normalizeTimestampUTC(c.datetime),
                 o: +c.open,
                 h: +c.high,
@@ -623,8 +623,14 @@ async function getHistory(tfStr, forPair) {
                 timeframe: tfStr,
                 source: 'TWELVE_DATA',
                 timestamp_source: 'PROVIDER',
-                is_closed: true
+                is_closed: Number.isFinite(normalizeTimestampUTC(c.datetime))
+                    && normalizeTimestampUTC(c.datetime) + (TIMEFRAME_MS[tfStr] || 60 * 60000) <= Date.now()
             }));
+            // Twelve Data may include the currently forming bucket. It is
+            // useful for display, but must never become confirmed structure or
+            // indicator input. Keep only closed candles in the analysis cache.
+            const values = rawValues.filter(c => c.is_closed);
+            if (!values.length) throw new Error(`No closed provider candles available for ${tfStr}`);
             if (values.some(c => !Number.isFinite(c.t))) throw new Error(`Invalid provider timestamp for ${tfStr}`);
             values.reverse();
             Object.defineProperty(values, 'provider_metadata', { value: {
@@ -633,7 +639,10 @@ async function getHistory(tfStr, forPair) {
                 requested_timezone: 'UTC',
                 timeframe: tfStr,
                 symbol: providerSymbol,
-                timestamp_contract: ['1D', '1W'].includes(tfStr) ? 'PERIOD_BUCKET' : 'INTRADAY_UTC'
+                timestamp_contract: ['1D', '1W'].includes(tfStr) ? 'PERIOD_BUCKET' : 'INTRADAY_UTC',
+                raw_count: rawValues.length,
+                closed_count: values.length,
+                open_candles_filtered: rawValues.length - values.length
             }, enumerable: false });
             historyResponseCache.set(cacheKey, { data: values, ts: Date.now() });
             return values;
