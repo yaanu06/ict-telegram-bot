@@ -4537,6 +4537,27 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(result.trades.find(t => t.signal_id === 'same-bar')).toMatchObject({ outcome: 'LOSS', reason: 'STOP_AND_TARGET_SAME_CANDLE' });
     });
 
+    it('keeps pending paper-order lifecycle deterministic for touch, expiry, and invalidation', () => {
+        const ctx = getContext();
+        const created = Date.parse('2026-09-18T10:00:00Z');
+        const base = { signalType: 'LONG', idealEntry: 100, stopLoss: 95, takeProfit1: 110, invalidationPrice: 94, createdAt: new Date(created).toISOString() };
+        expect(ctx.evaluatePendingPaperOrder(base, 101, created + 30 * 60000)).toMatchObject({ status: 'ORDER_PENDING' });
+        expect(ctx.evaluatePendingPaperOrder(base, 100, created + 30 * 60000)).toMatchObject({ status: 'FILLED', reason: 'LIMIT_TOUCHED' });
+        expect(ctx.evaluatePendingPaperOrder(base, 93, created + 30 * 60000)).toMatchObject({ status: 'INVALIDATED' });
+        expect(ctx.evaluatePendingPaperOrder(base, 101, created + 4 * 60 * 60000)).toMatchObject({ status: 'EXPIRED' });
+    });
+
+    it('records paper-order lifecycle events without secrets', () => {
+        const ctx = getContext();
+        let stored = null;
+        ctx.localStorage.getItem = key => key === 'ict_paper_order_audit' ? stored : null;
+        ctx.localStorage.setItem = (key, value) => { if (key === 'ict_paper_order_audit') stored = value; };
+        const event = ctx.recordPaperOrderEvent({ id: 7, pair: 'EUR/USD', signalType: 'LONG', idealEntry: 1, stopLoss: 0.99, takeProfit1: 1.03, candidate_id: 'candidate-7' }, 'ORDER_PENDING', 'USER_APPROVED_PAPER_ORDER');
+        expect(event).toMatchObject({ order_id: 7, status: 'ORDER_PENDING', pair: 'EUR/USD' });
+        expect(JSON.parse(stored)[0]).toMatchObject({ order_id: 7, candidate_id: 'candidate-7' });
+        expect(stored).not.toMatch(/api|token|authorization|secret/i);
+    });
+
     it('rejects duplicate timestamps and explicitly open candles in required histories', () => {
         const ctx = getContext();
         const baseStart = Date.parse('2026-09-01T00:00:00Z');

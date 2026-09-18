@@ -11716,7 +11716,34 @@ function clearLimit() {
     updateLimitUI();
 }
 
+const PAPER_ORDER_AUDIT_KEY = 'ict_paper_order_audit';
+function recordPaperOrderEvent(order = {}, status, reason, price = null) {
+    const event = {
+        recorded_at: new Date().toISOString(),
+        order_id: order.id || null,
+        pair: order.pair || null,
+        execution_mode: order.execution_mode || 'PAPER',
+        signal_type: order.signalType || null,
+        status,
+        reason: reason || null,
+        price: Number.isFinite(Number(price)) ? Number(price) : null,
+        ideal_entry: Number.isFinite(Number(order.idealEntry)) ? Number(order.idealEntry) : null,
+        stop_loss: Number.isFinite(Number(order.stopLoss)) ? Number(order.stopLoss) : null,
+        take_profit_1: Number.isFinite(Number(order.takeProfit1)) ? Number(order.takeProfit1) : null,
+        candidate_id: order.candidate_id || null
+    };
+    try {
+        const previous = JSON.parse(localStorage.getItem(PAPER_ORDER_AUDIT_KEY) || '[]');
+        const entries = Array.isArray(previous) ? previous : [];
+        localStorage.setItem(PAPER_ORDER_AUDIT_KEY, JSON.stringify([event, ...entries].slice(0, 200)));
+    } catch (error) {
+        console.warn('[ORDER AUDIT] unable to persist paper-order event', error?.message || error);
+    }
+    return event;
+}
+
 function cancelLimit() {
+    if (limitOrder) recordPaperOrderEvent(limitOrder, 'CANCELLED', 'USER_CANCELLED');
     clearLimit();
     showNotif('❌ Cancelled', 'warning');
 }
@@ -11766,6 +11793,21 @@ function validateExecutionMode(mode = 'PAPER') {
     return { valid: false, mode: normalized, reason: `${normalized} execution is unavailable in this client; broker submission is disabled.` };
 }
 
+function evaluatePendingPaperOrder(order = {}, currentPrice, nowMs = Date.now()) {
+    const price = Number(currentPrice);
+    const createdMs = normalizeTimestampUTC(order.createdAt);
+    if (!Number.isFinite(price)) return { status: 'ORDER_PENDING', reason: 'PRICE_UNAVAILABLE' };
+    if (Number.isFinite(createdMs) && nowMs - createdMs >= LIMIT_ORDER_EXPIRY_HOURS * 60 * 60 * 1000) {
+        return { status: 'EXPIRED', reason: 'ORDER_EXPIRY' };
+    }
+    const invalidation = Number(order.invalidationPrice);
+    if (Number.isFinite(invalidation) && ((order.signalType === 'LONG' && price <= invalidation) || (order.signalType === 'SHORT' && price >= invalidation))) {
+        return { status: 'INVALIDATED', reason: 'STRUCTURAL_INVALIDATION_BREACHED', price };
+    }
+    const filled = order.signalType === 'LONG' ? price <= Number(order.idealEntry) : price >= Number(order.idealEntry);
+    return filled ? { status: 'FILLED', reason: 'LIMIT_TOUCHED', price } : { status: 'ORDER_PENDING', reason: 'WAITING_FOR_LIMIT_TOUCH', price };
+}
+
 function startMonitor() {
     if(priceTimer) clearInterval(priceTimer);
     priceTimer = setInterval(async () => {
@@ -11781,10 +11823,17 @@ function startMonitor() {
             document.getElementById('currentPrice').innerHTML = `$${p.toFixed(settings.prec)}`;
         }
         
-        const orderAge = (Date.now() - new Date(limitOrder.createdAt).getTime()) / (1000 * 60 * 60);
-        if(orderAge >= LIMIT_ORDER_EXPIRY_HOURS) {
+        const lifecycle = evaluatePendingPaperOrder(limitOrder, p, Date.now());
+        if(lifecycle.status === 'EXPIRED') {
+            recordPaperOrderEvent(limitOrder, lifecycle.status, lifecycle.reason, p);
             clearLimit();
             showNotif(`⏰ Order EXPIRED after ${LIMIT_ORDER_EXPIRY_HOURS}h — zone became stale`, 'warning');
+            return;
+        }
+        if(lifecycle.status === 'INVALIDATED') {
+            recordPaperOrderEvent(limitOrder, lifecycle.status, lifecycle.reason, p);
+            clearLimit();
+            showNotif('❌ Order INVALIDATED — structural invalidation was breached', 'warning');
             return;
         }
         
@@ -11796,9 +11845,9 @@ function startMonitor() {
             showNotif(`🎯 PRICE APPROACHING ZONE! ${limitOrder.pair||''} ${limitOrder.signalType} — ${distToEntry.toFixed(2)}% away`, 'info');
         }
         
-        if((limitOrder.signalType === 'LONG' && p <= limitOrder.idealEntry) ||
-           (limitOrder.signalType === 'SHORT' && p >= limitOrder.idealEntry)) {
+        if(lifecycle.status === 'FILLED') {
             const filled = limitOrder;
+            recordPaperOrderEvent(filled, lifecycle.status, lifecycle.reason, filled.idealEntry);
             clearLimit();
             showNotif(`✅ FILLED! ${filled.pair||''} ${filled.signalType} @ $${p.toFixed(settings.prec)}`, 'success');
             // AUTO OUTCOME DETECTION: enqueue the fill so the next monitor
@@ -11865,6 +11914,7 @@ function handleLimit() {
         fill_price_source: 'LIMIT_ORDER_PRICE'
     };
     saveLimit(o);
+    recordPaperOrderEvent(o, 'ORDER_PENDING', 'USER_APPROVED_PAPER_ORDER');
     startMonitor();
     const aiLabel = o.aiDecision ? '🤖 AI Setup' : '📊 Rule-Based';
     const prec = getPrec(pair);

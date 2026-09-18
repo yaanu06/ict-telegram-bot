@@ -40,6 +40,10 @@
 - Local audit entries now retain symbol metadata, provider timestamp, data-quality verdict, and public status code alongside the decision and risk gate.
 - Stored records continue to exclude API keys, authorization headers, and other secrets.
 
+### 1h. **Paper-Order Lifecycle Audit**
+- Pending paper orders now have deterministic touch, expiry, invalidation, and fill evaluation.
+- Order lifecycle events are retained in a bounded local audit queue, including user cancellation and the original candidate ID.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:
