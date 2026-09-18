@@ -81,6 +81,9 @@
 - The public signal carries bid, ask, and spread conditions for audit and UI display.
 - Excessive spread is surfaced as `RISK_BLOCKED` rather than an ambiguous generic WAIT.
 
+### 1r. **Backtest Performance Metrics**
+- Pending-limit backtests now report average reward-to-risk, expectancy in R, average time in trade, cancellation rate, and rejection rate.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

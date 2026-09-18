@@ -4534,6 +4534,11 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(result.metrics.wins).toBe(1);
         expect(result.metrics.losses).toBe(1);
         expect(result.metrics.expired).toBe(1);
+        expect(result.metrics.average_reward_to_risk).toBeGreaterThan(0);
+        expect(result.metrics.expectancy_R).toBeCloseTo(-0.4 / 3, 8);
+        expect(result.metrics.average_time_in_trade_ms).toBeGreaterThan(0);
+        expect(result.metrics.cancel_rate).toBeCloseTo(1 / 3, 8);
+        expect(result.metrics.rejection_rate).toBe(0);
         expect(result.trades.find(t => t.signal_id === 'same-bar')).toMatchObject({ outcome: 'LOSS', reason: 'STOP_AND_TARGET_SAME_CANDLE' });
     });
 

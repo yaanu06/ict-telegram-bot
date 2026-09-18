@@ -11198,7 +11198,7 @@ function simulatePendingLimitBacktest({ signals = [], candles = [], spread = 0, 
         }
         const grossR = outcome === 'WIN' ? reward / risk : -1;
         const netR = grossR - (Number.isFinite(Number(feeR)) ? Number(feeR) : 0);
-        trades.push({ status: 'CLOSED', outcome, reason, signal_id: signal.id || null, fill_time: filled.bar.time, exit_time: exitTime, fill_price: filled.fillPrice, exit_price: exitPrice, risk, reward, grossR, netR });
+        trades.push({ status: 'CLOSED', outcome, reason, signal_id: signal.id || null, fill_time: filled.bar.time, exit_time: exitTime, duration_ms: Math.max(0, exitTime - filled.bar.time), fill_price: filled.fillPrice, exit_price: exitPrice, risk, reward, rr: risk > 0 ? reward / risk : null, grossR, netR });
     }
     const closed = trades.filter(t => t.status === 'CLOSED');
     const wins = closed.filter(t => t.outcome === 'WIN');
@@ -11214,6 +11214,10 @@ function simulatePendingLimitBacktest({ signals = [], candles = [], spread = 0, 
     }
     const grossWins = wins.reduce((sum, t) => sum + t.netR, 0);
     const grossLosses = Math.abs(losses.reduce((sum, t) => sum + t.netR, 0));
+    const closedRiskRewards = closed.map(t => Number(t.rr)).filter(Number.isFinite);
+    const durations = closed.map(t => Number(t.duration_ms)).filter(Number.isFinite);
+    const rejectedCount = trades.filter(t => t.status === 'REJECTED').length;
+    const expiredCount = trades.filter(t => t.status === 'EXPIRED').length;
     return {
         trades,
         metrics: {
@@ -11225,6 +11229,11 @@ function simulatePendingLimitBacktest({ signals = [], candles = [], spread = 0, 
             rejected: trades.filter(t => t.status === 'REJECTED').length,
             open: trades.filter(t => t.status === 'OPEN').length,
             fill_rate: orderedSignals.length ? (closed.length + trades.filter(t => t.status === 'OPEN').length) / orderedSignals.length : 0,
+            average_reward_to_risk: closedRiskRewards.length ? closedRiskRewards.reduce((sum, value) => sum + value, 0) / closedRiskRewards.length : 0,
+            expectancy_R: orderedSignals.length ? (equityR - (Number.isFinite(Number(initialR)) ? Number(initialR) : 0)) / orderedSignals.length : 0,
+            average_time_in_trade_ms: durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : 0,
+            cancel_rate: orderedSignals.length ? expiredCount / orderedSignals.length : 0,
+            rejection_rate: orderedSignals.length ? rejectedCount / orderedSignals.length : 0,
             win_rate: closed.length ? wins.length / closed.length : 0,
             net_R: equityR - (Number.isFinite(Number(initialR)) ? Number(initialR) : 0),
             profit_factor: grossLosses > 0 ? grossWins / grossLosses : (grossWins > 0 ? Infinity : 0),
