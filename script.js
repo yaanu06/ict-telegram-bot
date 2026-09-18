@@ -142,6 +142,7 @@ const ICT_FIVE_MIN_MS = 5 * 60 * 1000;
 // ============================================
 function getMarketSettings(p, metadata = {}) {
     const symbol = normalizeSymbolInput(p);
+    const assetClass = metadata.asset_class || getAssetClass(symbol);
     const withMetadata = settings => ({
         ...settings,
         pipSize: Number.isFinite(Number(metadata.tick_size)) && Number(metadata.tick_size) > 0 ? Number(metadata.tick_size) : settings.pipSize,
@@ -156,7 +157,6 @@ function getMarketSettings(p, metadata = {}) {
     if (symbol.includes('XAG')) return withMetadata({ slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.01 });
     if (symbol.includes('JPY')) return withMetadata({ slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01 });
     if (symbol === 'BTC/USD') return withMetadata({ slBuffer: 50, minSL: 30, maxSLPct: 0.02, targetRR: 2.5, prec: 2, pipSize: 1 });
-    const assetClass = getAssetClass(symbol);
     if (assetClass === 'CRYPTO') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.25, targetRR: 2.5, prec: 8, pipSize: 0.00000001, minSLMultiplier: 2.0 });
     if (assetClass === 'EQUITY' || assetClass === 'INDEX') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 4, pipSize: 0.01, minSLMultiplier: 1.5 });
     if (assetClass === 'UNKNOWN') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 6, pipSize: 0.000001, minSLMultiplier: 1.5 });

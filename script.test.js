@@ -5076,6 +5076,13 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         });
     });
 
+    it('uses supplied asset class when a provider symbol is otherwise unknown', () => {
+        const ctx = getContext();
+        const metadata = ctx.getSymbolMetadata('VENUE_ASSET', { asset_class: 'INDEX', tick_size: 0.25, price_precision: 2 });
+        expect(metadata.asset_class).toBe('INDEX');
+        expect(ctx.getMarketSettings('VENUE_ASSET', metadata)).toMatchObject({ pipSize: 0.25, prec: 2, minSLMultiplier: 1.5 });
+    });
+
     it('marks known excessive quote spread as a deterministic candidate rejection', () => {
         const ctx = getContext();
         const data = candles(60, 1.1, 0.0002, 'up');
