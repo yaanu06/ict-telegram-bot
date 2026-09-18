@@ -152,7 +152,7 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
             return jsonResponse(res, 404, { error: 'route not found' }, origin);
         } catch (error) {
             const status = Number(error?.statusCode) || 502;
-            return jsonResponse(res, status, { error: status === 413 ? error.message : 'upstream request failed' }, origin);
+            return jsonResponse(res, status, { error: status === 400 || status === 413 ? error.message : 'upstream request failed' }, origin);
         }
     });
 }

@@ -37,7 +37,9 @@ function createAuditStore({ filePath, fsImpl = fs, maxRecords = MAX_AUDIT_RECORD
     const append = record => {
         const safe = sanitizeAuditValue(record);
         const validation = validateAuditRecord(safe);
-        if (!validation.valid) throw new Error(validation.issues.join('; '));
+        if (!validation.valid) {
+            throw Object.assign(new Error(validation.issues.join('; ')), { statusCode: 400, code: 'INVALID_AUDIT_RECORD' });
+        }
         fsImpl.mkdirSync(path.dirname(filePath), { recursive: true });
         fsImpl.appendFileSync(filePath, JSON.stringify(safe) + '\n', 'utf8');
         return safe;

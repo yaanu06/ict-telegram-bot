@@ -1,9 +1,13 @@
 'use strict';
 
 const http = require('node:http');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { validateMarketRequest, createRateLimiter, createProxyServer } = require('./proxy');
+const { createAuditStore } = require('./audit-store');
 
-function request(server, method, pathname, headers = {}) {
+function request(server, method, pathname, headers = {}, body = '') {
     const address = server.address();
     return new Promise((resolve, reject) => {
         const req = http.request({ hostname: '127.0.0.1', port: address.port, path: pathname, method, headers }, response => {
@@ -13,7 +17,7 @@ function request(server, method, pathname, headers = {}) {
             response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(body) }));
         });
         req.on('error', reject);
-        req.end();
+        req.end(body);
     });
 }
 
@@ -46,6 +50,26 @@ describe('market and AI proxy boundary', () => {
             expect((await request(server, 'GET', '/api/audit')).status).toBe(401);
         } finally {
             await new Promise(resolve => server.close(resolve));
+        }
+    });
+
+    test('returns client validation errors for malformed audit records', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ict-proxy-audit-'));
+        const store = createAuditStore({ filePath: path.join(directory, 'audit.jsonl') });
+        const server = createProxyServer({
+            env: { PROXY_MAX_REQUESTS: '20', AUDIT_WRITE_TOKEN: 'write-secret', AUDIT_READ_TOKEN: 'read-secret' },
+            fetchImpl: jest.fn(),
+            auditStore: store
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const response = await request(server, 'POST', '/api/audit', { 'x-audit-token': 'write-secret', 'content-type': 'application/json' }, JSON.stringify({ pair: 'EUR/USD' }));
+            expect(response.status).toBe(400);
+            expect(response.body.error).toMatch(/request_id is required/);
+            expect((await request(server, 'GET', '/api/audit', { 'x-audit-token': 'read-secret' })).body.records).toEqual([]);
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+            fs.rmSync(directory, { recursive: true, force: true });
         }
     });
 });
