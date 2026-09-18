@@ -1222,6 +1222,68 @@ function detectCompression(data, n = 5) {
 // Loss protection: stops trading after N losses or daily drawdown
 let consecutiveLosses = 0;
 let dailyPnlR = 0;
+let weeklyPnlR = 0;
+const PAPER_RISK_STATE_KEY = 'ict_paper_risk_state';
+const PAPER_RISK_LIMITS = Object.freeze({
+    max_daily_loss: 2,
+    max_weekly_loss: 5,
+    max_consecutive_losses: 3,
+    max_active_orders: 1,
+    max_symbol_exposure: 1
+});
+
+function getRiskPeriodKeys(now = Date.now()) {
+    const date = new Date(now);
+    const day = date.toISOString().slice(0, 10);
+    const weekDate = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    const dayOfWeek = weekDate.getUTCDay() || 7;
+    weekDate.setUTCDate(weekDate.getUTCDate() - dayOfWeek + 1);
+    return { day, week: weekDate.toISOString().slice(0, 10) };
+}
+
+function persistPaperRiskState(now = Date.now()) {
+    const periods = getRiskPeriodKeys(now);
+    try {
+        localStorage.setItem(PAPER_RISK_STATE_KEY, JSON.stringify({
+            day: periods.day, week: periods.week, consecutive_losses: consecutiveLosses,
+            daily_pnl_r: dailyPnlR, weekly_pnl_r: weeklyPnlR
+        }));
+    } catch (error) { console.warn('[RISK] unable to persist paper risk state', error?.message || error); }
+}
+
+function loadPaperRiskState(now = Date.now()) {
+    const periods = getRiskPeriodKeys(now);
+    let stored = null;
+    try { stored = JSON.parse(localStorage.getItem(PAPER_RISK_STATE_KEY) || 'null'); } catch (error) { stored = null; }
+    if (!stored || stored.week !== periods.week) {
+        consecutiveLosses = 0; dailyPnlR = 0; weeklyPnlR = 0;
+        persistPaperRiskState(now);
+        return;
+    }
+    consecutiveLosses = Number.isFinite(Number(stored.consecutive_losses)) ? Number(stored.consecutive_losses) : 0;
+    weeklyPnlR = Number.isFinite(Number(stored.weekly_pnl_r)) ? Number(stored.weekly_pnl_r) : 0;
+    dailyPnlR = stored.day === periods.day && Number.isFinite(Number(stored.daily_pnl_r)) ? Number(stored.daily_pnl_r) : 0;
+}
+
+function getPaperRiskSnapshot(now = Date.now()) {
+    loadPaperRiskState(now);
+    const activeOrders = limitOrder ? 1 : 0;
+    return {
+        daily_loss: Math.max(0, -dailyPnlR),
+        weekly_loss: Math.max(0, -weeklyPnlR),
+        consecutive_losses: consecutiveLosses,
+        active_orders: activeOrders,
+        symbol_exposure: activeOrders,
+        daily_pnl_r: dailyPnlR,
+        weekly_pnl_r: weeklyPnlR
+    };
+}
+
+function buildPaperOrderRiskGate(now = Date.now()) {
+    const snapshot = getPaperRiskSnapshot(now);
+    return buildAccountRiskGate({ mode: 'PAPER', account: PAPER_RISK_LIMITS, ...snapshot });
+}
+
 function checkLossProtection() {
     return consecutiveLosses < 3 && dailyPnlR > -2.0;
 }
@@ -1235,9 +1297,12 @@ function ictGetLastTradeTime() {
     return Math.max(lastTradeTime || 0, stored);
 }
 function recordTradeResult(isWin, riskR) {
+    loadPaperRiskState();
     if (!ictGetLastTradeTime()) ictSetLastTradeTime(Date.now());
-    if(isWin) { consecutiveLosses = 0; dailyPnlR += riskR; }
-    else { consecutiveLosses++; dailyPnlR -= riskR; }
+    const resultR = Math.max(0, Number(riskR) || 0);
+    if(isWin) { consecutiveLosses = 0; dailyPnlR += resultR; weeklyPnlR += resultR; }
+    else { consecutiveLosses++; dailyPnlR -= resultR; weeklyPnlR -= resultR; }
+    persistPaperRiskState();
 }
 
 // ============================================
@@ -12129,6 +12194,12 @@ function handleLimit() {
     if (!duplicate.valid) {
         showNotif(`â›” Order rejected: ${duplicate.message}`, 'warning');
         console.warn('[ORDER] duplicate paper order rejected', duplicate);
+        return;
+    }
+    const riskGate = buildPaperOrderRiskGate();
+    if (!riskGate.execution_allowed) {
+        showNotif(`⛔ Order rejected: ${riskGate.reason}`, 'warning');
+        console.warn('[ORDER] paper risk gate rejected order', riskGate);
         return;
     }
     if (analysis.execution_allowed === false) {

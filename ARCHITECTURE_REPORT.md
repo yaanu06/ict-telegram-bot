@@ -30,7 +30,7 @@ The repository remains paper-only and has no database, broker adapter, or live o
 
 The optional proxy supplies server-side data/AI routing and authenticated append-only audit storage. A database-backed audit service, authenticated user approvals, and a separately reviewed broker adapter are still required before live execution could be considered. The current code intentionally does not submit broker orders.
 
-Account risk limits are evaluated by one shared deterministic gate when account state is supplied. It supports open risk, daily loss, weekly loss, consecutive losses, active-order count, and per-symbol exposure. The browser cannot infer omitted account state, so live sizing remains blocked without equity, risk, and symbol tick metadata; paper mode remains available unless an explicitly supplied limit is breached.
+Account risk limits are evaluated by one shared deterministic gate when account state is supplied. It supports open risk, daily loss, weekly loss, consecutive losses, active-order count, and per-symbol exposure. Paper loss state is persisted locally across refreshes and checked before a new paper order is created, so daily, weekly, and consecutive-loss limits do not reset when the app reloads. The browser cannot infer omitted account state, so live sizing remains blocked without equity, risk, and symbol tick metadata; paper mode remains available unless an explicitly supplied limit is breached.
 
 ## Recent operational safeguards
 

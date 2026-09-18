@@ -4558,6 +4558,44 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(live.issues).toContain('maximum weekly loss reached');
     });
 
+    it('persists paper loss protection and blocks new orders after the configured limit', () => {
+        const storage = {};
+        const first = getContext();
+        first.localStorage.getItem = key => storage[key] || null;
+        first.localStorage.setItem = (key, value) => { storage[key] = value; };
+
+        expect(first.getPaperRiskSnapshot()).toMatchObject({
+            consecutive_losses: 0,
+            daily_loss: 0,
+            weekly_loss: 0
+        });
+        first.recordTradeResult(false, 1);
+        first.recordTradeResult(false, 1);
+        first.recordTradeResult(false, 1);
+        expect(first.getPaperRiskSnapshot()).toMatchObject({
+            consecutive_losses: 3,
+            daily_loss: 3,
+            weekly_loss: 3
+        });
+        expect(first.buildPaperOrderRiskGate()).toMatchObject({
+            status: 'RISK_BLOCKED',
+            execution_allowed: false
+        });
+
+        const refreshed = getContext();
+        refreshed.localStorage.getItem = key => storage[key] || null;
+        refreshed.localStorage.setItem = (key, value) => { storage[key] = value; };
+        expect(refreshed.getPaperRiskSnapshot()).toMatchObject({
+            consecutive_losses: 3,
+            daily_loss: 3,
+            weekly_loss: 3
+        });
+        expect(refreshed.buildPaperOrderRiskGate().issues).toEqual(expect.arrayContaining([
+            'maximum daily loss reached',
+            'maximum consecutive losses reached'
+        ]));
+    });
+
     it.each([
         ['EUR/USD', 'FOREX'], ['USD/JPY', 'FOREX'], ['XAU/USD', 'METAL'],
         ['ETH/USD', 'CRYPTO'], ['AAPL', 'EQUITY'], ['US30', 'INDEX'], ['ABC/XYZ', 'UNKNOWN']
