@@ -143,6 +143,7 @@ const ICT_FIVE_MIN_MS = 5 * 60 * 1000;
 function getMarketSettings(p, metadata = {}) {
     const symbol = normalizeSymbolInput(p);
     const assetClass = metadata.asset_class || getAssetClass(symbol);
+    const quoteCurrency = symbol.includes('/') ? symbol.split('/').pop() : '';
     const withMetadata = settings => ({
         ...settings,
         pipSize: Number.isFinite(Number(metadata.tick_size)) && Number(metadata.tick_size) > 0 ? Number(metadata.tick_size) : settings.pipSize,
@@ -153,10 +154,8 @@ function getMarketSettings(p, metadata = {}) {
         targetRR: Number.isFinite(Number(metadata.minimum_rr)) && Number(metadata.minimum_rr) > 0 ? Number(metadata.minimum_rr) : settings.targetRR,
         minSLMultiplier: Number.isFinite(Number(metadata.min_sl_atr_multiplier)) && Number(metadata.min_sl_atr_multiplier) > 0 ? Number(metadata.min_sl_atr_multiplier) : settings.minSLMultiplier
     });
-    if (symbol.includes('XAU')) return withMetadata({ slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.1, minSLMultiplier: 2.0 });
-    if (symbol.includes('XAG')) return withMetadata({ slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.01 });
-    if (symbol.includes('JPY')) return withMetadata({ slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01 });
-    if (symbol === 'BTC/USD') return withMetadata({ slBuffer: 50, minSL: 30, maxSLPct: 0.02, targetRR: 2.5, prec: 2, pipSize: 1 });
+    if (assetClass === 'METAL') return withMetadata({ slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.1, minSLMultiplier: 2.0 });
+    if (assetClass === 'FOREX' && quoteCurrency === 'JPY') return withMetadata({ slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01 });
     if (assetClass === 'CRYPTO') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.25, targetRR: 2.5, prec: 8, pipSize: 0.00000001, minSLMultiplier: 2.0 });
     if (assetClass === 'EQUITY' || assetClass === 'INDEX') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 4, pipSize: 0.01, minSLMultiplier: 1.5 });
     if (assetClass === 'UNKNOWN') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 6, pipSize: 0.000001, minSLMultiplier: 1.5 });

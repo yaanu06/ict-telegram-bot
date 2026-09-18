@@ -5111,6 +5111,13 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.getMarketSettings('VENUE_ASSET', metadata)).toMatchObject({ pipSize: 0.25, prec: 2, minSLMultiplier: 1.5 });
     });
 
+    it('uses asset class and quote currency profiles instead of symbol-name risk branches', () => {
+        const ctx = getContext();
+        expect(ctx.getMarketSettings('VENUE_METAL', { asset_class: 'METAL' })).toMatchObject({ pipSize: 0.1, prec: 2, minSL: 3, minSLMultiplier: 2.0 });
+        expect(ctx.getMarketSettings('USD/JPY', { asset_class: 'FOREX' })).toMatchObject({ pipSize: 0.01, prec: 3, minSL: 0.10 });
+        expect(ctx.getMarketSettings('VENUE_COIN', { asset_class: 'CRYPTO' })).toMatchObject({ pipSize: 0.00000001, prec: 8, minSLMultiplier: 2.0 });
+    });
+
     it('carries supplied metadata into deterministic risk constraints', () => {
         const ctx = getContext();
         const data = candles(40, 100, 0.5, 'up');
