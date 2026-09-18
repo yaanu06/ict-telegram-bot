@@ -108,4 +108,33 @@ describe('market and AI proxy boundary', () => {
             fs.rmSync(directory, { recursive: true, force: true });
         }
     });
+
+    test('accepts a reproducible replay payload and preserves it in the audit store', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ict-proxy-replay-'));
+        const store = createAuditStore({ filePath: path.join(directory, 'audit.jsonl') });
+        const server = createProxyServer({
+            env: { PROXY_MAX_REQUESTS: '20', AUDIT_WRITE_TOKEN: 'write-secret', AUDIT_READ_TOKEN: 'read-secret' },
+            fetchImpl: jest.fn(),
+            auditStore: store
+        });
+        const replay = {
+            schema_version: 1,
+            captured_at: '2026-09-19T10:00:00Z',
+            pair: 'EUR/USD',
+            quote: { price: 1.1 },
+            history: { '1H': [{ timestamp: '2026-09-19T09:00:00Z', open: 1.09, high: 1.11, low: 1.08, close: 1.1 }] }
+        };
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const response = await request(server, 'POST', '/api/audit', { 'x-audit-token': 'write-secret', 'content-type': 'application/json' }, JSON.stringify({
+                request_id: 'scan-replay-1', recorded_at: '2026-09-19T10:00:00Z', pair: 'EUR/USD', decision: 'WAIT', replay
+            }));
+            expect(response.status).toBe(201);
+            const records = (await request(server, 'GET', '/api/audit', { 'x-audit-token': 'read-secret' })).body.records;
+            expect(records[0]).toMatchObject({ request_id: 'scan-replay-1', replay });
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+            fs.rmSync(directory, { recursive: true, force: true });
+        }
+    });
 });

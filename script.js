@@ -10155,6 +10155,8 @@ async function runAutoScan() {
     let price = null;
     let quoteSnapshot = null;
     let historyCache = {};
+    // A failed scan must never reuse the previous scan's replay/context.
+    lastLiveMarketContextForReplay = null;
     const btn = document.getElementById('analyzeBtn');
     const scanStatus = document.getElementById('scanStatus');
     const scanText = document.getElementById('scanText');
@@ -10888,6 +10890,32 @@ async function runAutoScan() {
             } catch (fallbackError) {
                 console.error('[SCAN] FAILED', { stage: 'fallback after scan failure', error: fallbackError?.message, stack: fallbackError?.stack });
                 showNotif(`Fallback failed: ${fallbackError?.message || 'unknown error'}`, 'error');
+                const context = lastLiveMarketContextForReplay;
+                const marketOpen = quoteSnapshot?.is_market_open ?? context?.market_open ?? null;
+                const failureMessage = `Analysis failed during ${scanStage}; no trade decision was produced.`;
+                setJsonOutput({ trade_signal: {
+                    date: new Date(scanAsOfMs).toISOString().slice(0, 10),
+                    time: new Date(scanAsOfMs).toISOString().slice(11, 19),
+                    pair,
+                    current_price: price,
+                    decision: 'WAIT',
+                    trade_type: 'WAIT',
+                    status: 'NO_TRADE',
+                    status_code: 'NO_TRADE',
+                    execution_allowed: false,
+                    reason: { code: 'ANALYSIS_FAILURE', message: `${failureMessage} ${fallbackError?.message || e?.message || 'Unknown analysis error.'}` },
+                    analysis: {
+                        trend_detection: context?.timeframe_context || context?.structural_context || null,
+                        volatility_level: context?.volatility?.regime || null,
+                        technical_indicators: context?.indicators || null,
+                        type: 'DETERMINISTIC_FAILURE_FALLBACK'
+                    },
+                    news_risk: context?.news_risk || { status: 'UNKNOWN', available: false },
+                    data_quality: context?.data_quality || null,
+                    symbol_metadata: context?.symbol_metadata || getSymbolMetadata(pair),
+                    provider_metadata: context?.provider_metadata || null,
+                    market_open: marketOpen
+                }});
             }
         }
     } finally {
