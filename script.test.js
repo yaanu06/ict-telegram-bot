@@ -4932,6 +4932,24 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(requestedUrl).toContain('interval=1min');
     });
 
+    it('deduplicates simultaneous quote and history requests per symbol and timeframe', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        ctx.fetch = jest.fn(async url => {
+            await new Promise(resolve => setTimeout(resolve, 5));
+            if (url.includes('/quote?')) return { ok: true, json: async () => ({ price: '1.25', timestamp: '2026-09-19T10:00:00Z' }) };
+            return { ok: true, json: async () => ({ values: [{ datetime: '2026-09-19 10:00:00', open: '1', high: '2', low: '0.5', close: '1.5', volume: '1' }] }) };
+        });
+        const [quotes, history] = await Promise.all([
+            Promise.all([ctx.getMarketQuoteSnapshot('EUR/USD'), ctx.getMarketQuoteSnapshot('EUR/USD')]),
+            Promise.all([ctx.getHistory('1H', 'EUR/USD'), ctx.getHistory('1H', 'EUR/USD')])
+        ]);
+        expect(quotes[0].price).toBe(1.25);
+        expect(quotes[1]).toEqual(quotes[0]);
+        expect(history[0]).toEqual(history[1]);
+        expect(ctx.fetch).toHaveBeenCalledTimes(2);
+    });
+
     it('filters the currently forming provider candle before structure analysis', async () => {
         const ctx = getContext();
         await ctx.saveKeys('tw', '', '', '', '');

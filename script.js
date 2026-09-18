@@ -500,6 +500,8 @@ const TD_REQUEST_BUDGET = 50;
 const TD_REQUEST_WINDOW_MS = 60000;
 const tdRequestTimes = [];
 const historyResponseCache = new Map();
+const historyInFlightCache = new Map();
+const quoteInFlightCache = new Map();
 const HISTORY_CACHE_TTL_MS = Object.freeze({
     '1M': 30000,
     '5M': 60000,
@@ -657,7 +659,7 @@ function getMarketOpenState(forPair = pair, scanSnapshot = {}) {
     return { is_market_open: open, market_open: open, source: 'ASSET_CALENDAR', asset_class: assetClass };
 }
 
-async function getMarketQuoteSnapshot(forPair = pair) {
+async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
     const p = forPair || pair;
     const symbolMetadata = getSymbolMetadata(p);
     const assetClass = symbolMetadata.asset_class;
@@ -706,7 +708,20 @@ async function getMarketQuoteSnapshot(forPair = pair) {
     };
 }
 
-async function getHistory(tfStr, forPair) {
+async function getMarketQuoteSnapshot(forPair = pair) {
+    const requestedPair = forPair || pair;
+    const existing = quoteInFlightCache.get(requestedPair);
+    if (existing) return existing;
+    const request = fetchMarketQuoteSnapshotUncached(requestedPair);
+    quoteInFlightCache.set(requestedPair, request);
+    try {
+        return await request;
+    } finally {
+        if (quoteInFlightCache.get(requestedPair) === request) quoteInFlightCache.delete(requestedPair);
+    }
+}
+
+async function fetchHistoryUncached(tfStr, forPair) {
     if(!hasMarketDataAccess()) return null;
     if (!TF_MAP[tfStr]) throw new Error(`Unsupported timeframe: ${tfStr}`);
     const requestedPair = forPair || pair;
@@ -1927,6 +1942,20 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
 
 function buildFreshExecutionZones(narrative, historyCache = {}, existingZones = [], pairLocal = pair, currentPrice = null, symbolMetadata = {}) {
     return buildFreshExecutionZonesForNarrative(narrative, historyCache, existingZones, pairLocal, currentPrice, symbolMetadata);
+}
+
+async function getHistory(tfStr, forPair) {
+    const requestedPair = forPair || pair;
+    const cacheKey = `${requestedPair}|${tfStr}`;
+    const existing = historyInFlightCache.get(cacheKey);
+    if (existing) return existing;
+    const request = fetchHistoryUncached(tfStr, requestedPair);
+    historyInFlightCache.set(cacheKey, request);
+    try {
+        return await request;
+    } finally {
+        if (historyInFlightCache.get(cacheKey) === request) historyInFlightCache.delete(cacheKey);
+    }
 }
 
 function evaluateStrategyNarrative(narrative, historyCache = {}, price) {
