@@ -11,6 +11,9 @@ $env:PROXY_CORS_ORIGIN = 'https://your-mini-app.example'
 npm run proxy
 ```
 
+For local setup, copy `server/.env.example` to `.env` and load those values
+through the process manager or shell. Never commit the copied `.env` file.
+
 Routes:
 
 - `GET /health`
