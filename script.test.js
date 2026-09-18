@@ -1963,6 +1963,18 @@ describe('getQuoteDirection', () => {
         ])).toEqual({ '4H': 'BULLISH_TRANSITION', '1H': 'BULLISH' });
         expect(ctx.normalizePublicTrendMap({ '1D': 'BEARISH', '15M': { structural_trend: 'MIXED', effective_trend: 'NEUTRAL', momentum_trend: 'NEUTRAL' } }))
             .toEqual({ '1D': 'BEARISH', '15M': 'MIXED' });
+        expect(ctx.normalizePublicTrendMap({ daily: '1D: BEARISH; BOS supports SELL', four_hour: '4H: BULLISH_TRANSITION; MSS supports BUY', one_hour: '1H: BULLISH' }))
+            .toEqual({ '1D': 'BEARISH', '4H': 'BULLISH_TRANSITION', '1H': 'BULLISH' });
+    });
+
+    it('keeps canonical trend analysis in a WAIT response with no current opportunity', () => {
+        const ctx = getContext();
+        const signal = ctx.buildPublicTradeSignal({
+            pair: 'AUD/USD', decision: 'WAIT', status: 'NO_TRADE_TODAY',
+            top_down_context: { higher_timeframe: { daily: '1D: BEARISH', four_hour: '4H: BULLISH', one_hour: '1H: BULLISH' } },
+            reason: { code: 'NO_TRADE_TODAY', message: 'No current opportunity.' }
+        });
+        expect(signal.analysis.trend_detection).toEqual({ '1D': 'BEARISH', '4H': 'BULLISH', '1H': 'BULLISH' });
     });
 });
 

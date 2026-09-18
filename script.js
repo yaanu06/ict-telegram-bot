@@ -11513,14 +11513,22 @@ function cIsClosed(candle) {
 function normalizePublicTrendMap(value) {
     if (!value) return null;
     const output = {};
+    const aliases = { daily: '1D', day: '1D', four_hour: '4H', '4hour': '4H', '4h': '4H', one_hour: '1H', '1hour': '1H', '1h': '1H' };
+    const normalizeTrend = raw => {
+        const text = String(raw || '').toUpperCase();
+        const match = text.match(/BULLISH_TRANSITION|BEARISH_TRANSITION|BULLISH|BEARISH|MIXED|NEUTRAL|UNKNOWN/);
+        return match ? match[0] : null;
+    };
     const add = (tf, snapshot) => {
+        tf = aliases[tf.toLowerCase()] || tf;
         if (!['1D', '4H', '1H', '15M', '5M', '1W', '1M'].includes(tf)) return;
         if (typeof snapshot === 'string') {
-            output[tf] = snapshot;
+            const trend = normalizeTrend(snapshot);
+            if (trend) output[tf] = trend;
             return;
         }
         if (snapshot && typeof snapshot === 'object') {
-            const trend = snapshot.displayed_trend || getCanonicalDisplayedTrend(snapshot);
+            const trend = normalizeTrend(snapshot.displayed_trend || getCanonicalDisplayedTrend(snapshot));
             if (trend) output[tf] = trend;
         }
     };
@@ -11660,6 +11668,12 @@ function buildPublicTradeSignal(signal = {}) {
             confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
             status: signal.status || null,
             reason: { code: reason.code, message: reason.message },
+            analysis: {
+                trend_detection: publicTrendMap || signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
+                volatility_level: signal.volatility?.regime || signal.analysis?.volatility || null,
+                technical_indicators: signal.indicators || signal.analysis?.indicators || null,
+                type: signal.strategy || signal.trade_context_classification || null
+            },
             news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
             data_quality: signal.data_quality || null,
             provider_metadata: signal.provider_metadata || null,
