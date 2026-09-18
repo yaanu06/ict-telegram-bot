@@ -4396,6 +4396,18 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(badSide.issues.join(' ')).toMatch(/above current price/);
     });
 
+    it('records a safe audit summary without secrets', () => {
+        const ctx = getContext();
+        let raw = null;
+        ctx.localStorage.setItem = (key, value) => { if (key === 'ict_analysis_audit') raw = value; };
+        ctx.localStorage.getItem = key => key === 'ict_analysis_audit' ? raw : null;
+        const record = ctx.recordAnalysisAudit({ pair: 'EUR/USD', current_price: 1.1, decision: 'WAIT', status: 'TODAY_OPPORTUNITY', reason: { code: 'WAITING' } });
+        expect(record.request_id).toMatch(/^scan-/);
+        const stored = JSON.parse(raw);
+        expect(stored[0]).toMatchObject({ pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY' });
+        expect(JSON.stringify(stored)).not.toMatch(/apikey|authorization|secret|token/i);
+    });
+
     it('rejects duplicate timestamps and explicitly open candles in required histories', () => {
         const ctx = getContext();
         const baseStart = Date.parse('2026-09-01T00:00:00Z');

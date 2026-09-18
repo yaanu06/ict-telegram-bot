@@ -10982,9 +10982,39 @@ function buildDebugDiagnostics(output = {}, context = null) {
     };
 }
 
+const ANALYSIS_AUDIT_KEY = 'ict_analysis_audit';
+const ANALYSIS_AUDIT_CAP = 200;
+
+function recordAnalysisAudit(signal = {}) {
+    const record = {
+        request_id: `scan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        recorded_at: new Date().toISOString(),
+        pair: signal.pair || null,
+        current_price: Number.isFinite(Number(signal.current_price)) ? Number(signal.current_price) : null,
+        decision: signal.decision || signal.trade_type || 'WAIT',
+        status: signal.status || signal.opportunity_status || null,
+        setup_state: signal.setup_state || null,
+        execution_allowed: signal.execution_allowed ?? false,
+        confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
+        reason: signal.reason || null,
+        news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
+        selected_candidate_id: signal.selected_candidate_id || null,
+        validation: signal.validation?.passed ?? signal.validation?.final_consistency?.valid ?? null
+    };
+    try {
+        const previous = JSON.parse(localStorage.getItem(ANALYSIS_AUDIT_KEY) || '[]');
+        const entries = Array.isArray(previous) ? previous : [];
+        localStorage.setItem(ANALYSIS_AUDIT_KEY, JSON.stringify([record, ...entries].slice(0, ANALYSIS_AUDIT_CAP)));
+    } catch (error) {
+        console.warn('[AUDIT] unable to persist analysis record', error?.message || error);
+    }
+    return record;
+}
+
 function setJsonOutput(obj) {
     const el = document.getElementById('jsonOutput');
     const publicSignal = buildPublicTradeSignal(obj?.trade_signal || obj);
+    recordAnalysisAudit(publicSignal);
     if(el) el.textContent = JSON.stringify({ trade_signal: publicSignal }, null, 2);
     renderOpportunityStack(publicSignal);
     if (lastLiveMarketContextForReplay) {
