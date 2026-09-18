@@ -36,3 +36,5 @@ The browser implementation still needs a server-side data/AI proxy, encrypted se
 - Live quotes and candles require usable timestamps; stale, future-dated, undated, or expired cached price data is blocked.
 - Supplied symbol metadata and quote bid/ask conditions are preserved through the live context and public signal.
 - A known excessive spread rejects candidate construction before AI selection and is exposed as `RISK_BLOCKED`.
+- Paper orders carry deterministic idempotency keys, and persisted keys are checked against the stored order geometry before monitoring.
+- Backtest reports include partial-fill scaling and grouped performance by symbol, timeframe, regime, and session.
