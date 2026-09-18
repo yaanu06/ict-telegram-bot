@@ -8949,9 +8949,9 @@ Return ONLY this selector JSON (no additional fields):
     return { system, user };
 }
 
-function buildCandleData(historyCache, count = 10, symbolMetadata = {}) {
+function buildCandleData(historyCache, count = 10, symbolMetadata = {}, pairLocal = pair) {
     const tfs = ['1D', '4H', '1H', '15M', '5M'];
-    const realVolume = hasRealVolume(pair, symbolMetadata);
+    const realVolume = hasRealVolume(pairLocal, symbolMetadata);
     let data = '';
     for (const tf of tfs) {
         const candles = historyCache[tf];
@@ -9754,7 +9754,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
             validCandidates: (fallbackCandidateResult.valid_candidates || []).filter(candidate => candidate.id !== bestCandidate?.id),
             targetCandidates: fallbackTargetCandidates,
             symbolMetadata: quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair),
-            marketOpen: true
+            marketOpen: getMarketOpenState(pair, quoteSnapshot || {}).is_market_open
         });
         if (fallbackToday.state === 'TODAY_OPPORTUNITY' || fallbackToday.state === 'WATCH_ONLY') {
             const recovery = buildTodayOpportunityOutput(fallbackToday, pair, price, Date.now(), true);
@@ -10181,7 +10181,7 @@ async function runAutoScan() {
         scanStage = 'AI market analyst';
         const analystStartedAt = scanClock();
         const analystEvidence = buildAiMarketEvidenceCatalog(liveMarketContext, historyCache);
-        const analystResult = await runAiMarketAnalyst(analystEvidence, liveMarketContext, buildCandleData(historyCache, 10, quoteSnapshot?.symbol_metadata || {}));
+        const analystResult = await runAiMarketAnalyst(analystEvidence, liveMarketContext, buildCandleData(historyCache, 10, quoteSnapshot?.symbol_metadata || {}, pair));
         const aiMerge = mergeVerifiedAiSetups(liveMarketContext, analystResult.verified_setups, analystEvidence);
         analystResult.diagnostics.deterministic_duplicates = aiMerge.duplicates;
         analystResult.diagnostics.setups_added_from_ai = aiMerge.added;
@@ -10261,7 +10261,7 @@ async function runAutoScan() {
 
         liveMarketContext.ai_analysis.final_selector_called = true;
         scanStage = 'prompt construction';
-        const candleData = buildCandleData(historyCache, 10, quoteSnapshot?.symbol_metadata || {});
+            const candleData = buildCandleData(historyCache, 10, quoteSnapshot?.symbol_metadata || {}, pair);
         const aiPrompt = buildAIPrompt(liveMarketContext, candleData);
         scanText.innerHTML = '🤖 AI analyzing live market context...';
         scanStage = 'DeepSeek request';
