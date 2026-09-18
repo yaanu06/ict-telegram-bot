@@ -10238,7 +10238,11 @@ async function runAutoScan() {
             throw new Error('Twelve Data returned no usable live price');
         }
         
-        const tfs = ['5M', '15M', '1H', '4H', '1D', '1W'];
+        // The live decision path requires these five closed timeframes. Keep
+        // 1W available through getHistory()/explicit analysis, but do not
+        // spend a provider request on it during every scan when no consumer
+        // uses weekly candles for the current opportunity decision.
+        const tfs = ['5M', '15M', '1H', '4H', '1D'];
         scanText.innerHTML = '📊 Collecting market data...';
         scanStage = 'history requests';
         await Promise.all(tfs.map(async (t) => {

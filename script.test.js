@@ -1789,6 +1789,7 @@ describe('Analyze scan lifecycle', () => {
         const { context, elements, spies } = prepareScan();
         await context.runAutoScan();
         expect(spies.askAIToFindSetup).not.toHaveBeenCalled();
+        expect(spies.getHistory.mock.calls.map(call => call[0])).toEqual(['5M', '15M', '1H', '4H', '1D']);
         expect(elements.get('analyzeBtn').disabled).toBe(false);
         expect(elements.get('scanStatus').classList.contains('hidden')).toBe(true);
     });
