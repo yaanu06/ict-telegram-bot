@@ -155,6 +155,10 @@ Added actual detection algorithms for:
 - A supplied `maximum_slippage` is enforced before candidate selection and live sizing.
 - Excessive estimated slippage produces `SLIPPAGE_TOO_WIDE` and blocks execution rather than silently reducing the position size.
 
+### 5c. **Maximum Spread Gate**
+- A supplied `maximum_spread` overrides the derived volatility-based spread ceiling for that symbol.
+- Excessive quote spread blocks candidate selection and account-risk approval instead of allowing a setup with unsafe fill costs.
+
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:
 1. First choice: FVG midpoint

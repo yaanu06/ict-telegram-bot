@@ -4705,6 +4705,10 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
             symbol_metadata: { tick_size: 0.0001, tick_value: 1, slippage_estimate: 0.0005, maximum_slippage: 0.0002 } });
         expect(slippageBlocked.status).toBe('RISK_BLOCKED');
         expect(slippageBlocked.issues).toContain('estimated slippage exceeds symbol maximum');
+        const spreadBlocked = ctx.buildAccountRiskGate({ mode: 'LIVE', account: { equity: 10000, risk_distance: 0.01 }, risk_percent: 1,
+            symbol_metadata: { tick_size: 0.0001, tick_value: 1, spread: 0.0005, maximum_spread: 0.0002 } });
+        expect(spreadBlocked.status).toBe('RISK_BLOCKED');
+        expect(spreadBlocked.issues).toContain('current spread exceeds symbol maximum');
     });
 
     it('enforces configured loss, order-count, and symbol-exposure limits in every mode', () => {
@@ -5227,8 +5231,8 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
 
     it('preserves supplied asset metadata without inventing missing broker values', () => {
         const ctx = getContext();
-        const metadata = ctx.getSymbolMetadata('EUR/USD', { tick_size: 0.0001, tick_value: 1, contract_size: 100000, minimum_order_size: 1000, leverage: 30, trading_permissions: ['PAPER'], maximum_slippage: 0.0003 });
-        expect(metadata).toMatchObject({ tick_size: 0.0001, tick_value: 1, contract_size: 100000, minimum_order_size: 1000, leverage: 30, trading_permissions: ['PAPER'], maximum_slippage: 0.0003 });
+        const metadata = ctx.getSymbolMetadata('EUR/USD', { tick_size: 0.0001, tick_value: 1, contract_size: 100000, minimum_order_size: 1000, leverage: 30, trading_permissions: ['PAPER'], maximum_slippage: 0.0003, maximum_spread: 0.0004 });
+        expect(metadata).toMatchObject({ tick_size: 0.0001, tick_value: 1, contract_size: 100000, minimum_order_size: 1000, leverage: 30, trading_permissions: ['PAPER'], maximum_slippage: 0.0003, maximum_spread: 0.0004 });
         expect(metadata.spread).toBeNull();
         expect(metadata.metadata_complete).toBe(true);
     });

@@ -625,9 +625,10 @@ function getSymbolMetadata(forPair = pair, overrides = {}) {
         minimum_rr: Number.isFinite(Number(overrides.minimum_rr)) ? Number(overrides.minimum_rr) : null,
         min_sl_atr_multiplier: Number.isFinite(Number(overrides.min_sl_atr_multiplier)) ? Number(overrides.min_sl_atr_multiplier) : null,
         spread: Number.isFinite(Number(overrides.spread)) ? Number(overrides.spread) : null,
+        maximum_spread: overrides.maximum_spread != null && Number.isFinite(Number(overrides.maximum_spread)) ? Number(overrides.maximum_spread) : null,
         commission_per_unit: Number.isFinite(Number(overrides.commission_per_unit)) ? Number(overrides.commission_per_unit) : null,
         slippage_estimate: Number.isFinite(Number(overrides.slippage_estimate)) ? Number(overrides.slippage_estimate) : null,
-        maximum_slippage: Number.isFinite(Number(overrides.maximum_slippage)) ? Number(overrides.maximum_slippage) : null,
+        maximum_slippage: overrides.maximum_slippage != null && Number.isFinite(Number(overrides.maximum_slippage)) ? Number(overrides.maximum_slippage) : null,
         volume_reliable: typeof overrides.volume_reliable === 'boolean' ? overrides.volume_reliable : null,
         leverage: Number.isFinite(Number(overrides.leverage)) ? Number(overrides.leverage) : null,
         trading_permissions: overrides.trading_permissions ?? null,
@@ -4527,9 +4528,11 @@ function buildRiskConstraints(pairLocal, price, historyCache, quoteSnapshot = nu
     const absoluteMinSL = Math.max(settings.pipSize, Number.isFinite(primaryAtr) && primaryAtr > 0 ? primaryAtr * 0.10 : settings.pipSize);
     const rawMaxSLDistance = primaryAtr > 0 ? Math.min(price * settings.maxSLPct, primaryAtr * 4.0) : price * settings.maxSLPct;
     const currentSpread = Number(quoteSnapshot?.spread);
-    const maximumSpread = Math.max(settings.pipSize * 10, Number.isFinite(primaryAtr) && primaryAtr > 0 ? primaryAtr * 0.15 : settings.pipSize * 10);
+    const derivedMaximumSpread = Math.max(settings.pipSize * 10, Number.isFinite(primaryAtr) && primaryAtr > 0 ? primaryAtr * 0.15 : settings.pipSize * 10);
+    const configuredMaximumSpread = symbolMetadata?.maximum_spread != null ? Number(symbolMetadata.maximum_spread) : NaN;
+    const maximumSpread = Number.isFinite(configuredMaximumSpread) && configuredMaximumSpread >= 0 ? configuredMaximumSpread : derivedMaximumSpread;
     const slippageEstimate = Number(symbolMetadata?.slippage_estimate);
-    const maximumSlippage = Number(symbolMetadata?.maximum_slippage);
+    const maximumSlippage = symbolMetadata?.maximum_slippage != null ? Number(symbolMetadata.maximum_slippage) : NaN;
     return {
         minimum_rr: settings.targetRR || 2.5,
         minimum_sl_distance: ictRound(absoluteMinSL, prec),
@@ -11458,13 +11461,15 @@ function buildAccountRiskGate({ mode = 'PAPER', account = null, risk_percent = n
     const spread = Number(symbol_metadata?.spread);
     const slippage = Number(symbol_metadata?.slippage_estimate);
     const commission = Number(symbol_metadata?.commission_per_unit);
-    const maximumSlippage = Number(symbol_metadata?.maximum_slippage);
+    const maximumSlippage = symbol_metadata?.maximum_slippage != null ? Number(symbol_metadata.maximum_slippage) : NaN;
+    const maximumSpread = symbol_metadata?.maximum_spread != null ? Number(symbol_metadata.maximum_spread) : NaN;
     const issues = [];
     if (!Number.isFinite(equity) || equity <= 0) issues.push('account equity is unavailable');
     if (!Number.isFinite(riskPct) || riskPct <= 0) issues.push('risk percentage is unavailable');
     if (!Number.isFinite(tickValue) || tickValue <= 0 || !Number.isFinite(tickSize) || tickSize <= 0) issues.push('symbol tick metadata is unavailable');
     if (!Number.isFinite(riskDistance) || riskDistance <= 0) issues.push('risk distance is unavailable');
     if (Number.isFinite(maximumSlippage) && maximumSlippage >= 0 && Number.isFinite(slippage) && slippage > maximumSlippage) issues.push('estimated slippage exceeds symbol maximum');
+    if (Number.isFinite(maximumSpread) && maximumSpread >= 0 && Number.isFinite(spread) && spread > maximumSpread) issues.push('current spread exceeds symbol maximum');
     if (issues.length) return { mode: normalizedMode, status: 'RISK_BLOCKED', execution_allowed: false, position_size: null, risk_amount: null, issues, reason: issues.join('; ') };
     const riskAmount = equity * riskPct / 100;
     const costDistance = (Number.isFinite(spread) && spread > 0 ? spread : 0)
