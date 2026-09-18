@@ -7591,7 +7591,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
 
 function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen, symbolMetadata = null, providerMetadata = null) {
     const date = new Date(Number.isFinite(asOfMs) ? asOfMs : Date.now());
-    const opportunity = ['TODAY_OPPORTUNITY', 'WATCH_ONLY'].includes(today?.state) ? {
+    const opportunity = ['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(today?.state) ? {
         scenario: today.reason,
         area_of_interest: today.area_of_interest,
         execution_model: today.execution_model,
@@ -7607,7 +7607,7 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         pair: pairLocal,
         current_price: price,
         decision: 'WAIT',
-        confidence: today?.state === 'TODAY_OPPORTUNITY' ? today.confidence || 0 : 0,
+        confidence: ['TODAY_OPPORTUNITY', 'TRADE_READY'].includes(today?.state) ? today.confidence || 0 : 0,
         // Keep the public API's developing state stable.  WATCH_ONLY is a
         // display tier inside the opportunity stack, not a new top-level trade
         // decision contract.
@@ -7661,6 +7661,7 @@ function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, select
         candidateDiagnostics: liveMarketContext.setup_candidate_audit,
         validCandidates: remainingCandidates,
         targetCandidates: liveMarketContext.target_candidates,
+        symbolMetadata: liveMarketContext.symbol_metadata || null,
         marketOpen: liveMarketContext.market_open
     });
 }
@@ -10690,13 +10691,15 @@ async function runAutoScan() {
                     aiResult.selected_candidate_id,
                     { pair, currentPrice: price, scanAsOfMs, histories: historyCache }
                 );
-                if (recoveryToday?.state === 'TODAY_OPPORTUNITY' || recoveryToday?.state === 'WATCH_ONLY') {
+                if (['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(recoveryToday?.state)) {
                     const recovery = buildTodayOpportunityOutput(recoveryToday, pair, price, scanAsOfMs, liveMarketContext.market_open, liveMarketContext.symbol_metadata, liveMarketContext.provider_metadata);
                     Object.assign(out.trade_signal, recovery.trade_signal, {
                         selected_candidate_id: null,
                         trade_type: 'WAIT',
                         decision: 'WAIT',
                         ai_decision: 'skip',
+                        status: 'TODAY_OPPORTUNITY',
+                        setup_state: 'TODAY_OPPORTUNITY',
                         confidence: recovery.trade_signal.confidence || 0,
                         reason: {
                             code: 'STALE_AI_SELECTION_RECOVERED',

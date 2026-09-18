@@ -2019,6 +2019,23 @@ describe('getQuoteDirection', () => {
         expect(raw.trade_signal.symbol_metadata).toMatchObject({ asset_class: 'METAL', price_precision: 2 });
         expect(raw.trade_signal.provider_metadata).toEqual({ '4H': { provider: 'TWELVE_DATA' } });
     });
+
+    it('keeps a recovered trade-ready planner opportunity visible while waiting for user review', () => {
+        const ctx = getContext();
+        const raw = ctx.buildTodayOpportunityOutput({
+            state: 'TRADE_READY',
+            confidence: 82,
+            reason: 'A deterministic replacement candidate is available.',
+            reason_code: 'TRADE_READY',
+            area_of_interest: { low: 100, high: 101, source: 'MSNR', timeframe: '1H', zone_id: 'zone-1' },
+            execution_model: 'PENDING_LIMIT',
+            target_intent: 'SWING_HIGH',
+            activation_conditions: ['Price reaches the limit zone.'],
+            cancellation_conditions: ['Structural invalidation is breached.']
+        }, 'EUR/USD', 102, Date.parse('2026-09-19T10:00:00Z'), true);
+        expect(raw.trade_signal.confidence).toBe(82);
+        expect(raw.trade_signal.opportunity).toMatchObject({ execution_model: 'PENDING_LIMIT' });
+    });
 });
 
 describe('analyzeMarketPhase (AMD)', () => {
