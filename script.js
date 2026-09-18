@@ -2854,18 +2854,20 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
     // Calculate Quality Score for each candidate (Freshness + Pattern Base)
     // STRUCTURAL: a fresh liquidity sweep or breakout-retest at the candidate level
     // boosts its ranking so it wins over plain MSNR/FVG zones.
+    const atrVal = customATR || atr(data, 14);
     const sweepHit = detectLiquiditySweep(data, price, direction);
-    const retestHit = detectBreakoutRetest(data, price, direction);
+    const retestHit = detectBreakoutRetest(data, price, direction, pairLocal, symbolMetadata);
     for(const c of candidates) {
         const f = checkZoneFreshness(data, { low: c.low, high: c.high }, direction);
         let q = c.score || 70;
         if(f.fresh) q += 15;
         else if(f.partiallyUsed && f.touches <= 3) q += 8;
-        if(sweepHit && Math.abs(c.price - sweepHit.level) / c.price <= 0.004) {
+        const proximity = Math.max(settings.pipSize * 4, atrVal * 0.2);
+        if(sweepHit && Math.abs(c.price - sweepHit.level) <= proximity) {
             q += 25;
             c.sweepRanked = true;
         }
-        if(retestHit && Math.abs(c.price - retestHit.level) / c.price <= 0.004) {
+        if(retestHit && Math.abs(c.price - retestHit.level) <= proximity) {
             q += 25;
             c.retestRanked = true;
         }
@@ -2874,8 +2876,7 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
     
     // REACHABILITY FILTER: A limit order entry must be within ~3x ATR of price,
     // otherwise price will rarely reach it and the setup never triggers.
-    const atrVal = customATR || atr(data, 14);
-    const maxEntryDist = Math.max(atrVal * LIMIT_ORDER_MAX_DIST_ATR, price * 0.001);
+    const maxEntryDist = Math.max(atrVal * LIMIT_ORDER_MAX_DIST_ATR, settings.pipSize * 10);
     const maxDistPct = (maxEntryDist / price) * 100;
     const reachable = candidates.filter(c => (c.distancePct || 0) <= maxDistPct);
     
@@ -2917,7 +2918,7 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
                 nearestMsnr = msnrLevels[i];
             }
         }
-        if(Math.abs(entry - nearestMsnr) / entry <= 0.002) {
+        if(Math.abs(entry - nearestMsnr) <= Math.max(settings.pipSize * 2, atrVal * 0.2)) {
             entry = nearestMsnr;
         }
     }
@@ -3342,28 +3343,31 @@ function detectDisplacement(data, dir) {
 }
 
 // Breakout-retest: a swing level broken with volume, price now retesting it
-function detectBreakoutRetest(data, price, dir) {
+function detectBreakoutRetest(data, price, dir, pairLocal = pair, symbolMetadata = {}) {
     data = closedStructureCandles(data);
     if(!data || data.length < 40) return null;
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
+    const atrVal = atr(data, 14);
+    const maxRetestDistance = Math.max(atrVal * 1.5, settings.pipSize * 10);
     const sw = findSwings(data.slice(-60), 2);
     if(dir === 'BUY') {
         const highs = (sw.H || []).slice(-4);
         for(const h of highs) {
-            const dist = (price - h.p) / price * 100;
-            if(dist > -1.5 && dist < 0.1) {
+            const distance = price - h.p;
+            if(distance > -maxRetestDistance && distance < maxRetestDistance * 0.25) {
                 const after = data.slice(h.i + 1);
                 const broke = after.slice(0, 6).some(c => c.c > h.p);
-                if(broke) return { breakout: true, level: h.p, distPct: Math.abs(dist), type: 'BUY' };
+                if(broke) return { breakout: true, level: h.p, distPct: Math.abs(distance / price * 100), distance, type: 'BUY' };
             }
         }
     } else {
         const lows = (sw.L || []).slice(-4);
         for(const l of lows) {
-            const dist = (l.p - price) / price * 100;
-            if(dist > -1.5 && dist < 0.1) {
+            const distance = l.p - price;
+            if(distance > -maxRetestDistance && distance < maxRetestDistance * 0.25) {
                 const after = data.slice(l.i + 1);
                 const broke = after.slice(0, 6).some(c => c.c < l.p);
-                if(broke) return { breakout: true, level: l.p, distPct: Math.abs(dist), type: 'SELL' };
+                if(broke) return { breakout: true, level: l.p, distPct: Math.abs(distance / price * 100), distance, type: 'SELL' };
             }
         }
     }
@@ -3476,7 +3480,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             const volTruth = analyzeVolumeTruth(entryData, hasRealVolume(pairLocal, symbolMetadata));
             const sweep = detectLiquiditySweep(entryData, price, dir);
             const displaced = detectDisplacement(entryData, dir);
-            const breakoutRetest = detectBreakoutRetest(entryData, price, dir);
+            const breakoutRetest = detectBreakoutRetest(entryData, price, dir, pairLocal, symbolMetadata);
             const pdZone = isPremiumDiscount(entryData, price);
             
             // Fake / dry volume: now soft confidence penalties (used to hard-reject).

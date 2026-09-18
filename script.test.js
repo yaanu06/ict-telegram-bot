@@ -1902,6 +1902,17 @@ describe('detectFVG', () => {
         const fvgs = ctx.detectFVG(data);
         expect(fvgs.some(f => f.type === 'bull')).toBe(true);
     });
+    it('uses asset-aware volatility thresholds for small-precision crypto gaps', () => {
+        const ctx = getContext();
+        const data = Array.from({ length: 20 }, (_, i) => {
+            const close = 100 + i * 0.001;
+            return { t: i + 1, o: close - 0.0002, h: close + 0.0002, l: close - 0.0003, c: close, v: 1 };
+        });
+        data[10] = { t: 11, o: 99.9998, h: 100.0000, l: 99.9995, c: 99.9999, v: 1 };
+        data[12] = { t: 13, o: 100.0104, h: 100.0108, l: 100.0100, c: 100.0106, v: 1 };
+        const fvgs = ctx.detectFVG(data, 'BTC/USD', { asset_class: 'CRYPTO', tick_size: 0.00000001, price_precision: 8 });
+        expect(fvgs.some(f => f.type === 'bull' && f.l === 100.0000 && f.h === 100.0100)).toBe(true);
+    });
 });
 
 describe('getQuoteDirection', () => {
