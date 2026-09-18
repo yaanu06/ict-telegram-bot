@@ -1388,27 +1388,33 @@ function checkTradeSession(now = new Date()) {
     };
 }
 
-// High Impact News Filter Check (Warning only, robust fallback)
-function checkHighImpactNews(customPair = null) {
-    try {
-        const now = new Date();
-        const utcHour = now.getUTCHours();
-        const utcMin = now.getUTCMinutes();
-        const totalMin = utcHour * 60 + utcMin;
-        const newsWindows = [
-            { name: 'US CPI / NFP (12:30 UTC)', start: 12 * 60 + 15, end: 12 * 60 + 45 },
-            { name: 'FOMC Rate Decision (18:00 UTC)', start: 17 * 60 + 45, end: 18 * 60 + 15 }
-        ];
-        for(const w of newsWindows) {
-            if(totalMin >= w.start && totalMin <= w.end) {
-                return { inNewsWindow: true, newsName: w.name, warning: `⚠️ High impact news window (${w.name})` };
-            }
+// News is deliberately UNKNOWN until an external calendar is supplied. Time
+// of day alone cannot prove that a high-impact event is absent.
+function checkHighImpactNews(newsInput = null) {
+    if (newsInput && typeof newsInput === 'object') {
+        const highImpact = newsInput.high_impact_event;
+        if (typeof highImpact === 'boolean') {
+            return {
+                status: highImpact ? 'HIGH_IMPACT' : 'CLEAR',
+                available: true,
+                inNewsWindow: highImpact,
+                high_impact_event: highImpact,
+                newsName: newsInput.event_name || null,
+                event_name: newsInput.event_name || null,
+                event_time: newsInput.event_time || null,
+                minutes_to_event: newsInput.minutes_to_event ?? null,
+                minutes_after_event: newsInput.minutes_after_event ?? null,
+                source: newsInput.source || null,
+                warning: highImpact ? `⚠️ High-impact news risk${newsInput.event_name ? `: ${newsInput.event_name}` : ''}` : null
+            };
         }
-        return { inNewsWindow: false, newsName: null, warning: null };
-    } catch(e) {
-        console.warn('News filter check fallback:', e);
-        return { inNewsWindow: false, newsName: null, warning: null };
     }
+    return {
+        status: 'UNKNOWN', available: false, inNewsWindow: false,
+        high_impact_event: null, newsName: null, event_name: null,
+        event_time: null, minutes_to_event: null, minutes_after_event: null,
+        source: null, warning: 'High-impact news status is unavailable.'
+    };
 }
 
 // Dynamic Position Sizing based on Confidence Score
@@ -7228,6 +7234,7 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         trade_context_classification: today?.trade_context_classification || null,
         top_down_context: today?.top_down_context || null,
         daily_bias: today?.daily_bias || null,
+        news_risk: today?.news_risk || { status: 'UNKNOWN', available: false },
         strategy: today?.strategy || null,
             direction: today?.direction || null,
             bias: today?.bias || 'NEUTRAL',
@@ -8076,6 +8083,7 @@ function buildAiMarketEvidenceCatalog(liveMarketContext = {}, historyCache = {})
         pair: liveMarketContext.pair,
         current_price: liveMarketContext.current_price,
         market_open: liveMarketContext.market_open,
+        news_risk: liveMarketContext.news_risk || { status: 'UNKNOWN', available: false },
         session: liveMarketContext.session,
         market_context: liveMarketContext.market_context,
         structure: liveMarketContext.structure,
@@ -9710,6 +9718,7 @@ async function runAutoScan() {
             as_of_ms: scanAsOfMs,
             quote_snapshot: quoteSnapshot
         });
+        liveMarketContext.news_risk = checkHighImpactNews();
         liveMarketContext.indicators = indicators;
         liveMarketContext.holistic = holistic;
         lastLiveMarketContextForReplay = liveMarketContext;
@@ -9774,6 +9783,7 @@ async function runAutoScan() {
         liveMarketContext.today_opportunity.trend_detection = liveMarketContext.multi_timeframe_direction?.trend || null;
         liveMarketContext.today_opportunity.volatility = liveMarketContext.volatility || null;
         liveMarketContext.today_opportunity.indicators = liveMarketContext.momentum || null;
+        liveMarketContext.today_opportunity.news_risk = liveMarketContext.news_risk;
         console.log('[SCAN] today opportunity', liveMarketContext.today_opportunity);
 
         if (liveMarketContext.adaptive_setup_candidates.length === 0) {
@@ -10878,6 +10888,7 @@ function buildPublicTradeSignal(signal = {}) {
                     technical_indicators: signal.indicators || signal.analysis?.indicators || null,
                     type: signal.strategy || signal.trade_context_classification || null
                 },
+                news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
                 market_open: signal.market_open ?? null
             };
         }
@@ -10899,6 +10910,7 @@ function buildPublicTradeSignal(signal = {}) {
             take_profit_3: null,
             confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
             reason: { code: reason.code, message: reason.message },
+            news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
             market_open: signal.market_open ?? null
         };
     }
@@ -10946,7 +10958,8 @@ function buildPublicTradeSignal(signal = {}) {
             liquidity: liquiditySummary || reasoning.liquidity || null,
             invalidation: signal.analysis?.invalidation || reasoning.invalidation || signal.stop_loss_reason || '',
             notes: signal.analysis?.notes || (Array.isArray(reasoning.secondary) ? reasoning.secondary.slice(0, 3) : [])
-        }
+        },
+        news_risk: signal.news_risk || { status: 'UNKNOWN', available: false }
     };
 }
 

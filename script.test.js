@@ -4404,6 +4404,12 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(openResult.reasons.join(' ')).toMatch(/open candle/);
     });
 
+    it('marks news risk unknown when no calendar data is supplied', () => {
+        const ctx = getContext();
+        expect(ctx.checkHighImpactNews()).toMatchObject({ status: 'UNKNOWN', available: false, high_impact_event: null });
+        expect(ctx.checkHighImpactNews({ high_impact_event: true, event_name: 'CPI', source: 'calendar' })).toMatchObject({ status: 'HIGH_IMPACT', available: true, event_name: 'CPI' });
+    });
+
     it('requests enough bounded history for configured MSNR lookback and keeps intraday UTC', async () => {
         const ctx = getContext();
         ctx.console.warn = () => {};
