@@ -4442,10 +4442,12 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         let raw = null;
         ctx.localStorage.setItem = (key, value) => { if (key === 'ict_analysis_audit') raw = value; };
         ctx.localStorage.getItem = key => key === 'ict_analysis_audit' ? raw : null;
-        const record = ctx.recordAnalysisAudit({ pair: 'EUR/USD', current_price: 1.1, decision: 'WAIT', status: 'TODAY_OPPORTUNITY', reason: { code: 'WAITING' } });
+        const record = ctx.recordAnalysisAudit({ pair: 'EUR/USD', current_price: 1.1, decision: 'WAIT', status: 'TODAY_OPPORTUNITY', provider_timestamp: '2026-09-18T10:00:00Z', data_quality: { valid: true }, reason: { code: 'WAITING' } });
         expect(record.request_id).toMatch(/^scan-/);
         const stored = JSON.parse(raw);
         expect(stored[0]).toMatchObject({ pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY' });
+        expect(stored[0]).toMatchObject({ status_code: 'NO_TRADE', provider_timestamp: '2026-09-18T10:00:00Z', data_quality: { valid: true } });
+        expect(stored[0].symbol_metadata).toMatchObject({ symbol: 'EUR/USD', asset_class: 'FOREX' });
         expect(stored[0].risk_gate).toMatchObject({ mode: 'PAPER', status: 'PAPER', execution_allowed: true });
         expect(JSON.stringify(stored)).not.toMatch(/apikey|authorization|secret|token/i);
     });

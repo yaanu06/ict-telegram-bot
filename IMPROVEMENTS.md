@@ -36,6 +36,10 @@
 - `NEWS_BLOCKED`, `DATA_BLOCKED`, `RISK_BLOCKED`, and `MARKET_CLOSED` now override ready/watch labels in the public status mapper.
 - A status cannot advertise a ready setup while its risk gate or execution permission rejects it.
 
+### 1g. **Reproducible Audit Records**
+- Local audit entries now retain symbol metadata, provider timestamp, data-quality verdict, and public status code alongside the decision and risk gate.
+- Stored records continue to exclude API keys, authorization headers, and other secrets.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:
