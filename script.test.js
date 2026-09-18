@@ -626,6 +626,7 @@ describe('top-down trade context', () => {
         await ctx.updateMTFDisplay({ '1D': candles(10, 100, 0.1, 'up') });
         expect(elements.get('trend1D').innerHTML).toBe('Data');
         expect(elements.get('trend1D').className).toContain('neutral');
+        expect(elements.get('trend1W').innerHTML).toBe('Data');
     });
 
     it('does not fetch optional weekly or one-minute data during a normal display refresh', async () => {

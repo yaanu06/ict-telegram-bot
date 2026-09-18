@@ -3225,13 +3225,13 @@ async function updateMTFDisplay(historyCache = {}) {
     // Optional 1M/1W cards may display explicitly supplied data, but a
     // routine scan must not trigger hidden provider calls just to populate
     // them. Missing optional data is shown as Data until explicitly fetched.
-    const tfs = ['5M', '15M', '1H', '4H', '1D'];
-    if (Array.isArray(historyCache['1W'])) tfs.push('1W');
-    if (Array.isArray(historyCache['1M'])) tfs.unshift('1M');
+    const tfs = ['5M', '15M', '1H', '4H', '1D', '1W'];
+    if (document.getElementById('trend1M')) tfs.unshift('1M');
     for(let t of tfs) {
         let tr = 'UNAVAILABLE';
         try {
-            const data = historyCache[t] || await getHistory(t);
+            const optional = ['1M', '1W'].includes(t);
+            const data = historyCache[t] || (optional ? null : await getHistory(t));
             // Keep the display on the same minimum history contract as the
             // signal direction reader. Short data must be visible as missing,
             // never misrepresented as a neutral market trend.
