@@ -11741,6 +11741,7 @@ function validatePublicTradeSignal(signal = {}) {
     if (signal?.current_price != null && !Number.isFinite(Number(signal.current_price))) issues.push('current_price is invalid');
     if (signal?.status_code != null && !statuses.has(String(signal.status_code))) issues.push('status_code is invalid');
     if (signal?.execution_allowed != null && typeof signal.execution_allowed !== 'boolean') issues.push('execution_allowed must be boolean');
+    if (signal?.status_code === 'SETUP_READY' && !['BUY_LIMIT', 'SELL_LIMIT'].includes(String(signal.decision || ''))) issues.push('SETUP_READY requires a limit decision');
     const entry = Number(signal?.entry ?? signal?.entry_price);
     const stop = Number(signal?.stop_loss);
     const target = Number(signal?.tp1 ?? signal?.take_profit_1);

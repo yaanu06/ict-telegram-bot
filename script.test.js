@@ -4717,6 +4717,7 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         const ctx = getContext();
         expect(ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status_code: 'WATCH', current_price: 1.1 }).valid).toBe(true);
         expect(ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY', status_code: 'SETUP_READY', entry: 100, stop_loss: 99, tp1: 103 }).valid).toBe(false);
+        expect(ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status_code: 'SETUP_READY', current_price: 100, entry: 99, stop_loss: 98, tp1: 103 }).issues).toContain('SETUP_READY requires a limit decision');
         const missingPrice = ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status_code: 'SETUP_READY', entry: 100, stop_loss: 99, tp1: 103 });
         expect(missingPrice.valid).toBe(false);
         expect(missingPrice.issues).toContain('ready setup current_price is unavailable');
