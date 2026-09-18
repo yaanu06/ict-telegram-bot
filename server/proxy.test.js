@@ -40,6 +40,24 @@ describe('market and AI proxy boundary', () => {
         expect(allow('client')).toMatchObject({ allowed: true, remaining: 1 });
     });
 
+    test('applies a separate Twelve Data budget below the provider plan limit', async () => {
+        const fetchImpl = jest.fn(async () => ({ status: 200, text: async () => JSON.stringify({ price: '1.25', timestamp: '2026-09-19T10:00:00Z' }) }));
+        const server = createProxyServer({
+            env: { TWELVE_DATA_API_KEY: 'provider-secret', PROXY_MAX_REQUESTS: '20', PROXY_TWELVE_MAX_REQUESTS: '1' },
+            fetchImpl
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            expect((await request(server, 'GET', '/api/twelve/quote?symbol=EUR%2FUSD')).status).toBe(200);
+            const second = await request(server, 'GET', '/api/twelve/quote?symbol=EUR%2FUSD');
+            expect(second.status).toBe(429);
+            expect(second.body.error).toMatch(/Twelve Data request budget/);
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
     test('does not expose unconfigured providers or unauthenticated audit reads', async () => {
         const server = createProxyServer({ env: { PROXY_MAX_REQUESTS: '20' }, fetchImpl: jest.fn() });
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

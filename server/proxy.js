@@ -9,6 +9,7 @@ const TIMEFRAME_INTERVALS = new Set(['1min', '5min', '15min', '1h', '4h', '1day'
 const MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_WINDOW_MS = 60_000;
 const DEFAULT_MAX_REQUESTS = 60;
+const DEFAULT_TWELVE_MAX_REQUESTS = 50;
 
 function normalizeSymbol(value) {
     return String(value || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -90,6 +91,7 @@ async function proxyJson(fetchImpl, url, options = {}) {
 function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, now = () => Date.now(), auditStore = null } = {}) {
     if (typeof fetchImpl !== 'function') throw new Error('a fetch implementation is required');
     const allow = createRateLimiter({ now, maxRequests: Number(env.PROXY_MAX_REQUESTS || DEFAULT_MAX_REQUESTS) });
+    const allowTwelveData = createRateLimiter({ now, maxRequests: Number(env.PROXY_TWELVE_MAX_REQUESTS || DEFAULT_TWELVE_MAX_REQUESTS) });
     const twelveKey = String(env.TWELVE_DATA_API_KEY || '').trim();
     const deepSeekKey = String(env.DEEPSEEK_API_KEY || '').trim();
     const twelveBase = String(env.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com').replace(/\/$/, '');
@@ -115,6 +117,9 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
         try {
             if (req.method === 'GET' && (requestUrl.pathname === '/api/twelve/quote' || requestUrl.pathname === '/api/twelve/time_series')) {
                 if (!twelveKey) return jsonResponse(res, 503, { error: 'market data provider is not configured' }, origin);
+                const twelveRate = allowTwelveData(String(clientKey));
+                res.setHeader('X-Twelve-RateLimit-Remaining', String(twelveRate.remaining));
+                if (!twelveRate.allowed) return jsonResponse(res, 429, { error: 'Twelve Data request budget exceeded' }, origin);
                 const validation = validateMarketRequest(requestUrl.pathname, requestUrl.searchParams);
                 if (!validation.valid) return jsonResponse(res, 400, { error: validation.reason }, origin);
                 const upstream = new URL(`${twelveBase}/${requestUrl.pathname.endsWith('/quote') ? 'quote' : 'time_series'}`);
