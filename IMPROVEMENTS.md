@@ -170,6 +170,7 @@ Added actual detection algorithms for:
 ### 5f. **Custom Asset Symbols**
 - The Mini App now accepts validated provider symbols outside the preset dropdown, including equities, indices, crypto, and additional forex pairs.
 - Custom symbols use the existing asset metadata, normalization, data-quality, analysis, AI-selection, and manual-tracking pipeline without instrument-specific price assumptions.
+- The server proxy uses the same symbol grammar, including provider exchange-qualified forms such as `NASDAQ:AAPL`.
 
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:

@@ -24,6 +24,7 @@ function request(server, method, pathname, headers = {}, body = '') {
 describe('market and AI proxy boundary', () => {
     test('validates symbols, intervals, and bounded history sizes', () => {
         expect(validateMarketRequest('/quote', new URLSearchParams('symbol=EUR%2FUSD'))).toMatchObject({ valid: true, symbol: 'EUR/USD' });
+        expect(validateMarketRequest('/quote', new URLSearchParams('symbol=NASDAQ%3AAAPL'))).toMatchObject({ valid: true, symbol: 'NASDAQ:AAPL' });
         expect(validateMarketRequest('/time_series', new URLSearchParams('symbol=EUR/USD&interval=1h&outputsize=200'))).toMatchObject({ valid: true, interval: '1h', outputsize: 200 });
         expect(validateMarketRequest('/time_series', new URLSearchParams('symbol=EUR/USD&interval=2h'))).toMatchObject({ valid: false, reason: 'interval is unsupported' });
         expect(validateMarketRequest('/time_series', new URLSearchParams('symbol=EUR/USD&interval=1h&outputsize=5'))).toMatchObject({ valid: false, reason: 'outputsize is invalid' });

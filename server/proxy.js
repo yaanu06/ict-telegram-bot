@@ -32,7 +32,7 @@ function jsonResponse(res, status, payload, origin = '') {
 
 function validateMarketRequest(pathname, query) {
     const symbol = normalizeSymbol(query.get('symbol'));
-    if (!symbol || !/^[A-Z0-9._/-]{1,32}$/.test(symbol)) return { valid: false, reason: 'symbol is invalid' };
+    if (!symbol || !/^[A-Z0-9._:/-]{1,32}$/.test(symbol)) return { valid: false, reason: 'symbol is invalid' };
     if (pathname.endsWith('/time_series')) {
         const interval = String(query.get('interval') || '').toLowerCase();
         if (!TIMEFRAME_INTERVALS.has(interval)) return { valid: false, reason: 'interval is unsupported' };
