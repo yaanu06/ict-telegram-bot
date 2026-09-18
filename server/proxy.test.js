@@ -36,7 +36,7 @@ describe('server market and AI proxy', () => {
             append: record => { records.push(record); return record; },
             recent: () => records.slice().reverse()
         };
-        const server = createProxyServer({ env: { AUDIT_WRITE_TOKEN: 'audit-secret' }, fetchImpl: jest.fn(), auditStore });
+        const server = createProxyServer({ env: { AUDIT_WRITE_TOKEN: 'audit-secret', AUDIT_READ_TOKEN: 'read-secret' }, fetchImpl: jest.fn(), auditStore });
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
         const port = server.address().port;
         const denied = await fetch(`http://127.0.0.1:${port}/api/audit`, { method: 'POST', body: JSON.stringify({ request_id: '1' }) });
@@ -48,6 +48,11 @@ describe('server market and AI proxy', () => {
         });
         expect(accepted.status).toBe(201);
         expect(records[0]).toMatchObject({ request_id: '1', pair: 'EUR/USD' });
+        const writeTokenRead = await fetch(`http://127.0.0.1:${port}/api/audit`, { headers: { 'X-Audit-Token': 'audit-secret' } });
+        expect(writeTokenRead.status).toBe(401);
+        const read = await fetch(`http://127.0.0.1:${port}/api/audit`, { headers: { 'X-Audit-Token': 'read-secret' } });
+        expect(read.status).toBe(200);
+        expect((await read.json()).records[0]).toMatchObject({ request_id: '1' });
         const order = await fetch(`http://127.0.0.1:${port}/api/order`, { method: 'POST' });
         expect(order.status).toBe(404);
         server.close();
