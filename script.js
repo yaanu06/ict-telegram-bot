@@ -8606,7 +8606,7 @@ function buildCandleData(historyCache, count = 10) {
     return data;
 }
 
-async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMarketContext = null) {
+async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMarketContext = null, retryCount = 0) {
     if (!DEEPSEEK_API_KEY) {
         console.error('No AI key available');
         lastAIRequestError = { code: 'NO_AI_KEY', message: 'No DeepSeek API key available' };
@@ -8614,6 +8614,18 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
     }
     const requestStartedAt = scanClock();
     lastAIRequestError = null;
+    const noTradeAfterInvalidAI = reason => ({
+        decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
+        reasoning: { primary: `AI output rejected after ${retryCount + 1} attempts: ${reason}` },
+        ai_decision: 'skip', noTrade: true,
+        wait_condition: `AI output rejected after ${retryCount + 1} attempts: ${reason}`,
+        schema_validation: { valid: false, issues: [reason], attempts: retryCount + 1 }
+    });
+    const retryInvalidAI = reason => retryCount < 1
+        ? askAIToFindSetup(
+            `${marketData}\n\nCORRECTION: Your previous response was invalid (${reason}). Return only the exact JSON contract requested above. Do not add markdown or extra fields.`,
+            price, systemPrompt, liveMarketContext, retryCount + 1)
+        : noTradeAfterInvalidAI(reason);
     console.log('[SCAN] DeepSeek request start', {
         timeout_ms: AI_REQUEST_TIMEOUT_MS,
         prompt_characters: String(marketData || '').length,
@@ -8650,28 +8662,29 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         
         if (!content) {
             console.error('No content from AI');
-            return null;
+            return retryInvalidAI('AI response contained no content');
         }
         
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         if (!jsonMatch) {
             console.error('No JSON found in AI response');
-            return null;
+            return retryInvalidAI('AI response did not contain a JSON object');
         }
-        
-        const selector = JSON.parse(jsonMatch[0]);
+        let selector;
+        try {
+            selector = JSON.parse(jsonMatch[0]);
+        } catch (parseError) {
+            console.error('AI JSON parse failed', parseError);
+            return retryInvalidAI('AI response JSON could not be parsed');
+        }
         const productionSelector = liveMarketContext && Array.isArray(liveMarketContext.adaptive_setup_candidates);
         if (productionSelector) {
             const selectorContract = validateAiSelectorResponse(selector, liveMarketContext.adaptive_setup_candidates);
             if (!selectorContract.valid) {
                 console.error('[AI] selector schema rejected', selectorContract.issues);
-                return {
-                    decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
-                    reasoning: { primary: `AI selector schema rejected: ${selectorContract.issues.join('; ')}` },
-                    ai_decision: 'skip', noTrade: true,
-                    wait_condition: `AI selector schema rejected: ${selectorContract.issues.join('; ')}`,
-                    schema_validation: selectorContract
-                };
+                const reason = `AI selector schema rejected: ${selectorContract.issues.join('; ')}`;
+                if (retryCount < 1) return retryInvalidAI(reason);
+                return { ...noTradeAfterInvalidAI(reason), schema_validation: { ...selectorContract, attempts: retryCount + 1 } };
             }
             const selectedId = typeof selector.selected_candidate_id === 'string' ? selector.selected_candidate_id : null;
             if (!selectedId || ['WAIT', 'NO_TRADE'].includes(String(selector.decision || '').toUpperCase())) {

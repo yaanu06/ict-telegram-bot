@@ -4374,6 +4374,25 @@ describe('engine contract completion', () => {
         expect(ctx.validateAiSelectorResponse({ decision: 'WAIT', selected_candidate_id: null, reasoning: 'no valid setup' }, candidates).valid).toBe(true);
     });
 
+    it('retries malformed AI selector output once, then returns explicit no-trade', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        const candidate = { id: 'retry-candidate', direction: 'BUY', timeframe: '1H', zone_type: 'FVG', zone_origin: 'STRUCTURAL',
+            zone_low: 1.0995, zone_high: 1.1005, entry: 1.1, stop_loss: 1.098, tp1: 1.105, tp2: null, tp3: null, rr_tp1: 2.5,
+            quality: { final_confidence: 64 }, stop_reason: 'Authoritative strategy invalidation', opportunity_status: 'FRESH_PENDING_TODAY', still_actionable_today: true,
+            entry_consumed: false, tp1_already_reached: false };
+        let calls = 0;
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: ++calls === 1 ? 'not json' : JSON.stringify({ decision: 'SELECT', selected_candidate_id: 'retry-candidate', reasoning: 'valid after correction' }) } }] }) }));
+        const recovered = await ctx.askAIToFindSetup('prompt', 1.101, 'system', { pair: 'EUR/USD', adaptive_setup_candidates: [candidate] });
+        expect(calls).toBe(2);
+        expect(recovered.selected_candidate_id).toBe('retry-candidate');
+
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: 'still not json' } }] }) }));
+        const rejected = await ctx.askAIToFindSetup('prompt', 1.101, 'system', { pair: 'EUR/USD', adaptive_setup_candidates: [candidate] });
+        expect(rejected.noTrade).toBe(true);
+        expect(rejected.schema_validation.attempts).toBe(2);
+    });
+
     it.each([false, true])('hydrates SELECT exclusively from the candidate (legacy mutation=%s)', async mutate => {
         const ctx = getContext();
         await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
