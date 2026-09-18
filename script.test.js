@@ -1995,6 +1995,26 @@ describe('getQuoteDirection', () => {
             .toEqual({ '1D': 'BEARISH', '4H': 'BULLISH_TRANSITION', '1H': 'BULLISH' });
     });
 
+    it('keeps higher-timeframe explanations aligned with the canonical trend map', () => {
+        const ctx = getContext();
+        const signal = ctx.buildPublicTradeSignal({
+            decision: 'BUY_LIMIT', direction: 'BUY', pair: 'XAU/USD', entry: 100,
+            stop_loss: 98, tp1: 105, confidence: 80,
+            trend_detection: { '1D': 'BEARISH', '4H': 'BEARISH_TRANSITION', '1H': 'BULLISH' },
+            top_down_context: { higher_timeframe: {
+                daily: '1D: BEARISH; BOS supports SELL',
+                four_hour: '4H: MIXED; LIQUIDITY_SWEEP supports BUY',
+                one_hour: '1H: BEARISH; CRT supports BUY'
+            } }
+        });
+        expect(signal.analysis.structural_context).toEqual({ '1D': 'BEARISH', '4H': 'BEARISH_TRANSITION', '1H': 'BULLISH' });
+        expect(signal.analysis.higher_timeframe).toEqual({
+            daily: '1D: BEARISH; BOS supports SELL',
+            four_hour: '4H: BEARISH_TRANSITION; LIQUIDITY_SWEEP BUY evidence',
+            one_hour: '1H: BULLISH; CRT supports BUY'
+        });
+    });
+
     it('keeps canonical trend analysis in a WAIT response with no current opportunity', () => {
         const ctx = getContext();
         const signal = ctx.buildPublicTradeSignal({

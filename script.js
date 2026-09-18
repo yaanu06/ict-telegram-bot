@@ -11808,6 +11808,33 @@ function normalizePublicTrendMap(value) {
     return Object.keys(output).length ? output : null;
 }
 
+function normalizePublicHigherTimeframe(value, trendMap = {}) {
+    if (!value || typeof value !== 'object') return value || null;
+    const aliases = { daily: '1D', day: '1D', four_hour: '4H', '4hour': '4H', '4h': '4H', one_hour: '1H', '1hour': '1H', '1h': '1H' };
+    const output = {};
+    for (const [key, raw] of Object.entries(value)) {
+        const tf = aliases[String(key).toLowerCase()] || String(key).toUpperCase();
+        const canonical = trendMap[tf];
+        if (typeof raw !== 'string' || !canonical) {
+            output[key] = raw;
+            continue;
+        }
+        const match = raw.match(/^\s*([^:]+):\s*(BULLISH_TRANSITION|BEARISH_TRANSITION|BULLISH|BEARISH|MIXED|NEUTRAL|UNKNOWN)(.*)$/i);
+        if (!match) {
+            output[key] = raw;
+            continue;
+        }
+        let suffix = match[3] || '';
+        const selectedDirection = canonical.startsWith('BULLISH') ? 'BUY' : canonical.startsWith('BEARISH') ? 'SELL' : null;
+        suffix = suffix.replace(/supports\s+(BUY|SELL)/gi, (full, direction) => {
+            if (!selectedDirection || direction.toUpperCase() === selectedDirection) return full;
+            return `${direction.toUpperCase()} evidence`;
+        });
+        output[key] = `${match[1]}: ${canonical}${suffix}`;
+    }
+    return output;
+}
+
 function buildPublicTradeSignal(signal = {}) {
     const isWait = signal.decision === 'WAIT' || signal.trade_type === 'WAIT';
     const parseRR = value => {
@@ -11817,6 +11844,7 @@ function buildPublicTradeSignal(signal = {}) {
     };
     const structural = signal.structural_context || signal.top_down_context?.higher_timeframe || null;
     const publicTrendMap = normalizePublicTrendMap(signal.trend_detection || structural);
+    const publicHigherTimeframe = normalizePublicHigherTimeframe(signal.top_down_context?.higher_timeframe, publicTrendMap || {});
     const publicRiskGate = signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE);
     const structureSummary = signal.analysis?.structure || (publicTrendMap
         ? Object.entries(publicTrendMap).map(([tf, value]) => `${tf} ${value}`).join('; ')
@@ -11994,7 +12022,7 @@ function buildPublicTradeSignal(signal = {}) {
         analysis: {
             bias: signal.analysis?.bias || (signal.direction === 'BUY' ? 'BULLISH' : signal.direction === 'SELL' ? 'BEARISH' : 'NEUTRAL'),
             trade_context: signal.trade_context_classification || signal.adaptive_candidate?.trade_context_classification || null,
-            higher_timeframe: signal.top_down_context?.higher_timeframe || null,
+            higher_timeframe: publicHigherTimeframe,
             structural_context: publicTrendMap || signal.structural_context || null,
             daily_bias: signal.daily_bias ? {
                 direction: signal.daily_bias.direction,
