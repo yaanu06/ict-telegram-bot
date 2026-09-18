@@ -4594,6 +4594,12 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
             'maximum daily loss reached',
             'maximum consecutive losses reached'
         ]));
+        const paperSignal = refreshed.buildPublicTradeSignal({
+            pair: 'EUR/USD', execution_mode: 'PAPER', decision: 'WAIT', status: 'TODAY_OPPORTUNITY',
+            reason: { code: 'WAITING', message: 'paper watch' }
+        });
+        expect(paperSignal.risk_gate.status).toBe('RISK_BLOCKED');
+        expect(paperSignal.status_code).toBe('RISK_BLOCKED');
     });
 
     it.each([

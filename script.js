@@ -11200,11 +11200,12 @@ function buildSelectedCandidateEntryContext({ historyCache, sessionCheck, market
 
 function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = false) {
     const reasonCode = String(signal.reason?.code || '').toUpperCase();
+    const riskGate = signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE);
     // News risk is a hard execution lock. It must take precedence over a
     // paper-mode risk gate or any stale execution_allowed value.
     if (signal.news_risk?.status === 'HIGH_IMPACT') return 'NEWS_BLOCKED';
     if (signal.data_quality?.valid === false || reasonCode.includes('DATA') || reasonCode.includes('PRICE_UNAVAILABLE')) return 'DATA_BLOCKED';
-    if (signal.risk_gate?.status === 'RISK_BLOCKED' || reasonCode.includes('RISK_BLOCKED') || reasonCode.includes('SPREAD_TOO_WIDE')) return 'RISK_BLOCKED';
+    if (riskGate.status === 'RISK_BLOCKED' || reasonCode.includes('RISK_BLOCKED') || reasonCode.includes('SPREAD_TOO_WIDE')) return 'RISK_BLOCKED';
     if (signal.market_open === false) return 'MARKET_CLOSED';
     if ((signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') && signal.execution_allowed === false) return 'RISK_BLOCKED';
     if (signal.execution_allowed === false && signal.setup_state === 'SETUP_AVAILABLE') return 'SETUP_READY';
