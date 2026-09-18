@@ -4639,6 +4639,14 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(expired.execution_allowed).toBe(false);
     });
 
+    it('derives explicit analysis lifecycle statuses without changing compact status codes', () => {
+        const ctx = getContext();
+        expect(ctx.getAnalysisStatus({ status_code: 'NO_TRADE', current_price: null })).toBe('WAITING_FOR_DATA');
+        expect(ctx.getAnalysisStatus({ status_code: 'NO_TRADE', current_price: 1.1, data_quality: { valid: true }, market_open: true })).toBe('SAFE_TO_ANALYZE');
+        expect(ctx.getAnalysisStatus({ status_code: 'WATCH', current_price: 1.1 })).toBe('WATCH');
+        expect(ctx.getAnalysisStatus({ status_code: 'RISK_BLOCKED', current_price: 1.1 })).toBe('RISK_BLOCKED');
+    });
+
     it('exposes a hard news block even when the planner omitted execution_allowed', () => {
         const ctx = getContext();
         const blocked = ctx.buildPublicTradeSignal({

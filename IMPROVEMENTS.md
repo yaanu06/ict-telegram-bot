@@ -44,6 +44,10 @@
 - Local audit entries now retain symbol metadata, provider timestamp, data-quality verdict, and public status code alongside the decision and risk gate.
 - Stored records continue to exclude API keys, authorization headers, and other secrets.
 
+### 1g.1 **Explicit Analysis Lifecycle Status**
+- Public signals now also expose `analysis_status` for `WAITING_FOR_DATA`, `SAFE_TO_ANALYZE`, `WATCH`, `SETUP_READY`, and the existing blocker states.
+- The legacy `status` and compact `status_code` fields remain unchanged for existing consumers.
+
 ### 1h. **Paper-Order Lifecycle Audit**
 - Pending paper orders now have deterministic touch, expiry, invalidation, and fill evaluation.
 - Order lifecycle events are retained in a bounded local audit queue, including user cancellation and the original candidate ID.

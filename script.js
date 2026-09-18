@@ -11374,6 +11374,16 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
     return 'NO_TRADE';
 }
 
+function getAnalysisStatus(signal = {}) {
+    const statusCode = String(signal.status_code || getPublicStatusCode(signal,
+        !!signal.primary_opportunity || !!signal.opportunity,
+        Number.isFinite(Number(signal.entry ?? signal.entry_price))));
+    if (['DATA_BLOCKED', 'NEWS_BLOCKED', 'RISK_BLOCKED', 'MARKET_CLOSED', 'INVALIDATED', 'EXPIRED', 'SETUP_READY', 'WATCH', 'ORDER_PENDING'].includes(statusCode)) return statusCode;
+    if (signal.current_price == null || !Number.isFinite(Number(signal.current_price))) return 'WAITING_FOR_DATA';
+    if (signal.data_quality?.valid === true && signal.market_open !== false) return 'SAFE_TO_ANALYZE';
+    return 'NO_TRADE';
+}
+
 function getPublicExecutionAllowed(signal = {}, riskGate = null) {
     const gate = riskGate || signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE);
     const reasonCode = String(signal.reason?.code || '').toUpperCase();
@@ -11871,6 +11881,7 @@ function recordAnalysisAudit(signal = {}) {
         decision: signal.decision || signal.trade_type || 'WAIT',
         status: signal.status || signal.opportunity_status || null,
         status_code: signal.status_code || getPublicStatusCode(signal),
+        analysis_status: signal.analysis_status || getAnalysisStatus(signal),
         setup_state: signal.setup_state || null,
         execution_allowed: signal.execution_allowed ?? false,
         confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
@@ -11940,6 +11951,7 @@ function validatePublicTradeSignal(signal = {}) {
 function setJsonOutput(obj) {
     const el = document.getElementById('jsonOutput');
     let publicSignal = buildPublicTradeSignal(obj?.trade_signal || obj);
+    publicSignal.analysis_status = getAnalysisStatus(publicSignal);
     const publicValidation = validatePublicTradeSignal(publicSignal);
     if (!publicValidation.valid) {
         console.error('[PUBLIC SIGNAL] schema rejected', publicValidation.issues);
@@ -12001,7 +12013,7 @@ function renderOpportunityCard(setup, heading) {
 function renderSignalStatus(signal = {}) {
     const el = document.getElementById('signalStatus');
     if (!el) return;
-    const code = String(signal.status_code || signal.status || 'NO_TRADE');
+    const code = String(signal.analysis_status || signal.status_code || signal.status || 'NO_TRADE');
     const permission = signal.execution_allowed === true
         ? 'EXECUTION ALLOWED'
         : signal.manual_tracking_allowed === true
