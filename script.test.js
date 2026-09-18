@@ -5212,6 +5212,16 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.fetch).not.toHaveBeenCalled();
     });
 
+    it('derives local indicators from supplied candles without market-data credentials', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        const data = candles(80, 100, 0.5, 'up').map((bar, index) => ({ ...bar, is_closed: true, timeframe: '1H', t: index }));
+        const indicators = await ctx.getTechnicalIndicators('1H', data);
+        expect(indicators.indicator_source).toBe('LOCAL_OHLCV');
+        expect(Number.isFinite(indicators.atr_api)).toBe(true);
+        expect(Number.isFinite(indicators.ema21)).toBe(true);
+    });
+
     it('does not let device timezone affect canonical timestamps', () => {
         const ctx = getContext();
         const value = '2026-09-11T10:00:00Z';

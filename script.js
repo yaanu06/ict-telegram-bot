@@ -926,7 +926,6 @@ function localIndicatorSnapshot(candleData = []) {
 }
 
 async function getTechnicalIndicators(tfUsed, candleData = null) {
-    if(!hasMarketDataAccess()) return {};
     const cacheKey = `${pair}|${tfUsed}`;
     const cachedHit = indicatorCache[cacheKey];
     if(cachedHit && Date.now() - cachedHit.ts < INDICATOR_CACHE_TTL) return cachedHit.data;
@@ -4021,9 +4020,8 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
 }
 
 async function analyzeTimeframe(tfToAnalyze, price, htfData, pairLocal = pair, symbolMetadata = {}) {
-    // Grow 55 = 55 credits/min. Only 4H/1H are tradeable, so indicator API calls
-    // happen ONLY for those (7 each, cached 4 min). 5M/15M/1D scan indicator-free —
-    // every indicator check in evaluateSetup is defensive (skips when missing).
+    // Indicators are derived locally from the already-fetched candles, so
+    // analysis remains reproducible when provider credentials are unavailable.
     const tradeable = ['4H', '1H'].includes(tfToAnalyze);
     const twelveIndicators = tradeable ? await getTechnicalIndicators(tfToAnalyze, htfData[tfToAnalyze] || null) : {};
     return evaluateSetup(tfToAnalyze, price, htfData, twelveIndicators, new Date(), pairLocal, symbolMetadata);
