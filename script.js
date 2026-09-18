@@ -11545,6 +11545,12 @@ function validateLocalLimitOrderInput(signal = {}, pairLocal = pair) {
     return { valid: issues.length === 0, issues, direction, minimum_rr: minimumRR };
 }
 
+function validateExecutionMode(mode = 'PAPER') {
+    const normalized = String(mode || 'PAPER').toUpperCase();
+    if (normalized === 'PAPER') return { valid: true, mode: normalized, reason: 'Local paper pending-order simulation is enabled.' };
+    return { valid: false, mode: normalized, reason: `${normalized} execution is unavailable in this client; broker submission is disabled.` };
+}
+
 function startMonitor() {
     if(priceTimer) clearInterval(priceTimer);
     priceTimer = setInterval(async () => {
@@ -11597,6 +11603,12 @@ function handleLimit() {
     }
     if(limitOrder) {
         cancelLimit();
+        return;
+    }
+    const executionMode = validateExecutionMode(analysis.execution_mode || 'PAPER');
+    if (!executionMode.valid) {
+        showNotif(`⛔ Order rejected: ${executionMode.reason}`, 'error');
+        console.error('[ORDER] execution mode rejected', executionMode);
         return;
     }
     const safety = validateLocalLimitOrderInput(analysis, pair);

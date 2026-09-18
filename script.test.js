@@ -4403,6 +4403,8 @@ describe('engine contract completion', () => {
 describe('provider, calendar, lifecycle, and public output contracts', () => {
     it('rechecks local pending-limit safety at user approval time', () => {
         const ctx = getContext();
+        expect(ctx.validateExecutionMode('PAPER')).toMatchObject({ valid: true, mode: 'PAPER' });
+        expect(ctx.validateExecutionMode('LIVE')).toMatchObject({ valid: false, mode: 'LIVE' });
         const valid = ctx.validateLocalLimitOrderInput({ signalType: 'SHORT', currentPrice: 100, idealEntry: 101, stopLoss: 103, takeProfit1: 95 }, 'EUR/USD');
         expect(valid.valid).toBe(true);
         const badSide = ctx.validateLocalLimitOrderInput({ signalType: 'SHORT', currentPrice: 100, idealEntry: 99, stopLoss: 103, takeProfit1: 95 }, 'EUR/USD');
