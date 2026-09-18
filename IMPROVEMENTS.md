@@ -65,6 +65,9 @@
 - A live quote with a numeric price but no provider timestamp is now data-blocked.
 - This prevents an undated provider response from being treated as current market state.
 
+### 1n. **Provider HTTP Failure Handling**
+- Non-success Twelve Data HTTP responses now enter the normal fallback/error path instead of being parsed as valid market data.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

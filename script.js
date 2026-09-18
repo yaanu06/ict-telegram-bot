@@ -488,6 +488,7 @@ async function fetchTD(pathAndQuery, timeoutMs = 10000, retries = 2) {
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
         const r = await fetch(`${TWELVE_DATA_BASE}${pathAndQuery}&apikey=${TWELVE_DATA_KEY}`, { signal: ctrl.signal });
+        if (r.ok === false) throw new Error(`Twelve Data HTTP ${r.status || 'error'}`);
         const d = await r.json();
         if(d.code === 429) {
             const src = document.getElementById('apiSource');
