@@ -10794,6 +10794,18 @@ function buildSelectedCandidateEntryContext({ historyCache, sessionCheck, market
 // JSON OUTPUT
 // ============================================
 
+function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = false) {
+    const reasonCode = String(signal.reason?.code || '').toUpperCase();
+    if (signal.news_risk?.status === 'HIGH_IMPACT' && signal.execution_allowed === false) return 'NEWS_BLOCKED';
+    if (reasonCode.includes('DATA') || reasonCode.includes('PRICE_UNAVAILABLE')) return 'DATA_BLOCKED';
+    if (signal.execution_allowed === false && signal.setup_state === 'SETUP_AVAILABLE') return 'SETUP_READY';
+    if (signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') return 'SETUP_READY';
+    if (hasOpportunity && hasEntry) return 'SETUP_READY';
+    if (hasOpportunity) return 'WATCH';
+    if (signal.status === 'ORDER_PENDING') return 'ORDER_PENDING';
+    return 'NO_TRADE';
+}
+
 function buildPublicTradeSignal(signal = {}) {
     const isWait = signal.decision === 'WAIT' || signal.trade_type === 'WAIT';
     const parseRR = value => {
@@ -10889,6 +10901,8 @@ function buildPublicTradeSignal(signal = {}) {
                     type: signal.strategy || signal.trade_context_classification || null
                 },
                 news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
+                status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity, !!compactPrimary?.entry_price),
+                execution_mode: signal.execution_mode || 'PAPER',
                 market_open: signal.market_open ?? null
             };
         }
@@ -10911,6 +10925,8 @@ function buildPublicTradeSignal(signal = {}) {
             confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
             reason: { code: reason.code, message: reason.message },
             news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
+            status_code: getPublicStatusCode(signal, false, false),
+            execution_mode: signal.execution_mode || 'PAPER',
             market_open: signal.market_open ?? null
         };
     }
@@ -10960,6 +10976,8 @@ function buildPublicTradeSignal(signal = {}) {
             notes: signal.analysis?.notes || (Array.isArray(reasoning.secondary) ? reasoning.secondary.slice(0, 3) : [])
         },
         news_risk: signal.news_risk || { status: 'UNKNOWN', available: false }
+        ,status_code: getPublicStatusCode(signal, !!signal.primary_opportunity, Number.isFinite(Number(signal.entry ?? signal.entry_price)))
+        ,execution_mode: signal.execution_mode || 'PAPER'
     };
 }
 
@@ -11411,6 +11429,7 @@ function handleLimit() {
     const o = {
         id: Date.now(),
         pair: pair,
+        execution_mode: 'PAPER',
         signalType: analysis.signalType,
         idealEntry: analysis.idealEntry,
         stopLoss: analysis.stopLoss,

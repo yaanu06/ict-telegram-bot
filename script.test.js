@@ -4408,6 +4408,16 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(JSON.stringify(stored)).not.toMatch(/apikey|authorization|secret|token/i);
     });
 
+    it('exposes explicit public status codes without removing legacy status fields', () => {
+        const ctx = getContext();
+        const watch = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY', opportunity: { area_of_interest: { low: 1, high: 1.1 } }, reason: { code: 'WAITING', message: 'watch' } });
+        expect(watch.status).toBe('TODAY_OPPORTUNITY');
+        expect(watch.status_code).toBe('WATCH');
+        expect(watch.execution_mode).toBe('PAPER');
+        const ready = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: true, entry: 1, stop_loss: 0.99, take_profit_1: 1.03 });
+        expect(ready.status_code).toBe('SETUP_READY');
+    });
+
     it('rejects duplicate timestamps and explicitly open candles in required histories', () => {
         const ctx = getContext();
         const baseStart = Date.parse('2026-09-01T00:00:00Z');
