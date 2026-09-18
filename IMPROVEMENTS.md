@@ -131,6 +131,7 @@ Added actual detection algorithms for:
   - Reduces premature stop-outs from market noise
 - **Better take profit targets**: Based on liquidity pools
 - **Conservative confidence cap**: 95% max (was 98%)
+- **Deterministic account-limit gate**: weekly loss, consecutive losses, active-order count, and per-symbol exposure are checked alongside open risk and daily loss. An explicitly breached limit blocks both paper and live order creation.
 
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:

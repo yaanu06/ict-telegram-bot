@@ -11098,12 +11098,42 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
     return 'NO_TRADE';
 }
 
-function buildAccountRiskGate({ mode = 'PAPER', account = null, risk_percent = null, symbol_metadata = null, open_risk = 0, daily_loss = 0 } = {}) {
+function evaluateRiskLimits({ open_risk = 0, daily_loss = 0, weekly_loss = 0, consecutive_losses = 0, active_orders = 0, symbol_exposure = 0, limits = {} } = {}) {
+    const checks = [
+        ['max_open_risk', open_risk, 'maximum open risk reached'],
+        ['max_daily_loss', daily_loss, 'maximum daily loss reached'],
+        ['max_weekly_loss', weekly_loss, 'maximum weekly loss reached'],
+        ['max_consecutive_losses', consecutive_losses, 'maximum consecutive losses reached'],
+        ['max_active_orders', active_orders, 'maximum active orders reached'],
+        ['max_symbol_exposure', symbol_exposure, 'maximum symbol exposure reached']
+    ];
+    const issues = [];
+    for (const [limitName, currentValue, message] of checks) {
+        const limit = Number(limits?.[limitName]);
+        const current = Number(currentValue);
+        if (Number.isFinite(limit) && Number.isFinite(current) && current >= limit) issues.push(message);
+    }
+    return { valid: issues.length === 0, issues };
+}
+
+function buildAccountRiskGate({ mode = 'PAPER', account = null, risk_percent = null, symbol_metadata = null, open_risk = 0, daily_loss = 0, weekly_loss = 0, consecutive_losses = 0, active_orders = 0, symbol_exposure = 0 } = {}) {
     const normalizedMode = String(mode || 'PAPER').toUpperCase();
+    const riskLimits = evaluateRiskLimits({
+        open_risk, daily_loss, weekly_loss, consecutive_losses, active_orders, symbol_exposure,
+        limits: account || {}
+    });
+    if (!riskLimits.valid) {
+        return {
+            mode: normalizedMode, status: 'RISK_BLOCKED', execution_allowed: false,
+            position_size: null, risk_amount: null, issues: riskLimits.issues,
+            reason: riskLimits.issues.join('; ')
+        };
+    }
     if (normalizedMode === 'PAPER') {
         return {
             mode: 'PAPER', status: 'PAPER', execution_allowed: true,
             position_size: null, risk_amount: null,
+            issues: [],
             reason: 'Paper execution does not submit broker orders or calculate live position size.'
         };
     }
@@ -11112,15 +11142,11 @@ function buildAccountRiskGate({ mode = 'PAPER', account = null, risk_percent = n
     const tickValue = Number(symbol_metadata?.tick_value);
     const tickSize = Number(symbol_metadata?.tick_size);
     const riskDistance = Number(account?.risk_distance);
-    const maxOpenRisk = Number(account?.max_open_risk);
-    const maxDailyLoss = Number(account?.max_daily_loss);
     const issues = [];
     if (!Number.isFinite(equity) || equity <= 0) issues.push('account equity is unavailable');
     if (!Number.isFinite(riskPct) || riskPct <= 0) issues.push('risk percentage is unavailable');
     if (!Number.isFinite(tickValue) || tickValue <= 0 || !Number.isFinite(tickSize) || tickSize <= 0) issues.push('symbol tick metadata is unavailable');
     if (!Number.isFinite(riskDistance) || riskDistance <= 0) issues.push('risk distance is unavailable');
-    if (Number.isFinite(maxOpenRisk) && Number(open_risk) >= maxOpenRisk) issues.push('maximum open risk reached');
-    if (Number.isFinite(maxDailyLoss) && Number(daily_loss) >= maxDailyLoss) issues.push('maximum daily loss reached');
     if (issues.length) return { mode: normalizedMode, status: 'RISK_BLOCKED', execution_allowed: false, position_size: null, risk_amount: null, issues, reason: issues.join('; ') };
     const riskAmount = equity * riskPct / 100;
     const positionSize = riskAmount / ((riskDistance / tickSize) * tickValue);

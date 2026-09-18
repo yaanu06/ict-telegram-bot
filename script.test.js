@@ -4505,6 +4505,40 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ready.position_size).toBeGreaterThan(0);
     });
 
+    it('enforces configured loss, order-count, and symbol-exposure limits in every mode', () => {
+        const ctx = getContext();
+        const blocked = ctx.buildAccountRiskGate({
+            mode: 'PAPER',
+            account: {
+                max_weekly_loss: 500,
+                max_consecutive_losses: 3,
+                max_active_orders: 2,
+                max_symbol_exposure: 1000
+            },
+            weekly_loss: 500,
+            consecutive_losses: 3,
+            active_orders: 2,
+            symbol_exposure: 1000
+        });
+        expect(blocked).toMatchObject({ status: 'RISK_BLOCKED', execution_allowed: false });
+        expect(blocked.issues).toEqual(expect.arrayContaining([
+            'maximum weekly loss reached',
+            'maximum consecutive losses reached',
+            'maximum active orders reached',
+            'maximum symbol exposure reached'
+        ]));
+
+        const live = ctx.buildAccountRiskGate({
+            mode: 'LIVE',
+            account: { max_weekly_loss: 10, equity: 10000, risk_distance: 1 },
+            weekly_loss: 10,
+            risk_percent: 1,
+            symbol_metadata: { tick_size: 1, tick_value: 1 }
+        });
+        expect(live).toMatchObject({ status: 'RISK_BLOCKED', execution_allowed: false });
+        expect(live.issues).toContain('maximum weekly loss reached');
+    });
+
     it.each([
         ['EUR/USD', 'FOREX'], ['USD/JPY', 'FOREX'], ['XAU/USD', 'METAL'],
         ['ETH/USD', 'CRYPTO'], ['AAPL', 'EQUITY'], ['US30', 'INDEX'], ['ABC/XYZ', 'UNKNOWN']
