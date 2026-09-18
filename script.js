@@ -10678,6 +10678,7 @@ async function runAutoScan() {
         analysis = {
             signalType: st,
             symbol_metadata: liveMarketContext.symbol_metadata,
+            market_conditions: liveMarketContext.market_conditions,
             idealEntry: aiResult.entry,
             currentPrice: price,
             stopLoss: aiResult.stop_loss,
@@ -12296,6 +12297,8 @@ function validateLocalLimitOrderInput(signal = {}, pairLocal = pair, symbolMetad
     const issues = [];
     const direction = signal.signalType === 'LONG' ? 'BUY' : signal.signalType === 'SHORT' ? 'SELL' : null;
     const current = Number(signal.currentPrice);
+    const bid = Number(signal.market_conditions?.bid);
+    const ask = Number(signal.market_conditions?.ask);
     const entry = Number(signal.idealEntry);
     const stop = Number(signal.stopLoss);
     const tp1 = Number(signal.takeProfit1);
@@ -12304,8 +12307,10 @@ function validateLocalLimitOrderInput(signal = {}, pairLocal = pair, symbolMetad
     if (![current, entry, stop, tp1].every(Number.isFinite)) issues.push('order geometry is not finite');
     if (direction === 'BUY' && !(stop < entry && entry < tp1)) issues.push('BUY geometry is invalid');
     if (direction === 'SELL' && !(stop > entry && entry > tp1)) issues.push('SELL geometry is invalid');
-    if (direction === 'BUY' && Number.isFinite(current) && !(entry <= current)) issues.push('BUY limit must be at or below current price');
-    if (direction === 'SELL' && Number.isFinite(current) && !(entry >= current)) issues.push('SELL limit must be at or above current price');
+    const referencePrice = direction === 'BUY' && Number.isFinite(ask) ? ask
+        : direction === 'SELL' && Number.isFinite(bid) ? bid : current;
+    if (direction === 'BUY' && Number.isFinite(referencePrice) && !(entry < referencePrice)) issues.push(Number.isFinite(ask) ? 'BUY limit must be below the current ask' : 'BUY limit must be at or below current price');
+    if (direction === 'SELL' && Number.isFinite(referencePrice) && !(entry > referencePrice)) issues.push(Number.isFinite(bid) ? 'SELL limit must be above the current bid' : 'SELL limit must be at or above current price');
     const risk = Math.abs(entry - stop);
     const reward = Math.abs(tp1 - entry);
     if (!(risk > 0) || reward / risk < minimumRR) issues.push(`RR is below minimum ${minimumRR}`);

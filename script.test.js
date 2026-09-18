@@ -4524,6 +4524,8 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(badSide.valid).toBe(false);
         expect(badSide.issues.join(' ')).toMatch(/above current price/);
         expect(ctx.validateLocalLimitOrderInput({ signalType: 'SHORT', currentPrice: 100, idealEntry: 101, stopLoss: 103, takeProfit1: 95 }, 'EUR/USD', { minimum_rr: 3.1 }).valid).toBe(false);
+        expect(ctx.validateLocalLimitOrderInput({ signalType: 'LONG', currentPrice: 100, market_conditions: { ask: 100.2 }, idealEntry: 100.1, stopLoss: 99, takeProfit1: 103 }, 'EUR/USD').valid).toBe(true);
+        expect(ctx.validateLocalLimitOrderInput({ signalType: 'SHORT', currentPrice: 100, market_conditions: { bid: 99.8 }, idealEntry: 99.9, stopLoss: 101, takeProfit1: 95 }, 'EUR/USD').valid).toBe(true);
     });
 
     it('requires explicit cancellation before replacing a pending paper order', () => {
