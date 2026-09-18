@@ -48,6 +48,10 @@
 - Reloaded local orders are validated for paper-only mode, finite geometry, direction, ordering, and creation time before monitoring.
 - Direct calls to the order handler now respect the final scan execution permission even if the UI button state is bypassed.
 
+### 1j. **Public Signal Schema Guard**
+- The final compact signal is schema-checked before it reaches the UI, audit, replay, or opportunity renderer.
+- Malformed public geometry or status is converted to a safe `WAIT` / `DATA_BLOCKED` signal.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

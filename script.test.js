@@ -4567,6 +4567,15 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.validatePersistedPaperOrder({ ...valid, createdAt: 'bad' }).valid).toBe(false);
     });
 
+    it('validates the final public signal contract and rejects malformed ready geometry', () => {
+        const ctx = getContext();
+        expect(ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status_code: 'WATCH', current_price: 1.1 }).valid).toBe(true);
+        const invalid = ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status_code: 'SETUP_READY', entry: 100, stop_loss: 101, tp1: 99 });
+        expect(invalid.valid).toBe(false);
+        expect(invalid.issues.join(' ')).toMatch(/BUY_LIMIT geometry/);
+        expect(ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status_code: 'DATA_BLOCKED', execution_allowed: 'yes' }).valid).toBe(false);
+    });
+
     it('rejects duplicate timestamps and explicitly open candles in required histories', () => {
         const ctx = getContext();
         const baseStart = Date.parse('2026-09-01T00:00:00Z');

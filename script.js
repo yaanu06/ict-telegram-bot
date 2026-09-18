@@ -11424,9 +11424,48 @@ function recordAnalysisAudit(signal = {}) {
     return record;
 }
 
+function validatePublicTradeSignal(signal = {}) {
+    const issues = [];
+    const decisions = new Set(['WAIT', 'BUY_LIMIT', 'SELL_LIMIT', 'BUY', 'SELL']);
+    const statuses = new Set(['SETUP_READY', 'WATCH', 'ORDER_PENDING', 'NO_TRADE', 'DATA_BLOCKED', 'NEWS_BLOCKED', 'RISK_BLOCKED', 'MARKET_CLOSED']);
+    if (!signal || typeof signal !== 'object' || Array.isArray(signal)) issues.push('signal must be an object');
+    if (!String(signal?.pair || '').trim()) issues.push('pair is required');
+    if (!decisions.has(String(signal?.decision || ''))) issues.push('decision is invalid');
+    if (signal?.current_price != null && !Number.isFinite(Number(signal.current_price))) issues.push('current_price is invalid');
+    if (signal?.status_code != null && !statuses.has(String(signal.status_code))) issues.push('status_code is invalid');
+    if (signal?.execution_allowed != null && typeof signal.execution_allowed !== 'boolean') issues.push('execution_allowed must be boolean');
+    const entry = Number(signal?.entry ?? signal?.entry_price);
+    const stop = Number(signal?.stop_loss);
+    const target = Number(signal?.tp1 ?? signal?.take_profit_1);
+    if (signal?.status_code === 'SETUP_READY' && [entry, stop, target].some(value => !Number.isFinite(value))) issues.push('ready setup geometry is incomplete');
+    if (signal?.decision === 'BUY_LIMIT' && !(stop < entry && entry < target)) issues.push('BUY_LIMIT geometry is invalid');
+    if (signal?.decision === 'SELL_LIMIT' && !(stop > entry && entry > target)) issues.push('SELL_LIMIT geometry is invalid');
+    return { valid: issues.length === 0, issues };
+}
+
 function setJsonOutput(obj) {
     const el = document.getElementById('jsonOutput');
-    const publicSignal = buildPublicTradeSignal(obj?.trade_signal || obj);
+    let publicSignal = buildPublicTradeSignal(obj?.trade_signal || obj);
+    const publicValidation = validatePublicTradeSignal(publicSignal);
+    if (!publicValidation.valid) {
+        console.error('[PUBLIC SIGNAL] schema rejected', publicValidation.issues);
+        publicSignal = {
+            date: publicSignal?.date || new Date().toISOString().slice(0, 10),
+            time: publicSignal?.time || new Date().toISOString().slice(11, 19),
+            pair: publicSignal?.pair || null,
+            current_price: Number.isFinite(Number(publicSignal?.current_price)) ? Number(publicSignal.current_price) : null,
+            decision: 'WAIT',
+            trade_type: 'WAIT',
+            confidence: 0,
+            status: 'DATA_BLOCKED',
+            status_code: 'DATA_BLOCKED',
+            execution_allowed: false,
+            reason: { code: 'PUBLIC_SIGNAL_SCHEMA_INVALID', message: publicValidation.issues.join('; ') },
+            data_quality: { valid: false, reasons: publicValidation.issues },
+            news_risk: publicSignal?.news_risk || { status: 'UNKNOWN', available: false },
+            risk_gate: publicSignal?.risk_gate || buildAccountRiskGate({ mode: 'PAPER' })
+        };
+    }
     recordAnalysisAudit(publicSignal);
     if(el) el.textContent = JSON.stringify({ trade_signal: publicSignal }, null, 2);
     renderOpportunityStack(publicSignal);
