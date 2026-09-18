@@ -663,16 +663,46 @@ function parseProviderMarketOpen(value) {
     return null;
 }
 
+function parseUtcClock(value) {
+    if (typeof value !== 'string') return null;
+    const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    return hour <= 23 && minute <= 59 ? hour * 60 + minute : null;
+}
+
+function configuredSessionState(session, asOfMs) {
+    if (!session || typeof session !== 'object' || Array.isArray(session)) return null;
+    const explicit = parseProviderMarketOpen(session.is_open ?? session.market_open);
+    if (explicit !== null) return explicit;
+    const open = parseUtcClock(session.open_utc ?? session.open);
+    const close = parseUtcClock(session.close_utc ?? session.close);
+    if (open === null || close === null) return null;
+    const day = new Date(asOfMs).getUTCDay();
+    const configuredDays = Array.isArray(session.open_days)
+        ? session.open_days.map(Number).filter(value => Number.isInteger(value) && value >= 0 && value <= 6)
+        : [1, 2, 3, 4, 5];
+    if (!configuredDays.includes(day)) return false;
+    const minute = new Date(asOfMs).getUTCHours() * 60 + new Date(asOfMs).getUTCMinutes();
+    if (open === close) return true;
+    return open < close ? minute >= open && minute < close : minute >= open || minute < close;
+}
+
 function getMarketOpenState(forPair = pair, scanSnapshot = {}) {
     const providerState = parseProviderMarketOpen(scanSnapshot.is_market_open ?? scanSnapshot.market_open);
     if (providerState !== null) {
         return { is_market_open: providerState, market_open: providerState, source: 'PROVIDER', asset_class: getAssetClass(forPair) };
     }
     const assetClass = scanSnapshot.asset_class || getAssetClass(forPair);
+    const asOf = normalizeTimestampUTC(scanSnapshot.as_of_ms ?? scanSnapshot.as_of_time ?? scanSnapshot.provider_timestamp) || Date.now();
+    const configured = configuredSessionState(scanSnapshot.session || scanSnapshot.symbol_metadata?.session, asOf);
+    if (configured !== null) {
+        return { is_market_open: configured, market_open: configured, source: 'SYMBOL_SESSION', asset_class: assetClass };
+    }
     if (assetClass === 'CRYPTO') {
         return { is_market_open: true, market_open: true, source: 'ASSET_CALENDAR', asset_class: assetClass };
     }
-    const asOf = normalizeTimestampUTC(scanSnapshot.as_of_ms ?? scanSnapshot.as_of_time ?? scanSnapshot.provider_timestamp) || Date.now();
     const day = new Date(asOf).getUTCDay();
     const open = ![0, 6].includes(day);
     return { is_market_open: open, market_open: open, source: 'ASSET_CALENDAR', asset_class: assetClass };

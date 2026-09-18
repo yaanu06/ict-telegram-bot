@@ -5293,6 +5293,15 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.getMarketOpenState('BTC/USD', { as_of_ms: saturday, is_market_open: false }).is_market_open).toBe(false);
     });
 
+    it('uses supplied UTC symbol-session metadata before generic asset calendar fallback', () => {
+        const ctx = getContext();
+        const open = Date.parse('2026-09-14T10:00:00Z');
+        const closed = Date.parse('2026-09-14T18:00:00Z');
+        const session = { open_days: [1, 2, 3, 4, 5], open_utc: '09:00', close_utc: '17:00' };
+        expect(ctx.getMarketOpenState('NASDAQ:AAPL', { as_of_ms: open, symbol_metadata: { session } })).toMatchObject({ is_market_open: true, source: 'SYMBOL_SESSION' });
+        expect(ctx.getMarketOpenState('NASDAQ:AAPL', { as_of_ms: closed, symbol_metadata: { session } })).toMatchObject({ is_market_open: false, source: 'SYMBOL_SESSION' });
+    });
+
     it('keeps MARKET_CLOSED separate from entry reachability and chooses dominant lifecycle wait', () => {
         const ctx = getContext();
         expect(ctx.evaluateSetupLifecycle({ direction: 'BUY', entry: 100, zone_low: 99, zone_high: 101, tp1: 110,
