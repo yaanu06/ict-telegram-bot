@@ -4587,7 +4587,7 @@ function buildTimeframeContext({ historyCache = {}, structure = {}, price, strat
 function classifyTopDownTrade(candidate, timeframeContext = {}) {
     const direction = candidate.direction;
     const wanted = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
-    const supports = tf => [timeframeContext[tf]?.effective_trend, timeframeContext[tf]?.structural_trend, timeframeContext[tf]?.bias]
+    const supports = tf => [timeframeContext[tf]?.displayed_trend, timeframeContext[tf]?.effective_trend, timeframeContext[tf]?.structural_trend, timeframeContext[tf]?.bias]
         .some(value => value === wanted || value === `${wanted}_TRANSITION`);
     // 4H leads. Daily/1H agreement strengthens the thesis, but a validated
     // 4H/1H location and real objective are enough to describe a developing
@@ -4610,7 +4610,8 @@ function classifyTopDownTrade(candidate, timeframeContext = {}) {
         higher_timeframe: Object.fromEntries([['daily', '1D'], ['four_hour', '4H'], ['one_hour', '1H']].map(([key, tf]) => {
             const context = timeframeContext[tf];
             const signals = (context?.evidence || []).filter(e => e.kind !== 'TREND' && e.direction === direction).map(e => e.kind);
-            return [key, tf + ': ' + (context?.effective_trend || context?.bias || 'UNAVAILABLE') + (signals.length ? '; ' + [...new Set(signals)].join(', ') + ' supports ' + direction : '')];
+            const trend = context?.displayed_trend || getCanonicalDisplayedTrend(context || {}) || context?.bias || 'UNAVAILABLE';
+            return [key, tf + ': ' + trend + (signals.length ? '; ' + [...new Set(signals)].join(', ') + ' supports ' + direction : '')];
         })),
         reason: aligned ? '4H direction is supported by daily or 1H structure.' : verifiedReversal
             ? 'Higher-timeframe liquidity reversal evidence is confirmed by a 4H or 1H structure shift.'
@@ -5424,7 +5425,7 @@ function getStrategyExecutionZones(strategySetups) {
 function hasDeterministicMarketMechanicsProof(zone, direction, timeframeContext = {}, targetCandidates = {}, price) {
     if (!zone || !['BUY', 'SELL'].includes(direction) || zone.primary_eligible === false || zone.invalidated) return false;
     const wanted = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
-    const supports = ['1D', '4H', '1H'].some(tf => [timeframeContext[tf]?.effective_trend, timeframeContext[tf]?.structural_trend, timeframeContext[tf]?.bias]
+    const supports = ['1D', '4H', '1H'].some(tf => [timeframeContext[tf]?.displayed_trend, timeframeContext[tf]?.effective_trend, timeframeContext[tf]?.structural_trend, timeframeContext[tf]?.bias]
         .some(value => value === wanted || value === `${wanted}_TRANSITION`));
     const htfEvents = ['4H', '1H'].flatMap(tf => timeframeContext[tf]?.evidence || []);
     const localEvents = (timeframeContext['15M']?.evidence || []).concat(timeframeContext['5M']?.evidence || []);
@@ -7626,7 +7627,9 @@ function buildCanonicalMarketTheses(strategySetups, marketContext, targetCandida
             structural_context: ['1D', '4H', '1H'].map(tf => ({
                 timeframe: tf,
                 structural_trend: marketContext?.timeframe_context?.[tf]?.structural_trend || 'NEUTRAL',
-                effective_trend: marketContext?.timeframe_context?.[tf]?.effective_trend || 'NEUTRAL'
+                effective_trend: marketContext?.timeframe_context?.[tf]?.effective_trend || 'NEUTRAL',
+                displayed_trend: marketContext?.timeframe_context?.[tf]?.displayed_trend
+                    || getCanonicalDisplayedTrend(marketContext?.timeframe_context?.[tf] || {})
             })),
             daily_bias_relationship: thesis?.daily_bias?.direction === 'NEUTRAL' ? 'NEUTRAL_CONTEXT' :
                 thesis?.daily_bias?.direction === direction ? 'ALIGNED' : thesis ? 'CONFLICTING_UNVERIFIED' : 'UNKNOWN',
@@ -7659,6 +7662,7 @@ function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure
             structural_trend: snapshot.structural_trend || 'NEUTRAL',
             momentum_trend: snapshot.momentum_trend || snapshot.trend || 'NEUTRAL',
             effective_trend: snapshot.effective_trend || snapshot.trend || 'NEUTRAL',
+            displayed_trend: context.displayed_trend || getCanonicalDisplayedTrend(snapshot),
             bos: { buy: !!snapshot.bos_buy, sell: !!snapshot.bos_sell },
             choch: { buy: !!snapshot.choch_buy, sell: !!snapshot.choch_sell },
             mss: snapshot.mss || null,
