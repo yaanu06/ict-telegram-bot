@@ -656,6 +656,19 @@ describe('top-down trade context', () => {
         expect(ctx.classifyTopDownTrade({ direction: 'BUY' }, context(ctx, daily, fourH, oneH)).classification).toBe(expected);
     });
 
+    it('does not treat contradictory raw timeframe fields as alignment', () => {
+        const ctx = getContext();
+        const tf = context(ctx, 'BEARISH', 'BEARISH', 'BULLISH');
+        // This models the inconsistent payload that previously let a matching
+        // raw field override the canonical displayed trend. The canonical read
+        // remains bearish on 1H, so a SELL continuation is allowed only when
+        // the actual displayed direction supports it; a BUY must stay local.
+        tf['1H'].displayed_trend = 'BEARISH';
+        tf['1H'].effective_trend = 'BULLISH';
+        tf['1H'].structural_trend = 'BULLISH';
+        expect(ctx.classifyTopDownTrade({ direction: 'BUY' }, tf).classification).toBe('LTF_ISOLATED');
+    });
+
     it('verifies a reversal with HTF sweep and 1H shift despite bearish HTF trends', () => {
         const ctx = getContext();
         const tf = context(ctx, 'BEARISH', 'BEARISH', 'BEARISH', true);

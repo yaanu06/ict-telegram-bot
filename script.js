@@ -4745,8 +4745,20 @@ function buildTimeframeContext({ historyCache = {}, structure = {}, price, strat
 function classifyTopDownTrade(candidate, timeframeContext = {}) {
     const direction = candidate.direction;
     const wanted = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
-    const supports = tf => [timeframeContext[tf]?.displayed_trend, timeframeContext[tf]?.effective_trend, timeframeContext[tf]?.structural_trend, timeframeContext[tf]?.bias]
-        .some(value => value === wanted || value === `${wanted}_TRANSITION`);
+    // Use one canonical read per timeframe. Checking every raw field with
+    // `some()` lets a contradictory snapshot pass when, for example,
+    // displayed_trend says BULLISH while effective_trend says BEARISH.
+    // The displayed trend is produced by getCanonicalDisplayedTrend and is
+    // therefore the only directional value allowed to drive alignment.
+    const canonicalTrend = tf => {
+        const context = timeframeContext[tf] || {};
+        const value = context.displayed_trend || getCanonicalDisplayedTrend(context);
+        return value;
+    };
+    const supports = tf => {
+        const value = canonicalTrend(tf);
+        return value === wanted || value === `${wanted}_TRANSITION`;
+    };
     // Continuation requires the primary 4H narrative and intraday 1H
     // structure to agree. Daily conflict lowers conviction, but cannot be
     // used to bypass a conflicting 1H direction.
@@ -4765,7 +4777,7 @@ function classifyTopDownTrade(candidate, timeframeContext = {}) {
         higher_timeframe: Object.fromEntries([['daily', '1D'], ['four_hour', '4H'], ['one_hour', '1H']].map(([key, tf]) => {
             const context = timeframeContext[tf];
             const signals = (context?.evidence || []).filter(e => e.kind !== 'TREND' && e.direction === direction).map(e => e.kind);
-            const trend = context?.displayed_trend || getCanonicalDisplayedTrend(context || {}) || context?.bias || 'UNAVAILABLE';
+            const trend = context ? (context.displayed_trend || getCanonicalDisplayedTrend(context)) : 'UNAVAILABLE';
             return [key, tf + ': ' + trend + (signals.length ? '; ' + [...new Set(signals)].join(', ') + ' supports ' + direction : '')];
         })),
         reason: aligned ? '4H direction is supported by daily or 1H structure.' : verifiedReversal
@@ -10253,6 +10265,10 @@ async function runAutoScan() {
         if (!hasMarketDataAccess()) {
             scanStage = 'missing Twelve Data key';
             showSetup();
+            const dataBlockedMarketState = getMarketOpenState(pair, {
+                ...(quoteSnapshot || {}),
+                as_of_ms: scanAsOfMs
+            });
             setJsonOutput({ trade_signal: {
                 date: new Date(scanAsOfMs).toISOString().slice(0, 10),
                 pair,
@@ -10972,7 +10988,8 @@ async function runAutoScan() {
                 status: 'DATA_BLOCKED',
                 execution_allowed: false,
                 reason: { code: 'DATA_BLOCKED', message: e?.message || 'A usable market price was not returned by the data provider.' },
-                market_open: quoteSnapshot?.is_market_open ?? null
+                market_open: dataBlockedMarketState.is_market_open,
+                market_open_source: dataBlockedMarketState.source
             }});
         }
         if (price && Object.keys(historyCache).length > 0) {
@@ -10983,7 +11000,13 @@ async function runAutoScan() {
                 console.error('[SCAN] FAILED', { stage: 'fallback after scan failure', error: fallbackError?.message, stack: fallbackError?.stack });
                 showNotif(`Fallback failed: ${fallbackError?.message || 'unknown error'}`, 'error');
                 const context = lastLiveMarketContextForReplay;
-                const marketOpen = quoteSnapshot?.is_market_open ?? context?.market_open ?? null;
+                const marketOpenState = getMarketOpenState(pair, {
+                    ...(quoteSnapshot || {}),
+                    market_open: context?.market_open,
+                    session: context?.symbol_metadata?.session,
+                    as_of_ms: scanAsOfMs
+                });
+                const marketOpen = marketOpenState.is_market_open;
                 const failureMessage = `Analysis failed during ${scanStage}; no trade decision was produced.`;
                 setJsonOutput({ trade_signal: {
                     date: new Date(scanAsOfMs).toISOString().slice(0, 10),
@@ -11006,7 +11029,8 @@ async function runAutoScan() {
                     data_quality: context?.data_quality || null,
                     symbol_metadata: context?.symbol_metadata || getSymbolMetadata(pair),
                     provider_metadata: context?.provider_metadata || null,
-                    market_open: marketOpen
+                    market_open: marketOpen,
+                    market_open_source: marketOpenState.source
                 }});
             }
         }
