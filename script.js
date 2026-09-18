@@ -11298,6 +11298,26 @@ function updateLimitUI() {
     }
 }
 
+function validateLocalLimitOrderInput(signal = {}, pairLocal = pair) {
+    const issues = [];
+    const direction = signal.signalType === 'LONG' ? 'BUY' : signal.signalType === 'SHORT' ? 'SELL' : null;
+    const current = Number(signal.currentPrice);
+    const entry = Number(signal.idealEntry);
+    const stop = Number(signal.stopLoss);
+    const tp1 = Number(signal.takeProfit1);
+    const minimumRR = Number(getMarketSettings(pairLocal).targetRR) || 2.5;
+    if (!direction) issues.push('direction is missing');
+    if (![current, entry, stop, tp1].every(Number.isFinite)) issues.push('order geometry is not finite');
+    if (direction === 'BUY' && !(stop < entry && entry < tp1)) issues.push('BUY geometry is invalid');
+    if (direction === 'SELL' && !(stop > entry && entry > tp1)) issues.push('SELL geometry is invalid');
+    if (direction === 'BUY' && Number.isFinite(current) && !(entry <= current)) issues.push('BUY limit must be at or below current price');
+    if (direction === 'SELL' && Number.isFinite(current) && !(entry >= current)) issues.push('SELL limit must be at or above current price');
+    const risk = Math.abs(entry - stop);
+    const reward = Math.abs(tp1 - entry);
+    if (!(risk > 0) || reward / risk < minimumRR) issues.push(`RR is below minimum ${minimumRR}`);
+    return { valid: issues.length === 0, issues, direction, minimum_rr: minimumRR };
+}
+
 function startMonitor() {
     if(priceTimer) clearInterval(priceTimer);
     priceTimer = setInterval(async () => {
@@ -11350,6 +11370,12 @@ function handleLimit() {
     }
     if(limitOrder) {
         cancelLimit();
+        return;
+    }
+    const safety = validateLocalLimitOrderInput(analysis, pair);
+    if (!safety.valid) {
+        showNotif(`⛔ Order rejected: ${safety.issues.join('; ')}`, 'error');
+        console.error('[ORDER] local safety validation rejected', safety);
         return;
     }
     const o = {

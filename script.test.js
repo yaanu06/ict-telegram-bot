@@ -4387,6 +4387,15 @@ describe('engine contract completion', () => {
 });
 
 describe('provider, calendar, lifecycle, and public output contracts', () => {
+    it('rechecks local pending-limit safety at user approval time', () => {
+        const ctx = getContext();
+        const valid = ctx.validateLocalLimitOrderInput({ signalType: 'SHORT', currentPrice: 100, idealEntry: 101, stopLoss: 103, takeProfit1: 95 }, 'EUR/USD');
+        expect(valid.valid).toBe(true);
+        const badSide = ctx.validateLocalLimitOrderInput({ signalType: 'SHORT', currentPrice: 100, idealEntry: 99, stopLoss: 103, takeProfit1: 95 }, 'EUR/USD');
+        expect(badSide.valid).toBe(false);
+        expect(badSide.issues.join(' ')).toMatch(/above current price/);
+    });
+
     it('rejects duplicate timestamps and explicitly open candles in required histories', () => {
         const ctx = getContext();
         const baseStart = Date.parse('2026-09-01T00:00:00Z');
