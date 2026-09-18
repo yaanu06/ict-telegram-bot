@@ -4707,6 +4707,8 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(watch.execution_allowed).toBe(false);
         expect(watch.execution_mode).toBe('MANUAL');
         expect(watch.symbol_metadata.asset_class).toBe('FOREX');
+        const aiView = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY', ai_analysis: { analyst_status: 'OK', hypotheses_verified: 1, selected_candidate_id: 'C-1' }, opportunity: { area_of_interest: { low: 1, high: 1.1 } }, reason: { code: 'WAITING', message: 'watch' } });
+        expect(aiView.ai_analysis).toMatchObject({ analyst_status: 'OK', hypotheses_verified: 1, selected_candidate_id: 'C-1' });
     const ready = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: true, entry: 1, stop_loss: 0.99, take_profit_1: 1.03 });
     expect(ready.status_code).toBe('SETUP_READY');
     const manualReview = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: false, manual_tracking_allowed: true, validation: { passed: true }, entry: 1, stop_loss: 0.99, take_profit_1: 1.03 });

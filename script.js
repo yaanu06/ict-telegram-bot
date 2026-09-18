@@ -7500,6 +7500,23 @@ function buildOpportunityDisplayStack(plans = [], currentPrice = null, selected 
     };
 }
 
+function compactAiDiagnostics(analysis = null) {
+    if (!analysis || typeof analysis !== 'object') return null;
+    return {
+        analyst_called: analysis.analyst_called === true,
+        analyst_status: analysis.analyst_status || null,
+        schema_validation: analysis.schema_validation || null,
+        market_view: analysis.market_view || null,
+        hypotheses_received: Number(analysis.hypotheses_received) || 0,
+        hypotheses_verified: Number(analysis.hypotheses_verified) || 0,
+        hypotheses_rejected: Number(analysis.hypotheses_rejected) || 0,
+        final_selector_called: analysis.final_selector_called === true,
+        selected_candidate_id: analysis.selected_candidate_id || null,
+        setups_added_from_ai: Number(analysis.setups_added_from_ai) || 0,
+        error: analysis.error || null
+    };
+}
+
 function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfMs, histories, marketContext = {}, strategySetups = [], aiAnalysis = null, executionZones = [], candidateDiagnostics = {}, validCandidates = [], targetCandidates = {}, marketOpen = true, symbolMetadata = null } = {}) {
     const timeframeContext = marketContext.timeframe_context || buildTimeframeContext({ historyCache: histories, structure: marketContext.structure, price: currentPrice, strategySetups, zones: executionZones });
     const state = {
@@ -7513,6 +7530,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             || 'NEUTRAL'])),
         volatility: marketContext.volatility || null,
         indicators: marketContext.indicators || null,
+        ai_analysis: compactAiDiagnostics(aiAnalysis),
         data_quality: marketContext.data_quality || null,
         news_risk: marketContext.news_risk || { status: 'UNKNOWN', available: false },
         execution_zone_id: null, source: 'DETERMINISTIC_MARKET_FACTS', ai_supported: false, deterministic_supported: false, area_of_interest: null,
@@ -7706,8 +7724,9 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
             bias: today?.bias || 'NEUTRAL',
             trend_detection: today?.trend_detection || null,
             volatility: today?.volatility || null,
-            indicators: today?.indicators || null,
-            opportunity,
+        indicators: today?.indicators || null,
+        ai_analysis: today?.ai_analysis || null,
+        opportunity,
         primary_opportunity: today?.primary_opportunity || null,
         active_setups: Array.isArray(today?.active_setups) ? today.active_setups : [],
         watch_setups: Array.isArray(today?.watch_setups) ? today.watch_setups : [],
@@ -10442,6 +10461,7 @@ async function runAutoScan() {
         scanStage = 'DeepSeek request';
         const aiResult = await askAIToFindSetup(aiPrompt.user, price, aiPrompt.system, liveMarketContext);
         liveMarketContext.ai_analysis.selected_candidate_id = aiResult?.selected_candidate_id || null;
+        liveMarketContext.today_opportunity.ai_analysis = compactAiDiagnostics(liveMarketContext.ai_analysis);
         if (!aiResult) {
             scanStage = lastAIRequestError?.code === 'AI_TIMEOUT' ? 'DeepSeek timeout fallback' : 'DeepSeek failure fallback';
             showNotif(`⚠️ ${lastAIRequestError?.message || 'AI analysis failed'} - using fallback`, 'warning');
@@ -10571,6 +10591,7 @@ async function runAutoScan() {
                 current_price: price,
                 symbol_metadata: getSymbolMetadata(pair),
                 market_conditions: liveMarketContext.market_conditions,
+                ai_analysis: compactAiDiagnostics(liveMarketContext.ai_analysis),
                 direction: aiResult.direction,
                 trade_type: aiResult.decision || (aiResult.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT'),
                 decision: aiResult.decision,
@@ -11874,6 +11895,7 @@ function buildPublicTradeSignal(signal = {}) {
                     next_requirement: plan.next_requirement
                 } : (signal.opportunity || null),
                 reason: signal.reason || { code: 'DEVELOPING_SETUP', message: 'A valid developing opportunity remains for today.' },
+                ai_analysis: signal.ai_analysis || null,
                 analysis: {
                     trend_detection: publicTrendMap || signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
                     volatility_level: signal.volatility?.regime || signal.analysis?.volatility || null,
@@ -11911,6 +11933,7 @@ function buildPublicTradeSignal(signal = {}) {
             confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
             status: signal.status || null,
             reason: { code: reason.code, message: reason.message },
+            ai_analysis: signal.ai_analysis || null,
             analysis: {
                 trend_detection: publicTrendMap || signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
                 volatility_level: signal.volatility?.regime || signal.analysis?.volatility || null,
@@ -11958,6 +11981,7 @@ function buildPublicTradeSignal(signal = {}) {
         status: signal.status || signal.opportunity_status || signal.lifecycle_state || null,
         setup_state: signal.setup_state || (signal.status === 'TRADE_READY' ? 'TRADE_READY' : null),
         reason: signal.reason || (reasoning.primary ? { code: 'SETUP_CONTEXT', message: reasoning.primary } : null),
+        ai_analysis: signal.ai_analysis || null,
         manual_tracking_allowed: signal.manual_tracking_allowed === true,
         execution_allowed: getPublicExecutionAllowed(signal, publicRiskGate),
         primary_opportunity: signal.primary_opportunity || null,
@@ -12037,6 +12061,7 @@ function recordAnalysisAudit(signal = {}, replay = null) {
         execution_allowed: signal.execution_allowed ?? false,
         confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
         reason: signal.reason || null,
+        ai_analysis: signal.ai_analysis || null,
         news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
         risk_gate: signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE),
         selected_candidate_id: signal.selected_candidate_id || null,

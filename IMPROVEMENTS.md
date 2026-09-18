@@ -188,6 +188,10 @@ Added actual detection algorithms for:
 - The analyst receives the calculated canonical regime, symbol metadata, provider metadata, data-quality verdict, news state, timeframe structure, liquidity, zones, targets, and candidate references explicitly.
 - The model still cannot supply or modify order geometry; deterministic validation remains the authority for any displayed setup.
 
+### 5k. **AI Decision Diagnostics**
+- Public signals and audit records now expose a compact AI diagnostic section with analyst status, schema state, market view, verified and rejected hypothesis counts, and selector choice.
+- This makes AI participation auditable without exposing credentials or allowing AI output to bypass deterministic validation.
+
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:
 1. First choice: FVG midpoint
