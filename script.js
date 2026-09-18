@@ -8394,11 +8394,15 @@ function validateAiSelectorResponse(value, candidates = []) {
     return { valid: issues.length === 0, issues, decision, selected_candidate_id: typeof selectedId === 'string' ? selectedId : null };
 }
 
-async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData = '') {
-    const diagnostics = { analyst_called: false, analyst_status: 'SKIPPED', market_view: null, hypotheses_received: 0, hypotheses_verified: 0, hypotheses_rejected: 0, verified_hypotheses: [], rejected_hypotheses: [], deterministic_duplicates: 0, setups_added_from_ai: 0, final_selector_called: false, selected_candidate_id: null };
+async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData = '', retryCount = 0) {
+    const diagnostics = { analyst_called: false, analyst_status: 'SKIPPED', attempts: retryCount + 1, market_view: null, hypotheses_received: 0, hypotheses_verified: 0, hypotheses_rejected: 0, verified_hypotheses: [], rejected_hypotheses: [], deterministic_duplicates: 0, setups_added_from_ai: 0, final_selector_called: false, selected_candidate_id: null };
     if (!DEEPSEEK_API_KEY) { diagnostics.analyst_status = 'NO_API_KEY'; return { diagnostics, analysis: null, verified_setups: [] }; }
     diagnostics.analyst_called = true;
     const prompt = buildAiMarketAnalystPrompt(evidenceCatalog, candleData);
+    const retryAnalyst = reason => retryCount < 1
+        ? runAiMarketAnalyst(evidenceCatalog, liveMarketContext,
+            `${candleData}\n\nCORRECTION: The previous analyst response was invalid (${reason}). Return only the exact market_view and hypotheses JSON contract.`, retryCount + 1)
+        : null;
     try {
         const { data } = await requestAIJson(DEEPSEEK_API_URL, {
             method: 'POST',
@@ -8408,8 +8412,10 @@ async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData
         const rawAnalysis = parseAiJsonContent(data?.choices?.[0]?.message?.content);
         const schema = validateAiMarketAnalystResponse(rawAnalysis);
         if (!schema.valid) {
+            const retry = retryAnalyst(schema.issues.join('; '));
+            if (retry) return retry;
             diagnostics.analyst_status = 'ANALYST_SCHEMA_INVALID';
-            diagnostics.schema_validation = schema;
+            diagnostics.schema_validation = { ...schema, attempts: retryCount + 1 };
             return { diagnostics, analysis: null, verified_setups: [] };
         }
         const analysis = normalizeAiMarketAnalysis(rawAnalysis);
@@ -8431,6 +8437,8 @@ async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData
         }
         return { diagnostics, analysis, verified_setups: verifiedSetups };
     } catch (error) {
+        const retry = retryAnalyst(error?.message || 'AI analyst request failed');
+        if (retry) return retry;
         diagnostics.analyst_status = error?.name === 'AbortError' ? 'TIMEOUT' : 'ERROR';
         diagnostics.error = error?.message || 'AI market analyst failed';
         console.error('[AI] market analyst failed', { status: diagnostics.analyst_status, error: diagnostics.error });

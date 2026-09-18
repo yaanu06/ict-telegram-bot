@@ -24,6 +24,10 @@
 - Unknown symbols no longer inherit forex assumptions silently.
 - Symbol metadata is carried through quote snapshots, live context, and public signals for auditability.
 
+### 1d. **Bounded Analyst Retry**
+- The DeepSeek market-analyst stage now retries one malformed, schema-invalid, or failed response with a correction request.
+- A second failure remains a safe schema/error result with attempt diagnostics and no verified setups.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

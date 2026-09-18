@@ -4829,10 +4829,28 @@ describe('AI market analyst contract', () => {
     it('rejects malformed analyst top-level output instead of inventing neutral analysis', async () => {
         const ctx = getContext();
         await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
-        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ bias: 'BULLISH' }) } }] }) }));
+        let calls = 0;
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ bias: ++calls === 1 ? 'BULLISH' : 'BEARISH' }) } }] }) }));
         const result = await ctx.runAiMarketAnalyst({ pair: 'EUR/USD', strategy_events: [] }, { pair: 'EUR/USD' }, '');
         expect(result.diagnostics.analyst_status).toBe('ANALYST_SCHEMA_INVALID');
+        expect(result.diagnostics.attempts).toBe(2);
+        expect(calls).toBe(2);
         expect(result.analysis).toBeNull();
+        expect(result.verified_setups).toEqual([]);
+    });
+
+    it('retries a malformed analyst response and accepts a valid second response', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        let calls = 0;
+        const cat = evidence();
+        const live = { pair: 'EUR/USD', strategy_setups: [], adaptive_setup_candidates: [] };
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: calls++ === 0
+            ? '{malformed'
+            : JSON.stringify({ market_view: { bias: 'MIXED' }, hypotheses: [] }) } }] }) }));
+        const result = await ctx.runAiMarketAnalyst(cat, live, '');
+        expect(result.diagnostics.analyst_status).toBe('OK');
+        expect(result.diagnostics.attempts).toBe(2);
         expect(result.verified_setups).toEqual([]);
     });
 
