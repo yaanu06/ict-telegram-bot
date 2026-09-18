@@ -757,6 +757,16 @@ describe('top-down trade context', () => {
         expect(elements.get('opportunityStack').innerHTML).toContain('0.71');
     });
 
+    it('renders the public safety status banner without requiring JSON inspection', () => {
+        const { context, elements } = getScanContext();
+        context.renderSignalStatus({ status_code: 'SETUP_READY', execution_allowed: false, manual_tracking_allowed: true,
+            data_quality: { valid: true }, news_risk: { status: 'UNKNOWN' } });
+        expect(elements.get('signalStatus').textContent).toContain('SETUP_READY');
+        expect(elements.get('signalStatus').textContent).toContain('MANUAL REVIEW AVAILABLE');
+        expect(elements.get('signalStatus').textContent).toContain('DATA VALID');
+        expect(elements.get('signalStatus').className).toContain('setup-ready');
+    });
+
     it('removes the replay action while retaining the copy action', () => {
         const html = fs.readFileSync('index.html', 'utf8');
         expect(html).toContain('id="copyJsonBtn"');

@@ -11859,6 +11859,7 @@ function setJsonOutput(obj) {
             risk_gate: publicSignal?.risk_gate || getDefaultRiskGate(publicSignal?.execution_mode || DEFAULT_EXECUTION_MODE)
         };
     }
+    renderSignalStatus(publicSignal);
     recordAnalysisAudit(publicSignal);
     if(el) el.textContent = JSON.stringify({ trade_signal: publicSignal }, null, 2);
     renderOpportunityStack(publicSignal);
@@ -11894,6 +11895,22 @@ function renderOpportunityCard(setup, heading) {
         <div class="opportunity-reason">${escapeOpportunityHtml(setup.reason || 'Waiting for deterministic execution evidence.')}</div>
         ${next.length ? `<div class="opportunity-next">Next: ${next.slice(0, 3).map(item => `<span>• ${escapeOpportunityHtml(item)}</span>`).join('')}</div>` : ''}
     </div>`;
+}
+
+function renderSignalStatus(signal = {}) {
+    const el = document.getElementById('signalStatus');
+    if (!el) return;
+    const code = String(signal.status_code || signal.status || 'NO_TRADE');
+    const permission = signal.execution_allowed === true
+        ? 'EXECUTION ALLOWED'
+        : signal.manual_tracking_allowed === true
+            ? 'MANUAL REVIEW AVAILABLE'
+            : 'EXECUTION BLOCKED';
+    const data = signal.data_quality?.valid === false ? 'DATA BLOCKED'
+        : signal.data_quality?.valid === true ? 'DATA VALID' : 'DATA UNKNOWN';
+    const news = signal.news_risk?.status === 'HIGH_IMPACT' ? 'NEWS BLOCKED' : 'NEWS CHECK UNKNOWN';
+    el.textContent = `${code} · ${permission} · ${data} · ${news}`;
+    el.className = `signal-status ${code.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
 }
 
 function renderOpportunityStack(signal = {}) {
