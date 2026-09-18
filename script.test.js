@@ -4431,6 +4431,9 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(watch.execution_mode).toBe('PAPER');
         const ready = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: true, entry: 1, stop_loss: 0.99, take_profit_1: 1.03 });
         expect(ready.status_code).toBe('SETUP_READY');
+        const blocked = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'DATA_BLOCKED', reason: { code: 'DATA_BLOCKED', message: 'price unavailable' } });
+        expect(blocked.status).toBe('DATA_BLOCKED');
+        expect(blocked.status_code).toBe('DATA_BLOCKED');
     });
 
     it('keeps account risk deterministic and blocks live sizing without metadata', () => {

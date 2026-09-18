@@ -9605,6 +9605,17 @@ async function runAutoScan() {
         if (!TWELVE_DATA_KEY) {
             scanStage = 'missing Twelve Data key';
             showSetup();
+            setJsonOutput({ trade_signal: {
+                date: new Date(scanAsOfMs).toISOString().slice(0, 10),
+                pair,
+                current_price: null,
+                decision: 'WAIT',
+                trade_type: 'WAIT',
+                status: 'DATA_BLOCKED',
+                execution_allowed: false,
+                reason: { code: 'DATA_BLOCKED', message: 'Twelve Data credentials are unavailable; no market analysis was run.' },
+                market_open: null
+            }});
             return;
         }
 
@@ -10262,6 +10273,19 @@ async function runAutoScan() {
     } catch(e) {
         console.error('[SCAN] FAILED', { stage: scanStage, error: e?.message, stack: e?.stack });
         showNotif('Error: ' + (e?.message || 'scan failed'), 'error');
+        if (!Number.isFinite(Number(price))) {
+            setJsonOutput({ trade_signal: {
+                date: new Date(scanAsOfMs).toISOString().slice(0, 10),
+                pair,
+                current_price: null,
+                decision: 'WAIT',
+                trade_type: 'WAIT',
+                status: 'DATA_BLOCKED',
+                execution_allowed: false,
+                reason: { code: 'DATA_BLOCKED', message: e?.message || 'A usable market price was not returned by the data provider.' },
+                market_open: quoteSnapshot?.is_market_open ?? null
+            }});
+        }
         if (price && Object.keys(historyCache).length > 0) {
             try {
                 scanStage = 'fallback after scan failure';
@@ -10964,6 +10988,7 @@ function buildPublicTradeSignal(signal = {}) {
             take_profit_2: null,
             take_profit_3: null,
             confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
+            status: signal.status || null,
             reason: { code: reason.code, message: reason.message },
             news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
             status_code: getPublicStatusCode(signal, false, false),
