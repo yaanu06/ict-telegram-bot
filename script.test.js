@@ -4456,6 +4456,7 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(watch.status).toBe('TODAY_OPPORTUNITY');
         expect(watch.status_code).toBe('WATCH');
         expect(watch.execution_mode).toBe('PAPER');
+        expect(watch.symbol_metadata.asset_class).toBe('FOREX');
         const ready = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: true, entry: 1, stop_loss: 0.99, take_profit_1: 1.03 });
         expect(ready.status_code).toBe('SETUP_READY');
         const blocked = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'DATA_BLOCKED', reason: { code: 'DATA_BLOCKED', message: 'price unavailable' } });
@@ -4494,6 +4495,18 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         const ready = ctx.buildAccountRiskGate({ mode: 'LIVE', account: { equity: 10000, risk_distance: 0.01 }, risk_percent: 1, symbol_metadata: { tick_size: 0.0001, tick_value: 1 } });
         expect(ready.status).toBe('RISK_READY');
         expect(ready.position_size).toBeGreaterThan(0);
+    });
+
+    it.each([
+        ['EUR/USD', 'FOREX'], ['USD/JPY', 'FOREX'], ['XAU/USD', 'METAL'],
+        ['ETH/USD', 'CRYPTO'], ['AAPL', 'EQUITY'], ['US30', 'INDEX'], ['ABC/XYZ', 'UNKNOWN']
+    ])('classifies %s without applying an unrelated forex fallback', (symbol, assetClass) => {
+        const ctx = getContext();
+        const metadata = ctx.getSymbolMetadata(symbol);
+        expect(metadata.asset_class).toBe(assetClass);
+        expect(metadata.symbol).toBe(symbol);
+        expect(Number.isFinite(metadata.tick_size)).toBe(true);
+        expect(ctx.getMarketSettings(symbol)).toBeDefined();
     });
 
     it('backtests pending limits without lookahead and uses conservative same-candle exits', () => {

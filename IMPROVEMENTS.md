@@ -19,6 +19,11 @@
 - The current forming bucket is filtered before structure, trend, indicator, or setup analysis.
 - Provider metadata records raw, closed, and filtered candle counts for audit and debugging.
 
+### 1c. **Asset-Aware Symbol Metadata**
+- Symbols are classified as forex, metals, crypto, equities, indices, or unknown before geometry is built.
+- Unknown symbols no longer inherit forex assumptions silently.
+- Symbol metadata is carried through quote snapshots, live context, and public signals for auditability.
+
 ### 2. **Fixed RSI Calculation (Wilder's Method)**
 - **Before**: Simple average over last 14 candles (incorrect)
 - **After**: Proper Wilder's smoothing method with:

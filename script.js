@@ -85,6 +85,9 @@ function hasRealVolume(p) {
     return REAL_VOLUME_PAIRS.has(sym);
 }
 
+const FIAT_CURRENCY_CODES = new Set(['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD', 'HKD', 'SGD', 'NOK', 'SEK', 'CNH', 'CNY', 'MXN', 'ZAR', 'TRY', 'PLN']);
+const CRYPTO_BASE_CODES = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'ADA', 'DOGE', 'LTC', 'BCH', 'BNB', 'AVAX', 'DOT', 'LINK']);
+
 let lastScanRejections = [];
 const TF_MAP = { '5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day','1W':'1week' };
 const ALL_TIMEFRAMES = ['5M', '15M', '1H', '4H', '1D'];
@@ -113,6 +116,10 @@ function getMarketSettings(p) {
     if (symbol.includes('XAG')) return { slBuffer: 0.05, minSL: 0.03, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.01 };
     if (symbol.includes('JPY')) return { slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01 };
     if (symbol === 'BTC/USD') return { slBuffer: 50, minSL: 30, maxSLPct: 0.02, targetRR: 2.5, prec: 2, pipSize: 1 };
+    const assetClass = getAssetClass(symbol);
+    if (assetClass === 'CRYPTO') return { slBuffer: 0, minSL: 0, maxSLPct: 0.25, targetRR: 2.5, prec: 8, pipSize: 0.00000001, minSLMultiplier: 2.0 };
+    if (assetClass === 'EQUITY' || assetClass === 'INDEX') return { slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 4, pipSize: 0.01, minSLMultiplier: 1.5 };
+    if (assetClass === 'UNKNOWN') return { slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 6, pipSize: 0.000001, minSLMultiplier: 1.5 };
     return { slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.01, targetRR: 2.5, prec: 5, pipSize: 0.0001 };
 }
 
@@ -533,9 +540,34 @@ function getRequiredHistoryOutputSize() {
 
 function getAssetClass(forPair = pair) {
     const normalized = String(forPair || '').toUpperCase().replace(/\s/g, '');
-    if (/^(BTC|ETH|SOL|XRP)\//.test(normalized) || normalized.endsWith('/USDT')) return 'CRYPTO';
+    const [base, quote] = normalized.split('/');
+    if (CRYPTO_BASE_CODES.has(base) || normalized.endsWith('/USDT')) return 'CRYPTO';
     if (normalized === 'XAU/USD' || normalized === 'XAG/USD' || normalized.startsWith('XAU') || normalized.startsWith('XAG')) return 'METAL';
-    return 'FOREX';
+    if (base && quote && base.length === 3 && quote.length === 3) {
+        if (FIAT_CURRENCY_CODES.has(base) && FIAT_CURRENCY_CODES.has(quote)) return 'FOREX';
+        return 'UNKNOWN';
+    }
+    if (/^[A-Z][A-Z0-9._-]{0,11}$/.test(normalized)) {
+        if (/\d/.test(normalized) || /^(US30|NAS100|SPX500|GER40|UK100|JP225)$/.test(normalized)) return 'INDEX';
+        return 'EQUITY';
+    }
+    return 'UNKNOWN';
+}
+
+function getSymbolMetadata(forPair = pair, overrides = {}) {
+    const symbol = normalizeSymbolInput(forPair);
+    const assetClass = overrides.asset_class || getAssetClass(symbol);
+    const settings = getMarketSettings(symbol);
+    return {
+        symbol,
+        asset_class: assetClass,
+        tick_size: Number.isFinite(Number(overrides.tick_size)) ? Number(overrides.tick_size) : settings.pipSize,
+        price_precision: Number.isInteger(Number(overrides.price_precision)) ? Number(overrides.price_precision) : settings.prec,
+        contract_size: Number.isFinite(Number(overrides.contract_size)) ? Number(overrides.contract_size) : null,
+        minimum_order_size: Number.isFinite(Number(overrides.minimum_order_size)) ? Number(overrides.minimum_order_size) : null,
+        metadata_source: Object.keys(overrides).length ? 'PROVIDER_OR_USER' : 'HEURISTIC',
+        metadata_complete: Number.isFinite(Number(overrides.tick_size)) && Number.isFinite(Number(overrides.contract_size))
+    };
 }
 
 function parseProviderMarketOpen(value) {
@@ -565,7 +597,8 @@ function getMarketOpenState(forPair = pair, scanSnapshot = {}) {
 
 async function getMarketQuoteSnapshot(forPair = pair) {
     const p = forPair || pair;
-    const assetClass = getAssetClass(p);
+    const symbolMetadata = getSymbolMetadata(p);
+    const assetClass = symbolMetadata.asset_class;
     try {
         const quote = await fetchTD('/quote?symbol=' + encodeURIComponent(getProviderSymbol(p)));
         const quotePrice = Number(quote.price ?? quote.close);
@@ -580,6 +613,7 @@ async function getMarketQuoteSnapshot(forPair = pair) {
                 provider_timestamp_utc: Number.isFinite(providerTimestamp) ? new Date(providerTimestamp).toISOString() : null,
                 is_market_open: providerOpen,
                 asset_class: assetClass,
+                symbol_metadata: symbolMetadata,
                 source: 'TWELVE_DATA',
                 quote_source: 'QUOTE'
             };
@@ -595,6 +629,7 @@ async function getMarketQuoteSnapshot(forPair = pair) {
         provider_timestamp_utc: null,
         is_market_open: null,
         asset_class: assetClass,
+        symbol_metadata: symbolMetadata,
         source: 'TWELVE_DATA',
         quote_source: 'PRICE_FALLBACK'
     };
@@ -7518,6 +7553,7 @@ function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure
 }
 
 function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext, as_of_ms = null, quote_snapshot = null }) {
+    const symbolMetadata = getSymbolMetadata(pair, quote_snapshot?.symbol_metadata || {});
     const settings = getMarketSettings(pair);
     const prec = settings.prec;
     const now = new Date(Number.isFinite(as_of_ms) ? as_of_ms : Date.now());
@@ -7786,6 +7822,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
 
     const liveContext = {
         pair,
+        symbol_metadata: symbolMetadata,
         current_price: ictRound(price, prec),
         as_of_time: now.getTime(),
         as_of_time_utc: now.toISOString(),
@@ -10098,6 +10135,7 @@ async function runAutoScan() {
                 time: new Date().toISOString().split('T')[1].split('.')[0],
                 pair: pair,
                 current_price: price,
+                symbol_metadata: getSymbolMetadata(pair),
                 direction: aiResult.direction,
                 trade_type: aiResult.decision || (aiResult.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT'),
                 decision: aiResult.decision,
@@ -11193,6 +11231,7 @@ function buildPublicTradeSignal(signal = {}) {
                 date: signal.date,
                 pair: signal.pair,
                 current_price: signal.current_price,
+                symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
                 decision: 'WAIT',
                 trade_type: orderType,
                 entry_price: compactPrimary?.entry_price ?? null,
@@ -11241,6 +11280,7 @@ function buildPublicTradeSignal(signal = {}) {
             time: signal.time,
             pair: signal.pair,
             current_price: signal.current_price,
+            symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
             decision: 'WAIT',
             trade_type: 'WAIT',
             entry_price: null,
@@ -11265,6 +11305,7 @@ function buildPublicTradeSignal(signal = {}) {
         time: signal.time,
         pair: signal.pair,
         current_price: signal.current_price,
+        symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
         decision: signal.decision || signal.trade_type,
         strategy,
         timeframe: signal.timeframe || signal.execution_timeframe || signal.setup_timeframe || null,
