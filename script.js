@@ -11247,6 +11247,16 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
     return 'NO_TRADE';
 }
 
+function getPublicExecutionAllowed(signal = {}, riskGate = null) {
+    const gate = riskGate || signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE);
+    const reasonCode = String(signal.reason?.code || '').toUpperCase();
+    if (gate.status === 'RISK_BLOCKED' || signal.news_risk?.status === 'HIGH_IMPACT'
+        || signal.data_quality?.valid === false || signal.market_open === false
+        || reasonCode.includes('DATA_BLOCKED') || reasonCode.includes('PRICE_UNAVAILABLE')
+        || reasonCode.includes('RISK_BLOCKED') || reasonCode.includes('NEWS_BLOCKED')) return false;
+    return signal.execution_allowed ?? (signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY');
+}
+
 function evaluateRiskLimits({ open_risk = 0, daily_loss = 0, weekly_loss = 0, consecutive_losses = 0, active_orders = 0, symbol_exposure = 0, limits = {} } = {}) {
     const checks = [
         ['max_open_risk', open_risk, 'maximum open risk reached'],
@@ -11463,6 +11473,7 @@ function buildPublicTradeSignal(signal = {}) {
         return match ? Number(match[1]) : null;
     };
     const structural = signal.structural_context || signal.top_down_context?.higher_timeframe || null;
+    const publicRiskGate = signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE);
     const structureSummary = signal.analysis?.structure || (structural && typeof structural === 'object'
         ? Object.entries(structural).map(([tf, value]) => `${tf} ${value}`).join('; ')
         : (typeof structural === 'string' ? structural : null));
@@ -11556,7 +11567,8 @@ function buildPublicTradeSignal(signal = {}) {
                 market_conditions: signal.market_conditions || null,
                 status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity, !!compactPrimary?.entry_price),
                 execution_mode: signal.execution_mode || DEFAULT_EXECUTION_MODE,
-                risk_gate: signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE),
+                risk_gate: publicRiskGate,
+                execution_allowed: false,
                 market_open: signal.market_open ?? null
             };
         }
@@ -11586,7 +11598,8 @@ function buildPublicTradeSignal(signal = {}) {
             market_conditions: signal.market_conditions || null,
             status_code: getPublicStatusCode(signal, false, false),
             execution_mode: signal.execution_mode || DEFAULT_EXECUTION_MODE,
-            risk_gate: signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE),
+            risk_gate: publicRiskGate,
+            execution_allowed: false,
             market_open: signal.market_open ?? null
         };
     }
@@ -11619,7 +11632,7 @@ function buildPublicTradeSignal(signal = {}) {
         confidence: signal.confidence,
         status: signal.status || signal.opportunity_status || signal.lifecycle_state || null,
         setup_state: signal.setup_state || (signal.status === 'TRADE_READY' ? 'TRADE_READY' : null),
-        execution_allowed: signal.execution_allowed ?? (signal.status === 'TRADE_READY'),
+        execution_allowed: getPublicExecutionAllowed(signal, publicRiskGate),
         primary_opportunity: signal.primary_opportunity || null,
         active_setups: Array.isArray(signal.active_setups) ? signal.active_setups : [],
         watch_setups: Array.isArray(signal.watch_setups) ? signal.watch_setups : [],
@@ -11650,7 +11663,7 @@ function buildPublicTradeSignal(signal = {}) {
         market_conditions: signal.market_conditions || null,
         status_code: getPublicStatusCode(signal, !!signal.primary_opportunity, Number.isFinite(Number(signal.entry ?? signal.entry_price))),
         execution_mode: signal.execution_mode || DEFAULT_EXECUTION_MODE,
-        risk_gate: signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE)
+        risk_gate: publicRiskGate
     };
 }
 

@@ -4491,6 +4491,7 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         const watch = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY', opportunity: { area_of_interest: { low: 1, high: 1.1 } }, reason: { code: 'WAITING', message: 'watch' } });
         expect(watch.status).toBe('TODAY_OPPORTUNITY');
         expect(watch.status_code).toBe('WATCH');
+        expect(watch.execution_allowed).toBe(false);
         expect(watch.execution_mode).toBe('MANUAL');
         expect(watch.symbol_metadata.asset_class).toBe('FOREX');
         const ready = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: true, entry: 1, stop_loss: 0.99, take_profit_1: 1.03 });
@@ -4502,6 +4503,7 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(invalidQuality.status_code).toBe('DATA_BLOCKED');
         const riskBlocked = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: true, entry: 1, stop_loss: 0.99, tp1: 1.03, risk_gate: { status: 'RISK_BLOCKED', execution_allowed: false } });
         expect(riskBlocked.status_code).toBe('RISK_BLOCKED');
+        expect(riskBlocked.execution_allowed).toBe(false);
         const closed = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'TODAY_OPPORTUNITY', market_open: false });
         expect(closed.status_code).toBe('MARKET_CLOSED');
     });
@@ -4516,6 +4518,7 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         });
         expect(blocked.status).toBe('TODAY_OPPORTUNITY');
         expect(blocked.status_code).toBe('NEWS_BLOCKED');
+        expect(blocked.execution_allowed).toBe(false);
     });
 
     it('keeps a high-impact news block authoritative over a stale execution permission', () => {
