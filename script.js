@@ -7701,6 +7701,36 @@ function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, select
     });
 }
 
+function buildRejectedSelectionWaitOutput({ today, pairLocal, price, asOfMs, marketOpen, symbolMetadata, providerMetadata, rejection, source = 'Deterministic Opportunity Planner + AI Selector' } = {}) {
+    const recovery = buildTodayOpportunityOutput(today || { state: 'NO_TRADE_TODAY' }, pairLocal, price, asOfMs, marketOpen, symbolMetadata, providerMetadata);
+    const hasOpportunity = ['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(today?.state)
+        && (!!recovery.trade_signal.opportunity || !!recovery.trade_signal.primary_opportunity || recovery.trade_signal.watch_setups?.length > 0);
+    const reasonCode = hasOpportunity ? 'STALE_AI_SELECTION_RECOVERED' : 'STALE_SELECTION_REJECTED';
+    const reasonMessage = hasOpportunity
+        ? 'The selected candidate was rejected as stale; the current deterministic opportunity remains available for your decision.'
+        : 'The selected candidate was rejected as stale and no current deterministic opportunity remains.';
+    return {
+        ...recovery.trade_signal,
+        selected_candidate_id: null,
+        trade_type: 'WAIT',
+        decision: 'WAIT',
+        ai_decision: 'skip',
+        status: hasOpportunity ? 'TODAY_OPPORTUNITY' : (recovery.trade_signal.status || 'NO_TRADE_TODAY'),
+        setup_state: hasOpportunity ? 'TODAY_OPPORTUNITY' : (recovery.trade_signal.status || 'NO_TRADE_TODAY'),
+        confidence: hasOpportunity ? (recovery.trade_signal.confidence || 0) : 0,
+        execution_allowed: false,
+        reason: { code: reasonCode, message: reasonMessage },
+        wait_condition: recovery.trade_signal.reason?.message || reasonMessage,
+        validation: {
+            passed: false,
+            reason: hasOpportunity ? 'AI selection rejected by final consistency checks; current opportunity recovered.' : 'AI selection rejected by final consistency checks; no replacement opportunity is currently available.',
+            rejected_selection: rejection || null,
+            current_opportunity: today || null
+        },
+        source
+    };
+}
+
 function buildCanonicalMarketTheses(strategySetups, marketContext, targetCandidates, price) {
     return Object.fromEntries(['BUY', 'SELL'].map(direction => {
         const setups = (strategySetups || []).filter(setup => setup.direction === direction);
@@ -10726,29 +10756,17 @@ async function runAutoScan() {
                     aiResult.selected_candidate_id,
                     { pair, currentPrice: price, scanAsOfMs, histories: historyCache }
                 );
-                if (['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(recoveryToday?.state)) {
-                    const recovery = buildTodayOpportunityOutput(recoveryToday, pair, price, scanAsOfMs, liveMarketContext.market_open, liveMarketContext.symbol_metadata, liveMarketContext.provider_metadata);
-                    Object.assign(out.trade_signal, recovery.trade_signal, {
-                        selected_candidate_id: null,
-                        trade_type: 'WAIT',
-                        decision: 'WAIT',
-                        ai_decision: 'skip',
-                        status: 'TODAY_OPPORTUNITY',
-                        setup_state: 'TODAY_OPPORTUNITY',
-                        confidence: recovery.trade_signal.confidence || 0,
-                        reason: {
-                            code: 'STALE_AI_SELECTION_RECOVERED',
-                            message: 'The AI-selected candidate was rejected as stale; the current deterministic opportunity remains available for your decision.'
-                        },
-                        wait_condition: recovery.trade_signal.reason?.message,
-                        validation: {
-                            passed: false,
-                            reason: 'AI selection rejected by final consistency checks; current opportunity recovered.',
-                            rejected_selection: finalConsistency,
-                            current_opportunity: recoveryToday
-                        },
-                        source: 'Deterministic Opportunity Planner + AI Selector'
-                    });
+                if (recoveryToday) {
+                    Object.assign(out.trade_signal, buildRejectedSelectionWaitOutput({
+                        today: recoveryToday,
+                        pairLocal: pair,
+                        price,
+                        asOfMs: scanAsOfMs,
+                        marketOpen: liveMarketContext.market_open,
+                        symbolMetadata: liveMarketContext.symbol_metadata,
+                        providerMetadata: liveMarketContext.provider_metadata,
+                        rejection: finalConsistency
+                    }));
                     console.log('[SCAN] recovered current opportunity after stale AI selection', {
                         rejected_candidate: aiResult.selected_candidate_id,
                         recovered_state: recoveryToday.state,

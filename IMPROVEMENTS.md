@@ -163,6 +163,10 @@ Added actual detection algorithms for:
 - No-opportunity responses preserve the calculated timeframe trends, volatility, indicators, data-quality verdict, and news-risk status.
 - A rejected or unavailable setup no longer causes the public analysis panel to lose the market facts used to reach that decision.
 
+### 5e. **Stale Selection Recovery**
+- A candidate that becomes stale during final validation is always converted into a complete deterministic wait response.
+- If a fresh replacement exists it remains visible; otherwise the user receives `NO_TRADE_TODAY` with the rejection reason and full market context.
+
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:
 1. First choice: FVG midpoint

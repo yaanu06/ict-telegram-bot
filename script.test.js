@@ -2071,6 +2071,30 @@ describe('getQuoteDirection', () => {
         expect(raw.trade_signal.confidence).toBe(82);
         expect(raw.trade_signal.opportunity).toMatchObject({ execution_model: 'PENDING_LIMIT' });
     });
+
+    it('converts a stale selector rejection into a complete wait result when no replacement exists', () => {
+        const ctx = getContext();
+        const signal = ctx.buildRejectedSelectionWaitOutput({
+            today: {
+                state: 'NO_TRADE_TODAY',
+                reason_code: 'NO_TRADE_TODAY',
+                reason: 'No fresh deterministic opportunity remains.',
+                trend_detection: { '1D': 'BEARISH', '4H': 'BULLISH_TRANSITION', '1H': 'BULLISH', '15M': 'MIXED' },
+                volatility: { regime: 'NORMAL' },
+                indicators: { adx_4h: 25 },
+                data_quality: { valid: true },
+                news_risk: { status: 'UNKNOWN', available: false }
+            },
+            pairLocal: 'XAU/USD', price: 4363.7, asOfMs: Date.parse('2026-09-19T10:00:00Z'), marketOpen: true,
+            rejection: { valid: false, issues: ['selected candidate lifecycle is not selectable'] }
+        });
+        const publicSignal = ctx.buildPublicTradeSignal(signal);
+        expect(signal).toMatchObject({ decision: 'WAIT', trade_type: 'WAIT', status: 'NO_TRADE_TODAY', execution_allowed: false });
+        expect(signal.reason.code).toBe('STALE_SELECTION_REJECTED');
+        expect(signal.opportunity).toBeUndefined();
+        expect(publicSignal.analysis.trend_detection).toEqual({ '1D': 'BEARISH', '4H': 'BULLISH_TRANSITION', '1H': 'BULLISH', '15M': 'MIXED' });
+        expect(publicSignal.analysis.technical_indicators).toEqual({ adx_4h: 25 });
+    });
 });
 
 describe('analyzeMarketPhase (AMD)', () => {
