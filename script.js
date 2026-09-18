@@ -4179,6 +4179,21 @@ function classifyVolatility(atrPct) {
     return 'LOW';
 }
 
+function classifyCanonicalRegime({ structure = {}, volatility = 'UNKNOWN', history = [] } = {}) {
+    const closed = closedStructureCandles(history || []);
+    if (closed.length < 20) return 'UNKNOWN';
+    const fourH = structure?.['4H'] || structure || {};
+    const effective = String(fourH.effective_trend || fourH.trend || '').toUpperCase();
+    const state = String(fourH.structure_state || '').toUpperCase();
+    if (volatility === 'EXTREME' || volatility === 'HIGH') return 'HIGH_VOLATILITY';
+    if (volatility === 'LOW') return 'LOW_VOLATILITY';
+    if (state === 'TRANSITION' || /_TRANSITION$/.test(effective) || fourH.mss || fourH.bos_buy || fourH.bos_sell || fourH.choch_buy || fourH.choch_sell) return 'TRANSITION';
+    if (effective === 'BULLISH') return 'TREND_UP';
+    if (effective === 'BEARISH') return 'TREND_DOWN';
+    if (effective === 'MIXED' || state === 'CONFLICTING' || effective === 'NEUTRAL') return 'RANGE';
+    return 'UNKNOWN';
+}
+
 function getZonePriceStatus(price, zone) {
     const low = Math.min(Number(zone?.low), Number(zone?.high));
     const high = Math.max(Number(zone?.low), Number(zone?.high));
@@ -7962,6 +7977,10 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     else if (bearVotes >= 2) primaryRegime = 'TRENDING_BEARISH';
     const marketRegime = {
         primary_regime: primaryRegime,
+        // Canonical regime names are stable for the AI, UI, and backtest
+        // consumers; primary_regime remains for backwards compatibility.
+        regime: classifyCanonicalRegime({ structure, volatility: volatilityRegime, history: closed4h }),
+        volatility_regime: volatilityRegime,
         phase: primaryPhase,
         compression,
         displacement

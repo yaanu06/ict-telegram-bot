@@ -180,6 +180,10 @@ Added actual detection algorithms for:
 - A failed AI or consistency pass now clears the previous scan context before starting.
 - If the deterministic fallback also fails, the UI still receives a complete `NO_TRADE` result with the current price, market status, available context, and explicit `ANALYSIS_FAILURE` reason.
 
+### 5i. **Canonical Regime Contract**
+- Live market context now exposes stable regime values: `TREND_UP`, `TREND_DOWN`, `RANGE`, `TRANSITION`, `HIGH_VOLATILITY`, `LOW_VOLATILITY`, or `UNKNOWN`.
+- The older `primary_regime` field remains available for existing strategy consumers, while `volatility_regime` makes volatility classification explicit.
+
 ### 6. **Better Entry Logic**
 Entries now prioritize ICT confluence:
 1. First choice: FVG midpoint

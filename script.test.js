@@ -2483,6 +2483,8 @@ describe('live AI market context and prompt', () => {
         expect(live.risk_constraints.minimum_sl_distance).toBeGreaterThan(0);
         expect(live.risk_constraints.maximum_sl_distance).toBeGreaterThanOrEqual(live.risk_constraints.minimum_sl_distance);
         expect(live.structure['4H'].trend).toBe('BULLISH');
+        expect(['TREND_UP', 'TREND_DOWN', 'RANGE', 'TRANSITION', 'HIGH_VOLATILITY', 'LOW_VOLATILITY', 'UNKNOWN']).toContain(live.market_regime.regime);
+        expect(live.market_regime).toHaveProperty('volatility_regime');
         expect(Array.isArray(live.real_ict_zones)).toBe(true);
         expect(Array.isArray(live.target_candidates.buy)).toBe(true);
         expect(Array.isArray(live.adaptive_setup_candidates)).toBe(true);
