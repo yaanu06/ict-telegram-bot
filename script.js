@@ -514,6 +514,7 @@ const historyResponseCache = new Map();
 const historyInFlightCache = new Map();
 const quoteInFlightCache = new Map();
 const quoteResponseCache = new Map();
+const historyFetchErrors = new Map();
 const QUOTE_CACHE_TTL_MS = 5000;
 const HISTORY_CACHE_TTL_MS = Object.freeze({
     '1M': 30000,
@@ -809,7 +810,11 @@ async function fetchHistoryUncached(tfStr, forPair) {
     try {
         const providerSymbol = getProviderSymbol(requestedPair);
         if (!providerSymbol) throw new Error('Market symbol is missing');
-        const d = await fetchTD('/time_series?symbol=' + encodeURIComponent(providerSymbol) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + '&timezone=UTC');
+        // Twelve Data treats daily/weekly timestamps as period buckets. The
+        // timezone query parameter is intended for intraday series and can
+        // make period-bucket requests fail for otherwise valid symbols.
+        const timezoneQuery = ['1D', '1W'].includes(tfStr) ? '' : '&timezone=UTC';
+        const d = await fetchTD('/time_series?symbol=' + encodeURIComponent(providerSymbol) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + timezoneQuery);
         if(d.values) {
             calls++;
             const rawValues = d.values.map(c => ({
@@ -849,9 +854,16 @@ async function fetchHistoryUncached(tfStr, forPair) {
                 open_candles_filtered: rawValues.length - values.length
             }, enumerable: false });
             historyResponseCache.set(cacheKey, { data: values, ts: Date.now() });
+            historyFetchErrors.delete(cacheKey);
             return values;
         }
-    } catch(e) { console.error(`History error (${tfStr}):`, e); }
+        const message = d?.message || d?.error || `Provider returned no values for ${tfStr}`;
+        historyFetchErrors.set(cacheKey, { timeframe: tfStr, symbol: requestedPair, message: String(message).slice(0, 300), at: Date.now() });
+    } catch(e) {
+        const message = e?.message || String(e);
+        historyFetchErrors.set(cacheKey, { timeframe: tfStr, symbol: requestedPair, message: String(message).slice(0, 300), at: Date.now() });
+        console.error(`History error (${tfStr}):`, e);
+    }
     return null;
 }
 
@@ -7771,6 +7783,7 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         symbol_metadata: symbolMetadata || getSymbolMetadata(pairLocal),
         provider_metadata: providerMetadata || today?.provider_metadata || null,
         data_quality: today?.data_quality || null,
+        history_errors: today?.history_errors || {},
         strategy: today?.strategy || null,
             direction: today?.direction || null,
             bias: today?.bias || 'NEUTRAL',
@@ -8136,6 +8149,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     });
     marketContext.news_risk = checkHighImpactNews(quote_snapshot?.news_risk || null);
     marketContext.symbol_metadata = symbolMetadata;
+    marketContext.history_errors = historyCache?.fetch_errors || {};
     // Candidate construction consumes this same quality verdict so a stale
     // quote cannot be replaced by a fresh-looking fallback candidate.
     marketContext.data_quality = dataQuality;
@@ -8263,6 +8277,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         market_open: marketState.is_market_open,
         market_open_source: marketState.source,
         provider_metadata: Object.fromEntries(Object.entries(historyCache || {}).map(([tf, data]) => [tf, data?.provider_metadata || null])),
+        history_errors: historyCache?.fetch_errors || {},
         last_closed_candle_time: Object.fromEntries(Object.entries(historyCache || {}).map(([tf, data]) => [tf, data?.filter(c => c.is_closed !== false).at(-1)?.t || null])),
         structure_data_cutoff: now.getTime(),
         utc_time: now.toISOString(),
@@ -10309,6 +10324,13 @@ async function runAutoScan() {
             historyCache[t] = await getHistory(t);
         }));
         for (const tf of tfs) historyCache[tf] = canonicalizeHistory(historyCache[tf], tf, scanAsOfMs);
+        Object.defineProperty(historyCache, 'fetch_errors', {
+            value: Object.fromEntries([...historyFetchErrors.entries()]
+                .filter(([key]) => key.startsWith(`${pair}|`))
+                .map(([key, value]) => [key.slice(pair.length + 1), value])),
+            enumerable: false,
+            configurable: true
+        });
         scanTrace('history loaded', scanStartedAt, { timeframes: Object.fromEntries(tfs.map(tf => [tf, historyCache[tf]?.length || 0])) });
         scanStage = 'MTF display';
         await updateMTFDisplay(historyCache);
@@ -10484,6 +10506,7 @@ async function runAutoScan() {
         liveMarketContext.today_opportunity.indicators = liveMarketContext.momentum || null;
         liveMarketContext.today_opportunity.news_risk = liveMarketContext.news_risk;
         liveMarketContext.today_opportunity.data_quality = liveMarketContext.data_quality;
+        liveMarketContext.today_opportunity.history_errors = liveMarketContext.history_errors || {};
         liveMarketContext.today_opportunity.symbol_metadata = liveMarketContext.symbol_metadata;
         liveMarketContext.today_opportunity.market_conditions = liveMarketContext.market_conditions;
         console.log('[SCAN] today opportunity', liveMarketContext.today_opportunity);
@@ -12011,6 +12034,7 @@ function buildPublicTradeSignal(signal = {}) {
                 },
                 news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
                 data_quality: signal.data_quality || null,
+                history_errors: signal.history_errors || {},
                 provider_metadata: signal.provider_metadata || null,
                 market_conditions: signal.market_conditions || null,
                 status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity, !!compactPrimary?.entry_price),
@@ -12049,6 +12073,7 @@ function buildPublicTradeSignal(signal = {}) {
             },
             news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
             data_quality: signal.data_quality || null,
+            history_errors: signal.history_errors || {},
             provider_metadata: signal.provider_metadata || null,
             market_conditions: signal.market_conditions || null,
             status_code: getPublicStatusCode(signal, false, false),
@@ -12117,6 +12142,7 @@ function buildPublicTradeSignal(signal = {}) {
         },
         news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
         data_quality: signal.data_quality || null,
+        history_errors: signal.history_errors || {},
         provider_metadata: signal.provider_metadata || null,
         market_conditions: signal.market_conditions || null,
         status_code: getPublicStatusCode(signal, !!signal.primary_opportunity, Number.isFinite(Number(signal.entry ?? signal.entry_price))),
@@ -12160,6 +12186,7 @@ function recordAnalysisAudit(signal = {}, replay = null) {
         provider_timestamp: signal.provider_timestamp || signal.quote_snapshot?.provider_timestamp || null,
         market_conditions: signal.market_conditions || null,
         data_quality: signal.data_quality || null,
+        history_errors: signal.history_errors || {},
         decision: signal.decision || signal.trade_type || 'WAIT',
         status: signal.status || signal.opportunity_status || null,
         status_code: signal.status_code || getPublicStatusCode(signal),
