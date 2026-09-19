@@ -2133,7 +2133,7 @@ describe('getQuoteDirection', () => {
                 entry: 100, entry_zone: { low: 99.5, high: 100.5 }, stop_loss: 98, tp1: 105, execution_model: 'PENDING_LIMIT', state: 'TRADE_READY' }
         }, 'EUR/USD', 102, Date.parse('2026-09-19T10:00:00Z'), true);
         const publicSignal = ctx.buildPublicTradeSignal(raw.trade_signal);
-        expect(publicSignal.decision).toBe('WAIT');
+        expect(publicSignal.decision).toBe('BUY_LIMIT');
         expect(publicSignal.status).toBe('TRADE_READY');
         expect(publicSignal.opportunity).toMatchObject({ id: 'candidate-1', direction: 'BUY', execution_model: 'PENDING_LIMIT' });
     });
@@ -4792,6 +4792,9 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
     expect(ready.status_code).toBe('SETUP_READY');
     const manualReview = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'BUY_LIMIT', status: 'TRADE_READY', execution_allowed: false, manual_tracking_allowed: true, validation: { passed: true }, entry: 1, stop_loss: 0.99, take_profit_1: 1.03 });
     expect(manualReview.status_code).toBe('SETUP_READY');
+        const incompleteReady = ctx.buildPublicTradeSignal({ pair: 'BTC/USD', decision: 'WAIT', status: 'TRADE_READY', primary_opportunity: { id: 'C-1', direction: 'BUY', state: 'WAITING_FOR_RETRACE' } });
+        expect(incompleteReady.status_code).toBe('WATCH');
+        expect(incompleteReady.decision).toBe('WAIT');
         expect(ready).toHaveProperty('market_open', null);
         expect(ready.reason).toBeNull();
         const blocked = ctx.buildPublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status: 'DATA_BLOCKED', reason: { code: 'DATA_BLOCKED', message: 'price unavailable' } });

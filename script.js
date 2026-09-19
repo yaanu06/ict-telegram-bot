@@ -11649,15 +11649,18 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
     if (signal.market_open === false) return 'MARKET_CLOSED';
     if (signal.status === 'INVALIDATED' || reasonCode.includes('INVALIDATED')) return 'INVALIDATED';
     if (signal.status === 'EXPIRED' || reasonCode.includes('EXPIRED')) return 'EXPIRED';
+    const limitDecision = ['BUY_LIMIT', 'SELL_LIMIT'].includes(String(signal.decision || ''));
+    const readyGeometry = [signal.entry ?? signal.entry_price, signal.stop_loss, signal.tp1 ?? signal.take_profit_1]
+        .every(value => Number.isFinite(Number(value)));
     if ((signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') && signal.execution_allowed === false) {
         // Manual execution is user-controlled. A deterministic setup may be
         // shown for the user's decision even when automatic execution is off.
         // Data, news, and explicit risk blocks above still override this.
-        if (signal.manual_tracking_allowed === true && signal.validation?.passed !== false) return 'SETUP_READY';
-        return 'RISK_BLOCKED';
+        if (limitDecision && readyGeometry && signal.manual_tracking_allowed === true && signal.validation?.passed !== false) return 'SETUP_READY';
+        return hasOpportunity ? 'WATCH' : 'NO_TRADE';
     }
-    if (signal.execution_allowed === false && signal.setup_state === 'SETUP_AVAILABLE') return 'SETUP_READY';
-    if (signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') return 'SETUP_READY';
+    if (signal.execution_allowed === false && signal.setup_state === 'SETUP_AVAILABLE' && limitDecision && readyGeometry) return 'SETUP_READY';
+    if ((signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') && limitDecision && readyGeometry) return 'SETUP_READY';
     if (hasOpportunity && hasEntry) return 'SETUP_READY';
     if (hasOpportunity) return 'WATCH';
     if (signal.status === 'ORDER_PENDING') return 'ORDER_PENDING';
@@ -12037,7 +12040,7 @@ function buildPublicTradeSignal(signal = {}) {
                 pair: signal.pair,
                 current_price: signal.current_price,
                 symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
-                decision: 'WAIT',
+                decision: compactPrimary?.entry_price != null && compactPrimary?.direction ? orderType : 'WAIT',
                 trade_type: orderType,
                 entry_price: compactPrimary?.entry_price ?? null,
                 stop_loss: compactPrimary?.stop_loss ?? null,
@@ -12315,21 +12318,20 @@ function setJsonOutput(obj) {
     const publicValidation = validatePublicTradeSignal(publicSignal);
     if (!publicValidation.valid) {
         console.error('[PUBLIC SIGNAL] schema rejected', publicValidation.issues);
+        const original = publicSignal;
+        const dataBlocked = original?.data_quality?.valid === false;
         publicSignal = {
-            date: publicSignal?.date || new Date().toISOString().slice(0, 10),
-            time: publicSignal?.time || new Date().toISOString().slice(11, 19),
-            pair: publicSignal?.pair || null,
-            current_price: Number.isFinite(Number(publicSignal?.current_price)) ? Number(publicSignal.current_price) : null,
+            ...original,
             decision: 'WAIT',
             trade_type: 'WAIT',
             confidence: 0,
-            status: 'DATA_BLOCKED',
-            status_code: 'DATA_BLOCKED',
+            status: dataBlocked ? 'DATA_BLOCKED' : 'NO_TRADE',
+            status_code: dataBlocked ? 'DATA_BLOCKED' : 'NO_TRADE',
             execution_allowed: false,
             reason: { code: 'PUBLIC_SIGNAL_SCHEMA_INVALID', message: publicValidation.issues.join('; ') },
-            data_quality: { valid: false, reasons: publicValidation.issues },
-            news_risk: publicSignal?.news_risk || { status: 'UNKNOWN', available: false },
-            risk_gate: publicSignal?.risk_gate || getDefaultRiskGate(publicSignal?.execution_mode || DEFAULT_EXECUTION_MODE)
+            data_quality: original?.data_quality || { valid: null, reasons: [] },
+            news_risk: original?.news_risk || { status: 'UNKNOWN', available: false },
+            risk_gate: original?.risk_gate || getDefaultRiskGate(original?.execution_mode || DEFAULT_EXECUTION_MODE)
         };
     }
     renderSignalStatus(publicSignal);
