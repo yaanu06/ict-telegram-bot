@@ -5332,6 +5332,17 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.getMarketOpenState('BTC/USD', { as_of_ms: saturday, is_market_open: false }).is_market_open).toBe(false);
     });
 
+    it('rejects a stale non-crypto provider-open flag during the weekend', () => {
+        const ctx = getContext();
+        const saturday = Date.parse('2026-09-19T06:00:00Z');
+        const staleQuote = Date.parse('2026-09-18T21:00:00Z');
+        expect(ctx.getMarketOpenState('XAU/USD', {
+            as_of_ms: saturday,
+            is_market_open: true,
+            provider_timestamp: staleQuote
+        })).toMatchObject({ is_market_open: false, source: 'ASSET_CALENDAR' });
+    });
+
     it('uses supplied UTC symbol-session metadata before generic asset calendar fallback', () => {
         const ctx = getContext();
         const open = Date.parse('2026-09-14T10:00:00Z');

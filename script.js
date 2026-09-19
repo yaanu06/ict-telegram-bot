@@ -693,12 +693,19 @@ function configuredSessionState(session, asOfMs) {
 }
 
 function getMarketOpenState(forPair = pair, scanSnapshot = {}) {
-    const providerState = parseProviderMarketOpen(scanSnapshot.is_market_open ?? scanSnapshot.market_open);
-    if (providerState !== null) {
-        return { is_market_open: providerState, market_open: providerState, source: 'PROVIDER', asset_class: getAssetClass(forPair) };
-    }
     const assetClass = scanSnapshot.asset_class || getAssetClass(forPair);
     const asOf = normalizeTimestampUTC(scanSnapshot.as_of_ms ?? scanSnapshot.as_of_time ?? scanSnapshot.provider_timestamp) || Date.now();
+    const providerState = parseProviderMarketOpen(scanSnapshot.is_market_open ?? scanSnapshot.market_open);
+    if (providerState !== null) {
+        const providerTimestamp = normalizeTimestampUTC(scanSnapshot.provider_timestamp ?? scanSnapshot.provider_timestamp_utc);
+        const staleProviderOnWeekend = providerState === true && assetClass !== 'CRYPTO'
+            && [0, 6].includes(new Date(asOf).getUTCDay())
+            && Number.isFinite(providerTimestamp)
+            && asOf - providerTimestamp > 60 * 60 * 1000;
+        if (!staleProviderOnWeekend) {
+            return { is_market_open: providerState, market_open: providerState, source: 'PROVIDER', asset_class: assetClass };
+        }
+    }
     const configured = configuredSessionState(scanSnapshot.session || scanSnapshot.symbol_metadata?.session, asOf);
     if (configured !== null) {
         return { is_market_open: configured, market_open: configured, source: 'SYMBOL_SESSION', asset_class: assetClass };
@@ -8270,9 +8277,9 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         provider_timestamp: quote_snapshot?.provider_timestamp || null,
         provider_timestamp_utc: quote_snapshot?.provider_timestamp_utc || null,
         market_conditions: {
-            bid: Number.isFinite(Number(quote_snapshot?.bid)) ? Number(quote_snapshot.bid) : null,
-            ask: Number.isFinite(Number(quote_snapshot?.ask)) ? Number(quote_snapshot.ask) : null,
-            spread: Number.isFinite(Number(quote_snapshot?.spread)) ? Number(quote_snapshot.spread) : null
+            bid: Number.isFinite(quote_snapshot?.bid) ? Number(quote_snapshot.bid) : null,
+            ask: Number.isFinite(quote_snapshot?.ask) ? Number(quote_snapshot.ask) : null,
+            spread: Number.isFinite(quote_snapshot?.spread) ? Number(quote_snapshot.spread) : null
         },
         asset_class: marketState.asset_class,
         data_quality: dataQuality,
