@@ -10,7 +10,7 @@ if (tg) { tg.expand(); tg.ready(); }
 // CONFIG
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
-const APP_BUILD_ID = '20260920-107';
+const APP_BUILD_ID = '20260920-108';
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
 let GITHUB_PAT = '', GITHUB_REPO = 'yaanu06/ict-telegram-bot';
@@ -2123,16 +2123,23 @@ function evaluateStrategyNarrative(narrative, historyCache = {}, price) {
 
 function canonicalizeHistory(candles, timeframe, asOfMs) {
     const duration = TIMEFRAME_MS[timeframe] || 60 * 60000;
-    const normalized = (Array.isArray(candles) ? candles : []).map(c => ({
+    const periodBucket = ['1D', '1W'].includes(timeframe);
+    const base = (Array.isArray(candles) ? candles : []).map(c => ({
         ...c,
         t: normalizeTimestampUTC(c?.t),
         timeframe,
         source: c?.source || 'TWELVE_DATA',
-        timestamp_source: c?.timestamp_source || 'PROVIDER',
-        is_closed: Number.isFinite(normalizeTimestampUTC(c?.t)) && Number.isFinite(asOfMs)
-            ? normalizeTimestampUTC(c.t) + duration <= asOfMs + STRATEGY_SPEC.TIME.futureToleranceMs
-            : c?.is_closed !== false
+        timestamp_source: c?.timestamp_source || 'PROVIDER'
     })).filter(c => Number.isFinite(c.t) && [c.o, c.h, c.l, c.c].every(Number.isFinite));
+    const latestBucketTime = periodBucket ? base.reduce((latest, candle) => Math.max(latest, candle.t), -Infinity) : NaN;
+    const normalized = base.map(c => ({
+        ...c,
+        is_closed: Number.isFinite(c.t) && Number.isFinite(asOfMs)
+            ? (periodBucket
+                ? c.t < latestBucketTime || c.t + duration <= asOfMs + STRATEGY_SPEC.TIME.futureToleranceMs
+                : c.t + duration <= asOfMs + STRATEGY_SPEC.TIME.futureToleranceMs)
+            : c.is_closed !== false
+    }));
     Object.defineProperty(normalized, 'provider_metadata', { value: candles?.provider_metadata || { provider: 'UNKNOWN', requested_timezone: 'UTC', timeframe }, enumerable: false });
     return normalized;
 }

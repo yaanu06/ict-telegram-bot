@@ -4384,6 +4384,18 @@ describe('production invariant contracts', () => {
         expect(result[0].is_closed).toBe(true);
     });
 
+    it('canonicalizes completed daily period buckets independently of intraday duration', () => {
+        const ctx = getContext();
+        const scan = Date.parse('2026-09-19T14:00:00Z');
+        const result = ctx.canonicalizeHistory([
+            { t: '2026-09-19T02:00:00Z', o: 1, h: 2, l: 0.5, c: 1.5 },
+            { t: '2026-09-19T13:00:00Z', o: 1.5, h: 2.5, l: 1, c: 2 }
+        ], '1D', scan);
+        expect(result).toHaveLength(2);
+        expect(result[0].is_closed).toBe(true);
+        expect(result[1].is_closed).toBe(false);
+    });
+
     it('rejects a future-dated strategy event without clamping its age', () => {
         const ctx = getContext();
         const asOf = Date.parse('2026-09-11T10:00:00Z');
