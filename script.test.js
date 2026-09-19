@@ -5451,6 +5451,20 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(metadata.metadata_complete).toBe(true);
     });
 
+    it('treats provider zero placeholders as unknown metadata', () => {
+        const ctx = getContext();
+        const metadata = ctx.getSymbolMetadata('EUR/USD', {
+            tick_size: 0, tick_value: 0, contract_size: 0,
+            minimum_order_size: 0, spread: 0, leverage: 0
+        });
+        expect(metadata.tick_size).toBe(0.0001);
+        expect(metadata.tick_value).toBeNull();
+        expect(metadata.contract_size).toBeNull();
+        expect(metadata.spread).toBeNull();
+        expect(metadata.leverage).toBeNull();
+        expect(metadata.metadata_complete).toBe(false);
+    });
+
     it('classifies exchange-qualified provider symbols by underlying instrument', () => {
         const ctx = getContext();
         expect(ctx.getAssetClass('NASDAQ:AAPL')).toBe('EQUITY');

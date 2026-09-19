@@ -627,30 +627,32 @@ function getSymbolMetadata(forPair = pair, overrides = {}) {
     const symbol = normalizeSymbolInput(forPair);
     const assetClass = overrides.asset_class || getAssetClass(symbol);
     const settings = getMarketSettings(symbol, overrides);
+    const positive = key => Number.isFinite(Number(overrides[key])) && Number(overrides[key]) > 0 ? Number(overrides[key]) : null;
+    const finite = key => Number.isFinite(Number(overrides[key])) ? Number(overrides[key]) : null;
     return {
         symbol,
         asset_class: assetClass,
-        tick_size: Number.isFinite(Number(overrides.tick_size)) ? Number(overrides.tick_size) : settings.pipSize,
+        tick_size: positive('tick_size') ?? settings.pipSize,
         price_precision: Number.isInteger(Number(overrides.price_precision)) ? Number(overrides.price_precision) : settings.prec,
-        tick_value: Number.isFinite(Number(overrides.tick_value)) ? Number(overrides.tick_value) : null,
-        contract_size: Number.isFinite(Number(overrides.contract_size)) ? Number(overrides.contract_size) : null,
-        minimum_order_size: Number.isFinite(Number(overrides.minimum_order_size)) ? Number(overrides.minimum_order_size) : null,
-        minimum_price_distance: Number.isFinite(Number(overrides.minimum_price_distance)) ? Number(overrides.minimum_price_distance) : null,
-        stop_buffer: Number.isFinite(Number(overrides.stop_buffer)) ? Number(overrides.stop_buffer) : null,
-        max_stop_pct: Number.isFinite(Number(overrides.max_stop_pct)) ? Number(overrides.max_stop_pct) : null,
-        minimum_rr: Number.isFinite(Number(overrides.minimum_rr)) ? Number(overrides.minimum_rr) : null,
-        min_sl_atr_multiplier: Number.isFinite(Number(overrides.min_sl_atr_multiplier)) ? Number(overrides.min_sl_atr_multiplier) : null,
-        spread: Number.isFinite(Number(overrides.spread)) ? Number(overrides.spread) : null,
-        maximum_spread: overrides.maximum_spread != null && Number.isFinite(Number(overrides.maximum_spread)) ? Number(overrides.maximum_spread) : null,
-        commission_per_unit: Number.isFinite(Number(overrides.commission_per_unit)) ? Number(overrides.commission_per_unit) : null,
-        slippage_estimate: Number.isFinite(Number(overrides.slippage_estimate)) ? Number(overrides.slippage_estimate) : null,
-        maximum_slippage: overrides.maximum_slippage != null && Number.isFinite(Number(overrides.maximum_slippage)) ? Number(overrides.maximum_slippage) : null,
+        tick_value: positive('tick_value'),
+        contract_size: positive('contract_size'),
+        minimum_order_size: positive('minimum_order_size'),
+        minimum_price_distance: positive('minimum_price_distance'),
+        stop_buffer: positive('stop_buffer'),
+        max_stop_pct: positive('max_stop_pct'),
+        minimum_rr: positive('minimum_rr'),
+        min_sl_atr_multiplier: positive('min_sl_atr_multiplier'),
+        spread: positive('spread'),
+        maximum_spread: positive('maximum_spread'),
+        commission_per_unit: finite('commission_per_unit'),
+        slippage_estimate: positive('slippage_estimate'),
+        maximum_slippage: positive('maximum_slippage'),
         volume_reliable: typeof overrides.volume_reliable === 'boolean' ? overrides.volume_reliable : null,
-        leverage: Number.isFinite(Number(overrides.leverage)) ? Number(overrides.leverage) : null,
+        leverage: positive('leverage'),
         trading_permissions: overrides.trading_permissions ?? null,
         session: overrides.session ?? null,
         metadata_source: Object.keys(overrides).length ? 'PROVIDER_OR_USER' : 'HEURISTIC',
-        metadata_complete: Number.isFinite(Number(overrides.tick_size)) && Number.isFinite(Number(overrides.contract_size))
+        metadata_complete: positive('tick_size') !== null && positive('contract_size') !== null
     };
 }
 
@@ -718,7 +720,7 @@ async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
         const quotePrice = Number(quote.price ?? quote.close);
         const bid = Number(quote.bid);
         const ask = Number(quote.ask);
-        const spread = Number.isFinite(bid) && Number.isFinite(ask) && ask >= bid ? ask - bid : null;
+        const spread = Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0 && ask >= bid && ask > bid ? ask - bid : null;
         const providerTimestamp = normalizeTimestampUTC(quote.timestamp ?? quote.datetime ?? quote.last_update);
         const providerOpen = parseProviderMarketOpen(quote.is_market_open ?? quote.market_open ?? quote.market_status);
         if (Number.isFinite(quotePrice)) {
@@ -726,8 +728,8 @@ async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
             return {
                 pair: p,
                 price: quotePrice,
-                bid: Number.isFinite(bid) ? bid : null,
-                ask: Number.isFinite(ask) ? ask : null,
+                bid: bid > 0 ? bid : null,
+                ask: ask > 0 ? ask : null,
                 spread,
                 provider_timestamp: providerTimestamp,
                 provider_timestamp_utc: Number.isFinite(providerTimestamp) ? new Date(providerTimestamp).toISOString() : null,
