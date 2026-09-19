@@ -858,15 +858,31 @@ async function fetchHistoryUncached(tfStr, forPair) {
                 v: Number.isFinite(Number(c.volume)) ? Number(c.volume) : null,
                 timeframe: tfStr,
                 source: 'TWELVE_DATA',
-                timestamp_source: 'PROVIDER',
-                is_closed: Number.isFinite(normalizeTimestampUTC(c.datetime))
-                    && normalizeTimestampUTC(c.datetime) + (TIMEFRAME_MS[tfStr] || 60 * 60000) <= Date.now()
+                timestamp_source: 'PROVIDER'
             }));
+            const periodBucket = ['1D', '1W'].includes(tfStr);
+            const latestBucketTime = periodBucket
+                ? rawValues.reduce((latest, candle) => Math.max(latest, Number(candle.t)), -Infinity)
+                : NaN;
+            for (const candle of rawValues) {
+                const candleTime = Number(candle.t);
+                // Daily/weekly values are period buckets. A provider may label
+                // the bucket at its start or end, so completion is determined
+                // by whether a newer bucket exists, then by elapsed duration
+                // for the newest bucket. Intraday candles use elapsed duration.
+                candle.is_closed = Number.isFinite(candleTime) && (periodBucket
+                    ? candleTime < latestBucketTime || candleTime + (TIMEFRAME_MS[tfStr] || 60 * 60000) <= Date.now()
+                    : candleTime + (TIMEFRAME_MS[tfStr] || 60 * 60000) <= Date.now());
+            }
             // Twelve Data may include the currently forming bucket. It is
             // useful for display, but must never become confirmed structure or
             // indicator input. Keep only closed candles in the analysis cache.
             const values = rawValues.filter(c => c.is_closed);
-            if (!values.length) throw new Error(`No closed provider candles available for ${tfStr}`);
+            if (!values.length) {
+                const timestamps = rawValues.map(candle => Number(candle.t)).filter(Number.isFinite);
+                const range = timestamps.length ? `; raw_count=${rawValues.length}; first=${new Date(Math.min(...timestamps)).toISOString()}; last=${new Date(Math.max(...timestamps)).toISOString()}` : `; raw_count=${rawValues.length}`;
+                throw new Error(`No closed provider candles available for ${tfStr}${range}`);
+            }
             if (values.some(c => !Number.isFinite(c.t))) throw new Error(`Invalid provider timestamp for ${tfStr}`);
             if (values.some(c => ![c.o, c.h, c.l, c.c].every(Number.isFinite))) throw new Error(`Invalid provider OHLC values for ${tfStr}`);
             if (values.some(c => c.h < Math.max(c.o, c.c) || c.l > Math.min(c.o, c.c) || c.h < c.l)) throw new Error(`Impossible provider OHLC geometry for ${tfStr}`);

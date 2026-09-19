@@ -5195,6 +5195,20 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(requestedUrl).toContain('interval=1min');
     });
 
+    it('closes completed daily period buckets even when their labels are within one day', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        const now = Date.now();
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ values: [
+            { datetime: new Date(now - 12 * 60 * 60 * 1000).toISOString(), open: '1', high: '2', low: '0.5', close: '1.5' },
+            { datetime: new Date(now - 60 * 60 * 1000).toISOString(), open: '1.5', high: '2.5', low: '1', close: '2' }
+        ] }) }));
+        const daily = await ctx.getHistory('1D', 'BTC/USD');
+        expect(daily).toHaveLength(1);
+        expect(daily[0].c).toBe(1.5);
+        expect(daily.provider_metadata.timestamp_contract).toBe('PERIOD_BUCKET');
+    });
+
     it('deduplicates simultaneous quote and history requests per symbol and timeframe', async () => {
         const ctx = getContext();
         await ctx.saveKeys('tw', '', '', '', '');
