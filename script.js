@@ -808,6 +808,29 @@ async function getMarketQuoteSnapshot(forPair = pair) {
     }
 }
 
+function refreshStaleQuoteFromClosedCandle(quoteSnapshot, historyCache, asOfMs = Date.now(), timeframe = '5M') {
+    if (!quoteSnapshot || !Array.isArray(historyCache?.[timeframe])) return quoteSnapshot;
+    const quoteTime = normalizeTimestampUTC(quoteSnapshot.provider_timestamp ?? quoteSnapshot.provider_timestamp_utc);
+    const quoteFresh = Number.isFinite(quoteTime) && Number(asOfMs) - quoteTime <= 60 * 60 * 1000;
+    if (quoteFresh) return quoteSnapshot;
+    const candles = historyCache[timeframe]
+        .filter(candle => candle?.is_closed !== false && Number.isFinite(Number(candle?.t)) && Number.isFinite(Number(candle?.c)) && Number(candle.c) > 0)
+        .sort((left, right) => Number(left.t) - Number(right.t));
+    const latest = candles.at(-1);
+    const candleTime = Number(latest?.t);
+    const candleAge = Number(asOfMs) - candleTime;
+    const maxAge = timeframeDurationMs(timeframe) * 3;
+    if (!latest || !Number.isFinite(candleTime) || candleAge < -5 * 60 * 1000 || candleAge > maxAge) return quoteSnapshot;
+    return {
+        ...quoteSnapshot,
+        price: Number(latest.c),
+        provider_timestamp: candleTime,
+        provider_timestamp_utc: new Date(candleTime).toISOString(),
+        quote_source: 'CANDLE_CLOSE_FALLBACK',
+        quote_fallback_reason: 'STALE_QUOTE_ENDPOINT'
+    };
+}
+
 async function fetchHistoryUncached(tfStr, forPair) {
     if(!hasMarketDataAccess()) return null;
     if (!TF_MAP[tfStr]) throw new Error(`Unsupported timeframe: ${tfStr}`);
@@ -10333,6 +10356,12 @@ async function runAutoScan() {
             historyCache[t] = await getHistory(t);
         }));
         for (const tf of tfs) historyCache[tf] = canonicalizeHistory(historyCache[tf], tf, scanAsOfMs);
+        const refreshedQuoteSnapshot = refreshStaleQuoteFromClosedCandle(quoteSnapshot, historyCache, scanAsOfMs, '5M');
+        if (refreshedQuoteSnapshot !== quoteSnapshot) {
+            quoteSnapshot = refreshedQuoteSnapshot;
+            price = quoteSnapshot.price;
+            scanTrace('quote refreshed from closed candle', scanStartedAt, { timeframe: '5M', quote_source: quoteSnapshot.quote_source });
+        }
         Object.defineProperty(historyCache, 'fetch_errors', {
             value: Object.fromEntries([...historyFetchErrors.entries()]
                 .filter(([key]) => key.startsWith(`${pair}|`))

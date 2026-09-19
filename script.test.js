@@ -5343,6 +5343,17 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         })).toMatchObject({ is_market_open: false, source: 'ASSET_CALENDAR' });
     });
 
+    it('uses a fresh closed candle when the quote endpoint is stale', () => {
+        const ctx = getContext();
+        const asOf = Date.parse('2026-09-19T06:00:00Z');
+        const refreshed = ctx.refreshStaleQuoteFromClosedCandle({
+            pair: 'BTC/USD', price: 81040, provider_timestamp: Date.parse('2026-09-18T20:00:00Z'), quote_source: 'QUOTE'
+        }, {
+            '5M': [{ t: Date.parse('2026-09-19T05:55:00Z'), c: 81055, is_closed: true }]
+        }, asOf, '5M');
+        expect(refreshed).toMatchObject({ price: 81055, provider_timestamp: Date.parse('2026-09-19T05:55:00Z'), quote_source: 'CANDLE_CLOSE_FALLBACK' });
+    });
+
     it('uses supplied UTC symbol-session metadata before generic asset calendar fallback', () => {
         const ctx = getContext();
         const open = Date.parse('2026-09-14T10:00:00Z');
