@@ -59,6 +59,27 @@ describe('market and AI proxy boundary', () => {
         }
     });
 
+    test('keeps daily Twelve Data requests free of intraday timezone parameters', async () => {
+        const urls = [];
+        const fetchImpl = jest.fn(async url => {
+            urls.push(String(url));
+            return { status: 200, text: async () => JSON.stringify({ values: [] }) };
+        });
+        const server = createProxyServer({
+            env: { TWELVE_DATA_API_KEY: 'provider-secret', PROXY_MAX_REQUESTS: '20', PROXY_TWELVE_MAX_REQUESTS: '20' },
+            fetchImpl
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            expect((await request(server, 'GET', '/api/twelve/time_series?symbol=EUR%2FUSD&interval=1day&outputsize=200')).status).toBe(200);
+            expect((await request(server, 'GET', '/api/twelve/time_series?symbol=EUR%2FUSD&interval=1h&outputsize=200')).status).toBe(200);
+            expect(new URL(urls[0]).searchParams.has('timezone')).toBe(false);
+            expect(new URL(urls[1]).searchParams.get('timezone')).toBe('UTC');
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
     test('enforces the Twelve Data account budget across different clients', async () => {
         const fetchImpl = jest.fn(async () => ({ status: 200, text: async () => JSON.stringify({ price: '1.25' }) }));
         const server = createProxyServer({

@@ -139,7 +139,13 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                 upstream.searchParams.set('symbol', validation.symbol);
                 if (validation.interval) upstream.searchParams.set('interval', validation.interval);
                 if (validation.outputsize) upstream.searchParams.set('outputsize', String(validation.outputsize));
-                upstream.searchParams.set('timezone', 'UTC');
+                // Twelve Data expects intraday candles in an explicit timezone,
+                // while 1day/1week are period buckets and can reject timezone
+                // when combined with forex symbols. Keep the provider request
+                // compatible with both contracts.
+                if (validation.interval && !['1day', '1week'].includes(validation.interval)) {
+                    upstream.searchParams.set('timezone', 'UTC');
+                }
                 upstream.searchParams.set('apikey', twelveKey);
                 const result = await proxyJson(fetchImpl, upstream, { headers: upstreamHeaders(twelveKey) }, upstreamTimeoutMs);
                 return jsonResponse(res, result.status, result.payload, origin);
