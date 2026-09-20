@@ -94,6 +94,12 @@
 .signal-status { margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; background: rgba(142, 142, 147, .14); color: #d1d1d6; font-size: 11px; font-weight: 700; letter-spacing: .02em; }
 .signal-status.setup-ready, .signal-status.watch { color: #34c759; background: rgba(52, 199, 89, .14); }
 .signal-status.risk-blocked, .signal-status.news-blocked, .signal-status.data-blocked, .signal-status.market-closed, .signal-status.invalidated, .signal-status.expired { color: #ff9f0a; background: rgba(255, 159, 10, .14); }
+#signalStatus, #opportunityStack, #jsonOutput { display: none !important; }
+.trade-summary { display: flex; flex-direction: column; gap: 0; font-size: 12px; line-height: 1.45; }
+.trade-summary-row { display: grid; grid-template-columns: minmax(112px, 38%) minmax(0, 1fr); gap: 8px; padding: 7px 0; border-bottom: 1px solid rgba(142, 142, 147, .16); }
+.trade-summary-row:last-child { border-bottom: 0; }
+.trade-summary-row > span { color: #8e8e93; }
+.trade-summary-row > strong { color: #f2f2f7; font-weight: 600; overflow-wrap: anywhere; }
 /* Custom provider symbol input */
 .custom-symbol-row { display: flex; gap: 8px; margin-top: 8px; }
 .custom-symbol-row .input-field { flex: 1; min-width: 0; }

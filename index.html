@@ -106,11 +106,12 @@
         <!-- JSON Output -->
         <div class="section json-section">
             <div class="json-header">
-                <h3>📋 Best Setup Found</h3>
-                <button id="copyJsonBtn" class="copy-json-btn">📋 Copy</button>
+                <h3>Trade Signal · ICT Trading Bot Pro</h3>
+                <button id="copyJsonBtn" class="copy-json-btn">Copy Summary</button>
             </div>
             <div id="signalStatus" class="signal-status" aria-live="polite">NO_TRADE · Awaiting analysis</div>
-            <pre id="jsonOutput" class="json-output">{}</pre>
+            <div id="tradeSummary" class="trade-summary" aria-live="polite">Run a scan to generate a trade summary.</div>
+            <pre id="jsonOutput" class="json-output" aria-hidden="true">{}</pre>
             <div id="opportunityStack" class="opportunity-stack" aria-live="polite"></div>
         </div>
 
@@ -153,6 +154,6 @@
         <div id="notification" class="notification hidden"></div>
     </div>
 
-<script src="script.js?v=20260920-110"></script>
+<script src="script.js?v=20260920-111"></script>
 </body>
 </html>

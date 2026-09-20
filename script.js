@@ -10,7 +10,8 @@ if (tg) { tg.expand(); tg.ready(); }
 // CONFIG
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
-const APP_BUILD_ID = '20260920-110';
+const APP_BUILD_ID = '20260920-111';
+let lastDisplayedPublicSignal = null;
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
 let GITHUB_PAT = '', GITHUB_REPO = 'yaanu06/ict-telegram-bot';
@@ -12063,6 +12064,8 @@ function buildPublicTradeSignal(signal = {}) {
                 reason: watch.reason || null,
                 next_requirement: watch.next_requirement || []
             } : null);
+            const planConfidence = [plan?.confidence, signal.opportunity?.confidence, signal.confidence]
+                .find(value => value !== null && value !== undefined && Number.isFinite(Number(value)));
             const orderType = compactPrimary?.entry_price != null && compactPrimary?.direction
                 ? `${compactPrimary.direction}_LIMIT` : 'WAIT';
             return {
@@ -12077,7 +12080,7 @@ function buildPublicTradeSignal(signal = {}) {
                 take_profit_1: compactPrimary?.take_profit_1 ?? null,
                 take_profit_2: compactPrimary?.take_profit_2 ?? null,
                 take_profit_3: compactPrimary?.take_profit_3 ?? null,
-                confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
+                confidence: planConfidence === undefined ? 0 : Number(planConfidence),
                 status: signal.status === 'TRADE_READY' ? 'TRADE_READY' : 'TODAY_OPPORTUNITY',
                 opportunity: plan ? {
                     id: plan.id,
@@ -12086,6 +12089,11 @@ function buildPublicTradeSignal(signal = {}) {
                     trade_context: plan.trade_context,
                     setup_timeframe: plan.setup_timeframe,
                     execution_timeframe: plan.execution_timeframe,
+                    entry_price: plan.entry_price ?? null,
+                    stop_loss: plan.stop_loss ?? null,
+                    take_profit_1: plan.take_profit_1 ?? null,
+                    take_profit_2: plan.take_profit_2 ?? null,
+                    take_profit_3: plan.take_profit_3 ?? null,
                     area_of_interest: plan.entry_zone,
                     execution_model: plan.execution_model,
                     target_intent: plan.target_intent || plan.target?.source || null,
@@ -12100,7 +12108,7 @@ function buildPublicTradeSignal(signal = {}) {
                 analysis: {
                     trend_detection: publicTrendMap || signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
                     volatility_level: signal.volatility?.regime || signal.analysis?.volatility || null,
-                    technical_indicators: signal.indicators || signal.analysis?.indicators || null,
+                    technical_indicators: signal.indicators || signal.analysis?.technical_indicators || signal.analysis?.indicators || null,
                     type: signal.strategy || signal.trade_context_classification || null
                 },
                 news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
@@ -12139,7 +12147,7 @@ function buildPublicTradeSignal(signal = {}) {
             analysis: {
                 trend_detection: publicTrendMap || signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
                 volatility_level: signal.volatility?.regime || signal.analysis?.volatility || null,
-                technical_indicators: signal.indicators || signal.analysis?.indicators || null,
+                technical_indicators: signal.indicators || signal.analysis?.technical_indicators || signal.analysis?.indicators || null,
                 type: signal.strategy || signal.trade_context_classification || null
             },
             news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
@@ -12180,7 +12188,7 @@ function buildPublicTradeSignal(signal = {}) {
         tp2: signal.tp2 ?? signal.take_profit_2 ?? null,
         tp3: signal.tp3 ?? signal.take_profit_3 ?? null,
         rr_tp1: signal.rr_tp1 ?? parseRR(signal.risk_reward),
-        confidence: signal.confidence,
+        confidence: signal.primary_opportunity?.confidence ?? signal.setup_confidence ?? signal.quality?.final_confidence ?? signal.adaptive_candidate?.quality?.final_confidence ?? signal.confidence ?? null,
         status: signal.status || signal.opportunity_status || signal.lifecycle_state || null,
         setup_state: signal.setup_state || (signal.status === 'TRADE_READY' ? 'TRADE_READY' : null),
         reason: signal.reason || (reasoning.primary ? { code: 'SETUP_CONTEXT', message: reasoning.primary } : null),
@@ -12192,6 +12200,9 @@ function buildPublicTradeSignal(signal = {}) {
         watch_setups: Array.isArray(signal.watch_setups) ? signal.watch_setups : [],
         analysis: {
             bias: signal.analysis?.bias || (signal.direction === 'BUY' ? 'BULLISH' : signal.direction === 'SELL' ? 'BEARISH' : 'NEUTRAL'),
+            volatility_level: signal.volatility?.regime || signal.analysis?.volatility_level || signal.analysis?.volatility || null,
+            technical_indicators: signal.indicators || signal.analysis?.technical_indicators || signal.analysis?.indicators || null,
+            type: signal.analysis?.type || signal.strategy || strategy || null,
             trade_context: signal.trade_context_classification || signal.adaptive_candidate?.trade_context_classification || null,
             higher_timeframe: publicHigherTimeframe,
             structural_context: publicTrendMap || signal.structural_context || null,
@@ -12365,7 +12376,9 @@ function setJsonOutput(obj) {
             risk_gate: original?.risk_gate || getDefaultRiskGate(original?.execution_mode || DEFAULT_EXECUTION_MODE)
         };
     }
+    lastDisplayedPublicSignal = publicSignal;
     renderSignalStatus(publicSignal);
+    renderTradeSummary(publicSignal);
     let replay = null;
     if (lastLiveMarketContextForReplay) {
         try {
@@ -12380,6 +12393,113 @@ function setJsonOutput(obj) {
         window.__ICT_LAST_SCAN_REPLAY__ = replay;
     }
     if (lastLiveMarketContextForReplay) lastLiveMarketContextForReplay = null;
+}
+
+function getTradeSummaryModel(signal = {}) {
+    const setup = signal.primary_opportunity
+        || signal.active_setups?.[0]
+        || signal.watch_setups?.[0]
+        || signal.opportunity
+        || {};
+    const location = setup.location || setup.area_of_interest || setup.entry_zone || {};
+    const metadata = signal.symbol_metadata || getSymbolMetadata(signal.pair);
+    const precision = Number.isInteger(Number(metadata?.price_precision)) ? Math.min(10, Number(metadata.price_precision)) : 5;
+    const price = value => {
+        const number = Number(value);
+        return value == null || value === '' || !Number.isFinite(number)
+            ? '—'
+            : number.toLocaleString('en-US', { maximumFractionDigits: precision, useGrouping: false });
+    };
+    const candidateConfidence = [
+        setup.confidence,
+        signal.setup_confidence,
+        signal.opportunity?.confidence,
+        signal.confidence
+    ].find(value => value !== null && value !== undefined && Number.isFinite(Number(value)));
+    const decision = String(signal.decision || '').toUpperCase();
+    const direction = ['BUY', 'SELL', 'BUY_LIMIT', 'SELL_LIMIT'].includes(decision) ? decision : String(setup.direction || '').toUpperCase();
+    const type = direction === 'BUY' || direction === 'BUY_LIMIT' ? 'BUY LIMIT'
+        : direction === 'SELL' || direction === 'SELL_LIMIT' ? 'SELL LIMIT' : 'WAIT';
+    const trend = signal.analysis?.trend_detection || signal.trend_detection || {};
+    const indicators = signal.analysis?.technical_indicators || signal.analysis?.indicators || signal.indicators || {};
+    const indicatorParts = [];
+    const indicatorLabels = {
+        adx_4h: 'ADX 4H', adx_1h: 'ADX 1H', rsi_4h: 'RSI 4H', rsi_1h: 'RSI 1H',
+        macd_direction_4h: 'MACD 4H', macd_4h: 'MACD value 4H', macd_signal_4h: 'MACD signal 4H'
+    };
+    for (const [key, label] of Object.entries(indicatorLabels)) {
+        const value = indicators?.[key];
+        if (value != null && (key.startsWith('macd_direction') || Number.isFinite(Number(value)))) indicatorParts.push(`${label}: ${key.startsWith('macd_direction') ? value : Number(value).toFixed(2)}`);
+    }
+    const ema = indicators?.ema_alignment_4h;
+    if (ema && typeof ema === 'object') {
+        for (const key of ['ema9', 'ema21', 'ema50', 'ema200']) {
+            if (ema[key] != null && Number.isFinite(Number(ema[key]))) indicatorParts.push(`${key.toUpperCase()}: ${price(ema[key])}`);
+        }
+    }
+    if (indicators?.supertrend_4h != null && Number.isFinite(Number(indicators.supertrend_4h))) indicatorParts.push(`Supertrend 4H: ${price(indicators.supertrend_4h)}`);
+    const trendText = Object.entries(trend).map(([tf, value]) => `${tf}: ${typeof value === 'object' ? (value.displayed_trend || value.effective_trend || value.trend || '—') : String(value).replace(/^\s*[^:]+:\s*/, '')}`).join(' · ');
+    const analysisText = signal.analysis?.setup
+        || signal.reason?.message
+        || setup.reason
+        || signal.analysis?.reason
+        || 'No current setup analysis.';
+    const setupType = setup.strategy || signal.analysis?.type || signal.strategy || location.source || '—';
+    const source = location.source || location.type;
+    return {
+        bot: 'ICT Trading Bot Pro',
+        date: signal.date || '—',
+        currentPrice: price(signal.current_price),
+        pair: signal.pair || '—',
+        tradeType: type,
+        confidence: candidateConfidence === undefined ? '0%' : `${Math.round(Number(candidateConfidence))}%`,
+        entry: price(signal.entry ?? signal.entry_price ?? setup.entry_price ?? setup.entry),
+        stopLoss: price(signal.stop_loss ?? setup.stop_loss),
+        tp1: price(signal.tp1 ?? signal.take_profit_1 ?? setup.take_profit_1 ?? setup.tp1 ?? setup.target?.level),
+        tp2: price(signal.tp2 ?? signal.take_profit_2 ?? setup.take_profit_2 ?? setup.tp2),
+        tp3: price(signal.tp3 ?? signal.take_profit_3 ?? setup.take_profit_3 ?? setup.tp3),
+        analysis: analysisText,
+        trend: trendText || '—',
+        volatility: signal.analysis?.volatility_level || signal.analysis?.volatility?.regime || signal.analysis?.volatility || signal.volatility_level || signal.volatility?.regime || '—',
+        indicators: indicatorParts.join(' · ') || '—',
+        type: source && source !== setupType ? `${setupType} · ${source}` : setupType
+    };
+}
+
+function formatTradeSummaryText(signal = {}) {
+    const model = getTradeSummaryModel(signal);
+    return [
+        `Trade Signal — ${model.bot}`,
+        `Date: ${model.date}`,
+        `Current Price: ${model.currentPrice}`,
+        `Pair: ${model.pair}`,
+        `Trade Type: ${model.tradeType}`,
+        `Confidence: ${model.confidence}`,
+        `Entry Price: ${model.entry}`,
+        `Stop Loss: ${model.stopLoss}`,
+        `Take Profit 1: ${model.tp1}`,
+        `Take Profit 2: ${model.tp2}`,
+        `Take Profit 3: ${model.tp3}`,
+        `Analysis: ${model.analysis}`,
+        `Trend Detection: ${model.trend}`,
+        `Volatility Level: ${model.volatility}`,
+        `Technical Indicators: ${model.indicators}`,
+        `Type: ${model.type}`
+    ].join('\n');
+}
+
+function renderTradeSummary(signal = {}) {
+    const el = document.getElementById('tradeSummary');
+    if (!el) return;
+    const model = getTradeSummaryModel(signal);
+    const rows = [
+        ['Date', model.date], ['Current Price', model.currentPrice], ['Pair', model.pair],
+        ['Trade Type', model.tradeType], ['Confidence', model.confidence], ['Entry Price', model.entry],
+        ['Stop Loss', model.stopLoss], ['Take Profit 1', model.tp1], ['Take Profit 2', model.tp2],
+        ['Take Profit 3', model.tp3], ['Analysis', model.analysis], ['Trend Detection', model.trend],
+        ['Volatility Level', model.volatility], ['Technical Indicators', model.indicators], ['Type', model.type]
+    ];
+    el.innerHTML = rows.map(([label, value]) => `<div class="trade-summary-row"><span>${escapeOpportunityHtml(label)}</span><strong>${escapeOpportunityHtml(value)}</strong></div>`).join('');
 }
 
 function escapeOpportunityHtml(value) {
@@ -13005,13 +13125,12 @@ function copyJson(event = null) {
             .catch(() => showNotif('Failed', 'error'));
         return;
     }
-    const el = document.getElementById('jsonOutput');
-    const t = el ? el.textContent : '';
-    if(!t || t.trim() === '{}') {
+    if (!lastDisplayedPublicSignal) {
         showNotif('Run analysis first', 'warning');
         return;
     }
-    navigator.clipboard.writeText(t).then(() => showNotif('📋 Copied!', 'success')).catch(() => showNotif('Failed', 'error'));
+    const summary = formatTradeSummaryText(lastDisplayedPublicSignal);
+    navigator.clipboard.writeText(summary).then(() => showNotif('Trade summary copied', 'success')).catch(() => showNotif('Failed', 'error'));
 }
 
 function showNotif(m, t) {

@@ -2049,6 +2049,41 @@ describe('getQuoteDirection', () => {
         expect(signal.analysis.trend_detection).toEqual({ '1D': 'BEARISH', '4H': 'BULLISH', '1H': 'BULLISH' });
     });
 
+    it('uses the selected developing setup confidence when the outer WAIT signal has zero', () => {
+        const ctx = getContext();
+        const signal = ctx.buildPublicTradeSignal({
+            pair: 'BTC/USD', current_price: 100, decision: 'WAIT', status: 'TODAY_OPPORTUNITY', confidence: 0,
+            watch_setups: [{ direction: 'BUY', confidence: 76, entry_price: 98, stop_loss: 95, take_profit_1: 104,
+                strategy: 'ICT', location: { source: 'FVG', low: 97, high: 99 } }],
+            trend_detection: { '1D': 'BULLISH', '4H': 'BULLISH', '1H': 'BEARISH' },
+            indicators: { adx_4h: 24.5, rsi_4h: 58.2, macd_direction_4h: 'BULLISH' },
+            volatility: { regime: 'NORMAL' }
+        });
+        expect(signal.confidence).toBe(76);
+        const summary = ctx.formatTradeSummaryText(signal);
+        expect(summary).toContain('Trade Type: BUY LIMIT');
+        expect(summary).toContain('Confidence: 76%');
+        expect(summary).toContain('Entry Price: 98');
+        expect(summary).toContain('Technical Indicators: ADX 4H: 24.50');
+        expect(summary).toContain('Type: ICT · FVG');
+    });
+
+    it('renders a compact trade summary while keeping raw JSON hidden', () => {
+        const { context, elements } = getScanContext();
+        context.renderTradeSummary({
+            pair: 'EUR/USD', date: '2026-09-20', current_price: 1.14567, decision: 'SELL_LIMIT', confidence: 81,
+            entry: 1.15, stop_loss: 1.153, tp1: 1.14, analysis: { trend_detection: { '4H': 'BEARISH' },
+                volatility_level: 'LOW', technical_indicators: { adx_4h: 22 }, type: 'FVG' }, strategy: 'ICT'
+        });
+        expect(elements.get('tradeSummary').innerHTML).toContain('Trade Type');
+        expect(elements.get('tradeSummary').innerHTML).toContain('SELL LIMIT');
+        expect(elements.get('tradeSummary').innerHTML).toContain('Volatility Level');
+        const html = fs.readFileSync('index.html', 'utf8');
+        const css = fs.readFileSync('style.css', 'utf8');
+        expect(html).toContain('id="tradeSummary"');
+        expect(css).toContain('#jsonOutput { display: none !important; }');
+    });
+
     it('keeps deterministic market facts in a no-opportunity output', () => {
         const ctx = getContext();
         const today = ctx.buildTodayOpportunity({
