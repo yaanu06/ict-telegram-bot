@@ -2084,6 +2084,29 @@ describe('getQuoteDirection', () => {
         expect(css).toContain('#jsonOutput { display: none !important; }');
     });
 
+    it('recovers limit side, setup confidence, trends, volatility, and indicators from a WAIT wrapper with valid geometry', () => {
+        const ctx = getContext();
+        const summary = ctx.formatTradeSummaryText({
+            pair: 'BTC/USD', date: '2026-09-20', current_price: 80333.43,
+            decision: 'WAIT', trade_type: 'WAIT', confidence: 0,
+            entry_price: 80263.66, stop_loss: 80104.5225,
+            take_profit_1: 81136.015, take_profit_2: 81175.62, take_profit_3: 81216.705,
+            primary_opportunity: { strategy: 'CRT+MSNR', direction: 'BUY', confidence: 0,
+                opportunity_quality: { deterministic_confidence: 78 } },
+            analysis: {
+                setup: 'CRT+MSNR BUY_LIMIT at 80263.66.',
+                trend_detection: { '1D': 'BEARISH', '4H': 'BULLISH', '1H': 'BULLISH', '15M': 'BULLISH' },
+                volatility_level: 'HIGH',
+                technical_indicators: { adx_4h: 60.9, rsi_4h: 62.8, macd_direction_4h: 'BULLISH' }
+            }
+        });
+        expect(summary).toContain('Trade Type: BUY LIMIT');
+        expect(summary).toContain('Confidence: 78%');
+        expect(summary).toContain('Trend Detection: 1D: BEARISH');
+        expect(summary).toContain('Volatility Level: HIGH');
+        expect(summary).toContain('Technical Indicators: ADX 4H: 60.90');
+    });
+
     it('keeps deterministic market facts in a no-opportunity output', () => {
         const ctx = getContext();
         const today = ctx.buildTodayOpportunity({

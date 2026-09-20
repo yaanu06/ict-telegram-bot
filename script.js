@@ -10,7 +10,7 @@ if (tg) { tg.expand(); tg.ready(); }
 // CONFIG
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
-const APP_BUILD_ID = '20260920-111';
+const APP_BUILD_ID = '20260920-112';
 let lastDisplayedPublicSignal = null;
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
@@ -12013,7 +12013,7 @@ function buildPublicTradeSignal(signal = {}) {
         return match ? Number(match[1]) : null;
     };
     const structural = signal.structural_context || signal.top_down_context?.higher_timeframe || null;
-    const publicTrendMap = normalizePublicTrendMap(signal.trend_detection || structural);
+    const publicTrendMap = normalizePublicTrendMap(signal.trend_detection || signal.analysis?.trend_detection || structural);
     const publicHigherTimeframe = normalizePublicHigherTimeframe(signal.top_down_context?.higher_timeframe, publicTrendMap || {});
     const publicRiskGate = signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE);
     const structureSummary = signal.analysis?.structure || (publicTrendMap
@@ -12107,8 +12107,8 @@ function buildPublicTradeSignal(signal = {}) {
                 ai_analysis: signal.ai_analysis || null,
                 analysis: {
                     trend_detection: publicTrendMap || signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
-                    volatility_level: signal.volatility?.regime || signal.analysis?.volatility || null,
-                    technical_indicators: signal.indicators || signal.analysis?.technical_indicators || signal.analysis?.indicators || null,
+                    volatility_level: signal.volatility?.regime || signal.analysis?.volatility_level || signal.analysis?.volatility?.regime || signal.analysis?.volatility || null,
+                    technical_indicators: signal.indicators || signal.technical_indicators || signal.analysis?.technical_indicators || signal.analysis?.indicators || null,
                     type: signal.strategy || signal.trade_context_classification || null
                 },
                 news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
@@ -12146,8 +12146,8 @@ function buildPublicTradeSignal(signal = {}) {
             ai_analysis: signal.ai_analysis || null,
             analysis: {
                 trend_detection: publicTrendMap || signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
-                volatility_level: signal.volatility?.regime || signal.analysis?.volatility || null,
-                technical_indicators: signal.indicators || signal.analysis?.technical_indicators || signal.analysis?.indicators || null,
+                volatility_level: signal.volatility?.regime || signal.analysis?.volatility_level || signal.analysis?.volatility?.regime || signal.analysis?.volatility || null,
+                technical_indicators: signal.indicators || signal.technical_indicators || signal.analysis?.technical_indicators || signal.analysis?.indicators || null,
                 type: signal.strategy || signal.trade_context_classification || null
             },
             news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
@@ -12200,8 +12200,9 @@ function buildPublicTradeSignal(signal = {}) {
         watch_setups: Array.isArray(signal.watch_setups) ? signal.watch_setups : [],
         analysis: {
             bias: signal.analysis?.bias || (signal.direction === 'BUY' ? 'BULLISH' : signal.direction === 'SELL' ? 'BEARISH' : 'NEUTRAL'),
-            volatility_level: signal.volatility?.regime || signal.analysis?.volatility_level || signal.analysis?.volatility || null,
-            technical_indicators: signal.indicators || signal.analysis?.technical_indicators || signal.analysis?.indicators || null,
+            trend_detection: publicTrendMap || signal.trend_detection || signal.analysis?.trend_detection || signal.structural_context || null,
+            volatility_level: signal.volatility?.regime || signal.analysis?.volatility_level || signal.analysis?.volatility?.regime || signal.analysis?.volatility || null,
+            technical_indicators: signal.indicators || signal.technical_indicators || signal.analysis?.technical_indicators || signal.analysis?.indicators || null,
             type: signal.analysis?.type || signal.strategy || strategy || null,
             trade_context: signal.trade_context_classification || signal.adaptive_candidate?.trade_context_classification || null,
             higher_timeframe: publicHigherTimeframe,
@@ -12410,18 +12411,42 @@ function getTradeSummaryModel(signal = {}) {
             ? '—'
             : number.toLocaleString('en-US', { maximumFractionDigits: precision, useGrouping: false });
     };
-    const candidateConfidence = [
+    const entryValue = signal.entry ?? signal.entry_price ?? setup.entry_price ?? setup.entry;
+    const stopValue = signal.stop_loss ?? setup.stop_loss;
+    const tp1Value = signal.tp1 ?? signal.take_profit_1 ?? setup.take_profit_1 ?? setup.tp1 ?? setup.target?.level;
+    const candidateConfidenceValues = [
         setup.confidence,
+        setup.opportunity_quality?.deterministic_confidence,
+        setup.opportunity_quality?.confidence,
+        setup.quality?.final_confidence,
+        setup.confidence_breakdown?.final_score,
+        signal.primary_opportunity?.confidence,
+        signal.selected_candidate?.confidence,
+        signal.adaptive_candidate?.confidence,
+        signal.adaptive_candidate?.quality?.final_confidence,
+        signal.quality?.final_confidence,
+        signal.opportunity_quality?.deterministic_confidence,
+        signal.confidence_breakdown?.final_score,
         signal.setup_confidence,
         signal.opportunity?.confidence,
         signal.confidence
-    ].find(value => value !== null && value !== undefined && Number.isFinite(Number(value)));
-    const decision = String(signal.decision || '').toUpperCase();
-    const direction = ['BUY', 'SELL', 'BUY_LIMIT', 'SELL_LIMIT'].includes(decision) ? decision : String(setup.direction || '').toUpperCase();
-    const type = direction === 'BUY' || direction === 'BUY_LIMIT' ? 'BUY LIMIT'
-        : direction === 'SELL' || direction === 'SELL_LIMIT' ? 'SELL LIMIT' : 'WAIT';
-    const trend = signal.analysis?.trend_detection || signal.trend_detection || {};
-    const indicators = signal.analysis?.technical_indicators || signal.analysis?.indicators || signal.indicators || {};
+    ].filter(value => value !== null && value !== undefined && Number.isFinite(Number(value)));
+    const candidateConfidence = candidateConfidenceValues.find(value => Number(value) > 0) ?? candidateConfidenceValues[0];
+    const orderLabels = [signal.trade_type, signal.decision].map(value => String(value || '').toUpperCase());
+    const explicitLimit = orderLabels.find(value => ['BUY_LIMIT', 'SELL_LIMIT'].includes(value));
+    const direction = explicitLimit || [signal.direction, setup.direction, signal.opportunity?.direction, signal.primary_opportunity?.direction]
+        .map(value => String(value || '').toUpperCase())
+        .find(value => ['BUY', 'SELL', 'BUY_LIMIT', 'SELL_LIMIT'].includes(value));
+    const numericEntry = Number(entryValue), numericStop = Number(stopValue), numericTarget = Number(tp1Value);
+    const geometryDirection = Number.isFinite(numericEntry) && Number.isFinite(numericStop) && Number.isFinite(numericTarget)
+        ? numericStop < numericEntry && numericEntry < numericTarget ? 'BUY_LIMIT'
+            : numericStop > numericEntry && numericEntry > numericTarget ? 'SELL_LIMIT' : null
+        : null;
+    const resolvedDirection = direction || geometryDirection;
+    const type = resolvedDirection === 'BUY' || resolvedDirection === 'BUY_LIMIT' ? 'BUY LIMIT'
+        : resolvedDirection === 'SELL' || resolvedDirection === 'SELL_LIMIT' ? 'SELL LIMIT' : 'WAIT';
+    const trend = signal.analysis?.trend_detection || signal.trend_detection || signal.analysis?.structural_context || signal.structural_context || signal.analysis?.higher_timeframe || {};
+    const indicators = signal.analysis?.technical_indicators || signal.analysis?.indicators || signal.technical_indicators || signal.indicators || {};
     const indicatorParts = [];
     const indicatorLabels = {
         adx_4h: 'ADX 4H', adx_1h: 'ADX 1H', rsi_4h: 'RSI 4H', rsi_1h: 'RSI 1H',
@@ -12453,14 +12478,14 @@ function getTradeSummaryModel(signal = {}) {
         pair: signal.pair || '—',
         tradeType: type,
         confidence: candidateConfidence === undefined ? '0%' : `${Math.round(Number(candidateConfidence))}%`,
-        entry: price(signal.entry ?? signal.entry_price ?? setup.entry_price ?? setup.entry),
-        stopLoss: price(signal.stop_loss ?? setup.stop_loss),
-        tp1: price(signal.tp1 ?? signal.take_profit_1 ?? setup.take_profit_1 ?? setup.tp1 ?? setup.target?.level),
+        entry: price(entryValue),
+        stopLoss: price(stopValue),
+        tp1: price(tp1Value),
         tp2: price(signal.tp2 ?? signal.take_profit_2 ?? setup.take_profit_2 ?? setup.tp2),
         tp3: price(signal.tp3 ?? signal.take_profit_3 ?? setup.take_profit_3 ?? setup.tp3),
         analysis: analysisText,
         trend: trendText || '—',
-        volatility: signal.analysis?.volatility_level || signal.analysis?.volatility?.regime || signal.analysis?.volatility || signal.volatility_level || signal.volatility?.regime || '—',
+        volatility: signal.analysis?.volatility_level || signal.analysis?.volatility?.regime || (typeof signal.analysis?.volatility === 'string' ? signal.analysis.volatility : null) || signal.volatility_level || signal.volatility?.regime || '—',
         indicators: indicatorParts.join(' · ') || '—',
         type: source && source !== setupType ? `${setupType} · ${source}` : setupType
     };
