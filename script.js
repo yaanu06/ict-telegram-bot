@@ -10,7 +10,7 @@ if (tg) { tg.expand(); tg.ready(); }
 // CONFIG
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
-const APP_BUILD_ID = '20260920-112';
+const APP_BUILD_ID = '20260920-113';
 let lastDisplayedPublicSignal = null;
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
@@ -7593,7 +7593,9 @@ function buildOpportunityDisplayScenario(plan = {}, currentPrice = null, tier = 
         next_requirement: plan.activation_conditions || [],
         cancellation_conditions: plan.cancellation_conditions || [],
         reason: plan.reason || null,
-        confidence: Number.isFinite(Number(plan.confidence)) ? Number(plan.confidence) : 0,
+        confidence: Number(plan.confidence) > 0 && Number.isFinite(Number(plan.confidence))
+            ? Number(plan.confidence)
+            : (Number(quality.deterministic_confidence) > 0 ? Number(quality.deterministic_confidence) : 0),
         opportunity_quality: quality,
         rejection_codes: quality.rejection_codes || plan.rejection_codes || [],
         rank_reasons: quality.rank_reasons || []
@@ -12025,6 +12027,10 @@ function buildPublicTradeSignal(signal = {}) {
         if (['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(signal.status)) {
             const primary = signal.primary_opportunity || null;
             const watch = Array.isArray(signal.watch_setups) && signal.watch_setups.length ? signal.watch_setups[0] : null;
+            const primaryConfidence = Number(primary?.confidence) > 0 ? Number(primary.confidence)
+                : Number(primary?.opportunity_quality?.deterministic_confidence) > 0 ? Number(primary.opportunity_quality.deterministic_confidence)
+                    : Number(primary?.quality?.final_confidence) > 0 ? Number(primary.quality.final_confidence)
+                        : Number(primary?.confidence_breakdown?.final_score) > 0 ? Number(primary.confidence_breakdown.final_score) : 0;
             const compactPrimary = primary ? {
                 id: primary.id || null,
                 direction: primary.direction || null,
@@ -12042,7 +12048,8 @@ function buildPublicTradeSignal(signal = {}) {
                 state: primary.state || primary.lifecycle_state || null,
                 target: primary.target || (primary.target_level != null ? { level: primary.target_level, source: primary.target_intent || null } : null),
                 structural_invalidation: primary.structural_invalidation || null,
-                confidence: primary.confidence ?? null,
+                confidence: primaryConfidence,
+                opportunity_quality: primary.opportunity_quality || primary.quality || null,
                 reason: primary.reason || null,
                 next_requirement: primary.next_requirement || []
             } : null;
@@ -12064,8 +12071,16 @@ function buildPublicTradeSignal(signal = {}) {
                 reason: watch.reason || null,
                 next_requirement: watch.next_requirement || []
             } : null);
-            const planConfidence = [plan?.confidence, signal.opportunity?.confidence, signal.confidence]
-                .find(value => value !== null && value !== undefined && Number.isFinite(Number(value)));
+            const planConfidence = [
+                plan?.confidence,
+                plan?.opportunity_quality?.deterministic_confidence,
+                primary?.confidence,
+                primary?.opportunity_quality?.deterministic_confidence,
+                watch?.confidence,
+                watch?.opportunity_quality?.deterministic_confidence,
+                signal.opportunity?.confidence,
+                signal.confidence
+            ].find(value => value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) > 0);
             const orderType = compactPrimary?.entry_price != null && compactPrimary?.direction
                 ? `${compactPrimary.direction}_LIMIT` : 'WAIT';
             return {
@@ -12107,8 +12122,8 @@ function buildPublicTradeSignal(signal = {}) {
                 ai_analysis: signal.ai_analysis || null,
                 analysis: {
                     trend_detection: publicTrendMap || signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
-                    volatility_level: signal.volatility?.regime || signal.analysis?.volatility_level || signal.analysis?.volatility?.regime || signal.analysis?.volatility || null,
-                    technical_indicators: signal.indicators || signal.technical_indicators || signal.analysis?.technical_indicators || signal.analysis?.indicators || null,
+                    volatility_level: signal.volatility?.regime || (typeof signal.volatility === 'string' ? signal.volatility : null) || signal.volatility_level || signal.analysis?.volatility_level || signal.analysis?.volatility?.regime || signal.analysis?.volatility || signal.market_context?.volatility?.regime || signal.today_opportunity?.volatility?.regime || null,
+                    technical_indicators: signal.indicators || signal.momentum || signal.technical_indicators || signal.analysis?.technical_indicators || signal.analysis?.indicators || signal.market_context?.momentum || signal.market_context?.indicators || signal.today_opportunity?.indicators || null,
                     type: signal.strategy || signal.trade_context_classification || null
                 },
                 news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
