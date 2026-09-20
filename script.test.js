@@ -324,6 +324,7 @@ describe('strategy entry lifecycle', () => {
         expect(ctx.normalizeTimestampUTC(ms)).toBe(ms);
         expect(ctx.normalizeTimestampUTC(Math.floor(ms / 1000))).toBe(ms);
         expect(ctx.normalizeTimestampUTC(iso)).toBe(ms);
+        expect(ctx.normalizeTimestampUTC('2026-09-11')).toBe(Date.UTC(2026, 8, 11));
         expect(ctx.normalizeTimestampUTC('2026-09-11 00:00:00')).toBe(ms);
         expect(ctx.normalizeTimestampUTC(new Date(ms))).toBe(ms);
         expect(ctx.normalizeTimestampUTC('2026-09-11T05:00:00+05:00')).toBe(ms);
@@ -5219,6 +5220,22 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(daily).toHaveLength(1);
         expect(daily[0].c).toBe(1.5);
         expect(daily.provider_metadata.timestamp_contract).toBe('PERIOD_BUCKET');
+    });
+
+    it('parses Twelve Data date-only daily candle labels as UTC period buckets', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        const today = new Date().toISOString().slice(0, 10);
+        const day = offset => new Date(Date.parse(`${today}T00:00:00Z`) - offset * 86400000).toISOString().slice(0, 10);
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ values: [
+            { datetime: day(0), open: '2', high: '3', low: '1', close: '2.5' },
+            { datetime: day(1), open: '1.5', high: '2.5', low: '1', close: '2' },
+            { datetime: day(2), open: '1', high: '2', low: '0.5', close: '1.5' }
+        ] }) }));
+        const daily = await ctx.getHistory('1D', 'BTC/USD');
+        expect(daily).toHaveLength(2);
+        expect(daily[0].t).toBe(Date.parse(`${day(2)}T00:00:00Z`));
+        expect(daily.provider_metadata.closed_count).toBe(2);
     });
 
     it('accepts provider daily candles whose timestamp field is named timestamp', async () => {

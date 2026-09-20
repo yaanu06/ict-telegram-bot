@@ -10,7 +10,7 @@ if (tg) { tg.expand(); tg.ready(); }
 // CONFIG
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
-const APP_BUILD_ID = '20260920-109';
+const APP_BUILD_ID = '20260920-110';
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
 let GITHUB_PAT = '', GITHUB_REPO = 'yaanu06/ict-telegram-bot';
@@ -13042,6 +13042,13 @@ function normalizeTimestampUTC(value) {
     }
     if (typeof value !== 'string' || !value.trim()) return NaN;
     const trimmed = value.trim();
+    // WebViews differ on parsing the non-standard date-only form `YYYY-MM-DDZ`.
+    // Twelve Data uses date-only labels for daily candles, so normalize them
+    // explicitly to UTC midnight before invoking Date parsing.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        const parsedDate = new Date(`${trimmed}T00:00:00Z`).getTime();
+        return Number.isFinite(parsedDate) ? parsedDate : NaN;
+    }
     if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
         const numeric = Number(trimmed);
         return Math.abs(numeric) < 1e11 ? numeric * 1000 : numeric;
