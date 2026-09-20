@@ -10,7 +10,7 @@ if (tg) { tg.expand(); tg.ready(); }
 // CONFIG
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
-const APP_BUILD_ID = '20260920-108';
+const APP_BUILD_ID = '20260920-109';
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
 let GITHUB_PAT = '', GITHUB_REPO = 'yaanu06/ict-telegram-bot';
@@ -851,7 +851,7 @@ async function fetchHistoryUncached(tfStr, forPair) {
         if(d.values) {
             calls++;
             const rawValues = d.values.map(c => ({
-                t: normalizeTimestampUTC(c.datetime),
+                t: normalizeTimestampUTC(c?.datetime ?? c?.timestamp ?? c?.time ?? c?.date ?? c?.t),
                 o: +c.open,
                 h: +c.high,
                 l: +c.low,
@@ -881,7 +881,13 @@ async function fetchHistoryUncached(tfStr, forPair) {
             const values = rawValues.filter(c => c.is_closed);
             if (!values.length) {
                 const timestamps = rawValues.map(candle => Number(candle.t)).filter(Number.isFinite);
-                const range = timestamps.length ? `; raw_count=${rawValues.length}; first=${new Date(Math.min(...timestamps)).toISOString()}; last=${new Date(Math.max(...timestamps)).toISOString()}` : `; raw_count=${rawValues.length}`;
+                const sample = d.values[0];
+                const rowKeys = sample && typeof sample === 'object' && !Array.isArray(sample) ? Object.keys(sample).slice(0, 12).join(',') : Array.isArray(sample) ? `array(${sample.length})` : typeof sample;
+                const rawTimestamp = sample && typeof sample === 'object' && !Array.isArray(sample)
+                    ? (sample.datetime ?? sample.timestamp ?? sample.time ?? sample.date ?? sample.t)
+                    : Array.isArray(sample) ? sample[0] : undefined;
+                const timestampSample = rawTimestamp == null ? 'missing' : String(rawTimestamp).slice(0, 80);
+                const range = timestamps.length ? `; raw_count=${rawValues.length}; first=${new Date(Math.min(...timestamps)).toISOString()}; last=${new Date(Math.max(...timestamps)).toISOString()}` : `; raw_count=${rawValues.length}; row_keys=${rowKeys || 'none'}; timestamp_sample=${timestampSample}`;
                 throw new Error(`No closed provider candles available for ${tfStr}${range}`);
             }
             if (values.some(c => !Number.isFinite(c.t))) throw new Error(`Invalid provider timestamp for ${tfStr}`);

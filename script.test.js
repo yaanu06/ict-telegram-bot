@@ -5221,6 +5221,35 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(daily.provider_metadata.timestamp_contract).toBe('PERIOD_BUCKET');
     });
 
+    it('accepts provider daily candles whose timestamp field is named timestamp', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        const now = Date.now();
+        const errors = [];
+        ctx.console.error = (...args) => errors.push(args);
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ values: [
+            { timestamp: new Date(now - 4 * 86400000).toISOString(), open: '1.5', high: '2.5', low: '1', close: '2' },
+            { timestamp: new Date(now - 5 * 86400000).toISOString(), open: '1', high: '2', low: '0.5', close: '1.5' }
+        ] }) }));
+        const daily = await ctx.getHistory('1D', 'BTC/USD');
+        if (!daily) throw errors[0]?.[1] || new Error('daily history request returned null');
+        expect(daily).toHaveLength(2);
+        expect(daily.provider_metadata.provider).toBe('TWELVE_DATA');
+    });
+
+    it('includes sanitized timestamp shape diagnostics when provider daily timestamps cannot be parsed', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        const errors = [];
+        ctx.console.error = (...args) => errors.push(args);
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ values: [
+            { ts: 'unrecognized-time', open: '1', high: '2', low: '0.5', close: '1.5' }
+        ] }) }));
+        expect(await ctx.getHistory('1D', 'BTC/USD')).toBeNull();
+        expect(errors[0][1].message).toContain('row_keys=ts,open,high,low,close');
+        expect(errors[0][1].message).toContain('timestamp_sample=missing');
+    });
+
     it('deduplicates simultaneous quote and history requests per symbol and timeframe', async () => {
         const ctx = getContext();
         await ctx.saveKeys('tw', '', '', '', '');
