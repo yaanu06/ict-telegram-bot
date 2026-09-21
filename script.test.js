@@ -388,6 +388,73 @@ describe('strategy entry lifecycle', () => {
     });
 });
 
+describe('calculation and execution contract regressions', () => {
+    it('rounds by tick in the correct direction for metal, JPY, and crypto symbols', () => {
+        const ctx = getContext();
+        expect(ctx.roundToTick(4351.27, 0.1, 'down')).toBe(4351.2);
+        expect(ctx.roundToTick(161.234, 0.001, 'up')).toBe(161.234);
+        expect(ctx.roundToTick(81540.523, 0.01, 'up')).toBe(81540.53);
+        expect(ctx.normalizeTradePrice(4351.27, 'XAU/USD', {}, 'BUY', 'entry')).toBe(4351.2);
+        expect(ctx.validatePriceTick(4351.2, 'XAU/USD', {})).toBe(true);
+    });
+
+    it('does not calculate EMA200 or ATR14 from insufficient history', () => {
+        const ctx = getContext();
+        const short = candles(199, 100, 1, 'up');
+        expect(ctx.localIndicatorSnapshot(short).ema200).toBeUndefined();
+        ctx.short = short;
+        ctx.short = candles(14, 100, 1, 'up');
+        expect(vm.runInContext('atr(short, 14)', ctx)).toBeNull();
+        expect(ctx.localIndicatorSnapshot([...short, ...candles(1, 300, 1, 'up')]).ema200).toEqual(expect.any(Number));
+    });
+
+    it('returns unavailable ADX instead of a fabricated strong trend and calculates Wilder ADX', () => {
+        const ctx = getContext();
+        expect(ctx.calculateADX(candles(27, 100, 1, 'up'), 14).adx).toBeNull();
+        const result = ctx.calculateADX(candles(60, 100, 1, 'up'), 14);
+        expect(result.adx).toBeCloseTo(100, 6);
+        expect(result.plusDI).toBeGreaterThan(result.minusDI);
+    });
+
+    it('converts breakout-retest swing indexes back to the full dataset', () => {
+        const ctx = getContext();
+        const data = Array.from({ length: 70 }, () => ({ o: 99, h: 99.5, l: 98.5, c: 99, v: 1 }));
+        data[14] = { o: 99, h: 101.2, l: 98.8, c: 101 };
+        ctx.findSwings = () => ({ H: [{ i: 2, p: 100 }], L: [] });
+        expect(ctx.detectBreakoutRetest(data, 100, 'BUY')).toMatchObject({ breakout: true, level: 100 });
+    });
+
+    it('distinguishes a zone touch from an exact entry fill', () => {
+        const ctx = getContext();
+        const candidate = { direction: 'BUY', entry: 100, entry_region_low: 99, entry_region_high: 101, zone_low: 99, zone_high: 101, tp1: 110,
+            execution_event_index: 0, execution_event_time: '2026-09-12T09:00:00Z',
+            strategy_setup: { primary: 'CRT', timeframe: '1H', reclaim_bar_index: 0 } };
+        const market = { pair: 'EUR/USD', price: 102, as_of_time: Date.parse('2026-09-12T12:00:00Z'),
+            historyCache: { '1H': [
+                { t: '2026-09-12T09:00:00Z', o: 102, h: 102.5, l: 99.5, c: 102 },
+                { t: '2026-09-12T10:00:00Z', o: 102, h: 102.5, l: 99.5, c: 102 }
+            ] }, market_open: true };
+        const lifecycle = ctx.evaluateSetupLifecycle(candidate, market);
+        expect(lifecycle.zone_touched).toBe(true);
+        expect(lifecycle.exact_entry_touched).toBe(true);
+        expect(lifecycle.entry_consumed).toBe(true);
+    });
+
+    it('returns UNKNOWN for unavailable news and blocks a supplied high-impact window', () => {
+        const ctx = getContext();
+        expect(ctx.checkHighImpactNews().status).toBe('UNKNOWN');
+        const now = new Date('2026-09-22T12:00:00Z');
+        expect(ctx.checkHighImpactNews({ available: true, source: 'calendar', events: [{ impact: 'high', name: 'CPI', event_time: now.toISOString() }] }, now)).toMatchObject({ status: 'HIGH_IMPACT', inNewsWindow: true });
+    });
+
+    it('uses deterministic candidate normalization and rejects RR after normalization', () => {
+        const ctx = getContext();
+        const candidate = { direction: 'BUY', pair: 'XAU/USD', entry: 100.01, zone_low: 99.9, zone_high: 100.1,
+            stop_loss: 99.89, tp1: 100.33, structural_invalidation: { level: 99.85 } };
+        expect(ctx.normalizeAndValidateCandidate(candidate, { pair: 'XAU/USD', symbol_metadata: {}, ask: 101 })).toMatchObject({ valid: false, reason: 'RR_BELOW_MINIMUM_AFTER_NORMALIZATION' });
+    });
+});
+
 describe('market-thesis opportunity invariants', () => {
     it('does not confuse verified market mechanics with fresh continuation', () => {
         const ctx = getContext();

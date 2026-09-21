@@ -181,6 +181,96 @@ function getPreferredStopAtrMultiplier(settings = {}) {
 
 function getPrec(p, metadata = {}) { return getMarketSettings(p, metadata).prec; }
 
+function getTickSize(symbol, metadata = {}) {
+    const settings = getMarketSettings(symbol, metadata);
+    const supplied = Number(metadata.tick_size ?? metadata.tickSize);
+    if (Number.isFinite(supplied) && supplied > 0) return supplied;
+    if (getAssetClass(normalizeSymbolInput(symbol)) === 'FOREX') return Math.pow(10, -settings.prec);
+    return Number(settings.pipSize) > 0 ? Number(settings.pipSize) : Math.pow(10, -settings.prec);
+}
+
+function roundToTick(value, tickSize, mode = 'nearest') {
+    if (!Number.isFinite(Number(value)) || !Number.isFinite(Number(tickSize)) || Number(tickSize) <= 0) return null;
+    const units = Number(value) / Number(tickSize);
+    const ticks = mode === 'down' ? Math.floor(units + 1e-10) : mode === 'up' ? Math.ceil(units - 1e-10) : Math.round(units);
+    return Number((ticks * Number(tickSize)).toPrecision(14));
+}
+
+function normalizeTradePrice(value, symbol, metadata = {}, direction, role) {
+    const roundDown = (direction === 'BUY' && ['entry', 'stop_loss'].includes(role)) ||
+        (direction === 'SELL' && String(role).startsWith('take_profit'));
+    return roundToTick(Number(value), getTickSize(symbol, metadata), roundDown ? 'down' : 'up');
+}
+
+function normalizeZoneBounds(low, high, symbol, metadata = {}) {
+    if (!Number.isFinite(Number(low)) || !Number.isFinite(Number(high)) || Number(low) > Number(high)) return null;
+    const tick = getTickSize(symbol, metadata);
+    return { low: roundToTick(Number(low), tick, 'down'), high: roundToTick(Number(high), tick, 'up') };
+}
+
+function validatePriceTick(value, symbol, metadata = {}) {
+    const tick = getTickSize(symbol, metadata);
+    return Number.isFinite(Number(value)) && Math.abs(Number(value) / tick - Math.round(Number(value) / tick)) <= 1e-7;
+}
+
+function normalizeAndValidateCandidate(candidate, context = {}) {
+    const fail = reason => ({ valid: false, reason, candidate: null });
+    if (!candidate || !['BUY', 'SELL'].includes(candidate.direction)) return fail('INVALID_DIRECTION');
+    const symbol = context.pair || candidate.pair || pair;
+    const metadata = context.symbol_metadata || context.symbolMetadata || candidate.symbol_metadata || {};
+    const rawZone = {
+        low: Number(candidate.entry_region_low ?? candidate.zone_low ?? candidate.zone?.low),
+        high: Number(candidate.entry_region_high ?? candidate.zone_high ?? candidate.zone?.high)
+    };
+    const raw = { entry: Number(candidate.entry), stop_loss: Number(candidate.stop_loss), tp1: Number(candidate.tp1), tp2: Number(candidate.tp2), tp3: Number(candidate.tp3) };
+    if (!Number.isFinite(rawZone.low) || !Number.isFinite(rawZone.high) || rawZone.low > rawZone.high) return fail('INVALID_RAW_ZONE');
+    if (![raw.entry, raw.stop_loss, raw.tp1].every(Number.isFinite)) return fail('INCOMPLETE_GEOMETRY');
+    if (raw.entry < rawZone.low || raw.entry > rawZone.high) return fail('RAW_ENTRY_OUTSIDE_ZONE');
+    const invalidationValue = candidate.structural_invalidation?.level ?? candidate.structural_invalidation
+        ?? (candidate.direction === 'BUY' ? rawZone.low : rawZone.high);
+    const invalidation = Number(invalidationValue);
+    if (!Number.isFinite(invalidation)) return fail('MISSING_STRUCTURAL_INVALIDATION');
+    const zone = normalizeZoneBounds(rawZone.low, rawZone.high, symbol, metadata);
+    const normalized = { ...candidate, raw_geometry: { ...raw, entry_region_low: rawZone.low, entry_region_high: rawZone.high,
+        structural_invalidation: invalidationValue } };
+    if (candidate.structural_invalidation == null) normalized.structural_invalidation = {
+        level: invalidation, source: 'ENTRY_ZONE_BOUNDARY', timeframe: candidate.timeframe || null
+    };
+    normalized.entry = normalizeTradePrice(raw.entry, symbol, metadata, candidate.direction, 'entry');
+    normalized.stop_loss = normalizeTradePrice(raw.stop_loss, symbol, metadata, candidate.direction, 'stop_loss');
+    normalized.tp1 = normalizeTradePrice(raw.tp1, symbol, metadata, candidate.direction, 'take_profit_1');
+    if (Number.isFinite(raw.tp2)) normalized.tp2 = normalizeTradePrice(raw.tp2, symbol, metadata, candidate.direction, 'take_profit_2');
+    if (Number.isFinite(raw.tp3)) normalized.tp3 = normalizeTradePrice(raw.tp3, symbol, metadata, candidate.direction, 'take_profit_3');
+    normalized.entry_region_low = zone.low;
+    normalized.entry_region_high = zone.high;
+    normalized.zone_low = zone.low;
+    normalized.zone_high = zone.high;
+    const tick = getTickSize(symbol, metadata);
+    if (normalized.entry < zone.low - tick / 2 || normalized.entry > zone.high + tick / 2) return fail('NORMALIZED_ENTRY_OUTSIDE_ZONE');
+    if (candidate.direction === 'BUY') {
+        if (Number.isFinite(Number(context.ask)) && normalized.entry >= Number(context.ask)) return fail('BUY_ENTRY_NOT_BELOW_ASK');
+        if (!(normalized.stop_loss < normalized.entry && normalized.tp1 > normalized.entry)) return fail('BUY_GEOMETRY_INVALID_AFTER_NORMALIZATION');
+        if (normalized.stop_loss >= invalidation) return fail('BUY_STOP_NOT_BEYOND_INVALIDATION');
+        if (Number.isFinite(normalized.tp2) && normalized.tp2 <= normalized.tp1 || Number.isFinite(normalized.tp3) && normalized.tp3 <= (Number.isFinite(normalized.tp2) ? normalized.tp2 : normalized.tp1)) return fail('TP_ORDER_INVALID');
+    } else {
+        if (Number.isFinite(Number(context.bid)) && normalized.entry <= Number(context.bid)) return fail('SELL_ENTRY_NOT_ABOVE_BID');
+        if (!(normalized.stop_loss > normalized.entry && normalized.tp1 < normalized.entry)) return fail('SELL_GEOMETRY_INVALID_AFTER_NORMALIZATION');
+        if (normalized.stop_loss <= invalidation) return fail('SELL_STOP_NOT_BEYOND_INVALIDATION');
+        if (Number.isFinite(normalized.tp2) && normalized.tp2 >= normalized.tp1 || Number.isFinite(normalized.tp3) && normalized.tp3 >= (Number.isFinite(normalized.tp2) ? normalized.tp2 : normalized.tp1)) return fail('TP_ORDER_INVALID');
+    }
+    const risk = Math.abs(normalized.entry - normalized.stop_loss);
+    const rr = risk > 0 ? Math.abs(normalized.tp1 - normalized.entry) / risk : 0;
+    const minimumRR = Number(context.risk_constraints?.minimum_rr) || Number(metadata.minimum_rr) || getMarketSettings(symbol, metadata).targetRR || 2.5;
+    if (rr + 1e-9 < minimumRR) return fail('RR_BELOW_MINIMUM_AFTER_NORMALIZATION');
+    normalized.actual_rr = ictRound(rr, 4);
+    normalized.rr_tp1 = ictRound(rr, 4);
+    if (Array.isArray(normalized.target_map)) {
+        normalized.target_map = normalized.target_map.map((target, i) => ({ ...target,
+            target_level: normalizeTradePrice(target.target_level, symbol, metadata, candidate.direction, `take_profit_${i + 1}`) }));
+    }
+    return { valid: true, candidate: normalized, reason: null };
+}
+
 // ============================================
 // API KEYS & GITHUB MANAGEMENT
 // ============================================
@@ -954,14 +1044,14 @@ function localIndicatorSnapshot(candleData = []) {
     if (closes.length >= 9) ind.ema9 = finite(ema(closes, 9).at(-1));
     if (closes.length >= 21) ind.ema21 = finite(ema(closes, 21).at(-1));
     if (closes.length >= 50) ind.ema50 = finite(ema(closes, 50).at(-1));
-    if (closes.length >= 100) ind.ema200 = finite(ema(closes, 200).at(-1));
+    if (closes.length >= 200) ind.ema200 = finite(ema(closes, 200).at(-1));
     if (closes.length >= 20) {
         const win = closes.slice(-20);
         const mid = windowMean(win, win.length);
         const sd = Math.sqrt(win.reduce((sum, value) => sum + Math.pow(value - mid, 2), 0) / win.length);
         ind.bb_upper = finite(mid + 2 * sd); ind.bb_middle = finite(mid); ind.bb_lower = finite(mid - 2 * sd);
     }
-    if (closes.length >= 26) {
+    if (closes.length >= 34) {
         const fast = ema(closes, 12), slow = ema(closes, 26);
         const macdSeries = fast.map((value, index) => value - slow[index]).slice(25);
         const signalSeries = ema(macdSeries, 9);
@@ -986,14 +1076,14 @@ function localIndicatorSnapshot(candleData = []) {
         const deviation = typical.slice(-20).reduce((sum, value) => sum + Math.abs(value - mean), 0) / 20;
         ind.cci = finite((tp - mean) / (0.015 * (deviation || 1)));
     }
-    if (data.length >= 26) {
+    if (data.length >= 52) {
         const hi9 = Math.max(...highs.slice(-9)), lo9 = Math.min(...lows.slice(-9));
         const hi26 = Math.max(...highs.slice(-26)), lo26 = Math.min(...lows.slice(-26));
         const hi52 = Math.max(...highs.slice(-52)), lo52 = Math.min(...lows.slice(-52));
         ind.ichimoku_tenkan = finite((hi9 + lo9) / 2);
         ind.ichimoku_kijun = finite((hi26 + lo26) / 2);
         ind.ichimoku_senkou_a = finite((ind.ichimoku_tenkan + ind.ichimoku_kijun) / 2);
-        ind.ichimoku_senkou_b = data.length >= 52 ? finite((hi52 + lo52) / 2) : null;
+        ind.ichimoku_senkou_b = finite((hi52 + lo52) / 2);
     }
     if (data.length >= 11) {
         let direction = 1, extreme = highs[0], sar = lows[0], acceleration = 0.02;
@@ -1047,16 +1137,19 @@ async function getTechnicalIndicators(tfUsed, candleData = null, pairLocal = pai
     // (Grow 55 plan = only 55 requests/minute; these used to be 8 API calls per TF)
     if(closes.length >= 15) ind.rsi = computeRSI(closes, 14);
     if(candleData && candleData.length >= 15) ind.atr_api = atr(candleData, 14);
-    if(closes.length >= 5) {
-        const e9 = ema(closes, 9), e21 = ema(closes, 21);
+    if(closes.length >= 9) {
+        const e9 = ema(closes, 9);
         ind.ema9 = e9[e9.length - 1];
+    }
+    if(closes.length >= 21) {
+        const e21 = ema(closes, 21);
         ind.ema21 = e21[e21.length - 1];
     }
     if(closes.length >= 50) {
         const e50 = ema(closes, 50);
         ind.ema50 = e50[e50.length - 1];
     }
-    if(closes.length >= 100) {
+    if(closes.length >= 200) {
         const e200 = ema(closes, 200);
         ind.ema200 = e200[e200.length - 1];
     }
@@ -1111,6 +1204,7 @@ const ema = (p, n) => {
 
 // ATR Calculation
 const atr = (d, n = 14) => {
+    if(!Array.isArray(d) || d.length < n + 1) return null;
     let t = [];
     for(let i = 1; i < d.length; i++) {
         t.push(Math.max(
@@ -1488,10 +1582,11 @@ function ictGetLastTradeTime() {
     try { stored = Number(localStorage.getItem(ICT_LAST_TRADE_TIME_KEY)) || 0; } catch (e) {}
     return Math.max(lastTradeTime || 0, stored);
 }
-function recordTradeResult(isWin, riskR) {
+function recordTradeResult(isWin, riskR, filledFraction = 1) {
     loadPaperRiskState();
     if (!ictGetLastTradeTime()) ictSetLastTradeTime(Date.now());
-    const resultR = Math.max(0, Number(riskR) || 0);
+    const fraction = Math.max(0, Math.min(1, Number(filledFraction) || 0));
+    const resultR = isWin ? Math.max(0, Number(riskR) || 0) * fraction : 1 * fraction;
     if(isWin) { consecutiveLosses = 0; dailyPnlR += resultR; weeklyPnlR += resultR; }
     else { consecutiveLosses++; dailyPnlR -= resultR; weeklyPnlR -= resultR; }
     persistPaperRiskState();
@@ -1626,13 +1721,13 @@ async function checkPendingFills() {
             // Risk is |entry - stopLoss|. Reward at TP1 is |TP1 - entry|. Use RR for PnL.
             const risk = Math.abs(fill.entry - fill.stopLoss);
             const reward = Math.abs(fill.takeProfit1 - fill.entry);
-            const r = risk > 0 ? reward / risk : 1.0;
+            const r = isWin && risk > 0 ? reward / risk : -1;
             recordTradeResult(isWin, r);
             try {
                 const patterns = Array.isArray(fill.patterns)
                     ? fill.patterns
                     : String(fill.patterns || '').split('+').map(x => x.trim()).filter(Boolean);
-                trackAIPerformance(String(fill.id), result.outcome, fill.confidence || 0, patterns, r);
+                trackAIPerformance(String(fill.id), result.outcome, fill.confidence || 0, patterns, isWin ? r : -1);
             } catch (e) {
                 console.warn('pendingFills self-learning update failed:', e);
             }
@@ -1696,7 +1791,8 @@ function detectOrderBlocks(data, direction) {
 // ADX Calculation (HTF > 15 required, LTF > 20 required)
 function calculateADX(data, period = 14, timeframe = '1H') {
     const minADX = ['1D', '4H', '1H'].includes(timeframe) ? 10 : 20;
-    if(!data || data.length < period * 2) return { adx: 30, isStrongTrend: true, minADX };
+    const unavailable = { adx: null, plusDI: null, minusDI: null, isStrongTrend: false, minADX };
+    if(!Array.isArray(data) || data.length < period * 2) return unavailable;
     let trs = [], pDMs = [], mDMs = [];
     for(let i = 1; i < data.length; i++) {
         const curr = data[i], prev = data[i-1];
@@ -1705,15 +1801,33 @@ function calculateADX(data, period = 14, timeframe = '1H') {
         const mDM = (prev.l - curr.l > curr.h - prev.h && prev.l - curr.l > 0) ? prev.l - curr.l : 0;
         trs.push(tr); pDMs.push(pDM); mDMs.push(mDM);
     }
-    if(trs.length < period) return { adx: 30, isStrongTrend: true, minADX };
-    let trSmooth = trs.slice(-period).reduce((a,b)=>a+b, 0);
-    let pDMSmooth = pDMs.slice(-period).reduce((a,b)=>a+b, 0);
-    let mDMSmooth = mDMs.slice(-period).reduce((a,b)=>a+b, 0);
-    if(trSmooth === 0) return { adx: 30, isStrongTrend: true, minADX };
-    const pDI = (pDMSmooth / trSmooth) * 100;
-    const mDI = (mDMSmooth / trSmooth) * 100;
-    const dx = (Math.abs(pDI - mDI) / (pDI + mDI || 1)) * 100;
-    return { adx: dx, isStrongTrend: dx > minADX, minADX };
+    if(trs.length < period * 2 - 1) return unavailable;
+    let trSmooth = trs.slice(0, period).reduce((a,b)=>a+b, 0);
+    let pDMSmooth = pDMs.slice(0, period).reduce((a,b)=>a+b, 0);
+    let mDMSmooth = mDMs.slice(0, period).reduce((a,b)=>a+b, 0);
+    const dxValues = [];
+    const currentDI = () => {
+        if (!(trSmooth > 0)) return null;
+        const plusDI = pDMSmooth / trSmooth * 100;
+        const minusDI = mDMSmooth / trSmooth * 100;
+        const total = plusDI + minusDI;
+        return { plusDI, minusDI, dx: total > 0 ? Math.abs(plusDI - minusDI) / total * 100 : 0 };
+    };
+    const first = currentDI();
+    if (!first) return unavailable;
+    dxValues.push(first.dx);
+    for(let i = period; i < trs.length; i++) {
+        trSmooth = trSmooth - trSmooth / period + trs[i];
+        pDMSmooth = pDMSmooth - pDMSmooth / period + pDMs[i];
+        mDMSmooth = mDMSmooth - mDMSmooth / period + mDMs[i];
+        const current = currentDI();
+        if(current) dxValues.push(current.dx);
+    }
+    if(dxValues.length < period) return unavailable;
+    let adx = dxValues.slice(0, period).reduce((a,b)=>a+b, 0) / period;
+    for(let i = period; i < dxValues.length; i++) adx = (adx * (period - 1) + dxValues[i]) / period;
+    const latest = currentDI();
+    return { adx, plusDI: latest?.plusDI ?? null, minusDI: latest?.minusDI ?? null, isStrongTrend: adx > minADX, minADX };
 }
 
 // RSI (Wilder's smoothing) — real local calculation from candle closes
@@ -1836,7 +1950,31 @@ function checkTradeSession(now = new Date()) {
 
 // News is deliberately UNKNOWN until an external calendar is supplied. Time
 // of day alone cannot prove that a high-impact event is absent.
-function checkHighImpactNews(newsInput = null) {
+function checkHighImpactNews(newsInput = null, now = new Date()) {
+    if (newsInput && typeof newsInput === 'object' && newsInput.available === true && Array.isArray(newsInput.events)) {
+        const nowMs = normalizeTimestampUTC(now) ?? Date.now();
+        const event = newsInput.events.find(item => {
+            if (!/^(HIGH|3)$/i.test(String(item?.impact || item?.importance || ''))) return false;
+            const eventMs = normalizeTimestampUTC(item.event_time ?? item.time ?? item.datetime);
+            if (!Number.isFinite(eventMs)) return false;
+            const before = Number(item.minutes_before ?? newsInput.minutes_before ?? 30);
+            const after = Number(item.minutes_after ?? newsInput.minutes_after ?? 30);
+            return nowMs >= eventMs - before * 60000 && nowMs <= eventMs + after * 60000;
+        });
+        if (event) {
+            const eventTime = event.event_time ?? event.time ?? event.datetime;
+            const eventMs = normalizeTimestampUTC(eventTime);
+            const deltaMinutes = Number.isFinite(eventMs) ? Math.round((eventMs - nowMs) / 60000) : null;
+            const name = event.name || event.title || null;
+            return { status: 'HIGH_IMPACT', available: true, inNewsWindow: true, high_impact_event: true,
+                newsName: name, event_name: name, event_time: eventTime || null,
+                minutes_to_event: deltaMinutes, minutes_after_event: deltaMinutes < 0 ? -deltaMinutes : null,
+                source: newsInput.source || null, warning: `High-impact news risk${name ? `: ${name}` : ''}` };
+        }
+        return { status: 'CLEAR', available: true, inNewsWindow: false, high_impact_event: false,
+            newsName: null, event_name: null, event_time: null, minutes_to_event: null,
+            minutes_after_event: null, source: newsInput.source || null, warning: null };
+    }
     if (newsInput && typeof newsInput === 'object') {
         const highImpact = newsInput.high_impact_event;
         if (typeof highImpact === 'boolean') {
@@ -2840,7 +2978,7 @@ function calcStopLoss(data, direction, entry, zone, msnr, tf, customATR = null, 
         slDist = Math.max(minSLDist, Math.min(rawDist, maxSLDist));
         sl = entry + slDist;
     }
-    sl = Math.round(sl * factor) / factor;
+    sl = normalizeTradePrice(sl, p, symbolMetadata, direction, 'stop_loss');
     return { price: sl };
 }
 
@@ -3083,7 +3221,7 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
         }
     }
 
-    entry = Math.round(entry * factor) / factor;
+    entry = normalizeTradePrice(entry, pairLocal, symbolMetadata, direction, 'entry');
     
     // STOP LOSS PRECISION: Keep current SL (1.5% max, 2.5x ATR max, DO NOT WIDEN SL)
     const slRes = calcStopLoss(data, direction, entry, best, msnr, null, atrVal, pairLocal, symbolMetadata);
@@ -3516,10 +3654,12 @@ function detectBreakoutRetest(data, price, dir, pairLocal = pair, symbolMetadata
     const settings = getMarketSettings(pairLocal, symbolMetadata);
     const atrVal = atr(data, 14);
     const maxRetestDistance = Math.max(atrVal * 1.5, settings.pipSize * 10);
-    const sw = findSwings(data.slice(-60), 2);
+    const offset = Math.max(0, data.length - 60);
+    const sw = findSwings(data.slice(offset), 2);
     if(dir === 'BUY') {
         const highs = (sw.H || []).slice(-4);
-        for(const h of highs) {
+        for(const swing of highs) {
+            const h = { ...swing, i: offset + swing.i };
             const distance = price - h.p;
             if(distance > -maxRetestDistance && distance < maxRetestDistance * 0.25) {
                 const after = data.slice(h.i + 1);
@@ -3529,7 +3669,8 @@ function detectBreakoutRetest(data, price, dir, pairLocal = pair, symbolMetadata
         }
     } else {
         const lows = (sw.L || []).slice(-4);
-        for(const l of lows) {
+        for(const swing of lows) {
+            const l = { ...swing, i: offset + swing.i };
             const distance = l.p - price;
             if(distance > -maxRetestDistance && distance < maxRetestDistance * 0.25) {
                 const after = data.slice(l.i + 1);
@@ -3590,7 +3731,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
         // just lowers confidence. Strong ADX still gets a bonus (below). This lets valid
         // zones/setups fire in ranges while still rewarding real trends.
         const adxResult = calculateADX(entryData, 14, tfToAnalyze);
-        const adxWeakTrend = !adxResult.isStrongTrend;
+        const adxWeakTrend = Number.isFinite(adxResult.adx) && !adxResult.isStrongTrend;
         if(adxWeakTrend) {
             console.log(`  ⚠️ ${tfToAnalyze}: ADX ${adxResult.adx.toFixed(1)} <= ${adxResult.minADX} (weak/ranging — penalty)`);
         }
@@ -3599,7 +3740,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
         const sessionCheck = checkTradeSession(now);
 
         // 3. High Impact News Warning Check (FOMC, NFP, CPI)
-        const newsCheck = checkHighImpactNews(pairLocal);
+        const newsCheck = checkHighImpactNews(window.quoteSnapshot?.news_risk || window.externalNewsData || null);
         if(newsCheck.inNewsWindow && newsCheck.warning) {
             console.log(`  ⚠️ ${tfToAnalyze}: ${newsCheck.warning}`);
         }
@@ -3669,7 +3810,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             const dailyBiasData = (htfData && htfData['1D']) || entryData;
             const dirBias = getDirectionBias(dailyBiasData);
             const dailyADX = calculateADX(dailyBiasData, 14, '1D');
-            const dailyStrong = dailyADX.adx > 20;
+            const dailyStrong = Number.isFinite(dailyADX.adx) && dailyADX.adx > 20;
             const fightingTrend = dir === 'BUY' ? (dirBias === 'BEARISH') : (dirBias === 'BULLISH');
 
             if(fightingTrend && dailyStrong) {
@@ -3679,8 +3820,8 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
                 continue;
             }
 
-            const trendStrengthLabel = dailyStrong ? 'STRONG' : 'WEAK (ranging)';
-            console.log(`  → 1D direction: ${dirBias} (ADX ${dailyADX.adx.toFixed(1)} — ${trendStrengthLabel})`);
+            const trendStrengthLabel = dailyStrong ? 'STRONG' : Number.isFinite(dailyADX.adx) ? 'WEAK (ranging)' : 'UNKNOWN (insufficient history)';
+            console.log(`  → 1D direction: ${dirBias} (ADX ${Number.isFinite(dailyADX.adx) ? dailyADX.adx.toFixed(1) : 'N/A'} — ${trendStrengthLabel})`);
 
             // Compression: SOFT signal now (was hard-reject). Trending setups are
             // valid ICT entries; compression just means lower-confidence expansion.
@@ -3759,9 +3900,9 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             let tp2 = tps.tp2;
             let tp3 = tps.tp3;
             if (!Number.isFinite(tp1)) continue;
-            tp1 = Math.round(tp1 * factor) / factor;
-            tp2 = Number.isFinite(tp2) ? Math.round(tp2 * factor) / factor : null;
-            tp3 = Number.isFinite(tp3) ? Math.round(tp3 * factor) / factor : null;
+            tp1 = normalizeTradePrice(tp1, pairLocal, symbolMetadata, dir, 'take_profit_1');
+            tp2 = Number.isFinite(tp2) ? normalizeTradePrice(tp2, pairLocal, symbolMetadata, dir, 'take_profit_2') : null;
+            tp3 = Number.isFinite(tp3) ? normalizeTradePrice(tp3, pairLocal, symbolMetadata, dir, 'take_profit_3') : null;
 
             // RR Protection Checks (Minimum 1.5x RR)
             const reward1 = Math.abs(tp1 - entry);
@@ -3867,7 +4008,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             }
 
             // 15. ADX Exhaustion Penalty (overextended trend is a warning, not strength)
-            if(adxResult.adx > 75) {
+            if(Number.isFinite(adxResult.adx) && adxResult.adx > 75) {
                 confidence -= 5;
                 reasons.push(`ADX overextended ${adxResult.adx.toFixed(0)} (-5)`);
             }
@@ -3977,7 +4118,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             }
 
             // ADX: strong trend bonus (reward strong trends)
-            if(adxResult && adxResult.adx > 25) {
+            if(adxResult && Number.isFinite(adxResult.adx) && adxResult.adx > 25) {
                 confidence += 3; reasons.push(`ADX ${adxResult.adx.toFixed(0)} strong (+3)`);
             }
             // ADX: weak/ranging trend penalty (no longer blocks the whole timeframe)
@@ -5854,6 +5995,8 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     distance_from_current_price_atr: safeAtr > 0 ? ictRound(Math.abs(entry - price) / safeAtr, 2) : null,
                     market_regime: marketRegime?.primary_regime || 'UNKNOWN'
                 };
+                rawCandidate.entry_region_low = zone.low;
+                rawCandidate.entry_region_high = zone.high;
                 if (strategySetup) {
                     rawCandidate.strategy_setup = strategySetup;
                     rawCandidate.strategy_label = strategySetup.label;
@@ -6057,6 +6200,15 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     setup_confidence: Math.max(0, Math.min(100, Math.round(score))),
                     score: ictRound(score, 2)
                 };
+                const normalizedCandidate = normalizeAndValidateCandidate(candidate, {
+                    pair,
+                    symbol_metadata: symbolMetadata || marketContext?.symbol_metadata || {},
+                    risk_constraints: marketContext?.risk_constraints,
+                    bid: marketContext?.market_conditions?.bid,
+                    ask: marketContext?.market_conditions?.ask
+                });
+                if (normalizedCandidate.valid) Object.assign(candidate, normalizedCandidate.candidate);
+                else candidate.normalization_rejection = normalizedCandidate.reason;
                 candidate.top_down_context = classifyTopDownTrade(candidate, timeframeContext);
                 candidate.trade_context_classification = candidate.top_down_context.classification;
                 candidate.opportunity_thesis = strategySetup?.opportunity_thesis || null;
@@ -6536,7 +6688,9 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         still_actionable_today: false,
         entry_region_low: low, entry_region_high: high,
         entry_consumed: false, entry_first_touch_index: null, entry_first_touch_time: null,
-        entry_touch_count_after_signal: 0, entry_freshness: 'FRESH',
+        entry_touch_count_after_signal: 0, zone_touched: false, zone_touch_count: 0,
+        exact_entry_touched: false, exact_entry_touch_count: 0, order_filled: candidate.order_filled === true,
+        entry_freshness: 'FRESH',
         tp1_already_reached: false, tp1_first_reached_index: null, tp1_first_reached_time: null,
         nominal_reward_after_fill: Number.isFinite(tp1) && Number.isFinite(entry) ? Math.abs(tp1 - entry) : null,
         entry_retracement_distance: Number.isFinite(entry) && Number.isFinite(price) ? Math.abs(price - entry) : null,
@@ -6607,10 +6761,17 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
             }
             if (bar.l <= high && bar.h >= low) {
                 result.entry_touch_count_after_signal++;
+                result.zone_touched = true;
+                result.zone_touch_count++;
                 if (result.entry_first_touch_index == null) {
                     result.entry_first_touch_index = i;
                     result.entry_first_touch_time = barTime;
                 }
+            }
+            const exactEntryTouch = candidate.direction === 'BUY' ? bar.l <= entry : bar.h >= entry;
+            if (exactEntryTouch) {
+                result.exact_entry_touched = true;
+                result.exact_entry_touch_count++;
             }
             if (Number.isFinite(tp1) && (candidate.direction === 'BUY' ? bar.h >= tp1 : bar.l <= tp1)) {
                 result.tp1_already_reached = true;
@@ -6621,7 +6782,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
             }
         }
     }
-    result.entry_consumed = result.entry_touch_count_after_signal > spec.maxEntryTouches;
+    result.entry_consumed = result.exact_entry_touched || result.order_filled;
     result.execution_zone_consumed = result.entry_consumed;
     const currentReached = Number.isFinite(tp1) && (candidate.direction === 'BUY' ? price >= tp1 : price <= tp1);
     result.tp1_already_reached ||= currentReached;
@@ -8223,7 +8384,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         holistic,
         symbolMetadata
     });
-    marketContext.news_risk = checkHighImpactNews(quote_snapshot?.news_risk || null);
+    marketContext.news_risk = checkHighImpactNews(quote_snapshot?.news_risk || window.externalNewsData || null);
     marketContext.symbol_metadata = symbolMetadata;
     marketContext.history_errors = historyCache?.fetch_errors || {};
     // Candidate construction consumes this same quality verdict so a stale
@@ -9739,6 +9900,8 @@ function validateExecutableCandidateInvariant(candidate, marketState = {}) {
     for (const field of ['entry', 'stop_loss', 'tp1']) if (!Number.isFinite(Number(candidate[field]))) failures.push(`${field}_NOT_FINITE`);
     const direction = candidate.direction;
     const entry = Number(candidate.entry), stop = Number(candidate.stop_loss), tp1 = Number(candidate.tp1 ?? candidate.take_profit_1);
+    const symbol = marketState.pair || marketState.symbol || pair;
+    const metadata = marketState.symbol_metadata || marketState.quote_snapshot?.symbol_metadata || {};
     if (direction === 'BUY' && !(stop < entry && tp1 > entry)) failures.push('BUY_GEOMETRY_INVALID');
     if (direction === 'SELL' && !(stop > entry && tp1 < entry)) failures.push('SELL_GEOMETRY_INVALID');
     const invalidation = candidate.structural_invalidation && typeof candidate.structural_invalidation === 'object' ? candidate.structural_invalidation : null;
@@ -10276,10 +10439,10 @@ function validateAISetupLegacy(aiResult, price, historyCache, pairArg, determini
 
     if (fourH.length >= 30) {
         const adx4 = calculateADX(fourH, 14, '4H');
-        if (adx4.adx > 25) {
+        if (Number.isFinite(adx4.adx) && adx4.adx > 25) {
             score += 6;
             factors.push(`ADX 4H ${adx4.adx.toFixed(1)} (+6)`);
-        } else if (adx4.adx < 15) {
+        } else if (Number.isFinite(adx4.adx) && adx4.adx < 15) {
             score -= 5;
             factors.push(`ADX 4H ${adx4.adx.toFixed(1)} (-5)`);
         }
@@ -10488,7 +10651,7 @@ async function runAutoScan() {
         }
         
         const session = getSession(new Date(scanAsOfMs));
-        const newsCheck = checkHighImpactNews(pair);
+        const newsCheck = checkHighImpactNews(quoteSnapshot?.news_risk || window.externalNewsData || null);
         
         const dailyDir = await getQuoteDirection('1D', historyCache['1D']);
         const h4Dir = await getQuoteDirection('4H', historyCache['4H']);
@@ -10519,7 +10682,7 @@ async function runAutoScan() {
             as_of_ms: scanAsOfMs,
             quote_snapshot: quoteSnapshot
         });
-        liveMarketContext.news_risk = checkHighImpactNews(quoteSnapshot?.news_risk || null);
+        liveMarketContext.news_risk = checkHighImpactNews(quoteSnapshot?.news_risk || window.externalNewsData || null);
         if (liveMarketContext.market_context) liveMarketContext.market_context.news_risk = liveMarketContext.news_risk;
         liveMarketContext.indicators = indicators;
         liveMarketContext.holistic = holistic;
@@ -12356,6 +12519,10 @@ function validatePublicTradeSignal(signal = {}) {
     const entry = Number(signal?.entry ?? signal?.entry_price);
     const stop = Number(signal?.stop_loss);
     const target = Number(signal?.tp1 ?? signal?.take_profit_1);
+    const metadata = signal?.symbol_metadata || getSymbolMetadata(signal?.pair);
+    for (const [name, value] of [['entry', entry], ['stop_loss', stop], ['take_profit_1', target]]) {
+        if (signal?.status_code === 'SETUP_READY' && Number.isFinite(value) && !validatePriceTick(value, signal.pair, metadata)) issues.push(`${name} is not tick-aligned`);
+    }
     if (signal?.status_code === 'SETUP_READY' && !Number.isFinite(Number(signal.current_price))) issues.push('ready setup current_price is unavailable');
     if (signal?.status_code === 'SETUP_READY' && [entry, stop, target].some(value => !Number.isFinite(value))) issues.push('ready setup geometry is incomplete');
     if (signal?.decision === 'BUY_LIMIT' && !(stop < entry && entry < target)) issues.push('BUY_LIMIT geometry is invalid');
@@ -12698,7 +12865,7 @@ function markRecentOutcome(id, outcome) {
         if (e.outcome) {
             try {
                 const patterns = (e.patterns || '').split('+').map(s => s.trim()).filter(Boolean);
-                const rr = parseFloat(String(e.risk_reward || '1:1').split(':')[1]) || 1.5;
+                const rr = e.outcome === 'WIN' ? (parseFloat(String(e.risk_reward || '1:1').split(':')[1]) || 0) : -1;
                 trackAIPerformance(String(id), e.outcome, e.confidence || 0, patterns, rr);
             } catch(err) {}
         }
@@ -12965,6 +13132,9 @@ function validateLocalLimitOrderInput(signal = {}, pairLocal = pair, symbolMetad
     const minimumRR = Number(getMarketSettings(pairLocal, symbolMetadata).targetRR) || 2.5;
     if (!direction) issues.push('direction is missing');
     if (![current, entry, stop, tp1].every(Number.isFinite)) issues.push('order geometry is not finite');
+    for (const [name, value] of [['entry', entry], ['stop_loss', stop], ['take_profit_1', tp1]]) {
+        if (Number.isFinite(value) && !validatePriceTick(value, pairLocal, symbolMetadata)) issues.push(`${name} is not tick-aligned`);
+    }
     if (direction === 'BUY' && !(stop < entry && entry < tp1)) issues.push('BUY geometry is invalid');
     if (direction === 'SELL' && !(stop > entry && entry > tp1)) issues.push('SELL geometry is invalid');
     const referencePrice = direction === 'BUY' && Number.isFinite(ask) ? ask
@@ -12974,6 +13144,9 @@ function validateLocalLimitOrderInput(signal = {}, pairLocal = pair, symbolMetad
     const risk = Math.abs(entry - stop);
     const reward = Math.abs(tp1 - entry);
     if (!(risk > 0) || reward / risk < minimumRR) issues.push(`RR is below minimum ${minimumRR}`);
+    const structuralInvalidation = Number(signal.structural_invalidation?.level ?? signal.structural_invalidation ?? signal.aiDecision?.adaptive_candidate?.structural_invalidation?.level);
+    if (Number.isFinite(structuralInvalidation) && direction === 'BUY' && !(stop < structuralInvalidation)) issues.push('BUY stop is not beyond structural invalidation');
+    if (Number.isFinite(structuralInvalidation) && direction === 'SELL' && !(stop > structuralInvalidation)) issues.push('SELL stop is not beyond structural invalidation');
     return { valid: issues.length === 0, issues, direction, minimum_rr: minimumRR };
 }
 
@@ -13193,8 +13366,8 @@ function showNotif(m, t) {
 }
 
 // Manual trade result logging (for loss protection)
-function logTradeResult(isWin, riskR) {
-    recordTradeResult(isWin, riskR);
+function logTradeResult(isWin, riskR, filledFraction = 1) {
+    recordTradeResult(isWin, riskR, filledFraction);
     showNotif(`✅ Trade logged: ${isWin ? 'WIN' : 'LOSS'} | Losses: ${consecutiveLosses} | Daily PnL: ${dailyPnlR.toFixed(1)}R`, isWin ? 'success' : 'warning');
 }
 
