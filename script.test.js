@@ -2108,6 +2108,25 @@ describe('getQuoteDirection', () => {
         expect(summary).toContain('Technical Indicators: ADX 4H: 60.90');
     });
 
+    it('carries developing-signal volatility and indicators through output projection to the summary', () => {
+        const ctx = getContext();
+        const raw = ctx.buildTodayOpportunityOutput({
+            state: 'TODAY_OPPORTUNITY', confidence: 59, strategy: 'CRT+MSNR', direction: 'SELL',
+            trend_detection: { '1D': 'BEARISH', '4H': 'BEARISH', '1H': 'BULLISH' },
+            volatility: { regime: 'NORMAL' },
+            indicators: { adx_4h: 26.8, rsi_4h: 40.5, macd_direction_4h: 'BEARISH' },
+            primary_opportunity: { id: 'setup', direction: 'SELL', strategy: 'CRT+MSNR', entry_price: 1.14814,
+                stop_loss: 1.14872, take_profit_1: 1.14601, confidence: 59,
+                area_of_interest: { low: 1.148, high: 1.1483, source: 'MSNR' } }
+        }, 'EUR/USD', 1.14749, Date.parse('2026-09-21T12:00:00Z'), true);
+        const signal = ctx.buildPublicTradeSignal(raw.trade_signal);
+        const summary = ctx.formatTradeSummaryText(signal);
+        expect(summary).toContain('Confidence: 59%');
+        expect(summary).toContain('Volatility Level: NORMAL');
+        expect(summary).toContain('Technical Indicators: ADX 4H: 26.80');
+        expect(summary).toContain('1H: BULLISH');
+    });
+
     it('keeps deterministic market facts in a no-opportunity output', () => {
         const ctx = getContext();
         const today = ctx.buildTodayOpportunity({
@@ -3538,6 +3557,28 @@ describe('live AI market context and prompt', () => {
         expect(candidates[0].stop_source).toBe('ZONE_BOUNDARY');
         expect(candidates[0].risk_distance).toBeGreaterThan(0.00030);
         expect(candidates[0].risk_distance).not.toBeCloseTo(0.00030, 5);
+    });
+
+    it('gives structural gold stops at least the configured ATR noise distance', () => {
+        const ctx = getContext();
+        const zone = { direction: 'BUY', strategy_setup: { direction: 'BUY', primary: 'CRT',
+            structural_invalidation_detail: { level: 99.5, source: 'CRT_SWEEP_EXTREME' } } };
+        const settings = ctx.getMarketSettings('XAU/USD');
+        const [stop] = ctx.getAdaptiveStopCandidates(zone, 'BUY', 100, [], [], 2, settings, 2);
+        expect(Math.abs(100 - stop.stop_loss)).toBeGreaterThanOrEqual(2);
+        expect(stop.stop_loss).toBeLessThan(99.5);
+    });
+
+    it('keeps candidate confidence when the top-level candidate score is zero', () => {
+        const ctx = getContext();
+        const today = ctx.buildTodayOpportunity({ pair: 'XAU/USD', currentPrice: 100, marketOpen: true,
+            validCandidates: [{ id: 'candidate-confidence', direction: 'BUY', confidence: 0, score: 0,
+                quality: { final_confidence: 83, deterministic_confidence: 83, rank_tier: 2 },
+                top_down_context: { classification: 'HTF_ALIGNED_CONTINUATION' },
+                zone: { id: 'zone', low: 99, high: 100, type: 'FVG' },
+                entry: 99.5, stop_loss: 98.5, tp1: 103, target: { level: 103, source: 'BUY_SIDE_LIQUIDITY' } }]
+        });
+        expect(today.primary_opportunity.confidence).toBe(83);
     });
 
     it('rejects adaptive candidates when the only structural stop exceeds maximum risk', () => {
