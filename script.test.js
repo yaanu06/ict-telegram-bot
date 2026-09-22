@@ -2354,6 +2354,27 @@ describe('getQuoteDirection', () => {
         expect(publicSignal.analysis.trend_detection).toEqual({ '1D': 'BEARISH', '4H': 'BULLISH_TRANSITION', '1H': 'BULLISH', '15M': 'MIXED' });
         expect(publicSignal.analysis.technical_indicators).toEqual({ adx_4h: 25 });
     });
+
+    it('promotes a complete current candidate after stale AI selection recovery', () => {
+        const ctx = getContext();
+        const signal = ctx.buildRejectedSelectionWaitOutput({
+            today: {
+                state: 'TRADE_READY',
+                strategy: 'OB',
+                primary_opportunity: {
+                    id: 'current-candidate', direction: 'SELL', strategy: 'OB', confidence: 46,
+                    entry_price: 4330, stop_loss: 4340, take_profit_1: 4290,
+                    opportunity_quality: { deterministic_confidence: 46 }
+                }
+            },
+            pairLocal: 'XAU/USD', price: 4321.14, asOfMs: Date.now(), marketOpen: true,
+            symbolMetadata: { tick_size: 0.1, price_precision: 2 }
+        });
+        expect(signal.decision).toBe('SELL_LIMIT');
+        expect(signal.status).toBe('SETUP_READY');
+        expect(signal.entry_price).toBe(4330);
+        expect(signal.reason.code).toBe('CURRENT_DETERMINISTIC_CANDIDATE');
+    });
 });
 
 describe('analyzeMarketPhase (AMD)', () => {

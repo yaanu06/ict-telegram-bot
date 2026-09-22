@@ -8351,7 +8351,7 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         provider_metadata: providerMetadata || today?.provider_metadata || null,
         data_quality: today?.data_quality || null,
         history_errors: today?.history_errors || {},
-        strategy: today?.strategy || null,
+        strategy: getDisplayStrategyLabel({ label: today?.strategy, primary: today?.primary }, today?.zone_type || today?.area_of_interest?.source),
             direction: today?.direction || null,
             bias: today?.bias || 'NEUTRAL',
             trend_detection: today?.trend_detection || null,
@@ -8403,6 +8403,41 @@ function buildRejectedSelectionWaitOutput({ today, pairLocal, price, asOfMs, mar
     const recovery = buildTodayOpportunityOutput(today || { state: 'NO_TRADE_TODAY' }, pairLocal, price, asOfMs, marketOpen, symbolMetadata, providerMetadata);
     const hasOpportunity = ['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(today?.state)
         && (!!recovery.trade_signal.opportunity || !!recovery.trade_signal.primary_opportunity || recovery.trade_signal.watch_setups?.length > 0);
+    const candidate = recovery.trade_signal.primary_opportunity || recovery.trade_signal.opportunity || null;
+    const direction = candidate?.direction;
+    const entry = Number(candidate?.entry_price ?? candidate?.entry);
+    const stop = Number(candidate?.stop_loss);
+    const tp1 = Number(candidate?.take_profit_1 ?? candidate?.tp1);
+    const complete = ['BUY', 'SELL'].includes(direction)
+        && [entry, stop, tp1].every(Number.isFinite)
+        && (direction === 'BUY' ? stop < entry && entry < tp1 : stop > entry && entry > tp1)
+        && (direction === 'BUY' ? entry < Number(price) : entry > Number(price));
+    if (complete) {
+        const limit = direction + '_LIMIT';
+        return {
+            ...recovery.trade_signal,
+            decision: limit,
+            trade_type: limit,
+            status: 'SETUP_READY',
+            status_code: 'SETUP_READY',
+            entry_price: entry,
+            stop_loss: stop,
+            take_profit_1: tp1,
+            take_profit_2: candidate.take_profit_2 ?? candidate.tp2 ?? null,
+            take_profit_3: candidate.take_profit_3 ?? candidate.tp3 ?? null,
+            confidence: Number(candidate.confidence || candidate.opportunity_quality?.deterministic_confidence || 0),
+            authorization_state: 'SECONDARY_CANDIDATE',
+            confidence_type: 'EXECUTION_CONFIDENCE',
+            execution_confidence: Number(candidate.confidence || candidate.opportunity_quality?.deterministic_confidence || 0),
+            has_complete_execution_geometry: true,
+            geometry_missing: [],
+            hard_validation_passed: true,
+            execution_allowed: false,
+            manual_tracking_allowed: true,
+            reason: { code: 'CURRENT_DETERMINISTIC_CANDIDATE', message: 'The stale AI selection was replaced by the current deterministic limit opportunity.' },
+            source: 'Deterministic Candidate Engine'
+        };
+    }
     const reasonCode = hasOpportunity ? 'STALE_AI_SELECTION_RECOVERED' : 'STALE_SELECTION_REJECTED';
     const reasonMessage = hasOpportunity
         ? 'The selected candidate was rejected as stale; the current deterministic opportunity remains available for your decision.'
