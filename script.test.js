@@ -6168,6 +6168,15 @@ describe('AI market analyst contract', () => {
             expect(selected.id).toBe('C-58');
         });
 
+        it('does not let the selector choose a weak zone over the strongest executable candidate', () => {
+            const ctx = getContext();
+            const selected = ctx.resolveDeterministicSelectorCandidate([
+                executable('WEAK-FVG', 28), executable('STRONG-CRT-FVG', 82)
+            ], 'WEAK-FVG');
+            expect(selected.id).toBe('STRONG-CRT-FVG');
+            expect(selected.ai_requested_candidate_id).toBe('WEAK-FVG');
+        });
+
         it('requires TP1, stop-loss, and RR for executable geometry', () => {
             const ctx = getContext();
             expect(ctx.hasCompleteExecutionGeometry({ entry: 1, stop_loss: 0.9, minimum_rr: 2.5, actual_rr: 3, execution_geometry_valid: true })).toBe(false);

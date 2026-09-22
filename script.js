@@ -243,6 +243,23 @@ function selectBestExecutableCandidate(candidates = []) {
         .sort(compareCandidates)[0] || null;
 }
 
+// The language model may explain or rank candidates, but it cannot replace
+// deterministic candidate ordering. Always resolve the final candidate from
+// the complete validated pool so a weak local zone cannot outrank a stronger
+// FVG/OB/CRT/MSNR combination selected by the engine.
+function resolveDeterministicSelectorCandidate(candidates = [], requestedId = null) {
+    const best = selectBestExecutableCandidate(candidates);
+    if (best) return { ...best, ai_requested_candidate_id: requestedId || null };
+    // Compatibility inputs created before authorization diagnostics existed
+    // may not carry the two explicit hard-validation flags. Preserve those
+    // only when the supplied geometry is complete and the requested id is an
+    // actual candidate; unknown ids still fail closed.
+    const legacy = candidates.find(candidate => candidate?.id === requestedId);
+    const legacyComplete = legacy && legacy.execution_geometry_valid == null && legacy.hard_validation_passed == null
+        && hasCompleteExecutionGeometry({ ...legacy, actual_rr: legacy.actual_rr ?? legacy.rr_tp1, minimum_rr: legacy.minimum_rr ?? 2.5, execution_geometry_valid: true });
+    return legacyComplete ? { ...legacy, ai_requested_candidate_id: requestedId || null } : null;
+}
+
 // ============================================
 // MARKET SETTINGS
 // ============================================
@@ -9791,7 +9808,17 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
                     reasoning: typeof selector.reasoning === 'object' ? selector.reasoning : { primary: selector.reasoning || 'No deterministic candidate selected' },
                     ai_decision: 'skip', noTrade: true, wait_condition: selector.reasoning || 'No deterministic candidate selected' };
             }
-            const selected = applyAdaptiveCandidateToAIResult({ selected_candidate_id: selectedId, reasoning: selector.reasoning }, liveMarketContext);
+            const deterministicCandidate = resolveDeterministicSelectorCandidate(liveMarketContext.adaptive_setup_candidates, selectedId);
+            if (!deterministicCandidate?.id) {
+                const unknownCandidate = !liveMarketContext.adaptive_setup_candidates.some(candidate => candidate?.id === selectedId);
+                const waitCondition = unknownCandidate
+                    ? 'AI selected unknown deterministic candidate'
+                    : 'No fully validated candidate met the executable confidence floor';
+                return { decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
+                    reasoning: { primary: waitCondition }, ai_decision: 'skip', noTrade: true, wait_condition: waitCondition };
+            }
+            const selected = applyAdaptiveCandidateToAIResult({ selected_candidate_id: deterministicCandidate.id, reasoning: selector.reasoning }, liveMarketContext);
+            selected.ai_requested_candidate_id = selectedId;
             if (selected.unknown_deterministic_candidate) return { decision: 'WAIT', direction: 'WAIT', selected_candidate_id: selectedId, confidence: 0, reasoning: { primary: 'AI selected unknown deterministic candidate' }, ai_decision: 'skip', noTrade: true, wait_condition: 'AI selected unknown deterministic candidate' };
             const deterministicConfidence = getDeterministicCandidateConfidence(selected.adaptive_candidate);
             selected.confidence = Number.isFinite(deterministicConfidence) ? deterministicConfidence : null;
