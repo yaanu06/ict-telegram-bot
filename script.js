@@ -10,7 +10,7 @@ if (tg) { tg.expand(); tg.ready(); }
 // CONFIG
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
-const APP_BUILD_ID = '20260922-114';
+const APP_BUILD_ID = '20260920-113';
 let lastDisplayedPublicSignal = null;
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
@@ -140,12 +140,6 @@ const SELL_INVALIDATION_FACTOR = 1.002;
 // PURE QUALITY SELECTION: Quality (Conf 58, HTF 1/3, 2+ patterns) is the criteria.
 // CHoCH/BOS/compression/ADX are confluence SCORING factors — no hard-block is removed, thresholds tuned.
 const MIN_CONFIDENCE = 58;
-const PRIMARY_CONFIDENCE_THRESHOLD = MIN_CONFIDENCE;
-// Complete deterministic geometry is the visibility gate. Confidence ranks
-// valid candidates and controls primary versus secondary presentation; it must
-// not erase valid entry/stop/target geometry. Execution permission remains a
-// separate final risk and execution contract.
-const MIN_EXECUTABLE_CONFIDENCE = 40;
 const MAX_ZONE_TOUCHES = 10;
 const LIMIT_ORDER_EXPIRY_HOURS = 4;
 const ZONE_PROXIMITY_ALERT_PCT = 0.3;
@@ -154,154 +148,6 @@ const HTF_MIN_MATCH = 1;
 const AI_ADVISORY_ONLY = true;
 const ICT_LAST_TRADE_TIME_KEY = 'ict_last_trade_time';
 const ICT_FIVE_MIN_MS = 5 * 60 * 1000;
-
-function hasCompleteExecutionGeometry(candidate) {
-    if (!candidate || typeof candidate !== 'object') return false;
-    const required = ['entry', 'stop_loss', 'tp1'];
-    const isPrice = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
-    const completePrices = required.every(field => isPrice(candidate[field] ?? (field === 'tp1' ? candidate.take_profit_1 : undefined)));
-    const rr = Number(candidate.actual_rr ?? candidate.rr_tp1);
-    const minimumRR = Number(candidate.minimum_rr);
-    return completePrices
-        && Number.isFinite(rr)
-        && Number.isFinite(minimumRR)
-        && rr >= minimumRR
-        && candidate.execution_geometry_valid === true;
-}
-
-function getCandidateConfidenceType(candidate) {
-    return candidate?.has_complete_execution_geometry === true
-        ? 'EXECUTION_CONFIDENCE'
-        : 'LOCATION_CONFIDENCE';
-}
-
-function getCanonicalCandidateConfidence(candidate) {
-    const complete = candidate?.has_complete_execution_geometry === true;
-    const value = complete
-        ? (candidate.execution_confidence
-            ?? candidate.quality?.final_confidence
-            ?? candidate.confidence_breakdown?.final_score
-            ?? candidate.setup_confidence
-            ?? candidate.score)
-        : (candidate.location_confidence
-            ?? candidate.quality?.location_confidence
-            ?? candidate.setup_confidence
-            ?? candidate.score
-            ?? candidate.confidence);
-    const number = Number(value);
-    return Number.isFinite(number) ? Math.max(0, Math.min(100, Math.round(number))) : 0;
-}
-
-function getGeometryMissing(candidate) {
-    const missing = [];
-    const isPrice = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
-    if (!isPrice(candidate?.entry)) missing.push('entry');
-    if (!isPrice(candidate?.stop_loss)) missing.push('stop_loss');
-    if (!isPrice(candidate?.tp1 ?? candidate?.take_profit_1)) missing.push('tp1');
-    const rr = Number(candidate?.actual_rr ?? candidate?.rr_tp1);
-    if (!Number.isFinite(rr)) missing.push('risk_reward');
-    return missing;
-}
-
-function classifyCandidateAuthorization(candidate) {
-    const complete = hasCompleteExecutionGeometry(candidate);
-    const confidence = getCanonicalCandidateConfidence({
-        ...candidate,
-        has_complete_execution_geometry: complete
-    });
-    const hardValidationPassed = candidate?.hard_validation_passed === true
-        || (candidate?.execution_geometry_valid === true && candidate?.evaluation?.valid !== false);
-    let authorization_state = 'WATCH_ONLY';
-    if (complete && hardValidationPassed && confidence > PRIMARY_CONFIDENCE_THRESHOLD) authorization_state = 'TRADE_READY';
-    else if (complete && hardValidationPassed) authorization_state = 'SECONDARY_CANDIDATE';
-    return {
-        ...candidate,
-        authorization_state,
-        confidence_type: complete ? 'EXECUTION_CONFIDENCE' : 'LOCATION_CONFIDENCE',
-        location_confidence: Number.isFinite(Number(candidate?.location_confidence)) ? Number(candidate.location_confidence) : (complete ? null : confidence),
-        execution_confidence: complete ? confidence : null,
-        has_complete_execution_geometry: complete,
-        geometry_missing: complete ? [] : getGeometryMissing(candidate),
-        hard_validation_passed: complete && hardValidationPassed,
-        selection_rank: candidate?.selection_rank ?? null
-    };
-}
-
-function compareCandidates(a, b) {
-    const tierRank = { TRADE_READY: 3, SECONDARY_CANDIDATE: 2, WATCH_ONLY: 1 };
-    return (tierRank[b?.authorization_state] || 0) - (tierRank[a?.authorization_state] || 0)
-        || getCanonicalCandidateConfidence(b) - getCanonicalCandidateConfidence(a)
-        || Number(b?.target_reachability?.reachability_score || 0) - Number(a?.target_reachability?.reachability_score || 0)
-        || Number(b?.confluence_score || 0) - Number(a?.confluence_score || 0)
-        || Number(a?.distance_from_current_price || Infinity) - Number(b?.distance_from_current_price || Infinity);
-}
-
-function selectBestExecutableCandidate(candidates = []) {
-    return candidates
-        .map(classifyCandidateAuthorization)
-        .filter(candidate => ['TRADE_READY', 'SECONDARY_CANDIDATE'].includes(candidate.authorization_state))
-        .sort(compareCandidates)[0] || null;
-}
-
-function selectBestPrimaryCandidate(candidates = []) {
-    return candidates
-        .map(classifyCandidateAuthorization)
-        .filter(candidate => candidate.authorization_state === 'TRADE_READY')
-        .sort(compareCandidates)[0] || null;
-}
-
-function selectBestSecondaryCandidate(candidates = []) {
-    return candidates
-        .map(classifyCandidateAuthorization)
-        .filter(candidate => candidate.authorization_state === 'SECONDARY_CANDIDATE')
-        .sort(compareCandidates)[0] || null;
-}
-
-// The language model may explain or rank candidates, but it cannot replace
-// deterministic candidate ordering. Always resolve the final candidate from
-// the complete validated pool so a weak local zone cannot outrank a stronger
-// FVG/OB/CRT/MSNR combination selected by the engine.
-function filterLimitCandidatesByCurrentPrice(candidates = [], currentPrice = null, marketConditions = {}) {
-    const reference = Number.isFinite(Number(currentPrice)) ? Number(currentPrice) : null;
-    if (reference == null) return candidates;
-    const bid = Number(marketConditions?.bid);
-    const ask = Number(marketConditions?.ask);
-    return candidates.filter(candidate => {
-        const entry = Number(candidate?.entry);
-        if (!Number.isFinite(entry)) return false;
-        const comparison = candidate.direction === 'BUY' && Number.isFinite(ask) ? ask
-            : candidate.direction === 'SELL' && Number.isFinite(bid) ? bid : reference;
-        return candidate.direction === 'BUY' ? entry < comparison : candidate.direction === 'SELL' ? entry > comparison : false;
-    });
-}
-
-function getDisplayStrategyLabel(setup = {}, zoneType = null) {
-    const locationOnly = new Set(['FVG', 'OB', 'FLIP', 'DEMAND', 'SUPPLY', 'ORDER_BLOCK', 'FAIR_VALUE_GAP']);
-    const raw = [setup.label, setup.strategy_label, setup.primary]
-        .flatMap(value => String(value || '').split('+'))
-        .map(value => value.trim().toUpperCase())
-        .filter(Boolean)
-        .filter(value => !locationOnly.has(value));
-    const parts = [...new Set(raw)];
-    return parts.length ? parts.join('+') : 'ICT';
-}
-
-function resolveDeterministicSelectorCandidate(candidates = [], requestedId = null, currentPrice = null, marketConditions = {}) {
-    const eligible = candidates;
-    // Compatibility inputs created before authorization diagnostics existed
-    // may not carry the two explicit hard-validation flags. Preserve those
-    // only when the supplied geometry is complete and the requested id is an
-    // actual candidate; unknown ids still fail closed.
-    const legacy = eligible.find(candidate => candidate?.id === requestedId);
-    const legacyComplete = legacy && legacy.execution_geometry_valid == null && legacy.hard_validation_passed == null
-        && [legacy.entry, legacy.stop_loss, legacy.tp1 ?? legacy.take_profit_1].every(value => Number.isFinite(Number(value)))
-        && Number.isFinite(Number(legacy.actual_rr ?? legacy.rr_tp1 ?? 0))
-        && Number(legacy.actual_rr ?? legacy.rr_tp1) >= Number(legacy.minimum_rr ?? 2.5);
-    if (legacyComplete) return { ...legacy, ai_requested_candidate_id: requestedId || null };
-    const best = selectBestExecutableCandidate(eligible);
-    if (best) return { ...best, ai_requested_candidate_id: requestedId || null };
-    return null;
-}
 
 // ============================================
 // MARKET SETTINGS
@@ -328,102 +174,7 @@ function getMarketSettings(p, metadata = {}) {
     return withMetadata({ slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.01, targetRR: 2.5, prec: 5, pipSize: 0.0001 });
 }
 
-function getPreferredStopAtrMultiplier(settings = {}) {
-    const configured = Number(settings.minSLMultiplier);
-    return Math.max(0.75, Math.min(1.0, (Number.isFinite(configured) && configured > 0 ? configured : 1.5) * 0.5));
-}
-
 function getPrec(p, metadata = {}) { return getMarketSettings(p, metadata).prec; }
-
-function getTickSize(symbol, metadata = {}) {
-    const settings = getMarketSettings(symbol, metadata);
-    const supplied = Number(metadata.tick_size ?? metadata.tickSize);
-    if (Number.isFinite(supplied) && supplied > 0) return supplied;
-    if (getAssetClass(normalizeSymbolInput(symbol)) === 'FOREX') return Math.pow(10, -settings.prec);
-    return Number(settings.pipSize) > 0 ? Number(settings.pipSize) : Math.pow(10, -settings.prec);
-}
-
-function roundToTick(value, tickSize, mode = 'nearest') {
-    if (!Number.isFinite(Number(value)) || !Number.isFinite(Number(tickSize)) || Number(tickSize) <= 0) return null;
-    const units = Number(value) / Number(tickSize);
-    const ticks = mode === 'down' ? Math.floor(units + 1e-10) : mode === 'up' ? Math.ceil(units - 1e-10) : Math.round(units);
-    return Number((ticks * Number(tickSize)).toPrecision(14));
-}
-
-function normalizeTradePrice(value, symbol, metadata = {}, direction, role) {
-    const roundDown = (direction === 'BUY' && ['entry', 'stop_loss'].includes(role)) ||
-        (direction === 'SELL' && String(role).startsWith('take_profit'));
-    return roundToTick(Number(value), getTickSize(symbol, metadata), roundDown ? 'down' : 'up');
-}
-
-function normalizeZoneBounds(low, high, symbol, metadata = {}) {
-    if (!Number.isFinite(Number(low)) || !Number.isFinite(Number(high)) || Number(low) > Number(high)) return null;
-    const tick = getTickSize(symbol, metadata);
-    return { low: roundToTick(Number(low), tick, 'down'), high: roundToTick(Number(high), tick, 'up') };
-}
-
-function validatePriceTick(value, symbol, metadata = {}) {
-    const tick = getTickSize(symbol, metadata);
-    return Number.isFinite(Number(value)) && Math.abs(Number(value) / tick - Math.round(Number(value) / tick)) <= 1e-7;
-}
-
-function normalizeAndValidateCandidate(candidate, context = {}) {
-    const fail = reason => ({ valid: false, reason, candidate: null });
-    if (!candidate || !['BUY', 'SELL'].includes(candidate.direction)) return fail('INVALID_DIRECTION');
-    const symbol = context.pair || candidate.pair || pair;
-    const metadata = context.symbol_metadata || context.symbolMetadata || candidate.symbol_metadata || {};
-    const rawZone = {
-        low: Number(candidate.entry_region_low ?? candidate.zone_low ?? candidate.zone?.low),
-        high: Number(candidate.entry_region_high ?? candidate.zone_high ?? candidate.zone?.high)
-    };
-    const raw = { entry: Number(candidate.entry), stop_loss: Number(candidate.stop_loss), tp1: Number(candidate.tp1), tp2: Number(candidate.tp2), tp3: Number(candidate.tp3) };
-    if (!Number.isFinite(rawZone.low) || !Number.isFinite(rawZone.high) || rawZone.low > rawZone.high) return fail('INVALID_RAW_ZONE');
-    if (![raw.entry, raw.stop_loss, raw.tp1].every(Number.isFinite)) return fail('INCOMPLETE_GEOMETRY');
-    if (raw.entry < rawZone.low || raw.entry > rawZone.high) return fail('RAW_ENTRY_OUTSIDE_ZONE');
-    const invalidationValue = candidate.structural_invalidation?.level ?? candidate.structural_invalidation
-        ?? (candidate.direction === 'BUY' ? rawZone.low : rawZone.high);
-    const invalidation = Number(invalidationValue);
-    if (!Number.isFinite(invalidation)) return fail('MISSING_STRUCTURAL_INVALIDATION');
-    const zone = normalizeZoneBounds(rawZone.low, rawZone.high, symbol, metadata);
-    const normalized = { ...candidate, raw_geometry: { ...raw, entry_region_low: rawZone.low, entry_region_high: rawZone.high,
-        structural_invalidation: invalidationValue } };
-    if (candidate.structural_invalidation == null) normalized.structural_invalidation = {
-        level: invalidation, source: 'ENTRY_ZONE_BOUNDARY', timeframe: candidate.timeframe || null
-    };
-    normalized.entry = normalizeTradePrice(raw.entry, symbol, metadata, candidate.direction, 'entry');
-    normalized.stop_loss = normalizeTradePrice(raw.stop_loss, symbol, metadata, candidate.direction, 'stop_loss');
-    normalized.tp1 = normalizeTradePrice(raw.tp1, symbol, metadata, candidate.direction, 'take_profit_1');
-    if (Number.isFinite(raw.tp2)) normalized.tp2 = normalizeTradePrice(raw.tp2, symbol, metadata, candidate.direction, 'take_profit_2');
-    if (Number.isFinite(raw.tp3)) normalized.tp3 = normalizeTradePrice(raw.tp3, symbol, metadata, candidate.direction, 'take_profit_3');
-    normalized.entry_region_low = zone.low;
-    normalized.entry_region_high = zone.high;
-    normalized.zone_low = zone.low;
-    normalized.zone_high = zone.high;
-    const tick = getTickSize(symbol, metadata);
-    if (normalized.entry < zone.low - tick / 2 || normalized.entry > zone.high + tick / 2) return fail('NORMALIZED_ENTRY_OUTSIDE_ZONE');
-    if (candidate.direction === 'BUY') {
-        if (Number.isFinite(Number(context.ask)) && normalized.entry >= Number(context.ask)) return fail('BUY_ENTRY_NOT_BELOW_ASK');
-        if (!(normalized.stop_loss < normalized.entry && normalized.tp1 > normalized.entry)) return fail('BUY_GEOMETRY_INVALID_AFTER_NORMALIZATION');
-        if (normalized.stop_loss >= invalidation) return fail('BUY_STOP_NOT_BEYOND_INVALIDATION');
-        if (Number.isFinite(normalized.tp2) && normalized.tp2 <= normalized.tp1 || Number.isFinite(normalized.tp3) && normalized.tp3 <= (Number.isFinite(normalized.tp2) ? normalized.tp2 : normalized.tp1)) return fail('TP_ORDER_INVALID');
-    } else {
-        if (Number.isFinite(Number(context.bid)) && normalized.entry <= Number(context.bid)) return fail('SELL_ENTRY_NOT_ABOVE_BID');
-        if (!(normalized.stop_loss > normalized.entry && normalized.tp1 < normalized.entry)) return fail('SELL_GEOMETRY_INVALID_AFTER_NORMALIZATION');
-        if (normalized.stop_loss <= invalidation) return fail('SELL_STOP_NOT_BEYOND_INVALIDATION');
-        if (Number.isFinite(normalized.tp2) && normalized.tp2 >= normalized.tp1 || Number.isFinite(normalized.tp3) && normalized.tp3 >= (Number.isFinite(normalized.tp2) ? normalized.tp2 : normalized.tp1)) return fail('TP_ORDER_INVALID');
-    }
-    const risk = Math.abs(normalized.entry - normalized.stop_loss);
-    const rr = risk > 0 ? Math.abs(normalized.tp1 - normalized.entry) / risk : 0;
-    const minimumRR = Number(context.risk_constraints?.minimum_rr) || Number(metadata.minimum_rr) || getMarketSettings(symbol, metadata).targetRR || 2.5;
-    if (rr + 1e-9 < minimumRR) return fail('RR_BELOW_MINIMUM_AFTER_NORMALIZATION');
-    normalized.actual_rr = ictRound(rr, 4);
-    normalized.rr_tp1 = ictRound(rr, 4);
-    if (Array.isArray(normalized.target_map)) {
-        normalized.target_map = normalized.target_map.map((target, i) => ({ ...target,
-            target_level: normalizeTradePrice(target.target_level, symbol, metadata, candidate.direction, `take_profit_${i + 1}`) }));
-    }
-    return { valid: true, candidate: normalized, reason: null };
-}
 
 // ============================================
 // API KEYS & GITHUB MANAGEMENT
@@ -1198,14 +949,14 @@ function localIndicatorSnapshot(candleData = []) {
     if (closes.length >= 9) ind.ema9 = finite(ema(closes, 9).at(-1));
     if (closes.length >= 21) ind.ema21 = finite(ema(closes, 21).at(-1));
     if (closes.length >= 50) ind.ema50 = finite(ema(closes, 50).at(-1));
-    if (closes.length >= 200) ind.ema200 = finite(ema(closes, 200).at(-1));
+    if (closes.length >= 100) ind.ema200 = finite(ema(closes, 200).at(-1));
     if (closes.length >= 20) {
         const win = closes.slice(-20);
         const mid = windowMean(win, win.length);
         const sd = Math.sqrt(win.reduce((sum, value) => sum + Math.pow(value - mid, 2), 0) / win.length);
         ind.bb_upper = finite(mid + 2 * sd); ind.bb_middle = finite(mid); ind.bb_lower = finite(mid - 2 * sd);
     }
-    if (closes.length >= 34) {
+    if (closes.length >= 26) {
         const fast = ema(closes, 12), slow = ema(closes, 26);
         const macdSeries = fast.map((value, index) => value - slow[index]).slice(25);
         const signalSeries = ema(macdSeries, 9);
@@ -1230,14 +981,14 @@ function localIndicatorSnapshot(candleData = []) {
         const deviation = typical.slice(-20).reduce((sum, value) => sum + Math.abs(value - mean), 0) / 20;
         ind.cci = finite((tp - mean) / (0.015 * (deviation || 1)));
     }
-    if (data.length >= 52) {
+    if (data.length >= 26) {
         const hi9 = Math.max(...highs.slice(-9)), lo9 = Math.min(...lows.slice(-9));
         const hi26 = Math.max(...highs.slice(-26)), lo26 = Math.min(...lows.slice(-26));
         const hi52 = Math.max(...highs.slice(-52)), lo52 = Math.min(...lows.slice(-52));
         ind.ichimoku_tenkan = finite((hi9 + lo9) / 2);
         ind.ichimoku_kijun = finite((hi26 + lo26) / 2);
         ind.ichimoku_senkou_a = finite((ind.ichimoku_tenkan + ind.ichimoku_kijun) / 2);
-        ind.ichimoku_senkou_b = finite((hi52 + lo52) / 2);
+        ind.ichimoku_senkou_b = data.length >= 52 ? finite((hi52 + lo52) / 2) : null;
     }
     if (data.length >= 11) {
         let direction = 1, extreme = highs[0], sar = lows[0], acceleration = 0.02;
@@ -1291,19 +1042,16 @@ async function getTechnicalIndicators(tfUsed, candleData = null, pairLocal = pai
     // (Grow 55 plan = only 55 requests/minute; these used to be 8 API calls per TF)
     if(closes.length >= 15) ind.rsi = computeRSI(closes, 14);
     if(candleData && candleData.length >= 15) ind.atr_api = atr(candleData, 14);
-    if(closes.length >= 9) {
-        const e9 = ema(closes, 9);
+    if(closes.length >= 5) {
+        const e9 = ema(closes, 9), e21 = ema(closes, 21);
         ind.ema9 = e9[e9.length - 1];
-    }
-    if(closes.length >= 21) {
-        const e21 = ema(closes, 21);
         ind.ema21 = e21[e21.length - 1];
     }
     if(closes.length >= 50) {
         const e50 = ema(closes, 50);
         ind.ema50 = e50[e50.length - 1];
     }
-    if(closes.length >= 200) {
+    if(closes.length >= 100) {
         const e200 = ema(closes, 200);
         ind.ema200 = e200[e200.length - 1];
     }
@@ -1358,7 +1106,6 @@ const ema = (p, n) => {
 
 // ATR Calculation
 const atr = (d, n = 14) => {
-    if(!Array.isArray(d) || d.length < n + 1) return null;
     let t = [];
     for(let i = 1; i < d.length; i++) {
         t.push(Math.max(
@@ -1736,11 +1483,10 @@ function ictGetLastTradeTime() {
     try { stored = Number(localStorage.getItem(ICT_LAST_TRADE_TIME_KEY)) || 0; } catch (e) {}
     return Math.max(lastTradeTime || 0, stored);
 }
-function recordTradeResult(isWin, riskR, filledFraction = 1) {
+function recordTradeResult(isWin, riskR) {
     loadPaperRiskState();
     if (!ictGetLastTradeTime()) ictSetLastTradeTime(Date.now());
-    const fraction = Math.max(0, Math.min(1, Number(filledFraction) || 0));
-    const resultR = isWin ? Math.max(0, Number(riskR) || 0) * fraction : 1 * fraction;
+    const resultR = Math.max(0, Number(riskR) || 0);
     if(isWin) { consecutiveLosses = 0; dailyPnlR += resultR; weeklyPnlR += resultR; }
     else { consecutiveLosses++; dailyPnlR -= resultR; weeklyPnlR -= resultR; }
     persistPaperRiskState();
@@ -1875,13 +1621,13 @@ async function checkPendingFills() {
             // Risk is |entry - stopLoss|. Reward at TP1 is |TP1 - entry|. Use RR for PnL.
             const risk = Math.abs(fill.entry - fill.stopLoss);
             const reward = Math.abs(fill.takeProfit1 - fill.entry);
-            const r = isWin && risk > 0 ? reward / risk : -1;
+            const r = risk > 0 ? reward / risk : 1.0;
             recordTradeResult(isWin, r);
             try {
                 const patterns = Array.isArray(fill.patterns)
                     ? fill.patterns
                     : String(fill.patterns || '').split('+').map(x => x.trim()).filter(Boolean);
-                trackAIPerformance(String(fill.id), result.outcome, fill.confidence || 0, patterns, isWin ? r : -1);
+                trackAIPerformance(String(fill.id), result.outcome, fill.confidence || 0, patterns, r);
             } catch (e) {
                 console.warn('pendingFills self-learning update failed:', e);
             }
@@ -1945,8 +1691,7 @@ function detectOrderBlocks(data, direction) {
 // ADX Calculation (HTF > 15 required, LTF > 20 required)
 function calculateADX(data, period = 14, timeframe = '1H') {
     const minADX = ['1D', '4H', '1H'].includes(timeframe) ? 10 : 20;
-    const unavailable = { adx: null, plusDI: null, minusDI: null, isStrongTrend: false, minADX };
-    if(!Array.isArray(data) || data.length < period * 2) return unavailable;
+    if(!data || data.length < period * 2) return { adx: 30, isStrongTrend: true, minADX };
     let trs = [], pDMs = [], mDMs = [];
     for(let i = 1; i < data.length; i++) {
         const curr = data[i], prev = data[i-1];
@@ -1955,33 +1700,15 @@ function calculateADX(data, period = 14, timeframe = '1H') {
         const mDM = (prev.l - curr.l > curr.h - prev.h && prev.l - curr.l > 0) ? prev.l - curr.l : 0;
         trs.push(tr); pDMs.push(pDM); mDMs.push(mDM);
     }
-    if(trs.length < period * 2 - 1) return unavailable;
-    let trSmooth = trs.slice(0, period).reduce((a,b)=>a+b, 0);
-    let pDMSmooth = pDMs.slice(0, period).reduce((a,b)=>a+b, 0);
-    let mDMSmooth = mDMs.slice(0, period).reduce((a,b)=>a+b, 0);
-    const dxValues = [];
-    const currentDI = () => {
-        if (!(trSmooth > 0)) return null;
-        const plusDI = pDMSmooth / trSmooth * 100;
-        const minusDI = mDMSmooth / trSmooth * 100;
-        const total = plusDI + minusDI;
-        return { plusDI, minusDI, dx: total > 0 ? Math.abs(plusDI - minusDI) / total * 100 : 0 };
-    };
-    const first = currentDI();
-    if (!first) return unavailable;
-    dxValues.push(first.dx);
-    for(let i = period; i < trs.length; i++) {
-        trSmooth = trSmooth - trSmooth / period + trs[i];
-        pDMSmooth = pDMSmooth - pDMSmooth / period + pDMs[i];
-        mDMSmooth = mDMSmooth - mDMSmooth / period + mDMs[i];
-        const current = currentDI();
-        if(current) dxValues.push(current.dx);
-    }
-    if(dxValues.length < period) return unavailable;
-    let adx = dxValues.slice(0, period).reduce((a,b)=>a+b, 0) / period;
-    for(let i = period; i < dxValues.length; i++) adx = (adx * (period - 1) + dxValues[i]) / period;
-    const latest = currentDI();
-    return { adx, plusDI: latest?.plusDI ?? null, minusDI: latest?.minusDI ?? null, isStrongTrend: adx > minADX, minADX };
+    if(trs.length < period) return { adx: 30, isStrongTrend: true, minADX };
+    let trSmooth = trs.slice(-period).reduce((a,b)=>a+b, 0);
+    let pDMSmooth = pDMs.slice(-period).reduce((a,b)=>a+b, 0);
+    let mDMSmooth = mDMs.slice(-period).reduce((a,b)=>a+b, 0);
+    if(trSmooth === 0) return { adx: 30, isStrongTrend: true, minADX };
+    const pDI = (pDMSmooth / trSmooth) * 100;
+    const mDI = (mDMSmooth / trSmooth) * 100;
+    const dx = (Math.abs(pDI - mDI) / (pDI + mDI || 1)) * 100;
+    return { adx: dx, isStrongTrend: dx > minADX, minADX };
 }
 
 // RSI (Wilder's smoothing) — real local calculation from candle closes
@@ -2104,31 +1831,7 @@ function checkTradeSession(now = new Date()) {
 
 // News is deliberately UNKNOWN until an external calendar is supplied. Time
 // of day alone cannot prove that a high-impact event is absent.
-function checkHighImpactNews(newsInput = null, now = new Date()) {
-    if (newsInput && typeof newsInput === 'object' && newsInput.available === true && Array.isArray(newsInput.events)) {
-        const nowMs = normalizeTimestampUTC(now) ?? Date.now();
-        const event = newsInput.events.find(item => {
-            if (!/^(HIGH|3)$/i.test(String(item?.impact || item?.importance || ''))) return false;
-            const eventMs = normalizeTimestampUTC(item.event_time ?? item.time ?? item.datetime);
-            if (!Number.isFinite(eventMs)) return false;
-            const before = Number(item.minutes_before ?? newsInput.minutes_before ?? 30);
-            const after = Number(item.minutes_after ?? newsInput.minutes_after ?? 30);
-            return nowMs >= eventMs - before * 60000 && nowMs <= eventMs + after * 60000;
-        });
-        if (event) {
-            const eventTime = event.event_time ?? event.time ?? event.datetime;
-            const eventMs = normalizeTimestampUTC(eventTime);
-            const deltaMinutes = Number.isFinite(eventMs) ? Math.round((eventMs - nowMs) / 60000) : null;
-            const name = event.name || event.title || null;
-            return { status: 'HIGH_IMPACT', available: true, inNewsWindow: true, high_impact_event: true,
-                newsName: name, event_name: name, event_time: eventTime || null,
-                minutes_to_event: deltaMinutes, minutes_after_event: deltaMinutes < 0 ? -deltaMinutes : null,
-                source: newsInput.source || null, warning: `High-impact news risk${name ? `: ${name}` : ''}` };
-        }
-        return { status: 'CLEAR', available: true, inNewsWindow: false, high_impact_event: false,
-            newsName: null, event_name: null, event_time: null, minutes_to_event: null,
-            minutes_after_event: null, source: newsInput.source || null, warning: null };
-    }
+function checkHighImpactNews(newsInput = null) {
     if (newsInput && typeof newsInput === 'object') {
         const highImpact = newsInput.high_impact_event;
         if (typeof highImpact === 'boolean') {
@@ -3132,7 +2835,7 @@ function calcStopLoss(data, direction, entry, zone, msnr, tf, customATR = null, 
         slDist = Math.max(minSLDist, Math.min(rawDist, maxSLDist));
         sl = entry + slDist;
     }
-    sl = normalizeTradePrice(sl, p, symbolMetadata, direction, 'stop_loss');
+    sl = Math.round(sl * factor) / factor;
     return { price: sl };
 }
 
@@ -3375,7 +3078,7 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
         }
     }
 
-    entry = normalizeTradePrice(entry, pairLocal, symbolMetadata, direction, 'entry');
+    entry = Math.round(entry * factor) / factor;
     
     // STOP LOSS PRECISION: Keep current SL (1.5% max, 2.5x ATR max, DO NOT WIDEN SL)
     const slRes = calcStopLoss(data, direction, entry, best, msnr, null, atrVal, pairLocal, symbolMetadata);
@@ -3808,12 +3511,10 @@ function detectBreakoutRetest(data, price, dir, pairLocal = pair, symbolMetadata
     const settings = getMarketSettings(pairLocal, symbolMetadata);
     const atrVal = atr(data, 14);
     const maxRetestDistance = Math.max(atrVal * 1.5, settings.pipSize * 10);
-    const offset = Math.max(0, data.length - 60);
-    const sw = findSwings(data.slice(offset), 2);
+    const sw = findSwings(data.slice(-60), 2);
     if(dir === 'BUY') {
         const highs = (sw.H || []).slice(-4);
-        for(const swing of highs) {
-            const h = { ...swing, i: offset + swing.i };
+        for(const h of highs) {
             const distance = price - h.p;
             if(distance > -maxRetestDistance && distance < maxRetestDistance * 0.25) {
                 const after = data.slice(h.i + 1);
@@ -3823,8 +3524,7 @@ function detectBreakoutRetest(data, price, dir, pairLocal = pair, symbolMetadata
         }
     } else {
         const lows = (sw.L || []).slice(-4);
-        for(const swing of lows) {
-            const l = { ...swing, i: offset + swing.i };
+        for(const l of lows) {
             const distance = l.p - price;
             if(distance > -maxRetestDistance && distance < maxRetestDistance * 0.25) {
                 const after = data.slice(l.i + 1);
@@ -3885,7 +3585,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
         // just lowers confidence. Strong ADX still gets a bonus (below). This lets valid
         // zones/setups fire in ranges while still rewarding real trends.
         const adxResult = calculateADX(entryData, 14, tfToAnalyze);
-        const adxWeakTrend = Number.isFinite(adxResult.adx) && !adxResult.isStrongTrend;
+        const adxWeakTrend = !adxResult.isStrongTrend;
         if(adxWeakTrend) {
             console.log(`  ⚠️ ${tfToAnalyze}: ADX ${adxResult.adx.toFixed(1)} <= ${adxResult.minADX} (weak/ranging — penalty)`);
         }
@@ -3894,7 +3594,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
         const sessionCheck = checkTradeSession(now);
 
         // 3. High Impact News Warning Check (FOMC, NFP, CPI)
-        const newsCheck = checkHighImpactNews(window.quoteSnapshot?.news_risk || window.externalNewsData || null);
+        const newsCheck = checkHighImpactNews(pairLocal);
         if(newsCheck.inNewsWindow && newsCheck.warning) {
             console.log(`  ⚠️ ${tfToAnalyze}: ${newsCheck.warning}`);
         }
@@ -3964,7 +3664,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             const dailyBiasData = (htfData && htfData['1D']) || entryData;
             const dirBias = getDirectionBias(dailyBiasData);
             const dailyADX = calculateADX(dailyBiasData, 14, '1D');
-            const dailyStrong = Number.isFinite(dailyADX.adx) && dailyADX.adx > 20;
+            const dailyStrong = dailyADX.adx > 20;
             const fightingTrend = dir === 'BUY' ? (dirBias === 'BEARISH') : (dirBias === 'BULLISH');
 
             if(fightingTrend && dailyStrong) {
@@ -3974,8 +3674,8 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
                 continue;
             }
 
-            const trendStrengthLabel = dailyStrong ? 'STRONG' : Number.isFinite(dailyADX.adx) ? 'WEAK (ranging)' : 'UNKNOWN (insufficient history)';
-            console.log(`  → 1D direction: ${dirBias} (ADX ${Number.isFinite(dailyADX.adx) ? dailyADX.adx.toFixed(1) : 'N/A'} — ${trendStrengthLabel})`);
+            const trendStrengthLabel = dailyStrong ? 'STRONG' : 'WEAK (ranging)';
+            console.log(`  → 1D direction: ${dirBias} (ADX ${dailyADX.adx.toFixed(1)} — ${trendStrengthLabel})`);
 
             // Compression: SOFT signal now (was hard-reject). Trending setups are
             // valid ICT entries; compression just means lower-confidence expansion.
@@ -4054,9 +3754,9 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             let tp2 = tps.tp2;
             let tp3 = tps.tp3;
             if (!Number.isFinite(tp1)) continue;
-            tp1 = normalizeTradePrice(tp1, pairLocal, symbolMetadata, dir, 'take_profit_1');
-            tp2 = Number.isFinite(tp2) ? normalizeTradePrice(tp2, pairLocal, symbolMetadata, dir, 'take_profit_2') : null;
-            tp3 = Number.isFinite(tp3) ? normalizeTradePrice(tp3, pairLocal, symbolMetadata, dir, 'take_profit_3') : null;
+            tp1 = Math.round(tp1 * factor) / factor;
+            tp2 = Number.isFinite(tp2) ? Math.round(tp2 * factor) / factor : null;
+            tp3 = Number.isFinite(tp3) ? Math.round(tp3 * factor) / factor : null;
 
             // RR Protection Checks (Minimum 1.5x RR)
             const reward1 = Math.abs(tp1 - entry);
@@ -4162,7 +3862,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             }
 
             // 15. ADX Exhaustion Penalty (overextended trend is a warning, not strength)
-            if(Number.isFinite(adxResult.adx) && adxResult.adx > 75) {
+            if(adxResult.adx > 75) {
                 confidence -= 5;
                 reasons.push(`ADX overextended ${adxResult.adx.toFixed(0)} (-5)`);
             }
@@ -4272,7 +3972,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             }
 
             // ADX: strong trend bonus (reward strong trends)
-            if(adxResult && Number.isFinite(adxResult.adx) && adxResult.adx > 25) {
+            if(adxResult && adxResult.adx > 25) {
                 confidence += 3; reasons.push(`ADX ${adxResult.adx.toFixed(0)} strong (+3)`);
             }
             // ADX: weak/ranging trend penalty (no longer blocks the whole timeframe)
@@ -4725,16 +4425,15 @@ function getAdaptiveStopCandidates(zone, direction, entry, data, zones, atrVal, 
         volatility_noise_buffer: (atrVal || 0) * 0.05
     };
     const buffer = Math.max(bufferComponents.pip_or_tick_buffer + bufferComponents.spread_buffer, bufferComponents.volatility_noise_buffer, entry * 0.00002);
-    const preferredAtrMultiplier = getPreferredStopAtrMultiplier(settings);
-    const preferredRisk = Number.isFinite(Number(atrVal)) && atrVal > 0
-        ? Math.max(settings.pipSize * 2, atrVal * preferredAtrMultiplier)
-        : settings.pipSize * 2;
     if (authoritative) {
         // Keep the authoritative invalidation as the anchor, while giving the
         // stop enough room for normal setup-timeframe noise. A microscopic
         // anchor buffer can otherwise produce a technically valid but fragile
         // stop, especially on gold and other volatile instruments.
         const anchorRisk = direction === 'BUY' ? entry - (authoritative.level - buffer) : (authoritative.level + buffer) - entry;
+        const preferredRisk = Number.isFinite(Number(atrVal)) && atrVal > 0
+            ? Math.max(settings.pipSize * 2, atrVal * 0.5)
+            : settings.pipSize * 2;
         const riskDistance = Math.max(anchorRisk, preferredRisk);
         const stopLoss = ictRound(direction === 'BUY' ? entry - riskDistance : entry + riskDistance, prec);
         return [{ level: authoritative.level, source: authoritative.source, origin: 'STRUCTURAL', authoritative: true,
@@ -4778,9 +4477,7 @@ function getAdaptiveStopCandidates(zone, direction, entry, data, zones, atrVal, 
             dedupe.set(key, { ...c, stop_loss: roundedStop, buffer: ictRound(buffer, prec), authoritative_invalidation: authoritative });
         }
     }
-    return [...dedupe.values()]
-        .filter(candidate => Math.abs(candidate.stop_loss - entry) >= preferredRisk)
-        .sort((a, b) => Math.abs(a.stop_loss - entry) - Math.abs(b.stop_loss - entry));
+    return [...dedupe.values()].sort((a, b) => Math.abs(a.stop_loss - entry) - Math.abs(b.stop_loss - entry));
 }
 
 function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, minimumRR, prec, reachabilityContext = {}) {
@@ -4883,11 +4580,11 @@ function getCandidateATRContext(candidate, historyCache, pairLocal, price, symbo
         : (Number.isFinite(fallbackAtr) && fallbackAtr > 0 ? fallbackAtr : NaN);
     const minMultiplier = settings.minSLMultiplier || 1.5;
     const minimumReasonable = Number.isFinite(atrForRule) && atrForRule > 0
-        ? Math.max(settings.minSL, atrForRule * getPreferredStopAtrMultiplier(settings))
+        ? Math.max(settings.minSL, atrForRule * 0.5)
         : settings.minSL;
     const absoluteMinSL = Math.max(settings.pipSize, Number.isFinite(atrForRule) && atrForRule > 0 ? atrForRule * 0.10 : settings.pipSize);
     const preferredMinSL = Number.isFinite(atrForRule) && atrForRule > 0
-        ? Math.max(settings.pipSize * 2, atrForRule * getPreferredStopAtrMultiplier(settings))
+        ? Math.max(settings.pipSize * 2, atrForRule * 0.5)
         : settings.pipSize * 2;
     const maxByAtr = Number.isFinite(atrForRule) && atrForRule > 0 ? atrForRule * 10.0 : Infinity;
     const maxByPrice = Number(price) * settings.maxSLPct;
@@ -5005,7 +4702,7 @@ function buildRiskConstraints(pairLocal, price, historyCache, quoteSnapshot = nu
         minimum_rr: settings.targetRR || 2.5,
         minimum_sl_distance: ictRound(absoluteMinSL, prec),
         absolute_min_sl: ictRound(absoluteMinSL, prec),
-        preferred_min_sl: ictRound(Math.max(settings.pipSize * 2, (primaryAtr || 0) * getPreferredStopAtrMultiplier(settings)), prec),
+        preferred_min_sl: ictRound(Math.max(settings.pipSize * 2, (primaryAtr || 0) * 0.5), prec),
         maximum_sl_distance: ictRound(Math.max(absoluteMinSL, rawMaxSLDistance), prec),
         maximum_entry_distance_atr: LIMIT_ORDER_MAX_DIST_ATR,
         current_spread: Number.isFinite(currentSpread) ? ictRound(currentSpread, prec) : null,
@@ -6149,8 +5846,6 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     distance_from_current_price_atr: safeAtr > 0 ? ictRound(Math.abs(entry - price) / safeAtr, 2) : null,
                     market_regime: marketRegime?.primary_regime || 'UNKNOWN'
                 };
-                rawCandidate.entry_region_low = zone.low;
-                rawCandidate.entry_region_high = zone.high;
                 if (strategySetup) {
                     rawCandidate.strategy_setup = strategySetup;
                     rawCandidate.strategy_label = strategySetup.label;
@@ -6292,9 +5987,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     setup_archetype: archetype.setup_archetype,
                     reversal_evidence: archetype.reversal_evidence,
                     strategy_setup: strategySetup || rawCandidate.strategy_setup || null,
-                    strategy_label: [...new Set([strategySetup?.label, strategySetup?.primary, rawCandidate.strategy_label, zone.type]
-                        .filter(Boolean)
-                        .flatMap(value => String(value).split('+').map(part => part.trim()).filter(Boolean)))].join('+') || zone.type,
+                    strategy_label: strategySetup?.label || rawCandidate.strategy_label || zone.type,
                     tp1: targets.tp1.level,
                     minimum_rr: minimumRR,
                     tp2: targets.tp2 ? targets.tp2.level : null,
@@ -6356,15 +6049,6 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     setup_confidence: Math.max(0, Math.min(100, Math.round(score))),
                     score: ictRound(score, 2)
                 };
-                const normalizedCandidate = normalizeAndValidateCandidate(candidate, {
-                    pair,
-                    symbol_metadata: symbolMetadata || marketContext?.symbol_metadata || {},
-                    risk_constraints: marketContext?.risk_constraints,
-                    bid: marketContext?.market_conditions?.bid,
-                    ask: marketContext?.market_conditions?.ask
-                });
-                if (normalizedCandidate.valid) Object.assign(candidate, normalizedCandidate.candidate);
-                else candidate.normalization_rejection = normalizedCandidate.reason;
                 candidate.top_down_context = classifyTopDownTrade(candidate, timeframeContext);
                 candidate.trade_context_classification = candidate.top_down_context.classification;
                 candidate.opportunity_thesis = strategySetup?.opportunity_thesis || null;
@@ -6393,9 +6077,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         rejectedCandidates.push({ id: candidate.id, rejection_code: 'ENGINE_INVARIANT_FAILURE', invariant_code: invariant.invariant_code, rejection_reasons: invariant.failures });
                         continue;
                     }
-                    candidate.execution_geometry_valid = true;
-                    candidate.hard_validation_passed = true;
-                    Object.assign(candidate, classifyCandidateAuthorization(candidate));
+                    Object.freeze(candidate);
                     console.log('STRATEGY CANDIDATE', { id: candidate.id, strategy: candidate.strategy_label, direction: candidate.direction, score: candidate.score });
                     validCandidates.push(candidate);
                 } else {
@@ -6416,12 +6098,8 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     }
 
     const selected = validCandidates
-        .sort(compareCandidates)
-        .slice(0, 5)
-        .map((candidate, index) => {
-            candidate.selection_rank = index + 1;
-            return candidate;
-        });
+        .sort((a, b) => b.score - a.score || b.rr_tp1 - a.rr_tp1 || a.distance_from_current_price - b.distance_from_current_price)
+        .slice(0, 5);
     const result = {
         raw_candidates: rawCandidates,
         valid_candidates: selected,
@@ -6483,46 +6161,13 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
         console.log('AI numeric override ignored', { selected_candidate_id: id, fields: numericOverrideFields.map(([field]) => field) });
     }
     aiResult.direction = candidate.direction;
-    aiResult.strategy_label = getDisplayStrategyLabel({
-        label: candidate.strategy_setup?.label,
-        primary: candidate.strategy_setup?.primary,
-        strategy_label: candidate.strategy_label
-    }, candidate.zone_type);
-    const explicitConfirmationEntry = String(candidate.execution_model || candidate.entry_model || '').toUpperCase() === 'CONFIRMATION_ENTRY';
-    const verifiedReversal = candidate.trade_context_classification === 'HTF_VERIFIED_REVERSAL'
-        || candidate.top_down_context?.classification === 'HTF_VERIFIED_REVERSAL';
-    const explicitConfirmationRequired = candidate.requires_confirmation === true
-        || candidate.strategy_setup?.requires_confirmation === true
-        || candidate.opportunity_thesis?.requires_confirmation === true;
-    const completeDeterministicGeometry = hasCompleteExecutionGeometry({
-        ...candidate,
-        actual_rr: candidate.actual_rr ?? candidate.rr_tp1
-    }) && candidate.execution_geometry_valid !== false
-        && candidate.hard_validation_passed !== false;
-    // A confirmation label can be inherited from a local strategy narrative.
-    // Once the deterministic engine has a complete, validated continuation
-    // limit, do not turn it into a market-after-confirmation instruction.
-    // Verified reversals and explicitly confirmation-only setups retain the
-    // confirmation workflow.
-    const continuationLimit = explicitConfirmationEntry
-        && completeDeterministicGeometry
-        && !verifiedReversal
-        && !explicitConfirmationRequired
-        && (candidate.trade_context_classification === 'HTF_ALIGNED_CONTINUATION'
-            || Number(candidate.htf_alignment) >= 2);
-    const confirmationEntry = explicitConfirmationEntry && !continuationLimit;
+    const confirmationEntry = String(candidate.execution_model || candidate.entry_model || '').toUpperCase() === 'CONFIRMATION_ENTRY';
     aiResult.decision = confirmationEntry ? candidate.direction : (candidate.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT');
     aiResult.order_type = confirmationEntry ? 'MARKET_AFTER_CONFIRMATION' : 'LIMIT';
     aiResult.setup_type = confirmationEntry ? 'CONFIRMATION_ENTRY' : 'PENDING_LIMIT';
     aiResult.ai_decision = confirmationEntry ? 'enter_after_confirmation' : 'pending_limit';
-    // Candidates can carry the same deterministic zone under different
-    // fields depending on whether they came from FVG/OB/CRT/MSNR discovery.
-    // Always project one complete public zone so a valid limit is not
-    // rejected as "ready entry zone is invalid".
-    const zoneLow = candidate.zone_low ?? candidate.entry_region_low ?? candidate.entry_zone?.low ?? candidate.execution_zone?.low;
-    const zoneHigh = candidate.zone_high ?? candidate.entry_region_high ?? candidate.entry_zone?.high ?? candidate.execution_zone?.high;
-    aiResult.selected_zone = { type: candidate.zone_type, timeframe: candidate.timeframe || candidate.execution_timeframe, low: zoneLow, high: zoneHigh };
-    aiResult.entry_zone = { source: candidate.zone_type, low: zoneLow, high: zoneHigh };
+    aiResult.selected_zone = { type: candidate.zone_type, timeframe: candidate.timeframe, low: candidate.zone_low, high: candidate.zone_high };
+    aiResult.entry_zone = { source: candidate.zone_type, low: candidate.zone_low, high: candidate.zone_high };
     aiResult.entry = candidate.entry;
     aiResult.stop_loss = candidate.stop_loss;
     aiResult.stop_loss_reason = candidate.stop_reason;
@@ -6558,17 +6203,7 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.entry_reachable_today = candidate.entry_reachable_today ?? aiResult.setup_lifecycle?.entry_reachable_today ?? false;
     aiResult.distance_to_entry_atr = candidate.distance_to_entry_atr ?? aiResult.setup_lifecycle?.distance_to_entry_atr ?? null;
     aiResult.remaining_reward_fraction = candidate.remaining_reward_fraction ?? aiResult.setup_lifecycle?.remaining_reward_fraction ?? null;
-    const candidateDiagnostics = classifyCandidateAuthorization(candidate);
-    aiResult.setup_confidence = getCanonicalCandidateConfidence(candidateDiagnostics);
-    aiResult.confidence = aiResult.setup_confidence;
-    aiResult.authorization_state = candidateDiagnostics.authorization_state;
-    aiResult.confidence_type = candidateDiagnostics.confidence_type;
-    aiResult.location_confidence = candidateDiagnostics.location_confidence;
-    aiResult.execution_confidence = candidateDiagnostics.execution_confidence;
-    aiResult.has_complete_execution_geometry = candidateDiagnostics.has_complete_execution_geometry;
-    aiResult.geometry_missing = candidateDiagnostics.geometry_missing;
-    aiResult.hard_validation_passed = candidateDiagnostics.hard_validation_passed;
-    aiResult.selection_rank = candidateDiagnostics.selection_rank;
+    aiResult.setup_confidence = getDeterministicCandidateConfidence(candidate);
     aiResult.strategy_setup = candidate.strategy_setup || null;
     aiResult.strategy_narrative = {
         state: candidate.narrative_state || candidate.strategy_setup?.narrative_state || 'ACTIVE',
@@ -6747,32 +6382,23 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
 }
 
 function candidateToAIResult(candidate) {
-    const classified = classifyCandidateAuthorization(candidate);
     return {
-        direction: classified.direction,
-        decision: classified.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT',
-        selected_candidate_id: classified.id,
-        selected_zone: { type: classified.zone_type, timeframe: classified.timeframe, low: classified.zone_low, high: classified.zone_high },
-        entry_zone: { source: classified.zone_type, low: classified.zone_low, high: classified.zone_high },
-        entry: classified.entry,
-        stop_loss: classified.stop_loss,
-        take_profit_1: classified.tp1,
-        take_profit_2: classified.tp2 ?? null,
-        take_profit_3: classified.tp3 ?? null,
-        confidence: getCanonicalCandidateConfidence(classified),
-        authorization_state: classified.authorization_state,
-        confidence_type: classified.confidence_type,
-        location_confidence: classified.location_confidence,
-        execution_confidence: classified.execution_confidence,
-        has_complete_execution_geometry: classified.has_complete_execution_geometry,
-        geometry_missing: classified.geometry_missing,
-        hard_validation_passed: classified.hard_validation_passed,
-        selection_rank: classified.selection_rank,
+        direction: candidate.direction,
+        decision: candidate.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT',
+        selected_candidate_id: candidate.id,
+        selected_zone: { type: candidate.zone_type, timeframe: candidate.timeframe, low: candidate.zone_low, high: candidate.zone_high },
+        entry_zone: { source: candidate.zone_type, low: candidate.zone_low, high: candidate.zone_high },
+        entry: candidate.entry,
+        stop_loss: candidate.stop_loss,
+        take_profit_1: candidate.tp1,
+        take_profit_2: candidate.tp2 ?? null,
+        take_profit_3: candidate.tp3 ?? null,
+        confidence: getDeterministicCandidateConfidence(candidate),
         reasoning: { primary: candidate.stop_reason || 'Deterministic candidate' },
-        patterns: classified.strategy_setup
-            ? [classified.strategy_setup.label || classified.strategy_setup.primary].concat(classified.strategy_setup.confirmations || [])
-            : [classified.zone_type],
-        risk_reward: classified.rr_tp1 ? `1:${classified.rr_tp1}` : null
+        patterns: candidate.strategy_setup
+            ? [candidate.strategy_setup.label || candidate.strategy_setup.primary].concat(candidate.strategy_setup.confirmations || [])
+            : [candidate.zone_type],
+        risk_reward: candidate.rr_tp1 ? `1:${candidate.rr_tp1}` : null
     };
 }
 
@@ -6902,9 +6528,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         still_actionable_today: false,
         entry_region_low: low, entry_region_high: high,
         entry_consumed: false, entry_first_touch_index: null, entry_first_touch_time: null,
-        entry_touch_count_after_signal: 0, zone_touched: false, zone_touch_count: 0,
-        exact_entry_touched: false, exact_entry_touch_count: 0, order_filled: candidate.order_filled === true,
-        entry_freshness: 'FRESH',
+        entry_touch_count_after_signal: 0, entry_freshness: 'FRESH',
         tp1_already_reached: false, tp1_first_reached_index: null, tp1_first_reached_time: null,
         nominal_reward_after_fill: Number.isFinite(tp1) && Number.isFinite(entry) ? Math.abs(tp1 - entry) : null,
         entry_retracement_distance: Number.isFinite(entry) && Number.isFinite(price) ? Math.abs(price - entry) : null,
@@ -6975,17 +6599,10 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
             }
             if (bar.l <= high && bar.h >= low) {
                 result.entry_touch_count_after_signal++;
-                result.zone_touched = true;
-                result.zone_touch_count++;
                 if (result.entry_first_touch_index == null) {
                     result.entry_first_touch_index = i;
                     result.entry_first_touch_time = barTime;
                 }
-            }
-            const exactEntryTouch = candidate.direction === 'BUY' ? bar.l <= entry : bar.h >= entry;
-            if (exactEntryTouch) {
-                result.exact_entry_touched = true;
-                result.exact_entry_touch_count++;
             }
             if (Number.isFinite(tp1) && (candidate.direction === 'BUY' ? bar.h >= tp1 : bar.l <= tp1)) {
                 result.tp1_already_reached = true;
@@ -6996,7 +6613,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
             }
         }
     }
-    result.entry_consumed = result.exact_entry_touched || result.order_filled;
+    result.entry_consumed = result.entry_touch_count_after_signal > spec.maxEntryTouches;
     result.execution_zone_consumed = result.entry_consumed;
     const currentReached = Number.isFinite(tp1) && (candidate.direction === 'BUY' ? price >= tp1 : price <= tp1);
     result.tp1_already_reached ||= currentReached;
@@ -7696,13 +7313,6 @@ function getTodayOpportunityExecutionModel(setup, zone) {
     return 'PENDING_LIMIT';
 }
 
-// These execution labels all describe a price-retracement limit plan. Keep
-// them on one path so a strategy-specific label cannot accidentally suppress
-// a complete pending-limit opportunity during the daily planner pass.
-function isPendingLimitExecutionModel(model) {
-    return ['PENDING_LIMIT', 'FRESH_RETRACEMENT_LIMIT', 'STRUCTURAL_LIMIT', 'RECLAIM_RETEST', 'LIMIT'].includes(String(model || '').toUpperCase());
-}
-
 function isTodayFreshContinuation(setup, zone) {
     if (!setup || !zone || setup.narrative_state && setup.narrative_state !== 'ACTIVE') return false;
     if (setup.original_strategy_entry_consumed && !zone.created_time && !zone.created_time_ms) return false;
@@ -7913,24 +7523,13 @@ function buildOpportunityQuality(setup, plan, marketContext = {}, topDown = {}) 
     const liquidityScore = plan?.target ? ((plan.target.structural_priority || 0) >= 85 ? 22 : 12) : 0;
     const executionState = !plan?.zone ? 'AWAITING_EXECUTION' : plan.execution_model === 'CONFIRMATION_ENTRY' && !setup?.opportunity_thesis?.execution_confirmed ? 'AWAITING_CONFIRMATION' : 'EXECUTION_AVAILABLE';
     const primaryEligible = ['HTF_VERIFIED_REVERSAL', 'HTF_ALIGNED_CONTINUATION'].includes(classification);
-    const expectedTrend = setup?.direction === 'BUY' ? 'BULLISH' : 'BEARISH';
-    const htfAlignment = ['1D', '4H', '1H'].filter(tf => {
-        const trend = String(marketContext?.structure?.[tf]?.effective_trend
-            || marketContext?.structure?.[tf]?.structural_trend
-            || marketContext?.timeframe_context?.[tf]?.effective_trend
-            || marketContext?.timeframe_context?.[tf]?.structural_trend
-            || '').toUpperCase();
-        return trend === expectedTrend || trend === `${expectedTrend}_TRANSITION`;
-    }).length;
-    const higherTimeframeSupported = htfAlignment >= 2;
     const tier = primaryEligible ? 2 : 1;
     const evidenceStrength = (setup?.opportunity_thesis?.evidence_ids || setup?.structural_evidence_ids || []).length;
     const executionScore = executionState === 'EXECUTION_AVAILABLE' ? 16 : executionState === 'AWAITING_CONFIRMATION' ? 10 : 5;
     const classAdjustment = classification === 'HTF_VERIFIED_REVERSAL' ? 4 : classification === 'HTF_ALIGNED_CONTINUATION' ? 3 : 0;
     const dailyAdjustment = dailyBiasRelationship === 'ALIGNED' ? 6 : dailyBiasRelationship === 'VERIFIED_COUNTERTREND' ? 2 : dailyBiasRelationship === 'CONFLICTING_UNVERIFIED' ? -8 : 0;
-    const rankScore = tier * 100 + classAdjustment + dailyAdjustment + htfAlignment * 18 + locationScore + liquidityScore + executionScore + evidenceStrength * 2 + (plan?.metrics?.opportunity_reachable_today ? 10 : 0);
+    const rankScore = tier * 100 + classAdjustment + dailyAdjustment + locationScore + liquidityScore + executionScore + evidenceStrength * 2 + (plan?.metrics?.opportunity_reachable_today ? 10 : 0);
     const rankReasons = [primaryEligible ? 'PRIMARY_ELIGIBLE' : 'WATCH_ONLY'];
-    if (higherTimeframeSupported) rankReasons.push('HTF_DIRECTION_SUPPORTED');
     if (dailyBiasRelationship === 'ALIGNED') rankReasons.push('DAILY_BIAS_ALIGNED');
     if (dailyBiasRelationship === 'VERIFIED_COUNTERTREND') rankReasons.push('VERIFIED_COUNTERTREND');
     if (locationScore >= 24) rankReasons.push('HTF_LOCATION');
@@ -7942,8 +7541,7 @@ function buildOpportunityQuality(setup, plan, marketContext = {}, topDown = {}) 
         + (plan?.target ? 20 : 0) + executionScore + evidenceStrength * 3
     )));
     return { classification, previous_classification: previousClassification, classification_changed: !!previousClassification && previousClassification !== classification,
-        daily_bias_relationship: dailyBiasRelationship, direction_quality: higherTimeframeSupported ? 'SUPPORTED' : 'LOCAL_ONLY',
-        htf_alignment: htfAlignment,
+        daily_bias_relationship: dailyBiasRelationship, direction_quality: tier > 1 ? 'SUPPORTED' : 'LOCAL_ONLY',
         location_quality: locationScore, liquidity_quality: liquidityScore, execution_state: executionState,
         freshness: setup?.freshness || location?.freshness || null, target_quality: plan?.target ? 'REAL_AHEAD' : 'MISSING',
         lifecycle_quality: setup?.narrative_state === 'ACTIVE' ? 'ACTIVE' : 'TERMINAL', evidence_strength: evidenceStrength,
@@ -7969,7 +7567,7 @@ function buildOpportunityDisplayScenario(plan = {}, currentPrice = null, tier = 
         direction: plan.direction || null,
         strategy: plan.strategy || plan.label || null,
         trade_context_classification: classification,
-        authorization_state: plan.authorization_state || tier || (watchOnly ? 'WATCH_ONLY' : 'AUTHORIZED_DEVELOPING'),
+        authorization_state: tier || (watchOnly ? 'WATCH_ONLY' : 'AUTHORIZED_DEVELOPING'),
         watch_only: watchOnly,
         setup_timeframe: plan.setup_timeframe || plan.timeframe || null,
         execution_timeframe: plan.execution_timeframe || null,
@@ -8009,8 +7607,6 @@ function compareOpportunityDisplayPlans(a, b) {
     const tier = value => value?.watch_only ? 0 : (value?.authorization_state === 'TRADE_READY' ? 3 : 2);
     return (tier(b) - tier(a))
         || (Number(bq.rank_tier || 0) - Number(aq.rank_tier || 0))
-        || (Number(bq.htf_alignment || 0) - Number(aq.htf_alignment || 0))
-        || (Number(bq.direction_quality === 'SUPPORTED') - Number(aq.direction_quality === 'SUPPORTED'))
         || (Number(bq.location_quality || 0) - Number(aq.location_quality || 0))
         || (Number(bq.liquidity_quality || 0) - Number(aq.liquidity_quality || 0))
         || (Number(bq.target_quality === 'REAL_AHEAD') - Number(aq.target_quality === 'REAL_AHEAD'))
@@ -8023,17 +7619,12 @@ function compareOpportunityDisplayPlans(a, b) {
 function buildOpportunityDisplayStack(plans = [], currentPrice = null, selected = null) {
     const sorted = plans.slice().sort(compareOpportunityDisplayPlans);
     const primaryPlan = (selected && !selected.watch_only) ? selected : sorted.find(plan => !plan.watch_only);
-    const displayTier = plan => plan?.authorization_state === 'TRADE_READY'
-        ? 'TRADE_READY'
-        : plan?.authorization_state === 'SECONDARY_CANDIDATE'
-            ? 'SECONDARY_CANDIDATE'
-            : 'PRIMARY_AUTHORIZED';
     return {
-        primary_opportunity: primaryPlan ? buildOpportunityDisplayScenario(primaryPlan, currentPrice, displayTier(primaryPlan)) : null,
+        primary_opportunity: primaryPlan ? buildOpportunityDisplayScenario(primaryPlan, currentPrice, primaryPlan.state === 'TRADE_READY' ? 'TRADE_READY' : 'PRIMARY_AUTHORIZED') : null,
         // Public output intentionally exposes one best setup.  Keep the
         // selected setup in active_setups so the two public views cannot
         // disagree; lower-ranked plans remain in diagnostics.
-        active_setups: primaryPlan ? [buildOpportunityDisplayScenario(primaryPlan, currentPrice, displayTier(primaryPlan))] : [],
+        active_setups: primaryPlan ? [buildOpportunityDisplayScenario(primaryPlan, currentPrice, primaryPlan.state === 'TRADE_READY' ? 'TRADE_READY' : 'PRIMARY_AUTHORIZED')] : [],
         watch_setups: sorted.filter(plan => plan.watch_only).map(plan => buildOpportunityDisplayScenario(plan, currentPrice, 'WATCH_ONLY'))
     };
 }
@@ -8050,7 +7641,6 @@ function compactAiDiagnostics(analysis = null) {
         hypotheses_rejected: Number(analysis.hypotheses_rejected) || 0,
         final_selector_called: analysis.final_selector_called === true,
         selected_candidate_id: analysis.selected_candidate_id || null,
-        selector_fallback: analysis.selector_fallback === true,
         setups_added_from_ai: Number(analysis.setups_added_from_ai) || 0,
         error: analysis.error || null
     };
@@ -8080,21 +7670,12 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         terminal_parent_opportunities: [], fresh_current_market_opportunities: []
     };
     if (marketOpen === false) { state.reason_code = 'MARKET_CLOSED'; state.reason = 'The instrument is currently closed for the current scan.'; return state; }
-    const classifiedCandidates = (validCandidates || []).map(candidate => classifyCandidateAuthorization({
-        ...candidate,
-        minimum_rr: candidate.minimum_rr ?? getMarketSettings(pairLocal, symbolMetadata || {}).targetRR,
-        execution_confidence: candidate.execution_confidence ?? candidate.confidence ?? candidate.setup_confidence ?? candidate.score ?? 100,
-        execution_geometry_valid: candidate.execution_geometry_valid ?? true,
-        hard_validation_passed: candidate.hard_validation_passed ?? true
-    })).sort(compareCandidates);
-    const bestPrimaryCandidate = selectBestPrimaryCandidate(classifiedCandidates);
-    const bestSecondaryCandidate = selectBestSecondaryCandidate(classifiedCandidates);
-    const bestCandidate = bestPrimaryCandidate || bestSecondaryCandidate || classifiedCandidates.find(candidate => candidate.authorization_state === 'WATCH_ONLY') || null;
+    const bestCandidate = (validCandidates || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
     if (bestCandidate) {
         state.top_down_context = bestCandidate.top_down_context || classifyTopDownTrade(bestCandidate, timeframeContext);
         state.trade_context_classification = state.top_down_context.classification;
         const zone = bestCandidate.zone || { low: bestCandidate.zone_low, high: bestCandidate.zone_high, type: bestCandidate.zone_type, timeframe: bestCandidate.execution_timeframe || bestCandidate.timeframe, id: bestCandidate.zone_id };
-        state.state = bestCandidate.authorization_state; state.authorization_state = bestCandidate.authorization_state; state.strategy = getDisplayStrategyLabel(bestCandidate.strategy_setup || bestCandidate, bestCandidate.zone_type); state.direction = bestCandidate.direction;
+        state.state = 'TRADE_READY'; state.strategy = bestCandidate.strategy_label || bestCandidate.zone_type || null; state.direction = bestCandidate.direction;
         state.narrative_id = bestCandidate.strategy_setup?.id || bestCandidate.id; state.execution_zone_id = zone?.id || bestCandidate.id;
         state.source = 'DETERMINISTIC_CANDIDATE' + (bestCandidate.ai_verified ? '+VERIFIED_AI_ANALYST' : ''); state.ai_supported = !!bestCandidate.ai_verified; state.deterministic_supported = true;
         state.area_of_interest = zone ? { low: zone.low, high: zone.high, source: zone.entry_region_source || zone.type || 'STRUCTURAL', timeframe: zone.timeframe, zone_id: zone.id || bestCandidate.id } : null;
@@ -8102,27 +7683,19 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.cancellation_conditions = ['Structural invalidation is breached', 'TP1 is completed before order execution', 'Pending opportunity expires']; state.target_intent = bestCandidate.target_bias || bestCandidate.strategy_setup?.target_bias || null;
         state.delivery_progress = bestCandidate.progress_to_tp1_fraction ?? bestCandidate.narrative_delivery_progress ?? null; state.remaining_reward_fraction = bestCandidate.remaining_reward_fraction ?? null;
         state.entry_reachable_today = bestCandidate.entry_reachable_today === true; state.opportunity_reachable_today = state.entry_reachable_today; state.target_viable = true;
-        state.structural_invalidation = bestCandidate.structural_invalidation || null; state.confidence = getCanonicalCandidateConfidence(bestCandidate); state.reason_code = state.state; state.reason = state.state === 'WATCH_ONLY'
-            ? 'A location exists, but complete executable geometry is unavailable.'
-            : state.state === 'SECONDARY_CANDIDATE'
-                ? 'A valid complete setup exists, but it does not meet the primary trade quality threshold.'
-                : 'A deterministic opportunity is executable under the current market state.';
-        const candidatePlans = classifiedCandidates.map(candidate => ({
+        state.structural_invalidation = bestCandidate.structural_invalidation || null; state.reason_code = 'TRADE_READY'; state.reason = 'A deterministic opportunity is executable under the current market state.';
+        const candidatePlans = (validCandidates || []).map(candidate => ({
             ...candidate,
-            state: candidate.authorization_state, authorization_state: candidate.authorization_state, narrative_id: candidate.strategy_setup?.id || candidate.id,
-            direction: candidate.direction, strategy: getDisplayStrategyLabel(candidate.strategy_setup || candidate, candidate.zone_type),
+            state: 'TRADE_READY', narrative_id: candidate.strategy_setup?.id || candidate.id,
+            direction: candidate.direction, strategy: candidate.strategy_label || candidate.zone_type || null,
             trade_context_classification: candidate.top_down_context?.classification || candidate.trade_context_classification,
             area_of_interest: candidate.zone ? { low: candidate.zone.low, high: candidate.zone.high, source: candidate.zone.type, timeframe: candidate.zone.timeframe, zone_id: candidate.zone.id } : null,
             execution_zone: candidate.zone, target: candidate.target_map?.[0] || candidate.target || null,
             target_level: candidate.tp1 || candidate.take_profit_1 || candidate.target_map?.[0]?.level,
             structural_invalidation: candidate.structural_invalidation,
             opportunity_quality: candidate.quality || { rank_tier: 2, rank_score: candidate.score || 0, target_quality: 'REAL_AHEAD' },
-            confidence: getCanonicalCandidateConfidence(candidate),
-            reason: candidate.authorization_state === 'WATCH_ONLY'
-                ? 'A location exists, but complete executable geometry is unavailable.'
-                : candidate.authorization_state === 'SECONDARY_CANDIDATE'
-                    ? 'A valid complete setup exists, but it does not meet the primary trade quality threshold.'
-                    : 'A deterministic opportunity is executable under the current market state.'
+            confidence: candidate.confidence || candidate.score || 0,
+            reason: 'A deterministic opportunity is executable under the current market state.'
         }));
         const stack = buildOpportunityDisplayStack(candidatePlans, currentPrice, candidatePlans.find(candidate => candidate.id === (bestCandidate.strategy_setup?.id || bestCandidate.id)) || candidatePlans[0]);
         Object.assign(state, stack);
@@ -8166,27 +7739,18 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         const executionTimeframe = setup.execution_timeframe || setup.timeframe || zone.timeframe || '1H';
         const aiHypothesis = aiAnalysis?.verified_hypotheses?.find(h => h.hypothesis_id === setup.ai_hypothesis_id);
         const targetIntent = setup.target_bias || setup.ai_target_intent || aiHypothesis?.target_intent || plan.target?.source || 'OPPOSING_STRUCTURE';
-        let topDown = classifyTopDownTrade(setup, timeframeContext);
+        const topDown = classifyTopDownTrade(setup, timeframeContext);
         const opportunityQuality = buildOpportunityQuality(setup, plan, marketContext, topDown);
         // A pending limit is already a complete deterministic order when its
         // zone, structural invalidation, target, and RR pass. Keep the exact
         // geometry on the developing plan so the public projection does not
         // describe an order while leaving entry/SL empty.
         let pendingGeometry = null;
-        const directionTrend = setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH';
-        const alignedHigherTimeframes = ['1D', '4H', '1H'].filter(tf => {
-            const trend = String(marketContext.structure?.[tf]?.effective_trend
-                || marketContext.structure?.[tf]?.structural_trend
-                || timeframeContext?.[tf]?.effective_trend || '').toUpperCase();
-            return trend === directionTrend || trend === `${directionTrend}_TRANSITION`;
-        }).length;
-        const higherTimeframeAligned = alignedHigherTimeframes >= 2;
-        const geometrySourceZone = zone || (higherTimeframeAligned ? planArea : null);
-        if (geometrySourceZone && (isPendingLimitExecutionModel(plan.execution_model) || String(plan.execution_model || '').toUpperCase() === 'CONFIRMATION_ENTRY')) {
+        if (zone && plan.execution_model === 'PENDING_LIMIT') {
             const settings = getMarketSettings(pairLocal, symbolMetadata || {});
             const executionData = getClosedHistory(histories, executionTimeframe);
             const executionAtr = executionData.length >= 15 ? atr(executionData, 14) : 0;
-            const geometryZone = { ...geometrySourceZone, strategy_setup: setup };
+            const geometryZone = { ...zone, strategy_setup: setup };
             const entry = getSemanticEntryCandidate(geometryZone, setup, setup.direction, settings.prec);
             const stops = entry == null ? [] : getAdaptiveStopCandidates(geometryZone, setup.direction, entry, executionData, executionZones, executionAtr, settings, settings.prec);
             const stop = stops.find(candidate => Number.isFinite(candidate.stop_loss));
@@ -8198,90 +7762,15 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
                     sell: [...(setup.target_candidates || []), ...(targetCandidates?.sell || [])]
                 };
                 const selectedTargets = selectAdaptiveTargets(setup.direction, entry, stop.stop_loss, pool, minimumRR, settings.prec, { currentPrice });
-                if (selectedTargets?.tp1) {
-                    const rrMetrics = calculateRRMetrics(setup.direction, entry, stop.stop_loss, selectedTargets.tp1.level, minimumRR);
-                    pendingGeometry = { entry, stop_loss: stop.stop_loss, tp1: selectedTargets.tp1.level,
-                        tp2: selectedTargets.tp2?.level ?? null, tp3: selectedTargets.tp3?.level ?? null,
-                        target: selectedTargets.tp1, rr: selectedTargets.tp1.rr ?? rrMetrics.actualRR };
-                }
+                if (selectedTargets?.tp1) pendingGeometry = { entry, stop_loss: stop.stop_loss, tp1: selectedTargets.tp1.level,
+                    tp2: selectedTargets.tp2?.level ?? null, tp3: selectedTargets.tp3?.level ?? null,
+                    target: selectedTargets.tp1, rr: selectedTargets.tp1.rr };
             }
         }
-        if (pendingGeometry) {
-            const rawInvalidation = setup?.structural_invalidation?.level
-                ?? setup?.structural_invalidation
-                ?? geometrySourceZone?.structural_invalidation?.level
-                ?? geometrySourceZone?.structural_invalidation
-                ?? (setup.direction === 'BUY' ? geometrySourceZone?.low : geometrySourceZone?.high);
-            const normalized = normalizeAndValidateCandidate({
-                direction: setup.direction,
-                entry: pendingGeometry.entry,
-                stop_loss: pendingGeometry.stop_loss,
-                tp1: pendingGeometry.tp1,
-                tp2: pendingGeometry.tp2,
-                tp3: pendingGeometry.tp3,
-                entry_region_low: geometrySourceZone?.low,
-                entry_region_high: geometrySourceZone?.high,
-                zone_low: geometrySourceZone?.low,
-                zone_high: geometrySourceZone?.high,
-                structural_invalidation: rawInvalidation,
-                timeframe: executionTimeframe,
-                id: setup.id || null
-            }, {
-                pair: pairLocal,
-                symbol_metadata: symbolMetadata || {},
-                risk_constraints: marketContext?.risk_constraints,
-                bid: marketContext?.market_conditions?.bid,
-                ask: marketContext?.market_conditions?.ask
-            });
-            if (normalized.valid) {
-                pendingGeometry = {
-                    ...pendingGeometry,
-                    entry: normalized.candidate.entry,
-                    stop_loss: normalized.candidate.stop_loss,
-                    tp1: normalized.candidate.tp1,
-                    tp2: normalized.candidate.tp2 ?? null,
-                    tp3: normalized.candidate.tp3 ?? null,
-                    rr: normalized.candidate.actual_rr
-                };
-            } else {
-                console.log('PENDING GEOMETRY REJECTED AFTER NORMALIZATION', {
-                    setup_id: setup.id || null,
-                    direction: setup.direction,
-                    reason: normalized.reason
-                });
-                pendingGeometry = null;
-            }
-        }
-        const pendingMinimumRR = Number(marketContext?.risk_constraints?.minimum_rr) || getMarketSettings(pairLocal, symbolMetadata || {}).targetRR || 2.5;
-        const pendingGeometryValid = !!pendingGeometry
-            && Number.isFinite(Number(pendingGeometry.entry))
-            && Number.isFinite(Number(pendingGeometry.stop_loss))
-            && Number.isFinite(Number(pendingGeometry.tp1))
-            && Number.isFinite(Number(pendingGeometry.rr))
-            && Number(pendingGeometry.rr) >= pendingMinimumRR;
-        const pendingExecutionConfidence = pendingGeometryValid
-            ? Number(opportunityQuality.deterministic_confidence)
-            : 0;
-        const pendingPlanExecutable = pendingGeometryValid
-            && higherTimeframeAligned
-            && pendingExecutionConfidence >= MIN_EXECUTABLE_CONFIDENCE;
-        if (pendingPlanExecutable) {
-            // A confirmed higher-timeframe location can be stalked with a
-            // pending limit even when the execution timeframe is mixed. The
-            // limit remains subject to the derived stop, target, RR, and
-            // final public validation contracts.
-            topDown = { ...topDown, classification: 'HTF_ALIGNED_CONTINUATION' };
-            opportunityQuality.watch_only = false;
-            opportunityQuality.authorization_state = 'PRIMARY_ELIGIBLE';
-            opportunityQuality.classification = 'HTF_ALIGNED_CONTINUATION';
-            opportunityQuality.direction_quality = 'SUPPORTED';
-            opportunityQuality.execution_state = 'EXECUTION_AVAILABLE';
-            opportunityQuality.rank_reasons = [...new Set([...(opportunityQuality.rank_reasons || []), 'HTF_ALIGNED_LIMIT'])];
-        }
-        plans.push({ state: 'TODAY_OPPORTUNITY', trade_context_classification: topDown.classification, top_down_context: topDown, bias: setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH', strategy: getDisplayStrategyLabel(setup, planArea?.type), zone_type: planArea?.type || null, direction: setup.direction,
+        plans.push({ state: 'TODAY_OPPORTUNITY', trade_context_classification: topDown.classification, top_down_context: topDown, bias: setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH', strategy: setup.label || setup.primary, direction: setup.direction,
             narrative_id: setup.id || null, execution_zone_id: zone?.id || null, source: setup.ai_verified ? 'VERIFIED_AI_HYPOTHESIS' : 'DETERMINISTIC_NARRATIVE',
             ai_supported: !!setup.ai_verified || !!aiHypothesis, deterministic_supported: true, area_of_interest: { low: Number(planArea.low), high: Number(planArea.high), source, timeframe: planArea.timeframe || executionTimeframe, zone_id: planArea.id || null },
-            execution_model: pendingPlanExecutable ? 'PENDING_LIMIT' : plan.execution_model, activation_conditions: !zone
+            execution_model: plan.execution_model, activation_conditions: !zone
                 ? ['A deterministic execution zone must form inside the validated location before exact geometry can be constructed']
                 : plan.execution_model === 'PENDING_LIMIT'
                 ? (inside ? ['Price is at the deterministic limit area; the order fills on touch at its limit price'] : ['Price retraces into the deterministic limit area; no confirmation is required after touch'])
@@ -8296,20 +7785,8 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             reason: !zone ? 'A valid current-market narrative and location exist, but no execution zone has formed yet.' : plan.execution_model === 'PENDING_LIMIT' ? 'A deterministic pending limit remains valid for the remainder of today.' : (inside ? 'A valid strategy area is active, but deterministic confirmation is not yet present.' : 'A valid strategy narrative remains actionable today; wait for price to reach the deterministic area and activate it.'),
             setup_timeframe: setup.setup_timeframe || setup.timeframe, execution_timeframe: executionTimeframe,
             entry: pendingGeometry?.entry ?? null, stop_loss: pendingGeometry?.stop_loss ?? null, tp1: pendingGeometry?.tp1 ?? null, tp2: pendingGeometry?.tp2 ?? null, tp3: pendingGeometry?.tp3 ?? null,
-            rr: pendingGeometry?.rr ?? null,
-            // Once deterministic geometry exists, use execution confidence
-            // from the planner. setup_confidence may describe only the raw
-            // location (for example an OB/FLIP) and must not downgrade a
-            // fully validated limit plan.
-            confidence: pendingGeometryValid
-                ? opportunityQuality.deterministic_confidence
-                : (Number(setup.setup_confidence) > 0 && Number.isFinite(Number(setup.setup_confidence))
-                    ? Number(setup.setup_confidence) : opportunityQuality.deterministic_confidence),
-            // A developing confirmation narrative may remain authorized to
-            // watch before geometry exists. Once geometry is built, however,
-            // its confidence floor must be met before it can be executable.
-            opportunity_quality: opportunityQuality,
-            watch_only: pendingGeometryValid ? !pendingPlanExecutable : opportunityQuality.watch_only });
+            rr: pendingGeometry?.rr ?? null, confidence: Number.isFinite(Number(setup.setup_confidence)) ? Number(setup.setup_confidence) : opportunityQuality.deterministic_confidence,
+            opportunity_quality: opportunityQuality, watch_only: opportunityQuality.watch_only });
         if (!currentSetupIds.has(setup.id || setup.primary)) state.fresh_current_market_opportunities.push(setup.id || setup.primary);
     }
     const primaryPlans = plans.filter(plan => !plan.watch_only);
@@ -8343,7 +7820,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
 
 function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen, symbolMetadata = null, providerMetadata = null) {
     const date = new Date(Number.isFinite(asOfMs) ? asOfMs : Date.now());
-    const opportunity = ['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY', 'SECONDARY_CANDIDATE'].includes(today?.state) ? {
+    const opportunity = ['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(today?.state) ? {
         scenario: today.reason,
         area_of_interest: today.area_of_interest,
         execution_model: today.execution_model,
@@ -8359,12 +7836,11 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         pair: pairLocal,
         current_price: price,
         decision: 'WAIT',
-        confidence: ['TODAY_OPPORTUNITY', 'TRADE_READY', 'SECONDARY_CANDIDATE'].includes(today?.state) ? today.confidence || 0 : 0,
+        confidence: ['TODAY_OPPORTUNITY', 'TRADE_READY'].includes(today?.state) ? today.confidence || 0 : 0,
         // Keep the public API's developing state stable.  WATCH_ONLY is a
         // display tier inside the opportunity stack, not a new top-level trade
         // decision contract.
         status: today?.state === 'WATCH_ONLY' ? 'TODAY_OPPORTUNITY' : (today?.state || 'NO_TRADE_TODAY'),
-        authorization_state: today?.authorization_state || null,
         trade_context_classification: today?.trade_context_classification || null,
         top_down_context: today?.top_down_context || null,
         daily_bias: today?.daily_bias || null,
@@ -8373,7 +7849,7 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         provider_metadata: providerMetadata || today?.provider_metadata || null,
         data_quality: today?.data_quality || null,
         history_errors: today?.history_errors || {},
-        strategy: getDisplayStrategyLabel({ label: today?.strategy, primary: today?.primary }, today?.zone_type || today?.area_of_interest?.source),
+        strategy: today?.strategy || null,
             direction: today?.direction || null,
             bias: today?.bias || 'NEUTRAL',
             trend_detection: today?.trend_detection || null,
@@ -8396,13 +7872,18 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
 
 function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, selectedCandidateId, scanArgs) {
     const today = liveMarketContext?.today_opportunity;
-    // Always rebuild from the live deterministic pool after a stale selector
-    // result. The cached today_opportunity can still point at an old location
-    // or an incomplete display plan, which would otherwise prevent the fresh
-    // strategy zones from being evaluated for a pending limit.
+    const todayIds = new Set([
+        today?.id,
+        today?.narrative_id,
+        today?.primary_opportunity?.id,
+        ...(today?.active_setups || []).map(setup => setup?.id),
+        ...(today?.watch_setups || []).map(setup => setup?.id)
+    ].filter(Boolean));
+    if (today && (!selectedCandidateId || !todayIds.has(selectedCandidateId))) return today;
+
     const remainingCandidates = (liveMarketContext?.adaptive_setup_candidates || [])
         .filter(candidate => candidate?.id !== selectedCandidateId);
-    const rebuilt = buildTodayOpportunity({
+    return buildTodayOpportunity({
         ...scanArgs,
         marketContext: liveMarketContext.market_context,
         strategySetups: liveMarketContext.strategy_setups,
@@ -8414,50 +7895,12 @@ function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, select
         symbolMetadata: liveMarketContext.symbol_metadata || null,
         marketOpen: liveMarketContext.market_open
     });
-    // If the live pool was unavailable, preserve the existing planner result
-    // as a diagnostic fallback. It must never be used to invent geometry.
-    return rebuilt?.state && rebuilt.state !== 'NO_TRADE_TODAY' ? rebuilt : (today || rebuilt);
 }
 
 function buildRejectedSelectionWaitOutput({ today, pairLocal, price, asOfMs, marketOpen, symbolMetadata, providerMetadata, rejection, source = 'Deterministic Opportunity Planner + AI Selector' } = {}) {
     const recovery = buildTodayOpportunityOutput(today || { state: 'NO_TRADE_TODAY' }, pairLocal, price, asOfMs, marketOpen, symbolMetadata, providerMetadata);
     const hasOpportunity = ['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(today?.state)
         && (!!recovery.trade_signal.opportunity || !!recovery.trade_signal.primary_opportunity || recovery.trade_signal.watch_setups?.length > 0);
-    const candidate = recovery.trade_signal.primary_opportunity || recovery.trade_signal.opportunity || null;
-    const direction = candidate?.direction;
-    const entry = Number(candidate?.entry_price ?? candidate?.entry);
-    const stop = Number(candidate?.stop_loss);
-    const tp1 = Number(candidate?.take_profit_1 ?? candidate?.tp1);
-    const complete = ['BUY', 'SELL'].includes(direction)
-        && [entry, stop, tp1].every(Number.isFinite)
-        && (direction === 'BUY' ? stop < entry && entry < tp1 : stop > entry && entry > tp1)
-        && (direction === 'BUY' ? entry < Number(price) : entry > Number(price));
-    if (complete) {
-        const limit = direction + '_LIMIT';
-        return {
-            ...recovery.trade_signal,
-            decision: limit,
-            trade_type: limit,
-            status: 'SETUP_READY',
-            status_code: 'SETUP_READY',
-            entry_price: entry,
-            stop_loss: stop,
-            take_profit_1: tp1,
-            take_profit_2: candidate.take_profit_2 ?? candidate.tp2 ?? null,
-            take_profit_3: candidate.take_profit_3 ?? candidate.tp3 ?? null,
-            confidence: Number(candidate.confidence || candidate.opportunity_quality?.deterministic_confidence || 0),
-            authorization_state: 'SECONDARY_CANDIDATE',
-            confidence_type: 'EXECUTION_CONFIDENCE',
-            execution_confidence: Number(candidate.confidence || candidate.opportunity_quality?.deterministic_confidence || 0),
-            has_complete_execution_geometry: true,
-            geometry_missing: [],
-            hard_validation_passed: true,
-            execution_allowed: false,
-            manual_tracking_allowed: true,
-            reason: { code: 'CURRENT_DETERMINISTIC_CANDIDATE', message: 'The stale AI selection was replaced by the current deterministic limit opportunity.' },
-            source: 'Deterministic Candidate Engine'
-        };
-    }
     const reasonCode = hasOpportunity ? 'STALE_AI_SELECTION_RECOVERED' : 'STALE_SELECTION_REJECTED';
     const reasonMessage = hasOpportunity
         ? 'The selected candidate was rejected as stale; the current deterministic opportunity remains available for your decision.'
@@ -8769,7 +8212,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         holistic,
         symbolMetadata
     });
-    marketContext.news_risk = checkHighImpactNews(quote_snapshot?.news_risk || window.externalNewsData || null);
+    marketContext.news_risk = checkHighImpactNews(quote_snapshot?.news_risk || null);
     marketContext.symbol_metadata = symbolMetadata;
     marketContext.history_errors = historyCache?.fetch_errors || {};
     // Candidate construction consumes this same quality verdict so a stale
@@ -9860,28 +9303,13 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
     }
     const requestStartedAt = scanClock();
     lastAIRequestError = null;
-    const noTradeAfterInvalidAI = reason => {
-        // AI is optional interpretation. If its response is malformed or it
-        // names an obsolete candidate, retain the current deterministic limit
-        // candidate instead of erasing geometry and confidence.
-        const selectorCandidates = filterLimitCandidatesByCurrentPrice(liveMarketContext?.adaptive_setup_candidates || [],
-            liveMarketContext?.current_price, liveMarketContext?.market_conditions);
-        const fallback = resolveDeterministicSelectorCandidate(selectorCandidates, null);
-        if (fallback?.id) {
-            const selected = applyAdaptiveCandidateToAIResult({ selected_candidate_id: fallback.id }, liveMarketContext);
-            selected.ai_decision = 'deterministic_fallback_after_ai_error';
-            selected.ai_error = reason;
-            selected.schema_validation = { valid: false, issues: [reason], attempts: retryCount + 1 };
-            return selected;
-        }
-        return {
-            decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
-            reasoning: { primary: `AI output rejected after ${retryCount + 1} attempts: ${reason}` },
-            ai_decision: 'skip', noTrade: true,
-            wait_condition: `AI output rejected after ${retryCount + 1} attempts: ${reason}`,
-            schema_validation: { valid: false, issues: [reason], attempts: retryCount + 1 }
-        };
-    };
+    const noTradeAfterInvalidAI = reason => ({
+        decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
+        reasoning: { primary: `AI output rejected after ${retryCount + 1} attempts: ${reason}` },
+        ai_decision: 'skip', noTrade: true,
+        wait_condition: `AI output rejected after ${retryCount + 1} attempts: ${reason}`,
+        schema_validation: { valid: false, issues: [reason], attempts: retryCount + 1 }
+    });
     const retryInvalidAI = reason => retryCount < 1
         ? askAIToFindSetup(
             `${marketData}\n\nCORRECTION: Your previous response was invalid (${reason}). Return only the exact JSON contract requested above. Do not add markdown or extra fields.`,
@@ -9945,43 +9373,13 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
                 return { ...noTradeAfterInvalidAI(reason), schema_validation: { ...selectorContract, attempts: retryCount + 1 } };
             }
             const selectedId = typeof selector.selected_candidate_id === 'string' ? selector.selected_candidate_id : null;
-            // DeepSeek may explain why it dislikes a setup, but it cannot
-            // veto a complete deterministic limit candidate. A selector WAIT
-            // used to discard the candidate and route the scan into WATCH,
-            // even though the engine had already proved the geometry.
-            const selectorWait = !selectedId || ['WAIT', 'NO_TRADE'].includes(String(selector.decision || '').toUpperCase());
-            const selectorCandidates = selectorWait
-                ? filterLimitCandidatesByCurrentPrice(
-                    liveMarketContext.adaptive_setup_candidates,
-                    liveMarketContext.current_price,
-                    liveMarketContext.market_conditions
-                )
-                : liveMarketContext.adaptive_setup_candidates;
-            const deterministicCandidate = resolveDeterministicSelectorCandidate(
-                selectorCandidates,
-                selectorWait ? null : selectedId
-            );
-            if (selectorWait && deterministicCandidate?.id) {
-                const selected = applyAdaptiveCandidateToAIResult({
-                    selected_candidate_id: deterministicCandidate.id,
-                    reasoning: { primary: 'Deterministic candidate preserved after selector WAIT.' }
-                }, liveMarketContext);
-                selected.ai_requested_candidate_id = selectedId;
-                selected.ai_decision = 'deterministic_candidate_preserved';
-                return selected;
-            }
-            if (!deterministicCandidate?.id) {
-                const unknownCandidate = !liveMarketContext.adaptive_setup_candidates.some(candidate => candidate?.id === selectedId);
-                const waitCondition = unknownCandidate
-                    ? 'No current deterministic candidate passed the executable geometry checks.'
-                    : 'No fully validated candidate met the executable confidence floor';
+            if (!selectedId || ['WAIT', 'NO_TRADE'].includes(String(selector.decision || '').toUpperCase())) {
                 return { decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
-                    reasoning: { primary: waitCondition }, ai_decision: 'skip', noTrade: true,
-                    ai_error: unknownCandidate ? 'AI selected unknown deterministic candidate' : null, wait_condition: waitCondition };
+                    reasoning: typeof selector.reasoning === 'object' ? selector.reasoning : { primary: selector.reasoning || 'No deterministic candidate selected' },
+                    ai_decision: 'skip', noTrade: true, wait_condition: selector.reasoning || 'No deterministic candidate selected' };
             }
-            const selected = applyAdaptiveCandidateToAIResult({ selected_candidate_id: deterministicCandidate.id, reasoning: selector.reasoning }, liveMarketContext);
-            selected.ai_requested_candidate_id = selectedId;
-            if (selected.unknown_deterministic_candidate) return { decision: 'WAIT', direction: 'WAIT', selected_candidate_id: selectedId, confidence: 0, reasoning: { primary: 'AI selected unknown deterministic candidate' }, ai_decision: 'skip', noTrade: true, ai_error: 'AI selected unknown deterministic candidate', wait_condition: 'AI selected unknown deterministic candidate' };
+            const selected = applyAdaptiveCandidateToAIResult({ selected_candidate_id: selectedId, reasoning: selector.reasoning }, liveMarketContext);
+            if (selected.unknown_deterministic_candidate) return { decision: 'WAIT', direction: 'WAIT', selected_candidate_id: selectedId, confidence: 0, reasoning: { primary: 'AI selected unknown deterministic candidate' }, ai_decision: 'skip', noTrade: true, wait_condition: 'AI selected unknown deterministic candidate' };
             const deterministicConfidence = getDeterministicCandidateConfidence(selected.adaptive_candidate);
             selected.confidence = Number.isFinite(deterministicConfidence) ? deterministicConfidence : null;
             selected.quality = selected.adaptive_candidate.quality;
@@ -10003,7 +9401,6 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
                 reasoning: { primary: 'AI selected unknown deterministic candidate' },
                 ai_decision: 'skip',
                 wait_condition: 'AI selected unknown deterministic candidate',
-                ai_error: 'AI selected unknown deterministic candidate',
                 noTrade: true
             };
         }
@@ -10331,8 +9728,6 @@ function validateExecutableCandidateInvariant(candidate, marketState = {}) {
     for (const field of ['entry', 'stop_loss', 'tp1']) if (!Number.isFinite(Number(candidate[field]))) failures.push(`${field}_NOT_FINITE`);
     const direction = candidate.direction;
     const entry = Number(candidate.entry), stop = Number(candidate.stop_loss), tp1 = Number(candidate.tp1 ?? candidate.take_profit_1);
-    const symbol = marketState.pair || marketState.symbol || pair;
-    const metadata = marketState.symbol_metadata || marketState.quote_snapshot?.symbol_metadata || {};
     if (direction === 'BUY' && !(stop < entry && tp1 > entry)) failures.push('BUY_GEOMETRY_INVALID');
     if (direction === 'SELL' && !(stop > entry && tp1 < entry)) failures.push('SELL_GEOMETRY_INVALID');
     const invalidation = candidate.structural_invalidation && typeof candidate.structural_invalidation === 'object' ? candidate.structural_invalidation : null;
@@ -10870,10 +10265,10 @@ function validateAISetupLegacy(aiResult, price, historyCache, pairArg, determini
 
     if (fourH.length >= 30) {
         const adx4 = calculateADX(fourH, 14, '4H');
-        if (Number.isFinite(adx4.adx) && adx4.adx > 25) {
+        if (adx4.adx > 25) {
             score += 6;
             factors.push(`ADX 4H ${adx4.adx.toFixed(1)} (+6)`);
-        } else if (Number.isFinite(adx4.adx) && adx4.adx < 15) {
+        } else if (adx4.adx < 15) {
             score -= 5;
             factors.push(`ADX 4H ${adx4.adx.toFixed(1)} (-5)`);
         }
@@ -11082,7 +10477,7 @@ async function runAutoScan() {
         }
         
         const session = getSession(new Date(scanAsOfMs));
-        const newsCheck = checkHighImpactNews(quoteSnapshot?.news_risk || window.externalNewsData || null);
+        const newsCheck = checkHighImpactNews(pair);
         
         const dailyDir = await getQuoteDirection('1D', historyCache['1D']);
         const h4Dir = await getQuoteDirection('4H', historyCache['4H']);
@@ -11113,7 +10508,7 @@ async function runAutoScan() {
             as_of_ms: scanAsOfMs,
             quote_snapshot: quoteSnapshot
         });
-        liveMarketContext.news_risk = checkHighImpactNews(quoteSnapshot?.news_risk || window.externalNewsData || null);
+        liveMarketContext.news_risk = checkHighImpactNews(quoteSnapshot?.news_risk || null);
         if (liveMarketContext.market_context) liveMarketContext.market_context.news_risk = liveMarketContext.news_risk;
         liveMarketContext.indicators = indicators;
         liveMarketContext.holistic = holistic;
@@ -11226,13 +10621,6 @@ async function runAutoScan() {
         scanText.innerHTML = '🤖 AI analyzing live market context...';
         scanStage = 'DeepSeek request';
         const aiResult = await askAIToFindSetup(aiPrompt.user, price, aiPrompt.system, liveMarketContext);
-        if (aiResult?.ai_error) {
-            liveMarketContext.ai_analysis.error = aiResult.ai_error;
-            liveMarketContext.ai_analysis.selector_fallback = true;
-        }
-        if (aiResult?.schema_validation && aiResult.schema_validation.valid === false) {
-            liveMarketContext.ai_analysis.schema_validation = aiResult.schema_validation;
-        }
         liveMarketContext.ai_analysis.selected_candidate_id = aiResult?.selected_candidate_id || null;
         liveMarketContext.today_opportunity.ai_analysis = compactAiDiagnostics(liveMarketContext.ai_analysis);
         if (!aiResult) {
@@ -11369,12 +10757,6 @@ async function runAutoScan() {
                 symbol_metadata: getSymbolMetadata(pair),
                 market_conditions: liveMarketContext.market_conditions,
                 ai_analysis: compactAiDiagnostics(liveMarketContext.ai_analysis),
-                trend_detection: liveMarketContext.multi_timeframe_direction?.trend
-                    || liveMarketContext.market_context?.timeframe_context
-                    || liveMarketContext.trend_detection
-                    || null,
-                volatility: liveMarketContext.volatility || liveMarketContext.market_context?.volatility || null,
-                indicators: liveMarketContext.momentum || liveMarketContext.indicators || liveMarketContext.market_context?.indicators || null,
                 direction: aiResult.direction,
                 trade_type: aiResult.decision || (aiResult.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT'),
                 decision: aiResult.decision,
@@ -11423,14 +10805,6 @@ async function runAutoScan() {
                 distance_to_entry_atr: aiResult.distance_to_entry_atr,
                 remaining_reward_fraction: aiResult.remaining_reward_fraction,
                 setup_confidence: aiResult.setup_confidence,
-                authorization_state: aiResult.authorization_state || 'TRADE_READY',
-                confidence_type: aiResult.confidence_type || 'EXECUTION_CONFIDENCE',
-                location_confidence: aiResult.location_confidence ?? null,
-                execution_confidence: aiResult.execution_confidence ?? aiResult.confidence ?? null,
-                has_complete_execution_geometry: aiResult.has_complete_execution_geometry !== false,
-                geometry_missing: aiResult.geometry_missing || [],
-                hard_validation_passed: aiResult.hard_validation_passed !== false,
-                selection_rank: aiResult.selection_rank ?? null,
                 quality: aiResult.quality,
                 time_integrity: aiResult.setup_lifecycle?.time_integrity || null,
                 target_map: aiResult.target_map,
@@ -11535,11 +10909,6 @@ async function runAutoScan() {
                 limitZoneStatus: selectedZoneStatus
             };
             out.trade_signal.confidence = validation.adjustedConfidence;
-            out.trade_signal.execution_confidence = validation.adjustedConfidence;
-            out.trade_signal.confidence_type = 'EXECUTION_CONFIDENCE';
-            out.trade_signal.has_complete_execution_geometry = true;
-            out.trade_signal.geometry_missing = [];
-            out.trade_signal.hard_validation_passed = true;
             out.trade_signal.validation = aiResult.validation;
             console.log(`  🎚️ AI confidence ${beforeConf} → adjusted ${validation.adjustedConfidence} (localScore ${validation.localScore}, htfMatch ${validation.htfMatch}/3, rr ${validation.rr1.toFixed(2)}x)`);
             setJsonOutput(out);
@@ -11557,13 +10926,8 @@ async function runAutoScan() {
             aiResult.ai_decision = effectiveDecision;
             aiResult.filterOverride = overrideReason;
         }
-        const executableConfidence = Number(aiResult.confidence);
-        const executableTier = aiResult.authorization_state
-            || (executableConfidence >= PRIMARY_CONFIDENCE_THRESHOLD ? 'TRADE_READY'
-                : executableConfidence >= MIN_EXECUTABLE_CONFIDENCE ? 'SECONDARY_CANDIDATE' : 'WATCH_ONLY');
         const tradeable = effectiveDecision !== 'skip'
-            && executableConfidence >= MIN_EXECUTABLE_CONFIDENCE
-            && executableTier !== 'WATCH_ONLY'
+            && aiResult.confidence >= 58
             && validation.valid;
         console.log("LIMIT ORDER DECISION", {
             pair,
@@ -11613,13 +10977,7 @@ async function runAutoScan() {
             out.trade_signal.decision = 'WAIT';
             out.trade_signal.ai_decision = 'skip';
             out.trade_signal.confidence = 0;
-            out.trade_signal.status = executableConfidence >= MIN_EXECUTABLE_CONFIDENCE ? 'WATCH' : 'NO_TRADE';
-            out.trade_signal.authorization_state = 'WATCH_ONLY';
-            out.trade_signal.confidence_type = 'LOCATION_CONFIDENCE';
-            out.trade_signal.execution_confidence = null;
-            out.trade_signal.has_complete_execution_geometry = false;
-            out.trade_signal.geometry_missing = out.trade_signal.geometry_missing?.length ? out.trade_signal.geometry_missing : getGeometryMissing(out.trade_signal);
-            out.trade_signal.hard_validation_passed = false;
+            out.trade_signal.status = 'TODAY_OPPORTUNITY';
             out.trade_signal.reason = {
                 code: !finalConsistency.valid ? 'INTERNAL_CONSISTENCY_FAILURE' : !validation.valid ? 'AI_VALIDATION_BLOCKED' : 'CONFIDENCE_BELOW_MINIMUM',
                 message: reason
@@ -11661,32 +11019,18 @@ async function runAutoScan() {
             }
         }
         if (displayableSetup && !tradeable) {
-            // A complete candidate below the primary threshold remains
-            // visible as a secondary candidate. It is still manual-only and
-            // cannot bypass any deterministic validation rule.
-            if (executableTier === 'SECONDARY_CANDIDATE') {
-                out.trade_signal.status = 'SETUP_READY';
-                out.trade_signal.setup_state = 'SETUP_READY';
-                out.trade_signal.authorization_state = 'SECONDARY_CANDIDATE';
-                out.trade_signal.confidence_type = 'EXECUTION_CONFIDENCE';
-            } else {
-                out.trade_signal.status = 'WATCH';
-                out.trade_signal.setup_state = 'WATCH';
-                out.trade_signal.authorization_state = 'WATCH_ONLY';
-                out.trade_signal.confidence_type = 'LOCATION_CONFIDENCE';
-                out.trade_signal.execution_confidence = null;
-            }
+            // Keep a valid AI setup visible for the user's decision. The
+            // execute action remains disabled until confidence and entry
+            // conditions pass independently.
+            out.trade_signal.status = 'SETUP_AVAILABLE';
+            out.trade_signal.setup_state = 'SETUP_AVAILABLE';
             out.trade_signal.execution_allowed = false;
             out.trade_signal.reason = {
-                code: executableTier === 'SECONDARY_CANDIDATE' ? 'SECONDARY_EXECUTABLE_CANDIDATE' : 'WATCH_ONLY',
-                message: executableTier === 'SECONDARY_CANDIDATE'
-                    ? `The complete ${aiResult.direction} limit setup passed deterministic validation but is below the primary confidence threshold; manual review is required.`
-                    : 'A location exists, but it does not meet the minimum executable confidence floor.'
+                code: 'SETUP_AVAILABLE_USER_DECISION',
+                message: `Valid ${aiResult.direction} setup displayed for user decision; automatic execution is disabled below ${MIN_CONFIDENCE}% confidence or before confirmation.`
             };
         }
-        const manualTrackingAllowed = DEFAULT_EXECUTION_MODE === 'MANUAL'
-            && displayableSetup
-            && executableTier !== 'WATCH_ONLY';
+        const manualTrackingAllowed = DEFAULT_EXECUTION_MODE === 'MANUAL' && displayableSetup;
         out.trade_signal.manual_tracking_allowed = manualTrackingAllowed;
         setJsonOutput(out);
         if (publishableTrade) syncSetupToGitHub(out.trade_signal, 'ai_scan');
@@ -12338,7 +11682,6 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
     if (signal.market_open === false) return 'MARKET_CLOSED';
     if (signal.status === 'INVALIDATED' || reasonCode.includes('INVALIDATED')) return 'INVALIDATED';
     if (signal.status === 'EXPIRED' || reasonCode.includes('EXPIRED')) return 'EXPIRED';
-    if (signal.authorization_state === 'WATCH_ONLY' || signal.status === 'WATCH') return (hasOpportunity || signal.status === 'WATCH') ? 'WATCH' : 'NO_TRADE';
     const limitDecision = ['BUY_LIMIT', 'SELL_LIMIT'].includes(String(signal.decision || ''));
     const readyGeometry = [signal.entry ?? signal.entry_price, signal.stop_loss, signal.tp1 ?? signal.take_profit_1]
         .every(value => Number.isFinite(Number(value)));
@@ -12665,45 +12008,6 @@ function normalizePublicHigherTimeframe(value, trendMap = {}) {
 }
 
 function buildPublicTradeSignal(signal = {}) {
-    const requestedLimit = ['BUY_LIMIT', 'SELL_LIMIT'].includes(String(signal.decision || signal.trade_type || '').toUpperCase());
-    const requestedGeometry = [signal.entry ?? signal.entry_price, signal.stop_loss, signal.tp1 ?? signal.take_profit_1]
-        .every(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
-    const weakLocationClaim = requestedLimit && (signal.authorization_state === 'WATCH_ONLY' || signal.status === 'WATCH');
-    const incompleteLocationClaim = requestedLimit && (!requestedGeometry || weakLocationClaim);
-    if (incompleteLocationClaim) {
-        const locationConfidence = Number(signal.location_confidence ?? signal.confidence);
-        signal = {
-            ...signal,
-            decision: 'WAIT',
-            trade_type: 'WAIT',
-            status: 'WATCH',
-            authorization_state: 'WATCH_ONLY',
-            confidence_type: 'LOCATION_CONFIDENCE',
-            location_confidence: Number.isFinite(locationConfidence) ? locationConfidence : 0,
-            execution_confidence: null,
-            has_complete_execution_geometry: false,
-            geometry_missing: getGeometryMissing(signal),
-            hard_validation_passed: false,
-            execution_allowed: false,
-            manual_tracking_allowed: false,
-            primary_opportunity: null,
-            active_setups: [],
-            entry: null,
-            entry_price: null,
-            stop_loss: null,
-            tp1: null,
-            take_profit_1: null,
-            tp2: null,
-            take_profit_2: null,
-            tp3: null,
-            take_profit_3: null,
-            risk_reward: null,
-            reason: signal.reason || {
-                code: 'INCOMPLETE_EXECUTION_GEOMETRY',
-                message: 'A location exists, but entry, stop-loss, and take-profit geometry was not deterministically constructed.'
-            }
-        };
-    }
     const isWait = signal.decision === 'WAIT' || signal.trade_type === 'WAIT';
     const parseRR = value => {
         if (Number.isFinite(Number(value))) return Number(value);
@@ -12720,10 +12024,8 @@ function buildPublicTradeSignal(signal = {}) {
     const draw = signal.daily_bias?.liquidity_draw || signal.daily_bias?.target_type || signal.target_type || signal.primary_target_source;
     const liquiditySummary = signal.analysis?.liquidity || (draw ? `${draw}${signal.daily_bias?.target_level != null ? ' at ' + signal.daily_bias.target_level : ''}` : null);
     if (isWait) {
-        if (['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY', 'SECONDARY_CANDIDATE', 'WATCH'].includes(signal.status)) {
-            const primaryRaw = signal.primary_opportunity || null;
-            const primary = primaryRaw && [primaryRaw.entry_price ?? primaryRaw.entry, primaryRaw.stop_loss, primaryRaw.take_profit_1 ?? primaryRaw.tp1]
-                .every(value => Number.isFinite(Number(value))) ? primaryRaw : null;
+        if (['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(signal.status)) {
+            const primary = signal.primary_opportunity || null;
             const watch = Array.isArray(signal.watch_setups) && signal.watch_setups.length ? signal.watch_setups[0] : null;
             const primaryConfidence = Number(primary?.confidence) > 0 ? Number(primary.confidence)
                 : Number(primary?.opportunity_quality?.deterministic_confidence) > 0 ? Number(primary.opportunity_quality.deterministic_confidence)
@@ -12760,10 +12062,6 @@ function buildPublicTradeSignal(signal = {}) {
                 execution_timeframe: watch.execution_timeframe || null,
                 entry_price: watch.entry_price ?? watch.entry ?? null,
                 entry_zone: watch.entry_zone || watch.execution_zone || watch.area_of_interest || watch.location || null,
-                stop_loss: watch.stop_loss ?? null,
-                take_profit_1: watch.take_profit_1 ?? watch.tp1 ?? null,
-                take_profit_2: watch.take_profit_2 ?? watch.tp2 ?? null,
-                take_profit_3: watch.take_profit_3 ?? watch.tp3 ?? null,
                 execution_model: watch.execution_model || null,
                 state: watch.state || watch.lifecycle_state || null,
                 target_intent: watch.target_intent || null,
@@ -12773,27 +12071,6 @@ function buildPublicTradeSignal(signal = {}) {
                 reason: watch.reason || null,
                 next_requirement: watch.next_requirement || []
             } : null);
-            const watchGeometryComplete = watch && [watch.entry_price ?? watch.entry, watch.stop_loss, watch.take_profit_1 ?? watch.tp1]
-                .every(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
-            const reference = Number(signal.current_price);
-            const bidReference = Number(signal.market_conditions?.bid);
-            const askReference = Number(signal.market_conditions?.ask);
-            const planReference = plan?.direction === 'SELL' && Number.isFinite(bidReference) ? bidReference
-                : plan?.direction === 'BUY' && Number.isFinite(askReference) ? askReference : reference;
-            const planSideValid = !Number.isFinite(planReference) || !Number.isFinite(Number(plan?.entry_price))
-                ? false
-                : plan.direction === 'BUY' ? Number(plan.entry_price) < planReference
-                    : plan.direction === 'SELL' ? Number(plan.entry_price) > planReference : false;
-            const secondaryCandidate = signal.authorization_state === 'SECONDARY_CANDIDATE'
-                || primary?.authorization_state === 'SECONDARY_CANDIDATE'
-                || plan?.authorization_state === 'SECONDARY_CANDIDATE';
-            const completePlan = (compactPrimary || (watchGeometryComplete ? plan : null))
-                && planSideValid ? (compactPrimary || plan) : null;
-            // A secondary setup keeps its complete deterministic geometry, but
-            // remains WAIT at the primary public decision level. It is exposed
-            // as a developing candidate for manual review.
-            const executablePlan = secondaryCandidate ? null : completePlan;
-            const visibleSecondaryPlan = secondaryCandidate ? completePlan : null;
             const planConfidence = [
                 plan?.confidence,
                 plan?.opportunity_quality?.deterministic_confidence,
@@ -12804,39 +12081,22 @@ function buildPublicTradeSignal(signal = {}) {
                 signal.opportunity?.confidence,
                 signal.confidence
             ].find(value => value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) > 0);
-            const orderType = executablePlan?.entry_price != null && executablePlan?.direction
-                ? `${executablePlan.direction}_LIMIT` : 'WAIT';
-            const watchOnly = !executablePlan && !visibleSecondaryPlan;
-            const displayedPlan = executablePlan || visibleSecondaryPlan;
-            const publicConfidenceType = watchOnly ? 'LOCATION_CONFIDENCE' : (signal.confidence_type || 'EXECUTION_CONFIDENCE');
-            const publicLocationConfidence = Number(signal.location_confidence ?? plan?.confidence ?? signal.confidence);
-            const publicExecutionConfidence = watchOnly ? null : Number(signal.execution_confidence ?? plan?.confidence ?? signal.confidence);
+            const orderType = compactPrimary?.entry_price != null && compactPrimary?.direction
+                ? `${compactPrimary.direction}_LIMIT` : 'WAIT';
             return {
                 date: signal.date,
                 pair: signal.pair,
                 current_price: signal.current_price,
                 symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
-                decision: executablePlan?.entry_price != null && executablePlan?.direction ? orderType : 'WAIT',
+                decision: compactPrimary?.entry_price != null && compactPrimary?.direction ? orderType : 'WAIT',
                 trade_type: orderType,
-                entry_price: displayedPlan?.entry_price ?? null,
-                stop_loss: displayedPlan?.stop_loss ?? null,
-                take_profit_1: displayedPlan?.take_profit_1 ?? null,
-                take_profit_2: displayedPlan?.take_profit_2 ?? null,
-                take_profit_3: displayedPlan?.take_profit_3 ?? null,
-                confidence: watchOnly
-                    ? (Number.isFinite(publicLocationConfidence) ? publicLocationConfidence : 0)
-                    : (planConfidence === undefined ? 0 : Number(planConfidence)),
-                confidence_type: publicConfidenceType,
-                location_confidence: Number.isFinite(publicLocationConfidence) ? publicLocationConfidence : 0,
-                execution_confidence: Number.isFinite(publicExecutionConfidence) ? publicExecutionConfidence : null,
-                has_complete_execution_geometry: !watchOnly,
-                geometry_missing: watchOnly ? (signal.geometry_missing || getGeometryMissing(primaryRaw || signal)) : [],
-                hard_validation_passed: !watchOnly && signal.hard_validation_passed !== false,
-                authorization_state: watchOnly ? 'WATCH_ONLY' : (secondaryCandidate ? 'SECONDARY_CANDIDATE' : (signal.authorization_state || 'TRADE_READY')),
-                selection_rank: signal.selection_rank ?? null,
-                // Preserve the legacy descriptive status for compatibility;
-                // status_code carries the normalized public state.
-                status: incompleteLocationClaim ? 'WATCH' : (secondaryCandidate ? 'TODAY_OPPORTUNITY' : (signal.status || (watchOnly ? 'WATCH' : 'SETUP_READY'))),
+                entry_price: compactPrimary?.entry_price ?? null,
+                stop_loss: compactPrimary?.stop_loss ?? null,
+                take_profit_1: compactPrimary?.take_profit_1 ?? null,
+                take_profit_2: compactPrimary?.take_profit_2 ?? null,
+                take_profit_3: compactPrimary?.take_profit_3 ?? null,
+                confidence: planConfidence === undefined ? 0 : Number(planConfidence),
+                status: signal.status === 'TRADE_READY' ? 'TRADE_READY' : 'TODAY_OPPORTUNITY',
                 opportunity: plan ? {
                     id: plan.id,
                     direction: plan.direction,
@@ -12858,20 +12118,7 @@ function buildPublicTradeSignal(signal = {}) {
                     reason: plan.reason,
                     next_requirement: plan.next_requirement
                 } : (signal.opportunity || null),
-                candidate: visibleSecondaryPlan ? {
-                    trade_type: `${visibleSecondaryPlan.direction}_LIMIT`,
-                    entry_price: visibleSecondaryPlan.entry_price,
-                    stop_loss: visibleSecondaryPlan.stop_loss,
-                    take_profit_1: visibleSecondaryPlan.take_profit_1,
-                    take_profit_2: visibleSecondaryPlan.take_profit_2 ?? null,
-                    take_profit_3: visibleSecondaryPlan.take_profit_3 ?? null,
-                    confidence: planConfidence === undefined ? 0 : Number(planConfidence),
-                    strategy: visibleSecondaryPlan.strategy || null,
-                    location: visibleSecondaryPlan.entry_zone || null
-                } : null,
-                reason: secondaryCandidate
-                    ? { code: 'LOW_CONFIDENCE_VALID_SETUP', message: 'A valid complete setup exists, but it does not meet the primary trade quality threshold.' }
-                    : (signal.reason || { code: 'DEVELOPING_SETUP', message: 'A valid developing opportunity remains for today.' }),
+                reason: signal.reason || { code: 'DEVELOPING_SETUP', message: 'A valid developing opportunity remains for today.' },
                 ai_analysis: signal.ai_analysis || null,
                 analysis: {
                     trend_detection: publicTrendMap || signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
@@ -12884,11 +12131,10 @@ function buildPublicTradeSignal(signal = {}) {
                 history_errors: signal.history_errors || {},
                 provider_metadata: signal.provider_metadata || null,
                 market_conditions: signal.market_conditions || null,
-                status_code: secondaryCandidate ? 'WATCH' : getPublicStatusCode(signal, !!plan || !!signal.opportunity || !!signal.primary_opportunity, !!executablePlan?.entry_price),
+                status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity, !!compactPrimary?.entry_price),
                 execution_mode: signal.execution_mode || DEFAULT_EXECUTION_MODE,
                 risk_gate: publicRiskGate,
                 execution_allowed: false,
-                manual_tracking_allowed: !watchOnly && signal.manual_tracking_allowed !== false,
                 market_open: signal.market_open ?? null
             };
         }
@@ -12932,10 +12178,7 @@ function buildPublicTradeSignal(signal = {}) {
         };
     }
     const reasoning = signal.reasoning || {};
-    const strategy = getDisplayStrategyLabel({
-        label: signal.strategy || signal.strategy_label,
-        primary: signal.strategy_setup?.primary
-    }, signal.zone_type || signal.entry_zone?.source);
+    const strategy = signal.strategy || signal.strategy_label || signal.strategy_setup?.label || null;
     const requestedDecision = String(signal.decision || signal.trade_type || 'WAIT').toUpperCase();
     const publicDecision = requestedDecision === 'BUY' ? 'BUY_LIMIT'
         : requestedDecision === 'SELL' ? 'SELL_LIMIT'
@@ -12950,7 +12193,6 @@ function buildPublicTradeSignal(signal = {}) {
         strategy,
         timeframe: signal.timeframe || signal.execution_timeframe || signal.setup_timeframe || null,
         entry: signal.entry ?? signal.entry_price,
-        entry_price: signal.entry ?? signal.entry_price,
         entry_zone: signal.entry_zone ? {
             low: signal.entry_zone.low,
             high: signal.entry_zone.high
@@ -12960,19 +12202,8 @@ function buildPublicTradeSignal(signal = {}) {
         tp1: signal.tp1 ?? signal.take_profit_1,
         tp2: signal.tp2 ?? signal.take_profit_2 ?? null,
         tp3: signal.tp3 ?? signal.take_profit_3 ?? null,
-        take_profit_1: signal.tp1 ?? signal.take_profit_1,
-        take_profit_2: signal.tp2 ?? signal.take_profit_2 ?? null,
-        take_profit_3: signal.tp3 ?? signal.take_profit_3 ?? null,
         rr_tp1: signal.rr_tp1 ?? parseRR(signal.risk_reward),
         confidence: signal.primary_opportunity?.confidence ?? signal.setup_confidence ?? signal.quality?.final_confidence ?? signal.adaptive_candidate?.quality?.final_confidence ?? signal.confidence ?? null,
-        authorization_state: signal.authorization_state || (publicDecision === 'WAIT' ? 'WATCH_ONLY' : 'TRADE_READY'),
-        confidence_type: signal.confidence_type || (publicDecision === 'WAIT' ? 'LOCATION_CONFIDENCE' : 'EXECUTION_CONFIDENCE'),
-        location_confidence: signal.location_confidence ?? null,
-        execution_confidence: signal.execution_confidence ?? (publicDecision === 'WAIT' ? null : signal.confidence ?? null),
-        has_complete_execution_geometry: signal.has_complete_execution_geometry ?? publicDecision !== 'WAIT',
-        geometry_missing: signal.geometry_missing || getGeometryMissing(signal),
-        hard_validation_passed: signal.hard_validation_passed ?? publicDecision !== 'WAIT',
-        selection_rank: signal.selection_rank ?? null,
         status: signal.status || signal.opportunity_status || signal.lifecycle_state || null,
         setup_state: signal.setup_state || (signal.status === 'TRADE_READY' ? 'TRADE_READY' : null),
         reason: signal.reason || (reasoning.primary ? { code: 'SETUP_CONTEXT', message: reasoning.primary } : null),
@@ -13114,10 +12345,6 @@ function validatePublicTradeSignal(signal = {}) {
     const entry = Number(signal?.entry ?? signal?.entry_price);
     const stop = Number(signal?.stop_loss);
     const target = Number(signal?.tp1 ?? signal?.take_profit_1);
-    const metadata = signal?.symbol_metadata || getSymbolMetadata(signal?.pair);
-    for (const [name, value] of [['entry', entry], ['stop_loss', stop], ['take_profit_1', target]]) {
-        if (signal?.status_code === 'SETUP_READY' && Number.isFinite(value) && !validatePriceTick(value, signal.pair, metadata)) issues.push(`${name} is not tick-aligned`);
-    }
     if (signal?.status_code === 'SETUP_READY' && !Number.isFinite(Number(signal.current_price))) issues.push('ready setup current_price is unavailable');
     if (signal?.status_code === 'SETUP_READY' && [entry, stop, target].some(value => !Number.isFinite(value))) issues.push('ready setup geometry is incomplete');
     if (signal?.decision === 'BUY_LIMIT' && !(stop < entry && entry < target)) issues.push('BUY_LIMIT geometry is invalid');
@@ -13141,92 +12368,9 @@ function validatePublicTradeSignal(signal = {}) {
     return { valid: issues.length === 0, issues };
 }
 
-// The public boundary is the last place a signal can be rendered. Complete
-// deterministic geometry may still arrive here from an AI or compatibility
-// path with provider precision rather than symbol tick precision. Normalize
-// that geometry before schema validation; incomplete geometry remains WAIT.
-function normalizePublicReadySignal(signal = {}) {
-    const decision = String(signal.decision || signal.trade_type || '').toUpperCase();
-    if (!['BUY_LIMIT', 'SELL_LIMIT'].includes(decision)) return signal;
-    const entry = signal.entry ?? signal.entry_price;
-    const tp1 = signal.tp1 ?? signal.take_profit_1;
-    if (![entry, signal.stop_loss, tp1].every(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)))) return signal;
-    const zoneSource = signal.entry_zone
-        || signal.selected_zone
-        || signal.zone
-        || signal.opportunity?.area_of_interest
-        || signal.primary_opportunity?.entry_zone
-        || signal.primary_opportunity?.area_of_interest
-        || signal.watch_setups?.[0]?.entry_zone
-        || signal.watch_setups?.[0]?.area_of_interest
-        || {};
-    const zone = {
-        ...zoneSource,
-        low: zoneSource.low ?? signal.entry_region_low ?? signal.zone_low,
-        high: zoneSource.high ?? signal.entry_region_high ?? signal.zone_high
-    };
-    const direction = decision === 'BUY_LIMIT' ? 'BUY' : 'SELL';
-    const metadata = signal.symbol_metadata || getSymbolMetadata(signal.pair);
-    const directNormalized = {
-        entry: normalizeTradePrice(entry, signal.pair, metadata, direction, 'entry'),
-        stop_loss: normalizeTradePrice(signal.stop_loss, signal.pair, metadata, direction, 'stop_loss'),
-        tp1: normalizeTradePrice(tp1, signal.pair, metadata, direction, 'take_profit_1'),
-        tp2: signal.tp2 ?? signal.take_profit_2,
-        tp3: signal.tp3 ?? signal.take_profit_3
-    };
-    if (Number.isFinite(Number(directNormalized.tp2))) directNormalized.tp2 = normalizeTradePrice(directNormalized.tp2, signal.pair, metadata, direction, 'take_profit_2');
-    if (Number.isFinite(Number(directNormalized.tp3))) directNormalized.tp3 = normalizeTradePrice(directNormalized.tp3, signal.pair, metadata, direction, 'take_profit_3');
-    const normalized = normalizeAndValidateCandidate({
-        direction,
-        entry: directNormalized.entry,
-        stop_loss: directNormalized.stop_loss,
-        tp1: directNormalized.tp1,
-        tp2: directNormalized.tp2,
-        tp3: directNormalized.tp3,
-        entry_region_low: zone.low,
-        entry_region_high: zone.high,
-        structural_invalidation: signal.structural_invalidation,
-        timeframe: signal.execution_timeframe || signal.timeframe
-    }, {
-        pair: signal.pair,
-        symbol_metadata: metadata,
-        risk_constraints: signal.risk_constraints,
-        bid: signal.market_conditions?.bid,
-        ask: signal.market_conditions?.ask
-    });
-    const c = normalized.valid ? normalized.candidate : {
-        entry: directNormalized.entry,
-        stop_loss: directNormalized.stop_loss,
-        tp1: directNormalized.tp1,
-        tp2: directNormalized.tp2 ?? null,
-        tp3: directNormalized.tp3 ?? null,
-        entry_region_low: Number.isFinite(Number(zone.low)) && Number.isFinite(Number(zone.high)) ? normalizeZoneBounds(zone.low, zone.high, signal.pair, metadata)?.low : zone.low,
-        entry_region_high: Number.isFinite(Number(zone.low)) && Number.isFinite(Number(zone.high)) ? normalizeZoneBounds(zone.low, zone.high, signal.pair, metadata)?.high : zone.high,
-        actual_rr: null
-    };
-    return {
-        ...signal,
-        decision,
-        trade_type: decision,
-        entry: c.entry,
-        entry_price: c.entry,
-        entry_zone: { ...zone, low: c.entry_region_low, high: c.entry_region_high },
-        stop_loss: c.stop_loss,
-        tp1: c.tp1,
-        tp2: c.tp2 ?? null,
-        tp3: c.tp3 ?? null,
-        take_profit_1: c.tp1,
-        take_profit_2: c.tp2 ?? null,
-        take_profit_3: c.tp3 ?? null,
-        rr_tp1: c.actual_rr,
-        risk_reward: Number.isFinite(Number(c.actual_rr)) ? `1:${Number(c.actual_rr).toFixed(2)}` : signal.risk_reward
-    };
-}
-
 function setJsonOutput(obj) {
     const el = document.getElementById('jsonOutput');
     let publicSignal = buildPublicTradeSignal(obj?.trade_signal || obj);
-    publicSignal = normalizePublicReadySignal(publicSignal);
     publicSignal.app_build = APP_BUILD_ID;
     publicSignal.analysis_status = getAnalysisStatus(publicSignal);
     const publicValidation = validatePublicTradeSignal(publicSignal);
@@ -13305,32 +12449,16 @@ function getTradeSummaryModel(signal = {}) {
     const candidateConfidence = candidateConfidenceValues.find(value => Number(value) > 0) ?? candidateConfidenceValues[0];
     const orderLabels = [signal.trade_type, signal.decision].map(value => String(value || '').toUpperCase());
     const explicitLimit = orderLabels.find(value => ['BUY_LIMIT', 'SELL_LIMIT'].includes(value));
-    const hasSummaryGeometry = [entryValue, stopValue, tp1Value]
-        .every(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
-    const publicSetupReady = (signal.status_code == null && hasSummaryGeometry
-        || signal.status_code === 'SETUP_READY')
-        && ['BUY_LIMIT', 'SELL_LIMIT'].includes(String(signal.decision || signal.trade_type || '').toUpperCase());
-    const secondaryGeometryVisible = signal.authorization_state === 'SECONDARY_CANDIDATE'
-        && hasSummaryGeometry
-        && signal.execution_allowed !== true;
-    const watchOnly = (!publicSetupReady && !secondaryGeometryVisible)
-        || signal.authorization_state === 'WATCH_ONLY'
-        || (!secondaryGeometryVisible && (signal.status_code === 'WATCH' || signal.status === 'WATCH'))
-        || !hasSummaryGeometry;
-    const displayEntryValue = watchOnly ? null : entryValue;
-    const displayStopValue = watchOnly ? null : stopValue;
     const direction = explicitLimit || [signal.direction, setup.direction, signal.opportunity?.direction, signal.primary_opportunity?.direction]
         .map(value => String(value || '').toUpperCase())
         .find(value => ['BUY', 'SELL', 'BUY_LIMIT', 'SELL_LIMIT'].includes(value));
-    const numericEntry = Number(displayEntryValue), numericStop = Number(displayStopValue), numericTarget = Number(tp1Value);
+    const numericEntry = Number(entryValue), numericStop = Number(stopValue), numericTarget = Number(tp1Value);
     const geometryDirection = Number.isFinite(numericEntry) && Number.isFinite(numericStop) && Number.isFinite(numericTarget)
         ? numericStop < numericEntry && numericEntry < numericTarget ? 'BUY_LIMIT'
             : numericStop > numericEntry && numericEntry > numericTarget ? 'SELL_LIMIT' : null
         : null;
-    const resolvedDirection = watchOnly ? null : (direction || geometryDirection);
-    const type = secondaryGeometryVisible
-        ? `SECONDARY ${resolvedDirection === 'BUY' || resolvedDirection === 'BUY_LIMIT' ? 'BUY' : 'SELL'} LIMIT`
-        : resolvedDirection === 'BUY' || resolvedDirection === 'BUY_LIMIT' ? 'BUY LIMIT'
+    const resolvedDirection = direction || geometryDirection;
+    const type = resolvedDirection === 'BUY' || resolvedDirection === 'BUY_LIMIT' ? 'BUY LIMIT'
         : resolvedDirection === 'SELL' || resolvedDirection === 'SELL_LIMIT' ? 'SELL LIMIT' : 'WAIT';
     const trend = signal.analysis?.trend_detection || signal.trend_detection || signal.analysis?.structural_context || signal.structural_context || signal.analysis?.higher_timeframe || {};
     const indicators = signal.analysis?.technical_indicators || signal.analysis?.indicators || signal.technical_indicators || signal.indicators || {};
@@ -13358,21 +12486,18 @@ function getTradeSummaryModel(signal = {}) {
         || 'No current setup analysis.';
     const setupType = setup.strategy || signal.analysis?.type || signal.strategy || location.source || '—';
     const source = location.source || location.type;
-    const displayTp1 = watchOnly ? null : tp1Value;
-    const displayTp2 = watchOnly ? null : (signal.tp2 ?? signal.take_profit_2 ?? setup.take_profit_2 ?? setup.tp2);
-    const displayTp3 = watchOnly ? null : (signal.tp3 ?? signal.take_profit_3 ?? setup.take_profit_3 ?? setup.tp3);
     return {
         bot: 'ICT Trading Bot Pro',
         date: signal.date || '—',
         currentPrice: price(signal.current_price),
         pair: signal.pair || '—',
         tradeType: type,
-        confidence: !publicSetupReady && !secondaryGeometryVisible && signal.authorization_state !== 'WATCH_ONLY' ? '0%' : (candidateConfidence === undefined ? '0%' : `${Math.round(Number(candidateConfidence))}%`),
-        entry: price(displayEntryValue),
-        stopLoss: price(displayStopValue),
-        tp1: price(displayTp1),
-        tp2: price(displayTp2),
-        tp3: price(displayTp3),
+        confidence: candidateConfidence === undefined ? '0%' : `${Math.round(Number(candidateConfidence))}%`,
+        entry: price(entryValue),
+        stopLoss: price(stopValue),
+        tp1: price(tp1Value),
+        tp2: price(signal.tp2 ?? signal.take_profit_2 ?? setup.take_profit_2 ?? setup.tp2),
+        tp3: price(signal.tp3 ?? signal.take_profit_3 ?? setup.take_profit_3 ?? setup.tp3),
         analysis: analysisText,
         trend: trendText || '—',
         volatility: signal.analysis?.volatility_level || signal.analysis?.volatility?.regime || (typeof signal.analysis?.volatility === 'string' ? signal.analysis.volatility : null) || signal.volatility_level || signal.volatility?.regime || '—',
@@ -13468,10 +12593,7 @@ function renderOpportunityStack(signal = {}) {
     // A watch opportunity is still useful to the manual trader: it shows the
     // validated location and the exact condition needed before a limit setup
     // can become actionable. It remains visibly separate from a primary setup.
-    const label = primary?.authorization_state === 'SECONDARY_CANDIDATE'
-        ? 'SECONDARY / DEVELOPING SETUP'
-        : primary ? 'PRIMARY OPPORTUNITY' : 'WATCH OPPORTUNITY';
-    el.innerHTML = renderOpportunityCard(setup, label);
+    el.innerHTML = renderOpportunityCard(setup, primary ? 'PRIMARY OPPORTUNITY' : 'WATCH OPPORTUNITY');
 }
 
 // ============================================
@@ -13565,7 +12687,7 @@ function markRecentOutcome(id, outcome) {
         if (e.outcome) {
             try {
                 const patterns = (e.patterns || '').split('+').map(s => s.trim()).filter(Boolean);
-                const rr = e.outcome === 'WIN' ? (parseFloat(String(e.risk_reward || '1:1').split(':')[1]) || 0) : -1;
+                const rr = parseFloat(String(e.risk_reward || '1:1').split(':')[1]) || 1.5;
                 trackAIPerformance(String(id), e.outcome, e.confidence || 0, patterns, rr);
             } catch(err) {}
         }
@@ -13832,9 +12954,6 @@ function validateLocalLimitOrderInput(signal = {}, pairLocal = pair, symbolMetad
     const minimumRR = Number(getMarketSettings(pairLocal, symbolMetadata).targetRR) || 2.5;
     if (!direction) issues.push('direction is missing');
     if (![current, entry, stop, tp1].every(Number.isFinite)) issues.push('order geometry is not finite');
-    for (const [name, value] of [['entry', entry], ['stop_loss', stop], ['take_profit_1', tp1]]) {
-        if (Number.isFinite(value) && !validatePriceTick(value, pairLocal, symbolMetadata)) issues.push(`${name} is not tick-aligned`);
-    }
     if (direction === 'BUY' && !(stop < entry && entry < tp1)) issues.push('BUY geometry is invalid');
     if (direction === 'SELL' && !(stop > entry && entry > tp1)) issues.push('SELL geometry is invalid');
     const referencePrice = direction === 'BUY' && Number.isFinite(ask) ? ask
@@ -13844,9 +12963,6 @@ function validateLocalLimitOrderInput(signal = {}, pairLocal = pair, symbolMetad
     const risk = Math.abs(entry - stop);
     const reward = Math.abs(tp1 - entry);
     if (!(risk > 0) || reward / risk < minimumRR) issues.push(`RR is below minimum ${minimumRR}`);
-    const structuralInvalidation = Number(signal.structural_invalidation?.level ?? signal.structural_invalidation ?? signal.aiDecision?.adaptive_candidate?.structural_invalidation?.level);
-    if (Number.isFinite(structuralInvalidation) && direction === 'BUY' && !(stop < structuralInvalidation)) issues.push('BUY stop is not beyond structural invalidation');
-    if (Number.isFinite(structuralInvalidation) && direction === 'SELL' && !(stop > structuralInvalidation)) issues.push('SELL stop is not beyond structural invalidation');
     return { valid: issues.length === 0, issues, direction, minimum_rr: minimumRR };
 }
 
@@ -14066,8 +13182,8 @@ function showNotif(m, t) {
 }
 
 // Manual trade result logging (for loss protection)
-function logTradeResult(isWin, riskR, filledFraction = 1) {
-    recordTradeResult(isWin, riskR, filledFraction);
+function logTradeResult(isWin, riskR) {
+    recordTradeResult(isWin, riskR);
     showNotif(`✅ Trade logged: ${isWin ? 'WIN' : 'LOSS'} | Losses: ${consecutiveLosses} | Daily PnL: ${dailyPnlR.toFixed(1)}R`, isWin ? 'success' : 'warning');
 }
 
