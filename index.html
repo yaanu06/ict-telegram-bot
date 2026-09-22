@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -10,61 +10,61 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>ðŸ“Š ICT Trading Bot Pro</h1>
+            <h1>📊 ICT Trading Bot Pro</h1>
             <p class="subtitle">AI-Powered | Multi-TF Auto Scan | Limit Orders</p>
             <div class="status-row">
                 <span id="liveTime" class="live-time"></span>
-                <span id="apiSource" class="api-source">âšª Ready</span>
+                <span id="apiSource" class="api-source">⚪ Ready</span>
             </div>
         </div>
 
         <!-- API Key Status -->
         <div class="section settings-section">
-            <h3>ðŸ”‘ API Status</h3>
+            <h3>🔑 API Status</h3>
             <div class="settings-grid">
                 <div class="setting-item">
-                    <span>ðŸ“¡ Twelve Data:</span>
+                    <span>📡 Twelve Data:</span>
                     <span id="twelveStatus" class="status-badge">Checking...</span>
                 </div>
                 <div class="setting-item">
-                    <span>ðŸ¤– DeepSeek AI:</span>
+                    <span>🤖 DeepSeek AI:</span>
                     <span id="deepseekStatus" class="status-badge">Checking...</span>
                 </div>
                 <div class="setting-item">
-                    <span>ðŸ™ GitHub:</span>
-                    <span id="githubStatus" class="status-badge">âšª Local Only</span>
+                    <span>🐙 GitHub:</span>
+                    <span id="githubStatus" class="status-badge">⚪ Local Only</span>
                 </div>
             </div>
-            <button id="updateKeysBtn" class="settings-btn">âš™ï¸ Update API Keys</button>
+            <button id="updateKeysBtn" class="settings-btn">⚙️ Update API Keys</button>
         </div>
 
         <!-- Market Selection -->
         <div class="section">
-            <h3>ðŸ”„ Market</h3>
+            <h3>🔄 Market</h3>
             <div class="btn-group">
-                <button class="category-btn" data-category="crypto">ðŸ’° Crypto</button>
-                <button class="category-btn" data-category="forex">ðŸ’± Forex</button>
-                <button class="category-btn active" data-category="metals">ðŸ¥‡ Metals</button>
+                <button class="category-btn" data-category="crypto">💰 Crypto</button>
+                <button class="category-btn" data-category="forex">💱 Forex</button>
+                <button class="category-btn active" data-category="metals">🥇 Metals</button>
             </div>
         </div>
 
         <!-- Trading Pair -->
         <div class="section">
-            <h3>ðŸ’± Trading Pair</h3>
+            <h3>💱 Trading Pair</h3>
             <select id="pairSelect" class="input-field">
-                <option value="XAU/USD" selected>ðŸ‘‘ XAU/USD</option>
-                <option value="XAG/USD">ðŸ¥ˆ XAG/USD</option>
-                <option value="BTC/USD">â‚¿ BTC/USD</option>
-                <option value="EUR/USD">â‚¬ EUR/USD</option>
-                <option value="GBP/USD">Â£ GBP/USD</option>
-                <option value="USD/JPY">ðŸ’´ USD/JPY</option>
-                <option value="AUD/USD">ðŸ‡¦ðŸ‡º AUD/USD</option>
-                <option value="USD/CAD">ðŸ‡¨ðŸ‡¦ USD/CAD</option>
-                <option value="USD/CHF">ðŸ‡¨ðŸ‡­ USD/CHF</option>
-                <option value="NZD/USD">ðŸ‡³ðŸ‡¿ NZD/USD</option>
-                <option value="EUR/GBP">â‚¬/Â£ EUR/GBP</option>
-                <option value="EUR/JPY">â‚¬/Â¥ EUR/JPY</option>
-                <option value="GBP/JPY">Â£/Â¥ GBP/JPY</option>
+                <option value="XAU/USD" selected>👑 XAU/USD</option>
+                <option value="XAG/USD">🥈 XAG/USD</option>
+                <option value="BTC/USD">₿ BTC/USD</option>
+                <option value="EUR/USD">€ EUR/USD</option>
+                <option value="GBP/USD">£ GBP/USD</option>
+                <option value="USD/JPY">💴 USD/JPY</option>
+                <option value="AUD/USD">🇦🇺 AUD/USD</option>
+                <option value="USD/CAD">🇨🇦 USD/CAD</option>
+                <option value="USD/CHF">🇨🇭 USD/CHF</option>
+                <option value="NZD/USD">🇳🇿 NZD/USD</option>
+                <option value="EUR/GBP">€/£ EUR/GBP</option>
+                <option value="EUR/JPY">€/¥ EUR/JPY</option>
+                <option value="GBP/JPY">£/¥ GBP/JPY</option>
             </select>
             <div class="custom-symbol-row">
                 <input id="customPairInput" class="input-field" type="text" inputmode="text" autocomplete="off" placeholder="Custom symbol (e.g. AAPL or ETH/USD)">
@@ -74,14 +74,14 @@
 
         <!-- Live Price -->
         <div class="section price-section">
-            <h3>ðŸ“ˆ Live Price</h3>
+            <h3>📈 Live Price</h3>
             <div id="currentPrice" class="current-price">----</div>
             <div id="priceChange" class="price-change">--</div>
         </div>
 
         <!-- Multi-Timeframe Display -->
         <div class="section">
-            <h3>ðŸ“Š Multi-Timeframe Trends</h3>
+            <h3>📊 Multi-Timeframe Trends</h3>
             <div class="mtf-grid">
                 <div class="mtf-card"><div class="mtf-header">5M</div><div class="mtf-trend" id="trend5M">--</div></div>
                 <div class="mtf-card"><div class="mtf-header">15M</div><div class="mtf-trend" id="trend15M">--</div></div>
@@ -93,7 +93,7 @@
         </div>
 
         <!-- AUTO SCAN BUTTON -->
-        <button id="analyzeBtn" class="analyze-btn">ðŸ” Auto-Scan All Timeframes</button>
+        <button id="analyzeBtn" class="analyze-btn">🔍 Auto-Scan All Timeframes</button>
         
         <!-- Scanning Status -->
         <div id="scanStatus" class="scan-status hidden">
@@ -106,10 +106,10 @@
         <!-- JSON Output -->
         <div class="section json-section">
             <div class="json-header">
-                <h3>Trade Signal Â· ICT Trading Bot Pro</h3>
+                <h3>Trade Signal · ICT Trading Bot Pro</h3>
                 <button id="copyJsonBtn" class="copy-json-btn">Copy Summary</button>
             </div>
-            <div id="signalStatus" class="signal-status" aria-live="polite">NO_TRADE Â· Awaiting analysis</div>
+            <div id="signalStatus" class="signal-status" aria-live="polite">NO_TRADE · Awaiting analysis</div>
             <div id="tradeSummary" class="trade-summary" aria-live="polite">Run a scan to generate a trade summary.</div>
             <pre id="jsonOutput" class="json-output" aria-hidden="true">{}</pre>
             <div id="opportunityStack" class="opportunity-stack" aria-live="polite"></div>
@@ -118,35 +118,35 @@
         <!-- Save Setup & Limit Order -->
         <div class="section">
             <div class="action-row">
-                <button id="saveSetupBtn" class="save-btn">ðŸ’¾ Save Setup</button>
-                <button id="executeBtn" class="execute-btn" disabled>âš¡ Track Manual Limit</button>
+                <button id="saveSetupBtn" class="save-btn">💾 Save Setup</button>
+                <button id="executeBtn" class="execute-btn" disabled>⚡ Track Manual Limit</button>
             </div>
-            <h3>ðŸ“ Limit Order</h3>
+            <h3>📝 Limit Order</h3>
             <div id="limitOrderBox" class="limit-box">
                 <span id="limitOrderText">No active limit order</span>
-                <button id="cancelLimitBtn" class="cancel-btn hidden">âœ• Cancel</button>
+                <button id="cancelLimitBtn" class="cancel-btn hidden">✕ Cancel</button>
             </div>
         </div>
 
         <!-- Recent Setups -->
         <div class="section">
             <div class="section-header">
-                <h3>ðŸ“‹ Recent Setups</h3>
+                <h3>📋 Recent Setups</h3>
                 <span id="recentCount" class="badge">0</span>
             </div>
             <div id="recentList" class="recent-list">
-                <span class="journal-empty">No saved setups â€” hit ðŸ’¾ Save after a scan to keep one here</span>
+                <span class="journal-empty">No saved setups — hit 💾 Save after a scan to keep one here</span>
             </div>
         </div>
 
         <!-- Trade Journal -->
         <div class="section">
             <div class="section-header">
-                <h3>ðŸ“’ Trade Journal</h3>
+                <h3>📒 Trade Journal</h3>
                 <span id="journalStats" class="badge"></span>
             </div>
             <div id="journalList" class="journal-list">
-                <span class="journal-empty">Journal is empty â€” mark a saved setup Win/Loss, then press ðŸ“’ Journal</span>
+                <span class="journal-empty">Journal is empty — mark a saved setup Win/Loss, then press 📒 Journal</span>
             </div>
         </div>
 
