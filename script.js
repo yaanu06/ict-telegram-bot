@@ -10,7 +10,7 @@ if (tg) { tg.expand(); tg.ready(); }
 // CONFIG
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
-const APP_BUILD_ID = '20260920-113';
+const APP_BUILD_ID = '20260922-114';
 let lastDisplayedPublicSignal = null;
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
@@ -172,6 +172,11 @@ function getMarketSettings(p, metadata = {}) {
     if (assetClass === 'EQUITY' || assetClass === 'INDEX') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 4, pipSize: 0.01, minSLMultiplier: 1.5 });
     if (assetClass === 'UNKNOWN') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 6, pipSize: 0.000001, minSLMultiplier: 1.5 });
     return withMetadata({ slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.01, targetRR: 2.5, prec: 5, pipSize: 0.0001 });
+}
+
+function getPreferredStopAtrMultiplier(settings = {}) {
+    const configured = Number(settings.minSLMultiplier);
+    return Math.max(0.75, Math.min(1.0, (Number.isFinite(configured) && configured > 0 ? configured : 1.5) * 0.5));
 }
 
 function getPrec(p, metadata = {}) { return getMarketSettings(p, metadata).prec; }
@@ -4425,15 +4430,16 @@ function getAdaptiveStopCandidates(zone, direction, entry, data, zones, atrVal, 
         volatility_noise_buffer: (atrVal || 0) * 0.05
     };
     const buffer = Math.max(bufferComponents.pip_or_tick_buffer + bufferComponents.spread_buffer, bufferComponents.volatility_noise_buffer, entry * 0.00002);
+    const preferredAtrMultiplier = getPreferredStopAtrMultiplier(settings);
+    const preferredRisk = Number.isFinite(Number(atrVal)) && atrVal > 0
+        ? Math.max(settings.pipSize * 2, atrVal * preferredAtrMultiplier)
+        : settings.pipSize * 2;
     if (authoritative) {
         // Keep the authoritative invalidation as the anchor, while giving the
         // stop enough room for normal setup-timeframe noise. A microscopic
         // anchor buffer can otherwise produce a technically valid but fragile
         // stop, especially on gold and other volatile instruments.
         const anchorRisk = direction === 'BUY' ? entry - (authoritative.level - buffer) : (authoritative.level + buffer) - entry;
-        const preferredRisk = Number.isFinite(Number(atrVal)) && atrVal > 0
-            ? Math.max(settings.pipSize * 2, atrVal * 0.5)
-            : settings.pipSize * 2;
         const riskDistance = Math.max(anchorRisk, preferredRisk);
         const stopLoss = ictRound(direction === 'BUY' ? entry - riskDistance : entry + riskDistance, prec);
         return [{ level: authoritative.level, source: authoritative.source, origin: 'STRUCTURAL', authoritative: true,
@@ -4477,7 +4483,9 @@ function getAdaptiveStopCandidates(zone, direction, entry, data, zones, atrVal, 
             dedupe.set(key, { ...c, stop_loss: roundedStop, buffer: ictRound(buffer, prec), authoritative_invalidation: authoritative });
         }
     }
-    return [...dedupe.values()].sort((a, b) => Math.abs(a.stop_loss - entry) - Math.abs(b.stop_loss - entry));
+    return [...dedupe.values()]
+        .filter(candidate => Math.abs(candidate.stop_loss - entry) >= preferredRisk)
+        .sort((a, b) => Math.abs(a.stop_loss - entry) - Math.abs(b.stop_loss - entry));
 }
 
 function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, minimumRR, prec, reachabilityContext = {}) {
@@ -4580,11 +4588,11 @@ function getCandidateATRContext(candidate, historyCache, pairLocal, price, symbo
         : (Number.isFinite(fallbackAtr) && fallbackAtr > 0 ? fallbackAtr : NaN);
     const minMultiplier = settings.minSLMultiplier || 1.5;
     const minimumReasonable = Number.isFinite(atrForRule) && atrForRule > 0
-        ? Math.max(settings.minSL, atrForRule * 0.5)
+        ? Math.max(settings.minSL, atrForRule * getPreferredStopAtrMultiplier(settings))
         : settings.minSL;
     const absoluteMinSL = Math.max(settings.pipSize, Number.isFinite(atrForRule) && atrForRule > 0 ? atrForRule * 0.10 : settings.pipSize);
     const preferredMinSL = Number.isFinite(atrForRule) && atrForRule > 0
-        ? Math.max(settings.pipSize * 2, atrForRule * 0.5)
+        ? Math.max(settings.pipSize * 2, atrForRule * getPreferredStopAtrMultiplier(settings))
         : settings.pipSize * 2;
     const maxByAtr = Number.isFinite(atrForRule) && atrForRule > 0 ? atrForRule * 10.0 : Infinity;
     const maxByPrice = Number(price) * settings.maxSLPct;
@@ -4702,7 +4710,7 @@ function buildRiskConstraints(pairLocal, price, historyCache, quoteSnapshot = nu
         minimum_rr: settings.targetRR || 2.5,
         minimum_sl_distance: ictRound(absoluteMinSL, prec),
         absolute_min_sl: ictRound(absoluteMinSL, prec),
-        preferred_min_sl: ictRound(Math.max(settings.pipSize * 2, (primaryAtr || 0) * 0.5), prec),
+        preferred_min_sl: ictRound(Math.max(settings.pipSize * 2, (primaryAtr || 0) * getPreferredStopAtrMultiplier(settings)), prec),
         maximum_sl_distance: ictRound(Math.max(absoluteMinSL, rawMaxSLDistance), prec),
         maximum_entry_distance_atr: LIMIT_ORDER_MAX_DIST_ATR,
         current_spread: Number.isFinite(currentSpread) ? ictRound(currentSpread, prec) : null,
@@ -7694,7 +7702,9 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             target_level: candidate.tp1 || candidate.take_profit_1 || candidate.target_map?.[0]?.level,
             structural_invalidation: candidate.structural_invalidation,
             opportunity_quality: candidate.quality || { rank_tier: 2, rank_score: candidate.score || 0, target_quality: 'REAL_AHEAD' },
-            confidence: candidate.confidence || candidate.score || 0,
+            confidence: Number(candidate.confidence) > 0 ? Number(candidate.confidence)
+                : Number(candidate.score) > 0 ? Number(candidate.score)
+                    : Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score) || 0,
             reason: 'A deterministic opportunity is executable under the current market state.'
         }));
         const stack = buildOpportunityDisplayStack(candidatePlans, currentPrice, candidatePlans.find(candidate => candidate.id === (bestCandidate.strategy_setup?.id || bestCandidate.id)) || candidatePlans[0]);
@@ -7785,7 +7795,8 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             reason: !zone ? 'A valid current-market narrative and location exist, but no execution zone has formed yet.' : plan.execution_model === 'PENDING_LIMIT' ? 'A deterministic pending limit remains valid for the remainder of today.' : (inside ? 'A valid strategy area is active, but deterministic confirmation is not yet present.' : 'A valid strategy narrative remains actionable today; wait for price to reach the deterministic area and activate it.'),
             setup_timeframe: setup.setup_timeframe || setup.timeframe, execution_timeframe: executionTimeframe,
             entry: pendingGeometry?.entry ?? null, stop_loss: pendingGeometry?.stop_loss ?? null, tp1: pendingGeometry?.tp1 ?? null, tp2: pendingGeometry?.tp2 ?? null, tp3: pendingGeometry?.tp3 ?? null,
-            rr: pendingGeometry?.rr ?? null, confidence: Number.isFinite(Number(setup.setup_confidence)) ? Number(setup.setup_confidence) : opportunityQuality.deterministic_confidence,
+            rr: pendingGeometry?.rr ?? null, confidence: Number(setup.setup_confidence) > 0 && Number.isFinite(Number(setup.setup_confidence))
+                ? Number(setup.setup_confidence) : opportunityQuality.deterministic_confidence,
             opportunity_quality: opportunityQuality, watch_only: opportunityQuality.watch_only });
         if (!currentSetupIds.has(setup.id || setup.primary)) state.fresh_current_market_opportunities.push(setup.id || setup.primary);
     }
