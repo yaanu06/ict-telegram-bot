@@ -11209,6 +11209,12 @@ async function runAutoScan() {
                 symbol_metadata: getSymbolMetadata(pair),
                 market_conditions: liveMarketContext.market_conditions,
                 ai_analysis: compactAiDiagnostics(liveMarketContext.ai_analysis),
+                trend_detection: liveMarketContext.multi_timeframe_direction?.trend
+                    || liveMarketContext.market_context?.timeframe_context
+                    || liveMarketContext.trend_detection
+                    || null,
+                volatility: liveMarketContext.volatility || liveMarketContext.market_context?.volatility || null,
+                indicators: liveMarketContext.momentum || liveMarketContext.indicators || liveMarketContext.market_context?.indicators || null,
                 direction: aiResult.direction,
                 trade_type: aiResult.decision || (aiResult.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT'),
                 decision: aiResult.decision,

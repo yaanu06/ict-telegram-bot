@@ -6103,6 +6103,23 @@ describe('AI market analyst contract', () => {
             expect(model.confidence).toBe('0%');
         });
 
+        it('preserves market context on a WAIT setup projection', () => {
+            const ctx = getContext();
+            const result = ctx.buildPublicTradeSignal({
+                pair: 'XAU/USD', current_price: 4311.74, decision: 'WAIT', trade_type: 'WAIT',
+                status: 'WATCH', confidence: 0, strategy: 'CRT+MSNR',
+                trend_detection: { '1D': 'BEARISH', '4H': 'BEARISH', '1H': 'BULLISH' },
+                volatility: { regime: 'NORMAL' },
+                indicators: { adx_4h: 15.9, rsi_4h: 43.29, macd_direction_4h: 'BEARISH' },
+                analysis: { setup: 'CRT+MSNR SELL confirmation entry at 4323' },
+                reason: { code: 'WATCH_ONLY', message: 'Confirmation is still required.' }
+            });
+            expect(result.analysis.trend_detection['4H']).toBe('BEARISH');
+            expect(result.analysis.volatility_level).toBe('NORMAL');
+            expect(result.analysis.technical_indicators.adx_4h).toBe(15.9);
+            expect(result.analysis.type).toBe('CRT+MSNR');
+        });
+
         it('keeps a complete 58% candidate as SECONDARY_CANDIDATE', () => {
             const ctx = getContext();
             const result = ctx.classifyCandidateAuthorization(executable('C-58', 58));
