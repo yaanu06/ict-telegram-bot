@@ -140,6 +140,8 @@ const SELL_INVALIDATION_FACTOR = 1.002;
 // PURE QUALITY SELECTION: Quality (Conf 58, HTF 1/3, 2+ patterns) is the criteria.
 // CHoCH/BOS/compression/ADX are confluence SCORING factors — no hard-block is removed, thresholds tuned.
 const MIN_CONFIDENCE = 58;
+const PRIMARY_CONFIDENCE_THRESHOLD = MIN_CONFIDENCE;
+const MIN_EXECUTABLE_CONFIDENCE = 50;
 const MAX_ZONE_TOUCHES = 10;
 const LIMIT_ORDER_EXPIRY_HOURS = 4;
 const ZONE_PROXIMITY_ALERT_PCT = 0.3;
@@ -148,6 +150,94 @@ const HTF_MIN_MATCH = 1;
 const AI_ADVISORY_ONLY = true;
 const ICT_LAST_TRADE_TIME_KEY = 'ict_last_trade_time';
 const ICT_FIVE_MIN_MS = 5 * 60 * 1000;
+
+function hasCompleteExecutionGeometry(candidate) {
+    if (!candidate || typeof candidate !== 'object') return false;
+    const required = ['entry', 'stop_loss', 'tp1'];
+    const isPrice = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+    const completePrices = required.every(field => isPrice(candidate[field] ?? (field === 'tp1' ? candidate.take_profit_1 : undefined)));
+    const rr = Number(candidate.actual_rr ?? candidate.rr_tp1);
+    const minimumRR = Number(candidate.minimum_rr);
+    return completePrices
+        && Number.isFinite(rr)
+        && Number.isFinite(minimumRR)
+        && rr >= minimumRR
+        && candidate.execution_geometry_valid === true;
+}
+
+function getCandidateConfidenceType(candidate) {
+    return candidate?.has_complete_execution_geometry === true
+        ? 'EXECUTION_CONFIDENCE'
+        : 'LOCATION_CONFIDENCE';
+}
+
+function getCanonicalCandidateConfidence(candidate) {
+    const complete = candidate?.has_complete_execution_geometry === true;
+    const value = complete
+        ? (candidate.execution_confidence
+            ?? candidate.quality?.final_confidence
+            ?? candidate.confidence_breakdown?.final_score
+            ?? candidate.setup_confidence
+            ?? candidate.score)
+        : (candidate.location_confidence
+            ?? candidate.quality?.location_confidence
+            ?? candidate.setup_confidence
+            ?? candidate.score
+            ?? candidate.confidence);
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.max(0, Math.min(100, Math.round(number))) : 0;
+}
+
+function getGeometryMissing(candidate) {
+    const missing = [];
+    const isPrice = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+    if (!isPrice(candidate?.entry)) missing.push('entry');
+    if (!isPrice(candidate?.stop_loss)) missing.push('stop_loss');
+    if (!isPrice(candidate?.tp1 ?? candidate?.take_profit_1)) missing.push('tp1');
+    const rr = Number(candidate?.actual_rr ?? candidate?.rr_tp1);
+    if (!Number.isFinite(rr)) missing.push('risk_reward');
+    return missing;
+}
+
+function classifyCandidateAuthorization(candidate) {
+    const complete = hasCompleteExecutionGeometry(candidate);
+    const confidence = getCanonicalCandidateConfidence({
+        ...candidate,
+        has_complete_execution_geometry: complete
+    });
+    const hardValidationPassed = candidate?.hard_validation_passed === true
+        || (candidate?.execution_geometry_valid === true && candidate?.evaluation?.valid !== false);
+    let authorization_state = 'WATCH_ONLY';
+    if (complete && hardValidationPassed && confidence > PRIMARY_CONFIDENCE_THRESHOLD) authorization_state = 'TRADE_READY';
+    else if (complete && hardValidationPassed && confidence >= MIN_EXECUTABLE_CONFIDENCE) authorization_state = 'SECONDARY_CANDIDATE';
+    return {
+        ...candidate,
+        authorization_state,
+        confidence_type: complete ? 'EXECUTION_CONFIDENCE' : 'LOCATION_CONFIDENCE',
+        location_confidence: Number.isFinite(Number(candidate?.location_confidence)) ? Number(candidate.location_confidence) : (complete ? null : confidence),
+        execution_confidence: complete ? confidence : null,
+        has_complete_execution_geometry: complete,
+        geometry_missing: complete ? [] : getGeometryMissing(candidate),
+        hard_validation_passed: complete && hardValidationPassed,
+        selection_rank: candidate?.selection_rank ?? null
+    };
+}
+
+function compareCandidates(a, b) {
+    const tierRank = { TRADE_READY: 3, SECONDARY_CANDIDATE: 2, WATCH_ONLY: 1 };
+    return (tierRank[b?.authorization_state] || 0) - (tierRank[a?.authorization_state] || 0)
+        || getCanonicalCandidateConfidence(b) - getCanonicalCandidateConfidence(a)
+        || Number(b?.target_reachability?.reachability_score || 0) - Number(a?.target_reachability?.reachability_score || 0)
+        || Number(b?.confluence_score || 0) - Number(a?.confluence_score || 0)
+        || Number(a?.distance_from_current_price || Infinity) - Number(b?.distance_from_current_price || Infinity);
+}
+
+function selectBestExecutableCandidate(candidates = []) {
+    return candidates
+        .map(classifyCandidateAuthorization)
+        .filter(candidate => ['TRADE_READY', 'SECONDARY_CANDIDATE'].includes(candidate.authorization_state))
+        .sort(compareCandidates)[0] || null;
+}
 
 // ============================================
 // MARKET SETTINGS
@@ -6237,7 +6327,9 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         rejectedCandidates.push({ id: candidate.id, rejection_code: 'ENGINE_INVARIANT_FAILURE', invariant_code: invariant.invariant_code, rejection_reasons: invariant.failures });
                         continue;
                     }
-                    Object.freeze(candidate);
+                    candidate.execution_geometry_valid = true;
+                    candidate.hard_validation_passed = true;
+                    Object.assign(candidate, classifyCandidateAuthorization(candidate));
                     console.log('STRATEGY CANDIDATE', { id: candidate.id, strategy: candidate.strategy_label, direction: candidate.direction, score: candidate.score });
                     validCandidates.push(candidate);
                 } else {
@@ -6258,8 +6350,12 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     }
 
     const selected = validCandidates
-        .sort((a, b) => b.score - a.score || b.rr_tp1 - a.rr_tp1 || a.distance_from_current_price - b.distance_from_current_price)
-        .slice(0, 5);
+        .sort(compareCandidates)
+        .slice(0, 5)
+        .map((candidate, index) => {
+            candidate.selection_rank = index + 1;
+            return candidate;
+        });
     const result = {
         raw_candidates: rawCandidates,
         valid_candidates: selected,
@@ -6363,7 +6459,17 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.entry_reachable_today = candidate.entry_reachable_today ?? aiResult.setup_lifecycle?.entry_reachable_today ?? false;
     aiResult.distance_to_entry_atr = candidate.distance_to_entry_atr ?? aiResult.setup_lifecycle?.distance_to_entry_atr ?? null;
     aiResult.remaining_reward_fraction = candidate.remaining_reward_fraction ?? aiResult.setup_lifecycle?.remaining_reward_fraction ?? null;
-    aiResult.setup_confidence = getDeterministicCandidateConfidence(candidate);
+    const candidateDiagnostics = classifyCandidateAuthorization(candidate);
+    aiResult.setup_confidence = getCanonicalCandidateConfidence(candidateDiagnostics);
+    aiResult.confidence = aiResult.setup_confidence;
+    aiResult.authorization_state = candidateDiagnostics.authorization_state;
+    aiResult.confidence_type = candidateDiagnostics.confidence_type;
+    aiResult.location_confidence = candidateDiagnostics.location_confidence;
+    aiResult.execution_confidence = candidateDiagnostics.execution_confidence;
+    aiResult.has_complete_execution_geometry = candidateDiagnostics.has_complete_execution_geometry;
+    aiResult.geometry_missing = candidateDiagnostics.geometry_missing;
+    aiResult.hard_validation_passed = candidateDiagnostics.hard_validation_passed;
+    aiResult.selection_rank = candidateDiagnostics.selection_rank;
     aiResult.strategy_setup = candidate.strategy_setup || null;
     aiResult.strategy_narrative = {
         state: candidate.narrative_state || candidate.strategy_setup?.narrative_state || 'ACTIVE',
@@ -6542,23 +6648,32 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
 }
 
 function candidateToAIResult(candidate) {
+    const classified = classifyCandidateAuthorization(candidate);
     return {
-        direction: candidate.direction,
-        decision: candidate.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT',
-        selected_candidate_id: candidate.id,
-        selected_zone: { type: candidate.zone_type, timeframe: candidate.timeframe, low: candidate.zone_low, high: candidate.zone_high },
-        entry_zone: { source: candidate.zone_type, low: candidate.zone_low, high: candidate.zone_high },
-        entry: candidate.entry,
-        stop_loss: candidate.stop_loss,
-        take_profit_1: candidate.tp1,
-        take_profit_2: candidate.tp2 ?? null,
-        take_profit_3: candidate.tp3 ?? null,
-        confidence: getDeterministicCandidateConfidence(candidate),
+        direction: classified.direction,
+        decision: classified.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT',
+        selected_candidate_id: classified.id,
+        selected_zone: { type: classified.zone_type, timeframe: classified.timeframe, low: classified.zone_low, high: classified.zone_high },
+        entry_zone: { source: classified.zone_type, low: classified.zone_low, high: classified.zone_high },
+        entry: classified.entry,
+        stop_loss: classified.stop_loss,
+        take_profit_1: classified.tp1,
+        take_profit_2: classified.tp2 ?? null,
+        take_profit_3: classified.tp3 ?? null,
+        confidence: getCanonicalCandidateConfidence(classified),
+        authorization_state: classified.authorization_state,
+        confidence_type: classified.confidence_type,
+        location_confidence: classified.location_confidence,
+        execution_confidence: classified.execution_confidence,
+        has_complete_execution_geometry: classified.has_complete_execution_geometry,
+        geometry_missing: classified.geometry_missing,
+        hard_validation_passed: classified.hard_validation_passed,
+        selection_rank: classified.selection_rank,
         reasoning: { primary: candidate.stop_reason || 'Deterministic candidate' },
-        patterns: candidate.strategy_setup
-            ? [candidate.strategy_setup.label || candidate.strategy_setup.primary].concat(candidate.strategy_setup.confirmations || [])
-            : [candidate.zone_type],
-        risk_reward: candidate.rr_tp1 ? `1:${candidate.rr_tp1}` : null
+        patterns: classified.strategy_setup
+            ? [classified.strategy_setup.label || classified.strategy_setup.primary].concat(classified.strategy_setup.confirmations || [])
+            : [classified.zone_type],
+        risk_reward: classified.rr_tp1 ? `1:${classified.rr_tp1}` : null
     };
 }
 
@@ -7839,12 +7954,19 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         terminal_parent_opportunities: [], fresh_current_market_opportunities: []
     };
     if (marketOpen === false) { state.reason_code = 'MARKET_CLOSED'; state.reason = 'The instrument is currently closed for the current scan.'; return state; }
-    const bestCandidate = (validCandidates || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+    const classifiedCandidates = (validCandidates || []).map(candidate => classifyCandidateAuthorization({
+        ...candidate,
+        minimum_rr: candidate.minimum_rr ?? getMarketSettings(pairLocal, symbolMetadata || {}).targetRR,
+        execution_confidence: candidate.execution_confidence ?? candidate.confidence ?? candidate.setup_confidence ?? candidate.score ?? 100,
+        execution_geometry_valid: candidate.execution_geometry_valid ?? true,
+        hard_validation_passed: candidate.hard_validation_passed ?? true
+    })).sort(compareCandidates);
+    const bestCandidate = selectBestExecutableCandidate(classifiedCandidates) || classifiedCandidates[0] || null;
     if (bestCandidate) {
         state.top_down_context = bestCandidate.top_down_context || classifyTopDownTrade(bestCandidate, timeframeContext);
         state.trade_context_classification = state.top_down_context.classification;
         const zone = bestCandidate.zone || { low: bestCandidate.zone_low, high: bestCandidate.zone_high, type: bestCandidate.zone_type, timeframe: bestCandidate.execution_timeframe || bestCandidate.timeframe, id: bestCandidate.zone_id };
-        state.state = 'TRADE_READY'; state.strategy = bestCandidate.strategy_label || bestCandidate.zone_type || null; state.direction = bestCandidate.direction;
+        state.state = bestCandidate.authorization_state === 'WATCH_ONLY' ? 'WATCH_ONLY' : 'TRADE_READY'; state.strategy = bestCandidate.strategy_label || bestCandidate.zone_type || null; state.direction = bestCandidate.direction;
         state.narrative_id = bestCandidate.strategy_setup?.id || bestCandidate.id; state.execution_zone_id = zone?.id || bestCandidate.id;
         state.source = 'DETERMINISTIC_CANDIDATE' + (bestCandidate.ai_verified ? '+VERIFIED_AI_ANALYST' : ''); state.ai_supported = !!bestCandidate.ai_verified; state.deterministic_supported = true;
         state.area_of_interest = zone ? { low: zone.low, high: zone.high, source: zone.entry_region_source || zone.type || 'STRUCTURAL', timeframe: zone.timeframe, zone_id: zone.id || bestCandidate.id } : null;
@@ -7852,10 +7974,12 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.cancellation_conditions = ['Structural invalidation is breached', 'TP1 is completed before order execution', 'Pending opportunity expires']; state.target_intent = bestCandidate.target_bias || bestCandidate.strategy_setup?.target_bias || null;
         state.delivery_progress = bestCandidate.progress_to_tp1_fraction ?? bestCandidate.narrative_delivery_progress ?? null; state.remaining_reward_fraction = bestCandidate.remaining_reward_fraction ?? null;
         state.entry_reachable_today = bestCandidate.entry_reachable_today === true; state.opportunity_reachable_today = state.entry_reachable_today; state.target_viable = true;
-        state.structural_invalidation = bestCandidate.structural_invalidation || null; state.reason_code = 'TRADE_READY'; state.reason = 'A deterministic opportunity is executable under the current market state.';
-        const candidatePlans = (validCandidates || []).map(candidate => ({
+        state.structural_invalidation = bestCandidate.structural_invalidation || null; state.reason_code = state.state === 'WATCH_ONLY' ? 'WATCH_ONLY' : 'TRADE_READY'; state.reason = state.state === 'WATCH_ONLY'
+            ? 'A location exists, but complete executable geometry is unavailable.'
+            : 'A deterministic opportunity is executable under the current market state.';
+        const candidatePlans = classifiedCandidates.map(candidate => ({
             ...candidate,
-            state: 'TRADE_READY', narrative_id: candidate.strategy_setup?.id || candidate.id,
+            state: candidate.authorization_state === 'WATCH_ONLY' ? 'WATCH_ONLY' : 'TRADE_READY', narrative_id: candidate.strategy_setup?.id || candidate.id,
             direction: candidate.direction, strategy: candidate.strategy_label || candidate.zone_type || null,
             trade_context_classification: candidate.top_down_context?.classification || candidate.trade_context_classification,
             area_of_interest: candidate.zone ? { low: candidate.zone.low, high: candidate.zone.high, source: candidate.zone.type, timeframe: candidate.zone.timeframe, zone_id: candidate.zone.id } : null,
@@ -7863,10 +7987,10 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             target_level: candidate.tp1 || candidate.take_profit_1 || candidate.target_map?.[0]?.level,
             structural_invalidation: candidate.structural_invalidation,
             opportunity_quality: candidate.quality || { rank_tier: 2, rank_score: candidate.score || 0, target_quality: 'REAL_AHEAD' },
-            confidence: Number(candidate.confidence) > 0 ? Number(candidate.confidence)
-                : Number(candidate.score) > 0 ? Number(candidate.score)
-                    : Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score) || 0,
-            reason: 'A deterministic opportunity is executable under the current market state.'
+            confidence: getCanonicalCandidateConfidence(candidate),
+            reason: candidate.authorization_state === 'WATCH_ONLY'
+                ? 'A location exists, but complete executable geometry is unavailable.'
+                : 'A deterministic opportunity is executable under the current market state.'
         }));
         const stack = buildOpportunityDisplayStack(candidatePlans, currentPrice, candidatePlans.find(candidate => candidate.id === (bestCandidate.strategy_setup?.id || bestCandidate.id)) || candidatePlans[0]);
         Object.assign(state, stack);
@@ -10979,6 +11103,14 @@ async function runAutoScan() {
                 distance_to_entry_atr: aiResult.distance_to_entry_atr,
                 remaining_reward_fraction: aiResult.remaining_reward_fraction,
                 setup_confidence: aiResult.setup_confidence,
+                authorization_state: aiResult.authorization_state || 'TRADE_READY',
+                confidence_type: aiResult.confidence_type || 'EXECUTION_CONFIDENCE',
+                location_confidence: aiResult.location_confidence ?? null,
+                execution_confidence: aiResult.execution_confidence ?? aiResult.confidence ?? null,
+                has_complete_execution_geometry: aiResult.has_complete_execution_geometry !== false,
+                geometry_missing: aiResult.geometry_missing || [],
+                hard_validation_passed: aiResult.hard_validation_passed !== false,
+                selection_rank: aiResult.selection_rank ?? null,
                 quality: aiResult.quality,
                 time_integrity: aiResult.setup_lifecycle?.time_integrity || null,
                 target_map: aiResult.target_map,
@@ -11083,6 +11215,11 @@ async function runAutoScan() {
                 limitZoneStatus: selectedZoneStatus
             };
             out.trade_signal.confidence = validation.adjustedConfidence;
+            out.trade_signal.execution_confidence = validation.adjustedConfidence;
+            out.trade_signal.confidence_type = 'EXECUTION_CONFIDENCE';
+            out.trade_signal.has_complete_execution_geometry = true;
+            out.trade_signal.geometry_missing = [];
+            out.trade_signal.hard_validation_passed = true;
             out.trade_signal.validation = aiResult.validation;
             console.log(`  🎚️ AI confidence ${beforeConf} → adjusted ${validation.adjustedConfidence} (localScore ${validation.localScore}, htfMatch ${validation.htfMatch}/3, rr ${validation.rr1.toFixed(2)}x)`);
             setJsonOutput(out);
@@ -11100,8 +11237,13 @@ async function runAutoScan() {
             aiResult.ai_decision = effectiveDecision;
             aiResult.filterOverride = overrideReason;
         }
+        const executableConfidence = Number(aiResult.confidence);
+        const executableTier = aiResult.authorization_state
+            || (executableConfidence >= PRIMARY_CONFIDENCE_THRESHOLD ? 'TRADE_READY'
+                : executableConfidence >= MIN_EXECUTABLE_CONFIDENCE ? 'SECONDARY_CANDIDATE' : 'WATCH_ONLY');
         const tradeable = effectiveDecision !== 'skip'
-            && aiResult.confidence >= 58
+            && executableConfidence >= MIN_EXECUTABLE_CONFIDENCE
+            && executableTier !== 'WATCH_ONLY'
             && validation.valid;
         console.log("LIMIT ORDER DECISION", {
             pair,
@@ -11151,7 +11293,13 @@ async function runAutoScan() {
             out.trade_signal.decision = 'WAIT';
             out.trade_signal.ai_decision = 'skip';
             out.trade_signal.confidence = 0;
-            out.trade_signal.status = 'TODAY_OPPORTUNITY';
+            out.trade_signal.status = executableConfidence >= MIN_EXECUTABLE_CONFIDENCE ? 'WATCH' : 'NO_TRADE';
+            out.trade_signal.authorization_state = 'WATCH_ONLY';
+            out.trade_signal.confidence_type = 'LOCATION_CONFIDENCE';
+            out.trade_signal.execution_confidence = null;
+            out.trade_signal.has_complete_execution_geometry = false;
+            out.trade_signal.geometry_missing = out.trade_signal.geometry_missing?.length ? out.trade_signal.geometry_missing : getGeometryMissing(out.trade_signal);
+            out.trade_signal.hard_validation_passed = false;
             out.trade_signal.reason = {
                 code: !finalConsistency.valid ? 'INTERNAL_CONSISTENCY_FAILURE' : !validation.valid ? 'AI_VALIDATION_BLOCKED' : 'CONFIDENCE_BELOW_MINIMUM',
                 message: reason
@@ -11193,18 +11341,32 @@ async function runAutoScan() {
             }
         }
         if (displayableSetup && !tradeable) {
-            // Keep a valid AI setup visible for the user's decision. The
-            // execute action remains disabled until confidence and entry
-            // conditions pass independently.
-            out.trade_signal.status = 'SETUP_AVAILABLE';
-            out.trade_signal.setup_state = 'SETUP_AVAILABLE';
+            // A complete candidate below the primary threshold remains
+            // visible as a secondary candidate. It is still manual-only and
+            // cannot bypass any deterministic validation rule.
+            if (executableTier === 'SECONDARY_CANDIDATE') {
+                out.trade_signal.status = 'SETUP_READY';
+                out.trade_signal.setup_state = 'SETUP_READY';
+                out.trade_signal.authorization_state = 'SECONDARY_CANDIDATE';
+                out.trade_signal.confidence_type = 'EXECUTION_CONFIDENCE';
+            } else {
+                out.trade_signal.status = 'WATCH';
+                out.trade_signal.setup_state = 'WATCH';
+                out.trade_signal.authorization_state = 'WATCH_ONLY';
+                out.trade_signal.confidence_type = 'LOCATION_CONFIDENCE';
+                out.trade_signal.execution_confidence = null;
+            }
             out.trade_signal.execution_allowed = false;
             out.trade_signal.reason = {
-                code: 'SETUP_AVAILABLE_USER_DECISION',
-                message: `Valid ${aiResult.direction} setup displayed for user decision; automatic execution is disabled below ${MIN_CONFIDENCE}% confidence or before confirmation.`
+                code: executableTier === 'SECONDARY_CANDIDATE' ? 'SECONDARY_EXECUTABLE_CANDIDATE' : 'WATCH_ONLY',
+                message: executableTier === 'SECONDARY_CANDIDATE'
+                    ? `The complete ${aiResult.direction} limit setup passed deterministic validation but is below the primary confidence threshold; manual review is required.`
+                    : 'A location exists, but it does not meet the minimum executable confidence floor.'
             };
         }
-        const manualTrackingAllowed = DEFAULT_EXECUTION_MODE === 'MANUAL' && displayableSetup;
+        const manualTrackingAllowed = DEFAULT_EXECUTION_MODE === 'MANUAL'
+            && displayableSetup
+            && executableTier !== 'WATCH_ONLY';
         out.trade_signal.manual_tracking_allowed = manualTrackingAllowed;
         setJsonOutput(out);
         if (publishableTrade) syncSetupToGitHub(out.trade_signal, 'ai_scan');
@@ -11856,6 +12018,7 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
     if (signal.market_open === false) return 'MARKET_CLOSED';
     if (signal.status === 'INVALIDATED' || reasonCode.includes('INVALIDATED')) return 'INVALIDATED';
     if (signal.status === 'EXPIRED' || reasonCode.includes('EXPIRED')) return 'EXPIRED';
+    if (signal.authorization_state === 'WATCH_ONLY' || signal.status === 'WATCH') return (hasOpportunity || signal.status === 'WATCH') ? 'WATCH' : 'NO_TRADE';
     const limitDecision = ['BUY_LIMIT', 'SELL_LIMIT'].includes(String(signal.decision || ''));
     const readyGeometry = [signal.entry ?? signal.entry_price, signal.stop_loss, signal.tp1 ?? signal.take_profit_1]
         .every(value => Number.isFinite(Number(value)));
@@ -12182,6 +12345,42 @@ function normalizePublicHigherTimeframe(value, trendMap = {}) {
 }
 
 function buildPublicTradeSignal(signal = {}) {
+    const requestedLimit = ['BUY_LIMIT', 'SELL_LIMIT'].includes(String(signal.decision || signal.trade_type || '').toUpperCase());
+    const requestedGeometry = [signal.entry ?? signal.entry_price, signal.stop_loss, signal.tp1 ?? signal.take_profit_1]
+        .every(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
+    const incompleteLocationClaim = requestedLimit && !requestedGeometry;
+    if (incompleteLocationClaim) {
+        const locationConfidence = Number(signal.location_confidence ?? signal.confidence);
+        signal = {
+            ...signal,
+            decision: 'WAIT',
+            trade_type: 'WAIT',
+            status: 'WATCH',
+            authorization_state: 'WATCH_ONLY',
+            confidence_type: 'LOCATION_CONFIDENCE',
+            location_confidence: Number.isFinite(locationConfidence) ? locationConfidence : 0,
+            execution_confidence: null,
+            has_complete_execution_geometry: false,
+            geometry_missing: getGeometryMissing(signal),
+            hard_validation_passed: false,
+            execution_allowed: false,
+            manual_tracking_allowed: false,
+            entry: null,
+            entry_price: null,
+            stop_loss: null,
+            tp1: null,
+            take_profit_1: null,
+            tp2: null,
+            take_profit_2: null,
+            tp3: null,
+            take_profit_3: null,
+            risk_reward: null,
+            reason: signal.reason || {
+                code: 'INCOMPLETE_EXECUTION_GEOMETRY',
+                message: 'A location exists, but entry, stop-loss, and take-profit geometry was not deterministically constructed.'
+            }
+        };
+    }
     const isWait = signal.decision === 'WAIT' || signal.trade_type === 'WAIT';
     const parseRR = value => {
         if (Number.isFinite(Number(value))) return Number(value);
@@ -12198,8 +12397,10 @@ function buildPublicTradeSignal(signal = {}) {
     const draw = signal.daily_bias?.liquidity_draw || signal.daily_bias?.target_type || signal.target_type || signal.primary_target_source;
     const liquiditySummary = signal.analysis?.liquidity || (draw ? `${draw}${signal.daily_bias?.target_level != null ? ' at ' + signal.daily_bias.target_level : ''}` : null);
     if (isWait) {
-        if (['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(signal.status)) {
-            const primary = signal.primary_opportunity || null;
+        if (['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY', 'WATCH'].includes(signal.status)) {
+            const primaryRaw = signal.primary_opportunity || null;
+            const primary = primaryRaw && [primaryRaw.entry_price ?? primaryRaw.entry, primaryRaw.stop_loss, primaryRaw.take_profit_1 ?? primaryRaw.tp1]
+                .every(value => Number.isFinite(Number(value))) ? primaryRaw : null;
             const watch = Array.isArray(signal.watch_setups) && signal.watch_setups.length ? signal.watch_setups[0] : null;
             const primaryConfidence = Number(primary?.confidence) > 0 ? Number(primary.confidence)
                 : Number(primary?.opportunity_quality?.deterministic_confidence) > 0 ? Number(primary.opportunity_quality.deterministic_confidence)
@@ -12257,6 +12458,10 @@ function buildPublicTradeSignal(signal = {}) {
             ].find(value => value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) > 0);
             const orderType = compactPrimary?.entry_price != null && compactPrimary?.direction
                 ? `${compactPrimary.direction}_LIMIT` : 'WAIT';
+            const watchOnly = !compactPrimary;
+            const publicConfidenceType = watchOnly ? 'LOCATION_CONFIDENCE' : (signal.confidence_type || 'EXECUTION_CONFIDENCE');
+            const publicLocationConfidence = Number(signal.location_confidence ?? plan?.confidence ?? signal.confidence);
+            const publicExecutionConfidence = watchOnly ? null : Number(signal.execution_confidence ?? plan?.confidence ?? signal.confidence);
             return {
                 date: signal.date,
                 pair: signal.pair,
@@ -12269,8 +12474,20 @@ function buildPublicTradeSignal(signal = {}) {
                 take_profit_1: compactPrimary?.take_profit_1 ?? null,
                 take_profit_2: compactPrimary?.take_profit_2 ?? null,
                 take_profit_3: compactPrimary?.take_profit_3 ?? null,
-                confidence: planConfidence === undefined ? 0 : Number(planConfidence),
-                status: signal.status === 'TRADE_READY' ? 'TRADE_READY' : 'TODAY_OPPORTUNITY',
+                confidence: watchOnly
+                    ? (Number.isFinite(publicLocationConfidence) ? publicLocationConfidence : 0)
+                    : (planConfidence === undefined ? 0 : Number(planConfidence)),
+                confidence_type: publicConfidenceType,
+                location_confidence: Number.isFinite(publicLocationConfidence) ? publicLocationConfidence : 0,
+                execution_confidence: Number.isFinite(publicExecutionConfidence) ? publicExecutionConfidence : null,
+                has_complete_execution_geometry: !watchOnly,
+                geometry_missing: watchOnly ? (signal.geometry_missing || getGeometryMissing(primaryRaw || signal)) : [],
+                hard_validation_passed: !watchOnly && signal.hard_validation_passed !== false,
+                authorization_state: watchOnly ? 'WATCH_ONLY' : (signal.authorization_state || 'TRADE_READY'),
+                selection_rank: signal.selection_rank ?? null,
+                // Preserve the legacy descriptive status for compatibility;
+                // status_code carries the normalized public state.
+                status: incompleteLocationClaim ? 'WATCH' : (signal.status || (watchOnly ? 'WATCH' : 'SETUP_READY')),
                 opportunity: plan ? {
                     id: plan.id,
                     direction: plan.direction,
@@ -12305,10 +12522,11 @@ function buildPublicTradeSignal(signal = {}) {
                 history_errors: signal.history_errors || {},
                 provider_metadata: signal.provider_metadata || null,
                 market_conditions: signal.market_conditions || null,
-                status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity, !!compactPrimary?.entry_price),
+                status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity || !!signal.primary_opportunity, !!compactPrimary?.entry_price),
                 execution_mode: signal.execution_mode || DEFAULT_EXECUTION_MODE,
                 risk_gate: publicRiskGate,
                 execution_allowed: false,
+                manual_tracking_allowed: !watchOnly && signal.manual_tracking_allowed === true,
                 market_open: signal.market_open ?? null
             };
         }
@@ -12367,6 +12585,7 @@ function buildPublicTradeSignal(signal = {}) {
         strategy,
         timeframe: signal.timeframe || signal.execution_timeframe || signal.setup_timeframe || null,
         entry: signal.entry ?? signal.entry_price,
+        entry_price: signal.entry ?? signal.entry_price,
         entry_zone: signal.entry_zone ? {
             low: signal.entry_zone.low,
             high: signal.entry_zone.high
@@ -12376,8 +12595,19 @@ function buildPublicTradeSignal(signal = {}) {
         tp1: signal.tp1 ?? signal.take_profit_1,
         tp2: signal.tp2 ?? signal.take_profit_2 ?? null,
         tp3: signal.tp3 ?? signal.take_profit_3 ?? null,
+        take_profit_1: signal.tp1 ?? signal.take_profit_1,
+        take_profit_2: signal.tp2 ?? signal.take_profit_2 ?? null,
+        take_profit_3: signal.tp3 ?? signal.take_profit_3 ?? null,
         rr_tp1: signal.rr_tp1 ?? parseRR(signal.risk_reward),
         confidence: signal.primary_opportunity?.confidence ?? signal.setup_confidence ?? signal.quality?.final_confidence ?? signal.adaptive_candidate?.quality?.final_confidence ?? signal.confidence ?? null,
+        authorization_state: signal.authorization_state || (publicDecision === 'WAIT' ? 'WATCH_ONLY' : 'TRADE_READY'),
+        confidence_type: signal.confidence_type || (publicDecision === 'WAIT' ? 'LOCATION_CONFIDENCE' : 'EXECUTION_CONFIDENCE'),
+        location_confidence: signal.location_confidence ?? null,
+        execution_confidence: signal.execution_confidence ?? (publicDecision === 'WAIT' ? null : signal.confidence ?? null),
+        has_complete_execution_geometry: signal.has_complete_execution_geometry ?? publicDecision !== 'WAIT',
+        geometry_missing: signal.geometry_missing || getGeometryMissing(signal),
+        hard_validation_passed: signal.hard_validation_passed ?? publicDecision !== 'WAIT',
+        selection_rank: signal.selection_rank ?? null,
         status: signal.status || signal.opportunity_status || signal.lifecycle_state || null,
         setup_state: signal.setup_state || (signal.status === 'TRADE_READY' ? 'TRADE_READY' : null),
         reason: signal.reason || (reasoning.primary ? { code: 'SETUP_CONTEXT', message: reasoning.primary } : null),

@@ -6018,4 +6018,101 @@ describe('AI market analyst contract', () => {
         });
         expect(lifecycle.rejection_code).not.toBe('SETUP_EXPIRED');
     });
+
+    describe('candidate authorization tiers and confidence provenance', () => {
+        const executable = (id, confidence) => ({
+            id, direction: 'SELL', zone_type: 'FLIP', timeframe: '1H',
+            entry: 1.1482, stop_loss: 1.1502, tp1: 1.1432,
+            actual_rr: 2.5, rr_tp1: 2.5, minimum_rr: 2.5,
+            execution_geometry_valid: true, hard_validation_passed: true,
+            execution_confidence: confidence, score: confidence,
+            target_reachability: { reachability_score: 80 }, confluence_score: 5
+        });
+
+        it('keeps a high-confidence location without geometry as WATCH_ONLY', () => {
+            const ctx = getContext();
+            const classified = ctx.classifyCandidateAuthorization({
+                id: 'FLIP-1', direction: 'SELL', location_confidence: 78,
+                entry: null, stop_loss: null, tp1: 4351.75
+            });
+            expect(classified.authorization_state).toBe('WATCH_ONLY');
+            expect(classified.confidence_type).toBe('LOCATION_CONFIDENCE');
+            expect(classified.geometry_missing).toEqual(['entry', 'stop_loss', 'risk_reward']);
+            expect(classified.execution_allowed).not.toBe(true);
+        });
+
+        it('does not render a location-only limit claim as a limit order', () => {
+            const ctx = getContext();
+            const result = ctx.buildPublicTradeSignal({
+                pair: 'XAU/USD', current_price: 4352.72, decision: 'SELL_LIMIT',
+                trade_type: 'SELL_LIMIT', confidence: 78, strategy: 'ICT · FLIP',
+                entry_price: null, stop_loss: null, take_profit_1: 4351.75,
+                status: 'TODAY_OPPORTUNITY', market_open: true
+            });
+            expect(result.decision).toBe('WAIT');
+            expect(result.trade_type).toBe('WAIT');
+            expect(result.status).toBe('WATCH');
+            expect(result.status_code).toBe('WATCH');
+            expect(result.authorization_state).toBe('WATCH_ONLY');
+            expect(result.entry_price).toBeNull();
+            expect(result.stop_loss).toBeNull();
+            expect(result.take_profit_1).toBeNull();
+        });
+
+        it('keeps a complete 58% candidate as SECONDARY_CANDIDATE', () => {
+            const ctx = getContext();
+            const result = ctx.classifyCandidateAuthorization(executable('C-58', 58));
+            expect(result.authorization_state).toBe('SECONDARY_CANDIDATE');
+            expect(result.confidence_type).toBe('EXECUTION_CONFIDENCE');
+            expect(result.has_complete_execution_geometry).toBe(true);
+            expect(result.geometry_missing).toEqual([]);
+        });
+
+        it('publishes a complete secondary candidate with executable geometry intact', () => {
+            const ctx = getContext();
+            const result = ctx.buildPublicTradeSignal({
+                pair: 'EUR/USD', current_price: 1.15, decision: 'SELL_LIMIT', trade_type: 'SELL_LIMIT',
+                status: 'TRADE_READY', authorization_state: 'SECONDARY_CANDIDATE',
+                confidence: 58, confidence_type: 'EXECUTION_CONFIDENCE', execution_confidence: 58,
+                entry_price: 1.1482, stop_loss: 1.1502, take_profit_1: 1.1432,
+                manual_tracking_allowed: true, execution_allowed: false, market_open: true
+            });
+            expect(result.status_code).toBe('SETUP_READY');
+            expect(result.authorization_state).toBe('SECONDARY_CANDIDATE');
+            expect(result.confidence_type).toBe('EXECUTION_CONFIDENCE');
+            expect(result.entry_price).toBe(1.1482);
+            expect(result.stop_loss).toBe(1.1502);
+        });
+
+        it('ranks a complete 70% candidate above a complete 58% candidate', () => {
+            const ctx = getContext();
+            const selected = ctx.selectBestExecutableCandidate([executable('C-58', 58), executable('C-70', 70)]);
+            expect(selected.id).toBe('C-70');
+            expect(selected.authorization_state).toBe('TRADE_READY');
+        });
+
+        it('ranks a complete 58% candidate above an incomplete 78% location', () => {
+            const ctx = getContext();
+            const selected = ctx.selectBestExecutableCandidate([
+                executable('C-58', 58),
+                { id: 'LOCATION-78', direction: 'SELL', location_confidence: 78, entry: null, stop_loss: null, tp1: 1.14 }
+            ]);
+            expect(selected.id).toBe('C-58');
+        });
+
+        it('requires TP1, stop-loss, and RR for executable geometry', () => {
+            const ctx = getContext();
+            expect(ctx.hasCompleteExecutionGeometry({ entry: 1, stop_loss: 0.9, minimum_rr: 2.5, actual_rr: 3, execution_geometry_valid: true })).toBe(false);
+            expect(ctx.hasCompleteExecutionGeometry({ entry: 1, tp1: 1.1, minimum_rr: 2.5, actual_rr: 3, execution_geometry_valid: true })).toBe(false);
+            expect(ctx.hasCompleteExecutionGeometry({ entry: 1, stop_loss: 0.9, tp1: 1.1, minimum_rr: 2.5, actual_rr: 2, execution_geometry_valid: true })).toBe(false);
+        });
+
+        it('uses execution confidence only for complete geometry', () => {
+            const ctx = getContext();
+            expect(ctx.getCandidateConfidenceType({ has_complete_execution_geometry: true })).toBe('EXECUTION_CONFIDENCE');
+            expect(ctx.getCandidateConfidenceType({ has_complete_execution_geometry: false })).toBe('LOCATION_CONFIDENCE');
+            expect(ctx.getCanonicalCandidateConfidence({ has_complete_execution_geometry: true, execution_confidence: 61, location_confidence: 95 })).toBe(61);
+            expect(ctx.getCanonicalCandidateConfidence({ has_complete_execution_geometry: false, location_confidence: 78, execution_confidence: 20 })).toBe(78);
+        });
+    });
 });
