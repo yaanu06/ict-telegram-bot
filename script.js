@@ -8176,7 +8176,13 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             && Number.isFinite(Number(pendingGeometry.tp1))
             && Number.isFinite(Number(pendingGeometry.rr))
             && Number(pendingGeometry.rr) >= pendingMinimumRR;
-        if (pendingGeometryValid && higherTimeframeAligned) {
+        const pendingExecutionConfidence = pendingGeometryValid
+            ? Number(opportunityQuality.deterministic_confidence)
+            : 0;
+        const pendingPlanExecutable = pendingGeometryValid
+            && higherTimeframeAligned
+            && pendingExecutionConfidence >= MIN_EXECUTABLE_CONFIDENCE;
+        if (pendingPlanExecutable) {
             // A confirmed higher-timeframe location can be stalked with a
             // pending limit even when the execution timeframe is mixed. The
             // limit remains subject to the derived stop, target, RR, and
@@ -8192,7 +8198,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         plans.push({ state: 'TODAY_OPPORTUNITY', trade_context_classification: topDown.classification, top_down_context: topDown, bias: setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH', strategy: setup.label || setup.primary, direction: setup.direction,
             narrative_id: setup.id || null, execution_zone_id: zone?.id || null, source: setup.ai_verified ? 'VERIFIED_AI_HYPOTHESIS' : 'DETERMINISTIC_NARRATIVE',
             ai_supported: !!setup.ai_verified || !!aiHypothesis, deterministic_supported: true, area_of_interest: { low: Number(planArea.low), high: Number(planArea.high), source, timeframe: planArea.timeframe || executionTimeframe, zone_id: planArea.id || null },
-            execution_model: pendingGeometryValid && higherTimeframeAligned ? 'PENDING_LIMIT' : plan.execution_model, activation_conditions: !zone
+            execution_model: pendingPlanExecutable ? 'PENDING_LIMIT' : plan.execution_model, activation_conditions: !zone
                 ? ['A deterministic execution zone must form inside the validated location before exact geometry can be constructed']
                 : plan.execution_model === 'PENDING_LIMIT'
                 ? (inside ? ['Price is at the deterministic limit area; the order fills on touch at its limit price'] : ['Price retraces into the deterministic limit area; no confirmation is required after touch'])
@@ -8216,7 +8222,11 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
                 ? opportunityQuality.deterministic_confidence
                 : (Number(setup.setup_confidence) > 0 && Number.isFinite(Number(setup.setup_confidence))
                     ? Number(setup.setup_confidence) : opportunityQuality.deterministic_confidence),
-            opportunity_quality: opportunityQuality, watch_only: opportunityQuality.watch_only });
+            // A developing confirmation narrative may remain authorized to
+            // watch before geometry exists. Once geometry is built, however,
+            // its confidence floor must be met before it can be executable.
+            opportunity_quality: opportunityQuality,
+            watch_only: pendingGeometryValid ? !pendingPlanExecutable : opportunityQuality.watch_only });
         if (!currentSetupIds.has(setup.id || setup.primary)) state.fresh_current_market_opportunities.push(setup.id || setup.primary);
     }
     const primaryPlans = plans.filter(plan => !plan.watch_only);
