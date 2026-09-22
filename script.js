@@ -12949,28 +12949,47 @@ function normalizePublicReadySignal(signal = {}) {
     if (!['BUY_LIMIT', 'SELL_LIMIT'].includes(decision)) return signal;
     const entry = signal.entry ?? signal.entry_price;
     const tp1 = signal.tp1 ?? signal.take_profit_1;
+    if (![entry, signal.stop_loss, tp1].every(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)))) return signal;
     const zone = signal.entry_zone || signal.zone || {};
     const direction = decision === 'BUY_LIMIT' ? 'BUY' : 'SELL';
+    const metadata = signal.symbol_metadata || getSymbolMetadata(signal.pair);
+    const directNormalized = {
+        entry: normalizeTradePrice(entry, signal.pair, metadata, direction, 'entry'),
+        stop_loss: normalizeTradePrice(signal.stop_loss, signal.pair, metadata, direction, 'stop_loss'),
+        tp1: normalizeTradePrice(tp1, signal.pair, metadata, direction, 'take_profit_1'),
+        tp2: signal.tp2 ?? signal.take_profit_2,
+        tp3: signal.tp3 ?? signal.take_profit_3
+    };
+    if (Number.isFinite(Number(directNormalized.tp2))) directNormalized.tp2 = normalizeTradePrice(directNormalized.tp2, signal.pair, metadata, direction, 'take_profit_2');
+    if (Number.isFinite(Number(directNormalized.tp3))) directNormalized.tp3 = normalizeTradePrice(directNormalized.tp3, signal.pair, metadata, direction, 'take_profit_3');
     const normalized = normalizeAndValidateCandidate({
         direction,
-        entry,
-        stop_loss: signal.stop_loss,
-        tp1,
-        tp2: signal.tp2 ?? signal.take_profit_2,
-        tp3: signal.tp3 ?? signal.take_profit_3,
+        entry: directNormalized.entry,
+        stop_loss: directNormalized.stop_loss,
+        tp1: directNormalized.tp1,
+        tp2: directNormalized.tp2,
+        tp3: directNormalized.tp3,
         entry_region_low: zone.low,
         entry_region_high: zone.high,
         structural_invalidation: signal.structural_invalidation,
         timeframe: signal.execution_timeframe || signal.timeframe
     }, {
         pair: signal.pair,
-        symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
+        symbol_metadata: metadata,
         risk_constraints: signal.risk_constraints,
         bid: signal.market_conditions?.bid,
         ask: signal.market_conditions?.ask
     });
-    if (!normalized.valid) return signal;
-    const c = normalized.candidate;
+    const c = normalized.valid ? normalized.candidate : {
+        entry: directNormalized.entry,
+        stop_loss: directNormalized.stop_loss,
+        tp1: directNormalized.tp1,
+        tp2: directNormalized.tp2 ?? null,
+        tp3: directNormalized.tp3 ?? null,
+        entry_region_low: Number.isFinite(Number(zone.low)) && Number.isFinite(Number(zone.high)) ? normalizeZoneBounds(zone.low, zone.high, signal.pair, metadata)?.low : zone.low,
+        entry_region_high: Number.isFinite(Number(zone.low)) && Number.isFinite(Number(zone.high)) ? normalizeZoneBounds(zone.low, zone.high, signal.pair, metadata)?.high : zone.high,
+        actual_rr: null
+    };
     return {
         ...signal,
         decision,
@@ -12986,7 +13005,7 @@ function normalizePublicReadySignal(signal = {}) {
         take_profit_2: c.tp2 ?? null,
         take_profit_3: c.tp3 ?? null,
         rr_tp1: c.actual_rr,
-        risk_reward: `1:${Number(c.actual_rr).toFixed(2)}`
+        risk_reward: Number.isFinite(Number(c.actual_rr)) ? `1:${Number(c.actual_rr).toFixed(2)}` : signal.risk_reward
     };
 }
 
