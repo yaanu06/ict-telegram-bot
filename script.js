@@ -6472,8 +6472,14 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.order_type = confirmationEntry ? 'MARKET_AFTER_CONFIRMATION' : 'LIMIT';
     aiResult.setup_type = confirmationEntry ? 'CONFIRMATION_ENTRY' : 'PENDING_LIMIT';
     aiResult.ai_decision = confirmationEntry ? 'enter_after_confirmation' : 'pending_limit';
-    aiResult.selected_zone = { type: candidate.zone_type, timeframe: candidate.timeframe, low: candidate.zone_low, high: candidate.zone_high };
-    aiResult.entry_zone = { source: candidate.zone_type, low: candidate.zone_low, high: candidate.zone_high };
+    // Candidates can carry the same deterministic zone under different
+    // fields depending on whether they came from FVG/OB/CRT/MSNR discovery.
+    // Always project one complete public zone so a valid limit is not
+    // rejected as "ready entry zone is invalid".
+    const zoneLow = candidate.zone_low ?? candidate.entry_region_low ?? candidate.entry_zone?.low ?? candidate.execution_zone?.low;
+    const zoneHigh = candidate.zone_high ?? candidate.entry_region_high ?? candidate.entry_zone?.high ?? candidate.execution_zone?.high;
+    aiResult.selected_zone = { type: candidate.zone_type, timeframe: candidate.timeframe || candidate.execution_timeframe, low: zoneLow, high: zoneHigh };
+    aiResult.entry_zone = { source: candidate.zone_type, low: zoneLow, high: zoneHigh };
     aiResult.entry = candidate.entry;
     aiResult.stop_loss = candidate.stop_loss;
     aiResult.stop_loss_reason = candidate.stop_reason;

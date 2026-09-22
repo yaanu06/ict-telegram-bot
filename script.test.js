@@ -968,6 +968,18 @@ describe('daily opportunity planning', () => {
         expect(result.ai_decision).toBe('pending_limit');
     });
 
+    it('projects fallback execution-zone bounds into the public entry zone', () => {
+        const ctx = getContext();
+        const candidate = { id: 'fallback-zone-bounds', direction: 'SELL', entry: 4321.6, stop_loss: 4336.4, tp1: 4283.9,
+            actual_rr: 2.5, minimum_rr: 2.5, rr_tp1: 2.5, execution_geometry_valid: true, hard_validation_passed: true,
+            execution_model: 'PENDING_LIMIT', zone_type: 'FVG', entry_region_low: 4320, entry_region_high: 4323,
+            quality: { final_confidence: 72 } };
+        const result = ctx.applyAdaptiveCandidateToAIResult({ selected_candidate_id: candidate.id }, { adaptive_setup_candidates: [candidate] });
+        expect(result.entry_zone).toMatchObject({ low: 4320, high: 4323 });
+        expect(ctx.validatePublicTradeSignal({ pair: 'XAU/USD', decision: 'SELL_LIMIT', status_code: 'SETUP_READY', current_price: 4301.28,
+            entry: result.entry, entry_zone: result.entry_zone, stop_loss: result.stop_loss, tp1: result.take_profit_1 }).valid).toBe(true);
+    });
+
     it('preserves a deterministic candidate when the selector returns WAIT', () => {
         const ctx = getContext();
         const candidate = { id: 'selector-wait-limit', direction: 'SELL', entry: 4321.6, stop_loss: 4336.4, tp1: 4283.9, rr_tp1: 2.5, actual_rr: 2.5, minimum_rr: 2.5,
