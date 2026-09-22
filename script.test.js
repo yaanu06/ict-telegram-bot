@@ -6097,10 +6097,10 @@ describe('AI market analyst contract', () => {
             expect(result.geometry_missing).toEqual([]);
         });
 
-        it('keeps a complete low-confidence candidate visible for manual choice', () => {
+        it('does not present a complete but weak candidate as a trade', () => {
             const ctx = getContext();
             const result = ctx.classifyCandidateAuthorization(executable('C-18', 18));
-            expect(result.authorization_state).toBe('SECONDARY_CANDIDATE');
+            expect(result.authorization_state).toBe('WATCH_ONLY');
             expect(result.confidence_type).toBe('EXECUTION_CONFIDENCE');
             expect(result.has_complete_execution_geometry).toBe(true);
         });
