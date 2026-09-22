@@ -954,6 +954,31 @@ describe('daily opportunity planning', () => {
         expect(result.decision).toBe('BUY');
     });
 
+    it('converts complete continuation confirmation geometry into a pending limit', () => {
+        const ctx = getContext();
+        const candidate = { id: 'continuation-limit', direction: 'SELL', entry: 4321.6, stop_loss: 4336.4, tp1: 4283.9, rr_tp1: 2.5, actual_rr: 2.5, minimum_rr: 2.5,
+            entry_zone: { low: 4320, high: 4323 }, execution_model: 'CONFIRMATION_ENTRY', entry_model: 'CONFIRMATION_ENTRY',
+            trade_context_classification: 'HTF_ALIGNED_CONTINUATION', htf_alignment: 2, execution_geometry_valid: true,
+            hard_validation_passed: true, strategy_setup: { primary: 'CRT+MSNR' }, quality: { final_confidence: 72 },
+            target_map: [{ target_level: 4283.9, primary_target_source: 'SELL_SIDE_LIQUIDITY' }] };
+        const result = ctx.applyAdaptiveCandidateToAIResult({ selected_candidate_id: candidate.id }, { adaptive_setup_candidates: [candidate] });
+        expect(result.decision).toBe('SELL_LIMIT');
+        expect(result.order_type).toBe('LIMIT');
+        expect(result.setup_type).toBe('PENDING_LIMIT');
+        expect(result.ai_decision).toBe('pending_limit');
+    });
+
+    it('preserves a deterministic candidate when the selector returns WAIT', () => {
+        const ctx = getContext();
+        const candidate = { id: 'selector-wait-limit', direction: 'SELL', entry: 4321.6, stop_loss: 4336.4, tp1: 4283.9, rr_tp1: 2.5, actual_rr: 2.5, minimum_rr: 2.5,
+            entry_zone: { low: 4320, high: 4323 }, execution_model: 'PENDING_LIMIT', entry_model: 'PENDING_LIMIT',
+            trade_context_classification: 'HTF_ALIGNED_CONTINUATION', htf_alignment: 2, execution_geometry_valid: true,
+            hard_validation_passed: true, quality: { final_confidence: 72 } };
+        const selected = ctx.resolveDeterministicSelectorCandidate([candidate], null);
+        expect(selected.id).toBe(candidate.id);
+        expect(ctx.applyAdaptiveCandidateToAIResult({ selected_candidate_id: selected.id }, { adaptive_setup_candidates: [candidate] }).decision).toBe('SELL_LIMIT');
+    });
+
     it('adds a closed previous-day high and low as deterministic liquidity targets', () => {
         const ctx = getContext();
         const day = t => ({ t, o: 100, h: 110, l: 90, c: 105, is_closed: true });

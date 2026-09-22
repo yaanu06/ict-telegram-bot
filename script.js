@@ -6445,7 +6445,29 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
         .filter(Boolean)
         .flatMap(value => value.split('+').map(part => part.trim()).filter(Boolean));
     aiResult.strategy_label = [...new Set(strategyParts)].join('+') || candidate.zone_type || null;
-    const confirmationEntry = String(candidate.execution_model || candidate.entry_model || '').toUpperCase() === 'CONFIRMATION_ENTRY';
+    const explicitConfirmationEntry = String(candidate.execution_model || candidate.entry_model || '').toUpperCase() === 'CONFIRMATION_ENTRY';
+    const verifiedReversal = candidate.trade_context_classification === 'HTF_VERIFIED_REVERSAL'
+        || candidate.top_down_context?.classification === 'HTF_VERIFIED_REVERSAL';
+    const explicitConfirmationRequired = candidate.requires_confirmation === true
+        || candidate.strategy_setup?.requires_confirmation === true
+        || candidate.opportunity_thesis?.requires_confirmation === true;
+    const completeDeterministicGeometry = hasCompleteExecutionGeometry({
+        ...candidate,
+        actual_rr: candidate.actual_rr ?? candidate.rr_tp1
+    }) && candidate.execution_geometry_valid !== false
+        && candidate.hard_validation_passed !== false;
+    // A confirmation label can be inherited from a local strategy narrative.
+    // Once the deterministic engine has a complete, validated continuation
+    // limit, do not turn it into a market-after-confirmation instruction.
+    // Verified reversals and explicitly confirmation-only setups retain the
+    // confirmation workflow.
+    const continuationLimit = explicitConfirmationEntry
+        && completeDeterministicGeometry
+        && !verifiedReversal
+        && !explicitConfirmationRequired
+        && (candidate.trade_context_classification === 'HTF_ALIGNED_CONTINUATION'
+            || Number(candidate.htf_alignment) >= 2);
+    const confirmationEntry = explicitConfirmationEntry && !continuationLimit;
     aiResult.decision = confirmationEntry ? candidate.direction : (candidate.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT');
     aiResult.order_type = confirmationEntry ? 'MARKET_AFTER_CONFIRMATION' : 'LIMIT';
     aiResult.setup_type = confirmationEntry ? 'CONFIRMATION_ENTRY' : 'PENDING_LIMIT';
@@ -9813,12 +9835,24 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
                 return { ...noTradeAfterInvalidAI(reason), schema_validation: { ...selectorContract, attempts: retryCount + 1 } };
             }
             const selectedId = typeof selector.selected_candidate_id === 'string' ? selector.selected_candidate_id : null;
-            if (!selectedId || ['WAIT', 'NO_TRADE'].includes(String(selector.decision || '').toUpperCase())) {
-                return { decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
-                    reasoning: typeof selector.reasoning === 'object' ? selector.reasoning : { primary: selector.reasoning || 'No deterministic candidate selected' },
-                    ai_decision: 'skip', noTrade: true, wait_condition: selector.reasoning || 'No deterministic candidate selected' };
+            // DeepSeek may explain why it dislikes a setup, but it cannot
+            // veto a complete deterministic limit candidate. A selector WAIT
+            // used to discard the candidate and route the scan into WATCH,
+            // even though the engine had already proved the geometry.
+            const selectorWait = !selectedId || ['WAIT', 'NO_TRADE'].includes(String(selector.decision || '').toUpperCase());
+            const deterministicCandidate = resolveDeterministicSelectorCandidate(
+                liveMarketContext.adaptive_setup_candidates,
+                selectorWait ? null : selectedId
+            );
+            if (selectorWait && deterministicCandidate?.id) {
+                const selected = applyAdaptiveCandidateToAIResult({
+                    selected_candidate_id: deterministicCandidate.id,
+                    reasoning: { primary: 'Deterministic candidate preserved after selector WAIT.' }
+                }, liveMarketContext);
+                selected.ai_requested_candidate_id = selectedId;
+                selected.ai_decision = 'deterministic_candidate_preserved';
+                return selected;
             }
-            const deterministicCandidate = resolveDeterministicSelectorCandidate(liveMarketContext.adaptive_setup_candidates, selectedId);
             if (!deterministicCandidate?.id) {
                 const unknownCandidate = !liveMarketContext.adaptive_setup_candidates.some(candidate => candidate?.id === selectedId);
                 const waitCondition = unknownCandidate
