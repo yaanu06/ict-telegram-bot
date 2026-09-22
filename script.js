@@ -8002,6 +8002,7 @@ function compactAiDiagnostics(analysis = null) {
         hypotheses_rejected: Number(analysis.hypotheses_rejected) || 0,
         final_selector_called: analysis.final_selector_called === true,
         selected_candidate_id: analysis.selected_candidate_id || null,
+        selector_fallback: analysis.selector_fallback === true,
         setups_added_from_ai: Number(analysis.setups_added_from_ai) || 0,
         error: analysis.error || null
     };
@@ -9878,11 +9879,12 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
                     ? 'AI selected unknown deterministic candidate'
                     : 'No fully validated candidate met the executable confidence floor';
                 return { decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
-                    reasoning: { primary: waitCondition }, ai_decision: 'skip', noTrade: true, wait_condition: waitCondition };
+                    reasoning: { primary: waitCondition }, ai_decision: 'skip', noTrade: true,
+                    ai_error: unknownCandidate ? waitCondition : null, wait_condition: waitCondition };
             }
             const selected = applyAdaptiveCandidateToAIResult({ selected_candidate_id: deterministicCandidate.id, reasoning: selector.reasoning }, liveMarketContext);
             selected.ai_requested_candidate_id = selectedId;
-            if (selected.unknown_deterministic_candidate) return { decision: 'WAIT', direction: 'WAIT', selected_candidate_id: selectedId, confidence: 0, reasoning: { primary: 'AI selected unknown deterministic candidate' }, ai_decision: 'skip', noTrade: true, wait_condition: 'AI selected unknown deterministic candidate' };
+            if (selected.unknown_deterministic_candidate) return { decision: 'WAIT', direction: 'WAIT', selected_candidate_id: selectedId, confidence: 0, reasoning: { primary: 'AI selected unknown deterministic candidate' }, ai_decision: 'skip', noTrade: true, ai_error: 'AI selected unknown deterministic candidate', wait_condition: 'AI selected unknown deterministic candidate' };
             const deterministicConfidence = getDeterministicCandidateConfidence(selected.adaptive_candidate);
             selected.confidence = Number.isFinite(deterministicConfidence) ? deterministicConfidence : null;
             selected.quality = selected.adaptive_candidate.quality;
@@ -9904,6 +9906,7 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
                 reasoning: { primary: 'AI selected unknown deterministic candidate' },
                 ai_decision: 'skip',
                 wait_condition: 'AI selected unknown deterministic candidate',
+                ai_error: 'AI selected unknown deterministic candidate',
                 noTrade: true
             };
         }
@@ -11126,6 +11129,13 @@ async function runAutoScan() {
         scanText.innerHTML = '🤖 AI analyzing live market context...';
         scanStage = 'DeepSeek request';
         const aiResult = await askAIToFindSetup(aiPrompt.user, price, aiPrompt.system, liveMarketContext);
+        if (aiResult?.ai_error) {
+            liveMarketContext.ai_analysis.error = aiResult.ai_error;
+            liveMarketContext.ai_analysis.selector_fallback = true;
+        }
+        if (aiResult?.schema_validation && aiResult.schema_validation.valid === false) {
+            liveMarketContext.ai_analysis.schema_validation = aiResult.schema_validation;
+        }
         liveMarketContext.ai_analysis.selected_candidate_id = aiResult?.selected_candidate_id || null;
         liveMarketContext.today_opportunity.ai_analysis = compactAiDiagnostics(liveMarketContext.ai_analysis);
         if (!aiResult) {
