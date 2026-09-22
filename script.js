@@ -12907,6 +12907,9 @@ function getTradeSummaryModel(signal = {}) {
         || 'No current setup analysis.';
     const setupType = setup.strategy || signal.analysis?.type || signal.strategy || location.source || '—';
     const source = location.source || location.type;
+    const displayTp1 = watchOnly ? null : tp1Value;
+    const displayTp2 = watchOnly ? null : (signal.tp2 ?? signal.take_profit_2 ?? setup.take_profit_2 ?? setup.tp2);
+    const displayTp3 = watchOnly ? null : (signal.tp3 ?? signal.take_profit_3 ?? setup.take_profit_3 ?? setup.tp3);
     return {
         bot: 'ICT Trading Bot Pro',
         date: signal.date || '—',
@@ -12916,9 +12919,9 @@ function getTradeSummaryModel(signal = {}) {
         confidence: candidateConfidence === undefined ? '0%' : `${Math.round(Number(candidateConfidence))}%`,
         entry: price(entryValue),
         stopLoss: price(stopValue),
-        tp1: price(tp1Value),
-        tp2: price(signal.tp2 ?? signal.take_profit_2 ?? setup.take_profit_2 ?? setup.tp2),
-        tp3: price(signal.tp3 ?? signal.take_profit_3 ?? setup.take_profit_3 ?? setup.tp3),
+        tp1: price(displayTp1),
+        tp2: price(displayTp2),
+        tp3: price(displayTp3),
         analysis: analysisText,
         trend: trendText || '—',
         volatility: signal.analysis?.volatility_level || signal.analysis?.volatility?.regime || (typeof signal.analysis?.volatility === 'string' ? signal.analysis.volatility : null) || signal.volatility_level || signal.volatility?.regime || '—',

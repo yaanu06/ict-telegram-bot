@@ -6070,6 +6070,7 @@ describe('AI market analyst contract', () => {
             expect(model.tradeType).toBe('WAIT');
             expect(model.entry).not.toMatch(/[0-9]/);
             expect(model.stopLoss).not.toMatch(/[0-9]/);
+            expect(model.tp1).not.toMatch(/[0-9]/);
         });
 
         it('keeps a complete 58% candidate as SECONDARY_CANDIDATE', () => {
