@@ -6073,6 +6073,21 @@ describe('AI market analyst contract', () => {
             expect(model.tp1).not.toMatch(/[0-9]/);
         });
 
+        it('converts a complete but WATCH-only limit claim into WAIT', () => {
+            const ctx = getContext();
+            const result = ctx.buildPublicTradeSignal({
+                pair: 'XAU/USD', current_price: 4318.94, decision: 'SELL_LIMIT', trade_type: 'SELL_LIMIT',
+                status: 'WATCH', authorization_state: 'WATCH_ONLY', confidence: 28,
+                entry_price: 4320, stop_loss: 4336.5, take_profit_1: 4264.9,
+                entry_zone: { low: 4319.5, high: 4320.5 }, strategy: 'CRT+FVG'
+            });
+            expect(result.decision).toBe('WAIT');
+            expect(result.trade_type).toBe('WAIT');
+            expect(result.entry_price).toBeNull();
+            expect(result.take_profit_1).toBeNull();
+            expect(result.status_code).toBe('WATCH');
+        });
+
         it('does not display complete geometry when public validation rejected the setup', () => {
             const ctx = getContext();
             const model = ctx.getTradeSummaryModel({

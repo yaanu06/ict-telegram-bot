@@ -6232,7 +6232,9 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     setup_archetype: archetype.setup_archetype,
                     reversal_evidence: archetype.reversal_evidence,
                     strategy_setup: strategySetup || rawCandidate.strategy_setup || null,
-                    strategy_label: strategySetup?.label || rawCandidate.strategy_label || zone.type,
+                    strategy_label: [...new Set([strategySetup?.label, strategySetup?.primary, rawCandidate.strategy_label, zone.type]
+                        .filter(Boolean)
+                        .flatMap(value => String(value).split('+').map(part => part.trim()).filter(Boolean)))].join('+') || zone.type,
                     tp1: targets.tp1.level,
                     minimum_rr: minimumRR,
                     tp2: targets.tp2 ? targets.tp2.level : null,
@@ -6421,6 +6423,11 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
         console.log('AI numeric override ignored', { selected_candidate_id: id, fields: numericOverrideFields.map(([field]) => field) });
     }
     aiResult.direction = candidate.direction;
+    const strategyParts = [candidate.strategy_setup?.label, candidate.strategy_setup?.primary, candidate.strategy_label, candidate.zone_type]
+        .map(value => String(value || '').trim())
+        .filter(Boolean)
+        .flatMap(value => value.split('+').map(part => part.trim()).filter(Boolean));
+    aiResult.strategy_label = [...new Set(strategyParts)].join('+') || candidate.zone_type || null;
     const confirmationEntry = String(candidate.execution_model || candidate.entry_model || '').toUpperCase() === 'CONFIRMATION_ENTRY';
     aiResult.decision = confirmationEntry ? candidate.direction : (candidate.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT');
     aiResult.order_type = confirmationEntry ? 'MARKET_AFTER_CONFIRMATION' : 'LIMIT';
@@ -12458,7 +12465,8 @@ function buildPublicTradeSignal(signal = {}) {
     const requestedLimit = ['BUY_LIMIT', 'SELL_LIMIT'].includes(String(signal.decision || signal.trade_type || '').toUpperCase());
     const requestedGeometry = [signal.entry ?? signal.entry_price, signal.stop_loss, signal.tp1 ?? signal.take_profit_1]
         .every(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
-    const incompleteLocationClaim = requestedLimit && !requestedGeometry;
+    const weakLocationClaim = requestedLimit && (signal.authorization_state === 'WATCH_ONLY' || signal.status === 'WATCH');
+    const incompleteLocationClaim = requestedLimit && (!requestedGeometry || weakLocationClaim);
     if (incompleteLocationClaim) {
         const locationConfidence = Number(signal.location_confidence ?? signal.confidence);
         signal = {
@@ -12475,6 +12483,8 @@ function buildPublicTradeSignal(signal = {}) {
             hard_validation_passed: false,
             execution_allowed: false,
             manual_tracking_allowed: false,
+            primary_opportunity: null,
+            active_setups: [],
             entry: null,
             entry_price: null,
             stop_loss: null,
