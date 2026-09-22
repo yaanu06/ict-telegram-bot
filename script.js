@@ -141,7 +141,11 @@ const SELL_INVALIDATION_FACTOR = 1.002;
 // CHoCH/BOS/compression/ADX are confluence SCORING factors — no hard-block is removed, thresholds tuned.
 const MIN_CONFIDENCE = 58;
 const PRIMARY_CONFIDENCE_THRESHOLD = MIN_CONFIDENCE;
-const MIN_EXECUTABLE_CONFIDENCE = 50;
+// Confidence ranks deterministic candidates; it must not hide a complete
+// manual-review limit setup. Hard geometry, data, lifecycle, and RR rules
+// remain the only execution gates. A zero floor keeps confidence descriptive
+// even when the user chooses whether to take the trade manually.
+const MIN_EXECUTABLE_CONFIDENCE = 0;
 const MAX_ZONE_TOUCHES = 10;
 const LIMIT_ORDER_EXPIRY_HOURS = 4;
 const ZONE_PROXIMITY_ALERT_PCT = 0.3;

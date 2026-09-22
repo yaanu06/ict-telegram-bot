@@ -6097,6 +6097,14 @@ describe('AI market analyst contract', () => {
             expect(result.geometry_missing).toEqual([]);
         });
 
+        it('keeps a complete low-confidence candidate visible for manual choice', () => {
+            const ctx = getContext();
+            const result = ctx.classifyCandidateAuthorization(executable('C-18', 18));
+            expect(result.authorization_state).toBe('SECONDARY_CANDIDATE');
+            expect(result.confidence_type).toBe('EXECUTION_CONFIDENCE');
+            expect(result.has_complete_execution_geometry).toBe(true);
+        });
+
         it('publishes a complete secondary candidate with executable geometry intact', () => {
             const ctx = getContext();
             const result = ctx.buildPublicTradeSignal({
