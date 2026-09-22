@@ -6234,12 +6234,44 @@ describe('AI market analyst contract', () => {
             expect(result.geometry_missing).toEqual([]);
         });
 
-        it('does not present a complete but weak candidate as a trade', () => {
+        it('keeps complete geometry visible below the executable confidence floor', () => {
             const ctx = getContext();
             const result = ctx.classifyCandidateAuthorization(executable('C-18', 18));
-            expect(result.authorization_state).toBe('WATCH_ONLY');
+            expect(result.authorization_state).toBe('SECONDARY_CANDIDATE');
             expect(result.confidence_type).toBe('EXECUTION_CONFIDENCE');
             expect(result.has_complete_execution_geometry).toBe(true);
+        });
+
+        it('publishes a complete 37% candidate without changing its confidence', () => {
+            const ctx = getContext();
+            const result = ctx.buildPublicTradeSignal({
+                pair: 'XAU/USD', current_price: 4317.74, decision: 'SELL_LIMIT', trade_type: 'SELL_LIMIT',
+                status: 'TRADE_READY', status_code: 'SETUP_READY', authorization_state: 'SECONDARY_CANDIDATE',
+                confidence: 37, confidence_type: 'EXECUTION_CONFIDENCE', execution_confidence: 37,
+                entry_price: 4330, stop_loss: 4340, take_profit_1: 4290,
+                manual_tracking_allowed: true, execution_allowed: false, market_open: true
+            });
+            expect(result.decision).toBe('SELL_LIMIT');
+            expect(result.status_code).toBe('SETUP_READY');
+            expect(result.authorization_state).toBe('SECONDARY_CANDIDATE');
+            expect(result.confidence).toBe(37);
+            expect(result.entry_price).toBe(4330);
+            expect(result.stop_loss).toBe(4340);
+            expect(result.take_profit_1).toBe(4290);
+            expect(result.execution_allowed).toBe(false);
+        });
+
+        it('keeps the strategy label separate from an OB location', () => {
+            const ctx = getContext();
+            const result = ctx.buildPublicTradeSignal({
+                pair: 'XAU/USD', current_price: 4317.74, decision: 'SELL_LIMIT', trade_type: 'SELL_LIMIT',
+                status: 'TRADE_READY', status_code: 'SETUP_READY', authorization_state: 'SECONDARY_CANDIDATE',
+                confidence: 37, strategy: 'CRT+TBS', zone_type: 'OB',
+                entry_price: 4330, stop_loss: 4340, take_profit_1: 4290,
+                entry_zone: { low: 4328, high: 4332, source: 'OB' }, execution_allowed: false
+            });
+            expect(result.strategy).toBe('CRT+TBS');
+            expect(result.analysis.type).toBe('CRT+TBS');
         });
 
         it('uses execution confidence instead of location confidence for a complete pending plan', () => {

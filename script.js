@@ -141,14 +141,10 @@ const SELL_INVALIDATION_FACTOR = 1.002;
 // CHoCH/BOS/compression/ADX are confluence SCORING factors — no hard-block is removed, thresholds tuned.
 const MIN_CONFIDENCE = 58;
 const PRIMARY_CONFIDENCE_THRESHOLD = MIN_CONFIDENCE;
-// A limit order is reserved for a sufficiently confirmed high-probability
-// candidate. Confidence ranks valid candidates, but the executable floor
-// prevents a geometrically valid yet weak location from being presented as a
-// trade. Incomplete locations remain WATCH_ONLY.
-// Complete deterministic geometry remains the hard gate. This floor only
-// controls whether a valid manual setup is visible as a secondary candidate.
-// Keep the floor low enough that a complete current opportunity is not hidden
-// solely because its confidence score is below the primary preference.
+// Complete deterministic geometry is the visibility gate. Confidence ranks
+// valid candidates and controls primary versus secondary presentation; it must
+// not erase valid entry/stop/target geometry. Execution permission remains a
+// separate final risk and execution contract.
 const MIN_EXECUTABLE_CONFIDENCE = 40;
 const MAX_ZONE_TOUCHES = 10;
 const LIMIT_ORDER_EXPIRY_HOURS = 4;
@@ -217,7 +213,7 @@ function classifyCandidateAuthorization(candidate) {
         || (candidate?.execution_geometry_valid === true && candidate?.evaluation?.valid !== false);
     let authorization_state = 'WATCH_ONLY';
     if (complete && hardValidationPassed && confidence > PRIMARY_CONFIDENCE_THRESHOLD) authorization_state = 'TRADE_READY';
-    else if (complete && hardValidationPassed && confidence >= MIN_EXECUTABLE_CONFIDENCE) authorization_state = 'SECONDARY_CANDIDATE';
+    else if (complete && hardValidationPassed) authorization_state = 'SECONDARY_CANDIDATE';
     return {
         ...candidate,
         authorization_state,
@@ -8077,7 +8073,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.top_down_context = bestCandidate.top_down_context || classifyTopDownTrade(bestCandidate, timeframeContext);
         state.trade_context_classification = state.top_down_context.classification;
         const zone = bestCandidate.zone || { low: bestCandidate.zone_low, high: bestCandidate.zone_high, type: bestCandidate.zone_type, timeframe: bestCandidate.execution_timeframe || bestCandidate.timeframe, id: bestCandidate.zone_id };
-        state.state = bestCandidate.authorization_state === 'WATCH_ONLY' ? 'WATCH_ONLY' : 'TRADE_READY'; state.strategy = bestCandidate.strategy_label || bestCandidate.zone_type || null; state.direction = bestCandidate.direction;
+        state.state = bestCandidate.authorization_state === 'WATCH_ONLY' ? 'WATCH_ONLY' : 'TRADE_READY'; state.strategy = getDisplayStrategyLabel(bestCandidate.strategy_setup || bestCandidate, bestCandidate.zone_type); state.direction = bestCandidate.direction;
         state.narrative_id = bestCandidate.strategy_setup?.id || bestCandidate.id; state.execution_zone_id = zone?.id || bestCandidate.id;
         state.source = 'DETERMINISTIC_CANDIDATE' + (bestCandidate.ai_verified ? '+VERIFIED_AI_ANALYST' : ''); state.ai_supported = !!bestCandidate.ai_verified; state.deterministic_supported = true;
         state.area_of_interest = zone ? { low: zone.low, high: zone.high, source: zone.entry_region_source || zone.type || 'STRUCTURAL', timeframe: zone.timeframe, zone_id: zone.id || bestCandidate.id } : null;
@@ -8091,7 +8087,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         const candidatePlans = classifiedCandidates.map(candidate => ({
             ...candidate,
             state: candidate.authorization_state === 'WATCH_ONLY' ? 'WATCH_ONLY' : 'TRADE_READY', narrative_id: candidate.strategy_setup?.id || candidate.id,
-            direction: candidate.direction, strategy: candidate.strategy_label || candidate.zone_type || null,
+            direction: candidate.direction, strategy: getDisplayStrategyLabel(candidate.strategy_setup || candidate, candidate.zone_type),
             trade_context_classification: candidate.top_down_context?.classification || candidate.trade_context_classification,
             area_of_interest: candidate.zone ? { low: candidate.zone.low, high: candidate.zone.high, source: candidate.zone.type, timeframe: candidate.zone.timeframe, zone_id: candidate.zone.id } : null,
             execution_zone: candidate.zone, target: candidate.target_map?.[0] || candidate.target || null,
