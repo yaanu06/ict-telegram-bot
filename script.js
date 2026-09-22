@@ -8034,18 +8034,27 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         const executionTimeframe = setup.execution_timeframe || setup.timeframe || zone.timeframe || '1H';
         const aiHypothesis = aiAnalysis?.verified_hypotheses?.find(h => h.hypothesis_id === setup.ai_hypothesis_id);
         const targetIntent = setup.target_bias || setup.ai_target_intent || aiHypothesis?.target_intent || plan.target?.source || 'OPPOSING_STRUCTURE';
-        const topDown = classifyTopDownTrade(setup, timeframeContext);
+        let topDown = classifyTopDownTrade(setup, timeframeContext);
         const opportunityQuality = buildOpportunityQuality(setup, plan, marketContext, topDown);
         // A pending limit is already a complete deterministic order when its
         // zone, structural invalidation, target, and RR pass. Keep the exact
         // geometry on the developing plan so the public projection does not
         // describe an order while leaving entry/SL empty.
         let pendingGeometry = null;
-        if (zone && plan.execution_model === 'PENDING_LIMIT') {
+        const directionTrend = setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH';
+        const alignedHigherTimeframes = ['1D', '4H', '1H'].filter(tf => {
+            const trend = String(marketContext.structure?.[tf]?.effective_trend
+                || marketContext.structure?.[tf]?.structural_trend
+                || timeframeContext?.[tf]?.effective_trend || '').toUpperCase();
+            return trend === directionTrend || trend === `${directionTrend}_TRANSITION`;
+        }).length;
+        const higherTimeframeAligned = alignedHigherTimeframes >= 2;
+        const geometrySourceZone = zone || (higherTimeframeAligned ? planArea : null);
+        if (geometrySourceZone && ['PENDING_LIMIT', 'CONFIRMATION_ENTRY'].includes(String(plan.execution_model || '').toUpperCase())) {
             const settings = getMarketSettings(pairLocal, symbolMetadata || {});
             const executionData = getClosedHistory(histories, executionTimeframe);
             const executionAtr = executionData.length >= 15 ? atr(executionData, 14) : 0;
-            const geometryZone = { ...zone, strategy_setup: setup };
+            const geometryZone = { ...geometrySourceZone, strategy_setup: setup };
             const entry = getSemanticEntryCandidate(geometryZone, setup, setup.direction, settings.prec);
             const stops = entry == null ? [] : getAdaptiveStopCandidates(geometryZone, setup.direction, entry, executionData, executionZones, executionAtr, settings, settings.prec);
             const stop = stops.find(candidate => Number.isFinite(candidate.stop_loss));
@@ -8057,15 +8066,38 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
                     sell: [...(setup.target_candidates || []), ...(targetCandidates?.sell || [])]
                 };
                 const selectedTargets = selectAdaptiveTargets(setup.direction, entry, stop.stop_loss, pool, minimumRR, settings.prec, { currentPrice });
-                if (selectedTargets?.tp1) pendingGeometry = { entry, stop_loss: stop.stop_loss, tp1: selectedTargets.tp1.level,
-                    tp2: selectedTargets.tp2?.level ?? null, tp3: selectedTargets.tp3?.level ?? null,
-                    target: selectedTargets.tp1, rr: selectedTargets.tp1.rr };
+                if (selectedTargets?.tp1) {
+                    const rrMetrics = calculateRRMetrics(setup.direction, entry, stop.stop_loss, selectedTargets.tp1.level, minimumRR);
+                    pendingGeometry = { entry, stop_loss: stop.stop_loss, tp1: selectedTargets.tp1.level,
+                        tp2: selectedTargets.tp2?.level ?? null, tp3: selectedTargets.tp3?.level ?? null,
+                        target: selectedTargets.tp1, rr: selectedTargets.tp1.rr ?? rrMetrics.actualRR };
+                }
             }
+        }
+        const pendingMinimumRR = Number(marketContext?.risk_constraints?.minimum_rr) || getMarketSettings(pairLocal, symbolMetadata || {}).targetRR || 2.5;
+        const pendingGeometryValid = !!pendingGeometry
+            && Number.isFinite(Number(pendingGeometry.entry))
+            && Number.isFinite(Number(pendingGeometry.stop_loss))
+            && Number.isFinite(Number(pendingGeometry.tp1))
+            && Number.isFinite(Number(pendingGeometry.rr))
+            && Number(pendingGeometry.rr) >= pendingMinimumRR;
+        if (pendingGeometryValid && higherTimeframeAligned) {
+            // A confirmed higher-timeframe location can be stalked with a
+            // pending limit even when the execution timeframe is mixed. The
+            // limit remains subject to the derived stop, target, RR, and
+            // final public validation contracts.
+            topDown = { ...topDown, classification: 'HTF_ALIGNED_CONTINUATION' };
+            opportunityQuality.watch_only = false;
+            opportunityQuality.authorization_state = 'PRIMARY_ELIGIBLE';
+            opportunityQuality.classification = 'HTF_ALIGNED_CONTINUATION';
+            opportunityQuality.direction_quality = 'SUPPORTED';
+            opportunityQuality.execution_state = 'EXECUTION_AVAILABLE';
+            opportunityQuality.rank_reasons = [...new Set([...(opportunityQuality.rank_reasons || []), 'HTF_ALIGNED_LIMIT'])];
         }
         plans.push({ state: 'TODAY_OPPORTUNITY', trade_context_classification: topDown.classification, top_down_context: topDown, bias: setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH', strategy: setup.label || setup.primary, direction: setup.direction,
             narrative_id: setup.id || null, execution_zone_id: zone?.id || null, source: setup.ai_verified ? 'VERIFIED_AI_HYPOTHESIS' : 'DETERMINISTIC_NARRATIVE',
             ai_supported: !!setup.ai_verified || !!aiHypothesis, deterministic_supported: true, area_of_interest: { low: Number(planArea.low), high: Number(planArea.high), source, timeframe: planArea.timeframe || executionTimeframe, zone_id: planArea.id || null },
-            execution_model: plan.execution_model, activation_conditions: !zone
+            execution_model: pendingGeometryValid && higherTimeframeAligned ? 'PENDING_LIMIT' : plan.execution_model, activation_conditions: !zone
                 ? ['A deterministic execution zone must form inside the validated location before exact geometry can be constructed']
                 : plan.execution_model === 'PENDING_LIMIT'
                 ? (inside ? ['Price is at the deterministic limit area; the order fills on touch at its limit price'] : ['Price retraces into the deterministic limit area; no confirmation is required after touch'])
