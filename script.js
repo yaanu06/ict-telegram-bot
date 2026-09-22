@@ -7597,6 +7597,13 @@ function getTodayOpportunityExecutionModel(setup, zone) {
     return 'PENDING_LIMIT';
 }
 
+// These execution labels all describe a price-retracement limit plan. Keep
+// them on one path so a strategy-specific label cannot accidentally suppress
+// a complete pending-limit opportunity during the daily planner pass.
+function isPendingLimitExecutionModel(model) {
+    return ['PENDING_LIMIT', 'FRESH_RETRACEMENT_LIMIT', 'STRUCTURAL_LIMIT', 'RECLAIM_RETEST', 'LIMIT'].includes(String(model || '').toUpperCase());
+}
+
 function isTodayFreshContinuation(setup, zone) {
     if (!setup || !zone || setup.narrative_state && setup.narrative_state !== 'ACTIVE') return false;
     if (setup.original_strategy_entry_consumed && !zone.created_time && !zone.created_time_ms) return false;
@@ -8064,7 +8071,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         }).length;
         const higherTimeframeAligned = alignedHigherTimeframes >= 2;
         const geometrySourceZone = zone || (higherTimeframeAligned ? planArea : null);
-        if (geometrySourceZone && ['PENDING_LIMIT', 'CONFIRMATION_ENTRY'].includes(String(plan.execution_model || '').toUpperCase())) {
+        if (geometrySourceZone && (isPendingLimitExecutionModel(plan.execution_model) || String(plan.execution_model || '').toUpperCase() === 'CONFIRMATION_ENTRY')) {
             const settings = getMarketSettings(pairLocal, symbolMetadata || {});
             const executionData = getClosedHistory(histories, executionTimeframe);
             const executionAtr = executionData.length >= 15 ? atr(executionData, 14) : 0;
@@ -12875,9 +12882,60 @@ function validatePublicTradeSignal(signal = {}) {
     return { valid: issues.length === 0, issues };
 }
 
+// The public boundary is the last place a signal can be rendered. Complete
+// deterministic geometry may still arrive here from an AI or compatibility
+// path with provider precision rather than symbol tick precision. Normalize
+// that geometry before schema validation; incomplete geometry remains WAIT.
+function normalizePublicReadySignal(signal = {}) {
+    const decision = String(signal.decision || signal.trade_type || '').toUpperCase();
+    if (!['BUY_LIMIT', 'SELL_LIMIT'].includes(decision)) return signal;
+    const entry = signal.entry ?? signal.entry_price;
+    const tp1 = signal.tp1 ?? signal.take_profit_1;
+    const zone = signal.entry_zone || signal.zone || {};
+    const direction = decision === 'BUY_LIMIT' ? 'BUY' : 'SELL';
+    const normalized = normalizeAndValidateCandidate({
+        direction,
+        entry,
+        stop_loss: signal.stop_loss,
+        tp1,
+        tp2: signal.tp2 ?? signal.take_profit_2,
+        tp3: signal.tp3 ?? signal.take_profit_3,
+        entry_region_low: zone.low,
+        entry_region_high: zone.high,
+        structural_invalidation: signal.structural_invalidation,
+        timeframe: signal.execution_timeframe || signal.timeframe
+    }, {
+        pair: signal.pair,
+        symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
+        risk_constraints: signal.risk_constraints,
+        bid: signal.market_conditions?.bid,
+        ask: signal.market_conditions?.ask
+    });
+    if (!normalized.valid) return signal;
+    const c = normalized.candidate;
+    return {
+        ...signal,
+        decision,
+        trade_type: decision,
+        entry: c.entry,
+        entry_price: c.entry,
+        entry_zone: { ...zone, low: c.entry_region_low, high: c.entry_region_high },
+        stop_loss: c.stop_loss,
+        tp1: c.tp1,
+        tp2: c.tp2 ?? null,
+        tp3: c.tp3 ?? null,
+        take_profit_1: c.tp1,
+        take_profit_2: c.tp2 ?? null,
+        take_profit_3: c.tp3 ?? null,
+        rr_tp1: c.actual_rr,
+        risk_reward: `1:${Number(c.actual_rr).toFixed(2)}`
+    };
+}
+
 function setJsonOutput(obj) {
     const el = document.getElementById('jsonOutput');
     let publicSignal = buildPublicTradeSignal(obj?.trade_signal || obj);
+    publicSignal = normalizePublicReadySignal(publicSignal);
     publicSignal.app_build = APP_BUILD_ID;
     publicSignal.analysis_status = getAnalysisStatus(publicSignal);
     const publicValidation = validatePublicTradeSignal(publicSignal);

@@ -6170,4 +6170,37 @@ describe('AI market analyst contract', () => {
             expect(result.candidate.tp1).toBe(0.7105);
         });
     });
+
+        it('normalizes complete public limit geometry before schema validation', () => {
+            const ctx = getContext();
+            const signal = ctx.normalizePublicReadySignal({
+                pair: 'XAU/USD', current_price: 4344.12, decision: 'SELL_LIMIT', trade_type: 'SELL_LIMIT',
+                symbol_metadata: { asset_class: 'METAL', tick_size: 0.1, price_precision: 2 },
+                entry: 4360.26, stop_loss: 4385.3, tp1: 4283.21,
+                entry_zone: { low: 4359.9, high: 4360.6 },
+                structural_invalidation: { level: 4361.1 }
+            });
+            expect(signal.entry).toBe(4360.3);
+            expect(signal.stop_loss).toBe(4385.3);
+            expect(signal.tp1).toBe(4283.2);
+            expect(ctx.validatePublicTradeSignal({ ...signal, status_code: 'SETUP_READY' })).toEqual({ valid: true, issues: [] });
+        });
+
+        it('does not invent geometry when a limit signal is incomplete', () => {
+            const ctx = getContext();
+            const signal = ctx.normalizePublicReadySignal({
+                pair: 'XAU/USD', decision: 'SELL_LIMIT', entry: null, stop_loss: null,
+                tp1: 4283.2, entry_zone: { low: 4359.9, high: 4360.6 }
+            });
+            expect(signal.entry).toBeNull();
+            expect(signal.stop_loss).toBeNull();
+        });
+
+        it('treats strategy-specific retracement labels as pending-limit models', () => {
+        const ctx = getContext();
+        expect(ctx.isPendingLimitExecutionModel('FRESH_RETRACEMENT_LIMIT')).toBe(true);
+        expect(ctx.isPendingLimitExecutionModel('STRUCTURAL_LIMIT')).toBe(true);
+        expect(ctx.isPendingLimitExecutionModel('RECLAIM_RETEST')).toBe(true);
+        expect(ctx.isPendingLimitExecutionModel('CONFIRMATION_ENTRY')).toBe(false);
+    });
 });
