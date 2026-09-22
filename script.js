@@ -145,7 +145,11 @@ const PRIMARY_CONFIDENCE_THRESHOLD = MIN_CONFIDENCE;
 // candidate. Confidence ranks valid candidates, but the executable floor
 // prevents a geometrically valid yet weak location from being presented as a
 // trade. Incomplete locations remain WATCH_ONLY.
-const MIN_EXECUTABLE_CONFIDENCE = 50;
+// Complete deterministic geometry remains the hard gate. This floor only
+// controls whether a valid manual setup is visible as a secondary candidate.
+// Keep the floor low enough that a complete current opportunity is not hidden
+// solely because its confidence score is below the primary preference.
+const MIN_EXECUTABLE_CONFIDENCE = 40;
 const MAX_ZONE_TOUCHES = 10;
 const LIMIT_ORDER_EXPIRY_HOURS = 4;
 const ZONE_PROXIMITY_ALERT_PCT = 0.3;
@@ -9914,11 +9918,11 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
             if (!deterministicCandidate?.id) {
                 const unknownCandidate = !liveMarketContext.adaptive_setup_candidates.some(candidate => candidate?.id === selectedId);
                 const waitCondition = unknownCandidate
-                    ? 'AI selected unknown deterministic candidate'
+                    ? 'No current deterministic candidate passed the executable geometry checks.'
                     : 'No fully validated candidate met the executable confidence floor';
                 return { decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
                     reasoning: { primary: waitCondition }, ai_decision: 'skip', noTrade: true,
-                    ai_error: unknownCandidate ? waitCondition : null, wait_condition: waitCondition };
+                    ai_error: unknownCandidate ? 'AI selected unknown deterministic candidate' : null, wait_condition: waitCondition };
             }
             const selected = applyAdaptiveCandidateToAIResult({ selected_candidate_id: deterministicCandidate.id, reasoning: selector.reasoning }, liveMarketContext);
             selected.ai_requested_candidate_id = selectedId;
@@ -12851,7 +12855,10 @@ function buildPublicTradeSignal(signal = {}) {
         };
     }
     const reasoning = signal.reasoning || {};
-    const strategy = signal.strategy || signal.strategy_label || signal.strategy_setup?.label || null;
+    const strategy = getDisplayStrategyLabel({
+        label: signal.strategy || signal.strategy_label,
+        primary: signal.strategy_setup?.primary
+    }, signal.zone_type || signal.entry_zone?.source);
     const requestedDecision = String(signal.decision || signal.trade_type || 'WAIT').toUpperCase();
     const publicDecision = requestedDecision === 'BUY' ? 'BUY_LIMIT'
         : requestedDecision === 'SELL' ? 'SELL_LIMIT'

@@ -3874,7 +3874,7 @@ describe('live AI market context and prompt', () => {
         });
         expect(result.noTrade).toBe(true);
         expect(result.decision).toBe('WAIT');
-        expect(result.wait_condition).toMatch(/unknown deterministic candidate/);
+        expect(result.wait_condition).toMatch(/No current deterministic candidate|unknown deterministic candidate/);
     });
 
     it('keeps liquidity labels directionally correct around current price', () => {
