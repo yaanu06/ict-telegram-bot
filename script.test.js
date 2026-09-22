@@ -2375,6 +2375,28 @@ describe('getQuoteDirection', () => {
         expect(signal.entry_price).toBe(4330);
         expect(signal.reason.code).toBe('CURRENT_DETERMINISTIC_CANDIDATE');
     });
+
+    it('rebuilds stale recovery from the live deterministic candidate pool', () => {
+        const ctx = getContext();
+        const current = {
+            id: 'fresh-sell-limit', direction: 'SELL', strategy_label: 'CRT+MSNR',
+            entry: 4330, entry_price: 4330, stop_loss: 4340, tp1: 4290,
+            rr_tp1: 4, actual_rr: 4, minimum_rr: 2.5,
+            execution_geometry_valid: true, hard_validation_passed: true,
+            zone: { id: 'fresh-zone', type: 'FVG', low: 4328, high: 4332, timeframe: '1H' },
+            zone_low: 4328, zone_high: 4332, entry_region_low: 4328, entry_region_high: 4332,
+            lifecycle_state: 'FRESH_PENDING_TODAY', opportunity_status: 'FRESH_PENDING_TODAY',
+            entry_reachable_today: true, confidence: 64
+        };
+        const rebuilt = ctx.recoverTodayOpportunityAfterRejectedSelection({
+            today: { state: 'TODAY_OPPORTUNITY', primary_opportunity: { id: 'old-location', strategy: 'OB' } },
+            adaptive_setup_candidates: [current],
+            market_context: {}, strategy_setups: [], strategy_execution_zones: [],
+            setup_candidate_audit: {}, target_candidates: {}, symbol_metadata: { tick_size: 0.1 }, market_open: true
+        }, 'old-location', { pair: 'XAU/USD', currentPrice: 4317.74, scanAsOfMs: Date.now(), histories: {} });
+        expect(rebuilt.primary_opportunity.id).toBe('fresh-sell-limit');
+        expect(rebuilt.primary_opportunity.entry_price).toBe(4330);
+    });
 });
 
 describe('analyzeMarketPhase (AMD)', () => {

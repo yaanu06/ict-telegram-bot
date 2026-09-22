@@ -8374,18 +8374,13 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
 
 function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, selectedCandidateId, scanArgs) {
     const today = liveMarketContext?.today_opportunity;
-    const todayIds = new Set([
-        today?.id,
-        today?.narrative_id,
-        today?.primary_opportunity?.id,
-        ...(today?.active_setups || []).map(setup => setup?.id),
-        ...(today?.watch_setups || []).map(setup => setup?.id)
-    ].filter(Boolean));
-    if (today && (!selectedCandidateId || !todayIds.has(selectedCandidateId))) return today;
-
+    // Always rebuild from the live deterministic pool after a stale selector
+    // result. The cached today_opportunity can still point at an old location
+    // or an incomplete display plan, which would otherwise prevent the fresh
+    // strategy zones from being evaluated for a pending limit.
     const remainingCandidates = (liveMarketContext?.adaptive_setup_candidates || [])
         .filter(candidate => candidate?.id !== selectedCandidateId);
-    return buildTodayOpportunity({
+    const rebuilt = buildTodayOpportunity({
         ...scanArgs,
         marketContext: liveMarketContext.market_context,
         strategySetups: liveMarketContext.strategy_setups,
@@ -8397,6 +8392,9 @@ function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, select
         symbolMetadata: liveMarketContext.symbol_metadata || null,
         marketOpen: liveMarketContext.market_open
     });
+    // If the live pool was unavailable, preserve the existing planner result
+    // as a diagnostic fallback. It must never be used to invent geometry.
+    return rebuilt?.state && rebuilt.state !== 'NO_TRADE_TODAY' ? rebuilt : (today || rebuilt);
 }
 
 function buildRejectedSelectionWaitOutput({ today, pairLocal, price, asOfMs, marketOpen, symbolMetadata, providerMetadata, rejection, source = 'Deterministic Opportunity Planner + AI Selector' } = {}) {
