@@ -1103,6 +1103,12 @@ describe('active narrative fresh execution zones', () => {
 });
 
 describe('fresh execution downstream validation', () => {
+    it('keeps the effective stop floor at 75% of the configured ATR rule', () => {
+        const ctx = getContext();
+        expect(ctx.getPreferredStopAtrMultiplier({ minSLMultiplier: 2 })).toBe(1.5);
+        expect(ctx.getPreferredStopAtrMultiplier({ minSLMultiplier: 1.5 })).toBe(1.125);
+    });
+
     it('keeps a structurally valid 2.1 pip FX stop as tight quality, not extreme', () => {
         const ctx = getContext();
         const result = ctx.evaluateStructuralStop({ direction: 'BUY', entry: 1.16000, stop_loss: 1.15979 }, {

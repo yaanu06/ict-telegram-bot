@@ -176,7 +176,10 @@ function getMarketSettings(p, metadata = {}) {
 
 function getPreferredStopAtrMultiplier(settings = {}) {
     const configured = Number(settings.minSLMultiplier);
-    return Math.max(0.75, Math.min(1.0, (Number.isFinite(configured) && configured > 0 ? configured : 1.5) * 0.5));
+    // Keep structural invalidation authoritative, but leave more room for
+    // ordinary volatility. The old 50% reduction made metal stops especially
+    // fragile: the configured 2 ATR floor became only 1 ATR in production.
+    return Math.max(0.75, Math.min(1.5, (Number.isFinite(configured) && configured > 0 ? configured : 1.5) * 0.75));
 }
 
 function getPrec(p, metadata = {}) { return getMarketSettings(p, metadata).prec; }
