@@ -7807,13 +7807,24 @@ function buildOpportunityQuality(setup, plan, marketContext = {}, topDown = {}) 
     const liquidityScore = plan?.target ? ((plan.target.structural_priority || 0) >= 85 ? 22 : 12) : 0;
     const executionState = !plan?.zone ? 'AWAITING_EXECUTION' : plan.execution_model === 'CONFIRMATION_ENTRY' && !setup?.opportunity_thesis?.execution_confirmed ? 'AWAITING_CONFIRMATION' : 'EXECUTION_AVAILABLE';
     const primaryEligible = ['HTF_VERIFIED_REVERSAL', 'HTF_ALIGNED_CONTINUATION'].includes(classification);
+    const expectedTrend = setup?.direction === 'BUY' ? 'BULLISH' : 'BEARISH';
+    const htfAlignment = ['1D', '4H', '1H'].filter(tf => {
+        const trend = String(marketContext?.structure?.[tf]?.effective_trend
+            || marketContext?.structure?.[tf]?.structural_trend
+            || marketContext?.timeframe_context?.[tf]?.effective_trend
+            || marketContext?.timeframe_context?.[tf]?.structural_trend
+            || '').toUpperCase();
+        return trend === expectedTrend || trend === `${expectedTrend}_TRANSITION`;
+    }).length;
+    const higherTimeframeSupported = htfAlignment >= 2;
     const tier = primaryEligible ? 2 : 1;
     const evidenceStrength = (setup?.opportunity_thesis?.evidence_ids || setup?.structural_evidence_ids || []).length;
     const executionScore = executionState === 'EXECUTION_AVAILABLE' ? 16 : executionState === 'AWAITING_CONFIRMATION' ? 10 : 5;
     const classAdjustment = classification === 'HTF_VERIFIED_REVERSAL' ? 4 : classification === 'HTF_ALIGNED_CONTINUATION' ? 3 : 0;
     const dailyAdjustment = dailyBiasRelationship === 'ALIGNED' ? 6 : dailyBiasRelationship === 'VERIFIED_COUNTERTREND' ? 2 : dailyBiasRelationship === 'CONFLICTING_UNVERIFIED' ? -8 : 0;
-    const rankScore = tier * 100 + classAdjustment + dailyAdjustment + locationScore + liquidityScore + executionScore + evidenceStrength * 2 + (plan?.metrics?.opportunity_reachable_today ? 10 : 0);
+    const rankScore = tier * 100 + classAdjustment + dailyAdjustment + htfAlignment * 18 + locationScore + liquidityScore + executionScore + evidenceStrength * 2 + (plan?.metrics?.opportunity_reachable_today ? 10 : 0);
     const rankReasons = [primaryEligible ? 'PRIMARY_ELIGIBLE' : 'WATCH_ONLY'];
+    if (higherTimeframeSupported) rankReasons.push('HTF_DIRECTION_SUPPORTED');
     if (dailyBiasRelationship === 'ALIGNED') rankReasons.push('DAILY_BIAS_ALIGNED');
     if (dailyBiasRelationship === 'VERIFIED_COUNTERTREND') rankReasons.push('VERIFIED_COUNTERTREND');
     if (locationScore >= 24) rankReasons.push('HTF_LOCATION');
@@ -7825,7 +7836,8 @@ function buildOpportunityQuality(setup, plan, marketContext = {}, topDown = {}) 
         + (plan?.target ? 20 : 0) + executionScore + evidenceStrength * 3
     )));
     return { classification, previous_classification: previousClassification, classification_changed: !!previousClassification && previousClassification !== classification,
-        daily_bias_relationship: dailyBiasRelationship, direction_quality: tier > 1 ? 'SUPPORTED' : 'LOCAL_ONLY',
+        daily_bias_relationship: dailyBiasRelationship, direction_quality: higherTimeframeSupported ? 'SUPPORTED' : 'LOCAL_ONLY',
+        htf_alignment: htfAlignment,
         location_quality: locationScore, liquidity_quality: liquidityScore, execution_state: executionState,
         freshness: setup?.freshness || location?.freshness || null, target_quality: plan?.target ? 'REAL_AHEAD' : 'MISSING',
         lifecycle_quality: setup?.narrative_state === 'ACTIVE' ? 'ACTIVE' : 'TERMINAL', evidence_strength: evidenceStrength,
@@ -7891,6 +7903,8 @@ function compareOpportunityDisplayPlans(a, b) {
     const tier = value => value?.watch_only ? 0 : (value?.authorization_state === 'TRADE_READY' ? 3 : 2);
     return (tier(b) - tier(a))
         || (Number(bq.rank_tier || 0) - Number(aq.rank_tier || 0))
+        || (Number(bq.htf_alignment || 0) - Number(aq.htf_alignment || 0))
+        || (Number(bq.direction_quality === 'SUPPORTED') - Number(aq.direction_quality === 'SUPPORTED'))
         || (Number(bq.location_quality || 0) - Number(aq.location_quality || 0))
         || (Number(bq.liquidity_quality || 0) - Number(aq.liquidity_quality || 0))
         || (Number(bq.target_quality === 'REAL_AHEAD') - Number(aq.target_quality === 'REAL_AHEAD'))

@@ -6143,5 +6143,18 @@ describe('AI market analyst contract', () => {
             expect(ctx.getCanonicalCandidateConfidence({ has_complete_execution_geometry: true, execution_confidence: 61, location_confidence: 95 })).toBe(61);
             expect(ctx.getCanonicalCandidateConfidence({ has_complete_execution_geometry: false, location_confidence: 78, execution_confidence: 20 })).toBe(78);
         });
+
+        it('ranks a higher-timeframe supported supply above an opposing local demand', () => {
+            const ctx = getContext();
+            const localDemand = {
+                id: 'LOCAL-DEMAND', watch_only: true,
+                opportunity_quality: { rank_tier: 1, htf_alignment: 0, direction_quality: 'LOCAL_ONLY', location_quality: 24 }
+            };
+            const alignedSupply = {
+                id: 'ALIGNED-SUPPLY', watch_only: true,
+                opportunity_quality: { rank_tier: 1, htf_alignment: 3, direction_quality: 'SUPPORTED', location_quality: 14 }
+            };
+            expect(ctx.compareOpportunityDisplayPlans(alignedSupply, localDemand)).toBeLessThan(0);
+        });
     });
 });
