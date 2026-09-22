@@ -6322,6 +6322,55 @@ describe('AI market analyst contract', () => {
             expect(selected.id).toBe('C-58');
         });
 
+        it('keeps a lone 19% setup secondary instead of making it the primary trade', () => {
+            const ctx = getContext();
+            const today = ctx.buildTodayOpportunity({
+                pair: 'XAU/USD', currentPrice: 4330.01, marketOpen: true,
+                validCandidates: [{ ...executable('C-19', 19), entry: 4398.5, stop_loss: 4425, tp1: 4324.8,
+                    tp2: 4324.1, tp3: 4321.2, strategy_label: 'CRT+TBS', zone_type: 'OB',
+                    zone: { id: 'ob-zone', type: 'OB', low: 4397, high: 4400, timeframe: '1H' } }]
+            });
+            expect(today.state).toBe('SECONDARY_CANDIDATE');
+            expect(today.authorization_state).toBe('SECONDARY_CANDIDATE');
+            expect(today.primary_opportunity.authorization_state).toBe('SECONDARY_CANDIDATE');
+            expect(today.primary_opportunity.confidence).toBe(19);
+            expect(today.primary_opportunity.entry_price).toBe(4398.5);
+            const rawSecondary = ctx.buildTodayOpportunityOutput(today, 'XAU/USD', 4330.01, Date.now(), true).trade_signal;
+            const publicSignal = ctx.buildPublicTradeSignal(rawSecondary);
+            expect(publicSignal.decision).toBe('WAIT');
+            expect(publicSignal.authorization_state).toBe('SECONDARY_CANDIDATE');
+            expect(publicSignal.candidate).toMatchObject({ trade_type: 'SELL_LIMIT', entry_price: 4398.5, confidence: 19 });
+            expect(publicSignal.stop_loss).toBe(4425);
+            expect(publicSignal.take_profit_1).toBe(4324.8);
+            const summary = ctx.getTradeSummaryModel(publicSignal);
+            expect(summary.tradeType).toBe('SECONDARY SELL LIMIT');
+            expect(summary.confidence).toBe('19%');
+            expect(summary.entry).toMatch(/4398/);
+        });
+
+        it('selects a 72% primary candidate over a 19% secondary candidate', () => {
+            const ctx = getContext();
+            const low = executable('C-19', 19);
+            const high = executable('C-72', 72);
+            expect(ctx.selectBestPrimaryCandidate([low, high]).id).toBe('C-72');
+            expect(ctx.selectBestSecondaryCandidate([low, high]).id).toBe('C-19');
+            const today = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.15, marketOpen: true, validCandidates: [low, high] });
+            expect(today.state).toBe('TRADE_READY');
+            expect(today.authorization_state).toBe('TRADE_READY');
+            expect(today.primary_opportunity.id).toBe('C-72');
+        });
+
+        it('keeps the best secondary visible without creating a primary when all are below threshold', () => {
+            const ctx = getContext();
+            const a = executable('C-35', 35);
+            const b = executable('C-19', 19);
+            const today = ctx.buildTodayOpportunity({ pair: 'EUR/USD', currentPrice: 1.15, marketOpen: true, validCandidates: [a, b] });
+            expect(today.state).toBe('SECONDARY_CANDIDATE');
+            expect(today.authorization_state).toBe('SECONDARY_CANDIDATE');
+            expect(today.primary_opportunity.id).toBe('C-35');
+            expect(today.primary_opportunity.confidence).toBe(35);
+        });
+
         it('does not let the selector choose a weak zone over the strongest executable candidate', () => {
             const ctx = getContext();
             const selected = ctx.resolveDeterministicSelectorCandidate([

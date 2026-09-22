@@ -243,6 +243,20 @@ function selectBestExecutableCandidate(candidates = []) {
         .sort(compareCandidates)[0] || null;
 }
 
+function selectBestPrimaryCandidate(candidates = []) {
+    return candidates
+        .map(classifyCandidateAuthorization)
+        .filter(candidate => candidate.authorization_state === 'TRADE_READY')
+        .sort(compareCandidates)[0] || null;
+}
+
+function selectBestSecondaryCandidate(candidates = []) {
+    return candidates
+        .map(classifyCandidateAuthorization)
+        .filter(candidate => candidate.authorization_state === 'SECONDARY_CANDIDATE')
+        .sort(compareCandidates)[0] || null;
+}
+
 // The language model may explain or rank candidates, but it cannot replace
 // deterministic candidate ordering. Always resolve the final candidate from
 // the complete validated pool so a weak local zone cannot outrank a stronger
@@ -7955,7 +7969,7 @@ function buildOpportunityDisplayScenario(plan = {}, currentPrice = null, tier = 
         direction: plan.direction || null,
         strategy: plan.strategy || plan.label || null,
         trade_context_classification: classification,
-        authorization_state: tier || (watchOnly ? 'WATCH_ONLY' : 'AUTHORIZED_DEVELOPING'),
+        authorization_state: plan.authorization_state || tier || (watchOnly ? 'WATCH_ONLY' : 'AUTHORIZED_DEVELOPING'),
         watch_only: watchOnly,
         setup_timeframe: plan.setup_timeframe || plan.timeframe || null,
         execution_timeframe: plan.execution_timeframe || null,
@@ -8009,12 +8023,17 @@ function compareOpportunityDisplayPlans(a, b) {
 function buildOpportunityDisplayStack(plans = [], currentPrice = null, selected = null) {
     const sorted = plans.slice().sort(compareOpportunityDisplayPlans);
     const primaryPlan = (selected && !selected.watch_only) ? selected : sorted.find(plan => !plan.watch_only);
+    const displayTier = plan => plan?.authorization_state === 'TRADE_READY'
+        ? 'TRADE_READY'
+        : plan?.authorization_state === 'SECONDARY_CANDIDATE'
+            ? 'SECONDARY_CANDIDATE'
+            : 'PRIMARY_AUTHORIZED';
     return {
-        primary_opportunity: primaryPlan ? buildOpportunityDisplayScenario(primaryPlan, currentPrice, primaryPlan.state === 'TRADE_READY' ? 'TRADE_READY' : 'PRIMARY_AUTHORIZED') : null,
+        primary_opportunity: primaryPlan ? buildOpportunityDisplayScenario(primaryPlan, currentPrice, displayTier(primaryPlan)) : null,
         // Public output intentionally exposes one best setup.  Keep the
         // selected setup in active_setups so the two public views cannot
         // disagree; lower-ranked plans remain in diagnostics.
-        active_setups: primaryPlan ? [buildOpportunityDisplayScenario(primaryPlan, currentPrice, primaryPlan.state === 'TRADE_READY' ? 'TRADE_READY' : 'PRIMARY_AUTHORIZED')] : [],
+        active_setups: primaryPlan ? [buildOpportunityDisplayScenario(primaryPlan, currentPrice, displayTier(primaryPlan))] : [],
         watch_setups: sorted.filter(plan => plan.watch_only).map(plan => buildOpportunityDisplayScenario(plan, currentPrice, 'WATCH_ONLY'))
     };
 }
@@ -8068,12 +8087,14 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         execution_geometry_valid: candidate.execution_geometry_valid ?? true,
         hard_validation_passed: candidate.hard_validation_passed ?? true
     })).sort(compareCandidates);
-    const bestCandidate = selectBestExecutableCandidate(classifiedCandidates) || classifiedCandidates[0] || null;
+    const bestPrimaryCandidate = selectBestPrimaryCandidate(classifiedCandidates);
+    const bestSecondaryCandidate = selectBestSecondaryCandidate(classifiedCandidates);
+    const bestCandidate = bestPrimaryCandidate || bestSecondaryCandidate || classifiedCandidates.find(candidate => candidate.authorization_state === 'WATCH_ONLY') || null;
     if (bestCandidate) {
         state.top_down_context = bestCandidate.top_down_context || classifyTopDownTrade(bestCandidate, timeframeContext);
         state.trade_context_classification = state.top_down_context.classification;
         const zone = bestCandidate.zone || { low: bestCandidate.zone_low, high: bestCandidate.zone_high, type: bestCandidate.zone_type, timeframe: bestCandidate.execution_timeframe || bestCandidate.timeframe, id: bestCandidate.zone_id };
-        state.state = bestCandidate.authorization_state === 'WATCH_ONLY' ? 'WATCH_ONLY' : 'TRADE_READY'; state.strategy = getDisplayStrategyLabel(bestCandidate.strategy_setup || bestCandidate, bestCandidate.zone_type); state.direction = bestCandidate.direction;
+        state.state = bestCandidate.authorization_state; state.authorization_state = bestCandidate.authorization_state; state.strategy = getDisplayStrategyLabel(bestCandidate.strategy_setup || bestCandidate, bestCandidate.zone_type); state.direction = bestCandidate.direction;
         state.narrative_id = bestCandidate.strategy_setup?.id || bestCandidate.id; state.execution_zone_id = zone?.id || bestCandidate.id;
         state.source = 'DETERMINISTIC_CANDIDATE' + (bestCandidate.ai_verified ? '+VERIFIED_AI_ANALYST' : ''); state.ai_supported = !!bestCandidate.ai_verified; state.deterministic_supported = true;
         state.area_of_interest = zone ? { low: zone.low, high: zone.high, source: zone.entry_region_source || zone.type || 'STRUCTURAL', timeframe: zone.timeframe, zone_id: zone.id || bestCandidate.id } : null;
@@ -8081,12 +8102,14 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.cancellation_conditions = ['Structural invalidation is breached', 'TP1 is completed before order execution', 'Pending opportunity expires']; state.target_intent = bestCandidate.target_bias || bestCandidate.strategy_setup?.target_bias || null;
         state.delivery_progress = bestCandidate.progress_to_tp1_fraction ?? bestCandidate.narrative_delivery_progress ?? null; state.remaining_reward_fraction = bestCandidate.remaining_reward_fraction ?? null;
         state.entry_reachable_today = bestCandidate.entry_reachable_today === true; state.opportunity_reachable_today = state.entry_reachable_today; state.target_viable = true;
-        state.structural_invalidation = bestCandidate.structural_invalidation || null; state.reason_code = state.state === 'WATCH_ONLY' ? 'WATCH_ONLY' : 'TRADE_READY'; state.reason = state.state === 'WATCH_ONLY'
+        state.structural_invalidation = bestCandidate.structural_invalidation || null; state.confidence = getCanonicalCandidateConfidence(bestCandidate); state.reason_code = state.state; state.reason = state.state === 'WATCH_ONLY'
             ? 'A location exists, but complete executable geometry is unavailable.'
-            : 'A deterministic opportunity is executable under the current market state.';
+            : state.state === 'SECONDARY_CANDIDATE'
+                ? 'A valid complete setup exists, but it does not meet the primary trade quality threshold.'
+                : 'A deterministic opportunity is executable under the current market state.';
         const candidatePlans = classifiedCandidates.map(candidate => ({
             ...candidate,
-            state: candidate.authorization_state === 'WATCH_ONLY' ? 'WATCH_ONLY' : 'TRADE_READY', narrative_id: candidate.strategy_setup?.id || candidate.id,
+            state: candidate.authorization_state, authorization_state: candidate.authorization_state, narrative_id: candidate.strategy_setup?.id || candidate.id,
             direction: candidate.direction, strategy: getDisplayStrategyLabel(candidate.strategy_setup || candidate, candidate.zone_type),
             trade_context_classification: candidate.top_down_context?.classification || candidate.trade_context_classification,
             area_of_interest: candidate.zone ? { low: candidate.zone.low, high: candidate.zone.high, source: candidate.zone.type, timeframe: candidate.zone.timeframe, zone_id: candidate.zone.id } : null,
@@ -8097,7 +8120,9 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             confidence: getCanonicalCandidateConfidence(candidate),
             reason: candidate.authorization_state === 'WATCH_ONLY'
                 ? 'A location exists, but complete executable geometry is unavailable.'
-                : 'A deterministic opportunity is executable under the current market state.'
+                : candidate.authorization_state === 'SECONDARY_CANDIDATE'
+                    ? 'A valid complete setup exists, but it does not meet the primary trade quality threshold.'
+                    : 'A deterministic opportunity is executable under the current market state.'
         }));
         const stack = buildOpportunityDisplayStack(candidatePlans, currentPrice, candidatePlans.find(candidate => candidate.id === (bestCandidate.strategy_setup?.id || bestCandidate.id)) || candidatePlans[0]);
         Object.assign(state, stack);
@@ -8318,7 +8343,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
 
 function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen, symbolMetadata = null, providerMetadata = null) {
     const date = new Date(Number.isFinite(asOfMs) ? asOfMs : Date.now());
-    const opportunity = ['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(today?.state) ? {
+    const opportunity = ['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY', 'SECONDARY_CANDIDATE'].includes(today?.state) ? {
         scenario: today.reason,
         area_of_interest: today.area_of_interest,
         execution_model: today.execution_model,
@@ -8334,11 +8359,12 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         pair: pairLocal,
         current_price: price,
         decision: 'WAIT',
-        confidence: ['TODAY_OPPORTUNITY', 'TRADE_READY'].includes(today?.state) ? today.confidence || 0 : 0,
+        confidence: ['TODAY_OPPORTUNITY', 'TRADE_READY', 'SECONDARY_CANDIDATE'].includes(today?.state) ? today.confidence || 0 : 0,
         // Keep the public API's developing state stable.  WATCH_ONLY is a
         // display tier inside the opportunity stack, not a new top-level trade
         // decision contract.
         status: today?.state === 'WATCH_ONLY' ? 'TODAY_OPPORTUNITY' : (today?.state || 'NO_TRADE_TODAY'),
+        authorization_state: today?.authorization_state || null,
         trade_context_classification: today?.trade_context_classification || null,
         top_down_context: today?.top_down_context || null,
         daily_bias: today?.daily_bias || null,
@@ -12694,7 +12720,7 @@ function buildPublicTradeSignal(signal = {}) {
     const draw = signal.daily_bias?.liquidity_draw || signal.daily_bias?.target_type || signal.target_type || signal.primary_target_source;
     const liquiditySummary = signal.analysis?.liquidity || (draw ? `${draw}${signal.daily_bias?.target_level != null ? ' at ' + signal.daily_bias.target_level : ''}` : null);
     if (isWait) {
-        if (['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY', 'WATCH'].includes(signal.status)) {
+        if (['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY', 'SECONDARY_CANDIDATE', 'WATCH'].includes(signal.status)) {
             const primaryRaw = signal.primary_opportunity || null;
             const primary = primaryRaw && [primaryRaw.entry_price ?? primaryRaw.entry, primaryRaw.stop_loss, primaryRaw.take_profit_1 ?? primaryRaw.tp1]
                 .every(value => Number.isFinite(Number(value))) ? primaryRaw : null;
@@ -12758,8 +12784,16 @@ function buildPublicTradeSignal(signal = {}) {
                 ? false
                 : plan.direction === 'BUY' ? Number(plan.entry_price) < planReference
                     : plan.direction === 'SELL' ? Number(plan.entry_price) > planReference : false;
-            const executablePlan = (compactPrimary || (watchGeometryComplete ? plan : null))
+            const secondaryCandidate = signal.authorization_state === 'SECONDARY_CANDIDATE'
+                || primary?.authorization_state === 'SECONDARY_CANDIDATE'
+                || plan?.authorization_state === 'SECONDARY_CANDIDATE';
+            const completePlan = (compactPrimary || (watchGeometryComplete ? plan : null))
                 && planSideValid ? (compactPrimary || plan) : null;
+            // A secondary setup keeps its complete deterministic geometry, but
+            // remains WAIT at the primary public decision level. It is exposed
+            // as a developing candidate for manual review.
+            const executablePlan = secondaryCandidate ? null : completePlan;
+            const visibleSecondaryPlan = secondaryCandidate ? completePlan : null;
             const planConfidence = [
                 plan?.confidence,
                 plan?.opportunity_quality?.deterministic_confidence,
@@ -12772,7 +12806,8 @@ function buildPublicTradeSignal(signal = {}) {
             ].find(value => value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) > 0);
             const orderType = executablePlan?.entry_price != null && executablePlan?.direction
                 ? `${executablePlan.direction}_LIMIT` : 'WAIT';
-            const watchOnly = !executablePlan;
+            const watchOnly = !executablePlan && !visibleSecondaryPlan;
+            const displayedPlan = executablePlan || visibleSecondaryPlan;
             const publicConfidenceType = watchOnly ? 'LOCATION_CONFIDENCE' : (signal.confidence_type || 'EXECUTION_CONFIDENCE');
             const publicLocationConfidence = Number(signal.location_confidence ?? plan?.confidence ?? signal.confidence);
             const publicExecutionConfidence = watchOnly ? null : Number(signal.execution_confidence ?? plan?.confidence ?? signal.confidence);
@@ -12783,11 +12818,11 @@ function buildPublicTradeSignal(signal = {}) {
                 symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
                 decision: executablePlan?.entry_price != null && executablePlan?.direction ? orderType : 'WAIT',
                 trade_type: orderType,
-                entry_price: executablePlan?.entry_price ?? null,
-                stop_loss: executablePlan?.stop_loss ?? null,
-                take_profit_1: executablePlan?.take_profit_1 ?? null,
-                take_profit_2: executablePlan?.take_profit_2 ?? null,
-                take_profit_3: executablePlan?.take_profit_3 ?? null,
+                entry_price: displayedPlan?.entry_price ?? null,
+                stop_loss: displayedPlan?.stop_loss ?? null,
+                take_profit_1: displayedPlan?.take_profit_1 ?? null,
+                take_profit_2: displayedPlan?.take_profit_2 ?? null,
+                take_profit_3: displayedPlan?.take_profit_3 ?? null,
                 confidence: watchOnly
                     ? (Number.isFinite(publicLocationConfidence) ? publicLocationConfidence : 0)
                     : (planConfidence === undefined ? 0 : Number(planConfidence)),
@@ -12797,11 +12832,11 @@ function buildPublicTradeSignal(signal = {}) {
                 has_complete_execution_geometry: !watchOnly,
                 geometry_missing: watchOnly ? (signal.geometry_missing || getGeometryMissing(primaryRaw || signal)) : [],
                 hard_validation_passed: !watchOnly && signal.hard_validation_passed !== false,
-                authorization_state: watchOnly ? 'WATCH_ONLY' : (signal.authorization_state || 'TRADE_READY'),
+                authorization_state: watchOnly ? 'WATCH_ONLY' : (secondaryCandidate ? 'SECONDARY_CANDIDATE' : (signal.authorization_state || 'TRADE_READY')),
                 selection_rank: signal.selection_rank ?? null,
                 // Preserve the legacy descriptive status for compatibility;
                 // status_code carries the normalized public state.
-                status: incompleteLocationClaim ? 'WATCH' : (signal.status || (watchOnly ? 'WATCH' : 'SETUP_READY')),
+                status: incompleteLocationClaim ? 'WATCH' : (secondaryCandidate ? 'TODAY_OPPORTUNITY' : (signal.status || (watchOnly ? 'WATCH' : 'SETUP_READY'))),
                 opportunity: plan ? {
                     id: plan.id,
                     direction: plan.direction,
@@ -12823,7 +12858,20 @@ function buildPublicTradeSignal(signal = {}) {
                     reason: plan.reason,
                     next_requirement: plan.next_requirement
                 } : (signal.opportunity || null),
-                reason: signal.reason || { code: 'DEVELOPING_SETUP', message: 'A valid developing opportunity remains for today.' },
+                candidate: visibleSecondaryPlan ? {
+                    trade_type: `${visibleSecondaryPlan.direction}_LIMIT`,
+                    entry_price: visibleSecondaryPlan.entry_price,
+                    stop_loss: visibleSecondaryPlan.stop_loss,
+                    take_profit_1: visibleSecondaryPlan.take_profit_1,
+                    take_profit_2: visibleSecondaryPlan.take_profit_2 ?? null,
+                    take_profit_3: visibleSecondaryPlan.take_profit_3 ?? null,
+                    confidence: planConfidence === undefined ? 0 : Number(planConfidence),
+                    strategy: visibleSecondaryPlan.strategy || null,
+                    location: visibleSecondaryPlan.entry_zone || null
+                } : null,
+                reason: secondaryCandidate
+                    ? { code: 'LOW_CONFIDENCE_VALID_SETUP', message: 'A valid complete setup exists, but it does not meet the primary trade quality threshold.' }
+                    : (signal.reason || { code: 'DEVELOPING_SETUP', message: 'A valid developing opportunity remains for today.' }),
                 ai_analysis: signal.ai_analysis || null,
                 analysis: {
                     trend_detection: publicTrendMap || signal.trend_detection || signal.top_down_context?.higher_timeframe || signal.structural_context || null,
@@ -12836,11 +12884,11 @@ function buildPublicTradeSignal(signal = {}) {
                 history_errors: signal.history_errors || {},
                 provider_metadata: signal.provider_metadata || null,
                 market_conditions: signal.market_conditions || null,
-                status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity || !!signal.primary_opportunity, !!executablePlan?.entry_price),
+                status_code: secondaryCandidate ? 'WATCH' : getPublicStatusCode(signal, !!plan || !!signal.opportunity || !!signal.primary_opportunity, !!executablePlan?.entry_price),
                 execution_mode: signal.execution_mode || DEFAULT_EXECUTION_MODE,
                 risk_gate: publicRiskGate,
                 execution_allowed: false,
-                manual_tracking_allowed: !watchOnly && signal.manual_tracking_allowed === true,
+                manual_tracking_allowed: !watchOnly && signal.manual_tracking_allowed !== false,
                 market_open: signal.market_open ?? null
             };
         }
@@ -13262,10 +13310,12 @@ function getTradeSummaryModel(signal = {}) {
     const publicSetupReady = (signal.status_code == null && hasSummaryGeometry
         || signal.status_code === 'SETUP_READY')
         && ['BUY_LIMIT', 'SELL_LIMIT'].includes(String(signal.decision || signal.trade_type || '').toUpperCase());
-    const watchOnly = !publicSetupReady
+    const secondaryGeometryVisible = signal.authorization_state === 'SECONDARY_CANDIDATE'
+        && hasSummaryGeometry
+        && signal.execution_allowed !== true;
+    const watchOnly = (!publicSetupReady && !secondaryGeometryVisible)
         || signal.authorization_state === 'WATCH_ONLY'
-        || signal.status_code === 'WATCH'
-        || signal.status === 'WATCH'
+        || (!secondaryGeometryVisible && (signal.status_code === 'WATCH' || signal.status === 'WATCH'))
         || !hasSummaryGeometry;
     const displayEntryValue = watchOnly ? null : entryValue;
     const displayStopValue = watchOnly ? null : stopValue;
@@ -13278,7 +13328,9 @@ function getTradeSummaryModel(signal = {}) {
             : numericStop > numericEntry && numericEntry > numericTarget ? 'SELL_LIMIT' : null
         : null;
     const resolvedDirection = watchOnly ? null : (direction || geometryDirection);
-    const type = resolvedDirection === 'BUY' || resolvedDirection === 'BUY_LIMIT' ? 'BUY LIMIT'
+    const type = secondaryGeometryVisible
+        ? `SECONDARY ${resolvedDirection === 'BUY' || resolvedDirection === 'BUY_LIMIT' ? 'BUY' : 'SELL'} LIMIT`
+        : resolvedDirection === 'BUY' || resolvedDirection === 'BUY_LIMIT' ? 'BUY LIMIT'
         : resolvedDirection === 'SELL' || resolvedDirection === 'SELL_LIMIT' ? 'SELL LIMIT' : 'WAIT';
     const trend = signal.analysis?.trend_detection || signal.trend_detection || signal.analysis?.structural_context || signal.structural_context || signal.analysis?.higher_timeframe || {};
     const indicators = signal.analysis?.technical_indicators || signal.analysis?.indicators || signal.technical_indicators || signal.indicators || {};
@@ -13315,7 +13367,7 @@ function getTradeSummaryModel(signal = {}) {
         currentPrice: price(signal.current_price),
         pair: signal.pair || '—',
         tradeType: type,
-        confidence: !publicSetupReady && signal.authorization_state !== 'WATCH_ONLY' ? '0%' : (candidateConfidence === undefined ? '0%' : `${Math.round(Number(candidateConfidence))}%`),
+        confidence: !publicSetupReady && !secondaryGeometryVisible && signal.authorization_state !== 'WATCH_ONLY' ? '0%' : (candidateConfidence === undefined ? '0%' : `${Math.round(Number(candidateConfidence))}%`),
         entry: price(displayEntryValue),
         stopLoss: price(displayStopValue),
         tp1: price(displayTp1),
@@ -13416,7 +13468,10 @@ function renderOpportunityStack(signal = {}) {
     // A watch opportunity is still useful to the manual trader: it shows the
     // validated location and the exact condition needed before a limit setup
     // can become actionable. It remains visibly separate from a primary setup.
-    el.innerHTML = renderOpportunityCard(setup, primary ? 'PRIMARY OPPORTUNITY' : 'WATCH OPPORTUNITY');
+    const label = primary?.authorization_state === 'SECONDARY_CANDIDATE'
+        ? 'SECONDARY / DEVELOPING SETUP'
+        : primary ? 'PRIMARY OPPORTUNITY' : 'WATCH OPPORTUNITY';
+    el.innerHTML = renderOpportunityCard(setup, label);
 }
 
 // ============================================
