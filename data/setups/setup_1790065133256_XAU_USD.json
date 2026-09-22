@@ -1,0 +1,1821 @@
+{
+  "id": 1790065133256,
+  "recordedAt": "2026-09-22T08:18:53.262Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-22",
+    "time": "08:18:53",
+    "pair": "XAU/USD",
+    "current_price": 4310.51762,
+    "symbol_metadata": {
+      "symbol": "XAU/USD",
+      "asset_class": "METAL",
+      "tick_size": 0.1,
+      "price_precision": 2,
+      "tick_value": null,
+      "contract_size": null,
+      "minimum_order_size": null,
+      "minimum_price_distance": null,
+      "stop_buffer": null,
+      "max_stop_pct": null,
+      "minimum_rr": null,
+      "min_sl_atr_multiplier": null,
+      "spread": null,
+      "maximum_spread": null,
+      "commission_per_unit": null,
+      "slippage_estimate": null,
+      "maximum_slippage": null,
+      "volume_reliable": null,
+      "leverage": null,
+      "trading_permissions": null,
+      "session": null,
+      "metadata_source": "HEURISTIC",
+      "metadata_complete": false
+    },
+    "market_conditions": {
+      "bid": null,
+      "ask": null,
+      "spread": null
+    },
+    "ai_analysis": {
+      "analyst_called": true,
+      "analyst_status": "ANALYST_SCHEMA_INVALID",
+      "schema_validation": {
+        "valid": false,
+        "issues": [
+          "response must be an object",
+          "market_view must be an object",
+          "hypotheses must be an array"
+        ],
+        "attempts": 2
+      },
+      "market_view": null,
+      "hypotheses_received": 0,
+      "hypotheses_verified": 0,
+      "hypotheses_rejected": 0,
+      "final_selector_called": true,
+      "selected_candidate_id": "15M-CRT-SELL-4320.69-4322.35-2-2",
+      "setups_added_from_ai": 0,
+      "error": null
+    },
+    "trend_detection": {
+      "1D": "BEARISH",
+      "4H": "BEARISH",
+      "1H": "BULLISH",
+      "15M": "BEARISH"
+    },
+    "volatility": {
+      "atr_4h": 16.71,
+      "atr_1h": 15.03,
+      "atr_15m": 10.41,
+      "atr_pct_of_price": 0.388,
+      "regime": "NORMAL"
+    },
+    "indicators": {
+      "adx_4h": 15.904968857982373,
+      "adx_1h": 28.121633408273258,
+      "rsi_4h": 43.28957802850096,
+      "macd_4h": -1.1569567786018524,
+      "macd_signal_4h": 3.8970810500800015,
+      "macd_direction_4h": "BEARISH",
+      "ema_alignment_4h": {
+        "ema9": 4355.462511376038,
+        "ema21": 4359.890682165676,
+        "ema50": 4357.3173925975825,
+        "ema200": null
+      },
+      "supertrend_4h": 4376.439140999999
+    },
+    "direction": "SELL",
+    "trade_type": "SELL",
+    "decision": "SELL",
+    "selected_candidate_id": "15M-CRT-SELL-4320.69-4322.35-2-2",
+    "strategy": "CRT+MSNR",
+    "status": "TRADE_READY",
+    "trade_context_classification": "HTF_VERIFIED_REVERSAL",
+    "top_down_context": {
+      "classification": "HTF_VERIFIED_REVERSAL",
+      "evidence_ids": [
+        "TD:4H:LIQUIDITY_SWEEP:SELL:1790038800000:4359.57799",
+        "TD:1H:MSS:SELL:1790060400000"
+      ],
+      "higher_timeframe": {
+        "daily": "1D: BEARISH",
+        "four_hour": "4H: BEARISH; BOS, LIQUIDITY_SWEEP supports SELL",
+        "one_hour": "1H: BULLISH; BOS, MSS, LIQUIDITY_SWEEP, TBS supports SELL"
+      },
+      "reason": "Higher-timeframe liquidity reversal evidence is confirmed by a 4H or 1H structure shift."
+    },
+    "daily_bias": {
+      "direction": "SELL",
+      "confidence": null,
+      "score": {
+        "BUY": 11,
+        "SELL": 21.75
+      },
+      "structural_trend_1d": "BEARISH",
+      "primary_4h_narrative": "BEARISH",
+      "target_type": "OPPOSING_MSNR",
+      "target_level": 4264.98,
+      "target_evidence_ids": [
+        "TARGET:SELL:4H:OPPOSING_MSNR:4264.98"
+      ],
+      "invalidation_type": "4H_CONFIRMED_SWING",
+      "invalidation_level": 4384.52529,
+      "invalidation_evidence_ids": [
+        "INVALIDATION:4H:SELL:4384.52529"
+      ],
+      "liquidity_draw": "OPPOSING_MSNR 4264.98",
+      "dealing_range_position": "discount",
+      "evidence_ids": [
+        "TD:1D:TREND:SELL:1789948800000",
+        "TD:4H:TREND:SELL:1790038800000",
+        "TD:4H:BOS:SELL:1790038800000",
+        "TD:4H:LIQUIDITY_SWEEP:SELL:1790038800000:4359.57799",
+        "TD:1H:BOS:SELL:1790060400000",
+        "TD:1H:MSS:SELL:1790060400000",
+        "TD:1H:LIQUIDITY_SWEEP:SELL:1790060400000:4353.12554",
+        "TD:1H:TBS:SELL:1H-TBS-SELL-16",
+        "TD:1H:TBS:SELL:1H-TBS-SELL-17",
+        "TD:1H:TBS:SELL:1H-TBS-SELL-20",
+        "TD:15M:BOS:SELL:1790064000000",
+        "TARGET:SELL:4H:OPPOSING_MSNR:4264.98",
+        "INVALIDATION:4H:SELL:4384.52529"
+      ],
+      "conflicts": [],
+      "as_of_time": 1790065106886,
+      "reason": "Evidence-weighted SELL thesis: 21.8 vs 11.0 with a remaining OPPOSING_MSNR objective."
+    },
+    "structural_context": {
+      "1D": "BEARISH",
+      "4H": "BEARISH",
+      "1H": "BULLISH"
+    },
+    "strategy_version": "1.0.0",
+    "order_type": "MARKET_AFTER_CONFIRMATION",
+    "setup_type": "CONFIRMATION_ENTRY",
+    "entry_price": 4321.6,
+    "entry_zone": {
+      "source": "CRT",
+      "low": 4320.6,
+      "high": 4322.4
+    },
+    "stop_loss": 4336.6,
+    "stop_quality": {
+      "status": "VALID_STRUCTURAL_STOP",
+      "volatility_classification": "NORMAL",
+      "risk_distance": 15.03,
+      "atr_multiple": 1.44,
+      "minimum_reasonable_distance": 10.41,
+      "preferred_minimum_distance": 10.41,
+      "warning": null
+    },
+    "stop_loss_reason": "CRT_SWEEP_EXTREME invalidation 4325.71038 plus structural buffer",
+    "structural_invalidation": {
+      "strategy": "CRT",
+      "direction": "SELL",
+      "level": 4325.71038,
+      "source": "CRT_SWEEP_EXTREME",
+      "timeframe": "15M",
+      "source_time": 1790061300000
+    },
+    "stop_buffer": 0.75,
+    "stop_buffer_components": {
+      "pip_or_tick_buffer": 0.1,
+      "spread_buffer": 0.05,
+      "volatility_noise_buffer": 0.7517023571428646,
+      "final_buffer": 0.75,
+      "preferred_noise_distance": 15.03,
+      "anchor_risk_distance": 4.94
+    },
+    "take_profit_1": 4283.9,
+    "take_profit_2": 4283.2,
+    "take_profit_3": 4282.4,
+    "risk_reward": "1:2.51",
+    "confidence": 81,
+    "patterns_detected": "CRT+MSNR+FVG+MSNR",
+    "reasoning": {
+      "primary": "CRT+MSNR SELL confirmation entry at 4321.6. TP1 4283.9: SELL_SIDE_LIQUIDITY (EXTERNAL_LIQUIDITY).",
+      "freshness": "Fresh 15M opportunity from 1.1 hours ago; fresh and actionable later today. 71% of the original reward path remains.",
+      "why_best": "Selected deterministic candidate 15M-CRT-SELL-4320.69-4322.35-2-2; target confluence: SELL_SIDE_LIQUIDITY 1H.",
+      "risk_warning": "Structural invalidation and market execution risk apply."
+    },
+    "strategy_evidence": {
+      "CRT": {
+        "range_high": 4321.52118,
+        "range_low": 4316.48465,
+        "sweep_side": "BUY_SIDE",
+        "sweep_extreme": 4325.71038,
+        "reclaim_level": 4321.52118,
+        "reclaim_bar": 195,
+        "direction": "SELL",
+        "timeframe": "15M"
+      },
+      "TBS": null,
+      "MSNR": {
+        "level": 4380.09,
+        "origin": "STRUCTURAL_MSNR",
+        "zone_low": 4378.71,
+        "zone_high": 4381.47,
+        "transition_type": "A_LEVEL_BULLISH_TO_BEARISH",
+        "role": "REACTION_RESISTANCE",
+        "source_candle_index": 186,
+        "touch_count": 1,
+        "mitigation_count": 1
+      }
+    },
+    "entry_model": "RECLAIM_RETEST",
+    "setup_timeframe": "15M",
+    "execution_timeframe": "15M",
+    "opportunity_status": "FRESH_PENDING_TODAY",
+    "event_time": 1790061300000,
+    "event_age_hours": 1.0577602777777777,
+    "current_session": "LONDON KZ",
+    "event_session": "LONDON KZ",
+    "expected_entry_window": "CURRENT_SESSION_OR_NEXT_VALID_15M_WINDOW",
+    "hours_remaining_in_relevant_session": 1.6999999999999993,
+    "still_actionable_today": true,
+    "pending_entry_quality": "HIGH",
+    "entry_reachable_today": true,
+    "distance_to_entry_atr": 1.0643132596189833,
+    "remaining_reward_fraction": 0.7060376657824794,
+    "setup_confidence": 81,
+    "authorization_state": "TRADE_READY",
+    "confidence_type": "EXECUTION_CONFIDENCE",
+    "location_confidence": 0,
+    "execution_confidence": 81,
+    "has_complete_execution_geometry": true,
+    "geometry_missing": [],
+    "hard_validation_passed": true,
+    "selection_rank": 1,
+    "quality": {
+      "final_confidence": 81,
+      "quality_breakdown": {
+        "base": 50,
+        "strategy_adjustment": 18,
+        "htf_adjustment": 4,
+        "execution_freshness_adjustment": 12.32,
+        "target_reachability_adjustment": -3.12,
+        "obstacle_adjustment": 0,
+        "delivery_progress_adjustment": 8,
+        "session_adjustment": 0,
+        "stop_quality_adjustment": 0,
+        "final_confidence": 81,
+        "quality_band": "HIGH"
+      }
+    },
+    "time_integrity": {
+      "as_of_time_ms": 1790065107937,
+      "as_of_time_utc": "2026-09-22T08:18:27.937Z",
+      "event_time_ms": 1790061300000,
+      "event_time_utc": "2026-09-22T07:15:00.000Z",
+      "zone_created_time_ms": null,
+      "zone_created_time_utc": null,
+      "event_delta_ms": 3807937,
+      "zone_delta_ms": null,
+      "strategy_timeframe": "15M",
+      "execution_timeframe": "15M",
+      "event_timestamp_source": "PROVIDER",
+      "zone_timestamp_source": "NORMALIZED_PROVIDER",
+      "failure": null
+    },
+    "target_map": [
+      {
+        "target_level": 4283.9,
+        "target_type": "EXTERNAL_LIQUIDITY",
+        "primary_target_source": "SELL_SIDE_LIQUIDITY",
+        "target_confluence": [
+          {
+            "source": "SELL_SIDE_LIQUIDITY",
+            "target_type": "EXTERNAL_LIQUIDITY",
+            "timeframe": "1H",
+            "level": 4283.94
+          }
+        ],
+        "target_timeframe": "1H",
+        "target_distance": 37.58,
+        "target_distance_atr": 2.4996595822073884,
+        "target_distance_atr_timeframe": "1H",
+        "structural_priority": 82,
+        "intervening_obstacles": [
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4304.96,
+            "high": 4308.8,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4293.32,
+            "high": 4319.63,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4299.06,
+            "high": 4308.3,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4299.23,
+            "high": 4303.65,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4296.54,
+            "high": 4302.21,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "OB",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4290.56,
+            "high": 4299.16,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4283.73,
+            "high": 4286.51,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "TBS",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4320.03,
+            "high": 4322.43,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "CRT",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "15M",
+            "low": 4316.58,
+            "high": 4318.25,
+            "freshness": "ACTIVE",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "TBS",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "15M",
+            "low": 4320.4,
+            "high": 4322.06,
+            "freshness": "AGED",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          }
+        ],
+        "intervening_liquidity": [],
+        "reachability_score": 24,
+        "target_quality": "VERY_LOW",
+        "target_reachability": {
+          "reachable": true,
+          "hard_unreachable": false,
+          "reachability_score": 24,
+          "target_quality": "VERY_LOW",
+          "reachability_class": "VERY_LOW",
+          "target_distance_atr_timeframe": "1H",
+          "intervening_obstacles": [
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4304.96,
+              "high": 4308.8,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4293.32,
+              "high": 4319.63,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4299.06,
+              "high": 4308.3,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4299.23,
+              "high": 4303.65,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4296.54,
+              "high": 4302.21,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "OB",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4290.56,
+              "high": 4299.16,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4283.73,
+              "high": 4286.51,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "TBS",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4320.03,
+              "high": 4322.43,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "CRT",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "15M",
+              "low": 4316.58,
+              "high": 4318.25,
+              "freshness": "ACTIVE",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "TBS",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "15M",
+              "low": 4320.4,
+              "high": 4322.06,
+              "freshness": "AGED",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            }
+          ],
+          "intervening_liquidity": [],
+          "structural_priority": 82,
+          "reason": "10 opposing zones, 0 liquidity levels before target"
+        },
+        "actual_rr": 2.5003326679974367
+      },
+      {
+        "target_level": 4283.2,
+        "target_type": "EXTERNAL_LIQUIDITY",
+        "primary_target_source": "SELL_SIDE_LIQUIDITY",
+        "target_confluence": [
+          {
+            "source": "SELL_SIDE_LIQUIDITY",
+            "target_type": "EXTERNAL_LIQUIDITY",
+            "timeframe": "4H",
+            "level": 4283.21
+          }
+        ],
+        "target_timeframe": "4H",
+        "target_distance": 38.31,
+        "target_distance_atr": 2.29249871118013,
+        "target_distance_atr_timeframe": "4H",
+        "structural_priority": 82,
+        "intervening_obstacles": [
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4304.96,
+            "high": 4308.8,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4293.32,
+            "high": 4319.63,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4299.06,
+            "high": 4308.3,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4299.23,
+            "high": 4303.65,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4296.54,
+            "high": 4302.21,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "OB",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4290.56,
+            "high": 4299.16,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4283.73,
+            "high": 4286.51,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "TBS",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4320.03,
+            "high": 4322.43,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "CRT",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "15M",
+            "low": 4316.58,
+            "high": 4318.25,
+            "freshness": "ACTIVE",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "TBS",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "15M",
+            "low": 4320.4,
+            "high": 4322.06,
+            "freshness": "AGED",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          }
+        ],
+        "intervening_liquidity": [],
+        "reachability_score": 29,
+        "target_quality": "VERY_LOW",
+        "target_reachability": {
+          "reachable": true,
+          "hard_unreachable": false,
+          "reachability_score": 29,
+          "target_quality": "VERY_LOW",
+          "reachability_class": "VERY_LOW",
+          "target_distance_atr_timeframe": "4H",
+          "intervening_obstacles": [
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4304.96,
+              "high": 4308.8,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4293.32,
+              "high": 4319.63,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4299.06,
+              "high": 4308.3,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4299.23,
+              "high": 4303.65,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4296.54,
+              "high": 4302.21,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "OB",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4290.56,
+              "high": 4299.16,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4283.73,
+              "high": 4286.51,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "TBS",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4320.03,
+              "high": 4322.43,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "CRT",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "15M",
+              "low": 4316.58,
+              "high": 4318.25,
+              "freshness": "ACTIVE",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "TBS",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "15M",
+              "low": 4320.4,
+              "high": 4322.06,
+              "freshness": "AGED",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            }
+          ],
+          "intervening_liquidity": [],
+          "structural_priority": 82,
+          "reason": "10 opposing zones, 0 liquidity levels before target"
+        },
+        "actual_rr": 2.5489021956088522
+      },
+      {
+        "target_level": 4282.4,
+        "target_type": "EXTERNAL_LIQUIDITY",
+        "primary_target_source": "SELL_SIDE_LIQUIDITY",
+        "target_confluence": [
+          {
+            "source": "SELL_SIDE_LIQUIDITY",
+            "target_type": "EXTERNAL_LIQUIDITY",
+            "timeframe": "1H",
+            "level": 4282.47
+          }
+        ],
+        "target_timeframe": "1H",
+        "target_distance": 39.05,
+        "target_distance_atr": 2.597437644630037,
+        "target_distance_atr_timeframe": "1H",
+        "structural_priority": 82,
+        "intervening_obstacles": [
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4304.96,
+            "high": 4308.8,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4293.32,
+            "high": 4319.63,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4299.06,
+            "high": 4308.3,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4299.23,
+            "high": 4303.65,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4296.54,
+            "high": 4302.21,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "OB",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4290.56,
+            "high": 4299.16,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "FVG",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4283.73,
+            "high": 4286.51,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "TBS",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4320.03,
+            "high": 4322.43,
+            "freshness": "FRESH",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "CRT",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "15M",
+            "low": 4316.58,
+            "high": 4318.25,
+            "freshness": "ACTIVE",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "TBS",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "15M",
+            "low": 4320.4,
+            "high": 4322.06,
+            "freshness": "AGED",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          }
+        ],
+        "intervening_liquidity": [],
+        "reachability_score": 24,
+        "target_quality": "VERY_LOW",
+        "target_reachability": {
+          "reachable": true,
+          "hard_unreachable": false,
+          "reachability_score": 24,
+          "target_quality": "VERY_LOW",
+          "reachability_class": "VERY_LOW",
+          "target_distance_atr_timeframe": "1H",
+          "intervening_obstacles": [
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4304.96,
+              "high": 4308.8,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4293.32,
+              "high": 4319.63,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4299.06,
+              "high": 4308.3,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4299.23,
+              "high": 4303.65,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4296.54,
+              "high": 4302.21,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "OB",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4290.56,
+              "high": 4299.16,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "FVG",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4283.73,
+              "high": 4286.51,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "TBS",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4320.03,
+              "high": 4322.43,
+              "freshness": "FRESH",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "CRT",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "15M",
+              "low": 4316.58,
+              "high": 4318.25,
+              "freshness": "ACTIVE",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "TBS",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "15M",
+              "low": 4320.4,
+              "high": 4322.06,
+              "freshness": "AGED",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            }
+          ],
+          "intervening_liquidity": [],
+          "structural_priority": 82,
+          "reason": "10 opposing zones, 0 liquidity levels before target"
+        },
+        "actual_rr": 2.5981370592149595
+      }
+    ],
+    "primary_target_source": "SELL_SIDE_LIQUIDITY",
+    "target_type": "EXTERNAL_LIQUIDITY",
+    "target_confluence": [
+      {
+        "source": "SELL_SIDE_LIQUIDITY",
+        "target_type": "EXTERNAL_LIQUIDITY",
+        "timeframe": "1H",
+        "level": 4283.94
+      }
+    ],
+    "strategy_detections": {
+      "CRT": {
+        "raw_count": 331,
+        "deduped_count": 113,
+        "bullish": 4,
+        "bearish": 7
+      },
+      "TBS": {
+        "raw_count": 31,
+        "deduped_count": 28,
+        "bullish": 6,
+        "bearish": 3
+      },
+      "MSNR": {
+        "raw_count": 87,
+        "deduped_count": 69,
+        "structural_count": 5,
+        "executable_count": 5,
+        "pivot_reference_count": 12,
+        "atr_fallback_count": 0
+      },
+      "combinations": {
+        "CRT_TBS": 0,
+        "CRT_MSNR": 3,
+        "TBS_MSNR": 2,
+        "CRT_TBS_MSNR": 1
+      },
+      "narratives": {
+        "strategy_narratives": 24,
+        "active_narratives": 4,
+        "invalidated_narratives": 10,
+        "completed_narratives": 8,
+        "stale_narratives": 2
+      },
+      "execution_zones": {
+        "execution_zones_discovered": 33,
+        "execution_zones_fresh": 4,
+        "fresh_execution_zones": 1,
+        "fresh_execution_zones_raw": 4,
+        "consumed_execution_zones": 5,
+        "invalidated_execution_zones": 4,
+        "pre_signal_execution_zones": 20,
+        "wrong_side_execution_zones": 0,
+        "expired_execution_zones": 2
+      }
+    },
+    "candidate_pipeline": {
+      "strategy_setups": 27,
+      "execution_seeds": 26,
+      "execution_opportunities": 36,
+      "semantic_entries": 8,
+      "raw_candidates": 16,
+      "zero_candidate_seeds": 28,
+      "seed_failure_counts": {
+        "POI_CONSUMED": 4,
+        "LTF_ISOLATED": 11,
+        "EXECUTION_NOT_CONFIRMED": 11,
+        "NO_REAL_TARGET": 12,
+        "LIFECYCLE_REJECTED": 3,
+        "TARGETS_EXIST_BUT_RR_TOO_LOW": 1,
+        "NO_DIRECTION_THESIS": 8
+      },
+      "seed_diagnostics": [
+        {
+          "seed_id": "4H-BUY-MSNR-4262.44-4267.53",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "MSNR",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "POI_CONSUMED",
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-SELL-MSNR-4378.71-4381.47",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "MSNR",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "POI_CONSUMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-SELL-MSNR-4391.67-4394.72",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "MSNR",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "POI_CONSUMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-SELL-MSNR-4399.89-4403.03",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "MSNR",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "POI_CONSUMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-BUY-CRT-4338.45-4341.12-8",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-SELL-CRT-4364.9-4367.58-7",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_REAL_TARGET"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-SELL-CRT-4372.35-4375.02-10",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_REAL_TARGET"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-BUY-CRT-4354.44-4357.12-13",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "1H-BUY-TBS-4320.03-4322.43-18",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_REAL_TARGET",
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-BUY-TBS-4333.67-4336.35-5",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_REAL_TARGET",
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "1H-BUY-TBS-4337.35-4339.76-19",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_REAL_TARGET",
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "15M-SELL-CRT-4322.13-4323.8-37",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 1,
+          "failure_reasons": [],
+          "details": [],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "15M-SELL-CRT-4320.69-4322.35-40",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 1,
+          "failure_reasons": [],
+          "details": [],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "4H-BUY-TBS-4341.58-4344.25-6",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_REAL_TARGET",
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "15M-BUY-CRT-4316.58-4318.25-33",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "1H-SELL-TBS-4351.92-4354.33-16",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_REAL_TARGET"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "1H-SELL-TBS-4355.53-4357.93-17",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_NOT_REACHABLE_TODAY"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "1H-SELL-CRT-4347.84-4350.24-25",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_REAL_TARGET"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "1H-SELL-TBS-4372.49-4374.89-20",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_NOT_REACHABLE_TODAY"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "1H-BUY-CRT-4340.77-4343.18-21",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "15M-BUY-TBS-4320.4-4322.06-31",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_REAL_TARGET",
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "15M-BUY-TBS-4331.16-4332.82-29",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_REAL_TARGET",
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "15M-SELL-CRT-4341.94-4343.61-38",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_REAL_TARGET"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "15M-SELL-CRT-4346.43-4348.09-39",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_REAL_TARGET"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "FRESH-1H-SELL-OB-4336.14-4343.29-1790053200000",
+          "execution_model": "FRESH_RETRACEMENT_LIMIT",
+          "zone_source": "OB",
+          "timeframe": "1H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "TARGETS_EXIST_BUT_RR_TOO_LOW"
+          ],
+          "details": [
+            "{\"target_pool_count\":46,\"provenance_valid_count\":46,\"directional_target_count\":28,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":4309.91,\"best_target_rr\":0.7014117647058917,\"best_target_reachability_score\":37,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "4H-SELL-FVG-4333.72-4335.98",
+          "execution_model": "PENDING_LIMIT",
+          "zone_source": "FVG",
+          "timeframe": "4H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "SETUP_EXPIRED"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "4H-SELL-OB-4347.83-4348.71",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "OB",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_DIRECTION_THESIS"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-SELL-FVG-4349.15-4351.23",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "FVG",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_DIRECTION_THESIS"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-SELL-OB-4361.29-4399.22",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "OB",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_DIRECTION_THESIS"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-SELL-OB-4379.87-4380.48",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "OB",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_DIRECTION_THESIS"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-SELL-FVG-4376.18-4392.89",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "FVG",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_DIRECTION_THESIS"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-SELL-OB-4386.93-4409.96",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "OB",
+          "timeframe": "4H",
+          "raw_candidates": 5,
+          "failure_reasons": [],
+          "details": [],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "4H-SELL-OB-4385.96-4423.87",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "OB",
+          "timeframe": "4H",
+          "raw_candidates": 5,
+          "failure_reasons": [],
+          "details": [],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "1H-SELL-FVG-4318.35-4321.52",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "FVG",
+          "timeframe": "1H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_DIRECTION_THESIS"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "1H-SELL-FVG-4325.38-4336.14",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "FVG",
+          "timeframe": "1H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_DIRECTION_THESIS"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "1H-SELL-FVG-4349.04-4351.42",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "FVG",
+          "timeframe": "1H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "NO_DIRECTION_THESIS"
+          ],
+          "details": []
+        }
+      ],
+      "structural_stop_valid": 13,
+      "structural_stops_valid": 13,
+      "target_valid": 12,
+      "rr_valid": 12,
+      "volatility_rejected": 0,
+      "target_rejected": 1,
+      "consistency_rejected": 0,
+      "context_rejected": 0,
+      "final_valid": 5,
+      "original_execution_pipeline": {
+        "seeds": 35,
+        "candidates": 16,
+        "consumed": 0,
+        "expired": 1,
+        "completed": 0
+      },
+      "fresh_execution_pipeline": {
+        "seeds": 1,
+        "candidates": 0,
+        "stop_valid": 0,
+        "target_valid": 0,
+        "rr_valid": 0,
+        "final_valid": 0,
+        "failure_counts": {
+          "TARGETS_EXIST_BUT_RR_TOO_LOW": 1
+        }
+      }
+    },
+    "ai_decision": "pending_limit",
+    "wait_condition": "Confirmation SELL at 4321.6 requires the deterministic confirmation trigger at the supplied POI; structural invalidation 4325.71038 must remain intact.",
+    "source": "Deterministic Candidate Engine + AI Selector",
+    "validation": {
+      "passed": true,
+      "localScore": 81,
+      "aiConf": 81,
+      "adjustedConfidence": 81,
+      "rr1": 2.5133,
+      "htfMatch": 2,
+      "factors": [],
+      "matchedZone": null,
+      "limitZoneStatus": {
+        "insideZone": false,
+        "distanceToZone": 10.172379999999976,
+        "pricePosition": "BELOW_ZONE"
+      },
+      "final_consistency": {
+        "valid": true,
+        "issues": [],
+        "candidate_id": "15M-CRT-SELL-4320.69-4322.35-2-2"
+      }
+    },
+    "limit_order_setup": {
+      "eligible": true,
+      "reason": "Future pending-limit setup passed deterministic validation",
+      "current_price_inside_zone_required": false,
+      "selected_zone_status": {
+        "insideZone": false,
+        "distanceToZone": 10.172379999999976,
+        "pricePosition": "BELOW_ZONE"
+      }
+    },
+    "immediate_entry": {
+      "eligible": false,
+      "reason": "Current price is outside the selected entry zone; pending limit fills at its order price",
+      "confirmation": {
+        "confirmed": false,
+        "score": 0,
+        "strength": "NONE",
+        "confirmations": [],
+        "reason": "Current price is outside the selected entry zone",
+        "shouldWait": true,
+        "isAtZone": false
+      }
+    },
+    "limitZoneStatus": {
+      "insideZone": false,
+      "distanceToZone": 10.172379999999976,
+      "pricePosition": "BELOW_ZONE"
+    },
+    "entry_consumed": false,
+    "tp1_already_reached": false,
+    "invariants": {
+      "passed": true,
+      "checks": [
+        "deterministic candidate geometry, lifecycle, target, RR, and pending-limit semantics passed"
+      ]
+    },
+    "manual_tracking_allowed": true
+  }
+}
