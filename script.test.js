@@ -991,6 +991,16 @@ describe('daily opportunity planning', () => {
         expect(ctx.applyAdaptiveCandidateToAIResult({ selected_candidate_id: selected.id }, { adaptive_setup_candidates: [candidate] }).decision).toBe('SELL_LIMIT');
     });
 
+    it('does not select a sell limit below the current price', () => {
+        const ctx = getContext();
+        const invalid = { id: 'below-market-sell', direction: 'SELL', entry: 4320, stop_loss: 4336, tp1: 4280,
+            actual_rr: 2.5, minimum_rr: 2.5, execution_geometry_valid: true, hard_validation_passed: true,
+            quality: { final_confidence: 95 } };
+        const valid = { ...invalid, id: 'above-market-sell', entry: 4330 };
+        const eligible = ctx.filterLimitCandidatesByCurrentPrice([invalid, valid], 4321.48);
+        expect(ctx.resolveDeterministicSelectorCandidate(eligible, null).id).toBe(valid.id);
+    });
+
     it('adds a closed previous-day high and low as deterministic liquidity targets', () => {
         const ctx = getContext();
         const day = t => ({ t, o: 100, h: 110, l: 90, c: 105, is_closed: true });

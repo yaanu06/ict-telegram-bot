@@ -247,17 +247,35 @@ function selectBestExecutableCandidate(candidates = []) {
 // deterministic candidate ordering. Always resolve the final candidate from
 // the complete validated pool so a weak local zone cannot outrank a stronger
 // FVG/OB/CRT/MSNR combination selected by the engine.
-function resolveDeterministicSelectorCandidate(candidates = [], requestedId = null) {
-    const best = selectBestExecutableCandidate(candidates);
-    if (best) return { ...best, ai_requested_candidate_id: requestedId || null };
+function filterLimitCandidatesByCurrentPrice(candidates = [], currentPrice = null, marketConditions = {}) {
+    const reference = Number.isFinite(Number(currentPrice)) ? Number(currentPrice) : null;
+    if (reference == null) return candidates;
+    const bid = Number(marketConditions?.bid);
+    const ask = Number(marketConditions?.ask);
+    return candidates.filter(candidate => {
+        const entry = Number(candidate?.entry);
+        if (!Number.isFinite(entry)) return false;
+        const comparison = candidate.direction === 'BUY' && Number.isFinite(ask) ? ask
+            : candidate.direction === 'SELL' && Number.isFinite(bid) ? bid : reference;
+        return candidate.direction === 'BUY' ? entry < comparison : candidate.direction === 'SELL' ? entry > comparison : false;
+    });
+}
+
+function resolveDeterministicSelectorCandidate(candidates = [], requestedId = null, currentPrice = null, marketConditions = {}) {
+    const eligible = candidates;
     // Compatibility inputs created before authorization diagnostics existed
     // may not carry the two explicit hard-validation flags. Preserve those
     // only when the supplied geometry is complete and the requested id is an
     // actual candidate; unknown ids still fail closed.
-    const legacy = candidates.find(candidate => candidate?.id === requestedId);
+    const legacy = eligible.find(candidate => candidate?.id === requestedId);
     const legacyComplete = legacy && legacy.execution_geometry_valid == null && legacy.hard_validation_passed == null
-        && hasCompleteExecutionGeometry({ ...legacy, actual_rr: legacy.actual_rr ?? legacy.rr_tp1, minimum_rr: legacy.minimum_rr ?? 2.5, execution_geometry_valid: true });
-    return legacyComplete ? { ...legacy, ai_requested_candidate_id: requestedId || null } : null;
+        && [legacy.entry, legacy.stop_loss, legacy.tp1 ?? legacy.take_profit_1].every(value => Number.isFinite(Number(value)))
+        && Number.isFinite(Number(legacy.actual_rr ?? legacy.rr_tp1 ?? 0))
+        && Number(legacy.actual_rr ?? legacy.rr_tp1) >= Number(legacy.minimum_rr ?? 2.5);
+    if (legacyComplete) return { ...legacy, ai_requested_candidate_id: requestedId || null };
+    const best = selectBestExecutableCandidate(eligible);
+    if (best) return { ...best, ai_requested_candidate_id: requestedId || null };
+    return null;
 }
 
 // ============================================
@@ -9776,7 +9794,9 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         // AI is optional interpretation. If its response is malformed or it
         // names an obsolete candidate, retain the current deterministic limit
         // candidate instead of erasing geometry and confidence.
-        const fallback = resolveDeterministicSelectorCandidate(liveMarketContext?.adaptive_setup_candidates || [], null);
+        const selectorCandidates = filterLimitCandidatesByCurrentPrice(liveMarketContext?.adaptive_setup_candidates || [],
+            liveMarketContext?.current_price, liveMarketContext?.market_conditions);
+        const fallback = resolveDeterministicSelectorCandidate(selectorCandidates, null);
         if (fallback?.id) {
             const selected = applyAdaptiveCandidateToAIResult({ selected_candidate_id: fallback.id }, liveMarketContext);
             selected.ai_decision = 'deterministic_fallback_after_ai_error';
@@ -9860,8 +9880,15 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
             // used to discard the candidate and route the scan into WATCH,
             // even though the engine had already proved the geometry.
             const selectorWait = !selectedId || ['WAIT', 'NO_TRADE'].includes(String(selector.decision || '').toUpperCase());
+            const selectorCandidates = selectorWait
+                ? filterLimitCandidatesByCurrentPrice(
+                    liveMarketContext.adaptive_setup_candidates,
+                    liveMarketContext.current_price,
+                    liveMarketContext.market_conditions
+                )
+                : liveMarketContext.adaptive_setup_candidates;
             const deterministicCandidate = resolveDeterministicSelectorCandidate(
-                liveMarketContext.adaptive_setup_candidates,
+                selectorCandidates,
                 selectorWait ? null : selectedId
             );
             if (selectorWait && deterministicCandidate?.id) {
@@ -12678,7 +12705,17 @@ function buildPublicTradeSignal(signal = {}) {
             } : null);
             const watchGeometryComplete = watch && [watch.entry_price ?? watch.entry, watch.stop_loss, watch.take_profit_1 ?? watch.tp1]
                 .every(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
-            const executablePlan = compactPrimary || (watchGeometryComplete ? plan : null);
+            const reference = Number(signal.current_price);
+            const bidReference = Number(signal.market_conditions?.bid);
+            const askReference = Number(signal.market_conditions?.ask);
+            const planReference = plan?.direction === 'SELL' && Number.isFinite(bidReference) ? bidReference
+                : plan?.direction === 'BUY' && Number.isFinite(askReference) ? askReference : reference;
+            const planSideValid = !Number.isFinite(planReference) || !Number.isFinite(Number(plan?.entry_price))
+                ? false
+                : plan.direction === 'BUY' ? Number(plan.entry_price) < planReference
+                    : plan.direction === 'SELL' ? Number(plan.entry_price) > planReference : false;
+            const executablePlan = (compactPrimary || (watchGeometryComplete ? plan : null))
+                && planSideValid ? (compactPrimary || plan) : null;
             const planConfidence = [
                 plan?.confidence,
                 plan?.opportunity_quality?.deterministic_confidence,
