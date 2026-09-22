@@ -6059,6 +6059,19 @@ describe('AI market analyst contract', () => {
             expect(result.take_profit_1).toBeNull();
         });
 
+        it('does not let the summary renderer infer a limit direction from a WATCH location', () => {
+            const ctx = getContext();
+            const model = ctx.getTradeSummaryModel({
+                pair: 'XAU/USD', current_price: 4352.72, trade_type: 'SELL_LIMIT',
+                decision: 'SELL_LIMIT', status_code: 'WATCH', authorization_state: 'WATCH_ONLY',
+                confidence: 78, entry_price: null, stop_loss: null, take_profit_1: 4351.75,
+                analysis: { trend_detection: { '1D': 'BEARISH' } }
+            });
+            expect(model.tradeType).toBe('WAIT');
+            expect(model.entry).not.toMatch(/[0-9]/);
+            expect(model.stopLoss).not.toMatch(/[0-9]/);
+        });
+
         it('keeps a complete 58% candidate as SECONDARY_CANDIDATE', () => {
             const ctx = getContext();
             const result = ctx.classifyCandidateAuthorization(executable('C-58', 58));

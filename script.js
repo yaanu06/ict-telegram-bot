@@ -12437,6 +12437,10 @@ function buildPublicTradeSignal(signal = {}) {
                 execution_timeframe: watch.execution_timeframe || null,
                 entry_price: watch.entry_price ?? watch.entry ?? null,
                 entry_zone: watch.entry_zone || watch.execution_zone || watch.area_of_interest || watch.location || null,
+                stop_loss: watch.stop_loss ?? null,
+                take_profit_1: watch.take_profit_1 ?? watch.tp1 ?? null,
+                take_profit_2: watch.take_profit_2 ?? watch.tp2 ?? null,
+                take_profit_3: watch.take_profit_3 ?? watch.tp3 ?? null,
                 execution_model: watch.execution_model || null,
                 state: watch.state || watch.lifecycle_state || null,
                 target_intent: watch.target_intent || null,
@@ -12446,6 +12450,9 @@ function buildPublicTradeSignal(signal = {}) {
                 reason: watch.reason || null,
                 next_requirement: watch.next_requirement || []
             } : null);
+            const watchGeometryComplete = watch && [watch.entry_price ?? watch.entry, watch.stop_loss, watch.take_profit_1 ?? watch.tp1]
+                .every(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
+            const executablePlan = compactPrimary || (watchGeometryComplete ? plan : null);
             const planConfidence = [
                 plan?.confidence,
                 plan?.opportunity_quality?.deterministic_confidence,
@@ -12456,9 +12463,9 @@ function buildPublicTradeSignal(signal = {}) {
                 signal.opportunity?.confidence,
                 signal.confidence
             ].find(value => value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) > 0);
-            const orderType = compactPrimary?.entry_price != null && compactPrimary?.direction
-                ? `${compactPrimary.direction}_LIMIT` : 'WAIT';
-            const watchOnly = !compactPrimary;
+            const orderType = executablePlan?.entry_price != null && executablePlan?.direction
+                ? `${executablePlan.direction}_LIMIT` : 'WAIT';
+            const watchOnly = !executablePlan;
             const publicConfidenceType = watchOnly ? 'LOCATION_CONFIDENCE' : (signal.confidence_type || 'EXECUTION_CONFIDENCE');
             const publicLocationConfidence = Number(signal.location_confidence ?? plan?.confidence ?? signal.confidence);
             const publicExecutionConfidence = watchOnly ? null : Number(signal.execution_confidence ?? plan?.confidence ?? signal.confidence);
@@ -12467,13 +12474,13 @@ function buildPublicTradeSignal(signal = {}) {
                 pair: signal.pair,
                 current_price: signal.current_price,
                 symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
-                decision: compactPrimary?.entry_price != null && compactPrimary?.direction ? orderType : 'WAIT',
+                decision: executablePlan?.entry_price != null && executablePlan?.direction ? orderType : 'WAIT',
                 trade_type: orderType,
-                entry_price: compactPrimary?.entry_price ?? null,
-                stop_loss: compactPrimary?.stop_loss ?? null,
-                take_profit_1: compactPrimary?.take_profit_1 ?? null,
-                take_profit_2: compactPrimary?.take_profit_2 ?? null,
-                take_profit_3: compactPrimary?.take_profit_3 ?? null,
+                entry_price: executablePlan?.entry_price ?? null,
+                stop_loss: executablePlan?.stop_loss ?? null,
+                take_profit_1: executablePlan?.take_profit_1 ?? null,
+                take_profit_2: executablePlan?.take_profit_2 ?? null,
+                take_profit_3: executablePlan?.take_profit_3 ?? null,
                 confidence: watchOnly
                     ? (Number.isFinite(publicLocationConfidence) ? publicLocationConfidence : 0)
                     : (planConfidence === undefined ? 0 : Number(planConfidence)),
@@ -12522,7 +12529,7 @@ function buildPublicTradeSignal(signal = {}) {
                 history_errors: signal.history_errors || {},
                 provider_metadata: signal.provider_metadata || null,
                 market_conditions: signal.market_conditions || null,
-                status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity || !!signal.primary_opportunity, !!compactPrimary?.entry_price),
+                status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity || !!signal.primary_opportunity, !!executablePlan?.entry_price),
                 execution_mode: signal.execution_mode || DEFAULT_EXECUTION_MODE,
                 risk_gate: publicRiskGate,
                 execution_allowed: false,
@@ -12857,6 +12864,12 @@ function getTradeSummaryModel(signal = {}) {
     const candidateConfidence = candidateConfidenceValues.find(value => Number(value) > 0) ?? candidateConfidenceValues[0];
     const orderLabels = [signal.trade_type, signal.decision].map(value => String(value || '').toUpperCase());
     const explicitLimit = orderLabels.find(value => ['BUY_LIMIT', 'SELL_LIMIT'].includes(value));
+    const hasSummaryGeometry = [entryValue, stopValue, tp1Value]
+        .every(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
+    const watchOnly = signal.authorization_state === 'WATCH_ONLY'
+        || signal.status_code === 'WATCH'
+        || signal.status === 'WATCH'
+        || !hasSummaryGeometry;
     const direction = explicitLimit || [signal.direction, setup.direction, signal.opportunity?.direction, signal.primary_opportunity?.direction]
         .map(value => String(value || '').toUpperCase())
         .find(value => ['BUY', 'SELL', 'BUY_LIMIT', 'SELL_LIMIT'].includes(value));
@@ -12865,7 +12878,7 @@ function getTradeSummaryModel(signal = {}) {
         ? numericStop < numericEntry && numericEntry < numericTarget ? 'BUY_LIMIT'
             : numericStop > numericEntry && numericEntry > numericTarget ? 'SELL_LIMIT' : null
         : null;
-    const resolvedDirection = direction || geometryDirection;
+    const resolvedDirection = watchOnly ? null : (direction || geometryDirection);
     const type = resolvedDirection === 'BUY' || resolvedDirection === 'BUY_LIMIT' ? 'BUY LIMIT'
         : resolvedDirection === 'SELL' || resolvedDirection === 'SELL_LIMIT' ? 'SELL LIMIT' : 'WAIT';
     const trend = signal.analysis?.trend_detection || signal.trend_detection || signal.analysis?.structural_context || signal.structural_context || signal.analysis?.higher_timeframe || {};
