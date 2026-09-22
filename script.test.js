@@ -5311,6 +5311,12 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.validatePublicTradeSignal({ ...signal, status_code: 'SETUP_READY' }).valid).toBe(true);
     });
 
+    it('keeps location types out of the displayed strategy label', () => {
+        const ctx = getContext();
+        expect(ctx.getDisplayStrategyLabel({ label: 'OB', primary: 'OB' }, 'OB')).toBe('ICT');
+        expect(ctx.getDisplayStrategyLabel({ label: 'CRT+MSNR+FVG', primary: 'CRT' }, 'FVG')).toBe('CRT+MSNR');
+    });
+
     it('preserves stop quality warnings for manual review', () => {
         const ctx = getContext();
         const signal = ctx.buildPublicTradeSignal({

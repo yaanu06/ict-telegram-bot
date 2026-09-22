@@ -261,6 +261,17 @@ function filterLimitCandidatesByCurrentPrice(candidates = [], currentPrice = nul
     });
 }
 
+function getDisplayStrategyLabel(setup = {}, zoneType = null) {
+    const locationOnly = new Set(['FVG', 'OB', 'FLIP', 'DEMAND', 'SUPPLY', 'ORDER_BLOCK', 'FAIR_VALUE_GAP']);
+    const raw = [setup.label, setup.strategy_label, setup.primary]
+        .flatMap(value => String(value || '').split('+'))
+        .map(value => value.trim().toUpperCase())
+        .filter(Boolean)
+        .filter(value => !locationOnly.has(value));
+    const parts = [...new Set(raw)];
+    return parts.length ? parts.join('+') : 'ICT';
+}
+
 function resolveDeterministicSelectorCandidate(candidates = [], requestedId = null, currentPrice = null, marketConditions = {}) {
     const eligible = candidates;
     // Compatibility inputs created before authorization diagnostics existed
@@ -6458,11 +6469,11 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
         console.log('AI numeric override ignored', { selected_candidate_id: id, fields: numericOverrideFields.map(([field]) => field) });
     }
     aiResult.direction = candidate.direction;
-    const strategyParts = [candidate.strategy_setup?.label, candidate.strategy_setup?.primary, candidate.strategy_label, candidate.zone_type]
-        .map(value => String(value || '').trim())
-        .filter(Boolean)
-        .flatMap(value => value.split('+').map(part => part.trim()).filter(Boolean));
-    aiResult.strategy_label = [...new Set(strategyParts)].join('+') || candidate.zone_type || null;
+    aiResult.strategy_label = getDisplayStrategyLabel({
+        label: candidate.strategy_setup?.label,
+        primary: candidate.strategy_setup?.primary,
+        strategy_label: candidate.strategy_label
+    }, candidate.zone_type);
     const explicitConfirmationEntry = String(candidate.execution_model || candidate.entry_model || '').toUpperCase() === 'CONFIRMATION_ENTRY';
     const verifiedReversal = candidate.trade_context_classification === 'HTF_VERIFIED_REVERSAL'
         || candidate.top_down_context?.classification === 'HTF_VERIFIED_REVERSAL';
@@ -8242,7 +8253,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             opportunityQuality.execution_state = 'EXECUTION_AVAILABLE';
             opportunityQuality.rank_reasons = [...new Set([...(opportunityQuality.rank_reasons || []), 'HTF_ALIGNED_LIMIT'])];
         }
-        plans.push({ state: 'TODAY_OPPORTUNITY', trade_context_classification: topDown.classification, top_down_context: topDown, bias: setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH', strategy: setup.label || setup.primary, direction: setup.direction,
+        plans.push({ state: 'TODAY_OPPORTUNITY', trade_context_classification: topDown.classification, top_down_context: topDown, bias: setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH', strategy: getDisplayStrategyLabel(setup, planArea?.type), zone_type: planArea?.type || null, direction: setup.direction,
             narrative_id: setup.id || null, execution_zone_id: zone?.id || null, source: setup.ai_verified ? 'VERIFIED_AI_HYPOTHESIS' : 'DETERMINISTIC_NARRATIVE',
             ai_supported: !!setup.ai_verified || !!aiHypothesis, deterministic_supported: true, area_of_interest: { low: Number(planArea.low), high: Number(planArea.high), source, timeframe: planArea.timeframe || executionTimeframe, zone_id: planArea.id || null },
             execution_model: pendingPlanExecutable ? 'PENDING_LIMIT' : plan.execution_model, activation_conditions: !zone
