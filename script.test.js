@@ -6105,6 +6105,22 @@ describe('AI market analyst contract', () => {
             expect(result.has_complete_execution_geometry).toBe(true);
         });
 
+        it('uses execution confidence instead of location confidence for a complete pending plan', () => {
+            const ctx = getContext();
+            const quality = ctx.buildOpportunityQuality(
+                { id: 'ob-location', direction: 'SELL', setup_confidence: 18, primary: 'ICT',
+                    narrative_state: 'ACTIVE', execution_zone: { type: 'OB', low: 4398, high: 4399 } },
+                { zone: { type: 'OB', low: 4398, high: 4399 }, execution_model: 'PENDING_LIMIT',
+                    target: { level: 4200, source: 'SELL_SIDE_LIQUIDITY', structural_priority: 90 },
+                    metrics: { opportunity_reachable_today: true } },
+                { daily_bias: { direction: 'SELL' }, timeframe_context: {
+                    '1D': { effective_trend: 'BEARISH' }, '4H': { effective_trend: 'BEARISH' }, '1H': { effective_trend: 'BULLISH' }
+                } },
+                { classification: 'HTF_ALIGNED_CONTINUATION' }
+            );
+            expect(quality.deterministic_confidence).toBeGreaterThan(18);
+        });
+
         it('publishes a complete secondary candidate with executable geometry intact', () => {
             const ctx = getContext();
             const result = ctx.buildPublicTradeSignal({

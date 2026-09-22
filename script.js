@@ -8183,8 +8183,15 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             reason: !zone ? 'A valid current-market narrative and location exist, but no execution zone has formed yet.' : plan.execution_model === 'PENDING_LIMIT' ? 'A deterministic pending limit remains valid for the remainder of today.' : (inside ? 'A valid strategy area is active, but deterministic confirmation is not yet present.' : 'A valid strategy narrative remains actionable today; wait for price to reach the deterministic area and activate it.'),
             setup_timeframe: setup.setup_timeframe || setup.timeframe, execution_timeframe: executionTimeframe,
             entry: pendingGeometry?.entry ?? null, stop_loss: pendingGeometry?.stop_loss ?? null, tp1: pendingGeometry?.tp1 ?? null, tp2: pendingGeometry?.tp2 ?? null, tp3: pendingGeometry?.tp3 ?? null,
-            rr: pendingGeometry?.rr ?? null, confidence: Number(setup.setup_confidence) > 0 && Number.isFinite(Number(setup.setup_confidence))
-                ? Number(setup.setup_confidence) : opportunityQuality.deterministic_confidence,
+            rr: pendingGeometry?.rr ?? null,
+            // Once deterministic geometry exists, use execution confidence
+            // from the planner. setup_confidence may describe only the raw
+            // location (for example an OB/FLIP) and must not downgrade a
+            // fully validated limit plan.
+            confidence: pendingGeometryValid
+                ? opportunityQuality.deterministic_confidence
+                : (Number(setup.setup_confidence) > 0 && Number.isFinite(Number(setup.setup_confidence))
+                    ? Number(setup.setup_confidence) : opportunityQuality.deterministic_confidence),
             opportunity_quality: opportunityQuality, watch_only: opportunityQuality.watch_only });
         if (!currentSetupIds.has(setup.id || setup.primary)) state.fresh_current_market_opportunities.push(setup.id || setup.primary);
     }
