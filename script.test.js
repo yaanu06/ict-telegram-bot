@@ -2065,7 +2065,22 @@ describe('getQuoteDirection', () => {
         expect(summary).toContain('Confidence: 76%');
         expect(summary).toContain('Entry Price: 98');
         expect(summary).toContain('Technical Indicators: ADX 4H: 24.50');
-        expect(summary).toContain('Type: ICT · FVG');
+        expect(summary).toContain('Type: ICT');
+        expect(summary).not.toMatch(/Type: ICT.*FVG/);
+    });
+
+    it('keeps strategy labels separate from FVG and OB entry locations', () => {
+        const ctx = getContext();
+        expect(ctx.getDisplayStrategyLabel({ strategy_label: 'CRT+TBS' }, 'FVG')).toBe('CRT+TBS');
+        expect(ctx.getDisplayStrategyLabel({ strategy_label: 'MSNR+CRT' }, 'OB')).toBe('MSNR+CRT');
+        expect(ctx.getDisplayStrategyLabel({ strategy_label: 'FVG' }, 'FVG')).toBe('ICT');
+        const signal = ctx.buildPublicTradeSignal({
+            pair: 'XAU/USD', current_price: 4300, decision: 'SELL_LIMIT', strategy: 'CRT+TBS',
+            entry: 4310, stop_loss: 4320, tp1: 4280,
+            entry_zone: { source: 'FVG', low: 4309, high: 4311 }
+        });
+        expect(ctx.getTradeSummaryModel(signal).type).toBe('CRT+TBS');
+        expect(ctx.getTradeSummaryModel(signal).type).not.toBe('FVG');
     });
 
     it('renders a compact trade summary while keeping raw JSON hidden', () => {

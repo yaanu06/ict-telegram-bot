@@ -1937,6 +1937,19 @@ function narrativeEventIndex(setup, data) {
     return Number.isInteger(index) && index >= 0 && index < data.length ? index : -1;
 }
 
+// Strategy labels describe the setup logic. Zone types describe the price
+// location used for entry. Keep those concepts separate in every public view.
+function getDisplayStrategyLabel(setup = {}, zoneType = null) {
+    const raw = setup?.strategy_label || setup?.label || setup?.primary || setup?.strategy || null;
+    const locationOnly = new Set(['FVG', 'OB', 'FLIP', 'DEMAND', 'SUPPLY', 'ORDER_BLOCK', 'FAIR_VALUE_GAP']);
+    const parts = String(raw || '')
+        .split(/[+|,·]/)
+        .map(value => value.trim().toUpperCase())
+        .filter(Boolean)
+        .filter(value => !locationOnly.has(value));
+    return parts.length ? parts.join('+') : 'ICT';
+}
+
 function isDirectionalDisplacement(candle, direction, atrValue) {
     if (!candle) return false;
     const range = Number(candle.h) - Number(candle.l);
@@ -6213,6 +6226,7 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.remaining_reward_fraction = candidate.remaining_reward_fraction ?? aiResult.setup_lifecycle?.remaining_reward_fraction ?? null;
     aiResult.setup_confidence = getDeterministicCandidateConfidence(candidate);
     aiResult.strategy_setup = candidate.strategy_setup || null;
+    aiResult.strategy_label = getDisplayStrategyLabel(candidate, candidate.zone_type);
     aiResult.strategy_narrative = {
         state: candidate.narrative_state || candidate.strategy_setup?.narrative_state || 'ACTIVE',
         primary: candidate.strategy_setup?.primary || candidate.strategy_label || null,
@@ -7683,7 +7697,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.top_down_context = bestCandidate.top_down_context || classifyTopDownTrade(bestCandidate, timeframeContext);
         state.trade_context_classification = state.top_down_context.classification;
         const zone = bestCandidate.zone || { low: bestCandidate.zone_low, high: bestCandidate.zone_high, type: bestCandidate.zone_type, timeframe: bestCandidate.execution_timeframe || bestCandidate.timeframe, id: bestCandidate.zone_id };
-        state.state = 'TRADE_READY'; state.strategy = bestCandidate.strategy_label || bestCandidate.zone_type || null; state.direction = bestCandidate.direction;
+        state.state = 'TRADE_READY'; state.strategy = getDisplayStrategyLabel(bestCandidate, bestCandidate.zone_type); state.direction = bestCandidate.direction;
         state.narrative_id = bestCandidate.strategy_setup?.id || bestCandidate.id; state.execution_zone_id = zone?.id || bestCandidate.id;
         state.source = 'DETERMINISTIC_CANDIDATE' + (bestCandidate.ai_verified ? '+VERIFIED_AI_ANALYST' : ''); state.ai_supported = !!bestCandidate.ai_verified; state.deterministic_supported = true;
         state.area_of_interest = zone ? { low: zone.low, high: zone.high, source: zone.entry_region_source || zone.type || 'STRUCTURAL', timeframe: zone.timeframe, zone_id: zone.id || bestCandidate.id } : null;
@@ -7695,7 +7709,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         const candidatePlans = (validCandidates || []).map(candidate => ({
             ...candidate,
             state: 'TRADE_READY', narrative_id: candidate.strategy_setup?.id || candidate.id,
-            direction: candidate.direction, strategy: candidate.strategy_label || candidate.zone_type || null,
+            direction: candidate.direction, strategy: getDisplayStrategyLabel(candidate, candidate.zone_type),
             trade_context_classification: candidate.top_down_context?.classification || candidate.trade_context_classification,
             area_of_interest: candidate.zone ? { low: candidate.zone.low, high: candidate.zone.high, source: candidate.zone.type, timeframe: candidate.zone.timeframe, zone_id: candidate.zone.id } : null,
             execution_zone: candidate.zone, target: candidate.target_map?.[0] || candidate.target || null,
@@ -7777,7 +7791,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
                     target: selectedTargets.tp1, rr: selectedTargets.tp1.rr };
             }
         }
-        plans.push({ state: 'TODAY_OPPORTUNITY', trade_context_classification: topDown.classification, top_down_context: topDown, bias: setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH', strategy: setup.label || setup.primary, direction: setup.direction,
+        plans.push({ state: 'TODAY_OPPORTUNITY', trade_context_classification: topDown.classification, top_down_context: topDown, bias: setup.direction === 'BUY' ? 'BULLISH' : 'BEARISH', strategy: getDisplayStrategyLabel(setup, source), direction: setup.direction,
             narrative_id: setup.id || null, execution_zone_id: zone?.id || null, source: setup.ai_verified ? 'VERIFIED_AI_HYPOTHESIS' : 'DETERMINISTIC_NARRATIVE',
             ai_supported: !!setup.ai_verified || !!aiHypothesis, deterministic_supported: true, area_of_interest: { low: Number(planArea.low), high: Number(planArea.high), source, timeframe: planArea.timeframe || executionTimeframe, zone_id: planArea.id || null },
             execution_model: plan.execution_model, activation_conditions: !zone
@@ -12189,7 +12203,12 @@ function buildPublicTradeSignal(signal = {}) {
         };
     }
     const reasoning = signal.reasoning || {};
-    const strategy = signal.strategy || signal.strategy_label || signal.strategy_setup?.label || null;
+    const strategy = getDisplayStrategyLabel({
+        strategy_label: signal.strategy_label,
+        label: signal.strategy_setup?.label,
+        primary: signal.strategy_setup?.primary,
+        strategy: signal.analysis?.type || signal.strategy
+    }, signal.entry_zone?.source || signal.zone_type);
     const requestedDecision = String(signal.decision || signal.trade_type || 'WAIT').toUpperCase();
     const publicDecision = requestedDecision === 'BUY' ? 'BUY_LIMIT'
         : requestedDecision === 'SELL' ? 'SELL_LIMIT'
@@ -12495,8 +12514,12 @@ function getTradeSummaryModel(signal = {}) {
         || setup.reason
         || signal.analysis?.reason
         || 'No current setup analysis.';
-    const setupType = setup.strategy || signal.analysis?.type || signal.strategy || location.source || '—';
-    const source = location.source || location.type;
+    const setupType = getDisplayStrategyLabel({
+        strategy_label: setup.strategy || signal.strategy_label,
+        label: signal.strategy_setup?.label,
+        primary: signal.strategy_setup?.primary,
+        strategy: signal.analysis?.type || signal.strategy
+    }, location.source || location.type);
     return {
         bot: 'ICT Trading Bot Pro',
         date: signal.date || '—',
@@ -12513,7 +12536,7 @@ function getTradeSummaryModel(signal = {}) {
         trend: trendText || '—',
         volatility: signal.analysis?.volatility_level || signal.analysis?.volatility?.regime || (typeof signal.analysis?.volatility === 'string' ? signal.analysis.volatility : null) || signal.volatility_level || signal.volatility?.regime || '—',
         indicators: indicatorParts.join(' · ') || '—',
-        type: source && source !== setupType ? `${setupType} · ${source}` : setupType
+        type: setupType
     };
 }
 
