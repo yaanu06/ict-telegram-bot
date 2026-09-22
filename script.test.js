@@ -6156,5 +6156,18 @@ describe('AI market analyst contract', () => {
             };
             expect(ctx.compareOpportunityDisplayPlans(alignedSupply, localDemand)).toBeLessThan(0);
         });
+
+        it('normalizes fallback FX geometry to the symbol tick before validation', () => {
+            const ctx = getContext();
+            const result = ctx.normalizeAndValidateCandidate({
+                direction: 'BUY', entry: 0.70878, stop_loss: 0.7082, tp1: 0.7105,
+                entry_region_low: 0.7085, entry_region_high: 0.7090,
+                structural_invalidation: 0.7083
+            }, { pair: 'AUD/USD', symbol_metadata: { asset_class: 'FOREX', tick_size: 0.0001, price_precision: 5 } });
+            expect(result.valid).toBe(true);
+            expect(result.candidate.entry).toBe(0.7087);
+            expect(result.candidate.stop_loss).toBe(0.7082);
+            expect(result.candidate.tp1).toBe(0.7105);
+        });
     });
 });

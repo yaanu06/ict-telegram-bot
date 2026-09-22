@@ -8088,6 +8088,52 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
                 }
             }
         }
+        if (pendingGeometry) {
+            const rawInvalidation = setup?.structural_invalidation?.level
+                ?? setup?.structural_invalidation
+                ?? geometrySourceZone?.structural_invalidation?.level
+                ?? geometrySourceZone?.structural_invalidation
+                ?? (setup.direction === 'BUY' ? geometrySourceZone?.low : geometrySourceZone?.high);
+            const normalized = normalizeAndValidateCandidate({
+                direction: setup.direction,
+                entry: pendingGeometry.entry,
+                stop_loss: pendingGeometry.stop_loss,
+                tp1: pendingGeometry.tp1,
+                tp2: pendingGeometry.tp2,
+                tp3: pendingGeometry.tp3,
+                entry_region_low: geometrySourceZone?.low,
+                entry_region_high: geometrySourceZone?.high,
+                zone_low: geometrySourceZone?.low,
+                zone_high: geometrySourceZone?.high,
+                structural_invalidation: rawInvalidation,
+                timeframe: executionTimeframe,
+                id: setup.id || null
+            }, {
+                pair: pairLocal,
+                symbol_metadata: symbolMetadata || {},
+                risk_constraints: marketContext?.risk_constraints,
+                bid: marketContext?.market_conditions?.bid,
+                ask: marketContext?.market_conditions?.ask
+            });
+            if (normalized.valid) {
+                pendingGeometry = {
+                    ...pendingGeometry,
+                    entry: normalized.candidate.entry,
+                    stop_loss: normalized.candidate.stop_loss,
+                    tp1: normalized.candidate.tp1,
+                    tp2: normalized.candidate.tp2 ?? null,
+                    tp3: normalized.candidate.tp3 ?? null,
+                    rr: normalized.candidate.actual_rr
+                };
+            } else {
+                console.log('PENDING GEOMETRY REJECTED AFTER NORMALIZATION', {
+                    setup_id: setup.id || null,
+                    direction: setup.direction,
+                    reason: normalized.reason
+                });
+                pendingGeometry = null;
+            }
+        }
         const pendingMinimumRR = Number(marketContext?.risk_constraints?.minimum_rr) || getMarketSettings(pairLocal, symbolMetadata || {}).targetRR || 2.5;
         const pendingGeometryValid = !!pendingGeometry
             && Number.isFinite(Number(pendingGeometry.entry))
