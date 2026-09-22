@@ -5292,6 +5292,15 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.validatePublicTradeSignal({ pair: 'EUR/USD', decision: 'WAIT', status_code: 'DATA_BLOCKED', execution_allowed: 'yes' }).valid).toBe(false);
     });
 
+    it('uses selected opportunity bounds when normalizing a ready limit signal', () => {
+        const ctx = getContext();
+        const signal = ctx.normalizePublicReadySignal({ pair: 'XAU/USD', decision: 'SELL_LIMIT', current_price: 4301.28,
+            entry: 4321.6, stop_loss: 4336.4, tp1: 4283.9,
+            selected_zone: { type: 'FVG', low: 4320, high: 4323 } });
+        expect(signal.entry_zone).toMatchObject({ low: 4320, high: 4323 });
+        expect(ctx.validatePublicTradeSignal({ ...signal, status_code: 'SETUP_READY' }).valid).toBe(true);
+    });
+
     it('preserves stop quality warnings for manual review', () => {
         const ctx = getContext();
         const signal = ctx.buildPublicTradeSignal({

@@ -9771,13 +9771,26 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
     }
     const requestStartedAt = scanClock();
     lastAIRequestError = null;
-    const noTradeAfterInvalidAI = reason => ({
-        decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
-        reasoning: { primary: `AI output rejected after ${retryCount + 1} attempts: ${reason}` },
-        ai_decision: 'skip', noTrade: true,
-        wait_condition: `AI output rejected after ${retryCount + 1} attempts: ${reason}`,
-        schema_validation: { valid: false, issues: [reason], attempts: retryCount + 1 }
-    });
+    const noTradeAfterInvalidAI = reason => {
+        // AI is optional interpretation. If its response is malformed or it
+        // names an obsolete candidate, retain the current deterministic limit
+        // candidate instead of erasing geometry and confidence.
+        const fallback = resolveDeterministicSelectorCandidate(liveMarketContext?.adaptive_setup_candidates || [], null);
+        if (fallback?.id) {
+            const selected = applyAdaptiveCandidateToAIResult({ selected_candidate_id: fallback.id }, liveMarketContext);
+            selected.ai_decision = 'deterministic_fallback_after_ai_error';
+            selected.ai_error = reason;
+            selected.schema_validation = { valid: false, issues: [reason], attempts: retryCount + 1 };
+            return selected;
+        }
+        return {
+            decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
+            reasoning: { primary: `AI output rejected after ${retryCount + 1} attempts: ${reason}` },
+            ai_decision: 'skip', noTrade: true,
+            wait_condition: `AI output rejected after ${retryCount + 1} attempts: ${reason}`,
+            schema_validation: { valid: false, issues: [reason], attempts: retryCount + 1 }
+        };
+    };
     const retryInvalidAI = reason => retryCount < 1
         ? askAIToFindSetup(
             `${marketData}\n\nCORRECTION: Your previous response was invalid (${reason}). Return only the exact JSON contract requested above. Do not add markdown or extra fields.`,
@@ -12996,7 +13009,20 @@ function normalizePublicReadySignal(signal = {}) {
     const entry = signal.entry ?? signal.entry_price;
     const tp1 = signal.tp1 ?? signal.take_profit_1;
     if (![entry, signal.stop_loss, tp1].every(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)))) return signal;
-    const zone = signal.entry_zone || signal.zone || {};
+    const zoneSource = signal.entry_zone
+        || signal.selected_zone
+        || signal.zone
+        || signal.opportunity?.area_of_interest
+        || signal.primary_opportunity?.entry_zone
+        || signal.primary_opportunity?.area_of_interest
+        || signal.watch_setups?.[0]?.entry_zone
+        || signal.watch_setups?.[0]?.area_of_interest
+        || {};
+    const zone = {
+        ...zoneSource,
+        low: zoneSource.low ?? signal.entry_region_low ?? signal.zone_low,
+        high: zoneSource.high ?? signal.entry_region_high ?? signal.zone_high
+    };
     const direction = decision === 'BUY_LIMIT' ? 'BUY' : 'SELL';
     const metadata = signal.symbol_metadata || getSymbolMetadata(signal.pair);
     const directNormalized = {
