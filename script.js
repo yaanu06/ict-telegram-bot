@@ -12898,14 +12898,20 @@ function getTradeSummaryModel(signal = {}) {
     const explicitLimit = orderLabels.find(value => ['BUY_LIMIT', 'SELL_LIMIT'].includes(value));
     const hasSummaryGeometry = [entryValue, stopValue, tp1Value]
         .every(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
-    const watchOnly = signal.authorization_state === 'WATCH_ONLY'
+    const publicSetupReady = (signal.status_code == null && hasSummaryGeometry
+        || signal.status_code === 'SETUP_READY')
+        && ['BUY_LIMIT', 'SELL_LIMIT'].includes(String(signal.decision || signal.trade_type || '').toUpperCase());
+    const watchOnly = !publicSetupReady
+        || signal.authorization_state === 'WATCH_ONLY'
         || signal.status_code === 'WATCH'
         || signal.status === 'WATCH'
         || !hasSummaryGeometry;
+    const displayEntryValue = watchOnly ? null : entryValue;
+    const displayStopValue = watchOnly ? null : stopValue;
     const direction = explicitLimit || [signal.direction, setup.direction, signal.opportunity?.direction, signal.primary_opportunity?.direction]
         .map(value => String(value || '').toUpperCase())
         .find(value => ['BUY', 'SELL', 'BUY_LIMIT', 'SELL_LIMIT'].includes(value));
-    const numericEntry = Number(entryValue), numericStop = Number(stopValue), numericTarget = Number(tp1Value);
+    const numericEntry = Number(displayEntryValue), numericStop = Number(displayStopValue), numericTarget = Number(tp1Value);
     const geometryDirection = Number.isFinite(numericEntry) && Number.isFinite(numericStop) && Number.isFinite(numericTarget)
         ? numericStop < numericEntry && numericEntry < numericTarget ? 'BUY_LIMIT'
             : numericStop > numericEntry && numericEntry > numericTarget ? 'SELL_LIMIT' : null
@@ -12948,9 +12954,9 @@ function getTradeSummaryModel(signal = {}) {
         currentPrice: price(signal.current_price),
         pair: signal.pair || '—',
         tradeType: type,
-        confidence: candidateConfidence === undefined ? '0%' : `${Math.round(Number(candidateConfidence))}%`,
-        entry: price(entryValue),
-        stopLoss: price(stopValue),
+        confidence: !publicSetupReady && signal.authorization_state !== 'WATCH_ONLY' ? '0%' : (candidateConfidence === undefined ? '0%' : `${Math.round(Number(candidateConfidence))}%`),
+        entry: price(displayEntryValue),
+        stopLoss: price(displayStopValue),
         tp1: price(displayTp1),
         tp2: price(displayTp2),
         tp3: price(displayTp3),

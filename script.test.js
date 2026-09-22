@@ -6073,6 +6073,21 @@ describe('AI market analyst contract', () => {
             expect(model.tp1).not.toMatch(/[0-9]/);
         });
 
+        it('does not display complete geometry when public validation rejected the setup', () => {
+            const ctx = getContext();
+            const model = ctx.getTradeSummaryModel({
+                pair: 'XAU/USD', current_price: 4344.12, decision: 'WAIT', trade_type: 'WAIT',
+                status_code: 'NO_TRADE', confidence: 78, entry_price: 4360.26,
+                stop_loss: 4385.3, take_profit_1: 4283.21,
+                reason: { code: 'PUBLIC_SIGNAL_SCHEMA_INVALID', message: 'entry is not tick-aligned' }
+            });
+            expect(model.tradeType).toBe('WAIT');
+            expect(model.entry).not.toMatch(/[0-9]/);
+            expect(model.stopLoss).not.toMatch(/[0-9]/);
+            expect(model.tp1).not.toMatch(/[0-9]/);
+            expect(model.confidence).toBe('0%');
+        });
+
         it('keeps a complete 58% candidate as SECONDARY_CANDIDATE', () => {
             const ctx = getContext();
             const result = ctx.classifyCandidateAuthorization(executable('C-58', 58));
