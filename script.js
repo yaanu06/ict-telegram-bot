@@ -144,6 +144,13 @@ const MAX_ZONE_TOUCHES = 10;
 const LIMIT_ORDER_EXPIRY_HOURS = 4;
 const ZONE_PROXIMITY_ALERT_PCT = 0.3;
 const LIMIT_ORDER_MAX_DIST_ATR = 6.0;
+
+// These models create an order ahead of price.  They must be evaluated from
+// their future entry, not from whether price can revisit the zone today or
+// whether a second confirmation candle has already formed.
+function isPendingLimitExecutionModel(model) {
+    return ['PENDING_LIMIT', 'FRESH_RETRACEMENT_LIMIT', 'STRUCTURAL_LIMIT'].includes(String(model || '').toUpperCase());
+}
 const HTF_MIN_MATCH = 1;
 const AI_ADVISORY_ONLY = true;
 const ICT_LAST_TRADE_TIME_KEY = 'ict_last_trade_time';
@@ -5858,7 +5865,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         const marketMechanicsVerified = !strategySetup && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price);
         if (Array.isArray(strategySetups) && !strategySetup && !marketMechanicsVerified) { failSeed(seed, 'NO_MARKET_MECHANICS_PROOF'); continue; }
         const setupModel = String(strategySetup?.opportunity_thesis?.execution_model || strategySetup?.execution_model || strategySetup?.entry_model || zone.execution_model || '').toUpperCase();
-        if (strategySetup && setupModel !== 'PENDING_LIMIT' && strategySetup.opportunity_thesis?.state !== 'EXECUTION_VALID' && marketContext?.daily_bias) {
+        if (strategySetup && !isPendingLimitExecutionModel(setupModel) && strategySetup.opportunity_thesis?.state !== 'EXECUTION_VALID' && marketContext?.daily_bias) {
             for (const code of strategySetup?.opportunity_thesis?.rejection_codes || ['NO_DIRECTION_THESIS']) failSeed(seed, code);
             continue;
         }
@@ -6201,12 +6208,14 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const selectableCandidates = rankedCandidates.filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
         const qualityPasses = !Number.isFinite(quality) || quality >= highQualityMinimum;
-        return qualityPasses && candidate.still_actionable_today !== false && candidate.entry_reachable_today !== false;
+        const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
+        return qualityPasses && candidate.still_actionable_today !== false && (pendingLimit || candidate.entry_reachable_today !== false);
     }).slice(0, 5);
     const futureWatchCandidates = rankedCandidates.filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
         const qualityPasses = Number.isFinite(quality) && quality >= highQualityMinimum;
-        const futureOnly = candidate.still_actionable_today === false || candidate.entry_reachable_today === false;
+        const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
+        const futureOnly = candidate.still_actionable_today === false || (!pendingLimit && candidate.entry_reachable_today === false);
         return qualityPasses && futureOnly;
     }).slice(0, 10);
     const lowQualityCandidates = rankedCandidates.filter(candidate => {
@@ -6699,7 +6708,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
             : setupTf === '4H'
                 ? freshnessSpec.max4hEventAgeHours
                 : freshnessSpec.max1hEventAgeHours;
-    const pendingLimitModel = String(candidate.execution_model || candidate.entry_model || setup.execution_model || setup.entry_model || '').toUpperCase() === 'PENDING_LIMIT';
+    const pendingLimitModel = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model || setup.execution_model || setup.entry_model);
     const parentAgeExpired = !(pendingLimitModel && Number.isFinite(executionEventTime)) && Number.isFinite(parentEventAgeHours)
         ? parentEventAgeHours > parentMaxAgeHours
         : false;
@@ -6745,15 +6754,19 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const deliveryAdvanced = result.remaining_reward_fraction != null && result.remaining_reward_fraction < freshnessSpec.minRemainingRewardFraction;
     const entryTooFarForToday = !result.entry_reachable_today;
     result.timestamp_consistent = !timestampInFuture && !zoneTimeInFuture && !(hasExplicitTimes && Number.isFinite(eventAgeHours) && eventAgeHours < -(STRATEGY_SPEC.TIME.futureToleranceMs / 3600000));
+    // A pending limit can be placed before its retracement is reachable in
+    // the current session.  Distance changes fill probability, not whether
+    // a fresh structural order is valid.  Confirmation entries retain the
+    // same-day reachability requirement.
     result.still_actionable_today = result.timestamp_consistent && !expired && !staleByAge && !result.entry_consumed && !result.tp1_already_reached &&
-        !deliveryAdvanced && !entryTooFarForToday && !marketClosed;
+        !deliveryAdvanced && !(entryTooFarForToday && !pendingLimitModel) && !marketClosed;
     result.rejection_code = !result.timestamp_consistent ? 'DATA_TIME_INCONSISTENT' : expired ? 'SETUP_EXPIRED'
         : result.tp1_already_reached ? 'SETUP_ALREADY_COMPLETED'
         : result.entry_consumed ? 'ENTRY_ALREADY_CONSUMED'
         : deliveryAdvanced ? 'SETUP_DELIVERY_ALREADY_ADVANCED'
         : staleByAge ? 'SETUP_STALE'
         : marketClosed ? 'MARKET_CLOSED'
-            : entryTooFarForToday ? 'ENTRY_NOT_REACHABLE_TODAY' : null;
+            : entryTooFarForToday && !pendingLimitModel ? 'ENTRY_NOT_REACHABLE_TODAY' : null;
     result.entry_freshness = expired ? 'EXPIRED' : result.entry_consumed ? 'CONSUMED' : result.entry_touch_count_after_signal ? 'TOUCHED' : 'FRESH';
     result.opportunity_status = result.rejection_code === 'SETUP_ALREADY_COMPLETED' ? 'COMPLETED'
         : result.rejection_code === 'SETUP_EXPIRED' ? 'EXPIRED'
@@ -6762,7 +6775,8 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
                     : result.rejection_code === 'MARKET_CLOSED' ? 'FRESH_PENDING_LATER'
                         : result.rejection_code === 'ENTRY_NOT_REACHABLE_TODAY' ? 'FRESH_PENDING_LATER'
                         : result.rejection_code ? 'INVALID'
-                            : (getZonePriceStatus(price, { low, high }).insideZone ? 'FRESH_NOW' : 'FRESH_PENDING_TODAY');
+                            : (getZonePriceStatus(price, { low, high }).insideZone ? 'FRESH_NOW'
+                                : entryTooFarForToday && pendingLimitModel ? 'FRESH_PENDING_LATER' : 'FRESH_PENDING_TODAY');
     result.setup_lifecycle_status = result.lifecycle_state = result.opportunity_status;
     return result;
 }
@@ -6776,7 +6790,7 @@ function calculateCandidateConfidence(candidate, context = {}) {
         score += value;
         adjustments.push({ label, value });
     };
-    if (['FRESH_NOW', 'FRESH_PENDING_TODAY'].includes(lifecycle.opportunity_status)) add('Fresh actionable event', spec.freshEvent);
+    if (['FRESH_NOW', 'FRESH_PENDING_TODAY', 'FRESH_PENDING_LATER'].includes(lifecycle.opportunity_status)) add('Fresh actionable event', spec.freshEvent);
     if (Number.isFinite(lifecycle.remaining_reward_fraction)) {
         if (lifecycle.remaining_reward_fraction >= STRATEGY_SPEC.FRESHNESS.normalRemainingRewardFraction) add('Normal reward remains', spec.normalReward);
         else if (lifecycle.remaining_reward_fraction >= STRATEGY_SPEC.FRESHNESS.minRemainingRewardFraction) add('Partial reward remaining', spec.partialRewardPenalty);
@@ -6789,7 +6803,10 @@ function calculateCandidateConfidence(candidate, context = {}) {
     const htfAlignment = Number(candidate?.htf_alignment ?? context.htf_alignment ?? 0);
     if (candidate.trade_context_classification && TOP_DOWN_QUALITY_ADJUSTMENTS[candidate.trade_context_classification] != null) {
         add('HTF context ' + candidate.trade_context_classification, TOP_DOWN_QUALITY_ADJUSTMENTS[candidate.trade_context_classification]);
-    } else if (htfAlignment > 0) add(`HTF alignment ${htfAlignment}`, htfAlignment * spec.htfAlignment);
+    }
+    // Classification gives the setup archetype; agreement across 1D, 4H,
+    // and 1H is separate evidence and must not disappear once classified.
+    if (htfAlignment > 0) add(`HTF alignment ${htfAlignment}`, htfAlignment * spec.htfAlignment);
     const confirmations = candidate?.strategy_setup?.confirmations || [];
     if (confirmations.length > 0) add(`Strategy confluence ${confirmations.length}`, confirmations.length * spec.confluence);
     const bias = context.directional_bias || context.market_context?.directional_bias;
@@ -6965,7 +6982,9 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
     if (atrContext.atr_rule_reference > 0) {
         const entryDistATR = Math.abs(entry - price) / atrContext.atr_rule_reference;
         metrics.entryDistanceATR = entryDistATR;
-        if (entryDistATR > LIMIT_ORDER_MAX_DIST_ATR) add(`entry is ${entryDistATR.toFixed(2)}x ATR from price (max ${LIMIT_ORDER_MAX_DIST_ATR}x)`);
+        if (entryDistATR > LIMIT_ORDER_MAX_DIST_ATR && !isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model)) {
+            add(`entry is ${entryDistATR.toFixed(2)}x ATR from price (max ${LIMIT_ORDER_MAX_DIST_ATR}x)`);
+        }
     }
 
     const desiredTrend = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
@@ -7582,6 +7601,11 @@ function evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal = pair, cur
     const direction = setup?.direction;
     const executionTimeframe = setup?.execution_timeframe || setup?.timeframe || zone?.timeframe;
     const model = getTodayOpportunityExecutionModel(setup, zone);
+    // getTodayOpportunityExecutionModel intentionally presents reclaim plans
+    // as a pending workflow to the UI.  Its raw model still determines
+    // whether this exact setup can skip confirmation and reachability gates.
+    const rawExecutionModel = setup?.opportunity_thesis?.execution_model || setup?.execution_model || setup?.entry_model || zone?.execution_model || zone?.entry_model;
+    const truePendingLimit = isPendingLimitExecutionModel(rawExecutionModel);
     const lifecycle = setup?.evaluation?.metrics?.setup_lifecycle || setup?.setup_lifecycle || {};
     const state = setup?.narrative_state || setup?.narrativeState || setup?.strategy_state;
     const hardDataCodes = ['DATA_TIME_INCONSISTENT', 'DATA_QUALITY', 'INVALID_MARKET_DATA', 'MISSING_TIMEFRAME_DATA', 'ENGINE_INVARIANT_FAILURE'];
@@ -7642,9 +7666,10 @@ function evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal = pair, cur
     const distanceToArea = currentPrice < low ? low - currentPrice : currentPrice > high ? currentPrice - high : 0;
     const distanceToAreaAtr = Number.isFinite(executionAtr) && executionAtr > 0 ? distanceToArea / executionAtr : null;
     const calculatedReachable = Number.isFinite(distanceToAreaAtr) ? distanceToAreaAtr <= STRATEGY_SPEC.FRESHNESS.pendingLaterDistanceAtr : null;
-    const explicitReachable = model === 'PENDING_LIMIT'
-        ? (typeof zone.entry_reachable_today === 'boolean' ? zone.entry_reachable_today : typeof lifecycle.entry_reachable_today === 'boolean' ? lifecycle.entry_reachable_today : null)
-        : (typeof zone.opportunity_reachable_today === 'boolean' ? zone.opportunity_reachable_today : typeof lifecycle.opportunity_reachable_today === 'boolean' ? lifecycle.opportunity_reachable_today : null);
+    const explicitReachable = typeof zone.entry_reachable_today === 'boolean' ? zone.entry_reachable_today
+        : typeof lifecycle.entry_reachable_today === 'boolean' ? lifecycle.entry_reachable_today
+            : typeof zone.opportunity_reachable_today === 'boolean' ? zone.opportunity_reachable_today
+                : typeof lifecycle.opportunity_reachable_today === 'boolean' ? lifecycle.opportunity_reachable_today : null;
     const reachable = explicitReachable ?? calculatedReachable;
     const metrics = {
         distance_to_area: distanceToArea,
@@ -7658,7 +7683,7 @@ function evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal = pair, cur
         execution_model: model,
         structural_invalidation: { level: invalidation, source: setup?.structural_invalidation?.source || zone?.structural_invalidation?.source || (setup.primary || 'STRATEGY') + '_INVALIDATION', timeframe: setup?.setup_timeframe || setup?.timeframe || executionTimeframe }
     };
-    if (reachable !== true) return fail('ENTRY_NOT_REACHABLE_TODAY', 'The area is not demonstrably reachable during the remaining trading window.', metrics);
+    if (reachable !== true && !truePendingLimit) return fail('ENTRY_NOT_REACHABLE_TODAY', 'The area is not demonstrably reachable during the remaining trading window.', metrics);
     const rewardDistance = Math.abs(targetLevel - entry);
     const remainingDistance = Math.abs(targetLevel - currentPrice);
     const rawProgress = rewardDistance > 0 ? (direction === 'BUY' ? (currentPrice - entry) / rewardDistance : (entry - currentPrice) / rewardDistance) : null;
@@ -7839,7 +7864,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
     // from older callers without lifecycle fields remain compatible here.
     const tradeReadyCandidates = (validCandidates || []).filter(candidate => {
         if (candidate.still_actionable_today === false) return false;
-        if (candidate.entry_reachable_today === false) return false;
+        if (!isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model) && candidate.entry_reachable_today === false) return false;
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score);
         return !Number.isFinite(quality) || quality >= STRATEGY_SPEC.CONFIDENCE.mediumQualityMinimum;
     });
@@ -7855,6 +7880,9 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.execution_model = bestCandidate.execution_model || bestCandidate.entry_model || 'PENDING_LIMIT'; state.activation_conditions = ['All deterministic entry, structural stop, target, RR, and lifecycle conditions are satisfied'];
         state.cancellation_conditions = ['Structural invalidation is breached', 'TP1 is completed before order execution', 'Pending opportunity expires']; state.target_intent = bestCandidate.target_bias || bestCandidate.strategy_setup?.target_bias || null;
         state.delivery_progress = bestCandidate.progress_to_tp1_fraction ?? bestCandidate.narrative_delivery_progress ?? null; state.remaining_reward_fraction = bestCandidate.remaining_reward_fraction ?? null;
+        state.entry = bestCandidate.entry; state.stop_loss = bestCandidate.stop_loss; state.tp1 = bestCandidate.tp1;
+        state.tp2 = bestCandidate.tp2 ?? null; state.tp3 = bestCandidate.tp3 ?? null;
+        state.rr = bestCandidate.rr_tp1 ?? bestCandidate.actual_rr ?? null;
         state.entry_reachable_today = bestCandidate.entry_reachable_today === true; state.opportunity_reachable_today = state.entry_reachable_today; state.target_viable = true;
         state.structural_invalidation = bestCandidate.structural_invalidation || null; state.reason_code = 'TRADE_READY'; state.reason = 'A deterministic opportunity is executable under the current market state.';
         const candidatePlans = tradeReadyCandidates.map(candidate => ({
@@ -7931,7 +7959,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
     // limit geometry as a watch, instead of returning a blank WAIT that makes
     // it look as though the scan found nothing at all.
     const bestLowQualityWatch = (lowQualityCandidates || [])
-        .filter(candidate => candidate.still_actionable_today !== false && candidate.entry_reachable_today !== false)
+        .filter(candidate => candidate.still_actionable_today !== false && (isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model) || candidate.entry_reachable_today !== false))
         .slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
     if (bestLowQualityWatch) {
         const zone = bestLowQualityWatch.zone || { low: bestLowQualityWatch.zone_low, high: bestLowQualityWatch.zone_high, type: bestLowQualityWatch.zone_type, timeframe: bestLowQualityWatch.execution_timeframe || bestLowQualityWatch.timeframe, id: bestLowQualityWatch.zone_id };
@@ -8655,8 +8683,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         valid_deterministic_candidates: adaptiveSetupResult.all_valid_candidates || adaptiveSetupResult.valid_candidates || [],
         low_quality_candidates: adaptiveSetupResult.low_quality_candidates || [],
         // Keep the complete deterministic catalog available to the AI
-        // analyst. Only adaptive_setup_candidates are selectable; valid
-        // future entries are watch-only and low-quality entries are context.
+        // analyst. Selectable candidates include valid future pending limits;
+        // low-quality and rejected entries remain context only.
         rejected_setup_candidates: adaptiveSetupResult.rejected_candidates,
         candidate_seed_diagnostics: adaptiveSetupResult.seed_diagnostics,
         strategy_detections: strategyDetectionSummary,
@@ -8976,7 +9004,7 @@ function compactAIContext(liveMarketContext) {
         real_ict_zones: (liveMarketContext?.real_ict_zones || []).slice(0, 40).map(compactZone),
         strategy_execution_zones: (liveMarketContext?.strategy_execution_zones || []).slice(0, STRATEGY_SPEC.COMBINATION.maxSetups).map(compactZone),
         adaptive_setup_candidates: (liveMarketContext?.adaptive_setup_candidates || [])
-            .filter(c => ['FRESH_NOW', 'FRESH_PENDING_TODAY'].includes(c.lifecycle_state || c.opportunity_status))
+            .filter(c => ['FRESH_NOW', 'FRESH_PENDING_TODAY', 'FRESH_PENDING_LATER'].includes(c.lifecycle_state || c.opportunity_status))
             .map(compactCandidate),
         candidate_catalog: [
             ...(liveMarketContext?.adaptive_setup_candidates || []).map(c => ({
@@ -9521,7 +9549,7 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'Rank the supplied adaptive_setup_candidates and return SELECT with the best candidate ID, or WAIT when no supplied candidate is worth selecting.',
         'Do not return WAIT merely because price has not reached a valid future limit zone. Immediate-entry confirmation is separate and never required before a true LIMIT fill.',
         'Select the best FRESH deterministic opportunity that remains actionable now or later in the current trading day. If none exists, return WAIT.',
-        'Never select a setup merely because its historical pattern was valid. Reject any candidate with opportunity_status STALE, COMPLETED, or EXPIRED, entry_consumed true, tp1_already_reached true, insufficient remaining_reward_fraction, or still_actionable_today false.',
+        'Never select a setup merely because its historical pattern was valid. Reject any candidate with opportunity_status STALE, COMPLETED, or EXPIRED, entry_consumed true, tp1_already_reached true, insufficient remaining_reward_fraction, or still_actionable_today false. FRESH_PENDING_LATER is valid for a true pending limit when its zone is fresh and all structural geometry passes.',
         'A true pending BUY_LIMIT or SELL_LIMIT does not require current price to be inside the zone or reaction confirmation before the limit fills. Use pending_entry_quality and entry_reachability_score to compare future entries, not to relabel a valid limit as a confirmation entry.',
         'Return only decision, selected_candidate_id, and qualitative reasoning; the application hydrates all geometry and confidence from the selected deterministic candidate.',
         'When discussing TP1, use the supplied candidate target_map primary_target_source, target_type, and target_confluence. Never reinterpret an OB target as CRT or a CRT target as OB unless target_confluence explicitly contains both.',
@@ -10034,7 +10062,7 @@ function validateExecutableCandidateInvariant(candidate, marketState = {}) {
         failures.push('REVERSAL_REQUIRES_CONFIRMATION_ENTRY');
     }
     const candidateModel = String(candidate.execution_model || candidate.entry_model || '').toUpperCase();
-    if (candidate.opportunity_thesis && candidate.opportunity_thesis.state !== 'EXECUTION_VALID' && candidateModel !== 'PENDING_LIMIT') failures.push('EXECUTION_NOT_CONFIRMED');
+    if (candidate.opportunity_thesis && candidate.opportunity_thesis.state !== 'EXECUTION_VALID' && !isPendingLimitExecutionModel(candidateModel)) failures.push('EXECUTION_NOT_CONFIRMED');
     for (const field of ['entry', 'stop_loss', 'tp1']) if (!Number.isFinite(Number(candidate[field]))) failures.push(`${field}_NOT_FINITE`);
     const direction = candidate.direction;
     const entry = Number(candidate.entry), stop = Number(candidate.stop_loss), tp1 = Number(candidate.tp1 ?? candidate.take_profit_1);
@@ -10051,7 +10079,7 @@ function validateExecutableCandidateInvariant(candidate, marketState = {}) {
     if (candidate.execution_zone_created_time != null && Number.isFinite(asOf) && normalizeTimestampUTC(candidate.execution_zone_created_time) > asOf + STRATEGY_SPEC.TIME.futureToleranceMs) failures.push('ZONE_TIME_INCONSISTENT');
     if (candidate.entry_consumed === true) failures.push('ENTRY_ALREADY_CONSUMED');
     if (candidate.tp1_already_reached === true) failures.push('SETUP_ALREADY_COMPLETED');
-    if (candidate.opportunity_status && !['FRESH_NOW', 'FRESH_PENDING_TODAY'].includes(candidate.opportunity_status)) failures.push('LIFECYCLE_NOT_SELECTABLE');
+    if (candidate.opportunity_status && !['FRESH_NOW', 'FRESH_PENDING_TODAY', 'FRESH_PENDING_LATER'].includes(candidate.opportunity_status)) failures.push('LIFECYCLE_NOT_SELECTABLE');
     if (candidate.target_map && candidate.target_map.length && !candidate.target_map[0].primary_target_source) failures.push('TARGET_PROVENANCE_INVALID');
     const rr = Math.abs(tp1 - entry) / Math.abs(entry - stop);
     if (!Number.isFinite(rr)) failures.push('RR_NOT_FINITE');
@@ -10082,9 +10110,10 @@ function validateFinalSignalConsistency(signal, liveMarketContext = {}) {
         if (!signal.still_actionable_today) issues.push('selected candidate is not actionable today');
         if (signal.entry_consumed) issues.push('selected candidate entry is consumed');
         if (signal.tp1_already_reached) issues.push('selected candidate TP1 is already reached');
-        if (signal.entry_reachable_today !== true) issues.push('selected candidate entry is not reachable today');
+        const candidateIsPendingLimit = isPendingLimitExecutionModel(candidate?.execution_model || candidate?.entry_model || signal.execution_model || signal.setup_type);
+        if (signal.entry_reachable_today !== true && !candidateIsPendingLimit) issues.push('selected candidate entry is not reachable today');
         if (!Number.isFinite(Number(signal.remaining_reward_fraction)) || Number(signal.remaining_reward_fraction) < STRATEGY_SPEC.FRESHNESS.minRemainingRewardFraction) issues.push('selected candidate reward is materially delivered');
-        if (!['FRESH_NOW', 'FRESH_PENDING_TODAY'].includes(signal.opportunity_status)) issues.push('selected candidate lifecycle is not selectable');
+        if (!['FRESH_NOW', 'FRESH_PENDING_TODAY', 'FRESH_PENDING_LATER'].includes(signal.opportunity_status)) issues.push('selected candidate lifecycle is not selectable');
         if (signal.limit_order_setup?.eligible !== true) issues.push('eligible limit signal has ineligible pending-limit state');
         if (signal.ai_decision !== 'pending_limit') issues.push('true limit signal does not expose pending_limit decision');
         if (signal.source === 'AI-Generated Setup') issues.push('selected deterministic geometry has an untruthful AI source');

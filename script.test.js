@@ -287,6 +287,23 @@ describe('strategy entry lifecycle', () => {
         expect(result.time_integrity.zone_created_time_utc).toBe('2026-09-23T09:00:00.000Z');
     });
 
+    it('keeps a fresh retracement limit valid when its fill is in a later session', () => {
+        const ctx = getContext();
+        const data = Array.from({ length: 20 }, (_, i) => c(100 + i * 0.1, 100.15 + i * 0.1, 99.95 + i * 0.1, 100.1 + i * 0.1, `2026-09-23 ${String(i).padStart(2, '0')}:00:00`));
+        const result = ctx.evaluateSetupLifecycle({
+            direction: 'BUY', execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT',
+            entry: 98, zone_low: 97.9, zone_high: 98.1, tp1: 120,
+            zone: { id: 'fresh-limit', created_time: Date.parse('2026-09-23T18:00:00Z') },
+            strategy_setup: { primary: 'ICT', timeframe: '1H', event_time: Date.parse('2026-09-13T09:00:00Z') }
+        }, {
+            price: 102, as_of_time: '2026-09-23T19:00:00Z', historyCache: { '1H': data }
+        });
+        expect(result.entry_reachable_today).toBe(false);
+        expect(result.rejection_code).toBeNull();
+        expect(result.opportunity_status).toBe('FRESH_PENDING_LATER');
+        expect(result.still_actionable_today).toBe(true);
+    });
+
     it('rejects a same-day setup after most of the delivery path is complete', () => {
         const ctx = getContext();
         const candidate = { direction: 'BUY', entry: 100, zone_low: 99.9, zone_high: 100.1, tp1: 110,
@@ -331,10 +348,11 @@ describe('strategy entry lifecycle', () => {
         const ctx = getContext();
         const payload = ctx.compactAIContext({ adaptive_setup_candidates: [
             { id: 'fresh', opportunity_status: 'FRESH_PENDING_TODAY', direction: 'BUY', entry: 1, stop_loss: 0.9, tp1: 1.3 },
+            { id: 'later-limit', opportunity_status: 'FRESH_PENDING_LATER', direction: 'SELL', execution_model: 'FRESH_RETRACEMENT_LIMIT', entry: 1, stop_loss: 1.1, tp1: 0.7 },
             { id: 'stale', opportunity_status: 'STALE', direction: 'BUY', entry: 1, stop_loss: 0.9, tp1: 1.3 },
             { id: 'completed', opportunity_status: 'COMPLETED', direction: 'BUY', entry: 1, stop_loss: 0.9, tp1: 1.3 }
         ] });
-        expect(payload.adaptive_setup_candidates.map(c => c.id)).toEqual(['fresh']);
+        expect(payload.adaptive_setup_candidates.map(c => c.id)).toEqual(['fresh', 'later-limit']);
     });
 
     it('sends the full candidate catalog while keeping rejected candidates unselectable', () => {
@@ -974,6 +992,23 @@ describe('daily opportunity planning', () => {
             validCandidates: [{ id: 'C-1', strategy_label: 'CRT', direction: 'BUY', execution_timeframe: '1H', execution_model: 'PENDING_LIMIT', entry: 1.1, zone_low: 1.09, zone_high: 1.11, stop_loss: 1.08, tp1: 1.14, rr_tp1: 3, target_bias: 'BUY_SIDE_LIQUIDITY', lifecycle: { state: 'FRESH_PENDING_TODAY' }, entry_reachable_today: true }] });
         expect(result.state).toBe('TRADE_READY');
         expect(result.execution_model).toBe('PENDING_LIMIT');
+    });
+
+    it('returns TRADE_READY for a high-quality future fresh limit without requiring a confirmation candle', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({ pair: 'XAU/USD', currentPrice: 4320, scanAsOfMs: Date.parse('2026-09-23T10:00:00Z'), marketOpen: true,
+            validCandidates: [{
+                id: 'XAU-FRESH-SELL', strategy_label: 'ICT', direction: 'SELL', execution_timeframe: '1H',
+                execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT',
+                entry: 4345, zone_low: 4343, zone_high: 4347, stop_loss: 4371, tp1: 4290, rr_tp1: 2.1,
+                still_actionable_today: true, entry_reachable_today: false, opportunity_status: 'FRESH_PENDING_LATER',
+                quality: { final_confidence: 78 }, target_map: [{ primary_target_source: 'PDL' }]
+            }]
+        });
+        expect(result.state).toBe('TRADE_READY');
+        expect(result.direction).toBe('SELL');
+        expect(result.entry).toBe(4345);
+        expect(result.execution_model).toBe('FRESH_RETRACEMENT_LIMIT');
     });
 
     it('does not let an AI WAIT veto a deterministic TRADE_READY candidate', () => {
