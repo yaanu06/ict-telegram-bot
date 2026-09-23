@@ -6223,3 +6223,37 @@ describe('AI market analyst contract', () => {
         expect(lifecycle.rejection_code).not.toBe('SETUP_EXPIRED');
     });
 });
+
+
+describe('fallback presentation regressions', () => {
+    it.each(['XAU/USD', 'AUD/USD', 'EUR/USD', 'GBP/JPY', 'BTC/USD'])('preserves facts, strategy and three targets for %s', pair => {
+        const ctx = getContext();
+        const bars = Array.from({ length: 210 }, (_, i) => ({
+            o: 100 + i * 0.1, h: 102 + i * 0.1, l: 99 + i * 0.1, c: 101 + i * 0.1,
+            is_closed: true, t: Date.UTC(2026, 8, 1) + i * 3600000
+        }));
+        const facts = ctx.buildFallbackDisplayFacts(Object.fromEntries(['1D', '4H', '1H', '15M'].map(tf => [tf, bars])), 122);
+        const signal = ctx.buildPublicTradeSignal({
+            ...facts, pair, decision: 'SELL_LIMIT', strategy_label: 'CRT+MSNR', strategy: 'CRT+MSNR',
+            analysis: { type: 'ICT' }, entry_price: 125, stop_loss: 130,
+            take_profit_1: 110, take_profit_2: 105, take_profit_3: 100
+        });
+        expect(signal.strategy).toBe('CRT+MSNR');
+        expect(signal.analysis.type).toBe('CRT+MSNR');
+        expect(signal.analysis.volatility_level).toBeTruthy();
+        expect(Number.isFinite(signal.analysis.technical_indicators.adx_4h)).toBe(true);
+        expect(Number.isFinite(signal.analysis.technical_indicators.rsi_4h)).toBe(true);
+        expect(signal.analysis.trend_detection['15M']).toBeTruthy();
+        expect([signal.tp1, signal.tp2, signal.tp3]).toEqual([110, 105, 100]);
+    });
+    it('leaves unavailable secondary targets empty and does not invent market facts', () => {
+        const ctx = getContext();
+        const facts = ctx.buildFallbackDisplayFacts({}, 100);
+        expect(facts.volatility.regime).toBeNull();
+        expect(facts.indicators.adx_4h).toBeNull();
+        const signal = ctx.buildPublicTradeSignal({ decision: 'SELL_LIMIT', strategy: 'TBS', entry: 100, stop_loss: 110, tp1: 80 });
+        expect(signal.tp2).toBeNull();
+        expect(signal.tp3).toBeNull();
+        expect(ctx.getDisplayStrategyLabel({ strategy_label: 'CRT+ICT+FVG' })).toBe('CRT');
+    });
+});

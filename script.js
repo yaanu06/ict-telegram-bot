@@ -1959,14 +1959,15 @@ function narrativeEventIndex(setup, data) {
 // Strategy labels describe the setup logic. Zone types describe the price
 // location used for entry. Keep those concepts separate in every public view.
 function getDisplayStrategyLabel(setup = {}, zoneType = null) {
-    const raw = setup?.strategy_label || setup?.label || setup?.primary || setup?.strategy || null;
+    const raw = setup?.strategy_label || setup?.strategy_setup?.label || setup?.label || setup?.primary || setup?.strategy || null;
     const locationOnly = new Set(['FVG', 'OB', 'FLIP', 'DEMAND', 'SUPPLY', 'ORDER_BLOCK', 'FAIR_VALUE_GAP']);
     const parts = String(raw || '')
         .split(/[+|,·]/)
         .map(value => value.trim().toUpperCase())
         .filter(Boolean)
         .filter(value => !locationOnly.has(value));
-    return parts.length ? parts.join('+') : 'ICT';
+    const strategies = [...new Set(parts.filter(value => ['CRT', 'TBS', 'MSNR'].includes(value)))];
+    return strategies.length ? strategies.join('+') : (parts.length ? parts.join('+') : 'ICT');
 }
 
 function isDirectionalDisplacement(candle, direction, atrValue) {
@@ -8519,23 +8520,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         current_range_position_pct: ictRound(rangePositionPct, 1),
         classification: isPremiumDiscount(pdData, price).zone
     };
-    const momentumFacts = {
-        adx_4h: patterns?.['4H']?.adx?.adx ?? null,
-        adx_1h: patterns?.['1H']?.adx?.adx ?? null,
-        rsi_4h: indicators?.['4H']?.rsi ?? null,
-        macd_4h: indicators?.['4H']?.macd ?? null,
-        macd_signal_4h: indicators?.['4H']?.macd_signal ?? null,
-        macd_direction_4h: Number.isFinite(indicators?.['4H']?.macd) && Number.isFinite(indicators?.['4H']?.macd_signal)
-            ? (indicators['4H'].macd > indicators['4H'].macd_signal ? 'BULLISH' : 'BEARISH')
-            : 'UNKNOWN',
-        ema_alignment_4h: {
-            ema9: indicators?.['4H']?.ema9 ?? null,
-            ema21: indicators?.['4H']?.ema21 ?? null,
-            ema50: indicators?.['4H']?.ema50 ?? null,
-            ema200: indicators?.['4H']?.ema200 ?? null
-        },
-        supertrend_4h: indicators?.['4H']?.supertrend ?? null
-    };
+    const momentumFacts = buildMomentumFacts(indicators, patterns);
     const marketContext = buildMarketContext({
         pair,
         price,
@@ -10202,6 +10187,43 @@ function validateFinalSignalConsistency(signal, liveMarketContext = {}) {
     return { valid: issues.length === 0, issues, candidate_id: candidate?.id || null };
 }
 
+function buildMomentumFacts(indicators = {}, patterns = {}) {
+    return {
+        adx_4h: patterns?.['4H']?.adx?.adx ?? null,
+        adx_1h: patterns?.['1H']?.adx?.adx ?? null,
+        rsi_4h: indicators?.['4H']?.rsi ?? null,
+        macd_4h: indicators?.['4H']?.macd ?? null,
+        macd_signal_4h: indicators?.['4H']?.macd_signal ?? null,
+        macd_direction_4h: Number.isFinite(indicators?.['4H']?.macd) && Number.isFinite(indicators?.['4H']?.macd_signal)
+            ? (indicators['4H'].macd > indicators['4H'].macd_signal ? 'BULLISH' : 'BEARISH')
+            : 'UNKNOWN',
+        ema_alignment_4h: {
+            ema9: indicators?.['4H']?.ema9 ?? null,
+            ema21: indicators?.['4H']?.ema21 ?? null,
+            ema50: indicators?.['4H']?.ema50 ?? null,
+            ema200: indicators?.['4H']?.ema200 ?? null
+        },
+        supertrend_4h: indicators?.['4H']?.supertrend ?? null
+    };
+}
+
+function buildFallbackDisplayFacts(historyCache, price) {
+    const frames = ['1D', '4H', '1H', '15M'];
+    const history = Object.fromEntries(frames.map(tf => [tf, getClosedHistory(historyCache, tf)]));
+    const indicators = Object.fromEntries(['4H', '1H'].map(tf => [tf, localIndicatorSnapshot(history[tf])]));
+    const patterns = Object.fromEntries(['4H', '1H'].map(tf => [tf, {
+        adx: history[tf].length >= 28 ? calculateADX(history[tf], 14, tf) : { adx: null }
+    }]));
+    const atrValues = Object.fromEntries(['4H', '1H', '15M'].map(tf => [tf, history[tf].length >= 15 ? atr(history[tf], 14) : null]));
+    const pct = atrValues['4H'] != null && price > 0 ? atrValues['4H'] / price * 100 : null;
+    return {
+        trend_detection: Object.fromEntries(frames.map(tf => [tf, buildStructureSnapshot(history[tf], tf).trend])),
+        volatility: { atr_4h: atrValues['4H'], atr_1h: atrValues['1H'], atr_15m: atrValues['15M'],
+            atr_pct_of_price: pct, regime: pct == null ? null : classifyVolatility(pct) },
+        indicators: buildMomentumFacts(indicators, patterns)
+    };
+}
+
 async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
     const fallbackStartedAt = scanClock();
     console.log('[SCAN] fallback start', { pair, timestamp: new Date().toISOString() });
@@ -10211,6 +10233,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
     let best = null;
     let bestEvaluation = null;
     let bestCandidate = null;
+    const fallbackDisplayFacts = buildFallbackDisplayFacts(historyCache, price);
     const fallbackZones = [];
     const fallbackAtr4h = historyCache?.['4H']?.length >= 15 ? atr(historyCache['4H'], 14) : 0;
     const fallbackAtr1h = historyCache?.['1H']?.length >= 15 ? atr(historyCache['1H'], 14) : 0;
@@ -10253,11 +10276,8 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
         },
         premiumDiscount: isPremiumDiscount(historyCache?.['4H'] || historyCache?.['1H'] || [], price),
         marketRegime: fallbackMarketRegime,
-        momentum: {},
-        volatility: {
-            atr_4h: fallbackAtr4h || null,
-            atr_1h: fallbackAtr1h || null
-        },
+        momentum: fallbackDisplayFacts.indicators,
+        volatility: fallbackDisplayFacts.volatility,
         holistic: null,
         symbolMetadata: quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair)
     });
@@ -10389,6 +10409,10 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
             },
             ai_decision: 'wait_for_reaction',
             wait_condition: 'Pending limit setup valid; immediate entry confirmation is separate.',
+            ...fallbackDisplayFacts,
+            strategy: getDisplayStrategyLabel(bestCandidate),
+            strategy_label: getDisplayStrategyLabel(bestCandidate),
+            strategy_setup: bestCandidate.strategy_setup,
             source: 'Deterministic Candidate Engine (Fallback)',
             validation: { passed: true, evaluator: bestEvaluation }
         }
@@ -12617,7 +12641,7 @@ function buildPublicTradeSignal(signal = {}) {
             trend_detection: publicTrendMap || signal.trend_detection || signal.analysis?.trend_detection || signal.structural_context || null,
             volatility_level: signal.volatility?.regime || signal.analysis?.volatility_level || signal.analysis?.volatility?.regime || signal.analysis?.volatility || null,
             technical_indicators: signal.indicators || signal.technical_indicators || signal.analysis?.technical_indicators || signal.analysis?.indicators || null,
-            type: signal.analysis?.type || signal.strategy || strategy || null,
+            type: strategy,
             trade_context: signal.trade_context_classification || signal.adaptive_candidate?.trade_context_classification || null,
             higher_timeframe: publicHigherTimeframe,
             structural_context: publicTrendMap || signal.structural_context || null,
