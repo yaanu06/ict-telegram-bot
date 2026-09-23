@@ -440,6 +440,22 @@ describe('market-thesis opportunity invariants', () => {
         expect(ctx.isTodayFreshContinuation(setup, { ...zone })).toBe(false);
     });
 
+    it('shows a hard-valid but low-quality candidate as a watch instead of a blank wait', () => {
+        const ctx = getContext();
+        const candidate = {
+            id: 'low-quality-sell', direction: 'SELL', timeframe: '1H', zone_type: 'FVG',
+            zone_low: 101, zone_high: 102, entry: 101.5, stop_loss: 103, tp1: 97,
+            rr_tp1: 3, score: 48, setup_confidence: 48,
+            quality: { final_confidence: 48, quality_breakdown: { quality_band: 'LOW' } },
+            still_actionable_today: true, entry_reachable_today: true,
+            zone: { id: 'low-quality-zone', type: 'FVG', timeframe: '1H', low: 101, high: 102 }
+        };
+        const result = ctx.buildTodayOpportunity({ pair: 'XAU/USD', currentPrice: 100, marketOpen: true, lowQualityCandidates: [candidate] });
+        expect(result.state).toBe('WATCH_ONLY');
+        expect(result.reason_code).toBe('LOW_QUALITY_WATCH');
+        expect(result.watch_setups[0]).toMatchObject({ id: 'low-quality-sell', entry: 101.5, stop_loss: 103, tp1: 97 });
+    });
+
     it('keeps an advanced parent terminal while evaluating a later zone independently', () => {
         const ctx = getContext();
         const t0 = Date.parse('2026-09-14T10:00:00Z');

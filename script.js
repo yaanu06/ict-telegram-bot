@@ -7807,7 +7807,7 @@ function compactAiDiagnostics(analysis = null) {
     };
 }
 
-function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfMs, histories, marketContext = {}, strategySetups = [], aiAnalysis = null, executionZones = [], candidateDiagnostics = {}, validCandidates = [], futureWatchCandidates = [], targetCandidates = {}, marketOpen = true, symbolMetadata = null } = {}) {
+function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfMs, histories, marketContext = {}, strategySetups = [], aiAnalysis = null, executionZones = [], candidateDiagnostics = {}, validCandidates = [], futureWatchCandidates = [], lowQualityCandidates = [], targetCandidates = {}, marketOpen = true, symbolMetadata = null } = {}) {
     const timeframeContext = marketContext.timeframe_context || buildTimeframeContext({ historyCache: histories, structure: marketContext.structure, price: currentPrice, strategySetups, zones: executionZones });
     const state = {
         state: 'NO_TRADE_TODAY', bias: marketContext.directional_bias || aiAnalysis?.market_view?.bias || 'NEUTRAL', strategy: null, direction: null, narrative_id: null,
@@ -7828,7 +7828,8 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         delivery_progress: null, remaining_reward_fraction: null, distance_to_area_atr: null, entry_reachable_today: false, opportunity_reachable_today: false,
         target_viable: false, structural_invalidation: null, reason_code: 'NO_TRADE_TODAY', reason: 'No defensible fresh or developing opportunity remains for today.',
         rejected_reason: null, rejected_opportunities: [], missed_opportunities: [], completed_opportunities: [], fresh_continuation_opportunities: [],
-        terminal_parent_opportunities: [], fresh_current_market_opportunities: [], future_watch_candidates: (futureWatchCandidates || []).map(candidate => candidate.id).filter(Boolean)
+        terminal_parent_opportunities: [], fresh_current_market_opportunities: [], future_watch_candidates: (futureWatchCandidates || []).map(candidate => candidate.id).filter(Boolean),
+        low_quality_candidates: (lowQualityCandidates || []).map(candidate => candidate.id).filter(Boolean)
     };
     if (marketOpen === false) { state.reason_code = 'MARKET_CLOSED'; state.reason = 'The instrument is currently closed for the current scan.'; return state; }
     // A candidate can pass numeric geometry while still being unsuitable for
@@ -7923,6 +7924,41 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.activation_conditions = plan.activation_conditions; state.cancellation_conditions = plan.cancellation_conditions;
         state.watch_setups = [plan];
         state.secondary_watch_scenarios = [plan];
+        return state;
+    }
+    // A candidate that passed every hard structural rule but did not reach
+    // the confidence threshold is useful market intelligence. Show its exact
+    // limit geometry as a watch, instead of returning a blank WAIT that makes
+    // it look as though the scan found nothing at all.
+    const bestLowQualityWatch = (lowQualityCandidates || [])
+        .filter(candidate => candidate.still_actionable_today !== false && candidate.entry_reachable_today !== false)
+        .slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+    if (bestLowQualityWatch) {
+        const zone = bestLowQualityWatch.zone || { low: bestLowQualityWatch.zone_low, high: bestLowQualityWatch.zone_high, type: bestLowQualityWatch.zone_type, timeframe: bestLowQualityWatch.execution_timeframe || bestLowQualityWatch.timeframe, id: bestLowQualityWatch.zone_id };
+        const plan = {
+            id: bestLowQualityWatch.id, state: 'WATCH_ONLY', watch_only: true,
+            direction: bestLowQualityWatch.direction, strategy: getDisplayStrategyLabel(bestLowQualityWatch, bestLowQualityWatch.zone_type),
+            narrative_id: bestLowQualityWatch.strategy_setup?.id || bestLowQualityWatch.id,
+            execution_zone_id: zone?.id || bestLowQualityWatch.id,
+            area_of_interest: zone ? { low: zone.low, high: zone.high, source: zone.type || bestLowQualityWatch.zone_type, timeframe: zone.timeframe, zone_id: zone.id || bestLowQualityWatch.id } : null,
+            execution_model: bestLowQualityWatch.execution_model || bestLowQualityWatch.entry_model || 'PENDING_LIMIT',
+            entry: bestLowQualityWatch.entry, stop_loss: bestLowQualityWatch.stop_loss, tp1: bestLowQualityWatch.tp1,
+            tp2: bestLowQualityWatch.tp2 ?? null, tp3: bestLowQualityWatch.tp3 ?? null,
+            rr: bestLowQualityWatch.rr_tp1 ?? bestLowQualityWatch.actual_rr ?? null,
+            confidence: bestLowQualityWatch.quality?.final_confidence ?? bestLowQualityWatch.setup_confidence ?? bestLowQualityWatch.score ?? 0,
+            opportunity_quality: { ...(bestLowQualityWatch.quality || {}), authorization_state: 'LOW_QUALITY_WATCH', watch_only: true },
+            target: bestLowQualityWatch.target_map?.[0] || null, target_level: bestLowQualityWatch.tp1,
+            structural_invalidation: bestLowQualityWatch.structural_invalidation || null,
+            entry_reachable_today: true, opportunity_reachable_today: true,
+            reason_code: 'LOW_QUALITY_WATCH',
+            reason: 'A structurally valid pending limit exists, but its quality score is below the execution threshold. Watch it; do not place it as a high-probability order.',
+            activation_conditions: ['Quality must improve through a fresh aligned structure event or reduced target-path risk', 'Revalidate the limit before placing it'],
+            cancellation_conditions: ['Structural invalidation is breached', 'Target is completed before entry', 'The zone is consumed or materially changes']
+        };
+        Object.assign(state, plan, {
+            state: 'WATCH_ONLY', watch_only: true, target_viable: true,
+            watch_setups: [plan], secondary_watch_scenarios: [plan]
+        });
         return state;
     }
     const active = (strategySetups || []).filter(setup => {
@@ -8120,6 +8156,7 @@ function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, select
         candidateDiagnostics: liveMarketContext.setup_candidate_audit,
         validCandidates: remainingCandidates,
         futureWatchCandidates: liveMarketContext.future_watch_candidates,
+        lowQualityCandidates: liveMarketContext.low_quality_candidates,
         targetCandidates: liveMarketContext.target_candidates,
         symbolMetadata: liveMarketContext.symbol_metadata || null,
         marketOpen: liveMarketContext.market_open
@@ -8765,7 +8802,7 @@ function replayCapturedScan(replay) {
         } : null });
     const today = buildTodayOpportunity({ pair: replay.pair, currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
         marketContext: live.market_context, strategySetups: live.strategy_setups, executionZones: [...(live.strategy_execution_zones || []), ...(live.real_ict_zones || [])],
-        candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, futureWatchCandidates: live.future_watch_candidates, targetCandidates: live.target_candidates,
+        candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, futureWatchCandidates: live.future_watch_candidates, lowQualityCandidates: live.low_quality_candidates, targetCandidates: live.target_candidates,
         symbolMetadata: live.symbol_metadata,
         marketOpen: live.market_open });
     const finalOutput = buildTodayOpportunityOutput(today, replay.pair, price, asOfMs, live.market_open, live.symbol_metadata, live.provider_metadata);
@@ -10840,6 +10877,7 @@ async function runAutoScan() {
             candidateDiagnostics: liveMarketContext.setup_candidate_audit,
             validCandidates: liveMarketContext.adaptive_setup_candidates,
             futureWatchCandidates: liveMarketContext.future_watch_candidates,
+            lowQualityCandidates: liveMarketContext.low_quality_candidates,
             targetCandidates: liveMarketContext.target_candidates,
             symbolMetadata: liveMarketContext.symbol_metadata,
             marketOpen: liveMarketContext.market_open
