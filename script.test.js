@@ -780,7 +780,7 @@ describe('top-down trade context', () => {
         const isolated = ctx.calculateCandidateConfidence(candidate);
         const aligned = ctx.calculateCandidateConfidence({ ...candidate, trade_context_classification: 'HTF_ALIGNED_CONTINUATION' });
         expect(isolated.final_score).toBeLessThan(aligned.final_score);
-        expect(aligned.final_score - isolated.final_score).toBe(10);
+        expect(aligned.final_score - isolated.final_score).toBe(18);
         expect(isolated.quality).not.toBe('HIGH');
         candidate.quality = { final_confidence: isolated.final_score };
         candidate.top_down_context = ctx.classifyTopDownTrade(candidate, context(ctx, 'BEARISH', 'BEARISH', 'BEARISH'));

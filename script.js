@@ -6807,6 +6807,13 @@ function calculateCandidateConfidence(candidate, context = {}) {
     // Classification gives the setup archetype; agreement across 1D, 4H,
     // and 1H is separate evidence and must not disappear once classified.
     if (htfAlignment > 0) add(`HTF alignment ${htfAlignment}`, htfAlignment * spec.htfAlignment);
+    // A fresh continuation supported by all three decision timeframes is the
+    // intended pending-limit model.  It deserves a distinct quality credit;
+    // otherwise one duplicated path obstacle can demote a fully aligned
+    // retracement below the execution threshold.
+    if (htfAlignment === 3 && candidate.trade_context_classification === 'HTF_ALIGNED_CONTINUATION') {
+        add('Full top-down continuation alignment', 8);
+    }
     const confirmations = candidate?.strategy_setup?.confirmations || [];
     if (confirmations.length > 0) add(`Strategy confluence ${confirmations.length}`, confirmations.length * spec.confluence);
     const bias = context.directional_bias || context.market_context?.directional_bias;
@@ -12391,6 +12398,7 @@ function buildPublicTradeSignal(signal = {}) {
                 structural_invalidation: primary.structural_invalidation || null,
                 confidence: primaryConfidence,
                 opportunity_quality: primary.opportunity_quality || primary.quality || null,
+                watch_only: primary.watch_only === true || primary.opportunity_quality?.watch_only === true,
                 reason: primary.reason || null,
                 next_requirement: primary.next_requirement || []
             } : null;
@@ -12403,12 +12411,17 @@ function buildPublicTradeSignal(signal = {}) {
                 execution_timeframe: watch.execution_timeframe || null,
                 entry_price: watch.entry_price ?? watch.entry ?? null,
                 entry_zone: watch.entry_zone || watch.execution_zone || watch.area_of_interest || watch.location || null,
+                stop_loss: watch.stop_loss ?? null,
+                take_profit_1: watch.take_profit_1 ?? watch.tp1 ?? watch.target_level ?? null,
+                take_profit_2: watch.take_profit_2 ?? watch.tp2 ?? null,
+                take_profit_3: watch.take_profit_3 ?? watch.tp3 ?? null,
                 execution_model: watch.execution_model || null,
                 state: watch.state || watch.lifecycle_state || null,
                 target_intent: watch.target_intent || null,
                 target: watch.target || (watch.target_level != null ? { level: watch.target_level, source: watch.target_intent || null } : null),
                 structural_invalidation: watch.structural_invalidation || null,
                 confidence: watch.confidence ?? null,
+                watch_only: watch.watch_only === true || watch.opportunity_quality?.watch_only === true,
                 reason: watch.reason || null,
                 next_requirement: watch.next_requirement || []
             } : null);
@@ -12422,14 +12435,16 @@ function buildPublicTradeSignal(signal = {}) {
                 signal.opportunity?.confidence,
                 signal.confidence
             ].find(value => value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) > 0);
-            const orderType = compactPrimary?.entry_price != null && compactPrimary?.direction
-                ? `${compactPrimary.direction}_LIMIT` : 'WAIT';
+            const completePrimaryGeometry = compactPrimary && [compactPrimary.entry_price, compactPrimary.stop_loss, compactPrimary.take_profit_1]
+                .every(value => value !== null && value !== undefined && Number.isFinite(Number(value)));
+            const executablePrimary = completePrimaryGeometry && compactPrimary.direction && compactPrimary.watch_only !== true;
+            const orderType = executablePrimary ? `${compactPrimary.direction}_LIMIT` : 'WAIT';
             return {
                 date: signal.date,
                 pair: signal.pair,
                 current_price: signal.current_price,
                 symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
-                decision: compactPrimary?.entry_price != null && compactPrimary?.direction ? orderType : 'WAIT',
+                decision: executablePrimary ? orderType : 'WAIT',
                 trade_type: orderType,
                 entry_price: compactPrimary?.entry_price ?? null,
                 stop_loss: compactPrimary?.stop_loss ?? null,
