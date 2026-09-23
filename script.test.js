@@ -1149,6 +1149,31 @@ describe('fresh execution downstream validation', () => {
     });
 });
 
+describe('institutional-style zone confluence ranking', () => {
+    it('rewards a same-direction entry zone nested inside higher-timeframe demand or a breaker', () => {
+        const ctx = getContext();
+        const result = ctx.scoreInstitutionalZoneConfluence({ type: 'FVG', direction: 'BUY', timeframe: '15M', low: 99.4, high: 99.6 }, [
+            { id: 'demand-4h', type: 'DEMAND', direction: 'BUY', timeframe: '4H', low: 99, high: 100 },
+            { id: 'breaker-1h', type: 'FLIP', direction: 'BUY', timeframe: '1H', low: 99.2, high: 99.8 }
+        ], {
+            '4H': { evidence: [{ direction: 'BUY', kind: 'LIQUIDITY_SWEEP' }] }
+        }, 'BUY');
+        expect(result.score).toBe(19);
+        expect(result.nested_locations).toEqual(['demand-4h', 'breaker-1h']);
+        expect(result.evidence).toContain('LIQUIDITY_SWEEP:4H');
+    });
+
+    it('does not reward opposite-side or non-nested locations', () => {
+        const ctx = getContext();
+        const result = ctx.scoreInstitutionalZoneConfluence({ type: 'OB', direction: 'SELL', timeframe: '15M', low: 99.4, high: 99.6 }, [
+            { type: 'DEMAND', direction: 'BUY', timeframe: '4H', low: 99, high: 100 },
+            { type: 'SUPPLY', direction: 'SELL', timeframe: '4H', low: 101, high: 102 }
+        ], {}, 'SELL');
+        expect(result.score).toBe(0);
+        expect(result.nested_locations).toEqual([]);
+    });
+});
+
 describe('strategy-authoritative structural invalidation', () => {
     it('rejects a GBP/JPY TBS stop inside the sweep extreme and keeps the buffered anchor', () => {
         const ctx = getContext();

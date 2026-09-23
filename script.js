@@ -5708,6 +5708,41 @@ function hasDeterministicMarketMechanicsProof(zone, direction, timeframeContext 
     return location && targets && (continuation || reversal);
 }
 
+function scoreInstitutionalZoneConfluence(zone, poiZones = [], timeframeContext = {}, direction = null) {
+    if (!zone || !['BUY', 'SELL'].includes(direction)) return { score: 0, nested_locations: [], evidence: [] };
+    const midpoint = (Number(zone.low) + Number(zone.high)) / 2;
+    if (!Number.isFinite(midpoint)) return { score: 0, nested_locations: [], evidence: [] };
+    const timeframeRank = { '15M': 1, '1H': 2, '4H': 3, '1D': 4 };
+    const entryRank = timeframeRank[zone.timeframe] || 0;
+    const nested = (poiZones || []).filter(poi => {
+        const low = Number(poi.low), high = Number(poi.high);
+        return poi.direction === direction
+            && !poi.invalidated
+            && ['DEMAND', 'SUPPLY', 'FLIP'].includes(String(poi.type || '').toUpperCase())
+            && Number.isFinite(low) && Number.isFinite(high)
+            && midpoint >= low && midpoint <= high
+            && (timeframeRank[poi.timeframe] || 0) >= entryRank;
+    });
+    const evidence = [];
+    let score = 0;
+    if (nested.length) {
+        score += 10;
+        if (nested.some(poi => String(poi.type).toUpperCase() === 'FLIP')) score += 3;
+        if (nested.some(poi => (timeframeRank[poi.timeframe] || 0) > entryRank)) score += 3;
+        evidence.push(...nested.map(poi => `${poi.type}:${poi.timeframe}`));
+    }
+    const relevantContexts = ['4H', '1H', zone.timeframe].filter((tf, index, list) => list.indexOf(tf) === index);
+    for (const tf of relevantContexts) {
+        const events = timeframeContext?.[tf]?.evidence || [];
+        if (events.some(event => event.direction === direction && event.kind === 'LIQUIDITY_SWEEP')) {
+            score += 3;
+            evidence.push(`LIQUIDITY_SWEEP:${tf}`);
+            break;
+        }
+    }
+    return { score: Math.min(20, score), nested_locations: nested.map(poi => poi.id || `${poi.type}:${poi.timeframe}`), evidence: [...new Set(evidence)] };
+}
+
 function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, targetCandidates, riskConstraints, marketRegime, structure, marketContext, strategySetups, symbolMetadata = null }) {
     const timeframeContext = marketContext?.timeframe_context || buildTimeframeContext({ historyCache, structure, price, strategySetups, zones });
     const settings = getMarketSettings(pair, symbolMetadata || {});
@@ -6005,11 +6040,13 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 const distancePenalty = Math.min(10, Math.abs(entry - price) / Math.max(price, 1) * 100);
                 const contextBias = marketContext?.directional_bias;
                 const contextSupport = (direction === 'BUY' && contextBias === 'BULLISH') || (direction === 'SELL' && contextBias === 'BEARISH') ? 8 : (contextBias === 'MIXED' || contextBias === 'NEUTRAL' ? 0 : -6);
-                const score = zoneScore + strategyScore + freshnessScore + htfAlignment * 8 + rrScore + reversalScore + contextSupport - distancePenalty;
+                const institutionalConfluence = scoreInstitutionalZoneConfluence(zone, poiZones, timeframeContext, direction);
+                const score = zoneScore + strategyScore + freshnessScore + htfAlignment * 8 + rrScore + reversalScore + contextSupport + institutionalConfluence.score - distancePenalty;
                 const candidate = {
                     ...rawCandidate,
                     setup_archetype: archetype.setup_archetype,
                     reversal_evidence: archetype.reversal_evidence,
+                    institutional_confluence: institutionalConfluence,
                     strategy_setup: strategySetup || rawCandidate.strategy_setup || null,
                     strategy_label: strategySetup?.label || rawCandidate.strategy_label || zone.type,
                     tp1: targets.tp1.level,
