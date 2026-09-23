@@ -267,6 +267,26 @@ describe('strategy entry lifecycle', () => {
         expect(result.remaining_reward_fraction).toBeCloseTo(0.818, 2);
     });
 
+    it('uses a fresh execution-zone timestamp instead of expiring it from an old parent narrative', () => {
+        const ctx = getContext();
+        const market = {
+            price: 101,
+            as_of_time: '2026-09-23T11:00:00Z',
+            historyCache: { '1H': [
+                c(99, 100, 98.5, 99.5, '2026-09-23 09:00:00'),
+                c(99.5, 101.2, 99.3, 101, '2026-09-23 10:00:00'),
+                c(101, 101.1, 100.9, 101, '2026-09-23 11:00:00')
+            ] }
+        };
+        const candidate = { direction: 'BUY', execution_model: 'PENDING_LIMIT', entry: 99, zone_low: 98.9, zone_high: 99.1, tp1: 110,
+            zone: { id: 'fresh-child', created_time: Date.parse('2026-09-23T09:00:00Z') },
+            strategy_setup: { primary: 'ICT', timeframe: '1H', event_time: Date.parse('2026-09-13T09:00:00Z') } };
+        const result = ctx.evaluateSetupLifecycle(candidate, market);
+        expect(result.rejection_code).not.toBe('SETUP_STALE');
+        expect(result.still_actionable_today).toBe(true);
+        expect(result.time_integrity.zone_created_time_utc).toBe('2026-09-23T09:00:00.000Z');
+    });
+
     it('rejects a same-day setup after most of the delivery path is complete', () => {
         const ctx = getContext();
         const candidate = { direction: 'BUY', entry: 100, zone_low: 99.9, zone_high: 100.1, tp1: 110,
@@ -315,6 +335,18 @@ describe('strategy entry lifecycle', () => {
             { id: 'completed', opportunity_status: 'COMPLETED', direction: 'BUY', entry: 1, stop_loss: 0.9, tp1: 1.3 }
         ] });
         expect(payload.adaptive_setup_candidates.map(c => c.id)).toEqual(['fresh']);
+    });
+
+    it('sends the full candidate catalog while keeping rejected candidates unselectable', () => {
+        const ctx = getContext();
+        const payload = ctx.compactAIContext({
+            adaptive_setup_candidates: [{ id: 'valid', opportunity_status: 'FRESH_PENDING_TODAY', direction: 'SELL', entry: 2, stop_loss: 3, tp1: 1 }],
+            rejected_setup_candidates: [{ id: 'expired-zone', direction: 'SELL', timeframe: '4H', zone_type: 'OB', rejection_code: 'SETUP_EXPIRED', rejection_reasons: ['SETUP_EXPIRED'] }]
+        });
+        expect(payload.candidate_catalog.map(c => c.id)).toEqual(['valid', 'expired-zone']);
+        expect(payload.candidate_catalog[0].catalog_status).toBe('VALID_SELECTABLE');
+        expect(payload.candidate_catalog[1].catalog_status).toBe('REJECTED');
+        expect(payload.candidate_catalog[1].rejection_code).toBe('SETUP_EXPIRED');
     });
 
     it('normalizes epoch seconds, epoch milliseconds, ISO, text, Date, and timezone timestamps identically', () => {

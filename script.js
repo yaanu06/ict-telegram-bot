@@ -6486,7 +6486,9 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     // timestamp when the parent narrative did not provide a separate
     // execution event; otherwise an MSNR/FVG zone is aged from the old
     // narrative index and expires while the zone is still actionable.
-    const executionEventTime = normalizeTimestampUTC(candidate.execution_event_time ?? candidate.execution_zone_created_time ?? setup.execution_event_time ?? setup.execution_zone_created_time ?? setup.execution_zone?.created_time);
+    const executionEventTime = normalizeTimestampUTC(candidate.execution_event_time ?? candidate.execution_zone_created_time
+        ?? candidate.zone?.created_time ?? candidate.zone?.created_time_ms
+        ?? setup.execution_event_time ?? setup.execution_zone_created_time ?? setup.execution_zone?.created_time);
     const executionEventIndex = Number.isInteger(candidate.execution_event_index)
         ? candidate.execution_event_index
         : Number.isInteger(setup.execution_event_index)
@@ -6535,7 +6537,9 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         ? (asOfTime - resolvedEventTime) / 3600000
         : (Number.isInteger(index) ? Math.max(0, data.length - 1 - index) * (({ '15M': 15, '1H': 60, '4H': 240, '1D': 1440 }[setupTf] || 60) / 60) : null);
     const timestampInFuture = hasExplicitTimes && Number.isFinite(asOfTime) && Number.isFinite(resolvedEventTime) && resolvedEventTime > asOfTime + STRATEGY_SPEC.TIME.futureToleranceMs;
-    const zoneCreatedTime = normalizeTimestampUTC(candidate.execution_zone_created_time ?? setup.execution_zone_created_time ?? setup.execution_zone?.created_time);
+    const zoneCreatedTime = normalizeTimestampUTC(candidate.execution_zone_created_time
+        ?? candidate.zone?.created_time ?? candidate.zone?.created_time_ms
+        ?? setup.execution_zone_created_time ?? setup.execution_zone?.created_time);
     const zoneTimeInFuture = hasExplicitTimes && Number.isFinite(asOfTime) && Number.isFinite(zoneCreatedTime) && zoneCreatedTime > asOfTime + STRATEGY_SPEC.TIME.futureToleranceMs;
     const eventAgeHours = rawEventAgeHours;
     const ageTimeframe = Number.isFinite(executionEventTime) ? executionTf : setupTf;
@@ -6648,7 +6652,8 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
             : setupTf === '4H'
                 ? freshnessSpec.max4hEventAgeHours
                 : freshnessSpec.max1hEventAgeHours;
-    const parentAgeExpired = Number.isFinite(parentEventAgeHours)
+    const pendingLimitModel = String(candidate.execution_model || candidate.entry_model || setup.execution_model || setup.entry_model || '').toUpperCase() === 'PENDING_LIMIT';
+    const parentAgeExpired = !(pendingLimitModel && Number.isFinite(executionEventTime)) && Number.isFinite(parentEventAgeHours)
         ? parentEventAgeHours > parentMaxAgeHours
         : false;
     const indexAgeExpired = !Number.isFinite(executionEventTime)
@@ -8485,6 +8490,12 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         risk_constraints: riskConstraints,
         target_candidates: targetCandidates,
         adaptive_setup_candidates: adaptiveSetupCandidates,
+        // Keep the complete deterministic catalog available to the AI
+        // analyst. Only adaptive_setup_candidates are selectable; rejected
+        // entries are context with explicit reasons and can never become an
+        // order through AI output.
+        rejected_setup_candidates: adaptiveSetupResult.rejected_candidates,
+        candidate_seed_diagnostics: adaptiveSetupResult.seed_diagnostics,
         strategy_detections: strategyDetectionSummary,
         candidate_pipeline: candidatePipelineAudit,
         opportunity_funnel: marketContext.opportunity_funnel || null,
@@ -8801,6 +8812,22 @@ function compactAIContext(liveMarketContext) {
         adaptive_setup_candidates: (liveMarketContext?.adaptive_setup_candidates || [])
             .filter(c => ['FRESH_NOW', 'FRESH_PENDING_TODAY'].includes(c.lifecycle_state || c.opportunity_status))
             .map(compactCandidate),
+        candidate_catalog: [
+            ...(liveMarketContext?.adaptive_setup_candidates || []).map(c => ({
+                ...compactCandidate(c), catalog_status: 'VALID_SELECTABLE'
+            })),
+            ...(liveMarketContext?.rejected_setup_candidates || []).map(c => ({
+                id: c.id,
+                direction: c.direction,
+                timeframe: c.timeframe,
+                zone_type: c.zone_type,
+                catalog_status: 'REJECTED',
+                rejection_code: c.rejection_code || null,
+                rejection_reasons: c.rejection_reasons || [],
+                setup_lifecycle: c.setup_lifecycle || null
+            }))
+        ].slice(0, 80),
+        candidate_seed_diagnostics: (liveMarketContext?.candidate_seed_diagnostics || []).slice(0, 80),
         target_candidates: {
             buy: (liveMarketContext?.target_candidates?.buy || []).slice(0, STRATEGY_SPEC.EXECUTION.maxTargetsPerEvaluation),
             sell: (liveMarketContext?.target_candidates?.sell || []).slice(0, STRATEGY_SPEC.EXECUTION.maxTargetsPerEvaluation)
@@ -9295,6 +9322,7 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'You are the discretionary candidate-selection layer of an ICT pending-limit trading system.',
         'Return only {"decision":"SELECT"|"WAIT","selected_candidate_id":"string or null","reasoning":"qualitative text"}. Do not return trade geometry or confidence.',
         'The deterministic engine has already calculated and validated every numeric trade level in COMPUTED MARKET FACTS.adaptive_setup_candidates.',
+        'candidate_catalog contains the full deterministic scan, including rejected zones and exact rejection reasons. Use it to understand the complete market map, but select only IDs marked VALID_SELECTABLE in adaptive_setup_candidates.',
         'You must NEVER invent, modify, recalculate, improve, widen, tighten, or replace entry, stop_loss, TP1, TP2, TP3, RR, or zone bounds.',
         'Your job is only to select the best candidate ID using the supplied live market context, or return WAIT for qualitative market reasons.',
         'A selected candidate numeric geometry is authoritative and immutable.',
