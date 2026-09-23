@@ -151,6 +151,14 @@ const LIMIT_ORDER_MAX_DIST_ATR = 6.0;
 function isPendingLimitExecutionModel(model) {
     return ['PENDING_LIMIT', 'FRESH_RETRACEMENT_LIMIT', 'STRUCTURAL_LIMIT'].includes(String(model || '').toUpperCase());
 }
+function getCandidateExecutionQualityMinimum(candidate = {}) {
+    const fullyAlignedPendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model)
+        && Number(candidate.htf_alignment) === 3
+        && candidate.trade_context_classification === 'HTF_ALIGNED_CONTINUATION';
+    return fullyAlignedPendingLimit
+        ? Number(STRATEGY_SPEC?.CONFIDENCE?.alignedPendingLimitMinimum) || 65
+        : Number(STRATEGY_SPEC?.CONFIDENCE?.highQualityMinimum) || 70;
+}
 const HTF_MIN_MATCH = 1;
 const AI_ADVISORY_ONLY = true;
 const ICT_LAST_TRADE_TIME_KEY = 'ict_last_trade_time';
@@ -1924,6 +1932,7 @@ const STRATEGY_SPEC = {
         countertrendPenalty: -8,
         seriousObstaclePenalty: -10,
         highQualityMinimum: 70,
+        alignedPendingLimitMinimum: 65,
         mediumQualityMinimum: 55
     },
     CRT: { referenceLookback: 18, eventLookahead: 10, minReferenceAtr: 0.35, maxEventAgeBars: 8, minSweepAtr: 0.04, dedupeAtr: 0.2, maxEventsPerTimeframe: 8 },
@@ -5006,7 +5015,7 @@ function selectFutureLimitLocation(direction, zones = [], locationPois = [], pri
         // A true future retracement limit must be beyond current price in its
         // fill direction.  A passed zone cannot be revived as an order.
         .filter(zone => wantedSide === 'BELOW' ? Number(zone.high) < Number(price) : Number(zone.low) > Number(price))
-        .filter(zone => zone.primary_eligible !== false || zone.location_only === true || ['FVG', 'OB', 'MSNR'].includes(String(zone.type || '').toUpperCase()))
+        .filter(zone => zone.primary_eligible !== false || zone.location_only === true)
         .map(zone => {
             const midpoint = (Number(zone.low) + Number(zone.high)) / 2;
             const distance = Math.abs(midpoint - Number(price));
@@ -5048,8 +5057,14 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
         // deterministic child FVG/OB/MSNR zone inside it, use that child as
         // the pending-limit entry location. This keeps the strategy forecast
         // intact without treating the parent POI itself as executable.
+        const nestedFutureExecution = location.location_only
+            ? selectFutureLimitLocation(direction, (zones || []).filter(zone => zone.id !== location.id && zone.location_only !== true && Number(zone.low) >= Number(location.low) && Number(zone.high) <= Number(location.high)), [], price)
+            : null;
+        // A validated HTF supply/demand location is usable as the order area
+        // when no narrower untouched child exists.  Do not make a new FVG a
+        // prerequisite for a future limit order.
         const executionLocation = location.location_only
-            ? getTodayOpportunityZone({ direction, opportunity_narrative: { location } }, zones || [])
+            ? (nestedFutureExecution || { ...location, primary_eligible: true, entry_region_source: 'HTF_LOCATION' })
             : location;
         const pendingLimitZone = executionLocation ? {
             ...executionLocation,
@@ -6222,23 +6237,22 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const rankedCandidates = validCandidates
         .sort((a, b) => b.score - a.score || b.rr_tp1 - a.rr_tp1 || a.distance_from_current_price - b.distance_from_current_price)
         .slice();
-    const highQualityMinimum = Number(STRATEGY_SPEC.CONFIDENCE.highQualityMinimum) || 70;
     const selectableCandidates = rankedCandidates.filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
-        const qualityPasses = !Number.isFinite(quality) || quality >= highQualityMinimum;
+        const qualityPasses = !Number.isFinite(quality) || quality >= getCandidateExecutionQualityMinimum(candidate);
         const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
         return qualityPasses && candidate.still_actionable_today !== false && (pendingLimit || candidate.entry_reachable_today !== false);
     }).slice(0, 5);
     const futureWatchCandidates = rankedCandidates.filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
-        const qualityPasses = Number.isFinite(quality) && quality >= highQualityMinimum;
+        const qualityPasses = Number.isFinite(quality) && quality >= getCandidateExecutionQualityMinimum(candidate);
         const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
         const futureOnly = candidate.still_actionable_today === false || (!pendingLimit && candidate.entry_reachable_today === false);
         return qualityPasses && futureOnly;
     }).slice(0, 10);
     const lowQualityCandidates = rankedCandidates.filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
-        return Number.isFinite(quality) && quality < highQualityMinimum;
+        return Number.isFinite(quality) && quality < getCandidateExecutionQualityMinimum(candidate);
     }).slice(0, 20);
     const selected = rankedCandidates.slice(0, 5);
     const result = {
@@ -6840,7 +6854,8 @@ function calculateCandidateConfidence(candidate, context = {}) {
         .filter(obstacle => obstacle.severity === 'SERIOUS').length;
     if (seriousObstacles > 0) add(`Serious target obstacles ${seriousObstacles}`, seriousObstacles * spec.seriousObstaclePenalty);
     const finalScore = Math.max(0, Math.min(100, Math.round(score)));
-    const qualityBand = finalScore >= spec.highQualityMinimum ? 'HIGH' : finalScore >= spec.mediumQualityMinimum ? 'MEDIUM' : 'LOW';
+    const qualityMinimum = getCandidateExecutionQualityMinimum(candidate);
+    const qualityBand = finalScore >= qualityMinimum ? 'HIGH' : finalScore >= spec.mediumQualityMinimum ? 'MEDIUM' : 'LOW';
     const qualityBreakdown = {
         base: spec.baseScore,
         strategy_adjustment: adjustments.filter(a => /Fresh|confluence/i.test(a.label)).reduce((s, a) => s + a.value, 0),
@@ -6852,7 +6867,8 @@ function calculateCandidateConfidence(candidate, context = {}) {
         session_adjustment: 0,
         stop_quality_adjustment: 0,
         final_confidence: finalScore,
-        quality_band: qualityBand
+        quality_band: qualityBand,
+        execution_threshold: qualityMinimum
     };
     return {
         base_score: spec.baseScore,
@@ -10954,8 +10970,8 @@ async function runAutoScan() {
             const hasStrategySetups = (liveMarketContext.strategy_setups || []).length > 0;
             const decision = 'WAIT';
             const reason = !hasStrategySetups
-                ? 'Market context available, but no valid CRT/TBS/MSNR strategy setup is currently available.'
-                : (hasRaw ? 'No strategy setup execution combination passed all hard rules' : 'Strategy setup exists, but no valid execution candidate is available.');
+                ? 'No validated future limit zone has been found for the current market thesis.'
+                : (hasRaw ? 'No pending-limit candidate passed the structural stop, target, RR, freshness, and data checks.' : 'No untouched future execution zone currently supports the market thesis.');
             const waitCode = waitCodeFromRejections({ ...audit, market_open: liveMarketContext.market_open }, hasStrategySetups);
             const today = liveMarketContext.today_opportunity;
             if (today.state === 'NO_TRADE_TODAY' && today.reason_code === 'NO_TRADE_TODAY' && !today.previous_opportunity_status) {

@@ -994,6 +994,18 @@ describe('daily opportunity planning', () => {
         expect(result.execution_model).toBe('PENDING_LIMIT');
     });
 
+    it('uses the aligned pending-limit threshold for a fully confirmed retracement plan', () => {
+        const ctx = getContext();
+        expect(ctx.getCandidateExecutionQualityMinimum({
+            execution_model: 'FRESH_RETRACEMENT_LIMIT', htf_alignment: 3,
+            trade_context_classification: 'HTF_ALIGNED_CONTINUATION'
+        })).toBe(65);
+        expect(ctx.getCandidateExecutionQualityMinimum({
+            execution_model: 'FRESH_RETRACEMENT_LIMIT', htf_alignment: 2,
+            trade_context_classification: 'HTF_ALIGNED_CONTINUATION'
+        })).toBe(70);
+    });
+
     it('returns TRADE_READY for a high-quality future fresh limit without requiring a confirmation candle', () => {
         const ctx = getContext();
         const result = ctx.buildTodayOpportunity({ pair: 'XAU/USD', currentPrice: 4320, scanAsOfMs: Date.parse('2026-09-23T10:00:00Z'), marketOpen: true,
