@@ -6885,6 +6885,10 @@ function getDeterministicCandidateConfidence(candidate) {
 }
 
 function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
+    // Published candidates are frozen. Revalidation must recompute lifecycle
+    // on a working copy, while returning the current verdict in metrics.
+    // Construction still uses a mutable candidate to collect those fields.
+    if (candidate && Object.isFrozen(candidate)) candidate = { ...candidate };
     const reasons = [];
     const checks = {};
     const metrics = {};

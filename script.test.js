@@ -175,6 +175,28 @@ const freshExecutionFixture = () => {
 };
 
 describe('strategy entry lifecycle', () => {
+    it.each(['XAU/USD', 'AUD/USD', 'EUR/USD', 'GBP/JPY', 'BTC/USD'])('revalidates frozen %s candidates without mutating their published lifecycle', pair => {
+        const ctx = getContext();
+        const candidate = Object.freeze({
+            direction: 'BUY', entry: 100, stop_loss: 98, tp1: 110,
+            zone_low: 99, zone_high: 101, event_time: 123,
+            execution_model: 'PENDING_LIMIT',
+            strategy_setup: Object.freeze({ primary: 'ICT', timeframe: '1H',
+                event_time: Date.parse('2026-09-23T09:00:00Z') })
+        });
+        const before = JSON.stringify(candidate);
+        const market = { pair, price: 111, as_of_time: '2026-09-23T11:00:00Z',
+            historyCache: { '1H': [
+                c(100, 101, 99, 100, '2026-09-23T09:00:00Z'),
+                c(108, 112, 107, 111, '2026-09-23T10:00:00Z')
+            ] } };
+        const result = ctx.evaluateSetupCandidate(candidate, market);
+        expect(result.valid).toBe(false);
+        expect(result.reasons).toContain('SETUP_ALREADY_COMPLETED');
+        expect(result.metrics.setup_lifecycle.tp1_already_reached).toBe(true);
+        expect(JSON.stringify(candidate)).toBe(before);
+        expect(ctx.evaluateSetupCandidate({ ...candidate }, market).reasons).toEqual(result.reasons);
+    });
     const fixture = (primary = 'CRT', later = []) => {
         const bars = [c(1.161, 1.1613, 1.159, 1.1604), ...later];
         return {
