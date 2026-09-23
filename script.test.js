@@ -6226,6 +6226,40 @@ describe('AI market analyst contract', () => {
 
 
 describe('fallback presentation regressions', () => {
+    it('revalidates eligible fallback candidates in rank order without selecting a low-quality candidate', async () => {
+        const ctx = getContext();
+        const first = { id: 'expired-since-ranking' }, second = { id: 'next-eligible' };
+        Object.assign(ctx, {
+            showNotif: jest.fn(), buildFallbackDisplayFacts: () => ({}), buildLiveZonesForTf: () => [],
+            buildRiskConstraints: () => ({}), buildStructureSnapshot: () => ({}),
+            getSession: () => ({}), shouldTradeSession: () => ({}), detectCompression: () => ({}),
+            detectDisplacement: () => ({}), mapLiquidity: () => ({}), isPremiumDiscount: () => ({}),
+            buildMarketContext: () => ({}), buildStrategySetups: () => [], buildTargetCandidates: () => ({}),
+            buildDeterministicValidationContext: () => ({}),
+            buildAdaptiveSetupCandidates: () => ({ valid_candidates: [{ id: 'low-quality' }],
+                selectable_candidates: [first, second], rejected_candidates: [] }),
+            evaluateSetupCandidate: jest.fn(candidate => {
+                if (candidate === second) throw new Error('second eligible reached');
+                return { valid: false };
+            })
+        });
+        await expect(ctx.runFallbackScan(100, {})).rejects.toThrow('second eligible reached');
+        expect(ctx.evaluateSetupCandidate.mock.calls.map(call => call[0].id)).toEqual(['expired-since-ranking', 'next-eligible']);
+    });
+    it.each(['XAU/USD', 'AUD/USD', 'EUR/USD', 'GBP/JPY', 'BTC/USD'])('does not advertise incomplete or watch-only orders for %s', pair => {
+        const ctx = getContext();
+        const incomplete = { pair, decision: 'WAIT', status: 'TODAY_OPPORTUNITY',
+            watch_setups: [{ direction: 'BUY', confidence: 74, strategy: 'CRT', target_level: 0.70486,
+                watch_only: true, reason: 'Higher-timeframe confirmation is insufficient.' }] };
+        const publicSignal = ctx.buildPublicTradeSignal(incomplete);
+        expect(ctx.getTradeSummaryModel(publicSignal).tradeType).toBe('WAIT');
+        for (const entry of [null, undefined, '', 0]) {
+            expect(ctx.getTradeSummaryModel({ pair, decision: 'BUY_LIMIT', entry, stop_loss: 90, tp1: 110 }).tradeType).toBe('WAIT');
+        }
+        expect(ctx.getTradeSummaryModel({ pair, decision: 'BUY_LIMIT', entry: 100, stop_loss: 105, tp1: 110 }).tradeType).toBe('WAIT');
+        expect(ctx.getTradeSummaryModel({ pair, decision: 'BUY_LIMIT', entry: 100, stop_loss: 90, tp1: 110, watch_only: true }).tradeType).toBe('WAIT');
+        expect(ctx.getTradeSummaryModel({ pair, decision: 'BUY_LIMIT', entry: 100, stop_loss: 90, tp1: 110 }).tradeType).toBe('BUY LIMIT');
+    });
     it.each(['XAU/USD', 'AUD/USD', 'EUR/USD', 'GBP/JPY', 'BTC/USD'])('preserves facts, strategy and three targets for %s', pair => {
         const ctx = getContext();
         const bars = Array.from({ length: 210 }, (_, i) => ({

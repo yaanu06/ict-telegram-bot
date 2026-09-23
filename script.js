@@ -10314,8 +10314,8 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
         rejection_code: rejection.rejection_code,
         rejection_reasons: rejection.rejection_reasons
     }));
-    if ((fallbackCandidateResult.valid_candidates || []).length > 0) {
-        bestCandidate = fallbackCandidateResult.valid_candidates[0];
+    for (const candidate of fallbackCandidateResult.selectable_candidates || []) {
+        bestCandidate = candidate;
         bestEvaluation = evaluateSetupCandidate(bestCandidate, fallbackValidationContext);
         if (bestEvaluation.valid) {
             best = {
@@ -10334,6 +10334,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
                 isFresh: bestCandidate.freshness,
                 distancePct: Math.abs(bestCandidate.entry - price) / price * 100
             };
+            break;
         }
     }
     if (!best) {
@@ -12498,8 +12499,11 @@ function buildPublicTradeSignal(signal = {}) {
                 signal.confidence
             ].find(value => value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) > 0);
             const completePrimaryGeometry = compactPrimary && [compactPrimary.entry_price, compactPrimary.stop_loss, compactPrimary.take_profit_1]
-                .every(value => value !== null && value !== undefined && Number.isFinite(Number(value)));
-            const executablePrimary = completePrimaryGeometry && compactPrimary.direction && compactPrimary.watch_only !== true;
+                .every(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) && Number(value) > 0);
+            const orderedPrimaryGeometry = completePrimaryGeometry && (compactPrimary.direction === 'BUY'
+                ? Number(compactPrimary.stop_loss) < Number(compactPrimary.entry_price) && Number(compactPrimary.entry_price) < Number(compactPrimary.take_profit_1)
+                : compactPrimary.direction === 'SELL' && Number(compactPrimary.stop_loss) > Number(compactPrimary.entry_price) && Number(compactPrimary.entry_price) > Number(compactPrimary.take_profit_1));
+            const executablePrimary = orderedPrimaryGeometry && compactPrimary.watch_only !== true && compactPrimary.trade_context !== 'LTF_ISOLATED';
             const orderType = executablePrimary ? `${compactPrimary.direction}_LIMIT` : 'WAIT';
             return {
                 date: signal.date,
@@ -12533,6 +12537,7 @@ function buildPublicTradeSignal(signal = {}) {
                     target: plan.target,
                     state: plan.state,
                     confidence: plan.confidence,
+                    watch_only: plan.watch_only === true,
                     reason: plan.reason,
                     next_requirement: plan.next_requirement
                 } : (signal.opportunity || null),
@@ -12876,11 +12881,16 @@ function getTradeSummaryModel(signal = {}) {
         .map(value => String(value || '').toUpperCase())
         .find(value => ['BUY', 'SELL', 'BUY_LIMIT', 'SELL_LIMIT'].includes(value));
     const numericEntry = Number(entryValue), numericStop = Number(stopValue), numericTarget = Number(tp1Value);
-    const geometryDirection = Number.isFinite(numericEntry) && Number.isFinite(numericStop) && Number.isFinite(numericTarget)
+    const completeGeometry = [entryValue, stopValue, tp1Value].every(value => value != null && value !== '' && Number.isFinite(Number(value)) && Number(value) > 0);
+    const geometryDirection = completeGeometry
         ? numericStop < numericEntry && numericEntry < numericTarget ? 'BUY_LIMIT'
             : numericStop > numericEntry && numericEntry > numericTarget ? 'SELL_LIMIT' : null
         : null;
-    const resolvedDirection = direction || geometryDirection;
+    const watchOnly = signal.watch_only === true || setup.watch_only === true
+        || setup.opportunity_quality?.watch_only === true || signal.status === 'WATCH_ONLY'
+        || setup.state === 'WATCH_ONLY' || setup.trade_context === 'LTF_ISOLATED';
+    const directionMatches = !direction || direction.replace('_LIMIT', '') === geometryDirection?.replace('_LIMIT', '');
+    const resolvedDirection = !watchOnly && directionMatches ? geometryDirection : null;
     const type = resolvedDirection === 'BUY' || resolvedDirection === 'BUY_LIMIT' ? 'BUY LIMIT'
         : resolvedDirection === 'SELL' || resolvedDirection === 'SELL_LIMIT' ? 'SELL LIMIT' : 'WAIT';
     const trend = signal.analysis?.trend_detection || signal.trend_detection || signal.analysis?.structural_context || signal.structural_context || signal.analysis?.higher_timeframe || {};
