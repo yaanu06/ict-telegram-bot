@@ -531,6 +531,19 @@ describe('market-thesis opportunity invariants', () => {
         expect(result.primary_opportunity.execution_zone).toBeNull();
     });
 
+    it('selects an existing nested limit zone instead of waiting for a new zone to form', () => {
+        const ctx = getContext();
+        const setup = {
+            id: 'sell-narrative', direction: 'SELL',
+            opportunity_narrative: { location: { type: 'SUPPLY', low: 1.148, high: 1.151 } }
+        };
+        const zone = ctx.getTodayOpportunityZone(setup, [
+            { id: 'outside', type: 'FVG', direction: 'SELL', low: 1.155, high: 1.156, primary_eligible: true },
+            { id: 'nested-ob', type: 'OB', direction: 'SELL', low: 1.149, high: 1.150, primary_eligible: true, freshness: 'FRESH' }
+        ]);
+        expect(zone.id).toBe('nested-ob');
+    });
+
     it('keeps an isolated local setup watch-only and lets aligned continuation win', () => {
         const ctx = getContext();
         const context = { daily_bias: { direction: 'SELL' }, timeframe_context: {

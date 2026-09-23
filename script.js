@@ -7364,9 +7364,32 @@ function waitCodeFromRejections(audit, hasStrategySetups) {
 }
 
 function getTodayOpportunityZone(setup, executionZones = []) {
-    return setup?.execution_zone || (executionZones || []).find(zone =>
+    const direct = setup?.execution_zone || (executionZones || []).find(zone =>
         zone?.strategy_setup?.id === setup?.id || zone?.parent_narrative_id === setup?.id || zone?.narrative_id === setup?.id
-    ) || null;
+    );
+    if (direct) return direct;
+    const location = setup?.opportunity_narrative?.location;
+    if (!location) return null;
+    const locationLow = Number(location.low), locationHigh = Number(location.high);
+    const locationTypes = new Set(['FVG', 'OB', 'MSNR', 'CRT', 'TBS', 'FLIP', 'DEMAND', 'SUPPLY']);
+    const typePriority = { FVG: 6, OB: 5, FLIP: 5, MSNR: 4, CRT: 3, TBS: 3, DEMAND: 2, SUPPLY: 2 };
+    const nested = (executionZones || []).filter(zone => {
+        const low = Number(zone?.low), high = Number(zone?.high);
+        const midpoint = (low + high) / 2;
+        return zone?.direction === setup.direction
+            && locationTypes.has(String(zone?.type || '').toUpperCase())
+            && zone?.invalidated !== true
+            && zone?.consumed !== true
+            && zone?.primary_eligible !== false
+            && Number.isFinite(low) && Number.isFinite(high)
+            && (!Number.isFinite(locationLow) || !Number.isFinite(locationHigh)
+                || (midpoint >= locationLow && midpoint <= locationHigh));
+    });
+    return nested.sort((a, b) =>
+        (typePriority[String(b.type || '').toUpperCase()] || 0) - (typePriority[String(a.type || '').toUpperCase()] || 0)
+        || Number(b.primary_eligible !== false) - Number(a.primary_eligible !== false)
+        || String(b.freshness || '').localeCompare(String(a.freshness || ''))
+    )[0] || null;
 }
 
 function getTodayOpportunityExecutionModel(setup, zone) {
@@ -7953,7 +7976,7 @@ function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, select
         marketContext: liveMarketContext.market_context,
         strategySetups: liveMarketContext.strategy_setups,
         aiAnalysis: liveMarketContext.ai_analysis,
-        executionZones: liveMarketContext.strategy_execution_zones,
+        executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
         candidateDiagnostics: liveMarketContext.setup_candidate_audit,
         validCandidates: remainingCandidates,
         targetCandidates: liveMarketContext.target_candidates,
@@ -8589,7 +8612,7 @@ function replayCapturedScan(replay) {
             provider_timestamp_utc: replay.runtime_state.quote_snapshot.provider_timestamp_utc || replay.runtime_state.quote_snapshot.timestamp || null
         } : null });
     const today = buildTodayOpportunity({ pair: replay.pair, currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
-        marketContext: live.market_context, strategySetups: live.strategy_setups, executionZones: live.strategy_execution_zones,
+        marketContext: live.market_context, strategySetups: live.strategy_setups, executionZones: [...(live.strategy_execution_zones || []), ...(live.real_ict_zones || [])],
         candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, targetCandidates: live.target_candidates,
         symbolMetadata: live.symbol_metadata,
         marketOpen: live.market_open });
@@ -10628,7 +10651,7 @@ async function runAutoScan() {
             marketContext: liveMarketContext.market_context,
             strategySetups: liveMarketContext.strategy_setups,
             aiAnalysis: analystResult.diagnostics,
-            executionZones: liveMarketContext.strategy_execution_zones,
+            executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
             candidateDiagnostics: liveMarketContext.setup_candidate_audit,
             validCandidates: liveMarketContext.adaptive_setup_candidates,
             targetCandidates: liveMarketContext.target_candidates,
@@ -10716,7 +10739,7 @@ async function runAutoScan() {
                     marketContext: liveMarketContext.market_context,
                     strategySetups: liveMarketContext.strategy_setups,
                     aiAnalysis: liveMarketContext.ai_analysis,
-                    executionZones: liveMarketContext.strategy_execution_zones,
+                    executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
                     candidateDiagnostics: liveMarketContext.setup_candidate_audit,
                     validCandidates: [],
                     targetCandidates: liveMarketContext.target_candidates,
