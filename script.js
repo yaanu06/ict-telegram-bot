@@ -3243,9 +3243,23 @@ function checkZoneFreshness(data, zone, direction) {
     const lookback = Math.min(50, data.length);
     const zoneLow = Number(zone?.low ?? zone * 0.998);
     const zoneHigh = Number(zone?.high ?? zone * 1.002);
+    const createdTime = normalizeTimestampUTC(zone?.created_time ?? zone?.created_time_ms ?? zone?.source_time);
+    const createdIndex = Number.isInteger(zone?.created_index)
+        ? zone.created_index
+        : Number.isInteger(zone?.source_candle_index) ? zone.source_candle_index : null;
+    const hasExplicitTimes = data.some(candle => Number.isFinite(normalizeTimestampUTC(candle?.t)));
+    // Freshness means what happened after this exact zone was created. Looking
+    // through arbitrary older candles turns historical interaction with a
+    // similar price area into false "invalidations" of a new FVG/OB.
+    let startIndex = Math.max(0, data.length - lookback);
+    if (Number.isFinite(createdTime) && hasExplicitTimes) {
+        const firstPostCreation = data.findIndex(candle => normalizeTimestampUTC(candle?.t) > createdTime);
+        startIndex = firstPostCreation >= 0 ? firstPostCreation : data.length;
+    } else if (Number.isInteger(createdIndex)) {
+        startIndex = Math.max(0, Math.min(data.length, createdIndex + 1));
+    }
 
-    for(let i = data.length - lookback; i < data.length; i++) {
-        if(i < 0) continue;
+    for(let i = startIndex; i < data.length; i++) {
         const close = data[i].c;
         const closeInZone = close >= zoneLow && close <= zoneHigh;
         if(closeInZone) {
@@ -3261,7 +3275,7 @@ function checkZoneFreshness(data, zone, direction) {
     const fresh = touches <= 2 && violations === 0;
     const partiallyUsed = touches <= 5 && violations <= 1;
     const used = touches > 5 || violations > 1;
-    return { fresh, partiallyUsed, used, touches, violations };
+    return { fresh, partiallyUsed, used, touches, violations, start_index: startIndex };
 }
 
 // ============================================
@@ -6884,7 +6898,13 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
     const hasContextZones = Array.isArray(marketContext.real_ict_zones);
     const zones = hasContextZones ? marketContext.real_ict_zones : [];
     if (hasContextZones) {
-        matchedZone = findSelectedLiveZone(candidateToAIResult(candidate), { real_ict_zones: zones });
+        // Candidate construction already chose a concrete deterministic zone.
+        // Resolve that exact ID first. Price-only matching is too loose on
+        // instruments such as XAU/USD and can attach an old, invalidated zone
+        // to a fresh candidate at a nearby level.
+        const candidateZoneId = candidate.zone?.id || candidate.execution_zone_id || candidate.zone_id;
+        matchedZone = candidateZoneId ? zones.find(zone => zone?.id === candidateZoneId) || null : null;
+        matchedZone ||= findSelectedLiveZone(candidateToAIResult(candidate), { real_ict_zones: zones });
         matchedZoneTf = matchedZone?.timeframe || matchedZoneTf;
         if (!matchedZone) add('candidate zone does not exist in current deterministic market context');
     }

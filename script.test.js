@@ -3949,6 +3949,38 @@ describe('live AI market context and prompt', () => {
         expect(result.reasons).toContain('candidate zone does not exist in current deterministic market context');
     });
 
+    it('counts zone freshness only after the zone was created', () => {
+        const ctx = getContext();
+        const start = Date.parse('2026-09-23T00:00:00Z');
+        const data = Array.from({ length: 20 }, (_, i) => ({
+            t: start + i * 3600000, o: 102, h: 103, l: 101.5, c: 102
+        }));
+        data[19] = { t: start + 19 * 3600000, o: 100.5, h: 101.2, l: 99.8, c: 100.4 };
+        const freshness = ctx.checkZoneFreshness(data, {
+            low: 100, high: 101, created_time: data[18].t, created_index: 18
+        }, 'SELL');
+        expect(freshness.violations).toBe(0);
+        expect(freshness.touches).toBe(1);
+        expect(freshness.fresh).toBe(true);
+    });
+
+    it('validates a candidate against its exact zone ID before nearby gold zones', () => {
+        const ctx = getContext();
+        const historyCache = trendCache('down', 4360, 1);
+        const freshZone = { id: 'fresh-gold-zone', type: 'FVG', timeframe: '1H', direction: 'SELL', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 4343.11, high: 4347.64 };
+        const staleNearbyZone = { id: 'stale-nearby-zone', type: 'FVG', timeframe: '1H', direction: 'SELL', origin: 'STRUCTURAL', primary_eligible: true, invalidated: true, low: 4343.20, high: 4347.70 };
+        const result = ctx.evaluateSetupCandidate({
+            id: 'fresh-sell', direction: 'SELL', timeframe: '1H', zone_type: 'FVG', zone_low: 4343.11, zone_high: 4347.64,
+            zone: freshZone, entry: 4345, stop_loss: 4350, tp1: 4330
+        }, {
+            pair: 'XAU/USD', price: 4320, historyCache, real_ict_zones: [staleNearbyZone, freshZone],
+            risk_constraints: { minimum_rr: 2.5, minimum_sl_distance: 0.5, maximum_sl_distance: 100 },
+            structure: { '1D': { trend: 'BEARISH' }, '4H': { trend: 'BEARISH' }, '1H': { trend: 'BEARISH' } }
+        }, { includeAccountRules: false });
+        expect(result.matchedZone.id).toBe('fresh-gold-zone');
+        expect(result.reasons).not.toContain('matched zone is invalidated');
+    });
+
     it('valid candidates pass final evaluator with the same deterministic context', () => {
         const ctx = getContext();
         const historyCache = trendCache('up', 1.08000, 0.00030);
