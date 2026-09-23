@@ -4997,12 +4997,22 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
         if (!location || !targetPool.length || !anchor) continue;
         const eventTime = location.created_time || location.created_time_ms || lead?.structure?.last_closed_candle_time || null;
         const id = `ICT:CONTINUATION:${direction}:${location.id || strategyZoneKey(location)}`;
-        const pendingLimitZone = location.location_only ? null : {
-            ...location,
+        // The strategy narrative owns the direction and future objective. A
+        // location-only POI is still only a parent location; when it has a
+        // deterministic child FVG/OB/MSNR zone inside it, use that child as
+        // the pending-limit entry location. This keeps the strategy forecast
+        // intact without treating the parent POI itself as executable.
+        const executionLocation = location.location_only
+            ? getTodayOpportunityZone({ direction, opportunity_narrative: { location } }, zones || [])
+            : location;
+        const pendingLimitZone = executionLocation ? {
+            ...executionLocation,
             execution_model: 'PENDING_LIMIT',
             entry_model: 'PENDING_LIMIT',
-            entry_reachable_today: true
-        };
+            entry_reachable_today: true,
+            parent_location_id: location.id || null,
+            parent_location_type: location.type || null
+        } : null;
         setups.push({ id, primary: 'ICT', label: 'MARKET_MECHANICS', direction,
             timeframe: location.timeframe, setup_timeframe: location.timeframe, execution_timeframe: location.timeframe === '4H' ? '1H' : '15M',
             event_time: eventTime, narrative_state: 'ACTIVE', execution_zone: pendingLimitZone, execution_model: 'PENDING_LIMIT', entry_model: 'PENDING_LIMIT',
@@ -7365,7 +7375,9 @@ function waitCodeFromRejections(audit, hasStrategySetups) {
 
 function getTodayOpportunityZone(setup, executionZones = []) {
     const direct = setup?.execution_zone || (executionZones || []).find(zone =>
-        zone?.strategy_setup?.id === setup?.id || zone?.parent_narrative_id === setup?.id || zone?.narrative_id === setup?.id
+        (setup?.id && zone?.strategy_setup?.id === setup.id)
+        || (setup?.id && zone?.parent_narrative_id === setup.id)
+        || (setup?.id && zone?.narrative_id === setup.id)
     );
     if (direct) return direct;
     const location = setup?.opportunity_narrative?.location;

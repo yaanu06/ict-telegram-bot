@@ -2858,6 +2858,23 @@ describe('live AI market context and prompt', () => {
         expect(result.some(setup => setup.primary === 'ICT' && setup.direction === 'SELL' && setup.execution_model === 'PENDING_LIMIT')).toBe(true);
     });
 
+    it('uses a nested executable zone for a location-only strategy narrative', () => {
+        const ctx = getContext();
+        const history = candles(40, 100, 0.1, 'down');
+        const parent = { id: '4H-SUPPLY', type: 'SUPPLY', direction: 'SELL', timeframe: '4H', low: 101, high: 103,
+            location_only: true, primary_eligible: false, freshness: 'FRESH' };
+        const child = { id: '1H-FVG', type: 'FVG', direction: 'SELL', timeframe: '1H', low: 101.5, high: 102,
+            primary_eligible: true, freshness: 'FRESH', created_time: Date.parse('2026-09-23T08:00:00Z') };
+        const result = ctx.buildMarketMechanicsSetups({ pair: 'XAU/USD', price: 99, historyCache: { '4H': history, '1H': history, '15M': history },
+            timeframeContext: { '4H': { effective_trend: 'BEARISH', structural_trend: 'BEARISH', structure: { recent_swing_highs: [{ level: 105 }] } } },
+            targets: { all: [{ direction: 'SELL', level: 90, source: 'PDL' }] }, zones: [parent, child] });
+        const setup = result.find(candidate => candidate.direction === 'SELL' && candidate.primary === 'ICT');
+        expect(setup).toBeTruthy();
+        expect(setup.opportunity_narrative.location.id).toBe('4H-SUPPLY');
+        expect(setup.execution_zone).toEqual(expect.objectContaining({ id: '1H-FVG', type: 'FVG', execution_model: 'PENDING_LIMIT' }));
+        expect(setup.execution_zone.parent_location_id).toBe('4H-SUPPLY');
+    });
+
     it('keeps a validated narrative location when its execution zone is not formed', () => {
         const ctx = getContext();
         const setup = { id: 'MM-LOCATION', direction: 'SELL', execution_model: 'PENDING_LIMIT', narrative_state: 'ACTIVE',
