@@ -7790,7 +7790,18 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         terminal_parent_opportunities: [], fresh_current_market_opportunities: []
     };
     if (marketOpen === false) { state.reason_code = 'MARKET_CLOSED'; state.reason = 'The instrument is currently closed for the current scan.'; return state; }
-    const bestCandidate = (validCandidates || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+    // A candidate can pass numeric geometry while still being unsuitable for
+    // an order now (for example, an old zone or a limit entry outside the
+    // remaining trading window). Do not promote those candidates to
+    // TRADE_READY. Explicit lifecycle values are authoritative; candidates
+    // from older callers without lifecycle fields remain compatible here.
+    const tradeReadyCandidates = (validCandidates || []).filter(candidate => {
+        if (candidate.still_actionable_today === false) return false;
+        if (candidate.entry_reachable_today === false) return false;
+        const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score);
+        return !Number.isFinite(quality) || quality >= STRATEGY_SPEC.CONFIDENCE.mediumQualityMinimum;
+    });
+    const bestCandidate = tradeReadyCandidates.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
     if (bestCandidate) {
         state.top_down_context = bestCandidate.top_down_context || classifyTopDownTrade(bestCandidate, timeframeContext);
         state.trade_context_classification = state.top_down_context.classification;
@@ -7804,7 +7815,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.delivery_progress = bestCandidate.progress_to_tp1_fraction ?? bestCandidate.narrative_delivery_progress ?? null; state.remaining_reward_fraction = bestCandidate.remaining_reward_fraction ?? null;
         state.entry_reachable_today = bestCandidate.entry_reachable_today === true; state.opportunity_reachable_today = state.entry_reachable_today; state.target_viable = true;
         state.structural_invalidation = bestCandidate.structural_invalidation || null; state.reason_code = 'TRADE_READY'; state.reason = 'A deterministic opportunity is executable under the current market state.';
-        const candidatePlans = (validCandidates || []).map(candidate => ({
+        const candidatePlans = tradeReadyCandidates.map(candidate => ({
             ...candidate,
             state: 'TRADE_READY', narrative_id: candidate.strategy_setup?.id || candidate.id,
             direction: candidate.direction, strategy: getDisplayStrategyLabel(candidate, candidate.zone_type),
