@@ -4526,10 +4526,17 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
     }
     const sourceTargets = [...targetMap.values()];
     const currentPrice = Number(reachabilityContext.currentPrice);
+    const executionModel = String(reachabilityContext.executionModel || reachabilityContext.entryModel || reachabilityContext.strategySetup?.execution_model || '').toUpperCase();
+    const isPendingLimit = executionModel === 'PENDING_LIMIT' || executionModel === 'FRESH_RETRACEMENT_LIMIT';
     const targets = sourceTargets
         .map(c => ({ ...c, level: ictRound(Number(c.level), prec), distance_from_entry: ictRound(Math.abs(Number(c.level) - entry), prec) }))
         .filter(c => direction === 'BUY' ? c.level > entry : c.level < entry)
-        .filter(c => !Number.isFinite(currentPrice) || (direction === 'BUY' ? c.level > currentPrice : c.level < currentPrice))
+        // A market entry needs an objective still ahead of the live price.
+        // A pending limit is different: the order is evaluated from its
+        // future entry. Its target only needs to remain beyond that entry;
+        // the market may currently be past the target and later retrace into
+        // the limit zone before the order is filled.
+        .filter(c => isPendingLimit || !Number.isFinite(currentPrice) || (direction === 'BUY' ? c.level > currentPrice : c.level < currentPrice))
         .map(c => {
             const rr = calculateRRMetrics(direction, entry, stopLoss, c.level, minimumRR);
             const reachability = evaluateTargetReachability({
@@ -6001,7 +6008,12 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     currentPrice: price,
                     zones: validationZones,
                     liquidity: marketContext?.liquidity?.[tf] || mapLiquidity(data || []),
-                    strategySetup
+                    strategySetup,
+                    executionModel: strategySetup?.opportunity_thesis?.execution_model
+                        || strategySetup?.execution_model
+                        || strategySetup?.entry_model
+                        || zone.execution_model
+                        || zone.entry_model
                 });
                 const targetDiagnostics = {
                     ...(selectAdaptiveTargets.lastDiagnostics || {}),
@@ -7494,10 +7506,15 @@ function buildSupplyDemandAndFlipPOIs(data, tf, price, pairLocal, symbolMetadata
     return pois;
 }
 
-function getTodayOpportunityTargetPool({ setup, zone, targetCandidates, direction, currentPrice }) {
+function getTodayOpportunityTargetPool({ setup, zone, targetCandidates, direction, currentPrice, executionModel = null }) {
+    const modelName = String(executionModel || setup?.execution_model || setup?.entry_model || zone?.execution_model || zone?.entry_model || '').toUpperCase();
+    const pendingLimit = modelName === 'PENDING_LIMIT' || modelName === 'FRESH_RETRACEMENT_LIMIT';
+    const catalogTargets = pendingLimit && Array.isArray(targetCandidates?.all)
+        ? targetCandidates.all.filter(target => target?.direction === direction)
+        : (Array.isArray(targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell']) ? targetCandidates[direction === 'BUY' ? 'buy' : 'sell'] : []);
     const candidates = [
         ...(Array.isArray(setup?.target_candidates) ? setup.target_candidates : []),
-        ...(Array.isArray(targetCandidates?.[direction === 'BUY' ? 'buy' : 'sell']) ? targetCandidates[direction === 'BUY' ? 'buy' : 'sell'] : [])
+        ...catalogTargets
     ];
     const native = Number(setup?.primary_objective ?? setup?.target_level ?? setup?.target);
     if (Number.isFinite(native)) candidates.push({ level: native, source: setup?.target_bias || 'STRUCTURAL_OBJECTIVE', strategy_native: true });
@@ -7510,7 +7527,7 @@ function getTodayOpportunityTargetPool({ setup, zone, targetCandidates, directio
         // A target already passed by price cannot be the objective of a
         // future pending-limit entry. Continue through the catalog to the
         // next real structural objective.
-        if (direction === 'BUY' ? level <= Number(currentPrice) : level >= Number(currentPrice)) return false;
+        if (!pendingLimit && (direction === 'BUY' ? level <= Number(currentPrice) : level >= Number(currentPrice))) return false;
         if (direction === 'BUY' ? level <= entryReference : level >= entryReference) return false;
         const key = String(level);
         if (seen.has(key)) return false;
@@ -7537,7 +7554,7 @@ function evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal = pair, cur
         const location = setup.opportunity_narrative.location;
         const low = Number(location?.low), high = Number(location?.high);
         const invalidation = Number(setup?.structural_invalidation?.level ?? setup?.structural_invalidation_detail?.level ?? setup?.structural_invalidation);
-        const targetPool = getTodayOpportunityTargetPool({ setup, zone: location, targetCandidates, direction, currentPrice });
+        const targetPool = getTodayOpportunityTargetPool({ setup, zone: location, targetCandidates, direction, currentPrice, executionModel: getTodayOpportunityExecutionModel(setup, location) });
         const target = targetPool[0];
         const targetLevel = Number(target?.level ?? target?.target_level);
         if (!Number.isFinite(low) || !Number.isFinite(high)) return fail('NO_MEANINGFUL_POI', 'A developing event has no deterministic location yet.');
@@ -7571,13 +7588,14 @@ function evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal = pair, cur
     if (freshContinuation && !Number.isFinite(zoneCreated)) return fail('INVALID_EXECUTION_ZONE', 'A fresh continuation area has no canonical creation time.');
     if (Number.isFinite(zoneCreated) && Number.isFinite(parentTime) && zoneCreated < parentTime && freshContinuation) return fail('PRE_SIGNAL_EXECUTION_ZONE', 'The proposed continuation area predates its parent narrative.');
     if (['SETUP_ALREADY_COMPLETED', 'SETUP_DELIVERY_ALREADY_ADVANCED', 'SETUP_EXPIRED', 'SETUP_STALE', 'ENTRY_ALREADY_CONSUMED', 'DATA_TIME_INCONSISTENT'].includes(lifecycle.rejection_code) && !freshContinuation) return fail(lifecycle.rejection_code, 'The execution opportunity has a terminal lifecycle rejection.');
-    const targetPool = getTodayOpportunityTargetPool({ setup, zone, targetCandidates, direction, currentPrice });
+    const targetPool = getTodayOpportunityTargetPool({ setup, zone, targetCandidates, direction, currentPrice, executionModel: model });
     const target = targetPool[0];
     const targetLevel = Number(target?.level ?? target?.target_level);
     const entry = Number(zone.entry ?? zone.midpoint ?? setup.entry ?? ((low + high) / 2));
     if (!target || !Number.isFinite(targetLevel)) return fail('NO_REMAINING_TARGET', 'No real structural objective remains in the trade direction.', { target_available: false });
     if (target.hard_unreachable === true || target.reachability?.quality === 'HARD_UNREACHABLE' || target.reachability?.hard_unreachable === true) return fail('NO_REMAINING_TARGET', 'The remaining structural objective has a hard-unreachable path.', { target_available: false, target_level: targetLevel });
-    if (direction === 'BUY' ? targetLevel <= currentPrice : targetLevel >= currentPrice) return fail('NO_REMAINING_TARGET', 'The remaining structural objective has already been delivered or is not ahead of price.', { target_available: false, target_level: targetLevel });
+    if (model !== 'PENDING_LIMIT' && model !== 'FRESH_RETRACEMENT_LIMIT'
+        && (direction === 'BUY' ? targetLevel <= currentPrice : targetLevel >= currentPrice)) return fail('NO_REMAINING_TARGET', 'The remaining structural objective has already been delivered or is not ahead of price.', { target_available: false, target_level: targetLevel });
     const executionData = getClosedHistory(histories, executionTimeframe);
     const executionAtr = executionData.length >= 15 ? atr(executionData, 14) : null;
     const distanceToArea = currentPrice < low ? low - currentPrice : currentPrice > high ? currentPrice - high : 0;
@@ -7860,12 +7878,15 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             const stop = stops.find(candidate => Number.isFinite(candidate.stop_loss));
             if (Number.isFinite(entry) && stop) {
                 const minimumRR = Number(marketContext?.risk_constraints?.minimum_rr) || settings.targetRR || 2.5;
+                const pendingTargetCatalog = plan.execution_model === 'PENDING_LIMIT' || plan.execution_model === 'FRESH_RETRACEMENT_LIMIT'
+                    ? (targetCandidates?.all || [])
+                    : [];
                 const pool = {
                     all: [...(setup.target_candidates || []), ...(targetCandidates?.all || [])],
-                    buy: [...(setup.target_candidates || []), ...(targetCandidates?.buy || [])],
-                    sell: [...(setup.target_candidates || []), ...(targetCandidates?.sell || [])]
+                    buy: [...(setup.target_candidates || []), ...(pendingTargetCatalog.length ? pendingTargetCatalog.filter(t => t.direction === 'BUY') : (targetCandidates?.buy || []))],
+                    sell: [...(setup.target_candidates || []), ...(pendingTargetCatalog.length ? pendingTargetCatalog.filter(t => t.direction === 'SELL') : (targetCandidates?.sell || []))]
                 };
-                const selectedTargets = selectAdaptiveTargets(setup.direction, entry, stop.stop_loss, pool, minimumRR, settings.prec, { currentPrice });
+                const selectedTargets = selectAdaptiveTargets(setup.direction, entry, stop.stop_loss, pool, minimumRR, settings.prec, { currentPrice, executionModel: plan.execution_model, strategySetup: setup });
                 if (selectedTargets?.tp1) pendingGeometry = { entry, stop_loss: stop.stop_loss, tp1: selectedTargets.tp1.level,
                     tp2: selectedTargets.tp2?.level ?? null, tp3: selectedTargets.tp3?.level ?? null,
                     target: selectedTargets.tp1, rr: selectedTargets.tp1.rr };

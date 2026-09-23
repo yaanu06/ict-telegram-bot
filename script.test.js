@@ -1184,6 +1184,39 @@ describe('fresh execution downstream validation', () => {
         expect(result.tp1.level).toBe(102.5);
     });
 
+    it('allows a pending limit target that is past current price but still beyond the future entry', () => {
+        const ctx = getContext();
+        const result = ctx.selectAdaptiveTargets('SELL', 1.14500, 1.14600, {
+            sell: [{ direction: 'SELL', level: 1.14300, source: 'SWING_LOW', origin: 'STRUCTURAL', timeframe: '1H', structural_priority: 76 }],
+            buy: []
+        }, 2.0, 5, {
+            currentPrice: 1.14282,
+            executionModel: 'PENDING_LIMIT',
+            historyCache: { '1H': candles(40, 1.143, 0.0001, 'down') },
+            zones: [],
+            liquidity: { above: [], below: [] },
+            strategySetup: { target_candidates: [] }
+        });
+        expect(result?.tp1?.level).toBe(1.143);
+    });
+
+    it('keeps current-price target filtering for confirmation entries', () => {
+        const ctx = getContext();
+        const result = ctx.selectAdaptiveTargets('SELL', 1.14500, 1.14600, {
+            sell: [{ direction: 'SELL', level: 1.14300, source: 'SWING_LOW', origin: 'STRUCTURAL', timeframe: '1H', structural_priority: 76 }],
+            buy: []
+        }, 2.0, 5, {
+            currentPrice: 1.14282,
+            executionModel: 'CONFIRMATION_ENTRY',
+            historyCache: { '1H': candles(40, 1.143, 0.0001, 'down') },
+            zones: [],
+            liquidity: { above: [], below: [] },
+            strategySetup: { target_candidates: [] }
+        });
+        expect(result).toBeNull();
+        expect(ctx.selectAdaptiveTargets.lastDiagnostics.failure_code).toBe('NO_TARGETS_DIRECTIONALLY_AHEAD');
+    });
+
     it('exposes explicit target failure diagnostics instead of one generic TP failure', () => {
         const ctx = getContext();
         const diagnostics = {};
