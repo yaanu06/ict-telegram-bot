@@ -6180,12 +6180,33 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         }
     }
 
-    const selected = validCandidates
+    const rankedCandidates = validCandidates
         .sort((a, b) => b.score - a.score || b.rr_tp1 - a.rr_tp1 || a.distance_from_current_price - b.distance_from_current_price)
-        .slice(0, 5);
+        .slice();
+    const highQualityMinimum = Number(STRATEGY_SPEC.CONFIDENCE.highQualityMinimum) || 70;
+    const selectableCandidates = rankedCandidates.filter(candidate => {
+        const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
+        const qualityPasses = !Number.isFinite(quality) || quality >= highQualityMinimum;
+        return qualityPasses && candidate.still_actionable_today !== false && candidate.entry_reachable_today !== false;
+    }).slice(0, 5);
+    const futureWatchCandidates = rankedCandidates.filter(candidate => {
+        const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
+        const qualityPasses = Number.isFinite(quality) && quality >= highQualityMinimum;
+        const futureOnly = candidate.still_actionable_today === false || candidate.entry_reachable_today === false;
+        return qualityPasses && futureOnly;
+    }).slice(0, 10);
+    const lowQualityCandidates = rankedCandidates.filter(candidate => {
+        const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
+        return Number.isFinite(quality) && quality < highQualityMinimum;
+    }).slice(0, 20);
+    const selected = rankedCandidates.slice(0, 5);
     const result = {
         raw_candidates: rawCandidates,
         valid_candidates: selected,
+        all_valid_candidates: rankedCandidates,
+        selectable_candidates: selectableCandidates,
+        future_watch_candidates: futureWatchCandidates,
+        low_quality_candidates: lowQualityCandidates,
         seed_diagnostics: seedDiagnostics,
         rejected_candidates: rejectedCandidates
     };
@@ -6194,7 +6215,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     console.log('VALID STRATEGY CANDIDATES', selected.map(c => ({ id: c.id, strategy: c.strategy_label || c.zone_type, direction: c.direction, score: c.score })));
     for (const candidate of selected) console.log('VALID DETERMINISTIC CANDIDATE', { id: candidate.id, direction: candidate.direction, timeframe: candidate.timeframe, score: candidate.score, rr: candidate.rr_tp1 });
     console.log('REJECTED SETUP CANDIDATES', rejectedCandidates);
-    console.log('AI CANDIDATES SENT', selected.map(c => c.id));
+    console.log('AI CANDIDATES SENT', selectableCandidates.map(c => c.id));
     return result;
 }
 
@@ -7766,7 +7787,7 @@ function compactAiDiagnostics(analysis = null) {
     };
 }
 
-function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfMs, histories, marketContext = {}, strategySetups = [], aiAnalysis = null, executionZones = [], candidateDiagnostics = {}, validCandidates = [], targetCandidates = {}, marketOpen = true, symbolMetadata = null } = {}) {
+function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfMs, histories, marketContext = {}, strategySetups = [], aiAnalysis = null, executionZones = [], candidateDiagnostics = {}, validCandidates = [], futureWatchCandidates = [], targetCandidates = {}, marketOpen = true, symbolMetadata = null } = {}) {
     const timeframeContext = marketContext.timeframe_context || buildTimeframeContext({ historyCache: histories, structure: marketContext.structure, price: currentPrice, strategySetups, zones: executionZones });
     const state = {
         state: 'NO_TRADE_TODAY', bias: marketContext.directional_bias || aiAnalysis?.market_view?.bias || 'NEUTRAL', strategy: null, direction: null, narrative_id: null,
@@ -7787,7 +7808,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         delivery_progress: null, remaining_reward_fraction: null, distance_to_area_atr: null, entry_reachable_today: false, opportunity_reachable_today: false,
         target_viable: false, structural_invalidation: null, reason_code: 'NO_TRADE_TODAY', reason: 'No defensible fresh or developing opportunity remains for today.',
         rejected_reason: null, rejected_opportunities: [], missed_opportunities: [], completed_opportunities: [], fresh_continuation_opportunities: [],
-        terminal_parent_opportunities: [], fresh_current_market_opportunities: []
+        terminal_parent_opportunities: [], fresh_current_market_opportunities: [], future_watch_candidates: (futureWatchCandidates || []).map(candidate => candidate.id).filter(Boolean)
     };
     if (marketOpen === false) { state.reason_code = 'MARKET_CLOSED'; state.reason = 'The instrument is currently closed for the current scan.'; return state; }
     // A candidate can pass numeric geometry while still being unsuitable for
@@ -7832,6 +7853,56 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         }));
         const stack = buildOpportunityDisplayStack(candidatePlans, currentPrice, candidatePlans.find(candidate => candidate.id === (bestCandidate.strategy_setup?.id || bestCandidate.id)) || candidatePlans[0]);
         Object.assign(state, stack);
+        return state;
+    }
+    const bestFutureWatch = (futureWatchCandidates || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+    if (bestFutureWatch) {
+        const zone = bestFutureWatch.zone || { low: bestFutureWatch.zone_low, high: bestFutureWatch.zone_high, type: bestFutureWatch.zone_type, timeframe: bestFutureWatch.execution_timeframe || bestFutureWatch.timeframe, id: bestFutureWatch.zone_id };
+        const plan = {
+            id: bestFutureWatch.id,
+            state: 'WATCH_ONLY',
+            watch_only: true,
+            direction: bestFutureWatch.direction,
+            strategy: getDisplayStrategyLabel(bestFutureWatch, bestFutureWatch.zone_type),
+            narrative_id: bestFutureWatch.strategy_setup?.id || bestFutureWatch.id,
+            execution_zone_id: zone?.id || bestFutureWatch.id,
+            area_of_interest: zone ? { low: zone.low, high: zone.high, source: zone.type || bestFutureWatch.zone_type, timeframe: zone.timeframe, zone_id: zone.id || bestFutureWatch.id } : null,
+            execution_model: bestFutureWatch.execution_model || bestFutureWatch.entry_model || 'PENDING_LIMIT',
+            entry: bestFutureWatch.entry,
+            stop_loss: bestFutureWatch.stop_loss,
+            tp1: bestFutureWatch.tp1,
+            tp2: bestFutureWatch.tp2 ?? null,
+            tp3: bestFutureWatch.tp3 ?? null,
+            rr: bestFutureWatch.rr_tp1 ?? bestFutureWatch.actual_rr ?? null,
+            confidence: bestFutureWatch.quality?.final_confidence ?? bestFutureWatch.setup_confidence ?? bestFutureWatch.score ?? 0,
+            opportunity_quality: { ...(bestFutureWatch.quality || {}), authorization_state: 'FUTURE_WATCH', watch_only: true },
+            target: bestFutureWatch.target_map?.[0] || null,
+            target_level: bestFutureWatch.tp1,
+            structural_invalidation: bestFutureWatch.structural_invalidation || null,
+            entry_reachable_today: false,
+            opportunity_reachable_today: false,
+            reason_code: 'FUTURE_SETUP_WATCH',
+            reason: 'A high-quality pending limit exists, but its entry is outside the current execution window. Keep it under review for a later session.',
+            activation_conditions: ['Re-evaluate the pending limit when the relevant session or entry window opens', 'Revalidate structure, invalidation, target, and RR before placing the order'],
+            cancellation_conditions: ['Structural invalidation is breached', 'Target is completed before entry', 'The zone is consumed or materially changes']
+        };
+        state.state = 'WATCH_ONLY';
+        state.watch_only = true;
+        state.strategy = plan.strategy;
+        state.direction = plan.direction;
+        state.narrative_id = plan.narrative_id;
+        state.execution_zone_id = plan.execution_zone_id;
+        state.area_of_interest = plan.area_of_interest;
+        state.execution_model = plan.execution_model;
+        state.entry = plan.entry; state.stop_loss = plan.stop_loss; state.tp1 = plan.tp1; state.tp2 = plan.tp2; state.tp3 = plan.tp3; state.rr = plan.rr;
+        state.confidence = plan.confidence;
+        state.opportunity_quality = plan.opportunity_quality;
+        state.entry_reachable_today = false; state.opportunity_reachable_today = false; state.target_viable = true;
+        state.structural_invalidation = plan.structural_invalidation;
+        state.reason_code = plan.reason_code; state.reason = plan.reason;
+        state.activation_conditions = plan.activation_conditions; state.cancellation_conditions = plan.cancellation_conditions;
+        state.watch_setups = [plan];
+        state.secondary_watch_scenarios = [plan];
         return state;
     }
     const active = (strategySetups || []).filter(setup => {
@@ -8028,6 +8099,7 @@ function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, select
         executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
         candidateDiagnostics: liveMarketContext.setup_candidate_audit,
         validCandidates: remainingCandidates,
+        futureWatchCandidates: liveMarketContext.future_watch_candidates,
         targetCandidates: liveMarketContext.target_candidates,
         symbolMetadata: liveMarketContext.symbol_metadata || null,
         marketOpen: liveMarketContext.market_open
@@ -8432,7 +8504,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         rejected_candidates: adaptiveSetupResult.rejected_candidates.length
     });
     console.log('[SCAN] candidate construction complete', { raw_candidates: adaptiveSetupResult.raw_candidates.length, valid_candidates: adaptiveSetupResult.valid_candidates.length, rejected_candidates: adaptiveSetupResult.rejected_candidates.length });
-    const adaptiveSetupCandidates = adaptiveSetupResult.valid_candidates;
+    const adaptiveSetupCandidates = adaptiveSetupResult.selectable_candidates || adaptiveSetupResult.valid_candidates;
     stageContext.limit_order_setup.eligible = adaptiveSetupCandidates.length > 0;
     stageContext.limit_order_setup.future_entry_allowed = adaptiveSetupCandidates.length > 0;
     stageContext.limit_order_setup.reason = adaptiveSetupCandidates.length > 0
@@ -8521,11 +8593,13 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         },
         risk_constraints: riskConstraints,
         target_candidates: targetCandidates,
-        adaptive_setup_candidates: adaptiveSetupCandidates,
+        adaptive_setup_candidates: adaptiveSetupResult.selectable_candidates || adaptiveSetupCandidates,
+        future_watch_candidates: adaptiveSetupResult.future_watch_candidates || [],
+        valid_deterministic_candidates: adaptiveSetupResult.all_valid_candidates || adaptiveSetupResult.valid_candidates || [],
+        low_quality_candidates: adaptiveSetupResult.low_quality_candidates || [],
         // Keep the complete deterministic catalog available to the AI
-        // analyst. Only adaptive_setup_candidates are selectable; rejected
-        // entries are context with explicit reasons and can never become an
-        // order through AI output.
+        // analyst. Only adaptive_setup_candidates are selectable; valid
+        // future entries are watch-only and low-quality entries are context.
         rejected_setup_candidates: adaptiveSetupResult.rejected_candidates,
         candidate_seed_diagnostics: adaptiveSetupResult.seed_diagnostics,
         strategy_detections: strategyDetectionSummary,
@@ -8534,6 +8608,9 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         setup_candidate_audit: {
             raw_candidate_count: adaptiveSetupResult.raw_candidates.length,
             valid_candidate_count: adaptiveSetupResult.valid_candidates.length,
+            selectable_candidate_count: (adaptiveSetupResult.selectable_candidates || adaptiveSetupResult.valid_candidates || []).length,
+            future_watch_candidate_count: (adaptiveSetupResult.future_watch_candidates || []).length,
+            low_quality_candidate_count: (adaptiveSetupResult.low_quality_candidates || []).length,
             rejected_candidate_count: adaptiveSetupResult.rejected_candidates.length,
             rejection_summary: summarizeCandidateRejections(adaptiveSetupResult.rejected_candidates),
             rejection_detail: summarizeCandidateRejectionDetails(adaptiveSetupResult.rejected_candidates),
@@ -8668,7 +8745,7 @@ function replayCapturedScan(replay) {
         } : null });
     const today = buildTodayOpportunity({ pair: replay.pair, currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
         marketContext: live.market_context, strategySetups: live.strategy_setups, executionZones: [...(live.strategy_execution_zones || []), ...(live.real_ict_zones || [])],
-        candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, targetCandidates: live.target_candidates,
+        candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, futureWatchCandidates: live.future_watch_candidates, targetCandidates: live.target_candidates,
         symbolMetadata: live.symbol_metadata,
         marketOpen: live.market_open });
     const finalOutput = buildTodayOpportunityOutput(today, replay.pair, price, asOfMs, live.market_open, live.symbol_metadata, live.provider_metadata);
@@ -8848,6 +8925,14 @@ function compactAIContext(liveMarketContext) {
             ...(liveMarketContext?.adaptive_setup_candidates || []).map(c => ({
                 ...compactCandidate(c), catalog_status: 'VALID_SELECTABLE'
             })),
+            ...(liveMarketContext?.future_watch_candidates || []).map(c => ({
+                ...compactCandidate(c), catalog_status: 'FUTURE_WATCH',
+                selection_reason: 'High-quality pending setup retained for a later execution window; do not select as an order today.'
+            })),
+            ...(liveMarketContext?.low_quality_candidates || []).map(c => ({
+                ...compactCandidate(c), catalog_status: 'LOW_QUALITY_NOT_SELECTABLE',
+                selection_reason: `Deterministic geometry passed, but quality is below ${STRATEGY_SPEC.CONFIDENCE.highQualityMinimum}.`
+            })),
             ...(liveMarketContext?.rejected_setup_candidates || []).map(c => ({
                 id: c.id,
                 direction: c.direction,
@@ -8858,7 +8943,7 @@ function compactAIContext(liveMarketContext) {
                 rejection_reasons: c.rejection_reasons || [],
                 setup_lifecycle: c.setup_lifecycle || null
             }))
-        ].slice(0, 80),
+        ].slice(0, 120),
         candidate_seed_diagnostics: (liveMarketContext?.candidate_seed_diagnostics || []).slice(0, 80),
         target_candidates: {
             buy: (liveMarketContext?.target_candidates?.buy || []).slice(0, STRATEGY_SPEC.EXECUTION.maxTargetsPerEvaluation),
@@ -9336,11 +9421,17 @@ function rebuildCandidatesWithAiSetups(liveMarketContext, strategySetups) {
     if (liveMarketContext.deterministic_validation_context) {
         liveMarketContext.deterministic_validation_context.strategy_setups = strategySetups;
     }
-    liveMarketContext.adaptive_setup_candidates = result.valid_candidates;
+    liveMarketContext.adaptive_setup_candidates = result.selectable_candidates || result.valid_candidates;
+    liveMarketContext.future_watch_candidates = result.future_watch_candidates || [];
+    liveMarketContext.valid_deterministic_candidates = result.all_valid_candidates || result.valid_candidates || [];
+    liveMarketContext.low_quality_candidates = result.low_quality_candidates || [];
     liveMarketContext.setup_candidate_audit = {
         ...(liveMarketContext.setup_candidate_audit || {}),
         raw_candidate_count: result.raw_candidates.length,
         valid_candidate_count: result.valid_candidates.length,
+        selectable_candidate_count: (result.selectable_candidates || result.valid_candidates || []).length,
+        future_watch_candidate_count: (result.future_watch_candidates || []).length,
+        low_quality_candidate_count: (result.low_quality_candidates || []).length,
         rejected_candidate_count: result.rejected_candidates.length,
         rejection_summary: summarizeCandidateRejections(result.rejected_candidates),
         rejection_detail: summarizeCandidateRejectionDetails(result.rejected_candidates)
@@ -9354,7 +9445,7 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'You are the discretionary candidate-selection layer of an ICT pending-limit trading system.',
         'Return only {"decision":"SELECT"|"WAIT","selected_candidate_id":"string or null","reasoning":"qualitative text"}. Do not return trade geometry or confidence.',
         'The deterministic engine has already calculated and validated every numeric trade level in COMPUTED MARKET FACTS.adaptive_setup_candidates.',
-        'candidate_catalog contains the full deterministic scan, including rejected zones and exact rejection reasons. Use it to understand the complete market map, but select only IDs marked VALID_SELECTABLE in adaptive_setup_candidates.',
+        'candidate_catalog contains the full deterministic scan, including selectable candidates, FUTURE_WATCH candidates, low-quality candidates, rejected zones, and exact reasons. Use it to understand the complete market map, but select only IDs marked VALID_SELECTABLE in adaptive_setup_candidates.',
         'You must NEVER invent, modify, recalculate, improve, widen, tighten, or replace entry, stop_loss, TP1, TP2, TP3, RR, or zone bounds.',
         'Your job is only to select the best candidate ID using the supplied live market context, or return WAIT for qualitative market reasons.',
         'A selected candidate numeric geometry is authoritative and immutable.',
@@ -9367,6 +9458,8 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'IMMEDIATE_ENTRY = separate current-price reaction assessment, never a requirement before a pending limit fills.',
         'Zone/target origin hierarchy: STRUCTURAL and STRUCTURAL_MSNR = directly derived market structure. PIVOT_REFERENCE = classic pivot-derived reference only, not MSNR strategy evidence. ATR_FALLBACK = synthetic reference only. PIVOT_REFERENCE and ATR_FALLBACK must never create standalone MSNR trades.',
         'Stage 1 asks whether a valid future pending-limit setup exists. Current price not being inside the zone, immediate confirmation score of 0, or off-hours are not by themselves reasons for NO_TRADE.',
+        'FUTURE_WATCH means the deterministic setup is high quality but its entry is outside the current execution window; preserve it as watch-only and never select it as an order in this scan.',
+        'LOW_QUALITY_NOT_SELECTABLE and REJECTED candidates are diagnostics only and must never be selected.',
         'Stage 2 assesses immediate entry independently of pending-limit execution.',
         'Rank the supplied adaptive_setup_candidates and return SELECT with the best candidate ID, or WAIT when no supplied candidate is worth selecting.',
         'Do not return WAIT merely because price has not reached a valid future limit zone. Immediate-entry confirmation is separate and never required before a true LIMIT fill.',
@@ -10726,6 +10819,7 @@ async function runAutoScan() {
             executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
             candidateDiagnostics: liveMarketContext.setup_candidate_audit,
             validCandidates: liveMarketContext.adaptive_setup_candidates,
+            futureWatchCandidates: liveMarketContext.future_watch_candidates,
             targetCandidates: liveMarketContext.target_candidates,
             symbolMetadata: liveMarketContext.symbol_metadata,
             marketOpen: liveMarketContext.market_open
