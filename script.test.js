@@ -2974,6 +2974,19 @@ describe('live AI market context and prompt', () => {
         expect(result.some(setup => setup.primary === 'ICT' && setup.direction === 'SELL' && setup.execution_model === 'PENDING_LIMIT')).toBe(true);
     });
 
+    it('selects the best untouched future retracement zone instead of an already-passed zone', () => {
+        const ctx = getContext();
+        const history = candles(40, 4300, 1, 'down');
+        const passed = { id: 'passed-4H-supply', type: 'SUPPLY', direction: 'SELL', timeframe: '4H', low: 4310, high: 4315, freshness: 'FRESH', primary_eligible: true };
+        const future = { id: 'future-1H-fvg', type: 'FVG', direction: 'SELL', timeframe: '1H', low: 4335, high: 4340, freshness: 'FRESH', primary_eligible: true };
+        const result = ctx.buildMarketMechanicsSetups({ pair: 'XAU/USD', price: 4320,
+            historyCache: { '4H': history, '1H': history, '15M': history },
+            timeframeContext: { '4H': { effective_trend: 'BEARISH', structural_trend: 'BEARISH', structure: { recent_swing_highs: [{ level: 4370 }] } } },
+            targets: { all: [{ direction: 'SELL', level: 4290, source: 'PDL' }] }, zones: [passed, future] });
+        const setup = result.find(candidate => candidate.primary === 'ICT' && candidate.direction === 'SELL');
+        expect(setup.execution_zone).toEqual(expect.objectContaining({ id: 'future-1H-fvg', execution_model: 'PENDING_LIMIT' }));
+    });
+
     it('uses a nested executable zone for a location-only strategy narrative', () => {
         const ctx = getContext();
         const history = candles(40, 100, 0.1, 'down');

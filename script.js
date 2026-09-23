@@ -4994,6 +4994,33 @@ function buildDailyTradingBias(timeframeContext, targets, price, asOfTime) {
     };
 }
 
+function selectFutureLimitLocation(direction, zones = [], locationPois = [], price) {
+    const wantedSide = direction === 'BUY' ? 'BELOW' : 'ABOVE';
+    const timeframeScore = { '4H': 40, '1H': 24, '15M': 8 };
+    const sourceScore = { MSNR: 22, OB: 20, FVG: 18, SUPPLY: 14, DEMAND: 14, FLIP: 12 };
+    return [...zones, ...locationPois]
+        .filter(zone => zone?.direction === direction && ['4H', '1H', '15M'].includes(zone.timeframe))
+        .filter(zone => Number.isFinite(Number(zone.low)) && Number.isFinite(Number(zone.high)) && Number(zone.high) >= Number(zone.low))
+        .filter(zone => !zone.invalidated && !zone.consumed && !zone.entry_consumed && !zone.mitigated)
+        .filter(zone => !['CONSUMED', 'USED', 'INVALIDATED', 'EXPIRED', 'TESTED'].includes(String(zone.freshness || '').toUpperCase()))
+        // A true future retracement limit must be beyond current price in its
+        // fill direction.  A passed zone cannot be revived as an order.
+        .filter(zone => wantedSide === 'BELOW' ? Number(zone.high) < Number(price) : Number(zone.low) > Number(price))
+        .filter(zone => zone.primary_eligible !== false || zone.location_only === true || ['FVG', 'OB', 'MSNR'].includes(String(zone.type || '').toUpperCase()))
+        .map(zone => {
+            const midpoint = (Number(zone.low) + Number(zone.high)) / 2;
+            const distance = Math.abs(midpoint - Number(price));
+            const score = (timeframeScore[zone.timeframe] || 0)
+                + (sourceScore[String(zone.type || '').toUpperCase()] || 0)
+                + (zone.primary_eligible !== false ? 12 : 0)
+                + (zone.location_only === true && zone.timeframe === '4H' ? 16 : 0)
+                + (String(zone.freshness || '').toUpperCase() === 'FRESH' ? 10 : 0)
+                - Math.min(20, distance / Math.max(Math.abs(Number(price)), 1) * 100);
+            return { ...zone, future_limit_score: score, future_limit_distance: distance };
+        })
+        .sort((a, b) => b.future_limit_score - a.future_limit_score || a.future_limit_distance - b.future_limit_distance)[0] || null;
+}
+
 function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias, targets, zones, pair: pairLocal, price, symbolMetadata = {} }) {
     const setups = [];
     const discovery = { discovery_buy_events: 0, discovery_sell_events: 0, discovery_structure_shifts: 0,
@@ -5007,16 +5034,7 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
         const lead = timeframeContext?.['4H'];
         const leadTrend = lead?.effective_trend || lead?.structural_trend || lead?.bias;
         if (leadTrend !== wanted && leadTrend !== `${wanted}_TRANSITION`) continue;
-        const location = [...(zones || []), ...locationPois]
-            .filter(zone => zone.direction === direction && ['4H', '1H'].includes(zone.timeframe)
-                // location_only POIs are valid narrative locations. They are
-                // not executable geometry until the candidate planner proves
-                // an entry zone, stop, target, RR, and lifecycle.
-                && (zone.primary_eligible !== false || zone.location_only === true) && !zone.invalidated
-                && !['CONSUMED', 'USED', 'INVALIDATED', 'EXPIRED'].includes(String(zone.freshness || '').toUpperCase()))
-            .sort((a, b) => (Number(b.timeframe === '4H') - Number(a.timeframe === '4H'))
-                || (Number(a.low <= price && price <= a.high) - Number(b.low <= price && price <= b.high))
-                || Math.abs(((a.low + a.high) / 2) - price) - Math.abs(((b.low + b.high) / 2) - price))[0];
+        const location = selectFutureLimitLocation(direction, zones || [], locationPois, price);
         const targetPool = (targets?.all || []).filter(target => target.direction === direction && Number.isFinite(target.level)
             && (direction === 'BUY' ? target.level > price : target.level < price));
         const swings = direction === 'BUY' ? lead?.structure?.recent_swing_lows : lead?.structure?.recent_swing_highs;
