@@ -1967,7 +1967,12 @@ function getDisplayStrategyLabel(setup = {}, zoneType = null) {
         .filter(Boolean)
         .filter(value => !locationOnly.has(value));
     const strategies = [...new Set(parts.filter(value => ['CRT', 'TBS', 'MSNR'].includes(value)))];
-    return strategies.length ? strategies.join('+') : (parts.length ? parts.join('+') : 'ICT');
+    return strategies.length ? strategies.join('+') : 'ICT';
+}
+
+function hasSupportedStrategyLabel(setup = {}) {
+    const raw = setup?.strategy_label || setup?.strategy_setup?.label || setup?.label || setup?.primary || setup?.strategy || '';
+    return String(raw).toUpperCase().split(/[+|,·]/).some(value => ['CRT', 'TBS', 'MSNR'].includes(value.trim()));
 }
 
 function isDirectionalDisplacement(candle, direction, atrValue) {
@@ -5823,12 +5828,19 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const rawCandidates = [];
     const validCandidates = [];
     const rejectedCandidates = [];
-    const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(strategySetups) : [];
+    const supportedStrategySetups = Array.isArray(strategySetups)
+        ? strategySetups.filter(hasSupportedStrategyLabel)
+        : [];
+    const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(supportedStrategySetups) : [];
     const poiZones = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pair, symbolMetadata || {}));
     const labeledZoneKeys = new Set(strategyExecutionZones.map(strategyZoneKey));
-    const genericMarketZones = (zones || []).filter(zone => !labeledZoneKeys.has(strategyZoneKey(zone))
-        && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price));
-    const seedZones = Array.isArray(strategySetups) ? [...strategyExecutionZones, ...genericMarketZones] : (zones || []);
+    // FVG/OB/ICT locations remain discovery evidence. A primary order must
+    // be owned by one of the supported CRT/TBS/MSNR strategies.
+    const genericMarketZones = !supportedStrategySetups.length && !Array.isArray(strategySetups)
+        ? (zones || []).filter(zone => !labeledZoneKeys.has(strategyZoneKey(zone))
+            && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price))
+        : [];
+    const seedZones = Array.isArray(strategySetups) ? strategyExecutionZones : genericMarketZones;
     const seedDiagnostics = seedZones.map((z, i) => ({ seed_id: z.id || `seed-${i + 1}`, execution_model: z.execution_model || z.entry_model || 'STRUCTURAL_LIMIT', zone_source: z.entry_region_source || z.type, timeframe: z.timeframe || '1H', raw_candidates: 0, failure_reasons: [], details: [] }));
     const freshTargetPoolCache = new Map();
     const failSeed = (seed, code, detail) => {
@@ -6932,8 +6944,8 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
         const labels = [strategySetup?.primary, ...(strategySetup?.confirmations || [])].filter(Boolean);
         const marketMechanicsVerified = candidate.market_mechanics_verified === true
             || (strategySetup?.market_mechanics_verified && strategySetup?.opportunity_thesis?.state === 'EXECUTION_VALID');
-        if (!labels.some(v => ['CRT', 'TBS', 'MSNR', 'ICT', 'MARKET_MECHANICS'].includes(String(v).toUpperCase())) && !marketMechanicsVerified) {
-            add('candidate is not backed by a deterministic market-mechanics narrative');
+        if (!labels.some(v => ['CRT', 'TBS', 'MSNR'].includes(String(v).toUpperCase())) && !marketMechanicsVerified) {
+            add('candidate is not backed by a supported CRT/TBS/MSNR strategy');
         }
     }
 
@@ -8224,7 +8236,7 @@ function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, select
     return buildTodayOpportunity({
         ...scanArgs,
         marketContext: liveMarketContext.market_context,
-        strategySetups: liveMarketContext.strategy_setups,
+        strategySetups: (liveMarketContext.strategy_setups || []).filter(hasSupportedStrategyLabel),
         aiAnalysis: liveMarketContext.ai_analysis,
         executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
         candidateDiagnostics: liveMarketContext.setup_candidate_audit,
@@ -8859,7 +8871,7 @@ function replayCapturedScan(replay) {
             provider_timestamp_utc: replay.runtime_state.quote_snapshot.provider_timestamp_utc || replay.runtime_state.quote_snapshot.timestamp || null
         } : null });
     const today = buildTodayOpportunity({ pair: replay.pair, currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
-        marketContext: live.market_context, strategySetups: live.strategy_setups, executionZones: [...(live.strategy_execution_zones || []), ...(live.real_ict_zones || [])],
+        marketContext: live.market_context, strategySetups: (live.strategy_setups || []).filter(hasSupportedStrategyLabel), executionZones: [...(live.strategy_execution_zones || []), ...(live.real_ict_zones || [])],
         candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, futureWatchCandidates: live.future_watch_candidates, lowQualityCandidates: live.low_quality_candidates, targetCandidates: live.target_candidates,
         symbolMetadata: live.symbol_metadata,
         marketOpen: live.market_open });
@@ -10484,7 +10496,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
             scanAsOfMs: Date.now(),
             histories: historyCache,
             marketContext: fallbackMarketContext,
-            strategySetups: fallbackStrategySetups,
+            strategySetups: (fallbackStrategySetups || []).filter(hasSupportedStrategyLabel),
             executionZones: getStrategyExecutionZones(fallbackStrategySetups),
             candidateDiagnostics: {
                 raw_candidate_count: fallbackCandidateResult.raw_candidates?.length || 0,
@@ -10970,7 +10982,7 @@ async function runAutoScan() {
             scanAsOfMs: scanAsOfMs,
             histories: historyCache,
             marketContext: liveMarketContext.market_context,
-            strategySetups: liveMarketContext.strategy_setups,
+            strategySetups: (liveMarketContext.strategy_setups || []).filter(hasSupportedStrategyLabel),
             aiAnalysis: analystResult.diagnostics,
             executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
             candidateDiagnostics: liveMarketContext.setup_candidate_audit,
@@ -11060,7 +11072,7 @@ async function runAutoScan() {
                     scanAsOfMs,
                     histories: historyCache,
                     marketContext: liveMarketContext.market_context,
-                    strategySetups: liveMarketContext.strategy_setups,
+                    strategySetups: (liveMarketContext.strategy_setups || []).filter(hasSupportedStrategyLabel),
                     aiAnalysis: liveMarketContext.ai_analysis,
                     executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
                     candidateDiagnostics: liveMarketContext.setup_candidate_audit,
@@ -12605,7 +12617,7 @@ function buildPublicTradeSignal(signal = {}) {
         strategy_label: signal.strategy_label,
         label: signal.strategy_setup?.label,
         primary: signal.strategy_setup?.primary,
-        strategy: signal.analysis?.type || signal.strategy
+        strategy: signal.strategy || signal.adaptive_candidate?.strategy_label || signal.primary_opportunity?.strategy || signal.opportunity?.strategy || signal.analysis?.type
     }, signal.entry_zone?.source || signal.zone_type);
     const requestedDecision = String(signal.decision || signal.trade_type || 'WAIT').toUpperCase();
     const publicDecision = requestedDecision === 'BUY' ? 'BUY_LIMIT'
@@ -12918,10 +12930,10 @@ function getTradeSummaryModel(signal = {}) {
         || signal.analysis?.reason
         || 'No current setup analysis.';
     const setupType = getDisplayStrategyLabel({
-        strategy_label: setup.strategy || signal.strategy_label,
+        strategy_label: setup.strategy || signal.strategy_label || signal.adaptive_candidate?.strategy_label,
         label: signal.strategy_setup?.label,
         primary: signal.strategy_setup?.primary,
-        strategy: signal.analysis?.type || signal.strategy
+        strategy: setup.strategy || signal.strategy || signal.adaptive_candidate?.strategy_label || signal.analysis?.type
     }, location.source || location.type);
     return {
         bot: 'ICT Trading Bot Pro',

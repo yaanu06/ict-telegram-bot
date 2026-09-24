@@ -2962,7 +2962,7 @@ describe('live AI market context and prompt', () => {
         expect(stage.immediate_entry.confirmation_score).toBe(0);
     });
 
-    it('creates a deterministic market-mechanics candidate without CRT/TBS/MSNR labels', () => {
+    it('keeps generic market-mechanics locations out of primary order candidates', () => {
         const ctx = getContext();
         const historyCache = trendCache('up', 1.08000, 0.00020);
         const zone = { id: '1H-BUY-FVG-1.0995-1.1005', type: 'FVG', direction: 'BUY', timeframe: '1H', low: 1.09950, high: 1.10050, origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, freshness: 'FRESH' };
@@ -2979,10 +2979,8 @@ describe('live AI market context and prompt', () => {
             marketContext: { directional_bias: 'BULLISH', context_score: 82 },
             strategySetups: []
         });
-        expect(result.raw_candidates).toHaveLength(1);
-        expect(result.valid_candidates).toHaveLength(1);
-        expect(result.valid_candidates[0].market_mechanics_verified).toBe(true);
-        expect(result.valid_candidates[0].strategy_setup).toBeNull();
+        expect(result.raw_candidates).toHaveLength(0);
+        expect(result.valid_candidates).toHaveLength(0);
     });
 
     it('requires coherent HTF continuation or raid plus shift proof for generic zones', () => {
@@ -3120,7 +3118,7 @@ describe('live AI market context and prompt', () => {
             strategy_setups: []
         }, { includeAccountRules: false });
         expect(result.valid).toBe(false);
-        expect(result.reasons).toContain('candidate is not backed by a deterministic market-mechanics narrative');
+        expect(result.reasons).toContain('candidate is not backed by a supported CRT/TBS/MSNR strategy');
     });
 
     it('detects deterministic bullish and bearish Turtle Soup strategy setups', () => {
@@ -3907,9 +3905,9 @@ describe('live AI market context and prompt', () => {
             marketRegime: { primary_regime: 'TRENDING_BEARISH' },
             structure: { '1D': { trend: 'BEARISH' }, '4H': { trend: 'BEARISH' }, '1H': { trend: 'BEARISH' } }
         });
-        expect(result.raw_candidates.length).toBeGreaterThan(0);
+        expect(result.raw_candidates.length).toBe(0);
         expect(result.valid_candidates).toEqual([]);
-        expect(result.rejected_candidates.some(c => c.rejection_reasons.some(r => /reversal evidence insufficient/.test(r)))).toBe(true);
+        expect(result.rejected_candidates).toEqual([]);
     });
 
     it('requires actionable AI output to select a deterministic candidate when valid candidates exist', () => {
@@ -6259,6 +6257,23 @@ describe('fallback presentation regressions', () => {
         expect(ctx.getTradeSummaryModel({ pair, decision: 'BUY_LIMIT', entry: 100, stop_loss: 105, tp1: 110 }).tradeType).toBe('WAIT');
         expect(ctx.getTradeSummaryModel({ pair, decision: 'BUY_LIMIT', entry: 100, stop_loss: 90, tp1: 110, watch_only: true }).tradeType).toBe('WAIT');
         expect(ctx.getTradeSummaryModel({ pair, decision: 'BUY_LIMIT', entry: 100, stop_loss: 90, tp1: 110 }).tradeType).toBe('BUY LIMIT');
+    });
+    it('does not allow an ICT market-mechanics narrative to become a primary limit order', () => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({
+            pair: 'AUD/USD', currentPrice: 0.70443, marketOpen: true,
+            marketContext: { directional_bias: 'BEARISH', timeframe_context: {
+                '4H': { effective_trend: 'BEARISH', displayed_trend: 'BEARISH' },
+                '1H': { effective_trend: 'BEARISH', displayed_trend: 'BEARISH' }
+            } },
+            strategySetups: [{ id: 'ict-location', primary: 'ICT', label: 'MARKET_MECHANICS', direction: 'SELL',
+                narrative_state: 'ACTIVE', execution_model: 'PENDING_LIMIT',
+                execution_zone: { id: 'zone', type: 'FVG', direction: 'SELL', timeframe: '1H', low: 0.705, high: 0.706, primary_eligible: true },
+                target_candidates: [{ direction: 'SELL', level: 0.698, source: 'PDL' }] }],
+            executionZones: [], validCandidates: [], targetCandidates: { all: [], buy: [], sell: [] }
+        });
+        expect(result.state).toBe('NO_TRADE_TODAY');
+        expect(result.strategy).toBeNull();
     });
     it.each(['XAU/USD', 'AUD/USD', 'EUR/USD', 'GBP/JPY', 'BTC/USD'])('preserves facts, strategy and three targets for %s', pair => {
         const ctx = getContext();
