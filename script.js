@@ -12929,12 +12929,21 @@ function getTradeSummaryModel(signal = {}) {
         || setup.reason
         || signal.analysis?.reason
         || 'No current setup analysis.';
-    const setupType = getDisplayStrategyLabel({
+    const hasOpportunitySetup = !!(
+        signal.primary_opportunity
+        || signal.opportunity
+        || (Array.isArray(signal.active_setups) && signal.active_setups.length)
+        || (Array.isArray(signal.watch_setups) && signal.watch_setups.length)
+        || signal.status === 'TODAY_OPPORTUNITY'
+        || signal.status === 'WATCH_ONLY'
+        || ['BUY_LIMIT', 'SELL_LIMIT'].includes(String(signal.decision || signal.trade_type || '').toUpperCase())
+    );
+    const setupType = hasOpportunitySetup ? getDisplayStrategyLabel({
         strategy_label: setup.strategy || signal.strategy_label || signal.adaptive_candidate?.strategy_label,
         label: signal.strategy_setup?.label,
         primary: signal.strategy_setup?.primary,
         strategy: setup.strategy || signal.strategy || signal.adaptive_candidate?.strategy_label || signal.analysis?.type
-    }, location.source || location.type);
+    }, location.source || location.type) : '—';
     return {
         bot: 'ICT Trading Bot Pro',
         date: signal.date || '—',

@@ -2241,6 +2241,7 @@ describe('getQuoteDirection', () => {
             reason: { code: 'NO_TRADE_TODAY', message: 'No current opportunity.' }
         });
         expect(signal.analysis.trend_detection).toEqual({ '1D': 'BEARISH', '4H': 'BULLISH', '1H': 'BULLISH' });
+        expect(ctx.getTradeSummaryModel(signal).type).toBe('—');
     });
 
     it('uses the selected developing setup confidence when the outer WAIT signal has zero', () => {
