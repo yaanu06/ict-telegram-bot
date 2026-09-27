@@ -11022,13 +11022,21 @@ async function runAutoScan() {
         liveMarketContext.today_opportunity.market_conditions = liveMarketContext.market_conditions;
         console.log('[SCAN] today opportunity', liveMarketContext.today_opportunity);
 
-        if (liveMarketContext.adaptive_setup_candidates.length === 0) {
+        // A valid setup can be a next-session watch or a lower-quality
+        // candidate even when no candidate is currently selectable for an
+        // order. Let buildTodayOpportunity present that geometry instead of
+        // collapsing it into a blank WAIT.
+        const hasPlanningCandidates = liveMarketContext.adaptive_setup_candidates.length > 0
+            || (liveMarketContext.future_watch_candidates || []).length > 0
+            || (liveMarketContext.low_quality_candidates || []).length > 0;
+        if (!hasPlanningCandidates) {
             const audit = liveMarketContext.setup_candidate_audit || {};
             const hasRaw = (audit.raw_candidate_count || 0) > 0;
-            const hasStrategySetups = (liveMarketContext.strategy_setups || []).length > 0;
+            const supportedStrategySetups = (liveMarketContext.strategy_setups || []).filter(hasSupportedStrategyLabel);
+            const hasStrategySetups = supportedStrategySetups.length > 0;
             const decision = 'WAIT';
             const reason = !hasStrategySetups
-                ? 'No validated future limit zone has been found for the current market thesis.'
+                ? 'No active CRT/TBS/MSNR strategy setup was detected for the current market thesis; ICT market mechanics remain informational.'
                 : (hasRaw ? 'No pending-limit candidate passed the structural stop, target, RR, freshness, and data checks.' : 'No untouched future execution zone currently supports the market thesis.');
             const waitCode = waitCodeFromRejections({ ...audit, market_open: liveMarketContext.market_open }, hasStrategySetups);
             const today = liveMarketContext.today_opportunity;
