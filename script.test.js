@@ -6307,6 +6307,31 @@ describe('fallback presentation regressions', () => {
         expect(result.state).toBe('NO_TRADE_TODAY');
         expect(result.strategy).toBeNull();
     });
+    it('keeps strategy ownership separate from informational location labels', () => {
+        const ctx = getContext();
+        expect(ctx.getExecutableStrategyComponents({ primary: 'CRT', label: 'CRT+MSNR' })).toEqual(['CRT', 'MSNR']);
+        expect(ctx.hasExecutableStrategyBacking({ primary: 'CRT', label: 'CRT', execution_zone: { low: 99, high: 100 } })).toBe(true);
+        expect(ctx.hasExecutableStrategyBacking({ primary: 'ICT', label: 'CRT+FVG', execution_zone: { low: 99, high: 100 } })).toBe(false);
+        expect(ctx.hasExecutableStrategyBacking({ primary: 'MARKET_MECHANICS', label: 'FVG', execution_zone: { low: 99, high: 100 } })).toBe(false);
+        expect(ctx.isInformationalStrategy('FVG')).toBe(true);
+        expect(ctx.isExecutableStrategy('MSNR')).toBe(true);
+    });
+    it('keeps verified AI ICT context out of executable strategy setups', () => {
+        const ctx = getContext();
+        const live = {
+            strategy_setups: [{ id: 'crt', primary: 'CRT', label: 'CRT', direction: 'SELL', event_time: '2026-09-18T10:00:00Z', execution_zone: { id: 'crt-zone', low: 100, high: 101 } }],
+            informational_setups: []
+        };
+        const result = ctx.mergeVerifiedAiSetups(live, [{
+            id: 'ai-ict', primary: 'ICT', label: 'ICT', direction: 'SELL', event_time: '2026-09-18T10:30:00Z',
+            execution_zone: { id: 'ict-zone', low: 102, high: 103 }, market_mechanics_verified: true
+        }]);
+        expect(result.strategy_setups).toHaveLength(1);
+        expect(result.informational_setups).toHaveLength(1);
+        expect(result.informational_setups[0].primary).toBe('ICT');
+        expect(result.added).toBe(0);
+        expect(result.informational_added).toBe(1);
+    });
     it.each(['XAU/USD', 'AUD/USD', 'EUR/USD', 'GBP/JPY', 'BTC/USD'])('preserves facts, strategy and three targets for %s', pair => {
         const ctx = getContext();
         const bars = Array.from({ length: 210 }, (_, i) => ({

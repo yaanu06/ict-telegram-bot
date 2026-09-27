@@ -1959,20 +1959,78 @@ function narrativeEventIndex(setup, data) {
 // Strategy labels describe the setup logic. Zone types describe the price
 // location used for entry. Keep those concepts separate in every public view.
 function getDisplayStrategyLabel(setup = {}, zoneType = null) {
-    const raw = setup?.strategy_label || setup?.strategy_setup?.label || setup?.label || setup?.primary || setup?.strategy || null;
-    const locationOnly = new Set(['FVG', 'OB', 'FLIP', 'DEMAND', 'SUPPLY', 'ORDER_BLOCK', 'FAIR_VALUE_GAP']);
-    const parts = String(raw || '')
-        .split(/[+|,·]/)
-        .map(value => value.trim().toUpperCase())
-        .filter(Boolean)
-        .filter(value => !locationOnly.has(value));
-    const strategies = [...new Set(parts.filter(value => ['CRT', 'TBS', 'MSNR'].includes(value)))];
+    const source = setup?.strategy_setup && typeof setup.strategy_setup === 'object' ? setup.strategy_setup : setup;
+    const primary = canonicalStrategyName(source?.primary || source?.strategy);
+    if (isInformationalStrategy(primary)) return 'ICT';
+    const strategies = getExecutableStrategyComponents(setup);
     return strategies.length ? strategies.join('+') : 'ICT';
 }
 
 function hasSupportedStrategyLabel(setup = {}) {
-    const raw = setup?.strategy_label || setup?.strategy_setup?.label || setup?.label || setup?.primary || setup?.strategy || '';
-    return String(raw).toUpperCase().split(/[+|,·]/).some(value => ['CRT', 'TBS', 'MSNR'].includes(value.trim()));
+    return hasExecutableStrategyBacking(setup);
+}
+
+// Strategy ownership is separate from the price location used for entry.
+// CRT, TBS, and MSNR may authorize execution; ICT and market-mechanics
+// records remain context even when they contain FVG/OB/FLIP zones.
+const EXECUTABLE_STRATEGIES = new Set(['CRT', 'TBS', 'MSNR']);
+const INFORMATIONAL_STRATEGIES = new Set([
+    'ICT', 'MARKET_MECHANICS', 'FVG', 'OB', 'FLIP', 'SUPPLY', 'DEMAND',
+    'ORDER_BLOCK', 'FAIR_VALUE_GAP'
+]);
+
+function canonicalStrategyName(value) {
+    const normalized = String(value ?? '')
+        .trim()
+        .toUpperCase()
+        .replace(/[\u00b7Â·]/g, '+')
+        .replace(/[\s-]+/g, '_');
+    if (normalized === 'ORDERBLOCK') return 'ORDER_BLOCK';
+    if (normalized === 'FAIRVALUEGAP') return 'FAIR_VALUE_GAP';
+    return normalized;
+}
+
+function isExecutableStrategy(value) {
+    return EXECUTABLE_STRATEGIES.has(canonicalStrategyName(value));
+}
+
+function isInformationalStrategy(value) {
+    return INFORMATIONAL_STRATEGIES.has(canonicalStrategyName(value));
+}
+
+function getExecutableStrategyComponents(setup = {}) {
+    const source = setup?.strategy_setup && typeof setup.strategy_setup === 'object'
+        ? setup.strategy_setup
+        : setup;
+    const values = [
+        source?.primary,
+        source?.strategy_label,
+        source?.label,
+        source?.strategy,
+        ...(Array.isArray(source?.confirmations) ? source.confirmations : []),
+        ...(Array.isArray(source?.strategy_confluence) ? source.strategy_confluence : [])
+    ];
+    const components = [];
+    for (const value of values) {
+        for (const part of String(value ?? '').split(/[+|,\u00b7Â·]/)) {
+            const name = canonicalStrategyName(part);
+            if (isExecutableStrategy(name) && !components.includes(name)) components.push(name);
+        }
+    }
+    return components;
+}
+
+function hasExecutableStrategyBacking(setup = {}) {
+    const source = setup?.strategy_setup && typeof setup.strategy_setup === 'object'
+        ? setup.strategy_setup
+        : setup;
+    const components = getExecutableStrategyComponents(setup);
+    if (!components.length) return false;
+    const primary = canonicalStrategyName(source?.primary || source?.strategy);
+    // An informational primary cannot be upgraded by a generic location
+    // label such as CRT+ICT or FVG+CRT.
+    if (isInformationalStrategy(primary)) return false;
+    return true;
 }
 
 function isDirectionalDisplacement(candle, direction, atrValue) {
@@ -5829,7 +5887,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const validCandidates = [];
     const rejectedCandidates = [];
     const supportedStrategySetups = Array.isArray(strategySetups)
-        ? strategySetups.filter(hasSupportedStrategyLabel)
+        ? strategySetups.filter(hasExecutableStrategyBacking)
         : [];
     const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(supportedStrategySetups) : [];
     const poiZones = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pair, symbolMetadata || {}));
@@ -5908,8 +5966,14 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
             continue;
         }
         const strategySetup = zone.strategy_setup || (Array.isArray(strategySetups) ? getStrategySetupForZone(zone, strategySetups) : null);
-        const marketMechanicsVerified = !strategySetup && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price);
-        if (Array.isArray(strategySetups) && !strategySetup && !marketMechanicsVerified) { failSeed(seed, 'NO_MARKET_MECHANICS_PROOF'); continue; }
+        // Production candidate construction is strategy-owned. The legacy
+        // no-strategy call path remains diagnostic-only for older unit callers;
+        // it cannot authorize a production candidate because production always
+        // supplies an explicit strategy array.
+        const marketMechanicsVerified = !Array.isArray(strategySetups)
+            && !strategySetup
+            && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price);
+        if (Array.isArray(strategySetups) && !strategySetup) { failSeed(seed, 'NO_EXECUTABLE_STRATEGY_BACKING'); continue; }
         const setupModel = String(strategySetup?.opportunity_thesis?.execution_model || strategySetup?.execution_model || strategySetup?.entry_model || zone.execution_model || '').toUpperCase();
         if (strategySetup && !isPendingLimitExecutionModel(setupModel) && strategySetup.opportunity_thesis?.state !== 'EXECUTION_VALID' && marketContext?.daily_bias) {
             for (const code of strategySetup?.opportunity_thesis?.rejection_codes || ['NO_DIRECTION_THESIS']) failSeed(seed, code);
@@ -6946,10 +7010,7 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
         if (lifecycle.rejection_code) return { valid: false, checks, reasons: [lifecycle.rejection_code], metrics };
     }
     if (marketContext.require_strategy_setup) {
-        const labels = [strategySetup?.primary, ...(strategySetup?.confirmations || [])].filter(Boolean);
-        const marketMechanicsVerified = candidate.market_mechanics_verified === true
-            || (strategySetup?.market_mechanics_verified && strategySetup?.opportunity_thesis?.state === 'EXECUTION_VALID');
-        if (!labels.some(v => ['CRT', 'TBS', 'MSNR'].includes(String(v).toUpperCase())) && !marketMechanicsVerified) {
+        if (!hasExecutableStrategyBacking(strategySetup || candidate)) {
             add('candidate is not backed by a supported CRT/TBS/MSNR strategy');
         }
     }
@@ -8253,7 +8314,7 @@ function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, select
     return buildTodayOpportunity({
         ...scanArgs,
         marketContext: liveMarketContext.market_context,
-        strategySetups: (liveMarketContext.strategy_setups || []).filter(hasSupportedStrategyLabel),
+        strategySetups: (liveMarketContext.strategy_setups || []).filter(hasExecutableStrategyBacking),
         aiAnalysis: liveMarketContext.ai_analysis,
         executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
         candidateDiagnostics: liveMarketContext.setup_candidate_audit,
@@ -8582,11 +8643,18 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const strategyStartedAt = scanClock();
     marketContext.timeframe_context = buildTimeframeContext({ historyCache, structure, price, zones, liquidity: liquidityFacts });
     marketContext.daily_bias = buildDailyTradingBias(marketContext.timeframe_context, targetCandidates, price, now.getTime());
-    const mechanicsSetups = buildMarketMechanicsSetups({ historyCache, timeframeContext: marketContext.timeframe_context,
+    const informationalMarketMechanicsSetups = buildMarketMechanicsSetups({ historyCache, timeframeContext: marketContext.timeframe_context,
         dailyBias: marketContext.daily_bias, targets: targetCandidates, zones, pair, price, symbolMetadata });
-    marketContext.discovery_funnel = { ...(mechanicsSetups.discovery || {}) };
-    const strategySetups = buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext, symbolMetadata });
-    strategySetups.push(...mechanicsSetups);
+    marketContext.discovery_funnel = { ...(informationalMarketMechanicsSetups.discovery || {}) };
+    const detectedStrategySetups = buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext, symbolMetadata });
+    const strategySetups = detectedStrategySetups.filter(hasExecutableStrategyBacking);
+    Object.defineProperty(strategySetups, 'detection_stats', {
+        value: detectedStrategySetups.detection_stats || null,
+        enumerable: false,
+        configurable: true
+    });
+    marketContext.informational_setups = informationalMarketMechanicsSetups.slice();
+    marketContext.informational_setup_count = informationalMarketMechanicsSetups.length;
     marketContext.timeframe_context = buildTimeframeContext({ historyCache, structure, price, strategySetups, zones, liquidity: liquidityFacts });
     marketContext.daily_bias = buildDailyTradingBias(marketContext.timeframe_context, targetCandidates, price, now.getTime());
     prepareOpportunitySetups(strategySetups, marketContext, price);
@@ -8621,6 +8689,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         market_context: marketContext,
         market_theses: canonicalMarketTheses,
         strategy_setups: strategySetups,
+        informational_setups: informationalMarketMechanicsSetups,
         require_strategy_setup: true,
         market_open: marketState.is_market_open,
         data_quality: dataQuality,
@@ -8721,6 +8790,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         structure,
         market_context: marketContext,
         strategy_setups: strategySetups,
+        informational_setups: informationalMarketMechanicsSetups,
         real_ict_zones: validationZones,
         context_ict_zones: zones,
         poi_zones: ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pair, symbolMetadata || {})),
@@ -8765,7 +8835,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     liveContext.production_trace = buildProductionScanTrace({ pair, price, asOfMs: as_of_ms, historyCache, structure,
         timeframeContext: marketContext.timeframe_context, liquidity: liquidityFacts, zones, targetCandidates,
         strategySetups, candidatePipeline: candidatePipelineAudit, candidateRejections: adaptiveSetupResult.rejected_candidates,
-        validCandidates: adaptiveSetupResult.valid_candidates, discoveryEvents: mechanicsSetups.discovery || [], opportunityFunnel: marketContext.opportunity_funnel });
+        validCandidates: adaptiveSetupResult.valid_candidates, discoveryEvents: informationalMarketMechanicsSetups.discovery || [], opportunityFunnel: marketContext.opportunity_funnel });
     liveContext.production_trace.daily_bias = liveContext.daily_bias;
     liveContext.production_trace.buy_thesis = canonicalMarketTheses.buy;
     liveContext.production_trace.sell_thesis = canonicalMarketTheses.sell;
@@ -8888,7 +8958,7 @@ function replayCapturedScan(replay) {
             provider_timestamp_utc: replay.runtime_state.quote_snapshot.provider_timestamp_utc || replay.runtime_state.quote_snapshot.timestamp || null
         } : null });
     const today = buildTodayOpportunity({ pair: replay.pair, currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
-        marketContext: live.market_context, strategySetups: (live.strategy_setups || []).filter(hasSupportedStrategyLabel), executionZones: [...(live.strategy_execution_zones || []), ...(live.real_ict_zones || [])],
+        marketContext: live.market_context, strategySetups: (live.strategy_setups || []).filter(hasExecutableStrategyBacking), executionZones: [...(live.strategy_execution_zones || []), ...(live.real_ict_zones || [])],
         candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, futureWatchCandidates: live.future_watch_candidates, lowQualityCandidates: live.low_quality_candidates, targetCandidates: live.target_candidates,
         symbolMetadata: live.symbol_metadata,
         marketOpen: live.market_open });
@@ -9516,9 +9586,14 @@ function verifyAiStrategyHypothesis(hypothesis, evidenceCatalog = {}, liveMarket
 
 function mergeVerifiedAiSetups(liveMarketContext, verifiedSetups = [], evidenceCatalog = {}) {
     const current = liveMarketContext?.strategy_setups || [];
+    const currentInformational = liveMarketContext?.informational_setups || [];
     const merged = [...current];
+    const informational = [...currentInformational];
     let duplicates = 0;
-    for (const setup of verifiedSetups) {
+    let informationalAdded = 0;
+    const executableSetups = (verifiedSetups || []).filter(hasExecutableStrategyBacking);
+    const informationalSetups = (verifiedSetups || []).filter(setup => !hasExecutableStrategyBacking(setup));
+    for (const setup of executableSetups) {
         const duplicate = merged.find(existing => existing.primary === setup.primary && existing.direction === setup.direction &&
             Math.abs(normalizeTimestampUTC(existing.event_time) - normalizeTimestampUTC(setup.event_time)) <= 3600000 &&
             strategyZoneKey(existing.execution_zone) === strategyZoneKey(setup.execution_zone));
@@ -9529,7 +9604,22 @@ function mergeVerifiedAiSetups(liveMarketContext, verifiedSetups = [], evidenceC
             duplicates++;
         } else merged.push(setup);
     }
-    return { strategy_setups: merged, duplicates, added: merged.length - current.length };
+    for (const setup of informationalSetups) {
+        const duplicate = informational.find(existing => existing.primary === setup.primary && existing.direction === setup.direction &&
+            Math.abs(normalizeTimestampUTC(existing.event_time) - normalizeTimestampUTC(setup.event_time)) <= 3600000 &&
+            strategyZoneKey(existing.execution_zone) === strategyZoneKey(setup.execution_zone));
+        if (!duplicate) {
+            informational.push(setup);
+            informationalAdded++;
+        }
+    }
+    return {
+        strategy_setups: merged,
+        informational_setups: informational,
+        duplicates,
+        added: merged.length - current.length,
+        informational_added: informationalAdded
+    };
 }
 
 function rebuildCandidatesWithAiSetups(liveMarketContext, strategySetups) {
@@ -10108,6 +10198,9 @@ function findSelectedLiveZone(aiResult, liveMarketContext) {
 function validateExecutableCandidateInvariant(candidate, marketState = {}) {
     const failures = [];
     if (!candidate || typeof candidate !== 'object') return { valid: false, invariant_code: 'CANDIDATE_MISSING', failures: ['candidate missing'] };
+    if (marketState.require_strategy_setup && !hasExecutableStrategyBacking(candidate.strategy_setup || candidate)) {
+        failures.push('EXECUTABLE_STRATEGY_BACKING_MISSING');
+    }
     const timeframeContext = marketState.timeframe_context || marketState.market_context?.timeframe_context;
     if (candidate.trade_context_classification && timeframeContext && candidate.direction) {
         const actualTopDown = classifyTopDownTrade(candidate, timeframeContext);
@@ -10513,7 +10606,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
             scanAsOfMs: Date.now(),
             histories: historyCache,
             marketContext: fallbackMarketContext,
-            strategySetups: (fallbackStrategySetups || []).filter(hasSupportedStrategyLabel),
+            strategySetups: (fallbackStrategySetups || []).filter(hasExecutableStrategyBacking),
             executionZones: getStrategyExecutionZones(fallbackStrategySetups),
             candidateDiagnostics: {
                 raw_candidate_count: fallbackCandidateResult.raw_candidates?.length || 0,
@@ -10977,7 +11070,9 @@ async function runAutoScan() {
         const aiMerge = mergeVerifiedAiSetups(liveMarketContext, analystResult.verified_setups, analystEvidence);
         analystResult.diagnostics.deterministic_duplicates = aiMerge.duplicates;
         analystResult.diagnostics.setups_added_from_ai = aiMerge.added;
+        analystResult.diagnostics.informational_setups_added_from_ai = aiMerge.informational_added || 0;
         liveMarketContext.ai_analysis = analystResult.diagnostics;
+        liveMarketContext.informational_setups = aiMerge.informational_setups || liveMarketContext.informational_setups || [];
         if (aiMerge.added > 0) {
             const aiZones = aiMerge.strategy_setups.slice(liveMarketContext.strategy_setups.length).map(s => s.execution_zone).filter(Boolean);
             liveMarketContext.real_ict_zones = [...(liveMarketContext.real_ict_zones || []), ...aiZones];
@@ -10999,7 +11094,7 @@ async function runAutoScan() {
             scanAsOfMs: scanAsOfMs,
             histories: historyCache,
             marketContext: liveMarketContext.market_context,
-            strategySetups: (liveMarketContext.strategy_setups || []).filter(hasSupportedStrategyLabel),
+            strategySetups: (liveMarketContext.strategy_setups || []).filter(hasExecutableStrategyBacking),
             aiAnalysis: analystResult.diagnostics,
             executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
             candidateDiagnostics: liveMarketContext.setup_candidate_audit,
@@ -11032,7 +11127,7 @@ async function runAutoScan() {
         if (!hasPlanningCandidates) {
             const audit = liveMarketContext.setup_candidate_audit || {};
             const hasRaw = (audit.raw_candidate_count || 0) > 0;
-            const supportedStrategySetups = (liveMarketContext.strategy_setups || []).filter(hasSupportedStrategyLabel);
+            const supportedStrategySetups = (liveMarketContext.strategy_setups || []).filter(hasExecutableStrategyBacking);
             const hasStrategySetups = supportedStrategySetups.length > 0;
             const decision = 'WAIT';
             const reason = !hasStrategySetups
@@ -11097,7 +11192,7 @@ async function runAutoScan() {
                     scanAsOfMs,
                     histories: historyCache,
                     marketContext: liveMarketContext.market_context,
-                    strategySetups: (liveMarketContext.strategy_setups || []).filter(hasSupportedStrategyLabel),
+                    strategySetups: (liveMarketContext.strategy_setups || []).filter(hasExecutableStrategyBacking),
                     aiAnalysis: liveMarketContext.ai_analysis,
                     executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
                     candidateDiagnostics: liveMarketContext.setup_candidate_audit,
