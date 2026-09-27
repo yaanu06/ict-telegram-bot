@@ -6803,21 +6803,26 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     // the current session.  Distance changes fill probability, not whether
     // a fresh structural order is valid.  Confirmation entries retain the
     // same-day reachability requirement.
+    // A pending limit can be prepared while the venue is closed. The order
+    // remains execution-blocked by the public risk gate until the next valid
+    // session, but market closure must not erase a structurally valid setup.
+    const closedPendingLimit = marketClosed && pendingLimitModel;
+    result.actionable_next_session = closedPendingLimit;
     result.still_actionable_today = result.timestamp_consistent && !expired && !staleByAge && !result.entry_consumed && !result.tp1_already_reached &&
-        !deliveryAdvanced && !(entryTooFarForToday && !pendingLimitModel) && !marketClosed;
+        !deliveryAdvanced && !(entryTooFarForToday && !pendingLimitModel) && (!marketClosed || pendingLimitModel);
     result.rejection_code = !result.timestamp_consistent ? 'DATA_TIME_INCONSISTENT' : expired ? 'SETUP_EXPIRED'
         : result.tp1_already_reached ? 'SETUP_ALREADY_COMPLETED'
         : result.entry_consumed ? 'ENTRY_ALREADY_CONSUMED'
         : deliveryAdvanced ? 'SETUP_DELIVERY_ALREADY_ADVANCED'
         : staleByAge ? 'SETUP_STALE'
-        : marketClosed ? 'MARKET_CLOSED'
+        : marketClosed && !pendingLimitModel ? 'MARKET_CLOSED'
             : entryTooFarForToday && !pendingLimitModel ? 'ENTRY_NOT_REACHABLE_TODAY' : null;
     result.entry_freshness = expired ? 'EXPIRED' : result.entry_consumed ? 'CONSUMED' : result.entry_touch_count_after_signal ? 'TOUCHED' : 'FRESH';
     result.opportunity_status = result.rejection_code === 'SETUP_ALREADY_COMPLETED' ? 'COMPLETED'
         : result.rejection_code === 'SETUP_EXPIRED' ? 'EXPIRED'
             : result.rejection_code === 'ENTRY_ALREADY_CONSUMED' ? 'CONSUMED'
                 : result.rejection_code === 'SETUP_DELIVERY_ALREADY_ADVANCED' ? 'DELIVERY_ADVANCED'
-                    : result.rejection_code === 'MARKET_CLOSED' ? 'FRESH_PENDING_LATER'
+        : result.rejection_code === 'MARKET_CLOSED' || closedPendingLimit ? 'FRESH_PENDING_LATER'
                         : result.rejection_code === 'ENTRY_NOT_REACHABLE_TODAY' ? 'FRESH_PENDING_LATER'
                         : result.rejection_code ? 'INVALID'
                             : (getZonePriceStatus(price, { low, high }).insideZone ? 'FRESH_NOW'
@@ -7670,7 +7675,11 @@ function evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal = pair, cur
     const detail = { ...(candidateDiagnostics?.rejection_detail || {}), ...(candidateDiagnostics?.seed_failure_counts || {}) };
     const hardDataFailure = hardDataCodes.find(code => Number(detail[code]) > 0);
     if (hardDataFailure) return fail(hardDataFailure, 'The scan contains a hard market-data or engine-integrity failure.');
-    if (marketOpen === false || lifecycle.market_closed === true) return fail('MARKET_CLOSED', 'The instrument is closed for the current scan.');
+    // Pending limits are plans for a future fill and remain valid while the
+    // venue is closed. Confirmation entries still require an open market.
+    if ((marketOpen === false || lifecycle.market_closed === true) && !truePendingLimit) {
+        return fail('MARKET_CLOSED', 'The instrument is closed for the current scan.');
+    }
     if (!direction || !['BUY', 'SELL'].includes(direction)) return fail('INVALID_STRATEGY_NARRATIVE', 'The developing narrative has no valid direction.');
     if (['INVALIDATED', 'TARGET_COMPLETED', 'STALE_NARRATIVE', 'EXPIRED'].includes(state)) return fail(state === 'TARGET_COMPLETED' ? 'SETUP_ALREADY_COMPLETED' : state === 'STALE_NARRATIVE' ? 'SETUP_STALE' : 'SETUP_EXPIRED', 'The strategy narrative is no longer active.');
     if (!zone && setup?.opportunity_narrative) {
@@ -7732,7 +7741,8 @@ function evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal = pair, cur
     const metrics = {
         distance_to_area: distanceToArea,
         distance_to_area_atr: distanceToAreaAtr,
-        opportunity_reachable_today: reachable === true,
+        opportunity_reachable_today: marketOpen !== false && reachable === true,
+        actionable_next_session: marketOpen === false && truePendingLimit,
         delivery_progress: null,
         remaining_reward_fraction: null,
         target_available: true,
@@ -7909,12 +7919,12 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         execution_zone_id: null, source: 'DETERMINISTIC_MARKET_FACTS', ai_supported: false, deterministic_supported: false, area_of_interest: null,
         execution_model: null, activation_conditions: [], cancellation_conditions: [], target_intent: null, expected_window: 'REMAINDER_OF_TODAY',
         delivery_progress: null, remaining_reward_fraction: null, distance_to_area_atr: null, entry_reachable_today: false, opportunity_reachable_today: false,
+        market_open: marketOpen, planning_only: marketOpen === false,
         target_viable: false, structural_invalidation: null, reason_code: 'NO_TRADE_TODAY', reason: 'No defensible fresh or developing opportunity remains for today.',
         rejected_reason: null, rejected_opportunities: [], missed_opportunities: [], completed_opportunities: [], fresh_continuation_opportunities: [],
         terminal_parent_opportunities: [], fresh_current_market_opportunities: [], future_watch_candidates: (futureWatchCandidates || []).map(candidate => candidate.id).filter(Boolean),
         low_quality_candidates: (lowQualityCandidates || []).map(candidate => candidate.id).filter(Boolean)
     };
-    if (marketOpen === false) { state.reason_code = 'MARKET_CLOSED'; state.reason = 'The instrument is currently closed for the current scan.'; return state; }
     // A candidate can pass numeric geometry while still being unsuitable for
     // an order now (for example, an old zone or a limit entry outside the
     // remaining trading window). Do not promote those candidates to
@@ -7935,14 +7945,19 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.narrative_id = bestCandidate.strategy_setup?.id || bestCandidate.id; state.execution_zone_id = zone?.id || bestCandidate.id;
         state.source = 'DETERMINISTIC_CANDIDATE' + (bestCandidate.ai_verified ? '+VERIFIED_AI_ANALYST' : ''); state.ai_supported = !!bestCandidate.ai_verified; state.deterministic_supported = true;
         state.area_of_interest = zone ? { low: zone.low, high: zone.high, source: zone.entry_region_source || zone.type || 'STRUCTURAL', timeframe: zone.timeframe, zone_id: zone.id || bestCandidate.id } : null;
-        state.execution_model = bestCandidate.execution_model || bestCandidate.entry_model || 'PENDING_LIMIT'; state.activation_conditions = ['All deterministic entry, structural stop, target, RR, and lifecycle conditions are satisfied'];
+        state.execution_model = bestCandidate.execution_model || bestCandidate.entry_model || 'PENDING_LIMIT'; state.activation_conditions = marketOpen === false
+            ? ['The market is closed; keep this pending limit for the next valid session', 'Revalidate structure, invalidation, target, and RR when the market opens']
+            : ['All deterministic entry, structural stop, target, RR, and lifecycle conditions are satisfied'];
         state.cancellation_conditions = ['Structural invalidation is breached', 'TP1 is completed before order execution', 'Pending opportunity expires']; state.target_intent = bestCandidate.target_bias || bestCandidate.strategy_setup?.target_bias || null;
         state.delivery_progress = bestCandidate.progress_to_tp1_fraction ?? bestCandidate.narrative_delivery_progress ?? null; state.remaining_reward_fraction = bestCandidate.remaining_reward_fraction ?? null;
         state.entry = bestCandidate.entry; state.stop_loss = bestCandidate.stop_loss; state.tp1 = bestCandidate.tp1;
         state.tp2 = bestCandidate.tp2 ?? null; state.tp3 = bestCandidate.tp3 ?? null;
         state.rr = bestCandidate.rr_tp1 ?? bestCandidate.actual_rr ?? null;
-        state.entry_reachable_today = bestCandidate.entry_reachable_today === true; state.opportunity_reachable_today = state.entry_reachable_today; state.target_viable = true;
-        state.structural_invalidation = bestCandidate.structural_invalidation || null; state.reason_code = 'TRADE_READY'; state.reason = 'A deterministic opportunity is executable under the current market state.';
+        state.entry_reachable_today = marketOpen !== false && bestCandidate.entry_reachable_today === true; state.opportunity_reachable_today = state.entry_reachable_today; state.target_viable = true;
+        state.structural_invalidation = bestCandidate.structural_invalidation || null; state.reason_code = marketOpen === false ? 'MARKET_CLOSED_SETUP' : 'TRADE_READY'; state.reason = marketOpen === false
+            ? 'A deterministic pending limit is ready for the next valid market session; execution is blocked while the market is closed.'
+            : 'A deterministic opportunity is executable under the current market state.';
+        state.expected_window = marketOpen === false ? 'NEXT_VALID_SESSION' : 'REMAINDER_OF_TODAY';
         const candidatePlans = tradeReadyCandidates.map(candidate => ({
             ...candidate,
             state: 'TRADE_READY', narrative_id: candidate.strategy_setup?.id || candidate.id,
@@ -8126,12 +8141,14 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
                 : (inside ? [executionTimeframe + ' area is reached; wait for deterministic 15M MSS, CHoCH, BOS, or directional displacement confirmation'] : ['Price retraces into the ' + source + ' area', 'After the area is reached, wait for deterministic confirmation before constructing the entry']),
             cancellation_conditions: ['Structural invalidation is breached', 'The structural target is completed before entry', 'The opportunity expires or market context materially changes'], target_intent: targetIntent, expected_window: 'REMAINDER_OF_TODAY',
             delivery_progress: plan.metrics.delivery_progress, remaining_reward_fraction: plan.metrics.remaining_reward_fraction, distance_to_area_atr: plan.metrics.distance_to_area_atr,
-            entry_reachable_today: true, opportunity_reachable_today: plan.metrics.opportunity_reachable_today, target_viable: plan.metrics.target_available, structural_invalidation: plan.metrics.structural_invalidation,
+            entry_reachable_today: marketOpen !== false, opportunity_reachable_today: plan.metrics.opportunity_reachable_today, actionable_next_session: plan.metrics.actionable_next_session === true, target_viable: plan.metrics.target_available, structural_invalidation: plan.metrics.structural_invalidation,
             target: plan.target, target_level: plan.metrics.target_level, liquidity_context: plan.target ? { source: plan.target.source || plan.target.target_type || 'STRUCTURAL_OBJECTIVE', level: plan.metrics.target_level } : null,
             evidence_ids: [...new Set([...(topDown.evidence_ids || []), ...(setup.structural_evidence_ids || []), ...(setup.opportunity_thesis?.evidence_ids || [])])],
             lifecycle_state: setup.narrative_state || setup.strategy_state || 'ACTIVE', freshness: setup.freshness || planArea.freshness || null,
             reason_code: !zone ? 'WAITING_FOR_EXECUTION' : plan.execution_model === 'PENDING_LIMIT' ? 'WAITING_FOR_RETRACE' : (inside ? 'WAITING_FOR_CONFIRMATION' : 'WAITING_FOR_RETRACE'),
-            reason: !zone ? 'A valid current-market narrative and location exist, but no execution zone has formed yet.' : plan.execution_model === 'PENDING_LIMIT' ? 'A deterministic pending limit remains valid for the remainder of today.' : (inside ? 'A valid strategy area is active, but deterministic confirmation is not yet present.' : 'A valid strategy narrative remains actionable today; wait for price to reach the deterministic area and activate it.'),
+            reason: !zone ? 'A valid current-market narrative and location exist, but no execution zone has formed yet.' : marketOpen === false && plan.execution_model === 'PENDING_LIMIT'
+                ? 'A deterministic pending limit remains valid for the next valid market session; execution is blocked while the market is closed.'
+                : plan.execution_model === 'PENDING_LIMIT' ? 'A deterministic pending limit remains valid for the remainder of today.' : (inside ? 'A valid strategy area is active, but deterministic confirmation is not yet present.' : 'A valid strategy narrative remains actionable today; wait for price to reach the deterministic area and activate it.'),
             setup_timeframe: setup.setup_timeframe || setup.timeframe, execution_timeframe: executionTimeframe,
             entry: pendingGeometry?.entry ?? null, stop_loss: pendingGeometry?.stop_loss ?? null, tp1: pendingGeometry?.tp1 ?? null, tp2: pendingGeometry?.tp2 ?? null, tp3: pendingGeometry?.tp3 ?? null,
             rr: pendingGeometry?.rr ?? null, confidence: Number(setup.setup_confidence) > 0 && Number.isFinite(Number(setup.setup_confidence))

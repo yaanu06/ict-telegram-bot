@@ -967,6 +967,37 @@ describe('top-down trade context', () => {
 });
 
 describe('daily opportunity planning', () => {
+    it('keeps a deterministic pending limit available for the next session when the market is closed', () => {
+        const ctx = getContext();
+        const tf = Object.fromEntries(['1D', '4H', '1H', '15M'].map(timeframe => [timeframe, {
+            bias: 'BEARISH', structural_trend: 'BEARISH', effective_trend: 'BEARISH', evidence: [], structural_evidence_ids: []
+        }]));
+        const candidate = {
+            id: 'closed-market-sell-limit', direction: 'SELL', strategy_label: 'CRT',
+            execution_model: 'PENDING_LIMIT', entry_model: 'PENDING_LIMIT',
+            entry: 110, stop_loss: 115, tp1: 100, tp2: 95, tp3: 90,
+            zone_type: 'CRT', zone_low: 109.5, zone_high: 110.5,
+            zone: { id: 'closed-zone', type: 'CRT', timeframe: '4H', low: 109.5, high: 110.5 },
+            strategy_setup: { id: 'closed-crt', primary: 'CRT', label: 'CRT', direction: 'SELL' },
+            still_actionable_today: true, entry_reachable_today: true,
+            quality: { final_confidence: 84 }, score: 84
+        };
+        const today = ctx.buildTodayOpportunity({
+            pair: 'XAU/USD', currentPrice: 105, marketOpen: false,
+            marketContext: { timeframe_context: tf }, validCandidates: [candidate]
+        });
+        expect(today.state).toBe('TRADE_READY');
+        expect(today.reason_code).toBe('MARKET_CLOSED_SETUP');
+        expect(today.entry_reachable_today).toBe(false);
+        expect(today.expected_window).toBe('NEXT_VALID_SESSION');
+        expect(today.entry).toBe(110);
+        const output = ctx.buildTodayOpportunityOutput(today, 'XAU/USD', 105, Date.parse('2026-09-27T10:00:00Z'), false);
+        const publicSignal = ctx.buildPublicTradeSignal(output.trade_signal);
+        expect(publicSignal.decision).toBe('SELL_LIMIT');
+        expect(publicSignal.execution_allowed).toBe(false);
+        expect(publicSignal.status_code).toBe('MARKET_CLOSED');
+    });
+
     it('does not let an advanced parent setup suppress a fresh current-market opportunity', () => {
         const ctx = getContext();
         const tf = Object.fromEntries(['1D', '4H', '1H', '15M'].map(timeframe => [timeframe, { bias: 'BULLISH', structural_trend: 'BULLISH', evidence: [], structural_evidence_ids: [] }]));
