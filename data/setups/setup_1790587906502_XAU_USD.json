@@ -1,0 +1,991 @@
+{
+  "id": 1790587906502,
+  "recordedAt": "2026-09-28T09:31:46.513Z",
+  "eventType": "ai_scan",
+  "pair": "XAU/USD",
+  "setup": {
+    "date": "2026-09-28",
+    "time": "09:31:46",
+    "pair": "XAU/USD",
+    "current_price": 4145.10928,
+    "symbol_metadata": {
+      "symbol": "XAU/USD",
+      "asset_class": "METAL",
+      "tick_size": 0.1,
+      "price_precision": 2,
+      "tick_value": null,
+      "contract_size": null,
+      "minimum_order_size": null,
+      "minimum_price_distance": null,
+      "stop_buffer": null,
+      "max_stop_pct": null,
+      "minimum_rr": null,
+      "min_sl_atr_multiplier": null,
+      "spread": null,
+      "maximum_spread": null,
+      "commission_per_unit": null,
+      "slippage_estimate": null,
+      "maximum_slippage": null,
+      "volume_reliable": null,
+      "leverage": null,
+      "trading_permissions": null,
+      "session": null,
+      "metadata_source": "HEURISTIC",
+      "metadata_complete": false
+    },
+    "market_conditions": {
+      "bid": null,
+      "ask": null,
+      "spread": null
+    },
+    "ai_analysis": {
+      "analyst_called": true,
+      "analyst_status": "OK",
+      "schema_validation": null,
+      "market_view": {
+        "bias": "BEARISH",
+        "market_narrative": "All three higher timeframes (1D, 4H, 1H) are effectively bearish with 4H and 1H printing bearish BOS and bearish MSS, and 4H showing bearish displacement. The 4H TBS (sweep of 4286.34 swing high, reclaim at 4286.34, reclaim bar 196) and the 1H TBS confirm a sell-side continuation narrative. Price has already delivered a large impulsive leg from ~4286 down to ~4145 (current price), which is deep into the 4H discount and near the 15M CRT sweep extreme of 4141.13. The 15M CRT-BUY-20 is a local sell-side sweep/reclaim and is classified LTF_ISOLATED, so it cannot be treated as an HTF-verified rever",
+        "important_liquidity": "Buy-side liquidity above: 4H 4315.60, 4355.11, 4359.58, 4370.44, 4375.41; 1H equal highs 4286.34/4286.34/4287.41/4287.61 and 4295.53. Sell-side liquidity below: 4H equal low 4253.79 (already traded through), 1D 4283.21/4243.32/4238.37/4122.52/4023.50, and the 15M CRT sweep extreme 4141.13. The 4H TBS swept 4286.34 and reclaimed, targeting sell-side liquidity; the 1H TBS swept 4286.34 and reclaimed",
+        "structure_interpretation": "1D: effective bearish, structure_state CONFLICTING (LH/HL), no BOS/CHoCH, discount, sell-side liquidity draw. 4H: effective bearish, bearish BOS, bearish MSS at 4192.17, bearish displacement, TBS sell active, discount. 1H: effective bearish, bearish BOS, bearish MSS at 4151.27, TBS sell active, discount. 15M: confirmed bearish, bearish BOS, LH/LL, but a fresh CRT BUY (sell-side sweep/reclaim) is active and classified LTF_ISOLATED. There is no conflict between 1D, 4H and 1H direction (all bearish",
+        "risk_notes": [
+          "4H and 1H are extended to the downside (RSI 4H ~12.4, ADX ~100); a sharp mean-reversion retracement is possible before continuation.",
+          "The 15M CRT-BUY-20 is LTF_ISOLATED and cannot be treated as an HTF-verified reversal; it is a local counter-trend signal only.",
+          "The 4H sell-side target pool is empty (target_candidates.sell is empty), so a fresh continuation sell lacks a proven remaining objective.",
+          "The nearest fresh 1H sell-side execution zones (4159.84-4162.68 and 4166.15-4180.25) are only ~16-28 points above price, giving limited reward to the next structural sell-side liquidity.",
+          "daily_bias is NEUTRAL with NO_PROVEN_DRAW; direction, remaining structural objective and invalidation are not all proven."
+        ]
+      },
+      "hypotheses_received": 2,
+      "hypotheses_verified": 0,
+      "hypotheses_rejected": 2,
+      "final_selector_called": true,
+      "selected_candidate_id": "FRESH-1H-MSNR-SELL-4259.05-4261.75-1790553600000-18",
+      "setups_added_from_ai": 0,
+      "error": null
+    },
+    "direction": "SELL",
+    "trade_type": "SELL_LIMIT",
+    "decision": "SELL_LIMIT",
+    "selected_candidate_id": "FRESH-1H-MSNR-SELL-4259.05-4261.75-1790553600000-18",
+    "strategy": "TBS+MSNR",
+    "status": "TRADE_READY",
+    "trade_context_classification": "HTF_ALIGNED_CONTINUATION",
+    "top_down_context": {
+      "classification": "HTF_ALIGNED_CONTINUATION",
+      "evidence_ids": [
+        "TD:1D:TREND:SELL:1790467200000",
+        "TD:4H:TREND:SELL:1790571600000",
+        "TD:1H:TREND:SELL:1790582400000"
+      ],
+      "higher_timeframe": {
+        "daily": "1D: BEARISH",
+        "four_hour": "4H: BEARISH; BOS, MSS, DISPLACEMENT, LIQUIDITY_SWEEP, TBS supports SELL",
+        "one_hour": "1H: BEARISH; BOS, MSS, TBS supports SELL"
+      },
+      "reason": "4H direction is supported by daily or 1H structure."
+    },
+    "daily_bias": {
+      "direction": "NEUTRAL",
+      "confidence": null,
+      "score": {
+        "BUY": 6.25,
+        "SELL": 16.75
+      },
+      "structural_trend_1d": "MIXED",
+      "primary_4h_narrative": "BEARISH",
+      "target_type": null,
+      "target_level": null,
+      "target_evidence_ids": [],
+      "invalidation_type": "4H_CONFIRMED_SWING",
+      "invalidation_level": 4315.59598,
+      "invalidation_evidence_ids": [
+        "INVALIDATION:4H:SELL:4315.59598"
+      ],
+      "liquidity_draw": "NO_PROVEN_DRAW",
+      "dealing_range_position": "discount",
+      "evidence_ids": [
+        "INVALIDATION:4H:SELL:4315.59598"
+      ],
+      "conflicts": [
+        "NO_LIQUIDITY_DRAW"
+      ],
+      "as_of_time": 1790587886938,
+      "reason": "Direction, remaining structural objective, and invalidation are not all proven."
+    },
+    "structural_context": {
+      "1D": "BEARISH",
+      "4H": "BEARISH",
+      "1H": "BEARISH"
+    },
+    "strategy_version": "1.0.0",
+    "order_type": "LIMIT",
+    "setup_type": "PENDING_LIMIT",
+    "entry_price": 4260.4,
+    "entry_zone": {
+      "source": "MSNR",
+      "low": 4259.05,
+      "high": 4261.75
+    },
+    "stop_loss": 4282.26,
+    "stop_quality": {
+      "status": "VALID_STRUCTURAL_STOP",
+      "volatility_classification": "TIGHT_BUT_STRUCTURAL",
+      "risk_distance": 21.86,
+      "atr_multiple": 1.5,
+      "minimum_reasonable_distance": 21.86,
+      "preferred_minimum_distance": 21.86,
+      "warning": "Stop is structurally valid but tighter than the preferred volatility distance."
+    },
+    "stop_loss_reason": "MSNR_EXECUTION_ZONE_INVALIDATION invalidation 4261.75 plus structural buffer",
+    "structural_invalidation": {
+      "strategy": "TBS",
+      "direction": "SELL",
+      "level": 4261.75,
+      "source": "MSNR_EXECUTION_ZONE_INVALIDATION",
+      "timeframe": "1H",
+      "source_time": 1790553600000,
+      "parent_invalidation": 4287.40522
+    },
+    "stop_buffer": 0.73,
+    "stop_buffer_components": {
+      "pip_or_tick_buffer": 0.1,
+      "spread_buffer": 0.05,
+      "volatility_noise_buffer": 0.728754357142855,
+      "final_buffer": 0.73,
+      "preferred_noise_distance": 21.86,
+      "anchor_risk_distance": 2.08
+    },
+    "take_profit_1": 4199.24,
+    "take_profit_2": 4195.56,
+    "take_profit_3": 4180.25,
+    "risk_reward": "1:2.80",
+    "confidence": 100,
+    "patterns_detected": "TBS+MSNR+MSNR+FVG+OB+TBS",
+    "reasoning": {
+      "primary": "TBS+MSNR SELL_LIMIT at 4260.4. TP1 4199.24: OPPOSING_MSNR (MSNR).",
+      "freshness": "Fresh 4H opportunity from 9.5 hours ago; fresh and actionable later today. 89% of the original reward path remains.",
+      "why_best": "Selected deterministic candidate FRESH-1H-MSNR-SELL-4259.05-4261.75-1790553600000-18; target confluence: OPPOSING_MSNR 1H.",
+      "risk_warning": "Structural invalidation and market execution risk apply."
+    },
+    "strategy_evidence": {
+      "CRT": null,
+      "TBS": {
+        "reference_level": 4286.33577,
+        "reference_type": "SWING_HIGH",
+        "sweep_extreme": 4287.40522,
+        "reclaim_level": 4286.33577,
+        "reclaim_bar": 196,
+        "sweep_depth": 1.0694499999999607,
+        "liquidity_level": 4286.33577,
+        "reclaim_price": 4230.06098,
+        "timeframe": "4H"
+      },
+      "MSNR": {
+        "level": 4286.18,
+        "origin": "STRUCTURAL_MSNR",
+        "zone_low": 4285.26,
+        "zone_high": 4287.1,
+        "transition_type": "A_LEVEL_BULLISH_TO_BEARISH",
+        "role": "REACTION_RESISTANCE",
+        "source_candle_index": 196,
+        "touch_count": 0,
+        "mitigation_count": 0
+      }
+    },
+    "entry_model": "FRESH_RETRACEMENT_LIMIT",
+    "setup_timeframe": "4H",
+    "execution_timeframe": "1H",
+    "opportunity_status": "FRESH_PENDING_LATER",
+    "event_time": 1790553600000,
+    "event_age_hours": 9.524501388888888,
+    "current_session": "LONDON KZ",
+    "event_session": "ASIA KZ",
+    "expected_entry_window": "CURRENT_SESSION_OR_NEXT_VALID_1H_WINDOW",
+    "hours_remaining_in_relevant_session": 0.4833333333333325,
+    "still_actionable_today": true,
+    "pending_entry_quality": "LOW",
+    "entry_reachable_today": false,
+    "distance_to_entry_atr": 7.910122174226669,
+    "remaining_reward_fraction": 0.8850673642903898,
+    "setup_confidence": 100,
+    "quality": {
+      "final_confidence": 100,
+      "quality_breakdown": {
+        "base": 50,
+        "strategy_adjustment": 28,
+        "htf_adjustment": 16,
+        "execution_freshness_adjustment": 0,
+        "target_reachability_adjustment": 4.2,
+        "obstacle_adjustment": 0,
+        "delivery_progress_adjustment": 8,
+        "session_adjustment": 0,
+        "stop_quality_adjustment": 0,
+        "final_confidence": 100,
+        "quality_band": "HIGH",
+        "execution_threshold": 65
+      }
+    },
+    "time_integrity": {
+      "as_of_time_ms": 1790587888205,
+      "as_of_time_utc": "2026-09-28T09:31:28.205Z",
+      "event_time_ms": 1790553600000,
+      "event_time_utc": "2026-09-28T00:00:00.000Z",
+      "zone_created_time_ms": 1790553600000,
+      "zone_created_time_utc": "2026-09-28T00:00:00.000Z",
+      "event_delta_ms": 34288205,
+      "zone_delta_ms": 34288205,
+      "strategy_timeframe": "4H",
+      "execution_timeframe": "1H",
+      "event_timestamp_source": "PROVIDER",
+      "zone_timestamp_source": "NORMALIZED_PROVIDER",
+      "failure": null
+    },
+    "target_map": [
+      {
+        "target_level": 4199.24,
+        "target_type": "MSNR",
+        "primary_target_source": "OPPOSING_MSNR",
+        "target_confluence": [
+          {
+            "source": "OPPOSING_MSNR",
+            "target_type": "MSNR",
+            "timeframe": "1H",
+            "level": 4199.24
+          }
+        ],
+        "target_timeframe": "1H",
+        "target_distance": 61.16,
+        "target_distance_atr": 4.1962013263140525,
+        "target_distance_atr_timeframe": "1H",
+        "structural_priority": 88,
+        "intervening_obstacles": [
+          {
+            "type": "CRT",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "4H",
+            "low": 4256.43,
+            "high": 4258.2,
+            "freshness": "AGED",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          }
+        ],
+        "intervening_liquidity": [],
+        "reachability_score": 85,
+        "target_quality": "HIGH",
+        "target_reachability": {
+          "reachable": true,
+          "hard_unreachable": false,
+          "reachability_score": 85,
+          "target_quality": "HIGH",
+          "reachability_class": "HIGH",
+          "target_distance_atr_timeframe": "1H",
+          "intervening_obstacles": [
+            {
+              "type": "CRT",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "4H",
+              "low": 4256.43,
+              "high": 4258.2,
+              "freshness": "AGED",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            }
+          ],
+          "intervening_liquidity": [],
+          "structural_priority": 88,
+          "reason": "1 opposing zones, 0 liquidity levels before target"
+        },
+        "actual_rr": 2.797804208600102
+      },
+      {
+        "target_level": 4195.56,
+        "target_type": "FVG",
+        "primary_target_source": "OPPOSING_FVG",
+        "target_confluence": [
+          {
+            "source": "OPPOSING_FVG",
+            "target_type": "FVG",
+            "timeframe": "1H",
+            "level": 4195.56
+          }
+        ],
+        "target_timeframe": "1H",
+        "target_distance": 64.84,
+        "target_distance_atr": 4.448686952226956,
+        "target_distance_atr_timeframe": "1H",
+        "structural_priority": 68,
+        "intervening_obstacles": [
+          {
+            "type": "CRT",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "4H",
+            "low": 4256.43,
+            "high": 4258.2,
+            "freshness": "AGED",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          }
+        ],
+        "intervening_liquidity": [],
+        "reachability_score": 65,
+        "target_quality": "MEDIUM",
+        "target_reachability": {
+          "reachable": true,
+          "hard_unreachable": false,
+          "reachability_score": 65,
+          "target_quality": "MEDIUM",
+          "reachability_class": "MEDIUM",
+          "target_distance_atr_timeframe": "1H",
+          "intervening_obstacles": [
+            {
+              "type": "CRT",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "4H",
+              "low": 4256.43,
+              "high": 4258.2,
+              "freshness": "AGED",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            }
+          ],
+          "intervening_liquidity": [],
+          "structural_priority": 68,
+          "reason": "1 opposing zones, 0 liquidity levels before target"
+        },
+        "actual_rr": 2.9661482159193735
+      },
+      {
+        "target_level": 4180.25,
+        "target_type": "FVG",
+        "primary_target_source": "OPPOSING_FVG",
+        "target_confluence": [
+          {
+            "source": "OPPOSING_FVG",
+            "target_type": "FVG",
+            "timeframe": "1H",
+            "level": 4180.25
+          }
+        ],
+        "target_timeframe": "1H",
+        "target_distance": 80.15,
+        "target_distance_atr": 5.499109488294156,
+        "target_distance_atr_timeframe": "1H",
+        "structural_priority": 68,
+        "intervening_obstacles": [
+          {
+            "type": "CRT",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "1H",
+            "low": 4194.17,
+            "high": 4196.5,
+            "freshness": "ACTIVE",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "CRT",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "4H",
+            "low": 4256.43,
+            "high": 4258.2,
+            "freshness": "AGED",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          },
+          {
+            "type": "CRT",
+            "direction_or_role": "BUY",
+            "direction": "BUY",
+            "role": null,
+            "timeframe": "15M",
+            "low": 4189.73,
+            "high": 4191.1,
+            "freshness": "AGED",
+            "blocks_direction": true,
+            "hard_blocking": false,
+            "severity": "WEAK",
+            "reason": "Opposing structure reduces path quality without invalidating geometry"
+          }
+        ],
+        "intervening_liquidity": [],
+        "reachability_score": 51,
+        "target_quality": "LOW",
+        "target_reachability": {
+          "reachable": true,
+          "hard_unreachable": false,
+          "reachability_score": 51,
+          "target_quality": "LOW",
+          "reachability_class": "LOW",
+          "target_distance_atr_timeframe": "1H",
+          "intervening_obstacles": [
+            {
+              "type": "CRT",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "1H",
+              "low": 4194.17,
+              "high": 4196.5,
+              "freshness": "ACTIVE",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "CRT",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "4H",
+              "low": 4256.43,
+              "high": 4258.2,
+              "freshness": "AGED",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            },
+            {
+              "type": "CRT",
+              "direction_or_role": "BUY",
+              "direction": "BUY",
+              "role": null,
+              "timeframe": "15M",
+              "low": 4189.73,
+              "high": 4191.1,
+              "freshness": "AGED",
+              "blocks_direction": true,
+              "hard_blocking": false,
+              "severity": "WEAK",
+              "reason": "Opposing structure reduces path quality without invalidating geometry"
+            }
+          ],
+          "intervening_liquidity": [],
+          "structural_priority": 68,
+          "reason": "3 opposing zones, 0 liquidity levels before target"
+        },
+        "actual_rr": 3.6665141811526762
+      }
+    ],
+    "primary_target_source": "OPPOSING_MSNR",
+    "target_type": "MSNR",
+    "target_confluence": [
+      {
+        "source": "OPPOSING_MSNR",
+        "target_type": "MSNR",
+        "timeframe": "1H",
+        "level": 4199.24
+      }
+    ],
+    "strategy_detections": {
+      "CRT": {
+        "raw_count": 110,
+        "deduped_count": 65,
+        "bullish": 8,
+        "bearish": 4
+      },
+      "TBS": {
+        "raw_count": 27,
+        "deduped_count": 15,
+        "bullish": 0,
+        "bearish": 5
+      },
+      "MSNR": {
+        "raw_count": 88,
+        "deduped_count": 69,
+        "structural_count": 9,
+        "executable_count": 9,
+        "pivot_reference_count": 12,
+        "atr_fallback_count": 0
+      },
+      "combinations": {
+        "CRT_TBS": 0,
+        "CRT_MSNR": 4,
+        "TBS_MSNR": 11,
+        "CRT_TBS_MSNR": 1
+      },
+      "narratives": {
+        "strategy_narratives": 19,
+        "active_narratives": 6,
+        "invalidated_narratives": 8,
+        "completed_narratives": 4,
+        "stale_narratives": 1
+      },
+      "execution_zones": {
+        "execution_zones_discovered": 45,
+        "execution_zones_fresh": 24,
+        "fresh_execution_zones": 7,
+        "fresh_execution_zones_raw": 24,
+        "consumed_execution_zones": 4,
+        "invalidated_execution_zones": 0,
+        "pre_signal_execution_zones": 14,
+        "wrong_side_execution_zones": 0,
+        "expired_execution_zones": 1
+      }
+    },
+    "candidate_pipeline": {
+      "strategy_setups": 26,
+      "execution_seeds": 26,
+      "execution_opportunities": 26,
+      "semantic_entries": 18,
+      "raw_candidates": 18,
+      "zero_candidate_seeds": 8,
+      "seed_failure_counts": {
+        "LIFECYCLE_REJECTED": 6,
+        "NO_VALID_TP1": 4,
+        "LTF_ISOLATED": 8,
+        "EXECUTION_NOT_CONFIRMED": 8,
+        "NO_TARGETS_DIRECTIONALLY_AHEAD": 1,
+        "TARGETS_EXIST_BUT_RR_TOO_LOW": 3
+      },
+      "seed_diagnostics": [
+        {
+          "seed_id": "4H-SELL-MSNR-4285.26-4287.1",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "MSNR",
+          "timeframe": "4H",
+          "raw_candidates": 1,
+          "failure_reasons": [],
+          "details": [],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "4H-SELL-MSNR-4297.66-4299.52",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "MSNR",
+          "timeframe": "4H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "SETUP_EXPIRED"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "4H-SELL-MSNR-4335.89-4337.76",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "MSNR",
+          "timeframe": "4H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "SETUP_EXPIRED"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "1H-SELL-MSNR-4196.76-4199.24",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "MSNR",
+          "timeframe": "1H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "NO_VALID_TP1"
+          ],
+          "details": [
+            "{\"target_pool_count\":22,\"provenance_valid_count\":22,\"directional_target_count\":0,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":null,\"best_target_rr\":null,\"best_target_reachability_score\":null,\"failure_code\":\"NO_TARGETS_DIRECTIONALLY_AHEAD\"}"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "1H-SELL-MSNR-4259.05-4261.75",
+          "execution_model": "STRUCTURAL_LIMIT",
+          "zone_source": "MSNR",
+          "timeframe": "1H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "NO_VALID_TP1"
+          ],
+          "details": [
+            "{\"target_pool_count\":22,\"provenance_valid_count\":22,\"directional_target_count\":7,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":4257.31,\"best_target_rr\":0.1413540713631818,\"best_target_reachability_score\":81,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "15M-BUY-CRT-4142.85-4144.22-20",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-SELL-TBS-4285.45-4287.22-4",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_ALREADY_CONSUMED"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "15M-SELL-CRT-4150.07-4151.44-21",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "NO_VALID_TP1"
+          ],
+          "details": [
+            "{\"target_pool_count\":23,\"provenance_valid_count\":23,\"directional_target_count\":1,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":4143.53,\"best_target_rr\":0.33074107959746485,\"best_target_reachability_score\":94,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "15M-BUY-CRT-4144.91-4146.28-17",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "1H-BUY-CRT-4194.17-4196.5-16",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "1H-SELL-TBS-4285.17-4287.5-15",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "1H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "NO_VALID_TP1"
+          ],
+          "details": [
+            "{\"target_pool_count\":22,\"provenance_valid_count\":22,\"directional_target_count\":15,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":4286.21,\"best_target_rr\":0.0059469350411761705,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "15M-BUY-CRT-4168.93-4170.31-18",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-SELL-CRT-4286.73-4288.5-5",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_ALREADY_CONSUMED"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "4H-SELL-CRT-4295.2-4296.97-7",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_ALREADY_CONSUMED"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "4H-BUY-CRT-4256.43-4258.2-9",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-SELL-CRT-4296.15-4297.92-10",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "LIFECYCLE_REJECTED"
+          ],
+          "details": [
+            "ENTRY_ALREADY_CONSUMED"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "4H-BUY-CRT-4260.42-4262.19-11",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "4H-BUY-CRT-4273.17-4274.94-12",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "4H",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "15M-BUY-CRT-4189.73-4191.1-19",
+          "execution_model": "RECLAIM_RETEST",
+          "zone_source": "RECLAIM_RETEST",
+          "timeframe": "15M",
+          "raw_candidates": 0,
+          "failure_reasons": [
+            "LTF_ISOLATED",
+            "EXECUTION_NOT_CONFIRMED"
+          ],
+          "details": []
+        },
+        {
+          "seed_id": "FRESH-1H-SELL-FVG-4159.84-4162.68-1790582400000",
+          "execution_model": "FRESH_RETRACEMENT_LIMIT",
+          "zone_source": "FVG",
+          "timeframe": "1H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "NO_TARGETS_DIRECTIONALLY_AHEAD"
+          ],
+          "details": [
+            "{\"target_pool_count\":22,\"provenance_valid_count\":22,\"directional_target_count\":0,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":null,\"best_target_rr\":null,\"best_target_reachability_score\":null,\"failure_code\":\"NO_TARGETS_DIRECTIONALLY_AHEAD\"}"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "FRESH-1H-SELL-FVG-4166.15-4180.25-1790578800000",
+          "execution_model": "FRESH_RETRACEMENT_LIMIT",
+          "zone_source": "FVG",
+          "timeframe": "1H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "TARGETS_EXIST_BUT_RR_TOO_LOW"
+          ],
+          "details": [
+            "{\"target_pool_count\":24,\"provenance_valid_count\":24,\"directional_target_count\":2,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":4162.68,\"best_target_rr\":0.48124428179319517,\"best_target_reachability_score\":73,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "FRESH-1H-SELL-FVG-4181.73-4195.56-1790575200000",
+          "execution_model": "FRESH_RETRACEMENT_LIMIT",
+          "zone_source": "FVG",
+          "timeframe": "1H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "TARGETS_EXIST_BUT_RR_TOO_LOW"
+          ],
+          "details": [
+            "{\"target_pool_count\":24,\"provenance_valid_count\":24,\"directional_target_count\":2,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":4180.25,\"best_target_rr\":0.38426349496795115,\"best_target_reachability_score\":80,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "FRESH-1H-SELL-FVG-4203.5-4206.43-1790564400000",
+          "execution_model": "FRESH_RETRACEMENT_LIMIT",
+          "zone_source": "FVG",
+          "timeframe": "1H",
+          "raw_candidates": 1,
+          "failure_reasons": [
+            "TARGETS_EXIST_BUT_RR_TOO_LOW"
+          ],
+          "details": [
+            "{\"target_pool_count\":26,\"provenance_valid_count\":26,\"directional_target_count\":4,\"rr_qualified_count\":0,\"reachable_target_count\":0,\"best_target_level\":4199.24,\"best_target_rr\":0.2616651418115435,\"best_target_reachability_score\":100,\"failure_code\":\"TARGETS_EXIST_BUT_RR_TOO_LOW\"}"
+          ],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "FRESH-1H-SELL-FVG-4217.95-4229.59-1790560800000",
+          "execution_model": "FRESH_RETRACEMENT_LIMIT",
+          "zone_source": "FVG",
+          "timeframe": "1H",
+          "raw_candidates": 1,
+          "failure_reasons": [],
+          "details": [],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "FRESH-1H-SELL-OB-4258.58-4266.76-1790553600000",
+          "execution_model": "FRESH_RETRACEMENT_LIMIT",
+          "zone_source": "OB",
+          "timeframe": "1H",
+          "raw_candidates": 1,
+          "failure_reasons": [],
+          "details": [],
+          "semantic_entries": 1
+        },
+        {
+          "seed_id": "FRESH-1H-SELL-MSNR-4259.05-4261.75-1790553600000",
+          "execution_model": "FRESH_RETRACEMENT_LIMIT",
+          "zone_source": "MSNR",
+          "timeframe": "1H",
+          "raw_candidates": 1,
+          "failure_reasons": [],
+          "details": [],
+          "semantic_entries": 1
+        }
+      ],
+      "structural_stop_valid": 12,
+      "structural_stops_valid": 12,
+      "target_valid": 4,
+      "rr_valid": 4,
+      "volatility_rejected": 0,
+      "target_rejected": 8,
+      "consistency_rejected": 0,
+      "context_rejected": 0,
+      "final_valid": 4,
+      "original_execution_pipeline": {
+        "seeds": 19,
+        "candidates": 18,
+        "consumed": 4,
+        "expired": 2,
+        "completed": 0
+      },
+      "fresh_execution_pipeline": {
+        "seeds": 7,
+        "candidates": 0,
+        "stop_valid": 0,
+        "target_valid": 0,
+        "rr_valid": 0,
+        "final_valid": 0,
+        "failure_counts": {
+          "NO_TARGETS_DIRECTIONALLY_AHEAD": 1,
+          "TARGETS_EXIST_BUT_RR_TOO_LOW": 3
+        }
+      }
+    },
+    "ai_decision": "pending_limit",
+    "wait_condition": "Pending SELL_LIMIT at 4260.4 remains valid while structural invalidation 4261.75 is not breached. The limit fills when market price trades at the order price.",
+    "source": "Twelve Data + DeepSeek Analyst + Deterministic Validator",
+    "validation": {
+      "passed": true,
+      "localScore": 100,
+      "aiConf": 100,
+      "adjustedConfidence": 100,
+      "rr1": 2.8,
+      "htfMatch": 3,
+      "factors": [],
+      "matchedZone": null,
+      "limitZoneStatus": {
+        "insideZone": false,
+        "distanceToZone": 113.94072000000051,
+        "pricePosition": "BELOW_ZONE"
+      },
+      "final_consistency": {
+        "valid": true,
+        "issues": [],
+        "candidate_id": "FRESH-1H-MSNR-SELL-4259.05-4261.75-1790553600000-18"
+      }
+    },
+    "limit_order_setup": {
+      "eligible": true,
+      "reason": "Future pending-limit setup passed deterministic validation",
+      "current_price_inside_zone_required": false,
+      "selected_zone_status": {
+        "insideZone": false,
+        "distanceToZone": 113.94072000000051,
+        "pricePosition": "BELOW_ZONE"
+      }
+    },
+    "immediate_entry": {
+      "eligible": false,
+      "reason": "Current price is outside the selected entry zone; pending limit fills at its order price",
+      "confirmation": {
+        "confirmed": false,
+        "score": 0,
+        "strength": "NONE",
+        "confirmations": [],
+        "reason": "Current price is outside the selected entry zone",
+        "shouldWait": true,
+        "isAtZone": false
+      }
+    },
+    "limitZoneStatus": {
+      "insideZone": false,
+      "distanceToZone": 113.94072000000051,
+      "pricePosition": "BELOW_ZONE"
+    },
+    "entry_consumed": false,
+    "tp1_already_reached": false,
+    "invariants": {
+      "passed": true,
+      "checks": [
+        "deterministic candidate geometry, lifecycle, target, RR, and pending-limit semantics passed"
+      ]
+    },
+    "manual_tracking_allowed": true
+  }
+}
