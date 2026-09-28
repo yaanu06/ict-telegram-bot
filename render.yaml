@@ -13,6 +13,6 @@ services:
       - key: TWELVE_DATA_API_KEY
         sync: false
       - key: PROXY_CORS_ORIGIN
-        sync: false
+        value: https://yaanu06.github.io
       - key: PROXY_TVKIT_MAX_REQUESTS
         value: "120"
