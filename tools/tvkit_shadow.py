@@ -170,10 +170,14 @@ async def fetch_snapshot(pair: str, tv_symbol: str, bars_count: int) -> dict[str
     }
 
 
-def replay_history(replay: dict[str, Any], timeframe: str) -> list[dict[str, Any]]:
+def replay_history(replay: dict[str, Any], timeframe: str) -> list[dict[str, Any]] | None:
     value = replay.get("history", {}).get(timeframe, [])
     if isinstance(value, dict):
-        value = value.get("candles", [])
+        # The Mini App's compact diagnostic export stores only counts and
+        # boundary timestamps. It cannot support OHLC comparison.
+        value = value.get("candles")
+        if value is None:
+            return None
     return [bar for bar in value if isinstance(bar, dict) and all(key in bar for key in ("t", "o", "h", "l", "c"))]
 
 
@@ -182,6 +186,20 @@ def compare_histories(twelve_replay: dict[str, Any], tv_snapshot: dict[str, Any]
     for timeframe in TIMEFRAMES:
         twelve = replay_history(twelve_replay, timeframe)
         tradingview = tv_snapshot.get("history", {}).get(timeframe, [])
+        source_history = twelve_replay.get("history", {}).get(timeframe, [])
+        if twelve is None:
+            comparison[timeframe] = {
+                "comparison_status": "SUMMARY_ONLY",
+                "twelve_data_count": source_history.get("count") if isinstance(source_history, dict) else None,
+                "twelve_first_closed": source_history.get("first_closed") if isinstance(source_history, dict) else None,
+                "twelve_last_closed": source_history.get("last_closed") if isinstance(source_history, dict) else None,
+                "tradingview_count": len(tradingview),
+                "tradingview_first_closed": tradingview[0]["t"] if tradingview else None,
+                "tradingview_last_closed": tradingview[-1]["t"] if tradingview else None,
+                "exact_timestamp_matches": None,
+                "note": "The supplied Twelve Data file contains replay boundaries only; provide full candle arrays for OHLC comparison.",
+            }
+            continue
         tv_by_time = {int(bar["t"]): bar for bar in tradingview}
         matched = []
         for bar in twelve:
@@ -199,6 +217,7 @@ def compare_histories(twelve_replay: dict[str, Any], tv_snapshot: dict[str, Any]
             default=0,
         )
         comparison[timeframe] = {
+            "comparison_status": "FULL_CANDLE_DATA",
             "twelve_data_count": len(twelve),
             "tradingview_count": len(tradingview),
             "exact_timestamp_matches": len(matched),

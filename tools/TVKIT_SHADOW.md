@@ -46,6 +46,9 @@ python tools/tvkit_shadow.py --pair XAU/USD `
 ```
 
 The comparison reports candle counts, exact timestamp matches, provider-only
-candles, and OHLC differences for each timeframe. Different feeds can produce
-different valid candles; the report is diagnostic evidence, not an automatic
-instruction to switch providers.
+candles, and OHLC differences for each timeframe. The compact diagnostic JSON
+copied from the Mini App contains only history counts and boundary timestamps;
+the tool labels that input `SUMMARY_ONLY` and compares boundaries only. Full
+OHLC comparison requires a replay object containing the candle arrays. Different
+feeds can produce different valid candles; the report is diagnostic evidence,
+not an automatic instruction to switch providers.
