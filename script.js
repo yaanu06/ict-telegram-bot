@@ -4536,7 +4536,7 @@ function getSemanticEntryCandidate(zone, strategySetup, direction, prec) {
     const high = Number(zone.high);
     if (!Number.isFinite(low) || !Number.isFinite(high) || high < low) return null;
     const model = zone.execution_model || zone.entry_model || strategySetup?.execution_model || strategySetup?.entry_model;
-    const levels = [zone.entry, strategySetup?.execution_entry, strategySetup?.entry,
+    const levels = [zone.entry, strategySetup?.execution_entry, strategySetup?.entry, strategySetup?.ai_geometry?.entry,
         model === 'RECLAIM_RETEST' ? strategySetup?.reclaim_level : null,
         zone.semantic_entry, zone.entry_level, zone.price, zone.midpoint, (low + high) / 2];
     for (const level of levels) {
@@ -4593,6 +4593,13 @@ function getAdaptiveStopCandidates(zone, direction, entry, data, zones, atrVal, 
     const preferredRisk = Number.isFinite(Number(atrVal)) && atrVal > 0
         ? Math.max(settings.pipSize * 2, atrVal * preferredAtrMultiplier)
         : settings.pipSize * 2;
+    const aiStop = Number(zone.strategy_setup?.ai_geometry?.stop_loss);
+    if (Number.isFinite(aiStop)
+        && ((direction === 'BUY' && aiStop < entry) || (direction === 'SELL' && aiStop > entry))
+        && (!authoritative || (direction === 'BUY' ? aiStop < authoritative.level : aiStop > authoritative.level))) {
+        return [{ level: authoritative?.level ?? aiStop, source: 'AI_PROPOSED_STRUCTURAL_STOP', origin: 'STRUCTURAL', authoritative: !!authoritative,
+            stop_loss: ictRound(aiStop, prec), buffer: 0, buffer_components: { ai_proposed: true }, authoritative_invalidation: authoritative }];
+    }
     if (authoritative) {
         // Keep the authoritative invalidation as the anchor, while giving the
         // stop enough room for normal setup-timeframe noise. A microscopic
@@ -9358,17 +9365,17 @@ function buildAiMarketAnalystPrompt(evidenceCatalog = {}, candleData = '') {
         'Identify the highest-quality trading opportunity still available from the current market state for the remainder of today.',
         'Assess the dominant current narrative, meaningful liquidity, whether price is extended, whether retracement or continuation is realistic, whether the original move already delivered too far, and whether no defensible opportunity remains today.',
         'You may return zero hypotheses or describe NO_VALID_OPPORTUNITY_TODAY through the market_view when the evidence does not support a plan.',
-        'Interpret only the supplied deterministic market evidence and propose zero or more strategy hypotheses for later code verification.',
+        'Interpret only the supplied closed Twelve Data candles and deterministic market evidence. Propose zero or more CRT, TBS, or MSNR future pending-limit hypotheses for later code verification.',
         'Return strict JSON only with market_view and hypotheses.',
         'You may reference supplied CRT, TBS/Turtle Soup, MSNR, ICT market-mechanics, liquidity, FVG, OB, and execution-zone IDs, but you must never invent IDs.',
         'Location is not execution: use preferred_location_zone_ids for supply, demand, flip, or other POI context, and preferred_execution_zone_ids only for a separately executable trigger. A location-only POI cannot authorize a trade by itself.',
-        'Do not return entry, entry_zone, stop_loss, TP prices, RR, confidence numbers, or arbitrary price levels. Those fields are ignored.',
+        'For an executable hypothesis, return proposed_geometry with entry_zone {low, high}, entry, stop_loss, tp1, optional tp2/tp3, and target_candidate_ids. These are proposals only: every number must be supported by the referenced supplied zone, structural invalidation, and target catalog. The local engine will reject or normalize anything unsupported.',
         'Hypotheses are observations, not proof. Code will independently verify every referenced event and reject unsupported claims.',
         'For combinations every component must be independently supported and temporally/spatially compatible.',
-        'A valid response is {"market_view":{"bias":"BULLISH|BEARISH|MIXED|NEUTRAL","market_narrative":"...","important_liquidity":"...","structure_interpretation":"...","risk_notes":[]},"hypotheses":[]}.',
+        'A valid response is {"market_view":{"bias":"BULLISH|BEARISH|MIXED|NEUTRAL","market_narrative":"...","important_liquidity":"...","structure_interpretation":"...","risk_notes":[]},"hypotheses":[{"hypothesis_id":"...","strategy":"CRT|TBS|MSNR|CRT+TBS|CRT+MSNR|TBS+MSNR|CRT+TBS+MSNR","direction":"BUY|SELL","setup_timeframe":"4H|1H|15M","execution_timeframe":"4H|1H|15M","preferred_execution_zone_ids":[],"target_candidate_ids":[],"proposed_geometry":{"entry_zone":{"low":0,"high":0},"entry":0,"stop_loss":0,"tp1":0,"tp2":null,"tp3":null}}]}.',
         'Return zero hypotheses when evidence is insufficient.'
     ].join('\n');
-    const user = 'DETERMINISTIC MARKET EVIDENCE\n' + JSON.stringify(bounded, null, 2) + '\n\nCOMPACT CLOSED-CANDLE CONTEXT\n' + String(candleData || '').slice(-16000) + '\n\nReturn only the analyst JSON object.';
+    const user = 'DETERMINISTIC MARKET EVIDENCE\n' + JSON.stringify(bounded, null, 2) + '\n\nCLOSED-CANDLE CONTEXT FROM TWELVE DATA\n' + String(candleData || '').slice(-40000) + '\n\nReturn only the analyst JSON object.';
     console.log('[AI] market analyst prompt characters', { system: system.length, evidence: user.length, hypothesis_cap: 12 });
     return { system, user };
 }
@@ -9378,6 +9385,19 @@ function normalizeAiMarketAnalysis(raw) {
     const allowedStrategies = new Set(['CRT', 'TBS', 'MSNR', 'ICT', 'MARKET_MECHANICS', 'CRT+TBS', 'CRT+MSNR', 'TBS+MSNR', 'CRT+TBS+MSNR']);
     const allowedTf = new Set(['4H', '1H', '15M', '5M']);
     const view = raw.market_view && typeof raw.market_view === 'object' ? raw.market_view : {};
+    const finiteOrNull = value => Number.isFinite(Number(value)) ? Number(value) : null;
+    const normalizeGeometry = geometry => {
+        if (!geometry || typeof geometry !== 'object' || Array.isArray(geometry)) return null;
+        const zone = geometry.entry_zone && typeof geometry.entry_zone === 'object' ? geometry.entry_zone : {};
+        return {
+            entry_zone: { low: finiteOrNull(zone.low), high: finiteOrNull(zone.high) },
+            entry: finiteOrNull(geometry.entry),
+            stop_loss: finiteOrNull(geometry.stop_loss),
+            tp1: finiteOrNull(geometry.tp1 ?? geometry.take_profit_1),
+            tp2: finiteOrNull(geometry.tp2 ?? geometry.take_profit_2),
+            tp3: finiteOrNull(geometry.tp3 ?? geometry.take_profit_3)
+        };
+    };
     const hypotheses = Array.isArray(raw.hypotheses) ? raw.hypotheses.slice(0, 12).map((h, index) => ({
         hypothesis_id: typeof h?.hypothesis_id === 'string' ? h.hypothesis_id : 'AI-H' + (index + 1),
         strategy: allowedStrategies.has(h?.strategy) ? h.strategy : null,
@@ -9395,6 +9415,8 @@ function normalizeAiMarketAnalysis(raw) {
         preferred_execution_zone_ids: Array.isArray(h?.preferred_execution_zone_ids) ? h.preferred_execution_zone_ids.filter(x => typeof x === 'string').slice(0, 5) : [],
         preferred_location_zone_ids: Array.isArray(h?.preferred_location_zone_ids) ? h.preferred_location_zone_ids.filter(x => typeof x === 'string').slice(0, 5) : [],
         preferred_execution_types: Array.isArray(h?.preferred_execution_types) ? h.preferred_execution_types.filter(x => ['FVG', 'OB', 'MSNR', 'SUPPLY', 'DEMAND', 'FLIP', 'RECLAIM_RETEST'].includes(x)).slice(0, 4) : [],
+        target_candidate_ids: Array.isArray(h?.target_candidate_ids) ? h.target_candidate_ids.filter(x => typeof x === 'string').slice(0, 6) : [],
+        proposed_geometry: normalizeGeometry(h?.proposed_geometry),
         target_intent: ['BUY_SIDE_LIQUIDITY', 'SELL_SIDE_LIQUIDITY', 'CRT_OPPOSITE_RANGE', 'OPPOSING_STRUCTURE'].includes(h?.target_intent) ? h.target_intent : null,
         invalidation_thesis: typeof h?.invalidation_thesis === 'string' ? h.invalidation_thesis.slice(0, 300) : ''
     })) : [];
@@ -9460,7 +9482,7 @@ async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData
         const { data } = await requestAIJson(getDeepSeekEndpoint(), {
             method: 'POST',
             headers: getDeepSeekHeaders(),
-            body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }], temperature: 0.1, max_tokens: 1800 })
+            body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }], temperature: 0.1, max_tokens: 2600 })
         });
         const rawAnalysis = parseAiJsonContent(data?.choices?.[0]?.message?.content);
         const schema = validateAiMarketAnalystResponse(rawAnalysis);
@@ -9614,8 +9636,87 @@ function verifyAiStrategyHypothesis(hypothesis, evidenceCatalog = {}, liveMarket
     base.ai_preferred_execution_zone_ids = hypothesis.preferred_execution_zone_ids;
     base.strategy_confluence = [...new Set([...(base.strategy_confluence || []), ...parts])];
     const preferredZone = zones[0];
+
+    // The analyst may now propose future-limit geometry. The proposal is
+    // never trusted directly: it must fit a supplied strategy event/zone,
+    // sit beyond the supplied structural invalidation, and match real target
+    // records from the deterministic catalog. The candidate engine performs
+    // the final stop, target, RR, lifecycle, and data checks afterward.
+    const geometry = hypothesis.proposed_geometry;
+    if (geometry) {
+        const low = Number(geometry.entry_zone?.low);
+        const high = Number(geometry.entry_zone?.high);
+        const entry = Number(geometry.entry);
+        const stopLoss = Number(geometry.stop_loss);
+        const tpLevels = [geometry.tp1, geometry.tp2, geometry.tp3].map(value => value == null ? null : Number(value));
+        if (![low, high, entry, stopLoss, tpLevels[0]].every(Number.isFinite) || high < low || entry < low || entry > high) {
+            return { verified: false, reason_code: 'AI_GEOMETRY_INVALID', reason: 'Proposed entry geometry is incomplete or entry is outside the proposed zone.' };
+        }
+        if (hypothesis.direction === 'BUY' && !(stopLoss < entry && tpLevels[0] > entry)) {
+            return { verified: false, reason_code: 'AI_GEOMETRY_INVALID', reason: 'BUY proposal must have SL below entry and TP1 above entry.' };
+        }
+        if (hypothesis.direction === 'SELL' && !(stopLoss > entry && tpLevels[0] < entry)) {
+            return { verified: false, reason_code: 'AI_GEOMETRY_INVALID', reason: 'SELL proposal must have SL above entry and TP1 below entry.' };
+        }
+        if (tpLevels.slice(1).some((level, index) => level != null && (!Number.isFinite(level) || (hypothesis.direction === 'BUY' ? level <= tpLevels[index] : level >= tpLevels[index])))) {
+            return { verified: false, reason_code: 'AI_GEOMETRY_INVALID', reason: 'Proposed take-profit ladder is not directional.' };
+        }
+        if (preferredZone) {
+            const tolerance = Math.max(Math.abs(entry) * 0.0002, 0.00001);
+            if (low < Number(preferredZone.low) - tolerance || high > Number(preferredZone.high) + tolerance) {
+                return { verified: false, reason_code: 'AI_ENTRY_ZONE_UNSUPPORTED', reason: 'Proposed entry zone extends beyond the supplied deterministic execution zone.' };
+            }
+        }
+        const invalidationLevel = Number(base.structural_invalidation_detail?.level ?? base.structural_invalidation ?? allEvidence[0]?.structural_invalidation?.level ?? allEvidence[0]?.sweep_extreme);
+        if (!Number.isFinite(invalidationLevel)
+            || (hypothesis.direction === 'BUY' && !(stopLoss < invalidationLevel))
+            || (hypothesis.direction === 'SELL' && !(stopLoss > invalidationLevel))) {
+            return { verified: false, reason_code: 'AI_INVALIDATION_UNSUPPORTED', reason: 'Proposed stop is not beyond a supplied structural invalidation.' };
+        }
+        const side = hypothesis.direction === 'BUY' ? 'buy' : 'sell';
+        const suppliedTargets = (evidenceCatalog.target_candidates?.[side] || []).filter(target => target && Number.isFinite(Number(target.level)));
+        const requestedTargetIds = hypothesis.target_candidate_ids || [];
+        if (requestedTargetIds.length && requestedTargetIds.some(id => !suppliedTargets.some(target => target.id === id))) {
+            return { verified: false, reason_code: 'AI_TARGET_UNSUPPORTED', reason: 'One or more proposed target IDs are not in the supplied target catalog.' };
+        }
+        const targetTolerance = value => Math.max(Math.abs(Number(value)) * 0.0002, 0.00001);
+        const matchedTargets = tpLevels.filter(Number.isFinite).map((level, index) => {
+            const requestedId = requestedTargetIds[index];
+            return suppliedTargets.find(target => requestedId ? target.id === requestedId : Math.abs(Number(target.level) - level) <= targetTolerance(level));
+        });
+        if (matchedTargets.length !== tpLevels.filter(Number.isFinite).length || matchedTargets.some(target => !target)) {
+            return { verified: false, reason_code: 'AI_TARGET_UNSUPPORTED', reason: 'Every proposed target must match a supplied directional target.' };
+        }
+        if (matchedTargets.some((target, index) => Math.abs(Number(target.level) - tpLevels[index]) > targetTolerance(tpLevels[index]))) {
+            return { verified: false, reason_code: 'AI_TARGET_MISMATCH', reason: 'Proposed target price does not match its supplied target record.' };
+        }
+        base.ai_geometry = { entry_zone: { low, high }, entry, stop_loss: stopLoss, tp1: tpLevels[0], tp2: tpLevels[1], tp3: tpLevels[2] };
+        base.target_candidates = matchedTargets;
+        base.execution_model = 'PENDING_LIMIT';
+        base.entry_model = 'PENDING_LIMIT';
+    }
     if (!base.execution_zone && preferredZone) {
         base.execution_zone = { ...preferredZone, strategy_source: parts[0] };
+    }
+    if (geometry) {
+        base.execution_zone = {
+            ...(base.execution_zone || {}),
+            id: base.execution_zone?.id || `AI-${hypothesis.hypothesis_id}-ZONE`,
+            type: base.execution_zone?.type || parts[0],
+            origin: base.execution_zone?.origin || 'STRUCTURAL',
+            primary_eligible: true,
+            direction: hypothesis.direction,
+            timeframe: hypothesis.execution_timeframe,
+            low: geometry.entry_zone.low,
+            high: geometry.entry_zone.high,
+            entry: geometry.entry,
+            semantic_entry: geometry.entry,
+            midpoint: geometry.entry,
+            entry_model: 'PENDING_LIMIT',
+            execution_model: 'PENDING_LIMIT',
+            created_time: base.execution_zone?.created_time || base.event_time || allEvidence[0]?.event_time || null,
+            strategy_source: parts[0]
+        };
     }
     if (!base.execution_zone) {
         const sourceEvent = allEvidence[0].source || allEvidence[0];
@@ -11131,7 +11232,10 @@ async function runAutoScan() {
         scanStage = 'AI market analyst';
         const analystStartedAt = scanClock();
         const analystEvidence = buildAiMarketEvidenceCatalog(liveMarketContext, historyCache);
-        const analystResult = await runAiMarketAnalyst(analystEvidence, liveMarketContext, buildCandleData(historyCache, 10, quoteSnapshot?.symbol_metadata || {}, pair));
+        // Give the analyst enough closed Twelve Data candles to reason about
+        // the strategy event and future retracement. The final selector keeps
+        // the smaller context because it only ranks already verified plans.
+        const analystResult = await runAiMarketAnalyst(analystEvidence, liveMarketContext, buildCandleData(historyCache, 30, quoteSnapshot?.symbol_metadata || {}, pair));
         const aiMerge = mergeVerifiedAiSetups(liveMarketContext, analystResult.verified_setups, analystEvidence);
         analystResult.diagnostics.deterministic_duplicates = aiMerge.duplicates;
         analystResult.diagnostics.setups_added_from_ai = aiMerge.added;
@@ -11423,7 +11527,7 @@ async function runAutoScan() {
                 candidate_pipeline: liveMarketContext.candidate_pipeline,
                 ai_decision: aiResult.ai_decision,
                 wait_condition: aiResult.wait_condition,
-                source: 'Deterministic Candidate Engine + AI Selector'
+                source: 'Twelve Data + DeepSeek Analyst + Deterministic Validator'
             }
         };
         

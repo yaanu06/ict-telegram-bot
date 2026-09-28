@@ -6115,7 +6115,11 @@ describe('AI market analyst contract', () => {
                     structural_invalidation: 1.088,
                     execution_zone: { type: 'MSNR', origin: 'STRUCTURAL_MSNR', direction: 'BUY', timeframe: '1H', low: 1.088, high: 1.092 } }
             }],
-            execution_zones: []
+            execution_zones: [],
+            target_candidates: {
+                buy: [{ id: 'TGT-CRT', direction: 'BUY', level: 1.12, source: 'CRT_OPPOSITE_RANGE', origin: 'STRUCTURAL' }],
+                sell: []
+            }
         };
     }
 
@@ -6131,6 +6135,27 @@ describe('AI market analyst contract', () => {
         }
     });
 
+    it('accepts AI future-limit geometry only when it matches supplied strategy and target evidence', () => {
+        const ctx = getContext();
+        const result = ctx.verifyAiStrategyHypothesis({
+            hypothesis_id: 'H-CRT-LIMIT', strategy: 'CRT', direction: 'BUY',
+            setup_timeframe: '4H', execution_timeframe: '1H', crt_event_ids: ['CRT-1'],
+            target_candidate_ids: ['TGT-CRT'],
+            proposed_geometry: {
+                entry_zone: { low: 1.09, high: 1.1 }, entry: 1.095,
+                stop_loss: 1.08, tp1: 1.12
+            }
+        }, { ...evidence(), target_candidates: {
+            buy: [{ id: 'TGT-CRT', direction: 'BUY', level: 1.12, source: 'CRT_OPPOSITE_RANGE', origin: 'STRUCTURAL' }],
+            sell: []
+        } }, { pair: 'EUR/USD', current_price: 1.1, strategy_setups: [] });
+        expect(result.verified).toBe(true);
+        expect(result.setup).toEqual(expect.objectContaining({ execution_model: 'PENDING_LIMIT', ai_verified: true }));
+        expect(result.setup.ai_geometry).toEqual(expect.objectContaining({ entry: 1.095, stop_loss: 1.08, tp1: 1.12 }));
+        expect(result.setup.execution_zone).toEqual(expect.objectContaining({ low: 1.09, high: 1.1, entry: 1.095 }));
+        expect(result.setup.target_candidates[0]).toEqual(expect.objectContaining({ id: 'TGT-CRT', level: 1.12 }));
+    });
+
     it('rejects nonexistent IDs, unsupported MSNR origins, and incompatible combinations', () => {
         const ctx = getContext();
         const cat = evidence();
@@ -6140,16 +6165,15 @@ describe('AI market analyst contract', () => {
         expect(ctx.verifyAiStrategyHypothesis({ strategy: 'CRT+TBS', direction: 'SELL', setup_timeframe: '4H', execution_timeframe: '1H', crt_event_ids: ['CRT-1'], tbs_event_ids: ['TBS-1'] }, cat).reason_code).toMatch(/EVIDENCE_INVALID/);
     });
 
-    it('normalizes analyst output without preserving AI numeric geometry', () => {
+    it('normalizes analyst output with a proposed geometry for local verification', () => {
         const ctx = getContext();
         const result = ctx.normalizeAiMarketAnalysis({
             market_view: { bias: 'BULLISH', market_narrative: 'supported' },
             hypotheses: [{ hypothesis_id: 'H', strategy: 'CRT', direction: 'BUY', setup_timeframe: '4H', execution_timeframe: '1H',
-                entry: 999, stop_loss: 1000, tp1: 1, reasoning: 'range reclaim', crt_event_ids: ['CRT-1'] }]
+                proposed_geometry: { entry_zone: { low: 1.09, high: 1.1 }, entry: 1.095, stop_loss: 1.085, tp1: 1.12 },
+                reasoning: 'range reclaim', crt_event_ids: ['CRT-1'] }]
         });
-        expect(result.hypotheses[0]).not.toHaveProperty('entry');
-        expect(result.hypotheses[0]).not.toHaveProperty('stop_loss');
-        expect(result.hypotheses[0]).not.toHaveProperty('tp1');
+        expect(result.hypotheses[0].proposed_geometry).toEqual(expect.objectContaining({ entry: 1.095, stop_loss: 1.085, tp1: 1.12 }));
     });
 
     it('rejects malformed analyst top-level output instead of inventing neutral analysis', async () => {
@@ -6236,10 +6260,8 @@ describe('AI market analyst contract', () => {
         expect(prompt.system).toMatch(/remainder of today/i);
         expect(prompt.system).toMatch(/original move already delivered too far/i);
         expect(prompt.system).toMatch(/never invent IDs/i);
-        expect(prompt.system).toMatch(/Do not return entry, entry_zone, stop_loss, TP prices/);
-        expect(prompt.user).not.toMatch(/"entry"\s*:/);
-        expect(prompt.user).not.toMatch(/"stop_loss"\s*:/);
-        expect(prompt.user).not.toMatch(/"tp1"\s*:/);
+        expect(prompt.system).toMatch(/return proposed_geometry/i);
+        expect(prompt.system).toMatch(/local engine will reject or normalize/i);
         expect(prompt.user).toContain('CRT-1');
         const finalPrompt = ctx.buildAIPrompt({ pair: 'EUR/USD', current_price: 1.1, utc_time: '2026-09-11T10:00:00Z', session: { name: 'LONDON' }, adaptive_setup_candidates: [] }, '');
         expect(finalPrompt.user).toMatch(/selected_candidate_id/);
@@ -6317,6 +6339,7 @@ describe('fallback presentation regressions', () => {
         await expect(ctx.runFallbackScan(100, {})).rejects.toThrow('second eligible reached');
         expect(ctx.evaluateSetupCandidate.mock.calls.map(call => call[0].id)).toEqual(['expired-since-ranking', 'next-eligible']);
     });
+
     it.each(['XAU/USD', 'AUD/USD', 'EUR/USD', 'GBP/JPY', 'BTC/USD'])('does not advertise incomplete or watch-only orders for %s', pair => {
         const ctx = getContext();
         const incomplete = { pair, decision: 'WAIT', status: 'TODAY_OPPORTUNITY',
