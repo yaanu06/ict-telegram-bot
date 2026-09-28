@@ -492,20 +492,68 @@ describe('market-thesis opportunity invariants', () => {
         expect(ctx.isTodayFreshContinuation(setup, { ...zone })).toBe(false);
     });
 
-    it('shows a hard-valid but low-quality candidate as a watch instead of a blank wait', () => {
+    it('keeps a hard-valid low-quality pending limit executable and labels the quality warning', () => {
         const ctx = getContext();
         const candidate = {
-            id: 'low-quality-sell', direction: 'SELL', timeframe: '1H', zone_type: 'FVG',
+            id: 'low-quality-sell', direction: 'SELL', timeframe: '1H', zone_type: 'FVG', execution_model: 'PENDING_LIMIT',
             zone_low: 101, zone_high: 102, entry: 101.5, stop_loss: 103, tp1: 97,
             rr_tp1: 3, score: 48, setup_confidence: 48,
             quality: { final_confidence: 48, quality_breakdown: { quality_band: 'LOW' } },
             still_actionable_today: true, entry_reachable_today: true,
             zone: { id: 'low-quality-zone', type: 'FVG', timeframe: '1H', low: 101, high: 102 }
         };
-        const result = ctx.buildTodayOpportunity({ pair: 'XAU/USD', currentPrice: 100, marketOpen: true, lowQualityCandidates: [candidate] });
-        expect(result.state).toBe('WATCH_ONLY');
-        expect(result.reason_code).toBe('LOW_QUALITY_WATCH');
-        expect(result.watch_setups[0]).toMatchObject({ id: 'low-quality-sell', entry: 101.5, stop_loss: 103, tp1: 97 });
+        const result = ctx.buildTodayOpportunity({ pair: 'XAU/USD', currentPrice: 100, marketOpen: true, validCandidates: [candidate], lowQualityCandidates: [candidate] });
+        expect(result.state).toBe('TRADE_READY');
+        expect(result.setup_state).toBe('PENDING_LIMIT');
+        expect(result.confidence).toBe(48);
+        expect(result.quality_warnings).toContain('QUALITY_BELOW_PREFERRED_THRESHOLD');
+        expect(result.primary_opportunity).toMatchObject({ id: 'low-quality-sell', entry_price: 101.5, stop_loss: 103, take_profit_1: 97, watch_only: false });
+    });
+
+    it.each([59, 60, 61, 69, 70, 71, 90])('does not turn a hard-valid pending limit into WAIT at confidence %i', confidence => {
+        const ctx = getContext();
+        const result = ctx.buildTodayOpportunity({
+            pair: 'EUR/USD', currentPrice: 1.1365, marketOpen: true,
+            validCandidates: [{
+                id: `eur-${confidence}`, direction: 'SELL', strategy_label: 'MSNR',
+                execution_model: 'PENDING_LIMIT', execution_timeframe: '1H',
+                entry: 1.14094, zone_low: 1.1408, zone_high: 1.1411,
+                stop_loss: 1.14232, tp1: 1.13741, tp2: 1.13730, tp3: 1.13718,
+                rr_tp1: 2.55, setup_confidence: confidence,
+                confidence: confidence, quality: { final_confidence: confidence, quality_breakdown: { quality_band: confidence >= 70 ? 'HIGH' : 'MEDIUM' } },
+                still_actionable_today: true, entry_reachable_today: true,
+                zone: { id: `eur-zone-${confidence}`, type: 'MSNR', timeframe: '1H', low: 1.1408, high: 1.1411 }
+            }]
+        });
+        expect(result.state).toBe('TRADE_READY');
+        expect(result.setup_state).toBe('PENDING_LIMIT');
+        expect(result.direction).toBe('SELL');
+        expect(result.confidence).toBe(confidence);
+    });
+
+    it('renders a structurally valid 61% pending sell as SELL LIMIT rather than WAIT', () => {
+        const ctx = getContext();
+        const raw = ctx.buildTodayOpportunityOutput({
+            state: 'TRADE_READY', setup_state: 'PENDING_LIMIT', execution_state: 'PENDING_LIMIT',
+            confidence: 61, strategy: 'MSNR', direction: 'SELL', execution_model: 'PENDING_LIMIT',
+            entry: 1.14094, stop_loss: 1.14232, tp1: 1.13741, tp2: 1.13730, tp3: 1.13718,
+            area_of_interest: { low: 1.1408, high: 1.1411, source: 'MSNR', timeframe: '1H' },
+            primary_opportunity: { id: 'eur-regression', direction: 'SELL', strategy: 'MSNR', setup_state: 'PENDING_LIMIT', state: 'TRADE_READY',
+                execution_model: 'PENDING_LIMIT', execution_timeframe: '1H', confidence: 61,
+                entry_price: 1.14094, stop_loss: 1.14232, take_profit_1: 1.13741, take_profit_2: 1.13730, take_profit_3: 1.13718,
+                area_of_interest: { low: 1.1408, high: 1.1411, source: 'MSNR', timeframe: '1H' },
+                opportunity_quality: { quality_breakdown: { quality_band: 'MEDIUM' } }, watch_only: false }
+        }, 'EUR/USD', 1.1365, Date.parse('2026-09-28T10:00:00Z'), true);
+        expect(raw.trade_signal.decision).toBe('SELL_LIMIT');
+        expect(raw.trade_signal.entry).toBe(1.14094);
+        const signal = ctx.buildPublicTradeSignal(raw.trade_signal);
+        expect(signal.decision).toBe('SELL_LIMIT');
+        expect(signal.setup_state).toBe('PENDING_LIMIT');
+        expect(signal.execution_allowed).toBe(true);
+        expect(ctx.getTradeSummaryModel(signal).tradeType).toBe('SELL LIMIT');
+        expect(ctx.getTradeSummaryModel(signal).tradeType).not.toBe('WAIT');
+        expect(ctx.getTradeSummaryModel(signal).quality).toBe('MEDIUM');
+        expect(ctx.formatTradeSummaryText(signal)).toContain('Quality: MEDIUM');
     });
 
     it('keeps an advanced parent terminal while evaluating a later zone independently', () => {

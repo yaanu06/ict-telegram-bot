@@ -6415,14 +6415,17 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
         const qualityPasses = !Number.isFinite(quality) || quality >= getCandidateExecutionQualityMinimum(candidate);
         const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
-        return qualityPasses && candidate.still_actionable_today !== false && (pendingLimit || candidate.entry_reachable_today !== false);
+        // Quality describes a hard-valid setup; it does not authorize or
+        // reject a future pending limit.  Confirmation entries may still use
+        // the quality preference because their execution is not yet complete.
+        return (qualityPasses || pendingLimit) && candidate.still_actionable_today !== false && (pendingLimit || candidate.entry_reachable_today !== false);
     }).slice(0, 5);
     const futureWatchCandidates = rankedCandidates.filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
         const qualityPasses = Number.isFinite(quality) && quality >= getCandidateExecutionQualityMinimum(candidate);
         const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
         const futureOnly = candidate.still_actionable_today === false || (!pendingLimit && candidate.entry_reachable_today === false);
-        return qualityPasses && futureOnly;
+        return (qualityPasses || pendingLimit) && futureOnly;
     }).slice(0, 10);
     const lowQualityCandidates = rankedCandidates.filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
@@ -7983,7 +7986,13 @@ function buildOpportunityQuality(setup, plan, marketContext = {}, topDown = {}) 
 function buildOpportunityDisplayScenario(plan = {}, currentPrice = null, tier = null) {
     const quality = plan.opportunity_quality || {};
     const classification = plan.trade_context_classification || quality.classification || null;
-    const watchOnly = plan.watch_only === true || classification === 'LTF_ISOLATED';
+    const confirmationEntry = String(plan.execution_model || plan.entry_model || '').toUpperCase() === 'CONFIRMATION_ENTRY';
+    const pendingLimit = isPendingLimitExecutionModel(plan.execution_model || plan.entry_model);
+    const actionablePendingLimit = pendingLimit && plan.setup_state === 'PENDING_LIMIT' && plan.state === 'TRADE_READY';
+    // LTF isolation is quality context for a future limit.  It is a watch
+    // state only when the setup explicitly requires confirmation at the POI.
+    const watchOnly = (plan.watch_only === true && !actionablePendingLimit)
+        || (classification === 'LTF_ISOLATED' && confirmationEntry);
     const location = plan.area_of_interest || null;
     const target = plan.target || null;
     const targetLevel = plan.target_level ?? target?.level ?? null;
@@ -8007,6 +8016,8 @@ function buildOpportunityDisplayScenario(plan = {}, currentPrice = null, tier = 
         take_profit_3: plan.tp3 ?? plan.take_profit_3 ?? null,
         execution_zone: plan.execution_zone || null,
         execution_model: plan.execution_model || null,
+        setup_state: plan.setup_state || (confirmationEntry ? 'WAITING_CONFIRMATION' : isPendingLimitExecutionModel(plan.execution_model || plan.entry_model) ? 'PENDING_LIMIT' : null),
+        execution_state: plan.execution_state || (confirmationEntry ? 'WAITING_CONFIRMATION' : isPendingLimitExecutionModel(plan.execution_model || plan.entry_model) ? 'PENDING_LIMIT' : null),
         lifecycle_state: plan.lifecycle_state || plan.narrative_state || plan.state || null,
         state: plan.reason_code || plan.state || null,
         freshness: quality.freshness || plan.freshness || location?.freshness || null,
@@ -8108,16 +8119,29 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
     // from older callers without lifecycle fields remain compatible here.
     const tradeReadyCandidates = (validCandidates || []).filter(candidate => {
         if (candidate.still_actionable_today === false) return false;
-        if (!isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model) && candidate.entry_reachable_today === false) return false;
+        const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
+        if (!pendingLimit && candidate.entry_reachable_today === false) return false;
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score);
-        return !Number.isFinite(quality) || quality >= STRATEGY_SPEC.CONFIDENCE.mediumQualityMinimum;
+        // A pending limit is complete once its deterministic geometry and
+        // lifecycle pass.  Confidence remains visible as quality evidence;
+        // it cannot turn that future order into WAIT.
+        return pendingLimit || !Number.isFinite(quality) || quality >= STRATEGY_SPEC.CONFIDENCE.mediumQualityMinimum;
     });
     const bestCandidate = tradeReadyCandidates.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
     if (bestCandidate) {
+        const pendingLimit = isPendingLimitExecutionModel(bestCandidate.execution_model || bestCandidate.entry_model);
+        const qualityWarnings = bestCandidate.quality_warnings
+            || (bestCandidate.quality?.quality_breakdown?.quality_band && bestCandidate.quality.quality_breakdown.quality_band !== 'HIGH'
+                ? ['QUALITY_BELOW_PREFERRED_THRESHOLD'] : []);
         state.top_down_context = bestCandidate.top_down_context || classifyTopDownTrade(bestCandidate, timeframeContext);
         state.trade_context_classification = state.top_down_context.classification;
         const zone = bestCandidate.zone || { low: bestCandidate.zone_low, high: bestCandidate.zone_high, type: bestCandidate.zone_type, timeframe: bestCandidate.execution_timeframe || bestCandidate.timeframe, id: bestCandidate.zone_id };
         state.state = 'TRADE_READY'; state.strategy = getDisplayStrategyLabel(bestCandidate, bestCandidate.zone_type); state.direction = bestCandidate.direction;
+        state.setup_state = pendingLimit ? 'PENDING_LIMIT' : 'WAITING_CONFIRMATION';
+        state.execution_state = pendingLimit ? 'PENDING_LIMIT' : 'WAITING_CONFIRMATION';
+        state.quality = bestCandidate.quality || null;
+        state.quality_warnings = qualityWarnings;
+        state.hard_rejections = bestCandidate.hard_rejections || [];
         state.narrative_id = bestCandidate.strategy_setup?.id || bestCandidate.id; state.execution_zone_id = zone?.id || bestCandidate.id;
         state.source = 'DETERMINISTIC_CANDIDATE' + (bestCandidate.ai_verified ? '+VERIFIED_AI_ANALYST' : ''); state.ai_supported = !!bestCandidate.ai_verified; state.deterministic_supported = true;
         state.area_of_interest = zone ? { low: zone.low, high: zone.high, source: zone.entry_region_source || zone.type || 'STRUCTURAL', timeframe: zone.timeframe, zone_id: zone.id || bestCandidate.id } : null;
@@ -8129,11 +8153,16 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.entry = bestCandidate.entry; state.stop_loss = bestCandidate.stop_loss; state.tp1 = bestCandidate.tp1;
         state.tp2 = bestCandidate.tp2 ?? null; state.tp3 = bestCandidate.tp3 ?? null;
         state.rr = bestCandidate.rr_tp1 ?? bestCandidate.actual_rr ?? null;
+        state.confidence = Number(bestCandidate.confidence) > 0 ? Number(bestCandidate.confidence)
+            : Number(bestCandidate.quality?.final_confidence ?? bestCandidate.confidence_breakdown?.final_score ?? bestCandidate.score) || 0;
+        state.opportunity_quality = bestCandidate.quality || null;
         state.entry_reachable_today = marketOpen !== false && bestCandidate.entry_reachable_today === true; state.opportunity_reachable_today = state.entry_reachable_today; state.target_viable = true;
         state.structural_invalidation = bestCandidate.structural_invalidation || null; state.reason_code = marketOpen === false ? 'MARKET_CLOSED_SETUP' : 'TRADE_READY'; state.reason = marketOpen === false
             ? 'A deterministic pending limit is ready for the next valid market session; execution is blocked while the market is closed.'
             : 'A deterministic opportunity is executable under the current market state.';
         state.expected_window = marketOpen === false ? 'NEXT_VALID_SESSION' : 'REMAINDER_OF_TODAY';
+        state.execution_allowed = marketOpen !== false && pendingLimit;
+        state.manual_tracking_allowed = pendingLimit;
         const candidatePlans = tradeReadyCandidates.map(candidate => ({
             ...candidate,
             state: 'TRADE_READY', narrative_id: candidate.strategy_setup?.id || candidate.id,
@@ -8147,6 +8176,12 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             confidence: Number(candidate.confidence) > 0 ? Number(candidate.confidence)
                 : Number(candidate.score) > 0 ? Number(candidate.score)
                     : Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score) || 0,
+            quality: candidate.quality || null,
+            quality_warnings: candidate.quality_warnings || (candidate.quality?.quality_breakdown?.quality_band && candidate.quality.quality_breakdown.quality_band !== 'HIGH' ? ['QUALITY_BELOW_PREFERRED_THRESHOLD'] : []),
+            hard_rejections: candidate.hard_rejections || [],
+            setup_state: isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model) ? 'PENDING_LIMIT' : 'WAITING_CONFIRMATION',
+            execution_state: isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model) ? 'PENDING_LIMIT' : 'WAITING_CONFIRMATION',
+            watch_only: isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model) ? false : (candidate.opportunity_quality?.watch_only === true),
             reason: 'A deterministic opportunity is executable under the current market state.'
         }));
         const stack = buildOpportunityDisplayStack(candidatePlans, currentPrice, candidatePlans.find(candidate => candidate.id === (bestCandidate.strategy_setup?.id || bestCandidate.id)) || candidatePlans[0]);
@@ -8203,17 +8238,16 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.secondary_watch_scenarios = [plan];
         return state;
     }
-    // A candidate that passed every hard structural rule but did not reach
-    // the confidence threshold is useful market intelligence. Show its exact
-    // limit geometry as a watch, instead of returning a blank WAIT that makes
-    // it look as though the scan found nothing at all.
+    // Compatibility path for callers that still provide a hard-valid pending
+    // limit only through lowQualityCandidates.  Quality remains descriptive;
+    // do not downgrade a complete future order to WATCH_ONLY or WAIT.
     const bestLowQualityWatch = (lowQualityCandidates || [])
-        .filter(candidate => candidate.still_actionable_today !== false && (isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model) || candidate.entry_reachable_today !== false))
+        .filter(candidate => candidate.still_actionable_today !== false && isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model))
         .slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
     if (bestLowQualityWatch) {
         const zone = bestLowQualityWatch.zone || { low: bestLowQualityWatch.zone_low, high: bestLowQualityWatch.zone_high, type: bestLowQualityWatch.zone_type, timeframe: bestLowQualityWatch.execution_timeframe || bestLowQualityWatch.timeframe, id: bestLowQualityWatch.zone_id };
         const plan = {
-            id: bestLowQualityWatch.id, state: 'WATCH_ONLY', watch_only: true,
+            id: bestLowQualityWatch.id, state: 'TRADE_READY', watch_only: false,
             direction: bestLowQualityWatch.direction, strategy: getDisplayStrategyLabel(bestLowQualityWatch, bestLowQualityWatch.zone_type),
             narrative_id: bestLowQualityWatch.strategy_setup?.id || bestLowQualityWatch.id,
             execution_zone_id: zone?.id || bestLowQualityWatch.id,
@@ -8223,17 +8257,24 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             tp2: bestLowQualityWatch.tp2 ?? null, tp3: bestLowQualityWatch.tp3 ?? null,
             rr: bestLowQualityWatch.rr_tp1 ?? bestLowQualityWatch.actual_rr ?? null,
             confidence: bestLowQualityWatch.quality?.final_confidence ?? bestLowQualityWatch.setup_confidence ?? bestLowQualityWatch.score ?? 0,
-            opportunity_quality: { ...(bestLowQualityWatch.quality || {}), authorization_state: 'LOW_QUALITY_WATCH', watch_only: true },
+            opportunity_quality: { ...(bestLowQualityWatch.quality || {}), authorization_state: 'PENDING_LIMIT', watch_only: false },
+            quality: bestLowQualityWatch.quality || null,
+            quality_warnings: bestLowQualityWatch.quality_warnings || ['QUALITY_BELOW_PREFERRED_THRESHOLD'],
+            hard_rejections: bestLowQualityWatch.hard_rejections || [],
+            setup_state: 'PENDING_LIMIT',
+            execution_state: 'PENDING_LIMIT',
             target: bestLowQualityWatch.target_map?.[0] || null, target_level: bestLowQualityWatch.tp1,
             structural_invalidation: bestLowQualityWatch.structural_invalidation || null,
             entry_reachable_today: true, opportunity_reachable_today: true,
-            reason_code: 'LOW_QUALITY_WATCH',
-            reason: 'A structurally valid pending limit exists, but its quality score is below the execution threshold. Watch it; do not place it as a high-probability order.',
-            activation_conditions: ['Quality must improve through a fresh aligned structure event or reduced target-path risk', 'Revalidate the limit before placing it'],
+            reason_code: 'TRADE_READY',
+            reason: 'A structurally valid pending limit is available; confidence describes its quality and does not invalidate the order geometry.',
+            activation_conditions: marketOpen === false
+                ? ['The market is closed; keep this pending limit for the next valid session', 'Revalidate structure, invalidation, target, and RR when the market opens']
+                : ['Price retraces into the deterministic limit area; no confirmation is required after touch'],
             cancellation_conditions: ['Structural invalidation is breached', 'Target is completed before entry', 'The zone is consumed or materially changes']
         };
         Object.assign(state, plan, {
-            state: 'WATCH_ONLY', watch_only: true, target_viable: true,
+            state: 'TRADE_READY', watch_only: false, target_viable: true,
             watch_setups: [plan], secondary_watch_scenarios: [plan]
         });
         return state;
@@ -8363,6 +8404,15 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
 
 function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen, symbolMetadata = null, providerMetadata = null) {
     const date = new Date(Number.isFinite(asOfMs) ? asOfMs : Date.now());
+    const setupState = today?.setup_state
+        || (isPendingLimitExecutionModel(today?.execution_model) ? 'PENDING_LIMIT' : today?.execution_model === 'CONFIRMATION_ENTRY' ? 'WAITING_CONFIRMATION' : null);
+    const hasPendingGeometry = setupState === 'PENDING_LIMIT'
+        && ['direction', 'entry', 'stop_loss', 'tp1'].every(field => field === 'direction'
+            ? ['BUY', 'SELL'].includes(String(today?.direction || '').toUpperCase())
+            : Number.isFinite(Number(today?.[field])));
+    const canonicalDecision = today?.state === 'TRADE_READY' && hasPendingGeometry
+        ? `${String(today.direction).toUpperCase()}_LIMIT`
+        : 'WAIT';
     const opportunity = ['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(today?.state) ? {
         scenario: today.reason,
         area_of_interest: today.area_of_interest,
@@ -8371,19 +8421,42 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         cancellation: today.cancellation_conditions,
         target_intent: today.target_intent,
         expected_window: today.expected_window,
-        opportunity_quality: today.opportunity_quality?.authorization_state || (today.state === 'WATCH_ONLY' ? 'WATCH_ONLY' : null)
+        opportunity_quality: today.opportunity_quality?.authorization_state || (today.state === 'WATCH_ONLY' ? 'WATCH_ONLY' : null),
+        setup_state: setupState,
+        execution_state: today?.execution_state || setupState,
+        quality: today?.quality || today?.opportunity_quality || null,
+        quality_warnings: today?.quality_warnings || [],
+        hard_rejections: today?.hard_rejections || []
     } : undefined;
         const signal = {
         date: date.toISOString().split('T')[0],
         time: date.toISOString().split('T')[1].split('.')[0],
         pair: pairLocal,
         current_price: price,
-        decision: 'WAIT',
+        decision: canonicalDecision,
+        trade_type: canonicalDecision,
+        direction: today?.direction || null,
+        strategy: today?.strategy || null,
+        execution_model: today?.execution_model || null,
+        entry: today?.entry ?? null,
+        entry_price: today?.entry ?? null,
+        entry_zone: today?.area_of_interest || null,
+        stop_loss: today?.stop_loss ?? null,
+        tp1: today?.tp1 ?? null,
+        tp2: today?.tp2 ?? null,
+        tp3: today?.tp3 ?? null,
         confidence: ['TODAY_OPPORTUNITY', 'TRADE_READY'].includes(today?.state) ? today.confidence || 0 : 0,
         // Keep the public API's developing state stable.  WATCH_ONLY is a
         // display tier inside the opportunity stack, not a new top-level trade
         // decision contract.
         status: today?.state === 'WATCH_ONLY' ? 'TODAY_OPPORTUNITY' : (today?.state || 'NO_TRADE_TODAY'),
+        setup_state: setupState,
+        execution_state: today?.execution_state || setupState,
+        quality: today?.quality || null,
+        quality_warnings: today?.quality_warnings || [],
+        hard_rejections: today?.hard_rejections || [],
+        execution_allowed: today?.execution_allowed ?? (setupState === 'PENDING_LIMIT' && marketOpen !== false),
+        manual_tracking_allowed: today?.manual_tracking_allowed === true || (setupState === 'PENDING_LIMIT' && marketOpen !== false),
         trade_context_classification: today?.trade_context_classification || null,
         top_down_context: today?.top_down_context || null,
         daily_bias: today?.daily_bias || null,
@@ -11845,9 +11918,17 @@ async function runAutoScan() {
             aiResult.ai_decision = effectiveDecision;
             aiResult.filterOverride = overrideReason;
         }
+        const selectedExecutionModel = aiResult.adaptive_candidate?.execution_model
+            || aiResult.adaptive_candidate?.entry_model
+            || aiResult.setup_type
+            || 'PENDING_LIMIT';
+        const selectedPendingLimit = isPendingLimitExecutionModel(selectedExecutionModel);
         const tradeable = effectiveDecision !== 'skip'
-            && aiResult.confidence >= 58
-            && validation.valid;
+            && validation.valid
+            // Confidence is descriptive for a complete future limit.  Keep
+            // the historical threshold only for confirmation/immediate-entry
+            // paths where execution is not structurally complete yet.
+            && (selectedPendingLimit || aiResult.confidence >= MIN_CONFIDENCE);
         console.log("LIMIT ORDER DECISION", {
             pair,
             direction: aiResult.direction,
@@ -12612,7 +12693,7 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
         return hasOpportunity ? 'WATCH' : 'NO_TRADE';
     }
     if (signal.execution_allowed === false && signal.setup_state === 'SETUP_AVAILABLE' && limitDecision && readyGeometry) return 'SETUP_READY';
-    if ((signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY') && limitDecision && readyGeometry) return 'SETUP_READY';
+    if ((signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY' || signal.setup_state === 'PENDING_LIMIT') && limitDecision && readyGeometry) return 'SETUP_READY';
     if (hasOpportunity && hasEntry) return 'SETUP_READY';
     if (hasOpportunity) return 'WATCH';
     if (signal.status === 'ORDER_PENDING') return 'ORDER_PENDING';
@@ -12638,7 +12719,10 @@ function getPublicExecutionAllowed(signal = {}, riskGate = null) {
         || reasonCode.includes('RISK_BLOCKED') || reasonCode.includes('NEWS_BLOCKED')) return false;
     if (['INVALIDATED', 'EXPIRED'].includes(String(signal.status || '').toUpperCase())
         || reasonCode.includes('INVALIDATED') || reasonCode.includes('EXPIRED')) return false;
-    return signal.execution_allowed ?? (signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY');
+    const pendingLimitState = signal.setup_state === 'PENDING_LIMIT' || isPendingLimitExecutionModel(signal.execution_model || signal.entry_model);
+    const readyGeometry = [signal.entry ?? signal.entry_price, signal.stop_loss, signal.tp1 ?? signal.take_profit_1]
+        .every(value => Number.isFinite(Number(value)));
+    return signal.execution_allowed ?? (signal.status === 'TRADE_READY' || signal.setup_state === 'TRADE_READY' || (pendingLimitState && readyGeometry));
 }
 
 function evaluateRiskLimits({ open_risk = 0, daily_loss = 0, weekly_loss = 0, consecutive_losses = 0, active_orders = 0, symbol_exposure = 0, limits = {} } = {}) {
@@ -12963,8 +13047,10 @@ function buildPublicTradeSignal(signal = {}) {
                 take_profit_1: primary.take_profit_1 ?? primary.tp1 ?? primary.target_level ?? null,
                 take_profit_2: primary.take_profit_2 ?? primary.tp2 ?? null,
                 take_profit_3: primary.take_profit_3 ?? primary.tp3 ?? null,
-                execution_model: primary.execution_model || null,
-                state: primary.state || primary.lifecycle_state || null,
+                 execution_model: primary.execution_model || null,
+                 setup_state: primary.setup_state || (isPendingLimitExecutionModel(primary.execution_model) ? 'PENDING_LIMIT' : primary.execution_model === 'CONFIRMATION_ENTRY' ? 'WAITING_CONFIRMATION' : primary.state || null),
+                 execution_state: primary.execution_state || null,
+                 state: primary.state || primary.lifecycle_state || null,
                 target: primary.target || (primary.target_level != null ? { level: primary.target_level, source: primary.target_intent || null } : null),
                 structural_invalidation: primary.structural_invalidation || null,
                 confidence: primaryConfidence,
@@ -13011,8 +13097,25 @@ function buildPublicTradeSignal(signal = {}) {
             const orderedPrimaryGeometry = completePrimaryGeometry && (compactPrimary.direction === 'BUY'
                 ? Number(compactPrimary.stop_loss) < Number(compactPrimary.entry_price) && Number(compactPrimary.entry_price) < Number(compactPrimary.take_profit_1)
                 : compactPrimary.direction === 'SELL' && Number(compactPrimary.stop_loss) > Number(compactPrimary.entry_price) && Number(compactPrimary.entry_price) > Number(compactPrimary.take_profit_1));
-            const executablePrimary = orderedPrimaryGeometry && compactPrimary.watch_only !== true && compactPrimary.trade_context !== 'LTF_ISOLATED';
+            const primaryPendingLimit = isPendingLimitExecutionModel(compactPrimary?.execution_model);
+            const primaryConfirmation = String(compactPrimary?.execution_model || '').toUpperCase() === 'CONFIRMATION_ENTRY';
+            const executablePrimary = orderedPrimaryGeometry && compactPrimary.watch_only !== true
+                && (!primaryConfirmation || compactPrimary.state === 'TRADE_READY')
+                && (!primaryConfirmation || compactPrimary.trade_context !== 'LTF_ISOLATED' || compactPrimary.setup_state === 'CONFIRMED');
             const orderType = executablePrimary ? `${compactPrimary.direction}_LIMIT` : 'WAIT';
+            const canonicalSetupState = compactPrimary?.setup_state
+                || (primaryPendingLimit ? 'PENDING_LIMIT' : primaryConfirmation ? 'WAITING_CONFIRMATION' : null);
+            const canonicalExecutionAllowed = executablePrimary
+                ? getPublicExecutionAllowed({
+                    ...signal,
+                    decision: orderType,
+                    trade_type: orderType,
+                    setup_state: canonicalSetupState,
+                    execution_allowed: signal.execution_allowed ?? true
+                }, publicRiskGate)
+                : false;
+            const canonicalManualTrackingAllowed = executablePrimary
+                && (signal.manual_tracking_allowed === true || DEFAULT_EXECUTION_MODE === 'MANUAL');
             return {
                 date: signal.date,
                 pair: signal.pair,
@@ -13027,6 +13130,11 @@ function buildPublicTradeSignal(signal = {}) {
                 take_profit_3: compactPrimary?.take_profit_3 ?? null,
                 confidence: planConfidence === undefined ? 0 : Number(planConfidence),
                 status: signal.status === 'TRADE_READY' ? 'TRADE_READY' : 'TODAY_OPPORTUNITY',
+                setup_state: canonicalSetupState,
+                execution_state: compactPrimary?.execution_state || canonicalSetupState,
+                quality: compactPrimary?.opportunity_quality || null,
+                quality_warnings: signal.quality_warnings || compactPrimary?.opportunity_quality?.quality_warnings || [],
+                hard_rejections: signal.hard_rejections || [],
                 opportunity: plan ? {
                     id: plan.id,
                     direction: plan.direction,
@@ -13065,7 +13173,8 @@ function buildPublicTradeSignal(signal = {}) {
                 status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity, !!compactPrimary?.entry_price),
                 execution_mode: signal.execution_mode || DEFAULT_EXECUTION_MODE,
                 risk_gate: publicRiskGate,
-                execution_allowed: false,
+                manual_tracking_allowed: canonicalManualTrackingAllowed,
+                execution_allowed: canonicalExecutionAllowed,
                 market_open: signal.market_open ?? null
             };
         }
@@ -13141,7 +13250,11 @@ function buildPublicTradeSignal(signal = {}) {
         rr_tp1: signal.rr_tp1 ?? parseRR(signal.risk_reward),
         confidence: signal.primary_opportunity?.confidence ?? signal.setup_confidence ?? signal.quality?.final_confidence ?? signal.adaptive_candidate?.quality?.final_confidence ?? signal.confidence ?? null,
         status: signal.status || signal.opportunity_status || signal.lifecycle_state || null,
-        setup_state: signal.setup_state || (signal.status === 'TRADE_READY' ? 'TRADE_READY' : null),
+        setup_state: signal.setup_state || (isPendingLimitExecutionModel(signal.execution_model || signal.entry_model) ? 'PENDING_LIMIT' : signal.status === 'TRADE_READY' ? 'TRADE_READY' : null),
+        execution_state: signal.execution_state || signal.setup_state || null,
+        quality: signal.quality || signal.opportunity_quality || null,
+        quality_warnings: signal.quality_warnings || [],
+        hard_rejections: signal.hard_rejections || [],
         reason: signal.reason || (reasoning.primary ? { code: 'SETUP_CONTEXT', message: reasoning.primary } : null),
         ai_analysis: signal.ai_analysis || null,
         manual_tracking_allowed: signal.manual_tracking_allowed === true,
@@ -13394,9 +13507,10 @@ function getTradeSummaryModel(signal = {}) {
         ? numericStop < numericEntry && numericEntry < numericTarget ? 'BUY_LIMIT'
             : numericStop > numericEntry && numericEntry > numericTarget ? 'SELL_LIMIT' : null
         : null;
+    const summaryConfirmation = String(setup.execution_model || '').toUpperCase() === 'CONFIRMATION_ENTRY';
     const watchOnly = signal.watch_only === true || setup.watch_only === true
         || setup.opportunity_quality?.watch_only === true || signal.status === 'WATCH_ONLY'
-        || setup.state === 'WATCH_ONLY' || setup.trade_context === 'LTF_ISOLATED';
+        || setup.state === 'WATCH_ONLY' || (setup.trade_context === 'LTF_ISOLATED' && summaryConfirmation);
     const directionMatches = !direction || direction.replace('_LIMIT', '') === geometryDirection?.replace('_LIMIT', '');
     const resolvedDirection = !watchOnly && directionMatches ? geometryDirection : null;
     const type = resolvedDirection === 'BUY' || resolvedDirection === 'BUY_LIMIT' ? 'BUY LIMIT'
@@ -13440,6 +13554,11 @@ function getTradeSummaryModel(signal = {}) {
         primary: signal.strategy_setup?.primary,
         strategy: setup.strategy || signal.strategy || signal.adaptive_candidate?.strategy_label || signal.analysis?.type
     }, location.source || location.type) : '—';
+    const qualityBand = setup.opportunity_quality?.quality_breakdown?.quality_band
+        || setup.quality?.quality_breakdown?.quality_band
+        || signal.quality?.quality_breakdown?.quality_band
+        || signal.opportunity_quality?.quality_breakdown?.quality_band
+        || null;
     return {
         bot: 'ICT Trading Bot Pro',
         date: signal.date || '—',
@@ -13447,6 +13566,7 @@ function getTradeSummaryModel(signal = {}) {
         pair: signal.pair || '—',
         tradeType: type,
         confidence: candidateConfidence === undefined ? '0%' : `${Math.round(Number(candidateConfidence))}%`,
+        quality: qualityBand || '—',
         entry: price(entryValue),
         stopLoss: price(stopValue),
         tp1: price(tp1Value),
@@ -13469,6 +13589,7 @@ function formatTradeSummaryText(signal = {}) {
         `Pair: ${model.pair}`,
         `Trade Type: ${model.tradeType}`,
         `Confidence: ${model.confidence}`,
+        `Quality: ${model.quality}`,
         `Entry Price: ${model.entry}`,
         `Stop Loss: ${model.stopLoss}`,
         `Take Profit 1: ${model.tp1}`,
@@ -13489,6 +13610,7 @@ function renderTradeSummary(signal = {}) {
     const rows = [
         ['Date', model.date], ['Current Price', model.currentPrice], ['Pair', model.pair],
         ['Trade Type', model.tradeType], ['Confidence', model.confidence], ['Entry Price', model.entry],
+        ['Quality', model.quality],
         ['Stop Loss', model.stopLoss], ['Take Profit 1', model.tp1], ['Take Profit 2', model.tp2],
         ['Take Profit 3', model.tp3], ['Analysis', model.analysis], ['Trend Detection', model.trend],
         ['Volatility Level', model.volatility], ['Technical Indicators', model.indicators], ['Type', model.type]
