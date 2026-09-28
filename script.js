@@ -4676,6 +4676,115 @@ function getAdaptiveStopCandidates(zone, direction, entry, data, zones, atrVal, 
         .sort((a, b) => Math.abs(a.stop_loss - entry) - Math.abs(b.stop_loss - entry));
 }
 
+function findTargetSourceIndex(data, target, level, direction) {
+    const explicitIndex = [target?.source_candle_index, target?.source_index, target?.created_index]
+        .map(Number)
+        .find(Number.isInteger);
+    if (Number.isInteger(explicitIndex) && explicitIndex >= 0 && explicitIndex < data.length) return explicitIndex;
+    const createdTime = normalizeTimestampUTC(target?.created_time ?? target?.source_time);
+    if (Number.isFinite(createdTime)) {
+        const index = data.findIndex((candle, i) => {
+            const time = normalizeTimestampUTC(candle?.t);
+            return Number.isFinite(time) && time === createdTime;
+        });
+        if (index >= 0) return index;
+    }
+    const source = String(target?.source || target?.target_type || '').toUpperCase();
+    if (!['SWING_HIGH', 'SWING_LOW', 'BUY_SIDE_LIQUIDITY', 'SELL_SIDE_LIQUIDITY', 'PDH', 'PDL'].includes(source)) return null;
+    const swings = findSwings(data, 3);
+    const sourceSwings = direction === 'BUY' ? (swings.H || []) : (swings.L || []);
+    const tolerance = Math.max(Math.abs(level) * 0.00002, Number(target?.lifecycle_tolerance) || 0);
+    const matches = sourceSwings.filter(swing => Math.abs(Number(swing.p) - level) <= tolerance);
+    return matches.length ? matches[matches.length - 1].i : null;
+}
+
+function assessTargetLifecycle(target, historyCache = {}, options = {}) {
+    const level = Number(target?.level ?? target?.target_level ?? target?.price);
+    const direction = target?.direction;
+    const source = String(target?.source || target?.target_type || '').toUpperCase();
+    const explicitState = String(target?.target_lifecycle_state || target?.lifecycle_state || '').toUpperCase();
+    const base = {
+        state: 'UNKNOWN',
+        lifecycle_state: 'UNKNOWN',
+        eligible: false,
+        source,
+        level: Number.isFinite(level) ? level : null,
+        direction: direction || null,
+        timeframe: target?.timeframe || null,
+        evidence: [],
+        reason: null,
+        source_candle_index: null,
+        source_time: target?.created_time || target?.source_time || null
+    };
+    if (!Number.isFinite(level) || !['BUY', 'SELL'].includes(direction)) {
+        base.reason = 'TARGET_GEOMETRY_INVALID';
+        return base;
+    }
+    if (target?.invalidated === true || explicitState === 'INVALIDATED') {
+        return { ...base, state: 'INVALIDATED', lifecycle_state: 'INVALIDATED', reason: 'Target was explicitly invalidated.' };
+    }
+    if (target?.consumed === true || target?.reached === true || explicitState === 'CONSUMED') {
+        return { ...base, state: 'CONSUMED', lifecycle_state: 'CONSUMED', reason: 'Target was explicitly marked reached or consumed.' };
+    }
+    if (['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(explicitState)) {
+        return { ...base, state: explicitState, lifecycle_state: explicitState, eligible: explicitState !== 'CONSUMED', reason: 'Target lifecycle was supplied by the deterministic structure detector.' };
+    }
+
+    const tf = target?.timeframe || options.timeframe || '1H';
+    const data = closedStructureCandles(historyCache?.[tf] || []);
+    if (!data.length) {
+        if (target?.lifecycle_required !== true) {
+            return { ...base, state: 'UNFULFILLED', lifecycle_state: 'UNFULFILLED', eligible: true,
+                reason: 'Target is supplied by an existing deterministic strategy record without lifecycle candle data.' };
+        }
+        base.reason = 'TARGET_TIMEFRAME_DATA_MISSING';
+        return base;
+    }
+    const sourceIndex = findTargetSourceIndex(data, target, level, direction);
+    base.source_candle_index = Number.isInteger(sourceIndex) ? sourceIndex : null;
+    if (Number.isInteger(sourceIndex)) {
+        const sourceCandle = data[sourceIndex];
+        base.source_time = sourceCandle?.t || base.source_time;
+    }
+    const lifecycleRequired = target?.lifecycle_required === true;
+    if (!Number.isInteger(sourceIndex)) {
+        if (!lifecycleRequired) {
+            return { ...base, state: 'UNFULFILLED', lifecycle_state: 'UNFULFILLED', eligible: true,
+                reason: 'Target is supplied by an existing deterministic strategy record without a separate source candle.' };
+        }
+        base.reason = 'TARGET_SOURCE_CANDLE_UNRESOLVED';
+        return base;
+    }
+    const tolerance = Math.max(Math.abs(level) * 0.00001, Number(target?.lifecycle_tolerance) || 0);
+    const postSource = data.slice(sourceIndex + 1);
+    let touched = null;
+    let consumed = null;
+    for (let i = 0; i < postSource.length; i++) {
+        const candle = postSource[i];
+        const crossed = direction === 'BUY'
+            ? Number(candle.h) > level + tolerance || Number(candle.c) > level + tolerance
+            : Number(candle.l) < level - tolerance || Number(candle.c) < level - tolerance;
+        const touchedLevel = direction === 'BUY'
+            ? Number(candle.h) >= level - tolerance
+            : Number(candle.l) <= level + tolerance;
+        if (touchedLevel && !touched) touched = { index: sourceIndex + 1 + i, time: candle.t || null, high: candle.h, low: candle.l, close: candle.c, kind: 'TOUCH' };
+        if (crossed) {
+            consumed = { index: sourceIndex + 1 + i, time: candle.t || null, high: candle.h, low: candle.l, close: candle.c, kind: 'DELIVERY_THROUGH_LEVEL' };
+            break;
+        }
+    }
+    if (consumed) {
+        return { ...base, state: 'CONSUMED', lifecycle_state: 'CONSUMED', eligible: false,
+            evidence: [consumed], reason: 'Closed-candle delivery crossed the structural target after its source formed.' };
+    }
+    if (touched) {
+        return { ...base, state: 'PARTIALLY_DELIVERED', lifecycle_state: 'PARTIALLY_DELIVERED', eligible: true,
+            evidence: [touched], reason: 'The target was touched but closed-candle delivery has not crossed it.' };
+    }
+    return { ...base, state: 'UNFULFILLED', lifecycle_state: 'UNFULFILLED', eligible: true,
+        reason: 'No closed candle after the target source has delivered through the level.' };
+}
+
 function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, minimumRR, prec, reachabilityContext = {}) {
     const side = direction === 'BUY' ? 'buy' : 'sell';
     const risk = Math.abs(entry - stopLoss);
@@ -4700,6 +4809,7 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
     const currentPrice = Number(reachabilityContext.currentPrice);
     const executionModel = String(reachabilityContext.executionModel || reachabilityContext.entryModel || reachabilityContext.strategySetup?.execution_model || '').toUpperCase();
     const isPendingLimit = executionModel === 'PENDING_LIMIT' || executionModel === 'FRESH_RETRACEMENT_LIMIT';
+    const lifecycleDiagnostics = [];
     const targets = sourceTargets
         .map(c => ({ ...c, level: ictRound(Number(c.level), prec), distance_from_entry: ictRound(Math.abs(Number(c.level) - entry), prec) }))
         .filter(c => direction === 'BUY' ? c.level > entry : c.level < entry)
@@ -4710,6 +4820,17 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
         // the limit zone before the order is filled.
         .filter(c => isPendingLimit || !Number.isFinite(currentPrice) || (direction === 'BUY' ? c.level > currentPrice : c.level < currentPrice))
         .map(c => {
+            const lifecycle = assessTargetLifecycle(c, reachabilityContext.historyCache || {}, { timeframe: c.timeframe });
+            lifecycleDiagnostics.push({
+                target_id: c.id || null,
+                target_type: c.target_type || c.source || null,
+                timeframe: c.timeframe || null,
+                price: c.level,
+                lifecycle_state: lifecycle.lifecycle_state,
+                lifecycle_reason: lifecycle.reason,
+                lifecycle_evidence: lifecycle.evidence,
+                eligible: lifecycle.eligible
+            });
             const rr = calculateRRMetrics(direction, entry, stopLoss, c.level, minimumRR);
             const reachability = evaluateTargetReachability({
                 direction,
@@ -4724,10 +4845,12 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
             const strategyNative = !!c.strategy_native || (reachabilityContext.strategySetup?.target_candidates || []).some(t => Number(t.level) === Number(c.level) && (t.source || t.target_type) === (c.source || c.target_type));
             const rrScore = Math.min(24, Math.max(0, (rr.actualRR - minimumRR) * 5));
             const composite_score = (Number(c.structural_priority) || 50) + reachability.reachability_score * 0.75 + rrScore + (strategyNative ? 18 : 0) - (reachability.intervening_obstacles || []).filter(o => o.severity === 'SERIOUS').length * 12;
-            return { ...c, actual_rr: rr.actualRR, target_reachability: reachability, reachability_score: reachability.reachability_score, target_quality: reachability.target_quality, strategy_native: strategyNative, composite_score };
+            return { ...c, actual_rr: rr.actualRR, target_reachability: reachability, reachability_score: reachability.reachability_score, target_quality: reachability.target_quality, strategy_native: strategyNative,
+                target_lifecycle_state: lifecycle.lifecycle_state, target_lifecycle: lifecycle, composite_score };
         });
-    const directionalTargets = targets.length;
-    const rrQualifiedTargets = targets.filter(c => direction === 'BUY' ? c.level + 1e-9 >= threshold : c.level - 1e-9 <= threshold);
+    const lifecycleEligibleTargets = targets.filter(c => c.target_lifecycle_state !== 'CONSUMED' && c.target_lifecycle_state !== 'INVALIDATED' && c.target_lifecycle_state !== 'UNKNOWN' && c.target_lifecycle?.eligible !== false);
+    const directionalTargets = lifecycleEligibleTargets.length;
+    const rrQualifiedTargets = lifecycleEligibleTargets.filter(c => direction === 'BUY' ? c.level + 1e-9 >= threshold : c.level - 1e-9 <= threshold);
     const reachableTargets = rrQualifiedTargets.filter(c => !c.target_reachability.hard_unreachable);
     const diagnosticBest = [...reachableTargets, ...rrQualifiedTargets, ...targets].sort((a, b) => a.distance_from_entry - b.distance_from_entry)[0];
     const diagnostics = {
@@ -4739,7 +4862,12 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
         best_target_level: diagnosticBest?.level || null,
         best_target_rr: diagnosticBest?.actual_rr || null,
         best_target_reachability_score: diagnosticBest?.reachability_score || null,
-        failure_code: !rawSourceTargets.length ? 'TARGET_POOL_EMPTY' : !provenanceValid.length ? 'TARGET_PROVENANCE_INVALID' : !directionalTargets ? 'NO_TARGETS_DIRECTIONALLY_AHEAD' : !rrQualifiedTargets.length ? 'TARGETS_EXIST_BUT_RR_TOO_LOW' : !reachableTargets.length ? (rrQualifiedTargets.some(t => (t.target_reachability.intervening_obstacles || []).some(o => o.severity === 'SERIOUS')) ? 'TARGETS_BLOCKED_BY_STRUCTURE' : 'TARGETS_EXIST_BUT_UNREACHABLE') : null
+        target_lifecycle: lifecycleDiagnostics,
+        consumed_target_count: lifecycleDiagnostics.filter(t => ['CONSUMED', 'INVALIDATED'].includes(t.lifecycle_state)).length,
+        unfulfilled_target_count: lifecycleDiagnostics.filter(t => ['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(t.lifecycle_state)).length,
+        failure_code: !rawSourceTargets.length ? 'TARGET_POOL_EMPTY' : !provenanceValid.length ? 'TARGET_PROVENANCE_INVALID' : !directionalTargets
+            ? (lifecycleDiagnostics.some(t => ['CONSUMED', 'INVALIDATED'].includes(t.lifecycle_state)) ? 'NO_UNFULFILLED_TARGET' : 'NO_TARGETS_DIRECTIONALLY_AHEAD')
+            : !rrQualifiedTargets.length ? 'TARGETS_EXIST_BUT_RR_TOO_LOW' : !reachableTargets.length ? (rrQualifiedTargets.some(t => (t.target_reachability.intervening_obstacles || []).some(o => o.severity === 'SERIOUS')) ? 'TARGETS_BLOCKED_BY_STRUCTURE' : 'TARGETS_EXIST_BUT_UNREACHABLE') : null
     };
     selectAdaptiveTargets.lastDiagnostics = diagnostics;
     reachabilityContext.targetDiagnostics = diagnostics;
@@ -4748,7 +4876,7 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
         target.target_type = target.target_type || target.source;
         target.target_confluence = target.target_confluence || [{ source: target.source || target.target_type, target_type: target.target_type || target.source, timeframe: target.timeframe || null, level: target.level }];
     }
-    const valid = targets
+    const valid = lifecycleEligibleTargets
         .filter(c => direction === 'BUY' ? c.level + 1e-9 >= threshold : c.level - 1e-9 <= threshold)
         .filter(c => !c.target_reachability.hard_unreachable)
         .sort((a, b) => a.distance_from_entry - b.distance_from_entry || Number(b.strategy_native) - Number(a.strategy_native) || (b.structural_priority || 0) - (a.structural_priority || 0) || b.reachability_score - a.reachability_score);
@@ -6276,6 +6404,9 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     continue;
                 }
                 const rr = calculateRRMetrics(direction, entry, stop.stop_loss, targets.tp1.level, minimumRR);
+                const pendingLimitModel = isPendingLimitExecutionModel(strategySetup?.opportunity_thesis?.execution_model
+                    || strategySetup?.execution_model || strategySetup?.entry_model || zone.execution_model || zone.entry_model);
+                const primaryTargetLifecycle = targets.tp1.target_lifecycle || null;
                 const archetype = classifySetupArchetype(rawCandidate, historyCache, price, structure);
                 const htfAlignment = ['1D', '4H', '1H']
                     .map(t => structure?.[t]?.trend)
@@ -6342,6 +6473,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     target_map: targets ? [targets.tp1, targets.tp2, targets.tp3].filter(Boolean).map(t => ({
                         target_level: t.level,
                         target_type: t.target_type || t.source,
+                        target_id: t.id || null,
                         primary_target_source: t.primary_target_source,
                         target_confluence: t.target_confluence,
                         target_timeframe: t.timeframe || null,
@@ -6353,10 +6485,24 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         intervening_liquidity: t.target_reachability.intervening_liquidity,
                         reachability_score: t.reachability_score,
                         target_quality: t.target_quality,
+                        target_lifecycle_state: t.target_lifecycle_state || t.target_lifecycle?.lifecycle_state || 'UNKNOWN',
+                        target_lifecycle: t.target_lifecycle || null,
                         target_reachability: compactTargetReachabilityForOutput(t.target_reachability),
                         actual_rr: t.actual_rr
                     })) : [],
                     target_diagnostics: targetDiagnostics,
+                    target_lifecycle_state: primaryTargetLifecycle?.lifecycle_state || 'UNKNOWN',
+                    target_lifecycle: primaryTargetLifecycle,
+                    // A future limit is evaluated from the future fill.  A
+                    // prior move through the target does not count as
+                    // delivery unless the target lifecycle proved that the
+                    // objective was consumed.
+                    remaining_reward_fraction: pendingLimitModel && ['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(primaryTargetLifecycle?.lifecycle_state)
+                        ? 1 : rawCandidate.remaining_reward_fraction,
+                    progress_to_tp1_fraction: pendingLimitModel && ['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(primaryTargetLifecycle?.lifecycle_state)
+                        ? 0 : rawCandidate.progress_to_tp1_fraction,
+                    progress_to_tp1_fraction_raw: pendingLimitModel && ['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(primaryTargetLifecycle?.lifecycle_state)
+                        ? 0 : rawCandidate.progress_to_tp1_fraction_raw,
                     setup_confidence: Math.max(0, Math.min(100, Math.round(score))),
                     score: ictRound(score, 2)
                 };
@@ -6469,7 +6615,7 @@ function buildDeterministicOrderDescription(candidate) {
         wait_condition: wait,
         reasoning: {
             primary: `${candidate.strategy_label || candidate.strategy_setup?.label || candidate.zone_type} ${confirmation ? candidate.direction + ' confirmation entry' : candidate.direction + '_LIMIT'} at ${candidate.entry}. TP1 ${candidate.tp1}: ${source} (${type}).`,
-            freshness: `Fresh ${candidate.setup_timeframe || candidate.timeframe || 'intraday'} opportunity from ${age}; ${freshness}. ${Number.isFinite(lifecycle.remaining_reward_fraction) ? `${Math.round(lifecycle.remaining_reward_fraction * 100)}% of the original reward path remains.` : 'The original reward path remains structurally valid.'}`,
+            freshness: `Fresh ${candidate.setup_timeframe || candidate.timeframe || 'intraday'} opportunity from ${age}; ${freshness}. ${['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(String(candidate.target_lifecycle_state || candidate.target_map?.[0]?.target_lifecycle_state || '').toUpperCase()) ? 'The selected target remains an unfulfilled structural objective for the future fill.' : Number.isFinite(lifecycle.remaining_reward_fraction) ? `${Math.round(lifecycle.remaining_reward_fraction * 100)}% of the original reward path remains.` : 'The original reward path remains structurally valid.'}`,
             why_best: `Selected deterministic candidate ${candidate.id}; target confluence: ${confluence.map(t => `${t.source} ${t.timeframe || ''}`.trim()).join(', ') || 'none'}.`,
             risk_warning: 'Structural invalidation and market execution risk apply.'
         }
@@ -6934,6 +7080,8 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         && hasExecutableOpportunityBacking(setup || candidate)
         && ((candidate.direction === 'SELL' && zonePriceStatus.pricePosition === 'BELOW_ZONE')
             || (candidate.direction === 'BUY' && zonePriceStatus.pricePosition === 'ABOVE_ZONE'));
+    const targetLifecycleState = String(candidate.target_lifecycle_state || candidate.target_map?.[0]?.target_lifecycle_state || '').toUpperCase();
+    const pendingTargetRemains = pendingLimitModel && ['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(targetLifecycleState);
     if ((Number.isInteger(index) && index >= 0 && index < lifecycleData.length) || eventCutoff != null) {
         for (let i = 0; i < executionData.length; i++) {
             const bar = executionData[i];
@@ -6968,6 +7116,16 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const currentReached = Number.isFinite(tp1) && !pendingRetracementLocation
         && (candidate.direction === 'BUY' ? price >= tp1 : price <= tp1);
     result.tp1_already_reached ||= currentReached;
+    if (pendingTargetRemains) {
+        // A pending limit is not filled at the scan price.  Do not infer
+        // target delivery from the quote being beyond TP1; only the target's
+        // closed-candle lifecycle can mark it consumed.
+        result.tp1_already_reached = false;
+        result.remaining_reward_fraction = 1;
+        result.progress_to_tp1_fraction = 0;
+        result.progress_to_tp1_fraction_raw = 0;
+        result.target_lifecycle_state = targetLifecycleState;
+    }
     const staleByAge = !Number.isFinite(eventAgeHours) || eventAgeHours > maxEventAgeHours || parentAgeExpired;
     const deliveryAdvanced = !pendingRetracementLocation
         && result.remaining_reward_fraction != null
@@ -7388,12 +7546,13 @@ function buildLiveZonesForTf(data, tf, price, pairLocal, atrVal, limitPerDirecti
 
 function buildTargetCandidates(historyCache, price, pairLocal, symbolMetadata = {}) {
     const prec = getMarketSettings(pairLocal, symbolMetadata).prec;
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
     const candidates = [];
     const daily = getClosedHistory(historyCache, '1D');
     const previousDay = daily.at(-1);
     if (previousDay) {
-        if (Number.isFinite(previousDay.h)) candidates.push({ id: `PDH:${previousDay.t}`, direction: 'BUY', timeframe: '1D', source: 'PDH', target_type: 'PREVIOUS_DAY_HIGH', origin: 'CLOSED_DAILY', level: ictRound(previousDay.h, prec), distance_from_price: Math.abs(previousDay.h - price), structural_priority: 92 });
-        if (Number.isFinite(previousDay.l)) candidates.push({ id: `PDL:${previousDay.t}`, direction: 'SELL', timeframe: '1D', source: 'PDL', target_type: 'PREVIOUS_DAY_LOW', origin: 'CLOSED_DAILY', level: ictRound(previousDay.l, prec), distance_from_price: Math.abs(previousDay.l - price), structural_priority: 92 });
+        if (Number.isFinite(previousDay.h)) candidates.push({ id: `PDH:${previousDay.t}`, direction: 'BUY', timeframe: '1D', source: 'PDH', target_type: 'PREVIOUS_DAY_HIGH', origin: 'CLOSED_DAILY', level: ictRound(previousDay.h, prec), distance_from_price: Math.abs(previousDay.h - price), structural_priority: 92, source_candle_index: daily.length - 1, lifecycle_required: true });
+        if (Number.isFinite(previousDay.l)) candidates.push({ id: `PDL:${previousDay.t}`, direction: 'SELL', timeframe: '1D', source: 'PDL', target_type: 'PREVIOUS_DAY_LOW', origin: 'CLOSED_DAILY', level: ictRound(previousDay.l, prec), distance_from_price: Math.abs(previousDay.l - price), structural_priority: 92, source_candle_index: daily.length - 1, lifecycle_required: true });
     }
     for (const tf of ['4H', '1H']) {
         const data = getClosedHistory(historyCache, tf);
@@ -7403,39 +7562,41 @@ function buildTargetCandidates(historyCache, price, pairLocal, symbolMetadata = 
         const sw = findSwings(data, 3);
         for (const meta of (msnr.structural_levels || []).filter(l => l.direction === 'SELL' && l.level > price).slice(0, 5)) {
             const level = meta.level;
-            candidates.push({ direction: 'BUY', timeframe: tf, source: 'OPPOSING_MSNR', target_type: 'OPPOSING_MSNR', origin: meta.origin || 'STRUCTURAL_MSNR', level, distance_from_price: Math.abs(level - price), structural_priority: 88 });
+            candidates.push({ direction: 'BUY', timeframe: tf, source: 'OPPOSING_MSNR', target_type: 'OPPOSING_MSNR', origin: meta.origin || 'STRUCTURAL_MSNR', level, distance_from_price: Math.abs(level - price), structural_priority: 88, created_time: meta.event_time || meta.retest_time || meta.break_time || null, source_candle_index: meta.retest_index ?? meta.first_retest_index ?? meta.break_index ?? null, lifecycle_required: true });
         }
         for (const meta of (msnr.structural_levels || []).filter(l => l.direction === 'BUY' && l.level < price).slice(0, 5)) {
             const level = meta.level;
-            candidates.push({ direction: 'SELL', timeframe: tf, source: 'OPPOSING_MSNR', target_type: 'OPPOSING_MSNR', origin: meta.origin || 'STRUCTURAL_MSNR', level, distance_from_price: Math.abs(level - price), structural_priority: 88 });
+            candidates.push({ direction: 'SELL', timeframe: tf, source: 'OPPOSING_MSNR', target_type: 'OPPOSING_MSNR', origin: meta.origin || 'STRUCTURAL_MSNR', level, distance_from_price: Math.abs(level - price), structural_priority: 88, created_time: meta.event_time || meta.retest_time || meta.break_time || null, source_candle_index: meta.retest_index ?? meta.first_retest_index ?? meta.break_index ?? null, lifecycle_required: true });
         }
         for (const level of (liq.above || []).slice(0, 5)) {
-            candidates.push({ direction: 'BUY', timeframe: tf, source: 'BUY_SIDE_LIQUIDITY', target_type: 'EXTERNAL_LIQUIDITY', origin: 'STRUCTURAL', level, distance_from_price: Math.abs(level - price), structural_priority: 82 });
+            const sourceSwing = (sw.H || []).find(s => Math.abs(Number(s.p) - Number(level)) <= Math.max(Math.abs(Number(level)) * 0.00002, settings.pipSize * 2));
+            candidates.push({ direction: 'BUY', timeframe: tf, source: 'BUY_SIDE_LIQUIDITY', target_type: 'EXTERNAL_LIQUIDITY', origin: 'STRUCTURAL', level, distance_from_price: Math.abs(level - price), structural_priority: 82, source_candle_index: sourceSwing?.i ?? null, lifecycle_required: true });
         }
         for (const level of (liq.below || []).slice(0, 5)) {
-            candidates.push({ direction: 'SELL', timeframe: tf, source: 'SELL_SIDE_LIQUIDITY', target_type: 'EXTERNAL_LIQUIDITY', origin: 'STRUCTURAL', level, distance_from_price: Math.abs(level - price), structural_priority: 82 });
+            const sourceSwing = (sw.L || []).find(s => Math.abs(Number(s.p) - Number(level)) <= Math.max(Math.abs(Number(level)) * 0.00002, settings.pipSize * 2));
+            candidates.push({ direction: 'SELL', timeframe: tf, source: 'SELL_SIDE_LIQUIDITY', target_type: 'EXTERNAL_LIQUIDITY', origin: 'STRUCTURAL', level, distance_from_price: Math.abs(level - price), structural_priority: 82, source_candle_index: sourceSwing?.i ?? null, lifecycle_required: true });
         }
         for (const s of (sw.H || []).slice(-5)) {
-            candidates.push({ direction: 'BUY', timeframe: tf, source: 'SWING_HIGH', target_type: 'SWING_HIGH_LOW', origin: 'STRUCTURAL', level: s.p, distance_from_price: Math.abs(s.p - price), structural_priority: 76 });
+            candidates.push({ direction: 'BUY', timeframe: tf, source: 'SWING_HIGH', target_type: 'SWING_HIGH_LOW', origin: 'STRUCTURAL', level: s.p, distance_from_price: Math.abs(s.p - price), structural_priority: 76, source_candle_index: s.i, lifecycle_required: true });
         }
         for (const s of (sw.L || []).slice(-5)) {
-            candidates.push({ direction: 'SELL', timeframe: tf, source: 'SWING_LOW', target_type: 'SWING_HIGH_LOW', origin: 'STRUCTURAL', level: s.p, distance_from_price: Math.abs(s.p - price), structural_priority: 76 });
+            candidates.push({ direction: 'SELL', timeframe: tf, source: 'SWING_LOW', target_type: 'SWING_HIGH_LOW', origin: 'STRUCTURAL', level: s.p, distance_from_price: Math.abs(s.p - price), structural_priority: 76, source_candle_index: s.i, lifecycle_required: true });
         }
         for (const fvg of detectFVG(data, pairLocal, symbolMetadata)) {
             if (fvg.type === 'bear') {
-                candidates.push({ direction: 'BUY', timeframe: tf, source: 'OPPOSING_FVG', target_type: 'FVG', origin: 'STRUCTURAL', level: fvg.m, distance_from_price: Math.abs(fvg.m - price), structural_priority: 62 });
+                candidates.push({ direction: 'BUY', timeframe: tf, source: 'OPPOSING_FVG', target_type: 'FVG', origin: 'STRUCTURAL', level: fvg.m, distance_from_price: Math.abs(fvg.m - price), structural_priority: 62, source_candle_index: fvg.source_index ?? null, lifecycle_required: true });
             }
             if (fvg.type === 'bull') {
-                candidates.push({ direction: 'SELL', timeframe: tf, source: 'OPPOSING_FVG', target_type: 'FVG', origin: 'STRUCTURAL', level: fvg.m, distance_from_price: Math.abs(fvg.m - price), structural_priority: 62 });
+                candidates.push({ direction: 'SELL', timeframe: tf, source: 'OPPOSING_FVG', target_type: 'FVG', origin: 'STRUCTURAL', level: fvg.m, distance_from_price: Math.abs(fvg.m - price), structural_priority: 62, source_candle_index: fvg.source_index ?? null, lifecycle_required: true });
             }
         }
         for (const ob of detectOrderBlocks(data, 'SELL')) {
             const mid = (ob.low + ob.high) / 2;
-            candidates.push({ direction: 'BUY', timeframe: tf, source: 'OPPOSING_OB', target_type: 'OB', origin: 'STRUCTURAL', level: mid, distance_from_price: Math.abs(mid - price), structural_priority: 68 });
+            candidates.push({ direction: 'BUY', timeframe: tf, source: 'OPPOSING_OB', target_type: 'OB', origin: 'STRUCTURAL', level: mid, distance_from_price: Math.abs(mid - price), structural_priority: 68, source_candle_index: ob.source_index ?? null, lifecycle_required: true });
         }
         for (const ob of detectOrderBlocks(data, 'BUY')) {
             const mid = (ob.low + ob.high) / 2;
-            candidates.push({ direction: 'SELL', timeframe: tf, source: 'OPPOSING_OB', target_type: 'OB', origin: 'STRUCTURAL', level: mid, distance_from_price: Math.abs(mid - price), structural_priority: 68 });
+            candidates.push({ direction: 'SELL', timeframe: tf, source: 'OPPOSING_OB', target_type: 'OB', origin: 'STRUCTURAL', level: mid, distance_from_price: Math.abs(mid - price), structural_priority: 68, source_candle_index: ob.source_index ?? null, lifecycle_required: true });
         }
     }
     const dedupe = new Map();
@@ -7446,6 +7607,8 @@ function buildTargetCandidates(historyCache, price, pairLocal, symbolMetadata = 
             ...c,
             id: c.id || `TARGET:${c.direction}:${c.timeframe}:${c.source}:${ictRound(c.level, prec)}`,
             created_time: c.created_time || null,
+            source_candle_index: c.source_candle_index ?? c.source_index ?? null,
+            lifecycle_required: c.lifecycle_required === true,
             reached: !!c.reached, consumed: !!c.consumed, invalidated: !!c.invalidated,
             ahead_of_current_price: c.direction === 'BUY' ? c.level > price : c.level < price,
             ahead_of_entry: null, reachability: c.reachability ?? null,
@@ -7522,6 +7685,7 @@ function classifyRejectionDetail(reason) {
     if (/EXTREME_TOO_WIDE|exceeds .*maximum|too wide/i.test(reason)) return 'EXTREME_TOO_WIDE';
     if (/no real TP1 satisfies minimum RR/i.test(reason)) return 'NO_VALID_TP1';
     if (/TARGET_POOL_EMPTY|no target pool/i.test(reason)) return 'TARGET_POOL_EMPTY';
+    if (/NO_UNFULFILLED_TARGET|no unfulfilled target|target was consumed|target lifecycle/i.test(reason)) return 'NO_UNFULFILLED_TARGET';
     if (/NO_TARGETS_DIRECTIONALLY_AHEAD|directionally ahead/i.test(reason)) return 'NO_TARGETS_DIRECTIONALLY_AHEAD';
     if (/TARGETS_EXIST_BUT_RR_TOO_LOW|no real TP1|minimum RR/i.test(reason)) return 'TARGETS_EXIST_BUT_RR_TOO_LOW';
     if (/TARGETS_EXIST_BUT_UNREACHABLE|unreachable target/i.test(reason)) return 'TARGETS_EXIST_BUT_UNREACHABLE';
@@ -7623,7 +7787,7 @@ function buildCandidatePipelineAudit(strategySetups, rawCandidates, rejectedCand
         rr_valid: (rawCandidates || []).filter(c => Number.isFinite(c.tp1) && Number.isFinite(c.minimum_rr)
             && calculateRRMetrics(c.direction, c.entry, c.stop_loss, c.tp1, c.minimum_rr).actualRR >= c.minimum_rr).length,
         volatility_rejected: (details.EXTREME_TOO_TIGHT || 0) + (details.EXTREME_TOO_WIDE || 0) + (details.STOP_VOLATILITY_TOO_TIGHT || 0) + (details.STOP_VOLATILITY_TOO_WIDE || 0),
-        target_rejected: (details.NO_VALID_TP1 || 0) + (details.TP1_RR_TOO_LOW || 0) + (details.TARGET_POOL_EMPTY || 0) + (details.NO_TARGETS_DIRECTIONALLY_AHEAD || 0) + (details.TARGETS_EXIST_BUT_RR_TOO_LOW || 0) + (details.TARGETS_BLOCKED_BY_STRUCTURE || 0) + (details.TARGETS_EXIST_BUT_UNREACHABLE || 0),
+        target_rejected: (details.NO_VALID_TP1 || 0) + (details.TP1_RR_TOO_LOW || 0) + (details.TARGET_POOL_EMPTY || 0) + (details.NO_TARGETS_DIRECTIONALLY_AHEAD || 0) + (details.NO_UNFULFILLED_TARGET || 0) + (details.TARGETS_EXIST_BUT_RR_TOO_LOW || 0) + (details.TARGETS_BLOCKED_BY_STRUCTURE || 0) + (details.TARGETS_EXIST_BUT_UNREACHABLE || 0),
         consistency_rejected: details.ZONE_INVALID || 0,
         context_rejected: (details.CONTINUATION_HTF || 0) + (details.REVERSAL_EVIDENCE_INSUFFICIENT || 0),
         final_valid: (validCandidates || []).length,
@@ -7804,7 +7968,7 @@ function buildSupplyDemandAndFlipPOIs(data, tf, price, pairLocal, symbolMetadata
     return pois;
 }
 
-function getTodayOpportunityTargetPool({ setup, zone, targetCandidates, direction, currentPrice, executionModel = null }) {
+function getTodayOpportunityTargetPool({ setup, zone, targetCandidates, direction, currentPrice, executionModel = null, historyCache = {} }) {
     const modelName = String(executionModel || setup?.execution_model || setup?.entry_model || zone?.execution_model || zone?.entry_model || '').toUpperCase();
     const pendingLimit = modelName === 'PENDING_LIMIT' || modelName === 'FRESH_RETRACEMENT_LIMIT';
     const catalogTargets = pendingLimit && Array.isArray(targetCandidates?.all)
@@ -7818,10 +7982,22 @@ function getTodayOpportunityTargetPool({ setup, zone, targetCandidates, directio
     if (Number.isFinite(native)) candidates.push({ level: native, source: setup?.target_bias || 'STRUCTURAL_OBJECTIVE', strategy_native: true });
     const entryReference = Number(zone?.entry ?? zone?.midpoint ?? setup?.entry ?? currentPrice);
     const seen = new Set();
-    return candidates.filter(target => {
+    return candidates.map(target => ({
+        ...target,
+        direction: target?.direction || direction,
+        ...(() => {
+            const lifecycle = assessTargetLifecycle({ ...target, direction: target?.direction || direction }, historyCache, { timeframe: target?.timeframe });
+            return {
+                target_lifecycle_state: lifecycle.lifecycle_state,
+                target_lifecycle: lifecycle,
+                consumed: target?.consumed === true || lifecycle.lifecycle_state === 'CONSUMED',
+                invalidated: target?.invalidated === true || lifecycle.lifecycle_state === 'INVALIDATED'
+            };
+        })()
+    })).filter(target => {
         const level = Number(target?.level ?? target?.target_level ?? target?.price);
         if (!Number.isFinite(level) || !Number.isFinite(entryReference)) return false;
-        if (target?.consumed || target?.invalidated || target?.reached) return false;
+        if (target?.consumed || target?.invalidated || target?.reached || target?.target_lifecycle?.eligible === false) return false;
         // A target already passed by price cannot be the objective of a
         // future pending-limit entry. Continue through the catalog to the
         // next real structural objective.
@@ -7895,7 +8071,7 @@ function evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal = pair, cur
     if (freshContinuation && !Number.isFinite(zoneCreated)) return fail('INVALID_EXECUTION_ZONE', 'A fresh continuation area has no canonical creation time.');
     if (Number.isFinite(zoneCreated) && Number.isFinite(parentTime) && zoneCreated < parentTime && freshContinuation) return fail('PRE_SIGNAL_EXECUTION_ZONE', 'The proposed continuation area predates its parent narrative.');
     if (['SETUP_ALREADY_COMPLETED', 'SETUP_DELIVERY_ALREADY_ADVANCED', 'SETUP_EXPIRED', 'SETUP_STALE', 'ENTRY_ALREADY_CONSUMED', 'DATA_TIME_INCONSISTENT'].includes(lifecycle.rejection_code) && !freshContinuation) return fail(lifecycle.rejection_code, 'The execution opportunity has a terminal lifecycle rejection.');
-    const targetPool = getTodayOpportunityTargetPool({ setup, zone, targetCandidates, direction, currentPrice, executionModel: model });
+    const targetPool = getTodayOpportunityTargetPool({ setup, zone, targetCandidates, direction, currentPrice, executionModel: model, historyCache: histories });
     const target = targetPool[0];
     const targetLevel = Number(target?.level ?? target?.target_level);
     const entry = Number(zone.entry ?? zone.midpoint ?? setup.entry ?? ((low + high) / 2));
@@ -8143,6 +8319,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.quality_warnings = qualityWarnings;
         state.hard_rejections = bestCandidate.hard_rejections || [];
         state.narrative_id = bestCandidate.strategy_setup?.id || bestCandidate.id; state.execution_zone_id = zone?.id || bestCandidate.id;
+        state.selected_candidate_id = bestCandidate.id;
         state.source = 'DETERMINISTIC_CANDIDATE' + (bestCandidate.ai_verified ? '+VERIFIED_AI_ANALYST' : ''); state.ai_supported = !!bestCandidate.ai_verified; state.deterministic_supported = true;
         state.area_of_interest = zone ? { low: zone.low, high: zone.high, source: zone.entry_region_source || zone.type || 'STRUCTURAL', timeframe: zone.timeframe, zone_id: zone.id || bestCandidate.id } : null;
         state.execution_model = bestCandidate.execution_model || bestCandidate.entry_model || 'PENDING_LIMIT'; state.activation_conditions = marketOpen === false
@@ -8436,6 +8613,7 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         decision: canonicalDecision,
         trade_type: canonicalDecision,
         direction: today?.direction || null,
+        selected_candidate_id: today?.selected_candidate_id || null,
         strategy: today?.strategy || null,
         execution_model: today?.execution_model || null,
         entry: today?.entry ?? null,
@@ -8517,12 +8695,41 @@ function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, select
 
 function buildRejectedSelectionWaitOutput({ today, pairLocal, price, asOfMs, marketOpen, symbolMetadata, providerMetadata, rejection, source = 'Deterministic Opportunity Planner + AI Selector' } = {}) {
     const recovery = buildTodayOpportunityOutput(today || { state: 'NO_TRADE_TODAY' }, pairLocal, price, asOfMs, marketOpen, symbolMetadata, providerMetadata);
+    const recoveredPendingLimit = ['BUY_LIMIT', 'SELL_LIMIT'].includes(recovery.trade_signal?.decision)
+        && recovery.trade_signal?.setup_state === 'PENDING_LIMIT'
+        && ['direction', 'entry_price', 'stop_loss', 'tp1'].every(field => field === 'direction'
+            ? ['BUY', 'SELL'].includes(String(recovery.trade_signal?.direction || '').toUpperCase())
+            : Number.isFinite(Number(recovery.trade_signal?.[field])));
     const hasOpportunity = ['TODAY_OPPORTUNITY', 'WATCH_ONLY', 'TRADE_READY'].includes(today?.state)
         && (!!recovery.trade_signal.opportunity || !!recovery.trade_signal.primary_opportunity || recovery.trade_signal.watch_setups?.length > 0);
     const reasonCode = hasOpportunity ? 'STALE_AI_SELECTION_RECOVERED' : 'STALE_SELECTION_REJECTED';
     const reasonMessage = hasOpportunity
         ? 'The selected candidate was rejected as stale; the current deterministic opportunity remains available for your decision.'
         : 'The selected candidate was rejected as stale and no current deterministic opportunity remains.';
+    if (recoveredPendingLimit) {
+        return {
+            ...recovery.trade_signal,
+            reason: {
+                code: 'RECOVERED_DETERMINISTIC_OPPORTUNITY',
+                message: recovery.trade_signal.reason?.message || 'A verified deterministic pending-limit opportunity remains available.'
+            },
+            wait_condition: recovery.trade_signal.reason?.message || 'Price is waiting for the verified limit area.',
+            selection_recovery: {
+                code: 'STALE_AI_SELECTION_RECOVERED',
+                status: 'RECOVERED',
+                rejected_selection: rejection || null,
+                recovered_candidate_id: recovery.trade_signal.selected_candidate_id || today?.selected_candidate_id || null,
+                snapshot_reused: true
+            },
+            validation: {
+                passed: true,
+                reason: 'The replacement candidate was rebuilt and passed deterministic geometry, target lifecycle, RR, and lifecycle checks.',
+                rejected_selection: rejection || null,
+                current_opportunity: today || null
+            },
+            source: 'Deterministic Candidate Engine + Recovery'
+        };
+    }
     return {
         ...recovery.trade_signal,
         selected_candidate_id: null,
@@ -8540,6 +8747,13 @@ function buildRejectedSelectionWaitOutput({ today, pairLocal, price, asOfMs, mar
             reason: hasOpportunity ? 'AI selection rejected by final consistency checks; current opportunity recovered.' : 'AI selection rejected by final consistency checks; no replacement opportunity is currently available.',
             rejected_selection: rejection || null,
             current_opportunity: today || null
+        },
+        selection_recovery: {
+            code: reasonCode,
+            status: hasOpportunity ? 'WATCH_ONLY' : 'REJECTED',
+            rejected_selection: rejection || null,
+            recovered_candidate_id: today?.selected_candidate_id || null,
+            snapshot_reused: true
         },
         source
     };
@@ -8648,16 +8862,25 @@ function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure
         discovery_events: discoveryEvents,
         target_catalog: Object.fromEntries(['BUY', 'SELL'].map(direction => [direction.toLowerCase(), (targetCandidates?.all || []).filter(target => target.direction === direction).map(target => {
             const level = Number(target.level);
+            const lifecycle = target.target_lifecycle || assessTargetLifecycle(target, historyCache, { timeframe: target.timeframe });
             const accepted = validCandidates.some(candidate => candidate.target_map?.some(selected => Number(selected.target_level ?? selected.level) === level));
             const rejected = candidateRejections.filter(item => item.target_diagnostics && Number(item.target_diagnostics.best_target_level) === level)
                 .map(item => item.rejection_code || item.target_diagnostics.failure_code).filter(Boolean);
             if (target.reached) rejected.push('ALREADY_REACHED');
             if (target.consumed) rejected.push('CONSUMED');
             if (target.invalidated) rejected.push('INVALIDATED');
+            if (lifecycle.lifecycle_state === 'CONSUMED') rejected.push('TARGET_CONSUMED');
+            if (lifecycle.lifecycle_state === 'INVALIDATED') rejected.push('TARGET_INVALIDATED');
+            if (lifecycle.lifecycle_state === 'UNKNOWN') rejected.push(lifecycle.reason || 'TARGET_LIFECYCLE_UNKNOWN');
             if (target.ahead_of_current_price === false) rejected.push('BEHIND_CURRENT_PRICE');
             return { id: target.id, direction: target.direction, level: target.level, source: target.source, timeframe: target.timeframe,
                 structural_priority: target.structural_priority, created_time: target.created_time || null, reached: !!target.reached,
                 consumed: !!target.consumed, invalidated: !!target.invalidated, ahead_of_current_price: !!target.ahead_of_current_price,
+                source_candle_index: lifecycle.source_candle_index ?? target.source_candle_index ?? null,
+                lifecycle_required: target.lifecycle_required === true,
+                lifecycle_state: lifecycle.lifecycle_state,
+                lifecycle_reason: lifecycle.reason || null,
+                lifecycle_evidence: lifecycle.evidence || [],
                 ahead_of_entry: target.ahead_of_entry, reachability: target.reachability, accepted,
                 rejected: !accepted && rejected.length > 0, rejection_reasons: [...new Set(rejected)] };
         })])),
@@ -10670,6 +10893,10 @@ function validateExecutableCandidateInvariant(candidate, marketState = {}) {
     if (candidate.execution_zone_created_time != null && Number.isFinite(asOf) && normalizeTimestampUTC(candidate.execution_zone_created_time) > asOf + STRATEGY_SPEC.TIME.futureToleranceMs) failures.push('ZONE_TIME_INCONSISTENT');
     if (candidate.entry_consumed === true) failures.push('ENTRY_ALREADY_CONSUMED');
     if (candidate.tp1_already_reached === true) failures.push('SETUP_ALREADY_COMPLETED');
+    const primaryTarget = Array.isArray(candidate.target_map) ? candidate.target_map[0] : null;
+    const targetLifecycleState = String(candidate.target_lifecycle_state || primaryTarget?.target_lifecycle_state || '').toUpperCase();
+    if (['CONSUMED', 'INVALIDATED'].includes(targetLifecycleState)) failures.push(`TARGET_${targetLifecycleState}`);
+    if (targetLifecycleState === 'UNKNOWN' && primaryTarget?.target_lifecycle?.reason === 'TARGET_SOURCE_CANDLE_UNRESOLVED') failures.push('TARGET_LIFECYCLE_UNKNOWN');
     if (candidate.opportunity_status && !['FRESH_NOW', 'FRESH_PENDING_TODAY', 'FRESH_PENDING_LATER'].includes(candidate.opportunity_status)) failures.push('LIFECYCLE_NOT_SELECTABLE');
     if (candidate.target_map && candidate.target_map.length && !candidate.target_map[0].primary_target_source) failures.push('TARGET_PROVENANCE_INVALID');
     const rr = Math.abs(tp1 - entry) / Math.abs(entry - stop);
@@ -10703,7 +10930,9 @@ function validateFinalSignalConsistency(signal, liveMarketContext = {}) {
         if (signal.tp1_already_reached) issues.push('selected candidate TP1 is already reached');
         const candidateIsPendingLimit = isPendingLimitExecutionModel(candidate?.execution_model || candidate?.entry_model || signal.execution_model || signal.setup_type);
         if (signal.entry_reachable_today !== true && !candidateIsPendingLimit) issues.push('selected candidate entry is not reachable today');
-        if (!Number.isFinite(Number(signal.remaining_reward_fraction)) || Number(signal.remaining_reward_fraction) < STRATEGY_SPEC.FRESHNESS.minRemainingRewardFraction) issues.push('selected candidate reward is materially delivered');
+        const targetLifecycleState = String(candidate?.target_lifecycle_state || candidate?.target_map?.[0]?.target_lifecycle_state || '').toUpperCase();
+        const pendingTargetRemains = candidateIsPendingLimit && ['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(targetLifecycleState);
+        if (!pendingTargetRemains && (!Number.isFinite(Number(signal.remaining_reward_fraction)) || Number(signal.remaining_reward_fraction) < STRATEGY_SPEC.FRESHNESS.minRemainingRewardFraction)) issues.push('selected candidate reward is materially delivered');
         if (!['FRESH_NOW', 'FRESH_PENDING_TODAY', 'FRESH_PENDING_LATER'].includes(signal.opportunity_status)) issues.push('selected candidate lifecycle is not selectable');
         if (signal.limit_order_setup?.eligible !== true) issues.push('eligible limit signal has ineligible pending-limit state');
         if (signal.ai_decision !== 'pending_limit') issues.push('true limit signal does not expose pending_limit decision');

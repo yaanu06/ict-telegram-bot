@@ -431,6 +431,21 @@ describe('strategy entry lifecycle', () => {
         expect(result.opportunity_status).toBe('DELIVERY_ADVANCED');
     });
 
+    it('does not mark a pending limit stale when the quote is already beyond an unfulfilled target', () => {
+        const ctx = getContext();
+        const result = ctx.evaluateSetupLifecycle({
+            direction: 'SELL', execution_model: 'STRUCTURAL_LIMIT', entry: 110, zone_low: 109, zone_high: 111, tp1: 105,
+            target_lifecycle_state: 'UNFULFILLED',
+            strategy_setup: { primary: 'CRT', timeframe: '1H', reclaim_bar_index: 0, reclaim_time: '2026-09-28T00:00:00Z' }
+        }, {
+            price: 104.5, as_of_time: '2026-09-28T01:00:00Z',
+            historyCache: { '1H': [c(110, 111, 109, 110, '2026-09-28T00:00:00Z'), c(110, 108.5, 104.8, 105, '2026-09-28T01:00:00Z')] }
+        });
+        expect(result.tp1_already_reached).toBe(false);
+        expect(result.remaining_reward_fraction).toBe(1);
+        expect(result.rejection_code).toBeNull();
+    });
+
     it('penalizes partial delivery without making a limit order automatically low confidence', () => {
         const ctx = getContext();
         const normal = ctx.calculateCandidateConfidence({ direction: 'BUY', opportunity_status: 'FRESH_PENDING_TODAY', remaining_reward_fraction: 0.8, entry_reachability_score: 85, htf_alignment: 3, strategy_setup: { confirmations: ['TBS'] }, target_reachability: { reachability_score: 85 } });
@@ -1468,6 +1483,65 @@ describe('fresh execution downstream validation', () => {
         expect(result).toBeNull();
         expect(ctx.selectAdaptiveTargets.lastDiagnostics.failure_code).toBe('TARGETS_EXIST_BUT_RR_TOO_LOW');
         expect(ctx.selectAdaptiveTargets.lastDiagnostics.directional_target_count).toBe(1);
+    });
+
+    it('marks a target consumed only after closed-candle delivery crosses its source level', () => {
+        const ctx = getContext();
+        const history = [
+            c(110, 111, 105, 106, '2026-09-28T00:00:00Z'),
+            c(106, 107, 104.8, 105.2, '2026-09-28T01:00:00Z')
+        ];
+        const lifecycle = ctx.assessTargetLifecycle({
+            id: 'sell-liquidity-105', direction: 'SELL', timeframe: '1H', source: 'SELL_SIDE_LIQUIDITY',
+            level: 105, source_candle_index: 0, lifecycle_required: true
+        }, { '1H': history });
+        expect(lifecycle.lifecycle_state).toBe('CONSUMED');
+        expect(lifecycle.evidence[0]).toMatchObject({ kind: 'DELIVERY_THROUGH_LEVEL', index: 1 });
+    });
+
+    it('skips a consumed nearer target and selects a farther genuine objective', () => {
+        const ctx = getContext();
+        const history = [
+            c(110, 111, 105, 106, '2026-09-28T00:00:00Z'),
+            c(106, 107, 104.8, 105.2, '2026-09-28T01:00:00Z'),
+            c(105.2, 106, 104.7, 105, '2026-09-28T02:00:00Z')
+        ];
+        const result = ctx.selectAdaptiveTargets('SELL', 110, 112, {
+            sell: [
+                { id: 'near', direction: 'SELL', level: 105, source: 'SELL_SIDE_LIQUIDITY', timeframe: '1H', structural_priority: 90, source_candle_index: 0, lifecycle_required: true },
+                { id: 'far', direction: 'SELL', level: 104, source: 'SWING_LOW', timeframe: '1H', structural_priority: 76, source_candle_index: 1, lifecycle_required: true }
+            ], buy: []
+        }, 2, 2, { currentPrice: 104.5, executionModel: 'PENDING_LIMIT', historyCache: { '1H': history }, zones: [], liquidity: { above: [], below: [] }, strategySetup: { target_candidates: [] } });
+        expect(result.tp1.id).toBe('far');
+        expect(result.tp1.target_lifecycle_state).toBe('UNFULFILLED');
+        expect(ctx.selectAdaptiveTargets.lastDiagnostics.consumed_target_count).toBe(1);
+    });
+
+    it('keeps an untouched target eligible even when the current quote is already beyond it', () => {
+        const ctx = getContext();
+        const history = [
+            c(110, 111, 105, 106, '2026-09-28T00:00:00Z'),
+            c(106, 106.5, 105.2, 105.4, '2026-09-28T01:00:00Z')
+        ];
+        const result = ctx.selectAdaptiveTargets('SELL', 110, 112, {
+            sell: [{ id: 'untouched', direction: 'SELL', level: 105, source: 'SELL_SIDE_LIQUIDITY', timeframe: '1H', structural_priority: 90, source_candle_index: 0, lifecycle_required: true }],
+            buy: []
+        }, 2, 2, { currentPrice: 104.5, executionModel: 'PENDING_LIMIT', historyCache: { '1H': history }, zones: [], liquidity: { above: [], below: [] }, strategySetup: { target_candidates: [] } });
+        expect(result.tp1).toMatchObject({ id: 'untouched', target_lifecycle_state: 'UNFULFILLED' });
+    });
+
+    it('rejects a pending limit when every genuine target is consumed', () => {
+        const ctx = getContext();
+        const history = [
+            c(110, 111, 105, 106, '2026-09-28T00:00:00Z'),
+            c(106, 107, 104.5, 104.8, '2026-09-28T01:00:00Z')
+        ];
+        const result = ctx.selectAdaptiveTargets('SELL', 110, 112, {
+            sell: [{ id: 'consumed', direction: 'SELL', level: 105, source: 'SELL_SIDE_LIQUIDITY', timeframe: '1H', structural_priority: 90, source_candle_index: 0, lifecycle_required: true }],
+            buy: []
+        }, 2, 2, { currentPrice: 104.5, executionModel: 'PENDING_LIMIT', historyCache: { '1H': history }, zones: [], liquidity: { above: [], below: [] }, strategySetup: { target_candidates: [] } });
+        expect(result).toBeNull();
+        expect(ctx.selectAdaptiveTargets.lastDiagnostics.failure_code).toBe('NO_UNFULFILLED_TARGET');
     });
 });
 
@@ -2623,6 +2697,31 @@ describe('getQuoteDirection', () => {
         expect(signal.opportunity).toBeUndefined();
         expect(publicSignal.analysis.trend_detection).toEqual({ '1D': 'BEARISH', '4H': 'BULLISH_TRANSITION', '1H': 'BULLISH', '15M': 'MIXED' });
         expect(publicSignal.analysis.technical_indicators).toEqual({ adx_4h: 25 });
+    });
+
+    it('publishes a verified replacement pending limit instead of forcing WAIT during recovery', () => {
+        const ctx = getContext();
+        const signal = ctx.buildRejectedSelectionWaitOutput({
+            today: {
+                state: 'TRADE_READY', selected_candidate_id: 'replacement-candidate', direction: 'SELL', strategy: 'MSNR',
+                confidence: 63, reason: 'A verified replacement remains available.', reason_code: 'TRADE_READY',
+                area_of_interest: { low: 1.1408, high: 1.1411, source: 'MSNR', timeframe: '1H', zone_id: 'replacement-zone' },
+                execution_model: 'STRUCTURAL_LIMIT', setup_state: 'PENDING_LIMIT', execution_state: 'PENDING_LIMIT',
+                entry: 1.14094, stop_loss: 1.14232, tp1: 1.13741, tp2: 1.13730, tp3: 1.13718,
+                rr: 2.56, target: { id: 'target-1', level: 1.13741, source: 'SELL_SIDE_LIQUIDITY' }, target_level: 1.13741,
+                structural_invalidation: { level: 1.14232, source: 'MSNR_ZONE_INVALIDATION' },
+                quality: { final_confidence: 63, quality_breakdown: { quality_band: 'MEDIUM' } },
+                activation_conditions: ['Price retraces into the verified limit area.'], cancellation_conditions: ['Target is consumed before entry.']
+            },
+            pairLocal: 'EUR/USD', price: 1.13671, asOfMs: Date.parse('2026-09-28T07:00:00Z'), marketOpen: true,
+            rejection: { valid: false, issues: ['selected candidate reward is materially delivered'] }
+        });
+        expect(signal.trade_type).toBe('SELL_LIMIT');
+        expect(signal.decision).toBe('SELL_LIMIT');
+        expect(signal.setup_state).toBe('PENDING_LIMIT');
+        expect(signal.selected_candidate_id).toBe('replacement-candidate');
+        expect(signal.reason.code).toBe('RECOVERED_DETERMINISTIC_OPPORTUNITY');
+        expect(signal.selection_recovery).toMatchObject({ code: 'STALE_AI_SELECTION_RECOVERED', status: 'RECOVERED', snapshot_reused: true });
     });
 });
 
