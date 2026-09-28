@@ -831,7 +831,7 @@ describe('top-down trade context', () => {
         const second = ctx.buildTimeframeContext({ ...input, historyCache: { '1H': [...data, { o: 200, h: 300, l: 1, c: 299, is_closed: false }] } });
         expect(second['1H']).toEqual(first['1H']);
         expect(first['1H'].structural_evidence_ids).toEqual(ctx.buildTimeframeContext(input)['1H'].structural_evidence_ids);
-        expect(first).not.toHaveProperty('5M');
+        expect(first).toHaveProperty('5M');
     });
 
     it('exposes compact top-down truth without changing the selected execution timeframe', () => {
@@ -965,16 +965,58 @@ describe('top-down trade context', () => {
             timeframe_context: tf, execution_zones: [zone], target_candidates: { buy: [{ direction: 'BUY', level: 110, source: 'BUY_SIDE_LIQUIDITY' }] }
         }, { pair: 'XAU/USD', current_price: 101 });
         expect(result.verified).toBe(true);
-        expect(result.setup.primary).toBe('ICT');
+        expect(result.setup.primary).toBe('MARKET_MECHANICS');
         expect(result.setup.execution_zone.id).toBe(zone.id);
     });
 
-    it('blocks an isolated strategy-backed candidate from executable authorization', () => {
+    it('promotes a verified future market-mechanics limit without present-time confirmation', () => {
         const ctx = getContext();
-        const result = ctx.validateExecutableCandidateInvariant({ direction: 'BUY', entry: 100, stop_loss: 98, tp1: 106,
-            strategy_setup: { primary: 'CRT' }, trade_context_classification: 'LTF_ISOLATED' }, { as_of_time: Date.now() });
-        expect(result.valid).toBe(false);
-        expect(result.failures).toContain('LTF_ISOLATED');
+        const zone = { id: 'OB-1H-SELL', type: 'OB', direction: 'SELL', timeframe: '1H', low: 110, high: 112, primary_eligible: true, freshness: 'FRESH', created_time: Date.parse('2026-09-14T08:00:00Z') };
+        const evidence = {
+            timeframe_context: {
+                '4H': { effective_trend: 'BEARISH', structural_trend: 'BEARISH', structural_evidence_ids: [], evidence: [], structure: { recent_swing_highs: [{ level: 116 }] } },
+                '1H': { effective_trend: 'BEARISH', structural_trend: 'BEARISH', structural_evidence_ids: [], evidence: [], structure: { recent_swing_highs: [{ level: 116 }] } }
+            },
+            execution_zones: [zone], poi_zones: [zone],
+            target_candidates: { sell: [{ id: 'SSL-100', direction: 'SELL', level: 100, source: 'SELL_SIDE_LIQUIDITY' }] }
+        };
+        const result = ctx.verifyAiMarketMechanicsHypothesis({ hypothesis_id: 'LIMIT-1', strategy: 'MARKET_MECHANICS', direction: 'SELL', setup_mode: 'PENDING_LIMIT', setup_timeframe: '4H', execution_timeframe: '1H', preferred_execution_zone_ids: [zone.id], target_candidate_ids: ['SSL-100'] }, evidence, { pair: 'XAU/USD', current_price: 100 });
+        expect(result.verified).toBe(true);
+        expect(result.setup.execution_model).toBe('PENDING_LIMIT');
+        expect(result.setup.execution_confirmed).toBe(true);
+        expect(ctx.hasExecutableOpportunityBacking(result.setup)).toBe(true);
+    });
+
+    it('rejects AI geometry that places an entry outside the referenced POI', () => {
+        const ctx = getContext();
+        const zone = { id: 'FVG-1H-SELL', type: 'FVG', direction: 'SELL', timeframe: '1H', low: 110, high: 112, primary_eligible: true, freshness: 'FRESH' };
+        const evidence = {
+            timeframe_context: { '1H': { effective_trend: 'BEARISH', structural_trend: 'BEARISH', evidence: [], structure: { recent_swing_highs: [{ level: 116 }] } } },
+            execution_zones: [zone], target_candidates: { sell: [{ id: 'SSL-100', direction: 'SELL', level: 100, source: 'SELL_SIDE_LIQUIDITY' }] }
+        };
+        const result = ctx.verifyAiMarketMechanicsHypothesis({ hypothesis_id: 'BAD-ENTRY', strategy: 'MARKET_MECHANICS', direction: 'SELL', setup_mode: 'LIMIT', setup_timeframe: '1H', execution_timeframe: '1H', preferred_execution_zone_ids: [zone.id], target_candidate_ids: ['SSL-100'], proposed_geometry: { entry_zone: { low: 110, high: 112 }, entry: 120 } }, evidence, { pair: 'XAU/USD', current_price: 100 });
+        expect(result.verified).toBe(false);
+        expect(result.reason_code).toBe('AI_ENTRY_ZONE_UNSUPPORTED');
+    });
+
+    it('builds one evidence package from closed candles across all live timeframes', () => {
+        const ctx = getContext();
+        const bars = candles(40, 100, 0.2, 'up').map((bar, index) => ({ ...bar, t: Date.UTC(2026, 8, 1) + index * 3600000, is_closed: true }));
+        const catalog = ctx.buildAiMarketEvidenceCatalog({ pair: 'XAU/USD', current_price: 108, symbol_metadata: {}, market_context: { timeframe_context: {} }, structure: {} }, Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, bars])));
+        expect(Object.keys(catalog.market_evidence_package.timeframes)).toEqual(['1D', '4H', '1H', '15M', '5M']);
+        expect(catalog.market_evidence_package.timeframes['4H'].raw_closed_candles.length).toBeGreaterThan(0);
+        expect(catalog.market_evidence_package.timeframes['5M'].raw_closed_candles[0].is_closed).toBe(true);
+    });
+
+    it('keeps isolated pending limits executable while confirmation entries remain blocked', () => {
+        const ctx = getContext();
+        const pending = ctx.validateExecutableCandidateInvariant({ direction: 'BUY', entry: 100, stop_loss: 98, tp1: 106,
+            execution_model: 'PENDING_LIMIT', strategy_setup: { primary: 'CRT' }, trade_context_classification: 'LTF_ISOLATED' }, { as_of_time: Date.now() });
+        expect(pending.valid).toBe(true);
+        const confirmation = ctx.validateExecutableCandidateInvariant({ direction: 'BUY', entry: 100, stop_loss: 98, tp1: 106,
+            execution_model: 'CONFIRMATION_ENTRY', strategy_setup: { primary: 'CRT' }, trade_context_classification: 'LTF_ISOLATED' }, { as_of_time: Date.now() });
+        expect(confirmation.valid).toBe(false);
+        expect(confirmation.failures).toContain('LTF_ISOLATED');
     });
 });
 
@@ -3203,7 +3245,7 @@ describe('live AI market context and prompt', () => {
             strategy_setups: []
         }, { includeAccountRules: false });
         expect(result.valid).toBe(false);
-        expect(result.reasons).toContain('candidate is not backed by a supported CRT/TBS/MSNR strategy');
+        expect(result.reasons).toContain('candidate is not backed by a verified executable opportunity');
     });
 
     it('detects deterministic bullish and bearish Turtle Soup strategy setups', () => {

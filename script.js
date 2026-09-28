@@ -10,7 +10,7 @@ if (tg) { tg.expand(); tg.ready(); }
 // CONFIG
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
-const APP_BUILD_ID = '20260922-114';
+const APP_BUILD_ID = '20260928-001';
 let lastDisplayedPublicSignal = null;
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
@@ -1961,6 +1961,7 @@ function narrativeEventIndex(setup, data) {
 function getDisplayStrategyLabel(setup = {}, zoneType = null) {
     const source = setup?.strategy_setup && typeof setup.strategy_setup === 'object' ? setup.strategy_setup : setup;
     const primary = canonicalStrategyName(source?.primary || source?.strategy);
+    if (primary === 'MARKET_MECHANICS') return 'MARKET_MECHANICS';
     if (isInformationalStrategy(primary)) return 'ICT';
     const strategies = getExecutableStrategyComponents(setup);
     return strategies.length ? strategies.join('+') : 'ICT';
@@ -2031,6 +2032,27 @@ function hasExecutableStrategyBacking(setup = {}) {
     // label such as CRT+ICT or FVG+CRT.
     if (isInformationalStrategy(primary)) return false;
     return true;
+}
+
+// AI-verified market mechanics are executable only after the analyst has
+// referenced deterministic zones, invalidation, and target evidence. A plain
+// ICT/FVG/OB record never satisfies this predicate on its own.
+function hasExecutableOpportunityBacking(setup = {}) {
+    if (hasExecutableStrategyBacking(setup)) return true;
+    const source = setup?.strategy_setup && typeof setup.strategy_setup === 'object'
+        ? setup.strategy_setup
+        : setup;
+    const zone = source?.execution_zone || setup?.execution_zone;
+    const invalidation = getAuthoritativeStructuralInvalidation(zone, source);
+    const targets = Array.isArray(source?.target_candidates) ? source.target_candidates : [];
+    return source?.ai_verified === true
+        && source?.market_mechanics_verified === true
+        && ['BUY', 'SELL'].includes(source?.direction)
+        && Number.isFinite(Number(zone?.low))
+        && Number.isFinite(Number(zone?.high))
+        && Number(zone.high) >= Number(zone.low)
+        && !!invalidation
+        && targets.some(target => Number.isFinite(Number(target?.level)));
 }
 
 function isDirectionalDisplacement(candle, direction, atrValue) {
@@ -4939,7 +4961,7 @@ const TOP_DOWN_QUALITY_ADJUSTMENTS = Object.freeze({
 });
 
 function buildTimeframeContext({ historyCache = {}, structure = {}, price, strategySetups = [], zones = [], liquidity = {} } = {}) {
-    return Object.fromEntries(['1D', '4H', '1H', '15M'].map(tf => {
+    return Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => {
         const data = getClosedHistory(historyCache, tf);
         const snapshot = structure[tf] || buildStructureSnapshot(data, tf);
         const lastTime = data.at(-1)?.t ?? 'UNAVAILABLE';
@@ -4980,7 +5002,7 @@ function buildTimeframeContext({ historyCache = {}, structure = {}, price, strat
         const levels = zones.filter(z => z.timeframe === tf && !z.invalidated);
         const majorLiquidity = liquidity[tf] || mapLiquidity(data);
         return [tf, {
-            role: { '1D': 'MACRO_CONTEXT', '4H': 'PRIMARY_NARRATIVE', '1H': 'INTRADAY_STRUCTURE', '15M': 'EXECUTION_SETUP' }[tf],
+            role: { '1D': 'MACRO_CONTEXT', '4H': 'PRIMARY_NARRATIVE', '1H': 'INTRADAY_STRUCTURE', '15M': 'EXECUTION_STRUCTURE', '5M': 'EXECUTION_REFINEMENT' }[tf],
             bias, structural_trend: structuralTrend, momentum_trend: snapshot.momentum_trend || 'NEUTRAL', effective_trend: effectiveTrend, displayed_trend: displayedTrend, structure: snapshot, mss: snapshot.mss || null,
             bos: { buy: !!snapshot.bos_buy, sell: !!snapshot.bos_sell },
             choch: { buy: !!snapshot.choch_buy, sell: !!snapshot.choch_sell },
@@ -5298,17 +5320,27 @@ function buildOpportunityThesis(setup, marketContext, price) {
     const invalidation = getAuthoritativeStructuralInvalidation(executionZone || zone, setup);
     const target = (setup.target_candidates || []).find(t => Number.isFinite(t.level)
         && (setup.direction === 'BUY' ? t.level > price : t.level < price));
-    const model = setup.execution_model === 'CONFIRMATION_ENTRY' || setup.entry_model === 'CONFIRMATION_ENTRY'
-        || topDown.classification !== 'HTF_ALIGNED_CONTINUATION' ? 'CONFIRMATION_ENTRY' : 'PENDING_LIMIT';
+    const explicitModel = String(setup.execution_model || setup.entry_model || '').toUpperCase();
+    const model = explicitModel === 'CONFIRMATION_ENTRY'
+        ? 'CONFIRMATION_ENTRY'
+        : explicitModel === 'PENDING_LIMIT' || explicitModel === 'FRESH_RETRACEMENT_LIMIT' || explicitModel === 'STRUCTURAL_LIMIT'
+            ? 'PENDING_LIMIT'
+            : topDown.classification === 'HTF_ALIGNED_CONTINUATION' ? 'PENDING_LIMIT' : 'CONFIRMATION_ENTRY';
     const confirmation = setup.market_mechanics_verified === true && setup.execution_confirmed === true
         || topDown.classification === 'HTF_VERIFIED_REVERSAL';
     const failures = [];
+    const qualityWarnings = [];
     if (!zone || !Number.isFinite(zone.low) || !Number.isFinite(zone.high) || zone.high < zone.low) failures.push('NO_MEANINGFUL_POI');
     if (zone?.invalidated) failures.push('POI_INVALIDATED');
     if (zone?.mitigated || zone?.touch_count > 0 || ['CONSUMED', 'USED'].includes(zone?.freshness)) failures.push('POI_CONSUMED');
     if (!invalidation) failures.push('NO_STRUCTURAL_INVALIDATION');
     if (!target) failures.push('NO_REAL_TARGET');
-    if (topDown.classification === 'LTF_ISOLATED') failures.push('LTF_ISOLATED');
+    if (topDown.classification === 'LTF_ISOLATED') {
+        // A pending limit is intentionally allowed to wait at a future POI.
+        // Isolation affects ranking and explanation; it is a hard issue only
+        // when the setup explicitly says confirmation is required.
+        (model === 'CONFIRMATION_ENTRY' ? failures : qualityWarnings).push('LTF_ISOLATED');
+    }
     if (model === 'CONFIRMATION_ENTRY' && executionZone && !confirmation) failures.push('EXECUTION_NOT_CONFIRMED');
     return { id: `THESIS:${setup.id}`, direction: setup.direction, daily_bias: marketContext.daily_bias,
         htf_narrative: topDown, liquidity_draw: target?.source || null,
@@ -5320,7 +5352,10 @@ function buildOpportunityThesis(setup, marketContext, price) {
         strategy_confluence: [setup.primary, ...(setup.confirmations || [])],
         target_intent: target?.source || null, structural_invalidation_intent: invalidation,
         evidence_ids: [...topDown.evidence_ids, ...(setup.structural_evidence_ids || [])],
-        state: failures.length ? 'AWAITING_CONFIRMATION' : 'EXECUTION_VALID', rejection_codes: failures };
+        state: failures.length ? 'AWAITING_CONFIRMATION' : 'EXECUTION_VALID',
+        rejection_codes: failures,
+        hard_rejection_codes: failures,
+        quality_warnings: qualityWarnings };
 }
 
 function prepareOpportunitySetups(setups, marketContext, price) {
@@ -5948,13 +5983,14 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const validCandidates = [];
     const rejectedCandidates = [];
     const supportedStrategySetups = Array.isArray(strategySetups)
-        ? strategySetups.filter(hasExecutableStrategyBacking)
+        ? strategySetups.filter(hasExecutableOpportunityBacking)
         : [];
     const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(supportedStrategySetups) : [];
     const poiZones = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pair, symbolMetadata || {}));
     const labeledZoneKeys = new Set(strategyExecutionZones.map(strategyZoneKey));
-    // FVG/OB/ICT locations remain discovery evidence. A primary order must
-    // be owned by one of the supported CRT/TBS/MSNR strategies.
+    // Generic zones remain discovery evidence. Production orders require
+    // either CRT/TBS/MSNR ownership or a separately AI-verified mechanics
+    // thesis with deterministic zone, stop, and target backing.
     const genericMarketZones = !supportedStrategySetups.length && !Array.isArray(strategySetups)
         ? (zones || []).filter(zone => !labeledZoneKeys.has(strategyZoneKey(zone))
             && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price))
@@ -6031,10 +6067,10 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         // no-strategy call path remains diagnostic-only for older unit callers;
         // it cannot authorize a production candidate because production always
         // supplies an explicit strategy array.
-        const marketMechanicsVerified = !Array.isArray(strategySetups)
-            && !strategySetup
-            && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price);
-        if (Array.isArray(strategySetups) && !strategySetup) { failSeed(seed, 'NO_EXECUTABLE_STRATEGY_BACKING'); continue; }
+        const marketMechanicsVerified = strategySetup?.market_mechanics_verified === true
+            || (!Array.isArray(strategySetups) && !strategySetup
+                && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price));
+        if (Array.isArray(strategySetups) && (!strategySetup || !hasExecutableOpportunityBacking(strategySetup))) { failSeed(seed, 'NO_EXECUTABLE_OPPORTUNITY_BACKING'); continue; }
         const setupModel = String(strategySetup?.opportunity_thesis?.execution_model || strategySetup?.execution_model || strategySetup?.entry_model || zone.execution_model || '').toUpperCase();
         if (strategySetup && !isPendingLimitExecutionModel(setupModel) && strategySetup.opportunity_thesis?.state !== 'EXECUTION_VALID' && marketContext?.daily_bias) {
             for (const code of strategySetup?.opportunity_thesis?.rejection_codes || ['NO_DIRECTION_THESIS']) failSeed(seed, code);
@@ -6892,7 +6928,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     // A future retracement limit can be created after price has already
     // crossed its eventual target while the order remains unfilled.
     const pendingRetracementLocation = pendingLimitModel
-        && hasExecutableStrategyBacking(setup || candidate)
+        && hasExecutableOpportunityBacking(setup || candidate)
         && ((candidate.direction === 'SELL' && zonePriceStatus.pricePosition === 'BELOW_ZONE')
             || (candidate.direction === 'BUY' && zonePriceStatus.pricePosition === 'ABOVE_ZONE'));
     if ((Number.isInteger(index) && index >= 0 && index < lifecycleData.length) || eventCutoff != null) {
@@ -7085,8 +7121,8 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
         if (lifecycle.rejection_code) return { valid: false, checks, reasons: [lifecycle.rejection_code], metrics };
     }
     if (marketContext.require_strategy_setup) {
-        if (!hasExecutableStrategyBacking(strategySetup || candidate)) {
-            add('candidate is not backed by a supported CRT/TBS/MSNR strategy');
+        if (!hasExecutableOpportunityBacking(strategySetup || candidate)) {
+            add('candidate is not backed by a verified executable opportunity');
         }
     }
 
@@ -8029,6 +8065,10 @@ function compactAiDiagnostics(analysis = null) {
         hypotheses_received: Number(analysis.hypotheses_received) || 0,
         hypotheses_verified: Number(analysis.hypotheses_verified) || 0,
         hypotheses_rejected: Number(analysis.hypotheses_rejected) || 0,
+        hard_rejections: Array.isArray(analysis.hard_rejections) ? analysis.hard_rejections.slice(0, 40) : [],
+        quality_warnings: Array.isArray(analysis.quality_warnings) ? analysis.quality_warnings.slice(0, 40) : [],
+        request_payload: analysis.request_payload || null,
+        raw_response: typeof analysis.raw_response === 'string' ? analysis.raw_response.slice(0, 30000) : null,
         final_selector_called: analysis.final_selector_called === true,
         selected_candidate_id: analysis.selected_candidate_id || null,
         setups_added_from_ai: Number(analysis.setups_added_from_ai) || 0,
@@ -8041,7 +8081,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
     const state = {
         state: 'NO_TRADE_TODAY', bias: marketContext.directional_bias || aiAnalysis?.market_view?.bias || 'NEUTRAL', strategy: null, direction: null, narrative_id: null,
         daily_bias: marketContext.daily_bias || null,
-        trend_detection: Object.fromEntries(['1D', '4H', '1H', '15M'].map(tf => [tf,
+        trend_detection: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf,
             marketContext.timeframe_context?.[tf]?.displayed_trend
             || marketContext.timeframe_context?.[tf]?.effective_trend
             || marketContext.structure?.[tf]?.effective_trend
@@ -8389,7 +8429,7 @@ function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, select
     return buildTodayOpportunity({
         ...scanArgs,
         marketContext: liveMarketContext.market_context,
-        strategySetups: (liveMarketContext.strategy_setups || []).filter(hasExecutableStrategyBacking),
+        strategySetups: (liveMarketContext.strategy_setups || []).filter(hasExecutableOpportunityBacking),
         aiAnalysis: liveMarketContext.ai_analysis,
         executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
         candidateDiagnostics: liveMarketContext.setup_candidate_audit,
@@ -8473,7 +8513,7 @@ function buildCanonicalMarketTheses(strategySetups, marketContext, targetCandida
 
 function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure, timeframeContext, liquidity, zones, targetCandidates, strategySetups, candidatePipeline, candidateRejections = [], validCandidates = [], discoveryEvents = [], opportunityFunnel }) {
     const timeframe = {};
-    for (const tf of ['1D', '4H', '1H', '15M']) {
+    for (const tf of ['1D', '4H', '1H', '15M', '5M']) {
         const data = getClosedHistory(historyCache, tf);
         const snapshot = structure?.[tf] || {};
         const context = timeframeContext?.[tf] || {};
@@ -8490,7 +8530,7 @@ function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure
             mss: snapshot.mss || null,
             displacement: { buy: detectDisplacement(data, 'BUY'), sell: detectDisplacement(data, 'SELL') },
             liquidity_sweeps: tfLiquidity.sweeps || [],
-            premium_discount: tf === '4H' || tf === '1H' ? isPremiumDiscount(data, price) : null,
+            premium_discount: ['4H', '1H', '15M', '5M'].includes(tf) ? isPremiumDiscount(data, price) : null,
             pois: (zones || []).filter(zone => zone.timeframe === tf).map(zone => ({ id: zone.id, type: zone.type, direction: zone.direction, low: zone.low, high: zone.high, freshness: zone.freshness }))
         };
     }
@@ -8547,7 +8587,9 @@ function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure
                 consumed: !!target.consumed, invalidated: !!target.invalidated, ahead_of_current_price: !!target.ahead_of_current_price,
                 ahead_of_entry: target.ahead_of_entry, reachability: target.reachability, accepted,
                 rejected: !accepted && rejected.length > 0, rejection_reasons: [...new Set(rejected)] };
-        })]))
+        })])),
+        hard_rejections: (candidateRejections || []).map(item => ({ id: item.id || null, code: item.rejection_code || 'REJECTED', reasons: item.rejection_reasons || [] })),
+        quality_warnings: (strategySetups || []).flatMap(setup => (setup.opportunity_thesis?.quality_warnings || []).map(code => ({ setup_id: setup.id, code })))
     };
 }
 
@@ -8572,7 +8614,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const volatilityRegime = classifyVolatility(atrPct);
 
     const structure = {};
-    for (const tf of ['1D', '4H', '1H', '15M']) {
+    for (const tf of ['1D', '4H', '1H', '15M', '5M']) {
         structure[tf] = buildStructureSnapshot(historyCache?.[tf], tf);
     }
 
@@ -8611,7 +8653,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const compression = {
         '4H': detectCompression(historyCache?.['4H'] || []),
         '1H': detectCompression(historyCache?.['1H'] || []),
-        '15M': detectCompression(historyCache?.['15M'] || [])
+        '15M': detectCompression(historyCache?.['15M'] || []),
+        '5M': detectCompression(historyCache?.['5M'] || [])
     };
     const displacement = {
         buy_4h: detectDisplacement(historyCache?.['4H'] || [], 'BUY'),
@@ -8804,6 +8847,12 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     stageContext.limit_order_setup.rejection_detail = summarizeCandidateRejectionDetails(adaptiveSetupResult.rejected_candidates);
     const strategyDetectionSummary = summarizeStrategyDetections(strategySetups);
     const candidatePipelineAudit = buildCandidatePipelineAudit(strategySetups, adaptiveSetupResult.raw_candidates, adaptiveSetupResult.rejected_candidates, adaptiveSetupResult.valid_candidates, adaptiveSetupResult.seed_diagnostics);
+    const hardRejections = adaptiveSetupResult.rejected_candidates.map(item => ({
+        id: item.id || null,
+        code: item.rejection_code || 'REJECTED',
+        reasons: item.rejection_reasons || []
+    }));
+    const qualityWarnings = strategySetups.flatMap(setup => (setup.opportunity_thesis?.quality_warnings || []).map(code => ({ setup_id: setup.id, code })));
     marketContext.opportunity_funnel = {
         ...(marketContext.opportunity_funnel || {}),
         structural_stop_valid: candidatePipelineAudit.structural_stops_valid,
@@ -8852,7 +8901,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
                 '1D': marketContext.timeframe_context?.['1D']?.displayed_trend || getCanonicalDisplayedTrend(structure['1D']),
                 '4H': marketContext.timeframe_context?.['4H']?.displayed_trend || getCanonicalDisplayedTrend(structure['4H']),
                 '1H': marketContext.timeframe_context?.['1H']?.displayed_trend || getCanonicalDisplayedTrend(structure['1H']),
-                '15M': marketContext.timeframe_context?.['15M']?.displayed_trend || getCanonicalDisplayedTrend(structure['15M'])
+                '15M': marketContext.timeframe_context?.['15M']?.displayed_trend || getCanonicalDisplayedTrend(structure['15M']),
+                '5M': marketContext.timeframe_context?.['5M']?.displayed_trend || getCanonicalDisplayedTrend(structure['5M'])
             },
             bias: {
                 '1D': structure['1D'].bias,
@@ -8903,6 +8953,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             rejected_candidate_count: adaptiveSetupResult.rejected_candidates.length,
             rejection_summary: summarizeCandidateRejections(adaptiveSetupResult.rejected_candidates),
             rejection_detail: summarizeCandidateRejectionDetails(adaptiveSetupResult.rejected_candidates),
+            hard_rejections: hardRejections,
+            quality_warnings: qualityWarnings,
             market_open: marketState.is_market_open
         },
         entry_filters: entryContext || null
@@ -8974,6 +9026,10 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         provider_metadata: liveMarketContext.provider_metadata || null,
         daily_bias: liveMarketContext.daily_bias || null,
         market_regime: liveMarketContext.market_regime || null,
+        market_evidence_package: liveMarketContext.market_evidence_package || null,
+        ai_analysis: liveMarketContext.ai_analysis || null,
+        hard_rejections: liveMarketContext.hard_rejections || [],
+        quality_warnings: liveMarketContext.quality_warnings || [],
         strategy_setups: liveMarketContext.strategy_setups || [],
         canonical_market_theses: liveMarketContext.market_theses || {},
         opportunity_funnel: liveMarketContext.opportunity_funnel || liveMarketContext.market_context?.opportunity_funnel || null,
@@ -9033,7 +9089,7 @@ function replayCapturedScan(replay) {
             provider_timestamp_utc: replay.runtime_state.quote_snapshot.provider_timestamp_utc || replay.runtime_state.quote_snapshot.timestamp || null
         } : null });
     const today = buildTodayOpportunity({ pair: replay.pair, currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
-        marketContext: live.market_context, strategySetups: (live.strategy_setups || []).filter(hasExecutableStrategyBacking), executionZones: [...(live.strategy_execution_zones || []), ...(live.real_ict_zones || [])],
+        marketContext: live.market_context, strategySetups: (live.strategy_setups || []).filter(hasExecutableOpportunityBacking), executionZones: [...(live.strategy_execution_zones || []), ...(live.real_ict_zones || [])],
         candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, futureWatchCandidates: live.future_watch_candidates, lowQualityCandidates: live.low_quality_candidates, targetCandidates: live.target_candidates,
         symbolMetadata: live.symbol_metadata,
         marketOpen: live.market_open });
@@ -9247,6 +9303,78 @@ function compactAIContext(liveMarketContext) {
     };
 }
 
+function buildCanonicalMarketEvidencePackage(liveMarketContext = {}, historyCache = {}) {
+    const pairLocal = liveMarketContext.pair || pair;
+    const metadata = liveMarketContext.symbol_metadata || {};
+    const price = Number(liveMarketContext.current_price);
+    const timeframes = {};
+    for (const timeframe of ['1D', '4H', '1H', '15M', '5M']) {
+        const data = getClosedHistory(historyCache, timeframe);
+        const snapshot = liveMarketContext.structure?.[timeframe] || buildStructureSnapshot(data, timeframe);
+        const tfContext = liveMarketContext.market_context?.timeframe_context?.[timeframe] || {};
+        const liquidity = liveMarketContext.liquidity?.[timeframe] || mapLiquidity(data, pairLocal, metadata);
+        const fvg = detectFVG(data, pairLocal, metadata) || [];
+        const orderBlocks = {
+            buy: detectOrderBlocks(data, 'BUY') || [],
+            sell: detectOrderBlocks(data, 'SELL') || []
+        };
+        const msnrResult = calculateMSNR(data, price, timeframe, pairLocal, metadata);
+        const msnr = (msnrResult?.structural_levels || []).filter(level => level.origin === 'STRUCTURAL_MSNR');
+        const pois = ['1D', '4H', '1H', '15M', '5M'].includes(timeframe)
+            ? buildSupplyDemandAndFlipPOIs(data, timeframe, price, pairLocal, metadata)
+            : [];
+        const swings = findSwings(data, 3);
+        const recent = data.slice(-45).map((candle, index) => ({
+            index: data.length - Math.min(45, data.length) + index,
+            t: candle.t ?? null, o: candle.o, h: candle.h, l: candle.l, c: candle.c, v: candle.v ?? null,
+            is_closed: candle.is_closed !== false
+        }));
+        const previous = data.length > 1 ? data[data.length - 2] : null;
+        const dailyData = getClosedHistory(historyCache, '1D');
+        const previousDay = dailyData.length > 1 ? dailyData[dailyData.length - 2] : null;
+        timeframes[timeframe] = {
+            timeframe,
+            role: tfContext.role || ({ '1D': 'MACRO_CONTEXT', '4H': 'PRIMARY_LOCATION', '1H': 'INTERMEDIATE_STRUCTURE', '15M': 'EXECUTION_STRUCTURE', '5M': 'EXECUTION_REFINEMENT' }[timeframe]),
+            closed_candle_count: data.length,
+            current_closed_price: data.at(-1)?.c ?? null,
+            raw_closed_candles: recent,
+            structure: {
+                structural_trend: snapshot.structural_trend || snapshot.trend || 'NEUTRAL',
+                momentum_trend: snapshot.momentum_trend || 'NEUTRAL',
+                effective_trend: snapshot.effective_trend || snapshot.trend || 'NEUTRAL',
+                bias: snapshot.bias || null,
+                sequence: snapshot.structure_sequence || [],
+                swing_highs: snapshot.recent_swing_highs || swings.H || [],
+                swing_lows: snapshot.recent_swing_lows || swings.L || [],
+                bos: { buy: !!snapshot.bos_buy, sell: !!snapshot.bos_sell },
+                choch: { buy: !!snapshot.choch_buy, sell: !!snapshot.choch_sell },
+                mss: snapshot.mss || null,
+                displacement: { buy: detectDisplacement(data, 'BUY'), sell: detectDisplacement(data, 'SELL') }
+            },
+            liquidity,
+            fvg: fvg.slice(-20),
+            order_blocks: { buy: orderBlocks.buy.slice(-10), sell: orderBlocks.sell.slice(-10) },
+            msnr_levels: msnr.slice(-12),
+            structural_pois: pois.slice(-20),
+            zones: (tfContext.zones || []).slice(-20),
+            premium_discount: data.length >= 20 ? isPremiumDiscount(data, price).zone : 'UNAVAILABLE',
+            dealing_range: data.length ? { high: Math.max(...data.slice(-50).map(c => c.h)), low: Math.min(...data.slice(-50).map(c => c.l)) } : null,
+            previous_period: previous ? { high: previous.h, low: previous.l, time: previous.t ?? null } : null,
+            previous_day_levels: previousDay ? { high: previousDay.h, low: previousDay.l, time: previousDay.t ?? null } : null,
+            atr: data.length >= 15 ? atr(data, 14) : null,
+            structural_evidence_ids: tfContext.structural_evidence_ids || [],
+            evidence: tfContext.evidence || []
+        };
+    }
+    return {
+        package_version: 1,
+        timeframes,
+        current_price: price,
+        as_of_time: liveMarketContext.as_of_time,
+        note: 'All candles are normalized closed Twelve Data candles. Structure and zones are derived from these same candles.'
+    };
+}
+
 function buildAiMarketEvidenceCatalog(liveMarketContext = {}, historyCache = {}) {
     const idFor = (prefix, item, index) => item?.id || prefix + '-' + (item?.timeframe || 'NA') + '-' + (normalizeTimestampUTC(item?.event_time ?? item?.reclaim_time ?? item?.source_time ?? item?.created_time) || index);
     const strategyEvents = [];
@@ -9300,7 +9428,11 @@ function buildAiMarketEvidenceCatalog(liveMarketContext = {}, historyCache = {})
         }
     }
     const msnr = strategyEvents.filter(z => z.strategy === 'MSNR' && z.origin === 'STRUCTURAL_MSNR');
+    const marketEvidencePackage = buildCanonicalMarketEvidencePackage(liveMarketContext, historyCache);
     return {
+        market_evidence_package_version: 1,
+        market_evidence_package: marketEvidencePackage,
+        raw_closed_candles: Object.fromEntries(Object.entries(marketEvidencePackage.timeframes).map(([tf, value]) => [tf, value.raw_closed_candles])),
         as_of_time: liveMarketContext.as_of_time,
         as_of_time_utc: liveMarketContext.as_of_time_utc || liveMarketContext.utc_time,
         timeframe_context: liveMarketContext.market_context?.timeframe_context || {},
@@ -9352,30 +9484,30 @@ function buildAiMarketAnalystPrompt(evidenceCatalog = {}, candleData = '') {
         }
     };
     const system = [
-        'You are the MARKET ANALYST stage of a deterministic ICT trading engine.',
-        'Use timeframe_context: 1D macro context, 4H primary narrative, 1H intraday structure, and 15M execution. 5M is optional confirmation only for CONFIRMATION_ENTRY.',
+        'You are the MARKET ANALYST stage of a deterministic trading engine.',
+        'Use 1D for macro context, 4H for primary structure/location, 1H for intermediate structure, 15M for execution structure, and 5M only for execution refinement when needed. Timeframe disagreement is evidence, not an automatic WAIT.',
         'Derive every conclusion from the supplied closed OHLCV and computed evidence. Never assume a level, price, trend, regime, bias, or reversal.',
         'Use the supplied canonical market_regime.regime value when present: TREND_UP, TREND_DOWN, RANGE, TRANSITION, HIGH_VOLATILITY, LOW_VOLATILITY, or UNKNOWN. Do not replace it with a guessed label; explain the supplied regime and its evidence.',
         'A BOS requires a candle close beyond the opposing swing. An MSS requires a valid BOS followed by a retrace that holds inside the prior range. A wick alone is not a structure break.',
         'For 1D, 4H, and 1H, report the derived directional structure as bullish, bearish, or neutral only when the supplied evidence supports it; identify any conflict between timeframes.',
         'A liquidity sweep requires a wick through an identifiable equal high, equal low, session level, or structural liquidity level followed by a close back inside. Do not call ordinary volatility a sweep.',
-        'BUY is continuation-eligible only when 4H is bullish or bullish transition and 1H confirms BUY. SELL is continuation-eligible only when 4H is bearish or bearish transition and 1H confirms SELL.',
-        'When 1D conflicts with 4H, reduce conviction and require one additional independent confirmation such as a valid sweep plus BOS/MSS, displacement, or a fresh execution zone. Keep the setup available for user choice when that evidence exists.',
+        'Use the complete evidence package to decide whether the market is continuation, retracement, reversal, range, or unclear. Do not require every timeframe to agree.',
+        'When 1D conflicts with 4H, reduce conviction and record the conflict as quality evidence. Keep a coherent, verifiable setup available when a genuine POI, invalidation, and objective exist.',
         'A reversal is distinct from continuation: a local 15M reversal cannot be labelled higher-timeframe verified unless 4H or 1H structure shift evidence is supplied.',
-        'A limit plan must use a supplied derived retracement, FVG, OB, MSNR, flip, or liquidity zone and supplied structural invalidation. If the zone, invalidation, or target cannot be derived, return no hypothesis.',
-        'Require at least three independent confluences for a preferred hypothesis: 4H direction, 1H alignment, valid liquidity sweep, and a clear executable entry zone. List the evidence IDs used.',
+        'A LIMIT plan must reference a supplied deterministic FVG, OB, MSNR, flip, supply, demand, reclaim, CRT, TBS, or liquidity location. A LIMIT does not require price to be inside the zone or current 5M/15M confirmation.',
+        'A CONFIRMATION_ENTRY may require a later MSS, CHoCH, BOS, displacement, reclaim, or rejection at the POI. Use that mode only when the strategy genuinely needs post-arrival confirmation.',
         'For each hypothesis you may propose trade_context_classification: HTF_ALIGNED_CONTINUATION, HTF_VERIFIED_REVERSAL, or LTF_ISOLATED, with top_down_evidence_ids from the supplied catalog. Code verifies the label and IDs. A local 15M pattern alone cannot prove an HTF reversal.',
         'Identify the highest-quality trading opportunity still available from the current market state for the remainder of today.',
         'Assess the dominant current narrative, meaningful liquidity, whether price is extended, whether retracement or continuation is realistic, whether the original move already delivered too far, and whether no defensible opportunity remains today.',
         'You may return zero hypotheses or describe NO_VALID_OPPORTUNITY_TODAY through the market_view when the evidence does not support a plan.',
-        'Interpret only the supplied closed Twelve Data candles and deterministic market evidence. Propose zero or more CRT, TBS, or MSNR future pending-limit hypotheses for later code verification.',
+        'Interpret only the supplied closed Twelve Data candles and deterministic market evidence. Propose zero or more coherent CRT, TBS, MSNR, or MARKET_MECHANICS hypotheses for later code verification. ICT is context terminology; MARKET_MECHANICS is the executable label only after code verifies it.',
         'Return strict JSON only with market_view and hypotheses.',
         'You may reference supplied CRT, TBS/Turtle Soup, MSNR, ICT market-mechanics, liquidity, FVG, OB, and execution-zone IDs, but you must never invent IDs.',
-        'Location is not execution: use preferred_location_zone_ids for supply, demand, flip, or other POI context, and preferred_execution_zone_ids only for a separately executable trigger. A location-only POI cannot authorize a trade by itself.',
-        'For an executable hypothesis, return proposed_geometry with entry_zone {low, high}, entry, stop_loss, tp1, optional tp2/tp3, and target_candidate_ids. These are proposals only: every number must be supported by the referenced supplied zone, structural invalidation, and target catalog. The local engine will reject or normalize anything unsupported.',
+        'Use preferred_location_zone_ids for the higher-level POI. For LIMIT, preferred_execution_zone_ids may reference the same deterministic bounded POI. For CONFIRMATION_ENTRY, reference a separately executable trigger zone. Code derives exact entry, structural stop, targets, and RR from the supplied evidence.',
+        'For a hypothesis, return proposed_geometry only when useful for an auditable reference. If proposed_geometry is included, entry_zone and entry must fit the referenced POI and target_candidate_ids must exist; the local engine will reject or normalize anything unsupported and remains authoritative for all final prices.',
         'Hypotheses are observations, not proof. Code will independently verify every referenced event and reject unsupported claims.',
         'For combinations every component must be independently supported and temporally/spatially compatible.',
-        'A valid response is {"market_view":{"bias":"BULLISH|BEARISH|MIXED|NEUTRAL","market_narrative":"...","important_liquidity":"...","structure_interpretation":"...","risk_notes":[]},"hypotheses":[{"hypothesis_id":"...","strategy":"CRT|TBS|MSNR|CRT+TBS|CRT+MSNR|TBS+MSNR|CRT+TBS+MSNR","direction":"BUY|SELL","setup_timeframe":"4H|1H|15M","execution_timeframe":"4H|1H|15M","preferred_execution_zone_ids":[],"target_candidate_ids":[],"proposed_geometry":{"entry_zone":{"low":0,"high":0},"entry":0,"stop_loss":0,"tp1":0,"tp2":null,"tp3":null}}]}.',
+        'A valid response is {"market_view":{"bias":"BULLISH|BEARISH|MIXED|NEUTRAL","market_narrative":"...","important_liquidity":"...","structure_interpretation":"...","risk_notes":[]},"hypotheses":[{"hypothesis_id":"...","strategy":"CRT|TBS|MSNR|MARKET_MECHANICS|CRT+TBS|CRT+MSNR|TBS+MSNR|CRT+TBS+MSNR","direction":"BUY|SELL","setup_mode":"LIMIT|CONFIRMATION_ENTRY","setup_timeframe":"4H|1H|15M","execution_timeframe":"4H|1H|15M|5M","preferred_location_zone_ids":[],"preferred_execution_zone_ids":[],"supporting_evidence":[],"conflicting_evidence":[],"target_candidate_ids":[]}]}.',
         'Return zero hypotheses when evidence is insufficient.'
     ].join('\n');
     const user = 'DETERMINISTIC MARKET EVIDENCE\n' + JSON.stringify(bounded, null, 2) + '\n\nCLOSED-CANDLE CONTEXT FROM TWELVE DATA\n' + String(candleData || '').slice(-40000) + '\n\nReturn only the analyst JSON object.';
@@ -9386,7 +9518,7 @@ function buildAiMarketAnalystPrompt(evidenceCatalog = {}, candleData = '') {
 function normalizeAiMarketAnalysis(raw) {
     if (!raw || typeof raw !== 'object') return null;
     const allowedStrategies = new Set(['CRT', 'TBS', 'MSNR', 'ICT', 'MARKET_MECHANICS', 'CRT+TBS', 'CRT+MSNR', 'TBS+MSNR', 'CRT+TBS+MSNR']);
-    const allowedTf = new Set(['4H', '1H', '15M', '5M']);
+    const allowedTf = new Set(['1D', '4H', '1H', '15M', '5M']);
     const view = raw.market_view && typeof raw.market_view === 'object' ? raw.market_view : {};
     const finiteOrNull = value => Number.isFinite(Number(value)) ? Number(value) : null;
     const normalizeGeometry = geometry => {
@@ -9405,12 +9537,18 @@ function normalizeAiMarketAnalysis(raw) {
         hypothesis_id: typeof h?.hypothesis_id === 'string' ? h.hypothesis_id : 'AI-H' + (index + 1),
         strategy: allowedStrategies.has(h?.strategy) ? h.strategy : null,
         direction: h?.direction === 'BUY' || h?.direction === 'SELL' ? h.direction : null,
+        setup_mode: ['LIMIT', 'PENDING_LIMIT'].includes(String(h?.setup_mode || h?.execution_model || '').toUpperCase())
+            ? 'PENDING_LIMIT'
+            : String(h?.setup_mode || h?.execution_model || '').toUpperCase() === 'CONFIRMATION_ENTRY' ? 'CONFIRMATION_ENTRY' : 'PENDING_LIMIT',
         setup_timeframe: allowedTf.has(h?.setup_timeframe) ? h.setup_timeframe : null,
         execution_timeframe: allowedTf.has(h?.execution_timeframe) ? h.execution_timeframe : null,
         quality: ['A', 'B', 'C'].includes(h?.quality) ? h.quality : null,
         trade_context_classification: typeof h?.trade_context_classification === 'string' ? h.trade_context_classification : null,
         top_down_evidence_ids: Array.isArray(h?.top_down_evidence_ids) ? h.top_down_evidence_ids.filter(id => typeof id === 'string').slice(0, 24) : [],
         reasoning: typeof h?.reasoning === 'string' ? h.reasoning.slice(0, 500) : '',
+        supporting_evidence: Array.isArray(h?.supporting_evidence) ? h.supporting_evidence.filter(x => typeof x === 'string').slice(0, 24) : [],
+        conflicting_evidence: Array.isArray(h?.conflicting_evidence) ? h.conflicting_evidence.filter(x => typeof x === 'string').slice(0, 24) : [],
+        alternative_thesis: typeof h?.alternative_thesis === 'string' ? h.alternative_thesis.slice(0, 400) : '',
         crt_event_ids: Array.isArray(h?.crt_event_ids) ? h.crt_event_ids.filter(x => typeof x === 'string').slice(0, 5) : [],
         tbs_event_ids: Array.isArray(h?.tbs_event_ids) ? h.tbs_event_ids.filter(x => typeof x === 'string').slice(0, 5) : [],
         msnr_level_ids: Array.isArray(h?.msnr_level_ids) ? h.msnr_level_ids.filter(x => typeof x === 'string').slice(0, 5) : [],
@@ -9473,7 +9611,7 @@ function validateAiSelectorResponse(value, candidates = []) {
 }
 
 async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData = '', retryCount = 0) {
-    const diagnostics = { analyst_called: false, analyst_status: 'SKIPPED', attempts: retryCount + 1, market_view: null, hypotheses_received: 0, hypotheses_verified: 0, hypotheses_rejected: 0, verified_hypotheses: [], rejected_hypotheses: [], deterministic_duplicates: 0, setups_added_from_ai: 0, final_selector_called: false, selected_candidate_id: null };
+    const diagnostics = { analyst_called: false, analyst_status: 'SKIPPED', attempts: retryCount + 1, market_view: null, hypotheses_received: 0, hypotheses_verified: 0, hypotheses_rejected: 0, verified_hypotheses: [], rejected_hypotheses: [], hard_rejections: [], quality_warnings: [], deterministic_duplicates: 0, setups_added_from_ai: 0, final_selector_called: false, selected_candidate_id: null, request_payload: null, raw_response: null, parsed_analysis: null };
     if (!hasAiAccess()) { diagnostics.analyst_status = 'NO_API_KEY'; return { diagnostics, analysis: null, verified_setups: [] }; }
     diagnostics.analyst_called = true;
     const prompt = buildAiMarketAnalystPrompt(evidenceCatalog, candleData);
@@ -9482,11 +9620,14 @@ async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData
             `${candleData}\n\nCORRECTION: The previous analyst response was invalid (${reason}). Return only the exact market_view and hypotheses JSON contract.`, retryCount + 1)
         : null;
     try {
+        const requestPayload = { model: 'deepseek-chat', messages: [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }], temperature: 0.1, max_tokens: 2600 };
+        diagnostics.request_payload = requestPayload;
         const { data } = await requestAIJson(getDeepSeekEndpoint(), {
             method: 'POST',
             headers: getDeepSeekHeaders(),
-            body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }], temperature: 0.1, max_tokens: 2600 })
+            body: JSON.stringify(requestPayload)
         });
+        diagnostics.raw_response = String(data?.choices?.[0]?.message?.content || '').slice(0, 30000);
         const rawAnalysis = parseAiJsonContent(data?.choices?.[0]?.message?.content);
         const schema = validateAiMarketAnalystResponse(rawAnalysis);
         if (!schema.valid) {
@@ -9498,6 +9639,7 @@ async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData
         }
         const analysis = normalizeAiMarketAnalysis(rawAnalysis);
         if (!analysis) { diagnostics.analyst_status = 'INVALID_JSON'; return { diagnostics, analysis: null, verified_setups: [] }; }
+        diagnostics.parsed_analysis = analysis;
         diagnostics.analyst_status = 'OK';
         diagnostics.market_view = analysis.market_view;
         diagnostics.hypotheses_received = analysis.hypotheses.length;
@@ -9510,9 +9652,15 @@ async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData
                 if (verification.setup) verifiedSetups.push(verification.setup);
             } else {
                 diagnostics.hypotheses_rejected++;
-                diagnostics.rejected_hypotheses.push({ hypothesis_id: hypothesis.hypothesis_id, reason_code: verification.reason_code, reason: verification.reason });
+                const rejected = { hypothesis_id: hypothesis.hypothesis_id, reason_code: verification.reason_code, reason: verification.reason };
+                diagnostics.rejected_hypotheses.push(rejected);
+                diagnostics.hard_rejections.push(rejected);
             }
         }
+        diagnostics.quality_warnings = analysis.hypotheses.flatMap(hypothesis => [
+            ...(hypothesis.conflicting_evidence || []).map(id => ({ hypothesis_id: hypothesis.hypothesis_id, code: 'CONFLICTING_EVIDENCE', evidence_id: id })),
+            ...(hypothesis.trade_context_classification === 'LTF_ISOLATED' ? [{ hypothesis_id: hypothesis.hypothesis_id, code: 'LTF_ISOLATED' }] : [])
+        ]);
         return { diagnostics, analysis, verified_setups: verifiedSetups };
     } catch (error) {
         const retry = retryAnalyst(error?.message || 'AI analyst request failed');
@@ -9533,46 +9681,95 @@ function verifyAiMarketMechanicsHypothesis(hypothesis, evidenceCatalog = {}, liv
         return { verified: false, reason_code: 'MARKET_MECHANICS_POI_MISSING', reason: 'A referenced deterministic location or execution POI does not exist.' };
     }
     const locations = findZones(locationIds);
-    const zones = findZones(executionIds);
-    if (!locations.length && !zones.length) return { verified: false, reason_code: 'MARKET_MECHANICS_POI_MISSING', reason: 'No supplied deterministic location or execution POI was referenced.' };
-    const invalid = zone => zone.direction && zone.direction !== hypothesis.direction || zone.invalidated || zone.expired === true ||
+    const suppliedExecutionZones = findZones(executionIds);
+    if (!locations.length && !suppliedExecutionZones.length) {
+        return { verified: false, reason_code: 'MARKET_MECHANICS_POI_MISSING', reason: 'No supplied deterministic location or execution POI was referenced.' };
+    }
+    const invalid = zone => (zone.direction && zone.direction !== hypothesis.direction) || zone.invalidated || zone.expired === true ||
         ['CONSUMED', 'MITIGATED', 'INVALIDATED', 'EXPIRED'].includes(String(zone.freshness || '').toUpperCase());
     if (locations.some(invalid)) return { verified: false, reason_code: 'MARKET_MECHANICS_LOCATION_INVALID', reason: 'The supplied location POI is invalid, consumed, or directionally incompatible.' };
-    if (zones.some(zone => invalid(zone) || zone.location_only === true || zone.primary_eligible === false)) {
-        return { verified: false, reason_code: 'MARKET_MECHANICS_EXECUTION_INVALID', reason: 'The supplied execution POI is not deterministically executable.' };
+    if (suppliedExecutionZones.some(invalid)) return { verified: false, reason_code: 'MARKET_MECHANICS_EXECUTION_INVALID', reason: 'The supplied execution POI is invalid or directionally incompatible.' };
+
+    const setupMode = hypothesis.setup_mode === 'CONFIRMATION_ENTRY' ? 'CONFIRMATION_ENTRY' : 'PENDING_LIMIT';
+    if (suppliedExecutionZones.some(zone => zone.location_only === true || zone.primary_eligible === false)) {
+        return { verified: false, reason_code: 'MARKET_MECHANICS_EXECUTION_INVALID', reason: 'A location-only POI cannot be used as a separately supplied execution trigger.' };
     }
-    if (!zones.length) return { verified: false, reason_code: 'MARKET_MECHANICS_EXECUTION_MISSING', reason: 'A location POI requires separate executable evidence.' };
+    const zone = suppliedExecutionZones[0] || (setupMode === 'PENDING_LIMIT' ? locations[0] : null);
+    if (!zone || !Number.isFinite(Number(zone.low)) || !Number.isFinite(Number(zone.high)) || Number(zone.high) < Number(zone.low)) {
+        return { verified: false, reason_code: 'MARKET_MECHANICS_EXECUTION_MISSING', reason: 'The hypothesis has no deterministic bounded POI for execution.' };
+    }
+    if (setupMode === 'CONFIRMATION_ENTRY' && (!suppliedExecutionZones.length || zone.location_only === true || zone.primary_eligible === false)) {
+        return { verified: false, reason_code: 'MARKET_MECHANICS_EXECUTION_INVALID', reason: 'A confirmation entry requires a separately supplied executable trigger zone.' };
+    }
+    if (zone.primary_eligible === false && zone.location_only !== true) {
+        return { verified: false, reason_code: 'MARKET_MECHANICS_EXECUTION_INVALID', reason: 'The referenced POI is not eligible for deterministic pricing.' };
+    }
+
     const knownTopDown = new Set(Object.values(evidenceCatalog.timeframe_context || {}).flatMap(tf => tf.structural_evidence_ids || []));
     const suppliedTopDown = hypothesis.top_down_evidence_ids || [];
     if (suppliedTopDown.some(id => !knownTopDown.has(id))) return { verified: false, reason_code: 'TOP_DOWN_EVIDENCE_UNKNOWN', reason: 'Market-mechanics hypothesis references unknown top-down evidence.' };
     const context = evidenceCatalog.timeframe_context || {};
-    const desired = hypothesis.direction === 'BUY' ? 'BULLISH' : 'BEARISH';
-    const hasShift = ['4H', '1H', '15M'].some(tf => (context[tf]?.evidence || []).some(e => e.direction === hypothesis.direction && ['MSS', 'CHOCH', 'BOS', 'DISPLACEMENT'].includes(e.kind)));
-    if (!hasShift) return { verified: false, reason_code: 'MARKET_MECHANICS_SHIFT_MISSING', reason: 'No deterministic directional shift or displacement supports the proposed market-mechanics opportunity.' };
-    const zone = zones[0];
-    const targetPool = (evidenceCatalog.target_candidates?.[hypothesis.direction === 'BUY' ? 'buy' : 'sell'] || [])
-        .filter(target => Number.isFinite(Number(target.level)) && (hypothesis.direction === 'BUY' ? target.level > zone.high : target.level < zone.low));
+    const desiredTrend = hypothesis.direction === 'BUY' ? 'BULLISH' : 'BEARISH';
+    const hasShift = ['4H', '1H', '15M', '5M'].some(tf => (context[tf]?.evidence || []).some(e => e.direction === hypothesis.direction && ['MSS', 'CHOCH', 'BOS', 'DISPLACEMENT'].includes(e.kind)));
+    const hasDirectionalThesis = ['1D', '4H', '1H'].some(tf => {
+        const value = context[tf]?.displayed_trend || context[tf]?.effective_trend || context[tf]?.structural_trend;
+        return value === desiredTrend || value === `${desiredTrend}_TRANSITION`;
+    });
+    const reversalClaim = hypothesis.trade_context_classification === 'HTF_VERIFIED_REVERSAL';
+    if (!hasShift && (!hasDirectionalThesis || setupMode === 'CONFIRMATION_ENTRY' || reversalClaim)) {
+        return { verified: false, reason_code: 'MARKET_MECHANICS_THESIS_MISSING', reason: 'The proposed direction has no deterministic higher-timeframe thesis or valid structure shift.' };
+    }
+
+    const side = hypothesis.direction === 'BUY' ? 'buy' : 'sell';
+    const allTargets = (evidenceCatalog.target_candidates?.[side] || []).filter(target => Number.isFinite(Number(target?.level)));
+    const requestedTargetIds = hypothesis.target_candidate_ids || [];
+    if (requestedTargetIds.length && requestedTargetIds.some(id => !allTargets.some(target => target.id === id))) {
+        return { verified: false, reason_code: 'MARKET_MECHANICS_TARGET_MISSING', reason: 'A referenced target does not exist in the deterministic target catalog.' };
+    }
+    const requestedTargets = requestedTargetIds.length ? allTargets.filter(target => requestedTargetIds.includes(target.id)) : allTargets;
+    const targetPool = requestedTargets.filter(target => hypothesis.direction === 'BUY' ? Number(target.level) > Number(zone.high) : Number(target.level) < Number(zone.low));
     if (!targetPool.length) return { verified: false, reason_code: 'MARKET_MECHANICS_TARGET_MISSING', reason: 'No supplied directional structural target remains beyond the POI.' };
-    const tfContext = context[zone.timeframe] || context['1H'] || {};
+
+    const tfContext = context[zone.timeframe] || context[hypothesis.setup_timeframe] || context['1H'] || {};
     const swings = hypothesis.direction === 'BUY' ? tfContext.structure?.recent_swing_lows : tfContext.structure?.recent_swing_highs;
-    const invalidation = (swings || []).filter(s => Number.isFinite(Number(s.level)) && (hypothesis.direction === 'BUY' ? s.level < zone.low : s.level > zone.high)).at(-1);
+    const invalidation = (swings || []).filter(s => Number.isFinite(Number(s.level)) && (hypothesis.direction === 'BUY' ? Number(s.level) < Number(zone.low) : Number(s.level) > Number(zone.high))).at(-1);
     if (!invalidation) return { verified: false, reason_code: 'MARKET_MECHANICS_INVALIDATION_MISSING', reason: 'No deterministic structural invalidation exists for the proposed POI.' };
+
+    const proposed = hypothesis.proposed_geometry;
+    if (proposed?.entry != null) {
+        const entry = Number(proposed.entry);
+        if (!Number.isFinite(entry) || entry < Number(zone.low) || entry > Number(zone.high)) {
+            return { verified: false, reason_code: 'AI_ENTRY_ZONE_UNSUPPORTED', reason: 'The proposed entry is outside the referenced deterministic POI.' };
+        }
+    }
+    const executableZone = {
+        ...zone,
+        id: zone.id || `AI-${hypothesis.hypothesis_id}-ZONE`,
+        primary_eligible: true,
+        direction: hypothesis.direction,
+        location_only_origin: zone.location_only === true,
+        entry_model: setupMode,
+        execution_model: setupMode
+    };
     const setup = {
-        id: `AI-ICT-${hypothesis.hypothesis_id}`,
-        primary: 'ICT', label: 'ICT', direction: hypothesis.direction,
+        id: `AI-MECHANICS-${hypothesis.hypothesis_id}`,
+        primary: 'MARKET_MECHANICS', label: 'MARKET_MECHANICS', direction: hypothesis.direction,
         timeframe: hypothesis.setup_timeframe, setup_timeframe: hypothesis.setup_timeframe,
         execution_timeframe: hypothesis.execution_timeframe, event_time: zone.created_time,
-        execution_zone: zone, entry_model: hypothesis.preferred_execution_types?.includes('RECLAIM_RETEST') ? 'RECLAIM_RETEST' : 'FRESH_RETRACEMENT_LIMIT',
-        execution_model: hypothesis.preferred_execution_types?.includes('RECLAIM_RETEST') ? 'RECLAIM_RETEST' : 'FRESH_RETRACEMENT_LIMIT',
+        execution_zone: executableZone, entry_model: setupMode, execution_model: setupMode,
         target_candidates: targetPool, target_bias: hypothesis.target_intent,
-        structural_invalidation_detail: { strategy: 'ICT', source: 'MARKET_MECHANICS_SWING', level: Number(invalidation.level), timeframe: zone.timeframe, source_time: zone.created_time },
+        structural_invalidation_detail: { strategy: 'MARKET_MECHANICS', source: 'STRUCTURAL_SWING', level: Number(invalidation.level), timeframe: zone.timeframe, source_time: zone.created_time },
         structural_invalidation: Number(invalidation.level), execution_zone_created_time: zone.created_time,
-        market_mechanics_verified: true, execution_confirmed: false, ai_verified: true,
-        ai_hypothesis_id: hypothesis.hypothesis_id, ai_reasoning: hypothesis.reasoning
+        market_mechanics_verified: true, execution_confirmed: setupMode === 'PENDING_LIMIT', ai_verified: true,
+        ai_hypothesis_id: hypothesis.hypothesis_id, ai_reasoning: hypothesis.reasoning,
+        quality_warnings: [
+            ...(hypothesis.trade_context_classification === 'LTF_ISOLATED' ? ['LTF_ISOLATED'] : []),
+            ...(hasDirectionalThesis && !hasShift ? ['NO_CURRENT_EXECUTION_SHIFT_REQUIRED_FOR_LIMIT'] : [])
+        ]
     };
     setup.location = locations[0] ? { zone_id: locations[0].id, type: locations[0].type, timeframe: locations[0].timeframe, evidence_ids: locations[0].structural_evidence_ids || [] } : null;
-    setup.execution = { zone_id: zone.id, type: zone.type, timeframe: zone.timeframe, evidence_ids: zone.structural_evidence_ids || [], confirmation_state: setup.execution_confirmed ? 'CONFIRMED' : 'PENDING' };
-    return { verified: true, reason_code: null, reason: 'POI, directional shift, target, and structural invalidation are deterministic.', setup };
+    setup.execution = { zone_id: executableZone.id, type: executableZone.type, timeframe: executableZone.timeframe, evidence_ids: executableZone.structural_evidence_ids || [], confirmation_state: setup.execution_confirmed ? 'CONFIRMED' : 'PENDING' };
+    return { verified: true, reason_code: null, reason: 'AI thesis references a deterministic POI, structural invalidation, and genuine target.', setup };
 }
 
 function verifyAiStrategyHypothesis(hypothesis, evidenceCatalog = {}, liveMarketContext = {}) {
@@ -9760,8 +9957,8 @@ function mergeVerifiedAiSetups(liveMarketContext, verifiedSetups = [], evidenceC
     const informational = [...currentInformational];
     let duplicates = 0;
     let informationalAdded = 0;
-    const executableSetups = (verifiedSetups || []).filter(hasExecutableStrategyBacking);
-    const informationalSetups = (verifiedSetups || []).filter(setup => !hasExecutableStrategyBacking(setup));
+    const executableSetups = (verifiedSetups || []).filter(hasExecutableOpportunityBacking);
+    const informationalSetups = (verifiedSetups || []).filter(setup => !hasExecutableOpportunityBacking(setup));
     for (const setup of executableSetups) {
         const duplicate = merged.find(existing => existing.primary === setup.primary && existing.direction === setup.direction &&
             Math.abs(normalizeTimestampUTC(existing.event_time) - normalizeTimestampUTC(setup.event_time)) <= 3600000 &&
@@ -9855,8 +10052,8 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'VALID_CANDIDATES = executable numerical candidates that already passed all hard rules.',
         'REAL_ICT_ZONES = authoritative deterministic market structures.',
         'MARKET_CONTEXT = deterministic market understanding only; FVG, OB, BOS, CHoCH, MSS, liquidity, premium/discount, session, AMD, indicators, and ATR describe what the market is doing.',
-        'STRATEGY_SETUPS = deterministic CRT, TBS/Turtle Soup, and MSNR detections. Actionable candidates must come from these strategy setups.',
-        'FVG and OB are confluence/context unless a supplied deterministic strategy candidate uses them. Do not treat every FVG/OB as a standalone trade strategy.',
+        'STRATEGY_SETUPS = deterministic CRT, TBS/Turtle Soup, and MSNR detections. AI_VERIFIED_MECHANICS = a market thesis that references deterministic POI, structural invalidation, and genuine target evidence. Only these validated candidate types are actionable.',
+        'FVG, OB, flip, supply, demand, and liquidity are informational until a verified candidate references them and the code proves the final geometry.',
         'RAW CANDLES = secondary context for qualitative interpretation only.',
         'IMMEDIATE_ENTRY = separate current-price reaction assessment, never a requirement before a pending limit fills.',
         'Zone/target origin hierarchy: STRUCTURAL and STRUCTURAL_MSNR = directly derived market structure. PIVOT_REFERENCE = classic pivot-derived reference only, not MSNR strategy evidence. ATR_FALLBACK = synthetic reference only. PIVOT_REFERENCE and ATR_FALLBACK must never create standalone MSNR trades.',
@@ -9872,7 +10069,7 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'Return only decision, selected_candidate_id, and qualitative reasoning; the application hydrates all geometry and confidence from the selected deterministic candidate.',
         'When discussing TP1, use the supplied candidate target_map primary_target_source, target_type, and target_confluence. Never reinterpret an OB target as CRT or a CRT target as OB unless target_confluence explicitly contains both.',
         'If adaptive_setup_candidates is empty, do not invent entry/SL/TP levels; return WAIT.',
-        'If market_context has a strong directional bias but strategy_setups is empty, return WAIT because context alone is not a trade.',
+        'If market_context has a strong directional bias but no validated candidate exists, return WAIT because context alone is not a trade.',
         'Never invent CRT, TBS/Turtle Soup, or MSNR detections. Use only supplied deterministic strategy_setups and adaptive_setup_candidates.',
         'Do not calculate risk, required reward, minimum TP, alternate stops, alternate targets, or entry geometry. You may describe the supplied candidate RR qualitatively.',
         'Premium/discount context: discount generally favors BUY entries and premium generally favors SELL entries unless stronger supplied structure says otherwise.',
@@ -10367,8 +10564,8 @@ function findSelectedLiveZone(aiResult, liveMarketContext) {
 function validateExecutableCandidateInvariant(candidate, marketState = {}) {
     const failures = [];
     if (!candidate || typeof candidate !== 'object') return { valid: false, invariant_code: 'CANDIDATE_MISSING', failures: ['candidate missing'] };
-    if (marketState.require_strategy_setup && !hasExecutableStrategyBacking(candidate.strategy_setup || candidate)) {
-        failures.push('EXECUTABLE_STRATEGY_BACKING_MISSING');
+    if (marketState.require_strategy_setup && !hasExecutableOpportunityBacking(candidate.strategy_setup || candidate)) {
+        failures.push('EXECUTABLE_OPPORTUNITY_BACKING_MISSING');
     }
     const timeframeContext = marketState.timeframe_context || marketState.market_context?.timeframe_context;
     if (candidate.trade_context_classification && timeframeContext && candidate.direction) {
@@ -10377,12 +10574,12 @@ function validateExecutableCandidateInvariant(candidate, marketState = {}) {
             failures.push('TOP_DOWN_CLASSIFICATION_MISMATCH');
         }
     }
-    if (candidate.strategy_setup && candidate.trade_context_classification === 'LTF_ISOLATED') failures.push('LTF_ISOLATED');
+    const candidateModel = String(candidate.execution_model || candidate.entry_model || '').toUpperCase();
+    if (candidate.strategy_setup && candidate.trade_context_classification === 'LTF_ISOLATED' && candidateModel === 'CONFIRMATION_ENTRY') failures.push('LTF_ISOLATED');
     if (candidate.strategy_setup && candidate.trade_context_classification === 'HTF_VERIFIED_REVERSAL'
         && String(candidate.execution_model || candidate.entry_model || '').toUpperCase() !== 'CONFIRMATION_ENTRY') {
         failures.push('REVERSAL_REQUIRES_CONFIRMATION_ENTRY');
     }
-    const candidateModel = String(candidate.execution_model || candidate.entry_model || '').toUpperCase();
     if (candidate.opportunity_thesis && candidate.opportunity_thesis.state !== 'EXECUTION_VALID' && !isPendingLimitExecutionModel(candidateModel)) failures.push('EXECUTION_NOT_CONFIRMED');
     for (const field of ['entry', 'stop_loss', 'tp1']) if (!Number.isFinite(Number(candidate[field]))) failures.push(`${field}_NOT_FINITE`);
     const direction = candidate.direction;
@@ -10775,7 +10972,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
             scanAsOfMs: Date.now(),
             histories: historyCache,
             marketContext: fallbackMarketContext,
-            strategySetups: (fallbackStrategySetups || []).filter(hasExecutableStrategyBacking),
+            strategySetups: (fallbackStrategySetups || []).filter(hasExecutableOpportunityBacking),
             executionZones: getStrategyExecutionZones(fallbackStrategySetups),
             candidateDiagnostics: {
                 raw_candidate_count: fallbackCandidateResult.raw_candidates?.length || 0,
@@ -11235,6 +11432,7 @@ async function runAutoScan() {
         scanStage = 'AI market analyst';
         const analystStartedAt = scanClock();
         const analystEvidence = buildAiMarketEvidenceCatalog(liveMarketContext, historyCache);
+        liveMarketContext.market_evidence_package = analystEvidence;
         // Give the analyst enough closed Twelve Data candles to reason about
         // the strategy event and future retracement. The final selector keeps
         // the smaller context because it only ranks already verified plans.
@@ -11244,6 +11442,8 @@ async function runAutoScan() {
         analystResult.diagnostics.setups_added_from_ai = aiMerge.added;
         analystResult.diagnostics.informational_setups_added_from_ai = aiMerge.informational_added || 0;
         liveMarketContext.ai_analysis = analystResult.diagnostics;
+        liveMarketContext.hard_rejections = analystResult.diagnostics.hard_rejections || [];
+        liveMarketContext.quality_warnings = analystResult.diagnostics.quality_warnings || [];
         liveMarketContext.informational_setups = aiMerge.informational_setups || liveMarketContext.informational_setups || [];
         if (aiMerge.added > 0) {
             const aiZones = aiMerge.strategy_setups.slice(liveMarketContext.strategy_setups.length).map(s => s.execution_zone).filter(Boolean);
@@ -11266,7 +11466,7 @@ async function runAutoScan() {
             scanAsOfMs: scanAsOfMs,
             histories: historyCache,
             marketContext: liveMarketContext.market_context,
-            strategySetups: (liveMarketContext.strategy_setups || []).filter(hasExecutableStrategyBacking),
+            strategySetups: (liveMarketContext.strategy_setups || []).filter(hasExecutableOpportunityBacking),
             aiAnalysis: analystResult.diagnostics,
             executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
             candidateDiagnostics: liveMarketContext.setup_candidate_audit,
@@ -11299,7 +11499,7 @@ async function runAutoScan() {
         if (!hasPlanningCandidates) {
             const audit = liveMarketContext.setup_candidate_audit || {};
             const hasRaw = (audit.raw_candidate_count || 0) > 0;
-            const supportedStrategySetups = (liveMarketContext.strategy_setups || []).filter(hasExecutableStrategyBacking);
+            const supportedStrategySetups = (liveMarketContext.strategy_setups || []).filter(hasExecutableOpportunityBacking);
             const hasStrategySetups = supportedStrategySetups.length > 0;
             const decision = 'WAIT';
             const reason = !hasStrategySetups
@@ -11364,7 +11564,7 @@ async function runAutoScan() {
                     scanAsOfMs,
                     histories: historyCache,
                     marketContext: liveMarketContext.market_context,
-                    strategySetups: (liveMarketContext.strategy_setups || []).filter(hasExecutableStrategyBacking),
+                    strategySetups: (liveMarketContext.strategy_setups || []).filter(hasExecutableOpportunityBacking),
                     aiAnalysis: liveMarketContext.ai_analysis,
                     executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
                     candidateDiagnostics: liveMarketContext.setup_candidate_audit,
