@@ -10,9 +10,11 @@ if (tg) { tg.expand(); tg.ready(); }
 // CONFIG
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
-const APP_BUILD_ID = '20260928-001';
+const APP_BUILD_ID = '20260929-001';
 let lastDisplayedPublicSignal = null;
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
+const MARKET_DATA_PROVIDER_STORAGE_KEY = 'ict_market_data_provider';
+const TVKIT_BASE_URL_STORAGE_KEY = 'ict_tvkit_base_url';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
 let GITHUB_PAT = '', GITHUB_REPO = 'yaanu06/ict-telegram-bot';
 const AI_REQUEST_TIMEOUT_MS = 45000;
@@ -25,7 +27,58 @@ function getProxyBaseUrl() {
     return String(configured || '').trim().replace(/\/$/, '');
 }
 
+function getStoredConfigValue(key) {
+    try { return typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null; } catch { return null; }
+}
+
+function getMarketDataProvider() {
+    const configured = typeof window !== 'undefined' ? window.__ICT_MARKET_DATA_PROVIDER__ : null;
+    const stored = getStoredConfigValue(MARKET_DATA_PROVIDER_STORAGE_KEY);
+    const provider = String(configured || stored || 'TVKIT').trim().toUpperCase();
+    return provider === 'TWELVE_DATA' ? 'TWELVE_DATA' : 'TVKIT';
+}
+
+function getTvkitBaseUrl() {
+    const configured = typeof window !== 'undefined' ? window.__ICT_TVKIT_BASE_URL__ : null;
+    return String(configured || getStoredConfigValue(TVKIT_BASE_URL_STORAGE_KEY) || '').trim().replace(/\/$/, '');
+}
+
+function getMarketDataProviderLabel() {
+    return getMarketDataProvider() === 'TVKIT' ? 'TradingView/tvkit' : 'Twelve Data';
+}
+
+function getTvkitSymbol(forPair = pair) {
+    const normalized = normalizeSymbolInput(forPair);
+    if (normalized.includes(':')) return normalized;
+    const known = {
+        'XAU/USD': 'OANDA:XAUUSD',
+        'XAG/USD': 'OANDA:XAGUSD',
+        'BTC/USD': 'BINANCE:BTCUSDT'
+    };
+    if (known[normalized]) return known[normalized];
+    const instrument = normalized.replace('/', '');
+    return getAssetClass(normalized) === 'FOREX' ? `FX_IDC:${instrument}` : normalized;
+}
+
+function setMarketDataProvider(provider, tvkitBaseUrl = null) {
+    const normalized = String(provider || '').trim().toUpperCase() === 'TWELVE_DATA' ? 'TWELVE_DATA' : 'TVKIT';
+    try {
+        localStorage.setItem(MARKET_DATA_PROVIDER_STORAGE_KEY, normalized);
+        if (tvkitBaseUrl != null) localStorage.setItem(TVKIT_BASE_URL_STORAGE_KEY, String(tvkitBaseUrl).trim().replace(/\/$/, ''));
+    } catch {}
+    if (typeof window !== 'undefined') {
+        window.__ICT_MARKET_DATA_PROVIDER__ = normalized;
+        if (tvkitBaseUrl != null) window.__ICT_TVKIT_BASE_URL__ = String(tvkitBaseUrl).trim().replace(/\/$/, '');
+    }
+    return { provider: normalized, tvkit_base_url: getTvkitBaseUrl() || null };
+}
+
+// Provider selection is intentionally explicit. There is no automatic feed
+// mixing, so a scan uses one provider for its quote and all five histories.
+if (typeof window !== 'undefined') window.setMarketDataProvider = setMarketDataProvider;
+
 function hasMarketDataAccess() {
+    if (getMarketDataProvider() === 'TVKIT') return !!getTvkitBaseUrl() || !!getProxyBaseUrl();
     return !!TWELVE_DATA_KEY || !!getProxyBaseUrl();
 }
 
@@ -247,7 +300,11 @@ function updateKeyStatus() {
     const gs = document.getElementById('githubStatus');
     const proxy = !!getProxyBaseUrl();
     if(ts) {
-        ts.innerHTML = TWELVE_DATA_KEY ? '✅ Direct' : proxy ? '✅ Proxy' : '❌ Missing';
+        if (getMarketDataProvider() === 'TVKIT') {
+            ts.innerHTML = hasMarketDataAccess() ? '✅ tvkit' : '❌ tvkit offline';
+        } else {
+            ts.innerHTML = TWELVE_DATA_KEY ? '✅ Direct' : proxy ? '✅ Proxy' : '❌ Missing';
+        }
         ts.className = 'status-badge ' + (hasMarketDataAccess() ? 'active' : 'inactive');
     }
     if(ds) {
@@ -268,8 +325,9 @@ function showSetup() {
             <div class="setup-modal">
                 <h3>🔐 API & GitHub Setup</h3>
                 <p class="setup-desc">Enter your API keys & GitHub repository access</p>
-                <label>📡 Twelve Data Key:</label>
+                <label>📡 Twelve Data Key (optional fallback):</label>
                 <input type="password" id="twInput" class="setup-input" value="${TWELVE_DATA_KEY}">
+                <p class="setup-note">Primary market source: TradingView/tvkit. Start <code>python tools/tvkit_service.py</code>, then configure <code>setMarketDataProvider('TVKIT','http://127.0.0.1:8790')</code> in the browser console. Use <code>setMarketDataProvider('TWELVE_DATA')</code> only when you want the paid fallback.</p>
                 <label>🤖 DeepSeek Key:</label>
                 <input type="password" id="dsInput" class="setup-input" value="${DEEPSEEK_API_KEY}">
                 <label>🌐 Custom AI URL:</label>
@@ -295,7 +353,7 @@ function showSetup() {
         const du = document.getElementById('urlInput').value.trim();
         const ght = document.getElementById('ghInput').value.trim();
         const ghr = document.getElementById('ghRepoInput').value.trim();
-        if(!tk) { showNotif('⚠️ Twelve Data key required','warning'); return; }
+        if(getMarketDataProvider() === 'TWELVE_DATA' && !tk && !getProxyBaseUrl()) { showNotif('⚠️ Twelve Data key required for the selected fallback','warning'); return; }
         await saveKeys(tk, dk, du, ght, ghr);
         document.getElementById('setupOverlay').remove();
     });
@@ -564,25 +622,26 @@ async function reserveTwelveDataRequest() {
 }
 
 async function fetchTD(pathAndQuery, timeoutMs = 10000, retries = 2) {
-    await reserveTwelveDataRequest();
+    const provider = getMarketDataProvider();
+    if (provider === 'TWELVE_DATA') await reserveTwelveDataRequest();
     const ctrl = typeof AbortController === 'function'
         ? new AbortController()
         : { signal: undefined, abort: () => {} };
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
         const proxy = getProxyBaseUrl();
-        const endpoint = proxy
-            ? `${proxy}/api/twelve${pathAndQuery}`
-            : `${TWELVE_DATA_BASE}${pathAndQuery}&apikey=${TWELVE_DATA_KEY}`;
+        const endpoint = provider === 'TVKIT'
+            ? (proxy ? `${proxy}/api/tvkit${pathAndQuery}` : `${getTvkitBaseUrl()}${pathAndQuery}`)
+            : (proxy ? `${proxy}/api/twelve${pathAndQuery}` : `${TWELVE_DATA_BASE}${pathAndQuery}&apikey=${TWELVE_DATA_KEY}`);
         const r = await fetch(endpoint, { signal: ctrl.signal });
-        if (r.ok === false) throw new Error(`Twelve Data HTTP ${r.status || 'error'}`);
+        if (r.ok === false) throw new Error(`${getMarketDataProviderLabel()} HTTP ${r.status || 'error'}`);
         const d = await r.json();
         if(d.code === 429) {
             const src = document.getElementById('apiSource');
             if(src) src.innerHTML = '🔴 Rate limited';
             if(Date.now() - rateLimitNotified > 30000) {
                 rateLimitNotified = Date.now();
-                showNotif('⏳ Twelve Data rate limit hit - wait a minute and rescan', 'warning');
+                showNotif(`⏳ ${getMarketDataProviderLabel()} rate limit hit - wait a minute and rescan`, 'warning');
             }
             // Grow 55 = 55 credits/min, quota resets every minute — brief backoff then retry
             if(retries > 0) {
@@ -604,7 +663,10 @@ async function getPrice(forPair) {
     }
     if(!hasMarketDataAccess()) return null;
     try {
-        const d = await fetchTD(`/price?symbol=${encodeURIComponent(getProviderSymbol(p))}`);
+        const provider = getMarketDataProvider();
+        const endpoint = provider === 'TVKIT' ? '/quote' : '/price';
+        const symbol = provider === 'TVKIT' ? getTvkitSymbol(p) : getProviderSymbol(p);
+        const d = await fetchTD(`${endpoint}?symbol=${encodeURIComponent(symbol)}`);
         if(d.price) {
             calls++;
             document.getElementById('apiSource').innerHTML = '📡 Live';
@@ -748,7 +810,8 @@ async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
     const symbolMetadata = getSymbolMetadata(p);
     const assetClass = symbolMetadata.asset_class;
     try {
-        const quote = await fetchTD('/quote?symbol=' + encodeURIComponent(getProviderSymbol(p)));
+        const providerSymbol = getMarketDataProvider() === 'TVKIT' ? getTvkitSymbol(p) : getProviderSymbol(p);
+        const quote = await fetchTD('/quote?symbol=' + encodeURIComponent(providerSymbol));
         const quotePrice = Number(quote.price ?? quote.close);
         const bid = Number(quote.bid);
         const ask = Number(quote.ask);
@@ -768,7 +831,7 @@ async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
                 is_market_open: providerOpen,
                 asset_class: assetClass,
                 symbol_metadata: symbolMetadata,
-                source: 'TWELVE_DATA',
+                source: getMarketDataProvider(),
                 quote_source: 'QUOTE'
             };
         }
@@ -790,7 +853,7 @@ async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
         is_market_open: null,
         asset_class: assetClass,
         symbol_metadata: symbolMetadata,
-        source: 'TWELVE_DATA',
+        source: getMarketDataProvider(),
         quote_source: 'PRICE_FALLBACK'
     };
 }
@@ -865,7 +928,8 @@ async function fetchHistoryUncached(tfStr, forPair) {
     const cacheTtl = HISTORY_CACHE_TTL_MS[tfStr] || 60000;
     if (cached && Date.now() - cached.ts < cacheTtl) return cached.data;
     try {
-        const providerSymbol = getProviderSymbol(requestedPair);
+        const provider = getMarketDataProvider();
+        const providerSymbol = provider === 'TVKIT' ? getTvkitSymbol(requestedPair) : getProviderSymbol(requestedPair);
         if (!providerSymbol) throw new Error('Market symbol is missing');
         // Twelve Data treats daily/weekly timestamps as period buckets. The
         // timezone query parameter is intended for intraday series and can
@@ -882,7 +946,7 @@ async function fetchHistoryUncached(tfStr, forPair) {
                 c: +c.close,
                 v: Number.isFinite(Number(c.volume)) ? Number(c.volume) : null,
                 timeframe: tfStr,
-                source: 'TWELVE_DATA',
+                source: provider,
                 timestamp_source: 'PROVIDER'
             }));
             const periodBucket = ['1D', '1W'].includes(tfStr);
@@ -922,7 +986,7 @@ async function fetchHistoryUncached(tfStr, forPair) {
                 if (values[i].t <= values[i - 1].t) throw new Error(`Duplicate or unordered provider timestamps for ${tfStr}`);
             }
             Object.defineProperty(values, 'provider_metadata', { value: {
-                provider: 'TWELVE_DATA',
+                provider,
                 provider_timezone: d.meta?.timezone || 'UTC',
                 requested_timezone: 'UTC',
                 timeframe: tfStr,
@@ -2296,7 +2360,7 @@ function canonicalizeHistory(candles, timeframe, asOfMs) {
         ...c,
         t: normalizeTimestampUTC(c?.t),
         timeframe,
-        source: c?.source || 'TWELVE_DATA',
+        source: c?.source || getMarketDataProvider(),
         timestamp_source: c?.timestamp_source || 'PROVIDER'
     })).filter(c => Number.isFinite(c.t) && [c.o, c.h, c.l, c.c].every(Number.isFinite));
     const latestBucketTime = periodBucket ? base.reduce((latest, candle) => Math.max(latest, candle.t), -Infinity) : NaN;
@@ -9667,7 +9731,7 @@ function buildCanonicalMarketEvidencePackage(liveMarketContext = {}, historyCach
         timeframes,
         current_price: price,
         as_of_time: liveMarketContext.as_of_time,
-        note: 'All candles are normalized closed Twelve Data candles. Structure and zones are derived from these same candles.'
+        note: `All candles are normalized closed ${getMarketDataProviderLabel()} candles. Structure and zones are derived from these same candles.`
     };
 }
 
@@ -9796,7 +9860,7 @@ function buildAiMarketAnalystPrompt(evidenceCatalog = {}, candleData = '') {
         'Identify the highest-quality trading opportunity still available from the current market state for the remainder of today.',
         'Assess the dominant current narrative, meaningful liquidity, whether price is extended, whether retracement or continuation is realistic, whether the original move already delivered too far, and whether no defensible opportunity remains today.',
         'You may return zero hypotheses or describe NO_VALID_OPPORTUNITY_TODAY through the market_view when the evidence does not support a plan.',
-        'Interpret only the supplied closed Twelve Data candles and deterministic market evidence. Propose zero or more coherent CRT, TBS, MSNR, or MARKET_MECHANICS hypotheses for later code verification. ICT is context terminology; MARKET_MECHANICS is the executable label only after code verifies it.',
+        `Interpret only the supplied closed ${getMarketDataProviderLabel()} candles and deterministic market evidence. Propose zero or more coherent CRT, TBS, MSNR, or MARKET_MECHANICS hypotheses for later code verification. ICT is context terminology; MARKET_MECHANICS is the executable label only after code verifies it.`,
         'Return strict JSON only with market_view and hypotheses.',
         'You may reference supplied CRT, TBS/Turtle Soup, MSNR, ICT market-mechanics, liquidity, FVG, OB, and execution-zone IDs, but you must never invent IDs.',
         'Use preferred_location_zone_ids for the higher-level POI. For LIMIT, preferred_execution_zone_ids may reference the same deterministic bounded POI. For CONFIRMATION_ENTRY, reference a separately executable trigger zone. Code derives exact entry, structural stop, targets, and RR from the supplied evidence.',
@@ -11549,7 +11613,7 @@ async function runAutoScan() {
     
     try {
         if (!hasMarketDataAccess()) {
-            scanStage = 'missing Twelve Data key';
+            scanStage = `missing ${getMarketDataProviderLabel()} access`;
             showSetup();
             const dataBlockedMarketState = getMarketOpenState(pair, {
                 ...(quoteSnapshot || {}),
@@ -11563,7 +11627,7 @@ async function runAutoScan() {
                 trade_type: 'WAIT',
                 status: 'DATA_BLOCKED',
                 execution_allowed: false,
-                reason: { code: 'DATA_BLOCKED', message: 'Twelve Data credentials are unavailable; no market analysis was run.' },
+                reason: { code: 'DATA_BLOCKED', message: `${getMarketDataProviderLabel()} access is unavailable; no market analysis was run.` },
                 market_open: null
             }});
             return;
@@ -11574,7 +11638,7 @@ async function runAutoScan() {
         quoteSnapshot = await getMarketQuoteSnapshot(pair);
         price = quoteSnapshot?.price;
         if (!Number.isFinite(Number(price))) {
-            throw new Error('Twelve Data returned no usable live price');
+            throw new Error(`${getMarketDataProviderLabel()} returned no usable live price`);
         }
         
         // The live decision path requires these five closed timeframes. Keep
@@ -11735,7 +11799,7 @@ async function runAutoScan() {
         const analystStartedAt = scanClock();
         const analystEvidence = buildAiMarketEvidenceCatalog(liveMarketContext, historyCache);
         liveMarketContext.market_evidence_package = analystEvidence;
-        // Give the analyst enough closed Twelve Data candles to reason about
+        // Give the analyst enough closed provider candles to reason about
         // the strategy event and future retracement. The final selector keeps
         // the smaller context because it only ranks already verified plans.
         const analystResult = await runAiMarketAnalyst(analystEvidence, liveMarketContext, buildCandleData(historyCache, 30, quoteSnapshot?.symbol_metadata || {}, pair));
@@ -12036,7 +12100,7 @@ async function runAutoScan() {
                 candidate_pipeline: liveMarketContext.candidate_pipeline,
                 ai_decision: aiResult.ai_decision,
                 wait_condition: aiResult.wait_condition,
-                source: 'Twelve Data + DeepSeek Analyst + Deterministic Validator'
+                source: `${getMarketDataProviderLabel()} + DeepSeek Analyst + Deterministic Validator`
             }
         };
         

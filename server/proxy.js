@@ -10,6 +10,7 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_WINDOW_MS = 60_000;
 const DEFAULT_MAX_REQUESTS = 60;
 const DEFAULT_TWELVE_MAX_REQUESTS = 50;
+const DEFAULT_TVKIT_MAX_REQUESTS = 120;
 
 function normalizeSymbol(value) {
     return String(value || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -101,9 +102,11 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
     // Provider credits belong to the account, so enforce a global budget in
     // addition to the per-client abuse limit.
     const allowTwelveDataGlobal = createRateLimiter({ now, maxRequests: Number(env.PROXY_TWELVE_GLOBAL_MAX_REQUESTS || DEFAULT_TWELVE_MAX_REQUESTS) });
+    const allowTvkit = createRateLimiter({ now, maxRequests: Number(env.PROXY_TVKIT_MAX_REQUESTS || DEFAULT_TVKIT_MAX_REQUESTS) });
     const twelveKey = String(env.TWELVE_DATA_API_KEY || '').trim();
     const deepSeekKey = String(env.DEEPSEEK_API_KEY || '').trim();
     const twelveBase = String(env.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com').replace(/\/$/, '');
+    const tvkitBase = String(env.TVKIT_BASE_URL || '').trim().replace(/\/$/, '');
     const deepSeekUrl = String(env.DEEPSEEK_API_URL || 'https://api.deepseek.com/chat/completions');
     const upstreamTimeoutMs = Math.max(1, Number(env.PROXY_UPSTREAM_TIMEOUT_MS) || 10_000);
     const origin = configuredOrigin(env);
@@ -122,9 +125,23 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
             return res.end();
         }
         if (req.method === 'GET' && requestUrl.pathname === '/health') {
-            return jsonResponse(res, 200, { ok: true, service: 'market-ai-proxy', time: new Date(now()).toISOString(), data_provider_configured: !!twelveKey, ai_provider_configured: !!deepSeekKey }, origin);
+            return jsonResponse(res, 200, { ok: true, service: 'market-ai-proxy', time: new Date(now()).toISOString(), data_provider_configured: !!twelveKey, tvkit_provider_configured: !!tvkitBase, market_data_provider_configured: !!twelveKey || !!tvkitBase, ai_provider_configured: !!deepSeekKey }, origin);
         }
         try {
+            if (req.method === 'GET' && (requestUrl.pathname === '/api/tvkit/quote' || requestUrl.pathname === '/api/tvkit/time_series')) {
+                if (!tvkitBase) return jsonResponse(res, 503, { error: 'tvkit provider is not configured' }, origin);
+                const tvkitRate = allowTvkit(String(clientKey));
+                res.setHeader('X-Tvkit-RateLimit-Remaining', String(tvkitRate.remaining));
+                if (!tvkitRate.allowed) return jsonResponse(res, 429, { error: 'tvkit request budget exceeded' }, origin);
+                const validation = validateMarketRequest(requestUrl.pathname, requestUrl.searchParams);
+                if (!validation.valid) return jsonResponse(res, 400, { error: validation.reason }, origin);
+                const upstream = new URL(`${tvkitBase}/${requestUrl.pathname.endsWith('/quote') ? 'quote' : 'time_series'}`);
+                upstream.searchParams.set('symbol', validation.symbol);
+                if (validation.interval) upstream.searchParams.set('interval', validation.interval);
+                if (validation.outputsize) upstream.searchParams.set('outputsize', String(validation.outputsize));
+                const result = await proxyJson(fetchImpl, upstream, { headers: upstreamHeaders('') }, upstreamTimeoutMs);
+                return jsonResponse(res, result.status, result.payload, origin);
+            }
             if (req.method === 'GET' && (requestUrl.pathname === '/api/twelve/quote' || requestUrl.pathname === '/api/twelve/time_series')) {
                 if (!twelveKey) return jsonResponse(res, 503, { error: 'market data provider is not configured' }, origin);
                 const twelveGlobalRate = allowTwelveDataGlobal('account');

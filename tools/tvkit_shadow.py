@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Fetch TradingView candles through tvkit for safe shadow comparison.
+"""Fetch TradingView candles through tvkit for comparison and diagnostics.
 
-Twelve Data remains the production provider. This utility only creates a
-normalized comparison snapshot and never sends orders or changes the bot.
+The production Mini App can use the same tvkit source through
+``tools/tvkit_service.py``. This utility remains read-only and never sends
+orders or changes the bot.
 """
 
 from __future__ import annotations
@@ -163,7 +164,7 @@ async def fetch_snapshot(pair: str, tv_symbol: str, bars_count: int) -> dict[str
         "history": history,
         "provider_metadata": provider_metadata,
         "notes": [
-            "Shadow comparison only; Twelve Data remains the production provider.",
+            "Read-only TradingView/tvkit comparison snapshot; no orders are sent.",
             "Closed candles are filtered conservatively from TradingView timestamps.",
             "Provider differences are diagnostic evidence, not proof that either feed is correct.",
         ],
@@ -197,7 +198,7 @@ def compare_histories(twelve_replay: dict[str, Any], tv_snapshot: dict[str, Any]
                 "tradingview_first_closed": tradingview[0]["t"] if tradingview else None,
                 "tradingview_last_closed": tradingview[-1]["t"] if tradingview else None,
                 "exact_timestamp_matches": None,
-                "note": "The supplied Twelve Data file contains replay boundaries only; provide full candle arrays for OHLC comparison.",
+                "note": "The supplied replay file contains boundaries only; provide full candle arrays for OHLC comparison.",
             }
             continue
         tv_by_time = {int(bar["t"]): bar for bar in tradingview}

@@ -80,6 +80,29 @@ describe('market and AI proxy boundary', () => {
         }
     });
 
+    test('forwards the optional tvkit provider without requiring a Twelve Data key', async () => {
+        const urls = [];
+        const fetchImpl = jest.fn(async url => {
+            urls.push(String(url));
+            return { status: 200, text: async () => JSON.stringify({ values: [] }) };
+        });
+        const server = createProxyServer({
+            env: { TVKIT_BASE_URL: 'http://127.0.0.1:8790', PROXY_MAX_REQUESTS: '20', PROXY_TVKIT_MAX_REQUESTS: '20' },
+            fetchImpl
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const response = await request(server, 'GET', '/api/tvkit/time_series?symbol=OANDA%3AXAUUSD&interval=4h&outputsize=200');
+            expect(response.status).toBe(200);
+            expect(new URL(urls[0]).origin).toBe('http://127.0.0.1:8790');
+            expect(new URL(urls[0]).pathname).toBe('/time_series');
+            expect(new URL(urls[0]).searchParams.get('symbol')).toBe('OANDA:XAUUSD');
+            expect(new URL(urls[0]).searchParams.get('interval')).toBe('4h');
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
     test('enforces the Twelve Data account budget across different clients', async () => {
         const fetchImpl = jest.fn(async () => ({ status: 200, text: async () => JSON.stringify({ price: '1.25' }) }));
         const server = createProxyServer({

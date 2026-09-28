@@ -14,7 +14,7 @@ const getContext = () => {
         value: ''
     });
     const context = {
-        window: { Telegram: null },
+        window: { Telegram: null, __ICT_MARKET_DATA_PROVIDER__: 'TWELVE_DATA' },
         document: {
             getElementById: () => fakeEl(),
             addEventListener: () => {},
@@ -59,7 +59,7 @@ const getScanContext = () => {
         return elements.get(id);
     };
     const context = {
-        window: { Telegram: null },
+        window: { Telegram: null, __ICT_MARKET_DATA_PROVIDER__: 'TWELVE_DATA' },
         document: {
             readyState: 'loading',
             getElementById: getElement,
@@ -5359,6 +5359,15 @@ describe('engine contract completion', () => {
 });
 
 describe('provider, calendar, lifecycle, and public output contracts', () => {
+    it('uses tvkit by default and keeps Twelve Data as an explicit fallback', () => {
+        const ctx = getContext();
+        ctx.window.__ICT_MARKET_DATA_PROVIDER__ = undefined;
+        expect(ctx.getMarketDataProvider()).toBe('TVKIT');
+        expect(ctx.getTvkitSymbol('XAU/USD')).toBe('OANDA:XAUUSD');
+        expect(ctx.setMarketDataProvider('TWELVE_DATA')).toMatchObject({ provider: 'TWELVE_DATA' });
+        expect(ctx.getMarketDataProvider()).toBe('TWELVE_DATA');
+    });
+
     it('passes unknown symbols through to the provider without hardcoding the instrument list', () => {
         const ctx = getContext();
         expect(ctx.getProviderSymbol(' custom/asset ')).toBe('CUSTOM/ASSET');

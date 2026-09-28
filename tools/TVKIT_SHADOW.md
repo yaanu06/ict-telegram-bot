@@ -1,9 +1,9 @@
 # tvkit shadow comparison
 
-Twelve Data remains the production market-data provider. The optional
-`tvkit_shadow.py` utility fetches TradingView candles and writes the same basic
-closed-candle shape used by the bot so feeds can be compared without changing
-Analyze or the Telegram UI.
+The Mini App now uses TradingView/tvkit as its default market-data provider.
+The `tvkit_shadow.py` utility remains useful for diagnostics: it fetches the
+same basic closed-candle shape used by the bot so feeds can be compared without
+changing Analyze or the Telegram UI.
 
 ## Install
 
