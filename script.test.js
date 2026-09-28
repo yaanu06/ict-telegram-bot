@@ -1264,6 +1264,32 @@ describe('active narrative fresh execution zones', () => {
 });
 
 describe('fresh execution downstream validation', () => {
+    it('keeps an unfilled executable sell limit valid after price has already crossed TP1', () => {
+        const ctx = getContext();
+        const result = ctx.evaluateSetupLifecycle({
+            direction: 'SELL', entry: 4260.4, zone_low: 4259.23, zone_high: 4261.57, tp1: 4243.32,
+            execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT',
+            execution_zone_created_time: Date.parse('2026-09-28T03:00:00Z'),
+            strategy_setup: {
+                primary: 'MSNR', direction: 'SELL', timeframe: '1H', execution_timeframe: '1H',
+                execution_model: 'FRESH_RETRACEMENT_LIMIT', event_time: Date.parse('2026-09-28T02:00:00Z'),
+                structural_invalidation: 4286.82
+            }
+        }, {
+            pair: 'XAU/USD', price: 4161.46, as_of_time: '2026-09-28T07:10:00Z',
+            historyCache: {
+                '1H': [
+                    c(4264, 4265, 4258, 4260, '2026-09-28T03:00:00Z'),
+                    c(4250, 4251, 4158, 4161.46, '2026-09-28T04:00:00Z')
+                ]
+            }
+        });
+        expect(result.entry_touch_count_after_signal).toBe(0);
+        expect(result.tp1_already_reached).toBe(false);
+        expect(result.rejection_code).toBeNull();
+        expect(result.still_actionable_today).toBe(true);
+    });
+
     it('keeps the effective stop floor at 75% of the configured ATR rule', () => {
         const ctx = getContext();
         expect(ctx.getPreferredStopAtrMultiplier({ minSLMultiplier: 2 })).toBe(1.5);
@@ -1369,6 +1395,21 @@ describe('institutional-style zone confluence ranking', () => {
 });
 
 describe('strategy-authoritative structural invalidation', () => {
+    it('uses the fresh execution zone anchor for a future retracement stop', () => {
+        const ctx = getContext();
+        const zone = {
+            type: 'MSNR', direction: 'SELL', timeframe: '1H', low: 4259.23, high: 4261.57,
+            execution_model: 'FRESH_RETRACEMENT_LIMIT',
+            execution_structural_invalidation: { level: 4261.57, source: 'MSNR_EXECUTION_ZONE_INVALIDATION' },
+            strategy_setup: { primary: 'MSNR', direction: 'SELL', structural_invalidation: 4286.82, execution_model: 'FRESH_RETRACEMENT_LIMIT' }
+        };
+        const anchor = ctx.getAuthoritativeStructuralInvalidation(zone, zone.strategy_setup);
+        expect(anchor).toMatchObject({ level: 4261.57, source: 'MSNR_EXECUTION_ZONE_INVALIDATION', parent_invalidation: 4286.82 });
+        const [stop] = ctx.getAdaptiveStopCandidates(zone, 'SELL', 4260.4, candles(40, 4260, 0.4, 'down'), [], 2, ctx.getMarketSettings('XAU/USD'), 2);
+        expect(stop.stop_loss).toBeGreaterThan(4261.57);
+        expect(stop.stop_loss).toBeLessThan(4270);
+    });
+
     it('rejects a GBP/JPY TBS stop inside the sweep extreme and keeps the buffered anchor', () => {
         const ctx = getContext();
         const zone = {

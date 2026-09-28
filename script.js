@@ -2114,6 +2114,18 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
             mitigated: touch.touched, freshness: touch.touched ? 'CONSUMED' : 'FRESH',
             execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT',
             entry_region_source: 'FVG', strategy_source: narrative.primary,
+            // A fresh retracement gets its own execution stop anchor. The
+            // parent invalidation remains available on the setup as thesis
+            // cancellation evidence, but must not widen every child zone.
+            execution_structural_invalidation: {
+                strategy: narrative.primary,
+                direction,
+                level: direction === 'BUY' ? low : high,
+                source: `${direction === 'BUY' ? 'FVG_DEMAND' : 'FVG_SUPPLY'}_ZONE_INVALIDATION`,
+                timeframe: executionTf,
+                source_time: candleTimestamp(data[createdIndex], createdIndex, executionTf)
+            },
+            parent_structural_invalidation: narrative.structural_invalidation,
             structural_invalidation: narrative.structural_invalidation
         };
         if (!touch.touched) fvgZones.push(zone);
@@ -2147,6 +2159,15 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
             mitigated: false, freshness: 'FRESH', displacement_confirmed: true,
             execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT',
             entry_region_source: 'OB', strategy_source: narrative.primary,
+            execution_structural_invalidation: {
+                strategy: narrative.primary,
+                direction,
+                level: direction === 'BUY' ? low : high,
+                source: `${direction === 'BUY' ? 'OB_DEMAND' : 'OB_SUPPLY'}_ZONE_INVALIDATION`,
+                timeframe: executionTf,
+                source_time: candleTimestamp(data[i], i, executionTf)
+            },
+            parent_structural_invalidation: narrative.structural_invalidation,
             structural_invalidation: narrative.structural_invalidation
         });
     }
@@ -2168,7 +2189,24 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
         if (zone.primary_eligible === false || zone.invalidated) { executionZoneStats.invalidated++; continue; }
         const touch = touchAfterCreation(zone.low, zone.high, sourceIndex);
         if (touch.touched) { executionZoneStats.consumed++; continue; }
-        msnrZones.push({ ...zone, id: `FRESH-${executionTf}-${direction}-MSNR-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${normalizeTimestampUTC(sourceTime || candleTimestamp(data[sourceIndex], sourceIndex, executionTf)) || sourceIndex}`, execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT', entry_region_source: 'MSNR', strategy_source: narrative.primary, created_index: sourceIndex, created_time: sourceTime || candleTimestamp(data[sourceIndex], sourceIndex, executionTf), signal_time: signalTime, first_touch_after_creation: null, first_touch_time: null, touch_count: 0, mitigated: false, freshness: 'FRESH' });
+        msnrZones.push({ ...zone,
+            id: `FRESH-${executionTf}-${direction}-MSNR-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${normalizeTimestampUTC(sourceTime || candleTimestamp(data[sourceIndex], sourceIndex, executionTf)) || sourceIndex}`,
+            execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT',
+            entry_region_source: 'MSNR', strategy_source: narrative.primary,
+            execution_structural_invalidation: {
+                strategy: narrative.primary,
+                direction,
+                level: direction === 'BUY' ? zone.low : zone.high,
+                source: 'MSNR_EXECUTION_ZONE_INVALIDATION',
+                timeframe: executionTf,
+                source_time: sourceTime || candleTimestamp(data[sourceIndex], sourceIndex, executionTf)
+            },
+            parent_structural_invalidation: narrative.structural_invalidation,
+            created_index: sourceIndex,
+            created_time: sourceTime || candleTimestamp(data[sourceIndex], sourceIndex, executionTf),
+            signal_time: signalTime, first_touch_after_creation: null, first_touch_time: null,
+            touch_count: 0, mitigated: false, freshness: 'FRESH'
+        });
     }
 
     const dedupe = new Map();
@@ -4511,6 +4549,17 @@ function getSemanticEntryCandidate(zone, strategySetup, direction, prec) {
 
 function getAuthoritativeStructuralInvalidation(zone, strategySetup = null) {
     const setup = strategySetup || zone?.strategy_setup || {};
+    const executionModel = String(zone?.execution_model || zone?.entry_model || setup?.execution_model || setup?.entry_model || '').toUpperCase();
+    const executionInvalidation = zone?.execution_structural_invalidation;
+    if (isPendingLimitExecutionModel(executionModel) && executionInvalidation && Number.isFinite(Number(executionInvalidation.level))) {
+        return {
+            ...executionInvalidation,
+            level: Number(executionInvalidation.level),
+            parent_invalidation: Number.isFinite(Number(setup.structural_invalidation))
+                ? Number(setup.structural_invalidation)
+                : null
+        };
+    }
     if (setup.structural_invalidation_detail && Number.isFinite(Number(setup.structural_invalidation_detail.level))) {
         return { ...setup.structural_invalidation_detail, level: Number(setup.structural_invalidation_detail.level) };
     }
@@ -5814,7 +5863,12 @@ function getStrategyExecutionZones(strategySetups) {
         .map(s => ({
             ...s.execution_zone,
             strategy_setup: s,
-            structural_invalidation: s.structural_invalidation,
+            // Fresh retracement zones get a local execution stop anchor. The
+            // parent narrative invalidation remains on strategy_setup for
+            // thesis cancellation and audit purposes.
+            structural_invalidation: isPendingLimitExecutionModel(s.execution_model || s.entry_model)
+                ? (s.execution_zone.execution_structural_invalidation || s.execution_zone.structural_invalidation || s.structural_invalidation)
+                : s.structural_invalidation,
             freshness: s.freshness || s.execution_zone.freshness || 'FRESH'
         }));
 }
@@ -6827,6 +6881,13 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         indexAgeExpired || !Number.isFinite(low) || !Number.isFinite(high);
     const hasExplicitExecutionTimes = executionData.some(bar => Number.isFinite(parseCandleTimeUTC(bar?.t)));
     const eventCutoff = Number.isFinite(resolvedEventTime) && hasExplicitExecutionTimes ? resolvedEventTime : null;
+    const zonePriceStatus = getZonePriceStatus(price, { low, high });
+    // A future retracement limit can be created after price has already
+    // crossed its eventual target while the order remains unfilled.
+    const pendingRetracementLocation = pendingLimitModel
+        && hasExecutableStrategyBacking(setup || candidate)
+        && ((candidate.direction === 'SELL' && zonePriceStatus.pricePosition === 'BELOW_ZONE')
+            || (candidate.direction === 'BUY' && zonePriceStatus.pricePosition === 'ABOVE_ZONE'));
     if ((Number.isInteger(index) && index >= 0 && index < lifecycleData.length) || eventCutoff != null) {
         for (let i = 0; i < executionData.length; i++) {
             const bar = executionData[i];
@@ -6846,7 +6907,8 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
                     result.entry_first_touch_time = barTime;
                 }
             }
-            if (Number.isFinite(tp1) && (candidate.direction === 'BUY' ? bar.h >= tp1 : bar.l <= tp1)) {
+            if (Number.isFinite(tp1) && (!pendingRetracementLocation || result.entry_touch_count_after_signal > 0)
+                && (candidate.direction === 'BUY' ? bar.h >= tp1 : bar.l <= tp1)) {
                 result.tp1_already_reached = true;
                 if (result.tp1_first_reached_index == null) {
                     result.tp1_first_reached_index = i;
@@ -6857,10 +6919,13 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     }
     result.entry_consumed = result.entry_touch_count_after_signal > spec.maxEntryTouches;
     result.execution_zone_consumed = result.entry_consumed;
-    const currentReached = Number.isFinite(tp1) && (candidate.direction === 'BUY' ? price >= tp1 : price <= tp1);
+    const currentReached = Number.isFinite(tp1) && !pendingRetracementLocation
+        && (candidate.direction === 'BUY' ? price >= tp1 : price <= tp1);
     result.tp1_already_reached ||= currentReached;
     const staleByAge = !Number.isFinite(eventAgeHours) || eventAgeHours > maxEventAgeHours || parentAgeExpired;
-    const deliveryAdvanced = result.remaining_reward_fraction != null && result.remaining_reward_fraction < freshnessSpec.minRemainingRewardFraction;
+    const deliveryAdvanced = !pendingRetracementLocation
+        && result.remaining_reward_fraction != null
+        && result.remaining_reward_fraction < freshnessSpec.minRemainingRewardFraction;
     const entryTooFarForToday = !result.entry_reachable_today;
     result.timestamp_consistent = !timestampInFuture && !zoneTimeInFuture && !(hasExplicitTimes && Number.isFinite(eventAgeHours) && eventAgeHours < -(STRATEGY_SPEC.TIME.futureToleranceMs / 3600000));
     // A pending limit can be placed before its retracement is reachable in
