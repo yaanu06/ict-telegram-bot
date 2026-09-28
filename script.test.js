@@ -441,6 +441,18 @@ describe('strategy entry lifecycle', () => {
         expect(poor.final_score).toBeLessThan(partial.final_score);
     });
 
+    it('never presents deterministic quality as 100 percent certainty', () => {
+        const ctx = getContext();
+        const result = ctx.calculateCandidateConfidence({
+            direction: 'BUY', opportunity_status: 'FRESH_PENDING_TODAY',
+            remaining_reward_fraction: 1, entry_reachability_score: 100,
+            htf_alignment: 3, trade_context_classification: 'HTF_ALIGNED_CONTINUATION',
+            strategy_setup: { confirmations: ['TBS', 'MSNR'] },
+            target_reachability: { reachability_score: 100 }
+        });
+        expect(result.final_score).toBeLessThanOrEqual(95);
+    });
+
     it('blocks contradictory final limit output and permits a valid pending limit outside the zone', () => {
         const ctx = getContext();
         const candidate = { id: 'fresh-limit', direction: 'SELL', entry: 110, stop_loss: 112, tp1: 104, tp2: null, tp3: null,

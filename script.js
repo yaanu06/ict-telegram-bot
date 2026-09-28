@@ -7007,7 +7007,10 @@ function calculateCandidateConfidence(candidate, context = {}) {
     const seriousObstacles = (candidate?.target_reachability?.intervening_obstacles || candidate?.target_map?.[0]?.intervening_obstacles || [])
         .filter(obstacle => obstacle.severity === 'SERIOUS').length;
     if (seriousObstacles > 0) add(`Serious target obstacles ${seriousObstacles}`, seriousObstacles * spec.seriousObstaclePenalty);
-    const finalScore = Math.max(0, Math.min(100, Math.round(score)));
+    // This is a deterministic quality score, not a calibrated probability.
+    // Keep the public value below certainty so 100% cannot be mistaken for a
+    // guaranteed outcome.
+    const finalScore = Math.max(0, Math.min(95, Math.round(score)));
     const qualityMinimum = getCandidateExecutionQualityMinimum(candidate);
     const qualityBand = finalScore >= qualityMinimum ? 'HIGH' : finalScore >= spec.mediumQualityMinimum ? 'MEDIUM' : 'LOW';
     const qualityBreakdown = {
@@ -11495,6 +11498,7 @@ async function runAutoScan() {
                 take_profit_3: aiResult.take_profit_3,
                 risk_reward: aiResult.risk_reward,
                 confidence: aiResult.confidence,
+                confidence_type: 'DETERMINISTIC_QUALITY_SCORE_NOT_PROBABILITY',
                 zone_quality: aiResult.zone_quality,
                 patterns_detected: aiResult.patterns.join('+'),
                 probability: aiResult.probability,
@@ -11524,6 +11528,9 @@ async function runAutoScan() {
                 target_type: aiResult.target_type,
                 target_confluence: aiResult.target_confluence,
                 strategy_detections: liveMarketContext.strategy_detections,
+                trend_detection: liveMarketContext.multi_timeframe_direction?.trend || null,
+                volatility: liveMarketContext.volatility || null,
+                indicators: liveMarketContext.momentum || null,
                 candidate_pipeline: liveMarketContext.candidate_pipeline,
                 ai_decision: aiResult.ai_decision,
                 wait_condition: aiResult.wait_condition,
