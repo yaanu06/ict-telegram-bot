@@ -10,7 +10,7 @@ if (tg) { tg.expand(); tg.ready(); }
 // CONFIG
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
-const APP_BUILD_ID = '20260929-001';
+const APP_BUILD_ID = '20260929-002';
 let lastDisplayedPublicSignal = null;
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 const MARKET_DATA_PROVIDER_STORAGE_KEY = 'ict_market_data_provider';
