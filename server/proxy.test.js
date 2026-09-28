@@ -14,7 +14,11 @@ function request(server, method, pathname, headers = {}, body = '') {
             let body = '';
             response.setEncoding('utf8');
             response.on('data', chunk => { body += chunk; });
-            response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(body) }));
+            response.on('end', () => {
+                let parsed = body;
+                try { parsed = JSON.parse(body); } catch {}
+                resolve({ status: response.statusCode, body: parsed });
+            });
         });
         req.on('error', reject);
         req.end(body);
@@ -22,6 +26,18 @@ function request(server, method, pathname, headers = {}, body = '') {
 }
 
 describe('market and AI proxy boundary', () => {
+    test('serves the Mini App from the same origin as the API', async () => {
+        const server = createProxyServer({ env: { PROXY_MAX_REQUESTS: '20' }, fetchImpl: jest.fn() });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const response = await request(server, 'GET', '/');
+            expect(response.status).toBe(200);
+            expect(response.body).toBeDefined();
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
     test('validates symbols, intervals, and bounded history sizes', () => {
         expect(validateMarketRequest('/quote', new URLSearchParams('symbol=EUR%2FUSD'))).toMatchObject({ valid: true, symbol: 'EUR/USD' });
         expect(validateMarketRequest('/quote', new URLSearchParams('symbol=NASDAQ%3AAAPL'))).toMatchObject({ valid: true, symbol: 'NASDAQ:AAPL' });

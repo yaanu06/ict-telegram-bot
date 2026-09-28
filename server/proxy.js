@@ -1,6 +1,7 @@
 'use strict';
 
 const http = require('node:http');
+const fs = require('node:fs');
 const path = require('node:path');
 const { URL } = require('node:url');
 const { createAuditStore } = require('./audit-store');
@@ -11,6 +12,13 @@ const DEFAULT_WINDOW_MS = 60_000;
 const DEFAULT_MAX_REQUESTS = 60;
 const DEFAULT_TWELVE_MAX_REQUESTS = 50;
 const DEFAULT_TVKIT_MAX_REQUESTS = 120;
+const PUBLIC_ROOT = path.resolve(__dirname, '..');
+const PUBLIC_ASSETS = {
+    '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
+    '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
+    '/script.js': { file: 'script.js', type: 'application/javascript; charset=utf-8' },
+    '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' }
+};
 
 function normalizeSymbol(value) {
     return String(value || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -29,6 +37,26 @@ function jsonResponse(res, status, payload, origin = '') {
     if (origin) headers['Access-Control-Allow-Origin'] = origin;
     res.writeHead(status, headers);
     res.end(JSON.stringify(payload));
+}
+
+function publicAssetResponse(res, pathname) {
+    const asset = PUBLIC_ASSETS[pathname];
+    if (!asset) return false;
+    const filePath = path.join(PUBLIC_ROOT, asset.file);
+    let body = fs.readFileSync(filePath, 'utf8');
+    // When the Mini App is served by this same process, API calls must stay on
+    // the same origin. GitHub Pages deployments can still inject an explicit
+    // __ICT_PROXY_BASE_URL__ before script.js loads.
+    if (asset.file === 'index.html') {
+        body = body.replace('</head>', '<script>window.__ICT_PROXY_BASE_URL__ = window.location.origin;</script></head>');
+    }
+    res.writeHead(200, {
+        'Content-Type': asset.type,
+        'Cache-Control': asset.file === 'index.html' ? 'no-store' : 'public, max-age=300',
+        'X-Content-Type-Options': 'nosniff'
+    });
+    res.end(body);
+    return true;
 }
 
 function validateMarketRequest(pathname, query) {
@@ -124,6 +152,7 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
             res.writeHead(204, { 'Access-Control-Allow-Origin': origin || '*', 'Access-Control-Allow-Headers': 'Content-Type, X-Proxy-Client', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' });
             return res.end();
         }
+        if (req.method === 'GET' && publicAssetResponse(res, requestUrl.pathname)) return;
         if (req.method === 'GET' && requestUrl.pathname === '/health') {
             return jsonResponse(res, 200, { ok: true, service: 'market-ai-proxy', time: new Date(now()).toISOString(), data_provider_configured: !!twelveKey, tvkit_provider_configured: !!tvkitBase, market_data_provider_configured: !!twelveKey || !!tvkitBase, ai_provider_configured: !!deepSeekKey }, origin);
         }

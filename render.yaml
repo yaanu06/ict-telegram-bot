@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: ict-telegram-bot
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DEEPSEEK_API_URL
+        value: https://api.deepseek.com/chat/completions
+      - key: TWELVE_DATA_API_KEY
+        sync: false
+      - key: PROXY_CORS_ORIGIN
+        sync: false
+      - key: PROXY_TVKIT_MAX_REQUESTS
+        value: "120"

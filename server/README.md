@@ -2,6 +2,11 @@
 
 This optional Node 20 service keeps provider credentials outside the browser. It does not place orders. The Mini App can use the local tvkit service as its primary market source, while Twelve Data remains available as an explicit fallback.
 
+For phone-only use, deploy the repository with the included `Dockerfile` and
+`render.yaml`. The container starts tvkit and the Node proxy together and also
+serves the Mini App from the same URL. After the first deployment, open that
+URL in the Telegram Mini App; no terminal or local service is required.
+
 ## Run
 
 ```powershell
@@ -28,4 +33,4 @@ Routes:
 
 The proxy validates symbols, intervals, output size, request bodies, provider configuration, and rate limits. Twelve Data routes have a separate 50-request-per-minute default account budget (`PROXY_TWELVE_GLOBAL_MAX_REQUESTS`) plus a per-client abuse budget (`PROXY_TWELVE_MAX_REQUESTS`) to stay below the Grow 55 plan limit. tvkit routes have a separate per-client budget (`PROXY_TVKIT_MAX_REQUESTS`, 120 per minute by default) and forward to `TVKIT_BASE_URL`; they require no paid provider key. Upstream provider calls are bounded by `PROXY_UPSTREAM_TIMEOUT_MS` (10 seconds by default). Authenticated audit records are appended to `AUDIT_FILE_PATH` as JSON Lines with credential-like fields removed. It never returns provider credentials and has no broker or order route.
 
-To use it from the Mini App, set `window.__ICT_PROXY_BASE_URL__` before `script.js` loads. For the default tvkit provider, run `python tools/tvkit_service.py`, set `TVKIT_BASE_URL` to that service URL, and the client calls `/api/tvkit/*`. To intentionally use the paid fallback, run `setMarketDataProvider('TWELVE_DATA')`; the client then calls `/api/twelve/*`. Set `window.__ICT_AUDIT_WRITE_TOKEN__` only if you want the browser's sanitized analysis records forwarded to the proxy; keep `AUDIT_READ_TOKEN` private.
+To use it from a separately hosted Mini App, set `window.__ICT_PROXY_BASE_URL__` before `script.js` loads. For the default same-origin deployment, the server injects that value automatically and the client calls `/api/tvkit/*`. To intentionally use the paid fallback, run `setMarketDataProvider('TWELVE_DATA')`; the client then calls `/api/twelve/*`. Set `window.__ICT_AUDIT_WRITE_TOKEN__` only if you want the browser's sanitized analysis records forwarded to the proxy; keep `AUDIT_READ_TOKEN` private.
