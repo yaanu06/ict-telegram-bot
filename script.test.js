@@ -1829,6 +1829,197 @@ describe('phase selection audit observability', () => {
     });
 });
 
+describe('current opportunity regeneration', () => {
+    const timestampedHistory = (count, timeframeMinutes, asOf) => Array.from({ length: count }, (_, index) => {
+        const t = asOf - (count - index) * timeframeMinutes * 60000;
+        return { t, o: 100, h: 100.1, l: 99.9, c: 100, v: 1000, is_closed: true };
+    });
+
+    const currentZoneContext = () => {
+        const asOf = Date.parse('2026-09-29T08:00:00Z');
+        const zone = {
+            id: '1H-SELL-FVG-101.5-102', type: 'FVG', origin: 'STRUCTURAL', primary_eligible: true,
+            direction: 'SELL', timeframe: '1H', low: 101.5, high: 102, midpoint: 101.75,
+            price: 100, freshness: 'FRESH', invalidated: false, created_index: 48,
+            created_time: asOf - 2 * 60 * 60 * 1000
+        };
+        const target = {
+            id: 'SELL-TARGET-90', direction: 'SELL', level: 90, source: 'SELL_SIDE_LIQUIDITY',
+            target_type: 'EXTERNAL_LIQUIDITY', timeframe: '1H', structural_priority: 82,
+            target_lifecycle_state: 'UNFULFILLED'
+        };
+        const historyCache = {
+            '1D': timestampedHistory(50, 1440, asOf),
+            '4H': timestampedHistory(50, 240, asOf),
+            '1H': timestampedHistory(50, 60, asOf),
+            '15M': timestampedHistory(50, 15, asOf),
+            '5M': timestampedHistory(50, 5, asOf)
+        };
+        const timeframeContext = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, {
+            effective_trend: 'BEARISH', structural_trend: 'BEARISH', displayed_trend: 'BEARISH',
+            evidence: [], structure: { recent_swing_highs: [], recent_swing_lows: [] }
+        }]));
+        return {
+            asOf, zone, target, historyCache, timeframeContext,
+            marketContext: {
+                pair: 'EUR/USD', current_price: 100, as_of_time: asOf, market_open: true,
+                timeframe_context: timeframeContext,
+                data_quality: { valid: true, reasons: [] },
+                daily_bias: { direction: 'SELL' },
+                liquidity: {},
+                news_risk: { status: 'CLEAR' }
+            },
+            targetCandidates: { all: [target], sell: [target], buy: [] }
+        };
+    };
+
+    it('constructs a fresh current candidate from deterministic structure after historical locations are unusable', () => {
+        const ctx = getContext();
+        const fixture = currentZoneContext();
+        const regeneration = ctx.buildCurrentOpportunityRegenerationSetups({
+            pair: 'EUR/USD', price: 100, historyCache: fixture.historyCache, zones: [fixture.zone],
+            strategySetups: [], targetCandidates: fixture.targetCandidates,
+            marketContext: fixture.marketContext, symbolMetadata: {}
+        });
+        expect(regeneration.setups).toHaveLength(1);
+        expect(regeneration.setups[0]).toEqual(expect.objectContaining({
+            candidate_role: 'FRESH_CONTINUATION_POI',
+            current_opportunity_source: 'CURRENT_MARKET_REGENERATION',
+            execution_model: 'FRESH_RETRACEMENT_LIMIT'
+        }));
+        expect(regeneration.setups[0].execution_zone.id).toBe(fixture.zone.id);
+
+        ctx.prepareOpportunitySetups(regeneration.setups, fixture.marketContext, 100);
+        const result = ctx.buildAdaptiveSetupCandidates({
+            pair: 'EUR/USD', price: 100, historyCache: fixture.historyCache,
+            zones: [fixture.zone], targetCandidates: fixture.targetCandidates,
+            riskConstraints: { minimum_rr: 2.5, spread_valid: true, slippage_valid: true },
+            marketRegime: { primary_regime: 'TRENDING_BEARISH' },
+            structure: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, { effective_trend: 'BEARISH', structural_trend: 'BEARISH', trend: 'BEARISH' }])),
+            marketContext: fixture.marketContext,
+            strategySetups: regeneration.setups,
+            symbolMetadata: {}
+        });
+        expect(result.selectable_candidates).toEqual(expect.arrayContaining([
+            expect.objectContaining({ candidate_role: 'FRESH_CONTINUATION_POI', execution_model: 'PENDING_LIMIT' })
+        ]));
+        expect(result.selectable_candidates[0].entry).toBe(101.75);
+        expect(result.selectable_candidates[0].target_lifecycle_state).toBe('UNFULFILLED');
+
+        const compact = ctx.compactAIContext({
+            snapshot_id: 'TVKIT:EUR_USD:current',
+            pair: 'EUR/USD',
+            current_price: 100,
+            adaptive_setup_candidates: result.selectable_candidates,
+            valid_deterministic_candidates: result.selectable_candidates,
+            future_watch_candidates: [],
+            low_quality_candidates: [],
+            rejected_setup_candidates: [],
+            current_opportunity_regeneration: { current_regenerated_count: 1 }
+        });
+        expect(compact.current_opportunity_regeneration).toEqual(expect.objectContaining({ current_regenerated_count: 1 }));
+        expect(compact.candidate_catalog).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: result.selectable_candidates[0].id, candidate_role: 'FRESH_CONTINUATION_POI' })
+        ]));
+    });
+
+    it('does not resurrect a consumed or expired historical zone and records it as a regeneration rejection', () => {
+        const ctx = getContext();
+        const fixture = currentZoneContext();
+        const consumed = { ...fixture.zone, id: 'old-consumed', freshness: 'USED', consumed: true };
+        const regeneration = ctx.buildCurrentOpportunityRegenerationSetups({
+            pair: 'EUR/USD', price: 100, historyCache: fixture.historyCache, zones: [consumed],
+            strategySetups: [], targetCandidates: fixture.targetCandidates,
+            marketContext: fixture.marketContext, symbolMetadata: {}
+        });
+        expect(regeneration.setups).toHaveLength(0);
+        expect(regeneration.rejected).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'old-consumed', rejection_code: 'CURRENT_ZONE_NOT_FRESH' })
+        ]));
+    });
+
+    it('regenerates a structurally valid BUY pending limit with the same generic path', () => {
+        const ctx = getContext();
+        const fixture = currentZoneContext();
+        const buyZone = {
+            ...fixture.zone,
+            id: '1H-BUY-FVG-98-98.5', direction: 'BUY', low: 98, high: 98.5,
+            midpoint: 98.25
+        };
+        const buyTarget = {
+            id: 'BUY-TARGET-110', direction: 'BUY', level: 110, source: 'BUY_SIDE_LIQUIDITY',
+            target_type: 'EXTERNAL_LIQUIDITY', timeframe: '1H', structural_priority: 82,
+            target_lifecycle_state: 'UNFULFILLED'
+        };
+        const marketContext = {
+            ...fixture.marketContext,
+            daily_bias: { direction: 'BUY' },
+            timeframe_context: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, {
+                effective_trend: 'BULLISH', structural_trend: 'BULLISH', displayed_trend: 'BULLISH',
+                evidence: [], structure: { recent_swing_highs: [], recent_swing_lows: [] }
+            }]))
+        };
+        const targetCandidates = { all: [buyTarget], buy: [buyTarget], sell: [] };
+        const regeneration = ctx.buildCurrentOpportunityRegenerationSetups({
+            pair: 'EUR/USD', price: 100, historyCache: fixture.historyCache, zones: [buyZone],
+            strategySetups: [], targetCandidates, marketContext, symbolMetadata: {}
+        });
+        ctx.prepareOpportunitySetups(regeneration.setups, marketContext, 100);
+        const result = ctx.buildAdaptiveSetupCandidates({
+            pair: 'EUR/USD', price: 100, historyCache: fixture.historyCache,
+            zones: [buyZone], targetCandidates,
+            riskConstraints: { minimum_rr: 2.5, spread_valid: true, slippage_valid: true },
+            marketRegime: { primary_regime: 'TRENDING_BULLISH' },
+            structure: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, { effective_trend: 'BULLISH', structural_trend: 'BULLISH', trend: 'BULLISH' }])),
+            marketContext, strategySetups: regeneration.setups, symbolMetadata: {}
+        });
+        expect(result.selectable_candidates).toEqual(expect.arrayContaining([
+            expect.objectContaining({ direction: 'BUY', candidate_role: 'FRESH_CONTINUATION_POI', execution_model: 'PENDING_LIMIT' })
+        ]));
+    });
+
+    it('keeps rejected catalog records unclassified instead of inferring ORIGINAL_THESIS_POI', () => {
+        const ctx = getContext();
+        const live = {
+            snapshot_id: 'TVKIT:EUR_USD:current', pair: 'EUR/USD', current_price: 100,
+            historyCache: {}, adaptive_setup_candidates: [], valid_deterministic_candidates: [],
+            setup_candidate_audit: { raw_candidate_count: 1 }, candidate_pipeline: { raw_candidates: 1 }
+        };
+        const audit = ctx.buildPhaseSelectionAudit(live);
+        ctx.capturePhaseSelectionDeepSeekVisibility(live, {
+            adaptive_setup_candidates: [],
+            candidate_catalog: [{ id: 'old-rejected', execution_model: 'FRESH_RETRACEMENT_LIMIT', catalog_status: 'REJECTED', rejection_code: 'SETUP_EXPIRED' }]
+        });
+        expect(audit.candidates_before_ai).toEqual([]);
+        expect(live.phase_selection_audit.candidate_pipeline_counts.by_role.deepseek_visible).toEqual({ UNCLASSIFIED: 1 });
+    });
+
+    it('exposes historical and regenerated pipeline counts without changing candidate selection inputs', () => {
+        const ctx = getContext();
+        const live = {
+            snapshot_id: 'TVKIT:XAU_USD:current', pair: 'XAU/USD', current_price: 4140.94,
+            historyCache: {}, adaptive_setup_candidates: [{ id: 'fresh', candidate_role: 'FRESH_CONTINUATION_POI' }],
+            valid_deterministic_candidates: [{ id: 'fresh', candidate_role: 'FRESH_CONTINUATION_POI' }],
+            setup_candidate_audit: { raw_candidate_count: 17 }, candidate_pipeline: { raw_candidates: 17 },
+            current_opportunity_regeneration: {
+                snapshot_id: 'TVKIT:XAU_USD:current', historical_discovered_count: 17,
+                historical_rejected_count: 16, current_regenerated_count: 2,
+                current_regenerated_valid_count: 1, current_regenerated_selectable_count: 1
+            }
+        };
+        const audit = ctx.buildPhaseSelectionAudit(live);
+        expect(audit.current_opportunity_regeneration).toEqual(expect.objectContaining({ current_regenerated_count: 2 }));
+        expect(audit.candidate_pipeline_counts).toEqual(expect.objectContaining({
+            historical_discovered_count: 17,
+            historical_rejected_count: 16,
+            current_regenerated_count: 2,
+            current_regenerated_valid_count: 1,
+            current_regenerated_selectable_count: 1
+        }));
+        expect(live.adaptive_setup_candidates.map(candidate => candidate.id)).toEqual(['fresh']);
+    });
+});
+
 describe('institutional-style zone confluence ranking', () => {
     it('rewards a same-direction entry zone nested inside higher-timeframe demand or a breaker', () => {
         const ctx = getContext();

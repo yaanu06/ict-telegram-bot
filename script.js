@@ -6172,6 +6172,15 @@ function scoreInstitutionalZoneConfluence(zone, poiZones = [], timeframeContext 
 // the current scan price.  Keep this metadata separate so a pending limit is
 // never rejected merely because the earlier directional delivery is advanced.
 function getCandidateOpportunityRole(candidate = {}) {
+    const explicitRole = candidate.candidate_role || candidate.current_opportunity_role || candidate.current_opportunity_relevance?.candidate_role;
+    if (['ORIGINAL_THESIS_POI', 'FRESH_RETRACEMENT_POI', 'FRESH_CONTINUATION_POI', 'CONFIRMATION_POI'].includes(String(explicitRole || '').toUpperCase())) {
+        return String(explicitRole).toUpperCase();
+    }
+    // Rejected catalog stubs do not have enough surviving geometry to infer a
+    // semantic opportunity role.  Keeping them unclassified prevents the
+    // selector audit from presenting every rejected historical record as an
+    // original thesis candidate.
+    if (candidate.catalog_status && candidate.catalog_status !== 'VALID_SELECTABLE') return null;
     const model = String(candidate.execution_model || candidate.entry_model || '').toUpperCase();
     if (model === 'FRESH_RETRACEMENT_LIMIT') {
         const zoneTime = normalizeTimestampUTC(candidate.execution_zone_created_time || candidate.zone?.created_time);
@@ -6347,10 +6356,13 @@ function normalizeMarketPhaseSelection(value = {}, inherited = {}) {
 const PHASE_SELECTION_AUDIT_TIMEFRAMES = ['1D', '4H', '1H', '15M', '5M'];
 
 function getPhaseSelectionCandidateRole(candidate = {}) {
-    return candidate.candidate_role
-        || candidate.current_opportunity_relevance?.candidate_role
-        || getCandidateOpportunityRole(candidate)
-        || null;
+    const explicitRole = candidate.candidate_role || candidate.current_opportunity_role || candidate.current_opportunity_relevance?.candidate_role;
+    if (['ORIGINAL_THESIS_POI', 'FRESH_RETRACEMENT_POI', 'FRESH_CONTINUATION_POI', 'CONFIRMATION_POI'].includes(String(explicitRole || '').toUpperCase())) {
+        return String(explicitRole).toUpperCase();
+    }
+    return candidate.catalog_status && candidate.catalog_status !== 'VALID_SELECTABLE'
+        ? null
+        : getCandidateOpportunityRole(candidate) || null;
 }
 
 function buildPhaseSelectionCandidateAuditRecord(candidate = {}, catalogStatus = null, deterministicValid = null) {
@@ -6374,6 +6386,8 @@ function buildPhaseSelectionCandidateAuditRecord(candidate = {}, catalogStatus =
         strategy: candidate.strategy_label || candidate.strategy || strategySetup.label || strategySetup.primary || null,
         strategy_family: strategyFamily,
         pattern_types: [...new Set([candidate.zone_type, candidate.zone_origin, candidate.entry_region_source, candidate.zone?.type].filter(Boolean))],
+        source_evidence_ids: candidate.source_evidence_ids || strategySetup.structural_evidence_ids || [],
+        current_opportunity_source: candidate.current_opportunity_source || strategySetup.current_opportunity_source || null,
         setup_timeframe: candidate.setup_timeframe || candidate.timeframe || null,
         execution_timeframe: candidate.execution_timeframe || candidate.timeframe || null,
         execution_model: candidate.execution_model || candidate.entry_model || null,
@@ -6471,6 +6485,7 @@ function buildPhaseSelectionAudit(liveMarketContext = {}) {
         deepseek_phase_response: null,
         phase_resolution: null,
         final_selection: null,
+        current_opportunity_regeneration: liveMarketContext.current_opportunity_regeneration || null,
         candidate_pipeline_counts: {
             discovered_candidate_count: Number(liveMarketContext.setup_candidate_audit?.raw_candidate_count) || Number(liveMarketContext.candidate_pipeline?.raw_candidates) || candidates.length,
             role_classified_candidate_count: candidateRecords.filter(record => record.candidate_role).length,
@@ -6488,6 +6503,11 @@ function buildPhaseSelectionAudit(liveMarketContext = {}) {
             }
         }
     };
+    audit.candidate_pipeline_counts.historical_discovered_count = liveMarketContext.current_opportunity_regeneration?.historical_discovered_count ?? null;
+    audit.candidate_pipeline_counts.historical_rejected_count = liveMarketContext.current_opportunity_regeneration?.historical_rejected_count ?? null;
+    audit.candidate_pipeline_counts.current_regenerated_count = liveMarketContext.current_opportunity_regeneration?.current_regenerated_count ?? 0;
+    audit.candidate_pipeline_counts.current_regenerated_valid_count = liveMarketContext.current_opportunity_regeneration?.current_regenerated_valid_count ?? 0;
+    audit.candidate_pipeline_counts.current_regenerated_selectable_count = liveMarketContext.current_opportunity_regeneration?.current_regenerated_selectable_count ?? 0;
     return audit;
 }
 
@@ -6754,6 +6774,147 @@ function resolvePhaseAwareCandidateSelection(selector = {}, liveMarketContext = 
     };
 }
 
+function buildCurrentOpportunityRegenerationSetups({ pair: pairLocal = pair, price, historyCache = {}, zones = [], strategySetups = [], targetCandidates = {}, marketContext = {}, symbolMetadata = {} } = {}) {
+    const settings = getMarketSettings(pairLocal, symbolMetadata || {});
+    const timeframeContext = marketContext?.timeframe_context || buildTimeframeContext({ historyCache, structure: marketContext?.structure, price, strategySetups, zones });
+    const atrByTimeframe = {};
+    for (const tf of ['4H', '1H', '15M']) {
+        const data = getClosedHistory(historyCache, tf);
+        atrByTimeframe[tf] = data.length >= 15 ? atr(data, 14) : 0;
+    }
+    const currentZones = [
+        ...(zones || []),
+        ...['15M'].flatMap(tf => buildLiveZonesForTf(getClosedHistory(historyCache, tf), tf, price, pairLocal, atrByTimeframe[tf], 20, symbolMetadata || {}))
+    ];
+    const existingZoneKeys = new Set((strategySetups || []).map(setup => strategyZoneKey(setup.execution_zone)).filter(Boolean));
+    const seen = new Set();
+    const rejected = [];
+    const setups = [];
+    const eligibleFreshness = new Set(['FRESH']);
+    for (const zone of currentZones) {
+        const direction = zone?.direction;
+        const tf = zone?.timeframe;
+        const key = strategyZoneKey(zone);
+        if (!zone || !['4H', '1H', '15M'].includes(tf) || !['BUY', 'SELL'].includes(direction) || seen.has(key)) continue;
+        seen.add(key);
+        if (existingZoneKeys.has(key)) continue;
+        const freshness = String(zone.freshness || '').toUpperCase();
+        if (!eligibleFreshness.has(freshness) || zone.primary_eligible === false || zone.invalidated || zone.consumed) {
+            rejected.push({ id: zone.id || key, candidate_role: null, direction, timeframe: tf, zone_type: zone.type, rejection_code: 'CURRENT_ZONE_NOT_FRESH', rejection_reasons: ['CURRENT_ZONE_NOT_FRESH'] });
+            continue;
+        }
+        if (!hasDeterministicMarketMechanicsProof(zone, direction, timeframeContext, targetCandidates, price)) {
+            rejected.push({ id: zone.id || key, candidate_role: null, direction, timeframe: tf, zone_type: zone.type, rejection_code: 'CURRENT_STRUCTURE_NOT_SUPPORTED', rejection_reasons: ['CURRENT_STRUCTURE_NOT_SUPPORTED'] });
+            continue;
+        }
+        const invalidationLevel = Number(zone.structural_invalidation?.level ?? zone.structural_invalidation ?? (direction === 'BUY' ? zone.low : zone.high));
+        if (!Number.isFinite(invalidationLevel)) {
+            rejected.push({ id: zone.id || key, candidate_role: null, direction, timeframe: tf, zone_type: zone.type, rejection_code: 'NO_STRUCTURAL_STOP', rejection_reasons: ['NO_STRUCTURAL_STOP'] });
+            continue;
+        }
+        const sourceTime = normalizeTimestampUTC(zone.created_time ?? zone.source_time);
+        const evidenceIds = [...new Set([
+            zone.id,
+            ...(Array.isArray(zone.structural_evidence_ids) ? zone.structural_evidence_ids : []),
+            Number.isInteger(zone.source_candle_index) ? `${zone.type}:${tf}:${zone.source_candle_index}` : null,
+            Number.isInteger(zone.created_index) ? `${zone.type}:${tf}:${zone.created_index}` : null
+        ].filter(Boolean))];
+        const role = tf === '4H' ? 'FRESH_RETRACEMENT_POI' : 'FRESH_CONTINUATION_POI';
+        const executionInvalidation = {
+            strategy: 'CURRENT_STRUCTURE',
+            direction,
+            level: invalidationLevel,
+            source: `${String(zone.type || 'ZONE').toUpperCase()}_ZONE_INVALIDATION`,
+            timeframe: tf,
+            source_time: sourceTime || null
+        };
+        const targetPool = (targetCandidates?.all || []).filter(target => target?.direction === direction && Number.isFinite(Number(target.level)));
+        setups.push({
+            id: `CURRENT:${tf}:${direction}:${zone.type}:${ictRound(zone.low, settings.prec)}:${ictRound(zone.high, settings.prec)}:${sourceTime || zone.created_index || 0}`,
+            primary: 'CURRENT_STRUCTURE',
+            label: `CURRENT_${String(zone.type || 'STRUCTURE').toUpperCase()}`,
+            direction,
+            timeframe: tf,
+            setup_timeframe: tf,
+            execution_timeframe: tf,
+            event_time: sourceTime || null,
+            execution_event_time: sourceTime || null,
+            execution_event_index: zone.created_index ?? zone.source_candle_index ?? null,
+            execution_zone_created_time: sourceTime || null,
+            execution_zone_created_index: zone.created_index ?? zone.source_candle_index ?? null,
+            narrative_state: 'ACTIVE',
+            freshness: 'FRESH',
+            market_mechanics_verified: true,
+            ai_verified: true,
+            execution_confirmed: true,
+            candidate_role: role,
+            current_opportunity_role: role,
+            current_opportunity_source: 'CURRENT_MARKET_REGENERATION',
+            structural_invalidation: invalidationLevel,
+            structural_invalidation_detail: executionInvalidation,
+            structural_evidence_ids: evidenceIds,
+            strategy_evidence: { CURRENT_STRUCTURE: { zone_id: zone.id || key, evidence_ids: evidenceIds } },
+            execution_model: 'FRESH_RETRACEMENT_LIMIT',
+            entry_model: 'FRESH_RETRACEMENT_LIMIT',
+            entry_region_source: zone.type,
+            target_candidates: targetPool,
+            execution_zone: {
+                ...zone,
+                id: zone.id || key,
+                execution_model: 'FRESH_RETRACEMENT_LIMIT',
+                entry_model: 'FRESH_RETRACEMENT_LIMIT',
+                candidate_id_prefix: 'CURRENT-',
+                entry_region_source: zone.type,
+                execution_structural_invalidation: executionInvalidation,
+                structural_invalidation: executionInvalidation,
+                strategy_source: 'CURRENT_STRUCTURE',
+                primary_eligible: true,
+                freshness: 'FRESH'
+            }
+        });
+    }
+    return { setups, zones: setups.map(setup => setup.execution_zone), rejected, discovered: currentZones.length };
+}
+
+function isSelectableAdaptiveCandidate(candidate = {}) {
+    const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
+    const qualityPasses = !Number.isFinite(quality) || quality >= getCandidateExecutionQualityMinimum(candidate);
+    const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
+    return (qualityPasses || pendingLimit) && candidate.still_actionable_today !== false && (pendingLimit || candidate.entry_reachable_today !== false);
+}
+
+function mergeAdaptiveSetupCandidateResults(results = [], price = null, asOfTime = null) {
+    const dedupe = new Map();
+    for (const result of results) {
+        for (const candidate of result?.all_valid_candidates || result?.valid_candidates || []) {
+            if (candidate?.id && !dedupe.has(candidate.id)) dedupe.set(candidate.id, candidate);
+        }
+    }
+    const allValidCandidates = rankCurrentOpportunityCandidates([...dedupe.values()], price, asOfTime);
+    const selectableCandidates = allValidCandidates.filter(isSelectableAdaptiveCandidate);
+    const futureWatchCandidates = allValidCandidates.filter(candidate => {
+        const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
+        const qualityPasses = Number.isFinite(quality) && quality >= getCandidateExecutionQualityMinimum(candidate);
+        const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
+        const futureOnly = candidate.still_actionable_today === false || (!pendingLimit && candidate.entry_reachable_today === false);
+        return (qualityPasses || pendingLimit) && futureOnly;
+    }).slice(0, 10);
+    const lowQualityCandidates = allValidCandidates.filter(candidate => {
+        const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
+        return Number.isFinite(quality) && quality < getCandidateExecutionQualityMinimum(candidate);
+    }).slice(0, 20);
+    return {
+        raw_candidates: results.flatMap(result => result?.raw_candidates || []),
+        valid_candidates: allValidCandidates.slice(0, 5),
+        all_valid_candidates: allValidCandidates,
+        selectable_candidates: selectableCandidates,
+        future_watch_candidates: futureWatchCandidates,
+        low_quality_candidates: lowQualityCandidates,
+        seed_diagnostics: results.flatMap(result => result?.seed_diagnostics || []),
+        rejected_candidates: results.flatMap(result => result?.rejected_candidates || [])
+    };
+}
+
 function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, targetCandidates, riskConstraints, marketRegime, structure, marketContext, strategySetups, symbolMetadata = null }) {
     const timeframeContext = marketContext?.timeframe_context || buildTimeframeContext({ historyCache, structure, price, strategySetups, zones });
     const settings = getMarketSettings(pair, symbolMetadata || {});
@@ -6878,7 +7039,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 if (!Number.isFinite(entry) || !Number.isFinite(stop.stop_loss)) {
                     failSeed(seed, 'INVALID_NUMERIC_GEOMETRY'); continue;
                 }
-                const seedPrefix = zone.execution_model === 'FRESH_RETRACEMENT_LIMIT' ? 'FRESH-' : '';
+                const seedPrefix = zone.candidate_id_prefix || (zone.execution_model === 'FRESH_RETRACEMENT_LIMIT' ? 'FRESH-' : '');
                 const createdKey = normalizeTimestampUTC(zone.created_time);
                 const rawId = `${seedPrefix}${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${createdKey || zone.created_index || rawCandidates.length + 1}-${rawCandidates.length + 1}`;
                 const risk = Math.abs(entry - stop.stop_loss);
@@ -6943,6 +7104,10 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     rawCandidate.execution_zone_created_time = zone.created_time || strategySetup.execution_zone_created_time || null;
                     rawCandidate.execution_zone_created_index = zone.created_index ?? strategySetup.execution_zone_created_index ?? null;
                     rawCandidate.execution_zone_consumed = !!zone.execution_zone_consumed;
+                    rawCandidate.candidate_role = strategySetup.candidate_role || strategySetup.current_opportunity_role || null;
+                    rawCandidate.current_opportunity_source = strategySetup.current_opportunity_source || null;
+                    rawCandidate.source_evidence_ids = Array.isArray(strategySetup.structural_evidence_ids)
+                        ? [...strategySetup.structural_evidence_ids] : [];
                 }
                 rawCandidate.market_mechanics_verified = marketMechanicsVerified;
                 rawCandidates.push(rawCandidate);
@@ -7224,15 +7389,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
 
     const rankingAsOfTime = normalizeTimestampUTC(marketContext?.as_of_time || marketContext?.as_of_ms || marketContext?.scan_as_of_ms);
     const rankedCandidates = rankCurrentOpportunityCandidates(validCandidates, price, rankingAsOfTime);
-    const selectableCandidates = rankedCandidates.filter(candidate => {
-        const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
-        const qualityPasses = !Number.isFinite(quality) || quality >= getCandidateExecutionQualityMinimum(candidate);
-        const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
-        // Quality describes a hard-valid setup; it does not authorize or
-        // reject a future pending limit.  Confirmation entries may still use
-        // the quality preference because their execution is not yet complete.
-        return (qualityPasses || pendingLimit) && candidate.still_actionable_today !== false && (pendingLimit || candidate.entry_reachable_today !== false);
-    });
+    const selectableCandidates = rankedCandidates.filter(isSelectableAdaptiveCandidate);
     const futureWatchCandidates = rankedCandidates.filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
         const qualityPasses = Number.isFinite(quality) && quality >= getCandidateExecutionQualityMinimum(candidate);
@@ -9840,7 +9997,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         symbol_metadata: symbolMetadata
     });
     const candidateStartedAt = scanClock();
-    const adaptiveSetupResult = buildAdaptiveSetupCandidates({
+    const historicalAdaptiveSetupResult = buildAdaptiveSetupCandidates({
         pair,
         price,
         historyCache,
@@ -9853,10 +10010,70 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         strategySetups,
         symbolMetadata
     });
+    // Historical strategy records are not the complete current-opportunity
+    // universe. If their locations are consumed/expired, derive fresh
+    // candidates from the same canonical current zones and send those
+    // candidates through the existing deterministic builder. This does not
+    // revive rejected records and does not create a second target/stop
+    // engine.
+    const currentRegeneration = buildCurrentOpportunityRegenerationSetups({
+        pair,
+        price,
+        historyCache,
+        zones,
+        strategySetups,
+        targetCandidates,
+        marketContext,
+        symbolMetadata
+    });
+    let currentAdaptiveSetupResult = { raw_candidates: [], valid_candidates: [], all_valid_candidates: [], selectable_candidates: [], future_watch_candidates: [], low_quality_candidates: [], seed_diagnostics: [], rejected_candidates: [] };
+    if (currentRegeneration.setups.length) {
+        prepareOpportunitySetups(currentRegeneration.setups, marketContext, price);
+        currentAdaptiveSetupResult = buildAdaptiveSetupCandidates({
+            pair,
+            price,
+            historyCache,
+            zones: [...(zones || []), ...(currentRegeneration.zones || [])],
+            targetCandidates,
+            riskConstraints,
+            marketRegime,
+            structure,
+            marketContext,
+            strategySetups: currentRegeneration.setups,
+            symbolMetadata
+        });
+    }
+    const adaptiveSetupResult = mergeAdaptiveSetupCandidateResults(
+        [historicalAdaptiveSetupResult, currentAdaptiveSetupResult],
+        price,
+        normalizeTimestampUTC(marketContext.as_of_time || marketContext.as_of_ms || marketContext.scan_as_of_ms)
+    );
+    const allStrategySetups = [...strategySetups, ...currentRegeneration.setups];
+    const allStrategyExecutionZones = getStrategyExecutionZones(allStrategySetups);
+    const allValidationZones = [...(zones || []), ...allStrategyExecutionZones];
+    const finalCanonicalMarketTheses = buildCanonicalMarketTheses(allStrategySetups, marketContext, targetCandidates, price);
+    deterministicValidationContext.strategy_setups = allStrategySetups;
+    deterministicValidationContext.real_ict_zones = allValidationZones;
+    deterministicValidationContext.market_theses = finalCanonicalMarketTheses;
+    const currentRegenerationAudit = {
+        snapshot_id: snapshotId,
+        historical_discovered_count: historicalAdaptiveSetupResult.raw_candidates.length,
+        historical_rejected_count: historicalAdaptiveSetupResult.rejected_candidates.length,
+        current_zone_discovered_count: currentRegeneration.discovered,
+        current_regenerated_setup_count: currentRegeneration.setups.length,
+        current_regenerated_count: currentAdaptiveSetupResult.raw_candidates.length,
+        current_regenerated_valid_count: currentAdaptiveSetupResult.all_valid_candidates.length,
+        current_regenerated_selectable_count: currentAdaptiveSetupResult.selectable_candidates.length,
+        current_regenerated_rejected_count: currentAdaptiveSetupResult.rejected_candidates.length,
+        current_regenerated_rejected: [...currentRegeneration.rejected, ...currentAdaptiveSetupResult.rejected_candidates],
+        candidate_ids: currentAdaptiveSetupResult.all_valid_candidates.map(candidate => candidate.id),
+        selectable_candidate_ids: currentAdaptiveSetupResult.selectable_candidates.map(candidate => candidate.id)
+    };
     console.log('[PERF] adaptive candidate construction', {
         elapsed_ms: Math.round((scanClock() - candidateStartedAt) * 100) / 100,
         raw_candidates: adaptiveSetupResult.raw_candidates.length,
-        valid_candidates: adaptiveSetupResult.valid_candidates.length,
+        valid_candidates: adaptiveSetupResult.all_valid_candidates.length,
+        current_regenerated_candidates: currentAdaptiveSetupResult.all_valid_candidates.length,
         rejected_candidates: adaptiveSetupResult.rejected_candidates.length
     });
     console.log('[SCAN] candidate construction complete', { raw_candidates: adaptiveSetupResult.raw_candidates.length, valid_candidates: adaptiveSetupResult.valid_candidates.length, rejected_candidates: adaptiveSetupResult.rejected_candidates.length });
@@ -9867,17 +10084,17 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         ? 'Valid deterministic pending-limit candidate exists; immediate entry confirmation is separate.'
         : 'No valid deterministic CRT/TBS/MSNR pending-limit candidate passed strategy, stop, target, RR, and consistency checks.';
     stageContext.limit_order_setup.adaptive_candidate_count = adaptiveSetupCandidates.length;
-    stageContext.limit_order_setup.strategy_setup_count = strategySetups.length;
+    stageContext.limit_order_setup.strategy_setup_count = allStrategySetups.length;
     stageContext.limit_order_setup.rejection_summary = summarizeCandidateRejections(adaptiveSetupResult.rejected_candidates);
     stageContext.limit_order_setup.rejection_detail = summarizeCandidateRejectionDetails(adaptiveSetupResult.rejected_candidates);
-    const strategyDetectionSummary = summarizeStrategyDetections(strategySetups);
-    const candidatePipelineAudit = buildCandidatePipelineAudit(strategySetups, adaptiveSetupResult.raw_candidates, adaptiveSetupResult.rejected_candidates, adaptiveSetupResult.valid_candidates, adaptiveSetupResult.seed_diagnostics);
+    const strategyDetectionSummary = summarizeStrategyDetections(allStrategySetups);
+    const candidatePipelineAudit = buildCandidatePipelineAudit(allStrategySetups, adaptiveSetupResult.raw_candidates, adaptiveSetupResult.rejected_candidates, adaptiveSetupResult.valid_candidates, adaptiveSetupResult.seed_diagnostics);
     const hardRejections = adaptiveSetupResult.rejected_candidates.map(item => ({
         id: item.id || null,
         code: item.rejection_code || 'REJECTED',
         reasons: item.rejection_reasons || []
     }));
-    const qualityWarnings = strategySetups.flatMap(setup => (setup.opportunity_thesis?.quality_warnings || []).map(code => ({ setup_id: setup.id, code })));
+    const qualityWarnings = allStrategySetups.flatMap(setup => (setup.opportunity_thesis?.quality_warnings || []).map(code => ({ setup_id: setup.id, code })));
     marketContext.opportunity_funnel = {
         ...(marketContext.opportunity_funnel || {}),
         structural_stop_valid: candidatePipelineAudit.structural_stops_valid,
@@ -9940,12 +10157,13 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         },
         structure,
         market_context: marketContext,
-        strategy_setups: strategySetups,
+        strategy_setups: allStrategySetups,
         informational_setups: informationalMarketMechanicsSetups,
-        real_ict_zones: validationZones,
+        real_ict_zones: allValidationZones,
         context_ict_zones: zones,
         poi_zones: ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pair, symbolMetadata || {})),
-        strategy_execution_zones: strategyExecutionZones,
+        strategy_execution_zones: allStrategyExecutionZones,
+        current_opportunity_regeneration: currentRegenerationAudit,
         limit_order_setup: stageContext.limit_order_setup,
         immediate_entry: stageContext.immediate_entry,
         liquidity: liquidityFacts,
@@ -9981,17 +10199,18 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             rejection_detail: summarizeCandidateRejectionDetails(adaptiveSetupResult.rejected_candidates),
             hard_rejections: hardRejections,
             quality_warnings: qualityWarnings,
-            market_open: marketState.is_market_open
+            market_open: marketState.is_market_open,
+            current_opportunity_regeneration: currentRegenerationAudit
         },
         entry_filters: entryContext || null
     };
     liveContext.production_trace = buildProductionScanTrace({ pair, price, asOfMs: as_of_ms, historyCache, structure,
         timeframeContext: marketContext.timeframe_context, liquidity: liquidityFacts, zones, targetCandidates,
-        strategySetups, candidatePipeline: candidatePipelineAudit, candidateRejections: adaptiveSetupResult.rejected_candidates,
+        strategySetups: allStrategySetups, candidatePipeline: candidatePipelineAudit, candidateRejections: adaptiveSetupResult.rejected_candidates,
         validCandidates: adaptiveSetupResult.valid_candidates, discoveryEvents: informationalMarketMechanicsSetups.discovery || [], opportunityFunnel: marketContext.opportunity_funnel });
     liveContext.production_trace.daily_bias = liveContext.daily_bias;
-    liveContext.production_trace.buy_thesis = canonicalMarketTheses.buy;
-    liveContext.production_trace.sell_thesis = canonicalMarketTheses.sell;
+    liveContext.production_trace.buy_thesis = finalCanonicalMarketTheses.buy;
+    liveContext.production_trace.sell_thesis = finalCanonicalMarketTheses.sell;
     Object.defineProperty(liveContext, 'deterministic_validation_context', {
         value: deterministicValidationContext,
         enumerable: false,
@@ -10212,6 +10431,8 @@ function compactAIContext(liveMarketContext) {
         entry_region_source: c.zone?.entry_region_source || c.entry_region_source,
         stop_source: c.stop_source,
         freshness: c.freshness,
+        source_evidence_ids: c.source_evidence_ids || c.strategy_setup?.structural_evidence_ids || [],
+        current_opportunity_source: c.current_opportunity_source || c.strategy_setup?.current_opportunity_source || null,
         target_map: c.target_map,
         trade_context_classification: c.trade_context_classification,
         top_down_context: c.top_down_context,
@@ -10264,6 +10485,7 @@ function compactAIContext(liveMarketContext) {
             rejected_hypotheses: liveMarketContext.ai_analysis.rejected_hypotheses?.slice(0, 12)
         } : null,
         market_phase_selection: liveMarketContext?.market_phase_selection || null,
+        current_opportunity_regeneration: liveMarketContext?.current_opportunity_regeneration || null,
         today_opportunity: liveMarketContext?.today_opportunity ? {
             state: liveMarketContext.today_opportunity.state,
             strategy: liveMarketContext.today_opportunity.strategy,
