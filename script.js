@@ -13276,7 +13276,25 @@ function buildManualExternalAIReviewOutput({ liveMarketContext = {}, pairLocal =
     signal.decision = 'WAIT';
     signal.trade_type = 'WAIT';
     signal.selected_candidate_id = null;
-    signal.status = hasDeterministicOpportunity ? 'TODAY_OPPORTUNITY' : 'NO_TRADE_TODAY';
+    signal.status = 'MANUAL_EXTERNAL_AI_REVIEW';
+    signal.direction = null;
+    signal.strategy = null;
+    signal.strategy_label = null;
+    signal.execution_model = null;
+    signal.entry = null;
+    signal.entry_price = null;
+    signal.entry_zone = null;
+    signal.stop_loss = null;
+    signal.tp1 = null;
+    signal.tp2 = null;
+    signal.tp3 = null;
+    signal.rr = null;
+    signal.rr_tp1 = null;
+    signal.candidate_role = null;
+    signal.primary_opportunity = null;
+    signal.opportunity = null;
+    signal.active_setups = [];
+    signal.watch_setups = [];
     signal.setup_state = DEFAULT_ANALYSIS_MODE;
     signal.execution_state = DEFAULT_ANALYSIS_MODE;
     signal.execution_allowed = false;
@@ -14814,6 +14832,9 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
 }
 
 function getAnalysisStatus(signal = {}) {
+    if (String(signal.reason?.code || '').toUpperCase() === 'MANUAL_EXTERNAL_AI_REVIEW'
+        || signal.analysis_mode === DEFAULT_ANALYSIS_MODE
+        || signal.automatic_ai_selection === 'NOT_RUN') return 'MANUAL_EXTERNAL_AI_REVIEW';
     const statusCode = String(signal.status_code || getPublicStatusCode(signal,
         !!signal.primary_opportunity || !!signal.opportunity,
         Number.isFinite(Number(signal.entry ?? signal.entry_price))));
@@ -15303,11 +15324,26 @@ function buildPublicTradeSignal(signal = {}) {
             symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
             decision: 'WAIT',
             trade_type: 'WAIT',
+            analysis_mode: signal.analysis_mode || null,
+            automatic_ai_selection: signal.automatic_ai_selection || null,
+            deterministic_candidate_count: signal.deterministic_candidate_count ?? null,
+            deterministic_candidate_ids: Array.isArray(signal.deterministic_candidate_ids) ? signal.deterministic_candidate_ids : [],
+            selected_candidate_id: signal.selected_candidate_id || null,
+            entry: null,
+            entry_zone: null,
             entry_price: null,
             stop_loss: null,
+            tp1: null,
+            tp2: null,
+            tp3: null,
+            rr_tp1: null,
             take_profit_1: null,
             take_profit_2: null,
             take_profit_3: null,
+            primary_opportunity: null,
+            opportunity: null,
+            active_setups: [],
+            watch_setups: [],
             confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0,
             status: signal.status || null,
             reason: { code: reason.code, message: reason.message },
@@ -15349,6 +15385,10 @@ function buildPublicTradeSignal(signal = {}) {
         current_price: signal.current_price,
         symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
         decision: publicDecision,
+        analysis_mode: signal.analysis_mode || null,
+        automatic_ai_selection: signal.automatic_ai_selection || null,
+        deterministic_candidate_count: signal.deterministic_candidate_count ?? null,
+        deterministic_candidate_ids: Array.isArray(signal.deterministic_candidate_ids) ? signal.deterministic_candidate_ids : [],
         strategy,
         strategy_label: specificStrategyLabel,
         strategy_setup: signal.strategy_setup || signal.adaptive_candidate?.strategy_setup || null,
@@ -16500,6 +16540,13 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
         warnings: result.quality_warnings || result.warnings || [],
         reason: result.reason || null
     }, ['analysis_mode', 'automatic_ai_selection', 'deterministic_candidate_count', 'state', 'direction', 'type', 'candidate_id', 'entry', 'entry_zone', 'sl', 'tp1', 'tp2', 'tp3', 'rr', 'execution_mode', 'confidence', 'quality', 'warnings', 'reason']);
+    const selectionStatus = manualReview ? externalPacketDefined({
+        mode: DEFAULT_ANALYSIS_MODE,
+        automatic_ai_selection: 'NOT_RUN',
+        final_selection: 'PENDING_EXTERNAL_AI_REVIEW',
+        selected_candidate_id: 'NONE',
+        deterministic_candidate_count: candidates.length
+    }, ['mode', 'automatic_ai_selection', 'final_selection', 'selected_candidate_id', 'deterministic_candidate_count']) : currentResult;
     const compactSnapshot = externalPacketDefined({
         snapshot_id: source.snapshot_id || result.snapshot_id || null,
         symbol: pairValue,
@@ -16550,10 +16597,12 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
         semantic ? JSON.stringify(semantic.rejected_opportunity_summary || {}, null, 2) : 'UNAVAILABLE',
         '',
         '==============================',
-        'CURRENT BOT RESULT',
+        manualReview ? 'SELECTION STATUS' : 'CURRENT BOT RESULT',
         '==============================',
-        JSON.stringify(currentResult, null, 2),
-        'This is the production pipeline result for the snapshot. Treat it as evidence, then independently compare every supplied selectable candidate.',
+        JSON.stringify(selectionStatus, null, 2),
+        manualReview
+            ? 'No candidate has been selected for you. Independently evaluate ALL supplied candidates using the strategy contract and current market evidence. The candidates are deterministic possibilities, not recommendations. You may return NO_TRADE. Do not invent or modify entry, SL, TP, target, POI, evidence, or candidate IDs.'
+            : 'This is the production pipeline result for the snapshot. Treat it as evidence, then independently compare every supplied selectable candidate.',
         '',
         '==============================',
         'YOUR TASK',

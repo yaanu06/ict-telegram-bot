@@ -2749,8 +2749,11 @@ describe('Analyze scan lifecycle', () => {
     });
 
     it('manual external AI mode runs deterministic preparation and makes no AI request', async () => {
-        const candidate = { id: 'manual-candidate', direction: 'BUY', execution_model: 'PENDING_LIMIT' };
-        const { context, elements, spies } = prepareScan({ candidates: [candidate] });
+        const candidates = [
+            { id: 'manual-buy-candidate', direction: 'BUY', execution_model: 'PENDING_LIMIT' },
+            { id: 'manual-sell-candidate', direction: 'SELL', execution_model: 'PENDING_LIMIT' }
+        ];
+        const { context, elements, spies } = prepareScan({ candidates });
         context.fetch = jest.fn(() => Promise.reject(new Error('AI request must not occur in manual mode')));
         await context.runAutoScan();
         expect(context.getAnalysisMode()).toBe('MANUAL_EXTERNAL_AI');
@@ -2760,16 +2763,39 @@ describe('Analyze scan lifecycle', () => {
         expect(spies.runAiMarketAnalyst).not.toHaveBeenCalled();
         expect(spies.buildAIPrompt).not.toHaveBeenCalled();
         expect(spies.askAIToFindSetup).not.toHaveBeenCalled();
+        const aiRequests = context.fetch.mock.calls.filter(([url]) => /\/api\/(?:ai\/chat|deepseek\/chat|gemini\/chat)|(?:api\.deepseek\.com|generativelanguage\.googleapis\.com)/i.test(String(url)));
+        expect(aiRequests).toHaveLength(0);
         const output = JSON.parse(elements.get('jsonOutput').textContent).trade_signal;
         expect(output.reason.code).toBe('MANUAL_EXTERNAL_AI_REVIEW');
+        expect(output.status).toBe('MANUAL_EXTERNAL_AI_REVIEW');
+        expect(output.analysis_status).toBe('MANUAL_EXTERNAL_AI_REVIEW');
+        expect(output.analysis_mode).toBe('MANUAL_EXTERNAL_AI');
+        expect(output.automatic_ai_selection).toBe('NOT_RUN');
+        expect(output.selected_candidate_id).toBeNull();
+        expect(output.deterministic_candidate_count).toBe(2);
+        expect(output.deterministic_candidate_ids).toEqual(expect.arrayContaining(['manual-buy-candidate', 'manual-sell-candidate']));
+        expect(output.entry).toBeNull();
+        expect(output.stop_loss).toBeNull();
+        expect(output.tp1).toBeNull();
+        expect(output.primary_opportunity).toBeNull();
         expect(output.ai_analysis).toEqual(expect.objectContaining({ mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN' }));
         expect(output.decision).toBe('WAIT');
         expect(output.execution_allowed).toBe(false);
+        expect(elements.get('tradeSummary').innerHTML).toContain('WAIT');
+        expect(elements.get('tradeSummary').innerHTML).not.toContain('BUY LIMIT');
+        expect(elements.get('tradeSummary').innerHTML).not.toContain('SELL LIMIT');
         expect(context.window.__ICT_LAST_SCAN_REPLAY__).toBeTruthy();
-        expect(context.window.__ICT_LAST_SCAN_REPLAY__.valid_candidates.map(c => c.id)).toContain('manual-candidate');
+        expect(context.window.__ICT_LAST_SCAN_REPLAY__.valid_candidates.map(c => c.id)).toEqual(['manual-buy-candidate', 'manual-sell-candidate']);
         const packet = context.buildExternalAIClipboardPacket({ signal: output, replay: context.window.__ICT_LAST_SCAN_REPLAY__ });
-        expect(packet).toContain('manual-candidate');
+        expect(packet).toContain('manual-buy-candidate');
+        expect(packet).toContain('manual-sell-candidate');
+        expect(packet).toContain('SELECTION STATUS');
+        expect(packet).toContain('"mode": "MANUAL_EXTERNAL_AI"');
+        expect(packet).toContain('"final_selection": "PENDING_EXTERNAL_AI_REVIEW"');
+        expect(packet).toContain('"selected_candidate_id": "NONE"');
         expect(packet).toContain('"automatic_ai_selection": "NOT_RUN"');
+        expect(packet).toContain('No candidate has been selected for you.');
+        expect(packet).not.toContain('CURRENT BOT RESULT');
         expect(elements.get('analyzeBtn').disabled).toBe(false);
     });
 
