@@ -1624,6 +1624,80 @@ describe('current opportunity relevance ranking', () => {
     });
 });
 
+describe('market phase aware candidate selection', () => {
+    const phaseCandidate = (overrides = {}) => ({
+        id: 'candidate',
+        direction: 'SELL',
+        execution_model: 'PENDING_LIMIT',
+        entry_model: 'PENDING_LIMIT',
+        entry: 110,
+        stop_loss: 113,
+        tp1: 104,
+        tp2: null,
+        tp3: null,
+        zone_type: 'FVG',
+        timeframe: '1H',
+        zone_low: 109.5,
+        zone_high: 110.5,
+        opportunity_status: 'FRESH_PENDING_TODAY',
+        still_actionable_today: true,
+        entry_consumed: false,
+        tp1_already_reached: false,
+        structural_invalidation: { level: 112, source: 'STRUCTURAL_SWING' },
+        target_map: [{ level: 104, target_level: 104, primary_target_source: 'SELL_SIDE_LIQUIDITY', target_type: 'LIQUIDITY', target_lifecycle_state: 'UNFULFILLED' }],
+        strategy_setup: { primary: 'CRT', direction: 'SELL' },
+        candidate_role: 'ORIGINAL_THESIS_POI',
+        current_opportunity_relevance: { candidate_role: 'ORIGINAL_THESIS_POI', ranking_key: { remaining_reward_fraction: 0.9, role_priority: 1, freshness_priority: 1, remaining_structural_objectives: 1 } },
+        score: 99,
+        ...overrides
+    });
+
+    it('lets an explicit RETRACEMENT preference select a fresh continuation over an older high-confluence original', () => {
+        const ctx = getContext();
+        const original = phaseCandidate({ id: 'original', score: 99 });
+        const fresh = phaseCandidate({ id: 'fresh', candidate_role: 'FRESH_CONTINUATION_POI', score: 62,
+            current_opportunity_relevance: { candidate_role: 'FRESH_CONTINUATION_POI', ranking_key: { remaining_reward_fraction: 0.55, role_priority: 2, freshness_priority: 3, remaining_structural_objectives: 1 } } });
+        const result = ctx.resolvePhaseAwareCandidateSelection({ decision: 'SELECT', selected_candidate_id: 'original', market_phase: 'RETRACEMENT', directional_thesis: 'SELL', thesis_status: 'INTACT', preferred_opportunity_role: 'FRESH_CONTINUATION_POI', preferred_candidate_ids: ['fresh'], fallback_allowed: false, wait_if_preferred_candidates_fail: true }, {
+            adaptive_setup_candidates: [original, fresh], current_price: 100, as_of_time: Date.parse('2026-09-29T08:00:00Z'), market_context: {}
+        });
+        expect(result.resolution_status).toBe('PREFERRED_SELECTED');
+        expect(result.final_candidate_id).toBe('fresh');
+        expect(result.fallback_used).toBe(false);
+    });
+
+    it('waits when the preferred continuation role fails and fallback is not authorized', () => {
+        const ctx = getContext();
+        const original = phaseCandidate({ id: 'original' });
+        const result = ctx.resolvePhaseAwareCandidateSelection({ decision: 'SELECT', selected_candidate_id: 'original', market_phase: 'LATE_DELIVERY', preferred_opportunity_role: 'FRESH_CONTINUATION_POI', preferred_candidate_ids: ['missing-fresh'], fallback_allowed: false, wait_if_preferred_candidates_fail: true }, {
+            adaptive_setup_candidates: [original], current_price: 100, as_of_time: Date.parse('2026-09-29T08:00:00Z'), market_context: {}
+        });
+        expect(result.resolution_status).toBe('NO_VALID_CANDIDATE');
+        expect(result.final_candidate_id).toBeNull();
+        expect(result.wait_reason).toMatch(/no deterministically valid candidate/i);
+    });
+
+    it('uses an original thesis only through explicit fallback authorization', () => {
+        const ctx = getContext();
+        const original = phaseCandidate({ id: 'original' });
+        const result = ctx.resolvePhaseAwareCandidateSelection({ decision: 'SELECT', selected_candidate_id: 'missing-fresh', market_phase: 'RETRACEMENT', preferred_opportunity_role: 'FRESH_CONTINUATION_POI', preferred_candidate_ids: ['missing-fresh'], fallback_candidate_ids: ['original'], fallback_opportunity_role: 'ORIGINAL_THESIS_POI', fallback_allowed: true, wait_if_preferred_candidates_fail: true }, {
+            adaptive_setup_candidates: [original], current_price: 100, as_of_time: Date.parse('2026-09-29T08:00:00Z'), market_context: {}
+        });
+        expect(result.resolution_status).toBe('FALLBACK_SELECTED');
+        expect(result.final_candidate_id).toBe('original');
+        expect(result.fallback_used).toBe(true);
+    });
+
+    it('does not let pattern count override a phase preference', () => {
+        const ctx = getContext();
+        const original = phaseCandidate({ id: 'old-msnr-crt-tbs', score: 150, candidate_role: 'ORIGINAL_THESIS_POI' });
+        const fresh = phaseCandidate({ id: 'fresh-1h-fvg', score: 40, candidate_role: 'FRESH_CONTINUATION_POI' });
+        const result = ctx.resolvePhaseAwareCandidateSelection({ decision: 'SELECT', selected_candidate_id: original.id, market_phase: 'CONTINUATION_READY', preferred_opportunity_role: 'FRESH_CONTINUATION_POI', preferred_candidate_ids: [fresh.id], fallback_allowed: false }, {
+            adaptive_setup_candidates: [original, fresh], current_price: 100, as_of_time: Date.parse('2026-09-29T08:00:00Z'), market_context: {}
+        });
+        expect(result.final_candidate_id).toBe(fresh.id);
+    });
+});
+
 describe('institutional-style zone confluence ranking', () => {
     it('rewards a same-direction entry zone nested inside higher-timeframe demand or a breaker', () => {
         const ctx = getContext();
@@ -5373,13 +5447,13 @@ describe('engine contract completion', () => {
             .toBe('NO_FRESH_OPPORTUNITY');
     });
 
-    it('requests exactly three selector output fields, never geometry or confidence', () => {
+    it('requests phase and role semantics without executable geometry or confidence', () => {
         const ctx = getContext();
         const prompt = ctx.buildAIPrompt({ pair: 'EUR/USD', current_price: 1.101, utc_time: '2026-09-11T10:00:00Z',
             session: { name: 'LONDON' }, adaptive_setup_candidates: [] }, '');
         const schema = prompt.user.split('Return ONLY this selector JSON')[1];
         expect([...schema.matchAll(/"([a-z_]+)":/g)].map(m => m[1]))
-            .toEqual(['decision', 'selected_candidate_id', 'reasoning']);
+            .toEqual(['decision', 'selected_candidate_id', 'market_phase', 'directional_thesis', 'thesis_status', 'original_thesis_status', 'preferred_opportunity_role', 'preferred_candidate_ids', 'fallback_candidate_ids', 'fallback_opportunity_role', 'fallback_allowed', 'wait_if_preferred_candidates_fail', 'phase_evidence_ids', 'conflicting_evidence_ids', 'reasoning']);
         expect(schema).toContain('"SELECT" | "WAIT"');
         expect(prompt.system).not.toMatch(/return BUY_LIMIT|return SELL_LIMIT|ai_decision:|reaction\/fill confirmation/);
     });
