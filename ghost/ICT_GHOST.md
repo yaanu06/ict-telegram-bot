@@ -22,6 +22,62 @@ The current architecture is:
 
 Core rule: AI discovers and interprets; code proves and executes.
 
+## Portable AI Runtime Instructions
+
+This file is the one authoritative Ghost knowledge file. When the user asks for a current or live analysis, such as “Find today's XAU/USD trading opportunity,” first determine which external-data capabilities are actually available in the host AI environment. Do not ask for unnecessary setup when a usable capability is already available.
+
+### Method A — remote MCP
+
+If the host AI can dynamically connect to a remote MCP server in the current conversation, use:
+
+    https://ict-telegram-bot-temf.onrender.com/mcp
+
+Read or discover `ict://ghost/specification` when needed. If this uploaded `ICT_GHOST.md` is already the authoritative specification in context, do not repeatedly reread an identical copy. The available read-only market-data tools are:
+
+- `get_quote` with `symbol`;
+- `get_time_series` with `symbol`, `interval` and optional `outputsize`;
+- `get_market_snapshot` with `symbol`.
+
+Prefer `get_market_snapshot` for a complete snapshot when it is available. Use `XAU/USD` as the user-facing symbol; the service normalizes it to `OANDA:XAUUSD`.
+
+### Method B — direct HTTPS
+
+If remote MCP cannot be used dynamically but the host AI has a general HTTP/API/web-request capability that can retrieve JSON from arbitrary HTTPS endpoints, use the existing Render routes:
+
+    Base: https://ict-telegram-bot-temf.onrender.com
+    GET /api/tvkit/quote?symbol=OANDA%3AXAUUSD
+    GET /api/tvkit/time_series?symbol=OANDA%3AXAUUSD&interval=<interval>&outputsize=200
+
+Retrieve one quote and 200 closed-candle bars for exactly `1day`, `4h`, `1h`, `15min` and `5min`. Do not request `1week` or `1min` for Ghost semantic analysis. Do not substitute search snippets, financial-news pages, remembered prices or another provider for the required TVKit snapshot unless this specification explicitly permits that provider path.
+
+### Method C — no external access
+
+If the host AI cannot use either the remote MCP endpoint or the direct HTTPS market-data routes, it must return:
+
+    DATA_UNAVAILABLE
+
+Explain briefly that the current host cannot access the required live Ghost market-data service. It may explain the methodology if asked, but it must not invent a price, candle, timestamp, structure, POI, setup, entry, SL, TP, RR, direction or current opportunity.
+
+The Markdown file itself does not grant network access. Use only capabilities that are actually available. Do not claim to have connected to MCP or fetched TVKit unless the host received the corresponding response. MCP and direct HTTPS are transport choices only: both supply the same TVKit market data and must produce the same Ghost analysis, validation, status and confidence rules.
+
+### Live XAU/USD procedure
+
+For a current XAU/USD request:
+
+1. Normalize the symbol to `OANDA:XAUUSD` for TVKit.
+2. Retrieve the current quote.
+3. Retrieve 200 bars for exactly `1day`, `4h`, `1h`, `15min` and `5min`.
+4. Validate every response using the data-quality rules in this file.
+5. Use one coherent snapshot and market-data as-of time.
+6. Apply the documented Ghost methodology without simplifying or replacing it with generic ICT knowledge.
+7. Return a valid opportunity, `NO_TRADE`/the appropriate `WAIT` state, or `DATA_UNAVAILABLE`.
+
+Never force a trade. If data is valid but no candidate passes, return the appropriate no-trade state without trade geometry.
+
+### Specification fidelity
+
+This file describes the production methodology. When an external AI applies the deterministic algorithms described here, it is reproducing or emulating those calculations from the specification; it is not executing `script.js` unless a future Ghost tool explicitly exposes the production deterministic engine. Follow the documented algorithms and constants exactly, do not silently simplify them, and do not claim byte-for-byte equivalence with production JavaScript unless that engine actually executed.
+
 ## Direction -> Location -> Execution
 
 Direction is the current evidence-backed thesis. Location is a real deterministic POI. Execution is a deterministic order model and price construction. A directional opinion alone is never a trade.
@@ -230,9 +286,11 @@ The current implementation records entry distance/ATR and reachability. Its gene
 
 This appendix is part of the authoritative Ghost file. The separate openapi.yaml and README.md are reference artifacts only; an AI runtime needs this file plus a host HTTP/action tool.
 
-## Host tool requirement
+## Capability and specification fidelity
 
-Markdown cannot make network requests. The host AI must be given an HTTP, OpenAPI, plugin, or action-capable tool that can call the documented Render routes. Attaching this file alone does not provide network access. The tool must be read-only for Ghost. It must not be given provider credentials, broker credentials, or an order endpoint.
+This one file is sufficient as the Ghost methodology and runtime knowledge artifact. `README.md` and `openapi.yaml` are not required uploads for analysis. Markdown cannot make network requests: current analysis still requires one of the host capabilities described in Portable AI Runtime Instructions. The host tool must be read-only for Ghost and must not be given provider credentials, broker credentials or an order endpoint.
+
+The external AI applies the documented deterministic algorithms from this specification unless a future Ghost tool explicitly executes the production deterministic engine. It must preserve the documented constants, sequences and invariants and must distinguish emulation from execution of `script.js`.
 
 ## Exact Render/TVKit tool contract
 
