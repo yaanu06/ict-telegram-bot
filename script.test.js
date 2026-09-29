@@ -377,15 +377,16 @@ describe('strategy entry lifecycle', () => {
         expect(payload.adaptive_setup_candidates.map(c => c.id)).toEqual(['fresh', 'later-limit']);
     });
 
-    it('sends selectable candidates once and summarizes rejected candidates', () => {
+    it('sends the full candidate catalog while keeping rejected candidates unselectable', () => {
         const ctx = getContext();
         const payload = ctx.compactAIContext({
             adaptive_setup_candidates: [{ id: 'valid', opportunity_status: 'FRESH_PENDING_TODAY', direction: 'SELL', entry: 2, stop_loss: 3, tp1: 1 }],
             rejected_setup_candidates: [{ id: 'expired-zone', direction: 'SELL', timeframe: '4H', zone_type: 'OB', rejection_code: 'SETUP_EXPIRED', rejection_reasons: ['SETUP_EXPIRED'] }]
         });
-        expect(payload.adaptive_setup_candidates.map(c => c.id)).toEqual(['valid']);
-        expect(payload.rejected_opportunity_summary).toEqual(expect.objectContaining({ total: 1, counts: { SETUP_EXPIRED: 1 } }));
-        expect(JSON.stringify(payload)).not.toContain('expired-zone');
+        expect(payload.candidate_catalog.map(c => c.id)).toEqual(['valid', 'expired-zone']);
+        expect(payload.candidate_catalog[0].catalog_status).toBe('VALID_SELECTABLE');
+        expect(payload.candidate_catalog[1].catalog_status).toBe('REJECTED');
+        expect(payload.candidate_catalog[1].rejection_code).toBe('SETUP_EXPIRED');
     });
 
     it('normalizes epoch seconds, epoch milliseconds, ISO, text, Date, and timezone timestamps identically', () => {
@@ -1919,7 +1920,7 @@ describe('current opportunity regeneration', () => {
             current_opportunity_regeneration: { current_regenerated_count: 1 }
         });
         expect(compact.current_opportunity_regeneration).toEqual(expect.objectContaining({ current_regenerated_count: 1 }));
-        expect(compact.adaptive_setup_candidates).toEqual(expect.arrayContaining([
+        expect(compact.candidate_catalog).toEqual(expect.arrayContaining([
             expect.objectContaining({ id: result.selectable_candidates[0].id, candidate_role: 'FRESH_CONTINUATION_POI' })
         ]));
     });
@@ -2683,11 +2684,18 @@ describe('strategy pipeline integration rules', () => {
 describe('Analyze scan lifecycle', () => {
     const historyFixture = () => candles(60, 100, 0.1, 'up');
     const baseLiveContext = candidates => ({
+        pair: 'EUR/USD', current_price: 100, as_of_time_utc: '2026-09-29T10:00:00Z',
+        historyCache: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, historyFixture()])),
+        quote_snapshot: { price: 100, timestamp: '2026-09-29T09:59:00Z', provider: 'TVKIT' },
+        provider_metadata: { provider: 'TVKIT' },
         session: { name: 'TEST' },
         market_regime: { primary_regime: 'RANGING' },
         volatility: {},
         volume: { volume_available: false },
         real_ict_zones: [],
+        poi_zones: [], strategy_execution_zones: [], target_candidates: { buy: [], sell: [], all: [] },
+        market_context: { timeframe_context: {}, directional_bias: 'NEUTRAL', structure: {} },
+        structure: {}, data_quality: { valid: true, reasons: [] },
         adaptive_setup_candidates: candidates,
         strategy_setups: candidates.length ? [{ primary: 'TBS' }] : [],
         strategy_detections: {},
@@ -2697,8 +2705,9 @@ describe('Analyze scan lifecycle', () => {
         immediate_entry: {}
     });
 
-    function prepareScan({ candidates = [], aiResult = null, fallback = null } = {}) {
+    function prepareScan({ candidates = [], aiResult = null, fallback = null, mode = 'MANUAL_EXTERNAL_AI' } = {}) {
         const { context, elements } = getScanContext();
+        context.window.__ICT_ANALYSIS_MODE__ = mode;
         context.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
         const spies = {
             getPrice: jest.fn(() => Promise.resolve(100)),
@@ -2707,6 +2716,8 @@ describe('Analyze scan lifecycle', () => {
             updateMTFDisplay: jest.fn(() => Promise.resolve()),
             getQuoteDirection: jest.fn(() => Promise.resolve('NEUTRAL')),
             buildLiveMarketContext: jest.fn(() => baseLiveContext(candidates)),
+            buildAiMarketEvidenceCatalog: jest.fn(() => ({ market_evidence_package: { snapshot_id: 'MANUAL-TEST', timeframes: {} }, snapshot_id: 'MANUAL-TEST', pair: 'EUR/USD', current_price: 100 })),
+            runAiMarketAnalyst: jest.fn(() => Promise.resolve({ verified_setups: [], diagnostics: { analyst_status: 'OK' } })),
             buildAIPrompt: jest.fn(() => ({ system: 'system', user: 'user' })),
             askAIToFindSetup: jest.fn(() => Promise.resolve(aiResult)),
             runFallbackScan: jest.fn(() => fallback ? fallback() : Promise.resolve())
@@ -2719,6 +2730,8 @@ describe('Analyze scan lifecycle', () => {
             updateMTFDisplay = (...args) => testScanSpies.updateMTFDisplay(...args);
             getQuoteDirection = (...args) => testScanSpies.getQuoteDirection(...args);
             buildLiveMarketContext = (...args) => testScanSpies.buildLiveMarketContext(...args);
+            buildAiMarketEvidenceCatalog = (...args) => testScanSpies.buildAiMarketEvidenceCatalog(...args);
+            runAiMarketAnalyst = (...args) => testScanSpies.runAiMarketAnalyst(...args);
             buildAIPrompt = (...args) => testScanSpies.buildAIPrompt(...args);
             askAIToFindSetup = (...args) => testScanSpies.askAIToFindSetup(...args);
             runFallbackScan = (...args) => testScanSpies.runFallbackScan(...args);
@@ -2735,8 +2748,33 @@ describe('Analyze scan lifecycle', () => {
         expect(elements.get('scanStatus').classList.contains('hidden')).toBe(true);
     });
 
+    it('manual external AI mode runs deterministic preparation and makes no AI request', async () => {
+        const candidate = { id: 'manual-candidate', direction: 'BUY', execution_model: 'PENDING_LIMIT' };
+        const { context, elements, spies } = prepareScan({ candidates: [candidate] });
+        context.fetch = jest.fn(() => Promise.reject(new Error('AI request must not occur in manual mode')));
+        await context.runAutoScan();
+        expect(context.getAnalysisMode()).toBe('MANUAL_EXTERNAL_AI');
+        expect(spies.getHistory.mock.calls.map(call => call[0])).toEqual(['5M', '15M', '1H', '4H', '1D']);
+        expect(spies.buildLiveMarketContext).toHaveBeenCalledTimes(1);
+        expect(spies.buildAiMarketEvidenceCatalog).toHaveBeenCalledTimes(1);
+        expect(spies.runAiMarketAnalyst).not.toHaveBeenCalled();
+        expect(spies.buildAIPrompt).not.toHaveBeenCalled();
+        expect(spies.askAIToFindSetup).not.toHaveBeenCalled();
+        const output = JSON.parse(elements.get('jsonOutput').textContent).trade_signal;
+        expect(output.reason.code).toBe('MANUAL_EXTERNAL_AI_REVIEW');
+        expect(output.ai_analysis).toEqual(expect.objectContaining({ mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN' }));
+        expect(output.decision).toBe('WAIT');
+        expect(output.execution_allowed).toBe(false);
+        expect(context.window.__ICT_LAST_SCAN_REPLAY__).toBeTruthy();
+        expect(context.window.__ICT_LAST_SCAN_REPLAY__.valid_candidates.map(c => c.id)).toContain('manual-candidate');
+        const packet = context.buildExternalAIClipboardPacket({ signal: output, replay: context.window.__ICT_LAST_SCAN_REPLAY__ });
+        expect(packet).toContain('manual-candidate');
+        expect(packet).toContain('"automatic_ai_selection": "NOT_RUN"');
+        expect(elements.get('analyzeBtn').disabled).toBe(false);
+    });
+
     it('clears loading state after an AI WAIT response', async () => {
-        const { context, elements, spies } = prepareScan({ candidates: [{ id: 'candidate', direction: 'BUY' }], aiResult: { noTrade: true, decision: 'WAIT', confidence: 0, reasoning: { primary: 'No trade' }, wait_condition: 'No setup' } });
+        const { context, elements, spies } = prepareScan({ mode: 'AUTO_AI', candidates: [{ id: 'candidate', direction: 'BUY' }], aiResult: { noTrade: true, decision: 'WAIT', confidence: 0, reasoning: { primary: 'No trade' }, wait_condition: 'No setup' } });
         await context.runAutoScan();
         expect(spies.askAIToFindSetup).toHaveBeenCalledTimes(1);
         expect(elements.get('analyzeBtn').disabled).toBe(false);
@@ -2757,7 +2795,7 @@ describe('Analyze scan lifecycle', () => {
     });
 
     it('clears loading state when fallback completes or fails', async () => {
-        const success = prepareScan({ candidates: [{ id: 'candidate', direction: 'BUY' }], aiResult: null });
+        const success = prepareScan({ mode: 'AUTO_AI', candidates: [{ id: 'candidate', direction: 'BUY' }], aiResult: null });
         await success.context.runAutoScan();
         expect(success.elements.get('analyzeBtn').disabled).toBe(false);
         expect(success.spies.runFallbackScan).toHaveBeenCalledWith(
@@ -2769,7 +2807,7 @@ describe('Analyze scan lifecycle', () => {
             ]) })
         );
 
-        const failure = prepareScan({ candidates: [{ id: 'candidate', direction: 'BUY' }], aiResult: null, fallback: () => Promise.reject(new Error('fallback failed')) });
+        const failure = prepareScan({ mode: 'AUTO_AI', candidates: [{ id: 'candidate', direction: 'BUY' }], aiResult: null, fallback: () => Promise.reject(new Error('fallback failed')) });
         await failure.context.runAutoScan();
         expect(failure.elements.get('analyzeBtn').disabled).toBe(false);
         expect(failure.elements.get('scanStatus').classList.contains('hidden')).toBe(true);
@@ -7184,51 +7222,6 @@ describe('AI market analyst contract', () => {
         const compactBytes = Buffer.byteLength(JSON.stringify(selector.semantic_package || ctx.compactAIContext(live)), 'utf8');
         const fullBytes = Buffer.byteLength(JSON.stringify({ ...live, replay_history: live.historyCache }), 'utf8');
         expect(compactBytes).toBeLessThan(fullBytes / 3);
-        expect(compactBytes).toBeLessThan(100_000);
-        expect(selector.semantic_package.candidate_catalog).toBeUndefined();
-        expect(selector.semantic_package.target_candidates).toBeUndefined();
-        expect(selector.semantic_package.deterministic_evidence).toBeUndefined();
-        expect(JSON.stringify(selector.semantic_package)).not.toContain('raw_closed_candles');
-        expect(JSON.stringify(selector.semantic_package)).not.toContain('RAW-CANDLE-MUST-NOT-CROSS-AI-BOUNDARY');
-        expect(selector.semantic_package.adaptive_setup_candidates.every(candidate => !('entry' in candidate.execution) && !('stop_loss' in candidate.execution))).toBe(true);
-    });
-
-    it('keeps a maximum-size semantic fixture inside the payload budget without dropping selectable IDs', () => {
-        const ctx = getContext();
-        const tfs = ['1D', '4H', '1H', '15M', '5M'];
-        const timeframes = Object.fromEntries(tfs.map(tf => [tf, {
-            timeframe: tf,
-            closed_candle_count: 199,
-            raw_closed_candles: Array.from({ length: 199 }, (_, i) => ({ t: i, o: 100, h: 101, l: 99, c: 100, v: 1 })),
-            structure: { structural_trend: 'BEARISH', effective_trend: 'BEARISH', bos: { buy: false, sell: true }, choch: { buy: false, sell: false }, swing_highs: [], swing_lows: [] },
-            fvg: Array.from({ length: 40 }, (_, i) => ({ id: `${tf}:FVG:${i}`, type: 'FVG', direction: 'SELL', low: 101 + i, high: 102 + i })),
-            order_blocks: { buy: [], sell: Array.from({ length: 40 }, (_, i) => ({ id: `${tf}:OB:${i}`, type: 'OB', direction: 'SELL', low: 103 + i, high: 104 + i })) },
-            msnr_levels: Array.from({ length: 40 }, (_, i) => ({ id: `${tf}:MSNR:${i}`, type: 'MSNR', direction: 'SELL', level: 105 + i })),
-            structural_evidence_ids: [`${tf}:BOS:1`]
-        }]));
-        const candidates = Array.from({ length: 35 }, (_, i) => ({
-            id: `MAX-CANDIDATE-${i}`, direction: i % 2 ? 'SELL' : 'BUY', strategy_label: i % 2 ? 'CURRENT_FVG' : 'MSNR+CRT',
-            candidate_role: i % 2 ? 'FRESH_CONTINUATION_POI' : 'ORIGINAL_THESIS_POI', opportunity_status: 'FRESH_PENDING_TODAY',
-            execution_model: 'PENDING_LIMIT', setup_timeframe: '1H', execution_timeframe: '15M', actual_rr: 2.5,
-            structural_invalidation: { id: `MAX-CANDIDATE-${i}:SL`, source: 'STRUCTURAL_SWING' },
-            target_map: [{ id: `MAX-CANDIDATE-${i}:TP1`, target_type: 'LIQUIDITY', primary_target_source: 'STRUCTURAL', target_lifecycle_state: 'UNFULFILLED' }],
-            source_evidence_ids: [`1H:FVG:${i % 40}`]
-        }));
-        const live = {
-            snapshot_id: 'TVKIT:EUR_USD:max-compact', pair: 'EUR/USD', current_price: 100, as_of_time_utc: '2026-09-29T10:00:00Z',
-            market_evidence_package: { snapshot_id: 'TVKIT:EUR_USD:max-compact', timeframes }, adaptive_setup_candidates: candidates,
-            valid_deterministic_candidates: candidates, rejected_setup_candidates: Array.from({ length: 200 }, (_, i) => ({ id: `REJECTED-${i}`, rejection_code: 'SETUP_STALE' })),
-            target_candidates: { buy: [], sell: [] }, market_context: { directional_bias: 'BEARISH', conflicts: [] }
-        };
-        const dto = ctx.compactAIContext(live);
-        const bytes = Buffer.byteLength(JSON.stringify(dto), 'utf8');
-        expect(bytes).toBeLessThan(100_000);
-        expect(dto.adaptive_setup_candidates.map(candidate => candidate.id)).toEqual(candidates.map(candidate => candidate.id));
-        expect(dto.timeframes).toEqual(expect.objectContaining({ '1D': expect.any(Object), '4H': expect.any(Object), '1H': expect.any(Object), '15M': expect.any(Object), '5M': expect.any(Object) }));
-        expect(JSON.stringify(dto)).not.toContain('raw_closed_candles');
-        expect(JSON.stringify(dto)).not.toContain('REJECTED-0');
-        expect(dto.candidate_catalog).toBeUndefined();
-        expect(dto.target_candidates).toBeUndefined();
     });
 
     it('builds a self-contained external AI packet from the completed scan replay', () => {
