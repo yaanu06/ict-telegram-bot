@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { URL } = require('node:url');
 const { createAuditStore } = require('./audit-store');
+const { createGhostMcpNodeHandler } = require('./ghost-mcp');
 
 const TIMEFRAME_INTERVALS = new Set(['1min', '5min', '15min', '1h', '4h', '1day', '1week']);
 // The market analyst sends a bounded, machine-readable evidence package. Its
@@ -295,6 +296,60 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
     const configuredAuditToken = String(env.AUDIT_WRITE_TOKEN || '').trim();
     const configuredAuditReadToken = String(env.AUDIT_READ_TOKEN || '').trim();
     const store = auditStore || (configuredAuditToken ? createAuditStore({ filePath: env.AUDIT_FILE_PATH || path.join(__dirname, 'data', 'audit.jsonl') }) : null);
+    const requestTvkit = async ({ pathname, query, clientKey = 'unknown', setRateHeaders = null } = {}) => {
+        if (!tvkitBase) return { status: 503, payload: { error: 'tvkit provider is not configured' } };
+        const tvkitRate = allowTvkit(String(clientKey));
+        if (typeof setRateHeaders === 'function') setRateHeaders(tvkitRate);
+        if (!tvkitRate.allowed) return { status: 429, payload: { error: 'tvkit request budget exceeded' } };
+        const validation = validateMarketRequest(pathname, query);
+        if (!validation.valid) return { status: 400, payload: { error: validation.reason } };
+        const upstream = new URL(`${tvkitBase}/${pathname.endsWith('/quote') ? 'quote' : 'time_series'}`);
+        upstream.searchParams.set('symbol', validation.symbol);
+        if (validation.interval) upstream.searchParams.set('interval', validation.interval);
+        if (validation.outputsize) upstream.searchParams.set('outputsize', String(validation.outputsize));
+        return proxyJson(fetchImpl, upstream, { headers: upstreamHeaders('') }, upstreamTimeoutMs);
+    };
+    const mcpTvkitResult = async ({ pathname, symbol, interval, outputsize } = {}) => {
+        try {
+            const query = new URLSearchParams({ symbol });
+            if (interval) query.set('interval', interval);
+            if (outputsize != null) query.set('outputsize', String(outputsize));
+            const result = await requestTvkit({ pathname, query, clientKey: 'mcp' });
+            if (result.status >= 200 && result.status < 300) return { ok: true, payload: result.payload };
+            const providerMessage = typeof result.payload?.error === 'string' ? result.payload.error.slice(0, 240) : null;
+            const errorCode = result.status === 400
+                ? 'INVALID_REQUEST'
+                : result.status === 429
+                    ? 'RATE_LIMITED'
+                    : result.status === 503
+                        ? 'PROVIDER_UNAVAILABLE'
+                        : 'UPSTREAM_ERROR';
+            return {
+                ok: false,
+                error: {
+                    error_code: errorCode,
+                    provider: 'TVKIT',
+                    status: result.status,
+                    ...(providerMessage ? { message: providerMessage } : { message: 'Market data request failed' })
+                }
+            };
+        } catch (error) {
+            const isTimeout = error?.code === 'UPSTREAM_TIMEOUT';
+            return {
+                ok: false,
+                error: {
+                    error_code: isTimeout ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_ERROR',
+                    provider: 'TVKIT',
+                    status: Number(error?.statusCode) || 502,
+                    message: isTimeout ? 'TVKit request timed out' : 'TVKit request failed'
+                }
+            };
+        }
+    };
+    const mcpNodeHandler = createGhostMcpNodeHandler({
+        getQuote: ({ symbol }) => mcpTvkitResult({ pathname: '/api/tvkit/quote', symbol }),
+        getTimeSeries: ({ symbol, interval, outputsize }) => mcpTvkitResult({ pathname: '/api/tvkit/time_series', symbol, interval, outputsize })
+    });
 
     return http.createServer(async (req, res) => {
         const requestUrl = new URL(req.url || '/', 'http://proxy.local');
@@ -303,8 +358,23 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
         res.setHeader('X-RateLimit-Remaining', String(rate.remaining));
         if (!rate.allowed) return jsonResponse(res, 429, { error: 'rate limit exceeded' }, origin);
         if (req.method === 'OPTIONS') {
-            res.writeHead(204, { 'Access-Control-Allow-Origin': origin || '*', 'Access-Control-Allow-Headers': 'Content-Type, X-Proxy-Client', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' });
+            const isMcp = requestUrl.pathname === '/mcp';
+            res.writeHead(204, {
+                'Access-Control-Allow-Origin': origin || '*',
+                'Access-Control-Allow-Headers': isMcp ? 'Content-Type, Accept, MCP-Protocol-Version, Mcp-Session-Id, Last-Event-ID, X-Proxy-Client' : 'Content-Type, X-Proxy-Client',
+                'Access-Control-Allow-Methods': isMcp ? 'GET, POST, DELETE, OPTIONS' : 'GET, POST, OPTIONS',
+                ...(isMcp ? { 'Access-Control-Expose-Headers': 'Mcp-Session-Id, Last-Event-ID' } : {})
+            });
             return res.end();
+        }
+        if (requestUrl.pathname === '/mcp') {
+            if (!['GET', 'POST', 'DELETE'].includes(req.method)) return jsonResponse(res, 405, { error: 'MCP method not allowed' }, origin);
+            res.setHeader('Access-Control-Allow-Origin', origin || '*');
+            res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, MCP-Protocol-Version, Mcp-Session-Id, Last-Event-ID');
+            res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+            res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, Last-Event-ID');
+            await mcpNodeHandler(req, res);
+            return;
         }
         if (req.method === 'GET' && publicAssetResponse(res, requestUrl.pathname, env)) return;
         if (req.method === 'GET' && requestUrl.pathname === '/health') {
@@ -322,17 +392,12 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
         }
         try {
             if (req.method === 'GET' && (requestUrl.pathname === '/api/tvkit/quote' || requestUrl.pathname === '/api/tvkit/time_series')) {
-                if (!tvkitBase) return jsonResponse(res, 503, { error: 'tvkit provider is not configured' }, origin);
-                const tvkitRate = allowTvkit(String(clientKey));
-                res.setHeader('X-Tvkit-RateLimit-Remaining', String(tvkitRate.remaining));
-                if (!tvkitRate.allowed) return jsonResponse(res, 429, { error: 'tvkit request budget exceeded' }, origin);
-                const validation = validateMarketRequest(requestUrl.pathname, requestUrl.searchParams);
-                if (!validation.valid) return jsonResponse(res, 400, { error: validation.reason }, origin);
-                const upstream = new URL(`${tvkitBase}/${requestUrl.pathname.endsWith('/quote') ? 'quote' : 'time_series'}`);
-                upstream.searchParams.set('symbol', validation.symbol);
-                if (validation.interval) upstream.searchParams.set('interval', validation.interval);
-                if (validation.outputsize) upstream.searchParams.set('outputsize', String(validation.outputsize));
-                const result = await proxyJson(fetchImpl, upstream, { headers: upstreamHeaders('') }, upstreamTimeoutMs);
+                const result = await requestTvkit({
+                    pathname: requestUrl.pathname,
+                    query: requestUrl.searchParams,
+                    clientKey,
+                    setRateHeaders: tvkitRate => res.setHeader('X-Tvkit-RateLimit-Remaining', String(tvkitRate.remaining))
+                });
                 return jsonResponse(res, result.status, result.payload, origin);
             }
             if (req.method === 'GET' && (requestUrl.pathname === '/api/twelve/quote' || requestUrl.pathname === '/api/twelve/time_series')) {
