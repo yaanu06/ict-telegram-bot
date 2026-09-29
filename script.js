@@ -16,7 +16,7 @@ const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 const MARKET_DATA_PROVIDER_STORAGE_KEY = 'ict_market_data_provider';
 const TVKIT_BASE_URL_STORAGE_KEY = 'ict_tvkit_base_url';
 let DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
-const DEFAULT_AI_PROVIDER = 'GEMINI';
+const DEFAULT_AI_PROVIDER = 'DEEPSEEK';
 const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 let GITHUB_PAT = '', GITHUB_REPO = 'yaanu06/ict-telegram-bot';
 const AI_REQUEST_TIMEOUT_MS = 45000;
@@ -6864,7 +6864,9 @@ function updatePhaseSelectionAudit(liveMarketContext = {}, audit = null) {
 function capturePhaseSelectionDeepSeekVisibility(liveMarketContext = {}, compactContext = {}) {
     const audit = liveMarketContext.phase_selection_audit || buildPhaseSelectionAudit(liveMarketContext);
     const selectable = Array.isArray(compactContext.adaptive_setup_candidates) ? compactContext.adaptive_setup_candidates : [];
-    const catalog = Array.isArray(compactContext.candidate_catalog) ? compactContext.candidate_catalog : [];
+    const catalog = Array.isArray(compactContext.candidate_catalog)
+        ? compactContext.candidate_catalog
+        : selectable.map(candidate => ({ ...candidate, catalog_status: 'VALID_SELECTABLE' }));
     const visibleIds = [...new Set(catalog.map(candidate => candidate?.id).filter(Boolean))];
     const visibleRecords = catalog.map(candidate => buildPhaseSelectionCandidateAuditRecord(candidate, candidate.catalog_status, candidate.catalog_status === 'VALID_SELECTABLE' ? true : null));
     audit.deepseek_candidate_ids = visibleIds;
@@ -10743,6 +10745,13 @@ function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe
         high,
         event_time: item.event_time || item.created_time || item.source_time || item.reclaim_time || null,
         state: item.lifecycle_state || item.target_lifecycle_state || item.freshness || item.state || null,
+        range_low: Number.isFinite(Number(item.range_low)) ? Number(item.range_low) : null,
+        range_high: Number.isFinite(Number(item.range_high)) ? Number(item.range_high) : null,
+        sweep_extreme: Number.isFinite(Number(item.sweep_extreme)) ? Number(item.sweep_extreme) : null,
+        reference_level: Number.isFinite(Number(item.reference_level)) ? Number(item.reference_level) : null,
+        origin: item.origin || null,
+        role: item.role || null,
+        primary_eligible: item.primary_eligible ?? null,
         invalidated: item.invalidated === true,
         consumed: item.consumed === true || item.entry_consumed === true
     };
@@ -10754,15 +10763,53 @@ function compactAiTarget(target = {}, fallbackDirection = null) {
         id: target.id || target.target_id || null,
         direction: target.direction || fallbackDirection || null,
         timeframe: target.timeframe || null,
-        level: Number.isFinite(Number(target.level ?? target.target_level ?? target.price))
-            ? Number(target.level ?? target.target_level ?? target.price) : null,
         source: target.primary_target_source || target.source || null,
         type: target.target_type || target.type || null,
         lifecycle_state: target.target_lifecycle_state || target.lifecycle_state || target.state || null,
         reached: target.reached === true || target.consumed === true || target.invalidated === true,
         structural_priority: target.structural_priority ?? null,
-        evidence_ids: Array.isArray(target.evidence_ids) ? target.evidence_ids.filter(id => typeof id === 'string').slice(0, 12) : []
+        reachability: target.reachability || target.reachability_state || null,
+        evidence_ids: Array.isArray(target.evidence_ids) ? [...new Set(target.evidence_ids.filter(id => typeof id === 'string'))].slice(0, 8) : []
     };
+}
+
+function compactAiEventTime(item = {}) {
+    const value = item?.event_time || item?.created_time || item?.source_time || item?.reclaim_time || item?.retest_time || null;
+    const timestamp = Date.parse(String(value || ''));
+    return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function compactAiList(items, type, timeframe, limit = 6) {
+    return (Array.isArray(items) ? items : [])
+        .map(item => compactAiEvidenceItem(item, type, timeframe))
+        .filter(item => item?.id)
+        .sort((left, right) => compactAiEventTime(right) - compactAiEventTime(left))
+        .slice(0, limit);
+}
+
+function compactAiRange(value) {
+    if (value == null || typeof value !== 'object') return value ?? null;
+    const allowed = ['zone', 'position', 'state', 'range_low', 'range_high', 'low', 'high', 'equilibrium', 'midpoint', 'current_position', 'premium', 'discount'];
+    return Object.fromEntries(allowed.filter(key => value[key] != null).map(key => [key, value[key]]));
+}
+
+function compactAiSignal(value, fallbackType = null, timeframe = null) {
+    if (value == null) return null;
+    if (typeof value !== 'object') return value;
+    if (value.buy != null || value.sell != null) return { buy: !!value.buy, sell: !!value.sell };
+    return {
+        ...compactAiEvidenceItem(value, fallbackType, timeframe),
+        strength: value.strength || value.quality || null,
+        close_confirmed: value.close_confirmed ?? value.confirmed ?? null
+    };
+}
+
+function compactAiDropNulls(value) {
+    if (Array.isArray(value)) return value.map(compactAiDropNulls);
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.entries(value)
+        .filter(([, item]) => item !== null && item !== undefined)
+        .map(([key, item]) => [key, compactAiDropNulls(item)]));
 }
 
 function compactAiCandidate(candidate = {}) {
@@ -10776,13 +10823,13 @@ function compactAiCandidate(candidate = {}) {
         setup.label,
         setup.primary,
         ...(Array.isArray(candidate.strategy_confluence) ? candidate.strategy_confluence : [])
-    ].filter(Boolean))];
+    ].filter(Boolean))].slice(0, 5);
     const sourceEvidenceIds = [...new Set([
         ...(Array.isArray(candidate.source_evidence_ids) ? candidate.source_evidence_ids : []),
         ...(Array.isArray(setup.structural_evidence_ids) ? setup.structural_evidence_ids : [])
-    ].filter(id => typeof id === 'string'))];
+    ].filter(id => typeof id === 'string'))].slice(0, 24);
     const invalidation = candidate.structural_invalidation || candidate.structural_invalidation_detail || {};
-    return {
+    const dto = {
         id: candidate.id || null,
         candidate_id: candidate.id || null,
         candidate_role: candidate.candidate_role || candidate.current_opportunity_role || relevance.candidate_role || null,
@@ -10798,19 +10845,17 @@ function compactAiCandidate(candidate = {}) {
         poi: {
             id: candidate.zone?.id || candidate.execution_zone_id || null,
             type: candidate.zone_type || candidate.zone?.type || null,
-            low: candidate.zone_low ?? candidate.entry_region_low ?? candidate.zone?.low ?? null,
-            high: candidate.zone_high ?? candidate.entry_region_high ?? candidate.zone?.high ?? null,
             freshness: candidate.freshness || candidate.freshness_state || null,
-            mitigation_state: candidate.mitigation_state || candidate.mitigation || null
+            mitigation_state: candidate.mitigation_state || candidate.mitigation || null,
+            timeframe: candidate.zone?.timeframe || candidate.setup_timeframe || candidate.timeframe || null
         },
         execution: {
-            entry: candidate.entry ?? null,
-            stop_loss: candidate.stop_loss ?? null,
             structural_invalidation_id: invalidation.id || candidate.structural_invalidation_id || null,
-            structural_invalidation_level: invalidation.level ?? candidate.structural_invalidation_anchor ?? null,
             structural_invalidation_source: invalidation.source || candidate.structural_invalidation_source || null,
             targets: targetRecords,
-            rr: candidate.actual_rr ?? candidate.rr_tp1 ?? candidate.risk_reward ?? null
+            rr: candidate.actual_rr ?? candidate.rr_tp1 ?? candidate.risk_reward ?? null,
+            minimum_rr: candidate.minimum_rr ?? candidate.min_rr ?? null,
+            reachability: candidate.entry_reachability || candidate.reachability || candidate.pending_entry_quality || null
         },
         lifecycle: {
             state: candidate.lifecycle_state || candidate.opportunity_status || null,
@@ -10819,15 +10864,7 @@ function compactAiCandidate(candidate = {}) {
             tp1_already_reached: candidate.tp1_already_reached ?? null,
             target_lifecycle_state: candidate.target_lifecycle_state || targetRecords[0]?.lifecycle_state || null
         },
-        delivery: {
-            continuation_state: candidate.continuation_state || relevance.continuation_state || null,
-            delivery_fraction: candidate.delivery_fraction ?? relevance.delivery_fraction ?? null,
-            remaining_reward_fraction: candidate.remaining_reward_fraction ?? relevance.remaining_reward_fraction ?? null,
-            entry_retracement_distance: relevance.entry_retracement_distance ?? candidate.distance_from_current_price ?? null,
-            remaining_structural_objectives: candidate.remaining_structural_objectives ?? relevance.remaining_structural_objectives ?? null
-        },
         current_opportunity_relevance: {
-            candidate_role: candidate.candidate_role || candidate.current_opportunity_role || relevance.candidate_role || null,
             continuation_state: candidate.continuation_state || relevance.continuation_state || null,
             delivery_fraction: candidate.delivery_fraction ?? relevance.delivery_fraction ?? null,
             remaining_reward_fraction: candidate.remaining_reward_fraction ?? relevance.remaining_reward_fraction ?? null,
@@ -10835,21 +10872,23 @@ function compactAiCandidate(candidate = {}) {
             remaining_structural_objectives: candidate.remaining_structural_objectives ?? relevance.remaining_structural_objectives ?? null
         },
         quality_warnings: Array.isArray(candidate.quality_warnings)
-            ? candidate.quality_warnings.slice(0, 12)
-            : Array.isArray(candidate.quality?.warnings) ? candidate.quality.warnings.slice(0, 12) : [],
+            ? candidate.quality_warnings.slice(0, 8)
+            : Array.isArray(candidate.quality?.warnings) ? candidate.quality.warnings.slice(0, 8) : [],
         deterministic_valid: candidate.deterministic_valid ?? true
     };
+    return compactAiDropNulls(dto);
 }
 
 function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = {}) {
     const structure = source.structure || fallbackStructure || {};
-    const compactLocations = (items, type) => (Array.isArray(items) ? items : [])
-        .map(item => compactAiEvidenceItem(item, type, timeframe))
-        .filter(Boolean);
+    const compactLocations = (items, type, limit = 6) => compactAiList(items, type, timeframe, limit);
     const liquidity = source.liquidity && typeof source.liquidity === 'object'
         ? Object.fromEntries(Object.entries(source.liquidity).map(([key, values]) => [key,
-            (Array.isArray(values) ? values : []).map(item => compactAiEvidenceItem(item, key, timeframe)).filter(Boolean)]))
+            compactLocations(values, key, 4)]))
         : {};
+    const structuralEvidenceIds = Array.isArray(source.structural_evidence_ids)
+        ? [...new Set(source.structural_evidence_ids.filter(id => typeof id === 'string'))].slice(0, 24)
+        : [];
     return {
         timeframe,
         role: source.role || null,
@@ -10860,30 +10899,30 @@ function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = 
             momentum_trend: structure.momentum_trend || null,
             effective_trend: structure.effective_trend || structure.trend || null,
             bias: structure.bias || null,
-            sequence: Array.isArray(structure.sequence) ? structure.sequence.slice(-12) : [],
-            swing_highs: compactLocations(structure.swing_highs || structure.recent_swing_highs, 'SWING_HIGH'),
-            swing_lows: compactLocations(structure.swing_lows || structure.recent_swing_lows, 'SWING_LOW'),
-            bos: structure.bos || { buy: !!structure.bos_buy, sell: !!structure.bos_sell },
-            choch: structure.choch || { buy: !!structure.choch_buy, sell: !!structure.choch_sell },
-            mss: compactAiEvidenceItem(structure.mss, 'MSS', timeframe),
-            displacement: structure.displacement || null
+            sequence: Array.isArray(structure.sequence) ? structure.sequence.slice(-6) : [],
+            swing_highs: compactLocations(structure.swing_highs || structure.recent_swing_highs, 'SWING_HIGH', 4),
+            swing_lows: compactLocations(structure.swing_lows || structure.recent_swing_lows, 'SWING_LOW', 4),
+            bos: compactAiSignal(structure.bos, 'BOS', timeframe) || { buy: !!structure.bos_buy, sell: !!structure.bos_sell },
+            choch: compactAiSignal(structure.choch, 'CHoCH', timeframe) || { buy: !!structure.choch_buy, sell: !!structure.choch_sell },
+            mss: compactAiSignal(structure.mss, 'MSS', timeframe),
+            displacement: compactAiSignal(structure.displacement, 'DISPLACEMENT', timeframe)
         },
         liquidity,
         locations: [
-            ...compactLocations(source.fvg, 'FVG'),
-            ...compactLocations(source.order_blocks?.buy, 'OB'),
-            ...compactLocations(source.order_blocks?.sell, 'OB'),
-            ...compactLocations(source.msnr_levels, 'MSNR'),
-            ...compactLocations(source.structural_pois, 'POI'),
-            ...compactLocations(source.zones, 'ZONE')
+            ...compactLocations(source.fvg, 'FVG', 4),
+            ...compactLocations(source.order_blocks?.buy, 'OB', 3),
+            ...compactLocations(source.order_blocks?.sell, 'OB', 3),
+            ...compactLocations(source.msnr_levels, 'MSNR', 4),
+            ...compactLocations(source.structural_pois, 'POI', 4),
+            ...compactLocations(source.zones, 'ZONE', 4)
         ],
-        premium_discount: source.premium_discount || null,
-        dealing_range: source.dealing_range || null,
-        previous_period: source.previous_period || null,
-        previous_day_levels: source.previous_day_levels || null,
+        premium_discount: compactAiRange(source.premium_discount),
+        dealing_range: compactAiRange(source.dealing_range),
+        previous_period: compactAiRange(source.previous_period),
+        previous_day_levels: compactAiRange(source.previous_day_levels),
         atr: source.atr ?? null,
-        structural_evidence_ids: Array.isArray(source.structural_evidence_ids) ? source.structural_evidence_ids : [],
-        evidence: compactLocations(source.evidence, 'STRUCTURE_EVIDENCE')
+        structural_evidence_ids: structuralEvidenceIds,
+        evidence: compactLocations(source.evidence, 'STRUCTURE_EVIDENCE', 6)
     };
 }
 
@@ -10904,14 +10943,16 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
     const targetRecords = [];
     const addTarget = (target, direction = null) => {
         const compact = compactAiTarget(target, direction);
-        if (!compact || !Number.isFinite(Number(compact.level))) return;
-        const key = compact.id || `${compact.direction || ''}:${compact.level}:${compact.source || ''}`;
-        if (!targetRecords.some(existing => (existing.id || `${existing.direction || ''}:${existing.level}:${existing.source || ''}`) === key)) targetRecords.push(compact);
+        if (!compact?.id) return;
+        if (!targetRecords.some(existing => existing.id === compact.id)) targetRecords.push(compact);
     };
     for (const candidate of selectable) for (const target of candidate.execution?.targets || []) addTarget(target, candidate.direction);
-    for (const direction of ['buy', 'sell']) for (const target of (liveMarketContext.target_candidates?.[direction] || [])) {
+    for (const direction of ['buy', 'sell']) for (const target of [...(liveMarketContext.target_candidates?.[direction] || [])]
+        .filter(target => target?.id)
+        .sort((left, right) => Number(right?.structural_priority || 0) - Number(left?.structural_priority || 0))
+        .slice(0, 32)) {
         const state = String(target?.target_lifecycle_state || target?.lifecycle_state || target?.state || '').toUpperCase();
-        if (!['CONSUMED', 'INVALIDATED', 'REACHED', 'COMPLETED'].includes(state)) addTarget(target, direction.toUpperCase());
+        if (target?.id && !['CONSUMED', 'INVALIDATED', 'REACHED', 'COMPLETED'].includes(state)) addTarget(target, direction.toUpperCase());
     }
     const evidenceArrays = [
         ...(evidenceCatalog.strategy_events || []),
@@ -10923,22 +10964,39 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
         ...(evidenceCatalog.execution_zones || [])
     ];
     const evidenceById = new Map();
+    const referencedEvidenceIds = new Set([
+        ...selectable.flatMap(candidate => candidate.source_evidence_ids || []),
+        ...targetRecords.flatMap(target => target.evidence_ids || [])
+    ]);
+    for (const timeframe of AI_SEMANTIC_TIMEFRAMES) {
+        for (const id of structure[timeframe].structural_evidence_ids || []) referencedEvidenceIds.add(id);
+    }
     for (const item of evidenceArrays) {
         const compact = compactAiEvidenceItem(item, item?.strategy || item?.type, item?.timeframe);
-        if (compact?.id && !evidenceById.has(compact.id)) evidenceById.set(compact.id, compact);
+        if (compact?.id && referencedEvidenceIds.has(compact.id)) evidenceById.set(compact.id, compact);
+    }
+    for (const item of evidenceArrays) {
+        const compact = compactAiEvidenceItem(item, item?.strategy || item?.type, item?.timeframe);
+        if (!compact?.id || evidenceById.has(compact.id)) continue;
+        const family = `${compact.timeframe || 'UNKNOWN'}:${compact.type || 'EVIDENCE'}`;
+        const familyCount = [...evidenceById.values()].filter(existing => `${existing.timeframe || 'UNKNOWN'}:${existing.type || 'EVIDENCE'}` === family).length;
+        if (familyCount < 4) evidenceById.set(compact.id, compact);
     }
     const rejected = liveMarketContext.rejected_setup_candidates || [];
     const rejectionCounts = {};
-    const rejectedRecords = rejected.map(item => {
+    rejected.forEach(item => {
         const codes = [...new Set([item?.rejection_code, ...(item?.rejection_reasons || [])].filter(Boolean))];
         for (const code of codes) rejectionCounts[code] = (rejectionCounts[code] || 0) + 1;
-        return { id: item?.id || null, candidate_id: item?.id || null, rejection_code: codes[0] || null, rejection_codes: codes, direction: item?.direction || null, timeframe: item?.timeframe || null };
-    }).filter(item => item.candidate_id);
+    });
     const marketContext = liveMarketContext.market_context || {};
     const multiTimeframeTrend = liveMarketContext.multi_timeframe_direction?.trend || Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf, structure[tf].structure.effective_trend]));
     const regeneration = liveMarketContext.current_opportunity_regeneration || {};
-    return {
-        schema_version: 2,
+    const compactConflicts = Array.isArray(marketContext.conflicts)
+        ? marketContext.conflicts.slice(0, 12).map(item => typeof item === 'string' ? item : ({ id: item?.id || null, type: item?.type || item?.code || null, direction: item?.direction || null, timeframe: item?.timeframe || null }))
+        : [];
+    const compactLiquidityDraw = marketContext.liquidity?.draw || marketContext.liquidity?.liquidity_draw || null;
+    const dto = {
+        schema_version: 3,
         package_type: 'AI_SEMANTIC_MARKET',
         snapshot: {
             snapshot_id: liveMarketContext.snapshot_id || evidencePackage.snapshot_id || null,
@@ -10949,39 +11007,30 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
         },
         timeframes: structure,
         directional_context: {
-            daily_bias: liveMarketContext.daily_bias || marketContext.daily_bias || null,
+            daily_bias: compactAiSignal(liveMarketContext.daily_bias || marketContext.daily_bias, 'DAILY_BIAS', '1D'),
             directional_bias: marketContext.directional_bias || null,
-            liquidity_draw: marketContext.liquidity?.draw || marketContext.liquidity?.liquidity_draw || null,
+            liquidity_draw: compactAiSignal(compactLiquidityDraw, 'LIQUIDITY_DRAW', null),
             dealing_range_position: liveMarketContext.premium_discount?.zone || marketContext.premium_discount?.zone || null,
-            conflicts: marketContext.conflicts || [],
-            structural_invalidation_ids: Array.isArray(liveMarketContext.daily_bias?.invalidation_evidence_ids) ? liveMarketContext.daily_bias.invalidation_evidence_ids : [],
+            conflicts: compactConflicts,
+            structural_invalidation_ids: Array.isArray(liveMarketContext.daily_bias?.invalidation_evidence_ids) ? [...new Set(liveMarketContext.daily_bias.invalidation_evidence_ids)].slice(0, 12) : [],
             multi_timeframe_trend: multiTimeframeTrend,
-            volatility: liveMarketContext.volatility || marketContext.volatility || null,
+            volatility: compactAiRange(liveMarketContext.volatility || marketContext.volatility),
             market_regime: liveMarketContext.market_regime?.primary_regime || liveMarketContext.market_regime?.regime || marketContext.market_regime || null
         },
         phase_evidence: {
             current_regime: liveMarketContext.market_regime?.primary_regime || liveMarketContext.market_regime?.regime || null,
             current_structure: multiTimeframeTrend,
-            delivery_by_candidate: selectable.map(candidate => ({ candidate_id: candidate.candidate_id, candidate_role: candidate.candidate_role, continuation_state: candidate.delivery.continuation_state, delivery_fraction: candidate.delivery.delivery_fraction, remaining_reward_fraction: candidate.delivery.remaining_reward_fraction })),
-            conflicts: marketContext.conflicts || [],
-            liquidity: marketContext.liquidity || null
+            delivery_by_candidate: selectable.map(candidate => ({ candidate_id: candidate.candidate_id, candidate_role: candidate.candidate_role, continuation_state: candidate.current_opportunity_relevance.continuation_state, delivery_fraction: candidate.current_opportunity_relevance.delivery_fraction, remaining_reward_fraction: candidate.current_opportunity_relevance.remaining_reward_fraction })),
+            conflicts: compactConflicts,
+            liquidity_draw: compactAiSignal(compactLiquidityDraw, 'LIQUIDITY_DRAW', null)
         },
-        selectable_opportunities: selectable,
-        // Compatibility aliases are intentionally compact records, not the
-        // old nested replay candidates.
+        // This is the single serialized candidate collection. Local code and
+        // diagnostics use this same field; no duplicate aliases cross AI.
         adaptive_setup_candidates: selectable,
-        candidate_catalog: [
-            ...selectable.map(candidate => ({ ...candidate, catalog_status: 'VALID_SELECTABLE' })),
-            ...rejectedRecords.map(record => ({ ...record, catalog_status: 'REJECTED' }))
-        ],
-        rejected_opportunity_summary: { counts: rejectionCounts, records: rejectedRecords },
+        rejected_opportunity_summary: { counts: rejectionCounts, total: rejected.length },
         target_context: targetRecords,
-        target_candidates: { all: targetRecords, buy: targetRecords.filter(target => target.direction === 'BUY'), sell: targetRecords.filter(target => target.direction === 'SELL') },
-        deterministic_evidence: {
-            strategy_events: [...evidenceById.values()],
-            evidence_id_count: evidenceById.size
-        },
-        strategy_detections: liveMarketContext.strategy_detections || null,
+        evidence_index: [...evidenceById.values()],
+        evidence_id_count: evidenceById.size,
         current_opportunity_regeneration: {
             snapshot_id: regeneration.snapshot_id || liveMarketContext.snapshot_id || null,
             historical_discovered_count: regeneration.historical_discovered_count ?? null,
@@ -10989,8 +11038,7 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
             current_regenerated_count: regeneration.current_regenerated_count ?? 0,
             current_regenerated_valid_count: regeneration.current_regenerated_valid_count ?? 0,
             current_regenerated_selectable_count: regeneration.current_regenerated_selectable_count ?? 0,
-            candidate_ids: regeneration.candidate_ids || regeneration.current_candidate_ids || [],
-            selectable_candidate_ids: regeneration.selectable_candidate_ids || regeneration.current_selectable_candidate_ids || []
+            selectable_candidate_ids: regeneration.selectable_candidate_ids || regeneration.current_selectable_candidate_ids || selectable.map(candidate => candidate.candidate_id)
         },
         risk_constraints: {
             minimum_rr: liveMarketContext.risk_constraints?.minimum_rr ?? null,
@@ -10998,6 +11046,7 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
             slippage_valid: liveMarketContext.risk_constraints?.slippage_valid ?? null
         }
     };
+    return compactAiDropNulls(dto);
 }
 
 function updateAiContextAudit(liveMarketContext = null, stage = 'SELECTOR', semanticPackage = {}, requestBody = null) {
@@ -11017,7 +11066,10 @@ function updateAiContextAudit(liveMarketContext = null, stage = 'SELECTOR', sema
         evidence_id_count: evidenceIds.size,
         target_count: (semanticPackage.target_context || semanticPackage.target_candidates?.all || []).length,
         semantic_package_bytes: aiUtf8ByteLength(JSON.stringify(semanticPackage)),
+        semantic_dto_bytes: aiUtf8ByteLength(JSON.stringify(semanticPackage)),
         request_body_bytes: requestBody == null ? null : aiUtf8ByteLength(requestBody),
+        approximate_input_tokens: requestBody == null ? null : Math.ceil(aiUtf8ByteLength(requestBody) / 4),
+        semantic_dto_schema_version: semanticPackage.schema_version || null,
         usage: null
     };
     liveMarketContext.ai_context_audit = liveMarketContext.ai_context_audit || {};
@@ -11025,8 +11077,28 @@ function updateAiContextAudit(liveMarketContext = null, stage = 'SELECTOR', sema
     return record;
 }
 
-function compactAIContext(liveMarketContext) {
-    return buildCompactAISemanticPackage(liveMarketContext || {}, liveMarketContext?.market_evidence_package || {});
+function compactAIContext(liveMarketContext, evidenceCatalog = null) {
+    const context = liveMarketContext || {};
+    const candidates = Array.isArray(context.adaptive_setup_candidates) ? context.adaptive_setup_candidates : [];
+    const catalog = evidenceCatalog || context.__ai_evidence_catalog || context.market_evidence_package || {};
+    if (evidenceCatalog && evidenceCatalog !== context.__ai_evidence_catalog) {
+        try { Object.defineProperty(context, '__ai_evidence_catalog', { value: evidenceCatalog, writable: true, configurable: true, enumerable: false }); }
+        catch { context.__ai_evidence_catalog = evidenceCatalog; }
+    }
+    const evidenceSignature = ['strategy_events', 'crt_events', 'tbs_events', 'msnr_levels', 'fvg_zones', 'ob_zones', 'execution_zones']
+        .flatMap(key => (Array.isArray(catalog[key]) ? catalog[key] : []).map(item => item?.id || ''))
+        .filter(Boolean).join(',');
+    const signature = [context.snapshot_id || '', ...candidates.map(candidate => candidate?.id || '').filter(Boolean), evidenceSignature].join('|');
+    if (context.__ai_semantic_dto && context.__ai_semantic_dto_signature === signature) return context.__ai_semantic_dto;
+    const dto = buildCompactAISemanticPackage(context, catalog);
+    try {
+        Object.defineProperty(context, '__ai_semantic_dto', { value: dto, writable: true, configurable: true, enumerable: false });
+        Object.defineProperty(context, '__ai_semantic_dto_signature', { value: signature, writable: true, configurable: true, enumerable: false });
+    } catch {
+        context.__ai_semantic_dto = dto;
+        context.__ai_semantic_dto_signature = signature;
+    }
+    return dto;
 }
 
 function buildCanonicalMarketEvidencePackage(liveMarketContext = {}, historyCache = {}) {
@@ -11200,11 +11272,13 @@ function buildAiMarketAnalystPrompt(evidenceCatalog = {}, candleData = '', liveM
     // evidenceCatalog after the response arrives, but DeepSeek receives only
     // this canonical semantic projection. In particular, raw candles and
     // nested replay objects never cross the AI boundary.
-    const bounded = buildCompactAISemanticPackage(liveMarketContext || evidenceCatalog, evidenceCatalog);
+    const bounded = liveMarketContext
+        ? compactAIContext(liveMarketContext, evidenceCatalog)
+        : buildCompactAISemanticPackage(evidenceCatalog, evidenceCatalog);
     const system = [
         'You are the MARKET ANALYST stage of a deterministic trading engine.',
         'Use 1D for macro context, 4H for primary structure/location, 1H for intermediate structure, 15M for execution structure, and 5M only for execution refinement when needed. Timeframe disagreement is evidence, not an automatic WAIT.',
-        'Derive every conclusion from the supplied closed OHLCV and computed evidence. Never assume a level, price, trend, regime, bias, or reversal.',
+        'Derive every conclusion from the supplied closed-candle-derived evidence and computed facts. Never assume a level, price, trend, regime, bias, or reversal.',
         'Use the supplied canonical market_regime.regime value when present: TREND_UP, TREND_DOWN, RANGE, TRANSITION, HIGH_VOLATILITY, LOW_VOLATILITY, or UNKNOWN. Do not replace it with a guessed label; explain the supplied regime and its evidence.',
         'A BOS requires a candle close beyond the opposing swing. An MSS requires a valid BOS followed by a retrace that holds inside the prior range. A wick alone is not a structure break.',
         'For 1D, 4H, and 1H, report the derived directional structure as bullish, bearish, or neutral only when the supplied evidence supports it; identify any conflict between timeframes.',
@@ -11229,7 +11303,7 @@ function buildAiMarketAnalystPrompt(evidenceCatalog = {}, candleData = '', liveM
         'Allowed market_phase values: ORIGINAL_SETUP, EARLY_DELIVERY, EXPANSION, RETRACEMENT, CONTINUATION_READY, LATE_DELIVERY, TRANSITION_WAIT. Allowed preferred_opportunity_role values: ORIGINAL_THESIS_POI, FRESH_RETRACEMENT_POI, FRESH_CONTINUATION_POI, CONFIRMATION_POI. These describe interpretation only; code still proves candidates.',
         'Return zero hypotheses when evidence is insufficient.'
     ].join('\n');
-    const user = 'COMPACT DETERMINISTIC MARKET EVIDENCE\n' + JSON.stringify(bounded, null, 2) + '\n\nRaw candle arrays are intentionally omitted; structure and locations are derived from the same canonical closed-candle snapshot.\n\nReturn only the analyst JSON object.';
+    const user = 'COMPACT DETERMINISTIC MARKET EVIDENCE\n' + JSON.stringify(bounded) + '\n\nRaw candle arrays are intentionally omitted; structure and locations are derived from the same canonical closed-candle snapshot.\n\nReturn only the analyst JSON object.';
     console.log('[AI] market analyst prompt characters', { system: system.length, evidence: user.length, hypothesis_cap: 12 });
     return { system, user, semantic_package: bounded };
 }
@@ -11800,7 +11874,7 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'You are the discretionary candidate-selection layer of an ICT pending-limit trading system.',
         'Return only the selector and market-phase JSON contract. You may interpret phase and opportunity role, but do not return executable prices, geometry, or confidence as a trade instruction.',
         'The deterministic engine has already calculated and validated every numeric trade level in COMPUTED MARKET FACTS.adaptive_setup_candidates.',
-        'candidate_catalog contains compact selectable candidate records and compact rejection summaries. Select only IDs marked VALID_SELECTABLE in adaptive_setup_candidates; rejected records are context only and cannot be resurrected.',
+        'adaptive_setup_candidates contains the complete compact selectable candidate universe. Select only supplied candidate IDs; rejected opportunities are represented only by aggregate counts and cannot be resurrected.',
         'You must NEVER invent, modify, recalculate, improve, widen, tighten, or replace entry, stop_loss, TP1, TP2, TP3, RR, or zone bounds.',
         'Your job is only to select the best candidate ID using the supplied live market context, or return WAIT for qualitative market reasons.',
         'A selected candidate numeric geometry is authoritative and immutable.',
@@ -11844,7 +11918,7 @@ function buildAIPrompt(liveMarketContext, candleData) {
     // prompt, candidate ordering, or selection behavior.
     capturePhaseSelectionDeepSeekVisibility(liveMarketContext, compactContext);
     updateAiContextAudit(liveMarketContext, 'SELECTOR', compactContext, null);
-    const compactFacts = JSON.stringify(compactContext, null, 2);
+    const compactFacts = JSON.stringify(compactContext);
     console.log('[AI] prompt characters', {
         system: system.length,
         computed_facts: compactFacts.length,
@@ -16198,6 +16272,262 @@ function handleLimit() {
     showNotif(`📝 ${aiLabel}: ${o.signalType} @ $${o.idealEntry.toFixed(prec)} | ${o.confirmation} | RR: 1:${o.rrUsed}`, 'info');
 }
 
+const EXTERNAL_AI_PACKET_CONTRACT = [
+    'AI can interpret supplied evidence; deterministic evidence defines the market facts and executable geometry.',
+    'PROCESS: Direction -> Location -> Execution.',
+    'DIRECTION: use only supplied HTF structure, effective/momentum structure, BOS, MSS, CHoCH, displacement, liquidity, sweeps/raids, structural objectives, premium/discount, dealing range, and conflicts.',
+    'LOCATION: compare supplied FVG, OB, MSNR, CRT, TBS, supply/demand, flip/reclaim/retest, liquidity-raid, and fresh/current POIs.',
+    'ICT is the umbrella methodology. CRT, TBS, MSNR, and combined labels such as MSNR+CRT are setup/model labels; FVG, OB, liquidity, displacement, and BOS/MSS/CHoCH may be structural evidence or CURRENT_STRUCTURE locations.',
+    'MARKET PHASES: ORIGINAL_SETUP, EARLY_DELIVERY, EXPANSION, RETRACEMENT, CONTINUATION_READY, LATE_DELIVERY, TRANSITION_WAIT.',
+    'OPPORTUNITY ROLES: ORIGINAL_THESIS_POI, FRESH_RETRACEMENT_POI, FRESH_CONTINUATION_POI, CONFIRMATION_POI.',
+    'A valid pending LIMIT may wait away from current price. Do not reject it merely because price is outside the zone, has not reached entry, lacks current 5M/15M confirmation, or is outside a killzone.',
+    'CONFIRMATION_ENTRY is different: require the supplied deterministic confirmation state and requirements. Do not turn every opportunity into a confirmation entry.',
+    'STRUCTURAL SL FIRST: use the supplied structural invalidation/stop. Targets must be supplied genuine structural/liquidity objectives with an executable lifecycle. Never manufacture ATR, fixed-R, or other levels.',
+    'Respect target lifecycle and minimum RR. Consumed, invalidated, unknown, or otherwise rejected targets cannot become TP1. Do not move TP to manufacture RR.',
+    'Confidence describes quality after deterministic validity. Keep quality warnings separate from hard rejection.',
+    'Use only supplied candidate IDs, evidence IDs, prices, zones, stops, targets, and RR. Never invent market data, evidence, POIs, setup labels, levels, or candidate IDs.',
+    'If required context is unavailable return DATA_UNAVAILABLE. If supplied evidence has no valid opportunity return NO_TRADE. Never create a trade because the user requested one.'
+].join('\n');
+
+function externalPacketDefined(object, keys) {
+    const out = {};
+    for (const key of keys) if (object && object[key] !== undefined && object[key] !== null) out[key] = object[key];
+    return out;
+}
+
+function externalPacketNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+}
+
+function externalPacketTargetRecord(target = {}, fallbackDirection = null) {
+    const id = target.id || target.target_id || target.uid || null;
+    if (!id) return null;
+    return externalPacketDefined({
+        target_id: id,
+        type: target.target_type || target.type || target.source || null,
+        source: target.primary_target_source || target.source || target.origin || null,
+        timeframe: target.timeframe || null,
+        direction: target.direction || fallbackDirection || null,
+        price: externalPacketNumber(target.level ?? target.price ?? target.target_price ?? target.value),
+        lifecycle: target.target_lifecycle_state || target.lifecycle_state || target.state || null,
+        priority: target.structural_priority ?? target.priority ?? null,
+        reachability: target.reachability || target.reachability_status || target.reachable || null,
+        evidence_ids: Array.isArray(target.evidence_ids) ? target.evidence_ids : []
+    }, ['target_id', 'type', 'source', 'timeframe', 'direction', 'price', 'lifecycle', 'priority', 'reachability', 'evidence_ids']);
+}
+
+function externalPacketCandidateRecord(candidate = {}, targetIndex = new Map()) {
+    const zone = candidate.entry_zone || candidate.execution_zone || candidate.zone || {};
+    const invalidation = candidate.structural_invalidation && typeof candidate.structural_invalidation === 'object'
+        ? candidate.structural_invalidation : {};
+    const targetList = [
+        ...(Array.isArray(candidate.target_map) ? candidate.target_map : []),
+        ...(Array.isArray(candidate.target_candidates) ? candidate.target_candidates : []),
+        ...(Array.isArray(candidate.execution?.targets) ? candidate.execution.targets : []),
+        ...(Array.isArray(candidate.targets) ? candidate.targets : [])
+    ];
+    const targets = [...new Map(targetList.map(target => externalPacketTargetRecord(target, candidate.direction)).filter(Boolean).map(target => [target.target_id, target])).values()];
+    for (const targetId of candidate.target_ids || candidate.execution?.target_ids || []) {
+        if (!targetIndex.has(targetId)) continue;
+        const target = externalPacketTargetRecord(targetIndex.get(targetId), candidate.direction);
+        if (target && !targets.some(existing => existing.target_id === target.target_id)) targets.push(target);
+    }
+    const entryZone = externalPacketDefined({
+        id: zone.id || candidate.zone_id || null,
+        type: zone.type || candidate.zone_type || null,
+        low: externalPacketNumber(zone.low ?? candidate.zone_low),
+        high: externalPacketNumber(zone.high ?? candidate.zone_high),
+        timeframe: zone.timeframe || candidate.setup_timeframe || candidate.timeframe || null,
+        freshness: zone.freshness || candidate.freshness || null
+    }, ['id', 'type', 'low', 'high', 'timeframe', 'freshness']);
+    return externalPacketDefined({
+        candidate_id: candidate.id || candidate.candidate_id || null,
+        direction: candidate.direction || null,
+        type: candidate.strategy_label || candidate.label || candidate.strategy_setup?.label || candidate.strategy_setup?.strategy_label || candidate.primary || candidate.strategy || null,
+        setup_label: candidate.strategy_label || candidate.label || candidate.strategy_setup?.label || null,
+        opportunity_role: candidate.candidate_role || candidate.current_opportunity_role || candidate.role || null,
+        setup_timeframe: candidate.setup_timeframe || candidate.timeframe || null,
+        execution_timeframe: candidate.execution_timeframe || null,
+        execution_mode: candidate.execution_model || candidate.entry_model || candidate.setup_type || null,
+        source: candidate.current_opportunity_source || candidate.source || candidate.primary || null,
+        evidence_ids: candidate.source_evidence_ids || candidate.evidence_ids || [],
+        entry_zone: entryZone,
+        entry: externalPacketNumber(candidate.entry ?? candidate.entry_price),
+        structural_invalidation_id: invalidation.id || candidate.structural_invalidation_id || null,
+        structural_invalidation: externalPacketDefined({
+            level: externalPacketNumber(invalidation.level ?? invalidation.price ?? candidate.structural_invalidation_level),
+            source: invalidation.source || candidate.structural_invalidation_source || null
+        }, ['level', 'source']),
+        stop_loss: externalPacketNumber(candidate.stop_loss ?? candidate.sl ?? invalidation.level),
+        tp1: externalPacketNumber(candidate.tp1 ?? candidate.take_profit_1),
+        tp2: externalPacketNumber(candidate.tp2 ?? candidate.take_profit_2),
+        tp3: externalPacketNumber(candidate.tp3 ?? candidate.take_profit_3),
+        target_ids: [...new Set([...targets.map(target => target.target_id), ...(candidate.target_ids || [])])],
+        targets,
+        rr: externalPacketNumber(candidate.actual_rr ?? candidate.risk_reward ?? candidate.rr_tp1 ?? candidate.rr),
+        minimum_rr: externalPacketNumber(candidate.minimum_rr ?? candidate.min_rr),
+        freshness: candidate.freshness || zone.freshness || null,
+        lifecycle: candidate.lifecycle_state || candidate.opportunity_status || candidate.continuation_state || null,
+        mitigation: candidate.mitigation_state ?? candidate.mitigation_count ?? null,
+        entry_consumed: candidate.entry_consumed ?? candidate.entry_already_consumed ?? null,
+        reachability: (candidate.entry_reachable_today ?? candidate.opportunity_reachable_today ?? candidate.reachability) ?? null,
+        delivery: candidate.current_opportunity_relevance || externalPacketDefined({
+            delivery_fraction: candidate.delivery_fraction,
+            remaining_reward_fraction: candidate.remaining_reward_fraction,
+            continuation_state: candidate.continuation_state
+        }, ['delivery_fraction', 'remaining_reward_fraction', 'continuation_state']),
+        confluence: candidate.confluence || candidate.strategy_confluence || candidate.patterns || null,
+        supporting_evidence_ids: candidate.supporting_evidence_ids || [],
+        conflicting_evidence_ids: candidate.conflicting_evidence_ids || [],
+        quality_warnings: candidate.quality_warnings || candidate.warnings || [],
+        hard_rejections: candidate.hard_rejections || candidate.rejection_reasons || [],
+        deterministic_valid: candidate.deterministic_valid ?? candidate.valid ?? true,
+        state: candidate.status || candidate.opportunity_status || candidate.lifecycle_state || null
+    }, ['candidate_id', 'direction', 'type', 'setup_label', 'opportunity_role', 'setup_timeframe', 'execution_timeframe', 'execution_mode', 'source', 'evidence_ids', 'entry_zone', 'entry', 'structural_invalidation_id', 'structural_invalidation', 'stop_loss', 'tp1', 'tp2', 'tp3', 'target_ids', 'targets', 'rr', 'minimum_rr', 'freshness', 'lifecycle', 'mitigation', 'entry_consumed', 'reachability', 'delivery', 'confluence', 'supporting_evidence_ids', 'conflicting_evidence_ids', 'quality_warnings', 'hard_rejections', 'deterministic_valid', 'state']);
+}
+
+function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
+    const source = replay || {};
+    const result = signal || source.final_output?.trade_signal || source.final_output || {};
+    const pairValue = source.pair || result.pair || 'UNKNOWN';
+    const providerMetadata = source.provider_metadata;
+    const provider = providerMetadata?.provider || providerMetadata?.name || getMarketDataProvider();
+    const targetCatalog = source.target_candidates || {};
+    const allCatalogTargets = [
+        ...(Array.isArray(targetCatalog.all) ? targetCatalog.all : []),
+        ...(Array.isArray(targetCatalog.buy) ? targetCatalog.buy : []),
+        ...(Array.isArray(targetCatalog.sell) ? targetCatalog.sell : [])
+    ];
+    const targetIndex = new Map(allCatalogTargets.filter(target => target?.id || target?.target_id).map(target => [target.id || target.target_id, target]));
+    const sourceCandidates = Array.isArray(source.valid_candidates) ? source.valid_candidates : [];
+    const candidates = [...new Map(sourceCandidates.map(candidate => externalPacketCandidateRecord(candidate, targetIndex)).filter(candidate => candidate.candidate_id).map(candidate => [candidate.candidate_id, candidate])).values()];
+    let semantic = null;
+    try {
+        const semanticSource = {
+            snapshot_id: source.snapshot_id || result.snapshot_id || null,
+            pair: pairValue,
+            current_price: source.quote?.price ?? result.current_price ?? null,
+            as_of_time_utc: source.scan_as_of || result.time || null,
+            provider_metadata: providerMetadata,
+            market_evidence_package: source.market_evidence_package || {},
+            structure: source.structure || {},
+            adaptive_setup_candidates: source.valid_candidates || [],
+            valid_deterministic_candidates: source.valid_candidates || [],
+            target_candidates: targetCatalog,
+            daily_bias: source.daily_bias,
+            market_regime: source.market_regime,
+            market_context: { timeframe_context: source.timeframe_context || {}, directional_bias: source.daily_bias?.direction || null, daily_bias: source.daily_bias, liquidity: source.liquidity || {}, market_regime: source.market_regime },
+            current_opportunity_regeneration: source.candidate_pipeline_audit?.current_opportunity_regeneration || {}
+        };
+        semantic = buildCompactAISemanticPackage(semanticSource, source.market_evidence_package || {});
+    } catch { semantic = null; }
+    const timeframes = semantic?.timeframes || {};
+    const targetContext = [...new Map(candidates.flatMap(candidate => candidate.targets || []).map(target => [target.target_id, target])).values()];
+    const currentResult = externalPacketDefined({
+        state: result.status || result.status_code || result.decision || null,
+        direction: result.direction || null,
+        type: result.strategy_label || result.strategy_setup?.label || result.strategy || null,
+        candidate_id: result.selected_candidate_id || result.primary_opportunity?.candidate_id || null,
+        entry: externalPacketNumber(result.entry),
+        entry_zone: result.entry_zone || null,
+        sl: externalPacketNumber(result.stop_loss),
+        tp1: externalPacketNumber(result.tp1),
+        tp2: externalPacketNumber(result.tp2),
+        tp3: externalPacketNumber(result.tp3),
+        rr: externalPacketNumber(result.rr_tp1 || result.risk_reward || result.rr),
+        execution_mode: result.setup_type || result.execution_mode || result.execution_model || null,
+        confidence: result.confidence ?? null,
+        quality: result.quality || null,
+        warnings: result.quality_warnings || result.warnings || [],
+        reason: result.reason || null
+    }, ['state', 'direction', 'type', 'candidate_id', 'entry', 'entry_zone', 'sl', 'tp1', 'tp2', 'tp3', 'rr', 'execution_mode', 'confidence', 'quality', 'warnings', 'reason']);
+    const compactSnapshot = externalPacketDefined({
+        snapshot_id: source.snapshot_id || result.snapshot_id || null,
+        symbol: pairValue,
+        provider,
+        as_of: source.scan_as_of || result.time || null,
+        current_price: externalPacketNumber(source.quote?.price ?? result.current_price),
+        quote_time: source.quote?.quote_time || null,
+        timeframes
+    }, ['snapshot_id', 'symbol', 'provider', 'as_of', 'current_price', 'quote_time', 'timeframes']);
+    const packet = [
+        'ICT TRADING BOT PRO',
+        'EXTERNAL AI DECISION PACKET',
+        '',
+        `Symbol: ${pairValue}`,
+        `Generated At: ${source.scan_as_of || result.time || 'UNAVAILABLE'}`,
+        `Market Data Provider: ${provider || 'UNAVAILABLE'}`,
+        `Strategy Version: ${result.strategy_version || STRATEGY_SPEC_VERSION || 'UNAVAILABLE'}`,
+        `Snapshot ID: ${source.snapshot_id || result.snapshot_id || 'UNAVAILABLE'}`,
+        '',
+        'IMPORTANT: This packet contains deterministic evidence from one completed market snapshot. Use only supplied evidence, candidate IDs, levels, and targets. Do not invent missing market data or trading levels.',
+        '',
+        '==============================',
+        'COMPACT STRATEGY CONTRACT',
+        '==============================',
+        EXTERNAL_AI_PACKET_CONTRACT,
+        '',
+        '==============================',
+        'CURRENT MARKET SNAPSHOT',
+        '==============================',
+        semantic ? JSON.stringify(compactSnapshot, null, 2) : 'UNAVAILABLE: completed semantic market evidence was not retained for this result.',
+        '',
+        '==============================',
+        'DIRECTIONAL / PHASE CONTEXT',
+        '==============================',
+        semantic ? JSON.stringify({ directional_context: semantic.directional_context || null, phase_evidence: semantic.phase_evidence || null, regeneration: semantic.current_opportunity_regeneration || null }, null, 2) : 'UNAVAILABLE',
+        '',
+        '==============================',
+        'CURRENT SELECTABLE CANDIDATE UNIVERSE',
+        '==============================',
+        candidates.length ? JSON.stringify(candidates, null, 2) : 'UNAVAILABLE: no selectable candidate records were retained.',
+        '',
+        '==============================',
+        'RELEVANT TARGET CONTEXT',
+        '==============================',
+        targetContext.length ? JSON.stringify(targetContext, null, 2) : 'UNAVAILABLE: no relevant target records were retained.',
+        '',
+        'REJECTION SUMMARY',
+        semantic ? JSON.stringify(semantic.rejected_opportunity_summary || {}, null, 2) : 'UNAVAILABLE',
+        '',
+        '==============================',
+        'CURRENT BOT RESULT',
+        '==============================',
+        JSON.stringify(currentResult, null, 2),
+        'This is the production pipeline result for the snapshot. Treat it as evidence, then independently compare every supplied selectable candidate.',
+        '',
+        '==============================',
+        'YOUR TASK',
+        '==============================',
+        'You are the interpretation layer for this ICT Trading Bot packet. Using ONLY the supplied deterministic evidence and candidate universe: determine the current market phase, directional thesis, liquidity draw, and best valid supplied opportunity; compare original, retracement, continuation, and confirmation roles; preserve LIMIT versus CONFIRMATION_ENTRY semantics; respect structural invalidation, target lifecycle, and minimum RR; use only supplied IDs and levels; return NO_TRADE when evidence does not support a valid opportunity; explain conflicts.',
+        '',
+        'STRICT RESPONSE FORMAT',
+        'DECISION: TRADE | NO_TRADE',
+        'DIRECTION: BUY | SELL | NONE',
+        'MARKET_PHASE:',
+        'DIRECTIONAL_THESIS:',
+        'LIQUIDITY_DRAW:',
+        'TYPE:',
+        'OPPORTUNITY_ROLE:',
+        'CANDIDATE_ID:',
+        'EXECUTION_MODE:',
+        'ENTRY:',
+        'SL:',
+        'TP1:',
+        'TP2:',
+        'TP3:',
+        'RR:',
+        'CONFIDENCE:',
+        'SUPPORTING_EVIDENCE:',
+        'CONFLICTING_EVIDENCE:',
+        'INVALIDATION:',
+        'REASONING:',
+        'For NO_TRADE, unavailable trade fields must be NONE.'
+    ].join('\n');
+    return packet.replace(/(DEEPSEEK_API_KEY|GEMINI_API_KEY|TWELVE_DATA_API_KEY|TELEGRAM_BOT_TOKEN|Authorization|Bearer)\s*[:=]?\s*[^\s\n]*/gi, '$1: [REDACTED]');
+}
+
 function copyJson(event = null) {
     if ((event?.altKey || event?.shiftKey || event?.detail >= 2) && window.__ICT_LAST_SCAN_REPLAY__) {
         const replay = window.__ICT_LAST_SCAN_REPLAY__;
@@ -16239,8 +16569,8 @@ function copyJson(event = null) {
         showNotif('Run analysis first', 'warning');
         return;
     }
-    const summary = formatTradeSummaryText(lastDisplayedPublicSignal);
-    navigator.clipboard.writeText(summary).then(() => showNotif('Trade summary copied', 'success')).catch(() => showNotif('Failed', 'error'));
+    const packet = buildExternalAIClipboardPacket({ signal: lastDisplayedPublicSignal, replay: window.__ICT_LAST_SCAN_REPLAY__ || null });
+    navigator.clipboard.writeText(packet).then(() => showNotif('AI decision packet copied', 'success')).catch(() => showNotif('Failed', 'error'));
 }
 
 function showNotif(m, t) {

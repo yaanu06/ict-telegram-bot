@@ -213,6 +213,27 @@ describe('market and AI proxy boundary', () => {
         }
     });
 
+    test('uses DeepSeek as the production default and does not call Gemini', async () => {
+        const calls = [];
+        const fetchImpl = jest.fn(async (url, options) => {
+            calls.push({ url: String(url), options });
+            return { status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: '{"decision":"WAIT"}' } }] }) };
+        });
+        const server = createProxyServer({ env: { DEEPSEEK_API_KEY: 'deepseek-secret', PROXY_MAX_REQUESTS: '20' }, fetchImpl });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const response = await request(server, 'POST', '/api/ai/chat', { 'content-type': 'application/json' }, JSON.stringify({ messages: [{ role: 'user', content: 'select' }] }));
+            expect(response.status).toBe(200);
+            expect(response.body).toMatchObject({ provider: 'DEEPSEEK', model: 'deepseek-chat' });
+            expect(calls).toHaveLength(1);
+            expect(calls[0].url).toBe('https://api.deepseek.com/chat/completions');
+            expect(calls[0].options.headers.Authorization).toBe('Bearer deepseek-secret');
+            expect(calls[0].url).not.toContain('generativelanguage.googleapis.com');
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
     test('health reports the selected Gemini provider and model safely', async () => {
         const server = createProxyServer({ env: { AI_PROVIDER: 'GEMINI', GEMINI_API_KEY: 'gemini-secret', GEMINI_MODEL: 'gemini-test', PROXY_MAX_REQUESTS: '20' }, fetchImpl: jest.fn() });
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

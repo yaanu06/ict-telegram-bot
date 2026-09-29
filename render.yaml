@@ -7,11 +7,7 @@ services:
     healthCheckPath: /health
     envVars:
       - key: AI_PROVIDER
-        value: GEMINI
-      - key: GEMINI_API_KEY
-        sync: false
-      - key: GEMINI_MODEL
-        value: gemini-3.5-flash-lite
+        value: DEEPSEEK
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: DEEPSEEK_API_URL

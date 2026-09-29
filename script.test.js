@@ -377,16 +377,15 @@ describe('strategy entry lifecycle', () => {
         expect(payload.adaptive_setup_candidates.map(c => c.id)).toEqual(['fresh', 'later-limit']);
     });
 
-    it('sends the full candidate catalog while keeping rejected candidates unselectable', () => {
+    it('sends selectable candidates once and summarizes rejected candidates', () => {
         const ctx = getContext();
         const payload = ctx.compactAIContext({
             adaptive_setup_candidates: [{ id: 'valid', opportunity_status: 'FRESH_PENDING_TODAY', direction: 'SELL', entry: 2, stop_loss: 3, tp1: 1 }],
             rejected_setup_candidates: [{ id: 'expired-zone', direction: 'SELL', timeframe: '4H', zone_type: 'OB', rejection_code: 'SETUP_EXPIRED', rejection_reasons: ['SETUP_EXPIRED'] }]
         });
-        expect(payload.candidate_catalog.map(c => c.id)).toEqual(['valid', 'expired-zone']);
-        expect(payload.candidate_catalog[0].catalog_status).toBe('VALID_SELECTABLE');
-        expect(payload.candidate_catalog[1].catalog_status).toBe('REJECTED');
-        expect(payload.candidate_catalog[1].rejection_code).toBe('SETUP_EXPIRED');
+        expect(payload.adaptive_setup_candidates.map(c => c.id)).toEqual(['valid']);
+        expect(payload.rejected_opportunity_summary).toEqual(expect.objectContaining({ total: 1, counts: { SETUP_EXPIRED: 1 } }));
+        expect(JSON.stringify(payload)).not.toContain('expired-zone');
     });
 
     it('normalizes epoch seconds, epoch milliseconds, ISO, text, Date, and timezone timestamps identically', () => {
@@ -1920,7 +1919,7 @@ describe('current opportunity regeneration', () => {
             current_opportunity_regeneration: { current_regenerated_count: 1 }
         });
         expect(compact.current_opportunity_regeneration).toEqual(expect.objectContaining({ current_regenerated_count: 1 }));
-        expect(compact.candidate_catalog).toEqual(expect.arrayContaining([
+        expect(compact.adaptive_setup_candidates).toEqual(expect.arrayContaining([
             expect.objectContaining({ id: result.selectable_candidates[0].id, candidate_role: 'FRESH_CONTINUATION_POI' })
         ]));
     });
@@ -7185,6 +7184,143 @@ describe('AI market analyst contract', () => {
         const compactBytes = Buffer.byteLength(JSON.stringify(selector.semantic_package || ctx.compactAIContext(live)), 'utf8');
         const fullBytes = Buffer.byteLength(JSON.stringify({ ...live, replay_history: live.historyCache }), 'utf8');
         expect(compactBytes).toBeLessThan(fullBytes / 3);
+        expect(compactBytes).toBeLessThan(100_000);
+        expect(selector.semantic_package.candidate_catalog).toBeUndefined();
+        expect(selector.semantic_package.target_candidates).toBeUndefined();
+        expect(selector.semantic_package.deterministic_evidence).toBeUndefined();
+        expect(JSON.stringify(selector.semantic_package)).not.toContain('raw_closed_candles');
+        expect(JSON.stringify(selector.semantic_package)).not.toContain('RAW-CANDLE-MUST-NOT-CROSS-AI-BOUNDARY');
+        expect(selector.semantic_package.adaptive_setup_candidates.every(candidate => !('entry' in candidate.execution) && !('stop_loss' in candidate.execution))).toBe(true);
+    });
+
+    it('keeps a maximum-size semantic fixture inside the payload budget without dropping selectable IDs', () => {
+        const ctx = getContext();
+        const tfs = ['1D', '4H', '1H', '15M', '5M'];
+        const timeframes = Object.fromEntries(tfs.map(tf => [tf, {
+            timeframe: tf,
+            closed_candle_count: 199,
+            raw_closed_candles: Array.from({ length: 199 }, (_, i) => ({ t: i, o: 100, h: 101, l: 99, c: 100, v: 1 })),
+            structure: { structural_trend: 'BEARISH', effective_trend: 'BEARISH', bos: { buy: false, sell: true }, choch: { buy: false, sell: false }, swing_highs: [], swing_lows: [] },
+            fvg: Array.from({ length: 40 }, (_, i) => ({ id: `${tf}:FVG:${i}`, type: 'FVG', direction: 'SELL', low: 101 + i, high: 102 + i })),
+            order_blocks: { buy: [], sell: Array.from({ length: 40 }, (_, i) => ({ id: `${tf}:OB:${i}`, type: 'OB', direction: 'SELL', low: 103 + i, high: 104 + i })) },
+            msnr_levels: Array.from({ length: 40 }, (_, i) => ({ id: `${tf}:MSNR:${i}`, type: 'MSNR', direction: 'SELL', level: 105 + i })),
+            structural_evidence_ids: [`${tf}:BOS:1`]
+        }]));
+        const candidates = Array.from({ length: 35 }, (_, i) => ({
+            id: `MAX-CANDIDATE-${i}`, direction: i % 2 ? 'SELL' : 'BUY', strategy_label: i % 2 ? 'CURRENT_FVG' : 'MSNR+CRT',
+            candidate_role: i % 2 ? 'FRESH_CONTINUATION_POI' : 'ORIGINAL_THESIS_POI', opportunity_status: 'FRESH_PENDING_TODAY',
+            execution_model: 'PENDING_LIMIT', setup_timeframe: '1H', execution_timeframe: '15M', actual_rr: 2.5,
+            structural_invalidation: { id: `MAX-CANDIDATE-${i}:SL`, source: 'STRUCTURAL_SWING' },
+            target_map: [{ id: `MAX-CANDIDATE-${i}:TP1`, target_type: 'LIQUIDITY', primary_target_source: 'STRUCTURAL', target_lifecycle_state: 'UNFULFILLED' }],
+            source_evidence_ids: [`1H:FVG:${i % 40}`]
+        }));
+        const live = {
+            snapshot_id: 'TVKIT:EUR_USD:max-compact', pair: 'EUR/USD', current_price: 100, as_of_time_utc: '2026-09-29T10:00:00Z',
+            market_evidence_package: { snapshot_id: 'TVKIT:EUR_USD:max-compact', timeframes }, adaptive_setup_candidates: candidates,
+            valid_deterministic_candidates: candidates, rejected_setup_candidates: Array.from({ length: 200 }, (_, i) => ({ id: `REJECTED-${i}`, rejection_code: 'SETUP_STALE' })),
+            target_candidates: { buy: [], sell: [] }, market_context: { directional_bias: 'BEARISH', conflicts: [] }
+        };
+        const dto = ctx.compactAIContext(live);
+        const bytes = Buffer.byteLength(JSON.stringify(dto), 'utf8');
+        expect(bytes).toBeLessThan(100_000);
+        expect(dto.adaptive_setup_candidates.map(candidate => candidate.id)).toEqual(candidates.map(candidate => candidate.id));
+        expect(dto.timeframes).toEqual(expect.objectContaining({ '1D': expect.any(Object), '4H': expect.any(Object), '1H': expect.any(Object), '15M': expect.any(Object), '5M': expect.any(Object) }));
+        expect(JSON.stringify(dto)).not.toContain('raw_closed_candles');
+        expect(JSON.stringify(dto)).not.toContain('REJECTED-0');
+        expect(dto.candidate_catalog).toBeUndefined();
+        expect(dto.target_candidates).toBeUndefined();
+    });
+
+    it('builds a self-contained external AI packet from the completed scan replay', () => {
+        const ctx = getContext();
+        const timeframes = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map((tf, index) => [tf, {
+            timeframe: tf,
+            closed_candle_count: 199,
+            raw_closed_candles: [{ t: `RAW-${tf}`, o: 100, h: 101, l: 99, c: 100 }],
+            structure: { structural_trend: index < 3 ? 'BEARISH' : 'BULLISH', effective_trend: 'BEARISH', bos: { buy: false, sell: true }, mss: { buy: false, sell: true }, choch: { buy: false, sell: false }, displacement: { direction: 'SELL' }, swing_highs: [], swing_lows: [] },
+            liquidity: { sweeps: [{ id: `${tf}:SWEEP:1`, direction: 'SELL' }] },
+            structural_evidence_ids: [`${tf}:BOS:1`],
+            fvg: [{ id: `${tf}:FVG:1`, type: 'FVG', direction: 'SELL', low: 101, high: 102 }],
+            order_blocks: { buy: [], sell: [{ id: `${tf}:OB:1`, type: 'OB', direction: 'SELL', low: 103, high: 104 }] }
+        }]));
+        const candidate = {
+            id: 'CURRENT-1H-FVG-SELL-1', direction: 'SELL', strategy_label: 'CURRENT_FVG', label: 'CURRENT_FVG',
+            candidate_role: 'FRESH_CONTINUATION_POI', setup_timeframe: '1H', execution_timeframe: '15M', execution_model: 'PENDING_LIMIT',
+            current_opportunity_source: 'CURRENT_MARKET_REGENERATION', zone_type: 'FVG', zone_low: 101, zone_high: 102, entry: 101.5,
+            structural_invalidation: { id: 'CURRENT-1H-FVG-SELL-1:SL', level: 104, source: 'FVG_INVALIDATION' }, stop_loss: 104,
+            tp1: 98, tp2: 97, actual_rr: 2.5, minimum_rr: 2.5, lifecycle_state: 'FRESH_PENDING_TODAY', freshness: 'FRESH',
+            entry_consumed: false, entry_reachable_today: true, current_opportunity_relevance: { delivery_fraction: 0.2, remaining_reward_fraction: 0.8, continuation_state: 'FRESH_CONTINUATION' },
+            source_evidence_ids: ['1H:FVG:1'], supporting_evidence_ids: ['1H:BOS:1'], conflicting_evidence_ids: ['15M:TRANSITION:1'],
+            quality_warnings: ['LTF retracement is active'], target_map: [
+                { id: 'SELL-TARGET-1', direction: 'SELL', level: 98, target_type: 'LIQUIDITY', primary_target_source: 'SELL_SIDE_LIQUIDITY', timeframe: '1H', target_lifecycle_state: 'UNFULFILLED' },
+                { id: 'SELL-TARGET-2', direction: 'SELL', level: 97, target_type: 'OPPOSING_OB', timeframe: '4H', target_lifecycle_state: 'UNFULFILLED' }
+            ]
+        };
+        const replay = {
+            schema_version: 1, pair: 'XAU/USD', snapshot_id: 'TVKIT:XAUUSD:copy-test', scan_as_of: '2026-09-29T10:00:00Z',
+            quote: { price: 100.5, quote_time: '2026-09-29T09:59:00Z' }, provider_metadata: { provider: 'TVKIT' },
+            history: Object.fromEntries(Object.keys(timeframes).map(tf => [tf, timeframes[tf].raw_closed_candles])),
+            market_evidence_package: { snapshot_id: 'TVKIT:XAUUSD:copy-test', timeframes }, structure: Object.fromEntries(Object.keys(timeframes).map(tf => [tf, timeframes[tf].structure])),
+            timeframe_context: Object.fromEntries(Object.keys(timeframes).map(tf => [tf, { timeframe: tf, trend: timeframes[tf].structure.effective_trend }])),
+            daily_bias: { direction: 'SELL', evidence_ids: ['1D:BOS:1'], invalidation_evidence_ids: ['1D:INVALIDATION:1'] },
+            market_regime: { primary_regime: 'RETRACEMENT' }, liquidity: { draw: { id: 'SSL-1', type: 'SELL_SIDE_LIQUIDITY' } },
+            target_candidates: { sell: candidate.target_map, buy: [] }, valid_candidates: [candidate],
+            candidate_pipeline_audit: { current_opportunity_regeneration: { current_regenerated_count: 1, current_regenerated_selectable_count: 1 } }
+        };
+        const signal = {
+            pair: 'XAU/USD', time: replay.scan_as_of, current_price: 100.5, snapshot_id: replay.snapshot_id,
+            direction: 'SELL', strategy: 'ICT', strategy_label: 'CURRENT_FVG', selected_candidate_id: candidate.id,
+            entry: candidate.entry, entry_zone: { low: 101, high: 102 }, stop_loss: candidate.stop_loss, tp1: candidate.tp1, tp2: candidate.tp2, tp3: null,
+            rr_tp1: candidate.actual_rr, setup_type: 'PENDING_LIMIT', status: 'SETUP_READY', confidence: 74, quality: 'HIGH',
+            quality_warnings: candidate.quality_warnings, reason: { code: 'VALID_CURRENT_OPPORTUNITY', message: 'Fresh continuation POI' }
+        };
+        const packet = ctx.buildExternalAIClipboardPacket({ signal, replay });
+        expect(packet).toContain('EXTERNAL AI DECISION PACKET');
+        expect(packet).toContain('Direction -> Location -> Execution');
+        expect(packet).toContain('CRT, TBS, MSNR');
+        expect(packet).toContain('MSNR+CRT');
+        expect(packet).toContain('ORIGINAL_SETUP');
+        expect(packet).toContain('FRESH_CONTINUATION_POI');
+        expect(packet).toContain('A valid pending LIMIT may wait away from current price');
+        expect(packet).toContain('CONFIRMATION_ENTRY');
+        expect(packet).toContain('STRUCTURAL SL FIRST');
+        expect(packet).toContain('target lifecycle');
+        expect(packet).toContain('Confidence describes quality');
+        for (const tf of ['1D', '4H', '1H', '15M', '5M']) expect(packet).toContain(`"${tf}"`);
+        expect(packet).toContain(candidate.id);
+        expect(packet).toContain('"entry": 101.5');
+        expect(packet).toContain('"stop_loss": 104');
+        expect(packet).toContain('"tp1": 98');
+        expect(packet).toContain('"rr": 2.5');
+        expect(packet).toContain('CURRENT BOT RESULT');
+        expect(packet).toContain('SUPPORTING_EVIDENCE');
+        expect(packet).toContain('CONFLICTING_EVIDENCE');
+        expect(packet).not.toContain('RAW-1D');
+        expect(packet).not.toContain('raw_closed_candles');
+        expect(packet).not.toContain('DEEPSEEK_API_KEY');
+        expect(packet).not.toContain('GEMINI_API_KEY');
+        expect(Buffer.byteLength(packet, 'utf8')).toBeLessThan(100000);
+    });
+
+    it('keeps Copy packet generation safe for a partial result without scan context', () => {
+        const ctx = getContext();
+        const packet = ctx.buildExternalAIClipboardPacket({ signal: {
+            pair: 'XAU/USD', status: 'NO_TRADE', decision: 'WAIT', reason: { code: 'DATA_UNAVAILABLE' }, confidence: 0
+        } });
+        expect(packet).toContain('Symbol: XAU/USD');
+        expect(packet).toContain('UNAVAILABLE');
+        expect(packet).toContain('DATA_UNAVAILABLE');
+        expect(packet).toContain('DECISION: TRADE | NO_TRADE');
+        expect(() => ctx.buildExternalAIClipboardPacket()).not.toThrow();
+    });
+
+    it('routes the existing normal Copy action through the external AI packet', () => {
+        const { context: ctx } = getScanContext();
+        ctx.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
+        ctx.setJsonOutput({ trade_signal: { pair: 'XAU/USD', decision: 'WAIT', status: 'NO_TRADE', current_price: 100, confidence: 0, reason: { code: 'NO_TRADE' } } });
+        ctx.copyJson();
+        expect(ctx.navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
+        expect(ctx.navigator.clipboard.writeText.mock.calls[0][0]).toContain('EXTERNAL AI DECISION PACKET');
     });
 
     it('records bounded analyst and selector semantic-package audits without secrets', async () => {

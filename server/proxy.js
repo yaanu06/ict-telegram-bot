@@ -18,7 +18,7 @@ const DEFAULT_WINDOW_MS = 60_000;
 const DEFAULT_MAX_REQUESTS = 60;
 const DEFAULT_TWELVE_MAX_REQUESTS = 50;
 const DEFAULT_TVKIT_MAX_REQUESTS = 120;
-const DEFAULT_AI_PROVIDER = 'GEMINI';
+const DEFAULT_AI_PROVIDER = 'DEEPSEEK';
 const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 const PUBLIC_ROOT = path.resolve(__dirname, '..');
 const PUBLIC_ASSETS = {
@@ -33,7 +33,9 @@ function normalizeSymbol(value) {
 }
 
 function normalizeAIProvider(value) {
-    return String(value || '').trim().toUpperCase() === 'DEEPSEEK' ? 'DEEPSEEK' : DEFAULT_AI_PROVIDER;
+    const normalized = String(value || '').trim().toUpperCase();
+    if (normalized === 'GEMINI') return 'GEMINI';
+    return normalized === 'DEEPSEEK' ? 'DEEPSEEK' : DEFAULT_AI_PROVIDER;
 }
 
 function configuredOrigin(env = process.env) {
