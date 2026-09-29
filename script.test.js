@@ -1768,6 +1768,8 @@ describe('phase selection audit observability', () => {
         expect(audit.candidates_before_ai.map(candidate => candidate.candidate_id)).toEqual(['original', 'fresh']);
         expect(live.phase_selection_audit.deepseek_candidate_ids).toEqual(['original', 'fresh']);
         expect(live.phase_selection_audit.deepseek_selectable_candidate_ids).toEqual(['original', 'fresh']);
+        expect(live.decision_handoff_audit.compact_ai_candidate_ids).toEqual(['original', 'fresh']);
+        expect(live.decision_handoff_audit.deepseek_candidate_ids).toEqual(['original', 'fresh']);
         expect(live.phase_selection_audit.candidate_pipeline_counts.by_role.candidates_before_ai).toEqual({ ORIGINAL_THESIS_POI: 1, FRESH_CONTINUATION_POI: 1 });
         expect(live.phase_selection_audit.snapshot_id).toBe(live.snapshot_id);
         expect(live.phase_selection_audit.closed_candles['1D']).toEqual(expect.objectContaining({ candle_count: 1 }));
@@ -2759,6 +2761,14 @@ describe('Analyze scan lifecycle', () => {
         const success = prepareScan({ candidates: [{ id: 'candidate', direction: 'BUY' }], aiResult: null });
         await success.context.runAutoScan();
         expect(success.elements.get('analyzeBtn').disabled).toBe(false);
+        expect(success.spies.runFallbackScan).toHaveBeenCalledWith(
+            100,
+            expect.any(Object),
+            expect.anything(),
+            expect.objectContaining({ adaptive_setup_candidates: expect.arrayContaining([
+                expect.objectContaining({ id: 'candidate', direction: 'BUY' })
+            ]) })
+        );
 
         const failure = prepareScan({ candidates: [{ id: 'candidate', direction: 'BUY' }], aiResult: null, fallback: () => Promise.reject(new Error('fallback failed')) });
         await failure.context.runAutoScan();
@@ -7004,6 +7014,90 @@ describe('AI market analyst contract', () => {
 
 
 describe('fallback presentation regressions', () => {
+    it('revalidates the merged regenerated candidate universe after selector failure', async () => {
+        const ctx = getContext();
+        const regenerated = {
+            id: 'CURRENT:1H:SELL:FVG:101:102:123', direction: 'SELL', timeframe: '1H',
+            entry: 101.5, stop_loss: 103, tp1: 98, tp2: 96, tp3: 94,
+            zone_low: 101, zone_high: 102, zone_type: 'FVG', freshness: 'FRESH',
+            execution_model: 'PENDING_LIMIT', strategy_label: 'CURRENT_FVG', strategy_setup: {},
+            still_actionable_today: true, opportunity_status: 'FRESH_PENDING_TODAY'
+        };
+        const live = {
+            snapshot_id: 'TVKIT:EUR_USD:handoff', pair: 'EUR/USD', current_price: 100,
+            adaptive_setup_candidates: [regenerated], valid_deterministic_candidates: [regenerated],
+            rejected_setup_candidates: [], strategy_setups: [], real_ict_zones: [],
+            target_candidates: { all: [], buy: [], sell: [] }, risk_constraints: {},
+            structure: {}, market_context: {}, deterministic_validation_context: {},
+            phase_selection_audit: { phase_resolution: null },
+            decision_handoff_audit: ctx.buildDecisionHandoffAudit({
+                snapshotId: 'TVKIT:EUR_USD:handoff', pair: 'EUR/USD', currentPrice: 100,
+                mergedCandidates: [regenerated],
+                regeneration: { candidate_ids: [regenerated.id], selectable_candidate_ids: [regenerated.id] }
+            })
+        };
+        ctx.showNotif = jest.fn();
+        ctx.scanTrace = jest.fn();
+        ctx.setJsonOutput = jest.fn();
+        ctx.buildFallbackDisplayFacts = () => ({});
+        ctx.evaluateSetupCandidate = jest.fn(() => ({ valid: false, invariant_code: 'TARGET_CONSUMED', failures: ['TARGET_CONSUMED'] }));
+
+        await ctx.runFallbackScan(100, {}, null, live);
+
+        expect(ctx.evaluateSetupCandidate).toHaveBeenCalledWith(regenerated, live.deterministic_validation_context);
+        const output = ctx.setJsonOutput.mock.calls[0][0].trade_signal;
+        expect(output.decision).toBe('WAIT');
+        expect(output.decision_handoff_audit).toEqual(expect.objectContaining({
+            fallback_invoked: true,
+            fallback_candidate_ids: [regenerated.id],
+            final_reason: 'FALLBACK_CANDIDATES_FAILED'
+        }));
+        expect(output.decision_handoff_audit.fallback_candidate_results).toEqual([
+            expect.objectContaining({ candidate_id: regenerated.id, valid: false, failure_code: 'TARGET_CONSUMED' })
+        ]);
+    });
+
+    it('can publish a valid regenerated pending limit through fallback', async () => {
+        const ctx = getContext();
+        const regenerated = {
+            id: 'CURRENT:1H:SELL:FVG:101:102:456', direction: 'SELL', timeframe: '1H',
+            entry: 101.5, stop_loss: 103, tp1: 98, tp2: 96, tp3: 94,
+            zone_low: 101, zone_high: 102, zone_type: 'FVG', freshness: 'FRESH',
+            execution_model: 'PENDING_LIMIT', entry_model: 'PENDING_LIMIT', strategy_label: 'CURRENT_FVG',
+            strategy_setup: {}, still_actionable_today: true, opportunity_status: 'FRESH_PENDING_TODAY',
+            target_map: [{ primary_target_source: 'SELL_SIDE_LIQUIDITY', target_lifecycle_state: 'UNFULFILLED' }]
+        };
+        const live = {
+            snapshot_id: 'TVKIT:EUR_USD:handoff-success', pair: 'EUR/USD', current_price: 100,
+            adaptive_setup_candidates: [regenerated], valid_deterministic_candidates: [regenerated],
+            rejected_setup_candidates: [], strategy_setups: [], real_ict_zones: [],
+            target_candidates: { all: [], buy: [], sell: [] }, risk_constraints: {},
+            structure: {}, market_context: {}, deterministic_validation_context: {},
+            phase_selection_audit: null,
+            decision_handoff_audit: ctx.buildDecisionHandoffAudit({
+                snapshotId: 'TVKIT:EUR_USD:handoff-success', pair: 'EUR/USD', currentPrice: 100,
+                mergedCandidates: [regenerated], regeneration: { candidate_ids: [regenerated.id], selectable_candidate_ids: [regenerated.id] }
+            })
+        };
+        ctx.showNotif = jest.fn();
+        ctx.scanTrace = jest.fn();
+        ctx.setJsonOutput = jest.fn();
+        ctx.buildFallbackDisplayFacts = () => ({});
+        ctx.getDisplayStrategyLabel = () => 'CURRENT_FVG';
+        ctx.buildDeterministicOrderDescription = () => ({ wait_condition: 'Wait for price to reach the verified limit zone.' });
+        ctx.evaluateSetupCandidate = jest.fn(() => ({ valid: true, failures: [] }));
+
+        await ctx.runFallbackScan(100, {}, null, live);
+
+        const output = ctx.setJsonOutput.mock.calls[0][0].trade_signal;
+        expect(output.decision).toBe('SELL_LIMIT');
+        expect(output.selected_candidate_id).toBe(regenerated.id);
+        expect(output.decision_handoff_audit).toEqual(expect.objectContaining({
+            final_state: 'SELL_LIMIT', final_candidate_id: regenerated.id,
+            final_reason: 'FALLBACK_SELECTED_DETERMINISTIC_CANDIDATE'
+        }));
+    });
+
     it('revalidates eligible fallback candidates in rank order without selecting a low-quality candidate', async () => {
         const ctx = getContext();
         const first = { id: 'expired-since-ranking' }, second = { id: 'next-eligible' };

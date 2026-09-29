@@ -6355,6 +6355,63 @@ function normalizeMarketPhaseSelection(value = {}, inherited = {}) {
 
 const PHASE_SELECTION_AUDIT_TIMEFRAMES = ['1D', '4H', '1H', '15M', '5M'];
 
+function buildDecisionHandoffAudit({ snapshotId = null, pair: pairLocal = null, provider = null, scanAsOf = null, currentPrice = null, regeneration = null, mergedCandidates = [] } = {}) {
+    const selectableIds = (mergedCandidates || []).map(candidate => candidate?.id).filter(Boolean);
+    return {
+        schema_version: 1,
+        snapshot_id: snapshotId,
+        pair: pairLocal,
+        provider: provider || getMarketDataProvider(),
+        scan_as_of: scanAsOf,
+        current_price: currentPrice,
+        regenerated_candidate_ids: regeneration?.candidate_ids || [],
+        regenerated_selectable_candidate_ids: regeneration?.selectable_candidate_ids || [],
+        merged_selectable_candidate_ids: selectableIds,
+        compact_ai_candidate_ids: [],
+        deepseek_candidate_ids: [],
+        analyst_status: null,
+        analyst_error_code: null,
+        analyst_error_message: null,
+        selector_status: null,
+        selector_error_code: null,
+        selector_error_message: null,
+        deepseek_raw_decision_type: null,
+        deepseek_selected_candidate_ids: [],
+        deepseek_preferred_role: null,
+        deepseek_fallback_allowed: false,
+        phase_resolution_status: null,
+        phase_resolution_candidate_id: null,
+        phase_resolution_failures: [],
+        deterministic_reverification_candidate_id: null,
+        deterministic_reverification_valid: null,
+        deterministic_reverification_failures: [],
+        fallback_invoked: false,
+        fallback_reason: null,
+        fallback_candidate_ids: [],
+        fallback_candidate_results: [],
+        final_state: null,
+        final_candidate_id: null,
+        final_reason: null
+    };
+}
+
+function updateDecisionHandoffAudit(liveMarketContext = null, patch = {}) {
+    if (!liveMarketContext) return null;
+    const current = liveMarketContext.decision_handoff_audit || buildDecisionHandoffAudit({
+        snapshotId: liveMarketContext.snapshot_id || null,
+        pair: liveMarketContext.pair || null,
+        scanAsOf: liveMarketContext.as_of_time_utc || liveMarketContext.as_of_time || null,
+        currentPrice: liveMarketContext.current_price ?? null,
+        regeneration: liveMarketContext.current_opportunity_regeneration,
+        mergedCandidates: liveMarketContext.adaptive_setup_candidates || []
+    });
+    const next = sanitizeScanReplayValue({ ...current, ...patch });
+    liveMarketContext.decision_handoff_audit = next;
+    if (liveMarketContext.phase_selection_audit) liveMarketContext.phase_selection_audit.decision_handoff_audit = next;
+    if (liveMarketContext.today_opportunity) liveMarketContext.today_opportunity.decision_handoff_audit = next;
+    return next;
+}
+
 function getPhaseSelectionCandidateRole(candidate = {}) {
     const explicitRole = candidate.candidate_role || candidate.current_opportunity_role || candidate.current_opportunity_relevance?.candidate_role;
     if (['ORIGINAL_THESIS_POI', 'FRESH_RETRACEMENT_POI', 'FRESH_CONTINUATION_POI', 'CONFIRMATION_POI'].includes(String(explicitRole || '').toUpperCase())) {
@@ -6483,6 +6540,7 @@ function buildPhaseSelectionAudit(liveMarketContext = {}) {
         deepseek_candidate_catalog: [],
         analyst_phase_response: null,
         deepseek_phase_response: null,
+        decision_handoff_audit: liveMarketContext.decision_handoff_audit || null,
         phase_resolution: null,
         final_selection: null,
         current_opportunity_regeneration: liveMarketContext.current_opportunity_regeneration || null,
@@ -6530,6 +6588,11 @@ function capturePhaseSelectionDeepSeekVisibility(liveMarketContext = {}, compact
     audit.deepseek_candidate_catalog = visibleRecords;
     audit.candidate_pipeline_counts.deepseek_visible_candidate_count = visibleIds.length;
     audit.candidate_pipeline_counts.by_role.deepseek_visible = phaseSelectionRoleCounts(visibleRecords);
+    updateDecisionHandoffAudit(liveMarketContext, {
+        merged_selectable_candidate_ids: (liveMarketContext.adaptive_setup_candidates || []).map(candidate => candidate?.id).filter(Boolean),
+        compact_ai_candidate_ids: selectable.map(candidate => candidate?.id).filter(Boolean),
+        deepseek_candidate_ids: visibleIds
+    });
     return updatePhaseSelectionAudit(liveMarketContext, audit);
 }
 
@@ -6605,6 +6668,14 @@ function recordPhaseSelectionResolutionAudit(liveMarketContext = {}, resolution 
         original_thesis_used: getPhaseSelectionCandidateRole(finalCandidate) === 'ORIGINAL_THESIS_POI',
         fresh_candidate_used: ['FRESH_CONTINUATION_POI', 'FRESH_RETRACEMENT_POI'].includes(getPhaseSelectionCandidateRole(finalCandidate))
     };
+    updateDecisionHandoffAudit(liveMarketContext, {
+        phase_resolution_status: resolution.resolution_status || null,
+        phase_resolution_candidate_id: resolution.final_candidate_id || null,
+        phase_resolution_failures: failures.slice(0, 20),
+        deterministic_reverification_candidate_id: resolution.final_candidate_id || null,
+        deterministic_reverification_valid: verificationResults.find(result => result.candidate_id === resolution.final_candidate_id)?.valid ?? null,
+        deterministic_reverification_failures: verificationResults.find(result => result.candidate_id === resolution.final_candidate_id)?.failures || []
+    });
     return updatePhaseSelectionAudit(liveMarketContext, audit);
 }
 
@@ -9492,6 +9563,7 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         original_thesis_status: today?.original_thesis_status || today?.market_phase_selection?.original_thesis_status || null,
         preferred_opportunity_role: today?.preferred_opportunity_role || today?.market_phase_selection?.preferred_opportunity_role || null,
         market_phase_selection: today?.market_phase_selection || null,
+        decision_handoff_audit: today?.decision_handoff_audit || null,
         snapshot_id: today?.snapshot_id || null,
         phase_selection_audit: today?.phase_selection_audit || null,
         confidence: ['TODAY_OPPORTUNITY', 'TRADE_READY'].includes(today?.state) ? today.confidence || 0 : 0,
@@ -10066,6 +10138,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         current_regenerated_selectable_count: currentAdaptiveSetupResult.selectable_candidates.length,
         current_regenerated_rejected_count: currentAdaptiveSetupResult.rejected_candidates.length,
         current_regenerated_rejected: [...currentRegeneration.rejected, ...currentAdaptiveSetupResult.rejected_candidates],
+        regenerated_candidate_ids: currentAdaptiveSetupResult.all_valid_candidates.map(candidate => candidate.id),
+        regenerated_selectable_candidate_ids: currentAdaptiveSetupResult.selectable_candidates.map(candidate => candidate.id),
         candidate_ids: currentAdaptiveSetupResult.all_valid_candidates.map(candidate => candidate.id),
         selectable_candidate_ids: currentAdaptiveSetupResult.selectable_candidates.map(candidate => candidate.id)
     };
@@ -10164,6 +10238,14 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         poi_zones: ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pair, symbolMetadata || {})),
         strategy_execution_zones: allStrategyExecutionZones,
         current_opportunity_regeneration: currentRegenerationAudit,
+        decision_handoff_audit: buildDecisionHandoffAudit({
+            snapshotId,
+            pair: pair,
+            scanAsOf: now.toISOString(),
+            currentPrice: ictRound(price, prec),
+            regeneration: currentRegenerationAudit,
+            mergedCandidates: adaptiveSetupResult.selectable_candidates
+        }),
         limit_order_setup: stageContext.limit_order_setup,
         immediate_entry: stageContext.immediate_entry,
         liquidity: liquidityFacts,
@@ -10274,6 +10356,7 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         market_regime: liveMarketContext.market_regime || null,
         market_phase_selection: liveMarketContext.market_phase_selection || null,
         phase_selection_audit: liveMarketContext.phase_selection_audit || null,
+        decision_handoff_audit: liveMarketContext.decision_handoff_audit || null,
         market_evidence_package: liveMarketContext.market_evidence_package || null,
         ai_analysis: liveMarketContext.ai_analysis || null,
         hard_rejections: liveMarketContext.hard_rejections || [],
@@ -11478,6 +11561,11 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
     if (!hasAiAccess()) {
         console.error('No AI key available');
         lastAIRequestError = { code: 'NO_AI_KEY', message: 'No DeepSeek API key available' };
+        updateDecisionHandoffAudit(liveMarketContext, {
+            selector_status: 'ERROR',
+            selector_error_code: lastAIRequestError.code,
+            selector_error_message: lastAIRequestError.message
+        });
         return null;
     }
     const requestStartedAt = scanClock();
@@ -11489,11 +11577,23 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         wait_condition: `AI output rejected after ${retryCount + 1} attempts: ${reason}`,
         schema_validation: { valid: false, issues: [reason], attempts: retryCount + 1 }
     });
-    const retryInvalidAI = reason => retryCount < 1
+    const retryInvalidAI = reason => {
+        updateDecisionHandoffAudit(liveMarketContext, {
+            selector_status: 'ERROR',
+            selector_error_code: 'AI_INVALID_RESPONSE',
+            selector_error_message: reason
+        });
+        return retryCount < 1
         ? askAIToFindSetup(
             `${marketData}\n\nCORRECTION: Your previous response was invalid (${reason}). Return only the exact JSON contract requested above. Do not add markdown or extra fields.`,
             price, systemPrompt, liveMarketContext, retryCount + 1)
         : noTradeAfterInvalidAI(reason);
+    };
+    updateDecisionHandoffAudit(liveMarketContext, {
+        selector_status: 'REQUESTED',
+        selector_error_code: null,
+        selector_error_message: null
+    });
     console.log('[SCAN] DeepSeek request start', {
         timeout_ms: AI_REQUEST_TIMEOUT_MS,
         prompt_characters: String(marketData || '').length,
@@ -11542,11 +11642,27 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
             console.error('AI JSON parse failed', parseError);
             return retryInvalidAI('AI response JSON could not be parsed');
         }
+        updateDecisionHandoffAudit(liveMarketContext, {
+            selector_status: 'RETURNED',
+            deepseek_raw_decision_type: selector?.decision || selector?.direction || null,
+            deepseek_selected_candidate_ids: [...new Set([
+                selector?.selected_candidate_id,
+                ...(Array.isArray(selector?.preferred_candidate_ids) ? selector.preferred_candidate_ids : []),
+                ...(Array.isArray(selector?.fallback_candidate_ids) ? selector.fallback_candidate_ids : [])
+            ].filter(Boolean))],
+            deepseek_preferred_role: selector?.preferred_opportunity_role || null,
+            deepseek_fallback_allowed: selector?.fallback_allowed === true
+        });
         const productionSelector = liveMarketContext && Array.isArray(liveMarketContext.adaptive_setup_candidates);
         if (productionSelector) {
             const selectorContract = validateAiSelectorResponse(selector, liveMarketContext.adaptive_setup_candidates);
             if (!selectorContract.valid) {
                 console.error('[AI] selector schema rejected', selectorContract.issues);
+                updateDecisionHandoffAudit(liveMarketContext, {
+                    selector_status: 'SCHEMA_ERROR',
+                    selector_error_code: 'AI_SCHEMA_INVALID',
+                    selector_error_message: selectorContract.issues.join('; ')
+                });
                 const reason = `AI selector schema rejected: ${selectorContract.issues.join('; ')}`;
                 if (retryCount < 1) return retryInvalidAI(reason);
                 return { ...noTradeAfterInvalidAI(reason), schema_validation: { ...selectorContract, attempts: retryCount + 1 } };
@@ -11751,6 +11867,11 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
             message: timedOut ? `DeepSeek request timed out after ${AI_REQUEST_TIMEOUT_MS}ms` : (e?.message || 'DeepSeek request failed'),
             stack: e?.stack
         };
+        updateDecisionHandoffAudit(liveMarketContext, {
+            selector_status: 'ERROR',
+            selector_error_code: lastAIRequestError.code,
+            selector_error_message: lastAIRequestError.message
+        });
         console.error('[SCAN] FAILED', { stage: timedOut ? 'DeepSeek request timeout' : 'DeepSeek request', error: lastAIRequestError.message, stack: e?.stack });
         return null;
     }
@@ -12093,7 +12214,7 @@ function buildFallbackDisplayFacts(historyCache, price) {
     };
 }
 
-async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
+async function runFallbackScan(price, historyCache, quoteSnapshot = null, liveMarketContext = null) {
     const fallbackStartedAt = scanClock();
     console.log('[SCAN] fallback start', { pair, timestamp: new Date().toISOString() });
     console.log('🔄 Running fallback rule-based scan...');
@@ -12103,89 +12224,143 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
     let bestEvaluation = null;
     let bestCandidate = null;
     const fallbackDisplayFacts = buildFallbackDisplayFacts(historyCache, price);
-    const fallbackZones = [];
-    const fallbackAtr4h = historyCache?.['4H']?.length >= 15 ? atr(historyCache['4H'], 14) : 0;
-    const fallbackAtr1h = historyCache?.['1H']?.length >= 15 ? atr(historyCache['1H'], 14) : 0;
-    for (const tf of ['4H', '1H']) {
-        const tfAtr = tf === '4H' ? fallbackAtr4h : fallbackAtr1h;
-        fallbackZones.push(...buildLiveZonesForTf(historyCache?.[tf], tf, price, pair, tfAtr || fallbackAtr4h || fallbackAtr1h || 0, 5, quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair)));
-    }
-    const fallbackRiskConstraints = buildRiskConstraints(pair, price, historyCache, quoteSnapshot, quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair));
-    const fallbackStructure = {
-        '1D': buildStructureSnapshot(historyCache?.['1D'], '1D'),
-        '4H': buildStructureSnapshot(historyCache?.['4H'], '4H'),
-        '1H': buildStructureSnapshot(historyCache?.['1H'], '1H')
-    };
-    const fallbackSession = getSession();
-    const fallbackSessionCheck = shouldTradeSession();
-    const fallbackMarketRegime = {
-        primary_regime: fallbackStructure['4H']?.trend === 'BULLISH' ? 'TRENDING_BULLISH' : (fallbackStructure['4H']?.trend === 'BEARISH' ? 'TRENDING_BEARISH' : 'RANGING'),
-        phase: 'UNKNOWN',
-        compression: {
-            '4H': detectCompression(historyCache?.['4H'] || []),
-            '1H': detectCompression(historyCache?.['1H'] || [])
-        },
-        displacement: {
-            buy_4h: detectDisplacement(historyCache?.['4H'] || [], 'BUY'),
-            sell_4h: detectDisplacement(historyCache?.['4H'] || [], 'SELL'),
-            buy_1h: detectDisplacement(historyCache?.['1H'] || [], 'BUY'),
-            sell_1h: detectDisplacement(historyCache?.['1H'] || [], 'SELL')
+    const usingLiveCandidateUniverse = Array.isArray(liveMarketContext?.adaptive_setup_candidates);
+    let fallbackZones = [];
+    let fallbackRiskConstraints;
+    let fallbackStructure;
+    let fallbackMarketContext;
+    let fallbackMetadata;
+    let fallbackStrategySetups;
+    let fallbackTargetCandidates;
+    let fallbackCandidateResult;
+    let fallbackValidationContext;
+    if (usingLiveCandidateUniverse) {
+        // A selector failure must fall back over the same canonical snapshot
+        // and merged candidate universe. Rebuilding only historical CRT/TBS/
+        // MSNR setups here silently discarded current regenerated candidates.
+        fallbackZones = liveMarketContext.real_ict_zones || [];
+        fallbackRiskConstraints = liveMarketContext.risk_constraints || buildRiskConstraints(pair, price, historyCache, quoteSnapshot, quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair));
+        fallbackStructure = liveMarketContext.structure || {};
+        fallbackMarketContext = liveMarketContext.market_context || {};
+        fallbackMetadata = liveMarketContext.symbol_metadata || quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair);
+        fallbackStrategySetups = liveMarketContext.strategy_setups || [];
+        fallbackTargetCandidates = liveMarketContext.target_candidates || { buy: [], sell: [], all: [] };
+        fallbackCandidateResult = {
+            raw_candidates: liveMarketContext.valid_deterministic_candidates || liveMarketContext.adaptive_setup_candidates || [],
+            valid_candidates: liveMarketContext.valid_deterministic_candidates || liveMarketContext.adaptive_setup_candidates || [],
+            selectable_candidates: liveMarketContext.adaptive_setup_candidates || [],
+            rejected_candidates: liveMarketContext.rejected_setup_candidates || []
+        };
+        fallbackValidationContext = liveMarketContext.deterministic_validation_context || buildDeterministicValidationContext({
+            pair,
+            price,
+            historyCache,
+            real_ict_zones: fallbackZones,
+            risk_constraints: fallbackRiskConstraints,
+            structure: fallbackStructure,
+            market_context: fallbackMarketContext,
+            strategy_setups: fallbackStrategySetups,
+            require_strategy_setup: false,
+            symbol_metadata: fallbackMetadata
+        });
+    } else {
+        const fallbackAtr4h = historyCache?.['4H']?.length >= 15 ? atr(historyCache['4H'], 14) : 0;
+        const fallbackAtr1h = historyCache?.['1H']?.length >= 15 ? atr(historyCache['1H'], 14) : 0;
+        for (const tf of ['4H', '1H']) {
+            const tfAtr = tf === '4H' ? fallbackAtr4h : fallbackAtr1h;
+            fallbackZones.push(...buildLiveZonesForTf(historyCache?.[tf], tf, price, pair, tfAtr || fallbackAtr4h || fallbackAtr1h || 0, 5, quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair)));
         }
-    };
-    const fallbackMarketContext = buildMarketContext({
-        pair,
-        price,
-        historyCache,
-        structure: fallbackStructure,
-        session: { name: fallbackSession.session, priority: fallbackSessionCheck.priority },
-        sessionCheck: fallbackSessionCheck,
-        liquidity: {
-            '4H': mapLiquidity(historyCache?.['4H'] || [], pair, quoteSnapshot?.symbol_metadata || {}),
-            '1H': mapLiquidity(historyCache?.['1H'] || [], pair, quoteSnapshot?.symbol_metadata || {})
-        },
-        premiumDiscount: isPremiumDiscount(historyCache?.['4H'] || historyCache?.['1H'] || [], price),
-        marketRegime: fallbackMarketRegime,
-        momentum: fallbackDisplayFacts.indicators,
-        volatility: fallbackDisplayFacts.volatility,
-        holistic: null,
-        symbolMetadata: quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair)
-    });
-    const fallbackMetadata = quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair);
-    const fallbackStrategySetups = buildStrategySetups({ pair, price, historyCache, realZones: fallbackZones, marketContext: { ...fallbackMarketContext, symbol_metadata: fallbackMetadata }, symbolMetadata: fallbackMetadata });
-    const fallbackTargetCandidates = buildTargetCandidates(historyCache, price, pair, fallbackMetadata);
-    const fallbackCandidateResult = buildAdaptiveSetupCandidates({
-        pair,
-        price,
-        historyCache,
-        zones: fallbackZones,
-        targetCandidates: fallbackTargetCandidates,
-        riskConstraints: fallbackRiskConstraints,
-        marketRegime: fallbackMarketRegime,
-        structure: fallbackStructure,
-        marketContext: fallbackMarketContext,
-        strategySetups: fallbackStrategySetups,
-        symbolMetadata: fallbackMetadata
-    });
-    const fallbackValidationContext = buildDeterministicValidationContext({
-        pair,
-        price,
-        historyCache,
-        real_ict_zones: [...fallbackZones, ...getStrategyExecutionZones(fallbackStrategySetups)],
-        risk_constraints: fallbackRiskConstraints,
-        structure: fallbackStructure,
-        market_context: fallbackMarketContext,
-        strategy_setups: fallbackStrategySetups,
-        require_strategy_setup: true,
-        symbol_metadata: quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair)
-    });
+        fallbackRiskConstraints = buildRiskConstraints(pair, price, historyCache, quoteSnapshot, quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair));
+        fallbackStructure = {
+            '1D': buildStructureSnapshot(historyCache?.['1D'], '1D'),
+            '4H': buildStructureSnapshot(historyCache?.['4H'], '4H'),
+            '1H': buildStructureSnapshot(historyCache?.['1H'], '1H')
+        };
+        const fallbackSession = getSession();
+        const fallbackSessionCheck = shouldTradeSession();
+        const fallbackMarketRegime = {
+            primary_regime: fallbackStructure['4H']?.trend === 'BULLISH' ? 'TRENDING_BULLISH' : (fallbackStructure['4H']?.trend === 'BEARISH' ? 'TRENDING_BEARISH' : 'RANGING'),
+            phase: 'UNKNOWN',
+            compression: {
+                '4H': detectCompression(historyCache?.['4H'] || []),
+                '1H': detectCompression(historyCache?.['1H'] || [])
+            },
+            displacement: {
+                buy_4h: detectDisplacement(historyCache?.['4H'] || [], 'BUY'),
+                sell_4h: detectDisplacement(historyCache?.['4H'] || [], 'SELL'),
+                buy_1h: detectDisplacement(historyCache?.['1H'] || [], 'BUY'),
+                sell_1h: detectDisplacement(historyCache?.['1H'] || [], 'SELL')
+            }
+        };
+        fallbackMarketContext = buildMarketContext({
+            pair,
+            price,
+            historyCache,
+            structure: fallbackStructure,
+            session: { name: fallbackSession.session, priority: fallbackSessionCheck.priority },
+            sessionCheck: fallbackSessionCheck,
+            liquidity: {
+                '4H': mapLiquidity(historyCache?.['4H'] || [], pair, quoteSnapshot?.symbol_metadata || {}),
+                '1H': mapLiquidity(historyCache?.['1H'] || [], pair, quoteSnapshot?.symbol_metadata || {})
+            },
+            premiumDiscount: isPremiumDiscount(historyCache?.['4H'] || historyCache?.['1H'] || [], price),
+            marketRegime: fallbackMarketRegime,
+            momentum: fallbackDisplayFacts.indicators,
+            volatility: fallbackDisplayFacts.volatility,
+            holistic: null,
+            symbolMetadata: quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair)
+        });
+        fallbackMetadata = quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair);
+        fallbackStrategySetups = buildStrategySetups({ pair, price, historyCache, realZones: fallbackZones, marketContext: { ...fallbackMarketContext, symbol_metadata: fallbackMetadata }, symbolMetadata: fallbackMetadata });
+        fallbackTargetCandidates = buildTargetCandidates(historyCache, price, pair, fallbackMetadata);
+        fallbackCandidateResult = buildAdaptiveSetupCandidates({
+            pair,
+            price,
+            historyCache,
+            zones: fallbackZones,
+            targetCandidates: fallbackTargetCandidates,
+            riskConstraints: fallbackRiskConstraints,
+            marketRegime: fallbackMarketRegime,
+            structure: fallbackStructure,
+            marketContext: fallbackMarketContext,
+            strategySetups: fallbackStrategySetups,
+            symbolMetadata: fallbackMetadata
+        });
+        fallbackValidationContext = buildDeterministicValidationContext({
+            pair,
+            price,
+            historyCache,
+            real_ict_zones: [...fallbackZones, ...getStrategyExecutionZones(fallbackStrategySetups)],
+            risk_constraints: fallbackRiskConstraints,
+            structure: fallbackStructure,
+            market_context: fallbackMarketContext,
+            strategy_setups: fallbackStrategySetups,
+            require_strategy_setup: true,
+            symbol_metadata: quoteSnapshot?.symbol_metadata || getSymbolMetadata(pair)
+        });
+    }
     const rejectedFallbacks = (fallbackCandidateResult.rejected_candidates || []).map(rejection => ({
         id: rejection.id,
         rejection_code: rejection.rejection_code,
         rejection_reasons: rejection.rejection_reasons
     }));
+    const fallbackCandidateResults = [];
     for (const candidate of fallbackCandidateResult.selectable_candidates || []) {
         bestCandidate = candidate;
         bestEvaluation = evaluateSetupCandidate(bestCandidate, fallbackValidationContext);
+        fallbackCandidateResults.push({
+            candidate_id: candidate.id || null,
+            valid: bestEvaluation.valid,
+            failure_code: bestEvaluation.invariant_code || null,
+            failures: bestEvaluation.failures || []
+        });
+        if (!bestEvaluation.valid) {
+            rejectedFallbacks.push({
+                id: candidate.id || null,
+                rejection_code: bestEvaluation.invariant_code || 'FALLBACK_DETERMINISTIC_INVALID',
+                rejection_reasons: bestEvaluation.failures || []
+            });
+        }
         if (bestEvaluation.valid) {
             best = {
                 timeframe: bestCandidate.timeframe,
@@ -12206,6 +12381,16 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
             break;
         }
     }
+    const fallbackAudit = updateDecisionHandoffAudit(liveMarketContext, {
+        fallback_invoked: true,
+        fallback_reason: liveMarketContext?.decision_handoff_audit?.fallback_reason
+            || (liveMarketContext?.decision_handoff_audit?.selector_error_code ? 'AI_INTERPRETATION_UNAVAILABLE' : 'ANALYSIS_FAILURE'),
+        fallback_candidate_ids: (fallbackCandidateResult.selectable_candidates || []).map(candidate => candidate?.id).filter(Boolean),
+        fallback_candidate_results: fallbackCandidateResults.slice(0, 30),
+        final_state: best ? `${best.direction}_LIMIT` : 'WAIT',
+        final_candidate_id: bestCandidate?.id || null,
+        final_reason: best ? 'FALLBACK_SELECTED_DETERMINISTIC_CANDIDATE' : 'FALLBACK_CANDIDATES_FAILED'
+    });
     if (!best) {
         const reason = 'No fallback setup passed hard rules';
         console.log('REJECTED SETUP CANDIDATES', rejectedFallbacks);
@@ -12222,6 +12407,9 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
                 ai_decision: 'skip',
                 wait_condition: reason,
                 source: 'Rule-Based (Fallback)',
+                phase_selection_audit: liveMarketContext?.phase_selection_audit || null,
+                decision_handoff_audit: fallbackAudit,
+                candidate_pipeline: liveMarketContext?.candidate_pipeline || null,
                 validation: { passed: false, reason, rejected_candidates: rejectedFallbacks }
             }
         };
@@ -12284,6 +12472,9 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null) {
             strategy_label: getDisplayStrategyLabel(bestCandidate),
             strategy_setup: bestCandidate.strategy_setup,
             source: 'Deterministic Candidate Engine (Fallback)',
+            phase_selection_audit: liveMarketContext?.phase_selection_audit || null,
+            decision_handoff_audit: fallbackAudit,
+            candidate_pipeline: liveMarketContext?.candidate_pipeline || null,
             validation: { passed: true, evaluator: bestEvaluation }
         }
     };
@@ -12823,6 +13014,11 @@ async function runAutoScan() {
         analystResult.diagnostics.setups_added_from_ai = aiMerge.added;
         analystResult.diagnostics.informational_setups_added_from_ai = aiMerge.informational_added || 0;
         liveMarketContext.ai_analysis = analystResult.diagnostics;
+        updateDecisionHandoffAudit(liveMarketContext, {
+            analyst_status: analystResult.diagnostics.analyst_status || null,
+            analyst_error_code: analystResult.diagnostics.error_code || analystResult.diagnostics.error?.code || null,
+            analyst_error_message: analystResult.diagnostics.error || analystResult.diagnostics.error_message || null
+        });
         liveMarketContext.hard_rejections = analystResult.diagnostics.hard_rejections || [];
         liveMarketContext.quality_warnings = analystResult.diagnostics.quality_warnings || [];
         liveMarketContext.informational_setups = aiMerge.informational_setups || liveMarketContext.informational_setups || [];
@@ -12869,6 +13065,7 @@ async function runAutoScan() {
             symbolMetadata: liveMarketContext.symbol_metadata,
             marketOpen: liveMarketContext.market_open
         });
+        liveMarketContext.today_opportunity.decision_handoff_audit = liveMarketContext.decision_handoff_audit;
         liveMarketContext.today_opportunity.phase_selection_audit = liveMarketContext.phase_selection_audit;
         // Keep the public projection small while retaining the deterministic
         // market summary the user needs to understand a WAIT or limit setup.
@@ -12912,6 +13109,12 @@ async function runAutoScan() {
             out.trade_signal.strategy_detections = liveMarketContext.strategy_detections;
             out.trade_signal.candidate_pipeline = liveMarketContext.candidate_pipeline;
             out.trade_signal.validation = { passed: false, reason, candidate_audit: audit };
+            updateDecisionHandoffAudit(liveMarketContext, {
+                final_state: 'WAIT',
+                final_candidate_id: null,
+                final_reason: waitCode || 'NO_CURRENT_OPPORTUNITY'
+            });
+            out.trade_signal.decision_handoff_audit = liveMarketContext.decision_handoff_audit;
             setJsonOutput(out);
             lastSetupSummary = null;
             lastSetupOut = out;
@@ -12940,9 +13143,15 @@ async function runAutoScan() {
         liveMarketContext.today_opportunity.ai_analysis = compactAiDiagnostics(liveMarketContext.ai_analysis);
         if (!aiResult) {
             scanStage = lastAIRequestError?.code === 'AI_TIMEOUT' ? 'DeepSeek timeout fallback' : 'DeepSeek failure fallback';
+            updateDecisionHandoffAudit(liveMarketContext, {
+                selector_status: 'ERROR',
+                selector_error_code: lastAIRequestError?.code || 'AI_REQUEST_FAILED',
+                selector_error_message: lastAIRequestError?.message || 'DeepSeek returned no result.',
+                fallback_reason: 'AI_INTERPRETATION_UNAVAILABLE'
+            });
             showNotif(`⚠️ ${lastAIRequestError?.message || 'AI analysis failed'} - using fallback`, 'warning');
             try {
-                await runFallbackScan(price, historyCache, quoteSnapshot);
+                await runFallbackScan(price, historyCache, quoteSnapshot, liveMarketContext);
             } catch (fallbackError) {
                 console.error('[SCAN] FAILED', { stage: 'fallback', error: fallbackError?.message, stack: fallbackError?.stack });
                 showNotif(`Fallback failed: ${fallbackError?.message || 'unknown error'}`, 'error');
@@ -12986,6 +13195,17 @@ async function runAutoScan() {
             out.trade_signal.strategy_detections = liveMarketContext.strategy_detections;
             out.trade_signal.candidate_pipeline = liveMarketContext.candidate_pipeline;
             out.trade_signal.validation = { passed: false, reason: aiResult.wait_condition || 'AI returned no trade' };
+            const aiWaitReason = aiResult.schema_validation?.valid === false
+                ? 'AI_INTERPRETATION_UNAVAILABLE'
+                : liveMarketContext.phase_selection_audit?.phase_resolution?.resolution_status === 'AI_WAIT'
+                    ? 'AI_SELECTED_WAIT'
+                    : 'AI_PREFERRED_CANDIDATE_FAILED';
+            updateDecisionHandoffAudit(liveMarketContext, {
+                final_state: 'WAIT',
+                final_candidate_id: null,
+                final_reason: aiWaitReason
+            });
+            out.trade_signal.decision_handoff_audit = liveMarketContext.decision_handoff_audit;
             setJsonOutput(out);
             lastSetupSummary = null;
             lastSetupOut = out;
@@ -13045,11 +13265,18 @@ async function runAutoScan() {
                     candidate_pipeline: liveMarketContext.candidate_pipeline,
                     opportunity_funnel: liveMarketContext.opportunity_funnel || null,
                     phase_selection_audit: liveMarketContext.phase_selection_audit || null,
+                    decision_handoff_audit: liveMarketContext.decision_handoff_audit || null,
                     execution_mode: DEFAULT_EXECUTION_MODE,
                     risk_gate: getDefaultRiskGate(DEFAULT_EXECUTION_MODE),
                     validation: { passed: false, reason, consistency: outputConsistency }
                 }
             };
+            updateDecisionHandoffAudit(liveMarketContext, {
+                final_state: 'WAIT',
+                final_candidate_id: aiResult.selected_candidate_id || null,
+                final_reason: 'DETERMINISTIC_REVERIFICATION_FAILED'
+            });
+            out.trade_signal.decision_handoff_audit = liveMarketContext.decision_handoff_audit;
             setJsonOutput(out);
             lastSetupSummary = null;
             lastSetupOut = out;
@@ -13372,6 +13599,12 @@ async function runAutoScan() {
         }
         const manualTrackingAllowed = DEFAULT_EXECUTION_MODE === 'MANUAL' && displayableSetup;
         out.trade_signal.manual_tracking_allowed = manualTrackingAllowed;
+        updateDecisionHandoffAudit(liveMarketContext, {
+            final_state: publishableTrade ? aiResult.decision : (displayableSetup ? 'SETUP_AVAILABLE' : 'WAIT'),
+            final_candidate_id: aiResult.selected_candidate_id || null,
+            final_reason: publishableTrade ? 'SELECTED_CANDIDATE_PUBLISHED' : displayableSetup ? 'VALID_CANDIDATE_DISPLAYED' : 'FINAL_VALIDATION_FAILED'
+        });
+        out.trade_signal.decision_handoff_audit = liveMarketContext.decision_handoff_audit;
         setJsonOutput(out);
         if (publishableTrade) syncSetupToGitHub(out.trade_signal, 'ai_scan');
         
@@ -13436,7 +13669,7 @@ async function runAutoScan() {
         if (price && Object.keys(historyCache).length > 0) {
             try {
                 scanStage = 'fallback after scan failure';
-                await runFallbackScan(price, historyCache, quoteSnapshot);
+                await runFallbackScan(price, historyCache, quoteSnapshot, lastLiveMarketContextForReplay);
             } catch (fallbackError) {
                 console.error('[SCAN] FAILED', { stage: 'fallback after scan failure', error: fallbackError?.message, stack: fallbackError?.stack });
                 showNotif(`Fallback failed: ${fallbackError?.message || 'unknown error'}`, 'error');
@@ -14648,6 +14881,7 @@ function buildDebugDiagnostics(output = {}, context = null) {
         top_down_context: signal.top_down_context || null,
         daily_bias: context?.daily_bias || signal.daily_bias || null,
         opportunity_funnel: context?.opportunity_funnel || null,
+        decision_handoff_audit: context?.decision_handoff_audit || signal.decision_handoff_audit || null,
         strategy_detections: context?.strategy_detections || signal.strategy_detections || null,
         candidate_pipeline: context?.candidate_pipeline || signal.candidate_pipeline || null,
         validation: signal.validation || null,
