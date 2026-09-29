@@ -147,8 +147,8 @@ describe('market and AI proxy boundary', () => {
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
         try {
             const response = await request(server, 'GET', '/api/twelve/quote?symbol=EUR%2FUSD');
-            expect(response.status).toBe(502);
-            expect(response.body.error).toBe('upstream request failed');
+            expect(response.status).toBe(504);
+            expect(response.body).toEqual({ error: 'upstream timeout', code: 'UPSTREAM_TIMEOUT' });
         } finally {
             await new Promise(resolve => server.close(resolve));
         }
@@ -166,6 +166,75 @@ describe('market and AI proxy boundary', () => {
             const response = await request(server, 'POST', '/api/deepseek/chat', { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, body);
             expect(response.status).toBe(200);
             expect(fetchImpl).toHaveBeenCalledTimes(1);
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
+    test('routes the configured provider to Gemini and normalizes its response without exposing the key', async () => {
+        const calls = [];
+        const fetchImpl = jest.fn(async (url, options) => {
+            calls.push({ url: String(url), options });
+            return {
+                status: 200,
+                text: async () => JSON.stringify({
+                    candidates: [{ content: { parts: [{ text: '{"decision":"WAIT","reasoning":"clear"}' }] }, finishReason: 'STOP' }],
+                    usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 4, totalTokenCount: 16 }
+                })
+            };
+        });
+        const server = createProxyServer({
+            env: { AI_PROVIDER: 'GEMINI', GEMINI_API_KEY: 'gemini-secret', GEMINI_MODEL: 'gemini-test', PROXY_MAX_REQUESTS: '20' },
+            fetchImpl
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const response = await request(server, 'POST', '/api/ai/chat', { 'content-type': 'application/json' }, JSON.stringify({
+                model: 'gemini-test',
+                messages: [{ role: 'system', content: 'JSON only' }, { role: 'user', content: 'select' }],
+                temperature: 0.1,
+                max_tokens: 100,
+                response_schema: { type: 'OBJECT', properties: { decision: { type: 'STRING' } } }
+            }));
+            expect(response.status).toBe(200);
+            expect(response.body).toMatchObject({ provider: 'GEMINI', model: 'gemini-test', choices: [{ message: { content: '{"decision":"WAIT","reasoning":"clear"}' } }], usage: { total_tokens: 16 } });
+            expect(calls).toHaveLength(1);
+            expect(calls[0].url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-test:generateContent');
+            expect(calls[0].options.headers['x-goog-api-key']).toBe('gemini-secret');
+            expect(calls[0].options.headers.Authorization).toBeUndefined();
+            const forwarded = JSON.parse(calls[0].options.body);
+            expect(forwarded.systemInstruction.parts[0].text).toBe('JSON only');
+            expect(forwarded.contents).toEqual([{ role: 'user', parts: [{ text: 'select' }] }]);
+            expect(forwarded.generationConfig.responseMimeType).toBe('application/json');
+            expect(forwarded.generationConfig.responseSchema).toEqual({ type: 'OBJECT', properties: { decision: { type: 'STRING' } } });
+            expect(JSON.stringify(response.body)).not.toContain('gemini-secret');
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
+    test('health reports the selected Gemini provider and model safely', async () => {
+        const server = createProxyServer({ env: { AI_PROVIDER: 'GEMINI', GEMINI_API_KEY: 'gemini-secret', GEMINI_MODEL: 'gemini-test', PROXY_MAX_REQUESTS: '20' }, fetchImpl: jest.fn() });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const health = (await request(server, 'GET', '/health')).body;
+            expect(health).toMatchObject({ ai_provider: 'GEMINI', ai_model: 'gemini-test', ai_provider_configured: true });
+            expect(JSON.stringify(health)).not.toContain('gemini-secret');
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
+    test('preserves Gemini rate-limit status for the client diagnostics', async () => {
+        const server = createProxyServer({
+            env: { AI_PROVIDER: 'GEMINI', GEMINI_API_KEY: 'gemini-secret', PROXY_MAX_REQUESTS: '20' },
+            fetchImpl: jest.fn(async () => ({ status: 429, text: async () => JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED' } }) }))
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const response = await request(server, 'POST', '/api/ai/chat', { 'content-type': 'application/json' }, JSON.stringify({ messages: [{ role: 'user', content: 'select' }] }));
+            expect(response.status).toBe(429);
+            expect(response.body.error.status).toBe('RESOURCE_EXHAUSTED');
         } finally {
             await new Promise(resolve => server.close(resolve));
         }

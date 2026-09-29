@@ -2925,6 +2925,53 @@ describe('DeepSeek request settlement', () => {
     });
 });
 
+describe('provider-neutral Gemini AI boundary', () => {
+    it('uses one configured provider endpoint for analyst and selector without exposing a key', async () => {
+        const ctx = getContext();
+        ctx.window.__ICT_PROXY_BASE_URL__ = 'https://proxy.example';
+        ctx.window.__ICT_AI_PROVIDER__ = 'GEMINI';
+        ctx.window.__ICT_AI_MODEL__ = 'gemini-test';
+        const candidate = { id: 'gemini-candidate', direction: 'SELL', timeframe: '1H', zone_type: 'FVG', zone_low: 1.14, zone_high: 1.15,
+            entry: 1.145, stop_loss: 1.16, tp1: 1.12, rr_tp1: 2.5, quality: { final_confidence: 70 },
+            opportunity_status: 'FRESH_PENDING_TODAY', still_actionable_today: true, entry_consumed: false, tp1_already_reached: false };
+        const responses = [
+            { market_view: { bias: 'BEARISH', market_phase: 'RETRACEMENT', thesis_status: 'INTACT' }, hypotheses: [] },
+            { decision: 'SELECT', selected_candidate_id: candidate.id, reasoning: 'valid candidate' }
+        ];
+        ctx.fetch = jest.fn(() => Promise.resolve({
+            ok: true, status: 200, headers: { get: () => 'application/json' },
+            text: async () => JSON.stringify({ choices: [{ message: { content: JSON.stringify(responses.shift()) } }], provider: 'GEMINI', model: 'gemini-test', usage: { total_tokens: 10 } })
+        }));
+        const analyst = await ctx.runAiMarketAnalyst({}, {}, '');
+        expect(analyst.diagnostics.analyst_status).toBe('OK');
+        const selector = await ctx.askAIToFindSetup('compact context', 1.13, 'selector', { adaptive_setup_candidates: [candidate] });
+        expect(selector.selected_candidate_id).toBe(candidate.id);
+        expect(ctx.fetch).toHaveBeenCalledTimes(2);
+        for (const call of ctx.fetch.mock.calls) {
+            expect(call[0]).toBe('https://proxy.example/api/ai/chat');
+            expect(JSON.stringify(call[1])).not.toContain('GEMINI_API_KEY');
+            expect(JSON.stringify(call[1])).not.toContain('Authorization');
+        }
+        expect(JSON.parse(ctx.fetch.mock.calls[0][1].body).model).toBe('gemini-test');
+        expect(JSON.parse(ctx.fetch.mock.calls[0][1].body).response_schema).toBeDefined();
+    });
+
+    it('classifies a Gemini 429 as AI_RATE_LIMITED while preserving transport details', async () => {
+        const ctx = getContext();
+        ctx.window.__ICT_PROXY_BASE_URL__ = 'https://proxy.example';
+        ctx.window.__ICT_AI_PROVIDER__ = 'GEMINI';
+        ctx.fetch = jest.fn(() => Promise.resolve({
+            ok: false, status: 429, statusText: 'Too Many Requests', headers: { get: () => 'application/json' },
+            text: async () => JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED' } })
+        }));
+        const live = { adaptive_setup_candidates: [] };
+        const result = await ctx.askAIToFindSetup('context', 1.1, 'selector', live);
+        expect(result).toBeNull();
+        expect(live.decision_handoff_audit).toMatchObject({ selector_error_code: 'AI_RATE_LIMITED' });
+        expect(live.decision_handoff_audit.selector_transport_diagnostic).toMatchObject({ provider: 'GEMINI', http_status: 429, transport_status: 'HTTP_ERROR' });
+    });
+});
+
 describe('detectCHoCH', () => {
     it('returns false for insufficient data', () => {
         const ctx = getContext();
@@ -7060,6 +7107,76 @@ describe('AI market analyst contract', () => {
         expect(prompt.user).toContain('CRT-1');
         const finalPrompt = ctx.buildAIPrompt({ pair: 'EUR/USD', current_price: 1.1, utc_time: '2026-09-11T10:00:00Z', session: { name: 'LONDON' }, adaptive_setup_candidates: [] }, '');
         expect(finalPrompt.user).toMatch(/selected_candidate_id/);
+    });
+
+    it('builds one compact semantic package for analyst and selector without raw candles', () => {
+        const ctx = getContext();
+        const timeframes = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map((tf, index) => [tf, {
+            timeframe: tf,
+            closed_candle_count: 199,
+            current_closed_price: 100 + index,
+            raw_closed_candles: Array.from({ length: 199 }, (_, i) => ({ t: i, o: 1, h: 2, l: 0, c: 1, v: 0 })),
+            structure: { structural_trend: 'BEARISH', effective_trend: 'BEARISH', bos: { buy: false, sell: true }, choch: { buy: false, sell: false }, swing_highs: [], swing_lows: [] },
+            fvg: [{ id: `${tf}-FVG-1`, type: 'FVG', direction: 'SELL', low: 101, high: 102 }],
+            order_blocks: { buy: [], sell: [{ id: `${tf}-OB-1`, type: 'OB', direction: 'SELL', low: 103, high: 104 }] },
+            msnr_levels: [{ id: `${tf}-MSNR-1`, type: 'MSNR', direction: 'SELL', level: 105 }],
+            structural_evidence_ids: [`${tf}:BOS:1`]
+        }]));
+        const makeCandidate = (id, label, direction) => ({
+            id, direction, strategy_label: label, candidate_role: 'FRESH_CONTINUATION_POI',
+            opportunity_status: 'FRESH_PENDING_TODAY', execution_model: 'PENDING_LIMIT',
+            setup_timeframe: '1H', execution_timeframe: '15M', zone_type: label === 'CURRENT_FVG' ? 'FVG' : label,
+            zone_low: 101, zone_high: 102, entry: direction === 'BUY' ? 101 : 102,
+            stop_loss: direction === 'BUY' ? 99 : 104, actual_rr: 2.5,
+            structural_invalidation: { id: `${id}:SL`, level: direction === 'BUY' ? 99 : 104, source: 'STRUCTURAL_SWING' },
+            target_map: [{ id: `${id}:TP1`, level: direction === 'BUY' ? 105 : 98, target_type: 'LIQUIDITY', primary_target_source: direction === 'BUY' ? 'BUY_SIDE_LIQUIDITY' : 'SELL_SIDE_LIQUIDITY', target_lifecycle_state: 'UNFULFILLED' }],
+            source_evidence_ids: [`${id}:POI`], freshness: 'FRESH', still_actionable_today: true,
+            entry_consumed: false, tp1_already_reached: false
+        });
+        const candidates = [
+            makeCandidate('CRT-CANDIDATE', 'CRT', 'BUY'),
+            makeCandidate('TBS-CANDIDATE', 'TBS', 'SELL'),
+            makeCandidate('MSNR-CANDIDATE', 'MSNR', 'SELL'),
+            makeCandidate('MSNR-CRT-CANDIDATE', 'MSNR+CRT', 'SELL'),
+            makeCandidate('FVG-CANDIDATE', 'CURRENT_FVG', 'SELL'),
+            makeCandidate('OB-CANDIDATE', 'CURRENT_OB', 'BUY')
+        ];
+        const live = {
+            snapshot_id: 'TVKIT:EUR_USD:compact-test', pair: 'EUR/USD', current_price: 100,
+            as_of_time_utc: '2026-09-29T10:00:00Z', session: { name: 'LONDON' },
+            market_evidence_package: { snapshot_id: 'TVKIT:EUR_USD:compact-test', timeframes },
+            adaptive_setup_candidates: candidates, valid_deterministic_candidates: candidates,
+            target_candidates: { buy: candidates.filter(c => c.direction === 'BUY').flatMap(c => c.target_map), sell: candidates.filter(c => c.direction === 'SELL').flatMap(c => c.target_map) },
+            structure: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, { effective_trend: 'BEARISH' }])),
+            market_context: { directional_bias: 'BEARISH', conflicts: [] },
+            historyCache: Object.fromEntries(Object.keys(timeframes).map(tf => [tf, timeframes[tf].raw_closed_candles]))
+        };
+        const selector = ctx.buildAIPrompt(live, 'RAW-CANDLE-MUST-NOT-CROSS-AI-BOUNDARY');
+        const analyst = ctx.buildAiMarketAnalystPrompt({ pair: 'EUR/USD', current_price: 100, market_evidence_package: { snapshot_id: live.snapshot_id, timeframes }, strategy_events: [], crt_events: [], tbs_events: [], msnr_levels: [], target_candidates: live.target_candidates }, '', live);
+        const expectedIds = candidates.map(candidate => candidate.id);
+        expect(selector.user).not.toContain('RAW-CANDLE-MUST-NOT-CROSS-AI-BOUNDARY');
+        expect(analyst.user).not.toContain('raw_closed_candles');
+        expect(selector.user).not.toContain('O:');
+        expect(selector.user).toEqual(expect.stringContaining('CRT-CANDIDATE'));
+        expect(analyst.user).toEqual(expect.stringContaining('FVG-CANDIDATE'));
+        expect(selector.user).toEqual(expect.stringContaining('MSNR-CRT-CANDIDATE'));
+        expect(live.ai_context_audit.selector.selectable_candidate_ids).toEqual(expectedIds);
+        expect(live.ai_context_audit.selector.raw_candles_included).toBe(false);
+        expect(live.ai_context_audit.selector.raw_candles_in_ai_context).toBe(false);
+        const compactBytes = Buffer.byteLength(JSON.stringify(selector.semantic_package || ctx.compactAIContext(live)), 'utf8');
+        const fullBytes = Buffer.byteLength(JSON.stringify({ ...live, replay_history: live.historyCache }), 'utf8');
+        expect(compactBytes).toBeLessThan(fullBytes / 3);
+    });
+
+    it('records bounded analyst and selector semantic-package audits without secrets', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
+        const live = { snapshot_id: 'TVKIT:EUR_USD:audit', pair: 'EUR/USD', current_price: 1.1, session: { name: 'LONDON' }, adaptive_setup_candidates: [], valid_deterministic_candidates: [], market_context: {} };
+        ctx.fetch = jest.fn(async () => ({ ok: true, status: 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify({ choices: [{ message: { content: JSON.stringify({ market_view: { bias: 'MIXED' }, hypotheses: [] }) } }] }) }));
+        const result = await ctx.runAiMarketAnalyst({ pair: 'EUR/USD', strategy_events: [], crt_events: [], tbs_events: [], msnr_levels: [], target_candidates: { buy: [], sell: [] } }, live, '');
+        expect(result.diagnostics.analyst_status).toBe('OK');
+        expect(live.ai_context_audit.analyst).toEqual(expect.objectContaining({ raw_candles_included: false, request_body_bytes: expect.any(Number) }));
+        expect(JSON.stringify(live.ai_context_audit)).not.toMatch(/DEEPSEEK_API_KEY|authorization|Bearer|deepseek\.test/i);
     });
 
     it('preserves FVG source time so a fresh market mechanics limit is not expired', () => {

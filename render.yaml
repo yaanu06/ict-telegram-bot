@@ -6,6 +6,12 @@ services:
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     envVars:
+      - key: AI_PROVIDER
+        value: GEMINI
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: DEEPSEEK_API_URL
@@ -16,3 +22,5 @@ services:
         value: https://yaanu06.github.io
       - key: PROXY_TVKIT_MAX_REQUESTS
         value: "120"
+      - key: PROXY_UPSTREAM_TIMEOUT_MS
+        value: "40000"

@@ -11,10 +11,14 @@ const TIMEFRAME_INTERVALS = new Set(['1min', '5min', '15min', '1h', '4h', '1day'
 // JSON encoding can be slightly larger than the one-megabyte prompt text, so
 // keep a finite proxy limit without truncating otherwise valid requests.
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 40_000;
+const MAX_UPSTREAM_TIMEOUT_MS = 44_000;
 const DEFAULT_WINDOW_MS = 60_000;
 const DEFAULT_MAX_REQUESTS = 60;
 const DEFAULT_TWELVE_MAX_REQUESTS = 50;
 const DEFAULT_TVKIT_MAX_REQUESTS = 120;
+const DEFAULT_AI_PROVIDER = 'GEMINI';
+const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 const PUBLIC_ROOT = path.resolve(__dirname, '..');
 const PUBLIC_ASSETS = {
     '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
@@ -25,6 +29,10 @@ const PUBLIC_ASSETS = {
 
 function normalizeSymbol(value) {
     return String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+}
+
+function normalizeAIProvider(value) {
+    return String(value || '').trim().toUpperCase() === 'DEEPSEEK' ? 'DEEPSEEK' : DEFAULT_AI_PROVIDER;
 }
 
 function configuredOrigin(env = process.env) {
@@ -42,7 +50,7 @@ function jsonResponse(res, status, payload, origin = '') {
     res.end(JSON.stringify(payload));
 }
 
-function publicAssetResponse(res, pathname) {
+function publicAssetResponse(res, pathname, env = process.env) {
     const asset = PUBLIC_ASSETS[pathname];
     if (!asset) return false;
     const filePath = path.join(PUBLIC_ROOT, asset.file);
@@ -51,7 +59,9 @@ function publicAssetResponse(res, pathname) {
     // the same origin. GitHub Pages deployments can still inject an explicit
     // __ICT_PROXY_BASE_URL__ before script.js loads.
     if (asset.file === 'index.html') {
-        body = body.replace('</head>', '<script>window.__ICT_PROXY_BASE_URL__ = window.location.origin;</script></head>');
+        const provider = normalizeAIProvider(env.AI_PROVIDER);
+        const model = String(env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
+        body = body.replace('</head>', `<script>window.__ICT_PROXY_BASE_URL__ = window.location.origin; window.__ICT_AI_PROVIDER__ = ${JSON.stringify(provider)}; window.__ICT_AI_MODEL__ = ${JSON.stringify(provider === 'GEMINI' ? model : 'deepseek-chat')};</script></head>`);
     }
     res.writeHead(200, {
         'Content-Type': asset.type,
@@ -115,6 +125,57 @@ function upstreamHeaders(apiKey) {
     return { 'Accept': 'application/json', 'User-Agent': 'ict-telegram-bot-proxy/1.0', 'X-Proxy-Request': 'server' };
 }
 
+function geminiContents(messages = []) {
+    return messages
+        .filter(message => message && message.role !== 'system')
+        .map(message => ({
+            role: message.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: String(message.content ?? '') }]
+        }));
+}
+
+function geminiRequestBody(body = {}) {
+    const systemMessages = (body.messages || [])
+        .filter(message => message?.role === 'system')
+        .map(message => String(message.content ?? ''))
+        .filter(Boolean);
+    const generationConfig = {
+        ...(Number.isFinite(Number(body.temperature)) ? { temperature: Number(body.temperature) } : {}),
+        ...(Number.isFinite(Number(body.max_tokens)) ? { maxOutputTokens: Number(body.max_tokens) } : {}),
+        responseMimeType: 'application/json',
+        ...(body.response_schema ? { responseSchema: body.response_schema } : {})
+    };
+    return {
+        ...(systemMessages.length ? { systemInstruction: { parts: [{ text: systemMessages.join('\n\n') }] } } : {}),
+        contents: geminiContents(body.messages),
+        generationConfig
+    };
+}
+
+function normalizeGeminiResponse(payload, model) {
+    const candidate = payload?.candidates?.[0] || {};
+    const content = (candidate.content?.parts || [])
+        .map(part => part?.text)
+        .filter(text => typeof text === 'string')
+        .join('\n');
+    const usageMetadata = payload?.usageMetadata || {};
+    const usage = {
+        prompt_tokens: usageMetadata.promptTokenCount ?? null,
+        output_tokens: usageMetadata.candidatesTokenCount ?? null,
+        total_tokens: usageMetadata.totalTokenCount ?? null,
+        cached_tokens: usageMetadata.cachedContentTokenCount ?? null,
+        thinking_tokens: usageMetadata.thoughtsTokenCount ?? null
+    };
+    return {
+        provider: 'GEMINI',
+        model,
+        choices: [{ message: { role: 'assistant', content } }],
+        usage,
+        usage_metadata: usageMetadata,
+        finish_reason: candidate.finishReason || null
+    };
+}
+
 async function proxyJson(fetchImpl, url, options = {}, timeoutMs = 10_000) {
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     const timer = setTimeout(() => controller?.abort(), Math.max(1, Number(timeoutMs) || 10_000));
@@ -124,6 +185,14 @@ async function proxyJson(fetchImpl, url, options = {}, timeoutMs = 10_000) {
         let payload;
         try { payload = text ? JSON.parse(text) : {}; } catch { payload = { error: 'upstream returned invalid JSON' }; }
         return { status: response.status, payload };
+    } catch (error) {
+        if (error?.name === 'AbortError') {
+            throw Object.assign(new Error('upstream request timed out'), {
+                statusCode: 504,
+                code: 'UPSTREAM_TIMEOUT'
+            });
+        }
+        throw error;
     } finally {
         clearTimeout(timer);
     }
@@ -139,10 +208,18 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
     const allowTvkit = createRateLimiter({ now, maxRequests: Number(env.PROXY_TVKIT_MAX_REQUESTS || DEFAULT_TVKIT_MAX_REQUESTS) });
     const twelveKey = String(env.TWELVE_DATA_API_KEY || '').trim();
     const deepSeekKey = String(env.DEEPSEEK_API_KEY || '').trim();
+    const aiProvider = normalizeAIProvider(env.AI_PROVIDER);
+    const geminiKey = String(env.GEMINI_API_KEY || '').trim();
+    const geminiModel = String(env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
     const twelveBase = String(env.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com').replace(/\/$/, '');
     const tvkitBase = String(env.TVKIT_BASE_URL || '').trim().replace(/\/$/, '');
     const deepSeekUrl = String(env.DEEPSEEK_API_URL || 'https://api.deepseek.com/chat/completions');
-    const upstreamTimeoutMs = Math.max(1, Number(env.PROXY_UPSTREAM_TIMEOUT_MS) || 10_000);
+    // Keep the server deadline below the browser's 45s AI deadline so an
+    // upstream timeout is returned as a typed 504 instead of becoming a
+    // client-side fetch failure. Provider responses still pass through with
+    // their original status (for example, a real upstream 502).
+    const upstreamTimeoutMs = Math.min(MAX_UPSTREAM_TIMEOUT_MS,
+        Math.max(1, Number(env.PROXY_UPSTREAM_TIMEOUT_MS) || DEFAULT_UPSTREAM_TIMEOUT_MS));
     const origin = configuredOrigin(env);
     const configuredAuditToken = String(env.AUDIT_WRITE_TOKEN || '').trim();
     const configuredAuditReadToken = String(env.AUDIT_READ_TOKEN || '').trim();
@@ -158,9 +235,19 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
             res.writeHead(204, { 'Access-Control-Allow-Origin': origin || '*', 'Access-Control-Allow-Headers': 'Content-Type, X-Proxy-Client', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' });
             return res.end();
         }
-        if (req.method === 'GET' && publicAssetResponse(res, requestUrl.pathname)) return;
+        if (req.method === 'GET' && publicAssetResponse(res, requestUrl.pathname, env)) return;
         if (req.method === 'GET' && requestUrl.pathname === '/health') {
-            return jsonResponse(res, 200, { ok: true, service: 'market-ai-proxy', time: new Date(now()).toISOString(), data_provider_configured: !!twelveKey, tvkit_provider_configured: !!tvkitBase, market_data_provider_configured: !!twelveKey || !!tvkitBase, ai_provider_configured: !!deepSeekKey }, origin);
+            return jsonResponse(res, 200, {
+                ok: true,
+                service: 'market-ai-proxy',
+                time: new Date(now()).toISOString(),
+                data_provider_configured: !!twelveKey,
+                tvkit_provider_configured: !!tvkitBase,
+                market_data_provider_configured: !!twelveKey || !!tvkitBase,
+                ai_provider: aiProvider,
+                ai_model: aiProvider === 'GEMINI' ? geminiModel : 'deepseek-chat',
+                ai_provider_configured: aiProvider === 'GEMINI' ? !!geminiKey : !!deepSeekKey
+            }, origin);
         }
         try {
             if (req.method === 'GET' && (requestUrl.pathname === '/api/tvkit/quote' || requestUrl.pathname === '/api/tvkit/time_series')) {
@@ -202,18 +289,39 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                 const result = await proxyJson(fetchImpl, upstream, { headers: upstreamHeaders(twelveKey) }, upstreamTimeoutMs);
                 return jsonResponse(res, result.status, result.payload, origin);
             }
-            if (req.method === 'POST' && requestUrl.pathname === '/api/deepseek/chat') {
-                if (!deepSeekKey) return jsonResponse(res, 503, { error: 'AI provider is not configured' }, origin);
+            if (req.method === 'POST' && ['/api/ai/chat', '/api/gemini/chat', '/api/deepseek/chat'].includes(requestUrl.pathname)) {
+                const requestedProvider = requestUrl.pathname === '/api/gemini/chat'
+                    ? 'GEMINI'
+                    : requestUrl.pathname === '/api/deepseek/chat'
+                        ? 'DEEPSEEK'
+                        : aiProvider;
+                if (requestedProvider === 'GEMINI' && !geminiKey) return jsonResponse(res, 503, { error: 'AI provider is not configured', provider: 'GEMINI' }, origin);
+                if (requestedProvider === 'DEEPSEEK' && !deepSeekKey) return jsonResponse(res, 503, { error: 'AI provider is not configured', provider: 'DEEPSEEK' }, origin);
                 const raw = await readBody(req);
                 let body;
                 try { body = JSON.parse(raw || '{}'); } catch { return jsonResponse(res, 400, { error: 'request body must be valid JSON' }, origin); }
                 if (!body || typeof body !== 'object' || Array.isArray(body) || !Array.isArray(body.messages)) return jsonResponse(res, 400, { error: 'messages array is required' }, origin);
+                if (requestedProvider === 'GEMINI') {
+                    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`;
+                    const result = await proxyJson(fetchImpl, geminiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'x-goog-api-key': geminiKey, 'User-Agent': 'ict-telegram-bot-proxy/1.0' },
+                        body: JSON.stringify(geminiRequestBody(body))
+                    }, upstreamTimeoutMs);
+                    return jsonResponse(res, result.status, result.status >= 200 && result.status < 300
+                        ? normalizeGeminiResponse(result.payload, geminiModel)
+                        : result.payload, origin);
+                }
+                const deepSeekBody = { ...body, model: 'deepseek-chat', stream: false };
+                delete deepSeekBody.response_schema;
                 const result = await proxyJson(fetchImpl, deepSeekUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepSeekKey}`, 'User-Agent': 'ict-telegram-bot-proxy/1.0' },
-                    body: JSON.stringify({ ...body, stream: false })
+                    body: JSON.stringify(deepSeekBody)
                 }, upstreamTimeoutMs);
-                return jsonResponse(res, result.status, result.payload, origin);
+                return jsonResponse(res, result.status, result.status >= 200 && result.status < 300
+                    ? { ...result.payload, provider: 'DEEPSEEK', model: 'deepseek-chat' }
+                    : result.payload, origin);
             }
             if ((req.method === 'POST' || req.method === 'GET') && requestUrl.pathname === '/api/audit') {
                 const expectedToken = req.method === 'GET' ? configuredAuditReadToken : configuredAuditToken;
@@ -228,7 +336,12 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
             return jsonResponse(res, 404, { error: 'route not found' }, origin);
         } catch (error) {
             const status = Number(error?.statusCode) || 502;
-            return jsonResponse(res, status, { error: status === 400 || status === 413 ? error.message : 'upstream request failed' }, origin);
+            const isClientError = status === 400 || status === 413;
+            const isTimeout = error?.code === 'UPSTREAM_TIMEOUT';
+            return jsonResponse(res, status, {
+                error: isTimeout ? 'upstream timeout' : (isClientError ? error.message : 'upstream request failed'),
+                ...(error?.code ? { code: error.code } : {})
+            }, origin);
         }
     });
 }
@@ -240,4 +353,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { MAX_BODY_BYTES, TIMEFRAME_INTERVALS, normalizeSymbol, validateMarketRequest, createRateLimiter, createProxyServer };
+module.exports = { MAX_BODY_BYTES, DEFAULT_UPSTREAM_TIMEOUT_MS, MAX_UPSTREAM_TIMEOUT_MS, DEFAULT_AI_PROVIDER, DEFAULT_GEMINI_MODEL, TIMEFRAME_INTERVALS, normalizeSymbol, normalizeAIProvider, geminiContents, geminiRequestBody, normalizeGeminiResponse, validateMarketRequest, createRateLimiter, createProxyServer };
