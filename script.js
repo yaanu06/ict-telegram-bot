@@ -16479,6 +16479,88 @@ function externalPacketCandidateRecord(candidate = {}, targetIndex = new Map()) 
     }, ['candidate_id', 'direction', 'type', 'setup_label', 'opportunity_role', 'setup_timeframe', 'execution_timeframe', 'execution_mode', 'source', 'evidence_ids', 'entry_zone', 'entry', 'structural_invalidation_id', 'structural_invalidation', 'stop_loss', 'tp1', 'tp2', 'tp3', 'target_ids', 'targets', 'rr', 'minimum_rr', 'freshness', 'lifecycle', 'mitigation', 'entry_consumed', 'reachability', 'delivery', 'confluence', 'supporting_evidence_ids', 'conflicting_evidence_ids', 'quality_warnings', 'hard_rejections', 'deterministic_valid', 'state']);
 }
 
+function buildExternalAIResponseTemplate() {
+    // Keep this shape aligned with buildPublicTradeSignal()/setJsonOutput().
+    // It is an output contract only; the external AI must replace trade fields
+    // from one supplied candidate or leave them null for WAIT.
+    return {
+        trade_signal: {
+            date: null,
+            time: null,
+            pair: 'XAU/USD',
+            current_price: null,
+            symbol_metadata: null,
+            decision: 'WAIT',
+            trade_type: 'WAIT',
+            strategy: null,
+            strategy_label: null,
+            strategy_setup: null,
+            selected_candidate_id: null,
+            candidate_role: null,
+            timeframe: null,
+            execution_model: null,
+            entry: null,
+            entry_price: null,
+            entry_zone: null,
+            stop_loss: null,
+            tp1: null,
+            tp2: null,
+            tp3: null,
+            take_profit_1: null,
+            take_profit_2: null,
+            take_profit_3: null,
+            rr_tp1: null,
+            confidence: null,
+            quality: null,
+            status: 'NO_TRADE',
+            analysis_status: 'MANUAL_EXTERNAL_AI_REVIEW',
+            setup_state: null,
+            execution_state: null,
+            reason: { code: 'NO_TRADE', message: null },
+            ai_analysis: {
+                source: 'EXTERNAL_AI_MANUAL',
+                market_phase: null,
+                directional_thesis: null,
+                liquidity_draw: null,
+                supporting_evidence: [],
+                conflicting_evidence: [],
+                invalidation: null,
+                reasoning: null
+            },
+            quality_warnings: [],
+            hard_rejections: [],
+            stop_quality: null,
+            analysis: {
+                bias: null,
+                trend_detection: null,
+                higher_timeframe: null,
+                structural_context: null,
+                daily_bias: null,
+                execution: null,
+                setup: null,
+                structure: null,
+                liquidity: null,
+                invalidation: null,
+                notes: []
+            },
+            status_code: 'NO_TRADE',
+            execution_mode: null,
+            manual_tracking_allowed: false,
+            execution_allowed: false,
+            primary_opportunity: null,
+            active_setups: [],
+            watch_setups: [],
+            news_risk: null,
+            data_quality: null,
+            history_errors: {},
+            provider_metadata: null,
+            market_conditions: null,
+            risk_gate: null,
+            market_open: null
+        }
+    };
+}
+
 function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
     const source = replay || {};
     const result = signal || source.final_output?.trade_signal || source.final_output || {};
@@ -16630,7 +16712,34 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
         'CONFLICTING_EVIDENCE:',
         'INVALIDATION:',
         'REASONING:',
-        'For NO_TRADE, unavailable trade fields must be NONE.'
+        'For NO_TRADE, unavailable trade fields must be NONE.',
+        '',
+        '==================================================',
+        'EXTERNAL AI EXECUTION INSTRUCTION',
+        '==================================================',
+        'You are now the interpretation and final-selection layer for ICT Trading Bot Pro.',
+        'The live market data has already been retrieved and processed by the bot deterministic pipeline.',
+        'Do not request additional market data. Do not ask the user for another prompt. Do not merely summarize this packet.',
+        'Immediately analyze the supplied CURRENT market evidence and ALL supplied selectable candidates using the strategy contract above.',
+        'Your objective is to determine whether there is a valid XAU/USD trading opportunity for TODAY at this snapshot.',
+        'Use Direction -> Location -> Execution.',
+        'Determine the current market phase, directional thesis, liquidity draw, original-thesis actionability, delivery state, and the best supplied candidate if one is valid.',
+        'No candidate has been preselected for you. Candidate ordering does not indicate preference. Evaluate ALL supplied selectable candidates.',
+        'You may select BUY, SELL, a pending LIMIT, a confirmation entry, or NO_TRADE only when supported by the supplied deterministic evidence.',
+        'Respect pending LIMIT semantics, confirmation-entry requirements, structural invalidation, structural SL, genuine target lifecycle, minimum RR, freshness, mitigation, reachability, supporting evidence, and conflicting evidence.',
+        'Do not invent market data, candidate IDs, entry, SL, TP, target IDs, POIs, evidence IDs, or RR.',
+        'Do not invent or modify entry, SL, TP, target IDs, POIs, evidence IDs, or RR.',
+        'If selecting a trade, use the EXACT executable geometry belonging to the selected supplied candidate. Do not optimize, round, adjust, improve, or recalculate it.',
+        'The external AI selects/interprets supplied deterministic candidates; it does not generate executable geometry. Candidate ID -> entry/SL/targets/RR must remain internally consistent.',
+        'If the supplied evidence does not support a valid candidate, return NO_TRADE with null trade geometry.',
+        'Perform the analysis NOW. Do not wait for another user instruction.',
+        '',
+        'EXTERNAL AI JSON RESPONSE TEMPLATE',
+        JSON.stringify(buildExternalAIResponseTemplate(), null, 2),
+        '',
+        'RETURN ONLY VALID JSON. No Markdown fences. No introductory sentence. No commentary before JSON. No commentary after JSON. The response must be directly JSON.parse()-able.',
+        'For a trade, use the exact supplied candidate ID and copy its exact entry, entry_price, entry_zone, stop_loss, tp1/tp2/tp3, take_profit_1/take_profit_2/take_profit_3, and rr_tp1 values. For NO_TRADE, selected_candidate_id and all trade geometry fields remain null.',
+        'Perform the analysis NOW.'
     ].join('\n');
     return packet.replace(/(DEEPSEEK_API_KEY|GEMINI_API_KEY|TWELVE_DATA_API_KEY|TELEGRAM_BOT_TOKEN|Authorization|Bearer)\s*[:=]?\s*[^\s\n]*/gi, '$1: [REDACTED]');
 }

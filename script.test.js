@@ -2795,6 +2795,7 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).toContain('"selected_candidate_id": "NONE"');
         expect(packet).toContain('"automatic_ai_selection": "NOT_RUN"');
         expect(packet).toContain('No candidate has been selected for you.');
+        expect(packet.trim().endsWith('Perform the analysis NOW.')).toBe(true);
         expect(packet).not.toContain('CURRENT BOT RESULT');
         expect(elements.get('analyzeBtn').disabled).toBe(false);
     });
@@ -7314,6 +7315,22 @@ describe('AI market analyst contract', () => {
         expect(packet).toContain('CURRENT BOT RESULT');
         expect(packet).toContain('SUPPORTING_EVIDENCE');
         expect(packet).toContain('CONFLICTING_EVIDENCE');
+        expect(packet).toContain('EXTERNAL AI EXECUTION INSTRUCTION');
+        expect(packet).toContain('Do not ask the user for another prompt');
+        expect(packet).toContain('Evaluate ALL supplied selectable candidates');
+        expect(packet).toContain('No candidate has been preselected for you');
+        expect(packet).toContain('Do not invent or modify entry, SL, TP, target IDs, POIs, evidence IDs, or RR.');
+        expect(packet).toContain('RETURN ONLY VALID JSON');
+        expect(packet).toContain('Perform the analysis NOW.');
+        const templateStart = packet.indexOf('EXTERNAL AI JSON RESPONSE TEMPLATE\n') + 'EXTERNAL AI JSON RESPONSE TEMPLATE\n'.length;
+        const templateEnd = packet.indexOf('\nRETURN ONLY VALID JSON.', templateStart);
+        const template = JSON.parse(packet.slice(templateStart, templateEnd));
+        expect(template).toHaveProperty('trade_signal');
+        expect(template.trade_signal.decision).toBe('WAIT');
+        expect(template.trade_signal.selected_candidate_id).toBeNull();
+        for (const field of ['entry', 'entry_price', 'stop_loss', 'tp1', 'tp2', 'tp3', 'take_profit_1', 'take_profit_2', 'take_profit_3', 'rr_tp1']) {
+            expect(template.trade_signal[field]).toBeNull();
+        }
         expect(packet).not.toContain('RAW-1D');
         expect(packet).not.toContain('raw_closed_candles');
         expect(packet).not.toContain('DEEPSEEK_API_KEY');
