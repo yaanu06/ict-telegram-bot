@@ -1545,6 +1545,85 @@ describe('fresh execution downstream validation', () => {
     });
 });
 
+describe('current opportunity relevance ranking', () => {
+    const candidate = (overrides = {}) => ({
+        direction: 'SELL',
+        execution_model: 'PENDING_LIMIT',
+        entry_model: 'PENDING_LIMIT',
+        entry: 4278.67,
+        stop_loss: 4331.19,
+        tp1: 4121.26,
+        tp2: null,
+        tp3: null,
+        score: 92,
+        rr_tp1: 3,
+        freshness: 'PARTIAL',
+        target_lifecycle_state: 'UNFULFILLED',
+        target_map: [{ target_level: 4121.26, target_lifecycle_state: 'UNFULFILLED' }],
+        execution_zone_created_time: Date.parse('2026-09-27T00:00:00Z'),
+        parent_event_time_ms: Date.parse('2026-09-26T00:00:00Z'),
+        ...overrides
+    });
+
+    it('lets a fresh continuation POI outrank an old high-confluence POI after substantial delivery', () => {
+        const ctx = getContext();
+        const old = candidate({ id: 'old-msnr-crt', strategy_label: 'MSNR+CRT', score: 96 });
+        const fresh = candidate({
+            id: 'fresh-1h-fvg', execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT',
+            entry: 4165, stop_loss: 4180, tp1: 4095, score: 64, rr_tp1: 2.7, freshness: 'FRESH',
+            execution_zone_created_time: Date.parse('2026-09-29T05:00:00Z'),
+            parent_event_time_ms: Date.parse('2026-09-28T20:00:00Z'),
+            target_map: [{ target_level: 4095, target_lifecycle_state: 'UNFULFILLED' }]
+        });
+        const ranked = ctx.rankCurrentOpportunityCandidates([old, fresh], 4136.76, Date.parse('2026-09-29T08:00:00Z'));
+        expect(ranked[0].id).toBe('fresh-1h-fvg');
+        expect(ranked[0].candidate_role).toBe('FRESH_CONTINUATION_POI');
+        expect(ranked[1].candidate_role).toBe('ORIGINAL_THESIS_POI');
+        expect(ranked[1].current_opportunity_relevance.remaining_reward_fraction).toBeCloseTo(0.0985, 2);
+        expect(ranked[1].current_opportunity_relevance.continuation_state).toBe('ADVANCED_ORIGINAL_DELIVERY');
+    });
+
+    it('still permits the original deep POI to win when no stronger current continuation exists', () => {
+        const ctx = getContext();
+        const old = candidate({ id: 'original-deep-poi', score: 68, tp1: 3900, target_map: [{ target_level: 3900, target_lifecycle_state: 'UNFULFILLED' }] });
+        const ranked = ctx.rankCurrentOpportunityCandidates([old], 4136.76, Date.parse('2026-09-29T08:00:00Z'));
+        expect(ranked[0].id).toBe('original-deep-poi');
+        expect(ranked[0].current_opportunity_relevance.remaining_reward_fraction).toBeGreaterThan(0.5);
+    });
+
+    it('does not use entry distance as an automatic rejection', () => {
+        const ctx = getContext();
+        const ranked = ctx.rankCurrentOpportunityCandidates([candidate({ id: 'distant-valid-limit' })], 4136.76, Date.parse('2026-09-29T08:00:00Z'));
+        expect(ranked).toHaveLength(1);
+        expect(ranked[0].id).toBe('distant-valid-limit');
+        expect(ranked[0].current_opportunity_relevance.entry_retracement_distance).toBeCloseTo(141.91, 2);
+    });
+
+    it('deduplicates repeated confluence labels in the current ranking context', () => {
+        const ctx = getContext();
+        const ranked = ctx.rankCurrentOpportunityCandidates([candidate({
+            id: 'deduped', opportunity_status: 'FRESH_PENDING_LATER', strategy_confluence: ['MSNR', 'CRT', 'MSNR', 'CRT'],
+            current_opportunity_relevance: undefined
+        })], 4136.76, Date.parse('2026-09-29T08:00:00Z'));
+        expect(ranked[0].current_opportunity_relevance).toEqual(expect.objectContaining({ candidate_role: 'ORIGINAL_THESIS_POI' }));
+        const compact = ctx.compactAIContext({ adaptive_setup_candidates: ranked });
+        expect(compact.adaptive_setup_candidates[0].current_opportunity_relevance).toBeTruthy();
+        expect(compact.adaptive_setup_candidates[0].candidate_role).toBe('ORIGINAL_THESIS_POI');
+    });
+
+    it('keeps a fresh pending limit eligible without current lower-timeframe confirmation', () => {
+        const ctx = getContext();
+        const fresh = candidate({
+            id: 'fresh-limit-no-confirmation', execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT',
+            entry: 4165, tp1: 4095, freshness: 'FRESH', five_minute_confirmation: false,
+            execution_zone_created_time: Date.parse('2026-09-29T05:00:00Z'), parent_event_time_ms: Date.parse('2026-09-28T20:00:00Z')
+        });
+        const ranked = ctx.rankCurrentOpportunityCandidates([fresh], 4136.76, Date.parse('2026-09-29T08:00:00Z'));
+        expect(ranked[0].execution_model).toBe('FRESH_RETRACEMENT_LIMIT');
+        expect(ranked[0].candidate_role).toBe('FRESH_CONTINUATION_POI');
+    });
+});
+
 describe('institutional-style zone confluence ranking', () => {
     it('rewards a same-direction entry zone nested inside higher-timeframe demand or a breaker', () => {
         const ctx = getContext();

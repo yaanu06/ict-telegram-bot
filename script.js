@@ -6166,6 +6166,109 @@ function scoreInstitutionalZoneConfluence(zone, poiZones = [], timeframeContext 
     return { score: Math.min(20, score), nested_locations: nested.map(poi => poi.id || `${poi.type}:${poi.timeframe}`), evidence: [...new Set(evidence)] };
 }
 
+// Candidate quality and current-opportunity relevance answer different
+// questions.  Quality describes how strong the verified setup is.  Relevance
+// describes whether that setup still represents the market phase visible at
+// the current scan price.  Keep this metadata separate so a pending limit is
+// never rejected merely because the earlier directional delivery is advanced.
+function getCandidateOpportunityRole(candidate = {}) {
+    const model = String(candidate.execution_model || candidate.entry_model || '').toUpperCase();
+    if (model === 'FRESH_RETRACEMENT_LIMIT') {
+        const zoneTime = normalizeTimestampUTC(candidate.execution_zone_created_time || candidate.zone?.created_time);
+        const parentTime = normalizeTimestampUTC(candidate.parent_event_time_ms || candidate.narrative_event_time || candidate.strategy_setup?.narrative_event_time || candidate.strategy_setup?.event_time);
+        return Number.isFinite(zoneTime) && Number.isFinite(parentTime) && zoneTime > parentTime
+            ? 'FRESH_CONTINUATION_POI'
+            : 'FRESH_RETRACEMENT_POI';
+    }
+    return 'ORIGINAL_THESIS_POI';
+}
+
+function getCandidateFreshnessPriority(value) {
+    const freshness = String(value || '').toUpperCase();
+    return freshness === 'FRESH' ? 3 : freshness === 'PARTIAL' ? 2 : freshness === 'ACTIVE' ? 1 : 0;
+}
+
+function buildCandidateOpportunityRelevance(candidate = {}, currentPrice = null, asOfTime = null) {
+    const direction = candidate.direction;
+    const entry = Number(candidate.entry);
+    const target = Number(candidate.tp1 ?? candidate.take_profit_1 ?? candidate.target_map?.[0]?.target_level ?? candidate.target_map?.[0]?.level);
+    const price = Number(currentPrice);
+    const rewardDistance = Number.isFinite(entry) && Number.isFinite(target) ? Math.abs(target - entry) : null;
+    let remainingRewardFraction = null;
+    if (rewardDistance > 0 && Number.isFinite(price) && (direction === 'BUY' || direction === 'SELL')) {
+        // This is a ranking observation only.  It measures the remaining
+        // directional path from the scan price to the verified TP1 relative
+        // to the entry-to-TP1 path.  Target lifecycle remains authoritative
+        // for eligibility and can still classify an objective as consumed.
+        const remainingDistance = direction === 'BUY' ? target - price : price - target;
+        remainingRewardFraction = Math.max(0, Math.min(1, remainingDistance / rewardDistance));
+    }
+    const role = getCandidateOpportunityRole(candidate);
+    const zoneCreated = normalizeTimestampUTC(candidate.execution_zone_created_time || candidate.zone?.created_time);
+    const parentEvent = normalizeTimestampUTC(candidate.parent_event_time_ms || candidate.narrative_event_time || candidate.strategy_setup?.narrative_event_time || candidate.strategy_setup?.event_time);
+    const ageHours = Number.isFinite(zoneCreated) && Number.isFinite(asOfTime) ? Math.max(0, (asOfTime - zoneCreated) / 3600000) : null;
+    const deliveryFraction = Number.isFinite(remainingRewardFraction) ? 1 - remainingRewardFraction : null;
+    const freshRole = role === 'FRESH_CONTINUATION_POI' || role === 'FRESH_RETRACEMENT_POI';
+    const lifecycle = String(candidate.target_lifecycle_state || candidate.target_map?.[0]?.target_lifecycle_state || 'UNKNOWN').toUpperCase();
+    const remainingTargets = (candidate.target_map || []).filter(targetItem => !['CONSUMED', 'INVALIDATED'].includes(String(targetItem?.target_lifecycle_state || targetItem?.target_lifecycle?.lifecycle_state || '').toUpperCase())).length;
+    return {
+        candidate_role: role,
+        original_thesis_candidate: role === 'ORIGINAL_THESIS_POI',
+        continuation_candidate: freshRole,
+        candidate_created_at: zoneCreated,
+        candidate_age_hours: ageHours,
+        parent_event_time: parentEvent,
+        entry_retracement_distance: Number.isFinite(entry) && Number.isFinite(price) ? Math.abs(entry - price) : null,
+        original_structural_objective: candidate.strategy_setup?.primary_objective || candidate.strategy_setup?.target_level || null,
+        remaining_structural_objectives: remainingTargets,
+        delivery_fraction: deliveryFraction,
+        remaining_reward_fraction: remainingRewardFraction,
+        freshness_state: candidate.freshness || candidate.zone?.freshness || null,
+        target_lifecycle_state: lifecycle,
+        continuation_state: freshRole ? 'CURRENT_CONTINUATION_PHASE' : (Number.isFinite(deliveryFraction) && deliveryFraction >= 0.75 ? 'ADVANCED_ORIGINAL_DELIVERY' : 'ORIGINAL_THESIS_ACTIVE'),
+        // The comparator reads these as an ordered evidence tuple.  No
+        // distance threshold or synthetic score is used to make a trade.
+        ranking_key: {
+            remaining_reward_fraction: remainingRewardFraction,
+            role_priority: freshRole ? 2 : 1,
+            freshness_priority: getCandidateFreshnessPriority(candidate.freshness || candidate.zone?.freshness),
+            remaining_structural_objectives: remainingTargets
+        }
+    };
+}
+
+function rankCurrentOpportunityCandidates(candidates = [], currentPrice = null, asOfTime = null) {
+    return (Array.isArray(candidates) ? candidates : [])
+        .map(candidate => {
+            if (candidate?.current_opportunity_relevance) {
+                const relevance = candidate.current_opportunity_relevance;
+                if (candidate.candidate_role && candidate.continuation_state) return candidate;
+                return Object.isFrozen(candidate)
+                    ? { ...candidate, candidate_role: relevance.candidate_role, delivery_fraction: relevance.delivery_fraction, remaining_reward_fraction_at_scan: relevance.remaining_reward_fraction, continuation_state: relevance.continuation_state }
+                    : Object.assign(candidate, { candidate_role: relevance.candidate_role, delivery_fraction: relevance.delivery_fraction, remaining_reward_fraction_at_scan: relevance.remaining_reward_fraction, continuation_state: relevance.continuation_state });
+            }
+            const relevance = buildCandidateOpportunityRelevance(candidate, currentPrice, asOfTime);
+            return Object.isFrozen(candidate)
+                ? { ...candidate, current_opportunity_relevance: relevance, candidate_role: relevance.candidate_role, delivery_fraction: relevance.delivery_fraction, remaining_reward_fraction_at_scan: relevance.remaining_reward_fraction, continuation_state: relevance.continuation_state }
+                : Object.assign(candidate, { current_opportunity_relevance: relevance, candidate_role: relevance.candidate_role, delivery_fraction: relevance.delivery_fraction, remaining_reward_fraction_at_scan: relevance.remaining_reward_fraction, continuation_state: relevance.continuation_state });
+        })
+        .sort((a, b) => {
+            const ar = a.current_opportunity_relevance || {};
+            const br = b.current_opportunity_relevance || {};
+            const ak = ar.ranking_key || {}, bk = br.ranking_key || {};
+            const remaining = (Number.isFinite(Number(bk.remaining_reward_fraction)) ? Number(bk.remaining_reward_fraction) : -1)
+                - (Number.isFinite(Number(ak.remaining_reward_fraction)) ? Number(ak.remaining_reward_fraction) : -1);
+            return remaining
+                || (Number(bk.role_priority || 0) - Number(ak.role_priority || 0))
+                || (Number(bk.freshness_priority || 0) - Number(ak.freshness_priority || 0))
+                || (Number(bk.remaining_structural_objectives || 0) - Number(ak.remaining_structural_objectives || 0))
+                || (Number(b.score || 0) - Number(a.score || 0))
+                || (Number(b.rr_tp1 || b.actual_rr || 0) - Number(a.rr_tp1 || a.actual_rr || 0))
+                || (Number(a.distance_from_current_price || 0) - Number(b.distance_from_current_price || 0))
+                || String(a.id || '').localeCompare(String(b.id || ''));
+        });
+}
+
 function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, targetCandidates, riskConstraints, marketRegime, structure, marketContext, strategySetups, symbolMetadata = null }) {
     const timeframeContext = marketContext?.timeframe_context || buildTimeframeContext({ historyCache, structure, price, strategySetups, zones });
     const settings = getMarketSettings(pair, symbolMetadata || {});
@@ -6476,8 +6579,9 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     .map(t => structure?.[t]?.trend)
                     .filter(v => v === (direction === 'BUY' ? 'BULLISH' : 'BEARISH')).length;
                 const zoneScore = zone.type === 'FVG' ? 18 : zone.type === 'OB' ? 20 : 24;
+                const uniqueConfirmations = [...new Set((strategySetup?.confirmations || []).map(value => String(value).trim()).filter(Boolean))];
                 const strategyScore = strategySetup
-                    ? 18 + Math.min(14, (strategySetup.confirmations || []).length * 7 + (String(strategySetup.label).includes('+') ? 6 : 0))
+                    ? 18 + Math.min(14, uniqueConfirmations.length * 7 + (String(strategySetup.label).includes('+') ? 6 : 0))
                     : 0;
                 const freshnessScore = zone.freshness === 'FRESH' ? 12 : zone.freshness === 'PARTIAL' ? 6 : 0;
                 const rrScore = Math.min(15, (rr.actualRR - minimumRR) * 4);
@@ -6528,9 +6632,17 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         event_time: strategySetup?.narrative_event_time || rawCandidate.narrative_event_time || null,
                         original_entry_consumed: !!(strategySetup?.original_strategy_entry_consumed || rawCandidate.original_strategy_entry_consumed)
                     },
-                    strategy_confluence: strategySetup?.strategy_confluence || [],
+                    strategy_confluence: [...new Set([
+                        ...(strategySetup?.strategy_confluence || []),
+                        ...uniqueConfirmations,
+                        strategySetup?.primary
+                    ].map(value => String(value || '').trim()).filter(Boolean))],
                     narrative_ids: strategySetup?.narrative_ids || [],
-                    confluence_score: strategySetup?.confluence_score || 1,
+                    confluence_score: new Set([
+                        ...(strategySetup?.strategy_confluence || []),
+                        ...uniqueConfirmations,
+                        strategySetup?.primary
+                    ].map(value => String(value || '').trim()).filter(Boolean)).size || 1,
                     setup_timeframe: strategySetup?.setup_timeframe || tf,
                     execution_timeframe: strategySetup?.execution_timeframe || tf,
                     strategy_evidence: strategySetup?.strategy_evidence || null,
@@ -6573,6 +6685,13 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 candidate.top_down_context = classifyTopDownTrade(candidate, timeframeContext);
                 candidate.trade_context_classification = candidate.top_down_context.classification;
                 candidate.opportunity_thesis = strategySetup?.opportunity_thesis || null;
+                const opportunityRelevance = buildCandidateOpportunityRelevance(candidate, price,
+                    normalizeTimestampUTC(marketContext?.as_of_time || marketContext?.as_of_ms || marketContext?.scan_as_of_ms));
+                candidate.current_opportunity_relevance = opportunityRelevance;
+                candidate.candidate_role = opportunityRelevance.candidate_role;
+                candidate.delivery_fraction = opportunityRelevance.delivery_fraction;
+                candidate.remaining_reward_fraction_at_scan = opportunityRelevance.remaining_reward_fraction;
+                candidate.continuation_state = opportunityRelevance.continuation_state;
                 Object.assign(rawCandidate, candidate);
                 const evaluation = evaluateSetupCandidate(candidate, deterministicValidationContext);
                 Object.assign(rawCandidate, candidate);
@@ -6618,9 +6737,8 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         }
     }
 
-    const rankedCandidates = validCandidates
-        .sort((a, b) => b.score - a.score || b.rr_tp1 - a.rr_tp1 || a.distance_from_current_price - b.distance_from_current_price)
-        .slice();
+    const rankingAsOfTime = normalizeTimestampUTC(marketContext?.as_of_time || marketContext?.as_of_ms || marketContext?.scan_as_of_ms);
+    const rankedCandidates = rankCurrentOpportunityCandidates(validCandidates, price, rankingAsOfTime);
     const selectableCandidates = rankedCandidates.filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
         const qualityPasses = !Number.isFinite(quality) || quality >= getCandidateExecutionQualityMinimum(candidate);
@@ -6629,7 +6747,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         // reject a future pending limit.  Confirmation entries may still use
         // the quality preference because their execution is not yet complete.
         return (qualityPasses || pendingLimit) && candidate.still_actionable_today !== false && (pendingLimit || candidate.entry_reachable_today !== false);
-    }).slice(0, 5);
+    });
     const futureWatchCandidates = rankedCandidates.filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
         const qualityPasses = Number.isFinite(quality) && quality >= getCandidateExecutionQualityMinimum(candidate);
@@ -6671,6 +6789,13 @@ function buildDeterministicOrderDescription(candidate) {
     const age = Number.isFinite(lifecycle.event_age_hours) ? `${lifecycle.event_age_hours.toFixed(1)} hours ago` : 'recently';
     const freshness = lifecycle.opportunity_status === 'FRESH_NOW' ? 'fresh and actionable now' : 'fresh and actionable later today';
     const confirmation = String(candidate.execution_model || candidate.entry_model || '').toUpperCase() === 'CONFIRMATION_ENTRY';
+    const relevance = candidate.current_opportunity_relevance || buildCandidateOpportunityRelevance(candidate, null, null);
+    const roleText = relevance.candidate_role === 'ORIGINAL_THESIS_POI'
+        ? 'original thesis location'
+        : `${relevance.candidate_role.toLowerCase().replace(/_/g, ' ')}`;
+    const scanPathText = Number.isFinite(relevance.remaining_reward_fraction)
+        ? `${Math.round(relevance.delivery_fraction * 100)}% of the verified entry-to-target path had already delivered at the scan price; ${Math.round(relevance.remaining_reward_fraction * 100)}% remained for the planned fill.`
+        : 'current delivery fraction is unavailable, so the verified target lifecycle remains authoritative.';
     const wait = confirmation
         ? `Confirmation ${candidate.direction} at ${candidate.entry} requires the deterministic confirmation trigger at the supplied POI; structural invalidation ${invalidation} must remain intact.`
         : `Pending ${candidate.direction}_LIMIT at ${candidate.entry} remains valid while structural invalidation ${invalidation} is not breached. The limit fills when market price trades at the order price.`;
@@ -6678,9 +6803,9 @@ function buildDeterministicOrderDescription(candidate) {
         primary_target_source: source, target_type: type, target_confluence: confluence,
         wait_condition: wait,
         reasoning: {
-            primary: `${candidate.strategy_label || candidate.strategy_setup?.label || candidate.zone_type} ${confirmation ? candidate.direction + ' confirmation entry' : candidate.direction + '_LIMIT'} at ${candidate.entry}. TP1 ${candidate.tp1}: ${source} (${type}).`,
-            freshness: `Fresh ${candidate.setup_timeframe || candidate.timeframe || 'intraday'} opportunity from ${age}; ${freshness}. ${['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(String(candidate.target_lifecycle_state || candidate.target_map?.[0]?.target_lifecycle_state || '').toUpperCase()) ? 'The selected target remains an unfulfilled structural objective for the future fill.' : Number.isFinite(lifecycle.remaining_reward_fraction) ? `${Math.round(lifecycle.remaining_reward_fraction * 100)}% of the original reward path remains.` : 'The original reward path remains structurally valid.'}`,
-            why_best: `Selected deterministic candidate ${candidate.id}; target confluence: ${confluence.map(t => `${t.source} ${t.timeframe || ''}`.trim()).join(', ') || 'none'}.`,
+            primary: `${candidate.strategy_label || candidate.strategy_setup?.label || candidate.zone_type} ${confirmation ? candidate.direction + ' confirmation entry' : candidate.direction + '_LIMIT'} at ${candidate.entry}. TP1 ${candidate.tp1}: ${source} (${type}). This is the ${roleText}.`,
+            freshness: `Fresh ${candidate.setup_timeframe || candidate.timeframe || 'intraday'} opportunity from ${age}; ${freshness}. ${scanPathText} ${['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(String(candidate.target_lifecycle_state || candidate.target_map?.[0]?.target_lifecycle_state || '').toUpperCase()) ? 'The selected target remains an unfulfilled structural objective for the future fill.' : Number.isFinite(lifecycle.remaining_reward_fraction) ? `${Math.round(lifecycle.remaining_reward_fraction * 100)}% of the original reward path remains.` : 'The original reward path remains structurally valid.'}`,
+            why_best: `Selected deterministic candidate ${candidate.id} as the current ${roleText}; target confluence: ${confluence.map(t => `${t.source} ${t.timeframe || ''}`.trim()).join(', ') || 'none'}.`,
             risk_warning: 'Structural invalidation and market execution risk apply.'
         }
     };
@@ -6749,6 +6874,11 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.entry_reachable_today = candidate.entry_reachable_today ?? aiResult.setup_lifecycle?.entry_reachable_today ?? false;
     aiResult.distance_to_entry_atr = candidate.distance_to_entry_atr ?? aiResult.setup_lifecycle?.distance_to_entry_atr ?? null;
     aiResult.remaining_reward_fraction = candidate.remaining_reward_fraction ?? aiResult.setup_lifecycle?.remaining_reward_fraction ?? null;
+    aiResult.candidate_role = candidate.candidate_role || candidate.current_opportunity_relevance?.candidate_role || null;
+    aiResult.current_opportunity_relevance = candidate.current_opportunity_relevance || null;
+    aiResult.delivery_fraction = candidate.delivery_fraction ?? candidate.current_opportunity_relevance?.delivery_fraction ?? null;
+    aiResult.remaining_reward_fraction_at_scan = candidate.remaining_reward_fraction_at_scan ?? candidate.current_opportunity_relevance?.remaining_reward_fraction ?? null;
+    aiResult.continuation_state = candidate.continuation_state || candidate.current_opportunity_relevance?.continuation_state || null;
     aiResult.setup_confidence = getDeterministicCandidateConfidence(candidate);
     aiResult.strategy_setup = candidate.strategy_setup || null;
     aiResult.strategy_label = getDisplayStrategyLabel(candidate, candidate.zone_type);
@@ -6809,9 +6939,7 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
 // continue through the normal WAIT output path.
 function preserveDeterministicCandidateAfterAiNoTrade(aiResult, today, liveMarketContext) {
     if (!aiResult?.noTrade || today?.state !== 'TRADE_READY') return false;
-    const candidate = (liveMarketContext?.adaptive_setup_candidates || [])
-        .slice()
-        .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+    const candidate = rankCurrentOpportunityCandidates(liveMarketContext?.adaptive_setup_candidates || [], liveMarketContext?.current_price, liveMarketContext?.as_of_time)[0];
     if (!candidate?.id) return false;
     const selected = applyAdaptiveCandidateToAIResult({
         selected_candidate_id: candidate.id,
@@ -7261,7 +7389,7 @@ function calculateCandidateConfidence(candidate, context = {}) {
     if (htfAlignment === 3 && candidate.trade_context_classification === 'HTF_ALIGNED_CONTINUATION') {
         add('Full top-down continuation alignment', 8);
     }
-    const confirmations = candidate?.strategy_setup?.confirmations || [];
+    const confirmations = [...new Set((candidate?.strategy_setup?.confirmations || []).map(value => String(value).trim()).filter(Boolean))];
     if (confirmations.length > 0) add(`Strategy confluence ${confirmations.length}`, confirmations.length * spec.confluence);
     const bias = context.directional_bias || context.market_context?.directional_bias;
     if ((candidate.direction === 'BUY' && bias === 'BEARISH') || (candidate.direction === 'SELL' && bias === 'BULLISH')) add('Countertrend context', spec.countertrendPenalty);
@@ -8367,7 +8495,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         // it cannot turn that future order into WAIT.
         return pendingLimit || !Number.isFinite(quality) || quality >= STRATEGY_SPEC.CONFIDENCE.mediumQualityMinimum;
     });
-    const bestCandidate = tradeReadyCandidates.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+    const bestCandidate = rankCurrentOpportunityCandidates(tradeReadyCandidates, currentPrice, scanAsOfMs)[0];
     if (bestCandidate) {
         const pendingLimit = isPendingLimitExecutionModel(bestCandidate.execution_model || bestCandidate.entry_model);
         const qualityWarnings = bestCandidate.quality_warnings
@@ -8391,6 +8519,11 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             : ['All deterministic entry, structural stop, target, RR, and lifecycle conditions are satisfied'];
         state.cancellation_conditions = ['Structural invalidation is breached', 'TP1 is completed before order execution', 'Pending opportunity expires']; state.target_intent = bestCandidate.target_bias || bestCandidate.strategy_setup?.target_bias || null;
         state.delivery_progress = bestCandidate.progress_to_tp1_fraction ?? bestCandidate.narrative_delivery_progress ?? null; state.remaining_reward_fraction = bestCandidate.remaining_reward_fraction ?? null;
+        state.remaining_reward_fraction_at_scan = bestCandidate.remaining_reward_fraction_at_scan ?? bestCandidate.current_opportunity_relevance?.remaining_reward_fraction ?? null;
+        state.delivery_fraction = bestCandidate.delivery_fraction ?? bestCandidate.current_opportunity_relevance?.delivery_fraction ?? null;
+        state.candidate_role = bestCandidate.candidate_role || bestCandidate.current_opportunity_relevance?.candidate_role || null;
+        state.continuation_state = bestCandidate.continuation_state || bestCandidate.current_opportunity_relevance?.continuation_state || null;
+        state.current_opportunity_relevance = bestCandidate.current_opportunity_relevance || null;
         state.entry = bestCandidate.entry; state.stop_loss = bestCandidate.stop_loss; state.tp1 = bestCandidate.tp1;
         state.tp2 = bestCandidate.tp2 ?? null; state.tp3 = bestCandidate.tp3 ?? null;
         state.rr = bestCandidate.rr_tp1 ?? bestCandidate.actual_rr ?? null;
@@ -8429,7 +8562,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         Object.assign(state, stack);
         return state;
     }
-    const bestFutureWatch = (futureWatchCandidates || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+    const bestFutureWatch = rankCurrentOpportunityCandidates(futureWatchCandidates || [], currentPrice, scanAsOfMs)[0];
     if (bestFutureWatch) {
         const zone = bestFutureWatch.zone || { low: bestFutureWatch.zone_low, high: bestFutureWatch.zone_high, type: bestFutureWatch.zone_type, timeframe: bestFutureWatch.execution_timeframe || bestFutureWatch.timeframe, id: bestFutureWatch.zone_id };
         const plan = {
@@ -8482,9 +8615,8 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
     // Compatibility path for callers that still provide a hard-valid pending
     // limit only through lowQualityCandidates.  Quality remains descriptive;
     // do not downgrade a complete future order to WATCH_ONLY or WAIT.
-    const bestLowQualityWatch = (lowQualityCandidates || [])
-        .filter(candidate => candidate.still_actionable_today !== false && isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model))
-        .slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+    const bestLowQualityWatch = rankCurrentOpportunityCandidates((lowQualityCandidates || [])
+        .filter(candidate => candidate.still_actionable_today !== false && isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model)), currentPrice, scanAsOfMs)[0];
     if (bestLowQualityWatch) {
         const zone = bestLowQualityWatch.zone || { low: bestLowQualityWatch.zone_low, high: bestLowQualityWatch.zone_high, type: bestLowQualityWatch.zone_type, timeframe: bestLowQualityWatch.execution_timeframe || bestLowQualityWatch.timeframe, id: bestLowQualityWatch.zone_id };
         const plan = {
@@ -8687,6 +8819,11 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         tp1: today?.tp1 ?? null,
         tp2: today?.tp2 ?? null,
         tp3: today?.tp3 ?? null,
+        remaining_reward_fraction_at_scan: today?.remaining_reward_fraction_at_scan ?? null,
+        delivery_fraction: today?.delivery_fraction ?? null,
+        candidate_role: today?.candidate_role || null,
+        continuation_state: today?.continuation_state || null,
+        current_opportunity_relevance: today?.current_opportunity_relevance || null,
         confidence: ['TODAY_OPPORTUNITY', 'TRADE_READY'].includes(today?.state) ? today.confidence || 0 : 0,
         // Keep the public API's developing state stable.  WATCH_ONLY is a
         // display tier inside the opportunity stack, not a new top-level trade
@@ -9104,6 +9241,13 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         holistic,
         symbolMetadata
     });
+    // Keep the canonical scan clock attached to the nested context as well as
+    // the outer live context. Candidate construction can be rerun after the
+    // analyst response, so age/relevance diagnostics must use the same scan
+    // snapshot timestamp in both passes.
+    marketContext.as_of_time = now.getTime();
+    marketContext.as_of_time_utc = now.toISOString();
+    marketContext.scan_as_of_ms = now.getTime();
     marketContext.news_risk = checkHighImpactNews(quote_snapshot?.news_risk || null);
     marketContext.symbol_metadata = symbolMetadata;
     marketContext.history_errors = historyCache?.fetch_errors || {};
@@ -9548,6 +9692,11 @@ function compactAIContext(liveMarketContext) {
         top_down_context: c.top_down_context,
         target_diagnostics: c.target_diagnostics || null,
         target_reachability: compactTargetReachabilityForOutput(c.target_reachability),
+        candidate_role: c.candidate_role || c.current_opportunity_relevance?.candidate_role || null,
+        current_opportunity_relevance: c.current_opportunity_relevance || null,
+        delivery_fraction: c.delivery_fraction ?? c.current_opportunity_relevance?.delivery_fraction ?? null,
+        remaining_reward_fraction_at_scan: c.remaining_reward_fraction_at_scan ?? c.current_opportunity_relevance?.remaining_reward_fraction ?? null,
+        continuation_state: c.continuation_state || c.current_opportunity_relevance?.continuation_state || null,
         score: c.score
     } : null;
     const structure = Object.fromEntries(Object.entries(liveMarketContext?.structure || {}).map(([tf, s]) => [tf, {
@@ -10422,6 +10571,8 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'LOW_QUALITY_NOT_SELECTABLE and REJECTED candidates are diagnostics only and must never be selected.',
         'Stage 2 assesses immediate entry independently of pending-limit execution.',
         'Rank the supplied adaptive_setup_candidates and return SELECT with the best candidate ID, or WAIT when no supplied candidate is worth selecting.',
+        'Compare ORIGINAL_THESIS_POI candidates against FRESH_CONTINUATION_POI and FRESH_RETRACEMENT_POI candidates. current_opportunity_relevance is deterministic context: it describes the current market phase and how much of the verified target path remains at the scan price. It is ranking evidence, not a hard validity rule.',
+        'A fresh continuation POI can be more relevant than an older high-confluence origin after substantial delivery. An original POI may still win when its remaining structural opportunity is stronger or nearer continuation candidates are invalid, consumed, or weak. Do not choose by pattern-label count alone.',
         'Do not return WAIT merely because price has not reached a valid future limit zone. Immediate-entry confirmation is separate and never required before a true LIMIT fill.',
         'Select the best FRESH deterministic opportunity that remains actionable now or later in the current trading day. If none exists, return WAIT.',
         'Never select a setup merely because its historical pattern was valid. Reject any candidate with opportunity_status STALE, COMPLETED, or EXPIRED, entry_consumed true, tp1_already_reached true, insufficient remaining_reward_fraction, or still_actionable_today false. FRESH_PENDING_LATER is valid for a true pending limit when its zone is fresh and all structural geometry passes.',
@@ -12086,6 +12237,11 @@ async function runAutoScan() {
                 entry_reachable_today: aiResult.entry_reachable_today,
                 distance_to_entry_atr: aiResult.distance_to_entry_atr,
                 remaining_reward_fraction: aiResult.remaining_reward_fraction,
+                remaining_reward_fraction_at_scan: aiResult.remaining_reward_fraction_at_scan,
+                delivery_fraction: aiResult.delivery_fraction,
+                candidate_role: aiResult.candidate_role,
+                continuation_state: aiResult.continuation_state,
+                current_opportunity_relevance: aiResult.current_opportunity_relevance,
                 setup_confidence: aiResult.setup_confidence,
                 quality: aiResult.quality,
                 time_integrity: aiResult.setup_lifecycle?.time_integrity || null,
