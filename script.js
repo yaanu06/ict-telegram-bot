@@ -191,6 +191,40 @@ function getAIErrorCode(error = {}, transportDiagnostic = error?.transport_diagn
     return error?.name === 'AIParseError' ? 'AI_PARSE_ERROR' : null;
 }
 
+const CLIENT_PROVIDER_SECRET_PATTERN = /(?:(?:gemini[_-]?api[_-]?key|deepseek[_-]?api[_-]?key|x-goog-api-key|authorization)\s*[:=]?\s*(?:bearer\s+)?[^\s,;]+|bearer\s+[^\s,;]+)/ig;
+
+function sanitizeClientProviderText(value, maxLength = 1000) {
+    if (value == null) return null;
+    return String(value).slice(0, maxLength).replace(CLIENT_PROVIDER_SECRET_PATTERN, '[REDACTED]');
+}
+
+function normalizeClientProviderError(data = {}) {
+    const source = data?.provider_error && typeof data.provider_error === 'object'
+        ? data.provider_error
+        : data?.error && typeof data.error === 'object' ? data.error : null;
+    if (!source || Array.isArray(source)) return null;
+    const quota = Array.isArray(source.quota) ? source.quota.slice(0, 24).map(item => {
+        if (!item || typeof item !== 'object') return null;
+        const dimensions = item.quota_dimensions && typeof item.quota_dimensions === 'object' && !Array.isArray(item.quota_dimensions)
+            ? Object.fromEntries(Object.entries(item.quota_dimensions).slice(0, 16).filter(([key, value]) => /^[A-Za-z0-9_.-]{1,80}$/.test(key) && ['string', 'number', 'boolean'].includes(typeof value)).map(([key, value]) => [key, sanitizeClientProviderText(value, 160)]))
+            : null;
+        return {
+            ...(item.quota_metric != null ? { quota_metric: sanitizeClientProviderText(item.quota_metric, 200) } : {}),
+            ...(item.quota_id != null ? { quota_id: sanitizeClientProviderText(item.quota_id, 200) } : {}),
+            ...(item.quota_value != null ? { quota_value: sanitizeClientProviderText(item.quota_value, 120) } : {}),
+            ...(dimensions && Object.keys(dimensions).length ? { quota_dimensions: dimensions } : {})
+        };
+    }).filter(Boolean) : [];
+    return {
+        ...(source.code != null ? { code: typeof source.code === 'number' ? source.code : sanitizeClientProviderText(source.code, 80) } : {}),
+        ...(source.type != null ? { type: sanitizeClientProviderText(source.type, 120) } : {}),
+        ...(source.status != null ? { status: sanitizeClientProviderText(source.status, 120) } : {}),
+        ...(source.message != null ? { message: sanitizeClientProviderText(source.message) } : {}),
+        ...(quota.length ? { quota } : {}),
+        ...(source.retry_delay != null ? { retry_delay: sanitizeClientProviderText(source.retry_delay, 80) } : {})
+    };
+}
+
 if (typeof window !== 'undefined') window.setAIProvider = setAIProvider;
 
 // Legacy helpers remain available for rollback/tests, while production calls
@@ -313,6 +347,7 @@ async function requestAIJson(url, options = {}, timeoutMs = AI_REQUEST_TIMEOUT_M
                 throw parseError;
             }
             const providerTimeout = data?.error?.code === 'UPSTREAM_TIMEOUT' || data?.code === 'UPSTREAM_TIMEOUT' || response.status === 504;
+            const providerError = normalizeClientProviderError(data);
             const transportDiagnostic = {
                 provider: data?.provider || getAIProvider(),
                 model: data?.model || getAIModel(),
@@ -325,8 +360,12 @@ async function requestAIJson(url, options = {}, timeoutMs = AI_REQUEST_TIMEOUT_M
                 http_status: response.status ?? null,
                 http_status_text: response.statusText || null,
                 response_content_type: contentType,
-                provider_error_type: data?.error?.type || data?.error?.name || null,
-                provider_error_code: data?.error?.code || data?.code || null,
+                provider_error_type: providerError?.status || data?.error?.type || data?.error?.name || null,
+                provider_error_code: providerError?.code || data?.error?.code || data?.code || null,
+                provider_error_status: providerError?.status || null,
+                provider_error_message: providerError?.message || null,
+                provider_quota_details: providerError?.quota || [],
+                provider_retry_delay: providerError?.retry_delay || null,
                 parse_status: 'OK',
                 abort_reason: providerTimeout ? 'SERVER_UPSTREAM_TIMEOUT' : null
             };
@@ -336,7 +375,7 @@ async function requestAIJson(url, options = {}, timeoutMs = AI_REQUEST_TIMEOUT_M
                 const error = new Error(`${getAIProvider()} HTTP ${response.status}`);
                 error.name = 'AIHttpError';
                 error.http_status = response.status;
-                error.provider_error = data?.error || null;
+                error.provider_error = providerError;
                 error.transport_diagnostic = transportDiagnostic;
                 throw error;
             }

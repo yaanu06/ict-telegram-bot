@@ -234,7 +234,61 @@ describe('market and AI proxy boundary', () => {
         try {
             const response = await request(server, 'POST', '/api/ai/chat', { 'content-type': 'application/json' }, JSON.stringify({ messages: [{ role: 'user', content: 'select' }] }));
             expect(response.status).toBe(429);
-            expect(response.body.error.status).toBe('RESOURCE_EXHAUSTED');
+            expect(response.body).toMatchObject({ error: 'Upstream AI request failed', provider: 'GEMINI', status: 429, provider_error: { code: 429, status: 'RESOURCE_EXHAUSTED' } });
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
+    test('preserves safe Gemini quota and retry metadata on a structured 429', async () => {
+        const providerPayload = {
+            error: {
+                code: 429,
+                status: 'RESOURCE_EXHAUSTED',
+                message: 'Quota exceeded for requests per minute.',
+                details: [
+                    { '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [{ quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests', quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', quotaValue: '10', quotaDimensions: { model: 'gemini-3.5-flash-lite', location: 'global' } }] },
+                    { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: { seconds: '12', nanos: 0 } }
+                ]
+            }
+        };
+        const server = createProxyServer({
+            env: { AI_PROVIDER: 'GEMINI', GEMINI_API_KEY: 'gemini-secret', PROXY_MAX_REQUESTS: '20' },
+            fetchImpl: jest.fn(async () => ({ status: 429, text: async () => JSON.stringify(providerPayload) }))
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const response = await request(server, 'POST', '/api/ai/chat', { 'content-type': 'application/json' }, JSON.stringify({ messages: [{ role: 'user', content: 'select' }] }));
+            expect(response.body.provider_error).toEqual({
+                code: 429,
+                status: 'RESOURCE_EXHAUSTED',
+                message: 'Quota exceeded for requests per minute.',
+                quota: [{ quota_metric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests', quota_id: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', quota_value: '10', quota_dimensions: { model: 'gemini-3.5-flash-lite', location: 'global' } }],
+                retry_delay: '12s'
+            });
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
+    test('sanitizes credential-like text and handles malformed Gemini errors without leaking the upstream body', async () => {
+        const responses = [
+            { status: 429, text: async () => JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'x-goog-api-key: gemini-secret' } }) },
+            { status: 502, text: async () => '<html>proxy failure with gemini-secret</html>' }
+        ];
+        const server = createProxyServer({
+            env: { AI_PROVIDER: 'GEMINI', GEMINI_API_KEY: 'gemini-secret', PROXY_MAX_REQUESTS: '20' },
+            fetchImpl: jest.fn(async () => responses.shift())
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const body = JSON.stringify({ messages: [{ role: 'user', content: 'select' }] });
+            const first = await request(server, 'POST', '/api/ai/chat', { 'content-type': 'application/json' }, body);
+            const second = await request(server, 'POST', '/api/ai/chat', { 'content-type': 'application/json' }, body);
+            expect(JSON.stringify(first.body)).not.toContain('gemini-secret');
+            expect(first.body.provider_error.message).toContain('[REDACTED]');
+            expect(second.body).toEqual({ error: 'Upstream AI request failed', provider: 'GEMINI', status: 502, provider_error: null });
+            expect(JSON.stringify(second.body)).not.toContain('proxy failure');
         } finally {
             await new Promise(resolve => server.close(resolve));
         }

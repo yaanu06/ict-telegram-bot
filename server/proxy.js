@@ -176,6 +176,77 @@ function normalizeGeminiResponse(payload, model) {
     };
 }
 
+const PROVIDER_MESSAGE_SECRET_PATTERN = /(?:(?:gemini[_-]?api[_-]?key|deepseek[_-]?api[_-]?key|x-goog-api-key|authorization)\s*[:=]?\s*(?:bearer\s+)?[^\s,;]+|bearer\s+[^\s,;]+)/ig;
+
+function sanitizeProviderText(value, maxLength = 1000) {
+    if (value == null) return null;
+    return String(value).slice(0, maxLength).replace(PROVIDER_MESSAGE_SECRET_PATTERN, '[REDACTED]');
+}
+
+function safeProviderDimensions(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const dimensions = {};
+    for (const [key, item] of Object.entries(value).slice(0, 16)) {
+        if (!/^[A-Za-z0-9_.-]{1,80}$/.test(key)) continue;
+        if (['string', 'number', 'boolean'].includes(typeof item)) dimensions[key] = sanitizeProviderText(item, 160);
+    }
+    return Object.keys(dimensions).length ? dimensions : null;
+}
+
+function normalizeRetryDelay(value) {
+    if (value == null) return null;
+    if (typeof value === 'string' || typeof value === 'number') return sanitizeProviderText(value, 80);
+    if (typeof value !== 'object' || Array.isArray(value)) return null;
+    const seconds = value.seconds ?? value.Seconds;
+    const nanos = value.nanos ?? value.Nanos;
+    if (seconds == null && nanos == null) return null;
+    const secondsText = seconds == null ? '' : `${seconds}s`;
+    const nanosText = nanos == null || Number(nanos) === 0 ? '' : ` ${nanos}ns`;
+    return sanitizeProviderText(`${secondsText}${nanosText}`.trim(), 80);
+}
+
+function extractProviderQuota(details = []) {
+    if (!Array.isArray(details)) return [];
+    const quota = [];
+    for (const detail of details.slice(0, 24)) {
+        if (!detail || typeof detail !== 'object') continue;
+        const violations = Array.isArray(detail.violations) ? detail.violations : [detail];
+        for (const violation of violations.slice(0, 16)) {
+            if (!violation || typeof violation !== 'object') continue;
+            const metric = violation.quotaMetric ?? violation.quota_metric;
+            const id = violation.quotaId ?? violation.quota_id;
+            const value = violation.quotaValue ?? violation.quota_value;
+            const dimensions = safeProviderDimensions(violation.quotaDimensions ?? violation.quota_dimensions);
+            if (metric != null || id != null || value != null || dimensions) {
+                quota.push({
+                    ...(metric != null ? { quota_metric: sanitizeProviderText(metric, 200) } : {}),
+                    ...(id != null ? { quota_id: sanitizeProviderText(id, 200) } : {}),
+                    ...(value != null ? { quota_value: sanitizeProviderText(value, 120) } : {}),
+                    ...(dimensions ? { quota_dimensions: dimensions } : {})
+                });
+            }
+        }
+    }
+    return quota;
+}
+
+function sanitizeProviderError(payload = {}) {
+    const source = payload?.error && typeof payload.error === 'object' && !Array.isArray(payload.error)
+        ? payload.error
+        : {};
+    const details = Array.isArray(source.details) ? source.details : [];
+    const retryDetail = details.find(detail => detail && typeof detail === 'object' && (detail.retryDelay != null || detail.retry_delay != null));
+    const quota = extractProviderQuota(details);
+    const providerError = {
+        ...(source.code != null ? { code: typeof source.code === 'number' ? source.code : sanitizeProviderText(source.code, 80) } : {}),
+        ...(source.status != null ? { status: sanitizeProviderText(source.status, 120) } : {}),
+        ...(source.message != null ? { message: sanitizeProviderText(source.message) } : {}),
+        ...(quota.length ? { quota } : {}),
+        ...((retryDetail?.retryDelay ?? retryDetail?.retry_delay) != null ? { retry_delay: normalizeRetryDelay(retryDetail.retryDelay ?? retryDetail.retry_delay) } : {})
+    };
+    return Object.keys(providerError).length ? providerError : null;
+}
+
 async function proxyJson(fetchImpl, url, options = {}, timeoutMs = 10_000) {
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     const timer = setTimeout(() => controller?.abort(), Math.max(1, Number(timeoutMs) || 10_000));
@@ -308,9 +379,15 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'x-goog-api-key': geminiKey, 'User-Agent': 'ict-telegram-bot-proxy/1.0' },
                         body: JSON.stringify(geminiRequestBody(body))
                     }, upstreamTimeoutMs);
-                    return jsonResponse(res, result.status, result.status >= 200 && result.status < 300
-                        ? normalizeGeminiResponse(result.payload, geminiModel)
-                        : result.payload, origin);
+                    if (result.status < 200 || result.status >= 300) {
+                        return jsonResponse(res, result.status, {
+                            error: 'Upstream AI request failed',
+                            provider: 'GEMINI',
+                            status: result.status,
+                            provider_error: sanitizeProviderError(result.payload)
+                        }, origin);
+                    }
+                    return jsonResponse(res, result.status, normalizeGeminiResponse(result.payload, geminiModel), origin);
                 }
                 const deepSeekBody = { ...body, model: 'deepseek-chat', stream: false };
                 delete deepSeekBody.response_schema;
@@ -353,4 +430,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { MAX_BODY_BYTES, DEFAULT_UPSTREAM_TIMEOUT_MS, MAX_UPSTREAM_TIMEOUT_MS, DEFAULT_AI_PROVIDER, DEFAULT_GEMINI_MODEL, TIMEFRAME_INTERVALS, normalizeSymbol, normalizeAIProvider, geminiContents, geminiRequestBody, normalizeGeminiResponse, validateMarketRequest, createRateLimiter, createProxyServer };
+module.exports = { MAX_BODY_BYTES, DEFAULT_UPSTREAM_TIMEOUT_MS, MAX_UPSTREAM_TIMEOUT_MS, DEFAULT_AI_PROVIDER, DEFAULT_GEMINI_MODEL, TIMEFRAME_INTERVALS, normalizeSymbol, normalizeAIProvider, geminiContents, geminiRequestBody, normalizeGeminiResponse, sanitizeProviderError, validateMarketRequest, createRateLimiter, createProxyServer };

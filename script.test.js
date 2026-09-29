@@ -2962,13 +2962,32 @@ describe('provider-neutral Gemini AI boundary', () => {
         ctx.window.__ICT_AI_PROVIDER__ = 'GEMINI';
         ctx.fetch = jest.fn(() => Promise.resolve({
             ok: false, status: 429, statusText: 'Too Many Requests', headers: { get: () => 'application/json' },
-            text: async () => JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED' } })
+            text: async () => JSON.stringify({ error: 'Upstream AI request failed', provider: 'GEMINI', status: 429, provider_error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'Quota exceeded', quota: [{ quota_metric: 'requests', quota_id: 'per-minute', quota_value: '10', quota_dimensions: { model: 'gemini-3.5-flash-lite' } }], retry_delay: '12s' } })
         }));
         const live = { adaptive_setup_candidates: [] };
         const result = await ctx.askAIToFindSetup('context', 1.1, 'selector', live);
         expect(result).toBeNull();
         expect(live.decision_handoff_audit).toMatchObject({ selector_error_code: 'AI_RATE_LIMITED' });
-        expect(live.decision_handoff_audit.selector_transport_diagnostic).toMatchObject({ provider: 'GEMINI', http_status: 429, transport_status: 'HTTP_ERROR' });
+        expect(live.decision_handoff_audit.selector_transport_diagnostic).toMatchObject({
+            provider: 'GEMINI', http_status: 429, transport_status: 'HTTP_ERROR', provider_error_code: 429,
+            provider_error_status: 'RESOURCE_EXHAUSTED', provider_error_message: 'Quota exceeded',
+            provider_quota_details: [{ quota_metric: 'requests', quota_id: 'per-minute', quota_value: '10', quota_dimensions: { model: 'gemini-3.5-flash-lite' } }],
+            provider_retry_delay: '12s'
+        });
+    });
+
+    it('keeps non-rate-limit Gemini HTTP errors distinct while preserving safe metadata', async () => {
+        const ctx = getContext();
+        ctx.window.__ICT_PROXY_BASE_URL__ = 'https://proxy.example';
+        ctx.window.__ICT_AI_PROVIDER__ = 'GEMINI';
+        ctx.fetch = jest.fn(() => Promise.resolve({
+            ok: false, status: 500, statusText: 'Server Error', headers: { get: () => 'application/json' },
+            text: async () => JSON.stringify({ error: 'Upstream AI request failed', provider: 'GEMINI', status: 500, provider_error: { code: 500, status: 'INTERNAL', message: 'provider failed' } })
+        }));
+        const live = { adaptive_setup_candidates: [] };
+        await ctx.askAIToFindSetup('context', 1.1, 'selector', live);
+        expect(live.decision_handoff_audit).toMatchObject({ selector_error_code: 'AI_HTTP_500' });
+        expect(live.decision_handoff_audit.selector_transport_diagnostic).toMatchObject({ provider_error_status: 'INTERNAL', provider_error_message: 'provider failed' });
     });
 });
 
