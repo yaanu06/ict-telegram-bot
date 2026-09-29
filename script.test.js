@@ -1698,6 +1698,137 @@ describe('market phase aware candidate selection', () => {
     });
 });
 
+describe('phase selection audit observability', () => {
+    const auditCandidate = (overrides = {}) => ({
+        id: 'audit-candidate',
+        direction: 'SELL',
+        strategy_label: 'MSNR',
+        strategy_setup: { primary: 'MSNR', label: 'MSNR' },
+        candidate_role: 'ORIGINAL_THESIS_POI',
+        timeframe: '4H',
+        setup_timeframe: '4H',
+        execution_timeframe: '1H',
+        execution_model: 'PENDING_LIMIT',
+        entry_model: 'PENDING_LIMIT',
+        event_time: 1790668800000,
+        zone_type: 'MSNR',
+        zone_low: 4278,
+        zone_high: 4279,
+        entry: 4278.67,
+        stop_loss: 4331.34,
+        structural_invalidation: { level: 4331.34, source: 'MSNR_ZONE_INVALIDATION' },
+        tp1: 4129.51,
+        tp2: 4121.75,
+        tp3: 4121.26,
+        actual_rr: 2.8,
+        target_map: [{ id: 'target-original', target_type: 'OB', primary_target_source: 'OPPOSING_OB', target_lifecycle_state: 'UNFULFILLED' }],
+        freshness: 'FRESH',
+        mitigation_state: 'UNMITIGATED',
+        entry_consumed: false,
+        still_actionable_today: true,
+        opportunity_status: 'FRESH_PENDING_TODAY',
+        delivery_fraction: 0.8,
+        remaining_reward_fraction: 0.2,
+        current_opportunity_relevance: { candidate_role: 'ORIGINAL_THESIS_POI', continuation_state: 'LATE_DELIVERY', remaining_structural_objectives: 1 },
+        quality: { final_confidence: 88 },
+        ...overrides
+    });
+
+    const auditContext = candidates => ({
+        snapshot_id: 'TVKIT:XAU_USD:test-snapshot',
+        pair: 'XAU/USD',
+        current_price: 4143.5,
+        as_of_time: 1790672400000,
+        as_of_time_utc: '2026-09-29T08:00:00.000Z',
+        session: { name: 'OFF-HOURS' },
+        market_context: {},
+        historyCache: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map((tf, index) => [tf, [{ t: 1790670000000 + index * 60000, o: 1, h: 2, l: 0, c: 1, is_closed: true }]])),
+        last_closed_candle_time: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, 1790670000000])),
+        adaptive_setup_candidates: candidates,
+        valid_deterministic_candidates: candidates,
+        setup_candidate_audit: { raw_candidate_count: candidates.length },
+        candidate_pipeline: { raw_candidates: candidates.length }
+    });
+
+    it('records every pre-AI candidate, exact selector-visible IDs, roles, and one snapshot identity', () => {
+        const ctx = getContext();
+        const original = auditCandidate({ id: 'original', candidate_role: 'ORIGINAL_THESIS_POI' });
+        const fresh = auditCandidate({ id: 'fresh', candidate_role: 'FRESH_CONTINUATION_POI', timeframe: '1H', setup_timeframe: '1H', zone_type: 'FVG', current_opportunity_relevance: { candidate_role: 'FRESH_CONTINUATION_POI', continuation_state: 'CONTINUATION_READY' } });
+        const live = auditContext([original, fresh]);
+        const beforeIds = live.adaptive_setup_candidates.map(candidate => candidate.id);
+        const audit = ctx.buildPhaseSelectionAudit(live);
+        ctx.buildAIPrompt(live, '');
+        ctx.capturePhaseSelectionDeepSeekVisibility(live, {
+            adaptive_setup_candidates: [original, fresh],
+            candidate_catalog: [
+                { ...original, catalog_status: 'VALID_SELECTABLE' },
+                { ...fresh, catalog_status: 'VALID_SELECTABLE' }
+            ]
+        });
+        expect(audit.candidates_before_ai.map(candidate => candidate.candidate_id)).toEqual(['original', 'fresh']);
+        expect(live.phase_selection_audit.deepseek_candidate_ids).toEqual(['original', 'fresh']);
+        expect(live.phase_selection_audit.deepseek_selectable_candidate_ids).toEqual(['original', 'fresh']);
+        expect(live.phase_selection_audit.candidate_pipeline_counts.by_role.candidates_before_ai).toEqual({ ORIGINAL_THESIS_POI: 1, FRESH_CONTINUATION_POI: 1 });
+        expect(live.phase_selection_audit.snapshot_id).toBe(live.snapshot_id);
+        expect(live.phase_selection_audit.closed_candles['1D']).toEqual(expect.objectContaining({ candle_count: 1 }));
+        expect(live.adaptive_setup_candidates.map(candidate => candidate.id)).toEqual(beforeIds);
+        expect(JSON.stringify(live.phase_selection_audit)).not.toMatch(/DEEPSEEK_API_KEY|authorization|Bearer|GITHUB_PAT/);
+    });
+
+    it('records exact preferred and fallback verification results without changing the final candidate', () => {
+        const ctx = getContext();
+        const original = auditCandidate({ id: 'original' });
+        const fresh = auditCandidate({ id: 'fresh', candidate_role: 'FRESH_CONTINUATION_POI', current_opportunity_relevance: { candidate_role: 'FRESH_CONTINUATION_POI' } });
+        const live = auditContext([original, fresh]);
+        const audit = ctx.buildPhaseSelectionAudit(live);
+        audit.deepseek_phase_response = { preferred_candidate_ids: ['fresh'], fallback_candidate_ids: ['original'] };
+        ctx.updatePhaseSelectionAudit(live, audit);
+        ctx.recordPhaseSelectionResolutionAudit(live, {
+            resolution_status: 'FALLBACK_SELECTED',
+            ai_selected_candidate_id: 'fresh',
+            preferred_candidate_ids: ['fresh'],
+            fallback_candidate_ids: ['original'],
+            fallback_allowed: true,
+            fallback_used: true,
+            fallback_reason: 'Preferred candidate failed deterministic validation.',
+            final_candidate_id: 'original',
+            failures: [{ candidate_id: 'fresh', source: 'preferred_candidate_ids', code: 'DETERMINISTIC_INVALID', failures: [{ code: 'NO_UNFULFILLED_TARGET' }] }],
+            verification_results: [
+                { candidate_id: 'fresh', source: 'preferred_candidate_ids', valid: false, failure_codes: ['NO_UNFULFILLED_TARGET'] },
+                { candidate_id: 'original', source: 'fallback_candidate_ids', valid: true, failure_codes: [], failures: [] }
+            ]
+        });
+        expect(live.phase_selection_audit.phase_resolution.preferred_candidate_verification[0]).toEqual(expect.objectContaining({ candidate_id: 'fresh', valid: false }));
+        expect(live.phase_selection_audit.phase_resolution.fallback_used).toBe(true);
+        expect(live.phase_selection_audit.final_selection).toEqual(expect.objectContaining({ final_candidate_id: 'original', final_candidate_role: 'ORIGINAL_THESIS_POI', selection_path: 'FALLBACK_SELECTED', original_thesis_used: true, fresh_candidate_used: false }));
+    });
+
+    it('records unknown references and pipeline counts while remaining neutral about selection', () => {
+        const ctx = getContext();
+        const fresh = auditCandidate({ id: 'fresh', candidate_role: 'FRESH_CONTINUATION_POI', current_opportunity_relevance: { candidate_role: 'FRESH_CONTINUATION_POI' } });
+        const live = auditContext([fresh]);
+        const audit = ctx.buildPhaseSelectionAudit(live);
+        audit.deepseek_phase_response = { selected_candidate_id: 'missing', preferred_candidate_ids: ['missing'] };
+        ctx.updatePhaseSelectionAudit(live, audit);
+        const resolution = ctx.resolvePhaseAwareCandidateSelection({ decision: 'SELECT', selected_candidate_id: 'missing', market_phase: 'RETRACEMENT', preferred_opportunity_role: 'FRESH_CONTINUATION_POI', preferred_candidate_ids: ['missing'], fallback_allowed: false }, live);
+        ctx.recordPhaseSelectionResolutionAudit(live, resolution);
+        expect(live.phase_selection_audit.phase_resolution.failures).toEqual(expect.arrayContaining([
+            expect.objectContaining({ code: 'AI_CANDIDATE_REFERENCE_NOT_FOUND', candidate_id: 'missing' })
+        ]));
+        expect(live.phase_selection_audit.candidate_pipeline_counts).toEqual(expect.objectContaining({ discovered_candidate_count: 1, role_classified_candidate_count: 1, deterministically_valid_candidate_count: 1, final_candidate_count: 0 }));
+        expect(resolution.final_candidate_id).toBeNull();
+    });
+
+    it('carries the audit into the canonical saved setup signal without changing public trade fields', () => {
+        const ctx = getContext();
+        const audit = { schema_version: 1, snapshot_id: 'TVKIT:XAU_USD:test-snapshot', candidates_before_ai: [] };
+        const output = ctx.buildTodayOpportunityOutput({ state: 'NO_TRADE_TODAY', phase_selection_audit: audit }, 'XAU/USD', 4143.5, 1790672400000, true, {}, {});
+        expect(output.trade_signal.phase_selection_audit).toBe(audit);
+        expect(output.trade_signal.trade_type).toBe('WAIT');
+        expect(output.trade_signal.pair).toBe('XAU/USD');
+    });
+});
+
 describe('institutional-style zone confluence ranking', () => {
     it('rewards a same-direction entry zone nested inside higher-timeframe demand or a breaker', () => {
         const ctx = getContext();

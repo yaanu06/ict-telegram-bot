@@ -6344,6 +6344,250 @@ function normalizeMarketPhaseSelection(value = {}, inherited = {}) {
     };
 }
 
+const PHASE_SELECTION_AUDIT_TIMEFRAMES = ['1D', '4H', '1H', '15M', '5M'];
+
+function getPhaseSelectionCandidateRole(candidate = {}) {
+    return candidate.candidate_role
+        || candidate.current_opportunity_relevance?.candidate_role
+        || getCandidateOpportunityRole(candidate)
+        || null;
+}
+
+function buildPhaseSelectionCandidateAuditRecord(candidate = {}, catalogStatus = null, deterministicValid = null) {
+    const target = Array.isArray(candidate.target_map) ? candidate.target_map[0] || {} : {};
+    const invalidation = candidate.structural_invalidation || candidate.structural_invalidation_detail || null;
+    const relevance = candidate.current_opportunity_relevance || {};
+    const strategySetup = candidate.strategy_setup || {};
+    const role = getPhaseSelectionCandidateRole(candidate);
+    const strategyFamily = [...new Set([
+        candidate.strategy_label,
+        candidate.strategy,
+        strategySetup.label,
+        strategySetup.primary,
+        ...(Array.isArray(candidate.strategy_confluence) ? candidate.strategy_confluence : []),
+        ...(Array.isArray(strategySetup.confirmations) ? strategySetup.confirmations : [])
+    ].filter(Boolean))];
+    return {
+        candidate_id: candidate.id || null,
+        candidate_role: role,
+        direction: candidate.direction || null,
+        strategy: candidate.strategy_label || candidate.strategy || strategySetup.label || strategySetup.primary || null,
+        strategy_family: strategyFamily,
+        pattern_types: [...new Set([candidate.zone_type, candidate.zone_origin, candidate.entry_region_source, candidate.zone?.type].filter(Boolean))],
+        setup_timeframe: candidate.setup_timeframe || candidate.timeframe || null,
+        execution_timeframe: candidate.execution_timeframe || candidate.timeframe || null,
+        execution_model: candidate.execution_model || candidate.entry_model || null,
+        entry_model: candidate.entry_model || candidate.execution_model || null,
+        formation_time: candidate.event_time || candidate.execution_zone_created_time || candidate.zone?.created_time || null,
+        age: {
+            event_age_hours: candidate.event_age_hours ?? null,
+            event_age_ms: Number.isFinite(Number(candidate.event_time)) && Number.isFinite(Number(candidate.as_of_time))
+                ? Number(candidate.as_of_time) - Number(candidate.event_time) : null
+        },
+        zone: {
+            type: candidate.zone_type || candidate.zone?.type || null,
+            low: candidate.zone_low ?? candidate.entry_region_low ?? candidate.zone?.low ?? null,
+            high: candidate.zone_high ?? candidate.entry_region_high ?? candidate.zone?.high ?? null
+        },
+        entry: candidate.entry ?? null,
+        structural_invalidation: invalidation,
+        stop_loss: candidate.stop_loss ?? null,
+        targets: {
+            tp1: candidate.tp1 ?? null,
+            tp2: candidate.tp2 ?? null,
+            tp3: candidate.tp3 ?? null,
+            primary_target_id: target.id || candidate.primary_target_id || null,
+            primary_target_type: target.target_type || candidate.target_type || null,
+            primary_target_source: target.primary_target_source || target.source || candidate.primary_target_source || null,
+            target_lifecycle_state: target.target_lifecycle_state || target.lifecycle_state || candidate.target_lifecycle_state || null
+        },
+        risk_reward: candidate.actual_rr ?? candidate.rr_tp1 ?? candidate.risk_reward ?? null,
+        freshness_state: candidate.freshness || candidate.freshness_state || null,
+        mitigation_state: candidate.mitigation_state || candidate.mitigation || null,
+        mitigation_count: candidate.mitigation_count ?? candidate.entry_touch_count_after_signal ?? null,
+        entry_consumed: candidate.entry_consumed ?? null,
+        still_actionable_today: candidate.still_actionable_today ?? null,
+        opportunity_status: candidate.opportunity_status || candidate.lifecycle_state || null,
+        continuation_state: candidate.continuation_state || relevance.continuation_state || null,
+        delivery_fraction: candidate.delivery_fraction ?? relevance.delivery_fraction ?? null,
+        remaining_reward_fraction: candidate.remaining_reward_fraction ?? relevance.remaining_reward_fraction ?? null,
+        original_reward_path: candidate.original_reward_path ?? relevance.original_reward_path ?? null,
+        remaining_reward_path: candidate.remaining_reward_path ?? relevance.remaining_reward_path ?? null,
+        remaining_structural_objectives: candidate.remaining_structural_objectives ?? relevance.remaining_structural_objectives ?? null,
+        current_opportunity_relevance: relevance,
+        deterministic_valid: deterministicValid,
+        hard_rejections: candidate.hard_rejections || candidate.rejection_codes || candidate.rejection_reasons || [],
+        quality_warnings: candidate.quality_warnings || candidate.quality?.warnings || [],
+        catalog_status: catalogStatus
+    };
+}
+
+function phaseSelectionRoleCounts(records = []) {
+    return records.reduce((counts, record) => {
+        const role = record?.candidate_role || 'UNCLASSIFIED';
+        counts[role] = (counts[role] || 0) + 1;
+        return counts;
+    }, {});
+}
+
+function buildPhaseSelectionSnapshotIdentity(liveMarketContext = {}) {
+    const historyCache = liveMarketContext.historyCache || {};
+    const closedCandles = Object.fromEntries(PHASE_SELECTION_AUDIT_TIMEFRAMES.map(tf => {
+        const candles = getClosedHistory(historyCache, tf);
+        return [tf, {
+            last_closed_candle_time: liveMarketContext.last_closed_candle_time?.[tf] || candles.at(-1)?.t || null,
+            candle_count: candles.length
+        }];
+    }));
+    return {
+        snapshot_id: liveMarketContext.snapshot_id || null,
+        pair: liveMarketContext.pair || null,
+        provider: getMarketDataProvider(),
+        scan_as_of: liveMarketContext.as_of_time_utc || liveMarketContext.as_of_time || null,
+        current_price: liveMarketContext.current_price ?? null,
+        closed_candles: closedCandles
+    };
+}
+
+function buildPhaseSelectionAudit(liveMarketContext = {}) {
+    const candidates = Array.isArray(liveMarketContext.adaptive_setup_candidates)
+        ? liveMarketContext.adaptive_setup_candidates : [];
+    const validIds = new Set((liveMarketContext.valid_deterministic_candidates || []).map(candidate => candidate?.id || candidate).filter(Boolean));
+    const candidateRecords = candidates.map(candidate => buildPhaseSelectionCandidateAuditRecord(candidate, 'VALID_SELECTABLE', validIds.size ? validIds.has(candidate.id) : true));
+    const audit = {
+        schema_version: 1,
+        snapshot_id: liveMarketContext.snapshot_id || null,
+        pair: liveMarketContext.pair || null,
+        provider: getMarketDataProvider(),
+        scan_as_of: liveMarketContext.as_of_time_utc || liveMarketContext.as_of_time || null,
+        current_price: liveMarketContext.current_price ?? null,
+        closed_candles: buildPhaseSelectionSnapshotIdentity(liveMarketContext).closed_candles,
+        candidates_before_ai: candidateRecords,
+        deepseek_candidate_ids: [],
+        deepseek_selectable_candidate_ids: [],
+        deepseek_candidate_records: [],
+        deepseek_candidate_catalog: [],
+        analyst_phase_response: null,
+        deepseek_phase_response: null,
+        phase_resolution: null,
+        final_selection: null,
+        candidate_pipeline_counts: {
+            discovered_candidate_count: Number(liveMarketContext.setup_candidate_audit?.raw_candidate_count) || Number(liveMarketContext.candidate_pipeline?.raw_candidates) || candidates.length,
+            role_classified_candidate_count: candidateRecords.filter(record => record.candidate_role).length,
+            deterministically_valid_candidate_count: validIds.size || candidates.length,
+            deepseek_visible_candidate_count: 0,
+            preferred_candidate_count: 0,
+            fallback_candidate_count: 0,
+            final_candidate_count: 0,
+            by_role: {
+                candidates_before_ai: phaseSelectionRoleCounts(candidateRecords),
+                deepseek_visible: {},
+                preferred: {},
+                fallback: {},
+                final: {}
+            }
+        }
+    };
+    return audit;
+}
+
+function updatePhaseSelectionAudit(liveMarketContext = {}, audit = null) {
+    if (!liveMarketContext || !audit) return audit;
+    liveMarketContext.phase_selection_audit = audit;
+    if (liveMarketContext.today_opportunity) liveMarketContext.today_opportunity.phase_selection_audit = audit;
+    return audit;
+}
+
+function capturePhaseSelectionDeepSeekVisibility(liveMarketContext = {}, compactContext = {}) {
+    const audit = liveMarketContext.phase_selection_audit || buildPhaseSelectionAudit(liveMarketContext);
+    const selectable = Array.isArray(compactContext.adaptive_setup_candidates) ? compactContext.adaptive_setup_candidates : [];
+    const catalog = Array.isArray(compactContext.candidate_catalog) ? compactContext.candidate_catalog : [];
+    const visibleIds = [...new Set(catalog.map(candidate => candidate?.id).filter(Boolean))];
+    const visibleRecords = catalog.map(candidate => buildPhaseSelectionCandidateAuditRecord(candidate, candidate.catalog_status, candidate.catalog_status === 'VALID_SELECTABLE' ? true : null));
+    audit.deepseek_candidate_ids = visibleIds;
+    audit.deepseek_selectable_candidate_ids = selectable.map(candidate => candidate?.id).filter(Boolean);
+    audit.deepseek_candidate_records = selectable.map(candidate => buildPhaseSelectionCandidateAuditRecord(candidate, 'VALID_SELECTABLE', true));
+    audit.deepseek_candidate_catalog = visibleRecords;
+    audit.candidate_pipeline_counts.deepseek_visible_candidate_count = visibleIds.length;
+    audit.candidate_pipeline_counts.by_role.deepseek_visible = phaseSelectionRoleCounts(visibleRecords);
+    return updatePhaseSelectionAudit(liveMarketContext, audit);
+}
+
+function buildPhaseSelectionResponseAudit(selector = {}, phaseSelection = {}) {
+    return {
+        decision: selector.decision || null,
+        market_phase: phaseSelection.market_phase || null,
+        directional_thesis: phaseSelection.directional_thesis || null,
+        thesis_status: phaseSelection.thesis_status || null,
+        original_thesis_status: phaseSelection.original_thesis_status || null,
+        preferred_opportunity_role: phaseSelection.preferred_opportunity_role || null,
+        preferred_candidate_ids: phaseSelection.preferred_candidate_ids || [],
+        fallback_candidate_ids: phaseSelection.fallback_candidate_ids || [],
+        fallback_opportunity_role: phaseSelection.fallback_opportunity_role || null,
+        fallback_allowed: phaseSelection.fallback_allowed === true,
+        wait_if_preferred_candidates_fail: phaseSelection.wait_if_preferred_candidates_fail === true,
+        phase_evidence_ids: phaseSelection.phase_evidence_ids || [],
+        conflicting_evidence_ids: phaseSelection.conflicting_evidence_ids || [],
+        selected_candidate_id: typeof selector.selected_candidate_id === 'string' ? selector.selected_candidate_id : null,
+        reasoning: sanitizeScanReplayValue(typeof selector.reasoning === 'string' ? selector.reasoning.slice(0, 1600) : selector.reasoning || null),
+        unresolved_candidate_references: [],
+        unresolved_evidence_references: phaseSelection.phase_evidence_resolution?.unresolved_ids || [],
+        unresolved_conflicting_evidence_references: phaseSelection.phase_evidence_resolution?.conflicting_unresolved_ids || []
+    };
+}
+
+function recordPhaseSelectionResolutionAudit(liveMarketContext = {}, resolution = null) {
+    if (!resolution) return null;
+    const audit = liveMarketContext.phase_selection_audit || buildPhaseSelectionAudit(liveMarketContext);
+    const failures = Array.isArray(resolution.failures) ? resolution.failures : [];
+    const unresolvedCandidates = failures.filter(failure => failure.code === 'AI_CANDIDATE_REFERENCE_NOT_FOUND').map(failure => failure.candidate_id).filter(Boolean);
+    if (audit.deepseek_phase_response) {
+        audit.deepseek_phase_response.unresolved_candidate_references = [...new Set(unresolvedCandidates)];
+        audit.deepseek_phase_response.unresolved_evidence_references = resolution.phase_evidence_resolution?.unresolved_ids || audit.deepseek_phase_response.unresolved_evidence_references || [];
+        audit.deepseek_phase_response.unresolved_conflicting_evidence_references = resolution.phase_evidence_resolution?.conflicting_unresolved_ids || audit.deepseek_phase_response.unresolved_conflicting_evidence_references || [];
+    }
+    const preferredIds = resolution.preferred_candidate_ids || [];
+    const fallbackIds = resolution.fallback_candidate_ids || [];
+    const verificationResults = Array.isArray(resolution.verification_results) ? resolution.verification_results : [];
+    audit.phase_resolution = {
+        resolution_status: resolution.resolution_status || null,
+        ai_selected_candidate_id: resolution.ai_selected_candidate_id || null,
+        preferred_candidate_ids_considered: preferredIds,
+        preferred_candidate_verification: verificationResults.filter(result => result.source === 'preferred_candidate_ids' || result.source === 'preferred_role' || result.source === 'selected_candidate_id'),
+        fallback_candidate_ids_considered: fallbackIds,
+        fallback_candidate_verification: verificationResults.filter(result => result.source === 'fallback_candidate_ids' || result.source === 'fallback_role'),
+        fallback_allowed: resolution.fallback_allowed === true,
+        fallback_used: resolution.fallback_used === true,
+        fallback_reason: sanitizeScanReplayValue(resolution.fallback_reason || null),
+        final_candidate_id: resolution.final_candidate_id || null,
+        wait_reason: resolution.wait_reason || null,
+        failures
+    };
+    audit.candidate_pipeline_counts.preferred_candidate_count = preferredIds.length;
+    audit.candidate_pipeline_counts.fallback_candidate_count = fallbackIds.length;
+    const candidateById = new Map((liveMarketContext.adaptive_setup_candidates || []).map(candidate => [candidate?.id, candidate]));
+    audit.candidate_pipeline_counts.by_role.preferred = phaseSelectionRoleCounts(preferredIds.map(id => buildPhaseSelectionCandidateAuditRecord(candidateById.get(id) || { id }, null, null)));
+    audit.candidate_pipeline_counts.by_role.fallback = phaseSelectionRoleCounts(fallbackIds.map(id => buildPhaseSelectionCandidateAuditRecord(candidateById.get(id) || { id }, null, null)));
+    const finalCandidate = (liveMarketContext.adaptive_setup_candidates || []).find(candidate => candidate?.id === resolution.final_candidate_id);
+    audit.candidate_pipeline_counts.final_candidate_count = finalCandidate ? 1 : 0;
+    audit.candidate_pipeline_counts.by_role.final = finalCandidate ? { [getPhaseSelectionCandidateRole(finalCandidate) || 'UNCLASSIFIED']: 1 } : {};
+    audit.final_selection = {
+        final_candidate_id: finalCandidate?.id || null,
+        final_candidate_role: finalCandidate ? getPhaseSelectionCandidateRole(finalCandidate) : null,
+        final_strategy: finalCandidate?.strategy_label || finalCandidate?.strategy_setup?.label || finalCandidate?.strategy_setup?.primary || null,
+        final_entry: finalCandidate?.entry ?? null,
+        final_stop: finalCandidate?.stop_loss ?? null,
+        final_tp1: finalCandidate?.tp1 ?? null,
+        final_tp2: finalCandidate?.tp2 ?? null,
+        final_tp3: finalCandidate?.tp3 ?? null,
+        final_rr: finalCandidate?.actual_rr ?? finalCandidate?.rr_tp1 ?? finalCandidate?.risk_reward ?? null,
+        selection_path: resolution.resolution_status || null,
+        original_thesis_used: getPhaseSelectionCandidateRole(finalCandidate) === 'ORIGINAL_THESIS_POI',
+        fresh_candidate_used: ['FRESH_CONTINUATION_POI', 'FRESH_RETRACEMENT_POI'].includes(getPhaseSelectionCandidateRole(finalCandidate))
+    };
+    return updatePhaseSelectionAudit(liveMarketContext, audit);
+}
+
 function resolvePhaseAwareCandidateSelection(selector = {}, liveMarketContext = {}) {
     const inherited = liveMarketContext?.ai_analysis?.market_view || {};
     let phaseSelection = normalizeMarketPhaseSelection(selector, inherited);
@@ -6373,12 +6617,13 @@ function resolvePhaseAwareCandidateSelection(selector = {}, liveMarketContext = 
     const currentPrice = liveMarketContext.current_price;
     const asOfTime = liveMarketContext.as_of_time;
     const failures = [];
-    const validated = new Set();
+    const verificationResults = [];
     const checkCandidate = (candidate, source, requiredRole = phaseSelection.preferred_opportunity_role) => {
         if (!candidate) return null;
         const role = candidate.candidate_role || candidate.current_opportunity_relevance?.candidate_role || getCandidateOpportunityRole(candidate);
         if (requiredRole && role !== requiredRole) {
             failures.push({ candidate_id: candidate.id, code: 'ROLE_MISMATCH', expected_role: requiredRole, actual_role: role, source });
+            verificationResults.push({ candidate_id: candidate.id, source, valid: false, code: 'ROLE_MISMATCH', expected_role: requiredRole, actual_role: role });
             return null;
         }
         const invariant = validateExecutableCandidateInvariant(candidate, {
@@ -6386,7 +6631,13 @@ function resolvePhaseAwareCandidateSelection(selector = {}, liveMarketContext = 
             require_strategy_setup: false,
             timeframe_context: liveMarketContext.market_context?.timeframe_context || liveMarketContext.timeframe_context
         });
-        validated.add(candidate.id);
+        verificationResults.push({
+            candidate_id: candidate.id,
+            source,
+            valid: invariant.valid,
+            failure_codes: invariant.failures.map(failure => failure?.code || failure?.reason || String(failure)),
+            failures: invariant.failures
+        });
         if (!invariant.valid) {
             failures.push({ candidate_id: candidate.id, code: 'DETERMINISTIC_INVALID', failures: invariant.failures, source });
             return null;
@@ -6398,6 +6649,7 @@ function resolvePhaseAwareCandidateSelection(selector = {}, liveMarketContext = 
             const candidate = byId.get(id);
             if (!candidate) {
                 failures.push({ candidate_id: id, code: 'AI_CANDIDATE_REFERENCE_NOT_FOUND', source });
+                verificationResults.push({ candidate_id: id, source, valid: false, code: 'AI_CANDIDATE_REFERENCE_NOT_FOUND' });
                 continue;
             }
             const checked = checkCandidate(candidate, source, requiredRole);
@@ -6407,7 +6659,10 @@ function resolvePhaseAwareCandidateSelection(selector = {}, liveMarketContext = 
     };
     const selectedId = typeof selector.selected_candidate_id === 'string' ? selector.selected_candidate_id : null;
     const selectedCandidate = selectedId ? byId.get(selectedId) : null;
-    if (selectedId && !selectedCandidate) failures.push({ candidate_id: selectedId, code: 'AI_CANDIDATE_REFERENCE_NOT_FOUND', source: 'selected_candidate_id' });
+    if (selectedId && !selectedCandidate) {
+        failures.push({ candidate_id: selectedId, code: 'AI_CANDIDATE_REFERENCE_NOT_FOUND', source: 'selected_candidate_id' });
+        verificationResults.push({ candidate_id: selectedId, source: 'selected_candidate_id', valid: false, code: 'AI_CANDIDATE_REFERENCE_NOT_FOUND' });
+    }
 
     // A semantic role is authoritative over a conflicting raw selected ID.
     // The ID remains useful evidence, but it cannot make an original POI win
@@ -6422,7 +6677,8 @@ function resolvePhaseAwareCandidateSelection(selector = {}, liveMarketContext = 
                 ai_selected_candidate_id: selectedId,
                 final_candidate_id: checked.id,
                 fallback_used: false,
-                failures
+                failures,
+                verification_results: verificationResults
             };
         } else {
             failures.push({ candidate_id: selectedId, code: 'AI_SELECTED_ROLE_MISMATCH', expected_role: phaseSelection.preferred_opportunity_role, actual_role: selectedRole, source: 'selected_candidate_id' });
@@ -6435,7 +6691,8 @@ function resolvePhaseAwareCandidateSelection(selector = {}, liveMarketContext = 
             ai_selected_candidate_id: selectedId,
             final_candidate_id: checked.id,
             fallback_used: false,
-            failures
+            failures,
+            verification_results: verificationResults
         };
     }
 
@@ -6447,7 +6704,8 @@ function resolvePhaseAwareCandidateSelection(selector = {}, liveMarketContext = 
             ai_selected_candidate_id: selectedId,
             final_candidate_id: preferred.id,
             fallback_used: false,
-            failures
+            failures,
+            verification_results: verificationResults
         };
     } else if (phaseSelection.preferred_opportunity_role) {
         const preferred = rankCurrentOpportunityCandidates(candidates.filter(candidate => {
@@ -6477,7 +6735,8 @@ function resolvePhaseAwareCandidateSelection(selector = {}, liveMarketContext = 
             final_candidate_id: fallback.id,
             fallback_used: true,
             fallback_reason: phaseSelection.reason || 'Preferred current-role candidates were unavailable; the explicitly authorized fallback passed deterministic verification.',
-            failures
+            failures,
+            verification_results: verificationResults
         };
     }
 
@@ -6488,6 +6747,7 @@ function resolvePhaseAwareCandidateSelection(selector = {}, liveMarketContext = 
         final_candidate_id: null,
         fallback_used: false,
         failures,
+        verification_results: verificationResults,
         wait_reason: phaseSelection.wait_if_preferred_candidates_fail || phaseSelection.market_phase === 'TRANSITION_WAIT'
             ? 'The preferred current market phase has no deterministically valid candidate and no authorized fallback.'
             : 'No candidate matched the supplied market phase preference.'
@@ -9076,6 +9336,7 @@ function buildTodayOpportunityOutput(today, pairLocal, price, asOfMs, marketOpen
         preferred_opportunity_role: today?.preferred_opportunity_role || today?.market_phase_selection?.preferred_opportunity_role || null,
         market_phase_selection: today?.market_phase_selection || null,
         snapshot_id: today?.snapshot_id || null,
+        phase_selection_audit: today?.phase_selection_audit || null,
         confidence: ['TODAY_OPPORTUNITY', 'TRADE_READY'].includes(today?.state) ? today.confidence || 0 : 0,
         // Keep the public API's developing state stable.  WATCH_ONLY is a
         // display tier inside the opportunity stack, not a new top-level trade
@@ -9793,6 +10054,7 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         daily_bias: liveMarketContext.daily_bias || null,
         market_regime: liveMarketContext.market_regime || null,
         market_phase_selection: liveMarketContext.market_phase_selection || null,
+        phase_selection_audit: liveMarketContext.phase_selection_audit || null,
         market_evidence_package: liveMarketContext.market_evidence_package || null,
         ai_analysis: liveMarketContext.ai_analysis || null,
         hard_rejections: liveMarketContext.hard_rejections || [],
@@ -10885,6 +11147,10 @@ function buildAIPrompt(liveMarketContext, candleData) {
     ].join('\n');
 
     const compactContext = compactAIContext(liveMarketContext);
+    // Capture the exact candidate section used to build the selector request.
+    // This only records sanitized deterministic facts; it does not alter the
+    // prompt, candidate ordering, or selection behavior.
+    capturePhaseSelectionDeepSeekVisibility(liveMarketContext, compactContext);
     const compactFacts = JSON.stringify(compactContext, null, 2);
     console.log('[AI] prompt characters', {
         system: system.length,
@@ -11065,14 +11331,26 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
             }
             const inheritedPhase = liveMarketContext.ai_analysis?.market_view || {};
             const phaseSelection = normalizeMarketPhaseSelection(selector, inheritedPhase);
+            const phaseAudit = liveMarketContext.phase_selection_audit || buildPhaseSelectionAudit(liveMarketContext);
+            phaseAudit.deepseek_phase_response = buildPhaseSelectionResponseAudit(selector, phaseSelection);
+            updatePhaseSelectionAudit(liveMarketContext, phaseAudit);
             const selectedId = typeof selector.selected_candidate_id === 'string' ? selector.selected_candidate_id : null;
             if (!selectedId || ['WAIT', 'NO_TRADE'].includes(String(selector.decision || '').toUpperCase())) {
+                const waitResolution = {
+                    ...phaseSelection,
+                    resolution_status: 'AI_WAIT',
+                    ai_selected_candidate_id: null,
+                    final_candidate_id: null,
+                    fallback_used: false,
+                    failures: [],
+                    verification_results: [],
+                    wait_reason: typeof selector.reasoning === 'string' ? selector.reasoning : 'DeepSeek classified the current market as not ready for a verified opportunity.'
+                };
+                recordPhaseSelectionResolutionAudit(liveMarketContext, waitResolution);
                 return attachMarketPhaseSelection({ decision: 'WAIT', direction: 'WAIT', selected_candidate_id: null, confidence: 0,
                     reasoning: typeof selector.reasoning === 'object' ? selector.reasoning : { primary: selector.reasoning || 'No deterministic candidate selected' },
                     ai_decision: 'skip', noTrade: true, wait_condition: selector.reasoning || 'No deterministic candidate selected' }, {
-                        ...phaseSelection,
-                        resolution_status: 'AI_WAIT',
-                        wait_reason: typeof selector.reasoning === 'string' ? selector.reasoning : 'DeepSeek classified the current market as not ready for a verified opportunity.'
+                        ...waitResolution
                     });
             }
             const resolution = phaseSelection.explicit
@@ -11085,6 +11363,7 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
                     fallback_used: false,
                     failures: []
                 };
+            recordPhaseSelectionResolutionAudit(liveMarketContext, resolution);
             liveMarketContext.market_phase_selection = resolution;
             if (!resolution.final_candidate_id) {
                 const waitResult = attachMarketPhaseSelection({ decision: 'WAIT', direction: 'WAIT', selected_candidate_id: selectedId, confidence: 0,
@@ -12333,6 +12612,17 @@ async function runAutoScan() {
             liveMarketContext.strategy_detections = summarizeStrategyDetections(aiMerge.strategy_setups);
             console.log('[SCAN] verified AI setups merged', { added: aiMerge.added, duplicates: aiMerge.duplicates });
         }
+        updatePhaseSelectionAudit(liveMarketContext, buildPhaseSelectionAudit(liveMarketContext));
+        liveMarketContext.phase_selection_audit.analyst_phase_response = analystResult.diagnostics.market_view ? {
+            market_phase: analystResult.diagnostics.market_view.market_phase || null,
+            directional_thesis: analystResult.diagnostics.market_view.directional_thesis || null,
+            thesis_status: analystResult.diagnostics.market_view.thesis_status || null,
+            original_thesis_status: analystResult.diagnostics.market_view.original_thesis_status || null,
+            preferred_opportunity_role: analystResult.diagnostics.market_view.preferred_opportunity_role || null,
+            phase_evidence_ids: analystResult.diagnostics.market_view.phase_evidence_ids || [],
+            conflicting_evidence_ids: analystResult.diagnostics.market_view.conflicting_evidence_ids || [],
+            confidence: analystResult.diagnostics.market_view.confidence ?? null
+        } : null;
         scanTrace('AI market analyst complete', analystStartedAt, {
             status: analystResult.diagnostics.analyst_status,
             hypotheses_received: analystResult.diagnostics.hypotheses_received,
@@ -12357,6 +12647,7 @@ async function runAutoScan() {
             symbolMetadata: liveMarketContext.symbol_metadata,
             marketOpen: liveMarketContext.market_open
         });
+        liveMarketContext.today_opportunity.phase_selection_audit = liveMarketContext.phase_selection_audit;
         // Keep the public projection small while retaining the deterministic
         // market summary the user needs to understand a WAIT or limit setup.
         liveMarketContext.today_opportunity.trend_detection = liveMarketContext.multi_timeframe_direction?.trend || null;
@@ -12531,6 +12822,7 @@ async function runAutoScan() {
                     strategy_detections: liveMarketContext.strategy_detections,
                     candidate_pipeline: liveMarketContext.candidate_pipeline,
                     opportunity_funnel: liveMarketContext.opportunity_funnel || null,
+                    phase_selection_audit: liveMarketContext.phase_selection_audit || null,
                     execution_mode: DEFAULT_EXECUTION_MODE,
                     risk_gate: getDefaultRiskGate(DEFAULT_EXECUTION_MODE),
                     validation: { passed: false, reason, consistency: outputConsistency }
@@ -12618,6 +12910,7 @@ async function runAutoScan() {
                 original_thesis_status: aiResult.original_thesis_status || null,
                 preferred_opportunity_role: aiResult.preferred_opportunity_role || null,
                 market_phase_selection: aiResult.market_phase_selection || null,
+                phase_selection_audit: liveMarketContext.phase_selection_audit || null,
                 setup_confidence: aiResult.setup_confidence,
                 quality: aiResult.quality,
                 time_integrity: aiResult.setup_lifecycle?.time_integrity || null,
