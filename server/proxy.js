@@ -7,7 +7,10 @@ const { URL } = require('node:url');
 const { createAuditStore } = require('./audit-store');
 
 const TIMEFRAME_INTERVALS = new Set(['1min', '5min', '15min', '1h', '4h', '1day', '1week']);
-const MAX_BODY_BYTES = 1024 * 1024;
+// The market analyst sends a bounded, machine-readable evidence package. Its
+// JSON encoding can be slightly larger than the one-megabyte prompt text, so
+// keep a finite proxy limit without truncating otherwise valid requests.
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const DEFAULT_WINDOW_MS = 60_000;
 const DEFAULT_MAX_REQUESTS = 60;
 const DEFAULT_TWELVE_MAX_REQUESTS = 50;
@@ -90,17 +93,20 @@ function createRateLimiter({ now = () => Date.now(), windowMs = DEFAULT_WINDOW_M
 function readBody(req) {
     return new Promise((resolve, reject) => {
         let size = 0;
+        let rejected = false;
         const chunks = [];
         req.on('data', chunk => {
+            if (rejected) return;
             size += chunk.length;
             if (size > MAX_BODY_BYTES) {
-                reject(Object.assign(new Error('request body is too large'), { statusCode: 413 }));
-                req.destroy();
+                rejected = true;
+                reject(Object.assign(new Error('request body is too large'), { statusCode: 413, code: 'REQUEST_BODY_TOO_LARGE' }));
+                req.resume();
                 return;
             }
             chunks.push(chunk);
         });
-        req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        req.on('end', () => { if (!rejected) resolve(Buffer.concat(chunks).toString('utf8')); });
         req.on('error', reject);
     });
 }

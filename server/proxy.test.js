@@ -154,6 +154,23 @@ describe('market and AI proxy boundary', () => {
         }
     });
 
+    test('accepts the bounded market analyst payload above one megabyte', async () => {
+        const fetchImpl = jest.fn(async () => ({
+            status: 200,
+            text: async () => JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] })
+        }));
+        const server = createProxyServer({ env: { DEEPSEEK_API_KEY: 'provider-secret', PROXY_MAX_REQUESTS: '20' }, fetchImpl });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const body = JSON.stringify({ messages: [{ role: 'user', content: 'x'.repeat(1_100_000) }] });
+            const response = await request(server, 'POST', '/api/deepseek/chat', { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, body);
+            expect(response.status).toBe(200);
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
     test('does not expose unconfigured providers or unauthenticated audit reads', async () => {
         const server = createProxyServer({ env: { PROXY_MAX_REQUESTS: '20' }, fetchImpl: jest.fn() });
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

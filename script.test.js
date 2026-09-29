@@ -2846,6 +2846,83 @@ describe('DeepSeek request settlement', () => {
             expect(result).toBeNull();
         }
     });
+
+    it('classifies a browser network failure without fabricating an HTTP response', async () => {
+        const ctx = getContext();
+        ctx.window.__ICT_PROXY_BASE_URL__ = 'https://proxy.example';
+        const failure = Object.assign(new TypeError('Failed to fetch'), { name: 'TypeError' });
+        ctx.fetch = jest.fn(() => Promise.reject(failure));
+        await expect(ctx.requestAIJson('https://proxy.example/api/deepseek/chat', {}, 1000)).rejects.toMatchObject({
+            transport_diagnostic: expect.objectContaining({
+                transport_status: 'NETWORK_ERROR',
+                request_transport: 'SERVER_PROXY',
+                request_url_path: '/api/deepseek/chat'
+            })
+        });
+    });
+
+    it.each([
+        [401, 'authentication_error'],
+        [429, 'rate_limit_error'],
+        [500, 'server_error']
+    ])('captures DeepSeek HTTP %s as a provider response', async (status, providerType) => {
+        const ctx = getContext();
+        ctx.fetch = jest.fn(() => Promise.resolve({
+            ok: false,
+            status,
+            statusText: status === 429 ? 'Too Many Requests' : 'Error',
+            headers: { get: () => 'application/json' },
+            text: async () => JSON.stringify({ error: { type: providerType, code: `provider_${status}` } })
+        }));
+        await expect(ctx.requestAIJson('https://api.deepseek.com/chat/completions', {}, 1000)).rejects.toMatchObject({
+            name: 'AIHttpError',
+            http_status: status,
+            transport_diagnostic: expect.objectContaining({
+                transport_status: 'HTTP_ERROR',
+                http_status: status,
+                provider_error_type: providerType,
+                provider_error_code: `provider_${status}`
+            })
+        });
+    });
+
+    it('distinguishes a successful transport with invalid JSON', async () => {
+        const ctx = getContext();
+        ctx.fetch = jest.fn(() => Promise.resolve({
+            ok: true, status: 200, headers: { get: () => 'text/html' }, text: async () => '<html>proxy error</html>'
+        }));
+        await expect(ctx.requestAIJson('https://api.deepseek.com/chat/completions', {}, 1000)).rejects.toMatchObject({
+            name: 'AIParseError',
+            transport_diagnostic: expect.objectContaining({ transport_status: 'PARSE_ERROR', http_status: 200, response_content_type: 'text/html' })
+        });
+    });
+
+    it('records successful analyst and selector transport diagnostics separately', async () => {
+        const ctx = getContext();
+        ctx.window.__ICT_PROXY_BASE_URL__ = 'https://proxy.example';
+        ctx.buildAiMarketAnalystPrompt = () => ({ system: 'system', user: 'user' });
+        ctx.fetch = jest.fn(() => Promise.resolve({
+            ok: true,
+            status: 200,
+            headers: { get: () => 'application/json' },
+            text: async () => JSON.stringify({ choices: [{ message: { content: JSON.stringify({ market_view: { bias: 'BEARISH' }, hypotheses: [] }) } }] })
+        }));
+        const analyst = await ctx.runAiMarketAnalyst({}, {}, '');
+        expect(analyst.diagnostics.analyst_status).toBe('OK');
+        expect(analyst.diagnostics.transport_diagnostic).toEqual(expect.objectContaining({ transport_status: 'SUCCESS', request_transport: 'SERVER_PROXY' }));
+
+        const candidate = { id: 'transport-selector-candidate', direction: 'BUY', timeframe: '1H', zone_type: 'FVG', zone_low: 1.0995, zone_high: 1.1005,
+            entry: 1.1, stop_loss: 1.098, tp1: 1.105, rr_tp1: 2.5, quality: { final_confidence: 64 },
+            opportunity_status: 'FRESH_PENDING_TODAY', still_actionable_today: true, entry_consumed: false, tp1_already_reached: false };
+        ctx.fetch = jest.fn(() => Promise.resolve({
+            ok: true, status: 200, headers: { get: () => 'application/json' },
+            text: async () => JSON.stringify({ choices: [{ message: { content: JSON.stringify({ decision: 'SELECT', selected_candidate_id: candidate.id, reasoning: 'valid' }) } }] })
+        }));
+        const live = { pair: 'EUR/USD', adaptive_setup_candidates: [candidate] };
+        const selector = await ctx.askAIToFindSetup('prompt', 1.101, 'system', live);
+        expect(selector.selected_candidate_id).toBe(candidate.id);
+        expect(live.decision_handoff_audit.selector_transport_diagnostic).toEqual(expect.objectContaining({ transport_status: 'SUCCESS' }));
+    });
 });
 
 describe('detectCHoCH', () => {
@@ -2993,8 +3070,7 @@ describe('getQuoteDirection', () => {
         expect(summary).toContain('Confidence: 76%');
         expect(summary).toContain('Entry Price: 98');
         expect(summary).toContain('Technical Indicators: ADX 4H: 24.50');
-        expect(summary).toContain('Type: ICT');
-        expect(summary).not.toMatch(/Type: ICT.*FVG/);
+        expect(summary).toContain('Type: FVG');
     });
 
     it('keeps strategy labels separate from FVG and OB entry locations', () => {
@@ -3009,6 +3085,30 @@ describe('getQuoteDirection', () => {
         });
         expect(ctx.getTradeSummaryModel(signal).type).toBe('CRT+TBS');
         expect(ctx.getTradeSummaryModel(signal).type).not.toBe('FVG');
+    });
+
+    it('shows the selected specific setup label while preserving ICT methodology', () => {
+        const ctx = getContext();
+        const signal = ctx.buildPublicTradeSignal({
+            pair: 'XAU/USD', current_price: 4140, decision: 'SELL_LIMIT', strategy: 'ICT', strategy_label: 'ICT',
+            strategy_setup: { primary: 'CURRENT_STRUCTURE', label: 'CURRENT_FVG' }, setup_type: 'PENDING_LIMIT', order_type: 'LIMIT',
+            candidate_role: 'FRESH_RETRACEMENT_POI', entry: 4255, stop_loss: 4309, tp1: 4121,
+            entry_zone: { source: 'FVG', low: 4231, high: 4279 }
+        });
+        expect(signal.strategy).toBe('ICT');
+        expect(signal.strategy_label).toBe('CURRENT_FVG');
+        expect(ctx.getTradeSummaryModel(signal).type).toBe('CURRENT_FVG');
+        expect(ctx.formatTradeSummaryText(signal)).toContain('Type: CURRENT_FVG');
+    });
+
+    it.each(['MSNR', 'CRT'])('preserves specific %s display labels', label => {
+        const ctx = getContext();
+        expect(ctx.getCanonicalSetupDisplayLabel({ strategy: 'ICT', strategy_setup: { primary: label, label } })).toBe(label);
+    });
+
+    it('falls back to ICT only when no specific setup label exists', () => {
+        const ctx = getContext();
+        expect(ctx.getCanonicalSetupDisplayLabel({ strategy: 'ICT', strategy_setup: { primary: 'CURRENT_STRUCTURE' } })).toBe('ICT');
     });
 
     it('renders a compact trade summary while keeping raw JSON hidden', () => {

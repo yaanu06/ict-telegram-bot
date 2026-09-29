@@ -110,11 +110,25 @@ function scanTrace(stage, startedAt, details = {}) {
     console.log(`[SCAN] ${stage}`, { elapsed_ms: Math.round((scanClock() - startedAt) * 100) / 100, ...details });
 }
 
+function getAIRequestUrlPath(url) {
+    const raw = String(url || '');
+    try {
+        const parsed = new URL(raw, typeof window !== 'undefined' ? window.location.href : undefined);
+        return parsed.pathname || '/';
+    } catch {
+        const match = raw.match(/^[a-z][a-z\d+.-]*:\/\/[^/]+(\/[^?#]*)/i);
+        return match?.[1] || raw.split('?')[0].slice(0, 160);
+    }
+}
+
 async function requestAIJson(url, options = {}, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
     const controller = typeof AbortController === 'function'
         ? new AbortController()
         : { signal: undefined, abort() {} };
     let timeoutId;
+    const requestBodyBytes = typeof options.body === 'string'
+        ? (typeof TextEncoder === 'function' ? new TextEncoder().encode(options.body).byteLength : options.body.length)
+        : null;
     const deadline = new Promise((resolve, reject) => {
         timeoutId = setTimeout(() => {
             const error = new Error('AI request deadline exceeded');
@@ -128,11 +142,75 @@ async function requestAIJson(url, options = {}, timeoutMs = AI_REQUEST_TIMEOUT_M
             ? { ...options }
             : { ...options, signal: controller.signal };
         return await Promise.race([deadline, (async () => {
-            const response = await fetch(url, requestOptions);
-            console.log('[SCAN] DeepSeek response received', { status: response.status });
-            if (response.ok === false) throw new Error(`DeepSeek HTTP ${response.status}`);
-            const data = await response.json();
-            return { response, data };
+            const startedAt = scanClock();
+            let response;
+            const requestUrlPath = getAIRequestUrlPath(url);
+            try {
+                response = await fetch(url, requestOptions);
+            } catch (error) {
+                error.transport_diagnostic = {
+                    transport_status: error?.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK_ERROR',
+                    request_transport: getProxyBaseUrl() ? 'SERVER_PROXY' : 'DIRECT',
+                    request_url_path: requestUrlPath,
+                    request_body_bytes: requestBodyBytes,
+                    timeout_ms: timeoutMs,
+                    request_duration_ms: Math.max(0, Math.round((scanClock() - startedAt) * 100) / 100),
+                    transport_error_name: error?.name || 'Error',
+                    transport_error_message: String(error?.message || 'AI request failed').slice(0, 240)
+                };
+                throw error;
+            }
+            const contentType = response.headers?.get?.('content-type') || null;
+            let data;
+            try {
+                if (typeof response.text === 'function') {
+                    const responseText = await response.text();
+                    data = responseText ? JSON.parse(responseText) : {};
+                } else {
+                    data = await response.json();
+                }
+            } catch (error) {
+                const parseError = new Error('AI response JSON could not be parsed');
+                parseError.name = 'AIParseError';
+                parseError.transport_diagnostic = {
+                    transport_status: 'PARSE_ERROR',
+                    request_transport: getProxyBaseUrl() ? 'SERVER_PROXY' : 'DIRECT',
+                    request_url_path: requestUrlPath,
+                    request_body_bytes: requestBodyBytes,
+                    timeout_ms: timeoutMs,
+                    request_duration_ms: Math.max(0, Math.round((scanClock() - startedAt) * 100) / 100),
+                    http_status: response.status ?? null,
+                    http_status_text: response.statusText || null,
+                    response_content_type: contentType,
+                    transport_error_name: error?.name || 'SyntaxError',
+                    transport_error_message: 'Provider/proxy returned non-JSON content'
+                };
+                throw parseError;
+            }
+            const transportDiagnostic = {
+                transport_status: response.ok === false ? 'HTTP_ERROR' : 'SUCCESS',
+                request_transport: getProxyBaseUrl() ? 'SERVER_PROXY' : 'DIRECT',
+                request_url_path: requestUrlPath,
+                request_body_bytes: requestBodyBytes,
+                timeout_ms: timeoutMs,
+                request_duration_ms: Math.max(0, Math.round((scanClock() - startedAt) * 100) / 100),
+                http_status: response.status ?? null,
+                http_status_text: response.statusText || null,
+                response_content_type: contentType,
+                provider_error_type: data?.error?.type || data?.error?.name || null,
+                provider_error_code: data?.error?.code || data?.code || null,
+                parse_status: 'OK'
+            };
+            console.log('[SCAN] DeepSeek response received', { status: response.status, transport_status: transportDiagnostic.transport_status });
+            if (response.ok === false) {
+                const error = new Error(`DeepSeek HTTP ${response.status}`);
+                error.name = 'AIHttpError';
+                error.http_status = response.status;
+                error.provider_error = data?.error || null;
+                error.transport_diagnostic = transportDiagnostic;
+                throw error;
+            }
+            return { response, data, transport_diagnostic: transportDiagnostic };
         })()]);
     } finally {
         clearTimeout(timeoutId);
@@ -2031,6 +2109,36 @@ function getDisplayStrategyLabel(setup = {}, zoneType = null) {
     return strategies.length ? strategies.join('+') : 'ICT';
 }
 
+// Public display metadata has a more specific purpose than strategy
+// ownership. CURRENT_FVG, CURRENT_OB, MSNR, and CRT identify the selected
+// setup; ICT is only the broad methodology fallback. Keep this helper out of
+// deterministic strategy predicates so display changes cannot alter trading.
+function getCanonicalSetupDisplayLabel(setup = {}, zoneType = null) {
+    const candidates = [
+        setup?.strategy_setup?.label,
+        setup?.specific_setup_label,
+        setup?.strategy_label,
+        setup?.label,
+        setup?.strategy_setup?.strategy_label,
+        setup?.strategy_setup?.primary,
+        setup?.primary,
+        setup?.strategy,
+        setup?.adaptive_candidate?.strategy_setup?.label,
+        setup?.adaptive_candidate?.strategy_label,
+        setup?.primary_opportunity?.strategy_setup?.label,
+        setup?.primary_opportunity?.strategy_label,
+        setup?.opportunity?.strategy_setup?.label,
+        setup?.opportunity?.strategy_label,
+        zoneType
+    ];
+    const generic = new Set(['', 'ICT', 'CURRENT_STRUCTURE', 'MARKET_MECHANICS']);
+    for (const value of candidates) {
+        const label = canonicalStrategyName(value);
+        if (label && !generic.has(label)) return label;
+    }
+    return getDisplayStrategyLabel(setup, zoneType);
+}
+
 function hasSupportedStrategyLabel(setup = {}) {
     return hasExecutableStrategyBacking(setup);
 }
@@ -3620,7 +3728,7 @@ Return ONLY JSON:
                 max_tokens: 200
             })
         });
-        
+
         const content = data.choices?.[0]?.message?.content;
         
         if(content) {
@@ -6372,9 +6480,11 @@ function buildDecisionHandoffAudit({ snapshotId = null, pair: pairLocal = null, 
         analyst_status: null,
         analyst_error_code: null,
         analyst_error_message: null,
+        analyst_transport_diagnostic: null,
         selector_status: null,
         selector_error_code: null,
         selector_error_message: null,
+        selector_transport_diagnostic: null,
         deepseek_raw_decision_type: null,
         deepseek_selected_candidate_ids: [],
         deepseek_preferred_role: null,
@@ -10561,6 +10671,9 @@ function compactAIContext(liveMarketContext) {
         strategy_detections: liveMarketContext?.strategy_detections,
         ai_analysis: liveMarketContext?.ai_analysis ? {
             analyst_status: liveMarketContext.ai_analysis.analyst_status,
+            analyst_error_code: liveMarketContext.ai_analysis.error_code || null,
+            analyst_error_message: liveMarketContext.ai_analysis.error || null,
+            analyst_transport_diagnostic: liveMarketContext.ai_analysis.transport_diagnostic || null,
             market_view: liveMarketContext.ai_analysis.market_view,
             market_phase_selection: liveMarketContext.ai_analysis.market_phase_selection || liveMarketContext.market_phase_selection || null,
             hypotheses_verified: liveMarketContext.ai_analysis.hypotheses_verified,
@@ -10975,7 +11088,7 @@ function validateAiSelectorResponse(value, candidates = []) {
 }
 
 async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData = '', retryCount = 0) {
-    const diagnostics = { analyst_called: false, analyst_status: 'SKIPPED', attempts: retryCount + 1, market_view: null, hypotheses_received: 0, hypotheses_verified: 0, hypotheses_rejected: 0, verified_hypotheses: [], rejected_hypotheses: [], hard_rejections: [], quality_warnings: [], deterministic_duplicates: 0, setups_added_from_ai: 0, final_selector_called: false, selected_candidate_id: null, request_payload: null, raw_response: null, parsed_analysis: null };
+    const diagnostics = { analyst_called: false, analyst_status: 'SKIPPED', attempts: retryCount + 1, market_view: null, hypotheses_received: 0, hypotheses_verified: 0, hypotheses_rejected: 0, verified_hypotheses: [], rejected_hypotheses: [], hard_rejections: [], quality_warnings: [], deterministic_duplicates: 0, setups_added_from_ai: 0, final_selector_called: false, selected_candidate_id: null, request_payload: null, raw_response: null, parsed_analysis: null, transport_diagnostic: null };
     if (!hasAiAccess()) { diagnostics.analyst_status = 'NO_API_KEY'; return { diagnostics, analysis: null, verified_setups: [] }; }
     diagnostics.analyst_called = true;
     const prompt = buildAiMarketAnalystPrompt(evidenceCatalog, candleData);
@@ -10986,11 +11099,12 @@ async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData
     try {
         const requestPayload = { model: 'deepseek-chat', messages: [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }], temperature: 0.1, max_tokens: 2600 };
         diagnostics.request_payload = requestPayload;
-        const { data } = await requestAIJson(getDeepSeekEndpoint(), {
+        const { data, transport_diagnostic } = await requestAIJson(getDeepSeekEndpoint(), {
             method: 'POST',
             headers: getDeepSeekHeaders(),
             body: JSON.stringify(requestPayload)
         });
+        diagnostics.transport_diagnostic = transport_diagnostic || null;
         diagnostics.raw_response = String(data?.choices?.[0]?.message?.content || '').slice(0, 30000);
         const rawAnalysis = parseAiJsonContent(data?.choices?.[0]?.message?.content);
         const schema = validateAiMarketAnalystResponse(rawAnalysis);
@@ -11034,6 +11148,8 @@ async function runAiMarketAnalyst(evidenceCatalog, liveMarketContext, candleData
         const retry = retryAnalyst(error?.message || 'AI analyst request failed');
         if (retry) return retry;
         diagnostics.analyst_status = error?.name === 'AbortError' ? 'TIMEOUT' : 'ERROR';
+        diagnostics.transport_diagnostic = error?.transport_diagnostic || null;
+        diagnostics.error_code = error?.transport_diagnostic?.transport_status || (error?.name === 'AIParseError' ? 'PARSE_ERROR' : null);
         diagnostics.error = error?.message || 'AI market analyst failed';
         console.error('[AI] market analyst failed', { status: diagnostics.analyst_status, error: diagnostics.error });
         return { diagnostics, analysis: null, verified_setups: [] };
@@ -11600,7 +11716,7 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         candidate_count: liveMarketContext?.adaptive_setup_candidates?.length || 0
     });
     try {
-        const { response, data } = await requestAIJson(getDeepSeekEndpoint(), {
+        const { response, data, transport_diagnostic } = await requestAIJson(getDeepSeekEndpoint(), {
             method: 'POST',
             headers: getDeepSeekHeaders(),
             body: JSON.stringify({
@@ -11619,6 +11735,7 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
                 max_tokens: 2000
             })
         });
+        updateDecisionHandoffAudit(liveMarketContext, { selector_transport_diagnostic: transport_diagnostic || null });
         if (response && response.ok === false) {
             throw new Error(`DeepSeek HTTP ${response.status || 'error'}`);
         }
@@ -11862,15 +11979,24 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         
     } catch (e) {
         const timedOut = e?.name === 'AbortError';
+        const transportDiagnostic = e?.transport_diagnostic || null;
+        const transportStatus = transportDiagnostic?.transport_status || null;
+        const errorCode = timedOut ? 'AI_TIMEOUT'
+            : transportStatus === 'HTTP_ERROR' ? `AI_HTTP_${transportDiagnostic.http_status || 'ERROR'}`
+                : transportStatus === 'PARSE_ERROR' ? 'AI_RESPONSE_PARSE_ERROR'
+                    : transportStatus === 'NETWORK_ERROR' ? 'AI_NETWORK_ERROR' : 'AI_REQUEST_FAILED';
         lastAIRequestError = {
-            code: timedOut ? 'AI_TIMEOUT' : 'AI_REQUEST_FAILED',
+            code: errorCode,
             message: timedOut ? `DeepSeek request timed out after ${AI_REQUEST_TIMEOUT_MS}ms` : (e?.message || 'DeepSeek request failed'),
+            transport_diagnostic: transportDiagnostic,
+            provider_error: e?.provider_error || null,
             stack: e?.stack
         };
         updateDecisionHandoffAudit(liveMarketContext, {
             selector_status: 'ERROR',
             selector_error_code: lastAIRequestError.code,
-            selector_error_message: lastAIRequestError.message
+            selector_error_message: lastAIRequestError.message,
+            selector_transport_diagnostic: transportDiagnostic
         });
         console.error('[SCAN] FAILED', { stage: timedOut ? 'DeepSeek request timeout' : 'DeepSeek request', error: lastAIRequestError.message, stack: e?.stack });
         return null;
@@ -13017,7 +13143,8 @@ async function runAutoScan() {
         updateDecisionHandoffAudit(liveMarketContext, {
             analyst_status: analystResult.diagnostics.analyst_status || null,
             analyst_error_code: analystResult.diagnostics.error_code || analystResult.diagnostics.error?.code || null,
-            analyst_error_message: analystResult.diagnostics.error || analystResult.diagnostics.error_message || null
+            analyst_error_message: analystResult.diagnostics.error || analystResult.diagnostics.error_message || null,
+            analyst_transport_diagnostic: analystResult.diagnostics.transport_diagnostic || null
         });
         liveMarketContext.hard_rejections = analystResult.diagnostics.hard_rejections || [];
         liveMarketContext.quality_warnings = analystResult.diagnostics.quality_warnings || [];
@@ -14797,6 +14924,7 @@ function buildPublicTradeSignal(signal = {}) {
         primary: signal.strategy_setup?.primary,
         strategy: signal.strategy || signal.adaptive_candidate?.strategy_label || signal.primary_opportunity?.strategy || signal.opportunity?.strategy || signal.analysis?.type
     }, signal.entry_zone?.source || signal.zone_type);
+    const specificStrategyLabel = getCanonicalSetupDisplayLabel(signal, signal.entry_zone?.source || signal.zone_type);
     const requestedDecision = String(signal.decision || signal.trade_type || 'WAIT').toUpperCase();
     const publicDecision = requestedDecision === 'BUY' ? 'BUY_LIMIT'
         : requestedDecision === 'SELL' ? 'SELL_LIMIT'
@@ -14809,6 +14937,8 @@ function buildPublicTradeSignal(signal = {}) {
         symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
         decision: publicDecision,
         strategy,
+        strategy_label: specificStrategyLabel,
+        strategy_setup: signal.strategy_setup || signal.adaptive_candidate?.strategy_setup || null,
         timeframe: signal.timeframe || signal.execution_timeframe || signal.setup_timeframe || null,
         entry: signal.entry ?? signal.entry_price,
         entry_zone: signal.entry_zone ? {
@@ -15122,11 +15252,14 @@ function getTradeSummaryModel(signal = {}) {
         || signal.status === 'WATCH_ONLY'
         || ['BUY_LIMIT', 'SELL_LIMIT'].includes(String(signal.decision || signal.trade_type || '').toUpperCase())
     );
-    const setupType = hasOpportunitySetup ? getDisplayStrategyLabel({
-        strategy_label: setup.strategy || signal.strategy_label || signal.adaptive_candidate?.strategy_label,
-        label: signal.strategy_setup?.label,
-        primary: signal.strategy_setup?.primary,
-        strategy: setup.strategy || signal.strategy || signal.adaptive_candidate?.strategy_label || signal.analysis?.type
+    const setupType = hasOpportunitySetup ? getCanonicalSetupDisplayLabel({
+        ...signal,
+        strategy_setup: signal.strategy_setup || setup.strategy_setup,
+        strategy_label: signal.strategy_label || setup.strategy_label,
+        strategy: setup.strategy || signal.strategy || signal.analysis?.type,
+        adaptive_candidate: signal.adaptive_candidate || setup.adaptive_candidate,
+        opportunity: signal.opportunity || setup.opportunity,
+        primary_opportunity: signal.primary_opportunity || setup.primary_opportunity
     }, location.source || location.type) : '—';
     const qualityBand = setup.opportunity_quality?.quality_breakdown?.quality_band
         || setup.quality?.quality_breakdown?.quality_band
