@@ -16614,7 +16614,8 @@ const MANUAL_EXTERNAL_AI_PACKET_CONTRACT = [
     'A valid pending LIMIT may remain away from current price, outside its zone, without current 5M/15M confirmation, or outside a killzone. Distance alone is information, not rejection; no fixed dollar, pip, percentage, ATR, candle-count, proximity, current-zone, or current-retracement filter exists. CONFIRMATION_ENTRY must satisfy its supplied confirmation facts.',
     'A remote pending LIMIT must represent a coherent CURRENT opportunity: explain internally why the location matters now, what phase supports a return/activation, whether the original move already substantially delivered, whether the thesis survives intervening structure, and what objective remains after entry. A fresh remote POI plus attractive RR is not sufficient.',
     'RETRACEMENT must be supported by complete current evidence showing a corrective move is occurring, beginning, or structurally capable within the current delivery narrative. A remote opposite-side POI alone does not establish RETRACEMENT, and no single timeframe is a hard gate.',
-    'If the evidence does not support a coherent current opportunity or remaining objective, return NO_TRADE. Do not revive an old opportunity by moving entry, stop, or target.',
+    'If one considered location is stale, substantially delivered, superseded, or inconsistent with the current phase, reject that location and CONTINUE SEARCHING. Evaluate both BUY and SELL directions, all five timeframes, newer FVG/OB/MSNR locations, CRT/TBS evidence, raids/sweeps, reclaim/retests, current structure, newer objectives, and other supplied locations before deciding NO_TRADE. Do not force a replacement trade, but do not stop after rejecting one location. Return NO_TRADE only after the complete supplied evidence has been evaluated and no valid current opportunity with deterministic geometry and a genuine remaining objective exists.',
+    'Do not revive an old opportunity by moving entry, stop, or target.',
     'When multiple targets are populated, order them by expected price-path delivery: BUY entry < TP1 < TP2 < TP3; SELL entry > TP1 > TP2 > TP3. Use only supplied genuine objectives. One valid target uses TP1 only; two use TP1 and TP2 only. risk_reward is reward to TP1 divided by structural risk: BUY (TP1-entry)/(entry-stop_loss), SELL (entry-TP1)/(stop_loss-entry).',
     'The final setup field must be only a concise interpreted ICT model/type such as CRT, TBS, MSNR, CRT+MSNR, CRT+TBS, CRT+MSNR+TBS, FVG, OB, FVG+MSNR, OB+CRT, or CURRENT_STRUCTURE. Do not put thesis, timeframe narrative, entry, stop, targets, RR, confidence, or evidence explanation in setup.',
     'Evaluate both bullish and bearish evidence. HTF disagreement, neutral daily bias, and ambiguous global liquidity are contextual evidence, not standalone gates.',
@@ -17080,6 +17081,17 @@ use distance itself as a rejection rule and do not infer RETRACEMENT merely
 because a remote opposite-side POI exists; RETRACEMENT requires complete
 evidence of a corrective move or structurally capable correction in the
 current delivery narrative.
+
+If a considered location is stale, substantially delivered, superseded, or
+inconsistent with the current phase, reject that location and CONTINUE
+SEARCHING. Evaluate both BUY and SELL directions, all supplied 1D/4H/1H/15M
+and 5M context, newer FVG/OB/MSNR locations, CRT/TBS evidence, liquidity raids
+or sweeps, reclaim/retests, current-structure opportunities, newer locations,
+and newer objectives before deciding NO_TRADE. Do not force a newer trade merely
+because the first location was rejected, but do not stop after rejecting one
+location. NO_TRADE is allowed only after complete supplied-evidence evaluation
+finds no valid current opportunity with valid deterministic geometry and a
+genuine remaining objective.
 
 The market phase and setup are your interpretations of the supplied facts.
 Possible interpretations include ORIGINAL_SETUP, EARLY_DELIVERY, EXPANSION,

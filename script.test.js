@@ -7613,6 +7613,10 @@ describe('AI market analyst contract', () => {
         expect(packet).toContain('SELL entry > TP1 > TP2 > TP3');
         expect(packet).toContain('risk_reward is reward to TP1');
         expect(packet).toContain('setup value must be only a concise ICT model/type');
+        expect(packet).toContain('reject that location and CONTINUE SEARCHING');
+        expect(packet).toContain('Evaluate both BUY and SELL directions');
+        expect(packet).toContain('Do not force a newer trade merely');
+        expect(packet).toContain('do not stop after rejecting one location');
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
         expect(packet).not.toContain('"candidate_id": "REMOTE-SELL-POI"');
     });
