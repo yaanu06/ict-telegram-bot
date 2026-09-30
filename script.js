@@ -10812,6 +10812,14 @@ function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe
     const level = Number.isFinite(Number(item.level ?? item.price)) ? Number(item.level ?? item.price) : null;
     const low = Number.isFinite(Number(item.low)) ? Number(item.low) : null;
     const high = Number.isFinite(Number(item.high)) ? Number(item.high) : null;
+    const midpointValue = item.midpoint ?? item.mid ?? item.price;
+    const midpoint = Number.isFinite(Number(midpointValue)) ? Number(midpointValue) : null;
+    const invalidation = item.structural_invalidation && typeof item.structural_invalidation === 'object'
+        ? item.structural_invalidation
+        : item.structural_invalidation_detail && typeof item.structural_invalidation_detail === 'object'
+            ? item.structural_invalidation_detail : null;
+    const invalidationLevel = Number.isFinite(Number(invalidation?.level ?? item.structural_invalidation_level ?? item.invalidation_level ?? item.invalidation))
+        ? Number(invalidation?.level ?? item.structural_invalidation_level ?? item.invalidation_level ?? item.invalidation) : null;
     return {
         id,
         type: item.type || item.kind || item.source_type || fallbackType,
@@ -10822,10 +10830,36 @@ function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe
         price: level,
         low,
         high,
+        midpoint,
         event_time: item.event_time || item.created_time || item.source_time || item.reclaim_time || null,
+        freshness: item.freshness || item.freshness_state || null,
+        mitigation_state: item.mitigation_state || item.mitigation || null,
+        lifecycle_state: item.lifecycle_state || item.target_lifecycle_state || null,
         state: item.lifecycle_state || item.target_lifecycle_state || item.freshness || item.state || null,
         invalidated: item.invalidated === true,
-        consumed: item.consumed === true || item.entry_consumed === true
+        consumed: item.consumed === true || item.entry_consumed === true,
+        structural_invalidation: invalidationLevel == null ? null : {
+            level: invalidationLevel,
+            source: invalidation?.source || item.structural_invalidation_source || null,
+            evidence_id: id
+        },
+        evidence_ids: Array.isArray(item.evidence_ids || item.supporting_evidence_ids)
+            ? (item.evidence_ids || item.supporting_evidence_ids).filter(value => typeof value === 'string').slice(0, 12) : []
+    };
+}
+
+function compactAiStructuralInvalidation(item = {}, fallbackTimeframe = null) {
+    const compact = compactAiEvidenceItem(item, item?.type || item?.kind || 'STRUCTURAL_LOCATION', fallbackTimeframe);
+    if (!compact?.id || !compact.structural_invalidation) return null;
+    return {
+        evidence_id: compact.id,
+        type: compact.type,
+        direction: compact.direction,
+        timeframe: compact.timeframe,
+        event_time: compact.event_time,
+        invalidation: compact.structural_invalidation,
+        invalidated: compact.invalidated,
+        consumed: compact.consumed
     };
 }
 
@@ -10985,6 +11019,14 @@ function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = 
             ...compactLocations(source.structural_pois, 'POI'),
             ...compactLocations(source.zones, 'ZONE')
         ],
+        structural_invalidations: [
+            ...compactLocations(source.fvg, 'FVG'),
+            ...compactLocations(source.order_blocks?.buy, 'OB'),
+            ...compactLocations(source.order_blocks?.sell, 'OB'),
+            ...compactLocations(source.msnr_levels, 'MSNR'),
+            ...compactLocations(source.structural_pois, 'POI'),
+            ...compactLocations(source.zones, 'ZONE')
+        ].map(item => compactAiStructuralInvalidation(item, timeframe)).filter(Boolean),
         premium_discount: source.premium_discount || null,
         dealing_range: source.dealing_range || null,
         previous_period: source.previous_period || null,
@@ -11006,16 +11048,14 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
     const sourceCandidates = Array.isArray(liveMarketContext.adaptive_setup_candidates)
         ? liveMarketContext.adaptive_setup_candidates
         : Array.isArray(liveMarketContext.valid_deterministic_candidates) ? liveMarketContext.valid_deterministic_candidates : [];
-    const selectable = [...new Map(sourceCandidates
+    const selectable = manualOpportunityDiscovery ? [] : [...new Map(sourceCandidates
         .filter(candidate => ['FRESH_NOW', 'FRESH_PENDING_TODAY', 'FRESH_PENDING_LATER'].includes(candidate?.lifecycle_state || candidate?.opportunity_status))
         .filter(candidate => candidate?.id)
         .map(candidate => [candidate.id, compactAiCandidate(candidate)])).values()];
     const opportunityMaterialSource = evidenceCatalog.opportunity_material?.records
         || liveMarketContext.market_evidence_package?.opportunity_material?.records
         || [];
-    const opportunityMaterial = manualOpportunityDiscovery
-        ? [...new Map(opportunityMaterialSource.filter(record => record?.candidate_id).map(record => [record.candidate_id, record])).values()].slice(0, 48)
-        : [];
+    const opportunityMaterial = manualOpportunityDiscovery ? [] : [...new Map(opportunityMaterialSource.filter(record => record?.candidate_id).map(record => [record.candidate_id, record])).values()].slice(0, 48);
     const locations = Object.values(structure).flatMap(timeframe => Array.isArray(timeframe?.locations) ? timeframe.locations : []);
     const buyLocations = locations.filter(location => String(location?.direction || '').toUpperCase() === 'BUY');
     const sellLocations = locations.filter(location => String(location?.direction || '').toUpperCase() === 'SELL');
@@ -11055,6 +11095,12 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
     const marketContext = liveMarketContext.market_context || {};
     const multiTimeframeTrend = liveMarketContext.multi_timeframe_direction?.trend || Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf, structure[tf].structure.effective_trend]));
     const regeneration = liveMarketContext.current_opportunity_regeneration || {};
+    const locationFacts = { buy: buyLocations.slice(0, 120), sell: sellLocations.slice(0, 120) };
+    const invalidationFacts = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf, structure[tf].structural_invalidations || []]));
+    const deliveryFacts = {
+        locations: [...locationFacts.buy, ...locationFacts.sell].filter(location => location?.freshness || location?.mitigation_state || location?.state || location?.consumed || location?.invalidated),
+        targets: targetRecords.map(target => ({ id: target.id, direction: target.direction, timeframe: target.timeframe, type: target.type, source: target.source, level: target.level, lifecycle_state: target.lifecycle_state, reached: target.reached, evidence_ids: target.evidence_ids }))
+    };
     return {
         schema_version: 2,
         package_type: 'AI_SEMANTIC_MARKET',
@@ -11080,25 +11126,29 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
         phase_evidence: {
             current_regime: liveMarketContext.market_regime?.primary_regime || liveMarketContext.market_regime?.regime || null,
             current_structure: multiTimeframeTrend,
-            delivery_by_candidate: selectable.map(candidate => ({ candidate_id: candidate.candidate_id, candidate_role: candidate.candidate_role, continuation_state: candidate.delivery.continuation_state, delivery_fraction: candidate.delivery.delivery_fraction, remaining_reward_fraction: candidate.delivery.remaining_reward_fraction })),
+            ...(manualOpportunityDiscovery
+                ? { delivery_facts: deliveryFacts }
+                : { delivery_by_candidate: selectable.map(candidate => ({ candidate_id: candidate.candidate_id, candidate_role: candidate.candidate_role, continuation_state: candidate.delivery.continuation_state, delivery_fraction: candidate.delivery.delivery_fraction, remaining_reward_fraction: candidate.delivery.remaining_reward_fraction })) }),
             conflicts: marketContext.conflicts || [],
             liquidity: marketContext.liquidity || null
         },
-        selectable_opportunities: selectable,
+        selectable_opportunities: manualOpportunityDiscovery ? [] : selectable,
         // Compatibility aliases are intentionally compact records, not the
         // old nested replay candidates.
-        adaptive_setup_candidates: selectable,
-        candidate_catalog: [
+        adaptive_setup_candidates: manualOpportunityDiscovery ? [] : selectable,
+        candidate_catalog: manualOpportunityDiscovery ? [] : [
             ...selectable.map(candidate => ({ ...candidate, catalog_status: 'VALID_SELECTABLE' })),
             ...opportunityMaterial.filter(candidate => !selectable.some(selected => selected.candidate_id === candidate.candidate_id)),
             ...rejectedRecords.map(record => ({ ...record, catalog_status: 'REJECTED' }))
         ],
         opportunity_material: {
             records: opportunityMaterial,
-            buy_locations: buyLocations.slice(0, 80),
-            sell_locations: sellLocations.slice(0, 80),
-            selection_summary: evidenceCatalog.opportunity_material || null,
-            note: 'CURRENT_SELECTABLE is an internal selector result only. Zero retained selectable candidates does not prove NO_TRADE.'
+            buy_locations: locationFacts.buy,
+            sell_locations: locationFacts.sell,
+            selection_summary: manualOpportunityDiscovery ? null : evidenceCatalog.opportunity_material || null,
+            note: manualOpportunityDiscovery
+                ? 'These are deterministic market locations, not preconstructed trades. The external AI must interpret them.'
+                : 'CURRENT_SELECTABLE is an internal selector result only. Zero retained selectable candidates does not prove NO_TRADE.'
         },
         important_levels: Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf, {
             current_closed_price: structure[tf].current_closed_price,
@@ -11109,7 +11159,7 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
             previous_period: structure[tf].previous_period,
             previous_day_levels: structure[tf].previous_day_levels
         }])),
-        rejected_opportunity_summary: { counts: rejectionCounts, records: rejectedRecords },
+        rejected_opportunity_summary: manualOpportunityDiscovery ? null : { counts: rejectionCounts, records: rejectedRecords },
         target_context: targetRecords,
         target_candidates: { all: targetRecords, buy: targetRecords.filter(target => target.direction === 'BUY'), sell: targetRecords.filter(target => target.direction === 'SELL') },
         deterministic_evidence: {
@@ -11117,7 +11167,7 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
             evidence_id_count: evidenceById.size
         },
         strategy_detections: liveMarketContext.strategy_detections || null,
-        current_opportunity_regeneration: {
+        current_opportunity_regeneration: manualOpportunityDiscovery ? null : {
             snapshot_id: regeneration.snapshot_id || liveMarketContext.snapshot_id || null,
             historical_discovered_count: regeneration.historical_discovered_count ?? null,
             historical_rejected_count: regeneration.historical_rejected_count ?? null,
@@ -16539,6 +16589,22 @@ const EXTERNAL_AI_PACKET_CONTRACT = [
     'If required context is unavailable return DATA_UNAVAILABLE. NO_TRADE remains valid, but zero retained candidates, WAIT workflow state, HTF disagreement, neutral daily bias, or ambiguous liquidity alone is not proof of NO_TRADE.'
 ].join('\n');
 
+const MANUAL_EXTERNAL_AI_PACKET_CONTRACT = [
+    'CODE OWNS FACTS. The packet contains deterministic market evidence, structural locations, invalidations, and genuine objectives. The external AI owns interpretation and setup discovery.',
+    'Use Direction -> Location -> Execution. ICT is the umbrella methodology. CRT, TBS, MSNR, combinations, FVG, OB, liquidity raids, reclaim/retest, and current structure are interpretations grounded in the supplied evidence.',
+    'Do not assume that a setup already exists. Determine the current market phase and actionable direction from the complete five-timeframe evidence before interpreting a model.',
+    'This packet intentionally does not provide a candidate shortlist, ranking, or preselected trade. Discover the opportunity from the market facts themselves.',
+    'Use exactly these semantic timeframes: 1D, 4H, 1H, 15M, 5M. No 1W semantic trading context is supplied.',
+    'A location record is market evidence, not a trade. Do not treat its midpoint or boundaries as a preselected entry. Choose only supplied locations and supplied structural facts.',
+    'Structural invalidation records are facts. Select the invalidation that belongs to the setup you discover; never invent one.',
+    'Structural and liquidity targets are genuine supplied objectives. Respect lifecycle, reached, consumed, invalidated, and minimum-RR facts. Never manufacture fixed-R or ATR targets.',
+    'POI freshness is not opportunity freshness. Use formation time, mitigation, consumption, delivery, and chronological evidence to decide whether a location still represents a current opportunity.',
+    'A valid pending LIMIT may remain away from current price, outside its zone, without current 5M/15M confirmation, or outside a killzone. Distance alone is not rejection. CONFIRMATION_ENTRY must satisfy its supplied confirmation facts.',
+    'Evaluate both bullish and bearish evidence. HTF disagreement, neutral daily bias, and ambiguous global liquidity are contextual evidence, not standalone gates.',
+    'Every important component of a TRADE must be traceable to supplied evidence IDs and levels. If exact valid geometry cannot be established from supplied deterministic facts and strategy rules, return NO_TRADE.',
+    'Confidence describes quality after validity and must be a JSON integer from 0 through 100. It never creates validity. NO_TRADE confidence is null.'
+].join('\n');
+
 function externalPacketDefined(object, keys) {
     const out = {};
     for (const key of keys) if (object && object[key] !== undefined && object[key] !== null) out[key] = object[key];
@@ -16649,6 +16715,9 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
     const source = replay || {};
     const result = signal || source.final_output?.trade_signal || source.final_output || {};
     const pairValue = source.pair || result.pair || 'UNKNOWN';
+    const manualReview = result.reason?.code === 'MANUAL_EXTERNAL_AI_REVIEW'
+        || result.analysis_mode === DEFAULT_ANALYSIS_MODE
+        || result.automatic_ai_selection === 'NOT_RUN';
     const providerMetadata = source.provider_metadata;
     const provider = providerMetadata?.provider || providerMetadata?.name || getMarketDataProvider();
     const targetCatalog = source.target_candidates || {};
@@ -16659,10 +16728,7 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
     ];
     const targetIndex = new Map(allCatalogTargets.filter(target => target?.id || target?.target_id).map(target => [target.id || target.target_id, target]));
     const sourceCandidates = Array.isArray(source.valid_candidates) ? source.valid_candidates : [];
-    const candidates = [...new Map(sourceCandidates.map(candidate => externalPacketCandidateRecord(candidate, targetIndex)).filter(candidate => candidate.candidate_id).map(candidate => [candidate.candidate_id, candidate])).values()];
-    const manualReview = result.reason?.code === 'MANUAL_EXTERNAL_AI_REVIEW'
-        || result.analysis_mode === DEFAULT_ANALYSIS_MODE
-        || result.automatic_ai_selection === 'NOT_RUN';
+    const candidates = manualReview ? [] : [...new Map(sourceCandidates.map(candidate => externalPacketCandidateRecord(candidate, targetIndex)).filter(candidate => candidate.candidate_id).map(candidate => [candidate.candidate_id, candidate])).values()];
     let semantic = null;
     try {
         const semanticSource = {
@@ -16673,8 +16739,8 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
             provider_metadata: providerMetadata,
             market_evidence_package: source.market_evidence_package || {},
             structure: source.structure || {},
-            adaptive_setup_candidates: source.valid_candidates || [],
-            valid_deterministic_candidates: source.valid_candidates || [],
+            adaptive_setup_candidates: manualReview ? [] : (source.valid_candidates || []),
+            valid_deterministic_candidates: manualReview ? [] : (source.valid_candidates || []),
             target_candidates: targetCatalog,
             daily_bias: source.daily_bias,
             market_regime: source.market_regime,
@@ -16715,7 +16781,7 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
         quote_time: source.quote?.quote_time || null,
         timeframes
     }, ['snapshot_id', 'symbol', 'provider', 'as_of', 'current_price', 'quote_time', 'timeframes']);
-    const externalAIClipboardTask = `==================================================
+    const integratedExternalAIClipboardTask = `==================================================
 EXTERNAL AI TASK
 ==================================================
 
@@ -16965,6 +17031,102 @@ Do not restore an internal application wrapper, a legacy verbose response
 contract, or any competing output contract.
 
 ==================================================`;
+    const manualExternalAIClipboardTask = `==================================================
+EXTERNAL AI TASK
+==================================================
+
+Find today's trading opportunity for the symbol in THIS packet.
+
+Analyze the complete supplied deterministic market evidence immediately.
+Do not assume that a setup or trade already exists. Determine the current
+market phase first, then determine the actionable direction for the current
+opportunity horizon, then identify the best supported ICT model and location,
+then determine execution. Evaluate both bullish and bearish evidence.
+
+Use exactly the supplied 1D, 4H, 1H, 15M, and 5M evidence. Consider structure,
+momentum, effective trend, HH/HL/LH/LL sequence, BOS, MSS, CHoCH, displacement,
+swings, liquidity, sweeps/raids, dealing range, premium/discount, FVG, OB,
+MSNR, CRT, TBS, supply/demand, reclaim/retest, structural invalidation,
+genuine objectives, timestamps, freshness, mitigation, consumption, and
+delivery. Determine what has already delivered and what remains actionable.
+
+The market phase and setup are your interpretations of the supplied facts.
+Possible interpretations include ORIGINAL_SETUP, EARLY_DELIVERY, EXPANSION,
+RETRACEMENT, CONTINUATION_READY, LATE_DELIVERY, or TRANSITION_WAIT. Do not
+make historical 1D/4H direction a mandatory gate. Daily bias and global
+liquidity draw are contextual evidence. Missing or ambiguous liquidity alone
+does not force NO_TRADE.
+
+Discover whether a valid CRT, TBS, MSNR, combination, FVG/OB, or other
+supported current-structure opportunity exists. Choose a supplied factual
+location, supplied structural invalidation, and supplied genuine structural or
+liquidity objectives. Respect target lifecycle and minimum RR. A pending LIMIT
+may remain away from current price; distance, an untouched entry, missing 5M/
+15M confirmation, or an outside-killzone location alone is not rejection.
+CONFIRMATION_ENTRY must satisfy its supplied confirmation requirements.
+
+Do not invent an FVG, OB, MSNR, CRT/TBS event, liquidity level, sweep, swing,
+BOS/MSS/CHoCH, displacement, POI, invalidation, target, price, or unsupported
+entry. Do not repair a location by moving entry, SL, or TP. If exact valid
+geometry cannot be established from supplied deterministic facts and rules,
+return NO_TRADE. POI freshness is not opportunity freshness; an old untouched
+location whose original delivery substantially played out is not automatically
+a fresh trade.
+
+Return ONLY one directly JSON.parse()-able JSON object. Return only the compact
+JSON object. No Markdown,
+heading, explanation, or prose outside JSON. The detailed analysis is
+internal only. Use selected_candidate_id: null for manual discovery.
+
+TRADE shape:
+{
+  "pair": "<symbol from this packet>",
+  "decision": "TRADE",
+  "direction": "<BUY or SELL>",
+  "trade_type": "<PENDING_LIMIT, SELL LIMIT, BUY, SELL, or supplied equivalent>",
+  "setup": "<AI-interpreted supported ICT model>",
+  "market_phase": "<AI-determined current phase>",
+  "selected_candidate_id": null,
+  "entry": null,
+  "entry_zone": null,
+  "stop_loss": null,
+  "tp1": null,
+  "tp2": null,
+  "tp3": null,
+  "risk_reward": null,
+  "confidence": 82
+}
+
+The numeric values above are schema placeholders/examples only. Populate
+geometry only from supplied deterministic locations, invalidations, targets,
+and canonical strategy rules. Confidence must be an integer from 0 through 100
+and describes quality after validity.
+
+NO_TRADE shape:
+{
+  "pair": "<symbol from this packet>",
+  "decision": "NO_TRADE",
+  "direction": null,
+  "trade_type": null,
+  "setup": null,
+  "market_phase": "<AI-determined current phase>",
+  "selected_candidate_id": null,
+  "entry": null,
+  "entry_zone": null,
+  "stop_loss": null,
+  "tp1": null,
+  "tp2": null,
+  "tp3": null,
+  "risk_reward": null,
+  "confidence": null
+}
+
+NO_TRADE is valid when no complete deterministic opportunity exists. Do not
+force a trade. There is exactly one authoritative external-AI task in this
+packet.
+
+==================================================`;
+    const externalAIClipboardTask = manualReview ? manualExternalAIClipboardTask : integratedExternalAIClipboardTask;
     const packet = [
         'ICT TRADING BOT PRO',
         'EXTERNAL AI DECISION PACKET',
@@ -16975,12 +17137,14 @@ contract, or any competing output contract.
         `Strategy Version: ${result.strategy_version || STRATEGY_SPEC_VERSION || 'UNAVAILABLE'}`,
         `Snapshot ID: ${source.snapshot_id || result.snapshot_id || 'UNAVAILABLE'}`,
         '',
-        'IMPORTANT: This packet contains deterministic evidence from one completed market snapshot. Use only supplied evidence, candidate IDs, levels, and targets. Do not invent missing market data or trading levels.',
+        manualReview
+            ? 'IMPORTANT: This manual packet contains deterministic market facts from one completed snapshot. Use only supplied evidence IDs, locations, invalidations, levels, and targets. It is not a preconstructed trade shortlist; do not invent missing market data or trading levels.'
+            : 'IMPORTANT: This packet contains deterministic evidence from one completed market snapshot. Use only supplied evidence, candidate IDs, levels, and targets. Do not invent missing market data or trading levels.',
         '',
         '==============================',
         'COMPACT STRATEGY CONTRACT',
         '==============================',
-        EXTERNAL_AI_PACKET_CONTRACT,
+        manualReview ? MANUAL_EXTERNAL_AI_PACKET_CONTRACT : EXTERNAL_AI_PACKET_CONTRACT,
         '',
         '==============================',
         'CURRENT MARKET SNAPSHOT',
@@ -16997,38 +17161,70 @@ contract, or any competing output contract.
         '==============================',
         semantic ? JSON.stringify(semantic.important_levels || {}, null, 2) : 'UNAVAILABLE',
         '',
-        '==============================',
-        'BUY LOCATIONS',
-        '==============================',
-        semantic?.opportunity_material?.buy_locations?.length ? JSON.stringify(semantic.opportunity_material.buy_locations, null, 2) : 'UNAVAILABLE: no deterministic BUY locations were retained.',
-        '',
-        '==============================',
-        'SELL LOCATIONS',
-        '==============================',
-        semantic?.opportunity_material?.sell_locations?.length ? JSON.stringify(semantic.opportunity_material.sell_locations, null, 2) : 'UNAVAILABLE: no deterministic SELL locations were retained.',
-        '',
-        '==============================',
-        'DETERMINISTIC EVIDENCE / SETUP COMPONENTS',
-        '==============================',
-        semantic ? JSON.stringify(semantic.deterministic_evidence || {}, null, 2) : 'UNAVAILABLE',
-        '',
-        '==============================',
-        'CURRENT SELECTABLE CANDIDATES (REFERENCE MATERIAL ONLY)',
-        '==============================',
-        candidates.length ? JSON.stringify(candidates, null, 2) : 'NONE RETAINED BY INTERNAL SELECTOR. THIS IS NOT A MARKET NO_TRADE CONCLUSION.',
-        '',
-        '==============================',
-        'CURRENT OPPORTUNITY MATERIAL',
-        '==============================',
-        semantic?.opportunity_material ? JSON.stringify(semantic.opportunity_material, null, 2) : 'UNAVAILABLE: no independent opportunity material was retained.',
-        '',
-        '==============================',
-        'RELEVANT TARGET CONTEXT',
-        '==============================',
-        targetContext.length ? JSON.stringify(targetContext, null, 2) : 'UNAVAILABLE: no relevant target records were retained.',
-        '',
-        'REJECTION SUMMARY',
-        semantic ? JSON.stringify(semantic.rejected_opportunity_summary || {}, null, 2) : 'UNAVAILABLE',
+        ...(manualReview ? [
+            '==============================',
+            'BUY MARKET LOCATIONS',
+            '==============================',
+            semantic?.opportunity_material?.buy_locations?.length ? JSON.stringify(semantic.opportunity_material.buy_locations, null, 2) : 'UNAVAILABLE: no deterministic BUY locations were retained.',
+            '',
+            '==============================',
+            'SELL MARKET LOCATIONS',
+            '==============================',
+            semantic?.opportunity_material?.sell_locations?.length ? JSON.stringify(semantic.opportunity_material.sell_locations, null, 2) : 'UNAVAILABLE: no deterministic SELL locations were retained.',
+            '',
+            '==============================',
+            'ICT MODEL EVIDENCE',
+            '==============================',
+            semantic ? JSON.stringify(semantic.deterministic_evidence || {}, null, 2) : 'UNAVAILABLE',
+            '',
+            '==============================',
+            'STRUCTURAL INVALIDATION CONTEXT',
+            '==============================',
+            semantic ? JSON.stringify(Object.fromEntries(Object.entries(semantic.timeframes || {}).map(([timeframe, value]) => [timeframe, value.structural_invalidations || []])), null, 2) : 'UNAVAILABLE',
+            '',
+            '==============================',
+            'STRUCTURAL / LIQUIDITY TARGET CONTEXT',
+            '==============================',
+            targetContext.length ? JSON.stringify(targetContext, null, 2) : 'UNAVAILABLE: no relevant target records were retained.',
+            '',
+            '==============================',
+            'MARKET DELIVERY / LIFECYCLE FACTS',
+            '==============================',
+            semantic ? JSON.stringify(semantic.phase_evidence?.delivery_facts || {}, null, 2) : 'UNAVAILABLE'
+        ] : [
+            '==============================',
+            'BUY LOCATIONS',
+            '==============================',
+            semantic?.opportunity_material?.buy_locations?.length ? JSON.stringify(semantic.opportunity_material.buy_locations, null, 2) : 'UNAVAILABLE: no deterministic BUY locations were retained.',
+            '',
+            '==============================',
+            'SELL LOCATIONS',
+            '==============================',
+            semantic?.opportunity_material?.sell_locations?.length ? JSON.stringify(semantic.opportunity_material.sell_locations, null, 2) : 'UNAVAILABLE: no deterministic SELL locations were retained.',
+            '',
+            '==============================',
+            'DETERMINISTIC EVIDENCE / SETUP COMPONENTS',
+            '==============================',
+            semantic ? JSON.stringify(semantic.deterministic_evidence || {}, null, 2) : 'UNAVAILABLE',
+            '',
+            '==============================',
+            'CURRENT SELECTABLE CANDIDATES (REFERENCE MATERIAL ONLY)',
+            '==============================',
+            candidates.length ? JSON.stringify(candidates, null, 2) : 'NONE RETAINED BY INTERNAL SELECTOR. THIS IS NOT A MARKET NO_TRADE CONCLUSION.',
+            '',
+            '==============================',
+            'CURRENT OPPORTUNITY MATERIAL',
+            '==============================',
+            semantic?.opportunity_material ? JSON.stringify(semantic.opportunity_material, null, 2) : 'UNAVAILABLE: no independent opportunity material was retained.',
+            '',
+            '==============================',
+            'RELEVANT TARGET CONTEXT',
+            '==============================',
+            targetContext.length ? JSON.stringify(targetContext, null, 2) : 'UNAVAILABLE: no relevant target records were retained.',
+            '',
+            'REJECTION SUMMARY',
+            semantic ? JSON.stringify(semantic.rejected_opportunity_summary || {}, null, 2) : 'UNAVAILABLE'
+        ]),
         ...(manualReview ? [] : [
             '',
             '==============================',
