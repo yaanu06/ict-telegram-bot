@@ -7486,8 +7486,29 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     Object.assign(rawCandidate, lifecycle);
                     if (lifecycle.rejection_code) {
                         failSeed(seed, 'LIFECYCLE_REJECTED', lifecycle.rejection_code);
-                        rejectedCandidates.push({ id: rawCandidate.id, rejection_code: lifecycle.rejection_code,
-                            rejection_reasons: [lifecycle.rejection_code], setup_lifecycle: lifecycle });
+                        rejectedCandidates.push({
+                            id: rawCandidate.id,
+                            candidate_id: rawCandidate.id,
+                            direction: rawCandidate.direction,
+                            timeframe: rawCandidate.timeframe,
+                            zone_type: rawCandidate.zone_type,
+                            zone_low: rawCandidate.zone_low,
+                            zone_high: rawCandidate.zone_high,
+                            execution_zone: { id: rawCandidate.zone?.id || null, type: rawCandidate.zone_type, low: rawCandidate.zone_low, high: rawCandidate.zone_high, timeframe: rawCandidate.timeframe, freshness: rawCandidate.freshness },
+                            entry: rawCandidate.entry,
+                            stop_loss: rawCandidate.stop_loss,
+                            structural_invalidation: rawCandidate.structural_invalidation,
+                            execution_model: rawCandidate.execution_model,
+                            freshness: rawCandidate.freshness,
+                            poi_freshness: lifecycle.poi_freshness,
+                            opportunity_freshness: lifecycle.opportunity_freshness,
+                            source_evidence_ids: rawCandidate.source_evidence_ids || [],
+                            target_candidates: Array.isArray(strategySetup?.target_candidates) ? strategySetup.target_candidates.slice(0, 8) : [],
+                            current_opportunity_source: rawCandidate.current_opportunity_source,
+                            rejection_code: lifecycle.rejection_code,
+                            rejection_reasons: [lifecycle.rejection_code],
+                            setup_lifecycle: lifecycle
+                        });
                         continue;
                     }
                 }
@@ -7688,16 +7709,16 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     target_diagnostics: targetDiagnostics,
                     target_lifecycle_state: primaryTargetLifecycle?.lifecycle_state || 'UNKNOWN',
                     target_lifecycle: primaryTargetLifecycle,
-                    // A future limit is evaluated from the future fill.  A
-                    // prior move through the target does not count as
-                    // delivery unless the target lifecycle proved that the
-                    // objective was consumed.
-                    remaining_reward_fraction: pendingLimitModel && ['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(primaryTargetLifecycle?.lifecycle_state)
-                        ? 1 : rawCandidate.remaining_reward_fraction,
-                    progress_to_tp1_fraction: pendingLimitModel && ['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(primaryTargetLifecycle?.lifecycle_state)
-                        ? 0 : rawCandidate.progress_to_tp1_fraction,
-                    progress_to_tp1_fraction_raw: pendingLimitModel && ['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(primaryTargetLifecycle?.lifecycle_state)
-                        ? 0 : rawCandidate.progress_to_tp1_fraction_raw,
+                    // Target lifecycle remains authoritative for whether a
+                    // structural objective is executable, while opportunity
+                    // freshness retains post-formation delivery evidence.
+                    remaining_reward_fraction: rawCandidate.remaining_reward_fraction,
+                    progress_to_tp1_fraction: rawCandidate.progress_to_tp1_fraction,
+                    progress_to_tp1_fraction_raw: rawCandidate.progress_to_tp1_fraction_raw,
+                    opportunity_freshness: rawCandidate.opportunity_freshness,
+                    delivery_after_formation: rawCandidate.delivery_after_formation,
+                    formation_progress_to_tp1_fraction: rawCandidate.formation_progress_to_tp1_fraction,
+                    post_formation_delivery_progress: rawCandidate.post_formation_delivery_progress,
                     setup_confidence: Math.max(0, Math.min(100, Math.round(score))),
                     score: ictRound(score, 2)
                 };
@@ -8329,19 +8350,63 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         && (candidate.direction === 'BUY' ? price >= tp1 : price <= tp1);
     result.tp1_already_reached ||= currentReached;
     if (pendingTargetRemains) {
-        // A pending limit is not filled at the scan price.  Do not infer
-        // target delivery from the quote being beyond TP1; only the target's
-        // closed-candle lifecycle can mark it consumed.
+        // Target lifecycle and opportunity lifecycle answer different
+        // questions.  An unfilled target remains a valid structural objective
+        // for a future fill, but it must not erase evidence that the original
+        // pending opportunity already delivered toward that objective.
+        // Keep the target eligible while retaining the directional path
+        // metrics used by opportunity freshness below.
         result.tp1_already_reached = false;
-        result.remaining_reward_fraction = 1;
-        result.progress_to_tp1_fraction = 0;
-        result.progress_to_tp1_fraction_raw = 0;
         result.target_lifecycle_state = targetLifecycleState;
     }
+    const deliveryThreshold = 1 - freshnessSpec.minRemainingRewardFraction;
+    const formationCandle = Number.isInteger(index) && index >= 0
+        ? (executionEventTime ? executionData[index] : data[index])
+        : null;
+    const formationPrice = Number.isFinite(Number(formationCandle?.c)) ? Number(formationCandle.c) : null;
+    const progressAtPrice = value => Number.isFinite(tp1) && Number.isFinite(entry) && Math.abs(tp1 - entry) > 0 && Number.isFinite(Number(value))
+        ? (candidate.direction === 'BUY' ? (Number(value) - entry) / (tp1 - entry) : (entry - Number(value)) / (entry - tp1))
+        : null;
+    const formationProgressRaw = progressAtPrice(formationPrice);
+    const postFormationBars = executionData.filter((bar, barIndex) => {
+        const barHasExplicitTime = Number.isFinite(parseCandleTimeUTC(bar?.t));
+        const barTime = candleTimestamp(bar, barIndex, executionTf);
+        if (eventCutoff != null) return barHasExplicitTime ? barTime > eventCutoff : (Number.isInteger(index) && executionTf === setupTf ? barIndex > index : false);
+        return Number.isInteger(index) ? barIndex > index : false;
+    });
+    const postFormationProgressValues = postFormationBars.flatMap(bar => {
+        const favorable = candidate.direction === 'BUY' ? Number(bar?.h) : Number(bar?.l);
+        const progress = progressAtPrice(favorable);
+        return Number.isFinite(progress) ? [progress] : [];
+    });
+    // If no closed candle follows formation, the current quote is the only
+    // post-formation observation available.  Otherwise closed-candle path
+    // evidence is preferred so a move that pre-dates a newly formed POI is
+    // not incorrectly attributed to that opportunity.
+    if (postFormationProgressValues.length === 0 && Number.isFinite(asOfTime) && Number.isFinite(resolvedEventTime) && asOfTime > resolvedEventTime) {
+        const currentProgress = progressAtPrice(price);
+        if (Number.isFinite(currentProgress)) postFormationProgressValues.push(currentProgress);
+    }
+    const postFormationProgressRaw = postFormationProgressValues.length ? Math.max(...postFormationProgressValues) : null;
+    const formationOrderingAvailable = Number.isFinite(formationPrice) || Number.isFinite(resolvedEventTime) || Number.isInteger(index);
+    const formationWasAlreadyAdvanced = Number.isFinite(formationProgressRaw) && formationProgressRaw >= deliveryThreshold;
+    const deliveryCrossedAfterFormation = Number.isFinite(postFormationProgressRaw)
+        ? (!formationWasAlreadyAdvanced && postFormationProgressRaw > deliveryThreshold)
+        : (!formationOrderingAvailable && Number.isFinite(result.progress_to_tp1_fraction_raw) && result.progress_to_tp1_fraction_raw > deliveryThreshold);
+    result.formation_price = formationPrice;
+    result.formation_progress_to_tp1_fraction = Number.isFinite(formationProgressRaw) ? Math.max(0, Math.min(1, formationProgressRaw)) : null;
+    result.post_formation_delivery_progress = Number.isFinite(postFormationProgressRaw) ? Math.max(0, Math.min(1, postFormationProgressRaw)) : null;
+    result.delivery_threshold = deliveryThreshold;
+    result.delivery_after_formation = deliveryCrossedAfterFormation;
+    result.poi_freshness = candidate.freshness || candidate.zone?.freshness || 'UNKNOWN';
+    result.opportunity_freshness = result.tp1_already_reached ? 'TARGET_DELIVERED'
+        : result.entry_consumed ? 'INVALIDATED'
+            : deliveryCrossedAfterFormation ? 'STALE_DELIVERY'
+                : result.poi_freshness === 'FRESH' ? 'FRESH_PENDING' : 'ACTIVE_PENDING';
     const staleByAge = !Number.isFinite(eventAgeHours) || eventAgeHours > maxEventAgeHours || parentAgeExpired;
-    const deliveryAdvanced = !pendingRetracementLocation
-        && result.remaining_reward_fraction != null
-        && result.remaining_reward_fraction < freshnessSpec.minRemainingRewardFraction;
+    const deliveryAdvanced = (deliveryCrossedAfterFormation || (result.remaining_reward_fraction != null
+            && result.remaining_reward_fraction < freshnessSpec.minRemainingRewardFraction
+            && !Number.isFinite(formationProgressRaw)));
     const entryTooFarForToday = !result.entry_reachable_today;
     result.timestamp_consistent = !timestampInFuture && !zoneTimeInFuture && !(hasExplicitTimes && Number.isFinite(eventAgeHours) && eventAgeHours < -(STRATEGY_SPEC.TIME.futureToleranceMs / 3600000));
     // A pending limit can be placed before its retracement is reachable in
@@ -8369,9 +8434,12 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
                 : result.rejection_code === 'SETUP_DELIVERY_ALREADY_ADVANCED' ? 'DELIVERY_ADVANCED'
         : result.rejection_code === 'MARKET_CLOSED' || closedPendingLimit ? 'FRESH_PENDING_LATER'
                         : result.rejection_code === 'ENTRY_NOT_REACHABLE_TODAY' ? 'FRESH_PENDING_LATER'
-                        : result.rejection_code ? 'INVALID'
+                : result.rejection_code ? 'INVALID'
                             : (getZonePriceStatus(price, { low, high }).insideZone ? 'FRESH_NOW'
                                 : entryTooFarForToday && pendingLimitModel ? 'FRESH_PENDING_LATER' : 'FRESH_PENDING_TODAY');
+    if (result.rejection_code === 'SETUP_DELIVERY_ALREADY_ADVANCED') result.opportunity_freshness = 'STALE_DELIVERY';
+    if (result.rejection_code === 'SETUP_ALREADY_COMPLETED') result.opportunity_freshness = 'TARGET_DELIVERED';
+    if (result.rejection_code && !['SETUP_DELIVERY_ALREADY_ADVANCED', 'SETUP_ALREADY_COMPLETED'].includes(result.rejection_code)) result.opportunity_freshness = 'INVALIDATED';
     result.setup_lifecycle_status = result.lifecycle_state = result.opportunity_status;
     return result;
 }
@@ -10781,7 +10849,11 @@ function compactAiTarget(target = {}, fallbackDirection = null) {
 function compactAiCandidate(candidate = {}) {
     const setup = candidate.strategy_setup || {};
     const relevance = candidate.current_opportunity_relevance || {};
-    const targetMap = Array.isArray(candidate.target_map) ? candidate.target_map : [];
+    const lifecycleMetrics = candidate.evaluation?.metrics?.setup_lifecycle || candidate.setup_lifecycle || {};
+    const targetMap = [
+        ...(Array.isArray(candidate.target_map) ? candidate.target_map : []),
+        ...(Array.isArray(candidate.target_candidates) ? candidate.target_candidates : [])
+    ];
     const targetRecords = targetMap.map(target => compactAiTarget(target, candidate.direction)).filter(Boolean);
     const strategyLabels = [...new Set([
         candidate.strategy_label,
@@ -10826,7 +10898,10 @@ function compactAiCandidate(candidate = {}) {
             rr: candidate.actual_rr ?? candidate.rr_tp1 ?? candidate.risk_reward ?? null
         },
         lifecycle: {
-            state: candidate.lifecycle_state || candidate.opportunity_status || null,
+            state: candidate.lifecycle_state || candidate.opportunity_status || lifecycleMetrics.opportunity_status || null,
+            opportunity_freshness: candidate.opportunity_freshness || lifecycleMetrics.opportunity_freshness || null,
+            poi_freshness: candidate.poi_freshness || candidate.freshness || candidate.zone?.freshness || lifecycleMetrics.poi_freshness || null,
+            formation_time: candidate.execution_zone_created_time || candidate.event_time || candidate.parent_event_time_ms || null,
             still_actionable_today: candidate.still_actionable_today ?? null,
             entry_consumed: candidate.entry_consumed ?? null,
             tp1_already_reached: candidate.tp1_already_reached ?? null,
@@ -10836,6 +10911,10 @@ function compactAiCandidate(candidate = {}) {
             continuation_state: candidate.continuation_state || relevance.continuation_state || null,
             delivery_fraction: candidate.delivery_fraction ?? relevance.delivery_fraction ?? null,
             remaining_reward_fraction: candidate.remaining_reward_fraction ?? relevance.remaining_reward_fraction ?? null,
+            delivery_after_formation: candidate.delivery_after_formation ?? lifecycleMetrics.delivery_after_formation ?? null,
+            formation_progress_to_tp1_fraction: candidate.formation_progress_to_tp1_fraction ?? lifecycleMetrics.formation_progress_to_tp1_fraction ?? null,
+            post_formation_delivery_progress: candidate.post_formation_delivery_progress ?? lifecycleMetrics.post_formation_delivery_progress ?? null,
+            delivery_threshold: candidate.delivery_threshold ?? lifecycleMetrics.delivery_threshold ?? null,
             entry_retracement_distance: relevance.entry_retracement_distance ?? candidate.distance_from_current_price ?? null,
             remaining_structural_objectives: candidate.remaining_structural_objectives ?? relevance.remaining_structural_objectives ?? null
         },
@@ -16451,7 +16530,9 @@ const EXTERNAL_AI_PACKET_CONTRACT = [
     'CONFIRMATION_ENTRY is different: require the supplied deterministic confirmation state and requirements. Do not turn every opportunity into a confirmation entry.',
     'STRUCTURAL SL FIRST: use the supplied structural invalidation/stop. Targets must be supplied genuine structural/liquidity objectives with an executable lifecycle. Never manufacture ATR, fixed-R, or other levels.',
     'Respect target lifecycle and minimum RR. Consumed, invalidated, unknown, or otherwise rejected targets cannot become TP1. Do not move TP to manufacture RR.',
-    'Confidence describes quality after deterministic validity. Keep quality warnings separate from hard rejection.',
+    'POI FRESHNESS IS NOT OPPORTUNITY FRESHNESS. A zone may remain FRESH while the pending opportunity built from it is STALE_DELIVERY, TARGET_DELIVERED, or otherwise no longer actionable. Use the supplied formation time, opportunity freshness, target lifecycle, and post-formation delivery evidence together.',
+    'Do not reject a pending limit merely because it is far from current price. Do not prefer an old untouched POI when its original delivery substantially played out after formation without filling entry. Do not revive it by moving entry, SL, or TP; prefer newer supplied material or return NO_TRADE.',
+    'Confidence describes quality after deterministic validity. Keep quality warnings separate from hard rejection. In the compact external TRADE JSON it must be a JSON integer from 0 through 100 inclusive; labels and decimal probabilities are invalid. NO_TRADE confidence is null.',
     'Use only supplied evidence IDs, locations, prices, zones, stops, targets, invalidations, and RR. Existing complete candidate geometry is immutable.',
     'The external AI may combine supplied deterministic evidence into a supported opportunity even when the internal selector retained zero final candidates. selected_candidate_id may be null for that discovered path.',
     'Never invent market data, evidence, POIs, setup labels, levels, targets, invalidations, or arbitrary geometry. If exact valid geometry cannot be established from supplied deterministic data, return NO_TRADE.',
@@ -16488,6 +16569,7 @@ function externalPacketTargetRecord(target = {}, fallbackDirection = null) {
 
 function externalPacketCandidateRecord(candidate = {}, targetIndex = new Map()) {
     const zone = candidate.entry_zone || candidate.execution_zone || candidate.zone || {};
+    const lifecycleMetrics = candidate.evaluation?.metrics?.setup_lifecycle || candidate.setup_lifecycle || {};
     const invalidation = candidate.structural_invalidation && typeof candidate.structural_invalidation === 'object'
         ? candidate.structural_invalidation : {};
     const targetList = [
@@ -16537,15 +16619,22 @@ function externalPacketCandidateRecord(candidate = {}, targetIndex = new Map()) 
         rr: externalPacketNumber(candidate.actual_rr ?? candidate.risk_reward ?? candidate.rr_tp1 ?? candidate.rr),
         minimum_rr: externalPacketNumber(candidate.minimum_rr ?? candidate.min_rr),
         freshness: candidate.freshness || zone.freshness || null,
-        lifecycle: candidate.lifecycle_state || candidate.opportunity_status || candidate.continuation_state || null,
+        lifecycle: candidate.lifecycle_state || candidate.opportunity_status || lifecycleMetrics.opportunity_status || candidate.continuation_state || null,
+        poi_freshness: candidate.poi_freshness || candidate.freshness || zone.freshness || lifecycleMetrics.poi_freshness || null,
+        opportunity_freshness: candidate.opportunity_freshness || lifecycleMetrics.opportunity_freshness || null,
+        formation_time: candidate.execution_zone_created_time || candidate.event_time || candidate.parent_event_time_ms || null,
         mitigation: candidate.mitigation_state ?? candidate.mitigation_count ?? null,
         entry_consumed: candidate.entry_consumed ?? candidate.entry_already_consumed ?? null,
         reachability: (candidate.entry_reachable_today ?? candidate.opportunity_reachable_today ?? candidate.reachability) ?? null,
         delivery: candidate.current_opportunity_relevance || externalPacketDefined({
             delivery_fraction: candidate.delivery_fraction,
             remaining_reward_fraction: candidate.remaining_reward_fraction,
+            delivery_after_formation: candidate.delivery_after_formation ?? lifecycleMetrics.delivery_after_formation,
+            formation_progress_to_tp1_fraction: candidate.formation_progress_to_tp1_fraction ?? lifecycleMetrics.formation_progress_to_tp1_fraction,
+            post_formation_delivery_progress: candidate.post_formation_delivery_progress ?? lifecycleMetrics.post_formation_delivery_progress,
+            delivery_threshold: candidate.delivery_threshold ?? lifecycleMetrics.delivery_threshold,
             continuation_state: candidate.continuation_state
-        }, ['delivery_fraction', 'remaining_reward_fraction', 'continuation_state']),
+        }, ['delivery_fraction', 'remaining_reward_fraction', 'delivery_after_formation', 'formation_progress_to_tp1_fraction', 'post_formation_delivery_progress', 'delivery_threshold', 'continuation_state']),
         confluence: candidate.confluence || candidate.strategy_confluence || candidate.patterns || null,
         supporting_evidence_ids: candidate.supporting_evidence_ids || [],
         conflicting_evidence_ids: candidate.conflicting_evidence_ids || [],
@@ -16553,7 +16642,7 @@ function externalPacketCandidateRecord(candidate = {}, targetIndex = new Map()) 
         hard_rejections: candidate.hard_rejections || candidate.rejection_reasons || [],
         deterministic_valid: candidate.deterministic_valid ?? candidate.valid ?? true,
         state: candidate.status || candidate.opportunity_status || candidate.lifecycle_state || null
-    }, ['candidate_id', 'direction', 'type', 'setup_label', 'opportunity_role', 'setup_timeframe', 'execution_timeframe', 'execution_mode', 'source', 'evidence_ids', 'entry_zone', 'entry', 'structural_invalidation_id', 'structural_invalidation', 'stop_loss', 'tp1', 'tp2', 'tp3', 'target_ids', 'targets', 'rr', 'minimum_rr', 'freshness', 'lifecycle', 'mitigation', 'entry_consumed', 'reachability', 'delivery', 'confluence', 'supporting_evidence_ids', 'conflicting_evidence_ids', 'quality_warnings', 'hard_rejections', 'deterministic_valid', 'state']);
+    }, ['candidate_id', 'direction', 'type', 'setup_label', 'opportunity_role', 'setup_timeframe', 'execution_timeframe', 'execution_mode', 'source', 'evidence_ids', 'entry_zone', 'entry', 'structural_invalidation_id', 'structural_invalidation', 'stop_loss', 'tp1', 'tp2', 'tp3', 'target_ids', 'targets', 'rr', 'minimum_rr', 'freshness', 'poi_freshness', 'opportunity_freshness', 'formation_time', 'lifecycle', 'mitigation', 'entry_consumed', 'reachability', 'delivery', 'confluence', 'supporting_evidence_ids', 'conflicting_evidence_ids', 'quality_warnings', 'hard_rejections', 'deterministic_valid', 'state']);
 }
 
 function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
@@ -16753,6 +16842,21 @@ absent, or price is outside a killzone, unless another supplied
 deterministic rule invalidates it. CONFIRMATION_ENTRY is different and
 must satisfy its supplied confirmation requirements.
 
+OPPORTUNITY FRESHNESS:
+
+POI freshness and opportunity freshness are different. A POI can remain
+FRESH while the opportunity formed from it is STALE_DELIVERY or
+TARGET_DELIVERED. Before selecting a PENDING_LIMIT, inspect the supplied
+formation time, opportunity_freshness, target lifecycle, and delivery
+after formation. If the original entry-to-TP1 delivery substantially
+played out after formation without filling the entry, do not select that
+old opportunity merely because its POI is untouched. Prefer newer/current
+supplied opportunity material when it has exact deterministic geometry.
+Do not move entry, SL, TP, or create a replacement entry. An untouched
+limit far from current price remains valid when its original thesis and
+objective are still fresh and unfulfilled. Distance alone is not a
+freshness rule.
+
 VALIDITY IS NOT QUALITY:
 
 Hard deterministic invalidity can reject a candidate. Conflicting context
@@ -16810,7 +16914,7 @@ discovered from supplied deterministic market evidence, return EXACTLY:
   "tp2": null,
   "tp3": null,
   "risk_reward": null,
-  "confidence": null
+  "confidence": 82
 }
 
 The null values are schema placeholders only. For TRADE, populate entry,
@@ -16819,7 +16923,9 @@ geometry traceable to supplied deterministic evidence. For PATH A these
 values MUST exactly match the selected candidate. For PATH B do not
 calculate arbitrary new levels; use only supplied deterministic values and
 rules. Confidence is only the quality assessment of the already-valid
-opportunity.
+opportunity; confidence MUST be a JSON integer from 0 through 100 inclusive,
+never a label such as HIGH, MEDIUM, or MEDIUM_HIGH, and never a decimal
+probability such as 0.82. For NO_TRADE confidence MUST be null.
 
 If no valid opportunity exists after evaluating EVERY supplied candidate
 and meaningful opportunity-material record, return EXACTLY:

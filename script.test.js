@@ -289,6 +289,59 @@ describe('strategy entry lifecycle', () => {
         expect(result.remaining_reward_fraction).toBeCloseTo(0.818, 2);
     });
 
+    it.each([
+        ['BUY', 100, 200, 130],
+        ['SELL', 200, 100, 170]
+    ])('keeps a fresh untouched far-away pending %s valid when its objective remains unfulfilled', (direction, entry, tp1, price) => {
+        const ctx = getContext();
+        const result = ctx.evaluateSetupLifecycle({
+            direction, execution_model: 'PENDING_LIMIT', entry, zone_low: direction === 'BUY' ? 99.5 : 199.5,
+            zone_high: direction === 'BUY' ? 100.5 : 200.5, tp1,
+            freshness: 'FRESH', strategy_setup: { primary: 'ICT', timeframe: '1H', event_time: '2026-09-11T09:00:00Z' }
+        }, {
+            price, as_of_time: '2026-09-11T11:00:00Z',
+            historyCache: { '1H': [c(entry, entry + (direction === 'BUY' ? 0.2 : 0.1), entry - (direction === 'BUY' ? 0.1 : 0.2), entry, '2026-09-11T09:00:00Z')] }
+        });
+        expect(result.entry_freshness).toBe('FRESH');
+        expect(result.opportunity_freshness).toBe('FRESH_PENDING');
+        expect(result.rejection_code).toBeNull();
+        expect(result.still_actionable_today).toBe(true);
+    });
+
+    it('keeps the existing symmetric delivery boundary valid at exactly 50% remaining reward', () => {
+        const ctx = getContext();
+        const result = ctx.evaluateSetupLifecycle({
+            direction: 'BUY', execution_model: 'PENDING_LIMIT', entry: 100, zone_low: 99.5, zone_high: 100.5, tp1: 200,
+            freshness: 'FRESH', strategy_setup: { primary: 'ICT', timeframe: '1H', event_time: '2026-09-11T09:00:00Z' }
+        }, {
+            price: 150, as_of_time: '2026-09-11T11:00:00Z',
+            historyCache: { '1H': [c(100, 100.2, 99.8, 100, '2026-09-11T09:00:00Z')] }
+        });
+        expect(result.remaining_reward_fraction).toBeCloseTo(0.5, 5);
+        expect(result.delivery_threshold).toBeCloseTo(0.5, 5);
+        expect(result.delivery_after_formation).toBe(false);
+        expect(result.rejection_code).toBeNull();
+    });
+
+    it('does not stale a newly formed opportunity because price was already advanced before formation', () => {
+        const ctx = getContext();
+        const result = ctx.evaluateSetupLifecycle({
+            direction: 'BUY', execution_model: 'PENDING_LIMIT', entry: 100, zone_low: 99.9, zone_high: 100.1, tp1: 110,
+            freshness: 'FRESH', strategy_setup: { primary: 'ICT', timeframe: '1H', reclaim_bar_index: 1, reclaim_time: '2026-09-11T10:00:00Z' }
+        }, {
+            price: 109, as_of_time: '2026-09-11T11:00:00Z',
+            historyCache: { '1H': [
+                c(108, 109, 107.5, 108.5, '2026-09-11T09:00:00Z'),
+                c(108.5, 109.2, 108.2, 109, '2026-09-11T10:00:00Z'),
+                c(109, 109.1, 108.8, 109, '2026-09-11T11:00:00Z')
+            ] }
+        });
+        expect(result.formation_progress_to_tp1_fraction).toBeGreaterThan(0.5);
+        expect(result.delivery_after_formation).toBe(false);
+        expect(result.opportunity_freshness).toBe('FRESH_PENDING');
+        expect(result.rejection_code).toBeNull();
+    });
+
     it('uses a fresh execution-zone timestamp instead of expiring it from an old parent narrative', () => {
         const ctx = getContext();
         const market = {
@@ -431,7 +484,7 @@ describe('strategy entry lifecycle', () => {
         expect(result.opportunity_status).toBe('DELIVERY_ADVANCED');
     });
 
-    it('does not mark a pending limit stale when the quote is already beyond an unfulfilled target', () => {
+    it('marks an old pending limit stale when delivery advanced after formation even if the target remains unfulfilled', () => {
         const ctx = getContext();
         const result = ctx.evaluateSetupLifecycle({
             direction: 'SELL', execution_model: 'STRUCTURAL_LIMIT', entry: 110, zone_low: 109, zone_high: 111, tp1: 105,
@@ -442,8 +495,10 @@ describe('strategy entry lifecycle', () => {
             historyCache: { '1H': [c(110, 111, 109, 110, '2026-09-28T00:00:00Z'), c(110, 108.5, 104.8, 105, '2026-09-28T01:00:00Z')] }
         });
         expect(result.tp1_already_reached).toBe(false);
-        expect(result.remaining_reward_fraction).toBe(1);
-        expect(result.rejection_code).toBeNull();
+        expect(result.remaining_reward_fraction).toBeCloseTo(0.1, 5);
+        expect(result.poi_freshness).toBe('UNKNOWN');
+        expect(result.opportunity_freshness).toBe('STALE_DELIVERY');
+        expect(result.rejection_code).toBe('SETUP_DELIVERY_ALREADY_ADVANCED');
     });
 
     it('penalizes partial delivery without making a limit order automatically low confidence', () => {
@@ -1381,7 +1436,7 @@ describe('active narrative fresh execution zones', () => {
 });
 
 describe('fresh execution downstream validation', () => {
-    it('keeps an unfilled executable sell limit valid after price has already crossed TP1', () => {
+    it('stales an unfilled executable sell limit when delivery crossed TP1 after the opportunity formed', () => {
         const ctx = getContext();
         const result = ctx.evaluateSetupLifecycle({
             direction: 'SELL', entry: 4260.4, zone_low: 4259.23, zone_high: 4261.57, tp1: 4243.32,
@@ -1403,8 +1458,12 @@ describe('fresh execution downstream validation', () => {
         });
         expect(result.entry_touch_count_after_signal).toBe(0);
         expect(result.tp1_already_reached).toBe(false);
-        expect(result.rejection_code).toBeNull();
-        expect(result.still_actionable_today).toBe(true);
+        expect(result.entry_region_low).toBe(4259.23);
+        expect(result.entry_region_high).toBe(4261.57);
+        expect(result.entry_freshness).toBe('FRESH');
+        expect(result.opportunity_freshness).toBe('STALE_DELIVERY');
+        expect(result.rejection_code).toBe('SETUP_DELIVERY_ALREADY_ADVANCED');
+        expect(result.still_actionable_today).toBe(false);
     });
 
     it('keeps the effective stop floor at 75% of the configured ATR rule', () => {
@@ -5626,7 +5685,7 @@ describe('validateAISetup', () => {
             strategy_setup: { primary: 'TBS', label: 'TBS', timeframe: '1H', reclaim_bar_index: 79 }
         }), 4405, cache, 'XAU/USD', { ...validationContext, price: 4405 });
         expect(r.valid).toBe(false);
-        expect(r.reason).toContain('SETUP_DELIVERY_ALREADY_ADVANCED');
+        expect(r.reason).toContain('real RR');
     });
 });
 
@@ -7273,6 +7332,7 @@ describe('AI market analyst contract', () => {
             current_opportunity_source: 'CURRENT_MARKET_REGENERATION', zone_type: 'FVG', zone_low: 101, zone_high: 102, entry: 101.5,
             structural_invalidation: { id: 'CURRENT-1H-FVG-SELL-1:SL', level: 104, source: 'FVG_INVALIDATION' }, stop_loss: 104,
             tp1: 98, tp2: 97, actual_rr: 2.5, minimum_rr: 2.5, lifecycle_state: 'FRESH_PENDING_TODAY', freshness: 'FRESH',
+            opportunity_freshness: 'FRESH_PENDING', poi_freshness: 'FRESH', execution_zone_created_time: '2026-09-29T08:00:00Z',
             entry_consumed: false, entry_reachable_today: true, current_opportunity_relevance: { delivery_fraction: 0.2, remaining_reward_fraction: 0.8, continuation_state: 'FRESH_CONTINUATION' },
             source_evidence_ids: ['1H:FVG:1'], supporting_evidence_ids: ['1H:BOS:1'], conflicting_evidence_ids: ['15M:TRANSITION:1'],
             quality_warnings: ['LTF retracement is active'], target_map: [
@@ -7310,6 +7370,8 @@ describe('AI market analyst contract', () => {
         expect(packet).toContain('STRUCTURAL SL FIRST');
         expect(packet).toContain('target lifecycle');
         expect(packet).toContain('Confidence describes quality');
+        expect(packet).toContain('"opportunity_freshness": "FRESH_PENDING"');
+        expect(packet).toContain('"poi_freshness": "FRESH"');
         for (const tf of ['1D', '4H', '1H', '15M', '5M']) expect(packet).toContain(`"${tf}"`);
         expect(packet).toContain(candidate.id);
         expect(packet).toContain('"entry": 101.5');
@@ -7335,6 +7397,8 @@ describe('AI market analyst contract', () => {
         expect(task).toContain('Before selecting or rejecting candidates, determine internally:');
         expect(task).toContain('Historical HTF direction is important');
         expect(task).toContain('A valid pending LIMIT may remain actionable while price is away');
+        expect(task).toContain('POI freshness and opportunity freshness are different.');
+        expect(task).toContain('confidence MUST be a JSON integer from 0 through 100 inclusive');
         expect(task).toContain('Confidence describes the quality of an already-valid setup.');
         expect(task).toContain('NO_TRADE remains fully valid. Do not force a trade');
         expect(task).toContain('There is exactly ONE authoritative task in this packet');
@@ -7360,7 +7424,10 @@ describe('AI market analyst contract', () => {
         const noTradeExample = packet.slice(noTradeExampleStart, noTradeExampleEnd);
         expect(() => JSON.parse(tradeExample)).not.toThrow();
         expect(Object.keys(JSON.parse(tradeExample))).toEqual(['pair', 'decision', 'direction', 'trade_type', 'setup', 'market_phase', 'selected_candidate_id', 'entry', 'entry_zone', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk_reward', 'confidence']);
-        expect(JSON.parse(tradeExample)).toEqual(expect.objectContaining({ decision: 'TRADE', selected_candidate_id: '<EXACT supplied candidate ID or null for PATH B>', entry: null, entry_zone: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null, confidence: null }));
+        expect(JSON.parse(tradeExample)).toEqual(expect.objectContaining({ decision: 'TRADE', selected_candidate_id: '<EXACT supplied candidate ID or null for PATH B>', entry: null, entry_zone: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null, confidence: 82 }));
+        expect(Number.isInteger(JSON.parse(tradeExample).confidence)).toBe(true);
+        expect(JSON.parse(tradeExample).confidence).toBeGreaterThanOrEqual(0);
+        expect(JSON.parse(tradeExample).confidence).toBeLessThanOrEqual(100);
         expect(() => JSON.parse(noTradeExample)).not.toThrow();
         expect(Object.keys(JSON.parse(noTradeExample))).toEqual(['pair', 'decision', 'direction', 'trade_type', 'setup', 'market_phase', 'selected_candidate_id', 'entry', 'entry_zone', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk_reward', 'confidence']);
         expect(JSON.parse(noTradeExample)).toEqual(expect.objectContaining({ decision: 'NO_TRADE', selected_candidate_id: null, entry: null, entry_zone: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null, confidence: null }));
@@ -7369,6 +7436,28 @@ describe('AI market analyst contract', () => {
             expect(noTradeExample).not.toContain(`\"${verboseField}\"`);
         }
         expect(Buffer.byteLength(packet, 'utf8')).toBeLessThan(100000);
+    });
+
+    it('serializes stale opportunity freshness without deleting the underlying fresh POI material', () => {
+        const ctx = getContext();
+        const catalog = ctx.buildAiMarketEvidenceCatalog({
+            pair: 'EUR/USD', current_price: 1.1, as_of_time: '2026-09-29T10:00:00Z',
+            strategy_setups: [], real_ict_zones: [], poi_zones: [], liquidity: {}, structure: {},
+            rejected_setup_candidates: [{
+                id: 'old-limit', direction: 'BUY', timeframe: '1H', zone_type: 'MSNR', zone_low: 1.09, zone_high: 1.091,
+                execution_zone: { id: 'old-poi', type: 'MSNR', low: 1.09, high: 1.091, freshness: 'FRESH' },
+                entry: 1.0905, stop_loss: 1.085, structural_invalidation: { level: 1.085, source: 'STRUCTURAL_SWING' },
+                execution_model: 'PENDING_LIMIT', freshness: 'FRESH', poi_freshness: 'FRESH', opportunity_freshness: 'STALE_DELIVERY',
+                setup_lifecycle: { opportunity_status: 'DELIVERY_ADVANCED', opportunity_freshness: 'STALE_DELIVERY', poi_freshness: 'FRESH', delivery_after_formation: true, post_formation_delivery_progress: 0.88 },
+                target_candidates: [{ id: 'old-tp1', direction: 'BUY', level: 1.101, source: 'BUY_SIDE_LIQUIDITY', target_lifecycle_state: 'UNFULFILLED' }]
+            }]
+        }, {});
+        const record = catalog.opportunity_material.records[0];
+        expect(record.catalog_status).toBe('CURRENT_REJECTED');
+        expect(record.poi.freshness).toBe('FRESH');
+        expect(record.lifecycle.opportunity_freshness).toBe('STALE_DELIVERY');
+        expect(record.delivery.delivery_after_formation).toBe(true);
+        expect(record.execution.targets[0]).toMatchObject({ id: 'old-tp1', level: 1.101, lifecycle_state: 'UNFULFILLED' });
     });
 
     it('keeps Copy packet generation safe for a partial result without scan context', () => {
