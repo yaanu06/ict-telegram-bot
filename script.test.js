@@ -7571,6 +7571,52 @@ describe('AI market analyst contract', () => {
         expect(packet).not.toContain('"rr": 3');
     });
 
+    it('gives manual AI enough contract and lifecycle facts for remote pending relevance', () => {
+        const ctx = getContext();
+        const remoteLocation = {
+            id: 'REMOTE-SELL-POI', type: 'MSNR', direction: 'SELL', timeframe: '4H',
+            low: 4276.08, high: 4281.27, price: 4278.67,
+            event_time: '2026-09-30T02:00:00Z', freshness: 'FRESH', mitigation_state: 'UNMITIGATED',
+            post_formation_delivery_progress: 0.88, delivery_after_formation: true
+        };
+        const timeframes = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, {
+            timeframe: tf,
+            structure: { structural_trend: 'BEARISH', effective_trend: 'BEARISH', swing_highs: [], swing_lows: [], bos: { buy: false, sell: true }, choch: { buy: false, sell: false }, displacement: null },
+            structural_pois: tf === '4H' ? [remoteLocation] : [], fvg: [], order_blocks: { buy: [], sell: [] }, msnr_levels: [], liquidity: {}
+        }]));
+        const replay = {
+            pair: 'XAU/USD', snapshot_id: 'REMOTE-RELEVANCE', scan_as_of: '2026-09-30T12:00:00Z',
+            quote: { price: 4157.23, quote_time: '2026-09-30T11:59:00Z' }, provider_metadata: { provider: 'TVKIT' },
+            market_evidence_package: {
+                snapshot_id: 'REMOTE-RELEVANCE', timeframes,
+                strategy_events: [{ id: 'CRT-4H-SELL', strategy: 'CRT', direction: 'SELL', timeframe: '4H', event_time: remoteLocation.event_time }],
+                target_candidates: { buy: [], sell: [{ id: 'SSL-4142', direction: 'SELL', timeframe: '1H', level: 4142.34, target_lifecycle_state: 'UNFULFILLED', source: 'SELL_SIDE_LIQUIDITY' }] }
+            },
+            target_candidates: { buy: [], sell: [{ id: 'SSL-4142', direction: 'SELL', timeframe: '1H', level: 4142.34, target_lifecycle_state: 'UNFULFILLED', source: 'SELL_SIDE_LIQUIDITY' }] },
+            valid_candidates: []
+        };
+        const packet = ctx.buildExternalAIClipboardPacket({
+            signal: { pair: 'XAU/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' } },
+            replay
+        });
+        expect(packet).toContain('REMOTE-SELL-POI');
+        expect(packet).toContain('"formation_time"');
+        expect(packet).toContain('"delivery_since_formation"');
+        expect(packet).toContain('0.88');
+        expect(packet).toContain('4157.23');
+        expect(packet).toContain('LOCATION VALIDITY IS NOT OPPORTUNITY RELEVANCE');
+        expect(packet).toContain('current-price-to-POI path');
+        expect(packet).toContain('intervening/newer structure');
+        expect(packet).toContain('genuine objective remains meaningful');
+        expect(packet).toContain('no fixed dollar, pip, percentage, ATR, candle-count, proximity, current-zone, or current-retracement filter');
+        expect(packet).toContain('BUY entry < TP1 < TP2 < TP3');
+        expect(packet).toContain('SELL entry > TP1 > TP2 > TP3');
+        expect(packet).toContain('risk_reward is reward to TP1');
+        expect(packet).toContain('setup value must be only a concise ICT model/type');
+        expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
+        expect(packet).not.toContain('"candidate_id": "REMOTE-SELL-POI"');
+    });
+
     it('routes the existing normal Copy action through the external AI packet', () => {
         const { context: ctx } = getScanContext();
         ctx.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };

@@ -10820,6 +10820,10 @@ function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe
             ? item.structural_invalidation_detail : null;
     const invalidationLevel = Number.isFinite(Number(invalidation?.level ?? item.structural_invalidation_level ?? item.invalidation_level ?? item.invalidation))
         ? Number(invalidation?.level ?? item.structural_invalidation_level ?? item.invalidation_level ?? item.invalidation) : null;
+    const formationTime = item.event_time || item.created_time || item.source_time || item.reclaim_time || null;
+    const postFormationDelivery = Number.isFinite(Number(item.post_formation_delivery_progress ?? item.delivery_progress_since_formation))
+        ? Number(item.post_formation_delivery_progress ?? item.delivery_progress_since_formation) : null;
+    const deliveryAfterFormation = typeof item.delivery_after_formation === 'boolean' ? item.delivery_after_formation : null;
     return {
         id,
         type: item.type || item.kind || item.source_type || fallbackType,
@@ -10831,7 +10835,7 @@ function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe
         low,
         high,
         midpoint,
-        event_time: item.event_time || item.created_time || item.source_time || item.reclaim_time || null,
+        event_time: formationTime,
         freshness: item.freshness || item.freshness_state || null,
         mitigation_state: item.mitigation_state || item.mitigation || null,
         lifecycle_state: item.lifecycle_state || item.target_lifecycle_state || null,
@@ -10844,7 +10848,14 @@ function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe
             evidence_id: id
         },
         evidence_ids: Array.isArray(item.evidence_ids || item.supporting_evidence_ids)
-            ? (item.evidence_ids || item.supporting_evidence_ids).filter(value => typeof value === 'string').slice(0, 12) : []
+            ? (item.evidence_ids || item.supporting_evidence_ids).filter(value => typeof value === 'string').slice(0, 12) : [],
+        ...(postFormationDelivery != null || deliveryAfterFormation != null ? {
+            formation_time: formationTime,
+            delivery_since_formation: {
+                progress: postFormationDelivery,
+                delivered: deliveryAfterFormation
+            }
+        } : {})
     };
 }
 
@@ -16595,11 +16606,17 @@ const MANUAL_EXTERNAL_AI_PACKET_CONTRACT = [
     'Do not assume that a setup already exists. Determine the current market phase and actionable direction from the complete five-timeframe evidence before interpreting a model.',
     'This packet intentionally does not provide a candidate shortlist, ranking, or preselected trade. Discover the opportunity from the market facts themselves.',
     'Use exactly these semantic timeframes: 1D, 4H, 1H, 15M, 5M. No 1W semantic trading context is supplied.',
+    'LOCATION VALIDITY IS NOT OPPORTUNITY RELEVANCE. A location may be structurally valid, FRESH, unmitigated, and untouched without being the current actionable pending opportunity. Do not equate untouched with current.',
     'A location record is market evidence, not a trade. Do not treat its midpoint or boundaries as a preselected entry. Choose only supplied locations and supplied structural facts.',
     'Structural invalidation records are facts. Select the invalidation that belongs to the setup you discover; never invent one.',
     'Structural and liquidity targets are genuine supplied objectives. Respect lifecycle, reached, consumed, invalidated, and minimum-RR facts. Never manufacture fixed-R or ATR targets.',
-    'POI freshness is not opportunity freshness. Use formation time, mitigation, consumption, delivery, and chronological evidence to decide whether a location still represents a current opportunity.',
-    'A valid pending LIMIT may remain away from current price, outside its zone, without current 5M/15M confirmation, or outside a killzone. Distance alone is not rejection. CONFIRMATION_ENTRY must satisfy its supplied confirmation facts.',
+    'POI freshness is not opportunity freshness. For every PENDING_LIMIT, evaluate current 1D/4H/1H/15M/5M state, location formation time/age, mitigation, consumption, invalidation, delivery since formation, current-price-to-POI path, intervening/newer structure, and whether genuine objectives remain if entry is reached.',
+    'A valid pending LIMIT may remain away from current price, outside its zone, without current 5M/15M confirmation, or outside a killzone. Distance alone is information, not rejection; no fixed dollar, pip, percentage, ATR, candle-count, proximity, current-zone, or current-retracement filter exists. CONFIRMATION_ENTRY must satisfy its supplied confirmation facts.',
+    'A remote pending LIMIT must represent a coherent CURRENT opportunity: explain internally why the location matters now, what phase supports a return/activation, whether the original move already substantially delivered, whether the thesis survives intervening structure, and what objective remains after entry. A fresh remote POI plus attractive RR is not sufficient.',
+    'RETRACEMENT must be supported by complete current evidence showing a corrective move is occurring, beginning, or structurally capable within the current delivery narrative. A remote opposite-side POI alone does not establish RETRACEMENT, and no single timeframe is a hard gate.',
+    'If the evidence does not support a coherent current opportunity or remaining objective, return NO_TRADE. Do not revive an old opportunity by moving entry, stop, or target.',
+    'When multiple targets are populated, order them by expected price-path delivery: BUY entry < TP1 < TP2 < TP3; SELL entry > TP1 > TP2 > TP3. Use only supplied genuine objectives. One valid target uses TP1 only; two use TP1 and TP2 only. risk_reward is reward to TP1 divided by structural risk: BUY (TP1-entry)/(entry-stop_loss), SELL (entry-TP1)/(stop_loss-entry).',
+    'The final setup field must be only a concise interpreted ICT model/type such as CRT, TBS, MSNR, CRT+MSNR, CRT+TBS, CRT+MSNR+TBS, FVG, OB, FVG+MSNR, OB+CRT, or CURRENT_STRUCTURE. Do not put thesis, timeframe narrative, entry, stop, targets, RR, confidence, or evidence explanation in setup.',
     'Evaluate both bullish and bearish evidence. HTF disagreement, neutral daily bias, and ambiguous global liquidity are contextual evidence, not standalone gates.',
     'Every important component of a TRADE must be traceable to supplied evidence IDs and levels. If exact valid geometry cannot be established from supplied deterministic facts and strategy rules, return NO_TRADE.',
     'Confidence describes quality after validity and must be a JSON integer from 0 through 100. It never creates validity. NO_TRADE confidence is null.'
@@ -17050,6 +17067,20 @@ MSNR, CRT, TBS, supply/demand, reclaim/retest, structural invalidation,
 genuine objectives, timestamps, freshness, mitigation, consumption, and
 delivery. Determine what has already delivered and what remains actionable.
 
+LOCATION VALIDITY IS NOT OPPORTUNITY RELEVANCE. For every PENDING_LIMIT,
+especially one materially away from current price, internally evaluate: (1)
+the complete current market state; (2) location formation/event time, age,
+freshness, mitigation, consumption, invalidation, and chronology; (3) delivery
+since formation; (4) whether current price can coherently reach/activate the
+location in the interpreted phase; (5) intervening objectives, structure,
+newer BOS/MSS/CHoCH, locations, or a changed dealing range; and (6) whether a
+genuine objective remains meaningful if entry is eventually reached. A fresh
+untouched POI plus attractive RR is not automatically a current trade. Do not
+use distance itself as a rejection rule and do not infer RETRACEMENT merely
+because a remote opposite-side POI exists; RETRACEMENT requires complete
+evidence of a corrective move or structurally capable correction in the
+current delivery narrative.
+
 The market phase and setup are your interpretations of the supplied facts.
 Possible interpretations include ORIGINAL_SETUP, EARLY_DELIVERY, EXPANSION,
 RETRACEMENT, CONTINUATION_READY, LATE_DELIVERY, or TRANSITION_WAIT. Do not
@@ -17072,6 +17103,21 @@ geometry cannot be established from supplied deterministic facts and rules,
 return NO_TRADE. POI freshness is not opportunity freshness; an old untouched
 location whose original delivery substantially played out is not automatically
 a fresh trade.
+
+TARGET DELIVERY ORDER AND RR: when multiple genuine targets are populated,
+order them by the price path from entry, not timeframe, ID, evidence score, or
+semantic priority. For BUY require entry < TP1 < TP2 < TP3. For SELL require
+entry > TP1 > TP2 > TP3. One valid target means TP1 only; two valid targets
+mean TP1 and TP2 only; do not manufacture a third. Reject consumed,
+invalidated, unknown, or otherwise non-executable targets. risk_reward must use
+TP1 itself and structural risk: BUY (TP1-entry)/(entry-stop_loss), SELL
+(entry-TP1)/(stop_loss-entry). Do not use TP2/TP3 to rescue a TP1 that fails
+the supplied canonical minimum RR, and do not change that minimum.
+
+The final setup value must be only a concise ICT model/type such as CRT, TBS,
+MSNR, CRT+MSNR, CRT+TBS, CRT+MSNR+TBS, FVG, OB, FVG+MSNR, OB+CRT, or
+CURRENT_STRUCTURE. Do not put explanation, timeframe narrative, entry, zone,
+stop, target, RR, confidence, or evidence prose in setup.
 
 Return ONLY one directly JSON.parse()-able JSON object. Return only the compact
 JSON object. No Markdown,
