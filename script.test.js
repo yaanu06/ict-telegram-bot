@@ -2789,12 +2789,11 @@ describe('Analyze scan lifecycle', () => {
         const packet = context.buildExternalAIClipboardPacket({ signal: output, replay: context.window.__ICT_LAST_SCAN_REPLAY__ });
         expect(packet).toContain('manual-buy-candidate');
         expect(packet).toContain('manual-sell-candidate');
-        expect(packet).toContain('SELECTION STATUS');
-        expect(packet).toContain('"mode": "MANUAL_EXTERNAL_AI"');
-        expect(packet).toContain('"final_selection": "PENDING_EXTERNAL_AI_REVIEW"');
-        expect(packet).toContain('"selected_candidate_id": "NONE"');
-        expect(packet).toContain('"automatic_ai_selection": "NOT_RUN"');
-        expect(packet).toContain('No candidate has been selected for you.');
+        expect(packet).not.toContain('SELECTION STATUS');
+        expect(packet).not.toContain('CURRENT BOT RESULT');
+        expect(packet).toContain('MANUAL_EXTERNAL_AI_REVIEW is application workflow metadata only.');
+        expect(packet).toContain('CURRENT OPPORTUNITY MATERIAL');
+        expect(packet).toContain('CURRENT_SELECTABLE is an internal selector result only');
         expect(packet).toContain("Find today's trading opportunity for the symbol in THIS packet.");
         expect(packet).not.toContain('YOUR TASK');
         expect(packet).not.toContain('STRICT RESPONSE FORMAT');
@@ -7324,9 +7323,9 @@ describe('AI market analyst contract', () => {
         expect(task).toContain("Find today's trading opportunity for the symbol in THIS packet.");
         expect(task).toContain('No candidate is preselected');
         expect(task).toContain('evaluate EVERY supplied selectable candidate');
-        expect(task).toContain('It may NOT');
+        expect(task).toContain('It may');
         expect(task).toContain('candidate ID, direction,');
-        expect(task).toContain('If no supplied candidate is valid after evaluating EVERY candidate');
+        expect(task).toContain('If no valid opportunity exists after evaluating EVERY supplied candidate');
         expect(task).toContain('Return ONLY one directly JSON.parse()-able JSON object.');
         expect(task).toContain('The detailed analysis above is INTERNAL ONLY');
         expect(task).toContain('HTF CONTEXT IS NOT A STANDALONE HARD GATE.');
@@ -7353,15 +7352,15 @@ describe('AI market analyst contract', () => {
         expect(packet).not.toContain('raw_closed_candles');
         expect(packet).not.toContain('DEEPSEEK_API_KEY');
         expect(packet).not.toContain('GEMINI_API_KEY');
-        const tradeExampleStart = packet.indexOf('If a valid supplied candidate is selected, return EXACTLY:\n\n') + 'If a valid supplied candidate is selected, return EXACTLY:\n\n'.length;
+        const tradeExampleStart = packet.indexOf('If a valid supplied candidate is selected OR a valid opportunity is\ndiscovered from supplied deterministic market evidence, return EXACTLY:\n\n') + 'If a valid supplied candidate is selected OR a valid opportunity is\ndiscovered from supplied deterministic market evidence, return EXACTLY:\n\n'.length;
         const tradeExampleEnd = packet.indexOf('\n\nThe null values are schema placeholders only.', tradeExampleStart);
         const tradeExample = packet.slice(tradeExampleStart, tradeExampleEnd);
-        const noTradeExampleStart = packet.indexOf('If no supplied candidate is valid after evaluating EVERY candidate,\nreturn EXACTLY:\n\n') + 'If no supplied candidate is valid after evaluating EVERY candidate,\nreturn EXACTLY:\n\n'.length;
+        const noTradeExampleStart = packet.indexOf('If no valid opportunity exists after evaluating EVERY supplied candidate\nand meaningful opportunity-material record, return EXACTLY:\n\n') + 'If no valid opportunity exists after evaluating EVERY supplied candidate\nand meaningful opportunity-material record, return EXACTLY:\n\n'.length;
         const noTradeExampleEnd = packet.indexOf('\n\nNO_TRADE must contain no invented geometry.', noTradeExampleStart);
         const noTradeExample = packet.slice(noTradeExampleStart, noTradeExampleEnd);
         expect(() => JSON.parse(tradeExample)).not.toThrow();
         expect(Object.keys(JSON.parse(tradeExample))).toEqual(['pair', 'decision', 'direction', 'trade_type', 'setup', 'market_phase', 'selected_candidate_id', 'entry', 'entry_zone', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk_reward', 'confidence']);
-        expect(JSON.parse(tradeExample)).toEqual(expect.objectContaining({ decision: 'TRADE', selected_candidate_id: '<EXACT supplied candidate ID>', entry: null, entry_zone: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null, confidence: null }));
+        expect(JSON.parse(tradeExample)).toEqual(expect.objectContaining({ decision: 'TRADE', selected_candidate_id: '<EXACT supplied candidate ID or null for PATH B>', entry: null, entry_zone: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null, confidence: null }));
         expect(() => JSON.parse(noTradeExample)).not.toThrow();
         expect(Object.keys(JSON.parse(noTradeExample))).toEqual(['pair', 'decision', 'direction', 'trade_type', 'setup', 'market_phase', 'selected_candidate_id', 'entry', 'entry_zone', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk_reward', 'confidence']);
         expect(JSON.parse(noTradeExample)).toEqual(expect.objectContaining({ decision: 'NO_TRADE', selected_candidate_id: null, entry: null, entry_zone: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null, confidence: null }));
@@ -7382,6 +7381,94 @@ describe('AI market analyst contract', () => {
         expect(packet).toContain('DATA_UNAVAILABLE');
         expect(packet).toContain('Return ONLY one directly JSON.parse()-able JSON object.');
         expect(() => ctx.buildExternalAIClipboardPacket()).not.toThrow();
+    });
+
+    it('keeps manual discovery grounded when the internal selector retains zero candidates', () => {
+        const ctx = getContext();
+        const timeframes = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map((tf, index) => [tf, {
+            timeframe: tf,
+            closed_candle_count: 120,
+            current_closed_price: 1.1 + index / 1000,
+            structure: {
+                structural_trend: index < 2 ? 'BEARISH' : 'BULLISH',
+                momentum_trend: 'BULLISH',
+                effective_trend: 'BULLISH',
+                swing_highs: [{ id: `${tf}:SH:1`, type: 'SWING_HIGH', direction: 'SELL', level: 1.105 + index / 1000, high: 1.105 + index / 1000 }],
+                swing_lows: [{ id: `${tf}:SL:1`, type: 'SWING_LOW', direction: 'BUY', level: 1.095 + index / 1000, low: 1.095 + index / 1000 }],
+                bos: { buy: true, sell: false }, choch: { buy: false, sell: false }, mss: { id: `${tf}:MSS:1`, direction: 'BUY' }, displacement: { direction: 'BUY' }
+            },
+            liquidity: { buy_side_levels: [{ id: `${tf}:BSL:1`, direction: 'BUY', level: 1.11 + index / 1000 }], sell_side_levels: [{ id: `${tf}:SSL:1`, direction: 'SELL', level: 1.09 + index / 1000 }] },
+            fvg: [{ id: `${tf}:FVG:BUY:1`, type: 'FVG', direction: 'BUY', low: 1.098, high: 1.1, freshness: 'FRESH' }],
+            order_blocks: { buy: [{ id: `${tf}:OB:BUY:1`, type: 'OB', direction: 'BUY', low: 1.097, high: 1.099, lifecycle_state: 'UNFULFILLED' }], sell: [] },
+            msnr_levels: [{ id: `${tf}:MSNR:BUY:1`, type: 'MSNR', direction: 'BUY', low: 1.096, high: 1.098, freshness: 'FRESH' }],
+            structural_pois: [{ id: `${tf}:CRT:BUY:1`, type: 'CRT', direction: 'BUY', low: 1.098, high: 1.1, state: 'ACTIONABLE' }],
+            zones: []
+        }]));
+        const replay = {
+            schema_version: 1,
+            pair: 'EUR/USD',
+            snapshot_id: 'TVKIT:EURUSD:zero-selectable',
+            scan_as_of: '2026-09-30T10:00:00Z',
+            quote: { price: 1.101, quote_time: '2026-09-30T09:59:00Z' },
+            provider_metadata: { provider: 'TVKIT' },
+            market_evidence_package: {
+                snapshot_id: 'TVKIT:EURUSD:zero-selectable',
+                timeframes,
+                opportunity_material: {
+                    records: [{
+                        candidate_id: 'NON-PROMOTED-BUY', direction: 'BUY', setup_label: 'CRT+MSNR', execution_mode: 'PENDING_LIMIT',
+                        catalog_status: 'CURRENT_VALID_NOT_SELECTABLE', source_evidence_ids: ['1H:FVG:BUY:1', '1H:MSNR:BUY:1'],
+                        execution: { entry: 1.099, structural_invalidation_level: 1.094, targets: [{ id: 'TARGET-BUY', direction: 'BUY', timeframe: '1H', level: 1.11, lifecycle_state: 'UNFULFILLED' }], rr: 3 },
+                        lifecycle: { state: 'FRESH_PENDING_TODAY', entry_consumed: false }, rejection_codes: [], hard_invalid: false
+                    }],
+                    selectable_candidate_count: 0,
+                    valid_deterministic_candidate_count: 1,
+                    rejected_candidate_count: 0,
+                    note: 'CURRENT_SELECTABLE is an internal selector result only.'
+                },
+                strategy_events: [
+                    { id: 'CRT-EVIDENCE-1', strategy: 'CRT', direction: 'BUY', timeframe: '1H', low: 1.098, high: 1.1 },
+                    { id: 'TBS-EVIDENCE-1', strategy: 'TBS', direction: 'SELL', timeframe: '15M', low: 1.102, high: 1.104 },
+                    { id: 'MSNR-EVIDENCE-1', strategy: 'MSNR', direction: 'BUY', timeframe: '1H', level: 1.098 }
+                ],
+                crt_events: [{ id: 'CRT-EVIDENCE-1', strategy: 'CRT', direction: 'BUY', timeframe: '1H', low: 1.098, high: 1.1 }],
+                tbs_events: [{ id: 'TBS-EVIDENCE-1', strategy: 'TBS', direction: 'SELL', timeframe: '15M', low: 1.102, high: 1.104 }],
+                msnr_levels: [{ id: 'MSNR-EVIDENCE-1', strategy: 'MSNR', direction: 'BUY', timeframe: '1H', level: 1.098 }]
+            },
+            structure: Object.fromEntries(Object.keys(timeframes).map(tf => [tf, timeframes[tf].structure])),
+            target_candidates: { buy: [{ id: 'TARGET-BUY', direction: 'BUY', timeframe: '1H', level: 1.11, source: 'BUY_SIDE_LIQUIDITY', target_lifecycle_state: 'UNFULFILLED' }], sell: [] },
+            valid_candidates: [],
+            daily_bias: { direction: 'NEUTRAL' },
+            market_regime: { primary_regime: 'REVERSAL_TRANSITION' }
+        };
+        const signal = { pair: 'EUR/USD', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' }, analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', current_price: 1.101 };
+        const packet = ctx.buildExternalAIClipboardPacket({ signal, replay });
+        expect(packet).toContain('Symbol: EUR/USD');
+        expect(packet).toContain('"current_price": 1.101');
+        expect(packet).toContain('CURRENT SELECTABLE CANDIDATES (REFERENCE MATERIAL ONLY)');
+        expect(packet).toContain('NONE RETAINED BY INTERNAL SELECTOR. THIS IS NOT A MARKET NO_TRADE CONCLUSION.');
+        expect(packet).toContain('CURRENT OPPORTUNITY MATERIAL');
+        expect(packet).toContain('NON-PROMOTED-BUY');
+        expect(packet).toContain('BUY LOCATIONS');
+        expect(packet).toContain('SELL LOCATIONS');
+        expect(packet).toContain('1H:FVG:BUY:1');
+        expect(packet).toContain('1H:OB:BUY:1');
+        expect(packet).toContain('1H:MSNR:BUY:1');
+        expect(packet).toContain('1H:CRT:BUY:1');
+        expect(packet).toContain('CRT-EVIDENCE-1');
+        expect(packet).toContain('TBS-EVIDENCE-1');
+        expect(packet).toContain('MSNR-EVIDENCE-1');
+        expect(packet).toContain('TARGET-BUY');
+        expect(packet).toContain('UNFULFILLED');
+        expect(packet).toContain('MANUAL_EXTERNAL_AI_REVIEW is application workflow metadata only.');
+        expect(packet).toContain('A zero selectable-candidate');
+        expect(packet).not.toContain('SELECTION STATUS');
+        expect(packet).not.toContain('CURRENT BOT RESULT');
+        expect(packet).not.toContain('"decision": "WAIT"');
+        expect(packet).not.toContain('raw_closed_candles');
+        expect(packet).not.toMatch(/"1W"/);
+        expect(packet).not.toContain('"selected_candidate_id": "NONE"');
+        expect(packet).toContain('selected_candidate_id may be null for that discovered path.');
     });
 
     it('routes the existing normal Copy action through the external AI packet', () => {
