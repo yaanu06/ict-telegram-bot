@@ -2798,7 +2798,7 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).toContain("Find today's trading opportunity for the symbol in THIS packet.");
         expect(packet).not.toContain('YOUR TASK');
         expect(packet).not.toContain('STRICT RESPONSE FORMAT');
-        expect(packet).toContain('Return the COMPLETED trading analysis as JSON ONLY.');
+        expect(packet).toContain('Return ONLY one directly JSON.parse()-able JSON object.');
         expect(packet).not.toContain('Mini App JSON');
         expect(packet.trim().endsWith('==================================================')).toBe(true);
         expect(packet).not.toContain('CURRENT BOT RESULT');
@@ -7322,21 +7322,24 @@ describe('AI market analyst contract', () => {
         const task = packet.slice(packet.lastIndexOf('EXTERNAL AI TASK'));
         expect(packet).toContain('Symbol: XAU/USD');
         expect(task).toContain("Find today's trading opportunity for the symbol in THIS packet.");
-        expect(task).toContain('Independently analyze ALL supplied information');
-        expect(task).toContain('ALL supplied');
-        expect(task).toContain('No candidate has been preselected for you.');
+        expect(task).toContain('No candidate is preselected');
         expect(task).toContain('evaluate EVERY supplied selectable candidate');
-        expect(task).toContain('Do NOT invent or modify:');
-        expect(task).toContain('- candidate ID;');
-        expect(task).toContain('If no supplied candidate is valid, return NO_TRADE');
-        expect(task).toContain('Return the COMPLETED trading analysis as JSON ONLY.');
-        expect(task).toContain('This is an EXTERNAL AI ANALYSIS JSON.');
-        expect(task).toContain('The entire response must be directly JSON.parse()-able.');
-        expect(task).toContain('The null values above define the OUTPUT SHAPE ONLY.');
-        expect(task).toContain('NO_TRADE JSON');
-        expect(task).toContain('CRITICAL OUTPUT CONSISTENCY');
-        expect(task).toContain('Do NOT change:');
-        expect(task).not.toMatch(/XAU\/USD|EUR\/USD|AUD\/USD/);
+        expect(task).toContain('It may NOT');
+        expect(task).toContain('candidate ID, direction,');
+        expect(task).toContain('If no supplied candidate is valid after evaluating EVERY candidate');
+        expect(task).toContain('Return ONLY one directly JSON.parse()-able JSON object.');
+        expect(task).toContain('The detailed analysis above is INTERNAL ONLY');
+        expect(task).toContain('HTF CONTEXT IS NOT A STANDALONE HARD GATE.');
+        expect(task).toContain('Do NOT automatically reject a');
+        expect(task).toContain('NEUTRAL daily bias means mixed evidence');
+        expect(task).toContain('NO_LIQUIDITY_DRAW alone must not reject every candidate.');
+        expect(task).toContain('Before selecting or rejecting candidates, determine internally:');
+        expect(task).toContain('Historical HTF direction is important');
+        expect(task).toContain('A valid pending LIMIT may remain actionable while price is away');
+        expect(task).toContain('Confidence describes the quality of an already-valid setup.');
+        expect(task).toContain('NO_TRADE remains fully valid. Do not force a trade');
+        expect(task).toContain('There is exactly ONE authoritative task in this packet');
+        expect(task).not.toMatch(/XAU\/USD|EUR\/USD|AUD\/USD|GBP\/USD/);
         expect(packet).not.toContain('YOUR TASK');
         expect(packet).not.toContain('STRICT RESPONSE FORMAT');
         expect(packet).not.toContain('EXTERNAL AI EXECUTION INSTRUCTION');
@@ -7350,16 +7353,22 @@ describe('AI market analyst contract', () => {
         expect(packet).not.toContain('raw_closed_candles');
         expect(packet).not.toContain('DEEPSEEK_API_KEY');
         expect(packet).not.toContain('GEMINI_API_KEY');
-        const tradeExampleStart = packet.indexOf('For a valid trading opportunity return this shape:\n\n') + 'For a valid trading opportunity return this shape:\n\n'.length;
-        const tradeExampleEnd = packet.indexOf('\n\nIMPORTANT:\n', tradeExampleStart);
+        const tradeExampleStart = packet.indexOf('If a valid supplied candidate is selected, return EXACTLY:\n\n') + 'If a valid supplied candidate is selected, return EXACTLY:\n\n'.length;
+        const tradeExampleEnd = packet.indexOf('\n\nThe null values are schema placeholders only.', tradeExampleStart);
         const tradeExample = packet.slice(tradeExampleStart, tradeExampleEnd);
-        const noTradeExampleStart = packet.indexOf('If no supplied candidate represents a valid opportunity now, return:\n\n') + 'If no supplied candidate represents a valid opportunity now, return:\n\n'.length;
-        const noTradeExampleEnd = packet.indexOf('\n\nDo not manufacture a trade', noTradeExampleStart);
+        const noTradeExampleStart = packet.indexOf('If no supplied candidate is valid after evaluating EVERY candidate,\nreturn EXACTLY:\n\n') + 'If no supplied candidate is valid after evaluating EVERY candidate,\nreturn EXACTLY:\n\n'.length;
+        const noTradeExampleEnd = packet.indexOf('\n\nNO_TRADE must contain no invented geometry.', noTradeExampleStart);
         const noTradeExample = packet.slice(noTradeExampleStart, noTradeExampleEnd);
         expect(() => JSON.parse(tradeExample)).not.toThrow();
-        expect(JSON.parse(tradeExample)).toEqual(expect.objectContaining({ decision: 'TRADE', selected_candidate_id: '<EXACT supplied candidate ID>', entry: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null }));
+        expect(Object.keys(JSON.parse(tradeExample))).toEqual(['pair', 'decision', 'direction', 'trade_type', 'setup', 'market_phase', 'selected_candidate_id', 'entry', 'entry_zone', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk_reward', 'confidence']);
+        expect(JSON.parse(tradeExample)).toEqual(expect.objectContaining({ decision: 'TRADE', selected_candidate_id: '<EXACT supplied candidate ID>', entry: null, entry_zone: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null, confidence: null }));
         expect(() => JSON.parse(noTradeExample)).not.toThrow();
-        expect(JSON.parse(noTradeExample)).toEqual(expect.objectContaining({ decision: 'NO_TRADE', selected_candidate_id: null, entry: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null }));
+        expect(Object.keys(JSON.parse(noTradeExample))).toEqual(['pair', 'decision', 'direction', 'trade_type', 'setup', 'market_phase', 'selected_candidate_id', 'entry', 'entry_zone', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk_reward', 'confidence']);
+        expect(JSON.parse(noTradeExample)).toEqual(expect.objectContaining({ decision: 'NO_TRADE', selected_candidate_id: null, entry: null, entry_zone: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null, confidence: null }));
+        for (const verboseField of ['directional_thesis', 'liquidity_draw', 'analysis', 'supporting_evidence', 'conflicting_evidence', 'invalidation']) {
+            expect(tradeExample).not.toContain(`\"${verboseField}\"`);
+            expect(noTradeExample).not.toContain(`\"${verboseField}\"`);
+        }
         expect(Buffer.byteLength(packet, 'utf8')).toBeLessThan(100000);
     });
 
@@ -7371,7 +7380,7 @@ describe('AI market analyst contract', () => {
         expect(packet).toContain('Symbol: XAU/USD');
         expect(packet).toContain('UNAVAILABLE');
         expect(packet).toContain('DATA_UNAVAILABLE');
-        expect(packet).toContain('Return the COMPLETED trading analysis as JSON ONLY.');
+        expect(packet).toContain('Return ONLY one directly JSON.parse()-able JSON object.');
         expect(() => ctx.buildExternalAIClipboardPacket()).not.toThrow();
     });
 

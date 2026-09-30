@@ -16563,148 +16563,147 @@ EXTERNAL AI TASK
 Find today's trading opportunity for the symbol in THIS packet.
 
 The market data and deterministic evidence in this packet represent the
-current completed market snapshot.
+current completed market snapshot. Identify the symbol from THIS packet,
+perform the complete analysis immediately, and return ONLY the compact
+final JSON defined below. Do not ask another question, wait for another
+prompt, or merely summarize the packet.
 
-Independently analyze ALL supplied information, including:
-
-- strategy contract;
-- 1D evidence;
-- 4H evidence;
-- 1H evidence;
-- 15M evidence;
-- 5M evidence;
-- HTF structure;
-- momentum/effective structure;
-- BOS/MSS/CHoCH;
-- displacement;
-- liquidity and sweeps;
-- premium/discount;
-- dealing range;
-- FVG/OB/MSNR/CRT/TBS and other supplied locations;
-- market-phase evidence;
-- structural invalidation;
-- target lifecycle;
-- conflicts;
-- ALL selectable candidates.
+AI interprets and selects. Deterministic code proves geometry.
 
 Use the methodology:
 
-Direction -> Location -> Execution.
+DIRECTION -> LOCATION -> EXECUTION
 
-First determine the current market interpretation:
+Direction does NOT mean that a candidate must match the 1D and 4H
+trend. Direction means determining the ACTIONABLE directional thesis for
+the CURRENT opportunity horizon from the complete supplied evidence.
+Consider 1D, 4H, 1H, 15M, and 5M structure; effective/momentum
+structure; BOS/MSS/CHoCH; displacement; liquidity sweeps/raids;
+premium/discount; dealing range; HTF objectives; whether previous
+objectives have delivered; current location; market phase; FVG/OB/MSNR/
+CRT/TBS evidence; candidate-specific target and structural invalidation;
+freshness; mitigation; reachability; supporting evidence; and
+conflicting evidence.
 
-- market phase;
-- directional thesis;
-- liquidity draw;
-- whether the original thesis remains actionable;
-- whether price is in original setup, early delivery, expansion,
-  retracement, continuation-ready, late delivery, or transition/wait;
-- important supporting and conflicting evidence.
+HTF CONTEXT IS NOT A STANDALONE HARD GATE.
 
-Then independently evaluate EVERY supplied selectable candidate.
+Do NOT treat 1D trend, 4H trend, daily bias, or the primary HTF narrative
+as standalone mandatory alignment gates. Do NOT automatically reject a
+BUY candidate because 1D/4H are bearish, or a SELL candidate because
+1D/4H are bullish. HTF disagreement is conflicting evidence to weigh
+against current market phase and candidate-specific evidence. Strong
+unresolved HTF opposition may still invalidate a candidate, but rejection
+must come from COMPLETE current evidence, not merely from disagreement
+with the older HTF trend.
 
-No candidate has been preselected for you.
+A current opportunity may be HTF continuation, retracement,
+reversal/transition, liquidity raid/reversal, a current-structure
+opportunity, a new delivery phase, or another supplied ICT setup/model
+supported by current evidence. Historical HTF direction is important
+context; do not assume it remains actionable indefinitely.
 
-Candidate ordering does NOT indicate preference.
+Before selecting or rejecting candidates, determine internally:
 
-Do not assume Candidate 1 is better than Candidate 2.
+1. What was the original HTF thesis?
+2. What structural/liquidity objective was it delivering toward?
+3. Is that objective UNFULFILLED, PARTIALLY_DELIVERED, CONSUMED,
+   INVALIDATED, or UNKNOWN according to the supplied evidence?
+4. Is the original thesis still actionable NOW?
+5. What is the current market phase? Use a supplied phase when possible,
+   such as ORIGINAL_SETUP, EARLY_DELIVERY, EXPANSION, RETRACEMENT,
+   CONTINUATION_READY, REVERSAL_TRANSITION, LATE_DELIVERY, or
+   TRANSITION_WAIT. Another clearly supported phase is allowed.
+6. What direction is actionable for the CURRENT opportunity horizon?
 
-Determine which supplied candidate, if any, represents the best valid
-trading opportunity for TODAY at THIS market snapshot.
+DAILY BIAS IS CONTEXTUAL EVIDENCE.
 
-A pending LIMIT may remain valid while price is away from the entry
-zone according to the supplied strategy rules.
+NEUTRAL daily bias means mixed evidence at that layer; it does NOT
+automatically mean NO_TRADE. BUY daily bias does not automatically
+validate BUY, and SELL daily bias does not automatically validate SELL.
+Continue evaluating current phase, location, 1H/15M/5M transition,
+candidate-specific evidence, structural objective, and invalidation.
 
-Do not reject a valid pending LIMIT merely because:
-- price has not reached entry;
-- price is outside the zone;
-- current 5M/15M confirmation is absent;
-- price is outside a killzone;
+LIQUIDITY DRAW:
 
-unless another supplied deterministic rule actually invalidates it.
+A missing or ambiguous GLOBAL liquidity draw is conflicting evidence,
+not an automatic NO_TRADE. If a supplied candidate has a credible
+structural/liquidity target, structural invalidation, valid geometry,
+acceptable RR, fresh/actionable location, and sufficient current
+evidence, evaluate that candidate-specific objective. Do not invent a
+liquidity draw. If neither global context nor candidate-specific
+objectives provide a credible destination, rejection may be correct, but
+NO_LIQUIDITY_DRAW alone must not reject every candidate.
 
-CONFIRMATION_ENTRY is different and must satisfy its supplied
-confirmation requirements.
+CANDIDATE-BY-CANDIDATE EVALUATION:
 
-Respect:
+Independently evaluate EVERY supplied selectable candidate before making
+the final decision. No candidate is preselected and candidate order does
+not indicate preference. For each candidate, determine internally:
 
-- structural invalidation;
-- structural SL;
-- genuine structural/liquidity targets;
-- target lifecycle;
-- minimum RR;
-- freshness;
-- mitigation;
-- reachability;
-- supporting evidence;
-- conflicting evidence.
+- what phase would make it actionable and whether CURRENT evidence supports it;
+- whether its direction fits the current opportunity horizon;
+- whether its location is appropriate, fresh, unconsumed, and actionable;
+- whether it is over-mitigated or invalidated;
+- whether its structural invalidation and supplied targets remain meaningful;
+- whether minimum RR is valid and the target is reachable in the current phase;
+- what supports it and what conflicts with it;
+- whether HTF conflict invalidates it or only reduces quality/confidence;
+- whether it is LIMIT or CONFIRMATION_ENTRY and whether its execution rules are met.
 
-If a valid supplied candidate exists, SELECT that candidate.
+Only after evaluating every candidate may you select TRADE or NO_TRADE.
+NO_TRADE remains fully valid. Do not force a trade, but do not return
+NO_TRADE solely because 1D disagrees, 4H disagrees, daily bias is
+NEUTRAL, the global draw is ambiguous, timeframes conflict, the candidate
+is counter-trend, a LIMIT has not reached entry, or current 5M/15M
+confirmation is absent for a pending LIMIT. These are contextual factors
+unless complete evidence shows the candidate is genuinely invalid.
 
-If multiple candidates are valid, select the candidate best supported
-by the supplied methodology and CURRENT market evidence.
+PENDING LIMIT SEMANTICS:
 
-If no supplied candidate is valid, return NO_TRADE.
+A valid pending LIMIT may remain actionable while price is away from its
+entry. Do not reject it merely because current price has not reached
+entry, price is outside the entry zone, current 5M/15M confirmation is
+absent, or price is outside a killzone, unless another supplied
+deterministic rule invalidates it. CONFIRMATION_ENTRY is different and
+must satisfy its supplied confirmation requirements.
 
-Do NOT invent a new candidate.
+VALIDITY IS NOT QUALITY:
 
-Do NOT invent or modify:
+Hard deterministic invalidity can reject a candidate. Conflicting context
+normally affects interpretation, quality, and confidence unless the
+supplied methodology demonstrates that it actually invalidates the setup.
+Confidence describes the quality of an already-valid setup. Low
+confidence alone must not invalidate a valid candidate, and high
+confidence must not rescue an invalid candidate.
 
-- candidate ID;
-- direction;
-- setup/type;
-- execution mode;
-- entry;
-- entry zone;
-- stop loss;
-- TP1;
-- TP2;
-- TP3;
-- target IDs;
-- RR;
-- POI;
-- evidence IDs.
+EXACT DETERMINISTIC GEOMETRY:
 
-If selecting a trade, executable geometry MUST come exactly from the
-selected supplied deterministic candidate.
-
-If you believe a candidate would only work after changing its supplied
-entry, SL, TP, or RR, DO NOT change it. Reject that candidate instead.
-
-Do not ask the user what to do with this packet.
-
-Do not wait for another user message.
-
-Do not merely summarize the packet.
-
-Perform the trading analysis immediately.
+The external AI may SELECT or REJECT a supplied candidate. It may NOT
+invent, repair, redesign, recalculate, or modify candidate ID, direction,
+setup/type, execution mode, entry, entry zone, stop loss, TP1, TP2, TP3,
+target IDs, RR, POI, or evidence IDs. If a candidate would only become
+valid after changing its geometry, REJECT that candidate instead.
 
 ==================================================
-OUTPUT REQUIREMENT
+COMPACT FINAL TRADE RESULT JSON
 ==================================================
 
-Return the COMPLETED trading analysis as JSON ONLY.
+Return ONLY one directly JSON.parse()-able JSON object. No Markdown code
+fence, heading, introduction, explanation, or prose outside the object.
+The detailed analysis above is INTERNAL ONLY and must not be dumped into
+the final JSON. The final JSON must contain only the compact fields shown
+below; do not add directional thesis, liquidity draw, analysis,
+supporting/conflicting evidence, or invalidation fields.
 
-This is an EXTERNAL AI ANALYSIS JSON.
-
-It is NOT the Mini App's internal/manual-review JSON.
-
-Do not output Markdown.
-Do not use a code fence.
-Do not output introductory text.
-Do not output text after the JSON.
-
-The entire response must be directly JSON.parse()-able.
-
-For a valid trading opportunity return this shape:
+If a valid supplied candidate is selected, return EXACTLY:
 
 {
   "pair": "<symbol from this packet>",
   "decision": "TRADE",
-  "direction": "BUY or SELL",
-  "trade_type": "BUY LIMIT / SELL LIMIT / BUY / SELL / appropriate supplied execution type",
+  "direction": "<BUY or SELL>",
+  "trade_type": "<exact supplied execution/trade type>",
   "setup": "<exact supplied setup/model label>",
-  "market_phase": "<interpreted current market phase>",
+  "market_phase": "<current market phase determined by the external AI>",
   "selected_candidate_id": "<EXACT supplied candidate ID>",
   "entry": null,
   "entry_zone": null,
@@ -16713,45 +16712,17 @@ For a valid trading opportunity return this shape:
   "tp2": null,
   "tp3": null,
   "risk_reward": null,
-  "confidence": null,
-  "directional_thesis": "<concise current directional thesis>",
-  "liquidity_draw": "<current structural/liquidity objective>",
-  "analysis": "<concise explanation of why this is today's valid opportunity>",
-  "supporting_evidence": [],
-  "conflicting_evidence": [],
-  "invalidation": "<supplied structural invalidation context>"
+  "confidence": null
 }
 
-IMPORTANT:
+The null values are schema placeholders only. For TRADE, populate entry,
+entry_zone, stop_loss, tp1, tp2, tp3, and risk_reward with the EXACT
+deterministic values supplied for selected_candidate_id. Do not
+recalculate, improve, or differently round them. Confidence is only the
+quality assessment of the already-valid selected setup.
 
-The null values above define the OUTPUT SHAPE ONLY.
-
-They are NOT predetermined values and they do NOT mean NO_TRADE.
-
-When selecting a trade, populate:
-
-entry
-entry_zone
-stop_loss
-tp1
-tp2
-tp3
-risk_reward
-
-using the EXACT values belonging to selected_candidate_id in this
-packet.
-
-Do not recalculate or improve those values.
-
-confidence is your interpretation of the quality of the already-valid
-selected setup. Confidence must NOT be used to make an otherwise
-invalid trade valid.
-
-==================================================
-NO_TRADE JSON
-==================================================
-
-If no supplied candidate represents a valid opportunity now, return:
+If no supplied candidate is valid after evaluating EVERY candidate,
+return EXACTLY:
 
 {
   "pair": "<symbol from this packet>",
@@ -16759,7 +16730,7 @@ If no supplied candidate represents a valid opportunity now, return:
   "direction": null,
   "trade_type": null,
   "setup": null,
-  "market_phase": "<interpreted current market phase>",
+  "market_phase": "<current market phase determined by the external AI>",
   "selected_candidate_id": null,
   "entry": null,
   "entry_zone": null,
@@ -16768,79 +16739,22 @@ If no supplied candidate represents a valid opportunity now, return:
   "tp2": null,
   "tp3": null,
   "risk_reward": null,
-  "confidence": null,
-  "directional_thesis": "<current directional thesis>",
-  "liquidity_draw": "<current liquidity draw if identifiable>",
-  "analysis": "<concise reason no supplied candidate is currently valid>",
-  "supporting_evidence": [],
-  "conflicting_evidence": [],
-  "invalidation": null
+  "confidence": null
 }
 
-Do not manufacture a trade because the task asks for today's
-opportunity.
+NO_TRADE must contain no invented geometry. NO_TRADE is allowed, but it
+must result from complete candidate-by-candidate evaluation rather than
+an automatic HTF, daily-bias, liquidity-draw, pending-LIMIT, or
+counter-trend gate.
 
-NO_TRADE is a valid conclusion.
+For TRADE, selected_candidate_id must exactly match a supplied candidate;
+direction, setup/type, execution type, and every geometry value must
+match that candidate exactly. The deterministic bot remains the source of
+executable trade geometry.
 
-==================================================
-CRITICAL OUTPUT CONSISTENCY
-==================================================
-
-For decision = TRADE:
-
-selected_candidate_id MUST exactly match one selectable candidate
-contained in the packet.
-
-direction MUST match that candidate.
-
-setup/type MUST match that candidate.
-
-execution type MUST match that candidate.
-
-entry MUST match that candidate.
-
-entry_zone MUST match that candidate when supplied.
-
-stop_loss MUST match that candidate.
-
-TP1/TP2/TP3 MUST match that candidate.
-
-risk_reward MUST match the supplied deterministic RR representation.
-
-The external AI is the INTERPRETATION + SELECTION layer.
-
-The deterministic bot remains the source of executable trade geometry.
-
-==================================================
-DO NOT CHANGE APPLICATION BEHAVIOR
-==================================================
-
-Do NOT change:
-
-- deterministic trading algorithms;
-- candidate generation;
-- candidate regeneration;
-- market structure;
-- BOS/MSS/CHoCH;
-- liquidity;
-- FVG/OB/MSNR/CRT/TBS detection;
-- structural SL;
-- targets;
-- RR;
-- lifecycle;
-- freshness;
-- Analyze behavior;
-- manual external AI mode;
-- UI;
-- TVKit;
-- Render;
-- Ghost/MCP;
-- provider infrastructure.
-
-Gemini and DeepSeek infrastructure may remain for future use.
-
-But normal MANUAL_EXTERNAL_AI Analyze MUST continue making ZERO AI API
-requests.
+There is exactly ONE authoritative task in this packet: the task above.
+Do not restore an internal application wrapper, a legacy verbose response
+contract, or any competing output contract.
 
 ==================================================`;
     const packet = [
