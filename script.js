@@ -10725,6 +10725,7 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         phase_selection_audit: liveMarketContext.phase_selection_audit || null,
         decision_handoff_audit: liveMarketContext.decision_handoff_audit || null,
         ai_context_audit: liveMarketContext.ai_context_audit || null,
+        risk_constraints: liveMarketContext.risk_constraints || null,
         market_evidence_package: liveMarketContext.market_evidence_package || null,
         ai_analysis: liveMarketContext.ai_analysis || null,
         hard_rejections: liveMarketContext.hard_rejections || [],
@@ -16654,6 +16655,8 @@ const MANUAL_EXTERNAL_AI_PACKET_CONTRACT = [
     'Structural and liquidity levels are neutral supplied market objectives, not BUY/SELL trade targets. Do not label objective records as directional trade targets. Determine whether a neutral objective belongs to the setup you discover.',
     'A TRADE stop_loss must correspond to a supplied structural invalidation fact that actually invalidates the discovered setup. A nearby FVG, OB, MSNR, swing, supply/demand boundary, or other level is not a stop merely because it is nearby, on the correct side, or improves RR. If no defensible supplied structural invalidation exists, return NO_TRADE.',
     'Structural invalidation comes before RR validation: DIRECTION -> LOCATION -> SETUP/EXECUTION -> STRUCTURAL INVALIDATION -> GENUINE OBJECTIVE -> RR VALIDATION. RR must never choose the stop, and a high RR cannot rescue unsupported geometry.',
+    'FINAL-GEOMETRY RR VALIDATION: after deciding the setup, serialize the exact final numeric entry, stop_loss, and tp1 that will appear in the JSON, then recalculate risk_reward from those same values. BUY risk = entry - stop_loss and reward = tp1 - entry; SELL risk = stop_loss - entry and reward = entry - tp1; risk_reward = reward / risk. Do not use a hidden midpoint, boundary, alternate entry, TP2, TP3, unrounded geometry, or an earlier setup.',
+    'A TRADE is invalid when the exact final JSON risk_reward computed from final entry/stop_loss/tp1 is below the supplied canonical minimum_rr. TP2 or TP3 cannot rescue a TP1 RR failure. Reject that geometry and CONTINUE SEARCHING the complete supplied evidence for another valid BUY or SELL opportunity; return NO_TRADE only after that search finds no valid geometry.',
     'Structural and liquidity objectives are genuine supplied facts. Respect lifecycle, reached, consumed, invalidated, and minimum-RR facts. Never manufacture fixed-R or ATR targets.',
     'POI freshness is not opportunity freshness. For every PENDING_LIMIT, evaluate current 1D/4H/1H/15M/5M state, location formation time/age, mitigation, consumption, invalidation, delivery since formation, current-price-to-POI path, intervening/newer structure, and whether genuine objectives remain if entry is reached.',
     'A valid pending LIMIT may remain away from current price, outside its zone, without current 5M/15M confirmation, or outside a killzone. Distance alone is information, not rejection; no fixed dollar, pip, percentage, ATR, candle-count, proximity, current-zone, or current-retracement filter exists. CONFIRMATION_ENTRY must satisfy its supplied confirmation facts.',
@@ -16662,7 +16665,8 @@ const MANUAL_EXTERNAL_AI_PACKET_CONTRACT = [
     'If one considered location is stale, substantially delivered, superseded, or inconsistent with the current phase, reject that location and CONTINUE SEARCHING. Evaluate both BUY and SELL directions, all five timeframes, newer FVG/OB/MSNR locations, CRT/TBS evidence, raids/sweeps, reclaim/retests, current structure, newer objectives, and other supplied locations before deciding NO_TRADE. Do not force a replacement trade, but do not stop after rejecting one location. Return NO_TRADE only after the complete supplied evidence has been evaluated and no valid current opportunity with deterministic geometry and a genuine remaining objective exists.',
     'Do not revive an old opportunity by moving entry, stop, or target.',
     'When multiple targets are populated, order them by expected price-path delivery: BUY entry < TP1 < TP2 < TP3; SELL entry > TP1 > TP2 > TP3. Use only supplied genuine objectives. One valid target uses TP1 only; two use TP1 and TP2 only. risk_reward is reward to TP1 divided by structural risk: BUY (TP1-entry)/(entry-stop_loss), SELL (entry-TP1)/(stop_loss-entry).',
-    'The final setup field must be only a concise interpreted ICT model/type such as CRT, TBS, MSNR, CRT+MSNR, CRT+TBS, CRT+MSNR+TBS, FVG, OB, FVG+MSNR, OB+CRT, or CURRENT_STRUCTURE. Do not put thesis, timeframe narrative, entry, stop, targets, RR, confidence, or evidence explanation in setup.',
+    'The final setup field must be only a concise interpreted ICT model/type such as CRT, TBS, MSNR, CRT+MSNR, CRT+TBS, CRT+MSNR+TBS, FVG, OB, FVG+MSNR, OB+CRT, or CURRENT_STRUCTURE. FVG alone is valid. A combined label is valid only when every named component belongs to the SAME discovered opportunity, location, thesis, and execution; never concatenate unrelated evidence merely because it exists somewhere in the packet. Do not put thesis, timeframe narrative, entry, stop, targets, RR, confidence, or evidence explanation in setup.',
+    'ENTRY GEOMETRY TRACEABILITY: entry and entry_zone must be directly traceable to supplied location boundaries, midpoint, or canonical execution options. A midpoint or partial-zone range is allowed only when deterministically derived from the supplied location and existing execution semantics; never invent arbitrary fractions, buffers, offsets, or internal prices. The exact returned entry is the entry used for final RR validation. Stop and every TP must likewise map to supplied structural invalidation and genuine objective facts.',
     'Evaluate both bullish and bearish evidence. HTF disagreement, neutral daily bias, and ambiguous global liquidity are contextual evidence, not standalone gates.',
     'Every important component of a TRADE must be traceable to supplied evidence IDs and levels. If exact valid geometry cannot be established from supplied deterministic facts and strategy rules, return NO_TRADE.',
     'Confidence describes quality after validity and must be a JSON integer from 0 through 100. It never creates validity. NO_TRADE confidence is null.'
@@ -16807,6 +16811,7 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
             target_candidates: targetCatalog,
             daily_bias: source.daily_bias,
             market_regime: source.market_regime,
+            risk_constraints: source.risk_constraints || result.risk_constraints || null,
             market_context: { timeframe_context: source.timeframe_context || {}, directional_bias: source.daily_bias?.direction || null, daily_bias: source.daily_bias, liquidity: source.liquidity || {}, market_regime: source.market_regime },
             current_opportunity_regeneration: source.candidate_pipeline_audit?.current_opportunity_regeneration || {}
         };
@@ -17183,12 +17188,30 @@ mean TP1 and TP2 only; do not manufacture a third. Reject consumed,
 invalidated, unknown, or otherwise non-executable targets. risk_reward must use
 TP1 itself and structural risk: BUY (TP1-entry)/(entry-stop_loss), SELL
 (entry-TP1)/(stop_loss-entry). Do not use TP2/TP3 to rescue a TP1 that fails
-the supplied canonical minimum RR, and do not change that minimum.
+the supplied canonical minimum RR, and do not change that minimum. After
+populating the final JSON, recalculate risk_reward from the exact serialized
+entry, stop_loss, and tp1 values. The returned risk_reward must match that
+calculation; a claim based on a hidden midpoint, alternate entry, unrounded
+geometry, TP2, TP3, or an earlier setup is invalid. If the final exact RR is
+below the supplied canonical minimum_rr, reject the geometry and CONTINUE
+SEARCHING both directions and all supplied locations before deciding NO_TRADE.
 
 The final setup value must be only a concise ICT model/type such as CRT, TBS,
 MSNR, CRT+MSNR, CRT+TBS, CRT+MSNR+TBS, FVG, OB, FVG+MSNR, OB+CRT, or
-CURRENT_STRUCTURE. Do not put explanation, timeframe narrative, entry, zone,
-stop, target, RR, confidence, or evidence prose in setup.
+CURRENT_STRUCTURE. FVG alone is a valid setup. Use a combined label only when
+every named component structurally belongs to the SAME discovered opportunity,
+location, thesis, and execution; do not concatenate unrelated packet-wide
+evidence. Do not put explanation, timeframe narrative, entry, zone, stop,
+target, RR, confidence, or evidence prose in setup.
+
+ENTRY GEOMETRY TRACEABILITY: entry and entry_zone must map directly to the
+supplied location boundaries, midpoint, or canonical execution options. A
+midpoint or partial-zone execution is allowed only when it is deterministically
+derived from supplied location facts and existing execution semantics. Do not
+invent arbitrary percentages, internal prices, buffers, or offsets. The exact
+returned entry is the value used for final RR validation; stop_loss must map to
+the same setup's supplied structural invalidation and every TP must map to a
+supplied genuine objective.
 
 Return ONLY one directly JSON.parse()-able JSON object. Return only the compact
 JSON object. No Markdown,
@@ -17267,6 +17290,13 @@ packet.
         'CURRENT MARKET SNAPSHOT',
         '==============================',
         semantic ? JSON.stringify(compactSnapshot, null, 2) : 'UNAVAILABLE: completed semantic market evidence was not retained for this result.',
+        ...(manualReview ? [
+            '',
+            '==============================',
+            'CANONICAL RISK / GEOMETRY FACTS',
+            '==============================',
+            semantic ? JSON.stringify(semantic.risk_constraints || {}, null, 2) : 'UNAVAILABLE'
+        ] : []),
         '',
         '==============================',
         'DIRECTIONAL / PHASE CONTEXT',

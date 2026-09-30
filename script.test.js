@@ -7596,6 +7596,7 @@ describe('AI market analyst contract', () => {
                 target_candidates: { buy: [], sell: [{ id: 'SSL-4142', direction: 'SELL', timeframe: '1H', level: 4142.34, target_lifecycle_state: 'UNFULFILLED', source: 'SELL_SIDE_LIQUIDITY' }] }
             },
             target_candidates: { buy: [], sell: [{ id: 'SSL-4142', direction: 'SELL', timeframe: '1H', level: 4142.34, target_lifecycle_state: 'UNFULFILLED', source: 'SELL_SIDE_LIQUIDITY' }] },
+            risk_constraints: { minimum_rr: 2.5 },
             valid_candidates: []
         };
         const packet = ctx.buildExternalAIClipboardPacket({
@@ -7607,6 +7608,8 @@ describe('AI market analyst contract', () => {
         expect(packet).toContain('"delivery_since_formation"');
         expect(packet).toContain('0.88');
         expect(packet).toContain('4157.23');
+        expect(packet).toContain('CANONICAL RISK / GEOMETRY FACTS');
+        expect(packet).toContain('"minimum_rr": 2.5');
         expect(packet).toContain('LOCATION VALIDITY IS NOT OPPORTUNITY RELEVANCE');
         expect(packet).toContain('current-price-to-POI path');
         expect(packet).toContain('intervening/newer structure');
@@ -7620,6 +7623,17 @@ describe('AI market analyst contract', () => {
         expect(packet).toContain('A TRADE stop_loss must correspond to a supplied structural invalidation');
         expect(packet).toContain('If no defensible supplied structural invalidation exists, return NO_TRADE');
         expect(packet).toContain('RR validates geometry after the stop is chosen');
+        expect(packet).toContain('recalculate risk_reward from the exact serialized');
+        expect(packet).toContain('BUY risk = entry - stop_loss and reward = tp1 - entry');
+        expect(packet).toContain('SELL risk = stop_loss - entry and reward = entry - tp1');
+        expect(packet).toContain('The returned risk_reward must match that');
+        expect(packet).toContain('exact final JSON risk_reward computed from final entry/stop_loss/tp1');
+        expect(packet).toContain('TP2 or TP3 cannot rescue a TP1 RR failure');
+        expect(packet).toContain('CONTINUE SEARCHING the complete supplied evidence');
+        expect(packet).toContain('FVG alone is a valid setup');
+        expect(packet).toContain('SAME discovered opportunity');
+        expect(packet).toContain('ENTRY GEOMETRY TRACEABILITY');
+        expect(packet).toContain('arbitrary percentages, internal prices, buffers, or offsets');
         expect(packet).toContain('OBJECTIVES AND INVALIDATION');
         expect(packet).toContain('reject that location and CONTINUE SEARCHING');
         expect(packet).toContain('Evaluate both BUY and SELL directions');
