@@ -10978,6 +10978,28 @@ function compactAiCandidate(candidate = {}) {
     };
 }
 
+function compactAiNeutralObjective(target = {}) {
+    if (!target || typeof target !== 'object') return null;
+    const level = Number.isFinite(Number(target.level ?? target.target_level ?? target.price))
+        ? Number(target.level ?? target.target_level ?? target.price) : null;
+    const lifecycle = target.lifecycle_state || target.target_lifecycle_state || target.state || null;
+    const normalizedType = String(target.type || '').replace(/^OPPOSING_/, '') || null;
+    const normalizedSource = String(target.source || '').replace(/^(BUY|SELL)_SIDE_LIQUIDITY$/, 'LIQUIDITY').replace(/^OPPOSING_/, '') || null;
+    if (level == null && !target.id && !target.target_id) return null;
+    return {
+        objective_id: `OBJECTIVE:${target.timeframe || 'NA'}:${normalizedType || normalizedSource || 'LEVEL'}:${level ?? 'NA'}`,
+        timeframe: target.timeframe || null,
+        level,
+        source: normalizedSource,
+        type: normalizedType,
+        lifecycle_state: lifecycle,
+        reached: target.reached === true || lifecycle === 'CONSUMED' || lifecycle === 'INVALIDATED',
+        consumed: lifecycle === 'CONSUMED',
+        invalidated: lifecycle === 'INVALIDATED',
+        evidence_ids: Array.isArray(target.evidence_ids) ? target.evidence_ids.filter(id => typeof id === 'string').slice(0, 12) : []
+    };
+}
+
 function compactAiOpportunityMaterial(candidate = {}, catalogStatus = 'CURRENT_MATERIAL') {
     const compact = compactAiCandidate(candidate);
     if (!compact?.candidate_id) return null;
@@ -11108,9 +11130,29 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
     const regeneration = liveMarketContext.current_opportunity_regeneration || {};
     const locationFacts = { buy: buyLocations.slice(0, 120), sell: sellLocations.slice(0, 120) };
     const invalidationFacts = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf, structure[tf].structural_invalidations || []]));
+    for (const item of evidenceById.values()) {
+        const invalidation = item?.structural_invalidation;
+        const timeframe = AI_SEMANTIC_TIMEFRAMES.includes(item?.timeframe) ? item.timeframe : null;
+        if (!invalidation || !timeframe || !item.id) continue;
+        if (invalidationFacts[timeframe].some(existing => (existing.evidence_id || existing.id) === item.id)) continue;
+        invalidationFacts[timeframe].push({
+            id: item.id,
+            evidence_id: item.id,
+            type: item.type || 'STRUCTURAL_INVALIDATION',
+            timeframe,
+            level: invalidation.level ?? null,
+            source: invalidation.source || null,
+            event_time: item.event_time || null,
+            state: item.state || null,
+            invalidated: item.invalidated === true,
+            evidence_ids: [...new Set([item.id, ...(item.evidence_ids || [])])].slice(0, 12)
+        });
+    }
     const deliveryFacts = {
         locations: [...locationFacts.buy, ...locationFacts.sell].filter(location => location?.freshness || location?.mitigation_state || location?.state || location?.consumed || location?.invalidated),
-        targets: targetRecords.map(target => ({ id: target.id, direction: target.direction, timeframe: target.timeframe, type: target.type, source: target.source, level: target.level, lifecycle_state: target.lifecycle_state, reached: target.reached, evidence_ids: target.evidence_ids }))
+        targets: manualOpportunityDiscovery
+            ? targetRecords.map(compactAiNeutralObjective).filter(Boolean)
+            : targetRecords.map(target => ({ id: target.id, direction: target.direction, timeframe: target.timeframe, type: target.type, source: target.source, level: target.level, lifecycle_state: target.lifecycle_state, reached: target.reached, evidence_ids: target.evidence_ids }))
     };
     return {
         schema_version: 2,
@@ -16609,7 +16651,10 @@ const MANUAL_EXTERNAL_AI_PACKET_CONTRACT = [
     'LOCATION VALIDITY IS NOT OPPORTUNITY RELEVANCE. A location may be structurally valid, FRESH, unmitigated, and untouched without being the current actionable pending opportunity. Do not equate untouched with current.',
     'A location record is market evidence, not a trade. Do not treat its midpoint or boundaries as a preselected entry. Choose only supplied locations and supplied structural facts.',
     'Structural invalidation records are facts. Select the invalidation that belongs to the setup you discover; never invent one.',
-    'Structural and liquidity targets are genuine supplied objectives. Respect lifecycle, reached, consumed, invalidated, and minimum-RR facts. Never manufacture fixed-R or ATR targets.',
+    'Structural and liquidity levels are neutral supplied market objectives, not BUY/SELL trade targets. Do not label objective records as directional trade targets. Determine whether a neutral objective belongs to the setup you discover.',
+    'A TRADE stop_loss must correspond to a supplied structural invalidation fact that actually invalidates the discovered setup. A nearby FVG, OB, MSNR, swing, supply/demand boundary, or other level is not a stop merely because it is nearby, on the correct side, or improves RR. If no defensible supplied structural invalidation exists, return NO_TRADE.',
+    'Structural invalidation comes before RR validation: DIRECTION -> LOCATION -> SETUP/EXECUTION -> STRUCTURAL INVALIDATION -> GENUINE OBJECTIVE -> RR VALIDATION. RR must never choose the stop, and a high RR cannot rescue unsupported geometry.',
+    'Structural and liquidity objectives are genuine supplied facts. Respect lifecycle, reached, consumed, invalidated, and minimum-RR facts. Never manufacture fixed-R or ATR targets.',
     'POI freshness is not opportunity freshness. For every PENDING_LIMIT, evaluate current 1D/4H/1H/15M/5M state, location formation time/age, mitigation, consumption, invalidation, delivery since formation, current-price-to-POI path, intervening/newer structure, and whether genuine objectives remain if entry is reached.',
     'A valid pending LIMIT may remain away from current price, outside its zone, without current 5M/15M confirmation, or outside a killzone. Distance alone is information, not rejection; no fixed dollar, pip, percentage, ATR, candle-count, proximity, current-zone, or current-retracement filter exists. CONFIRMATION_ENTRY must satisfy its supplied confirmation facts.',
     'A remote pending LIMIT must represent a coherent CURRENT opportunity: explain internally why the location matters now, what phase supports a return/activation, whether the original move already substantially delivered, whether the thesis survives intervening structure, and what objective remains after entry. A fresh remote POI plus attractive RR is not sufficient.',
@@ -16768,7 +16813,10 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
         semantic = buildCompactAISemanticPackage(semanticSource, source.market_evidence_package || {}, { manualOpportunityDiscovery: manualReview });
     } catch { semantic = null; }
     const timeframes = semantic?.timeframes || {};
-    const targetContext = semantic?.target_context || [...new Map(candidates.flatMap(candidate => candidate.targets || []).map(target => [target.target_id, target])).values()];
+    const rawTargetContext = semantic?.target_context || [...new Map(candidates.flatMap(candidate => candidate.targets || []).map(target => [target.target_id, target])).values()];
+    const targetContext = manualReview
+        ? rawTargetContext.map(compactAiNeutralObjective).filter(Boolean)
+        : rawTargetContext;
     const currentResult = externalPacketDefined({
         analysis_mode: manualReview ? DEFAULT_ANALYSIS_MODE : null,
         automatic_ai_selection: manualReview ? 'NOT_RUN' : 'COMPLETED',
@@ -17116,6 +17164,17 @@ return NO_TRADE. POI freshness is not opportunity freshness; an old untouched
 location whose original delivery substantially played out is not automatically
 a fresh trade.
 
+OBJECTIVES AND INVALIDATION: objective records are neutral market facts, not
+BUY or SELL trade targets. Do not infer a stop from the nearest level. A
+TRADE stop_loss must correspond to a supplied structural invalidation that
+actually invalidates the discovered setup; a nearby FVG, OB, MSNR, swing,
+supply/demand boundary, or other level is not sufficient merely because it is
+nearby, on the correct side, or improves RR. If no defensible supplied
+structural invalidation exists, return NO_TRADE. Apply the sequence:
+DIRECTION -> LOCATION -> SETUP/EXECUTION -> STRUCTURAL INVALIDATION -> GENUINE
+OBJECTIVE -> RR VALIDATION. RR validates geometry after the stop is chosen; it
+must never choose the stop.
+
 TARGET DELIVERY ORDER AND RR: when multiple genuine targets are populated,
 order them by the price path from entry, not timeframe, ID, evidence score, or
 semantic priority. For BUY require entry < TP1 < TP2 < TP3. For SELL require
@@ -17241,7 +17300,7 @@ packet.
             semantic ? JSON.stringify(Object.fromEntries(Object.entries(semantic.timeframes || {}).map(([timeframe, value]) => [timeframe, value.structural_invalidations || []])), null, 2) : 'UNAVAILABLE',
             '',
             '==============================',
-            'STRUCTURAL / LIQUIDITY TARGET CONTEXT',
+            'STRUCTURAL / LIQUIDITY OBJECTIVE FACTS',
             '==============================',
             targetContext.length ? JSON.stringify(targetContext, null, 2) : 'UNAVAILABLE: no relevant target records were retained.',
             '',

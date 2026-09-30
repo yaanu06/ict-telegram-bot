@@ -7555,7 +7555,7 @@ describe('AI market analyst contract', () => {
         expect(packet).toContain('CRT-EVIDENCE-1');
         expect(packet).toContain('TBS-EVIDENCE-1');
         expect(packet).toContain('MSNR-EVIDENCE-1');
-        expect(packet).toContain('TARGET-BUY');
+        expect(packet).toContain('OBJECTIVE:1H:LIQUIDITY:1.11');
         expect(packet).toContain('UNFULFILLED');
         expect(packet).not.toContain('MANUAL_EXTERNAL_AI_REVIEW is application workflow metadata only.');
         expect(packet).not.toContain('A zero selectable-candidate');
@@ -7569,6 +7569,9 @@ describe('AI market analyst contract', () => {
         expect(packet).not.toContain('"candidate_id": "NON-PROMOTED-BUY"');
         expect(packet).not.toContain('"entry": 1.099');
         expect(packet).not.toContain('"rr": 3');
+        const objectiveSection = packet.split('STRUCTURAL / LIQUIDITY OBJECTIVE FACTS')[1].split('MARKET DELIVERY / LIFECYCLE FACTS')[0];
+        expect(objectiveSection).not.toContain('TARGET:BUY');
+        expect(objectiveSection).not.toContain('TARGET:SELL');
     });
 
     it('gives manual AI enough contract and lifecycle facts for remote pending relevance', () => {
@@ -7589,7 +7592,7 @@ describe('AI market analyst contract', () => {
             quote: { price: 4157.23, quote_time: '2026-09-30T11:59:00Z' }, provider_metadata: { provider: 'TVKIT' },
             market_evidence_package: {
                 snapshot_id: 'REMOTE-RELEVANCE', timeframes,
-                strategy_events: [{ id: 'CRT-4H-SELL', strategy: 'CRT', direction: 'SELL', timeframe: '4H', event_time: remoteLocation.event_time }],
+                strategy_events: [{ id: 'CRT-4H-SELL', strategy: 'CRT', direction: 'SELL', timeframe: '4H', event_time: remoteLocation.event_time, structural_invalidation: { level: 4315.8, source: 'CRT_SWEEP_EXTREME' } }],
                 target_candidates: { buy: [], sell: [{ id: 'SSL-4142', direction: 'SELL', timeframe: '1H', level: 4142.34, target_lifecycle_state: 'UNFULFILLED', source: 'SELL_SIDE_LIQUIDITY' }] }
             },
             target_candidates: { buy: [], sell: [{ id: 'SSL-4142', direction: 'SELL', timeframe: '1H', level: 4142.34, target_lifecycle_state: 'UNFULFILLED', source: 'SELL_SIDE_LIQUIDITY' }] },
@@ -7613,12 +7616,21 @@ describe('AI market analyst contract', () => {
         expect(packet).toContain('SELL entry > TP1 > TP2 > TP3');
         expect(packet).toContain('risk_reward is reward to TP1');
         expect(packet).toContain('setup value must be only a concise ICT model/type');
+        expect(packet).toContain('4315.8');
+        expect(packet).toContain('A TRADE stop_loss must correspond to a supplied structural invalidation');
+        expect(packet).toContain('If no defensible supplied structural invalidation exists, return NO_TRADE');
+        expect(packet).toContain('RR validates geometry after the stop is chosen');
+        expect(packet).toContain('OBJECTIVES AND INVALIDATION');
         expect(packet).toContain('reject that location and CONTINUE SEARCHING');
         expect(packet).toContain('Evaluate both BUY and SELL directions');
         expect(packet).toContain('Do not force a newer trade merely');
         expect(packet).toContain('do not stop after rejecting one location');
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
         expect(packet).not.toContain('"candidate_id": "REMOTE-SELL-POI"');
+        const objectiveSection = packet.split('STRUCTURAL / LIQUIDITY OBJECTIVE FACTS')[1].split('MARKET DELIVERY / LIFECYCLE FACTS')[0];
+        expect(objectiveSection).not.toContain('TARGET:SELL');
+        expect(objectiveSection).not.toContain('"direction"');
+        expect(packet).not.toContain('"direction": "SELL"\n      }');
     });
 
     it('routes the existing normal Copy action through the external AI packet', () => {
