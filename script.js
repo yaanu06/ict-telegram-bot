@@ -11017,7 +11017,8 @@ function compactAiOpportunityMaterial(candidate = {}, catalogStatus = 'CURRENT_M
     };
 }
 
-function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = {}) {
+function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = {}, options = {}) {
+    const manualEvidenceOnly = options.manualEvidenceOnly === true;
     const structure = source.structure || fallbackStructure || {};
     const compactLocations = (items, type) => (Array.isArray(items) ? items : [])
         .map(item => compactAiEvidenceItem(item, type, timeframe))
@@ -11035,7 +11036,7 @@ function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = 
             structural_trend: structure.structural_trend || structure.trend || null,
             momentum_trend: structure.momentum_trend || null,
             effective_trend: structure.effective_trend || structure.trend || null,
-            bias: structure.bias || null,
+            bias: manualEvidenceOnly ? null : (structure.bias || null),
             sequence: Array.isArray(structure.sequence) ? structure.sequence.slice(-12) : [],
             swing_highs: compactLocations(structure.swing_highs || structure.recent_swing_highs, 'SWING_HIGH'),
             swing_lows: compactLocations(structure.swing_lows || structure.recent_swing_lows, 'SWING_LOW'),
@@ -11078,7 +11079,7 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
         : evidenceCatalog.market_evidence_package || {};
     const evidenceTimeframes = evidencePackage.timeframes || {};
     const structure = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf,
-        compactAiTimeframeEvidence(tf, evidenceTimeframes[tf] || {}, liveMarketContext.structure?.[tf] || {})]));
+        compactAiTimeframeEvidence(tf, evidenceTimeframes[tf] || {}, liveMarketContext.structure?.[tf] || {}, { manualEvidenceOnly: manualOpportunityDiscovery })]));
     const sourceCandidates = Array.isArray(liveMarketContext.adaptive_setup_candidates)
         ? liveMarketContext.adaptive_setup_candidates
         : Array.isArray(liveMarketContext.valid_deterministic_candidates) ? liveMarketContext.valid_deterministic_candidates : [];
@@ -11155,6 +11156,23 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
             ? targetRecords.map(compactAiNeutralObjective).filter(Boolean)
             : targetRecords.map(target => ({ id: target.id, direction: target.direction, timeframe: target.timeframe, type: target.type, source: target.source, level: target.level, lifecycle_state: target.lifecycle_state, reached: target.reached, evidence_ids: target.evidence_ids }))
     };
+    const automaticDirectionalContext = {
+        daily_bias: liveMarketContext.daily_bias || marketContext.daily_bias || null,
+        directional_bias: marketContext.directional_bias || null,
+        liquidity_draw: marketContext.liquidity?.draw || marketContext.liquidity?.liquidity_draw || null,
+        dealing_range_position: liveMarketContext.premium_discount?.zone || marketContext.premium_discount?.zone || null,
+        conflicts: marketContext.conflicts || [],
+        structural_invalidation_ids: Array.isArray(liveMarketContext.daily_bias?.invalidation_evidence_ids) ? liveMarketContext.daily_bias.invalidation_evidence_ids : [],
+        multi_timeframe_trend: multiTimeframeTrend,
+        volatility: liveMarketContext.volatility || marketContext.volatility || null,
+        market_regime: liveMarketContext.market_regime?.primary_regime || liveMarketContext.market_regime?.regime || marketContext.market_regime || null
+    };
+    const manualMarketFactContext = {
+        timeframe_structure: multiTimeframeTrend,
+        dealing_range_position: liveMarketContext.premium_discount?.zone || marketContext.premium_discount?.zone || null,
+        conflicts: marketContext.conflicts || [],
+        volatility_facts: liveMarketContext.volatility || marketContext.volatility || null
+    };
     return {
         schema_version: 2,
         package_type: 'AI_SEMANTIC_MARKET',
@@ -11166,26 +11184,25 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
             current_price: liveMarketContext.current_price ?? evidenceCatalog.current_price ?? null
         },
         timeframes: structure,
-        directional_context: {
-            daily_bias: liveMarketContext.daily_bias || marketContext.daily_bias || null,
-            directional_bias: marketContext.directional_bias || null,
-            liquidity_draw: marketContext.liquidity?.draw || marketContext.liquidity?.liquidity_draw || null,
-            dealing_range_position: liveMarketContext.premium_discount?.zone || marketContext.premium_discount?.zone || null,
-            conflicts: marketContext.conflicts || [],
-            structural_invalidation_ids: Array.isArray(liveMarketContext.daily_bias?.invalidation_evidence_ids) ? liveMarketContext.daily_bias.invalidation_evidence_ids : [],
-            multi_timeframe_trend: multiTimeframeTrend,
-            volatility: liveMarketContext.volatility || marketContext.volatility || null,
-            market_regime: liveMarketContext.market_regime?.primary_regime || liveMarketContext.market_regime?.regime || marketContext.market_regime || null
-        },
-        phase_evidence: {
-            current_regime: liveMarketContext.market_regime?.primary_regime || liveMarketContext.market_regime?.regime || null,
-            current_structure: multiTimeframeTrend,
-            ...(manualOpportunityDiscovery
-                ? { delivery_facts: deliveryFacts }
-                : { delivery_by_candidate: selectable.map(candidate => ({ candidate_id: candidate.candidate_id, candidate_role: candidate.candidate_role, continuation_state: candidate.delivery.continuation_state, delivery_fraction: candidate.delivery.delivery_fraction, remaining_reward_fraction: candidate.delivery.remaining_reward_fraction })) }),
-            conflicts: marketContext.conflicts || [],
-            liquidity: marketContext.liquidity || null
-        },
+        ...(manualOpportunityDiscovery
+            ? {
+                market_fact_context: manualMarketFactContext,
+                phase_evidence: {
+                    structural_observations: multiTimeframeTrend,
+                    delivery_facts: deliveryFacts,
+                    conflicts: marketContext.conflicts || []
+                }
+            }
+            : {
+                directional_context: automaticDirectionalContext,
+                phase_evidence: {
+                    current_regime: liveMarketContext.market_regime?.primary_regime || liveMarketContext.market_regime?.regime || null,
+                    current_structure: multiTimeframeTrend,
+                    delivery_by_candidate: selectable.map(candidate => ({ candidate_id: candidate.candidate_id, candidate_role: candidate.candidate_role, continuation_state: candidate.delivery.continuation_state, delivery_fraction: candidate.delivery.delivery_fraction, remaining_reward_fraction: candidate.delivery.remaining_reward_fraction })),
+                    conflicts: marketContext.conflicts || [],
+                    liquidity: marketContext.liquidity || null
+                }
+            }),
         selectable_opportunities: manualOpportunityDiscovery ? [] : selectable,
         // Compatibility aliases are intentionally compact records, not the
         // old nested replay candidates.
@@ -16645,10 +16662,13 @@ const EXTERNAL_AI_PACKET_CONTRACT = [
 
 const MANUAL_EXTERNAL_AI_PACKET_CONTRACT = [
     'CODE OWNS FACTS. The packet contains deterministic market evidence, structural locations, invalidations, and genuine objectives. The external AI owns interpretation and setup discovery.',
-    'Use Direction -> Location -> Execution. ICT is the umbrella methodology. CRT, TBS, MSNR, combinations, FVG, OB, liquidity raids, reclaim/retest, and current structure are interpretations grounded in the supplied evidence.',
-    'Do not assume that a setup already exists. Determine the current market phase and actionable direction from the complete five-timeframe evidence before interpreting a model.',
+    'Use this reasoning order: COMPLETE MARKET STATE -> CURRENT DELIVERY / PHASE INTERPRETATION -> ACTIONABLE DIRECTION -> LOCATION -> SETUP / EXECUTION -> STRUCTURAL INVALIDATION -> GENUINE OBJECTIVE -> EXACT RR VALIDATION -> TRADE / CONTINUE SEARCHING / NO_TRADE. Direction -> Location -> Execution remains the core methodology.',
+    'ICT is the umbrella methodology. CRT, TBS, MSNR, combinations, FVG, OB, liquidity raids, reclaim/retest, and current structure are interpretations grounded in the supplied evidence. A model/event is evidence inside the broader narrative; it does not decide direction by itself.',
+    'Do not assume that a setup, direction, phase, regime, thesis, score winner, or liquidity draw already exists. The manual packet intentionally omits those overall conclusions. Determine market phase and actionable direction independently from the complete five-timeframe evidence before interpreting a model or selecting a location.',
     'This packet intentionally does not provide a candidate shortlist, ranking, or preselected trade. Discover the opportunity from the market facts themselves.',
     'Use exactly these semantic timeframes: 1D, 4H, 1H, 15M, 5M. No 1W semantic trading context is supplied.',
+    'Direction on an actual event remains factual provenance: BOS SELL, MSS BUY, liquidity sweep BUY, TBS BUY, CRT SELL, FVG BUY, and similar records describe what was detected. Do not convert one event or local model into the actionable direction without reconciling all supplied timeframes, delivery, chronology, and conflicts.',
+    'When lower-timeframe evidence opposes higher/intraday delivery, distinguish a reaction, retracement, liquidity manipulation, genuine reversal, transition, or failed continuation. Do not call it a reversal without supplied structural change, displacement, MSS, CHoCH, reclaim, failed continuation, liquidity behavior, or other existing evidence that supports that interpretation. Do not impose an HTF hard gate either.',
     'LOCATION VALIDITY IS NOT OPPORTUNITY RELEVANCE. A location may be structurally valid, FRESH, unmitigated, and untouched without being the current actionable pending opportunity. Do not equate untouched with current.',
     'A location record is market evidence, not a trade. Do not treat its midpoint or boundaries as a preselected entry. Choose only supplied locations and supplied structural facts.',
     'Structural invalidation records are facts. Select the invalidation that belongs to the setup you discover; never invent one.',
@@ -17114,6 +17134,16 @@ market phase first, then determine the actionable direction for the current
 opportunity horizon, then identify the best supported ICT model and location,
 then determine execution. Evaluate both bullish and bearish evidence.
 
+The bot has intentionally withheld any overall directional bias, aggregate
+BUY/SELL score winner, thesis reason, phase/regime conclusion, and selected
+liquidity draw. Independently reconcile the complete supplied market facts;
+do not infer the answer from one event, one model, or one timeframe.
+
+Use this order: COMPLETE MARKET STATE -> CURRENT DELIVERY / PHASE
+INTERPRETATION -> ACTIONABLE DIRECTION -> LOCATION -> SETUP / EXECUTION ->
+STRUCTURAL INVALIDATION -> GENUINE OBJECTIVE -> EXACT RR VALIDATION -> TRADE /
+CONTINUE SEARCHING / NO_TRADE.
+
 Use exactly the supplied 1D, 4H, 1H, 15M, and 5M evidence. Consider structure,
 momentum, effective trend, HH/HL/LH/LL sequence, BOS, MSS, CHoCH, displacement,
 swings, liquidity, sweeps/raids, dealing range, premium/discount, FVG, OB,
@@ -17152,6 +17182,13 @@ RETRACEMENT, CONTINUATION_READY, LATE_DELIVERY, or TRANSITION_WAIT. Do not
 make historical 1D/4H direction a mandatory gate. Daily bias and global
 liquidity draw are contextual evidence. Missing or ambiguous liquidity alone
 does not force NO_TRADE.
+
+When lower-timeframe evidence opposes higher/intraday delivery, distinguish a
+reaction, retracement, liquidity manipulation, genuine reversal, transition,
+or failed continuation. A local counter-direction event is not automatically
+a reversal; require supplied structural change, displacement, MSS, CHoCH,
+reclaim, failed continuation, liquidity behavior, or other existing evidence
+supporting that interpretation. This is interpretation, not an HTF hard gate.
 
 Discover whether a valid CRT, TBS, MSNR, combination, FVG/OB, or other
 supported current-structure opportunity exists. Choose a supplied factual
@@ -17298,10 +17335,17 @@ packet.
             semantic ? JSON.stringify(semantic.risk_constraints || {}, null, 2) : 'UNAVAILABLE'
         ] : []),
         '',
-        '==============================',
-        'DIRECTIONAL / PHASE CONTEXT',
-        '==============================',
-        semantic ? JSON.stringify({ directional_context: semantic.directional_context || null, phase_evidence: semantic.phase_evidence || null, regeneration: semantic.current_opportunity_regeneration || null }, null, 2) : 'UNAVAILABLE',
+        ...(manualReview ? [
+            '==============================',
+            'MARKET FACT CONTEXT',
+            '==============================',
+            semantic ? JSON.stringify({ market_fact_context: semantic.market_fact_context || null, phase_observations: semantic.phase_evidence || null }, null, 2) : 'UNAVAILABLE'
+        ] : [
+            '==============================',
+            'DIRECTIONAL / PHASE CONTEXT',
+            '==============================',
+            semantic ? JSON.stringify({ directional_context: semantic.directional_context || null, phase_evidence: semantic.phase_evidence || null, regeneration: semantic.current_opportunity_regeneration || null }, null, 2) : 'UNAVAILABLE'
+        ]),
         '',
         '==============================',
         'IMPORTANT DETERMINISTIC LEVELS',

@@ -7574,6 +7574,97 @@ describe('AI market analyst contract', () => {
         expect(objectiveSection).not.toContain('TARGET:SELL');
     });
 
+    it('keeps mixed EUR/USD market facts without leaking manual directional or phase conclusions', () => {
+        const ctx = getContext();
+        const timeframes = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => {
+            const isDaily = tf === '1D';
+            const isLowerBullish = tf === '5M';
+            const trend = isDaily ? 'BULLISH' : isLowerBullish ? 'BULLISH' : 'BEARISH';
+            return [tf, {
+                timeframe: tf,
+                structure: {
+                    structural_trend: trend,
+                    momentum_trend: isDaily ? 'BEARISH' : trend,
+                    effective_trend: trend,
+                    bias: isDaily ? 'BEARISH' : trend,
+                    swing_highs: [{ id: `${tf}:SH:EUR`, type: 'SWING_HIGH', direction: 'SELL', level: 1.13802 }],
+                    swing_lows: [{ id: `${tf}:SL:EUR`, type: 'SWING_LOW', direction: 'BUY', level: 1.13221 }],
+                    bos: { buy: isLowerBullish, sell: !isLowerBullish },
+                    choch: { buy: isLowerBullish, sell: false },
+                    mss: { id: `${tf}:MSS:EUR`, direction: isLowerBullish ? 'BUY' : 'SELL', level: 1.13325 },
+                    displacement: { direction: isLowerBullish ? 'BUY' : 'SELL' }
+                },
+                liquidity: {
+                    buy_side_levels: [{ id: `${tf}:PDH:EUR`, direction: 'BUY', level: 1.13802 }],
+                    sell_side_levels: [{ id: `${tf}:PDL:EUR`, direction: 'SELL', level: 1.13221 }],
+                    sweeps: [{ id: `${tf}:SWEEP:EUR`, direction: isLowerBullish ? 'BUY' : 'SELL', level: 1.13325 }]
+                },
+                fvg: [{ id: `${tf}:FVG:EUR`, type: 'FVG', direction: isLowerBullish ? 'BUY' : 'SELL', low: 1.1325, high: 1.1332, freshness: 'FRESH' }],
+                order_blocks: { buy: [], sell: [{ id: `${tf}:OB:EUR`, type: 'OB', direction: 'SELL', low: 1.134, high: 1.135 }] },
+                msnr_levels: [{ id: `${tf}:MSNR:EUR`, type: 'MSNR', direction: 'SELL', low: 1.133, high: 1.134, freshness: 'FRESH' }],
+                structural_pois: []
+            }];
+        }));
+        const replay = {
+            pair: 'EUR/USD', snapshot_id: 'TVKIT:EURUSD:directional-leak',
+            scan_as_of: '2026-10-01T01:46:34.576Z',
+            quote: { price: 1.13325, quote_time: '2026-10-01T01:46:00Z' },
+            provider_metadata: { provider: 'TVKIT' },
+            market_evidence_package: {
+                snapshot_id: 'TVKIT:EURUSD:directional-leak', timeframes,
+                strategy_events: [
+                    { id: 'CRT-4H-SELL-EUR', strategy: 'CRT', direction: 'SELL', timeframe: '4H', event_time: '2026-10-01T00:00:00Z' },
+                    { id: 'TBS-15M-BUY-EUR', strategy: 'TBS', direction: 'BUY', timeframe: '15M', event_time: '2026-10-01T01:00:00Z' },
+                    { id: 'MSNR-1H-SELL-EUR', strategy: 'MSNR', direction: 'SELL', timeframe: '1H', level: 1.1335 },
+                    { id: 'SWEEP-15M-BUY-EUR', strategy: 'LIQUIDITY_SWEEP', direction: 'BUY', timeframe: '15M', level: 1.13325 }
+                ]
+            },
+            target_candidates: {
+                buy: [{ id: 'PDH-EUR', direction: 'BUY', timeframe: '1D', level: 1.13802, source: 'PDH', target_lifecycle_state: 'UNFULFILLED' }],
+                sell: [{ id: 'PDL-EUR', direction: 'SELL', timeframe: '1D', level: 1.13221, source: 'PDL', target_lifecycle_state: 'UNFULFILLED' }]
+            },
+            daily_bias: {
+                direction: 'BUY', score: { BUY: 16.75, SELL: 8 }, target_type: 'PDH', target_level: 1.13802,
+                liquidity_draw: 'PDH 1.13802', reason: 'Evidence-weighted BUY thesis: 16.8 vs 8.0 with a remaining PDH objective.',
+                invalidation_evidence_ids: ['INVALIDATION:4H:BUY:1.13221']
+            },
+            market_regime: { primary_regime: 'MANIPULATION', regime: 'TRANSITION', phase: 'MANIPULATION' },
+            risk_constraints: { minimum_rr: 2.5 },
+            valid_candidates: []
+        };
+        const packet = ctx.buildExternalAIClipboardPacket({
+            signal: { pair: 'EUR/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' } },
+            replay
+        });
+        const evidenceBody = packet.slice(packet.indexOf('CURRENT MARKET SNAPSHOT'), packet.lastIndexOf('EXTERNAL AI TASK'));
+        expect(packet).toContain('MARKET FACT CONTEXT');
+        expect(packet).not.toContain('DIRECTIONAL / PHASE CONTEXT');
+        expect(evidenceBody).not.toContain('"directional_bias"');
+        expect(evidenceBody).not.toContain('"daily_bias"');
+        expect(evidenceBody).not.toContain('"market_regime"');
+        expect(evidenceBody).not.toContain('MANIPULATION');
+        expect(evidenceBody).not.toContain('Evidence-weighted BUY thesis');
+        expect(evidenceBody).not.toContain('"liquidity_draw"');
+        expect(evidenceBody).not.toContain('"score"');
+        expect(evidenceBody).toContain('CRT-4H-SELL-EUR');
+        expect(evidenceBody).toContain('TBS-15M-BUY-EUR');
+        expect(evidenceBody).toContain('MSNR-1H-SELL-EUR');
+        expect(evidenceBody).toContain('SWEEP-15M-BUY-EUR');
+        expect(evidenceBody).toContain('"direction": "BUY"');
+        expect(evidenceBody).toContain('"direction": "SELL"');
+        expect(evidenceBody).toContain('OBJECTIVE:1D:PDH:1.13802');
+        expect(evidenceBody).toContain('OBJECTIVE:1D:PDL:1.13221');
+        expect(evidenceBody).not.toContain('TARGET:BUY');
+        expect(evidenceBody).not.toContain('TARGET:SELL');
+        expect(packet).toContain('Determine market phase and actionable direction independently');
+        expect(packet).toContain('COMPLETE MARKET STATE -> CURRENT DELIVERY / PHASE');
+        expect(packet).toContain('A local counter-direction event is not automatically');
+        expect(packet).toContain('Do not impose an HTF hard gate either.');
+        expect(packet).toContain('minimum_rr');
+        expect(packet).not.toContain('EUR/USD special');
+        expect(packet).not.toContain('XAU/USD special');
+    });
+
     it('gives manual AI enough contract and lifecycle facts for remote pending relevance', () => {
         const ctx = getContext();
         const remoteLocation = {
