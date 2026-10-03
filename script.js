@@ -3997,7 +3997,7 @@ function analyzeVolumeTruth(data, realVolume = true) {
 }
 
 // Liquidity sweep detection: price swept a recent swing high/low then closed back
-function detectLiquiditySweep(data, price, dir) {
+function detectLiquiditySweep(data, price, dir, timeframe = null) {
     data = closedStructureCandles(data);
     if(!data || data.length < 26) return null;
     const lookback = 6;
@@ -4007,32 +4007,432 @@ function detectLiquiditySweep(data, price, dir) {
     if(dir === 'BUY') {
         const lows = (sw.L || []).slice(-4);
         for(const low of lows) {
-            if(recent.some(c => c.l < low.p && c.c > low.p)) {
-                return { swept: true, level: low.p, type: 'BUY' };
+            const sweepOffset = recent.findIndex(c => c.l < low.p && c.c > low.p);
+            if(sweepOffset >= 0) {
+                const sourceIndex = body.length + sweepOffset;
+                return { swept: true, level: low.p, type: 'BUY', source_index: sourceIndex,
+                    event_time: candleTimestamp(data[sourceIndex], sourceIndex, timeframe), source: 'SWING_LOW' };
             }
         }
     } else {
         const highs = (sw.H || []).slice(-4);
         for(const high of highs) {
-            if(recent.some(c => c.h > high.p && c.c < high.p)) {
-                return { swept: true, level: high.p, type: 'SELL' };
+            const sweepOffset = recent.findIndex(c => c.h > high.p && c.c < high.p);
+            if(sweepOffset >= 0) {
+                const sourceIndex = body.length + sweepOffset;
+                return { swept: true, level: high.p, type: 'SELL', source_index: sourceIndex,
+                    event_time: candleTimestamp(data[sourceIndex], sourceIndex, timeframe), source: 'SWING_HIGH' };
             }
         }
     }
     return null;
 }
 
-// Displacement: current candle body >= 2.5x average body in direction
+// Displacement: current candle body >= 2.5x average body in direction.
+// The indexed helper is the same canonical calculation, exposed so evidence
+// composition can retain provenance without creating a second threshold.
+function getDisplacementMetricsAtIndex(data, index, dir) {
+    data = closedStructureCandles(data);
+    if (!data || index < 9 || index >= data.length) return null;
+    const candle = data[index];
+    const body = Math.abs(candle.c - candle.o);
+    const range = Math.max(0, candle.h - candle.l);
+    // Preserve the existing detector's exact ten-candle window, which
+    // includes the candle being tested.
+    const prior = data.slice(Math.max(0, index - 9), index + 1);
+    const averageBody = prior.reduce((sum, item) => sum + Math.abs(item.c - item.o), 0) / prior.length;
+    const averageRange = prior.reduce((sum, item) => sum + Math.max(0, item.h - item.l), 0) / prior.length;
+    if (averageBody <= 0) return null;
+    const bullish = candle.c > candle.o;
+    const bearish = candle.c < candle.o;
+    const directional = dir === 'BUY' ? bullish : dir === 'SELL' ? bearish : false;
+    const closeQuality = range > 0
+        ? dir === 'BUY' ? (candle.c - candle.l) / range : (candle.h - candle.c) / range
+        : 0;
+    return {
+        detected: directional && body >= averageBody * 2.5,
+        direction: dir,
+        index,
+        event_time: candleTimestamp(candle, index),
+        body,
+        range,
+        body_ratio: body / averageBody,
+        range_expansion: averageRange > 0 ? range / averageRange : null,
+        close_quality: Math.max(0, Math.min(1, closeQuality)),
+        candle
+    };
+}
+
+function detectDisplacementAtIndex(data, index, dir) {
+    return !!getDisplacementMetricsAtIndex(data, index, dir)?.detected;
+}
+
 function detectDisplacement(data, dir) {
     data = closedStructureCandles(data);
     if(!data || data.length < 10) return false;
-    const last = data[data.length - 1];
-    const avgBody = data.slice(-10).reduce((a, c) => a + Math.abs(c.c - c.o), 0) / 10;
-    const body = Math.abs(last.c - last.o);
-    if(avgBody <= 0) return false;
-    if(dir === 'BUY' && last.c > last.o && body >= avgBody * 2.5) return true;
-    if(dir === 'SELL' && last.c < last.o && body >= avgBody * 2.5) return true;
-    return false;
+    return detectDisplacementAtIndex(data, data.length - 1, dir);
+}
+
+const INSTITUTIONAL_ACTIVITY_TIMEFRAMES = ['1D', '4H', '1H', '15M', '5M'];
+// This is an association context, not POI/opportunity expiry. It reuses the
+// canonical displacement detector's ten-candle observation window.
+const INSTITUTIONAL_DISPLACEMENT_CONTEXT_BARS = 10;
+
+function institutionalDirection(value) {
+    const normalized = String(value || '').toUpperCase();
+    if (normalized === 'BULL' || normalized === 'BULLISH' || normalized === 'BUY') return 'BUY';
+    if (normalized === 'BEAR' || normalized === 'BEARISH' || normalized === 'SELL') return 'SELL';
+    return null;
+}
+
+function institutionalEventIndex(event = {}) {
+    const index = Number(event.index ?? event.source_index ?? event.source_candle_index ?? event.formation_index);
+    return Number.isInteger(index) ? index : null;
+}
+
+function institutionalEventTime(event = {}) {
+    return event.event_time || event.time || event.source_time || event.created_time || event.reclaim_time || null;
+}
+
+function institutionalEventEvidenceIds(event = {}, fallbackId = null) {
+    return [...new Set([
+        fallbackId,
+        event.id,
+        ...(Array.isArray(event.evidence_ids) ? event.evidence_ids : []),
+        ...(Array.isArray(event.supporting_evidence_ids) ? event.supporting_evidence_ids : [])
+    ].filter(id => typeof id === 'string'))].slice(0, 12);
+}
+
+function institutionalChronologicallyBefore(left, right) {
+    const leftIndex = institutionalEventIndex(left);
+    const rightIndex = institutionalEventIndex(right);
+    if (leftIndex != null && rightIndex != null) return leftIndex < rightIndex;
+    const leftTime = Date.parse(institutionalEventTime(left) || '');
+    const rightTime = Date.parse(institutionalEventTime(right) || '');
+    return Number.isFinite(leftTime) && Number.isFinite(rightTime) ? leftTime < rightTime : false;
+}
+
+function institutionalWithinEpisode(left, right, maxBars = INSTITUTIONAL_DISPLACEMENT_CONTEXT_BARS) {
+    const leftIndex = institutionalEventIndex(left);
+    const rightIndex = institutionalEventIndex(right);
+    if (leftIndex != null && rightIndex != null) return Math.abs(rightIndex - leftIndex) <= maxBars;
+    const leftTime = Date.parse(institutionalEventTime(left) || '');
+    const rightTime = Date.parse(institutionalEventTime(right) || '');
+    const timeframe = left.timeframe || right.timeframe;
+    const timeframeMs = TIMEFRAME_MS[timeframe];
+    return Number.isFinite(leftTime) && Number.isFinite(rightTime)
+        && leftTime !== rightTime
+        && (!Number.isFinite(timeframeMs) || Math.abs(rightTime - leftTime) <= timeframeMs * maxBars);
+}
+
+function normalizeInstitutionalLiquidityEvent(event = {}, timeframe = null, index = 0) {
+    const direction = institutionalDirection(event.direction || event.type);
+    const rawType = String(event.type || event.side || event.liquidity_side || '').toUpperCase();
+    const side = rawType.includes('BUY_SIDE') || rawType.includes('HIGH') || rawType === 'SELL'
+        ? 'BUY_SIDE' : rawType.includes('SELL_SIDE') || rawType.includes('LOW') || rawType === 'BUY'
+            ? 'SELL_SIDE' : null;
+    const inferredSide = side || (direction === 'SELL' ? 'BUY_SIDE' : direction === 'BUY' ? 'SELL_SIDE' : null);
+    const level = Number(event.level ?? event.price ?? event.liquidity_level ?? event.keyLevel);
+    if (!inferredSide || !Number.isFinite(level)) return null;
+    const id = event.id || `LIQUIDITY_SWEEP:${timeframe || 'NA'}:${institutionalEventIndex(event) ?? index}:${inferredSide}`;
+    return {
+        id,
+        type: `${inferredSide}_SWEEP`,
+        side: inferredSide,
+        timeframe: event.timeframe || timeframe || null,
+        event_time: institutionalEventTime(event),
+        index: institutionalEventIndex(event),
+        level,
+        source: event.source || event.origin || event.liquidity_source || 'LIQUIDITY_SWEEP',
+        evidence_ids: institutionalEventEvidenceIds(event, id)
+    };
+}
+
+function normalizeInstitutionalDisplacementEvent(event = {}, timeframe = null, index = 0) {
+    const direction = institutionalDirection(event.direction || event.type);
+    const eventIndex = institutionalEventIndex(event) ?? index;
+    if (!direction) return null;
+    const id = event.id || `DISPLACEMENT:${timeframe || 'NA'}:${eventIndex}:${direction}`;
+    return {
+        id,
+        direction,
+        timeframe: event.timeframe || timeframe || null,
+        event_time: institutionalEventTime(event),
+        index: eventIndex,
+        quality: event.quality || 'CANONICAL_DISPLACEMENT',
+        body_ratio: Number.isFinite(Number(event.body_ratio)) ? Number(event.body_ratio) : null,
+        range_expansion: Number.isFinite(Number(event.range_expansion)) ? Number(event.range_expansion) : null,
+        close_quality: Number.isFinite(Number(event.close_quality)) ? Number(event.close_quality) : null,
+        fvg_created: event.fvg_created === true,
+        evidence_ids: institutionalEventEvidenceIds(event, id)
+    };
+}
+
+function normalizeInstitutionalStructureEvent(event = {}, timeframe = null, index = 0) {
+    const direction = institutionalDirection(event.direction || event.type || event.event_type);
+    const eventIndex = institutionalEventIndex(event) ?? index;
+    const eventType = String(event.event_type || event.type || '').toUpperCase();
+    const isStructural = ['BOS', 'MSS', 'CHOCH', 'CHoCH', 'RECLAIM', 'RANGE_ESCAPE', 'STRUCTURAL_CONTINUATION'].includes(eventType)
+        || event.bos === true || event.mss === true || event.choch === true;
+    if (!direction || !isStructural) return null;
+    const id = event.id || `${eventType || 'STRUCTURE'}:${timeframe || 'NA'}:${eventIndex}:${direction}`;
+    return {
+        id,
+        event_type: eventType === 'CHOCH' ? 'CHoCH' : eventType || 'STRUCTURAL_CONSEQUENCE',
+        direction,
+        timeframe: event.timeframe || timeframe || null,
+        event_time: institutionalEventTime(event),
+        index: eventIndex,
+        level: Number.isFinite(Number(event.level)) ? Number(event.level) : null,
+        evidence_ids: institutionalEventEvidenceIds(event, id)
+    };
+}
+
+function normalizeInstitutionalOriginLocation(location = {}, timeframe = null, index = 0) {
+    const type = String(location.type || location.kind || location.source_type || '').toUpperCase();
+    if (!['FVG', 'OB', 'MSNR', 'SUPPLY', 'DEMAND', 'CRT', 'TBS', 'FLIP', 'RECLAIM', 'ZONE'].includes(type)) return null;
+    const direction = institutionalDirection(location.direction || (location.type === 'bull' ? 'BUY' : location.type === 'bear' ? 'SELL' : null));
+    const low = Number(location.low ?? location.zone_low);
+    const high = Number(location.high ?? location.zone_high);
+    const midpoint = Number(location.midpoint ?? location.m ?? location.price ?? ((low + high) / 2));
+    if (!Number.isFinite(low) || !Number.isFinite(high)) return null;
+    const eventIndex = institutionalEventIndex(location) ?? index;
+    const id = location.id || `${type}:${timeframe || 'NA'}:${eventIndex}:${direction || 'NA'}:${low}:${high}`;
+    return {
+        id,
+        type,
+        direction,
+        timeframe: location.timeframe || timeframe || null,
+        event_time: institutionalEventTime(location),
+        index: eventIndex,
+        low,
+        high,
+        midpoint: Number.isFinite(midpoint) ? midpoint : (low + high) / 2,
+        freshness: location.freshness || location.freshness_state || null,
+        invalidated: location.invalidated === true,
+        consumed: location.consumed === true || location.entry_consumed === true,
+        evidence_ids: institutionalEventEvidenceIds(location, id)
+    };
+}
+
+function normalizeInstitutionalFollowThrough(followThrough = {}, timeframe = null, index = 0) {
+    if (!followThrough || typeof followThrough !== 'object') return null;
+    const direction = institutionalDirection(followThrough.direction || followThrough.delivery_direction);
+    const state = String(followThrough.state || followThrough.status || '').toUpperCase();
+    const accepted = followThrough.accepted === true || ['ACCEPTANCE', 'ACCEPTED', 'ACCEPTED_FOLLOW_THROUGH', 'FOLLOW_THROUGH'].includes(state);
+    const failed = followThrough.invalidated === true || followThrough.reclaimed === true || ['FAILED', 'FAILED_RECLAIM', 'INVALIDATED'].includes(state);
+    const id = followThrough.id || `FOLLOW_THROUGH:${timeframe || 'NA'}:${institutionalEventIndex(followThrough) ?? index}:${direction || 'NA'}`;
+    return {
+        id,
+        state: failed ? (followThrough.invalidated === true ? 'INVALIDATED' : 'FAILED_RECLAIM') : accepted ? 'ACCEPTED_FOLLOW_THROUGH' : 'OBSERVATION_PENDING',
+        direction,
+        delivery_direction: direction,
+        timeframe: followThrough.timeframe || timeframe || null,
+        event_time: institutionalEventTime(followThrough),
+        index: institutionalEventIndex(followThrough) ?? index,
+        source_structure_id: followThrough.source_structure_id || followThrough.structural_event_id || null,
+        reclaimed: followThrough.reclaimed === true,
+        invalidated: followThrough.invalidated === true,
+        evidence_ids: institutionalEventEvidenceIds(followThrough, id)
+    };
+}
+
+function composeInstitutionalActivitySequence({ timeframe, liquidityEvents = [], displacementEvents = [], structuralEvents = [], originLocations = [], followThroughEvents = [] } = {}) {
+    const liquidity = liquidityEvents.map((event, index) => normalizeInstitutionalLiquidityEvent(event, timeframe, index)).filter(Boolean);
+    const displacements = displacementEvents.map((event, index) => normalizeInstitutionalDisplacementEvent(event, timeframe, index)).filter(Boolean);
+    const structural = structuralEvents.map((event, index) => normalizeInstitutionalStructureEvent(event, timeframe, index)).filter(Boolean);
+    const origins = originLocations.map((event, index) => normalizeInstitutionalOriginLocation(event, timeframe, index)).filter(Boolean);
+    const followThrough = followThroughEvents.map((event, index) => normalizeInstitutionalFollowThrough(event, timeframe, index)).filter(Boolean);
+    const records = [];
+    const addRecord = (liquidityEvent, displacement, consequence, linkedOrigins, follow) => {
+        const components = {
+            LIQUIDITY_EVENT: !!liquidityEvent,
+            DISPLACEMENT: !!displacement,
+            STRUCTURAL_CONSEQUENCE: !!consequence,
+            ORIGIN: linkedOrigins.length > 0,
+            FOLLOW_THROUGH: follow?.state === 'ACCEPTED_FOLLOW_THROUGH'
+        };
+        const componentNames = Object.entries(components).filter(([, present]) => present).map(([name]) => name);
+        // A lone candle, FVG, or BOS is not an institutional-style sequence.
+        // A sweep may remain visible as an explicitly incomplete footprint.
+        if (componentNames.length < 2 && !liquidityEvent) return;
+        if (!liquidityEvent && !displacement && !consequence) return;
+        const failed = follow?.state === 'FAILED_RECLAIM' || follow?.state === 'INVALIDATED'
+            || follow?.reclaimed === true || follow?.invalidated === true
+            || linkedOrigins.some(origin => origin.invalidated);
+        const completeness = failed ? 'FAILED_SEQUENCE'
+            : Object.values(components).every(Boolean) ? 'CONFIRMED_SEQUENCE' : 'PARTIAL';
+        const evidenceIds = [...new Set([
+            ...(liquidityEvent?.evidence_ids || []), ...(displacement?.evidence_ids || []),
+            ...(consequence?.evidence_ids || []), ...linkedOrigins.flatMap(origin => origin.evidence_ids || []),
+            ...(follow?.evidence_ids || [])
+        ])].slice(0, 32);
+        const id = `INSTITUTIONAL_ACTIVITY:${timeframe || 'NA'}:${displacement?.direction || consequence?.direction || 'UNKNOWN'}:${liquidityEvent?.id || 'NO_LIQUIDITY'}:${displacement?.id || 'NO_DISPLACEMENT'}:${consequence?.id || 'NO_STRUCTURE'}:${linkedOrigins.map(origin => origin.id).join(',') || 'NO_ORIGIN'}`;
+        if (records.some(record => record.id === id)) return;
+        records.push({
+            id,
+            source_class: 'PRICE_ACTION',
+            timeframe: timeframe || null,
+            direction: displacement?.direction || consequence?.direction || (liquidityEvent?.side === 'SELL_SIDE' ? 'BUY' : 'SELL'),
+            event_time: displacement?.event_time || consequence?.event_time || liquidityEvent?.event_time || null,
+            completeness,
+            components_present: componentNames,
+            components_missing: Object.keys(components).filter(name => !components[name]),
+            ...(liquidityEvent ? { liquidity_event: liquidityEvent } : {}),
+            ...(displacement ? { displacement } : {}),
+            ...(consequence ? {
+                structural_consequence: {
+                    event_type: consequence.event_type,
+                    direction: consequence.direction,
+                    timeframe: consequence.timeframe,
+                    level: consequence.level,
+                    event_time: consequence.event_time,
+                    bos: consequence.event_type === 'BOS',
+                    mss: consequence.event_type === 'MSS',
+                    choch: consequence.event_type === 'CHoCH',
+                    evidence_ids: consequence.evidence_ids
+                }
+            } : {}),
+            ...(linkedOrigins.length ? { origin_locations: linkedOrigins } : {}),
+            ...(follow ? { follow_through: follow } : {}),
+            evidence_ids: evidenceIds
+        });
+    };
+
+    for (const displacement of displacements) {
+        const precedingLiquidity = liquidity.filter(event => event.side === (displacement.direction === 'BUY' ? 'SELL_SIDE' : 'BUY_SIDE'))
+            .filter(event => institutionalChronologicallyBefore(event, displacement) && institutionalWithinEpisode(event, displacement));
+        const liquidityOptions = precedingLiquidity.length ? [precedingLiquidity.at(-1)] : [null];
+        const consequences = structural.filter(event => event.direction === displacement.direction
+            && institutionalChronologicallyBefore(displacement, event) && institutionalWithinEpisode(displacement, event));
+        const consequenceOptions = consequences.length ? [consequences[0]] : [null];
+        const linkedOrigins = origins.filter(origin => origin.direction === displacement.direction || !origin.direction)
+            .filter(origin => institutionalWithinEpisode(origin, displacement));
+        const originOptions = linkedOrigins.length ? [linkedOrigins.slice(0, 4)] : [[]];
+        for (const liquidityEvent of liquidityOptions) for (const consequence of consequenceOptions) {
+            const followOptions = consequence
+                ? followThrough.filter(event => (!event.direction || event.direction === displacement.direction)
+                    && (!event.source_structure_id || event.source_structure_id === consequence.id)
+                    && institutionalChronologicallyBefore(consequence, event)
+                    // Follow-through is evaluated through the snapshot, not
+                    // expired after an arbitrary number of candles. The
+                    // displacement/liquidity association remains bounded by
+                    // the canonical displacement context above.
+                    )
+                : [];
+            const follow = followOptions.find(event => event.state === 'FAILED_RECLAIM' || event.state === 'INVALIDATED')
+                || followOptions.find(event => event.state === 'ACCEPTED_FOLLOW_THROUGH')
+                || followOptions[0] || null;
+            addRecord(liquidityEvent, displacement, consequence, originOptions[0], follow);
+        }
+    }
+    // Preserve an observed sweep as PARTIAL, but never turn a lone location or
+    // structural flag into an institutional-style activity record.
+    if (!displacements.length) for (const event of liquidity) addRecord(event, null, null, [], null);
+    return records;
+}
+
+function buildInstitutionalDisplacementFacts(data, timeframe = null, pairLocal = pair, symbolMetadata = {}) {
+    const closed = closedStructureCandles(data);
+    const facts = [];
+    const fvgs = detectFVG(closed, pairLocal, symbolMetadata);
+    for (let index = 9; index < closed.length; index++) {
+        for (const direction of ['BUY', 'SELL']) {
+            const metrics = getDisplacementMetricsAtIndex(closed, index, direction);
+            if (!metrics?.detected) continue;
+            const fvg = fvgs.find(item => item.source_index === index || item.source_index === index + 1);
+            const id = `DISPLACEMENT:${timeframe || 'NA'}:${index}:${direction}`;
+            facts.push({
+                id, direction, timeframe, index, event_time: candleTimestamp(closed[index], index, timeframe),
+                quality: 'CANONICAL_DISPLACEMENT', body_ratio: metrics.body_ratio,
+                range_expansion: metrics.range_expansion, close_quality: metrics.close_quality,
+                fvg_created: !!fvg, evidence_ids: [id, ...(fvg ? [`FVG:${timeframe || 'NA'}:${fvg.source_index}`] : [])]
+            });
+        }
+    }
+    return facts;
+}
+
+function buildInstitutionalStructureFacts(data, timeframe = null) {
+    const closed = closedStructureCandles(data);
+    const facts = [];
+    for (let index = 20; index < closed.length; index++) {
+        const prefix = closed.slice(0, index + 1);
+        for (const direction of ['BUY', 'SELL']) {
+            const bos = detectBOS(prefix, direction);
+            const mss = detectMSS(prefix);
+            const choch = detectCHoCH(prefix, direction);
+            if (bos) facts.push({ id: `BOS:${timeframe || 'NA'}:${index}:${direction}`, event_type: 'BOS', direction, index, timeframe, event_time: candleTimestamp(closed[index], index, timeframe), level: direction === 'BUY' ? Math.max(...prefix.slice(-20, -5).map(c => c.h)) : Math.min(...prefix.slice(-20, -5).map(c => c.l)) });
+            if (mss && institutionalDirection(mss.type) === direction) facts.push({ id: `MSS:${timeframe || 'NA'}:${index}:${direction}`, event_type: 'MSS', direction, index, timeframe, event_time: candleTimestamp(closed[index], index, timeframe), level: mss.level });
+            if (choch) facts.push({ id: `CHoCH:${timeframe || 'NA'}:${index}:${direction}`, event_type: 'CHoCH', direction, index, timeframe, event_time: candleTimestamp(closed[index], index, timeframe) });
+        }
+    }
+    return facts;
+}
+
+function buildInstitutionalFollowThroughFact(data, direction, consequence, origins = [], timeframe = null) {
+    const closed = closedStructureCandles(data);
+    const start = institutionalEventIndex(consequence);
+    if (start == null || start >= closed.length - 1) return null;
+    const subsequent = closed.slice(start + 1);
+    const level = Number(consequence.level);
+    const originInvalidated = origins.some(origin => origin.invalidated || subsequent.some(candle => direction === 'BUY' ? candle.c < origin.low : candle.c > origin.high));
+    const immediateReclaim = Number.isFinite(level) && (direction === 'BUY' ? subsequent[0].c <= level : subsequent[0].c >= level);
+    const acceptedCloses = Number.isFinite(level)
+        ? subsequent.filter(candle => direction === 'BUY' ? candle.c > level : candle.c < level).length
+        : 0;
+    const id = `FOLLOW_THROUGH:${timeframe || 'NA'}:${start}:${direction}`;
+    if (originInvalidated || immediateReclaim) return { id, direction, source_structure_id: consequence.id, index: closed.length - 1, event_time: candleTimestamp(closed.at(-1), closed.length - 1, timeframe), state: originInvalidated ? 'INVALIDATED' : 'FAILED_RECLAIM', reclaimed: immediateReclaim, invalidated: originInvalidated, evidence_ids: [id, consequence.id] };
+    if (acceptedCloses > 0) return { id, direction, source_structure_id: consequence.id, index: closed.length - 1, event_time: candleTimestamp(closed.at(-1), closed.length - 1, timeframe), state: 'ACCEPTED_FOLLOW_THROUGH', accepted: true, reclaimed: false, invalidated: false, evidence_ids: [id, consequence.id] };
+    return { id, direction, source_structure_id: consequence.id, index: closed.length - 1, event_time: candleTimestamp(closed.at(-1), closed.length - 1, timeframe), state: 'NO_ACCEPTANCE', reclaimed: false, invalidated: false, evidence_ids: [id, consequence.id] };
+}
+
+function buildInstitutionalOriginLocations(timeframePackage = {}, timeframe = null) {
+    const items = [
+        ...(timeframePackage.fvg || []).map(item => ({ ...item, type: 'FVG', direction: item.direction || institutionalDirection(item.type) })),
+        ...(timeframePackage.order_blocks?.buy || []).map(item => ({ ...item, type: 'OB', direction: item.direction || 'BUY' })),
+        ...(timeframePackage.order_blocks?.sell || []).map(item => ({ ...item, type: 'OB', direction: item.direction || 'SELL' })),
+        ...(timeframePackage.msnr_levels || []), ...(timeframePackage.structural_pois || []), ...(timeframePackage.zones || [])
+    ];
+    return [...new Map(items.map((item, index) => normalizeInstitutionalOriginLocation(item, timeframe, index)).filter(Boolean).map(item => [item.id, item])).values()];
+}
+
+function buildInstitutionalActivityEvidence({ historyCache = {}, canonicalTimeframes = {}, asOfTime = null, pairLocal = pair, symbolMetadata = {} } = {}) {
+    const timeframes = {};
+    for (const timeframe of INSTITUTIONAL_ACTIVITY_TIMEFRAMES) {
+        const data = getClosedHistory(historyCache, timeframe);
+        const packageFacts = canonicalTimeframes[timeframe] || {};
+        const latestPrice = data.at(-1)?.c ?? null;
+        const existingSweeps = packageFacts.liquidity?.sweeps || [];
+        const detectedSweeps = [detectLiquiditySweep(data, latestPrice, 'BUY', timeframe), detectLiquiditySweep(data, latestPrice, 'SELL', timeframe)].filter(Boolean);
+        const liquidityEvents = [...existingSweeps, ...detectedSweeps].map((event, index) => ({
+            ...event,
+            timeframe,
+            index: event.index ?? event.source_index,
+            event_time: event.event_time || (event.source_index != null ? candleTimestamp(data[event.source_index], event.source_index, timeframe) : null),
+            type: event.type === 'SELL' ? 'BUY_SIDE_SWEEP' : event.type === 'BUY' ? 'SELL_SIDE_SWEEP' : event.type
+        }));
+        const displacements = buildInstitutionalDisplacementFacts(data, timeframe, pairLocal, symbolMetadata);
+        const structureEvents = buildInstitutionalStructureFacts(data, timeframe);
+        const origins = buildInstitutionalOriginLocations(packageFacts, timeframe);
+        const enrichedFollowThrough = structureEvents.flatMap(event => {
+            const direction = institutionalDirection(event.direction);
+            const relatedOrigins = origins.filter(origin => origin.direction === direction && institutionalWithinEpisode(origin, event));
+            const follow = buildInstitutionalFollowThroughFact(data, direction, event, relatedOrigins, timeframe);
+            return follow ? [follow] : [];
+        });
+        const records = composeInstitutionalActivitySequence({ timeframe, liquidityEvents, displacementEvents: displacements, structuralEvents: structureEvents, originLocations: origins, followThroughEvents: enrichedFollowThrough });
+        timeframes[timeframe] = records.slice(0, 24);
+    }
+    const records = Object.values(timeframes).flat();
+    return {
+        schema_version: 1,
+        source_class: 'PRICE_ACTION',
+        as_of_time: asOfTime,
+        timeframes,
+        records,
+        note: 'OHLC-derived market footprints are consistent with institutional-style participation; they do not identify actual participants or prove institutional activity.'
+    };
 }
 
 // Breakout-retest: a swing level broken with volume, price now retesting it
@@ -11078,6 +11478,10 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
         ? liveMarketContext.market_evidence_package
         : evidenceCatalog.market_evidence_package || {};
     const evidenceTimeframes = evidencePackage.timeframes || {};
+    const institutionalActivityEvidence = evidencePackage.institutional_activity_evidence
+        || evidenceCatalog.institutional_activity_evidence
+        || liveMarketContext.institutional_activity_evidence
+        || null;
     const structure = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf,
         compactAiTimeframeEvidence(tf, evidenceTimeframes[tf] || {}, liveMarketContext.structure?.[tf] || {}, { manualEvidenceOnly: manualOpportunityDiscovery })]));
     const sourceCandidates = Array.isArray(liveMarketContext.adaptive_setup_candidates)
@@ -11184,6 +11588,7 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
             current_price: liveMarketContext.current_price ?? evidenceCatalog.current_price ?? null
         },
         timeframes: structure,
+        institutional_activity_evidence: institutionalActivityEvidence,
         ...(manualOpportunityDiscovery
             ? {
                 market_fact_context: manualMarketFactContext,
@@ -11348,10 +11753,18 @@ function buildCanonicalMarketEvidencePackage(liveMarketContext = {}, historyCach
             evidence: tfContext.evidence || []
         };
     }
+    const institutionalActivityEvidence = buildInstitutionalActivityEvidence({
+        historyCache,
+        canonicalTimeframes: timeframes,
+        asOfTime: liveMarketContext.as_of_time_utc || liveMarketContext.as_of_time || null,
+        pairLocal,
+        symbolMetadata: metadata
+    });
     return {
         package_version: 1,
         snapshot_id: liveMarketContext.snapshot_id || liveMarketContext.market_context?.snapshot_id || null,
         timeframes,
+        institutional_activity_evidence: institutionalActivityEvidence,
         current_price: price,
         as_of_time: liveMarketContext.as_of_time,
         note: `All candles are normalized closed ${getMarketDataProviderLabel()} candles. Structure and zones are derived from these same candles.`
@@ -11439,6 +11852,7 @@ function buildAiMarketEvidenceCatalog(liveMarketContext = {}, historyCache = {})
         market_evidence_package_version: 1,
         snapshot_id: liveMarketContext.snapshot_id || marketEvidencePackage.snapshot_id || null,
         market_evidence_package: marketEvidencePackage,
+        institutional_activity_evidence: marketEvidencePackage.institutional_activity_evidence || null,
         raw_closed_candles: Object.fromEntries(Object.entries(marketEvidencePackage.timeframes).map(([tf, value]) => [tf, value.raw_closed_candles])),
         as_of_time: liveMarketContext.as_of_time,
         as_of_time_utc: liveMarketContext.as_of_time_utc || liveMarketContext.utc_time,
@@ -13811,6 +14225,7 @@ async function runAutoScan() {
         const analystStartedAt = scanClock();
         const analystEvidence = buildAiMarketEvidenceCatalog(liveMarketContext, historyCache);
         liveMarketContext.market_evidence_package = analystEvidence;
+        liveMarketContext.institutional_activity_evidence = analystEvidence.institutional_activity_evidence || null;
         if (isManualExternalAIMode()) {
             scanStage = 'manual external AI review';
             scanText.innerHTML = '📋 Market analysis prepared — Copy for external AI review';
@@ -16668,6 +17083,8 @@ const MANUAL_EXTERNAL_AI_PACKET_CONTRACT = [
     'This packet intentionally does not provide a candidate shortlist, ranking, or preselected trade. Discover the opportunity from the market facts themselves.',
     'Use exactly these semantic timeframes: 1D, 4H, 1H, 15M, 5M. No 1W semantic trading context is supplied.',
     'Direction on an actual event remains factual provenance: BOS SELL, MSS BUY, liquidity sweep BUY, TBS BUY, CRT SELL, FVG BUY, and similar records describe what was detected. Do not convert one event or local model into the actionable direction without reconciling all supplied timeframes, delivery, chronology, and conflicts.',
+    'INSTITUTIONAL ACTIVITY EVIDENCE is neutral OHLC-derived footprint evidence, not verified participant identity. It describes chronologically associated liquidity events, canonical displacement, structural consequence, origin/imbalance, and observed follow-through or failure. Use it as contextual evidence for continuation, retracement, manipulation, reversal, transition, or setup quality; it is not a mandatory gate, standalone signal, or automatic trade direction.',
+    'A complete footprint sequence may strengthen a narrative and a FAILED_SEQUENCE may weaken it. Reconcile conflicting sequences across 1D, 4H, 1H, 15M, and 5M. This evidence cannot rescue invalid geometry, missing structural invalidation, consumed targets, stale opportunities, or insufficient minimum RR.',
     'When lower-timeframe evidence opposes higher/intraday delivery, distinguish a reaction, retracement, liquidity manipulation, genuine reversal, transition, or failed continuation. Do not call it a reversal without supplied structural change, displacement, MSS, CHoCH, reclaim, failed continuation, liquidity behavior, or other existing evidence that supports that interpretation. Do not impose an HTF hard gate either.',
     'LOCATION VALIDITY IS NOT OPPORTUNITY RELEVANCE. A location may be structurally valid, FRESH, unmitigated, and untouched without being the current actionable pending opportunity. Do not equate untouched with current.',
     'A location record is market evidence, not a trade. Do not treat its midpoint or boundaries as a preselected entry. Choose only supplied locations and supplied structural facts.',
@@ -17367,6 +17784,11 @@ packet.
             'ICT MODEL EVIDENCE',
             '==============================',
             semantic ? JSON.stringify(semantic.deterministic_evidence || {}, null, 2) : 'UNAVAILABLE',
+            '',
+            '==============================',
+            'INSTITUTIONAL ACTIVITY EVIDENCE',
+            '==============================',
+            semantic?.institutional_activity_evidence ? JSON.stringify(semantic.institutional_activity_evidence, null, 2) : 'UNAVAILABLE: no OHLC-derived footprint sequence was retained.',
             '',
             '==============================',
             'STRUCTURAL INVALIDATION CONTEXT',

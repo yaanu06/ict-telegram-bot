@@ -3159,6 +3159,104 @@ describe('detectFVG', () => {
     });
 });
 
+describe('institutional activity evidence composition', () => {
+    const sequenceFixture = direction => {
+        const sell = direction === 'SELL';
+        return {
+            timeframe: '1H',
+            liquidityEvents: [{ id: sell ? 'BSL-SWEEP' : 'SSL-SWEEP', type: sell ? 'BUY_SIDE_SWEEP' : 'SELL_SIDE_SWEEP', side: sell ? 'BUY_SIDE' : 'SELL_SIDE', level: sell ? 110 : 90, index: 10, event_time: '2026-09-30T10:00:00Z' }],
+            displacementEvents: [{ id: `${direction}-DISPLACEMENT`, direction, index: 11, event_time: '2026-09-30T11:00:00Z', body_ratio: 3.1, range_expansion: 2.2, close_quality: 0.9, fvg_created: true }],
+            structuralEvents: [{ id: `${direction}-MSS`, event_type: 'MSS', direction, level: sell ? 104 : 96, index: 12, event_time: '2026-09-30T12:00:00Z' }],
+            originLocations: [{ id: `${direction}-FVG`, type: 'FVG', direction, low: sell ? 105 : 94, high: sell ? 106 : 95, midpoint: sell ? 105.5 : 94.5, index: 11, event_time: '2026-09-30T11:00:00Z', freshness: 'FRESH' }],
+            followThroughEvents: [{ id: `${direction}-FOLLOW`, direction, state: 'ACCEPTED_FOLLOW_THROUGH', index: 13, event_time: '2026-09-30T13:00:00Z' }]
+        };
+    };
+
+    it('composes the bearish buy-side sweep sequence as factual SELL evidence', () => {
+        const ctx = getContext();
+        const [record] = ctx.composeInstitutionalActivitySequence(sequenceFixture('SELL'));
+        expect(record).toMatchObject({ timeframe: '1H', direction: 'SELL', completeness: 'CONFIRMED_SEQUENCE', source_class: 'PRICE_ACTION' });
+        expect(record.liquidity_event.type).toBe('BUY_SIDE_SWEEP');
+        expect(record.displacement).toMatchObject({ direction: 'SELL', fvg_created: true, body_ratio: 3.1 });
+        expect(record.structural_consequence).toMatchObject({ mss: true, bos: false, choch: false });
+        expect(record.origin_locations[0]).toMatchObject({ id: 'SELL-FVG', type: 'FVG', freshness: 'FRESH' });
+        expect(record.follow_through.state).toBe('ACCEPTED_FOLLOW_THROUGH');
+        expect(record.components_missing).toEqual([]);
+    });
+
+    it('composes the bullish sell-side sweep mirror as factual BUY evidence', () => {
+        const ctx = getContext();
+        const [record] = ctx.composeInstitutionalActivitySequence(sequenceFixture('BUY'));
+        expect(record).toMatchObject({ timeframe: '1H', direction: 'BUY', completeness: 'CONFIRMED_SEQUENCE' });
+        expect(record.liquidity_event.type).toBe('SELL_SIDE_SWEEP');
+        expect(record.structural_consequence).toMatchObject({ direction: 'BUY', mss: true });
+    });
+
+    it('keeps incomplete and singleton facts from becoming confirmed institutional sequences', () => {
+        const ctx = getContext();
+        const sweep = ctx.composeInstitutionalActivitySequence({ timeframe: '1H', liquidityEvents: [{ type: 'BUY_SIDE_SWEEP', side: 'BUY_SIDE', level: 110, index: 1 }] });
+        const displacement = ctx.composeInstitutionalActivitySequence({ timeframe: '1H', displacementEvents: [{ direction: 'SELL', index: 1 }] });
+        const displacementWithoutStructure = ctx.composeInstitutionalActivitySequence({ timeframe: '1H', liquidityEvents: [{ type: 'BUY_SIDE_SWEEP', side: 'BUY_SIDE', level: 110, index: 1 }], displacementEvents: [{ direction: 'SELL', index: 2 }] });
+        expect(sweep[0].completeness).toBe('PARTIAL');
+        expect(displacement).toEqual([]); // a large candle alone is not institutional evidence
+        expect(displacementWithoutStructure[0].completeness).toBe('PARTIAL');
+    });
+
+    it('does not promote an FVG or BOS alone and enforces chronology between episodes', () => {
+        const ctx = getContext();
+        expect(ctx.composeInstitutionalActivitySequence({ timeframe: '1H', originLocations: [{ type: 'FVG', direction: 'SELL', low: 1, high: 2, index: 10 }] })).toEqual([]);
+        expect(ctx.composeInstitutionalActivitySequence({ timeframe: '1H', structuralEvents: [{ event_type: 'BOS', direction: 'SELL', level: 2, index: 10 }] })).toEqual([]);
+        const unrelated = ctx.composeInstitutionalActivitySequence({
+            timeframe: '1H',
+            liquidityEvents: [{ type: 'BUY_SIDE_SWEEP', side: 'BUY_SIDE', level: 110, index: 1 }],
+            displacementEvents: [{ direction: 'SELL', index: 20 }],
+            structuralEvents: [{ event_type: 'BOS', direction: 'SELL', level: 100, index: 21 }],
+            originLocations: [{ type: 'FVG', direction: 'SELL', low: 98, high: 99, index: 22 }],
+            followThroughEvents: [{ direction: 'SELL', state: 'ACCEPTED_FOLLOW_THROUGH', index: 23 }]
+        });
+        expect(unrelated.some(record => record.completeness === 'CONFIRMED_SEQUENCE')).toBe(false);
+        expect(unrelated.some(record => record.liquidity_event?.type === 'BUY_SIDE_SWEEP')).toBe(false);
+    });
+
+    it('represents immediate reclaim as a failed sequence and preserves opposite timeframe evidence', () => {
+        const ctx = getContext();
+        const failed = ctx.composeInstitutionalActivitySequence({ ...sequenceFixture('SELL'), followThroughEvents: [{ direction: 'SELL', state: 'FAILED_RECLAIM', reclaimed: true, index: 13 }] });
+        const buy = ctx.composeInstitutionalActivitySequence(sequenceFixture('BUY'));
+        expect(failed[0].completeness).toBe('FAILED_SEQUENCE');
+        expect(failed[0].follow_through.reclaimed).toBe(true);
+        expect(new Set([...failed, ...buy].map(record => record.direction))).toEqual(new Set(['SELL', 'BUY']));
+    });
+
+    it('keeps the production evidence layer to the exact five semantic timeframes', () => {
+        const ctx = getContext();
+        const evidence = ctx.buildInstitutionalActivityEvidence({ historyCache: {}, canonicalTimeframes: {}, asOfTime: '2026-09-30T14:00:00Z' });
+        expect(Object.keys(evidence.timeframes)).toEqual(['1D', '4H', '1H', '15M', '5M']);
+        expect(Object.keys(evidence.timeframes)).not.toContain('1W');
+        expect(evidence.source_class).toBe('PRICE_ACTION');
+        expect(JSON.stringify(evidence)).not.toMatch(/institutional_probability|bank_probability|institutional_volume|institutional_order_size/i);
+    });
+
+    it('serializes both-sided institutional-style facts in the manual packet without directional conclusions', () => {
+        const ctx = getContext();
+        const records = {
+            schema_version: 1, source_class: 'PRICE_ACTION',
+            timeframes: { '1D': [], '4H': [{ ...ctx.composeInstitutionalActivitySequence(sequenceFixture('SELL'))[0], timeframe: '4H' }], '1H': [], '15M': [], '5M': [{ ...ctx.composeInstitutionalActivitySequence(sequenceFixture('BUY'))[0], timeframe: '5M' }] },
+            records: [], note: 'OHLC-derived market footprints do not identify actual participants.'
+        };
+        const timeframes = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, { timeframe: tf, structure: {}, liquidity: {}, fvg: [], order_blocks: { buy: [], sell: [] }, msnr_levels: [], structural_pois: [] }]));
+        const packet = ctx.buildExternalAIClipboardPacket({
+            signal: { pair: 'EUR/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' } },
+            replay: { pair: 'EUR/USD', snapshot_id: 'IAE-TEST', scan_as_of: '2026-09-30T14:00:00Z', market_evidence_package: { snapshot_id: 'IAE-TEST', timeframes, institutional_activity_evidence: records }, target_candidates: { buy: [], sell: [] }, valid_candidates: [] }
+        });
+        expect(packet).toContain('INSTITUTIONAL ACTIVITY EVIDENCE');
+        expect(packet).toContain('"direction": "SELL"');
+        expect(packet).toContain('"direction": "BUY"');
+        expect(packet).toContain('CONFIRMED_SEQUENCE');
+        expect(packet).not.toMatch(/institutional_direction|institutional_bias|recommended_direction|institutional BUY score|institutional SELL score|preferred trade|candidate ranking/i);
+        expect(packet).not.toContain('"candidate_id"');
+    });
+});
+
 describe('getQuoteDirection', () => {
     it('returns NEUTRAL for short data (no more 1-candle guessing)', async () => {
         const ctx = getContext();
