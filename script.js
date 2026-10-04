@@ -11639,6 +11639,14 @@ function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = 
             return manualEvidenceOnly ? (compactManualPacketValue(compact) || null) : compact;
         }).filter(Boolean);
     };
+    const allLocationItems = [
+        ...(Array.isArray(source.fvg) ? source.fvg : []),
+        ...(Array.isArray(source.order_blocks?.buy) ? source.order_blocks.buy : []),
+        ...(Array.isArray(source.order_blocks?.sell) ? source.order_blocks.sell : []),
+        ...(Array.isArray(source.msnr_levels) ? source.msnr_levels : []),
+        ...(Array.isArray(source.structural_pois) ? source.structural_pois : []),
+        ...(Array.isArray(source.zones) ? source.zones : [])
+    ];
     const locationSources = [
         ...compactLocations(source.fvg, 'FVG'),
         ...compactLocations(source.order_blocks?.buy, 'OB'),
@@ -11666,10 +11674,13 @@ function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = 
             }).filter(Boolean)];
         }))
         : {};
-    const structuralInvalidations = locations.map(item => {
+    const structuralInvalidationItems = manualEvidenceOnly
+        ? allLocationItems.filter(item => item?.structural_invalidation || item?.structural_invalidation_detail || item?.structural_invalidation_level != null || item?.invalidation_level != null || item?.invalidation != null)
+        : locations;
+    const structuralInvalidations = [...new Map(structuralInvalidationItems.map(item => {
         const compact = compactAiStructuralInvalidation(item, timeframe);
         return manualEvidenceOnly ? (compactManualPacketValue(compact) || null) : compact;
-    }).filter(Boolean);
+    }).filter(Boolean).map(item => [item.evidence_id || item.id, item])).values()];
     const swingHighs = compactLocations(structure.swing_highs || structure.recent_swing_highs, 'SWING_HIGH', 8);
     const swingLows = compactLocations(structure.swing_lows || structure.recent_swing_lows, 'SWING_LOW', 8);
     const evidence = compactLocations(source.evidence, 'STRUCTURE_EVIDENCE', MANUAL_PACKET_MAX_EVENTS_PER_TIMEFRAME);
