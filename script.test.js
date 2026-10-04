@@ -3255,6 +3255,112 @@ describe('institutional activity evidence composition', () => {
         expect(packet).not.toMatch(/institutional_direction|institutional_bias|recommended_direction|institutional BUY score|institutional SELL score|preferred trade|candidate ranking/i);
         expect(packet).not.toContain('"candidate_id"');
     });
+
+    it('compacts current manual evidence without losing geometry, provenance, or opposing facts', () => {
+        const ctx = getContext();
+        const asOf = '2026-10-04T12:00:00Z';
+        const currentEvent = '2026-10-04T11:00:00Z';
+        const timeframes = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map((tf, index) => {
+            const direction = tf === '15M' || tf === '5M' ? 'BUY' : 'SELL';
+            const fvg = { id: `${tf}:CURRENT:FVG`, type: 'FVG', direction, low: 4168.43 + index, high: 4172.59 + index, event_time: currentEvent, freshness: 'FRESH', mitigation_state: 'UNMITIGATED', lifecycle_state: 'ACTIVE', structural_invalidation: { level: direction === 'BUY' ? 4160.25 + index : 4180.75 + index, source: 'STRUCTURAL_SWING' }, evidence_ids: [`${tf}:BOS`] };
+            return [tf, {
+                timeframe: tf,
+                closed_candle_count: 199,
+                current_closed_price: 4170.51 + index,
+                raw_closed_candles: [{ t: asOf, o: 4170, h: 4173, l: 4167, c: 4170.51 + index }],
+                structure: {
+                    structural_trend: direction === 'BUY' ? 'BULLISH' : 'BEARISH',
+                    momentum_trend: direction === 'BUY' ? 'BULLISH' : 'BEARISH',
+                    effective_trend: direction === 'BUY' ? 'BULLISH' : 'BEARISH',
+                    sequence: ['LH', 'LL', 'BOS'],
+                    swing_highs: [{ id: `${tf}:SWING:H`, type: 'SWING_HIGH', level: 4188.12 + index, event_time: currentEvent }],
+                    swing_lows: [{ id: `${tf}:SWING:L`, type: 'SWING_LOW', level: 4155.44 + index, event_time: currentEvent }],
+                    bos: { buy: direction === 'BUY', sell: direction === 'SELL' },
+                    choch: { buy: false, sell: false },
+                    mss: { id: `${tf}:MSS`, type: 'MSS', direction, level: 4175.11 + index, event_time: currentEvent },
+                    displacement: { id: `${tf}:DISPLACEMENT`, direction, quality: 'CANONICAL_DISPLACEMENT', body_ratio: 2.4, range_expansion: 1.9, close_quality: 0.88, fvg_created: true, event_time: currentEvent }
+                },
+                liquidity: {
+                    buy_side_levels: [{ id: `${tf}:PDH`, type: 'PDH', level: 4192.2 + index, event_time: currentEvent }],
+                    sell_side_levels: [{ id: `${tf}:PDL`, type: 'PDL', level: 4142.34 - index, event_time: currentEvent }],
+                    sweeps: [{ id: `${tf}:SWEEP`, type: direction === 'BUY' ? 'SELL_SIDE_SWEEP' : 'BUY_SIDE_SWEEP', direction, level: 4160.11 + index, event_time: currentEvent }]
+                },
+                fvg: [fvg, { id: `${tf}:OLD:FVG`, type: 'FVG', direction: 'SELL', low: 4000, high: 4001, event_time: '2026-01-01T00:00:00Z', freshness: 'STALE', lifecycle_state: 'EXPIRED' }],
+                order_blocks: { buy: [{ id: `${tf}:OB:BUY`, type: 'OB', direction: 'BUY', low: 4165.1, high: 4167.2, event_time: currentEvent, freshness: 'FRESH' }], sell: [{ id: `${tf}:OB:SELL`, type: 'OB', direction: 'SELL', low: 4178.2, high: 4181.4, event_time: currentEvent, freshness: 'FRESH' }] },
+                msnr_levels: [{ id: `${tf}:MSNR`, type: 'MSNR', direction, low: 4166.2, high: 4169.3, event_time: currentEvent, freshness: 'FRESH' }],
+                structural_pois: [{ id: `${tf}:CRT`, type: 'CRT', direction, low: 4164.8, high: 4171.8, event_time: currentEvent, lifecycle_state: 'ACTIVE' }],
+                zones: []
+            }];
+        }));
+        const makeSequence = (id, timeframe, direction, completeness, eventTime) => ({
+            id, source_class: 'PRICE_ACTION', timeframe, direction, event_time: eventTime, completeness,
+            liquidity_event: { id: `${id}:LIQ`, type: direction === 'SELL' ? 'BUY_SIDE_SWEEP' : 'SELL_SIDE_SWEEP', side: direction === 'SELL' ? 'BUY_SIDE' : 'SELL_SIDE', level: 4175, event_time: eventTime, evidence_ids: [`${id}:LIQ`] },
+            displacement: { id: `${id}:DISP`, direction, quality: 'CANONICAL_DISPLACEMENT', body_ratio: 2.2, range_expansion: 1.8, close_quality: 0.9, fvg_created: true, event_time: eventTime, evidence_ids: [`${id}:DISP`] },
+            structural_consequence: { id: `${id}:MSS`, event_type: 'MSS', direction, level: 4174, event_time: eventTime, evidence_ids: [`${id}:MSS`] },
+            origin_locations: [{ id: `${id}:FVG`, type: 'FVG', direction, low: 4168, high: 4172, midpoint: 4170, event_time: eventTime, freshness: 'FRESH', evidence_ids: [`${id}:FVG`] }],
+            follow_through: { id: `${id}:FOLLOW`, direction, state: completeness === 'FAILED_SEQUENCE' ? 'FAILED_RECLAIM' : 'ACCEPTED_FOLLOW_THROUGH', event_time: eventTime, reclaimed: completeness === 'FAILED_SEQUENCE', evidence_ids: [`${id}:FOLLOW`] },
+            components_present: ['LIQUIDITY_EVENT', 'DISPLACEMENT', 'STRUCTURAL_CONSEQUENCE', 'ORIGIN', 'FOLLOW_THROUGH'], components_missing: [], evidence_ids: [`${id}:LIQ`, `${id}:DISP`, `${id}:MSS`, `${id}:FVG`, `${id}:FOLLOW`]
+        });
+        const institutional = {
+            schema_version: 1, source_class: 'PRICE_ACTION', as_of_time: asOf,
+            timeframes: {
+                '1D': [makeSequence('OLD-1D', '1D', 'SELL', 'CONFIRMED_SEQUENCE', '2026-01-01T00:00:00Z')],
+                '4H': [makeSequence('CURRENT-4H-SELL', '4H', 'SELL', 'CONFIRMED_SEQUENCE', currentEvent)],
+                '1H': [makeSequence('CURRENT-1H-FAILED', '1H', 'SELL', 'FAILED_SEQUENCE', currentEvent)],
+                '15M': [makeSequence('CURRENT-15M-BUY', '15M', 'BUY', 'PARTIAL', currentEvent)],
+                '5M': []
+            }, records: [], note: 'OHLC-derived market footprints do not identify actual participants.'
+        };
+        const replay = {
+            pair: 'TEST/PAIR', snapshot_id: 'COMPACT-REGRESSION', scan_as_of: asOf,
+            quote: { price: 4170.51, quote_time: asOf }, provider_metadata: { provider: 'TVKIT' },
+            market_evidence_package: {
+                snapshot_id: 'COMPACT-REGRESSION', as_of_time: asOf, timeframes, institutional_activity_evidence: institutional,
+                strategy_events: [
+                    { id: 'CRT-4H-SELL', strategy: 'CRT', direction: 'SELL', timeframe: '4H', event_time: currentEvent, level: 4175 },
+                    { id: 'TBS-15M-BUY', strategy: 'TBS', direction: 'BUY', timeframe: '15M', event_time: currentEvent, level: 4160 },
+                    { id: 'BOS-4H-SELL', strategy: 'BOS', direction: 'SELL', timeframe: '4H', event_time: currentEvent, level: 4174 }
+                ]
+            },
+            target_candidates: {
+                buy: [{ id: 'PDH-OBJECTIVE', direction: 'BUY', timeframe: '4H', level: 4192.2, source: 'PDH', target_lifecycle_state: 'UNFULFILLED', evidence_ids: ['4H:PDH'] }],
+                sell: [{ id: 'PDL-OBJECTIVE', direction: 'SELL', timeframe: '4H', level: 4142.34, source: 'PDL', target_lifecycle_state: 'UNFULFILLED', evidence_ids: ['4H:PDL'] }]
+            },
+            risk_constraints: { minimum_rr: 2.5 }, valid_candidates: []
+        };
+        const packet = ctx.buildExternalAIClipboardPacket({ signal: { pair: 'TEST/PAIR', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' }, current_price: 4170.51 }, replay });
+        const evidenceBody = packet.slice(packet.indexOf('CURRENT MARKET SNAPSHOT'), packet.lastIndexOf('EXTERNAL AI TASK'));
+        expect(packet).toContain('"current_price": 4170.51');
+        expect(packet).toContain('4168.43');
+        expect(packet).toContain('4172.59');
+        expect(packet).toContain('4165.1');
+        expect(packet).toContain('4181.4');
+        expect(packet).toContain('4166.2');
+        expect(packet).toContain('CRT-4H-SELL');
+        expect(packet).toContain('TBS-15M-BUY');
+        expect(packet).toContain('BOS-4H-SELL');
+        expect(packet).toContain('STRUCTURAL_SWING');
+        expect(packet).toContain('OBJECTIVE:4H:PDH:4192.2');
+        expect(packet).toContain('OBJECTIVE:4H:PDL:4142.34');
+        expect(packet).toContain('CURRENT-4H-SELL');
+        expect(packet).toContain('CURRENT-15M-BUY');
+        expect(packet).toContain('CURRENT-1H-FAILED');
+        expect(packet).not.toContain('OLD-1D');
+        expect(packet).toContain('CONFIRMED_SEQUENCE');
+        expect(packet).toContain('FAILED_SEQUENCE');
+        expect(packet).toContain('PARTIAL');
+        expect(packet).toContain('"minimum_rr": 2.5');
+        expect(packet).not.toContain('raw_closed_candles');
+        expect(packet).not.toMatch(/institutional_direction|institutional_bias|recommended_direction|directional_bias|market_regime|preferred_target|liquidity_draw|candidate ranking/i);
+        expect(evidenceBody).not.toContain('"candidate_id"');
+        expect(evidenceBody).not.toContain('"entry": 4170');
+        expect(evidenceBody).not.toContain('"stop_loss"');
+        expect(evidenceBody).not.toContain('"risk_reward"');
+        const snapshotText = packet.match(/CURRENT MARKET SNAPSHOT\n=+\n([\s\S]*?)\n=+\nCANONICAL RISK \/ GEOMETRY FACTS/)?.[1];
+        expect(JSON.parse(snapshotText)).toEqual(expect.objectContaining({ timeframes: expect.objectContaining({ '1D': expect.any(Object), '4H': expect.any(Object), '1H': expect.any(Object), '15M': expect.any(Object), '5M': expect.any(Object) }) }));
+        expect(snapshotText).not.toMatch(/"1W"/);
+        expect(Buffer.byteLength(packet, 'utf8')).toBeLessThan(500000);
+    });
 });
 
 describe('getQuoteDirection', () => {

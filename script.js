@@ -11275,6 +11275,212 @@ function compactAiStructuralInvalidation(item = {}, fallbackTimeframe = null) {
     };
 }
 
+// Manual packets are a presentation boundary.  These helpers deliberately do
+// not change canonical evidence, lifecycle decisions, or automatic selection.
+// Relevance is based on market-state properties only; direction is never used
+// as a preference signal.
+const MANUAL_PACKET_RELEVANCE_BARS = 24;
+const MANUAL_PACKET_MAX_LOCATIONS_PER_TIMEFRAME = 32;
+const MANUAL_PACKET_MAX_EVENTS_PER_TIMEFRAME = 28;
+const MANUAL_PACKET_MAX_INSTITUTIONAL_RECORDS_PER_TIMEFRAME = 12;
+
+function manualPacketEventTime(item = {}) {
+    if (!item || typeof item !== 'object') return NaN;
+    return normalizeTimestampUTC(item.event_time ?? item.formation_time ?? item.created_time
+        ?? item.source_time ?? item.reclaim_time ?? item.time ?? item.timestamp);
+}
+
+function manualPacketTimeframeWindow(timeframe) {
+    const windows = { '1D': 24 * 60 * 60 * 1000, '4H': 4 * 60 * 60 * 1000, '1H': 60 * 60 * 1000, '15M': 15 * 60 * 1000, '5M': 5 * 60 * 1000 };
+    // This is only clipboard relevance, not opportunity expiry. A sequence
+    // can span several lower-timeframe candles, so retain at least one day of
+    // recent context while still dropping genuinely historical episodes.
+    return Math.max((windows[timeframe] || windows['1H']) * MANUAL_PACKET_RELEVANCE_BARS, 24 * 60 * 60 * 1000);
+}
+
+function manualPacketLifecycleState(item = {}) {
+    return String(item.lifecycle_state || item.target_lifecycle_state || item.freshness
+        || item.freshness_state || item.mitigation_state || item.state || '').toUpperCase();
+}
+
+function manualPacketIsRelevant(item = {}, timeframe = null, referenceTime = null) {
+    if (!item || typeof item !== 'object') return false;
+    const state = manualPacketLifecycleState(item);
+    const activeState = ['FRESH', 'CURRENT', 'ACTIVE', 'FRESH_PENDING', 'FRESH_PENDING_TODAY', 'FRESH_PENDING_LATER', 'UNMITIGATED', 'PARTIAL'].some(value => state.includes(value));
+    const invalidationState = item.invalidated === true || ['INVALIDATED', 'CONSUMED', 'EXPIRED', 'STALE', 'TARGET_DELIVERED'].some(value => state.includes(value));
+    const eventTime = manualPacketEventTime(item);
+    const referenceMs = normalizeTimestampUTC(referenceTime);
+    const recent = Number.isFinite(eventTime) && Number.isFinite(referenceMs)
+        ? eventTime >= referenceMs - manualPacketTimeframeWindow(timeframe)
+        : false;
+    // Active state preserves a current location even when a provider omits a
+    // timestamp. Recent invalidations/consumption are retained as context;
+    // old inactive records are intentionally omitted from the clipboard.
+    return activeState || recent || (!Number.isFinite(eventTime) && !invalidationState);
+}
+
+function manualPacketRelevanceRank(item = {}, timeframe = null, referenceTime = null) {
+    const eventTime = manualPacketEventTime(item);
+    const referenceMs = normalizeTimestampUTC(referenceTime);
+    const state = manualPacketLifecycleState(item);
+    const active = ['FRESH', 'CURRENT', 'ACTIVE', 'FRESH_PENDING', 'FRESH_PENDING_TODAY', 'FRESH_PENDING_LATER', 'UNMITIGATED'].some(value => state.includes(value));
+    const recent = Number.isFinite(eventTime) && Number.isFinite(referenceMs)
+        ? eventTime >= referenceMs - manualPacketTimeframeWindow(timeframe) : false;
+    const structurallyLinked = !!(item.structural_invalidation || item.structural_invalidation_detail
+        || item.evidence_ids?.length || item.supporting_evidence_ids?.length);
+    return (active ? 4 : 0) + (recent ? 3 : 0) + (structurallyLinked ? 1 : 0);
+}
+
+function manualPacketRecordKey(item = {}, fallbackType = null, timeframe = null) {
+    if (!item || typeof item !== 'object') return `${fallbackType || 'ITEM'}:${timeframe || 'NA'}:${String(item)}`;
+    return item.id || item.evidence_id || `${item.type || fallbackType || 'ITEM'}:${timeframe || item.timeframe || 'NA'}:${item.event_time || item.formation_time || item.level || item.price || item.low || item.high || 'NA'}`;
+}
+
+function selectManualPacketRecords(items = [], timeframe = null, referenceTime = null, maxItems = 32) {
+    const unique = new Map();
+    for (const item of Array.isArray(items) ? items : []) {
+        if (!item || typeof item !== 'object' || !manualPacketIsRelevant(item, timeframe, referenceTime)) continue;
+        const key = manualPacketRecordKey(item, item.type || item.kind, timeframe);
+        if (!unique.has(key)) unique.set(key, item);
+    }
+    const records = [...unique.values()];
+    records.sort((a, b) => {
+        const rankDifference = manualPacketRelevanceRank(b, timeframe, referenceTime) - manualPacketRelevanceRank(a, timeframe, referenceTime);
+        if (rankDifference) return rankDifference;
+        const timeDifference = (Number.isFinite(manualPacketEventTime(b)) ? manualPacketEventTime(b) : -Infinity)
+            - (Number.isFinite(manualPacketEventTime(a)) ? manualPacketEventTime(a) : -Infinity);
+        if (timeDifference) return timeDifference;
+        return manualPacketRecordKey(a, null, timeframe).localeCompare(manualPacketRecordKey(b, null, timeframe));
+    });
+    if (records.length <= maxItems) return records;
+    // Preserve distinct factual sides when both exist. This is a symmetry
+    // guarantee, not a BUY/SELL ranking or directional vote.
+    const selected = [];
+    const selectedKeys = new Set();
+    const directions = [...new Set(records.map(item => String(item.direction || '').toUpperCase()).filter(Boolean))];
+    for (const direction of directions) {
+        const item = records.find(candidate => String(candidate.direction || '').toUpperCase() === direction);
+        if (item) {
+            selected.push(item);
+            selectedKeys.add(manualPacketRecordKey(item, item.type || item.kind, timeframe));
+        }
+    }
+    for (const item of records) {
+        if (selected.length >= maxItems) break;
+        const key = manualPacketRecordKey(item, item.type || item.kind, timeframe);
+        if (!selectedKeys.has(key)) {
+            selected.push(item);
+            selectedKeys.add(key);
+        }
+    }
+    return selected;
+}
+
+function compactManualPacketValue(value) {
+    if (Array.isArray(value)) {
+        const compact = value.map(compactManualPacketValue).filter(item => item !== undefined);
+        return compact.length ? compact : undefined;
+    }
+    if (!value || typeof value !== 'object') return value == null ? undefined : value;
+    const compact = {};
+    for (const [key, nested] of Object.entries(value)) {
+        const normalized = compactManualPacketValue(nested);
+        if (normalized !== undefined && normalized !== null && !(Array.isArray(normalized) && !normalized.length)) compact[key] = normalized;
+    }
+    return Object.keys(compact).length ? compact : undefined;
+}
+
+function compactManualInstitutionalComponent(component = {}, type = null, timeframe = null) {
+    if (!component || typeof component !== 'object') return null;
+    const compact = {
+        id: component.id || component.evidence_id || null,
+        type: component.type || component.event_type || type || null,
+        direction: component.direction || null,
+        side: component.side || null,
+        timeframe: component.timeframe || timeframe || null,
+        level: Number.isFinite(Number(component.level ?? component.price)) ? Number(component.level ?? component.price) : null,
+        event_time: component.event_time || null,
+        state: component.state || null,
+        quality: component.quality || null,
+        body_ratio: component.body_ratio ?? null,
+        range_expansion: component.range_expansion ?? null,
+        close_quality: component.close_quality ?? null,
+        fvg_created: typeof component.fvg_created === 'boolean' ? component.fvg_created : null,
+        reclaimed: component.reclaimed === true,
+        invalidated: component.invalidated === true,
+        evidence_ids: Array.isArray(component.evidence_ids) ? component.evidence_ids.filter(id => typeof id === 'string').slice(0, 12) : []
+    };
+    return compactManualPacketValue(compact) || null;
+}
+
+function compactManualInstitutionalOrigin(origin = {}, timeframe = null) {
+    if (!origin || typeof origin !== 'object') return null;
+    return compactManualPacketValue({
+        id: origin.id || origin.evidence_id || null,
+        type: origin.type || null,
+        timeframe: origin.timeframe || timeframe || null,
+        direction: origin.direction || null,
+        low: Number.isFinite(Number(origin.low)) ? Number(origin.low) : null,
+        high: Number.isFinite(Number(origin.high)) ? Number(origin.high) : null,
+        midpoint: Number.isFinite(Number(origin.midpoint ?? origin.mid)) ? Number(origin.midpoint ?? origin.mid) : null,
+        event_time: origin.event_time || origin.formation_time || null,
+        freshness: origin.freshness || origin.freshness_state || null,
+        mitigation_state: origin.mitigation_state || origin.mitigation || null,
+        lifecycle_state: origin.lifecycle_state || origin.state || null,
+        invalidated: origin.invalidated === true,
+        consumed: origin.consumed === true,
+        evidence_ids: Array.isArray(origin.evidence_ids) ? origin.evidence_ids.filter(id => typeof id === 'string').slice(0, 12) : []
+    }) || null;
+}
+
+function compactManualInstitutionalRecord(record = {}, timeframe = null) {
+    if (!record || typeof record !== 'object') return null;
+    return compactManualPacketValue({
+        id: record.id || null,
+        source_class: record.source_class || 'PRICE_ACTION',
+        timeframe: record.timeframe || timeframe || null,
+        direction: record.direction || null,
+        event_time: record.event_time || null,
+        completeness: record.completeness || null,
+        liquidity_event: compactManualInstitutionalComponent(record.liquidity_event, 'LIQUIDITY_EVENT', timeframe),
+        displacement: compactManualInstitutionalComponent(record.displacement, 'DISPLACEMENT', timeframe),
+        structural_consequence: compactManualInstitutionalComponent(record.structural_consequence, 'STRUCTURAL_CONSEQUENCE', timeframe),
+        origin_locations: (record.origin_locations || []).map(origin => compactManualInstitutionalOrigin(origin, timeframe)).filter(Boolean),
+        follow_through: compactManualInstitutionalComponent(record.follow_through, 'FOLLOW_THROUGH', timeframe),
+        components_present: Array.isArray(record.components_present) ? record.components_present : [],
+        components_missing: Array.isArray(record.components_missing) ? record.components_missing : [],
+        evidence_ids: Array.isArray(record.evidence_ids) ? record.evidence_ids.filter(id => typeof id === 'string').slice(0, 32) : []
+    }) || null;
+}
+
+function compactManualInstitutionalActivityEvidence(activity = {}, referenceTime = null) {
+    if (!activity || typeof activity !== 'object') return null;
+    const sourceTimeframes = activity.timeframes || {};
+    const timeframes = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(timeframe => {
+        const records = selectManualPacketRecords(sourceTimeframes[timeframe] || [], timeframe, referenceTime, MANUAL_PACKET_MAX_INSTITUTIONAL_RECORDS_PER_TIMEFRAME)
+            .map(record => compactManualInstitutionalRecord(record, timeframe)).filter(Boolean);
+        return [timeframe, records];
+    }));
+    return compactManualPacketValue({
+        schema_version: activity.schema_version || 1,
+        source_class: activity.source_class || 'PRICE_ACTION',
+        as_of_time: activity.as_of_time || null,
+        timeframes,
+        // Keep a small index for consumers that use the top-level record
+        // list; the complete component payload lives once under its semantic
+        // timeframe instead of being duplicated in the clipboard.
+        records: Object.values(timeframes).flat().map(record => ({
+            id: record.id,
+            timeframe: record.timeframe,
+            direction: record.direction,
+            event_time: record.event_time,
+            completeness: record.completeness,
+            evidence_ids: record.evidence_ids
+        })),
+        note: activity.note || 'OHLC-derived market footprints describe price-action sequences consistent with institutional-style participation; they do not identify actual participants.'
+    }) || null;
+}
+
 function compactAiTarget(target = {}, fallbackDirection = null) {
     if (!target || typeof target !== 'object') return null;
     return {
@@ -11420,13 +11626,53 @@ function compactAiOpportunityMaterial(candidate = {}, catalogStatus = 'CURRENT_M
 function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = {}, options = {}) {
     const manualEvidenceOnly = options.manualEvidenceOnly === true;
     const structure = source.structure || fallbackStructure || {};
-    const compactLocations = (items, type) => (Array.isArray(items) ? items : [])
-        .map(item => compactAiEvidenceItem(item, type, timeframe))
-        .filter(Boolean);
+    const referenceTime = source.last_closed_candle_time
+        || source.raw_closed_candles?.at(-1)?.t
+        || options.referenceTime
+        || null;
+    const compactLocations = (items, type, maxItems = MANUAL_PACKET_MAX_LOCATIONS_PER_TIMEFRAME) => {
+        const relevant = manualEvidenceOnly
+            ? selectManualPacketRecords(items, timeframe, referenceTime, maxItems)
+            : (Array.isArray(items) ? items : []);
+        return relevant.map(item => {
+            const compact = compactAiEvidenceItem(item, type, timeframe);
+            return manualEvidenceOnly ? (compactManualPacketValue(compact) || null) : compact;
+        }).filter(Boolean);
+    };
+    const locationSources = [
+        ...compactLocations(source.fvg, 'FVG'),
+        ...compactLocations(source.order_blocks?.buy, 'OB'),
+        ...compactLocations(source.order_blocks?.sell, 'OB'),
+        ...compactLocations(source.msnr_levels, 'MSNR'),
+        ...compactLocations(source.structural_pois, 'POI'),
+        ...compactLocations(source.zones, 'ZONE')
+    ];
+    const locations = manualEvidenceOnly
+        ? selectManualPacketRecords(locationSources, timeframe, referenceTime, MANUAL_PACKET_MAX_LOCATIONS_PER_TIMEFRAME)
+        : locationSources;
     const liquidity = source.liquidity && typeof source.liquidity === 'object'
-        ? Object.fromEntries(Object.entries(source.liquidity).map(([key, values]) => [key,
-            (Array.isArray(values) ? values : []).map(item => compactAiEvidenceItem(item, key, timeframe)).filter(Boolean)]))
+        ? Object.fromEntries(Object.entries(source.liquidity).map(([key, values]) => {
+            const normalizedValues = (Array.isArray(values) ? values : []).map(item => {
+                if (typeof item !== 'number' && typeof item !== 'string') return item;
+                const level = Number(item);
+                return Number.isFinite(level) ? { id: `LIQUIDITY:${timeframe}:${key}:${level}`, type: key, source: key, timeframe, level } : null;
+            }).filter(Boolean);
+            const selectedValues = manualEvidenceOnly
+                ? selectManualPacketRecords(normalizedValues, timeframe, referenceTime, 16)
+                : normalizedValues;
+            return [key, selectedValues.map(item => {
+                const compact = compactAiEvidenceItem(item, key, timeframe);
+                return manualEvidenceOnly ? (compactManualPacketValue(compact) || null) : compact;
+            }).filter(Boolean)];
+        }))
         : {};
+    const structuralInvalidations = locations.map(item => {
+        const compact = compactAiStructuralInvalidation(item, timeframe);
+        return manualEvidenceOnly ? (compactManualPacketValue(compact) || null) : compact;
+    }).filter(Boolean);
+    const swingHighs = compactLocations(structure.swing_highs || structure.recent_swing_highs, 'SWING_HIGH', 8);
+    const swingLows = compactLocations(structure.swing_lows || structure.recent_swing_lows, 'SWING_LOW', 8);
+    const evidence = compactLocations(source.evidence, 'STRUCTURE_EVIDENCE', MANUAL_PACKET_MAX_EVENTS_PER_TIMEFRAME);
     return {
         timeframe,
         role: source.role || null,
@@ -11438,37 +11684,25 @@ function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = 
             effective_trend: structure.effective_trend || structure.trend || null,
             bias: manualEvidenceOnly ? null : (structure.bias || null),
             sequence: Array.isArray(structure.sequence) ? structure.sequence.slice(-12) : [],
-            swing_highs: compactLocations(structure.swing_highs || structure.recent_swing_highs, 'SWING_HIGH'),
-            swing_lows: compactLocations(structure.swing_lows || structure.recent_swing_lows, 'SWING_LOW'),
+            swing_highs: swingHighs,
+            swing_lows: swingLows,
             bos: structure.bos || { buy: !!structure.bos_buy, sell: !!structure.bos_sell },
             choch: structure.choch || { buy: !!structure.choch_buy, sell: !!structure.choch_sell },
-            mss: compactAiEvidenceItem(structure.mss, 'MSS', timeframe),
-            displacement: structure.displacement || null
+            mss: manualEvidenceOnly
+                ? (compactManualPacketValue(compactAiEvidenceItem(structure.mss, 'MSS', timeframe)) || null)
+                : compactAiEvidenceItem(structure.mss, 'MSS', timeframe),
+            displacement: manualEvidenceOnly ? (compactManualPacketValue(structure.displacement) || null) : (structure.displacement || null)
         },
         liquidity,
-        locations: [
-            ...compactLocations(source.fvg, 'FVG'),
-            ...compactLocations(source.order_blocks?.buy, 'OB'),
-            ...compactLocations(source.order_blocks?.sell, 'OB'),
-            ...compactLocations(source.msnr_levels, 'MSNR'),
-            ...compactLocations(source.structural_pois, 'POI'),
-            ...compactLocations(source.zones, 'ZONE')
-        ],
-        structural_invalidations: [
-            ...compactLocations(source.fvg, 'FVG'),
-            ...compactLocations(source.order_blocks?.buy, 'OB'),
-            ...compactLocations(source.order_blocks?.sell, 'OB'),
-            ...compactLocations(source.msnr_levels, 'MSNR'),
-            ...compactLocations(source.structural_pois, 'POI'),
-            ...compactLocations(source.zones, 'ZONE')
-        ].map(item => compactAiStructuralInvalidation(item, timeframe)).filter(Boolean),
+        locations,
+        structural_invalidations: structuralInvalidations,
         premium_discount: source.premium_discount || null,
         dealing_range: source.dealing_range || null,
         previous_period: source.previous_period || null,
         previous_day_levels: source.previous_day_levels || null,
         atr: source.atr ?? null,
         structural_evidence_ids: Array.isArray(source.structural_evidence_ids) ? source.structural_evidence_ids : [],
-        evidence: compactLocations(source.evidence, 'STRUCTURE_EVIDENCE')
+        evidence
     };
 }
 
@@ -11482,8 +11716,16 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
         || evidenceCatalog.institutional_activity_evidence
         || liveMarketContext.institutional_activity_evidence
         || null;
+    const packetReferenceTime = liveMarketContext.as_of_time_utc
+        || liveMarketContext.as_of_time
+        || evidencePackage.as_of_time
+        || evidenceCatalog.as_of_time_utc
+        || null;
     const structure = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf,
-        compactAiTimeframeEvidence(tf, evidenceTimeframes[tf] || {}, liveMarketContext.structure?.[tf] || {}, { manualEvidenceOnly: manualOpportunityDiscovery })]));
+        compactAiTimeframeEvidence(tf, evidenceTimeframes[tf] || {}, liveMarketContext.structure?.[tf] || {}, {
+            manualEvidenceOnly: manualOpportunityDiscovery,
+            referenceTime: packetReferenceTime
+        })]));
     const sourceCandidates = Array.isArray(liveMarketContext.adaptive_setup_candidates)
         ? liveMarketContext.adaptive_setup_candidates
         : Array.isArray(liveMarketContext.valid_deterministic_candidates) ? liveMarketContext.valid_deterministic_candidates : [];
@@ -11500,6 +11742,12 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
     const sellLocations = locations.filter(location => String(location?.direction || '').toUpperCase() === 'SELL');
     const targetRecords = [];
     const addTarget = (target, direction = null) => {
+        if (manualOpportunityDiscovery) {
+            const targetState = String(target?.target_lifecycle_state || target?.lifecycle_state || target?.state || '').toUpperCase();
+            if (target?.reached === true || target?.consumed === true || target?.invalidated === true
+                || ['CONSUMED', 'INVALIDATED', 'TARGET_DELIVERED'].includes(targetState)) return;
+            if (!manualPacketIsRelevant(target, target?.timeframe || null, packetReferenceTime)) return;
+        }
         const compact = compactAiTarget(target, direction);
         if (!compact || !Number.isFinite(Number(compact.level))) return;
         const key = compact.id || `${compact.direction || ''}:${compact.level}:${compact.source || ''}`;
@@ -11515,12 +11763,20 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
         ...(evidenceCatalog.crt_events || []),
         ...(evidenceCatalog.tbs_events || []),
         ...(evidenceCatalog.msnr_levels || []),
-        ...(evidenceCatalog.fvg_zones || []),
-        ...(evidenceCatalog.ob_zones || []),
-        ...(evidenceCatalog.execution_zones || [])
+        ...(manualOpportunityDiscovery ? [] : (evidenceCatalog.fvg_zones || [])),
+        ...(manualOpportunityDiscovery ? [] : (evidenceCatalog.ob_zones || [])),
+        ...(manualOpportunityDiscovery ? [] : (evidenceCatalog.execution_zones || []))
     ];
     const evidenceById = new Map();
-    for (const item of evidenceArrays) {
+    const relevantEvidence = manualOpportunityDiscovery
+        ? AI_SEMANTIC_TIMEFRAMES.flatMap(timeframe => selectManualPacketRecords(
+            evidenceArrays.filter(item => !item?.timeframe || item.timeframe === timeframe),
+            timeframe,
+            packetReferenceTime,
+            MANUAL_PACKET_MAX_EVENTS_PER_TIMEFRAME
+        ))
+        : evidenceArrays;
+    for (const item of relevantEvidence) {
         const compact = compactAiEvidenceItem(item, item?.strategy || item?.type, item?.timeframe);
         if (compact?.id && !evidenceById.has(compact.id)) evidenceById.set(compact.id, compact);
     }
@@ -11534,7 +11790,9 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
     const marketContext = liveMarketContext.market_context || {};
     const multiTimeframeTrend = liveMarketContext.multi_timeframe_direction?.trend || Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf, structure[tf].structure.effective_trend]));
     const regeneration = liveMarketContext.current_opportunity_regeneration || {};
-    const locationFacts = { buy: buyLocations.slice(0, 120), sell: sellLocations.slice(0, 120) };
+    const locationFacts = manualOpportunityDiscovery
+        ? { buy: buyLocations, sell: sellLocations }
+        : { buy: buyLocations.slice(0, 120), sell: sellLocations.slice(0, 120) };
     const invalidationFacts = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf, structure[tf].structural_invalidations || []]));
     for (const item of evidenceById.values()) {
         const invalidation = item?.structural_invalidation;
@@ -11555,7 +11813,21 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
         });
     }
     const deliveryFacts = {
-        locations: [...locationFacts.buy, ...locationFacts.sell].filter(location => location?.freshness || location?.mitigation_state || location?.state || location?.consumed || location?.invalidated),
+        locations: [...locationFacts.buy, ...locationFacts.sell]
+            .filter(location => location?.freshness || location?.mitigation_state || location?.state || location?.consumed || location?.invalidated)
+            .map(location => manualOpportunityDiscovery ? compactManualPacketValue({
+                id: location.id,
+                type: location.type,
+                timeframe: location.timeframe,
+                direction: location.direction,
+                formation_time: location.formation_time || location.event_time,
+                freshness: location.freshness,
+                mitigation_state: location.mitigation_state,
+                lifecycle_state: location.lifecycle_state,
+                invalidated: location.invalidated,
+                consumed: location.consumed,
+                evidence_ids: location.evidence_ids
+            }) : location).filter(Boolean),
         targets: manualOpportunityDiscovery
             ? targetRecords.map(compactAiNeutralObjective).filter(Boolean)
             : targetRecords.map(target => ({ id: target.id, direction: target.direction, timeframe: target.timeframe, type: target.type, source: target.source, level: target.level, lifecycle_state: target.lifecycle_state, reached: target.reached, evidence_ids: target.evidence_ids }))
@@ -11588,11 +11860,13 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
             current_price: liveMarketContext.current_price ?? evidenceCatalog.current_price ?? null
         },
         timeframes: structure,
-        institutional_activity_evidence: institutionalActivityEvidence,
+        institutional_activity_evidence: manualOpportunityDiscovery
+            ? compactManualInstitutionalActivityEvidence(institutionalActivityEvidence, packetReferenceTime)
+            : institutionalActivityEvidence,
         ...(manualOpportunityDiscovery
             ? {
                 market_fact_context: manualMarketFactContext,
-                phase_evidence: {
+                market_observations: {
                     structural_observations: multiTimeframeTrend,
                     delivery_facts: deliveryFacts,
                     conflicts: marketContext.conflicts || []
@@ -11636,8 +11910,13 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
             previous_day_levels: structure[tf].previous_day_levels
         }])),
         rejected_opportunity_summary: manualOpportunityDiscovery ? null : { counts: rejectionCounts, records: rejectedRecords },
-        target_context: targetRecords,
-        target_candidates: { all: targetRecords, buy: targetRecords.filter(target => target.direction === 'BUY'), sell: targetRecords.filter(target => target.direction === 'SELL') },
+        target_context: manualOpportunityDiscovery
+            ? targetRecords.map(compactAiNeutralObjective).filter(Boolean)
+            : targetRecords,
+        target_candidates: manualOpportunityDiscovery
+            ? { all: targetRecords.map(compactAiNeutralObjective).filter(Boolean), buy: [], sell: [] }
+            : { all: targetRecords, buy: targetRecords.filter(target => target.direction === 'BUY'), sell: targetRecords.filter(target => target.direction === 'SELL') },
+        structural_invalidations: invalidationFacts,
         deterministic_evidence: {
             strategy_events: [...evidenceById.values()],
             evidence_id_count: evidenceById.size
@@ -17280,6 +17559,21 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
         warnings: result.quality_warnings || result.warnings || [],
         reason: result.reason || null
     }, ['analysis_mode', 'automatic_ai_selection', 'deterministic_candidate_count', 'state', 'direction', 'type', 'candidate_id', 'entry', 'entry_zone', 'sl', 'tp1', 'tp2', 'tp3', 'rr', 'execution_mode', 'confidence', 'quality', 'warnings', 'reason']);
+    const snapshotTimeframes = manualReview
+        ? Object.fromEntries(Object.entries(timeframes).map(([timeframe, value]) => [timeframe, {
+            timeframe: value.timeframe,
+            role: value.role,
+            closed_candle_count: value.closed_candle_count,
+            current_closed_price: value.current_closed_price,
+            structure: value.structure,
+            liquidity: value.liquidity,
+            premium_discount: value.premium_discount,
+            dealing_range: value.dealing_range,
+            previous_period: value.previous_period,
+            previous_day_levels: value.previous_day_levels,
+            structural_evidence_ids: value.structural_evidence_ids
+        }]))
+        : timeframes;
     const compactSnapshot = externalPacketDefined({
         snapshot_id: source.snapshot_id || result.snapshot_id || null,
         symbol: pairValue,
@@ -17287,7 +17581,7 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
         as_of: source.scan_as_of || result.time || null,
         current_price: externalPacketNumber(source.quote?.price ?? result.current_price),
         quote_time: source.quote?.quote_time || null,
-        timeframes
+        timeframes: snapshotTimeframes
     }, ['snapshot_id', 'symbol', 'provider', 'as_of', 'current_price', 'quote_time', 'timeframes']);
     const integratedExternalAIClipboardTask = `==================================================
 EXTERNAL AI TASK
@@ -17756,7 +18050,7 @@ packet.
             '==============================',
             'MARKET FACT CONTEXT',
             '==============================',
-            semantic ? JSON.stringify({ market_fact_context: semantic.market_fact_context || null, phase_observations: semantic.phase_evidence || null }, null, 2) : 'UNAVAILABLE'
+            semantic ? JSON.stringify({ market_fact_context: semantic.market_fact_context || null, market_observations: semantic.market_observations || null }, null, 2) : 'UNAVAILABLE'
         ] : [
             '==============================',
             'DIRECTIONAL / PHASE CONTEXT',
@@ -17793,7 +18087,7 @@ packet.
             '==============================',
             'STRUCTURAL INVALIDATION CONTEXT',
             '==============================',
-            semantic ? JSON.stringify(Object.fromEntries(Object.entries(semantic.timeframes || {}).map(([timeframe, value]) => [timeframe, value.structural_invalidations || []])), null, 2) : 'UNAVAILABLE',
+            semantic ? JSON.stringify(semantic.structural_invalidations || {}, null, 2) : 'UNAVAILABLE',
             '',
             '==============================',
             'STRUCTURAL / LIQUIDITY OBJECTIVE FACTS',
@@ -17803,7 +18097,7 @@ packet.
             '==============================',
             'MARKET DELIVERY / LIFECYCLE FACTS',
             '==============================',
-            semantic ? JSON.stringify(semantic.phase_evidence?.delivery_facts || {}, null, 2) : 'UNAVAILABLE'
+            semantic ? JSON.stringify(semantic.market_observations?.delivery_facts || {}, null, 2) : 'UNAVAILABLE'
         ] : [
             '==============================',
             'BUY LOCATIONS',
