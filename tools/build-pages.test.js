@@ -24,6 +24,8 @@ describe('GitHub Pages frontend artifact', () => {
             expect(new URL('script.js?v=pages-test-123', 'https://yaanu06.github.io/ict-telegram-bot/').pathname)
                 .toBe('/ict-telegram-bot/script.js');
             expect(index).not.toMatch(/__ICT_BUILD_VERSION__/);
+            expect(script).not.toMatch(/__ICT_BUILD_VERSION__/);
+            expect(script).toContain('CURRENT_SCAN_ARTIFACT_V2');
             expect(script).not.toMatch(/gh[pousr]_[A-Za-z0-9]{20,}/);
             expect(fs.existsSync(path.join(outputDir, 'server'))).toBe(false);
             expect(fs.existsSync(path.join(outputDir, 'node_modules'))).toBe(false);

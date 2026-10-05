@@ -11,12 +11,14 @@ if (tg) { tg.expand(); tg.ready(); }
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
 const INJECTED_APP_BUILD_ID = typeof window !== 'undefined' ? window.__ICT_APP_BUILD_ID__ : null;
+const INJECTED_BUILD_TOKEN_PATTERN = /^__ICT_[A-Z0-9_]+__$/;
 const APP_BUILD_ID = INJECTED_APP_BUILD_ID
-    && !String(INJECTED_APP_BUILD_ID).includes('__ICT_APP_BUILD_ID__')
-    && !String(INJECTED_APP_BUILD_ID).includes('__ICT_BUILD_VERSION__')
+    && !INJECTED_BUILD_TOKEN_PATTERN.test(String(INJECTED_APP_BUILD_ID).trim())
     ? String(INJECTED_APP_BUILD_ID)
     : 'development';
+const CLIPBOARD_SERIALIZER_ID = 'CURRENT_SCAN_ARTIFACT_V2';
 if (typeof window !== 'undefined') window.__ICT_APP_BUILD_ID__ = APP_BUILD_ID;
+if (typeof window !== 'undefined') window.__ICT_CLIPBOARD_SERIALIZER_ID__ = CLIPBOARD_SERIALIZER_ID;
 let lastDisplayedPublicSignal = null;
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 const MARKET_DATA_PROVIDER_STORAGE_KEY = 'ict_market_data_provider';
@@ -34,6 +36,7 @@ let GITHUB_PAT = '', GITHUB_REPO = 'yaanu06/ict-telegram-bot';
 const AI_REQUEST_TIMEOUT_MS = 45000;
 const TIMEFRAME_MS = { '1M': 60000, '5M': 5 * 60000, '15M': 15 * 60000, '1H': 60 * 60000, '4H': 240 * 60000, '1D': 1440 * 60000, '1W': 10080 * 60000 };
 let scanInProgress = false;
+let activeScanId = null;
 let lastAIRequestError = null;
 
 function getProxyBaseUrl() {
@@ -913,7 +916,14 @@ async function reserveTwelveDataRequest() {
     }
 }
 
-async function fetchTD(pathAndQuery, timeoutMs = 10000, retries = 2) {
+function pushHistoryDiagnosticStage(diagnostic, stage) {
+    if (!diagnostic || !stage) return;
+    if (!Array.isArray(diagnostic.stage_progression)) diagnostic.stage_progression = [];
+    if (diagnostic.stage_progression.at(-1) !== stage) diagnostic.stage_progression.push(stage);
+    diagnostic.stage = stage;
+}
+
+async function fetchTD(pathAndQuery, timeoutMs = 10000, retries = 2, diagnostic = null) {
     const provider = getMarketDataProvider();
     if (provider === 'TWELVE_DATA') await reserveTwelveDataRequest();
     const ctrl = typeof AbortController === 'function'
@@ -925,9 +935,43 @@ async function fetchTD(pathAndQuery, timeoutMs = 10000, retries = 2) {
         const endpoint = provider === 'TVKIT'
             ? (proxy ? `${proxy}/api/tvkit${pathAndQuery}` : `${getTvkitBaseUrl()}${pathAndQuery}`)
             : (proxy ? `${proxy}/api/twelve${pathAndQuery}` : `${TWELVE_DATA_BASE}${pathAndQuery}&apikey=${TWELVE_DATA_KEY}`);
-        const r = await fetch(endpoint, { signal: ctrl.signal });
-        if (r.ok === false) throw new Error(`${getMarketDataProviderLabel()} HTTP ${r.status || 'error'}`);
-        const d = await r.json();
+        let r;
+        try {
+            r = await fetch(endpoint, { signal: ctrl.signal });
+        } catch (error) {
+            if (diagnostic) {
+                diagnostic.error_stage = 'HTTP_REQUEST';
+                diagnostic.error_code = error?.name || 'FETCH_ERROR';
+                diagnostic.error_message = String(error?.message || error).slice(0, 240);
+            }
+            throw error;
+        }
+        if (diagnostic) {
+            diagnostic.http_status = Number.isFinite(Number(r?.status)) ? Number(r.status) : null;
+            diagnostic.response_ok = r?.ok !== false;
+            diagnostic.response_content_type = typeof r?.headers?.get === 'function' ? r.headers.get('content-type') || null : null;
+            pushHistoryDiagnosticStage(diagnostic, 'HTTP_RECEIVED');
+        }
+        if (r.ok === false) {
+            if (diagnostic) {
+                diagnostic.error_stage = 'HTTP_STATUS';
+                diagnostic.error_code = `HTTP_${r.status || 'ERROR'}`;
+                diagnostic.error_message = `${getMarketDataProviderLabel()} HTTP ${r.status || 'error'}`;
+            }
+            throw new Error(`${getMarketDataProviderLabel()} HTTP ${r.status || 'error'}`);
+        }
+        let d;
+        try {
+            d = await r.json();
+        } catch (error) {
+            if (diagnostic) {
+                diagnostic.error_stage = 'JSON_PARSE';
+                diagnostic.error_code = error?.name || 'JSON_PARSE_ERROR';
+                diagnostic.error_message = String(error?.message || error).slice(0, 240);
+            }
+            throw error;
+        }
+        if (diagnostic) pushHistoryDiagnosticStage(diagnostic, 'JSON_PARSED');
         if(d.code === 429) {
             const src = document.getElementById('apiSource');
             if(src) src.innerHTML = '🔴 Rate limited';
@@ -938,7 +982,7 @@ async function fetchTD(pathAndQuery, timeoutMs = 10000, retries = 2) {
             // Grow 55 = 55 credits/min, quota resets every minute — brief backoff then retry
             if(retries > 0) {
                 await new Promise(res => setTimeout(res, 3000));
-                return fetchTD(pathAndQuery, timeoutMs, retries - 1);
+                return fetchTD(pathAndQuery, timeoutMs, retries - 1, diagnostic);
             }
             throw new Error('Rate limited');
         }
@@ -1220,25 +1264,42 @@ async function fetchHistoryUncached(tfStr, forPair) {
     const provider = getMarketDataProvider();
     const providerSymbol = provider === 'TVKIT' ? getTvkitSymbol(requestedPair) : getProviderSymbol(requestedPair);
     const requestStartedAt = Date.now();
-    let rawCandleCount = null;
-    let normalizedCandleCount = 0;
-    const diagnosticBase = {
+    const diagnostic = {
+        scan_id: activeScanId,
         timeframe: tfStr,
+        canonical_symbol: requestedPair,
         symbol: requestedPair,
         provider,
         provider_symbol: providerSymbol || null,
         interval: TF_MAP[tfStr] || null,
-        requested_outputsize: getRequiredHistoryOutputSize()
+        cache_key: cacheKey,
+        requested_outputsize: getRequiredHistoryOutputSize(),
+        request_started: new Date(requestStartedAt).toISOString(),
+        http_status: null,
+        response_ok: null,
+        response_content_type: null,
+        raw_values_count: null,
+        normalized_count: 0,
+        closed_count: 0,
+        cache_count: 0,
+        final_history_count: 0,
+        error_stage: null,
+        error_code: null,
+        error_message: null,
+        stage_progression: ['REQUEST_STARTED'],
+        stage: 'REQUEST_STARTED'
     };
+    let rawCandleCount = null;
+    let normalizedCandleCount = 0;
+    historyRequestDiagnostics.set(cacheKey, diagnostic);
     if (!hasMarketDataAccess()) {
         const error = 'Market data provider access is unavailable';
         historyFetchErrors.set(cacheKey, { timeframe: tfStr, symbol: requestedPair, message: error, at: Date.now() });
-        historyRequestDiagnostics.set(cacheKey, {
-            ...diagnosticBase,
+        Object.assign(diagnostic, {
             state: 'ACCESS_UNAVAILABLE',
-            raw_candle_count: null,
-            normalized_candle_count: 0,
-            closed_candle_count: 0,
+            error_stage: 'ACCESS_CHECK',
+            error_code: 'MARKET_DATA_ACCESS_UNAVAILABLE',
+            error_message: error,
             error,
             elapsed_ms: 0
         });
@@ -1246,26 +1307,33 @@ async function fetchHistoryUncached(tfStr, forPair) {
     }
     if (cached && Date.now() - cached.ts < cacheTtl) {
         const cachedCount = Array.isArray(cached.data) ? cached.data.length : 0;
-        historyRequestDiagnostics.set(cacheKey, {
-            ...diagnosticBase,
+        Object.assign(diagnostic, {
             state: 'CACHE_HIT',
             raw_candle_count: cached.data?.provider_metadata?.raw_count ?? null,
+            raw_values_count: cached.data?.provider_metadata?.raw_count ?? null,
             normalized_candle_count: cachedCount,
+            normalized_count: cachedCount,
             closed_candle_count: cached.data?.provider_metadata?.closed_count ?? cachedCount,
+            closed_count: cached.data?.provider_metadata?.closed_count ?? cachedCount,
+            cache_count: cachedCount,
+            final_history_count: cachedCount,
+            stage_progression: ['REQUEST_STARTED', 'CACHE_HIT'],
+            stage: 'CACHE_HIT',
             elapsed_ms: Date.now() - requestStartedAt
         });
         return cached.data;
     }
     try {
         if (!providerSymbol) throw new Error('Market symbol is missing');
-        historyRequestDiagnostics.set(cacheKey, { ...diagnosticBase, state: 'REQUESTED' });
+        diagnostic.state = 'REQUESTED';
         // Twelve Data treats daily/weekly timestamps as period buckets. The
         // timezone query parameter is intended for intraday series and can
         // make period-bucket requests fail for otherwise valid symbols.
         const timezoneQuery = ['1D', '1W'].includes(tfStr) ? '' : '&timezone=UTC';
-        const d = await fetchTD('/time_series?symbol=' + encodeURIComponent(providerSymbol) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + timezoneQuery);
+        const d = await fetchTD('/time_series?symbol=' + encodeURIComponent(providerSymbol) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + timezoneQuery, 10000, 2, diagnostic);
         if(d.values) {
             rawCandleCount = Array.isArray(d.values) ? d.values.length : null;
+            diagnostic.raw_values_count = rawCandleCount;
             calls++;
             const rawValues = d.values.map(c => ({
                 t: normalizeTimestampUTC(c?.datetime ?? c?.timestamp ?? c?.time ?? c?.date ?? c?.t),
@@ -1279,6 +1347,8 @@ async function fetchHistoryUncached(tfStr, forPair) {
                 timestamp_source: 'PROVIDER'
             }));
             normalizedCandleCount = rawValues.length;
+            diagnostic.normalized_count = normalizedCandleCount;
+            pushHistoryDiagnosticStage(diagnostic, 'NORMALIZED');
             const periodBucket = ['1D', '1W'].includes(tfStr);
             const latestBucketTime = periodBucket
                 ? rawValues.reduce((latest, candle) => Math.max(latest, Number(candle.t)), -Infinity)
@@ -1297,6 +1367,8 @@ async function fetchHistoryUncached(tfStr, forPair) {
             // useful for display, but must never become confirmed structure or
             // indicator input. Keep only closed candles in the analysis cache.
             const values = rawValues.filter(c => c.is_closed);
+            diagnostic.closed_count = values.length;
+            pushHistoryDiagnosticStage(diagnostic, 'CLOSED_FILTERED');
             if (!values.length) {
                 const timestamps = rawValues.map(candle => Number(candle.t)).filter(Number.isFinite);
                 const sample = d.values[0];
@@ -1326,28 +1398,37 @@ async function fetchHistoryUncached(tfStr, forPair) {
                 closed_count: values.length,
                 open_candles_filtered: rawValues.length - values.length
             }, enumerable: false });
-            historyRequestDiagnostics.set(cacheKey, {
-                ...diagnosticBase,
+            Object.assign(diagnostic, {
                 state: 'SUCCESS',
                 raw_candle_count: rawValues.length,
                 normalized_candle_count: rawValues.length,
                 closed_candle_count: values.length,
+                cache_count: values.length,
+                final_history_count: values.length,
                 malformed_candle_count: 0,
                 elapsed_ms: Date.now() - requestStartedAt
             });
             historyResponseCache.set(cacheKey, { data: values, ts: Date.now() });
+            pushHistoryDiagnosticStage(diagnostic, 'CACHE_STORED');
             historyFetchErrors.delete(cacheKey);
             return values;
         }
         const message = d?.message || d?.error || `Provider returned no values for ${tfStr}`;
         const safeMessage = String(message).slice(0, 300);
         historyFetchErrors.set(cacheKey, { timeframe: tfStr, symbol: requestedPair, message: safeMessage, at: Date.now() });
-        historyRequestDiagnostics.set(cacheKey, {
-            ...diagnosticBase,
+        Object.assign(diagnostic, {
             state: 'NO_VALUES',
             raw_candle_count: 0,
             normalized_candle_count: 0,
             closed_candle_count: 0,
+            raw_values_count: 0,
+            normalized_count: 0,
+            closed_count: 0,
+            cache_count: 0,
+            final_history_count: 0,
+            error_stage: 'NO_VALUES',
+            error_code: 'PROVIDER_NO_VALUES',
+            error_message: safeMessage,
             error: safeMessage,
             elapsed_ms: Date.now() - requestStartedAt
         });
@@ -1355,12 +1436,19 @@ async function fetchHistoryUncached(tfStr, forPair) {
         const message = e?.message || String(e);
         const safeMessage = String(message).slice(0, 300);
         historyFetchErrors.set(cacheKey, { timeframe: tfStr, symbol: requestedPair, message: safeMessage, at: Date.now() });
-        historyRequestDiagnostics.set(cacheKey, {
-            ...diagnosticBase,
+        Object.assign(diagnostic, {
             state: 'ERROR',
             raw_candle_count: rawCandleCount,
             normalized_candle_count: normalizedCandleCount,
             closed_candle_count: 0,
+            raw_values_count: rawCandleCount,
+            normalized_count: normalizedCandleCount,
+            closed_count: 0,
+            cache_count: 0,
+            final_history_count: 0,
+            error_stage: diagnostic.error_stage || 'NORMALIZATION',
+            error_code: diagnostic.error_code || 'HISTORY_REQUEST_ERROR',
+            error_message: diagnostic.error_message || safeMessage,
             error: safeMessage,
             elapsed_ms: Date.now() - requestStartedAt
         });
@@ -2777,17 +2865,34 @@ function sanitizeSnapshotProviderErrors(providerErrors = {}) {
 function sanitizeHistoryRequestDiagnostics(diagnostics = {}) {
     if (!diagnostics || typeof diagnostics !== 'object' || Array.isArray(diagnostics)) return {};
     return Object.fromEntries(Object.entries(diagnostics).map(([timeframe, value]) => [timeframe, {
+        scan_id: value?.scan_id || null,
         timeframe: value?.timeframe || timeframe,
+        canonical_symbol: value?.canonical_symbol || value?.symbol || null,
         symbol: value?.symbol || null,
         provider: value?.provider || null,
         provider_symbol: value?.provider_symbol || null,
         interval: value?.interval || null,
+        cache_key: value?.cache_key || null,
         requested_outputsize: Number.isFinite(Number(value?.requested_outputsize)) ? Number(value.requested_outputsize) : null,
+        request_started: value?.request_started || null,
+        http_status: Number.isFinite(Number(value?.http_status)) ? Number(value.http_status) : null,
+        response_ok: typeof value?.response_ok === 'boolean' ? value.response_ok : null,
+        response_content_type: value?.response_content_type || null,
+        stage: value?.stage || null,
+        stage_progression: Array.isArray(value?.stage_progression) ? [...value.stage_progression] : [],
         state: value?.state || 'UNKNOWN',
+        raw_values_count: value?.raw_values_count ?? value?.raw_candle_count ?? null,
+        normalized_count: value?.normalized_count ?? value?.normalized_candle_count ?? null,
+        closed_count: value?.closed_count ?? value?.closed_candle_count ?? null,
+        cache_count: value?.cache_count ?? null,
+        final_history_count: value?.final_history_count ?? null,
         raw_candle_count: value?.raw_candle_count ?? null,
         normalized_candle_count: value?.normalized_candle_count ?? null,
         closed_candle_count: value?.closed_candle_count ?? null,
         malformed_candle_count: value?.malformed_candle_count ?? null,
+        error_stage: value?.error_stage || null,
+        error_code: value?.error_code || null,
+        error_message: value?.error_message ? String(value.error_message).slice(0, 240) : null,
         error: value?.error ? String(value.error).slice(0, 240) : null
     }]));
 }
@@ -2799,11 +2904,13 @@ function assessMarketSnapshotCompleteness({ historyCache = {}, price = null, pro
     const required = [...new Set(Array.isArray(requiredTimeframes) ? requiredTimeframes : REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES)];
     const sanitizedErrors = sanitizeSnapshotProviderErrors(providerErrors || historyCache?.fetch_errors || {});
     const timeframes = {};
+    const snapshotInputCounts = {};
     const missingTimeframes = [];
     const invalidTimeframes = [];
     for (const timeframe of required) {
         const minimum = MARKET_SNAPSHOT_MINIMUM_CANDLES[timeframe] || 1;
         const data = historyCache?.[timeframe];
+        snapshotInputCounts[timeframe] = Array.isArray(data) ? data.length : 0;
         const status = { timeframe, minimum_closed_candles: minimum, loaded: Array.isArray(data) };
         if (!Array.isArray(data) || data.length === 0) {
             status.state = 'MISSING';
@@ -2853,11 +2960,69 @@ function assessMarketSnapshotCompleteness({ historyCache = {}, price = null, pro
         price_valid: priceValid,
         timeframes,
         provider_errors: sanitizedErrors,
+        snapshot_input_counts: snapshotInputCounts,
         reason_code: complete ? null : 'INCOMPLETE_MARKET_SNAPSHOT'
     };
 }
 
-function buildIncompleteMarketSnapshotSignal({ pair: pairLocal = pair, price = null, quoteSnapshot = null, completeness = {}, historyDiagnostics = {}, asOfMs = Date.now() } = {}) {
+function markHistorySnapshotConsumed(historyCache = {}, pairLocal = pair, completeness = {}) {
+    const canonicalPair = normalizeCanonicalMarketSymbol(pairLocal);
+    for (const timeframe of REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES) {
+        const cacheKey = `${canonicalPair}|${timeframe}`;
+        const data = historyCache?.[timeframe];
+        let record = historyRequestDiagnostics.get(cacheKey);
+        if (!record) {
+            record = {
+                scan_id: activeScanId,
+                timeframe,
+                canonical_symbol: canonicalPair,
+                symbol: canonicalPair,
+                provider: getMarketDataProvider(),
+                provider_symbol: getMarketDataProvider() === 'TVKIT' ? getTvkitSymbol(canonicalPair) : getProviderSymbol(canonicalPair),
+                interval: TF_MAP[timeframe] || null,
+                cache_key: cacheKey,
+                requested_outputsize: getRequiredHistoryOutputSize(),
+                request_started: null,
+                http_status: null,
+                response_ok: null,
+                response_content_type: null,
+                raw_values_count: null,
+                normalized_count: null,
+                closed_count: null,
+                cache_count: 0,
+                final_history_count: 0,
+                error_stage: 'CALLER_RETURNED_WITHOUT_REQUEST_DIAGNOSTIC',
+                error_code: 'HISTORY_DIAGNOSTIC_MISSING',
+                error_message: 'The history loader returned without a request diagnostic record.',
+                stage_progression: [],
+                stage: null
+            };
+            historyRequestDiagnostics.set(cacheKey, record);
+        }
+        if (record) {
+            record.cache_count = Array.isArray(data) ? data.length : 0;
+            record.final_history_count = Array.isArray(data) ? data.length : 0;
+            record.snapshot_input_count = Array.isArray(data) ? data.length : 0;
+            record.snapshot_state = completeness.timeframes?.[timeframe]?.state || null;
+            pushHistoryDiagnosticStage(record, 'SNAPSHOT_CONSUMED');
+        }
+        let exposed = historyCache?.fetch_diagnostics?.[timeframe];
+        if (!exposed && historyCache?.fetch_diagnostics && typeof historyCache.fetch_diagnostics === 'object') {
+            exposed = { ...record };
+            historyCache.fetch_diagnostics[timeframe] = exposed;
+        }
+        if (exposed) {
+            exposed.cache_count = Array.isArray(data) ? data.length : 0;
+            exposed.final_history_count = Array.isArray(data) ? data.length : 0;
+            exposed.snapshot_input_count = Array.isArray(data) ? data.length : 0;
+            exposed.snapshot_state = completeness.timeframes?.[timeframe]?.state || null;
+            pushHistoryDiagnosticStage(exposed, 'SNAPSHOT_CONSUMED');
+        }
+    }
+    return completeness;
+}
+
+function buildIncompleteMarketSnapshotSignal({ pair: pairLocal = pair, price = null, quoteSnapshot = null, completeness = {}, historyDiagnostics = {}, asOfMs = Date.now(), scanId = activeScanId } = {}) {
     const provider = getMarketDataProvider();
     const missing = completeness.missing_timeframes || [];
     const invalid = completeness.invalid_timeframes || [];
@@ -2867,6 +3032,9 @@ function buildIncompleteMarketSnapshotSignal({ pair: pairLocal = pair, price = n
             date: new Date(asOfMs).toISOString().slice(0, 10),
             time: new Date(asOfMs).toISOString().slice(11, 19),
             pair: normalizeCanonicalMarketSymbol(pairLocal),
+            scan_id: scanId || null,
+            app_build_id: APP_BUILD_ID,
+            clipboard_serializer_id: CLIPBOARD_SERIALIZER_ID,
             current_price: Number.isFinite(Number(price)) ? Number(price) : null,
             decision: 'WAIT',
             trade_type: 'WAIT',
@@ -2880,6 +3048,10 @@ function buildIncompleteMarketSnapshotSignal({ pair: pairLocal = pair, price = n
             },
             data_quality: { valid: false, reasons: ['INCOMPLETE_MARKET_SNAPSHOT', ...details] },
             snapshot_completeness: completeness,
+            snapshot_input_counts: completeness.snapshot_input_counts || {},
+            snapshot_complete: completeness.complete === true,
+            snapshot_missing_timeframes: completeness.missing_timeframes || [],
+            snapshot_reason: completeness.reason_code || 'INCOMPLETE_MARKET_SNAPSHOT',
             history_errors: completeness.provider_errors || {},
             history_diagnostics: sanitizeHistoryRequestDiagnostics(historyDiagnostics),
             provider_metadata: {
@@ -14485,13 +14657,23 @@ function buildManualExternalAIReviewOutput({ liveMarketContext = {}, pairLocal =
         || ['TRADE_READY', 'TODAY_OPPORTUNITY', 'WATCH_ONLY'].includes(today.state);
     const output = buildTodayOpportunityOutput(today, pairLocal, price, scanAsOfMs, liveMarketContext.market_open, liveMarketContext.symbol_metadata, liveMarketContext.provider_metadata);
     const signal = output.trade_signal;
+    const manualSnapshotCompleteness = liveMarketContext.snapshot_completeness
+        || assessMarketSnapshotCompleteness({ historyCache, price });
     signal.decision = 'WAIT';
     signal.trade_type = 'WAIT';
     signal.selected_candidate_id = null;
     signal.snapshot_id = liveMarketContext.snapshot_id || null;
-    signal.snapshot_completeness = liveMarketContext.snapshot_completeness || null;
-    signal.history_errors = liveMarketContext.history_errors || {};
-    signal.history_diagnostics = liveMarketContext.history_diagnostics || {};
+    signal.snapshot_completeness = manualSnapshotCompleteness;
+    signal.snapshot_input_counts = manualSnapshotCompleteness.snapshot_input_counts || {};
+    signal.app_build_id = APP_BUILD_ID;
+    signal.clipboard_serializer_id = CLIPBOARD_SERIALIZER_ID;
+    signal.scan_id = activeScanId || null;
+    signal.history_errors = Object.keys(liveMarketContext.history_errors || {}).length
+        ? liveMarketContext.history_errors
+        : (historyCache?.fetch_errors || {});
+    signal.history_diagnostics = Object.keys(liveMarketContext.history_diagnostics || {}).length
+        ? liveMarketContext.history_diagnostics
+        : (historyCache?.fetch_diagnostics || {});
     signal.status = 'MANUAL_EXTERNAL_AI_REVIEW';
     signal.direction = null;
     signal.strategy = null;
@@ -14548,6 +14730,7 @@ async function runAutoScan() {
     scanInProgress = true;
     pair = normalizeCanonicalMarketSymbol(pair);
     const scanAsOfMs = Date.now();
+    activeScanId = `${APP_BUILD_ID}:${pair}:${scanAsOfMs}`;
     const scanStartedAt = scanClock();
     let scanStage = 'initializing';
     let price = null;
@@ -14643,6 +14826,13 @@ async function runAutoScan() {
             providerErrors: historyCache.fetch_errors,
             requiredTimeframes: REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES
         });
+        markHistorySnapshotConsumed(historyCache, pair, snapshotCompleteness);
+        scanTrace('snapshot input consumed', scanStartedAt, {
+            snapshot_input_counts: snapshotCompleteness.snapshot_input_counts,
+            snapshot_complete: snapshotCompleteness.complete,
+            snapshot_missing_timeframes: snapshotCompleteness.missing_timeframes,
+            snapshot_reason: snapshotCompleteness.reason_code
+        });
         if (!snapshotCompleteness.complete) {
             scanStage = 'incomplete market snapshot';
             const unavailableOutput = buildIncompleteMarketSnapshotSignal({
@@ -14651,7 +14841,8 @@ async function runAutoScan() {
                 quoteSnapshot,
                 completeness: snapshotCompleteness,
                 historyDiagnostics: historyCache.fetch_diagnostics,
-                asOfMs: scanAsOfMs
+                asOfMs: scanAsOfMs,
+                scanId: activeScanId
             });
             setJsonOutput(unavailableOutput);
             lastSetupSummary = null;
@@ -15479,6 +15670,7 @@ async function runAutoScan() {
             providerErrors: historyCache.fetch_errors,
             requiredTimeframes: REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES
         });
+        markHistorySnapshotConsumed(historyCache, pair, failedSnapshotCompleteness);
         if (Number.isFinite(Number(price)) && !failedSnapshotCompleteness.complete) {
             scanStage = 'incomplete market snapshot after scan failure';
             const unavailableOutput = buildIncompleteMarketSnapshotSignal({
@@ -15487,7 +15679,8 @@ async function runAutoScan() {
                 quoteSnapshot,
                 completeness: failedSnapshotCompleteness,
                 historyDiagnostics: historyCache.fetch_diagnostics,
-                asOfMs: scanAsOfMs
+                asOfMs: scanAsOfMs,
+                scanId: activeScanId
             });
             setJsonOutput(unavailableOutput);
             lastSetupSummary = null;
@@ -15561,6 +15754,7 @@ async function runAutoScan() {
         if (scanFill) scanFill.style.width = '100%';
         scanInProgress = false;
         scanTrace('COMPLETE', scanStartedAt, { stage: scanStage });
+        activeScanId = null;
     }
 }
 
@@ -16872,6 +17066,13 @@ function setJsonOutput(obj, { publishArtifact = true } = {}) {
     const el = document.getElementById('jsonOutput');
     let publicSignal = buildPublicTradeSignal(obj?.trade_signal || obj);
     publicSignal.app_build = APP_BUILD_ID;
+    publicSignal.app_build_id = publicSignal.app_build_id || obj?.trade_signal?.app_build_id || APP_BUILD_ID;
+    publicSignal.clipboard_serializer_id = publicSignal.clipboard_serializer_id || obj?.trade_signal?.clipboard_serializer_id || CLIPBOARD_SERIALIZER_ID;
+    publicSignal.scan_id = publicSignal.scan_id || obj?.trade_signal?.scan_id || activeScanId || null;
+    publicSignal.snapshot_input_counts = publicSignal.snapshot_input_counts
+        || obj?.trade_signal?.snapshot_input_counts
+        || publicSignal.snapshot_completeness?.snapshot_input_counts
+        || {};
     publicSignal.analysis_status = getAnalysisStatus(publicSignal);
     const publicValidation = validatePublicTradeSignal(publicSignal);
     if (!publicValidation.valid) {
@@ -17152,9 +17353,12 @@ function publishCurrentScanArtifact({ signal = {}, replay = null, output = null 
         || output?.trade_signal?.snapshot_completeness
         || null;
     currentScanArtifact = {
-        scan_id: replay?.snapshot_id || signal.snapshot_id || `scan-${Date.now()}`,
+        scan_id: signal.scan_id || replay?.snapshot_id || signal.snapshot_id || activeScanId || `scan-${Date.now()}`,
         symbol: signal.pair || replay?.pair || null,
-        status: signal.status_code || signal.status || null,
+        status: signal.status || signal.status_code || null,
+        app_build_id: signal.app_build_id || signal.app_build || APP_BUILD_ID,
+        clipboard_serializer_id: signal.clipboard_serializer_id || CLIPBOARD_SERIALIZER_ID,
+        snapshot_input_counts: signal.snapshot_input_counts || completeness?.snapshot_input_counts || {},
         snapshot_completeness: completeness,
         signal,
         replay
@@ -17859,6 +18063,9 @@ function buildDataUnavailableExternalAIPacket({ signal = {}, replay = null } = {
     const providerMetadata = source.provider_metadata || result.provider_metadata || {};
     const payload = {
         packet_type: 'MARKET_DATA_AVAILABILITY_DIAGNOSTIC',
+        app_build_id: result.app_build_id || source.app_build_id || APP_BUILD_ID,
+        clipboard_serializer_id: result.clipboard_serializer_id || source.clipboard_serializer_id || CLIPBOARD_SERIALIZER_ID,
+        scan_id: result.scan_id || source.scan_id || null,
         status: 'DATA_UNAVAILABLE',
         reason: result.reason || { code: 'INCOMPLETE_MARKET_SNAPSHOT', message: 'Required market evidence was not available.' },
         symbol: source.pair || result.pair || null,
@@ -17868,6 +18075,9 @@ function buildDataUnavailableExternalAIPacket({ signal = {}, replay = null } = {
         current_price: externalPacketNumber(source.quote?.price ?? result.current_price),
         as_of: source.scan_as_of || result.time || null,
         required_timeframes: completeness?.required_timeframes || REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES,
+        snapshot_complete: completeness?.complete === true,
+        snapshot_input_counts: completeness?.snapshot_input_counts || result.snapshot_input_counts || source.snapshot_input_counts || {},
+        snapshot_reason: completeness?.reason_code || result.snapshot_reason || 'INCOMPLETE_MARKET_SNAPSHOT',
         missing_timeframes: completeness?.missing_timeframes || [],
         invalid_timeframes: completeness?.invalid_timeframes || [],
         timeframe_status: completeness?.timeframes || {},
@@ -18417,6 +18627,9 @@ packet.
         '',
         `Symbol: ${pairValue}`,
         `Generated At: ${source.scan_as_of || result.time || 'UNAVAILABLE'}`,
+        `App Build ID: ${result.app_build_id || source.app_build_id || APP_BUILD_ID}`,
+        `Clipboard Serializer ID: ${result.clipboard_serializer_id || source.clipboard_serializer_id || CLIPBOARD_SERIALIZER_ID}`,
+        `Scan ID: ${result.scan_id || source.scan_id || 'UNAVAILABLE'}`,
         `Market Data Provider: ${provider || 'UNAVAILABLE'}`,
         `Strategy Version: ${result.strategy_version || STRATEGY_SPEC_VERSION || 'UNAVAILABLE'}`,
         `Snapshot ID: ${source.snapshot_id || result.snapshot_id || 'UNAVAILABLE'}`,

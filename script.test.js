@@ -2879,6 +2879,8 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).toContain('DATA_UNAVAILABLE');
         expect(packet).toContain('INCOMPLETE_MARKET_SNAPSHOT');
         expect(packet).toContain(runtimePair);
+        expect(packet).toContain('"clipboard_serializer_id": "CURRENT_SCAN_ARTIFACT_V2"');
+        expect(packet).toContain('"snapshot_input_counts"');
         expect(packet).not.toContain('EXTERNAL AI DECISION PACKET');
         expect(packet).not.toContain('CURRENT BOT RESULT');
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
@@ -2903,8 +2905,78 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).toContain('EXTERNAL AI DECISION PACKET');
         expect(packet).toContain(runtimePair);
         expect(packet).toContain(`TVKIT:${runtimePair.replace('/', '_')}:test`);
+        expect(packet).toContain('Clipboard Serializer ID: CURRENT_SCAN_ARTIFACT_V2');
+        expect(packet).toContain('App Build ID: development');
         expect(packet).not.toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
         expect(packet).not.toContain('CURRENT BOT RESULT');
+    });
+
+    it('captures the real TVKIT response stages and closed-candle counts before snapshot consumption', async () => {
+        const { context } = getScanContext();
+        context.window.__ICT_MARKET_DATA_PROVIDER__ = 'TVKIT';
+        context.window.__ICT_PROXY_BASE_URL__ = 'https://proxy.test';
+        context.fetch = jest.fn(async () => ({
+            ok: true,
+            status: 200,
+            headers: { get: name => name.toLowerCase() === 'content-type' ? 'application/json' : null },
+            json: async () => ({
+                values: Array.from({ length: 200 }, (_, index) => ({
+                    datetime: new Date(Date.now() - (index + 1) * 3600000 - (index === 0 ? -1800000 : 0)).toISOString(),
+                    open: 1.1, high: 1.11, low: 1.09, close: 1.105
+                })),
+                meta: { provider: 'TVKIT', provider_symbol: 'FX_IDC:EURUSD', timezone: 'UTC' }
+            })
+        }));
+        const history = await context.fetchHistoryUncached('1H', 'EUR/USD');
+        expect(history).toHaveLength(199);
+        const diagnostic = vm.runInContext("historyRequestDiagnostics.get('EUR/USD|1H')", context);
+        expect(diagnostic).toEqual(expect.objectContaining({
+            canonical_symbol: 'EUR/USD',
+            provider: 'TVKIT',
+            provider_symbol: 'FX_IDC:EURUSD',
+            interval: '1h',
+            http_status: 200,
+            response_ok: true,
+            response_content_type: 'application/json',
+            raw_values_count: 200,
+            normalized_count: 200,
+            closed_count: 199,
+            cache_count: 199,
+            final_history_count: 199,
+            state: 'SUCCESS',
+            stage: 'CACHE_STORED'
+        }));
+        expect(diagnostic.stage_progression).toEqual(['REQUEST_STARTED', 'HTTP_RECEIVED', 'JSON_PARSED', 'NORMALIZED', 'CLOSED_FILTERED', 'CACHE_STORED']);
+    });
+
+    it('publishes snapshot input counts and current scan identity through the actual Analyze and Copy handlers', async () => {
+        const { context, elements } = prepareScan({ runtimePair: 'EUR/USD' });
+        context.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
+        context.init();
+        vm.runInContext("pair = 'EUR/USD'", context);
+        await elements.get('analyzeBtn').dispatchEvent({ type: 'click' });
+        const displayed = JSON.parse(elements.get('jsonOutput').textContent).trade_signal;
+        expect(displayed.snapshot_input_counts).toEqual({ '1D': 60, '4H': 60, '1H': 60, '15M': 60, '5M': 60 });
+        expect(displayed.app_build_id).toBe('development');
+        expect(displayed.clipboard_serializer_id).toBe('CURRENT_SCAN_ARTIFACT_V2');
+        expect(displayed.scan_id).toMatch(/^development:EUR\/USD:\d+$/);
+        const artifact = vm.runInContext('currentScanArtifact', context);
+        expect(artifact).toEqual(expect.objectContaining({
+            scan_id: displayed.scan_id,
+            symbol: 'EUR/USD',
+            status: 'MANUAL_EXTERNAL_AI_REVIEW',
+            app_build_id: 'development',
+            clipboard_serializer_id: 'CURRENT_SCAN_ARTIFACT_V2',
+            snapshot_input_counts: displayed.snapshot_input_counts
+        }));
+        for (const timeframe of ['1D', '4H', '1H', '15M', '5M']) {
+            expect(displayed.history_diagnostics[timeframe].stage_progression).toContain('SNAPSHOT_CONSUMED');
+            expect(displayed.history_diagnostics[timeframe].final_history_count).toBe(60);
+        }
+        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
+        expect(packet).toContain('Clipboard Serializer ID: CURRENT_SCAN_ARTIFACT_V2');
+        expect(packet).toContain(`Scan ID: ${displayed.scan_id}`);
     });
 
     it('clears loading state on deterministic WAIT without calling DeepSeek', async () => {
