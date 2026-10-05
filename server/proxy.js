@@ -64,9 +64,14 @@ function publicAssetResponse(res, pathname, env = process.env) {
         const model = String(env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
         body = body.replace('</head>', `<script>window.__ICT_PROXY_BASE_URL__ = window.location.origin; window.__ICT_AI_PROVIDER__ = ${JSON.stringify(provider)}; window.__ICT_AI_MODEL__ = ${JSON.stringify(provider === 'GEMINI' ? model : 'deepseek-chat')};</script></head>`);
     }
+    const cacheControl = asset.file === 'index.html'
+        ? 'no-store'
+        : asset.file === 'script.js'
+            ? 'no-cache, must-revalidate'
+            : 'public, max-age=300';
     res.writeHead(200, {
         'Content-Type': asset.type,
-        'Cache-Control': asset.file === 'index.html' ? 'no-store' : 'public, max-age=300',
+        'Cache-Control': cacheControl,
         'X-Content-Type-Options': 'nosniff'
     });
     res.end(body);

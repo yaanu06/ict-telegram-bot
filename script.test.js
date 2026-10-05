@@ -43,8 +43,10 @@ const getScanContext = () => {
     const elements = new Map();
     const makeElement = () => {
         const classes = new Set();
+        const listeners = new Map();
         return {
-        addEventListener: () => {},
+        addEventListener: (type, listener) => listeners.set(type, listener),
+        dispatchEvent: event => listeners.get(event?.type)?.(event),
         classList: { add: c => classes.add(c), remove: c => classes.delete(c), contains: c => classes.has(c) },
         style: {},
         innerHTML: '',
@@ -1036,7 +1038,8 @@ describe('top-down trade context', () => {
     });
 
     it('keeps replay export hidden behind the existing Copy action', () => {
-        expect(code).toContain('(event?.altKey || event?.shiftKey || event?.detail >= 2) && window.__ICT_LAST_SCAN_REPLAY__');
+        expect(code).toContain('(event?.altKey || event?.shiftKey || event?.detail >= 2) && artifact?.replay');
+        expect(code).toContain('buildExternalAIClipboardPacket({ signal: artifact.signal, replay: artifact.replay || null })');
         const html = fs.readFileSync('index.html', 'utf8');
         expect(html).toContain('id="copyJsonBtn"');
         expect(html).not.toContain('Scan Replay</button>');
@@ -2746,8 +2749,8 @@ describe('Analyze scan lifecycle', () => {
         const end = Date.now() - duration;
         return candles(60, 100, 0.1, 'up').map((candle, index) => ({ o: 100, c: 100, h: 100.03, l: 99.97, v: candle.v, t: end - (59 - index) * duration, is_closed: true, timeframe }));
     };
-    const baseLiveContext = candidates => ({
-        pair: 'EUR/USD', current_price: 100, as_of_time_utc: '2026-09-29T10:00:00Z',
+    const baseLiveContext = (candidates, pairLocal = 'EUR/USD') => ({
+        pair: pairLocal, snapshot_id: `TVKIT:${pairLocal.replace('/', '_')}:test`, current_price: 100, as_of_time_utc: '2026-09-29T10:00:00Z',
         historyCache: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, historyFixture(tf)])),
         quote_snapshot: { price: 100, timestamp: '2026-09-29T09:59:00Z', provider: 'TVKIT' },
         provider_metadata: { provider: 'TVKIT' },
@@ -2768,7 +2771,7 @@ describe('Analyze scan lifecycle', () => {
         immediate_entry: {}
     });
 
-    function prepareScan({ candidates = [], aiResult = null, fallback = null, mode = 'MANUAL_EXTERNAL_AI', historyByTimeframe = null } = {}) {
+    function prepareScan({ candidates = [], aiResult = null, fallback = null, mode = 'MANUAL_EXTERNAL_AI', historyByTimeframe = null, runtimePair = 'EUR/USD' } = {}) {
         const { context, elements } = getScanContext();
         context.window.__ICT_ANALYSIS_MODE__ = mode;
         context.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
@@ -2778,8 +2781,8 @@ describe('Analyze scan lifecycle', () => {
             getTechnicalIndicators: jest.fn(() => Promise.resolve({})),
             updateMTFDisplay: jest.fn(() => Promise.resolve()),
             getQuoteDirection: jest.fn(() => Promise.resolve('NEUTRAL')),
-            buildLiveMarketContext: jest.fn(() => baseLiveContext(candidates)),
-            buildAiMarketEvidenceCatalog: jest.fn(() => ({ market_evidence_package: { snapshot_id: 'MANUAL-TEST', timeframes: {} }, snapshot_id: 'MANUAL-TEST', pair: 'EUR/USD', current_price: 100 })),
+            buildLiveMarketContext: jest.fn(() => baseLiveContext(candidates, runtimePair)),
+            buildAiMarketEvidenceCatalog: jest.fn(() => ({ market_evidence_package: { snapshot_id: `MANUAL-${runtimePair.replace('/', '_')}`, timeframes: {} }, snapshot_id: `MANUAL-${runtimePair.replace('/', '_')}`, pair: runtimePair, current_price: 100 })),
             runAiMarketAnalyst: jest.fn(() => Promise.resolve({ verified_setups: [], diagnostics: { analyst_status: 'OK' } })),
             buildAIPrompt: jest.fn(() => ({ system: 'system', user: 'user' })),
             askAIToFindSetup: jest.fn(() => Promise.resolve(aiResult)),
@@ -2828,6 +2831,58 @@ describe('Analyze scan lifecycle', () => {
         expect(output.status).toBe('DATA_UNAVAILABLE');
         expect(output.snapshot_completeness.missing_timeframes).toEqual(['15M']);
         expect(spies.buildLiveMarketContext).not.toHaveBeenCalled();
+    });
+
+    it.each([['XAU/USD', 'NZD/USD'], ['NZD/USD', 'GBP/USD']])('binds incomplete %s Copy to the current scan instead of prior %s state', async (priorPair, runtimePair) => {
+        const { context, elements, spies } = prepareScan({ runtimePair: priorPair });
+        context.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
+        context.init();
+
+        // Establish a prior successful scan and copy through the same public
+        // handlers used by the Mini App before changing symbols.
+        vm.runInContext(`pair = '${priorPair}'`, context);
+        await elements.get('analyzeBtn').dispatchEvent({ type: 'click' });
+        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        expect(context.navigator.clipboard.writeText.mock.calls.at(-1)[0]).toContain(priorPair);
+
+        vm.runInContext(`pair = '${runtimePair}'`, context);
+        spies.getHistory = jest.fn(() => Promise.resolve(null));
+        await elements.get('analyzeBtn').dispatchEvent({ type: 'click' });
+        const displayed = JSON.parse(elements.get('jsonOutput').textContent).trade_signal;
+        expect(displayed.status).toBe('DATA_UNAVAILABLE');
+        expect(displayed.reason.code).toBe('INCOMPLETE_MARKET_SNAPSHOT');
+        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
+        expect(packet).toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
+        expect(packet).toContain('DATA_UNAVAILABLE');
+        expect(packet).toContain('INCOMPLETE_MARKET_SNAPSHOT');
+        expect(packet).toContain(runtimePair);
+        expect(packet).not.toContain('EXTERNAL AI DECISION PACKET');
+        expect(packet).not.toContain('CURRENT BOT RESULT');
+        expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
+        expect(packet).not.toContain('CURRENT OPPORTUNITY MATERIAL');
+        expect(packet).not.toContain('automatic_ai_selection');
+        expect(packet).not.toContain('NO_FRESH_OPPORTUNITY');
+        expect(packet).not.toContain(priorPair);
+    });
+
+    it.each(['XAU/USD', 'GBP/USD', 'NZD/USD'])('uses the compact evidence-first Copy path for a complete %s scan', async runtimePair => {
+        const { context, elements, spies } = prepareScan({ runtimePair });
+        context.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
+        context.init();
+        vm.runInContext(`pair = '${runtimePair}'`, context);
+        await elements.get('analyzeBtn').dispatchEvent({ type: 'click' });
+        const displayed = JSON.parse(elements.get('jsonOutput').textContent).trade_signal;
+        expect(displayed.status).toBe('MANUAL_EXTERNAL_AI_REVIEW');
+        expect(displayed.snapshot_id).toBe(`TVKIT:${runtimePair.replace('/', '_')}:test`);
+        expect(spies.askAIToFindSetup).not.toHaveBeenCalled();
+        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
+        expect(packet).toContain('EXTERNAL AI DECISION PACKET');
+        expect(packet).toContain(runtimePair);
+        expect(packet).toContain(`TVKIT:${runtimePair.replace('/', '_')}:test`);
+        expect(packet).not.toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
+        expect(packet).not.toContain('CURRENT BOT RESULT');
     });
 
     it('clears loading state on deterministic WAIT without calling DeepSeek', async () => {

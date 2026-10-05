@@ -10,7 +10,7 @@ if (tg) { tg.expand(); tg.ready(); }
 // CONFIG
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
-const APP_BUILD_ID = '20260929-002';
+const APP_BUILD_ID = '20261005-001';
 let lastDisplayedPublicSignal = null;
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 const MARKET_DATA_PROVIDER_STORAGE_KEY = 'ict_market_data_provider';
@@ -14453,9 +14453,10 @@ async function runAutoScan() {
     let price = null;
     let quoteSnapshot = null;
     let historyCache = {};
-    // A failed scan must never reuse the previous scan's replay/context.
-    lastLiveMarketContextForReplay = null;
-    if (typeof window !== 'undefined') window.__ICT_LAST_SCAN_REPLAY__ = null;
+    // A new scan owns the Copy state from this point forward. Do not allow a
+    // failed/incomplete scan to inherit a prior symbol's public signal,
+    // replay, or saved setup artifact.
+    clearCurrentScanArtifact();
     const btn = document.getElementById('analyzeBtn');
     const scanStatus = document.getElementById('scanStatus');
     const scanText = document.getElementById('scanText');
@@ -16762,6 +16763,7 @@ function setJsonOutput(obj) {
     if (replay) {
         window.__ICT_LAST_SCAN_REPLAY__ = replay;
     }
+    publishCurrentScanArtifact({ signal: publicSignal, replay, output: obj });
     if (lastLiveMarketContextForReplay) lastLiveMarketContextForReplay = null;
 }
 
@@ -16987,6 +16989,33 @@ function renderOpportunityStack(signal = {}) {
 let lastSetupSummary = null;
 let lastSetupOut = null;
 let lastLiveMarketContextForReplay = null;
+let currentScanArtifact = null;
+
+function clearCurrentScanArtifact() {
+    currentScanArtifact = null;
+    lastDisplayedPublicSignal = null;
+    lastSetupSummary = null;
+    lastSetupOut = null;
+    lastLiveMarketContextForReplay = null;
+    if (typeof window !== 'undefined') window.__ICT_LAST_SCAN_REPLAY__ = null;
+}
+
+function publishCurrentScanArtifact({ signal = {}, replay = null, output = null } = {}) {
+    const completeness = signal.snapshot_completeness
+        || replay?.snapshot_completeness
+        || replay?.market_evidence_package?.snapshot_completeness
+        || output?.trade_signal?.snapshot_completeness
+        || null;
+    currentScanArtifact = {
+        scan_id: replay?.snapshot_id || signal.snapshot_id || `scan-${Date.now()}`,
+        symbol: signal.pair || replay?.pair || null,
+        status: signal.status_code || signal.status || null,
+        snapshot_completeness: completeness,
+        signal,
+        replay
+    };
+    return currentScanArtifact;
+}
 
 function buildSetupSummary(best, st, finalEntry, price) {
     return {
@@ -18365,8 +18394,13 @@ packet.
 }
 
 function copyJson(event = null) {
-    if ((event?.altKey || event?.shiftKey || event?.detail >= 2) && window.__ICT_LAST_SCAN_REPLAY__) {
-        const replay = window.__ICT_LAST_SCAN_REPLAY__;
+    // Copy is intentionally bound to the artifact published by the latest
+    // completed Analyze operation.  Do not reconstruct a packet from the
+    // independently-rendered public signal and replay globals: that permits a
+    // new/incomplete scan to inherit a previous symbol's packet.
+    const artifact = currentScanArtifact;
+    if ((event?.altKey || event?.shiftKey || event?.detail >= 2) && artifact?.replay) {
+        const replay = artifact.replay;
         const diagnosticReplay = {
             schema_version: replay.schema_version,
             pair: replay.pair,
@@ -18401,11 +18435,11 @@ function copyJson(event = null) {
             .catch(() => showNotif('Failed', 'error'));
         return;
     }
-    if (!lastDisplayedPublicSignal) {
+    if (!artifact?.signal) {
         showNotif('Run analysis first', 'warning');
         return;
     }
-    const packet = buildExternalAIClipboardPacket({ signal: lastDisplayedPublicSignal, replay: window.__ICT_LAST_SCAN_REPLAY__ || null });
+    const packet = buildExternalAIClipboardPacket({ signal: artifact.signal, replay: artifact.replay || null });
     navigator.clipboard.writeText(packet).then(() => showNotif('AI decision packet copied', 'success')).catch(() => showNotif('Failed', 'error'));
 }
 

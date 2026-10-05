@@ -17,7 +17,7 @@ function request(server, method, pathname, headers = {}, body = '') {
             response.on('end', () => {
                 let parsed = body;
                 try { parsed = JSON.parse(body); } catch {}
-                resolve({ status: response.statusCode, body: parsed });
+                resolve({ status: response.statusCode, headers: response.headers, body: parsed });
             });
         });
         req.on('error', reject);
@@ -33,6 +33,21 @@ describe('market and AI proxy boundary', () => {
             const response = await request(server, 'GET', '/');
             expect(response.status).toBe(200);
             expect(response.body).toBeDefined();
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
+    test('serves the current script build and prevents stale script caching', async () => {
+        const server = createProxyServer({ env: { PROXY_MAX_REQUESTS: '20' }, fetchImpl: jest.fn() });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const index = await request(server, 'GET', '/');
+            const script = await request(server, 'GET', '/script.js');
+            const build = script.body.match(/const APP_BUILD_ID = '([^']+)'/)?.[1];
+            expect(build).toBeTruthy();
+            expect(index.body).toContain(`script.js?v=${build}`);
+            expect(script.headers['cache-control']).toBe('no-cache, must-revalidate');
         } finally {
             await new Promise(resolve => server.close(resolve));
         }
