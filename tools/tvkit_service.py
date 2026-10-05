@@ -33,6 +33,10 @@ SYMBOLS = {
     "XAG/USD": "OANDA:XAGUSD",
     "BTC/USD": "BINANCE:BTCUSDT",
 }
+FIAT_CURRENCY_CODES = {
+    "USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "HKD",
+    "SGD", "NOK", "SEK", "CNH", "CNY", "MXN", "ZAR", "TRY", "PLN",
+}
 
 
 def value(item: Any, name: str) -> Any:
@@ -59,10 +63,14 @@ def tv_symbol(symbol: str) -> str:
     normalized = str(symbol or "").strip().upper().replace(" ", "")
     if ":" in normalized:
         return normalized
+    aliases = {"XAUUSD": "XAU/USD", "XAGUSD": "XAG/USD", "BTCUSD": "BTC/USD"}
+    normalized = aliases.get(normalized, normalized)
     if normalized in SYMBOLS:
         return SYMBOLS[normalized]
+    instrument = normalized.replace("/", "")
+    if len(instrument) == 6 and instrument[:3] in FIAT_CURRENCY_CODES and instrument[3:] in FIAT_CURRENCY_CODES:
+        return f"FX_IDC:{instrument}"
     if "/" in normalized:
-        instrument = normalized.replace("/", "")
         return f"FX_IDC:{instrument}"
     return normalized
 

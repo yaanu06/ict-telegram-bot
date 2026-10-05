@@ -2741,10 +2741,14 @@ describe('strategy pipeline integration rules', () => {
 });
 
 describe('Analyze scan lifecycle', () => {
-    const historyFixture = () => candles(60, 100, 0.1, 'up');
+    const historyFixture = (timeframe = '1H') => {
+        const duration = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 }[timeframe] || 3600000;
+        const end = Date.now() - duration;
+        return candles(60, 100, 0.1, 'up').map((candle, index) => ({ o: 100, c: 100, h: 100.03, l: 99.97, v: candle.v, t: end - (59 - index) * duration, is_closed: true, timeframe }));
+    };
     const baseLiveContext = candidates => ({
         pair: 'EUR/USD', current_price: 100, as_of_time_utc: '2026-09-29T10:00:00Z',
-        historyCache: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, historyFixture()])),
+        historyCache: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, historyFixture(tf)])),
         quote_snapshot: { price: 100, timestamp: '2026-09-29T09:59:00Z', provider: 'TVKIT' },
         provider_metadata: { provider: 'TVKIT' },
         session: { name: 'TEST' },
@@ -2764,13 +2768,13 @@ describe('Analyze scan lifecycle', () => {
         immediate_entry: {}
     });
 
-    function prepareScan({ candidates = [], aiResult = null, fallback = null, mode = 'MANUAL_EXTERNAL_AI' } = {}) {
+    function prepareScan({ candidates = [], aiResult = null, fallback = null, mode = 'MANUAL_EXTERNAL_AI', historyByTimeframe = null } = {}) {
         const { context, elements } = getScanContext();
         context.window.__ICT_ANALYSIS_MODE__ = mode;
         context.saveKeys('tw', 'deepseek', 'https://deepseek.test', '', '');
         const spies = {
             getPrice: jest.fn(() => Promise.resolve(100)),
-            getHistory: jest.fn(() => Promise.resolve(historyFixture())),
+            getHistory: jest.fn(tf => Promise.resolve(historyByTimeframe && Object.prototype.hasOwnProperty.call(historyByTimeframe, tf) ? historyByTimeframe[tf] : historyFixture(tf))),
             getTechnicalIndicators: jest.fn(() => Promise.resolve({})),
             updateMTFDisplay: jest.fn(() => Promise.resolve()),
             getQuoteDirection: jest.fn(() => Promise.resolve('NEUTRAL')),
@@ -2797,6 +2801,34 @@ describe('Analyze scan lifecycle', () => {
         `, context);
         return { context, elements, spies };
     }
+
+    it('does not turn a quote-only scan into NO_TRADE and emits a concise DATA_UNAVAILABLE diagnostic', async () => {
+        const { context, elements, spies } = prepareScan({
+            historyByTimeframe: { '1D': null, '4H': null, '1H': null, '15M': null, '5M': null }
+        });
+        await context.runAutoScan();
+        const output = JSON.parse(elements.get('jsonOutput').textContent).trade_signal;
+        expect(output.status).toBe('DATA_UNAVAILABLE');
+        expect(output.status_code).toBe('DATA_UNAVAILABLE');
+        expect(output.reason.code).toBe('INCOMPLETE_MARKET_SNAPSHOT');
+        expect(output.reason.message).not.toMatch(/NO_FRESH_OPPORTUNITY|NO_TRADE|TRANSITION_WAIT/i);
+        expect(spies.buildLiveMarketContext).not.toHaveBeenCalled();
+        expect(spies.askAIToFindSetup).not.toHaveBeenCalled();
+        const packet = context.buildExternalAIClipboardPacket({ signal: output, replay: null });
+        expect(packet).toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
+        expect(packet).toContain('DATA_UNAVAILABLE');
+        expect(packet).not.toContain('CURRENT BOT RESULT');
+        expect(packet).not.toContain('EXTERNAL AI TASK');
+    });
+
+    it('does not complete a snapshot when one required timeframe is missing', async () => {
+        const { context, elements, spies } = prepareScan({ historyByTimeframe: { '15M': null } });
+        await context.runAutoScan();
+        const output = JSON.parse(elements.get('jsonOutput').textContent).trade_signal;
+        expect(output.status).toBe('DATA_UNAVAILABLE');
+        expect(output.snapshot_completeness.missing_timeframes).toEqual(['15M']);
+        expect(spies.buildLiveMarketContext).not.toHaveBeenCalled();
+    });
 
     it('clears loading state on deterministic WAIT without calling DeepSeek', async () => {
         const { context, elements, spies } = prepareScan();
@@ -3360,6 +3392,90 @@ describe('institutional activity evidence composition', () => {
         expect(JSON.parse(snapshotText)).toEqual(expect.objectContaining({ timeframes: expect.objectContaining({ '1D': expect.any(Object), '4H': expect.any(Object), '1H': expect.any(Object), '15M': expect.any(Object), '5M': expect.any(Object) }) }));
         expect(snapshotText).not.toMatch(/"1W"/);
         expect(Buffer.byteLength(packet, 'utf8')).toBeLessThan(500000);
+    });
+});
+
+describe('multi-symbol snapshot completeness and provider boundary', () => {
+    const required = ['1D', '4H', '1H', '15M', '5M'];
+    const validHistory = (timeframe, count = 60) => {
+        const duration = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 }[timeframe];
+        const end = Date.now() - duration;
+        return candles(count, 100, 0.1, 'up').map((bar, index) => ({ ...bar, t: end - (count - 1 - index) * duration, is_closed: true, timeframe }));
+    };
+    const completeHistory = () => Object.fromEntries(required.map(tf => [tf, validHistory(tf)]));
+
+    it.each([
+        ['XAU/USD', 'OANDA:XAUUSD'],
+        ['XAUUSD', 'OANDA:XAUUSD'],
+        ['EUR/USD', 'FX_IDC:EURUSD'],
+        ['EURUSD', 'FX_IDC:EURUSD'],
+        ['GBP/USD', 'FX_IDC:GBPUSD'],
+        ['GBPUSD', 'FX_IDC:GBPUSD'],
+        ['NZD/USD', 'FX_IDC:NZDUSD'],
+        ['NZDUSD', 'FX_IDC:NZDUSD']
+    ])('normalizes %s through the same TVKIT provider mapping', (input, expected) => {
+        const ctx = getContext();
+        expect(ctx.normalizeCanonicalMarketSymbol(input)).toBe(input.includes('/') ? input : input === 'XAUUSD' ? 'XAU/USD' : input === 'EURUSD' ? 'EUR/USD' : input === 'GBPUSD' ? 'GBP/USD' : input === 'NZDUSD' ? 'NZD/USD' : input);
+        expect(ctx.getTvkitSymbol(input)).toBe(expected);
+    });
+
+    it('requires five usable closed-candle series, independent of detector output', () => {
+        const ctx = getContext();
+        const complete = ctx.assessMarketSnapshotCompleteness({ historyCache: completeHistory(), price: 100 });
+        expect(complete.complete).toBe(true);
+        expect(complete.status).toBe('COMPLETE');
+        expect(complete.required_timeframes).toEqual(required);
+        expect(complete.missing_timeframes).toEqual([]);
+        expect(complete.invalid_timeframes).toEqual([]);
+        const noEvents = ctx.assessMarketSnapshotCompleteness({ historyCache: completeHistory(), price: 100 });
+        expect(noEvents.complete).toBe(true);
+        const snapshotId = ctx.buildMarketSnapshotId({ pair: 'NZD/USD', asOfMs: Date.now(), historyCache: completeHistory(), providerTimestamp: Date.now(), provider: 'TVKIT' });
+        expect(snapshotId).toMatch(/^TVKIT:NZD\/USD:/);
+        expect(snapshotId).not.toContain('UNAVAILABLE');
+    });
+
+    it.each([['all missing', {}], ['one missing', { ...completeHistory(), '4H': [] }]])('%s is DATA_UNAVAILABLE rather than a market conclusion', (label, historyCache) => {
+        const ctx = getContext();
+        const result = ctx.assessMarketSnapshotCompleteness({ historyCache, price: 100 });
+        expect(result.complete).toBe(false);
+        expect(result.status).toBe('DATA_UNAVAILABLE');
+        expect(result.reason_code).toBe('INCOMPLETE_MARKET_SNAPSHOT');
+    });
+
+    it('retains provider errors and rejects malformed or insufficient candles', () => {
+        const ctx = getContext();
+        const history = completeHistory();
+        history['5M'] = [{ o: 1, h: 0, l: 1, c: 1, is_closed: true }];
+        const result = ctx.assessMarketSnapshotCompleteness({
+            historyCache: { ...history, fetch_errors: { '5M': { timeframe: '5M', symbol: 'GBP/USD', message: 'provider returned no values' } } },
+            price: 1
+        });
+        expect(result.complete).toBe(false);
+        expect(result.invalid_timeframes).toContain('5M');
+        expect(result.provider_errors['5M'].message).toBe('provider returned no values');
+    });
+
+    it.each([
+        ['XAU/USD', 'OANDA:XAUUSD'],
+        ['EUR/USD', 'FX_IDC:EURUSD'],
+        ['GBP/USD', 'FX_IDC:GBPUSD'],
+        ['NZD/USD', 'FX_IDC:NZDUSD']
+    ])('uses one canonical provider symbol for quote and all requested series for %s', async (symbol, providerSymbol) => {
+        const { context } = getScanContext();
+        context.window.__ICT_MARKET_DATA_PROVIDER__ = 'TVKIT';
+        context.window.__ICT_TVKIT_BASE_URL__ = 'https://tvkit.test';
+        const urls = [];
+        context.fetch = jest.fn(url => {
+            urls.push(String(url));
+            const parsed = new URL(String(url));
+            return Promise.resolve({ ok: true, json: () => Promise.resolve(parsed.pathname.endsWith('/quote') ? { price: 0.55892, timestamp: Date.now() } : { values: [] }) });
+        });
+        await context.fetchMarketQuoteSnapshotUncached(symbol);
+        await context.fetchHistoryUncached('1D', symbol);
+        expect(urls[0]).toContain(`symbol=${encodeURIComponent(providerSymbol)}`);
+        expect(urls[1]).toContain(`symbol=${encodeURIComponent(providerSymbol)}`);
+        expect(urls[1]).toContain('interval=1day');
+        expect(urls[1]).toContain('outputsize=200');
     });
 });
 

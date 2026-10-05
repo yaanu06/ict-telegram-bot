@@ -22,6 +22,8 @@ const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 // window override to AUTO_AI only when re-enabling the existing automatic
 // analyst/selector workflow for controlled testing or a future rollout.
 const DEFAULT_ANALYSIS_MODE = 'MANUAL_EXTERNAL_AI';
+const REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES = Object.freeze(['1D', '4H', '1H', '15M', '5M']);
+const MARKET_SNAPSHOT_MINIMUM_CANDLES = Object.freeze({ '1D': 50, '4H': 50, '1H': 50, '15M': 20, '5M': 20 });
 let GITHUB_PAT = '', GITHUB_REPO = 'yaanu06/ict-telegram-bot';
 const AI_REQUEST_TIMEOUT_MS = 45000;
 const TIMEFRAME_MS = { '1M': 60000, '5M': 5 * 60000, '15M': 15 * 60000, '1H': 60 * 60000, '4H': 240 * 60000, '1D': 1440 * 60000, '1W': 10080 * 60000 };
@@ -63,7 +65,7 @@ function getMarketDataProviderLabel() {
 }
 
 function getTvkitSymbol(forPair = pair) {
-    const normalized = normalizeSymbolInput(forPair);
+    const normalized = normalizeCanonicalMarketSymbol(forPair);
     if (normalized.includes(':')) return normalized;
     const known = {
         'XAU/USD': 'OANDA:XAUUSD',
@@ -412,8 +414,27 @@ function normalizeSymbolInput(value) {
     return String(value || '').trim().toUpperCase().replace(/\s+/g, '');
 }
 
+// This is the single browser-side symbol boundary. Trading logic consumes the
+// canonical slash form; provider adapters are the only layer that turns it
+// into an exchange-qualified symbol. Compact fiat pairs are normalized here
+// so quote, history, caches, snapshots, and evidence cannot disagree about
+// the selected instrument.
+function normalizeCanonicalMarketSymbol(value) {
+    const normalized = normalizeSymbolInput(value);
+    if (!normalized || normalized.includes(':')) return normalized;
+    const aliases = { XAUUSD: 'XAU/USD', XAGUSD: 'XAG/USD', BTCUSD: 'BTC/USD' };
+    if (aliases[normalized]) return aliases[normalized];
+    const instrument = normalized.replace('/', '');
+    if (/^[A-Z]{6}$/.test(instrument)) {
+        const base = instrument.slice(0, 3);
+        const quote = instrument.slice(3);
+        if (FIAT_CURRENCY_CODES.has(base) && FIAT_CURRENCY_CODES.has(quote)) return `${base}/${quote}`;
+    }
+    return normalized;
+}
+
 function validateSymbolInput(value) {
-    const symbol = normalizeSymbolInput(value);
+    const symbol = normalizeCanonicalMarketSymbol(value);
     if (!symbol) return { valid: false, symbol: '', reason: 'Symbol is required.' };
     if (symbol.length > 32) return { valid: false, symbol, reason: 'Symbol is too long.' };
     if (!/^[A-Z0-9][A-Z0-9._:-]*(?:\/[A-Z0-9][A-Z0-9._:-]*)?$/.test(symbol)) {
@@ -423,7 +444,7 @@ function validateSymbolInput(value) {
 }
 
 function getProviderSymbol(value) {
-    const normalized = normalizeSymbolInput(value);
+    const normalized = normalizeCanonicalMarketSymbol(value);
     return SYMBOLS[normalized] || normalized;
 }
 
@@ -435,7 +456,7 @@ function getProviderSymbol(value) {
 // plan, but we default conservative).
 function hasRealVolume(p, metadata = {}) {
     if (typeof metadata.volume_reliable === 'boolean') return metadata.volume_reliable;
-    const sym = normalizeSymbolInput(p || pair);
+    const sym = normalizeCanonicalMarketSymbol(p || pair);
     const assetClass = metadata.asset_class || getAssetClass(sym);
     return ['CRYPTO', 'EQUITY', 'INDEX'].includes(assetClass);
 }
@@ -917,7 +938,7 @@ async function fetchTD(pathAndQuery, timeoutMs = 10000, retries = 2) {
 }
 
 async function getPrice(forPair) {
-    const p = forPair || pair;
+    const p = normalizeCanonicalMarketSymbol(forPair || pair);
     const now = Date.now();
     if(cachedPrice !== null && cachedPricePair === p && (now - priceCacheTime) < PRICE_CACHE_DURATION) {
         return cachedPrice;
@@ -952,7 +973,7 @@ function getRequiredHistoryOutputSize() {
 }
 
 function getAssetClass(forPair = pair) {
-    const normalized = String(forPair || '').toUpperCase().replace(/\s/g, '');
+    const normalized = normalizeCanonicalMarketSymbol(forPair);
     // Twelve Data accepts exchange-qualified symbols such as NASDAQ:AAPL
     // and BINANCE:BTC/USD. Classification must use the instrument portion,
     // while the original qualified symbol remains the provider symbol.
@@ -972,7 +993,7 @@ function getAssetClass(forPair = pair) {
 }
 
 function getSymbolMetadata(forPair = pair, overrides = {}) {
-    const symbol = normalizeSymbolInput(forPair);
+    const symbol = normalizeCanonicalMarketSymbol(forPair);
     const assetClass = overrides.asset_class || getAssetClass(symbol);
     const settings = getMarketSettings(symbol, overrides);
     const positive = key => Number.isFinite(Number(overrides[key])) && Number(overrides[key]) > 0 ? Number(overrides[key]) : null;
@@ -1067,7 +1088,7 @@ function getMarketOpenState(forPair = pair, scanSnapshot = {}) {
 }
 
 async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
-    const p = forPair || pair;
+    const p = normalizeCanonicalMarketSymbol(forPair || pair);
     const symbolMetadata = getSymbolMetadata(p);
     const assetClass = symbolMetadata.asset_class;
     try {
@@ -1126,7 +1147,7 @@ function applyCustomPair() {
         showNotif(result.reason, 'warning');
         return;
     }
-    pair = result.symbol;
+    pair = normalizeCanonicalMarketSymbol(result.symbol);
     const select = document.getElementById('pairSelect');
     if (select) {
         const existing = [...select.options].find(option => option.value === pair);
@@ -1141,7 +1162,7 @@ function applyCustomPair() {
 }
 
 async function getMarketQuoteSnapshot(forPair = pair) {
-    const requestedPair = forPair || pair;
+    const requestedPair = normalizeCanonicalMarketSymbol(forPair || pair);
     const cached = quoteResponseCache.get(requestedPair);
     if (cached && Date.now() - cached.ts < QUOTE_CACHE_TTL_MS) return cached.data;
     const existing = quoteInFlightCache.get(requestedPair);
@@ -1183,7 +1204,7 @@ function refreshStaleQuoteFromClosedCandle(quoteSnapshot, historyCache, asOfMs =
 async function fetchHistoryUncached(tfStr, forPair) {
     if(!hasMarketDataAccess()) return null;
     if (!TF_MAP[tfStr]) throw new Error(`Unsupported timeframe: ${tfStr}`);
-    const requestedPair = forPair || pair;
+    const requestedPair = normalizeCanonicalMarketSymbol(forPair || pair);
     const cacheKey = `${requestedPair}|${tfStr}`;
     const cached = historyResponseCache.get(cacheKey);
     const cacheTtl = HISTORY_CACHE_TTL_MS[tfStr] || 60000;
@@ -2611,7 +2632,7 @@ function buildFreshExecutionZones(narrative, historyCache = {}, existingZones = 
 }
 
 async function getHistory(tfStr, forPair) {
-    const requestedPair = forPair || pair;
+    const requestedPair = normalizeCanonicalMarketSymbol(forPair || pair);
     const cacheKey = `${requestedPair}|${tfStr}`;
     const existing = historyInFlightCache.get(cacheKey);
     if (existing) return existing;
@@ -2665,6 +2686,114 @@ function canonicalizeHistory(candles, timeframe, asOfMs) {
     }));
     Object.defineProperty(normalized, 'provider_metadata', { value: candles?.provider_metadata || { provider: 'UNKNOWN', requested_timezone: 'UTC', timeframe }, enumerable: false });
     return normalized;
+}
+
+function sanitizeSnapshotProviderErrors(providerErrors = {}) {
+    if (!providerErrors || typeof providerErrors !== 'object' || Array.isArray(providerErrors)) return {};
+    return Object.fromEntries(Object.entries(providerErrors).map(([timeframe, error]) => [timeframe, {
+        timeframe: error?.timeframe || timeframe,
+        symbol: error?.symbol || null,
+        message: String(error?.message || error || 'Provider did not return usable candle data').slice(0, 240)
+    }]));
+}
+
+// Snapshot availability is deliberately independent of detector output. A
+// valid market can have no FVG, CRT, TBS, candidate, or institutional event;
+// it is still analyzable when all required closed-candle series are usable.
+function assessMarketSnapshotCompleteness({ historyCache = {}, price = null, providerErrors = null, requiredTimeframes = REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES } = {}) {
+    const required = [...new Set(Array.isArray(requiredTimeframes) ? requiredTimeframes : REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES)];
+    const sanitizedErrors = sanitizeSnapshotProviderErrors(providerErrors || historyCache?.fetch_errors || {});
+    const timeframes = {};
+    const missingTimeframes = [];
+    const invalidTimeframes = [];
+    for (const timeframe of required) {
+        const minimum = MARKET_SNAPSHOT_MINIMUM_CANDLES[timeframe] || 1;
+        const data = historyCache?.[timeframe];
+        const status = { timeframe, minimum_closed_candles: minimum, loaded: Array.isArray(data) };
+        if (!Array.isArray(data) || data.length === 0) {
+            status.state = 'MISSING';
+            status.closed_candle_count = 0;
+            missingTimeframes.push(timeframe);
+            timeframes[timeframe] = status;
+            continue;
+        }
+        const closed = data.filter(candle => candle && candle.is_closed !== false);
+        status.closed_candle_count = closed.length;
+        let previousTimestamp = null;
+        let ordered = true;
+        for (const candle of closed) {
+            const timestamp = normalizeTimestampUTC(candle.t);
+            if (Number.isFinite(timestamp)) {
+                if (previousTimestamp !== null && timestamp <= previousTimestamp) ordered = false;
+                previousTimestamp = timestamp;
+            }
+        }
+        const usable = closed.every(candle => candle && [candle.o, candle.h, candle.l, candle.c].every(value => Number.isFinite(Number(value)))
+            && Number(candle.h) >= Math.max(Number(candle.o), Number(candle.c))
+            && Number(candle.l) <= Math.min(Number(candle.o), Number(candle.c))
+            && Number(candle.h) >= Number(candle.l));
+        if (sanitizedErrors[timeframe]) {
+            status.state = 'ERROR';
+            status.error = sanitizedErrors[timeframe].message;
+            invalidTimeframes.push(timeframe);
+        } else if (!usable || !ordered) {
+            status.state = !ordered ? 'UNORDERED' : 'MALFORMED';
+            invalidTimeframes.push(timeframe);
+        } else if (closed.length < minimum) {
+            status.state = 'INSUFFICIENT';
+            invalidTimeframes.push(timeframe);
+        } else {
+            status.state = 'VALID';
+        }
+        timeframes[timeframe] = status;
+    }
+    const priceValid = Number.isFinite(Number(price)) && Number(price) > 0;
+    const complete = priceValid && missingTimeframes.length === 0 && invalidTimeframes.length === 0;
+    return {
+        status: complete ? 'COMPLETE' : 'DATA_UNAVAILABLE',
+        complete,
+        required_timeframes: required,
+        missing_timeframes: missingTimeframes,
+        invalid_timeframes: invalidTimeframes,
+        price_valid: priceValid,
+        timeframes,
+        provider_errors: sanitizedErrors,
+        reason_code: complete ? null : 'INCOMPLETE_MARKET_SNAPSHOT'
+    };
+}
+
+function buildIncompleteMarketSnapshotSignal({ pair: pairLocal = pair, price = null, quoteSnapshot = null, completeness = {}, asOfMs = Date.now() } = {}) {
+    const provider = getMarketDataProvider();
+    const missing = completeness.missing_timeframes || [];
+    const invalid = completeness.invalid_timeframes || [];
+    const details = [...missing.map(tf => `${tf} missing`), ...invalid.map(tf => `${tf} unusable`)];
+    return {
+        trade_signal: {
+            date: new Date(asOfMs).toISOString().slice(0, 10),
+            time: new Date(asOfMs).toISOString().slice(11, 19),
+            pair: normalizeCanonicalMarketSymbol(pairLocal),
+            current_price: Number.isFinite(Number(price)) ? Number(price) : null,
+            decision: 'WAIT',
+            trade_type: 'WAIT',
+            status: 'DATA_UNAVAILABLE',
+            status_code: 'DATA_UNAVAILABLE',
+            execution_allowed: false,
+            selected_candidate_id: null,
+            reason: {
+                code: 'INCOMPLETE_MARKET_SNAPSHOT',
+                message: `Required ${provider} market evidence is unavailable; ${details.length ? details.join(', ') : 'the five-timeframe snapshot could not be completed'}. No market conclusion was made.`
+            },
+            data_quality: { valid: false, reasons: ['INCOMPLETE_MARKET_SNAPSHOT', ...details] },
+            snapshot_completeness: completeness,
+            history_errors: completeness.provider_errors || {},
+            provider_metadata: {
+                provider,
+                provider_symbol: provider === 'TVKIT' ? getTvkitSymbol(pairLocal) : getProviderSymbol(pairLocal),
+                quote_source: quoteSnapshot?.quote_source || null
+            },
+            market_open: quoteSnapshot?.is_market_open ?? null
+        }
+    };
 }
 
 function isValidCandleArray(data, min = 1) {
@@ -10600,6 +10729,7 @@ function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure
 }
 
 function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext, as_of_ms = null, quote_snapshot = null }) {
+    pair = normalizeCanonicalMarketSymbol(pair);
     const symbolMetadata = getSymbolMetadata(pair, quote_snapshot?.symbol_metadata || {});
     const settings = getMarketSettings(pair, symbolMetadata);
     const prec = settings.prec;
@@ -10608,6 +10738,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const sessionCheck = shouldTradeSession(now);
     const marketState = getMarketOpenState(pair, { ...(quote_snapshot || {}), as_of_ms });
     const dataQuality = validateMarketDataQuality(historyCache, price, quote_snapshot, as_of_ms || Date.now(), ['1D', '4H', '1H', '15M', '5M']);
+    const snapshotCompleteness = assessMarketSnapshotCompleteness({ historyCache, price });
     const realVolume = hasRealVolume(pair, symbolMetadata);
     const closed4h = getClosedHistory(historyCache, '4H');
     const closed1h = getClosedHistory(historyCache, '1H');
@@ -10771,6 +10902,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     // Candidate construction consumes this same quality verdict so a stale
     // quote cannot be replaced by a fresh-looking fallback candidate.
     marketContext.data_quality = dataQuality;
+    marketContext.snapshot_completeness = snapshotCompleteness;
     console.log('MARKET CONTEXT', marketContext);
     console.log('CONTEXT BIAS', {
         directional_bias: marketContext.directional_bias,
@@ -10969,6 +11101,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         },
         asset_class: marketState.asset_class,
         data_quality: dataQuality,
+        snapshot_completeness: snapshotCompleteness,
         market_open: marketState.is_market_open,
         market_open_source: marketState.source,
         provider_metadata: Object.fromEntries(Object.entries(historyCache || {}).map(([tf, data]) => [tf, data?.provider_metadata || null])),
@@ -12053,6 +12186,7 @@ function buildCanonicalMarketEvidencePackage(liveMarketContext = {}, historyCach
     return {
         package_version: 1,
         snapshot_id: liveMarketContext.snapshot_id || liveMarketContext.market_context?.snapshot_id || null,
+        snapshot_completeness: liveMarketContext.snapshot_completeness || assessMarketSnapshotCompleteness({ historyCache, price }),
         timeframes,
         institutional_activity_evidence: institutionalActivityEvidence,
         current_price: price,
@@ -12153,6 +12287,7 @@ function buildAiMarketEvidenceCatalog(liveMarketContext = {}, historyCache = {})
         symbol_metadata: liveMarketContext.symbol_metadata || null,
         provider_metadata: liveMarketContext.provider_metadata || null,
         data_quality: liveMarketContext.data_quality || null,
+        snapshot_completeness: liveMarketContext.snapshot_completeness || marketEvidencePackage.snapshot_completeness || null,
         news_risk: liveMarketContext.news_risk || { status: 'UNKNOWN', available: false },
         session: liveMarketContext.session,
         market_regime: liveMarketContext.market_regime || null,
@@ -14255,6 +14390,8 @@ function buildManualExternalAIReviewOutput({ liveMarketContext = {}, pairLocal =
     signal.decision = 'WAIT';
     signal.trade_type = 'WAIT';
     signal.selected_candidate_id = null;
+    signal.snapshot_id = liveMarketContext.snapshot_id || null;
+    signal.snapshot_completeness = liveMarketContext.snapshot_completeness || null;
     signal.status = 'MANUAL_EXTERNAL_AI_REVIEW';
     signal.direction = null;
     signal.strategy = null;
@@ -14309,6 +14446,7 @@ async function runAutoScan() {
         return;
     }
     scanInProgress = true;
+    pair = normalizeCanonicalMarketSymbol(pair);
     const scanAsOfMs = Date.now();
     const scanStartedAt = scanClock();
     let scanStage = 'initializing';
@@ -14317,6 +14455,7 @@ async function runAutoScan() {
     let historyCache = {};
     // A failed scan must never reuse the previous scan's replay/context.
     lastLiveMarketContextForReplay = null;
+    if (typeof window !== 'undefined') window.__ICT_LAST_SCAN_REPLAY__ = null;
     const btn = document.getElementById('analyzeBtn');
     const scanStatus = document.getElementById('scanStatus');
     const scanText = document.getElementById('scanText');
@@ -14382,6 +14521,30 @@ async function runAutoScan() {
             configurable: true
         });
         scanTrace('history loaded', scanStartedAt, { timeframes: Object.fromEntries(tfs.map(tf => [tf, historyCache[tf]?.length || 0])) });
+        const snapshotCompleteness = assessMarketSnapshotCompleteness({
+            historyCache,
+            price,
+            providerErrors: historyCache.fetch_errors,
+            requiredTimeframes: REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES
+        });
+        if (!snapshotCompleteness.complete) {
+            scanStage = 'incomplete market snapshot';
+            const unavailableOutput = buildIncompleteMarketSnapshotSignal({
+                pairLocal: pair,
+                price,
+                quoteSnapshot,
+                completeness: snapshotCompleteness,
+                asOfMs: scanAsOfMs
+            });
+            setJsonOutput(unavailableOutput);
+            lastSetupSummary = null;
+            lastSetupOut = unavailableOutput;
+            analysis = { signalType: 'DATA_UNAVAILABLE', currentPrice: price, confidence: 0, entryReady: false, executionDecision: 'skip', aiDecision: null, execution_allowed: false, manual_tracking_allowed: false };
+            scanText.innerHTML = '⚠️ Market data incomplete — no market conclusion was made';
+            showNotif('Required market timeframe data is unavailable; no trade conclusion was made.', 'warning');
+            scanTrace('incomplete market snapshot', scanStartedAt, snapshotCompleteness);
+            return;
+        }
         scanStage = 'MTF display';
         await updateMTFDisplay(historyCache);
         
@@ -15788,6 +15951,7 @@ function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = fal
     // News risk is a hard execution lock. It must take precedence over a
     // paper-mode risk gate or any stale execution_allowed value.
     if (signal.news_risk?.status === 'HIGH_IMPACT') return 'NEWS_BLOCKED';
+    if (reasonCode === 'INCOMPLETE_MARKET_SNAPSHOT' || signal.status === 'DATA_UNAVAILABLE' || signal.status_code === 'DATA_UNAVAILABLE') return 'DATA_UNAVAILABLE';
     if (signal.data_quality?.valid === false || reasonCode.includes('DATA') || reasonCode.includes('PRICE_UNAVAILABLE')) return 'DATA_BLOCKED';
     if (riskGate.status === 'RISK_BLOCKED' || reasonCode.includes('RISK_BLOCKED') || reasonCode.includes('SPREAD_TOO_WIDE')) return 'RISK_BLOCKED';
     if (signal.market_open === false) return 'MARKET_CLOSED';
@@ -15818,7 +15982,7 @@ function getAnalysisStatus(signal = {}) {
     const statusCode = String(signal.status_code || getPublicStatusCode(signal,
         !!signal.primary_opportunity || !!signal.opportunity,
         Number.isFinite(Number(signal.entry ?? signal.entry_price))));
-    if (['DATA_BLOCKED', 'NEWS_BLOCKED', 'RISK_BLOCKED', 'MARKET_CLOSED', 'INVALIDATED', 'EXPIRED', 'SETUP_READY', 'WATCH', 'ORDER_PENDING'].includes(statusCode)) return statusCode;
+    if (['DATA_UNAVAILABLE', 'DATA_BLOCKED', 'NEWS_BLOCKED', 'RISK_BLOCKED', 'MARKET_CLOSED', 'INVALIDATED', 'EXPIRED', 'SETUP_READY', 'WATCH', 'ORDER_PENDING'].includes(statusCode)) return statusCode;
     if (signal.current_price == null || !Number.isFinite(Number(signal.current_price))) return 'WAITING_FOR_DATA';
     if (signal.data_quality?.valid === true && signal.market_open !== false) return 'SAFE_TO_ANALYZE';
     return 'NO_TRADE';
@@ -16234,6 +16398,8 @@ function buildPublicTradeSignal(signal = {}) {
                 date: signal.date,
                 pair: signal.pair,
                 current_price: signal.current_price,
+                snapshot_id: signal.snapshot_id || signal.today_opportunity?.snapshot_id || null,
+                snapshot_completeness: signal.snapshot_completeness || signal.today_opportunity?.snapshot_completeness || null,
                 symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
                 decision: executablePrimary ? orderType : 'WAIT',
                 trade_type: orderType,
@@ -16301,6 +16467,8 @@ function buildPublicTradeSignal(signal = {}) {
             time: signal.time,
             pair: signal.pair,
             current_price: signal.current_price,
+            snapshot_id: signal.snapshot_id || null,
+            snapshot_completeness: signal.snapshot_completeness || null,
             symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
             decision: 'WAIT',
             trade_type: 'WAIT',
@@ -16520,7 +16688,7 @@ function recordAnalysisAudit(signal = {}, replay = null) {
 function validatePublicTradeSignal(signal = {}) {
     const issues = [];
     const decisions = new Set(['WAIT', 'BUY_LIMIT', 'SELL_LIMIT']);
-    const statuses = new Set(['SETUP_READY', 'WATCH', 'ORDER_PENDING', 'NO_TRADE', 'DATA_BLOCKED', 'NEWS_BLOCKED', 'RISK_BLOCKED', 'MARKET_CLOSED', 'INVALIDATED', 'EXPIRED']);
+    const statuses = new Set(['SETUP_READY', 'WATCH', 'ORDER_PENDING', 'NO_TRADE', 'DATA_UNAVAILABLE', 'DATA_BLOCKED', 'NEWS_BLOCKED', 'RISK_BLOCKED', 'MARKET_CLOSED', 'INVALIDATED', 'EXPIRED']);
     if (!signal || typeof signal !== 'object' || Array.isArray(signal)) issues.push('signal must be an object');
     if (!String(signal?.pair || '').trim()) issues.push('pair is required');
     if (!decisions.has(String(signal?.decision || ''))) issues.push('decision is invalid');
@@ -17505,9 +17673,49 @@ function externalPacketCandidateRecord(candidate = {}, targetIndex = new Map()) 
     }, ['candidate_id', 'direction', 'type', 'setup_label', 'opportunity_role', 'setup_timeframe', 'execution_timeframe', 'execution_mode', 'source', 'evidence_ids', 'entry_zone', 'entry', 'structural_invalidation_id', 'structural_invalidation', 'stop_loss', 'tp1', 'tp2', 'tp3', 'target_ids', 'targets', 'rr', 'minimum_rr', 'freshness', 'poi_freshness', 'opportunity_freshness', 'formation_time', 'lifecycle', 'mitigation', 'entry_consumed', 'reachability', 'delivery', 'confluence', 'supporting_evidence_ids', 'conflicting_evidence_ids', 'quality_warnings', 'hard_rejections', 'deterministic_valid', 'state']);
 }
 
+function buildDataUnavailableExternalAIPacket({ signal = {}, replay = null } = {}) {
+    const source = replay || {};
+    const result = signal || source.final_output?.trade_signal || source.final_output || {};
+    const completeness = result.snapshot_completeness
+        || source.snapshot_completeness
+        || source.market_evidence_package?.snapshot_completeness
+        || null;
+    const providerMetadata = source.provider_metadata || result.provider_metadata || {};
+    const payload = {
+        packet_type: 'MARKET_DATA_AVAILABILITY_DIAGNOSTIC',
+        status: 'DATA_UNAVAILABLE',
+        reason: result.reason || { code: 'INCOMPLETE_MARKET_SNAPSHOT', message: 'Required market evidence was not available.' },
+        symbol: source.pair || result.pair || null,
+        provider: providerMetadata.provider || getMarketDataProvider(),
+        provider_symbol: providerMetadata.provider_symbol || null,
+        snapshot_id: source.snapshot_id || result.snapshot_id || null,
+        current_price: externalPacketNumber(source.quote?.price ?? result.current_price),
+        as_of: source.scan_as_of || result.time || null,
+        required_timeframes: completeness?.required_timeframes || REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES,
+        missing_timeframes: completeness?.missing_timeframes || [],
+        invalid_timeframes: completeness?.invalid_timeframes || [],
+        timeframe_status: completeness?.timeframes || {},
+        provider_errors: completeness?.provider_errors || result.history_errors || {}
+    };
+    return [
+        'ICT TRADING BOT PRO',
+        'MARKET DATA AVAILABILITY DIAGNOSTIC',
+        '',
+        JSON.stringify(payload, null, 2),
+        '',
+        'No market conclusion was made. A quote without a complete closed-candle snapshot is not a NO_TRADE result. Retry after the required timeframes are available.'
+    ].join('\n').replace(/(DEEPSEEK_API_KEY|GEMINI_API_KEY|TWELVE_DATA_API_KEY|TELEGRAM_BOT_TOKEN|Authorization|Bearer)\s*[:=]?\s*[^\s\n]*/gi, '$1: [REDACTED]');
+}
+
 function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
     const source = replay || {};
     const result = signal || source.final_output?.trade_signal || source.final_output || {};
+    const unavailable = result.status === 'DATA_UNAVAILABLE'
+        || result.status_code === 'DATA_UNAVAILABLE'
+        || result.reason?.code === 'INCOMPLETE_MARKET_SNAPSHOT'
+        || source.snapshot_completeness?.complete === false
+        || source.market_evidence_package?.snapshot_completeness?.complete === false;
+    if (unavailable) return buildDataUnavailableExternalAIPacket({ signal: result, replay: source });
     const pairValue = source.pair || result.pair || 'UNKNOWN';
     const manualReview = result.reason?.code === 'MANUAL_EXTERNAL_AI_REVIEW'
         || result.analysis_mode === DEFAULT_ANALYSIS_MODE
