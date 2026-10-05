@@ -2833,6 +2833,28 @@ describe('Analyze scan lifecycle', () => {
         expect(spies.buildLiveMarketContext).not.toHaveBeenCalled();
     });
 
+    it('keeps a post-history failure on the DATA_UNAVAILABLE path instead of invoking fallback', async () => {
+        const { context, elements, spies } = prepareScan({
+            runtimePair: 'NZD/USD',
+            historyByTimeframe: { '1D': null, '4H': null, '1H': null, '15M': null, '5M': null }
+        });
+        context.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
+        vm.runInContext(`refreshStaleQuoteFromClosedCandle = () => { throw new Error('history normalization failure'); }`, context);
+        context.init();
+        vm.runInContext(`pair = 'NZD/USD'`, context);
+        await elements.get('analyzeBtn').dispatchEvent({ type: 'click' });
+        const displayed = JSON.parse(elements.get('jsonOutput').textContent).trade_signal;
+        expect(displayed.status).toBe('DATA_UNAVAILABLE');
+        expect(displayed.reason.code).toBe('INCOMPLETE_MARKET_SNAPSHOT');
+        expect(spies.runFallbackScan).not.toHaveBeenCalled();
+        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
+        expect(packet).toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
+        expect(packet).toContain('NZD/USD');
+        expect(packet).not.toContain('CURRENT BOT RESULT');
+        expect(packet).not.toContain('NO_FRESH_OPPORTUNITY');
+    });
+
     it.each([['XAU/USD', 'NZD/USD'], ['NZD/USD', 'GBP/USD']])('binds incomplete %s Copy to the current scan instead of prior %s state', async (priorPair, runtimePair) => {
         const { context, elements, spies } = prepareScan({ runtimePair: priorPair });
         context.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
@@ -2866,7 +2888,7 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).not.toContain(priorPair);
     });
 
-    it.each(['XAU/USD', 'GBP/USD', 'NZD/USD'])('uses the compact evidence-first Copy path for a complete %s scan', async runtimePair => {
+    it.each(['XAU/USD', 'EUR/USD', 'GBP/USD', 'NZD/USD'])('uses the compact evidence-first Copy path for a complete %s scan', async runtimePair => {
         const { context, elements, spies } = prepareScan({ runtimePair });
         context.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
         context.init();
@@ -2892,6 +2914,48 @@ describe('Analyze scan lifecycle', () => {
         expect(spies.getHistory.mock.calls.map(call => call[0])).toEqual(['5M', '15M', '1H', '4H', '1D']);
         expect(elements.get('analyzeBtn').disabled).toBe(false);
         expect(elements.get('scanStatus').classList.contains('hidden')).toBe(true);
+    });
+
+    it('uses the same generic TVKIT provider symbol and five interval contract for supported symbols', async () => {
+        const { context } = getScanContext();
+        context.window.__ICT_MARKET_DATA_PROVIDER__ = 'TVKIT';
+        context.window.__ICT_PROXY_BASE_URL__ = 'https://proxy.test';
+        const intervals = { '1D': ['1day', 86400000], '4H': ['4h', 14400000], '1H': ['1h', 3600000], '15M': ['15min', 900000], '5M': ['5min', 300000] };
+        const calls = [];
+        context.fetch = jest.fn(async url => {
+            calls.push(String(url));
+            const match = String(url).match(/interval=([^&]+)/);
+            const tfInterval = decodeURIComponent(match?.[1] || '1h');
+            const duration = Object.values(intervals).find(([value]) => value === tfInterval)?.[1] || 3600000;
+            const now = Date.now();
+            return {
+                ok: true,
+                json: async () => ({
+                    values: Array.from({ length: 60 }, (_, index) => {
+                        const t = new Date(now - (index + 1) * duration).toISOString();
+                        return { datetime: t, open: 100, high: 101, low: 99, close: 100 };
+                    }),
+                    meta: { provider: 'TVKIT', provider_symbol: 'TEST', interval: tfInterval, timezone: 'UTC', raw_count: 60 }
+                })
+            };
+        });
+        const expectedSymbols = {
+            'XAU/USD': 'OANDA:XAUUSD',
+            'EUR/USD': 'FX_IDC:EURUSD',
+            'GBP/USD': 'FX_IDC:GBPUSD',
+            'NZD/USD': 'FX_IDC:NZDUSD'
+        };
+        for (const [symbol, providerSymbol] of Object.entries(expectedSymbols)) {
+            expect(context.getTvkitSymbol(symbol)).toBe(providerSymbol);
+            for (const [timeframe, [interval]] of Object.entries(intervals)) {
+                const result = await context.fetchHistoryUncached(timeframe, symbol);
+                expect(result).toHaveLength(60);
+                expect(calls.at(-1)).toContain(`symbol=${encodeURIComponent(providerSymbol)}`);
+                expect(calls.at(-1)).toContain(`interval=${interval}`);
+            }
+        }
+        expect(calls).toHaveLength(20);
+        expect(calls.join('\n')).not.toMatch(/1week|1month/i);
     });
 
     it('manual external AI mode runs deterministic preparation and makes no AI request', async () => {

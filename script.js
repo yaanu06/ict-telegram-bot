@@ -886,6 +886,10 @@ const historyInFlightCache = new Map();
 const quoteInFlightCache = new Map();
 const quoteResponseCache = new Map();
 const historyFetchErrors = new Map();
+// Keep request-level availability facts separate from the candle payload.
+// These diagnostics are used by the scan result, never serialized as raw
+// candles into the external-AI packet.
+const historyRequestDiagnostics = new Map();
 const QUOTE_CACHE_TTL_MS = 5000;
 const HISTORY_CACHE_TTL_MS = Object.freeze({
     '1M': 30000,
@@ -1208,23 +1212,60 @@ function refreshStaleQuoteFromClosedCandle(quoteSnapshot, historyCache, asOfMs =
 }
 
 async function fetchHistoryUncached(tfStr, forPair) {
-    if(!hasMarketDataAccess()) return null;
     if (!TF_MAP[tfStr]) throw new Error(`Unsupported timeframe: ${tfStr}`);
     const requestedPair = normalizeCanonicalMarketSymbol(forPair || pair);
     const cacheKey = `${requestedPair}|${tfStr}`;
     const cached = historyResponseCache.get(cacheKey);
     const cacheTtl = HISTORY_CACHE_TTL_MS[tfStr] || 60000;
-    if (cached && Date.now() - cached.ts < cacheTtl) return cached.data;
+    const provider = getMarketDataProvider();
+    const providerSymbol = provider === 'TVKIT' ? getTvkitSymbol(requestedPair) : getProviderSymbol(requestedPair);
+    const requestStartedAt = Date.now();
+    let rawCandleCount = null;
+    let normalizedCandleCount = 0;
+    const diagnosticBase = {
+        timeframe: tfStr,
+        symbol: requestedPair,
+        provider,
+        provider_symbol: providerSymbol || null,
+        interval: TF_MAP[tfStr] || null,
+        requested_outputsize: getRequiredHistoryOutputSize()
+    };
+    if (!hasMarketDataAccess()) {
+        const error = 'Market data provider access is unavailable';
+        historyFetchErrors.set(cacheKey, { timeframe: tfStr, symbol: requestedPair, message: error, at: Date.now() });
+        historyRequestDiagnostics.set(cacheKey, {
+            ...diagnosticBase,
+            state: 'ACCESS_UNAVAILABLE',
+            raw_candle_count: null,
+            normalized_candle_count: 0,
+            closed_candle_count: 0,
+            error,
+            elapsed_ms: 0
+        });
+        return null;
+    }
+    if (cached && Date.now() - cached.ts < cacheTtl) {
+        const cachedCount = Array.isArray(cached.data) ? cached.data.length : 0;
+        historyRequestDiagnostics.set(cacheKey, {
+            ...diagnosticBase,
+            state: 'CACHE_HIT',
+            raw_candle_count: cached.data?.provider_metadata?.raw_count ?? null,
+            normalized_candle_count: cachedCount,
+            closed_candle_count: cached.data?.provider_metadata?.closed_count ?? cachedCount,
+            elapsed_ms: Date.now() - requestStartedAt
+        });
+        return cached.data;
+    }
     try {
-        const provider = getMarketDataProvider();
-        const providerSymbol = provider === 'TVKIT' ? getTvkitSymbol(requestedPair) : getProviderSymbol(requestedPair);
         if (!providerSymbol) throw new Error('Market symbol is missing');
+        historyRequestDiagnostics.set(cacheKey, { ...diagnosticBase, state: 'REQUESTED' });
         // Twelve Data treats daily/weekly timestamps as period buckets. The
         // timezone query parameter is intended for intraday series and can
         // make period-bucket requests fail for otherwise valid symbols.
         const timezoneQuery = ['1D', '1W'].includes(tfStr) ? '' : '&timezone=UTC';
         const d = await fetchTD('/time_series?symbol=' + encodeURIComponent(providerSymbol) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + timezoneQuery);
         if(d.values) {
+            rawCandleCount = Array.isArray(d.values) ? d.values.length : null;
             calls++;
             const rawValues = d.values.map(c => ({
                 t: normalizeTimestampUTC(c?.datetime ?? c?.timestamp ?? c?.time ?? c?.date ?? c?.t),
@@ -1237,6 +1278,7 @@ async function fetchHistoryUncached(tfStr, forPair) {
                 source: provider,
                 timestamp_source: 'PROVIDER'
             }));
+            normalizedCandleCount = rawValues.length;
             const periodBucket = ['1D', '1W'].includes(tfStr);
             const latestBucketTime = periodBucket
                 ? rawValues.reduce((latest, candle) => Math.max(latest, Number(candle.t)), -Infinity)
@@ -1284,15 +1326,44 @@ async function fetchHistoryUncached(tfStr, forPair) {
                 closed_count: values.length,
                 open_candles_filtered: rawValues.length - values.length
             }, enumerable: false });
+            historyRequestDiagnostics.set(cacheKey, {
+                ...diagnosticBase,
+                state: 'SUCCESS',
+                raw_candle_count: rawValues.length,
+                normalized_candle_count: rawValues.length,
+                closed_candle_count: values.length,
+                malformed_candle_count: 0,
+                elapsed_ms: Date.now() - requestStartedAt
+            });
             historyResponseCache.set(cacheKey, { data: values, ts: Date.now() });
             historyFetchErrors.delete(cacheKey);
             return values;
         }
         const message = d?.message || d?.error || `Provider returned no values for ${tfStr}`;
-        historyFetchErrors.set(cacheKey, { timeframe: tfStr, symbol: requestedPair, message: String(message).slice(0, 300), at: Date.now() });
+        const safeMessage = String(message).slice(0, 300);
+        historyFetchErrors.set(cacheKey, { timeframe: tfStr, symbol: requestedPair, message: safeMessage, at: Date.now() });
+        historyRequestDiagnostics.set(cacheKey, {
+            ...diagnosticBase,
+            state: 'NO_VALUES',
+            raw_candle_count: 0,
+            normalized_candle_count: 0,
+            closed_candle_count: 0,
+            error: safeMessage,
+            elapsed_ms: Date.now() - requestStartedAt
+        });
     } catch(e) {
         const message = e?.message || String(e);
-        historyFetchErrors.set(cacheKey, { timeframe: tfStr, symbol: requestedPair, message: String(message).slice(0, 300), at: Date.now() });
+        const safeMessage = String(message).slice(0, 300);
+        historyFetchErrors.set(cacheKey, { timeframe: tfStr, symbol: requestedPair, message: safeMessage, at: Date.now() });
+        historyRequestDiagnostics.set(cacheKey, {
+            ...diagnosticBase,
+            state: 'ERROR',
+            raw_candle_count: rawCandleCount,
+            normalized_candle_count: normalizedCandleCount,
+            closed_candle_count: 0,
+            error: safeMessage,
+            elapsed_ms: Date.now() - requestStartedAt
+        });
         console.error(`History error (${tfStr}):`, e);
     }
     return null;
@@ -2703,6 +2774,24 @@ function sanitizeSnapshotProviderErrors(providerErrors = {}) {
     }]));
 }
 
+function sanitizeHistoryRequestDiagnostics(diagnostics = {}) {
+    if (!diagnostics || typeof diagnostics !== 'object' || Array.isArray(diagnostics)) return {};
+    return Object.fromEntries(Object.entries(diagnostics).map(([timeframe, value]) => [timeframe, {
+        timeframe: value?.timeframe || timeframe,
+        symbol: value?.symbol || null,
+        provider: value?.provider || null,
+        provider_symbol: value?.provider_symbol || null,
+        interval: value?.interval || null,
+        requested_outputsize: Number.isFinite(Number(value?.requested_outputsize)) ? Number(value.requested_outputsize) : null,
+        state: value?.state || 'UNKNOWN',
+        raw_candle_count: value?.raw_candle_count ?? null,
+        normalized_candle_count: value?.normalized_candle_count ?? null,
+        closed_candle_count: value?.closed_candle_count ?? null,
+        malformed_candle_count: value?.malformed_candle_count ?? null,
+        error: value?.error ? String(value.error).slice(0, 240) : null
+    }]));
+}
+
 // Snapshot availability is deliberately independent of detector output. A
 // valid market can have no FVG, CRT, TBS, candidate, or institutional event;
 // it is still analyzable when all required closed-candle series are usable.
@@ -2768,7 +2857,7 @@ function assessMarketSnapshotCompleteness({ historyCache = {}, price = null, pro
     };
 }
 
-function buildIncompleteMarketSnapshotSignal({ pair: pairLocal = pair, price = null, quoteSnapshot = null, completeness = {}, asOfMs = Date.now() } = {}) {
+function buildIncompleteMarketSnapshotSignal({ pair: pairLocal = pair, price = null, quoteSnapshot = null, completeness = {}, historyDiagnostics = {}, asOfMs = Date.now() } = {}) {
     const provider = getMarketDataProvider();
     const missing = completeness.missing_timeframes || [];
     const invalid = completeness.invalid_timeframes || [];
@@ -2792,6 +2881,7 @@ function buildIncompleteMarketSnapshotSignal({ pair: pairLocal = pair, price = n
             data_quality: { valid: false, reasons: ['INCOMPLETE_MARKET_SNAPSHOT', ...details] },
             snapshot_completeness: completeness,
             history_errors: completeness.provider_errors || {},
+            history_diagnostics: sanitizeHistoryRequestDiagnostics(historyDiagnostics),
             provider_metadata: {
                 provider,
                 provider_symbol: provider === 'TVKIT' ? getTvkitSymbol(pairLocal) : getProviderSymbol(pairLocal),
@@ -10905,6 +10995,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     marketContext.news_risk = checkHighImpactNews(quote_snapshot?.news_risk || null);
     marketContext.symbol_metadata = symbolMetadata;
     marketContext.history_errors = historyCache?.fetch_errors || {};
+    marketContext.history_diagnostics = historyCache?.fetch_diagnostics || {};
     // Candidate construction consumes this same quality verdict so a stale
     // quote cannot be replaced by a fresh-looking fallback candidate.
     marketContext.data_quality = dataQuality;
@@ -12193,6 +12284,7 @@ function buildCanonicalMarketEvidencePackage(liveMarketContext = {}, historyCach
         package_version: 1,
         snapshot_id: liveMarketContext.snapshot_id || liveMarketContext.market_context?.snapshot_id || null,
         snapshot_completeness: liveMarketContext.snapshot_completeness || assessMarketSnapshotCompleteness({ historyCache, price }),
+        history_diagnostics: sanitizeHistoryRequestDiagnostics(historyCache?.fetch_diagnostics || {}),
         timeframes,
         institutional_activity_evidence: institutionalActivityEvidence,
         current_price: price,
@@ -14398,6 +14490,8 @@ function buildManualExternalAIReviewOutput({ liveMarketContext = {}, pairLocal =
     signal.selected_candidate_id = null;
     signal.snapshot_id = liveMarketContext.snapshot_id || null;
     signal.snapshot_completeness = liveMarketContext.snapshot_completeness || null;
+    signal.history_errors = liveMarketContext.history_errors || {};
+    signal.history_diagnostics = liveMarketContext.history_diagnostics || {};
     signal.status = 'MANUAL_EXTERNAL_AI_REVIEW';
     signal.direction = null;
     signal.strategy = null;
@@ -14527,6 +14621,21 @@ async function runAutoScan() {
             enumerable: false,
             configurable: true
         });
+        Object.defineProperty(historyCache, 'fetch_diagnostics', {
+            value: Object.fromEntries([...historyRequestDiagnostics.entries()]
+                .filter(([key]) => key.startsWith(`${pair}|`))
+                .map(([key, value]) => {
+                    const timeframe = key.slice(pair.length + 1);
+                    const data = historyCache[timeframe];
+                    return [timeframe, {
+                        ...value,
+                        normalized_candle_count: Array.isArray(data) ? data.length : 0,
+                        closed_candle_count: Array.isArray(data) ? data.filter(candle => candle?.is_closed !== false).length : 0
+                    }];
+                })),
+            enumerable: false,
+            configurable: true
+        });
         scanTrace('history loaded', scanStartedAt, { timeframes: Object.fromEntries(tfs.map(tf => [tf, historyCache[tf]?.length || 0])) });
         const snapshotCompleteness = assessMarketSnapshotCompleteness({
             historyCache,
@@ -14541,6 +14650,7 @@ async function runAutoScan() {
                 price,
                 quoteSnapshot,
                 completeness: snapshotCompleteness,
+                historyDiagnostics: historyCache.fetch_diagnostics,
                 asOfMs: scanAsOfMs
             });
             setJsonOutput(unavailableOutput);
@@ -15360,6 +15470,33 @@ async function runAutoScan() {
     } catch(e) {
         console.error('[SCAN] FAILED', { stage: scanStage, error: e?.message, stack: e?.stack });
         showNotif('Error: ' + (e?.message || 'scan failed'), 'error');
+        // A post-quote exception must never downgrade a partial snapshot into
+        // the historical fallback selector. Re-check the same canonical
+        // availability contract before allowing any deterministic fallback.
+        const failedSnapshotCompleteness = assessMarketSnapshotCompleteness({
+            historyCache,
+            price,
+            providerErrors: historyCache.fetch_errors,
+            requiredTimeframes: REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES
+        });
+        if (Number.isFinite(Number(price)) && !failedSnapshotCompleteness.complete) {
+            scanStage = 'incomplete market snapshot after scan failure';
+            const unavailableOutput = buildIncompleteMarketSnapshotSignal({
+                pairLocal: pair,
+                price,
+                quoteSnapshot,
+                completeness: failedSnapshotCompleteness,
+                historyDiagnostics: historyCache.fetch_diagnostics,
+                asOfMs: scanAsOfMs
+            });
+            setJsonOutput(unavailableOutput);
+            lastSetupSummary = null;
+            lastSetupOut = unavailableOutput;
+            analysis = { signalType: 'DATA_UNAVAILABLE', currentPrice: price, confidence: 0, entryReady: false, executionDecision: 'skip', aiDecision: null, execution_allowed: false, manual_tracking_allowed: false };
+            scanText.innerHTML = '⚠️ Market data incomplete — no market conclusion was made';
+            scanTrace('incomplete market snapshot after scan failure', scanStartedAt, failedSnapshotCompleteness);
+            return;
+        }
         if (!Number.isFinite(Number(price)) || /^DATA_BLOCKED:/i.test(String(e?.message || ''))) {
             setJsonOutput({ trade_signal: {
                 date: new Date(scanAsOfMs).toISOString().slice(0, 10),
@@ -16455,6 +16592,7 @@ function buildPublicTradeSignal(signal = {}) {
                 news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
                 data_quality: signal.data_quality || null,
                 history_errors: signal.history_errors || {},
+                history_diagnostics: signal.history_diagnostics || {},
                 provider_metadata: signal.provider_metadata || null,
                 market_conditions: signal.market_conditions || null,
                 status_code: getPublicStatusCode(signal, !!plan || !!signal.opportunity, !!compactPrimary?.entry_price),
@@ -16512,6 +16650,7 @@ function buildPublicTradeSignal(signal = {}) {
             news_risk: signal.news_risk || { status: 'UNKNOWN', available: false },
             data_quality: signal.data_quality || null,
             history_errors: signal.history_errors || {},
+            history_diagnostics: signal.history_diagnostics || {},
             provider_metadata: signal.provider_metadata || null,
             market_conditions: signal.market_conditions || null,
             status_code: getPublicStatusCode(signal, false, false),
@@ -16729,7 +16868,7 @@ function validatePublicTradeSignal(signal = {}) {
     return { valid: issues.length === 0, issues };
 }
 
-function setJsonOutput(obj) {
+function setJsonOutput(obj, { publishArtifact = true } = {}) {
     const el = document.getElementById('jsonOutput');
     let publicSignal = buildPublicTradeSignal(obj?.trade_signal || obj);
     publicSignal.app_build = APP_BUILD_ID;
@@ -16769,7 +16908,7 @@ function setJsonOutput(obj) {
     if (replay) {
         window.__ICT_LAST_SCAN_REPLAY__ = replay;
     }
-    publishCurrentScanArtifact({ signal: publicSignal, replay, output: obj });
+    if (publishArtifact) publishCurrentScanArtifact({ signal: publicSignal, replay, output: obj });
     if (lastLiveMarketContextForReplay) lastLiveMarketContextForReplay = null;
 }
 
@@ -17142,7 +17281,9 @@ function deleteRecent(id) {
 function viewRecent(id) {
     const e = getRecents().find(x => x.id === id);
     if(e?.out) {
-        setJsonOutput(e.out);
+        // Viewing a saved record is display-only. It must not replace the
+        // current Analyze artifact that owns the Copy action.
+        setJsonOutput(e.out, { publishArtifact: false });
         showNotif('📋 Loaded into Best Setup view - rescan before trading', 'info');
     }
 }
@@ -17730,7 +17871,8 @@ function buildDataUnavailableExternalAIPacket({ signal = {}, replay = null } = {
         missing_timeframes: completeness?.missing_timeframes || [],
         invalid_timeframes: completeness?.invalid_timeframes || [],
         timeframe_status: completeness?.timeframes || {},
-        provider_errors: completeness?.provider_errors || result.history_errors || {}
+        provider_errors: completeness?.provider_errors || result.history_errors || {},
+        history_diagnostics: result.history_diagnostics || source.history_diagnostics || {}
     };
     return [
         'ICT TRADING BOT PRO',
