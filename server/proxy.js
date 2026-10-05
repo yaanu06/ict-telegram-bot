@@ -106,6 +106,15 @@ function createRateLimiter({ now = () => Date.now(), windowMs = DEFAULT_WINDOW_M
     };
 }
 
+function createSerialQueue() {
+    let tail = Promise.resolve();
+    return function enqueue(task) {
+        const current = tail.then(task, task);
+        tail = current.catch(() => {});
+        return current;
+    };
+}
+
 function readBody(req) {
     return new Promise((resolve, reject) => {
         let size = 0;
@@ -283,6 +292,12 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
     // addition to the per-client abuse limit.
     const allowTwelveDataGlobal = createRateLimiter({ now, maxRequests: Number(env.PROXY_TWELVE_GLOBAL_MAX_REQUESTS || DEFAULT_TWELVE_MAX_REQUESTS) });
     const allowTvkit = createRateLimiter({ now, maxRequests: Number(env.PROXY_TVKIT_MAX_REQUESTS || DEFAULT_TVKIT_MAX_REQUESTS) });
+    // The bundled TVKit adapter creates one TradingView WebSocket per request.
+    // The browser requests the five scan timeframes together, so keep those
+    // provider sessions serialized at the shared proxy boundary. This avoids
+    // burst failures without changing symbols, intervals, candle counts, or
+    // any downstream trading/evidence logic.
+    const enqueueTvkitRequest = createSerialQueue();
     const twelveKey = String(env.TWELVE_DATA_API_KEY || '').trim();
     const deepSeekKey = String(env.DEEPSEEK_API_KEY || '').trim();
     const aiProvider = normalizeAIProvider(env.AI_PROVIDER);
@@ -312,7 +327,7 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
         upstream.searchParams.set('symbol', validation.symbol);
         if (validation.interval) upstream.searchParams.set('interval', validation.interval);
         if (validation.outputsize) upstream.searchParams.set('outputsize', String(validation.outputsize));
-        return proxyJson(fetchImpl, upstream, { headers: upstreamHeaders('') }, upstreamTimeoutMs);
+        return enqueueTvkitRequest(() => proxyJson(fetchImpl, upstream, { headers: upstreamHeaders('') }, upstreamTimeoutMs));
     };
     const mcpTvkitResult = async ({ pathname, symbol, interval, outputsize } = {}) => {
         try {

@@ -134,6 +134,49 @@ describe('market and AI proxy boundary', () => {
         }
     });
 
+    test('serializes concurrent TVKit history requests to protect TradingView sessions', async () => {
+        let active = 0;
+        let maxActive = 0;
+        const urls = [];
+        const fetchImpl = jest.fn(async url => {
+            urls.push(String(url));
+            active += 1;
+            maxActive = Math.max(maxActive, active);
+            await new Promise(resolve => setTimeout(resolve, 10));
+            active -= 1;
+            return {
+                status: 200,
+                text: async () => JSON.stringify({
+                    values: [{
+                        datetime: '2026-10-05T09:00:00Z',
+                        open: '1.1', high: '1.2', low: '1.0', close: '1.15'
+                    }],
+                    meta: { provider: 'TVKIT', provider_symbol: 'FX_IDC:EURUSD', raw_count: 1 }
+                })
+            };
+        });
+        const server = createProxyServer({
+            env: { TVKIT_BASE_URL: 'http://127.0.0.1:8790', PROXY_MAX_REQUESTS: '20', PROXY_TVKIT_MAX_REQUESTS: '20' },
+            fetchImpl
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const responses = await Promise.all([
+                request(server, 'GET', '/api/tvkit/time_series?symbol=FX_IDC%3AEURUSD&interval=1day&outputsize=200'),
+                request(server, 'GET', '/api/tvkit/time_series?symbol=FX_IDC%3AEURUSD&interval=4h&outputsize=200'),
+                request(server, 'GET', '/api/tvkit/time_series?symbol=FX_IDC%3AEURUSD&interval=1h&outputsize=200'),
+                request(server, 'GET', '/api/tvkit/time_series?symbol=FX_IDC%3AEURUSD&interval=15min&outputsize=200'),
+                request(server, 'GET', '/api/tvkit/time_series?symbol=FX_IDC%3AEURUSD&interval=5min&outputsize=200')
+            ]);
+            expect(responses.map(response => response.status)).toEqual([200, 200, 200, 200, 200]);
+            expect(maxActive).toBe(1);
+            expect(urls).toHaveLength(5);
+            expect(urls.every(url => new URL(url).searchParams.get('symbol') === 'FX_IDC:EURUSD')).toBe(true);
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
     test('enforces the Twelve Data account budget across different clients', async () => {
         const fetchImpl = jest.fn(async () => ({ status: 200, text: async () => JSON.stringify({ price: '1.25' }) }));
         const server = createProxyServer({
