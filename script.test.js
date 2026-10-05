@@ -3297,6 +3297,14 @@ describe('Analyze scan lifecycle', () => {
         expect(elements.get('scanStatus').classList.contains('hidden')).toBe(true);
     });
 
+    it('loads TVKIT history sequentially in the required timeframe order', async () => {
+        const { context, spies } = prepareScan({ runtimePair: 'EUR/USD' });
+        vm.runInContext("window.__ICT_MARKET_DATA_PROVIDER__ = 'TVKIT'; window.__ICT_PROXY_BASE_URL__ = 'https://proxy.test'; getMarketQuoteSnapshot = () => Promise.resolve({ price: 100, symbol_metadata: {} });", context);
+        expect(context.getMarketDataProvider()).toBe('TVKIT');
+        await context.runAutoScan();
+        expect(spies.getHistory.mock.calls.map(call => call[0])).toEqual(['1D', '4H', '1H', '15M', '5M']);
+    });
+
     it('prevents overlapping Analyze calls and re-enables the button after completion', async () => {
         let release;
         const pending = new Promise(resolve => { release = resolve; });
@@ -3349,6 +3357,138 @@ describe('Analyze scan lifecycle', () => {
         expect(crt.length).toBeLessThanOrEqual(8);
         expect(msnr.length).toBeLessThanOrEqual(12);
         expect(setups.length).toBeLessThanOrEqual(24);
+    });
+});
+
+describe('TVKIT request attempt lifecycle', () => {
+    const successResponse = () => ({
+        ok: true,
+        status: 200,
+        headers: { get: name => name.toLowerCase() === 'content-type' ? 'application/json' : null },
+        json: async () => ({ values: [] })
+    });
+
+    function prepareTransportContext() {
+        const context = getContext();
+        context.window.__ICT_MARKET_DATA_PROVIDER__ = 'TVKIT';
+        context.window.__ICT_PROXY_BASE_URL__ = 'https://proxy.test';
+        context.setTimeout = setTimeout;
+        context.clearTimeout = clearTimeout;
+        context.AbortController = AbortController;
+        return context;
+    }
+
+    it('clears the timeout after a slow successful TVKIT response', async () => {
+        jest.useFakeTimers();
+        try {
+            const context = prepareTransportContext();
+            context.fetch = jest.fn((url, { signal }) => new Promise((resolve, reject) => {
+                const timer = setTimeout(() => resolve(successResponse()), 100);
+                signal.addEventListener('abort', () => {
+                    clearTimeout(timer);
+                    reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+                }, { once: true });
+            }));
+            const request = context.fetchTD('/time_series?symbol=FX_IDC%3AEURUSD', 1000, 0);
+            await jest.advanceTimersByTimeAsync(100);
+            await expect(request).resolves.toEqual({ values: [] });
+            expect(jest.getTimerCount()).toBe(0);
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    it('uses a fresh controller and timer after a timeout retry', async () => {
+        jest.useFakeTimers();
+        try {
+            const context = prepareTransportContext();
+            const signals = [];
+            context.fetch = jest.fn((url, { signal }) => {
+                signals.push(signal);
+                if (signals.length === 1) {
+                    return new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('Fetch is aborted'), { name: 'AbortError' })), { once: true }));
+                }
+                return Promise.resolve(successResponse());
+            });
+            const diagnostic = {};
+            const request = context.fetchTD('/time_series?symbol=FX_IDC%3AEURUSD', 50, 1, diagnostic, { retryOnTimeout: true, retryBackoffMs: 0 });
+            await jest.advanceTimersByTimeAsync(50);
+            await expect(request).resolves.toEqual({ values: [] });
+            expect(signals).toHaveLength(2);
+            expect(signals[0]).not.toBe(signals[1]);
+            expect(diagnostic.retry_reason).toBe('REQUEST_TIMEOUT');
+            expect(diagnostic.attempts).toHaveLength(2);
+            expect(diagnostic.attempts[0].abort_source).toBe('REQUEST_TIMEOUT');
+            expect(jest.getTimerCount()).toBe(0);
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    it('prevents an old timeout from aborting the later retry attempt', async () => {
+        jest.useFakeTimers();
+        try {
+            const context = prepareTransportContext();
+            let call = 0;
+            context.fetch = jest.fn((url, { signal }) => {
+                call++;
+                if (call === 1) return new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('Fetch is aborted'), { name: 'AbortError' })), { once: true }));
+                return new Promise((resolve, reject) => {
+                    const timer = setTimeout(() => resolve(successResponse()), 10);
+                    signal.addEventListener('abort', () => {
+                        clearTimeout(timer);
+                        reject(Object.assign(new Error('retry aborted'), { name: 'AbortError' }));
+                    }, { once: true });
+                });
+            });
+            const request = context.fetchTD('/time_series?symbol=FX_IDC%3AEURUSD', 20, 1, {}, { retryOnTimeout: true, retryBackoffMs: 0 });
+            await jest.advanceTimersByTimeAsync(20);
+            await jest.advanceTimersByTimeAsync(10);
+            await expect(request).resolves.toEqual({ values: [] });
+            expect(call).toBe(2);
+            expect(jest.getTimerCount()).toBe(0);
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    it('terminates permanent timeouts after the bounded attempt count', async () => {
+        jest.useFakeTimers();
+        try {
+            const context = prepareTransportContext();
+            context.fetch = jest.fn((url, { signal }) => new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('Fetch is aborted'), { name: 'AbortError' })), { once: true })));
+            const diagnostic = {};
+            const request = context.fetchTD('/time_series?symbol=FX_IDC%3AEURUSD', 25, 1, diagnostic, { retryOnTimeout: true, retryBackoffMs: 0 });
+            const assertion = expect(request).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
+            await jest.advanceTimersByTimeAsync(50);
+            await assertion;
+            expect(context.fetch).toHaveBeenCalledTimes(2);
+            expect(diagnostic.attempts).toHaveLength(2);
+            expect(jest.getTimerCount()).toBe(0);
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    it('retries a transient HTTP status but not a non-retryable client status', async () => {
+        const context = prepareTransportContext();
+        const responses = [{ ok: false, status: 503, headers: { get: () => 'application/json' }, json: async () => ({}) }, successResponse()];
+        context.fetch = jest.fn(() => Promise.resolve(responses.shift()));
+        await expect(context.fetchTD('/time_series?symbol=FX_IDC%3AEURUSD', 1000, 1, {}, { retryBackoffMs: 0 })).resolves.toEqual({ values: [] });
+        expect(context.fetch).toHaveBeenCalledTimes(2);
+        context.fetch.mockReset().mockResolvedValue({ ok: false, status: 400, headers: { get: () => 'application/json' }, json: async () => ({}) });
+        await expect(context.fetchTD('/time_series?symbol=FX_IDC%3AEURUSD', 1000, 1, {}, { retryBackoffMs: 0 })).rejects.toMatchObject({ code: 'HTTP_400' });
+        expect(context.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not convert an unavailable quote into numeric zero', async () => {
+        const context = prepareTransportContext();
+        context.fetch = jest.fn(async () => ({ ok: true, status: 200, json: async () => ({ price: null }) }));
+        const quote = await context.fetchMarketQuoteSnapshotUncached('EUR/USD');
+        expect(quote.price).toBeNull();
+        context.fetch = jest.fn(async () => ({ ok: true, status: 200, json: async () => ({ price: 1.12026 }) }));
+        const validQuote = await context.fetchMarketQuoteSnapshotUncached('EUR/USD');
+        expect(validQuote.price).toBe(1.12026);
     });
 });
 

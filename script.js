@@ -949,6 +949,12 @@ const historyFetchErrors = new Map();
 // candles into the external-AI packet.
 const historyRequestDiagnostics = new Map();
 const QUOTE_CACHE_TTL_MS = 5000;
+// Render serializes TVKit requests and permits up to 40 seconds for the
+// upstream adapter. Keep a finite client budget with a small transport margin
+// and keep it separate from Twelve Data's request policy.
+const TVKIT_HISTORY_REQUEST_TIMEOUT_MS = 45000;
+const TVKIT_HISTORY_MAX_ATTEMPTS = 2;
+const TVKIT_HISTORY_RETRY_BACKOFF_MS = 750;
 const HISTORY_CACHE_TTL_MS = Object.freeze({
     '1M': 30000,
     '5M': 60000,
@@ -978,78 +984,185 @@ function pushHistoryDiagnosticStage(diagnostic, stage) {
     diagnostic.stage = stage;
 }
 
-async function fetchTD(pathAndQuery, timeoutMs = 10000, retries = 2, diagnostic = null) {
+function isRetryableHistoryHttpStatus(status) {
+    return [408, 429, 502, 503, 504].includes(Number(status));
+}
+
+function createRequestLifecycleError(message, details = {}) {
+    const error = new Error(message);
+    Object.assign(error, details);
+    return error;
+}
+
+// Each attempt owns its controller and timer.  The finally block runs before
+// a retry backoff, so no timer from an earlier attempt can abort a later one.
+async function fetchTD(pathAndQuery, timeoutMs = 10000, retries = 2, diagnostic = null, options = {}) {
     const provider = getMarketDataProvider();
     if (provider === 'TWELVE_DATA') await reserveTwelveDataRequest();
-    const ctrl = typeof AbortController === 'function'
-        ? new AbortController()
-        : { signal: undefined, abort: () => {} };
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-        const proxy = getProxyBaseUrl();
-        const endpoint = provider === 'TVKIT'
-            ? (proxy ? `${proxy}/api/tvkit${pathAndQuery}` : `${getTvkitBaseUrl()}${pathAndQuery}`)
-            : (proxy ? `${proxy}/api/twelve${pathAndQuery}` : `${TWELVE_DATA_BASE}${pathAndQuery}&apikey=${TWELVE_DATA_KEY}`);
-        let r;
-        try {
-            r = await fetch(endpoint, { signal: ctrl.signal });
-        } catch (error) {
-            if (diagnostic) {
-                diagnostic.error_stage = 'HTTP_REQUEST';
-                diagnostic.error_code = error?.name || 'FETCH_ERROR';
-                diagnostic.error_message = String(error?.message || error).slice(0, 240);
-            }
-            throw error;
-        }
+    const proxy = getProxyBaseUrl();
+    const endpoint = provider === 'TVKIT'
+        ? (proxy ? `${proxy}/api/tvkit${pathAndQuery}` : `${getTvkitBaseUrl()}${pathAndQuery}`)
+        : (proxy ? `${proxy}/api/twelve${pathAndQuery}` : `${TWELVE_DATA_BASE}${pathAndQuery}&apikey=${TWELVE_DATA_KEY}`);
+    const maxAttempts = Math.max(1, Number(retries) + 1);
+    const retryOnNetwork = options.retryOnNetwork === true;
+    const retryOnTimeout = options.retryOnTimeout === true;
+    const retryBackoffMs = Math.max(0, Number(options.retryBackoffMs) || 0);
+    const attempts = [];
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const controller = typeof AbortController === 'function'
+            ? new AbortController()
+            : { signal: undefined, abort: () => {} };
+        const attemptStartedAt = Date.now();
+        let timer = null;
+        let timedOut = false;
+        let retry = false;
+        let retryReason = null;
+        const attemptDiagnostic = {
+            attempt,
+            timeout_ms: timeoutMs,
+            attempt_started_at: new Date(attemptStartedAt).toISOString()
+        };
+        attempts.push(attemptDiagnostic);
         if (diagnostic) {
-            diagnostic.http_status = Number.isFinite(Number(r?.status)) ? Number(r.status) : null;
-            diagnostic.response_ok = r?.ok !== false;
-            diagnostic.response_content_type = typeof r?.headers?.get === 'function' ? r.headers.get('content-type') || null : null;
-            pushHistoryDiagnosticStage(diagnostic, 'HTTP_RECEIVED');
+            diagnostic.attempt = attempt;
+            diagnostic.timeout_ms = timeoutMs;
+            diagnostic.attempt_started_at = attemptDiagnostic.attempt_started_at;
+            diagnostic.attempts = attempts;
         }
-        if (r.ok === false) {
-            if (diagnostic) {
-                diagnostic.error_stage = 'HTTP_STATUS';
-                diagnostic.error_code = `HTTP_${r.status || 'ERROR'}`;
-                diagnostic.error_message = `${getMarketDataProviderLabel()} HTTP ${r.status || 'error'}`;
-            }
-            throw new Error(`${getMarketDataProviderLabel()} HTTP ${r.status || 'error'}`);
-        }
-        let d;
         try {
-            d = await r.json();
-        } catch (error) {
+            timer = setTimeout(() => {
+                timedOut = true;
+                attemptDiagnostic.abort_source = 'REQUEST_TIMEOUT';
+                controller.abort();
+            }, timeoutMs);
+            let response;
+            try {
+                response = await fetch(endpoint, { signal: controller.signal });
+            } catch (error) {
+                const abortSource = timedOut ? 'REQUEST_TIMEOUT' : error?.name === 'AbortError' ? 'EXTERNAL_ABORT' : null;
+                const errorCode = timedOut ? 'REQUEST_TIMEOUT' : error?.name || 'FETCH_ERROR';
+                const message = String(error?.message || error).slice(0, 240);
+                Object.assign(attemptDiagnostic, {
+                    http_status: null,
+                    response_ok: null,
+                    error_stage: 'HTTP_REQUEST',
+                    error_code: errorCode,
+                    error_message: message,
+                    abort_source: abortSource
+                });
+                if (diagnostic) Object.assign(diagnostic, {
+                    http_status: null,
+                    response_ok: null,
+                    error_stage: 'HTTP_REQUEST',
+                    error_code: errorCode,
+                    error_message: message,
+                    abort_source: abortSource
+                });
+                lastError = createRequestLifecycleError(message, {
+                    name: error?.name || 'FetchError',
+                    code: errorCode,
+                    abort_source: abortSource,
+                    http_status: null,
+                    retryable: timedOut ? retryOnTimeout : retryOnNetwork,
+                    cause: error
+                });
+                retry = attempt < maxAttempts && lastError.retryable === true;
+                retryReason = timedOut ? 'REQUEST_TIMEOUT' : 'NETWORK_ERROR';
+            }
+            if (!response) {
+                retry = retry && attempt < maxAttempts;
+            } else {
             if (diagnostic) {
-                diagnostic.error_stage = 'JSON_PARSE';
-                diagnostic.error_code = error?.name || 'JSON_PARSE_ERROR';
-                diagnostic.error_message = String(error?.message || error).slice(0, 240);
+                diagnostic.http_status = Number.isFinite(Number(response?.status)) ? Number(response.status) : null;
+                diagnostic.response_ok = response?.ok !== false;
+                diagnostic.response_content_type = typeof response?.headers?.get === 'function' ? response.headers.get('content-type') || null : null;
+                pushHistoryDiagnosticStage(diagnostic, 'HTTP_RECEIVED');
             }
-            throw error;
+            Object.assign(attemptDiagnostic, {
+                http_status: Number.isFinite(Number(response?.status)) ? Number(response.status) : null,
+                response_ok: response?.ok !== false
+            });
+            if (response.ok === false) {
+                const status = Number(response.status) || null;
+                const message = `${getMarketDataProviderLabel()} HTTP ${status || 'error'}`;
+                lastError = createRequestLifecycleError(message, {
+                    name: 'HttpError',
+                    code: status ? `HTTP_${status}` : 'HTTP_ERROR',
+                    http_status: status,
+                    retryable: isRetryableHistoryHttpStatus(status)
+                });
+                if (diagnostic) Object.assign(diagnostic, { error_stage: 'HTTP_STATUS', error_code: lastError.code, error_message: message });
+                Object.assign(attemptDiagnostic, { error_stage: 'HTTP_STATUS', error_code: lastError.code, error_message: message });
+                retry = attempt < maxAttempts && lastError.retryable === true;
+                retryReason = `HTTP_${status || 'ERROR'}`;
+            } else {
+                let data;
+                try {
+                    data = await response.json();
+                } catch (error) {
+                    const message = String(error?.message || error).slice(0, 240);
+                    lastError = createRequestLifecycleError(message, {
+                        name: error?.name || 'JSON_PARSE_ERROR',
+                        code: error?.name || 'JSON_PARSE_ERROR',
+                        retryable: false,
+                        cause: error
+                    });
+                    if (diagnostic) Object.assign(diagnostic, { error_stage: 'JSON_PARSE', error_code: lastError.code, error_message: message });
+                    Object.assign(attemptDiagnostic, { error_stage: 'JSON_PARSE', error_code: lastError.code, error_message: message });
+                }
+                if (data !== undefined) {
+                    if (diagnostic) pushHistoryDiagnosticStage(diagnostic, 'JSON_PARSED');
+                    if (data?.code === 429) {
+                        const src = document.getElementById('apiSource');
+                        if (src) src.innerHTML = 'Rate limited';
+                        if (Date.now() - rateLimitNotified > 30000) {
+                            rateLimitNotified = Date.now();
+                            showNotif(`${getMarketDataProviderLabel()} rate limit hit - wait a minute and rescan`, 'warning');
+                        }
+                        lastError = createRequestLifecycleError('Rate limited', { name: 'RateLimitError', code: 'HTTP_429', http_status: 429, retryable: true });
+                        if (diagnostic) Object.assign(diagnostic, { error_stage: 'HTTP_STATUS', error_code: 'HTTP_429', error_message: 'Rate limited' });
+                        Object.assign(attemptDiagnostic, { error_stage: 'HTTP_STATUS', error_code: 'HTTP_429', error_message: 'Rate limited' });
+                        retry = attempt < maxAttempts;
+                        retryReason = 'HTTP_429';
+                    } else if (data?.code && data.code !== 200) {
+                        const message = String(data.message || 'API Error').slice(0, 240);
+                        lastError = createRequestLifecycleError(message, { name: 'ProviderError', code: `PROVIDER_${data.code}`, retryable: false });
+                        if (diagnostic) Object.assign(diagnostic, { error_stage: 'PROVIDER_RESPONSE', error_code: lastError.code, error_message: message });
+                        Object.assign(attemptDiagnostic, { error_stage: 'PROVIDER_RESPONSE', error_code: lastError.code, error_message: message });
+                    } else {
+                        return data;
+                    }
+                }
+            }
+            }
+        } finally {
+            if (timer !== null) clearTimeout(timer);
+            attemptDiagnostic.attempt_elapsed_ms = Math.max(0, Date.now() - attemptStartedAt);
+            if (diagnostic) {
+                diagnostic.attempt_elapsed_ms = attemptDiagnostic.attempt_elapsed_ms;
+                diagnostic.attempts = attempts.map(item => ({ ...item }));
+            }
         }
-        if (diagnostic) pushHistoryDiagnosticStage(diagnostic, 'JSON_PARSED');
-        if(d.code === 429) {
-            const src = document.getElementById('apiSource');
-            if(src) src.innerHTML = '🔴 Rate limited';
-            if(Date.now() - rateLimitNotified > 30000) {
-                rateLimitNotified = Date.now();
-                showNotif(`⏳ ${getMarketDataProviderLabel()} rate limit hit - wait a minute and rescan`, 'warning');
+        if (retry && attempt < maxAttempts) {
+            if (diagnostic) {
+                diagnostic.retry_scheduled = true;
+                diagnostic.retry_reason = retryReason;
+                diagnostic.retry_attempt = attempt + 1;
             }
-            // Grow 55 = 55 credits/min, quota resets every minute — brief backoff then retry
-            if(retries > 0) {
-                await new Promise(res => setTimeout(res, 3000));
-                return fetchTD(pathAndQuery, timeoutMs, retries - 1, diagnostic);
-            }
-            throw new Error('Rate limited');
+            if (retryBackoffMs > 0) await new Promise(resolve => setTimeout(resolve, retryBackoffMs));
+            continue;
         }
-        if(d.code && d.code !== 200) throw new Error(d.message || 'API Error');
-        return d;
-    } finally { clearTimeout(timer); }
+        break;
+    }
+    throw lastError || new Error('Request failed');
 }
 
 async function getPrice(forPair) {
     const p = normalizeCanonicalMarketSymbol(forPair || pair);
     const now = Date.now();
-    if(cachedPrice !== null && cachedPricePair === p && (now - priceCacheTime) < PRICE_CACHE_DURATION) {
+    if(Number.isFinite(Number(cachedPrice)) && Number(cachedPrice) > 0 && cachedPricePair === p && (now - priceCacheTime) < PRICE_CACHE_DURATION) {
         return cachedPrice;
     }
     if(!hasMarketDataAccess()) return null;
@@ -1058,7 +1171,7 @@ async function getPrice(forPair) {
         const endpoint = provider === 'TVKIT' ? '/quote' : '/price';
         const symbol = provider === 'TVKIT' ? getTvkitSymbol(p) : getProviderSymbol(p);
         const d = await fetchTD(`${endpoint}?symbol=${encodeURIComponent(symbol)}`);
-        if(d.price) {
+        if(Number.isFinite(Number(d.price)) && Number(d.price) > 0) {
             calls++;
             document.getElementById('apiSource').innerHTML = '📡 Live';
             cachedPrice = +d.price;
@@ -1069,7 +1182,7 @@ async function getPrice(forPair) {
     } catch(e) {
         // Never turn an expired quote cache into a live-looking price. The
         // caller must receive null so the data-quality gate can block the scan.
-        if(cachedPrice !== null && cachedPricePair === p && (Date.now() - priceCacheTime) < PRICE_CACHE_DURATION) return cachedPrice;
+        if(Number.isFinite(Number(cachedPrice)) && Number(cachedPrice) > 0 && cachedPricePair === p && (Date.now() - priceCacheTime) < PRICE_CACHE_DURATION) return cachedPrice;
     }
     return null;
 }
@@ -1209,7 +1322,7 @@ async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
         const spread = Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0 && ask >= bid && ask > bid ? ask - bid : null;
         const providerTimestamp = normalizeTimestampUTC(quote.timestamp ?? quote.datetime ?? quote.last_update);
         const providerOpen = parseProviderMarketOpen(quote.is_market_open ?? quote.market_open ?? quote.market_status);
-        if (Number.isFinite(quotePrice)) {
+        if (Number.isFinite(quotePrice) && quotePrice > 0) {
             calls++;
             return {
                 pair: p,
@@ -1232,7 +1345,7 @@ async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
     const fallbackPrice = await getPrice(p);
     return {
         pair: p,
-        price: Number.isFinite(Number(fallbackPrice)) ? Number(fallbackPrice) : null,
+        price: Number.isFinite(Number(fallbackPrice)) && Number(fallbackPrice) > 0 ? Number(fallbackPrice) : null,
         bid: null,
         ask: null,
         spread: null,
@@ -1280,7 +1393,7 @@ async function getMarketQuoteSnapshot(forPair = pair) {
     quoteInFlightCache.set(requestedPair, request);
     try {
         const data = await request;
-        if (data && Number.isFinite(Number(data.price))) quoteResponseCache.set(requestedPair, { data, ts: Date.now() });
+        if (data && Number.isFinite(Number(data.price)) && Number(data.price) > 0) quoteResponseCache.set(requestedPair, { data, ts: Date.now() });
         return data;
     } finally {
         if (quoteInFlightCache.get(requestedPair) === request) quoteInFlightCache.delete(requestedPair);
@@ -1385,7 +1498,17 @@ async function fetchHistoryUncached(tfStr, forPair) {
         // timezone query parameter is intended for intraday series and can
         // make period-bucket requests fail for otherwise valid symbols.
         const timezoneQuery = ['1D', '1W'].includes(tfStr) ? '' : '&timezone=UTC';
-        const d = await fetchTD('/time_series?symbol=' + encodeURIComponent(providerSymbol) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + timezoneQuery, 10000, 2, diagnostic);
+        const d = await fetchTD(
+            '/time_series?symbol=' + encodeURIComponent(providerSymbol) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + timezoneQuery,
+            provider === 'TVKIT' ? TVKIT_HISTORY_REQUEST_TIMEOUT_MS : 10000,
+            provider === 'TVKIT' ? TVKIT_HISTORY_MAX_ATTEMPTS - 1 : 2,
+            diagnostic,
+            provider === 'TVKIT' ? {
+                retryOnNetwork: true,
+                retryOnTimeout: true,
+                retryBackoffMs: TVKIT_HISTORY_RETRY_BACKOFF_MS
+            } : {}
+        );
         if(d.values) {
             rawCandleCount = Array.isArray(d.values) ? d.values.length : null;
             diagnostic.raw_values_count = rawCandleCount;
@@ -2930,6 +3053,26 @@ function sanitizeHistoryRequestDiagnostics(diagnostics = {}) {
         cache_key: value?.cache_key || null,
         requested_outputsize: Number.isFinite(Number(value?.requested_outputsize)) ? Number(value.requested_outputsize) : null,
         request_started: value?.request_started || null,
+        attempt: Number.isFinite(Number(value?.attempt)) ? Number(value.attempt) : null,
+        timeout_ms: Number.isFinite(Number(value?.timeout_ms)) ? Number(value.timeout_ms) : null,
+        attempt_started_at: value?.attempt_started_at || null,
+        attempt_elapsed_ms: Number.isFinite(Number(value?.attempt_elapsed_ms)) ? Number(value.attempt_elapsed_ms) : null,
+        abort_source: value?.abort_source || null,
+        retry_scheduled: value?.retry_scheduled === true,
+        retry_reason: value?.retry_reason || null,
+        retry_attempt: Number.isFinite(Number(value?.retry_attempt)) ? Number(value.retry_attempt) : null,
+        attempts: Array.isArray(value?.attempts) ? value.attempts.map(attempt => ({
+            attempt: Number.isFinite(Number(attempt?.attempt)) ? Number(attempt.attempt) : null,
+            timeout_ms: Number.isFinite(Number(attempt?.timeout_ms)) ? Number(attempt.timeout_ms) : null,
+            attempt_started_at: attempt?.attempt_started_at || null,
+            attempt_elapsed_ms: Number.isFinite(Number(attempt?.attempt_elapsed_ms)) ? Number(attempt.attempt_elapsed_ms) : null,
+            http_status: Number.isFinite(Number(attempt?.http_status)) ? Number(attempt.http_status) : null,
+            response_ok: typeof attempt?.response_ok === 'boolean' ? attempt.response_ok : null,
+            abort_source: attempt?.abort_source || null,
+            error_stage: attempt?.error_stage || null,
+            error_code: attempt?.error_code || null,
+            error_message: attempt?.error_message ? String(attempt.error_message).slice(0, 240) : null
+        })) : [],
         http_status: Number.isFinite(Number(value?.http_status)) ? Number(value.http_status) : null,
         response_ok: typeof value?.response_ok === 'boolean' ? value.response_ok : null,
         response_content_type: value?.response_content_type || null,
@@ -14885,12 +15028,21 @@ async function runAutoScan() {
         // 1W available through getHistory()/explicit analysis, but do not
         // spend a provider request on it during every scan when no consumer
         // uses weekly candles for the current opportunity decision.
-        const tfs = ['5M', '15M', '1H', '4H', '1D'];
+        // Render serializes TVKit work. Start each TVKit request only when the
+        // previous one has completed so its client timeout measures the
+        // request itself rather than time spent behind the server queue.
+        const tfs = getMarketDataProvider() === 'TVKIT'
+            ? ['1D', '4H', '1H', '15M', '5M']
+            : ['5M', '15M', '1H', '4H', '1D'];
         scanText.innerHTML = '📊 Collecting market data...';
         scanStage = 'history requests';
-        await Promise.all(tfs.map(async (t) => {
-            historyCache[t] = await getHistory(t);
-        }));
+        if (getMarketDataProvider() === 'TVKIT') {
+            for (const timeframe of tfs) historyCache[timeframe] = await getHistory(timeframe);
+        } else {
+            await Promise.all(tfs.map(async (t) => {
+                historyCache[t] = await getHistory(t);
+            }));
+        }
         for (const tf of tfs) historyCache[tf] = canonicalizeHistory(historyCache[tf], tf, scanAsOfMs);
         recordScanRuntimeBoundary('history_counts_after_load', historyCache);
         const refreshedQuoteSnapshot = refreshStaleQuoteFromClosedCandle(quoteSnapshot, historyCache, scanAsOfMs, '5M');
