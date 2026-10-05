@@ -10,7 +10,13 @@ if (tg) { tg.expand(); tg.ready(); }
 // CONFIG
 // ============================================
 let TWELVE_DATA_KEY = '', DEEPSEEK_API_KEY = '';
-const APP_BUILD_ID = '20261005-001';
+const INJECTED_APP_BUILD_ID = typeof window !== 'undefined' ? window.__ICT_APP_BUILD_ID__ : null;
+const APP_BUILD_ID = INJECTED_APP_BUILD_ID
+    && !String(INJECTED_APP_BUILD_ID).includes('__ICT_APP_BUILD_ID__')
+    && !String(INJECTED_APP_BUILD_ID).includes('__ICT_BUILD_VERSION__')
+    ? String(INJECTED_APP_BUILD_ID)
+    : 'development';
+if (typeof window !== 'undefined') window.__ICT_APP_BUILD_ID__ = APP_BUILD_ID;
 let lastDisplayedPublicSignal = null;
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 const MARKET_DATA_PROVIDER_STORAGE_KEY = 'ict_market_data_provider';

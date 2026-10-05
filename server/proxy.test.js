@@ -44,9 +44,9 @@ describe('market and AI proxy boundary', () => {
         try {
             const index = await request(server, 'GET', '/');
             const script = await request(server, 'GET', '/script.js');
-            const build = script.body.match(/const APP_BUILD_ID = '([^']+)'/)?.[1];
-            expect(build).toBeTruthy();
-            expect(index.body).toContain(`script.js?v=${build}`);
+            expect(index.body).toContain('window.__ICT_APP_BUILD_ID__ = \'__ICT_BUILD_VERSION__\'');
+            expect(index.body).toContain('script.js?v=__ICT_BUILD_VERSION__');
+            expect(script.body).toContain('const APP_BUILD_ID = INJECTED_APP_BUILD_ID');
             expect(script.headers['cache-control']).toBe('no-cache, must-revalidate');
         } finally {
             await new Promise(resolve => server.close(resolve));
