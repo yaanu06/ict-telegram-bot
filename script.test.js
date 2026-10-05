@@ -102,6 +102,38 @@ const candles = (n, start, step, dir) => {
 
 const c = (o, h, l, close, t = null) => ({ o, h, l, c: close, v: 1e6, ...(t ? { t } : {}) });
 
+const completeReplay = replay => {
+    const packageEvidence = replay.market_evidence_package || {};
+    const packageTimeframes = packageEvidence.timeframes || {};
+    const required = ['1D', '4H', '1H', '15M', '5M'];
+    const minimums = { '1D': 50, '4H': 50, '1H': 50, '15M': 20, '5M': 20 };
+    const snapshotInputCounts = Object.fromEntries(required.map(timeframe => [
+        timeframe,
+        Number(packageTimeframes[timeframe]?.closed_candle_count) || minimums[timeframe]
+    ]));
+    const snapshotCompleteness = {
+        complete: true,
+        status: 'COMPLETE',
+        reason_code: null,
+        required_timeframes: required,
+        missing_timeframes: [],
+        invalid_timeframes: [],
+        snapshot_input_counts: snapshotInputCounts,
+        timeframes: Object.fromEntries(required.map(timeframe => [timeframe, {
+            timeframe,
+            loaded: true,
+            state: 'VALID',
+            closed_candle_count: snapshotInputCounts[timeframe],
+            minimum_closed_candles: minimums[timeframe]
+        }]))
+    };
+    return {
+        ...replay,
+        snapshot_completeness: snapshotCompleteness,
+        market_evidence_package: { ...packageEvidence, snapshot_completeness: snapshotCompleteness }
+    };
+};
+
 const crtBuyFixture = () => {
     const data = candles(25, 100, 0.02, 'up');
     for (let i = 0; i < 14; i++) data[i] = c(100, 100.4, 99.6, 100);
@@ -2749,9 +2781,9 @@ describe('Analyze scan lifecycle', () => {
         const end = Date.now() - duration;
         return candles(60, 100, 0.1, 'up').map((candle, index) => ({ o: 100, c: 100, h: 100.03, l: 99.97, v: candle.v, t: end - (59 - index) * duration, is_closed: true, timeframe }));
     };
-    const baseLiveContext = (candidates, pairLocal = 'EUR/USD') => ({
+    const baseLiveContext = (candidates, pairLocal = 'EUR/USD', scanHistoryCache = null) => ({
         pair: pairLocal, snapshot_id: `TVKIT:${pairLocal.replace('/', '_')}:test`, current_price: 100, as_of_time_utc: '2026-09-29T10:00:00Z',
-        historyCache: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, historyFixture(tf)])),
+        historyCache: scanHistoryCache || Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, historyFixture(tf)])),
         quote_snapshot: { price: 100, timestamp: '2026-09-29T09:59:00Z', provider: 'TVKIT' },
         provider_metadata: { provider: 'TVKIT' },
         session: { name: 'TEST' },
@@ -2781,7 +2813,10 @@ describe('Analyze scan lifecycle', () => {
             getTechnicalIndicators: jest.fn(() => Promise.resolve({})),
             updateMTFDisplay: jest.fn(() => Promise.resolve()),
             getQuoteDirection: jest.fn(() => Promise.resolve('NEUTRAL')),
-            buildLiveMarketContext: jest.fn(() => baseLiveContext(candidates, runtimePair)),
+            buildLiveMarketContext: jest.fn(({ historyCache: scanHistoryCache, snapshot_completeness: scanSnapshotCompleteness } = {}) => ({
+                ...baseLiveContext(candidates, runtimePair, scanHistoryCache),
+                snapshot_completeness: scanSnapshotCompleteness || null
+            })),
             buildAiMarketEvidenceCatalog: jest.fn(() => ({ market_evidence_package: { snapshot_id: `MANUAL-${runtimePair.replace('/', '_')}`, timeframes: {} }, snapshot_id: `MANUAL-${runtimePair.replace('/', '_')}`, pair: runtimePair, current_price: 100 })),
             runAiMarketAnalyst: jest.fn(() => Promise.resolve({ verified_setups: [], diagnostics: { analyst_status: 'OK' } })),
             buildAIPrompt: jest.fn(() => ({ system: 'system', user: 'user' })),
@@ -2851,6 +2886,32 @@ describe('Analyze scan lifecycle', () => {
         const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
         expect(packet).toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
         expect(packet).toContain('NZD/USD');
+        expect(packet).not.toContain('CURRENT BOT RESULT');
+        expect(packet).not.toContain('NO_FRESH_OPPORTUNITY');
+    });
+
+    it('blocks the legacy fallback packet when a post-completeness context error omits snapshot metadata', async () => {
+        const completeHistories = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, historyFixture(tf)]));
+        const { context, elements, spies } = prepareScan({ runtimePair: 'EUR/USD', historyByTimeframe: completeHistories });
+        context.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
+        spies.buildLiveMarketContext = jest.fn(() => { throw new Error('context construction failure'); });
+        spies.runFallbackScan = jest.fn(() => {
+            context.setJsonOutput({ trade_signal: {
+                pair: 'EUR/USD', current_price: 100, status: 'NO_TRADE', decision: 'WAIT',
+                reason: { code: 'NO_FRESH_OPPORTUNITY' }
+            } });
+            return Promise.resolve();
+        });
+        context.init();
+        vm.runInContext("pair = 'EUR/USD'", context);
+        await elements.get('analyzeBtn').dispatchEvent({ type: 'click' });
+        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
+        expect(spies.runFallbackScan).toHaveBeenCalledTimes(1);
+        expect(packet).toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
+        expect(packet).toContain('RUNTIME MARKET DATA TRACE');
+        expect(packet).toContain('context construction failure');
+        expect(packet).not.toContain('EXTERNAL AI DECISION PACKET');
         expect(packet).not.toContain('CURRENT BOT RESULT');
         expect(packet).not.toContain('NO_FRESH_OPPORTUNITY');
     });
@@ -2977,6 +3038,142 @@ describe('Analyze scan lifecycle', () => {
         const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
         expect(packet).toContain('Clipboard Serializer ID: CURRENT_SCAN_ARTIFACT_V2');
         expect(packet).toContain(`Scan ID: ${displayed.scan_id}`);
+    });
+
+    it('records the scan-owned runtime trace in an incomplete Copy diagnostic', async () => {
+        const { context, elements } = prepareScan({ runtimePair: 'EUR/USD', historyByTimeframe: { '1D': null, '4H': null, '1H': null, '15M': null, '5M': null } });
+        context.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
+        context.init();
+        vm.runInContext("pair = 'EUR/USD'", context);
+        await elements.get('analyzeBtn').dispatchEvent({ type: 'click' });
+        const displayed = JSON.parse(elements.get('jsonOutput').textContent).trade_signal;
+        expect(displayed.status).toBe('DATA_UNAVAILABLE');
+        expect(displayed.runtime_market_data_trace).toEqual(expect.objectContaining({
+            scan_id: displayed.scan_id,
+            history_cache_identity: expect.stringContaining(':history_cache:'),
+            snapshot_completeness_identity: expect.stringContaining(':snapshot_completeness:')
+        }));
+        expect(displayed.runtime_market_data_trace.boundaries.history_counts_after_load.history_counts)
+            .toEqual({ '1D': 0, '4H': 0, '1H': 0, '15M': 0, '5M': 0 });
+        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
+        expect(packet).toContain('RUNTIME MARKET DATA TRACE');
+        expect(packet).toContain('"history_cache_identity"');
+        expect(packet).toContain('"history_counts_after_load"');
+        expect(packet).not.toContain('EXTERNAL AI DECISION PACKET');
+        expect(packet).not.toContain('NO_FRESH_OPPORTUNITY');
+    });
+
+    it('carries a complete five-timeframe EUR/USD history through Analyze and Copy', async () => {
+        const completeHistories = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => {
+            const base = historyFixture(tf);
+            const duration = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 }[tf];
+            const lastTime = base.at(-1).t;
+            const extension = Array.from({ length: 139 }, (_, index) => ({ ...base[0], t: lastTime + (index + 1) * duration, timeframe: tf }));
+            return [tf, [...base, ...extension]];
+        }));
+        const { context, elements, spies } = prepareScan({ runtimePair: 'EUR/USD', historyByTimeframe: completeHistories });
+        context.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
+        context.init();
+        vm.runInContext("pair = 'EUR/USD'", context);
+        await elements.get('analyzeBtn').dispatchEvent({ type: 'click' });
+        const displayed = JSON.parse(elements.get('jsonOutput').textContent).trade_signal;
+        expect(displayed.status).toBe('MANUAL_EXTERNAL_AI_REVIEW');
+        expect(displayed.snapshot_completeness.complete).toBe(true);
+        expect(displayed.snapshot_input_counts).toEqual({ '1D': 199, '4H': 199, '1H': 199, '15M': 199, '5M': 199 });
+        expect(displayed.snapshot_id).toBe('TVKIT:EUR_USD:test');
+        const liveContextArgs = spies.buildLiveMarketContext.mock.calls[0][0];
+        const liveContextResult = spies.buildLiveMarketContext.mock.results[0].value;
+        expect(liveContextResult.historyCache).toBe(liveContextArgs.historyCache);
+        expect(liveContextResult.snapshot_completeness).toBe(liveContextArgs.snapshot_completeness);
+        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
+        expect(packet).toContain('EXTERNAL AI DECISION PACKET');
+        expect(packet).toContain('EUR/USD');
+        expect(packet).not.toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
+    });
+
+    it('rejects a downstream live context that carries a different or empty history object', () => {
+        const { context } = getScanContext();
+        const completeHistory = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, historyFixture(tf)]));
+        const completeness = context.assessMarketSnapshotCompleteness({ historyCache: completeHistory, price: 100 });
+        const output = context.buildManualExternalAIReviewOutput({
+            pairLocal: 'EUR/USD',
+            price: 100,
+            scanAsOfMs: Date.now(),
+            historyCache: completeHistory,
+            liveMarketContext: {
+                pair: 'EUR/USD',
+                snapshot_id: 'TVKIT:EUR_USD:identity-test',
+                snapshot_completeness: completeness,
+                historyCache: {}
+            }
+        });
+        expect(output.trade_signal.status).toBe('DATA_UNAVAILABLE');
+        expect(output.trade_signal.reason.code).toBe('INCOMPLETE_MARKET_SNAPSHOT');
+        const packet = context.buildExternalAIClipboardPacket({ signal: output.trade_signal });
+        expect(packet).toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
+        expect(packet).not.toContain('EXTERNAL AI DECISION PACKET');
+    });
+
+    it('fails closed when a normal-looking signal has no canonical snapshot ID', () => {
+        const context = getContext();
+        const complete = completeReplay({ market_evidence_package: {} }).snapshot_completeness;
+        const packet = context.buildExternalAIClipboardPacket({ signal: {
+            pair: 'EUR/USD', status: 'NO_TRADE', decision: 'WAIT', current_price: 1.12,
+            snapshot_id: null, snapshot_completeness: complete, reason: { code: 'NO_FRESH_OPPORTUNITY' }
+        } });
+        expect(packet).toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
+        expect(packet).toContain('INCOMPLETE_MARKET_SNAPSHOT');
+        expect(packet).not.toContain('CURRENT BOT RESULT');
+        expect(packet).not.toContain('automatic_ai_selection: COMPLETED');
+        expect(packet).not.toContain('NO_FRESH_OPPORTUNITY');
+    });
+
+    it('does not allow a partial setJsonOutput followed by a legacy-shaped result to copy normally', () => {
+        const { context } = getScanContext();
+        context.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
+        context.setJsonOutput({ trade_signal: {
+            pair: 'NZD/USD', current_price: 0.55969, status: 'DATA_UNAVAILABLE', status_code: 'DATA_UNAVAILABLE',
+            snapshot_id: null, snapshot_completeness: { complete: false, reason_code: 'INCOMPLETE_MARKET_SNAPSHOT', missing_timeframes: ['1D', '4H', '1H', '15M', '5M'] },
+            reason: { code: 'INCOMPLETE_MARKET_SNAPSHOT' }
+        } });
+        context.setJsonOutput({ trade_signal: {
+            pair: 'NZD/USD', current_price: 0.55969, status: 'NO_TRADE', decision: 'WAIT',
+            reason: { code: 'NO_FRESH_OPPORTUNITY' }
+        } });
+        context.copyJson();
+        const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
+        expect(packet).toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
+        expect(packet).not.toContain('EXTERNAL AI DECISION PACKET');
+        expect(packet).not.toContain('CURRENT BOT RESULT');
+        expect(packet).not.toContain('NO_FRESH_OPPORTUNITY');
+    });
+
+    it('keeps viewing a saved scan display-only and preserves the current Copy artifact', () => {
+        const { context } = getScanContext();
+        const storage = new Map();
+        context.localStorage = {
+            getItem: key => storage.get(key) || null,
+            setItem: (key, value) => storage.set(key, value),
+            removeItem: key => storage.delete(key)
+        };
+        context.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
+        const currentCompleteness = completeReplay({ market_evidence_package: {} }).snapshot_completeness;
+        context.setJsonOutput({ trade_signal: {
+            pair: 'XAU/USD', current_price: 4157.23, status: 'NO_TRADE', decision: 'WAIT',
+            snapshot_id: 'CURRENT-XAU', snapshot_completeness: currentCompleteness, reason: { code: 'NO_TRADE' }
+        } });
+        storage.set('ict_recent_saved', JSON.stringify([{ id: 77, out: { trade_signal: {
+            pair: 'EUR/USD', current_price: 1.12, status: 'NO_TRADE', decision: 'WAIT',
+            snapshot_id: 'OLD-EUR', snapshot_completeness: currentCompleteness, reason: { code: 'NO_TRADE' }
+        } } }]));
+        context.viewRecent(77);
+        context.copyJson();
+        const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
+        expect(packet).toContain('"symbol": "XAU/USD"');
+        expect(packet).toContain('CURRENT-XAU');
+        expect(packet).not.toContain('OLD-EUR');
     });
 
     it('clears loading state on deterministic WAIT without calling DeepSeek', async () => {
@@ -3469,7 +3666,7 @@ describe('institutional activity evidence composition', () => {
         const timeframes = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, { timeframe: tf, structure: {}, liquidity: {}, fvg: [], order_blocks: { buy: [], sell: [] }, msnr_levels: [], structural_pois: [] }]));
         const packet = ctx.buildExternalAIClipboardPacket({
             signal: { pair: 'EUR/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' } },
-            replay: { pair: 'EUR/USD', snapshot_id: 'IAE-TEST', scan_as_of: '2026-09-30T14:00:00Z', market_evidence_package: { snapshot_id: 'IAE-TEST', timeframes, institutional_activity_evidence: records }, target_candidates: { buy: [], sell: [] }, valid_candidates: [] }
+            replay: completeReplay({ pair: 'EUR/USD', snapshot_id: 'IAE-TEST', scan_as_of: '2026-09-30T14:00:00Z', market_evidence_package: { snapshot_id: 'IAE-TEST', timeframes, institutional_activity_evidence: records }, target_candidates: { buy: [], sell: [] }, valid_candidates: [] })
         });
         expect(packet).toContain('INSTITUTIONAL ACTIVITY EVIDENCE');
         expect(packet).toContain('"direction": "SELL"');
@@ -3551,7 +3748,7 @@ describe('institutional activity evidence composition', () => {
             },
             risk_constraints: { minimum_rr: 2.5 }, valid_candidates: []
         };
-        const packet = ctx.buildExternalAIClipboardPacket({ signal: { pair: 'TEST/PAIR', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' }, current_price: 4170.51 }, replay });
+        const packet = ctx.buildExternalAIClipboardPacket({ signal: { pair: 'TEST/PAIR', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' }, current_price: 4170.51 }, replay: completeReplay(replay) });
         const evidenceBody = packet.slice(packet.indexOf('CURRENT MARKET SNAPSHOT'), packet.lastIndexOf('EXTERNAL AI TASK'));
         expect(packet).toContain('"current_price": 4170.51');
         expect(packet).toContain('4168.43');
@@ -7875,7 +8072,7 @@ describe('AI market analyst contract', () => {
             rr_tp1: candidate.actual_rr, setup_type: 'PENDING_LIMIT', status: 'SETUP_READY', confidence: 74, quality: 'HIGH',
             quality_warnings: candidate.quality_warnings, reason: { code: 'VALID_CURRENT_OPPORTUNITY', message: 'Fresh continuation POI' }
         };
-        const packet = ctx.buildExternalAIClipboardPacket({ signal, replay });
+        const packet = ctx.buildExternalAIClipboardPacket({ signal, replay: completeReplay(replay) });
         expect(packet).toContain('EXTERNAL AI DECISION PACKET');
         expect(packet).toContain('Direction -> Location -> Execution');
         expect(packet).toContain('CRT, TBS, MSNR');
@@ -7982,10 +8179,11 @@ describe('AI market analyst contract', () => {
         const packet = ctx.buildExternalAIClipboardPacket({ signal: {
             pair: 'XAU/USD', status: 'NO_TRADE', decision: 'WAIT', reason: { code: 'DATA_UNAVAILABLE' }, confidence: 0
         } });
-        expect(packet).toContain('Symbol: XAU/USD');
-        expect(packet).toContain('UNAVAILABLE');
+        expect(packet).toContain('"symbol": "XAU/USD"');
+        expect(packet).toContain('"snapshot_id": null');
         expect(packet).toContain('DATA_UNAVAILABLE');
-        expect(packet).toContain('Return ONLY one directly JSON.parse()-able JSON object.');
+        expect(packet).not.toContain('EXTERNAL AI DECISION PACKET');
+        expect(packet).not.toContain('Return ONLY one directly JSON.parse()-able JSON object.');
         expect(() => ctx.buildExternalAIClipboardPacket()).not.toThrow();
     });
 
@@ -8048,7 +8246,7 @@ describe('AI market analyst contract', () => {
             market_regime: { primary_regime: 'REVERSAL_TRANSITION' }
         };
         const signal = { pair: 'EUR/USD', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' }, analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', current_price: 1.101 };
-        const packet = ctx.buildExternalAIClipboardPacket({ signal, replay });
+        const packet = ctx.buildExternalAIClipboardPacket({ signal, replay: completeReplay(replay) });
         expect(packet).toContain('Symbol: EUR/USD');
         expect(packet).toContain('"current_price": 1.101');
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
@@ -8145,7 +8343,7 @@ describe('AI market analyst contract', () => {
         };
         const packet = ctx.buildExternalAIClipboardPacket({
             signal: { pair: 'EUR/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' } },
-            replay
+            replay: completeReplay(replay)
         });
         const evidenceBody = packet.slice(packet.indexOf('CURRENT MARKET SNAPSHOT'), packet.lastIndexOf('EXTERNAL AI TASK'));
         expect(packet).toContain('MARKET FACT CONTEXT');
@@ -8203,7 +8401,7 @@ describe('AI market analyst contract', () => {
         };
         const packet = ctx.buildExternalAIClipboardPacket({
             signal: { pair: 'XAU/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' } },
-            replay
+            replay: completeReplay(replay)
         });
         expect(packet).toContain('REMOTE-SELL-POI');
         expect(packet).toContain('"formation_time"');
@@ -8252,7 +8450,12 @@ describe('AI market analyst contract', () => {
     it('routes the existing normal Copy action through the external AI packet', () => {
         const { context: ctx } = getScanContext();
         ctx.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
-        ctx.setJsonOutput({ trade_signal: { pair: 'XAU/USD', decision: 'WAIT', status: 'NO_TRADE', current_price: 100, confidence: 0, reason: { code: 'NO_TRADE' } } });
+        ctx.setJsonOutput({ trade_signal: {
+            pair: 'XAU/USD', decision: 'WAIT', status: 'NO_TRADE', current_price: 100, confidence: 0,
+            snapshot_id: 'TVKIT:XAUUSD:copy-handler',
+            snapshot_completeness: completeReplay({ market_evidence_package: {} }).snapshot_completeness,
+            reason: { code: 'NO_TRADE' }
+        } });
         ctx.copyJson();
         expect(ctx.navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
         expect(ctx.navigator.clipboard.writeText.mock.calls[0][0]).toContain('EXTERNAL AI DECISION PACKET');

@@ -37,7 +37,62 @@ const AI_REQUEST_TIMEOUT_MS = 45000;
 const TIMEFRAME_MS = { '1M': 60000, '5M': 5 * 60000, '15M': 15 * 60000, '1H': 60 * 60000, '4H': 240 * 60000, '1D': 1440 * 60000, '1W': 10080 * 60000 };
 let scanInProgress = false;
 let activeScanId = null;
+const runtimeObjectIds = new WeakMap();
+let runtimeObjectSequence = 0;
+let activeScanRuntimeTrace = null;
 let lastAIRequestError = null;
+
+function runtimeObjectIdentity(value, label = 'object') {
+    if (!value || (typeof value !== 'object' && typeof value !== 'function')) return null;
+    if (!runtimeObjectIds.has(value)) runtimeObjectIds.set(value, `${activeScanId || 'runtime'}:${label}:${++runtimeObjectSequence}`);
+    return runtimeObjectIds.get(value);
+}
+
+function historyCountSnapshot(historyCache = {}) {
+    return Object.fromEntries(REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES.map(timeframe => [
+        timeframe,
+        Array.isArray(historyCache?.[timeframe]) ? historyCache[timeframe].length : 0
+    ]));
+}
+
+function beginScanRuntimeTrace(scanId) {
+    activeScanRuntimeTrace = {
+        scan_id: scanId,
+        history_cache_identity: null,
+        snapshot_completeness_identity: null,
+        live_market_context_identity: null,
+        canonical_evidence_package_identity: null,
+        boundaries: {}
+    };
+}
+
+function recordScanRuntimeBoundary(label, historyCache = null, completeness = null, liveMarketContext = null) {
+    if (!activeScanRuntimeTrace) return;
+    if (historyCache) activeScanRuntimeTrace.history_cache_identity ||= runtimeObjectIdentity(historyCache, 'history_cache');
+    if (completeness) activeScanRuntimeTrace.snapshot_completeness_identity ||= runtimeObjectIdentity(completeness, 'snapshot_completeness');
+    if (liveMarketContext) activeScanRuntimeTrace.live_market_context_identity ||= runtimeObjectIdentity(liveMarketContext, 'live_market_context');
+    const entry = { history_counts: historyCountSnapshot(historyCache || {}) };
+    if (completeness) {
+        entry.snapshot_complete = completeness.complete === true;
+        entry.snapshot_missing_timeframes = completeness.missing_timeframes || [];
+        entry.snapshot_reason = completeness.reason_code || null;
+    }
+    if (liveMarketContext) {
+        entry.history_cache_identity = runtimeObjectIdentity(liveMarketContext.historyCache || historyCache, 'history_cache');
+        entry.live_market_context_identity = runtimeObjectIdentity(liveMarketContext, 'live_market_context');
+        entry.live_context_snapshot_completeness_identity = runtimeObjectIdentity(liveMarketContext.snapshot_completeness, 'snapshot_completeness');
+    }
+    activeScanRuntimeTrace.boundaries[label] = entry;
+}
+
+function scanRuntimeTraceSnapshot() {
+    if (!activeScanRuntimeTrace) return null;
+    return JSON.parse(JSON.stringify(activeScanRuntimeTrace));
+}
+
+function runtimeTraceBoundaryCounts(trace, label) {
+    return trace?.boundaries?.[label]?.history_counts || {};
+}
 
 function getProxyBaseUrl() {
     const configured = typeof window !== 'undefined' ? window.__ICT_PROXY_BASE_URL__ : null;
@@ -2901,6 +2956,7 @@ function sanitizeHistoryRequestDiagnostics(diagnostics = {}) {
 // valid market can have no FVG, CRT, TBS, candidate, or institutional event;
 // it is still analyzable when all required closed-candle series are usable.
 function assessMarketSnapshotCompleteness({ historyCache = {}, price = null, providerErrors = null, requiredTimeframes = REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES } = {}) {
+    recordScanRuntimeBoundary('snapshot_input_counts', historyCache);
     const required = [...new Set(Array.isArray(requiredTimeframes) ? requiredTimeframes : REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES)];
     const sanitizedErrors = sanitizeSnapshotProviderErrors(providerErrors || historyCache?.fetch_errors || {});
     const timeframes = {};
@@ -3026,7 +3082,11 @@ function buildIncompleteMarketSnapshotSignal({ pair: pairLocal = pair, price = n
     const provider = getMarketDataProvider();
     const missing = completeness.missing_timeframes || [];
     const invalid = completeness.invalid_timeframes || [];
-    const details = [...missing.map(tf => `${tf} missing`), ...invalid.map(tf => `${tf} unusable`)];
+    const details = [
+        ...missing.map(tf => `${tf} missing`),
+        ...invalid.map(tf => `${tf} unusable`),
+        ...(completeness.snapshot_id_missing ? ['snapshot ID unavailable'] : [])
+    ];
     return {
         trade_signal: {
             date: new Date(asOfMs).toISOString().slice(0, 10),
@@ -3052,6 +3112,7 @@ function buildIncompleteMarketSnapshotSignal({ pair: pairLocal = pair, price = n
             snapshot_complete: completeness.complete === true,
             snapshot_missing_timeframes: completeness.missing_timeframes || [],
             snapshot_reason: completeness.reason_code || 'INCOMPLETE_MARKET_SNAPSHOT',
+            runtime_market_data_trace: scanRuntimeTraceSnapshot(),
             history_errors: completeness.provider_errors || {},
             history_diagnostics: sanitizeHistoryRequestDiagnostics(historyDiagnostics),
             provider_metadata: {
@@ -10996,7 +11057,7 @@ function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure
     };
 }
 
-function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext, as_of_ms = null, quote_snapshot = null }) {
+function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext, as_of_ms = null, quote_snapshot = null, snapshot_completeness = null }) {
     pair = normalizeCanonicalMarketSymbol(pair);
     const symbolMetadata = getSymbolMetadata(pair, quote_snapshot?.symbol_metadata || {});
     const settings = getMarketSettings(pair, symbolMetadata);
@@ -11006,7 +11067,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const sessionCheck = shouldTradeSession(now);
     const marketState = getMarketOpenState(pair, { ...(quote_snapshot || {}), as_of_ms });
     const dataQuality = validateMarketDataQuality(historyCache, price, quote_snapshot, as_of_ms || Date.now(), ['1D', '4H', '1H', '15M', '5M']);
-    const snapshotCompleteness = assessMarketSnapshotCompleteness({ historyCache, price });
+    const snapshotCompleteness = snapshot_completeness || assessMarketSnapshotCompleteness({ historyCache, price });
     const realVolume = hasRealVolume(pair, symbolMetadata);
     const closed4h = getClosedHistory(historyCache, '4H');
     const closed1h = getClosedHistory(historyCache, '1H');
@@ -11472,6 +11533,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         enumerable: false,
         configurable: true
     });
+    recordScanRuntimeBoundary('live_context_history_counts', historyCache, snapshotCompleteness, liveContext);
     return liveContext;
 }
 
@@ -12383,6 +12445,7 @@ function compactAIContext(liveMarketContext) {
 }
 
 function buildCanonicalMarketEvidencePackage(liveMarketContext = {}, historyCache = {}) {
+    recordScanRuntimeBoundary('canonical_history_counts', historyCache, liveMarketContext.snapshot_completeness, liveMarketContext);
     const pairLocal = liveMarketContext.pair || pair;
     const metadata = liveMarketContext.symbol_metadata || {};
     const price = Number(liveMarketContext.current_price);
@@ -12452,7 +12515,7 @@ function buildCanonicalMarketEvidencePackage(liveMarketContext = {}, historyCach
         pairLocal,
         symbolMetadata: metadata
     });
-    return {
+    const canonicalPackage = {
         package_version: 1,
         snapshot_id: liveMarketContext.snapshot_id || liveMarketContext.market_context?.snapshot_id || null,
         snapshot_completeness: liveMarketContext.snapshot_completeness || assessMarketSnapshotCompleteness({ historyCache, price }),
@@ -12463,6 +12526,9 @@ function buildCanonicalMarketEvidencePackage(liveMarketContext = {}, historyCach
         as_of_time: liveMarketContext.as_of_time,
         note: `All candles are normalized closed ${getMarketDataProviderLabel()} candles. Structure and zones are derived from these same candles.`
     };
+    if (activeScanRuntimeTrace) activeScanRuntimeTrace.canonical_evidence_package_identity = runtimeObjectIdentity(canonicalPackage, 'canonical_evidence_package');
+    recordScanRuntimeBoundary('canonical_evidence_output', historyCache, canonicalPackage.snapshot_completeness, liveMarketContext);
+    return canonicalPackage;
 }
 
 function buildAiMarketEvidenceCatalog(liveMarketContext = {}, historyCache = {}) {
@@ -14600,6 +14666,42 @@ function validateAISetup(aiResult, price, historyCache, pairArg, deterministicVa
 }
 
 function buildManualExternalAIReviewOutput({ liveMarketContext = {}, pairLocal = pair, price, scanAsOfMs, historyCache = {} } = {}) {
+    const canonicalSnapshotCompleteness = liveMarketContext.snapshot_completeness
+        || assessMarketSnapshotCompleteness({ historyCache, price });
+    const contextHistoryCache = liveMarketContext.historyCache;
+    const historyIdentityMatches = !contextHistoryCache || contextHistoryCache === historyCache;
+    const canonicalCounts = canonicalSnapshotCompleteness.snapshot_input_counts || {};
+    const currentCounts = historyCountSnapshot(historyCache);
+    const countsMatchCanonical = REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES.every(timeframe =>
+        Number(canonicalCounts[timeframe] ?? 0) === Number(currentCounts[timeframe] ?? 0));
+    const snapshotId = liveMarketContext.snapshot_id || liveMarketContext.market_context?.snapshot_id || null;
+    const manualSnapshotValid = canonicalSnapshotCompleteness.complete === true
+        && Boolean(snapshotId)
+        && historyIdentityMatches
+        && countsMatchCanonical;
+    if (!manualSnapshotValid) {
+        const failureCompleteness = {
+            ...canonicalSnapshotCompleteness,
+            complete: false,
+            status: 'DATA_UNAVAILABLE',
+            reason_code: 'INCOMPLETE_MARKET_SNAPSHOT',
+            snapshot_id_missing: !snapshotId,
+            history_identity_mismatch: !historyIdentityMatches,
+            history_counts_mismatch: !countsMatchCanonical,
+            snapshot_input_counts: currentCounts
+        };
+        recordScanRuntimeBoundary('manual_builder_rejected', historyCache, failureCompleteness, liveMarketContext);
+        return buildIncompleteMarketSnapshotSignal({
+            pairLocal,
+            price,
+            quoteSnapshot: liveMarketContext.quote_snapshot || null,
+            completeness: failureCompleteness,
+            historyDiagnostics: historyCache?.fetch_diagnostics || liveMarketContext.history_diagnostics || {},
+            asOfMs: scanAsOfMs,
+            scanId: activeScanId
+        });
+    }
+    recordScanRuntimeBoundary('manual_builder_accepted', historyCache, canonicalSnapshotCompleteness, liveMarketContext);
     const candidates = Array.isArray(liveMarketContext.adaptive_setup_candidates) ? liveMarketContext.adaptive_setup_candidates : [];
     const futureWatchCandidates = liveMarketContext.future_watch_candidates || [];
     const lowQualityCandidates = liveMarketContext.low_quality_candidates || [];
@@ -14657,14 +14759,12 @@ function buildManualExternalAIReviewOutput({ liveMarketContext = {}, pairLocal =
         || ['TRADE_READY', 'TODAY_OPPORTUNITY', 'WATCH_ONLY'].includes(today.state);
     const output = buildTodayOpportunityOutput(today, pairLocal, price, scanAsOfMs, liveMarketContext.market_open, liveMarketContext.symbol_metadata, liveMarketContext.provider_metadata);
     const signal = output.trade_signal;
-    const manualSnapshotCompleteness = liveMarketContext.snapshot_completeness
-        || assessMarketSnapshotCompleteness({ historyCache, price });
     signal.decision = 'WAIT';
     signal.trade_type = 'WAIT';
     signal.selected_candidate_id = null;
-    signal.snapshot_id = liveMarketContext.snapshot_id || null;
-    signal.snapshot_completeness = manualSnapshotCompleteness;
-    signal.snapshot_input_counts = manualSnapshotCompleteness.snapshot_input_counts || {};
+    signal.snapshot_id = snapshotId;
+    signal.snapshot_completeness = canonicalSnapshotCompleteness;
+    signal.snapshot_input_counts = canonicalSnapshotCompleteness.snapshot_input_counts || {};
     signal.app_build_id = APP_BUILD_ID;
     signal.clipboard_serializer_id = CLIPBOARD_SERIALIZER_ID;
     signal.scan_id = activeScanId || null;
@@ -14731,6 +14831,7 @@ async function runAutoScan() {
     pair = normalizeCanonicalMarketSymbol(pair);
     const scanAsOfMs = Date.now();
     activeScanId = `${APP_BUILD_ID}:${pair}:${scanAsOfMs}`;
+    beginScanRuntimeTrace(activeScanId);
     const scanStartedAt = scanClock();
     let scanStage = 'initializing';
     let price = null;
@@ -14791,6 +14892,7 @@ async function runAutoScan() {
             historyCache[t] = await getHistory(t);
         }));
         for (const tf of tfs) historyCache[tf] = canonicalizeHistory(historyCache[tf], tf, scanAsOfMs);
+        recordScanRuntimeBoundary('history_counts_after_load', historyCache);
         const refreshedQuoteSnapshot = refreshStaleQuoteFromClosedCandle(quoteSnapshot, historyCache, scanAsOfMs, '5M');
         if (refreshedQuoteSnapshot !== quoteSnapshot) {
             quoteSnapshot = refreshedQuoteSnapshot;
@@ -14820,12 +14922,14 @@ async function runAutoScan() {
             configurable: true
         });
         scanTrace('history loaded', scanStartedAt, { timeframes: Object.fromEntries(tfs.map(tf => [tf, historyCache[tf]?.length || 0])) });
+        recordScanRuntimeBoundary('history_counts_before_completeness', historyCache);
         const snapshotCompleteness = assessMarketSnapshotCompleteness({
             historyCache,
             price,
             providerErrors: historyCache.fetch_errors,
             requiredTimeframes: REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES
         });
+        recordScanRuntimeBoundary('snapshot_after_completeness', historyCache, snapshotCompleteness);
         markHistorySnapshotConsumed(historyCache, pair, snapshotCompleteness);
         scanTrace('snapshot input consumed', scanStartedAt, {
             snapshot_input_counts: snapshotCompleteness.snapshot_input_counts,
@@ -14956,7 +15060,8 @@ async function runAutoScan() {
             holistic,
             entryContext,
             as_of_ms: scanAsOfMs,
-            quote_snapshot: quoteSnapshot
+            quote_snapshot: quoteSnapshot,
+            snapshot_completeness: snapshotCompleteness
         });
         liveMarketContext.news_risk = checkHighImpactNews(quoteSnapshot?.news_risk || null);
         if (liveMarketContext.market_context) liveMarketContext.market_context.news_risk = liveMarketContext.news_risk;
@@ -14990,6 +15095,7 @@ async function runAutoScan() {
         if (isManualExternalAIMode()) {
             scanStage = 'manual external AI review';
             scanText.innerHTML = '📋 Market analysis prepared — Copy for external AI review';
+            recordScanRuntimeBoundary('manual_builder_history_counts', historyCache, liveMarketContext.snapshot_completeness, liveMarketContext);
             const manualOutput = buildManualExternalAIReviewOutput({
                 liveMarketContext,
                 pairLocal: pair,
@@ -15661,6 +15767,10 @@ async function runAutoScan() {
     } catch(e) {
         console.error('[SCAN] FAILED', { stage: scanStage, error: e?.message, stack: e?.stack });
         showNotif('Error: ' + (e?.message || 'scan failed'), 'error');
+        if (activeScanRuntimeTrace) {
+            activeScanRuntimeTrace.failure_stage = scanStage;
+            activeScanRuntimeTrace.failure_message = String(e?.message || 'Unknown scan failure').slice(0, 240);
+        }
         // A post-quote exception must never downgrade a partial snapshot into
         // the historical fallback selector. Re-check the same canonical
         // availability contract before allowing any deterministic fallback.
@@ -17073,6 +17183,9 @@ function setJsonOutput(obj, { publishArtifact = true } = {}) {
         || obj?.trade_signal?.snapshot_input_counts
         || publicSignal.snapshot_completeness?.snapshot_input_counts
         || {};
+    publicSignal.runtime_market_data_trace = publicSignal.runtime_market_data_trace
+        || obj?.trade_signal?.runtime_market_data_trace
+        || (publicSignal.status_code === 'DATA_UNAVAILABLE' || !publicSignal.snapshot_id ? scanRuntimeTraceSnapshot() : null);
     publicSignal.analysis_status = getAnalysisStatus(publicSignal);
     const publicValidation = validatePublicTradeSignal(publicSignal);
     if (!publicValidation.valid) {
@@ -17359,6 +17472,7 @@ function publishCurrentScanArtifact({ signal = {}, replay = null, output = null 
         app_build_id: signal.app_build_id || signal.app_build || APP_BUILD_ID,
         clipboard_serializer_id: signal.clipboard_serializer_id || CLIPBOARD_SERIALIZER_ID,
         snapshot_input_counts: signal.snapshot_input_counts || completeness?.snapshot_input_counts || {},
+        runtime_market_data_trace: signal.runtime_market_data_trace || null,
         snapshot_completeness: completeness,
         signal,
         replay
@@ -18056,9 +18170,10 @@ function externalPacketCandidateRecord(candidate = {}, targetIndex = new Map()) 
 function buildDataUnavailableExternalAIPacket({ signal = {}, replay = null } = {}) {
     const source = replay || {};
     const result = signal || source.final_output?.trade_signal || source.final_output || {};
-    const completeness = result.snapshot_completeness
-        || source.snapshot_completeness
-        || source.market_evidence_package?.snapshot_completeness
+    const runtimeTrace = result.runtime_market_data_trace || source.runtime_market_data_trace || null;
+    const completeness = Object.prototype.hasOwnProperty.call(result, 'snapshot_completeness')
+        ? result.snapshot_completeness
+        : (source.snapshot_completeness || source.market_evidence_package?.snapshot_completeness)
         || null;
     const providerMetadata = source.provider_metadata || result.provider_metadata || {};
     const payload = {
@@ -18067,17 +18182,28 @@ function buildDataUnavailableExternalAIPacket({ signal = {}, replay = null } = {
         clipboard_serializer_id: result.clipboard_serializer_id || source.clipboard_serializer_id || CLIPBOARD_SERIALIZER_ID,
         scan_id: result.scan_id || source.scan_id || null,
         status: 'DATA_UNAVAILABLE',
+        execution_allowed: false,
         reason: result.reason || { code: 'INCOMPLETE_MARKET_SNAPSHOT', message: 'Required market evidence was not available.' },
         symbol: source.pair || result.pair || null,
         provider: providerMetadata.provider || getMarketDataProvider(),
         provider_symbol: providerMetadata.provider_symbol || null,
-        snapshot_id: source.snapshot_id || result.snapshot_id || null,
+        snapshot_id: Object.prototype.hasOwnProperty.call(result, 'snapshot_id') ? result.snapshot_id : (source.snapshot_id || null),
         current_price: externalPacketNumber(source.quote?.price ?? result.current_price),
         as_of: source.scan_as_of || result.time || null,
         required_timeframes: completeness?.required_timeframes || REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES,
         snapshot_complete: completeness?.complete === true,
         snapshot_input_counts: completeness?.snapshot_input_counts || result.snapshot_input_counts || source.snapshot_input_counts || {},
         snapshot_reason: completeness?.reason_code || result.snapshot_reason || 'INCOMPLETE_MARKET_SNAPSHOT',
+        runtime_market_data_trace: runtimeTrace,
+        history_cache_identity: runtimeTrace?.history_cache_identity || null,
+        snapshot_completeness_identity: runtimeTrace?.snapshot_completeness_identity || null,
+        live_market_context_identity: runtimeTrace?.live_market_context_identity || null,
+        history_counts_after_load: runtimeTraceBoundaryCounts(runtimeTrace, 'history_counts_after_load'),
+        history_counts_before_completeness: runtimeTraceBoundaryCounts(runtimeTrace, 'history_counts_before_completeness'),
+        snapshot_input_counts_at_check: runtimeTraceBoundaryCounts(runtimeTrace, 'snapshot_input_counts'),
+        canonical_history_counts: runtimeTraceBoundaryCounts(runtimeTrace, 'canonical_history_counts'),
+        live_context_history_counts: runtimeTraceBoundaryCounts(runtimeTrace, 'live_context_history_counts'),
+        manual_builder_history_counts: runtimeTraceBoundaryCounts(runtimeTrace, 'manual_builder_history_counts'),
         missing_timeframes: completeness?.missing_timeframes || [],
         invalid_timeframes: completeness?.invalid_timeframes || [],
         timeframe_status: completeness?.timeframes || {},
@@ -18087,6 +18213,7 @@ function buildDataUnavailableExternalAIPacket({ signal = {}, replay = null } = {
     return [
         'ICT TRADING BOT PRO',
         'MARKET DATA AVAILABILITY DIAGNOSTIC',
+        ...(runtimeTrace ? ['', 'RUNTIME MARKET DATA TRACE'] : []),
         '',
         JSON.stringify(payload, null, 2),
         '',
@@ -18097,12 +18224,37 @@ function buildDataUnavailableExternalAIPacket({ signal = {}, replay = null } = {
 function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
     const source = replay || {};
     const result = signal || source.final_output?.trade_signal || source.final_output || {};
+    const completeness = Object.prototype.hasOwnProperty.call(result, 'snapshot_completeness')
+        ? result.snapshot_completeness
+        : (source.snapshot_completeness || source.market_evidence_package?.snapshot_completeness)
+        || null;
+    const snapshotId = Object.prototype.hasOwnProperty.call(result, 'snapshot_id') ? result.snapshot_id : (source.snapshot_id || null);
     const unavailable = result.status === 'DATA_UNAVAILABLE'
         || result.status_code === 'DATA_UNAVAILABLE'
         || result.reason?.code === 'INCOMPLETE_MARKET_SNAPSHOT'
         || source.snapshot_completeness?.complete === false
         || source.market_evidence_package?.snapshot_completeness?.complete === false;
     if (unavailable) return buildDataUnavailableExternalAIPacket({ signal: result, replay: source });
+    if (completeness?.complete !== true || !snapshotId || snapshotId === 'UNAVAILABLE') {
+        return buildDataUnavailableExternalAIPacket({
+            signal: {
+                ...result,
+                status: 'DATA_UNAVAILABLE',
+                status_code: 'DATA_UNAVAILABLE',
+                snapshot_completeness: completeness || {
+                    status: 'DATA_UNAVAILABLE',
+                    complete: false,
+                    required_timeframes: REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES,
+                    missing_timeframes: REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES,
+                    invalid_timeframes: [],
+                    snapshot_input_counts: result.snapshot_input_counts || {},
+                    reason_code: 'INCOMPLETE_MARKET_SNAPSHOT'
+                },
+                reason: { code: 'INCOMPLETE_MARKET_SNAPSHOT', message: 'A complete canonical market snapshot and snapshot ID are required before a normal external-AI packet can be copied.' }
+            },
+            replay: source
+        });
+    }
     const pairValue = source.pair || result.pair || 'UNKNOWN';
     const manualReview = result.reason?.code === 'MANUAL_EXTERNAL_AI_REVIEW'
         || result.analysis_mode === DEFAULT_ANALYSIS_MODE
