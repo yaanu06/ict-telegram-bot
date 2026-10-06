@@ -6497,8 +6497,19 @@ function buildTimeframeContext({ historyCache = {}, structure = {}, price, strat
             premium_discount: data.length >= 20 ? isPremiumDiscount(data, price).zone : 'UNAVAILABLE',
             crt_events: events.filter(s => s.primary === 'CRT').map(s => s.id),
             tbs_events: events.filter(s => s.primary === 'TBS').map(s => s.id),
-            msnr_levels: levels.filter(z => z.type === 'MSNR' && z.origin === 'STRUCTURAL_MSNR').map(z => ({ id: z.id, low: z.low, high: z.high, direction: z.direction })),
-            zones: levels.map(z => ({ id: z.id, type: z.type, low: z.low, high: z.high, direction: z.direction })),
+            msnr_levels: levels.filter(z => z.type === 'MSNR' && z.origin === 'STRUCTURAL_MSNR').map(z => ({
+                id: z.id, event_id: z.event_id || null, type: z.type, low: z.low, high: z.high, direction: z.direction,
+                event_time: z.event_time || z.formation_time || z.created_time || z.source_time || z.reclaim_time || z.time || null,
+                formation_time: z.formation_time || z.created_time || z.source_time || null,
+                created_time: z.created_time || null, source_time: z.source_time || null, reclaim_time: z.reclaim_time || null
+            })),
+            zones: levels.map(z => ({
+                id: z.id, event_id: z.event_id || null, type: z.type, low: z.low, high: z.high, direction: z.direction,
+                event_time: z.event_time || z.formation_time || z.created_time || z.source_time || z.reclaim_time || z.time || null,
+                formation_time: z.formation_time || z.created_time || z.source_time || null,
+                created_time: z.created_time || null, source_time: z.source_time || null, reclaim_time: z.reclaim_time || null,
+                time: z.time || null
+            })),
             execution_events: tf === '15M' ? events.map(s => s.id) : [],
             structural_evidence_ids: evidence.map(e => e.id), evidence
         }];
@@ -11825,13 +11836,30 @@ function compactEvidenceNumber(...values) {
     return Number.isFinite(number) ? number : null;
 }
 
+// Manual packet normalization accepts the timestamp aliases used by the
+// deterministic detectors and strategy-event adapters.  This is a
+// presentation-boundary helper only; it does not alter detector chronology.
+function manualPacketTimestampValue(item = {}) {
+    if (!item || typeof item !== 'object') return null;
+    return item.event_time ?? item.formation_time ?? item.created_time
+        ?? item.source_time ?? item.reclaim_time ?? item.time ?? item.timestamp ?? null;
+}
+
+// Existing location records use id/evidence_id as their canonical identity.
+// event_id is an accepted fallback for event-shaped records; it must not
+// displace an already supplied canonical location id.
+function manualPacketCanonicalId(item = {}) {
+    if (!item || typeof item !== 'object') return null;
+    return item.id || item.evidence_id || item.event_id || null;
+}
+
 function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe = null) {
     if (item == null || typeof item !== 'object') return null;
-    const id = item.id || item.evidence_id || null;
+    const id = manualPacketCanonicalId(item);
     const level = compactEvidenceNumber(item.level, item.price);
-    const low = compactEvidenceNumber(item.low);
-    const high = compactEvidenceNumber(item.high);
-    const midpointValue = item.midpoint ?? item.mid ?? item.price;
+    const low = compactEvidenceNumber(item.low, item.zone?.low, item.zone_low);
+    const high = compactEvidenceNumber(item.high, item.zone?.high, item.zone_high);
+    const midpointValue = item.midpoint ?? item.mid ?? item.price ?? item.zone?.midpoint;
     const midpoint = compactEvidenceNumber(midpointValue);
     const invalidation = item.structural_invalidation && typeof item.structural_invalidation === 'object'
         ? item.structural_invalidation
@@ -11839,13 +11867,13 @@ function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe
             ? item.structural_invalidation_detail : null;
     const invalidationLevel = Number.isFinite(Number(invalidation?.level ?? item.structural_invalidation_level ?? item.invalidation_level ?? item.invalidation))
         ? Number(invalidation?.level ?? item.structural_invalidation_level ?? item.invalidation_level ?? item.invalidation) : null;
-    const formationTime = item.event_time || item.created_time || item.source_time || item.reclaim_time || null;
+    const formationTime = manualPacketTimestampValue(item);
     const postFormationDelivery = Number.isFinite(Number(item.post_formation_delivery_progress ?? item.delivery_progress_since_formation))
         ? Number(item.post_formation_delivery_progress ?? item.delivery_progress_since_formation) : null;
     const deliveryAfterFormation = typeof item.delivery_after_formation === 'boolean' ? item.delivery_after_formation : null;
     return {
         id,
-        type: item.type || item.kind || item.source_type || fallbackType,
+        type: item.type || item.event_type || item.kind || item.source_type || fallbackType,
         source: item.source || item.primary_target_source || item.origin || null,
         direction: item.direction || null,
         timeframe: item.timeframe || fallbackTimeframe || null,
@@ -11867,7 +11895,10 @@ function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe
             evidence_id: id
         },
         evidence_ids: Array.isArray(item.evidence_ids || item.supporting_evidence_ids)
-            ? (item.evidence_ids || item.supporting_evidence_ids).filter(value => typeof value === 'string').slice(0, 12) : [],
+            ? [...new Set([
+                ...(item.evidence_ids || item.supporting_evidence_ids),
+                ...(item.event_id ? [item.event_id] : [])
+            ].filter(value => typeof value === 'string'))].slice(0, 12) : (item.event_id ? [item.event_id] : []),
         ...(postFormationDelivery != null || deliveryAfterFormation != null ? {
             formation_time: formationTime,
             delivery_since_formation: {
@@ -12027,8 +12058,7 @@ function buildPacketEvidencePackage(source = {}) {
 
 function manualPacketEventTime(item = {}) {
     if (!item || typeof item !== 'object') return NaN;
-    return normalizeTimestampUTC(item.event_time ?? item.formation_time ?? item.created_time
-        ?? item.source_time ?? item.reclaim_time ?? item.time ?? item.timestamp);
+    return normalizeTimestampUTC(manualPacketTimestampValue(item));
 }
 
 function manualPacketTimeframeWindow(timeframe) {
@@ -12117,7 +12147,7 @@ function compactManualStructureSummary(value = {}, chronologyEvents = []) {
 
 function manualPacketRecordKey(item = {}, fallbackType = null, timeframe = null) {
     if (!item || typeof item !== 'object') return `${fallbackType || 'ITEM'}:${timeframe || 'NA'}:${String(item)}`;
-    return item.id || item.evidence_id || `${item.type || fallbackType || 'ITEM'}:${timeframe || item.timeframe || 'NA'}:${item.event_time || item.formation_time || item.level || item.price || item.low || item.high || 'NA'}`;
+    return manualPacketCanonicalId(item) || `${item.type || fallbackType || 'ITEM'}:${timeframe || item.timeframe || 'NA'}:${manualPacketTimestampValue(item) || item.level || item.price || item.low || item.high || 'NA'}`;
 }
 
 function selectManualPacketRecords(items = [], timeframe = null, referenceTime = null, maxItems = 32) {
@@ -12747,10 +12777,10 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
 
 function manualDecisionEvent(item = {}, fallbackType = null, fallbackTimeframe = null) {
     if (!item || typeof item !== 'object') return null;
-    const eventTime = item.event_time || item.formation_time || item.created_time || item.source_time || item.time || null;
-    const level = compactEvidenceNumber(item.level, item.price, item.midpoint);
-    const low = compactEvidenceNumber(item.low);
-    const high = compactEvidenceNumber(item.high);
+    const eventTime = manualPacketTimestampValue(item);
+    const level = compactEvidenceNumber(item.level, item.price, item.midpoint, item.zone?.midpoint);
+    const low = compactEvidenceNumber(item.low, item.zone?.low, item.zone_low);
+    const high = compactEvidenceNumber(item.high, item.zone?.high, item.zone_high);
     if (!item.id && !item.event_id && !item.evidence_id && !eventTime && level == null && low == null && high == null && !item.direction) return null;
     const eventId = item.event_id || item.id || item.evidence_id
         || `${fallbackType || item.type || item.kind || 'EVENT'}:${fallbackTimeframe || item.timeframe || 'NA'}:${eventTime || level || `${low || ''}-${high || ''}`}`;
@@ -12921,11 +12951,11 @@ function buildManualLocationCatalogue(semantic = {}, invalidations = [], objecti
     for (const timeframe of AI_SEMANTIC_TIMEFRAMES) {
         for (const item of semantic.timeframes?.[timeframe]?.locations || []) {
             if (!manualPacketIsRelevant(item, timeframe, referenceTime)) continue;
-            const id = item.id || item.evidence_id;
+            const id = manualPacketCanonicalId(item);
             if (!id || locations.has(id)) continue;
-            const low = compactEvidenceNumber(item.low);
-            const high = compactEvidenceNumber(item.high);
-            const midpoint = compactEvidenceNumber(item.midpoint, item.price);
+            const low = compactEvidenceNumber(item.low, item.zone?.low, item.zone_low);
+            const high = compactEvidenceNumber(item.high, item.zone?.high, item.zone_high);
+            const midpoint = compactEvidenceNumber(item.midpoint, item.price, item.level, item.zone?.midpoint);
             const evidenceIds = [...new Set([id, ...(item.evidence_ids || [])].filter(value => typeof value === 'string'))];
             const compatibleInvalidationIds = invalidations.filter(invalidation =>
                 invalidation.timeframe === (item.timeframe || timeframe)
@@ -12942,14 +12972,14 @@ function buildManualLocationCatalogue(semantic = {}, invalidations = [], objecti
                 : null;
             locations.set(id, compactManualPacketValue({
                 location_id: String(id),
-                type: item.type || null,
-                model_family: manualLocationModelFamily(item.type),
+                type: item.type || item.event_type || null,
+                model_family: manualLocationModelFamily(item.type || item.event_type),
                 direction_if_factual: item.direction || null,
                 timeframe: item.timeframe || timeframe,
                 zone_low: low,
                 zone_high: high,
                 midpoint_if_defined: midpoint,
-                formed_at: item.event_time || item.formation_time || null,
+                formed_at: manualPacketTimestampValue(item),
                 freshness: item.freshness || null,
                 mitigated: item.mitigation_state || item.mitigation || null,
                 mitigation_state: item.mitigation_state || item.mitigation || null,
@@ -12959,7 +12989,7 @@ function buildManualLocationCatalogue(semantic = {}, invalidations = [], objecti
                 origin_evidence_ids: evidenceIds,
                 formation_context: compactManualPacketValue({
                     source: item.source || null,
-                    event_time: item.event_time || item.formation_time || null,
+                    event_time: manualPacketTimestampValue(item),
                     evidence_ids: evidenceIds
                 }),
                 delivery_since_formation: item.delivery_since_formation || item.delivery_since_formation_facts || null,
