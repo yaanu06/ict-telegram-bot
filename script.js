@@ -11726,6 +11726,10 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         poi_zones: liveMarketContext.poi_zones || [],
         target_candidates: liveMarketContext.target_candidates || {},
         provider_metadata: liveMarketContext.provider_metadata || null,
+        asset_class: liveMarketContext.asset_class || liveMarketContext.symbol_metadata?.asset_class || null,
+        session: liveMarketContext.session || null,
+        volatility: liveMarketContext.volatility || null,
+        premium_discount: liveMarketContext.premium_discount || null,
         daily_bias: liveMarketContext.daily_bias || null,
         market_regime: liveMarketContext.market_regime || null,
         market_phase_selection: liveMarketContext.market_phase_selection || null,
@@ -11897,6 +11901,7 @@ const MANUAL_PACKET_RELEVANCE_BARS = 24;
 const MANUAL_PACKET_MAX_LOCATIONS_PER_TIMEFRAME = 32;
 const MANUAL_PACKET_MAX_EVENTS_PER_TIMEFRAME = 28;
 const MANUAL_PACKET_MAX_INSTITUTIONAL_RECORDS_PER_TIMEFRAME = 12;
+const MANUAL_RECENT_CANDLES_PER_TIMEFRAME = 20;
 const MANUAL_MARKET_PHASES = Object.freeze([
     'ORIGINAL_SETUP', 'EARLY_DELIVERY', 'EXPANSION', 'RETRACEMENT',
     'CONTINUATION_READY', 'LATE_DELIVERY', 'TRANSITION_WAIT'
@@ -11905,6 +11910,120 @@ const MANUAL_SETUP_TOKENS = Object.freeze([
     'ICT', 'CURRENT_STRUCTURE', 'FVG', 'OB', 'CRT', 'TBS', 'MSNR',
     'FLIP', 'SUPPLY', 'DEMAND', 'ORDER_BLOCK', 'FAIR_VALUE_GAP'
 ]);
+
+// Raw candles are an observation layer for the manual external-AI packet.
+// They must come from the already-built canonical snapshot; this helper never
+// fetches data or recomputes strategy facts.
+function compactManualClosedCandle(candle = {}, timeframe = null, canonicalLastTime = null) {
+    if (!candle || typeof candle !== 'object' || candle.is_closed === false) return null;
+    const timestamp = normalizeTimestampUTC(candle.t ?? candle.time);
+    const open = Number(candle.o ?? candle.open);
+    const high = Number(candle.h ?? candle.high);
+    const low = Number(candle.l ?? candle.low);
+    const close = Number(candle.c ?? candle.close);
+    if (!Number.isFinite(timestamp) || !Number.isFinite(open) || !Number.isFinite(high)
+        || !Number.isFinite(low) || !Number.isFinite(close)) return null;
+    if (Number.isFinite(canonicalLastTime) && timestamp > canonicalLastTime) return null;
+    if (high < Math.max(open, close, low) || low > Math.min(open, close, high) || high < low) return null;
+    return {
+        time: new Date(timestamp).toISOString(),
+        open,
+        high,
+        low,
+        close,
+        _timeframe: timeframe
+    };
+}
+
+function buildManualRecentClosedCandles(timeframe, source = {}, referenceTime = null) {
+    const raw = Array.isArray(source.raw_closed_candles)
+        ? source.raw_closed_candles
+        : (Array.isArray(source.recent_closed_candles) ? source.recent_closed_candles : []);
+    const sourceLastTime = normalizeTimestampUTC(source.last_closed_time || source.last_closed_candle_time);
+    const fallbackLastTime = raw.map(candle => normalizeTimestampUTC(candle?.t)).filter(Number.isFinite).at(-1);
+    const canonicalLastTime = Number.isFinite(sourceLastTime)
+        ? sourceLastTime
+        : (Number.isFinite(fallbackLastTime) ? fallbackLastTime : normalizeTimestampUTC(referenceTime));
+    const unique = new Map();
+    for (const candle of raw) {
+        const compact = compactManualClosedCandle(candle, timeframe, canonicalLastTime);
+        if (compact) unique.set(compact.time, compact);
+    }
+    return [...unique.values()]
+        .sort((left, right) => left.time.localeCompare(right.time))
+        .slice(-MANUAL_RECENT_CANDLES_PER_TIMEFRAME)
+        .map(({ _timeframe, ...candle }) => candle);
+}
+
+function buildManualRecentPriceAction(semantic = {}) {
+    const records = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(timeframe => {
+        const source = semantic.timeframes?.[timeframe] || {};
+        return [timeframe, buildManualRecentClosedCandles(timeframe, source, semantic.snapshot?.as_of)];
+    }));
+    const missingTimeframes = AI_SEMANTIC_TIMEFRAMES.filter(timeframe => records[timeframe].length !== MANUAL_RECENT_CANDLES_PER_TIMEFRAME);
+    return {
+        complete: missingTimeframes.length === 0,
+        missing_timeframes: missingTimeframes,
+        candles_per_timeframe: MANUAL_RECENT_CANDLES_PER_TIMEFRAME,
+        timeframes: records
+    };
+}
+
+function buildManualCurrentMarketContext(semantic = {}, pair = null) {
+    const snapshot = semantic.snapshot || {};
+    const timeframes = semantic.timeframes || {};
+    const volatilityFacts = snapshot.volatility || {};
+    const session = snapshot.session || null;
+    const sessionContext = session ? {
+        session: session.name || session.session || null,
+        is_killzone: session.is_killzone ?? session.isKillzone ?? null,
+        is_silver_bullet: session.is_silver_bullet ?? session.isSilverBullet ?? null
+    } : null;
+    const volatility = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(timeframe => [timeframe, {
+        atr: timeframes[timeframe]?.atr
+            ?? ({ '1D': volatilityFacts.atr_1d, '4H': volatilityFacts.atr_4h, '1H': volatilityFacts.atr_1h, '15M': volatilityFacts.atr_15m, '5M': volatilityFacts.atr_5m }[timeframe] ?? null)
+    }]));
+    const dealingContext = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(timeframe => {
+        const value = timeframes[timeframe] || {};
+        const range = value.dealing_range || {};
+        const premiumDiscount = value.premium_discount || {};
+        return [timeframe, {
+            range_high: range.high ?? range.range_high ?? null,
+            equilibrium: range.equilibrium ?? null,
+            range_low: range.low ?? range.range_low ?? null,
+            position: premiumDiscount.zone || premiumDiscount.classification || null
+        }];
+    }));
+    return {
+        snapshot_time: snapshot.as_of || null,
+        current_price: snapshot.current_price ?? null,
+        asset_class: snapshot.asset_class || getAssetClass(pair || snapshot.pair),
+        session_context: sessionContext,
+        volatility_context: { regime: volatilityFacts.regime || null, by_timeframe: volatility },
+        dealing_context: dealingContext
+    };
+}
+
+function buildPacketEvidencePackage(source = {}) {
+    const packageEvidence = source.market_evidence_package && typeof source.market_evidence_package === 'object'
+        ? source.market_evidence_package
+        : {};
+    const sourceHistory = source.history && typeof source.history === 'object' ? source.history : {};
+    const timeframes = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(timeframe => {
+        const canonical = packageEvidence.timeframes?.[timeframe] || {};
+        const history = Array.isArray(sourceHistory[timeframe]) ? sourceHistory[timeframe] : [];
+        const raw = Array.isArray(canonical.raw_closed_candles) && canonical.raw_closed_candles.length
+            ? canonical.raw_closed_candles
+            : history;
+        return [timeframe, {
+            ...canonical,
+            raw_closed_candles: raw,
+            last_closed_time: canonical.last_closed_time || raw.filter(candle => candle?.is_closed !== false).at(-1)?.t || null,
+            closed_candle_count: canonical.closed_candle_count ?? raw.filter(candle => candle?.is_closed !== false).length
+        }];
+    }));
+    return { ...packageEvidence, timeframes };
+}
 
 function manualPacketEventTime(item = {}) {
     if (!item || typeof item !== 'object') return NaN;
@@ -12349,7 +12468,7 @@ function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = 
     const swingHighs = compactLocations(structure.swing_highs || structure.recent_swing_highs, 'SWING_HIGH', 8);
     const swingLows = compactLocations(structure.swing_lows || structure.recent_swing_lows, 'SWING_LOW', 8);
     const evidence = compactLocations(source.evidence, 'STRUCTURE_EVIDENCE', MANUAL_PACKET_MAX_EVENTS_PER_TIMEFRAME);
-    return {
+    const compacted = {
         timeframe,
         role: source.role || null,
         last_closed_time: source.last_closed_time || source.last_closed_candle_time || null,
@@ -12381,6 +12500,10 @@ function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = 
         structural_evidence_ids: Array.isArray(source.structural_evidence_ids) ? source.structural_evidence_ids : [],
         evidence
     };
+    if (manualEvidenceOnly) {
+        compacted.recent_closed_candles = buildManualRecentClosedCandles(timeframe, source, referenceTime);
+    }
+    return compacted;
 }
 
 function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog = {}, options = {}) {
@@ -12534,7 +12657,12 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
             pair: liveMarketContext.pair || evidenceCatalog.pair || null,
             provider: getMarketDataProvider(),
             as_of: liveMarketContext.as_of_time_utc || liveMarketContext.as_of_time || evidenceCatalog.as_of_time_utc || null,
-            current_price: liveMarketContext.current_price ?? evidenceCatalog.current_price ?? null
+            current_price: liveMarketContext.current_price ?? evidenceCatalog.current_price ?? null,
+            ...(manualOpportunityDiscovery ? {
+                asset_class: liveMarketContext.asset_class || liveMarketContext.symbol_metadata?.asset_class || evidenceCatalog.symbol_metadata?.asset_class || null,
+                session: liveMarketContext.session || evidenceCatalog.session || null,
+                volatility: liveMarketContext.volatility || evidenceCatalog.volatility || null
+            } : {})
         },
         timeframes: structure,
         institutional_activity_evidence: manualOpportunityDiscovery
@@ -12946,6 +13074,8 @@ function buildManualCurrentMarketSummary(semantic = {}, chronology = {}, modelEv
 
 function buildProfessionalManualMarketPacket({ semantic = {}, pair = null, provider = null, result = {}, source = {}, minimumRR = null } = {}) {
     const referenceTime = source.scan_as_of || result.time || semantic.snapshot?.as_of || null;
+    const recentPriceAction = buildManualRecentPriceAction(semantic);
+    const currentMarketContext = buildManualCurrentMarketContext(semantic, pair);
     const chronology = buildManualDeliveryChronology(semantic, referenceTime);
     const objectives = buildManualLiquidityObjectiveMap(semantic, semantic.snapshot?.current_price);
     const invalidations = buildManualInvalidationCatalogue(semantic);
@@ -12972,7 +13102,8 @@ function buildProfessionalManualMarketPacket({ semantic = {}, pair = null, provi
             'Find today\'s highest-quality current trading opportunity on the supplied symbol, if one exists.',
             'Analyze BUY and SELL possibilities. Do not force a trade; NO_TRADE is a professional decision.',
             'Use only supplied deterministic prices, events, locations, invalidations, objectives, and evidence IDs.',
-            'Understand current delivery and chronology before selecting a model or location. A historical valid location is not automatically a current opportunity.'
+            'Understand current delivery and chronology before selecting a model or location. A historical valid location is not automatically a current opportunity.',
+            'Use RECENT PRICE ACTION as an observation of the same closed-candle snapshot. Reconcile it with deterministic evidence, but do not invent structure, locations, invalidations, objectives, or executable prices from candles.'
         ],
         strategy_contract: {
             facts_owner: 'CODE',
@@ -12992,9 +13123,12 @@ function buildProfessionalManualMarketPacket({ semantic = {}, pair = null, provi
                 'Combined setup labels require same-opportunity components with compatible chronology, location, direction, and evidence.',
                 'setup is one supported model/type or a same-opportunity + combination; it is not a prose description of supporting evidence.',
                 'market_phase is one supplied phase enum, not a thesis paragraph. confidence is an integer percentage after validity; NO_TRADE confidence is null.',
-                'Every returned ID and numeric value must refer to the same supplied deterministic fact. The code recalculates RR from final entry, stop_loss, and TP1.'
+                'Every returned ID and numeric value must refer to the same supplied deterministic fact. The code recalculates RR from final entry, stop_loss, and TP1.',
+                'Recent price action contains only closed OHLC candles from this canonical snapshot. It is for interpreting delivery, rejection, compression, expansion, pullback quality, and transition; deterministic catalogues remain authoritative for executable geometry.'
             ]
         },
+        current_market_context: currentMarketContext,
+        recent_price_action: recentPriceAction.timeframes,
         current_market_summary: buildManualCurrentMarketSummary(semantic, chronology, modelEvidence),
         market_delivery_chronology: chronology,
         current_liquidity_objective_map: objectives,
@@ -13009,7 +13143,12 @@ function buildProfessionalManualMarketPacket({ semantic = {}, pair = null, provi
         multi_timeframe_conflict_map: conflicts,
         institutional_activity_evidence: semantic.institutional_activity_evidence || null,
         provenance: {
-            raw_candles_included: false,
+            raw_candles_included: recentPriceAction.complete,
+            raw_candle_policy: {
+                closed_only: true,
+                candles_per_timeframe: MANUAL_RECENT_CANDLES_PER_TIMEFRAME,
+                timeframes: AI_SEMANTIC_TIMEFRAMES
+            },
             direction_preselected: false,
             candidate_ranking_included: false,
             evidence_ids_traceable: true
@@ -13023,11 +13162,13 @@ function buildProfessionalManualExternalAIInstruction(minimumRR = null) {
         'You are a professional price-action trader with expertise in ICT market structure and liquidity concepts, as well as the separately supported CRT, TBS, and MSNR trading models.',
         'Analyze the complete supplied current market context and find today\'s highest-quality trading opportunity, if one exists. Think like a professional trader, not a pattern matcher. First understand the market, then find the trade. In particular, understand what price is doing now and what recently delivered.',
         'Analyze both BUY and SELL possibilities. A trade is not required; NO_TRADE is valid when the current evidence does not support a complete actionable opportunity.',
-        'Use this order: CURRENT MARKET STATE -> RECENT DELIVERY / CHRONOLOGY -> MULTI-TIMEFRAME CONTEXT -> LIQUIDITY MAP -> CURRENT MARKET PHASE -> ACTIONABLE DIRECTION -> CURRENT LOCATION -> SETUP / MODEL -> EXECUTION -> STRUCTURAL INVALIDATION -> GENUINE OBJECTIVE -> EXACT RR -> TRADE OR NO_TRADE.',
+        'You have two complementary views of the same canonical snapshot: RECENT CLOSED PRICE ACTION and deterministic structural/liquidity/model evidence. Inspect the last closed OHLC candles to understand delivery, displacement shape, rejection, wick behavior, compression, expansion, follow-through, pullback quality, consolidation, and transition, then reconcile that observation with the deterministic evidence.',
+        'Recent price action is observation, not authority for executable geometry. Do not invent structure, locations, invalidations, objectives, targets, or prices from candles that are not supplied in the deterministic catalogues. Do not use one candle as a signal.',
+        'Use this order: CURRENT MARKET CONTEXT -> RECENT RAW PRICE ACTION -> RECENT DELIVERY / CHRONOLOGY -> MULTI-TIMEFRAME CONTEXT -> LIQUIDITY TAKEN / REMAINING -> CURRENT MARKET PHASE -> ACTIONABLE DIRECTION -> CURRENT LOCATION -> SETUP / MODEL -> EXECUTION -> STRUCTURAL INVALIDATION -> GENUINE OBJECTIVE -> EXACT RR -> TRADE OR NO_TRADE.',
         'ICT structure/liquidity evidence and the separately supported CRT, TBS, and MSNR frameworks may align, but CRT, TBS, and MSNR are not being labeled as ICT concepts. A combined model is valid only when its components belong to the same opportunity.',
         'Use only supplied facts and prices. Never invent or alter an entry, entry_zone, stop_loss, target, location, invalidation, objective, or evidence ID. When selecting an ID, its returned numeric value must correspond to that exact ID; do not combine an ID from one fact with a price from another. Do not use timeframe majority voting, an HTF hard gate, a single event as automatic direction, or a confidence score as validity.',
         `The canonical minimum_rr is ${minimumRR == null ? 'not available' : minimumRR}. Calculate exact final RR from serialized entry, stop_loss, and TP1; TP2/TP3 cannot rescue an invalid TP1.`,
-        'For PENDING_LIMIT, distance from current price and absent 5M/15M confirmation alone are not rejection reasons. For CONFIRMATION_ENTRY, require the supplied confirmation facts. Fresh POI does not automatically mean current opportunity.',
+        'Session context may affect expected volatility, liquidity, and execution quality, but session or killzone is not an automatic trade gate. A PENDING_LIMIT is not invalid merely because current time is outside a killzone or price is away from its zone. Do not force a trade because a killzone is active. For PENDING_LIMIT, distance from current price and absent 5M/15M confirmation alone are not rejection reasons. For CONFIRMATION_ENTRY, require the supplied confirmation facts. Fresh POI does not automatically mean current opportunity.',
         `setup must be a concise supported token or same-opportunity combination from: ${MANUAL_SETUP_TOKENS.join(', ')}. Do not put confluence prose, timeframe narrative, prices, RR, or evidence explanation in setup. market_phase must be exactly one of: ${MANUAL_MARKET_PHASES.join(', ')}; do not return a thesis paragraph. confidence must be a JSON integer from 0 through 100; do not return labels, a percent string, or a decimal probability. NO_TRADE confidence is null.`,
         'Before TRADE, verify location_id and entry/entry_zone, invalidation_id and stop_loss, every objective ID and TP value, executable lifecycle, directionally valid geometry, exact TP1 RR, and same-opportunity setup evidence. If any hard requirement fails, continue searching or return NO_TRADE.',
         'Return ONLY one directly JSON.parse()-able JSON object. Required fields: pair, decision, direction, trade_type, setup, market_phase, selected_candidate_id, entry, entry_zone, stop_loss, tp1, tp2, tp3, risk_reward, confidence. For manual discovery selected_candidate_id remains null. Include location_id, invalidation_id, tp1_objective_id, tp2_objective_id, tp3_objective_id, evidence_ids, and conflict_ids for traceability when returning TRADE. Do not return chain-of-thought or prose.'
@@ -19062,7 +19203,11 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
             current_price: source.quote?.price ?? result.current_price ?? null,
             as_of_time_utc: source.scan_as_of || result.time || null,
             provider_metadata: providerMetadata,
-            market_evidence_package: source.market_evidence_package || {},
+            asset_class: source.asset_class || source.symbol_metadata?.asset_class || source.quote?.symbol_metadata?.asset_class || null,
+            session: source.session || null,
+            volatility: source.volatility || null,
+            premium_discount: source.premium_discount || null,
+            market_evidence_package: buildPacketEvidencePackage(source),
             structure: source.structure || {},
             adaptive_setup_candidates: manualReview ? [] : (source.valid_candidates || []),
             valid_deterministic_candidates: manualReview ? [] : (source.valid_candidates || []),
@@ -19073,7 +19218,7 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
             market_context: { timeframe_context: source.timeframe_context || {}, directional_bias: source.daily_bias?.direction || null, daily_bias: source.daily_bias, liquidity: source.liquidity || {}, market_regime: source.market_regime },
             current_opportunity_regeneration: source.candidate_pipeline_audit?.current_opportunity_regeneration || {}
         };
-        semantic = buildCompactAISemanticPackage(semanticSource, source.market_evidence_package || {}, { manualOpportunityDiscovery: manualReview });
+        semantic = buildCompactAISemanticPackage(semanticSource, semanticSource.market_evidence_package || {}, { manualOpportunityDiscovery: manualReview });
     } catch { semantic = null; }
     if (manualReview) {
         const minimumRR = externalPacketNumber(
@@ -19089,6 +19234,27 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
             source,
             minimumRR
         });
+        if (professionalPacket.provenance?.raw_candles_included !== true) {
+            const rawObservationCompleteness = {
+                ...(completeness || {}),
+                status: 'DATA_UNAVAILABLE',
+                complete: false,
+                missing_timeframes: professionalPacket.recent_price_action
+                    ? AI_SEMANTIC_TIMEFRAMES.filter(timeframe => (professionalPacket.recent_price_action[timeframe] || []).length !== MANUAL_RECENT_CANDLES_PER_TIMEFRAME)
+                    : AI_SEMANTIC_TIMEFRAMES,
+                reason_code: 'INCOMPLETE_MARKET_SNAPSHOT'
+            };
+            return buildDataUnavailableExternalAIPacket({
+                signal: {
+                    ...result,
+                    status: 'DATA_UNAVAILABLE',
+                    status_code: 'DATA_UNAVAILABLE',
+                    snapshot_completeness: rawObservationCompleteness,
+                    reason: { code: 'INCOMPLETE_MARKET_SNAPSHOT', message: 'The canonical closed-candle observation layer was incomplete.' }
+                },
+                replay: source
+            });
+        }
         const sectionJson = value => JSON.stringify(value);
         const packet = [
             'ICT TRADING BOT PRO',
@@ -19102,6 +19268,12 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
             '',
             'HARD STRATEGY / EXECUTION RULES',
             sectionJson(professionalPacket.strategy_contract),
+            '',
+            'CURRENT MARKET CONTEXT',
+            sectionJson(professionalPacket.current_market_context),
+            '',
+            'RECENT CLOSED PRICE ACTION',
+            sectionJson(professionalPacket.recent_price_action),
             '',
             'CURRENT MARKET SUMMARY',
             sectionJson(professionalPacket.current_market_summary),

@@ -107,6 +107,28 @@ const completeReplay = replay => {
     const packageTimeframes = packageEvidence.timeframes || {};
     const required = ['1D', '4H', '1H', '15M', '5M'];
     const minimums = { '1D': 50, '4H': 50, '1H': 50, '15M': 20, '5M': 20 };
+    const fallbackLastTime = Date.parse(replay.scan_as_of || '2026-10-05T10:00:00Z');
+    const normalizedTimeframes = Object.fromEntries(required.map((timeframe, timeframeIndex) => {
+        const source = packageTimeframes[timeframe] || {};
+        const existing = Array.isArray(source.raw_closed_candles)
+            ? source.raw_closed_candles.filter(candle => candle?.is_closed !== false)
+            : [];
+        const lastTime = Number.isFinite(Date.parse(source.last_closed_time || source.last_closed_candle_time || ''))
+            ? Date.parse(source.last_closed_time || source.last_closed_candle_time)
+            : fallbackLastTime - timeframeIndex * 60 * 1000;
+        const current = Number(source.current_closed_price) || 100 + timeframeIndex;
+        const raw = existing.length >= 20
+            ? existing.slice(-20)
+            : Array.from({ length: 20 }, (_, index) => {
+                const close = current + (index - 19) * 0.01;
+                return { t: new Date(lastTime - (19 - index) * 60 * 1000).toISOString(), o: close - 0.005, h: close + 0.01, l: close - 0.01, c: close, is_closed: true };
+            });
+        return [timeframe, {
+            ...source,
+            raw_closed_candles: raw,
+            last_closed_time: raw.at(-1)?.t || source.last_closed_time || new Date(lastTime).toISOString()
+        }];
+    }));
     const snapshotInputCounts = Object.fromEntries(required.map(timeframe => [
         timeframe,
         Number(packageTimeframes[timeframe]?.closed_candle_count) || minimums[timeframe]
@@ -130,7 +152,7 @@ const completeReplay = replay => {
     return {
         ...replay,
         snapshot_completeness: snapshotCompleteness,
-        market_evidence_package: { ...packageEvidence, snapshot_completeness: snapshotCompleteness }
+        market_evidence_package: { ...packageEvidence, timeframes: normalizedTimeframes, snapshot_completeness: snapshotCompleteness }
     };
 };
 
@@ -2961,13 +2983,20 @@ describe('Analyze scan lifecycle', () => {
         expect(displayed.status).toBe('MANUAL_EXTERNAL_AI_REVIEW');
         expect(displayed.snapshot_id).toBe(`TVKIT:${runtimePair.replace('/', '_')}:test`);
         expect(spies.askAIToFindSetup).not.toHaveBeenCalled();
+        const historyCallsBeforeCopy = spies.getHistory.mock.calls.length;
         elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
         const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
+        expect(spies.getHistory).toHaveBeenCalledTimes(historyCallsBeforeCopy);
         expect(packet).toContain('EXTERNAL AI DECISION PACKET');
         expect(packet).toContain(runtimePair);
         expect(packet).toContain(`TVKIT:${runtimePair.replace('/', '_')}:test`);
         expect(packet).toContain('"serializer_id":"CURRENT_SCAN_ARTIFACT_V2"');
         expect(packet).toContain('"app_build_id":"development"');
+        const rawStart = packet.indexOf('RECENT CLOSED PRICE ACTION\n') + 'RECENT CLOSED PRICE ACTION\n'.length;
+        const rawEnd = packet.indexOf('\n\nCURRENT MARKET SUMMARY', rawStart);
+        const recentPriceAction = JSON.parse(packet.slice(rawStart, rawEnd));
+        expect(Object.keys(recentPriceAction)).toEqual(['1D', '4H', '1H', '15M', '5M']);
+        expect(Object.values(recentPriceAction).every(candles => candles.length === 20)).toBe(true);
         expect(packet).not.toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
         expect(packet).not.toContain('CURRENT BOT RESULT');
     });
@@ -3929,6 +3958,10 @@ describe('professional manual decision packet and external decision validation',
             role: timeframe === '1D' ? 'higher-timeframe context' : null,
             last_closed_time: `2026-10-05T${String(10 + index).padStart(2, '0')}:00:00Z`,
             closed_candle_count: index < 3 ? 199 : 60,
+            recent_closed_candles: Array.from({ length: 20 }, (_, candleIndex) => {
+                const close = 100 + index + candleIndex * 0.01;
+                return { time: new Date(Date.parse(`2026-10-05T${String(10 + index).padStart(2, '0')}:00:00Z`) - (19 - candleIndex) * 60 * 1000).toISOString(), open: close - 0.005, high: close + 0.01, low: close - 0.01, close };
+            }),
             current_closed_price: 100 + index,
             structure: {
                 structural_trend: index < 3 ? 'BEARISH' : 'BULLISH',
@@ -3954,7 +3987,7 @@ describe('professional manual decision packet and external decision validation',
             evidence: []
         }]));
         return {
-            snapshot: { snapshot_id: 'PACKET-REGRESSION', pair: 'EUR/USD', provider: 'TVKIT', as_of: '2026-10-05T10:00:00Z', current_price: 100 },
+            snapshot: { snapshot_id: 'PACKET-REGRESSION', pair: 'EUR/USD', provider: 'TVKIT', as_of: '2026-10-05T10:00:00Z', current_price: 100, asset_class: 'FOREX', session: { name: 'LONDON KZ', is_killzone: true, is_silver_bullet: false }, volatility: { atr_4h: 0.01, atr_1h: 0.005 } },
             timeframes,
             target_context: [
                 { id: 'OBJ-ABOVE', timeframe: '1H', level: 110, source: 'SWING_HIGH', lifecycle_state: 'UNFULFILLED', evidence_ids: ['1H:BSL'] },
@@ -3983,6 +4016,22 @@ describe('professional manual decision packet and external decision validation',
         expect(packetData.model_setup_evidence.TBS).toEqual(expect.arrayContaining([expect.objectContaining({ event_id: 'TBS-FACT' })]));
         expect(packetData.model_setup_evidence.MSNR).toEqual(expect.arrayContaining([expect.objectContaining({ event_id: 'MSNR-FACT' })]));
         expect(packetData.multi_timeframe_conflict_map.length).toBeGreaterThan(0);
+        expect(packetData.recent_price_action['1D']).toHaveLength(20);
+        expect(Object.keys(packetData.recent_price_action)).toEqual(['1D', '4H', '1H', '15M', '5M']);
+        for (const timeframe of ['1D', '4H', '1H', '15M', '5M']) {
+            expect(packetData.recent_price_action[timeframe]).toHaveLength(20);
+            expect(packetData.recent_price_action[timeframe][0].time < packetData.recent_price_action[timeframe].at(-1).time).toBe(true);
+        }
+        expect(packetData.current_market_context).toEqual(expect.objectContaining({
+            snapshot_time: '2026-10-05T10:00:00Z',
+            current_price: 100,
+            asset_class: 'FOREX',
+            session_context: expect.objectContaining({ session: 'LONDON KZ', is_killzone: true })
+        }));
+        expect(packetData.provenance).toEqual(expect.objectContaining({
+            raw_candles_included: true,
+            raw_candle_policy: { closed_only: true, candles_per_timeframe: 20, timeframes: ['1D', '4H', '1H', '15M', '5M'] }
+        }));
         expect(packetData.strategy_contract.minimum_rr).toBe(2.5);
         expect(JSON.stringify(packetData)).not.toContain('raw_closed_candles');
         expect(JSON.stringify(packetData)).not.toContain('directional_bias');
@@ -4004,6 +4053,27 @@ describe('professional manual decision packet and external decision validation',
         expect(packet).not.toContain('automatic_ai_selection');
         expect(packet).not.toContain('raw_closed_candles');
         expect(Buffer.byteLength(packet, 'utf8')).toBeLessThan(100000);
+    });
+
+    it('uses only the latest twenty closed candles and excludes a forming candle', () => {
+        const ctx = getContext();
+        const semantic = makeSemantic();
+        for (const timeframe of ['1D', '4H', '1H', '15M', '5M']) {
+            const lastClosed = Date.parse(semantic.timeframes[timeframe].last_closed_time);
+            const raw = Array.from({ length: 20 }, (_, index) => {
+                const close = 100 + index * 0.01;
+                return { t: new Date(lastClosed - (19 - index) * 60 * 1000).toISOString(), o: close - 0.005, h: close + 0.01, l: close - 0.01, c: close, is_closed: true };
+            });
+            raw.push({ t: new Date(lastClosed + 60 * 1000).toISOString(), o: 100, h: 101, l: 99, c: 100, is_closed: false });
+            semantic.timeframes[timeframe].raw_closed_candles = raw;
+        }
+        const packet = ctx.buildProfessionalManualMarketPacket({ semantic, pair: 'EUR/USD', provider: 'TVKIT', result: { scan_id: 'SCAN-CLOSED' }, minimumRR: 2.5 });
+        for (const timeframe of ['1D', '4H', '1H', '15M', '5M']) {
+            const candles = packet.recent_price_action[timeframe];
+            expect(candles).toHaveLength(20);
+            expect(Date.parse(candles.at(-1).time)).toBe(Date.parse(semantic.timeframes[timeframe].last_closed_time));
+            expect(candles.every(candle => Date.parse(candle.time) <= Date.parse(semantic.timeframes[timeframe].last_closed_time))).toBe(true);
+        }
     });
 
     it('validates exact RR and traceability without changing pending-limit semantics', () => {
