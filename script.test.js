@@ -2966,8 +2966,8 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).toContain('EXTERNAL AI DECISION PACKET');
         expect(packet).toContain(runtimePair);
         expect(packet).toContain(`TVKIT:${runtimePair.replace('/', '_')}:test`);
-        expect(packet).toContain('Clipboard Serializer ID: CURRENT_SCAN_ARTIFACT_V2');
-        expect(packet).toContain('App Build ID: development');
+        expect(packet).toContain('"serializer_id":"CURRENT_SCAN_ARTIFACT_V2"');
+        expect(packet).toContain('"app_build_id":"development"');
         expect(packet).not.toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
         expect(packet).not.toContain('CURRENT BOT RESULT');
     });
@@ -3036,8 +3036,8 @@ describe('Analyze scan lifecycle', () => {
         }
         elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
         const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
-        expect(packet).toContain('Clipboard Serializer ID: CURRENT_SCAN_ARTIFACT_V2');
-        expect(packet).toContain(`Scan ID: ${displayed.scan_id}`);
+        expect(packet).toContain('"serializer_id":"CURRENT_SCAN_ARTIFACT_V2"');
+        expect(packet).toContain(`"scan_id":"${displayed.scan_id}"`);
     });
 
     it('records the scan-owned runtime trace in an incomplete Copy diagnostic', async () => {
@@ -3271,15 +3271,14 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).not.toContain('SELECTION STATUS');
         expect(packet).not.toContain('CURRENT BOT RESULT');
         expect(packet).not.toContain('MANUAL_EXTERNAL_AI_REVIEW is application workflow metadata only.');
-        expect(packet).toContain('BUY MARKET LOCATIONS');
-        expect(packet).toContain('SELL MARKET LOCATIONS');
-        expect(packet).toContain('ICT MODEL EVIDENCE');
-        expect(packet).toContain('STRUCTURAL INVALIDATION CONTEXT');
-        expect(packet).toContain('MARKET DELIVERY / LIFECYCLE FACTS');
+        expect(packet).toContain('CURRENT ACTIONABLE LOCATION CATALOGUE');
+        expect(packet).toContain('MODEL / SETUP EVIDENCE');
+        expect(packet).toContain('STRUCTURAL INVALIDATION CATALOGUE');
+        expect(packet).toContain('MARKET DELIVERY CHRONOLOGY');
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
         expect(packet).not.toContain('CURRENT OPPORTUNITY MATERIAL');
         expect(packet).not.toContain('Path A');
-        expect(packet).toContain("Find today's trading opportunity for the symbol in THIS packet.");
+        expect(packet).toContain("Find today's highest-quality current trading opportunity");
         expect(packet).not.toContain('YOUR TASK');
         expect(packet).not.toContain('STRICT RESPONSE FORMAT');
         expect(packet).toContain('Return ONLY one directly JSON.parse()-able JSON object.');
@@ -3808,9 +3807,9 @@ describe('institutional activity evidence composition', () => {
             signal: { pair: 'EUR/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' } },
             replay: completeReplay({ pair: 'EUR/USD', snapshot_id: 'IAE-TEST', scan_as_of: '2026-09-30T14:00:00Z', market_evidence_package: { snapshot_id: 'IAE-TEST', timeframes, institutional_activity_evidence: records }, target_candidates: { buy: [], sell: [] }, valid_candidates: [] })
         });
-        expect(packet).toContain('INSTITUTIONAL ACTIVITY EVIDENCE');
-        expect(packet).toContain('"direction": "SELL"');
-        expect(packet).toContain('"direction": "BUY"');
+        expect(packet).toContain('INSTITUTIONAL ACTIVITY / FOOTPRINT EVIDENCE');
+        expect(packet).toContain('"direction":"SELL"');
+        expect(packet).toContain('"direction":"BUY"');
         expect(packet).toContain('CONFIRMED_SEQUENCE');
         expect(packet).not.toMatch(/institutional_direction|institutional_bias|recommended_direction|institutional BUY score|institutional SELL score|preferred trade|candidate ranking/i);
         expect(packet).not.toContain('"candidate_id"');
@@ -3889,8 +3888,8 @@ describe('institutional activity evidence composition', () => {
             risk_constraints: { minimum_rr: 2.5 }, valid_candidates: []
         };
         const packet = ctx.buildExternalAIClipboardPacket({ signal: { pair: 'TEST/PAIR', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' }, current_price: 4170.51 }, replay: completeReplay(replay) });
-        const evidenceBody = packet.slice(packet.indexOf('CURRENT MARKET SNAPSHOT'), packet.lastIndexOf('EXTERNAL AI TASK'));
-        expect(packet).toContain('"current_price": 4170.51');
+        const evidenceBody = packet.slice(packet.indexOf('CURRENT MARKET SUMMARY'), packet.indexOf('PROVENANCE / INTEGRITY'));
+        expect(packet).toContain('"current_price":4170.51');
         expect(packet).toContain('4168.43');
         expect(packet).toContain('4172.59');
         expect(packet).toContain('4165.1');
@@ -3900,8 +3899,8 @@ describe('institutional activity evidence composition', () => {
         expect(packet).toContain('TBS-15M-BUY');
         expect(packet).toContain('BOS-4H-SELL');
         expect(packet).toContain('STRUCTURAL_SWING');
-        expect(packet).toContain('OBJECTIVE:4H:PDH:4192.2');
-        expect(packet).toContain('OBJECTIVE:4H:PDL:4142.34');
+        expect(packet).toContain('"objective_id":"PDH-OBJECTIVE"');
+        expect(packet).toContain('"objective_id":"PDL-OBJECTIVE"');
         expect(packet).toContain('CURRENT-4H-SELL');
         expect(packet).toContain('CURRENT-15M-BUY');
         expect(packet).toContain('CURRENT-1H-FAILED');
@@ -3909,17 +3908,142 @@ describe('institutional activity evidence composition', () => {
         expect(packet).toContain('CONFIRMED_SEQUENCE');
         expect(packet).toContain('FAILED_SEQUENCE');
         expect(packet).toContain('PARTIAL');
-        expect(packet).toContain('"minimum_rr": 2.5');
+        expect(packet).toContain('"minimum_rr":2.5');
         expect(packet).not.toContain('raw_closed_candles');
         expect(packet).not.toMatch(/institutional_direction|institutional_bias|recommended_direction|directional_bias|market_regime|preferred_target|liquidity_draw|candidate ranking/i);
         expect(evidenceBody).not.toContain('"candidate_id"');
         expect(evidenceBody).not.toContain('"entry": 4170');
         expect(evidenceBody).not.toContain('"stop_loss"');
         expect(evidenceBody).not.toContain('"risk_reward"');
-        const snapshotText = packet.match(/CURRENT MARKET SNAPSHOT\n=+\n([\s\S]*?)\n=+\nCANONICAL RISK \/ GEOMETRY FACTS/)?.[1];
-        expect(JSON.parse(snapshotText)).toEqual(expect.objectContaining({ timeframes: expect.objectContaining({ '1D': expect.any(Object), '4H': expect.any(Object), '1H': expect.any(Object), '15M': expect.any(Object), '5M': expect.any(Object) }) }));
-        expect(snapshotText).not.toMatch(/"1W"/);
+        const summaryText = packet.slice(packet.indexOf('CURRENT MARKET SUMMARY') + 'CURRENT MARKET SUMMARY\n'.length, packet.indexOf('MARKET DELIVERY CHRONOLOGY')).trim();
+        expect(JSON.parse(summaryText)).toEqual(expect.objectContaining({ '1D': expect.any(Object), '4H': expect.any(Object), '1H': expect.any(Object), '15M': expect.any(Object), '5M': expect.any(Object) }));
+        expect(summaryText).not.toMatch(/"1W"/);
         expect(Buffer.byteLength(packet, 'utf8')).toBeLessThan(500000);
+    });
+});
+
+describe('professional manual decision packet and external decision validation', () => {
+    const makeSemantic = () => {
+        const timeframes = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map((timeframe, index) => [timeframe, {
+            timeframe,
+            role: timeframe === '1D' ? 'higher-timeframe context' : null,
+            last_closed_time: `2026-10-05T${String(10 + index).padStart(2, '0')}:00:00Z`,
+            closed_candle_count: index < 3 ? 199 : 60,
+            current_closed_price: 100 + index,
+            structure: {
+                structural_trend: index < 3 ? 'BEARISH' : 'BULLISH',
+                momentum_trend: index < 3 ? 'BEARISH' : 'BULLISH',
+                effective_trend: index < 3 ? 'BEARISH' : 'BULLISH',
+                sequence: ['LH', 'LL', 'BOS'],
+                swing_highs: [{ id: `${timeframe}:SH`, type: 'SWING_HIGH', level: 105 + index, event_time: '2026-10-05T09:00:00Z' }],
+                swing_lows: [{ id: `${timeframe}:SL`, type: 'SWING_LOW', level: 95 + index, event_time: '2026-10-05T09:00:00Z' }],
+                bos: { buy: index >= 3, sell: index < 3 },
+                choch: { buy: index === 4, sell: false },
+                mss: { id: `${timeframe}:MSS`, type: 'MSS', direction: index < 3 ? 'SELL' : 'BUY', level: 101 + index, event_time: '2026-10-05T09:30:00Z' },
+                displacement: { id: `${timeframe}:DISP`, type: 'DISPLACEMENT', direction: index < 3 ? 'SELL' : 'BUY', event_time: '2026-10-05T09:45:00Z' }
+            },
+            liquidity: {
+                buy_side_levels: [{ id: `${timeframe}:BSL`, type: 'BSL', level: 110 + index, event_time: '2026-10-05T09:50:00Z' }],
+                sell_side_levels: [{ id: `${timeframe}:SSL`, type: 'SSL', level: 90 + index, event_time: '2026-10-05T09:50:00Z' }]
+            },
+            locations: [{ id: `${timeframe}:FVG`, type: 'FVG', direction: index < 3 ? 'SELL' : 'BUY', low: 98 + index, high: 99 + index, event_time: '2026-10-05T09:00:00Z', freshness: 'FRESH', evidence_ids: [`${timeframe}:MSS`] }],
+            structural_invalidations: [{ id: `${timeframe}:INV`, evidence_id: `${timeframe}:FVG`, type: 'STRUCTURAL_SWING', level: 103 + index, event_time: '2026-10-05T09:00:00Z', evidence_ids: [`${timeframe}:FVG`] }],
+            premium_discount: { zone: index < 3 ? 'PREMIUM' : 'DISCOUNT' },
+            dealing_range: { low: 90, high: 110, equilibrium: 100 },
+            structural_evidence_ids: [`${timeframe}:MSS`],
+            evidence: []
+        }]));
+        return {
+            snapshot: { snapshot_id: 'PACKET-REGRESSION', pair: 'EUR/USD', provider: 'TVKIT', as_of: '2026-10-05T10:00:00Z', current_price: 100 },
+            timeframes,
+            target_context: [
+                { id: 'OBJ-ABOVE', timeframe: '1H', level: 110, source: 'SWING_HIGH', lifecycle_state: 'UNFULFILLED', evidence_ids: ['1H:BSL'] },
+                { id: 'OBJ-BELOW', timeframe: '1H', level: 90, source: 'SWING_LOW', lifecycle_state: 'UNFULFILLED', evidence_ids: ['1H:SSL'] }
+            ],
+            structural_invalidations: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, timeframes[tf].structural_invalidations])),
+            deterministic_evidence: { strategy_events: [
+                { id: 'CRT-FACT', strategy: 'CRT', type: 'CRT', timeframe: '4H', direction: 'SELL', level: 101, event_time: '2026-10-05T09:00:00Z' },
+                { id: 'TBS-FACT', strategy: 'TBS', type: 'TBS', timeframe: '15M', direction: 'BUY', level: 99, event_time: '2026-10-05T09:30:00Z' },
+                { id: 'MSNR-FACT', strategy: 'MSNR', type: 'MSNR', timeframe: '1H', direction: 'SELL', level: 102, event_time: '2026-10-05T09:15:00Z' }
+            ] },
+            institutional_activity_evidence: { source_class: 'PRICE_ACTION', timeframes: { '1D': [], '4H': [{ id: 'INST-SELL', timeframe: '4H', direction: 'SELL', completeness: 'CONFIRMED_SEQUENCE', event_time: '2026-10-05T09:00:00Z', evidence_ids: ['CRT-FACT'] }], '1H': [], '15M': [{ id: 'INST-BUY', timeframe: '15M', direction: 'BUY', completeness: 'PARTIAL', event_time: '2026-10-05T09:30:00Z', evidence_ids: ['TBS-FACT'] }], '5M': [] } },
+            risk_constraints: { minimum_rr: 2.5 }
+        };
+    };
+
+    it('serializes a compact five-timeframe professional packet with chronology, maps, conflicts and separate model families', () => {
+        const ctx = getContext();
+        const semantic = makeSemantic();
+        const packetData = ctx.buildProfessionalManualMarketPacket({ semantic, pair: 'EUR/USD', provider: 'TVKIT', result: { scan_id: 'SCAN-1' }, minimumRR: 2.5 });
+        expect(Object.keys(packetData.current_market_summary)).toEqual(['1D', '4H', '1H', '15M', '5M']);
+        expect(packetData.market_delivery_chronology.ordering).toBe('ASCENDING_EVENT_TIME');
+        expect(packetData.current_liquidity_objective_map.above_current_price).toEqual(expect.arrayContaining([expect.objectContaining({ objective_id: 'OBJ-ABOVE' })]));
+        expect(packetData.current_liquidity_objective_map.below_current_price).toEqual(expect.arrayContaining([expect.objectContaining({ objective_id: 'OBJ-BELOW' })]));
+        expect(packetData.model_setup_evidence.CRT).toEqual(expect.arrayContaining([expect.objectContaining({ event_id: 'CRT-FACT' })]));
+        expect(packetData.model_setup_evidence.TBS).toEqual(expect.arrayContaining([expect.objectContaining({ event_id: 'TBS-FACT' })]));
+        expect(packetData.model_setup_evidence.MSNR).toEqual(expect.arrayContaining([expect.objectContaining({ event_id: 'MSNR-FACT' })]));
+        expect(packetData.multi_timeframe_conflict_map.length).toBeGreaterThan(0);
+        expect(packetData.strategy_contract.minimum_rr).toBe(2.5);
+        expect(JSON.stringify(packetData)).not.toContain('raw_closed_candles');
+        expect(JSON.stringify(packetData)).not.toContain('directional_bias');
+        expect(JSON.stringify(packetData)).not.toContain('market_regime');
+        expect(JSON.stringify(packetData)).not.toContain('BEST_DIRECTION');
+        expect(JSON.stringify(packetData)).not.toContain('ICT is the umbrella');
+        expect(packetData.institutional_activity_evidence).toEqual(expect.objectContaining({ source_class: 'PRICE_ACTION' }));
+        const packet = ctx.buildExternalAIClipboardPacket({
+            signal: { pair: 'EUR/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' }, current_price: 100 },
+            replay: completeReplay({ pair: 'EUR/USD', snapshot_id: 'PACKET-REGRESSION', scan_as_of: '2026-10-05T10:00:00Z', quote: { price: 100 }, provider_metadata: { provider: 'TVKIT' }, market_evidence_package: semantic, target_candidates: { buy: [], sell: [] }, risk_constraints: { minimum_rr: 2.5 } })
+        });
+        expect(packet).toContain('CURRENT MARKET SUMMARY');
+        expect(packet).toContain('CURRENT LIQUIDITY / OBJECTIVE MAP');
+        expect(packet).toContain('MODEL / SETUP EVIDENCE');
+        expect(packet).toContain('CURRENT_SCAN_ARTIFACT_V2');
+        expect(packet).not.toContain('CURRENT BOT RESULT');
+        expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
+        expect(packet).not.toContain('CURRENT OPPORTUNITY MATERIAL');
+        expect(packet).not.toContain('automatic_ai_selection');
+        expect(packet).not.toContain('raw_closed_candles');
+        expect(Buffer.byteLength(packet, 'utf8')).toBeLessThan(100000);
+    });
+
+    it('validates exact RR and traceability without changing pending-limit semantics', () => {
+        const ctx = getContext();
+        const evidence = {
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [{ location_id: 'LOC-SELL', origin_evidence_ids: ['LOC-SELL'] }],
+            structural_invalidation_catalogue: [{ invalidation_id: 'INV-SELL', level: 1.1 }],
+            current_liquidity_objective_map: { above_current_price: [], below_current_price: [{ objective_id: 'OBJ-SELL', level: 0.7 }] },
+            model_setup_evidence: { ICT_STRUCTURE_AND_LIQUIDITY: [{ event_id: 'LOC-SELL', event_type: 'FVG' }] }
+        };
+        const invalidRR = ctx.validateExternalAITradeDecision({ decision: 'TRADE', direction: 'SELL', setup: 'FVG', entry: 1, stop_loss: 1.1, tp1: 0.9, risk_reward: 3, location_id: 'LOC-SELL', invalidation_id: 'INV-SELL', tp1_objective_id: 'OBJ-SELL', evidence_ids: ['LOC-SELL'] }, evidence);
+        expect(invalidRR.valid).toBe(false);
+        expect(invalidRR.issues).toEqual(expect.arrayContaining(['exact TP1 risk_reward is below canonical minimum_rr', 'reported risk_reward does not match exact serialized geometry']));
+        const exactLowRR = ctx.validateExternalAITradeDecision({ decision: 'TRADE', direction: 'SELL', setup: 'FVG', entry: 0.55991, stop_loss: 0.56056, tp1: 0.55857, risk_reward: 2.06, location_id: 'LOC-SELL', invalidation_id: 'INV-SELL', tp1_objective_id: 'OBJ-SELL', evidence_ids: ['LOC-SELL'] }, {
+            ...evidence,
+            structural_invalidation_catalogue: [{ invalidation_id: 'INV-SELL', level: 0.56056 }],
+            current_liquidity_objective_map: { above_current_price: [], below_current_price: [{ objective_id: 'OBJ-SELL', level: 0.55857 }] }
+        });
+        expect(exactLowRR.calculated_risk_reward).toBeCloseTo(2.061538, 5);
+        expect(exactLowRR.issues).toContain('exact TP1 risk_reward is below canonical minimum_rr');
+        const validPending = ctx.validateExternalAITradeDecision({ decision: 'TRADE', direction: 'SELL', setup: 'FVG', trade_type: 'PENDING_LIMIT', entry: 1, stop_loss: 1.1, tp1: 0.7, risk_reward: 3, location_id: 'LOC-SELL', invalidation_id: 'INV-SELL', tp1_objective_id: 'OBJ-SELL', evidence_ids: ['LOC-SELL'] }, evidence);
+        expect(validPending.valid).toBe(true);
+        const noTrade = ctx.validateExternalAITradeDecision({ decision: 'NO_TRADE', direction: null, trade_type: null, setup: null, entry: null, entry_zone: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null }, evidence);
+        expect(noTrade.valid).toBe(true);
+    });
+
+    it('rejects invalidation mismatch and unrelated combined-model evidence', () => {
+        const ctx = getContext();
+        const evidence = {
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [{ location_id: 'LOC-1', origin_evidence_ids: ['CRT-1'] }],
+            structural_invalidation_catalogue: [{ invalidation_id: 'INV-1', level: 1.1 }],
+            current_liquidity_objective_map: { above_current_price: [], below_current_price: [{ objective_id: 'OBJ-1', level: 0.5 }] },
+            model_setup_evidence: { CRT: [{ event_id: 'CRT-1' }], MSNR: [{ event_id: 'MSNR-UNRELATED' }] }
+        };
+        const result = ctx.validateExternalAITradeDecision({ decision: 'TRADE', direction: 'SELL', setup: 'CRT+MSNR', entry: 1, stop_loss: 1.2, tp1: 0.5, risk_reward: 2.5, location_id: 'LOC-1', invalidation_id: 'INV-1', tp1_objective_id: 'OBJ-1', evidence_ids: ['CRT-1'] }, evidence);
+        expect(result.valid).toBe(false);
+        expect(result.issues).toContain('stop_loss does not equal selected structural invalidation level');
+        expect(result.issues).toContain('setup component MSNR is not traceable to returned evidence_ids');
     });
 });
 
@@ -8387,16 +8511,15 @@ describe('AI market analyst contract', () => {
         };
         const signal = { pair: 'EUR/USD', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' }, analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', current_price: 1.101 };
         const packet = ctx.buildExternalAIClipboardPacket({ signal, replay: completeReplay(replay) });
-        expect(packet).toContain('Symbol: EUR/USD');
-        expect(packet).toContain('"current_price": 1.101');
+        expect(packet).toContain('"symbol":"EUR/USD"');
+        expect(packet).toContain('"current_price":1.101');
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
         expect(packet).not.toContain('CURRENT OPPORTUNITY MATERIAL');
         expect(packet).not.toContain('NON-PROMOTED-BUY');
-        expect(packet).toContain('BUY MARKET LOCATIONS');
-        expect(packet).toContain('SELL MARKET LOCATIONS');
-        expect(packet).toContain('ICT MODEL EVIDENCE');
-        expect(packet).toContain('STRUCTURAL INVALIDATION CONTEXT');
-        expect(packet).toContain('MARKET DELIVERY / LIFECYCLE FACTS');
+        expect(packet).toContain('CURRENT ACTIONABLE LOCATION CATALOGUE');
+        expect(packet).toContain('MODEL / SETUP EVIDENCE');
+        expect(packet).toContain('STRUCTURAL INVALIDATION CATALOGUE');
+        expect(packet).toContain('MARKET DELIVERY CHRONOLOGY');
         expect(packet).toContain('1H:FVG:BUY:1');
         expect(packet).toContain('1H:OB:BUY:1');
         expect(packet).toContain('1H:MSNR:BUY:1');
@@ -8404,7 +8527,7 @@ describe('AI market analyst contract', () => {
         expect(packet).toContain('CRT-EVIDENCE-1');
         expect(packet).toContain('TBS-EVIDENCE-1');
         expect(packet).toContain('MSNR-EVIDENCE-1');
-        expect(packet).toContain('OBJECTIVE:1H:LIQUIDITY:1.11');
+        expect(packet).toContain('"objective_id":"TARGET-BUY"');
         expect(packet).toContain('UNFULFILLED');
         expect(packet).not.toContain('MANUAL_EXTERNAL_AI_REVIEW is application workflow metadata only.');
         expect(packet).not.toContain('A zero selectable-candidate');
@@ -8414,11 +8537,11 @@ describe('AI market analyst contract', () => {
         expect(packet).not.toContain('raw_closed_candles');
         expect(packet).not.toMatch(/"1W"/);
         expect(packet).not.toContain('"selected_candidate_id": "NONE"');
-        expect(packet).toContain('Use selected_candidate_id: null for manual discovery.');
+        expect(packet).toContain('selected_candidate_id remains null');
         expect(packet).not.toContain('"candidate_id": "NON-PROMOTED-BUY"');
         expect(packet).not.toContain('"entry": 1.099');
         expect(packet).not.toContain('"rr": 3');
-        const objectiveSection = packet.split('STRUCTURAL / LIQUIDITY OBJECTIVE FACTS')[1].split('MARKET DELIVERY / LIFECYCLE FACTS')[0];
+        const objectiveSection = packet.split('CURRENT LIQUIDITY / OBJECTIVE MAP')[1].split('CURRENT ACTIONABLE LOCATION CATALOGUE')[0];
         expect(objectiveSection).not.toContain('TARGET:BUY');
         expect(objectiveSection).not.toContain('TARGET:SELL');
     });
@@ -8485,8 +8608,8 @@ describe('AI market analyst contract', () => {
             signal: { pair: 'EUR/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' } },
             replay: completeReplay(replay)
         });
-        const evidenceBody = packet.slice(packet.indexOf('CURRENT MARKET SNAPSHOT'), packet.lastIndexOf('EXTERNAL AI TASK'));
-        expect(packet).toContain('MARKET FACT CONTEXT');
+        const evidenceBody = packet.slice(packet.indexOf('PACKET / SNAPSHOT IDENTITY'), packet.indexOf('PROVENANCE / INTEGRITY'));
+        expect(packet).toContain('CURRENT MARKET SUMMARY');
         expect(packet).not.toContain('DIRECTIONAL / PHASE CONTEXT');
         expect(evidenceBody).not.toContain('"directional_bias"');
         expect(evidenceBody).not.toContain('"daily_bias"');
@@ -8499,16 +8622,16 @@ describe('AI market analyst contract', () => {
         expect(evidenceBody).toContain('TBS-15M-BUY-EUR');
         expect(evidenceBody).toContain('MSNR-1H-SELL-EUR');
         expect(evidenceBody).toContain('SWEEP-15M-BUY-EUR');
-        expect(evidenceBody).toContain('"direction": "BUY"');
-        expect(evidenceBody).toContain('"direction": "SELL"');
-        expect(evidenceBody).toContain('OBJECTIVE:1D:PDH:1.13802');
-        expect(evidenceBody).toContain('OBJECTIVE:1D:PDL:1.13221');
+        expect(evidenceBody).toContain('"direction":"BUY"');
+        expect(evidenceBody).toContain('"direction":"SELL"');
+        expect(evidenceBody).toContain('"objective_id":"PDH-EUR"');
+        expect(evidenceBody).toContain('"objective_id":"PDL-EUR"');
         expect(evidenceBody).not.toContain('TARGET:BUY');
         expect(evidenceBody).not.toContain('TARGET:SELL');
-        expect(packet).toContain('Determine market phase and actionable direction independently');
-        expect(packet).toContain('COMPLETE MARKET STATE -> CURRENT DELIVERY / PHASE');
-        expect(packet).toContain('A local counter-direction event is not automatically');
-        expect(packet).toContain('Do not impose an HTF hard gate either.');
+        expect(packet).toContain('First understand the market, then find the trade.');
+        expect(packet).toContain('CURRENT MARKET STATE -> RECENT DELIVERY / CHRONOLOGY');
+        expect(packet).toContain('Analyze both BUY and SELL possibilities.');
+        expect(packet).toContain('Do not use timeframe majority voting, an HTF hard gate');
         expect(packet).toContain('minimum_rr');
         expect(packet).not.toContain('EUR/USD special');
         expect(packet).not.toContain('XAU/USD special');
@@ -8544,44 +8667,23 @@ describe('AI market analyst contract', () => {
             replay: completeReplay(replay)
         });
         expect(packet).toContain('REMOTE-SELL-POI');
-        expect(packet).toContain('"formation_time"');
+        expect(packet).toContain('"formed_at"');
         expect(packet).toContain('"delivery_since_formation"');
         expect(packet).toContain('0.88');
         expect(packet).toContain('4157.23');
-        expect(packet).toContain('CANONICAL RISK / GEOMETRY FACTS');
-        expect(packet).toContain('"minimum_rr": 2.5');
-        expect(packet).toContain('LOCATION VALIDITY IS NOT OPPORTUNITY RELEVANCE');
-        expect(packet).toContain('current-price-to-POI path');
-        expect(packet).toContain('intervening/newer structure');
-        expect(packet).toContain('genuine objective remains meaningful');
-        expect(packet).toContain('no fixed dollar, pip, percentage, ATR, candle-count, proximity, current-zone, or current-retracement filter');
-        expect(packet).toContain('BUY entry < TP1 < TP2 < TP3');
-        expect(packet).toContain('SELL entry > TP1 > TP2 > TP3');
-        expect(packet).toContain('risk_reward is reward to TP1');
-        expect(packet).toContain('setup value must be only a concise ICT model/type');
+        expect(packet).toContain('HARD STRATEGY / EXECUTION RULES');
+        expect(packet).toContain('"minimum_rr":2.5');
+        expect(packet).toContain('Fresh POI does not automatically mean current opportunity.');
+        expect(packet).toContain('distance alone is not rejection');
+        expect(packet).toContain('Combined setup labels require same-opportunity components');
         expect(packet).toContain('4315.8');
-        expect(packet).toContain('A TRADE stop_loss must correspond to a supplied structural invalidation');
-        expect(packet).toContain('If no defensible supplied structural invalidation exists, return NO_TRADE');
-        expect(packet).toContain('RR validates geometry after the stop is chosen');
-        expect(packet).toContain('recalculate risk_reward from the exact serialized');
-        expect(packet).toContain('BUY risk = entry - stop_loss and reward = tp1 - entry');
-        expect(packet).toContain('SELL risk = stop_loss - entry and reward = entry - tp1');
-        expect(packet).toContain('The returned risk_reward must match that');
-        expect(packet).toContain('exact final JSON risk_reward computed from final entry/stop_loss/tp1');
-        expect(packet).toContain('TP2 or TP3 cannot rescue a TP1 RR failure');
-        expect(packet).toContain('CONTINUE SEARCHING the complete supplied evidence');
-        expect(packet).toContain('FVG alone is a valid setup');
-        expect(packet).toContain('SAME discovered opportunity');
-        expect(packet).toContain('ENTRY GEOMETRY TRACEABILITY');
-        expect(packet).toContain('arbitrary percentages, internal prices, buffers, or offsets');
-        expect(packet).toContain('OBJECTIVES AND INVALIDATION');
-        expect(packet).toContain('reject that location and CONTINUE SEARCHING');
-        expect(packet).toContain('Evaluate both BUY and SELL directions');
-        expect(packet).toContain('Do not force a newer trade merely');
-        expect(packet).toContain('do not stop after rejecting one location');
+        expect(packet).toContain('A stop must be a supplied structural invalidation belonging to the thesis');
+        expect(packet).toContain('TP2/TP3 cannot rescue it');
+        expect(packet).toContain('Use only supplied facts and prices.');
+        expect(packet).toContain('Do not return chain-of-thought or prose.');
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
         expect(packet).not.toContain('"candidate_id": "REMOTE-SELL-POI"');
-        const objectiveSection = packet.split('STRUCTURAL / LIQUIDITY OBJECTIVE FACTS')[1].split('MARKET DELIVERY / LIFECYCLE FACTS')[0];
+        const objectiveSection = packet.split('CURRENT LIQUIDITY / OBJECTIVE MAP')[1].split('CURRENT ACTIONABLE LOCATION CATALOGUE')[0];
         expect(objectiveSection).not.toContain('TARGET:SELL');
         expect(objectiveSection).not.toContain('"direction"');
         expect(packet).not.toContain('"direction": "SELL"\n      }');

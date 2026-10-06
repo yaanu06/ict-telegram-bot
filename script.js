@@ -11814,14 +11814,21 @@ function aiUtf8ByteLength(value) {
     return typeof TextEncoder === 'function' ? new TextEncoder().encode(text).byteLength : text.length;
 }
 
+function compactEvidenceNumber(...values) {
+    const value = values.find(candidate => candidate !== null && candidate !== undefined && candidate !== '');
+    if (value === undefined) return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+}
+
 function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe = null) {
     if (item == null || typeof item !== 'object') return null;
     const id = item.id || item.evidence_id || null;
-    const level = Number.isFinite(Number(item.level ?? item.price)) ? Number(item.level ?? item.price) : null;
-    const low = Number.isFinite(Number(item.low)) ? Number(item.low) : null;
-    const high = Number.isFinite(Number(item.high)) ? Number(item.high) : null;
+    const level = compactEvidenceNumber(item.level, item.price);
+    const low = compactEvidenceNumber(item.low);
+    const high = compactEvidenceNumber(item.high);
     const midpointValue = item.midpoint ?? item.mid ?? item.price;
-    const midpoint = Number.isFinite(Number(midpointValue)) ? Number(midpointValue) : null;
+    const midpoint = compactEvidenceNumber(midpointValue);
     const invalidation = item.structural_invalidation && typeof item.structural_invalidation === 'object'
         ? item.structural_invalidation
         : item.structural_invalidation_detail && typeof item.structural_invalidation_detail === 'object'
@@ -12094,8 +12101,7 @@ function compactAiTarget(target = {}, fallbackDirection = null) {
         id: target.id || target.target_id || null,
         direction: target.direction || fallbackDirection || null,
         timeframe: target.timeframe || null,
-        level: Number.isFinite(Number(target.level ?? target.target_level ?? target.price))
-            ? Number(target.level ?? target.target_level ?? target.price) : null,
+        level: compactEvidenceNumber(target.level, target.target_level, target.price),
         source: target.primary_target_source || target.source || null,
         type: target.target_type || target.type || null,
         lifecycle_state: target.target_lifecycle_state || target.lifecycle_state || target.state || null,
@@ -12194,18 +12200,19 @@ function compactAiCandidate(candidate = {}) {
 
 function compactAiNeutralObjective(target = {}) {
     if (!target || typeof target !== 'object') return null;
-    const level = Number.isFinite(Number(target.level ?? target.target_level ?? target.price))
-        ? Number(target.level ?? target.target_level ?? target.price) : null;
+    const level = compactEvidenceNumber(target.level, target.target_level, target.price);
     const lifecycle = target.lifecycle_state || target.target_lifecycle_state || target.state || null;
     const normalizedType = String(target.type || '').replace(/^OPPOSING_/, '') || null;
     const normalizedSource = String(target.source || '').replace(/^(BUY|SELL)_SIDE_LIQUIDITY$/, 'LIQUIDITY').replace(/^OPPOSING_/, '') || null;
     if (level == null && !target.id && !target.target_id) return null;
     return {
-        objective_id: `OBJECTIVE:${target.timeframe || 'NA'}:${normalizedType || normalizedSource || 'LEVEL'}:${level ?? 'NA'}`,
+        objective_id: target.objective_id || target.id || target.target_id
+            || `OBJECTIVE:${target.timeframe || 'NA'}:${normalizedType || normalizedSource || 'LEVEL'}:${level ?? 'NA'}`,
         timeframe: target.timeframe || null,
         level,
         source: normalizedSource,
         type: normalizedType,
+        event_time: target.event_time || target.formation_time || target.created_time || null,
         lifecycle_state: lifecycle,
         reached: target.reached === true || lifecycle === 'CONSUMED' || lifecycle === 'INVALIDATED',
         consumed: lifecycle === 'CONSUMED',
@@ -12294,6 +12301,7 @@ function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = 
     return {
         timeframe,
         role: source.role || null,
+        last_closed_time: source.last_closed_time || source.last_closed_candle_time || null,
         closed_candle_count: source.closed_candle_count ?? null,
         current_closed_price: source.current_closed_price ?? null,
         structure: {
@@ -12558,6 +12566,393 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
     };
 }
 
+function manualDecisionEvent(item = {}, fallbackType = null, fallbackTimeframe = null) {
+    if (!item || typeof item !== 'object') return null;
+    const eventTime = item.event_time || item.formation_time || item.created_time || item.source_time || item.time || null;
+    const level = compactEvidenceNumber(item.level, item.price, item.midpoint);
+    const low = compactEvidenceNumber(item.low);
+    const high = compactEvidenceNumber(item.high);
+    const eventId = item.event_id || item.id || item.evidence_id
+        || `${fallbackType || item.type || item.kind || 'EVENT'}:${fallbackTimeframe || item.timeframe || 'NA'}:${eventTime || level || `${low || ''}-${high || ''}`}`;
+    if (!eventId && !eventTime && level == null && low == null && high == null) return null;
+    return compactManualPacketValue({
+        event_id: String(eventId),
+        event_type: item.event_type || item.type || item.kind || item.strategy || fallbackType || null,
+        timeframe: item.timeframe || fallbackTimeframe || null,
+        direction: item.direction || null,
+        time: eventTime,
+        level,
+        zone: low != null || high != null ? { low, high } : undefined,
+        state: item.state || item.lifecycle_state || item.freshness || null,
+        evidence_ids: [...new Set([
+            ...(Array.isArray(item.evidence_ids) ? item.evidence_ids : []),
+            ...(item.id ? [item.id] : []),
+            ...(item.evidence_id ? [item.evidence_id] : [])
+        ].filter(id => typeof id === 'string'))].slice(0, 16)
+    }) || null;
+}
+
+function buildManualDeliveryChronology(semantic = {}, referenceTime = null) {
+    const events = new Map();
+    const add = (item, fallbackType, timeframe) => {
+        const event = manualDecisionEvent(item, fallbackType, timeframe);
+        if (!event) return;
+        const existing = events.get(event.event_id);
+        if (!existing || (event.time && !existing.time)) events.set(event.event_id, event);
+    };
+    for (const timeframe of AI_SEMANTIC_TIMEFRAMES) {
+        const current = semantic.timeframes?.[timeframe] || {};
+        const structure = current.structure || {};
+        for (const item of (Array.isArray(current.evidence) ? current.evidence : [])) add(item, item.type || 'STRUCTURE_EVENT', timeframe);
+        for (const item of (Array.isArray(current.locations) ? current.locations : [])) add(item, item.type || 'LOCATION_FORMED', timeframe);
+        for (const key of ['mss', 'displacement']) {
+            if (structure[key] && typeof structure[key] === 'object') add(structure[key], key.toUpperCase(), timeframe);
+        }
+        for (const values of Object.values(current.liquidity || {})) {
+            for (const item of (Array.isArray(values) ? values : [])) add(item, item.type || 'LIQUIDITY_EVENT', timeframe);
+        }
+    }
+    for (const item of semantic.deterministic_evidence?.strategy_events || []) add(item, item.type || item.strategy || 'MODEL_EVENT', item.timeframe);
+    const institutional = semantic.institutional_activity_evidence?.timeframes || {};
+    for (const timeframe of AI_SEMANTIC_TIMEFRAMES) {
+        for (const record of institutional[timeframe] || []) {
+            for (const component of ['liquidity_event', 'displacement', 'structural_consequence', 'follow_through']) {
+                add(record[component], component.toUpperCase(), timeframe);
+            }
+            for (const origin of record.origin_locations || []) add(origin, 'ORIGIN', timeframe);
+        }
+    }
+    const ordered = [...events.values()].sort((a, b) => {
+        const at = manualPacketEventTime(a);
+        const bt = manualPacketEventTime(b);
+        if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) return at - bt;
+        if (Number.isFinite(at) !== Number.isFinite(bt)) return Number.isFinite(at) ? -1 : 1;
+        return a.event_id.localeCompare(b.event_id);
+    });
+    const recent = ordered.filter(item => manualPacketIsRelevant(item, item.timeframe, referenceTime));
+    return {
+        ordering: 'ASCENDING_EVENT_TIME',
+        events: (recent.length ? recent : ordered).slice(-96)
+    };
+}
+
+function manualObjectiveRecord(target = {}, timeframe = null, sourceType = null) {
+    const level = compactEvidenceNumber(target.level, target.target_level, target.price);
+    if (level == null) return null;
+    const source = target.source || target.primary_target_source || sourceType || null;
+    const type = target.type || target.target_type || sourceType || 'LEVEL';
+    const objectiveId = target.objective_id || target.id || target.target_id
+        || `OBJECTIVE:${timeframe || target.timeframe || 'NA'}:${type}:${level}`;
+    const lifecycle = target.lifecycle_state || target.target_lifecycle_state || target.state || null;
+    return compactManualPacketValue({
+        objective_id: String(objectiveId),
+        timeframe: target.timeframe || timeframe || null,
+        level,
+        source,
+        type,
+        event_time: target.event_time || target.formation_time || target.created_time || null,
+        reached: target.reached === true,
+        consumed: target.consumed === true || lifecycle === 'CONSUMED',
+        invalidated: target.invalidated === true || lifecycle === 'INVALIDATED',
+        lifecycle_state: lifecycle,
+        evidence_ids: Array.isArray(target.evidence_ids) ? target.evidence_ids.filter(id => typeof id === 'string').slice(0, 16) : []
+    }) || null;
+}
+
+function buildManualLiquidityObjectiveMap(semantic = {}, currentPrice = null) {
+    const records = new Map();
+    const add = record => {
+        if (!record) return;
+        if (!records.has(record.objective_id)) records.set(record.objective_id, record);
+    };
+    for (const target of semantic.target_context || []) add(manualObjectiveRecord(target));
+    for (const timeframe of AI_SEMANTIC_TIMEFRAMES) {
+        const liquidity = semantic.timeframes?.[timeframe]?.liquidity || {};
+        for (const [type, values] of Object.entries(liquidity)) {
+            for (const value of Array.isArray(values) ? values : []) add(manualObjectiveRecord(value, timeframe, type));
+        }
+    }
+    const numericPrice = Number(currentPrice);
+    const sorted = [...records.values()].sort((a, b) => {
+        const distanceA = Number.isFinite(numericPrice) ? Math.abs(a.level - numericPrice) : Infinity;
+        const distanceB = Number.isFinite(numericPrice) ? Math.abs(b.level - numericPrice) : Infinity;
+        return distanceA - distanceB || a.objective_id.localeCompare(b.objective_id);
+    });
+    return {
+        above_current_price: sorted.filter(item => Number.isFinite(numericPrice) && item.level > numericPrice).slice(0, 48),
+        below_current_price: sorted.filter(item => Number.isFinite(numericPrice) && item.level < numericPrice).slice(0, 48)
+    };
+}
+
+function manualLocationModelFamily(type = '') {
+    const normalized = String(type || '').toUpperCase();
+    if (normalized.includes('CRT')) return 'CRT';
+    if (normalized.includes('TBS')) return 'TBS';
+    if (normalized.includes('MSNR')) return 'MSNR';
+    return 'ICT_STRUCTURE_AND_LIQUIDITY';
+}
+
+function buildManualInvalidationCatalogue(semantic = {}) {
+    const records = new Map();
+    for (const timeframe of AI_SEMANTIC_TIMEFRAMES) {
+        for (const item of semantic.structural_invalidations?.[timeframe] || []) {
+            const level = compactEvidenceNumber(item.level, item.invalidation?.level);
+            const id = item.invalidation_id || item.id || item.evidence_id;
+            if (!id || level == null || records.has(id)) continue;
+            records.set(id, compactManualPacketValue({
+                invalidation_id: String(id),
+                timeframe: item.timeframe || timeframe,
+                type: item.type || item.invalidation?.source || 'STRUCTURAL_INVALIDATION',
+                level,
+                event_time: item.event_time || null,
+                source: item.source || item.invalidation?.source || null,
+                source_evidence_id: item.evidence_id || item.id || null,
+                direction_if_deterministic: item.direction || null,
+                state: item.state || null,
+                invalidated: item.invalidated === true,
+                consumed: item.consumed === true,
+                evidence_ids: Array.isArray(item.evidence_ids) ? item.evidence_ids.filter(idValue => typeof idValue === 'string').slice(0, 16) : []
+            }));
+        }
+    }
+    return [...records.values()];
+}
+
+function buildManualLocationCatalogue(semantic = {}, invalidations = [], objectives = {}, currentPrice = null) {
+    const locations = new Map();
+    for (const timeframe of AI_SEMANTIC_TIMEFRAMES) {
+        for (const item of semantic.timeframes?.[timeframe]?.locations || []) {
+            const id = item.id || item.evidence_id;
+            if (!id || locations.has(id)) continue;
+            const low = compactEvidenceNumber(item.low);
+            const high = compactEvidenceNumber(item.high);
+            const midpoint = compactEvidenceNumber(item.midpoint, item.price);
+            const evidenceIds = [...new Set([id, ...(item.evidence_ids || [])].filter(value => typeof value === 'string'))];
+            const compatibleInvalidationIds = invalidations.filter(invalidation =>
+                invalidation.timeframe === (item.timeframe || timeframe)
+                && (invalidation.source_evidence_id === id || invalidation.evidence_ids?.some(value => evidenceIds.includes(value)))
+            ).map(invalidation => invalidation.invalidation_id);
+            const allObjectives = [...(objectives.above_current_price || []), ...(objectives.below_current_price || [])];
+            const spatialObjectiveIds = allObjectives.filter(objective =>
+                objective.timeframe === (item.timeframe || timeframe)
+                && (objective.evidence_ids?.some(value => evidenceIds.includes(value))
+                    || (low != null && high != null && objective.level >= low && objective.level <= high))
+            ).map(objective => objective.objective_id);
+            const relation = Number.isFinite(Number(currentPrice)) && low != null && high != null
+                ? currentPrice < low ? 'BELOW_ZONE' : currentPrice > high ? 'ABOVE_ZONE' : 'INSIDE_ZONE'
+                : null;
+            locations.set(id, compactManualPacketValue({
+                location_id: String(id),
+                type: item.type || null,
+                model_family: manualLocationModelFamily(item.type),
+                direction_if_factual: item.direction || null,
+                timeframe: item.timeframe || timeframe,
+                zone_low: low,
+                zone_high: high,
+                midpoint_if_defined: midpoint,
+                formed_at: item.event_time || item.formation_time || null,
+                freshness: item.freshness || null,
+                mitigated: item.mitigation_state || item.mitigation || null,
+                mitigation_state: item.mitigation_state || item.mitigation || null,
+                lifecycle_state: item.lifecycle_state || item.state || null,
+                consumed: item.consumed === true,
+                invalidated: item.invalidated === true,
+                origin_evidence_ids: evidenceIds,
+                formation_context: compactManualPacketValue({
+                    source: item.source || null,
+                    event_time: item.event_time || item.formation_time || null,
+                    evidence_ids: evidenceIds
+                }),
+                delivery_since_formation: item.delivery_since_formation || item.delivery_since_formation_facts || null,
+                current_relationship: compactManualPacketValue({
+                    price_relation: relation,
+                    traded_through: item.traded_through ?? null,
+                    newer_structure: item.newer_structure || null
+                }),
+                compatible_invalidation_ids: compatibleInvalidationIds,
+                spatially_relevant_objective_ids: spatialObjectiveIds
+            }));
+        }
+    }
+    return [...locations.values()];
+}
+
+function buildManualModelEvidence(semantic = {}) {
+    const groups = { ICT_STRUCTURE_AND_LIQUIDITY: [], CRT: [], TBS: [], MSNR: [] };
+    const records = [];
+    const add = (item, fallbackType = null, timeframe = null) => {
+        const compact = manualDecisionEvent(item, fallbackType, timeframe);
+        if (!compact) return;
+        const type = String(compact.event_type || '').toUpperCase();
+        const family = manualLocationModelFamily(type);
+        const key = `${family}:${compact.event_id}`;
+        if (records.some(record => record._key === key)) return;
+        records.push({ ...compact, _key: key });
+    };
+    for (const item of semantic.deterministic_evidence?.strategy_events || []) add(item, item.type || item.strategy, item.timeframe);
+    for (const timeframe of AI_SEMANTIC_TIMEFRAMES) {
+        const current = semantic.timeframes?.[timeframe] || {};
+        for (const item of current.locations || []) add(item, item.type || 'LOCATION', timeframe);
+        for (const item of current.evidence || []) add(item, item.type || 'STRUCTURE_EVENT', timeframe);
+        for (const values of Object.values(current.liquidity || {})) {
+            for (const item of Array.isArray(values) ? values : []) add(item, item.type || 'LIQUIDITY_EVENT', timeframe);
+        }
+        for (const key of ['mss', 'displacement']) if (current.structure?.[key]) add(current.structure[key], key.toUpperCase(), timeframe);
+    }
+    for (const record of records) {
+        const { _key, ...publicRecord } = record;
+        groups[manualLocationModelFamily(publicRecord.event_type)].push(publicRecord);
+    }
+    for (const key of Object.keys(groups)) groups[key] = groups[key].slice(0, 64);
+    return groups;
+}
+
+function buildManualConflictMap(semantic = {}) {
+    const conflicts = [];
+    for (let leftIndex = 0; leftIndex < AI_SEMANTIC_TIMEFRAMES.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < AI_SEMANTIC_TIMEFRAMES.length; rightIndex += 1) {
+            const leftTf = AI_SEMANTIC_TIMEFRAMES[leftIndex];
+            const rightTf = AI_SEMANTIC_TIMEFRAMES[rightIndex];
+            const left = String(semantic.timeframes?.[leftTf]?.structure?.effective_trend || '').toUpperCase();
+            const right = String(semantic.timeframes?.[rightTf]?.structure?.effective_trend || '').toUpperCase();
+            if (!left || !right || left === 'NEUTRAL' || right === 'NEUTRAL' || left === right) continue;
+            conflicts.push({
+                conflict_id: `CONFLICT:TREND:${leftTf}:${rightTf}`,
+                type: 'EFFECTIVE_TREND_DISAGREEMENT',
+                timeframes: [leftTf, rightTf],
+                facts: { [leftTf]: left, [rightTf]: right },
+                evidence_ids: [...new Set([
+                    ...(semantic.timeframes?.[leftTf]?.structural_evidence_ids || []),
+                    ...(semantic.timeframes?.[rightTf]?.structural_evidence_ids || [])
+                ])].slice(0, 16),
+                interpretation_required: true
+            });
+        }
+    }
+    for (const item of semantic.market_observations?.conflicts || []) {
+        const compact = compactManualPacketValue({
+            conflict_id: item.conflict_id || item.id || `CONFLICT:FACT:${conflicts.length + 1}`,
+            type: item.type || 'DETERMINISTIC_CONTEXT_CONFLICT',
+            timeframes: item.timeframes || item.timeframe || null,
+            facts: item.facts || item.description || item,
+            evidence_ids: Array.isArray(item.evidence_ids) ? item.evidence_ids.slice(0, 16) : [],
+            interpretation_required: true
+        });
+        if (compact && !conflicts.some(existing => existing.conflict_id === compact.conflict_id)) conflicts.push(compact);
+    }
+    return conflicts.slice(0, 48);
+}
+
+function buildManualCurrentMarketSummary(semantic = {}, chronology = {}, modelEvidence = {}) {
+    return Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(timeframe => {
+        const value = semantic.timeframes?.[timeframe] || {};
+        const timeframeEvents = (chronology.events || []).filter(event => event.timeframe === timeframe).slice(-10);
+        return [timeframe, compactManualPacketValue({
+            timeframe,
+            role: value.role || null,
+            last_closed_time: value.last_closed_time || null,
+            last_closed_price: value.current_closed_price ?? null,
+            closed_candle_count: value.closed_candle_count ?? null,
+            structure: value.structure || {},
+            latest_meaningful_events: timeframeEvents,
+            dealing_context: {
+                dealing_range: value.dealing_range || null,
+                premium_discount: value.premium_discount || null,
+                previous_period: value.previous_period || null,
+                previous_day_levels: value.previous_day_levels || null,
+                atr: value.atr ?? null
+            },
+            model_evidence_ids: Object.values(modelEvidence).flat()
+                .filter(item => item.timeframe === timeframe)
+                .map(item => item.event_id)
+                .filter(Boolean)
+                .slice(0, 24)
+        }) || { timeframe }];
+    }));
+}
+
+function buildProfessionalManualMarketPacket({ semantic = {}, pair = null, provider = null, result = {}, source = {}, minimumRR = null } = {}) {
+    const referenceTime = source.scan_as_of || result.time || semantic.snapshot?.as_of || null;
+    const chronology = buildManualDeliveryChronology(semantic, referenceTime);
+    const objectives = buildManualLiquidityObjectiveMap(semantic, semantic.snapshot?.current_price);
+    const invalidations = buildManualInvalidationCatalogue(semantic);
+    const locations = buildManualLocationCatalogue(semantic, invalidations, objectives, semantic.snapshot?.current_price);
+    const modelEvidence = buildManualModelEvidence(semantic);
+    const conflicts = buildManualConflictMap(semantic);
+    const identity = {
+        symbol: pair || semantic.snapshot?.pair || null,
+        generated_at: source.scan_as_of || result.time || semantic.snapshot?.as_of || null,
+        app_build_id: result.app_build_id || source.app_build_id || APP_BUILD_ID,
+        serializer_id: result.clipboard_serializer_id || source.clipboard_serializer_id || CLIPBOARD_SERIALIZER_ID,
+        scan_id: result.scan_id || source.scan_id || null,
+        provider: provider || semantic.snapshot?.provider || null,
+        strategy_version: result.strategy_version || STRATEGY_SPEC_VERSION || null,
+        snapshot_id: semantic.snapshot?.snapshot_id || source.snapshot_id || result.snapshot_id || null,
+        current_price: semantic.snapshot?.current_price ?? source.quote?.price ?? result.current_price ?? null,
+        quote_time: source.quote?.quote_time || null
+    };
+    return {
+        packet_type: 'EXTERNAL_AI_MARKET_DECISION',
+        schema_version: 3,
+        packet_identity: identity,
+        professional_trader_mandate: [
+            'Find today\'s highest-quality current trading opportunity on the supplied symbol, if one exists.',
+            'Analyze BUY and SELL possibilities. Do not force a trade; NO_TRADE is a professional decision.',
+            'Use only supplied deterministic prices, events, locations, invalidations, objectives, and evidence IDs.',
+            'Understand current delivery and chronology before selecting a model or location. A historical valid location is not automatically a current opportunity.'
+        ],
+        strategy_contract: {
+            facts_owner: 'CODE',
+            interpretation_owner: 'EXTERNAL_AI',
+            semantic_timeframes: AI_SEMANTIC_TIMEFRAMES,
+            minimum_rr: minimumRR,
+            rules: [
+                'Use supplied deterministic facts only; never invent entry, stop, target, or market data.',
+                'Reason in order: CURRENT MARKET STATE -> RECENT DELIVERY / CHRONOLOGY -> MULTI-TIMEFRAME CONTEXT -> LIQUIDITY MAP -> CURRENT PHASE -> DIRECTION -> LOCATION -> MODEL / EXECUTION -> INVALIDATION -> OBJECTIVE -> EXACT RR.',
+                'A stop must be a supplied structural invalidation belonging to the thesis; an objective must be a genuine remaining neutral market fact.',
+                'Consumed, invalidated, or unusable objectives cannot be used. TP1 must satisfy minimum_rr; TP2/TP3 cannot rescue it.',
+                'PENDING_LIMIT may be away from current price and does not require 5M/15M confirmation unless supplied setup semantics require it. CONFIRMATION_ENTRY requires supplied confirmation.',
+                'Freshness is not opportunity relevance, distance alone is not rejection, and confidence never makes invalid geometry valid.',
+                'Combined setup labels require same-opportunity components with compatible chronology, location, direction, and evidence.'
+            ]
+        },
+        current_market_summary: buildManualCurrentMarketSummary(semantic, chronology, modelEvidence),
+        market_delivery_chronology: chronology,
+        current_liquidity_objective_map: objectives,
+        current_actionable_location_catalogue: locations,
+        structural_invalidation_catalogue: invalidations,
+        model_setup_evidence: {
+            ICT_STRUCTURE_AND_LIQUIDITY: modelEvidence.ICT_STRUCTURE_AND_LIQUIDITY || [],
+            CRT: modelEvidence.CRT || [],
+            TBS: modelEvidence.TBS || [],
+            MSNR: modelEvidence.MSNR || []
+        },
+        multi_timeframe_conflict_map: conflicts,
+        institutional_activity_evidence: semantic.institutional_activity_evidence || null,
+        provenance: {
+            raw_candles_included: false,
+            direction_preselected: false,
+            candidate_ranking_included: false,
+            evidence_ids_traceable: true
+        }
+    };
+}
+
+function buildProfessionalManualExternalAIInstruction(minimumRR = null) {
+    return [
+        'PROFESSIONAL TRADER TASK',
+        'You are a professional price-action trader with expertise in ICT market structure and liquidity concepts, as well as the separately supported CRT, TBS, and MSNR trading models.',
+        'Analyze the complete supplied current market context and find today\'s highest-quality trading opportunity, if one exists. Think like a professional trader, not a pattern matcher. First understand the market, then find the trade.',
+        'Analyze both BUY and SELL possibilities. A trade is not required; NO_TRADE is valid when the current evidence does not support a complete actionable opportunity.',
+        'Use this order: CURRENT MARKET STATE -> RECENT DELIVERY / CHRONOLOGY -> MULTI-TIMEFRAME CONTEXT -> LIQUIDITY MAP -> CURRENT MARKET PHASE -> ACTIONABLE DIRECTION -> CURRENT LOCATION -> SETUP / MODEL -> EXECUTION -> STRUCTURAL INVALIDATION -> GENUINE OBJECTIVE -> EXACT RR -> TRADE OR NO_TRADE.',
+        'ICT structure/liquidity evidence and the separately supported CRT, TBS, and MSNR frameworks may align, but CRT, TBS, and MSNR are not being labeled as ICT concepts. A combined model is valid only when its components belong to the same opportunity.',
+        'Use only supplied facts and prices. Do not invent market data, geometry, stops, objectives, or evidence. Do not use timeframe majority voting, an HTF hard gate, a single event as automatic direction, or a confidence score as validity.',
+        `The canonical minimum_rr is ${minimumRR == null ? 'not available' : minimumRR}. Calculate exact final RR from serialized entry, stop_loss, and TP1; TP2/TP3 cannot rescue an invalid TP1.`,
+        'For PENDING_LIMIT, distance from current price and absent 5M/15M confirmation alone are not rejection reasons. For CONFIRMATION_ENTRY, require the supplied confirmation facts. Fresh POI does not automatically mean current opportunity.',
+        'Return ONLY one directly JSON.parse()-able JSON object. Required fields: pair, decision, direction, trade_type, setup, market_phase, selected_candidate_id, entry, entry_zone, stop_loss, tp1, tp2, tp3, risk_reward, confidence. For manual discovery selected_candidate_id remains null. You may add location_id, invalidation_id, tp1_objective_id, tp2_objective_id, tp3_objective_id, evidence_ids, and conflict_ids for traceability. Do not return chain-of-thought or prose.'
+    ].join('\n') + '\n==================================================';
+}
+
 function updateAiContextAudit(liveMarketContext = null, stage = 'SELECTOR', semanticPackage = {}, requestBody = null) {
     if (!liveMarketContext) return null;
     const candidates = semanticPackage.selectable_opportunities || semanticPackage.adaptive_setup_candidates || [];
@@ -12620,6 +13015,7 @@ function buildCanonicalMarketEvidencePackage(liveMarketContext = {}, historyCach
         timeframes[timeframe] = {
             timeframe,
             role: tfContext.role || ({ '1D': 'MACRO_CONTEXT', '4H': 'PRIMARY_LOCATION', '1H': 'INTERMEDIATE_STRUCTURE', '15M': 'EXECUTION_STRUCTURE', '5M': 'EXECUTION_REFINEMENT' }[timeframe]),
+            last_closed_time: data.at(-1)?.t ?? null,
             closed_candle_count: data.length,
             current_closed_price: data.at(-1)?.c ?? null,
             raw_closed_candles: recent,
@@ -18163,7 +18559,7 @@ const EXTERNAL_AI_PACKET_CONTRACT = [
     'PROCESS: Direction -> Location -> Execution.',
     'DIRECTION: use only supplied HTF structure, effective/momentum structure, BOS, MSS, CHoCH, displacement, liquidity, sweeps/raids, structural objectives, premium/discount, dealing range, and conflicts.',
     'LOCATION: compare supplied FVG, OB, MSNR, CRT, TBS, supply/demand, flip/reclaim/retest, liquidity-raid, and fresh/current POIs.',
-    'ICT is the umbrella methodology. CRT, TBS, MSNR, and combined labels such as MSNR+CRT are setup/model labels; FVG, OB, liquidity, displacement, and BOS/MSS/CHoCH may be structural evidence or CURRENT_STRUCTURE locations.',
+    'ICT structure and liquidity concepts are one supported evidence framework. CRT, TBS, MSNR are separately supported trading models; combined labels such as MSNR+CRT are valid only when same-opportunity evidence supports them. They may align with ICT-style evidence but are not ICT concepts.',
     'MARKET PHASES: ORIGINAL_SETUP, EARLY_DELIVERY, EXPANSION, RETRACEMENT, CONTINUATION_READY, LATE_DELIVERY, TRANSITION_WAIT.',
     'OPPORTUNITY ROLES: ORIGINAL_THESIS_POI, FRESH_RETRACEMENT_POI, FRESH_CONTINUATION_POI, CONFIRMATION_POI.',
     'A valid pending LIMIT may wait away from current price. Do not reject it merely because price is outside the zone, has not reached entry, lacks current 5M/15M confirmation, or is outside a killzone.',
@@ -18182,7 +18578,7 @@ const EXTERNAL_AI_PACKET_CONTRACT = [
 const MANUAL_EXTERNAL_AI_PACKET_CONTRACT = [
     'CODE OWNS FACTS. The packet contains deterministic market evidence, structural locations, invalidations, and genuine objectives. The external AI owns interpretation and setup discovery.',
     'Use this reasoning order: COMPLETE MARKET STATE -> CURRENT DELIVERY / PHASE INTERPRETATION -> ACTIONABLE DIRECTION -> LOCATION -> SETUP / EXECUTION -> STRUCTURAL INVALIDATION -> GENUINE OBJECTIVE -> EXACT RR VALIDATION -> TRADE / CONTINUE SEARCHING / NO_TRADE. Direction -> Location -> Execution remains the core methodology.',
-    'ICT is the umbrella methodology. CRT, TBS, MSNR, combinations, FVG, OB, liquidity raids, reclaim/retest, and current structure are interpretations grounded in the supplied evidence. A model/event is evidence inside the broader narrative; it does not decide direction by itself.',
+    'ICT structure/liquidity concepts and the separately supported CRT, TBS, and MSNR models are distinct frameworks. They may align in one opportunity, but no model/event decides direction by itself.',
     'Do not assume that a setup, direction, phase, regime, thesis, score winner, or liquidity draw already exists. The manual packet intentionally omits those overall conclusions. Determine market phase and actionable direction independently from the complete five-timeframe evidence before interpreting a model or selecting a location.',
     'This packet intentionally does not provide a candidate shortlist, ranking, or preselected trade. Discover the opportunity from the market facts themselves.',
     'Use exactly these semantic timeframes: 1D, 4H, 1H, 15M, 5M. No 1W semantic trading context is supplied.',
@@ -18222,6 +18618,92 @@ function externalPacketDefined(object, keys) {
 function externalPacketNumber(value) {
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
+}
+
+// Manual AI responses are not used as an automatic execution path, but this
+// pure validator keeps the response contract auditable for callers that do
+// ingest a pasted decision. It validates the supplied facts; it never creates
+// a candidate or changes strategy rules.
+function validateExternalAITradeDecision(decision = {}, evidence = {}) {
+    const issues = [];
+    const warnings = [];
+    const normalizedDecision = decision && typeof decision === 'object' ? decision : {};
+    const outcome = String(normalizedDecision.decision || '').toUpperCase();
+    const minimumRR = externalPacketNumber(
+        evidence.strategy_contract?.minimum_rr
+        ?? evidence.minimum_rr
+        ?? evidence.risk_constraints?.minimum_rr
+    );
+    const locations = Array.isArray(evidence.current_actionable_location_catalogue)
+        ? evidence.current_actionable_location_catalogue : [];
+    const invalidations = Array.isArray(evidence.structural_invalidation_catalogue)
+        ? evidence.structural_invalidation_catalogue : [];
+    const objectives = [
+        ...(evidence.current_liquidity_objective_map?.above_current_price || []),
+        ...(evidence.current_liquidity_objective_map?.below_current_price || []),
+        ...(Array.isArray(evidence.objectives) ? evidence.objectives : [])
+    ];
+    const number = key => externalPacketNumber(normalizedDecision[key]);
+    const exactEqual = (left, right) => Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) <= Math.max(1e-10, Math.abs(right) * 1e-9);
+    if (!['TRADE', 'NO_TRADE'].includes(outcome)) issues.push('decision must be TRADE or NO_TRADE');
+    if (outcome === 'NO_TRADE') {
+        for (const field of ['direction', 'trade_type', 'setup', 'entry', 'entry_zone', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk_reward']) {
+            if (normalizedDecision[field] != null) issues.push(`NO_TRADE field ${field} must be null`);
+        }
+        return { valid: issues.length === 0, issues, warnings, decision: outcome, calculated_risk_reward: null, minimum_rr: minimumRR };
+    }
+    const direction = String(normalizedDecision.direction || '').toUpperCase();
+    const entry = number('entry');
+    const stop = number('stop_loss');
+    const tp1 = number('tp1');
+    if (!['BUY', 'SELL'].includes(direction)) issues.push('TRADE direction must be BUY or SELL');
+    if (![entry, stop, tp1].every(Number.isFinite)) issues.push('TRADE requires finite entry, stop_loss, and tp1');
+    if (direction === 'BUY' && !(stop < entry && entry < tp1)) issues.push('BUY geometry must satisfy stop_loss < entry < tp1');
+    if (direction === 'SELL' && !(stop > entry && entry > tp1)) issues.push('SELL geometry must satisfy stop_loss > entry > tp1');
+    const risk = Number.isFinite(entry) && Number.isFinite(stop) ? Math.abs(entry - stop) : null;
+    const reward = Number.isFinite(entry) && Number.isFinite(tp1) ? Math.abs(tp1 - entry) : null;
+    const calculatedRR = risk > 0 && reward != null ? reward / risk : null;
+    if (minimumRR != null && (!Number.isFinite(calculatedRR) || calculatedRR < minimumRR)) issues.push('exact TP1 risk_reward is below canonical minimum_rr');
+    const reportedRR = number('risk_reward');
+    if (reportedRR != null && calculatedRR != null && !exactEqual(reportedRR, calculatedRR)) issues.push('reported risk_reward does not match exact serialized geometry');
+    const selectedLocation = normalizedDecision.location_id == null ? null : locations.find(item => item.location_id === normalizedDecision.location_id);
+    const selectedInvalidation = normalizedDecision.invalidation_id == null ? null : invalidations.find(item => item.invalidation_id === normalizedDecision.invalidation_id);
+    const selectedObjective = normalizedDecision.tp1_objective_id == null ? null : objectives.find(item => item.objective_id === normalizedDecision.tp1_objective_id);
+    if (normalizedDecision.location_id != null && !selectedLocation) issues.push('location_id is not present in supplied location catalogue');
+    if (normalizedDecision.invalidation_id == null) issues.push('TRADE requires invalidation_id traceability');
+    else if (!selectedInvalidation) issues.push('invalidation_id is not present in supplied invalidation catalogue');
+    else if (!exactEqual(stop, externalPacketNumber(selectedInvalidation.level))) issues.push('stop_loss does not equal selected structural invalidation level');
+    if (normalizedDecision.tp1_objective_id == null) issues.push('TRADE requires tp1_objective_id traceability');
+    else if (!selectedObjective) issues.push('tp1_objective_id is not present in supplied objective map');
+    else if (!exactEqual(tp1, externalPacketNumber(selectedObjective.level))) issues.push('tp1 does not equal selected objective level');
+    const setupParts = String(normalizedDecision.setup || '').toUpperCase().split('+').map(value => value.trim()).filter(Boolean);
+    const modelEvidence = evidence.model_setup_evidence || {};
+    for (const component of setupParts.filter(value => ['CRT', 'TBS', 'MSNR', 'FVG', 'OB'].includes(value))) {
+        const records = component === 'FVG' || component === 'OB'
+            ? modelEvidence.ICT_STRUCTURE_AND_LIQUIDITY || []
+            : modelEvidence[component] || [];
+        if (!records.length) issues.push(`setup component ${component} has no supplied supporting evidence`);
+        const evidenceIds = new Set((normalizedDecision.evidence_ids || []).filter(value => typeof value === 'string'));
+        if (evidenceIds.size && !records.some(record => evidenceIds.has(record.event_id) || (record.evidence_ids || []).some(id => evidenceIds.has(id)))) {
+            issues.push(`setup component ${component} is not traceable to returned evidence_ids`);
+        }
+    }
+    if (selectedLocation && normalizedDecision.evidence_ids?.length) {
+        const locationEvidence = new Set(selectedLocation.origin_evidence_ids || []);
+        if (!(normalizedDecision.evidence_ids || []).some(id => locationEvidence.has(id) || id === selectedLocation.location_id)) warnings.push('returned evidence_ids do not overlap selected location provenance');
+    }
+    return {
+        valid: issues.length === 0,
+        issues,
+        warnings,
+        decision: outcome,
+        direction,
+        calculated_risk_reward: calculatedRR,
+        minimum_rr: minimumRR,
+        location_id: normalizedDecision.location_id || null,
+        invalidation_id: normalizedDecision.invalidation_id || null,
+        tp1_objective_id: normalizedDecision.tp1_objective_id || null
+    };
 }
 
 function externalPacketTargetRecord(target = {}, fallbackDirection = null) {
@@ -18443,6 +18925,65 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
         };
         semantic = buildCompactAISemanticPackage(semanticSource, source.market_evidence_package || {}, { manualOpportunityDiscovery: manualReview });
     } catch { semantic = null; }
+    if (manualReview) {
+        const minimumRR = externalPacketNumber(
+            semantic?.risk_constraints?.minimum_rr
+            ?? source.risk_constraints?.minimum_rr
+            ?? result.risk_constraints?.minimum_rr
+        ) ?? externalPacketNumber(getMarketSettings(pairValue, source.symbol_metadata || {}).targetRR);
+        const professionalPacket = buildProfessionalManualMarketPacket({
+            semantic: semantic || {},
+            pair: pairValue,
+            provider,
+            result,
+            source,
+            minimumRR
+        });
+        const sectionJson = value => JSON.stringify(value);
+        const packet = [
+            'ICT TRADING BOT PRO',
+            'EXTERNAL AI DECISION PACKET',
+            '',
+            'PACKET / SNAPSHOT IDENTITY',
+            sectionJson(professionalPacket.packet_identity),
+            '',
+            'PROFESSIONAL TRADER MANDATE',
+            sectionJson(professionalPacket.professional_trader_mandate),
+            '',
+            'HARD STRATEGY / EXECUTION RULES',
+            sectionJson(professionalPacket.strategy_contract),
+            '',
+            'CURRENT MARKET SUMMARY',
+            sectionJson(professionalPacket.current_market_summary),
+            '',
+            'MARKET DELIVERY CHRONOLOGY',
+            sectionJson(professionalPacket.market_delivery_chronology),
+            '',
+            'CURRENT LIQUIDITY / OBJECTIVE MAP',
+            sectionJson(professionalPacket.current_liquidity_objective_map),
+            '',
+            'CURRENT ACTIONABLE LOCATION CATALOGUE',
+            sectionJson(professionalPacket.current_actionable_location_catalogue),
+            '',
+            'STRUCTURAL INVALIDATION CATALOGUE',
+            sectionJson(professionalPacket.structural_invalidation_catalogue),
+            '',
+            'MODEL / SETUP EVIDENCE',
+            sectionJson(professionalPacket.model_setup_evidence),
+            '',
+            'MULTI-TIMEFRAME CONFLICT MAP',
+            sectionJson(professionalPacket.multi_timeframe_conflict_map),
+            '',
+            'INSTITUTIONAL ACTIVITY / FOOTPRINT EVIDENCE',
+            sectionJson(professionalPacket.institutional_activity_evidence),
+            '',
+            'PROVENANCE / INTEGRITY',
+            sectionJson(professionalPacket.provenance),
+            '',
+            buildProfessionalManualExternalAIInstruction(minimumRR)
+        ].join('\n');
+        return packet.replace(/(DEEPSEEK_API_KEY|GEMINI_API_KEY|TWELVE_DATA_API_KEY|TELEGRAM_BOT_TOKEN|Authorization|Bearer)\s*[:=]?\s*[^\s\n]*/gi, '$1: [REDACTED]');
+    }
     const timeframes = semantic?.timeframes || {};
     const rawTargetContext = semantic?.target_context || [...new Map(candidates.flatMap(candidate => candidate.targets || []).map(target => [target.target_id, target])).values()];
     const targetContext = manualReview
@@ -18924,7 +19465,9 @@ force a trade. There is exactly one authoritative external-AI task in this
 packet.
 
 ==================================================`;
-    const externalAIClipboardTask = manualReview ? manualExternalAIClipboardTask : integratedExternalAIClipboardTask;
+    // Manual packets return through the structured presentation boundary above.
+    // This task is retained only for the automatic/integrated serializer.
+    const externalAIClipboardTask = integratedExternalAIClipboardTask;
     const packet = [
         'ICT TRADING BOT PRO',
         'EXTERNAL AI DECISION PACKET',
