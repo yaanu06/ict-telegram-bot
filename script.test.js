@@ -4010,14 +4010,15 @@ describe('professional manual decision packet and external decision validation',
         const ctx = getContext();
         const evidence = {
             strategy_contract: { minimum_rr: 2.5 },
-            current_actionable_location_catalogue: [{ location_id: 'LOC-SELL', origin_evidence_ids: ['LOC-SELL'] }],
+            current_actionable_location_catalogue: [{ location_id: 'LOC-SELL', zone_low: 0.99, zone_high: 1.01, midpoint_if_defined: 1, origin_evidence_ids: ['LOC-SELL'] }],
             structural_invalidation_catalogue: [{ invalidation_id: 'INV-SELL', level: 1.1 }],
             current_liquidity_objective_map: { above_current_price: [], below_current_price: [{ objective_id: 'OBJ-SELL', level: 0.7 }] },
             model_setup_evidence: { ICT_STRUCTURE_AND_LIQUIDITY: [{ event_id: 'LOC-SELL', event_type: 'FVG' }] }
         };
         const invalidRR = ctx.validateExternalAITradeDecision({ decision: 'TRADE', direction: 'SELL', setup: 'FVG', entry: 1, stop_loss: 1.1, tp1: 0.9, risk_reward: 3, location_id: 'LOC-SELL', invalidation_id: 'INV-SELL', tp1_objective_id: 'OBJ-SELL', evidence_ids: ['LOC-SELL'] }, evidence);
         expect(invalidRR.valid).toBe(false);
-        expect(invalidRR.issues).toEqual(expect.arrayContaining(['exact TP1 risk_reward is below canonical minimum_rr', 'reported risk_reward does not match exact serialized geometry']));
+        expect(invalidRR.issues).toContain('exact TP1 risk_reward is below canonical minimum_rr');
+        expect(invalidRR.warnings).toContain('REPORTED_RR_IGNORED_CODE_CALCULATED_RR_WINS');
         const exactLowRR = ctx.validateExternalAITradeDecision({ decision: 'TRADE', direction: 'SELL', setup: 'FVG', entry: 0.55991, stop_loss: 0.56056, tp1: 0.55857, risk_reward: 2.06, location_id: 'LOC-SELL', invalidation_id: 'INV-SELL', tp1_objective_id: 'OBJ-SELL', evidence_ids: ['LOC-SELL'] }, {
             ...evidence,
             structural_invalidation_catalogue: [{ invalidation_id: 'INV-SELL', level: 0.56056 }],
@@ -4025,7 +4026,7 @@ describe('professional manual decision packet and external decision validation',
         });
         expect(exactLowRR.calculated_risk_reward).toBeCloseTo(2.061538, 5);
         expect(exactLowRR.issues).toContain('exact TP1 risk_reward is below canonical minimum_rr');
-        const validPending = ctx.validateExternalAITradeDecision({ decision: 'TRADE', direction: 'SELL', setup: 'FVG', trade_type: 'PENDING_LIMIT', entry: 1, stop_loss: 1.1, tp1: 0.7, risk_reward: 3, location_id: 'LOC-SELL', invalidation_id: 'INV-SELL', tp1_objective_id: 'OBJ-SELL', evidence_ids: ['LOC-SELL'] }, evidence);
+        const validPending = ctx.validateExternalAITradeDecision({ decision: 'TRADE', direction: 'SELL', setup: 'FVG', market_phase: 'RETRACEMENT', trade_type: 'PENDING_LIMIT', confidence: 78, entry: 1, entry_zone: [0.99, 1.01], stop_loss: 1.1, tp1: 0.7, risk_reward: 3, location_id: 'LOC-SELL', invalidation_id: 'INV-SELL', tp1_objective_id: 'OBJ-SELL', evidence_ids: ['LOC-SELL'] }, evidence);
         expect(validPending.valid).toBe(true);
         const noTrade = ctx.validateExternalAITradeDecision({ decision: 'NO_TRADE', direction: null, trade_type: null, setup: null, entry: null, entry_zone: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null }, evidence);
         expect(noTrade.valid).toBe(true);
@@ -4035,15 +4036,76 @@ describe('professional manual decision packet and external decision validation',
         const ctx = getContext();
         const evidence = {
             strategy_contract: { minimum_rr: 2.5 },
-            current_actionable_location_catalogue: [{ location_id: 'LOC-1', origin_evidence_ids: ['CRT-1'] }],
+            current_actionable_location_catalogue: [{ location_id: 'LOC-1', zone_low: 0.99, zone_high: 1.01, midpoint_if_defined: 1, origin_evidence_ids: ['CRT-1'] }],
             structural_invalidation_catalogue: [{ invalidation_id: 'INV-1', level: 1.1 }],
             current_liquidity_objective_map: { above_current_price: [], below_current_price: [{ objective_id: 'OBJ-1', level: 0.5 }] },
             model_setup_evidence: { CRT: [{ event_id: 'CRT-1' }], MSNR: [{ event_id: 'MSNR-UNRELATED' }] }
         };
         const result = ctx.validateExternalAITradeDecision({ decision: 'TRADE', direction: 'SELL', setup: 'CRT+MSNR', entry: 1, stop_loss: 1.2, tp1: 0.5, risk_reward: 2.5, location_id: 'LOC-1', invalidation_id: 'INV-1', tp1_objective_id: 'OBJ-1', evidence_ids: ['CRT-1'] }, evidence);
         expect(result.valid).toBe(false);
-        expect(result.issues).toContain('stop_loss does not equal selected structural invalidation level');
-        expect(result.issues).toContain('setup component MSNR is not traceable to returned evidence_ids');
+        expect(result.issues).toContain('STOP_LOSS_DOES_NOT_MATCH_INVALIDATION_ID');
+        expect(result.issues).toContain('setup component MSNR is not traceable to the same opportunity');
+    });
+
+    it('enforces clean semantic output fields and strict confidence percentages', () => {
+        const ctx = getContext();
+        const evidence = {
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [{ location_id: 'LOC-1', zone_low: 0.99, zone_high: 1.01, midpoint_if_defined: 1, origin_evidence_ids: ['FVG-1'] }],
+            structural_invalidation_catalogue: [{ invalidation_id: 'INV-1', level: 1.1 }],
+            current_liquidity_objective_map: { above_current_price: [], below_current_price: [{ objective_id: 'OBJ-1', level: 0.7 }] },
+            model_setup_evidence: { ICT_STRUCTURE_AND_LIQUIDITY: [{ event_id: 'FVG-1', event_type: 'FVG' }] }
+        };
+        const base = { decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'FVG', market_phase: 'RETRACEMENT', confidence: 78, location_id: 'LOC-1', invalidation_id: 'INV-1', tp1_objective_id: 'OBJ-1', evidence_ids: ['FVG-1'], entry: 1, entry_zone: [0.99, 1.01], stop_loss: 1.1, tp1: 0.7, risk_reward: 3 };
+        expect(ctx.validateExternalAITradeDecision(base, evidence).valid).toBe(true);
+        expect(ctx.validateExternalAITradeDecision({ ...base, confidence: '78%' }, evidence).issues).toContain('CONFIDENCE_MUST_BE_INTEGER_PERCENTAGE');
+        expect(ctx.validateExternalAITradeDecision({ ...base, confidence: 'MODERATE' }, evidence).issues).toContain('CONFIDENCE_MUST_BE_INTEGER_PERCENTAGE');
+        expect(ctx.validateExternalAITradeDecision({ ...base, confidence: 0.78 }, evidence).issues).toContain('CONFIDENCE_MUST_BE_INTEGER_PERCENTAGE');
+        expect(ctx.validateExternalAITradeDecision({ ...base, confidence: -1 }, evidence).issues).toContain('CONFIDENCE_MUST_BE_INTEGER_PERCENTAGE');
+        expect(ctx.validateExternalAITradeDecision({ ...base, confidence: 101 }, evidence).issues).toContain('CONFIDENCE_MUST_BE_INTEGER_PERCENTAGE');
+        expect(ctx.validateExternalAITradeDecision({ ...base, setup: '4H Demand + 15M Demand + 5M MSS/BOS Continuation' }, evidence).issues).toContain('SETUP_NOT_CANONICAL');
+        expect(ctx.validateExternalAITradeDecision({ ...base, market_phase: 'Bullish intraday continuation thesis' }, evidence).issues).toContain('INVALID_MARKET_PHASE');
+        expect(ctx.validateExternalAITradeDecision({ ...base, risk_reward: 99 }, evidence).warnings).toContain('REPORTED_RR_IGNORED_CODE_CALCULATED_RR_WINS');
+        expect(ctx.validateExternalAITradeDecision({ ...base, confidence: null }, evidence).issues).toContain('CONFIDENCE_MUST_BE_INTEGER_PERCENTAGE');
+    });
+
+    it('rejects mixed invalidation and objective IDs with exact reason codes', () => {
+        const ctx = getContext();
+        const evidence = {
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [{ location_id: '15M-DEMAND', zone_low: 1.12411, zone_high: 1.12448, midpoint_if_defined: 1.1243, origin_evidence_ids: ['15M-DEMAND'] }],
+            structural_invalidation_catalogue: [
+                { invalidation_id: 'CURRENT:15M:BUY:OB:1.12411:1.12448', level: 1.12411 },
+                { invalidation_id: 'CURRENT:15M:BUY:STRUCTURE:1.12343', level: 1.12343 }
+            ],
+            current_liquidity_objective_map: { above_current_price: [{ objective_id: 'OBJ-TP2', level: 1.128 }], below_current_price: [{ objective_id: 'OBJ-TP1', level: 1.127 }] },
+            model_setup_evidence: { ICT_STRUCTURE_AND_LIQUIDITY: [{ event_id: '15M-DEMAND', event_type: 'DEMAND' }] }
+        };
+        const response = {
+            decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'DEMAND', market_phase: 'RETRACEMENT', confidence: 78,
+            location_id: '15M-DEMAND', invalidation_id: 'CURRENT:15M:BUY:OB:1.12411:1.12448', tp1_objective_id: 'OBJ-TP1',
+            entry: 1.1243, entry_zone: [1.12411, 1.12448], stop_loss: 1.12343, tp1: 1.127, evidence_ids: ['15M-DEMAND']
+        };
+        const mixed = ctx.validateExternalAITradeDecision(response, evidence);
+        expect(mixed.valid).toBe(false);
+        expect(mixed.issues).toContain('STOP_LOSS_DOES_NOT_MATCH_INVALIDATION_ID');
+        const correct = ctx.validateExternalAITradeDecision({ ...response, invalidation_id: 'CURRENT:15M:BUY:STRUCTURE:1.12343', risk_reward: 3.1 }, evidence);
+        expect(correct.issues).not.toContain('STOP_LOSS_DOES_NOT_MATCH_INVALIDATION_ID');
+        expect(correct.valid).toBe(true);
+        expect(ctx.validateExternalAITradeDecision({ ...response, invalidation_id: 'CURRENT:15M:BUY:STRUCTURE:1.12343', tp1: 1.126, risk_reward: 3 }, evidence).issues).toContain('TP1_DOES_NOT_MATCH_OBJECTIVE_ID');
+        expect(ctx.validateExternalAITradeDecision({ ...response, invalidation_id: 'CURRENT:15M:BUY:STRUCTURE:1.12343', tp2: 1.129, tp2_objective_id: 'OBJ-TP2', risk_reward: 3.1 }, evidence).issues).toContain('TP2_DOES_NOT_MATCH_OBJECTIVE_ID');
+    });
+
+    it('keeps chronology causal and leaves the location catalogue as the location history', () => {
+        const ctx = getContext();
+        const semantic = makeSemantic();
+        semantic.timeframes['1H'].locations.push({ id: 'OLD-HISTORICAL-OB', type: 'OB', low: 80, high: 81, event_time: '2025-01-01T00:00:00Z', freshness: 'STALE', lifecycle_state: 'EXPIRED' });
+        const packet = ctx.buildProfessionalManualMarketPacket({ semantic, pair: 'EUR/USD', provider: 'TVKIT', result: { scan_id: 'SCAN-CHRONOLOGY' }, minimumRR: 2.5 });
+        const chronologyIds = packet.market_delivery_chronology.events.map(event => event.event_id);
+        expect(chronologyIds).not.toContain('OLD-HISTORICAL-OB');
+        expect(packet.current_actionable_location_catalogue.map(location => location.location_id)).not.toContain('OLD-HISTORICAL-OB');
+        expect(packet.current_actionable_location_catalogue.map(location => location.location_id)).toContain('1H:FVG');
+        expect(packet.market_delivery_chronology.events.every(event => /LOCATION_FORMED|LIQUIDITY|SWEEP|RAID|DISPLAC|BOS|MSS|CHOCH|CRT|TBS|MSNR|OBJECTIVE|RECLAIM|RETEST|FAIL|INVALIDAT/i.test(event.event_type))).toBe(true);
     });
 });
 
