@@ -4242,16 +4242,16 @@ describe('professional manual decision packet and external decision validation',
         const timeframes = ['1D', '4H', '1H', '15M', '5M'];
         const makeHistory = timeframe => Array.from({ length: 60 }, (_, index) => {
             const t = Date.parse('2026-10-05T00:00:00Z') + index * 60 * 60 * 1000;
-            if (index === 45) return { t, o: 100.5, h: 102.3, l: 100.1, c: 102, is_closed: true };
-            if (index === 46) return { t, o: 102.5, h: 103.2, l: 101.2, c: 102.8, is_closed: true };
-            const close = index > 46 ? 103 : 100;
+            if (index === 30) return { t, o: 100.5, h: 102.3, l: 100.1, c: 102, is_closed: true };
+            if (index === 31) return { t, o: 102.5, h: 103.2, l: 101.2, c: 102.8, is_closed: true };
+            const close = index > 31 ? 103 : 100;
             return { t, o: close - 0.1, h: close + 0.2, l: close - 0.2, c: close, is_closed: true };
         });
         const historyCache = Object.fromEntries(timeframes.map(timeframe => [timeframe, makeHistory(timeframe)]));
         const price = 103;
         const liveZones = ctx.buildLiveZonesForTf(historyCache['1H'], '1H', price, 'EUR/USD', 1, 20, {});
         const sourceZone = liveZones.find(zone => zone.type === 'FVG' || zone.type === 'OB' || zone.type === 'MSNR');
-        expect(sourceZone).toEqual(expect.objectContaining({ id: expect.any(String), created_time: expect.anything() }));
+        expect(sourceZone).toEqual(expect.objectContaining({ id: expect.any(String), created_time: expect.anything(), freshness: 'FRESH' }));
         const timeframeContext = ctx.buildTimeframeContext({ historyCache, structure: {}, price, zones: liveZones, strategySetups: [] });
         expect(timeframeContext['1H'].zones).toEqual(expect.arrayContaining([expect.objectContaining({ id: sourceZone.id, type: sourceZone.type })]));
         expect(timeframeContext['1H'].zones.find(zone => zone.id === sourceZone.id).event_time).toBe(sourceZone.created_time);
@@ -4264,6 +4264,9 @@ describe('professional manual decision packet and external decision validation',
             pair: 'EUR/USD', current_price: price, as_of_time_utc: '2026-10-07T12:00:00Z',
             market_evidence_package: canonical, market_context: { timeframe_context: timeframeContext }
         }, canonical, { manualOpportunityDiscovery: true });
+        const semanticLocation = semantic.timeframes['1H'].locations.find(location => location.id === sourceZone.id);
+        expect(semanticLocation).toEqual(expect.objectContaining({ id: sourceZone.id, freshness: 'FRESH', low: sourceZone.low, high: sourceZone.high }));
+        expect(ctx.manualPacketIsRelevant(semanticLocation, '1H', semantic.timeframes['1H'].last_closed_time)).toBe(true);
         const packet = ctx.buildProfessionalManualMarketPacket({ semantic, pair: 'EUR/USD', provider: 'TVKIT', result: { scan_id: 'SCAN-UPSTREAM-LOCATION' }, minimumRR: 2.5 });
         expect(packet.current_actionable_location_catalogue).toEqual(expect.arrayContaining([expect.objectContaining({
             location_id: sourceZone.id,

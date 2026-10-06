@@ -6501,14 +6501,23 @@ function buildTimeframeContext({ historyCache = {}, structure = {}, price, strat
                 id: z.id, event_id: z.event_id || null, type: z.type, low: z.low, high: z.high, direction: z.direction,
                 event_time: z.event_time || z.formation_time || z.created_time || z.source_time || z.reclaim_time || z.time || null,
                 formation_time: z.formation_time || z.created_time || z.source_time || null,
-                created_time: z.created_time || null, source_time: z.source_time || null, reclaim_time: z.reclaim_time || null
+                created_time: z.created_time || null, source_time: z.source_time || null, reclaim_time: z.reclaim_time || null,
+                freshness: z.freshness || z.freshness_state || null,
+                mitigation_state: z.mitigation_state || z.mitigation || null,
+                lifecycle_state: z.lifecycle_state || z.target_lifecycle_state || null,
+                state: z.state || null, consumed: z.consumed === true, invalidated: z.invalidated === true,
+                primary_eligible: z.primary_eligible !== false
             })),
             zones: levels.map(z => ({
                 id: z.id, event_id: z.event_id || null, type: z.type, low: z.low, high: z.high, direction: z.direction,
                 event_time: z.event_time || z.formation_time || z.created_time || z.source_time || z.reclaim_time || z.time || null,
                 formation_time: z.formation_time || z.created_time || z.source_time || null,
                 created_time: z.created_time || null, source_time: z.source_time || null, reclaim_time: z.reclaim_time || null,
-                time: z.time || null
+                time: z.time || null, freshness: z.freshness || z.freshness_state || null,
+                mitigation_state: z.mitigation_state || z.mitigation || null,
+                lifecycle_state: z.lifecycle_state || z.target_lifecycle_state || null,
+                state: z.state || null, consumed: z.consumed === true, invalidated: z.invalidated === true,
+                primary_eligible: z.primary_eligible !== false
             })),
             execution_events: tf === '15M' ? events.map(s => s.id) : [],
             structural_evidence_ids: evidence.map(e => e.id), evidence
