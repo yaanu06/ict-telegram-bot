@@ -3314,6 +3314,11 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).toContain('invent a target');
         expect(packet).toContain('REACHABLE OBJECTIVE LADDER');
         expect(packet).toContain('Calculate RR to TP1, TP2, and TP3 when present');
+        expect(packet).toContain('Do not wait for a newly formed 5M/15M setup before analyzing a pending limit');
+        expect(packet).toContain('Do not choose the newest location by default');
+        expect(packet).toContain('without current 5M BOS/MSS');
+        expect(packet).toContain('CONFIRMATION_ENTRY is different and must satisfy its supplied confirmation facts');
+        expect(packet).toContain('Review ALL structurally usable locations');
         expect(packet).toContain('selected_candidate_id MUST be JSON null');
         expect(packet).toContain('copy the numeric level from that exact serialized objective catalogue record');
         expect(packet).toContain('prefer that specific setup token; use ICT only when no more specific supported model describes it');
@@ -4616,14 +4621,22 @@ describe('professional manual decision packet and external decision validation',
         const objectives = [
             { objective_id: 'T1', timeframe: '1H', level: 4131.47, lifecycle_state: 'UNFULFILLED' },
             { objective_id: 'T2', timeframe: '1H', level: 4127.27, lifecycle_state: 'UNFULFILLED' },
-            { objective_id: 'T3', timeframe: '1H', level: 4125.27, lifecycle_state: 'UNFULFILLED' }
+            { objective_id: 'T3', timeframe: '1H', level: 4125.27, lifecycle_state: 'UNFULFILLED' },
+            { objective_id: 'T4', timeframe: '1H', level: 4113.44, lifecycle_state: 'UNFULFILLED' }
         ];
         const delivery = ctx.evaluateManualPendingOpportunityDelivery(oldLocation, '1H', {
             above_current_price: [objectives[0]], below_current_price: objectives.slice(1)
         }, 4129.72);
-        expect(delivery.opportunity_lifecycle_state).toBe('STALE_FOR_NEW_ENTRY');
-        expect(delivery.delivery_fraction).toBeGreaterThan(0.5);
+        expect(delivery.opportunity_lifecycle_state).toBe('PARTIALLY_DELIVERED');
+        expect(delivery.delivery_fraction).toBeLessThan(0.5);
+        expect(delivery.remaining_objective_ids).toEqual(expect.arrayContaining(['T2', 'T3', 'T4']));
         expect(oldLocation.freshness).toBe('FRESH');
+
+        const substantiallyDelivered = ctx.evaluateManualPendingOpportunityDelivery(oldLocation, '1H', {
+            above_current_price: [objectives[0]], below_current_price: objectives.slice(1)
+        }, 4110);
+        expect(substantiallyDelivered.opportunity_lifecycle_state).toBe('STALE_FOR_NEW_ENTRY');
+        expect(substantiallyDelivered.delivery_fraction).toBeGreaterThan(0.5);
 
         const partialObjectives = [
             { objective_id: 'P1', timeframe: '1H', level: 4137, lifecycle_state: 'UNFULFILLED' },
@@ -4640,11 +4653,15 @@ describe('professional manual decision packet and external decision validation',
         semantic.timeframes['1H'].locations = [oldLocation, {
             id: '15M-SELL-MSNR-CURRENT', type: 'MSNR', timeframe: '15M', direction: 'SELL',
             low: 4130, high: 4132, midpoint: 4131, event_time: '2026-10-07T09:30:00Z', freshness: 'FRESH', state: 'FRESH'
+        }, {
+            id: '5M-SELL-OB-CURRENT', type: 'OB', timeframe: '5M', direction: 'SELL',
+            low: 4132, high: 4133, midpoint: 4132.5, event_time: '2026-10-07T09:45:00Z', freshness: 'FRESH', state: 'FRESH'
         }];
         semantic.target_context = objectives;
         const packet = ctx.buildProfessionalManualMarketPacket({ semantic, pair: 'XAU/USD', provider: 'TVKIT', result: { scan_id: 'SCAN-DELIVERY' }, minimumRR: 2.5 });
-        expect(packet.current_actionable_location_catalogue.map(item => item.location_id)).not.toContain(oldLocation.id);
+        expect(packet.current_actionable_location_catalogue.map(item => item.location_id)).toContain(oldLocation.id);
         expect(packet.current_actionable_location_catalogue.map(item => item.location_id)).toContain('15M-SELL-MSNR-CURRENT');
+        expect(packet.current_actionable_location_catalogue.map(item => item.location_id)).toContain('5M-SELL-OB-CURRENT');
     });
 
     it('normalizes event_id/time location records without changing identity precedence or geometry', () => {
