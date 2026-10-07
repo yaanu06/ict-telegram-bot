@@ -3308,6 +3308,11 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).not.toContain('CURRENT OPPORTUNITY MATERIAL');
         expect(packet).not.toContain('Path A');
         expect(packet).toContain("Find today's highest-quality current trading opportunity");
+        expect(packet).toContain('RR is part of the TRADE / NO_TRADE decision');
+        expect(packet).toContain('If RR < minimum_rr, discard THIS combination and continue searching');
+        expect(packet).toContain('Do not manufacture a farther target');
+        expect(packet).toContain('selected_candidate_id MUST be JSON null');
+        expect(packet).toContain('copy the numeric level from that exact serialized objective catalogue record');
         expect(packet).toContain('choose exactly ONE executable location from CURRENT ACTIONABLE LOCATION CATALOGUE');
         expect(packet).toContain('That selected record is the sole source of truth for location_id, entry_zone, and entry');
         expect(packet).toContain('Supporting records may strengthen confidence');
@@ -4282,6 +4287,91 @@ describe('professional manual decision packet and external decision validation',
         const unrelated = ctx.validateExternalAITradeDecision({ ...base, setup: 'OB+MSNR+FLIP', evidence_ids: ['LOC-OPP', 'MSNR-OPP'] }, evidence);
         expect(unrelated.valid).toBe(false);
         expect(unrelated.issues).toContain('EXTERNAL_AI_SETUP_COMPONENT_UNSUPPORTED_BY_EVIDENCE');
+    });
+
+    it('rejects the production-shaped low-RR XAU trade and exact objective rounding mismatch', () => {
+        const ctx = getContext();
+        const evidence = {
+            manual_external_ai: true,
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [{
+                location_id: '4H-SUPPLY-4133.17-4151.39-1791234000000',
+                type: 'SUPPLY', timeframe: '4H', zone_low: 4133.17, zone_high: 4151.39, midpoint_if_defined: 4142.28,
+                origin_evidence_ids: ['TBS-4H-SELL-7']
+            }],
+            structural_invalidation_catalogue: [{ invalidation_id: '4H-TBS-SELL-7', level: 4179.685, state: 'ACTIVE' }],
+            current_liquidity_objective_map: {
+                above_current_price: [],
+                below_current_price: [{ objective_id: 'TARGET:SELL:4H:SELL_SIDE_LIQUIDITY:4139.27', level: 4139.27, lifecycle_state: 'UNFULFILLED' }]
+            },
+            model_setup_evidence: { TBS: [{ event_id: 'TBS-4H-SELL-7', event_type: 'TBS', direction: 'SELL', evidence_ids: ['TBS-4H-SELL-7'] }] }
+        };
+        const productionShape = {
+            pair: 'XAU/USD', decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'TBS', market_phase: 'RETRACEMENT', confidence: 68,
+            selected_candidate_id: null,
+            location_id: '4H-SUPPLY-4133.17-4151.39-1791234000000', entry_zone: [4133.17, 4151.39], entry: 4149.31,
+            invalidation_id: '4H-TBS-SELL-7', stop_loss: 4179.685,
+            tp1_objective_id: 'TARGET:SELL:4H:SELL_SIDE_LIQUIDITY:4139.27', tp1: 4139.27, evidence_ids: ['TBS-4H-SELL-7'], risk_reward: 4.73
+        };
+        const lowRR = ctx.validateExternalAITradeDecision(productionShape, evidence);
+        expect(lowRR.valid).toBe(false);
+        expect(lowRR.calculated_risk_reward).toBeCloseTo((4149.31 - 4139.27) / (4179.685 - 4149.31), 8);
+        expect(lowRR.issues).toContain('EXTERNAL_AI_TP1_RR_BELOW_MINIMUM');
+
+        const roundedObjective = ctx.validateExternalAITradeDecision({ ...productionShape, entry: 4151.39, tp1: 4139.265 }, evidence);
+        expect(roundedObjective.valid).toBe(false);
+        expect(roundedObjective.issues).toContain('TP1_DOES_NOT_MATCH_OBJECTIVE_ID');
+        expect(roundedObjective.issues).toContain('EXTERNAL_AI_TP1_OBJECTIVE_PRICE_MISMATCH');
+        const canonicalObjective = ctx.validateExternalAITradeDecision({ ...productionShape, entry: 4151.39, tp1: 4139.27 }, evidence);
+        expect(canonicalObjective.issues).not.toContain('TP1_DOES_NOT_MATCH_OBJECTIVE_ID');
+        expect(canonicalObjective.issues).not.toContain('EXTERNAL_AI_TP1_OBJECTIVE_PRICE_MISMATCH');
+    });
+
+    it('requires selected_candidate_id to remain null for manual external-AI validation', () => {
+        const ctx = getContext();
+        const evidence = {
+            manual_external_ai: true,
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [{ location_id: 'LOC-MANUAL', zone_low: 100, zone_high: 102, midpoint_if_defined: 101, origin_evidence_ids: ['FVG-MANUAL'] }],
+            structural_invalidation_catalogue: [{ invalidation_id: 'INV-MANUAL', level: 104, state: 'ACTIVE' }],
+            current_liquidity_objective_map: { above_current_price: [], below_current_price: [{ objective_id: 'OBJ-MANUAL', level: 90, lifecycle_state: 'UNFULFILLED' }] },
+            model_setup_evidence: { ICT_STRUCTURE_AND_LIQUIDITY: [{ event_id: 'FVG-MANUAL', event_type: 'FVG', direction: 'SELL' }] }
+        };
+        const response = { decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'FVG', market_phase: 'RETRACEMENT', confidence: 80, selected_candidate_id: 'LOC-MANUAL', location_id: 'LOC-MANUAL', entry_zone: [100, 102], entry: 101, invalidation_id: 'INV-MANUAL', stop_loss: 104, tp1_objective_id: 'OBJ-MANUAL', tp1: 90, evidence_ids: ['FVG-MANUAL'] };
+        const result = ctx.validateExternalAITradeDecision(response, evidence);
+        expect(result.valid).toBe(false);
+        expect(result.issues).toContain('MANUAL_SELECTED_CANDIDATE_ID_MUST_BE_NULL');
+        const coherent = ctx.validateExternalAITradeDecision({ ...response, selected_candidate_id: null, entry: 101, entry_zone: [100, 102], stop_loss: 104, tp1: 90 }, evidence);
+        expect(coherent.valid).toBe(true);
+    });
+
+    it('ingests a manual result only against the current retained scan artifact and rejects invalid TRADE without repair', () => {
+        const ctx = getContext();
+        const semantic = makeSemantic();
+        semantic.snapshot.snapshot_id = 'INGEST-SNAPSHOT';
+        ctx.publishCurrentScanArtifact({
+            signal: {
+                pair: 'EUR/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', scan_id: 'INGEST-SCAN', snapshot_id: 'INGEST-SNAPSHOT',
+                snapshot_completeness: { complete: true }, current_price: 100
+            },
+            replay: {
+                pair: 'EUR/USD', snapshot_id: 'INGEST-SNAPSHOT', scan_id: 'INGEST-SCAN', scan_as_of: '2026-10-05T10:00:00Z',
+                quote: { price: 100 }, provider_metadata: { provider: 'TVKIT' }, market_evidence_package: semantic,
+                target_candidates: { below_current_price: [{ id: 'OBJ-INGEST', level: 90, lifecycle_state: 'UNFULFILLED' }] },
+                snapshot_completeness: { complete: true }, risk_constraints: { minimum_rr: 2.5 }
+            }
+        });
+        const result = ctx.ingestManualExternalAIResult(JSON.stringify({
+            pair: 'EUR/USD', decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'FVG', market_phase: 'RETRACEMENT', confidence: 80,
+            selected_candidate_id: 'STALE-CANDIDATE', location_id: '1H:FVG', entry_zone: [99, 100], entry: 99.5,
+            invalidation_id: '1H:INV', stop_loss: 103, tp1_objective_id: 'OBJ-INGEST', tp1: 90, evidence_ids: ['1H:MSS']
+        }));
+        expect(result.status).toBe('EXTERNAL_AI_TRADE_REJECTED');
+        expect(result.execution_allowed).toBe(false);
+        expect(result.issues).toContain('MANUAL_SELECTED_CANDIDATE_ID_MUST_BE_NULL');
+        expect(result.decision_received).toBe('TRADE');
+        expect(result.scan_id).toBe('INGEST-SCAN');
+        expect(result.snapshot_id).toBe('INGEST-SNAPSHOT');
     });
 
     it('keeps chronology causal and leaves the location catalogue as the location history', () => {

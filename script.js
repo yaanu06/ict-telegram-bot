@@ -13231,9 +13231,12 @@ function buildProfessionalManualExternalAIInstruction(minimumRR = null) {
         'OBJECTIVE LOCK: for each TP, choose one objective_id from CURRENT LIQUIDITY / OBJECTIVE MAP. That objective record is the sole source of truth for tp1_objective_id/tp2_objective_id/tp3_objective_id and the corresponding TP value. Do not pair an objective ID with another objective\'s price. TP1 is the decisive minimum-RR objective; TP2/TP3 cannot rescue invalid TP1 geometry.',
         `The canonical minimum_rr is ${minimumRR == null ? 'not available' : minimumRR}. Calculate exact final RR from serialized entry, stop_loss, and TP1; TP2/TP3 cannot rescue an invalid TP1.`,
         'For SELL, risk = stop_loss - entry and reward = entry - tp1. For BUY, risk = entry - stop_loss and reward = tp1 - entry. Calculate risk_reward as reward / risk from the exact serialized values without rounding intermediate values; the final value may be rounded reasonably after calculation. TP1 must satisfy the supplied canonical minimum_rr.',
+        'RR is part of the TRADE / NO_TRADE decision, not a post-hoc label. Use this loop: DIRECTION -> LOCATION LOCK -> ENTRY -> INVALIDATION LOCK -> TP1 OBJECTIVE LOCK -> EXACT RR. If RR >= minimum_rr, continue to TP2/TP3 and the final audit. If RR < minimum_rr, discard THIS combination and continue searching the supplied facts for another coherent opportunity. Do not manufacture a farther target or move entry, stop, or TP. If no valid combination remains, return NO_TRADE.',
+        'For each selected objective_id, copy the numeric level from that exact serialized objective catalogue record into the matching TP field. Do not derive a TP from raw liquidity, another duplicate representation, digits embedded in the ID, a nearby equivalent level, or a differently rounded source. The same-record rule applies to stop_loss from invalidation and entry/entry_zone from location.',
+        'For this MANUAL_EXTERNAL_AI packet, selected_candidate_id MUST be JSON null. It is reserved for non-manual/internal candidate flows. Never copy location_id into selected_candidate_id; location_id is the manual executable location reference.',
         'Session context may affect expected volatility, liquidity, and execution quality, but session or killzone is not an automatic trade gate. A PENDING_LIMIT is not invalid merely because current time is outside a killzone or price is away from its zone. Do not force a trade because a killzone is active. For PENDING_LIMIT, distance from current price and absent 5M/15M confirmation alone are not rejection reasons. For CONFIRMATION_ENTRY, require the supplied confirmation facts. Fresh POI does not automatically mean current opportunity.',
         `setup means the actual selected setup/model for this one opportunity. It must be one concise supported token or a same-opportunity + combination from: ${MANUAL_SETUP_TOKENS.join(', ')}. Do not use commas to return a confluence inventory. Do not put supporting evidence, timeframe narrative, prices, RR, or thesis prose in setup; place supporting records in evidence_ids. Use + only when every named component belongs to the same selected location, chronology, direction, thesis, and execution. market_phase must be exactly one of: ${MANUAL_MARKET_PHASES.join(', ')}; do not return a thesis paragraph. confidence must be a JSON integer from 0 through 100; do not return labels, a percent string, or a decimal probability. NO_TRADE confidence is null.`,
-        'Before returning TRADE, silently audit the final object: (A) does location_id exist; (B) does entry_zone exactly belong to that selected location; (C) does entry belong to that selected location; (D) does invalidation_id exist and does stop_loss exactly match it; (E) does every objective ID exist and does every TP exactly match it; (F) is geometry valid for the chosen direction; (G) does TP1 satisfy minimum_rr; (H) does setup describe this same opportunity rather than unrelated evidence; and (I) are all evidence_ids actually supplied? If any answer is NO, fix the trade selection or return NO_TRADE. Do not expose this checklist or chain-of-thought.',
+        'Before returning TRADE, silently audit the final object: (A) does location_id exist; (B) does entry_zone exactly belong to that selected location; (C) does entry belong to that selected location; (D) does invalidation_id exist and does stop_loss exactly match it; (E) does every objective ID exist and does every TP exactly match it; (F) is geometry valid for the chosen direction; (G) does TP1 satisfy minimum_rr; (H) does setup describe this same opportunity rather than unrelated evidence; (I) are all evidence_ids actually supplied; and (J) is selected_candidate_id exactly null? If any answer is NO, fix the trade selection or return NO_TRADE. Do not expose this checklist or chain-of-thought.',
         'Return ONLY one directly JSON.parse()-able JSON object. Required fields: pair, decision, direction, trade_type, setup, market_phase, selected_candidate_id, entry, entry_zone, stop_loss, tp1, tp2, tp3, risk_reward, confidence. For manual discovery selected_candidate_id remains null. Include location_id, invalidation_id, tp1_objective_id, tp2_objective_id, tp3_objective_id, evidence_ids, and conflict_ids for traceability when returning TRADE. Do not return chain-of-thought or prose.'
     ].join('\n') + '\n==================================================';
 }
@@ -18915,6 +18918,12 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
     const warnings = [];
     const normalizedDecision = decision && typeof decision === 'object' ? decision : {};
     const outcome = String(normalizedDecision.decision || '').toUpperCase();
+    const manualExternalAI = evidence.manual_external_ai === true
+        || evidence.analysis_mode === DEFAULT_ANALYSIS_MODE
+        || evidence.packet_type === 'EXTERNAL_AI_MARKET_DECISION';
+    if (manualExternalAI && normalizedDecision.selected_candidate_id !== null) {
+        issues.push('MANUAL_SELECTED_CANDIDATE_ID_MUST_BE_NULL');
+    }
     const minimumRR = externalPacketNumber(
         evidence.strategy_contract?.minimum_rr
         ?? evidence.minimum_rr
@@ -19164,6 +19173,114 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
         tp1_objective_id: normalizedDecision.tp1_objective_id || null
     };
 }
+
+function buildManualExternalAIValidationEvidence(source = {}, signal = {}) {
+    const pairValue = source.pair || signal.pair || 'UNKNOWN';
+    const providerMetadata = source.provider_metadata;
+    const targetCatalog = source.target_candidates || {};
+    const evidencePackage = buildPacketEvidencePackage(source);
+    const semanticSource = {
+        snapshot_id: source.snapshot_id || signal.snapshot_id || null,
+        pair: pairValue,
+        current_price: source.quote?.price ?? signal.current_price ?? null,
+        as_of_time_utc: source.scan_as_of || signal.time || null,
+        provider_metadata: providerMetadata,
+        asset_class: source.asset_class || source.symbol_metadata?.asset_class || source.quote?.symbol_metadata?.asset_class || null,
+        session: source.session || null,
+        volatility: source.volatility || null,
+        premium_discount: source.premium_discount || null,
+        market_evidence_package: evidencePackage,
+        structure: source.structure || {},
+        adaptive_setup_candidates: [],
+        valid_deterministic_candidates: [],
+        target_candidates: targetCatalog,
+        daily_bias: source.daily_bias,
+        market_regime: source.market_regime,
+        risk_constraints: source.risk_constraints || signal.risk_constraints || null,
+        market_context: {
+            timeframe_context: source.timeframe_context || {},
+            directional_bias: source.daily_bias?.direction || null,
+            daily_bias: source.daily_bias,
+            liquidity: source.liquidity || {},
+            market_regime: source.market_regime
+        },
+        current_opportunity_regeneration: source.candidate_pipeline_audit?.current_opportunity_regeneration || {}
+    };
+    const semantic = buildCompactAISemanticPackage(semanticSource, evidencePackage, { manualOpportunityDiscovery: true });
+    const minimumRR = externalPacketNumber(
+        semantic?.risk_constraints?.minimum_rr
+        ?? source.risk_constraints?.minimum_rr
+        ?? signal.risk_constraints?.minimum_rr
+    ) ?? externalPacketNumber(getMarketSettings(pairValue, source.symbol_metadata || {}).targetRR);
+    const provider = providerMetadata?.provider || providerMetadata?.name || getMarketDataProvider();
+    return {
+        ...buildProfessionalManualMarketPacket({ semantic, pair: pairValue, provider, result: signal, source, minimumRR }),
+        manual_external_ai: true,
+        analysis_mode: DEFAULT_ANALYSIS_MODE
+    };
+}
+
+// Explicit boundary for a future/manual external-AI JSON import. It uses only
+// the latest retained Analyze artifact and never repairs, substitutes, ranks,
+// or executes a returned trade.
+function ingestManualExternalAIResult(rawDecision = null) {
+    const artifact = currentScanArtifact;
+    if (!artifact?.signal || !artifact?.replay) {
+        return { valid: false, status: 'EXTERNAL_AI_VALIDATION_UNAVAILABLE', execution_allowed: false, issues: ['CURRENT_SCAN_ARTIFACT_UNAVAILABLE'] };
+    }
+    let decision = rawDecision;
+    if (typeof rawDecision === 'string') {
+        try { decision = JSON.parse(rawDecision); } catch {
+            return { valid: false, status: 'EXTERNAL_AI_TRADE_REJECTED', execution_allowed: false, decision_received: null, issues: ['EXTERNAL_AI_RESPONSE_JSON_INVALID'] };
+        }
+    }
+    if (!decision || typeof decision !== 'object' || Array.isArray(decision)) {
+        return { valid: false, status: 'EXTERNAL_AI_TRADE_REJECTED', execution_allowed: false, decision_received: null, issues: ['EXTERNAL_AI_RESPONSE_OBJECT_REQUIRED'] };
+    }
+    const source = artifact.replay;
+    const expectedPair = artifact.symbol || source.pair || null;
+    const expectedSnapshotId = source.snapshot_id || artifact.snapshot_id || artifact.signal.snapshot_id || null;
+    const expectedScanId = artifact.scan_id || source.scan_id || artifact.signal.scan_id || null;
+    const identityIssues = [];
+    if (decision.pair != null && expectedPair && normalizeCanonicalMarketSymbol(decision.pair) !== normalizeCanonicalMarketSymbol(expectedPair)) identityIssues.push('EXTERNAL_AI_SNAPSHOT_MISMATCH: pair');
+    if (decision.snapshot_id != null && expectedSnapshotId && decision.snapshot_id !== expectedSnapshotId) identityIssues.push('EXTERNAL_AI_SNAPSHOT_MISMATCH: snapshot_id');
+    if (decision.scan_id != null && expectedScanId && decision.scan_id !== expectedScanId) identityIssues.push('EXTERNAL_AI_SNAPSHOT_MISMATCH: scan_id');
+    if (identityIssues.length) return {
+        valid: false, status: 'EXTERNAL_AI_VALIDATION_UNAVAILABLE', execution_allowed: false,
+        decision_received: String(decision.decision || '').toUpperCase() || null,
+        issues: identityIssues, scan_id: expectedScanId, snapshot_id: expectedSnapshotId
+    };
+    const completeness = artifact.snapshot_completeness || source.snapshot_completeness || source.market_evidence_package?.snapshot_completeness || null;
+    if (completeness?.complete !== true || !expectedSnapshotId || expectedSnapshotId === 'UNAVAILABLE') return {
+        valid: false, status: 'EXTERNAL_AI_VALIDATION_UNAVAILABLE', execution_allowed: false,
+        decision_received: String(decision.decision || '').toUpperCase() || null,
+        issues: ['EXTERNAL_AI_CANONICAL_SNAPSHOT_UNAVAILABLE'], scan_id: expectedScanId, snapshot_id: expectedSnapshotId
+    };
+    let evidence;
+    try { evidence = buildManualExternalAIValidationEvidence(source, artifact.signal); } catch {
+        return {
+            valid: false, status: 'EXTERNAL_AI_VALIDATION_UNAVAILABLE', execution_allowed: false,
+            decision_received: String(decision.decision || '').toUpperCase() || null,
+            issues: ['EXTERNAL_AI_VALIDATION_CONTEXT_BUILD_FAILED'], scan_id: expectedScanId, snapshot_id: expectedSnapshotId
+        };
+    }
+    const validation = validateExternalAITradeDecision(decision, evidence);
+    const decisionReceived = String(decision.decision || '').toUpperCase() || null;
+    return {
+        ...validation,
+        status: !validation.valid && decisionReceived === 'TRADE'
+            ? 'EXTERNAL_AI_TRADE_REJECTED'
+            : validation.valid && decisionReceived === 'TRADE'
+                ? 'VALIDATED_EXTERNAL_AI_TRADE'
+                : decisionReceived === 'NO_TRADE' && validation.valid ? 'NO_TRADE' : 'EXTERNAL_AI_TRADE_REJECTED',
+        execution_allowed: validation.valid && decisionReceived === 'TRADE',
+        decision_received: decisionReceived,
+        scan_id: expectedScanId,
+        snapshot_id: expectedSnapshotId
+    };
+}
+
+if (typeof window !== 'undefined') window.ingestManualExternalAIResult = ingestManualExternalAIResult;
 
 function externalPacketTargetRecord(target = {}, fallbackDirection = null) {
     const id = target.id || target.target_id || target.uid || null;
