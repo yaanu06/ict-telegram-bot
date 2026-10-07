@@ -4391,6 +4391,133 @@ describe('professional manual decision packet and external decision validation',
         expect(clipboard).not.toContain('"buy_locations"');
         expect(clipboard).not.toContain('"sell_locations"');
     });
+
+    it('propagates the real production zones through the stored replay canonical package into Copy', () => {
+        const ctx = getContext();
+        const timeframes = ['1D', '4H', '1H', '15M', '5M'];
+        const durations = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 };
+        const historyCache = Object.fromEntries([
+            ['4H', 80, 0.5], ['1H', 80, 0.3], ['1D', 80, 0.2], ['15M', 40, 0.1], ['5M', 40, 0.05]
+        ].map(([timeframe, count, step]) => {
+            const end = Date.parse('2026-10-05T10:00:00Z') - durations[timeframe];
+            return [timeframe, candles(count, 100, step, 'up').map((bar, index) => ({
+                ...bar,
+                t: end - (count - 1 - index) * durations[timeframe],
+                is_closed: true
+            }))];
+        }));
+        const price = 103;
+        const patterns = Object.fromEntries(['4H', '1H', '15M', '5M'].map(timeframe => [timeframe, {
+            fvg: ctx.detectFVG(historyCache[timeframe]),
+            swings: ctx.findSwings(historyCache[timeframe], 3),
+            orderBlocks: ctx.detectOrderBlocks(historyCache[timeframe], 'BUY'),
+            msnr: ctx.calculateMSNR(historyCache[timeframe], price, timeframe),
+            trend: ctx.detectTrend(historyCache[timeframe]),
+            adx: ctx.calculateADX(historyCache[timeframe], 14, timeframe)
+        }]));
+        const live = ctx.buildLiveMarketContext({
+            pair: 'XAU/USD',
+            price,
+            historyCache,
+            indicators: { '4H': {}, '1H': {} },
+            patterns,
+            enhancedAnalysis: { phase: ctx.analyzeMarketPhase(historyCache['4H'], false) },
+            holistic: { suggestedDirection: 'NEUTRAL', buyScore: 0, sellScore: 0 },
+            entryContext: null,
+            as_of_ms: Date.parse('2026-10-05T10:00:00Z')
+        });
+        // Pin the completed-scan identity explicitly so this regression stays
+        // focused on location propagation rather than snapshot-ID generation.
+        live.snapshot_id = 'TVKIT:XAU/USD:PRODUCTION-SHAPED';
+        const sourceZone = live.real_ict_zones.find(zone => zone.timeframe === '1H' && zone.id && ['FVG', 'OB', 'MSNR'].includes(zone.type) && zone.freshness === 'FRESH');
+        expect(sourceZone).toEqual(expect.objectContaining({ id: expect.any(String), timeframe: '1H', low: expect.any(Number), high: expect.any(Number) }));
+
+        const sourceZoneIds = live.real_ict_zones.filter(zone => zone.timeframe === '1H').map(zone => zone.id);
+        const timeframeContextZoneIds = (live.market_context.timeframe_context['1H'].zones || []).map(zone => zone.id);
+        expect(timeframeContextZoneIds).toContain(sourceZone.id);
+
+        const analystEvidence = ctx.buildAiMarketEvidenceCatalog(live, historyCache);
+        live.market_evidence_package = analystEvidence;
+        const canonical = analystEvidence.market_evidence_package;
+        const canonicalArrays = canonical.timeframes['1H'];
+        const canonicalLocationIds = [
+            ...(canonicalArrays.fvg || []),
+            ...(canonicalArrays.order_blocks?.buy || []),
+            ...(canonicalArrays.order_blocks?.sell || []),
+            ...(canonicalArrays.msnr_levels || []),
+            ...(canonicalArrays.structural_pois || []),
+            ...(canonicalArrays.zones || [])
+        ].map(location => location.id || location.evidence_id || location.event_id).filter(Boolean);
+        expect(canonicalArrays.zones.map(zone => zone.id)).toContain(sourceZone.id);
+
+        const replay = ctx.createScanReplay(live, { pair: 'XAU/USD', status: 'NO_TRADE' });
+        expect(replay.market_evidence_package.timeframes).toBeUndefined();
+        expect(replay.market_evidence_package.market_evidence_package.timeframes['1H'].zones.map(zone => zone.id)).toContain(sourceZone.id);
+
+        // This is the exact Copy boundary: the replay stores the analyst
+        // wrapper, while the canonical location package is nested inside it.
+        const packetEvidence = ctx.buildPacketEvidencePackage(replay);
+        const packetCanonicalLocationIds = [
+            ...(packetEvidence.timeframes['1H'].fvg || []),
+            ...(packetEvidence.timeframes['1H'].order_blocks?.buy || []),
+            ...(packetEvidence.timeframes['1H'].order_blocks?.sell || []),
+            ...(packetEvidence.timeframes['1H'].msnr_levels || []),
+            ...(packetEvidence.timeframes['1H'].structural_pois || []),
+            ...(packetEvidence.timeframes['1H'].zones || [])
+        ].map(location => location.id || location.evidence_id || location.event_id).filter(Boolean);
+        expect(packetEvidence.timeframes['1H'].zones.map(zone => zone.id)).toContain(sourceZone.id);
+
+        const semantic = ctx.buildCompactAISemanticPackage({
+            pair: replay.pair,
+            current_price: replay.quote.price,
+            as_of_time_utc: replay.scan_as_of,
+            market_evidence_package: packetEvidence,
+            structure: replay.structure,
+            market_context: { timeframe_context: replay.timeframe_context }
+        }, packetEvidence, { manualOpportunityDiscovery: true });
+        const semanticLocationIds = semantic.timeframes['1H'].locations.map(location => location.id).filter(Boolean);
+        expect(semanticLocationIds).toContain(sourceZone.id);
+
+        const packet = ctx.buildExternalAIClipboardPacket({
+            signal: {
+                pair: 'XAU/USD',
+                analysis_mode: 'MANUAL_EXTERNAL_AI',
+                automatic_ai_selection: 'NOT_RUN',
+                reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' },
+                current_price: price
+            },
+            replay
+        });
+        const catalogueStart = packet.indexOf('CURRENT ACTIONABLE LOCATION CATALOGUE\n') + 'CURRENT ACTIONABLE LOCATION CATALOGUE\n'.length;
+        const catalogueEnd = packet.indexOf('\nSTRUCTURAL INVALIDATION CATALOGUE', catalogueStart);
+        const catalogue = JSON.parse(packet.slice(catalogueStart, catalogueEnd).trim());
+        expect(catalogue.map(location => location.location_id)).toContain(sourceZone.id);
+        expect(catalogue.find(location => location.location_id === sourceZone.id)).toEqual(expect.objectContaining({
+            formed_at: sourceZone.created_time,
+            zone_low: sourceZone.low,
+            zone_high: sourceZone.high
+        }));
+        expect(catalogue.every(location => !Object.prototype.hasOwnProperty.call(location, 'direction_if_factual'))).toBe(true);
+        expect(packet).not.toContain('"buy_locations"');
+        expect(packet).not.toContain('"sell_locations"');
+
+        expect({
+            timeframe: '1H',
+            source_zone_ids: sourceZoneIds,
+            timeframe_context_zone_ids: timeframeContextZoneIds,
+            canonical_location_ids: canonicalLocationIds,
+            packet_canonical_location_ids: packetCanonicalLocationIds,
+            semantic_location_ids: semanticLocationIds,
+            actionable_location_ids: catalogue.map(location => location.location_id)
+        }).toEqual(expect.objectContaining({
+            source_zone_ids: expect.arrayContaining([sourceZone.id]),
+            timeframe_context_zone_ids: expect.arrayContaining([sourceZone.id]),
+            canonical_location_ids: expect.arrayContaining([sourceZone.id]),
+            packet_canonical_location_ids: expect.arrayContaining([sourceZone.id]),
+            semantic_location_ids: expect.arrayContaining([sourceZone.id]),
+            actionable_location_ids: expect.arrayContaining([sourceZone.id])
+        }));
+    });
 });
 
 describe('multi-symbol snapshot completeness and provider boundary', () => {

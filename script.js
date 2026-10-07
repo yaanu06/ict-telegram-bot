@@ -12045,9 +12045,21 @@ function buildManualCurrentMarketContext(semantic = {}, pair = null) {
 }
 
 function buildPacketEvidencePackage(source = {}) {
-    const packageEvidence = source.market_evidence_package && typeof source.market_evidence_package === 'object'
+    const storedPackage = source.market_evidence_package && typeof source.market_evidence_package === 'object'
         ? source.market_evidence_package
         : {};
+    // Analyze stores the analyst catalog in the replay.  Its canonical
+    // evidence package is nested under market_evidence_package; Copy must
+    // unwrap that exact package instead of falling back to replay candles and
+    // silently discarding canonical zones/lifecycle/identity fields.
+    const nestedCanonicalPackage = storedPackage.market_evidence_package
+        && typeof storedPackage.market_evidence_package === 'object'
+        && storedPackage.market_evidence_package.timeframes
+        ? storedPackage.market_evidence_package
+        : null;
+    const packageEvidence = nestedCanonicalPackage
+        ? { ...storedPackage, ...nestedCanonicalPackage }
+        : storedPackage;
     const sourceHistory = source.history && typeof source.history === 'object' ? source.history : {};
     const timeframes = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(timeframe => {
         const canonical = packageEvidence.timeframes?.[timeframe] || {};
