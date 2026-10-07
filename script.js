@@ -18947,15 +18947,34 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
     if (!tradeType || !['PENDING_LIMIT', 'CONFIRMATION_ENTRY', 'BUY_LIMIT', 'SELL_LIMIT', 'BUY', 'SELL'].includes(tradeType)) issue('INVALID_TRADE_TYPE');
     if (!Number.isInteger(normalizedDecision.confidence) || normalizedDecision.confidence < 0 || normalizedDecision.confidence > 100) issue('CONFIDENCE_MUST_BE_INTEGER_PERCENTAGE');
     if (!setup) issue('SETUP_REQUIRED');
-    if (setupParts.some(part => !MANUAL_SETUP_TOKENS.includes(part)) || new Set(setupParts).size !== setupParts.length || (setupParts.length > 1 && setupParts.includes('ICT'))) issue('SETUP_NOT_CANONICAL');
+    const setupTokensValid = setupParts.length > 0
+        && setupParts.every(part => MANUAL_SETUP_TOKENS.includes(part))
+        && new Set(setupParts).size === setupParts.length
+        && !(setupParts.length > 1 && setupParts.includes('ICT'));
+    if (!setupTokensValid) {
+        issue('SETUP_NOT_CANONICAL');
+        issue('EXTERNAL_AI_SETUP_TOKEN_INVALID');
+    }
     if (![entry, stop, tp1].every(Number.isFinite)) issues.push('TRADE requires finite entry, stop_loss, and tp1');
     if (direction === 'BUY' && !(stop < entry && entry < tp1)) issues.push('BUY geometry must satisfy stop_loss < entry < tp1');
     if (direction === 'SELL' && !(stop > entry && entry > tp1)) issues.push('SELL geometry must satisfy stop_loss > entry > tp1');
     const selectedLocation = normalizedDecision.location_id == null ? null : locations.find(item => item.location_id === normalizedDecision.location_id);
-    if (normalizedDecision.location_id == null || !selectedLocation) issue(normalizedDecision.location_id == null ? 'LOCATION_ID_REQUIRED' : 'UNKNOWN_LOCATION_ID');
-    const entryZone = normalizedDecision.entry_zone;
-    if (!Array.isArray(entryZone) || entryZone.length !== 2 || !entryZone.every(value => Number.isFinite(externalPacketNumber(value)))) {
+    if (normalizedDecision.location_id == null) {
+        issue('LOCATION_ID_REQUIRED');
+        issue('EXTERNAL_AI_LOCATION_NOT_FOUND');
+    } else if (!selectedLocation) {
+        issue('UNKNOWN_LOCATION_ID');
+        issue('EXTERNAL_AI_LOCATION_NOT_FOUND');
+    }
+    const rawEntryZone = normalizedDecision.entry_zone;
+    const entryZone = Array.isArray(rawEntryZone) && rawEntryZone.length === 2
+        ? [externalPacketNumber(rawEntryZone[0]), externalPacketNumber(rawEntryZone[1])]
+        : rawEntryZone && typeof rawEntryZone === 'object'
+            ? [externalPacketNumber(rawEntryZone.low), externalPacketNumber(rawEntryZone.high)]
+            : null;
+    if (!entryZone || entryZone.some(value => !Number.isFinite(value))) {
         issue('ENTRY_ZONE_DOES_NOT_MATCH_LOCATION_ID');
+        issue('EXTERNAL_AI_LOCATION_GEOMETRY_MISMATCH');
     } else if (selectedLocation) {
         const zoneLow = externalPacketNumber(selectedLocation.zone_low);
         const zoneHigh = externalPacketNumber(selectedLocation.zone_high);
@@ -18965,26 +18984,103 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
         const locationHasZone = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh) && zoneHigh >= zoneLow;
         const exactLocationZone = locationHasZone && exactEqual(proposedLow, zoneLow) && exactEqual(proposedHigh, zoneHigh);
         const exactMidpointExecution = Number.isFinite(midpoint) && exactEqual(proposedLow, midpoint) && exactEqual(proposedHigh, midpoint);
-        const canonicalEntry = Number.isFinite(entry) && (exactEqual(entry, zoneLow) || exactEqual(entry, zoneHigh) || (Number.isFinite(midpoint) && exactEqual(entry, midpoint)));
-        if (!locationHasZone || (!exactLocationZone && !exactMidpointExecution) || !canonicalEntry || proposedHigh < proposedLow || !Number.isFinite(entry) || entry < proposedLow || entry > proposedHigh) {
+        const singleLevelLocation = !locationHasZone && Number.isFinite(midpoint);
+        const exactSingleLevel = singleLevelLocation && exactEqual(proposedLow, midpoint) && exactEqual(proposedHigh, midpoint);
+        const canonicalEntry = Number.isFinite(entry) && (
+            exactEqual(entry, zoneLow)
+            || exactEqual(entry, zoneHigh)
+            || (Number.isFinite(midpoint) && exactEqual(entry, midpoint))
+        );
+        const entryOutsideSelectedLocation = !Number.isFinite(entry)
+            || (locationHasZone && (entry < zoneLow && !exactEqual(entry, zoneLow) || entry > zoneHigh && !exactEqual(entry, zoneHigh)))
+            || (singleLevelLocation && !exactEqual(entry, midpoint));
+        if (!locationHasZone && !singleLevelLocation) {
+            issue('EXTERNAL_AI_LOCATION_GEOMETRY_MISMATCH');
+            issue('ENTRY_DOES_NOT_MATCH_LOCATION_ID');
+        } else if ((!exactLocationZone && !exactMidpointExecution && !exactSingleLevel) || proposedHigh < proposedLow) {
+            issue('EXTERNAL_AI_LOCATION_GEOMETRY_MISMATCH');
+            issue('ENTRY_DOES_NOT_MATCH_LOCATION_ID');
+        }
+        if (entryOutsideSelectedLocation) {
+            issue('EXTERNAL_AI_ENTRY_OUTSIDE_SELECTED_LOCATION');
+            issue('ENTRY_DOES_NOT_MATCH_LOCATION_ID');
+        } else if (!canonicalEntry) {
+            issue('EXTERNAL_AI_ENTRY_NOT_CANONICAL_FOR_SELECTED_LOCATION');
             issue('ENTRY_DOES_NOT_MATCH_LOCATION_ID');
         }
     }
-    const risk = Number.isFinite(entry) && Number.isFinite(stop) ? Math.abs(entry - stop) : null;
-    const reward = Number.isFinite(entry) && Number.isFinite(tp1) ? Math.abs(tp1 - entry) : null;
-    const calculatedRR = risk > 0 && reward != null ? reward / risk : null;
-    if (minimumRR != null && (!Number.isFinite(calculatedRR) || calculatedRR < minimumRR)) issues.push('exact TP1 risk_reward is below canonical minimum_rr');
+    const risk = direction === 'SELL'
+        ? (Number.isFinite(stop) && Number.isFinite(entry) ? stop - entry : null)
+        : (Number.isFinite(stop) && Number.isFinite(entry) ? entry - stop : null);
+    const reward = direction === 'SELL'
+        ? (Number.isFinite(entry) && Number.isFinite(tp1) ? entry - tp1 : null)
+        : (Number.isFinite(entry) && Number.isFinite(tp1) ? tp1 - entry : null);
+    const calculatedRR = risk > 0 && reward > 0 ? reward / risk : null;
+    if (minimumRR != null && (!Number.isFinite(calculatedRR) || calculatedRR < minimumRR)) {
+        issues.push('exact TP1 risk_reward is below canonical minimum_rr');
+        issues.push('EXTERNAL_AI_TP1_RR_BELOW_MINIMUM');
+    }
     const reportedRR = number('risk_reward');
     if (normalizedDecision.risk_reward != null && reportedRR == null) issue('RISK_REWARD_MUST_BE_NUMBER');
     if (reportedRR != null && calculatedRR != null && !exactEqual(reportedRR, calculatedRR)) warnings.push('REPORTED_RR_IGNORED_CODE_CALCULATED_RR_WINS');
     const selectedInvalidation = normalizedDecision.invalidation_id == null ? null : invalidations.find(item => item.invalidation_id === normalizedDecision.invalidation_id);
-    const selectedObjective = normalizedDecision.tp1_objective_id == null ? null : objectives.find(item => item.objective_id === normalizedDecision.tp1_objective_id);
-    if (normalizedDecision.invalidation_id == null) issue('UNKNOWN_INVALIDATION_ID');
-    else if (!selectedInvalidation) issue('UNKNOWN_INVALIDATION_ID');
-    else if (!exactEqual(stop, externalPacketNumber(selectedInvalidation.level))) issue('STOP_LOSS_DOES_NOT_MATCH_INVALIDATION_ID');
-    if (normalizedDecision.tp1_objective_id == null) issue('UNKNOWN_OBJECTIVE_ID');
-    else if (!selectedObjective) issue('UNKNOWN_OBJECTIVE_ID');
-    else if (!exactEqual(tp1, externalPacketNumber(selectedObjective.level))) issue('TP1_DOES_NOT_MATCH_OBJECTIVE_ID');
+    const invalidationLifecycle = String(selectedInvalidation?.lifecycle_state || selectedInvalidation?.state || '').toUpperCase();
+    if (normalizedDecision.invalidation_id == null) {
+        issue('UNKNOWN_INVALIDATION_ID');
+        issue('EXTERNAL_AI_INVALIDATION_NOT_FOUND');
+    } else if (!selectedInvalidation) {
+        issue('UNKNOWN_INVALIDATION_ID');
+        issue('EXTERNAL_AI_INVALIDATION_NOT_FOUND');
+    } else {
+        const invalidationLevel = externalPacketNumber(selectedInvalidation.level);
+        if (!exactEqual(stop, invalidationLevel)) {
+            issue('STOP_LOSS_DOES_NOT_MATCH_INVALIDATION_ID');
+            issue('EXTERNAL_AI_INVALIDATION_PRICE_MISMATCH');
+        }
+        if (selectedInvalidation.invalidated === true || selectedInvalidation.consumed === true
+            || ['INVALIDATED', 'CONSUMED', 'EXPIRED'].includes(invalidationLifecycle)) {
+            issue('EXTERNAL_AI_INVALIDATION_NOT_EXECUTABLE');
+        }
+        if ((direction === 'BUY' && !(invalidationLevel < entry)) || (direction === 'SELL' && !(invalidationLevel > entry))) {
+            issue('EXTERNAL_AI_INVALIDATION_WRONG_SIDE');
+        }
+        const compatibleInvalidationIds = Array.isArray(selectedLocation?.compatible_invalidation_ids)
+            ? selectedLocation.compatible_invalidation_ids : [];
+        if (compatibleInvalidationIds.length && !compatibleInvalidationIds.includes(selectedInvalidation.invalidation_id)) {
+            issue('EXTERNAL_AI_INVALIDATION_NOT_COMPATIBLE_WITH_LOCATION');
+        }
+    }
+    const objectiveIsUsable = objective => objective && objective.reached !== true && objective.consumed !== true
+        && objective.invalidated !== true
+        && !['CONSUMED', 'INVALIDATED', 'TARGET_DELIVERED', 'REACHED'].includes(String(objective.lifecycle_state || objective.state || '').toUpperCase());
+    const checkObjective = (objectiveId, price, mismatchCode, priceKey) => {
+        if (objectiveId == null) {
+            issue('UNKNOWN_OBJECTIVE_ID');
+            issue('EXTERNAL_AI_OBJECTIVE_NOT_FOUND', priceKey);
+            return null;
+        }
+        const objective = objectives.find(item => item.objective_id === objectiveId);
+        if (!objective) {
+            issue('UNKNOWN_OBJECTIVE_ID');
+            issue('EXTERNAL_AI_OBJECTIVE_NOT_FOUND', priceKey);
+            return null;
+        }
+        if (!exactEqual(price, externalPacketNumber(objective.level))) {
+            issue(mismatchCode);
+            issue(`EXTERNAL_AI_${priceKey.toUpperCase()}_OBJECTIVE_PRICE_MISMATCH`);
+        }
+        if (!objectiveIsUsable(objective)) issue('OBJECTIVE_NOT_EXECUTABLE', priceKey);
+        if ((direction === 'BUY' && !(externalPacketNumber(objective.level) > entry))
+            || (direction === 'SELL' && !(externalPacketNumber(objective.level) < entry))) {
+            issue('EXTERNAL_AI_OBJECTIVE_WRONG_SIDE', priceKey);
+        }
+        return objective;
+    };
+    if (normalizedDecision.tp1_objective_id == null) {
+        issue('UNKNOWN_OBJECTIVE_ID');
+        issue('EXTERNAL_AI_OBJECTIVE_NOT_FOUND', 'tp1');
+    }
+    if (normalizedDecision.tp1_objective_id != null) checkObjective(normalizedDecision.tp1_objective_id, tp1, 'TP1_DOES_NOT_MATCH_OBJECTIVE_ID', 'tp1');
     const selectedObjectiveFor = key => normalizedDecision[key] == null ? null : objectives.find(item => item.objective_id === normalizedDecision[key]);
     for (const [priceKey, idKey, mismatchCode] of [['tp2', 'tp2_objective_id', 'TP2_DOES_NOT_MATCH_OBJECTIVE_ID'], ['tp3', 'tp3_objective_id', 'TP3_DOES_NOT_MATCH_OBJECTIVE_ID']]) {
         const price = number(priceKey);
@@ -18995,11 +19091,13 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
             continue;
         }
         const objective = selectedObjectiveFor(idKey);
-        if (!objective) issue('UNKNOWN_OBJECTIVE_ID', idKey);
-        else if (!exactEqual(price, externalPacketNumber(objective.level))) issue(mismatchCode);
-        if (objective && (objective.reached === true || objective.consumed === true || objective.invalidated === true || ['CONSUMED', 'INVALIDATED', 'TARGET_DELIVERED', 'REACHED'].includes(String(objective.lifecycle_state || '').toUpperCase()))) issue('OBJECTIVE_NOT_EXECUTABLE', idKey);
+        if (!objective) {
+            issue('UNKNOWN_OBJECTIVE_ID', idKey);
+            issue('EXTERNAL_AI_OBJECTIVE_NOT_FOUND', idKey);
+        } else {
+            checkObjective(id, price, mismatchCode, idKey.replace('_objective_id', ''));
+        }
     }
-    if (selectedObjective && (selectedObjective.reached === true || selectedObjective.consumed === true || selectedObjective.invalidated === true || ['CONSUMED', 'INVALIDATED', 'TARGET_DELIVERED', 'REACHED'].includes(String(selectedObjective.lifecycle_state || '').toUpperCase()))) issue('OBJECTIVE_NOT_EXECUTABLE', 'tp1_objective_id');
     if (direction === 'BUY' && [tp1, number('tp2'), number('tp3')].filter(Number.isFinite).some(value => value <= entry)) issue('TARGET_ORDER_INVALID');
     if (direction === 'SELL' && [tp1, number('tp2'), number('tp3')].filter(Number.isFinite).some(value => value >= entry)) issue('TARGET_ORDER_INVALID');
     if (direction === 'BUY' && Number.isFinite(number('tp2')) && number('tp2') <= tp1) issue('TARGET_ORDER_INVALID');
@@ -19009,17 +19107,21 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
     const modelEvidence = evidence.model_setup_evidence || {};
     const returnedEvidenceIds = new Set((normalizedDecision.evidence_ids || []).filter(value => typeof value === 'string'));
     const locationEvidence = new Set(selectedLocation ? [selectedLocation.location_id, ...(selectedLocation.origin_evidence_ids || [])] : []);
+    const setupEvidenceTypeMatches = (component, type) => {
+        const normalizedType = String(type || '').toUpperCase();
+        if (component === 'ICT' || component === 'CURRENT_STRUCTURE') return true;
+        if (component === 'FVG' || component === 'FAIR_VALUE_GAP') return normalizedType.includes('FVG') || normalizedType.includes('FAIR_VALUE_GAP');
+        if (component === 'OB' || component === 'ORDER_BLOCK') return normalizedType.includes('OB') || normalizedType.includes('ORDER_BLOCK');
+        if (component === 'FLIP') return normalizedType.includes('FLIP');
+        if (component === 'SUPPLY') return normalizedType.includes('SUPPLY');
+        if (component === 'DEMAND') return normalizedType.includes('DEMAND');
+        return normalizedType.includes(component);
+    };
     const componentRecords = component => {
         const records = component === 'CRT' || component === 'TBS' || component === 'MSNR'
             ? (modelEvidence[component] || [])
             : (modelEvidence.ICT_STRUCTURE_AND_LIQUIDITY || []);
-        return records.filter(record => {
-            const type = String(record.event_type || record.type || '').toUpperCase();
-            if (component === 'FVG' && !type.includes('FVG')) return false;
-            if (component === 'OB' && !(type.includes('OB') || type.includes('ORDER_BLOCK'))) return false;
-            if (component === 'ICT' || component === 'CURRENT_STRUCTURE') return true;
-            return true;
-        });
+        return records.filter(record => setupEvidenceTypeMatches(component, record.event_type || record.type || record.strategy));
     };
     for (const component of setupParts) {
         if (!['CRT', 'TBS', 'MSNR', 'FVG', 'OB', 'ICT', 'CURRENT_STRUCTURE', 'FLIP', 'SUPPLY', 'DEMAND', 'ORDER_BLOCK', 'FAIR_VALUE_GAP'].includes(component)) continue;
@@ -19029,10 +19131,13 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
             const recordIds = new Set([record.event_id, record.location_id, record.opportunity_id, ...(record.evidence_ids || [])].filter(Boolean));
             const returnedOverlap = [...recordIds].some(id => returnedEvidenceIds.has(id));
             const locationOverlap = [...recordIds].some(id => locationEvidence.has(id));
-            return returnedOverlap && (locationOverlap || !selectedLocation);
+            const recordDirection = record.direction == null ? null : String(record.direction).toUpperCase();
+            const directionCompatible = !recordDirection || recordDirection === direction;
+            return returnedOverlap && directionCompatible && (locationOverlap || !selectedLocation);
         });
         if (!sameOpportunity) {
             issues.push(`setup component ${component} is not traceable to the same opportunity`);
+            issues.push('EXTERNAL_AI_SETUP_COMPONENT_UNSUPPORTED_BY_EVIDENCE');
         }
     }
     if (selectedLocation && normalizedDecision.evidence_ids?.length) {

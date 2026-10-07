@@ -4168,6 +4168,109 @@ describe('professional manual decision packet and external decision validation',
         expect(ctx.validateExternalAITradeDecision({ ...response, invalidation_id: 'CURRENT:15M:BUY:STRUCTURE:1.12343', tp2: 1.129, tp2_objective_id: 'OBJ-TP2', risk_reward: 3.1 }, evidence).issues).toContain('TP2_DOES_NOT_MATCH_OBJECTIVE_ID');
     });
 
+    it('rejects the production-shaped cross-location XAU trade and accepts coherent geometry', () => {
+        const ctx = getContext();
+        const evidence = {
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [
+                {
+                    location_id: '1H-SELL-FVG-4149.31-4155.55',
+                    type: 'FVG',
+                    timeframe: '1H',
+                    zone_low: 4149.31,
+                    zone_high: 4155.55,
+                    midpoint_if_defined: 4152.43,
+                    origin_evidence_ids: ['FVG-1H-SELL']
+                },
+                {
+                    location_id: '15M-MSNR-4147.12-4148.05',
+                    type: 'MSNR',
+                    timeframe: '15M',
+                    zone_low: 4147.12,
+                    zone_high: 4148.05,
+                    midpoint_if_defined: 4147.585,
+                    origin_evidence_ids: ['MSNR-15M-SELL']
+                }
+            ],
+            structural_invalidation_catalogue: [
+                { invalidation_id: '15M-CRT-SELL-37', timeframe: '15M', level: 4149.31, state: 'ACTIVE' },
+                { invalidation_id: '1H-FVG-SELL-INVALIDATION', timeframe: '1H', level: 4157.5, state: 'ACTIVE' }
+            ],
+            current_liquidity_objective_map: {
+                above_current_price: [],
+                below_current_price: [
+                    { objective_id: 'TARGET:SELL:1H:SELL_SIDE_LIQUIDITY:4139.27', level: 4139.27, lifecycle_state: 'UNFULFILLED' },
+                    { objective_id: 'TARGET:SELL:1H:SELL_SIDE_LIQUIDITY:4133.72', level: 4133.72, lifecycle_state: 'UNFULFILLED' },
+                    { objective_id: 'TARGET:SELL:1H:SWING_LOW:4123.35', level: 4123.35, lifecycle_state: 'UNFULFILLED' }
+                ]
+            },
+            model_setup_evidence: {
+                ICT_STRUCTURE_AND_LIQUIDITY: [{ event_id: 'FVG-1H-SELL', event_type: 'FVG', direction: 'SELL' }]
+            }
+        };
+        const bad = {
+            pair: 'XAU/USD', decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'FVG', market_phase: 'RETRACEMENT', confidence: 68,
+            location_id: '1H-SELL-FVG-4149.31-4155.55',
+            entry_zone: { low: 4147.12, high: 4148.05 },
+            entry: 4147.58,
+            stop_loss: 4149.31,
+            tp1: 4139.27,
+            tp2: 4133.72,
+            tp3: 4123.35,
+            invalidation_id: '15M-CRT-SELL-37',
+            tp1_objective_id: 'TARGET:SELL:1H:SELL_SIDE_LIQUIDITY:4139.27',
+            tp2_objective_id: 'TARGET:SELL:1H:SELL_SIDE_LIQUIDITY:4133.72',
+            tp3_objective_id: 'TARGET:SELL:1H:SWING_LOW:4123.35',
+            evidence_ids: ['FVG-1H-SELL'],
+            risk_reward: 4.73
+        };
+        const rejected = ctx.validateExternalAITradeDecision(bad, evidence);
+        expect(rejected.valid).toBe(false);
+        expect(rejected.issues).toContain('EXTERNAL_AI_LOCATION_GEOMETRY_MISMATCH');
+        expect(rejected.issues).toContain('EXTERNAL_AI_ENTRY_OUTSIDE_SELECTED_LOCATION');
+        expect(rejected.issues).toContain('ENTRY_DOES_NOT_MATCH_LOCATION_ID');
+
+        const valid = ctx.validateExternalAITradeDecision({
+            ...bad,
+            entry_zone: [4149.31, 4155.55],
+            entry: 4152.43,
+            stop_loss: 4157.5,
+            invalidation_id: '1H-FVG-SELL-INVALIDATION',
+            risk_reward: 99
+        }, evidence);
+        expect(valid.valid).toBe(true);
+        expect(valid.calculated_risk_reward).toBeCloseTo((4152.43 - 4139.27) / (4157.5 - 4152.43), 8);
+        expect(valid.warnings).toContain('REPORTED_RR_IGNORED_CODE_CALCULATED_RR_WINS');
+    });
+
+    it('requires setup tokens and components to be supported by the same opportunity', () => {
+        const ctx = getContext();
+        const evidence = {
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [{ location_id: 'LOC-OPP', zone_low: 100, zone_high: 102, midpoint_if_defined: 101, origin_evidence_ids: ['LOC-OPP'] }],
+            structural_invalidation_catalogue: [{ invalidation_id: 'INV-OPP', level: 104, state: 'ACTIVE' }],
+            current_liquidity_objective_map: { above_current_price: [], below_current_price: [{ objective_id: 'OBJ-OPP', level: 90, lifecycle_state: 'UNFULFILLED' }] },
+            model_setup_evidence: {
+                MSNR: [{ event_id: 'MSNR-OPP', event_type: 'MSNR', direction: 'SELL', evidence_ids: ['LOC-OPP'] }],
+                CRT: [{ event_id: 'CRT-OPP', event_type: 'CRT', direction: 'SELL', evidence_ids: ['LOC-OPP'] }],
+                ICT_STRUCTURE_AND_LIQUIDITY: [{ event_id: 'OB-OTHER', event_type: 'OB', direction: 'SELL', evidence_ids: ['OTHER-LOCATION'] }]
+            }
+        };
+        const base = {
+            decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', market_phase: 'RETRACEMENT', confidence: 70,
+            location_id: 'LOC-OPP', entry_zone: [100, 102], entry: 101, stop_loss: 104, tp1: 90,
+            invalidation_id: 'INV-OPP', tp1_objective_id: 'OBJ-OPP', evidence_ids: ['LOC-OPP', 'MSNR-OPP', 'CRT-OPP'], risk_reward: 3
+        };
+        expect(ctx.validateExternalAITradeDecision({ ...base, setup: 'MSNR' }, evidence).valid).toBe(true);
+        expect(ctx.validateExternalAITradeDecision({ ...base, setup: 'MSNR+CRT' }, evidence).valid).toBe(true);
+        const commaSeparated = ctx.validateExternalAITradeDecision({ ...base, setup: 'ICT,OB,MSNR,FLIP' }, evidence);
+        expect(commaSeparated.valid).toBe(false);
+        expect(commaSeparated.issues).toContain('EXTERNAL_AI_SETUP_TOKEN_INVALID');
+        const unrelated = ctx.validateExternalAITradeDecision({ ...base, setup: 'OB+MSNR+FLIP', evidence_ids: ['LOC-OPP', 'MSNR-OPP'] }, evidence);
+        expect(unrelated.valid).toBe(false);
+        expect(unrelated.issues).toContain('EXTERNAL_AI_SETUP_COMPONENT_UNSUPPORTED_BY_EVIDENCE');
+    });
+
     it('keeps chronology causal and leaves the location catalogue as the location history', () => {
         const ctx = getContext();
         const semantic = makeSemantic();
