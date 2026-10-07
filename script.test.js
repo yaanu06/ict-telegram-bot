@@ -3309,10 +3309,11 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).not.toContain('Path A');
         expect(packet).toContain("Find today's highest-quality current trading opportunity");
         expect(packet).toContain('RR is part of the TRADE / NO_TRADE decision');
-        expect(packet).toContain('If RR < minimum_rr, discard THIS combination and continue searching');
+        expect(packet).toContain('If RR < minimum_rr, the final object MUST NOT have decision=TRADE');
         expect(packet).toContain('Do not manufacture a farther target');
         expect(packet).toContain('selected_candidate_id MUST be JSON null');
         expect(packet).toContain('copy the numeric level from that exact serialized objective catalogue record');
+        expect(packet).toContain('prefer that specific setup token; use ICT only when no more specific supported model describes it');
         expect(packet).toContain('choose exactly ONE executable location from CURRENT ACTIONABLE LOCATION CATALOGUE');
         expect(packet).toContain('That selected record is the sole source of truth for location_id, entry_zone, and entry');
         expect(packet).toContain('Supporting records may strengthen confidence');
@@ -4325,6 +4326,102 @@ describe('professional manual decision packet and external decision validation',
         const canonicalObjective = ctx.validateExternalAITradeDecision({ ...productionShape, entry: 4151.39, tp1: 4139.27 }, evidence);
         expect(canonicalObjective.issues).not.toContain('TP1_DOES_NOT_MATCH_OBJECTIVE_ID');
         expect(canonicalObjective.issues).not.toContain('EXTERNAL_AI_TP1_OBJECTIVE_PRICE_MISMATCH');
+    });
+
+    it('rejects the latest production-shaped XAU contradiction across orientation, RR, and objective provenance', () => {
+        const ctx = getContext();
+        const evidence = {
+            manual_external_ai: true,
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [{
+                location_id: '1H-SELL-FVG-4149.31-4155.55', type: 'FVG', timeframe: '1H', source_orientation: 'SELL',
+                zone_low: 4149.31, zone_high: 4155.55, midpoint_if_defined: 4152.43, origin_evidence_ids: ['1H-SELL-FVG-4149.31-4155.55']
+            }],
+            structural_invalidation_catalogue: [{ invalidation_id: '15M-CRT-BUY-41', level: 4141.41, state: 'ACTIVE' }],
+            current_liquidity_objective_map: {
+                above_current_price: [
+                    { objective_id: 'LIQUIDITY:1D:above:4166.13', level: 4166.13, direction: 'BUY', lifecycle_state: 'UNFULFILLED' },
+                    { objective_id: 'LIQUIDITY:5M:above:4164.745', level: 4164.745, direction: 'BUY', lifecycle_state: 'UNFULFILLED' }
+                ],
+                below_current_price: []
+            },
+            model_setup_evidence: { ICT_STRUCTURE_AND_LIQUIDITY: [
+                { event_id: '1H-SELL-FVG-4149.31-4155.55', event_type: 'FVG', direction: 'SELL' },
+                { event_id: 'MSNR-15M-1791315000000', event_type: 'MSNR', direction: 'BUY' }
+            ] }
+        };
+        const result = ctx.validateExternalAITradeDecision({
+            pair: 'XAU/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'ICT', market_phase: 'RETRACEMENT', confidence: 68,
+            selected_candidate_id: null, entry: 4149.31, entry_zone: { low: 4149.31, high: 4155.55 }, stop_loss: 4141.41,
+            tp1: 4166.13, tp2: 4176.31, tp3: 4184.385, risk_reward: 2.515,
+            location_id: '1H-SELL-FVG-4149.31-4155.55', invalidation_id: '15M-CRT-BUY-41',
+            tp1_objective_id: 'LIQUIDITY:1D:above:4166.13', tp2_objective_id: 'MSNR-15M-1791315000000', tp3_objective_id: 'LIQUIDITY:5M:above:4164.745',
+            evidence_ids: ['1H-SELL-FVG-4149.31-4155.55', 'MSNR-15M-1791315000000']
+        }, evidence);
+        expect(result.valid).toBe(false);
+        expect(result.calculated_risk_reward).toBeCloseTo((4166.13 - 4149.31) / (4149.31 - 4141.41), 8);
+        expect(result.issues).toContain('EXTERNAL_AI_LOCATION_DIRECTION_MISMATCH');
+        expect(result.issues).toContain('EXTERNAL_AI_TP1_RR_BELOW_MINIMUM');
+        expect(result.issues).toContain('EXTERNAL_AI_OBJECTIVE_ID_NOT_FROM_OBJECTIVE_MAP');
+        expect(result.issues).toContain('EXTERNAL_AI_TP3_OBJECTIVE_PRICE_MISMATCH');
+    });
+
+    it('allows a canonical BUY location and transformed FLIP while rejecting the original SELL location', () => {
+        const ctx = getContext();
+        const evidence = {
+            manual_external_ai: true,
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [
+                { location_id: 'ORIGINAL-SELL-FVG', type: 'FVG', source_orientation: 'SELL', zone_low: 100, zone_high: 102, midpoint_if_defined: 101, origin_evidence_ids: ['ORIGINAL-SELL-FVG'] },
+                { location_id: 'BUY-FLIP-RECLAIM', type: 'FLIP', source_orientation: 'BUY', role_reversal: true, zone_low: 100, zone_high: 102, midpoint_if_defined: 101, origin_evidence_ids: ['BUY-FLIP-RECLAIM'] }
+            ],
+            structural_invalidation_catalogue: [{ invalidation_id: 'BUY-INV', level: 98, state: 'ACTIVE' }],
+            current_liquidity_objective_map: { above_current_price: [
+                { objective_id: 'BUY-TP1', level: 110, direction: 'BUY', lifecycle_state: 'UNFULFILLED' },
+                { objective_id: 'BUY-TP2', level: 120, direction: 'BUY', lifecycle_state: 'UNFULFILLED' },
+                { objective_id: 'BUY-TP3', level: 130, direction: 'BUY', lifecycle_state: 'UNFULFILLED' }
+            ], below_current_price: [] },
+            model_setup_evidence: { ICT_STRUCTURE_AND_LIQUIDITY: [
+                { event_id: 'ORIGINAL-SELL-FVG', event_type: 'FVG', direction: 'SELL' },
+                { event_id: 'BUY-FLIP-RECLAIM', event_type: 'FLIP', direction: 'BUY' }
+            ] }
+        };
+        const base = {
+            pair: 'XAU/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', market_phase: 'RETRACEMENT', confidence: 80,
+            selected_candidate_id: null, entry: 101, entry_zone: [100, 102], invalidation_id: 'BUY-INV', stop_loss: 98,
+            tp1: 110, tp2: 120, tp3: 130, tp1_objective_id: 'BUY-TP1', tp2_objective_id: 'BUY-TP2', tp3_objective_id: 'BUY-TP3', risk_reward: 4.5
+        };
+        const validFlip = ctx.validateExternalAITradeDecision({ ...base, setup: 'FLIP', location_id: 'BUY-FLIP-RECLAIM', evidence_ids: ['BUY-FLIP-RECLAIM'] }, evidence);
+        expect(validFlip.valid).toBe(true);
+        const originalSell = ctx.validateExternalAITradeDecision({ ...base, setup: 'FVG', location_id: 'ORIGINAL-SELL-FVG', evidence_ids: ['ORIGINAL-SELL-FVG'] }, evidence);
+        expect(originalSell.valid).toBe(false);
+        expect(originalSell.issues).toContain('EXTERNAL_AI_LOCATION_DIRECTION_MISMATCH');
+    });
+
+    it('accepts only objective-map IDs and rejects evidence-only IDs and invalid target ordering', () => {
+        const ctx = getContext();
+        const evidence = {
+            manual_external_ai: true,
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [{ location_id: 'BUY-LOC', type: 'DEMAND', source_orientation: 'BUY', zone_low: 100, zone_high: 102, midpoint_if_defined: 101, origin_evidence_ids: ['MSNR-EVENT'] }],
+            structural_invalidation_catalogue: [{ invalidation_id: 'BUY-INV', level: 98, state: 'ACTIVE' }],
+            current_liquidity_objective_map: { above_current_price: [{ objective_id: 'MAP-TP1', level: 110, direction: 'BUY', lifecycle_state: 'UNFULFILLED' }], below_current_price: [] },
+            model_setup_evidence: { MSNR: [{ event_id: 'MSNR-EVENT', event_type: 'MSNR', direction: 'BUY', evidence_ids: ['MSNR-EVENT'] }] }
+        };
+        const evidenceOnly = ctx.validateExternalAITradeDecision({
+            decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'MSNR', market_phase: 'RETRACEMENT', confidence: 80,
+            selected_candidate_id: null, location_id: 'BUY-LOC', entry_zone: [100, 102], entry: 101, invalidation_id: 'BUY-INV', stop_loss: 98,
+            tp1: 110, tp2: 120, tp1_objective_id: 'MAP-TP1', tp2_objective_id: 'MSNR-EVENT', evidence_ids: ['MSNR-EVENT']
+        }, evidence);
+        expect(evidenceOnly.valid).toBe(false);
+        expect(evidenceOnly.issues).toContain('EXTERNAL_AI_OBJECTIVE_ID_NOT_FROM_OBJECTIVE_MAP');
+        const reversed = ctx.validateExternalAITradeDecision({
+            decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'MSNR', market_phase: 'RETRACEMENT', confidence: 80,
+            selected_candidate_id: null, location_id: 'BUY-LOC', entry_zone: [100, 102], entry: 101, invalidation_id: 'BUY-INV', stop_loss: 98,
+            tp1: 110, tp2: 100, tp1_objective_id: 'MAP-TP1', tp2_objective_id: 'MAP-TP1', evidence_ids: ['MSNR-EVENT']
+        }, evidence);
+        expect(reversed.valid).toBe(false);
+        expect(reversed.issues).toContain('EXTERNAL_AI_TARGET_ORDER_INVALID');
     });
 
     it('requires selected_candidate_id to remain null for manual external-AI validation', () => {

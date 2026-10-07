@@ -13002,6 +13002,10 @@ function buildManualLocationCatalogue(semantic = {}, invalidations = [], objecti
                 location_id: String(id),
                 type: item.type || item.event_type || null,
                 model_family: manualLocationModelFamily(item.type || item.event_type),
+                source_orientation: item.source_orientation || item.orientation || item.direction || item.source_direction
+                    || (String(item.type || item.event_type || '').toUpperCase() === 'DEMAND' ? 'BUY' : String(item.type || item.event_type || '').toUpperCase() === 'SUPPLY' ? 'SELL' : null),
+                role_reversal: item.role_reversal === true || item.reclaim_confirmed === true
+                    || ['FLIP', 'RECLAIM', 'RECLAIM_RETEST'].includes(String(item.type || item.event_type || '').toUpperCase()),
                 timeframe: item.timeframe || timeframe,
                 zone_low: low,
                 zone_high: high,
@@ -13226,17 +13230,18 @@ function buildProfessionalManualExternalAIInstruction(minimumRR = null) {
         'ICT structure/liquidity evidence and the separately supported CRT, TBS, and MSNR frameworks may align, but CRT, TBS, and MSNR are not being labeled as ICT concepts. A combined model is valid only when its components belong to the same opportunity.',
         'CURRENT ACTIONABLE LOCATION CATALOGUE contains possible executable market locations, not preselected trades. Choose exactly ONE executable location record if returning TRADE. That selected record is the sole source of truth for location_id, entry_zone, and entry. Copy its exact zone_low and zone_high into entry_zone and derive entry only from its permitted deterministic executable geometry. Do not blend two locations, use one location ID with another location\'s zone, or switch zones after locking. If another location is preferred, change location_id first and rebuild the trade around that record.',
         'Other FVG, OB, MSNR, FLIP, SUPPLY, DEMAND, CRT, TBS, liquidity, BOS, MSS, CHoCH, displacement, or institutional-activity records may support the thesis, but they remain SUPPORTING EVIDENCE unless they are the selected executable location. Supporting records may strengthen confidence and belong in evidence_ids; they never modify the selected location\'s executable geometry.',
+        'A selected location with factual source_orientation BUY or SELL must be compatible with your chosen direction. Do not use BUY with an original SELL FVG/OB/MSNR or SUPPLY merely because other BUY evidence exists. A historical opposite-direction location is usable only when the catalogue itself contains the canonical transformed FLIP/reclaim/role-reversal location; select that transformed record ID, not the original location ID.',
         'Use only supplied facts and prices. Never invent or alter an entry, entry_zone, stop_loss, target, location, invalidation, objective, or evidence ID. When selecting an ID, its returned numeric value must correspond to that exact ID; do not combine an ID from one fact with a price from another. Do not use timeframe majority voting, an HTF hard gate, a single event as automatic direction, or a confidence score as validity.',
         'INVALIDATION LOCK: choose one invalidation_id from STRUCTURAL INVALIDATION CATALOGUE. That record is the sole source of truth for invalidation_id and stop_loss. The returned stop_loss must equal that exact supplied invalidation level. Do not use an invalidation ID from one record with a stop price from another; choose the structurally correct invalidation for the selected opportunity.',
         'OBJECTIVE LOCK: for each TP, choose one objective_id from CURRENT LIQUIDITY / OBJECTIVE MAP. That objective record is the sole source of truth for tp1_objective_id/tp2_objective_id/tp3_objective_id and the corresponding TP value. Do not pair an objective ID with another objective\'s price. TP1 is the decisive minimum-RR objective; TP2/TP3 cannot rescue invalid TP1 geometry.',
         `The canonical minimum_rr is ${minimumRR == null ? 'not available' : minimumRR}. Calculate exact final RR from serialized entry, stop_loss, and TP1; TP2/TP3 cannot rescue an invalid TP1.`,
         'For SELL, risk = stop_loss - entry and reward = entry - tp1. For BUY, risk = entry - stop_loss and reward = tp1 - entry. Calculate risk_reward as reward / risk from the exact serialized values without rounding intermediate values; the final value may be rounded reasonably after calculation. TP1 must satisfy the supplied canonical minimum_rr.',
-        'RR is part of the TRADE / NO_TRADE decision, not a post-hoc label. Use this loop: DIRECTION -> LOCATION LOCK -> ENTRY -> INVALIDATION LOCK -> TP1 OBJECTIVE LOCK -> EXACT RR. If RR >= minimum_rr, continue to TP2/TP3 and the final audit. If RR < minimum_rr, discard THIS combination and continue searching the supplied facts for another coherent opportunity. Do not manufacture a farther target or move entry, stop, or TP. If no valid combination remains, return NO_TRADE.',
-        'For each selected objective_id, copy the numeric level from that exact serialized objective catalogue record into the matching TP field. Do not derive a TP from raw liquidity, another duplicate representation, digits embedded in the ID, a nearby equivalent level, or a differently rounded source. The same-record rule applies to stop_loss from invalidation and entry/entry_zone from location.',
+        'RR is part of the TRADE / NO_TRADE decision, not a post-hoc label. Use this loop: DIRECTION -> LOCATION LOCK -> ENTRY -> INVALIDATION LOCK -> TP1 OBJECTIVE LOCK -> EXACT RR. Do not trust a previously calculated risk_reward. Immediately before returning TRADE, recalculate from the FINAL serialized JSON values: BUY risk = entry - stop_loss, reward = tp1 - entry; SELL risk = stop_loss - entry, reward = entry - tp1; risk_reward = reward / risk. If RR >= minimum_rr, continue to TP2/TP3 and the final audit. If RR < minimum_rr, the final object MUST NOT have decision=TRADE: discard THIS combination and continue searching the supplied facts. Do not manufacture a farther target, tighten the stop, or invent a new entry merely to reach minimum_rr. If no valid combination remains, return NO_TRADE.',
+        'The ONLY legal values for tp1_objective_id, tp2_objective_id, and tp3_objective_id are exact objective_id values that appear in CURRENT LIQUIDITY / OBJECTIVE MAP. Do not use event_id, evidence_id, location_id, MSNR, CRT, TBS, BOS, MSS, CHoCH, or raw-liquidity IDs unless that exact string is also an objective_id record in the objective map. For each selected objective_id, copy the numeric level from that exact serialized objective catalogue record into the matching TP field. Do not derive a TP from raw liquidity, another duplicate representation, digits embedded in the ID, a nearby equivalent level, or a differently rounded source. The same-record rule applies to stop_loss from invalidation and entry/entry_zone from location.',
         'For this MANUAL_EXTERNAL_AI packet, selected_candidate_id MUST be JSON null. It is reserved for non-manual/internal candidate flows. Never copy location_id into selected_candidate_id; location_id is the manual executable location reference.',
         'Session context may affect expected volatility, liquidity, and execution quality, but session or killzone is not an automatic trade gate. A PENDING_LIMIT is not invalid merely because current time is outside a killzone or price is away from its zone. Do not force a trade because a killzone is active. For PENDING_LIMIT, distance from current price and absent 5M/15M confirmation alone are not rejection reasons. For CONFIRMATION_ENTRY, require the supplied confirmation facts. Fresh POI does not automatically mean current opportunity.',
-        `setup means the actual selected setup/model for this one opportunity. It must be one concise supported token or a same-opportunity + combination from: ${MANUAL_SETUP_TOKENS.join(', ')}. Do not use commas to return a confluence inventory. Do not put supporting evidence, timeframe narrative, prices, RR, or thesis prose in setup; place supporting records in evidence_ids. Use + only when every named component belongs to the same selected location, chronology, direction, thesis, and execution. market_phase must be exactly one of: ${MANUAL_MARKET_PHASES.join(', ')}; do not return a thesis paragraph. confidence must be a JSON integer from 0 through 100; do not return labels, a percent string, or a decimal probability. NO_TRADE confidence is null.`,
-        'Before returning TRADE, silently audit the final object: (A) does location_id exist; (B) does entry_zone exactly belong to that selected location; (C) does entry belong to that selected location; (D) does invalidation_id exist and does stop_loss exactly match it; (E) does every objective ID exist and does every TP exactly match it; (F) is geometry valid for the chosen direction; (G) does TP1 satisfy minimum_rr; (H) does setup describe this same opportunity rather than unrelated evidence; (I) are all evidence_ids actually supplied; and (J) is selected_candidate_id exactly null? If any answer is NO, fix the trade selection or return NO_TRADE. Do not expose this checklist or chain-of-thought.',
+        `setup means the actual selected setup/model for this one opportunity. It must be one concise supported token or a same-opportunity + combination from: ${MANUAL_SETUP_TOKENS.join(', ')}. When a concrete supplied executable model/type describes the opportunity, prefer that specific setup token; use ICT only when no more specific supported model describes it. Do not use commas to return a confluence inventory. Do not put supporting evidence, timeframe narrative, prices, RR, or thesis prose in setup; place supporting records in evidence_ids. Use + only when every named component belongs to the same selected location, chronology, direction, thesis, and execution. market_phase must be exactly one of: ${MANUAL_MARKET_PHASES.join(', ')}; do not return a thesis paragraph. confidence must be a JSON integer from 0 through 100; do not return labels, a percent string, or a decimal probability. NO_TRADE confidence is null.`,
+        'For a ranged executable location, choose entry only from the deterministic entry choices allowed for that exact record: zone_low, zone_high, or midpoint_if_defined when present. Do not select an arbitrary interior price from another fact. Before returning TRADE, silently audit the final object: (A) does location_id exist; (B) is its factual orientation compatible with the chosen direction or is it the canonical transformed role-reversal record; (C) does entry_zone exactly belong to selected location; (D) is entry a permitted price for it; (E) does invalidation_id exist; (F) does stop_loss exactly match it; (G) is invalidation on the correct side; (H) does tp1_objective_id resolve from the objective map; (I) does each optional TP2/TP3 objective ID resolve from that map; (J) does every TP exactly match its selected objective level; (K) are targets ordered correctly; (L) is every objective lifecycle usable; (M) does exact RR from final serialized values satisfy minimum_rr; (N) does setup describe this same opportunity; (O) is selected_candidate_id exactly null; (P) are all evidence_ids supplied; and (Q) are all conflict_ids supplied when returned? If any answer is NO, fix the trade selection or return NO_TRADE. Do not expose this checklist or chain-of-thought.',
         'Return ONLY one directly JSON.parse()-able JSON object. Required fields: pair, decision, direction, trade_type, setup, market_phase, selected_candidate_id, entry, entry_zone, stop_loss, tp1, tp2, tp3, risk_reward, confidence. For manual discovery selected_candidate_id remains null. Include location_id, invalidation_id, tp1_objective_id, tp2_objective_id, tp3_objective_id, evidence_ids, and conflict_ids for traceability when returning TRADE. Do not return chain-of-thought or prose.'
     ].join('\n') + '\n==================================================';
 }
@@ -18935,8 +18940,7 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
         ? evidence.structural_invalidation_catalogue : [];
     const objectives = [
         ...(evidence.current_liquidity_objective_map?.above_current_price || []),
-        ...(evidence.current_liquidity_objective_map?.below_current_price || []),
-        ...(Array.isArray(evidence.objectives) ? evidence.objectives : [])
+        ...(evidence.current_liquidity_objective_map?.below_current_price || [])
     ];
     const number = key => externalPacketNumber(normalizedDecision[key]);
     const exactEqual = (left, right) => Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) <= Math.max(1e-10, Math.abs(right) * 1e-9);
@@ -18980,6 +18984,18 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
     } else if (!selectedLocation) {
         issue('UNKNOWN_LOCATION_ID');
         issue('EXTERNAL_AI_LOCATION_NOT_FOUND');
+    }
+    if (selectedLocation && ['BUY', 'SELL'].includes(direction)) {
+        const orientation = String(selectedLocation.source_orientation || '').trim().toUpperCase();
+        const type = String(selectedLocation.type || '').trim().toUpperCase();
+        const factualDirection = ['BUY', 'SELL'].includes(orientation)
+            ? orientation
+            : type === 'DEMAND' ? 'BUY' : type === 'SUPPLY' ? 'SELL' : null;
+        const transformedLocation = selectedLocation.role_reversal === true
+            || ['FLIP', 'RECLAIM', 'RECLAIM_RETEST'].includes(type);
+        if (factualDirection && factualDirection !== direction && !(transformedLocation && orientation === direction)) {
+            issue('EXTERNAL_AI_LOCATION_DIRECTION_MISMATCH');
+        }
     }
     const rawEntryZone = normalizedDecision.entry_zone;
     const entryZone = Array.isArray(rawEntryZone) && rawEntryZone.length === 2
@@ -19078,6 +19094,7 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
         if (!objective) {
             issue('UNKNOWN_OBJECTIVE_ID');
             issue('EXTERNAL_AI_OBJECTIVE_NOT_FOUND', priceKey);
+            issue('EXTERNAL_AI_OBJECTIVE_ID_NOT_FROM_OBJECTIVE_MAP');
             return null;
         }
         if (!exactEqual(price, externalPacketNumber(objective.level))) {
@@ -19089,6 +19106,8 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
             || (direction === 'SELL' && !(externalPacketNumber(objective.level) < entry))) {
             issue('EXTERNAL_AI_OBJECTIVE_WRONG_SIDE', priceKey);
         }
+        const objectiveDirection = String(objective.direction || '').toUpperCase();
+        if (['BUY', 'SELL'].includes(objectiveDirection) && objectiveDirection !== direction) issue('EXTERNAL_AI_OBJECTIVE_DIRECTION_MISMATCH');
         return objective;
     };
     if (normalizedDecision.tp1_objective_id == null) {
@@ -19109,19 +19128,41 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
         if (!objective) {
             issue('UNKNOWN_OBJECTIVE_ID', idKey);
             issue('EXTERNAL_AI_OBJECTIVE_NOT_FOUND', idKey);
+            issue('EXTERNAL_AI_OBJECTIVE_ID_NOT_FROM_OBJECTIVE_MAP');
         } else {
             checkObjective(id, price, mismatchCode, idKey.replace('_objective_id', ''));
         }
     }
-    if (direction === 'BUY' && [tp1, number('tp2'), number('tp3')].filter(Number.isFinite).some(value => value <= entry)) issue('TARGET_ORDER_INVALID');
-    if (direction === 'SELL' && [tp1, number('tp2'), number('tp3')].filter(Number.isFinite).some(value => value >= entry)) issue('TARGET_ORDER_INVALID');
-    if (direction === 'BUY' && Number.isFinite(number('tp2')) && number('tp2') <= tp1) issue('TARGET_ORDER_INVALID');
-    if (direction === 'BUY' && Number.isFinite(number('tp3')) && Number.isFinite(number('tp2')) && number('tp3') <= number('tp2')) issue('TARGET_ORDER_INVALID');
-    if (direction === 'SELL' && Number.isFinite(number('tp2')) && number('tp2') >= tp1) issue('TARGET_ORDER_INVALID');
-    if (direction === 'SELL' && Number.isFinite(number('tp3')) && Number.isFinite(number('tp2')) && number('tp3') >= number('tp2')) issue('TARGET_ORDER_INVALID');
+    const targetOrderIssue = () => {
+        issue('TARGET_ORDER_INVALID');
+        issue('EXTERNAL_AI_TARGET_ORDER_INVALID');
+    };
+    if (direction === 'BUY' && [tp1, number('tp2'), number('tp3')].filter(Number.isFinite).some(value => value <= entry)) targetOrderIssue();
+    if (direction === 'SELL' && [tp1, number('tp2'), number('tp3')].filter(Number.isFinite).some(value => value >= entry)) targetOrderIssue();
+    if (direction === 'BUY' && Number.isFinite(number('tp2')) && number('tp2') <= tp1) targetOrderIssue();
+    if (direction === 'BUY' && Number.isFinite(number('tp3')) && Number.isFinite(number('tp2')) && number('tp3') <= number('tp2')) targetOrderIssue();
+    if (direction === 'SELL' && Number.isFinite(number('tp2')) && number('tp2') >= tp1) targetOrderIssue();
+    if (direction === 'SELL' && Number.isFinite(number('tp3')) && Number.isFinite(number('tp2')) && number('tp3') >= number('tp2')) targetOrderIssue();
     const modelEvidence = evidence.model_setup_evidence || {};
     const returnedEvidenceIds = new Set((normalizedDecision.evidence_ids || []).filter(value => typeof value === 'string'));
     const locationEvidence = new Set(selectedLocation ? [selectedLocation.location_id, ...(selectedLocation.origin_evidence_ids || [])] : []);
+    const suppliedEvidenceIds = new Set();
+    const collectEvidenceIds = item => {
+        if (!item || typeof item !== 'object') return;
+        for (const value of [item.location_id, item.invalidation_id, item.objective_id, item.event_id, item.evidence_id, item.opportunity_id, item.conflict_id,
+            ...(Array.isArray(item.origin_evidence_ids) ? item.origin_evidence_ids : []),
+            ...(Array.isArray(item.evidence_ids) ? item.evidence_ids : [])]) {
+            if (typeof value === 'string' && value) suppliedEvidenceIds.add(value);
+        }
+    };
+    for (const item of locations) collectEvidenceIds(item);
+    for (const item of invalidations) collectEvidenceIds(item);
+    for (const item of objectives) collectEvidenceIds(item);
+    for (const records of Object.values(modelEvidence)) for (const item of Array.isArray(records) ? records : []) collectEvidenceIds(item);
+    for (const item of evidence.multi_timeframe_conflict_map || evidence.conflicts || []) collectEvidenceIds(item);
+    for (const evidenceId of returnedEvidenceIds) {
+        if (!suppliedEvidenceIds.has(evidenceId)) issues.push('EXTERNAL_AI_EVIDENCE_ID_NOT_FOUND');
+    }
     const setupEvidenceTypeMatches = (component, type) => {
         const normalizedType = String(type || '').toUpperCase();
         if (component === 'ICT' || component === 'CURRENT_STRUCTURE') return true;
