@@ -4016,6 +4016,8 @@ describe('professional manual decision packet and external decision validation',
         expect(packetData.model_setup_evidence.TBS).toEqual(expect.arrayContaining([expect.objectContaining({ event_id: 'TBS-FACT' })]));
         expect(packetData.model_setup_evidence.MSNR).toEqual(expect.arrayContaining([expect.objectContaining({ event_id: 'MSNR-FACT' })]));
         expect(packetData.multi_timeframe_conflict_map.length).toBeGreaterThan(0);
+        expect(packetData.current_actionable_location_catalogue.length).toBeGreaterThan(0);
+        expect(packetData.current_actionable_location_catalogue.every(location => !Object.prototype.hasOwnProperty.call(location, 'direction_if_factual'))).toBe(true);
         expect(packetData.recent_price_action['1D']).toHaveLength(20);
         expect(Object.keys(packetData.recent_price_action)).toEqual(['1D', '4H', '1H', '15M', '5M']);
         for (const timeframe of ['1D', '4H', '1H', '15M', '5M']) {
@@ -4275,6 +4277,119 @@ describe('professional manual decision packet and external decision validation',
             zone_high: sourceZone.high
         })]));
         expect(packet.current_actionable_location_catalogue.every(location => location.location_id)).toBe(true);
+    });
+
+    it('retains a neutral executable location through the real manual semantic path', () => {
+        const ctx = getContext();
+        const timeframes = ['1D', '4H', '1H', '15M', '5M'];
+        const makeHistory = timeframe => Array.from({ length: 60 }, (_, index) => {
+            const t = Date.parse('2026-10-05T00:00:00Z') + index * 60 * 60 * 1000;
+            const close = index > 31 ? 103 : 100;
+            return { t, o: close - 0.1, h: close + 0.2, l: close - 0.2, c: close, is_closed: true, timeframe };
+        });
+        const historyCache = Object.fromEntries(timeframes.map(timeframe => [timeframe, makeHistory(timeframe)]));
+        const price = 103;
+        const directionalSourceZone = ctx.buildLiveZonesForTf(historyCache['1H'], '1H', price, 'EUR/USD', 1, 20, {})
+            .find(zone => zone.type === 'FVG' || zone.type === 'OB' || zone.type === 'MSNR');
+        expect(directionalSourceZone).toEqual(expect.objectContaining({ id: expect.any(String), freshness: 'FRESH' }));
+
+        // The detector-created zone is real executable source data.  The
+        // manual packet must also support a canonical location whose detector
+        // direction is absent, because direction is selected by the external
+        // AI rather than by this evidence serializer.
+        const neutralSourceZone = { ...directionalSourceZone, direction: null };
+        const timeframeContext = ctx.buildTimeframeContext({
+            historyCache,
+            structure: {},
+            price,
+            zones: [neutralSourceZone],
+            strategySetups: []
+        });
+        expect(timeframeContext['1H'].zones).toEqual(expect.arrayContaining([expect.objectContaining({
+            id: directionalSourceZone.id,
+            direction: null,
+            low: directionalSourceZone.low,
+            high: directionalSourceZone.high
+        })]));
+
+        const canonical = ctx.buildCanonicalMarketEvidencePackage({
+            pair: 'EUR/USD',
+            snapshot_id: 'CANONICAL-NEUTRAL',
+            current_price: price,
+            as_of_time_utc: '2026-10-05T10:00:00Z',
+            market_context: { timeframe_context: timeframeContext },
+            snapshot_completeness: { complete: true, status: 'COMPLETE' }
+        }, historyCache);
+        const semantic = ctx.buildCompactAISemanticPackage({
+            pair: 'EUR/USD',
+            current_price: price,
+            as_of_time_utc: '2026-10-05T10:00:00Z',
+            market_evidence_package: canonical,
+            market_context: { timeframe_context: timeframeContext }
+        }, canonical, { manualOpportunityDiscovery: true });
+        const semanticLocation = semantic.timeframes['1H'].locations.find(location => location.id === directionalSourceZone.id);
+        expect(semanticLocation).toEqual(expect.objectContaining({
+            id: directionalSourceZone.id,
+            event_time: directionalSourceZone.created_time,
+            low: directionalSourceZone.low,
+            high: directionalSourceZone.high,
+            freshness: 'FRESH'
+        }));
+        expect(semanticLocation.direction ?? null).toBeNull();
+        expect(semantic.market_observations.delivery_facts.locations).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: directionalSourceZone.id, timeframe: '1H', freshness: 'FRESH' })
+        ]));
+        expect(semantic.opportunity_material).not.toHaveProperty('buy_locations');
+        expect(semantic.opportunity_material).not.toHaveProperty('sell_locations');
+        expect(semantic.opportunity_material.locations).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: directionalSourceZone.id })
+        ]));
+
+        const packet = ctx.buildProfessionalManualMarketPacket({
+            semantic,
+            pair: 'EUR/USD',
+            provider: 'TVKIT',
+            result: { scan_id: 'SCAN-NEUTRAL-LOCATION' },
+            minimumRR: 2.5
+        });
+        const catalogueLocation = packet.current_actionable_location_catalogue.find(location => location.location_id === directionalSourceZone.id);
+        expect(catalogueLocation).toEqual(expect.objectContaining({
+            location_id: directionalSourceZone.id,
+            timeframe: '1H',
+            formed_at: directionalSourceZone.created_time,
+            zone_low: directionalSourceZone.low,
+            zone_high: directionalSourceZone.high,
+            lifecycle_state: 'FRESH'
+        }));
+        expect(catalogueLocation).not.toHaveProperty('direction_if_factual');
+        expect(JSON.stringify(packet)).not.toContain('direction_if_factual');
+
+        const clipboard = ctx.buildExternalAIClipboardPacket({
+            signal: {
+                pair: 'EUR/USD',
+                analysis_mode: 'MANUAL_EXTERNAL_AI',
+                automatic_ai_selection: 'NOT_RUN',
+                reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' },
+                current_price: price
+            },
+            replay: {
+                pair: 'EUR/USD',
+                snapshot_id: canonical.snapshot_id,
+                scan_as_of: '2026-10-05T10:00:00Z',
+                quote: { price },
+                provider_metadata: { provider: 'TVKIT' },
+                history: historyCache,
+                market_evidence_package: canonical,
+                risk_constraints: { minimum_rr: 2.5 }
+            }
+        });
+        expect(clipboard).toContain('CURRENT ACTIONABLE LOCATION CATALOGUE');
+        expect(clipboard).toContain(directionalSourceZone.id);
+        expect(clipboard).not.toContain('direction_if_factual');
+        expect(clipboard).not.toContain('BUY MARKET LOCATIONS');
+        expect(clipboard).not.toContain('SELL MARKET LOCATIONS');
+        expect(clipboard).not.toContain('"buy_locations"');
+        expect(clipboard).not.toContain('"sell_locations"');
     });
 });
 

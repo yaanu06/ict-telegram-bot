@@ -12629,8 +12629,12 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
     const marketContext = liveMarketContext.market_context || {};
     const multiTimeframeTrend = liveMarketContext.multi_timeframe_direction?.trend || Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf, structure[tf].structure.effective_trend]));
     const regeneration = liveMarketContext.current_opportunity_regeneration || {};
+    // Manual discovery receives market locations as neutral facts.  A
+    // location is not a trade until the external AI interprets the complete
+    // market context and chooses direction.  Keep the directional buckets
+    // only for the automatic/internal selector path.
     const locationFacts = manualOpportunityDiscovery
-        ? { buy: buyLocations, sell: sellLocations }
+        ? { locations }
         : { buy: buyLocations.slice(0, 120), sell: sellLocations.slice(0, 120) };
     const invalidationFacts = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf, structure[tf].structural_invalidations || []]));
     for (const item of evidenceById.values()) {
@@ -12651,14 +12655,16 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
             evidence_ids: [...new Set([item.id, ...(item.evidence_ids || [])])].slice(0, 12)
         });
     }
+    const deliveryLocations = manualOpportunityDiscovery
+        ? locationFacts.locations
+        : [...locationFacts.buy, ...locationFacts.sell];
     const deliveryFacts = {
-        locations: [...locationFacts.buy, ...locationFacts.sell]
+        locations: deliveryLocations
             .filter(location => location?.freshness || location?.mitigation_state || location?.state || location?.consumed || location?.invalidated)
             .map(location => manualOpportunityDiscovery ? compactManualPacketValue({
                 id: location.id,
                 type: location.type,
                 timeframe: location.timeframe,
-                direction: location.direction,
                 formation_time: location.formation_time || location.event_time,
                 freshness: location.freshness,
                 mitigation_state: location.mitigation_state,
@@ -12737,8 +12743,9 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
         ],
         opportunity_material: {
             records: opportunityMaterial,
-            buy_locations: locationFacts.buy,
-            sell_locations: locationFacts.sell,
+            ...(manualOpportunityDiscovery
+                ? { locations: locationFacts.locations }
+                : { buy_locations: locationFacts.buy, sell_locations: locationFacts.sell }),
             selection_summary: manualOpportunityDiscovery ? null : evidenceCatalog.opportunity_material || null,
             note: manualOpportunityDiscovery
                 ? 'These are deterministic market locations, not preconstructed trades. The external AI must interpret them.'
@@ -12983,7 +12990,6 @@ function buildManualLocationCatalogue(semantic = {}, invalidations = [], objecti
                 location_id: String(id),
                 type: item.type || item.event_type || null,
                 model_family: manualLocationModelFamily(item.type || item.event_type),
-                direction_if_factual: item.direction || null,
                 timeframe: item.timeframe || timeframe,
                 zone_low: low,
                 zone_high: high,
