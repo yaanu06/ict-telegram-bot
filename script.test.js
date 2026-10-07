@@ -3318,6 +3318,8 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).toContain('copy the numeric level from that exact serialized objective catalogue record');
         expect(packet).toContain('prefer that specific setup token; use ICT only when no more specific supported model describes it');
         expect(packet).toContain('choose exactly ONE executable location from CURRENT ACTIONABLE LOCATION CATALOGUE');
+        expect(packet).toContain('The ONLY legal values for location_id are exact location_id values appearing in CURRENT ACTIONABLE LOCATION CATALOGUE');
+        expect(packet).toContain('Historical location IDs, model/setup evidence IDs, chronology location IDs, invalidation IDs');
         expect(packet).toContain('That selected record is the sole source of truth for location_id, entry_zone, and entry');
         expect(packet).toContain('Supporting records may strengthen confidence');
         expect(packet).toContain('INVALIDATION LOCK');
@@ -4496,6 +4498,53 @@ describe('professional manual decision packet and external decision validation',
         }, evidence);
         expect(result.valid).toBe(false);
         expect(result.issues).toContain('EXTERNAL_AI_OBJECTIVE_ALREADY_DELIVERED_BEFORE_ENTRY');
+    });
+
+    it('requires the executable location ID to come from the current actionable catalogue only', () => {
+        const ctx = getContext();
+        const makeEvidence = includeHistoricalLocation => ({
+            manual_external_ai: true,
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [
+                { location_id: 'NEW-15M-SELL-MSNR', type: 'MSNR', source_orientation: 'SELL', zone_low: 100, zone_high: 102, midpoint_if_defined: 101, origin_evidence_ids: ['NEW-15M-SELL-MSNR'] },
+                ...(includeHistoricalLocation ? [{ location_id: 'OLD-1H-SELL-OB', type: 'OB', source_orientation: 'SELL', zone_low: 100, zone_high: 102, midpoint_if_defined: 101, origin_evidence_ids: ['OLD-1H-SELL-OB'] }] : [])
+            ],
+            structural_invalidation_catalogue: [
+                { invalidation_id: 'OLD-1H-SELL-INV', level: 104, state: 'ACTIVE', source_evidence_id: 'OLD-1H-SELL-OB' },
+                { invalidation_id: 'NEW-15M-SELL-INV', level: 104, state: 'ACTIVE', source_evidence_id: 'NEW-15M-SELL-MSNR' }
+            ],
+            current_liquidity_objective_map: { above_current_price: [], below_current_price: [{ objective_id: 'SELL-TP', level: 90, lifecycle_state: 'UNFULFILLED' }] },
+            model_setup_evidence: {
+                ICT_STRUCTURE_AND_LIQUIDITY: [
+                    { event_id: 'OLD-1H-SELL-OB', event_type: 'OB', direction: 'SELL', evidence_ids: ['OLD-1H-SELL-OB'] }
+                ],
+                MSNR: [{ event_id: 'NEW-15M-SELL-MSNR', event_type: 'MSNR', direction: 'SELL', evidence_ids: ['NEW-15M-SELL-MSNR', 'OLD-1H-SELL-OB'] }]
+            }
+        });
+        const oldLocationTrade = {
+            decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 70,
+            selected_candidate_id: null, location_id: 'OLD-1H-SELL-OB', entry_zone: [100, 102], entry: 100,
+            invalidation_id: 'OLD-1H-SELL-INV', stop_loss: 104, tp1_objective_id: 'SELL-TP', tp1: 90,
+            evidence_ids: ['OLD-1H-SELL-OB'], risk_reward: 2
+        };
+        const rejectedHistorical = ctx.validateExternalAITradeDecision(oldLocationTrade, makeEvidence(false));
+        expect(rejectedHistorical.valid).toBe(false);
+        expect(rejectedHistorical.issues).toContain('EXTERNAL_AI_LOCATION_ID_NOT_ACTIONABLE');
+        expect(rejectedHistorical.issues).toContain('EXTERNAL_AI_LOCATION_NOT_FOUND');
+
+        const sameIdActionable = ctx.validateExternalAITradeDecision(oldLocationTrade, makeEvidence(true));
+        expect(sameIdActionable.issues).not.toContain('EXTERNAL_AI_LOCATION_ID_NOT_ACTIONABLE');
+        expect(sameIdActionable.valid).toBe(true);
+
+        const historicalSupport = ctx.validateExternalAITradeDecision({
+            ...oldLocationTrade,
+            setup: 'MSNR',
+            location_id: 'NEW-15M-SELL-MSNR',
+            invalidation_id: 'NEW-15M-SELL-INV',
+            evidence_ids: ['NEW-15M-SELL-MSNR', 'OLD-1H-SELL-OB']
+        }, makeEvidence(false));
+        expect(historicalSupport.valid).toBe(true);
+        expect(historicalSupport.issues).not.toContain('EXTERNAL_AI_LOCATION_ID_NOT_ACTIONABLE');
     });
 
     it('requires selected_candidate_id to remain null for manual external-AI validation', () => {
