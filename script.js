@@ -13178,7 +13178,7 @@ function buildProfessionalManualMarketPacket({ semantic = {}, pair = null, provi
                 'Use supplied deterministic facts only; never invent entry, stop, target, or market data.',
                 'Reason in order: CURRENT MARKET STATE -> RECENT DELIVERY / CHRONOLOGY -> MULTI-TIMEFRAME CONTEXT -> LIQUIDITY MAP -> CURRENT PHASE -> DIRECTION -> LOCATION -> MODEL / EXECUTION -> INVALIDATION -> OBJECTIVE -> EXACT RR.',
                 'A stop must be a supplied structural invalidation belonging to the thesis; an objective must be a genuine remaining neutral market fact.',
-                'Consumed, invalidated, or unusable objectives cannot be used. TP1 must satisfy minimum_rr; TP2/TP3 cannot rescue it.',
+                'Consumed, invalidated, or unusable objectives cannot be used. minimum_rr is a preferred quality benchmark; it does not authorize target fabrication or invalidate a structurally coherent opportunity with a lower realistic RR.',
                 'PENDING_LIMIT may be away from current price and does not require 5M/15M confirmation unless supplied setup semantics require it. CONFIRMATION_ENTRY requires supplied confirmation.',
                 'Freshness is not opportunity relevance, distance alone is not rejection, and confidence never makes invalid geometry valid.',
                 'Combined setup labels require same-opportunity components with compatible chronology, location, direction, and evidence.',
@@ -13233,15 +13233,15 @@ function buildProfessionalManualExternalAIInstruction(minimumRR = null) {
         'A selected location with factual source_orientation BUY or SELL must be compatible with your chosen direction. Do not use BUY with an original SELL FVG/OB/MSNR or SUPPLY merely because other BUY evidence exists. A historical opposite-direction location is usable only when the catalogue itself contains the canonical transformed FLIP/reclaim/role-reversal location; select that transformed record ID, not the original location ID.',
         'Use only supplied facts and prices. Never invent or alter an entry, entry_zone, stop_loss, target, location, invalidation, objective, or evidence ID. When selecting an ID, its returned numeric value must correspond to that exact ID; do not combine an ID from one fact with a price from another. Do not use timeframe majority voting, an HTF hard gate, a single event as automatic direction, or a confidence score as validity.',
         'INVALIDATION LOCK: choose one invalidation_id from STRUCTURAL INVALIDATION CATALOGUE. That record is the sole source of truth for invalidation_id and stop_loss. The returned stop_loss must equal that exact supplied invalidation level. Do not use an invalidation ID from one record with a stop price from another; choose the structurally correct invalidation for the selected opportunity.',
-        'OBJECTIVE LOCK: for each TP, choose one objective_id from CURRENT LIQUIDITY / OBJECTIVE MAP. That objective record is the sole source of truth for tp1_objective_id/tp2_objective_id/tp3_objective_id and the corresponding TP value. Do not pair an objective ID with another objective\'s price. TP1 is the decisive minimum-RR objective; TP2/TP3 cannot rescue invalid TP1 geometry.',
-        `The canonical minimum_rr is ${minimumRR == null ? 'not available' : minimumRR}. Calculate exact final RR from serialized entry, stop_loss, and TP1; TP2/TP3 cannot rescue an invalid TP1.`,
-        'For SELL, risk = stop_loss - entry and reward = entry - tp1. For BUY, risk = entry - stop_loss and reward = tp1 - entry. Calculate risk_reward as reward / risk from the exact serialized values without rounding intermediate values; the final value may be rounded reasonably after calculation. TP1 must satisfy the supplied canonical minimum_rr.',
-        'RR is part of the TRADE / NO_TRADE decision, not a post-hoc label. Use this loop: DIRECTION -> LOCATION LOCK -> ENTRY -> INVALIDATION LOCK -> TP1 OBJECTIVE LOCK -> EXACT RR. Do not trust a previously calculated risk_reward. Immediately before returning TRADE, recalculate from the FINAL serialized JSON values: BUY risk = entry - stop_loss, reward = tp1 - entry; SELL risk = stop_loss - entry, reward = entry - tp1; risk_reward = reward / risk. If RR >= minimum_rr, continue to TP2/TP3 and the final audit. If RR < minimum_rr, the final object MUST NOT have decision=TRADE: discard THIS combination and continue searching the supplied facts. Do not manufacture a farther target, tighten the stop, or invent a new entry merely to reach minimum_rr. If no valid combination remains, return NO_TRADE.',
+        'OBJECTIVE LOCK: for each TP, choose one objective_id from CURRENT LIQUIDITY / OBJECTIVE MAP. That objective record is the sole source of truth for tp1_objective_id/tp2_objective_id/tp3_objective_id and the corresponding TP value. Do not pair an objective ID with another objective\'s price. TP1 is the nearest meaningful reachable objective for partial realization; TP2 is the next meaningful objective if the thesis continues; TP3 is the furthest realistic objective belonging to the same thesis. Do not choose a distant objective merely to improve RR.',
+        `The canonical minimum_rr is ${minimumRR == null ? 'not available' : minimumRR}. It is a preferred quality benchmark, not a hard trade-existence gate. Calculate exact RR after locking realistic structure, the structural stop, and genuine objectives.`,
+        'For SELL, risk = stop_loss - entry and reward to each target = entry - that target. For BUY, risk = entry - stop_loss and reward to each target = that target - entry. Calculate RR to TP1, TP2, and TP3 when present from the exact serialized values without rounding intermediate values. Keep risk_reward as RR to TP1. A realistic RR below minimum_rr is a quality warning, not permission to move the structural stop, invent a target, or abandon an otherwise coherent thesis.',
+        'Use this loop: DIRECTION -> LOCATION LOCK -> ENTRY -> STRUCTURAL INVALIDATION LOCK -> REACHABLE OBJECTIVE LADDER -> EXACT RR MEASUREMENT -> QUALITY ASSESSMENT -> FINAL AUDIT. Once direction, location, entry, and structural invalidation form a valid current opportunity, preserve that thesis and build the best realistic TP ladder from genuine remaining objectives. Never move or tighten a valid structural stop to improve risk_reward. If no genuine usable objective remains, return NO_TRADE; do not create one to reach minimum_rr.',
         'The ONLY legal values for tp1_objective_id, tp2_objective_id, and tp3_objective_id are exact objective_id values that appear in CURRENT LIQUIDITY / OBJECTIVE MAP. Do not use event_id, evidence_id, location_id, MSNR, CRT, TBS, BOS, MSS, CHoCH, or raw-liquidity IDs unless that exact string is also an objective_id record in the objective map. For each selected objective_id, copy the numeric level from that exact serialized objective catalogue record into the matching TP field. Do not derive a TP from raw liquidity, another duplicate representation, digits embedded in the ID, a nearby equivalent level, or a differently rounded source. The same-record rule applies to stop_loss from invalidation and entry/entry_zone from location.',
         'For this MANUAL_EXTERNAL_AI packet, selected_candidate_id MUST be JSON null. It is reserved for non-manual/internal candidate flows. Never copy location_id into selected_candidate_id; location_id is the manual executable location reference.',
         'Session context may affect expected volatility, liquidity, and execution quality, but session or killzone is not an automatic trade gate. A PENDING_LIMIT is not invalid merely because current time is outside a killzone or price is away from its zone. Do not force a trade because a killzone is active. For PENDING_LIMIT, distance from current price and absent 5M/15M confirmation alone are not rejection reasons. For CONFIRMATION_ENTRY, require the supplied confirmation facts. Fresh POI does not automatically mean current opportunity.',
         `setup means the actual selected setup/model for this one opportunity. It must be one concise supported token or a same-opportunity + combination from: ${MANUAL_SETUP_TOKENS.join(', ')}. When a concrete supplied executable model/type describes the opportunity, prefer that specific setup token; use ICT only when no more specific supported model describes it. Do not use commas to return a confluence inventory. Do not put supporting evidence, timeframe narrative, prices, RR, or thesis prose in setup; place supporting records in evidence_ids. Use + only when every named component belongs to the same selected location, chronology, direction, thesis, and execution. market_phase must be exactly one of: ${MANUAL_MARKET_PHASES.join(', ')}; do not return a thesis paragraph. confidence must be a JSON integer from 0 through 100; do not return labels, a percent string, or a decimal probability. NO_TRADE confidence is null.`,
-        'For a ranged executable location, choose entry only from the deterministic entry choices allowed for that exact record: zone_low, zone_high, or midpoint_if_defined when present. Do not select an arbitrary interior price from another fact. Before returning TRADE, silently audit the final object: (A) does location_id exist; (B) is its factual orientation compatible with the chosen direction or is it the canonical transformed role-reversal record; (C) does entry_zone exactly belong to selected location; (D) is entry a permitted price for it; (E) does invalidation_id exist; (F) does stop_loss exactly match it; (G) is invalidation on the correct side; (H) does tp1_objective_id resolve from the objective map; (I) does each optional TP2/TP3 objective ID resolve from that map; (J) does every TP exactly match its selected objective level; (K) are targets ordered correctly; (L) is every objective lifecycle usable; (M) does exact RR from final serialized values satisfy minimum_rr; (N) does setup describe this same opportunity; (O) is selected_candidate_id exactly null; (P) are all evidence_ids supplied; and (Q) are all conflict_ids supplied when returned? If any answer is NO, fix the trade selection or return NO_TRADE. Do not expose this checklist or chain-of-thought.',
+        'For a ranged executable location, choose entry only from the deterministic entry choices allowed for that exact record: zone_low, zone_high, or midpoint_if_defined when present. Do not select an arbitrary interior price from another fact. Before returning TRADE, silently audit the final object: (A) does location_id exist; (B) is its factual orientation compatible with the chosen direction or is it the canonical transformed role-reversal record; (C) does entry_zone exactly belong to selected location; (D) is entry a permitted price for it; (E) does invalidation_id exist; (F) does stop_loss exactly match it and remain an absolute structural stop; (G) is invalidation on the correct side; (H) does tp1_objective_id resolve from the objective map; (I) does each optional TP2/TP3 objective ID resolve from that map; (J) does every TP exactly match its selected objective level; (K) are targets ordered correctly; (L) is every objective lifecycle usable and reasonably reachable in the current thesis; (M) is exact RR to TP1 measured from final serialized values and reported honestly, whether above or below preferred minimum_rr; (N) does setup describe this same opportunity; (O) is selected_candidate_id exactly null; (P) are all evidence_ids supplied; and (Q) are all conflict_ids supplied when returned? If any answer is NO, fix the factual combination or return NO_TRADE. Do not expose this checklist or chain-of-thought.',
         'Return ONLY one directly JSON.parse()-able JSON object. Required fields: pair, decision, direction, trade_type, setup, market_phase, selected_candidate_id, entry, entry_zone, stop_loss, tp1, tp2, tp3, risk_reward, confidence. For manual discovery selected_candidate_id remains null. Include location_id, invalidation_id, tp1_objective_id, tp2_objective_id, tp3_objective_id, evidence_ids, and conflict_ids for traceability when returning TRADE. Do not return chain-of-thought or prose.'
     ].join('\n') + '\n==================================================';
 }
@@ -18877,7 +18877,7 @@ const MANUAL_EXTERNAL_AI_PACKET_CONTRACT = [
     'Use exactly these semantic timeframes: 1D, 4H, 1H, 15M, 5M. No 1W semantic trading context is supplied.',
     'Direction on an actual event remains factual provenance: BOS SELL, MSS BUY, liquidity sweep BUY, TBS BUY, CRT SELL, FVG BUY, and similar records describe what was detected. Do not convert one event or local model into the actionable direction without reconciling all supplied timeframes, delivery, chronology, and conflicts.',
     'INSTITUTIONAL ACTIVITY EVIDENCE is neutral OHLC-derived footprint evidence, not verified participant identity. It describes chronologically associated liquidity events, canonical displacement, structural consequence, origin/imbalance, and observed follow-through or failure. Use it as contextual evidence for continuation, retracement, manipulation, reversal, transition, or setup quality; it is not a mandatory gate, standalone signal, or automatic trade direction.',
-    'A complete footprint sequence may strengthen a narrative and a FAILED_SEQUENCE may weaken it. Reconcile conflicting sequences across 1D, 4H, 1H, 15M, and 5M. This evidence cannot rescue invalid geometry, missing structural invalidation, consumed targets, stale opportunities, or insufficient minimum RR.',
+    'A complete footprint sequence may strengthen a narrative and a FAILED_SEQUENCE may weaken it. Reconcile conflicting sequences across 1D, 4H, 1H, 15M, and 5M. This evidence cannot rescue invalid geometry, missing structural invalidation, consumed targets, stale opportunities, or factual target errors. minimum_rr is a preferred quality benchmark, not a reason to alter structural geometry.',
     'When lower-timeframe evidence opposes higher/intraday delivery, distinguish a reaction, retracement, liquidity manipulation, genuine reversal, transition, or failed continuation. Do not call it a reversal without supplied structural change, displacement, MSS, CHoCH, reclaim, failed continuation, liquidity behavior, or other existing evidence that supports that interpretation. Do not impose an HTF hard gate either.',
     'LOCATION VALIDITY IS NOT OPPORTUNITY RELEVANCE. A location may be structurally valid, FRESH, unmitigated, and untouched without being the current actionable pending opportunity. Do not equate untouched with current.',
     'A location record is market evidence, not a trade. Do not treat its midpoint or boundaries as a preselected entry. Choose only supplied locations and supplied structural facts.',
@@ -18885,9 +18885,9 @@ const MANUAL_EXTERNAL_AI_PACKET_CONTRACT = [
     'Structural and liquidity levels are neutral supplied market objectives, not BUY/SELL trade targets. Do not label objective records as directional trade targets. Determine whether a neutral objective belongs to the setup you discover.',
     'A TRADE stop_loss must correspond to a supplied structural invalidation fact that actually invalidates the discovered setup. A nearby FVG, OB, MSNR, swing, supply/demand boundary, or other level is not a stop merely because it is nearby, on the correct side, or improves RR. If no defensible supplied structural invalidation exists, return NO_TRADE.',
     'Structural invalidation comes before RR validation: DIRECTION -> LOCATION -> SETUP/EXECUTION -> STRUCTURAL INVALIDATION -> GENUINE OBJECTIVE -> RR VALIDATION. RR must never choose the stop, and a high RR cannot rescue unsupported geometry.',
-    'FINAL-GEOMETRY RR VALIDATION: after deciding the setup, serialize the exact final numeric entry, stop_loss, and tp1 that will appear in the JSON, then recalculate risk_reward from those same values. BUY risk = entry - stop_loss and reward = tp1 - entry; SELL risk = stop_loss - entry and reward = entry - tp1; risk_reward = reward / risk. Do not use a hidden midpoint, boundary, alternate entry, TP2, TP3, unrounded geometry, or an earlier setup.',
-    'A TRADE is invalid when the exact final JSON risk_reward computed from final entry/stop_loss/tp1 is below the supplied canonical minimum_rr. TP2 or TP3 cannot rescue a TP1 RR failure. Reject that geometry and CONTINUE SEARCHING the complete supplied evidence for another valid BUY or SELL opportunity; return NO_TRADE only after that search finds no valid geometry.',
-    'Structural and liquidity objectives are genuine supplied facts. Respect lifecycle, reached, consumed, invalidated, and minimum-RR facts. Never manufacture fixed-R or ATR targets.',
+    'FINAL-GEOMETRY RR MEASUREMENT: after deciding the setup, serialize the exact final numeric entry, stop_loss, and each supplied TP that will appear in the JSON, then recalculate RR from those same values. BUY risk = entry - stop_loss and reward to each TP = TP - entry; SELL risk = stop_loss - entry and reward to each TP = entry - TP. Keep risk_reward as RR to TP1 and measure rr_tp2/rr_tp3 when those targets exist. Do not use a hidden midpoint, boundary, alternate entry, unrounded geometry, or an earlier setup.',
+    'minimum_rr is a preferred quality benchmark, not a hard trade-existence gate. If the realistic reachable TP ladder produces RR below minimum_rr, preserve a structurally coherent direction/location/entry/stop/objective thesis and report the exact lower RR as a quality warning. Do not tighten or move a valid structural stop, invent a farther target, or abandon the thesis solely to reach minimum_rr.',
+    'Structural and liquidity objectives are genuine supplied facts. Respect lifecycle, reached, consumed, invalidated, reachability, and path facts. TP1 is the nearest meaningful reachable objective, TP2 the next continuation objective, and TP3 the furthest realistic objective belonging to the same thesis. Never manufacture fixed-R or ATR targets.',
     'POI freshness is not opportunity freshness. For every PENDING_LIMIT, evaluate current 1D/4H/1H/15M/5M state, location formation time/age, mitigation, consumption, invalidation, delivery since formation, current-price-to-POI path, intervening/newer structure, and whether genuine objectives remain if entry is reached.',
     'A valid pending LIMIT may remain away from current price, outside its zone, without current 5M/15M confirmation, or outside a killzone. Distance alone is information, not rejection; no fixed dollar, pip, percentage, ATR, candle-count, proximity, current-zone, or current-retracement filter exists. CONFIRMATION_ENTRY must satisfy its supplied confirmation facts.',
     'A remote pending LIMIT must represent a coherent CURRENT opportunity: explain internally why the location matters now, what phase supports a return/activation, whether the original move already substantially delivered, whether the thesis survives intervening structure, and what objective remains after entry. A fresh remote POI plus attractive RR is not sufficient.',
@@ -19043,13 +19043,18 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
     const risk = direction === 'SELL'
         ? (Number.isFinite(stop) && Number.isFinite(entry) ? stop - entry : null)
         : (Number.isFinite(stop) && Number.isFinite(entry) ? entry - stop : null);
-    const reward = direction === 'SELL'
-        ? (Number.isFinite(entry) && Number.isFinite(tp1) ? entry - tp1 : null)
-        : (Number.isFinite(entry) && Number.isFinite(tp1) ? tp1 - entry : null);
-    const calculatedRR = risk > 0 && reward > 0 ? reward / risk : null;
-    if (minimumRR != null && (!Number.isFinite(calculatedRR) || calculatedRR < minimumRR)) {
-        issues.push('exact TP1 risk_reward is below canonical minimum_rr');
-        issues.push('EXTERNAL_AI_TP1_RR_BELOW_MINIMUM');
+    const calculateTargetRR = target => risk > 0 && Number.isFinite(target)
+        ? (direction === 'SELL' ? entry - target : target - entry) / risk
+        : null;
+    const calculatedRR = calculateTargetRR(tp1);
+    const calculatedRRs = {
+        tp1: calculatedRR,
+        tp2: calculateTargetRR(number('tp2')),
+        tp3: calculateTargetRR(number('tp3'))
+    };
+    const qualityWarnings = [];
+    if (minimumRR != null && Number.isFinite(calculatedRR) && calculatedRR < minimumRR) {
+        qualityWarnings.push('EXTERNAL_AI_RR_BELOW_PREFERRED');
     }
     const reportedRR = number('risk_reward');
     if (normalizedDecision.risk_reward != null && reportedRR == null) issue('RISK_REWARD_MUST_BE_NUMBER');
@@ -19204,9 +19209,13 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
         valid: issues.length === 0,
         issues,
         warnings,
+        quality_warnings: qualityWarnings,
         decision: outcome,
         direction,
         calculated_risk_reward: calculatedRR,
+        rr_tp1: calculatedRRs.tp1,
+        rr_tp2: calculatedRRs.tp2,
+        rr_tp3: calculatedRRs.tp3,
         reported_risk_reward: reportedRR,
         minimum_rr: minimumRR,
         location_id: normalizedDecision.location_id || null,
@@ -20003,7 +20012,9 @@ supporting that interpretation. This is interpretation, not an HTF hard gate.
 Discover whether a valid CRT, TBS, MSNR, combination, FVG/OB, or other
 supported current-structure opportunity exists. Choose a supplied factual
 location, supplied structural invalidation, and supplied genuine structural or
-liquidity objectives. Respect target lifecycle and minimum RR. A pending LIMIT
+liquidity objectives. Respect target lifecycle and reachability. minimum_rr is
+a preferred quality benchmark, not a reason to move a structural stop or
+invent a target. A pending LIMIT
 may remain away from current price; distance, an untouched entry, missing 5M/
 15M confirmation, or an outside-killzone location alone is not rejection.
 CONFIRMATION_ENTRY must satisfy its supplied confirmation requirements.
@@ -20034,14 +20045,16 @@ entry > TP1 > TP2 > TP3. One valid target means TP1 only; two valid targets
 mean TP1 and TP2 only; do not manufacture a third. Reject consumed,
 invalidated, unknown, or otherwise non-executable targets. risk_reward must use
 TP1 itself and structural risk: BUY (TP1-entry)/(entry-stop_loss), SELL
-(entry-TP1)/(stop_loss-entry). Do not use TP2/TP3 to rescue a TP1 that fails
-the supplied canonical minimum RR, and do not change that minimum. After
-populating the final JSON, recalculate risk_reward from the exact serialized
-entry, stop_loss, and tp1 values. The returned risk_reward must match that
-calculation; a claim based on a hidden midpoint, alternate entry, unrounded
-geometry, TP2, TP3, or an earlier setup is invalid. If the final exact RR is
-below the supplied canonical minimum_rr, reject the geometry and CONTINUE
-SEARCHING both directions and all supplied locations before deciding NO_TRADE.
+(entry-TP1)/(stop_loss-entry). Calculate rr_tp2 and rr_tp3 from the same
+structural risk when those targets exist. minimum_rr is a preferred quality
+benchmark, not a hard trade-existence gate. After populating the final JSON,
+recalculate risk_reward from the exact serialized entry, stop_loss, and tp1
+values. The returned risk_reward must match that calculation; a claim based on
+a hidden midpoint, alternate entry, unrounded geometry, TP2, TP3, or an earlier
+setup is invalid. If realistic RR is below minimum_rr, preserve the coherent
+direction/location/structural-stop thesis and report the lower RR as a quality
+warning. Do not tighten the structural stop, invent a farther target, or reject
+the trade solely to reach minimum_rr.
 
 The final setup value must be only a concise ICT model/type such as CRT, TBS,
 MSNR, CRT+MSNR, CRT+TBS, CRT+MSNR+TBS, FVG, OB, FVG+MSNR, OB+CRT, or

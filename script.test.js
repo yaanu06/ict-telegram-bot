@@ -3308,9 +3308,12 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).not.toContain('CURRENT OPPORTUNITY MATERIAL');
         expect(packet).not.toContain('Path A');
         expect(packet).toContain("Find today's highest-quality current trading opportunity");
-        expect(packet).toContain('RR is part of the TRADE / NO_TRADE decision');
-        expect(packet).toContain('If RR < minimum_rr, the final object MUST NOT have decision=TRADE');
-        expect(packet).toContain('Do not manufacture a farther target');
+        expect(packet).toContain('It is a preferred quality benchmark, not a hard trade-existence gate');
+        expect(packet).toContain('A realistic RR below minimum_rr is a quality warning');
+        expect(packet).toContain('Never move or tighten a valid structural stop');
+        expect(packet).toContain('invent a target');
+        expect(packet).toContain('REACHABLE OBJECTIVE LADDER');
+        expect(packet).toContain('Calculate RR to TP1, TP2, and TP3 when present');
         expect(packet).toContain('selected_candidate_id MUST be JSON null');
         expect(packet).toContain('copy the numeric level from that exact serialized objective catalogue record');
         expect(packet).toContain('prefer that specific setup token; use ICT only when no more specific supported model describes it');
@@ -4107,8 +4110,7 @@ describe('professional manual decision packet and external decision validation',
             model_setup_evidence: { ICT_STRUCTURE_AND_LIQUIDITY: [{ event_id: 'LOC-SELL', event_type: 'FVG' }] }
         };
         const invalidRR = ctx.validateExternalAITradeDecision({ decision: 'TRADE', direction: 'SELL', setup: 'FVG', entry: 1, stop_loss: 1.1, tp1: 0.9, risk_reward: 3, location_id: 'LOC-SELL', invalidation_id: 'INV-SELL', tp1_objective_id: 'OBJ-SELL', evidence_ids: ['LOC-SELL'] }, evidence);
-        expect(invalidRR.valid).toBe(false);
-        expect(invalidRR.issues).toContain('exact TP1 risk_reward is below canonical minimum_rr');
+        expect(invalidRR.issues).not.toContain('EXTERNAL_AI_TP1_RR_BELOW_MINIMUM');
         expect(invalidRR.warnings).toContain('REPORTED_RR_IGNORED_CODE_CALCULATED_RR_WINS');
         const exactLowRR = ctx.validateExternalAITradeDecision({ decision: 'TRADE', direction: 'SELL', setup: 'FVG', entry: 0.55991, stop_loss: 0.56056, tp1: 0.55857, risk_reward: 2.06, location_id: 'LOC-SELL', invalidation_id: 'INV-SELL', tp1_objective_id: 'OBJ-SELL', evidence_ids: ['LOC-SELL'] }, {
             ...evidence,
@@ -4116,11 +4118,51 @@ describe('professional manual decision packet and external decision validation',
             current_liquidity_objective_map: { above_current_price: [], below_current_price: [{ objective_id: 'OBJ-SELL', level: 0.55857 }] }
         });
         expect(exactLowRR.calculated_risk_reward).toBeCloseTo(2.061538, 5);
-        expect(exactLowRR.issues).toContain('exact TP1 risk_reward is below canonical minimum_rr');
+        expect(exactLowRR.quality_warnings).toContain('EXTERNAL_AI_RR_BELOW_PREFERRED');
         const validPending = ctx.validateExternalAITradeDecision({ decision: 'TRADE', direction: 'SELL', setup: 'FVG', market_phase: 'RETRACEMENT', trade_type: 'PENDING_LIMIT', confidence: 78, entry: 1, entry_zone: [0.99, 1.01], stop_loss: 1.1, tp1: 0.7, risk_reward: 3, location_id: 'LOC-SELL', invalidation_id: 'INV-SELL', tp1_objective_id: 'OBJ-SELL', evidence_ids: ['LOC-SELL'] }, evidence);
         expect(validPending.valid).toBe(true);
         const noTrade = ctx.validateExternalAITradeDecision({ decision: 'NO_TRADE', direction: null, trade_type: null, setup: null, entry: null, entry_zone: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null }, evidence);
         expect(noTrade.valid).toBe(true);
+    });
+
+    it('keeps a structurally coherent low-RR SELL valid and reports RR quality for every target', () => {
+        const ctx = getContext();
+        const evidence = {
+            manual_external_ai: true,
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [{
+                location_id: '1H-SELL-OB-4138.34-4148.39', type: 'OB', timeframe: '1H', source_orientation: 'SELL',
+                zone_low: 4138.34, zone_high: 4148.39, midpoint_if_defined: 4143.365, origin_evidence_ids: ['1H-SELL-OB-4138.34-4148.39']
+            }],
+            structural_invalidation_catalogue: [{ invalidation_id: '1H-STRUCTURAL-SELL-4153.28', level: 4153.28, state: 'ACTIVE' }],
+            current_liquidity_objective_map: {
+                above_current_price: [],
+                below_current_price: [
+                    { objective_id: 'SELL-TP1-4125.27', level: 4125.27, lifecycle_state: 'UNFULFILLED' },
+                    { objective_id: 'SELL-TP2-4123.35', level: 4123.35, lifecycle_state: 'UNFULFILLED' },
+                    { objective_id: 'SELL-TP3-4113.44', level: 4113.44, lifecycle_state: 'UNFULFILLED' }
+                ]
+            },
+            model_setup_evidence: { ICT_STRUCTURE_AND_LIQUIDITY: [{
+                event_id: '1H-SELL-OB-4138.34-4148.39', event_type: 'OB', direction: 'SELL'
+            }] }
+        };
+        const result = ctx.validateExternalAITradeDecision({
+            pair: 'XAU/USD', decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 68,
+            selected_candidate_id: null, location_id: '1H-SELL-OB-4138.34-4148.39', entry_zone: [4138.34, 4148.39], entry: 4138.34,
+            invalidation_id: '1H-STRUCTURAL-SELL-4153.28', stop_loss: 4153.28,
+            tp1_objective_id: 'SELL-TP1-4125.27', tp1: 4125.27,
+            tp2_objective_id: 'SELL-TP2-4123.35', tp2: 4123.35,
+            tp3_objective_id: 'SELL-TP3-4113.44', tp3: 4113.44,
+            risk_reward: 2.7584, evidence_ids: ['1H-SELL-OB-4138.34-4148.39']
+        }, evidence);
+        expect(result.valid).toBe(true);
+        expect(result.rr_tp1).toBeCloseTo(13.07 / 14.94, 8);
+        expect(result.rr_tp2).toBeCloseTo(14.99 / 14.94, 8);
+        expect(result.rr_tp3).toBeCloseTo(24.90 / 14.94, 8);
+        expect(result.quality_warnings).toContain('EXTERNAL_AI_RR_BELOW_PREFERRED');
+        expect(result.issues).not.toContain('EXTERNAL_AI_TP1_RR_BELOW_MINIMUM');
+        expect(result.warnings).toContain('REPORTED_RR_IGNORED_CODE_CALCULATED_RR_WINS');
     });
 
     it('rejects invalidation mismatch and unrelated combined-model evidence', () => {
@@ -4290,7 +4332,7 @@ describe('professional manual decision packet and external decision validation',
         expect(unrelated.issues).toContain('EXTERNAL_AI_SETUP_COMPONENT_UNSUPPORTED_BY_EVIDENCE');
     });
 
-    it('rejects the production-shaped low-RR XAU trade and exact objective rounding mismatch', () => {
+    it('retains production-shaped location geometry rejection while measuring RR and exact objective mismatch', () => {
         const ctx = getContext();
         const evidence = {
             manual_external_ai: true,
@@ -4303,7 +4345,11 @@ describe('professional manual decision packet and external decision validation',
             structural_invalidation_catalogue: [{ invalidation_id: '4H-TBS-SELL-7', level: 4179.685, state: 'ACTIVE' }],
             current_liquidity_objective_map: {
                 above_current_price: [],
-                below_current_price: [{ objective_id: 'TARGET:SELL:4H:SELL_SIDE_LIQUIDITY:4139.27', level: 4139.27, lifecycle_state: 'UNFULFILLED' }]
+                below_current_price: [
+                    { objective_id: 'TARGET:SELL:4H:SELL_SIDE_LIQUIDITY:4139.27', level: 4139.27, lifecycle_state: 'UNFULFILLED' },
+                    { objective_id: 'TARGET:SELL:4H:SELL_SIDE_LIQUIDITY:4133.72', level: 4133.72, lifecycle_state: 'UNFULFILLED' },
+                    { objective_id: 'TARGET:SELL:4H:SWING_LOW:4123.35', level: 4123.35, lifecycle_state: 'UNFULFILLED' }
+                ]
             },
             model_setup_evidence: { TBS: [{ event_id: 'TBS-4H-SELL-7', event_type: 'TBS', direction: 'SELL', evidence_ids: ['TBS-4H-SELL-7'] }] }
         };
@@ -4312,12 +4358,19 @@ describe('professional manual decision packet and external decision validation',
             selected_candidate_id: null,
             location_id: '4H-SUPPLY-4133.17-4151.39-1791234000000', entry_zone: [4133.17, 4151.39], entry: 4149.31,
             invalidation_id: '4H-TBS-SELL-7', stop_loss: 4179.685,
-            tp1_objective_id: 'TARGET:SELL:4H:SELL_SIDE_LIQUIDITY:4139.27', tp1: 4139.27, evidence_ids: ['TBS-4H-SELL-7'], risk_reward: 4.73
+            tp1_objective_id: 'TARGET:SELL:4H:SELL_SIDE_LIQUIDITY:4139.27', tp1: 4139.27,
+            tp2_objective_id: 'TARGET:SELL:4H:SELL_SIDE_LIQUIDITY:4133.72', tp2: 4133.72,
+            tp3_objective_id: 'TARGET:SELL:4H:SWING_LOW:4123.35', tp3: 4123.35,
+            evidence_ids: ['TBS-4H-SELL-7'], risk_reward: 4.73
         };
         const lowRR = ctx.validateExternalAITradeDecision(productionShape, evidence);
         expect(lowRR.valid).toBe(false);
+        expect(lowRR.issues).toContain('ENTRY_DOES_NOT_MATCH_LOCATION_ID');
         expect(lowRR.calculated_risk_reward).toBeCloseTo((4149.31 - 4139.27) / (4179.685 - 4149.31), 8);
-        expect(lowRR.issues).toContain('EXTERNAL_AI_TP1_RR_BELOW_MINIMUM');
+        expect(lowRR.rr_tp2).toBeCloseTo((4149.31 - 4133.72) / (4179.685 - 4149.31), 8);
+        expect(lowRR.rr_tp3).toBeCloseTo((4149.31 - 4123.35) / (4179.685 - 4149.31), 8);
+        expect(lowRR.quality_warnings).toContain('EXTERNAL_AI_RR_BELOW_PREFERRED');
+        expect(lowRR.issues).not.toContain('EXTERNAL_AI_TP1_RR_BELOW_MINIMUM');
 
         const roundedObjective = ctx.validateExternalAITradeDecision({ ...productionShape, entry: 4151.39, tp1: 4139.265 }, evidence);
         expect(roundedObjective.valid).toBe(false);
@@ -4361,7 +4414,7 @@ describe('professional manual decision packet and external decision validation',
         expect(result.valid).toBe(false);
         expect(result.calculated_risk_reward).toBeCloseTo((4166.13 - 4149.31) / (4149.31 - 4141.41), 8);
         expect(result.issues).toContain('EXTERNAL_AI_LOCATION_DIRECTION_MISMATCH');
-        expect(result.issues).toContain('EXTERNAL_AI_TP1_RR_BELOW_MINIMUM');
+        expect(result.quality_warnings).toContain('EXTERNAL_AI_RR_BELOW_PREFERRED');
         expect(result.issues).toContain('EXTERNAL_AI_OBJECTIVE_ID_NOT_FROM_OBJECTIVE_MAP');
         expect(result.issues).toContain('EXTERNAL_AI_TP3_OBJECTIVE_PRICE_MISMATCH');
     });
@@ -9454,7 +9507,7 @@ describe('AI market analyst contract', () => {
         expect(packet).toContain('Combined setup labels require same-opportunity components');
         expect(packet).toContain('4315.8');
         expect(packet).toContain('A stop must be a supplied structural invalidation belonging to the thesis');
-        expect(packet).toContain('TP2/TP3 cannot rescue it');
+        expect(packet).toContain('TP1 is the nearest meaningful reachable objective');
         expect(packet).toContain('Use only supplied facts and prices.');
         expect(packet).toContain('Do not return chain-of-thought or prose.');
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
