@@ -3353,6 +3353,7 @@ describe('Analyze scan lifecycle', () => {
         expect(context.getMarketDataProvider()).toBe('TVKIT');
         await context.runAutoScan();
         expect(spies.getHistory.mock.calls.map(call => call[0])).toEqual(['1D', '4H', '1H', '15M', '5M']);
+        expect(spies.getHistory.mock.calls.every(call => call[2]?.forceRefresh === true)).toBe(true);
     });
 
     it('prevents overlapping Analyze calls and re-enables the button after completion', async () => {
@@ -4477,6 +4478,26 @@ describe('professional manual decision packet and external decision validation',
         expect(reversed.issues).toContain('EXTERNAL_AI_TARGET_ORDER_INVALID');
     });
 
+    it('rejects an objective already delivered before a future pending entry activates', () => {
+        const ctx = getContext();
+        const evidence = {
+            manual_external_ai: true,
+            current_market_context: { current_price: 4129.72 },
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [{ location_id: 'OLD-SELL-OB', type: 'OB', source_orientation: 'SELL', zone_low: 4138.34, zone_high: 4148.39, midpoint_if_defined: 4143.365, origin_evidence_ids: ['OLD-SELL-OB'] }],
+            structural_invalidation_catalogue: [{ invalidation_id: 'OLD-SELL-INV', level: 4153.28, state: 'ACTIVE' }],
+            current_liquidity_objective_map: { above_current_price: [{ objective_id: 'DELIVERED-TP1', level: 4131.47, lifecycle_state: 'UNFULFILLED' }], below_current_price: [] },
+            model_setup_evidence: { ICT_STRUCTURE_AND_LIQUIDITY: [{ event_id: 'OLD-SELL-OB', event_type: 'OB', direction: 'SELL' }] }
+        };
+        const result = ctx.validateExternalAITradeDecision({
+            decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 70,
+            selected_candidate_id: null, location_id: 'OLD-SELL-OB', entry_zone: [4138.34, 4148.39], entry: 4138.34,
+            invalidation_id: 'OLD-SELL-INV', stop_loss: 4153.28, tp1_objective_id: 'DELIVERED-TP1', tp1: 4131.47, evidence_ids: ['OLD-SELL-OB']
+        }, evidence);
+        expect(result.valid).toBe(false);
+        expect(result.issues).toContain('EXTERNAL_AI_OBJECTIVE_ALREADY_DELIVERED_BEFORE_ENTRY');
+    });
+
     it('requires selected_candidate_id to remain null for manual external-AI validation', () => {
         const ctx = getContext();
         const evidence = {
@@ -4534,6 +4555,47 @@ describe('professional manual decision packet and external decision validation',
         expect(packet.current_actionable_location_catalogue.map(location => location.location_id)).not.toContain('OLD-HISTORICAL-OB');
         expect(packet.current_actionable_location_catalogue.map(location => location.location_id)).toContain('1H:FVG');
         expect(packet.market_delivery_chronology.events.every(event => /LOCATION_FORMED|LIQUIDITY|SWEEP|RAID|DISPLAC|BOS|MSS|CHOCH|CRT|TBS|MSNR|OBJECTIVE|RECLAIM|RETEST|FAIL|INVALIDAT/i.test(event.event_type))).toBe(true);
+    });
+
+    it('separates structural POI validity from future-entry delivery freshness', () => {
+        const ctx = getContext();
+        const oldLocation = {
+            id: '1H-SELL-OB-4138.34-4148.39', type: 'OB', timeframe: '1H', direction: 'SELL',
+            low: 4138.34, high: 4148.39, midpoint: 4143.365,
+            event_time: '2026-10-07T04:00:00Z', freshness: 'FRESH', state: 'FRESH'
+        };
+        const objectives = [
+            { objective_id: 'T1', timeframe: '1H', level: 4131.47, lifecycle_state: 'UNFULFILLED' },
+            { objective_id: 'T2', timeframe: '1H', level: 4127.27, lifecycle_state: 'UNFULFILLED' },
+            { objective_id: 'T3', timeframe: '1H', level: 4125.27, lifecycle_state: 'UNFULFILLED' }
+        ];
+        const delivery = ctx.evaluateManualPendingOpportunityDelivery(oldLocation, '1H', {
+            above_current_price: [objectives[0]], below_current_price: objectives.slice(1)
+        }, 4129.72);
+        expect(delivery.opportunity_lifecycle_state).toBe('STALE_FOR_NEW_ENTRY');
+        expect(delivery.delivery_fraction).toBeGreaterThan(0.5);
+        expect(oldLocation.freshness).toBe('FRESH');
+
+        const partialObjectives = [
+            { objective_id: 'P1', timeframe: '1H', level: 4137, lifecycle_state: 'UNFULFILLED' },
+            { objective_id: 'P2', timeframe: '1H', level: 4120, lifecycle_state: 'UNFULFILLED' }
+        ];
+        const partial = ctx.evaluateManualPendingOpportunityDelivery(oldLocation, '1H', {
+            above_current_price: partialObjectives, below_current_price: []
+        }, 4136.5);
+        expect(partial.opportunity_lifecycle_state).toBe('PARTIALLY_DELIVERED');
+        expect(partial.remaining_reward_fraction).toBeGreaterThanOrEqual(0.5);
+
+        const semantic = makeSemantic();
+        semantic.snapshot.current_price = 4129.72;
+        semantic.timeframes['1H'].locations = [oldLocation, {
+            id: '15M-SELL-MSNR-CURRENT', type: 'MSNR', timeframe: '15M', direction: 'SELL',
+            low: 4130, high: 4132, midpoint: 4131, event_time: '2026-10-07T09:30:00Z', freshness: 'FRESH', state: 'FRESH'
+        }];
+        semantic.target_context = objectives;
+        const packet = ctx.buildProfessionalManualMarketPacket({ semantic, pair: 'XAU/USD', provider: 'TVKIT', result: { scan_id: 'SCAN-DELIVERY' }, minimumRR: 2.5 });
+        expect(packet.current_actionable_location_catalogue.map(item => item.location_id)).not.toContain(oldLocation.id);
+        expect(packet.current_actionable_location_catalogue.map(item => item.location_id)).toContain('15M-SELL-MSNR-CURRENT');
     });
 
     it('normalizes event_id/time location records without changing identity precedence or geometry', () => {
@@ -8530,6 +8592,26 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         const second = await ctx.getMarketQuoteSnapshot('EUR/USD');
         expect(second).toEqual(first);
         expect(ctx.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('force-refreshes completed quote and history caches without changing ordinary cache reuse', async () => {
+        const ctx = getContext();
+        await ctx.saveKeys('tw', '', '', '', '');
+        let historyCalls = 0;
+        ctx.fetch = jest.fn(async url => url.includes('/quote?')
+            ? { ok: true, json: async () => ({ price: '1.25', timestamp: new Date().toISOString() }) }
+            : { ok: true, json: async () => ({ values: [{ datetime: '2026-09-19 10:00:00', open: '1', high: '2', low: '0.5', close: String(1.5 + 0.1 * historyCalls++) }] }) });
+        const firstQuote = await ctx.getMarketQuoteSnapshot('EUR/USD');
+        const cachedQuote = await ctx.getMarketQuoteSnapshot('EUR/USD');
+        const refreshedQuote = await ctx.getMarketQuoteSnapshot('EUR/USD', { forceRefresh: true });
+        expect(cachedQuote).toEqual(firstQuote);
+        expect(refreshedQuote).toEqual(firstQuote);
+        const firstHistory = await ctx.getHistory('1H', 'EUR/USD');
+        const cachedHistory = await ctx.getHistory('1H', 'EUR/USD');
+        const refreshedHistory = await ctx.getHistory('1H', 'EUR/USD', { forceRefresh: true });
+        expect(cachedHistory[0].c).toBe(firstHistory[0].c);
+        expect(refreshedHistory[0].c).not.toBe(firstHistory[0].c);
+        expect(ctx.fetch).toHaveBeenCalledTimes(4);
     });
 
     it('filters the currently forming provider candle before structure analysis', async () => {

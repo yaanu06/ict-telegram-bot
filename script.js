@@ -1159,10 +1159,11 @@ async function fetchTD(pathAndQuery, timeoutMs = 10000, retries = 2, diagnostic 
     throw lastError || new Error('Request failed');
 }
 
-async function getPrice(forPair) {
+async function getPrice(forPair, options = {}) {
     const p = normalizeCanonicalMarketSymbol(forPair || pair);
     const now = Date.now();
-    if(Number.isFinite(Number(cachedPrice)) && Number(cachedPrice) > 0 && cachedPricePair === p && (now - priceCacheTime) < PRICE_CACHE_DURATION) {
+    const forceRefresh = options?.forceRefresh === true;
+    if(!forceRefresh && Number.isFinite(Number(cachedPrice)) && Number(cachedPrice) > 0 && cachedPricePair === p && (now - priceCacheTime) < PRICE_CACHE_DURATION) {
         return cachedPrice;
     }
     if(!hasMarketDataAccess()) return null;
@@ -1182,7 +1183,7 @@ async function getPrice(forPair) {
     } catch(e) {
         // Never turn an expired quote cache into a live-looking price. The
         // caller must receive null so the data-quality gate can block the scan.
-        if(Number.isFinite(Number(cachedPrice)) && Number(cachedPrice) > 0 && cachedPricePair === p && (Date.now() - priceCacheTime) < PRICE_CACHE_DURATION) return cachedPrice;
+        if(!forceRefresh && Number.isFinite(Number(cachedPrice)) && Number(cachedPrice) > 0 && cachedPricePair === p && (Date.now() - priceCacheTime) < PRICE_CACHE_DURATION) return cachedPrice;
     }
     return null;
 }
@@ -1309,8 +1310,9 @@ function getMarketOpenState(forPair = pair, scanSnapshot = {}) {
     return { is_market_open: open, market_open: open, source: 'ASSET_CALENDAR', asset_class: assetClass };
 }
 
-async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
+async function fetchMarketQuoteSnapshotUncached(forPair = pair, options = {}) {
     const p = normalizeCanonicalMarketSymbol(forPair || pair);
+    const forceRefresh = options?.forceRefresh === true;
     const symbolMetadata = getSymbolMetadata(p);
     const assetClass = symbolMetadata.asset_class;
     try {
@@ -1342,7 +1344,7 @@ async function fetchMarketQuoteSnapshotUncached(forPair = pair) {
     } catch (error) {
         if (typeof console?.warn === 'function') console.warn('Quote snapshot unavailable; falling back to price endpoint', error?.message || error);
     }
-    const fallbackPrice = await getPrice(p);
+    const fallbackPrice = await getPrice(p, { forceRefresh });
     return {
         pair: p,
         price: Number.isFinite(Number(fallbackPrice)) && Number(fallbackPrice) > 0 ? Number(fallbackPrice) : null,
@@ -1383,13 +1385,14 @@ function applyCustomPair() {
     showNotif(`Using ${pair}`, 'info');
 }
 
-async function getMarketQuoteSnapshot(forPair = pair) {
+async function getMarketQuoteSnapshot(forPair = pair, options = {}) {
     const requestedPair = normalizeCanonicalMarketSymbol(forPair || pair);
+    const forceRefresh = options?.forceRefresh === true;
     const cached = quoteResponseCache.get(requestedPair);
-    if (cached && Date.now() - cached.ts < QUOTE_CACHE_TTL_MS) return cached.data;
+    if (!forceRefresh && cached && Date.now() - cached.ts < QUOTE_CACHE_TTL_MS) return cached.data;
     const existing = quoteInFlightCache.get(requestedPair);
     if (existing) return existing;
-    const request = fetchMarketQuoteSnapshotUncached(requestedPair);
+    const request = fetchMarketQuoteSnapshotUncached(requestedPair, { forceRefresh });
     quoteInFlightCache.set(requestedPair, request);
     try {
         const data = await request;
@@ -1423,10 +1426,11 @@ function refreshStaleQuoteFromClosedCandle(quoteSnapshot, historyCache, asOfMs =
     };
 }
 
-async function fetchHistoryUncached(tfStr, forPair) {
+async function fetchHistoryUncached(tfStr, forPair, options = {}) {
     if (!TF_MAP[tfStr]) throw new Error(`Unsupported timeframe: ${tfStr}`);
     const requestedPair = normalizeCanonicalMarketSymbol(forPair || pair);
     const cacheKey = `${requestedPair}|${tfStr}`;
+    const forceRefresh = options?.forceRefresh === true;
     const cached = historyResponseCache.get(cacheKey);
     const cacheTtl = HISTORY_CACHE_TTL_MS[tfStr] || 60000;
     const provider = getMarketDataProvider();
@@ -1442,6 +1446,7 @@ async function fetchHistoryUncached(tfStr, forPair) {
         interval: TF_MAP[tfStr] || null,
         cache_key: cacheKey,
         requested_outputsize: getRequiredHistoryOutputSize(),
+        cache_bypassed: forceRefresh,
         request_started: new Date(requestStartedAt).toISOString(),
         http_status: null,
         response_ok: null,
@@ -1473,7 +1478,7 @@ async function fetchHistoryUncached(tfStr, forPair) {
         });
         return null;
     }
-    if (cached && Date.now() - cached.ts < cacheTtl) {
+    if (!forceRefresh && cached && Date.now() - cached.ts < cacheTtl) {
         const cachedCount = Array.isArray(cached.data) ? cached.data.length : 0;
         Object.assign(diagnostic, {
             state: 'CACHE_HIT',
@@ -2974,12 +2979,12 @@ function buildFreshExecutionZones(narrative, historyCache = {}, existingZones = 
     return buildFreshExecutionZonesForNarrative(narrative, historyCache, existingZones, pairLocal, currentPrice, symbolMetadata);
 }
 
-async function getHistory(tfStr, forPair) {
+async function getHistory(tfStr, forPair, options = {}) {
     const requestedPair = normalizeCanonicalMarketSymbol(forPair || pair);
     const cacheKey = `${requestedPair}|${tfStr}`;
     const existing = historyInFlightCache.get(cacheKey);
     if (existing) return existing;
-    const request = fetchHistoryUncached(tfStr, requestedPair);
+    const request = fetchHistoryUncached(tfStr, requestedPair, options);
     historyInFlightCache.set(cacheKey, request);
     try {
         return await request;
@@ -11757,6 +11762,7 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         decision_handoff_audit: liveMarketContext.decision_handoff_audit || null,
         ai_context_audit: liveMarketContext.ai_context_audit || null,
         risk_constraints: liveMarketContext.risk_constraints || null,
+        snapshot_freshness: liveMarketContext.scan_snapshot_freshness || liveMarketContext.historyCache.snapshot_freshness || null,
         market_evidence_package: liveMarketContext.market_evidence_package || null,
         ai_analysis: liveMarketContext.ai_analysis || null,
         hard_rejections: liveMarketContext.hard_rejections || [],
@@ -11896,6 +11902,13 @@ function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe
         mitigation_state: item.mitigation_state || item.mitigation || null,
         lifecycle_state: item.lifecycle_state || item.target_lifecycle_state || null,
         state: item.lifecycle_state || item.target_lifecycle_state || item.freshness || item.state || null,
+        ...(item.opportunity_freshness || item.opportunity_lifecycle_state || Number.isFinite(Number(item.delivery_fraction))
+            || Number.isFinite(Number(item.remaining_reward_fraction ?? item.remaining_reward_fraction_at_scan)) ? {
+            opportunity_freshness: item.opportunity_freshness || item.opportunity_lifecycle_state || null,
+            delivery_fraction: Number.isFinite(Number(item.delivery_fraction)) ? Number(item.delivery_fraction) : null,
+            remaining_reward_fraction: Number.isFinite(Number(item.remaining_reward_fraction ?? item.remaining_reward_fraction_at_scan))
+                ? Number(item.remaining_reward_fraction ?? item.remaining_reward_fraction_at_scan) : null
+        } : {}),
         invalidated: item.invalidated === true,
         consumed: item.consumed === true || item.entry_consumed === true,
         structural_invalidation: invalidationLevel == null ? null : {
@@ -12121,6 +12134,82 @@ function manualPacketRelevanceRank(item = {}, timeframe = null, referenceTime = 
     const structurallyLinked = !!(item.structural_invalidation || item.structural_invalidation_detail
         || item.evidence_ids?.length || item.supporting_evidence_ids?.length);
     return (active ? 4 : 0) + (recent ? 3 : 0) + (structurallyLinked ? 1 : 0);
+}
+
+// Structural location lifecycle and opportunity lifecycle are deliberately
+// separate.  A zone can remain a valid historical POI after the move it was
+// intended to capture has already delivered.  This helper measures only the
+// future-entry path, using the existing 50% remaining-reward principle; it
+// does not rank locations or choose a replacement opportunity.
+function evaluateManualPendingOpportunityDelivery(item = {}, timeframe = null, objectives = {}, currentPrice = null) {
+    const orientation = String(item.source_orientation || item.orientation || item.direction || item.source_direction || '').toUpperCase();
+    const direction = ['BUY', 'SELL'].includes(orientation)
+        ? orientation
+        : String(item.type || item.event_type || '').toUpperCase() === 'DEMAND' ? 'BUY'
+            : String(item.type || item.event_type || '').toUpperCase() === 'SUPPLY' ? 'SELL' : null;
+    const low = compactEvidenceNumber(item.low, item.zone?.low, item.zone_low);
+    const high = compactEvidenceNumber(item.high, item.zone?.high, item.zone_high);
+    const price = externalPacketNumber(currentPrice);
+    const suppliedRemaining = externalPacketNumber(item.remaining_reward_fraction ?? item.remaining_reward_fraction_at_scan);
+    const suppliedDelivery = externalPacketNumber(item.delivery_fraction);
+    const suppliedFreshness = String(item.opportunity_freshness || item.opportunity_lifecycle_state || '').toUpperCase();
+    const base = {
+        opportunity_lifecycle_state: 'CURRENT',
+        opportunity_relevance: 'CURRENT',
+        delivery_fraction: suppliedDelivery,
+        remaining_reward_fraction: suppliedRemaining,
+        remaining_objective_ids: [],
+        delivered_objective_ids: [],
+        entry_reference: null,
+        direction
+    };
+    if (['STALE_DELIVERY', 'STALE_FOR_NEW_ENTRY', 'TARGET_DELIVERED', 'SUBSTANTIALLY_DELIVERED'].includes(suppliedFreshness)) {
+        return { ...base, opportunity_lifecycle_state: 'STALE_FOR_NEW_ENTRY', opportunity_relevance: 'STALE_FOR_NEW_ENTRY' };
+    }
+    if (Number.isFinite(suppliedRemaining) && suppliedRemaining < STRATEGY_SPEC.FRESHNESS.minRemainingRewardFraction) {
+        return { ...base, opportunity_lifecycle_state: 'STALE_FOR_NEW_ENTRY', opportunity_relevance: 'STALE_FOR_NEW_ENTRY', delivery_fraction: 1 - suppliedRemaining };
+    }
+    if (!direction || !Number.isFinite(price) || !Number.isFinite(low) || !Number.isFinite(high) || high < low) return base;
+
+    // Use the canonical midpoint when available.  If no midpoint exists, use
+    // the directionally relevant edge; this is a measurement reference only,
+    // not a serialized trade entry or a code-selected opportunity.
+    const entry = compactEvidenceNumber(item.entry, item.execution_entry, item.midpoint, item.level,
+        direction === 'SELL' ? low : high);
+    if (!Number.isFinite(entry)) return base;
+    const allObjectives = [
+        ...(Array.isArray(objectives.above_current_price) ? objectives.above_current_price : []),
+        ...(Array.isArray(objectives.below_current_price) ? objectives.below_current_price : [])
+    ].filter(objective => objective && (objective.timeframe == null || objective.timeframe === (item.timeframe || timeframe)));
+    const usable = objective => objective.reached !== true && objective.consumed !== true && objective.invalidated !== true
+        && !['CONSUMED', 'INVALIDATED', 'TARGET_DELIVERED', 'REACHED'].includes(String(objective.lifecycle_state || objective.state || '').toUpperCase());
+    const favorable = objective => direction === 'SELL' ? Number(objective.level) < entry : Number(objective.level) > entry;
+    const path = allObjectives.filter(objective => usable(objective) && Number.isFinite(Number(objective.level)) && favorable(objective));
+    if (!path.length) return { ...base, entry_reference: entry };
+    // The manual map may also contain neutral liquidity observations that are
+    // not part of this location's immediate delivery ladder.  Use the first
+    // meaningful nearby objectives in path order; this measures delivery
+    // without allowing a distant unrelated level to dilute it.
+    const ordered = path.slice().sort((a, b) => direction === 'SELL' ? Number(b.level) - Number(a.level) : Number(a.level) - Number(b.level)).slice(0, 3);
+    const delivered = ordered.filter(objective => direction === 'SELL' ? price <= Number(objective.level) : price >= Number(objective.level));
+    const remaining = ordered.filter(objective => direction === 'SELL' ? price > Number(objective.level) : price < Number(objective.level));
+    const farthest = direction === 'SELL' ? Math.min(...ordered.map(objective => Number(objective.level))) : Math.max(...ordered.map(objective => Number(objective.level)));
+    const totalReward = Math.abs(farthest - entry);
+    const deliveredDistance = direction === 'SELL' ? entry - price : price - entry;
+    const deliveryFraction = totalReward > 0 ? Math.max(0, Math.min(1, deliveredDistance / totalReward)) : 0;
+    const remainingRewardFraction = 1 - deliveryFraction;
+    const stale = remainingRewardFraction < STRATEGY_SPEC.FRESHNESS.minRemainingRewardFraction;
+    const partial = delivered.length > 0 && !stale;
+    return {
+        ...base,
+        opportunity_lifecycle_state: stale ? 'STALE_FOR_NEW_ENTRY' : partial ? 'PARTIALLY_DELIVERED' : 'CURRENT',
+        opportunity_relevance: stale ? 'STALE_FOR_NEW_ENTRY' : partial ? 'PARTIALLY_DELIVERED' : 'CURRENT',
+        delivery_fraction: deliveryFraction,
+        remaining_reward_fraction: remainingRewardFraction,
+        remaining_objective_ids: remaining.map(objective => objective.objective_id).filter(Boolean),
+        delivered_objective_ids: delivered.map(objective => objective.objective_id).filter(Boolean),
+        entry_reference: entry
+    };
 }
 
 function manualChronologyType(item = {}, fallbackType = null) {
@@ -12979,6 +13068,8 @@ function buildManualLocationCatalogue(semantic = {}, invalidations = [], objecti
     for (const timeframe of AI_SEMANTIC_TIMEFRAMES) {
         for (const item of semantic.timeframes?.[timeframe]?.locations || []) {
             if (!manualPacketIsRelevant(item, timeframe, referenceTime)) continue;
+            const opportunityDelivery = evaluateManualPendingOpportunityDelivery(item, timeframe, objectives, currentPrice);
+            if (opportunityDelivery.opportunity_lifecycle_state === 'STALE_FOR_NEW_ENTRY') continue;
             const id = manualPacketCanonicalId(item);
             if (!id || locations.has(id)) continue;
             const low = compactEvidenceNumber(item.low, item.zone?.low, item.zone_low);
@@ -13015,6 +13106,12 @@ function buildManualLocationCatalogue(semantic = {}, invalidations = [], objecti
                 mitigated: item.mitigation_state || item.mitigation || null,
                 mitigation_state: item.mitigation_state || item.mitigation || null,
                 lifecycle_state: item.lifecycle_state || item.state || null,
+                opportunity_lifecycle_state: opportunityDelivery.opportunity_lifecycle_state,
+                opportunity_relevance: opportunityDelivery.opportunity_relevance,
+                delivery_fraction: opportunityDelivery.delivery_fraction,
+                remaining_reward_fraction: opportunityDelivery.remaining_reward_fraction,
+                remaining_objective_ids: opportunityDelivery.remaining_objective_ids,
+                delivered_objective_ids: opportunityDelivery.delivered_objective_ids,
                 consumed: item.consumed === true,
                 invalidated: item.invalidated === true,
                 origin_evidence_ids: evidenceIds,
@@ -15669,6 +15766,14 @@ async function runAutoScan() {
     let price = null;
     let quoteSnapshot = null;
     let historyCache = {};
+    const previousSnapshotId = currentScanArtifact?.replay?.snapshot_id
+        || currentScanArtifact?.signal?.snapshot_id
+        || lastLiveMarketContextForReplay?.snapshot_id || null;
+    const previousSnapshotFreshness = currentScanArtifact?.replay?.snapshot_freshness
+        || lastLiveMarketContextForReplay?.scan_snapshot_freshness || null;
+    const forceFreshProviderSnapshot = isManualExternalAIMode();
+    const snapshotRequestedAt = new Date(scanAsOfMs).toISOString();
+    const providerFetchOptions = forceFreshProviderSnapshot ? { forceRefresh: true } : {};
     // A new scan owns the Copy state from this point forward. Do not allow a
     // failed/incomplete scan to inherit a prior symbol's public signal,
     // replay, or saved setup artifact.
@@ -15707,7 +15812,7 @@ async function runAutoScan() {
 
         showNotif('🤖 AI analyzing market data...', 'info');
         scanStage = 'price request';
-        quoteSnapshot = await getMarketQuoteSnapshot(pair);
+        quoteSnapshot = await getMarketQuoteSnapshot(pair, providerFetchOptions);
         price = quoteSnapshot?.price;
         if (!Number.isFinite(Number(price))) {
             throw new Error(`${getMarketDataProviderLabel()} returned no usable live price`);
@@ -15726,10 +15831,10 @@ async function runAutoScan() {
         scanText.innerHTML = '📊 Collecting market data...';
         scanStage = 'history requests';
         if (getMarketDataProvider() === 'TVKIT') {
-            for (const timeframe of tfs) historyCache[timeframe] = await getHistory(timeframe);
+            for (const timeframe of tfs) historyCache[timeframe] = await getHistory(timeframe, pair, providerFetchOptions);
         } else {
             await Promise.all(tfs.map(async (t) => {
-                historyCache[t] = await getHistory(t);
+                historyCache[t] = await getHistory(t, pair, providerFetchOptions);
             }));
         }
         for (const tf of tfs) historyCache[tf] = canonicalizeHistory(historyCache[tf], tf, scanAsOfMs);
@@ -15755,10 +15860,26 @@ async function runAutoScan() {
                     const data = historyCache[timeframe];
                     return [timeframe, {
                         ...value,
+                        requested_at: value.requested_at || snapshotRequestedAt,
                         normalized_candle_count: Array.isArray(data) ? data.length : 0,
                         closed_candle_count: Array.isArray(data) ? data.filter(candle => candle?.is_closed !== false).length : 0
                     }];
                 })),
+            enumerable: false,
+            configurable: true
+        });
+        Object.defineProperty(historyCache, 'snapshot_freshness', {
+            value: {
+                requested_at: snapshotRequestedAt,
+                provider_fetch_started_at: Object.values(historyCache.fetch_diagnostics || {})
+                    .map(item => item.request_started).filter(Boolean).sort()[0] || snapshotRequestedAt,
+                provider_fetch_completed_at: new Date().toISOString(),
+                cache_bypassed: forceFreshProviderSnapshot,
+                quote_cache_bypassed: forceFreshProviderSnapshot,
+                quote_time: quoteSnapshot?.provider_timestamp_utc || quoteSnapshot?.provider_timestamp || null,
+                quote_price: Number.isFinite(Number(quoteSnapshot?.price)) ? Number(quoteSnapshot.price) : null,
+                latest_closed_time: Object.fromEntries(tfs.map(tf => [tf, historyCache[tf]?.at(-1)?.t || null]))
+            },
             enumerable: false,
             configurable: true
         });
@@ -15904,6 +16025,22 @@ async function runAutoScan() {
             quote_snapshot: quoteSnapshot,
             snapshot_completeness: snapshotCompleteness
         });
+        const scanSnapshotFreshness = {
+            ...(historyCache.snapshot_freshness || {}),
+            previous_snapshot_id: previousSnapshotId,
+            current_snapshot_id: liveMarketContext.snapshot_id || null,
+            snapshot_materially_changed: previousSnapshotFreshness
+                ? JSON.stringify(previousSnapshotFreshness.latest_closed_time || {})
+                    !== JSON.stringify(historyCache.snapshot_freshness?.latest_closed_time || {})
+                    || previousSnapshotFreshness.quote_price !== historyCache.snapshot_freshness?.quote_price
+                : null
+        };
+        Object.defineProperty(historyCache, 'snapshot_freshness', {
+            value: scanSnapshotFreshness,
+            enumerable: false,
+            configurable: true
+        });
+        liveMarketContext.scan_snapshot_freshness = scanSnapshotFreshness;
         liveMarketContext.news_risk = checkHighImpactNews(quoteSnapshot?.news_risk || null);
         if (liveMarketContext.market_context) liveMarketContext.market_context.news_risk = liveMarketContext.news_risk;
         liveMarketContext.indicators = indicators;
@@ -18914,6 +19051,22 @@ function externalPacketNumber(value) {
     return Number.isFinite(number) ? number : null;
 }
 
+function isObjectiveRemainingForFutureEntry({ direction, tradeType, entry, currentPrice, objective } = {}) {
+    if (!['PENDING_LIMIT', 'BUY_LIMIT', 'SELL_LIMIT'].includes(String(tradeType || '').toUpperCase())) return true;
+    const level = externalPacketNumber(objective?.level);
+    const current = externalPacketNumber(currentPrice);
+    const plannedEntry = externalPacketNumber(entry);
+    if (!['BUY', 'SELL'].includes(String(direction || '').toUpperCase())
+        || !Number.isFinite(level) || !Number.isFinite(current) || !Number.isFinite(plannedEntry)) return true;
+    // A pending order has not activated while price is on the far side of its
+    // entry.  A target already crossed before that activation cannot provide
+    // future reward for the pending trade, even if the objective remains a
+    // valid historical/current market level globally.
+    if (direction === 'SELL' && current < plannedEntry && current <= level) return false;
+    if (direction === 'BUY' && current > plannedEntry && current >= level) return false;
+    return true;
+}
+
 // Manual AI responses are not used as an automatic execution path, but this
 // pure validator keeps the response contract auditable for callers that do
 // ingest a pasted decision. It validates the supplied facts; it never creates
@@ -18938,6 +19091,11 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
         ? evidence.current_actionable_location_catalogue : [];
     const invalidations = Array.isArray(evidence.structural_invalidation_catalogue)
         ? evidence.structural_invalidation_catalogue : [];
+    const currentPrice = externalPacketNumber(
+        evidence.current_market_context?.current_price
+        ?? evidence.current_price
+        ?? evidence.snapshot?.current_price
+    );
     const objectives = [
         ...(evidence.current_liquidity_objective_map?.above_current_price || []),
         ...(evidence.current_liquidity_objective_map?.below_current_price || [])
@@ -19113,6 +19271,9 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
         }
         const objectiveDirection = String(objective.direction || '').toUpperCase();
         if (['BUY', 'SELL'].includes(objectiveDirection) && objectiveDirection !== direction) issue('EXTERNAL_AI_OBJECTIVE_DIRECTION_MISMATCH');
+        if (!isObjectiveRemainingForFutureEntry({ direction, tradeType, entry, currentPrice, objective })) {
+            issue('EXTERNAL_AI_OBJECTIVE_ALREADY_DELIVERED_BEFORE_ENTRY');
+        }
         return objective;
     };
     if (normalizedDecision.tp1_objective_id == null) {
