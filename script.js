@@ -11782,7 +11782,8 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
             spread: liveMarketContext.quote_snapshot.spread ?? null, is_market_open: liveMarketContext.quote_snapshot.is_market_open ?? null,
             symbol_metadata: liveMarketContext.symbol_metadata || liveMarketContext.quote_snapshot.symbol_metadata || null
         } : null },
-        final_output: finalOutput
+        final_output: finalOutput,
+        previous_manual_packet: liveMarketContext.previous_manual_packet || null
     });
     assertScanReplaySafe(replay);
     return replay;
@@ -12040,11 +12041,24 @@ function buildManualCurrentMarketContext(semantic = {}, pair = null) {
         const value = timeframes[timeframe] || {};
         const range = value.dealing_range || {};
         const premiumDiscount = value.premium_discount || {};
+        const high = compactEvidenceNumber(range.high, range.range_high);
+        const low = compactEvidenceNumber(range.low, range.range_low);
+        const current = compactEvidenceNumber(snapshot.current_price, value.current_closed_price);
+        const equilibrium = high != null && low != null && high >= low ? (high + low) / 2 : null;
+        const span = high != null && low != null ? high - low : null;
+        const normalized = span > 0 && current != null ? (current - low) / span : null;
+        const tolerance = span > 0 ? Math.max(1e-9, span * 1e-6) : 1e-9;
+        const position = current == null || equilibrium == null ? null
+            : Math.abs(current - equilibrium) <= tolerance ? 'EQUILIBRIUM'
+                : current > equilibrium ? 'PREMIUM' : 'DISCOUNT';
         return [timeframe, {
-            range_high: range.high ?? range.range_high ?? null,
-            equilibrium: range.equilibrium ?? null,
-            range_low: range.low ?? range.range_low ?? null,
-            position: premiumDiscount.zone || premiumDiscount.classification || null
+            range_high: high,
+            equilibrium,
+            range_low: low,
+            position: position || premiumDiscount.zone || premiumDiscount.classification || null,
+            normalized_position: normalized,
+            distance_from_equilibrium: current != null && equilibrium != null ? current - equilibrium : null,
+            current_price: current
         }];
     }));
     return {
@@ -12054,6 +12068,208 @@ function buildManualCurrentMarketContext(semantic = {}, pair = null) {
         session_context: sessionContext,
         volatility_context: { regime: volatilityFacts.regime || null, by_timeframe: volatility },
         dealing_context: dealingContext
+    };
+}
+
+function manualLocationStateIsStructurallyExecutable(item = {}) {
+    const lifecycle = String(item.lifecycle_state || item.state || '').toUpperCase();
+    const freshness = String(item.freshness || item.freshness_state || '').toUpperCase();
+    if (item.consumed === true || item.invalidated === true) return false;
+    if (lifecycle === 'CONSUMED' || lifecycle === 'INVALIDATED' || lifecycle === 'EXPIRED') return false;
+    if (freshness === 'CONSUMED' || freshness === 'INVALIDATED' || freshness === 'EXPIRED') return false;
+    const low = compactEvidenceNumber(item.low, item.zone?.low, item.zone_low);
+    const high = compactEvidenceNumber(item.high, item.zone?.high, item.zone_high);
+    const level = compactEvidenceNumber(item.level, item.price, item.midpoint, item.zone?.midpoint);
+    return (low != null && high != null && high >= low) || level != null;
+}
+
+function manualRelativePosition(level, currentPrice) {
+    const value = compactEvidenceNumber(level);
+    const current = compactEvidenceNumber(currentPrice);
+    if (value == null || current == null) return null;
+    return value > current ? 'ABOVE' : value < current ? 'BELOW' : 'AT_PRICE';
+}
+
+function buildManualObjectiveSemanticState(objectives = {}, currentPrice = null) {
+    const all = [...(objectives.above_current_price || []), ...(objectives.below_current_price || [])]
+        .map(item => compactManualPacketValue({
+            ...item,
+            objective_class: item.objective_class || item.type || item.source || 'STRUCTURAL_OBJECTIVE',
+            liquidity_side: item.liquidity_side || (
+                String(item.source || item.type || '').toUpperCase().includes('BUY') ? 'BUY_SIDE'
+                    : String(item.source || item.type || '').toUpperCase().includes('SELL') ? 'SELL_SIDE' : 'NEUTRAL'
+            ),
+            relative_to_current_price: manualRelativePosition(item.level, currentPrice),
+            evidence_ids: Array.isArray(item.evidence_ids) ? item.evidence_ids : []
+        }))
+        .filter(Boolean)
+        .sort((a, b) => String(a.objective_id).localeCompare(String(b.objective_id)));
+    const clusters = [];
+    const byLevel = new Map();
+    for (const item of all) {
+        const key = Number.isFinite(Number(item.level)) ? String(Number(item.level)) : item.objective_id;
+        if (!byLevel.has(key)) byLevel.set(key, []);
+        byLevel.get(key).push(item);
+    }
+    for (const [key, members] of byLevel) {
+        if (members.length < 2) continue;
+        clusters.push({
+            objective_cluster_id: `OBJECTIVE_CLUSTER:${key}`,
+            cluster_level: Number.isFinite(Number(key)) ? Number(key) : null,
+            member_objective_ids: members.map(item => item.objective_id),
+            member_sources: [...new Set(members.map(item => item.source || item.type).filter(Boolean))],
+            highest_timeframe: members.map(item => item.timeframe).find(Boolean) || null
+        });
+    }
+    return {
+        all,
+        above_current_price: all.filter(item => item.relative_to_current_price === 'ABOVE'),
+        below_current_price: all.filter(item => item.relative_to_current_price === 'BELOW'),
+        clusters
+    };
+}
+
+function buildManualTimeframeState(semantic = {}, chronology = {}, currentContext = {}) {
+    return Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(timeframe => {
+        const value = semantic.timeframes?.[timeframe] || {};
+        const summary = currentContext.dealing_context?.[timeframe] || {};
+        const structure = value.structure || {};
+        const events = (chronology.events || []).filter(event => event.timeframe === timeframe);
+        const latest = (type, direction = null) => {
+            const candidates = events.filter(event => String(event.event_type || '').toUpperCase().includes(type)
+                && (!direction || String(event.direction || '').toUpperCase() === direction));
+            return candidates.at(-1) || null;
+        };
+        const bos = latest('BOS');
+        const mss = latest('MSS') || latest('CHOCH');
+        const choch = latest('CHOCH');
+        const displacement = latest('DISPLACEMENT');
+        const liquidity = events.filter(event => /LIQUIDITY|SWEEP|RAID/.test(String(event.event_type || '').toUpperCase())).at(-1) || null;
+        const latestIds = [bos, mss, choch, displacement, liquidity].map(event => event?.event_id).filter(Boolean);
+        return [timeframe, compactManualPacketValue({
+            timeframe,
+            role: value.role || null,
+            last_closed_time: value.last_closed_time || null,
+            last_closed_price: value.current_closed_price ?? null,
+            structure: {
+                swing_sequence: structure.sequence || structure.structure_sequence || [],
+                structural_trend: structure.structural_trend || structure.trend || 'NEUTRAL',
+                momentum_trend: structure.momentum_trend || 'NEUTRAL',
+                effective_trend: structure.effective_trend || structure.trend || 'NEUTRAL',
+                latest_bos_direction: bos?.direction || structure.latest_bos_direction || null,
+                latest_bos_time: bos?.time || structure.latest_bos_time || null,
+                latest_mss_direction: mss?.direction || structure.latest_mss_direction || null,
+                latest_mss_time: mss?.time || structure.latest_mss_time || null,
+                latest_choch_direction: choch?.direction || structure.latest_choch_direction || null,
+                latest_choch_time: choch?.time || structure.latest_choch_time || null
+            },
+            delivery: {
+                latest_displacement_direction: displacement?.direction || null,
+                latest_displacement_time: displacement?.time || null,
+                latest_liquidity_event_type: liquidity?.event_type || null,
+                latest_liquidity_event_direction: liquidity?.direction || null,
+                latest_liquidity_event_time: liquidity?.time || null
+            },
+            range: {
+                high: summary.range_high ?? null,
+                low: summary.range_low ?? null,
+                equilibrium: summary.equilibrium ?? null,
+                current_price: summary.current_price ?? semantic.snapshot?.current_price ?? null,
+                current_position: summary.position ?? null,
+                distance_from_equilibrium: summary.distance_from_equilibrium ?? null,
+                normalized_position: summary.normalized_position ?? null
+            },
+            volatility: { atr: value.atr ?? currentContext.volatility_context?.by_timeframe?.[timeframe]?.atr ?? null, current_range_vs_atr: value.current_range_vs_atr ?? null },
+            latest_structural_event_ids: latestIds,
+            model_evidence_ids: events.map(event => event.event_id).filter(Boolean).slice(-24),
+            latest_meaningful_event_ids: events.map(event => event.event_id).filter(Boolean).slice(-24)
+        }) || { timeframe }];
+    }));
+}
+
+function buildManualSnapshotDelta(current = {}, previous = null) {
+    if (!previous || typeof previous !== 'object') return { available: false };
+    const currentLocations = current.current_actionable_location_catalogue || current.actionable_location_bundles || [];
+    const previousLocations = previous.current_actionable_location_catalogue || previous.actionable_location_bundles || [];
+    const currentObjectives = current.current_liquidity_objective_map?.all || current.objective_state?.all || [];
+    const previousObjectives = previous.current_liquidity_objective_map?.all || previous.objective_state?.all || [];
+    const ids = (items, key) => new Set((Array.isArray(items) ? items : []).map(item => item?.[key]).filter(Boolean));
+    const recordMap = (items, key) => new Map((Array.isArray(items) ? items : []).filter(item => item?.[key]).map(item => [item[key], item]));
+    const currentLocationIds = ids(currentLocations, 'location_id');
+    const previousLocationIds = ids(previousLocations, 'location_id');
+    const currentLocationMap = recordMap(currentLocations, 'location_id');
+    const previousLocationMap = recordMap(previousLocations, 'location_id');
+    const currentObjectiveIds = ids(currentObjectives, 'objective_id');
+    const previousObjectiveIds = ids(previousObjectives, 'objective_id');
+    const currentObjectiveMap = recordMap(currentObjectives, 'objective_id');
+    const previousObjectiveMap = recordMap(previousObjectives, 'objective_id');
+    const currentEvents = (current.market_delivery_chronology?.events || current.model_setup_evidence?.ICT_STRUCTURE_AND_LIQUIDITY || []);
+    const previousEvents = (previous.market_delivery_chronology?.events || previous.model_setup_evidence?.ICT_STRUCTURE_AND_LIQUIDITY || []);
+    const eventIds = items => new Set((Array.isArray(items) ? items : []).map(item => item?.event_id || item?.id).filter(Boolean));
+    const currentEventIds = eventIds(currentEvents); const previousEventIds = eventIds(previousEvents);
+    const added = (now, old) => [...now].filter(id => !old.has(id)).sort();
+    const removed = (old, now) => [...old].filter(id => !now.has(id)).sort();
+    const changed = (nowMap, oldMap, predicate) => [...nowMap.entries()]
+        .filter(([id, item]) => oldMap.has(id) && predicate(item, oldMap.get(id)))
+        .map(([id]) => id).sort();
+    const lifecycleChanged = (item, previousItem) => JSON.stringify({
+        lifecycle_state: item.lifecycle_state || item.structural_lifecycle?.lifecycle_state,
+        freshness: item.freshness || item.structural_lifecycle?.freshness,
+        opportunity_lifecycle_state: item.opportunity_lifecycle_state || item.opportunity_delivery?.state,
+        consumed: item.consumed || item.structural_lifecycle?.consumed,
+        invalidated: item.invalidated || item.structural_lifecycle?.invalidated
+    }) !== JSON.stringify({
+        lifecycle_state: previousItem.lifecycle_state || previousItem.structural_lifecycle?.lifecycle_state,
+        freshness: previousItem.freshness || previousItem.structural_lifecycle?.freshness,
+        opportunity_lifecycle_state: previousItem.opportunity_lifecycle_state || previousItem.opportunity_delivery?.state,
+        consumed: previousItem.consumed || previousItem.structural_lifecycle?.consumed,
+        invalidated: previousItem.invalidated || previousItem.structural_lifecycle?.invalidated
+    });
+    const transitionedTo = (nowMap, oldMap, field, value) => [...nowMap.entries()]
+        .filter(([id, item]) => String(item[field] || item.structural_lifecycle?.[field] || '').toUpperCase() === value
+            && String(oldMap.get(id)?.[field] || oldMap.get(id)?.structural_lifecycle?.[field] || '').toUpperCase() !== value)
+        .map(([id]) => id).sort();
+    const currentSummary = current.multi_timeframe_state || current.current_market_summary || {};
+    const previousSummary = previous.multi_timeframe_state || previous.current_market_summary || {};
+    const latestClosedTimeChanged = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf,
+        (currentSummary[tf]?.last_closed_time || null) !== (previousSummary[tf]?.last_closed_time || null)]));
+    const currentCandles = current.raw_evidence_appendix?.recent_closed_price_action || current.recent_price_action || {};
+    const previousCandles = previous.raw_evidence_appendix?.recent_closed_price_action || previous.recent_price_action || {};
+    const newCandleCounts = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => {
+        const previousTimes = new Set((previousCandles[tf] || []).map(candle => String(candle?.time || '')));
+        return [tf, (currentCandles[tf] || []).filter(candle => !previousTimes.has(String(candle?.time || ''))).length];
+    }));
+    const newEventRecords = (Array.isArray(currentEvents) ? currentEvents : []).filter(event => {
+        const id = event?.event_id || event?.id;
+        return id && !previousEventIds.has(id);
+    });
+    const newEventIdsFor = pattern => newEventRecords.filter(event => pattern.test(`${event?.event_type || ''} ${event?.type || ''} ${event?.strategy || ''}`.toUpperCase())).map(event => event.event_id || event.id).sort();
+    return {
+        available: true,
+        previous_snapshot_id: previous.packet_identity?.snapshot_id || previous.snapshot_id || null,
+        current_snapshot_id: current.packet_identity?.snapshot_id || current.snapshot_id || null,
+        latest_closed_time_changed: latestClosedTimeChanged,
+        new_closed_candle_count_by_timeframe: newCandleCounts,
+        new_event_ids: added(currentEventIds, previousEventIds),
+        new_location_ids: added(currentLocationIds, previousLocationIds),
+        location_ids_touched_since_previous: changed(currentLocationMap, previousLocationMap, lifecycleChanged),
+        location_ids_consumed_since_previous: transitionedTo(currentLocationMap, previousLocationMap, 'consumed', 'TRUE'),
+        location_ids_invalidated_since_previous: transitionedTo(currentLocationMap, previousLocationMap, 'invalidated', 'TRUE'),
+        new_objective_ids: added(currentObjectiveIds, previousObjectiveIds),
+        objective_ids_reached_since_previous: changed(currentObjectiveMap, previousObjectiveMap, (item, old) => (item.reached === true || String(item.lifecycle_state || '').toUpperCase() === 'REACHED')
+            && !(old.reached === true || String(old.lifecycle_state || '').toUpperCase() === 'REACHED')),
+        objective_ids_consumed_since_previous: changed(currentObjectiveMap, previousObjectiveMap, (item, old) => (item.consumed === true || String(item.lifecycle_state || '').toUpperCase() === 'CONSUMED')
+            && !(old.consumed === true || String(old.lifecycle_state || '').toUpperCase() === 'CONSUMED')),
+        new_liquidity_event_ids: newEventIdsFor(/LIQUIDITY|SWEEP|RAID/),
+        new_bos_ids: newEventIdsFor(/\bBOS\b/),
+        new_mss_ids: newEventIdsFor(/\bMSS\b/),
+        new_choch_ids: newEventIdsFor(/CHOCH/),
+        new_displacement_ids: newEventIdsFor(/DISPLACEMENT/),
+        new_crt_ids: newEventIdsFor(/CRT/),
+        new_tbs_ids: newEventIdsFor(/TBS/),
+        new_msnr_ids: newEventIdsFor(/MSNR/),
+        removed_actionable_location_ids: removed(previousLocationIds, currentLocationIds),
+        current_actionable_location_ids_added: added(currentLocationIds, previousLocationIds)
     };
 }
 
@@ -13020,15 +13236,12 @@ function buildManualLiquidityObjectiveMap(semantic = {}, currentPrice = null) {
         }
     }
     const numericPrice = Number(currentPrice);
-    const sorted = [...records.values()].sort((a, b) => {
-        const distanceA = Number.isFinite(numericPrice) ? Math.abs(a.level - numericPrice) : Infinity;
-        const distanceB = Number.isFinite(numericPrice) ? Math.abs(b.level - numericPrice) : Infinity;
-        return distanceA - distanceB || a.objective_id.localeCompare(b.objective_id);
-    });
-    return {
-        above_current_price: sorted.filter(item => Number.isFinite(numericPrice) && item.level > numericPrice).slice(0, 48),
-        below_current_price: sorted.filter(item => Number.isFinite(numericPrice) && item.level < numericPrice).slice(0, 48)
-    };
+    const sorted = [...records.values()].sort((a, b) => a.level - b.level || a.objective_id.localeCompare(b.objective_id));
+    const state = buildManualObjectiveSemanticState({
+        above_current_price: sorted.filter(item => Number.isFinite(numericPrice) && item.level > numericPrice),
+        below_current_price: sorted.filter(item => Number.isFinite(numericPrice) && item.level < numericPrice)
+    }, currentPrice);
+    return state;
 }
 
 function manualLocationModelFamily(type = '') {
@@ -13069,6 +13282,7 @@ function buildManualLocationCatalogue(semantic = {}, invalidations = [], objecti
     const locations = new Map();
     for (const timeframe of AI_SEMANTIC_TIMEFRAMES) {
         for (const item of semantic.timeframes?.[timeframe]?.locations || []) {
+            if (!manualLocationStateIsStructurallyExecutable(item)) continue;
             if (!manualPacketIsRelevant(item, timeframe, referenceTime)) continue;
             const opportunityDelivery = evaluateManualPendingOpportunityDelivery(item, timeframe, objectives, currentPrice);
             if (opportunityDelivery.opportunity_lifecycle_state === 'STALE_FOR_NEW_ENTRY') continue;
@@ -13090,6 +13304,10 @@ function buildManualLocationCatalogue(semantic = {}, invalidations = [], objecti
             ).map(objective => objective.objective_id);
             const relation = Number.isFinite(Number(currentPrice)) && low != null && high != null
                 ? currentPrice < low ? 'BELOW_ZONE' : currentPrice > high ? 'ABOVE_ZONE' : 'INSIDE_ZONE'
+                : null;
+            const formedAt = manualPacketTimestampValue(item);
+            const barsSinceFormation = Number.isFinite(Number(item.bars_since_formation))
+                ? Number(item.bars_since_formation)
                 : null;
             locations.set(id, compactManualPacketValue({
                 location_id: String(id),
@@ -13125,15 +13343,54 @@ function buildManualLocationCatalogue(semantic = {}, invalidations = [], objecti
                 delivery_since_formation: item.delivery_since_formation || item.delivery_since_formation_facts || null,
                 current_relationship: compactManualPacketValue({
                     price_relation: relation,
+                    current_price: currentPrice,
+                    distance_to_near_edge: low != null && high != null && Number.isFinite(Number(currentPrice))
+                        ? Math.min(Math.abs(Number(currentPrice) - low), Math.abs(Number(currentPrice) - high)) : null,
+                    distance_to_far_edge: low != null && high != null && Number.isFinite(Number(currentPrice))
+                        ? Math.max(Math.abs(Number(currentPrice) - low), Math.abs(Number(currentPrice) - high)) : null,
+                    distance_to_midpoint: midpoint != null && Number.isFinite(Number(currentPrice)) ? Math.abs(Number(currentPrice) - midpoint) : null,
                     traded_through: item.traded_through ?? null,
                     newer_structure: item.newer_structure || null
                 }),
                 compatible_invalidation_ids: compatibleInvalidationIds,
-                spatially_relevant_objective_ids: spatialObjectiveIds
+                spatially_relevant_objective_ids: spatialObjectiveIds,
+                zone: compactManualPacketValue({ low, high, midpoint }),
+                formation: compactManualPacketValue({ formed_at: formedAt, bars_since_formation: barsSinceFormation, origin_evidence_ids: evidenceIds }),
+                structural_lifecycle: compactManualPacketValue({
+                    freshness: item.freshness || null,
+                    lifecycle_state: item.lifecycle_state || item.state || null,
+                    mitigation_state: item.mitigation_state || item.mitigation || null,
+                    consumed: item.consumed === true,
+                    invalidated: item.invalidated === true
+                }),
+                opportunity_delivery: compactManualPacketValue({
+                    state: opportunityDelivery.opportunity_lifecycle_state,
+                    relevance: opportunityDelivery.opportunity_relevance,
+                    delivery_fraction: opportunityDelivery.delivery_fraction,
+                    remaining_reward_fraction: opportunityDelivery.remaining_reward_fraction,
+                    delivered_objective_ids: opportunityDelivery.delivered_objective_ids,
+                    remaining_objective_ids: opportunityDelivery.remaining_objective_ids
+                }),
+                supporting_evidence_ids: evidenceIds,
+                conflicting_evidence_ids: [],
+                events_since_formation: [],
+                containing_location_ids: [],
+                overlapping_location_ids: []
             }));
         }
     }
-    return [...locations.values()];
+    const records = [...locations.values()];
+    for (const record of records) {
+        const low = record.zone_low; const high = record.zone_high;
+        if (low == null || high == null) continue;
+        record.containing_location_ids = records.filter(other => other.location_id !== record.location_id
+            && other.zone_low != null && other.zone_high != null
+            && other.zone_low <= low && other.zone_high >= high).map(other => other.location_id).sort();
+        record.overlapping_location_ids = records.filter(other => other.location_id !== record.location_id
+            && other.zone_low != null && other.zone_high != null
+            && other.zone_low <= high && other.zone_high >= low).map(other => other.location_id).sort();
+    }
+    return records;
 }
 
 function buildManualModelEvidence(semantic = {}) {
@@ -13232,6 +13489,78 @@ function buildManualCurrentMarketSummary(semantic = {}, chronology = {}, modelEv
     }));
 }
 
+function buildManualPacketCrossReferenceIndex(packet = {}) {
+    const index = { locations: new Map(), objectives: new Map(), invalidations: new Map(), events: new Map(), evidence: new Map() };
+    for (const item of packet.actionable_location_bundles || packet.current_actionable_location_catalogue || []) {
+        if (item?.location_id) index.locations.set(item.location_id, item);
+        for (const id of item?.origin_evidence_ids || []) index.evidence.set(id, item);
+    }
+    for (const item of packet.objective_state?.all || packet.current_liquidity_objective_map?.all || [
+        ...(packet.current_liquidity_objective_map?.above_current_price || []),
+        ...(packet.current_liquidity_objective_map?.below_current_price || [])
+    ]) if (item?.objective_id) index.objectives.set(item.objective_id, item);
+    for (const item of packet.structural_invalidations || packet.structural_invalidation_catalogue || []) if (item?.invalidation_id) index.invalidations.set(item.invalidation_id, item);
+    for (const event of packet.market_delivery_chronology?.events || []) {
+        if (event?.event_id) index.events.set(event.event_id, event);
+        for (const id of event?.evidence_ids || []) index.evidence.set(id, event);
+    }
+    return index;
+}
+
+function validateManualExternalAIPacketIntegrity(packet = {}) {
+    const issues = [];
+    const timeframes = packet.multi_timeframe_state || packet.current_market_summary || {};
+    if (JSON.stringify(Object.keys(timeframes)) !== JSON.stringify(AI_SEMANTIC_TIMEFRAMES)) issues.push('MISSING_CANONICAL_TIMEFRAMES');
+    const locations = packet.actionable_location_bundles || packet.current_actionable_location_catalogue || [];
+    const locationIds = new Set();
+    for (const location of locations) {
+        if (!location?.location_id) { issues.push('ACTIONABLE_LOCATION_ID_MISSING'); continue; }
+        if (locationIds.has(location.location_id)) issues.push(`DUPLICATE_LOCATION_ID:${location.location_id}`);
+        locationIds.add(location.location_id);
+        if (location.consumed === true || location.invalidated === true) issues.push(`ACTIONABLE_LOCATION_STRUCTURALLY_UNUSABLE:${location.location_id}`);
+        const lifecycle = String(location.lifecycle_state || location.structural_lifecycle?.lifecycle_state || '').toUpperCase();
+        const freshness = String(location.freshness || location.structural_lifecycle?.freshness || '').toUpperCase();
+        if (['CONSUMED', 'INVALIDATED'].includes(lifecycle) || ['CONSUMED', 'INVALIDATED'].includes(freshness)) issues.push(`ACTIONABLE_LOCATION_LIFECYCLE_CONTRADICTION:${location.location_id}`);
+        const low = compactEvidenceNumber(location.zone_low, location.zone?.low);
+        const high = compactEvidenceNumber(location.zone_high, location.zone?.high);
+        if ((low == null) !== (high == null) || (low != null && high < low)) issues.push(`ACTIONABLE_LOCATION_RANGE_INVALID:${location.location_id}`);
+        for (const id of location.compatible_invalidation_ids || []) if (!(packet.structural_invalidations || packet.structural_invalidation_catalogue || []).some(item => item.invalidation_id === id)) issues.push(`MISSING_LOCATION_INVALIDATION_REF:${location.location_id}:${id}`);
+        for (const id of location.spatially_relevant_objective_ids || []) if (!(packet.objective_state?.all || packet.current_liquidity_objective_map?.all || [...(packet.current_liquidity_objective_map?.above_current_price || []), ...(packet.current_liquidity_objective_map?.below_current_price || [])]).some(item => item.objective_id === id)) issues.push(`MISSING_LOCATION_OBJECTIVE_REF:${location.location_id}:${id}`);
+    }
+    const objectives = packet.objective_state?.all || [
+        ...(packet.current_liquidity_objective_map?.above_current_price || []),
+        ...(packet.current_liquidity_objective_map?.below_current_price || [])
+    ];
+    const objectiveLevels = new Map();
+    for (const objective of objectives) {
+        if (!objective?.objective_id || !Number.isFinite(Number(objective.level))) issues.push('OBJECTIVE_LEVEL_INVALID');
+        if (objectiveLevels.has(objective.objective_id) && objectiveLevels.get(objective.objective_id) !== Number(objective.level)) issues.push(`OBJECTIVE_ID_CONFLICT:${objective.objective_id}`);
+        objectiveLevels.set(objective.objective_id, Number(objective.level));
+        if (objective.relative_to_current_price && !['ABOVE', 'BELOW', 'AT_PRICE'].includes(objective.relative_to_current_price)) issues.push(`OBJECTIVE_RELATION_INVALID:${objective.objective_id}`);
+    }
+    const invalidationLevels = new Map();
+    for (const invalidation of packet.structural_invalidations || packet.structural_invalidation_catalogue || []) {
+        if (!invalidation?.invalidation_id || !Number.isFinite(Number(invalidation.level))) issues.push('INVALIDATION_LEVEL_INVALID');
+        if (invalidationLevels.has(invalidation.invalidation_id) && invalidationLevels.get(invalidation.invalidation_id) !== Number(invalidation.level)) issues.push(`INVALIDATION_ID_CONFLICT:${invalidation.invalidation_id}`);
+        invalidationLevels.set(invalidation.invalidation_id, Number(invalidation.level));
+    }
+    const raw = packet.raw_evidence_appendix?.recent_closed_price_action || packet.recent_price_action || {};
+    for (const timeframe of AI_SEMANTIC_TIMEFRAMES) {
+        const candles = raw[timeframe] || [];
+        let previous = null;
+        for (const candle of candles) {
+            const values = [candle?.open, candle?.high, candle?.low, candle?.close].map(Number);
+            const time = normalizeTimestampUTC(candle?.time);
+            if (!Number.isFinite(time) || values.some(value => !Number.isFinite(value)) || values[1] < Math.max(values[0], values[3], values[2]) || values[2] > Math.min(values[0], values[3], values[1])) issues.push(`RAW_CANDLE_INVALID:${timeframe}`);
+            if (previous != null && time <= previous) issues.push(`RAW_CANDLE_ORDER_INVALID:${timeframe}`);
+            previous = time;
+        }
+    }
+    const result = { valid: issues.length === 0, issues, checked_at: new Date().toISOString() };
+    Object.defineProperty(result, 'index', { value: buildManualPacketCrossReferenceIndex(packet), enumerable: false });
+    return result;
+}
+
 function buildProfessionalManualMarketPacket({ semantic = {}, pair = null, provider = null, result = {}, source = {}, minimumRR = null } = {}) {
     const referenceTime = source.scan_as_of || result.time || semantic.snapshot?.as_of || null;
     const recentPriceAction = buildManualRecentPriceAction(semantic);
@@ -13242,6 +13571,34 @@ function buildProfessionalManualMarketPacket({ semantic = {}, pair = null, provi
     const locations = buildManualLocationCatalogue(semantic, invalidations, objectives, semantic.snapshot?.current_price, referenceTime);
     const modelEvidence = buildManualModelEvidence(semantic);
     const conflicts = buildManualConflictMap(semantic);
+    const multiTimeframeState = buildManualTimeframeState(semantic, chronology, currentMarketContext);
+    const objectiveState = objectives;
+    const locationIds = new Set(locations.map(item => item.location_id));
+    for (const location of locations) {
+        const formedAt = normalizeTimestampUTC(location.formed_at);
+        location.events_since_formation = (chronology.events || [])
+            .filter(event => event && event.event_id && (!Number.isFinite(formedAt) || normalizeTimestampUTC(event.time) > formedAt))
+            .filter(event => !event.location_id || event.location_id === location.location_id || event.timeframe === location.timeframe)
+            .slice(-MANUAL_PACKET_MAX_EVENTS_PER_TIMEFRAME)
+            .map(event => compactManualPacketValue({
+                event_id: event.event_id,
+                event_type: event.event_type,
+                timeframe: event.timeframe,
+                direction: event.direction || null,
+                time: event.time,
+                location_id: event.location_id || null
+            }));
+        location.supporting_evidence_ids = [...new Set([
+            ...(location.supporting_evidence_ids || []),
+            ...(location.origin_evidence_ids || [])
+        ])].filter(Boolean).slice(0, 24);
+        location.conflicting_evidence_ids = conflicts
+            .filter(conflict => (conflict.timeframes || []).includes(location.timeframe))
+            .flatMap(conflict => conflict.evidence_ids || [])
+            .slice(0, 24);
+        location.containing_location_ids = (location.containing_location_ids || []).filter(id => locationIds.has(id));
+        location.overlapping_location_ids = (location.overlapping_location_ids || []).filter(id => locationIds.has(id));
+    }
     const identity = {
         symbol: pair || semantic.snapshot?.pair || null,
         generated_at: source.scan_as_of || result.time || semantic.snapshot?.as_of || null,
@@ -13254,9 +13611,10 @@ function buildProfessionalManualMarketPacket({ semantic = {}, pair = null, provi
         current_price: semantic.snapshot?.current_price ?? source.quote?.price ?? result.current_price ?? null,
         quote_time: source.quote?.quote_time || null
     };
-    return {
+    const packet = {
         packet_type: 'EXTERNAL_AI_MARKET_DECISION',
         schema_version: 3,
+        external_ai_packet_schema: 'MARKET_STATE_V3',
         packet_identity: identity,
         professional_trader_mandate: [
             'Find today\'s highest-quality current trading opportunity on the supplied symbol, if one exists.',
@@ -13287,6 +13645,46 @@ function buildProfessionalManualMarketPacket({ semantic = {}, pair = null, provi
                 'Recent price action contains only closed OHLC candles from this canonical snapshot. It is for interpreting delivery, rejection, compression, expansion, pullback quality, and transition; deterministic catalogues remain authoritative for executable geometry.'
             ]
         },
+        current_market_state: compactManualPacketValue({
+            symbol: identity.symbol,
+            snapshot_time: currentMarketContext.snapshot_time,
+            quote_time: identity.quote_time,
+            current_price: currentMarketContext.current_price,
+            asset_class: currentMarketContext.asset_class,
+            session: currentMarketContext.session_context,
+            volatility: currentMarketContext.volatility_context,
+            provider: identity.provider,
+            latest_closed_time_by_timeframe: Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf, semantic.timeframes?.[tf]?.last_closed_time || null]))
+        }),
+        snapshot_delta: buildManualSnapshotDelta({
+            packet_identity: identity,
+            multi_timeframe_state: multiTimeframeState,
+            current_actionable_location_catalogue: locations,
+            current_liquidity_objective_map: objectives,
+            market_delivery_chronology: chronology,
+            raw_evidence_appendix: { recent_closed_price_action: recentPriceAction.timeframes }
+        }, source.previous_manual_packet || source.previous_scan_replay?.manual_packet || null),
+        multi_timeframe_state: multiTimeframeState,
+        liquidity_state: Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf, {
+            timeframe: tf,
+            above_current_price: (objectives.above_current_price || []).filter(item => item.timeframe === tf),
+            below_current_price: (objectives.below_current_price || []).filter(item => item.timeframe === tf),
+            recent_events: (chronology.events || []).filter(event => event.timeframe === tf && /LIQUIDITY|SWEEP|RAID/.test(String(event.event_type || '').toUpperCase())).slice(-12)
+        }])),
+        actionable_location_bundles: locations,
+        objective_state: objectiveState,
+        structural_invalidations: invalidations,
+        model_evidence: {
+            ICT_STRUCTURE_AND_LIQUIDITY: modelEvidence.ICT_STRUCTURE_AND_LIQUIDITY || [],
+            CRT: modelEvidence.CRT || [],
+            TBS: modelEvidence.TBS || [],
+            MSNR: modelEvidence.MSNR || []
+        },
+        conflict_state: conflicts,
+        raw_evidence_appendix: {
+            recent_closed_price_action: recentPriceAction.timeframes,
+            institutional_activity: semantic.institutional_activity_evidence || null
+        },
         current_market_context: currentMarketContext,
         recent_price_action: recentPriceAction.timeframes,
         current_market_summary: buildManualCurrentMarketSummary(semantic, chronology, modelEvidence),
@@ -13294,15 +13692,11 @@ function buildProfessionalManualMarketPacket({ semantic = {}, pair = null, provi
         current_liquidity_objective_map: objectives,
         current_actionable_location_catalogue: locations,
         structural_invalidation_catalogue: invalidations,
-        model_setup_evidence: {
-            ICT_STRUCTURE_AND_LIQUIDITY: modelEvidence.ICT_STRUCTURE_AND_LIQUIDITY || [],
-            CRT: modelEvidence.CRT || [],
-            TBS: modelEvidence.TBS || [],
-            MSNR: modelEvidence.MSNR || []
-        },
+        model_setup_evidence: modelEvidence,
         multi_timeframe_conflict_map: conflicts,
         institutional_activity_evidence: semantic.institutional_activity_evidence || null,
         provenance: {
+            packet_schema: 'MARKET_STATE_V3',
             raw_candles_included: recentPriceAction.complete,
             raw_candle_policy: {
                 closed_only: true,
@@ -13311,12 +13705,35 @@ function buildProfessionalManualMarketPacket({ semantic = {}, pair = null, provi
             },
             direction_preselected: false,
             candidate_ranking_included: false,
-            evidence_ids_traceable: true
+            all_executable_prices_deterministic: true,
+            evidence_ids_traceable: true,
+            semantic_consistency_passed: null,
+            provider: identity.provider,
+            snapshot_id: identity.snapshot_id,
+            scan_id: identity.scan_id,
+            app_build_id: identity.app_build_id
         }
     };
+    const integrity = validateManualExternalAIPacketIntegrity(packet);
+    packet.provenance.semantic_consistency_passed = integrity.valid;
+    packet.packet_integrity_result = integrity;
+    packet.packet_diagnostics = {
+        approx_character_count: JSON.stringify(packet).length,
+        section_counts: {
+            locations: locations.length,
+            objectives: objectiveState.all?.length || 0,
+            events: chronology.events?.length || 0,
+            raw_candles: Object.values(recentPriceAction.timeframes).reduce((sum, candles) => sum + candles.length, 0)
+        },
+        location_count: locations.length,
+        objective_count: objectiveState.all?.length || 0,
+        event_count: chronology.events?.length || 0,
+        raw_candle_count: Object.values(recentPriceAction.timeframes).reduce((sum, candles) => sum + candles.length, 0)
+    };
+    return packet;
 }
 
-function buildProfessionalManualExternalAIInstruction(minimumRR = null) {
+function buildProfessionalManualExternalAIInstructionLegacy(minimumRR = null) {
     return [
         'PROFESSIONAL TRADER TASK',
         'You are a professional price-action trader with expertise in ICT market structure and liquidity concepts, as well as the separately supported CRT, TBS, and MSNR trading models.',
@@ -13346,6 +13763,43 @@ function buildProfessionalManualExternalAIInstruction(minimumRR = null) {
         `setup means the actual selected setup/model for this one opportunity. It must be one concise supported token or a same-opportunity + combination from: ${MANUAL_SETUP_TOKENS.join(', ')}. When a concrete supplied executable model/type describes the opportunity, prefer that specific setup token; use ICT only when no more specific supported model describes it. Do not use commas to return a confluence inventory. Do not put supporting evidence, timeframe narrative, prices, RR, or thesis prose in setup; place supporting records in evidence_ids. Use + only when every named component belongs to the same selected location, chronology, direction, thesis, and execution. market_phase must be exactly one of: ${MANUAL_MARKET_PHASES.join(', ')}; do not return a thesis paragraph. confidence must be a JSON integer from 0 through 100; do not return labels, a percent string, or a decimal probability. NO_TRADE confidence is null.`,
         'For a ranged executable location, choose entry only from the deterministic entry choices allowed for that exact record: zone_low, zone_high, or midpoint_if_defined when present. Do not select an arbitrary interior price from another fact. Before returning TRADE, silently audit the final object: (A) does location_id exist EXACTLY in CURRENT ACTIONABLE LOCATION CATALOGUE; (B) is its factual orientation compatible with the chosen direction or is it the canonical transformed role-reversal record; (C) does entry_zone exactly belong to selected location; (D) is entry a permitted price for it; (E) does invalidation_id exist; (F) does stop_loss exactly match it and remain an absolute structural stop; (G) is invalidation on the correct side; (H) does tp1_objective_id resolve from the objective map; (I) does each optional TP2/TP3 objective ID resolve from that map; (J) does every TP exactly match its selected objective level; (K) are targets ordered correctly; (L) is every objective lifecycle usable and reasonably reachable in the current thesis; (M) is exact RR to TP1 measured from final serialized values and reported honestly, whether above or below preferred minimum_rr; (N) does setup describe this same opportunity; (O) is selected_candidate_id exactly null; (P) are all evidence_ids supplied; and (Q) are all conflict_ids supplied when returned? If any answer is NO, fix the factual combination or return NO_TRADE. Do not expose this checklist or chain-of-thought.',
         'Return ONLY one directly JSON.parse()-able JSON object. Required fields: pair, decision, direction, trade_type, setup, market_phase, selected_candidate_id, entry, entry_zone, stop_loss, tp1, tp2, tp3, risk_reward, confidence. For manual discovery selected_candidate_id remains null. Include location_id, invalidation_id, tp1_objective_id, tp2_objective_id, tp3_objective_id, evidence_ids, and conflict_ids for traceability when returning TRADE. Do not return chain-of-thought or prose.'
+    ].join('\n') + '\n==================================================';
+}
+
+function buildProfessionalManualExternalAIInstruction(minimumRR = null) {
+    return [
+        'Find today\'s highest-quality current trading opportunity if one exists. First understand the market, then find the trade. Analyze both BUY and SELL possibilities.',
+        'CURRENT MARKET STATE -> RECENT DELIVERY / CHRONOLOGY',
+        'Do not use timeframe majority voting, an HTF hard gate.',
+        'Fresh POI does not automatically mean current opportunity. Distance alone is not rejection.',
+        'REACHABLE OBJECTIVE LADDER',
+        'A realistic RR below minimum_rr is a quality warning.',
+        'Calculate RR to TP1, TP2, and TP3 when present.',
+        'Do not wait for a newly formed 5M/15M setup before analyzing a pending limit. Do not choose the newest location by default.',
+        'A valid pending LIMIT may remain away from current price, outside its zone, without current 5M BOS/MSS, without current 15M BOS/MSS, or outside a killzone. CONFIRMATION_ENTRY is different and must satisfy its supplied confirmation facts. Review ALL structurally usable locations.',
+        'copy the numeric level from that exact serialized objective catalogue record. prefer that specific setup token; use ICT only when no more specific supported model describes it. Choose exactly ONE executable location from CURRENT ACTIONABLE LOCATION CATALOGUE.',
+        'The ONLY legal values for location_id are exact location_id values appearing in CURRENT ACTIONABLE LOCATION CATALOGUE. Historical location IDs, model/setup evidence IDs, chronology location IDs, invalidation IDs are not executable authority.',
+        'choose exactly ONE executable location from CURRENT ACTIONABLE LOCATION CATALOGUE. That selected record is the sole source of truth for location_id, entry_zone, and entry.',
+        'Supporting records may strengthen confidence. silently audit the final object.',
+        'EXTERNAL AI TASK — MARKET ANALYSIS RESPONSIBILITY',
+        'copy the numeric level from that exact serialized objective catalogue record. Prefer that specific setup token; use ICT only when no more specific supported model describes it. Choose exactly ONE executable location from CURRENT ACTIONABLE LOCATION CATALOGUE.',
+        'The ONLY legal values for location_id are exact location_id values appearing in CURRENT ACTIONABLE LOCATION CATALOGUE. Historical location IDs, model/setup evidence IDs, chronology location IDs, invalidation IDs are not executable authority.',
+        'You are a professional price-action trader. Analyze the complete current 1D/4H/1H/15M/5M snapshot, current delivery, chronology, liquidity, conflicts, model evidence, actionable location bundles, objectives, and raw closed candles. Determine BUY, SELL, or NO_TRADE, market phase, execution model, one current location, invalidation, and realistic remaining objectives. Think like a professional trader, not a pattern matcher. Find today\'s highest-quality current trading opportunity if one exists. Return JSON only; do not expose chain-of-thought.',
+        'The packet does not preselect direction, bias, a candidate, or a preferred location. Do not use timeframe-majority voting or an HTF hard gate. Interpret retracement, continuation, expansion, transition, reversal, late delivery, and uncertainty from the complete facts. An older location may remain the best current opportunity; age, distance, newer LTF structure, or absent micro confirmation alone does not invalidate it. Fresh POI does not automatically mean current opportunity. Distance alone is not rejection.',
+        '',
+        'DETERMINISTIC AUTHORITY',
+        'CODE owns exact IDs, timestamps, prices, zones, lifecycle, invalidations, objectives, events, and arithmetic. Use only supplied facts and prices. The ONLY legal location_id is an exact location_id in ACTIONABLE LOCATION BUNDLES / CURRENT ACTIONABLE LOCATION CATALOGUE. Historical/model/invalidation evidence cannot supply executable location_id. Choose exactly ONE executable location; lock its exact zone_low/zone_high and permitted entry geometry. Other FVG, OB, MSNR, FLIP, SUPPLY, DEMAND, CRT, TBS, BOS, MSS, CHoCH, liquidity, displacement, and institutional records are supporting evidence only and cannot replace the selected location geometry.',
+        'INVALIDATION LOCK: choose one supplied compatible invalidation_id and copy its exact level into stop_loss. Never combine an ID with another record’s price. Never move or tighten a valid structural stop to improve risk_reward.',
+        'OBJECTIVE LOCK: tp1_objective_id, tp2_objective_id, and tp3_objective_id may ONLY be exact objective_id values in CURRENT LIQUIDITY / OBJECTIVE MAP. Do not use event_id, evidence_id, location_id, MSNR, CRT, TBS, or raw-liquidity IDs unless the exact string is also an objective_id. Copy each exact serialized objective level into its TP field. Do not derive or round it from another record. TP1 is the nearest meaningful reachable objective, TP2 the next continuation objective, and TP3 the furthest realistic objective in the same thesis. Do not manufacture farther targets.',
+        '',
+        'PENDING LIMIT SEMANTICS',
+        'A PENDING_LIMIT may use an earlier-formed but still structurally usable OB/FVG/MSNR/SUPPLY/DEMAND location. It may be away from current price and does not require current 5M BOS/MSS, current 15M BOS/MSS, price inside the zone, a killzone, or an immediate rejection candle unless the selected setup semantics specifically require confirmation. CONFIRMATION_ENTRY is different and requires supplied confirmation. One crossed minor objective does not automatically end a thesis, but each selected objective must remain future-reward for the pending entry and be unused, unreached, uninvalidated, and relevant.',
+        `The canonical minimum_rr is ${minimumRR == null ? 'not available' : minimumRR}. RR is measured after realistic structure is selected. It is a preferred quality benchmark, not a hard trade-existence gate. For BUY risk = entry - stop_loss and reward = TP - entry; for SELL risk = stop_loss - entry and reward = entry - TP. Calculate exact RR to TP1, TP2, and TP3 from final serialized values; risk_reward remains RR to TP1. A realistic RR below minimum_rr is a quality warning, not permission to alter the stop, invent a target, or abandon a coherent thesis.`,
+        '',
+        'FINAL FACTUAL VALIDATION',
+        'Before TRADE, silently audit: (A) location_id exists exactly in CURRENT ACTIONABLE LOCATION CATALOGUE; (B) selected location orientation is compatible with direction, unless the selected record itself is a canonical FLIP/reclaim role reversal; (C) entry_zone and entry belong to that same location and use only permitted geometry; (D) invalidation exists, is compatible, and stop_loss exactly matches it; (E) every objective ID resolves from the objective map and every TP exactly matches its record; (F) targets are correctly ordered and usable; (G) exact RR is recalculated from final values and reported honestly; (H) setup describes this one opportunity, not a comma-separated confluence inventory; (I) all evidence_ids/conflict_ids are supplied; (J) selected_candidate_id is exactly null in MANUAL_EXTERNAL_AI. If any answer is NO, fix the factual combination or return NO_TRADE.',
+        `setup is one supported model/type or a same-opportunity + combination from ${MANUAL_SETUP_TOKENS.join(', ')}. Prefer a concrete supplied model over generic ICT when one exists. Do not use commas to list confluence. Do not use commas to return a confluence inventory. market_phase must be exactly one of ${MANUAL_MARKET_PHASES.join(', ')}. confidence is an integer 0–100 for TRADE and null for NO_TRADE. facts_owner = CODE; interpretation_owner = EXTERNAL_AI.`,
+        'For MANUAL_EXTERNAL_AI, selected_candidate_id MUST be JSON null; selected_candidate_id remains null; never copy location_id into it. Return ONLY one directly JSON.parse()-able JSON object. Return only the existing JSON schema with decision TRADE or NO_TRADE, direction, trade_type, setup, market_phase, selected_candidate_id, geometry, traceability IDs, risk_reward, and confidence. Do not return chain-of-thought or prose.'
     ].join('\n') + '\n==================================================';
 }
 
@@ -15777,6 +16231,7 @@ async function runAutoScan() {
         || lastLiveMarketContextForReplay?.snapshot_id || null;
     const previousSnapshotFreshness = currentScanArtifact?.replay?.snapshot_freshness
         || lastLiveMarketContextForReplay?.scan_snapshot_freshness || null;
+    const previousManualPacket = currentScanArtifact?.replay?.manual_packet || null;
     const forceFreshProviderSnapshot = isManualExternalAIMode();
     const snapshotRequestedAt = new Date(scanAsOfMs).toISOString();
     const providerFetchOptions = forceFreshProviderSnapshot ? { forceRefresh: true } : {};
@@ -16047,6 +16502,7 @@ async function runAutoScan() {
             configurable: true
         });
         liveMarketContext.scan_snapshot_freshness = scanSnapshotFreshness;
+        liveMarketContext.previous_manual_packet = previousManualPacket;
         liveMarketContext.news_risk = checkHighImpactNews(quoteSnapshot?.news_risk || null);
         if (liveMarketContext.market_context) liveMarketContext.market_context.news_risk = liveMarketContext.news_risk;
         liveMarketContext.indicators = indicators;
@@ -19761,54 +20217,83 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
             });
         }
         const sectionJson = value => JSON.stringify(value);
+        if (professionalPacket.packet_integrity_result?.valid === false) {
+            const diagnostic = {
+                packet_type: 'MARKET_DATA_AVAILABILITY_DIAGNOSTIC',
+                status: 'DATA_UNAVAILABLE',
+                reason: { code: 'MANUAL_PACKET_INTEGRITY_FAILED', issues: professionalPacket.packet_integrity_result.issues },
+                packet_schema: professionalPacket.external_ai_packet_schema,
+                snapshot_id: professionalPacket.packet_identity?.snapshot_id || null
+            };
+            return ['ICT TRADING BOT PRO', 'MARKET DATA AVAILABILITY DIAGNOSTIC', '', JSON.stringify(diagnostic, null, 2)].join('\n');
+        }
         const packet = [
             'ICT TRADING BOT PRO',
-            'EXTERNAL AI DECISION PACKET',
+            'EXTERNAL AI DECISION PACKET — MARKET_STATE_V3',
             '',
+            'PACKET_IDENTITY',
             'PACKET / SNAPSHOT IDENTITY',
             sectionJson(professionalPacket.packet_identity),
             '',
-            'PROFESSIONAL TRADER MANDATE',
-            sectionJson(professionalPacket.professional_trader_mandate),
-            '',
+            'STRATEGY_CONTRACT',
             'HARD STRATEGY / EXECUTION RULES',
             sectionJson(professionalPacket.strategy_contract),
             '',
+            'CURRENT_MARKET_STATE',
             'CURRENT MARKET CONTEXT',
-            sectionJson(professionalPacket.current_market_context),
+            sectionJson(professionalPacket.current_market_state),
             '',
-            'RECENT CLOSED PRICE ACTION',
-            sectionJson(professionalPacket.recent_price_action),
+            'SNAPSHOT_DELTA',
+            sectionJson(professionalPacket.snapshot_delta),
             '',
+            'MULTI_TIMEFRAME_STATE',
             'CURRENT MARKET SUMMARY',
-            sectionJson(professionalPacket.current_market_summary),
-            '',
+            sectionJson(professionalPacket.multi_timeframe_state),
             'MARKET DELIVERY CHRONOLOGY',
+            'MARKET DELIVERY CHRONOLOGY DATA',
             sectionJson(professionalPacket.market_delivery_chronology),
             '',
+            '',
+            'LIQUIDITY_STATE',
             'CURRENT LIQUIDITY / OBJECTIVE MAP',
-            sectionJson(professionalPacket.current_liquidity_objective_map),
+            sectionJson(professionalPacket.liquidity_state),
             '',
+            'ACTIONABLE_LOCATION_BUNDLES',
             'CURRENT ACTIONABLE LOCATION CATALOGUE',
-            sectionJson(professionalPacket.current_actionable_location_catalogue),
-            '',
+            sectionJson(professionalPacket.actionable_location_bundles),
             'STRUCTURAL INVALIDATION CATALOGUE',
-            sectionJson(professionalPacket.structural_invalidation_catalogue),
             '',
+            'OBJECTIVE_STATE',
+            sectionJson(professionalPacket.objective_state),
+            '',
+            'STRUCTURAL_INVALIDATIONS',
+            'STRUCTURAL INVALIDATION CATALOGUE',
+            sectionJson(professionalPacket.structural_invalidations),
+            '',
+            'MODEL_EVIDENCE',
             'MODEL / SETUP EVIDENCE',
-            sectionJson(professionalPacket.model_setup_evidence),
+            sectionJson(professionalPacket.model_evidence),
             '',
+            'CONFLICT_STATE',
             'MULTI-TIMEFRAME CONFLICT MAP',
-            sectionJson(professionalPacket.multi_timeframe_conflict_map),
+            sectionJson(professionalPacket.conflict_state),
+            '',
+            'RAW_EVIDENCE_APPENDIX',
+            'RECENT CLOSED PRICE ACTION',
+            sectionJson(professionalPacket.raw_evidence_appendix.recent_closed_price_action),
+            '',
+            'CURRENT MARKET SUMMARY',
             '',
             'INSTITUTIONAL ACTIVITY / FOOTPRINT EVIDENCE',
-            sectionJson(professionalPacket.institutional_activity_evidence),
+            sectionJson({ institutional_activity: professionalPacket.raw_evidence_appendix.institutional_activity }),
             '',
             'PROVENANCE / INTEGRITY',
             sectionJson(professionalPacket.provenance),
             '',
+            'EXTERNAL_AI_TASK',
             buildProfessionalManualExternalAIInstruction(minimumRR)
         ].join('\n');
+        source.manual_packet = professionalPacket;
         return packet.replace(/(DEEPSEEK_API_KEY|GEMINI_API_KEY|TWELVE_DATA_API_KEY|TELEGRAM_BOT_TOKEN|Authorization|Bearer)\s*[:=]?\s*[^\s\n]*/gi, '$1: [REDACTED]');
     }
     const timeframes = semantic?.timeframes || {};

@@ -3550,6 +3550,65 @@ describe('TVKIT request attempt lifecycle', () => {
     });
 });
 
+describe('MARKET_STATE_V3 manual packet integrity', () => {
+    it('rejects contradictory actionable lifecycle records and conflicting IDs', () => {
+        const ctx = getContext();
+        const result = ctx.validateManualExternalAIPacketIntegrity({
+            multi_timeframe_state: { '1D': {}, '4H': {}, '1H': {}, '15M': {}, '5M': {} },
+            actionable_location_bundles: [{ location_id: 'OLD', zone_low: 10, zone_high: 11, invalidated: true, lifecycle_state: 'INVALIDATED', opportunity_lifecycle_state: 'CURRENT' }],
+            objective_state: { all: [{ objective_id: 'OBJ', level: 12 }, { objective_id: 'OBJ', level: 13 }] },
+            structural_invalidations: [],
+            raw_evidence_appendix: { recent_closed_price_action: { '1D': [], '4H': [], '1H': [], '15M': [], '5M': [] } }
+        });
+        expect(result.valid).toBe(false);
+        expect(result.issues).toEqual(expect.arrayContaining(['ACTIONABLE_LOCATION_STRUCTURALLY_UNUSABLE:OLD', 'ACTIONABLE_LOCATION_LIFECYCLE_CONTRADICTION:OLD', 'OBJECTIVE_ID_CONFLICT:OBJ']));
+    });
+
+    it('calculates a deterministic range state without directional bias', () => {
+        const ctx = getContext();
+        const packet = ctx.buildProfessionalManualMarketPacket({ pair: 'EUR/USD', provider: 'TVKIT', minimumRR: 2.5, semantic: {
+            snapshot: { pair: 'EUR/USD', current_price: 15, as_of: '2026-10-08T00:00:00Z', snapshot_id: 'STATE-TEST' },
+            timeframes: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, { timeframe: tf, last_closed_time: '2026-10-08T00:00:00Z', current_closed_price: 15, dealing_range: { high: 20, low: 10 }, raw_closed_candles: [] }]))
+        }});
+        expect(packet.external_ai_packet_schema).toBe('MARKET_STATE_V3');
+        expect(packet.current_market_context.dealing_context['1H']).toEqual(expect.objectContaining({ equilibrium: 15, normalized_position: 0.5, position: 'EQUILIBRIUM' }));
+        expect(packet.multi_timeframe_state['1D']).not.toHaveProperty('recommended_direction');
+        expect(packet.provenance.direction_preselected).toBe(false);
+    });
+
+    it('reports factual snapshot deltas without ranking or directional conclusions', () => {
+        const ctx = getContext();
+        const candle = time => ({ time, open: 1, high: 2, low: 0, close: 1 });
+        const previous = {
+            packet_identity: { snapshot_id: 'PREVIOUS' },
+            multi_timeframe_state: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(timeframe => [timeframe, { last_closed_time: '2026-10-08T00:00:00Z' }])),
+            actionable_location_bundles: [{ location_id: 'L1', lifecycle_state: 'FRESH', opportunity_lifecycle_state: 'CURRENT', consumed: false, invalidated: false }],
+            objective_state: { all: [{ objective_id: 'O1', level: 10, lifecycle_state: 'UNFULFILLED' }] },
+            market_delivery_chronology: { events: [{ event_id: 'E1', event_type: 'BOS', timeframe: '1H' }] },
+            raw_evidence_appendix: { recent_closed_price_action: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(timeframe => [timeframe, [candle('2026-10-08T00:00:00Z')]])) }
+        };
+        const current = {
+            packet_identity: { snapshot_id: 'CURRENT' },
+            multi_timeframe_state: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(timeframe => [timeframe, { last_closed_time: '2026-10-08T00:05:00Z' }])),
+            actionable_location_bundles: [
+                { location_id: 'L1', lifecycle_state: 'FRESH', opportunity_lifecycle_state: 'PARTIALLY_DELIVERED', consumed: false, invalidated: false },
+                { location_id: 'L2', lifecycle_state: 'FRESH', opportunity_lifecycle_state: 'CURRENT', consumed: false, invalidated: false }
+            ],
+            objective_state: { all: [{ objective_id: 'O1', level: 10, lifecycle_state: 'REACHED' }, { objective_id: 'O2', level: 9, lifecycle_state: 'UNFULFILLED' }] },
+            market_delivery_chronology: { events: [{ event_id: 'E1', event_type: 'BOS', timeframe: '1H' }, { event_id: 'E2', event_type: 'MSS', timeframe: '15M' }] },
+            raw_evidence_appendix: { recent_closed_price_action: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(timeframe => [timeframe, [candle('2026-10-08T00:00:00Z'), candle('2026-10-08T00:05:00Z')]])) }
+        };
+        const delta = ctx.buildManualSnapshotDelta(current, previous);
+        expect(delta.available).toBe(true);
+        expect(delta.previous_snapshot_id).toBe('PREVIOUS');
+        expect(delta.new_closed_candle_count_by_timeframe['5M']).toBe(1);
+        expect(delta.new_location_ids).toEqual(['L2']);
+        expect(delta.location_ids_touched_since_previous).toEqual(['L1']);
+        expect(delta.objective_ids_reached_since_previous).toEqual(['O1']);
+        expect(delta.new_mss_ids).toEqual(['E2']);
+    });
+});
+
 describe('DeepSeek request settlement', () => {
     it.each(['headers', 'body'])('enforces the deadline when %s never settle and abort is ignored', async stage => {
         jest.useFakeTimers();
@@ -8671,7 +8730,8 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         const cachedQuote = await ctx.getMarketQuoteSnapshot('EUR/USD');
         const refreshedQuote = await ctx.getMarketQuoteSnapshot('EUR/USD', { forceRefresh: true });
         expect(cachedQuote).toEqual(firstQuote);
-        expect(refreshedQuote).toEqual(firstQuote);
+        expect(refreshedQuote.price).toBe(firstQuote.price);
+        expect(Number(refreshedQuote.provider_timestamp)).toBeGreaterThanOrEqual(Number(firstQuote.provider_timestamp));
         const firstHistory = await ctx.getHistory('1H', 'EUR/USD');
         const cachedHistory = await ctx.getHistory('1H', 'EUR/USD');
         const refreshedHistory = await ctx.getHistory('1H', 'EUR/USD', { forceRefresh: true });

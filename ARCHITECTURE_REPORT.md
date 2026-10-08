@@ -75,3 +75,9 @@ Account risk limits are evaluated by one shared deterministic gate when account 
 - A known excessive spread rejects candidate construction before AI selection and is exposed as `RISK_BLOCKED`.
 - Paper orders carry deterministic idempotency keys, and persisted keys are checked against the stored order geometry before monitoring. Manual tracking records use a separate `MANUAL:` key namespace so they cannot be confused with simulated orders.
 - Backtest reports include partial-fill scaling and grouped performance by symbol, timeframe, regime, and session.
+
+## Manual External AI Market Packet
+
+The manual packet is a deterministic market-state compiler, not a deterministic trade selector. Code owns the closed-candle snapshot, quote, normalized market state, structure/liquidity/model facts, lifecycle, relational IDs, executable geometry, and packet integrity. The external AI interprets that complete state and selects BUY, SELL, or NO_TRADE, the current phase, execution model, location, invalidation, and realistic objectives. The post-response validator proves IDs, prices, lifecycle, geometry, and arithmetic without substituting another opportunity.
+
+`MARKET_STATE_V3` presents current state before the raw appendix: packet identity and strategy contract, current market state, snapshot delta, five-timeframe state vectors, neutral liquidity/objective state, executable location bundles, structural invalidations, model evidence, factual conflicts, raw closed OHLC evidence, provenance, and the external task contract. Historical locations remain evidence, while only structurally usable, unconsumed, uninvalidated locations enter the actionable bundles. A pending limit may use an older still-current location and does not require fresh lower-timeframe confirmation; confirmation entries retain their separate confirmation semantics.
