@@ -13766,7 +13766,7 @@ function buildProfessionalManualExternalAIInstructionLegacy(minimumRR = null) {
     ].join('\n') + '\n==================================================';
 }
 
-function buildProfessionalManualExternalAIInstruction(minimumRR = null) {
+function buildProfessionalManualExternalAIInstructionLegacyV3(minimumRR = null) {
     return [
         'Find today\'s highest-quality current trading opportunity if one exists. First understand the market, then find the trade. Analyze both BUY and SELL possibilities.',
         'CURRENT MARKET STATE -> RECENT DELIVERY / CHRONOLOGY',
@@ -13800,6 +13800,26 @@ function buildProfessionalManualExternalAIInstruction(minimumRR = null) {
         'Before TRADE, silently audit: (A) location_id exists exactly in CURRENT ACTIONABLE LOCATION CATALOGUE; (B) selected location orientation is compatible with direction, unless the selected record itself is a canonical FLIP/reclaim role reversal; (C) entry_zone and entry belong to that same location and use only permitted geometry; (D) invalidation exists, is compatible, and stop_loss exactly matches it; (E) every objective ID resolves from the objective map and every TP exactly matches its record; (F) targets are correctly ordered and usable; (G) exact RR is recalculated from final values and reported honestly; (H) setup describes this one opportunity, not a comma-separated confluence inventory; (I) all evidence_ids/conflict_ids are supplied; (J) selected_candidate_id is exactly null in MANUAL_EXTERNAL_AI. If any answer is NO, fix the factual combination or return NO_TRADE.',
         `setup is one supported model/type or a same-opportunity + combination from ${MANUAL_SETUP_TOKENS.join(', ')}. Prefer a concrete supplied model over generic ICT when one exists. Do not use commas to list confluence. Do not use commas to return a confluence inventory. market_phase must be exactly one of ${MANUAL_MARKET_PHASES.join(', ')}. confidence is an integer 0–100 for TRADE and null for NO_TRADE. facts_owner = CODE; interpretation_owner = EXTERNAL_AI.`,
         'For MANUAL_EXTERNAL_AI, selected_candidate_id MUST be JSON null; selected_candidate_id remains null; never copy location_id into it. Return ONLY one directly JSON.parse()-able JSON object. Return only the existing JSON schema with decision TRADE or NO_TRADE, direction, trade_type, setup, market_phase, selected_candidate_id, geometry, traceability IDs, risk_reward, and confidence. Do not return chain-of-thought or prose.'
+    ].join('\n') + '\n==================================================';
+}
+
+function buildProfessionalManualExternalAIInstruction(minimumRR = null) {
+    return [
+        'EXTERNAL AI TASK',
+        'MARKET ANALYSIS RESPONSIBILITY',
+        'Analyze the complete current 1D/4H/1H/15M/5M market state, current delivery, chronology, liquidity, conflicts, model evidence, actionable location bundles, objectives, and raw closed candles. Analyze BUY and SELL, determine BUY, SELL, or NO_TRADE, determine the current phase, and choose the highest-quality current opportunity from the supplied facts. Do not use timeframe majority voting or a hard HTF veto. Do not automatically prefer the newest location; an older location may remain best while it is still actionable. The packet does not preselect direction; you own interpretation.',
+        '',
+        'DETERMINISTIC AUTHORITY',
+        'CODE owns exact IDs, timestamps, prices, zones, lifecycle, invalidations, objectives, executable geometry, and arithmetic. Do not invent or alter those facts. The ONLY legal values for location_id are exact location_id values appearing in ACTIONABLE LOCATION BUNDLES. Lock location_id, entry_zone, and permitted entry to that same record. Choose a supplied compatible invalidation and copy its exact level into stop_loss. Choose exact objective_id records from OBJECTIVE_STATE and copy their exact levels into tp1/tp2/tp3. Historical, model, and supporting evidence may support the thesis but cannot replace executable geometry. Never move or tighten a valid structural stop to improve RR.',
+        '',
+        'PENDING LIMIT SEMANTICS',
+        'PENDING_LIMIT may use an earlier-formed still-actionable location, may be away from current price or outside its zone at analysis time, and does not require current 5M BOS/MSS, current 15M BOS/MSS, or an active killzone. Do not require micro confirmation unless the selected setup semantics explicitly require it. CONFIRMATION_ENTRY is separate and requires supplied confirmation. One crossed minor objective does not automatically end the thesis, but selected objectives must remain future reward for the pending entry. minimum_rr is a preferred benchmark, not a trade-existence gate; never alter the structural stop or invent targets to improve RR.',
+        '',
+        'FINAL FACTUAL VALIDATION',
+        'Before returning TRADE, silently verify: location_id is an exact actionable record; orientation is compatible or the selected record is a canonical role reversal; entry_zone exactly matches it; entry uses permitted geometry; invalidation is supplied and compatible; stop_loss exactly matches it; every objective ID is from OBJECTIVE_STATE and every TP exactly matches its level; target ordering and lifecycle are valid; RR is calculated from final values; setup describes this same opportunity; evidence_ids and conflict_ids are supplied; selected_candidate_id is exactly null. If any check fails, return NO_TRADE or correct the factual combination without inventing facts.',
+        '',
+        'OUTPUT CONTRACT',
+        `Return only one directly JSON.parse()-able JSON object with these fields: pair, decision, direction, trade_type, setup, market_phase, selected_candidate_id, entry, entry_zone, stop_loss, tp1, tp2, tp3, risk_reward, confidence, location_id, invalidation_id, tp1_objective_id, tp2_objective_id, tp3_objective_id, evidence_ids, conflict_ids. Use decision TRADE or NO_TRADE, confidence as an integer percentage for TRADE and null for NO_TRADE, selected_candidate_id as null for MANUAL_EXTERNAL_AI, and no prose or chain-of-thought. setup must be one supported model token or a same-opportunity + combination; do not use a comma-separated confluence inventory. market_phase must be one supported phase enum. The canonical minimum_rr is ${minimumRR == null ? 'not available' : minimumRR}; reported risk_reward is informational and code-calculated RR is authoritative.`
     ].join('\n') + '\n==================================================';
 }
 
@@ -19551,18 +19571,22 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
         ?? evidence.minimum_rr
         ?? evidence.risk_constraints?.minimum_rr
     );
-    const locations = Array.isArray(evidence.current_actionable_location_catalogue)
-        ? evidence.current_actionable_location_catalogue : [];
-    const invalidations = Array.isArray(evidence.structural_invalidation_catalogue)
-        ? evidence.structural_invalidation_catalogue : [];
+    const locations = Array.isArray(evidence.actionable_location_bundles)
+        ? evidence.actionable_location_bundles
+        : Array.isArray(evidence.current_actionable_location_catalogue) ? evidence.current_actionable_location_catalogue : [];
+    const invalidations = Array.isArray(evidence.structural_invalidations)
+        ? evidence.structural_invalidations
+        : Array.isArray(evidence.structural_invalidation_catalogue) ? evidence.structural_invalidation_catalogue : [];
     const currentPrice = externalPacketNumber(
-        evidence.current_market_context?.current_price
+        evidence.current_market_state?.current_price
+        ?? evidence.current_market_context?.current_price
         ?? evidence.current_price
         ?? evidence.snapshot?.current_price
     );
     const objectives = [
-        ...(evidence.current_liquidity_objective_map?.above_current_price || []),
-        ...(evidence.current_liquidity_objective_map?.below_current_price || [])
+        ...(evidence.objective_state?.all || []),
+        ...(evidence.objective_state?.all ? [] : (evidence.current_liquidity_objective_map?.above_current_price || [])),
+        ...(evidence.objective_state?.all ? [] : (evidence.current_liquidity_objective_map?.below_current_price || []))
     ];
     const number = key => externalPacketNumber(normalizedDecision[key]);
     const exactEqual = (left, right) => Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) <= Math.max(1e-10, Math.abs(right) * 1e-9);
@@ -19774,7 +19798,7 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
     if (direction === 'BUY' && Number.isFinite(number('tp3')) && Number.isFinite(number('tp2')) && number('tp3') <= number('tp2')) targetOrderIssue();
     if (direction === 'SELL' && Number.isFinite(number('tp2')) && number('tp2') >= tp1) targetOrderIssue();
     if (direction === 'SELL' && Number.isFinite(number('tp3')) && Number.isFinite(number('tp2')) && number('tp3') >= number('tp2')) targetOrderIssue();
-    const modelEvidence = evidence.model_setup_evidence || {};
+    const modelEvidence = evidence.model_evidence || evidence.model_setup_evidence || {};
     const returnedEvidenceIds = new Set((normalizedDecision.evidence_ids || []).filter(value => typeof value === 'string'));
     const locationEvidence = new Set(selectedLocation ? [selectedLocation.location_id, ...(selectedLocation.origin_evidence_ids || [])] : []);
     const suppliedEvidenceIds = new Set();
@@ -19790,7 +19814,7 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
     for (const item of invalidations) collectEvidenceIds(item);
     for (const item of objectives) collectEvidenceIds(item);
     for (const records of Object.values(modelEvidence)) for (const item of Array.isArray(records) ? records : []) collectEvidenceIds(item);
-    for (const item of evidence.multi_timeframe_conflict_map || evidence.conflicts || []) collectEvidenceIds(item);
+    for (const item of evidence.conflict_state || evidence.multi_timeframe_conflict_map || evidence.conflicts || []) collectEvidenceIds(item);
     for (const evidenceId of returnedEvidenceIds) {
         if (!suppliedEvidenceIds.has(evidenceId)) issues.push('EXTERNAL_AI_EVIDENCE_ID_NOT_FOUND');
     }
@@ -20227,72 +20251,61 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
             };
             return ['ICT TRADING BOT PRO', 'MARKET DATA AVAILABILITY DIAGNOSTIC', '', JSON.stringify(diagnostic, null, 2)].join('\n');
         }
-        const packet = [
+        const renderPacket = () => [
             'ICT TRADING BOT PRO',
-            'EXTERNAL AI DECISION PACKET — MARKET_STATE_V3',
+            'EXTERNAL AI DECISION PACKET - MARKET_STATE_V3',
             '',
             'PACKET_IDENTITY',
-            'PACKET / SNAPSHOT IDENTITY',
             sectionJson(professionalPacket.packet_identity),
             '',
             'STRATEGY_CONTRACT',
-            'HARD STRATEGY / EXECUTION RULES',
             sectionJson(professionalPacket.strategy_contract),
             '',
             'CURRENT_MARKET_STATE',
-            'CURRENT MARKET CONTEXT',
             sectionJson(professionalPacket.current_market_state),
             '',
             'SNAPSHOT_DELTA',
             sectionJson(professionalPacket.snapshot_delta),
             '',
             'MULTI_TIMEFRAME_STATE',
-            'CURRENT MARKET SUMMARY',
             sectionJson(professionalPacket.multi_timeframe_state),
-            'MARKET DELIVERY CHRONOLOGY',
-            'MARKET DELIVERY CHRONOLOGY DATA',
+            'MARKET_DELIVERY_CHRONOLOGY',
             sectionJson(professionalPacket.market_delivery_chronology),
             '',
-            '',
             'LIQUIDITY_STATE',
-            'CURRENT LIQUIDITY / OBJECTIVE MAP',
             sectionJson(professionalPacket.liquidity_state),
             '',
             'ACTIONABLE_LOCATION_BUNDLES',
-            'CURRENT ACTIONABLE LOCATION CATALOGUE',
             sectionJson(professionalPacket.actionable_location_bundles),
-            'STRUCTURAL INVALIDATION CATALOGUE',
             '',
             'OBJECTIVE_STATE',
             sectionJson(professionalPacket.objective_state),
             '',
             'STRUCTURAL_INVALIDATIONS',
-            'STRUCTURAL INVALIDATION CATALOGUE',
             sectionJson(professionalPacket.structural_invalidations),
             '',
             'MODEL_EVIDENCE',
-            'MODEL / SETUP EVIDENCE',
             sectionJson(professionalPacket.model_evidence),
             '',
             'CONFLICT_STATE',
-            'MULTI-TIMEFRAME CONFLICT MAP',
             sectionJson(professionalPacket.conflict_state),
             '',
             'RAW_EVIDENCE_APPENDIX',
-            'RECENT CLOSED PRICE ACTION',
-            sectionJson(professionalPacket.raw_evidence_appendix.recent_closed_price_action),
+            sectionJson(professionalPacket.raw_evidence_appendix),
             '',
-            'CURRENT MARKET SUMMARY',
-            '',
-            'INSTITUTIONAL ACTIVITY / FOOTPRINT EVIDENCE',
-            sectionJson({ institutional_activity: professionalPacket.raw_evidence_appendix.institutional_activity }),
-            '',
-            'PROVENANCE / INTEGRITY',
-            sectionJson(professionalPacket.provenance),
+            'PROVENANCE_INTEGRITY',
+            sectionJson({ ...professionalPacket.provenance, packet_integrity_result: professionalPacket.packet_integrity_result, packet_diagnostics: professionalPacket.packet_diagnostics }),
             '',
             'EXTERNAL_AI_TASK',
             buildProfessionalManualExternalAIInstruction(minimumRR)
         ].join('\n');
+        let packet = renderPacket();
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const serializedLength = packet.length;
+            if (professionalPacket.packet_diagnostics.external_payload_character_count === serializedLength) break;
+            professionalPacket.packet_diagnostics.external_payload_character_count = serializedLength;
+            packet = renderPacket();
+        }
         source.manual_packet = professionalPacket;
         return packet.replace(/(DEEPSEEK_API_KEY|GEMINI_API_KEY|TWELVE_DATA_API_KEY|TELEGRAM_BOT_TOKEN|Authorization|Bearer)\s*[:=]?\s*[^\s\n]*/gi, '$1: [REDACTED]');
     }

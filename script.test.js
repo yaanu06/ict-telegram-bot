@@ -2992,9 +2992,10 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).toContain(`TVKIT:${runtimePair.replace('/', '_')}:test`);
         expect(packet).toContain('"serializer_id":"CURRENT_SCAN_ARTIFACT_V2"');
         expect(packet).toContain('"app_build_id":"development"');
-        const rawStart = packet.indexOf('RECENT CLOSED PRICE ACTION\n') + 'RECENT CLOSED PRICE ACTION\n'.length;
-        const rawEnd = packet.indexOf('\n\nCURRENT MARKET SUMMARY', rawStart);
-        const recentPriceAction = JSON.parse(packet.slice(rawStart, rawEnd));
+        const rawStart = packet.indexOf('RAW_EVIDENCE_APPENDIX\n') + 'RAW_EVIDENCE_APPENDIX\n'.length;
+        const rawEnd = packet.indexOf('\n\nPROVENANCE_INTEGRITY', rawStart);
+        const rawAppendix = JSON.parse(packet.slice(rawStart, rawEnd));
+        const recentPriceAction = rawAppendix.recent_closed_price_action;
         expect(Object.keys(recentPriceAction)).toEqual(['1D', '4H', '1H', '15M', '5M']);
         expect(Object.values(recentPriceAction).every(candles => candles.length === 20)).toBe(true);
         expect(packet).not.toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
@@ -3295,42 +3296,39 @@ describe('Analyze scan lifecycle', () => {
         expect(context.window.__ICT_LAST_SCAN_REPLAY__).toBeTruthy();
         expect(context.window.__ICT_LAST_SCAN_REPLAY__.valid_candidates.map(c => c.id)).toEqual(['manual-buy-candidate', 'manual-sell-candidate']);
         const packet = context.buildExternalAIClipboardPacket({ signal: output, replay: context.window.__ICT_LAST_SCAN_REPLAY__ });
+        expect(context.window.__ICT_LAST_SCAN_REPLAY__.manual_packet.packet_diagnostics.external_payload_character_count).toBe(packet.length);
         expect(packet).not.toContain('manual-buy-candidate');
         expect(packet).not.toContain('manual-sell-candidate');
         expect(packet).not.toContain('SELECTION STATUS');
         expect(packet).not.toContain('CURRENT BOT RESULT');
         expect(packet).not.toContain('MANUAL_EXTERNAL_AI_REVIEW is application workflow metadata only.');
-        expect(packet).toContain('CURRENT ACTIONABLE LOCATION CATALOGUE');
-        expect(packet).toContain('MODEL / SETUP EVIDENCE');
-        expect(packet).toContain('STRUCTURAL INVALIDATION CATALOGUE');
-        expect(packet).toContain('MARKET DELIVERY CHRONOLOGY');
+        const canonicalSections = ['PACKET_IDENTITY', 'STRATEGY_CONTRACT', 'CURRENT_MARKET_STATE', 'SNAPSHOT_DELTA', 'MULTI_TIMEFRAME_STATE', 'MARKET_DELIVERY_CHRONOLOGY', 'LIQUIDITY_STATE', 'ACTIONABLE_LOCATION_BUNDLES', 'OBJECTIVE_STATE', 'STRUCTURAL_INVALIDATIONS', 'MODEL_EVIDENCE', 'CONFLICT_STATE', 'RAW_EVIDENCE_APPENDIX', 'PROVENANCE_INTEGRITY', 'EXTERNAL_AI_TASK'];
+        for (const section of canonicalSections) expect(packet.split(`\n${section}\n`).length - 1).toBe(1);
+        expect(packet).not.toContain('CURRENT ACTIONABLE LOCATION CATALOGUE');
+        expect(packet).not.toContain('MODEL / SETUP EVIDENCE');
+        expect(packet).not.toContain('STRUCTURAL INVALIDATION CATALOGUE');
+        expect(packet).not.toContain('CURRENT MARKET SUMMARY');
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
         expect(packet).not.toContain('CURRENT OPPORTUNITY MATERIAL');
         expect(packet).not.toContain('Path A');
-        expect(packet).toContain("Find today's highest-quality current trading opportunity");
-        expect(packet).toContain('It is a preferred quality benchmark, not a hard trade-existence gate');
-        expect(packet).toContain('A realistic RR below minimum_rr is a quality warning');
+        expect(packet).toContain('MARKET ANALYSIS RESPONSIBILITY');
+        expect(packet).toContain('DETERMINISTIC AUTHORITY');
+        expect(packet).toContain('PENDING LIMIT SEMANTICS');
+        expect(packet).toContain('FINAL FACTUAL VALIDATION');
+        expect(packet).toContain('OUTPUT CONTRACT');
+        expect(packet).toContain("Analyze the complete current 1D/4H/1H/15M/5M market state");
+        expect(packet).toContain('minimum_rr is a preferred benchmark, not a trade-existence gate');
         expect(packet).toContain('Never move or tighten a valid structural stop');
-        expect(packet).toContain('invent a target');
-        expect(packet).toContain('REACHABLE OBJECTIVE LADDER');
-        expect(packet).toContain('Calculate RR to TP1, TP2, and TP3 when present');
-        expect(packet).toContain('Do not wait for a newly formed 5M/15M setup before analyzing a pending limit');
-        expect(packet).toContain('Do not choose the newest location by default');
-        expect(packet).toContain('without current 5M BOS/MSS');
-        expect(packet).toContain('CONFIRMATION_ENTRY is different and must satisfy its supplied confirmation facts');
-        expect(packet).toContain('Review ALL structurally usable locations');
-        expect(packet).toContain('selected_candidate_id MUST be JSON null');
-        expect(packet).toContain('copy the numeric level from that exact serialized objective catalogue record');
-        expect(packet).toContain('prefer that specific setup token; use ICT only when no more specific supported model describes it');
-        expect(packet).toContain('choose exactly ONE executable location from CURRENT ACTIONABLE LOCATION CATALOGUE');
-        expect(packet).toContain('The ONLY legal values for location_id are exact location_id values appearing in CURRENT ACTIONABLE LOCATION CATALOGUE');
-        expect(packet).toContain('Historical location IDs, model/setup evidence IDs, chronology location IDs, invalidation IDs');
-        expect(packet).toContain('That selected record is the sole source of truth for location_id, entry_zone, and entry');
-        expect(packet).toContain('Supporting records may strengthen confidence');
-        expect(packet).toContain('INVALIDATION LOCK');
-        expect(packet).toContain('OBJECTIVE LOCK');
-        expect(packet).toContain('Do not use commas to return a confluence inventory');
-        expect(packet).toContain('silently audit the final object');
+        expect(packet).toContain('Never move or tighten a valid structural stop to improve RR');
+        expect(packet).toContain('exact objective_id records from OBJECTIVE_STATE');
+        expect(packet).toContain('selected_candidate_id is exactly null');
+        expect(packet).toContain('selected_candidate_id as null for MANUAL_EXTERNAL_AI');
+        expect(packet).toContain('does not require current 5M BOS/MSS');
+        expect(packet).toContain('does not require current 5M BOS/MSS, current 15M BOS/MSS');
+        expect(packet.split('The ONLY legal values for location_id').length - 1).toBe(1);
+        expect(packet.split('Do not automatically prefer the newest location').length - 1).toBe(1);
+        expect(packet.split('minimum_rr is a preferred benchmark').length - 1).toBe(1);
+        expect(packet.split('selected_candidate_id is exactly null').length - 1).toBe(1);
         expect(packet).toContain('"facts_owner":"CODE"');
         expect(packet).toContain('"interpretation_owner":"EXTERNAL_AI"');
         expect(packet).not.toContain('buy_locations');
@@ -3339,7 +3337,7 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).not.toMatch(/preferred\s+(BUY|SELL)|precomputed\s+directional\s+thesis|directional\s+thesis\s+preselected/i);
         expect(packet).not.toContain('YOUR TASK');
         expect(packet).not.toContain('STRICT RESPONSE FORMAT');
-        expect(packet).toContain('Return ONLY one directly JSON.parse()-able JSON object.');
+        expect(packet).toContain('Return only one directly JSON.parse()-able JSON object');
         expect(packet).not.toContain('Mini App JSON');
         expect(packet.trim().endsWith('==================================================')).toBe(true);
         expect(packet).not.toContain('CURRENT BOT RESULT');
@@ -3925,7 +3923,8 @@ describe('institutional activity evidence composition', () => {
             signal: { pair: 'EUR/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' } },
             replay: completeReplay({ pair: 'EUR/USD', snapshot_id: 'IAE-TEST', scan_as_of: '2026-09-30T14:00:00Z', market_evidence_package: { snapshot_id: 'IAE-TEST', timeframes, institutional_activity_evidence: records }, target_candidates: { buy: [], sell: [] }, valid_candidates: [] })
         });
-        expect(packet).toContain('INSTITUTIONAL ACTIVITY / FOOTPRINT EVIDENCE');
+        expect(packet).toContain('RAW_EVIDENCE_APPENDIX');
+        expect(packet).toContain('"institutional_activity"');
         expect(packet).toContain('"direction":"SELL"');
         expect(packet).toContain('"direction":"BUY"');
         expect(packet).toContain('CONFIRMED_SEQUENCE');
@@ -4006,7 +4005,7 @@ describe('institutional activity evidence composition', () => {
             risk_constraints: { minimum_rr: 2.5 }, valid_candidates: []
         };
         const packet = ctx.buildExternalAIClipboardPacket({ signal: { pair: 'TEST/PAIR', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' }, current_price: 4170.51 }, replay: completeReplay(replay) });
-        const evidenceBody = packet.slice(packet.indexOf('CURRENT MARKET SUMMARY'), packet.indexOf('PROVENANCE / INTEGRITY'));
+        const evidenceBody = packet.slice(packet.indexOf('MULTI_TIMEFRAME_STATE'), packet.indexOf('PROVENANCE_INTEGRITY'));
         expect(packet).toContain('"current_price":4170.51');
         expect(packet).toContain('4168.43');
         expect(packet).toContain('4172.59');
@@ -4033,7 +4032,7 @@ describe('institutional activity evidence composition', () => {
         expect(evidenceBody).not.toContain('"entry": 4170');
         expect(evidenceBody).not.toContain('"stop_loss"');
         expect(evidenceBody).not.toContain('"risk_reward"');
-        const summaryText = packet.slice(packet.indexOf('CURRENT MARKET SUMMARY') + 'CURRENT MARKET SUMMARY\n'.length, packet.indexOf('MARKET DELIVERY CHRONOLOGY')).trim();
+        const summaryText = packet.slice(packet.indexOf('MULTI_TIMEFRAME_STATE\n') + 'MULTI_TIMEFRAME_STATE\n'.length, packet.indexOf('MARKET_DELIVERY_CHRONOLOGY')).trim();
         expect(JSON.parse(summaryText)).toEqual(expect.objectContaining({ '1D': expect.any(Object), '4H': expect.any(Object), '1H': expect.any(Object), '15M': expect.any(Object), '5M': expect.any(Object) }));
         expect(summaryText).not.toMatch(/"1W"/);
         expect(Buffer.byteLength(packet, 'utf8')).toBeLessThan(500000);
@@ -4134,9 +4133,9 @@ describe('professional manual decision packet and external decision validation',
             signal: { pair: 'EUR/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' }, current_price: 100 },
             replay: completeReplay({ pair: 'EUR/USD', snapshot_id: 'PACKET-REGRESSION', scan_as_of: '2026-10-05T10:00:00Z', quote: { price: 100 }, provider_metadata: { provider: 'TVKIT' }, market_evidence_package: semantic, target_candidates: { buy: [], sell: [] }, risk_constraints: { minimum_rr: 2.5 } })
         });
-        expect(packet).toContain('CURRENT MARKET SUMMARY');
-        expect(packet).toContain('CURRENT LIQUIDITY / OBJECTIVE MAP');
-        expect(packet).toContain('MODEL / SETUP EVIDENCE');
+        expect(packet).toContain('CURRENT_MARKET_STATE');
+        expect(packet).toContain('OBJECTIVE_STATE');
+        expect(packet).toContain('MODEL_EVIDENCE');
         expect(packet).toContain('CURRENT_SCAN_ARTIFACT_V2');
         expect(packet).not.toContain('CURRENT BOT RESULT');
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
@@ -4926,7 +4925,7 @@ describe('professional manual decision packet and external decision validation',
                 risk_constraints: { minimum_rr: 2.5 }
             }
         });
-        expect(clipboard).toContain('CURRENT ACTIONABLE LOCATION CATALOGUE');
+        expect(clipboard).toContain('ACTIONABLE_LOCATION_BUNDLES');
         expect(clipboard).toContain(directionalSourceZone.id);
         expect(clipboard).not.toContain('direction_if_factual');
         expect(clipboard).not.toContain('BUY MARKET LOCATIONS');
@@ -5031,8 +5030,8 @@ describe('professional manual decision packet and external decision validation',
             },
             replay
         });
-        const catalogueStart = packet.indexOf('CURRENT ACTIONABLE LOCATION CATALOGUE\n') + 'CURRENT ACTIONABLE LOCATION CATALOGUE\n'.length;
-        const catalogueEnd = packet.indexOf('\nSTRUCTURAL INVALIDATION CATALOGUE', catalogueStart);
+        const catalogueStart = packet.indexOf('ACTIONABLE_LOCATION_BUNDLES\n') + 'ACTIONABLE_LOCATION_BUNDLES\n'.length;
+        const catalogueEnd = packet.indexOf('\nOBJECTIVE_STATE', catalogueStart);
         const catalogue = JSON.parse(packet.slice(catalogueStart, catalogueEnd).trim());
         expect(catalogue.map(location => location.location_id)).toContain(sourceZone.id);
         expect(catalogue.find(location => location.location_id === sourceZone.id)).toEqual(expect.objectContaining({
@@ -9553,10 +9552,10 @@ describe('AI market analyst contract', () => {
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
         expect(packet).not.toContain('CURRENT OPPORTUNITY MATERIAL');
         expect(packet).not.toContain('NON-PROMOTED-BUY');
-        expect(packet).toContain('CURRENT ACTIONABLE LOCATION CATALOGUE');
-        expect(packet).toContain('MODEL / SETUP EVIDENCE');
-        expect(packet).toContain('STRUCTURAL INVALIDATION CATALOGUE');
-        expect(packet).toContain('MARKET DELIVERY CHRONOLOGY');
+        expect(packet).toContain('ACTIONABLE_LOCATION_BUNDLES');
+        expect(packet).toContain('MODEL_EVIDENCE');
+        expect(packet).toContain('STRUCTURAL_INVALIDATIONS');
+        expect(packet).toContain('MARKET_DELIVERY_CHRONOLOGY');
         expect(packet).toContain('1H:FVG:BUY:1');
         expect(packet).toContain('1H:OB:BUY:1');
         expect(packet).toContain('1H:MSNR:BUY:1');
@@ -9574,11 +9573,11 @@ describe('AI market analyst contract', () => {
         expect(packet).not.toContain('raw_closed_candles');
         expect(packet).not.toMatch(/"1W"/);
         expect(packet).not.toContain('"selected_candidate_id": "NONE"');
-        expect(packet).toContain('selected_candidate_id remains null');
+        expect(packet).toContain('selected_candidate_id as null for MANUAL_EXTERNAL_AI');
         expect(packet).not.toContain('"candidate_id": "NON-PROMOTED-BUY"');
         expect(packet).not.toContain('"entry": 1.099');
         expect(packet).not.toContain('"rr": 3');
-        const objectiveSection = packet.split('CURRENT LIQUIDITY / OBJECTIVE MAP')[1].split('CURRENT ACTIONABLE LOCATION CATALOGUE')[0];
+        const objectiveSection = packet.split('OBJECTIVE_STATE')[1].split('STRUCTURAL_INVALIDATIONS')[0];
         expect(objectiveSection).not.toContain('TARGET:BUY');
         expect(objectiveSection).not.toContain('TARGET:SELL');
     });
@@ -9645,8 +9644,8 @@ describe('AI market analyst contract', () => {
             signal: { pair: 'EUR/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', reason: { code: 'MANUAL_EXTERNAL_AI_REVIEW' } },
             replay: completeReplay(replay)
         });
-        const evidenceBody = packet.slice(packet.indexOf('PACKET / SNAPSHOT IDENTITY'), packet.indexOf('PROVENANCE / INTEGRITY'));
-        expect(packet).toContain('CURRENT MARKET SUMMARY');
+        const evidenceBody = packet.slice(packet.indexOf('PACKET_IDENTITY'), packet.indexOf('PROVENANCE_INTEGRITY'));
+        expect(packet).toContain('MULTI_TIMEFRAME_STATE');
         expect(packet).not.toContain('DIRECTIONAL / PHASE CONTEXT');
         expect(evidenceBody).not.toContain('"directional_bias"');
         expect(evidenceBody).not.toContain('"daily_bias"');
@@ -9665,10 +9664,10 @@ describe('AI market analyst contract', () => {
         expect(evidenceBody).toContain('"objective_id":"PDL-EUR"');
         expect(evidenceBody).not.toContain('TARGET:BUY');
         expect(evidenceBody).not.toContain('TARGET:SELL');
-        expect(packet).toContain('First understand the market, then find the trade.');
-        expect(packet).toContain('CURRENT MARKET STATE -> RECENT DELIVERY / CHRONOLOGY');
-        expect(packet).toContain('Analyze both BUY and SELL possibilities.');
-        expect(packet).toContain('Do not use timeframe majority voting, an HTF hard gate');
+        expect(packet).toContain('Analyze the complete current 1D/4H/1H/15M/5M market state');
+        expect(packet).toContain('MARKET ANALYSIS RESPONSIBILITY');
+        expect(packet).toContain('Analyze BUY and SELL');
+        expect(packet).toContain('Do not use timeframe majority voting or a hard HTF veto');
         expect(packet).toContain('minimum_rr');
         expect(packet).not.toContain('EUR/USD special');
         expect(packet).not.toContain('XAU/USD special');
@@ -9708,19 +9707,18 @@ describe('AI market analyst contract', () => {
         expect(packet).toContain('"delivery_since_formation"');
         expect(packet).toContain('0.88');
         expect(packet).toContain('4157.23');
-        expect(packet).toContain('HARD STRATEGY / EXECUTION RULES');
+        expect(packet).toContain('STRATEGY_CONTRACT');
         expect(packet).toContain('"minimum_rr":2.5');
-        expect(packet).toContain('Fresh POI does not automatically mean current opportunity.');
-        expect(packet).toContain('distance alone is not rejection');
-        expect(packet).toContain('Combined setup labels require same-opportunity components');
+        expect(packet).toContain('an earlier-formed still-actionable location');
+        expect(packet).toContain('does not require current 5M BOS/MSS');
+        expect(packet).toContain('minimum_rr is a preferred benchmark, not a trade-existence gate');
         expect(packet).toContain('4315.8');
-        expect(packet).toContain('A stop must be a supplied structural invalidation belonging to the thesis');
-        expect(packet).toContain('TP1 is the nearest meaningful reachable objective');
-        expect(packet).toContain('Use only supplied facts and prices.');
-        expect(packet).toContain('Do not return chain-of-thought or prose.');
+        expect(packet).toContain('CODE owns exact IDs, timestamps, prices, zones, lifecycle, invalidations, objectives');
+        expect(packet).toContain('exact objective_id records from OBJECTIVE_STATE');
+        expect(packet).toContain('no prose or chain-of-thought');
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
         expect(packet).not.toContain('"candidate_id": "REMOTE-SELL-POI"');
-        const objectiveSection = packet.split('CURRENT LIQUIDITY / OBJECTIVE MAP')[1].split('CURRENT ACTIONABLE LOCATION CATALOGUE')[0];
+        const objectiveSection = packet.split('OBJECTIVE_STATE')[1].split('STRUCTURAL_INVALIDATIONS')[0];
         expect(objectiveSection).not.toContain('TARGET:SELL');
         expect(objectiveSection).not.toContain('"direction"');
         expect(packet).not.toContain('"direction": "SELL"\n      }');
