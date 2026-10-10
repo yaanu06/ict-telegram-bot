@@ -2876,6 +2876,11 @@ function deriveObjectiveSourceRelation(target = {}) {
     const raw = String(target.source || target.type || target.target_type || '').toUpperCase();
     if (raw.includes(':ABOVE:') || raw.includes('ABOVE_REFERENCE') || raw === 'ABOVE') return 'ABOVE_REFERENCE_AT_DETECTION';
     if (raw.includes(':BELOW:') || raw.includes('BELOW_REFERENCE') || raw === 'BELOW') return 'BELOW_REFERENCE_AT_DETECTION';
+    if (raw.includes('SIDE_LIQUIDITY')) {
+        const direction = String(target.direction || target.source_orientation_if_factual || '').toUpperCase();
+        if (direction === 'BUY') return 'ABOVE_REFERENCE_AT_DETECTION';
+        if (direction === 'SELL') return 'BELOW_REFERENCE_AT_DETECTION';
+    }
     return null;
 }
 
@@ -12499,6 +12504,16 @@ function buildManualObjectiveSemanticState(objectives = {}, currentPrice = null)
             highest_timeframe: members.map(item => item.timeframe).find(Boolean) || null
         });
     }
+    const clusterByObjectiveId = new Map();
+    for (const cluster of clusters) for (const objectiveId of cluster.member_objective_ids) clusterByObjectiveId.set(objectiveId, cluster);
+    for (const item of all) {
+        const cluster = clusterByObjectiveId.get(item.objective_id);
+        if (cluster) {
+            item.objective_cluster_id = cluster.objective_cluster_id;
+            item.cluster_level = cluster.cluster_level;
+            item.cluster_member_count = cluster.member_objective_ids.length;
+        }
+    }
     return {
         all,
         above_current_price: all.filter(item => item.relative_to_current_price === 'ABOVE'),
@@ -13117,8 +13132,10 @@ function compactAiNeutralObjective(target = {}) {
     if (!target || typeof target !== 'object') return null;
     const level = compactEvidenceNumber(target.level, target.target_level, target.price);
     const lifecycle = target.lifecycle_state || target.target_lifecycle_state || target.state || null;
-    const normalizedType = String(target.type || '').replace(/^OPPOSING_/, '') || null;
-    const normalizedSource = String(target.source || '').replace(/^(BUY|SELL)_SIDE_LIQUIDITY$/, 'LIQUIDITY').replace(/^OPPOSING_/, '') || null;
+    const rawType = target.type || target.target_type || null;
+    const rawSource = target.source || target.primary_target_source || target.origin || null;
+    const normalizedType = String(rawType || '').replace(/^OPPOSING_/, '') || null;
+    const normalizedSource = String(rawSource || '').replace(/^(BUY|SELL)_SIDE_LIQUIDITY$/, 'LIQUIDITY').replace(/^OPPOSING_/, '') || null;
     if (level == null && !target.id && !target.target_id) return null;
     return {
         objective_id: target.objective_id || target.id || target.target_id
@@ -13127,6 +13144,18 @@ function compactAiNeutralObjective(target = {}) {
         level,
         source: normalizedSource,
         type: normalizedType,
+        objective_class: target.objective_class || target.target_type || rawType || normalizedSource || 'STRUCTURAL_OBJECTIVE',
+        liquidity_side: target.liquidity_side || deriveObjectiveLiquiditySide({ ...target, source: rawSource, type: rawType, target_type: rawType }),
+        source_relation_at_detection: target.source_relation_at_detection
+            || target.source_relation
+            || deriveObjectiveSourceRelation({ ...target, source: rawSource, type: rawType, target_type: rawType })
+            || (String(rawSource || '').toUpperCase().includes('SIDE_LIQUIDITY')
+                ? (String(target.direction || '').toUpperCase() === 'BUY' ? 'ABOVE_REFERENCE_AT_DETECTION'
+                    : String(target.direction || '').toUpperCase() === 'SELL' ? 'BELOW_REFERENCE_AT_DETECTION' : null)
+                : null),
+        source_orientation_if_factual: target.source_orientation_if_factual || target.direction || null,
+        source_record_type: rawType,
+        source_record_source: rawSource,
         event_time: target.event_time || target.formation_time || target.created_time || null,
         lifecycle_state: lifecycle,
         reached: target.reached === true || lifecycle === 'CONSUMED' || lifecycle === 'INVALIDATED',
@@ -13905,6 +13934,42 @@ function buildManualConflictMap(semantic = {}) {
                     ...(semantic.timeframes?.[leftTf]?.structural_evidence_ids || []),
                     ...(semantic.timeframes?.[rightTf]?.structural_evidence_ids || [])
                 ])].slice(0, 16),
+                interpretation_required: true
+            });
+        }
+    }
+    // Keep opposing overlapping locations visible as a factual conflict. This
+    // does not select a side or reject either location; it gives the external
+    // AI the exact relationship it otherwise has to reconstruct manually.
+    const locationRecords = AI_SEMANTIC_TIMEFRAMES.flatMap(timeframe =>
+        (semantic.timeframes?.[timeframe]?.locations || []).map(item => ({ item, timeframe }))
+    ).map(({ item, timeframe }) => ({
+        id: manualPacketCanonicalId(item),
+        timeframe,
+        type: item.type || item.event_type || null,
+        orientation: String(item.source_orientation || item.orientation || item.direction || item.source_direction || '').toUpperCase(),
+        low: compactEvidenceNumber(item.low, item.zone?.low, item.zone_low),
+        high: compactEvidenceNumber(item.high, item.zone?.high, item.zone_high)
+    })).filter(item => item.id && item.low != null && item.high != null && item.high >= item.low);
+    for (let leftIndex = 0; leftIndex < locationRecords.length; leftIndex += 1) {
+        const left = locationRecords[leftIndex];
+        for (let rightIndex = leftIndex + 1; rightIndex < locationRecords.length; rightIndex += 1) {
+            const right = locationRecords[rightIndex];
+            if (left.id === right.id || left.orientation === right.orientation
+                || !['BUY', 'SELL'].includes(left.orientation) || !['BUY', 'SELL'].includes(right.orientation)
+                || left.high < right.low || right.high < left.low) continue;
+            const ids = [left.id, right.id].sort();
+            conflicts.push({
+                conflict_id: `CONFLICT:LOCATION:${ids[0]}:${ids[1]}`,
+                type: 'OVERLAPPING_OPPOSING_LOCATIONS',
+                timeframes: [...new Set([left.timeframe, right.timeframe])],
+                facts: {
+                    locations: [
+                        { location_id: left.id, type: left.type, source_orientation: left.orientation, zone: { low: left.low, high: left.high } },
+                        { location_id: right.id, type: right.type, source_orientation: right.orientation, zone: { low: right.low, high: right.high } }
+                    ]
+                },
+                evidence_ids: ids,
                 interpretation_required: true
             });
         }
@@ -20444,12 +20509,36 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
     const selectedLow = externalPacketNumber(selectedLocation?.zone_low ?? selectedLocation?.zone?.low);
     const selectedHigh = externalPacketNumber(selectedLocation?.zone_high ?? selectedLocation?.zone?.high);
     const zoneWidth = Number.isFinite(selectedLow) && Number.isFinite(selectedHigh) ? selectedHigh - selectedLow : null;
+    const quoteSnapshot = evidence.quote_snapshot || evidence.quote || evidence.current_market_state || {};
+    const spread = externalPacketNumber(quoteSnapshot.spread)
+        ?? (Number.isFinite(externalPacketNumber(quoteSnapshot.bid)) && Number.isFinite(externalPacketNumber(quoteSnapshot.ask))
+            ? externalPacketNumber(quoteSnapshot.ask) - externalPacketNumber(quoteSnapshot.bid) : null);
+    const invalidationBasis = selectedInvalidation?.invalidation_basis
+        || selectedInvalidation?.execution_invalidation?.basis
+        || selectedInvalidation?.invalidation?.basis
+        || null;
+    const stopExecutionMode = selectedInvalidation?.confirmation_mode
+        || selectedInvalidation?.execution_invalidation?.confirmation_mode
+        || null;
+    const stopQualityWarnings = [];
+    const riskToAtr = calculatedRiskReward.risk != null && locationAtr > 0 ? calculatedRiskReward.risk / locationAtr : null;
+    if (riskToAtr != null && riskToAtr < 1) stopQualityWarnings.push('STRUCTURAL_RISK_DISTANCE_BELOW_LOCATION_ATR_CONTEXT');
+    if (spread != null && calculatedRiskReward.risk > 0 && spread > calculatedRiskReward.risk) stopQualityWarnings.push('SPREAD_EXCEEDS_STRUCTURAL_RISK_DISTANCE');
+    if (outcome === 'TRADE' && selectedInvalidation && !invalidationBasis) stopQualityWarnings.push('STRUCTURAL_INVALIDATION_BASIS_UNSPECIFIED');
+    if (outcome === 'TRADE' && selectedInvalidation && !stopExecutionMode) stopQualityWarnings.push('STRUCTURAL_STOP_EXECUTION_MODE_UNSPECIFIED');
     const riskDiagnostics = {
         risk_distance: calculatedRiskReward.risk,
-        risk_as_fraction_of_atr_of_location_timeframe: calculatedRiskReward.risk != null && locationAtr > 0 ? calculatedRiskReward.risk / locationAtr : null,
+        risk_to_atr_ratio: riskToAtr,
+        risk_as_fraction_of_atr_of_location_timeframe: riskToAtr,
         risk_as_fraction_of_zone_width: calculatedRiskReward.risk != null && zoneWidth > 0 ? calculatedRiskReward.risk / zoneWidth : null,
+        risk_to_zone_width_ratio: calculatedRiskReward.risk != null && zoneWidth > 0 ? calculatedRiskReward.risk / zoneWidth : null,
         entry_position_inside_zone: Number.isFinite(entry) && selectedLow != null && selectedHigh != null && selectedHigh > selectedLow
-            ? (entry - selectedLow) / (selectedHigh - selectedLow) : null
+            ? (entry - selectedLow) / (selectedHigh - selectedLow) : null,
+        structural_anchor_type: invalidationBasis,
+        stop_execution_mode: stopExecutionMode,
+        spread,
+        spread_to_risk_ratio: spread != null && calculatedRiskReward.risk > 0 ? spread / calculatedRiskReward.risk : null,
+        stop_quality_warnings: stopQualityWarnings
     };
     return {
         valid: issues.length === 0,
@@ -20469,6 +20558,7 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
         reported_risk_reward: reportedRR,
         normalized_decision: calculatedRR == null ? null : { ...normalizedDecision, risk_reward: calculatedRR },
         risk_diagnostics: riskDiagnostics,
+        stop_quality_warnings: stopQualityWarnings,
         minimum_rr: minimumRR,
         location_id: normalizedDecision.location_id || null,
         invalidation_id: normalizedDecision.invalidation_id || null,
@@ -20517,6 +20607,7 @@ function buildManualExternalAIValidationEvidence(source = {}, signal = {}) {
     const provider = providerMetadata?.provider || providerMetadata?.name || getMarketDataProvider();
     return {
         ...buildProfessionalManualMarketPacket({ semantic, pair: pairValue, provider, result: signal, source, minimumRR }),
+        quote_snapshot: source.quote || source.quote_snapshot || null,
         manual_external_ai: true,
         analysis_mode: DEFAULT_ANALYSIS_MODE
     };
@@ -20568,6 +20659,9 @@ function ingestManualExternalAIResult(rawDecision = null) {
     }
     const validation = validateExternalAITradeDecision(decision, evidence);
     const decisionReceived = String(decision.decision || '').toUpperCase() || null;
+    const acceptedDecision = validation.valid && decisionReceived === 'TRADE'
+        ? validation.normalized_decision
+        : null;
     return {
         ...validation,
         status: !validation.valid && decisionReceived === 'TRADE'
@@ -20576,6 +20670,17 @@ function ingestManualExternalAIResult(rawDecision = null) {
                 ? 'VALIDATED_EXTERNAL_AI_TRADE'
                 : decisionReceived === 'NO_TRADE' && validation.valid ? 'NO_TRADE' : 'EXTERNAL_AI_TRADE_REJECTED',
         execution_allowed: validation.valid && decisionReceived === 'TRADE',
+        accepted_decision: acceptedDecision,
+        authoritative_risk_reward: validation.calculated_risk_reward,
+        authoritative_risk_metrics: {
+            risk: validation.risk,
+            reward_tp1: validation.reward_tp1,
+            reward_tp2: validation.reward_tp2,
+            reward_tp3: validation.reward_tp3,
+            rr_tp1: validation.rr_tp1,
+            rr_tp2: validation.rr_tp2,
+            rr_tp3: validation.rr_tp3
+        },
         decision_received: decisionReceived,
         scan_id: expectedScanId,
         snapshot_id: expectedSnapshotId

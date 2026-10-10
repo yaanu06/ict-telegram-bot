@@ -4461,6 +4461,97 @@ describe('professional manual decision packet and external decision validation',
         expect(result.warnings).toContain('REPORTED_RR_IGNORED_CODE_CALCULATED_RR_WINS');
     });
 
+    it('validates the BTC/USD production-shaped MSNR result with code-owned RR and structural-risk diagnostics', () => {
+        const ctx = getContext();
+        const evidence = {
+            manual_external_ai: true,
+            packet_type: 'EXTERNAL_AI_MARKET_DECISION',
+            external_ai_packet_schema: 'MARKET_STATE_V3',
+            strategy_contract: { minimum_rr: 2.5 },
+            current_market_state: { current_price: 83053.67 },
+            quote_snapshot: { bid: 83053.62, ask: 83053.72, spread: 0.10 },
+            multi_timeframe_state: { '5M': { volatility: { atr: 17.19214 } } },
+            actionable_location_bundles: [{
+                location_id: 'MSNR-5M-SELL-1791664500000-3', type: 'MSNR', model_family: 'MSNR', timeframe: '5M',
+                source_orientation: 'SELL', zone_low: 83083.7689266, zone_high: 83087.1010734,
+                midpoint_if_defined: 83085.435, origin_evidence_ids: ['MSNR-5M-SELL-1791664500000-3'],
+                compatible_invalidation_ids: ['MSNR-5M-SELL-1791664500000-3']
+            }],
+            structural_invalidations: [{
+                invalidation_id: 'MSNR-5M-SELL-1791664500000-3', level: 83087.1010734,
+                state: 'ACTIVE', source_location_id: 'MSNR-5M-SELL-1791664500000-3', source_model: 'MSNR',
+                invalidation_basis: 'ZONE_FAR_EDGE', confirmation_mode: 'HARD_PRICE'
+            }],
+            objective_state: { all: [
+                { objective_id: 'LIQUIDITY:5M:below:83035.37', level: 83035.37, source: 'SELL_SIDE_LIQUIDITY', type: 'EXTERNAL_LIQUIDITY', lifecycle_state: 'UNFULFILLED' },
+                { objective_id: 'LIQUIDITY:5M:below:83034.5', level: 83034.5, source: 'SELL_SIDE_LIQUIDITY', type: 'EXTERNAL_LIQUIDITY', lifecycle_state: 'UNFULFILLED' },
+                { objective_id: 'LIQUIDITY:5M:below:83030', level: 83030, source: 'SELL_SIDE_LIQUIDITY', type: 'EXTERNAL_LIQUIDITY', lifecycle_state: 'UNFULFILLED' }
+            ] },
+            model_evidence: { MSNR: [{ event_id: 'MSNR-5M-SELL-1791664500000-3', event_type: 'MSNR', direction: 'SELL' }] }
+        };
+        const result = ctx.validateExternalAITradeDecision({
+            pair: 'BTC/USD', decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'MSNR', market_phase: 'RETRACEMENT',
+            selected_candidate_id: null, confidence: 45, location_id: 'MSNR-5M-SELL-1791664500000-3',
+            entry_zone: [83083.7689266, 83087.1010734], entry: 83085.435,
+            invalidation_id: 'MSNR-5M-SELL-1791664500000-3', stop_loss: 83087.1010734,
+            tp1_objective_id: 'LIQUIDITY:5M:below:83035.37', tp1: 83035.37,
+            tp2_objective_id: 'LIQUIDITY:5M:below:83034.5', tp2: 83034.5,
+            tp3_objective_id: 'LIQUIDITY:5M:below:83030', tp3: 83030,
+            risk_reward: 22.79, evidence_ids: ['MSNR-5M-SELL-1791664500000-3']
+        }, evidence);
+        const expected = ctx.calculateTradeRiskReward('SELL', 83085.435, 83087.1010734, { tp1: 83035.37, tp2: 83034.5, tp3: 83030 });
+        expect(result.valid).toBe(true);
+        expect(result.risk).toBeCloseTo(1.6660734, 10);
+        expect(result.rr_tp1).toBeCloseTo(expected.rr_tp1, 12);
+        expect(result.rr_tp1).toBeCloseTo(30.0496965, 6);
+        expect(result.rr_tp2).toBeCloseTo(expected.rr_tp2, 12);
+        expect(result.rr_tp3).toBeCloseTo(expected.rr_tp3, 12);
+        expect(result.normalized_decision.risk_reward).toBe(result.rr_tp1);
+        expect(result.warnings).toContain('EXTERNAL_AI_RR_MISMATCH');
+        expect(result.risk_diagnostics.structural_anchor_type).toBe('ZONE_FAR_EDGE');
+        expect(result.risk_diagnostics.stop_execution_mode).toBe('HARD_PRICE');
+        expect(result.risk_diagnostics.risk_to_atr_ratio).toBeCloseTo(1.6660734 / 17.19214, 8);
+        expect(result.stop_quality_warnings).toContain('STRUCTURAL_RISK_DISTANCE_BELOW_LOCATION_ATR_CONTEXT');
+        expect(result.stop_quality_warnings).not.toContain('SPREAD_EXCEEDS_STRUCTURAL_RISK_DISTANCE');
+    });
+
+    it('preserves objective source semantics and exact-level clustering without collapsing nearby levels', () => {
+        const ctx = getContext();
+        const state = ctx.buildManualObjectiveSemanticState({
+            below_current_price: [
+                { objective_id: 'LIQUIDITY:5M:below:83035.37', level: 83035.37, source: 'SELL_SIDE_LIQUIDITY', type: 'EXTERNAL_LIQUIDITY', direction: 'SELL' },
+                { objective_id: 'LIQUIDITY:5M:below:83034.5', level: 83034.5, source: 'SELL_SIDE_LIQUIDITY', type: 'EXTERNAL_LIQUIDITY', direction: 'SELL' },
+                { objective_id: 'LIQUIDITY:5M:below:83035.37:ALT', level: 83035.37, source: 'SELL_SIDE_LIQUIDITY', type: 'EXTERNAL_LIQUIDITY', direction: 'SELL' }
+            ]
+        }, 83053.67);
+        const first = state.all.find(item => item.objective_id === 'LIQUIDITY:5M:below:83035.37');
+        const nearby = state.all.find(item => item.objective_id === 'LIQUIDITY:5M:below:83034.5');
+        expect(first).toEqual(expect.objectContaining({ liquidity_side: 'SELL_SIDE', source_relation_at_detection: 'BELOW_REFERENCE_AT_DETECTION' }));
+        expect(first.objective_cluster_id).toBe('OBJECTIVE_CLUSTER:83035.37');
+        expect(first.cluster_member_count).toBe(2);
+        expect(nearby.objective_cluster_id).toBeUndefined();
+        expect(state.clusters).toEqual(expect.arrayContaining([expect.objectContaining({ cluster_level: 83035.37 })]));
+    });
+
+    it('exposes overlapping opposing locations as factual conflicts without rejecting either side', () => {
+        const ctx = getContext();
+        const conflicts = ctx.buildManualConflictMap({
+            timeframes: {
+                '1D': {}, '4H': {}, '1H': {},
+                '15M': { locations: [
+                    { id: 'MSNR-SELL', type: 'MSNR', direction: 'SELL', low: 100, high: 105 },
+                    { id: 'DEMAND-BUY', type: 'DEMAND', direction: 'BUY', low: 103, high: 108 }
+                ] },
+                '5M': {}
+            }
+        });
+        expect(conflicts).toEqual(expect.arrayContaining([expect.objectContaining({
+            conflict_id: 'CONFLICT:LOCATION:DEMAND-BUY:MSNR-SELL',
+            type: 'OVERLAPPING_OPPOSING_LOCATIONS',
+            evidence_ids: ['DEMAND-BUY', 'MSNR-SELL']
+        })]));
+    });
+
     it('rejects invalidation mismatch and unrelated combined-model evidence', () => {
         const ctx = getContext();
         const evidence = {
