@@ -3563,8 +3563,12 @@ describe('model semantics and temporal provenance', () => {
 
     it('does not publish BOS and MSS for the same closed range-break observation', () => {
         const ctx = getContext();
-        const data = Array.from({ length: 35 }, (_, index) => ({ o: 100, h: 101, l: 99, c: 100, t: Date.UTC(2026, 9, 1) + index * 3600000, is_closed: true }));
-        data[34] = { o: 100, h: 106, l: 99, c: 105, t: Date.UTC(2026, 9, 1) + 34 * 3600000, is_closed: true };
+        const data = Array.from({ length: 35 }, (_, index) => ({ o: 100, h: 102, l: 98, c: 100, t: Date.UTC(2026, 9, 1) + index * 3600000, is_closed: true }));
+        data[5] = { o: 100, h: 105, l: 99, c: 102, t: Date.UTC(2026, 9, 1) + 5 * 3600000, is_closed: true };
+        data[8] = { o: 100, h: 101, l: 95, c: 98, t: Date.UTC(2026, 9, 1) + 8 * 3600000, is_closed: true };
+        data[12] = { o: 100, h: 110, l: 99, c: 106, t: Date.UTC(2026, 9, 1) + 12 * 3600000, is_closed: true };
+        data[16] = { o: 100, h: 101, l: 97, c: 99, t: Date.UTC(2026, 9, 1) + 16 * 3600000, is_closed: true };
+        data[34] = { o: 100, h: 113, l: 99, c: 112, t: Date.UTC(2026, 9, 1) + 34 * 3600000, is_closed: true };
         const facts = ctx.buildInstitutionalStructureFacts(data, '15M');
         const sameObservation = facts.filter(item => item.index === 34 && item.direction === 'BUY').map(item => item.event_type);
         expect(sameObservation.filter(type => type === 'BOS')).toHaveLength(1);
@@ -3580,6 +3584,128 @@ describe('model semantics and temporal provenance', () => {
         expect(ob).toEqual(expect.objectContaining({ type: 'OB', low: 98, high: 100, timeframe: '1H' }));
         expect(fvg.id).toMatch(/^FVG-1H-BUY-\d+-0$/);
         expect(ob.id).toMatch(/^OB-1H-SELL-\d+-0$/);
+    });
+
+    it('requires positive location-to-invalidation compatibility in MARKET_STATE_V3 validation', () => {
+        const ctx = getContext();
+        const evidence = {
+            external_ai_packet_schema: 'MARKET_STATE_V3',
+            manual_external_ai: true,
+            strategy_contract: { minimum_rr: 2.5 },
+            current_market_state: { current_price: 100 },
+            actionable_location_bundles: [{ location_id: 'MSNR-SELL', type: 'MSNR', source_orientation: 'SELL', zone_low: 100, zone_high: 102, midpoint_if_defined: 101, origin_evidence_ids: ['MSNR-SELL'] }],
+            structural_invalidations: [{ invalidation_id: 'INV-MSNR', level: 104, state: 'ACTIVE', source_location_id: 'MSNR-SELL' }],
+            objective_state: { all: [{ objective_id: 'OBJ-SELL', level: 90, lifecycle_state: 'UNFULFILLED' }] },
+            model_evidence: { MSNR: [{ event_id: 'MSNR-SELL', event_type: 'MSNR', direction: 'SELL', evidence_ids: ['MSNR-SELL'] }] }
+        };
+        const decision = { decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'MSNR', market_phase: 'RETRACEMENT', confidence: 70, selected_candidate_id: null, location_id: 'MSNR-SELL', entry_zone: [100, 102], entry: 101, invalidation_id: 'INV-MSNR', stop_loss: 104, tp1_objective_id: 'OBJ-SELL', tp1: 90, evidence_ids: ['MSNR-SELL'] };
+        const missing = ctx.validateExternalAITradeDecision(decision, evidence);
+        expect(missing.valid).toBe(false);
+        expect(missing.issues).toContain('EXTERNAL_AI_LOCATION_HAS_NO_COMPATIBLE_INVALIDATION');
+        evidence.actionable_location_bundles[0].compatible_invalidation_ids = ['INV-MSNR'];
+        const linked = ctx.validateExternalAITradeDecision(decision, evidence);
+        expect(linked.issues).not.toContain('EXTERNAL_AI_LOCATION_HAS_NO_COMPATIBLE_INVALIDATION');
+        expect(linked.valid).toBe(true);
+    });
+
+    it('accepts same-opportunity MSNR plus OB confluence but rejects unrelated OB evidence', () => {
+        const ctx = getContext();
+        const evidence = {
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [{ location_id: 'MSNR-SELL', type: 'MSNR', source_orientation: 'SELL', zone_low: 100, zone_high: 102, midpoint_if_defined: 101, origin_evidence_ids: ['MSNR-SELL', 'OB-RELATED'], compatible_invalidation_ids: ['INV'] }],
+            structural_invalidation_catalogue: [{ invalidation_id: 'INV', level: 104, state: 'ACTIVE' }],
+            current_liquidity_objective_map: { above_current_price: [], below_current_price: [{ objective_id: 'OBJ', level: 90, lifecycle_state: 'UNFULFILLED' }] },
+            model_setup_evidence: { MSNR: [{ event_id: 'MSNR-SELL', event_type: 'MSNR', direction: 'SELL', evidence_ids: ['MSNR-SELL'] }], ICT_STRUCTURE_AND_LIQUIDITY: [{ event_id: 'OB-RELATED', event_type: 'OB', direction: 'SELL', evidence_ids: ['OB-RELATED', 'MSNR-SELL'] }] }
+        };
+        const base = { decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'MSNR+OB', market_phase: 'RETRACEMENT', confidence: 70, selected_candidate_id: null, location_id: 'MSNR-SELL', entry_zone: [100, 102], entry: 101, invalidation_id: 'INV', stop_loss: 104, tp1_objective_id: 'OBJ', tp1: 90, evidence_ids: ['MSNR-SELL', 'OB-RELATED'] };
+        expect(ctx.validateExternalAITradeDecision(base, evidence).valid).toBe(true);
+        evidence.model_setup_evidence.ICT_STRUCTURE_AND_LIQUIDITY[0] = { event_id: 'OB-UNRELATED', event_type: 'OB', direction: 'SELL', evidence_ids: ['OB-UNRELATED'] };
+        expect(ctx.validateExternalAITradeDecision({ ...base, evidence_ids: ['MSNR-SELL', 'OB-UNRELATED'] }, evidence).issues).toContain('EXTERNAL_AI_SETUP_COMPONENT_UNSUPPORTED_BY_EVIDENCE');
+    });
+
+    it('reports confirmed-swing structure breaks only on the first closed crossing', () => {
+        const ctx = getContext();
+        const data = Array.from({ length: 35 }, (_, index) => ({ o: 100, h: 102, l: 98, c: 100, t: Date.UTC(2026, 9, 1) + index * 3600000, is_closed: true }));
+        data[5] = { ...data[5], h: 105, c: 102 };
+        data[8] = { ...data[8], h: 101, l: 95, c: 98 };
+        data[12] = { ...data[12], h: 110, c: 106 };
+        data[16] = { ...data[16], h: 101, l: 97, c: 99 };
+        data[34] = { ...data[34], o: 100, h: 113, l: 99, c: 112 };
+        const event = ctx.detectConfirmedStructuralBreak(data, 'BUY', '1H');
+        expect(event).toEqual(expect.objectContaining({ event_type: 'BOS', confirmation_mode: 'CLOSE_BEYOND_CONFIRMED_SWING', broken_level: 110 }));
+        expect(event.displacement_confirmed).toBe(true);
+        expect(ctx.detectConfirmedStructuralBreak(data.slice(0, -1), 'BUY', '1H')).toBeNull();
+    });
+
+    it('records pivot and first-knowable timestamps for confirmed swings', () => {
+        const ctx = getContext();
+        const data = Array.from({ length: 12 }, (_, index) => ({
+            o: 100, h: index === 4 ? 110 : 102, l: index === 4 ? 99 : 98, c: 100,
+            t: Date.UTC(2026, 9, 1) + index * 3600000, is_closed: true
+        }));
+        const swing = ctx.findSwings(data, 2).H.find(item => item.i === 4);
+        expect(swing).toEqual(expect.objectContaining({
+            pivot_bar_time: data[4].t,
+            confirmation_time: data[6].t,
+            first_knowable_time: data[6].t,
+            confirmation_mode: 'RIGHT_SIDE_CLOSED_BARS'
+        }));
+    });
+
+    it('preserves model-specific invalidation provenance through compact serialization', () => {
+        const ctx = getContext();
+        const compact = ctx.compactAiStructuralInvalidation({
+            id: 'LOC-MSNR', type: 'MSNR', timeframe: '1H', direction: 'SELL',
+            structural_invalidation: { level: 102, source: 'MSNR_ZONE_INVALIDATION' },
+            invalidation_basis: 'ZONE_FAR_EDGE',
+            confirmation_mode: 'HARD_PRICE',
+            lifecycle_invalidation: { mode: 'CLOSE_BEYOND_ACTIVE_ZONE_EDGE', threshold: 102 },
+            execution_invalidation: { level: 102, basis: 'ZONE_FAR_EDGE', confirmation_mode: 'HARD_PRICE' },
+            evidence_ids: ['LOC-MSNR']
+        }, '1H');
+        expect(compact).toEqual(expect.objectContaining({
+            invalidation_id: 'LOC-MSNR',
+            source_location_id: 'LOC-MSNR',
+            source_model: 'MSNR',
+            invalidation_basis: 'ZONE_FAR_EDGE',
+            confirmation_mode: 'HARD_PRICE',
+            source_price: 102
+        }));
+        expect(compact.execution_invalidation).toEqual(expect.objectContaining({ level: 102, basis: 'ZONE_FAR_EDGE' }));
+    });
+
+    it('keeps FVG and OB formation knowable only on closed confirmation candles', () => {
+        const ctx = getContext();
+        const t0 = Date.UTC(2026, 9, 1);
+        const fvgData = [
+            { o: 99.5, h: 100, l: 99, c: 99.6, t: t0, is_closed: true },
+            { o: 99.6, h: 100.2, l: 99.5, c: 100, t: t0 + 3600000, is_closed: true },
+            { o: 101.2, h: 102, l: 101, c: 101.7, t: t0 + 7200000, is_closed: true }
+        ];
+        const fvg = ctx.detectFVG(fvgData, 'XAU/USD').at(-1);
+        expect(fvg).toEqual(expect.objectContaining({
+            origin_time: t0,
+            formation_time: t0 + 7200000,
+            confirmation_time: t0 + 7200000,
+            first_knowable_time: t0 + 7200000,
+            confirmation_mode: 'THREE_CANDLE_CLOSE'
+        }));
+
+        const obData = [
+            { o: 100, h: 101, l: 99, c: 100, t: t0, is_closed: true },
+            { o: 100, h: 101, l: 99, c: 100, t: t0 + 3600000, is_closed: true },
+            { o: 100, h: 102, l: 99, c: 101, t: t0 + 7200000, is_closed: true },
+            { o: 101, h: 101.5, l: 98, c: 99, t: t0 + 10800000, is_closed: true }
+        ];
+        const ob = ctx.detectOrderBlocks(obData, 'SELL').at(-1);
+        expect(ob).toEqual(expect.objectContaining({
+            origin_time: t0 + 7200000,
+            formation_time: t0 + 10800000,
+            confirmation_time: t0 + 10800000,
+            first_knowable_time: t0 + 10800000,
+            confirmation_mode: 'OPPOSING_CANDLE_EXTREME_TAKEN'
+        }));
+        expect(ctx.detectOrderBlocks(obData.map((candle, index) => index === 3 ? { ...candle, is_closed: false } : candle), 'SELL')).toHaveLength(0);
     });
 });
 

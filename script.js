@@ -1889,10 +1889,26 @@ function detectFVG(d, pairLocal = pair, symbolMetadata = {}) {
             // market map can give the zone a canonical creation time. Without
             // this provenance a fresh FVG is indistinguishable from a stale
             // setup and the lifecycle checker expires it.
-            f.push({ type: 'bull', l: prev.h, h: next.l, m: (prev.h + next.l) / 2, source_index: i + 1 });
+            f.push({
+                type: 'bull', l: prev.h, h: next.l, m: (prev.h + next.l) / 2,
+                source_index: i + 1, origin_index: i - 1, formation_index: i + 1,
+                origin_time: candleTimestamp(prev, i - 1),
+                formation_time: candleTimestamp(next, i + 1),
+                confirmation_time: candleTimestamp(next, i + 1),
+                first_knowable_time: candleTimestamp(next, i + 1),
+                confirmation_mode: 'THREE_CANDLE_CLOSE'
+            });
         }
         if(prev.l > next.h && prev.l - next.h > thresh) {
-            f.push({ type: 'bear', l: next.h, h: prev.l, m: (next.h + prev.l) / 2, source_index: i + 1 });
+            f.push({
+                type: 'bear', l: next.h, h: prev.l, m: (next.h + prev.l) / 2,
+                source_index: i + 1, origin_index: i - 1, formation_index: i + 1,
+                origin_time: candleTimestamp(prev, i - 1),
+                formation_time: candleTimestamp(next, i + 1),
+                confirmation_time: candleTimestamp(next, i + 1),
+                first_knowable_time: candleTimestamp(next, i + 1),
+                confirmation_mode: 'THREE_CANDLE_CLOSE'
+            });
         }
     }
     return f;
@@ -1910,22 +1926,100 @@ function findSwings(d, lb = 3) {
             if(h[i] <= h[i-j] || h[i] <= h[i+j]) iH = false;
             if(l[i] >= l[i-j] || l[i] >= l[i+j]) iL = false;
         }
-        if(iH) H.push({ p: h[i], i });
-        if(iL) L.push({ p: l[i], i });
+        const pivotBar = d[i];
+        const confirmationBar = d[i + lb];
+        const provenance = {
+            pivot_bar_time: candleTimestamp(pivotBar, i),
+            confirmation_time: candleTimestamp(confirmationBar, i + lb),
+            first_knowable_time: candleTimestamp(confirmationBar, i + lb),
+            confirmation_mode: 'RIGHT_SIDE_CLOSED_BARS'
+        };
+        if(iH) H.push({ p: h[i], i, ...provenance });
+        if(iL) L.push({ p: l[i], i, ...provenance });
     }
     return { H, L };
 }
 
-// Detect MSS
+function confirmedStructuralState(data, swingLookback = 2) {
+    const closed = closedStructureCandles(data);
+    const swings = findSwings(closed, swingLookback);
+    const highs = (swings.H || []).slice(-2);
+    const lows = (swings.L || []).slice(-2);
+    const bullish = highs.length === 2 && lows.length === 2
+        && highs[1].p > highs[0].p && lows[1].p > lows[0].p;
+    const bearish = highs.length === 2 && lows.length === 2
+        && highs[1].p < highs[0].p && lows[1].p < lows[0].p;
+    return {
+        state: bullish ? 'BULLISH' : bearish ? 'BEARISH' : 'MIXED',
+        swings,
+        latest_high: highs.at(-1) || null,
+        latest_low: lows.at(-1) || null
+    };
+}
+
+// A structural break is only knowable on a closed candle that closes beyond
+// a confirmed swing.  This is the canonical detector used by the manual
+// MARKET_STATE_V3 institutional evidence path.  It intentionally does not
+// require displacement: displacement is carried as a separate fact.
+function detectConfirmedStructuralBreak(data, direction, timeframe = null, swingLookback = 2) {
+    const closed = closedStructureCandles(data);
+    if (closed.length < Math.max(20, swingLookback * 2 + 4)) return null;
+    const currentIndex = closed.length - 1;
+    const current = closed[currentIndex];
+    const state = confirmedStructuralState(closed, swingLookback);
+    const target = direction === 'BUY' ? state.latest_high : state.latest_low;
+    if (!target || !Number.isFinite(Number(target.p))) return null;
+    const broken = direction === 'BUY' ? current.c > target.p : current.c < target.p;
+    if (!broken) return null;
+
+    // Emit only the first close through this confirmed swing. A later close
+    // remaining beyond the same level is continuation, not a new event.
+    const priorCloses = closed.slice(target.i + 1, -1);
+    const wasAlreadyBroken = priorCloses.some(candle => direction === 'BUY' ? candle.c > target.p : candle.c < target.p);
+    if (wasAlreadyBroken) return null;
+
+    const expectedState = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
+    const priorState = state.state;
+    const classification = priorState === expectedState
+        ? 'BOS'
+        : priorState === 'MIXED' ? 'STRUCTURE_BREAK' : 'MSS';
+    const brokenSwingId = `${direction === 'BUY' ? 'SWING_HIGH' : 'SWING_LOW'}:${timeframe || 'NA'}:${target.i}:${target.p}`;
+    const displacement = getDisplacementMetricsAtIndex(closed, currentIndex, direction);
+    return {
+        event_type: classification,
+        direction,
+        index: currentIndex,
+        timeframe,
+        level: target.p,
+        broken_level: target.p,
+        broken_swing_id: brokenSwingId,
+        broken_swing_pivot_time: target.pivot_bar_time || null,
+        broken_swing_confirmation_time: target.confirmation_time || null,
+        break_direction: direction,
+        prior_structural_state: priorState,
+        resulting_structural_state: expectedState,
+        confirmation_mode: 'CLOSE_BEYOND_CONFIRMED_SWING',
+        confirmation_time: candleTimestamp(current, currentIndex, timeframe),
+        first_knowable_time: candleTimestamp(current, currentIndex, timeframe),
+        event_time: candleTimestamp(current, currentIndex, timeframe),
+        displacement_confirmed: displacement?.detected === true,
+        displacement_id: displacement?.detected ? `DISPLACEMENT:${timeframe || 'NA'}:${currentIndex}:${direction}` : null,
+        evidence_ids: [brokenSwingId, ...(displacement?.detected ? [`DISPLACEMENT:${timeframe || 'NA'}:${currentIndex}:${direction}`] : [])]
+    };
+}
+
+// Detect MSS for the legacy automatic/scoring path. The manual MARKET_STATE_V3
+// institutional compiler uses detectConfirmedStructuralBreak directly below;
+// this compatibility API retains its existing contract for automatic callers.
 function detectMSS(d) {
     d = closedStructureCandles(d);
     if(d.length < 21) return null;
-    let h = d.map(c => c.h);
-    let l = d.map(c => c.l);
-    let c = d.map(c => c.c);
-    let rH = Math.max(...h.slice(-21, -1));
-    let rL = Math.min(...l.slice(-21, -1));
-    let cP = c[c.length - 1];
+    const h = d.map(c => c.h);
+    const l = d.map(c => c.l);
+    const closes = d.map(c => c.c);
+    const rH = Math.max(...h.slice(-21, -1));
+    const rL = Math.min(...l.slice(-21, -1));
+    const cP = closes[closes.length - 1];
     if(cP > rH) return { type: 'BULL', level: rH };
     if(cP < rL) return { type: 'BEAR', level: rL };
     return null;
@@ -2023,6 +2117,23 @@ function detectEngulfing(data, price, dir) {
 // Looks at the last meaningful swing high/low and checks if price has decisively
 // broken it AGAINST the prior trend (so a BUY CHoCH means price broke below a prior
 // swing low then reversed up — only then does a directional BUY align with the CHoCH).
+function detectConfirmedCHoCH(data, dir) {
+    const closed = closedStructureCandles(data);
+    const event = detectConfirmedStructuralBreak(closed, dir);
+    if (!event || event.event_type !== 'MSS') return false;
+    const swings = confirmedStructuralState(closed, 2).swings;
+    const opposing = dir === 'BUY' ? (swings.L || []).at(-1) : (swings.H || []).at(-1);
+    if (!opposing) return false;
+    const swept = closed.slice(opposing.i + 1, -1).some(candle => dir === 'BUY'
+        ? candle.l < opposing.p
+        : candle.h > opposing.p);
+    return swept;
+}
+
+// Compatibility API for the automatic/internal selector. The manual
+// MARKET_STATE_V3 compiler uses detectConfirmedCHoCH through
+// buildInstitutionalStructureFacts below; this preserves the automatic
+// selector's existing contract and avoids changing its strategy behavior.
 function detectCHoCH(data, dir) {
     data = closedStructureCandles(data);
     if(!data || data.length < 15) return false;
@@ -2394,11 +2505,27 @@ function detectOrderBlocks(data, direction) {
         
         if(direction === 'BUY') {
             if(curr.c < curr.o && next.c > next.o && next.h > curr.h) {
-                obs.push({ high: curr.h, low: curr.l, source_index: i + 1 });
+                obs.push({
+                    high: curr.h, low: curr.l, origin_index: i,
+                    source_index: i + 1, formation_index: i + 1,
+                    origin_time: candleTimestamp(curr, i),
+                    formation_time: candleTimestamp(next, i + 1),
+                    confirmation_time: candleTimestamp(next, i + 1),
+                    first_knowable_time: candleTimestamp(next, i + 1),
+                    confirmation_mode: 'OPPOSING_CANDLE_EXTREME_TAKEN'
+                });
             }
         } else {
             if(curr.c > curr.o && next.c < next.o && next.l < curr.l) {
-                obs.push({ high: curr.h, low: curr.l, source_index: i + 1 });
+                obs.push({
+                    high: curr.h, low: curr.l, origin_index: i,
+                    source_index: i + 1, formation_index: i + 1,
+                    origin_time: candleTimestamp(curr, i),
+                    formation_time: candleTimestamp(next, i + 1),
+                    confirmation_time: candleTimestamp(next, i + 1),
+                    first_knowable_time: candleTimestamp(next, i + 1),
+                    confirmation_mode: 'OPPOSING_CANDLE_EXTREME_TAKEN'
+                });
             }
         }
     }
@@ -3969,6 +4096,7 @@ function detectCRTEvents(data, timeframe = null, pairLocal = pair, symbolMetadat
                         reference_bar_index: refIndex,
                         reference_time: ref.t || null,
                         source_time: candleTimestamp(ref, refIndex, timeframe),
+                        origin_time: candleTimestamp(ref, refIndex, timeframe),
                         range_high,
                         range_low,
                         range_mid: (range_high + range_low) / 2,
@@ -3981,6 +4109,9 @@ function detectCRTEvents(data, timeframe = null, pairLocal = pair, symbolMetadat
                         reclaim_level: side.reclaim_level,
                         reclaim_bar_index: reclaimIndex,
                         reclaim_time: candleTimestamp(data[reclaimIndex], reclaimIndex, timeframe),
+                        confirmation_time: candleTimestamp(data[reclaimIndex], reclaimIndex, timeframe),
+                        first_knowable_time: candleTimestamp(data[reclaimIndex], reclaimIndex, timeframe),
+                        confirmation_mode: 'SWEEP_RECLAIM_CLOSE',
                         event_time: candleTimestamp(data[reclaimIndex], reclaimIndex, timeframe),
                         event_age: event_age_bars,
                         event_age_bars,
@@ -4392,12 +4523,24 @@ function ictBuildRealZones(data, price, direction, pairLocal, timeframe = null, 
                 const sourceIndex = Number.isInteger(fvg.source_index) ? fvg.source_index : null;
                 zones.push({ type: 'FVG', origin: 'STRUCTURAL', primary_eligible: true, low: fvg.l, high: fvg.h, price: fvg.m, tolerance: edgePad,
                     source_candle_index: sourceIndex, created_index: sourceIndex,
+                    origin_index: fvg.origin_index ?? null,
+                    origin_time: fvg.origin_time || null,
+                    formation_time: fvg.formation_time || (sourceIndex != null ? candleTimestamp(data[sourceIndex], sourceIndex, timeframe) : null),
+                    confirmation_time: fvg.confirmation_time || (sourceIndex != null ? candleTimestamp(data[sourceIndex], sourceIndex, timeframe) : null),
+                    first_knowable_time: fvg.first_knowable_time || (sourceIndex != null ? candleTimestamp(data[sourceIndex], sourceIndex, timeframe) : null),
+                    confirmation_mode: fvg.confirmation_mode || 'THREE_CANDLE_CLOSE',
                     created_time: sourceIndex != null ? candleTimestamp(data[sourceIndex], sourceIndex, timeframe) : null });
         }
         if (direction === 'SELL' && fvg.type === 'bear' && fvg.h > price) {
             const sourceIndex = Number.isInteger(fvg.source_index) ? fvg.source_index : null;
             zones.push({ type: 'FVG', origin: 'STRUCTURAL', primary_eligible: true, low: fvg.l, high: fvg.h, price: fvg.m, tolerance: edgePad,
                 source_candle_index: sourceIndex, created_index: sourceIndex,
+                origin_index: fvg.origin_index ?? null,
+                origin_time: fvg.origin_time || null,
+                formation_time: fvg.formation_time || (sourceIndex != null ? candleTimestamp(data[sourceIndex], sourceIndex, timeframe) : null),
+                confirmation_time: fvg.confirmation_time || (sourceIndex != null ? candleTimestamp(data[sourceIndex], sourceIndex, timeframe) : null),
+                first_knowable_time: fvg.first_knowable_time || (sourceIndex != null ? candleTimestamp(data[sourceIndex], sourceIndex, timeframe) : null),
+                confirmation_mode: fvg.confirmation_mode || 'THREE_CANDLE_CLOSE',
                 created_time: sourceIndex != null ? candleTimestamp(data[sourceIndex], sourceIndex, timeframe) : null });
         }
     }
@@ -4406,11 +4549,21 @@ function ictBuildRealZones(data, price, direction, pairLocal, timeframe = null, 
         if (direction === 'BUY' && ob.high < price) {
             zones.push({ type: 'OB', origin: 'STRUCTURAL', primary_eligible: true, low: ob.low, high: ob.high, price: (ob.low + ob.high) / 2, tolerance: edgePad,
                 source_candle_index: ob.source_index, created_index: ob.source_index,
+                origin_index: ob.origin_index ?? null, origin_time: ob.origin_time || null,
+                formation_time: ob.formation_time || (Number.isInteger(ob.source_index) ? candleTimestamp(data[ob.source_index], ob.source_index, timeframe) : null),
+                confirmation_time: ob.confirmation_time || (Number.isInteger(ob.source_index) ? candleTimestamp(data[ob.source_index], ob.source_index, timeframe) : null),
+                first_knowable_time: ob.first_knowable_time || (Number.isInteger(ob.source_index) ? candleTimestamp(data[ob.source_index], ob.source_index, timeframe) : null),
+                confirmation_mode: ob.confirmation_mode || 'OPPOSING_CANDLE_EXTREME_TAKEN',
                 created_time: Number.isInteger(ob.source_index) ? candleTimestamp(data[ob.source_index], ob.source_index, timeframe) : null });
         }
         if (direction === 'SELL' && ob.low > price) {
             zones.push({ type: 'OB', origin: 'STRUCTURAL', primary_eligible: true, low: ob.low, high: ob.high, price: (ob.low + ob.high) / 2, tolerance: edgePad,
                 source_candle_index: ob.source_index, created_index: ob.source_index,
+                origin_index: ob.origin_index ?? null, origin_time: ob.origin_time || null,
+                formation_time: ob.formation_time || (Number.isInteger(ob.source_index) ? candleTimestamp(data[ob.source_index], ob.source_index, timeframe) : null),
+                confirmation_time: ob.confirmation_time || (Number.isInteger(ob.source_index) ? candleTimestamp(data[ob.source_index], ob.source_index, timeframe) : null),
+                first_knowable_time: ob.first_knowable_time || (Number.isInteger(ob.source_index) ? candleTimestamp(data[ob.source_index], ob.source_index, timeframe) : null),
+                confirmation_mode: ob.confirmation_mode || 'OPPOSING_CANDLE_EXTREME_TAKEN',
                 created_time: Number.isInteger(ob.source_index) ? candleTimestamp(data[ob.source_index], ob.source_index, timeframe) : null });
         }
     }
@@ -4435,6 +4588,12 @@ function ictBuildRealZones(data, price, direction, pairLocal, timeframe = null, 
             reaction_count: meta.reaction_count,
             source_candle_index: meta.source_candle_index,
             source_time: meta.source_time,
+            formation_time: meta.formation_time,
+            confirmation_time: meta.confirmation_time,
+            first_knowable_time: meta.first_knowable_time,
+            invalidation_basis: meta.invalidation_basis,
+            lifecycle_invalidation: meta.lifecycle_invalidation,
+            execution_invalidation: meta.execution_invalidation,
             departure_confirmed_index: meta.departure_confirmed_index,
             first_retest_index: meta.first_retest_index,
             break_index: meta.break_index,
@@ -4910,7 +5069,7 @@ function normalizeInstitutionalStructureEvent(event = {}, timeframe = null, inde
     const direction = institutionalDirection(event.direction || event.type || event.event_type);
     const eventIndex = institutionalEventIndex(event) ?? index;
     const eventType = String(event.event_type || event.type || '').toUpperCase();
-    const isStructural = ['BOS', 'MSS', 'CHOCH', 'CHoCH', 'RECLAIM', 'RANGE_ESCAPE', 'STRUCTURAL_CONTINUATION'].includes(eventType)
+    const isStructural = ['BOS', 'MSS', 'CHOCH', 'CHoCH', 'STRUCTURE_BREAK', 'RECLAIM', 'RANGE_ESCAPE', 'STRUCTURAL_CONTINUATION'].includes(eventType)
         || event.bos === true || event.mss === true || event.choch === true;
     if (!direction || !isStructural) return null;
     const id = event.id || `${eventType || 'STRUCTURE'}:${timeframe || 'NA'}:${eventIndex}:${direction}`;
@@ -4920,8 +5079,19 @@ function normalizeInstitutionalStructureEvent(event = {}, timeframe = null, inde
         direction,
         timeframe: event.timeframe || timeframe || null,
         event_time: institutionalEventTime(event),
+        confirmation_time: event.confirmation_time || institutionalEventTime(event),
+        first_knowable_time: event.first_knowable_time || event.confirmation_time || institutionalEventTime(event),
         index: eventIndex,
         level: Number.isFinite(Number(event.level)) ? Number(event.level) : null,
+        broken_level: Number.isFinite(Number(event.broken_level)) ? Number(event.broken_level) : (Number.isFinite(Number(event.level)) ? Number(event.level) : null),
+        broken_swing_id: event.broken_swing_id || null,
+        broken_swing_pivot_time: event.broken_swing_pivot_time || null,
+        broken_swing_confirmation_time: event.broken_swing_confirmation_time || null,
+        break_direction: event.break_direction || direction,
+        confirmation_mode: event.confirmation_mode || null,
+        prior_structural_state: event.prior_structural_state || null,
+        resulting_structural_state: event.resulting_structural_state || null,
+        displacement_confirmed: event.displacement_confirmed === true,
         evidence_ids: institutionalEventEvidenceIds(event, id)
     };
 }
@@ -4942,6 +5112,11 @@ function normalizeInstitutionalOriginLocation(location = {}, timeframe = null, i
         direction,
         timeframe: location.timeframe || timeframe || null,
         event_time: institutionalEventTime(location),
+        origin_time: location.origin_time || location.source_time || null,
+        formation_time: location.formation_time || location.created_time || institutionalEventTime(location),
+        confirmation_time: location.confirmation_time || institutionalEventTime(location),
+        first_knowable_time: location.first_knowable_time || location.confirmation_time || institutionalEventTime(location),
+        confirmation_mode: location.confirmation_mode || null,
         index: eventIndex,
         low,
         high,
@@ -5097,15 +5272,31 @@ function buildInstitutionalStructureFacts(data, timeframe = null) {
     for (let index = 20; index < closed.length; index++) {
         const prefix = closed.slice(0, index + 1);
         for (const direction of ['BUY', 'SELL']) {
-            const bos = detectBOS(prefix, direction);
-            const mss = detectMSS(prefix);
-            const choch = detectCHoCH(prefix, direction);
-            const bosLevel = direction === 'BUY' ? Math.max(...prefix.slice(-20, -5).map(c => c.h)) : Math.min(...prefix.slice(-20, -5).map(c => c.l));
-            if (bos) facts.push({ id: `BOS:${timeframe || 'NA'}:${index}:${direction}`, event_type: 'BOS', direction, index, timeframe, event_time: candleTimestamp(closed[index], index, timeframe), level: bosLevel });
-            // The current project MSS primitive is the same closed-range break
-            // used by BOS. Do not publish two semantic labels for one candle.
-            if (mss && institutionalDirection(mss.type) === direction && !bos) facts.push({ id: `MSS:${timeframe || 'NA'}:${index}:${direction}`, event_type: 'MSS', direction, index, timeframe, event_time: candleTimestamp(closed[index], index, timeframe), level: mss.level });
-            if (choch) facts.push({ id: `CHoCH:${timeframe || 'NA'}:${index}:${direction}`, event_type: 'CHoCH', direction, index, timeframe, event_time: candleTimestamp(closed[index], index, timeframe) });
+            const structural = detectConfirmedStructuralBreak(prefix, direction, timeframe);
+            if (!structural) continue;
+            const choch = structural.event_type === 'MSS' && detectConfirmedCHoCH(prefix, direction);
+            const eventType = choch ? 'CHoCH' : structural.event_type;
+            const id = `${eventType}:${timeframe || 'NA'}:${index}:${direction}`;
+            facts.push({
+                id,
+                event_type: eventType,
+                structure_event_type: eventType,
+                direction,
+                index,
+                timeframe,
+                event_time: structural.event_time,
+                confirmation_time: structural.confirmation_time,
+                first_knowable_time: structural.first_knowable_time,
+                level: structural.level,
+                broken_level: structural.broken_level,
+                broken_swing_id: structural.broken_swing_id,
+                break_direction: structural.break_direction,
+                confirmation_mode: structural.confirmation_mode,
+                prior_structural_state: structural.prior_structural_state,
+                resulting_structural_state: structural.resulting_structural_state,
+                displacement_confirmed: structural.displacement_confirmed,
+                evidence_ids: [id, ...(structural.evidence_ids || [])]
+            });
         }
     }
     return facts;
@@ -7147,20 +7338,32 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
     };
     const addSetup = (setup) => {
         if (!setup || !setup.direction || !setup.primary) return;
+        const matchedZones = (setup.matched_zones || []).filter(Boolean);
+        const executionZone = setup.execution_zone || (matchedZones[0] ? { ...matchedZones[0], strategy_source: setup.primary } : null);
+        if (!executionZone) return;
         const invalidationLevel = Number(setup.structural_invalidation);
         if (Number.isFinite(invalidationLevel)) {
+            const invalidationBasis = setup.primary === 'TBS' || setup.primary === 'CRT'
+                ? 'SWEEP_EXTREME' : setup.primary === 'MSNR' ? 'ZONE_FAR_EDGE' : 'MODEL_DEFINED';
+            const invalidationConfirmationMode = setup.primary === 'TBS' || setup.primary === 'CRT'
+                ? 'MODEL_DEFINED_RECLAIM' : setup.primary === 'MSNR' ? 'CLOSE_BEYOND_WITH_DISPLACEMENT_BUFFER' : 'MODEL_DEFINED';
             setup.structural_invalidation_detail = {
                 strategy: setup.primary,
                 direction: setup.direction,
                 level: invalidationLevel,
-                source: setup.primary === 'TBS' ? 'TBS_SWEEP_EXTREME' : setup.primary === 'CRT' ? 'CRT_SWEEP_EXTREME' : 'MSNR_ZONE_INVALIDATION',
+                source: setup.primary === 'TBS' ? 'TBS_SWEEP_EXTREME'
+                    : setup.primary === 'CRT' ? 'CRT_SWEEP_EXTREME'
+                        : setup.primary === 'MSNR' ? 'MSNR_ZONE_INVALIDATION' : 'MODEL_DEFINED_INVALIDATION',
                 timeframe: setup.execution_timeframe || setup.timeframe || null,
-                source_time: setup.sweep_time || setup.retest_time || setup.source_time || setup.event_time || null
+                source_time: setup.sweep_time || setup.retest_time || setup.source_time || setup.event_time || null,
+                source_location_id: executionZone.id || executionZone.location_id || null,
+                source_model: setup.primary,
+                source_event_id: setup.id || setup.setup_id || null,
+                source_price: invalidationLevel,
+                invalidation_basis: invalidationBasis,
+                confirmation_mode: invalidationConfirmationMode
             };
         }
-        const matchedZones = (setup.matched_zones || []).filter(Boolean);
-        const executionZone = setup.execution_zone || (matchedZones[0] ? { ...matchedZones[0], strategy_source: setup.primary } : null);
-        if (!executionZone) return;
         Object.assign(setup, evaluateSetupLifecycle({
             strategy_setup: setup, direction: setup.direction,
             entry: executionZone.midpoint, zone_low: executionZone.low, zone_high: executionZone.high
@@ -7288,8 +7491,12 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 reclaim_level: tbs.reclaim_level,
                 reclaim_confirmed: tbs.reclaim_confirmed,
                 source_time: tbs.source_time,
+                origin_time: tbs.origin_time || tbs.source_time,
                 sweep_time: tbs.sweep_time,
                 reclaim_time: tbs.reclaim_time ?? (Number.isInteger(tbs.reclaim_bar_index) ? candleTimestamp(data[tbs.reclaim_bar_index], tbs.reclaim_bar_index, tf) : null),
+                confirmation_time: tbs.confirmation_time || tbs.reclaim_time,
+                first_knowable_time: tbs.first_knowable_time || tbs.reclaim_time,
+                confirmation_mode: tbs.confirmation_mode || 'SWEEP_RECLAIM_CLOSE',
                 reclaim_bar_index: tbs.reclaim_bar_index,
                 event_time: tbs.event_time ?? tbs.reclaim_time ?? (Number.isInteger(tbs.reclaim_bar_index) ? candleTimestamp(data[tbs.reclaim_bar_index], tbs.reclaim_bar_index, tf) : null),
                 event_age: tbs.event_age,
@@ -7333,8 +7540,12 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 manipulation_side: crt.manipulation_side,
                 sweep_extreme: crt.sweep_extreme,
                 source_time: crt.source_time,
+                origin_time: crt.origin_time || crt.source_time,
                 sweep_time: crt.sweep_time,
                 reclaim_time: crt.reclaim_time ?? (Number.isInteger(crt.reclaim_bar_index) ? candleTimestamp(data[crt.reclaim_bar_index], crt.reclaim_bar_index, tf) : null),
+                confirmation_time: crt.confirmation_time || crt.reclaim_time,
+                first_knowable_time: crt.first_knowable_time || crt.reclaim_time,
+                confirmation_mode: crt.confirmation_mode || 'SWEEP_RECLAIM_CLOSE',
                 reclaim_bar_index: crt.reclaim_bar_index,
                 event_time: crt.event_time ?? crt.reclaim_time ?? (Number.isInteger(crt.reclaim_bar_index) ? candleTimestamp(data[crt.reclaim_bar_index], crt.reclaim_bar_index, tf) : null),
                 reclaim_level: crt.reclaim_level,
@@ -12077,15 +12288,41 @@ function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe
 function compactAiStructuralInvalidation(item = {}, fallbackTimeframe = null) {
     const compact = compactAiEvidenceItem(item, item?.type || item?.kind || 'STRUCTURAL_LOCATION', fallbackTimeframe);
     if (!compact?.id || !compact.structural_invalidation) return null;
+    const model = canonicalModelToken(item.model_family || item.model_semantics_id || item.type || item.strategy || compact.type);
+    const invalidationBasis = item.invalidation_basis
+        || item.structural_invalidation_basis
+        || item.structural_invalidation?.basis
+        || item.structural_invalidation_detail?.basis
+        || deriveInvalidationBasis(item, model);
+    const confirmationMode = item.invalidation_confirmation_mode
+        || item.confirmation_mode
+        || item.structural_invalidation?.confirmation_mode
+        || item.structural_invalidation_detail?.confirmation_mode
+        || null;
     return {
+        invalidation_id: item.invalidation_id || item.invalidation?.id || compact.id,
         evidence_id: compact.id,
         type: compact.type,
         direction: compact.direction,
         timeframe: compact.timeframe,
         event_time: compact.event_time,
         invalidation: compact.structural_invalidation,
+        source_location_id: item.source_location_id || item.location_id || item.zone_id || compact.id,
+        source_model: model,
+        source_timeframe: item.source_timeframe || item.timeframe || fallbackTimeframe || null,
+        source_event_id: item.source_event_id || item.event_id || item.setup_id || null,
+        source_price: item.source_price ?? item.level ?? item.price ?? compact.structural_invalidation.level,
+        invalidation_basis: invalidationBasis,
+        confirmation_mode: confirmationMode,
+        lifecycle_invalidation: item.lifecycle_invalidation || null,
+        execution_invalidation: item.execution_invalidation || {
+            level: compact.structural_invalidation.level,
+            basis: invalidationBasis,
+            confirmation_mode: confirmationMode
+        },
         invalidated: compact.invalidated,
-        consumed: compact.consumed
+        consumed: compact.consumed,
+        evidence_ids: compact.evidence_ids || []
     };
 }
 
@@ -13006,13 +13243,20 @@ function compactAiTimeframeEvidence(timeframe, source = {}, fallbackStructure = 
             sequence: Array.isArray(structure.sequence) ? structure.sequence.slice(-12) : [],
             swing_highs: swingHighs,
             swing_lows: swingLows,
-            bos: structure.bos || { buy: !!structure.bos_buy, sell: !!structure.bos_sell },
-            choch: structure.choch || { buy: !!structure.choch_buy, sell: !!structure.choch_sell },
+            bos: manualEvidenceOnly
+                ? (structure.confirmed_bos || null)
+                : (structure.bos || { buy: !!structure.bos_buy, sell: !!structure.bos_sell }),
+            choch: manualEvidenceOnly
+                ? (structure.confirmed_choch || null)
+                : (structure.choch || { buy: !!structure.choch_buy, sell: !!structure.choch_sell }),
             mss: manualEvidenceOnly
-                ? (compactManualPacketValue(compactAiEvidenceItem(structure.mss, 'MSS', timeframe)) || null)
+                ? (compactManualPacketValue(compactAiEvidenceItem(structure.confirmed_mss, 'MSS', timeframe)) || null)
                 : compactAiEvidenceItem(structure.mss, 'MSS', timeframe),
             displacement: manualEvidenceOnly ? (compactManualPacketValue(structure.displacement) || null) : (structure.displacement || null)
         },
+        ...(manualEvidenceOnly && Array.isArray(source.confirmed_structure_events) ? {
+            confirmed_structure_events: source.confirmed_structure_events.map(event => manualDecisionEvent(event, event?.event_type || 'STRUCTURE_EVENT', timeframe)).filter(Boolean).slice(-MANUAL_PACKET_MAX_EVENTS_PER_TIMEFRAME)
+        } : {}),
         liquidity,
         locations,
         structural_invalidations: structuralInvalidations,
@@ -13297,6 +13541,8 @@ function manualDecisionEvent(item = {}, fallbackType = null, fallbackTimeframe =
         first_knowable_time: item.first_knowable_time || item.confirmation_time || item.event_time || eventTime,
         structure_event_type: item.structure_event_type || null,
         broken_swing_id: item.broken_swing_id || null,
+        broken_swing_pivot_time: item.broken_swing_pivot_time || null,
+        broken_swing_confirmation_time: item.broken_swing_confirmation_time || null,
         broken_level: item.broken_level ?? null,
         break_direction: item.break_direction || item.direction || null,
         confirmation_mode: item.confirmation_mode || null,
@@ -13493,10 +13739,18 @@ function buildManualLocationCatalogue(semantic = {}, invalidations = [], objecti
             const high = compactEvidenceNumber(item.high, item.zone?.high, item.zone_high);
             const midpoint = compactEvidenceNumber(item.midpoint, item.price, item.level, item.zone?.midpoint);
             const evidenceIds = [...new Set([id, ...(item.evidence_ids || [])].filter(value => typeof value === 'string'))];
-            const compatibleInvalidationIds = invalidations.filter(invalidation =>
-                invalidation.timeframe === (item.timeframe || timeframe)
-                && (invalidation.source_evidence_id === id || invalidation.evidence_ids?.some(value => evidenceIds.includes(value)))
-            ).map(invalidation => invalidation.invalidation_id);
+            const compatibleInvalidationIds = invalidations.filter(invalidation => {
+                const lifecycle = String(invalidation.lifecycle_state || invalidation.state || '').toUpperCase();
+                const usable = invalidation.invalidated !== true
+                    && invalidation.consumed !== true
+                    && !['INVALIDATED', 'CONSUMED', 'EXPIRED'].includes(lifecycle);
+                return usable
+                    && invalidation.timeframe === (item.timeframe || timeframe)
+                    && (invalidation.source_location_id === id
+                        || invalidation.source_evidence_id === id
+                        || invalidation.source_event_id === id
+                        || invalidation.evidence_ids?.some(value => evidenceIds.includes(value)));
+            }).map(invalidation => invalidation.invalidation_id).filter(Boolean);
             const allObjectives = [...(objectives.above_current_price || []), ...(objectives.below_current_price || [])];
             const spatialObjectiveIds = allObjectives.filter(objective =>
                 objective.timeframe === (item.timeframe || timeframe)
@@ -14108,7 +14362,13 @@ function canonicalDetectorLocation(item = {}, type, direction, timeframe, index,
         ...(low != null ? { low, zone_low: item.zone_low ?? low } : {}),
         ...(high != null ? { high, zone_high: item.zone_high ?? high } : {}),
         ...(midpoint != null ? { midpoint, price: item.price ?? midpoint } : {}),
-        ...(eventTime != null ? { event_time: eventTime, formation_time: item.formation_time || eventTime } : {}),
+        ...(eventTime != null ? {
+            event_time: eventTime,
+            formation_time: item.formation_time || eventTime,
+            confirmation_time: item.confirmation_time || eventTime,
+            first_knowable_time: item.first_knowable_time || item.confirmation_time || eventTime,
+            confirmation_mode: item.confirmation_mode || null
+        } : {}),
         timeframe
     };
 }
@@ -14132,6 +14392,13 @@ function buildCanonicalMarketEvidencePackage(liveMarketContext = {}, historyCach
         const msnrResult = calculateMSNR(data, price, timeframe, pairLocal, metadata);
         const msnr = (msnrResult?.structural_levels || []).filter(level => level.origin === 'STRUCTURAL_MSNR')
             .map((item, index) => canonicalDetectorLocation(item, 'MSNR', item.direction, timeframe, index, data));
+        const confirmedStructureEvents = buildInstitutionalStructureFacts(data, timeframe);
+        const latestStructureEvent = (eventType, direction = null) => confirmedStructureEvents
+            .filter(event => event.event_type === eventType && (!direction || event.direction === direction))
+            .at(-1) || null;
+        const latestBOS = latestStructureEvent('BOS');
+        const latestMSS = latestStructureEvent('MSS');
+        const latestCHoCH = latestStructureEvent('CHoCH');
         const pois = ['1D', '4H', '1H', '15M', '5M'].includes(timeframe)
             ? buildSupplyDemandAndFlipPOIs(data, timeframe, price, pairLocal, metadata)
             : [];
@@ -14159,9 +14426,15 @@ function buildCanonicalMarketEvidencePackage(liveMarketContext = {}, historyCach
                 sequence: snapshot.structure_sequence || [],
                 swing_highs: snapshot.recent_swing_highs || swings.H || [],
                 swing_lows: snapshot.recent_swing_lows || swings.L || [],
+                // Preserve the shared/automatic structure contract. The
+                // stricter confirmed-swing facts are carried in dedicated
+                // fields and selected by the manual V3 projection below.
                 bos: { buy: !!snapshot.bos_buy, sell: !!snapshot.bos_sell },
                 choch: { buy: !!snapshot.choch_buy, sell: !!snapshot.choch_sell },
                 mss: snapshot.mss || null,
+                confirmed_bos: latestBOS,
+                confirmed_mss: latestMSS,
+                confirmed_choch: latestCHoCH,
                 displacement: { buy: detectDisplacement(data, 'BUY'), sell: detectDisplacement(data, 'SELL') }
             },
             liquidity,
@@ -14176,6 +14449,7 @@ function buildCanonicalMarketEvidencePackage(liveMarketContext = {}, historyCach
             previous_day_levels: previousDay ? { high: previousDay.h, low: previousDay.l, time: previousDay.t ?? null } : null,
             atr: data.length >= 15 ? atr(data, 14) : null,
             structural_evidence_ids: tfContext.structural_evidence_ids || [],
+            confirmed_structure_events: confirmedStructureEvents.slice(-24),
             evidence: tfContext.evidence || []
         };
     }
@@ -20030,7 +20304,12 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
         }
         const compatibleInvalidationIds = Array.isArray(selectedLocation?.compatible_invalidation_ids)
             ? selectedLocation.compatible_invalidation_ids : [];
-        if (compatibleInvalidationIds.length && !compatibleInvalidationIds.includes(selectedInvalidation.invalidation_id)) {
+        const strictLocationCompatibility = evidence.external_ai_packet_schema === 'MARKET_STATE_V3'
+            || Object.prototype.hasOwnProperty.call(selectedLocation || {}, 'compatible_invalidation_ids');
+        if (strictLocationCompatibility && compatibleInvalidationIds.length === 0) {
+            issue('EXTERNAL_AI_INVALIDATION_NOT_COMPATIBLE_WITH_LOCATION');
+            issue('EXTERNAL_AI_LOCATION_HAS_NO_COMPATIBLE_INVALIDATION');
+        } else if (compatibleInvalidationIds.length && !compatibleInvalidationIds.includes(selectedInvalidation.invalidation_id)) {
             issue('EXTERNAL_AI_INVALIDATION_NOT_COMPATIBLE_WITH_LOCATION');
         }
     }

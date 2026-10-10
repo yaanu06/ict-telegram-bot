@@ -17,6 +17,16 @@ This is the neutral evidence family for structure, displacement, liquidity,
 FVG, OB, supply, demand, and role-reversal records. It is not a directional
 recommendation and does not create a trade by itself.
 
+## Model-specific execution semantics
+
+The executable model token is preserved on each location and checked against
+the first setup component returned by external AI. OB, FVG, MSNR, supply,
+demand, and FLIP currently permit the supplied full zone, either supplied zone
+edge, or supplied midpoint when one exists. CRT and TBS use the model-defined
+execution zone produced by their reclaim detectors; their invalidation basis is
+the sweep extreme. These are implemented project conventions, not universal
+definitions of the terms.
+
 ## OB
 
 The current detector uses a closed opposing source candle followed by a
@@ -26,6 +36,11 @@ consequence for SELL. The source and consequence provide formation chronology;
 there is no implicit FVG requirement. Lifecycle and structural invalidation
 come from the supplied zone/structure record and are serialized with their
 source evidence.
+
+The detector does not require an FVG. Its confirmation mode is
+`OPPOSING_CANDLE_EXTREME_TAKEN`; an OB should not be described as an FVG or as
+a stronger structural model unless separate supplied evidence supports that
+combination.
 
 ## FVG
 
@@ -66,6 +81,21 @@ existing detectors. Their model-defined zones and sweep-extreme invalidation
 provenance are preserved; this audit does not import external definitions or
 change their thresholds.
 
+CRT uses a closed reference range, a later sweep, and a reclaim close. TBS
+uses an age-qualified confirmed swing liquidity reference, a sweep beyond that
+reference, and a reclaim close. Both retain origin, sweep, reclaim,
+confirmation, and first-knowable timestamps; a sweep alone is not a confirmed
+event.
+
+## Structural events and time
+
+The manual MARKET_STATE_V3 structure compiler reports a break only when a
+closed candle closes beyond a confirmed swing. It records the broken swing,
+prior/resulting structural state, confirmation mode, confirmation time, and
+first-knowable time. A wick through a swing is not sufficient. Legacy
+automatic-selector APIs remain compatibility-scoped and are not the manual V3
+structural evidence source.
+
 ## Temporal integrity
 
 Detector inputs are normalized closed candles. Confirmation time and, where
@@ -82,4 +112,6 @@ currently uses the far edge for both threshold and execution stop by design.
 Objectives retain canonical IDs while exposing objective class, intrinsic
 liquidity side, source-side-at-detection, current price relation, and
 lifecycle. These fields describe facts; they do not preselect a target
-direction.
+direction. Invalidation records also retain source location/model/event,
+basis, source price, lifecycle invalidation, and execution invalidation;
+missing positive location compatibility is not treated as verified.
