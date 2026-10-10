@@ -3548,6 +3548,41 @@ describe('TVKIT request attempt lifecycle', () => {
     });
 });
 
+describe('model semantics and temporal provenance', () => {
+    it('exposes canonical MSNR zone and invalidation semantics without changing geometry', () => {
+        const ctx = getContext();
+        const levels = ctx.calculateMSNR(msnrReactionFixture(), 101, '1H', 'XAU/USD').structural_levels;
+        const msnr = levels.find(level => level.origin === 'STRUCTURAL_MSNR');
+        expect(msnr).toBeTruthy();
+        expect(msnr.model_semantics_id).toBe('MSNR_V1');
+        expect(msnr.invalidation_basis).toBe('ZONE_FAR_EDGE');
+        expect(msnr.lifecycle_invalidation.mode).toBe('CLOSE_BEYOND_ACTIVE_ZONE_EDGE');
+        expect(msnr.execution_invalidation).toEqual(expect.objectContaining({ basis: 'ZONE_FAR_EDGE', confirmation_mode: 'HARD_PRICE' }));
+        expect(msnr.structural_invalidation).toBe(msnr.direction === 'SELL' ? msnr.zone_high : msnr.zone_low);
+    });
+
+    it('does not publish BOS and MSS for the same closed range-break observation', () => {
+        const ctx = getContext();
+        const data = Array.from({ length: 35 }, (_, index) => ({ o: 100, h: 101, l: 99, c: 100, t: Date.UTC(2026, 9, 1) + index * 3600000, is_closed: true }));
+        data[34] = { o: 100, h: 106, l: 99, c: 105, t: Date.UTC(2026, 9, 1) + 34 * 3600000, is_closed: true };
+        const facts = ctx.buildInstitutionalStructureFacts(data, '15M');
+        const sameObservation = facts.filter(item => item.index === 34 && item.direction === 'BUY').map(item => item.event_type);
+        expect(sameObservation.filter(type => type === 'BOS')).toHaveLength(1);
+        expect(sameObservation.filter(type => type === 'MSS')).toHaveLength(0);
+    });
+
+    it('assigns reproducible canonical identity and geometry to detector outputs', () => {
+        const ctx = getContext();
+        const data = [{ t: '2026-10-08T00:00:00Z', o: 100, h: 101, l: 99, c: 100 }, { t: '2026-10-08T01:00:00Z', o: 100, h: 102, l: 99.5, c: 101 }];
+        const fvg = ctx.canonicalDetectorLocation({ l: 101, h: 102, m: 101.5, source_index: 1 }, 'FVG', 'BUY', '1H', 0, data);
+        const ob = ctx.canonicalDetectorLocation({ low: 98, high: 100, source_index: 1 }, 'OB', 'SELL', '1H', 0, data);
+        expect(fvg).toEqual(expect.objectContaining({ type: 'FVG', low: 101, high: 102, timeframe: '1H' }));
+        expect(ob).toEqual(expect.objectContaining({ type: 'OB', low: 98, high: 100, timeframe: '1H' }));
+        expect(fvg.id).toMatch(/^FVG-1H-BUY-\d+-0$/);
+        expect(ob.id).toMatch(/^OB-1H-SELL-\d+-0$/);
+    });
+});
+
 describe('MARKET_STATE_V3 manual packet integrity', () => {
     it('rejects contradictory actionable lifecycle records and conflicting IDs', () => {
         const ctx = getContext();
@@ -4228,6 +4263,75 @@ describe('professional manual decision packet and external decision validation',
         expect(result.rr_tp3).toBeCloseTo(24.90 / 14.94, 8);
         expect(result.quality_warnings).toContain('EXTERNAL_AI_RR_BELOW_PREFERRED');
         expect(result.issues).not.toContain('EXTERNAL_AI_TP1_RR_BELOW_MINIMUM');
+        expect(result.warnings).toContain('REPORTED_RR_IGNORED_CODE_CALCULATED_RR_WINS');
+    });
+
+    it('rejects a setup token that does not describe the selected executable model', () => {
+        const ctx = getContext();
+        const evidence = {
+            manual_external_ai: true,
+            strategy_contract: { minimum_rr: 2.5 },
+            current_actionable_location_catalogue: [{
+                location_id: '1H-SELL-MSNR-4195.41-4197.29', type: 'MSNR', model_family: 'MSNR',
+                timeframe: '1H', source_orientation: 'SELL', zone_low: 4195.41, zone_high: 4197.29,
+                midpoint_if_defined: 4196.35, origin_evidence_ids: ['1H-SELL-MSNR-4195.41-4197.29']
+            }],
+            structural_invalidation_catalogue: [{ invalidation_id: '1H-MSNR-SELL-17', level: 4197.29, state: 'ACTIVE' }],
+            objective_state: { all: [{ objective_id: 'TARGET:SELL:1H:SELL_SIDE_LIQUIDITY:4177.56', level: 4177.56, lifecycle_state: 'UNFULFILLED' }] },
+            model_evidence: { MSNR: [{ event_id: '1H-SELL-MSNR-4195.41-4197.29', event_type: 'MSNR', direction: 'SELL' }] },
+            current_market_state: { current_price: 4179.15 }
+        };
+        const result = ctx.validateExternalAITradeDecision({
+            decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT',
+            confidence: 68, selected_candidate_id: null, location_id: '1H-SELL-MSNR-4195.41-4197.29',
+            entry_zone: { low: 4195.41, high: 4197.29 }, entry: 4196.35,
+            invalidation_id: '1H-MSNR-SELL-17', stop_loss: 4197.29,
+            tp1_objective_id: 'TARGET:SELL:1H:SELL_SIDE_LIQUIDITY:4177.56', tp1: 4177.56,
+            evidence_ids: ['1H-SELL-MSNR-4195.41-4197.29']
+        }, evidence);
+        expect(result.valid).toBe(false);
+        expect(result.issues).toContain('EXTERNAL_AI_SETUP_LOCATION_MISMATCH');
+    });
+
+    it('normalizes production-shaped MSNR RR and preserves the structural geometry', () => {
+        const ctx = getContext();
+        const evidence = {
+            manual_external_ai: true,
+            strategy_contract: { minimum_rr: 2.5 },
+            current_market_state: { current_price: 4179.15 },
+            current_actionable_location_catalogue: [{
+                location_id: '1H-SELL-MSNR-4195.41-4197.29', type: 'MSNR', model_family: 'MSNR', timeframe: '1H', source_orientation: 'SELL',
+                zone_low: 4195.41, zone_high: 4197.29, midpoint_if_defined: 4196.35, origin_evidence_ids: ['1H-SELL-MSNR-4195.41-4197.29']
+            }],
+            structural_invalidation_catalogue: [{
+                invalidation_id: '1H-MSNR-SELL-17', level: 4197.29, state: 'ACTIVE', invalidation_basis: 'ZONE_FAR_EDGE',
+                source_location_id: '1H-SELL-MSNR-4195.41-4197.29', source_model: 'MSNR', confirmation_mode: 'HARD_PRICE'
+            }],
+            objective_state: { all: [
+                { objective_id: 'TARGET:SELL:1H:SELL_SIDE_LIQUIDITY:4177.56', level: 4177.56, lifecycle_state: 'UNFULFILLED' },
+                { objective_id: 'TARGET:SELL:1H:SELL_SIDE_LIQUIDITY:4174.615', level: 4174.615, lifecycle_state: 'UNFULFILLED' },
+                { objective_id: 'TARGET:SELL:1H:SELL_SIDE_LIQUIDITY:4166.02', level: 4166.02, lifecycle_state: 'UNFULFILLED' }
+            ] },
+            model_evidence: { MSNR: [{ event_id: '1H-SELL-MSNR-4195.41-4197.29', event_type: 'MSNR', direction: 'SELL' }] }
+        };
+        const result = ctx.validateExternalAITradeDecision({
+            pair: 'XAU/USD', decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'MSNR', market_phase: 'RETRACEMENT',
+            confidence: 68, selected_candidate_id: null, location_id: '1H-SELL-MSNR-4195.41-4197.29', entry_zone: { low: 4195.41, high: 4197.29 }, entry: 4196.35,
+            invalidation_id: '1H-MSNR-SELL-17', stop_loss: 4197.29,
+            tp1_objective_id: 'TARGET:SELL:1H:SELL_SIDE_LIQUIDITY:4177.56', tp1: 4177.56,
+            tp2_objective_id: 'TARGET:SELL:1H:SELL_SIDE_LIQUIDITY:4174.615', tp2: 4174.615,
+            tp3_objective_id: 'TARGET:SELL:1H:SELL_SIDE_LIQUIDITY:4166.02', tp3: 4166.02,
+            risk_reward: 4.31, evidence_ids: ['1H-SELL-MSNR-4195.41-4197.29']
+        }, evidence);
+        const expected = ctx.calculateTradeRiskReward('SELL', 4196.35, 4197.29, { tp1: 4177.56, tp2: 4174.615, tp3: 4166.02 });
+        expect(result.valid).toBe(true);
+        expect(result.risk).toBe(expected.risk);
+        expect(result.rr_tp1).toBeCloseTo(expected.rr_tp1, 12);
+        expect(result.rr_tp2).toBeCloseTo(expected.rr_tp2, 12);
+        expect(result.rr_tp3).toBeCloseTo(expected.rr_tp3, 12);
+        expect(result.calculated_risk_reward).toBe(expected.rr_tp1);
+        expect(result.normalized_decision.risk_reward).toBe(expected.rr_tp1);
+        expect(result.warnings).toContain('EXTERNAL_AI_RR_MISMATCH');
         expect(result.warnings).toContain('REPORTED_RR_IGNORED_CODE_CALCULATED_RR_WINS');
     });
 
