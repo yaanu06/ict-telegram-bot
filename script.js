@@ -3107,8 +3107,9 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
         if (low == null || high == null) continue;
         executionZoneStats.discovered++;
         const touch = touchAfterCreation(low, high, createdIndex);
+        const zoneId = `FRESH-${executionTf}-${direction}-FVG-${ictRound(low, prec)}-${ictRound(high, prec)}-${normalizeTimestampUTC(candleTimestamp(data[createdIndex], createdIndex, executionTf)) || createdIndex}`;
         const zone = {
-            id: `FRESH-${executionTf}-${direction}-FVG-${ictRound(low, prec)}-${ictRound(high, prec)}-${normalizeTimestampUTC(candleTimestamp(data[createdIndex], createdIndex, executionTf)) || createdIndex}`,
+            id: zoneId,
             type: 'FVG', origin: 'STRUCTURAL', primary_eligible: !touch.touched, invalidated: false,
             direction, timeframe: executionTf, low: ictRound(low, prec), high: ictRound(high, prec),
             midpoint: ictRound((low + high) / 2, prec), created_index: createdIndex,
@@ -3129,7 +3130,13 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
                 level: direction === 'BUY' ? low : high,
                 source: `${direction === 'BUY' ? 'FVG_DEMAND' : 'FVG_SUPPLY'}_ZONE_INVALIDATION`,
                 timeframe: executionTf,
-                source_time: candleTimestamp(data[createdIndex], createdIndex, executionTf)
+                source_time: candleTimestamp(data[createdIndex], createdIndex, executionTf),
+                source_location_id: zoneId,
+                source_model: 'FVG',
+                source_event_id: zoneId,
+                source_price: direction === 'BUY' ? low : high,
+                invalidation_basis: 'ZONE_FAR_EDGE',
+                confirmation_mode: 'HARD_PRICE'
             },
             parent_structural_invalidation: narrative.structural_invalidation,
             structural_invalidation: narrative.structural_invalidation
@@ -3153,8 +3160,9 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
         const touch = touchAfterCreation(low, high, i + 1);
         executionZoneStats.discovered++;
         if (touch.touched) { executionZoneStats.consumed++; continue; }
+        const zoneId = `FRESH-${executionTf}-${direction}-OB-${ictRound(low, prec)}-${ictRound(high, prec)}-${normalizeTimestampUTC(candleTimestamp(data[i + 1], i + 1, executionTf)) || i}`;
         obZones.push({
-            id: `FRESH-${executionTf}-${direction}-OB-${ictRound(low, prec)}-${ictRound(high, prec)}-${normalizeTimestampUTC(candleTimestamp(data[i + 1], i + 1, executionTf)) || i}`,
+            id: zoneId,
             type: 'OB', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false,
             direction, timeframe: executionTf, low: ictRound(low, prec), high: ictRound(high, prec),
             midpoint: ictRound((low + high) / 2, prec), created_index: i + 1,
@@ -3171,7 +3179,13 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
                 level: direction === 'BUY' ? low : high,
                 source: `${direction === 'BUY' ? 'OB_DEMAND' : 'OB_SUPPLY'}_ZONE_INVALIDATION`,
                 timeframe: executionTf,
-                source_time: candleTimestamp(data[i], i, executionTf)
+                source_time: candleTimestamp(data[i], i, executionTf),
+                source_location_id: zoneId,
+                source_model: 'OB',
+                source_event_id: zoneId,
+                source_price: direction === 'BUY' ? low : high,
+                invalidation_basis: 'ZONE_FAR_EDGE',
+                confirmation_mode: 'HARD_PRICE'
             },
             parent_structural_invalidation: narrative.structural_invalidation,
             structural_invalidation: narrative.structural_invalidation
@@ -3195,8 +3209,9 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
         if (zone.primary_eligible === false || zone.invalidated) { executionZoneStats.invalidated++; continue; }
         const touch = touchAfterCreation(zone.low, zone.high, sourceIndex);
         if (touch.touched) { executionZoneStats.consumed++; continue; }
+        const zoneId = `FRESH-${executionTf}-${direction}-MSNR-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${normalizeTimestampUTC(sourceTime || candleTimestamp(data[sourceIndex], sourceIndex, executionTf)) || sourceIndex}`;
         msnrZones.push({ ...zone,
-            id: `FRESH-${executionTf}-${direction}-MSNR-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${normalizeTimestampUTC(sourceTime || candleTimestamp(data[sourceIndex], sourceIndex, executionTf)) || sourceIndex}`,
+            id: zoneId,
             execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT',
             entry_region_source: 'MSNR', strategy_source: narrative.primary,
             execution_structural_invalidation: {
@@ -3205,7 +3220,13 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
                 level: direction === 'BUY' ? zone.low : zone.high,
                 source: 'MSNR_EXECUTION_ZONE_INVALIDATION',
                 timeframe: executionTf,
-                source_time: sourceTime || candleTimestamp(data[sourceIndex], sourceIndex, executionTf)
+                source_time: sourceTime || candleTimestamp(data[sourceIndex], sourceIndex, executionTf),
+                source_location_id: zoneId,
+                source_model: 'MSNR',
+                source_event_id: zoneId,
+                source_price: direction === 'BUY' ? zone.low : zone.high,
+                invalidation_basis: 'ZONE_FAR_EDGE',
+                confirmation_mode: 'HARD_PRICE'
             },
             parent_structural_invalidation: narrative.structural_invalidation,
             created_index: sourceIndex,
@@ -8655,7 +8676,13 @@ function buildCurrentOpportunityRegenerationSetups({ pair: pairLocal = pair, pri
             level: invalidationLevel,
             source: `${String(zone.type || 'ZONE').toUpperCase()}_ZONE_INVALIDATION`,
             timeframe: tf,
-            source_time: sourceTime || null
+            source_time: sourceTime || null,
+            source_location_id: zone.id || key,
+            source_model: zone.type || 'CURRENT_STRUCTURE',
+            source_event_id: zone.id || key,
+            source_price: invalidationLevel,
+            invalidation_basis: 'ZONE_FAR_EDGE',
+            confirmation_mode: 'HARD_PRICE'
         };
         const targetPool = (targetCandidates?.all || []).filter(target => target?.direction === direction && Number.isFinite(Number(target.level)));
         setups.push({
@@ -12700,6 +12727,39 @@ function buildManualTimeframeState(semantic = {}, chronology = {}, currentContex
 
 function buildManualSnapshotDelta(current = {}, previous = null) {
     if (!previous || typeof previous !== 'object') return { available: false };
+    const snapshotSymbol = snapshot => snapshot?.packet_identity?.symbol
+        || snapshot?.current_market_state?.symbol
+        || snapshot?.symbol
+        || null;
+    const snapshotProvider = snapshot => snapshot?.packet_identity?.provider
+        || snapshot?.current_market_state?.provider
+        || snapshot?.provider
+        || null;
+    const currentSymbol = snapshotSymbol(current);
+    const previousSymbol = snapshotSymbol(previous);
+    const currentProvider = snapshotProvider(current);
+    const previousProvider = snapshotProvider(previous);
+    if (currentSymbol && previousSymbol
+        && normalizeCanonicalMarketSymbol(currentSymbol) !== normalizeCanonicalMarketSymbol(previousSymbol)) {
+        return {
+            available: false,
+            reason: 'SYMBOL_MISMATCH',
+            previous_symbol: previousSymbol,
+            current_symbol: currentSymbol,
+            previous_snapshot_id: previous.packet_identity?.snapshot_id || previous.snapshot_id || null,
+            current_snapshot_id: current.packet_identity?.snapshot_id || current.snapshot_id || null
+        };
+    }
+    if (currentProvider && previousProvider && String(currentProvider).toUpperCase() !== String(previousProvider).toUpperCase()) {
+        return {
+            available: false,
+            reason: 'PROVIDER_MISMATCH',
+            previous_provider: previousProvider,
+            current_provider: currentProvider,
+            previous_snapshot_id: previous.packet_identity?.snapshot_id || previous.snapshot_id || null,
+            current_snapshot_id: current.packet_identity?.snapshot_id || current.snapshot_id || null
+        };
+    }
     const currentLocations = current.current_actionable_location_catalogue || current.actionable_location_bundles || [];
     const previousLocations = previous.current_actionable_location_catalogue || previous.actionable_location_bundles || [];
     const currentObjectives = current.current_liquidity_objective_map?.all || current.objective_state?.all || [];
@@ -13844,11 +13904,14 @@ function buildManualInvalidationCatalogue(semantic = {}) {
                 level,
                 event_time: item.event_time || null,
                 source: item.source || item.invalidation?.source || null,
-                source_evidence_id: item.evidence_id || item.id || null,
-                source_location_id: item.source_location_id || item.location_id || item.evidence_id || item.id || null,
+                // Do not manufacture provenance from the invalidation's own
+                // identity.  A standalone invalidation may be valid evidence,
+                // but it is not thereby linked to a location or event.
+                source_evidence_id: item.evidence_id || null,
+                source_location_id: item.source_location_id || item.location_id || null,
                 source_model: sourceModel,
                 source_timeframe: item.source_timeframe || item.timeframe || timeframe,
-                source_event_id: item.source_event_id || item.event_id || item.evidence_id || item.id || null,
+                source_event_id: item.source_event_id || item.event_id || null,
                 source_price: item.source_price ?? item.level ?? level,
                 invalidation_basis: invalidationBasis,
                 confirmation_mode: item.confirmation_mode || item.invalidation_confirmation_mode || item.invalidation?.confirmation_mode || null,
@@ -14075,7 +14138,12 @@ function buildManualConflictMap(semantic = {}) {
         type: item.type || item.event_type || null,
         orientation: String(item.source_orientation || item.orientation || item.direction || item.source_direction || '').toUpperCase(),
         low: compactEvidenceNumber(item.low, item.zone?.low, item.zone_low),
-        high: compactEvidenceNumber(item.high, item.zone?.high, item.zone_high)
+        high: compactEvidenceNumber(item.high, item.zone?.high, item.zone_high),
+        structural_lifecycle_state: item.lifecycle_state || item.state || item.freshness || null,
+        opportunity_lifecycle_state: item.opportunity_lifecycle_state || item.opportunity_relevance || null,
+        consumed: item.consumed === true,
+        invalidated: item.invalidated === true,
+        execution_eligible: manualLocationStateIsStructurallyExecutable(item)
     })).filter(item => item.id && item.low != null && item.high != null && item.high >= item.low);
     for (let leftIndex = 0; leftIndex < locationRecords.length; leftIndex += 1) {
         const left = locationRecords[leftIndex];
@@ -14091,8 +14159,8 @@ function buildManualConflictMap(semantic = {}) {
                 timeframes: [...new Set([left.timeframe, right.timeframe])],
                 facts: {
                     locations: [
-                        { location_id: left.id, type: left.type, source_orientation: left.orientation, zone: { low: left.low, high: left.high } },
-                        { location_id: right.id, type: right.type, source_orientation: right.orientation, zone: { low: right.low, high: right.high } }
+                        { location_id: left.id, type: left.type, source_orientation: left.orientation, zone: { low: left.low, high: left.high }, structural_lifecycle_state: left.structural_lifecycle_state, opportunity_lifecycle_state: left.opportunity_lifecycle_state, consumed: left.consumed, invalidated: left.invalidated, execution_eligible: left.execution_eligible },
+                        { location_id: right.id, type: right.type, source_orientation: right.orientation, zone: { low: right.low, high: right.high }, structural_lifecycle_state: right.structural_lifecycle_state, opportunity_lifecycle_state: right.opportunity_lifecycle_state, consumed: right.consumed, invalidated: right.invalidated, execution_eligible: right.execution_eligible }
                     ]
                 },
                 evidence_ids: ids,
@@ -16974,12 +17042,25 @@ async function runAutoScan() {
     let price = null;
     let quoteSnapshot = null;
     let historyCache = {};
-    const previousSnapshotId = currentScanArtifact?.replay?.snapshot_id
-        || currentScanArtifact?.signal?.snapshot_id
-        || lastLiveMarketContextForReplay?.snapshot_id || null;
-    const previousSnapshotFreshness = currentScanArtifact?.replay?.snapshot_freshness
-        || lastLiveMarketContextForReplay?.scan_snapshot_freshness || null;
-    const previousManualPacket = currentScanArtifact?.replay?.manual_packet || null;
+    const previousArtifactSymbol = currentScanArtifact?.symbol
+        || currentScanArtifact?.replay?.pair
+        || currentScanArtifact?.signal?.pair
+        || lastLiveMarketContextForReplay?.pair
+        || null;
+    const previousSnapshotComparable = !previousArtifactSymbol
+        || normalizeCanonicalMarketSymbol(previousArtifactSymbol) === normalizeCanonicalMarketSymbol(pair);
+    const previousSnapshotId = previousSnapshotComparable
+        ? currentScanArtifact?.replay?.snapshot_id
+            || currentScanArtifact?.signal?.snapshot_id
+            || lastLiveMarketContextForReplay?.snapshot_id || null
+        : null;
+    const previousSnapshotFreshness = previousSnapshotComparable
+        ? currentScanArtifact?.replay?.snapshot_freshness
+            || lastLiveMarketContextForReplay?.scan_snapshot_freshness || null
+        : null;
+    const previousManualPacket = previousSnapshotComparable
+        ? currentScanArtifact?.replay?.manual_packet || null
+        : null;
     const forceFreshProviderSnapshot = isManualExternalAIMode();
     const snapshotRequestedAt = new Date(scanAsOfMs).toISOString();
     const providerFetchOptions = forceFreshProviderSnapshot ? { forceRefresh: true } : {};

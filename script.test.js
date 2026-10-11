@@ -3807,6 +3807,26 @@ describe('model semantics and temporal provenance', () => {
         expect(compact.execution_invalidation).toEqual(expect.objectContaining({ level: 102, basis: 'ZONE_FAR_EDGE' }));
     });
 
+    it('does not infer location or event provenance from a standalone invalidation id', () => {
+        const ctx = getContext();
+        const catalogue = ctx.buildManualInvalidationCatalogue({
+            structural_invalidations: {
+                '4H': [{
+                    invalidation_id: 'UNLINKED-4H-STOP',
+                    type: 'OB',
+                    timeframe: '4H',
+                    level: 100,
+                    evidence_ids: ['UNLINKED-EVIDENCE']
+                }]
+            }
+        });
+        expect(catalogue).toHaveLength(1);
+        expect(catalogue[0]).toEqual(expect.objectContaining({ invalidation_id: 'UNLINKED-4H-STOP' }));
+        expect(catalogue[0].source_evidence_id).toBeUndefined();
+        expect(catalogue[0].source_location_id).toBeUndefined();
+        expect(catalogue[0].source_event_id).toBeUndefined();
+    });
+
     it('preserves an explicit execution-zone link when projecting a strategy invalidation into manual V3 evidence', () => {
         const ctx = getContext();
         const locationId = '4H-BUY-OB-4168.57-4191.61';
@@ -3955,6 +3975,24 @@ describe('MARKET_STATE_V3 manual packet integrity', () => {
         expect(packet.provenance.direction_preselected).toBe(false);
     });
 
+    it('preserves lifecycle state when exposing historical opposing locations as conflicts', () => {
+        const ctx = getContext();
+        const conflicts = ctx.buildManualConflictMap({
+            timeframes: {
+                '1D': { locations: [{ id: '1D-INVALIDATED-SUPPLY', type: 'SUPPLY', direction: 'SELL', low: 100, high: 110, lifecycle_state: 'INVALIDATED', freshness: 'INVALIDATED', invalidated: true, consumed: false }] },
+                '4H': { locations: [{ id: '4H-BUY-OB', type: 'OB', direction: 'BUY', low: 105, high: 115, lifecycle_state: 'FRESH', freshness: 'FRESH', invalidated: false, consumed: false }] }
+            }
+        });
+        const conflict = conflicts.find(item => item.type === 'OVERLAPPING_OPPOSING_LOCATIONS');
+        expect(conflict).toBeTruthy();
+        const historical = conflict.facts.locations.find(item => item.location_id === '1D-INVALIDATED-SUPPLY');
+        expect(historical).toEqual(expect.objectContaining({
+            structural_lifecycle_state: 'INVALIDATED',
+            invalidated: true,
+            execution_eligible: false
+        }));
+    });
+
     it('reports factual snapshot deltas without ranking or directional conclusions', () => {
         const ctx = getContext();
         const candle = time => ({ time, open: 1, high: 2, low: 0, close: 1 });
@@ -3985,6 +4023,27 @@ describe('MARKET_STATE_V3 manual packet integrity', () => {
         expect(delta.location_ids_touched_since_previous).toEqual(['L1']);
         expect(delta.objective_ids_reached_since_previous).toEqual(['O1']);
         expect(delta.new_mss_ids).toEqual(['E2']);
+    });
+
+    it('does not compare snapshot deltas across symbols or providers', () => {
+        const ctx = getContext();
+        const current = {
+            packet_identity: { symbol: 'EUR/USD', provider: 'TVKIT', snapshot_id: 'EUR-CURRENT' },
+            multi_timeframe_state: {}, actionable_location_bundles: [], objective_state: { all: [] },
+            market_delivery_chronology: { events: [] }, raw_evidence_appendix: { recent_closed_price_action: {} }
+        };
+        const previousSymbol = {
+            packet_identity: { symbol: 'XAU/USD', provider: 'TVKIT', snapshot_id: 'XAU-PREVIOUS' }
+        };
+        expect(ctx.buildManualSnapshotDelta(current, previousSymbol)).toEqual(expect.objectContaining({
+            available: false, reason: 'SYMBOL_MISMATCH', previous_symbol: 'XAU/USD', current_symbol: 'EUR/USD'
+        }));
+        const previousProvider = {
+            packet_identity: { symbol: 'EUR/USD', provider: 'OTHER_PROVIDER', snapshot_id: 'OTHER-PREVIOUS' }
+        };
+        expect(ctx.buildManualSnapshotDelta(current, previousProvider)).toEqual(expect.objectContaining({
+            available: false, reason: 'PROVIDER_MISMATCH', previous_provider: 'OTHER_PROVIDER', current_provider: 'TVKIT'
+        }));
     });
 });
 
@@ -4729,6 +4788,53 @@ describe('professional manual decision packet and external decision validation',
         });
         expect(unrelated.valid).toBe(false);
         expect(unrelated.issues).toContain('EXTERNAL_AI_LOCATION_HAS_NO_COMPATIBLE_INVALIDATION');
+    });
+
+    it('rejects the exact EUR DeepSeek SELL proposal when entry and invalidation are not supported by the selected FVG', () => {
+        const ctx = getContext();
+        const locationId = '4H-SELL-FVG-1.12015-1.12158';
+        const invalidationId = 'MSNR-1H-SELL-1791532800000-6';
+        const evidence = {
+            manual_external_ai: true,
+            external_ai_packet_schema: 'MARKET_STATE_V3',
+            strategy_contract: { minimum_rr: 2.5 },
+            current_market_state: { symbol: 'EUR/USD', current_price: 1.1212 },
+            actionable_location_bundles: [{
+                location_id: locationId, type: 'FVG', model_family: 'FVG', timeframe: '4H', source_orientation: 'SELL',
+                zone_low: 1.12015, zone_high: 1.12158, midpoint_if_defined: 1.120865,
+                origin_evidence_ids: [locationId], compatible_invalidation_ids: []
+            }],
+            structural_invalidations: [{
+                invalidation_id: invalidationId, timeframe: '1H', level: 1.12337, state: 'ACTIVE',
+                source_location_id: 'UNRELATED-1H-MSNR', source_model: 'MSNR',
+                invalidation_basis: 'ZONE_FAR_EDGE', confirmation_mode: 'HARD_PRICE', evidence_ids: ['UNRELATED-1H-MSNR']
+            }],
+            objective_state: { all: [
+                { objective_id: 'EUR-TP1', level: 1.11716, lifecycle_state: 'UNFULFILLED', source_orientation_if_factual: 'SELL' },
+                { objective_id: 'EUR-TP2', level: 1.11643, lifecycle_state: 'UNFULFILLED', source_orientation_if_factual: 'SELL' },
+                { objective_id: 'EUR-TP3', level: 1.11609, lifecycle_state: 'UNFULFILLED', source_orientation_if_factual: 'SELL' }
+            ] },
+            model_evidence: {
+                FVG: [{ event_id: locationId, event_type: 'FVG', direction: 'SELL', timeframe: '4H' }],
+                CRT: [{ event_id: 'CRT-EUR-4H', event_type: 'CRT', direction: 'SELL', timeframe: '4H' }]
+            }
+        };
+        const result = ctx.validateExternalAITradeDecision({
+            pair: 'EUR/USD', decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'CRT',
+            market_phase: 'RETRACEMENT', confidence: 55, selected_candidate_id: null,
+            location_id: locationId, entry_zone: [1.12015, 1.12158], entry: 1.12270,
+            invalidation_id: invalidationId, stop_loss: 1.12337,
+            tp1_objective_id: 'EUR-TP1', tp1: 1.11716,
+            tp2_objective_id: 'EUR-TP2', tp2: 1.11643,
+            tp3_objective_id: 'EUR-TP3', tp3: 1.11609,
+            risk_reward: 8.28, evidence_ids: [locationId, 'CRT-EUR-4H']
+        }, evidence);
+        expect(result.valid).toBe(false);
+        expect(result.issues).toEqual(expect.arrayContaining([
+            'EXTERNAL_AI_ENTRY_OUTSIDE_SELECTED_LOCATION',
+            'EXTERNAL_AI_LOCATION_HAS_NO_COMPATIBLE_INVALIDATION',
+            'EXTERNAL_AI_INVALIDATION_NOT_COMPATIBLE_WITH_LOCATION'
+        ]));
     });
 
     it('validates the BTC/USD production-shaped MSNR result with code-owned RR and structural-risk diagnostics', () => {
@@ -5809,6 +5915,57 @@ describe('multi-symbol snapshot completeness and provider boundary', () => {
         })).not.toThrow();
     });
 
+    it('runs a controlled five-timeframe 200-candle snapshot through context, evidence and V3 clipboard serialization', () => {
+        const ctx = getContext();
+        ctx.window.__ICT_MARKET_DATA_PROVIDER__ = 'TVKIT';
+        const required = ['1D', '4H', '1H', '15M', '5M'];
+        const durations = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 };
+        const lastClosedMs = Date.parse('2026-10-09T20:00:00Z');
+        const historyCache = Object.fromEntries(required.map((timeframe, tfIndex) => {
+            const duration = durations[timeframe];
+            const data = Array.from({ length: 200 }, (_, index) => {
+                const close = 1.12 + tfIndex * 0.0001 + index * 0.00001;
+                return {
+                    o: close - 0.00002, h: close + 0.00004, l: close - 0.00004, c: close,
+                    v: 1000, t: new Date(lastClosedMs - (199 - index) * duration).toISOString(),
+                    is_closed: true, timeframe
+                };
+            });
+            return [timeframe, data];
+        }));
+        const price = 1.122;
+        const asOfMs = Date.parse('2026-10-11T12:00:00Z');
+        const completeness = ctx.assessMarketSnapshotCompleteness({ historyCache, price });
+        expect(completeness.complete).toBe(true);
+        const live = ctx.buildLiveMarketContext({
+            pair: 'EUR/USD', price, historyCache, indicators: { '4H': {}, '1H': {} }, patterns: {},
+            enhancedAnalysis: { phase: ctx.analyzeMarketPhase(historyCache['4H'], false) },
+            holistic: { suggestedDirection: 'NEUTRAL', buyScore: 0, sellScore: 0 }, entryContext: null,
+            as_of_ms: asOfMs,
+            quote_snapshot: {
+                pair: 'EUR/USD', price, provider: 'TVKIT',
+                provider_timestamp_utc: new Date(lastClosedMs).toISOString(), is_market_open: false,
+                symbol_metadata: ctx.getSymbolMetadata('EUR/USD')
+            },
+            snapshot_completeness: completeness
+        });
+        expect(live.snapshot_completeness.complete).toBe(true);
+        const evidencePackage = ctx.buildAiMarketEvidenceCatalog(live, historyCache);
+        live.market_evidence_package = evidencePackage;
+        const replay = ctx.createScanReplay(live, { pair: 'EUR/USD', status: 'MANUAL_EXTERNAL_AI_REVIEW' });
+        const packet = ctx.buildExternalAIClipboardPacket({
+            signal: { pair: 'EUR/USD', analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', current_price: price },
+            replay
+        });
+        expect(packet).toContain('EXTERNAL AI DECISION PACKET');
+        expect(packet).toContain('MARKET_STATE_V3');
+        expect(packet).toContain('EUR/USD');
+        expect(packet).toContain('CURRENT_MARKET_STATE');
+        expect(packet).toContain('ACTIONABLE_LOCATION_BUNDLES');
+        expect(packet).toContain('RAW_EVIDENCE_APPENDIX');
+        expect(packet).not.toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
+    });
+
     it('keeps every early adaptive-candidate rejection result shape complete', () => {
         const ctx = getContext();
         const result = ctx.buildAdaptiveSetupCandidates({
@@ -6769,6 +6926,28 @@ describe('live AI market context and prompt', () => {
         expect(stage.limit_order_setup.current_price_inside_zone_required).toBe(false);
         expect(stage.immediate_entry.eligible).toBe(false);
         expect(stage.immediate_entry.confirmation_score).toBe(0);
+    });
+
+    it('preserves current regenerated-zone invalidation provenance for catalogue linking', () => {
+        const ctx = getContext();
+        const zone = {
+            id: '4H-BUY-OB-SOURCE', type: 'OB', direction: 'BUY', timeframe: '4H',
+            low: 100, high: 102, freshness: 'FRESH', primary_eligible: true,
+            invalidated: false, consumed: false, created_time: Date.parse('2026-10-10T00:00:00Z')
+        };
+        const result = ctx.buildCurrentOpportunityRegenerationSetups({
+            pair: 'EUR/USD', price: 99, zones: [zone], strategySetups: [],
+            targetCandidates: { all: [{ id: 'TARGET-BUY', direction: 'BUY', level: 110 }], buy: [{ id: 'TARGET-BUY', direction: 'BUY', level: 110 }] },
+            marketContext: { timeframe_context: { '4H': { effective_trend: 'BULLISH', evidence: [{ direction: 'BUY', kind: 'BOS' }] } } }
+        });
+        expect(result.setups).toHaveLength(1);
+        expect(result.setups[0].structural_invalidation_detail).toEqual(expect.objectContaining({
+            source_location_id: zone.id,
+            source_model: 'OB',
+            source_event_id: zone.id,
+            invalidation_basis: 'ZONE_FAR_EDGE',
+            level: 100
+        }));
     });
 
     it('keeps generic market-mechanics locations out of primary order candidates', () => {
