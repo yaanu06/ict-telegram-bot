@@ -3947,6 +3947,120 @@ describe('model semantics and temporal provenance', () => {
         }));
     });
 
+    it.each(['BUY', 'SELL'])('keeps %s OB formation facts stable under closed-bar prefix replay', direction => {
+        const ctx = getContext();
+        const t0 = Date.UTC(2026, 9, 1);
+        const data = Array.from({ length: 40 }, (_, index) =>
+            c(100, 100.2, 99.8, 100, t0 + index * 3600000));
+        if (direction === 'BUY') {
+            data[20] = c(100, 101, 99, 99.5, t0 + 20 * 3600000);
+            data[21] = c(99.5, 103, 99.2, 102.5, t0 + 21 * 3600000);
+        } else {
+            data[20] = c(100, 101, 99, 100.5, t0 + 20 * 3600000);
+            data[21] = c(100.5, 100.8, 98, 98.5, t0 + 21 * 3600000);
+        }
+        const prefix = ctx.detectOrderBlocks(data, direction).find(item => item.origin_index === 20);
+        const replay = ctx.detectOrderBlocks(data.concat(
+            Array.from({ length: 8 }, (_, index) => c(100, 100.2, 99.8, 100, t0 + (40 + index) * 3600000))
+        ), direction).find(item => item.origin_index === 20);
+        expect(prefix).toBeTruthy();
+        expect(replay).toEqual(expect.objectContaining({
+            high: prefix.high,
+            low: prefix.low,
+            origin_index: prefix.origin_index,
+            source_index: prefix.source_index,
+            origin_time: prefix.origin_time,
+            formation_time: prefix.formation_time,
+            confirmation_time: prefix.confirmation_time,
+            first_knowable_time: prefix.first_knowable_time,
+            confirmation_mode: 'OPPOSING_CANDLE_EXTREME_TAKEN'
+        }));
+
+        const unclosedConfirmation = data.map((candle, index) => index === 21 ? { ...candle, is_closed: false } : candle);
+        expect(ctx.detectOrderBlocks(unclosedConfirmation, direction).some(item => item.origin_index === 20)).toBe(false);
+    });
+
+    it.each([
+        ['CRT', crtBuyFixture, 'BUY'],
+        ['TBS', tbsBuyFixture, 'BUY']
+    ])('does not know a %s event before its closed reclaim and preserves its source facts after replay', (model, fixture, direction) => {
+        const ctx = getContext();
+        const base = fixture();
+        const events = model === 'CRT'
+            ? ctx.detectCRTEvents(base, '1H', 'XAU/USD')
+            : ctx.detectTurtleSoupEvents(base, '1H', 'XAU/USD');
+        const event = events.find(item => item.direction === direction && item.detected);
+        expect(event).toBeTruthy();
+
+        const beforeConfirmation = base.slice(0, event.reclaim_bar_index);
+        const beforeEvents = model === 'CRT'
+            ? ctx.detectCRTEvents(beforeConfirmation, '1H', 'XAU/USD')
+            : ctx.detectTurtleSoupEvents(beforeConfirmation, '1H', 'XAU/USD');
+        expect(beforeEvents.some(item => item.direction === direction && item.reclaim_bar_index === event.reclaim_bar_index)).toBe(false);
+        const unclosedReclaim = base.slice(0, event.reclaim_bar_index + 1).map((candle, index) =>
+            index === event.reclaim_bar_index ? { ...candle, is_closed: false } : candle);
+        const unclosedEvents = model === 'CRT'
+            ? ctx.detectCRTEvents(unclosedReclaim, '1H', 'XAU/USD')
+            : ctx.detectTurtleSoupEvents(unclosedReclaim, '1H', 'XAU/USD');
+        expect(unclosedEvents.some(item => item.direction === direction && item.reclaim_bar_index === event.reclaim_bar_index)).toBe(false);
+
+        const future = Array.from({ length: 2 }, (_, index) =>
+            model === 'CRT'
+                ? c(100.45, 100.7, 100.2, 100.55, Date.UTC(2026, 9, 1) + (base.length + index) * 3600000)
+                : c(100.1, 100.5, 99.9, 100.2, Date.UTC(2026, 9, 1) + (base.length + index) * 3600000));
+        const replayEvents = model === 'CRT'
+            ? ctx.detectCRTEvents(base.concat(future), '1H', 'XAU/USD')
+            : ctx.detectTurtleSoupEvents(base.concat(future), '1H', 'XAU/USD');
+        const replay = replayEvents.find(item => item.direction === direction && item.reference_bar_index === event.reference_bar_index && item.reclaim_bar_index === event.reclaim_bar_index);
+        expect(replay).toEqual(expect.objectContaining({
+            direction: event.direction,
+            reference_bar_index: event.reference_bar_index,
+            sweep_extreme: event.sweep_extreme,
+            reclaim_level: event.reclaim_level,
+            reclaim_bar_index: event.reclaim_bar_index,
+            reclaim_time: event.reclaim_time,
+            event_time: event.event_time
+        }));
+        if (event.first_knowable_time != null) expect(replay.first_knowable_time).toBe(event.first_knowable_time);
+    });
+
+    it('replays confirmed structure without moving the break or treating a forming candle as a break', () => {
+        const ctx = getContext();
+        const t0 = Date.UTC(2026, 9, 1);
+        const data = Array.from({ length: 35 }, (_, index) => ({ o: 100, h: 102, l: 98, c: 100, t: t0 + index * 3600000, is_closed: true }));
+        data[5] = { ...data[5], h: 105, c: 102 };
+        data[8] = { ...data[8], h: 101, l: 95, c: 98 };
+        data[12] = { ...data[12], h: 110, c: 106 };
+        data[16] = { ...data[16], h: 101, l: 97, c: 99 };
+        data[34] = { ...data[34], h: 113, c: 112 };
+        const prefixFacts = ctx.buildInstitutionalStructureFacts(data, '15M');
+        const prefixBreak = prefixFacts.find(item => item.index === 34 && item.direction === 'BUY');
+        const replayFacts = ctx.buildInstitutionalStructureFacts(data.concat(
+            Array.from({ length: 6 }, (_, index) => ({ o: 112, h: 112.2, l: 111.8, c: 112, t: t0 + (35 + index) * 3600000, is_closed: true }))
+        ), '15M');
+        const replayBreak = replayFacts.find(item => item.index === 34 && item.direction === 'BUY');
+        expect(prefixBreak).toBeTruthy();
+        expect(replayBreak).toEqual(expect.objectContaining({
+            event_type: prefixBreak.event_type,
+            broken_level: prefixBreak.broken_level,
+            broken_swing_id: prefixBreak.broken_swing_id,
+            confirmation_time: prefixBreak.confirmation_time,
+            first_knowable_time: prefixBreak.first_knowable_time
+        }));
+        const forming = data.map((candle, index) => index === 34 ? { ...candle, is_closed: false } : candle);
+        expect(ctx.detectConfirmedStructuralBreak(forming, 'BUY', '15M')).toBeNull();
+    });
+
+    it('keeps liquidity observations closed-bar-only and rejects flat price as supply/demand structure', () => {
+        const ctx = getContext();
+        const t0 = Date.UTC(2026, 9, 1);
+        const base = Array.from({ length: 60 }, (_, index) =>
+            c(100, 100.2, 99.8, 100, t0 + index * 3600000));
+        const forming = base.concat({ o: 100, h: 104, l: 96, c: 103, t: t0 + 60 * 3600000, is_closed: false });
+        expect(ctx.mapLiquidity(forming, 'EUR/USD')).toEqual(ctx.mapLiquidity(base, 'EUR/USD'));
+        expect(ctx.buildSupplyDemandAndFlipPOIs(base, '1H', 100, 'EUR/USD')).toEqual([]);
+    });
+
 });
 
 describe('MARKET_STATE_V3 manual packet integrity', () => {
