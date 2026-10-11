@@ -3607,6 +3607,26 @@ describe('model semantics and temporal provenance', () => {
         expect(linked.valid).toBe(true);
     });
 
+    it('preserves explicitly linked higher-timeframe invalidations for a lower-timeframe location', () => {
+        const ctx = getContext();
+        const catalogue = ctx.buildManualLocationCatalogue({
+            timeframes: {
+                '1H': {
+                    locations: [{
+                        id: '1H-BUY-OB', location_id: '1H-BUY-OB', type: 'OB', timeframe: '1H', direction: 'BUY',
+                        low: 100, high: 102, midpoint: 101, lifecycle_state: 'FRESH', freshness: 'FRESH',
+                        origin_evidence_ids: ['1H-BUY-OB']
+                    }]
+                }
+            }
+        }, [{
+            invalidation_id: '4H-BUY-STRUCTURE', timeframe: '4H', level: 98, state: 'ACTIVE',
+            source_location_id: '1H-BUY-OB', source_model: 'OB'
+        }], { above_current_price: [], below_current_price: [] }, 99, '2026-10-11T00:00:00Z');
+        expect(catalogue).toHaveLength(1);
+        expect(catalogue[0].compatible_invalidation_ids).toEqual(['4H-BUY-STRUCTURE']);
+    });
+
     it('accepts same-opportunity MSNR plus OB confluence but rejects unrelated OB evidence', () => {
         const ctx = getContext();
         const evidence = {
@@ -3706,6 +3726,46 @@ describe('model semantics and temporal provenance', () => {
         }));
         expect(ctx.detectOrderBlocks(obData.map((candle, index) => index === 3 ? { ...candle, is_closed: false } : candle), 'SELL')).toHaveLength(0);
     });
+
+    it('does not let future volatility change an already knowable FVG', () => {
+        const ctx = getContext();
+        const base = Array.from({ length: 15 }, () => c(100, 100.2, 99.8, 100));
+        base.push(
+            c(100, 100.2, 99.8, 100),
+            c(100, 100.1, 99.9, 100),
+            c(101.2, 101.5, 101.1, 101.3),
+            c(101.3, 101.5, 101.1, 101.3)
+        );
+        const futureVolatility = Array.from({ length: 20 }, () => c(100, 200, 0, 100));
+        const prefixFvg = ctx.detectFVG(base, 'XAU/USD').find(item => item.source_index === 17);
+        const replayFvg = ctx.detectFVG(base.concat(futureVolatility), 'XAU/USD').find(item => item.source_index === 17);
+        expect(prefixFvg).toBeTruthy();
+        expect(replayFvg).toEqual(expect.objectContaining({
+            type: prefixFvg.type,
+            l: prefixFvg.l,
+            h: prefixFvg.h,
+            first_knowable_time: prefixFvg.first_knowable_time
+        }));
+    });
+
+    it('keeps historical MSNR geometry tied to formation-time volatility', () => {
+        const ctx = getContext();
+        const base = msnrReactionFixture();
+        const futureVolatility = Array.from({ length: 20 }, (_, index) =>
+            index % 2 ? c(141.3, 181.3, 101.3, 161.3) : c(61.3, 101.3, 21.3, 61.3));
+        const prefixLevel = ctx.calculateMSNR(base, 101, '1H', 'XAU/USD').structural_levels
+            .find(level => level.formation_index === 31);
+        const replayLevel = ctx.calculateMSNR(base.concat(futureVolatility), 101, '1H', 'XAU/USD').structural_levels
+            .find(level => level.formation_index === 31);
+        expect(prefixLevel).toBeTruthy();
+        expect(replayLevel).toEqual(expect.objectContaining({
+            zone_low: prefixLevel.zone_low,
+            zone_high: prefixLevel.zone_high,
+            formation_quality: prefixLevel.formation_quality,
+            departure_distance: prefixLevel.departure_distance
+        }));
+    });
+
 });
 
 describe('MARKET_STATE_V3 manual packet integrity', () => {
@@ -6435,7 +6495,7 @@ describe('live AI market context and prompt', () => {
         expect(live.strategy_setups.length).toBeGreaterThan(0);
         expect(live.production_trace.funnel.raw_setups).toBe(live.strategy_setups.length);
         expect(output.state).toBe('NO_TRADE_TODAY');
-        expect(output.reason_code).toBe('NO_TRADE_TODAY');
+        expect(output.reason_code).toBe('DATA_QUALITY');
     });
 
     it('returns a safe no-opportunity result through the same raw-history production path', () => {

@@ -1876,13 +1876,18 @@ function detectFVG(d, pairLocal = pair, symbolMetadata = {}) {
     d = closedStructureCandles(d);
     let f = [];
     const settings = getMarketSettings(pairLocal, symbolMetadata);
-    const atrVal = d.length >= 15 ? atr(d, 14) : 0;
     const len = d.length;
     for(let i = 1; i < len - 1; i++) {
         const prev = d[i - 1];
         const curr = d[i];
         const next = d[i + 1];
-    const thresh = Math.max(settings.pipSize, atrVal * 0.02, Math.abs(curr.c) * 0.00005);
+        // The gap becomes knowable when `next` closes.  Use only candles
+        // available at that point for the volatility component of the
+        // threshold; using the scan-end ATR would let future volatility
+        // change whether an already-known historical FVG exists.
+        const formationData = d.slice(0, i + 2);
+        const formationAtr = formationData.length >= 15 ? atr(formationData, 14) : 0;
+        const thresh = Math.max(settings.pipSize, formationAtr * 0.02, Math.abs(curr.c) * 0.00005);
         
         if(prev.h < next.l && next.l - prev.h > thresh) {
             // The gap is confirmed by `next`. Keep its source index so the
@@ -3624,7 +3629,11 @@ function dedupeByNarrative(items, keyFn, scoreFn) {
 
 function evaluateMSNRFormation(data, index, role, zoneLow, zoneHigh, atrVal, timeframe) {
     const nextBars = data.slice(index + 1, Math.min(data.length, index + 6));
-    const sw = findSwings(data, 2);
+    // Formation quality is evaluated from the bounded departure window. A
+    // later scan must not allow an unrelated future swing to influence an
+    // earlier MSNR's formation evidence.
+    const formationWindow = data.slice(0, Math.min(data.length, index + 6));
+    const sw = findSwings(formationWindow, 2);
     const level = (zoneLow + zoneHigh) / 2;
     const nearSwing = role === 'REACTION_SUPPORT'
         ? (sw.L || []).some(s => Math.abs(s.i - index) <= 3 && Math.abs(s.p - level) <= Math.max(zoneHigh - zoneLow, atrVal * 0.2))
@@ -3826,9 +3835,6 @@ function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLoc
     if (!isValidCandleArray(data, 20)) return [];
     const settings = getMarketSettings(pairLocal, symbolMetadata);
     const prec = settings.prec;
-    const atrVal = data.length >= 15 ? atr(data, 14) : 0;
-    const pad = Math.max(settings.pipSize * 2, (atrVal || 0) * STRATEGY_SPEC.MSNR.zoneAtrWidth, currentPrice * 0.00002);
-    const breakBuffer = Math.max(settings.pipSize, (atrVal || 0) * STRATEGY_SPEC.MSNR.breakCloseBufferAtr);
     const start = Math.max(1, data.length - STRATEGY_SPEC.MSNR.lookback);
     const levels = [];
     for (let i = start; i < data.length - 1; i++) {
@@ -3849,9 +3855,17 @@ function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLoc
         const bodyLow = Math.min(prev.c, curr.o);
         const bodyHigh = Math.max(prev.c, curr.o);
         const level = (bodyLow + bodyHigh) / 2;
-        const zoneLow = bodyLow - pad;
-        const zoneHigh = bodyHigh + pad;
-        const formation = evaluateMSNRFormation(data, i, role, zoneLow, zoneHigh, atrVal || settings.pipSize * 10, timeframe);
+        // Zone width and break confirmation are properties of the formation,
+        // not of the eventual scan endpoint.  Recompute the volatility input
+        // from the prefix available when the transition is confirmed so later
+        // candles cannot rewrite historical MSNR geometry.
+        const formationData = data.slice(0, i + 2);
+        const formationAtr = formationData.length >= 15 ? atr(formationData, 14) : 0;
+        const levelPad = Math.max(settings.pipSize * 2, (formationAtr || 0) * STRATEGY_SPEC.MSNR.zoneAtrWidth, Math.abs(level) * 0.00002);
+        const levelBreakBuffer = Math.max(settings.pipSize, (formationAtr || 0) * STRATEGY_SPEC.MSNR.breakCloseBufferAtr);
+        const zoneLow = bodyLow - levelPad;
+        const zoneHigh = bodyHigh + levelPad;
+        const formation = evaluateMSNRFormation(data, i, role, zoneLow, zoneHigh, formationAtr || settings.pipSize * 10, timeframe);
         let activeRole = role;
         let touch_count = 0;
         let mitigation_count = 0;
@@ -3867,7 +3881,7 @@ function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLoc
         let wasOutsideAfterDeparture = false;
         for (let j = i + 1; j < data.length; j++) {
             const c = data[j];
-            const departed = role === 'REACTION_SUPPORT' ? c.c > zoneHigh + pad : c.c < zoneLow - pad;
+            const departed = role === 'REACTION_SUPPORT' ? c.c > zoneHigh + levelPad : c.c < zoneLow - levelPad;
             if (!departure_confirmed_index && departed) {
                 departure_confirmed_index = j;
                 wasOutsideAfterDeparture = true;
@@ -3904,22 +3918,22 @@ function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLoc
             } else if ((activeRole === 'REACTION_SUPPORT' || activeRole === 'RESISTANCE_TO_SUPPORT') ? c.l > zoneHigh : c.h < zoneLow) {
                 wasOutsideAfterDeparture = true;
             }
-            const breakDisplacement = Math.abs(c.c - c.o) > Math.max(breakBuffer, (atrVal || 0) * 0.15);
-            if (activeRole === 'REACTION_SUPPORT' && c.c < zoneLow - breakBuffer && breakDisplacement) {
+            const breakDisplacement = Math.abs(c.c - c.o) > Math.max(levelBreakBuffer, (formationAtr || 0) * 0.15);
+            if (activeRole === 'REACTION_SUPPORT' && c.c < zoneLow - levelBreakBuffer && breakDisplacement) {
                 broken = true;
                 flipped = true;
                 activeRole = 'SUPPORT_TO_RESISTANCE';
                 break_index = break_index ?? j;
                 retest_index = null;
-            } else if (activeRole === 'REACTION_RESISTANCE' && c.c > zoneHigh + breakBuffer && breakDisplacement) {
+            } else if (activeRole === 'REACTION_RESISTANCE' && c.c > zoneHigh + levelBreakBuffer && breakDisplacement) {
                 broken = true;
                 flipped = true;
                 activeRole = 'RESISTANCE_TO_SUPPORT';
                 break_index = break_index ?? j;
                 retest_index = null;
-            } else if (activeRole === 'SUPPORT_TO_RESISTANCE' && c.c > zoneHigh + breakBuffer) {
+            } else if (activeRole === 'SUPPORT_TO_RESISTANCE' && c.c > zoneHigh + levelBreakBuffer) {
                 invalidated = true;
-            } else if (activeRole === 'RESISTANCE_TO_SUPPORT' && c.c < zoneLow - breakBuffer) {
+            } else if (activeRole === 'RESISTANCE_TO_SUPPORT' && c.c < zoneLow - levelBreakBuffer) {
                 invalidated = true;
             }
         }
@@ -3982,7 +3996,7 @@ function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLoc
                 mode: 'CLOSE_BEYOND_ACTIVE_ZONE_EDGE',
                 threshold: direction === 'BUY' ? ictRound(zoneLow, prec) : ictRound(zoneHigh, prec),
                 timeframe,
-                break_buffer: ictRound(breakBuffer, prec)
+                break_buffer: ictRound(levelBreakBuffer, prec)
             },
             execution_invalidation: {
                 level: direction === 'BUY' ? ictRound(zoneLow, prec) : ictRound(zoneHigh, prec),
@@ -3992,7 +4006,7 @@ function buildStructuralMSNRLevels(data, currentPrice, timeframe = null, pairLoc
         });
     }
     const raw = levels.filter(l => l.structural_score >= STRATEGY_SPEC.MSNR.minStructuralScore || l.flipped);
-    const deduped = dedupeByNarrative(raw, l => `${l.direction}-${l.timeframe}-${Math.round(l.level / Math.max(pad, 0.00001))}`, l => (l.primary_eligible ? 100 : 0) + l.structural_score - l.event_age_bars);
+    const deduped = dedupeByNarrative(raw, l => `${l.direction}-${l.timeframe}-${Math.round(l.level / Math.max(Math.abs(l.zone_high - l.zone_low), 0.00001))}`, l => (l.primary_eligible ? 100 : 0) + l.structural_score - l.event_age_bars);
     deduped.raw_detection_count = raw.length;
     deduped.deduped_detection_count = deduped.length;
     const bounded = deduped
@@ -4028,8 +4042,6 @@ function detectTurtleSoupEvents(data, timeframe = null, pairLocal = pair, symbol
     data = closedStructureCandles(data);
     if (!isValidCandleArray(data, 20)) return [];
     const settings = getMarketSettings(pairLocal, symbolMetadata);
-    const atrVal = data.length >= 15 ? atr(data, 14) : 0;
-    const minSweep = Math.max(settings.pipSize * STRATEGY_SPEC.TBS.minSweepPips, (atrVal || 0) * STRATEGY_SPEC.TBS.minSweepAtr);
     const start = Math.max(0, data.length - STRATEGY_SPEC.TBS.lookback);
     const swings = findSwings(data.slice(start), 2);
     const refs = [
@@ -4042,6 +4054,9 @@ function detectTurtleSoupEvents(data, timeframe = null, pairLocal = pair, symbol
         const direction = isLow ? 'BUY' : 'SELL';
         for (let sweepIndex = ref.i + STRATEGY_SPEC.TBS.referenceMinAgeBars; sweepIndex < data.length; sweepIndex++) {
             const c = data[sweepIndex];
+            const sweepData = data.slice(0, sweepIndex + 1);
+            const sweepAtr = sweepData.length >= 15 ? atr(sweepData, 14) : 0;
+            const minSweep = Math.max(settings.pipSize * STRATEGY_SPEC.TBS.minSweepPips, (sweepAtr || 0) * STRATEGY_SPEC.TBS.minSweepAtr);
             const swept = isLow ? c.l < ref.p - minSweep : c.h > ref.p + minSweep;
             if (!swept) continue;
             const sweep_extreme = isLow ? c.l : c.h;
@@ -4074,7 +4089,7 @@ function detectTurtleSoupEvents(data, timeframe = null, pairLocal = pair, symbol
                     event_age_bars,
                     sweep_extreme,
                     sweep_depth,
-                    sweep_depth_atr: atrVal > 0 ? sweep_depth / atrVal : null,
+                    sweep_depth_atr: sweepAtr > 0 ? sweep_depth / sweepAtr : null,
                     sweep_quality: sweep_depth >= minSweep * 2 ? 'STRONG' : 'VALID',
                     reclaim_level: ref.p,
                     reclaim_price: r.c,
@@ -4093,7 +4108,7 @@ function detectTurtleSoupEvents(data, timeframe = null, pairLocal = pair, symbol
         }
     }
     const raw = events.sort((a, b) => a.event_age_bars - b.event_age_bars || b.reference_strength - a.reference_strength);
-    const deduped = dedupeByNarrative(raw, e => eventDedupeKey(e, atrVal, 'reference_level', timeframe), e => (e.detected ? 100 : 0) + e.reference_strength * 10 + (e.sweep_depth_atr || 0) - e.event_age_bars);
+    const deduped = dedupeByNarrative(raw, e => eventDedupeKey(e, settings.pipSize, 'reference_level', timeframe), e => (e.detected ? 100 : 0) + e.reference_strength * 10 + (e.sweep_depth_atr || 0) - e.event_age_bars);
     deduped.raw_detection_count = raw.length;
     deduped.deduped_detection_count = deduped.length;
     const bounded = deduped
@@ -4116,8 +4131,6 @@ function detectCRTEvents(data, timeframe = null, pairLocal = pair, symbolMetadat
     data = closedStructureCandles(data);
     if (!isValidCandleArray(data, 20)) return [];
     const settings = getMarketSettings(pairLocal, symbolMetadata);
-    const atrVal = data.length >= 15 ? atr(data, 14) : 0;
-    const minSweep = Math.max(settings.pipSize * 2, (atrVal || 0) * STRATEGY_SPEC.CRT.minSweepAtr);
     const start = Math.max(0, data.length - STRATEGY_SPEC.CRT.referenceLookback - STRATEGY_SPEC.CRT.eventLookahead - 4);
     const events = [];
     for (let refIndex = start; refIndex < data.length - 3; refIndex++) {
@@ -4126,10 +4139,15 @@ function detectCRTEvents(data, timeframe = null, pairLocal = pair, symbolMetadat
         const range_low = ref.l;
         const range_size = range_high - range_low;
         if (!(range_size > 0)) continue;
-        if (atrVal > 0 && range_size / atrVal < STRATEGY_SPEC.CRT.minReferenceAtr) continue;
+        const referenceData = data.slice(0, refIndex + 1);
+        const referenceAtr = referenceData.length >= 15 ? atr(referenceData, 14) : 0;
+        if (referenceAtr > 0 && range_size / referenceAtr < STRATEGY_SPEC.CRT.minReferenceAtr) continue;
         const maxEnd = Math.min(data.length, refIndex + 1 + STRATEGY_SPEC.CRT.eventLookahead + 1);
         for (let sweepIndex = refIndex + 1; sweepIndex < maxEnd; sweepIndex++) {
             const c = data[sweepIndex];
+            const sweepData = data.slice(0, sweepIndex + 1);
+            const sweepAtr = sweepData.length >= 15 ? atr(sweepData, 14) : 0;
+            const minSweep = Math.max(settings.pipSize * 2, (sweepAtr || 0) * STRATEGY_SPEC.CRT.minSweepAtr);
             const sides = [
                 { direction: 'BUY', swept: c.l < range_low - minSweep, sweep_extreme: c.l, reclaim_level: range_low, manipulation_side: 'SELL_SIDE', objective: range_high },
                 { direction: 'SELL', swept: c.h > range_high + minSweep, sweep_extreme: c.h, reclaim_level: range_high, manipulation_side: 'BUY_SIDE', objective: range_low }
@@ -4156,7 +4174,7 @@ function detectCRTEvents(data, timeframe = null, pairLocal = pair, symbolMetadat
                         range_low,
                         range_mid: (range_high + range_low) / 2,
                         range_size,
-                        reference_atr_multiple: atrVal > 0 ? range_size / atrVal : null,
+                        reference_atr_multiple: referenceAtr > 0 ? range_size / referenceAtr : null,
                         manipulation_side: side.manipulation_side,
                         sweep_level: side.reclaim_level,
                         sweep_extreme: side.sweep_extreme,
@@ -4185,7 +4203,7 @@ function detectCRTEvents(data, timeframe = null, pairLocal = pair, symbolMetadat
         }
     }
     const raw = events.sort((a, b) => a.event_age_bars - b.event_age_bars || (b.reference_atr_multiple || 0) - (a.reference_atr_multiple || 0));
-    const deduped = dedupeByNarrative(raw, e => eventDedupeKey(e, atrVal, 'reclaim_level', timeframe), e => (e.detected ? 100 : 0) + (e.reference_atr_multiple || 0) * 10 - e.event_age_bars);
+    const deduped = dedupeByNarrative(raw, e => eventDedupeKey(e, settings.pipSize, 'reclaim_level', timeframe), e => (e.detected ? 100 : 0) + (e.reference_atr_multiple || 0) * 10 - e.event_age_bars);
     deduped.raw_detection_count = raw.length;
     deduped.deduped_detection_count = deduped.length;
     const bounded = deduped
@@ -13823,12 +13841,17 @@ function buildManualLocationCatalogue(semantic = {}, invalidations = [], objecti
                 const usable = invalidation.invalidated !== true
                     && invalidation.consumed !== true
                     && !['INVALIDATED', 'CONSUMED', 'EXPIRED'].includes(lifecycle);
-                return usable
-                    && invalidation.timeframe === (item.timeframe || timeframe)
-                    && (invalidation.source_location_id === id
-                        || invalidation.source_evidence_id === id
-                        || invalidation.source_event_id === id
-                        || invalidation.evidence_ids?.some(value => evidenceIds.includes(value)));
+                const sameTimeframe = invalidation.timeframe === (item.timeframe || timeframe);
+                const explicitLocationLink = invalidation.source_location_id === id
+                    || invalidation.source_evidence_id === id
+                    || invalidation.source_event_id === id;
+                const evidenceLink = invalidation.evidence_ids?.some(value => evidenceIds.includes(value));
+                // Same-timeframe linkage remains the default.  An explicitly
+                // traceable source/evidence link is also sufficient across
+                // timeframes; timeframe equality alone must never authorize a
+                // stop, but it must not block a genuine HTF structural anchor.
+                return usable && (sameTimeframe || explicitLocationLink || evidenceLink)
+                    && (explicitLocationLink || evidenceLink);
             }).map(invalidation => invalidation.invalidation_id).filter(Boolean);
             const allObjectives = [...(objectives.above_current_price || []), ...(objectives.below_current_price || [])];
             const spatialObjectiveIds = allObjectives.filter(objective =>
