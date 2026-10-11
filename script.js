@@ -867,9 +867,6 @@ function init() {
     if(el('executeBtn')) el('executeBtn').addEventListener('click', handleLimit);
     if(el('cancelLimitBtn')) el('cancelLimitBtn').addEventListener('click', cancelLimit);
     if(el('copyJsonBtn')) el('copyJsonBtn').addEventListener('click', copyJson);
-    if(el('pasteExternalAIResultBtn')) el('pasteExternalAIResultBtn').addEventListener('click', pasteManualExternalAIResultFromClipboard);
-    if(el('validateExternalAIResultBtn')) el('validateExternalAIResultBtn').addEventListener('click', validateManualExternalAIResultFromInput);
-    if(el('saveExternalAIResultBtn')) el('saveExternalAIResultBtn').addEventListener('click', persistManualExternalAIResult);
     if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click', showSetup);
     if(el('saveSetupBtn')) el('saveSetupBtn').addEventListener('click', saveCurrentSetup);
     if(el('recentList')) el('recentList').addEventListener('click', handleRecentClick);
@@ -2890,6 +2887,14 @@ function deriveObjectiveSourceRelation(target = {}) {
         if (direction === 'SELL') return 'BELOW_REFERENCE_AT_DETECTION';
     }
     return null;
+}
+
+function deriveCanonicalObjectiveDirection(target = {}) {
+    const explicit = String(target.source_orientation_if_factual || target.direction || '').toUpperCase();
+    if (['BUY', 'SELL'].includes(explicit)) return explicit;
+    const id = String(target.objective_id || target.id || target.target_id || '');
+    const match = id.match(/^TARGET:(BUY|SELL):/i);
+    return match ? match[1].toUpperCase() : null;
 }
 
 function narrativeEventIndex(setup, data) {
@@ -12310,6 +12315,26 @@ function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe
         ? item.structural_invalidation
         : item.structural_invalidation_detail && typeof item.structural_invalidation_detail === 'object'
             ? item.structural_invalidation_detail : null;
+    const sourceRecord = item.source && typeof item.source === 'object' ? item.source : null;
+    const sourceInvalidation = sourceRecord?.structural_invalidation_detail && typeof sourceRecord.structural_invalidation_detail === 'object'
+        ? sourceRecord.structural_invalidation_detail
+        : sourceRecord?.structural_invalidation && typeof sourceRecord.structural_invalidation === 'object'
+            ? sourceRecord.structural_invalidation : null;
+    const sourceLocationId = item.source_location_id
+        || invalidation?.source_location_id
+        || sourceInvalidation?.source_location_id
+        || item.location_id
+        || item.zone_id
+        || sourceRecord?.execution_zone?.id
+        || sourceRecord?.execution_zone?.location_id
+        || null;
+    const sourceModel = item.source_model
+        || invalidation?.source_model
+        || sourceInvalidation?.source_model
+        || (invalidation?.source ? canonicalModelToken(invalidation.source) : null)
+        || (sourceInvalidation?.source ? canonicalModelToken(sourceInvalidation.source) : null)
+        || sourceRecord?.primary
+        || null;
     const invalidationLevel = Number.isFinite(Number(invalidation?.level ?? item.structural_invalidation_level ?? item.invalidation_level ?? item.invalidation))
         ? Number(invalidation?.level ?? item.structural_invalidation_level ?? item.invalidation_level ?? item.invalidation) : null;
     const formationTime = manualPacketTimestampValue(item);
@@ -12346,6 +12371,19 @@ function compactAiEvidenceItem(item = {}, fallbackType = null, fallbackTimeframe
             source: invalidation?.source || item.structural_invalidation_source || null,
             evidence_id: id
         },
+        ...(sourceLocationId ? { source_location_id: sourceLocationId } : {}),
+        ...(sourceModel ? {
+            source_model: sourceModel
+        } : {}),
+        ...(item.source_event_id || invalidation?.source_event_id || sourceInvalidation?.source_event_id || sourceRecord?.id ? {
+            source_event_id: item.source_event_id || invalidation?.source_event_id || sourceInvalidation?.source_event_id || sourceRecord?.id || null
+        } : {}),
+        ...(item.invalidation_basis || invalidation?.invalidation_basis || invalidation?.basis || sourceInvalidation?.invalidation_basis || sourceInvalidation?.basis ? {
+            invalidation_basis: item.invalidation_basis || invalidation?.invalidation_basis || invalidation?.basis || sourceInvalidation?.invalidation_basis || sourceInvalidation?.basis || null
+        } : {}),
+        ...(item.confirmation_mode || invalidation?.confirmation_mode || sourceInvalidation?.confirmation_mode ? {
+            confirmation_mode: item.confirmation_mode || invalidation?.confirmation_mode || sourceInvalidation?.confirmation_mode || null
+        } : {}),
         evidence_ids: Array.isArray(item.evidence_ids || item.supporting_evidence_ids)
             ? [...new Set([
                 ...(item.evidence_ids || item.supporting_evidence_ids),
@@ -13224,7 +13262,7 @@ function compactAiNeutralObjective(target = {}) {
                 ? (String(target.direction || '').toUpperCase() === 'BUY' ? 'ABOVE_REFERENCE_AT_DETECTION'
                     : String(target.direction || '').toUpperCase() === 'SELL' ? 'BELOW_REFERENCE_AT_DETECTION' : null)
                 : null),
-        source_orientation_if_factual: target.source_orientation_if_factual || target.direction || null,
+        source_orientation_if_factual: deriveCanonicalObjectiveDirection(target),
         source_record_type: rawType,
         source_record_source: rawSource,
         event_time: target.event_time || target.formation_time || target.created_time || null,
@@ -13479,6 +13517,12 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
             level: invalidation.level ?? null,
             source: invalidation.source || null,
             event_time: item.event_time || null,
+            source_location_id: item.source_location_id || invalidation.source_location_id || null,
+            source_model: item.source_model || invalidation.source_model || null,
+            source_event_id: item.source_event_id || invalidation.source_event_id || item.id || null,
+            source_price: invalidation.source_price ?? invalidation.level ?? null,
+            invalidation_basis: item.invalidation_basis || invalidation.invalidation_basis || invalidation.basis || null,
+            confirmation_mode: item.confirmation_mode || invalidation.confirmation_mode || null,
             state: item.state || null,
             invalidated: item.invalidated === true,
             evidence_ids: [...new Set([item.id, ...(item.evidence_ids || [])])].slice(0, 12)
@@ -13738,7 +13782,7 @@ function manualObjectiveRecord(target = {}, timeframe = null, sourceType = null)
         objective_class: target.objective_class || type || source || 'STRUCTURAL_OBJECTIVE',
         liquidity_side: deriveObjectiveLiquiditySide({ ...target, source, type }),
         source_relation_at_detection: deriveObjectiveSourceRelation({ ...target, source, type }),
-        source_orientation_if_factual: target.source_orientation_if_factual || target.direction || null,
+        source_orientation_if_factual: deriveCanonicalObjectiveDirection({ ...target, objective_id: objectiveId, source, type }),
         event_time: target.event_time || target.formation_time || target.created_time || null,
         reached: target.reached === true,
         consumed: target.consumed === true || lifecycle === 'CONSUMED',
@@ -14446,13 +14490,13 @@ function buildProfessionalManualExternalAIInstruction(minimumRR = null) {
         'Analyze the complete current 1D/4H/1H/15M/5M market state, current delivery, chronology, liquidity, conflicts, model evidence, actionable location bundles, objectives, and raw closed candles. Analyze BUY and SELL, determine BUY, SELL, or NO_TRADE, determine the current phase, and choose the highest-quality current opportunity from the supplied facts. Do not use timeframe majority voting or a hard HTF veto. Do not automatically prefer the newest location; an older location may remain best while it is still actionable. The packet does not preselect direction; you own interpretation.',
         '',
         'DETERMINISTIC AUTHORITY',
-        'CODE owns exact IDs, timestamps, prices, zones, lifecycle, invalidations, objectives, executable geometry, and arithmetic. Do not invent or alter those facts. The ONLY legal values for location_id are exact location_id values appearing in ACTIONABLE LOCATION BUNDLES. Lock location_id, entry_zone, and permitted entry to that same record. Inspect that record\'s compatible_invalidation_ids and choose an invalidation only when its exact ID is positively listed there; if the list is empty, do not borrow an unrelated stop—evaluate another supplied opportunity or return NO_TRADE. Copy the selected invalidation\'s exact level into stop_loss. Choose exact objective_id records from OBJECTIVE_STATE and copy their exact levels into tp1/tp2/tp3. Historical, model, and supporting evidence may support the thesis but cannot replace executable geometry. Never move or tighten a valid structural stop to improve RR.',
+        'CODE owns exact IDs, timestamps, prices, zones, lifecycle, invalidations, objectives, executable geometry, and arithmetic. Do not invent or alter those facts. The ONLY legal values for location_id are exact location_id values appearing in ACTIONABLE LOCATION BUNDLES. Lock location_id, entry_zone, and permitted entry to that same record. Inspect that record\'s compatible_invalidation_ids and choose an invalidation only when its exact ID is positively listed there; if the list is empty, do not borrow an unrelated stop—evaluate another supplied opportunity or return NO_TRADE. Copy the selected invalidation\'s exact level into stop_loss. Treat invalidation_basis as authoritative: ZONE_FAR_EDGE is a supplied model-defined zone boundary, not a confirmed structural swing; never relabel or move it. Choose exact objective_id records from OBJECTIVE_STATE and copy their exact levels into tp1/tp2/tp3; preserve each record\'s intrinsic source orientation/liquidity side and current-relative position—being above or below current price does not relabel it. Historical, model, and supporting evidence may support the thesis but cannot replace executable geometry. Never move or tighten a valid structural stop to improve RR.',
         '',
         'PENDING LIMIT SEMANTICS',
         'PENDING_LIMIT may use an earlier-formed still-actionable location, may be away from current price or outside its zone at analysis time, and does not require current 5M BOS/MSS, current 15M BOS/MSS, or an active killzone. Do not require micro confirmation unless the selected setup semantics explicitly require it. CONFIRMATION_ENTRY is separate and requires supplied confirmation. One crossed minor objective does not automatically end the thesis, but selected objectives must remain future reward for the pending entry. minimum_rr is a preferred benchmark, not a trade-existence gate; never alter the structural stop or invent targets to improve RR.',
         '',
         'FINAL FACTUAL VALIDATION',
-        'Before returning TRADE, silently verify: location_id is an exact actionable record; orientation is compatible or the selected record is a canonical role reversal; entry_zone exactly matches it; entry uses permitted geometry; invalidation is supplied and its exact ID is included in the selected location\'s compatible_invalidation_ids; stop_loss exactly matches it; every objective ID is from OBJECTIVE_STATE and every TP exactly matches its level; target ordering and lifecycle are valid; RR is calculated from final values; setup describes this same opportunity; evidence_ids and conflict_ids are supplied; selected_candidate_id is exactly null. If any check fails, return NO_TRADE or correct the factual combination without inventing facts.',
+        'Before returning TRADE, silently verify: location_id is an exact actionable record; orientation is compatible or the selected record is a canonical role reversal; entry_zone exactly matches it; entry uses permitted geometry; invalidation is supplied and its exact ID is included in the selected location\'s compatible_invalidation_ids; stop_loss exactly matches it; every objective ID is from OBJECTIVE_STATE, every TP exactly matches its level, and any intrinsic objective orientation/liquidity side is compatible with the chosen thesis; target ordering and lifecycle are valid; RR is calculated from final values; setup describes this same opportunity; evidence_ids and conflict_ids are supplied; selected_candidate_id is exactly null. If any check fails, return NO_TRADE or correct the factual combination without inventing facts.',
         '',
         'OUTPUT CONTRACT',
         `Return only one directly JSON.parse()-able JSON object with these fields: pair, decision, direction, trade_type, setup, market_phase, selected_candidate_id, entry, entry_zone, stop_loss, tp1, tp2, tp3, risk_reward, confidence, location_id, invalidation_id, tp1_objective_id, tp2_objective_id, tp3_objective_id, evidence_ids, conflict_ids. Use decision TRADE or NO_TRADE, confidence as an integer percentage for TRADE and null for NO_TRADE, selected_candidate_id as null for MANUAL_EXTERNAL_AI, and no prose or chain-of-thought. setup must be one supported model token or a same-opportunity + combination; do not use a comma-separated confluence inventory. market_phase must be one supported phase enum. The canonical minimum_rr is ${minimumRR == null ? 'not available' : minimumRR}; reported risk_reward is informational and code-calculated RR is authoritative.`
@@ -19629,7 +19673,6 @@ function clearCurrentScanArtifact() {
     lastSetupOut = null;
     lastLiveMarketContextForReplay = null;
     if (typeof window !== 'undefined') window.__ICT_LAST_SCAN_REPLAY__ = null;
-    clearManualExternalAIResult();
 }
 
 function publishCurrentScanArtifact({ signal = {}, replay = null, output = null } = {}) {
@@ -20514,7 +20557,7 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
             || (direction === 'SELL' && !(externalPacketNumber(objective.level) < entry))) {
             issue('EXTERNAL_AI_OBJECTIVE_WRONG_SIDE', priceKey);
         }
-        const objectiveDirection = String(objective.direction || '').toUpperCase();
+        const objectiveDirection = String(objective.source_orientation_if_factual || objective.direction || deriveCanonicalObjectiveDirection(objective) || '').toUpperCase();
         if (['BUY', 'SELL'].includes(objectiveDirection) && objectiveDirection !== direction) issue('EXTERNAL_AI_OBJECTIVE_DIRECTION_MISMATCH');
         if (!isObjectiveRemainingForFutureEntry({ direction, tradeType, entry, currentPrice, objective })) {
             issue('EXTERNAL_AI_OBJECTIVE_ALREADY_DELIVERED_BEFORE_ENTRY');
@@ -20801,126 +20844,6 @@ function ingestManualExternalAIResult(rawDecision = null) {
 }
 
 if (typeof window !== 'undefined') window.ingestManualExternalAIResult = ingestManualExternalAIResult;
-
-const MANUAL_EXTERNAL_AI_RESULT_STORAGE_KEY = 'ict_manual_external_ai_result';
-let lastManualExternalAIResult = null;
-
-function clearManualExternalAIResult() {
-    lastManualExternalAIResult = null;
-    const input = document.getElementById('externalAIResultInput');
-    const status = document.getElementById('externalAIResultStatus');
-    const output = document.getElementById('externalAIResultOutput');
-    const save = document.getElementById('saveExternalAIResultBtn');
-    if (input) input.value = '';
-    if (status) {
-        status.textContent = 'No external AI result reviewed.';
-        status.className = 'signal-status';
-    }
-    if (output) output.textContent = '{}';
-    if (save) save.disabled = true;
-}
-
-function externalAIResultPresentation(result = {}) {
-    const accepted = result.valid === true;
-    const tradeAccepted = accepted && result.decision_received === 'TRADE' && result.execution_allowed === true;
-    return {
-        status: result.status || 'EXTERNAL_AI_TRADE_REJECTED',
-        decision_received: result.decision_received || null,
-        execution_allowed: tradeAccepted,
-        accepted_decision: tradeAccepted ? result.accepted_decision : null,
-        authoritative_risk_reward: tradeAccepted ? result.authoritative_risk_reward : null,
-        authoritative_risk_metrics: tradeAccepted ? result.authoritative_risk_metrics : null,
-        quality_warnings: result.quality_warnings || [],
-        warnings: result.warnings || [],
-        issues: result.issues || [],
-        scan_id: result.scan_id || null,
-        snapshot_id: result.snapshot_id || null
-    };
-}
-
-function renderManualExternalAIResult(result = null) {
-    const status = document.getElementById('externalAIResultStatus');
-    const output = document.getElementById('externalAIResultOutput');
-    const save = document.getElementById('saveExternalAIResultBtn');
-    if (!result) {
-        clearManualExternalAIResult();
-        return;
-    }
-    const presentation = externalAIResultPresentation(result);
-    const accepted = result.valid === true;
-    const tradeAccepted = presentation.execution_allowed === true;
-    if (status) {
-        status.textContent = tradeAccepted
-            ? `VALIDATED_EXTERNAL_AI_TRADE · EXECUTION ALLOWED · RR TP1 ${result.authoritative_risk_reward}`
-            : accepted
-                ? `${presentation.status} · NO TRADE ACCEPTED · EXECUTION BLOCKED`
-                : `${presentation.status} · EXECUTION BLOCKED · ${presentation.issues.join('; ') || 'Validation failed'}`;
-        status.className = `signal-status ${tradeAccepted ? 'validated-external-ai-trade' : accepted ? 'no-trade' : 'external-ai-trade-rejected'}`;
-    }
-    if (output) output.textContent = JSON.stringify(presentation, null, 2);
-    if (save) save.disabled = !accepted;
-}
-
-function validateManualExternalAIResultFromInput() {
-    const input = document.getElementById('externalAIResultInput');
-    const raw = input?.value?.trim() || '';
-    const result = raw
-        ? ingestManualExternalAIResult(raw)
-        : { valid: false, status: 'EXTERNAL_AI_TRADE_REJECTED', execution_allowed: false, issues: ['EXTERNAL_AI_RESPONSE_JSON_REQUIRED'], decision_received: null };
-    lastManualExternalAIResult = result;
-    renderManualExternalAIResult(result);
-    return result;
-}
-
-async function pasteManualExternalAIResultFromClipboard() {
-    if (typeof navigator === 'undefined' || !navigator.clipboard?.readText) {
-        showNotif('Clipboard read is unavailable; paste the JSON into the field.', 'warning');
-        return null;
-    }
-    try {
-        const text = await navigator.clipboard.readText();
-        const input = document.getElementById('externalAIResultInput');
-        if (input) input.value = text;
-        return text;
-    } catch (error) {
-        showNotif('Clipboard permission was denied; paste the JSON into the field.', 'warning');
-        return null;
-    }
-}
-
-function persistManualExternalAIResult() {
-    const result = lastManualExternalAIResult;
-    if (!result || result.valid !== true) {
-        showNotif('Only a validated external AI result can be saved.', 'warning');
-        return false;
-    }
-    const record = {
-        saved_at: new Date().toISOString(),
-        status: result.status,
-        decision_received: result.decision_received,
-        accepted_decision: result.accepted_decision || null,
-        authoritative_risk_reward: result.authoritative_risk_reward ?? null,
-        authoritative_risk_metrics: result.authoritative_risk_metrics || null,
-        quality_warnings: result.quality_warnings || [],
-        warnings: result.warnings || [],
-        issues: result.issues || [],
-        scan_id: result.scan_id || null,
-        snapshot_id: result.snapshot_id || null
-    };
-    try {
-        localStorage.setItem(MANUAL_EXTERNAL_AI_RESULT_STORAGE_KEY, JSON.stringify(record));
-        showNotif('Validated external AI result saved.', 'success');
-        return true;
-    } catch (error) {
-        showNotif('Validated result could not be saved locally.', 'warning');
-        return false;
-    }
-}
-
-if (typeof window !== 'undefined') {
-    window.validateManualExternalAIResultFromInput = validateManualExternalAIResultFromInput;
-    window.persistManualExternalAIResult = persistManualExternalAIResult;
-}
 
 function externalPacketTargetRecord(target = {}, fallbackDirection = null) {
     const id = target.id || target.target_id || target.uid || null;

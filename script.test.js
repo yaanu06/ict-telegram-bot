@@ -3320,6 +3320,8 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).toContain('Never move or tighten a valid structural stop');
         expect(packet).toContain('Never move or tighten a valid structural stop to improve RR');
         expect(packet).toContain('exact objective_id records from OBJECTIVE_STATE');
+        expect(packet).toContain('preserve each record\'s intrinsic source orientation/liquidity side');
+        expect(packet).toContain('being above or below current price does not relabel it');
         expect(packet).toContain('selected_candidate_id is exactly null');
         expect(packet).toContain('selected_candidate_id as null for MANUAL_EXTERNAL_AI');
         expect(packet).toContain('does not require current 5M BOS/MSS');
@@ -3328,6 +3330,7 @@ describe('Analyze scan lifecycle', () => {
         expect(packet.split('Do not automatically prefer the newest location').length - 1).toBe(1);
         expect(packet).toContain('compatible_invalidation_ids');
         expect(packet).toContain('if the list is empty, do not borrow an unrelated stop');
+        expect(packet).toContain('ZONE_FAR_EDGE is a supplied model-defined zone boundary, not a confirmed structural swing');
         expect(packet.split('if the list is empty, do not borrow an unrelated stop').length - 1).toBe(1);
         expect(packet.split('minimum_rr is a preferred benchmark').length - 1).toBe(1);
         expect(packet.split('selected_candidate_id is exactly null').length - 1).toBe(1);
@@ -3659,6 +3662,14 @@ describe('model semantics and temporal provenance', () => {
             while (valueIndex < lines.length && !lines[valueIndex].trim()) valueIndex += 1;
             packet[heading] = JSON.parse(lines[valueIndex]);
         }
+        const packetLocation = packet.ACTIONABLE_LOCATION_BUNDLES.find(item => item.location_id === '4H-BUY-OB-4168.57-4191.61');
+        const packetInvalidation = packet.STRUCTURAL_INVALIDATIONS.find(item => item.invalidation_id === 'CURRENT:4H:BUY:OB:4168.57:4191.61:1791550800000');
+        expect(packetLocation).toEqual(expect.objectContaining({ compatible_invalidation_ids: [] }));
+        expect(packetInvalidation).toEqual(expect.objectContaining({
+            level: 4168.57,
+            invalidation_basis: 'ZONE_FAR_EDGE',
+            source_location_id: 'CURRENT:4H:BUY:OB:4168.57:4191.61:1791550800000'
+        }));
         const evidence = {
             manual_external_ai: true,
             external_ai_packet_schema: 'MARKET_STATE_V3',
@@ -3686,6 +3697,48 @@ describe('model semantics and temporal provenance', () => {
         expect(result.quality_warnings).toContain('EXTERNAL_AI_RR_BELOW_PREFERRED');
         expect(result.warnings).toContain('EXTERNAL_AI_RR_MISMATCH');
         expect(result.issues).not.toContain('EXTERNAL_AI_SETUP_COMPONENT_UNSUPPORTED_BY_EVIDENCE');
+    });
+
+    const latestPacketPath = 'packet/ICT TRADING BOT PRO.txt';
+    const latestPacketTest = fs.existsSync(latestPacketPath) ? it : it.skip;
+    latestPacketTest('rejects the latest DeepSeek XAU proposal for missing compatibility, stop mismatch, and intrinsic objective direction', () => {
+        const ctx = getContext();
+        const lines = fs.readFileSync(latestPacketPath, 'utf8').split(/\r?\n/);
+        const headings = new Set(['STRATEGY_CONTRACT', 'CURRENT_MARKET_STATE', 'MULTI_TIMEFRAME_STATE', 'ACTIONABLE_LOCATION_BUNDLES', 'OBJECTIVE_STATE', 'STRUCTURAL_INVALIDATIONS', 'MODEL_EVIDENCE', 'CONFLICT_STATE']);
+        const packet = {};
+        for (let index = 0; index < lines.length; index += 1) {
+            const heading = lines[index].trim();
+            if (!headings.has(heading)) continue;
+            let valueIndex = index + 1;
+            while (valueIndex < lines.length && !lines[valueIndex].trim()) valueIndex += 1;
+            packet[heading] = JSON.parse(lines[valueIndex]);
+        }
+        const evidence = {
+            manual_external_ai: true,
+            external_ai_packet_schema: 'MARKET_STATE_V3',
+            strategy_contract: packet.STRATEGY_CONTRACT,
+            current_market_state: packet.CURRENT_MARKET_STATE,
+            multi_timeframe_state: packet.MULTI_TIMEFRAME_STATE,
+            actionable_location_bundles: packet.ACTIONABLE_LOCATION_BUNDLES,
+            structural_invalidations: packet.STRUCTURAL_INVALIDATIONS,
+            objective_state: packet.OBJECTIVE_STATE,
+            model_evidence: packet.MODEL_EVIDENCE,
+            conflict_state: packet.CONFLICT_STATE
+        };
+        const decision = {
+            pair: 'XAU/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', selected_candidate_id: null,
+            entry: 4168.57, entry_zone: [4168.57, 4191.61], stop_loss: 4150.43, tp1: 4207.48, tp2: 4227.53, tp3: 4292.11, risk_reward: 3.54, confidence: 62,
+            location_id: '4H-BUY-OB-4168.57-4191.61', invalidation_id: 'CURRENT:4H:BUY:OB:4168.57:4191.61:1791550800000',
+            tp1_objective_id: 'TARGET:BUY:4H:BUY_SIDE_LIQUIDITY:4207.48', tp2_objective_id: 'TARGET:BUY:4H:BUY_SIDE_LIQUIDITY:4227.53', tp3_objective_id: 'TARGET:SELL:4H:SELL_SIDE_LIQUIDITY:4292.11',
+            evidence_ids: ['4H-BUY-OB-4168.57-4191.61'], conflict_ids: []
+        };
+        const result = ctx.validateExternalAITradeDecision(decision, evidence);
+        expect(result.valid).toBe(false);
+        expect(result.issues).toContain('EXTERNAL_AI_LOCATION_HAS_NO_COMPATIBLE_INVALIDATION');
+        expect(result.issues).toContain('EXTERNAL_AI_INVALIDATION_PRICE_MISMATCH');
+        expect(result.issues).toContain('EXTERNAL_AI_OBJECTIVE_DIRECTION_MISMATCH');
+        expect(result.warnings).toContain('EXTERNAL_AI_RR_MISMATCH');
+        expect(result.calculated_risk_reward).toBeCloseTo((4207.48 - 4168.57) / (4168.57 - 4150.43), 10);
     });
 
     it('accepts same-opportunity MSNR plus OB confluence but rejects unrelated OB evidence', () => {
@@ -3752,6 +3805,53 @@ describe('model semantics and temporal provenance', () => {
             source_price: 102
         }));
         expect(compact.execution_invalidation).toEqual(expect.objectContaining({ level: 102, basis: 'ZONE_FAR_EDGE' }));
+    });
+
+    it('preserves an explicit execution-zone link when projecting a strategy invalidation into manual V3 evidence', () => {
+        const ctx = getContext();
+        const locationId = '4H-BUY-OB-4168.57-4191.61';
+        const invalidationId = 'CURRENT:4H:BUY:OB:4168.57:4191.61:1791550800000';
+        const strategyEvent = {
+            id: invalidationId,
+            strategy: 'CURRENT_STRUCTURE',
+            direction: 'BUY',
+            timeframe: '4H',
+            event_time: 1791550800000,
+            structural_invalidation: {
+                level: 4168.57,
+                source: 'OB_ZONE_INVALIDATION',
+                source_location_id: locationId,
+                source_model: 'OB',
+                source_event_id: invalidationId,
+                invalidation_basis: 'ZONE_FAR_EDGE',
+                confirmation_mode: 'HARD_PRICE'
+            }
+        };
+        const semantic = ctx.buildCompactAISemanticPackage({
+            pair: 'XAU/USD',
+            current_price: 4194.65,
+            snapshot_id: 'SNAPSHOT-OB-LINK',
+            as_of_time_utc: '2026-10-11T08:07:34.272Z',
+            market_evidence_package: { timeframes: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, {}])) }
+        }, { market_evidence_package: { timeframes: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, {}])) }, strategy_events: [strategyEvent] }, { manualOpportunityDiscovery: true });
+        const projected = semantic.structural_invalidations['4H'].find(item => item.invalidation_id === invalidationId || item.id === invalidationId);
+        expect(projected).toEqual(expect.objectContaining({
+            source_location_id: locationId,
+            source_model: 'OB',
+            invalidation_basis: 'ZONE_FAR_EDGE'
+        }));
+        const invalidationCatalogue = ctx.buildManualInvalidationCatalogue({ structural_invalidations: { '4H': [projected] } });
+        const catalogue = ctx.buildManualLocationCatalogue({
+            snapshot: { current_price: 4194.65 },
+            timeframes: {
+                '4H': { locations: [{
+                    id: locationId, type: 'OB', timeframe: '4H', direction: 'BUY', low: 4168.57, high: 4191.61,
+                    lifecycle_state: 'FRESH', freshness: 'FRESH', origin_evidence_ids: [locationId]
+                }] }
+            },
+            structural_invalidations: { '4H': [projected] }
+        }, invalidationCatalogue, { above_current_price: [], below_current_price: [] }, 4194.65, 1791706054272);
+        expect(catalogue[0].compatible_invalidation_ids).toEqual([invalidationId]);
     });
 
     it('keeps FVG and OB formation knowable only on closed confirmation candles', () => {
@@ -5174,47 +5274,6 @@ describe('professional manual decision packet and external decision validation',
         expect(result.decision_received).toBe('TRADE');
         expect(result.scan_id).toBe('INGEST-SCAN');
         expect(result.snapshot_id).toBe('INGEST-SNAPSHOT');
-    });
-
-    it('keeps pasted external-AI review separate and displays only code-owned accepted geometry', () => {
-        const { context: ctx, elements } = getScanContext();
-        const accepted = {
-            valid: true,
-            status: 'VALIDATED_EXTERNAL_AI_TRADE',
-            decision_received: 'TRADE',
-            execution_allowed: true,
-            accepted_decision: {
-                pair: 'XAU/USD', direction: 'BUY', entry: 4181.45, stop_loss: 4168.57, tp1: 4196.54,
-                risk_reward: 1.171583850931677,
-                tp1_objective_id: 'TARGET:BUY:1H:BUY_SIDE_LIQUIDITY:4196.54',
-                invalidation_id: 'CURRENT:4H:BUY:OB:4168.57:4191.61:1791550800000'
-            },
-            authoritative_risk_reward: 1.171583850931677,
-            authoritative_risk_metrics: { risk: 12.88, rr_tp1: 1.171583850931677 },
-            warnings: ['EXTERNAL_AI_RR_MISMATCH'], quality_warnings: [], issues: [],
-            scan_id: 'SCAN-XAU', snapshot_id: 'SNAP-XAU'
-        };
-        ctx.renderManualExternalAIResult(accepted);
-        expect(elements.get('externalAIResultStatus').textContent).toContain('RR TP1 1.171583850931677');
-        expect(elements.get('externalAIResultOutput').textContent).toContain('"risk_reward": 1.171583850931677');
-        expect(elements.get('externalAIResultOutput').textContent).toContain('CURRENT:4H:BUY:OB:4168.57:4191.61:1791550800000');
-        expect(elements.get('saveExternalAIResultBtn').disabled).toBe(false);
-    });
-
-    it('renders rejected external-AI results as blocked and never as accepted trades', () => {
-        const { context: ctx, elements } = getScanContext();
-        ctx.renderManualExternalAIResult({
-            valid: false,
-            status: 'EXTERNAL_AI_TRADE_REJECTED',
-            decision_received: 'TRADE',
-            execution_allowed: false,
-            issues: ['EXTERNAL_AI_LOCATION_HAS_NO_COMPATIBLE_INVALIDATION'],
-            warnings: [], quality_warnings: [], scan_id: 'SCAN-XAU', snapshot_id: 'SNAP-XAU'
-        });
-        expect(elements.get('externalAIResultStatus').textContent).toContain('EXECUTION BLOCKED');
-        expect(elements.get('externalAIResultStatus').textContent).toContain('EXTERNAL_AI_LOCATION_HAS_NO_COMPATIBLE_INVALIDATION');
-        expect(JSON.parse(elements.get('externalAIResultOutput').textContent).accepted_decision).toBeNull();
-        expect(elements.get('saveExternalAIResultBtn').disabled).toBe(true);
     });
 
     it('keeps chronology causal and leaves the location catalogue as the location history', () => {

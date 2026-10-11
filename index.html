@@ -115,21 +115,6 @@
             <div id="opportunityStack" class="opportunity-stack" aria-live="polite"></div>
         </div>
 
-        <!-- Manual external-AI result review. This is deliberately separate
-             from the normal scan signal and never creates an order. -->
-        <div class="section external-ai-review-section">
-            <h3>External AI Result Review</h3>
-            <p>Paste the JSON returned for the latest copied packet. It is validated against that retained snapshot before it can be displayed as accepted.</p>
-            <textarea id="externalAIResultInput" rows="8" spellcheck="false" placeholder="Paste external AI JSON here"></textarea>
-            <div class="action-row">
-                <button id="pasteExternalAIResultBtn" type="button" class="settings-btn">Paste Clipboard</button>
-                <button id="validateExternalAIResultBtn" type="button" class="settings-btn">Validate Result</button>
-                <button id="saveExternalAIResultBtn" type="button" class="save-btn" disabled>Save Validated Result</button>
-            </div>
-            <div id="externalAIResultStatus" class="signal-status" aria-live="polite">No external AI result reviewed.</div>
-            <pre id="externalAIResultOutput" class="json-output" aria-live="polite">{}</pre>
-        </div>
-
         <!-- Save Setup & Limit Order -->
         <div class="section">
             <div class="action-row">
