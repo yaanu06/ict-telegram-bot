@@ -3326,6 +3326,9 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).toContain('does not require current 5M BOS/MSS, current 15M BOS/MSS');
         expect(packet.split('The ONLY legal values for location_id').length - 1).toBe(1);
         expect(packet.split('Do not automatically prefer the newest location').length - 1).toBe(1);
+        expect(packet).toContain('compatible_invalidation_ids');
+        expect(packet).toContain('if the list is empty, do not borrow an unrelated stop');
+        expect(packet.split('if the list is empty, do not borrow an unrelated stop').length - 1).toBe(1);
         expect(packet.split('minimum_rr is a preferred benchmark').length - 1).toBe(1);
         expect(packet.split('selected_candidate_id is exactly null').length - 1).toBe(1);
         expect(packet).toContain('"facts_owner":"CODE"');
@@ -3625,6 +3628,64 @@ describe('model semantics and temporal provenance', () => {
         }], { above_current_price: [], below_current_price: [] }, 99, '2026-10-11T00:00:00Z');
         expect(catalogue).toHaveLength(1);
         expect(catalogue[0].compatible_invalidation_ids).toEqual(['4H-BUY-STRUCTURE']);
+    });
+
+    it('serializes an explicit empty compatibility set instead of hiding missing stop authority', () => {
+        const ctx = getContext();
+        const catalogue = ctx.buildManualLocationCatalogue({
+            timeframes: {
+                '1H': {
+                    locations: [{
+                        id: '1H-BUY-OB-NO-STOP', location_id: '1H-BUY-OB-NO-STOP', type: 'OB', timeframe: '1H', direction: 'BUY',
+                        low: 100, high: 102, midpoint: 101, lifecycle_state: 'FRESH', freshness: 'FRESH', origin_evidence_ids: ['1H-BUY-OB-NO-STOP']
+                    }]
+                }
+            }
+        }, [{ invalidation_id: 'UNRELATED-STOP', timeframe: '4H', level: 98, state: 'ACTIVE', source_location_id: 'OTHER-LOCATION' }], { above_current_price: [], below_current_price: [] }, 99, '2026-10-11T00:00:00Z');
+        expect(catalogue[0]).toHaveProperty('compatible_invalidation_ids', []);
+    });
+
+    const realPacketPath = 'packet/ICT TRADING BOT PRO(20261011-034517).txt';
+    const realPacketTest = fs.existsSync(realPacketPath) ? it : it.skip;
+    realPacketTest('rejects the original XAU decision using the real packet without injecting compatibility', () => {
+        const ctx = getContext();
+        const lines = fs.readFileSync(realPacketPath, 'utf8').split(/\r?\n/);
+        const headings = new Set(['STRATEGY_CONTRACT', 'CURRENT_MARKET_STATE', 'MULTI_TIMEFRAME_STATE', 'ACTIONABLE_LOCATION_BUNDLES', 'OBJECTIVE_STATE', 'STRUCTURAL_INVALIDATIONS', 'MODEL_EVIDENCE', 'CONFLICT_STATE']);
+        const packet = {};
+        for (let index = 0; index < lines.length; index += 1) {
+            const heading = lines[index].trim();
+            if (!headings.has(heading)) continue;
+            let valueIndex = index + 1;
+            while (valueIndex < lines.length && !lines[valueIndex].trim()) valueIndex += 1;
+            packet[heading] = JSON.parse(lines[valueIndex]);
+        }
+        const evidence = {
+            manual_external_ai: true,
+            external_ai_packet_schema: 'MARKET_STATE_V3',
+            strategy_contract: packet.STRATEGY_CONTRACT,
+            current_market_state: packet.CURRENT_MARKET_STATE,
+            multi_timeframe_state: packet.MULTI_TIMEFRAME_STATE,
+            actionable_location_bundles: packet.ACTIONABLE_LOCATION_BUNDLES,
+            structural_invalidations: packet.STRUCTURAL_INVALIDATIONS,
+            objective_state: packet.OBJECTIVE_STATE,
+            model_evidence: packet.MODEL_EVIDENCE,
+            conflict_state: packet.CONFLICT_STATE
+        };
+        const decision = {
+            pair: 'XAU/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', selected_candidate_id: null,
+            entry: 4181.45, entry_zone: [4181.45, 4191.74], stop_loss: 4168.57, tp1: 4196.54, tp2: 4207.48, tp3: 4227.53, risk_reward: 2.5, confidence: 62,
+            location_id: '1H-BUY-OB-4181.45-4191.74', invalidation_id: 'CURRENT:4H:BUY:OB:4168.57:4191.61:1791550800000',
+            tp1_objective_id: 'TARGET:BUY:1H:BUY_SIDE_LIQUIDITY:4196.54', tp2_objective_id: 'TARGET:BUY:1H:BUY_SIDE_LIQUIDITY:4207.48', tp3_objective_id: 'TARGET:BUY:1H:BUY_SIDE_LIQUIDITY:4227.53',
+            evidence_ids: ['1H-BUY-OB-4181.45-4191.74'], conflict_ids: []
+        };
+        const result = ctx.validateExternalAITradeDecision(decision, evidence);
+        expect(result.valid).toBe(false);
+        expect(result.issues).toContain('EXTERNAL_AI_INVALIDATION_NOT_COMPATIBLE_WITH_LOCATION');
+        expect(result.issues).toContain('EXTERNAL_AI_LOCATION_HAS_NO_COMPATIBLE_INVALIDATION');
+        expect(result.calculated_risk_reward).toBeCloseTo(15.09 / 12.88, 10);
+        expect(result.quality_warnings).toContain('EXTERNAL_AI_RR_BELOW_PREFERRED');
+        expect(result.warnings).toContain('EXTERNAL_AI_RR_MISMATCH');
+        expect(result.issues).not.toContain('EXTERNAL_AI_SETUP_COMPONENT_UNSUPPORTED_BY_EVIDENCE');
     });
 
     it('accepts same-opportunity MSNR plus OB confluence but rejects unrelated OB evidence', () => {
@@ -4828,6 +4889,34 @@ describe('professional manual decision packet and external decision validation',
         expect(unrelated.issues).toContain('EXTERNAL_AI_SETUP_COMPONENT_UNSUPPORTED_BY_EVIDENCE');
     });
 
+    it('uses canonical V3 model evidence groups when proving the selected executable setup', () => {
+        const ctx = getContext();
+        const evidence = {
+            manual_external_ai: true,
+            external_ai_packet_schema: 'MARKET_STATE_V3',
+            strategy_contract: { minimum_rr: 2.5 },
+            current_market_state: { current_price: 105 },
+            actionable_location_bundles: [{
+                location_id: 'OB-BUY-1', type: 'OB', model_family: 'OB', source_orientation: 'BUY',
+                zone_low: 100, zone_high: 102, midpoint_if_defined: 101, origin_evidence_ids: ['OB-BUY-1'],
+                compatible_invalidation_ids: ['INV-BUY-1']
+            }],
+            structural_invalidations: [{ invalidation_id: 'INV-BUY-1', level: 98, state: 'ACTIVE' }],
+            objective_state: { all: [{ objective_id: 'OBJ-BUY-1', level: 110, lifecycle_state: 'UNFULFILLED' }] },
+            model_evidence: {
+                OB: [{ event_id: 'OB-BUY-1', event_type: 'OB', direction: 'BUY', evidence_ids: ['OB-BUY-1'] }],
+                ICT_STRUCTURE_AND_LIQUIDITY: []
+            }
+        };
+        const result = ctx.validateExternalAITradeDecision({
+            decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', market_phase: 'RETRACEMENT', setup: 'OB',
+            selected_candidate_id: null, confidence: 70, entry_zone: [100, 102], entry: 100, stop_loss: 98, tp1: 110,
+            location_id: 'OB-BUY-1', invalidation_id: 'INV-BUY-1', tp1_objective_id: 'OBJ-BUY-1', evidence_ids: ['OB-BUY-1'], risk_reward: 5
+        }, evidence);
+        expect(result.issues).not.toContain('EXTERNAL_AI_SETUP_COMPONENT_UNSUPPORTED_BY_EVIDENCE');
+        expect(result.valid).toBe(true);
+    });
+
     it('retains production-shaped location geometry rejection while measuring RR and exact objective mismatch', () => {
         const ctx = getContext();
         const evidence = {
@@ -5085,6 +5174,47 @@ describe('professional manual decision packet and external decision validation',
         expect(result.decision_received).toBe('TRADE');
         expect(result.scan_id).toBe('INGEST-SCAN');
         expect(result.snapshot_id).toBe('INGEST-SNAPSHOT');
+    });
+
+    it('keeps pasted external-AI review separate and displays only code-owned accepted geometry', () => {
+        const { context: ctx, elements } = getScanContext();
+        const accepted = {
+            valid: true,
+            status: 'VALIDATED_EXTERNAL_AI_TRADE',
+            decision_received: 'TRADE',
+            execution_allowed: true,
+            accepted_decision: {
+                pair: 'XAU/USD', direction: 'BUY', entry: 4181.45, stop_loss: 4168.57, tp1: 4196.54,
+                risk_reward: 1.171583850931677,
+                tp1_objective_id: 'TARGET:BUY:1H:BUY_SIDE_LIQUIDITY:4196.54',
+                invalidation_id: 'CURRENT:4H:BUY:OB:4168.57:4191.61:1791550800000'
+            },
+            authoritative_risk_reward: 1.171583850931677,
+            authoritative_risk_metrics: { risk: 12.88, rr_tp1: 1.171583850931677 },
+            warnings: ['EXTERNAL_AI_RR_MISMATCH'], quality_warnings: [], issues: [],
+            scan_id: 'SCAN-XAU', snapshot_id: 'SNAP-XAU'
+        };
+        ctx.renderManualExternalAIResult(accepted);
+        expect(elements.get('externalAIResultStatus').textContent).toContain('RR TP1 1.171583850931677');
+        expect(elements.get('externalAIResultOutput').textContent).toContain('"risk_reward": 1.171583850931677');
+        expect(elements.get('externalAIResultOutput').textContent).toContain('CURRENT:4H:BUY:OB:4168.57:4191.61:1791550800000');
+        expect(elements.get('saveExternalAIResultBtn').disabled).toBe(false);
+    });
+
+    it('renders rejected external-AI results as blocked and never as accepted trades', () => {
+        const { context: ctx, elements } = getScanContext();
+        ctx.renderManualExternalAIResult({
+            valid: false,
+            status: 'EXTERNAL_AI_TRADE_REJECTED',
+            decision_received: 'TRADE',
+            execution_allowed: false,
+            issues: ['EXTERNAL_AI_LOCATION_HAS_NO_COMPATIBLE_INVALIDATION'],
+            warnings: [], quality_warnings: [], scan_id: 'SCAN-XAU', snapshot_id: 'SNAP-XAU'
+        });
+        expect(elements.get('externalAIResultStatus').textContent).toContain('EXECUTION BLOCKED');
+        expect(elements.get('externalAIResultStatus').textContent).toContain('EXTERNAL_AI_LOCATION_HAS_NO_COMPATIBLE_INVALIDATION');
+        expect(JSON.parse(elements.get('externalAIResultOutput').textContent).accepted_decision).toBeNull();
+        expect(elements.get('saveExternalAIResultBtn').disabled).toBe(true);
     });
 
     it('keeps chronology causal and leaves the location catalogue as the location history', () => {
