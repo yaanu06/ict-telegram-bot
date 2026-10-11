@@ -4520,6 +4520,56 @@ describe('professional manual decision packet and external decision validation',
         expect(result.warnings).toContain('REPORTED_RR_IGNORED_CODE_CALCULATED_RR_WINS');
     });
 
+    it('requires and accepts only an explicitly linked higher-timeframe invalidation for the XAU BUY OB geometry', () => {
+        const ctx = getContext();
+        const invalidationId = 'CURRENT:4H:BUY:OB:4168.57:4191.61:1791550800000';
+        const locationId = '1H-BUY-OB-4181.45-4191.74';
+        const evidence = {
+            manual_external_ai: true,
+            external_ai_packet_schema: 'MARKET_STATE_V3',
+            strategy_contract: { minimum_rr: 2.5 },
+            current_market_state: { current_price: 4179.15 },
+            actionable_location_bundles: [{
+                location_id: locationId, type: 'OB', model_family: 'OB', timeframe: '1H', source_orientation: 'BUY',
+                zone_low: 4181.45, zone_high: 4191.74, midpoint_if_defined: 4186.595,
+                origin_evidence_ids: [locationId], compatible_invalidation_ids: [invalidationId]
+            }],
+            structural_invalidations: [{
+                invalidation_id: invalidationId, timeframe: '4H', level: 4168.57, state: 'ACTIVE',
+                source_location_id: locationId, source_model: 'OB', invalidation_basis: 'STRUCTURAL_SWING',
+                confirmation_mode: 'HARD_PRICE', evidence_ids: [locationId]
+            }],
+            objective_state: { all: [
+                { objective_id: 'TARGET:BUY:1H:BUY_SIDE_LIQUIDITY:4196.54', level: 4196.54, lifecycle_state: 'UNFULFILLED' },
+                { objective_id: 'TARGET:BUY:4H:BUY_SIDE_LIQUIDITY:4207.48', level: 4207.48, lifecycle_state: 'UNFULFILLED' },
+                { objective_id: 'TARGET:BUY:1D:BUY_SIDE_LIQUIDITY:4227.53', level: 4227.53, lifecycle_state: 'UNFULFILLED' }
+            ] },
+            model_evidence: { ICT_STRUCTURE_AND_LIQUIDITY: [{ event_id: locationId, event_type: 'OB', direction: 'BUY', evidence_ids: [locationId] }] }
+        };
+        const decision = {
+            pair: 'XAU/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT',
+            confidence: 62, selected_candidate_id: null, location_id: locationId,
+            entry_zone: [4181.45, 4191.74], entry: 4181.45,
+            invalidation_id: invalidationId, stop_loss: 4168.57,
+            tp1_objective_id: 'TARGET:BUY:1H:BUY_SIDE_LIQUIDITY:4196.54', tp1: 4196.54,
+            tp2_objective_id: 'TARGET:BUY:4H:BUY_SIDE_LIQUIDITY:4207.48', tp2: 4207.48,
+            tp3_objective_id: 'TARGET:BUY:1D:BUY_SIDE_LIQUIDITY:4227.53', tp3: 4227.53,
+            risk_reward: 2.5, evidence_ids: [locationId]
+        };
+        const linked = ctx.validateExternalAITradeDecision(decision, evidence);
+        expect(linked.valid).toBe(true);
+        expect(linked.rr_tp1).toBeCloseTo((4196.54 - 4181.45) / (4181.45 - 4168.57), 10);
+        expect(linked.quality_warnings).toContain('EXTERNAL_AI_RR_BELOW_PREFERRED');
+        expect(linked.warnings).toContain('EXTERNAL_AI_RR_MISMATCH');
+
+        const unrelated = ctx.validateExternalAITradeDecision(decision, {
+            ...evidence,
+            actionable_location_bundles: [{ ...evidence.actionable_location_bundles[0], compatible_invalidation_ids: [] }]
+        });
+        expect(unrelated.valid).toBe(false);
+        expect(unrelated.issues).toContain('EXTERNAL_AI_LOCATION_HAS_NO_COMPATIBLE_INVALIDATION');
+    });
+
     it('validates the BTC/USD production-shaped MSNR result with code-owned RR and structural-risk diagnostics', () => {
         const ctx = getContext();
         const evidence = {

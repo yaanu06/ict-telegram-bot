@@ -49,6 +49,15 @@ def timestamp_ms(raw: Any) -> int:
     if isinstance(raw, datetime):
         dt = raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
         return int(dt.timestamp() * 1000)
+    if isinstance(raw, str):
+        value_text = raw.strip()
+        if value_text:
+            try:
+                dt = datetime.fromisoformat(value_text.replace("Z", "+00:00"))
+                dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+                return int(dt.timestamp() * 1000)
+            except ValueError:
+                pass
     number = float(raw)
     if not math.isfinite(number):
         raise ValueError("timestamp is not finite")
@@ -73,6 +82,38 @@ def tv_symbol(symbol: str) -> str:
     if "/" in normalized:
         return f"FX_IDC:{instrument}"
     return normalized
+
+
+def quote_provider_timestamp_ms(quote: Any) -> int | None:
+    """Return the timestamp belonging to the provider's last-price update.
+
+    TVKit's quote model exposes TradingView's quote payload through
+    ``symbol_info``.  The adapter must not use local receipt time as market
+    data time: doing so makes a stale weekend quote look fresh to the browser.
+    ``lp_time`` is TradingView's last-price timestamp; the other keys are
+    compatibility fallbacks for provider/model variants.
+    """
+    info = value(quote, "symbol_info")
+    if not isinstance(info, dict):
+        info = value(quote, "quote_data")
+    info = info if isinstance(info, dict) else {}
+    candidates = [
+        value(quote, "timestamp"),
+        value(quote, "datetime"),
+        value(quote, "last_update"),
+        info.get("lp_time"),
+        info.get("timestamp"),
+        info.get("time"),
+        info.get("last_update"),
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            return timestamp_ms(candidate)
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return None
 
 
 def params(query: dict[str, list[str]], key: str, default: str = "") -> str:
@@ -143,9 +184,10 @@ async def fetch_quote(symbol: str) -> dict[str, Any]:
                 raw_price = value(quote, "price")
             if raw_price is None:
                 continue
+            provider_timestamp = quote_provider_timestamp_ms(quote)
             return {
                 "price": float(raw_price),
-                "timestamp": iso(int(datetime.now(tz=timezone.utc).timestamp() * 1000)),
+                "timestamp": iso(provider_timestamp) if provider_timestamp is not None else None,
                 "symbol": provider_symbol,
                 "provider": "TVKIT",
             }
