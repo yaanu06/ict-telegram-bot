@@ -2912,24 +2912,23 @@ describe('Analyze scan lifecycle', () => {
         expect(packet).not.toContain('NO_FRESH_OPPORTUNITY');
     });
 
-    it('blocks the legacy fallback packet when a post-completeness context error omits snapshot metadata', async () => {
+    it('reports a distinct context-construction failure without invoking fallback', async () => {
         const completeHistories = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, historyFixture(tf)]));
         const { context, elements, spies } = prepareScan({ runtimePair: 'EUR/USD', historyByTimeframe: completeHistories });
         context.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
         spies.buildLiveMarketContext = jest.fn(() => { throw new Error('context construction failure'); });
-        spies.runFallbackScan = jest.fn(() => {
-            context.setJsonOutput({ trade_signal: {
-                pair: 'EUR/USD', current_price: 100, status: 'NO_TRADE', decision: 'WAIT',
-                reason: { code: 'NO_FRESH_OPPORTUNITY' }
-            } });
-            return Promise.resolve();
-        });
         context.init();
         vm.runInContext("pair = 'EUR/USD'", context);
         await elements.get('analyzeBtn').dispatchEvent({ type: 'click' });
+        const displayed = JSON.parse(elements.get('jsonOutput').textContent).trade_signal;
+        expect(displayed.status).toBe('DATA_UNAVAILABLE');
+        expect(displayed.status_code).toBe('MARKET_CONTEXT_CONSTRUCTION_ERROR');
+        expect(displayed.reason.code).toBe('MARKET_CONTEXT_CONSTRUCTION_ERROR');
+        expect(displayed.snapshot_complete).toBe(true);
+        expect(displayed.context_construction_error.message).toBe('context construction failure');
+        expect(spies.runFallbackScan).not.toHaveBeenCalled();
         elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
         const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
-        expect(spies.runFallbackScan).toHaveBeenCalledTimes(1);
         expect(packet).toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
         expect(packet).toContain('RUNTIME MARKET DATA TRACE');
         expect(packet).toContain('context construction failure');
@@ -5391,6 +5390,151 @@ describe('multi-symbol snapshot completeness and provider boundary', () => {
         return candles(count, 100, 0.1, 'up').map((bar, index) => ({ ...bar, t: end - (count - 1 - index) * duration, is_closed: true, timeframe }));
     };
     const completeHistory = () => Object.fromEntries(required.map(tf => [tf, validHistory(tf)]));
+
+    it.each(['XAU/USD', 'EUR/USD', 'BTC/USD'])('builds context from a complete stale-weekend %s snapshot without runtime failure', pair => {
+        const ctx = getContext();
+        ctx.window.__ICT_MARKET_DATA_PROVIDER__ = 'TVKIT';
+        const durations = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 };
+        const asOfMs = Date.parse('2026-10-11T12:00:00Z');
+        const lastClosedMs = Date.parse('2026-10-09T20:00:00Z');
+        const historyCache = Object.fromEntries(required.map(timeframe => {
+            const duration = durations[timeframe];
+            const data = candles(200, 100, timeframe === '1D' ? 0.2 : 0.05, 'up').map((bar, index) => ({
+                ...bar,
+                t: new Date(lastClosedMs - (199 - index) * duration).toISOString(),
+                is_closed: true,
+                timeframe
+            }));
+            return [timeframe, data];
+        }));
+        const price = 110;
+        const completeness = ctx.assessMarketSnapshotCompleteness({ historyCache, price });
+        expect(completeness.complete).toBe(true);
+        const live = ctx.buildLiveMarketContext({
+            pair,
+            price,
+            historyCache,
+            indicators: { '4H': {}, '1H': {} },
+            patterns: {},
+            enhancedAnalysis: { phase: ctx.analyzeMarketPhase(historyCache['4H'], false) },
+            holistic: { suggestedDirection: 'NEUTRAL', buyScore: 0, sellScore: 0 },
+            entryContext: null,
+            as_of_ms: asOfMs,
+            quote_snapshot: {
+                pair,
+                price,
+                provider: 'TVKIT',
+                provider_timestamp_utc: new Date(lastClosedMs).toISOString(),
+                is_market_open: false,
+                symbol_metadata: ctx.getSymbolMetadata(pair)
+            },
+            snapshot_completeness: completeness
+        });
+        expect(live.snapshot_completeness.complete).toBe(true);
+        expect(live.market_open).toBe(false);
+        expect(live.data_quality.valid).toBe(false);
+        expect(live.data_quality.reasons).toContain('quote data is stale');
+        expect(Array.isArray(live.adaptive_setup_candidates)).toBe(true);
+        expect(Array.isArray(live.valid_deterministic_candidates)).toBe(true);
+        expect(live.snapshot_id).toMatch(/^TVKIT:/);
+        if (pair === 'XAU/USD') {
+            live.market_evidence_package = ctx.buildAiMarketEvidenceCatalog(live, historyCache);
+            live.indicators = { '4H': {}, '1H': {} };
+            live.holistic = { suggestedDirection: 'NEUTRAL', buyScore: 0, sellScore: 0 };
+            const replay = ctx.createScanReplay(live, { pair, status: 'MANUAL_EXTERNAL_AI_REVIEW' });
+            const packet = ctx.buildExternalAIClipboardPacket({
+                signal: { pair, analysis_mode: 'MANUAL_EXTERNAL_AI', automatic_ai_selection: 'NOT_RUN', current_price: price },
+                replay
+            });
+            expect(packet).toContain('EXTERNAL AI DECISION PACKET');
+            expect(packet).toContain('MARKET_STATE_V3');
+            expect(packet).not.toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
+        }
+    });
+
+    it('reproduces the XAU stale-weekend candidate-rejection path without crashing context construction', () => {
+        const ctx = getContext();
+        ctx.window.__ICT_MARKET_DATA_PROVIDER__ = 'TVKIT';
+        const durations = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 };
+        let seed = 1234567;
+        const random = () => {
+            seed = (seed * 1664525 + 1013904223) >>> 0;
+            return seed / 4294967296;
+        };
+        let historyCache = null;
+        for (let run = 0; run < 2; run += 1) {
+            historyCache = Object.fromEntries(Object.entries(durations).map(([timeframe, duration]) => {
+                let current = 4175 + random() * 10;
+                const values = Array.from({ length: 200 }, (_, index) => {
+                    const open = current;
+                    const close = open + (random() - 0.5) * (timeframe === '1D' ? 10 : timeframe === '4H' ? 5 : 1);
+                    const high = Math.max(open, close) + random() * 3;
+                    const low = Math.min(open, close) - random() * 3;
+                    current = close;
+                    return {
+                        o: open,
+                        h: high,
+                        l: low,
+                        c: close,
+                        v: 1000,
+                        t: new Date(Date.parse('2026-10-09T20:00:00Z') - (199 - index) * duration).toISOString(),
+                        is_closed: true,
+                        timeframe
+                    };
+                });
+                return [timeframe, values];
+            }));
+        }
+        const price = 4179.15;
+        const asOfMs = Date.parse('2026-10-11T12:00:00Z');
+        const completeness = ctx.assessMarketSnapshotCompleteness({ historyCache, price });
+        expect(completeness.complete).toBe(true);
+        expect(() => ctx.buildLiveMarketContext({
+            pair: 'XAU/USD',
+            price,
+            historyCache,
+            indicators: { '4H': {}, '1H': {} },
+            patterns: {},
+            enhancedAnalysis: { phase: ctx.analyzeMarketPhase(historyCache['4H'], false) },
+            holistic: { suggestedDirection: 'NEUTRAL' },
+            entryContext: null,
+            quote_snapshot: {
+                price,
+                provider: 'TVKIT',
+                provider_timestamp_utc: '2026-10-09T20:00:00Z',
+                is_market_open: false,
+                symbol_metadata: ctx.getSymbolMetadata('XAU/USD')
+            },
+            as_of_ms: asOfMs,
+            snapshot_completeness: completeness
+        })).not.toThrow();
+    });
+
+    it('keeps every early adaptive-candidate rejection result shape complete', () => {
+        const ctx = getContext();
+        const result = ctx.buildAdaptiveSetupCandidates({
+            pair: 'XAU/USD',
+            price: 100,
+            historyCache: completeHistory(),
+            zones: [],
+            targetCandidates: { all: [], buy: [], sell: [] },
+            riskConstraints: { minimum_rr: 2.5 },
+            marketRegime: {},
+            structure: {},
+            marketContext: { data_quality: { valid: false, reasons: ['quote data is stale'] } },
+            strategySetups: []
+        });
+        expect(result).toEqual(expect.objectContaining({
+            raw_candidates: [],
+            valid_candidates: [],
+            all_valid_candidates: [],
+            selectable_candidates: [],
+            future_watch_candidates: [],
+            low_quality_candidates: [],
+            seed_diagnostics: expect.any(Array),
+            rejected_candidates: expect.any(Array)
+        }));
+    });
 
     it.each([
         ['XAU/USD', 'OANDA:XAUUSD'],

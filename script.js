@@ -3520,6 +3520,56 @@ function buildIncompleteMarketSnapshotSignal({ pair: pairLocal = pair, price = n
     };
 }
 
+function buildMarketContextConstructionErrorSignal({ pair: pairLocal = pair, price = null, quoteSnapshot = null, completeness = {}, historyDiagnostics = {}, asOfMs = Date.now(), scanId = activeScanId, stage = 'market context construction', error = null } = {}) {
+    const provider = getMarketDataProvider();
+    const message = String(error?.message || error || 'Market context construction failed').slice(0, 300);
+    const marketOpenState = getMarketOpenState(pairLocal, { ...(quoteSnapshot || {}), as_of_ms: asOfMs });
+    return {
+        trade_signal: {
+            date: new Date(asOfMs).toISOString().slice(0, 10),
+            time: new Date(asOfMs).toISOString().slice(11, 19),
+            pair: normalizeCanonicalMarketSymbol(pairLocal),
+            scan_id: scanId || null,
+            app_build_id: APP_BUILD_ID,
+            clipboard_serializer_id: CLIPBOARD_SERIALIZER_ID,
+            current_price: Number.isFinite(Number(price)) ? Number(price) : null,
+            decision: 'WAIT',
+            trade_type: 'WAIT',
+            status: 'DATA_UNAVAILABLE',
+            status_code: 'MARKET_CONTEXT_CONSTRUCTION_ERROR',
+            execution_allowed: false,
+            selected_candidate_id: null,
+            reason: {
+                code: 'MARKET_CONTEXT_CONSTRUCTION_ERROR',
+                message: `Complete ${provider} market data was received, but ${stage} failed. No market conclusion was made.`
+            },
+            data_quality: { valid: false, reasons: ['MARKET_CONTEXT_CONSTRUCTION_ERROR'] },
+            snapshot_completeness: completeness,
+            snapshot_input_counts: completeness.snapshot_input_counts || {},
+            snapshot_complete: completeness.complete === true,
+            snapshot_missing_timeframes: completeness.missing_timeframes || [],
+            snapshot_reason: 'MARKET_CONTEXT_CONSTRUCTION_ERROR',
+            context_construction_error: {
+                stage,
+                message,
+                error_name: error?.name || 'Error'
+            },
+            runtime_market_data_trace: scanRuntimeTraceSnapshot(),
+            history_errors: completeness.provider_errors || {},
+            history_diagnostics: sanitizeHistoryRequestDiagnostics(historyDiagnostics),
+            provider_metadata: {
+                provider,
+                provider_symbol: provider === 'TVKIT' ? getTvkitSymbol(pairLocal) : getProviderSymbol(pairLocal),
+                quote_source: quoteSnapshot?.quote_source || null,
+                quote_timestamp: quoteSnapshot?.provider_timestamp_utc || quoteSnapshot?.provider_timestamp || null,
+                quote_freshness: validateMarketDataQuality({}, price, quoteSnapshot, asOfMs, []).reasons.includes('quote data is stale') ? 'STALE' : 'AVAILABLE'
+            },
+            market_open: marketOpenState.is_market_open,
+            market_open_source: marketOpenState.source
+        }
+    };
+}
+
 function isValidCandleArray(data, min = 1) {
     return Array.isArray(data) && data.length >= min && data.every(c =>
         c && ictFiniteNumber(c.o) && ictFiniteNumber(c.h) && ictFiniteNumber(c.l) && ictFiniteNumber(c.c)
@@ -8699,7 +8749,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     if (marketContext?.news_risk?.status === 'HIGH_IMPACT') {
         for (const seed of seedDiagnostics) failSeed(seed, 'NEWS_BLOCKED', marketContext.news_risk.warning || 'High-impact news risk blocks new setup selection');
         return {
-            raw_candidates: [], valid_candidates: [], seed_diagnostics: seedDiagnostics,
+            raw_candidates: [], valid_candidates: [], all_valid_candidates: [], selectable_candidates: [], future_watch_candidates: [], low_quality_candidates: [], seed_diagnostics: seedDiagnostics,
             rejected_candidates: [{ id: 'NEWS_BLOCKED', rejection_code: 'NEWS_BLOCKED', rejection_reasons: [marketContext.news_risk.warning || 'High-impact news risk blocks new setup selection'] }]
         };
     }
@@ -8707,7 +8757,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         const detail = `Current spread ${riskConstraints.current_spread} exceeds maximum ${riskConstraints.maximum_spread}`;
         for (const seed of seedDiagnostics) failSeed(seed, 'SPREAD_TOO_WIDE', detail);
         return {
-            raw_candidates: [], valid_candidates: [], seed_diagnostics: seedDiagnostics,
+            raw_candidates: [], valid_candidates: [], all_valid_candidates: [], selectable_candidates: [], future_watch_candidates: [], low_quality_candidates: [], seed_diagnostics: seedDiagnostics,
             rejected_candidates: [{ id: 'SPREAD_TOO_WIDE', rejection_code: 'SPREAD_TOO_WIDE', rejection_reasons: [detail] }]
         };
     }
@@ -8715,7 +8765,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         const detail = `Estimated slippage ${riskConstraints.slippage_estimate} exceeds maximum ${riskConstraints.maximum_slippage}`;
         for (const seed of seedDiagnostics) failSeed(seed, 'SLIPPAGE_TOO_WIDE', detail);
         return {
-            raw_candidates: [], valid_candidates: [], seed_diagnostics: seedDiagnostics,
+            raw_candidates: [], valid_candidates: [], all_valid_candidates: [], selectable_candidates: [], future_watch_candidates: [], low_quality_candidates: [], seed_diagnostics: seedDiagnostics,
             rejected_candidates: [{ id: 'SLIPPAGE_TOO_WIDE', rejection_code: 'SLIPPAGE_TOO_WIDE', rejection_reasons: [detail] }]
         };
     }
@@ -8724,7 +8774,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         for (const seed of seedDiagnostics) {
             for (const reason of dataQuality.reasons) failSeed(seed, /missing|insufficient/i.test(reason) ? 'MISSING_TIMEFRAME_DATA' : 'INVALID_MARKET_DATA', reason);
         }
-        const result = { raw_candidates: [], valid_candidates: [], seed_diagnostics: seedDiagnostics,
+        const result = { raw_candidates: [], valid_candidates: [], all_valid_candidates: [], selectable_candidates: [], future_watch_candidates: [], low_quality_candidates: [], seed_diagnostics: seedDiagnostics,
             rejected_candidates: dataQuality.reasons.map(reason => ({ id: 'DATA_QUALITY', rejection_code: 'DATA_QUALITY', rejection_reasons: [reason] })) };
         console.log('RAW SETUP CANDIDATES', result.raw_candidates);
         console.log('VALID SETUP CANDIDATES', result.valid_candidates);
@@ -17843,6 +17893,30 @@ async function runAutoScan() {
             requiredTimeframes: REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES
         });
         markHistorySnapshotConsumed(historyCache, pair, failedSnapshotCompleteness);
+        if (scanStage === 'market context construction') {
+            const constructionFailure = buildMarketContextConstructionErrorSignal({
+                pairLocal: pair,
+                price,
+                quoteSnapshot,
+                completeness: failedSnapshotCompleteness,
+                historyDiagnostics: historyCache.fetch_diagnostics,
+                asOfMs: scanAsOfMs,
+                scanId: activeScanId,
+                stage: scanStage,
+                error: e
+            });
+            setJsonOutput(constructionFailure);
+            lastSetupSummary = null;
+            lastSetupOut = constructionFailure;
+            analysis = { signalType: 'DATA_UNAVAILABLE', currentPrice: price, confidence: 0, entryReady: false, executionDecision: 'skip', aiDecision: null, execution_allowed: false, manual_tracking_allowed: false };
+            scanText.innerHTML = '⚠️ Market context construction failed — no market conclusion was made';
+            scanTrace('market context construction failure', scanStartedAt, {
+                error_code: 'MARKET_CONTEXT_CONSTRUCTION_ERROR',
+                error_message: e?.message || 'Unknown market context construction error',
+                snapshot_complete: failedSnapshotCompleteness.complete === true
+            });
+            return;
+        }
         if (Number.isFinite(Number(price)) && !failedSnapshotCompleteness.complete) {
             scanStage = 'incomplete market snapshot after scan failure';
             const unavailableOutput = buildIncompleteMarketSnapshotSignal({
@@ -18458,6 +18532,7 @@ function buildSelectedCandidateEntryContext({ historyCache, sessionCheck, market
 function getPublicStatusCode(signal = {}, hasOpportunity = false, hasEntry = false) {
     const reasonCode = String(signal.reason?.code || '').toUpperCase();
     const riskGate = signal.risk_gate || getDefaultRiskGate(signal.execution_mode || DEFAULT_EXECUTION_MODE);
+    if (reasonCode === 'MARKET_CONTEXT_CONSTRUCTION_ERROR' || signal.status_code === 'MARKET_CONTEXT_CONSTRUCTION_ERROR') return 'MARKET_CONTEXT_CONSTRUCTION_ERROR';
     // News risk is a hard execution lock. It must take precedence over a
     // paper-mode risk gate or any stale execution_allowed value.
     if (signal.news_risk?.status === 'HIGH_IMPACT') return 'NEWS_BLOCKED';
@@ -18492,7 +18567,7 @@ function getAnalysisStatus(signal = {}) {
     const statusCode = String(signal.status_code || getPublicStatusCode(signal,
         !!signal.primary_opportunity || !!signal.opportunity,
         Number.isFinite(Number(signal.entry ?? signal.entry_price))));
-    if (['DATA_UNAVAILABLE', 'DATA_BLOCKED', 'NEWS_BLOCKED', 'RISK_BLOCKED', 'MARKET_CLOSED', 'INVALIDATED', 'EXPIRED', 'SETUP_READY', 'WATCH', 'ORDER_PENDING'].includes(statusCode)) return statusCode;
+    if (['DATA_UNAVAILABLE', 'MARKET_CONTEXT_CONSTRUCTION_ERROR', 'DATA_BLOCKED', 'NEWS_BLOCKED', 'RISK_BLOCKED', 'MARKET_CLOSED', 'INVALIDATED', 'EXPIRED', 'SETUP_READY', 'WATCH', 'ORDER_PENDING'].includes(statusCode)) return statusCode;
     if (signal.current_price == null || !Number.isFinite(Number(signal.current_price))) return 'WAITING_FOR_DATA';
     if (signal.data_quality?.valid === true && signal.market_open !== false) return 'SAFE_TO_ANALYZE';
     return 'NO_TRADE';
@@ -18980,6 +19055,9 @@ function buildPublicTradeSignal(signal = {}) {
             current_price: signal.current_price,
             snapshot_id: signal.snapshot_id || null,
             snapshot_completeness: signal.snapshot_completeness || null,
+            snapshot_complete: signal.snapshot_complete ?? signal.snapshot_completeness?.complete ?? null,
+            snapshot_reason: signal.snapshot_reason || null,
+            context_construction_error: signal.context_construction_error || null,
             symbol_metadata: signal.symbol_metadata || getSymbolMetadata(signal.pair),
             decision: 'WAIT',
             trade_type: 'WAIT',
@@ -19200,7 +19278,7 @@ function recordAnalysisAudit(signal = {}, replay = null) {
 function validatePublicTradeSignal(signal = {}) {
     const issues = [];
     const decisions = new Set(['WAIT', 'BUY_LIMIT', 'SELL_LIMIT']);
-    const statuses = new Set(['SETUP_READY', 'WATCH', 'ORDER_PENDING', 'NO_TRADE', 'DATA_UNAVAILABLE', 'DATA_BLOCKED', 'NEWS_BLOCKED', 'RISK_BLOCKED', 'MARKET_CLOSED', 'INVALIDATED', 'EXPIRED']);
+    const statuses = new Set(['SETUP_READY', 'WATCH', 'ORDER_PENDING', 'NO_TRADE', 'DATA_UNAVAILABLE', 'MARKET_CONTEXT_CONSTRUCTION_ERROR', 'DATA_BLOCKED', 'NEWS_BLOCKED', 'RISK_BLOCKED', 'MARKET_CLOSED', 'INVALIDATED', 'EXPIRED']);
     if (!signal || typeof signal !== 'object' || Array.isArray(signal)) issues.push('signal must be an object');
     if (!String(signal?.pair || '').trim()) issues.push('pair is required');
     if (!decisions.has(String(signal?.decision || ''))) issues.push('decision is invalid');
@@ -20799,6 +20877,7 @@ function buildDataUnavailableExternalAIPacket({ signal = {}, replay = null } = {
         clipboard_serializer_id: result.clipboard_serializer_id || source.clipboard_serializer_id || CLIPBOARD_SERIALIZER_ID,
         scan_id: result.scan_id || source.scan_id || null,
         status: 'DATA_UNAVAILABLE',
+        status_code: result.status_code || 'DATA_UNAVAILABLE',
         execution_allowed: false,
         reason: result.reason || { code: 'INCOMPLETE_MARKET_SNAPSHOT', message: 'Required market evidence was not available.' },
         symbol: source.pair || result.pair || null,
