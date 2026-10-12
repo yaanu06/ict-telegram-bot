@@ -12377,6 +12377,7 @@ function buildRawMarketAnalysisInstruction() {
         '',
         'EXECUTION AND RR',
         'For BUY: stop_loss < entry < TP1/TP2/TP3. For SELL: stop_loss > entry > TP1/TP2/TP3. Risk must be finite and strictly positive. Calculate risk and RR from the exact proposed entry, stop_loss, and each target; the reported risk_reward is diagnostic only.',
+        'EXECUTION SUITABILITY: distinguish structural validity from execution readiness. Use the selected model\'s real invalidation and available closed-candle ATR/volatility context to avoid arbitrarily tight stops chosen only to inflate RR. Treat missing or zero bid/ask/spread, stale or unknown quote freshness, unknown tick/precision, and unavailable broker stop-distance constraints as UNKNOWN execution information; never assume those conditions are safe or READY. Do not widen or replace the proposed stop, and do not impose fresh 5M/15M confirmation for a valid pending limit.',
         '',
         'OUTPUT CONTRACT',
         'Return exactly one valid JSON object. Do not include Markdown fences, text before or after the JSON, comments, JavaScript expressions, NaN, Infinity, or trailing commas. Include the field schema with exactly RAW_MARKET_ANALYSIS_V1_RESULT, plus the exact packet pair and snapshot_id. Every TRADE must use trade_type PENDING_LIMIT only, setup must be one supported label such as OB, FVG, MSNR, CRT, TBS, SUPPLY, DEMAND, FLIP, or BREAKER, market_phase must be exactly one of ORIGINAL_SETUP, EARLY_DELIVERY, EXPANSION, RETRACEMENT, CONTINUATION_READY, LATE_DELIVERY, or TRANSITION_WAIT (do not use RANGING), confidence must be an integer from 0 through 100, and risk_reward must be one numeric TP1 RR value (not an object). Include schema, pair, snapshot_id, decision, direction, trade_type, setup, market_phase, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, confidence, source_candle_timestamps, invalidation_source_candle_timestamps, objective_source_candle_timestamps, invalidation_basis, evidence, target_evidence, conflicts, and concise model_reasoning. Every evidence and target_evidence item must include candle_id, timeframe, timestamp, field, role, claimed_level, and chronology. For NO_TRADE, keep market_phase as a supported enum when a phase can be established (use TRANSITION_WAIT when no more specific phase is supported), set direction, trade_type, setup, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, and confidence to null, and explain the factual reason. Do not invent IDs or claim code-side catalogue approval.'
@@ -12730,6 +12731,118 @@ function verifyRawModelClaim(normalized = {}, direction = null, setup = null, pa
     return { verified: targets.verified, warnings: [...new Set(warnings)], timeframe, matched };
 }
 
+function assessRawExecutionSuitability(normalized = {}, packet = {}, modelVerification = {}) {
+    const observation = packet.current_market_observation || {};
+    const pairValue = packet.packet_identity?.pair || packet.packet_identity?.symbol || '';
+    const metadata = observation.symbol_metadata || packet.provenance?.symbol_metadata || {};
+    const settings = getMarketSettings(pairValue, metadata);
+    const direction = String(normalized.direction || '').toUpperCase();
+    const entry = rawMarketAnalysisNumber(normalized.entry);
+    const stop = rawMarketAnalysisNumber(normalized.stop_loss);
+    const entryZone = Array.isArray(normalized.entry_zone)
+        ? normalized.entry_zone.map(rawMarketAnalysisNumber)
+        : normalized.entry_zone && typeof normalized.entry_zone === 'object'
+            ? [rawMarketAnalysisNumber(normalized.entry_zone.low), rawMarketAnalysisNumber(normalized.entry_zone.high)]
+            : null;
+    const riskDistance = Number.isFinite(entry) && Number.isFinite(stop) ? Math.abs(entry - stop) : null;
+    const timeframe = modelVerification.timeframe || rawModelTimeframe(normalized, normalized.evidence);
+    const candles = timeframe ? (packet.timeframes?.[timeframe]?.candles || []) : [];
+    const history = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(tf => [tf, packet.timeframes?.[tf]?.candles || []]));
+    const priceForContext = rawMarketAnalysisNumber(observation.current_price) ?? entry;
+    const atrContext = timeframe && candles.length >= 15 && Number.isFinite(priceForContext)
+        ? getCandidateATRContext({ timeframe }, history, pairValue, priceForContext, metadata)
+        : null;
+    const atrValue = atrContext?.atr_rule_reference ?? null;
+    const riskToAtrRatio = Number.isFinite(riskDistance) && Number.isFinite(atrValue) && atrValue > 0 ? riskDistance / atrValue : null;
+    const zoneWidth = entryZone && entryZone.every(Number.isFinite) ? Math.abs(entryZone[1] - entryZone[0]) : null;
+    const riskToZoneWidthRatio = Number.isFinite(riskDistance) && Number.isFinite(zoneWidth) && zoneWidth > 0 ? riskDistance / zoneWidth : null;
+    const bid = rawMarketAnalysisNumber(observation.bid);
+    const ask = rawMarketAnalysisNumber(observation.ask);
+    const observedSpread = Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > bid ? ask - bid : null;
+    const suppliedSpread = rawMarketAnalysisNumber(observation.spread);
+    const spread = observedSpread ?? (Number.isFinite(suppliedSpread) && suppliedSpread > 0 ? suppliedSpread : null);
+    const quoteFreshness = String(observation.quote_freshness || '').toUpperCase();
+    const stopBasis = String(normalized.invalidation_basis || '').toUpperCase() || null;
+    const matchedInvalidation = modelVerification.matched?.execution_invalidation || modelVerification.matched?.lifecycle_invalidation || null;
+    const structuralAnchorType = matchedInvalidation?.basis || stopBasis || (modelVerification.matched?.structural_invalidation != null ? 'STRUCTURAL_LEVEL' : 'UNKNOWN');
+    const stopExecutionMode = matchedInvalidation?.confirmation_mode || (stopBasis ? 'MODEL_DEFINED' : 'UNKNOWN');
+    const stopQualityWarnings = [];
+    const blockingReasons = [];
+    const unknownReasons = [];
+    const addUnique = (list, value) => { if (!list.includes(value)) list.push(value); };
+
+    if (!Number.isFinite(riskDistance) || riskDistance <= 0) addUnique(blockingReasons, 'RAW_EXECUTION_NON_POSITIVE_RISK');
+    if (!atrContext || !Number.isFinite(atrValue) || atrValue <= 0) {
+        addUnique(unknownReasons, 'RAW_EXECUTION_ATR_UNAVAILABLE');
+        addUnique(stopQualityWarnings, 'ATR_CONTEXT_UNAVAILABLE');
+    } else {
+        if (riskDistance <= atrContext.absolute_min_sl) {
+            addUnique(blockingReasons, 'RAW_EXECUTION_STOP_BELOW_ABSOLUTE_ATR_FLOOR');
+            addUnique(stopQualityWarnings, 'RISK_DISTANCE_BELOW_ABSOLUTE_ATR_FLOOR');
+        } else if (riskDistance < atrContext.preferred_min_sl) {
+            addUnique(stopQualityWarnings, 'RISK_DISTANCE_BELOW_PREFERRED_ATR_CLEARANCE');
+        }
+    }
+
+    if (quoteFreshness === 'STALE' || quoteFreshness === 'EXPIRED') {
+        addUnique(blockingReasons, 'RAW_EXECUTION_QUOTE_STALE');
+    } else if (!quoteFreshness || quoteFreshness === 'UNKNOWN') {
+        addUnique(unknownReasons, 'RAW_EXECUTION_QUOTE_FRESHNESS_UNKNOWN');
+    }
+    if (!Number.isFinite(spread)) addUnique(unknownReasons, 'RAW_EXECUTION_SPREAD_UNAVAILABLE');
+
+    const tickSize = rawMarketAnalysisNumber(metadata.tick_size);
+    const pricePrecision = Number.isInteger(Number(metadata.price_precision)) && Number(metadata.price_precision) >= 0 ? Number(metadata.price_precision) : null;
+    const minimumPriceDistance = rawMarketAnalysisNumber(metadata.minimum_price_distance);
+    const maximumSpread = rawMarketAnalysisNumber(metadata.maximum_spread);
+    const hasBrokerConstraints = Number.isFinite(tickSize) || Number.isInteger(pricePrecision) || Number.isFinite(minimumPriceDistance) || Number.isFinite(maximumSpread);
+    if (!hasBrokerConstraints) addUnique(unknownReasons, 'RAW_EXECUTION_BROKER_CONSTRAINTS_UNKNOWN');
+    if (Number.isFinite(minimumPriceDistance) && Number.isFinite(riskDistance) && riskDistance < minimumPriceDistance) {
+        addUnique(blockingReasons, 'RAW_EXECUTION_STOP_DISTANCE_BELOW_BROKER_MINIMUM');
+    }
+    if (Number.isFinite(maximumSpread) && Number.isFinite(spread) && spread > maximumSpread) {
+        addUnique(blockingReasons, 'RAW_EXECUTION_SPREAD_TOO_WIDE');
+    }
+    if (Number.isFinite(tickSize) && tickSize > 0) {
+        const aligned = value => Number.isFinite(value) && Math.abs(value / tickSize - Math.round(value / tickSize)) <= 1e-8;
+        if (!aligned(entry) || !aligned(stop)) addUnique(blockingReasons, 'RAW_EXECUTION_PRICE_NOT_TICK_ALIGNED');
+    }
+
+    if (Number.isFinite(spread) && Number.isFinite(riskDistance) && riskDistance > 0) {
+        const spreadToRiskRatio = spread / riskDistance;
+        if (spreadToRiskRatio > 0.5) addUnique(stopQualityWarnings, 'SPREAD_IS_LARGE_RELATIVE_TO_RISK');
+    }
+    if (stopQualityWarnings.includes('RISK_DISTANCE_BELOW_PREFERRED_ATR_CLEARANCE')) {
+        addUnique(stopQualityWarnings, 'STRUCTURALLY_SUPPORTED_BUT_VOLATILITY_FRAGILE');
+        addUnique(blockingReasons, 'RAW_EXECUTION_STOP_VOLATILITY_FRAGILE');
+    }
+
+    const status = blockingReasons.length ? 'NOT_READY' : unknownReasons.length ? 'UNKNOWN' : 'READY';
+    return {
+        status,
+        execution_ready: status === 'READY',
+        risk_distance: riskDistance,
+        risk_to_atr_ratio: riskToAtrRatio,
+        risk_to_zone_width_ratio: riskToZoneWidthRatio,
+        atr_value: atrValue,
+        atr_timeframe: timeframe || null,
+        structural_anchor_type: structuralAnchorType,
+        stop_execution_mode: stopExecutionMode,
+        quote_freshness: quoteFreshness || 'UNKNOWN',
+        bid,
+        ask,
+        spread,
+        spread_to_risk_ratio: Number.isFinite(spread) && Number.isFinite(riskDistance) && riskDistance > 0 ? spread / riskDistance : null,
+        tick_size: tickSize,
+        price_precision: pricePrecision,
+        minimum_price_distance: minimumPriceDistance,
+        maximum_spread: maximumSpread,
+        blocking_reasons: blockingReasons,
+        unknown_reasons: unknownReasons,
+        stop_quality_warnings: stopQualityWarnings
+    };
+}
+
 function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
     const issues = [];
     const warnings = [];
@@ -12849,6 +12962,9 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
     for (const issue of modelVerification.issues || []) add(issue);
     if (!issues.length && outcome === 'TRADE' && !modelVerification.verified) warn('RAW_MODEL_CLAIM_UNVERIFIED');
     if (!issues.length && outcome === 'TRADE' && !modelVerification.verified) warn('RAW_LEVEL_PROVENANCE_REQUIRES_MODEL_RECONSTRUCTION');
+    const executionRisk = outcome === 'TRADE'
+        ? assessRawExecutionSuitability(normalized, packet, modelVerification)
+        : { status: 'UNKNOWN', execution_ready: false, blocking_reasons: [], unknown_reasons: [], stop_quality_warnings: [] };
     const status = issues.length ? 'REJECTED' : modelVerification.verified ? 'VALIDATED' : 'UNVERIFIED';
     return {
         status,
@@ -12859,7 +12975,9 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
         model_verification: modelVerification,
         authoritative_risk_reward: rr,
         reported_risk_reward: reportedRiskReward,
-        risk_reward_mismatch: riskRewardMismatch
+        risk_reward_mismatch: riskRewardMismatch,
+        execution_risk: executionRisk,
+        execution_ready: status === 'VALIDATED' && executionRisk.execution_ready === true
     };
 }
 

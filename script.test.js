@@ -3578,6 +3578,50 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         };
     };
 
+    const makeRawFvgExecutionCase = ({ gapHigh = 151, entry = (150 + gapHigh) / 2, stop = 150, quoteFreshness = null, quoteOverrides = {}, symbolMetadata = {} } = {}) => {
+        const ctx = getContext();
+        const replay = makeReplay(true, 'EUR/USD');
+        replay.history['5M'] = Array.from({ length: 200 }, (_, index) => ({
+            t: 1790000000000 + index * 300000, o: 200, h: 201, l: 199, c: 200, is_closed: true
+        }));
+        replay.history['5M'][50] = { t: replay.history['5M'][50].t, o: 149, h: 150, l: 148, c: 149.5, is_closed: true };
+        replay.history['5M'][51] = { t: replay.history['5M'][51].t, o: 149.5, h: gapHigh + 1, l: 149, c: gapHigh, is_closed: true };
+        replay.history['5M'][52] = { t: replay.history['5M'][52].t, o: gapHigh, h: gapHigh + 2, l: gapHigh, c: gapHigh + 1, is_closed: true };
+        const makeFlat = () => Array.from({ length: 200 }, (_, index) => ({
+            t: 1790000000000 + index * 3600000, o: 200, h: 201, l: 199, c: 200, is_closed: true
+        }));
+        for (const [timeframe, level] of [['1H', 330], ['4H', 340], ['1D', 350]]) {
+            replay.history[timeframe] = makeFlat();
+            replay.history[timeframe][120] = { t: replay.history[timeframe][120].t, o: 200, h: level, l: 199, c: 200, is_closed: true };
+        }
+        replay.quote = { ...replay.quote, ...quoteOverrides, symbol_metadata: symbolMetadata };
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay });
+        packet.current_market_observation.symbol_metadata = symbolMetadata;
+        packet.current_market_observation.quote_freshness = quoteFreshness || 'AVAILABLE_TIMESTAMPED';
+        const candles = packet.timeframes['5M'].candles;
+        const [first, second, third] = candles.slice(50, 53);
+        const targetRefs = [['1H', 330], ['4H', 340], ['1D', 350]].map(([timeframe, level]) => ({
+            timeframe, level, candle: packet.timeframes[timeframe].candles[120]
+        }));
+        const proposal = {
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'EUR/USD',
+            decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'FVG', market_phase: 'RETRACEMENT', confidence: 70,
+            risk_reward: 2, entry_zone: [150, gapHigh], entry, stop_loss: stop, tp1: 330, tp2: 340, tp3: 350,
+            source_candle_timestamps: [first, second, third].map(candle => ({ timeframe: '5M', timestamp: candle.t })),
+            invalidation_source_candle_timestamps: [{ timeframe: '5M', timestamp: first.t }],
+            objective_source_candle_timestamps: targetRefs.map(ref => ({ timeframe: ref.timeframe, timestamp: ref.candle.t })),
+            invalidation_basis: 'ZONE_FAR_EDGE', model_reasoning: 'closed three-candle FVG with source-backed far-edge invalidation',
+            evidence: [
+                { candle_id: `5M:${first.t}`, timeframe: '5M', timestamp: first.t, field: 'high', role: 'LOCATION', claimed_level: first.h, chronology: 'first FVG candle' },
+                { candle_id: `5M:${second.t}`, timeframe: '5M', timestamp: second.t, field: 'close', role: 'FORMATION', claimed_level: second.c, chronology: 'middle FVG candle' },
+                { candle_id: `5M:${third.t}`, timeframe: '5M', timestamp: third.t, field: 'low', role: 'CONFIRMATION', claimed_level: third.l, chronology: 'third closed FVG candle' },
+                { candle_id: `5M:${first.t}`, timeframe: '5M', timestamp: first.t, field: 'high', role: 'INVALIDATION', claimed_level: stop, chronology: 'zone far edge' }
+            ],
+            target_evidence: targetRefs.map(ref => ({ candle_id: `${ref.timeframe}:${ref.candle.t}`, timeframe: ref.timeframe, timestamp: ref.candle.t, field: 'high', role: 'OBJECTIVE', claimed_level: ref.level, chronology: 'confirmed swing high' }))
+        };
+        return { packet, proposal, result: ctx.validateRawMarketAnalysisDecision(proposal, packet) };
+    };
+
     it('serializes only raw closed candles and factual provenance, with no preselected trade geometry', () => {
         const ctx = getContext();
         const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
@@ -4118,6 +4162,63 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         }, packet);
         expect(result.issues).not.toContain('RAW_PENDING_BUY_ENTRY_NOT_BELOW_CURRENT_PRICE');
         expect(result.status).not.toBe('VALIDATED');
+    });
+
+    it('separates structural validation from READY execution suitability for a supported FVG', () => {
+        const metadata = { asset_class: 'FOREX', tick_size: 0.01, price_precision: 2, minimum_price_distance: 0.01, maximum_spread: 0.25 };
+        const { result } = makeRawFvgExecutionCase({ gapHigh: 155, entry: 152.5, stop: 150, symbolMetadata: metadata });
+        expect(result.status).toBe('VALIDATED');
+        expect(result.execution_risk.status).toBe('READY');
+        expect(result.execution_risk.execution_ready).toBe(true);
+        expect(result.execution_ready).toBe(true);
+        expect(result.execution_risk.structural_anchor_type).toBe('ZONE_FAR_EDGE');
+        expect(result.execution_risk.stop_execution_mode).toBe('MODEL_DEFINED');
+        expect(result.execution_risk.risk_distance).toBe(2.5);
+    });
+
+    it('keeps a structurally valid but volatility-fragile stop out of READY status', () => {
+        const metadata = { asset_class: 'FOREX', tick_size: 0.01, price_precision: 2, minimum_price_distance: 0.01, maximum_spread: 0.25 };
+        const { result } = makeRawFvgExecutionCase({ gapHigh: 151, entry: 150.5, stop: 150, symbolMetadata: metadata });
+        expect(result.status).toBe('VALIDATED');
+        expect(result.execution_risk.status).toBe('NOT_READY');
+        expect(result.execution_ready).toBe(false);
+        expect(result.execution_risk.stop_quality_warnings).toEqual(expect.arrayContaining([
+            'RISK_DISTANCE_BELOW_PREFERRED_ATR_CLEARANCE',
+            'STRUCTURALLY_SUPPORTED_BUT_VOLATILITY_FRAGILE'
+        ]));
+        expect(result.authoritative_risk_reward.rr_tp1).toBeGreaterThan(1);
+    });
+
+    it('reports UNKNOWN execution readiness when quote or spread evidence is unavailable', () => {
+        const metadata = { asset_class: 'FOREX', tick_size: 0.01, price_precision: 2, minimum_price_distance: 0.01, maximum_spread: 0.25 };
+        const { result } = makeRawFvgExecutionCase({
+            gapHigh: 155, entry: 152.5, stop: 150, symbolMetadata: metadata,
+            quoteFreshness: 'UNKNOWN', quoteOverrides: { bid: null, ask: null, spread: null }
+        });
+        expect(result.status).toBe('VALIDATED');
+        expect(result.execution_risk.status).toBe('UNKNOWN');
+        expect(result.execution_risk.execution_ready).toBe(false);
+        expect(result.execution_risk.unknown_reasons).toEqual(expect.arrayContaining([
+            'RAW_EXECUTION_QUOTE_FRESHNESS_UNKNOWN',
+            'RAW_EXECUTION_SPREAD_UNAVAILABLE'
+        ]));
+    });
+
+    it('marks stale quotes and supplied broker distance violations NOT_READY', () => {
+        const stale = makeRawFvgExecutionCase({
+            gapHigh: 155, entry: 152.5, stop: 150,
+            symbolMetadata: { asset_class: 'FOREX', tick_size: 0.01, price_precision: 2, minimum_price_distance: 0.01, maximum_spread: 0.25 },
+            quoteFreshness: 'STALE'
+        });
+        expect(stale.result.execution_risk.status).toBe('NOT_READY');
+        expect(stale.result.execution_risk.blocking_reasons).toContain('RAW_EXECUTION_QUOTE_STALE');
+
+        const broker = makeRawFvgExecutionCase({
+            gapHigh: 155, entry: 152.5, stop: 150,
+            symbolMetadata: { asset_class: 'FOREX', tick_size: 0.01, price_precision: 2, minimum_price_distance: 3, maximum_spread: 0.25 }
+        });
+        expect(broker.result.execution_risk.status).toBe('NOT_READY');
+        expect(broker.result.execution_risk.blocking_reasons).toContain('RAW_EXECUTION_STOP_DISTANCE_BELOW_BROKER_MINIMUM');
     });
 
     it('reports deterministic RR mismatch without allowing the AI-reported value to become authoritative', () => {
