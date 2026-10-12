@@ -3619,6 +3619,10 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet.external_ai_task).toContain('every remaining TP must be above both the proposed entry and the current snapshot price');
         expect(packet.external_ai_task).toContain('Generic support, resistance, demand, or supply language is not by itself a confirmed ICT/SMC model');
         expect(packet.external_ai_task).toContain('Include schema, pair, snapshot_id, decision');
+        expect(packet.external_ai_task).toContain('MARKET-CLOSURE GAP POLICY');
+        expect(packet.external_ai_task).toContain('expected boundary, not an in-session provider failure');
+        expect(packet.external_ai_task).toContain('do not veto an otherwise supported 1H or 4H historical formation solely because 5M/15M continuity is absent');
+        expect(packet.external_ai_task).toContain('use TRANSITION_WAIT when no more specific phase is supported');
         expect(packet.external_ai_task).toContain('do not withhold the proposal merely to predict that status');
         expect(packet.external_ai_task).not.toContain('all timeframes must agree');
         expect(packet.output_contract.trade_type_values).toEqual(['PENDING_LIMIT']);
