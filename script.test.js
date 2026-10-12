@@ -3657,6 +3657,14 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet.provenance.precomputed_trade_recommendation_included).toBe(false);
     });
 
+    it('requires an explicit two-sided candidate audit before a raw NO_TRADE conclusion', () => {
+        const packet = getContext().buildRawMarketAnalysisPacket({ replay: makeReplay() });
+        expect(packet.external_ai_task).toContain('NO_TRADE DECISION DISCIPLINE');
+        expect(packet.external_ai_task).toContain('FORMATION_NOT_FOUND, LOCATION_INELIGIBLE, EXECUTION_UNSUPPORTED, OBJECTIVES_UNSUPPORTED, DATA_UNAVAILABLE, or ELIGIBLE_FOR_PENDING_LIMIT');
+        expect(packet.external_ai_task).toContain('separate BUY-side and SELL-side audit');
+        expect(packet.external_ai_task).toContain('do not describe the result as no formation');
+    });
+
     it('reproduces the saved XAU/USD detector facts and audits the saved NO_TRADE response offline', () => {
         const rawPath = path.join('packet', '{.txt');
         const responsePath = path.join('packet', 'deepseek_json_20261012_8bee9f.json');
@@ -3696,6 +3704,38 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
             snapshot_completeness: rawPacket.snapshot_status.supplied_completeness,
             asset_class: rawPacket.current_market_observation.asset_class
         } })).status).toBe('NO_TRADE');
+    });
+
+    it('rechecks the latest saved XAU/USD NO_TRADE against historical model and objective facts', () => {
+        const rawPath = path.join('packet', '{.txt');
+        const responsePath = path.join('packet', 'json.txt');
+        if (!fs.existsSync(rawPath) || !fs.existsSync(responsePath)) return;
+        const rawPacket = JSON.parse(fs.readFileSync(rawPath, 'utf8'));
+        const response = JSON.parse(fs.readFileSync(responsePath, 'utf8'));
+        const expectedSnapshot = 'TVKIT:XAU/USD:1791803451442:1791803405000:1D:1791493200000:199|4H:1791781200000:199|1H:1791799200000:199|15M:1791801900000:199|5M:1791803100000:199';
+        expect(rawPacket.packet_identity.snapshot_id).toBe(expectedSnapshot);
+        expect(response.snapshot_id).toBe(expectedSnapshot);
+        expect(response.decision).toBe('NO_TRADE');
+
+        const ctx = getContext();
+        const fourHCandles = rawPacket.timeframes['4H'].candles.map(candle => ({ ...candle, is_closed: true }));
+        const levels = ctx.calculateMSNR(fourHCandles, rawPacket.current_market_observation.current_price, '4H', 'XAU/USD').structural_levels;
+        const bearish = levels.find(item => item.direction === 'SELL' && Math.abs(item.zone_low - 4207.02) < 1e-9 && Math.abs(item.zone_high - 4211.1) < 1e-9);
+        const bullish = levels.find(item => item.direction === 'BUY' && Math.abs(item.zone_low - 4116.69) < 1e-9 && Math.abs(item.zone_high - 4121.01) < 1e-9);
+        expect(bearish).toEqual(expect.objectContaining({ primary_eligible: true, freshness: 'FRESH', touch_count: 0, invalidated: false }));
+        expect(bullish).toEqual(expect.objectContaining({ primary_eligible: true, freshness: 'FRESH', touch_count: 0, invalidated: false }));
+        expect(bearish.execution_invalidation).toEqual(expect.objectContaining({ level: 4211.1, basis: 'ZONE_FAR_EDGE' }));
+        expect(bullish.execution_invalidation).toEqual(expect.objectContaining({ level: 4116.69, basis: 'ZONE_FAR_EDGE' }));
+
+        const fvg = ctx.detectFVG(fourHCandles, 'XAU/USD').find(item => Math.abs(item.l - 4150.425) < 1e-9 && Math.abs(item.h - 4181.875) < 1e-9);
+        const fvgLifecycle = ctx.checkZoneFreshness(fourHCandles, { low: fvg.l, high: fvg.h, created_index: fvg.source_index, created_time: fvg.formation_time }, 'BUY');
+        expect(fvgLifecycle).toEqual(expect.objectContaining({ fresh: true, partiallyUsed: true, used: false, touches: 2, violations: 0 }));
+
+        const swings = ctx.findSwings(fourHCandles, 3);
+        const buyObjective = (swings.H || []).find(swing => Math.abs(swing.p - 4227.53) < 1e-9);
+        const sellObjective = (swings.L || []).find(swing => Math.abs(swing.p - 4066.535) < 1e-9);
+        expect(ctx.assessTargetLifecycle({ level: buyObjective.p, direction: 'BUY', source: 'SWING_HIGH', timeframe: '4H', source_index: buyObjective.i }, { '4H': fourHCandles }, { timeframe: '4H' }).lifecycle_state).toBe('UNFULFILLED');
+        expect(ctx.assessTargetLifecycle({ level: sellObjective.p, direction: 'SELL', source: 'SWING_LOW', timeframe: '4H', source_index: sellObjective.i }, { '4H': fourHCandles }, { timeframe: '4H' }).lifecycle_state).toBe('UNFULFILLED');
     });
 
     it('rejects an evidence item whose stable candle ID belongs to another timeframe or timestamp', () => {
