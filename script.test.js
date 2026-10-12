@@ -3673,7 +3673,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet.external_ai_task).toContain('Do not require a fresh 5M or 15M BOS, MSS, CHoCH, displacement');
         expect(packet.external_ai_task).toContain('do not use distance from the current quote');
         expect(packet.external_ai_task).toContain('A far historical zone may remain eligible');
-        expect(packet.external_ai_task).toContain('classify it at the furthest reached stage rather than FORMATION_NOT_FOUND');
+        expect(packet.external_ai_task).toContain('classify it at the furthest reached structural stage rather than FORMATION_NOT_FOUND');
         expect(packet.external_ai_task).toContain('a timestamp found in another timeframe is not valid evidence');
         expect(packet.external_ai_task).toContain('do not use RANGING');
         expect(packet.external_ai_task).toContain('every remaining TP must be above both the proposed entry and the current snapshot price');
@@ -3722,15 +3722,26 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const packet = getContext().buildRawMarketAnalysisPacket({ replay: makeReplay() });
         expect(packet.external_ai_task).toContain('NO_TRADE DECISION DISCIPLINE');
         expect(packet.external_ai_task).toContain('FORMATION_NOT_FOUND only when no model-specific formation was established');
-        expect(packet.external_ai_task).toContain('LOCATION_INELIGIBLE, EXECUTION_UNSUPPORTED, OBJECTIVES_UNSUPPORTED, DATA_UNAVAILABLE, or ELIGIBLE_FOR_PENDING_LIMIT');
+        expect(packet.external_ai_task).toContain('LOCATION_INELIGIBLE, INVALIDATION_UNSUPPORTED, OBJECTIVES_UNSUPPORTED, DATA_UNAVAILABLE, or ELIGIBLE_FOR_PENDING_LIMIT');
         expect(packet.external_ai_task).toContain('separate BUY-side and SELL-side audit');
-        expect(packet.external_ai_task).toContain('do not describe the result as no formation');
+        expect(packet.external_ai_task).toContain('do not claim a missing broker quote is missing historical candle evidence');
         expect(packet.external_ai_task).toContain('STAGE A formation existence');
         expect(packet.external_ai_task).toContain('STAGE B lifecycle eligibility');
         expect(packet.external_ai_task).toContain('STAGE C complete trade feasibility');
         expect(packet.external_ai_task).toContain('STAGE D execution suitability');
         expect(packet.external_ai_task).toContain('one factual source-backed example with model, timeframe, and exact candle IDs');
-        expect(packet.external_ai_task).toContain('furthest reached stage');
+        expect(packet.external_ai_task).toContain('furthest reached structural stage');
+    });
+
+    it('keeps execution metadata separate from structural RAW trade eligibility', () => {
+        const packet = getContext().buildRawMarketAnalysisPacket({ replay: makeReplay() });
+        expect(packet.external_ai_task).toContain('Unknown quote freshness, missing bid/ask/spread/tick or broker metadata, and OFF-HOURS context are Stage D execution information');
+        expect(packet.external_ai_task).toContain('return TRADE when one candidate has completed STAGE A formation existence, STAGE B lifecycle eligibility, and STAGE C pending-limit feasibility');
+        expect(packet.external_ai_task).toContain('UNKNOWN or NOT_READY execution metadata does not by itself suppress a complete Stage C structural proposal');
+        expect(packet.external_ai_task).toContain('A TRADE is a structural proposal, never broker-execution approval');
+        expect(packet.external_ai_task).toContain('current_market_observation.current_price is a separate observed reference quote');
+        expect(packet.external_ai_task).toContain('bucket-start times');
+        expect(packet.external_ai_task).not.toContain('If formations exist but execution is blocked, return NO_TRADE');
     });
 
     it('reproduces the saved XAU/USD detector facts and audits the saved NO_TRADE response offline', () => {
