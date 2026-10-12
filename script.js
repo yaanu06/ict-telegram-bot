@@ -867,6 +867,7 @@ function init() {
     if(el('executeBtn')) el('executeBtn').addEventListener('click', handleLimit);
     if(el('cancelLimitBtn')) el('cancelLimitBtn').addEventListener('click', cancelLimit);
     if(el('copyJsonBtn')) el('copyJsonBtn').addEventListener('click', copyJson);
+    if(el('copyRawMarketBtn')) el('copyRawMarketBtn').addEventListener('click', copyRawMarketAnalysisPacket);
     if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click', showSetup);
     if(el('saveSetupBtn')) el('saveSetupBtn').addEventListener('click', saveCurrentSetup);
     if(el('recentList')) el('recentList').addEventListener('click', handleRecentClick);
@@ -12300,6 +12301,281 @@ function replayCapturedScan(replay) {
 window.replayCapturedScan = replayCapturedScan;
 
 const AI_SEMANTIC_TIMEFRAMES = ['1D', '4H', '1H', '15M', '5M'];
+const RAW_MARKET_ANALYSIS_PACKET_SCHEMA = 'RAW_MARKET_ANALYSIS_V1';
+const RAW_MARKET_ANALYSIS_MAX_CANDLES = 200;
+
+function rawMarketAnalysisNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+}
+
+function rawMarketAnalysisCandle(candle, includeVolume) {
+    if (!candle || typeof candle !== 'object') return null;
+    const time = candle.t ?? candle.time ?? candle.timestamp ?? candle.datetime ?? null;
+    const open = rawMarketAnalysisNumber(candle.o ?? candle.open);
+    const high = rawMarketAnalysisNumber(candle.h ?? candle.high);
+    const low = rawMarketAnalysisNumber(candle.l ?? candle.low);
+    const close = rawMarketAnalysisNumber(candle.c ?? candle.close);
+    if (time === null || ![open, high, low, close].every(Number.isFinite)) return null;
+    // Canonical provider field names are preserved; `closed_only` in packet
+    // provenance carries the closed-candle invariant.
+    const record = { t: time, o: open, h: high, l: low, c: close };
+    const volume = rawMarketAnalysisNumber(candle.v ?? candle.volume);
+    if (includeVolume && Number.isFinite(volume)) record.v = volume;
+    return record;
+}
+
+function rawMarketAnalysisQuote(source = {}) {
+    const quote = source.quote || source.runtime_state?.quote_snapshot || {};
+    const metadata = quote.symbol_metadata || source.symbol_metadata || {};
+    const result = {
+        current_price: rawMarketAnalysisNumber(quote.price ?? source.current_price),
+        quote_time: quote.quote_time || quote.provider_timestamp_utc || quote.timestamp || source.quote_time || null,
+        quote_freshness: source.snapshot_freshness?.quote_freshness
+            || source.snapshot_completeness?.quote_freshness
+            || (quote.provider_timestamp || quote.provider_timestamp_utc || quote.timestamp ? 'AVAILABLE_TIMESTAMPED' : 'UNKNOWN'),
+        provider_timestamp: quote.provider_timestamp ?? null,
+        is_market_open: quote.is_market_open ?? source.runtime_state?.market_open ?? null,
+        market_open_source: source.runtime_state?.market_open_source || null
+    };
+    for (const key of ['bid', 'ask', 'spread']) {
+        const value = rawMarketAnalysisNumber(quote[key]);
+        if (Number.isFinite(value)) result[key] = value;
+    }
+    const marketStatus = quote.market_status || source.market_status || null;
+    if (marketStatus !== null && marketStatus !== undefined) result.market_status = marketStatus;
+    if (metadata.asset_class) result.asset_class = metadata.asset_class;
+    return result;
+}
+
+function buildRawMarketAnalysisInstruction() {
+    return [
+        'RAW_MARKET_ANALYSIS RESPONSIBILITY',
+        'Analyze the complete closed-candle TVKit snapshot independently across 1D, 4H, 1H, 15M, and 5M. Assess BUY and SELL before selecting BUY, SELL, or NO_TRADE. Identify structure, liquidity, OB, FVG, MSNR, CRT, and TBS only when their source candles and model-specific conditions support them.',
+        'PROJECT METHODOLOGY: reconstruct confirmed swings from closed candles; classify BOS as continuation and MSS/CHoCH as a structural shift only when chronology supports it; require displacement and structural consequence where the model convention requires them; treat liquidity sweeps as events rather than automatic reversals; treat OB/FVG/MSNR/CRT/TBS as model-specific formations with their own confirmation, mitigation and invalidation rules. A model that cannot be proven from these candles is unsupported.',
+        'This packet intentionally contains raw market observations, not precomputed trade locations, entry prices, stops, targets, rankings, or recommendations. Do not assume that a candle pattern is a confirmed model.',
+        '',
+        'INDEPENDENT EVIDENCE REQUIREMENTS',
+        'For a TRADE, cite source candle timestamps for the location, confirmation, invalidation, and each objective. Explain the model-specific formation and confirmation in concise fields, not hidden reasoning. Use only prices derivable from the supplied candles and documented model semantics.',
+        'The selected entry zone, entry, invalidation, stop, and objectives are hypotheses to be independently checked against these candles. Numerical proximity is not provenance. If the model, invalidation, or objective cannot be independently supported, return NO_TRADE or mark the proposal UNVERIFIED according to the external validator contract.',
+        '',
+        'EXECUTION AND RR',
+        'For BUY: stop_loss < entry < TP1/TP2/TP3. For SELL: stop_loss > entry > TP1/TP2/TP3. Risk must be finite and strictly positive. Calculate risk and RR from the exact proposed entry, stop_loss, and each target; the reported risk_reward is diagnostic only.',
+        '',
+        'OUTPUT CONTRACT',
+        'Return one JSON object only with schema RAW_MARKET_ANALYSIS_V1_RESULT and the exact packet symbol and snapshot_id. Include pair, snapshot_id, decision, direction, trade_type, setup, market_phase, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, confidence, source_candle_timestamps, invalidation_source_candle_timestamps, objective_source_candle_timestamps, invalidation_basis, evidence, target_evidence, conflicts, and concise model_reasoning. For NO_TRADE, set trade geometry fields to null and explain the factual reason. Do not invent IDs or claim code-side catalogue approval.'
+    ].join('\n');
+}
+
+function buildRawMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
+    const source = replay || {};
+    const replayPair = source.pair ? normalizeCanonicalMarketSymbol(source.pair) : null;
+    const signalPair = signal.pair ? normalizeCanonicalMarketSymbol(signal.pair) : null;
+    const identityMismatch = !!(replayPair && signalPair && replayPair !== signalPair);
+    const pairValue = replayPair || signalPair || null;
+    const providerMetadata = source.provider_metadata || {};
+    const quote = rawMarketAnalysisQuote(source);
+    const metadata = source.quote?.symbol_metadata || source.runtime_state?.quote_snapshot?.symbol_metadata || source.symbol_metadata || {};
+    const timeframes = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(timeframe => {
+        const raw = Array.isArray(source.history?.[timeframe]) ? source.history[timeframe] : [];
+        const closed = raw.filter(candle => candle && candle.is_closed !== false).slice(-RAW_MARKET_ANALYSIS_MAX_CANDLES);
+        const includeVolume = hasRealVolume(pairValue, metadata);
+        const candles = closed.map(candle => rawMarketAnalysisCandle(candle, includeVolume)).filter(Boolean);
+        return [timeframe, {
+            timeframe,
+            provider: providerMetadata.provider || getMarketDataProvider(),
+            provider_symbol: providerMetadata.provider_symbol || null,
+            timestamp_semantics: providerMetadata.timestamp_contract || 'PROVIDER_CANDLE_TIMESTAMP_NORMALIZED_UTC',
+            timezone: providerMetadata.provider_timezone || providerMetadata.requested_timezone || 'UTC',
+            candle_count: candles.length,
+            candles
+        }];
+    }));
+    const missingTimeframes = AI_SEMANTIC_TIMEFRAMES.filter(timeframe => timeframes[timeframe].candle_count === 0);
+    const suppliedCompleteness = source.snapshot_completeness || signal.snapshot_completeness || source.market_evidence_package?.snapshot_completeness || null;
+    const replaySnapshotId = source.snapshot_id || null;
+    const signalSnapshotId = signal.snapshot_id || null;
+    const snapshotMismatch = !!(replaySnapshotId && signalSnapshotId && replaySnapshotId !== signalSnapshotId);
+    const snapshotComplete = suppliedCompleteness?.complete === true && missingTimeframes.length === 0 && !identityMismatch && !snapshotMismatch;
+    const payload = {
+        packet_type: 'RAW_MARKET_ANALYSIS',
+        packet_schema: RAW_MARKET_ANALYSIS_PACKET_SCHEMA,
+        packet_identity: {
+            pair: pairValue,
+            symbol: pairValue,
+            provider: providerMetadata.provider || getMarketDataProvider(),
+            provider_symbol: providerMetadata.provider_symbol || null,
+            snapshot_id: source.snapshot_id || signal.snapshot_id || null,
+            scan_id: signal.scan_id || source.scan_id || null,
+            snapshot_as_of: source.scan_as_of || null,
+            app_build_id: signal.app_build_id || signal.app_build || source.app_build_id || APP_BUILD_ID,
+            generated_at: new Date().toISOString(),
+            closed_only: true,
+            semantic_timeframes: [...AI_SEMANTIC_TIMEFRAMES]
+        },
+        snapshot_status: {
+            complete: snapshotComplete,
+            supplied_completeness: suppliedCompleteness,
+            missing_timeframes: missingTimeframes,
+            analysis_allowed: snapshotComplete,
+            reason: snapshotComplete ? null : identityMismatch ? 'Replay and signal symbols do not match.' : snapshotMismatch ? 'Replay and signal snapshot IDs do not match.' : 'All five closed-candle timeframes are required for independent raw analysis.'
+        },
+        current_market_observation: {
+            ...quote,
+            session: source.session || null,
+            asset_class: quote.asset_class || source.asset_class || metadata.asset_class || null
+        },
+        timeframes,
+        provenance: {
+            provider: providerMetadata.provider || getMarketDataProvider(),
+            provider_symbol: providerMetadata.provider_symbol || null,
+            closed_only: true,
+            candle_limit_per_timeframe: RAW_MARKET_ANALYSIS_MAX_CANDLES,
+            timeframes: [...AI_SEMANTIC_TIMEFRAMES],
+            deterministic_opportunity_selection: false,
+            precomputed_execution_levels_included: false,
+            precomputed_trade_recommendation_included: false,
+            volume_policy: hasRealVolume(pairValue, metadata) ? 'INCLUDED_WHEN_PROVIDER_SUPPLIED' : 'OMITTED_UNRELIABLE_OR_SYNTHETIC'
+        },
+        external_ai_task: buildRawMarketAnalysisInstruction(),
+        output_contract: {
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT',
+            decision_values: ['TRADE', 'NO_TRADE'],
+            direction_values: ['BUY', 'SELL'],
+            required_trade_fields: ['pair', 'decision', 'direction', 'trade_type', 'setup', 'entry_zone', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk_reward', 'source_candle_timestamps', 'invalidation_source_candle_timestamps', 'objective_source_candle_timestamps', 'invalidation_basis'],
+            evidence_item: { timeframe: '1H', timestamp: 'exact candle t', field: 'high|low|open|close|pattern', role: 'LOCATION|CONFIRMATION|INVALIDATION|OBJECTIVE', claimed_level: 'finite number or null', chronology: 'why this candle is knowable in sequence' },
+            rr_authority: 'DETERMINISTIC_RECALCULATION_FROM_ENTRY_STOP_TP',
+            unsupported_model_status: 'UNVERIFIED'
+        }
+    };
+    const serialized = JSON.stringify(payload);
+    payload.diagnostics = {
+        approx_character_count: serialized.length,
+        estimated_tokens_at_four_chars: Math.ceil(serialized.length / 4),
+        candle_count: AI_SEMANTIC_TIMEFRAMES.reduce((sum, timeframe) => sum + timeframes[timeframe].candle_count, 0),
+        candle_count_by_timeframe: Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(timeframe => [timeframe, timeframes[timeframe].candle_count]))
+    };
+    return payload;
+}
+
+function rawMarketAnalysisCandleTimes(packet = {}) {
+    const times = new Set();
+    for (const timeframe of AI_SEMANTIC_TIMEFRAMES) {
+        for (const candle of packet.timeframes?.[timeframe]?.candles || []) {
+            if (candle?.t !== null && candle?.t !== undefined) times.add(String(candle.t));
+        }
+    }
+    return times;
+}
+
+function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
+    const issues = [];
+    const warnings = [];
+    const normalized = decision && typeof decision === 'object' ? decision : {};
+    const outcome = String(normalized.decision || '').toUpperCase();
+    let direction = String(normalized.direction || '').toUpperCase();
+    const packetPair = normalizeCanonicalMarketSymbol(packet.packet_identity?.pair || packet.packet_identity?.symbol || '');
+    const decisionPair = normalizeCanonicalMarketSymbol(normalized.pair || '');
+    const add = code => { if (!issues.includes(code)) issues.push(code); };
+    const warn = code => { if (!warnings.includes(code)) warnings.push(code); };
+    if (packet.packet_type !== 'RAW_MARKET_ANALYSIS' || packet.packet_schema !== RAW_MARKET_ANALYSIS_PACKET_SCHEMA) add('RAW_PACKET_SCHEMA_UNSUPPORTED');
+    if (normalized.schema !== 'RAW_MARKET_ANALYSIS_V1_RESULT') add('RAW_RESULT_SCHEMA_UNSUPPORTED');
+    if (packet.snapshot_status?.complete !== true) add('RAW_SNAPSHOT_INCOMPLETE');
+    if (packetPair && decisionPair && packetPair !== decisionPair) add('RAW_DECISION_SYMBOL_MISMATCH');
+    if (packet.packet_identity?.snapshot_id && normalized.snapshot_id !== packet.packet_identity.snapshot_id) add('RAW_SNAPSHOT_ID_MISMATCH');
+    const isNoTrade = outcome === 'NO_TRADE';
+    const isTrade = outcome === 'TRADE' || outcome === 'BUY' || outcome === 'SELL';
+    if (!isTrade && !isNoTrade) add('RAW_DECISION_INVALID');
+    if (isNoTrade) return { status: issues.length ? 'REJECTED' : 'NO_TRADE', valid: issues.length === 0, issues, warnings, normalized_decision: normalized };
+    if (outcome === 'BUY' || outcome === 'SELL') {
+        if (!direction) {
+            direction = outcome;
+            normalized.direction = outcome;
+        }
+    }
+    if (!['BUY', 'SELL'].includes(direction)) add('RAW_DIRECTION_REQUIRED');
+    const entry = rawMarketAnalysisNumber(normalized.entry);
+    const stop = rawMarketAnalysisNumber(normalized.stop_loss);
+    const tp1 = rawMarketAnalysisNumber(normalized.tp1);
+    const tp2 = rawMarketAnalysisNumber(normalized.tp2);
+    const tp3 = rawMarketAnalysisNumber(normalized.tp3);
+    if (![entry, stop, tp1].every(Number.isFinite)) add('RAW_TRADE_GEOMETRY_INCOMPLETE');
+    if (direction === 'BUY' && !(stop < entry && entry < tp1)) add('RAW_BUY_GEOMETRY_INVALID');
+    if (direction === 'SELL' && !(stop > entry && entry > tp1)) add('RAW_SELL_GEOMETRY_INVALID');
+    if (Number.isFinite(tp2) && ((direction === 'BUY' && tp2 <= tp1) || (direction === 'SELL' && tp2 >= tp1))) add('RAW_TARGET_ORDER_INVALID');
+    if (Number.isFinite(tp3) && Number.isFinite(tp2) && ((direction === 'BUY' && tp3 <= tp2) || (direction === 'SELL' && tp3 >= tp2))) add('RAW_TARGET_ORDER_INVALID');
+    const rawEntryZone = Array.isArray(normalized.entry_zone)
+        ? normalized.entry_zone.map(rawMarketAnalysisNumber)
+        : normalized.entry_zone && typeof normalized.entry_zone === 'object'
+            ? [rawMarketAnalysisNumber(normalized.entry_zone.low), rawMarketAnalysisNumber(normalized.entry_zone.high)]
+            : null;
+    if (!rawEntryZone || rawEntryZone.length !== 2 || !rawEntryZone.every(Number.isFinite) || rawEntryZone[1] < rawEntryZone[0]) {
+        add('RAW_ENTRY_ZONE_INVALID');
+    } else if (Number.isFinite(entry) && (entry < rawEntryZone[0] || entry > rawEntryZone[1])) {
+        add('RAW_ENTRY_OUTSIDE_ZONE');
+    }
+    const rr = calculateTradeRiskReward(direction, entry, stop, { tp1, tp2, tp3 });
+    if (!(Number.isFinite(rr.risk) && rr.risk > 0)) add('RAW_NON_POSITIVE_RISK');
+    const candleTimes = rawMarketAnalysisCandleTimes(packet);
+    const timestampFields = ['source_candle_timestamps', 'invalidation_source_candle_timestamps', 'objective_source_candle_timestamps'];
+    for (const field of timestampFields) {
+        const values = Array.isArray(normalized[field]) ? normalized[field] : [];
+        if (!values.length) add(`RAW_${field.toUpperCase()}_REQUIRED`);
+        for (const value of values) {
+            const timestamp = typeof value === 'object' ? value.time || value.timestamp : value;
+            if (timestamp === null || timestamp === undefined || !candleTimes.has(String(timestamp))) add('RAW_SOURCE_TIMESTAMP_NOT_IN_SNAPSHOT');
+        }
+    }
+    const evidence = Array.isArray(normalized.evidence) ? normalized.evidence : [];
+    const targetEvidence = Array.isArray(normalized.target_evidence) ? normalized.target_evidence : [];
+    if (!evidence.length) add('RAW_EVIDENCE_REQUIRED');
+    if (!targetEvidence.length) add('RAW_TARGET_EVIDENCE_REQUIRED');
+    for (const item of [...evidence, ...targetEvidence]) {
+        const timeframe = item && typeof item === 'object' ? item.timeframe : null;
+        const timestamp = item && typeof item === 'object' ? item.timestamp : null;
+        const role = item && typeof item === 'object' ? item.role : null;
+        if (!AI_SEMANTIC_TIMEFRAMES.includes(timeframe) || timestamp === null || timestamp === undefined || !candleTimes.has(String(timestamp)) || !role) add('RAW_EVIDENCE_REFERENCE_INVALID');
+    }
+    const supportedModels = new Set(['OB', 'FVG', 'MSNR', 'CRT', 'TBS', 'SUPPLY', 'DEMAND', 'FLIP', 'BREAKER']);
+    const setup = String(normalized.setup || '').toUpperCase().split('+')[0];
+    if (!supportedModels.has(setup)) add('RAW_MODEL_UNSUPPORTED');
+    if (!normalized.invalidation_basis) add('RAW_INVALIDATION_BASIS_REQUIRED');
+    if (!normalized.model_reasoning || typeof normalized.model_reasoning !== 'string') warn('RAW_MODEL_REASONING_MISSING');
+    // Raw candles provide inputs, not a trusted catalogue. Until a model-specific
+    // verifier proves the claimed formation, a geometrically plausible trade is
+    // deliberately not approved.
+    if (!issues.length && outcome === 'TRADE') warn('RAW_MODEL_CLAIM_UNVERIFIED');
+    if (!issues.length && outcome === 'TRADE') warn('RAW_LEVEL_PROVENANCE_REQUIRES_MODEL_RECONSTRUCTION');
+    return {
+        status: issues.length ? 'REJECTED' : 'UNVERIFIED',
+        valid: false,
+        issues,
+        warnings,
+        normalized_decision: normalized,
+        authoritative_risk_reward: rr,
+        reported_risk_reward: rawMarketAnalysisNumber(normalized.risk_reward),
+        risk_reward_mismatch: Number.isFinite(rawMarketAnalysisNumber(normalized.risk_reward)) && Number.isFinite(rr.rr_tp1)
+            ? Math.abs(rawMarketAnalysisNumber(normalized.risk_reward) - rr.rr_tp1) > 1e-9 : false
+    };
+}
+
+function copyRawMarketAnalysisPacket() {
+    const artifact = currentScanArtifact;
+    if (!artifact?.replay) {
+        showNotif('Run analysis first', 'warning');
+        return;
+    }
+    const packet = buildRawMarketAnalysisPacket({ signal: artifact.signal, replay: artifact.replay });
+    navigator.clipboard.writeText(JSON.stringify(packet, null, 2))
+        .then(() => showNotif('RAW_MARKET_ANALYSIS packet copied', 'success'))
+        .catch(() => showNotif('Failed', 'error'));
+}
+
+if (typeof window !== 'undefined') {
+    window.buildRawMarketAnalysisPacket = buildRawMarketAnalysisPacket;
+    window.validateRawMarketAnalysisDecision = validateRawMarketAnalysisDecision;
+    window.copyRawMarketAnalysisPacket = copyRawMarketAnalysisPacket;
+}
 
 function aiUtf8ByteLength(value) {
     const text = String(value ?? '');
