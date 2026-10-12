@@ -20570,6 +20570,9 @@ function validateExternalAITradeDecision(decision = {}, evidence = {}) {
         tp2: number('tp2'),
         tp3: number('tp3')
     });
+    if (Number.isFinite(entry) && Number.isFinite(stop) && !(Number.isFinite(calculatedRiskReward.risk) && calculatedRiskReward.risk > 0)) {
+        issue('EXTERNAL_AI_NON_POSITIVE_RISK');
+    }
     const calculatedRR = calculatedRiskReward.rr_tp1;
     const qualityWarnings = [];
     if (minimumRR != null && Number.isFinite(calculatedRR) && calculatedRR < minimumRR) {

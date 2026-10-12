@@ -4063,6 +4063,115 @@ describe('model semantics and temporal provenance', () => {
 
 });
 
+describe('external AI positive-risk execution integrity', () => {
+    const buildMsnrEvidence = direction => {
+        const buy = direction === 'BUY';
+        const locationId = `MSNR-1H-${direction}-1791763200000-1`;
+        const invalidationId = locationId;
+        const zoneLow = 4185.58;
+        const zoneHigh = 4187.57;
+        const objectives = buy
+            ? [4196.54, 4202.18, 4207.48]
+            : [4177.56, 4174.615, 4166.02];
+        return {
+            manual_external_ai: true,
+            external_ai_packet_schema: 'MARKET_STATE_V3',
+            strategy_contract: { minimum_rr: 2.5 },
+            current_market_state: { current_price: buy ? 4194.65 : 4179.15 },
+            actionable_location_bundles: [{
+                location_id: locationId,
+                type: 'MSNR',
+                model_family: 'MSNR',
+                timeframe: '1H',
+                source_orientation: direction,
+                zone_low: zoneLow,
+                zone_high: zoneHigh,
+                midpoint_if_defined: (zoneLow + zoneHigh) / 2,
+                origin_evidence_ids: [locationId],
+                compatible_invalidation_ids: [invalidationId]
+            }],
+            structural_invalidations: [{
+                invalidation_id: invalidationId,
+                level: buy ? zoneLow : zoneHigh,
+                state: 'ACTIVE',
+                source_location_id: locationId,
+                source_model: 'MSNR',
+                invalidation_basis: 'ZONE_FAR_EDGE',
+                confirmation_mode: 'HARD_PRICE',
+                evidence_ids: [locationId]
+            }],
+            objective_state: { all: objectives.map((level, index) => ({
+                objective_id: `TARGET:${direction}:1H:LIQUIDITY:${level}`,
+                level,
+                source_orientation_if_factual: direction,
+                lifecycle_state: 'UNFULFILLED'
+            })) },
+            model_evidence: { MSNR: [{ event_id: locationId, event_type: 'MSNR', direction, evidence_ids: [locationId] }] }
+        };
+    };
+
+    const buildMsnrDecision = (direction, entry, stop, reportedRiskReward = null) => {
+        const buy = direction === 'BUY';
+        const levels = buy ? [4196.54, 4202.18, 4207.48] : [4177.56, 4174.615, 4166.02];
+        const locationId = `MSNR-1H-${direction}-1791763200000-1`;
+        const decision = {
+            pair: 'XAU/USD',
+            decision: 'TRADE',
+            direction,
+            trade_type: 'PENDING_LIMIT',
+            setup: 'MSNR',
+            market_phase: 'RETRACEMENT',
+            selected_candidate_id: null,
+            entry_zone: { low: 4185.58, high: 4187.57 },
+            entry,
+            stop_loss: stop,
+            tp1: levels[0],
+            tp2: levels[1],
+            tp3: levels[2],
+            confidence: 60,
+            location_id: locationId,
+            invalidation_id: locationId,
+            tp1_objective_id: `TARGET:${direction}:1H:LIQUIDITY:${levels[0]}`,
+            tp2_objective_id: `TARGET:${direction}:1H:LIQUIDITY:${levels[1]}`,
+            tp3_objective_id: `TARGET:${direction}:1H:LIQUIDITY:${levels[2]}`,
+            evidence_ids: [locationId]
+        };
+        if (reportedRiskReward != null) decision.risk_reward = reportedRiskReward;
+        return decision;
+    };
+
+    it('rejects the exact zero-risk XAU/USD proposal with an explicit positive-risk issue', () => {
+        const ctx = getContext();
+        const result = ctx.validateExternalAITradeDecision({
+            ...buildMsnrDecision('BUY', 4185.58, 4185.58, 21.9),
+            setup: 'OB',
+            entry_zone: [4185.58, 4187.57]
+        }, buildMsnrEvidence('BUY'));
+        expect(result.valid).toBe(false);
+        expect(result.risk).toBe(0);
+        expect(result.calculated_risk_reward).toBeNull();
+        expect(result.issues).toContain('EXTERNAL_AI_NON_POSITIVE_RISK');
+        expect(result.issues).toContain('BUY geometry must satisfy stop_loss < entry < tp1');
+        expect(result.issues).toContain('EXTERNAL_AI_INVALIDATION_WRONG_SIDE');
+        expect(result.issues).toContain('EXTERNAL_AI_SETUP_LOCATION_MISMATCH');
+    });
+
+    it.each([
+        ['BUY', 4186.575, 4185.58],
+        ['SELL', 4186.575, 4187.57]
+    ])('accepts positive-risk MSNR %s geometry without changing the model-defined stop', (direction, entry, stop) => {
+        const ctx = getContext();
+        const result = ctx.validateExternalAITradeDecision(
+            buildMsnrDecision(direction, entry, stop),
+            buildMsnrEvidence(direction)
+        );
+        expect(result.valid).toBe(true);
+        expect(result.risk).toBeGreaterThan(0);
+        expect(result.normalized_decision.stop_loss).toBe(stop);
+        expect(result.issues).not.toContain('EXTERNAL_AI_NON_POSITIVE_RISK');
+    });
+});
+
 describe('MARKET_STATE_V3 manual packet integrity', () => {
     it('rejects contradictory actionable lifecycle records and conflicting IDs', () => {
         const ctx = getContext();
