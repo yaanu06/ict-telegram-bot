@@ -12309,7 +12309,7 @@ function rawMarketAnalysisNumber(value) {
     return Number.isFinite(number) ? number : null;
 }
 
-function rawMarketAnalysisCandle(candle, includeVolume) {
+function rawMarketAnalysisCandle(candle, includeVolume, timeframe = null) {
     if (!candle || typeof candle !== 'object') return null;
     const time = candle.t ?? candle.time ?? candle.timestamp ?? candle.datetime ?? null;
     const open = rawMarketAnalysisNumber(candle.o ?? candle.open);
@@ -12319,7 +12319,8 @@ function rawMarketAnalysisCandle(candle, includeVolume) {
     if (time === null || ![open, high, low, close].every(Number.isFinite)) return null;
     // Canonical provider field names are preserved; `closed_only` in packet
     // provenance carries the closed-candle invariant.
-    const record = { t: time, o: open, h: high, l: low, c: close };
+    const record = { candle_id: timeframe ? `${timeframe}:${String(time)}` : null, t: time, o: open, h: high, l: low, c: close };
+    if (!timeframe) delete record.candle_id;
     const volume = rawMarketAnalysisNumber(candle.v ?? candle.volume);
     if (includeVolume && Number.isFinite(volume)) record.v = volume;
     return record;
@@ -12355,16 +12356,22 @@ function buildRawMarketAnalysisInstruction() {
         'PROJECT METHODOLOGY: reconstruct confirmed swings from closed candles; classify BOS as continuation and MSS/CHoCH as a structural shift only when chronology supports it; require displacement and structural consequence where the model convention requires them; treat liquidity sweeps as events rather than automatic reversals; treat OB/FVG/MSNR/CRT/TBS as model-specific formations with their own confirmation, mitigation and invalidation rules. FORMATION CONFIRMATION is the historical evidence required to prove that the selected model exists and is usable. ENTRY CONFIRMATION is a separate execution choice and is not automatically required for PENDING_LIMIT. A model that cannot be proven from these candles is unsupported.',
         'This packet intentionally contains raw market observations, not precomputed trade locations, entry prices, stops, targets, rankings, or recommendations. Do not assume that a candle pattern is a confirmed model.',
         '',
+        'TIMEFRAME AND CANDLE REFERENCE CONTRACT',
+        'The packet has exactly five independent sections: 1D, 4H, 1H, 15M, and 5M. Candles are ordered oldest to newest. Each candle has candle_id <timeframe>:<t>, where t is the exact normalized UTC millisecond timestamp in that same section. For intraday sections t is the provider candle open/bucket-start time; for 1D it is the provider period-bucket start time, not a close timestamp. Use only candles from the claimed timeframe; a timestamp found in another timeframe is not valid evidence for this one. Before citing evidence, check candle_id, timeframe, timestamp, field, and claimed_level against the exact supplied candle.',
+        'Each timeframe section identifies its first and last closed candle and interval semantics. Do not infer a 1H candle by combining 15M candles, and do not use a later candle to move an earlier formation time. A formation must be knowable from candles available by its confirmation point; later candles may update lifecycle only.',
+        'Generic support, resistance, demand, or supply language is not by itself a confirmed ICT/SMC model. Use a supported model label only when its project-method formation, chronology, mitigation state, invalidation rule, and source-candle evidence are all explicit. If the model cannot be proven, return NO_TRADE rather than upgrading a visual zone.',
+        '',
         'INDEPENDENT EVIDENCE REQUIREMENTS',
-        'For a TRADE, cite source candle timestamps for the location, confirmation, invalidation, and each objective. Explain the model-specific formation and confirmation in concise fields, not hidden reasoning. Use only prices derivable from the supplied candles and documented model semantics.',
-        'The selected entry zone, entry, invalidation, stop, and objectives are hypotheses to be independently checked against these candles. Numerical proximity is not provenance. If the model, invalidation, or objective cannot be independently supported, return NO_TRADE. If the historical thesis is structurally supported but downstream deterministic reconstruction may still report UNVERIFIED, do not withhold the proposal merely to predict that status; provide the factual proposal and evidence, and let the validator assign its result.',
+        'For a TRADE, cite source candle objects with candle_id, timeframe, timestamp, field, claimed_level, role, and chronology for the location, formation confirmation, invalidation, and each objective. Every target_evidence item must support the exact corresponding TP price; do not cite one level while returning another. Recheck every claimed OHLC value against the exact candle before finalizing.',
+        'The selected entry zone, entry, invalidation, stop, and objectives are hypotheses to be independently checked against these candles. Numerical proximity is not provenance. Verify all subsequent candles after formation for touches, mitigation, consumption, invalidation, and failed retests. For a pending BUY, every remaining TP must be above both the proposed entry and the current snapshot price; for a pending SELL, every remaining TP must be below both. A target already crossed by current price is not future reward for that pending order.',
+        'Derive the stop from a real model-supported invalidation, not a narrative level, arbitrary buffer, or preferred RR. If the model, invalidation, objective, target price, or chronology cannot be independently supported, return NO_TRADE. If the historical thesis is structurally supported but downstream deterministic reconstruction may still report UNVERIFIED, do not withhold the proposal merely to predict that status; provide the factual proposal and evidence, and let the validator assign its result.',
         'PENDING_LIMIT DISCOVERY: independently search the supplied source candles for actionable BUY LIMIT and SELL LIMIT locations, including older 4H or 1H locations that remain structurally usable. Do not automatically prefer the newest location, require all timeframes to agree, or replace a pending limit with a confirmation entry. PENDING_LIMIT SEMANTICS: a BUY pending entry may be below current price and a SELL pending entry may be above current price; current price need not be inside or touching the zone at analysis time. Do not require a fresh 5M or 15M BOS, MSS, CHoCH, displacement, rejection, or entry confirmation after the future fill unless the selected model explicitly requires that evidence for its formation. A pending entry must still be inside its claimed zone and have a source-supported protective stop and remaining objectives.',
         '',
         'EXECUTION AND RR',
         'For BUY: stop_loss < entry < TP1/TP2/TP3. For SELL: stop_loss > entry > TP1/TP2/TP3. Risk must be finite and strictly positive. Calculate risk and RR from the exact proposed entry, stop_loss, and each target; the reported risk_reward is diagnostic only.',
         '',
         'OUTPUT CONTRACT',
-        'Return exactly one valid JSON object. Do not include Markdown fences, text before or after the JSON, comments, JavaScript expressions, NaN, Infinity, or trailing commas. Use schema RAW_MARKET_ANALYSIS_V1_RESULT and the exact packet symbol and snapshot_id. Every TRADE must use trade_type PENDING_LIMIT only, setup must be one supported label such as OB, FVG, MSNR, CRT, TBS, SUPPLY, DEMAND, FLIP, or BREAKER, market_phase must use the supported enum, confidence must be an integer from 0 through 100, and risk_reward must be one numeric TP1 RR value (not an object). Include pair, snapshot_id, decision, direction, trade_type, setup, market_phase, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, confidence, source_candle_timestamps, invalidation_source_candle_timestamps, objective_source_candle_timestamps, invalidation_basis, evidence, target_evidence, conflicts, and concise model_reasoning. For NO_TRADE, set direction, trade_type, setup, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, and confidence to null, and explain the factual reason. Do not invent IDs or claim code-side catalogue approval.'
+        'Return exactly one valid JSON object. Do not include Markdown fences, text before or after the JSON, comments, JavaScript expressions, NaN, Infinity, or trailing commas. Include the field schema with exactly RAW_MARKET_ANALYSIS_V1_RESULT, plus the exact packet pair and snapshot_id. Every TRADE must use trade_type PENDING_LIMIT only, setup must be one supported label such as OB, FVG, MSNR, CRT, TBS, SUPPLY, DEMAND, FLIP, or BREAKER, market_phase must be exactly one of ORIGINAL_SETUP, EARLY_DELIVERY, EXPANSION, RETRACEMENT, CONTINUATION_READY, LATE_DELIVERY, or TRANSITION_WAIT (do not use RANGING), confidence must be an integer from 0 through 100, and risk_reward must be one numeric TP1 RR value (not an object). Include schema, pair, snapshot_id, decision, direction, trade_type, setup, market_phase, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, confidence, source_candle_timestamps, invalidation_source_candle_timestamps, objective_source_candle_timestamps, invalidation_basis, evidence, target_evidence, conflicts, and concise model_reasoning. Every evidence and target_evidence item must include candle_id, timeframe, timestamp, field, role, claimed_level, and chronology. For NO_TRADE, set direction, trade_type, setup, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, and confidence to null, and explain the factual reason. Do not invent IDs or claim code-side catalogue approval.'
     ].join('\n');
 }
 
@@ -12381,14 +12388,22 @@ function buildRawMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         const raw = Array.isArray(source.history?.[timeframe]) ? source.history[timeframe] : [];
         const closed = raw.filter(candle => candle && candle.is_closed !== false).slice(-RAW_MARKET_ANALYSIS_MAX_CANDLES);
         const includeVolume = hasRealVolume(pairValue, metadata);
-        const candles = closed.map(candle => rawMarketAnalysisCandle(candle, includeVolume)).filter(Boolean);
+        const candles = closed.map(candle => rawMarketAnalysisCandle(candle, includeVolume, timeframe)).filter(Boolean);
+        const timestampContract = providerMetadata.timestamp_contract || 'PROVIDER_CANDLE_TIMESTAMP_NORMALIZED_UTC';
+        const periodBucket = timeframe === '1D';
         return [timeframe, {
             timeframe,
             provider: providerMetadata.provider || getMarketDataProvider(),
             provider_symbol: providerMetadata.provider_symbol || null,
-            timestamp_semantics: providerMetadata.timestamp_contract || 'PROVIDER_CANDLE_TIMESTAMP_NORMALIZED_UTC',
+            timestamp_semantics: timestampContract,
+            timestamp_role: periodBucket ? 'PERIOD_BUCKET_START_UTC' : 'INTRADAY_CANDLE_OPEN_TIME_UTC',
+            candle_order: 'OLDEST_TO_NEWEST',
+            candle_id_format: `${timeframe}:<timestamp_ms>`,
+            closed_candle_policy: 'ONLY_PROVIDER_OR_NORMALIZER_CONFIRMED_CLOSED_CANDLES',
             timezone: providerMetadata.provider_timezone || providerMetadata.requested_timezone || 'UTC',
             candle_count: candles.length,
+            first_closed_candle_id: candles[0]?.candle_id || null,
+            last_closed_candle_id: candles.at(-1)?.candle_id || null,
             candles
         }];
     }));
@@ -12445,7 +12460,7 @@ function buildRawMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             trade_type_values: ['PENDING_LIMIT'],
             direction_values: ['BUY', 'SELL'],
             required_trade_fields: ['pair', 'decision', 'direction', 'trade_type', 'setup', 'entry_zone', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk_reward', 'source_candle_timestamps', 'invalidation_source_candle_timestamps', 'objective_source_candle_timestamps', 'invalidation_basis'],
-            evidence_item: { timeframe: '1H', timestamp: 'exact candle t', field: 'high|low|open|close|pattern', role: 'LOCATION|CONFIRMATION|INVALIDATION|OBJECTIVE', claimed_level: 'finite number or null', chronology: 'why this candle is knowable in sequence' },
+            evidence_item: { candle_id: 'exact timeframe:t', timeframe: '1H', timestamp: 'exact candle t', field: 'high|low|open|close|pattern', role: 'LOCATION|CONFIRMATION|INVALIDATION|OBJECTIVE', claimed_level: 'finite number or null', chronology: 'why this candle is knowable in sequence' },
             rr_authority: 'DETERMINISTIC_RECALCULATION_FROM_ENTRY_STOP_TP',
             unsupported_model_status: 'UNVERIFIED'
         }
@@ -12561,6 +12576,7 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
         const role = item && typeof item === 'object' ? item.role : null;
         const candle = AI_SEMANTIC_TIMEFRAMES.includes(timeframe) ? candleIndex.byTimeframe.get(timeframe)?.get(String(timestamp)) : null;
         if (!AI_SEMANTIC_TIMEFRAMES.includes(timeframe) || timestamp === null || timestamp === undefined || !candleTimes.has(String(timestamp)) || !candle || !role) add('RAW_EVIDENCE_REFERENCE_INVALID');
+        if (item?.candle_id !== undefined && item.candle_id !== `${timeframe}:${String(timestamp)}`) add('RAW_EVIDENCE_CANDLE_ID_MISMATCH');
         if (candle && ['open', 'high', 'low', 'close'].includes(String(item.field || '').toLowerCase())) {
             const field = String(item.field).toLowerCase();
             const fieldKey = { open: 'o', high: 'h', low: 'l', close: 'c' }[field];
@@ -12578,6 +12594,11 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
     if (tradeType === 'PENDING_LIMIT' && Number.isFinite(currentPrice) && Number.isFinite(entry)) {
         if (direction === 'BUY' && entry >= currentPrice) add('RAW_PENDING_BUY_ENTRY_NOT_BELOW_CURRENT_PRICE');
         if (direction === 'SELL' && entry <= currentPrice) add('RAW_PENDING_SELL_ENTRY_NOT_ABOVE_CURRENT_PRICE');
+        for (const target of [tp1, tp2, tp3]) {
+            if (!Number.isFinite(target)) continue;
+            if (direction === 'BUY' && target <= currentPrice) add('RAW_PENDING_BUY_TARGET_NOT_ABOVE_CURRENT_PRICE');
+            if (direction === 'SELL' && target >= currentPrice) add('RAW_PENDING_SELL_TARGET_NOT_BELOW_CURRENT_PRICE');
+        }
     }
     // Raw candles provide inputs, not a trusted catalogue. Until a model-specific
     // verifier proves the claimed formation, a geometrically plausible trade is

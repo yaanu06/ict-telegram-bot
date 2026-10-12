@@ -3597,8 +3597,12 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet).not.toHaveProperty('tp1');
         expect(packet).not.toHaveProperty('targets');
         expect(packet.current_market_observation.current_price).toBe(250);
-        expect(packet.timeframes['5M'].candles[0]).toEqual(expect.objectContaining({ t: expect.any(String), o: 100, h: 102, l: 99, c: 101 }));
+        expect(packet.timeframes['5M'].candles[0]).toEqual(expect.objectContaining({ candle_id: expect.stringMatching(/^5M:/), t: expect.any(String), o: 100, h: 102, l: 99, c: 101 }));
         expect(packet.timeframes['5M'].candles[0].v).toBe(1000);
+        expect(packet.timeframes['1H'].timestamp_role).toBe('INTRADAY_CANDLE_OPEN_TIME_UTC');
+        expect(packet.timeframes['1D'].timestamp_role).toBe('PERIOD_BUCKET_START_UTC');
+        expect(packet.timeframes['1H'].first_closed_candle_id).toBe(`1H:${packet.timeframes['1H'].candles[0].t}`);
+        expect(packet.timeframes['1H'].last_closed_candle_id).toBe(`1H:${packet.timeframes['1H'].candles.at(-1).t}`);
         const forexPacket = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay(true, 'EUR/USD') });
         expect(forexPacket.timeframes['1H'].candles[0].v).toBeUndefined();
         expect(packet.external_ai_task).toContain('RAW_MARKET_ANALYSIS RESPONSIBILITY');
@@ -3610,12 +3614,32 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet.external_ai_task).toContain('actionable BUY LIMIT and SELL LIMIT locations');
         expect(packet.external_ai_task).toContain('older 4H or 1H locations');
         expect(packet.external_ai_task).toContain('Do not require a fresh 5M or 15M BOS, MSS, CHoCH, displacement');
+        expect(packet.external_ai_task).toContain('a timestamp found in another timeframe is not valid evidence');
+        expect(packet.external_ai_task).toContain('do not use RANGING');
+        expect(packet.external_ai_task).toContain('every remaining TP must be above both the proposed entry and the current snapshot price');
+        expect(packet.external_ai_task).toContain('Generic support, resistance, demand, or supply language is not by itself a confirmed ICT/SMC model');
+        expect(packet.external_ai_task).toContain('Include schema, pair, snapshot_id, decision');
         expect(packet.external_ai_task).toContain('do not withhold the proposal merely to predict that status');
         expect(packet.external_ai_task).not.toContain('all timeframes must agree');
         expect(packet.output_contract.trade_type_values).toEqual(['PENDING_LIMIT']);
         expect(repeat.timeframes).toEqual(packet.timeframes);
         expect(packet).not.toHaveProperty('actionable_location_bundles');
         expect(packet).not.toHaveProperty('current_actionable_location_catalogue');
+    });
+
+    it('rejects an evidence item whose stable candle ID belongs to another timeframe or timestamp', () => {
+        const ctx = getContext();
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
+        const timestamp = packet.timeframes['1H'].candles[50].t;
+        const base = {
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 2,
+            entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 250, source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'SOURCE_CANDLE_EXTREME',
+            evidence: [{ candle_id: `15M:${timestamp}`, timeframe: '1H', timestamp, role: 'LOCATION', field: 'pattern', claimed_level: null }],
+            target_evidence: [{ candle_id: `1H:${timestamp}`, timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'pattern', claimed_level: null }]
+        };
+        const result = ctx.validateRawMarketAnalysisDecision(base, packet);
+        expect(result.status).toBe('REJECTED');
+        expect(result.issues).toContain('RAW_EVIDENCE_CANDLE_ID_MISMATCH');
     });
 
     it('marks an incomplete five-timeframe snapshot as unavailable for raw analysis', () => {
@@ -3754,6 +3778,21 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const sell = ctx.validateRawMarketAnalysisDecision({ ...common, direction: 'SELL', entry_zone: [249, 251], entry: 250, stop_loss: 260, tp1: 240 }, packet);
         expect(sell.status).toBe('REJECTED');
         expect(sell.issues).toContain('RAW_PENDING_SELL_ENTRY_NOT_ABOVE_CURRENT_PRICE');
+    });
+
+    it('rejects a pending target that current price has already crossed', () => {
+        const ctx = getContext();
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
+        const timestamp = packet.timeframes['1H'].candles[50].t;
+        const result = ctx.validateRawMarketAnalysisDecision({
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 2,
+            entry_zone: [239, 241], entry: 240, stop_loss: 230, tp1: 249, tp2: 260, tp3: 270,
+            source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'SOURCE_CANDLE_EXTREME',
+            evidence: [{ candle_id: `1H:${timestamp}`, timeframe: '1H', timestamp, role: 'LOCATION', field: 'pattern', claimed_level: null }],
+            target_evidence: [{ candle_id: `1H:${timestamp}`, timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'pattern', claimed_level: null }]
+        }, packet);
+        expect(result.status).toBe('REJECTED');
+        expect(result.issues).toContain('RAW_PENDING_BUY_TARGET_NOT_ABOVE_CURRENT_PRICE');
     });
 
     it('copies only a complete current-symbol RAW snapshot and refuses incomplete state', async () => {
