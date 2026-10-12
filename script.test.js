@@ -3651,6 +3651,18 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const forexPacket = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay(true, 'EUR/USD') });
         expect(forexPacket.timeframes['1H'].candles[0].v).toBeUndefined();
         expect(packet.external_ai_task).toContain('RAW_MARKET_ANALYSIS RESPONSIBILITY');
+        expect(packet.external_ai_task).toContain('STEP 1 — VERIFY THE RAW SNAPSHOT');
+        expect(packet.external_ai_task).toContain('STEP 2 — ESTABLISH MARKET CONTEXT');
+        expect(packet.external_ai_task).toContain('STEP 3 — MODEL-BY-MODEL INDEPENDENT SEARCH');
+        expect(packet.external_ai_task).toContain('STEP 4 — VERIFY FORMATION GEOMETRY');
+        expect(packet.external_ai_task).toContain('STEP 5 — AUDIT FORMATION LIFECYCLE');
+        expect(packet.external_ai_task).toContain('STEP 6 — CHECK PENDING-LIMIT LOCATION');
+        expect(packet.external_ai_task).toContain('STEP 7 — CONSTRUCT THE STRUCTURAL STOP');
+        expect(packet.external_ai_task).toContain('STEP 8 — VERIFY REMAINING OBJECTIVES');
+        expect(packet.external_ai_task).toContain('STEP 9 — CALCULATE RR');
+        expect(packet.external_ai_task).toContain('STEP 10 — COMPARE SURVIVING CANDIDATES');
+        expect(packet.external_ai_task).toContain('STEP 11 — MAKE THE FINAL DECISION');
+        expect(packet.external_ai_task).toContain('STEP 12 — FINAL CONSISTENCY AUDIT');
         expect(packet.external_ai_task).toContain('Assess BUY and SELL');
         expect(packet.external_ai_task).toContain('Return exactly one valid JSON object');
         expect(packet.external_ai_task).toContain('trade_type PENDING_LIMIT only');
