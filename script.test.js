@@ -3622,6 +3622,8 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet.external_ai_task).toContain('MARKET-CLOSURE GAP POLICY');
         expect(packet.external_ai_task).toContain('expected boundary, not an in-session provider failure');
         expect(packet.external_ai_task).toContain('do not veto an otherwise supported 1H or 4H historical formation solely because 5M/15M continuity is absent');
+        expect(packet.external_ai_task).toContain('ASSET-NEUTRAL PENDING-LIMIT POLICY');
+        expect(packet.external_ai_task).toContain('using only the packet asset_class, symbol metadata, session/calendar facts, and candles');
         expect(packet.external_ai_task).toContain('use TRANSITION_WAIT when no more specific phase is supported');
         expect(packet.external_ai_task).toContain('do not withhold the proposal merely to predict that status');
         expect(packet.external_ai_task).not.toContain('all timeframes must agree');
@@ -3629,6 +3631,13 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(repeat.timeframes).toEqual(packet.timeframes);
         expect(packet).not.toHaveProperty('actionable_location_bundles');
         expect(packet).not.toHaveProperty('current_actionable_location_catalogue');
+    });
+
+    it.each(['XAU/USD', 'EUR/USD', 'BTC/USD', 'SPX500'])('keeps pending-limit confirmation policy asset-neutral for %s', pair => {
+        const packet = getContext().buildRawMarketAnalysisPacket({ replay: makeReplay(true, pair) });
+        expect(packet.packet_identity.pair).toBe(pair);
+        expect(packet.external_ai_task).toContain('A valid historical formation may be evaluated as a standing BUY LIMIT or SELL LIMIT without fresh lower-timeframe entry confirmation');
+        expect(packet.external_ai_task).not.toContain('XAU/USD-specific');
     });
 
     it('rejects an evidence item whose stable candle ID belongs to another timeframe or timestamp', () => {
