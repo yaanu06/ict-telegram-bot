@@ -1,4 +1,5 @@
 const fs = require('fs');
+const path = require('path');
 const vm = require('vm');
 
 const code = fs.readFileSync('script.js', 'utf8');
@@ -3638,6 +3639,63 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet.packet_identity.pair).toBe(pair);
         expect(packet.external_ai_task).toContain('A valid historical formation may be evaluated as a standing BUY LIMIT or SELL LIMIT without fresh lower-timeframe entry confirmation');
         expect(packet.external_ai_task).not.toContain('XAU/USD-specific');
+    });
+
+    it('requires independent model-by-model historical discovery without universal lower-timeframe gates', () => {
+        const packet = getContext().buildRawMarketAnalysisPacket({ replay: makeReplay() });
+        expect(packet.external_ai_task).toContain('MODEL-BY-MODEL INDEPENDENT SEARCH');
+        expect(packet.external_ai_task).toContain('opposing source candle followed by a closed candle taking the source extreme');
+        expect(packet.external_ai_task).toContain('bullish boundaries are previous high to next low and bearish boundaries are next high to previous low');
+        expect(packet.external_ai_task).toContain('project body-direction transition');
+        expect(packet.external_ai_task).toContain('reference range, sweep, and reclaim close');
+        expect(packet.external_ai_task).toContain('confirmed swing liquidity reference, sweep, and reclaim');
+        expect(packet.external_ai_task).toContain('Do not universalize BOS, MSS, CHoCH, displacement');
+        expect(packet.external_ai_task).toContain('BOTH-SIDE HISTORICAL SEARCH');
+        expect(packet.external_ai_task).toContain('complete the BUY LIMIT search and SELL LIMIT search independently');
+        expect(packet.external_ai_task).not.toContain('require a fresh 5M or 15M confirmation for every setup');
+        expect(packet.provenance.precomputed_execution_levels_included).toBe(false);
+        expect(packet.provenance.precomputed_trade_recommendation_included).toBe(false);
+    });
+
+    it('reproduces the saved XAU/USD detector facts and audits the saved NO_TRADE response offline', () => {
+        const rawPath = path.join('packet', '{.txt');
+        const responsePath = path.join('packet', 'deepseek_json_20261012_8bee9f.json');
+        if (!fs.existsSync(rawPath) || !fs.existsSync(responsePath)) return;
+        const rawPacket = JSON.parse(fs.readFileSync(rawPath, 'utf8'));
+        const response = JSON.parse(fs.readFileSync(responsePath, 'utf8'));
+        const expectedSnapshot = 'TVKIT:XAU/USD:1791800215316:1791800218000:1D:1791493200000:199|4H:1791781200000:199|1H:1791795600000:199|15M:1791799200000:199|5M:1791799800000:199';
+        expect(rawPacket.packet_identity.snapshot_id).toBe(expectedSnapshot);
+        expect(response.snapshot_id).toBe(expectedSnapshot);
+
+        const ctx = getContext();
+        const fourHCandles = rawPacket.timeframes['4H'].candles.map(candle => ({ ...candle, is_closed: true }));
+        const fvg = ctx.detectFVG(fourHCandles, 'XAU/USD').find(item => Math.abs(item.l - 4150.425) < 1e-9 && Math.abs(item.h - 4181.875) < 1e-9);
+        expect(fvg).toEqual(expect.objectContaining({ type: 'bull', formation_time: 1791522000000, first_knowable_time: 1791522000000 }));
+        expect(fvg.origin_time).toBe(1791493200000);
+
+        const msnr = ctx.calculateMSNR(fourHCandles, rawPacket.current_market_observation.current_price, '4H', 'XAU/USD').structural_levels;
+        const bearish = msnr.find(item => item.direction === 'SELL' && Math.abs(item.zone_low - 4207.02) < 1e-9 && Math.abs(item.zone_high - 4211.1) < 1e-9);
+        const bullish = msnr.find(item => item.direction === 'BUY' && Math.abs(item.zone_low - 4116.69) < 1e-9 && Math.abs(item.zone_high - 4121.01) < 1e-9);
+        expect(bearish).toEqual(expect.objectContaining({ primary_eligible: true, freshness: 'FRESH', touch_count: 0, first_knowable_time: 1791781200000 }));
+        expect(bullish).toEqual(expect.objectContaining({ primary_eligible: true, freshness: 'FRESH', touch_count: 0, first_knowable_time: 1791478800000 }));
+        expect([fvg, bearish, bullish].every(item => item.first_knowable_time <= 1791800215316)).toBe(true);
+
+        const narrative = JSON.stringify(response);
+        const diagnosticIssues = [];
+        if (narrative.includes('4172.96') && fvg.l !== 4172.96) diagnosticIssues.push('AI_FVG_BOUNDARY_MISMATCH');
+        if (/fresh 5M|fresh 15M|5M\/15M[^.]{0,80}(BOS|MSS|CHoCH)|lack(?:s|ing) decisive[^.]{0,80}(BOS|MSS)/i.test(narrative)) diagnosticIssues.push('AI_UNIVERSAL_LOWER_TIMEFRAME_VETO_CLAIM');
+        expect(diagnosticIssues).toEqual(expect.arrayContaining(['AI_FVG_BOUNDARY_MISMATCH', 'AI_UNIVERSAL_LOWER_TIMEFRAME_VETO_CLAIM']));
+        expect(response.decision).toBe('NO_TRADE');
+        expect(ctx.validateRawMarketAnalysisDecision(response, ctx.buildRawMarketAnalysisPacket({ replay: {
+            pair: rawPacket.packet_identity.pair,
+            snapshot_id: rawPacket.packet_identity.snapshot_id,
+            scan_as_of: rawPacket.packet_identity.snapshot_as_of,
+            quote: rawPacket.current_market_observation,
+            provider_metadata: rawPacket.provenance,
+            history: Object.fromEntries(timeframes.map(timeframe => [timeframe, rawPacket.timeframes[timeframe].candles])),
+            snapshot_completeness: rawPacket.snapshot_status.supplied_completeness,
+            asset_class: rawPacket.current_market_observation.asset_class
+        } })).status).toBe('NO_TRADE');
     });
 
     it('rejects an evidence item whose stable candle ID belongs to another timeframe or timestamp', () => {
