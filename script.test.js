@@ -3631,7 +3631,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const timestamp = packet.timeframes['1H'].candles[50].t;
         const result = ctx.validateRawMarketAnalysisDecision({
             schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id,
-            pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB',
+            pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 1,
             entry_zone: [250, 251], entry: 250, stop_loss: 250, tp1: 260,
             source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp],
             invalidation_basis: 'SOURCE_CANDLE_EXTREME', model_reasoning: 'test'
@@ -3640,7 +3640,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(result.issues).toContain('RAW_NON_POSITIVE_RISK');
         const sell = ctx.validateRawMarketAnalysisDecision({
             schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id,
-            pair: 'BTC/USD', decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'OB',
+            pair: 'BTC/USD', decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 1,
             entry: 250, stop_loss: 249, tp1: 240,
             source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp],
             invalidation_basis: 'SOURCE_CANDLE_EXTREME'
@@ -3653,10 +3653,10 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const ctx = getContext();
         const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
         const timestamp = packet.timeframes['1H'].candles[50].t;
-        const base = { schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', trade_type: 'PENDING_LIMIT', setup: 'OB', entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 260, tp2: 270, tp3: 280,
+        const base = { schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 2, entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 260, tp2: 270, tp3: 280,
             source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'SOURCE_CANDLE_EXTREME', model_reasoning: 'test',
-            evidence: [{ timeframe: '1H', timestamp, role: 'LOCATION', field: 'high', claimed_level: 251, chronology: 'closed source candle' }],
-            target_evidence: [{ timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'high', claimed_level: 260, chronology: 'closed source candle' }] };
+            evidence: [{ timeframe: '1H', timestamp, role: 'LOCATION', field: 'pattern', claimed_level: null, chronology: 'closed source candle' }],
+            target_evidence: [{ timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'pattern', claimed_level: null, chronology: 'closed source candle' }] };
         const buy = ctx.validateRawMarketAnalysisDecision({ ...base, direction: 'BUY' }, packet);
         expect(buy.status).toBe('UNVERIFIED');
         expect(buy.valid).toBe(false);
@@ -3669,7 +3669,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
     it('accepts a factual NO_TRADE result without pretending raw model claims are verified', () => {
         const ctx = getContext();
         const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
-        const result = ctx.validateRawMarketAnalysisDecision({ schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'NO_TRADE', direction: null, trade_type: null, setup: null, entry_zone: null, entry: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null, confidence: null, reason: 'No independently verified model' }, packet);
+        const result = ctx.validateRawMarketAnalysisDecision({ schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'NO_TRADE', direction: null, trade_type: null, setup: null, market_phase: 'RETRACEMENT', entry_zone: null, entry: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null, confidence: null, reason: 'No independently verified model' }, packet);
         expect(result.status).toBe('NO_TRADE');
         expect(result.valid).toBe(true);
     });
@@ -3684,7 +3684,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(noTrade.status).toBe('REJECTED');
         expect(noTrade.issues).toContain('RAW_NO_TRADE_FIELDS_MUST_BE_NULL');
         const timestamp = packet.timeframes['1H'].candles[50].t;
-        const base = { schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', setup: 'OB', entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 250, source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'SOURCE_CANDLE_EXTREME', evidence: [{ timeframe: '1H', timestamp, role: 'LOCATION' }], target_evidence: [{ timeframe: '1H', timestamp, role: 'OBJECTIVE' }] };
+        const base = { schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 2, entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 250, source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'SOURCE_CANDLE_EXTREME', evidence: [{ timeframe: '1H', timestamp, role: 'LOCATION', field: 'pattern', claimed_level: null }], target_evidence: [{ timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'pattern', claimed_level: null }] };
         const market = ctx.validateRawMarketAnalysisDecision({ ...base, trade_type: 'MARKET' }, packet);
         expect(market.status).toBe('REJECTED');
         expect(market.issues).toContain('RAW_TRADE_TYPE_MUST_BE_PENDING_LIMIT');
@@ -3693,13 +3693,46 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(confirmation.issues).toContain('RAW_TRADE_TYPE_MUST_BE_PENDING_LIMIT');
     });
 
+    it('rejects non-numeric confidence and object-valued risk_reward', () => {
+        const ctx = getContext();
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
+        const timestamp = packet.timeframes['1H'].candles[50].t;
+        const result = ctx.validateRawMarketAnalysisDecision({
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT',
+            confidence: 'MEDIUM', risk_reward: { tp1: 2.11, tp2: 3.02, tp3: 3.46 }, entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 250,
+            source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'SOURCE_CANDLE_EXTREME',
+            evidence: [{ timeframe: '1H', timestamp, role: 'LOCATION', field: 'pattern', claimed_level: null }], target_evidence: [{ timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'pattern', claimed_level: null }]
+        }, packet);
+        expect(result.status).toBe('REJECTED');
+        expect(result.issues).toContain('RAW_CONFIDENCE_MUST_BE_INTEGER_PERCENT');
+        expect(result.issues).toContain('RAW_RISK_REWARD_MUST_BE_NUMERIC_TP1');
+        expect(result.authoritative_risk_reward.rr_tp1).toBe(1);
+    });
+
+    it('validates evidence against the claimed timeframe and exact OHLC field', () => {
+        const ctx = getContext();
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
+        const timestamp = packet.timeframes['1H'].candles[50].t;
+        const base = {
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 2,
+            entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 250, invalidation_basis: 'SOURCE_CANDLE_EXTREME', source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp]
+        };
+        packet.timeframes['1H'].candles = packet.timeframes['1H'].candles.filter(candle => candle.t !== timestamp);
+        const crossTimeframe = ctx.validateRawMarketAnalysisDecision({ ...base, evidence: [{ timeframe: '1H', timestamp, role: 'LOCATION', field: 'close', claimed_level: 151 }], target_evidence: [{ timeframe: '1H', timestamp: packet.timeframes['15M'].candles[50].t, role: 'OBJECTIVE', field: 'pattern', claimed_level: null }] }, packet);
+        expect(crossTimeframe.issues).toContain('RAW_EVIDENCE_REFERENCE_INVALID');
+        const validTimestamp = packet.timeframes['1H'].candles[49].t;
+        const actualHigh = packet.timeframes['1H'].candles[49].h;
+        const wrongOhlc = ctx.validateRawMarketAnalysisDecision({ ...base, source_candle_timestamps: [validTimestamp], invalidation_source_candle_timestamps: [validTimestamp], objective_source_candle_timestamps: [validTimestamp], evidence: [{ timeframe: '1H', timestamp: validTimestamp, role: 'LOCATION', field: 'high', claimed_level: actualHigh + 1 }], target_evidence: [{ timeframe: '1H', timestamp: validTimestamp, role: 'OBJECTIVE', field: 'pattern', claimed_level: null }] }, packet);
+        expect(wrongOhlc.issues).toContain('RAW_EVIDENCE_OHLC_MISMATCH');
+    });
+
     it('allows BUY and SELL pending limits away from current price without requiring a current-zone touch', () => {
         const ctx = getContext();
         const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
         const timestamp = packet.timeframes['1H'].candles[50].t;
         const evidence = [{ timeframe: '1H', timestamp, role: 'LOCATION', field: 'pattern', claimed_level: 240, chronology: 'closed source candle' }];
-        const targetEvidence = [{ timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'high', claimed_level: 260, chronology: 'closed source candle' }];
-        const common = { schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', trade_type: 'PENDING_LIMIT', setup: 'OB',
+        const targetEvidence = [{ timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'pattern', claimed_level: null, chronology: 'closed source candle' }];
+        const common = { schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 2,
             source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'SOURCE_CANDLE_EXTREME', evidence, target_evidence: targetEvidence, model_reasoning: 'closed-candle model claim' };
         const buy = ctx.validateRawMarketAnalysisDecision({ ...common, direction: 'BUY', entry_zone: [239, 241], entry: 240, stop_loss: 230, tp1: 260 }, packet);
         const sell = ctx.validateRawMarketAnalysisDecision({ ...common, direction: 'SELL', entry_zone: [259, 261], entry: 260, stop_loss: 270, tp1: 240 }, packet);
@@ -3713,7 +3746,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const ctx = getContext();
         const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
         const timestamp = packet.timeframes['1H'].candles[50].t;
-        const common = { schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', trade_type: 'PENDING_LIMIT', setup: 'OB',
+        const common = { schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 2,
             source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'SOURCE_CANDLE_EXTREME', evidence: [{ timeframe: '1H', timestamp, role: 'LOCATION' }], target_evidence: [{ timeframe: '1H', timestamp, role: 'OBJECTIVE' }] };
         const buy = ctx.validateRawMarketAnalysisDecision({ ...common, direction: 'BUY', entry_zone: [249, 251], entry: 250, stop_loss: 240, tp1: 260 }, packet);
         expect(buy.status).toBe('REJECTED');
@@ -3744,10 +3777,10 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const timestamp = packet.timeframes['1H'].candles[50].t;
         const result = ctx.validateRawMarketAnalysisDecision({
             schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id,
-            pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'MSNR', entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 260,
+            pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'MSNR', market_phase: 'RETRACEMENT', confidence: 60, entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 260,
             risk_reward: 22.79, source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'MODEL_DEFINED',
-            evidence: [{ timeframe: '1H', timestamp, role: 'LOCATION', field: 'high', claimed_level: 251, chronology: 'closed source candle' }],
-            target_evidence: [{ timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'high', claimed_level: 260, chronology: 'closed source candle' }]
+            evidence: [{ timeframe: '1H', timestamp, role: 'LOCATION', field: 'pattern', claimed_level: null, chronology: 'closed source candle' }],
+            target_evidence: [{ timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'pattern', claimed_level: null, chronology: 'closed source candle' }]
         }, packet);
         expect(result.status).toBe('UNVERIFIED');
         expect(result.authoritative_risk_reward.rr_tp1).toBe(2);
@@ -3759,7 +3792,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const ctx = getContext();
         const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
         const result = ctx.validateRawMarketAnalysisDecision({
-            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: 'OTHER-SNAPSHOT', pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB',
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: 'OTHER-SNAPSHOT', pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 2,
             entry_zone: [250, 251], entry: 250, stop_loss: 240, tp1: 260,
             source_candle_timestamps: ['not-in-snapshot'], invalidation_source_candle_timestamps: ['not-in-snapshot'], objective_source_candle_timestamps: ['not-in-snapshot'],
             invalidation_basis: 'SOURCE_CANDLE_EXTREME', evidence: [], target_evidence: []

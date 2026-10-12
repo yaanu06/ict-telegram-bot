@@ -12364,7 +12364,7 @@ function buildRawMarketAnalysisInstruction() {
         'For BUY: stop_loss < entry < TP1/TP2/TP3. For SELL: stop_loss > entry > TP1/TP2/TP3. Risk must be finite and strictly positive. Calculate risk and RR from the exact proposed entry, stop_loss, and each target; the reported risk_reward is diagnostic only.',
         '',
         'OUTPUT CONTRACT',
-        'Return exactly one valid JSON object. Do not include Markdown fences, text before or after the JSON, comments, JavaScript expressions, NaN, Infinity, or trailing commas. Use schema RAW_MARKET_ANALYSIS_V1_RESULT and the exact packet symbol and snapshot_id. Every TRADE must use trade_type PENDING_LIMIT only. Include pair, snapshot_id, decision, direction, trade_type, setup, market_phase, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, confidence, source_candle_timestamps, invalidation_source_candle_timestamps, objective_source_candle_timestamps, invalidation_basis, evidence, target_evidence, conflicts, and concise model_reasoning. For NO_TRADE, set direction, trade_type, setup, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, and confidence to null, and explain the factual reason. Do not invent IDs or claim code-side catalogue approval.'
+        'Return exactly one valid JSON object. Do not include Markdown fences, text before or after the JSON, comments, JavaScript expressions, NaN, Infinity, or trailing commas. Use schema RAW_MARKET_ANALYSIS_V1_RESULT and the exact packet symbol and snapshot_id. Every TRADE must use trade_type PENDING_LIMIT only, setup must be one supported label such as OB, FVG, MSNR, CRT, TBS, SUPPLY, DEMAND, FLIP, or BREAKER, market_phase must use the supported enum, confidence must be an integer from 0 through 100, and risk_reward must be one numeric TP1 RR value (not an object). Include pair, snapshot_id, decision, direction, trade_type, setup, market_phase, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, confidence, source_candle_timestamps, invalidation_source_candle_timestamps, objective_source_candle_timestamps, invalidation_basis, evidence, target_evidence, conflicts, and concise model_reasoning. For NO_TRADE, set direction, trade_type, setup, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, and confidence to null, and explain the factual reason. Do not invent IDs or claim code-side catalogue approval.'
     ].join('\n');
 }
 
@@ -12461,13 +12461,24 @@ function buildRawMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
 }
 
 function rawMarketAnalysisCandleTimes(packet = {}) {
-    const times = new Set();
+    return rawMarketAnalysisCandleIndex(packet).allTimes;
+}
+
+function rawMarketAnalysisCandleIndex(packet = {}) {
+    const allTimes = new Set();
+    const byTimeframe = new Map();
     for (const timeframe of AI_SEMANTIC_TIMEFRAMES) {
+        const candles = new Map();
         for (const candle of packet.timeframes?.[timeframe]?.candles || []) {
-            if (candle?.t !== null && candle?.t !== undefined) times.add(String(candle.t));
+            if (candle?.t !== null && candle?.t !== undefined) {
+                const key = String(candle.t);
+                allTimes.add(key);
+                candles.set(key, candle);
+            }
         }
+        byTimeframe.set(timeframe, candles);
     }
-    return times;
+    return { allTimes, byTimeframe };
 }
 
 function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
@@ -12485,7 +12496,7 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
     if (packet.snapshot_status?.complete !== true) add('RAW_SNAPSHOT_INCOMPLETE');
     if (packetPair && decisionPair && packetPair !== decisionPair) add('RAW_DECISION_SYMBOL_MISMATCH');
     if (packet.packet_identity?.snapshot_id && normalized.snapshot_id !== packet.packet_identity.snapshot_id) add('RAW_SNAPSHOT_ID_MISMATCH');
-    if (normalized.market_phase !== null && normalized.market_phase !== undefined && !RAW_MARKET_ANALYSIS_PHASES.has(String(normalized.market_phase).toUpperCase())) add('RAW_MARKET_PHASE_INVALID');
+    if (typeof normalized.market_phase !== 'string' || !RAW_MARKET_ANALYSIS_PHASES.has(normalized.market_phase.toUpperCase())) add('RAW_MARKET_PHASE_INVALID');
     const isNoTrade = outcome === 'NO_TRADE';
     const isTrade = outcome === 'TRADE' || outcome === 'BUY' || outcome === 'SELL';
     if (!isTrade && !isNoTrade) add('RAW_DECISION_INVALID');
@@ -12503,6 +12514,8 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
     if (!['BUY', 'SELL'].includes(direction)) add('RAW_DIRECTION_REQUIRED');
     const tradeType = String(normalized.trade_type || '').toUpperCase();
     if (tradeType !== 'PENDING_LIMIT') add('RAW_TRADE_TYPE_MUST_BE_PENDING_LIMIT');
+    if (!Number.isInteger(normalized.confidence) || normalized.confidence < 0 || normalized.confidence > 100) add('RAW_CONFIDENCE_MUST_BE_INTEGER_PERCENT');
+    if (typeof normalized.risk_reward !== 'number' || !Number.isFinite(normalized.risk_reward)) add('RAW_RISK_REWARD_MUST_BE_NUMERIC_TP1');
     const entry = rawMarketAnalysisNumber(normalized.entry);
     const stop = rawMarketAnalysisNumber(normalized.stop_loss);
     const tp1 = rawMarketAnalysisNumber(normalized.tp1);
@@ -12525,14 +12538,17 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
     }
     const rr = calculateTradeRiskReward(direction, entry, stop, { tp1, tp2, tp3 });
     if (!(Number.isFinite(rr.risk) && rr.risk > 0)) add('RAW_NON_POSITIVE_RISK');
-    const candleTimes = rawMarketAnalysisCandleTimes(packet);
+    const candleIndex = rawMarketAnalysisCandleIndex(packet);
+    const candleTimes = candleIndex.allTimes;
     const timestampFields = ['source_candle_timestamps', 'invalidation_source_candle_timestamps', 'objective_source_candle_timestamps'];
     for (const field of timestampFields) {
         const values = Array.isArray(normalized[field]) ? normalized[field] : [];
         if (!values.length) add(`RAW_${field.toUpperCase()}_REQUIRED`);
         for (const value of values) {
             const timestamp = typeof value === 'object' ? value.time || value.timestamp : value;
+            const timeframe = typeof value === 'object' ? value.timeframe : null;
             if (timestamp === null || timestamp === undefined || !candleTimes.has(String(timestamp))) add('RAW_SOURCE_TIMESTAMP_NOT_IN_SNAPSHOT');
+            else if (timeframe && (!AI_SEMANTIC_TIMEFRAMES.includes(timeframe) || !candleIndex.byTimeframe.get(timeframe)?.has(String(timestamp)))) add('RAW_SOURCE_TIMESTAMP_NOT_IN_CLAIMED_TIMEFRAME');
         }
     }
     const evidence = Array.isArray(normalized.evidence) ? normalized.evidence : [];
@@ -12543,7 +12559,15 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
         const timeframe = item && typeof item === 'object' ? item.timeframe : null;
         const timestamp = item && typeof item === 'object' ? item.timestamp : null;
         const role = item && typeof item === 'object' ? item.role : null;
-        if (!AI_SEMANTIC_TIMEFRAMES.includes(timeframe) || timestamp === null || timestamp === undefined || !candleTimes.has(String(timestamp)) || !role) add('RAW_EVIDENCE_REFERENCE_INVALID');
+        const candle = AI_SEMANTIC_TIMEFRAMES.includes(timeframe) ? candleIndex.byTimeframe.get(timeframe)?.get(String(timestamp)) : null;
+        if (!AI_SEMANTIC_TIMEFRAMES.includes(timeframe) || timestamp === null || timestamp === undefined || !candleTimes.has(String(timestamp)) || !candle || !role) add('RAW_EVIDENCE_REFERENCE_INVALID');
+        if (candle && ['open', 'high', 'low', 'close'].includes(String(item.field || '').toLowerCase())) {
+            const field = String(item.field).toLowerCase();
+            const fieldKey = { open: 'o', high: 'h', low: 'l', close: 'c' }[field];
+            const claimed = item.claimed_level;
+            const actual = rawMarketAnalysisNumber(candle[fieldKey]);
+            if (typeof claimed !== 'number' || !Number.isFinite(claimed) || !Number.isFinite(actual) || Math.abs(claimed - actual) > Math.max(1e-9, Math.abs(actual) * 1e-10)) add('RAW_EVIDENCE_OHLC_MISMATCH');
+        }
     }
     const supportedModels = new Set(['OB', 'FVG', 'MSNR', 'CRT', 'TBS', 'SUPPLY', 'DEMAND', 'FLIP', 'BREAKER']);
     const setup = String(normalized.setup || '').toUpperCase().split('+')[0];
