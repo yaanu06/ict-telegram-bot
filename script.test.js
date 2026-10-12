@@ -3659,11 +3659,15 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet.external_ai_task).toContain('actionable BUY LIMIT and SELL LIMIT locations');
         expect(packet.external_ai_task).toContain('older 4H or 1H locations');
         expect(packet.external_ai_task).toContain('Do not require a fresh 5M or 15M BOS, MSS, CHoCH, displacement');
+        expect(packet.external_ai_task).toContain('do not use distance from the current quote');
+        expect(packet.external_ai_task).toContain('A far historical zone may remain eligible');
+        expect(packet.external_ai_task).toContain('classify it as EXECUTION_UNSUPPORTED or OBJECTIVES_UNSUPPORTED rather than FORMATION_NOT_FOUND');
         expect(packet.external_ai_task).toContain('a timestamp found in another timeframe is not valid evidence');
         expect(packet.external_ai_task).toContain('do not use RANGING');
         expect(packet.external_ai_task).toContain('every remaining TP must be above both the proposed entry and the current snapshot price');
         expect(packet.external_ai_task).toContain('Generic support, resistance, demand, or supply language is not by itself a confirmed ICT/SMC model');
         expect(packet.external_ai_task).toContain('Include schema, pair, snapshot_id, decision');
+        expect(packet.external_ai_task).toContain('model_reasoning as one concise string (never an object or per-timeframe map)');
         expect(packet.external_ai_task).toContain('MARKET-CLOSURE GAP POLICY');
         expect(packet.external_ai_task).toContain('expected boundary, not an in-session provider failure');
         expect(packet.external_ai_task).toContain('do not veto an otherwise supported 1H or 4H historical formation solely because 5M/15M continuity is absent');
