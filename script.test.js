@@ -3605,6 +3605,13 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet.external_ai_task).toContain('Assess BUY and SELL');
         expect(packet.external_ai_task).toContain('Return exactly one valid JSON object');
         expect(packet.external_ai_task).toContain('trade_type PENDING_LIMIT only');
+        expect(packet.external_ai_task).toContain('FORMATION CONFIRMATION');
+        expect(packet.external_ai_task).toContain('ENTRY CONFIRMATION is a separate execution choice');
+        expect(packet.external_ai_task).toContain('actionable BUY LIMIT and SELL LIMIT locations');
+        expect(packet.external_ai_task).toContain('older 4H or 1H locations');
+        expect(packet.external_ai_task).toContain('Do not require a fresh 5M or 15M BOS, MSS, CHoCH, displacement');
+        expect(packet.external_ai_task).toContain('do not withhold the proposal merely to predict that status');
+        expect(packet.external_ai_task).not.toContain('all timeframes must agree');
         expect(packet.output_contract.trade_type_values).toEqual(['PENDING_LIMIT']);
         expect(repeat.timeframes).toEqual(packet.timeframes);
         expect(packet).not.toHaveProperty('actionable_location_bundles');
