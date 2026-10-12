@@ -3744,6 +3744,16 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet.external_ai_task).not.toContain('If formations exist but execution is blocked, return NO_TRADE');
     });
 
+    it('requires a JSON result instead of a clarification when quote history is later or bucket grids are non-standard', () => {
+        const packet = getContext().buildRawMarketAnalysisPacket({ replay: makeReplay() });
+        expect(packet.external_ai_task).toContain('A quote or snapshot_as_of later than the newest supplied closed candle is a history-to-reference gap');
+        expect(packet.external_ai_task).toContain('Provider/session bucket starts may use non-zero minute boundaries');
+        expect(packet.external_ai_task).toContain('explicitly record that post-history interval as unobserved');
+        expect(packet.external_ai_task).toContain('Never ask the user to choose between a corrected packet and a DATA_UNAVAILABLE result');
+        expect(packet.external_ai_task).toContain('never return a clarification question or prose outside the JSON');
+        expect(packet.external_ai_task).toContain('if Stage C cannot be proven, return NO_TRADE with the required null trade fields');
+    });
+
     it('reproduces the saved XAU/USD detector facts and audits the saved NO_TRADE response offline', () => {
         const rawPath = path.join('packet', '{.txt');
         const responsePath = path.join('packet', 'deepseek_json_20261012_8bee9f.json');
