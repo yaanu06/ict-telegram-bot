@@ -3652,6 +3652,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet.external_ai_task).toContain('Do not universalize BOS, MSS, CHoCH, displacement');
         expect(packet.external_ai_task).toContain('BOTH-SIDE HISTORICAL SEARCH');
         expect(packet.external_ai_task).toContain('complete the BUY LIMIT search and SELL LIMIT search independently');
+        expect(packet.external_ai_task).toContain('DIRECTIONAL CONTEXT BEFORE SELECTION');
         expect(packet.external_ai_task).not.toContain('require a fresh 5M or 15M confirmation for every setup');
         expect(packet.provenance.precomputed_execution_levels_included).toBe(false);
         expect(packet.provenance.precomputed_trade_recommendation_included).toBe(false);
@@ -3698,7 +3699,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
             pair: rawPacket.packet_identity.pair,
             snapshot_id: rawPacket.packet_identity.snapshot_id,
             scan_as_of: rawPacket.packet_identity.snapshot_as_of,
-            quote: rawPacket.current_market_observation,
+            quote: { ...rawPacket.current_market_observation, price: rawPacket.current_market_observation.current_price },
             provider_metadata: rawPacket.provenance,
             history: Object.fromEntries(timeframes.map(timeframe => [timeframe, rawPacket.timeframes[timeframe].candles])),
             snapshot_completeness: rawPacket.snapshot_status.supplied_completeness,
@@ -3736,6 +3737,185 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const sellObjective = (swings.L || []).find(swing => Math.abs(swing.p - 4066.535) < 1e-9);
         expect(ctx.assessTargetLifecycle({ level: buyObjective.p, direction: 'BUY', source: 'SWING_HIGH', timeframe: '4H', source_index: buyObjective.i }, { '4H': fourHCandles }, { timeframe: '4H' }).lifecycle_state).toBe('UNFULFILLED');
         expect(ctx.assessTargetLifecycle({ level: sellObjective.p, direction: 'SELL', source: 'SWING_LOW', timeframe: '4H', source_index: sellObjective.i }, { '4H': fourHCandles }, { timeframe: '4H' }).lifecycle_state).toBe('UNFULFILLED');
+    });
+
+    it('rejects the saved false bullish FVG proposal for evidence, geometry, and pending-limit violations', () => {
+        const rawPath = path.join('packet', '{.txt');
+        const responsePath = path.join('packet', 'deepseek_json_20261012_e3fd36.json');
+        if (!fs.existsSync(rawPath) || !fs.existsSync(responsePath)) return;
+        const rawPacket = JSON.parse(fs.readFileSync(rawPath, 'utf8'));
+        const response = JSON.parse(fs.readFileSync(responsePath, 'utf8'));
+        const ctx = getContext();
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay: {
+            pair: rawPacket.packet_identity.pair,
+            snapshot_id: rawPacket.packet_identity.snapshot_id,
+            scan_as_of: rawPacket.packet_identity.snapshot_as_of,
+            quote: { ...rawPacket.current_market_observation, price: rawPacket.current_market_observation.current_price },
+            provider_metadata: rawPacket.provenance,
+            history: Object.fromEntries(timeframes.map(timeframe => [timeframe, rawPacket.timeframes[timeframe].candles])),
+            snapshot_completeness: rawPacket.snapshot_status.supplied_completeness,
+            asset_class: rawPacket.current_market_observation.asset_class
+        } });
+        const candles = packet.timeframes['5M'].candles;
+        const first = candles.find(candle => candle.t === 1791803100000);
+        const third = candles.find(candle => candle.t === 1791803700000);
+        expect(first).toEqual(expect.objectContaining({ h: 4175.03 }));
+        expect(third).toEqual(expect.objectContaining({ l: 4171.6 }));
+        expect(first.h < third.l).toBe(false);
+        const result = ctx.validateRawMarketAnalysisDecision(response, packet);
+        expect(result.status).toBe('REJECTED');
+        expect(result.valid).toBe(false);
+        expect(result.issues).toEqual(expect.arrayContaining([
+            'RAW_FVG_FORMATION_INVALID',
+            'RAW_EVIDENCE_OHLC_MISMATCH',
+            'RAW_EVIDENCE_REFERENCE_INVALID',
+            'RAW_PENDING_BUY_ENTRY_NOT_BELOW_CURRENT_PRICE'
+        ]));
+    });
+
+    it('keeps a genuine raw bullish FVG geometrically recognized but structurally UNVERIFIED', () => {
+        const ctx = getContext();
+        const replay = makeReplay(true, 'EUR/USD');
+        replay.history['5M'] = replay.history['5M'].map((candle, index) => ({ ...candle, t: new Date(Date.UTC(2026, 9, 12, 0, index)).toISOString() }));
+        replay.history['5M'][50] = { t: replay.history['5M'][50].t, o: 149, h: 150, l: 148.5, c: 149.5, is_closed: true };
+        replay.history['5M'][51] = { t: replay.history['5M'][51].t, o: 149.5, h: 152, l: 149.25, c: 151.5, is_closed: true };
+        replay.history['5M'][52] = { t: replay.history['5M'][52].t, o: 151.5, h: 153, l: 151, c: 152.5, is_closed: true };
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay });
+        const candles = packet.timeframes['5M'].candles;
+        const [first, second, third] = candles.slice(50, 53);
+        const result = ctx.validateRawMarketAnalysisDecision({
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'EUR/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'FVG', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 2,
+            entry_zone: [150, 151], entry: 150.5, stop_loss: 149, tp1: 260,
+            source_candle_timestamps: [first.t, second.t, third.t], invalidation_source_candle_timestamps: [first.t], objective_source_candle_timestamps: [third.t], invalidation_basis: 'MODEL_DEFINED', model_reasoning: 'closed three-candle FVG',
+            evidence: [
+                { candle_id: `5M:${first.t}`, timeframe: '5M', timestamp: first.t, field: 'high', role: 'LOCATION', claimed_level: 150, chronology: 'first candle' },
+                { candle_id: `5M:${second.t}`, timeframe: '5M', timestamp: second.t, field: 'high', role: 'LOCATION', claimed_level: 152, chronology: 'middle candle' },
+                { candle_id: `5M:${third.t}`, timeframe: '5M', timestamp: third.t, field: 'low', role: 'CONFIRMATION', claimed_level: 151, chronology: 'third candle close' }
+            ],
+            target_evidence: [{ candle_id: `5M:${third.t}`, timeframe: '5M', timestamp: third.t, field: 'close', role: 'OBJECTIVE', claimed_level: third.c, chronology: 'closed candle' }]
+        }, packet);
+        expect(result.status).toBe('UNVERIFIED');
+        expect(result.issues).not.toContain('RAW_FVG_FORMATION_INVALID');
+        expect(result.warnings).toContain('RAW_MODEL_CLAIM_UNVERIFIED');
+    });
+
+    it('reaches VALIDATED only when a bullish FVG, far-edge stop, and three remaining swing objectives are independently proven', () => {
+        const ctx = getContext();
+        const replay = makeReplay(true, 'EUR/USD');
+        const makeFlat = () => Array.from({ length: 200 }, (_, index) => ({
+            t: 1790000000000 + index * 3600000,
+            o: 200, h: 201, l: 199, c: 200, is_closed: true
+        }));
+        replay.history['5M'] = Array.from({ length: 200 }, (_, index) => ({
+            t: 1790000000000 + index * 300000,
+            o: 200, h: 201, l: 199, c: 200, is_closed: true
+        }));
+        replay.history['5M'][50] = { t: replay.history['5M'][50].t, o: 149, h: 150, l: 148, c: 149.5, is_closed: true };
+        replay.history['5M'][51] = { t: replay.history['5M'][51].t, o: 149.5, h: 152, l: 149, c: 151.5, is_closed: true };
+        replay.history['5M'][52] = { t: replay.history['5M'][52].t, o: 151.5, h: 154, l: 151, c: 153, is_closed: true };
+        for (const [timeframe, level, index] of [['1H', 330, 120], ['4H', 340, 120], ['1D', 350, 120]]) {
+            replay.history[timeframe] = makeFlat();
+            replay.history[timeframe][index] = { t: replay.history[timeframe][index].t, o: 200, h: level, l: 199, c: 200, is_closed: true };
+        }
+        replay.quote.price = 250;
+        replay.quote.bid = 249.9;
+        replay.quote.ask = 250.1;
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay });
+        const [first, second, third] = packet.timeframes['5M'].candles.slice(50, 53);
+        const targetRefs = [['1H', 330], ['4H', 340], ['1D', 350]].map(([timeframe, level]) => {
+            const candle = packet.timeframes[timeframe].candles[120];
+            return { timeframe, candle, level };
+        });
+        const result = ctx.validateRawMarketAnalysisDecision({
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'EUR/USD',
+            decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'FVG', market_phase: 'RETRACEMENT', confidence: 70,
+            risk_reward: 159, entry_zone: [150, 151], entry: 150.5, stop_loss: 150, tp1: 330, tp2: 340, tp3: 350,
+            source_candle_timestamps: [first, second, third].map(candle => ({ timeframe: '5M', timestamp: candle.t })),
+            invalidation_source_candle_timestamps: [{ timeframe: '5M', timestamp: first.t }],
+            objective_source_candle_timestamps: targetRefs.map(ref => ({ timeframe: ref.timeframe, timestamp: ref.candle.t })),
+            invalidation_basis: 'ZONE_FAR_EDGE', model_reasoning: 'Three closed candles form an unfilled bullish FVG; the zone far edge is the supplied execution invalidation.',
+            evidence: [
+                { candle_id: `5M:${first.t}`, timeframe: '5M', timestamp: first.t, field: 'high', role: 'LOCATION', claimed_level: first.h, chronology: 'first FVG candle' },
+                { candle_id: `5M:${second.t}`, timeframe: '5M', timestamp: second.t, field: 'close', role: 'FORMATION', claimed_level: second.c, chronology: 'middle candle' },
+                { candle_id: `5M:${third.t}`, timeframe: '5M', timestamp: third.t, field: 'low', role: 'CONFIRMATION', claimed_level: third.l, chronology: 'third closed candle' },
+                { candle_id: `5M:${first.t}`, timeframe: '5M', timestamp: first.t, field: 'high', role: 'INVALIDATION', claimed_level: 150, chronology: 'zone far edge' }
+            ],
+            target_evidence: targetRefs.map(ref => ({ candle_id: `${ref.timeframe}:${ref.candle.t}`, timeframe: ref.timeframe, timestamp: ref.candle.t, field: 'high', role: 'OBJECTIVE', claimed_level: ref.level, chronology: 'confirmed swing high' }))
+        }, packet);
+        expect(result.status).toBe('VALIDATED');
+        expect(result.valid).toBe(true);
+        expect(result.issues).toEqual([]);
+        expect(result.model_verification.verified).toBe(true);
+        expect(result.authoritative_risk_reward.rr_tp1).toBe(359);
+    });
+
+    it('rejects an OB claim when the cited source pair does not satisfy the project OB detector', () => {
+        const ctx = getContext();
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
+        const first = packet.timeframes['1H'].candles[50];
+        const second = packet.timeframes['1H'].candles[51];
+        const result = ctx.validateRawMarketAnalysisDecision({
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD',
+            decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 2,
+            entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 260,
+            source_candle_timestamps: [{ timeframe: '1H', timestamp: first.t }, { timeframe: '1H', timestamp: second.t }],
+            invalidation_source_candle_timestamps: [{ timeframe: '1H', timestamp: first.t }], objective_source_candle_timestamps: [{ timeframe: '1H', timestamp: second.t }],
+            invalidation_basis: 'ZONE_FAR_EDGE', model_reasoning: 'claimed bullish order block',
+            evidence: [
+                { candle_id: `1H:${first.t}`, timeframe: '1H', timestamp: first.t, field: 'pattern', role: 'LOCATION', claimed_level: null },
+                { candle_id: `1H:${second.t}`, timeframe: '1H', timestamp: second.t, field: 'pattern', role: 'CONFIRMATION', claimed_level: null }
+            ], target_evidence: [{ candle_id: `1H:${second.t}`, timeframe: '1H', timestamp: second.t, field: 'pattern', role: 'OBJECTIVE', claimed_level: null }]
+        }, packet);
+        expect(result.status).toBe('REJECTED');
+        expect(result.issues).toContain('RAW_OB_FORMATION_INVALID');
+    });
+
+    it('recognizes a deterministic MSNR formation but keeps it unverified until objective provenance is complete', () => {
+        const ctx = getContext();
+        const replay = makeReplay(true, 'XAU/USD');
+        replay.quote.price = 101;
+        replay.history['1H'] = msnrReactionFixture().map((candle, index) => ({ ...candle, t: 1790000000000 + index * 3600000, is_closed: true }));
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay });
+        const level = ctx.calculateMSNR(packet.timeframes['1H'].candles, 101, '1H', 'XAU/USD').structural_levels.find(item => item.direction === 'BUY' && item.primary_eligible);
+        expect(level).toBeTruthy();
+        const entry = (level.zone_low + level.zone_high) / 2;
+        const result = ctx.validateRawMarketAnalysisDecision({
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'XAU/USD',
+            decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'MSNR', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 2,
+            entry_zone: [level.zone_low, level.zone_high], entry, stop_loss: level.execution_invalidation.level, tp1: 110,
+            source_candle_timestamps: [{ timeframe: '1H', timestamp: level.source_time }],
+            invalidation_source_candle_timestamps: [{ timeframe: '1H', timestamp: level.source_time }],
+            objective_source_candle_timestamps: [{ timeframe: '1H', timestamp: level.source_time }],
+            invalidation_basis: 'ZONE_FAR_EDGE', model_reasoning: 'project MSNR transition and qualifying departure',
+            evidence: [
+                { candle_id: `1H:${level.source_time}`, timeframe: '1H', timestamp: level.source_time, field: 'pattern', role: 'LOCATION', claimed_level: null },
+                { candle_id: `1H:${level.source_time}`, timeframe: '1H', timestamp: level.source_time, field: 'pattern', role: 'INVALIDATION', claimed_level: level.execution_invalidation.level }
+            ],
+            target_evidence: [{ candle_id: `1H:${level.source_time}`, timeframe: '1H', timestamp: level.source_time, field: 'pattern', role: 'OBJECTIVE', claimed_level: null }]
+        }, packet);
+        expect(result.status).toBe('UNVERIFIED');
+        expect(result.valid).toBe(false);
+        expect(result.model_verification.matched).toEqual(expect.objectContaining({ origin: 'STRUCTURAL_MSNR' }));
+        expect(result.warnings).not.toContain('RAW_MSNR_FORMATION_UNVERIFIED');
+        expect(result.warnings).toContain('RAW_TARGET_OBJECTIVE_PROVENANCE_UNVERIFIED');
+    });
+
+    it.each(['CRT', 'TBS', 'SUPPLY', 'DEMAND', 'FLIP', 'BREAKER'])('does not approve %s without independently verifiable execution geometry', setup => {
+        const ctx = getContext();
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
+        const timestamp = packet.timeframes['1H'].candles[50].t;
+        const result = ctx.validateRawMarketAnalysisDecision({
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD',
+            decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup, market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 2,
+            entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 260,
+            source_candle_timestamps: [{ timeframe: '1H', timestamp }], invalidation_source_candle_timestamps: [{ timeframe: '1H', timestamp }], objective_source_candle_timestamps: [{ timeframe: '1H', timestamp }],
+            invalidation_basis: 'MODEL_DEFINED', model_reasoning: 'claim requires model-specific evidence',
+            evidence: [{ candle_id: `1H:${timestamp}`, timeframe: '1H', timestamp, field: 'pattern', role: 'LOCATION', claimed_level: null }],
+            target_evidence: [{ candle_id: `1H:${timestamp}`, timeframe: '1H', timestamp, field: 'pattern', role: 'OBJECTIVE', claimed_level: null }]
+        }, packet);
+        expect(result.status).toBe('UNVERIFIED');
+        expect(result.valid).toBe(false);
+        expect(result.warnings).toEqual(expect.arrayContaining([expect.stringMatching(/^RAW_(CRT|TBS|SUPPLY|DEMAND|FLIP|BREAKER)_/)]));
     });
 
     it('rejects an evidence item whose stable candle ID belongs to another timeframe or timestamp', () => {
@@ -3919,6 +4099,25 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         vm.runInContext("currentScanArtifact = { symbol: 'BTC/USD', signal: { pair: 'BTC/USD', snapshot_id: 'SNAP-BTC/USD' }, replay: __rawReplay }", ctx);
         ctx.copyRawMarketAnalysisPacket();
         expect(ctx.navigator.clipboard.writeText).not.toHaveBeenCalled();
+    });
+
+    it('keeps an unavailable RAW quote unknown instead of treating it as price zero', () => {
+        const ctx = getContext();
+        const replay = makeReplay(true, 'BTC/USD');
+        replay.quote.price = null;
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay });
+        expect(packet.current_market_observation.current_price).toBeNull();
+        const timestamp = packet.timeframes['1H'].candles[50].t;
+        const result = ctx.validateRawMarketAnalysisDecision({
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD',
+            decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB', market_phase: 'RETRACEMENT', confidence: 60, risk_reward: 2,
+            entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 260,
+            source_candle_timestamps: [{ timeframe: '1H', timestamp }], invalidation_source_candle_timestamps: [{ timeframe: '1H', timestamp }], objective_source_candle_timestamps: [{ timeframe: '1H', timestamp }],
+            invalidation_basis: 'ZONE_FAR_EDGE', evidence: [{ candle_id: `1H:${timestamp}`, timeframe: '1H', timestamp, role: 'LOCATION', field: 'pattern', claimed_level: null }],
+            target_evidence: [{ candle_id: `1H:${timestamp}`, timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'pattern', claimed_level: null }]
+        }, packet);
+        expect(result.issues).not.toContain('RAW_PENDING_BUY_ENTRY_NOT_BELOW_CURRENT_PRICE');
+        expect(result.status).not.toBe('VALIDATED');
     });
 
     it('reports deterministic RR mismatch without allowing the AI-reported value to become authoritative', () => {

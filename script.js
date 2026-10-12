@@ -12305,6 +12305,7 @@ const RAW_MARKET_ANALYSIS_MAX_CANDLES = 200;
 const RAW_MARKET_ANALYSIS_PHASES = new Set(['ORIGINAL_SETUP', 'EARLY_DELIVERY', 'EXPANSION', 'RETRACEMENT', 'CONTINUATION_READY', 'LATE_DELIVERY', 'TRANSITION_WAIT']);
 
 function rawMarketAnalysisNumber(value) {
+    if (value === null || value === undefined || value === '') return null;
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
 }
@@ -12365,6 +12366,7 @@ function buildRawMarketAnalysisInstruction() {
         'MARKET-CLOSURE GAP POLICY: Check the asset class, UTC timestamps, provider/session status, and project calendar before calling a discontinuity missing data. For scheduled non-crypto weekend or session closures, the final pre-close candle to the first post-reopen candle is an expected boundary, not an in-session provider failure. Do not invent candles to fill it, and do not veto an otherwise supported 1H or 4H historical formation solely because 5M/15M continuity is absent across that closure. Missing candles inside an expected open session remain a data-quality issue; unavailable source candles required by a model still prevent that model from being proven. A closure gap may still affect lifecycle, mitigation, invalidation, or a weekend price gap when the actual post-reopen prices support that conclusion.',
         'ASSET-NEUTRAL PENDING-LIMIT POLICY: Apply the same formation-versus-entry-confirmation distinction to every supported asset class, using only the packet asset_class, symbol metadata, session/calendar facts, and candles. Do not import XAU/USD, forex, crypto, index, or equity session assumptions into another symbol. A valid historical formation may be evaluated as a standing BUY LIMIT or SELL LIMIT without fresh lower-timeframe entry confirmation; lower-timeframe evidence may inform lifecycle and quality but is not a universal veto.',
         'BOTH-SIDE HISTORICAL SEARCH: complete the BUY LIMIT search and SELL LIMIT search independently, including older 4H and 1H locations. Compare both sides only after model formation and lifecycle checks; do not preselect direction from trend, session, phase, or the first candidate found.',
+        'DIRECTIONAL CONTEXT BEFORE SELECTION: establish 1D/4H context, 1H/15M structure and momentum, and relevant 5M delivery from the supplied candles before comparing trade hypotheses. In confirmed bearish conditions prioritize searching valid SELL LIMIT formations above price; in confirmed bullish conditions prioritize valid BUY LIMIT formations below price; in mixed or ranging conditions evaluate both sides without a direction gate. RSI, moving averages, one impulsive candle, session, or numeric RR is not proof of reversal or continuation. Prioritization is not permission to manufacture a trade or skip the opposing side.',
         'Generic support, resistance, demand, or supply language is not by itself a confirmed ICT/SMC model. Use a supported model label only when its project-method formation, chronology, mitigation state, invalidation rule, and source-candle evidence are all explicit. If the model cannot be proven, return NO_TRADE rather than upgrading a visual zone.',
         '',
         'INDEPENDENT EVIDENCE REQUIREMENTS',
@@ -12502,6 +12504,232 @@ function rawMarketAnalysisCandleIndex(packet = {}) {
     return { allTimes, byTimeframe };
 }
 
+function validateRawFvgClaim(normalized = {}, direction = null, candleIndex = {}, entryZone = null, evidence = []) {
+    const issues = [];
+    const add = code => { if (!issues.includes(code)) issues.push(code); };
+    const sourceValues = Array.isArray(normalized.source_candle_timestamps) ? normalized.source_candle_timestamps : [];
+    if (sourceValues.length !== 3) {
+        add('RAW_FVG_SOURCE_CANDLES_REQUIRED');
+        return { issues };
+    }
+    const references = sourceValues.map(value => {
+        const timestamp = typeof value === 'object' ? value.time ?? value.timestamp : value;
+        const matches = evidence.filter(item => item && String(item.timestamp) === String(timestamp) && typeof item.timeframe === 'string');
+        const timeframes = [...new Set(matches.map(item => item.timeframe))];
+        const timeframe = timeframes.length === 1 ? timeframes[0] : (typeof value === 'object' ? value.timeframe : null);
+        const candle = timeframe ? candleIndex.byTimeframe.get(timeframe)?.get(String(timestamp)) : null;
+        return { timestamp, timeframe, candle, evidenceMatches: matches };
+    });
+    if (references.some(reference => !reference.candle)) add('RAW_FVG_SOURCE_CANDLE_REFERENCE_INVALID');
+    const timeframes = [...new Set(references.map(reference => reference.timeframe).filter(Boolean))];
+    if (timeframes.length !== 1 || references.some(reference => !reference.evidenceMatches.length)) add('RAW_FVG_SOURCE_EVIDENCE_INCOMPLETE');
+    if (issues.length) return { issues };
+    const timeframe = timeframes[0];
+    const candles = references.map(reference => reference.candle);
+    const ordered = candles.every((candle, index) => index === 0 || String(candles[index - 1].t) < String(candle.t));
+    if (!ordered) {
+        add('RAW_FVG_SOURCE_CHRONOLOGY_INVALID');
+        return { issues };
+    }
+    const first = candles[0];
+    const third = candles[2];
+    const isBullish = direction === 'BUY';
+    const isBearish = direction === 'SELL';
+    const gapLow = isBullish ? rawMarketAnalysisNumber(first.h) : rawMarketAnalysisNumber(third.h);
+    const gapHigh = isBullish ? rawMarketAnalysisNumber(third.l) : rawMarketAnalysisNumber(first.l);
+    const gapWidth = gapHigh - gapLow;
+    const geometryValid = isBullish
+        ? rawMarketAnalysisNumber(first.h) < rawMarketAnalysisNumber(third.l)
+        : isBearish
+            ? rawMarketAnalysisNumber(first.l) > rawMarketAnalysisNumber(third.h)
+            : false;
+    if (!geometryValid || !(Number.isFinite(gapWidth) && gapWidth > 0)) add('RAW_FVG_FORMATION_INVALID');
+    if (geometryValid && Array.isArray(entryZone) && entryZone.length === 2) {
+        const tolerance = Math.max(1e-9, Math.abs(gapLow) * 1e-10);
+        if (entryZone[0] < gapLow - tolerance || entryZone[1] > gapHigh + tolerance) add('RAW_FVG_ENTRY_ZONE_NOT_WITHIN_FORMATION');
+    }
+    if (geometryValid) {
+        const candleMap = candleIndex.byTimeframe.get(timeframe);
+        const orderedCandles = candleMap ? [...candleMap.values()] : [];
+        const formationIndex = orderedCandles.findIndex(candle => String(candle.t) === String(third.t));
+        if (formationIndex >= 0 && typeof checkZoneFreshness === 'function') {
+            const lifecycle = checkZoneFreshness(orderedCandles, { low: gapLow, high: gapHigh, created_index: formationIndex, created_time: third.t }, direction);
+            if (lifecycle.used) add('RAW_FVG_LOCATION_NOT_ACTIONABLE');
+        }
+    }
+    return { issues, timeframe, gap_low: gapLow, gap_high: gapHigh, first_knowable_time: third.t };
+}
+
+function rawModelTimeframe(normalized = {}, evidence = []) {
+    const values = [
+        ...(Array.isArray(normalized.source_candle_timestamps) ? normalized.source_candle_timestamps : []),
+        ...(Array.isArray(normalized.invalidation_source_candle_timestamps) ? normalized.invalidation_source_candle_timestamps : [])
+    ];
+    const timeframes = [...new Set([
+        ...values.filter(value => value && typeof value === 'object').map(value => value.timeframe),
+        ...(evidence || []).map(item => item?.timeframe)
+    ].filter(timeframe => AI_SEMANTIC_TIMEFRAMES.includes(timeframe)))];
+    return timeframes.length === 1 ? timeframes[0] : null;
+}
+
+function rawModelTimestampValues(values = []) {
+    return (Array.isArray(values) ? values : []).map(value => ({
+        timeframe: value && typeof value === 'object' ? value.timeframe : null,
+        timestamp: value && typeof value === 'object' ? (value.time ?? value.timestamp) : value
+    })).filter(value => value.timestamp !== null && value.timestamp !== undefined);
+}
+
+function rawHasTimestamp(values, timeframe, timestamp) {
+    return rawModelTimestampValues(values).some(value => String(value.timestamp) === String(timestamp) && (!value.timeframe || value.timeframe === timeframe));
+}
+
+function rawNumberEquals(left, right) {
+    const a = rawMarketAnalysisNumber(left);
+    const b = rawMarketAnalysisNumber(right);
+    return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= Math.max(1e-9, Math.abs(b) * 1e-10);
+}
+
+function rawModelSourceReferences(normalized = {}, evidence = [], candleIndex = {}) {
+    const refs = rawModelTimestampValues(normalized.source_candle_timestamps);
+    return refs.map(ref => ({
+        ...ref,
+        candle: AI_SEMANTIC_TIMEFRAMES.includes(ref.timeframe)
+            ? candleIndex.byTimeframe.get(ref.timeframe)?.get(String(ref.timestamp)) || null
+            : null,
+        evidence: (evidence || []).filter(item => String(item?.timestamp) === String(ref.timestamp) && item?.timeframe === ref.timeframe)
+    }));
+}
+
+function rawVerifyRemainingTargets(normalized = {}, direction = null, candleIndex = {}) {
+    const warnings = [];
+    const targets = [normalized.tp1, normalized.tp2, normalized.tp3].map(rawMarketAnalysisNumber);
+    const evidence = Array.isArray(normalized.target_evidence) ? normalized.target_evidence : [];
+    if (targets.some(value => !Number.isFinite(value)) || evidence.length < 3) {
+        warnings.push('RAW_TARGET_OBJECTIVE_PROVENANCE_UNVERIFIED');
+        return { verified: false, warnings };
+    }
+    const expectedField = direction === 'BUY' ? 'high' : 'low';
+    for (let index = 0; index < 3; index++) {
+        const item = evidence[index];
+        const timeframe = item?.timeframe;
+        const timestamp = item?.timestamp;
+        const candle = AI_SEMANTIC_TIMEFRAMES.includes(timeframe)
+            ? candleIndex.byTimeframe.get(timeframe)?.get(String(timestamp))
+            : null;
+        if (!candle || String(item.field || '').toLowerCase() !== expectedField || item.role !== 'OBJECTIVE') {
+            warnings.push('RAW_TARGET_OBJECTIVE_PROVENANCE_UNVERIFIED');
+            continue;
+        }
+        const actual = rawMarketAnalysisNumber(candle[expectedField === 'high' ? 'h' : 'l']);
+        if (!rawNumberEquals(item.claimed_level, actual) || !rawNumberEquals(targets[index], actual)) {
+            warnings.push('RAW_TARGET_OBJECTIVE_PROVENANCE_UNVERIFIED');
+            continue;
+        }
+        const data = [...(candleIndex.byTimeframe.get(timeframe)?.values() || [])];
+        const swings = findSwings(data, 3);
+        const source = (direction === 'BUY' ? swings.H : swings.L).find(swing => String(data[swing.i]?.t) === String(timestamp) && rawNumberEquals(swing.p, actual));
+        if (!source) {
+            warnings.push('RAW_TARGET_OBJECTIVE_NOT_CONFIRMED_SWING');
+            continue;
+        }
+        const lifecycle = assessTargetLifecycle({
+            level: actual,
+            direction,
+            source: direction === 'BUY' ? 'SWING_HIGH' : 'SWING_LOW',
+            timeframe,
+            source_index: source.i,
+            lifecycle_required: true
+        }, { [timeframe]: data }, { timeframe });
+        if (!lifecycle.eligible || ['CONSUMED', 'INVALIDATED'].includes(lifecycle.lifecycle_state)) {
+            warnings.push('RAW_TARGET_OBJECTIVE_NOT_REMAINING');
+        }
+        if (!rawHasTimestamp(normalized.objective_source_candle_timestamps, timeframe, timestamp)) {
+            warnings.push('RAW_TARGET_SOURCE_TIMESTAMP_UNLINKED');
+        }
+    }
+    const uniqueWarnings = [...new Set(warnings)];
+    return { verified: uniqueWarnings.length === 0, warnings: uniqueWarnings };
+}
+
+function verifyRawModelClaim(normalized = {}, direction = null, setup = null, packet = {}, candleIndex = {}, evidence = [], entryZone = null) {
+    const warnings = [];
+    const pairValue = packet.packet_identity?.pair || packet.packet_identity?.symbol || '';
+    const timeframe = rawModelTimeframe(normalized, evidence);
+    const sourceRefs = rawModelSourceReferences(normalized, evidence, candleIndex);
+    const invalidationRefs = rawModelTimestampValues(normalized.invalidation_source_candle_timestamps);
+    const invalidationEvidence = (evidence || []).filter(item => String(item?.role || '').toUpperCase() === 'INVALIDATION');
+    const data = timeframe ? [...(candleIndex.byTimeframe.get(timeframe)?.values() || [])] : [];
+    if (!timeframe || !data.length || sourceRefs.some(ref => !ref.candle)) {
+        warnings.push('RAW_MODEL_SOURCE_PROVENANCE_UNVERIFIED');
+        return { verified: false, warnings, timeframe };
+    }
+    const currentPrice = rawMarketAnalysisNumber(packet.current_market_observation?.current_price);
+    const settings = packet.current_market_observation?.symbol_metadata || {};
+    const zoneLow = rawMarketAnalysisNumber(entryZone?.[0]);
+    const zoneHigh = rawMarketAnalysisNumber(entryZone?.[1]);
+    const stop = rawMarketAnalysisNumber(normalized.stop_loss);
+    const invalidationBasis = String(normalized.invalidation_basis || '').toUpperCase();
+    const sourceTimes = new Set(sourceRefs.map(ref => String(ref.timestamp)));
+    if (!invalidationRefs.length || !invalidationEvidence.length || invalidationEvidence.every(item => !rawNumberEquals(item.claimed_level, stop))) {
+        warnings.push('RAW_INVALIDATION_PROVENANCE_UNVERIFIED');
+    }
+    let matched = null;
+
+    if (setup === 'FVG') {
+        const fvg = detectFVG(data, pairValue, settings).find(candidate =>
+            (direction === 'BUY' ? candidate.type === 'bull' : candidate.type === 'bear') &&
+            sourceTimes.has(String(candidate.origin_time)) && sourceTimes.has(String(candidate.formation_time)) &&
+            zoneLow >= Number(candidate.l) - Math.max(1e-9, Math.abs(candidate.l) * 1e-10) &&
+            zoneHigh <= Number(candidate.h) + Math.max(1e-9, Math.abs(candidate.h) * 1e-10));
+        if (!fvg) return { verified: false, warnings: ['RAW_FVG_FORMATION_UNVERIFIED'], timeframe };
+        const lifecycle = checkZoneFreshness(data, { low: fvg.l, high: fvg.h, created_index: fvg.source_index, created_time: fvg.formation_time }, direction);
+        if (lifecycle.used) return { verified: false, issues: ['RAW_FVG_LOCATION_NOT_ACTIONABLE'], warnings, timeframe };
+        const expectedStop = direction === 'BUY' ? Number(fvg.l) : Number(fvg.h);
+        if (!rawNumberEquals(stop, expectedStop) || invalidationBasis !== 'ZONE_FAR_EDGE') {
+            warnings.push('RAW_FVG_EXECUTION_INVALIDATION_UNVERIFIED');
+        } else matched = fvg;
+    } else if (setup === 'OB') {
+        const obs = detectOrderBlocks(data, direction);
+        matched = obs.find(candidate => sourceTimes.has(String(candidate.origin_time)) && sourceTimes.has(String(candidate.formation_time)) &&
+            zoneLow >= Number(candidate.low) - Math.max(1e-9, Math.abs(candidate.low) * 1e-10) &&
+            zoneHigh <= Number(candidate.high) + Math.max(1e-9, Math.abs(candidate.high) * 1e-10));
+        if (!matched) return { verified: false, issues: ['RAW_OB_FORMATION_INVALID'], warnings, timeframe };
+        const lifecycle = checkZoneFreshness(data, { low: matched.low, high: matched.high, created_index: matched.source_index, created_time: matched.formation_time }, direction);
+        if (lifecycle.used) return { verified: false, issues: ['RAW_OB_LOCATION_NOT_ACTIONABLE'], warnings, timeframe };
+        const expectedStop = direction === 'BUY' ? Number(matched.low) : Number(matched.high);
+        if (!rawNumberEquals(stop, expectedStop) || invalidationBasis !== 'ZONE_FAR_EDGE') warnings.push('RAW_OB_EXECUTION_INVALIDATION_UNVERIFIED');
+    } else if (setup === 'MSNR') {
+        const levels = calculateMSNR(data, currentPrice, timeframe, pairValue, settings).structural_levels || [];
+        matched = levels.find(candidate => candidate.direction === direction && sourceTimes.has(String(candidate.source_time)) &&
+            zoneLow >= Number(candidate.zone_low) - Math.max(1e-9, Math.abs(candidate.zone_low) * 1e-10) &&
+            zoneHigh <= Number(candidate.zone_high) + Math.max(1e-9, Math.abs(candidate.zone_high) * 1e-10));
+        if (!matched) return { verified: false, issues: ['RAW_MSNR_FORMATION_INVALID'], warnings, timeframe };
+        if (!matched.primary_eligible || matched.invalidated || matched.freshness === 'MITIGATED') return { verified: false, issues: ['RAW_MSNR_LOCATION_NOT_ACTIONABLE'], warnings, timeframe };
+        const expectedStop = Number(matched.execution_invalidation?.level ?? matched.structural_invalidation);
+        if (!rawNumberEquals(stop, expectedStop) || invalidationBasis !== 'ZONE_FAR_EDGE') warnings.push('RAW_MSNR_EXECUTION_INVALIDATION_UNVERIFIED');
+    } else if (setup === 'CRT' || setup === 'TBS') {
+        const events = setup === 'CRT' ? detectCRTEvents(data, timeframe, pairValue, settings) : detectTurtleSoupEvents(data, timeframe, pairValue, settings);
+        const event = events.find(candidate => candidate.direction === direction && [candidate.source_time, candidate.reference_time, candidate.sweep_time, candidate.reclaim_time].filter(Boolean).every(time => sourceTimes.has(String(time))));
+        if (!event) return { verified: false, warnings: [`RAW_${setup}_FORMATION_UNVERIFIED`], timeframe };
+        if (!rawNumberEquals(stop, event.structural_invalidation) || invalidationBasis !== 'SWEEP_EXTREME') warnings.push(`RAW_${setup}_EXECUTION_INVALIDATION_UNVERIFIED`);
+        warnings.push(`RAW_${setup}_EXECUTION_ZONE_UNVERIFIED`);
+        matched = event;
+    } else if (setup === 'SUPPLY' || setup === 'DEMAND' || setup === 'FLIP' || setup === 'BREAKER') {
+        warnings.push(`RAW_${setup}_EXECUTION_UNVERIFIED`);
+    } else {
+        warnings.push('RAW_MODEL_UNSUPPORTED');
+    }
+    const firstKnowableTime = matched && (matched.first_knowable_time || matched.confirmation_time || matched.reclaim_time || matched.formation_time);
+    const snapshotAsOf = normalizeTimestampUTC(packet.packet_identity?.snapshot_as_of || packet.scan_as_of);
+    if (matched && Number.isFinite(normalizeTimestampUTC(firstKnowableTime)) && Number.isFinite(snapshotAsOf) && normalizeTimestampUTC(firstKnowableTime) > snapshotAsOf) {
+        return { verified: false, issues: ['RAW_MODEL_CONFIRMATION_AFTER_SNAPSHOT'], warnings, timeframe, matched };
+    }
+    if (!matched || warnings.length) return { verified: false, warnings: [...new Set(warnings)], timeframe, matched };
+    const targets = rawVerifyRemainingTargets(normalized, direction, candleIndex);
+    warnings.push(...targets.warnings);
+    return { verified: targets.verified, warnings: [...new Set(warnings)], timeframe, matched };
+}
+
 function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
     const issues = [];
     const warnings = [];
@@ -12559,6 +12787,10 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
     }
     const rr = calculateTradeRiskReward(direction, entry, stop, { tp1, tp2, tp3 });
     if (!(Number.isFinite(rr.risk) && rr.risk > 0)) add('RAW_NON_POSITIVE_RISK');
+    const reportedRiskReward = rawMarketAnalysisNumber(normalized.risk_reward);
+    const riskRewardMismatch = Number.isFinite(reportedRiskReward) && Number.isFinite(rr.rr_tp1)
+        ? Math.abs(reportedRiskReward - rr.rr_tp1) > 1e-9 : false;
+    if (riskRewardMismatch) warn('RAW_RISK_REWARD_MISMATCH');
     const candleIndex = rawMarketAnalysisCandleIndex(packet);
     const candleTimes = candleIndex.allTimes;
     const timestampFields = ['source_candle_timestamps', 'invalidation_source_candle_timestamps', 'objective_source_candle_timestamps'];
@@ -12596,6 +12828,10 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
     if (!supportedModels.has(setup)) add('RAW_MODEL_UNSUPPORTED');
     if (!normalized.invalidation_basis) add('RAW_INVALIDATION_BASIS_REQUIRED');
     if (!normalized.model_reasoning || typeof normalized.model_reasoning !== 'string') warn('RAW_MODEL_REASONING_MISSING');
+    if (setup === 'FVG') {
+        const fvgClaim = validateRawFvgClaim(normalized, direction, candleIndex, rawEntryZone, evidence);
+        for (const issue of fvgClaim.issues) add(issue);
+    }
     const currentPrice = rawMarketAnalysisNumber(packet.current_market_observation?.current_price);
     if (tradeType === 'PENDING_LIMIT' && Number.isFinite(currentPrice) && Number.isFinite(entry)) {
         if (direction === 'BUY' && entry >= currentPrice) add('RAW_PENDING_BUY_ENTRY_NOT_BELOW_CURRENT_PRICE');
@@ -12606,21 +12842,24 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
             if (direction === 'SELL' && target >= currentPrice) add('RAW_PENDING_SELL_TARGET_NOT_BELOW_CURRENT_PRICE');
         }
     }
-    // Raw candles provide inputs, not a trusted catalogue. Until a model-specific
-    // verifier proves the claimed formation, a geometrically plausible trade is
-    // deliberately not approved.
-    if (!issues.length && outcome === 'TRADE') warn('RAW_MODEL_CLAIM_UNVERIFIED');
-    if (!issues.length && outcome === 'TRADE') warn('RAW_LEVEL_PROVENANCE_REQUIRES_MODEL_RECONSTRUCTION');
+    const modelVerification = !issues.length && outcome === 'TRADE'
+        ? verifyRawModelClaim(normalized, direction, setup, packet, candleIndex, evidence, rawEntryZone)
+        : { verified: false, warnings: [] };
+    for (const warning of modelVerification.warnings || []) warn(warning);
+    for (const issue of modelVerification.issues || []) add(issue);
+    if (!issues.length && outcome === 'TRADE' && !modelVerification.verified) warn('RAW_MODEL_CLAIM_UNVERIFIED');
+    if (!issues.length && outcome === 'TRADE' && !modelVerification.verified) warn('RAW_LEVEL_PROVENANCE_REQUIRES_MODEL_RECONSTRUCTION');
+    const status = issues.length ? 'REJECTED' : modelVerification.verified ? 'VALIDATED' : 'UNVERIFIED';
     return {
-        status: issues.length ? 'REJECTED' : 'UNVERIFIED',
-        valid: false,
+        status,
+        valid: status === 'VALIDATED',
         issues,
         warnings,
         normalized_decision: normalized,
+        model_verification: modelVerification,
         authoritative_risk_reward: rr,
-        reported_risk_reward: rawMarketAnalysisNumber(normalized.risk_reward),
-        risk_reward_mismatch: Number.isFinite(rawMarketAnalysisNumber(normalized.risk_reward)) && Number.isFinite(rr.rr_tp1)
-            ? Math.abs(rawMarketAnalysisNumber(normalized.risk_reward) - rr.rr_tp1) > 1e-9 : false
+        reported_risk_reward: reportedRiskReward,
+        risk_reward_mismatch: riskRewardMismatch
     };
 }
 
