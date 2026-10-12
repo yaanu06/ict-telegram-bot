@@ -866,7 +866,6 @@ function init() {
     if(el('analyzeBtn')) el('analyzeBtn').addEventListener('click', runAutoScan);
     if(el('executeBtn')) el('executeBtn').addEventListener('click', handleLimit);
     if(el('cancelLimitBtn')) el('cancelLimitBtn').addEventListener('click', cancelLimit);
-    if(el('copyJsonBtn')) el('copyJsonBtn').addEventListener('click', copyJson);
     if(el('copyRawMarketBtn')) el('copyRawMarketBtn').addEventListener('click', copyRawMarketAnalysisPacket);
     if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click', showSetup);
     if(el('saveSetupBtn')) el('saveSetupBtn').addEventListener('click', saveCurrentSetup);
@@ -12303,6 +12302,7 @@ window.replayCapturedScan = replayCapturedScan;
 const AI_SEMANTIC_TIMEFRAMES = ['1D', '4H', '1H', '15M', '5M'];
 const RAW_MARKET_ANALYSIS_PACKET_SCHEMA = 'RAW_MARKET_ANALYSIS_V1';
 const RAW_MARKET_ANALYSIS_MAX_CANDLES = 200;
+const RAW_MARKET_ANALYSIS_PHASES = new Set(['ORIGINAL_SETUP', 'EARLY_DELIVERY', 'EXPANSION', 'RETRACEMENT', 'CONTINUATION_READY', 'LATE_DELIVERY', 'TRANSITION_WAIT']);
 
 function rawMarketAnalysisNumber(value) {
     const number = Number(value);
@@ -12358,12 +12358,13 @@ function buildRawMarketAnalysisInstruction() {
         'INDEPENDENT EVIDENCE REQUIREMENTS',
         'For a TRADE, cite source candle timestamps for the location, confirmation, invalidation, and each objective. Explain the model-specific formation and confirmation in concise fields, not hidden reasoning. Use only prices derivable from the supplied candles and documented model semantics.',
         'The selected entry zone, entry, invalidation, stop, and objectives are hypotheses to be independently checked against these candles. Numerical proximity is not provenance. If the model, invalidation, or objective cannot be independently supported, return NO_TRADE or mark the proposal UNVERIFIED according to the external validator contract.',
+        'PENDING_LIMIT SEMANTICS: a BUY pending entry may be below current price and a SELL pending entry may be above current price; current price need not be inside or touching the zone at analysis time. Do not require a fresh 5M/15M confirmation that would only occur after a future fill unless the selected model explicitly requires it. A pending entry must still be inside its claimed zone and have a source-supported protective stop and remaining objectives.',
         '',
         'EXECUTION AND RR',
         'For BUY: stop_loss < entry < TP1/TP2/TP3. For SELL: stop_loss > entry > TP1/TP2/TP3. Risk must be finite and strictly positive. Calculate risk and RR from the exact proposed entry, stop_loss, and each target; the reported risk_reward is diagnostic only.',
         '',
         'OUTPUT CONTRACT',
-        'Return one JSON object only with schema RAW_MARKET_ANALYSIS_V1_RESULT and the exact packet symbol and snapshot_id. Include pair, snapshot_id, decision, direction, trade_type, setup, market_phase, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, confidence, source_candle_timestamps, invalidation_source_candle_timestamps, objective_source_candle_timestamps, invalidation_basis, evidence, target_evidence, conflicts, and concise model_reasoning. For NO_TRADE, set trade geometry fields to null and explain the factual reason. Do not invent IDs or claim code-side catalogue approval.'
+        'Return exactly one valid JSON object. Do not include Markdown fences, text before or after the JSON, comments, JavaScript expressions, NaN, Infinity, or trailing commas. Use schema RAW_MARKET_ANALYSIS_V1_RESULT and the exact packet symbol and snapshot_id. Every TRADE must use trade_type PENDING_LIMIT only. Include pair, snapshot_id, decision, direction, trade_type, setup, market_phase, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, confidence, source_candle_timestamps, invalidation_source_candle_timestamps, objective_source_candle_timestamps, invalidation_basis, evidence, target_evidence, conflicts, and concise model_reasoning. For NO_TRADE, set direction, trade_type, setup, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, and confidence to null, and explain the factual reason. Do not invent IDs or claim code-side catalogue approval.'
     ].join('\n');
 }
 
@@ -12441,6 +12442,7 @@ function buildRawMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         output_contract: {
             schema: 'RAW_MARKET_ANALYSIS_V1_RESULT',
             decision_values: ['TRADE', 'NO_TRADE'],
+            trade_type_values: ['PENDING_LIMIT'],
             direction_values: ['BUY', 'SELL'],
             required_trade_fields: ['pair', 'decision', 'direction', 'trade_type', 'setup', 'entry_zone', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk_reward', 'source_candle_timestamps', 'invalidation_source_candle_timestamps', 'objective_source_candle_timestamps', 'invalidation_basis'],
             evidence_item: { timeframe: '1H', timestamp: 'exact candle t', field: 'high|low|open|close|pattern', role: 'LOCATION|CONFIRMATION|INVALIDATION|OBJECTIVE', claimed_level: 'finite number or null', chronology: 'why this candle is knowable in sequence' },
@@ -12483,10 +12485,15 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
     if (packet.snapshot_status?.complete !== true) add('RAW_SNAPSHOT_INCOMPLETE');
     if (packetPair && decisionPair && packetPair !== decisionPair) add('RAW_DECISION_SYMBOL_MISMATCH');
     if (packet.packet_identity?.snapshot_id && normalized.snapshot_id !== packet.packet_identity.snapshot_id) add('RAW_SNAPSHOT_ID_MISMATCH');
+    if (normalized.market_phase !== null && normalized.market_phase !== undefined && !RAW_MARKET_ANALYSIS_PHASES.has(String(normalized.market_phase).toUpperCase())) add('RAW_MARKET_PHASE_INVALID');
     const isNoTrade = outcome === 'NO_TRADE';
     const isTrade = outcome === 'TRADE' || outcome === 'BUY' || outcome === 'SELL';
     if (!isTrade && !isNoTrade) add('RAW_DECISION_INVALID');
-    if (isNoTrade) return { status: issues.length ? 'REJECTED' : 'NO_TRADE', valid: issues.length === 0, issues, warnings, normalized_decision: normalized };
+    if (isNoTrade) {
+        const noTradeFields = ['direction', 'trade_type', 'setup', 'entry_zone', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk_reward', 'confidence'];
+        if (noTradeFields.some(field => normalized[field] !== null)) add('RAW_NO_TRADE_FIELDS_MUST_BE_NULL');
+        return { status: issues.length ? 'REJECTED' : 'NO_TRADE', valid: issues.length === 0, issues, warnings, normalized_decision: normalized };
+    }
     if (outcome === 'BUY' || outcome === 'SELL') {
         if (!direction) {
             direction = outcome;
@@ -12494,6 +12501,8 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
         }
     }
     if (!['BUY', 'SELL'].includes(direction)) add('RAW_DIRECTION_REQUIRED');
+    const tradeType = String(normalized.trade_type || '').toUpperCase();
+    if (tradeType !== 'PENDING_LIMIT') add('RAW_TRADE_TYPE_MUST_BE_PENDING_LIMIT');
     const entry = rawMarketAnalysisNumber(normalized.entry);
     const stop = rawMarketAnalysisNumber(normalized.stop_loss);
     const tp1 = rawMarketAnalysisNumber(normalized.tp1);
@@ -12541,6 +12550,11 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
     if (!supportedModels.has(setup)) add('RAW_MODEL_UNSUPPORTED');
     if (!normalized.invalidation_basis) add('RAW_INVALIDATION_BASIS_REQUIRED');
     if (!normalized.model_reasoning || typeof normalized.model_reasoning !== 'string') warn('RAW_MODEL_REASONING_MISSING');
+    const currentPrice = rawMarketAnalysisNumber(packet.current_market_observation?.current_price);
+    if (tradeType === 'PENDING_LIMIT' && Number.isFinite(currentPrice) && Number.isFinite(entry)) {
+        if (direction === 'BUY' && entry >= currentPrice) add('RAW_PENDING_BUY_ENTRY_NOT_BELOW_CURRENT_PRICE');
+        if (direction === 'SELL' && entry <= currentPrice) add('RAW_PENDING_SELL_ENTRY_NOT_ABOVE_CURRENT_PRICE');
+    }
     // Raw candles provide inputs, not a trusted catalogue. Until a model-specific
     // verifier proves the claimed formation, a geometrically plausible trade is
     // deliberately not approved.
@@ -12559,13 +12573,53 @@ function validateRawMarketAnalysisDecision(decision = {}, packet = {}) {
     };
 }
 
+function parseRawMarketAnalysisDecision(raw) {
+    if (typeof raw !== 'string') return { valid: false, issue: 'RAW_JSON_FORMAT_INVALID', error: 'Response must be a JSON string.' };
+    const text = raw.trim();
+    if (!text || text[0] !== '{' || text[text.length - 1] !== '}') {
+        return { valid: false, issue: 'RAW_JSON_FORMAT_INVALID', error: 'Response must contain exactly one JSON object.' };
+    }
+    try {
+        const decision = JSON.parse(text);
+        if (!decision || typeof decision !== 'object' || Array.isArray(decision)) {
+            return { valid: false, issue: 'RAW_JSON_FORMAT_INVALID', error: 'Response must be one JSON object.' };
+        }
+        const stack = [decision];
+        while (stack.length) {
+            const value = stack.pop();
+            if (typeof value === 'number' && !Number.isFinite(value)) {
+                return { valid: false, issue: 'RAW_JSON_NON_FINITE_NUMBER', error: 'JSON contains a non-finite number.' };
+            }
+            if (Array.isArray(value)) stack.push(...value);
+            else if (value && typeof value === 'object') stack.push(...Object.values(value));
+        }
+        return { valid: true, decision };
+    } catch (error) {
+        return { valid: false, issue: 'RAW_JSON_FORMAT_INVALID', error: error.message };
+    }
+}
+
 function copyRawMarketAnalysisPacket() {
     const artifact = currentScanArtifact;
-    if (!artifact?.replay) {
-        showNotif('Run analysis first', 'warning');
+    const activePair = normalizeCanonicalMarketSymbol(pair);
+    const artifactPair = normalizeCanonicalMarketSymbol(artifact?.symbol || artifact?.replay?.pair || '');
+    if (!artifact?.replay || !artifactPair || !activePair || artifactPair !== activePair) {
+        showNotif('Run a current-symbol analysis first', 'warning');
         return;
     }
     const packet = buildRawMarketAnalysisPacket({ signal: artifact.signal, replay: artifact.replay });
+    if (packet.snapshot_status?.complete !== true || packet.snapshot_status?.analysis_allowed !== true || !packet.packet_identity?.snapshot_id) {
+        showNotif('RAW market snapshot is incomplete or unavailable', 'warning');
+        return;
+    }
+    if (packet.packet_identity.pair !== activePair) {
+        showNotif('RAW packet symbol does not match the current symbol', 'warning');
+        return;
+    }
+    if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
+        showNotif('Clipboard unavailable', 'error');
+        return;
+    }
     navigator.clipboard.writeText(JSON.stringify(packet, null, 2))
         .then(() => showNotif('RAW_MARKET_ANALYSIS packet copied', 'success'))
         .catch(() => showNotif('Failed', 'error'));
@@ -12574,6 +12628,7 @@ function copyRawMarketAnalysisPacket() {
 if (typeof window !== 'undefined') {
     window.buildRawMarketAnalysisPacket = buildRawMarketAnalysisPacket;
     window.validateRawMarketAnalysisDecision = validateRawMarketAnalysisDecision;
+    window.parseRawMarketAnalysisDecision = parseRawMarketAnalysisDecision;
     window.copyRawMarketAnalysisPacket = copyRawMarketAnalysisPacket;
 }
 

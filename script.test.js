@@ -1086,7 +1086,8 @@ describe('top-down trade context', () => {
 
     it('removes the replay action while retaining the copy action', () => {
         const html = fs.readFileSync('index.html', 'utf8');
-        expect(html).toContain('id="copyJsonBtn"');
+        expect(html).not.toContain('id="copyJsonBtn"');
+        expect(html).toContain('id="copyRawMarketBtn"');
         expect(html).not.toContain('id="scanReplayBtn"');
         expect(code).not.toContain("getElementById('scanReplayBtn')");
     });
@@ -1095,7 +1096,8 @@ describe('top-down trade context', () => {
         expect(code).toContain('(event?.altKey || event?.shiftKey || event?.detail >= 2) && artifact?.replay');
         expect(code).toContain('buildExternalAIClipboardPacket({ signal: artifact.signal, replay: artifact.replay || null })');
         const html = fs.readFileSync('index.html', 'utf8');
-        expect(html).toContain('id="copyJsonBtn"');
+        expect(html).not.toContain('id="copyJsonBtn"');
+        expect(html).toContain('id="copyRawMarketBtn"');
         expect(html).not.toContain('Scan Replay</button>');
     });
 
@@ -2904,7 +2906,7 @@ describe('Analyze scan lifecycle', () => {
         expect(displayed.status).toBe('DATA_UNAVAILABLE');
         expect(displayed.reason.code).toBe('INCOMPLETE_MARKET_SNAPSHOT');
         expect(spies.runFallbackScan).not.toHaveBeenCalled();
-        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        vm.runInContext('copyJson()', context);
         const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
         expect(packet).toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
         expect(packet).toContain('NZD/USD');
@@ -2927,7 +2929,7 @@ describe('Analyze scan lifecycle', () => {
         expect(displayed.snapshot_complete).toBe(true);
         expect(displayed.context_construction_error.message).toBe('context construction failure');
         expect(spies.runFallbackScan).not.toHaveBeenCalled();
-        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        vm.runInContext('copyJson()', context);
         const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
         expect(packet).toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
         expect(packet).toContain('RUNTIME MARKET DATA TRACE');
@@ -2946,7 +2948,7 @@ describe('Analyze scan lifecycle', () => {
         // handlers used by the Mini App before changing symbols.
         vm.runInContext(`pair = '${priorPair}'`, context);
         await elements.get('analyzeBtn').dispatchEvent({ type: 'click' });
-        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        vm.runInContext('copyJson()', context);
         expect(context.navigator.clipboard.writeText.mock.calls.at(-1)[0]).toContain(priorPair);
 
         vm.runInContext(`pair = '${runtimePair}'`, context);
@@ -2955,7 +2957,7 @@ describe('Analyze scan lifecycle', () => {
         const displayed = JSON.parse(elements.get('jsonOutput').textContent).trade_signal;
         expect(displayed.status).toBe('DATA_UNAVAILABLE');
         expect(displayed.reason.code).toBe('INCOMPLETE_MARKET_SNAPSHOT');
-        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        vm.runInContext('copyJson()', context);
         const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
         expect(packet).toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
         expect(packet).toContain('DATA_UNAVAILABLE');
@@ -2983,7 +2985,7 @@ describe('Analyze scan lifecycle', () => {
         expect(displayed.snapshot_id).toBe(`TVKIT:${runtimePair.replace('/', '_')}:test`);
         expect(spies.askAIToFindSetup).not.toHaveBeenCalled();
         const historyCallsBeforeCopy = spies.getHistory.mock.calls.length;
-        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        vm.runInContext('copyJson()', context);
         const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
         expect(spies.getHistory).toHaveBeenCalledTimes(historyCallsBeforeCopy);
         expect(packet).toContain('EXTERNAL AI DECISION PACKET');
@@ -3063,7 +3065,7 @@ describe('Analyze scan lifecycle', () => {
             expect(displayed.history_diagnostics[timeframe].stage_progression).toContain('SNAPSHOT_CONSUMED');
             expect(displayed.history_diagnostics[timeframe].final_history_count).toBe(60);
         }
-        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        vm.runInContext('copyJson()', context);
         const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
         expect(packet).toContain('"serializer_id":"CURRENT_SCAN_ARTIFACT_V2"');
         expect(packet).toContain(`"scan_id":"${displayed.scan_id}"`);
@@ -3084,7 +3086,7 @@ describe('Analyze scan lifecycle', () => {
         }));
         expect(displayed.runtime_market_data_trace.boundaries.history_counts_after_load.history_counts)
             .toEqual({ '1D': 0, '4H': 0, '1H': 0, '15M': 0, '5M': 0 });
-        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        vm.runInContext('copyJson()', context);
         const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
         expect(packet).toContain('RUNTIME MARKET DATA TRACE');
         expect(packet).toContain('"history_cache_identity"');
@@ -3115,7 +3117,7 @@ describe('Analyze scan lifecycle', () => {
         const liveContextResult = spies.buildLiveMarketContext.mock.results[0].value;
         expect(liveContextResult.historyCache).toBe(liveContextArgs.historyCache);
         expect(liveContextResult.snapshot_completeness).toBe(liveContextArgs.snapshot_completeness);
-        elements.get('copyJsonBtn').dispatchEvent({ type: 'click' });
+        vm.runInContext('copyJson()', context);
         const packet = context.navigator.clipboard.writeText.mock.calls.at(-1)[0];
         expect(packet).toContain('EXTERNAL AI DECISION PACKET');
         expect(packet).toContain('EUR/USD');
@@ -3580,7 +3582,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
         const repeat = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
         const html = fs.readFileSync('index.html', 'utf8');
-        expect(html).toContain('id="copyJsonBtn"');
+        expect(html).not.toContain('id="copyJsonBtn"');
         expect(html).toContain('id="copyRawMarketBtn"');
         expect(code).toContain("el('copyRawMarketBtn').addEventListener('click', copyRawMarketAnalysisPacket)");
         expect(packet.packet_type).toBe('RAW_MARKET_ANALYSIS');
@@ -3601,6 +3603,9 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(forexPacket.timeframes['1H'].candles[0].v).toBeUndefined();
         expect(packet.external_ai_task).toContain('RAW_MARKET_ANALYSIS RESPONSIBILITY');
         expect(packet.external_ai_task).toContain('Assess BUY and SELL');
+        expect(packet.external_ai_task).toContain('Return exactly one valid JSON object');
+        expect(packet.external_ai_task).toContain('trade_type PENDING_LIMIT only');
+        expect(packet.output_contract.trade_type_values).toEqual(['PENDING_LIMIT']);
         expect(repeat.timeframes).toEqual(packet.timeframes);
         expect(packet).not.toHaveProperty('actionable_location_bundles');
         expect(packet).not.toHaveProperty('current_actionable_location_catalogue');
@@ -3619,7 +3624,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const timestamp = packet.timeframes['1H'].candles[50].t;
         const result = ctx.validateRawMarketAnalysisDecision({
             schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id,
-            pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', setup: 'OB',
+            pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB',
             entry_zone: [250, 251], entry: 250, stop_loss: 250, tp1: 260,
             source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp],
             invalidation_basis: 'SOURCE_CANDLE_EXTREME', model_reasoning: 'test'
@@ -3628,7 +3633,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(result.issues).toContain('RAW_NON_POSITIVE_RISK');
         const sell = ctx.validateRawMarketAnalysisDecision({
             schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id,
-            pair: 'BTC/USD', decision: 'TRADE', direction: 'SELL', setup: 'OB',
+            pair: 'BTC/USD', decision: 'TRADE', direction: 'SELL', trade_type: 'PENDING_LIMIT', setup: 'OB',
             entry: 250, stop_loss: 249, tp1: 240,
             source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp],
             invalidation_basis: 'SOURCE_CANDLE_EXTREME'
@@ -3641,7 +3646,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const ctx = getContext();
         const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
         const timestamp = packet.timeframes['1H'].candles[50].t;
-        const base = { schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', setup: 'OB', entry_zone: [250, 251], entry: 250, stop_loss: 240, tp1: 260, tp2: 270, tp3: 280,
+        const base = { schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', trade_type: 'PENDING_LIMIT', setup: 'OB', entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 260, tp2: 270, tp3: 280,
             source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'SOURCE_CANDLE_EXTREME', model_reasoning: 'test',
             evidence: [{ timeframe: '1H', timestamp, role: 'LOCATION', field: 'high', claimed_level: 251, chronology: 'closed source candle' }],
             target_evidence: [{ timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'high', claimed_level: 260, chronology: 'closed source candle' }] };
@@ -3649,17 +3654,81 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(buy.status).toBe('UNVERIFIED');
         expect(buy.valid).toBe(false);
         expect(buy.warnings).toContain('RAW_MODEL_CLAIM_UNVERIFIED');
-        const sell = ctx.validateRawMarketAnalysisDecision({ ...base, direction: 'SELL', entry: 250, stop_loss: 260, tp1: 240, tp2: 230, tp3: 220 }, packet);
+        const sell = ctx.validateRawMarketAnalysisDecision({ ...base, direction: 'SELL', entry_zone: [259, 261], entry: 260, stop_loss: 270, tp1: 240, tp2: 230, tp3: 220 }, packet);
         expect(sell.status).toBe('UNVERIFIED');
-        expect(sell.authoritative_risk_reward.rr_tp1).toBe(1);
+        expect(sell.authoritative_risk_reward.rr_tp1).toBe(2);
     });
 
     it('accepts a factual NO_TRADE result without pretending raw model claims are verified', () => {
         const ctx = getContext();
         const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
-        const result = ctx.validateRawMarketAnalysisDecision({ schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'NO_TRADE', reason: 'No independently verified model' }, packet);
+        const result = ctx.validateRawMarketAnalysisDecision({ schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'NO_TRADE', direction: null, trade_type: null, setup: null, entry_zone: null, entry: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null, confidence: null, reason: 'No independently verified model' }, packet);
         expect(result.status).toBe('NO_TRADE');
         expect(result.valid).toBe(true);
+    });
+
+    it('requires strict JSON and rejects non-pending trade types and non-null NO_TRADE fields', () => {
+        const ctx = getContext();
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
+        expect(ctx.parseRawMarketAnalysisDecision('{"decision":"NO_TRADE"}').valid).toBe(true);
+        expect(ctx.parseRawMarketAnalysisDecision('```json\n{}\n```').issue).toBe('RAW_JSON_FORMAT_INVALID');
+        expect(ctx.parseRawMarketAnalysisDecision('{"decision":"NO_TRADE"} trailing').valid).toBe(false);
+        const noTrade = ctx.validateRawMarketAnalysisDecision({ schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'NO_TRADE', direction: null, trade_type: null, setup: null, entry_zone: null, entry: null, stop_loss: null, tp1: null, tp2: null, tp3: null, risk_reward: null, confidence: 0, reason: 'not a trade' }, packet);
+        expect(noTrade.status).toBe('REJECTED');
+        expect(noTrade.issues).toContain('RAW_NO_TRADE_FIELDS_MUST_BE_NULL');
+        const timestamp = packet.timeframes['1H'].candles[50].t;
+        const base = { schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', setup: 'OB', entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 250, source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'SOURCE_CANDLE_EXTREME', evidence: [{ timeframe: '1H', timestamp, role: 'LOCATION' }], target_evidence: [{ timeframe: '1H', timestamp, role: 'OBJECTIVE' }] };
+        const market = ctx.validateRawMarketAnalysisDecision({ ...base, trade_type: 'MARKET' }, packet);
+        expect(market.status).toBe('REJECTED');
+        expect(market.issues).toContain('RAW_TRADE_TYPE_MUST_BE_PENDING_LIMIT');
+        const confirmation = ctx.validateRawMarketAnalysisDecision({ ...base, trade_type: 'CONFIRMATION_ENTRY' }, packet);
+        expect(confirmation.status).toBe('REJECTED');
+        expect(confirmation.issues).toContain('RAW_TRADE_TYPE_MUST_BE_PENDING_LIMIT');
+    });
+
+    it('allows BUY and SELL pending limits away from current price without requiring a current-zone touch', () => {
+        const ctx = getContext();
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
+        const timestamp = packet.timeframes['1H'].candles[50].t;
+        const evidence = [{ timeframe: '1H', timestamp, role: 'LOCATION', field: 'pattern', claimed_level: 240, chronology: 'closed source candle' }];
+        const targetEvidence = [{ timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'high', claimed_level: 260, chronology: 'closed source candle' }];
+        const common = { schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', trade_type: 'PENDING_LIMIT', setup: 'OB',
+            source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'SOURCE_CANDLE_EXTREME', evidence, target_evidence: targetEvidence, model_reasoning: 'closed-candle model claim' };
+        const buy = ctx.validateRawMarketAnalysisDecision({ ...common, direction: 'BUY', entry_zone: [239, 241], entry: 240, stop_loss: 230, tp1: 260 }, packet);
+        const sell = ctx.validateRawMarketAnalysisDecision({ ...common, direction: 'SELL', entry_zone: [259, 261], entry: 260, stop_loss: 270, tp1: 240 }, packet);
+        expect(buy.status).toBe('UNVERIFIED');
+        expect(buy.issues).not.toContain('RAW_PENDING_ENTRY_REQUIRES_CURRENT_TOUCH');
+        expect(sell.status).toBe('UNVERIFIED');
+        expect(sell.issues).not.toContain('RAW_PENDING_ENTRY_REQUIRES_CURRENT_TOUCH');
+    });
+
+    it('rejects pending limits that are not on the future-entry side of the current quote', () => {
+        const ctx = getContext();
+        const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
+        const timestamp = packet.timeframes['1H'].candles[50].t;
+        const common = { schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id, pair: 'BTC/USD', decision: 'TRADE', trade_type: 'PENDING_LIMIT', setup: 'OB',
+            source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'SOURCE_CANDLE_EXTREME', evidence: [{ timeframe: '1H', timestamp, role: 'LOCATION' }], target_evidence: [{ timeframe: '1H', timestamp, role: 'OBJECTIVE' }] };
+        const buy = ctx.validateRawMarketAnalysisDecision({ ...common, direction: 'BUY', entry_zone: [249, 251], entry: 250, stop_loss: 240, tp1: 260 }, packet);
+        expect(buy.status).toBe('REJECTED');
+        expect(buy.issues).toContain('RAW_PENDING_BUY_ENTRY_NOT_BELOW_CURRENT_PRICE');
+        const sell = ctx.validateRawMarketAnalysisDecision({ ...common, direction: 'SELL', entry_zone: [249, 251], entry: 250, stop_loss: 260, tp1: 240 }, packet);
+        expect(sell.status).toBe('REJECTED');
+        expect(sell.issues).toContain('RAW_PENDING_SELL_ENTRY_NOT_ABOVE_CURRENT_PRICE');
+    });
+
+    it('copies only a complete current-symbol RAW snapshot and refuses incomplete state', async () => {
+        const ctx = getContext();
+        ctx.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
+        ctx.__rawReplay = makeReplay(true, 'BTC/USD');
+        vm.runInContext("pair = 'BTC/USD'; currentScanArtifact = { symbol: 'BTC/USD', signal: { pair: 'BTC/USD', snapshot_id: 'SNAP-BTC/USD' }, replay: __rawReplay }", ctx);
+        ctx.copyRawMarketAnalysisPacket();
+        expect(ctx.navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(ctx.navigator.clipboard.writeText.mock.calls[0][0]).packet_schema).toBe('RAW_MARKET_ANALYSIS_V1');
+        ctx.navigator.clipboard.writeText.mockClear();
+        ctx.__rawReplay = makeReplay(false, 'BTC/USD');
+        vm.runInContext("currentScanArtifact = { symbol: 'BTC/USD', signal: { pair: 'BTC/USD', snapshot_id: 'SNAP-BTC/USD' }, replay: __rawReplay }", ctx);
+        ctx.copyRawMarketAnalysisPacket();
+        expect(ctx.navigator.clipboard.writeText).not.toHaveBeenCalled();
     });
 
     it('reports deterministic RR mismatch without allowing the AI-reported value to become authoritative', () => {
@@ -3668,13 +3737,13 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const timestamp = packet.timeframes['1H'].candles[50].t;
         const result = ctx.validateRawMarketAnalysisDecision({
             schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: packet.packet_identity.snapshot_id,
-            pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', setup: 'MSNR', entry_zone: [250, 251], entry: 250, stop_loss: 240, tp1: 260,
+            pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'MSNR', entry_zone: [240, 241], entry: 240, stop_loss: 230, tp1: 260,
             risk_reward: 22.79, source_candle_timestamps: [timestamp], invalidation_source_candle_timestamps: [timestamp], objective_source_candle_timestamps: [timestamp], invalidation_basis: 'MODEL_DEFINED',
             evidence: [{ timeframe: '1H', timestamp, role: 'LOCATION', field: 'high', claimed_level: 251, chronology: 'closed source candle' }],
             target_evidence: [{ timeframe: '1H', timestamp, role: 'OBJECTIVE', field: 'high', claimed_level: 260, chronology: 'closed source candle' }]
         }, packet);
         expect(result.status).toBe('UNVERIFIED');
-        expect(result.authoritative_risk_reward.rr_tp1).toBe(1);
+        expect(result.authoritative_risk_reward.rr_tp1).toBe(2);
         expect(result.reported_risk_reward).toBe(22.79);
         expect(result.risk_reward_mismatch).toBe(true);
     });
@@ -3683,7 +3752,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const ctx = getContext();
         const packet = ctx.buildRawMarketAnalysisPacket({ replay: makeReplay() });
         const result = ctx.validateRawMarketAnalysisDecision({
-            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: 'OTHER-SNAPSHOT', pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', setup: 'OB',
+            schema: 'RAW_MARKET_ANALYSIS_V1_RESULT', snapshot_id: 'OTHER-SNAPSHOT', pair: 'BTC/USD', decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'OB',
             entry_zone: [250, 251], entry: 250, stop_loss: 240, tp1: 260,
             source_candle_timestamps: ['not-in-snapshot'], invalidation_source_candle_timestamps: ['not-in-snapshot'], objective_source_candle_timestamps: ['not-in-snapshot'],
             invalidation_basis: 'SOURCE_CANDLE_EXTREME', evidence: [], target_evidence: []
