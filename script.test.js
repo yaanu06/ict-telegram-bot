@@ -3704,10 +3704,11 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
     it('requires independent model-by-model historical discovery without universal lower-timeframe gates', () => {
         const packet = getContext().buildRawMarketAnalysisPacket({ replay: makeReplay() });
         expect(packet.external_ai_task).toContain('MODEL-BY-MODEL INDEPENDENT SEARCH');
-        expect(packet.external_ai_task).toContain('MANDATORY FORMATION AUDIT BEFORE NO_TRADE');
-        expect(packet.external_ai_task).toContain('mechanically scan every consecutive same-timeframe three-candle window');
+        expect(packet.external_ai_task).toContain('FORMATION AUDIT BEFORE NO_TRADE');
+        expect(packet.external_ai_task).toContain('Check consecutive same-timeframe three-candle candidates as needed');
         expect(packet.external_ai_task).toContain('A mathematically valid gap is Stage A formation evidence');
-        expect(packet.external_ai_task).toContain('Only use FORMATION_NOT_FOUND when the full audit found no model-specific formation');
+        expect(packet.external_ai_task).toContain('Do not refuse because the packet is large');
+        expect(packet.external_ai_task).toContain('Only use FORMATION_NOT_FOUND when the supplied evidence does not establish a model-specific formation');
         expect(packet.external_ai_task).toContain('opposing source candle followed by a closed candle taking the source extreme');
         expect(packet.external_ai_task).toContain('bullish boundaries are previous high to next low and bearish boundaries are next high to previous low');
         expect(packet.external_ai_task).toContain('project body-direction transition');
