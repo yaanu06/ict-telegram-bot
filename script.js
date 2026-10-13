@@ -530,6 +530,14 @@ const CRYPTO_BASE_CODES = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'ADA', 'DOGE', 'L
 
 let lastScanRejections = [];
 const TF_MAP = { '1M':'1min','5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day','1W':'1week' };
+const HISTORY_OUTPUT_SIZE_BY_TIMEFRAME = Object.freeze({
+    '1M': 50,
+    '5M': 50,
+    '15M': 50,
+    '1H': 80,
+    '4H': 100,
+    '1D': 100
+});
 const ALL_TIMEFRAMES = ['1M', '5M', '15M', '1H', '4H', '1D', '1W'];
 const DEFAULT_ATR_PERIOD = 14;
 const BUY_INVALIDATION_FACTOR = 0.998;
@@ -1188,11 +1196,9 @@ async function getPrice(forPair, options = {}) {
     return null;
 }
 
-function getRequiredHistoryOutputSize() {
-    // Keep the provider request bounded while covering every configured lookback.
-    const spec = typeof STRATEGY_SPEC === 'object' ? STRATEGY_SPEC : {};
-    return Math.max(200, spec.MSNR?.lookback || 0, spec.TBS?.lookback || 0,
-        spec.CRT?.referenceLookback || 0, 60);
+function getRequiredHistoryOutputSize(timeframe = null) {
+    if (HISTORY_OUTPUT_SIZE_BY_TIMEFRAME[timeframe]) return HISTORY_OUTPUT_SIZE_BY_TIMEFRAME[timeframe];
+    return Math.max(...Object.values(HISTORY_OUTPUT_SIZE_BY_TIMEFRAME));
 }
 
 function getAssetClass(forPair = pair) {
@@ -1445,7 +1451,7 @@ async function fetchHistoryUncached(tfStr, forPair, options = {}) {
         provider_symbol: providerSymbol || null,
         interval: TF_MAP[tfStr] || null,
         cache_key: cacheKey,
-        requested_outputsize: getRequiredHistoryOutputSize(),
+        requested_outputsize: getRequiredHistoryOutputSize(tfStr),
         cache_bypassed: forceRefresh,
         request_started: new Date(requestStartedAt).toISOString(),
         http_status: null,
@@ -1504,7 +1510,7 @@ async function fetchHistoryUncached(tfStr, forPair, options = {}) {
         // make period-bucket requests fail for otherwise valid symbols.
         const timezoneQuery = ['1D', '1W'].includes(tfStr) ? '' : '&timezone=UTC';
         const d = await fetchTD(
-            '/time_series?symbol=' + encodeURIComponent(providerSymbol) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize() + timezoneQuery,
+            '/time_series?symbol=' + encodeURIComponent(providerSymbol) + '&interval=' + TF_MAP[tfStr] + '&outputsize=' + getRequiredHistoryOutputSize(tfStr) + timezoneQuery,
             provider === 'TVKIT' ? TVKIT_HISTORY_REQUEST_TIMEOUT_MS : 10000,
             provider === 'TVKIT' ? TVKIT_HISTORY_MAX_ATTEMPTS - 1 : 2,
             diagnostic,
@@ -1525,6 +1531,15 @@ async function fetchHistoryUncached(tfStr, forPair, options = {}) {
                 l: +c.low,
                 c: +c.close,
                 v: Number.isFinite(Number(c.volume)) ? Number(c.volume) : null,
+                provider_closed: typeof c?.is_closed === 'boolean'
+                    ? c.is_closed
+                    : typeof c?.closed === 'boolean'
+                        ? c.closed
+                        : typeof c?.is_confirmed === 'boolean'
+                            ? c.is_confirmed
+                            : typeof c?.confirmed === 'boolean'
+                                ? c.confirmed
+                                : null,
                 timeframe: tfStr,
                 source: provider,
                 timestamp_source: 'PROVIDER'
@@ -1542,7 +1557,8 @@ async function fetchHistoryUncached(tfStr, forPair, options = {}) {
                 // the bucket at its start or end, so completion is determined
                 // by whether a newer bucket exists, then by elapsed duration
                 // for the newest bucket. Intraday candles use elapsed duration.
-                candle.is_closed = Number.isFinite(candleTime) && (periodBucket
+                const providerClosed = typeof candle.provider_closed === 'boolean' ? candle.provider_closed : null;
+                candle.is_closed = providerClosed !== null ? providerClosed : Number.isFinite(candleTime) && (periodBucket
                     ? candleTime < latestBucketTime || candleTime + (TIMEFRAME_MS[tfStr] || 60 * 60000) <= Date.now()
                     : candleTime + (TIMEFRAME_MS[tfStr] || 60 * 60000) <= Date.now());
             }
@@ -1566,7 +1582,7 @@ async function fetchHistoryUncached(tfStr, forPair, options = {}) {
             if (values.some(c => !Number.isFinite(c.t))) throw new Error(`Invalid provider timestamp for ${tfStr}`);
             if (values.some(c => ![c.o, c.h, c.l, c.c].every(Number.isFinite))) throw new Error(`Invalid provider OHLC values for ${tfStr}`);
             if (values.some(c => c.h < Math.max(c.o, c.c) || c.l > Math.min(c.o, c.c) || c.h < c.l)) throw new Error(`Impossible provider OHLC geometry for ${tfStr}`);
-            values.reverse();
+            values.sort((left, right) => Number(left.t) - Number(right.t));
             for (let i = 1; i < values.length; i++) {
                 if (values[i].t <= values[i - 1].t) throw new Error(`Duplicate or unordered provider timestamps for ${tfStr}`);
             }
@@ -3466,7 +3482,7 @@ function markHistorySnapshotConsumed(historyCache = {}, pairLocal = pair, comple
                 provider_symbol: getMarketDataProvider() === 'TVKIT' ? getTvkitSymbol(canonicalPair) : getProviderSymbol(canonicalPair),
                 interval: TF_MAP[timeframe] || null,
                 cache_key: cacheKey,
-                requested_outputsize: getRequiredHistoryOutputSize(),
+                requested_outputsize: getRequiredHistoryOutputSize(timeframe),
                 request_started: null,
                 http_status: null,
                 response_ok: null,
@@ -12350,6 +12366,28 @@ function rawMarketAnalysisQuote(source = {}) {
     return result;
 }
 
+function rawMarketAnalysisTimeUtc(value) {
+    const numeric = Number(value);
+    const date = Number.isFinite(numeric) && String(value).trim() !== ''
+        ? new Date(numeric)
+        : new Date(value);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function rawMarketAnalysisRangeSummary(candles = [], timeframe = null) {
+    const recent = candles.slice(-20);
+    const highs = recent.map(candle => Number(candle.h)).filter(Number.isFinite);
+    const lows = recent.map(candle => Number(candle.l)).filter(Number.isFinite);
+    return {
+        label: String(timeframe || 'TIMEFRAME') + ' RANGE (LAST ' + String(recent.length) + ')',
+        candle_count: recent.length,
+        high: highs.length ? Math.max(...highs) : null,
+        low: lows.length ? Math.min(...lows) : null,
+        first_candle_id: recent[0]?.candle_id || null,
+        last_candle_id: recent.at(-1)?.candle_id || null
+    };
+}
+
 function buildRawMarketAnalysisInstruction() {
     const mandatoryFormationAudit = 'FORMATION AUDIT BEFORE NO_TRADE: perform an internal, evidence-first scan of the supplied closed candles before writing FORMATION_NOT_FOUND or stating that no FVG exists. Check consecutive same-timeframe three-candle candidates as needed, comparing candle 1 high with candle 3 low for a bullish gap and candle 1 low with candle 3 high for a bearish gap, then apply the remaining project FVG rules. Keep exact timeframe-qualified source candle IDs and boundaries in the internal audit. A mathematically valid gap is Stage A formation evidence even if it later fails lifecycle, invalidation, objective, or execution requirements; do not erase it or relabel it as no formation. Apply the same Stage A-versus-later-stage distinction to OB and MSNR. If any formation exists but cannot complete a trade, the final model_reasoning string must name the furthest reached stage, specific blocker, model, timeframe, and exact source candle IDs. Do not refuse because the packet is large, because an exhaustive proof receipt is impractical, or because execution metadata is unknown. Do not ask the user to choose an audit path or request another packet; return the single required JSON object. Only use FORMATION_NOT_FOUND when the supplied evidence does not establish a model-specific formation.';
     const candidateCompletionPass = 'STAGE C CANDIDATE COMPLETION PASS: after any Stage A/B formation survives, do not stop at market context or a formation narrative. Internally attempt a concrete pending-limit construction for each surviving BUY and SELL candidate: choose an entry inside the verified zone, the model-defined structural invalidation, and the remaining source-backed objectives in price order. For a bearish location above the observed price, explicitly test SELL LIMIT geometry and search the supplied higher- and lower-timeframe swing/liquidity evidence for eligible downside objectives; for a bullish location below the observed price, explicitly test BUY LIMIT geometry and search for eligible upside objectives. Objectives may come from a different supplied timeframe when their source candle and lifecycle are valid. A current-price touch and fresh lower-timeframe confirmation are not required for a valid pending limit. If the construction fails, state the exact furthest-stage blocker; if one construction passes, return TRADE with its exact evidence. Do not require every model or timeframe to agree, and do not return NO_TRADE merely because the first attempted candidate lacked targets.';
@@ -12392,6 +12430,8 @@ function buildRawMarketAnalysisInstruction() {
         'For BUY: stop_loss < entry < TP1/TP2/TP3. For SELL: stop_loss > entry > TP1/TP2/TP3. Risk must be finite and strictly positive. Calculate risk and RR from the exact proposed entry, stop_loss, and each target; the reported risk_reward is diagnostic only.',
         'EXECUTION SUITABILITY: distinguish structural validity from execution readiness. Use the selected model\'s real invalidation and available closed-candle ATR/volatility context to avoid arbitrarily tight stops chosen only to inflate RR. Treat missing or zero bid/ask/spread, stale or unknown quote freshness, unknown tick/precision, and unavailable broker stop-distance constraints as Stage D execution information; never assume those conditions are safe or READY, but do not use UNKNOWN alone to suppress a complete Stage C structural proposal. Do not widen or replace the proposed stop, and do not impose fresh 5M/15M confirmation for a valid pending limit.',
         '',
+        'PRICE ANCHOR SELF-CHECK: read price_anchor.current_price, price_anchor.quote_time, and the per-timeframe last_closed_candle entries before analyzing levels. Use the supplied range_summary high/low only as a compact arithmetic check of the last 20 raw candles; always verify any proposed level against the exact source candle and selected model zone. For BUY LIMIT, verify entry < current_price and stop_loss < entry; for SELL LIMIT, verify entry > current_price and stop_loss > entry. Verify that entry is inside the selected model\'s verified zone, not automatically inside a 4H range when the selected model formed on another timeframe.',
+        'STRICT FINAL RESPONSE SHAPE: after the internal analysis, reply with exactly one JSON object using the existing RAW_MARKET_ANALYSIS_V1_RESULT fields: schema, pair, snapshot_id, decision, direction, trade_type, setup, market_phase, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, confidence, source_candle_timestamps, invalidation_source_candle_timestamps, objective_source_candle_timestamps, invalidation_basis, evidence, target_evidence, conflicts, and model_reasoning. Do not replace this JSON with ACTION, ENTRY, STOP_LOSS, or TAKE_PROFIT text lines.',
         'OUTPUT CONTRACT',
         'Return exactly one valid JSON object. Do not include Markdown fences, text before or after the JSON, comments, JavaScript expressions, NaN, Infinity, or trailing commas. Never ask the user to choose between a corrected packet and a DATA_UNAVAILABLE result, never request another packet, and never return a clarification question or prose outside the JSON. If quote-to-history timing is uncertain, continue with the supplied closed candles, state the unobserved interval or structural limitation in model_reasoning, and serialize one valid result; if Stage C cannot be proven, return NO_TRADE with the required null trade fields. Include the field schema with exactly RAW_MARKET_ANALYSIS_V1_RESULT, plus the exact packet pair and snapshot_id. Every TRADE must use trade_type PENDING_LIMIT only, setup must be one supported label such as OB, FVG, MSNR, CRT, TBS, SUPPLY, DEMAND, FLIP, or BREAKER, market_phase must be exactly one of ORIGINAL_SETUP, EARLY_DELIVERY, EXPANSION, RETRACEMENT, CONTINUATION_READY, LATE_DELIVERY, or TRANSITION_WAIT (do not use RANGING), confidence must be an integer from 0 through 100, and risk_reward must be one numeric TP1 RR value (not an object). Include schema, pair, snapshot_id, decision, direction, trade_type, setup, market_phase, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, confidence, source_candle_timestamps, invalidation_source_candle_timestamps, objective_source_candle_timestamps, invalidation_basis, evidence, target_evidence, conflicts, and model_reasoning as one concise string (never an object or per-timeframe map). Every evidence and target_evidence item must include candle_id, timeframe, timestamp, field, role, claimed_level, and chronology. For NO_TRADE, keep market_phase as a supported enum when a phase can be established (use TRANSITION_WAIT when no more specific phase is supported), set direction, trade_type, setup, entry_zone, entry, stop_loss, tp1, tp2, tp3, risk_reward, and confidence to null, and explain the factual reason in the model_reasoning string. Do not invent IDs or claim code-side catalogue approval.'
     ].join('\n');
@@ -12414,6 +12454,7 @@ function buildRawMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         const timestampContract = providerMetadata.timestamp_contract || 'PROVIDER_CANDLE_TIMESTAMP_NORMALIZED_UTC';
         const periodBucket = timeframe === '1D';
         return [timeframe, {
+            section_header: '════════ TIMEFRAME: ' + timeframe + ' ════════',
             timeframe,
             provider: providerMetadata.provider || getMarketDataProvider(),
             provider_symbol: providerMetadata.provider_symbol || null,
@@ -12426,10 +12467,29 @@ function buildRawMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             candle_count: candles.length,
             first_closed_candle_id: candles[0]?.candle_id || null,
             last_closed_candle_id: candles.at(-1)?.candle_id || null,
-            candles
+            candles,
+            range_summary: rawMarketAnalysisRangeSummary(candles, timeframe)
         }];
     }));
     const missingTimeframes = AI_SEMANTIC_TIMEFRAMES.filter(timeframe => timeframes[timeframe].candle_count === 0);
+    const lastClosedByTimeframe = Object.fromEntries(AI_SEMANTIC_TIMEFRAMES.map(timeframe => {
+        const candles = timeframes[timeframe].candles;
+        const last = candles.at(-1) || null;
+        return [timeframe, last ? {
+            candle_id: last.candle_id,
+            timestamp: last.t,
+            time_utc: rawMarketAnalysisTimeUtc(last.t)
+        } : null];
+    }));
+    const latestClosed = AI_SEMANTIC_TIMEFRAMES
+        .map(timeframe => ({ timeframe, candle: timeframes[timeframe].candles.at(-1) }))
+        .filter(item => item.candle)
+        .sort((left, right) => {
+            const leftTime = Number.isFinite(Number(left.candle.t)) ? Number(left.candle.t) : Date.parse(left.candle.t);
+            const rightTime = Number.isFinite(Number(right.candle.t)) ? Number(right.candle.t) : Date.parse(right.candle.t);
+            return leftTime - rightTime;
+        })
+        .at(-1) || null;
     const suppliedCompleteness = source.snapshot_completeness || signal.snapshot_completeness || source.market_evidence_package?.snapshot_completeness || null;
     const replaySnapshotId = source.snapshot_id || null;
     const signalSnapshotId = signal.snapshot_id || null;
@@ -12457,6 +12517,19 @@ function buildRawMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             missing_timeframes: missingTimeframes,
             analysis_allowed: snapshotComplete,
             reason: snapshotComplete ? null : identityMismatch ? 'Replay and signal symbols do not match.' : snapshotMismatch ? 'Replay and signal snapshot IDs do not match.' : 'All five closed-candle timeframes are required for independent raw analysis.'
+        },
+        price_anchor: {
+            current_price: quote.current_price,
+            quote_time: quote.quote_time,
+            snapshot_as_of: source.scan_as_of || null,
+            latest_closed_candle: latestClosed ? {
+                timeframe: latestClosed.timeframe,
+                candle_id: latestClosed.candle.candle_id,
+                timestamp: latestClosed.candle.t,
+                time_utc: rawMarketAnalysisTimeUtc(latestClosed.candle.t)
+            } : null,
+            last_closed_candle_by_timeframe: lastClosedByTimeframe,
+            reference_semantics: 'current_price is an observed reference quote; candle timestamps are provider bucket starts or candle opens, not quote-time candle closes'
         },
         current_market_observation: {
             ...quote,
@@ -13020,6 +13093,145 @@ function parseRawMarketAnalysisDecision(raw) {
     }
 }
 
+const RAW_TEXT_PACKET_TIMEFRAMES = Object.freeze(['4H', '1H', '15M', '5M', '1M']);
+const RAW_TEXT_OUTPUT_CONTRACT = [
+    '=== OUTPUT CONTRACT ===',
+    'Reply ONLY in this format. No prose. No markdown.',
+    '',
+    'ACTION: BUY_LIMIT | SELL_LIMIT | NO_TRADE',
+    'ENTRY: <price>',
+    'STOP_LOSS: <price>',
+    'TAKE_PROFIT: <price>',
+    'TIMEFRAME_USED: <one of the TFs above>',
+    'REASON: <one sentence, max 20 words>',
+    '',
+    'Verify before replying. If any check fails, output ACTION: NO_TRADE:',
+    '- ENTRY must be inside the LAST 20 BARS RANGE of TIMEFRAME_USED.',
+    '- BUY_LIMIT:  ENTRY < CURRENT PRICE, STOP_LOSS < ENTRY, TAKE_PROFIT > ENTRY.',
+    '- SELL_LIMIT: ENTRY > CURRENT PRICE, STOP_LOSS > ENTRY, TAKE_PROFIT < ENTRY.',
+    '- All prices use the same decimals as the packet.'
+].join('\n');
+
+function rawTextPacketTimestamp(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && String(value).trim() !== ''
+        ? numeric
+        : Date.parse(value);
+}
+
+function rawTextPacketPrecision(symbol, metadata = {}, currentPrice = null) {
+    const assetClass = String(metadata.asset_class || getAssetClass(symbol)).toUpperCase();
+    if (assetClass === 'FOREX') return 5;
+    if (assetClass === 'EQUITY' || assetClass === 'INDEX') return 2;
+    if (assetClass === 'CRYPTO') {
+        const price = Math.abs(Number(currentPrice));
+        if (price >= 100) return 2;
+        if (price >= 1) return 4;
+        if (price >= 0.01) return 6;
+        return 8;
+    }
+    const explicit = Number(metadata.price_precision);
+    if (Number.isInteger(explicit) && explicit >= 0 && explicit <= 12) return explicit;
+    return 2;
+}
+
+function rawTextPacketClosedCandles(source = {}, timeframe, asOfMs = Date.now()) {
+    const duration = TIMEFRAME_MS[timeframe] || 60 * 60000;
+    const values = Array.isArray(source.history?.[timeframe]) ? source.history[timeframe] : [];
+    return values
+        .filter(candle => {
+            if (!candle || candle.is_forming === true || candle.forming === true) return false;
+            if (candle.is_closed === false || candle.closed === false) return false;
+            if (candle.is_closed === true || candle.closed === true) return true;
+            const time = rawTextPacketTimestamp(candle.t ?? candle.time ?? candle.timestamp);
+            return Number.isFinite(time) && time + duration <= asOfMs;
+        })
+        .filter(candle => [candle.o, candle.h, candle.l, candle.c].every(value => Number.isFinite(Number(value))))
+        .sort((left, right) => rawTextPacketTimestamp(left.t) - rawTextPacketTimestamp(right.t));
+}
+
+function rawTextPacketFormatNumber(value, precision) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number.toFixed(precision) : '';
+}
+
+function buildRawTextMarketAnalysisInstruction() {
+    return [
+        'Analyze the supplied closed OHLC candle blocks independently. Evaluate both BUY_LIMIT and SELL_LIMIT historical ICT/SMC opportunities before deciding.',
+        'Use exact timeframe, timestamp, OHLC and range evidence. Preserve model-specific formation, lifecycle, invalidation, entry-zone, stop and target requirements.',
+        'A valid historical pending limit does not require a fresh lower-timeframe confirmation or a current-price zone touch. Do not invent candles, levels, stops or targets.',
+        'Return exactly the plain-text OUTPUT CONTRACT below and nothing else.'
+    ].join('\n');
+}
+
+function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
+    const source = replay || {};
+    const symbol = normalizeCanonicalMarketSymbol(source.pair || signal.pair || pair);
+    const metadata = source.quote?.symbol_metadata || source.runtime_state?.quote_snapshot?.symbol_metadata || source.symbol_metadata || {};
+    const asOfMs = rawTextPacketTimestamp(source.scan_as_of || source.quote?.quote_time) || Date.now();
+    const blocks = RAW_TEXT_PACKET_TIMEFRAMES.map(timeframe => ({
+        timeframe,
+        candles: rawTextPacketClosedCandles(source, timeframe, asOfMs)
+    })).filter(block => block.candles.length > 0);
+    const smallest = [...blocks].reverse().find(block => block.candles.length > 0) || null;
+    const latestSmallest = smallest?.candles.at(-1) || null;
+    const price = latestSmallest?.c;
+    const precision = rawTextPacketPrecision(symbol, metadata, price);
+    const generatedAt = new Date().toISOString();
+    const lines = [
+        '=== AI TRADING PACKET ===',
+        'SYMBOL: ' + symbol,
+        'CURRENT PRICE: ' + rawTextPacketFormatNumber(price, precision),
+        'LAST CLOSED CANDLE TIME: ' + (latestSmallest ? new Date(rawTextPacketTimestamp(latestSmallest.t)).toISOString() : ''),
+        'GENERATED AT: ' + generatedAt,
+        ''
+    ];
+    for (const block of blocks) {
+        const recent = block.candles.slice(-20);
+        const high = Math.max(...recent.map(candle => Number(candle.h)));
+        const low = Math.min(...recent.map(candle => Number(candle.l)));
+        lines.push('======== TIMEFRAME: ' + block.timeframe.toLowerCase() + ' ========');
+        lines.push('LAST 20 BARS RANGE: HIGH=' + rawTextPacketFormatNumber(high, precision) + ' LOW=' + rawTextPacketFormatNumber(low, precision));
+        lines.push('LAST CLOSE: ' + rawTextPacketFormatNumber(block.candles.at(-1).c, precision));
+        lines.push('FORMAT: time,open,high,low,close,volume');
+        for (const candle of block.candles) {
+            const time = new Date(rawTextPacketTimestamp(candle.t)).toISOString();
+            const volume = Number.isFinite(Number(candle.v ?? candle.volume))
+                ? rawTextPacketFormatNumber(candle.v ?? candle.volume, precision)
+                : '';
+            lines.push([
+                time,
+                rawTextPacketFormatNumber(candle.o, precision),
+                rawTextPacketFormatNumber(candle.h, precision),
+                rawTextPacketFormatNumber(candle.l, precision),
+                rawTextPacketFormatNumber(candle.c, precision),
+                volume
+            ].join(','));
+        }
+        lines.push('======== END ' + block.timeframe.toLowerCase() + ' ========');
+        lines.push('');
+    }
+    lines.push(buildRawTextMarketAnalysisInstruction(), '', RAW_TEXT_OUTPUT_CONTRACT);
+    return lines.join('\n');
+}
+
+function saveRawTextPacketFile(packetText, symbol, generatedAt = new Date().toISOString()) {
+    const safeSymbol = String(symbol || 'UNKNOWN').replace(/[^A-Za-z0-9_-]+/g, '_');
+    const safeTimestamp = String(generatedAt).replace(/[:.]/g, '-');
+    const filename = 'packet_' + safeSymbol + '_' + safeTimestamp + '.txt';
+    if (typeof document === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function' || typeof Blob === 'undefined') return filename;
+    const anchor = document.createElement('a');
+    const url = URL.createObjectURL(new Blob([packetText], { type: 'text/plain;charset=utf-8' }));
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.style.display = 'none';
+    document.body?.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    return filename;
+}
+
 function copyRawMarketAnalysisPacket() {
     const artifact = currentScanArtifact;
     const activePair = normalizeCanonicalMarketSymbol(pair);
@@ -13041,13 +13253,16 @@ function copyRawMarketAnalysisPacket() {
         showNotif('Clipboard unavailable', 'error');
         return;
     }
-    navigator.clipboard.writeText(JSON.stringify(packet, null, 2))
-        .then(() => showNotif('RAW_MARKET_ANALYSIS packet copied', 'success'))
+    const textPacket = buildRawTextMarketAnalysisPacket({ signal: artifact.signal, replay: artifact.replay });
+    const filename = saveRawTextPacketFile(textPacket, activePair);
+    navigator.clipboard.writeText(textPacket)
+        .then(() => showNotif('RAW packet copied and saved as ' + filename, 'success'))
         .catch(() => showNotif('Failed', 'error'));
 }
 
 if (typeof window !== 'undefined') {
     window.buildRawMarketAnalysisPacket = buildRawMarketAnalysisPacket;
+    window.buildRawTextMarketAnalysisPacket = buildRawTextMarketAnalysisPacket;
     window.validateRawMarketAnalysisDecision = validateRawMarketAnalysisDecision;
     window.parseRawMarketAnalysisDecision = parseRawMarketAnalysisDecision;
     window.copyRawMarketAnalysisPacket = copyRawMarketAnalysisPacket;
@@ -17868,8 +18083,8 @@ async function runAutoScan() {
         // previous one has completed so its client timeout measures the
         // request itself rather than time spent behind the server queue.
         const tfs = getMarketDataProvider() === 'TVKIT'
-            ? ['1D', '4H', '1H', '15M', '5M']
-            : ['5M', '15M', '1H', '4H', '1D'];
+            ? ['1D', '4H', '1H', '15M', '5M', '1M']
+            : ['1M', '5M', '15M', '1H', '4H', '1D'];
         scanText.innerHTML = '📊 Collecting market data...';
         scanStage = 'history requests';
         if (getMarketDataProvider() === 'TVKIT') {

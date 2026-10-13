@@ -3212,7 +3212,7 @@ describe('Analyze scan lifecycle', () => {
         const { context, elements, spies } = prepareScan();
         await context.runAutoScan();
         expect(spies.askAIToFindSetup).not.toHaveBeenCalled();
-        expect(spies.getHistory.mock.calls.map(call => call[0])).toEqual(['5M', '15M', '1H', '4H', '1D']);
+        expect(spies.getHistory.mock.calls.map(call => call[0])).toEqual(['1M', '5M', '15M', '1H', '4H', '1D']);
         expect(elements.get('analyzeBtn').disabled).toBe(false);
         expect(elements.get('scanStatus').classList.contains('hidden')).toBe(true);
     });
@@ -3221,7 +3221,7 @@ describe('Analyze scan lifecycle', () => {
         const { context } = getScanContext();
         context.window.__ICT_MARKET_DATA_PROVIDER__ = 'TVKIT';
         context.window.__ICT_PROXY_BASE_URL__ = 'https://proxy.test';
-        const intervals = { '1D': ['1day', 86400000], '4H': ['4h', 14400000], '1H': ['1h', 3600000], '15M': ['15min', 900000], '5M': ['5min', 300000] };
+        const intervals = { '1D': ['1day', 86400000, 100], '4H': ['4h', 14400000, 100], '1H': ['1h', 3600000, 80], '15M': ['15min', 900000, 50], '5M': ['5min', 300000, 50], '1M': ['1min', 60000, 50] };
         const calls = [];
         context.fetch = jest.fn(async url => {
             calls.push(String(url));
@@ -3255,7 +3255,7 @@ describe('Analyze scan lifecycle', () => {
                 expect(calls.at(-1)).toContain(`interval=${interval}`);
             }
         }
-        expect(calls).toHaveLength(20);
+        expect(calls).toHaveLength(24);
         expect(calls.join('\n')).not.toMatch(/1week|1month/i);
     });
 
@@ -3268,7 +3268,7 @@ describe('Analyze scan lifecycle', () => {
         context.fetch = jest.fn(() => Promise.reject(new Error('AI request must not occur in manual mode')));
         await context.runAutoScan();
         expect(context.getAnalysisMode()).toBe('MANUAL_EXTERNAL_AI');
-        expect(spies.getHistory.mock.calls.map(call => call[0])).toEqual(['5M', '15M', '1H', '4H', '1D']);
+        expect(spies.getHistory.mock.calls.map(call => call[0])).toEqual(['1M', '5M', '15M', '1H', '4H', '1D']);
         expect(spies.buildLiveMarketContext).toHaveBeenCalledTimes(1);
         expect(spies.buildAiMarketEvidenceCatalog).toHaveBeenCalledTimes(1);
         expect(spies.runAiMarketAnalyst).not.toHaveBeenCalled();
@@ -3365,7 +3365,7 @@ describe('Analyze scan lifecycle', () => {
         vm.runInContext("window.__ICT_MARKET_DATA_PROVIDER__ = 'TVKIT'; window.__ICT_PROXY_BASE_URL__ = 'https://proxy.test'; getMarketQuoteSnapshot = () => Promise.resolve({ price: 100, symbol_metadata: {} });", context);
         expect(context.getMarketDataProvider()).toBe('TVKIT');
         await context.runAutoScan();
-        expect(spies.getHistory.mock.calls.map(call => call[0])).toEqual(['1D', '4H', '1H', '15M', '5M']);
+        expect(spies.getHistory.mock.calls.map(call => call[0])).toEqual(['1D', '4H', '1H', '15M', '5M', '1M']);
         expect(spies.getHistory.mock.calls.every(call => call[2]?.forceRefresh === true)).toBe(true);
     });
 
@@ -3578,6 +3578,28 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         };
     };
 
+    it('formats the copied RAW packet as ordered closed-candle text with anchors and contract', () => {
+        const replay = makeReplay(true, 'EUR/USD');
+        replay.history['1M'] = Array.from({ length: 50 }, (_, index) => ({
+            t: '2026-10-12T05:' + String(index).padStart(2, '0') + ':00Z',
+            o: 1.10000 + index * 0.00001,
+            h: 1.10002 + index * 0.00001,
+            l: 1.09998 + index * 0.00001,
+            c: 1.10001 + index * 0.00001,
+            is_closed: true
+        }));
+        const text = getContext().buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('CURRENT PRICE: 1.10050');
+        expect(text.indexOf('======== TIMEFRAME: 4h ========')).toBeLessThan(text.indexOf('======== TIMEFRAME: 1h ========'));
+        expect(text.indexOf('======== TIMEFRAME: 1h ========')).toBeLessThan(text.indexOf('======== TIMEFRAME: 15m ========'));
+        expect(text.indexOf('======== TIMEFRAME: 15m ========')).toBeLessThan(text.indexOf('======== TIMEFRAME: 5m ========'));
+        expect(text.indexOf('======== TIMEFRAME: 5m ========')).toBeLessThan(text.indexOf('======== TIMEFRAME: 1m ========'));
+        expect(text).toContain('LAST 20 BARS RANGE: HIGH=1.10051 LOW=1.10028');
+        expect(text).toContain('FORMAT: time,open,high,low,close,volume');
+        expect(text).toContain('=== OUTPUT CONTRACT ===');
+        expect(text).toContain('ACTION: BUY_LIMIT | SELL_LIMIT | NO_TRADE');
+    });
+
     const makeRawFvgExecutionCase = ({ gapHigh = 151, entry = (150 + gapHigh) / 2, stop = 150, quoteFreshness = null, quoteOverrides = {}, symbolMetadata = {} } = {}) => {
         const ctx = getContext();
         const replay = makeReplay(true, 'EUR/USD');
@@ -3642,6 +3664,27 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet).not.toHaveProperty('tp1');
         expect(packet).not.toHaveProperty('targets');
         expect(packet.current_market_observation.current_price).toBe(250);
+        expect(packet.price_anchor).toEqual(expect.objectContaining({
+            current_price: 250,
+            quote_time: '2026-10-12T12:00:00Z',
+            latest_closed_candle: expect.objectContaining({ timeframe: '5M' })
+        }));
+        expect(packet.price_anchor.last_closed_candle_by_timeframe).toEqual(expect.objectContaining({
+            '1D': expect.objectContaining({ candle_id: expect.stringMatching(/^1D:/), time_utc: expect.any(String) }),
+            '4H': expect.objectContaining({ candle_id: expect.stringMatching(/^4H:/), time_utc: expect.any(String) }),
+            '1H': expect.objectContaining({ candle_id: expect.stringMatching(/^1H:/), time_utc: expect.any(String) }),
+            '15M': expect.objectContaining({ candle_id: expect.stringMatching(/^15M:/), time_utc: expect.any(String) }),
+            '5M': expect.objectContaining({ candle_id: expect.stringMatching(/^5M:/), time_utc: expect.any(String) })
+        }));
+        expect(packet.timeframes['4H'].section_header).toBe('════════ TIMEFRAME: 4H ════════');
+        expect(packet.timeframes['4H'].range_summary).toEqual({
+            label: '4H RANGE (LAST 20)',
+            candle_count: 20,
+            high: 301,
+            low: 279,
+            first_candle_id: packet.timeframes['4H'].candles[180].candle_id,
+            last_candle_id: packet.timeframes['4H'].candles.at(-1).candle_id
+        });
         expect(packet.timeframes['5M'].candles[0]).toEqual(expect.objectContaining({ candle_id: expect.stringMatching(/^5M:/), t: expect.any(String), o: 100, h: 102, l: 99, c: 101 }));
         expect(packet.timeframes['5M'].candles[0].v).toBe(1000);
         expect(packet.timeframes['1H'].timestamp_role).toBe('INTRADAY_CANDLE_OPEN_TIME_UTC');
@@ -3665,6 +3708,9 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet.external_ai_task).toContain('STEP 12 — FINAL CONSISTENCY AUDIT');
         expect(packet.external_ai_task).toContain('Assess BUY and SELL');
         expect(packet.external_ai_task).toContain('Return exactly one valid JSON object');
+        expect(packet.external_ai_task).toContain('PRICE ANCHOR SELF-CHECK');
+        expect(packet.external_ai_task).toContain('STRICT FINAL RESPONSE SHAPE');
+        expect(packet.external_ai_task).toContain('Do not replace this JSON with ACTION, ENTRY, STOP_LOSS, or TAKE_PROFIT text lines');
         expect(packet.external_ai_task).toContain('trade_type PENDING_LIMIT only');
         expect(packet.external_ai_task).toContain('FORMATION CONFIRMATION');
         expect(packet.external_ai_task).toContain('ENTRY CONFIRMATION is a separate execution choice');
@@ -4189,7 +4235,11 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         vm.runInContext("pair = 'BTC/USD'; currentScanArtifact = { symbol: 'BTC/USD', signal: { pair: 'BTC/USD', snapshot_id: 'SNAP-BTC/USD' }, replay: __rawReplay }", ctx);
         ctx.copyRawMarketAnalysisPacket();
         expect(ctx.navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
-        expect(JSON.parse(ctx.navigator.clipboard.writeText.mock.calls[0][0]).packet_schema).toBe('RAW_MARKET_ANALYSIS_V1');
+        const copied = ctx.navigator.clipboard.writeText.mock.calls[0][0];
+        expect(copied).toContain('=== AI TRADING PACKET ===');
+        expect(copied).toContain('SYMBOL: BTC/USD');
+        expect(copied).toContain('======== TIMEFRAME: 4h ========');
+        expect(copied).toContain('=== OUTPUT CONTRACT ===');
         ctx.navigator.clipboard.writeText.mockClear();
         ctx.__rawReplay = makeReplay(false, 'BTC/USD');
         vm.runInContext("currentScanArtifact = { symbol: 'BTC/USD', signal: { pair: 'BTC/USD', snapshot_id: 'SNAP-BTC/USD' }, replay: __rawReplay }", ctx);
@@ -7038,7 +7088,7 @@ describe('multi-symbol snapshot completeness and provider boundary', () => {
         expect(urls[0]).toContain(`symbol=${encodeURIComponent(providerSymbol)}`);
         expect(urls[1]).toContain(`symbol=${encodeURIComponent(providerSymbol)}`);
         expect(urls[1]).toContain('interval=1day');
-        expect(urls[1]).toContain('outputsize=200');
+        expect(urls[1]).toContain('outputsize=100');
     });
 });
 
@@ -10536,7 +10586,7 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         });
         const result = await ctx.getHistory('1H', 'EUR/USD');
         expect(result).toHaveLength(1);
-        expect(Number(new URL(requestedUrl).searchParams.get('outputsize'))).toBeGreaterThanOrEqual(ctx.getRequiredHistoryOutputSize());
+        expect(Number(new URL(requestedUrl).searchParams.get('outputsize'))).toBe(ctx.getRequiredHistoryOutputSize('1H'));
         expect(requestedUrl).toContain('timezone=UTC');
         expect(result.provider_metadata.requested_timezone).toBe('UTC');
         expect(result.provider_metadata.timestamp_contract).toBe('INTRADAY_UTC');
