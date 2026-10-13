@@ -13215,21 +13215,37 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     return lines.join('\n');
 }
 
-function saveRawTextPacketFile(packetText, symbol, generatedAt = new Date().toISOString()) {
-    const safeSymbol = String(symbol || 'UNKNOWN').replace(/[^A-Za-z0-9_-]+/g, '_');
-    const safeTimestamp = String(generatedAt).replace(/[:.]/g, '-');
-    const filename = 'packet_' + safeSymbol + '_' + safeTimestamp + '.txt';
-    if (typeof document === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function' || typeof Blob === 'undefined') return filename;
-    const anchor = document.createElement('a');
-    const url = URL.createObjectURL(new Blob([packetText], { type: 'text/plain;charset=utf-8' }));
-    anchor.href = url;
-    anchor.download = filename;
-    anchor.style.display = 'none';
-    document.body?.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-    return filename;
+function fallbackCopyPlainText(packetText) {
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') return false;
+    const textarea = document.createElement('textarea');
+    textarea.value = String(packetText ?? '');
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    textarea.style.pointerEvents = 'none';
+    document.body?.appendChild(textarea);
+    textarea.select();
+    let copied = false;
+    try {
+        copied = typeof document.execCommand === 'function' && document.execCommand('copy');
+    } catch (_) {
+        copied = false;
+    } finally {
+        textarea.remove();
+    }
+    return copied;
+}
+
+async function writePlainTextToClipboard(packetText) {
+    try {
+        if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(packetText);
+            return true;
+        }
+    } catch (_) {
+        // Continue to the hidden textarea fallback.
+    }
+    return fallbackCopyPlainText(packetText);
 }
 
 function copyRawMarketAnalysisPacket() {
@@ -13249,15 +13265,17 @@ function copyRawMarketAnalysisPacket() {
         showNotif('RAW packet symbol does not match the current symbol', 'warning');
         return;
     }
-    if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
-        showNotif('Clipboard unavailable', 'error');
-        return;
-    }
     const textPacket = buildRawTextMarketAnalysisPacket({ signal: artifact.signal, replay: artifact.replay });
-    const filename = saveRawTextPacketFile(textPacket, activePair);
-    navigator.clipboard.writeText(textPacket)
-        .then(() => showNotif('RAW packet copied and saved as ' + filename, 'success'))
-        .catch(() => showNotif('Failed', 'error'));
+    writePlainTextToClipboard(textPacket).then(copied => {
+        if (!copied) {
+            showNotif('Clipboard unavailable', 'error');
+            return;
+        }
+        if (typeof window !== 'undefined') {
+            window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success');
+        }
+        showToast('Copied to clipboard');
+    });
 }
 
 if (typeof window !== 'undefined') {
@@ -22901,6 +22919,10 @@ function showNotif(m, t) {
     n.className = `notification ${t}`;
     n.classList.remove('hidden');
     setTimeout(() => n.classList.add('hidden'), 3000);
+}
+
+function showToast(message) {
+    showNotif(message, 'success');
 }
 
 // Manual trade result logging (for loss protection)

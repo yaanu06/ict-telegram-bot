@@ -3652,6 +3652,8 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(html).not.toContain('id="copyJsonBtn"');
         expect(html).toContain('id="copyRawMarketBtn"');
         expect(code).toContain("el('copyRawMarketBtn').addEventListener('click', copyRawMarketAnalysisPacket)");
+        expect(code).toContain("showToast('Copied to clipboard')");
+        expect(code).not.toContain('saveRawTextPacketFile');
         expect(packet.packet_type).toBe('RAW_MARKET_ANALYSIS');
         expect(packet.packet_schema).toBe('RAW_MARKET_ANALYSIS_V1');
         expect(Object.keys(packet.timeframes)).toEqual(timeframes);
@@ -4231,20 +4233,46 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
     it('copies only a complete current-symbol RAW snapshot and refuses incomplete state', async () => {
         const ctx = getContext();
         ctx.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
+        ctx.document.createElement = jest.fn();
+        ctx.document.body = { appendChild: jest.fn() };
+        ctx.window.Telegram = { WebApp: { HapticFeedback: { notificationOccurred: jest.fn() } } };
         ctx.__rawReplay = makeReplay(true, 'BTC/USD');
         vm.runInContext("pair = 'BTC/USD'; currentScanArtifact = { symbol: 'BTC/USD', signal: { pair: 'BTC/USD', snapshot_id: 'SNAP-BTC/USD' }, replay: __rawReplay }", ctx);
         ctx.copyRawMarketAnalysisPacket();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
         expect(ctx.navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
         const copied = ctx.navigator.clipboard.writeText.mock.calls[0][0];
         expect(copied).toContain('=== AI TRADING PACKET ===');
         expect(copied).toContain('SYMBOL: BTC/USD');
         expect(copied).toContain('======== TIMEFRAME: 4h ========');
         expect(copied).toContain('=== OUTPUT CONTRACT ===');
+        expect(ctx.document.createElement).not.toHaveBeenCalled();
         ctx.navigator.clipboard.writeText.mockClear();
         ctx.__rawReplay = makeReplay(false, 'BTC/USD');
         vm.runInContext("currentScanArtifact = { symbol: 'BTC/USD', signal: { pair: 'BTC/USD', snapshot_id: 'SNAP-BTC/USD' }, replay: __rawReplay }", ctx);
         ctx.copyRawMarketAnalysisPacket();
         expect(ctx.navigator.clipboard.writeText).not.toHaveBeenCalled();
+    });
+
+    it('falls back to an invisible textarea without rendering the RAW packet', async () => {
+        const ctx = getContext();
+        const textarea = {
+            value: '',
+            style: {},
+            setAttribute: jest.fn(),
+            select: jest.fn(),
+            remove: jest.fn()
+        };
+        ctx.navigator = { clipboard: { writeText: jest.fn(() => Promise.reject(new Error('denied'))) } };
+        ctx.document.createElement = jest.fn(() => textarea);
+        ctx.document.body = { appendChild: jest.fn() };
+        ctx.document.execCommand = jest.fn(() => true);
+        await expect(ctx.writePlainTextToClipboard('=== AI TRADING PACKET ===')).resolves.toBe(true);
+        expect(textarea.value).toBe('=== AI TRADING PACKET ===');
+        expect(ctx.document.execCommand).toHaveBeenCalledWith('copy');
+        expect(textarea.remove).toHaveBeenCalledTimes(1);
     });
 
     it('keeps an unavailable RAW quote unknown instead of treating it as price zero', () => {
