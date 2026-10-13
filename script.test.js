@@ -3616,6 +3616,10 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('never say only "No setup found."');
         expect(text).toContain('TIMEFRAME_USED must always be one supplied timeframe');
         expect(text).toContain('never output TIMEFRAME_USED: NONE');
+        expect(text).toContain('deterministic CE entry, formation-extreme structural stop and 1R/2R/3R');
+        expect(text).toContain('three separate historical targets are not a mandatory gate');
+        expect(text).toContain('inspect later supplied CLOSED lower-timeframe candles for post-formation penetration');
+        expect(text).not.toContain('three distinct remaining evidence-supported targets before returning a pending limit');
     });
 
     it('keeps a real XAU/USD 4H bearish FVG in the pre-NO_TRADE audit', () => {
@@ -3681,6 +3685,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
         expect(text).toContain('FVG: TF=1h TYPE=BEARISH');
         expect(text).toContain('ZONE=4196.13-4201.70 STATUS=PARTIAL MAX_LATER_HIGH=4196.48 GEOMETRIC_REMAINING_ZONE=4196.48-4201.70');
+        expect(text).toContain('PENDING_CANDIDATE=SELL_LIMIT');
         expect(text).toContain('CURRENT_PRICE=4196.22 CURRENT_PRICE_RELATION=BELOW_REMAINING_ZONE');
     });
 
@@ -3694,6 +3699,36 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         ];
         const fvg = ctx.detectRawTextFvgs(candles, '4H').find(candidate => candidate.lower === 4180.27 && candidate.upper === 4193.78);
         expect(fvg).toEqual(expect.objectContaining({ type: 'BEARISH', status: 'FULLY_TRAVERSED', max_later_high: 4196.48 }));
+    });
+
+    it('constructs FVG pending candidates from eligible segments and rejects fully traversed zones', () => {
+        const ctx = getContext();
+        const base = { status: 'UNTOUCHED', lower: 100, upper: 110, formation_low: 95, formation_high: 111 };
+        const buy = ctx.buildRawTextFvgPendingCandidate({ ...base, type: 'BULLISH' }, 200, 2);
+        const partialBuy = ctx.buildRawTextFvgPendingCandidate({ ...base, type: 'BULLISH', status: 'PARTIAL', remaining_lower: 102, remaining_upper: 106 }, 200, 2);
+        const sellFvg = { ...base, type: 'BEARISH', lower: 300, upper: 310, formation_low: 295, formation_high: 315 };
+        const sell = ctx.buildRawTextFvgPendingCandidate(sellFvg, 200, 2);
+        const partialSell = ctx.buildRawTextFvgPendingCandidate({ ...sellFvg, status: 'PARTIAL', remaining_lower: 304, remaining_upper: 310 }, 200, 2);
+        const fullyTraversed = ctx.buildRawTextFvgPendingCandidate({ ...base, type: 'BULLISH', status: 'FULLY_TRAVERSED' }, 200, 2);
+        expect(buy).toEqual(expect.objectContaining({ action: 'BUY_LIMIT', entry: 105, stop_loss: 94.99, tp1: 115.01, tp2: 125.02, tp3: 135.03 }));
+        expect(partialBuy.entry).toBe(104);
+        expect(sell).toEqual(expect.objectContaining({ action: 'SELL_LIMIT', entry: 305, stop_loss: 315.01, tp1: 294.99, tp2: 284.98, tp3: 274.97 }));
+        expect(partialSell.entry).toBe(307);
+        expect(fullyTraversed).toBeNull();
+    });
+
+    it('uses the current XAU/USD 1H partial FVG to calculate CE, structural stop and 1R targets', () => {
+        const ctx = getContext();
+        const candles = [
+            { t: '2026-10-12T03:00:00Z', o: 4207, h: 4208.38, l: 4201.70, c: 4205, is_closed: true },
+            { t: '2026-10-12T04:00:00Z', o: 4205, h: 4204.48, l: 4199, c: 4200, is_closed: true },
+            { t: '2026-10-12T05:00:00Z', o: 4200, h: 4196.13, l: 4194, c: 4195, is_closed: true },
+            { t: '2026-10-12T06:00:00Z', o: 4195, h: 4200.63, l: 4192, c: 4194, is_closed: true }
+        ];
+        const fvg = ctx.detectRawTextFvgs(candles, '1H').find(candidate => candidate.lower === 4196.13 && candidate.upper === 4201.70);
+        expect(fvg).toEqual(expect.objectContaining({ type: 'BEARISH', status: 'PARTIAL', max_later_high: 4200.63, remaining_lower: 4200.63, remaining_upper: 4201.70 }));
+        const candidate = ctx.buildRawTextFvgPendingCandidate(fvg, 4192.20, 2);
+        expect(candidate).toEqual(expect.objectContaining({ action: 'SELL_LIMIT', entry: 4201.17, stop_loss: 4208.39, tp1: 4193.95, tp2: 4186.73, tp3: 4179.51, risk: 7.22 }));
     });
 
     const makeRawFvgExecutionCase = ({ gapHigh = 151, entry = (150 + gapHigh) / 2, stop = 150, quoteFreshness = null, quoteOverrides = {}, symbolMetadata = {} } = {}) => {

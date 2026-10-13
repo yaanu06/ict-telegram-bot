@@ -13115,7 +13115,7 @@ const RAW_TEXT_OUTPUT_CONTRACT = [
     'SELL_LIMIT: ENTRY > CURRENT PRICE, STOP_LOSS > ENTRY, ENTRY > TP1 > TP2 > TP3.',
     'Do not require a current-price touch or fresh lower-timeframe confirmation for an otherwise valid pending limit.',
     'Do not impose a universal LAST 20 BARS range restriction; use the actual formation zone and lifecycle.',
-    'Provide three distinct remaining evidence-supported targets before returning a pending limit.',
+    'For an eligible audited FVG, use its deterministic CE entry, formation-extreme structural stop and 1R/2R/3R TP1/TP2/TP3; historical structures are confluence, not a three-target gate.',
     'CONFIDENCE is setup quality, not win probability. Never invent formations, prices, targets or confidence.',
     'If no complete qualifying setup exists, return ACTION: NO_TRADE with SETUP: NONE, ENTRY: 0, STOP_LOSS: 0, TP1: 0, TP2: 0, TP3: 0, CONFIDENCE: 0% and a factual REASON.'
 ].join('\n');
@@ -13178,6 +13178,8 @@ function detectRawTextFvgs(candles = [], timeframe = '') {
         if (!bullish && !bearish) continue;
         const lower = bullish ? Number(c1.h) : Number(c3.h);
         const upper = bullish ? Number(c3.l) : Number(c1.l);
+        const formationLow = Math.min(Number(c1.l), Number(c2.l), Number(c3.l));
+        const formationHigh = Math.max(Number(c1.h), Number(c2.h), Number(c3.h));
         const laterLows = later.map(candle => Number(candle.l));
         const laterHighs = later.map(candle => Number(candle.h));
         const minLaterLow = laterLows.length ? Math.min(...laterLows) : null;
@@ -13207,6 +13209,8 @@ function detectRawTextFvgs(candles = [], timeframe = '') {
             c3: c3.t ?? c3.time ?? c3.timestamp,
             lower,
             upper,
+            formation_low: formationLow,
+            formation_high: formationHigh,
             status,
             min_later_low: minLaterLow,
             max_later_high: maxLaterHigh,
@@ -13216,6 +13220,41 @@ function detectRawTextFvgs(candles = [], timeframe = '') {
         });
     }
     return results;
+}
+
+function rawTextPacketRoundPrice(value, precision) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return null;
+    const factor = 10 ** precision;
+    const adjusted = Math.round((number + (Number.EPSILON * Math.max(1, Math.abs(number)))) * factor) / factor;
+    return Number(adjusted.toFixed(precision));
+}
+
+function buildRawTextFvgPendingCandidate(fvg, currentPrice, precision = 2) {
+    if (!fvg || !['BULLISH', 'BEARISH'].includes(fvg.type) || !['UNTOUCHED', 'PARTIAL'].includes(fvg.status)) return null;
+    const price = Number(currentPrice);
+    const lower = fvg.status === 'PARTIAL' ? Number(fvg.remaining_lower) : Number(fvg.lower);
+    const upper = fvg.status === 'PARTIAL' ? Number(fvg.remaining_upper) : Number(fvg.upper);
+    if (![price, lower, upper, fvg.formation_low, fvg.formation_high].every(Number.isFinite) || lower >= upper) return null;
+    const increment = 10 ** -precision;
+    const entry = rawTextPacketRoundPrice((lower + upper) / 2, precision);
+    const action = fvg.type === 'BULLISH' ? 'BUY_LIMIT' : 'SELL_LIMIT';
+    const stopLoss = rawTextPacketRoundPrice(
+        fvg.type === 'BULLISH' ? Number(fvg.formation_low) - increment : Number(fvg.formation_high) + increment,
+        precision
+    );
+    if (fvg.type === 'BULLISH' && !(upper < price && entry < price && stopLoss < entry)) return null;
+    if (fvg.type === 'BEARISH' && !(lower > price && entry > price && stopLoss > entry)) return null;
+    const risk = rawTextPacketRoundPrice(fvg.type === 'BULLISH' ? entry - stopLoss : stopLoss - entry, precision);
+    if (!(risk > 0)) return null;
+    const tp1 = rawTextPacketRoundPrice(fvg.type === 'BULLISH' ? entry + risk : entry - risk, precision);
+    const tp2 = rawTextPacketRoundPrice(fvg.type === 'BULLISH' ? entry + (risk * 2) : entry - (risk * 2), precision);
+    const tp3 = rawTextPacketRoundPrice(fvg.type === 'BULLISH' ? entry + (risk * 3) : entry - (risk * 3), precision);
+    const ordered = fvg.type === 'BULLISH'
+        ? stopLoss < entry && entry < tp1 && tp1 < tp2 && tp2 < tp3
+        : stopLoss > entry && entry > tp1 && tp1 > tp2 && tp2 > tp3;
+    if (!ordered) return null;
+    return { action, entry, stop_loss: stopLoss, tp1, tp2, tp3, risk };
 }
 
 function rawTextFvgCurrentPriceRelation(fvg, currentPrice) {
@@ -13236,6 +13275,7 @@ function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2) {
         const recentFullCutoff = Math.max(0, block.candles.length - 13);
         for (const fvg of fvgs) {
             if (fvg.status === 'FULLY_TRAVERSED' && fvg.formation_index < recentFullCutoff) continue;
+            const candidate = buildRawTextFvgPendingCandidate(fvg, currentPrice, precision);
             const parts = [
                 'FVG: TF=' + fvg.timeframe.toLowerCase(),
                 'TYPE=' + fvg.type,
@@ -13253,6 +13293,17 @@ function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2) {
             }
             if (fvg.status === 'PARTIAL') {
                 parts.push('GEOMETRIC_REMAINING_ZONE=' + rawTextPacketFormatNumber(fvg.remaining_lower, precision) + '-' + rawTextPacketFormatNumber(fvg.remaining_upper, precision));
+            }
+            if (candidate) {
+                parts.push(
+                    'PENDING_CANDIDATE=' + candidate.action,
+                    'ENTRY=' + rawTextPacketFormatNumber(candidate.entry, precision),
+                    'STOP_LOSS=' + rawTextPacketFormatNumber(candidate.stop_loss, precision),
+                    'TP1=' + rawTextPacketFormatNumber(candidate.tp1, precision),
+                    'TP2=' + rawTextPacketFormatNumber(candidate.tp2, precision),
+                    'TP3=' + rawTextPacketFormatNumber(candidate.tp3, precision),
+                    'R=' + rawTextPacketFormatNumber(candidate.risk, precision)
+                );
             }
             parts.push(
                 'CURRENT_PRICE=' + rawTextPacketFormatNumber(currentPrice, precision),
@@ -13273,9 +13324,10 @@ function buildRawTextMarketAnalysisInstruction() {
     'The DETERMINISTIC FVG AUDIT is arithmetic evidence derived directly from the supplied candles. A listed FVG exists geometrically; reject it only for a specific strategy, lifecycle, entry, stop, target or stronger-setup reason, and name that reason.',
     '4. Record exact timeframe, candle timestamps, OHLC evidence, first-knowable time and model-specific confirmation for every genuine formation. Do not construct zones from unrelated levels.',
     '5. Audit each real formation through the snapshot as still valid, partially mitigated, fully consumed or invalidated. A formation that later fails still existed; do not erase it from the audit.',
-    '6. For every surviving formation, attempt a complete pending-limit construction: entry, structural stop, TP1, TP2 and TP3. Do not require a current-price touch, fresh 5M/15M confirmation or a universal last-20-bars range.',
+    '6. For every surviving FVG, use the deterministic CE midpoint of its eligible original or remaining segment as ENTRY, the formation extreme plus/minus one packet price increment as STOP_LOSS, and deterministic 1R, 2R and 3R targets. Do not require a current-price touch, fresh 5M/15M confirmation or a universal last-20-bars range.',
+    'The audit status is same-timeframe price arithmetic; when exact chronology permits, inspect later supplied CLOSED lower-timeframe candles for post-formation penetration before preferring a higher-timeframe or micro FVG. Never use incomplete or future candles.',
     '7. BUY_LIMIT requires ENTRY < CURRENT PRICE, STOP_LOSS < ENTRY and ENTRY < TP1 < TP2 < TP3. SELL_LIMIT requires ENTRY > CURRENT PRICE, STOP_LOSS > ENTRY and ENTRY > TP1 > TP2 > TP3.',
-    '8. Stops must follow genuine model invalidation and targets must come from three distinct remaining supplied structural objectives. Never use arbitrary percentage levels or invent evidence.',
+    '8. FVG TP1, TP2 and TP3 are deterministic risk-multiple exits, not claimed historical liquidity. Historical swings, liquidity and other structures are confluence for setup quality and confidence; three separate historical targets are not a mandatory gate.',
     '9. If one candidate fails, continue searching other models, timeframes and the opposite direction. If multiple complete candidates survive, return only the strongest one.',
     '10. Return ACTION: NO_TRADE only after both directional searches and complete candidate-construction attempts fail. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker; never say only "No setup found."',
     '11. TIMEFRAME_USED must always be one supplied timeframe, including for NO_TRADE; never output TIMEFRAME_USED: NONE.',
