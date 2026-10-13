@@ -3599,7 +3599,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('=== DETERMINISTIC FVG AUDIT ===');
         expect(text).toContain('=== OUTPUT CONTRACT ===');
         expect(text).toContain('ACTION: BUY_LIMIT | SELL_LIMIT | NO_TRADE');
-        expect(text).toContain('SETUP: FVG | OB | MSNR | CRT | TBS | SUPPLY | DEMAND | FLIP | BREAKER | NONE');
+        expect(text).toContain('SETUP: <one or more valid setup components joined by +, or NONE>');
         expect(text).toContain('TP1: <price>');
         expect(text).toContain('TP2: <price>');
         expect(text).toContain('TP3: <price>');
@@ -3619,7 +3619,28 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('deterministic CE entry, formation-extreme structural stop and 1R/2R/3R');
         expect(text).toContain('three separate historical targets are not a mandatory gate');
         expect(text).toContain('inspect later supplied CLOSED lower-timeframe candles for post-formation penetration');
+        expect(text).toContain('SETUP uses only uppercase components FVG, OB, MSNR, CRT, TBS, SUPPLY, DEMAND, FLIP and BREAKER joined with + and no spaces');
+        expect(text).toContain('Valid SETUP examples include FVG, CRT+FVG, OB+FVG and CRT+OB+FVG');
+        expect(text).toContain('same location and chronology for genuine CRT, OB, MSNR, TBS, SUPPLY, DEMAND, FLIP and BREAKER confluence');
+        expect(text).toContain('combined label such as CRT+FVG requires independent evidence for both components');
+        expect(text).toContain('absence of CRT does not veto a valid FVG');
+        expect(text).toContain('REASON must briefly support every component named in SETUP');
+        expect(text).not.toContain('SETUP: FVG | OB | MSNR | CRT | TBS | SUPPLY | DEMAND | FLIP | BREAKER | NONE');
         expect(text).not.toContain('three distinct remaining evidence-supported targets before returning a pending limit');
+    });
+
+    it('permits evidence-backed multi-model setup confluence without forcing extra labels', () => {
+        const replay = makeReplay(true, 'XAU/USD');
+        const text = getContext().buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('FVG');
+        expect(text).toContain('CRT+FVG');
+        expect(text).toContain('OB+FVG');
+        expect(text).toContain('CRT+OB+FVG');
+        expect(text).toContain('use NONE only for NO_TRADE');
+        expect(text).toContain('Add a component to SETUP only when its closed-candle formation');
+        expect(text).toContain('absence of CRT does not veto a valid FVG');
+        expect(text).toContain('A standalone FVG remains eligible');
+        expect(text).toContain('CONFIDENCE is setup quality only, not guaranteed win probability');
     });
 
     it('keeps a real XAU/USD 4H bearish FVG in the pre-NO_TRADE audit', () => {
