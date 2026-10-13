@@ -13163,19 +13163,122 @@ function rawTextPacketFormatNumber(value, precision) {
     return Number.isFinite(number) ? number.toFixed(precision) : '';
 }
 
+function detectRawTextFvgs(candles = [], timeframe = '') {
+    const ordered = [...candles]
+        .filter(candle => candle && [candle.h, candle.l].every(value => Number.isFinite(Number(value))))
+        .sort((left, right) => rawTextPacketTimestamp(left.t ?? left.time ?? left.timestamp) - rawTextPacketTimestamp(right.t ?? right.time ?? right.timestamp));
+    const results = [];
+    for (let index = 0; index <= ordered.length - 3; index += 1) {
+        const c1 = ordered[index];
+        const c2 = ordered[index + 1];
+        const c3 = ordered[index + 2];
+        const later = ordered.slice(index + 3);
+        const bullish = Number(c1.h) < Number(c3.l);
+        const bearish = Number(c1.l) > Number(c3.h);
+        if (!bullish && !bearish) continue;
+        const lower = bullish ? Number(c1.h) : Number(c3.h);
+        const upper = bullish ? Number(c3.l) : Number(c1.l);
+        const laterLows = later.map(candle => Number(candle.l));
+        const laterHighs = later.map(candle => Number(candle.h));
+        const minLaterLow = laterLows.length ? Math.min(...laterLows) : null;
+        const maxLaterHigh = laterHighs.length ? Math.max(...laterHighs) : null;
+        let status = 'UNTOUCHED';
+        let remainingLower = null;
+        let remainingUpper = null;
+        if (bullish) {
+            if (minLaterLow == null || minLaterLow > upper) status = 'UNTOUCHED';
+            else if (minLaterLow > lower) {
+                status = 'PARTIAL';
+                remainingLower = lower;
+                remainingUpper = minLaterLow;
+            } else status = 'FULLY_TRAVERSED';
+        } else if (maxLaterHigh == null || maxLaterHigh < lower) {
+            status = 'UNTOUCHED';
+        } else if (maxLaterHigh < upper) {
+            status = 'PARTIAL';
+            remainingLower = maxLaterHigh;
+            remainingUpper = upper;
+        } else status = 'FULLY_TRAVERSED';
+        results.push({
+            timeframe: String(timeframe).toUpperCase(),
+            type: bullish ? 'BULLISH' : 'BEARISH',
+            c1: c1.t ?? c1.time ?? c1.timestamp,
+            c2: c2.t ?? c2.time ?? c2.timestamp,
+            c3: c3.t ?? c3.time ?? c3.timestamp,
+            lower,
+            upper,
+            status,
+            min_later_low: minLaterLow,
+            max_later_high: maxLaterHigh,
+            remaining_lower: remainingLower,
+            remaining_upper: remainingUpper,
+            formation_index: index
+        });
+    }
+    return results;
+}
+
+function rawTextFvgCurrentPriceRelation(fvg, currentPrice) {
+    const price = Number(currentPrice);
+    if (!Number.isFinite(price)) return 'UNKNOWN';
+    const lower = fvg.status === 'PARTIAL' ? fvg.remaining_lower : fvg.lower;
+    const upper = fvg.status === 'PARTIAL' ? fvg.remaining_upper : fvg.upper;
+    const suffix = fvg.status === 'PARTIAL' ? '_REMAINING_ZONE' : '_ZONE';
+    if (price > upper) return 'ABOVE' + suffix;
+    if (price < lower) return 'BELOW' + suffix;
+    return 'INSIDE' + suffix;
+}
+
+function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2) {
+    const records = [];
+    for (const block of blocks) {
+        const fvgs = detectRawTextFvgs(block.candles, block.timeframe);
+        const recentFullCutoff = Math.max(0, block.candles.length - 13);
+        for (const fvg of fvgs) {
+            if (fvg.status === 'FULLY_TRAVERSED' && fvg.formation_index < recentFullCutoff) continue;
+            const parts = [
+                'FVG: TF=' + fvg.timeframe.toLowerCase(),
+                'TYPE=' + fvg.type,
+                'C1=' + new Date(rawTextPacketTimestamp(fvg.c1)).toISOString(),
+                'C2=' + new Date(rawTextPacketTimestamp(fvg.c2)).toISOString(),
+                'C3=' + new Date(rawTextPacketTimestamp(fvg.c3)).toISOString(),
+                'ZONE=' + rawTextPacketFormatNumber(fvg.lower, precision) + '-' + rawTextPacketFormatNumber(fvg.upper, precision),
+                'STATUS=' + fvg.status
+            ];
+            if (fvg.type === 'BULLISH' && fvg.min_later_low != null) {
+                parts.push('MIN_LATER_LOW=' + rawTextPacketFormatNumber(fvg.min_later_low, precision));
+            }
+            if (fvg.type === 'BEARISH' && fvg.max_later_high != null) {
+                parts.push('MAX_LATER_HIGH=' + rawTextPacketFormatNumber(fvg.max_later_high, precision));
+            }
+            if (fvg.status === 'PARTIAL') {
+                parts.push('GEOMETRIC_REMAINING_ZONE=' + rawTextPacketFormatNumber(fvg.remaining_lower, precision) + '-' + rawTextPacketFormatNumber(fvg.remaining_upper, precision));
+            }
+            parts.push(
+                'CURRENT_PRICE=' + rawTextPacketFormatNumber(currentPrice, precision),
+                'CURRENT_PRICE_RELATION=' + rawTextFvgCurrentPriceRelation(fvg, currentPrice)
+            );
+            records.push(parts.join(' '));
+        }
+    }
+    return records;
+}
+
 function buildRawTextMarketAnalysisInstruction() {
     return [
         'Complete this internal analysis sequence before choosing ACTION; return only the final plain-text OUTPUT CONTRACT.',
         '1. Search both BUY_LIMIT and SELL_LIMIT opportunities across every supplied closed-candle timeframe before deciding.',
-        '2. Search the full supplied history for FVG, OB, MSNR, CRT, TBS, SUPPLY, DEMAND, FLIP and BREAKER formations only where the supplied data and project definitions support them.',
-        '3. For every FVG, use three chronological candles on the same timeframe: bullish requires candle1.high < candle3.low; bearish requires candle1.low > candle3.high. Use those candles for the actual gap boundaries.',
-        '4. Record exact timeframe, candle timestamps, OHLC evidence, first-knowable time and model-specific confirmation for every genuine formation. Do not construct zones from unrelated levels.',
-        '5. Audit each real formation through the snapshot as still valid, partially mitigated, fully consumed or invalidated. A formation that later fails still existed; do not erase it from the audit.',
-        '6. For every surviving formation, attempt a complete pending-limit construction: entry, structural stop, TP1, TP2 and TP3. Do not require a current-price touch, fresh 5M/15M confirmation or a universal last-20-bars range.',
-        '7. BUY_LIMIT requires ENTRY < CURRENT PRICE, STOP_LOSS < ENTRY and ENTRY < TP1 < TP2 < TP3. SELL_LIMIT requires ENTRY > CURRENT PRICE, STOP_LOSS > ENTRY and ENTRY > TP1 > TP2 > TP3.',
-        '8. Stops must follow genuine model invalidation and targets must come from three distinct remaining supplied structural objectives. Never use arbitrary percentage levels or invent evidence.',
-        '9. If one candidate fails, continue searching other models, timeframes and the opposite direction. If multiple complete candidates survive, return only the strongest one.',
-        '10. Return ACTION: NO_TRADE only after both directional searches and complete candidate-construction attempts fail. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker; never say only "No setup found."',
+    '2. Search the full supplied history for FVG, OB, MSNR, CRT, TBS, SUPPLY, DEMAND, FLIP and BREAKER formations only where the supplied data and project definitions support them.',
+    '3. For every FVG, use three chronological candles on the same timeframe: bullish requires candle1.high < candle3.low; bearish requires candle1.low > candle3.high. Use those candles for the actual gap boundaries.',
+    'The DETERMINISTIC FVG AUDIT is arithmetic evidence derived directly from the supplied candles. A listed FVG exists geometrically; reject it only for a specific strategy, lifecycle, entry, stop, target or stronger-setup reason, and name that reason.',
+    '4. Record exact timeframe, candle timestamps, OHLC evidence, first-knowable time and model-specific confirmation for every genuine formation. Do not construct zones from unrelated levels.',
+    '5. Audit each real formation through the snapshot as still valid, partially mitigated, fully consumed or invalidated. A formation that later fails still existed; do not erase it from the audit.',
+    '6. For every surviving formation, attempt a complete pending-limit construction: entry, structural stop, TP1, TP2 and TP3. Do not require a current-price touch, fresh 5M/15M confirmation or a universal last-20-bars range.',
+    '7. BUY_LIMIT requires ENTRY < CURRENT PRICE, STOP_LOSS < ENTRY and ENTRY < TP1 < TP2 < TP3. SELL_LIMIT requires ENTRY > CURRENT PRICE, STOP_LOSS > ENTRY and ENTRY > TP1 > TP2 > TP3.',
+    '8. Stops must follow genuine model invalidation and targets must come from three distinct remaining supplied structural objectives. Never use arbitrary percentage levels or invent evidence.',
+    '9. If one candidate fails, continue searching other models, timeframes and the opposite direction. If multiple complete candidates survive, return only the strongest one.',
+    '10. Return ACTION: NO_TRADE only after both directional searches and complete candidate-construction attempts fail. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker; never say only "No setup found."',
+    '11. TIMEFRAME_USED must always be one supplied timeframe, including for NO_TRADE; never output TIMEFRAME_USED: NONE.',
         'CONFIDENCE is setup quality only, not guaranteed win probability. Return exactly one final plain-text response and nothing else.'
     ].join('\n');
 }
@@ -13227,6 +13330,10 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         lines.push('======== END ' + block.timeframe.toLowerCase() + ' ========');
         lines.push('');
     }
+    lines.push('=== DETERMINISTIC FVG AUDIT ===');
+    const fvgAudit = buildRawTextFvgAudit(blocks, price, precision);
+    lines.push(...(fvgAudit.length ? fvgAudit : ['NONE']));
+    lines.push('');
     lines.push(buildRawTextMarketAnalysisInstruction(), '', RAW_TEXT_OUTPUT_CONTRACT);
     return lines.join('\n');
 }

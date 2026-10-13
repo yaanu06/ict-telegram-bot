@@ -3596,6 +3596,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text.indexOf('======== TIMEFRAME: 5m ========')).toBeLessThan(text.indexOf('======== TIMEFRAME: 1m ========'));
         expect(text).toContain('LAST 20 BARS RANGE: HIGH=1.10051 LOW=1.10028');
         expect(text).toContain('FORMAT: time,open,high,low,close,volume');
+        expect(text).toContain('=== DETERMINISTIC FVG AUDIT ===');
         expect(text).toContain('=== OUTPUT CONTRACT ===');
         expect(text).toContain('ACTION: BUY_LIMIT | SELL_LIMIT | NO_TRADE');
         expect(text).toContain('SETUP: FVG | OB | MSNR | CRT | TBS | SUPPLY | DEMAND | FLIP | BREAKER | NONE');
@@ -3613,10 +3614,13 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('still valid, partially mitigated, fully consumed or invalidated');
         expect(text).toContain('Return ACTION: NO_TRADE only after both directional searches and complete candidate-construction attempts fail');
         expect(text).toContain('never say only "No setup found."');
+        expect(text).toContain('TIMEFRAME_USED must always be one supplied timeframe');
+        expect(text).toContain('never output TIMEFRAME_USED: NONE');
     });
 
     it('keeps a real XAU/USD 4H bearish FVG in the pre-NO_TRADE audit', () => {
         const replay = makeReplay(true, 'XAU/USD');
+        replay.quote.symbol_metadata = { asset_class: 'METAL', price_precision: 2 };
         replay.history['4H'] = [
             { t: '2026-10-12T01:00:00Z', o: 4198.00, h: 4200.00, l: 4193.78, c: 4195.00, is_closed: true },
             { t: '2026-10-12T05:00:00Z', o: 4195.00, h: 4196.00, l: 4182.00, c: 4184.00, is_closed: true },
@@ -3631,6 +3635,65 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('For every FVG, use three chronological candles on the same timeframe');
         expect(text).toContain('If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker');
         expect(text).not.toContain('ACTION: SELL_LIMIT\nSETUP: FVG');
+    });
+
+    it('detects exact bullish and bearish FVG geometry and all geometric lifecycle states', () => {
+        const ctx = getContext();
+        const candle = (t, h, l) => ({ t, o: (h + l) / 2, h, l, c: (h + l) / 2, is_closed: true });
+        const bullish = (laterLow) => ctx.detectRawTextFvgs([
+            candle('2026-10-12T00:00:00Z', 100, 95),
+            candle('2026-10-12T01:00:00Z', 103, 97),
+            candle('2026-10-12T02:00:00Z', 110, 105),
+            candle('2026-10-12T03:00:00Z', 108, laterLow)
+        ], '1H').find(fvg => fvg.lower === 100 && fvg.upper === 105);
+        const bearish = (laterHigh) => ctx.detectRawTextFvgs([
+            candle('2026-10-12T00:00:00Z', 110, 105),
+            candle('2026-10-12T01:00:00Z', 103, 100),
+            candle('2026-10-12T02:00:00Z', 100, 95),
+            candle('2026-10-12T03:00:00Z', laterHigh, 90)
+        ], '1H').find(fvg => fvg.lower === 100 && fvg.upper === 105);
+        expect(ctx.detectRawTextFvgs([
+            candle('2026-10-12T00:00:00Z', 100, 95),
+            candle('2026-10-12T01:00:00Z', 103, 97),
+            candle('2026-10-12T02:00:00Z', 104, 99)
+        ], '1H')).toHaveLength(0);
+        expect(bullish(106)).toEqual(expect.objectContaining({ type: 'BULLISH', lower: 100, upper: 105, status: 'UNTOUCHED' }));
+        expect(bullish(102)).toEqual(expect.objectContaining({ type: 'BULLISH', status: 'PARTIAL', remaining_lower: 100, remaining_upper: 102 }));
+        expect(bullish(99)).toEqual(expect.objectContaining({ type: 'BULLISH', status: 'FULLY_TRAVERSED' }));
+        expect(bearish(99)).toEqual(expect.objectContaining({ type: 'BEARISH', lower: 100, upper: 105, status: 'UNTOUCHED' }));
+        expect(bearish(103)).toEqual(expect.objectContaining({ type: 'BEARISH', status: 'PARTIAL', remaining_lower: 103, remaining_upper: 105 }));
+        expect(bearish(106)).toEqual(expect.objectContaining({ type: 'BEARISH', status: 'FULLY_TRAVERSED' }));
+    });
+
+    it('reports the current XAU/USD 1H bearish FVG as partial with its remaining segment', () => {
+        const ctx = getContext();
+        const replay = makeReplay(true, 'XAU/USD');
+        replay.quote.symbol_metadata = { asset_class: 'METAL', price_precision: 2 };
+        replay.history['1H'] = [
+            { t: '2026-10-12T03:00:00Z', o: 4202.00, h: 4204.00, l: 4201.70, c: 4202.00, is_closed: true },
+            { t: '2026-10-12T04:00:00Z', o: 4202.00, h: 4203.00, l: 4198.00, c: 4199.00, is_closed: true },
+            { t: '2026-10-12T05:00:00Z', o: 4199.00, h: 4196.13, l: 4194.00, c: 4195.00, is_closed: true },
+            { t: '2026-10-12T06:00:00Z', o: 4195.00, h: 4196.48, l: 4192.00, c: 4194.00, is_closed: true }
+        ];
+        replay.history['5M'] = [{ t: '2026-10-12T09:00:00Z', o: 4196.22, h: 4196.30, l: 4196.00, c: 4196.22, is_closed: true }];
+        const fvg = ctx.detectRawTextFvgs(replay.history['1H'], '1H').find(candidate => candidate.lower === 4196.13 && candidate.upper === 4201.70);
+        expect(fvg).toEqual(expect.objectContaining({ type: 'BEARISH', status: 'PARTIAL', max_later_high: 4196.48, remaining_lower: 4196.48, remaining_upper: 4201.70 }));
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('FVG: TF=1h TYPE=BEARISH');
+        expect(text).toContain('ZONE=4196.13-4201.70 STATUS=PARTIAL MAX_LATER_HIGH=4196.48 GEOMETRIC_REMAINING_ZONE=4196.48-4201.70');
+        expect(text).toContain('CURRENT_PRICE=4196.22 CURRENT_PRICE_RELATION=BELOW_REMAINING_ZONE');
+    });
+
+    it('marks the older XAU/USD 4H bearish FVG fully traversed', () => {
+        const ctx = getContext();
+        const candles = [
+            { t: '2026-10-12T01:00:00Z', o: 4198, h: 4200, l: 4193.78, c: 4195, is_closed: true },
+            { t: '2026-10-12T05:00:00Z', o: 4195, h: 4196, l: 4182, c: 4184, is_closed: true },
+            { t: '2026-10-12T09:00:00Z', o: 4184, h: 4180.27, l: 4176, c: 4178, is_closed: true },
+            { t: '2026-10-12T13:00:00Z', o: 4178, h: 4196.48, l: 4170, c: 4190, is_closed: true }
+        ];
+        const fvg = ctx.detectRawTextFvgs(candles, '4H').find(candidate => candidate.lower === 4180.27 && candidate.upper === 4193.78);
+        expect(fvg).toEqual(expect.objectContaining({ type: 'BEARISH', status: 'FULLY_TRAVERSED', max_later_high: 4196.48 }));
     });
 
     const makeRawFvgExecutionCase = ({ gapHigh = 151, entry = (150 + gapHigh) / 2, stop = 150, quoteFreshness = null, quoteOverrides = {}, symbolMetadata = {} } = {}) => {
