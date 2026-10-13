@@ -13165,10 +13165,18 @@ function rawTextPacketFormatNumber(value, precision) {
 
 function buildRawTextMarketAnalysisInstruction() {
     return [
-        'Analyze the supplied closed OHLC candle blocks independently. Evaluate both BUY_LIMIT and SELL_LIMIT historical ICT/SMC opportunities before deciding.',
-        'Use exact timeframe, timestamp and OHLC evidence. Preserve model-specific formation, lifecycle, invalidation, entry-zone, stop and target requirements.',
-        'A valid historical pending limit does not require a fresh lower-timeframe confirmation or a current-price zone touch. Do not invent candles, levels, stops or targets.',
-        'Return exactly the plain-text OUTPUT CONTRACT below and nothing else.'
+        'Complete this internal analysis sequence before choosing ACTION; return only the final plain-text OUTPUT CONTRACT.',
+        '1. Search both BUY_LIMIT and SELL_LIMIT opportunities across every supplied closed-candle timeframe before deciding.',
+        '2. Search the full supplied history for FVG, OB, MSNR, CRT, TBS, SUPPLY, DEMAND, FLIP and BREAKER formations only where the supplied data and project definitions support them.',
+        '3. For every FVG, use three chronological candles on the same timeframe: bullish requires candle1.high < candle3.low; bearish requires candle1.low > candle3.high. Use those candles for the actual gap boundaries.',
+        '4. Record exact timeframe, candle timestamps, OHLC evidence, first-knowable time and model-specific confirmation for every genuine formation. Do not construct zones from unrelated levels.',
+        '5. Audit each real formation through the snapshot as still valid, partially mitigated, fully consumed or invalidated. A formation that later fails still existed; do not erase it from the audit.',
+        '6. For every surviving formation, attempt a complete pending-limit construction: entry, structural stop, TP1, TP2 and TP3. Do not require a current-price touch, fresh 5M/15M confirmation or a universal last-20-bars range.',
+        '7. BUY_LIMIT requires ENTRY < CURRENT PRICE, STOP_LOSS < ENTRY and ENTRY < TP1 < TP2 < TP3. SELL_LIMIT requires ENTRY > CURRENT PRICE, STOP_LOSS > ENTRY and ENTRY > TP1 > TP2 > TP3.',
+        '8. Stops must follow genuine model invalidation and targets must come from three distinct remaining supplied structural objectives. Never use arbitrary percentage levels or invent evidence.',
+        '9. If one candidate fails, continue searching other models, timeframes and the opposite direction. If multiple complete candidates survive, return only the strongest one.',
+        '10. Return ACTION: NO_TRADE only after both directional searches and complete candidate-construction attempts fail. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker; never say only "No setup found."',
+        'CONFIDENCE is setup quality only, not guaranteed win probability. Return exactly one final plain-text response and nothing else.'
     ].join('\n');
 }
 

@@ -3608,6 +3608,29 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('Do not impose a universal LAST 20 BARS range restriction');
         expect(text).toContain('ACTION: NO_TRADE with SETUP: NONE');
         expect(text).not.toContain('ENTRY must be inside the LAST 20 BARS RANGE');
+        expect(text).toContain('Search both BUY_LIMIT and SELL_LIMIT opportunities across every supplied closed-candle timeframe');
+        expect(text).toContain('bullish requires candle1.high < candle3.low; bearish requires candle1.low > candle3.high');
+        expect(text).toContain('still valid, partially mitigated, fully consumed or invalidated');
+        expect(text).toContain('Return ACTION: NO_TRADE only after both directional searches and complete candidate-construction attempts fail');
+        expect(text).toContain('never say only "No setup found."');
+    });
+
+    it('keeps a real XAU/USD 4H bearish FVG in the pre-NO_TRADE audit', () => {
+        const replay = makeReplay(true, 'XAU/USD');
+        replay.history['4H'] = [
+            { t: '2026-10-12T01:00:00Z', o: 4198.00, h: 4200.00, l: 4193.78, c: 4195.00, is_closed: true },
+            { t: '2026-10-12T05:00:00Z', o: 4195.00, h: 4196.00, l: 4182.00, c: 4184.00, is_closed: true },
+            { t: '2026-10-12T09:00:00Z', o: 4184.00, h: 4180.27, l: 4176.00, c: 4178.00, is_closed: true }
+        ];
+        const candles = replay.history['4H'];
+        expect(candles[0].l > candles[2].h).toBe(true);
+        const text = getContext().buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('2026-10-12T01:00:00.000Z');
+        expect(text).toContain('2026-10-12T05:00:00.000Z');
+        expect(text).toContain('2026-10-12T09:00:00.000Z');
+        expect(text).toContain('For every FVG, use three chronological candles on the same timeframe');
+        expect(text).toContain('If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker');
+        expect(text).not.toContain('ACTION: SELL_LIMIT\nSETUP: FVG');
     });
 
     const makeRawFvgExecutionCase = ({ gapHigh = 151, entry = (150 + gapHigh) / 2, stop = 150, quoteFreshness = null, quoteOverrides = {}, symbolMetadata = {} } = {}) => {
