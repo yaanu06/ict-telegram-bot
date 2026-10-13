@@ -3709,6 +3709,9 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(packet.external_ai_task).toContain('A mathematically valid gap is Stage A formation evidence');
         expect(packet.external_ai_task).toContain('Do not refuse because the packet is large');
         expect(packet.external_ai_task).toContain('Only use FORMATION_NOT_FOUND when the supplied evidence does not establish a model-specific formation');
+        expect(packet.external_ai_task).toContain('STAGE C CANDIDATE COMPLETION PASS');
+        expect(packet.external_ai_task).toContain('explicitly test SELL LIMIT geometry');
+        expect(packet.external_ai_task).toContain('do not return NO_TRADE merely because the first attempted candidate lacked targets');
         expect(packet.external_ai_task).toContain('opposing source candle followed by a closed candle taking the source extreme');
         expect(packet.external_ai_task).toContain('bullish boundaries are previous high to next low and bearish boundaries are next high to previous low');
         expect(packet.external_ai_task).toContain('project body-direction transition');
