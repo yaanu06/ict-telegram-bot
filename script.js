@@ -13099,17 +13099,25 @@ const RAW_TEXT_OUTPUT_CONTRACT = [
     'Reply ONLY in this format. No prose. No markdown.',
     '',
     'ACTION: BUY_LIMIT | SELL_LIMIT | NO_TRADE',
+    'SETUP: FVG | OB | MSNR | CRT | TBS | SUPPLY | DEMAND | FLIP | BREAKER | NONE',
     'ENTRY: <price>',
     'STOP_LOSS: <price>',
-    'TAKE_PROFIT: <price>',
+    'TP1: <price>',
+    'TP2: <price>',
+    'TP3: <price>',
+    'CONFIDENCE: <integer 0-100>%',
     'TIMEFRAME_USED: <one of the TFs above>',
-    'REASON: <one sentence, max 20 words>',
+    'REASON: <concise structural explanation>',
     '',
-    'Verify before replying. If any check fails, output ACTION: NO_TRADE:',
-    '- ENTRY must be inside the LAST 20 BARS RANGE of TIMEFRAME_USED.',
-    '- BUY_LIMIT:  ENTRY < CURRENT PRICE, STOP_LOSS < ENTRY, TAKE_PROFIT > ENTRY.',
-    '- SELL_LIMIT: ENTRY > CURRENT PRICE, STOP_LOSS > ENTRY, TAKE_PROFIT < ENTRY.',
-    '- All prices use the same decimals as the packet.'
+    'Analyze both BUY LIMIT and SELL LIMIT possibilities from the supplied closed candles.',
+    'Use only genuine historical ICT/SMC formations and source-supported lifecycle, invalidation and target evidence.',
+    'BUY_LIMIT: ENTRY < CURRENT PRICE, STOP_LOSS < ENTRY, ENTRY < TP1 < TP2 < TP3.',
+    'SELL_LIMIT: ENTRY > CURRENT PRICE, STOP_LOSS > ENTRY, ENTRY > TP1 > TP2 > TP3.',
+    'Do not require a current-price touch or fresh lower-timeframe confirmation for an otherwise valid pending limit.',
+    'Do not impose a universal LAST 20 BARS range restriction; use the actual formation zone and lifecycle.',
+    'Provide three distinct remaining evidence-supported targets before returning a pending limit.',
+    'CONFIDENCE is setup quality, not win probability. Never invent formations, prices, targets or confidence.',
+    'If no complete qualifying setup exists, return ACTION: NO_TRADE with SETUP: NONE, ENTRY: 0, STOP_LOSS: 0, TP1: 0, TP2: 0, TP3: 0, CONFIDENCE: 0% and a factual REASON.'
 ].join('\n');
 
 function rawTextPacketTimestamp(value) {
@@ -13158,7 +13166,7 @@ function rawTextPacketFormatNumber(value, precision) {
 function buildRawTextMarketAnalysisInstruction() {
     return [
         'Analyze the supplied closed OHLC candle blocks independently. Evaluate both BUY_LIMIT and SELL_LIMIT historical ICT/SMC opportunities before deciding.',
-        'Use exact timeframe, timestamp, OHLC and range evidence. Preserve model-specific formation, lifecycle, invalidation, entry-zone, stop and target requirements.',
+        'Use exact timeframe, timestamp and OHLC evidence. Preserve model-specific formation, lifecycle, invalidation, entry-zone, stop and target requirements.',
         'A valid historical pending limit does not require a fresh lower-timeframe confirmation or a current-price zone touch. Do not invent candles, levels, stops or targets.',
         'Return exactly the plain-text OUTPUT CONTRACT below and nothing else.'
     ].join('\n');

@@ -3598,6 +3598,16 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('FORMAT: time,open,high,low,close,volume');
         expect(text).toContain('=== OUTPUT CONTRACT ===');
         expect(text).toContain('ACTION: BUY_LIMIT | SELL_LIMIT | NO_TRADE');
+        expect(text).toContain('SETUP: FVG | OB | MSNR | CRT | TBS | SUPPLY | DEMAND | FLIP | BREAKER | NONE');
+        expect(text).toContain('TP1: <price>');
+        expect(text).toContain('TP2: <price>');
+        expect(text).toContain('TP3: <price>');
+        expect(text).toContain('CONFIDENCE: <integer 0-100>%');
+        expect(text).toContain('ENTRY < TP1 < TP2 < TP3');
+        expect(text).toContain('ENTRY > TP1 > TP2 > TP3');
+        expect(text).toContain('Do not impose a universal LAST 20 BARS range restriction');
+        expect(text).toContain('ACTION: NO_TRADE with SETUP: NONE');
+        expect(text).not.toContain('ENTRY must be inside the LAST 20 BARS RANGE');
     });
 
     const makeRawFvgExecutionCase = ({ gapHigh = 151, entry = (150 + gapHigh) / 2, stop = 150, quoteFreshness = null, quoteOverrides = {}, symbolMetadata = {} } = {}) => {
