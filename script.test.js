@@ -3600,6 +3600,8 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('=== DETERMINISTIC CRT AUDIT ===');
         expect(text).toContain('=== DETERMINISTIC MSNR AUDIT ===');
         expect(text).toContain('=== TIMEFRAME ROLES ===');
+        expect(text).toContain('=== MARKET CONTEXT ===');
+        expect(text).toContain('=== HIGH PROBABILITY ZONES ===');
         expect(text).toContain('1D_ROLE=DIRECTIONAL_BIAS_ONLY');
         expect(text).toContain('4H_ROLE=PRIMARY_SETUP');
         expect(text).toContain('1H_ROLE=PRIMARY_SETUP_OR_REFINEMENT');
@@ -3640,6 +3642,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('reject STALE_TP2 and EXPIRED_TP3 by default');
         expect(text).toContain('never resurface ENTRY_STATE=ENTRY_TOUCHED as a new pending order');
         expect(text).toContain('PENDING_CANDIDATE=NOT_PRIMARY_SELECTABLE');
+        expect(text).toContain('Use SCORE_BREAKDOWN');
         expect(text).not.toContain('SETUP: FVG | OB | MSNR | CRT | TBS | SUPPLY | DEMAND | FLIP | BREAKER | NONE');
         expect(text).not.toContain('three distinct remaining evidence-supported targets before returning a pending limit');
     });
@@ -3685,6 +3688,116 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(primary).toContain('PENDING_CANDIDATE=BUY_LIMIT');
         expect(lower).toContain('PRIMARY_SETUP_TF=NO');
         expect(lower).toContain('PENDING_CANDIDATE=NOT_PRIMARY_SELECTABLE');
+    });
+
+    it('scores selectable primary zones with transparent confluence and freshness inputs', () => {
+        const ctx = getContext();
+        const candle = (t, h, l, o = (h + l) / 2, c = (h + l) / 2) => ({ t, o, h, l, c, is_closed: true });
+        const candles = [
+            candle('2026-10-12T00:00:00Z', 100, 95, 97, 98),
+            candle('2026-10-12T01:00:00Z', 103, 97, 99, 101),
+            candle('2026-10-12T02:00:00Z', 110, 105, 106, 109)
+        ];
+        const baseArgs = [
+            [{ timeframe: '1H', candles }],
+            200,
+            2,
+            { crt_records: [], msnr_records: [] },
+            { daily_bias: 'NEUTRAL', pdh: 250, pdl: 50, pwh: 260, pwl: 40, atr_1h: 5 },
+            { daily_bias: 'NEUTRAL' }
+        ];
+        const standalone = ctx.buildRawTextHighProbabilityZones(...baseArgs);
+        expect(standalone.records).toHaveLength(1);
+        expect(standalone.records[0]).toMatchObject({ score: expect.any(Number), quality: expect.any(String), rank: 1 });
+        expect(standalone.records[0].score).toBeGreaterThanOrEqual(0);
+        expect(standalone.records[0].score).toBeLessThanOrEqual(100);
+        const breakdownTotal = Object.values(standalone.records[0].breakdown).reduce((sum, value) => sum + value, 0);
+        expect(standalone.records[0].raw_score).toBe(breakdownTotal);
+        expect(standalone.lines[0]).toContain('SCORE_BREAKDOWN=');
+
+        const aligned = ctx.buildRawTextHighProbabilityZones(
+            baseArgs[0], baseArgs[1], baseArgs[2], baseArgs[3], baseArgs[4], { daily_bias: 'BULLISH' }
+        );
+        const opposed = ctx.buildRawTextHighProbabilityZones(
+            baseArgs[0], baseArgs[1], baseArgs[2], baseArgs[3], baseArgs[4], { daily_bias: 'BEARISH' }
+        );
+        expect(aligned.records[0].score).toBeGreaterThan(opposed.records[0].score);
+
+        const confluence = ctx.buildRawTextHighProbabilityZones(
+            baseArgs[0], baseArgs[1], baseArgs[2], {
+                crt_records: [{ detected: true, status: 'VALID', direction: 'BUY', timeframe: '1H', first_knowable_ms: Date.parse('2026-10-12T02:00:00Z'), range_low: 99, range_high: 106 }],
+                msnr_records: [{ status: 'VALID', direction: 'BUY', timeframe: '1H', first_knowable_ms: Date.parse('2026-10-12T02:00:00Z'), zone_low: 99, zone_high: 106 }]
+            },
+            baseArgs[4],
+            { daily_bias: 'BULLISH' }
+        );
+        expect(confluence.records[0].score).toBeGreaterThan(aligned.records[0].score);
+        expect(confluence.lines[0]).toContain('CRT=YES');
+        expect(confluence.lines[0]).toContain('MSNR=YES');
+
+        const lowerExecution = ctx.buildRawTextHighProbabilityZones(
+            [{ timeframe: '1H', candles }, { timeframe: '15M', candles }],
+            200,
+            2,
+            baseArgs[3],
+            baseArgs[4],
+            { daily_bias: 'BULLISH' }
+        );
+        expect(lowerExecution.records[0].execution.exec_15m).toBe('CONFIRMED');
+        expect(lowerExecution.records[0].score).toBeGreaterThan(aligned.records[0].score);
+
+        const fourHour = ctx.buildRawTextHighProbabilityZones(
+            [{ timeframe: '4H', candles }], 200, 2, baseArgs[3], baseArgs[4], { daily_bias: 'NEUTRAL' }
+        );
+        expect(fourHour.records[0].block.timeframe).toBe('4H');
+    });
+
+    it('does not rank stale, expired or lower-timeframe-only candidates as high-probability primary zones', () => {
+        const ctx = getContext();
+        const candle = (t, h, l) => ({ t, o: (h + l) / 2, h, l, c: (h + l) / 2, is_closed: true });
+        const stale = [
+            candle('2026-10-12T00:00:00Z', 100, 95),
+            candle('2026-10-12T01:00:00Z', 103, 97),
+            candle('2026-10-12T02:00:00Z', 110, 105),
+            candle('2026-10-12T03:00:00Z', 130, 120)
+        ];
+        const staleZones = ctx.buildRawTextHighProbabilityZones(
+            [{ timeframe: '1H', candles: stale }], 200, 2, {}, { daily_bias: 'NEUTRAL' }, { daily_bias: 'NEUTRAL' }
+        ).records;
+        expect(staleZones.some(record => record.fvg.lower === 100 && record.fvg.upper === 105)).toBe(false);
+        expect(ctx.buildRawTextHighProbabilityZones(
+            [{ timeframe: '5M', candles: stale }], 200, 2, {}, { daily_bias: 'NEUTRAL' }, { daily_bias: 'NEUTRAL' }
+        ).records).toHaveLength(0);
+    });
+
+    it('calculates ATR and completed UTC day/week context without future candles', () => {
+        const ctx = getContext();
+        const constant = Array.from({ length: 15 }, (_, index) => ({
+            t: new Date(Date.UTC(2026, 9, 1, index)).toISOString(), o: 11, h: 12, l: 10, c: 11, is_closed: true
+        }));
+        expect(ctx.calculateRawTextAtr(constant, 14)).toBe(2);
+        const day1 = Array.from({ length: 15 }, (_, index) => ({
+            t: new Date(Date.UTC(2026, 9, 12, index)).toISOString(), o: 100, h: 105 + index, l: 95, c: 100, is_closed: true
+        }));
+        const day2 = Array.from({ length: 15 }, (_, index) => ({
+            t: new Date(Date.UTC(2026, 9, 13, index)).toISOString(), o: 110, h: 115 + index, l: 105, c: 110, is_closed: true
+        }));
+        const weekCandles = Array.from({ length: 30 }, (_, index) => {
+            const start = index < 15 ? Date.UTC(2026, 8, 24) : Date.UTC(2026, 9, 1);
+            const offset = index < 15 ? index : index - 15;
+            return { t: new Date(start + offset * 4 * 60 * 60 * 1000).toISOString(), o: 45 + index, h: 50 + index, l: 40 + index, c: 45 + index, is_closed: true };
+        });
+        const context = ctx.buildRawTextMarketContext([
+            { timeframe: '1H', candles: day1.concat(day2) },
+            { timeframe: '4H', candles: weekCandles }
+        ], 120, 2, Date.parse('2026-10-13T14:00:00Z'), 'BULLISH');
+        expect(context.context).toMatchObject({ daily_bias: 'BULLISH', pdh: 119, pdl: 95, pwh: 64, pwl: 40, daily_open: 110 });
+        expect(context.lines.join('\n')).toContain('PDH=119.00');
+        expect(context.lines.join('\n')).toContain('PWH=64.00 PWL=40.00');
+        expect(context.lines.join('\n')).toContain('ASIA_HIGH=118.00');
+        expect(context.lines.join('\n')).toContain('LONDON_HIGH=124.00');
+        expect(context.lines.join('\n')).toContain('NY_HIGH=119.00');
+        expect(context.lines.join('\n')).toContain('PREMIUM_DISCOUNT=NOT_EMITTED');
     });
 
     it('keeps a real XAU/USD 4H bearish FVG in the pre-NO_TRADE audit', () => {
