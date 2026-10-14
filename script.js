@@ -13259,6 +13259,68 @@ function buildRawTextFvgPendingCandidate(fvg, currentPrice, precision = 2) {
     return { action, entry, stop_loss: stopLoss, tp1, tp2, tp3, risk };
 }
 
+function buildRawTextFvgDeliveryAssessment(fvg, candidate, candles = [], currentPrice = null, precision = 2) {
+    const assessment = {
+        entry_state: 'PENDING_UNFILLED',
+        delivery_status: 'FRESH',
+        pre_entry_max_high: null,
+        pre_entry_min_low: null,
+        pre_entry_progress: null,
+        recommendation_eligible: true
+    };
+    if (!fvg || !candidate) return assessment;
+    const ordered = [...candles].filter(candle => (
+        candle && candle.is_forming !== true && candle.forming !== true && candle.is_closed !== false && candle.closed !== false
+    )).sort((left, right) => (
+        rawTextPacketTimestamp(left?.t ?? left?.time ?? left?.timestamp) -
+        rawTextPacketTimestamp(right?.t ?? right?.time ?? right?.timestamp)
+    ));
+    const formationEnd = Number.isInteger(fvg.formation_index) ? fvg.formation_index + 3 : 0;
+    const subsequent = ordered.slice(formationEnd);
+    let preEntryMaxHigh = null;
+    let preEntryMinLow = null;
+    for (const candle of subsequent) {
+        const high = Number(candle?.h);
+        const low = Number(candle?.l);
+        if (!Number.isFinite(high) || !Number.isFinite(low)) continue;
+        const entryTouched = fvg.type === 'BULLISH'
+            ? low <= Number(candidate.entry)
+            : high >= Number(candidate.entry);
+        if (entryTouched) {
+            assessment.entry_state = 'ENTRY_TOUCHED';
+            assessment.recommendation_eligible = false;
+            break;
+        }
+        if (fvg.type === 'BULLISH') preEntryMaxHigh = preEntryMaxHigh == null ? high : Math.max(preEntryMaxHigh, high);
+        else preEntryMinLow = preEntryMinLow == null ? low : Math.min(preEntryMinLow, low);
+    }
+    assessment.pre_entry_max_high = preEntryMaxHigh;
+    assessment.pre_entry_min_low = preEntryMinLow;
+    if (assessment.entry_state === 'PENDING_UNFILLED' || assessment.entry_state === 'ENTRY_TOUCHED') {
+        if (fvg.type === 'BULLISH') {
+            if (preEntryMaxHigh != null && preEntryMaxHigh >= candidate.tp3) assessment.delivery_status = 'EXPIRED_TP3';
+            else if (preEntryMaxHigh != null && preEntryMaxHigh >= candidate.tp2) assessment.delivery_status = 'STALE_TP2';
+            else if (preEntryMaxHigh != null && preEntryMaxHigh >= candidate.tp1) assessment.delivery_status = 'DELIVERED_TP1';
+        } else if (preEntryMinLow != null) {
+            if (preEntryMinLow <= candidate.tp3) assessment.delivery_status = 'EXPIRED_TP3';
+            else if (preEntryMinLow <= candidate.tp2) assessment.delivery_status = 'STALE_TP2';
+            else if (preEntryMinLow <= candidate.tp1) assessment.delivery_status = 'DELIVERED_TP1';
+        }
+        if (['STALE_TP2', 'EXPIRED_TP3'].includes(assessment.delivery_status)) assessment.recommendation_eligible = false;
+    }
+    const price = Number(currentPrice);
+    const path = fvg.type === 'BULLISH'
+        ? Number(candidate.tp3) - Number(candidate.entry)
+        : Number(candidate.entry) - Number(candidate.tp3);
+    const directionalProgress = fvg.type === 'BULLISH'
+        ? price - Number(candidate.entry)
+        : Number(candidate.entry) - price;
+    if (Number.isFinite(price) && path > 0 && Number.isFinite(directionalProgress)) {
+        assessment.pre_entry_progress = rawTextPacketRoundPrice(Math.min(100, Math.max(0, (directionalProgress / path) * 100)), 2);
+    }
+    return assessment;
+}
+
 function rawTextFvgCurrentPriceRelation(fvg, currentPrice) {
     const price = Number(currentPrice);
     if (!Number.isFinite(price)) return 'UNKNOWN';
@@ -13297,15 +13359,31 @@ function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2) {
                 parts.push('GEOMETRIC_REMAINING_ZONE=' + rawTextPacketFormatNumber(fvg.remaining_lower, precision) + '-' + rawTextPacketFormatNumber(fvg.remaining_upper, precision));
             }
             if (candidate) {
+                const delivery = buildRawTextFvgDeliveryAssessment(fvg, candidate, block.candles, currentPrice, precision);
                 parts.push(
-                    'PENDING_CANDIDATE=' + candidate.action,
-                    'ENTRY=' + rawTextPacketFormatNumber(candidate.entry, precision),
-                    'STOP_LOSS=' + rawTextPacketFormatNumber(candidate.stop_loss, precision),
-                    'TP1=' + rawTextPacketFormatNumber(candidate.tp1, precision),
-                    'TP2=' + rawTextPacketFormatNumber(candidate.tp2, precision),
-                    'TP3=' + rawTextPacketFormatNumber(candidate.tp3, precision),
-                    'R=' + rawTextPacketFormatNumber(candidate.risk, precision)
+                    'ENTRY_STATE=' + delivery.entry_state,
+                    'DELIVERY_STATUS=' + delivery.delivery_status,
+                    'PRE_ENTRY_PROGRESS=' + (delivery.pre_entry_progress == null ? '' : rawTextPacketFormatNumber(delivery.pre_entry_progress, 2)) + '%'
                 );
+                if (fvg.type === 'BULLISH' && delivery.pre_entry_max_high != null) {
+                    parts.push('PRE_ENTRY_MAX_HIGH=' + rawTextPacketFormatNumber(delivery.pre_entry_max_high, precision));
+                }
+                if (fvg.type === 'BEARISH' && delivery.pre_entry_min_low != null) {
+                    parts.push('PRE_ENTRY_MIN_LOW=' + rawTextPacketFormatNumber(delivery.pre_entry_min_low, precision));
+                }
+                if (delivery.recommendation_eligible) {
+                    parts.push(
+                        'PENDING_CANDIDATE=' + candidate.action,
+                        'ENTRY=' + rawTextPacketFormatNumber(candidate.entry, precision),
+                        'STOP_LOSS=' + rawTextPacketFormatNumber(candidate.stop_loss, precision),
+                        'TP1=' + rawTextPacketFormatNumber(candidate.tp1, precision),
+                        'TP2=' + rawTextPacketFormatNumber(candidate.tp2, precision),
+                        'TP3=' + rawTextPacketFormatNumber(candidate.tp3, precision),
+                        'R=' + rawTextPacketFormatNumber(candidate.risk, precision)
+                    );
+                } else {
+                    parts.push('PENDING_CANDIDATE=NOT_SELECTABLE');
+                }
             }
             parts.push(
                 'CURRENT_PRICE=' + rawTextPacketFormatNumber(currentPrice, precision),
@@ -13334,10 +13412,13 @@ function buildRawTextMarketAnalysisInstruction() {
         '10. Add a component to SETUP only when its closed-candle formation, required confirmation, timeframe, lifecycle and relationship to the selected FVG are independently supported. CRT must follow the existing project CRT semantics, including its defining range, sweep or reclaim and displacement evidence where applicable; do not invent a CRT definition.',
         '11. SETUP may be FVG alone or canonical components joined with + and no spaces. A combined label such as CRT+FVG requires independent evidence for both components; absence of CRT does not veto a valid FVG.',
         '12. Keep deterministic FVG ENTRY, STOP_LOSS and TP1/TP2/TP3 unchanged. Use additional confluence for candidate comparison and setup-quality confidence, not as fabricated evidence or a universal confidence boost. A standalone FVG remains eligible when it independently satisfies the required rules.',
-        '13. If one candidate fails, continue searching other models, timeframes and the opposite direction. If multiple complete candidates survive, return only the strongest one.',
-        '14. REASON must briefly support every component named in SETUP; never claim CRT+FVG merely because a deterministic FVG exists.',
-        '15. Return ACTION: NO_TRADE only after both directional searches and complete candidate-construction attempts fail. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker; never say only "No setup found."',
-        '16. TIMEFRAME_USED must always be one supplied timeframe, including for NO_TRADE; never output TIMEFRAME_USED: NONE.',
+        '13. Rank complete candidates by genuine quality: CRT+MSNR+FVG first, then CRT+FVG or MSNR+FVG, then other supported multi-model confluence, then standalone FVG. This is a preference only; never fabricate CRT or MSNR, and reject a stale higher-tier candidate in favor of a fresh lower-tier candidate.',
+        '14. Prefer ENTRY_STATE=PENDING_UNFILLED and DELIVERY_STATUS=FRESH. DELIVERY_STATUS=DELIVERED_TP1 is lower quality; reject STALE_TP2 and EXPIRED_TP3 by default, and never resurface ENTRY_STATE=ENTRY_TOUCHED as a new pending order.',
+        '15. Use PRE_ENTRY_PROGRESS only as freshness/ranking context: a candidate whose projected path has already travelled deeply toward TP3 is late even when its FVG is not fully traversed. Do not treat these fields as proof of strategy validity.',
+        '16. If one candidate fails, continue searching other models, timeframes and the opposite direction. If multiple complete candidates survive, return only the strongest one.',
+        '17. REASON must briefly support every component named in SETUP; never claim CRT+FVG merely because a deterministic FVG exists.',
+        '18. Return ACTION: NO_TRADE only after both directional searches and complete candidate-construction attempts fail. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker; never say only "No setup found."',
+        '19. TIMEFRAME_USED must always be one supplied timeframe, including for NO_TRADE; never output TIMEFRAME_USED: NONE.',
         'CONFIDENCE is setup quality only, not guaranteed win probability. Return exactly one final plain-text response and nothing else.'
     ].join('\n');
 }

@@ -3625,6 +3625,10 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('combined label such as CRT+FVG requires independent evidence for both components');
         expect(text).toContain('absence of CRT does not veto a valid FVG');
         expect(text).toContain('REASON must briefly support every component named in SETUP');
+        expect(text).toContain('CRT+MSNR+FVG first, then CRT+FVG or MSNR+FVG');
+        expect(text).toContain('Prefer ENTRY_STATE=PENDING_UNFILLED and DELIVERY_STATUS=FRESH');
+        expect(text).toContain('reject STALE_TP2 and EXPIRED_TP3 by default');
+        expect(text).toContain('never resurface ENTRY_STATE=ENTRY_TOUCHED as a new pending order');
         expect(text).not.toContain('SETUP: FVG | OB | MSNR | CRT | TBS | SUPPLY | DEMAND | FLIP | BREAKER | NONE');
         expect(text).not.toContain('three distinct remaining evidence-supported targets before returning a pending limit');
     });
@@ -3707,6 +3711,8 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('FVG: TF=1h TYPE=BEARISH');
         expect(text).toContain('ZONE=4196.13-4201.70 STATUS=PARTIAL MAX_LATER_HIGH=4196.48 GEOMETRIC_REMAINING_ZONE=4196.48-4201.70');
         expect(text).toContain('PENDING_CANDIDATE=SELL_LIMIT');
+        expect(text).toContain('ENTRY_STATE=PENDING_UNFILLED DELIVERY_STATUS=DELIVERED_TP1');
+        expect(text).toContain('PRE_ENTRY_MIN_LOW=4192.00');
         expect(text).toContain('CURRENT_PRICE=4196.22 CURRENT_PRICE_RELATION=BELOW_REMAINING_ZONE');
     });
 
@@ -3736,6 +3742,57 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(sell).toEqual(expect.objectContaining({ action: 'SELL_LIMIT', entry: 305, stop_loss: 315.01, tp1: 294.99, tp2: 284.98, tp3: 274.97 }));
         expect(partialSell.entry).toBe(307);
         expect(fullyTraversed).toBeNull();
+    });
+
+    it('classifies pending delivery before entry without changing FVG candidate arithmetic', () => {
+        const ctx = getContext();
+        const candle = (index, high, low) => ({ t: '2026-10-12T0' + index + ':00:00Z', o: low, h: high, l: low, c: high, is_closed: true });
+        const bullishFvg = { type: 'BULLISH', status: 'UNTOUCHED', lower: 100, upper: 110, formation_low: 95, formation_high: 111, formation_index: 0 };
+        const bullishCandidate = ctx.buildRawTextFvgPendingCandidate(bullishFvg, 200, 2);
+        const assessment = (laterHigh, laterLow) => ctx.buildRawTextFvgDeliveryAssessment(
+            bullishFvg,
+            bullishCandidate,
+            [candle(0, 100, 95), candle(1, 103, 97), candle(2, 110, 105), candle(3, laterHigh, laterLow)],
+            112,
+            2
+        );
+        expect(assessment(110, 106)).toEqual(expect.objectContaining({ entry_state: 'PENDING_UNFILLED', delivery_status: 'FRESH', recommendation_eligible: true }));
+        expect(assessment(116, 106).delivery_status).toBe('DELIVERED_TP1');
+        expect(assessment(126, 106)).toEqual(expect.objectContaining({ delivery_status: 'STALE_TP2', recommendation_eligible: false }));
+        expect(assessment(136, 106)).toEqual(expect.objectContaining({ delivery_status: 'EXPIRED_TP3', recommendation_eligible: false }));
+        expect(assessment(110, 104)).toEqual(expect.objectContaining({ entry_state: 'ENTRY_TOUCHED', delivery_status: 'FRESH', recommendation_eligible: false }));
+
+        const bearishFvg = { type: 'BEARISH', status: 'UNTOUCHED', lower: 300, upper: 310, formation_low: 295, formation_high: 315, formation_index: 0 };
+        const bearishCandidate = ctx.buildRawTextFvgPendingCandidate(bearishFvg, 200, 2);
+        const bearishAssessment = ctx.buildRawTextFvgDeliveryAssessment(
+            bearishFvg,
+            bearishCandidate,
+            [candle(0, 310, 300), candle(1, 303, 297), candle(2, 300, 295), candle(3, 304, 290)],
+            280,
+            2
+        );
+        expect(bearishAssessment).toEqual(expect.objectContaining({ delivery_status: 'DELIVERED_TP1', pre_entry_min_low: 290 }));
+        expect(bearishAssessment.pre_entry_progress).toBeGreaterThan(80);
+    });
+
+    it('uses only post-formation candles and determines the recent 4H BUY delivery state chronologically', () => {
+        const ctx = getContext();
+        const fvg = { type: 'BULLISH', status: 'UNTOUCHED', lower: 4175.89, upper: 4183.56, formation_low: 4168.49, formation_high: 4184.00, formation_index: 0 };
+        const candidate = { action: 'BUY_LIMIT', entry: 4179.72, stop_loss: 4168.48, tp1: 4208.66, tp2: 4237.60, tp3: 4266.54, risk: 11.24 };
+        const candle = (time, high, low) => ({ t: time, o: low, h: high, l: low, c: high, is_closed: true });
+        const result = ctx.buildRawTextFvgDeliveryAssessment(fvg, candidate, [
+            candle('2026-10-12T00:00:00Z', 4178, 4168),
+            candle('2026-10-12T04:00:00Z', 4180, 4175),
+            candle('2026-10-12T08:00:00Z', 4184, 4176),
+            candle('2026-10-12T12:00:00Z', 4209, 4185)
+        ], 4190, 2);
+        expect(result).toEqual(expect.objectContaining({
+            entry_state: 'PENDING_UNFILLED',
+            delivery_status: 'DELIVERED_TP1',
+            pre_entry_max_high: 4209,
+            recommendation_eligible: true
+        }));
+        expect(result.pre_entry_progress).toBeGreaterThan(0);
     });
 
     it('uses the current XAU/USD 1H partial FVG to calculate CE, structural stop and 1R targets', () => {
