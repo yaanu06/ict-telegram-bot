@@ -3597,6 +3597,8 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('LAST 20 BARS RANGE: HIGH=1.10051 LOW=1.10028');
         expect(text).toContain('FORMAT: time,open,high,low,close,volume');
         expect(text).toContain('=== DETERMINISTIC FVG AUDIT ===');
+        expect(text).toContain('=== DETERMINISTIC CRT AUDIT ===');
+        expect(text).toContain('=== DETERMINISTIC MSNR AUDIT ===');
         expect(text).toContain('=== OUTPUT CONTRACT ===');
         expect(text).toContain('ACTION: BUY_LIMIT | SELL_LIMIT | NO_TRADE');
         expect(text).toContain('SETUP: <one or more valid setup components joined by +, or NONE>');
@@ -3807,6 +3809,44 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(fvg).toEqual(expect.objectContaining({ type: 'BEARISH', status: 'PARTIAL', max_later_high: 4200.63, remaining_lower: 4200.63, remaining_upper: 4201.70 }));
         const candidate = ctx.buildRawTextFvgPendingCandidate(fvg, 4192.20, 2);
         expect(candidate).toEqual(expect.objectContaining({ action: 'SELL_LIMIT', entry: 4201.17, stop_loss: 4208.39, tp1: 4193.95, tp2: 4186.73, tp3: 4179.51, risk: 7.22 }));
+    });
+
+    it('serializes existing CRT and structural MSNR semantics as compact deterministic audits', () => {
+        const ctx = getContext();
+        const withTimes = data => data.map((candle, index) => ({
+            ...candle,
+            t: '2026-10-12T' + String(index).padStart(2, '0') + ':00:00Z',
+            is_closed: true
+        }));
+        const crtAudit = ctx.buildRawTextDeterministicCrtAudit([
+            { timeframe: '1H', candles: withTimes(crtBuyFixture()) }
+        ], 'XAU/USD', { price_precision: 2 }, 2);
+        expect(crtAudit.records.some(record => record.direction === 'BUY' && record.status === 'VALID')).toBe(true);
+        expect(crtAudit.lines.some(line => line.includes('SWEEP=SELL_SIDE') && line.includes('FIRST_KNOWABLE='))).toBe(true);
+
+        const msnrAudit = ctx.buildRawTextDeterministicMsnrAudit([
+            { timeframe: '1H', candles: withTimes(msnrReactionFixture()) }
+        ], 101, 'XAU/USD', { price_precision: 2 }, 2);
+        expect(msnrAudit.records.some(record => record.direction === 'BUY' && record.status === 'VALID')).toBe(true);
+        expect(msnrAudit.lines.some(line => line.includes('MSNR: TF=1h TYPE=BULLISH') && line.includes('ZONE=') && line.includes('FIRST_KNOWABLE='))).toBe(true);
+
+        const withFutureForming = withTimes(crtBuyFixture()).concat({ t: '2026-10-13T12:00:00Z', o: 1, h: 999, l: 1, c: 999, is_forming: true });
+        const futureAudit = ctx.buildRawTextDeterministicCrtAudit([
+            { timeframe: '1H', candles: withFutureForming }
+        ], 'XAU/USD', { price_precision: 2 }, 2);
+        expect(futureAudit.records.map(record => record.ref)).toEqual(crtAudit.records.map(record => record.ref));
+    });
+
+    it('links only directionally aligned, timely CRT and MSNR structures to an FVG', () => {
+        const ctx = getContext();
+        const fvg = { type: 'BULLISH', status: 'UNTOUCHED', lower: 99, upper: 100, c3: '2026-10-12T05:00:00Z' };
+        const candidate = { action: 'BUY_LIMIT', entry: 99.5 };
+        const crt = { ref: 'CRT:1H:BUY:1', timeframe: '1H', direction: 'BUY', range_low: 98, range_high: 101, first_knowable_ms: Date.parse('2026-10-12T04:00:00Z'), status: 'VALID', detected: true };
+        const msnr = { ref: 'MSNR:1H:BUY:1', timeframe: '1H', direction: 'BUY', zone_low: 99.2, zone_high: 99.8, first_knowable_ms: Date.parse('2026-10-12T04:00:00Z'), status: 'VALID' };
+        expect(ctx.rawTextFvgConfluence(fvg, candidate, [crt], [msnr])).toEqual({ crt: [crt], msnr: [msnr] });
+        expect(ctx.rawTextFvgConfluence(fvg, candidate, [{ ...crt, direction: 'SELL' }], [{ ...msnr, direction: 'SELL' }])).toEqual({ crt: [], msnr: [] });
+        expect(ctx.rawTextFvgConfluence(fvg, candidate, [{ ...crt, first_knowable_ms: Date.parse('2026-10-12T06:00:00Z') }], [{ ...msnr, first_knowable_ms: Date.parse('2026-10-12T06:00:00Z') }])).toEqual({ crt: [], msnr: [] });
+        expect(ctx.rawTextFvgConfluence(fvg, candidate, [{ ...crt, range_low: 110, range_high: 120 }], [{ ...msnr, zone_low: 110, zone_high: 120 }])).toEqual({ crt: [], msnr: [] });
     });
 
     const makeRawFvgExecutionCase = ({ gapHigh = 151, entry = (150 + gapHigh) / 2, stop = 150, quoteFreshness = null, quoteOverrides = {}, symbolMetadata = {} } = {}) => {

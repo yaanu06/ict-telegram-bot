@@ -13259,6 +13259,136 @@ function buildRawTextFvgPendingCandidate(fvg, currentPrice, precision = 2) {
     return { action, entry, stop_loss: stopLoss, tp1, tp2, tp3, risk };
 }
 
+function rawTextAuditTimestamp(value) {
+    const timestamp = rawTextPacketTimestamp(value);
+    return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : '';
+}
+
+function buildRawTextDeterministicCrtAudit(blocks = [], pairLocal = pair, symbolMetadata = {}, precision = 2) {
+    const records = [];
+    for (const block of blocks) {
+        const events = detectCRTEvents(block.candles, block.timeframe, pairLocal, symbolMetadata);
+        for (const event of events) {
+            const firstKnowable = event.first_knowable_time ?? event.confirmation_time ?? event.reclaim_time;
+            const firstKnowableMs = rawTextPacketTimestamp(firstKnowable);
+            const status = event.invalidated ? 'INVALIDATED' : event.detected ? 'VALID' : String(event.freshness || 'UNVERIFIED').toUpperCase();
+            const reference = [
+                'CRT',
+                String(block.timeframe).toUpperCase(),
+                String(event.direction || event.type || 'UNKNOWN').toUpperCase(),
+                Number.isFinite(firstKnowableMs) ? firstKnowableMs : 'UNKNOWN',
+                Number.isFinite(Number(event.reference_bar_index)) ? event.reference_bar_index : 'NA'
+            ].join(':');
+            records.push({
+                ref: reference,
+                timeframe: String(block.timeframe).toUpperCase(),
+                direction: event.direction || event.type,
+                range_low: Number(event.range_low),
+                range_high: Number(event.range_high),
+                first_knowable_ms: firstKnowableMs,
+                first_knowable: rawTextAuditTimestamp(firstKnowable),
+                status,
+                detected: event.detected === true,
+                event
+            });
+        }
+    }
+    const lines = records.map(record => {
+        const event = record.event;
+        return [
+            'CRT: TF=' + record.timeframe.toLowerCase(),
+            'TYPE=' + String(record.direction || 'UNKNOWN').toUpperCase(),
+            'RANGE=' + rawTextPacketFormatNumber(record.range_low, precision) + '-' + rawTextPacketFormatNumber(record.range_high, precision),
+            'SWEEP=' + String(event.manipulation_side || 'UNKNOWN').toUpperCase(),
+            'SWEEP_PRICE=' + rawTextPacketFormatNumber(event.sweep_extreme, precision),
+            'CONFIRM=' + rawTextAuditTimestamp(event.confirmation_time || event.reclaim_time),
+            'STATUS=' + record.status,
+            'FIRST_KNOWABLE=' + record.first_knowable,
+            'CRT_REF=' + record.ref
+        ].join(' ');
+    });
+    return { records, lines: lines.length ? lines : ['NONE'] };
+}
+
+function buildRawTextDeterministicMsnrAudit(blocks = [], currentPrice = null, pairLocal = pair, symbolMetadata = {}, precision = 2) {
+    const records = [];
+    const price = Number.isFinite(Number(currentPrice)) ? Number(currentPrice) : 0;
+    for (const block of blocks) {
+        const result = calculateMSNR(block.candles, price, block.timeframe, pairLocal, symbolMetadata);
+        for (const level of result.structural_levels || []) {
+            if (level.origin !== 'STRUCTURAL_MSNR' || !Number.isFinite(Number(level.zone_low)) || !Number.isFinite(Number(level.zone_high))) continue;
+            const firstKnowable = level.first_knowable_time ?? level.confirmation_time ?? level.event_time ?? level.formation_time;
+            const firstKnowableMs = rawTextPacketTimestamp(firstKnowable);
+            const status = level.invalidated
+                ? 'INVALIDATED'
+                : level.freshness === 'MITIGATED'
+                    ? 'MITIGATED'
+                    : level.primary_eligible
+                        ? 'VALID'
+                        : String(level.freshness || 'UNVERIFIED').toUpperCase();
+            const reference = [
+                'MSNR',
+                String(block.timeframe).toUpperCase(),
+                String(level.direction || 'UNKNOWN').toUpperCase(),
+                Number.isFinite(firstKnowableMs) ? firstKnowableMs : 'UNKNOWN',
+                Number.isFinite(Number(level.source_candle_index)) ? level.source_candle_index : 'NA'
+            ].join(':');
+            records.push({
+                ref: reference,
+                timeframe: String(block.timeframe).toUpperCase(),
+                direction: level.direction,
+                zone_low: Number(level.zone_low),
+                zone_high: Number(level.zone_high),
+                first_knowable_ms: firstKnowableMs,
+                first_knowable: rawTextAuditTimestamp(firstKnowable),
+                status,
+                level
+            });
+        }
+    }
+    const lines = records.map(record => {
+        const level = record.level;
+        const parts = [
+            'MSNR: TF=' + record.timeframe.toLowerCase(),
+            'TYPE=' + (record.direction === 'BUY' ? 'BULLISH' : record.direction === 'SELL' ? 'BEARISH' : 'UNKNOWN'),
+            'ZONE=' + rawTextPacketFormatNumber(record.zone_low, precision) + '-' + rawTextPacketFormatNumber(record.zone_high, precision),
+            'STATUS=' + record.status,
+            'CONFIRM=' + rawTextAuditTimestamp(level.confirmation_time || level.event_time),
+            'FIRST_KNOWABLE=' + record.first_knowable,
+            'MSNR_REF=' + record.ref,
+            'ROLE=' + String(level.role || 'UNKNOWN')
+        ];
+        if (level.break_time != null) parts.push('BREAK=' + rawTextAuditTimestamp(level.break_time));
+        if (level.retest_time != null) parts.push('RETEST=' + rawTextAuditTimestamp(level.retest_time));
+        return parts.join(' ');
+    });
+    return { records, lines: lines.length ? lines : ['NONE'] };
+}
+
+function rawTextIntervalsOverlap(firstLow, firstHigh, secondLow, secondHigh) {
+    return [firstLow, firstHigh, secondLow, secondHigh].every(Number.isFinite)
+        && Math.max(firstLow, secondLow) <= Math.min(firstHigh, secondHigh);
+}
+
+function rawTextFvgConfluence(fvg, candidate, crtRecords = [], msnrRecords = []) {
+    if (!fvg || !candidate) return { crt: [], msnr: [] };
+    const direction = candidate.action === 'BUY_LIMIT' ? 'BUY' : candidate.action === 'SELL_LIMIT' ? 'SELL' : null;
+    const firstKnowableMs = rawTextPacketTimestamp(fvg.c3);
+    const fvgLow = fvg.status === 'PARTIAL' ? Number(fvg.remaining_lower) : Number(fvg.lower);
+    const fvgHigh = fvg.status === 'PARTIAL' ? Number(fvg.remaining_upper) : Number(fvg.upper);
+    const crt = crtRecords.filter(record => (
+        direction && record.detected && record.status === 'VALID' && record.direction === direction
+        && Number.isFinite(firstKnowableMs) && Number.isFinite(record.first_knowable_ms) && record.first_knowable_ms <= firstKnowableMs
+        && rawTextIntervalsOverlap(fvgLow, fvgHigh, record.range_low, record.range_high)
+    ));
+    const msnr = msnrRecords.filter(record => (
+        direction && record.status === 'VALID' && record.direction === direction
+        && Number.isFinite(firstKnowableMs) && Number.isFinite(record.first_knowable_ms) && record.first_knowable_ms <= firstKnowableMs
+        && rawTextIntervalsOverlap(fvgLow, fvgHigh, record.zone_low, record.zone_high)
+    ));
+    return { crt, msnr };
+}
+
 function buildRawTextFvgDeliveryAssessment(fvg, candidate, candles = [], currentPrice = null, precision = 2) {
     const assessment = {
         entry_state: 'PENDING_UNFILLED',
@@ -13332,8 +13462,10 @@ function rawTextFvgCurrentPriceRelation(fvg, currentPrice) {
     return 'INSIDE' + suffix;
 }
 
-function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2) {
+function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2, strategyAudits = {}) {
     const records = [];
+    const crtRecords = strategyAudits.crt_records || [];
+    const msnrRecords = strategyAudits.msnr_records || [];
     for (const block of blocks) {
         const fvgs = detectRawTextFvgs(block.candles, block.timeframe);
         const recentFullCutoff = Math.max(0, block.candles.length - 13);
@@ -13370,6 +13502,15 @@ function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2) {
                 }
                 if (fvg.type === 'BEARISH' && delivery.pre_entry_min_low != null) {
                     parts.push('PRE_ENTRY_MIN_LOW=' + rawTextPacketFormatNumber(delivery.pre_entry_min_low, precision));
+                }
+                const confluence = rawTextFvgConfluence(fvg, candidate, crtRecords, msnrRecords);
+                parts.push('CRT_CONFLUENCE=' + (confluence.crt.length ? 'YES' : 'NO'));
+                if (confluence.crt.length) {
+                    parts.push('CRT_TF=' + confluence.crt[0].timeframe.toLowerCase(), 'CRT_REF=' + confluence.crt[0].ref);
+                }
+                parts.push('MSNR_CONFLUENCE=' + (confluence.msnr.length ? 'YES' : 'NO'));
+                if (confluence.msnr.length) {
+                    parts.push('MSNR_TF=' + confluence.msnr[0].timeframe.toLowerCase(), 'MSNR_REF=' + confluence.msnr[0].ref);
                 }
                 if (delivery.recommendation_eligible) {
                     parts.push(
@@ -13412,13 +13553,15 @@ function buildRawTextMarketAnalysisInstruction() {
         '10. Add a component to SETUP only when its closed-candle formation, required confirmation, timeframe, lifecycle and relationship to the selected FVG are independently supported. CRT must follow the existing project CRT semantics, including its defining range, sweep or reclaim and displacement evidence where applicable; do not invent a CRT definition.',
         '11. SETUP may be FVG alone or canonical components joined with + and no spaces. A combined label such as CRT+FVG requires independent evidence for both components; absence of CRT does not veto a valid FVG.',
         '12. Keep deterministic FVG ENTRY, STOP_LOSS and TP1/TP2/TP3 unchanged. Use additional confluence for candidate comparison and setup-quality confidence, not as fabricated evidence or a universal confidence boost. A standalone FVG remains eligible when it independently satisfies the required rules.',
-        '13. Rank complete candidates by genuine quality: CRT+MSNR+FVG first, then CRT+FVG or MSNR+FVG, then other supported multi-model confluence, then standalone FVG. This is a preference only; never fabricate CRT or MSNR, and reject a stale higher-tier candidate in favor of a fresh lower-tier candidate.',
-        '14. Prefer ENTRY_STATE=PENDING_UNFILLED and DELIVERY_STATUS=FRESH. DELIVERY_STATUS=DELIVERED_TP1 is lower quality; reject STALE_TP2 and EXPIRED_TP3 by default, and never resurface ENTRY_STATE=ENTRY_TOUCHED as a new pending order.',
-        '15. Use PRE_ENTRY_PROGRESS only as freshness/ranking context: a candidate whose projected path has already travelled deeply toward TP3 is late even when its FVG is not fully traversed. Do not treat these fields as proof of strategy validity.',
-        '16. If one candidate fails, continue searching other models, timeframes and the opposite direction. If multiple complete candidates survive, return only the strongest one.',
-        '17. REASON must briefly support every component named in SETUP; never claim CRT+FVG merely because a deterministic FVG exists.',
-        '18. Return ACTION: NO_TRADE only after both directional searches and complete candidate-construction attempts fail. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker; never say only "No setup found."',
-        '19. TIMEFRAME_USED must always be one supplied timeframe, including for NO_TRADE; never output TIMEFRAME_USED: NONE.',
+        '13. DETERMINISTIC CRT AUDIT and DETERMINISTIC MSNR AUDIT are evidence derived from supplied CLOSED candles. Do not deny a listed VALID structure exists; reject it only for a specific chronology, lifecycle, invalidation or location reason and name that reason.',
+        '14. Use CRT_CONFLUENCE and MSNR_CONFLUENCE only when the deterministic structure has matching direction, valid lifecycle, overlapping/related price location and FIRST_KNOWABLE no later than the FVG formation candle. Do not use a late structure to support an earlier FVG.',
+        '15. Rank complete candidates by genuine quality: CRT+MSNR+FVG first, then CRT+FVG or MSNR+FVG, then other supported multi-model confluence, then standalone FVG. This is a preference only; never fabricate CRT or MSNR, and reject a stale higher-tier candidate in favor of a fresh lower-tier candidate.',
+        '16. Prefer ENTRY_STATE=PENDING_UNFILLED and DELIVERY_STATUS=FRESH. DELIVERY_STATUS=DELIVERED_TP1 is lower quality; reject STALE_TP2 and EXPIRED_TP3 by default, and never resurface ENTRY_STATE=ENTRY_TOUCHED as a new pending order.',
+        '17. Use PRE_ENTRY_PROGRESS only as freshness/ranking context: a candidate whose projected path has already travelled deeply toward TP3 is late even when its FVG is not fully traversed. Do not treat these fields as proof of strategy validity.',
+        '18. If one candidate fails, continue searching other models, timeframes and the opposite direction. If multiple complete candidates survive, return only the strongest one.',
+        '19. REASON must briefly support every component named in SETUP; never claim CRT+FVG or MSNR+FVG merely because a deterministic FVG exists.',
+        '20. Return ACTION: NO_TRADE only after both directional searches and complete candidate-construction attempts fail. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker; never say only "No setup found."',
+        '21. TIMEFRAME_USED must always be one supplied timeframe, including for NO_TRADE; never output TIMEFRAME_USED: NONE.',
         'CONFIDENCE is setup quality only, not guaranteed win probability. Return exactly one final plain-text response and nothing else.'
     ].join('\n');
 }
@@ -13471,8 +13614,19 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         lines.push('');
     }
     lines.push('=== DETERMINISTIC FVG AUDIT ===');
-    const fvgAudit = buildRawTextFvgAudit(blocks, price, precision);
+    const crtAudit = buildRawTextDeterministicCrtAudit(blocks, symbol, metadata, precision);
+    const msnrAudit = buildRawTextDeterministicMsnrAudit(blocks, price, symbol, metadata, precision);
+    const fvgAudit = buildRawTextFvgAudit(blocks, price, precision, {
+        crt_records: crtAudit.records,
+        msnr_records: msnrAudit.records
+    });
     lines.push(...(fvgAudit.length ? fvgAudit : ['NONE']));
+    lines.push('');
+    lines.push('=== DETERMINISTIC CRT AUDIT ===');
+    lines.push(...crtAudit.lines);
+    lines.push('');
+    lines.push('=== DETERMINISTIC MSNR AUDIT ===');
+    lines.push(...msnrAudit.lines);
     lines.push('');
     lines.push(buildRawTextMarketAnalysisInstruction(), '', RAW_TEXT_OUTPUT_CONTRACT);
     return lines.join('\n');
