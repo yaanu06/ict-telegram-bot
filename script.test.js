@@ -3599,6 +3599,14 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('=== DETERMINISTIC FVG AUDIT ===');
         expect(text).toContain('=== DETERMINISTIC CRT AUDIT ===');
         expect(text).toContain('=== DETERMINISTIC MSNR AUDIT ===');
+        expect(text).toContain('=== TIMEFRAME ROLES ===');
+        expect(text).toContain('1D_ROLE=DIRECTIONAL_BIAS_ONLY');
+        expect(text).toContain('4H_ROLE=PRIMARY_SETUP');
+        expect(text).toContain('1H_ROLE=PRIMARY_SETUP_OR_REFINEMENT');
+        expect(text).toContain('15M_ROLE=EXECUTION_CONFIRMATION_OR_REFINEMENT_ONLY');
+        expect(text).toContain('5M_ROLE=EXECUTION_TIMING_ONLY');
+        expect(text).toContain('Every final TRADE must have PRIMARY_SETUP_TF=4h or PRIMARY_SETUP_TF=1h');
+        expect(text).toContain('higher-timeframe structural stop');
         expect(text).toContain('=== OUTPUT CONTRACT ===');
         expect(text).toContain('ACTION: BUY_LIMIT | SELL_LIMIT | NO_TRADE');
         expect(text).toContain('SETUP: <one or more valid setup components joined by +, or NONE>');
@@ -3631,6 +3639,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('Prefer ENTRY_STATE=PENDING_UNFILLED and DELIVERY_STATUS=FRESH');
         expect(text).toContain('reject STALE_TP2 and EXPIRED_TP3 by default');
         expect(text).toContain('never resurface ENTRY_STATE=ENTRY_TOUCHED as a new pending order');
+        expect(text).toContain('PENDING_CANDIDATE=NOT_PRIMARY_SELECTABLE');
         expect(text).not.toContain('SETUP: FVG | OB | MSNR | CRT | TBS | SUPPLY | DEMAND | FLIP | BREAKER | NONE');
         expect(text).not.toContain('three distinct remaining evidence-supported targets before returning a pending limit');
     });
@@ -3647,6 +3656,35 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('absence of CRT does not veto a valid FVG');
         expect(text).toContain('A standalone FVG remains eligible');
         expect(text).toContain('CONFIDENCE is setup quality only, not guaranteed win probability');
+    });
+
+    it('enforces higher-timeframe primary setup roles for deterministic FVG candidates', () => {
+        const ctx = getContext();
+        const candle = (t, h, l) => ({ t, o: (h + l) / 2, h, l, c: (h + l) / 2, is_closed: true });
+        const candles = [
+            candle('2026-10-12T00:00:00Z', 100, 95),
+            candle('2026-10-12T01:00:00Z', 103, 97),
+            candle('2026-10-12T02:00:00Z', 110, 105)
+        ];
+        const roleAudit = ctx.buildRawTextTimeframeRoleAudit([
+            { timeframe: '1D', candles: candles },
+            { timeframe: '4H', candles: candles },
+            { timeframe: '1H', candles: candles },
+            { timeframe: '15M', candles: candles },
+            { timeframe: '5M', candles: candles }
+        ], 2);
+        expect(roleAudit.lines).toEqual(expect.arrayContaining([
+            expect.stringContaining('1D_ROLE=DIRECTIONAL_BIAS_ONLY'),
+            expect.stringContaining('4H_ROLE=PRIMARY_SETUP'),
+            expect.stringContaining('5M_ROLE=EXECUTION_TIMING_ONLY')
+        ]));
+
+        const primary = ctx.buildRawTextFvgAudit([{ timeframe: '1H', candles }], 200, 2)[0];
+        const lower = ctx.buildRawTextFvgAudit([{ timeframe: '5M', candles }], 200, 2)[0];
+        expect(primary).toContain('PRIMARY_SETUP_TF=YES');
+        expect(primary).toContain('PENDING_CANDIDATE=BUY_LIMIT');
+        expect(lower).toContain('PRIMARY_SETUP_TF=NO');
+        expect(lower).toContain('PENDING_CANDIDATE=NOT_PRIMARY_SELECTABLE');
     });
 
     it('keeps a real XAU/USD 4H bearish FVG in the pre-NO_TRADE audit', () => {

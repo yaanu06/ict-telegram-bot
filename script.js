@@ -13094,6 +13094,7 @@ function parseRawMarketAnalysisDecision(raw) {
 }
 
 const RAW_TEXT_PACKET_TIMEFRAMES = Object.freeze(['4H', '1H', '15M', '5M', '1M']);
+const RAW_TEXT_PRIMARY_SETUP_TIMEFRAMES = Object.freeze(['4H', '1H']);
 const RAW_TEXT_OUTPUT_CONTRACT = [
     '=== OUTPUT CONTRACT ===',
     'Reply ONLY in this format. No prose. No markdown.',
@@ -13106,7 +13107,7 @@ const RAW_TEXT_OUTPUT_CONTRACT = [
     'TP2: <price>',
     'TP3: <price>',
     'CONFIDENCE: <integer 0-100>%',
-    'TIMEFRAME_USED: <one of the TFs above>',
+    'TIMEFRAME_USED: <4h or 1h for TRADE; one supplied timeframe for NO_TRADE>',
     'REASON: <concise structural explanation>',
     '',
     'SETUP uses only uppercase components FVG, OB, MSNR, CRT, TBS, SUPPLY, DEMAND, FLIP and BREAKER joined with + and no spaces; use NONE only for NO_TRADE.',
@@ -13163,6 +13164,39 @@ function rawTextPacketClosedCandles(source = {}, timeframe, asOfMs = Date.now())
 function rawTextPacketFormatNumber(value, precision) {
     const number = Number(value);
     return Number.isFinite(number) ? number.toFixed(precision) : '';
+}
+
+function buildRawTextTimeframeRoleAudit(blocks = [], precision = 2) {
+    const daily = blocks.find(block => block.timeframe === '1D');
+    let dailyBias = 'NEUTRAL';
+    let dailyEvidence = 'MIXED_OR_INSUFFICIENT_STRUCTURE';
+    let dailyLevels = '';
+    if (daily?.candles?.length) {
+        const state = confirmedStructuralState(daily.candles, 2);
+        dailyBias = ['BULLISH', 'BEARISH'].includes(state.state) ? state.state : 'NEUTRAL';
+        dailyEvidence = dailyBias === 'NEUTRAL' ? 'MIXED_OR_INSUFFICIENT_STRUCTURE' : 'CONFIRMED_SWING_SEQUENCE';
+        const latestHigh = Number(state.latest_high?.p);
+        const latestLow = Number(state.latest_low?.p);
+        if (Number.isFinite(latestHigh) || Number.isFinite(latestLow)) {
+            dailyLevels = [
+                Number.isFinite(latestHigh) ? 'LATEST_HIGH=' + rawTextPacketFormatNumber(latestHigh, precision) : '',
+                Number.isFinite(latestLow) ? 'LATEST_LOW=' + rawTextPacketFormatNumber(latestLow, precision) : ''
+            ].filter(Boolean).join(' ');
+        }
+    }
+    return {
+        daily_bias: dailyBias,
+        daily_evidence: dailyEvidence,
+        lines: [
+            '=== TIMEFRAME ROLES ===',
+            '1D_ROLE=DIRECTIONAL_BIAS_ONLY DAILY_BIAS=' + dailyBias + ' EVIDENCE=' + dailyEvidence + (dailyLevels ? ' ' + dailyLevels : ''),
+            '4H_ROLE=PRIMARY_SETUP',
+            '1H_ROLE=PRIMARY_SETUP_OR_REFINEMENT',
+            '15M_ROLE=EXECUTION_CONFIRMATION_OR_REFINEMENT_ONLY',
+            '5M_ROLE=EXECUTION_TIMING_ONLY',
+            '1M_ROLE=EXECUTION_TIMING_ONLY_WHEN_AVAILABLE'
+        ]
+    };
 }
 
 function detectRawTextFvgs(candles = [], timeframe = '') {
@@ -13492,10 +13526,12 @@ function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2, s
             }
             if (candidate) {
                 const delivery = buildRawTextFvgDeliveryAssessment(fvg, candidate, block.candles, currentPrice, precision);
+                const primarySetupTimeframe = RAW_TEXT_PRIMARY_SETUP_TIMEFRAMES.includes(block.timeframe);
                 parts.push(
                     'ENTRY_STATE=' + delivery.entry_state,
                     'DELIVERY_STATUS=' + delivery.delivery_status,
-                    'PRE_ENTRY_PROGRESS=' + (delivery.pre_entry_progress == null ? '' : rawTextPacketFormatNumber(delivery.pre_entry_progress, 2)) + '%'
+                    'PRE_ENTRY_PROGRESS=' + (delivery.pre_entry_progress == null ? '' : rawTextPacketFormatNumber(delivery.pre_entry_progress, 2)) + '%',
+                    'PRIMARY_SETUP_TF=' + (primarySetupTimeframe ? 'YES' : 'NO')
                 );
                 if (fvg.type === 'BULLISH' && delivery.pre_entry_max_high != null) {
                     parts.push('PRE_ENTRY_MAX_HIGH=' + rawTextPacketFormatNumber(delivery.pre_entry_max_high, precision));
@@ -13512,7 +13548,7 @@ function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2, s
                 if (confluence.msnr.length) {
                     parts.push('MSNR_TF=' + confluence.msnr[0].timeframe.toLowerCase(), 'MSNR_REF=' + confluence.msnr[0].ref);
                 }
-                if (delivery.recommendation_eligible) {
+                if (delivery.recommendation_eligible && primarySetupTimeframe) {
                     parts.push(
                         'PENDING_CANDIDATE=' + candidate.action,
                         'ENTRY=' + rawTextPacketFormatNumber(candidate.entry, precision),
@@ -13523,7 +13559,7 @@ function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2, s
                         'R=' + rawTextPacketFormatNumber(candidate.risk, precision)
                     );
                 } else {
-                    parts.push('PENDING_CANDIDATE=NOT_SELECTABLE');
+                    parts.push('PENDING_CANDIDATE=' + (primarySetupTimeframe ? 'NOT_SELECTABLE' : 'NOT_PRIMARY_SELECTABLE'));
                 }
             }
             parts.push(
@@ -13553,15 +13589,20 @@ function buildRawTextMarketAnalysisInstruction() {
         '10. Add a component to SETUP only when its closed-candle formation, required confirmation, timeframe, lifecycle and relationship to the selected FVG are independently supported. CRT must follow the existing project CRT semantics, including its defining range, sweep or reclaim and displacement evidence where applicable; do not invent a CRT definition.',
         '11. SETUP may be FVG alone or canonical components joined with + and no spaces. A combined label such as CRT+FVG requires independent evidence for both components; absence of CRT does not veto a valid FVG.',
         '12. Keep deterministic FVG ENTRY, STOP_LOSS and TP1/TP2/TP3 unchanged. Use additional confluence for candidate comparison and setup-quality confidence, not as fabricated evidence or a universal confidence boost. A standalone FVG remains eligible when it independently satisfies the required rules.',
-        '13. DETERMINISTIC CRT AUDIT and DETERMINISTIC MSNR AUDIT are evidence derived from supplied CLOSED candles. Do not deny a listed VALID structure exists; reject it only for a specific chronology, lifecycle, invalidation or location reason and name that reason.',
-        '14. Use CRT_CONFLUENCE and MSNR_CONFLUENCE only when the deterministic structure has matching direction, valid lifecycle, overlapping/related price location and FIRST_KNOWABLE no later than the FVG formation candle. Do not use a late structure to support an earlier FVG.',
-        '15. Rank complete candidates by genuine quality: CRT+MSNR+FVG first, then CRT+FVG or MSNR+FVG, then other supported multi-model confluence, then standalone FVG. This is a preference only; never fabricate CRT or MSNR, and reject a stale higher-tier candidate in favor of a fresh lower-tier candidate.',
-        '16. Prefer ENTRY_STATE=PENDING_UNFILLED and DELIVERY_STATUS=FRESH. DELIVERY_STATUS=DELIVERED_TP1 is lower quality; reject STALE_TP2 and EXPIRED_TP3 by default, and never resurface ENTRY_STATE=ENTRY_TOUCHED as a new pending order.',
-        '17. Use PRE_ENTRY_PROGRESS only as freshness/ranking context: a candidate whose projected path has already travelled deeply toward TP3 is late even when its FVG is not fully traversed. Do not treat these fields as proof of strategy validity.',
-        '18. If one candidate fails, continue searching other models, timeframes and the opposite direction. If multiple complete candidates survive, return only the strongest one.',
-        '19. REASON must briefly support every component named in SETUP; never claim CRT+FVG or MSNR+FVG merely because a deterministic FVG exists.',
-        '20. Return ACTION: NO_TRADE only after both directional searches and complete candidate-construction attempts fail. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker; never say only "No setup found."',
-        '21. TIMEFRAME_USED must always be one supplied timeframe, including for NO_TRADE; never output TIMEFRAME_USED: NONE.',
+        '13. Use explicit timeframe roles: 1D supplies directional bias only; 4H is the primary setup timeframe; 1H is primary setup or refinement; 15M is execution confirmation/refinement; 5M is execution timing only. Keep all lower-timeframe candles available.',
+        '14. DAILY_BIAS=BULLISH should prefer BUY and DAILY_BIAS=BEARISH should prefer SELL, but daily bias is not an absolute veto when an explicit higher-timeframe reversal model exists. DAILY_BIAS=NEUTRAL permits either direction based on stronger 4H/1H evidence.',
+        '15. Every final TRADE must have PRIMARY_SETUP_TF=4h or PRIMARY_SETUP_TF=1h and TIMEFRAME_USED=4h or TIMEFRAME_USED=1h. A standalone 15m or 5m FVG/CRT/MSNR must be PENDING_CANDIDATE=NOT_PRIMARY_SELECTABLE and cannot be the main thesis.',
+        '16. Link 15M/5M only as execution support for a valid 4H/1H setup: lower-TF FVG, CRT, MSNR, sweep/reclaim, displacement or reaction may improve confidence, but must not replace the primary setup or create its own trade.',
+        '17. Keep the stop and R calculation anchored to the selected 4H/1H primary structure. Do not replace a higher-timeframe structural stop with an unrelated 5M micro stop or use it to compress TP1/TP2/TP3.',
+        '18. DETERMINISTIC CRT AUDIT and DETERMINISTIC MSNR AUDIT are evidence derived from supplied CLOSED candles. Do not deny a listed VALID structure exists; reject it only for a specific chronology, lifecycle, invalidation or location reason and name that reason.',
+        '19. Use CRT_CONFLUENCE and MSNR_CONFLUENCE only when the deterministic structure has matching direction, valid lifecycle, overlapping/related price location and FIRST_KNOWABLE no later than the FVG formation candle. Do not use a late structure to support an earlier FVG.',
+        '20. Rank complete candidates by genuine quality: CRT+MSNR+FVG first, then CRT+FVG or MSNR+FVG, then other supported 4H/1H confluence, then fresh standalone 4H/1H FVG; prefer the daily-aligned candidate within each tier. A stale higher-tier candidate loses to a fresh lower-tier candidate; counter-bias trades require explicit higher-timeframe reversal evidence.',
+        '21. Prefer ENTRY_STATE=PENDING_UNFILLED and DELIVERY_STATUS=FRESH. DELIVERY_STATUS=DELIVERED_TP1 is lower quality; reject STALE_TP2 and EXPIRED_TP3 by default, and never resurface ENTRY_STATE=ENTRY_TOUCHED as a new pending order.',
+        '22. Use PRE_ENTRY_PROGRESS only as freshness/ranking context: a candidate whose projected path has already travelled deeply toward TP3 is late even when its FVG is not fully traversed. Do not treat these fields as proof of strategy validity.',
+        '23. If one candidate fails, continue searching other models, timeframes and the opposite direction. If multiple complete candidates survive, return only the strongest one.',
+        '24. REASON must briefly support every component named in SETUP and may describe 15M/5M execution support; never claim CRT+FVG or MSNR+FVG merely because a deterministic FVG exists.',
+        '25. Return ACTION: NO_TRADE only after both directional searches and complete candidate-construction attempts fail; final selection requires complete 4H/1H candidate-construction attempts. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker. If only lower-timeframe candidates exist, explain that no valid primary 4H/1H setup exists; never say only "No setup found."',
+        '26. TIMEFRAME_USED must always be one supplied timeframe; it must be 4h or 1h for TRADE decisions, while NO_TRADE uses one supplied timeframe actually evaluated; never output TIMEFRAME_USED: NONE.',
         'CONFIDENCE is setup quality only, not guaranteed win probability. Return exactly one final plain-text response and nothing else.'
     ].join('\n');
 }
@@ -13613,6 +13654,12 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         lines.push('======== END ' + block.timeframe.toLowerCase() + ' ========');
         lines.push('');
     }
+    const dailyCandles = rawTextPacketClosedCandles(source, '1D', asOfMs);
+    const roleAudit = buildRawTextTimeframeRoleAudit(
+        dailyCandles.length ? [...blocks, { timeframe: '1D', candles: dailyCandles }] : blocks,
+        precision
+    );
+    lines.push(...roleAudit.lines, '');
     lines.push('=== DETERMINISTIC FVG AUDIT ===');
     const crtAudit = buildRawTextDeterministicCrtAudit(blocks, symbol, metadata, precision);
     const msnrAudit = buildRawTextDeterministicMsnrAudit(blocks, price, symbol, metadata, precision);
