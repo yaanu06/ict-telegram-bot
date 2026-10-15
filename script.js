@@ -13569,27 +13569,29 @@ function buildRawTextCurrentOpportunityAssessment(record = {}, blocks = [], curr
     const ageHours = Number.isFinite(formationMs) && Number.isFinite(latestTimestamp) ? Math.max(0, (latestTimestamp - formationMs) / 3600000) : null;
     const ageBars = ageHours == null ? null : ageHours / primaryBarHours;
     const sessionKnown = Number.isFinite(asOfMs);
-    const sessionActive = sessionKnown ? getSession(new Date(asOfMs)).session !== 'OFF-HOURS' : true;
+    const session = sessionKnown ? getSession(new Date(asOfMs)) : null;
+    const sessionActive = !session || session.session !== 'OFF-HOURS';
+    const ageIsVeryOld = Number.isFinite(ageBars) && ageBars > 24;
+    const oldFarWithoutApproach = ageIsVeryOld && distanceClass === 'FAR' && approachState !== 'APPROACHING';
     let opportunityStatus = 'ACTIVE';
     if (delivery?.entry_state === 'ENTRY_TOUCHED') opportunityStatus = 'ENTRY_TOUCHED';
     else if (delivery?.delivery_status === 'EXPIRED_TP3') opportunityStatus = 'EXPIRED_TP3_BEFORE_ENTRY';
     else if (delivery?.delivery_status === 'STALE_TP2') opportunityStatus = 'STALE_TP2_BEFORE_ENTRY';
     else if (delivery?.delivery_status === 'DELIVERED_TP1') opportunityStatus = 'DELIVERED_TP1_BEFORE_ENTRY';
-    else if (distanceClass === 'TOO_FAR') opportunityStatus = 'TOO_FAR_FROM_ENTRY';
-    else if (!sessionActive) opportunityStatus = 'SESSION_INACTIVE';
-    else if (approachState === 'MOVING_AWAY' && distanceClass !== 'NEAR') opportunityStatus = 'MOVED_AWAY';
-    else if (approachState === 'APPROACHING') opportunityStatus = 'APPROACHING';
-    const currentOpportunity = ['ACTIVE', 'APPROACHING'].includes(opportunityStatus)
+    else if (distanceClass === 'TOO_FAR' || oldFarWithoutApproach) opportunityStatus = 'TOO_FAR';
+    else if (distanceClass === 'FAR') opportunityStatus = 'FAR_PENDING';
+    else if (distanceClass === 'REACHABLE') opportunityStatus = 'REACHABLE_PENDING';
+    else if (approachState === 'APPROACHING') opportunityStatus = 'PENDING_TODAY';
+    else opportunityStatus = 'ACTIVE_PENDING';
+    const currentOpportunity = ['PENDING_TODAY', 'ACTIVE_PENDING', 'REACHABLE_PENDING', 'FAR_PENDING'].includes(opportunityStatus)
         && ['NEAR', 'REACHABLE', 'FAR'].includes(distanceClass)
         && delivery?.entry_state === 'PENDING_UNFILLED'
-        && !['STALE_TP2', 'EXPIRED_TP3', 'DELIVERED_TP1'].includes(delivery?.delivery_status)
-        && sessionActive;
-    const currentness = !currentOpportunity && opportunityStatus !== 'ACTIVE' && opportunityStatus !== 'APPROACHING'
-        ? 0
-        : opportunityStatus === 'APPROACHING' && distanceClass === 'REACHABLE' ? 7
-            : opportunityStatus === 'ACTIVE' && distanceClass === 'NEAR' ? 10
-                : opportunityStatus === 'ACTIVE' && distanceClass === 'REACHABLE' ? 4
-                    : distanceClass === 'FAR' ? 1 : 0;
+        && !['STALE_TP2', 'EXPIRED_TP3', 'DELIVERED_TP1'].includes(delivery?.delivery_status);
+    const currentness = !currentOpportunity ? 0
+        : approachState === 'APPROACHING' && ['NEAR', 'REACHABLE'].includes(distanceClass) ? 7
+            : distanceClass === 'NEAR' ? 10
+                : distanceClass === 'REACHABLE' ? 4
+                    : 1;
     const distancePenalty = distanceClass === 'NEAR' ? 0 : distanceClass === 'REACHABLE' ? -2 : distanceClass === 'FAR' ? -6 : 0;
     return {
         structurally_valid: true,
@@ -13603,7 +13605,10 @@ function buildRawTextCurrentOpportunityAssessment(record = {}, blocks = [], curr
         formation_age_primary_bars: ageBars == null ? null : rawTextPacketRoundPrice(ageBars, 2),
         currentness,
         distance_penalty: distancePenalty,
-        direction
+        direction,
+        session: session?.session || null,
+        session_active: sessionActive,
+        today_opportunity: currentOpportunity
     };
 }
 
@@ -14209,6 +14214,7 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
             'QUALITY=' + quality,
             'STRUCTURALLY_VALID=YES',
             'CURRENT_OPPORTUNITY=' + (record.current.current_opportunity ? 'YES' : 'NO'),
+            'TODAY_OPPORTUNITY=' + (record.current.today_opportunity ? 'YES' : 'NO'),
             'OPPORTUNITY_STATUS=' + record.current.opportunity_status,
             'ENTRY_DISTANCE=' + rawTextPacketFormatNumber(record.current.entry_distance, precision),
             'ENTRY_DISTANCE_ATR=' + rawTextPacketFormatNumber(record.current.entry_distance_atr, 2),
@@ -14250,6 +14256,7 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
         'SCORE=' + record.current_score,
         'QUALITY=' + rawTextScoreQuality(record.current_score),
         'CURRENT_STATUS=' + record.current.opportunity_status,
+        'TODAY_OPPORTUNITY=YES',
         'ENTRY_DISTANCE=' + rawTextPacketFormatNumber(record.current.entry_distance, precision),
         'ENTRY_DISTANCE_ATR=' + rawTextPacketFormatNumber(record.current.entry_distance_atr, 2),
         'APPROACH_STATE=' + record.current.approach_state,
@@ -14354,10 +14361,10 @@ function buildRawTextMarketAnalysisInstruction() {
         '12. Keep deterministic FVG ENTRY, STOP_LOSS and TP1/TP2/TP3 unchanged. Use additional confluence for candidate comparison and setup-quality confidence, not as fabricated evidence or a universal confidence boost. A standalone FVG remains eligible when it independently satisfies the required rules.',
         '13. Use explicit timeframe roles: 1D supplies directional bias only; 4H is the primary setup timeframe; 1H is primary setup or refinement; 15M is execution confirmation/refinement; 5M is execution timing only. Keep all lower-timeframe candles available.',
         '14. DAILY_BIAS=BULLISH should prefer BUY and DAILY_BIAS=BEARISH should prefer SELL, but daily bias is not an absolute veto when an explicit higher-timeframe reversal model exists. DAILY_BIAS=NEUTRAL permits either direction based on stronger 4H/1H evidence.',
-        '15. CURRENT OPPORTUNITIES is the final currentness gate. Inspect === CURRENT OPPORTUNITIES === before HIGH PROBABILITY ZONES and select a trade only from a CURRENT_OPPORTUNITY=YES record unless an explicit structural exception is stated. HIGH PROBABILITY ZONES may contain structurally valid but late, touched, delivered or far-away candidates; they are not automatically current trades.',
-        '15A. CURRENT_OPPORTUNITY=YES requires a 4H/1H primary setup, STRUCTURALLY_VALID=YES, ENTRY_STATE=PENDING_UNFILLED, no DELIVERED_TP1_BEFORE_ENTRY/STALE_TP2_BEFORE_ENTRY/EXPIRED_TP3_BEFORE_ENTRY, valid stop and 1R/2R/3R geometry, acceptable ATR-normalized entry distance, chronology, and no clear lower-timeframe movement away. 15M/5M can confirm or show approach, but cannot create the primary setup.',
-        '15B. Cross-timeframe delivery uses later CLOSED 1H/15M/5M candles after the primary FVG becomes knowable. ENTRY_TOUCHED has precedence for a new pending recommendation. TOO_FAR_FROM_ENTRY, MOVED_AWAY, SESSION_INACTIVE and delivered/stale/expired states are blockers for CURRENT_OPPORTUNITY, not proof that the historical formation never existed.',
-        '15C. ENTRY_DISTANCE_ATR uses primary ATR: 4H uses ATR_4H and 1H uses ATR_1H. NEAR is <=0.75 ATR, REACHABLE is >0.75 and <=1.5, FAR is >1.5 and <=2.0, and TOO_FAR is >2.0. Formation age is context only; an old untouched zone is not rejected solely for age, but age plus distance and delivery can make it non-current.',
+        '15. CURRENT OPPORTUNITY means TODAY_PENDING_OPPORTUNITY: a valid unfilled 4H/1H pending-limit order suitable for today, not an immediate market-entry condition. Inspect === CURRENT OPPORTUNITIES === before HIGH PROBABILITY ZONES and select a trade only from a CURRENT_OPPORTUNITY=YES record unless an explicit structural exception is stated. Price need not touch the entry, the preferred session need not be active, and fresh 5M/15M confirmation is not mandatory.',
+        '15A. CURRENT_OPPORTUNITY=YES requires a 4H/1H primary setup, STRUCTURALLY_VALID=YES, ENTRY_STATE=PENDING_UNFILLED, no DELIVERED_TP1_BEFORE_ENTRY/STALE_TP2_BEFORE_ENTRY/EXPIRED_TP3_BEFORE_ENTRY, valid stop and 1R/2R/3R geometry, acceptable ATR-normalized entry distance, chronology and a pending order still reasonably reachable today. 15M/5M can confirm or show approach, but cannot create the primary setup.',
+        '15B. Cross-timeframe delivery uses later CLOSED 1H/15M/5M candles after the primary FVG becomes knowable. ENTRY_TOUCHED has precedence for a new pending recommendation. TOO_FAR and delivered/stale/expired states are blockers for TODAY_PENDING_OPPORTUNITY, not proof that the historical formation never existed. SESSION_INACTIVE is context only and must never reject a valid pending limit by itself; MOVING_AWAY is ranking context and becomes a blocker only with stronger distance, age, delivery or invalidation evidence.',
+        '15C. ENTRY_DISTANCE_ATR uses primary ATR: 4H uses ATR_4H and 1H uses ATR_1H. NEAR is <=0.75 ATR and strongly relevant, REACHABLE is >0.75 and <=1.5 and remains valid, FAR is >1.5 and <=2.0 and may remain valid at lower rank, and TOO_FAR is >2.0 and normally not a today opportunity. Formation age is context: a setup formed earlier today can remain actionable, while a very old FAR setup without approach or fresh context may be excluded.',
         '15D. HIGH PROBABILITY ZONES remain deterministic structural ranking evidence built only from selectable 4H/1H FVG candidates and objectively available CRT/MSNR/OB/SUPPLY/DEMAND, freshness, liquidity, volatility and execution context. Verify their supporting audits; do not use a structurally valid inactive HP zone as a fallback when CURRENT OPPORTUNITIES=NONE.',
         '16. SCORE is a 0-100 setup-quality score, never a win probability. The maximum component weights are DAILY=10, PRIMARY=8, CRT=11, MSNR=11, OB=4, FVG=10, FRESH=10, SUPPLY_DEMAND=8, EXEC=6, LIQUIDITY=5, VOL=4, PREMIUM_DISCOUNT=6, EMA=4, RSI=3. Use SCORE_BREAKDOWN, DAILY_BIAS, ATR, PDH/PDL/PWH/PWL, freshness, displacement and execution fields as ranking evidence, not as permission to invent a setup.',
         '16A. MARKET CONTEXT LAYERS: PREMIUM/DISCOUNT is valid only when MARKET CONTEXT emits a confirmed structural dealing range from closed-candle swings; use DISCOUNT as supportive for BUY and PREMIUM as supportive for SELL, but never create a trade from location alone. DETERMINISTIC SUPPLY DEMAND AUDIT uses the project OB-plus-confirmed-displacement semantics: generic support/resistance or an ordinary candle is not supply/demand. Match only same-direction, chronological, non-invalidated zones to the selected primary FVG.',
@@ -14373,7 +14380,7 @@ function buildRawTextMarketAnalysisInstruction() {
         '24. Use PRE_ENTRY_PROGRESS only as freshness/ranking context: a candidate whose projected path has already travelled deeply toward TP3 is late even when its FVG is not fully traversed. Do not treat these fields as proof of strategy validity.',
         '25. If one candidate fails, continue searching other models, timeframes and the opposite direction. If multiple complete candidates survive, return only the strongest one.',
         '26. REASON must briefly support every component named in SETUP and may describe 15M/5M execution support; never claim CRT+FVG or MSNR+FVG merely because a deterministic FVG exists.',
-        '27. Return ACTION: NO_TRADE only after both directional searches, complete candidate-construction attempts and CURRENT OPPORTUNITY filtering fail. Do not fall back to an old/far HP zone merely to produce a trade. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker such as TP1 delivered before entry, entry touched, TOO_FAR_FROM_ENTRY, MOVED_AWAY, SESSION_INACTIVE or no active higher-timeframe setup. If only lower-timeframe candidates exist, explain that no valid primary 4H/1H current opportunity exists; never say only "No setup found."',
+        '27. Return ACTION: NO_TRADE only after both directional searches, complete candidate-construction attempts and TODAY_PENDING_OPPORTUNITY filtering fail. Do not fall back to an old/far HP zone merely to produce a trade. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker such as TP1 delivered before entry, entry touched, TOO_FAR, extreme age with no current relevance or no active higher-timeframe setup. Never use inactive session, lack of immediate price touch, normal pending geometry or absent exact-moment lower-TF confirmation as the sole blocker; never say only "No setup found."',
         '28. TIMEFRAME_USED must always be one supplied timeframe; it must be 4h or 1h for TRADE decisions, while NO_TRADE uses one supplied timeframe actually evaluated; never output TIMEFRAME_USED: NONE.',
         'CONFIDENCE is setup quality only, not guaranteed win probability. Return exactly one final plain-text response and nothing else.'
     ].join('\n');
