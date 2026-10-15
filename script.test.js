@@ -3603,6 +3603,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('=== MARKET CONTEXT ===');
         expect(text).toContain('=== DETERMINISTIC SUPPLY DEMAND AUDIT ===');
         expect(text).toContain('=== HIGH PROBABILITY ZONES ===');
+        expect(text).toContain('=== CURRENT OPPORTUNITIES ===');
         expect(text).toContain('EMA_1D_20=');
         expect(text).toContain('RSI_4H_14=');
         expect(text).toContain('1D_ROLE=DIRECTIONAL_BIAS_ONLY');
@@ -3627,7 +3628,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('Search both BUY_LIMIT and SELL_LIMIT opportunities across every supplied closed-candle timeframe');
         expect(text).toContain('bullish requires candle1.high < candle3.low; bearish requires candle1.low > candle3.high');
         expect(text).toContain('still valid, partially mitigated, fully consumed or invalidated');
-        expect(text).toContain('Return ACTION: NO_TRADE only after both directional searches and complete candidate-construction attempts fail');
+        expect(text).toContain('Return ACTION: NO_TRADE only after both directional searches, complete candidate-construction attempts and CURRENT OPPORTUNITY filtering fail');
         expect(text).toContain('never say only "No setup found."');
         expect(text).toContain('TIMEFRAME_USED must always be one supplied timeframe');
         expect(text).toContain('never output TIMEFRAME_USED: NONE');
@@ -3646,6 +3647,10 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('never resurface ENTRY_STATE=ENTRY_TOUCHED as a new pending order');
         expect(text).toContain('PENDING_CANDIDATE=NOT_PRIMARY_SELECTABLE');
         expect(text).toContain('Use SCORE_BREAKDOWN');
+        expect(text).toContain('CURRENT_OPPORTUNITY=YES requires a 4H/1H primary setup');
+        expect(text).toContain('Cross-timeframe delivery uses later CLOSED 1H/15M/5M candles');
+        expect(text).toContain('ENTRY_DISTANCE_ATR uses primary ATR');
+        expect(text).toContain('do not use a structurally valid inactive HP zone as a fallback');
         expect(text).toContain('PREMIUM/DISCOUNT is valid only when MARKET CONTEXT emits a confirmed structural dealing range');
         expect(text).toContain('EMA and RSI are not SETUP components');
         expect(text).not.toContain('SETUP: FVG | OB | MSNR | CRT | TBS | SUPPLY | DEMAND | FLIP | BREAKER | NONE');
@@ -3769,10 +3774,113 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         const staleZones = ctx.buildRawTextHighProbabilityZones(
             [{ timeframe: '1H', candles: stale }], 200, 2, {}, { daily_bias: 'NEUTRAL' }, { daily_bias: 'NEUTRAL' }
         ).records;
-        expect(staleZones.some(record => record.fvg.lower === 100 && record.fvg.upper === 105)).toBe(false);
+        const staleRecord = staleZones.find(record => record.fvg.lower === 100 && record.fvg.upper === 105);
+        expect(staleRecord).toEqual(expect.objectContaining({ current: expect.objectContaining({ current_opportunity: false }) }));
+        expect(staleRecord.current.opportunity_status).toMatch(/^(DELIVERED_TP1_BEFORE_ENTRY|STALE_TP2_BEFORE_ENTRY|EXPIRED_TP3_BEFORE_ENTRY)$/);
         expect(ctx.buildRawTextHighProbabilityZones(
             [{ timeframe: '5M', candles: stale }], 200, 2, {}, { daily_bias: 'NEUTRAL' }, { daily_bias: 'NEUTRAL' }
         ).records).toHaveLength(0);
+    });
+
+    it('separates structural validity from current opportunity selection', () => {
+        const ctx = getContext();
+        const candle = (t, h, l, o = (h + l) / 2, close = (h + l) / 2) => ({ t, o, h, l, c: close, is_closed: true });
+        const primary = [
+            candle('2026-10-12T04:00:00Z', 100, 95, 98, 98),
+            candle('2026-10-12T05:00:00Z', 103, 97, 100, 101),
+            candle('2026-10-12T06:00:00Z', 110, 105, 106, 109),
+            candle('2026-10-12T07:00:00Z', 109, 106, 108, 108)
+        ];
+        const context = { daily_bias: 'NEUTRAL', atr_1h: 10, as_of_ms: Date.parse('2026-10-12T08:00:00Z'), session_levels: {} };
+        const result = ctx.buildRawTextHighProbabilityZones([{ timeframe: '1H', candles: primary }], 108, 2, {}, context, { daily_bias: 'NEUTRAL' });
+        expect(result.records).toEqual(expect.arrayContaining([expect.objectContaining({
+            current: expect.objectContaining({ structurally_valid: true, current_opportunity: true, distance_class: 'NEAR' })
+        })]));
+        expect(result.current_records.length).toBeGreaterThan(0);
+        expect(result.current_lines[0]).toContain('CURRENT_OPPORTUNITY: RANK=1');
+    });
+
+    it('uses lower-timeframe closed candles to mark delivery, touch and distance blockers', () => {
+        const ctx = getContext();
+        const candle = (t, h, l, o = (h + l) / 2, close = (h + l) / 2) => ({ t, o, h, l, c: close, is_closed: true });
+        const primary = [
+            candle('2026-10-12T04:00:00Z', 100, 95, 98, 98),
+            candle('2026-10-12T05:00:00Z', 103, 97, 100, 101),
+            candle('2026-10-12T06:00:00Z', 110, 105, 106, 109)
+        ];
+        const baseContext = { daily_bias: 'NEUTRAL', atr_1h: 10, as_of_ms: Date.parse('2026-10-12T08:00:00Z'), session_levels: {} };
+        const delivered = ctx.buildRawTextHighProbabilityZones([
+            { timeframe: '1H', candles: primary },
+            { timeframe: '15M', candles: [
+                candle('2026-10-12T06:15:00Z', 111, 106, 108, 110),
+                candle('2026-10-12T06:30:00Z', 109, 106, 108, 108)
+            ] }
+        ], 108, 2, {}, baseContext, { daily_bias: 'NEUTRAL' });
+        expect(delivered.records[0].current.opportunity_status).toBe('DELIVERED_TP1_BEFORE_ENTRY');
+        expect(delivered.current_records).toHaveLength(0);
+
+        const touched = ctx.buildRawTextHighProbabilityZones([
+            { timeframe: '1H', candles: primary },
+            { timeframe: '15M', candles: [candle('2026-10-12T06:15:00Z', 104, 102, 103, 103)] }
+        ], 108, 2, {}, baseContext, { daily_bias: 'NEUTRAL' });
+        expect(touched.records[0].current).toEqual(expect.objectContaining({ opportunity_status: 'ENTRY_TOUCHED', current_opportunity: false }));
+
+        const far = ctx.buildRawTextHighProbabilityZones([{ timeframe: '1H', candles: primary }], 130, 2, {}, baseContext, { daily_bias: 'NEUTRAL' });
+        expect(far.records[0].current).toEqual(expect.objectContaining({ opportunity_status: 'TOO_FAR_FROM_ENTRY', current_opportunity: false }));
+    });
+
+    it('distinguishes TP2-stale and TP3-expired delivery before entry', () => {
+        const ctx = getContext();
+        const candle = (t, h, l) => ({ t, o: (h + l) / 2, h, l, c: (h + l) / 2, is_closed: true });
+        const primary = [
+            candle('2026-10-12T04:00:00Z', 100, 95),
+            candle('2026-10-12T05:00:00Z', 103, 97),
+            candle('2026-10-12T06:00:00Z', 110, 105)
+        ];
+        const context = { daily_bias: 'NEUTRAL', atr_1h: 10, as_of_ms: Date.parse('2026-10-12T08:00:00Z'), session_levels: {} };
+        const stale = ctx.buildRawTextHighProbabilityZones([
+            { timeframe: '1H', candles: primary },
+            { timeframe: '15M', candles: [candle('2026-10-12T06:15:00Z', 118, 106)] }
+        ], 108, 2, {}, context, { daily_bias: 'NEUTRAL' });
+        expect(stale.records[0].current.opportunity_status).toBe('STALE_TP2_BEFORE_ENTRY');
+
+        const expired = ctx.buildRawTextHighProbabilityZones([
+            { timeframe: '1H', candles: primary },
+            { timeframe: '15M', candles: [candle('2026-10-12T06:15:00Z', 126, 106)] }
+        ], 108, 2, {}, context, { daily_bias: 'NEUTRAL' });
+        expect(expired.records[0].current.opportunity_status).toBe('EXPIRED_TP3_BEFORE_ENTRY');
+        expect(expired.current_records).toHaveLength(0);
+    });
+
+    it('classifies approaching and moving-away lower-timeframe flow without using future candles', () => {
+        const ctx = getContext();
+        const candle = (t, h, l, close) => ({ t, o: close, h, l, c: close, is_closed: true });
+        const primary = [
+            candle('2026-10-12T04:00:00Z', 100, 95, 98),
+            candle('2026-10-12T05:00:00Z', 103, 97, 101),
+            candle('2026-10-12T06:00:00Z', 110, 105, 109)
+        ];
+        const context = { daily_bias: 'NEUTRAL', atr_1h: 10, as_of_ms: Date.parse('2026-10-12T07:00:00Z'), session_levels: {} };
+        const approaching = ctx.buildRawTextHighProbabilityZones([
+            { timeframe: '1H', candles: primary },
+            { timeframe: '15M', candles: [
+                candle('2026-10-12T06:05:00Z', 119, 117, 118),
+                candle('2026-10-12T06:15:00Z', 116, 114, 115),
+                candle('2026-10-12T06:30:00Z', 112, 110, 111),
+                candle('2026-10-12T06:45:00Z', 109, 107, 108)
+            ] }
+        ], 108, 2, {}, context, { daily_bias: 'NEUTRAL' });
+        expect(approaching.records[0].current.approach_state).toBe('APPROACHING');
+        const future = ctx.buildRawTextHighProbabilityZones([
+            { timeframe: '1H', candles: primary },
+            { timeframe: '15M', candles: [
+                candle('2026-10-12T06:15:00Z', 116, 114, 115),
+                candle('2026-10-12T06:30:00Z', 112, 110, 111),
+                candle('2026-10-12T06:45:00Z', 109, 107, 108),
+                candle('2026-10-12T07:15:00Z', 111, 100, 105)
+            ] }
+        ], 108, 2, {}, context, { daily_bias: 'NEUTRAL' });
+        expect(future.records[0].current.opportunity_status).not.toBe('ENTRY_TOUCHED');
     });
 
     it('calculates ATR and completed UTC day/week context without future candles', () => {
