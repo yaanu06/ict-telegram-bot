@@ -3654,6 +3654,10 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('CURRENT OPPORTUNITY means TODAY_PENDING_OPPORTUNITY');
         expect(text).toContain('SESSION_INACTIVE is context only and must never reject a valid pending limit by itself');
         expect(text).toContain('REACHABLE is >0.75 and <=1.5 and remains valid');
+        expect(text).toContain('bind the final response to that exact candidate by matching SIDE, PRIMARY_TF, FVG_C1, FVG_C2, FVG_C3, FVG_ZONE, ENTRY, STOP, TP1, TP2 and TP3');
+        expect(text).toContain('Use only the exact CRT_REF, MSNR_REF, OB_REF, SUPPLY_REF, DEMAND_REF, BREAKER_REF or FLIP_REF');
+        expect(text).toContain('Build REASON in this order: selected FVG and exact timeframe-qualified C1/C2/C3 and zone');
+        expect(text).toContain('Fail closed on evidence mismatch');
         expect(text).toContain('PREMIUM/DISCOUNT is valid only when MARKET CONTEXT emits a confirmed structural dealing range');
         expect(text).toContain('EMA and RSI are not SETUP components');
         expect(text).not.toContain('SETUP: FVG | OB | MSNR | CRT | TBS | SUPPLY | DEMAND | FLIP | BREAKER | NONE');
@@ -4277,6 +4281,36 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(ctx.rawTextFvgConfluence(fvg, candidate, [{ ...crt, direction: 'SELL' }], [{ ...msnr, direction: 'SELL' }])).toEqual({ crt: [], msnr: [] });
         expect(ctx.rawTextFvgConfluence(fvg, candidate, [{ ...crt, first_knowable_ms: Date.parse('2026-10-12T06:00:00Z') }], [{ ...msnr, first_knowable_ms: Date.parse('2026-10-12T06:00:00Z') }])).toEqual({ crt: [], msnr: [] });
         expect(ctx.rawTextFvgConfluence(fvg, candidate, [{ ...crt, range_low: 110, range_high: 120 }], [{ ...msnr, zone_low: 110, zone_high: 120 }])).toEqual({ crt: [], msnr: [] });
+    });
+
+    it('exposes the exact selected FVG source candles and attached CRT/MSNR references', () => {
+        const ctx = getContext();
+        const candles = [
+            { t: '2026-10-15T07:00:00Z', o: 4144, h: 4146.19, l: 4142, c: 4145, is_closed: true },
+            { t: '2026-10-15T08:00:00Z', o: 4145, h: 4148, l: 4143, c: 4147, is_closed: true },
+            { t: '2026-10-15T09:00:00Z', o: 4147, h: 4154, l: 4151.40, c: 4152, is_closed: true }
+        ];
+        const crt = { ref: 'CRT:4H:BUY:1791997200000:93', timeframe: '4H', direction: 'BUY', range_low: 4145, range_high: 4153, first_knowable_ms: Date.parse('2026-10-15T06:00:00Z'), status: 'VALID', detected: true };
+        const msnr = { ref: 'MSNR:15M:BUY:1792054800000:42', timeframe: '15M', direction: 'BUY', zone_low: 4146, zone_high: 4152, first_knowable_ms: Date.parse('2026-10-15T06:00:00Z'), status: 'VALID' };
+        const audit = ctx.buildRawTextFvgAudit([{ timeframe: '1H', candles }], 4155.32, 2, { crt_records: [crt], msnr_records: [msnr], as_of_ms: Date.parse('2026-10-15T10:00:00Z') });
+        const line = audit.find(item => item.includes('FVG: TF=1h TYPE=BULLISH'));
+        expect(line).toContain('C1=2026-10-15T07:00:00.000Z C2=2026-10-15T08:00:00.000Z C3=2026-10-15T09:00:00.000Z');
+        expect(line).toContain('ZONE=4146.19-4151.40');
+        expect(line).toContain('CRT_TF=4h CRT_REF=CRT:4H:BUY:1791997200000:93');
+        expect(line).toContain('MSNR_TF=15m MSNR_REF=MSNR:15M:BUY:1792054800000:42');
+        expect(line).not.toContain('4143.91');
+        expect(line).not.toContain('4146.05');
+
+        const zones = ctx.buildRawTextHighProbabilityZones(
+            [{ timeframe: '1H', candles }],
+            4155.32,
+            2,
+            { crt_records: [crt], msnr_records: [msnr] },
+            { daily_bias: 'BULLISH', atr_1h: 14.17, as_of_ms: Date.parse('2026-10-15T10:00:00Z'), session_levels: {} },
+            { daily_bias: 'BULLISH' }
+        );
+        expect(zones.current_lines.join('\n')).toContain('CRT_REF=CRT:4H:BUY:1791997200000:93');
+        expect(zones.current_lines.join('\n')).toContain('MSNR_REF=MSNR:15M:BUY:1792054800000:42');
     });
 
     const makeRawFvgExecutionCase = ({ gapHigh = 151, entry = (150 + gapHigh) / 2, stop = 150, quoteFreshness = null, quoteOverrides = {}, symbolMetadata = {} } = {}) => {
