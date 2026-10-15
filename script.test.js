@@ -3601,7 +3601,10 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('=== DETERMINISTIC MSNR AUDIT ===');
         expect(text).toContain('=== TIMEFRAME ROLES ===');
         expect(text).toContain('=== MARKET CONTEXT ===');
+        expect(text).toContain('=== DETERMINISTIC SUPPLY DEMAND AUDIT ===');
         expect(text).toContain('=== HIGH PROBABILITY ZONES ===');
+        expect(text).toContain('EMA_1D_20=');
+        expect(text).toContain('RSI_4H_14=');
         expect(text).toContain('1D_ROLE=DIRECTIONAL_BIAS_ONLY');
         expect(text).toContain('4H_ROLE=PRIMARY_SETUP');
         expect(text).toContain('1H_ROLE=PRIMARY_SETUP_OR_REFINEMENT');
@@ -3643,6 +3646,8 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('never resurface ENTRY_STATE=ENTRY_TOUCHED as a new pending order');
         expect(text).toContain('PENDING_CANDIDATE=NOT_PRIMARY_SELECTABLE');
         expect(text).toContain('Use SCORE_BREAKDOWN');
+        expect(text).toContain('PREMIUM/DISCOUNT is valid only when MARKET CONTEXT emits a confirmed structural dealing range');
+        expect(text).toContain('EMA and RSI are not SETUP components');
         expect(text).not.toContain('SETUP: FVG | OB | MSNR | CRT | TBS | SUPPLY | DEMAND | FLIP | BREAKER | NONE');
         expect(text).not.toContain('three distinct remaining evidence-supported targets before returning a pending limit');
     });
@@ -3798,6 +3803,61 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(context.lines.join('\n')).toContain('LONDON_HIGH=124.00');
         expect(context.lines.join('\n')).toContain('NY_HIGH=119.00');
         expect(context.lines.join('\n')).toContain('PREMIUM_DISCOUNT=NOT_EMITTED');
+    });
+
+    it('emits premium/discount only from a confirmed structural dealing range', () => {
+        const ctx = getContext();
+        const candles = [
+            [100, 95], [103, 97], [102, 94], [101, 96], [106, 98], [104, 99],
+            [110, 101], [107, 100], [105, 99], [108, 102], [114, 103], [111, 104],
+            [109, 102], [113, 105], [118, 106], [115, 107], [112, 104], [116, 108],
+            [121, 109], [118, 110], [115, 107], [117, 111], [119, 112]
+        ].map(([h, l], index) => ({
+            t: new Date(Date.UTC(2026, 9, 1, index)).toISOString(),
+            o: (h + l) / 2, h, l, c: (h + l) / 2, is_closed: true
+        }));
+        const range = ctx.buildRawTextStructuralDealingRange([{ timeframe: '4H', candles }], 100, 2, Date.parse('2026-10-02T00:00:00Z'));
+        expect(range).toEqual(expect.objectContaining({ timeframe: '4H', direction: 'BULLISH', status: 'VALID' }));
+        expect(range.low).toBeLessThan(range.high);
+        expect(range.equilibrium).toBe((range.low + range.high) / 2);
+        expect(range.location).toBe('DISCOUNT');
+        expect(range.first_knowable_ms).toBeLessThanOrEqual(Date.parse('2026-10-02T00:00:00Z'));
+        const unavailable = ctx.buildRawTextStructuralDealingRange([{ timeframe: '4H', candles: candles.slice(0, 6) }], 110, 2, Date.parse('2026-10-02T00:00:00Z'));
+        expect(unavailable).toBeNull();
+    });
+
+    it('calculates closed-candle EMA and Wilder RSI context without indicator-driven trades', () => {
+        const ctx = getContext();
+        const candles = Array.from({ length: 220 }, (_, index) => ({
+            t: new Date(Date.UTC(2026, 0, 1) + index * 3600000).toISOString(),
+            o: 100 + index * 0.1, h: 101 + index * 0.1, l: 99 + index * 0.1, c: 100 + index * 0.1, is_closed: true
+        }));
+        expect(ctx.calculateRawTextEma(candles, 20)).toBeGreaterThan(100);
+        expect(ctx.calculateRawTextEma(candles.slice(0, 19), 20)).toBeNull();
+        expect(ctx.calculateRawTextRsi(candles, 14)).toBe(100);
+        const context = ctx.buildRawTextMarketContext([{ timeframe: '1H', candles }], 121.9, 2, Date.parse('2026-01-10T00:00:00Z'), 'NEUTRAL');
+        expect(context.context.ema['1H'].state).toBe('BULLISH');
+        expect(context.context.rsi['1H'].state).toBe('OVERBOUGHT');
+        expect(context.lines.join('\n')).toContain('EMA_STRUCTURE_1H=BULLISH');
+        expect(context.lines.join('\n')).toContain('RSI_1H_STATE=OVERBOUGHT');
+    });
+
+    it('audits supply and demand only from confirmed OB departure and lifecycle evidence', () => {
+        const ctx = getContext();
+        const candles = Array.from({ length: 16 }, (_, index) => ({
+            t: new Date(Date.UTC(2026, 9, 1, index)).toISOString(),
+            o: 100, h: 101, l: 99, c: 100, is_closed: true
+        }));
+        candles[12] = { ...candles[12], o: 100, c: 99, h: 101, l: 98 };
+        candles[13] = { ...candles[13], o: 99, c: 110, h: 111, l: 98 };
+        candles[14] = { ...candles[14], o: 102, c: 103, h: 104, l: 102 };
+        candles[15] = { ...candles[15], o: 103, c: 104, h: 105, l: 103 };
+        const records = ctx.buildRawTextSupplyDemandAudit([{ timeframe: '1H', candles }], 2, Date.parse('2026-10-02T00:00:00Z'));
+        expect(records).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'DEMAND', timeframe: '1H', status: expect.stringMatching(/^(FRESH|TESTED|MITIGATED)$/), departure: 'STRONG' })]));
+        expect(records[0].ref).toMatch(/^DEMAND:1H:/);
+        expect(ctx.buildRawTextSupplyDemandLines(records, 2).join('\n')).toContain('DEMAND: TF=1h');
+        const generic = ctx.buildRawTextSupplyDemandAudit([{ timeframe: '1H', candles: candles.slice(0, 12) }], 2, Date.parse('2026-10-02T00:00:00Z'));
+        expect(generic).toHaveLength(0);
     });
 
     it('keeps a real XAU/USD 4H bearish FVG in the pre-NO_TRADE audit', () => {

@@ -13497,6 +13497,22 @@ function rawTextFvgCurrentPriceRelation(fvg, currentPrice) {
 }
 
 const RAW_TEXT_HP_QUALITY_THRESHOLDS = Object.freeze({ A_PLUS: 85, A: 75, B: 65 });
+const RAW_TEXT_HP_SCORE_WEIGHTS = Object.freeze({
+    DAILY: 10,
+    PRIMARY: 8,
+    CRT: 11,
+    MSNR: 11,
+    OB: 4,
+    FVG: 10,
+    FRESH: 10,
+    SUPPLY_DEMAND: 8,
+    EXEC: 6,
+    LIQUIDITY: 5,
+    VOL: 4,
+    PREMIUM_DISCOUNT: 6,
+    EMA: 4,
+    RSI: 3
+});
 
 function calculateRawTextAtr(candles = [], period = 14) {
     const ordered = [...candles]
@@ -13605,6 +13621,189 @@ function buildRawTextSessionLevels(candles = [], asOfMs = null, precision = 2) {
     return result;
 }
 
+function rawTextOrderedClosedCandles(candles = [], asOfMs = null) {
+    return [...candles]
+        .filter(candle => candle && candle.is_closed !== false && candle.closed !== false && [candle.h, candle.l, candle.c].every(value => Number.isFinite(Number(value))))
+        .filter(candle => {
+            const timestamp = rawTextPacketTimestamp(candle.t ?? candle.time ?? candle.timestamp);
+            return Number.isFinite(timestamp) && (!Number.isFinite(asOfMs) || timestamp <= asOfMs);
+        })
+        .sort((left, right) => rawTextPacketTimestamp(left.t ?? left.time ?? left.timestamp) - rawTextPacketTimestamp(right.t ?? right.time ?? right.timestamp));
+}
+
+function buildRawTextStructuralDealingRange(blocks = [], currentPrice = null, precision = 2, asOfMs = null) {
+    const candidates = [];
+    for (const timeframe of ['1D', '4H', '1H']) {
+        const block = blocks.find(item => item.timeframe === timeframe);
+        const candles = rawTextOrderedClosedCandles(block?.candles || [], asOfMs);
+        if (candles.length < 8) continue;
+        const structural = confirmedStructuralState(candles, 2);
+        const swings = structural.swings || { H: [], L: [] };
+        const pairs = [];
+        if (structural.state === 'BULLISH') {
+            for (const low of swings.L || []) for (const high of swings.H || []) {
+                if (low.i >= high.i || !(Number(high.p) > Number(low.p))) continue;
+                const firstKnowable = Math.max(
+                    rawTextPacketTimestamp(low.first_knowable_time),
+                    rawTextPacketTimestamp(high.first_knowable_time)
+                );
+                if (Number.isFinite(firstKnowable)) pairs.push({ direction: 'BULLISH', low, high, firstKnowable });
+            }
+        } else if (structural.state === 'BEARISH') {
+            for (const high of swings.H || []) for (const low of swings.L || []) {
+                if (high.i >= low.i || !(Number(high.p) > Number(low.p))) continue;
+                const firstKnowable = Math.max(
+                    rawTextPacketTimestamp(high.first_knowable_time),
+                    rawTextPacketTimestamp(low.first_knowable_time)
+                );
+                if (Number.isFinite(firstKnowable)) pairs.push({ direction: 'BEARISH', low, high, firstKnowable });
+            }
+        }
+        const selected = pairs.sort((left, right) => right.firstKnowable - left.firstKnowable).at(0);
+        if (!selected) continue;
+        const low = Number(selected.low.p);
+        const high = Number(selected.high.p);
+        const equilibrium = (low + high) / 2;
+        const increment = 10 ** -precision;
+        const price = Number(currentPrice);
+        const location = Number.isFinite(price)
+            ? Math.abs(price - equilibrium) <= increment / 2 ? 'EQUILIBRIUM' : price < equilibrium ? 'DISCOUNT' : 'PREMIUM'
+            : 'UNKNOWN';
+        candidates.push({
+            timeframe,
+            direction: selected.direction,
+            low,
+            high,
+            equilibrium,
+            first_knowable_ms: selected.firstKnowable,
+            first_knowable: new Date(selected.firstKnowable).toISOString(),
+            status: 'VALID',
+            location
+        });
+    }
+    return candidates.sort((left, right) => right.first_knowable_ms - left.first_knowable_ms)[0] || null;
+}
+
+function calculateRawTextEma(candles = [], period = 20, asOfMs = null) {
+    const ordered = rawTextOrderedClosedCandles(candles, asOfMs);
+    if (!Number.isInteger(period) || period <= 0 || ordered.length < period) return null;
+    const closes = ordered.map(candle => Number(candle.c));
+    let value = closes.slice(0, period).reduce((sum, close) => sum + close, 0) / period;
+    const multiplier = 2 / (period + 1);
+    for (const close of closes.slice(period)) value = (close - value) * multiplier + value;
+    return Number.isFinite(value) ? value : null;
+}
+
+function rawTextIndicatorState(values = {}) {
+    const { ema20, ema50, ema200 } = values;
+    if (![ema20, ema50, ema200].every(Number.isFinite)) return 'MIXED';
+    if (ema20 > ema50 && ema50 > ema200) return 'BULLISH';
+    if (ema20 < ema50 && ema50 < ema200) return 'BEARISH';
+    return 'MIXED';
+}
+
+function rawTextPriceVs(value, price) {
+    if (![value, price].every(Number.isFinite)) return 'UNKNOWN';
+    if (price === value) return 'AT';
+    return price > value ? 'ABOVE' : 'BELOW';
+}
+
+function buildRawTextEmaContext(blocks = [], currentPrice = null, asOfMs = null) {
+    const values = {};
+    for (const timeframe of ['1D', '4H', '1H']) {
+        const block = blocks.find(item => item.timeframe === timeframe);
+        const emaValues = {
+            ema20: calculateRawTextEma(block?.candles || [], 20, asOfMs),
+            ema50: calculateRawTextEma(block?.candles || [], 50, asOfMs),
+            ema200: calculateRawTextEma(block?.candles || [], 200, asOfMs)
+        };
+        values[timeframe] = { ...emaValues, state: rawTextIndicatorState(emaValues) };
+        for (const period of [20, 50, 200]) values[timeframe]['price_vs_' + period] = rawTextPriceVs(emaValues['ema' + period], Number(currentPrice));
+    }
+    return values;
+}
+
+function rawTextRsiState(value) {
+    if (!Number.isFinite(value)) return 'NA';
+    if (value >= 70) return 'OVERBOUGHT';
+    if (value <= 30) return 'OVERSOLD';
+    return 'NEUTRAL';
+}
+
+function calculateRawTextRsi(candles = [], period = 14, asOfMs = null) {
+    const ordered = rawTextOrderedClosedCandles(candles, asOfMs);
+    const value = computeRSI(ordered.map(candle => Number(candle.c)), period);
+    return Number.isFinite(value) ? value : null;
+}
+
+function buildRawTextRsiContext(blocks = [], asOfMs = null) {
+    const values = {};
+    for (const timeframe of ['1D', '4H', '1H']) {
+        const value = calculateRawTextRsi(blocks.find(item => item.timeframe === timeframe)?.candles || [], 14, asOfMs);
+        values[timeframe] = { value, state: rawTextRsiState(value) };
+    }
+    return values;
+}
+
+function buildRawTextSupplyDemandAudit(blocks = [], precision = 2, asOfMs = null) {
+    const records = [];
+    for (const block of blocks.filter(item => ['4H', '1H'].includes(item.timeframe))) {
+        const candles = rawTextOrderedClosedCandles(block.candles || [], asOfMs);
+        for (const direction of ['BUY', 'SELL']) {
+            for (const ob of detectOrderBlocks(candles, direction)) {
+                const departureIndex = Number(ob.formation_index);
+                const departure = candles[departureIndex];
+                if (!departure || departureIndex < 1) continue;
+                const displacement = isDirectionalDisplacement(
+                    departure,
+                    direction,
+                    calculateRawTextAtr(candles.slice(0, departureIndex + 1), 14)
+                );
+                if (!displacement) continue;
+                const low = Number(ob.low);
+                const high = Number(ob.high);
+                if (!(Number.isFinite(low) && Number.isFinite(high) && high >= low)) continue;
+                const sourceTime = rawTextPacketTimestamp(ob.first_knowable_time ?? ob.confirmation_time);
+                if (!Number.isFinite(sourceTime)) continue;
+                const touches = checkZoneFreshness(candles, {
+                    low, high, source_candle_index: ob.origin_index,
+                    source_time: ob.first_knowable_time
+                }, direction);
+                const invalidated = candles.slice(departureIndex + 1).some(candle => direction === 'BUY'
+                    ? Number(candle.c) < low
+                    : Number(candle.c) > high);
+                const status = invalidated ? 'INVALIDATED' : touches.used ? 'MITIGATED' : touches.partiallyUsed ? 'TESTED' : 'FRESH';
+                records.push({
+                    type: direction === 'BUY' ? 'DEMAND' : 'SUPPLY',
+                    direction,
+                    timeframe: block.timeframe,
+                    low,
+                    high,
+                    status,
+                    first_knowable_ms: sourceTime,
+                    first_knowable: new Date(sourceTime).toISOString(),
+                    departure: 'STRONG',
+                    ref: (direction === 'BUY' ? 'DEMAND:' : 'SUPPLY:') + block.timeframe + ':' + sourceTime + ':' + rawTextPacketFormatNumber(low, precision) + '-' + rawTextPacketFormatNumber(high, precision)
+                });
+            }
+        }
+    }
+    const unique = new Map(records.map(record => [record.ref, record]));
+    return [...unique.values()].sort((left, right) => right.first_knowable_ms - left.first_knowable_ms);
+}
+
+function buildRawTextSupplyDemandLines(records = [], precision = 2) {
+    if (!records.length) return ['NONE'];
+    return records.slice(0, 12).map(record => [
+        record.type + ': TF=' + record.timeframe.toLowerCase(),
+        'ZONE=' + rawTextPacketFormatNumber(record.low, precision) + '-' + rawTextPacketFormatNumber(record.high, precision),
+        'STATUS=' + record.status,
+        'FIRST_KNOWABLE=' + record.first_knowable,
+        'DEPARTURE=' + record.departure,
+        'REF=' + record.ref
+    ].join(' '));
+}
+
 function buildRawTextMarketContext(blocks = [], currentPrice = null, precision = 2, asOfMs = null, dailyBias = 'NEUTRAL') {
     const findBlock = timeframe => blocks.find(block => block.timeframe === timeframe);
     const atr4h = calculateRawTextAtr(findBlock('4H')?.candles || [], 14);
@@ -13620,7 +13819,11 @@ function buildRawTextMarketContext(blocks = [], currentPrice = null, precision =
     const currentDayStats = rawTextPeriodStats(dayGroups.get(dayKeys.at(-1)) || []);
     const currentWeekStats = rawTextPeriodStats(weekGroups.get(weekKeys.at(-1)) || []);
     const sessionLevels = buildRawTextSessionLevels(intraday?.candles || [], asOfMs, precision);
+    const dealingRange = buildRawTextStructuralDealingRange(blocks, currentPrice, precision, asOfMs);
+    const ema = buildRawTextEmaContext(blocks, currentPrice, asOfMs);
+    const rsi = buildRawTextRsiContext(blocks, asOfMs);
     const context = {
+        precision,
         daily_bias: ['BULLISH', 'BEARISH'].includes(dailyBias) ? dailyBias : 'NEUTRAL',
         atr_4h: atr4h,
         atr_1h: atr1h,
@@ -13630,7 +13833,10 @@ function buildRawTextMarketContext(blocks = [], currentPrice = null, precision =
         pwl: previousWeekStats?.low ?? null,
         daily_open: currentDayStats?.open ?? null,
         weekly_open: currentWeekStats?.open ?? null,
-        session_levels: sessionLevels
+        session_levels: sessionLevels,
+        dealing_range: dealingRange,
+        ema,
+        rsi
     };
     return {
         context,
@@ -13661,7 +13867,30 @@ function buildRawTextMarketContext(blocks = [], currentPrice = null, precision =
                 'NY_HIGH=' + sessionLevels.NY.high_text,
                 'NY_LOW=' + sessionLevels.NY.low_text
             ].join(' '),
-            'PREMIUM_DISCOUNT=NOT_EMITTED_NO_ACCEPTED_STRUCTURAL_DEALING_RANGE'
+            dealingRange
+                ? [
+                    'DEALING_RANGE_TF=' + dealingRange.timeframe.toLowerCase(),
+                    'DR_LOW=' + rawTextPacketFormatNumber(dealingRange.low, precision),
+                    'DR_HIGH=' + rawTextPacketFormatNumber(dealingRange.high, precision),
+                    'DR_EQ=' + rawTextPacketFormatNumber(dealingRange.equilibrium, precision),
+                    'PREMIUM_DISCOUNT=' + dealingRange.location,
+                    'LOCATION=' + dealingRange.location,
+                    'DR_DIR=' + dealingRange.direction,
+                    'DR_FIRST_KNOWABLE=' + dealingRange.first_knowable,
+                    'DR_STATUS=' + dealingRange.status
+                ].join(' ')
+                : 'PREMIUM_DISCOUNT=NOT_EMITTED_NO_ACCEPTED_STRUCTURAL_DEALING_RANGE',
+            ['EMA_1D_20', 'EMA_1D_50', 'EMA_1D_200', 'EMA_4H_20', 'EMA_4H_50', 'EMA_4H_200', 'EMA_1H_20', 'EMA_1H_50', 'EMA_1H_200']
+                .map(key => {
+                    const timeframe = key.slice(4, 6);
+                    const period = key.slice(7);
+                    return key + '=' + rawTextContextValue(ema[timeframe]?.['ema' + period], precision);
+                }).join(' '),
+            ['1D', '4H', '1H'].map(timeframe => 'EMA_STRUCTURE_' + timeframe + '=' + (ema[timeframe]?.state || 'MIXED')).join(' '),
+            ['RSI_1D_14', 'RSI_4H_14', 'RSI_1H_14'].map(key => {
+                const timeframe = key.slice(4, 6);
+                return key + '=' + rawTextContextValue(rsi[timeframe]?.value, 2) + ' RSI_' + timeframe + '_STATE=' + (rsi[timeframe]?.state || 'NA');
+            }).join(' ')
         ]
     };
 }
@@ -13698,9 +13927,57 @@ function rawTextExecutionSupport(candidateRecord, blocks = [], crtRecords = [], 
             && rawTextIntervalsOverlap(primaryLow, primaryHigh, Number(fvg.lower), Number(fvg.upper)));
         const state = alignedFvg || alignedStructure ? 'CONFIRMED' : opposingFvg ? 'CONFLICTING' : 'NONE';
         support[timeframe === '15M' ? 'exec_15m' : 'exec_5m'] = state;
-        if (state === 'CONFIRMED') score += 5;
+        if (state === 'CONFIRMED') score += Math.floor(RAW_TEXT_HP_SCORE_WEIGHTS.EXEC / 2);
     }
     return { ...support, score };
+}
+
+function rawTextSupplyDemandConfluence(fvg, candidate, records = []) {
+    const direction = candidate.action === 'BUY_LIMIT' ? 'BUY' : 'SELL';
+    const lower = fvg.status === 'PARTIAL' ? Number(fvg.remaining_lower) : Number(fvg.lower);
+    const upper = fvg.status === 'PARTIAL' ? Number(fvg.remaining_upper) : Number(fvg.upper);
+    const eligible = records.filter(record => record.direction === direction
+        && record.status !== 'INVALIDATED'
+        && rawTextPacketTimestamp(record.first_knowable_ms) <= rawTextPacketTimestamp(fvg.c3)
+        && rawTextIntervalsOverlap(lower, upper, Number(record.low), Number(record.high)));
+    const supportingType = direction === 'BUY' ? 'DEMAND' : 'SUPPLY';
+    const opposingType = direction === 'BUY' ? 'SUPPLY' : 'DEMAND';
+    const supporting = eligible.filter(record => record.type === supportingType);
+    const opposing = records.filter(record => record.type === opposingType
+        && record.status !== 'INVALIDATED'
+        && rawTextIntervalsOverlap(lower, upper, Number(record.low), Number(record.high)));
+    const best = supporting.sort((left, right) => ({ FRESH: 3, TESTED: 2, MITIGATED: 1 }[right.status] || 0) - ({ FRESH: 3, TESTED: 2, MITIGATED: 1 }[left.status] || 0))[0] || null;
+    const score = best ? best.status === 'FRESH' ? RAW_TEXT_HP_SCORE_WEIGHTS.SUPPLY_DEMAND : best.status === 'TESTED' ? Math.floor(RAW_TEXT_HP_SCORE_WEIGHTS.SUPPLY_DEMAND * 0.625) : Math.floor(RAW_TEXT_HP_SCORE_WEIGHTS.SUPPLY_DEMAND * 0.25) : 0;
+    return { supporting, opposing, best, score, supporting_type: supportingType };
+}
+
+function rawTextPremiumDiscountScore(candidate, marketContext = {}) {
+    const range = marketContext.dealing_range;
+    if (!range || range.status !== 'VALID') return { score: 0, location: 'UNKNOWN' };
+    const direction = candidate.action === 'BUY_LIMIT' ? 'BUY' : 'SELL';
+    const increment = 10 ** -Number(marketContext.precision || 2);
+    const location = Math.abs(Number(candidate.entry) - Number(range.equilibrium)) <= increment / 2
+        ? 'EQUILIBRIUM'
+        : Number(candidate.entry) < Number(range.equilibrium) ? 'DISCOUNT' : 'PREMIUM';
+    const favorable = direction === 'BUY' ? location === 'DISCOUNT' : location === 'PREMIUM';
+    return { score: location === 'EQUILIBRIUM' ? Math.floor(RAW_TEXT_HP_SCORE_WEIGHTS.PREMIUM_DISCOUNT / 3) : favorable ? RAW_TEXT_HP_SCORE_WEIGHTS.PREMIUM_DISCOUNT : 0, location };
+}
+
+function rawTextEmaScore(candidate, block, marketContext = {}) {
+    const direction = candidate.action === 'BUY_LIMIT' ? 'BUY' : 'SELL';
+    const expected = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
+    const state = marketContext.ema?.[block.timeframe]?.state;
+    if (state === expected) return { score: RAW_TEXT_HP_SCORE_WEIGHTS.EMA, alignment: 'YES' };
+    if (state && state !== 'MIXED' && state !== 'NA') return { score: Math.floor(RAW_TEXT_HP_SCORE_WEIGHTS.EMA / 2), alignment: 'PARTIAL' };
+    return { score: 0, alignment: 'NO' };
+}
+
+function rawTextRsiScore(candidate, block, marketContext = {}) {
+    const direction = candidate.action === 'BUY_LIMIT' ? 'BUY' : 'SELL';
+    const value = Number(marketContext.rsi?.[block.timeframe]?.value);
+    if (!Number.isFinite(value)) return { score: 0, context: 'UNKNOWN' };
+    const directional = direction === 'BUY' ? value > 50 : value < 50;
+    return { score: directional ? RAW_TEXT_HP_SCORE_WEIGHTS.RSI : 0, context: directional ? (direction === 'BUY' ? 'BULLISH' : 'BEARISH') : 'NEUTRAL' };
 }
 
 function rawTextScoreQuality(score) {
@@ -13713,6 +13990,7 @@ function rawTextScoreQuality(score) {
 function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, precision = 2, strategyAudits = {}, marketContext = {}, roleAudit = {}) {
     const crtRecords = strategyAudits.crt_records || [];
     const msnrRecords = strategyAudits.msnr_records || [];
+    const supplyDemandRecords = strategyAudits.supply_demand_records || [];
     const primaryBlocks = blocks.filter(block => RAW_TEXT_PRIMARY_SETUP_TIMEFRAMES.includes(block.timeframe));
     const allFvgs = blocks.flatMap(block => detectRawTextFvgs(block.candles, block.timeframe).map(fvg => ({ fvg, block })));
     const records = [];
@@ -13740,23 +14018,27 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
             });
             const dailyBias = ['BULLISH', 'BEARISH'].includes(roleAudit.daily_bias || marketContext.daily_bias)
                 ? (roleAudit.daily_bias || marketContext.daily_bias) : 'NEUTRAL';
-            const daily = dailyBias === 'NEUTRAL' ? 7 : dailyBias === (direction === 'BUY' ? 'BULLISH' : 'BEARISH') ? 15 : 0;
-            const primary = block.timeframe === '4H' ? 10 : 8;
-            const crt = confluence.crt.length ? 15 : 0;
-            const msnr = confluence.msnr.length ? 15 : 0;
-            const ob = obEvidence.length ? 5 : 0;
+            const daily = dailyBias === 'NEUTRAL' ? RAW_TEXT_HP_SCORE_WEIGHTS.DAILY / 2 : dailyBias === (direction === 'BUY' ? 'BULLISH' : 'BEARISH') ? RAW_TEXT_HP_SCORE_WEIGHTS.DAILY : 0;
+            const primary = block.timeframe === '4H' ? RAW_TEXT_HP_SCORE_WEIGHTS.PRIMARY : Math.floor(RAW_TEXT_HP_SCORE_WEIGHTS.PRIMARY * 0.75);
+            const crt = confluence.crt.length ? RAW_TEXT_HP_SCORE_WEIGHTS.CRT : 0;
+            const msnr = confluence.msnr.length ? RAW_TEXT_HP_SCORE_WEIGHTS.MSNR : 0;
+            const ob = obEvidence.length ? RAW_TEXT_HP_SCORE_WEIGHTS.OB : 0;
             const displacement = rawTextDisplacementAssessment(block, fvg, direction);
-            const fvgScore = (fvg.status === 'UNTOUCHED' ? 10 : 7) + displacement.score;
-            const freshness = delivery.delivery_status === 'FRESH' ? 15 : delivery.delivery_status === 'DELIVERED_TP1' ? 6 : 0;
+            const fvgScore = (fvg.status === 'UNTOUCHED' ? RAW_TEXT_HP_SCORE_WEIGHTS.FVG - 2 : RAW_TEXT_HP_SCORE_WEIGHTS.FVG - 4) + (displacement.score >= 5 ? 2 : displacement.score >= 3 ? 1 : 0);
+            const freshness = delivery.delivery_status === 'FRESH' ? RAW_TEXT_HP_SCORE_WEIGHTS.FRESH : delivery.delivery_status === 'DELIVERED_TP1' ? Math.floor(RAW_TEXT_HP_SCORE_WEIGHTS.FRESH * 0.4) : 0;
             const execution = rawTextExecutionSupport({ fvg, candidate }, blocks, crtRecords, msnrRecords);
             const atrValue = block.timeframe === '4H' ? Number(marketContext.atr_4h) : Number(marketContext.atr_1h);
             const riskToAtr = atrValue > 0 ? Number(candidate.risk) / atrValue : null;
-            const volatility = riskToAtr == null ? 0 : riskToAtr >= 0.5 ? 5 : riskToAtr >= 0.25 ? 3 : 0;
+            const volatility = riskToAtr == null ? 0 : riskToAtr >= 0.5 ? RAW_TEXT_HP_SCORE_WEIGHTS.VOL : riskToAtr >= 0.25 ? Math.floor(RAW_TEXT_HP_SCORE_WEIGHTS.VOL / 2) : 0;
             const sessionLiquidity = Object.values(marketContext.session_levels || {}).map(level => direction === 'BUY' ? level.high : level.low);
             const levelForLiquidity = direction === 'BUY'
                 ? [marketContext.pdh, marketContext.pwh, ...sessionLiquidity]
                 : [marketContext.pdl, marketContext.pwl, ...sessionLiquidity];
             const liquidity = levelForLiquidity.some(level => Number.isFinite(Number(level)) && (direction === 'BUY' ? Number(level) > candidate.entry : Number(level) < candidate.entry)) ? 5 : 0;
+            const supplyDemand = rawTextSupplyDemandConfluence(fvg, candidate, supplyDemandRecords);
+            const premiumDiscount = rawTextPremiumDiscountScore(candidate, marketContext);
+            const emaContext = rawTextEmaScore(candidate, block, marketContext);
+            const rsiContext = rawTextRsiScore(candidate, block, marketContext);
             const candidateLow = fvg.status === 'PARTIAL' ? Number(fvg.remaining_lower) : Number(fvg.lower);
             const candidateHigh = fvg.status === 'PARTIAL' ? Number(fvg.remaining_upper) : Number(fvg.upper);
             const opposingFvg = allFvgs.some(item => item.fvg !== fvg
@@ -13766,18 +14048,24 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
             const opposingStructure = [...crtRecords, ...msnrRecords].some(record => record.status === 'VALID'
                 && record.direction !== direction
                 && rawTextIntervalsOverlap(candidateLow, candidateHigh, Number(record.range_low ?? record.zone_low), Number(record.range_high ?? record.zone_high)));
-            const conflict = (opposingFvg ? -5 : 0) + (opposingStructure ? -5 : 0);
-            const breakdown = { DAILY: daily, PRIMARY: primary, CRT: crt, MSNR: msnr, OB: ob, FVG: fvgScore, FRESH: freshness, EXEC: execution.score, LIQUIDITY: liquidity, VOL: volatility, CONFLICT: conflict };
+            const opposingZone = supplyDemand.opposing.length > 0;
+            const conflict = (opposingFvg ? -5 : 0) + (opposingStructure ? -5 : 0) + (opposingZone ? -5 : 0);
+            const breakdown = {
+                DAILY: daily, PRIMARY: primary, CRT: crt, MSNR: msnr, OB: ob, FVG: fvgScore,
+                FRESH: freshness, SUPPLY_DEMAND: supplyDemand.score, EXEC: execution.score,
+                LIQUIDITY: liquidity, VOL: volatility, PREMIUM_DISCOUNT: premiumDiscount.score,
+                EMA: emaContext.score, RSI: rsiContext.score, CONFLICT: conflict
+            };
             const total = Object.values(breakdown).reduce((sum, value) => sum + value, 0);
             const score = Math.max(0, Math.min(100, Math.round(total)));
-            records.push({ fvg, block, candidate, delivery, confluence, obEvidence, execution, displacement, score, raw_score: total, quality: rawTextScoreQuality(score), breakdown,
+            records.push({ fvg, block, candidate, delivery, confluence, obEvidence, supplyDemand, execution, displacement, premiumDiscount, emaContext, rsiContext, score, raw_score: total, quality: rawTextScoreQuality(score), breakdown,
                 daily_aligned: dailyBias === 'NEUTRAL' ? 'NEUTRAL' : dailyBias === (direction === 'BUY' ? 'BULLISH' : 'BEARISH') ? 'YES' : 'NO' });
         }
     }
     records.sort((left, right) => right.score - left.score || (right.confluence.crt.length + right.confluence.msnr.length) - (left.confluence.crt.length + left.confluence.msnr.length));
     const ranked = records.slice(0, 3).map((record, index) => ({ ...record, rank: index + 1 }));
     const lines = ranked.length ? ranked.map(record => {
-        const { fvg, candidate, block, delivery, confluence, obEvidence, execution, displacement, score, quality, breakdown } = record;
+        const { fvg, candidate, block, delivery, confluence, obEvidence, supplyDemand, execution, displacement, premiumDiscount, emaContext, rsiContext, score, quality, breakdown } = record;
         const zoneLow = fvg.status === 'PARTIAL' ? fvg.remaining_lower : fvg.lower;
         const zoneHigh = fvg.status === 'PARTIAL' ? fvg.remaining_upper : fvg.upper;
         const breakdownText = Object.entries(breakdown).map(([key, value]) => key + ':' + value).join(',');
@@ -13798,6 +14086,11 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
             'CRT=' + (confluence.crt.length ? 'YES' : 'NO'),
             'MSNR=' + (confluence.msnr.length ? 'YES' : 'NO'),
             'OB=' + (obEvidence.length ? 'YES' : 'NO'),
+            'SUPPLY=' + (supplyDemand.supporting_type === 'SUPPLY' && supplyDemand.best ? 'YES' : 'NO'),
+            'DEMAND=' + (supplyDemand.supporting_type === 'DEMAND' && supplyDemand.best ? 'YES' : 'NO'),
+            'PREMIUM_DISCOUNT=' + premiumDiscount.location,
+            'EMA_ALIGN=' + emaContext.alignment,
+            'RSI_CONTEXT=' + rsiContext.context,
             'FVG=YES',
             'EXEC_15M=' + execution.exec_15m,
             'EXEC_5M=' + execution.exec_5m,
@@ -13904,8 +14197,11 @@ function buildRawTextMarketAnalysisInstruction() {
         '12. Keep deterministic FVG ENTRY, STOP_LOSS and TP1/TP2/TP3 unchanged. Use additional confluence for candidate comparison and setup-quality confidence, not as fabricated evidence or a universal confidence boost. A standalone FVG remains eligible when it independently satisfies the required rules.',
         '13. Use explicit timeframe roles: 1D supplies directional bias only; 4H is the primary setup timeframe; 1H is primary setup or refinement; 15M is execution confirmation/refinement; 5M is execution timing only. Keep all lower-timeframe candles available.',
         '14. DAILY_BIAS=BULLISH should prefer BUY and DAILY_BIAS=BEARISH should prefer SELL, but daily bias is not an absolute veto when an explicit higher-timeframe reversal model exists. DAILY_BIAS=NEUTRAL permits either direction based on stronger 4H/1H evidence.',
-        '15. HIGH PROBABILITY ZONES are deterministic ranking evidence built only from selectable 4H/1H FVG candidates and objectively available CRT/MSNR/OB, freshness, liquidity, volatility and execution context. Inspect this section first, then verify its supporting audits; it is not a trade guarantee.',
-        '16. SCORE is a 0-100 setup-quality score, never a win probability. Use SCORE_BREAKDOWN, DAILY_BIAS, ATR, PDH/PDL/PWH/PWL, freshness, displacement and execution fields as ranking evidence, not as permission to invent a setup.',
+        '15. HIGH PROBABILITY ZONES are deterministic ranking evidence built only from selectable 4H/1H FVG candidates and objectively available CRT/MSNR/OB/SUPPLY/DEMAND, freshness, liquidity, volatility and execution context. Inspect this section first, then verify its supporting audits; it is not a trade guarantee.',
+        '16. SCORE is a 0-100 setup-quality score, never a win probability. The maximum component weights are DAILY=10, PRIMARY=8, CRT=11, MSNR=11, OB=4, FVG=10, FRESH=10, SUPPLY_DEMAND=8, EXEC=6, LIQUIDITY=5, VOL=4, PREMIUM_DISCOUNT=6, EMA=4, RSI=3. Use SCORE_BREAKDOWN, DAILY_BIAS, ATR, PDH/PDL/PWH/PWL, freshness, displacement and execution fields as ranking evidence, not as permission to invent a setup.',
+        '16A. MARKET CONTEXT LAYERS: PREMIUM/DISCOUNT is valid only when MARKET CONTEXT emits a confirmed structural dealing range from closed-candle swings; use DISCOUNT as supportive for BUY and PREMIUM as supportive for SELL, but never create a trade from location alone. DETERMINISTIC SUPPLY DEMAND AUDIT uses the project OB-plus-confirmed-displacement semantics: generic support/resistance or an ordinary candle is not supply/demand. Match only same-direction, chronological, non-invalidated zones to the selected primary FVG.',
+        '16B. EMA_1D/4H/1H and RSI_1D/4H/1H are closed-candle context and scoring inputs only. EMA and RSI are not SETUP components, cannot create a primary candidate, and overbought/oversold alone is not a BUY or SELL signal. Structural ICT evidence remains dominant; missing indicator history is not a universal veto.',
+        '16C. A high-probability score is a transparent setup-quality ranking, not a probability or approval. The score components are deliberately bounded and must not override primary timeframe, lifecycle, structural stop, pending geometry or chronology.',
         '17. Every final TRADE must have PRIMARY_SETUP_TF=4h or PRIMARY_SETUP_TF=1h and TIMEFRAME_USED=4h or TIMEFRAME_USED=1h. A standalone 15m or 5m FVG/CRT/MSNR must be PENDING_CANDIDATE=NOT_PRIMARY_SELECTABLE and cannot be the main thesis.',
         '18. Link 15M/5M only as execution support for a valid 4H/1H setup: lower-TF FVG, CRT, MSNR, sweep/reclaim, displacement or reaction may improve confidence, but must not replace the primary setup or create its own trade.',
         '19. Keep the stop and R calculation anchored to the selected 4H/1H primary structure. Do not replace a higher-timeframe structural stop with an unrelated 5M micro stop or use it to compress TP1/TP2/TP3.',
@@ -13975,9 +14271,11 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         precision
     );
     lines.push(...roleAudit.lines, '');
+    const contextBlocks = dailyCandles.length ? [...blocks, { timeframe: '1D', candles: dailyCandles }] : blocks;
     const crtAudit = buildRawTextDeterministicCrtAudit(blocks, symbol, metadata, precision);
     const msnrAudit = buildRawTextDeterministicMsnrAudit(blocks, price, symbol, metadata, precision);
-    const marketContext = buildRawTextMarketContext(blocks, price, precision, asOfMs, roleAudit.daily_bias);
+    const marketContext = buildRawTextMarketContext(contextBlocks, price, precision, asOfMs, roleAudit.daily_bias);
+    const supplyDemandAudit = buildRawTextSupplyDemandAudit(blocks, precision, asOfMs);
     lines.push(...marketContext.lines, '');
     const fvgAudit = buildRawTextFvgAudit(blocks, price, precision, {
         crt_records: crtAudit.records,
@@ -13985,8 +14283,12 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     });
     const highProbabilityZones = buildRawTextHighProbabilityZones(blocks, price, precision, {
         crt_records: crtAudit.records,
-        msnr_records: msnrAudit.records
+        msnr_records: msnrAudit.records,
+        supply_demand_records: supplyDemandAudit
     }, marketContext.context, roleAudit);
+    lines.push('=== DETERMINISTIC SUPPLY DEMAND AUDIT ===');
+    lines.push(...buildRawTextSupplyDemandLines(supplyDemandAudit, precision));
+    lines.push('');
     lines.push('=== HIGH PROBABILITY ZONES ===');
     lines.push(...highProbabilityZones.lines, '');
     lines.push('=== DETERMINISTIC FVG AUDIT ===');
