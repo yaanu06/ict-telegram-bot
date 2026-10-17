@@ -1,0 +1,90 @@
+'use strict';
+
+const { normalizeBars, validateRawRows, validateSeries } = require('./data-provider');
+const { simulateCandidate, replayClocks, visibleBars } = require('./replay');
+const { summarize } = require('./metrics');
+const { loadStrategyContext, analyzeVisibleHistory } = require('./strategy-adapter');
+
+function bar(timestamp, high, low, close = (high + low) / 2) {
+    return { timestamp, open: close, high, low, close, volume: 1 };
+}
+
+describe('historical backtest data and execution replay', () => {
+    test('normalizes candles chronologically and reports quality issues', () => {
+        const rows = [bar(300000, 11, 9), bar(0, 10, 8), bar(300000, 11, 9), bar(600000, 12, 10)];
+        const raw = validateRawRows(rows, '5m');
+        expect(raw.duplicate_timestamps).toEqual([300000]);
+        expect(raw.unsorted).toBe(true);
+        const normalized = normalizeBars(rows, '5m');
+        expect(normalized.map(item => item.t)).toEqual([0, 300000, 600000]);
+        expect(validateSeries(normalized, '5m').gaps).toHaveLength(0);
+    });
+
+    test('higher timeframe bars are invisible before their close', () => {
+        const series = [bar(0, 110, 90, 100), bar(14400000, 120, 100, 110)].map(item => ({ ...item, t: item.timestamp, close_time_ms: item.timestamp + 14400000 }));
+        expect(visibleBars(series, '4h', 14399999)).toHaveLength(0);
+        expect(visibleBars(series, '4h', 14400000)).toHaveLength(1);
+    });
+
+    test('replay clock uses execution candle close times', () => {
+        const series = { '5m': [0, 300000, 600000].map(timestamp => ({ t: timestamp, close_time_ms: timestamp + 300000 })) };
+        expect(replayClocks(series, '5m', 0, 900000)).toEqual([300000, 600000, 900000]);
+    });
+
+    test('BUY_LIMIT fills only when a later candle reaches entry and records TP1', () => {
+        const candidate = { candidate_id: 'buy', side: 'BUY', timeframe: '1h', first_knowable_ms: 0, entry: 100, stop_loss: 95, tp1: 105, tp2: 110, tp3: 115, risk: 5 };
+        const series = { '5m': [bar(300000, 101, 99, 100), bar(600000, 106, 100, 105)] };
+        const result = simulateCandidate(candidate, series, { executionTimeframe: '5m', ambiguity: 'exclude' });
+        expect(result.final_outcome).toBe('TP1');
+        expect(result.fill_time_ms).toBe(600000);
+    });
+
+    test('SELL_LIMIT fill and stop are symmetric', () => {
+        const candidate = { candidate_id: 'sell', side: 'SELL', timeframe: '1h', first_knowable_ms: 0, entry: 100, stop_loss: 105, tp1: 95, tp2: 90, tp3: 85, risk: 5 };
+        const series = { '5m': [bar(300000, 101, 99, 100), bar(600000, 105, 94, 100)] };
+        const result = simulateCandidate(candidate, series, { executionTimeframe: '5m', ambiguity: 'adverse-first' });
+        expect(result.final_outcome).toBe('SL');
+    });
+
+    test('ambiguous target and stop ordering is not counted as a winner', () => {
+        const candidate = { candidate_id: 'ambiguous', side: 'BUY', timeframe: '4h', first_knowable_ms: 0, entry: 100, stop_loss: 95, tp1: 105, tp2: 110, tp3: 115, risk: 5 };
+        const series = { '5m': [bar(300000, 106, 94, 100)] };
+        const result = simulateCandidate(candidate, series, { executionTimeframe: '5m', ambiguity: 'exclude' });
+        expect(result.final_outcome).toBe('AMBIGUOUS');
+        expect(result.r_result).toBe(0);
+    });
+
+    test('never-filled pending order remains not filled', () => {
+        const candidate = { candidate_id: 'none', side: 'BUY', timeframe: '1h', first_knowable_ms: 0, entry: 90, stop_loss: 85, tp1: 95, tp2: 100, tp3: 105, risk: 5 };
+        const result = simulateCandidate(candidate, { '5m': [bar(300000, 101, 99, 100)] }, { executionTimeframe: '5m' });
+        expect(result.final_outcome).toBe('NOT_FILLED');
+    });
+
+    test('metrics preserve descriptive baseline counts', () => {
+        const result = summarize([{ simulation: { final_outcome: 'SL', r_result: -1, mfe_r: 0.2, mae_r: -1 } }, { simulation: { final_outcome: 'TP2', r_result: 2, mfe_r: 2, mae_r: -0.1 } }]);
+        expect(result.sample_size).toBe(2);
+        expect(result.sl).toBe(1);
+        expect(result.tp2).toBe(1);
+        expect(result.total_r).toBe(1);
+    });
+
+    test('strategy adapter executes the existing deterministic analysis functions', () => {
+        const context = loadStrategyContext();
+        const start = Date.parse('2026-01-01T00:00:00Z');
+        const blocks = [
+            ['1D', 86400000], ['4H', 14400000], ['1H', 3600000], ['15M', 900000], ['5M', 300000
+            ]
+        ].map(([timeframe, interval]) => ({
+            timeframe,
+            candles: Array.from({ length: 40 }, (_, index) => {
+                const timestamp = start + index * interval;
+                const close = 100 + index * 0.01;
+                return { t: new Date(timestamp).toISOString(), o: close, h: close + 0.02, l: close - 0.02, c: close, v: 1, is_closed: true };
+            })
+        }));
+        const result = analyzeVisibleHistory(context, { blocks, symbol: 'AUD/USD', currentPrice: 100.4, asOfMs: start + 40 * 86400000, precision: 5 });
+        expect(result.role_audit).toHaveProperty('daily_bias');
+        expect(result.market_context).toHaveProperty('as_of_ms');
+        expect(result.zones).toHaveProperty('all_records');
+    });
+});

@@ -99,6 +99,180 @@ function getProxyBaseUrl() {
     return String(configured || '').trim().replace(/\/$/, '');
 }
 
+const KRONOS_FORECAST_CACHE = new Map();
+const KRONOS_DEFAULT_MODEL = 'NeoQuasar/Kronos-small';
+const KRONOS_DEFAULT_LOOKBACK = 400;
+// CPU live scans use one sampled path by default.  Research callers can
+// explicitly request a larger sample set through the proxy configuration.
+const KRONOS_DEFAULT_PATHS = 1;
+const KRONOS_DEFAULT_SEED = 42;
+
+function getKronosLibrary() {
+    return typeof window !== 'undefined' && window.ICTKronos ? window.ICTKronos : null;
+}
+
+function getKronosConfig() {
+    const enabled = typeof window === 'undefined' || window.__ICT_KRONOS_ENABLED__ !== false;
+    const model = String((typeof window !== 'undefined' && window.__ICT_KRONOS_MODEL__) || KRONOS_DEFAULT_MODEL).trim() || KRONOS_DEFAULT_MODEL;
+    const lookback = Math.min(512, Math.max(1, Number((typeof window !== 'undefined' && window.__ICT_KRONOS_LOOKBACK__) || KRONOS_DEFAULT_LOOKBACK) || KRONOS_DEFAULT_LOOKBACK));
+    const paths = Math.min(50, Math.max(1, Number((typeof window !== 'undefined' && window.__ICT_KRONOS_PATHS__) || KRONOS_DEFAULT_PATHS) || KRONOS_DEFAULT_PATHS));
+    const seed = Number((typeof window !== 'undefined' && window.__ICT_KRONOS_SEED__) || KRONOS_DEFAULT_SEED);
+    const horizon1h = Math.max(1, Number((typeof window !== 'undefined' && window.__ICT_KRONOS_1H_HORIZON__) || 12) || 12);
+    const horizon4h = Math.max(1, Number((typeof window !== 'undefined' && window.__ICT_KRONOS_4H_HORIZON__) || 6) || 6);
+    return { enabled, model, lookback, paths, horizon1h, horizon4h, seed: Number.isFinite(seed) ? seed : KRONOS_DEFAULT_SEED };
+}
+
+function kronosCandidateView(candidate = {}) {
+    const action = String(candidate.action || candidate.trade_type || candidate.direction || '').toUpperCase();
+    const side = action === 'BUY_LIMIT' || action === 'BUY' ? 'BUY' : action === 'SELL_LIMIT' || action === 'SELL' ? 'SELL' : null;
+    const timeframe = String(candidate.timeframe || candidate.setup_timeframe || candidate.primary_setup_timeframe || '').toUpperCase();
+    const normalizedTimeframe = timeframe === '1H' ? '1h' : timeframe === '4H' ? '4h' : null;
+    const number = value => Number.isFinite(Number(value)) ? Number(value) : null;
+    return {
+        id: candidate.id || candidate.candidate_id || null,
+        action: action === 'BUY' ? 'BUY_LIMIT' : action === 'SELL' ? 'SELL_LIMIT' : action,
+        side,
+        timeframe: normalizedTimeframe,
+        entry: number(candidate.entry ?? candidate.entry_price),
+        stop_loss: number(candidate.stop_loss ?? candidate.stopLoss),
+        tp1: number(candidate.tp1 ?? candidate.take_profit_1),
+        tp2: number(candidate.tp2 ?? candidate.take_profit_2),
+        tp3: number(candidate.tp3 ?? candidate.take_profit_3)
+    };
+}
+
+function kronosCandidateUniverse(liveMarketContext = {}) {
+    const arrays = [
+        liveMarketContext.adaptive_setup_candidates,
+        liveMarketContext.current_opportunities,
+        liveMarketContext.today_opportunity?.current_opportunities,
+        liveMarketContext.future_watch_candidates,
+        liveMarketContext.low_quality_candidates
+    ];
+    const unique = new Map();
+    for (const list of arrays) {
+        if (!Array.isArray(list)) continue;
+        for (const candidate of list) {
+            const view = kronosCandidateView(candidate);
+            if (!view.id || !view.timeframe || !view.side || ![view.entry, view.stop_loss, view.tp1, view.tp2, view.tp3].every(Number.isFinite)) continue;
+            const key = [view.id, view.timeframe, view.action, view.entry, view.stop_loss, view.tp1, view.tp2, view.tp3].join('|');
+            if (!unique.has(key)) unique.set(key, view);
+        }
+    }
+    return [...unique.values()];
+}
+
+function kronosUnavailableResult(candidate, config, reason, status = 'UNAVAILABLE') {
+    return {
+        candidate_id: candidate.id,
+        action: candidate.action,
+        side: candidate.side,
+        ...getKronosLibrary().compactForPacket({
+            status,
+            model: config.model,
+            timeframe: candidate.timeframe,
+            lookback: config.lookback,
+            horizon: candidate.timeframe === '1h' ? config.horizon1h : config.horizon4h,
+            paths: config.paths,
+            seed: config.seed,
+            error: reason
+        })
+    };
+}
+
+async function enrichLiveKronosForecasts(liveMarketContext = {}, historyCache = {}, scanAsOfMs = Date.now()) {
+    const library = getKronosLibrary();
+    const config = getKronosConfig();
+    const candidates = kronosCandidateUniverse(liveMarketContext);
+    const output = [];
+    liveMarketContext.kronos_diagnostics = {
+        enabled: config.enabled,
+        model: config.model,
+        paths: config.paths,
+        seed: config.seed,
+        candidate_count: candidates.length,
+        status: candidates.length ? 'PENDING' : 'SKIPPED_NO_ICT_CANDIDATE'
+    };
+    if (!candidates.length) {
+        liveMarketContext.kronos_forecasts = [];
+        return [];
+    }
+    if (!library) {
+        liveMarketContext.kronos_forecasts = candidates.map(candidate => ({
+            candidate_id: candidate.id,
+            action: candidate.action,
+            side: candidate.side,
+            kronos_status: 'UNAVAILABLE',
+            kronos_model: config.model,
+            kronos_timeframe: candidate.timeframe,
+            kronos_lookback: config.lookback,
+            kronos_horizon: candidate.timeframe === '1h' ? config.horizon1h : config.horizon4h,
+            kronos_paths: config.paths,
+            kronos_seed: config.seed,
+            kronos_error: 'Kronos client is not loaded'
+        }));
+        return liveMarketContext.kronos_forecasts;
+    }
+    for (const candidate of candidates) {
+        const history = historyCache[candidate.timeframe.toUpperCase()] || [];
+        const candles = library.closedCandleWindow(history, candidate.timeframe, scanAsOfMs, config.lookback);
+        const horizon = candidate.timeframe === '1h' ? config.horizon1h : config.horizon4h;
+        if (!config.enabled) {
+            output.push(kronosUnavailableResult(candidate, config, 'KRONOS_ENABLED=false'));
+            continue;
+        }
+        if (candles.length < 2) {
+            output.push(kronosUnavailableResult(candidate, config, 'insufficient closed candles'));
+            continue;
+        }
+        const last = candles.at(-1);
+        const lastClosed = last?.timestamp || last?.t || null;
+        const key = library.cacheKey({ symbol: liveMarketContext.pair, timeframe: candidate.timeframe, lastClosedTimestamp: lastClosed, model: config.model, lookback: candles.length, horizon, paths: config.paths, seed: config.seed });
+        let rawForecast = KRONOS_FORECAST_CACHE.get(key);
+        if (!rawForecast) {
+            try {
+                const response = await fetch(`${getProxyBaseUrl()}/api/kronos/forecast`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        symbol: liveMarketContext.pair,
+                        timeframe: candidate.timeframe,
+                        lookback: config.lookback,
+                        horizon,
+                        paths: config.paths,
+                        seed: config.seed,
+                        candles: candles.map(candle => ({
+                            timestamp: candle.timestamp || candle.t,
+                            open: Number(candle.open ?? candle.o),
+                            high: Number(candle.high ?? candle.h),
+                            low: Number(candle.low ?? candle.l),
+                            close: Number(candle.close ?? candle.c),
+                            volume: Number(candle.volume ?? candle.v ?? 0),
+                            amount: Number(candle.amount ?? candle.a ?? 0),
+                            is_closed: candle.is_closed !== false
+                        }))
+                    })
+                });
+                rawForecast = await response.json();
+                if (!rawForecast || typeof rawForecast !== 'object') rawForecast = { status: 'ERROR', error: 'invalid Kronos response' };
+                KRONOS_FORECAST_CACHE.set(key, rawForecast);
+                while (KRONOS_FORECAST_CACHE.size > 24) KRONOS_FORECAST_CACHE.delete(KRONOS_FORECAST_CACHE.keys().next().value);
+            } catch (error) {
+                rawForecast = { status: 'UNAVAILABLE', error: error?.message || 'Kronos endpoint unavailable' };
+            }
+        }
+        const summarized = library.summarizeForecast(rawForecast, candidate, { ...config, horizon, timeframe: candidate.timeframe, startPrice: Number(last?.c ?? last?.close) });
+        output.push({ candidate_id: candidate.id, action: candidate.action, side: candidate.side, ...library.compactForPacket(summarized) });
+    }
+    liveMarketContext.kronos_forecasts = output;
+    liveMarketContext.kronos_diagnostics.status = output.some(item => item.kronos_status === 'OK') ? 'OK' : 'UNAVAILABLE';
+    liveMarketContext.kronos_diagnostics.ok_count = output.filter(item => item.kronos_status === 'OK').length;
+    liveMarketContext.kronos_diagnostics.unavailable_count = output.filter(item => item.kronos_status !== 'OK').length;
+    return output;
+}
+
+if (typeof window !== 'undefined') window.enrichLiveKronosForecasts = enrichLiveKronosForecasts;
+
 function getAnalysisMode() {
     const configured = typeof window !== 'undefined' ? window.__ICT_ANALYSIS_MODE__ : null;
     return String(configured || DEFAULT_ANALYSIS_MODE).trim().toUpperCase() === 'AUTO_AI' ? 'AUTO_AI' : DEFAULT_ANALYSIS_MODE;
@@ -8749,6 +8923,7 @@ function buildCurrentOpportunityRegenerationSetups({ pair: pairLocal = pair, pri
 }
 
 function isSelectableAdaptiveCandidate(candidate = {}) {
+    if (candidate.trade_qualified === false || candidate.TRADE_QUALIFIED === 'NO') return false;
     const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
     const qualityPasses = !Number.isFinite(quality) || quality >= getCandidateExecutionQualityMinimum(candidate);
     const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
@@ -8764,14 +8939,14 @@ function mergeAdaptiveSetupCandidateResults(results = [], price = null, asOfTime
     }
     const allValidCandidates = rankCurrentOpportunityCandidates([...dedupe.values()], price, asOfTime);
     const selectableCandidates = allValidCandidates.filter(isSelectableAdaptiveCandidate);
-    const futureWatchCandidates = allValidCandidates.filter(candidate => {
+    const futureWatchCandidates = allValidCandidates.filter(candidate => candidate.trade_qualified !== false && candidate.TRADE_QUALIFIED !== 'NO').filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
         const qualityPasses = Number.isFinite(quality) && quality >= getCandidateExecutionQualityMinimum(candidate);
         const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
         const futureOnly = candidate.still_actionable_today === false || (!pendingLimit && candidate.entry_reachable_today === false);
         return (qualityPasses || pendingLimit) && futureOnly;
     }).slice(0, 10);
-    const lowQualityCandidates = allValidCandidates.filter(candidate => {
+    const lowQualityCandidates = allValidCandidates.filter(candidate => candidate.trade_qualified !== false && candidate.TRADE_QUALIFIED !== 'NO').filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
         return Number.isFinite(quality) && quality < getCandidateExecutionQualityMinimum(candidate);
     }).slice(0, 20);
@@ -8800,6 +8975,12 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         : [];
     const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(supportedStrategySetups) : [];
     const poiZones = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pair, symbolMetadata || {}));
+    const pathQualityRecords = [
+        ...poiZones,
+        ...(Array.isArray(zones) ? zones : []),
+        ...strategyExecutionZones
+    ];
+    const pathQualityAsOfMs = normalizeTimestampUTC(marketContext?.as_of_time || marketContext?.as_of_ms || marketContext?.scan_as_of_ms);
     const labeledZoneKeys = new Set(strategyExecutionZones.map(strategyZoneKey));
     // Generic zones remain discovery evidence. Production orders require
     // either CRT/TBS/MSNR ownership or a separately AI-verified mechanics
@@ -9225,6 +9406,19 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     setup_confidence: Math.max(0, Math.min(100, Math.round(score))),
                     score: ictRound(score, 2)
                 };
+                const pathQualityCandidate = apply4HPathQualityToCandidate(candidate, pathQualityRecords, pathQualityAsOfMs);
+                Object.assign(candidate, pathQualityCandidate, {
+                    TRADE_QUALIFIED: pathQualityCandidate.trade_qualified ? 'YES' : 'NO',
+                    ENTRY_INSIDE_OPPOSING_4H: pathQualityCandidate.entry_inside_opposing_4h,
+                    OPPOSING_4H_BARRIER_BEFORE_TP1: pathQualityCandidate.opposing_4h_barrier_before_tp1,
+                    NEAREST_OPPOSING_4H_REF: pathQualityCandidate.nearest_opposing_4h_ref,
+                    NEAREST_OPPOSING_4H_TYPE: pathQualityCandidate.nearest_opposing_4h_type,
+                    NEAREST_OPPOSING_4H_ZONE: pathQualityCandidate.nearest_opposing_4h_zone,
+                    BARRIER_DISTANCE_R: pathQualityCandidate.barrier_distance_r,
+                    CLEAR_PATH_TO_TP1: pathQualityCandidate.clear_path_to_tp1,
+                    PATH_QUALITY_PENALTY: pathQualityCandidate.path_quality_penalty,
+                    QUALIFICATION_BLOCKERS: pathQualityCandidate.qualification_blockers
+                });
                 candidate.top_down_context = classifyTopDownTrade(candidate, timeframeContext);
                 candidate.trade_context_classification = candidate.top_down_context.classification;
                 candidate.opportunity_thesis = strategySetup?.opportunity_thesis || null;
@@ -9239,10 +9433,23 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 const evaluation = evaluateSetupCandidate(candidate, deterministicValidationContext);
                 Object.assign(rawCandidate, candidate);
                 if (evaluation.valid) {
-                    rawCandidate.confidence_breakdown = calculateCandidateConfidence(candidate, {
+                    const baseConfidence = calculateCandidateConfidence(candidate, {
                         ...marketContext,
                         htf_alignment: htfAlignment
                     });
+                    const pathPenalty = Number(candidate.path_quality_penalty) || 0;
+                    const adjustedConfidence = Math.max(0, Math.min(95, Math.round(baseConfidence.final_score + pathPenalty)));
+                    rawCandidate.confidence_breakdown = {
+                        ...baseConfidence,
+                        adjustments: [...(baseConfidence.adjustments || []), ...(pathPenalty ? [{ label: '4H path quality', value: pathPenalty }] : [])],
+                        final_score: adjustedConfidence,
+                        quality_breakdown: {
+                            ...baseConfidence.quality_breakdown,
+                            path_quality_adjustment: pathPenalty,
+                            final_confidence: adjustedConfidence,
+                            quality_band: adjustedConfidence >= getCandidateExecutionQualityMinimum(candidate) ? 'HIGH' : adjustedConfidence >= STRATEGY_SPEC.CONFIDENCE.mediumQualityMinimum ? 'MEDIUM' : 'LOW'
+                        }
+                    };
                     rawCandidate.setup_confidence = rawCandidate.confidence_breakdown.final_score;
                     rawCandidate.quality = {
                         final_confidence: rawCandidate.confidence_breakdown.final_score,
@@ -9283,14 +9490,14 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const rankingAsOfTime = normalizeTimestampUTC(marketContext?.as_of_time || marketContext?.as_of_ms || marketContext?.scan_as_of_ms);
     const rankedCandidates = rankCurrentOpportunityCandidates(validCandidates, price, rankingAsOfTime);
     const selectableCandidates = rankedCandidates.filter(isSelectableAdaptiveCandidate);
-    const futureWatchCandidates = rankedCandidates.filter(candidate => {
+    const futureWatchCandidates = rankedCandidates.filter(candidate => candidate.trade_qualified !== false && candidate.TRADE_QUALIFIED !== 'NO').filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
         const qualityPasses = Number.isFinite(quality) && quality >= getCandidateExecutionQualityMinimum(candidate);
         const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
         const futureOnly = candidate.still_actionable_today === false || (!pendingLimit && candidate.entry_reachable_today === false);
         return (qualityPasses || pendingLimit) && futureOnly;
     }).slice(0, 10);
-    const lowQualityCandidates = rankedCandidates.filter(candidate => {
+    const lowQualityCandidates = rankedCandidates.filter(candidate => candidate.trade_qualified !== false && candidate.TRADE_QUALIFIED !== 'NO').filter(candidate => {
         const quality = Number(candidate.quality?.final_confidence ?? candidate.confidence_breakdown?.final_score ?? candidate.setup_confidence);
         return Number.isFinite(quality) && quality < getCandidateExecutionQualityMinimum(candidate);
     }).slice(0, 20);
@@ -11087,7 +11294,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
     // remaining trading window). Do not promote those candidates to
     // TRADE_READY. Explicit lifecycle values are authoritative; candidates
     // from older callers without lifecycle fields remain compatible here.
-    const tradeReadyCandidates = (validCandidates || []).filter(candidate => {
+    const tradeReadyCandidates = (validCandidates || []).filter(candidate => candidate.trade_qualified !== false && candidate.TRADE_QUALIFIED !== 'NO').filter(candidate => {
         if (candidate.still_actionable_today === false) return false;
         const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
         if (!pendingLimit && candidate.entry_reachable_today === false) return false;
@@ -11164,7 +11371,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         Object.assign(state, stack);
         return state;
     }
-    const bestFutureWatch = rankCurrentOpportunityCandidates(futureWatchCandidates || [], currentPrice, scanAsOfMs)[0];
+    const bestFutureWatch = rankCurrentOpportunityCandidates((futureWatchCandidates || []).filter(candidate => candidate.trade_qualified !== false && candidate.TRADE_QUALIFIED !== 'NO'), currentPrice, scanAsOfMs)[0];
     if (bestFutureWatch) {
         const zone = bestFutureWatch.zone || { low: bestFutureWatch.zone_low, high: bestFutureWatch.zone_high, type: bestFutureWatch.zone_type, timeframe: bestFutureWatch.execution_timeframe || bestFutureWatch.timeframe, id: bestFutureWatch.zone_id };
         const plan = {
@@ -11218,6 +11425,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
     // limit only through lowQualityCandidates.  Quality remains descriptive;
     // do not downgrade a complete future order to WATCH_ONLY or WAIT.
     const bestLowQualityWatch = rankCurrentOpportunityCandidates((lowQualityCandidates || [])
+        .filter(candidate => candidate.trade_qualified !== false && candidate.TRADE_QUALIFIED !== 'NO')
         .filter(candidate => candidate.still_actionable_today !== false && isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model)), currentPrice, scanAsOfMs)[0];
     if (bestLowQualityWatch) {
         const zone = bestLowQualityWatch.zone || { low: bestLowQualityWatch.zone_low, high: bestLowQualityWatch.zone_high, type: bestLowQualityWatch.zone_type, timeframe: bestLowQualityWatch.execution_timeframe || bestLowQualityWatch.timeframe, id: bestLowQualityWatch.zone_id };
@@ -12249,6 +12457,8 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         opportunity_funnel: liveMarketContext.opportunity_funnel || liveMarketContext.market_context?.opportunity_funnel || null,
         candidate_pipeline_audit: liveMarketContext.setup_candidate_audit || liveMarketContext.candidate_pipeline || null,
         valid_candidates: liveMarketContext.adaptive_setup_candidates || [],
+        kronos_forecasts: liveMarketContext.kronos_forecasts || [],
+        kronos_diagnostics: liveMarketContext.kronos_diagnostics || null,
         production_trace: liveMarketContext.production_trace || null,
         runtime_state: { market_open: liveMarketContext.market_open, market_open_source: liveMarketContext.market_open_source, quote_snapshot: liveMarketContext.quote_snapshot ? {
             provider_timestamp: liveMarketContext.quote_snapshot.provider_timestamp ?? null,
@@ -14115,6 +14325,143 @@ function rawTextScoreQuality(score) {
     return 'LOW';
 }
 
+// 4H path quality is deliberately a small deterministic layer. It consumes
+// only already-detected, closed-candle structure records; it does not create
+// a second structure detector or reinterpret ordinary 1H/entry-timeframe
+// opposition as a hard trade veto.
+const FOUR_H_PATH_PENALTIES = Object.freeze({
+    '0.00_0.25': -15,
+    '0.25_0.50': -10,
+    '0.50_0.75': -5,
+    '0.75_1.00': -2,
+    '1.00_PLUS': 0
+});
+
+function fourHPathRecordType(record = {}) {
+    return String(record.type || record.zone_type || record.source_type || '').toUpperCase();
+}
+
+function fourHPathRecordTimeframe(record = {}) {
+    return String(record.timeframe || record.zone_timeframe || record.setup_timeframe || '').toUpperCase();
+}
+
+function fourHPathRecordRef(record = {}) {
+    return record.ref || record.id || record.location_id || record.evidence_id || null;
+}
+
+function fourHPathRecordActive(record = {}, asOfMs = null) {
+    if (!record || fourHPathRecordTimeframe(record) !== '4H') return false;
+    if (record.invalidated === true || record.consumed === true || record.expired === true || record.superseded === true) return false;
+    const state = String(record.status || record.freshness || record.lifecycle_state || record.state || '').toUpperCase();
+    if (['INVALIDATED', 'CONSUMED', 'SUPERSEDED', 'EXPIRED', 'USED'].includes(state)) return false;
+    const firstKnowable = rawTextPacketTimestamp(record.first_knowable_ms ?? record.first_knowable_time ?? record.created_time ?? record.source_time ?? record.event_time);
+    return !Number.isFinite(asOfMs) || !Number.isFinite(firstKnowable) || firstKnowable <= asOfMs;
+}
+
+function fourHPathZone(record = {}) {
+    const low = Number(record.low ?? record.zone_low ?? record.range_low ?? record.entry_region_low);
+    const high = Number(record.high ?? record.zone_high ?? record.range_high ?? record.entry_region_high);
+    return Number.isFinite(low) && Number.isFinite(high) && high >= low ? { low, high } : null;
+}
+
+function fourHPathPenalty(distanceR, entryInside) {
+    if (entryInside || !Number.isFinite(distanceR) || distanceR >= 1) return 0;
+    if (distanceR <= 0.25) return FOUR_H_PATH_PENALTIES['0.00_0.25'];
+    if (distanceR <= 0.5) return FOUR_H_PATH_PENALTIES['0.25_0.50'];
+    if (distanceR <= 0.75) return FOUR_H_PATH_PENALTIES['0.50_0.75'];
+    return FOUR_H_PATH_PENALTIES['0.75_1.00'];
+}
+
+function fourHPathDistanceBin(distanceR, entryInside) {
+    if (entryInside) return 'ENTRY_INSIDE';
+    if (!Number.isFinite(distanceR) || distanceR >= 1) return 'NO_BARRIER_OR_>=1R';
+    if (distanceR <= 0.25) return '0-0.25R';
+    if (distanceR <= 0.5) return '0.25-0.50R';
+    if (distanceR <= 0.75) return '0.50-0.75R';
+    return '0.75-1.00R';
+}
+
+function build4HPathQualityAudit(candidate = {}, structureRecords = [], asOfMs = null) {
+    const direction = String(candidate.direction || (candidate.action === 'BUY_LIMIT' ? 'BUY' : candidate.action === 'SELL_LIMIT' ? 'SELL' : '')).toUpperCase();
+    const entry = Number(candidate.entry);
+    const stop = Number(candidate.stop_loss ?? candidate.stopLoss);
+    const tp1 = Number(candidate.tp1 ?? candidate.take_profit_1);
+    const risk = Math.abs(entry - stop);
+    const opposingType = direction === 'BUY' ? 'SUPPLY' : direction === 'SELL' ? 'DEMAND' : null;
+    const opposingDirection = direction === 'BUY' ? 'SELL' : direction === 'SELL' ? 'BUY' : null;
+    const eligibleTypes = new Set([opposingType, 'MSNR', 'OB', 'BREAKER', 'FLIP'].filter(Boolean));
+    const pathLow = Math.min(entry, tp1);
+    const pathHigh = Math.max(entry, tp1);
+    const records = [];
+    const seen = new Set();
+    for (const record of Array.isArray(structureRecords) ? structureRecords : []) {
+        const type = fourHPathRecordType(record);
+        if (!eligibleTypes.has(type) || !fourHPathRecordActive(record, asOfMs)) continue;
+        if (type === 'MSNR' || ['OB', 'BREAKER', 'FLIP'].includes(type)) {
+            if (opposingDirection && String(record.direction || '').toUpperCase() !== opposingDirection) continue;
+        } else if (type === opposingType && record.direction && String(record.direction).toUpperCase() === direction) {
+            continue;
+        }
+        const zone = fourHPathZone(record);
+        if (!zone || zone.high < pathLow || zone.low > pathHigh) continue;
+        const ref = fourHPathRecordRef(record) || `${type}:4H:${zone.low}-${zone.high}`;
+        if (seen.has(ref)) continue;
+        seen.add(ref);
+        const entryInside = entry >= zone.low && entry <= zone.high;
+        const firstEdge = entryInside
+            ? entry
+            : direction === 'BUY' ? zone.low : zone.high;
+        const beforeTp1 = direction === 'BUY' ? firstEdge < tp1 : firstEdge > tp1;
+        if (!entryInside && !beforeTp1) continue;
+        const distance = entryInside ? 0 : Math.abs(firstEdge - entry);
+        records.push({ record, type, ref, zone, entry_inside: entryInside, first_edge: firstEdge, distance });
+    }
+    records.sort((left, right) => left.distance - right.distance || String(left.ref).localeCompare(String(right.ref)));
+    const nearest = records[0] || null;
+    const entryInside = records.some(item => item.entry_inside);
+    const barrierBeforeTp1 = records.length > 0;
+    const distanceR = nearest && !entryInside && risk > 0 ? nearest.distance / risk : nearest && entryInside ? 0 : null;
+    const penalty = fourHPathPenalty(distanceR, entryInside);
+    const blockers = entryInside ? ['ENTRY_INSIDE_OPPOSING_4H'] : [];
+    return {
+        entry_inside_opposing_4h: entryInside ? 'YES' : 'NO',
+        opposing_4h_barrier_before_tp1: barrierBeforeTp1 ? 'YES' : 'NO',
+        nearest_opposing_4h_ref: nearest?.ref || 'NONE',
+        nearest_opposing_4h_type: nearest?.type || 'NONE',
+        nearest_opposing_4h_zone: nearest ? `${nearest.zone.low}-${nearest.zone.high}` : 'NONE',
+        barrier_distance_r: Number.isFinite(distanceR) ? Number(distanceR.toFixed(4)) : null,
+        clear_path_to_tp1: barrierBeforeTp1 ? 'NO' : 'YES',
+        path_quality_penalty: penalty,
+        path_quality_distance_bin: fourHPathDistanceBin(distanceR, entryInside),
+        trade_qualified: blockers.length === 0,
+        qualification_blockers: blockers,
+        risk: Number.isFinite(risk) ? risk : null
+    };
+}
+
+function apply4HPathQualityToCandidate(candidate = {}, structureRecords = [], asOfMs = null) {
+    const path = build4HPathQualityAudit(candidate, structureRecords, asOfMs);
+    const existingBlockers = Array.isArray(candidate.qualification_blockers) ? candidate.qualification_blockers : [];
+    const blockers = [...new Set([...existingBlockers, ...path.qualification_blockers])];
+    const baseScore = Number(candidate.score);
+    const nextScore = Number.isFinite(baseScore) ? Math.max(0, baseScore + path.path_quality_penalty) : candidate.score;
+    return {
+        ...candidate,
+        entry_inside_opposing_4h: path.entry_inside_opposing_4h,
+        opposing_4h_barrier_before_tp1: path.opposing_4h_barrier_before_tp1,
+        nearest_opposing_4h_ref: path.nearest_opposing_4h_ref,
+        nearest_opposing_4h_type: path.nearest_opposing_4h_type,
+        nearest_opposing_4h_zone: path.nearest_opposing_4h_zone,
+        barrier_distance_r: path.barrier_distance_r,
+        clear_path_to_tp1: path.clear_path_to_tp1,
+        path_quality_penalty: path.path_quality_penalty,
+        trade_qualified: path.trade_qualified && candidate.trade_qualified !== false,
+        qualification_blockers: blockers,
+        score: Number.isFinite(nextScore) ? ictRound(nextScore, 2) : candidate.score,
+        path_quality: path
+    };
+}
+
 function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, precision = 2, strategyAudits = {}, marketContext = {}, roleAudit = {}) {
     const crtRecords = strategyAudits.crt_records || [];
     const msnrRecords = strategyAudits.msnr_records || [];
@@ -14185,8 +14532,14 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
                 EMA: emaContext.score, RSI: rsiContext.score, CONFLICT: conflict
             };
             const total = Object.values(breakdown).reduce((sum, value) => sum + value, 0);
-            const score = Math.max(0, Math.min(100, Math.round(total)));
-            const record = { fvg, block, candidate, delivery, confluence, obEvidence, supplyDemand, execution, displacement, premiumDiscount, emaContext, rsiContext, score, raw_score: total, quality: rawTextScoreQuality(score), breakdown,
+            const pathQuality = build4HPathQualityAudit({ direction, entry: candidate.entry, stop_loss: candidate.stop_loss, tp1: candidate.tp1 }, [
+                ...supplyDemandRecords,
+                ...msnrRecords,
+                ...(strategyAudits.path_records || [])
+            ], strategyAudits.as_of_ms ?? marketContext.as_of_ms);
+            const pathBreakdown = { ...breakdown, PATH_QUALITY: pathQuality.path_quality_penalty };
+            const score = Math.max(0, Math.min(100, Math.round(total + pathQuality.path_quality_penalty)));
+            const record = { fvg, block, candidate, delivery, confluence, obEvidence, supplyDemand, execution, displacement, premiumDiscount, emaContext, rsiContext, score, raw_score: total + pathQuality.path_quality_penalty, quality: rawTextScoreQuality(score), breakdown: pathBreakdown, path_quality: pathQuality,
                 daily_aligned: dailyBias === 'NEUTRAL' ? 'NEUTRAL' : dailyBias === (direction === 'BUY' ? 'BULLISH' : 'BEARISH') ? 'YES' : 'NO' };
             record.current = buildRawTextCurrentOpportunityAssessment(record, blocks, currentPrice, marketContext, marketContext.as_of_ms, precision);
             record.current_score = Math.max(0, Math.min(100, Math.round(score + record.current.currentness + record.current.distance_penalty)));
@@ -14217,6 +14570,16 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
             'SCORE=' + score,
             'QUALITY=' + quality,
             'STRUCTURALLY_VALID=YES',
+            'TRADE_QUALIFIED=' + (record.path_quality.trade_qualified ? 'YES' : 'NO'),
+            'ENTRY_INSIDE_OPPOSING_4H=' + record.path_quality.entry_inside_opposing_4h,
+            'OPPOSING_4H_BARRIER_BEFORE_TP1=' + record.path_quality.opposing_4h_barrier_before_tp1,
+            'NEAREST_OPPOSING_4H_REF=' + record.path_quality.nearest_opposing_4h_ref,
+            'NEAREST_OPPOSING_4H_TYPE=' + record.path_quality.nearest_opposing_4h_type,
+            'NEAREST_OPPOSING_4H_ZONE=' + record.path_quality.nearest_opposing_4h_zone,
+            'BARRIER_DISTANCE_R=' + rawTextPacketFormatNumber(record.path_quality.barrier_distance_r, 4),
+            'CLEAR_PATH_TO_TP1=' + record.path_quality.clear_path_to_tp1,
+            'PATH_QUALITY_PENALTY=' + record.path_quality.path_quality_penalty,
+            'QUALIFICATION_BLOCKERS=' + (record.path_quality.qualification_blockers.join('|') || 'NONE'),
             'CURRENT_OPPORTUNITY=' + (record.current.current_opportunity ? 'YES' : 'NO'),
             'TODAY_OPPORTUNITY=' + (record.current.today_opportunity ? 'YES' : 'NO'),
             'OPPORTUNITY_STATUS=' + record.current.opportunity_status,
@@ -14246,7 +14609,7 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
         ].join(' ');
     }) : ['NONE'];
     const currentRecords = records
-        .filter(record => record.current.current_opportunity)
+        .filter(record => record.current.current_opportunity && record.path_quality.trade_qualified)
         .sort((left, right) => right.current_score - left.current_score || right.score - left.score)
         .slice(0, 3)
         .map((record, index) => ({ ...record, current_rank: index + 1 }));
@@ -14265,6 +14628,16 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
         'TP3=' + rawTextPacketFormatNumber(record.candidate.tp3, precision),
         'SCORE=' + record.current_score,
         'QUALITY=' + rawTextScoreQuality(record.current_score),
+        'TRADE_QUALIFIED=' + (record.path_quality.trade_qualified ? 'YES' : 'NO'),
+        'ENTRY_INSIDE_OPPOSING_4H=' + record.path_quality.entry_inside_opposing_4h,
+        'OPPOSING_4H_BARRIER_BEFORE_TP1=' + record.path_quality.opposing_4h_barrier_before_tp1,
+        'NEAREST_OPPOSING_4H_REF=' + record.path_quality.nearest_opposing_4h_ref,
+        'NEAREST_OPPOSING_4H_TYPE=' + record.path_quality.nearest_opposing_4h_type,
+        'NEAREST_OPPOSING_4H_ZONE=' + record.path_quality.nearest_opposing_4h_zone,
+        'BARRIER_DISTANCE_R=' + rawTextPacketFormatNumber(record.path_quality.barrier_distance_r, 4),
+        'CLEAR_PATH_TO_TP1=' + record.path_quality.clear_path_to_tp1,
+        'PATH_QUALITY_PENALTY=' + record.path_quality.path_quality_penalty,
+        'QUALIFICATION_BLOCKERS=' + (record.path_quality.qualification_blockers.join('|') || 'NONE'),
         'CURRENT_STATUS=' + record.current.opportunity_status,
         'TODAY_OPPORTUNITY=YES',
         'CRT_CONFLUENCE=' + (record.confluence.crt.length ? 'YES' : 'NO'),
@@ -14276,7 +14649,10 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
         'APPROACH_STATE=' + record.current.approach_state,
         'FRESHNESS=' + record.delivery.delivery_status
     ].join(' ')) : ['CURRENT_OPPORTUNITIES=NONE'];
-    return { records: ranked, current_records: currentRecords, lines, current_lines: currentLines };
+    // Keep the compact live output capped at three zones, while exposing the
+    // same deterministic records to internal research consumers. This does
+    // not change packet rendering or candidate selection.
+    return { records: ranked, all_records: records, current_records: currentRecords, lines, current_lines: currentLines };
 }
 
 function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2, strategyAudits = {}) {
@@ -14392,6 +14768,8 @@ function buildRawTextMarketAnalysisInstruction() {
         '22. Rank complete CURRENT OPPORTUNITY candidates by genuine quality: CRT+MSNR+FVG first, then CRT+FVG or MSNR+FVG, then other supported 4H/1H confluence, then fresh standalone 4H/1H FVG; prefer the daily-aligned candidate within each tier and normally prefer the highest current opportunity rank. A stale higher-tier candidate loses to a fresh lower-tier candidate; counter-bias trades require explicit higher-timeframe reversal evidence.',
         '22A. After selecting a CURRENT_OPPORTUNITY, bind the final response to that exact candidate by matching SIDE, PRIMARY_TF, FVG_C1, FVG_C2, FVG_C3, FVG_ZONE, ENTRY, STOP, TP1, TP2 and TP3 across CURRENT OPPORTUNITIES, HIGH PROBABILITY ZONES and the DETERMINISTIC FVG AUDIT. Use the selected FVG audit row as the authoritative source; do not reconstruct the setup independently after selection.',
         '22B. Use only the exact CRT_REF, MSNR_REF, OB_REF, SUPPLY_REF, DEMAND_REF, BREAKER_REF or FLIP_REF attached to the selected candidate. Locate each reference in its matching deterministic audit and preserve its actual timeframe. Never substitute another valid, nearby, same-direction or lower-timeframe structure; nearby structures are secondary context only and never prove a named SETUP component.',
+        '22C. KRONOS is a financial K-line forecast layer attached only to deterministic ICT candidates. Treat its fields as forecast-derived confluence, not certainty. KRONOS_TP1_PATH_SUPPORT, KRONOS_SL_PATH_SUPPORT and KRONOS_FILL_PATH_SUPPORT are forecast-path sample fractions, not calibrated probabilities and never win/loss probabilities. Prefer structural candidates whose Kronos direction aligns, heavily scrutinize KRONOS_CONFLICT=YES, never invent or alter Kronos values, and never let Kronos override deterministic invalidation. In this first integration, conflict alone is not an automatic NO_TRADE veto.',
+        '22D. DETERMINISTIC 4H PATH QUALITY is authoritative. ENTRY_INSIDE_OPPOSING_4H=YES makes TRADE_QUALIFIED=NO with blocker ENTRY_INSIDE_OPPOSING_4H; do not override it with Kronos, EMA, RSI, or a lower-timeframe signal. A non-containing opposing 4H barrier applies only the supplied PATH_QUALITY_PENALTY and remains a ranked candidate. If every current candidate is unqualified, return NO_TRADE.',
         '23. Prefer ENTRY_STATE=PENDING_UNFILLED and DELIVERY_STATUS=FRESH. DELIVERY_STATUS=DELIVERED_TP1 is lower quality; reject STALE_TP2 and EXPIRED_TP3 by default, and never resurface ENTRY_STATE=ENTRY_TOUCHED as a new pending order.',
         '24. Use PRE_ENTRY_PROGRESS only as freshness/ranking context: a candidate whose projected path has already travelled deeply toward TP3 is late even when its FVG is not fully traversed. Do not treat these fields as proof of strategy validity.',
         '25. If one candidate fails, continue searching other models, timeframes and the opposite direction. If multiple complete candidates survive, return only the strongest one.',
@@ -14489,6 +14867,52 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     lines.push('=== DETERMINISTIC MSNR AUDIT ===');
     lines.push(...msnrAudit.lines);
     lines.push('');
+    lines.push('======== KRONOS FORECAST ========');
+    const kronosForecasts = Array.isArray(source.kronos_forecasts) ? source.kronos_forecasts : [];
+    if (kronosForecasts.length) {
+        for (const forecast of kronosForecasts) {
+            const number = (value, digits = 2) => value == null || !Number.isFinite(Number(value)) ? '' : rawTextPacketFormatNumber(Number(value), digits);
+            lines.push([
+                'CANDIDATE=' + String(forecast.candidate_id || 'UNKNOWN'),
+                'ACTION=' + String(forecast.action || ''),
+                'KRONOS_STATUS=' + String(forecast.kronos_status || 'UNAVAILABLE'),
+                'KRONOS_MODEL=' + String(forecast.kronos_model || ''),
+                'KRONOS_DEVICE=' + String(forecast.kronos_device || ''),
+                'KRONOS_TIMEFRAME=' + String(forecast.kronos_timeframe || ''),
+                'KRONOS_LOOKBACK=' + String(forecast.kronos_lookback ?? ''),
+                'KRONOS_HORIZON=' + String(forecast.kronos_horizon ?? ''),
+                'KRONOS_DIRECTION=' + String(forecast.kronos_direction || ''),
+                'KRONOS_ALIGNMENT=' + String(forecast.kronos_alignment || ''),
+                'KRONOS_CONFLICT=' + String(forecast.kronos_conflict || ''),
+                'KRONOS_FORECAST_START_PRICE=' + number(forecast.kronos_forecast_start_price, precision),
+                'KRONOS_FORECAST_END_PRICE=' + number(forecast.kronos_forecast_end_price, precision),
+                'KRONOS_FORECAST_RETURN_PCT=' + number(forecast.kronos_forecast_return_pct, 4),
+                'KRONOS_UPSIDE_R=' + number(forecast.kronos_upside_r, 2),
+                'KRONOS_DOWNSIDE_R=' + number(forecast.kronos_downside_r, 2),
+                'KRONOS_PATHS=' + String(forecast.kronos_paths ?? ''),
+                'KRONOS_TP1_FIRST=' + String(forecast.kronos_tp1_first ?? ''),
+                'KRONOS_SL_FIRST=' + String(forecast.kronos_sl_first ?? ''),
+                'KRONOS_NEITHER=' + String(forecast.kronos_neither ?? ''),
+                'KRONOS_AMBIGUOUS=' + String(forecast.kronos_ambiguous ?? ''),
+                'KRONOS_NOT_FILLED=' + String(forecast.kronos_not_filled ?? ''),
+                'KRONOS_FILL_PATH_SUPPORT=' + number(forecast.kronos_fill_path_support, 2),
+                'KRONOS_TP1_PATH_SUPPORT=' + number(forecast.kronos_tp1_path_support, 2),
+                'KRONOS_SL_PATH_SUPPORT=' + number(forecast.kronos_sl_path_support, 2),
+                'KRONOS_NEITHER_PATH_SHARE=' + number((Number(forecast.kronos_neither) || 0) / Math.max(1, Number(forecast.kronos_paths) || 1), 2),
+                'KRONOS_AMBIGUOUS_PATH_SHARE=' + number((Number(forecast.kronos_ambiguous) || 0) / Math.max(1, Number(forecast.kronos_paths) || 1), 2),
+                ...(forecast.kronos_error ? ['ERROR=' + String(forecast.kronos_error).slice(0, 160)] : [])
+            ].join(' '));
+        }
+    } else if (source.kronos_diagnostics?.status === 'SKIPPED_NO_ICT_CANDIDATE') {
+        lines.push('KRONOS_STATUS=SKIPPED_NO_ICT_CANDIDATE');
+    } else if (source.kronos_diagnostics?.status) {
+        lines.push('KRONOS_STATUS=' + String(source.kronos_diagnostics.status));
+        if (source.kronos_diagnostics.model) lines.push('KRONOS_MODEL=' + String(source.kronos_diagnostics.model));
+        if (source.kronos_diagnostics.error) lines.push('ERROR=' + String(source.kronos_diagnostics.error).slice(0, 160));
+    } else {
+        lines.push('KRONOS_STATUS=UNAVAILABLE ERROR=Kronos forecast was not run for this replay');
+    }
+    lines.push('======== END KRONOS FORECAST ========', '');
     lines.push(buildRawTextMarketAnalysisInstruction(), '', RAW_TEXT_OUTPUT_CONTRACT);
     return lines.join('\n');
 }
@@ -15473,7 +15897,52 @@ function compactAiTarget(target = {}, fallbackDirection = null) {
     };
 }
 
-function compactAiCandidate(candidate = {}) {
+function compactAiPathQuality(candidate = {}) {
+    return {
+        trade_qualified: candidate.trade_qualified !== false && candidate.TRADE_QUALIFIED !== 'NO',
+        entry_inside_opposing_4h: candidate.entry_inside_opposing_4h || candidate.ENTRY_INSIDE_OPPOSING_4H || 'NO',
+        opposing_4h_barrier_before_tp1: candidate.opposing_4h_barrier_before_tp1 || candidate.OPPOSING_4H_BARRIER_BEFORE_TP1 || 'NO',
+        nearest_opposing_4h_ref: candidate.nearest_opposing_4h_ref || candidate.NEAREST_OPPOSING_4H_REF || 'NONE',
+        nearest_opposing_4h_type: candidate.nearest_opposing_4h_type || candidate.NEAREST_OPPOSING_4H_TYPE || 'NONE',
+        nearest_opposing_4h_zone: candidate.nearest_opposing_4h_zone || candidate.NEAREST_OPPOSING_4H_ZONE || 'NONE',
+        barrier_distance_r: candidate.barrier_distance_r ?? candidate.BARRIER_DISTANCE_R ?? null,
+        clear_path_to_tp1: candidate.clear_path_to_tp1 || candidate.CLEAR_PATH_TO_TP1 || 'YES',
+        path_quality_penalty: Number(candidate.path_quality_penalty ?? candidate.PATH_QUALITY_PENALTY) || 0,
+        qualification_blockers: candidate.qualification_blockers || candidate.QUALIFICATION_BLOCKERS || []
+    };
+}
+
+const AI_PATH_QUALITY_FIELDS = Object.freeze([
+    'TRADE_QUALIFIED',
+    'ENTRY_INSIDE_OPPOSING_4H',
+    'OPPOSING_4H_BARRIER_BEFORE_TP1',
+    'NEAREST_OPPOSING_4H_REF',
+    'NEAREST_OPPOSING_4H_TYPE',
+    'NEAREST_OPPOSING_4H_ZONE',
+    'BARRIER_DISTANCE_R',
+    'CLEAR_PATH_TO_TP1',
+    'PATH_QUALITY_PENALTY',
+    'QUALIFICATION_BLOCKERS'
+]);
+const AI_PATH_QUALITY_DEFAULTS = Object.freeze(['YES', 'NO', 'NO', 'NONE', 'NONE', 'NONE', null, 'YES', 0, []]);
+
+function compactAiPathQualityVector(candidate = {}) {
+    const path = compactAiPathQuality(candidate);
+    return [
+        path.trade_qualified ? 'YES' : 'NO',
+        path.entry_inside_opposing_4h,
+        path.opposing_4h_barrier_before_tp1,
+        path.nearest_opposing_4h_ref,
+        path.nearest_opposing_4h_type,
+        path.nearest_opposing_4h_zone,
+        path.barrier_distance_r,
+        path.clear_path_to_tp1,
+        path.path_quality_penalty,
+        path.qualification_blockers
+    ];
+}
+
+function compactAiCandidate(candidate = {}, options = {}) {
     const setup = candidate.strategy_setup || {};
     const relevance = candidate.current_opportunity_relevance || {};
     const lifecycleMetrics = candidate.evaluation?.metrics?.setup_lifecycle || candidate.setup_lifecycle || {};
@@ -15524,6 +15993,7 @@ function compactAiCandidate(candidate = {}) {
             targets: targetRecords,
             rr: candidate.actual_rr ?? candidate.rr_tp1 ?? candidate.risk_reward ?? null
         },
+        ...(options.includePathQuality ? { path_quality: compactAiPathQuality(candidate) } : {}),
         lifecycle: {
             state: candidate.lifecycle_state || candidate.opportunity_status || lifecycleMetrics.opportunity_status || null,
             opportunity_freshness: candidate.opportunity_freshness || lifecycleMetrics.opportunity_freshness || null,
@@ -15598,12 +16068,13 @@ function compactAiNeutralObjective(target = {}) {
 }
 
 function compactAiOpportunityMaterial(candidate = {}, catalogStatus = 'CURRENT_MATERIAL') {
-    const compact = compactAiCandidate(candidate);
+    const compact = compactAiCandidate(candidate, { includePathQuality: false });
     if (!compact?.candidate_id) return null;
     const rejectionCodes = [...new Set([
         candidate.rejection_code,
         ...(Array.isArray(candidate.rejection_reasons) ? candidate.rejection_reasons : []),
-        ...(Array.isArray(candidate.hard_rejections) ? candidate.hard_rejections : [])
+        ...(Array.isArray(candidate.hard_rejections) ? candidate.hard_rejections : []),
+        ...(Array.isArray(candidate.qualification_blockers) ? candidate.qualification_blockers : [])
     ].filter(Boolean))].slice(0, 12);
     return {
         ...compact,
@@ -15758,6 +16229,10 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
     const sourceCandidates = Array.isArray(liveMarketContext.adaptive_setup_candidates)
         ? liveMarketContext.adaptive_setup_candidates
         : Array.isArray(liveMarketContext.valid_deterministic_candidates) ? liveMarketContext.valid_deterministic_candidates : [];
+    const pathQualityByCandidate = manualOpportunityDiscovery ? {} : Object.fromEntries(sourceCandidates
+        .filter(candidate => candidate?.id)
+        .map(candidate => [candidate.id, compactAiPathQualityVector(candidate)])
+        .filter(([, vector]) => JSON.stringify(vector) !== JSON.stringify(AI_PATH_QUALITY_DEFAULTS)));
     const selectable = manualOpportunityDiscovery ? [] : [...new Map(sourceCandidates
         .filter(candidate => ['FRESH_NOW', 'FRESH_PENDING_TODAY', 'FRESH_PENDING_LATER'].includes(candidate?.lifecycle_state || candidate?.opportunity_status))
         .filter(candidate => candidate?.id)
@@ -15929,6 +16404,7 @@ function buildCompactAISemanticPackage(liveMarketContext = {}, evidenceCatalog =
                 }
             }),
         selectable_opportunities: manualOpportunityDiscovery ? [] : selectable,
+        path_quality_by_candidate: pathQualityByCandidate,
         // Compatibility aliases are intentionally compact records, not the
         // old nested replay candidates.
         adaptive_setup_candidates: manualOpportunityDiscovery ? [] : selectable,
@@ -17740,6 +18216,8 @@ function buildAIPrompt(liveMarketContext, candleData) {
         'MARKET_CONTEXT = deterministic market understanding only; FVG, OB, BOS, CHoCH, MSS, liquidity, premium/discount, session, AMD, indicators, and ATR describe what the market is doing.',
         'STRATEGY_SETUPS = deterministic CRT, TBS/Turtle Soup, and MSNR detections. AI_VERIFIED_MECHANICS = a market thesis that references deterministic POI, structural invalidation, and genuine target evidence. Only these validated candidate types are actionable.',
         'FVG, OB, flip, supply, demand, and liquidity are informational until a verified candidate references them and the code proves the final geometry.',
+        'Deterministic path-quality fields are authoritative: do not override TRADE_QUALIFIED=NO. 4H opposing structure between ENTRY and TP1 outranks Kronos, EMA, and RSI; Kronos remains context only. If all current candidates are unqualified, return NO_TRADE.',
+        'path_quality_by_candidate is keyed by candidate ID and is authoritative for exact deterministic 4H path fields. Its vector order is TRADE_QUALIFIED, ENTRY_INSIDE_OPPOSING_4H, OPPOSING_4H_BARRIER_BEFORE_TP1, NEAREST_OPPOSING_4H_REF, NEAREST_OPPOSING_4H_TYPE, NEAREST_OPPOSING_4H_ZONE, BARRIER_DISTANCE_R, CLEAR_PATH_TO_TP1, PATH_QUALITY_PENALTY, QUALIFICATION_BLOCKERS; an absent ID means YES, NO, NO, NONE, NONE, NONE, null, YES, 0, []. Use it with adaptive_setup_candidates when ranking.',
         'Raw candle arrays are intentionally omitted from this semantic request. Structure and locations are derived from the same canonical closed-candle snapshot.',
         'IMMEDIATE_ENTRY = separate current-price reaction assessment, never a requirement before a pending limit fills.',
         'Zone/target origin hierarchy: STRUCTURAL and STRUCTURAL_MSNR = directly derived market structure. PIVOT_REFERENCE = classic pivot-derived reference only, not MSNR strategy evidence. ATR_FALLBACK = synthetic reference only. PIVOT_REFERENCE and ATR_FALLBACK must never create standalone MSNR trades.',
@@ -19624,6 +20102,23 @@ async function runAutoScan() {
         const analystEvidence = buildAiMarketEvidenceCatalog(liveMarketContext, historyCache);
         liveMarketContext.market_evidence_package = analystEvidence;
         liveMarketContext.institutional_activity_evidence = analystEvidence.institutional_activity_evidence || null;
+        scanStage = 'Kronos forecast confirmation';
+        scanText.innerHTML = '📈 Deterministic analysis complete — Kronos forecast confirmation';
+        try {
+            await enrichLiveKronosForecasts(liveMarketContext, historyCache, scanAsOfMs);
+        } catch (error) {
+            // Kronos is deliberately non-authoritative.  A model/worker/network
+            // failure must leave the deterministic ICT candidate and manual RAW
+            // workflow usable, with an explicit unavailable diagnostic.
+            console.warn('[KRONOS] forecast layer unavailable', error);
+            liveMarketContext.kronos_diagnostics = {
+                enabled: getKronosConfig().enabled,
+                model: getKronosConfig().model,
+                status: 'ERROR',
+                error: error?.message || 'Kronos forecast failed'
+            };
+            liveMarketContext.kronos_forecasts = [];
+        }
         if (isManualExternalAIMode()) {
             scanStage = 'manual external AI review';
             scanText.innerHTML = '📋 Market analysis prepared — Copy for external AI review';

@@ -6,6 +6,7 @@ const path = require('node:path');
 const { URL } = require('node:url');
 const { createAuditStore } = require('./audit-store');
 const { createGhostMcpNodeHandler } = require('./ghost-mcp');
+const { createKronosWorker, DEFAULT_MODEL: DEFAULT_KRONOS_MODEL, configuredModel: configuredKronosModel } = require('./kronos-worker');
 
 const TIMEFRAME_INTERVALS = new Set(['1min', '5min', '15min', '1h', '4h', '1day', '1week']);
 // The market analyst sends a bounded, machine-readable evidence package. Its
@@ -24,6 +25,7 @@ const PUBLIC_ROOT = path.resolve(__dirname, '..');
 const PUBLIC_ASSETS = {
     '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
     '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
+    '/kronos-client.js': { file: 'kronos-client.js', type: 'application/javascript; charset=utf-8' },
     '/script.js': { file: 'script.js', type: 'application/javascript; charset=utf-8' },
     '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' }
 };
@@ -62,7 +64,14 @@ function publicAssetResponse(res, pathname, env = process.env) {
     if (asset.file === 'index.html') {
         const provider = normalizeAIProvider(env.AI_PROVIDER);
         const model = String(env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
-        body = body.replace('</head>', `<script>window.__ICT_PROXY_BASE_URL__ = window.location.origin; window.__ICT_AI_PROVIDER__ = ${JSON.stringify(provider)}; window.__ICT_AI_MODEL__ = ${JSON.stringify(provider === 'GEMINI' ? model : 'deepseek-chat')};</script></head>`);
+        const kronosEnabled = String(env.KRONOS_ENABLED || 'true').toLowerCase() !== 'false';
+        const kronosModel = configuredKronosModel(env);
+        const kronosLookback = Math.min(512, Math.max(1, Number(env.KRONOS_LOOKBACK || 400) || 400));
+        const kronosPaths = Math.min(50, Math.max(1, Number(env.KRONOS_PATHS || 1) || 1));
+        const kronosSeed = Number.isFinite(Number(env.KRONOS_SEED)) ? Number(env.KRONOS_SEED) : 42;
+        const kronos1hHorizon = Math.max(1, Number(env.KRONOS_1H_HORIZON || 12) || 12);
+        const kronos4hHorizon = Math.max(1, Number(env.KRONOS_4H_HORIZON || 6) || 6);
+        body = body.replace('</head>', `<script>window.__ICT_PROXY_BASE_URL__ = window.location.origin; window.__ICT_AI_PROVIDER__ = ${JSON.stringify(provider)}; window.__ICT_AI_MODEL__ = ${JSON.stringify(provider === 'GEMINI' ? model : 'deepseek-chat')}; window.__ICT_KRONOS_ENABLED__ = ${JSON.stringify(kronosEnabled)}; window.__ICT_KRONOS_MODEL__ = ${JSON.stringify(kronosModel)}; window.__ICT_KRONOS_LOOKBACK__ = ${kronosLookback}; window.__ICT_KRONOS_PATHS__ = ${kronosPaths}; window.__ICT_KRONOS_SEED__ = ${kronosSeed}; window.__ICT_KRONOS_1H_HORIZON__ = ${kronos1hHorizon}; window.__ICT_KRONOS_4H_HORIZON__ = ${kronos4hHorizon};</script></head>`);
     }
     const cacheControl = asset.file === 'index.html'
         ? 'no-store'
@@ -315,6 +324,7 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
     const origin = configuredOrigin(env);
     const configuredAuditToken = String(env.AUDIT_WRITE_TOKEN || '').trim();
     const configuredAuditReadToken = String(env.AUDIT_READ_TOKEN || '').trim();
+    const kronosWorker = createKronosWorker({ env });
     const store = auditStore || (configuredAuditToken ? createAuditStore({ filePath: env.AUDIT_FILE_PATH || path.join(__dirname, 'data', 'audit.jsonl') }) : null);
     const requestTvkit = async ({ pathname, query, clientKey = 'unknown', setRateHeaders = null } = {}) => {
         if (!tvkitBase) return { status: 503, payload: { error: 'tvkit provider is not configured' } };
@@ -407,7 +417,10 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                 market_data_provider_configured: !!twelveKey || !!tvkitBase,
                 ai_provider: aiProvider,
                 ai_model: aiProvider === 'GEMINI' ? geminiModel : 'deepseek-chat',
-                ai_provider_configured: aiProvider === 'GEMINI' ? !!geminiKey : !!deepSeekKey
+                ai_provider_configured: aiProvider === 'GEMINI' ? !!geminiKey : !!deepSeekKey,
+                kronos_enabled: String(env.KRONOS_ENABLED || 'true').toLowerCase() !== 'false',
+                kronos_model: configuredKronosModel(env),
+                kronos_device: String(env.KRONOS_DEVICE || 'auto')
             }, origin);
         }
         try {
@@ -444,6 +457,16 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                 upstream.searchParams.set('apikey', twelveKey);
                 const result = await proxyJson(fetchImpl, upstream, { headers: upstreamHeaders(twelveKey) }, upstreamTimeoutMs);
                 return jsonResponse(res, result.status, result.payload, origin);
+            }
+            if (req.method === 'POST' && requestUrl.pathname === '/api/kronos/forecast') {
+                const raw = await readBody(req);
+                let body;
+                try { body = JSON.parse(raw || '{}'); } catch { return jsonResponse(res, 400, { status: 'ERROR', error: 'Kronos request body must be valid JSON' }, origin); }
+                if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonResponse(res, 400, { status: 'ERROR', error: 'Kronos request must be an object' }, origin);
+                if (!['1h', '4h'].includes(String(body.timeframe || '').toLowerCase())) return jsonResponse(res, 400, { status: 'ERROR', error: 'Kronos supports only 1h and 4h' }, origin);
+                if (!Array.isArray(body.candles) || body.candles.length < 2) return jsonResponse(res, 400, { status: 'ERROR', error: 'closed candle history is required' }, origin);
+                const result = await kronosWorker.request(body);
+                return jsonResponse(res, 200, result, origin);
             }
             if (req.method === 'POST' && ['/api/ai/chat', '/api/gemini/chat', '/api/deepseek/chat'].includes(requestUrl.pathname)) {
                 const requestedProvider = requestUrl.pathname === '/api/gemini/chat'
@@ -515,4 +538,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { MAX_BODY_BYTES, DEFAULT_UPSTREAM_TIMEOUT_MS, MAX_UPSTREAM_TIMEOUT_MS, DEFAULT_AI_PROVIDER, DEFAULT_GEMINI_MODEL, TIMEFRAME_INTERVALS, normalizeSymbol, normalizeAIProvider, geminiContents, geminiRequestBody, normalizeGeminiResponse, sanitizeProviderError, validateMarketRequest, createRateLimiter, createProxyServer };
+module.exports = { MAX_BODY_BYTES, DEFAULT_UPSTREAM_TIMEOUT_MS, MAX_UPSTREAM_TIMEOUT_MS, DEFAULT_AI_PROVIDER, DEFAULT_GEMINI_MODEL, DEFAULT_KRONOS_MODEL, TIMEFRAME_INTERVALS, normalizeSymbol, normalizeAIProvider, geminiContents, geminiRequestBody, normalizeGeminiResponse, sanitizeProviderError, validateMarketRequest, createRateLimiter, createProxyServer };

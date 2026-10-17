@@ -1,6 +1,11 @@
 node_modules/
+.venv-kronos/
 .env
 .env.*
 !.env.example
 data/tvkit-shadow/
+data/historical/
+backtest-results/
+data/kronos/
+.cache/huggingface/
 .pages-artifact/
