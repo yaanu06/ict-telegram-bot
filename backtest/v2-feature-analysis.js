@@ -59,14 +59,15 @@ function sessionForHour(hour) {
 }
 
 function outcomeFlags(simulation) {
-    const highest = Number(simulation?.highest_target_reached || 0);
     const outcome = simulation?.final_outcome;
+    const tp1Plus = ['TP1', 'TP2', 'TP3'].includes(outcome);
+    const tp2Plus = ['TP2', 'TP3'].includes(outcome);
     return {
         outcome,
         sl: outcome === 'SL',
-        tp1_plus: highest >= 1,
-        tp2_plus: highest >= 2,
-        tp3: highest >= 3,
+        tp1_plus: tp1Plus,
+        tp2_plus: tp2Plus,
+        tp3: outcome === 'TP3',
         sl_before_tp1: outcome === 'SL' && simulation?.tp1_before_sl !== true
     };
 }
@@ -323,7 +324,7 @@ function candidateRuleReports(rows) {
         { name: 'REQUIRE_1H_CONTINUATION_EVENT', predicate: row => row['1H_CONTINUATION_EVENT'] === true },
         { name: 'REQUIRE_15M_BOS', predicate: row => row['15M_BOS_PRESENT'] === true },
         { name: 'REQUIRE_FIRST_RETRACE', predicate: row => row.FIRST_RETRACE === true },
-        { name: 'REQUIRE_OB_FVG_OVERLAP', predicate: row => row.OB_FVG_OVERLAP === true },
+        { name: 'REQUIRE_OB_FVG_OVERLAP', predicate: row => row['15M_OB_FVG_OVERLAP'] === true },
         { name: 'REQUIRE_PREMIUM_DISCOUNT_ALIGNMENT', predicate: row => row.ENTRY_PREMIUM_DISCOUNT_ALIGNED === true },
         { name: 'REQUIRE_LOCAL_5M_CONFIRMATION', predicate: row => row['5M_CONFIRMATION_ALIGNED'] === true },
         { name: 'REQUIRE_CLEAR_PATH', predicate: row => row.CLEAR_PATH_TO_TP1 === 'YES' }

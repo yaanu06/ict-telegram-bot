@@ -5,6 +5,7 @@ const { outcomeFlags, sessionForHour, metric, analyzeRows, enrichTrade } = requi
 describe('V2 trade feature analysis helpers', () => {
     test('outcome groups preserve TP progression and SL-before-TP1', () => {
         expect(outcomeFlags({ final_outcome: 'SL', highest_target_reached: 0, tp1_before_sl: false })).toEqual({ outcome: 'SL', sl: true, tp1_plus: false, tp2_plus: false, tp3: false, sl_before_tp1: true });
+        expect(outcomeFlags({ final_outcome: 'SL', highest_target_reached: 3, tp1_before_sl: true }).tp1_plus).toBe(false);
         expect(outcomeFlags({ final_outcome: 'TP3', highest_target_reached: 3, tp1_before_sl: false }).tp3).toBe(true);
     });
 
