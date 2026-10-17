@@ -1,7 +1,7 @@
 'use strict';
 
 const { normalizeBars, validateRawRows, validateSeries } = require('./data-provider');
-const { simulateCandidate, replayClocks, visibleBars } = require('./replay');
+const { simulateCandidate, replayClocks, visibleBars, validateCandidateDirection } = require('./replay');
 const { summarize } = require('./metrics');
 const { loadStrategyContext, analyzeVisibleHistory } = require('./strategy-adapter');
 
@@ -62,6 +62,21 @@ describe('historical backtest data and execution replay', () => {
         const series = { '5m': [bar(300000, 101, 99, 100), bar(600000, 105, 94, 100)] };
         const result = simulateCandidate(candidate, series, { executionTimeframe: '5m', ambiguity: 'adverse-first' });
         expect(result.final_outcome).toBe('SL');
+    });
+
+    test('target direction invariants reject a SELL objective above entry before simulation', () => {
+        const candidate = { candidate_id: 'invalid-sell-target', side: 'SELL', first_knowable_ms: 0, entry: 100, stop_loss: 105, tp1: 101, tp2: null, tp3: null, risk: 5 };
+        expect(validateCandidateDirection(candidate).valid).toBe(false);
+        const result = simulateCandidate(candidate, { '5m': [bar(300000, 101, 99, 100)] });
+        expect(result.final_outcome).toBe('INVALID_TARGET_DIRECTION');
+        expect(result.trade_qualified).toBe(false);
+        expect(result.rejection_reason).toBe('INVALID_TARGET_DIRECTION');
+    });
+
+    test('target direction invariants reject a BUY stop above entry and upside target is required', () => {
+        const candidate = { candidate_id: 'invalid-buy-geometry', side: 'BUY', first_knowable_ms: 0, entry: 100, stop_loss: 101, tp1: 105, tp2: null, tp3: null, risk: 1 };
+        expect(validateCandidateDirection(candidate).valid).toBe(false);
+        expect(simulateCandidate(candidate, { '5m': [bar(300000, 106, 99, 105)] }).final_outcome).toBe('INVALID_TARGET_DIRECTION');
     });
 
     test('missing BUY secondary targets remain absent and do not suppress a real stop', () => {

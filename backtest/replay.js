@@ -50,6 +50,22 @@ function normalizeCandidateTargets(candidate = {}) {
     ];
 }
 
+function validateCandidateDirection(candidate = {}) {
+    const direction = String(candidate.side || candidate.direction || '').toUpperCase();
+    const entry = normalizeOptionalPrice(candidate.entry);
+    const stop = normalizeOptionalPrice(candidate.stop_loss ?? candidate.stopLoss);
+    const targets = normalizeCandidateTargets(candidate);
+    if (!['BUY', 'SELL'].includes(direction) || entry == null || stop == null) {
+        return { valid: false, reason: 'INVALID_TARGET_DIRECTION', direction, entry, stop, targets };
+    }
+    const stopValid = direction === 'BUY' ? stop < entry : stop > entry;
+    const targetsValid = targets.filter(target => target != null).every(target => direction === 'BUY' ? target > entry : target < entry);
+    if (!stopValid || !targetsValid || !targets.some(target => target != null)) {
+        return { valid: false, reason: 'INVALID_TARGET_DIRECTION', direction, entry, stop, targets };
+    }
+    return { valid: true, reason: null, direction, entry, stop, targets };
+}
+
 function visibleBars(series, timeframe, asOfMs) {
     const interval = TIMEFRAME_MS[canonicalTimeframe(timeframe)];
     return (series || []).filter(bar => {
@@ -221,6 +237,29 @@ function simulateCandidate(candidate, series, options = {}) {
     const entry = Number(candidate.entry);
     const stop = Number(candidate.stop_loss);
     const targets = normalizeCandidateTargets(candidate);
+    const geometry = validateCandidateDirection(candidate);
+    if (!geometry.valid) {
+        return {
+            candidate_id: candidate.candidate_id,
+            side: direction,
+            timeframe: candidate.timeframe,
+            entry,
+            stop_loss: stop,
+            tp1: targets[0],
+            tp2: targets[1],
+            tp3: targets[2],
+            first_knowable_ms: candidate.first_knowable_ms,
+            fill_time_ms: null,
+            final_outcome: 'INVALID_TARGET_DIRECTION',
+            highest_target_reached: 0,
+            targets_reached: [false, false, false],
+            r_result: 0,
+            ambiguous: false,
+            trade_qualified: false,
+            rejection_reason: geometry.reason,
+            execution_timeframe: executionTimeframe
+        };
+    }
     const terminalTargetIndex = targets.reduce((last, target, index) => target == null ? last : index, -1);
     const risk = Number(candidate.risk) > 0 ? Number(candidate.risk) : Math.abs(entry - stop);
     let filled = false;
@@ -362,4 +401,4 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
     };
 }
 
-module.exports = { LIVE_TIMEFRAMES, STRATEGY_TIMEFRAMES, visibleBars, makeBlocks, replayClocks, simulateCandidate, replayHistory, symbolPrecision, normalizeOptionalPrice, normalizeCandidateTargets };
+module.exports = { LIVE_TIMEFRAMES, STRATEGY_TIMEFRAMES, visibleBars, makeBlocks, replayClocks, simulateCandidate, replayHistory, symbolPrecision, normalizeOptionalPrice, normalizeCandidateTargets, validateCandidateDirection };
