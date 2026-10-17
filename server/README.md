@@ -43,9 +43,15 @@ The proxy validates symbols, intervals, output size, request bodies, provider co
 To use it from a separately hosted Mini App, set `window.__ICT_PROXY_BASE_URL__` before `script.js` loads. For the default same-origin deployment, the server injects that value automatically and the client calls `/api/tvkit/*`. To intentionally use the paid fallback, run `setMarketDataProvider('TWELVE_DATA')`; the client then calls `/api/twelve/*`. Set `window.__ICT_AUDIT_WRITE_TOKEN__` only if you want the browser's sanitized analysis records forwarded to the proxy; keep `AUDIT_READ_TOKEN` private.
 
 The optional Kronos layer is configured with the `KRONOS_*` variables in
-`.env.example`. Install the official `shiyu-coder/Kronos` repository outside
-this checkout and set `KRONOS_REPO_PATH`; model weights remain in the external
-Hugging Face cache. The worker is started lazily and stays resident.
+`.env.example`. Local development may install the official `shiyu-coder/Kronos`
+repository outside this checkout and set `KRONOS_REPO_PATH`; model weights
+remain in the external Hugging Face cache. The included Render Docker image
+checks out the official repository at the pinned revision
+`67b630e67f6a18c9e9be918d9b4337c960db1e9a`, installs CPU-only Kronos
+dependencies, and sets `KRONOS_REPO_PATH=/opt/kronos`. The resident worker is
+lazy locally and warmed in the background on Render. `/health` exposes safe
+Kronos status, effective device, worker liveness, model-loaded state, and the
+last bounded error without exposing environment secrets.
 
 ## ICT Ghost MCP
 

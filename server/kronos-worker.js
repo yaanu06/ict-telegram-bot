@@ -20,6 +20,10 @@ function unavailable(reason, env = process.env) {
     };
 }
 
+function kronosEnabled(env = process.env) {
+    return String(env.KRONOS_ENABLED || 'true').toLowerCase() !== 'false';
+}
+
 function firstExistingPath(candidates) {
     const fs = require('node:fs');
     return candidates.find(candidate => fs.existsSync(candidate)) || null;
@@ -47,11 +51,41 @@ function createKronosWorker({ env = process.env, pythonPath = null, workerPath =
     let buffer = '';
     let sequence = 0;
     const pending = new Map();
+    const diagnosticsState = {
+        enabled: kronosEnabled(env),
+        status: kronosEnabled(env) ? 'NOT_STARTED' : 'DISABLED',
+        model: configuredModel(env),
+        device: String(env.KRONOS_DEVICE || 'auto').trim() || 'auto',
+        model_loaded: false,
+        last_error: kronosEnabled(env) ? null : 'KRONOS_ENABLED=false'
+    };
+
+    function diagnostics() {
+        return { ...diagnosticsState, worker_alive: !!child };
+    }
+
+    function recordResult(response) {
+        if (!response || typeof response !== 'object') return;
+        if (response.device) diagnosticsState.device = response.device;
+        if (response.status === 'OK') {
+            diagnosticsState.status = 'OK';
+            diagnosticsState.model_loaded = true;
+            diagnosticsState.last_error = null;
+        } else if (response.status === 'UNAVAILABLE') {
+            diagnosticsState.status = 'UNAVAILABLE';
+            diagnosticsState.last_error = response.error || 'Kronos is unavailable';
+        } else if (response.status === 'ERROR') {
+            diagnosticsState.status = 'ERROR';
+            diagnosticsState.last_error = response.error || 'Kronos worker error';
+        }
+    }
 
     function rejectPending(error) {
+        const response = unavailable(error?.message || 'Kronos worker stopped', env);
+        recordResult(response);
         for (const item of pending.values()) {
             clearTimeout(item.timer);
-            item.resolve(unavailable(error?.message || 'Kronos worker stopped', env));
+            item.resolve(response);
         }
         pending.clear();
     }
@@ -62,17 +96,21 @@ function createKronosWorker({ env = process.env, pythonPath = null, workerPath =
         child.kill();
         child = null;
         buffer = '';
+        diagnosticsState.status = diagnosticsState.enabled ? 'UNAVAILABLE' : 'DISABLED';
+        diagnosticsState.model_loaded = false;
     }
 
     function start() {
         if (child) return child;
-        const executable = pythonPath || env.KRONOS_PYTHON || defaultPythonPath(workerPath);
+        const executable = pythonPath || env.KRONOS_PYTHON || env.KRONOS_PYTHON_EXECUTABLE || defaultPythonPath(workerPath);
         const repoPath = defaultOfficialRepoPath(workerPath, env);
         child = spawn(executable, [workerPath], {
             cwd: path.dirname(workerPath),
             env: { ...env, ...(repoPath ? { KRONOS_REPO_PATH: repoPath } : {}), PYTHONUNBUFFERED: '1' },
             stdio: ['pipe', 'pipe', 'pipe']
         });
+        const processHandle = child;
+        diagnosticsState.status = 'STARTING';
         child.stdout.setEncoding('utf8');
         child.stdout.on('data', chunk => {
             buffer += chunk;
@@ -87,6 +125,7 @@ function createKronosWorker({ env = process.env, pythonPath = null, workerPath =
                 if (!item) continue;
                 pending.delete(response.id);
                 clearTimeout(item.timer);
+                recordResult(response);
                 item.resolve(response);
             }
         });
@@ -99,30 +138,41 @@ function createKronosWorker({ env = process.env, pythonPath = null, workerPath =
             if (message) console.warn('[KRONOS WORKER]', message);
         });
         child.on('error', error => {
+            if (child !== processHandle) return;
             rejectPending(error);
             child = null;
+            diagnosticsState.status = 'UNAVAILABLE';
         });
         child.on('exit', () => {
+            if (child !== processHandle) return;
             if (child) {
                 rejectPending(new Error('Kronos worker exited'));
                 child = null;
+                diagnosticsState.status = 'UNAVAILABLE';
+                diagnosticsState.model_loaded = false;
             }
         });
         return child;
     }
 
     function request(payload = {}) {
-        if (String(env.KRONOS_ENABLED || 'true').toLowerCase() === 'false') {
-            return Promise.resolve(unavailable('KRONOS_ENABLED=false', env));
+        if (!diagnosticsState.enabled) {
+            const response = unavailable('KRONOS_ENABLED=false', env);
+            recordResult(response);
+            diagnosticsState.status = 'DISABLED';
+            return Promise.resolve(response);
         }
         let processHandle;
         try { processHandle = start(); } catch (error) { return Promise.resolve(unavailable(error.message, env)); }
+        if (!diagnosticsState.model_loaded) diagnosticsState.status = payload.op === 'warmup' ? 'LOADING' : 'LOADING';
         const id = `kronos-${Date.now()}-${++sequence}`;
         const timeoutMs = Math.max(1000, Number(env.KRONOS_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
         return new Promise(resolve => {
             const timer = setTimeout(() => {
                 pending.delete(id);
-                resolve({ ...unavailable('Kronos inference timeout', env), status: 'ERROR', error: 'KRONOS_TIMEOUT' });
+                const response = { ...unavailable('Kronos inference timeout', env), status: 'ERROR', error: 'KRONOS_TIMEOUT' };
+                recordResult(response);
+                resolve(response);
             }, timeoutMs);
             pending.set(id, { resolve, timer });
             try {
@@ -130,12 +180,22 @@ function createKronosWorker({ env = process.env, pythonPath = null, workerPath =
             } catch (error) {
                 clearTimeout(timer);
                 pending.delete(id);
-                resolve(unavailable(error.message, env));
+                const response = unavailable(error.message, env);
+                recordResult(response);
+                resolve(response);
             }
         });
     }
 
-    return { request, stop };
+    if (diagnosticsState.enabled && String(env.KRONOS_WARMUP || 'false').toLowerCase() === 'true') {
+        setImmediate(() => {
+            request({ op: 'warmup' }).then(result => {
+                if (result.status !== 'OK') console.warn('[KRONOS]', result.error || 'warmup failed');
+            });
+        });
+    }
+
+    return { request, stop, diagnostics };
 }
 
-module.exports = { DEFAULT_MODEL, DEFAULT_TIMEOUT_MS, configuredModel, defaultPythonPath, defaultOfficialRepoPath, createKronosWorker };
+module.exports = { DEFAULT_MODEL, DEFAULT_TIMEOUT_MS, configuredModel, kronosEnabled, defaultPythonPath, defaultOfficialRepoPath, createKronosWorker };

@@ -1,0 +1,12 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# These are the versions used by the verified local CPU worker.  The official
+# Kronos repository itself is checked out at a fixed commit in Dockerfile.
+torch==2.14.1+cpu
+numpy==2.4.6
+pandas==2.2.2
+einops==0.8.1
+huggingface_hub==0.33.1
+matplotlib==3.9.3
+tqdm==4.67.1
+safetensors==0.6.2

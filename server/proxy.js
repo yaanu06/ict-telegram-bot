@@ -408,6 +408,7 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
         }
         if (req.method === 'GET' && publicAssetResponse(res, requestUrl.pathname, env)) return;
         if (req.method === 'GET' && requestUrl.pathname === '/health') {
+            const kronos = kronosWorker.diagnostics();
             return jsonResponse(res, 200, {
                 ok: true,
                 service: 'market-ai-proxy',
@@ -418,9 +419,18 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                 ai_provider: aiProvider,
                 ai_model: aiProvider === 'GEMINI' ? geminiModel : 'deepseek-chat',
                 ai_provider_configured: aiProvider === 'GEMINI' ? !!geminiKey : !!deepSeekKey,
-                kronos_enabled: String(env.KRONOS_ENABLED || 'true').toLowerCase() !== 'false',
-                kronos_model: configuredKronosModel(env),
-                kronos_device: String(env.KRONOS_DEVICE || 'auto')
+                kronos_enabled: kronos.enabled,
+                kronos_model: kronos.model,
+                kronos_device: kronos.device,
+                kronos: {
+                    enabled: kronos.enabled,
+                    status: kronos.status,
+                    model: kronos.model,
+                    device: kronos.device,
+                    worker_alive: kronos.worker_alive,
+                    model_loaded: kronos.model_loaded,
+                    last_error: kronos.last_error
+                }
             }, origin);
         }
         try {

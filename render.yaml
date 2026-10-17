@@ -24,3 +24,25 @@ services:
         value: "120"
       - key: PROXY_UPSTREAM_TIMEOUT_MS
         value: "40000"
+      - key: KRONOS_ENABLED
+        value: "true"
+      - key: KRONOS_MODEL
+        value: small
+      - key: KRONOS_TOKENIZER_ID
+        value: NeoQuasar/Kronos-Tokenizer-base
+      - key: KRONOS_DEVICE
+        value: cpu
+      - key: KRONOS_LOOKBACK
+        value: "400"
+      - key: KRONOS_1H_HORIZON
+        value: "12"
+      - key: KRONOS_4H_HORIZON
+        value: "6"
+      - key: KRONOS_PATHS
+        value: "1"
+      - key: KRONOS_SEED
+        value: "42"
+      - key: KRONOS_TIMEOUT_MS
+        value: "120000"
+      - key: KRONOS_WARMUP
+        value: "true"

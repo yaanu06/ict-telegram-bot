@@ -1,0 +1,12 @@
+.git
+.gitignore
+.venv-kronos
+.venv
+node_modules
+packet
+data
+backtest-results
+.cache
+*.pyc
+__pycache__
+*.log

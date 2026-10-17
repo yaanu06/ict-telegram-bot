@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from tools import kronos_worker
 
@@ -19,6 +20,15 @@ class KronosWorkerInputTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[-1]["volume"], 4.0)
         self.assertEqual(kronos_worker.MODEL_ID, "NeoQuasar/Kronos-small")
+
+    def test_warmup_reports_loaded_model_without_forecast_data(self):
+        with patch.object(kronos_worker, "_load_predictor", return_value=(object(), "cpu", 123.4)):
+            result = kronos_worker._warmup()
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(result["model"], "NeoQuasar/Kronos-small")
+        self.assertEqual(result["device"], "cpu")
+        self.assertTrue(result["model_loaded"])
+        self.assertEqual(result["load_ms"], 123.4)
 
 
 if __name__ == "__main__":

@@ -189,10 +189,22 @@ def _forecast(request):
     }
 
 
+def _warmup():
+    _, device, load_ms = _load_predictor()
+    return {
+        "status": "OK",
+        "model": MODEL_ID,
+        "tokenizer": TOKENIZER_ID,
+        "device": device,
+        "model_loaded": True,
+        "load_ms": load_ms,
+    }
+
+
 def handle(message):
     request_id = message.get("id")
     try:
-        return request_id, _forecast(message)
+        return request_id, _warmup() if message.get("op") == "warmup" else _forecast(message)
     except (ImportError, ModuleNotFoundError) as exc:
         return request_id, {"status": "UNAVAILABLE", "model": MODEL_ID, "device": _DEVICE, "error": str(exc)}
     except Exception as exc:  # worker boundary: never take down the live scan
