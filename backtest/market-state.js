@@ -20,13 +20,13 @@ function candleClose(candle, timeframe = '4h') {
     return start == null || !interval ? null : finite(candle?.close_time_ms ?? candle?.close_time ?? start + interval);
 }
 
-function closedCandles(candles = []) {
+function closedCandles(candles = [], timeframe = '4h') {
     return (Array.isArray(candles) ? candles : [])
         .filter(candle => candle && candle.is_closed !== false && candle.closed !== false && candle.is_forming !== true && candle.forming !== true)
         .map(candle => ({
             ...candle,
             t: candleStart(candle),
-            close_time_ms: candleClose(candle, '4h')
+            close_time_ms: candleClose(candle, timeframe)
         }))
         .filter(candle => candle.t != null && candle.close_time_ms != null)
         .sort((left, right) => left.t - right.t);
@@ -204,7 +204,7 @@ function makeImpulseId(symbol, timeframe, displacement) {
 }
 
 function buildImpulseLineage({ symbol = 'UNKNOWN', timeframe = '15M', candles = [], context, symbolMetadata = {} } = {}) {
-    const closed = closedCandles(candles).map(candle => ({ ...candle, close_time_ms: candleClose(candle, timeframe) }));
+    const closed = closedCandles(candles, timeframe).map(candle => ({ ...candle, close_time_ms: candleClose(candle, timeframe) }));
     if (!context || typeof context.buildInstitutionalDisplacementFacts !== 'function' || typeof context.detectFVG !== 'function') return { impulses: [], zones: [], setup_events: [] };
     const displacements = context.buildInstitutionalDisplacementFacts(closed, String(timeframe).toUpperCase(), symbol, symbolMetadata) || [];
     const impulses = displacements.map(displacement => {

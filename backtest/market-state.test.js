@@ -111,4 +111,24 @@ describe('deterministic impulse and setup lineage', () => {
         const linked = result.zones.find(zone => zone.parent_impulse_id === impulse.impulse_id);
         expect(linked.first_knowable_ms).toBeGreaterThanOrEqual(impulse.first_knowable_ms);
     });
+
+    test('15M lineage uses 15M close times rather than the 4H default interval', () => {
+        const fifteenMinuteCandles = Array.from({ length: 8 }, (_, index) => ({
+            t: index * 900000,
+            o: 100,
+            h: 102,
+            l: 98,
+            c: 100,
+            close_time_ms: (index + 1) * 900000,
+            is_closed: true
+        }));
+        const fifteenMinuteContext = {
+            buildInstitutionalDisplacementFacts: () => [{ id: 'D15', direction: 'SELL', index: 2, evidence_ids: ['D15'] }],
+            detectFVG: () => [{ type: 'bear', l: 101, h: 103, source_index: 3, first_knowable_time: new Date(4 * 900000).toISOString() }]
+        };
+        const result = buildImpulseLineage({ symbol: 'AUD/USD', timeframe: '15M', candles: fifteenMinuteCandles, context: fifteenMinuteContext });
+        expect(result.impulses[0].first_knowable_ms).toBe(3 * 900000);
+        expect(result.zones[0].first_knowable_ms).toBe(4 * 900000);
+        expect(result.zones[0].first_knowable_ms).toBeGreaterThanOrEqual(result.impulses[0].first_knowable_ms);
+    });
 });
