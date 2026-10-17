@@ -1,0 +1,77 @@
+{
+  "baseline_id": "CURRENT_PRODUCTION_5M_PATH_QUALITY",
+  "description": "Canonical current-production comparator. No V3 campaign engine or objective-only candidates.",
+  "strategy_git_commit": "d0a3d401ea38781b998ebb32a8df02a72c1f1f66",
+  "working_tree_simulator_patch": "normalize-candidate-targets-v1",
+  "strategy_mode": "CURRENT_PRODUCTION",
+  "path_quality_version": "CURRENT_PRODUCTION_PATH_QUALITY",
+  "replay_timeframe": "5m",
+  "ambiguity_policy": "exclude",
+  "candidate_semantics": "selected rows where first_selected_at_ms is set; one registry row per stable candidate_id",
+  "target_accounting": "optional TP1/TP2/TP3; absent targets remain null and are not simulated",
+  "simulator_version": "backtest/replay.js normalizeCandidateTargets + partial-target terminal handling",
+  "data_source": "TVKit/TradingView-compatible OHLCV frozen repository cache",
+  "refresh_data": false,
+  "bars_requested": 5000,
+  "symbols": [
+    {
+      "symbol": "AUD/USD",
+      "from": "2026-09-23T09:15:00Z",
+      "to": "2026-10-16T20:35:00Z",
+      "run_directory": "backtest-results/20261017T123857Z_AUD_USD",
+      "candle_counts": { "1d": 17, "4h": 105, "1h": 419, "15m": 1669, "5m": 4999 },
+      "metrics": { "candidates": 96, "selected": 28, "filled": 26, "sl": 17, "tp1": 1, "tp2": 0, "tp3": 6, "ambiguous": 1, "not_filled": 2, "total_r": 2, "average_r": 0.0714285714, "median_r": -1, "max_losing_streak": 10 },
+      "cache_sha256": {
+        "1d": "860357F1E3331B77B7373B17F5BB71B61DB7812E16DDCBD7CF2C47BC164EC8DF",
+        "4h": "D75C83C8B8C4D0657B744EAE2D2444ABA0B6D499A9CA75081EB8CFBFF678445B",
+        "1h": "2C8B6A312885CA915C40161C1E34BA202C3E25F42AA76A73545127D6421465C3",
+        "15m": "D54B887894B861FAD1720B44341EF12ED229580FD236703782A0BEDCE26B44FA",
+        "5m": "456CE9DB3FA2D6AF989D14CA479873F985F8C21D372EF3C3F13C590CD8F39F71"
+      }
+    },
+    {
+      "symbol": "GBP/JPY",
+      "from": "2026-09-23T10:35:00Z",
+      "to": "2026-10-16T20:35:00Z",
+      "run_directory": "backtest-results/20261017T124556Z_GBP_JPY",
+      "candle_counts": { "1d": 17, "4h": 104, "1h": 418, "15m": 1667, "5m": 4998 },
+      "metrics": { "candidates": 89, "selected": 32, "filled": 31, "sl": 21, "tp1": 0, "tp2": 3, "tp3": 6, "ambiguous": 0, "not_filled": 1, "total_r": 3, "average_r": 0.09375, "median_r": -1, "max_losing_streak": 8 },
+      "cache_sha256": {
+        "1d": "F31156A6922DFCA4C0186562D776A3CF97A0413CA4267580A3FD4560F16EE46B",
+        "4h": "76E81CD45A24EBD10D28119939F0ABB13EFD587727FEE58DD5FA5FFA174123DF",
+        "1h": "2F36A5AFF6D2CFF64188A73806533846540E287487E7A2F2F18E39B1AD56097B",
+        "15m": "83EDFE49A8CE3F4DBBD2B15EA0375140449C71AA0DDE68D0728F467276A04607",
+        "5m": "2973E863AACDCE3A6C4C40026B76430DB3F61478F92AF7890ED5ABFD78C894E4"
+      }
+    },
+    {
+      "symbol": "XAU/USD",
+      "from": "2026-09-22T18:05:00Z",
+      "to": "2026-10-16T20:40:00Z",
+      "run_directory": "backtest-results/20261017T125537Z_XAU_USD",
+      "candle_counts": { "1d": 18, "4h": 108, "1h": 416, "15m": 1666, "5m": 4998 },
+      "metrics": { "candidates": 111, "selected": 31, "filled": 29, "sl": 20, "tp1": 3, "tp2": 1, "tp3": 4, "ambiguous": 1, "not_filled": 2, "total_r": -3, "average_r": -0.0967741935, "median_r": -1, "max_losing_streak": 8 },
+      "cache_sha256": {
+        "1d": "99FB044B0AE48B58A8129EAA2326CB9CEAC15B0BF4CFC28BE10EE5475E011322",
+        "4h": "C133022B66787E01E169557D49AB45AE7A67B45151176F4054EA32E87ED9BA64",
+        "1h": "8843D85ADEAE06D66BDDBD7CCF451F1C0E88A770BFAD777998B6662AF23D9069",
+        "15m": "CD532D37D490285CCF063CA8BF665F3ED2B29A8C7566BB9065A5EA95CCE0A2E0",
+        "5m": "243DC8C8A526345BC8C3BA09DCD9F4A14EE942E30E8B0CA7E6CEAB71A7F9CD32"
+      }
+    }
+  ],
+  "combined_metrics": {
+    "candidates": 296,
+    "selected": 91,
+    "filled": 86,
+    "sl": 58,
+    "tp1": 4,
+    "tp2": 4,
+    "tp3": 16,
+    "ambiguous": 2,
+    "not_filled": 5,
+    "total_r": 2,
+    "average_r": 0.0219780220,
+    "median_r": -1
+  }
+}

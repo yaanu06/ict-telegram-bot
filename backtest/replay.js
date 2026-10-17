@@ -2,6 +2,7 @@
 
 const { TIMEFRAME_MS, canonicalTimeframe } = require('./data-provider');
 const { analyzeVisibleHistory } = require('./strategy-adapter');
+const { build4HStateHistory, getActive4HState } = require('./market-state');
 
 const LIVE_TIMEFRAMES = ['1d', '4h', '1h', '15m', '5m'];
 const STRATEGY_TIMEFRAMES = ['1D', '4H', '1H', '15M', '5M'];
@@ -33,6 +34,20 @@ function canonicalCandle(bar, timeframe) {
         is_closed: bar.is_closed !== false,
         close_time_ms: Number(bar.close_time_ms ?? timestamp + interval)
     };
+}
+
+function normalizeOptionalPrice(value) {
+    if (value == null || (typeof value === 'string' && value.trim() === '')) return null;
+    const numeric = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function normalizeCandidateTargets(candidate = {}) {
+    return [
+        normalizeOptionalPrice(candidate.tp1),
+        normalizeOptionalPrice(candidate.tp2),
+        normalizeOptionalPrice(candidate.tp3)
+    ];
 }
 
 function visibleBars(series, timeframe, asOfMs) {
@@ -205,7 +220,8 @@ function simulateCandidate(candidate, series, options = {}) {
     const direction = candidate.side;
     const entry = Number(candidate.entry);
     const stop = Number(candidate.stop_loss);
-    const targets = [Number(candidate.tp1), Number(candidate.tp2), Number(candidate.tp3)];
+    const targets = normalizeCandidateTargets(candidate);
+    const terminalTargetIndex = targets.reduce((last, target, index) => target == null ? last : index, -1);
     const risk = Number(candidate.risk) > 0 ? Number(candidate.risk) : Math.abs(entry - stop);
     let filled = false;
     let fillMs = null;
@@ -231,7 +247,7 @@ function simulateCandidate(candidate, series, options = {}) {
             mfe = Math.max(mfe, favorable / risk);
             mae = Math.min(mae, adverse / risk);
             const stopReached = stopHit(bar);
-            const targetReached = targets.some(target => hit(bar, target));
+            const targetReached = targets.some(target => target != null && hit(bar, target));
             if (stopReached && targetReached) {
                 ambiguous = true;
                 if (ambiguity === 'exclude') { outcome = 'AMBIGUOUS'; break; }
@@ -240,12 +256,15 @@ function simulateCandidate(candidate, series, options = {}) {
             }
             if (stopReached) { outcome = 'SL'; break; }
             for (let index = 0; index < targets.length; index += 1) {
-                if (hit(bar, targets[index])) {
+                if (targets[index] != null && hit(bar, targets[index])) {
                     highestTarget = Math.max(highestTarget, index + 1);
                     if (targetReachedAt[index] == null) targetReachedAt[index] = bar.close_time_ms;
                 }
             }
-            if (highestTarget === 3) { outcome = 'TP3'; break; }
+            if (terminalTargetIndex >= 0 && highestTarget >= terminalTargetIndex + 1) {
+                outcome = `TP${terminalTargetIndex + 1}`;
+                break;
+            }
             continue;
         }
         const favorable = directionalMove(direction === 'BUY' ? bar.h : bar.l);
@@ -253,7 +272,7 @@ function simulateCandidate(candidate, series, options = {}) {
         mfe = Math.max(mfe, favorable / risk);
         mae = Math.min(mae, adverse / risk);
         const stopReached = stopHit(bar);
-        const newTarget = targets.map((target, index) => hit(bar, target) ? index + 1 : 0).reduce((max, value) => Math.max(max, value), 0);
+        const newTarget = targets.map((target, index) => target != null && hit(bar, target) ? index + 1 : 0).reduce((max, value) => Math.max(max, value), 0);
         if (stopReached && newTarget > 0) {
             ambiguous = true;
             if (ambiguity === 'exclude') { outcome = 'AMBIGUOUS'; break; }
@@ -263,9 +282,12 @@ function simulateCandidate(candidate, series, options = {}) {
         if (stopReached) { outcome = 'SL'; break; }
         highestTarget = Math.max(highestTarget, newTarget);
         for (let index = 0; index < targets.length; index += 1) {
-            if (hit(bar, targets[index]) && targetReachedAt[index] == null) targetReachedAt[index] = bar.close_time_ms;
+            if (targets[index] != null && hit(bar, targets[index]) && targetReachedAt[index] == null) targetReachedAt[index] = bar.close_time_ms;
         }
-        if (highestTarget === 3) { outcome = 'TP3'; break; }
+        if (terminalTargetIndex >= 0 && highestTarget >= terminalTargetIndex + 1) {
+            outcome = `TP${terminalTargetIndex + 1}`;
+            break;
+        }
     }
     if (!filled) outcome = 'NOT_FILLED';
     else if (outcome === 'NOT_FILLED') outcome = highestTarget ? `TP${highestTarget}` : 'OPEN_AT_END';
@@ -297,12 +319,16 @@ function simulateCandidate(candidate, series, options = {}) {
     };
 }
 
-function replayHistory({ context, series, symbol, from, to, precision, replayTimeframe = '5m', ambiguity = 'exclude' }) {
+function replayHistory({ context, series, symbol, from, to, precision, replayTimeframe = '5m', ambiguity = 'exclude', includeMarketStateDiagnostics = false }) {
     const fromMs = toMs(from);
     const toMsValue = toMs(to);
     const clocks = replayClocks(series, replayTimeframe, fromMs, toMsValue);
     const registry = new Map();
     const observations = [];
+    const marketStateHistory = includeMarketStateDiagnostics
+        ? build4HStateHistory({ symbol, candles: series['4h'] || [], context })
+        : null;
+    const marketStateSnapshots = [];
     for (const asOfMs of clocks) {
         const blocks = makeBlocks(series, asOfMs);
         const executionBars = blocks.find(block => block.timeframe === '5M')?.candles || [];
@@ -311,12 +337,29 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
         const result = analyzeVisibleHistory(context, { blocks, symbol, currentPrice, asOfMs, precision });
         collectCandidateRows(result, asOfMs, registry, context, blocks);
         observations.push({ as_of_ms: asOfMs, candidate_count: result.zones.records.length, current_count: result.zones.current_records.length });
+        if (marketStateHistory) {
+            const activeState = getActive4HState(marketStateHistory, asOfMs);
+            marketStateSnapshots.push({
+                as_of_ms: asOfMs,
+                active_4h_state_id: activeState?.state_id || null,
+                active_4h_direction: activeState?.direction || 'NEUTRAL',
+                active_4h_state_age_bars: activeState?.age_bars ?? null
+            });
+        }
     }
     const candidates = [...registry.values()].map(row => ({ ...row, last_state: row.last_state || row }));
     const selected = candidates.filter(row => row.first_selected_at_ms != null);
     const rejected = candidates.filter(row => row.first_selected_at_ms == null);
     const trades = selected.map(candidate => ({ ...candidate, simulation: simulateCandidate(candidate, series, { executionTimeframe: replayTimeframe, ambiguity }) }));
-    return { candidates, selected, rejected, trades, observations, clocks: clocks.length };
+    return {
+        candidates,
+        selected,
+        rejected,
+        trades,
+        observations,
+        clocks: clocks.length,
+        ...(marketStateHistory ? { market_state: { history: marketStateHistory, snapshots: marketStateSnapshots } } : {})
+    };
 }
 
-module.exports = { LIVE_TIMEFRAMES, STRATEGY_TIMEFRAMES, visibleBars, makeBlocks, replayClocks, simulateCandidate, replayHistory, symbolPrecision };
+module.exports = { LIVE_TIMEFRAMES, STRATEGY_TIMEFRAMES, visibleBars, makeBlocks, replayClocks, simulateCandidate, replayHistory, symbolPrecision, normalizeOptionalPrice, normalizeCandidateTargets };

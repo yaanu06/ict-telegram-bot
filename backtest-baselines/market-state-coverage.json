@@ -1,0 +1,44 @@
+{
+  "diagnostic": "NON_AUTHORITATIVE_MARKET_STATE_AND_LINEAGE",
+  "source_baseline": "backtest-baselines/current-production.json",
+  "diagnostic_from": "2026-09-30T00:00:00.000Z",
+  "diagnostic_to": "2026-10-16T20:35:00.000Z",
+  "replay_timeframe": "1h",
+  "final_trade_opportunities": 0,
+  "note": "Coverage only. No campaign or trade authority is implemented here.",
+  "symbols": [
+    {
+      "symbol": "AUD/USD",
+      "evaluation_points": 309,
+      "active_state_coverage": { "BUY": 8, "SELL": 289, "NONE": 12, "BUY_pct": 0.02589, "SELL_pct": 0.935275, "NONE_pct": 0.038835 },
+      "states": 3,
+      "state_statuses": { "SUPERSEDED": 1, "INVALIDATED": 1, "ACTIVE": 1 },
+      "one_h_confirmations": { "total": 37, "aligned": 5, "conflict": 2, "no_active_4h_state": 30 },
+      "stages": { "objective_candidates": 7978, "objectives_valid": 7978, "active_4h_state_available": 297, "valid_1h_confirmation_inside_active_state": 5, "campaign_ready_structural_sequences": 5, "fresh_impulses": 34, "linked_15m_zones": 22, "setup_events": 22, "fresh_5m_execution_support": 22 },
+      "lineage": { "impulses_15m": 105, "zones_15m": 164, "zones_with_parent_impulse": 66, "zones_without_parent_impulse": 98, "stable_setup_event_ids": 164 },
+      "representative_refs": { "state_id": "4H_STATE:AUD/USD:SELL:DISPLACEMENT:4H:90:SELL+4H_SEQUENCE:AUD/USD:SELL:DISPLACEMENT:4H:90:SELL:STRUCTURE_BREAK:4H:93:SELL", "aligned_1h": "MSS:1H:28:SELL", "linked_15m": "FVG:15M:bear:447:0.6967:0.69883", "parent_impulse_id": "IMPULSE:AUD/USD:15M:DISPLACEMENT:15M:446:SELL:SELL" }
+    },
+    {
+      "symbol": "GBP/JPY",
+      "evaluation_points": 309,
+      "active_state_coverage": { "BUY": 11, "SELL": 40, "NONE": 258, "BUY_pct": 0.035599, "SELL_pct": 0.12945, "NONE_pct": 0.834951 },
+      "states": 2,
+      "state_statuses": { "SUPERSEDED": 1, "ACTIVE": 1 },
+      "one_h_confirmations": { "total": 40, "aligned": 1, "conflict": 1, "no_active_4h_state": 38 },
+      "stages": { "objective_candidates": 8991, "objectives_valid": 8991, "active_4h_state_available": 51, "valid_1h_confirmation_inside_active_state": 1, "campaign_ready_structural_sequences": 1, "fresh_impulses": 1, "linked_15m_zones": 1, "setup_events": 1, "fresh_5m_execution_support": 1 },
+      "lineage": { "impulses_15m": 103, "zones_15m": 242, "zones_with_parent_impulse": 64, "zones_without_parent_impulse": 178, "stable_setup_event_ids": 242 },
+      "representative_refs": { "state_id": "4H_STATE:GBP/JPY:BUY:DISPLACEMENT:4H:96:BUY+4H_SEQUENCE:GBP/JPY:BUY:DISPLACEMENT:4H:96:BUY:MSS:4H:100:BUY", "aligned_1h": "MSS:1H:90:SELL", "linked_15m": "FVG:15M:bear:1572:209.695:209.82", "parent_impulse_id": "IMPULSE:GBP/JPY:15M:DISPLACEMENT:15M:1571:SELL:SELL" }
+    },
+    {
+      "symbol": "XAU/USD",
+      "evaluation_points": 297,
+      "active_state_coverage": { "BUY": 58, "SELL": 88, "NONE": 151, "BUY_pct": 0.195286, "SELL_pct": 0.296296, "NONE_pct": 0.508418 },
+      "states": 2,
+      "state_statuses": { "SUPERSEDED": 1, "INVALIDATED": 1 },
+      "one_h_confirmations": { "total": 35, "aligned": 1, "conflict": 2, "no_active_4h_state": 32 },
+      "stages": { "objective_candidates": 7825, "objectives_valid": 7825, "active_4h_state_available": 146, "valid_1h_confirmation_inside_active_state": 1, "campaign_ready_structural_sequences": 1, "fresh_impulses": 17, "linked_15m_zones": 10, "setup_events": 10, "fresh_5m_execution_support": 10 },
+      "lineage": { "impulses_15m": 94, "zones_15m": 332, "zones_with_parent_impulse": 82, "zones_without_parent_impulse": 250, "stable_setup_event_ids": 332 },
+      "representative_refs": { "state_id": "4H_STATE:XAU/USD:BUY:DISPLACEMENT:4H:73:BUY+4H_SEQUENCE:XAU/USD:BUY:DISPLACEMENT:4H:73:BUY:BOS:4H:78:BUY", "aligned_1h": "BOS:1H:73:SELL", "linked_15m": "FVG:15M:bear:901:4165.105:4167.74", "parent_impulse_id": "IMPULSE:XAU/USD:15M:DISPLACEMENT:15M:900:SELL:SELL" }
+    }
+  ]
+}

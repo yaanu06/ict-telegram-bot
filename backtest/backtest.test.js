@@ -31,6 +31,24 @@ describe('historical backtest data and execution replay', () => {
         expect(replayClocks(series, '5m', 0, 900000)).toEqual([300000, 600000, 900000]);
     });
 
+    test('market-state snapshots are opt-in and do not alter candidate selection', () => {
+        const context = loadStrategyContext();
+        const makeHistory = interval => Array.from({ length: 4 }, (_, index) => {
+            const timestamp = (index - 3) * interval;
+            return { ...bar(timestamp, 101, 99, 100), t: timestamp, close_time_ms: timestamp + interval };
+        });
+        const series = {
+            '1d': makeHistory(86400000),
+            '4h': makeHistory(14400000),
+            '1h': makeHistory(3600000),
+            '5m': [0, 300000, 600000].map(timestamp => ({ ...bar(timestamp, 101, 99, 100), t: timestamp, close_time_ms: timestamp + 300000 }))
+        };
+        const result = require('./replay').replayHistory({ context, series, symbol: 'AUD/USD', from: 900000, to: 900000, precision: 5, replayTimeframe: '5m', includeMarketStateDiagnostics: true });
+        expect(result.selected).toEqual([]);
+        expect(result.market_state.snapshots).toHaveLength(1);
+        expect(result.market_state.snapshots[0].active_4h_direction).toBe('NEUTRAL');
+    });
+
     test('BUY_LIMIT fills only when a later candle reaches entry and records TP1', () => {
         const candidate = { candidate_id: 'buy', side: 'BUY', timeframe: '1h', first_knowable_ms: 0, entry: 100, stop_loss: 95, tp1: 105, tp2: 110, tp3: 115, risk: 5 };
         const series = { '5m': [bar(300000, 101, 99, 100), bar(600000, 106, 100, 105)] };
@@ -44,6 +62,33 @@ describe('historical backtest data and execution replay', () => {
         const series = { '5m': [bar(300000, 101, 99, 100), bar(600000, 105, 94, 100)] };
         const result = simulateCandidate(candidate, series, { executionTimeframe: '5m', ambiguity: 'adverse-first' });
         expect(result.final_outcome).toBe('SL');
+    });
+
+    test('missing BUY secondary targets remain absent and do not suppress a real stop', () => {
+        const candidate = { candidate_id: 'buy-null-targets', side: 'BUY', timeframe: '1h', first_knowable_ms: 0, entry: 100, stop_loss: 95, tp1: 105, tp2: null, tp3: null, risk: 5 };
+        const result = simulateCandidate(candidate, { '5m': [bar(300000, 101, 99, 100), bar(600000, 102, 94, 96)] }, { executionTimeframe: '5m', ambiguity: 'exclude' });
+        expect(result.tp2).toBeNull();
+        expect(result.tp3).toBeNull();
+        expect(result.final_outcome).toBe('SL');
+        expect(result.r_result).toBe(-1);
+    });
+
+    test('missing SELL secondary targets remain absent and do not suppress a real stop', () => {
+        const candidate = { candidate_id: 'sell-null-targets', side: 'SELL', timeframe: '1h', first_knowable_ms: 0, entry: 100, stop_loss: 105, tp1: 95, tp2: undefined, tp3: '', risk: 5 };
+        const result = simulateCandidate(candidate, { '5m': [bar(300000, 101, 99, 100), bar(600000, 106, 98, 104)] }, { executionTimeframe: '5m', ambiguity: 'exclude' });
+        expect(result.tp2).toBeNull();
+        expect(result.tp3).toBeNull();
+        expect(result.final_outcome).toBe('SL');
+        expect(result.r_result).toBe(-1);
+    });
+
+    test('a partial target set ends at its highest present target without creating zero targets', () => {
+        const candidate = { candidate_id: 'buy-only-tp1', side: 'BUY', timeframe: '1h', first_knowable_ms: 0, entry: 100, stop_loss: 95, tp1: 105, tp2: null, tp3: NaN, risk: 5 };
+        const result = simulateCandidate(candidate, { '5m': [bar(300000, 106, 99, 105)] }, { executionTimeframe: '5m', ambiguity: 'exclude' });
+        expect(result.final_outcome).toBe('TP1');
+        expect(result.targets_reached).toEqual([true, false, false]);
+        expect(result.tp2).toBeNull();
+        expect(result.tp3).toBeNull();
     });
 
     test('ambiguous target and stop ordering is not counted as a winner', () => {
