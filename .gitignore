@@ -5,6 +5,8 @@ node_modules/
 !.env.example
 data/tvkit-shadow/
 data/historical/
+data/deep-history/
+tools/__pycache__/
 backtest-results/
 data/kronos/
 .cache/huggingface/

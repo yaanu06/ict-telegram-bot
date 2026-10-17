@@ -61,7 +61,15 @@ function analyzeVisibleHistory(context, input) {
     const currentPrice = Number(input.currentPrice);
     const asOfMs = Number(input.asOfMs);
     const metadata = input.symbolMetadata || {};
-    const roleAudit = context.buildRawTextTimeframeRoleAudit(blocks, precision);
+    const cache = input.cache || null;
+    const blockSignature = blocks.map(block => {
+        const last = block.candles?.at(-1);
+        return `${block.timeframe}:${block.candles?.length || 0}:${last?.t || last?.timestamp || ''}`;
+    }).join('|');
+    const roleAudit = cache?.roleAudits?.has(blockSignature)
+        ? cache.roleAudits.get(blockSignature)
+        : context.buildRawTextTimeframeRoleAudit(blocks, precision);
+    if (cache && !cache.roleAudits.has(blockSignature)) cache.roleAudits.set(blockSignature, roleAudit);
     const dailyBlocks = blocks.some(block => block.timeframe === '1D')
         ? blocks
         : blocks;
@@ -72,7 +80,11 @@ function analyzeVisibleHistory(context, input) {
         asOfMs,
         roleAudit.daily_bias
     );
-    const crtAudit = context.buildRawTextDeterministicCrtAudit(blocks, symbol, metadata, precision);
+    const crtKey = `${symbol}|${precision}|${blockSignature}`;
+    const crtAudit = cache?.crtAudits?.has(crtKey)
+        ? cache.crtAudits.get(crtKey)
+        : context.buildRawTextDeterministicCrtAudit(blocks, symbol, metadata, precision);
+    if (cache && !cache.crtAudits.has(crtKey)) cache.crtAudits.set(crtKey, crtAudit);
     const msnrAudit = context.buildRawTextDeterministicMsnrAudit(blocks, currentPrice, symbol, metadata, precision);
     const supplyDemand = context.buildRawTextSupplyDemandAudit(blocks, precision, asOfMs);
     const zones = context.buildRawTextHighProbabilityZones(

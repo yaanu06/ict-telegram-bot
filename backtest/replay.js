@@ -68,7 +68,20 @@ function validateCandidateDirection(candidate = {}) {
 
 function visibleBars(series, timeframe, asOfMs) {
     const interval = TIMEFRAME_MS[canonicalTimeframe(timeframe)];
-    return (series || []).filter(bar => {
+    const rows = series || [];
+    // Replay series are normalized chronologically. Locate the visible prefix
+    // first so deep-history runs do not repeatedly scan the entire history at
+    // every clock; the returned candles and closed-bar semantics are unchanged.
+    let low = 0;
+    let high = rows.length;
+    while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        const start = Number(rows[middle]?.t ?? rows[middle]?.timestamp);
+        const close = Number(rows[middle]?.close_time_ms ?? start + interval);
+        if (Number.isFinite(close) && close <= asOfMs) low = middle + 1;
+        else high = middle;
+    }
+    return rows.slice(0, low).filter(bar => {
         const start = Number(bar.t ?? bar.timestamp);
         const close = Number(bar.close_time_ms ?? start + interval);
         return bar && Number.isFinite(start) && Number.isFinite(close) && close <= asOfMs && bar.is_closed !== false;
@@ -169,7 +182,7 @@ function candidateSnapshot(record, asOfMs, firstObservedMs, selected, dailyBias 
     };
 }
 
-function collectCandidateRows(result, asOfMs, registry, context, blocks) {
+function collectCandidateRows(result, asOfMs, registry, context, blocks, options = {}) {
     const records = result?.zones?.all_records || result?.zones?.records || [];
     const knownKeys = new Set(records.map(fvgKey));
     for (const record of records) {
@@ -181,7 +194,7 @@ function collectCandidateRows(result, asOfMs, registry, context, blocks) {
         else {
             existing.observations += 1;
             existing.last_observed_at_ms = asOfMs;
-            existing.last_state = snapshot;
+            if (options.retainLastState !== false) existing.last_state = snapshot;
             if (snapshot.selected_at_observation && !existing.first_selected_at_ms) existing.first_selected_at_ms = asOfMs;
         }
     }
@@ -358,23 +371,25 @@ function simulateCandidate(candidate, series, options = {}) {
     };
 }
 
-function replayHistory({ context, series, symbol, from, to, precision, replayTimeframe = '5m', ambiguity = 'exclude', includeMarketStateDiagnostics = false }) {
+function replayHistory({ context, series, symbol, from, to, precision, replayTimeframe = '5m', ambiguity = 'exclude', includeMarketStateDiagnostics = false, retainLastState = true, progress = null }) {
     const fromMs = toMs(from);
     const toMsValue = toMs(to);
     const clocks = replayClocks(series, replayTimeframe, fromMs, toMsValue);
     const registry = new Map();
     const observations = [];
+    const analysisCache = { roleAudits: new Map(), crtAudits: new Map() };
     const marketStateHistory = includeMarketStateDiagnostics
         ? build4HStateHistory({ symbol, candles: series['4h'] || [], context })
         : null;
     const marketStateSnapshots = [];
-    for (const asOfMs of clocks) {
+    for (let clockIndex = 0; clockIndex < clocks.length; clockIndex += 1) {
+        const asOfMs = clocks[clockIndex];
         const blocks = makeBlocks(series, asOfMs);
         const executionBars = blocks.find(block => block.timeframe === '5M')?.candles || [];
         const currentPrice = Number(executionBars.at(-1)?.c);
         if (!Number.isFinite(currentPrice) || blocks.filter(block => ['1D', '4H', '1H'].includes(block.timeframe)).some(block => block.candles.length < 3)) continue;
-        const result = analyzeVisibleHistory(context, { blocks, symbol, currentPrice, asOfMs, precision });
-        collectCandidateRows(result, asOfMs, registry, context, blocks);
+        const result = analyzeVisibleHistory(context, { blocks, symbol, currentPrice, asOfMs, precision, cache: analysisCache });
+        collectCandidateRows(result, asOfMs, registry, context, blocks, { retainLastState });
         observations.push({ as_of_ms: asOfMs, candidate_count: result.zones.records.length, current_count: result.zones.current_records.length });
         if (marketStateHistory) {
             const activeState = getActive4HState(marketStateHistory, asOfMs);
@@ -384,6 +399,9 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
                 active_4h_direction: activeState?.direction || 'NEUTRAL',
                 active_4h_state_age_bars: activeState?.age_bars ?? null
             });
+        }
+        if (typeof progress === 'function' && (clockIndex === 0 || (clockIndex + 1) % 1000 === 0 || clockIndex === clocks.length - 1)) {
+            progress({ clock_index: clockIndex + 1, clock_count: clocks.length });
         }
     }
     const candidates = [...registry.values()].map(row => ({ ...row, last_state: row.last_state || row }));

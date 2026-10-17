@@ -1,0 +1,58 @@
+{
+  "dataset_id": "V2_DEEP_HISTORY_2025_MAR_SEP",
+  "purpose": "Deep-history validation of unchanged production V2",
+  "provider_selection": {
+    "AUD/USD": "FXCM public weekly M1 BID archive",
+    "GBP/JPY": "FXCM public weekly M1 BID archive",
+    "XAU/USD": "Dukascopy BID M1 public mirror"
+  },
+  "source_notes": {
+    "base_timeframe": "1m",
+    "derived_timeframes": ["5m", "15m", "1h", "4h", "1d"],
+    "price_side": "BID",
+    "timezone": "UTC",
+    "context_start": "2025-03-01",
+    "scored_start": "2025-04-01",
+    "scored_end": "2025-09-30",
+    "aggregation": "UTC floor aggregation from source minute bars; no interpolation or gap filling",
+    "known_gap_note": "FXCM source contains normal weekend/session gaps and one two-week source gap (maximum 4608 five-minute intervals) in the scored window; these are retained and reported, not repaired."
+  },
+  "entries": [
+    {
+      "symbol": "AUD/USD",
+      "data_file": "data/deep-history/research/audusd_5m_2025-03-01_2025-09-30.json",
+      "test_from": "2025-04-01T00:00:00.000Z",
+      "test_to": "2025-09-30T23:59:59.999Z",
+      "provider": "FXCM public weekly M1 BID archive",
+      "bars_5m": 39397,
+      "source_minutes": 195934,
+      "gap_count": 71,
+      "max_gap_intervals_5m": 4608,
+      "sha256": "882af1777ba326aa2bc2a5a3f2911c7a38a56ae1e3b97276dfcfe78a46de32d8"
+    },
+    {
+      "symbol": "GBP/JPY",
+      "data_file": "data/deep-history/research/gbpjpy_5m_2025-03-01_2025-09-30.json",
+      "test_from": "2025-04-01T00:00:00.000Z",
+      "test_to": "2025-09-30T23:59:59.999Z",
+      "provider": "FXCM public weekly M1 BID archive",
+      "bars_5m": 39188,
+      "source_minutes": 195226,
+      "gap_count": 130,
+      "max_gap_intervals_5m": 4608,
+      "sha256": "7d284d1a614e86da5db05d213201428b960cee5ac5d9600916d1e8418e6d4e54"
+    },
+    {
+      "symbol": "XAU/USD",
+      "data_file": "data/deep-history/research/xauusd_5m_2025-03-01_2025-09-30.json",
+      "test_from": "2025-04-01T00:00:00.000Z",
+      "test_to": "2025-09-30T23:59:59.999Z",
+      "provider": "Dukascopy BID M1 public mirror",
+      "bars_5m": 61632,
+      "source_minutes": 308160,
+      "gap_count": 0,
+      "max_gap_intervals_5m": 0,
+      "sha256": "4fa91859490b20ed9e6cc22899d1733b9682538608c9f83a64294808e0a7cbc0"
+    }
+  ]
+}
