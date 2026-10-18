@@ -14815,6 +14815,11 @@ function buildV2ModelRouter({ blocks = [], currentPrice = null, precision = 2, s
             const record = addModel({ strategy_model: 'MSNR_REACTION', setup_class: 'MSNR+REACTION+EXECUTION_ZONE', msnr }, direction, rawTextModelEventTime(msnr));
             if (record) routed.push(record);
         }
+        const confirmedRoleReversal = msnr.level?.flipped === true && msnr.level?.role_reversal_quality === 'CONFIRMED_RETEST';
+        if (confirmedRoleReversal) {
+            const record = addModel({ strategy_model: 'FLIP_BREAKER', setup_class: 'FLIP/BREAKER+EXECUTION_ZONE', msnr }, direction, rawTextModelEventTime(msnr));
+            if (record) routed.push(record);
+        }
         const single = relatedTbs ? null : addModel({ strategy_model: 'MSNR_SINGLE_MOVE', setup_class: 'MSNR+LIQUIDITY+EXECUTION_ZONE', msnr, tbs: relatedTbs }, direction, rawTextModelEventTime(msnr));
         if (single) routed.push(single);
     }
