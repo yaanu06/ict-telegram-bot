@@ -7635,7 +7635,142 @@ function marketMechanicsSetupCampaignRelated(left = {}, right = {}) {
         && Math.abs(leftInvalidation - rightInvalidation) <= tolerance;
 }
 
-function buildMarketMechanicsFormingSetupStates(strategySetups = [], marketPlan = null) {
+function marketMechanicsSetupCandidateMatch(candidate = {}, setup = {}) {
+    const setupId = String(setup.id || '');
+    const zoneId = String(setup.execution_zone?.id || '');
+    const candidateSetupId = String(candidate.strategy_setup?.id || candidate.strategy_setup_id || '');
+    const candidateZoneId = String(candidate.zone?.id || candidate.execution_zone?.id || candidate.execution_zone_id || '');
+    return (setupId && candidateSetupId === setupId) || (zoneId && candidateZoneId === zoneId);
+}
+
+function marketMechanicsEntryZoneRelation(price, zone = {}) {
+    const current = Number(price);
+    const low = Number(zone.low);
+    const high = Number(zone.high);
+    if (![current, low, high].every(Number.isFinite) || high < low) return 'UNKNOWN';
+    if (current < low) return 'BELOW';
+    if (current > high) return 'ABOVE';
+    return 'INSIDE';
+}
+
+// This is deliberately a presentation/lifecycle diagnostic.  Candidate
+// construction remains authoritative; the helper only correlates a forming
+// setup with the candidate builder's raw/rejected/valid records so a packet
+// can distinguish "the order is not built yet" from "a valid untouched limit
+// is waiting for fill".
+function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
+    const zone = setup.execution_zone || setup.opportunity_narrative?.location || {};
+    const result = options.candidate_result || {};
+    const all = [
+        ...(Array.isArray(result.all_valid_candidates) ? result.all_valid_candidates : []),
+        ...(Array.isArray(result.raw_candidates) ? result.raw_candidates : []),
+        ...(Array.isArray(result.rejected_candidates) ? result.rejected_candidates : [])
+    ];
+    const matched = all.find(candidate => marketMechanicsSetupCandidateMatch(candidate, setup)) || null;
+    const valid = (Array.isArray(result.all_valid_candidates) ? result.all_valid_candidates : [])
+        .find(candidate => marketMechanicsSetupCandidateMatch(candidate, setup)) || null;
+    const raw = (Array.isArray(result.raw_candidates) ? result.raw_candidates : [])
+        .find(candidate => marketMechanicsSetupCandidateMatch(candidate, setup)) || null;
+    const rejected = (Array.isArray(result.rejected_candidates) ? result.rejected_candidates : [])
+        .find(candidate => marketMechanicsSetupCandidateMatch(candidate, setup)
+            || (raw?.id && String(candidate.id || candidate.candidate_id || '') === String(raw.id))) || null;
+    const candidate = valid || raw || matched;
+    const pairLocal = options.pair || pair;
+    const precision = getMarketSettings(pairLocal, options.symbol_metadata || {}).prec;
+    const relation = marketMechanicsEntryZoneRelation(options.current_price, zone);
+    const pending = isPendingLimitExecutionModel(setup.execution_model || setup.entry_model || zone.execution_model || zone.entry_model);
+    const entry = Number.isFinite(Number(candidate?.entry))
+        ? Number(candidate.entry)
+        : getSemanticEntryCandidate(zone, setup, setup.direction, precision);
+    const stop = Number.isFinite(Number(candidate?.stop_loss)) ? Number(candidate.stop_loss) : null;
+    const objective = Number.isFinite(Number(candidate?.tp1))
+        ? Number(candidate.tp1)
+        : Number.isFinite(Number(setup.primary_objective)) ? Number(setup.primary_objective)
+            : (Array.isArray(setup.target_candidates) ? Number(setup.target_candidates[0]?.level) : NaN);
+    const lifecycle = candidate?.evaluation?.metrics?.setup_lifecycle || candidate?.setup_lifecycle || null;
+    const touched = lifecycle && Number.isFinite(Number(lifecycle.entry_touch_count_after_signal))
+        ? Number(lifecycle.entry_touch_count_after_signal) > 0
+        : relation === 'INSIDE' ? true : null;
+    const retraced = lifecycle && Number.isFinite(Number(lifecycle.entry_touch_count_after_signal))
+        ? Number(lifecycle.entry_touch_count_after_signal) > 0
+        : null;
+    const rejectionCodes = [...new Set([
+        rejected?.rejection_code,
+        ...(Array.isArray(rejected?.rejection_reasons) ? rejected.rejection_reasons : []),
+        ...(Array.isArray(candidate?.QUALIFICATION_BLOCKERS) ? candidate.QUALIFICATION_BLOCKERS : []),
+        ...(Array.isArray(candidate?.qualification_blockers) ? candidate.qualification_blockers : []),
+        ...(Array.isArray(result.seed_diagnostics)
+            ? result.seed_diagnostics.filter(seed => String(seed.seed_id || '') === String(zone.id || setup.id || ''))
+                .flatMap(seed => seed.failure_reasons || [])
+            : [])
+    ].filter(Boolean).map(String))];
+    const geometry = {
+        entry: Number.isFinite(entry) ? entry : null,
+        stop_loss: Number.isFinite(stop) ? stop : null,
+        tp1: Number.isFinite(Number(candidate?.tp1)) ? Number(candidate.tp1) : null,
+        tp2: Number.isFinite(Number(candidate?.tp2)) ? Number(candidate.tp2) : null,
+        tp3: Number.isFinite(Number(candidate?.tp3)) ? Number(candidate.tp3) : null,
+        objective: Number.isFinite(objective) ? objective : null
+    };
+    const geometryComplete = Number.isFinite(geometry.entry)
+        && Number.isFinite(geometry.stop_loss)
+        && Number.isFinite(geometry.tp1)
+        && (setup.direction === 'BUY'
+            ? geometry.stop_loss < geometry.entry && geometry.entry < geometry.tp1
+            : setup.direction === 'SELL'
+                ? geometry.stop_loss > geometry.entry && geometry.entry > geometry.tp1
+                : false);
+    const liveCandidate = Boolean(valid && valid.TRADE_QUALIFIED !== 'NO' && valid.trade_qualified !== false);
+    const candidateRejected = Boolean(rejected || (raw && raw.rejection_code));
+    let nextRequiredEvent = 'NONE';
+    let state = liveCandidate ? 'PENDING_UNFILLED' : null;
+    let blocker = null;
+    if (!liveCandidate) {
+        if (rejectionCodes.length) {
+            blocker = rejectionCodes[0];
+            nextRequiredEvent = blocker;
+            state = candidateRejected ? 'WAITING_FOR_QUALIFICATION' : 'WAITING_FOR_PENDING_GEOMETRY';
+        } else if (!geometryComplete) {
+            blocker = !Number.isFinite(geometry.entry) ? 'NO_VALID_ENTRY_PRICE'
+                : !Number.isFinite(geometry.stop_loss) ? 'NO_STRUCTURAL_STOP'
+                    : !Number.isFinite(geometry.tp1) ? 'NO_VALID_OBJECTIVE' : 'INVALID_PENDING_GEOMETRY';
+            nextRequiredEvent = blocker;
+            state = 'WAITING_FOR_PENDING_GEOMETRY';
+        } else {
+            blocker = 'CANDIDATE_NOT_CONSTRUCTED';
+            nextRequiredEvent = 'CANDIDATE_CONSTRUCTION';
+            state = 'WAITING_FOR_QUALIFICATION';
+        }
+    }
+    return {
+        entry_zone_low: Number.isFinite(Number(zone.low)) ? Number(zone.low) : null,
+        entry_zone_high: Number.isFinite(Number(zone.high)) ? Number(zone.high) : null,
+        entry_zone_ref: zone.id || null,
+        entry_zone_source: zone.entry_region_source || zone.type || setup.primary || null,
+        proposed_entry: geometry.entry,
+        proposed_stop: geometry.stop_loss,
+        proposed_objective: geometry.objective,
+        tp1: geometry.tp1,
+        tp2: geometry.tp2,
+        tp3: geometry.tp3,
+        current_price_relation_to_entry_zone: relation,
+        entry_zone_touched: touched == null ? 'UNKNOWN' : touched ? 'YES' : 'NO',
+        entry_zone_retraced: retraced == null ? 'UNKNOWN' : retraced ? 'YES' : 'NO',
+        entry_zone_freshness: zone.freshness || setup.freshness || candidate?.freshness || 'UNKNOWN',
+        entry_zone_touch_required_for_qualification: pending ? 'NO' : 'YES',
+        next_required_event: nextRequiredEvent,
+        pending_limit_geometry_complete: geometryComplete ? 'YES' : 'NO',
+        pending_limit_candidate_state: state,
+        blocker: blocker || (liveCandidate ? 'NONE' : null),
+        candidate_id: valid?.id || raw?.id || rejected?.id || null,
+        candidate_authority: liveCandidate ? 'LIVE' : 'FORMING_ONLY',
+        rejection_codes: rejectionCodes,
+        candidate_rejected: candidateRejected,
+        candidate_present: Boolean(candidate)
+    };
+}
+
+function buildMarketMechanicsFormingSetupStates(strategySetups = [], marketPlan = null, options = {}) {
     const groups = [];
     const ordered = [...strategySetups].sort((left, right) => String(left.id || '').localeCompare(String(right.id || '')));
     for (const setup of ordered) {
@@ -7653,6 +7788,7 @@ function buildMarketMechanicsFormingSetupStates(strategySetups = [], marketPlan 
         ));
         const poiState = !planValid ? 'UNAVAILABLE' : poiMatchesActive ? 'ACTIVE' : setupPoi ? 'WAITING' : 'NONE';
         const confirmationComplete = setup.execution_confirmed === true || setup.execution_model === 'CONFIRMATION_ENTRY';
+        const pendingDiagnostics = buildMarketMechanicsPendingDiagnostics(setup, options);
         let state = 'WAITING_FOR_CONFIRMATION';
         let blocker = 'CONFIRMATION_NOT_COMPLETE';
         if (!planValid) {
@@ -7661,9 +7797,16 @@ function buildMarketMechanicsFormingSetupStates(strategySetups = [], marketPlan 
         } else if (!poiMatchesActive) {
             state = 'WAITING_FOR_POI';
             blocker = 'POI_NOT_VALID';
+        } else if (pendingDiagnostics.candidate_authority === 'LIVE') {
+            state = 'PENDING_UNFILLED';
+            blocker = 'NONE';
+        } else if (pendingDiagnostics.entry_zone_touch_required_for_qualification === 'NO'
+            && pendingDiagnostics.pending_limit_candidate_state) {
+            state = pendingDiagnostics.pending_limit_candidate_state;
+            blocker = pendingDiagnostics.blocker || 'PENDING_LIMIT_NOT_READY';
         } else if (confirmationComplete || String(setup.entry_model_state || '').toUpperCase() === 'WAITING_FOR_RETRACE') {
             state = 'WAITING_FOR_RETRACE';
-            blocker = 'ENTRY_ZONE_NOT_RETRACED';
+            blocker = pendingDiagnostics.blocker || 'ENTRY_ZONE_NOT_RETRACED';
         }
         const refs = group.members.map(item => item.crt_ref || item.id).filter(Boolean);
         const primaryRef = setup.crt_ref || setup.id || null;
@@ -7681,13 +7824,14 @@ function buildMarketMechanicsFormingSetupStates(strategySetups = [], marketPlan 
             prospective_poi_ref: !poiMatchesActive ? (setupPoi?.id || primaryRef) : null,
             liquidity_event_ref: setup.liquidity_event_ref || null,
             confirmation_state: confirmationComplete ? 'CONFIRMED' : 'WAITING',
-            retrace_state: state === 'WAITING_FOR_RETRACE' ? 'WAITING' : 'NOT_STARTED',
+            retrace_state: state === 'WAITING_FOR_RETRACE' ? 'WAITING' : state === 'PENDING_UNFILLED' ? 'PENDING_UNFILLED' : 'NOT_STARTED',
             blocker,
             primary_ref: primaryRef,
             alternate_crt_refs: refs.filter(ref => ref !== primaryRef),
             source_ids: group.members.map(item => item.id).filter(Boolean),
             source_count: group.members.length,
-            selectable: false
+            selectable: state === 'PENDING_UNFILLED',
+            ...pendingDiagnostics
         };
     });
 }
@@ -7698,7 +7842,9 @@ function normalizeMarketMechanicsFormingState(state = {}, marketPlan = null) {
     const poiState = state.poi_state || (activePoi ? 'ACTIVE' : 'WAITING');
     if (!planValid) return { ...state, market_plan_valid: 'NO', poi_state: 'UNAVAILABLE', state: 'WAITING_FOR_MARKET_PLAN', blocker: 'MARKET_PLAN_INVALID', selectable: false };
     if (poiState !== 'ACTIVE') return { ...state, market_plan_valid: 'YES', poi_state: poiState, state: 'WAITING_FOR_POI', blocker: 'POI_NOT_VALID', selectable: false };
-    return { ...state, market_plan_valid: 'YES', poi_state: 'ACTIVE', selectable: false };
+    const pendingCandidate = state.pending_limit_candidate_state === 'PENDING_UNFILLED'
+        && state.candidate_authority === 'LIVE';
+    return { ...state, market_plan_valid: 'YES', poi_state: 'ACTIVE', selectable: pendingCandidate };
 }
 
 function zoneTypeForSetup(setup = {}) {
@@ -12981,6 +13127,17 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             authority_invariants: authority.invariants,
             invariant_violation: authority.invariant_violation
         };
+        // Rebuild the presentation states after candidate construction so a
+        // forming setup can expose the exact pending-limit geometry or the
+        // deterministic rejection that prevented an order from being built.
+        // This does not change qualification; the adaptive candidate builder
+        // remains the sole source of live authority.
+        marketContext.market_mechanics.model_states = buildMarketMechanicsFormingSetupStates(strategySetups, marketPlan, {
+            candidate_result: adaptiveSetupResult,
+            current_price: price,
+            pair,
+            symbol_metadata: symbolMetadata
+        });
     }
     const allStrategySetups = [...strategySetups, ...currentRegeneration.setups];
     const allStrategyExecutionZones = getStrategyExecutionZones(allStrategySetups);
@@ -16314,6 +16471,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const formingMarketMechanicsSetups = marketMechanicsMode
         ? (source.market_mechanics?.model_states || source.forming_market_mechanics_setups || [])
             .map(setup => normalizeMarketMechanicsFormingState(setup, source.market_plan || source.market_context?.market_plan || null))
+            .filter(setup => setup.selectable !== true)
         : [];
     const visibleLegacyDiagnosticCount = marketMechanicsMode
         ? countRawLegacyDiagnosticCandidates([...highProbabilityZones.current_lines, ...highProbabilityZones.lines])
@@ -16387,8 +16545,22 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             'LIQUIDITY_EVENT_REF=' + String(setup.liquidity_event_ref || ''),
             'CONFIRMATION_STATE=' + String(setup.confirmation_state || ''),
             'RETRACE_STATE=' + String(setup.retrace_state || ''),
+            'ENTRY_ZONE_LOW=' + (setup.entry_zone_low == null ? 'NONE' : rawTextPacketFormatNumber(setup.entry_zone_low, precision)),
+            'ENTRY_ZONE_HIGH=' + (setup.entry_zone_high == null ? 'NONE' : rawTextPacketFormatNumber(setup.entry_zone_high, precision)),
+            'ENTRY_ZONE_REF=' + String(setup.entry_zone_ref || 'NONE'),
+            'ENTRY_ZONE_SOURCE=' + String(setup.entry_zone_source || 'NONE'),
+            'PROPOSED_ENTRY=' + (setup.proposed_entry == null ? 'NONE' : rawTextPacketFormatNumber(setup.proposed_entry, precision)),
+            'PROPOSED_STOP=' + (setup.proposed_stop == null ? 'NONE' : rawTextPacketFormatNumber(setup.proposed_stop, precision)),
+            'PROPOSED_OBJECTIVE=' + (setup.proposed_objective == null ? 'NONE' : rawTextPacketFormatNumber(setup.proposed_objective, precision)),
+            'CURRENT_PRICE_RELATION_TO_ENTRY_ZONE=' + String(setup.current_price_relation_to_entry_zone || 'UNKNOWN'),
+            'ENTRY_ZONE_TOUCHED=' + String(setup.entry_zone_touched || 'UNKNOWN'),
+            'ENTRY_ZONE_RETRACED=' + String(setup.entry_zone_retraced || 'UNKNOWN'),
+            'ENTRY_ZONE_FRESHNESS=' + String(setup.entry_zone_freshness || 'UNKNOWN'),
+            'ENTRY_ZONE_TOUCH_REQUIRED_FOR_QUALIFICATION=' + String(setup.entry_zone_touch_required_for_qualification || 'UNKNOWN'),
+            'PENDING_LIMIT_GEOMETRY_COMPLETE=' + String(setup.pending_limit_geometry_complete || 'NO'),
+            'NEXT_REQUIRED_EVENT=' + String(setup.next_required_event || 'NONE'),
             'STATE=' + String(setup.state || 'FORMING'),
-            'SELECTABLE=NO',
+            'SELECTABLE=' + (setup.selectable === true ? 'YES' : 'NO'),
             'BLOCKER=' + String(setup.blocker || 'NONE'),
             'SOURCE_COUNT=' + String(setup.source_count || 1),
             'ALTERNATE_CRT_REFS=' + (setup.alternate_crt_refs || []).join('|')

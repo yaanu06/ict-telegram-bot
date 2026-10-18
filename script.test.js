@@ -3715,6 +3715,32 @@ describe('Market Mechanics packet authority', () => {
         expect(text).not.toContain('DAILY_BIAS=');
     });
 
+    test('prints pending-limit geometry and next event for forming Market Mechanics states', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = completeReplay({
+            pair: 'BTC/USD', strategy_mode: 'MARKET_MECHANICS', snapshot_id: 'MM-PENDING-DIAGNOSTIC',
+            scan_as_of: '2026-10-18T10:00:00Z', quote: { price: 81913.05, quote_time: '2026-10-18T10:00:00Z' },
+            market_plan: { valid_context: true, bias: 'BULLISH', direction: 'BUY', htf_trend: 'BULLISH',
+                active_poi: { id: '1H-BUY-FVG-TEST', type: 'FVG', low: 81774.19, high: 82093.75 } },
+            market_mechanics: { model_states: [{ id: 'FORMING-BTC', campaign_id: 'CAMPAIGN-BTC', direction: 'BUY',
+                timeframe: '4H', model: 'CRT_AGGRESSIVE', market_plan_valid: 'YES', poi_state: 'ACTIVE', poi_ref: '1H-BUY-FVG-TEST',
+                confirmation_state: 'CONFIRMED', retrace_state: 'WAITING', state: 'WAITING_FOR_PENDING_GEOMETRY', selectable: false,
+                blocker: 'NO_STRUCTURAL_STOP', entry_zone_low: 81302.2, entry_zone_high: 81459.1,
+                entry_zone_ref: 'CRT-ZONE-BTC', entry_zone_source: 'CRT', proposed_entry: 81380.65,
+                proposed_stop: null, proposed_objective: 81995.97, current_price_relation_to_entry_zone: 'ABOVE',
+                entry_zone_touched: 'NO', entry_zone_retraced: 'NO', entry_zone_freshness: 'FRESH',
+                entry_zone_touch_required_for_qualification: 'NO', pending_limit_geometry_complete: 'NO',
+                next_required_event: 'NO_STRUCTURAL_STOP', source_count: 1 }] },
+            valid_candidates: [], history: {}
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('ENTRY_ZONE_LOW=81302.20000000 ENTRY_ZONE_HIGH=81459.10000000');
+        expect(text).toContain('PROPOSED_ENTRY=81380.65000000 PROPOSED_STOP=NONE PROPOSED_OBJECTIVE=81995.97000000');
+        expect(text).toContain('ENTRY_ZONE_TOUCH_REQUIRED_FOR_QUALIFICATION=NO');
+        expect(text).toContain('NEXT_REQUIRED_EVENT=NO_STRUCTURAL_STOP');
+        expect(text).toContain('STATE=WAITING_FOR_PENDING_GEOMETRY');
+    });
+
     test('groups only causally related forming CRTs into one campaign and preserves independent setups', () => {
         const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
         const plan = {
@@ -3735,6 +3761,73 @@ describe('Market Mechanics packet authority', () => {
         expect(forming[0].selectable).toBe(false);
         expect(forming[1].source_count).toBe(1);
         expect(forming[1].primary_ref).toBe('CRT-INDEPENDENT');
+    });
+
+    test('treats a complete untouched retracement limit as pending-unfilled, not waiting for a touch', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const setup = {
+            id: 'CRT-BUY-PENDING', direction: 'BUY', timeframe: '4H', entry_model: 'CRT_AGGRESSIVE',
+            execution_model: 'FRESH_RETRACEMENT_LIMIT', execution_confirmed: true,
+            execution_zone: { id: 'CRT-ZONE-BUY', type: 'CRT', low: 100, high: 102, freshness: 'FRESH',
+                structural_invalidation: { level: 98, source: 'CRT_SWEEP' } },
+            target_candidates: [{ level: 106, direction: 'BUY', source: 'CRT_EQ' }]
+        };
+        const state = ctx.buildMarketMechanicsFormingSetupStates([setup], {
+            valid_context: true, active_swing_range_id: 'RANGE-BUY',
+            active_poi: { id: 'CRT-ZONE-BUY', low: 100, high: 102 }
+        }, {
+            pair: 'EUR/USD', current_price: 110,
+            candidate_result: {
+                all_valid_candidates: [{ id: 'LIVE-BUY', direction: 'BUY', entry: 101, stop_loss: 98,
+                    tp1: 106, tp2: 108, tp3: 109, execution_model: 'FRESH_RETRACEMENT_LIMIT',
+                    TRADE_QUALIFIED: 'YES', trade_qualified: true,
+                    strategy_setup: setup, zone: setup.execution_zone }]
+            }
+        });
+        expect(state[0]).toEqual(expect.objectContaining({ state: 'PENDING_UNFILLED', selectable: true, blocker: 'NONE' }));
+        expect(state[0].entry_zone_touch_required_for_qualification).toBe('NO');
+        expect(state[0].current_price_relation_to_entry_zone).toBe('ABOVE');
+        expect(state[0].pending_limit_geometry_complete).toBe('YES');
+        expect(state[0].proposed_entry).toBe(101);
+    });
+
+    test('keeps an incomplete pending limit forming and identifies the missing structural geometry', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const state = ctx.buildMarketMechanicsFormingSetupStates([{
+            id: 'CRT-BUY-INCOMPLETE', direction: 'BUY', timeframe: '4H', entry_model: 'CRT_AGGRESSIVE',
+            execution_model: 'FRESH_RETRACEMENT_LIMIT', execution_confirmed: true,
+            execution_zone: { id: 'CRT-ZONE-INCOMPLETE', type: 'CRT', low: 100, high: 102, freshness: 'FRESH' }
+        }], { valid_context: true, active_swing_range_id: 'RANGE-INCOMPLETE', active_poi: { id: 'CRT-ZONE-INCOMPLETE', low: 100, high: 102 } }, {
+            pair: 'EUR/USD', current_price: 110, candidate_result: { all_valid_candidates: [], raw_candidates: [], rejected_candidates: [] }
+        });
+        expect(state[0].state).toBe('WAITING_FOR_PENDING_GEOMETRY');
+        expect(state[0].blocker).toBe('NO_STRUCTURAL_STOP');
+        expect(state[0].next_required_event).toBe('NO_STRUCTURAL_STOP');
+        expect(state[0].pending_limit_geometry_complete).toBe('NO');
+        expect(state[0].entry_zone_touch_required_for_qualification).toBe('NO');
+    });
+
+    test('supports an untouched pending SELL limit above current price', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const setup = {
+            id: 'CRT-SELL-PENDING', direction: 'SELL', timeframe: '1H', entry_model: 'CRT_AGGRESSIVE',
+            execution_model: 'FRESH_RETRACEMENT_LIMIT', execution_confirmed: true,
+            execution_zone: { id: 'CRT-ZONE-SELL', type: 'CRT', low: 108, high: 110, freshness: 'FRESH',
+                structural_invalidation: { level: 112, source: 'CRT_SWEEP' } },
+            target_candidates: [{ level: 104, direction: 'SELL', source: 'CRT_EQ' }]
+        };
+        const state = ctx.buildMarketMechanicsFormingSetupStates([setup], {
+            valid_context: true, active_swing_range_id: 'RANGE-SELL',
+            active_poi: { id: 'CRT-ZONE-SELL', low: 108, high: 110 }
+        }, {
+            pair: 'EUR/USD', current_price: 100,
+            candidate_result: { all_valid_candidates: [{ id: 'LIVE-SELL', direction: 'SELL', entry: 109,
+                stop_loss: 112, tp1: 104, execution_model: 'FRESH_RETRACEMENT_LIMIT',
+                TRADE_QUALIFIED: 'YES', trade_qualified: true, strategy_setup: setup, zone: setup.execution_zone }] }
+        });
+        expect(state[0].state).toBe('PENDING_UNFILLED');
+        expect(state[0].current_price_relation_to_entry_zone).toBe('BELOW');
+        expect(state[0].entry_zone_touch_required_for_qualification).toBe('NO');
     });
 
     test('diagnostic candidate count is deduplicated by visible source references', () => {
