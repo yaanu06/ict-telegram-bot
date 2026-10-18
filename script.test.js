@@ -3556,6 +3556,165 @@ describe('TVKIT request attempt lifecycle', () => {
     });
 });
 
+describe('Market Mechanics packet authority', () => {
+    const { loadStrategyContext } = require('./backtest/strategy-adapter');
+
+    const legacyXauCandidate = {
+        id: 'XAU-LEGACY-FVG-4177.03',
+        direction: 'SELL',
+        strategy_model: 'LEGACY_FVG',
+        strategy_label: 'FVG',
+        entry: 4177.03,
+        stop_loss: 4199.09,
+        tp1: 4154.97,
+        tp2: 4132.91,
+        tp3: 4110.85,
+        current_opportunity: true,
+        CURRENT_OPPORTUNITY: 'YES',
+        lifecycle_state: 'FRESH_PENDING_TODAY',
+        opportunity_status: 'FRESH_PENDING_TODAY',
+        MODEL_QUALIFIED: 'NO',
+        TRADE_QUALIFIED: 'YES'
+    };
+
+    const qualifiedMarketMechanicsCandidate = {
+        id: 'MM-MARKET-SHIFT-1',
+        direction: 'SELL',
+        strategy_label: 'SUPPLY+OB+FVG',
+        entry_model: 'MARKET_SHIFT',
+        execution_model: 'PENDING_LIMIT',
+        market_mechanics_verified: true,
+        execution_zone: { id: 'POI-1', low: 4177, high: 4180 },
+        entry: 4177.5,
+        stop_loss: 4199.09,
+        tp1: 4154.97,
+        tp2: 4132.91,
+        tp3: 4110.85,
+        trade_qualified: true,
+        TRADE_QUALIFIED: 'YES',
+        MODEL_QUALIFIED: 'YES',
+        opportunity_status: 'FRESH_PENDING_TODAY',
+        lifecycle_state: 'FRESH_PENDING_TODAY',
+        still_actionable_today: true
+    };
+
+    function marketContext(candidates = []) {
+        return {
+            strategy_mode: 'MARKET_MECHANICS',
+            pair: 'XAU/USD',
+            current_price: 4185,
+            snapshot_id: 'MM-AUTHORITY-TEST',
+            as_of_time_utc: '2026-10-18T10:00:00Z',
+            session: { name: 'LONDON' },
+            market_plan: { valid_context: true, bias: 'BEARISH', primary_poi: { id: 'POI-1', type: 'SUPPLY' } },
+            market_mechanics: { model_states: [{ id: 'MM-FORMING', model: 'CRT_CONSERVATIVE', state: 'WAITING_FOR_RETRACE' }] },
+            adaptive_setup_candidates: candidates,
+            valid_deterministic_candidates: candidates,
+            structure: {},
+            market_context: { market_plan: { valid_context: true }, directional_bias: 'BEARISH', conflicts: [] },
+            target_candidates: { all: [], buy: [], sell: [] }
+        };
+    }
+
+    test('rejects the supplied XAU legacy FVG row from Market Mechanics authority', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const semantic = ctx.buildCompactAISemanticPackage(marketContext([legacyXauCandidate]), {});
+        expect(semantic.live_market_mechanics_candidates).toEqual([]);
+        expect(semantic.candidate_catalog).toEqual([]);
+        expect(semantic.legacy_diagnostic_candidates[0]).toEqual(expect.objectContaining({
+            CANDIDATE_AUTHORITY: 'DIAGNOSTIC_ONLY', MODEL_QUALIFIED: 'NO', TRADE_QUALIFIED: 'NO'
+        }));
+        expect(semantic.authority_invariants).toBe('FAIL');
+    });
+
+    test('keeps a complete Market Mechanics candidate selectable and immutable', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const semantic = ctx.buildCompactAISemanticPackage(marketContext([qualifiedMarketMechanicsCandidate]), {});
+        expect(semantic.live_market_mechanics_candidates).toHaveLength(1);
+        expect(semantic.live_market_mechanics_candidates[0]).toEqual(expect.objectContaining({
+            candidate_id: 'MM-MARKET-SHIFT-1', candidate_authority: 'LIVE',
+            entry_model_qualified: 'YES', trade_qualified: 'YES'
+        }));
+        expect(semantic.candidate_catalog).toHaveLength(1);
+    });
+
+    test('fails closed when multiple authority modes are present', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const source = marketContext([qualifiedMarketMechanicsCandidate]);
+        source.market_context.strategy_mode = 'LEGACY';
+        const semantic = ctx.buildCompactAISemanticPackage(source, {});
+        expect(semantic.live_market_mechanics_candidates).toEqual([]);
+        expect(semantic.authority_invariants).toBe('FAIL');
+        expect(semantic.authority_invariant_violation).toBe('AUTHORITY_MODE_CONFLICT');
+        expect(semantic.active_authority_count).toBe(2);
+    });
+
+    test('Market Mechanics selector prompt cannot fall back to legacy authority', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const prompt = ctx.buildAIPrompt(marketContext([legacyXauCandidate]), '');
+        expect(prompt.system).toContain('MARKET_MECHANICS authority');
+        expect(prompt.system).toContain('Never fall back to legacy candidates');
+        expect(prompt.system).not.toContain('standalone FVG remains eligible');
+        expect(prompt.user).toContain('LIVE MARKET MECHANICS CANDIDATES');
+        expect(prompt.user).toContain('MM-AUTHORITY-TEST');
+        expect(prompt.semantic_package.live_market_mechanics_candidates).toEqual([]);
+    });
+
+    test('raw text packet separates legacy diagnostics and fails closed when live candidates are empty', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = {
+            pair: 'XAU/USD', strategy_mode: 'MARKET_MECHANICS', scan_as_of: '2026-10-18T10:00:00Z',
+            quote: { price: 4185, quote_time: '2026-10-18T10:00:00Z' },
+            market_plan: { valid_context: false },
+            valid_candidates: [legacyXauCandidate],
+            history: {}
+        };
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('V2_STRATEGY_MODE=MARKET_MECHANICS');
+        expect(text).toContain('LIVE_CANDIDATES=NONE');
+        expect(text).toContain('LEGACY DIAGNOSTICS');
+        expect(text).toContain('CANDIDATE_AUTHORITY=DIAGNOSTIC_ONLY');
+        expect(text).not.toContain('=== CURRENT OPPORTUNITIES ===');
+        expect(text).not.toContain('standalone FVG remains eligible');
+        expect(text).toContain('AUTHORITY_INVARIANTS=FAIL');
+        expect(text).toContain('AUTHORITY_INVARIANT_VIOLATION');
+    });
+
+    test('external copy-RAW packet uses the Market Mechanics contract and excludes legacy selection', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = completeReplay({
+            pair: 'XAU/USD',
+            strategy_mode: 'MARKET_MECHANICS',
+            snapshot_id: 'MM-EXTERNAL-AUTHORITY-TEST',
+            scan_as_of: '2026-10-18T10:00:00Z',
+            quote: { price: 4185, quote_time: '2026-10-18T10:00:00Z' },
+            market_plan: { valid_context: false, bias: 'NEUTRAL' },
+            valid_candidates: [legacyXauCandidate],
+            history: {}
+        });
+        const packet = ctx.buildExternalAIClipboardPacket({ replay });
+        expect(packet).toContain('V2_STRATEGY_MODE=MARKET_MECHANICS');
+        expect(packet).toContain('LIVE MARKET MECHANICS CANDIDATES');
+        expect(packet).toContain('LIVE_CANDIDATES=NONE');
+        expect(packet).toContain('LEGACY DIAGNOSTICS');
+        expect(packet).toContain('MARKET PLAN / LIVE AUTHORITY');
+        expect(packet).toContain('LIVE_AUTHORITY_SUMMARY');
+        expect(packet).toContain('AUTHORITY_INVARIANTS=FAIL');
+        expect(packet).not.toContain('The external AI may combine supplied deterministic evidence');
+        expect(packet).not.toContain('FVG alone is valid');
+        expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
+        expect(packet).not.toContain('CURRENT OPPORTUNITY MATERIAL');
+        expect(packet).not.toContain('XAU-LEGACY-FVG-4177.03\n');
+    });
+
+    test.each(['LEGACY', 'MODEL_ROUTER_LEGACY'])('keeps explicit rollback mode %s available', mode => {
+        const ctx = loadStrategyContext({ strategyMode: mode });
+        const semantic = ctx.buildCompactAISemanticPackage({ strategy_mode: mode, adaptive_setup_candidates: [legacyXauCandidate] }, {});
+        expect(semantic.authority_mode).toBe(mode);
+        expect(semantic.adaptive_setup_candidates).toHaveLength(1);
+    });
+});
+
 describe('RAW_MARKET_ANALYSIS experimental packet', () => {
     const timeframes = ['1D', '4H', '1H', '15M', '5M'];
     const makeReplay = (complete = true, pair = 'BTC/USD') => {
