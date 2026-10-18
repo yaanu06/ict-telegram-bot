@@ -3,6 +3,7 @@
 const { TIMEFRAME_MS, canonicalTimeframe } = require('./data-provider');
 const { analyzeVisibleHistory } = require('./strategy-adapter');
 const { build4HStateHistory, getActive4HState } = require('./market-state');
+const { MODES: V2_ALCHEMIST_MODES, buildQualificationIndex } = require('./v2-alchemist-sequence');
 
 const LIVE_TIMEFRAMES = ['1d', '4h', '1h', '15m', '5m'];
 const STRATEGY_TIMEFRAMES = ['1D', '4H', '1H', '15M', '5M'];
@@ -131,7 +132,7 @@ function formationKnowableMs(record) {
     return Number.isFinite(start) && interval ? start + interval : null;
 }
 
-function candidateSnapshot(record, asOfMs, firstObservedMs, selected, dailyBias = null) {
+function candidateSnapshot(record, asOfMs, firstObservedMs, selected, dailyBias = null, qualification = null) {
     const fvg = record.fvg || {};
     const candidate = record.candidate || {};
     const current = record.current || {};
@@ -191,7 +192,28 @@ function candidateSnapshot(record, asOfMs, firstObservedMs, selected, dailyBias 
         path_quality_penalty: Number(record.path_quality?.path_quality_penalty) || 0,
         qualification_blockers: record.path_quality?.qualification_blockers || [],
         score_breakdown: record.breakdown || {},
-        selected_at_observation: selected === true
+        selected_at_observation: selected === true,
+        ...(qualification ? {
+            v2_sequence_mode: qualification.mode,
+            v2_sequence_qualified: qualification.qualified,
+            v2_sequence_rejection_reason: qualification.rejection_reason,
+            v2_sequence_blockers: qualification.blockers,
+            htf_storyline: qualification.htf_storyline,
+            htf_state_id: qualification.htf_state_id,
+            htf_direction: qualification.htf_direction,
+            msnr_state: qualification.msnr_state,
+            crt_state: qualification.crt_state,
+            tbs_state: qualification.tbs_state,
+            liquidity_event: qualification.liquidity_event,
+            direction_confirmation: qualification.direction_confirmation,
+            displacement_ref: qualification.displacement_ref,
+            bos_ref: qualification.bos_ref,
+            setup_family: qualification.setup_family || null,
+            entry_zone_state: qualification.entry_zone_state,
+            first_retrace: qualification.first_retrace,
+            session_context: qualification.session,
+            sequence_evidence_refs: qualification.evidence_refs
+        } : {})
     };
 }
 
@@ -202,7 +224,12 @@ function collectCandidateRows(result, asOfMs, registry, context, blocks, options
         const key = fvgKey(record);
         const existing = registry.get(key);
         const firstObserved = existing?.first_observed_ms || asOfMs;
-        const snapshot = candidateSnapshot(record, asOfMs, firstObserved, result.zones.current_records?.some(item => fvgKey(item) === key), result.role_audit?.daily_bias);
+        const qualification = options.qualificationMap?.get(key) || null;
+        const selectedByV2 = result.zones.current_records?.some(item => fvgKey(item) === key) === true;
+        const selected = options.selectionMode && options.selectionMode !== 'CURRENT_V2'
+            ? selectedByV2 && qualification?.qualified === true
+            : selectedByV2;
+        const snapshot = candidateSnapshot(record, asOfMs, firstObserved, selected, result.role_audit?.daily_bias, qualification);
         if (!existing) registry.set(key, { ...snapshot, observations: 1, first_selected_at_ms: snapshot.selected_at_observation ? asOfMs : null });
         else {
             existing.observations += 1;
@@ -418,7 +445,7 @@ function simulateCandidate(candidate, series, options = {}) {
     };
 }
 
-function replayHistory({ context, series, symbol, from, to, precision, replayTimeframe = '5m', ambiguity = 'exclude', includeMarketStateDiagnostics = false, retainLastState = true, progress = null, optimized = true, resumeState = null, checkpoint = null }) {
+function replayHistory({ context, series, symbol, from, to, precision, replayTimeframe = '5m', ambiguity = 'exclude', includeMarketStateDiagnostics = false, retainLastState = true, progress = null, optimized = true, resumeState = null, checkpoint = null, sequenceMode = 'CURRENT_V2', symbolMetadata = {} }) {
     const fromMs = toMs(from);
     const toMsValue = toMs(to);
     const clocks = replayClocks(series, replayTimeframe, fromMs, toMsValue);
@@ -433,9 +460,31 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
         orderBlocksByBlock: new Map(),
         staticZoneRecords: new Map()
     } : null;
-    const marketStateHistory = includeMarketStateDiagnostics
-        ? build4HStateHistory({ symbol, candles: series['4h'] || [], context })
+    const sequenceEnabled = V2_ALCHEMIST_MODES.includes(sequenceMode) && sequenceMode !== 'CURRENT_V2';
+    const marketStateHistory = (includeMarketStateDiagnostics || sequenceEnabled)
+        ? build4HStateHistory({ symbol, candles: series['4h'] || [], context, symbolMetadata })
         : null;
+    const sequenceCounters = {
+        mode: sequenceMode,
+        replay_points: 0,
+        htf_storyline: 0,
+        valid_location: 0,
+        msnr_interaction: 0,
+        crt_formed: 0,
+        liquidity_swept: 0,
+        tbs_reclaimed: 0,
+        direction_confirmed: 0,
+        displacement_structure: 0,
+        fresh_entry_zone: 0,
+        first_retracement: 0,
+        execution_5m_confirmation: 0,
+        path_valid: 0,
+        selected: 0,
+        filled: 0,
+        outcomes: {},
+        rejection_reasons: {}
+    };
+    const sequenceCache = sequenceEnabled ? { candidates: new Map(), primitives: new Map() } : null;
     const marketStateSnapshots = Array.isArray(resumeState?.market_state_snapshots)
         ? resumeState.market_state_snapshots
         : [];
@@ -447,7 +496,33 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
         const currentPrice = Number(executionBars.at(-1)?.c);
         if (!Number.isFinite(currentPrice) || blocks.filter(block => ['1D', '4H', '1H'].includes(block.timeframe)).some(block => block.candles.length < 3)) continue;
         const result = analyzeVisibleHistory(context, { blocks, symbol, currentPrice, asOfMs, precision, cache: analysisCache });
-        collectCandidateRows(result, asOfMs, registry, context, blocks, { retainLastState, fvgCache: analysisCache?.fvgByBlock });
+        let qualificationMap = null;
+        if (sequenceEnabled) {
+            const unqualifiedOrUnseen = (result.zones.current_records || []).filter(record => {
+                const prior = registry.get(fvgKey(record));
+                return !prior || prior.first_selected_at_ms == null;
+            });
+            const qualification = buildQualificationIndex({
+                context,
+                blocks,
+                symbol,
+                asOfMs,
+                stateHistory: marketStateHistory,
+                symbolMetadata,
+                mode: sequenceMode,
+                records: unqualifiedOrUnseen,
+                keyOf: fvgKey,
+                cache: sequenceCache
+            });
+            qualificationMap = qualification.map;
+            sequenceCounters.replay_points += 1;
+            for (const [key, value] of Object.entries(qualification.counters || {})) {
+                if (key === 'rejection_reasons' || key === 'outcomes') {
+                    for (const [reason, count] of Object.entries(value || {})) sequenceCounters[key][reason] = (sequenceCounters[key][reason] || 0) + count;
+                } else if (Number.isFinite(value)) sequenceCounters[key] += value;
+            }
+        }
+        collectCandidateRows(result, asOfMs, registry, context, blocks, { retainLastState, fvgCache: analysisCache?.fvgByBlock, qualificationMap, selectionMode: sequenceMode });
         if (optimized) pruneReplayCaches(analysisCache);
         observations.push({ as_of_ms: asOfMs, candidate_count: result.zones.records.length, current_count: result.zones.current_records.length });
         if (marketStateHistory) {
@@ -483,6 +558,13 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
     const selected = candidates.filter(row => row.first_selected_at_ms != null);
     const rejected = candidates.filter(row => row.first_selected_at_ms == null);
     const trades = selected.map(candidate => ({ ...candidate, simulation: simulateCandidate(candidate, series, { executionTimeframe: replayTimeframe, ambiguity }) }));
+    if (sequenceEnabled) {
+        for (const trade of trades) {
+            sequenceCounters.filled += trade.simulation.fill_time_ms != null ? 1 : 0;
+            const outcome = trade.simulation.final_outcome || 'NOT_FILLED';
+            sequenceCounters.outcomes[outcome] = (sequenceCounters.outcomes[outcome] || 0) + 1;
+        }
+    }
     return {
         candidates,
         selected,
@@ -490,6 +572,7 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
         trades,
         observations,
         clocks: clocks.length,
+        ...(sequenceEnabled ? { sequence_diagnostics: sequenceCounters } : {}),
         ...(marketStateHistory ? { market_state: { history: marketStateHistory, snapshots: marketStateSnapshots } } : {})
     };
 }

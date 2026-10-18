@@ -98,6 +98,16 @@ function summarizeRows(rows) {
     };
 }
 
+function familyBreakdown(rows) {
+    const groups = new Map();
+    for (const row of rows) {
+        const family = row.setup_family || row.v2_sequence_setup_family || 'UNCLASSIFIED';
+        if (!groups.has(family)) groups.set(family, []);
+        groups.get(family).push(row);
+    }
+    return Object.fromEntries([...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([family, group]) => [family, summarizeRows(group)]));
+}
+
 function keyUtc(timestamp, unit) {
     const date = new Date(timestamp);
     if (unit === 'day') return date.toISOString().slice(0, 10);
@@ -196,7 +206,8 @@ async function runOne(entry, context, outputRoot, runId, options = {}) {
             const temporary = `${checkpointFile}.tmp`;
             fs.writeFileSync(temporary, JSON.stringify({ ...state, symbol: entry.symbol, updated_at: new Date().toISOString() }));
             fs.renameSync(temporary, checkpointFile);
-        } : null
+        } : null,
+        sequenceMode: options.sequenceMode || 'CURRENT_V2'
     });
     const trades = attachRegime(replay.trades, series);
     const summary = buildSummary({ ...replay, trades }, { symbol: entry.symbol, from: testFrom, to: testTo, provider: entry.provider, replay_timeframe: '5m', ambiguity: 'exclude', strategy_git_commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() });
@@ -204,7 +215,8 @@ async function runOne(entry, context, outputRoot, runId, options = {}) {
     const index = options.skipFeatureStudy ? null : buildFeatureIndex({ context, series, symbol: entry.symbol });
     const enriched = options.skipFeatureStudy ? [] : trades.filter(row => row.simulation?.fill_time_ms != null).map(trade => enrichTrade({ trade, index, symbol: entry.symbol }));
     const report = options.skipFeatureStudy ? null : analyzeRows(enriched);
-    const outputDir = path.join(outputRoot, `${runId}_${entry.symbol.replace(/[^A-Za-z0-9]+/g, '_')}_DEEP_V2`);
+    const modeLabel = options.sequenceMode && options.sequenceMode !== 'CURRENT_V2' ? `_${options.sequenceMode}` : '';
+    const outputDir = path.join(outputRoot, `${runId}_${entry.symbol.replace(/[^A-Za-z0-9]+/g, '_')}_DEEP_V2${modeLabel}`);
     fs.mkdirSync(outputDir, { recursive: true });
     const breakdowns = {
         monthly: groupedPerformance(trades, 'month'),
@@ -212,9 +224,11 @@ async function runOne(entry, context, outputRoot, runId, options = {}) {
         daily: groupedPerformance(trades, 'day'),
         rolling: { trade20: rollingExpectancy(trades, 20), trade50: rollingExpectancy(trades, 50) },
         bootstrap_mean_r_95: bootstrapMean(trades),
-        by_regime: Object.fromEntries(['TREND_UP', 'TREND_DOWN', 'RANGE_4H_25BAR'].map(regime => [regime, summarizeRows(trades.filter(row => row.diagnostic_regime_4h === regime))]))
+        by_regime: Object.fromEntries(['TREND_UP', 'TREND_DOWN', 'RANGE_4H_25BAR'].map(regime => [regime, summarizeRows(trades.filter(row => row.diagnostic_regime_4h === regime))])),
+        setup_families: familyBreakdown(trades)
     };
-    fs.writeFileSync(path.join(outputDir, 'config.json'), JSON.stringify({ entry: { ...entry, test_from: testFrom, test_to: testTo }, source: '1m artifacts aggregated to UTC 5m then higher timeframes', strategy: 'CURRENT_PRODUCTION_V2_UNCHANGED', simulator: 'backtest/replay.js', no_future_leakage: 'replay receives only closed aggregated candles at each 5m clock', }, null, 2));
+    fs.writeFileSync(path.join(outputDir, 'config.json'), JSON.stringify({ entry: { ...entry, test_from: testFrom, test_to: testTo }, source: '1m artifacts aggregated to UTC 5m then higher timeframes', strategy: options.sequenceMode && options.sequenceMode !== 'CURRENT_V2' ? `CURRENT_PRODUCTION_V2_WITH_SEQUENCE_QUALIFICATION_${options.sequenceMode}` : 'CURRENT_PRODUCTION_V2_UNCHANGED', simulator: 'backtest/replay.js', sequence_mode: options.sequenceMode || 'CURRENT_V2', no_future_leakage: 'replay receives only closed aggregated candles at each 5m clock', }, null, 2));
+    if (replay.sequence_diagnostics) fs.writeFileSync(path.join(outputDir, 'sequence-diagnostics.json'), JSON.stringify(replay.sequence_diagnostics, null, 2));
     fs.writeFileSync(path.join(outputDir, 'summary.json'), JSON.stringify(summary, null, 2));
     fs.writeFileSync(path.join(outputDir, 'breakdowns.json'), JSON.stringify(breakdowns, null, 2));
     fs.writeFileSync(path.join(outputDir, 'trades.json'), JSON.stringify(trades, null, 2));
@@ -223,7 +237,7 @@ async function runOne(entry, context, outputRoot, runId, options = {}) {
         fs.writeFileSync(path.join(outputDir, 'features-report.json'), JSON.stringify(report, null, 2));
         fs.writeFileSync(path.join(outputDir, 'features-enriched.json'), JSON.stringify(enriched, null, 2));
     }
-    console.log(JSON.stringify({ symbol: entry.symbol, outputDir, outcomes: summary.outcomes, feature_trade_count: enriched.length, breakdowns }, null, 2));
+    console.log(JSON.stringify({ symbol: entry.symbol, outputDir, sequence_mode: options.sequenceMode || 'CURRENT_V2', outcomes: summary.outcomes, sequence_diagnostics: replay.sequence_diagnostics || null, feature_trade_count: enriched.length, breakdowns }, null, 2));
     return { symbol: entry.symbol, outputDir, summary, breakdowns, report };
 }
 
@@ -242,7 +256,8 @@ async function main(argv = process.argv.slice(2)) {
     for (const entry of entries) results.push(await runOne(entry, context, args.outputRoot, runId, {
         skipFeatureStudy: args.skipFeatureStudy === true || args.skipFeatureStudy === 'true',
         checkpointDir: args.checkpointDir || null,
-        resume: args.resume === true || args.resume === 'true'
+        resume: args.resume === true || args.resume === 'true',
+        sequenceMode: args.sequenceMode || 'CURRENT_V2'
     }));
     fs.writeFileSync(path.join(args.outputRoot, `${runId}_DEEP_V2_MANIFEST.json`), JSON.stringify({ manifest: args.manifest, results: results.map(result => ({ symbol: result.symbol, outputDir: result.outputDir, outcomes: result.summary.outcomes, breakdowns: result.breakdowns })) }, null, 2));
     return results;
@@ -250,4 +265,4 @@ async function main(argv = process.argv.slice(2)) {
 
 if (require.main === module) main().catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });
 
-module.exports = { aggregateBars, summarizeRows, groupedPerformance, bootstrapMean, rollingExpectancy, parseArgs };
+module.exports = { aggregateBars, loadSeries, summarizeRows, groupedPerformance, bootstrapMean, rollingExpectancy, parseArgs };
