@@ -11910,6 +11910,83 @@ function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure
     };
 }
 
+function buildLiveModelRouterAuthority({ pair, price, historyCache, marketContext, symbolMetadata = {}, asOfMs }) {
+    const precision = getMarketSettings(pair, symbolMetadata).prec;
+    const blocks = ['1D', '4H', '1H', '15M', '5M']
+        .map(timeframe => ({ timeframe, candles: getClosedHistory(historyCache, timeframe) }))
+        .filter(block => block.candles.length > 0);
+    const crtAudit = buildRawTextDeterministicCrtAudit(blocks, pair, symbolMetadata, precision);
+    const tbsAudit = buildRawTextDeterministicTbsAudit(blocks, pair, symbolMetadata, precision);
+    const msnrAudit = buildRawTextDeterministicMsnrAudit(blocks, price, pair, symbolMetadata, precision);
+    const supplyDemand = buildRawTextSupplyDemandAudit(blocks, precision, asOfMs);
+    const rawContext = {
+        as_of_ms: asOfMs,
+        current_price: price,
+        daily_bias: marketContext.daily_bias || 'NEUTRAL',
+        atr_4h: marketContext.volatility?.atr_4h,
+        atr_1h: marketContext.volatility?.atr_1h,
+        pdh: marketContext.liquidity?.['4H']?.nearest_buy_side?.price,
+        pdl: marketContext.liquidity?.['4H']?.nearest_sell_side?.price,
+        pwh: marketContext.liquidity?.['4H']?.buy_side_levels?.at(-1)?.price,
+        pwl: marketContext.liquidity?.['4H']?.sell_side_levels?.at(-1)?.price,
+        session_levels: {}
+    };
+    const roleAudit = { daily_bias: marketContext.daily_bias || 'NEUTRAL' };
+    return buildRawTextHighProbabilityZones(blocks, price, precision, {
+        crt_records: crtAudit.records,
+        tbs_records: tbsAudit.records,
+        msnr_records: msnrAudit.records,
+        supply_demand_records: supplyDemand,
+        as_of_ms: asOfMs,
+        strategy_mode: 'MODEL_ROUTER'
+    }, rawContext, roleAudit);
+}
+
+function applyV2ModelRouterToLiveCandidates(result = {}, modelAuthority = {}, precision = 5) {
+    const authorized = modelAuthority.current_records || [];
+    const increment = 10 ** -precision;
+    const match = candidate => {
+        const direction = String(candidate.action || '').toUpperCase();
+        const model = authorized
+            .filter(record => String(record.candidate?.action || '').toUpperCase() === direction)
+            .sort((left, right) => Math.abs(Number(left.candidate.entry) - Number(candidate.entry)) - Math.abs(Number(right.candidate.entry) - Number(candidate.entry)))[0];
+        if (!model || Math.abs(Number(model.candidate.entry) - Number(candidate.entry)) > increment * 5) return null;
+        return {
+            ...candidate,
+            strategy_model: model.strategy_model || model.model_router?.strategy_model,
+            setup_class: model.setup_class || model.model_router?.setup_class,
+            model_router: model.model_router || null,
+            trade_qualified: candidate.trade_qualified !== false && candidate.TRADE_QUALIFIED !== 'NO',
+            TRADE_QUALIFIED: candidate.trade_qualified !== false && candidate.TRADE_QUALIFIED !== 'NO' ? 'YES' : 'NO'
+        };
+    };
+    const filterList = list => (list || []).map(match).filter(Boolean);
+    const existing = result.selectable_candidates || result.valid_candidates || [];
+    const selectable = filterList(existing);
+    const valid = filterList(result.valid_candidates || []);
+    const allValid = filterList(result.all_valid_candidates || result.valid_candidates || []);
+    const future = filterList(result.future_watch_candidates || []);
+    const lowQuality = filterList(result.low_quality_candidates || []);
+    const rejected = [...(result.rejected_candidates || [])];
+    for (const candidate of existing) {
+        if (!match(candidate)) rejected.push({
+            id: candidate.id || candidate.candidate_id || null,
+            rejection_code: 'MODEL_ROUTER_INCOMPLETE',
+            rejection_reasons: ['NO_COMPLETE_MODEL']
+        });
+    }
+    return {
+        ...result,
+        selectable_candidates: selectable,
+        valid_candidates: valid,
+        all_valid_candidates: allValid,
+        future_watch_candidates: future,
+        low_quality_candidates: lowQuality,
+        rejected_candidates: rejected,
+        model_router: modelAuthority.model_router || null
+    };
+}
+
 function buildLiveMarketContext({ pair, price, historyCache, indicators, patterns, enhancedAnalysis, holistic, entryContext, as_of_ms = null, quote_snapshot = null, snapshot_completeness = null }) {
     pair = normalizeCanonicalMarketSymbol(pair);
     const symbolMetadata = getSymbolMetadata(pair, quote_snapshot?.symbol_metadata || {});
@@ -12197,11 +12274,26 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             symbolMetadata
         });
     }
-    const adaptiveSetupResult = mergeAdaptiveSetupCandidateResults(
+    let adaptiveSetupResult = mergeAdaptiveSetupCandidateResults(
         [historicalAdaptiveSetupResult, currentAdaptiveSetupResult],
         price,
         normalizeTimestampUTC(marketContext.as_of_time || marketContext.as_of_ms || marketContext.scan_as_of_ms)
     );
+    let liveModelRouterDiagnostics = null;
+    if (rawTextV2StrategyMode() === 'MODEL_ROUTER') {
+        const modelAuthority = buildLiveModelRouterAuthority({
+            pair,
+            price,
+            historyCache,
+            marketContext,
+            symbolMetadata,
+            asOfMs: now.getTime()
+        });
+        adaptiveSetupResult = applyV2ModelRouterToLiveCandidates(adaptiveSetupResult, modelAuthority, prec);
+        liveModelRouterDiagnostics = modelAuthority.model_router || null;
+        marketContext.model_router = liveModelRouterDiagnostics;
+        marketContext.strategy_mode = 'MODEL_ROUTER';
+    }
     const allStrategySetups = [...strategySetups, ...currentRegeneration.setups];
     const allStrategyExecutionZones = getStrategyExecutionZones(allStrategySetups);
     const allValidationZones = [...(zones || []), ...allStrategyExecutionZones];
@@ -12283,6 +12375,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             spread: Number.isFinite(quote_snapshot?.spread) ? Number(quote_snapshot.spread) : null
         },
         asset_class: marketState.asset_class,
+        strategy_mode: rawTextV2StrategyMode(),
+        model_router: liveModelRouterDiagnostics,
         data_quality: dataQuality,
         snapshot_completeness: snapshotCompleteness,
         market_open: marketState.is_market_open,
@@ -14270,6 +14364,473 @@ function rawTextExecutionSupport(candidateRecord, blocks = [], crtRecords = [], 
     return { ...support, score };
 }
 
+// ---------------------------------------------------------------------------
+// V2 model router
+// ---------------------------------------------------------------------------
+// The public methodology used here is intentionally explicit about its
+// assumptions.  CRT means a closed-candle range followed by a boundary raid
+// and a close-back.  TBS means a failed breakout/reclaim of a known reference.
+// MSNR is a location/role-transition fact.  None of those facts is allowed to
+// authorize a trade by itself.  A model must first be complete, then an
+// execution zone created after that model's confirmation may be admitted.
+// This is a V2 authority layer, not a new strategy or a score replacement.
+
+function rawTextV2StrategyMode(strategyAudits = {}) {
+    const configured = strategyAudits.strategy_mode
+        || (typeof window !== 'undefined' ? window.__V2_STRATEGY_MODE__ : null)
+        || (typeof globalThis !== 'undefined' ? globalThis.__V2_STRATEGY_MODE__ : null)
+        || 'LEGACY';
+    return String(configured).toUpperCase() === 'LEGACY' ? 'LEGACY' : 'MODEL_ROUTER';
+}
+
+function rawTextModelEventTime(record = {}) {
+    return rawTextPacketTimestamp(record.first_knowable_ms
+        ?? record.first_knowable_time
+        ?? record.confirmation_time
+        ?? record.reclaim_time
+        ?? record.event_time
+        ?? record.source_time);
+}
+
+function rawTextModelDirection(record = {}) {
+    const value = String(record.direction || record.type || record.action || '').toUpperCase();
+    if (value.includes('BUY') || value.includes('BULL')) return 'BUY';
+    if (value.includes('SELL') || value.includes('BEAR')) return 'SELL';
+    return null;
+}
+
+function rawTextModelRange(record = {}) {
+    const low = Number(record.range_low ?? record.zone_low ?? record.low);
+    const high = Number(record.range_high ?? record.zone_high ?? record.high);
+    return Number.isFinite(low) && Number.isFinite(high) && high >= low ? { low, high } : null;
+}
+
+function rawTextModelStableId(prefix, parts = []) {
+    return [prefix, ...parts.map(value => String(value ?? 'NA'))].join(':');
+}
+
+function buildRawTextDeterministicTbsAudit(blocks = [], pairLocal = pair, symbolMetadata = {}, precision = 2) {
+    const records = [];
+    for (const block of blocks) {
+        const events = detectTurtleSoupEvents(block.candles, block.timeframe, pairLocal, symbolMetadata);
+        for (const event of events) {
+            const firstKnowableMs = rawTextPacketTimestamp(event.first_knowable_time ?? event.reclaim_time ?? event.event_time);
+            const direction = rawTextModelDirection(event);
+            if (!direction || !Number.isFinite(firstKnowableMs)) continue;
+            const ref = rawTextModelStableId('TBS', [String(block.timeframe).toUpperCase(), direction, firstKnowableMs, event.reference_bar_index]);
+            records.push({
+                ref,
+                tbs_id: ref,
+                timeframe: String(block.timeframe).toUpperCase(),
+                direction,
+                liquidity_ref: rawTextModelStableId('LIQUIDITY', [event.reference_type, event.keyLevel, event.reference_bar_index]),
+                reference_price: Number(event.keyLevel),
+                break_time_ms: rawTextPacketTimestamp(event.sweep_time),
+                sweep_time_ms: rawTextPacketTimestamp(event.sweep_time),
+                sweep_extreme: Number(event.sweep_extreme),
+                reclaim_time_ms: rawTextPacketTimestamp(event.reclaim_time),
+                confirmation_time_ms: firstKnowableMs,
+                first_knowable_ms: firstKnowableMs,
+                status: event.invalidated ? 'EXPIRED' : event.reclaim_confirmed ? 'CONFIRMED' : 'SWEPT',
+                subtype: event.reference_type === 'CRT_BOUNDARY' ? 'TURTLE_SOUP_RECLAIM' : 'FAILED_BREAKOUT',
+                event
+            });
+        }
+    }
+    const lines = records.map(record => [
+        'TBS: TF=' + record.timeframe.toLowerCase(),
+        'DIRECTION=' + record.direction,
+        'REFERENCE=' + rawTextPacketFormatNumber(record.reference_price, precision),
+        'SWEEP=' + rawTextPacketFormatNumber(record.sweep_extreme, precision),
+        'RECLAIM=' + (record.reclaim_time_ms ? new Date(record.reclaim_time_ms).toISOString() : 'NONE'),
+        'STATUS=' + record.status,
+        'SUBTYPE=' + record.subtype,
+        'TBS_REF=' + record.ref
+    ].join(' '));
+    return { records, lines: lines.length ? lines : ['NONE'] };
+}
+
+function rawTextModelStructureEvents(blocks = [], direction, minimumTime = 0, asOfMs = null, performanceCache = null) {
+    const result = [];
+    for (const block of blocks) {
+        const timeframe = String(block.timeframe || '').toUpperCase();
+        if (!['1H', '15M', '5M'].includes(timeframe)) continue;
+        const last = block.candles?.at(-1);
+        const cacheKey = `${timeframe}:${block.candles?.length || 0}:${last?.t || last?.timestamp || ''}:${direction}`;
+        const cache = performanceCache?.modelStructureEvents;
+        let event = cache?.get(cacheKey);
+        if (cache && cache.has(cacheKey)) event = cache.get(cacheKey);
+        else {
+            event = detectConfirmedStructuralBreak(block.candles, direction, timeframe, 2);
+            // The public model permits a close-back/continuation displacement
+            // to be the directional confirmation even when the stricter
+            // confirmed-pivot compiler has not emitted a new break on the
+            // latest candle.  This fallback still uses only closed candles
+            // and requires both a directional structure read and displacement.
+            if (!event) {
+                const closed = closedStructureCandles(block.candles);
+                const mss = detectMSS(closed);
+                const latestIndex = closed.length - 1;
+                const displacement = getDisplacementMetricsAtIndex(closed, latestIndex, direction);
+                const mssDirection = mss?.type === 'BULL' ? 'BUY' : mss?.type === 'BEAR' ? 'SELL' : null;
+                if (mssDirection === direction && displacement?.detected) {
+                    event = {
+                        event_type: 'MSS',
+                        direction,
+                        index: latestIndex,
+                        timeframe,
+                        level: Number(mss.level),
+                        confirmation_time: candleTimestamp(closed[latestIndex], latestIndex, timeframe),
+                        first_knowable_time: candleTimestamp(closed[latestIndex], latestIndex, timeframe),
+                        event_time: candleTimestamp(closed[latestIndex], latestIndex, timeframe),
+                        displacement_confirmed: true,
+                        displacement_id: rawTextModelStableId('DISPLACEMENT', [timeframe, latestIndex, direction])
+                    };
+                }
+            }
+            if (cache) cache.set(cacheKey, event || null);
+        }
+        if (!event || !event.displacement_confirmed) continue;
+        const eventTime = rawTextPacketTimestamp(event.first_knowable_time || event.event_time);
+        if (!Number.isFinite(eventTime) || eventTime < minimumTime || (Number.isFinite(asOfMs) && eventTime > asOfMs)) continue;
+        result.push({
+            structure_event_id: rawTextModelStableId('STRUCTURE', [timeframe, direction, eventTime, event.level]),
+            type: event.event_type === 'MSS' ? 'MSS' : 'BOS',
+            direction,
+            timeframe,
+            first_knowable_ms: eventTime,
+            break_price: Number(event.level),
+            displacement_ref: event.displacement_id,
+            event
+        });
+    }
+    return result.sort((left, right) => right.first_knowable_ms - left.first_knowable_ms);
+}
+
+function rawTextModelLocationContext(blocks = [], direction, crtRecords = [], msnrRecords = [], supplyDemandRecords = [], marketContext = {}, asOfMs = null) {
+    const validAt = record => {
+        const time = rawTextModelEventTime(record);
+        return (!Number.isFinite(time) || !Number.isFinite(asOfMs) || time <= asOfMs)
+            && String(record.status || '').toUpperCase() !== 'INVALIDATED'
+            && String(record.status || '').toUpperCase() !== 'EXPIRED';
+    };
+    const msnr = msnrRecords.filter(record => validAt(record) && rawTextModelDirection(record) === direction);
+    const crt = crtRecords.filter(record => validAt(record) && rawTextModelDirection(record) === direction && record.detected !== false);
+    const supportingType = direction === 'BUY' ? 'DEMAND' : 'SUPPLY';
+    const locationRecords = [
+        ...msnr.map(record => ({ source: 'MSNR', ref: record.ref, record })),
+        ...supplyDemandRecords
+            .filter(record => validAt(record) && rawTextModelDirection(record) === direction && String(record.type || '').toUpperCase() === supportingType)
+            .map(record => ({ source: 'SUPPLY_DEMAND', ref: record.ref || record.id, record })),
+        ...crt.map(record => ({ source: 'CRT', ref: record.ref, record }))
+    ];
+    const htfBlocks = blocks.filter(block => ['4H', '1H'].includes(String(block.timeframe).toUpperCase()));
+    const states = htfBlocks.map(block => ({
+        timeframe: String(block.timeframe).toUpperCase(),
+        state: confirmedStructuralState(block.candles, 2).state
+    }));
+    const alignedState = states.some(item => item.state === (direction === 'BUY' ? 'BULLISH' : 'BEARISH'));
+    const dailyBias = String(marketContext.daily_bias || '').toUpperCase();
+    const alignedDaily = dailyBias === (direction === 'BUY' ? 'BULLISH' : 'BEARISH');
+    const reversalLocation = locationRecords.length > 0;
+    const contextType = alignedState || alignedDaily
+        ? (direction === 'BUY' ? 'BULLISH_CONTINUATION' : 'BEARISH_CONTINUATION')
+        : reversalLocation
+            ? (direction === 'BUY' ? 'BULLISH_REVERSAL_LOCATION' : 'BEARISH_REVERSAL_LOCATION')
+            : 'NEUTRAL';
+    return {
+        direction,
+        context_type: contextType,
+        aligned_state: alignedState,
+        aligned_daily: alignedDaily,
+        location_records: locationRecords,
+        primary_location: locationRecords[0] || null,
+        states,
+        valid: alignedState || alignedDaily || reversalLocation
+    };
+}
+
+function rawTextModelEventsMatch(left = {}, right = {}, maxAgeMs = 12 * 60 * 60 * 1000) {
+    const leftTime = rawTextModelEventTime(left);
+    const rightTime = rawTextModelEventTime(right);
+    if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime) || Math.abs(leftTime - rightTime) > maxAgeMs) return false;
+    const leftRange = rawTextModelRange(left);
+    const rightRange = rawTextModelRange(right);
+    if (!leftRange || !rightRange) return false;
+    return rawTextIntervalsOverlap(leftRange.low, leftRange.high, rightRange.low, rightRange.high)
+        || Math.abs(Number(left.sweep_extreme ?? left.reference_price) - Number(right.sweep_extreme ?? right.reference_price)) <= Math.max(Math.abs(leftRange.high - leftRange.low), Math.abs(rightRange.high - rightRange.low));
+}
+
+function rawTextModelFindZone(executionRecords = [], direction, confirmationTime, asOfMs, context = {}, performanceCache = null) {
+    const action = direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT';
+    const eligible = executionRecords.filter(record => {
+        const recordDirection = record.candidate?.action === 'BUY_LIMIT' ? 'BUY' : record.candidate?.action === 'SELL_LIMIT' ? 'SELL' : null;
+        const formationTime = rawTextPacketTimestamp(record.fvg?.c3);
+        return recordDirection === direction
+            && Number.isFinite(formationTime)
+            && formationTime >= confirmationTime
+            && formationTime <= asOfMs
+            && record.fvg?.status !== 'FULLY_TRAVERSED'
+            && !['STALE_TP2_BEFORE_ENTRY', 'EXPIRED_TP3_BEFORE_ENTRY', 'DELIVERED_TP1_BEFORE_ENTRY', 'TOO_FAR'].includes(record.current?.opportunity_status)
+            && record.delivery?.entry_state === 'PENDING_UNFILLED';
+    }).sort((left, right) => rawTextPacketTimestamp(left.fvg.c3) - rawTextPacketTimestamp(right.fvg.c3) || String(left.fvg.c1).localeCompare(String(right.fvg.c1)));
+    for (const record of eligible) {
+        const block = record.block;
+        const zoneLow = Number(record.fvg.status === 'PARTIAL' ? record.fvg.remaining_lower : record.fvg.lower);
+        const zoneHigh = Number(record.fvg.status === 'PARTIAL' ? record.fvg.remaining_upper : record.fvg.upper);
+        const candles = block?.candles || [];
+        const last = candles.at(-1);
+        const obKey = `${String(block?.timeframe || '').toUpperCase()}:${candles.length}:${last?.t || last?.timestamp || ''}:${direction}`;
+        const obCache = performanceCache?.modelOrderBlocks;
+        let detectedOrderBlocks = obCache?.get(obKey);
+        if (obCache && obCache.has(obKey)) detectedOrderBlocks = obCache.get(obKey);
+        else {
+            detectedOrderBlocks = detectOrderBlocks(candles, direction);
+            if (obCache) obCache.set(obKey, detectedOrderBlocks);
+        }
+        const orderBlocks = detectedOrderBlocks.filter(ob => {
+            const formation = rawTextPacketTimestamp(ob.first_knowable_time || ob.formation_time);
+            return Number.isFinite(formation)
+                && formation >= confirmationTime
+                && formation <= rawTextPacketTimestamp(record.fvg.c3)
+                && rawTextIntervalsOverlap(zoneLow, zoneHigh, Number(ob.low), Number(ob.high));
+        });
+        const zone = {
+            entry_zone_id: rawTextModelStableId('ENTRY_ZONE', [direction, record.fvg.timeframe, record.fvg.c1, record.fvg.c3]),
+            type: orderBlocks.length ? 'OB+FVG' : 'FVG',
+            fvg_ref: rawTextModelStableId('FVG', [record.fvg.timeframe, record.fvg.c1, record.fvg.c2, record.fvg.c3]),
+            ob: orderBlocks[0] || null,
+            low: zoneLow,
+            high: zoneHigh,
+            formation_time: rawTextPacketTimestamp(record.fvg.c3),
+            first_retrace: record.delivery?.entry_state === 'PENDING_UNFILLED',
+            freshness: record.delivery?.delivery_status || record.fvg.status
+        };
+        if (!zone.first_retrace) continue;
+        return { record, zone };
+    }
+    return null;
+}
+
+function rawTextModelObjective(direction, entry, model, blocks = [], marketContext = {}) {
+    const values = [];
+    if (model.crt?.event) {
+        const range = rawTextModelRange(model.crt);
+        if (range) values.push({ price: direction === 'BUY' ? range.high : range.low, type: 'CRT_OPPOSITE_RANGE', ref: model.crt.ref });
+    }
+    const fourH = blocks.find(block => String(block.timeframe).toUpperCase() === '4H');
+    if (fourH) {
+        const swings = findSwings(fourH.candles, 2);
+        const levels = direction === 'BUY' ? swings.H || [] : swings.L || [];
+        for (const swing of levels.slice().reverse()) values.push({ price: Number(swing.p), type: 'HTF_SWING', ref: rawTextModelStableId('SWING', [fourH.timeframe, direction, swing.i, swing.p]) });
+    }
+    const sessionLevels = Object.values(marketContext.session_levels || {});
+    for (const level of sessionLevels) values.push({ price: Number(direction === 'BUY' ? level.high : level.low), type: 'SESSION_LIQUIDITY', ref: level.ref || 'SESSION' });
+    values.push(
+        { price: Number(direction === 'BUY' ? marketContext.pdh : marketContext.pdl), type: direction === 'BUY' ? 'PDH' : 'PDL', ref: direction === 'BUY' ? 'PDH' : 'PDL' },
+        { price: Number(direction === 'BUY' ? marketContext.pwh : marketContext.pwl), type: direction === 'BUY' ? 'PWH' : 'PWL', ref: direction === 'BUY' ? 'PWH' : 'PWL' }
+    );
+    const valid = values.filter(item => Number.isFinite(item.price) && (direction === 'BUY' ? item.price > entry : item.price < entry));
+    valid.sort((left, right) => Math.abs(left.price - entry) - Math.abs(right.price - entry) || String(left.ref).localeCompare(String(right.ref)));
+    return valid[0] || null;
+}
+
+function rawTextModelGeometry(candidate, direction, objective) {
+    const entry = Number(candidate.entry);
+    const stop = Number(candidate.stop_loss);
+    const targets = [candidate.tp1, candidate.tp2, candidate.tp3].map(Number).filter(Number.isFinite);
+    if (!Number.isFinite(entry) || !Number.isFinite(stop) || !objective || !Number.isFinite(Number(objective.price))) return { valid: false, reason: 'INVALID_TARGET_DIRECTION' };
+    const validStop = direction === 'BUY' ? stop < entry : stop > entry;
+    const validTargets = targets.filter(target => direction === 'BUY' ? target > entry : target < entry);
+    const validObjective = direction === 'BUY' ? objective.price > entry : objective.price < entry;
+    if (!validStop || !validObjective || validTargets.length === 0) return { valid: false, reason: 'INVALID_TARGET_DIRECTION' };
+    return { valid: true, risk: Math.abs(entry - stop), validTargets };
+}
+
+function rawTextModelBuildCandidate(model, zoneMatch, direction, blocks, marketContext, precision, pathRecords, asOfMs) {
+    const base = zoneMatch.record.candidate;
+    const increment = 10 ** -precision;
+    const sweepExtreme = Number(model.tbs?.sweep_extreme ?? model.crt?.event?.sweep_extreme ?? model.msnr?.level?.structural_invalidation);
+    const candidate = { ...base };
+    if (Number.isFinite(sweepExtreme)) candidate.stop_loss = rawTextPacketRoundPrice(direction === 'BUY' ? sweepExtreme - increment : sweepExtreme + increment, precision);
+    const objective = rawTextModelObjective(direction, Number(candidate.entry), model, blocks, marketContext);
+    if (!objective) return { valid: false, reason: 'NO_VALID_OBJECTIVE' };
+    const baseTargets = [base.tp1, base.tp2, base.tp3].map(Number).filter(Number.isFinite);
+    const structuralIntermediates = [model.crt?.event ? Number(model.crt.event.range_mid) : NaN]
+        .filter(value => Number.isFinite(value) && (direction === 'BUY' ? value > candidate.entry && value < objective.price : value < candidate.entry && value > objective.price));
+    const pathCompatibleFallbacks = baseTargets.filter(value => direction === 'BUY'
+        ? value > candidate.entry && value < objective.price
+        : value < candidate.entry && value > objective.price);
+    const intermediates = [...new Set([...pathCompatibleFallbacks, ...structuralIntermediates])]
+        .sort((left, right) => direction === 'BUY' ? left - right : right - left);
+    // The model objective is always the final target used.  Fixed-R levels
+    // can survive only as deterministic interim targets on the path to it.
+    const targetValues = [...intermediates.slice(0, 2), objective.price];
+    if (targetValues.length === 0) return { valid: false, reason: 'INVALID_TARGET_DIRECTION' };
+    candidate.tp1 = rawTextPacketRoundPrice(targetValues[0], precision);
+    candidate.tp2 = targetValues[1] == null ? null : rawTextPacketRoundPrice(targetValues[1], precision);
+    candidate.tp3 = targetValues[2] == null ? null : rawTextPacketRoundPrice(targetValues[2], precision);
+    candidate.final_target_used = candidate.tp3 ?? candidate.tp2 ?? candidate.tp1;
+    candidate.structural_objective = objective;
+    const geometry = rawTextModelGeometry(candidate, direction, objective);
+    if (!geometry.valid) return geometry;
+    const path = build4HPathQualityAudit({ direction, entry: candidate.entry, stop_loss: candidate.stop_loss, tp1: candidate.tp1 }, pathRecords, asOfMs);
+    if (!path.trade_qualified) return { valid: false, reason: 'ENTRY_INSIDE_OPPOSING_4H', path };
+    const routed = {
+        ...zoneMatch.record,
+        candidate,
+        path_quality: path,
+        strategy_model: model.strategy_model,
+        setup_class: model.setup_class,
+        model_router: {
+            qualified: true,
+            strategy_model: model.strategy_model,
+            setup_class: model.setup_class,
+            htf_context: model.htf_context,
+            msnr_ref: model.msnr?.ref || null,
+            crt_ref: model.crt?.ref || null,
+            tbs_ref: model.tbs?.ref || null,
+            liquidity_ref: model.tbs?.liquidity_ref || model.crt?.ref || null,
+            structure_ref: model.structure?.structure_event_id || null,
+            displacement_ref: model.structure?.displacement_ref || null,
+            entry_zone_ref: zoneMatch.zone.entry_zone_id,
+            first_retrace: 'YES',
+            objective_ref: objective.ref,
+            objective_type: objective.type,
+            objective_price: objective.price,
+            blockers: [],
+            chronology: model.chronology
+        }
+    };
+    routed.current = buildRawTextCurrentOpportunityAssessment(routed, blocks, marketContext.current_price, marketContext, asOfMs, precision);
+    routed.current_score = (Number(routed.score) || 0) + (routed.current.currentness || 0) + (routed.current.distance_penalty || 0);
+    return { valid: true, record: routed };
+}
+
+function buildV2ModelRouter({ blocks = [], currentPrice = null, precision = 2, strategyAudits = {}, marketContext = {}, executionRecords = [], performanceCache = null } = {}) {
+    const asOfMs = Number(strategyAudits.as_of_ms ?? marketContext.as_of_ms);
+    const crtRecords = strategyAudits.crt_records || [];
+    const tbsRecords = strategyAudits.tbs_records || [];
+    const msnrRecords = strategyAudits.msnr_records || [];
+    const supplyDemandRecords = strategyAudits.supply_demand_records || [];
+    const pathRecords = [...supplyDemandRecords, ...msnrRecords, ...(strategyAudits.path_records || [])];
+    const locationContexts = new Map();
+    const diagnostics = {
+        strategy_mode: 'MODEL_ROUTER',
+        active_models: [],
+        candidates_examined: executionRecords.length,
+        qualified_candidates: 0,
+        rejection_reasons: {},
+        stage_counts: { contexts: 0, locations: 0, crt: 0, tbs: 0, msnr: 0, confirmations: 0, zones: 0, retracements: 0, candidates: 0 },
+        models: {}
+    };
+    const reject = reason => { diagnostics.rejection_reasons[reason] = (diagnostics.rejection_reasons[reason] || 0) + 1; };
+    const addModel = (model, direction, triggerTime) => {
+        let htfContext = locationContexts.get(direction);
+        if (!htfContext) {
+            htfContext = rawTextModelLocationContext(blocks, direction, crtRecords, msnrRecords, supplyDemandRecords, marketContext, asOfMs);
+            locationContexts.set(direction, htfContext);
+        }
+        diagnostics.stage_counts.contexts += htfContext.valid ? 1 : 0;
+        diagnostics.stage_counts.locations += htfContext.location_records.length > 0 ? 1 : 0;
+        if (!htfContext.valid) { reject('NO_HTF_CONTEXT'); return; }
+        let structure = rawTextModelStructureEvents(blocks, direction, triggerTime, asOfMs, performanceCache).find(event => event.timeframe === '15M' || event.timeframe === '1H');
+        // A CRT close-back is itself a deterministic confirmation candle when
+        // the existing detector records that the post-reclaim move delivered
+        // displacement/MSS.  Likewise, a confirmed TBS reclaim can be the
+        // trigger for a later execution zone.  These are explicit model
+        // confirmations; they are not a generic score bypass.
+        if (!structure && model.crt?.event?.reclaim_time) {
+            structure = {
+                structure_event_id: rawTextModelStableId('CRT_CONFIRMATION', [model.crt.ref, direction]),
+                type: 'CRT_RECLAIM',
+                direction,
+                timeframe: model.crt.timeframe,
+                first_knowable_ms: triggerTime,
+                break_price: Number(model.crt.event.reclaim_level),
+                displacement_ref: null
+            };
+        }
+        if (!structure && model.tbs?.status === 'CONFIRMED') {
+            structure = {
+                structure_event_id: rawTextModelStableId('TBS_CONFIRMATION', [model.tbs.ref, direction]),
+                type: 'TBS_RECLAIM',
+                direction,
+                timeframe: model.tbs.timeframe,
+                first_knowable_ms: triggerTime,
+                break_price: Number(model.tbs.reference_price),
+                displacement_ref: null
+            };
+        }
+        if (!structure) { reject('NO_DIRECTIONAL_CONFIRMATION'); return; }
+        diagnostics.stage_counts.confirmations += 1;
+        const confirmationTime = Math.max(triggerTime, structure.first_knowable_ms);
+        const zoneMatch = rawTextModelFindZone(executionRecords, direction, confirmationTime, asOfMs, htfContext, performanceCache);
+        if (!zoneMatch) { reject('NO_CAUSAL_EXECUTION_ZONE'); return; }
+        diagnostics.stage_counts.zones += 1;
+        diagnostics.stage_counts.retracements += 1;
+        const enriched = rawTextModelBuildCandidate({
+            ...model,
+            direction,
+            structure,
+            htf_context: htfContext.context_type,
+            chronology: { trigger_time: triggerTime, confirmation_time: confirmationTime, zone_time: zoneMatch.zone.formation_time }
+        }, zoneMatch, direction, blocks, { ...marketContext, current_price: currentPrice }, precision, pathRecords, asOfMs);
+        if (!enriched.valid) { reject(enriched.reason || 'MODEL_CANDIDATE_INVALID'); return; }
+        diagnostics.stage_counts.candidates += 1;
+        diagnostics.models[model.strategy_model] = (diagnostics.models[model.strategy_model] || 0) + 1;
+        return enriched.record;
+    };
+    const routed = [];
+    const validCrt = crtRecords.filter(record => record.status === 'VALID' && record.detected !== false && rawTextModelDirection(record) && rawTextModelEventTime(record) <= asOfMs);
+    const validTbs = tbsRecords.filter(record => record.status === 'CONFIRMED' && rawTextModelEventTime(record) <= asOfMs);
+    const validMsnr = msnrRecords.filter(record => ['VALID', 'TESTED', 'FRESH'].includes(String(record.status).toUpperCase()) && rawTextModelDirection(record) && rawTextModelEventTime(record) <= asOfMs);
+    diagnostics.stage_counts.crt = validCrt.length;
+    diagnostics.stage_counts.tbs = validTbs.length;
+    diagnostics.stage_counts.msnr = validMsnr.length;
+    for (const crt of validCrt) {
+        const direction = rawTextModelDirection(crt);
+        const relatedTbs = validTbs.find(tbs => rawTextModelDirection(tbs) === direction && rawTextModelEventsMatch(crt, tbs));
+        const triggerTime = rawTextModelEventTime(relatedTbs || crt);
+        const common = { crt, tbs: relatedTbs || { ...crt.event, reference_type: 'CRT_BOUNDARY', sweep_extreme: crt.event?.sweep_extreme, liquidity_ref: crt.ref } };
+        const first = addModel({ strategy_model: 'CRT_TBS', setup_class: 'CRT+TBS+EXECUTION_ZONE', ...common }, direction, triggerTime);
+        if (first) routed.push(first);
+        const second = addModel({ strategy_model: 'CRT_LTF_CONFIRMATION', setup_class: 'CRT+EXECUTION_ZONE', crt }, direction, triggerTime);
+        if (second) routed.push(second);
+    }
+    for (const msnr of validMsnr) {
+        const direction = rawTextModelDirection(msnr);
+        const relatedTbs = validTbs.find(tbs => rawTextModelDirection(tbs) === direction && rawTextModelEventsMatch(msnr, tbs));
+        const relatedCrt = validCrt.find(crt => rawTextModelDirection(crt) === direction && rawTextModelEventsMatch(msnr, crt));
+        if (relatedCrt) {
+            const record = addModel({ strategy_model: 'MSNR_CRT', setup_class: 'MSNR+CRT+EXECUTION_ZONE', msnr, crt: relatedCrt, tbs: null }, direction, Math.max(rawTextModelEventTime(msnr), rawTextModelEventTime(relatedCrt)));
+            if (record) routed.push(record);
+        }
+        if (relatedTbs) {
+            const record = addModel({ strategy_model: 'MSNR_TBS', setup_class: 'MSNR+TBS+EXECUTION_ZONE', msnr, tbs: relatedTbs }, direction, Math.max(rawTextModelEventTime(msnr), rawTextModelEventTime(relatedTbs)));
+            if (record) routed.push(record);
+        }
+        const reaction = Number(msnr.level?.reaction_count ?? msnr.level?.reaction_strength ?? 0) > 0;
+        if (reaction) {
+            const record = addModel({ strategy_model: 'MSNR_REACTION', setup_class: 'MSNR+REACTION+EXECUTION_ZONE', msnr }, direction, rawTextModelEventTime(msnr));
+            if (record) routed.push(record);
+        }
+        const single = relatedTbs ? null : addModel({ strategy_model: 'MSNR_SINGLE_MOVE', setup_class: 'MSNR+LIQUIDITY+EXECUTION_ZONE', msnr, tbs: relatedTbs }, direction, rawTextModelEventTime(msnr));
+        if (single) routed.push(single);
+    }
+    const deduped = new Map();
+    for (const record of routed) {
+        const key = `${record.candidate.action}:${record.fvg?.c1}:${record.fvg?.c3}`;
+        const previous = deduped.get(key);
+        if (!previous || (record.current_score || 0) > (previous.current_score || 0) || String(record.strategy_model).localeCompare(String(previous.strategy_model)) < 0) deduped.set(key, record);
+    }
+    const records = [...deduped.values()].sort((left, right) => (right.current_score || 0) - (left.current_score || 0) || String(left.strategy_model).localeCompare(String(right.strategy_model)));
+    diagnostics.qualified_candidates = records.length;
+    diagnostics.active_models = [...new Set(records.map(record => record.strategy_model))].sort();
+    if (records.length === 0) reject('NO_COMPLETE_MODEL');
+    return { records, diagnostics };
+}
+
 function rawTextSupplyDemandConfluence(fvg, candidate, records = []) {
     const direction = candidate.action === 'BUY_LIMIT' ? 'BUY' : 'SELL';
     const lower = fvg.status === 'PARTIAL' ? Number(fvg.remaining_lower) : Number(fvg.lower);
@@ -14587,6 +15148,21 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
             records.push(record);
         }
     }
+    const legacyRecords = records.slice();
+    let modelRouterDiagnostics = null;
+    if (rawTextV2StrategyMode(strategyAudits) === 'MODEL_ROUTER') {
+        const routed = buildV2ModelRouter({
+            blocks,
+            currentPrice,
+            precision,
+            strategyAudits,
+            marketContext,
+            executionRecords: legacyRecords,
+            performanceCache
+        });
+        modelRouterDiagnostics = routed.diagnostics;
+        records.splice(0, records.length, ...routed.records);
+    }
     records.sort((left, right) => right.score - left.score || (right.confluence.crt.length + right.confluence.msnr.length) - (left.confluence.crt.length + left.confluence.msnr.length));
     const ranked = records.slice(0, 3).map((record, index) => ({ ...record, rank: index + 1 }));
     const lines = ranked.length ? ranked.map(record => {
@@ -14630,6 +15206,9 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
             'FORMATION_AGE_HOURS=' + rawTextPacketFormatNumber(record.current.formation_age_hours, 2),
             'FORMATION_AGE_PRIMARY_BARS=' + rawTextPacketFormatNumber(record.current.formation_age_primary_bars, 2),
             'STATUS=STRUCTURAL_CANDIDATE',
+            'STRATEGY_MODEL=' + (record.strategy_model || 'LEGACY_FVG'),
+            'SETUP_CLASS=' + (record.setup_class || 'FVG'),
+            'MODEL_QUALIFIED=' + (record.model_router?.qualified ? 'YES' : 'NO'),
             'DAILY_ALIGN=' + record.daily_aligned,
             'CRT=' + (confluence.crt.length ? 'YES' : 'NO'),
             'MSNR=' + (confluence.msnr.length ? 'YES' : 'NO'),
@@ -14689,11 +15268,25 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
         'ENTRY_DISTANCE_ATR=' + rawTextPacketFormatNumber(record.current.entry_distance_atr, 2),
         'APPROACH_STATE=' + record.current.approach_state,
         'FRESHNESS=' + record.delivery.delivery_status
+        , 'STRATEGY_MODEL=' + (record.strategy_model || 'LEGACY_FVG')
+        , 'SETUP_CLASS=' + (record.setup_class || 'FVG')
+        , 'MODEL_QUALIFIED=' + (record.model_router?.qualified ? 'YES' : 'NO')
     ].join(' ')) : ['CURRENT_OPPORTUNITIES=NONE'];
     // Keep the compact live output capped at three zones, while exposing the
     // same deterministic records to internal research consumers. This does
     // not change packet rendering or candidate selection.
-    return { records: ranked, all_records: records, current_records: currentRecords, lines, current_lines: currentLines };
+    const allRecords = rawTextV2StrategyMode(strategyAudits) === 'MODEL_ROUTER'
+        ? legacyRecords.map(record => ({ ...record, model_router: record.model_router || { qualified: false, blockers: ['NO_COMPLETE_MODEL'] } }))
+        : records;
+    return {
+        records: ranked,
+        all_records: allRecords,
+        current_records: currentRecords,
+        lines,
+        current_lines: currentLines,
+        strategy_mode: rawTextV2StrategyMode(strategyAudits),
+        model_router: modelRouterDiagnostics
+    };
 }
 
 function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2, strategyAudits = {}) {
@@ -14878,6 +15471,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     lines.push(...roleAudit.lines, '');
     const contextBlocks = dailyCandles.length ? [...blocks, { timeframe: '1D', candles: dailyCandles }] : blocks;
     const crtAudit = buildRawTextDeterministicCrtAudit(blocks, symbol, metadata, precision);
+    const tbsAudit = buildRawTextDeterministicTbsAudit(blocks, symbol, metadata, precision);
     const msnrAudit = buildRawTextDeterministicMsnrAudit(blocks, price, symbol, metadata, precision);
     const marketContext = buildRawTextMarketContext(contextBlocks, price, precision, asOfMs, roleAudit.daily_bias);
     const supplyDemandAudit = buildRawTextSupplyDemandAudit(blocks, precision, asOfMs);
@@ -14889,8 +15483,10 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     });
     const highProbabilityZones = buildRawTextHighProbabilityZones(blocks, price, precision, {
         crt_records: crtAudit.records,
+        tbs_records: tbsAudit.records,
         msnr_records: msnrAudit.records,
-        supply_demand_records: supplyDemandAudit
+        supply_demand_records: supplyDemandAudit,
+        strategy_mode: rawTextV2StrategyMode()
     }, marketContext.context, roleAudit);
     lines.push('=== DETERMINISTIC SUPPLY DEMAND AUDIT ===');
     lines.push(...buildRawTextSupplyDemandLines(supplyDemandAudit, precision));
@@ -14904,6 +15500,9 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     lines.push('');
     lines.push('=== DETERMINISTIC CRT AUDIT ===');
     lines.push(...crtAudit.lines);
+    lines.push('');
+    lines.push('=== DETERMINISTIC TBS AUDIT ===');
+    lines.push(...tbsAudit.lines);
     lines.push('');
     lines.push('=== DETERMINISTIC MSNR AUDIT ===');
     lines.push(...msnrAudit.lines);

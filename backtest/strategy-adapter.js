@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-function loadStrategyContext() {
+function loadStrategyContext(options = {}) {
     const source = fs.readFileSync(path.join(__dirname, '..', 'script.js'), 'utf8');
     const fakeElement = () => ({
         addEventListener() {},
@@ -17,7 +17,11 @@ function loadStrategyContext() {
         disabled: false
     });
     const context = {
-        window: { Telegram: null, __ICT_MARKET_DATA_PROVIDER__: 'TVKIT' },
+        window: {
+            Telegram: null,
+            __ICT_MARKET_DATA_PROVIDER__: 'TVKIT',
+            __V2_STRATEGY_MODE__: options.strategyMode || 'LEGACY'
+        },
         document: {
             readyState: 'loading',
             getElementById: fakeElement,
@@ -62,6 +66,7 @@ function analyzeVisibleHistory(context, input) {
     const asOfMs = Number(input.asOfMs);
     const metadata = input.symbolMetadata || {};
     const cache = input.cache || null;
+    if (input.strategyMode) context.window.__V2_STRATEGY_MODE__ = input.strategyMode;
     const blockSignature = blocks.map(block => {
         const last = block.candles?.at(-1);
         return `${block.timeframe}:${block.candles?.length || 0}:${last?.t || last?.timestamp || ''}`;
@@ -171,8 +176,14 @@ function analyzeVisibleHistory(context, input) {
         {
             crt_records: crtAudit.records,
             msnr_records: msnrAudit.records,
+            tbs_records: buildPerTimeframeAudit('tbsAuditsByTimeframe', block => {
+                if (typeof context.buildRawTextDeterministicTbsAudit !== 'function') return [];
+                return context.buildRawTextDeterministicTbsAudit([block], symbol, metadata, precision);
+            }).records,
             supply_demand_records: supplyDemand,
-            as_of_ms: asOfMs
+            as_of_ms: asOfMs,
+            strategy_mode: context.window.__V2_STRATEGY_MODE__ || 'LEGACY',
+            performance_cache: cache
         },
         marketContextResult.context,
         roleAudit,

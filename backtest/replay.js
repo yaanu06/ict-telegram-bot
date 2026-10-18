@@ -445,7 +445,7 @@ function simulateCandidate(candidate, series, options = {}) {
     };
 }
 
-function replayHistory({ context, series, symbol, from, to, precision, replayTimeframe = '5m', ambiguity = 'exclude', includeMarketStateDiagnostics = false, retainLastState = true, progress = null, optimized = true, resumeState = null, checkpoint = null, sequenceMode = 'CURRENT_V2', symbolMetadata = {} }) {
+function replayHistory({ context, series, symbol, from, to, precision, replayTimeframe = '5m', ambiguity = 'exclude', includeMarketStateDiagnostics = false, retainLastState = true, progress = null, optimized = true, resumeState = null, checkpoint = null, sequenceMode = 'CURRENT_V2', strategyMode = 'LEGACY', symbolMetadata = {} }) {
     const fromMs = toMs(from);
     const toMsValue = toMs(to);
     const clocks = replayClocks(series, replayTimeframe, fromMs, toMsValue);
@@ -458,7 +458,9 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
         crtAudits: new Map(),
         fvgByBlock: new Map(),
         orderBlocksByBlock: new Map(),
-        staticZoneRecords: new Map()
+        staticZoneRecords: new Map(),
+        modelStructureEvents: new Map(),
+        modelOrderBlocks: new Map()
     } : null;
     const sequenceEnabled = V2_ALCHEMIST_MODES.includes(sequenceMode) && sequenceMode !== 'CURRENT_V2';
     const marketStateHistory = (includeMarketStateDiagnostics || sequenceEnabled)
@@ -484,6 +486,14 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
         outcomes: {},
         rejection_reasons: {}
     };
+    const modelRouterCounters = {
+        replay_points: 0,
+        candidates_examined: 0,
+        qualified_candidates: 0,
+        stage_counts: {},
+        models: {},
+        rejection_reasons: {}
+    };
     const sequenceCache = sequenceEnabled ? { candidates: new Map(), primitives: new Map() } : null;
     const marketStateSnapshots = Array.isArray(resumeState?.market_state_snapshots)
         ? resumeState.market_state_snapshots
@@ -495,7 +505,16 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
         const executionBars = blocks.find(block => block.timeframe === '5M')?.candles || [];
         const currentPrice = Number(executionBars.at(-1)?.c);
         if (!Number.isFinite(currentPrice) || blocks.filter(block => ['1D', '4H', '1H'].includes(block.timeframe)).some(block => block.candles.length < 3)) continue;
-        const result = analyzeVisibleHistory(context, { blocks, symbol, currentPrice, asOfMs, precision, cache: analysisCache });
+        const result = analyzeVisibleHistory(context, { blocks, symbol, currentPrice, asOfMs, precision, cache: analysisCache, strategyMode });
+        if (result.zones.model_router) {
+            const router = result.zones.model_router;
+            modelRouterCounters.replay_points += 1;
+            modelRouterCounters.candidates_examined += Number(router.candidates_examined) || 0;
+            modelRouterCounters.qualified_candidates += Number(router.qualified_candidates) || 0;
+            for (const [key, value] of Object.entries(router.stage_counts || {})) modelRouterCounters.stage_counts[key] = (modelRouterCounters.stage_counts[key] || 0) + (Number(value) || 0);
+            for (const [key, value] of Object.entries(router.models || {})) modelRouterCounters.models[key] = (modelRouterCounters.models[key] || 0) + (Number(value) || 0);
+            for (const [key, value] of Object.entries(router.rejection_reasons || {})) modelRouterCounters.rejection_reasons[key] = (modelRouterCounters.rejection_reasons[key] || 0) + (Number(value) || 0);
+        }
         let qualificationMap = null;
         if (sequenceEnabled) {
             const unqualifiedOrUnseen = (result.zones.current_records || []).filter(record => {
@@ -573,6 +592,7 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
         observations,
         clocks: clocks.length,
         ...(sequenceEnabled ? { sequence_diagnostics: sequenceCounters } : {}),
+        ...(modelRouterCounters.replay_points ? { model_router_diagnostics: modelRouterCounters } : {}),
         ...(marketStateHistory ? { market_state: { history: marketStateHistory, snapshots: marketStateSnapshots } } : {})
     };
 }
