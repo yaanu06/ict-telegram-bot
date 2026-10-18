@@ -3830,6 +3830,144 @@ describe('Market Mechanics packet authority', () => {
         expect(state[0].entry_zone_touch_required_for_qualification).toBe('NO');
     });
 
+    test.each(['BTC/USD', 'XAU/USD', 'AUD/USD', 'GBP/JPY'])('keeps parent Market Plan POI and compatible execution POI distinct for %s', pair => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const relationship = ctx.marketMechanicsPoiRelationship({
+            id: `CRT-${pair}`, direction: 'BUY', timeframe: '1H', entry_model: 'CRT_AGGRESSIVE',
+            execution_zone: { id: `CRT-ZONE-${pair}`, type: 'CRT', low: 81302.2, high: 81459.1, freshness: 'FRESH' }
+        }, {
+            valid_context: true, direction: 'BUY', active_swing_low: 79000, active_swing_high: 83000,
+            active_poi: { id: `MSNR-${pair}`, type: 'MSNR', direction: 'BUY', low: 80852.49, high: 81003.50, freshness: 'FRESH' }
+        });
+        expect(relationship).toEqual(expect.objectContaining({
+            market_plan_poi_id: `MSNR-${pair}`,
+            market_plan_poi_valid: true,
+            execution_poi_id: `CRT-ZONE-${pair}`,
+            execution_poi_valid: true,
+            poi_relationship_status: 'INDEPENDENT_CONTEXT_COMPATIBLE'
+        }));
+    });
+
+    test('rejects an execution POI outside the active range with a precise relationship blocker', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const relationship = ctx.marketMechanicsPoiRelationship({
+            direction: 'BUY', timeframe: '1H', entry_model: 'CRT_AGGRESSIVE',
+            execution_zone: { id: 'CRT-OUTSIDE', type: 'CRT', low: 900, high: 910 }
+        }, {
+            valid_context: true, direction: 'BUY', active_swing_low: 100, active_swing_high: 200,
+            active_poi: { id: 'MSNR-PARENT', type: 'MSNR', direction: 'BUY', low: 120, high: 130 }
+        });
+        expect(relationship.poi_relationship_status).toBe('INCOMPATIBLE_EXECUTION_POI');
+        expect(relationship.failed_stage).toBe('POI_COMPATIBILITY');
+    });
+
+    test('fails a pending BUY whose entry is above the executable market price', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const result = ctx.evaluateSetupCandidate({
+            id: 'BTC-BUY-WRONG-SIDE', direction: 'BUY', timeframe: '1H', execution_model: 'PENDING_LIMIT',
+            zone_type: 'CRT', zone_low: 81302.2, zone_high: 81459.1,
+            zone: { id: 'BTC-CRT-ZONE', type: 'CRT', timeframe: '1H', direction: 'BUY', low: 81302.2, high: 81459.1, primary_eligible: true },
+            entry: 81380.65, stop_loss: 80971.16, tp1: 81770.01
+        }, {
+            pair: 'BTC/USD', price: 81099.29, historyCache: {},
+            real_ict_zones: [{ id: 'BTC-CRT-ZONE', type: 'CRT', timeframe: '1H', direction: 'BUY', low: 81302.2, high: 81459.1, primary_eligible: true }],
+            risk_constraints: { minimum_rr: 2.5 }, structure: { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } }
+        }, { includeAccountRules: false });
+        expect(result.valid).toBe(false);
+        expect(result.reasons).toContain('BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT');
+        expect(result.metrics.pending_limit_valid).toBe(false);
+        expect(result.metrics.pending_limit_reference_price).toBe(81099.29);
+    });
+
+    test('keeps a valid untouched BUY limit eligible when the entry is below market', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const result = ctx.evaluateSetupCandidate({
+            id: 'BTC-BUY-VALID-SIDE', direction: 'BUY', timeframe: '1H', execution_model: 'PENDING_LIMIT',
+            zone_type: 'CRT', zone_low: 80800, zone_high: 80900,
+            zone: { id: 'BTC-VALID-ZONE', type: 'CRT', timeframe: '1H', direction: 'BUY', low: 80800, high: 80900, primary_eligible: true },
+            entry: 80850, stop_loss: 80600, tp1: 81500
+        }, {
+            pair: 'BTC/USD', price: 81099.29, historyCache: {},
+            real_ict_zones: [{ id: 'BTC-VALID-ZONE', type: 'CRT', timeframe: '1H', direction: 'BUY', low: 80800, high: 80900, primary_eligible: true }],
+            risk_constraints: { minimum_rr: 2.5 }, structure: { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } }
+        }, { includeAccountRules: false });
+        expect(result.reasons).not.toContain('BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT');
+        expect(result.metrics.pending_limit_valid).toBe(true);
+    });
+
+    test.each([
+        ['BTC/USD', 'BUY', 81099.29, 80850, 80600, 81500],
+        ['XAU/USD', 'BUY', 4185, 4160, 4130, 4230],
+        ['AUD/USD', 'BUY', 0.6500, 0.6480, 0.6450, 0.6560],
+        ['GBP/JPY', 'BUY', 200.00, 199.50, 198.80, 201.80],
+        ['BTC/USD', 'SELL', 81099.29, 81380, 81600, 80700],
+        ['XAU/USD', 'SELL', 4185, 4210, 4240, 4140],
+        ['AUD/USD', 'SELL', 0.6500, 0.6520, 0.6550, 0.6440],
+        ['GBP/JPY', 'SELL', 200.00, 200.50, 201.20, 198.20]
+    ])('applies pending-limit side semantics across instrument precision classes: %s %s', (pair, direction, price, entry, stop, tp1) => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const result = ctx.evaluateSetupCandidate({
+            id: `SIDE-${pair}-${direction}`, direction, timeframe: '1H', execution_model: 'PENDING_LIMIT',
+            zone_type: 'OB', zone_low: Math.min(entry, stop), zone_high: Math.max(entry, stop),
+            zone: { id: `ZONE-${pair}-${direction}`, type: 'OB', timeframe: '1H', direction, low: Math.min(entry, price), high: Math.max(entry, price), primary_eligible: true },
+            entry, stop_loss: stop, tp1
+        }, {
+            pair, price, historyCache: {},
+            real_ict_zones: [],
+            risk_constraints: { minimum_rr: 2.5 },
+            structure: { '1D': { trend: direction === 'BUY' ? 'BULLISH' : 'BEARISH' }, '4H': { trend: direction === 'BUY' ? 'BULLISH' : 'BEARISH' }, '1H': { trend: direction === 'BUY' ? 'BULLISH' : 'BEARISH' } }
+        }, { includeAccountRules: false });
+        expect(result.metrics.pending_limit_valid).toBe(true);
+        expect(result.reasons).not.toContain(direction === 'BUY' ? 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT' : 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT');
+    });
+
+    test('classifies the BTC-shaped CRT candidate by execution-side failure, not generic POI failure', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const setup = {
+            id: 'BTC-CRT-BUY-4H', direction: 'BUY', timeframe: '4H', setup_timeframe: '4H',
+            entry_model: 'CRT_AGGRESSIVE', execution_model: 'FRESH_RETRACEMENT_LIMIT',
+            execution_confirmed: true, primary: 'CRT', crt_ref: 'CRT-BTC-4H-1',
+            execution_zone: { id: 'BTC-CRT-ENTRY-81302-81459', type: 'CRT', timeframe: '4H', direction: 'BUY', low: 81302.2, high: 81459.1, freshness: 'FRESH' },
+            target_candidates: [{ level: 81770.01, direction: 'BUY', source: 'SWING_HIGH' }]
+        };
+        const states = ctx.buildMarketMechanicsFormingSetupStates([setup], {
+            valid_context: true, plan_id: 'PLAN-BTC', direction: 'BUY',
+            active_swing_low: 79000, active_swing_high: 83000,
+            active_poi: { id: '4H-BUY-MSNR-80852-81003', type: 'MSNR', timeframe: '4H', direction: 'BUY', low: 80852.49737143, high: 81003.50262857, freshness: 'FRESH' }
+        }, {
+            current_price: 81099.29,
+            pair: 'BTC/USD',
+            candidate_result: {
+                raw_candidates: [{ id: 'BTC-CRT-BUY-4H', strategy_setup: setup, zone: setup.execution_zone, entry: 81380.65, stop_loss: 80971.16, tp1: 81770.01 }],
+                all_valid_candidates: [],
+                rejected_candidates: [{ id: 'BTC-CRT-BUY-4H', rejection_code: 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT', rejection_reasons: ['BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT'] }]
+            }
+        });
+        expect(states).toHaveLength(1);
+        expect(states[0]).toEqual(expect.objectContaining({
+            market_plan_poi_valid: 'YES',
+            execution_poi_valid: 'YES',
+            poi_relationship_status: 'INDEPENDENT_CONTEXT_COMPATIBLE',
+            state: 'INVALIDATED',
+            primary_blocker: 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT',
+            pending_limit_valid: 'NO',
+            pending_limit_geometry_complete: 'NO',
+            selectable: false
+        }));
+    });
+
+    test('normalizes invalid pending-limit side geometry to diagnostic-only authority', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const candidate = { id: 'MM-WRONG-SIDE', direction: 'BUY', entry_model: 'PENDING_LIMIT', market_mechanics_verified: true,
+            entry: 101, stop_loss: 98, tp1: 106, pending_limit_valid: false, trade_qualified: true, TRADE_QUALIFIED: 'YES' };
+        const normalized = ctx.normalizeMarketMechanicsAuthority(candidate, {
+            strategy_mode: 'MARKET_MECHANICS', market_plan: { valid_context: true, direction: 'BUY' }
+        }, 'LIVE');
+        expect(normalized.CANDIDATE_AUTHORITY).toBe('DIAGNOSTIC_ONLY');
+        expect(normalized.TRADE_QUALIFIED).toBe('NO');
+        expect(normalized.QUALIFICATION_BLOCKERS).toContain('INVALID_ENTRY_SIDE_BUY_LIMIT');
+    });
+
     test('diagnostic candidate count is deduplicated by visible source references', () => {
         const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
         expect(ctx.countRawLegacyDiagnosticCandidates([
