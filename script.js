@@ -7320,6 +7320,20 @@ function marketMechanicsDirectionFromTrend(value) {
     return null;
 }
 
+function marketMechanicsDrawFields(draw = null, precision = 2) {
+    if (!draw) return { type: 'NONE', price: null, timeframe: null, ref: null, status: null };
+    if (typeof draw === 'string') return { type: draw, price: null, timeframe: null, ref: null, status: null };
+    const type = draw.type || draw.label || draw.source || draw.target_type || draw.liquidity_type || 'NONE';
+    const price = Number(draw.price ?? draw.level ?? draw.objective_price);
+    return {
+        type: String(type),
+        price: Number.isFinite(price) ? Number(price.toFixed(precision)) : null,
+        timeframe: draw.timeframe || draw.tf || null,
+        ref: draw.ref || draw.liquidity_id || draw.target_id || draw.id || null,
+        status: draw.status || draw.lifecycle_state || null
+    };
+}
+
 function marketMechanicsClosed(data, timeframe, asOfMs = null) {
     const rows = getClosedHistory({ [timeframe]: Array.isArray(data) ? data : [] }, timeframe);
     if (!Number.isFinite(Number(asOfMs))) return rows;
@@ -7593,6 +7607,98 @@ function buildMarketMechanicsStrategySetups(args = {}) {
     Object.defineProperty(setups, 'detection_stats', { value: { strategy_narratives: setups.length, active_narratives: setups.length, entry_models: setups.reduce((out, setup) => { out[setup.entry_model] = (out[setup.entry_model] || 0) + 1; return out; }, {}) }, enumerable: false });
     if (discovery) Object.defineProperty(setups, 'discovery', { value: discovery, enumerable: false });
     return setups;
+}
+
+function marketMechanicsSetupRangesOverlap(left = {}, right = {}) {
+    const leftLow = Number(left.execution_zone?.low ?? left.zone?.low ?? left.zone_low);
+    const leftHigh = Number(left.execution_zone?.high ?? left.zone?.high ?? left.zone_high);
+    const rightLow = Number(right.execution_zone?.low ?? right.zone?.low ?? right.zone_low);
+    const rightHigh = Number(right.execution_zone?.high ?? right.zone?.high ?? right.zone_high);
+    return [leftLow, leftHigh, rightLow, rightHigh].every(Number.isFinite)
+        && Math.max(leftLow, rightLow) <= Math.min(leftHigh, rightHigh);
+}
+
+function marketMechanicsSetupCampaignRelated(left = {}, right = {}) {
+    if (String(left.direction || '').toUpperCase() !== String(right.direction || '').toUpperCase()) return false;
+    if (String(left.timeframe || left.setup_timeframe || '').toUpperCase() !== String(right.timeframe || right.setup_timeframe || '').toUpperCase()) return false;
+    if (String(left.entry_model || '').toUpperCase() !== String(right.entry_model || '').toUpperCase()) return false;
+    const sharedEvent = left.crt_ref && right.crt_ref && left.crt_ref === right.crt_ref;
+    const sharedLiquidity = left.liquidity_event_ref && right.liquidity_event_ref && left.liquidity_event_ref === right.liquidity_event_ref;
+    if (sharedEvent || sharedLiquidity) return true;
+    if (!marketMechanicsSetupRangesOverlap(left, right)) return false;
+    const leftInvalidation = Number(left.structural_invalidation_detail?.level ?? left.structural_invalidation);
+    const rightInvalidation = Number(right.structural_invalidation_detail?.level ?? right.structural_invalidation);
+    const leftWidth = Math.abs(Number(left.execution_zone?.high) - Number(left.execution_zone?.low));
+    const rightWidth = Math.abs(Number(right.execution_zone?.high) - Number(right.execution_zone?.low));
+    const tolerance = Math.max(leftWidth, rightWidth, Math.abs(leftInvalidation) * 0.0005, 1e-9);
+    return Number.isFinite(leftInvalidation) && Number.isFinite(rightInvalidation)
+        && Math.abs(leftInvalidation - rightInvalidation) <= tolerance;
+}
+
+function buildMarketMechanicsFormingSetupStates(strategySetups = [], marketPlan = null) {
+    const groups = [];
+    const ordered = [...strategySetups].sort((left, right) => String(left.id || '').localeCompare(String(right.id || '')));
+    for (const setup of ordered) {
+        const group = groups.find(candidate => marketMechanicsSetupCampaignRelated(candidate.primary, setup));
+        if (group) group.members.push(setup);
+        else groups.push({ primary: setup, members: [setup] });
+    }
+    const planValid = marketPlan?.valid_context === true;
+    const activePoi = marketPlan?.active_poi || marketPlan?.primary_poi || null;
+    return groups.map(group => {
+        const setup = group.primary;
+        const setupPoi = setup.execution_zone || setup.opportunity_narrative?.location || null;
+        const poiMatchesActive = Boolean(activePoi && setupPoi && (
+            activePoi.id === setupPoi.id || marketMechanicsSetupRangesOverlap({ execution_zone: activePoi }, { execution_zone: setupPoi })
+        ));
+        const poiState = !planValid ? 'UNAVAILABLE' : poiMatchesActive ? 'ACTIVE' : setupPoi ? 'WAITING' : 'NONE';
+        const confirmationComplete = setup.execution_confirmed === true || setup.execution_model === 'CONFIRMATION_ENTRY';
+        let state = 'WAITING_FOR_CONFIRMATION';
+        let blocker = 'CONFIRMATION_NOT_COMPLETE';
+        if (!planValid) {
+            state = 'WAITING_FOR_MARKET_PLAN';
+            blocker = 'MARKET_PLAN_INVALID';
+        } else if (!poiMatchesActive) {
+            state = 'WAITING_FOR_POI';
+            blocker = 'POI_NOT_VALID';
+        } else if (confirmationComplete || String(setup.entry_model_state || '').toUpperCase() === 'WAITING_FOR_RETRACE') {
+            state = 'WAITING_FOR_RETRACE';
+            blocker = 'ENTRY_ZONE_NOT_RETRACED';
+        }
+        const refs = group.members.map(item => item.crt_ref || item.id).filter(Boolean);
+        const primaryRef = setup.crt_ref || setup.id || null;
+        const campaignId = `CAMPAIGN:${marketPlan?.active_swing_range_id || marketPlan?.plan_id || 'NONE'}:${setup.direction || 'NA'}:${setup.timeframe || setup.setup_timeframe || 'NA'}:${setup.entry_model || 'NA'}:${primaryRef || 'NA'}`;
+        return {
+            id: `FORMING:${campaignId}`,
+            campaign_id: campaignId,
+            direction: setup.direction || null,
+            timeframe: setup.timeframe || setup.setup_timeframe || null,
+            model: setup.entry_model || setup.strategy_model || null,
+            state,
+            market_plan_valid: planValid ? 'YES' : 'NO',
+            poi_state: poiState,
+            poi_ref: activePoi?.id || null,
+            prospective_poi_ref: !poiMatchesActive ? (setupPoi?.id || primaryRef) : null,
+            liquidity_event_ref: setup.liquidity_event_ref || null,
+            confirmation_state: confirmationComplete ? 'CONFIRMED' : 'WAITING',
+            retrace_state: state === 'WAITING_FOR_RETRACE' ? 'WAITING' : 'NOT_STARTED',
+            blocker,
+            primary_ref: primaryRef,
+            alternate_crt_refs: refs.filter(ref => ref !== primaryRef),
+            source_ids: group.members.map(item => item.id).filter(Boolean),
+            source_count: group.members.length,
+            selectable: false
+        };
+    });
+}
+
+function normalizeMarketMechanicsFormingState(state = {}, marketPlan = null) {
+    const planValid = marketPlan?.valid_context === true;
+    const activePoi = marketPlan?.active_poi || marketPlan?.primary_poi || null;
+    const poiState = state.poi_state || (activePoi ? 'ACTIVE' : 'WAITING');
+    if (!planValid) return { ...state, market_plan_valid: 'NO', poi_state: 'UNAVAILABLE', state: 'WAITING_FOR_MARKET_PLAN', blocker: 'MARKET_PLAN_INVALID', selectable: false };
+    if (poiState !== 'ACTIVE') return { ...state, market_plan_valid: 'YES', poi_state: poiState, state: 'WAITING_FOR_POI', blocker: 'POI_NOT_VALID', selectable: false };
+    return { ...state, market_plan_valid: 'YES', poi_state: 'ACTIVE', selectable: false };
 }
 
 function zoneTypeForSetup(setup = {}) {
@@ -12849,7 +12955,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         marketContext.market_mechanics = {
             plan: marketPlan,
             entry_models: [...new Set(strategySetups.map(setup => setup.entry_model).filter(Boolean))],
-            model_states: strategySetups.map(setup => ({ id: setup.id, model: setup.entry_model, state: setup.entry_model_state, direction: setup.direction, zone: setup.execution_zone?.id || null })),
+            model_states: buildMarketMechanicsFormingSetupStates(strategySetups, marketPlan),
             authority: 'MARKET_PLAN->POI->ENTRY_MODEL',
             legacy_bypass: false,
             blockers: marketPlan.valid_context ? [] : ['NO_VALID_MARKET_PLAN']
@@ -14061,6 +14167,50 @@ const RAW_TEXT_OUTPUT_CONTRACT = [
     'If no complete qualifying setup exists, return ACTION: NO_TRADE with SETUP: NONE, ENTRY: 0, STOP_LOSS: 0, TP1: 0, TP2: 0, TP3: 0, CONFIDENCE: 0% and a factual REASON.'
 ].join('\n');
 
+const MARKET_MECHANICS_RAW_TEXT_OUTPUT_CONTRACT = [
+    '=== OUTPUT CONTRACT ===',
+    'Reply ONLY in this format. No prose. No markdown.',
+    '',
+    'ACTION: BUY_LIMIT | SELL_LIMIT | NO_TRADE',
+    'SETUP: <exact canonical setup components supplied by the selected live candidate, or NONE>',
+    'ENTRY: <exact supplied candidate entry, or 0>',
+    'STOP_LOSS: <exact supplied candidate stop, or 0>',
+    'TP1: <exact supplied candidate TP1, or 0>',
+    'TP2: <exact supplied candidate TP2, or 0>',
+    'TP3: <exact supplied candidate TP3, or 0>',
+    'CONFIDENCE: <exact supplied candidate confidence, or 0%>',
+    'TIMEFRAME_USED: <exact supplied candidate timeframe; 4h or 1h for a trade>',
+    'REASON: <concise supplied Market Mechanics state or blocker>',
+    '',
+    'Select only an exact row from === LIVE MARKET MECHANICS CANDIDATES ===.',
+    'Do not analyze raw candles to create a setup, promote a forming setup, promote a diagnostic legacy row, or alter supplied values.',
+    'If LIVE_CANDIDATES=NONE, return ACTION: NO_TRADE with SETUP: NONE and zero geometry.'
+].join('\n');
+
+function countRawLegacyDiagnosticCandidates(lines = []) {
+    const ids = new Set();
+    for (const line of lines) {
+        const text = String(line || '');
+        if (!/^(HP_ZONE:|CURRENT_OPPORTUNITY:)/.test(text)) continue;
+        const refs = [
+            text.match(/FVG_C1=([^\s]+)/)?.[1],
+            text.match(/FVG_C2=([^\s]+)/)?.[1],
+            text.match(/FVG_C3=([^\s]+)/)?.[1]
+        ].filter(Boolean);
+        ids.add(refs.length ? refs.join('|') : text);
+    }
+    return ids.size;
+}
+
+function countDiagnosticCandidateRecords(records = []) {
+    const ids = new Set();
+    for (const record of Array.isArray(records) ? records : []) {
+        const id = record?.candidate_id || record?.id || record?.opportunity_id || record?.CANDIDATE_ID;
+        ids.add(id || JSON.stringify(record));
+    }
+    return ids.size;
+}
+
 function rawTextPacketTimestamp(value) {
     const numeric = Number(value);
     return Number.isFinite(numeric) && String(value).trim() !== ''
@@ -14127,7 +14277,7 @@ function buildRawTextTimeframeRoleAudit(blocks = [], precision = 2) {
         daily_evidence: dailyEvidence,
         lines: [
             '=== TIMEFRAME ROLES ===',
-            '1D_ROLE=DIRECTIONAL_BIAS_ONLY DAILY_BIAS=' + dailyBias + ' EVIDENCE=' + dailyEvidence + (dailyLevels ? ' ' + dailyLevels : ''),
+            '1D_ROLE=DIRECTIONAL_BIAS_ONLY MACRO_1D_BIAS=' + dailyBias + ' EVIDENCE=' + dailyEvidence + (dailyLevels ? ' ' + dailyLevels : ''),
             '4H_ROLE=PRIMARY_SETUP',
             '1H_ROLE=PRIMARY_SETUP_OR_REFINEMENT',
             '15M_ROLE=EXECUTION_CONFIRMATION_OR_REFINEMENT_ONLY',
@@ -14869,7 +15019,7 @@ function buildRawTextSupplyDemandLines(records = [], precision = 2) {
     ].join(' '));
 }
 
-function buildRawTextMarketContext(blocks = [], currentPrice = null, precision = 2, asOfMs = null, dailyBias = 'NEUTRAL') {
+function buildRawTextMarketContext(blocks = [], currentPrice = null, precision = 2, asOfMs = null, dailyBias = 'NEUTRAL', biasLabel = 'DAILY_BIAS') {
     const findBlock = timeframe => blocks.find(block => block.timeframe === timeframe);
     const atr4h = calculateRawTextAtr(findBlock('4H')?.candles || [], 14);
     const atr1h = calculateRawTextAtr(findBlock('1H')?.candles || [], 14);
@@ -14909,7 +15059,7 @@ function buildRawTextMarketContext(blocks = [], currentPrice = null, precision =
         lines: [
             '=== MARKET CONTEXT ===',
             [
-                'DAILY_BIAS=' + context.daily_bias,
+                biasLabel + '=' + context.daily_bias,
                 'ATR_4H=' + rawTextContextValue(context.atr_4h, precision),
                 'ATR_1H=' + rawTextContextValue(context.atr_1h, precision),
                 'PDH=' + rawTextContextValue(context.pdh, precision),
@@ -16139,7 +16289,14 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const crtAudit = buildRawTextDeterministicCrtAudit(blocks, symbol, metadata, precision);
     const tbsAudit = buildRawTextDeterministicTbsAudit(blocks, symbol, metadata, precision);
     const msnrAudit = buildRawTextDeterministicMsnrAudit(blocks, price, symbol, metadata, precision);
-    const marketContext = buildRawTextMarketContext(contextBlocks, price, precision, asOfMs, roleAudit.daily_bias);
+    const marketContext = buildRawTextMarketContext(
+        contextBlocks,
+        price,
+        precision,
+        asOfMs,
+        roleAudit.daily_bias,
+        marketMechanicsMode ? 'MACRO_1D_BIAS' : 'DAILY_BIAS'
+    );
     const supplyDemandAudit = buildRawTextSupplyDemandAudit(blocks, precision, asOfMs);
     lines.push(...marketContext.lines, '');
     const fvgAudit = buildRawTextFvgAudit(blocks, price, precision, {
@@ -16152,22 +16309,41 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         tbs_records: tbsAudit.records,
         msnr_records: msnrAudit.records,
         supply_demand_records: supplyDemandAudit,
-        strategy_mode: rawTextV2StrategyMode()
+        strategy_mode: marketMechanicsMode ? 'MARKET_MECHANICS' : rawTextV2StrategyMode()
     }, marketContext.context, roleAudit);
+    const formingMarketMechanicsSetups = marketMechanicsMode
+        ? (source.market_mechanics?.model_states || source.forming_market_mechanics_setups || [])
+            .map(setup => normalizeMarketMechanicsFormingState(setup, source.market_plan || source.market_context?.market_plan || null))
+        : [];
+    const visibleLegacyDiagnosticCount = marketMechanicsMode
+        ? countRawLegacyDiagnosticCandidates([...highProbabilityZones.current_lines, ...highProbabilityZones.lines])
+        : 0;
     lines.push('=== DETERMINISTIC SUPPLY DEMAND AUDIT ===');
     lines.push(...buildRawTextSupplyDemandLines(supplyDemandAudit, precision));
     lines.push('');
     if (marketMechanicsMode) {
         const plan = source.market_plan || source.market_context?.market_plan || {};
+        const macroBias = roleAudit.daily_bias || 'NEUTRAL';
+        const planDirection = plan.direction || (plan.bias === 'BULLISH' ? 'BUY' : plan.bias === 'BEARISH' ? 'SELL' : 'NONE');
+        const draw = marketMechanicsDrawFields(plan.primary_draw_on_liquidity || plan.primary_liquidity_target || null, precision);
+        const activePoi = plan.active_poi || plan.primary_poi || null;
+        const prospectivePoi = !activePoi ? (plan.poi_candidates || [])[0] || null : null;
         lines.push('=== MARKET PLAN / LIVE AUTHORITY ===');
         lines.push('AUTHORITY_MODE=MARKET_MECHANICS MARKET_PLAN_VALID=' + (plan.valid_context === true ? 'YES' : 'NO'));
-        lines.push('DAILY_BIAS=' + String(source.daily_bias?.direction || plan.bias || 'NEUTRAL')
+        lines.push('MACRO_1D_BIAS=' + String(macroBias)
+            + ' MARKET_PLAN_DIRECTION=' + String(planDirection)
             + ' HTF_TREND=' + String(plan.htf_trend || plan.htf_context || '')
             + ' NARRATIVE=' + String(plan.narrative || plan.market_narrative || '')
-            + ' PRIMARY_DRAW_ON_LIQUIDITY=' + String(plan.primary_draw_on_liquidity || plan.primary_liquidity_target || ''));
-        lines.push('ACTIVE_POI=' + String(plan.primary_poi?.id || plan.primary_poi?.ref || plan.primary_poi || 'NONE')
-            + ' POI_TYPE=' + String(plan.primary_poi?.type || '')
-            + ' POI_VALID=' + (plan.valid_context === true && plan.primary_poi ? 'YES' : 'NO'));
+            + ' PRIMARY_DRAW_ON_LIQUIDITY=' + draw.type);
+        lines.push('PRIMARY_DRAW_PRICE=' + (draw.price == null ? 'NONE' : rawTextPacketFormatNumber(draw.price, precision))
+            + ' PRIMARY_DRAW_TF=' + String(draw.timeframe || '')
+            + ' PRIMARY_DRAW_REF=' + String(draw.ref || '')
+            + ' PRIMARY_DRAW_STATUS=' + String(draw.status || ''));
+        lines.push('ACTIVE_POI=' + String(activePoi?.id || activePoi?.ref || 'NONE')
+            + ' POI_TYPE=' + String(activePoi?.type || '')
+            + ' POI_VALID=' + (plan.valid_context === true && activePoi ? 'YES' : 'NO'));
+        lines.push('PROSPECTIVE_POI=' + String(prospectivePoi?.id || prospectivePoi?.ref || 'NONE')
+            + ' PROSPECTIVE_POI_STATE=' + (prospectivePoi ? 'WAITING' : 'NONE'));
         lines.push('');
         lines.push('=== LIVE MARKET MECHANICS CANDIDATES ===');
         if (!authority.live_candidates.length) lines.push('LIVE_CANDIDATES=NONE');
@@ -16196,17 +16372,41 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         }
         lines.push('');
         lines.push('=== FORMING MARKET MECHANICS SETUPS ===');
-        const forming = source.market_mechanics?.model_states || source.forming_market_mechanics_setups || [];
-        if (!forming.length) lines.push('FORMING_SETUPS=NONE');
-        for (const setup of forming) lines.push('FORMING_SETUP=' + String(setup.id || '') + ' ENTRY_MODEL=' + String(setup.model || setup.entry_model || '') + ' STATE=' + String(setup.state || 'FORMING') + ' SELECTABLE=NO');
+        if (!formingMarketMechanicsSetups.length) lines.push('FORMING_SETUPS=NONE');
+        for (const setup of formingMarketMechanicsSetups) lines.push([
+            'FORMING_SETUP',
+            'ID=' + String(setup.id || ''),
+            'CAMPAIGN_ID=' + String(setup.campaign_id || ''),
+            'DIRECTION=' + String(setup.direction || ''),
+            'PRIMARY_TF=' + String(setup.timeframe || setup.primary_tf || ''),
+            'ENTRY_MODEL=' + String(setup.model || setup.entry_model || ''),
+            'MARKET_PLAN_VALID=' + String(setup.market_plan_valid || 'NO'),
+            'POI_STATE=' + String(setup.poi_state || 'NONE'),
+            'POI_REF=' + String(setup.poi_ref || ''),
+            'PROSPECTIVE_POI_REF=' + String(setup.prospective_poi_ref || ''),
+            'LIQUIDITY_EVENT_REF=' + String(setup.liquidity_event_ref || ''),
+            'CONFIRMATION_STATE=' + String(setup.confirmation_state || ''),
+            'RETRACE_STATE=' + String(setup.retrace_state || ''),
+            'STATE=' + String(setup.state || 'FORMING'),
+            'SELECTABLE=NO',
+            'BLOCKER=' + String(setup.blocker || 'NONE'),
+            'SOURCE_COUNT=' + String(setup.source_count || 1),
+            'ALTERNATE_CRT_REFS=' + (setup.alternate_crt_refs || []).join('|')
+        ].join(' '));
         lines.push('');
         lines.push('=== LEGACY DIAGNOSTICS — NOT TRADE AUTHORITY ===');
         lines.push('CANDIDATE_AUTHORITY=DIAGNOSTIC_ONLY MODEL_QUALIFIED=NO TRADE_QUALIFIED=NO');
-        const diagnosticLines = [...highProbabilityZones.current_lines, ...highProbabilityZones.lines].map(line => String(line)
-            .replace(/TRADE_QUALIFIED=(YES|NO)/g, 'TRADE_QUALIFIED=NO')
-            .replace(/CURRENT_OPPORTUNITY=YES/g, 'CURRENT_OPPORTUNITY=NO')
-            .replace(/TODAY_OPPORTUNITY=YES/g, 'TODAY_OPPORTUNITY=NO'));
+        const diagnosticLines = [...highProbabilityZones.current_lines, ...highProbabilityZones.lines].map(line => [
+            'CANDIDATE_AUTHORITY=DIAGNOSTIC_ONLY',
+            String(line)
+                .replace(/CANDIDATE_AUTHORITY=[^\s]+/g, 'CANDIDATE_AUTHORITY=DIAGNOSTIC_ONLY')
+                .replace(/MODEL_QUALIFIED=(YES|NO)/g, 'MODEL_QUALIFIED=NO')
+                .replace(/TRADE_QUALIFIED=(YES|NO)/g, 'TRADE_QUALIFIED=NO')
+                .replace(/CURRENT_OPPORTUNITY=YES/g, 'CURRENT_OPPORTUNITY=NO')
+                .replace(/TODAY_OPPORTUNITY=YES/g, 'TODAY_OPPORTUNITY=NO')
+        ].join(' '));
         lines.push(...(diagnosticLines.length ? diagnosticLines : ['NONE']));
+        lines.push('DIAGNOSTIC_ONLY_CANDIDATE_COUNT=' + visibleLegacyDiagnosticCount);
         lines.push('');
     } else {
         lines.push('=== CURRENT OPPORTUNITIES ===');
@@ -16276,9 +16476,13 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         lines.push('LIVE_AUTHORITY_SUMMARY:');
         lines.push('MODE=MARKET_MECHANICS');
         lines.push('ACTIVE_AUTHORITY_COUNT=' + authority.active_authority_count);
+        const plan = source.market_plan || source.market_context?.market_plan || {};
+        lines.push('MARKET_PLAN_VALID=' + (plan.valid_context === true ? 'YES' : 'NO'));
         lines.push('LIVE_CANDIDATE_COUNT=' + authority.live_candidates.length);
+        lines.push('FORMING_SETUP_COUNT=' + formingMarketMechanicsSetups.length);
+        lines.push('FORMING_CAMPAIGN_COUNT=' + new Set(formingMarketMechanicsSetups.map(setup => setup.campaign_id || setup.id)).size);
         lines.push('SELECTABLE_CANDIDATE_IDS=' + (authority.live_candidate_ids.join('|') || 'NONE'));
-        lines.push('DIAGNOSTIC_ONLY_CANDIDATE_COUNT=' + authority.diagnostic_candidate_count);
+        lines.push('DIAGNOSTIC_ONLY_CANDIDATE_COUNT=' + visibleLegacyDiagnosticCount);
         lines.push('AUTHORITY_INVARIANTS=' + authority.invariants);
         if (authority.invariant_violation) lines.push('BLOCKER=' + authority.invariant_violation);
         lines.push('');
@@ -16286,7 +16490,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     lines.push(
         buildRawTextMarketAnalysisInstruction(marketMechanicsMode ? 'MARKET_MECHANICS' : null),
         '',
-        RAW_TEXT_OUTPUT_CONTRACT
+        marketMechanicsMode ? MARKET_MECHANICS_RAW_TEXT_OUTPUT_CONTRACT : RAW_TEXT_OUTPUT_CONTRACT
     );
     return lines.join('\n');
 }
@@ -25369,6 +25573,13 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
         };
         semantic = buildCompactAISemanticPackage(semanticSource, semanticSource.market_evidence_package || {}, { manualOpportunityDiscovery: manualReview });
     } catch { semantic = null; }
+    const marketMechanicsPlan = semantic?.market_plan || source.market_plan || source.market_context?.market_plan || {};
+    const marketMechanicsFormingSetups = marketMechanicsMode
+        ? (semantic?.forming_market_mechanics_setups || source.market_mechanics?.model_states || [])
+        : [];
+    const marketMechanicsDiagnosticCount = marketMechanicsMode
+        ? countDiagnosticCandidateRecords(semantic?.legacy_diagnostic_candidates || source.legacy_diagnostic_candidates || [])
+        : 0;
     if (manualReview) {
         const minimumRR = externalPacketNumber(
             semantic?.risk_constraints?.minimum_rr
@@ -26145,9 +26356,12 @@ Return only the existing compact JSON output contract.
             '==============================',
             'MODE=MARKET_MECHANICS',
             'ACTIVE_AUTHORITY_COUNT=' + String(packetAuthority?.active_authority_count || 0),
+            'MARKET_PLAN_VALID=' + (marketMechanicsPlan.valid_context === true ? 'YES' : 'NO'),
             'LIVE_CANDIDATE_COUNT=' + candidates.length,
+            'FORMING_SETUP_COUNT=' + marketMechanicsFormingSetups.length,
+            'FORMING_CAMPAIGN_COUNT=' + new Set(marketMechanicsFormingSetups.map(setup => setup.campaign_id || setup.id)).size,
             'SELECTABLE_CANDIDATE_IDS=' + (candidates.map(candidate => candidate.candidate_id).join('|') || 'NONE'),
-            'DIAGNOSTIC_ONLY_CANDIDATE_COUNT=' + (packetAuthority?.diagnostic_candidate_count ?? 0),
+            'DIAGNOSTIC_ONLY_CANDIDATE_COUNT=' + marketMechanicsDiagnosticCount,
             'AUTHORITY_INVARIANTS=' + (packetAuthority?.invariants || 'FAIL'),
             ...(packetAuthority?.invariant_violation ? ['BLOCKER=' + packetAuthority.invariant_violation] : [])
         ] : []),

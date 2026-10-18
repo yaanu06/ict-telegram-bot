@@ -3676,8 +3676,74 @@ describe('Market Mechanics packet authority', () => {
         expect(text).toContain('CANDIDATE_AUTHORITY=DIAGNOSTIC_ONLY');
         expect(text).not.toContain('=== CURRENT OPPORTUNITIES ===');
         expect(text).not.toContain('standalone FVG remains eligible');
+        expect(text).not.toContain('Analyze both BUY LIMIT and SELL LIMIT possibilities');
+        expect(text).not.toContain('deterministic CE entry');
+        expect(text).not.toContain('1R/2R/3R');
         expect(text).toContain('AUTHORITY_INVARIANTS=FAIL');
         expect(text).toContain('AUTHORITY_INVARIANT_VIOLATION');
+    });
+
+    test('serializes Market Mechanics draw and bias fields without ambiguity or object coercion', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = {
+            pair: 'XAU/USD', strategy_mode: 'MARKET_MECHANICS', scan_as_of: '2026-10-18T10:00:00Z',
+            quote: { price: 4185, quote_time: '2026-10-18T10:00:00Z' },
+            market_plan: {
+                valid_context: true,
+                bias: 'BEARISH',
+                direction: 'SELL',
+                htf_trend: 'BEARISH',
+                narrative: 'PULLBACK',
+                primary_draw_on_liquidity: { type: 'PDL', price: 4111.27, timeframe: '1D', ref: 'PDL:2026-10-17', status: 'AVAILABLE' },
+                active_poi: null,
+                poi_candidates: [{ id: 'CRT-POI-1', type: 'CRT', low: 4170, high: 4180 }]
+            },
+            market_mechanics: { model_states: [{ id: 'CRT-OLD', model: 'CRT_AGGRESSIVE', state: 'WAITING_FOR_RETRACE', direction: 'SELL' }] },
+            valid_candidates: [],
+            history: {}
+        };
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).not.toContain('[object Object]');
+        expect(text).toContain('MACRO_1D_BIAS=NEUTRAL MARKET_PLAN_DIRECTION=SELL');
+        expect(text).toContain('HTF_TREND=BEARISH NARRATIVE=PULLBACK PRIMARY_DRAW_ON_LIQUIDITY=PDL');
+        expect(text).toContain('PRIMARY_DRAW_PRICE=4111.27 PRIMARY_DRAW_TF=1D PRIMARY_DRAW_REF=PDL:2026-10-17 PRIMARY_DRAW_STATUS=AVAILABLE');
+        expect(text).toContain('ACTIVE_POI=NONE');
+        expect(text).toContain('POI_VALID=NO');
+        expect(text).toContain('PROSPECTIVE_POI=CRT-POI-1 PROSPECTIVE_POI_STATE=WAITING');
+        expect(text).toContain('STATE=WAITING_FOR_POI');
+        expect(text).not.toContain('STATE=WAITING_FOR_RETRACE');
+        expect(text).not.toContain('DAILY_BIAS=');
+    });
+
+    test('groups only causally related forming CRTs into one campaign and preserves independent setups', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const plan = {
+            valid_context: true,
+            active_swing_range_id: 'RANGE-1',
+            active_poi: { id: 'POI-1', low: 100, high: 110 }
+        };
+        const setups = [
+            { id: 'CRT-A', direction: 'SELL', timeframe: '1H', entry_model: 'CRT_AGGRESSIVE', crt_ref: 'CRT-SHARED-A', liquidity_event_ref: 'LIQ-SHARED', execution_zone: { low: 100, high: 105 }, execution_confirmed: true, entry_model_state: 'WAITING_FOR_RETRACE' },
+            { id: 'CRT-B', direction: 'SELL', timeframe: '1H', entry_model: 'CRT_AGGRESSIVE', crt_ref: 'CRT-SHARED-B', liquidity_event_ref: 'LIQ-SHARED', execution_zone: { low: 101, high: 106 }, execution_confirmed: true, entry_model_state: 'WAITING_FOR_RETRACE' },
+            { id: 'CRT-C', direction: 'SELL', timeframe: '1H', entry_model: 'CRT_AGGRESSIVE', crt_ref: 'CRT-INDEPENDENT', execution_zone: { low: 130, high: 135 }, execution_confirmed: true, entry_model_state: 'WAITING_FOR_RETRACE' }
+        ];
+        const forming = ctx.buildMarketMechanicsFormingSetupStates(setups, plan);
+        expect(forming).toHaveLength(2);
+        expect(forming[0].source_count).toBe(2);
+        expect(forming[0].alternate_crt_refs).toContain('CRT-SHARED-B');
+        expect(forming[0].state).toBe('WAITING_FOR_RETRACE');
+        expect(forming[0].selectable).toBe(false);
+        expect(forming[1].source_count).toBe(1);
+        expect(forming[1].primary_ref).toBe('CRT-INDEPENDENT');
+    });
+
+    test('diagnostic candidate count is deduplicated by visible source references', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        expect(ctx.countRawLegacyDiagnosticCandidates([
+            'CURRENT_OPPORTUNITY: SIDE=SELL FVG_C1=1H:1 FVG_C2=1H:2 FVG_C3=1H:3',
+            'HP_ZONE: SIDE=SELL FVG_C1=1H:1 FVG_C2=1H:2 FVG_C3=1H:3',
+            'HP_ZONE: SIDE=BUY FVG_C1=4H:1 FVG_C2=4H:2 FVG_C3=4H:3'
+        ])).toBe(2);
     });
 
     test('external copy-RAW packet uses the Market Mechanics contract and excludes legacy selection', () => {
@@ -3699,6 +3765,7 @@ describe('Market Mechanics packet authority', () => {
         expect(packet).toContain('LEGACY DIAGNOSTICS');
         expect(packet).toContain('MARKET PLAN / LIVE AUTHORITY');
         expect(packet).toContain('LIVE_AUTHORITY_SUMMARY');
+        expect(packet).toContain('DIAGNOSTIC_ONLY_CANDIDATE_COUNT=1');
         expect(packet).toContain('AUTHORITY_INVARIANTS=FAIL');
         expect(packet).not.toContain('The external AI may combine supplied deterministic evidence');
         expect(packet).not.toContain('FVG alone is valid');
