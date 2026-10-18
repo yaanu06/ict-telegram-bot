@@ -7,7 +7,9 @@ const { MODES: V2_ALCHEMIST_MODES, buildQualificationIndex } = require('./v2-alc
 
 const LIVE_TIMEFRAMES = ['1d', '4h', '1h', '15m', '5m'];
 const STRATEGY_TIMEFRAMES = ['1D', '4H', '1H', '15M', '5M'];
-const LIVE_HISTORY_LIMITS = Object.freeze({ '1d': 100, '4h': 100, '1h': 80, '15m': 50, '5m': 50 });
+const LEGACY_HISTORY_LIMITS = Object.freeze({ '1d': 100, '4h': 100, '1h': 80, '15m': 50, '5m': 50 });
+const MODEL_ROUTER_HISTORY_LIMITS = Object.freeze({ '1d': 120, '4h': 120, '1h': 120, '15m': 120, '5m': 120 });
+const LIVE_HISTORY_LIMITS = MODEL_ROUTER_HISTORY_LIMITS;
 
 function toMs(value) {
     if (typeof value === 'number') return value;
@@ -101,10 +103,12 @@ function visibleBars(series, timeframe, asOfMs, maxBars = null) {
     }).map(bar => canonicalCandle(bar, timeframe));
 }
 
-function makeBlocks(seriesByTimeframe, asOfMs) {
+function makeBlocks(seriesByTimeframe, asOfMs, strategyMode = 'LEGACY') {
+    const normalizedMode = String(strategyMode).toUpperCase();
+    const limits = ['MODEL_ROUTER', 'MODEL_ROUTER_LEGACY', 'MARKET_MECHANICS'].includes(normalizedMode) ? MODEL_ROUTER_HISTORY_LIMITS : LEGACY_HISTORY_LIMITS;
     return STRATEGY_TIMEFRAMES.map(timeframe => {
         const sourceTf = timeframe.toLowerCase();
-        const limit = LIVE_HISTORY_LIMITS[sourceTf] || 50;
+        const limit = limits[sourceTf] || 50;
         const visible = visibleBars(seriesByTimeframe[sourceTf] || [], sourceTf, asOfMs, limit);
         // Match the live compact packet's history window. The replay still
         // advances through every execution candle; each historical moment is
@@ -287,11 +291,13 @@ function allVisiblePrimaryFvgs(context, blocks) {
     return result;
 }
 
-function makeBlocksReference(seriesByTimeframe, asOfMs) {
+function makeBlocksReference(seriesByTimeframe, asOfMs, strategyMode = 'LEGACY') {
+    const normalizedMode = String(strategyMode).toUpperCase();
+    const limits = ['MODEL_ROUTER', 'MODEL_ROUTER_LEGACY', 'MARKET_MECHANICS'].includes(normalizedMode) ? MODEL_ROUTER_HISTORY_LIMITS : LEGACY_HISTORY_LIMITS;
     return STRATEGY_TIMEFRAMES.map(timeframe => {
         const sourceTf = timeframe.toLowerCase();
         const visible = visibleBars(seriesByTimeframe[sourceTf] || [], sourceTf, asOfMs);
-        return { timeframe, candles: visible.slice(-(LIVE_HISTORY_LIMITS[sourceTf] || 50)) };
+        return { timeframe, candles: visible.slice(-(limits[sourceTf] || 50)) };
     }).filter(block => block.candles.length > 0);
 }
 
@@ -501,7 +507,7 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
     const resumeClockIndex = Math.max(0, Math.min(clocks.length, Number(resumeState?.next_clock_index) || 0));
     for (let clockIndex = resumeClockIndex; clockIndex < clocks.length; clockIndex += 1) {
         const asOfMs = clocks[clockIndex];
-        const blocks = optimized ? makeBlocks(series, asOfMs) : makeBlocksReference(series, asOfMs);
+        const blocks = optimized ? makeBlocks(series, asOfMs, strategyMode) : makeBlocksReference(series, asOfMs, strategyMode);
         const executionBars = blocks.find(block => block.timeframe === '5M')?.candles || [];
         const currentPrice = Number(executionBars.at(-1)?.c);
         if (!Number.isFinite(currentPrice) || blocks.filter(block => ['1D', '4H', '1H'].includes(block.timeframe)).some(block => block.candles.length < 3)) continue;

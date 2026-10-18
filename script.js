@@ -705,12 +705,17 @@ const CRYPTO_BASE_CODES = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'ADA', 'DOGE', 'L
 let lastScanRejections = [];
 const TF_MAP = { '1M':'1min','5M':'5min','15M':'15min','1H':'1h','4H':'4h','1D':'1day','1W':'1week' };
 const HISTORY_OUTPUT_SIZE_BY_TIMEFRAME = Object.freeze({
-    '1M': 50,
-    '5M': 50,
-    '15M': 50,
-    '1H': 80,
-    '4H': 100,
-    '1D': 100
+    // MODEL_ROUTER audits MSNR on every supplied timeframe with the
+    // deterministic 120-bar lookback below.  The old 50/80/100 request
+    // sizes could therefore drop the origin of an otherwise still-valid
+    // structural record before the router saw it.  This is a bounded input
+    // change only; it does not alter any detector or qualification rule.
+    '1M': 120,
+    '5M': 120,
+    '15M': 120,
+    '1H': 120,
+    '4H': 120,
+    '1D': 120
 });
 const ALL_TIMEFRAMES = ['1M', '5M', '15M', '1H', '4H', '1D', '1W'];
 const DEFAULT_ATR_PERIOD = 14;
@@ -7300,7 +7305,301 @@ function selectFutureLimitLocation(direction, zones = [], locationPois = [], pri
         .sort((a, b) => b.future_limit_score - a.future_limit_score || a.future_limit_distance - b.future_limit_distance)[0] || null;
 }
 
-function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias, targets, zones, pair: pairLocal, price, symbolMetadata = {} }) {
+const MARKET_MECHANICS_ENTRY_MODELS = Object.freeze([
+    'MARKET_SHIFT',
+    'FLIP_ZONE',
+    'LIQUIDITY_OB_FVG',
+    'CRT_AGGRESSIVE',
+    'CRT_CONSERVATIVE'
+]);
+
+function marketMechanicsDirectionFromTrend(value) {
+    const trend = String(value || '').toUpperCase();
+    if (trend.includes('BULL')) return 'BUY';
+    if (trend.includes('BEAR')) return 'SELL';
+    return null;
+}
+
+function marketMechanicsClosed(data, timeframe, asOfMs = null) {
+    const rows = getClosedHistory({ [timeframe]: Array.isArray(data) ? data : [] }, timeframe);
+    if (!Number.isFinite(Number(asOfMs))) return rows;
+    return rows.filter(candle => {
+        const timestamp = normalizeTimestampUTC(candle?.t ?? candle?.timestamp ?? candle?.time);
+        return !Number.isFinite(timestamp) || timestamp <= Number(asOfMs) + STRATEGY_SPEC.TIME.futureToleranceMs;
+    });
+}
+
+function buildMarketMechanicsLiquidityMap({ historyCache = {}, price = null, structure = {}, targetCandidates = {}, marketContext = {}, asOfMs = null, pairLocal = pair, symbolMetadata = {} } = {}) {
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
+    const precision = settings.prec;
+    const pools = [];
+    const add = (type, direction, level, timeframe, createdAt, ref, source = 'STRUCTURE') => {
+        const numeric = Number(level);
+        if (!Number.isFinite(numeric)) return;
+        const timestamp = normalizeTimestampUTC(createdAt);
+        if (Number.isFinite(asOfMs) && Number.isFinite(timestamp) && timestamp > Number(asOfMs) + STRATEGY_SPEC.TIME.futureToleranceMs) return;
+        pools.push({
+            liquidity_id: `LIQUIDITY:${type}:${timeframe || 'NA'}:${ictRound(numeric, precision)}:${timestamp || 'NA'}`,
+            type,
+            direction,
+            price: ictRound(numeric, precision),
+            timeframe: timeframe || null,
+            created_at: timestamp || null,
+            status: 'AVAILABLE',
+            source,
+            ref: ref || null,
+            swept_at: null,
+            reclaimed_at: null,
+            delivered_at: null
+        });
+    };
+    const daily = marketMechanicsClosed(historyCache['1D'], '1D', asOfMs);
+    const previousDay = daily.at(-1);
+    if (previousDay) {
+        add('PDH', 'BUY', previousDay.h, '1D', candleTimestamp(previousDay, daily.length - 1, '1D'), `PDH:${previousDay.t}`, 'CLOSED_DAILY');
+        add('PDL', 'SELL', previousDay.l, '1D', candleTimestamp(previousDay, daily.length - 1, '1D'), `PDL:${previousDay.t}`, 'CLOSED_DAILY');
+    }
+    for (const [tf, state] of Object.entries(structure || {})) {
+        for (const swing of state?.recent_swing_highs || []) add('SWING_HIGH', 'BUY', swing.level, tf, swing.confirmation_time || null, `SWING_HIGH:${tf}:${swing.index}`, 'CONFIRMED_SWING');
+        for (const swing of state?.recent_swing_lows || []) add('SWING_LOW', 'SELL', swing.level, tf, swing.confirmation_time || null, `SWING_LOW:${tf}:${swing.index}`, 'CONFIRMED_SWING');
+    }
+    const fourH = marketMechanicsClosed(historyCache['4H'], '4H', asOfMs);
+    const fourHSwings = findSwings(fourH, 3);
+    for (const swing of (fourHSwings.H || []).slice(-6)) add('PROTECTED_HIGH', 'BUY', swing.p, '4H', swing.confirmation_time, `PROTECTED_HIGH:4H:${swing.i}`, 'ACTIVE_RANGE');
+    for (const swing of (fourHSwings.L || []).slice(-6)) add('PROTECTED_LOW', 'SELL', swing.p, '4H', swing.confirmation_time, `PROTECTED_LOW:4H:${swing.i}`, 'ACTIVE_RANGE');
+    for (const target of targetCandidates?.all || []) add(target.source || target.target_type || 'STRUCTURAL', target.direction, target.level, target.timeframe, target.created_time, target.id, 'TARGET_CATALOG');
+    for (const [key, level] of Object.entries(marketContext.session_levels || {})) {
+        const high = Number(level?.high ?? level?.price_high);
+        const low = Number(level?.low ?? level?.price_low);
+        add(`${String(key).toUpperCase()}_HIGH`, 'BUY', high, level?.timeframe || 'SESSION', level?.created_time, level?.ref || key, 'SESSION');
+        add(`${String(key).toUpperCase()}_LOW`, 'SELL', low, level?.timeframe || 'SESSION', level?.created_time, level?.ref || key, 'SESSION');
+    }
+    const deduped = new Map();
+    for (const pool of pools) {
+        const key = `${pool.direction}:${pool.type}:${pool.price}`;
+        const existing = deduped.get(key);
+        if (!existing || (existing.created_at || Infinity) < (pool.created_at || Infinity)) deduped.set(key, pool);
+    }
+    const all = [...deduped.values()].sort((a, b) => Math.abs(a.price - price) - Math.abs(b.price - price) || String(a.liquidity_id).localeCompare(String(b.liquidity_id)));
+    return {
+        all,
+        above: all.filter(pool => pool.price > Number(price)),
+        below: all.filter(pool => pool.price < Number(price)),
+        buy_side: all.filter(pool => pool.direction === 'BUY' && pool.price > Number(price)),
+        sell_side: all.filter(pool => pool.direction === 'SELL' && pool.price < Number(price))
+    };
+}
+
+function buildMarketMechanicsPlan({ historyCache = {}, price = null, structure = {}, zones = [], targetCandidates = {}, marketContext = {}, pair: pairLocal = pair, symbolMetadata = {}, asOfMs = null } = {}) {
+    const fourH = marketMechanicsClosed(historyCache['4H'], '4H', asOfMs);
+    const oneH = marketMechanicsClosed(historyCache['1H'], '1H', asOfMs);
+    const oneD = marketMechanicsClosed(historyCache['1D'], '1D', asOfMs);
+    const scopedHistoryCache = { ...historyCache, '1D': oneD, '4H': fourH, '1H': oneH,
+        '15M': marketMechanicsClosed(historyCache['15M'], '15M', asOfMs) };
+    const scopedStructure = {
+        ...structure,
+        '1D': oneD.length >= 20 ? buildStructureSnapshot(oneD, '1D') : (structure?.['1D'] || {}),
+        '4H': fourH.length >= 20 ? buildStructureSnapshot(fourH, '4H') : (structure?.['4H'] || {}),
+        '1H': oneH.length >= 20 ? buildStructureSnapshot(oneH, '1H') : (structure?.['1H'] || {})
+    };
+    const fourHState = confirmedStructuralState(fourH, 2);
+    const fourHSwings = findSwings(fourH, 3);
+    const highs = fourHSwings.H || [];
+    const lows = fourHSwings.L || [];
+    const latestHigh = highs.at(-1) || null;
+    const latestLow = lows.at(-1) || null;
+    const htfTrend = marketMechanicsDirectionFromTrend(
+        scopedStructure?.['4H']?.structural_trend || scopedStructure?.['4H']?.effective_trend || fourHState.state
+    );
+    const rangeHigh = latestHigh?.p ?? null;
+    const rangeLow = latestLow?.p ?? null;
+    const validRange = Number.isFinite(Number(rangeHigh)) && Number.isFinite(Number(rangeLow)) && Number(rangeHigh) > Number(rangeLow);
+    const equilibrium = validRange ? (Number(rangeHigh) + Number(rangeLow)) / 2 : null;
+    const position = validRange ? (Number(price) - Number(rangeLow)) / (Number(rangeHigh) - Number(rangeLow)) : null;
+    const location = !Number.isFinite(position) ? 'UNKNOWN' : position >= 0.66 ? 'PREMIUM' : position <= 0.34 ? 'DISCOUNT' : 'EQUILIBRIUM';
+    const internalDirection = marketMechanicsDirectionFromTrend(
+        scopedStructure?.['1H']?.structural_trend || scopedStructure?.['1H']?.effective_trend
+    );
+    const bias = htfTrend || marketMechanicsDirectionFromTrend(scopedStructure?.['1D']?.structural_trend || scopedStructure?.['1D']?.effective_trend);
+    const biasName = bias === 'BUY' ? 'BULLISH' : bias === 'SELL' ? 'BEARISH' : 'NEUTRAL';
+    let narrative = 'UNRESOLVED';
+    if (bias === 'BUY') narrative = internalDirection === 'SELL' ? 'PULLBACK' : internalDirection === 'BUY' ? 'CONTINUATION' : 'UNRESOLVED';
+    if (bias === 'SELL') narrative = internalDirection === 'BUY' ? 'PULLBACK' : internalDirection === 'SELL' ? 'CONTINUATION' : 'UNRESOLVED';
+    if (biasName === 'NEUTRAL') narrative = validRange ? 'RANGE' : 'UNRESOLVED';
+    const liquidity = buildMarketMechanicsLiquidityMap({ historyCache, price, structure: scopedStructure, targetCandidates, marketContext, asOfMs, pairLocal, symbolMetadata });
+    const targetDirection = bias || null;
+    const primaryDraw = targetDirection
+        ? (targetDirection === 'BUY' ? liquidity.buy_side : liquidity.sell_side).filter(pool => targetDirection === 'BUY' ? pool.price > Number(price) : pool.price < Number(price))[0] || null
+        : null;
+    const derivedPois = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(scopedHistoryCache?.[tf] || [], tf, price, pairLocal, symbolMetadata));
+    const crtPois = ['4H', '1H'].flatMap(tf => detectCRTEvents(scopedHistoryCache?.[tf] || [], tf, pairLocal, symbolMetadata)
+        .filter(event => event.detected !== false && !event.invalidated)
+        .map(event => ({
+            id: event.ref || `CRT:${tf}:${event.reference_bar_index}:${event.direction}`,
+            type: 'CRT', direction: event.direction, timeframe: tf,
+            low: Number(event.range_low), high: Number(event.range_high),
+            created_time: event.first_knowable_time || event.reclaim_time,
+            freshness: event.freshness || 'FRESH', primary_eligible: true,
+            invalidated: false, structural_invalidation: event.sweep_extreme,
+            crt_ref: event.ref || null
+        })));
+    const poiCatalog = [...(zones || []), ...derivedPois, ...crtPois];
+    const eligiblePois = poiCatalog.filter(zone => {
+        const direction = String(zone?.direction || '').toUpperCase();
+        if (!['BUY', 'SELL'].includes(direction) || !Number.isFinite(Number(zone.low)) || !Number.isFinite(Number(zone.high))) return false;
+        if (zone.invalidated || zone.consumed || zone.expired || ['USED', 'CONSUMED', 'INVALIDATED', 'EXPIRED'].includes(String(zone.freshness || '').toUpperCase())) return false;
+        if (targetDirection && direction !== targetDirection) return false;
+        const favorable = direction === 'BUY' ? location === 'DISCOUNT' : location === 'PREMIUM';
+        const atOrNear = Number(price) >= Number(zone.low) && Number(price) <= Number(zone.high)
+            || Number(zone.distance_in_atr) <= 3
+            || Number(zone.distance_pct) <= 1.5;
+        return favorable || atOrNear;
+    }).sort((a, b) => {
+        const freshness = { FRESH: 3, UNTOUCHED: 3, TOUCHED: 2, PARTIAL: 1 };
+        return (freshness[String(b.freshness || '').toUpperCase()] || 0) - (freshness[String(a.freshness || '').toUpperCase()] || 0)
+            || Number(a.distance_in_atr ?? Infinity) - Number(b.distance_in_atr ?? Infinity);
+    });
+    const primaryPoi = eligiblePois[0] || null;
+    const activeRangeId = validRange ? `ACTIVE_RANGE:4H:${latestLow.i}:${latestHigh.i}:${rangeLow}:${rangeHigh}` : null;
+    const protectedLow = htfTrend === 'BUY' ? latestLow?.p ?? null : null;
+    const protectedHigh = htfTrend === 'SELL' ? latestHigh?.p ?? null : null;
+    const evidenceRefs = [
+        activeRangeId,
+        latestHigh ? `SWING_HIGH:4H:${latestHigh.i}` : null,
+        latestLow ? `SWING_LOW:4H:${latestLow.i}` : null,
+        primaryPoi?.id || null,
+        primaryDraw?.liquidity_id || null
+    ].filter(Boolean);
+    return {
+        plan_id: `MARKET_PLAN:${pairLocal}:${asOfMs || 'NA'}:${activeRangeId || 'NONE'}`,
+        bias: biasName,
+        bias_state: biasName === 'BULLISH' ? 'BULLISH_CONTINUATION' : biasName === 'BEARISH' ? 'BEARISH_CONTINUATION' : validRange ? 'RANGE' : 'NEUTRAL',
+        htf_trend: htfTrend ? (htfTrend === 'BUY' ? 'BULLISH' : 'BEARISH') : 'NEUTRAL',
+        active_swing_low: validRange ? Number(rangeLow) : null,
+        active_swing_high: validRange ? Number(rangeHigh) : null,
+        active_swing_range_id: activeRangeId,
+        protected_high: protectedHigh,
+        protected_low: protectedLow,
+        range_midpoint: equilibrium,
+        location,
+        location_position: Number.isFinite(position) ? Number(position.toFixed(4)) : null,
+        internal_order_flow: internalDirection ? (internalDirection === 'BUY' ? 'BULLISH' : 'BEARISH') : 'UNRESOLVED',
+        narrative,
+        liquidity_above: liquidity.above.slice(0, 8),
+        liquidity_below: liquidity.below.slice(0, 8),
+        primary_draw_on_liquidity: primaryDraw,
+        poi_candidates: eligiblePois.slice(0, 8),
+        active_poi: primaryPoi,
+        invalidation: htfTrend === 'BUY' ? protectedLow : htfTrend === 'SELL' ? protectedHigh : null,
+        state: primaryPoi ? 'AT_POI' : validRange ? 'WAITING_FOR_LOCATION' : 'PLAN_BUILDING',
+        session: marketContext.session || null,
+        evidence_refs: evidenceRefs,
+        data_cutoff_ms: Number.isFinite(Number(asOfMs)) ? Number(asOfMs) : null,
+        source_bar_counts: { '1D': oneD.length, '4H': fourH.length, '1H': oneH.length },
+        valid_context: Boolean(validRange && bias),
+        direction: bias
+    };
+}
+
+function marketMechanicsEntryModelForSetup(setup = {}) {
+    const zoneType = String(setup.execution_zone?.type || setup.opportunity_narrative?.location?.type || '').toUpperCase();
+    const explicit = String(setup.entry_model || setup.execution_model || '').toUpperCase();
+    if (zoneType === 'FLIP' || zoneType === 'BREAKER' || explicit.includes('FLIP') || explicit.includes('BREAKER')) return 'FLIP_ZONE';
+    if (zoneType === 'CRT' || setup.crt_ref || setup.crt_id) return setup.execution_confirmed === true ? 'CRT_CONSERVATIVE' : 'CRT_AGGRESSIVE';
+    if (setup.liquidity_event_ids?.length || setup.tbs_ref || zoneType === 'FVG' || zoneType === 'OB' || zoneType === 'OB+FVG') return 'LIQUIDITY_OB_FVG';
+    return 'MARKET_SHIFT';
+}
+
+function buildMarketMechanicsStrategySetups(args = {}) {
+    const cutoff = Number(args.marketPlan?.data_cutoff_ms ?? args.asOfMs);
+    const scopedHistoryCache = Number.isFinite(cutoff)
+        ? Object.fromEntries(Object.entries(args.historyCache || {}).map(([timeframe, candles]) => [timeframe, marketMechanicsClosed(candles, timeframe, cutoff)]))
+        : args.historyCache;
+    const scopedArgs = { ...args, historyCache: scopedHistoryCache };
+    const base = buildMarketMechanicsSetups(scopedArgs);
+    const plan = args.marketPlan || null;
+    const discovery = base.discovery || null;
+    const crtSetups = [];
+    for (const timeframe of ['4H', '1H']) {
+        const events = detectCRTEvents(scopedHistoryCache?.[timeframe] || [], timeframe, args.pair, args.symbolMetadata || {})
+            .filter(event => event.detected !== false && !event.invalidated && ['BUY', 'SELL'].includes(event.direction));
+        for (const event of events) {
+            const firstKnowable = rawTextPacketTimestamp(event.first_knowable_time || event.reclaim_time || event.event_time);
+            if (Number.isFinite(Number(plan?.data_cutoff_ms)) && Number.isFinite(firstKnowable) && firstKnowable > Number(plan.data_cutoff_ms)) continue;
+            const midpoint = (Number(event.range_low) + Number(event.range_high)) / 2;
+            const width = Number(event.range_high) - Number(event.range_low);
+            if (!(width > 0)) continue;
+            const low = event.direction === 'BUY' ? Number(event.range_low) : midpoint;
+            const high = event.direction === 'BUY' ? midpoint : Number(event.range_high);
+            const targets = (args.targets?.all || []).filter(target => target.direction === event.direction
+                && Number.isFinite(Number(target.level))
+                && (event.direction === 'BUY' ? Number(target.level) > high : Number(target.level) < low));
+            if (!targets.length) continue;
+            const confirmation = detectConfirmedStructuralBreak(scopedHistoryCache?.['15M'] || [], event.direction, '15M', 2);
+            const confirmationTime = rawTextPacketTimestamp(confirmation?.first_knowable_time || confirmation?.event_time);
+            const conservative = confirmation && Number.isFinite(confirmationTime) && confirmationTime >= firstKnowable;
+            const model = conservative ? 'CRT_CONSERVATIVE' : 'CRT_AGGRESSIVE';
+            const zone = {
+                id: `CRT_ENTRY_ZONE:${timeframe}:${event.direction}:${firstKnowable}:${low}:${high}`,
+                type: 'CRT', direction: event.direction, timeframe,
+                low, high, midpoint: (low + high) / 2,
+                created_time: conservative ? confirmationTime : firstKnowable,
+                freshness: 'FRESH', primary_eligible: true,
+                invalidated: false, consumed: false,
+                structural_invalidation: { level: Number(event.sweep_extreme), source: 'CRT_SWEEP', timeframe },
+                structural_evidence_ids: [event.ref, confirmation?.structure_event_id].filter(Boolean),
+                entry_model: model, execution_model: 'FRESH_RETRACEMENT_LIMIT'
+            };
+            crtSetups.push({
+                id: `MARKET_PLAN:${model}:${timeframe}:${event.direction}:${firstKnowable}`,
+                primary: 'CRT', label: 'CRT', direction: event.direction, timeframe,
+                setup_timeframe: timeframe, execution_timeframe: timeframe === '4H' ? '1H' : '5M',
+                event_time: firstKnowable, execution_event_time: conservative ? confirmationTime : firstKnowable,
+                narrative_state: 'ACTIVE', execution_zone: zone,
+                execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: model,
+                market_mechanics_verified: true, execution_confirmed: true,
+                crt_ref: event.ref || null, liquidity_event_ref: event.ref || null,
+                structural_invalidation_detail: { level: Number(event.sweep_extreme), source: 'CRT_SWEEP', timeframe },
+                structural_evidence_ids: [event.ref, confirmation?.structure_event_id].filter(Boolean),
+                target_candidates: targets, primary_objective: targets[0].level,
+                opportunity_narrative: { id: `NARRATIVE:CRT:${event.ref}`, state: 'DEVELOPING', location: zone,
+                    liquidity_event_ids: [event.ref].filter(Boolean), structural_shift_ids: [confirmation?.structure_event_id].filter(Boolean),
+                    target_intent: targets[0].source || targets[0].target_type, execution_requirement: 'RETRACE_TO_LOCATION' }
+            });
+        }
+    }
+    const allBase = [...base, ...crtSetups];
+    const setups = allBase.filter(setup => {
+        const explicitModel = String(setup.entry_model || '').toUpperCase();
+        const model = MARKET_MECHANICS_ENTRY_MODELS.includes(explicitModel) ? explicitModel : marketMechanicsEntryModelForSetup(setup);
+        const directionAllowed = !plan?.direction || setup.direction === plan.direction || plan.narrative === 'REVERSAL';
+        const setupPoi = setup.execution_zone || setup.opportunity_narrative?.location || null;
+        const hasPoi = Boolean(plan?.poi_candidates?.length && setupPoi && plan.poi_candidates.some(poi => setupPoi.id === poi.id
+            || rawTextIntervalsOverlap(Number(setupPoi.low), Number(setupPoi.high), Number(poi.low), Number(poi.high))));
+        const hasTarget = (setup.target_candidates || []).some(target => Number.isFinite(Number(target.level)) && (setup.direction === 'BUY' ? Number(target.level) > Number(args.price) : Number(target.level) < Number(args.price)));
+        const hasCausalConfirmation = setup.execution_confirmed === true || setup.execution_model === 'CONFIRMATION_ENTRY' || (setup.structural_evidence_ids || []).some(ref => String(ref).includes('SHIFT:'));
+        setup.entry_model = model;
+        setup.market_plan_id = plan?.plan_id || null;
+        setup.market_plan = plan || null;
+        setup.entry_model_state = hasCausalConfirmation ? 'WAITING_FOR_RETRACE' : 'WAITING_FOR_CONFIRMATION';
+        setup.lifecycle_state = setup.entry_model_state;
+        setup.strategy_model = model;
+        setup.strategy_label = model;
+        setup.setup_class = [setup.primary || 'POI', zoneTypeForSetup(setup)].filter(Boolean).join('+');
+        setup.evidence_refs = [...new Set([...(setup.structural_evidence_ids || []), ...(plan?.evidence_refs || []), setup.execution_zone?.id].filter(Boolean))];
+        setup.model_mechanics_complete = plan?.valid_context === true && directionAllowed && hasPoi && hasTarget && hasCausalConfirmation && MARKET_MECHANICS_ENTRY_MODELS.includes(model);
+        return plan?.valid_context === true && directionAllowed && hasPoi && hasTarget && setup.model_mechanics_complete;
+    });
+    Object.defineProperty(setups, 'detection_stats', { value: { strategy_narratives: setups.length, active_narratives: setups.length, entry_models: setups.reduce((out, setup) => { out[setup.entry_model] = (out[setup.entry_model] || 0) + 1; return out; }, {}) }, enumerable: false });
+    if (discovery) Object.defineProperty(setups, 'discovery', { value: discovery, enumerable: false });
+    return setups;
+}
+
+function zoneTypeForSetup(setup = {}) {
+    return String(setup.execution_zone?.type || setup.opportunity_narrative?.location?.type || 'POI').toUpperCase();
+}
+
+function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias, targets, zones, pair: pairLocal, price, symbolMetadata = {}, marketPlan = null }) {
     const setups = [];
     const discovery = { discovery_buy_events: 0, discovery_sell_events: 0, discovery_structure_shifts: 0,
         discovery_liquidity_events: 0, discovery_pois: 0, discovery_reversal_candidates: 0, discovery_continuation_candidates: 0, discovery_events: [] };
@@ -11910,6 +12209,94 @@ function buildProductionScanTrace({ pair, price, asOfMs, historyCache, structure
     };
 }
 
+const MODEL_ROUTER_STATE_LOOKBACK = Object.freeze({
+    '1D': STRATEGY_SPEC.MSNR.lookback,
+    '4H': STRATEGY_SPEC.MSNR.lookback,
+    '1H': STRATEGY_SPEC.MSNR.lookback,
+    '15M': STRATEGY_SPEC.MSNR.lookback,
+    '5M': STRATEGY_SPEC.MSNR.lookback
+});
+
+function buildModelRouterStateCompleteness(historyCache = {}, asOfMs = null) {
+    const timeframes = Object.keys(MODEL_ROUTER_STATE_LOOKBACK);
+    const counts = {};
+    const oldest = {};
+    const newest = {};
+    const futureBars = {};
+    const openBars = {};
+    for (const timeframe of timeframes) {
+        const rows = getClosedHistory(historyCache, timeframe);
+        const ordered = rows.slice().sort((left, right) => rawTextPacketTimestamp(left.t ?? left.timestamp) - rawTextPacketTimestamp(right.t ?? right.timestamp));
+        const times = ordered.map(candle => rawTextPacketTimestamp(candle.t ?? candle.timestamp)).filter(Number.isFinite);
+        counts[timeframe] = ordered.length;
+        oldest[timeframe] = times.length ? new Date(times[0]).toISOString() : null;
+        newest[timeframe] = times.length ? new Date(times.at(-1)).toISOString() : null;
+        futureBars[timeframe] = Number.isFinite(Number(asOfMs))
+            ? ordered.filter(candle => rawTextPacketTimestamp(candle.t ?? candle.timestamp) > Number(asOfMs) + STRATEGY_SPEC.TIME.futureToleranceMs).length
+            : 0;
+        openBars[timeframe] = (historyCache?.[timeframe] || []).filter(candle => candle?.is_closed === false || candle?.closed === false).length;
+    }
+    const insufficient = timeframes.filter(timeframe => counts[timeframe] < MODEL_ROUTER_STATE_LOOKBACK[timeframe]);
+    const future = timeframes.filter(timeframe => futureBars[timeframe] > 0);
+    const open = timeframes.filter(timeframe => openBars[timeframe] > 0);
+    const reasons = [];
+    if (insufficient.length) reasons.push('INSUFFICIENT_MODEL_LOOKBACK:' + insufficient.join(','));
+    if (future.length) reasons.push('FUTURE_CANDLE_DATA:' + future.join(','));
+    if (open.length) reasons.push('OPEN_CANDLE_DATA:' + open.join(','));
+    return {
+        complete: reasons.length === 0,
+        state_reconstruction_mode: 'BOUNDED_CLOSED_CANDLE_LOOKBACK',
+        persisted_state_used: false,
+        as_of_ms: Number.isFinite(Number(asOfMs)) ? Number(asOfMs) : null,
+        required_closed_bars: { ...MODEL_ROUTER_STATE_LOOKBACK },
+        counts,
+        oldest,
+        newest,
+        future_bars: futureBars,
+        open_bars: openBars,
+        reasons,
+        reason: reasons[0] || null
+    };
+}
+
+function buildModelRouterStateSnapshot({ historyCache = {}, crtAudit = {}, tbsAudit = {}, msnrAudit = {}, modelAuthority = {}, asOfMs = null } = {}) {
+    const atOrBefore = value => {
+        const time = rawTextPacketTimestamp(value);
+        return !Number.isFinite(Number(asOfMs)) || !Number.isFinite(time) || time <= Number(asOfMs) + STRATEGY_SPEC.TIME.futureToleranceMs;
+    };
+    const active = (records, statuses) => (records || [])
+        .filter(record => atOrBefore(record.first_knowable_ms ?? record.first_knowable_time ?? record.confirmation_time ?? record.event_time))
+        .filter(record => statuses.has(String(record.status || '').toUpperCase()))
+        .map(record => ({
+            id: record.ref || record.tbs_id || record.id || null,
+            direction: rawTextModelDirection(record),
+            timeframe: record.timeframe || null,
+            origin_time: record.first_knowable || record.first_knowable_time || record.source_time || null,
+            status: record.status || null,
+            low: Number.isFinite(Number(record.zone_low ?? record.range_low)) ? Number(record.zone_low ?? record.range_low) : null,
+            high: Number.isFinite(Number(record.zone_high ?? record.range_high)) ? Number(record.zone_high ?? record.range_high) : null,
+            evidence_refs: [record.ref || record.tbs_id || null].filter(Boolean)
+        }));
+    const currentRecords = modelAuthority.current_records || [];
+    return {
+        as_of_ms: Number.isFinite(Number(asOfMs)) ? Number(asOfMs) : null,
+        active_crt: active(crtAudit.records, new Set(['VALID'])),
+        active_tbs: active(tbsAudit.records, new Set(['CONFIRMED', 'SWEPT'])),
+        active_msnr: active(msnrAudit.records, new Set(['VALID', 'TESTED', 'FRESH'])),
+        active_liquidity: [...active(crtAudit.records, new Set(['VALID'])), ...active(tbsAudit.records, new Set(['CONFIRMED', 'SWEPT']))]
+            .map(record => ({ ...record, liquidity_ref: record.id })),
+        active_entry_zone: currentRecords.map(record => ({
+            id: record.model_router?.entry_zone_ref || null,
+            direction: record.candidate?.action === 'BUY_LIMIT' ? 'BUY' : record.candidate?.action === 'SELL_LIMIT' ? 'SELL' : null,
+            origin_time: record.model_router?.chronology?.zone_time || record.fvg?.c3 || null,
+            status: record.current?.opportunity_status || 'ACTIVE',
+            evidence_refs: [record.model_router?.structure_ref, record.model_router?.entry_zone_ref].filter(Boolean)
+        })).filter(record => record.id),
+        active_setup_model: [...new Set(currentRecords.map(record => record.strategy_model).filter(Boolean))],
+        active_objective: currentRecords.map(record => record.candidate?.structural_objective || null).filter(Boolean)
+    };
+}
+
 function buildLiveModelRouterAuthority({ pair, price, historyCache, marketContext, symbolMetadata = {}, asOfMs }) {
     const precision = getMarketSettings(pair, symbolMetadata).prec;
     const blocks = ['1D', '4H', '1H', '15M', '5M']
@@ -11932,7 +12319,7 @@ function buildLiveModelRouterAuthority({ pair, price, historyCache, marketContex
         session_levels: {}
     };
     const roleAudit = { daily_bias: marketContext.daily_bias || 'NEUTRAL' };
-    return buildRawTextHighProbabilityZones(blocks, price, precision, {
+    const result = buildRawTextHighProbabilityZones(blocks, price, precision, {
         crt_records: crtAudit.records,
         tbs_records: tbsAudit.records,
         msnr_records: msnrAudit.records,
@@ -11940,6 +12327,10 @@ function buildLiveModelRouterAuthority({ pair, price, historyCache, marketContex
         as_of_ms: asOfMs,
         strategy_mode: 'MODEL_ROUTER'
     }, rawContext, roleAudit);
+    const stateCompleteness = buildModelRouterStateCompleteness(historyCache, asOfMs);
+    result.state_completeness = stateCompleteness;
+    result.state_snapshot = buildModelRouterStateSnapshot({ historyCache, crtAudit, tbsAudit, msnrAudit, modelAuthority: result, asOfMs });
+    return result;
 }
 
 function applyV2ModelRouterToLiveCandidates(result = {}, modelAuthority = {}, precision = 5) {
@@ -12174,10 +12565,17 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const strategyStartedAt = scanClock();
     marketContext.timeframe_context = buildTimeframeContext({ historyCache, structure, price, zones, liquidity: liquidityFacts });
     marketContext.daily_bias = buildDailyTradingBias(marketContext.timeframe_context, targetCandidates, price, now.getTime());
+    const strategyMode = rawTextV2StrategyMode();
+    const marketPlan = buildMarketMechanicsPlan({ historyCache, price, structure, zones, targetCandidates,
+        marketContext, pair, symbolMetadata, asOfMs: now.getTime() });
     const informationalMarketMechanicsSetups = buildMarketMechanicsSetups({ historyCache, timeframeContext: marketContext.timeframe_context,
-        dailyBias: marketContext.daily_bias, targets: targetCandidates, zones, pair, price, symbolMetadata });
+        dailyBias: marketContext.daily_bias, targets: targetCandidates, zones, pair, price, symbolMetadata, marketPlan });
+    marketContext.market_plan = marketPlan;
     marketContext.discovery_funnel = { ...(informationalMarketMechanicsSetups.discovery || {}) };
-    const detectedStrategySetups = buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext, symbolMetadata });
+    const detectedStrategySetups = strategyMode === 'MARKET_MECHANICS'
+        ? buildMarketMechanicsStrategySetups({ historyCache, timeframeContext: marketContext.timeframe_context,
+            dailyBias: marketContext.daily_bias, targets: targetCandidates, zones, pair, price, symbolMetadata, marketPlan })
+        : buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext, symbolMetadata });
     const strategySetups = detectedStrategySetups.filter(hasExecutableStrategyBacking);
     Object.defineProperty(strategySetups, 'detection_stats', {
         value: detectedStrategySetups.detection_stats || null,
@@ -12247,16 +12645,18 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     // candidates through the existing deterministic builder. This does not
     // revive rejected records and does not create a second target/stop
     // engine.
-    const currentRegeneration = buildCurrentOpportunityRegenerationSetups({
-        pair,
-        price,
-        historyCache,
-        zones,
-        strategySetups,
-        targetCandidates,
-        marketContext,
-        symbolMetadata
-    });
+    const currentRegeneration = strategyMode === 'MARKET_MECHANICS'
+        ? { setups: [], zones: [], discovered: 0, rejected: [] }
+        : buildCurrentOpportunityRegenerationSetups({
+            pair,
+            price,
+            historyCache,
+            zones,
+            strategySetups,
+            targetCandidates,
+            marketContext,
+            symbolMetadata
+        });
     let currentAdaptiveSetupResult = { raw_candidates: [], valid_candidates: [], all_valid_candidates: [], selectable_candidates: [], future_watch_candidates: [], low_quality_candidates: [], seed_diagnostics: [], rejected_candidates: [] };
     if (currentRegeneration.setups.length) {
         prepareOpportunitySetups(currentRegeneration.setups, marketContext, price);
@@ -12280,7 +12680,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         normalizeTimestampUTC(marketContext.as_of_time || marketContext.as_of_ms || marketContext.scan_as_of_ms)
     );
     let liveModelRouterDiagnostics = null;
-    if (rawTextV2StrategyMode() === 'MODEL_ROUTER') {
+    if (strategyMode === 'MODEL_ROUTER') {
         const modelAuthority = buildLiveModelRouterAuthority({
             pair,
             price,
@@ -12292,7 +12692,23 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         adaptiveSetupResult = applyV2ModelRouterToLiveCandidates(adaptiveSetupResult, modelAuthority, prec);
         liveModelRouterDiagnostics = modelAuthority.model_router || null;
         marketContext.model_router = liveModelRouterDiagnostics;
+        marketContext.model_router_state = modelAuthority.state_completeness || null;
+        marketContext.model_router_state_snapshot = modelAuthority.state_snapshot || null;
         marketContext.strategy_mode = 'MODEL_ROUTER';
+    }
+    if (strategyMode === 'MARKET_MECHANICS') {
+        marketContext.strategy_mode = 'MARKET_MECHANICS';
+        marketContext.market_mechanics = {
+            plan: marketPlan,
+            entry_models: [...new Set(strategySetups.map(setup => setup.entry_model).filter(Boolean))],
+            model_states: strategySetups.map(setup => ({ id: setup.id, model: setup.entry_model, state: setup.entry_model_state, direction: setup.direction, zone: setup.execution_zone?.id || null })),
+            authority: 'MARKET_PLAN->POI->ENTRY_MODEL',
+            legacy_bypass: false,
+            blockers: marketPlan.valid_context ? [] : ['NO_VALID_MARKET_PLAN']
+        };
+        marketContext.model_router = null;
+        marketContext.model_router_state = buildModelRouterStateCompleteness(historyCache, now.getTime());
+        marketContext.model_router_state_snapshot = buildModelRouterStateSnapshot({ historyCache, modelAuthority: { current_records: [] }, asOfMs: now.getTime() });
     }
     const allStrategySetups = [...strategySetups, ...currentRegeneration.setups];
     const allStrategyExecutionZones = getStrategyExecutionZones(allStrategySetups);
@@ -12376,7 +12792,18 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         },
         asset_class: marketState.asset_class,
         strategy_mode: rawTextV2StrategyMode(),
+        market_plan: marketContext.market_plan || null,
+        market_mechanics: marketContext.market_mechanics || null,
         model_router: liveModelRouterDiagnostics,
+        model_router_state: marketContext.model_router_state || null,
+        model_router_state_snapshot: marketContext.model_router_state_snapshot || null,
+        LIVE_HISTORY_1D_BARS: getClosedHistory(historyCache, '1D').length,
+        LIVE_HISTORY_4H_BARS: getClosedHistory(historyCache, '4H').length,
+        LIVE_HISTORY_1H_BARS: getClosedHistory(historyCache, '1H').length,
+        LIVE_HISTORY_15M_BARS: getClosedHistory(historyCache, '15M').length,
+        LIVE_HISTORY_5M_BARS: getClosedHistory(historyCache, '5M').length,
+        STATE_RECONSTRUCTION_MODE: marketContext.model_router_state?.state_reconstruction_mode || null,
+        MODEL_ROUTER_STATE_COMPLETE: marketContext.model_router_state?.complete === true ? 'YES' : 'NO',
         data_quality: dataQuality,
         snapshot_completeness: snapshotCompleteness,
         market_open: marketState.is_market_open,
@@ -12535,6 +12962,8 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         volatility: liveMarketContext.volatility || null,
         premium_discount: liveMarketContext.premium_discount || null,
         daily_bias: liveMarketContext.daily_bias || null,
+        market_plan: liveMarketContext.market_plan || liveMarketContext.market_context?.market_plan || null,
+        market_mechanics: liveMarketContext.market_mechanics || liveMarketContext.market_context?.market_mechanics || null,
         market_regime: liveMarketContext.market_regime || null,
         market_phase_selection: liveMarketContext.market_phase_selection || null,
         phase_selection_audit: liveMarketContext.phase_selection_audit || null,
@@ -14380,7 +14809,10 @@ function rawTextV2StrategyMode(strategyAudits = {}) {
         || (typeof window !== 'undefined' ? window.__V2_STRATEGY_MODE__ : null)
         || (typeof globalThis !== 'undefined' ? globalThis.__V2_STRATEGY_MODE__ : null)
         || 'LEGACY';
-    return String(configured).toUpperCase() === 'LEGACY' ? 'LEGACY' : 'MODEL_ROUTER';
+    const mode = String(configured).toUpperCase();
+    if (mode === 'MARKET_MECHANICS') return 'MARKET_MECHANICS';
+    if (mode === 'MODEL_ROUTER' || mode === 'MODEL_ROUTER_LEGACY') return 'MODEL_ROUTER';
+    return mode === 'LEGACY' ? 'LEGACY' : 'LEGACY';
 }
 
 function rawTextModelEventTime(record = {}) {

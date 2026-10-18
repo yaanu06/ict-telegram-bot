@@ -58,6 +58,129 @@ function loadStrategyContext(options = {}) {
     return context;
 }
 
+function historyCacheFromBlocks(blocks) {
+    return Object.fromEntries((blocks || []).map(block => [block.timeframe, (block.candles || []).map(candle => ({ ...candle }))]));
+}
+
+function marketMechanicsReplayRecord(candidate, block, asOfMs) {
+    const zone = candidate?.zone || {};
+    const created = candidate?.execution_zone_created_time || zone.created_time || candidate?.strategy_setup?.event_time || asOfMs;
+    const createdMs = Number.isFinite(Number(created)) ? Number(created) : Date.parse(created);
+    const createdIso = Number.isFinite(createdMs) ? new Date(createdMs).toISOString() : new Date(asOfMs).toISOString();
+    const direction = String(candidate?.direction || '').toUpperCase();
+    const fvgType = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
+    const lower = Number(zone.low ?? candidate?.zone_low);
+    const upper = Number(zone.high ?? candidate?.zone_high);
+    const syntheticRef = `MM:${candidate?.id || `${direction}:${createdIso}:${lower}:${upper}`}`;
+    const fvg = {
+        timeframe: String(candidate?.timeframe || block?.timeframe || '1H').toUpperCase(),
+        type: fvgType,
+        c1: syntheticRef,
+        c2: '',
+        c3: createdIso,
+        lower: Number.isFinite(lower) ? lower : null,
+        upper: Number.isFinite(upper) ? upper : null,
+        status: candidate?.freshness || 'UNTOUCHED'
+    };
+    const pendingAction = direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT';
+    const candidateView = {
+        ...candidate,
+        action: pendingAction,
+        stop_loss: candidate?.stop_loss,
+        risk: candidate?.risk_distance,
+        entry: candidate?.entry,
+        tp1: candidate?.tp1,
+        tp2: candidate?.tp2,
+        tp3: candidate?.tp3
+    };
+    return {
+        fvg,
+        candidate: candidateView,
+        block: { timeframe: String(candidate?.timeframe || block?.timeframe || '1H').toUpperCase() },
+        current: {
+            structurally_valid: candidate?.TRADE_QUALIFIED !== 'NO',
+            current_opportunity: true,
+            today_opportunity: true,
+            opportunity_status: candidate?.opportunity_status || 'CURRENT_SELECTABLE',
+            entry_distance_atr: candidate?.distance_from_current_price_atr ?? null,
+            approach_state: candidate?.approach_state || null,
+            formation_age_hours: Number.isFinite(createdMs) ? Math.max(0, (asOfMs - createdMs) / 3600000) : null
+        },
+        delivery: {
+            entry_state: 'PENDING_UNFILLED',
+            delivery_status: 'WAITING_FOR_ENTRY',
+            pre_entry_progress: candidate?.pre_entry_progress || null
+        },
+        score: candidate?.score ?? candidate?.setup_confidence ?? null,
+        current_score: candidate?.score ?? candidate?.setup_confidence ?? null,
+        quality: candidate?.quality || null,
+        confluence: {
+            crt: candidate?.strategy_setup?.strategy_evidence?.crt_refs || [],
+            msnr: candidate?.strategy_setup?.strategy_evidence?.msnr_refs || []
+        },
+        supplyDemand: { supporting_type: candidate?.zone_type || null },
+        displacement: { label: candidate?.strategy_setup?.strategy_evidence?.displacement_ref || null },
+        premiumDiscount: { location: candidate?.market_plan?.location || null },
+        execution: { exec_15m: candidate?.strategy_setup?.execution_timeframe || candidate?.timeframe || null, exec_5m: null },
+        path_quality: {
+            trade_qualified: candidate?.TRADE_QUALIFIED !== 'NO',
+            entry_inside_opposing_4h: candidate?.ENTRY_INSIDE_OPPOSING_4H || 'NO',
+            opposing_4h_barrier_before_tp1: candidate?.OPPOSING_4H_BARRIER_BEFORE_TP1 || 'NO',
+            nearest_opposing_4h_ref: candidate?.NEAREST_OPPOSING_4H_REF || 'NONE',
+            nearest_opposing_4h_type: candidate?.NEAREST_OPPOSING_4H_TYPE || 'NONE',
+            nearest_opposing_4h_zone: candidate?.NEAREST_OPPOSING_4H_ZONE || 'NONE',
+            barrier_distance_r: candidate?.BARRIER_DISTANCE_R ?? null,
+            clear_path_to_tp1: candidate?.CLEAR_PATH_TO_TP1 || 'YES',
+            path_quality_penalty: candidate?.PATH_QUALITY_PENALTY || 0,
+            qualification_blockers: candidate?.QUALIFICATION_BLOCKERS || []
+        },
+        breakdown: candidate?.confidence_breakdown || {},
+        strategy_setup: candidate?.strategy_setup || null
+    };
+}
+
+function analyzeMarketMechanicsHistory(context, input) {
+    const blocks = input.blocks || [];
+    const asOfMs = Number(input.asOfMs);
+    const symbol = input.symbol || 'UNKNOWN';
+    const precision = Number.isInteger(input.precision) ? input.precision : 2;
+    const historyCache = historyCacheFromBlocks(blocks);
+    const executionBars = historyCache['5M'] || [];
+    const currentPrice = Number(input.currentPrice ?? executionBars.at(-1)?.c);
+    const live = context.buildLiveMarketContext({
+        pair: symbol,
+        price: currentPrice,
+        historyCache,
+        indicators: {},
+        patterns: {},
+        enhancedAnalysis: {},
+        holistic: {},
+        entryContext: null,
+        as_of_ms: asOfMs,
+        quote_snapshot: { symbol_metadata: input.symbolMetadata || {}, provider_timestamp: asOfMs },
+        snapshot_completeness: null
+    });
+    const candidates = Array.isArray(live.adaptive_setup_candidates) ? live.adaptive_setup_candidates : [];
+    const records = candidates.map(candidate => marketMechanicsReplayRecord(candidate, blocks.find(block => block.timeframe === String(candidate.timeframe || '').toUpperCase()), asOfMs));
+    return {
+        as_of_ms: asOfMs,
+        current_price: currentPrice,
+        role_audit: { daily_bias: live.daily_bias || live.market_plan?.bias || null },
+        market_context: live.market_context || live.market_plan || null,
+        market_plan: live.market_plan || null,
+        market_mechanics: live.market_mechanics || null,
+        crt_audit: { records: [], lines: [] },
+        msnr_audit: { records: [], lines: [] },
+        supply_demand: [],
+        zones: {
+            records,
+            all_records: records,
+            current_records: records,
+            model_router: null
+        }
+    };
+}
+
 function analyzeVisibleHistory(context, input) {
     const blocks = input.blocks || [];
     const symbol = input.symbol || 'UNKNOWN';
@@ -67,6 +190,9 @@ function analyzeVisibleHistory(context, input) {
     const metadata = input.symbolMetadata || {};
     const cache = input.cache || null;
     if (input.strategyMode) context.window.__V2_STRATEGY_MODE__ = input.strategyMode;
+    if (String(input.strategyMode || context.window.__V2_STRATEGY_MODE__ || '').toUpperCase() === 'MARKET_MECHANICS') {
+        return analyzeMarketMechanicsHistory(context, input);
+    }
     const blockSignature = blocks.map(block => {
         const last = block.candles?.at(-1);
         return `${block.timeframe}:${block.candles?.length || 0}:${last?.t || last?.timestamp || ''}`;

@@ -7829,7 +7829,7 @@ describe('multi-symbol snapshot completeness and provider boundary', () => {
         expect(urls[0]).toContain(`symbol=${encodeURIComponent(providerSymbol)}`);
         expect(urls[1]).toContain(`symbol=${encodeURIComponent(providerSymbol)}`);
         expect(urls[1]).toContain('interval=1day');
-        expect(urls[1]).toContain('outputsize=100');
+        expect(urls[1]).toContain('outputsize=120');
     });
 });
 

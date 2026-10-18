@@ -9,7 +9,7 @@ const { replayHistory, symbolPrecision } = require('./replay');
 const { buildSummary, renderReport } = require('./metrics');
 
 function parseArgs(argv) {
-    const args = { symbols: [], refreshData: false, replayTimeframe: '5m', ambiguity: 'exclude', bars: 5000 };
+    const args = { symbols: [], refreshData: false, replayTimeframe: '5m', ambiguity: 'exclude', bars: 5000, strategyMode: 'MARKET_MECHANICS' };
     for (let index = 0; index < argv.length; index += 1) {
         const token = argv[index];
         if (!token.startsWith('--')) continue;
@@ -61,7 +61,8 @@ async function runOne(symbol, args, context) {
         to: args.to,
         precision: symbolPrecision(symbol, firstPrice),
         replayTimeframe: args.replayTimeframe,
-        ambiguity: args.ambiguity
+        ambiguity: args.ambiguity,
+        strategyMode: args.strategyMode
     });
     const runId = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z') + '_' + symbol.replace(/[^A-Za-z0-9]+/g, '_');
     const outputDir = path.join(process.cwd(), 'backtest-results', runId);
@@ -97,7 +98,7 @@ async function runOne(symbol, args, context) {
 
 async function main() {
     const args = parseArgs(process.argv.slice(2));
-    const context = loadStrategyContext();
+    const context = loadStrategyContext({ strategyMode: args.strategyMode });
     const results = [];
     for (const symbol of args.symbols) results.push(await runOne(symbol, args, context));
     if (results.length > 1) {
