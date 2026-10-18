@@ -155,34 +155,55 @@ function attachRegime(rows, series) {
     });
 }
 
-async function runOne(entry, context, outputRoot, runId) {
+async function runOne(entry, context, outputRoot, runId, options = {}) {
     const series = loadSeries(entry);
     const testFrom = entry.test_from || entry.scored_start;
     const testTo = entry.test_to || entry.scored_end;
     if (!testFrom || !testTo) throw new Error(`Manifest entry ${entry.symbol} is missing test_from/test_to`);
+    const firstPrice = series['5m'][0]?.c ?? series['5m'][0]?.close ?? 1;
+    const checkpointFile = options.checkpointDir
+        ? path.resolve(options.checkpointDir, `${entry.symbol.replace(/[^A-Za-z0-9]+/g, '_')}.checkpoint.json`)
+        : null;
+    let resumeState = null;
+    if (checkpointFile && options.resume && fs.existsSync(checkpointFile)) {
+        resumeState = JSON.parse(fs.readFileSync(checkpointFile, 'utf8'));
+        if (resumeState.completed) resumeState = null;
+    }
+    if (checkpointFile) fs.mkdirSync(path.dirname(checkpointFile), { recursive: true });
+    const replayStartedAt = Date.now();
     const replay = require('./replay').replayHistory({
         context,
         series,
         symbol: entry.symbol,
         from: testFrom,
         to: testTo,
-        precision: symbolPrecision(entry.symbol, series['5m'][0]?.c || 1),
+        precision: symbolPrecision(entry.symbol, firstPrice),
         replayTimeframe: '5m',
         ambiguity: 'exclude',
         retainLastState: false,
+        resumeState,
         progress: progress => {
             if (typeof global.gc === 'function') global.gc();
             if (progress.clock_index === 1 || progress.clock_index === progress.clock_count || progress.clock_index % 5000 === 0) {
-                console.error(`[deep-history] ${entry.symbol} ${progress.clock_index}/${progress.clock_count}`);
+                const elapsedSeconds = Math.max(0.001, (Date.now() - replayStartedAt) / 1000);
+                const rate = progress.clock_index / elapsedSeconds;
+                const remainingSeconds = rate > 0 ? (progress.clock_count - progress.clock_index) / rate : null;
+                const percent = progress.clock_count ? (progress.clock_index / progress.clock_count) * 100 : 0;
+                console.error(`[deep-history] ${entry.symbol} ${new Date(progress.as_of_ms).toISOString()} ${progress.clock_index}/${progress.clock_count} (${percent.toFixed(1)}%) elapsed=${elapsedSeconds.toFixed(1)}s eta=${remainingSeconds == null ? 'unknown' : `${remainingSeconds.toFixed(1)}s`} candidates=${progress.candidate_count} selected=${progress.selected_count}`);
             }
-        }
+        },
+        checkpoint: checkpointFile ? state => {
+            const temporary = `${checkpointFile}.tmp`;
+            fs.writeFileSync(temporary, JSON.stringify({ ...state, symbol: entry.symbol, updated_at: new Date().toISOString() }));
+            fs.renameSync(temporary, checkpointFile);
+        } : null
     });
     const trades = attachRegime(replay.trades, series);
     const summary = buildSummary({ ...replay, trades }, { symbol: entry.symbol, from: testFrom, to: testTo, provider: entry.provider, replay_timeframe: '5m', ambiguity: 'exclude', strategy_git_commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() });
     const filled = filledRows(trades);
-    const index = buildFeatureIndex({ context, series, symbol: entry.symbol });
-    const enriched = trades.filter(row => row.simulation?.fill_time_ms != null).map(trade => enrichTrade({ trade, index, symbol: entry.symbol }));
-    const report = analyzeRows(enriched);
+    const index = options.skipFeatureStudy ? null : buildFeatureIndex({ context, series, symbol: entry.symbol });
+    const enriched = options.skipFeatureStudy ? [] : trades.filter(row => row.simulation?.fill_time_ms != null).map(trade => enrichTrade({ trade, index, symbol: entry.symbol }));
+    const report = options.skipFeatureStudy ? null : analyzeRows(enriched);
     const outputDir = path.join(outputRoot, `${runId}_${entry.symbol.replace(/[^A-Za-z0-9]+/g, '_')}_DEEP_V2`);
     fs.mkdirSync(outputDir, { recursive: true });
     const breakdowns = {
@@ -197,8 +218,11 @@ async function runOne(entry, context, outputRoot, runId) {
     fs.writeFileSync(path.join(outputDir, 'summary.json'), JSON.stringify(summary, null, 2));
     fs.writeFileSync(path.join(outputDir, 'breakdowns.json'), JSON.stringify(breakdowns, null, 2));
     fs.writeFileSync(path.join(outputDir, 'trades.json'), JSON.stringify(trades, null, 2));
-    fs.writeFileSync(path.join(outputDir, 'features-report.json'), JSON.stringify(report, null, 2));
-    fs.writeFileSync(path.join(outputDir, 'features-enriched.json'), JSON.stringify(enriched, null, 2));
+    if (checkpointFile) fs.writeFileSync(checkpointFile, JSON.stringify({ completed: true, symbol: entry.symbol, outputDir }, null, 2));
+    if (!options.skipFeatureStudy) {
+        fs.writeFileSync(path.join(outputDir, 'features-report.json'), JSON.stringify(report, null, 2));
+        fs.writeFileSync(path.join(outputDir, 'features-enriched.json'), JSON.stringify(enriched, null, 2));
+    }
     console.log(JSON.stringify({ symbol: entry.symbol, outputDir, outcomes: summary.outcomes, feature_trade_count: enriched.length, breakdowns }, null, 2));
     return { symbol: entry.symbol, outputDir, summary, breakdowns, report };
 }
@@ -215,7 +239,11 @@ async function main(argv = process.argv.slice(2)) {
     }));
     const runId = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
     const results = [];
-    for (const entry of entries) results.push(await runOne(entry, context, args.outputRoot, runId));
+    for (const entry of entries) results.push(await runOne(entry, context, args.outputRoot, runId, {
+        skipFeatureStudy: args.skipFeatureStudy === true || args.skipFeatureStudy === 'true',
+        checkpointDir: args.checkpointDir || null,
+        resume: args.resume === true || args.resume === 'true'
+    }));
     fs.writeFileSync(path.join(args.outputRoot, `${runId}_DEEP_V2_MANIFEST.json`), JSON.stringify({ manifest: args.manifest, results: results.map(result => ({ symbol: result.symbol, outputDir: result.outputDir, outcomes: result.summary.outcomes, breakdowns: result.breakdowns })) }, null, 2));
     return results;
 }

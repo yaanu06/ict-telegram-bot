@@ -66,7 +66,7 @@ function validateCandidateDirection(candidate = {}) {
     return { valid: true, reason: null, direction, entry, stop, targets };
 }
 
-function visibleBars(series, timeframe, asOfMs) {
+function visibleBars(series, timeframe, asOfMs, maxBars = null) {
     const interval = TIMEFRAME_MS[canonicalTimeframe(timeframe)];
     const rows = series || [];
     // Replay series are normalized chronologically. Locate the visible prefix
@@ -81,7 +81,19 @@ function visibleBars(series, timeframe, asOfMs) {
         if (Number.isFinite(close) && close <= asOfMs) low = middle + 1;
         else high = middle;
     }
-    return rows.slice(0, low).filter(bar => {
+    let start = 0;
+    if (Number.isInteger(maxBars) && maxBars > 0 && low > maxBars) {
+        start = low;
+        let validCount = 0;
+        while (start > 0 && validCount < maxBars) {
+            start -= 1;
+            const bar = rows[start];
+            const barStart = Number(bar?.t ?? bar?.timestamp);
+            const barClose = Number(bar?.close_time_ms ?? barStart + interval);
+            if (bar && Number.isFinite(barStart) && Number.isFinite(barClose) && barClose <= asOfMs && bar.is_closed !== false) validCount += 1;
+        }
+    }
+    return rows.slice(start, low).filter(bar => {
         const start = Number(bar.t ?? bar.timestamp);
         const close = Number(bar.close_time_ms ?? start + interval);
         return bar && Number.isFinite(start) && Number.isFinite(close) && close <= asOfMs && bar.is_closed !== false;
@@ -91,11 +103,12 @@ function visibleBars(series, timeframe, asOfMs) {
 function makeBlocks(seriesByTimeframe, asOfMs) {
     return STRATEGY_TIMEFRAMES.map(timeframe => {
         const sourceTf = timeframe.toLowerCase();
-        const visible = visibleBars(seriesByTimeframe[sourceTf] || [], sourceTf, asOfMs);
+        const limit = LIVE_HISTORY_LIMITS[sourceTf] || 50;
+        const visible = visibleBars(seriesByTimeframe[sourceTf] || [], sourceTf, asOfMs, limit);
         // Match the live compact packet's history window. The replay still
         // advances through every execution candle; each historical moment is
         // analyzed with the same bounded input the live strategy receives.
-        return { timeframe, candles: visible.slice(-(LIVE_HISTORY_LIMITS[sourceTf] || 50)) };
+        return { timeframe, candles: visible };
     }).filter(block => block.candles.length > 0);
 }
 
@@ -202,7 +215,12 @@ function collectCandidateRows(result, asOfMs, registry, context, blocks, options
     // candidates at that historical moment (wrong side of price, consumed,
     // invalid geometry, etc.) without reimplementing strategy rules.
     for (const block of (blocks || []).filter(item => ['4H', '1H'].includes(item.timeframe))) {
-        for (const fvg of context.detectRawTextFvgs(block.candles, block.timeframe)) {
+        const last = block.candles?.at(-1);
+        const fvgCacheKey = `${block.timeframe}:${block.candles?.length || 0}:${last?.t || last?.timestamp || ''}`;
+        const cachedFvgs = options.fvgCache?.get(fvgCacheKey);
+        const fvgs = cachedFvgs || context.detectRawTextFvgs(block.candles, block.timeframe);
+        if (!cachedFvgs && options.fvgCache) options.fvgCache.set(fvgCacheKey, fvgs);
+        for (const fvg of fvgs) {
             const key = [fvg.timeframe, fvg.type, fvg.c1, fvg.c2, fvg.c3, fvg.lower, fvg.upper].join('|');
             if (knownKeys.has(key) || registry.has(key)) continue;
             registry.set(key, {
@@ -242,10 +260,38 @@ function allVisiblePrimaryFvgs(context, blocks) {
     return result;
 }
 
+function makeBlocksReference(seriesByTimeframe, asOfMs) {
+    return STRATEGY_TIMEFRAMES.map(timeframe => {
+        const sourceTf = timeframe.toLowerCase();
+        const visible = visibleBars(seriesByTimeframe[sourceTf] || [], sourceTf, asOfMs);
+        return { timeframe, candles: visible.slice(-(LIVE_HISTORY_LIMITS[sourceTf] || 50)) };
+    }).filter(block => block.candles.length > 0);
+}
+
+function pruneReplayCaches(cache, limit = 64) {
+    for (const value of Object.values(cache || {})) {
+        if (!(value instanceof Map)) continue;
+        while (value.size > limit) value.delete(value.keys().next().value);
+    }
+}
+
+function firstBarAfter(series, timestamp) {
+    let low = 0;
+    let high = (series || []).length;
+    while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        const value = Number(series[middle]?.t ?? series[middle]?.timestamp);
+        if (Number.isFinite(value) && value <= timestamp) low = middle + 1;
+        else high = middle;
+    }
+    return low;
+}
+
 function simulateCandidate(candidate, series, options = {}) {
     const executionTimeframe = canonicalTimeframe(options.executionTimeframe || '5m');
     const candidateAvailableAt = Number(candidate.first_selected_at_ms || candidate.first_knowable_ms);
-    const execution = (series[executionTimeframe] || []).filter(bar => Number(bar.t ?? bar.timestamp) > candidateAvailableAt);
+    const executionSeries = series[executionTimeframe] || [];
+    const executionStart = firstBarAfter(executionSeries, candidateAvailableAt);
     const direction = candidate.side;
     const entry = Number(candidate.entry);
     const stop = Number(candidate.stop_loss);
@@ -288,7 +334,8 @@ function simulateCandidate(candidate, series, options = {}) {
     const hit = (bar, level) => direction === 'BUY' ? Number(bar.h) >= level : Number(bar.l) <= level;
     const stopHit = bar => direction === 'BUY' ? Number(bar.l) <= stop : Number(bar.h) >= stop;
     const entryHit = bar => direction === 'BUY' ? Number(bar.l) <= entry : Number(bar.h) >= entry;
-    for (const source of execution) {
+    for (let executionIndex = executionStart; executionIndex < executionSeries.length; executionIndex += 1) {
+        const source = executionSeries[executionIndex];
         const bar = canonicalCandle(source, executionTimeframe);
         if (!filled) {
             if (!entryHit(bar)) continue;
@@ -371,25 +418,37 @@ function simulateCandidate(candidate, series, options = {}) {
     };
 }
 
-function replayHistory({ context, series, symbol, from, to, precision, replayTimeframe = '5m', ambiguity = 'exclude', includeMarketStateDiagnostics = false, retainLastState = true, progress = null }) {
+function replayHistory({ context, series, symbol, from, to, precision, replayTimeframe = '5m', ambiguity = 'exclude', includeMarketStateDiagnostics = false, retainLastState = true, progress = null, optimized = true, resumeState = null, checkpoint = null }) {
     const fromMs = toMs(from);
     const toMsValue = toMs(to);
     const clocks = replayClocks(series, replayTimeframe, fromMs, toMsValue);
-    const registry = new Map();
-    const observations = [];
-    const analysisCache = { roleAudits: new Map(), crtAudits: new Map() };
+    const registry = new Map(Array.isArray(resumeState?.registry)
+        ? resumeState.registry.filter(row => row?.candidate_id).map(row => [row.candidate_id, row])
+        : []);
+    const observations = Array.isArray(resumeState?.observations) ? resumeState.observations : [];
+    const analysisCache = optimized ? {
+        roleAudits: new Map(),
+        crtAudits: new Map(),
+        fvgByBlock: new Map(),
+        orderBlocksByBlock: new Map(),
+        staticZoneRecords: new Map()
+    } : null;
     const marketStateHistory = includeMarketStateDiagnostics
         ? build4HStateHistory({ symbol, candles: series['4h'] || [], context })
         : null;
-    const marketStateSnapshots = [];
-    for (let clockIndex = 0; clockIndex < clocks.length; clockIndex += 1) {
+    const marketStateSnapshots = Array.isArray(resumeState?.market_state_snapshots)
+        ? resumeState.market_state_snapshots
+        : [];
+    const resumeClockIndex = Math.max(0, Math.min(clocks.length, Number(resumeState?.next_clock_index) || 0));
+    for (let clockIndex = resumeClockIndex; clockIndex < clocks.length; clockIndex += 1) {
         const asOfMs = clocks[clockIndex];
-        const blocks = makeBlocks(series, asOfMs);
+        const blocks = optimized ? makeBlocks(series, asOfMs) : makeBlocksReference(series, asOfMs);
         const executionBars = blocks.find(block => block.timeframe === '5M')?.candles || [];
         const currentPrice = Number(executionBars.at(-1)?.c);
         if (!Number.isFinite(currentPrice) || blocks.filter(block => ['1D', '4H', '1H'].includes(block.timeframe)).some(block => block.candles.length < 3)) continue;
         const result = analyzeVisibleHistory(context, { blocks, symbol, currentPrice, asOfMs, precision, cache: analysisCache });
-        collectCandidateRows(result, asOfMs, registry, context, blocks, { retainLastState });
+        collectCandidateRows(result, asOfMs, registry, context, blocks, { retainLastState, fvgCache: analysisCache?.fvgByBlock });
+        if (optimized) pruneReplayCaches(analysisCache);
         observations.push({ as_of_ms: asOfMs, candidate_count: result.zones.records.length, current_count: result.zones.current_records.length });
         if (marketStateHistory) {
             const activeState = getActive4HState(marketStateHistory, asOfMs);
@@ -401,7 +460,23 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
             });
         }
         if (typeof progress === 'function' && (clockIndex === 0 || (clockIndex + 1) % 1000 === 0 || clockIndex === clocks.length - 1)) {
-            progress({ clock_index: clockIndex + 1, clock_count: clocks.length });
+            progress({
+                clock_index: clockIndex + 1,
+                clock_count: clocks.length,
+                as_of_ms: asOfMs,
+                candidate_count: registry.size,
+                selected_count: [...registry.values()].filter(row => row.first_selected_at_ms != null).length
+            });
+            if (typeof checkpoint === 'function') {
+                checkpoint({
+                    next_clock_index: clockIndex + 1,
+                    clock_count: clocks.length,
+                    last_replay_timestamp: asOfMs,
+                    registry: [...registry.values()].map(row => ({ ...row })),
+                    observations: observations.slice(),
+                    market_state_snapshots: marketStateSnapshots.slice()
+                });
+            }
         }
     }
     const candidates = [...registry.values()].map(row => ({ ...row, last_state: row.last_state || row }));
@@ -419,4 +494,4 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
     };
 }
 
-module.exports = { LIVE_TIMEFRAMES, STRATEGY_TIMEFRAMES, visibleBars, makeBlocks, replayClocks, simulateCandidate, replayHistory, symbolPrecision, normalizeOptionalPrice, normalizeCandidateTargets, validateCandidateDirection };
+module.exports = { LIVE_TIMEFRAMES, STRATEGY_TIMEFRAMES, visibleBars, makeBlocks, makeBlocksReference, replayClocks, simulateCandidate, replayHistory, symbolPrecision, normalizeOptionalPrice, normalizeCandidateTargets, validateCandidateDirection };

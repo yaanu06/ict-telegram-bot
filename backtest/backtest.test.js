@@ -49,6 +49,28 @@ describe('historical backtest data and execution replay', () => {
         expect(result.market_state.snapshots[0].active_4h_direction).toBe('NEUTRAL');
     });
 
+    test('replay checkpoint resumes at the next clock without changing output', () => {
+        const context = loadStrategyContext();
+        const makeHistory = interval => Array.from({ length: 4 }, (_, index) => {
+            const timestamp = (index - 3) * interval;
+            return { ...bar(timestamp, 101, 99, 100), t: timestamp, close_time_ms: timestamp + interval };
+        });
+        const series = {
+            '1d': makeHistory(86400000),
+            '4h': makeHistory(14400000),
+            '1h': makeHistory(3600000),
+            '5m': [0, 300000, 600000, 900000].map(timestamp => ({ ...bar(timestamp, 101, 99, 100), t: timestamp, close_time_ms: timestamp + 300000 }))
+        };
+        const full = require('./replay').replayHistory({ context, series, symbol: 'AUD/USD', from: 900000, to: 1200000, precision: 5 });
+        let checkpointState = null;
+        require('./replay').replayHistory({ context, series, symbol: 'AUD/USD', from: 900000, to: 1200000, precision: 5, progress: () => {}, checkpoint: state => { if (state.next_clock_index === 1) checkpointState = state; } });
+        expect(checkpointState).not.toBeNull();
+        const resumed = require('./replay').replayHistory({ context, series, symbol: 'AUD/USD', from: 900000, to: 1200000, precision: 5, resumeState: checkpointState });
+        expect(resumed.candidates).toEqual(full.candidates);
+        expect(resumed.selected).toEqual(full.selected);
+        expect(resumed.observations).toEqual(full.observations);
+    });
+
     test('BUY_LIMIT fills only when a later candle reaches entry and records TP1', () => {
         const candidate = { candidate_id: 'buy', side: 'BUY', timeframe: '1h', first_knowable_ms: 0, entry: 100, stop_loss: 95, tp1: 105, tp2: 110, tp3: 115, risk: 5 };
         const series = { '5m': [bar(300000, 101, 99, 100), bar(600000, 106, 100, 105)] };

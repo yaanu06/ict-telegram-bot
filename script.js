@@ -14462,35 +14462,85 @@ function apply4HPathQualityToCandidate(candidate = {}, structureRecords = [], as
     };
 }
 
-function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, precision = 2, strategyAudits = {}, marketContext = {}, roleAudit = {}) {
+function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, precision = 2, strategyAudits = {}, marketContext = {}, roleAudit = {}, performanceCache = null) {
     const crtRecords = strategyAudits.crt_records || [];
     const msnrRecords = strategyAudits.msnr_records || [];
     const supplyDemandRecords = strategyAudits.supply_demand_records || [];
     const primaryBlocks = blocks.filter(block => RAW_TEXT_PRIMARY_SETUP_TIMEFRAMES.includes(block.timeframe));
-    const allFvgs = blocks.flatMap(block => detectRawTextFvgs(block.candles, block.timeframe).map(fvg => ({ fvg, block })));
+    const blockKey = block => {
+        const last = block?.candles?.at(-1);
+        return `${block?.timeframe || ''}:${block?.candles?.length || 0}:${last?.t || last?.timestamp || ''}`;
+    };
+    const fvgCache = performanceCache?.fvgByBlock || null;
+    const orderBlockCache = performanceCache?.orderBlocksByBlock || null;
+    const staticRecordCache = performanceCache?.staticZoneRecords || null;
+    const getFvgs = block => {
+        const key = blockKey(block);
+        if (fvgCache?.has(key)) return fvgCache.get(key);
+        const value = detectRawTextFvgs(block.candles, block.timeframe);
+        if (fvgCache) fvgCache.set(key, value);
+        return value;
+    };
+    const getOrderBlocks = (block, direction) => {
+        const key = `${blockKey(block)}:${direction}`;
+        if (orderBlockCache?.has(key)) return orderBlockCache.get(key);
+        const value = detectOrderBlocks(block.candles, direction);
+        if (orderBlockCache) orderBlockCache.set(key, value);
+        return value;
+    };
+    const allFvgs = blocks.flatMap(block => getFvgs(block).map(fvg => ({ fvg, block })));
     const records = [];
     for (const block of primaryBlocks) {
-        for (const fvg of detectRawTextFvgs(block.candles, block.timeframe)) {
-            const candidate = buildRawTextFvgPendingCandidate(fvg, currentPrice, precision);
+        for (const fvg of getFvgs(block)) {
+            const staticKey = `${blockKey(block)}|${fvg.type}|${fvg.c1}|${fvg.c2}|${fvg.c3}|${fvg.lower}|${fvg.upper}|${fvg.status}|${fvg.remaining_lower}|${fvg.remaining_upper}`;
+            let staticParts = staticRecordCache?.get(staticKey);
+            if (!staticParts) {
+                const zoneLow = fvg.status === 'PARTIAL' ? Number(fvg.remaining_lower) : Number(fvg.lower);
+                const zoneHigh = fvg.status === 'PARTIAL' ? Number(fvg.remaining_upper) : Number(fvg.upper);
+                const sentinel = fvg.type === 'BULLISH'
+                    ? zoneHigh + Math.max(1, Math.abs(zoneHigh)) * 1000000
+                    : zoneLow - Math.max(1, Math.abs(zoneLow)) * 1000000;
+                const staticCandidate = buildRawTextFvgPendingCandidate(fvg, sentinel, precision);
+                if (!staticCandidate) continue;
+                const direction = staticCandidate.action === 'BUY_LIMIT' ? 'BUY' : 'SELL';
+                const confluence = rawTextFvgConfluence(fvg, staticCandidate, crtRecords, msnrRecords);
+                const obEvidence = (getOrderBlocks(block, direction) || []).filter(ob => {
+                    const firstKnowableMs = rawTextPacketTimestamp(ob.first_knowable_time ?? ob.confirmation_time ?? ob.formation_time);
+                    const fvgKnowableMs = rawTextPacketTimestamp(fvg.c3);
+                    const lifecycle = checkZoneFreshness(block.candles, {
+                        low: Number(ob.low), high: Number(ob.high), source_candle_index: ob.formation_index,
+                        source_time: ob.first_knowable_time
+                    }, direction);
+                    return Number.isFinite(firstKnowableMs) && Number.isFinite(fvgKnowableMs)
+                        && firstKnowableMs <= fvgKnowableMs
+                        && rawTextIntervalsOverlap(zoneLow, zoneHigh, Number(ob.low), Number(ob.high))
+                        && lifecycle.fresh;
+                });
+                const displacement = rawTextDisplacementAssessment(block, fvg, direction);
+                const supplyDemand = rawTextSupplyDemandConfluence(fvg, staticCandidate, supplyDemandRecords);
+                const pathQuality = build4HPathQualityAudit({ direction, entry: staticCandidate.entry, stop_loss: staticCandidate.stop_loss, tp1: staticCandidate.tp1 }, [
+                    ...supplyDemandRecords,
+                    ...msnrRecords,
+                    ...(strategyAudits.path_records || [])
+                ], marketContext.as_of_ms);
+                const opposingFvg = allFvgs.some(item => item.fvg !== fvg
+                    && item.fvg.status !== 'FULLY_TRAVERSED'
+                    && item.fvg.type !== fvg.type
+                    && rawTextIntervalsOverlap(zoneLow, zoneHigh, Number(item.fvg.lower), Number(item.fvg.upper)));
+                const opposingStructure = [...crtRecords, ...msnrRecords].some(record => record.status === 'VALID'
+                    && record.direction !== direction
+                    && rawTextIntervalsOverlap(zoneLow, zoneHigh, Number(record.range_low ?? record.zone_low), Number(record.range_high ?? record.zone_high)));
+                staticParts = { candidate: staticCandidate, confluence, obEvidence, displacement, supplyDemand, pathQuality, opposingFvg, opposingStructure };
+                if (staticRecordCache) staticRecordCache.set(staticKey, staticParts);
+            }
+            const candidate = (fvg.type === 'BULLISH' ? Number(currentPrice) > Number(fvg.status === 'PARTIAL' ? fvg.remaining_upper : fvg.upper) : Number(currentPrice) < Number(fvg.status === 'PARTIAL' ? fvg.remaining_lower : fvg.lower))
+                ? staticParts.candidate : null;
             if (!candidate) continue;
             const deliveryCandles = buildRawTextCrossTimeframeDeliveryCandles(fvg, block, blocks, marketContext.as_of_ms);
             const delivery = buildRawTextFvgDeliveryAssessment(fvg, candidate, block.candles, currentPrice, precision, deliveryCandles.length ? deliveryCandles : null);
-            const confluence = rawTextFvgConfluence(fvg, candidate, crtRecords, msnrRecords);
+            const confluence = staticParts.confluence;
             const direction = candidate.action === 'BUY_LIMIT' ? 'BUY' : 'SELL';
-            const obEvidence = (detectOrderBlocks(block.candles, direction) || []).filter(ob => {
-                const firstKnowableMs = rawTextPacketTimestamp(ob.first_knowable_time ?? ob.confirmation_time ?? ob.formation_time);
-                const fvgKnowableMs = rawTextPacketTimestamp(fvg.c3);
-                const lifecycle = checkZoneFreshness(block.candles, {
-                    low: Number(ob.low), high: Number(ob.high), source_candle_index: ob.formation_index,
-                    source_time: ob.first_knowable_time
-                }, direction);
-                const fvgLow = fvg.status === 'PARTIAL' ? Number(fvg.remaining_lower) : Number(fvg.lower);
-                const fvgHigh = fvg.status === 'PARTIAL' ? Number(fvg.remaining_upper) : Number(fvg.upper);
-                return Number.isFinite(firstKnowableMs) && Number.isFinite(fvgKnowableMs)
-                    && firstKnowableMs <= fvgKnowableMs
-                    && rawTextIntervalsOverlap(fvgLow, fvgHigh, Number(ob.low), Number(ob.high))
-                    && lifecycle.fresh;
-            });
+            const obEvidence = staticParts.obEvidence;
             const dailyBias = ['BULLISH', 'BEARISH'].includes(roleAudit.daily_bias || marketContext.daily_bias)
                 ? (roleAudit.daily_bias || marketContext.daily_bias) : 'NEUTRAL';
             const daily = dailyBias === 'NEUTRAL' ? RAW_TEXT_HP_SCORE_WEIGHTS.DAILY / 2 : dailyBias === (direction === 'BUY' ? 'BULLISH' : 'BEARISH') ? RAW_TEXT_HP_SCORE_WEIGHTS.DAILY : 0;
@@ -14498,7 +14548,7 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
             const crt = confluence.crt.length ? RAW_TEXT_HP_SCORE_WEIGHTS.CRT : 0;
             const msnr = confluence.msnr.length ? RAW_TEXT_HP_SCORE_WEIGHTS.MSNR : 0;
             const ob = obEvidence.length ? RAW_TEXT_HP_SCORE_WEIGHTS.OB : 0;
-            const displacement = rawTextDisplacementAssessment(block, fvg, direction);
+            const displacement = staticParts.displacement;
             const fvgScore = (fvg.status === 'UNTOUCHED' ? RAW_TEXT_HP_SCORE_WEIGHTS.FVG - 2 : RAW_TEXT_HP_SCORE_WEIGHTS.FVG - 4) + (displacement.score >= 5 ? 2 : displacement.score >= 3 ? 1 : 0);
             const freshness = delivery.delivery_status === 'FRESH' ? RAW_TEXT_HP_SCORE_WEIGHTS.FRESH : delivery.delivery_status === 'DELIVERED_TP1' ? Math.floor(RAW_TEXT_HP_SCORE_WEIGHTS.FRESH * 0.4) : 0;
             const execution = rawTextExecutionSupport({ fvg, candidate }, blocks, crtRecords, msnrRecords);
@@ -14510,19 +14560,14 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
                 ? [marketContext.pdh, marketContext.pwh, ...sessionLiquidity]
                 : [marketContext.pdl, marketContext.pwl, ...sessionLiquidity];
             const liquidity = levelForLiquidity.some(level => Number.isFinite(Number(level)) && (direction === 'BUY' ? Number(level) > candidate.entry : Number(level) < candidate.entry)) ? 5 : 0;
-            const supplyDemand = rawTextSupplyDemandConfluence(fvg, candidate, supplyDemandRecords);
+            const supplyDemand = staticParts.supplyDemand;
             const premiumDiscount = rawTextPremiumDiscountScore(candidate, marketContext);
             const emaContext = rawTextEmaScore(candidate, block, marketContext);
             const rsiContext = rawTextRsiScore(candidate, block, marketContext);
             const candidateLow = fvg.status === 'PARTIAL' ? Number(fvg.remaining_lower) : Number(fvg.lower);
             const candidateHigh = fvg.status === 'PARTIAL' ? Number(fvg.remaining_upper) : Number(fvg.upper);
-            const opposingFvg = allFvgs.some(item => item.fvg !== fvg
-                && item.fvg.status !== 'FULLY_TRAVERSED'
-                && item.fvg.type !== fvg.type
-                && rawTextIntervalsOverlap(candidateLow, candidateHigh, Number(item.fvg.lower), Number(item.fvg.upper)));
-            const opposingStructure = [...crtRecords, ...msnrRecords].some(record => record.status === 'VALID'
-                && record.direction !== direction
-                && rawTextIntervalsOverlap(candidateLow, candidateHigh, Number(record.range_low ?? record.zone_low), Number(record.range_high ?? record.zone_high)));
+            const opposingFvg = staticParts.opposingFvg;
+            const opposingStructure = staticParts.opposingStructure;
             const opposingZone = supplyDemand.opposing.length > 0;
             const conflict = (opposingFvg ? -5 : 0) + (opposingStructure ? -5 : 0) + (opposingZone ? -5 : 0);
             const breakdown = {
@@ -14532,11 +14577,7 @@ function buildRawTextHighProbabilityZones(blocks = [], currentPrice = null, prec
                 EMA: emaContext.score, RSI: rsiContext.score, CONFLICT: conflict
             };
             const total = Object.values(breakdown).reduce((sum, value) => sum + value, 0);
-            const pathQuality = build4HPathQualityAudit({ direction, entry: candidate.entry, stop_loss: candidate.stop_loss, tp1: candidate.tp1 }, [
-                ...supplyDemandRecords,
-                ...msnrRecords,
-                ...(strategyAudits.path_records || [])
-            ], strategyAudits.as_of_ms ?? marketContext.as_of_ms);
+            const pathQuality = staticParts.pathQuality;
             const pathBreakdown = { ...breakdown, PATH_QUALITY: pathQuality.path_quality_penalty };
             const score = Math.max(0, Math.min(100, Math.round(total + pathQuality.path_quality_penalty)));
             const record = { fvg, block, candidate, delivery, confluence, obEvidence, supplyDemand, execution, displacement, premiumDiscount, emaContext, rsiContext, score, raw_score: total + pathQuality.path_quality_penalty, quality: rawTextScoreQuality(score), breakdown: pathBreakdown, path_quality: pathQuality,
