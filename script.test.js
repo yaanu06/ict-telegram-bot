@@ -4349,6 +4349,61 @@ describe('Market Mechanics packet authority', () => {
         expect(text).toContain('AUTHORITY_INVARIANT_VIOLATION');
     });
 
+    test('manual Market Mechanics packet exposes active completed opportunities even when deterministic quality gates warn', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = completeReplay({
+            pair: 'NZD/USD', strategy_mode: 'MARKET_MECHANICS', scan_as_of: '2026-10-19T10:00:00Z',
+            quote: { price: 0.5668, quote_time: '2026-10-19T10:00:00Z' },
+            data_quality: { status: 'FRESH' },
+            market_plan: { valid_context: true, direction: 'BUY', htf_trend: 'BULLISH', narrative: 'PULLBACK' },
+            market_mechanics: { model_states: [
+                { id: 'NZD-15M-DEMAND', direction: 'BUY', timeframe: '15M', model: 'LIQUIDITY_OB_FVG',
+                    setup_formation_confirmed: 'YES', state: 'WAITING_FOR_QUALIFICATION', market_plan_poi_valid: 'NO',
+                    entry_zone_low: 0.56624, entry_zone_high: 0.56642, proposed_entry: 0.56633,
+                    proposed_stop: 0.55633, proposed_objective: 0.56750, stop_source: 'HTF_EXTREME',
+                    blocker: 'NO_STRUCTURAL_STOP', entry_zone_touched: 'NO', entry_consumed: 'NO',
+                    formation_evidence_refs: ['NZD-15M-SETUP'] },
+                { id: 'NZD-4H-FVG', direction: 'BUY', timeframe: '4H', model: 'LIQUIDITY_OB_FVG',
+                    confirmation_state: 'CONFIRMED', state: 'WAITING_FOR_PENDING_GEOMETRY', market_plan_poi_valid: 'YES',
+                    entry_zone_low: 0.56220, entry_zone_high: 0.56270, proposed_entry: 0.56245,
+                    proposed_stop: 0.55633, proposed_objective: 0.56750, stop_source: 'HTF_EXTREME',
+                    blocker: 'NO_STRUCTURAL_STOP', entry_zone_touched: 'NO', entry_consumed: 'NO',
+                    formation_evidence_refs: ['NZD-4H-SETUP'] },
+                { id: 'NZD-EXPIRED', direction: 'BUY', timeframe: '1H', model: 'CRT_AGGRESSIVE',
+                    setup_formation_confirmed: 'YES', state: 'EXPIRED', proposed_entry: 0.56 },
+                { id: 'NZD-INCOMPLETE', direction: 'SELL', timeframe: '1H', model: 'MARKET_SHIFT',
+                    setup_formation_confirmed: 'NO', state: 'FORMING', proposed_entry: 0.57 }
+            ] },
+            valid_candidates: [], history: {}
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('=== ACTIVE PENDING-LIMIT OPPORTUNITIES');
+        expect(text).toContain('MANUAL_ACTIVE_OPPORTUNITY_COUNT=2');
+        expect(text).toContain('OPPORTUNITY_ID=NZD-15M-DEMAND');
+        expect(text).toContain('OPPORTUNITY_ID=NZD-4H-FVG');
+        expect(text).toContain('ENTRY_ZONE=0.56624-0.56642');
+        expect(text).toContain('ENTRY_ZONE=0.56220-0.56270');
+        expect(text).toContain('NO_STRUCTURAL_STOP');
+        expect(text).toContain('PARENT_POI_CONTEXT_LIMITED');
+        expect(text).not.toContain('OPPORTUNITY_ID=NZD-EXPIRED');
+        expect(text).not.toContain('OPPORTUNITY_ID=NZD-INCOMPLETE');
+        expect(text).toContain('This is a MANUAL DEEPSEEK REVIEW packet');
+        expect(text).toContain('LIVE MARKET MECHANICS CANDIDATES remain deterministic engine authority');
+    });
+
+    test('manual Market Mechanics decision validation fails closed on unknown touch chronology and missing structural evidence', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = { pair: 'NZD/USD', quote: { price: 0.5668 }, market_mechanics: { model_states: [{
+            id: 'NZD-ACTIVE', direction: 'BUY', timeframe: '15M', model: 'DEMAND', confirmation_state: 'CONFIRMED',
+            entry_zone_low: 0.5662, entry_zone_high: 0.5665, proposed_entry: 0.5663,
+            entry_zone_touched: 'UNKNOWN', entry_consumed: 'NO'
+        }] } };
+        const result = ctx.validateManualMarketMechanicsDecision({ action: 'BUY_LIMIT', opportunity_id: 'NZD-ACTIVE', entry: 0.5663, stop_loss: 0.565, tp1: 0.568 }, replay);
+        expect(result.valid).toBe(false);
+        expect(result.issues).toEqual(expect.arrayContaining(['MANUAL_ENTRY_TOUCH_NOT_VERIFIABLY_UNTOUCHED', 'MANUAL_STRUCTURAL_STOP_EVIDENCE_REQUIRED', 'MANUAL_STRUCTURAL_TARGET_EVIDENCE_REQUIRED']));
+        expect(result.execution_allowed).toBe(false);
+    });
+
     test('serializes Market Mechanics draw and bias fields without ambiguity or object coercion', () => {
         const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
         const replay = {
@@ -4899,6 +4954,26 @@ describe('Market Mechanics packet authority', () => {
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
         expect(packet).not.toContain('CURRENT OPPORTUNITY MATERIAL');
         expect(packet).not.toContain('XAU-LEGACY-FVG-4177.03\n');
+    });
+
+    test('normal Copy packet carries the manual active shortlist when Market Mechanics has no LIVE row', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = completeReplay({
+            pair: 'NZD/USD', strategy_mode: 'MARKET_MECHANICS', snapshot_id: 'MM-MANUAL-COPY',
+            scan_as_of: '2026-10-19T10:00:00Z', quote: { price: 0.5668, quote_time: '2026-10-19T10:00:00Z' },
+            market_plan: { valid_context: true, direction: 'BUY', narrative: 'PULLBACK' },
+            market_mechanics: { model_states: [{ id: 'NZD-ACTIVE-COPY', direction: 'BUY', timeframe: '15M', model: 'DEMAND',
+                confirmation_state: 'CONFIRMED', state: 'WAITING_FOR_QUALIFICATION', entry_zone_low: 0.5662,
+                entry_zone_high: 0.5665, proposed_entry: 0.5663, proposed_stop: 0.5563,
+                proposed_objective: 0.5675, stop_source: 'STRUCTURAL_SWING', entry_zone_touched: 'NO' }] },
+            valid_candidates: [], history: {}
+        });
+        const packet = ctx.buildExternalAIClipboardPacket({ replay });
+        expect(packet).toContain('ACTIVE PENDING-LIMIT OPPORTUNITIES');
+        expect(packet).toContain('MANUAL_ACTIVE_OPPORTUNITY_COUNT=1');
+        expect(packet).toContain('NZD-ACTIVE-COPY');
+        expect(packet).toMatch(/LIVE_CANDIDATES=NONE as an[\s\S]*unconditional veto/);
+        expect(packet).toContain('LEGACY DIAGNOSTICS');
     });
 
     test.each(['LEGACY', 'MODEL_ROUTER_LEGACY'])('keeps explicit rollback mode %s available', mode => {

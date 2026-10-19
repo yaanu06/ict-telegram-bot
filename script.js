@@ -16090,6 +16090,10 @@ function buildRawMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             diagnostic_only_candidate_count: authority.diagnostic_candidate_count,
             invariants: authority.invariants
         } : { mode: rawTextV2StrategyMode(source), live_authority: rawTextV2StrategyMode(source) },
+        ...(marketMechanicsMode ? {
+            manual_analysis_opportunities: buildManualMarketMechanicsOpportunityShortlist(source, quote.current_price),
+            manual_analysis_authority: 'DEEPSEEK_REVIEW_ONLY'
+        } : {}),
         packet_identity: {
             pair: pairValue,
             symbol: pairValue,
@@ -16735,10 +16739,181 @@ const MARKET_MECHANICS_RAW_TEXT_OUTPUT_CONTRACT = [
     'TIMEFRAME_USED: <exact supplied candidate timeframe; 4h or 1h for a trade; NONE for NO_TRADE>',
     'REASON: <concise supplied Market Mechanics state or blocker>',
     '',
-    'Select only an exact row from === LIVE MARKET MECHANICS CANDIDATES ===.',
-    'Do not analyze raw candles to create a setup, promote a forming setup, promote a diagnostic legacy row, or alter supplied values.',
-    'If LIVE_CANDIDATES=NONE, return ACTION: NO_TRADE with SETUP: NONE and zero geometry.'
+    'This is a MANUAL DEEPSEEK REVIEW packet. Select only an exact opportunity from === ACTIVE PENDING-LIMIT OPPORTUNITIES — FOR DEEPSEEK ANALYSIS ===, or return NO_TRADE.',
+    'Do not select legacy diagnostics, terminal historical rows, expired setups, consumed entries, invalidated zones, or incomplete formations.',
+    'You may reject an active opportunity for an evidence-backed stop, target, path, lifecycle or risk weakness, but do not invent prices or structures.',
+    'LIVE MARKET MECHANICS CANDIDATES remain deterministic engine authority; the manual shortlist is analysis input only.',
+    'If no active opportunity has defensible geometry after review, return ACTION: NO_TRADE with SETUP: NONE and zero geometry.'
 ].join('\n');
+
+const MANUAL_MARKET_MECHANICS_TERMINAL_STATES = new Set([
+    'EXPIRED', 'CONSUMED', 'FILLED', 'INVALIDATED', 'DELIVERED', 'MISSED',
+    'BLOCKED_PENDING_SIDE', 'INITIAL_PENDING_SIDE_INVALID'
+]);
+
+function manualMarketMechanicsNumber(...values) {
+    for (const value of values) {
+        if (value === null || value === undefined || value === '') continue;
+        const number = Number(value);
+        if (Number.isFinite(number)) return number;
+    }
+    return null;
+}
+
+function manualMarketMechanicsFormationConfirmed(item = {}) {
+    return item.formation_confirmed === true
+        || String(item.formation_confirmed || '').toUpperCase() === 'YES'
+        || item.formation_complete === true
+        || String(item.formation_complete || '').toUpperCase() === 'YES'
+        || item.setup_formation_confirmed === true
+        || String(item.setup_formation_confirmed || '').toUpperCase() === 'YES'
+        || item.execution_confirmed === true
+        || String(item.execution_confirmed || '').toUpperCase() === 'YES'
+        || String(item.confirmation_state || item.setup_formation_state || '').toUpperCase() === 'CONFIRMED';
+}
+
+function manualMarketMechanicsTerminal(item = {}) {
+    const state = String(item.lifecycle_state || item.state || item.opportunity_status || '').toUpperCase();
+    const blocker = marketMechanicsCanonicalBlocker(item.primary_blocker || item.blocker || item.rejection_code || '');
+    return item.historical_only === true
+        || String(item.historical_only || '').toUpperCase() === 'YES'
+        || item.entry_consumed === true
+        || String(item.entry_consumed || '').toUpperCase() === 'YES'
+        || item.entry_crossed_after_signal === true
+        || String(item.entry_crossed_after_signal || '').toUpperCase() === 'YES'
+        || MANUAL_MARKET_MECHANICS_TERMINAL_STATES.has(state)
+        || ['SETUP_EXPIRED', 'SETUP_STALE', 'SETUP_ALREADY_COMPLETED', 'SETUP_INVALIDATED',
+            'ENTRY_ALREADY_CONSUMED', 'ENTRY_ALREADY_CROSSED', 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT',
+            'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT'].includes(blocker);
+}
+
+function manualMarketMechanicsSources(source = {}) {
+    const catalog = source.market_mechanics?.candidate_catalog || {};
+    return [
+        ...(Array.isArray(source.forming_market_mechanics_candidates) ? source.forming_market_mechanics_candidates : []),
+        ...(Array.isArray(source.market_mechanics?.model_states) ? source.market_mechanics.model_states : []),
+        ...(Array.isArray(catalog.forming_candidates) ? catalog.forming_candidates : []),
+        ...(Array.isArray(source.valid_candidates) ? source.valid_candidates : []),
+        ...(Array.isArray(source.live_market_mechanics_candidates) ? source.live_market_mechanics_candidates : [])
+    ];
+}
+
+function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentPrice = null) {
+    const zone = item.execution_zone || item.entry_zone || item.zone || {};
+    const direction = String(item.direction || '').toUpperCase();
+    const entry = manualMarketMechanicsNumber(item.proposed_entry, item.entry, item.entry_price, zone.midpoint, zone.ce);
+    const low = manualMarketMechanicsNumber(item.entry_zone_low, zone.low, item.zone_low);
+    const high = manualMarketMechanicsNumber(item.entry_zone_high, zone.high, item.zone_high);
+    const stop = manualMarketMechanicsNumber(item.proposed_stop, item.stop_loss, item.stop);
+    const objective = manualMarketMechanicsNumber(item.proposed_objective, item.tp1, item.take_profit_1);
+    const current = manualMarketMechanicsNumber(currentPrice, source.quote?.price, source.current_price);
+    const side = direction === 'BUY'
+        ? (entry != null && current != null ? (entry < current ? 'YES' : 'NO') : 'UNKNOWN')
+        : direction === 'SELL'
+            ? (entry != null && current != null ? (entry > current ? 'YES' : 'NO') : 'UNKNOWN')
+            : 'UNKNOWN';
+    const warnings = [...new Set([
+        ...(Array.isArray(item.quality_warnings) ? item.quality_warnings : []),
+        ...(Array.isArray(item.warnings) ? item.warnings : []),
+        ...(Array.isArray(item.all_blockers) ? item.all_blockers : []),
+        ...(item.primary_blocker && !['NONE', 'NO_LIVE_CANDIDATE'].includes(String(item.primary_blocker).toUpperCase()) ? [item.primary_blocker] : []),
+        ...(item.blocker && !['NONE', 'NO_LIVE_CANDIDATE'].includes(String(item.blocker).toUpperCase()) ? [item.blocker] : []),
+        ...(item.market_plan_poi_valid === 'NO' || item.market_plan_poi_valid === false ? ['PARENT_POI_CONTEXT_LIMITED'] : []),
+        ...(String(item.entry_zone_touched || '').toUpperCase() === 'UNKNOWN' ? ['ENTRY_TOUCH_CHRONOLOGY_UNKNOWN'] : [])
+    ])];
+    const lifecycle = String(item.lifecycle_state || item.state || item.opportunity_status || 'ACTIVE').toUpperCase();
+    return {
+        opportunity_id: item.opportunity_id || item.id || item.candidate_id || item.execution_poi_id || null,
+        symbol: normalizeCanonicalMarketSymbol(source.pair || source.symbol || ''),
+        direction: direction || null,
+        model: item.entry_model || item.model || item.execution_model || null,
+        primary_timeframe: item.timeframe || item.primary_tf || item.setup_timeframe || null,
+        formation_first_knowable_time: item.first_actionable_time || item.formation_time || item.first_knowable_time || item.event_time || null,
+        formation_status: manualMarketMechanicsFormationConfirmed(item) ? 'CONFIRMED' : 'INCOMPLETE',
+        market_structure_direction: item.market_structure_direction || item.htf_trend || source.market_plan?.htf_trend || null,
+        market_plan_direction: source.market_plan?.direction || null,
+        market_narrative: source.market_plan?.narrative || null,
+        parent_poi: item.market_plan_poi_id || item.parent_poi_id || item.poi_ref || null,
+        parent_poi_status: item.market_plan_poi_valid || item.parent_poi_valid || 'UNKNOWN',
+        execution_poi: item.execution_poi_id || item.entry_zone_ref || zone.id || null,
+        execution_poi_type: item.execution_poi_type || item.entry_zone_source || zone.type || null,
+        entry_zone_low: low,
+        entry_zone_high: high,
+        entry_zone_origin: item.entry_zone_origin || item.entry_zone_source || item.entry_zone_ref || zone.origin || null,
+        suggested_entry: entry,
+        proposed_stop: stop,
+        stop_source: item.stop_source || item.stop_ref || null,
+        stop_basis: item.stop_basis_price ?? item.stop_basis ?? null,
+        stop_quality_warning: item.stop_quality_warning || (String(item.primary_blocker || item.blocker || '').toUpperCase().includes('STOP') ? item.primary_blocker || item.blocker : null),
+        nearby_structural_invalidation_alternatives: item.structural_invalidation_alternatives || item.stop_alternatives || [],
+        directional_liquidity_targets: item.target_candidates || item.targets || (objective == null ? [] : [{ level: objective, source: item.target_source || null }]),
+        target_sources: item.target_source || item.target_ref || null,
+        target_lifecycle: item.target_lifecycle_state || null,
+        proposed_objective: objective,
+        reward_risk_for_supported_combinations: item.reward_risk_for_supported_combinations || item.risk_reward_combinations || item.rr || null,
+        opposing_structure: item.opposing_structure || item.path_quality?.nearest_opposing_barrier || item.nearest_opposing_barrier || null,
+        confluence: item.confluence || item.confluence_refs || item.strategy_confluence || [],
+        current_price: current,
+        correct_pending_order_side: direction === 'BUY' ? 'BUY_LIMIT' : direction === 'SELL' ? 'SELL_LIMIT' : null,
+        pending_side_eligible: side,
+        first_entry_touch_after_formation: item.first_entry_touch_after_formation || item.first_entry_touch_time || null,
+        entry_touched: item.entry_zone_touched || item.entry_touched || 'UNKNOWN',
+        entry_consumed: item.entry_consumed || 'NO',
+        expiry_status: item.expiry_status || (MANUAL_MARKET_MECHANICS_TERMINAL_STATES.has(lifecycle) ? lifecycle : 'ACTIVE'),
+        lifecycle_state: lifecycle,
+        data_freshness: source.data_quality?.status || source.market_context?.data_quality?.status || 'UNKNOWN',
+        evidence_refs: [...new Set([...(item.formation_evidence_refs || []), ...(item.evidence_refs || []), item.poi_ref, item.execution_poi_id].filter(Boolean))],
+        quality_warnings: warnings,
+        pending_limit_geometry_complete: item.pending_limit_geometry_complete || item.geometry_complete || 'UNKNOWN',
+        manual_authority: 'DEEPSEEK_REVIEW_ONLY',
+        deterministic_live_authority: item.CANDIDATE_AUTHORITY || item.candidate_authority || 'DIAGNOSTIC_ONLY'
+    };
+}
+
+function buildManualMarketMechanicsOpportunityShortlist(source = {}, currentPrice = null) {
+    const seen = new Set();
+    const rows = [];
+    for (const item of manualMarketMechanicsSources(source)) {
+        if (!item || manualMarketMechanicsTerminal(item) || !manualMarketMechanicsFormationConfirmed(item)) continue;
+        const row = manualMarketMechanicsOpportunityRecord(item, source, currentPrice);
+        if (!row.opportunity_id || seen.has(row.opportunity_id)) continue;
+        seen.add(row.opportunity_id);
+        rows.push(row);
+    }
+    return rows;
+}
+
+// Validates a manually returned DeepSeek decision against the same active
+// shortlist that was printed in the packet.  This is a safety boundary only;
+// it never places an order or changes deterministic Market Mechanics state.
+function validateManualMarketMechanicsDecision(decision = {}, replay = {}) {
+    const issues = [];
+    const add = code => { if (!issues.includes(code)) issues.push(code); };
+    const action = String(decision.action || decision.ACTION || decision.direction || '').toUpperCase();
+    const opportunities = Array.isArray(replay.manual_analysis_opportunities)
+        ? replay.manual_analysis_opportunities
+        : buildManualMarketMechanicsOpportunityShortlist(replay, replay.quote?.price ?? replay.current_price);
+    if (action === 'NO_TRADE') return { valid: true, execution_allowed: false, issues: [], action, opportunities_count: opportunities.length };
+    if (!['BUY_LIMIT', 'SELL_LIMIT'].includes(action)) add('MANUAL_ACTION_INVALID');
+    const opportunityId = decision.opportunity_id || decision.OPPORTUNITY_ID
+        || String(decision.reason || decision.REASON || '').match(/OPPORTUNITY_ID=([^\s,;]+)/i)?.[1];
+    const opportunity = opportunities.find(item => String(item.opportunity_id) === String(opportunityId));
+    if (!opportunity) add('MANUAL_ACTIVE_OPPORTUNITY_NOT_FOUND');
+    if (opportunity && opportunity.correct_pending_order_side !== action) add('MANUAL_PENDING_SIDE_INVALID');
+    const entry = manualMarketMechanicsNumber(decision.entry, decision.ENTRY, decision.price);
+    const stop = manualMarketMechanicsNumber(decision.stop_loss, decision.STOP_LOSS, decision.stop);
+    const tp1 = manualMarketMechanicsNumber(decision.tp1, decision.TP1, decision.target);
+    if (!opportunity || entry == null || opportunity.entry_zone_low == null || opportunity.entry_zone_high == null
+        || entry < opportunity.entry_zone_low || entry > opportunity.entry_zone_high) add('MANUAL_ENTRY_OUTSIDE_EVIDENCED_ZONE');
+    if (opportunity && String(opportunity.entry_touched).toUpperCase() !== 'NO') add('MANUAL_ENTRY_TOUCH_NOT_VERIFIABLY_UNTOUCHED');
+    if (opportunity && String(opportunity.entry_consumed).toUpperCase() === 'YES') add('MANUAL_ENTRY_CONSUMED');
+    if (opportunity && String(opportunity.expiry_status).toUpperCase() !== 'ACTIVE') add('MANUAL_OPPORTUNITY_TERMINAL');
+    if (stop == null || !opportunity?.stop_source) add('MANUAL_STRUCTURAL_STOP_EVIDENCE_REQUIRED');
+    if (tp1 == null || !Array.isArray(opportunity?.directional_liquidity_targets) || !opportunity.directional_liquidity_targets.length) add('MANUAL_STRUCTURAL_TARGET_EVIDENCE_REQUIRED');
+    if (opportunity && action === 'BUY_LIMIT' && !(entry < opportunity.current_price && stop < entry && tp1 > entry)) add('MANUAL_BUY_GEOMETRY_INVALID');
+    if (opportunity && action === 'SELL_LIMIT' && !(entry > opportunity.current_price && stop > entry && tp1 < entry)) add('MANUAL_SELL_GEOMETRY_INVALID');
+    return { valid: issues.length === 0, execution_allowed: false, issues, action, opportunity: opportunity || null, opportunities_count: opportunities.length };
+}
 
 function countRawLegacyDiagnosticCandidates(lines = []) {
     const ids = new Set();
@@ -18725,14 +18900,17 @@ function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2, s
 function buildRawTextMarketAnalysisInstruction(strategyModeOverride = null) {
     if (String(strategyModeOverride || rawTextV2StrategyMode()).toUpperCase() === 'MARKET_MECHANICS') {
         return [
-            'MARKET MECHANICS AUTHORITY CONTRACT',
-            'The deterministic V2 authority is MARKET_MECHANICS only.',
-            'Select only from === LIVE MARKET MECHANICS CANDIDATES === rows with CANDIDATE_AUTHORITY=LIVE, MARKET_PLAN_VALID=YES, POI_VALID=YES, MODEL_QUALIFIED=YES and TRADE_QUALIFIED=YES.',
-            'Ignore === LEGACY DIAGNOSTICS — NOT TRADE AUTHORITY ===, forming setups, old FVG/HP-zone/current-opportunity rows, scores, and raw detector evidence for trade selection.',
-            'Do not discover, promote, or reconstruct a trade from a standalone FVG, CRT, TBS, MSNR, OB, SUPPLY, DEMAND, FLIP or BREAKER row.',
-            'Do not invent or change the selected candidate direction, setup components, entry, stop, TP1, TP2, TP3, confidence, timeframe or objective. Bind selection to the exact OPPORTUNITY_ID.',
-            'Path-quality, target-direction and authority-invariant blockers are final. Kronos is informational only.',
-            'If LIVE_CANDIDATES=NONE, return ACTION=NO_TRADE with zero trade prices and name the current deterministic Market Mechanics blocker.',
+            'MARKET MECHANICS MANUAL DEEPSEEK REVIEW CONTRACT',
+            'TVKit and the deterministic engine provide market evidence and lifecycle facts. This packet is for manual DeepSeek analysis; it is not an API integration and it does not place broker orders.',
+            'Analyze only the completed, nonterminal opportunities in === ACTIVE PENDING-LIMIT OPPORTUNITIES — FOR DEEPSEEK ANALYSIS ===.',
+            'Do not select legacy diagnostics, expired setups, consumed or filled entries, invalidated zones, or incomplete formations.',
+            'A stop, target, path, risk, confluence or context warning is a serious review warning, not proof that the active formation should be hidden. Reject it when the supplied evidence cannot support a safe pending order.',
+            'You may choose a different entry, stop or target only when the exact supplied candle evidence and chronology support it. Never invent a structure, price, target, stop or candle.',
+            'For BUY_LIMIT ENTRY must be below the current executable reference and STOP_LOSS below ENTRY. For SELL_LIMIT ENTRY must be above the current executable reference and STOP_LOSS above ENTRY.',
+            'Do not require price to touch the entry before publishing a pending limit. Formation evidence must be complete before the order; touch is a later lifecycle event.',
+            'Verify formation chronology, remaining zone geometry, entry-touch chronology, structural invalidation, directional liquidity objectives, opposing structure and reward/risk from the closed candles supplied.',
+            'If touch chronology is UNKNOWN, do not claim the setup is untouched or authorize it. If no active opportunity has defensible geometry, return NO_TRADE and explain the exact evidence-backed reason.',
+            'LIVE MARKET MECHANICS CANDIDATES remain deterministic engine authority. The manual shortlist is review input only; DeepSeek must not promote legacy or terminal records.',
             'Return only the existing final output contract.'
         ].join('\n');
     }
@@ -18900,6 +19078,9 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             : (source.market_mechanics?.model_states || source.forming_market_mechanics_setups || [])
                 .map(setup => normalizeMarketMechanicsFormingState(setup, source.market_plan || source.market_context?.market_plan || null)))
             .filter(setup => setup.selectable !== true)
+        : [];
+    const manualMarketMechanicsOpportunities = marketMechanicsMode
+        ? buildManualMarketMechanicsOpportunityShortlist(source, price)
         : [];
     const historicalMarketMechanicsCandidates = marketMechanicsMode
         ? (source.historical_market_mechanics_candidates || source.market_mechanics?.historical_model_states || [])
@@ -19085,6 +19266,32 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             ].join(' '));
         }
         lines.push('');
+        lines.push('=== ACTIVE PENDING-LIMIT OPPORTUNITIES — FOR DEEPSEEK ANALYSIS ===');
+        lines.push('MANUAL_AUTHORITY=DEEPSEEK_REVIEW_ONLY DETERMINISTIC_LIVE_AUTHORITY=MARKET_MECHANICS');
+        lines.push('MANUAL_ACTIVE_OPPORTUNITY_COUNT=' + manualMarketMechanicsOpportunities.length);
+        if (!manualMarketMechanicsOpportunities.length) lines.push('MANUAL_ACTIVE_OPPORTUNITIES=NONE');
+        for (const opportunity of manualMarketMechanicsOpportunities) {
+            lines.push('MANUAL_ACTIVE_OPPORTUNITY OPPORTUNITY_ID=' + String(opportunity.opportunity_id)
+                + ' DIRECTION=' + String(opportunity.direction || 'NONE')
+                + ' MODEL=' + String(opportunity.model || 'NONE')
+                + ' PRIMARY_TIMEFRAME=' + String(opportunity.primary_timeframe || 'NONE')
+                + ' FORMATION_STATUS=' + String(opportunity.formation_status)
+                + ' FORMATION_FIRST_KNOWABLE_TIME=' + String(opportunity.formation_first_knowable_time || 'NONE')
+                + ' ENTRY_ZONE=' + (opportunity.entry_zone_low == null || opportunity.entry_zone_high == null
+                    ? 'NONE' : `${rawTextPacketFormatNumber(opportunity.entry_zone_low, precision)}-${rawTextPacketFormatNumber(opportunity.entry_zone_high, precision)}`)
+                + ' SUGGESTED_ENTRY=' + (opportunity.suggested_entry == null ? 'NONE' : rawTextPacketFormatNumber(opportunity.suggested_entry, precision))
+                + ' PROPOSED_STOP=' + (opportunity.proposed_stop == null ? 'NONE' : rawTextPacketFormatNumber(opportunity.proposed_stop, precision))
+                + ' PROPOSED_OBJECTIVE=' + (opportunity.proposed_objective == null ? 'NONE' : rawTextPacketFormatNumber(opportunity.proposed_objective, precision))
+                + ' CURRENT_PRICE=' + (opportunity.current_price == null ? 'NONE' : rawTextPacketFormatNumber(opportunity.current_price, precision))
+                + ' CORRECT_PENDING_ORDER_SIDE=' + String(opportunity.correct_pending_order_side || 'NONE')
+                + ' PENDING_SIDE_ELIGIBLE=' + String(opportunity.pending_side_eligible)
+                + ' ENTRY_TOUCHED=' + String(opportunity.entry_touched)
+                + ' ENTRY_CONSUMED=' + String(opportunity.entry_consumed)
+                + ' LIFECYCLE_STATE=' + String(opportunity.lifecycle_state)
+                + ' DATA_FRESHNESS=' + String(opportunity.data_freshness));
+            lines.push('OPPORTUNITY_EVIDENCE=' + JSON.stringify(opportunity));
+        }
+        lines.push('');
         lines.push('=== FORMING MARKET MECHANICS SETUPS ===');
         if (!formingMarketMechanicsSetups.length) lines.push('FORMING_SETUPS=NONE');
         for (const setup of formingMarketMechanicsSetups) lines.push([
@@ -19263,6 +19470,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         lines.push('MARKET_PLAN_VALID=' + (plan.valid_context === true ? 'YES' : 'NO'));
         lines.push('LIVE_CANDIDATE_COUNT=' + authority.live_candidates.length);
         lines.push('FORMING_SETUP_COUNT=' + formingMarketMechanicsSetups.length);
+        lines.push('MANUAL_ACTIVE_OPPORTUNITY_COUNT=' + manualMarketMechanicsOpportunities.length);
         lines.push('FORMING_CAMPAIGN_COUNT=' + new Set(formingMarketMechanicsSetups.map(setup => setup.campaign_id || setup.id)).size);
         lines.push('SELECTABLE_CANDIDATE_IDS=' + (authority.live_candidate_ids.join('|') || 'NONE'));
         lines.push('DIAGNOSTIC_ONLY_CANDIDATE_COUNT=' + (visibleLegacyDiagnosticCount + historicalMarketMechanicsCandidates.length));
@@ -19344,6 +19552,8 @@ function copyRawMarketAnalysisPacket() {
 if (typeof window !== 'undefined') {
     window.buildRawMarketAnalysisPacket = buildRawMarketAnalysisPacket;
     window.buildRawTextMarketAnalysisPacket = buildRawTextMarketAnalysisPacket;
+    window.buildManualMarketMechanicsOpportunityShortlist = buildManualMarketMechanicsOpportunityShortlist;
+    window.validateManualMarketMechanicsDecision = validateManualMarketMechanicsDecision;
     window.validateRawMarketAnalysisDecision = validateRawMarketAnalysisDecision;
     window.parseRawMarketAnalysisDecision = parseRawMarketAnalysisDecision;
     window.copyRawMarketAnalysisPacket = copyRawMarketAnalysisPacket;
@@ -27584,12 +27794,13 @@ const MANUAL_EXTERNAL_AI_PACKET_CONTRACT = [
 ].join('\n');
 
 const MARKET_MECHANICS_EXTERNAL_AI_PACKET_CONTRACT = [
-    'AUTHORITY: this packet is downstream of the deterministic V2 MARKET_MECHANICS engine.',
-    'Select only a row in LIVE MARKET MECHANICS CANDIDATES with CANDIDATE_AUTHORITY=LIVE, MARKET_PLAN_VALID=YES, POI_VALID=YES, MODEL_QUALIFIED=YES, and TRADE_QUALIFIED=YES.',
-    'LEGACY DIAGNOSTICS, old FVG/high-probability/current-opportunity rows, forming setups, scores, and raw detector evidence are not selectable trade candidates.',
-    'Do not discover, promote, reconstruct, or combine a trade from diagnostic evidence. Do not invent or change direction, setup components, entry, stop, TP1, TP2, TP3, confidence, objective, timeframe, or opportunity ID.',
-    'Path-quality, target-direction, lifecycle, current-opportunity, and authority-invariant blockers are final. Kronos is informational only.',
-    'If LIVE MARKET MECHANICS CANDIDATES is empty, return NO_TRADE using the supplied blocker/state. Return only the existing compact JSON output contract.'
+    'AUTHORITY: deterministic V2 MARKET_MECHANICS remains the only automatic trade authority; this is a manual DeepSeek analysis packet.',
+    'Review only completed, active, nonterminal rows in ACTIVE PENDING-LIMIT OPPORTUNITIES — FOR DEEPSEEK ANALYSIS. LIVE rows are authoritative; the manual shortlist is review input only.',
+    'Do not select legacy diagnostics, incomplete formations, expired setups, consumed entries or invalidated zones.',
+    'Stop, target, path, risk and confluence warnings are serious evidence to evaluate, not reasons to hide an active formation. Reject when supplied evidence cannot support a safe pending order.',
+    'Do not invent or arbitrarily change direction, entry, stop, TP1, TP2, TP3, confidence, objective, timeframe or opportunity ID. Any changed level must be supported by exact supplied candle evidence.',
+    'Do not require price to touch the entry. BUY_LIMIT entry must be below current price and SELL_LIMIT entry above current price. Unknown touch chronology is not an untouched entry.',
+    'If no active opportunity has defensible geometry, return NO_TRADE with the precise evidence-backed reason. LIVE_CANDIDATES=NONE is not an unconditional veto. Return only the existing compact JSON output contract.'
 ].join('\n');
 
 function externalPacketDefined(object, keys) {
@@ -28404,6 +28615,9 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
     const marketMechanicsFormingSetups = marketMechanicsMode
         ? (semantic?.forming_market_mechanics_setups || source.market_mechanics?.model_states || [])
         : [];
+    const manualMarketMechanicsOpportunities = marketMechanicsMode
+        ? buildManualMarketMechanicsOpportunityShortlist(source, source.quote?.price ?? result.current_price)
+        : [];
     const marketMechanicsDiagnosticCount = marketMechanicsMode
         ? countDiagnosticCandidateRecords(semantic?.legacy_diagnostic_candidates || source.legacy_diagnostic_candidates || [])
         : 0;
@@ -29000,17 +29214,26 @@ packet.
     // This task is retained only for the automatic/integrated serializer.
     const externalAIClipboardTask = marketMechanicsMode
         ? `==================================================
-EXTERNAL AI TASK — MARKET MECHANICS AUTHORITY
+MANUAL DEEPSEEK TASK — MARKET MECHANICS OPPORTUNITY REVIEW
 ==================================================
 
-You are downstream of the deterministic V2 MARKET_MECHANICS engine.
-Select only from LIVE MARKET MECHANICS CANDIDATES with
-CANDIDATE_AUTHORITY=LIVE, MODEL_QUALIFIED=YES and TRADE_QUALIFIED=YES.
-Ignore LEGACY DIAGNOSTICS, old FVG/high-probability/current-opportunity
-rows, forming setups, scores, and raw detector evidence for selection.
-Do not invent or change the candidate's direction, setup components, entry,
-stop, TP1, TP2, TP3, confidence, objective, or timeframe.
-If no live candidate exists, return NO_TRADE. Do not fall back to legacy.
+TVKit and the deterministic V2 MARKET_MECHANICS engine provide the market
+evidence and lifecycle facts. This is a manual packet; no DeepSeek API or
+automatic broker execution is used.
+Review only completed, active, nonterminal rows in ACTIVE PENDING-LIMIT
+OPPORTUNITIES — FOR DEEPSEEK ANALYSIS. LIVE rows are deterministic authority;
+the active shortlist is review input and is not automatic trade authority.
+Do not select legacy diagnostics, incomplete formations, expired setups,
+consumed entries or invalidated zones. A stop/target/path/risk warning must be
+examined and may justify NO_TRADE, but it must not hide an active formation.
+Use only supplied candle evidence and chronology. Never invent or arbitrarily
+tighten an entry, stop, target, zone or confidence.
+Do not require price to touch the pending entry before deciding. A pending
+BUY_LIMIT entry is below current price; a SELL_LIMIT entry is above current
+price. If touch chronology is unknown, do not claim the entry is untouched.
+If no active opportunity has defensible geometry, return NO_TRADE with the
+precise evidence-backed reason. Do not use LIVE_CANDIDATES=NONE as an
+unconditional veto.
 Return only the existing compact JSON output contract.
 ==================================================`
         : integratedExternalAIClipboardTask;
@@ -29036,7 +29259,9 @@ Return only the existing compact JSON output contract.
         ] : []),
         `Snapshot ID: ${source.snapshot_id || result.snapshot_id || 'UNAVAILABLE'}`,
         '',
-        manualReview
+        marketMechanicsMode
+            ? 'IMPORTANT: This is a manual Market Mechanics review packet. The active shortlist contains deterministic formation facts and suggested geometry for inspection; it is not automatic trade authority. Validate every level against the supplied evidence and lifecycle before accepting it.'
+            : manualReview
             ? 'IMPORTANT: This manual packet contains deterministic market facts from one completed snapshot. Use only supplied evidence IDs, locations, invalidations, levels, and targets. It is not a preconstructed trade shortlist; do not invent missing market data or trading levels.'
             : 'IMPORTANT: This packet contains deterministic evidence from one completed market snapshot. Use only supplied evidence, candidate IDs, levels, and targets. Do not invent missing market data or trading levels.',
         '',
@@ -29146,6 +29371,13 @@ Return only the existing compact JSON output contract.
             ...(marketMechanicsMode ? [
                 '',
                 '==============================',
+                'ACTIVE PENDING-LIMIT OPPORTUNITIES — FOR DEEPSEEK ANALYSIS',
+                '==============================',
+                'MANUAL_AUTHORITY=DEEPSEEK_REVIEW_ONLY DETERMINISTIC_LIVE_AUTHORITY=MARKET_MECHANICS',
+                'MANUAL_ACTIVE_OPPORTUNITY_COUNT=' + manualMarketMechanicsOpportunities.length,
+                manualMarketMechanicsOpportunities.length ? JSON.stringify(manualMarketMechanicsOpportunities, null, 2) : 'MANUAL_ACTIVE_OPPORTUNITIES=NONE',
+                '',
+                '==============================',
                 'FORMING MARKET MECHANICS SETUPS (NOT SELECTABLE)',
                 '==============================',
                 JSON.stringify(semantic?.forming_market_mechanics_setups || source.market_mechanics?.model_states || [], null, 2),
@@ -29185,7 +29417,8 @@ Return only the existing compact JSON output contract.
             'ACTIVE_AUTHORITY_COUNT=' + String(packetAuthority?.active_authority_count || 0),
             'MARKET_PLAN_VALID=' + (marketMechanicsPlan.valid_context === true ? 'YES' : 'NO'),
             'LIVE_CANDIDATE_COUNT=' + candidates.length,
-            'FORMING_SETUP_COUNT=' + marketMechanicsFormingSetups.length,
+             'FORMING_SETUP_COUNT=' + marketMechanicsFormingSetups.length,
+             'MANUAL_ACTIVE_OPPORTUNITY_COUNT=' + manualMarketMechanicsOpportunities.length,
             'FORMING_CAMPAIGN_COUNT=' + new Set(marketMechanicsFormingSetups.map(setup => setup.campaign_id || setup.id)).size,
             'SELECTABLE_CANDIDATE_IDS=' + (candidates.map(candidate => candidate.candidate_id).join('|') || 'NONE'),
             'DIAGNOSTIC_ONLY_CANDIDATE_COUNT=' + marketMechanicsDiagnosticCount,
