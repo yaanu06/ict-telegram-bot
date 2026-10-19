@@ -3735,7 +3735,8 @@ describe('Market Mechanics packet authority', () => {
         });
         const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
         expect(text).toContain('ENTRY_ZONE_LOW=81302.20000000 ENTRY_ZONE_HIGH=81459.10000000');
-        expect(text).toContain('PROPOSED_ENTRY=81380.65000000 PROPOSED_STOP=NONE PROPOSED_OBJECTIVE=81995.97000000');
+        expect(text).toContain('PROPOSED_ENTRY=81380.65000000 PROPOSED_STOP=NONE');
+        expect(text).toContain('PROPOSED_OBJECTIVE=81995.97000000');
         expect(text).toContain('ENTRY_ZONE_TOUCH_REQUIRED_FOR_QUALIFICATION=NO');
         expect(text).toContain('NEXT_REQUIRED_EVENT=NO_STRUCTURAL_STOP');
         expect(text).toContain('STATE=WAITING_FOR_PENDING_GEOMETRY');
@@ -3757,7 +3758,8 @@ describe('Market Mechanics packet authority', () => {
         expect(forming).toHaveLength(2);
         expect(forming[0].source_count).toBe(2);
         expect(forming[0].alternate_crt_refs).toContain('CRT-SHARED-B');
-        expect(forming[0].state).toBe('WAITING_FOR_RETRACE');
+        expect(forming[0].state).toBe('WAITING_FOR_PENDING_GEOMETRY');
+        expect(forming[0].blocker).toBe('NO_STRUCTURAL_STOP');
         expect(forming[0].selectable).toBe(false);
         expect(forming[1].source_count).toBe(1);
         expect(forming[1].primary_ref).toBe('CRT-INDEPENDENT');
@@ -3828,6 +3830,41 @@ describe('Market Mechanics packet authority', () => {
         expect(state[0].state).toBe('PENDING_UNFILLED');
         expect(state[0].current_price_relation_to_entry_zone).toBe('BELOW');
         expect(state[0].entry_zone_touch_required_for_qualification).toBe('NO');
+    });
+
+    test('XAU CRT aggressive exposes complete pre-entry SELL geometry before touch', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const setup = {
+            id: 'XAU-CRT-4H-113', primary: 'CRT', direction: 'SELL', timeframe: '4H',
+            setup_timeframe: '4H', execution_timeframe: '1H', entry_model: 'CRT_AGGRESSIVE',
+            execution_model: 'FRESH_RETRACEMENT_LIMIT', execution_confirmed: true,
+            structural_invalidation_detail: { level: 4199.09, source: 'CRT_SWEEP', ref: 'XAU-CRT-4H-113' },
+            execution_zone: { id: 'XAU-CRT-ZONE-4166.77-4186.39', type: 'CRT', low: 4166.77, high: 4186.39, freshness: 'FRESH', structural_invalidation: { level: 4199.09, source: 'CRT_SWEEP' } },
+            target_candidates: [{ id: 'XAU-SSL-4150', direction: 'SELL', level: 4150, source: 'SWING_LOW', target_type: 'STRUCTURAL_LIQUIDITY' }],
+            structural_evidence_ids: ['CRT:XAU:113', 'LIQ:XAU:BUY_SIDE']
+        };
+        const state = ctx.buildMarketMechanicsFormingSetupStates([setup], {
+            valid_context: true, market_plan_complete: true, direction: 'SELL',
+            active_swing_range_id: 'RANGE-XAU', active_poi: { id: 'CRT:XAU:113', type: 'CRT', direction: 'SELL', low: 4166.77, high: 4186.39 }
+        }, {
+            pair: 'XAU/USD', current_price: 4176.04,
+            history_cache: { '1H': candles(30, 4170, 0.4, 'down'), '4H': candles(30, 4200, 0.5, 'down') },
+            candidate_result: { all_valid_candidates: [], raw_candidates: [], rejected_candidates: [] }
+        });
+        expect(state[0]).toEqual(expect.objectContaining({
+            state: 'WAITING_FOR_QUALIFICATION',
+            blocker: 'CANDIDATE_NOT_CONSTRUCTED',
+            setup_formation_state: 'CONFIRMED',
+            setup_formation_confirmed: 'YES',
+            post_touch_confirmation_required: 'NO',
+            entry_zone_touch_required_for_qualification: 'NO',
+            pending_limit_valid: 'YES',
+            pending_limit_geometry_complete: 'YES',
+            proposed_stop: expect.any(Number),
+            proposed_objective: 4150,
+            current_price_relation_to_entry_zone: 'INSIDE'
+        }));
+        expect(state[0].retrace_state).toBe('NOT_STARTED');
     });
 
     test.each(['BTC/USD', 'XAU/USD', 'AUD/USD', 'GBP/JPY'])('keeps parent Market Plan POI and compatible execution POI distinct for %s', pair => {
@@ -9175,7 +9212,7 @@ describe('live AI market context and prompt', () => {
         expect(live.strategy_setups.length).toBeGreaterThan(0);
         expect(live.production_trace.funnel.raw_setups).toBe(live.strategy_setups.length);
         expect(output.state).toBe('NO_TRADE_TODAY');
-        expect(output.reason_code).toBe('DATA_QUALITY');
+        expect(output.reason_code).toBe('MARKET_DATA_STALE');
     });
 
     it('returns a safe no-opportunity result through the same raw-history production path', () => {

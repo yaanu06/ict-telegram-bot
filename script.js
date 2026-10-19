@@ -734,7 +734,9 @@ const LIMIT_ORDER_MAX_DIST_ATR = 6.0;
 // their future entry, not from whether price can revisit the zone today or
 // whether a second confirmation candle has already formed.
 function isPendingLimitExecutionModel(model) {
-    return ['PENDING_LIMIT', 'FRESH_RETRACEMENT_LIMIT', 'STRUCTURAL_LIMIT'].includes(String(model || '').toUpperCase());
+    return ['PENDING_LIMIT', 'FRESH_RETRACEMENT_LIMIT', 'STRUCTURAL_LIMIT',
+        'MARKET_SHIFT', 'FLIP_ZONE', 'LIQUIDITY_OB_FVG', 'CRT_AGGRESSIVE',
+        'CRT_CONSERVATIVE'].includes(String(model || '').toUpperCase());
 }
 function getCandidateExecutionQualityMinimum(candidate = {}) {
     const fullyAlignedPendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model)
@@ -7914,6 +7916,17 @@ function buildMarketMechanicsStrategySetups(args = {}) {
         const hasTarget = (setup.target_candidates || []).some(target => Number.isFinite(Number(target.level)) && (setup.direction === 'BUY' ? Number(target.level) > Number(args.price) : Number(target.level) < Number(args.price)));
         const hasCausalConfirmation = setup.execution_confirmed === true || setup.execution_model === 'CONFIRMATION_ENTRY' || (setup.structural_evidence_ids || []).some(ref => String(ref).includes('SHIFT:'));
         setup.entry_model = model;
+        const pendingModel = isPendingLimitExecutionModel(setup.execution_model || setup.entry_model);
+        setup.setup_formation_state = hasCausalConfirmation ? 'CONFIRMED' : 'WAITING_FOR_CONFIRMATION';
+        setup.setup_formation_confirmed = hasCausalConfirmation;
+        setup.setup_formation_evidence = [...new Set([
+            ...(setup.structural_evidence_ids || []),
+            setup.crt_ref,
+            setup.liquidity_event_ref,
+            ...(setup.execution_confirmed ? ['EXECUTION_FORMATION_CONFIRMED'] : [])
+        ].filter(Boolean))];
+        setup.post_touch_confirmation_required = pendingModel ? false : setup.execution_model === 'CONFIRMATION_ENTRY';
+        setup.post_touch_confirmation_state = setup.post_touch_confirmation_required ? 'REQUIRED' : 'NOT_REQUIRED';
         setup.market_plan_id = plan?.plan_id || null;
         setup.market_plan = plan || null;
         setup.poi_relationship = poiRelationship;
@@ -7983,6 +7996,42 @@ function marketMechanicsEntryZoneRelation(price, zone = {}) {
     return 'INSIDE';
 }
 
+function deriveMarketMechanicsPendingGeometry(setup = {}, options = {}) {
+    const zone = setup.execution_zone || setup.opportunity_narrative?.location || {};
+    const pairLocal = options.pair || pair;
+    const symbolMetadata = options.symbol_metadata || {};
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
+    const direction = String(setup.direction || '').toUpperCase();
+    const entry = getSemanticEntryCandidate(zone, setup, direction, settings.prec);
+    const setupTf = setup.setup_timeframe || setup.timeframe || zone.timeframe;
+    const data = options.history_cache?.[setupTf] || options.history_cache?.[zone.timeframe] || [];
+    const atrData = data.length >= 15 ? data : (options.history_cache?.['1H'] || []);
+    const atrValue = atrData.length >= 15 ? atr(atrData, 14) : 0;
+    const authoritative = getAuthoritativeStructuralInvalidation({ ...zone, strategy_setup: setup }, setup);
+    const stopCandidates = authoritative && Number.isFinite(entry)
+        ? getAdaptiveStopCandidates({ ...zone, strategy_setup: setup }, direction, entry, data, options.zones || [], atrValue, settings, settings.prec)
+        : [];
+    const stop = stopCandidates[0] || null;
+    const targets = (Array.isArray(setup.target_candidates) ? setup.target_candidates : [])
+        .filter(target => target?.direction === direction && Number.isFinite(Number(target.level))
+            && Number.isFinite(entry)
+            && (direction === 'BUY' ? Number(target.level) > entry : Number(target.level) < entry))
+        .sort((left, right) => Math.abs(Number(left.level) - entry) - Math.abs(Number(right.level) - entry));
+    const primaryTarget = targets[0] || null;
+    return {
+        entry: Number.isFinite(entry) ? entry : null,
+        stop_loss: Number.isFinite(Number(stop?.stop_loss)) ? Number(stop.stop_loss) : null,
+        stop_source: stop?.source || authoritative?.source || null,
+        stop_ref: authoritative?.ref || authoritative?.id || setup.crt_ref || setup.id || null,
+        stop_basis_price: Number.isFinite(Number(authoritative?.level)) ? Number(authoritative.level) : null,
+        structural_invalidation_valid: Boolean(authoritative && Number.isFinite(Number(authoritative.level))),
+        target: primaryTarget,
+        targets,
+        target_source: primaryTarget?.source || primaryTarget?.target_type || null,
+        target_ref: primaryTarget?.id || primaryTarget?.ref || null
+    };
+}
+
 // This is deliberately a presentation/lifecycle diagnostic.  Candidate
 // construction remains authoritative; the helper only correlates a forming
 // setup with the candidate builder's raw/rejected/valid records so a packet
@@ -8009,14 +8058,15 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
     const precision = getMarketSettings(pairLocal, options.symbol_metadata || {}).prec;
     const relation = marketMechanicsEntryZoneRelation(options.current_price, zone);
     const pending = isPendingLimitExecutionModel(setup.execution_model || setup.entry_model || zone.execution_model || zone.entry_model);
+    const derivedGeometry = deriveMarketMechanicsPendingGeometry(setup, options);
     const entry = Number.isFinite(Number(candidate?.entry))
         ? Number(candidate.entry)
-        : getSemanticEntryCandidate(zone, setup, setup.direction, precision);
-    const stop = Number.isFinite(Number(candidate?.stop_loss)) ? Number(candidate.stop_loss) : null;
+        : derivedGeometry.entry;
+    const stop = Number.isFinite(Number(candidate?.stop_loss)) ? Number(candidate.stop_loss) : derivedGeometry.stop_loss;
     const objective = Number.isFinite(Number(candidate?.tp1))
         ? Number(candidate.tp1)
         : Number.isFinite(Number(setup.primary_objective)) ? Number(setup.primary_objective)
-            : (Array.isArray(setup.target_candidates) ? Number(setup.target_candidates[0]?.level) : NaN);
+            : Number.isFinite(Number(derivedGeometry.target?.level)) ? Number(derivedGeometry.target.level) : NaN;
     const lifecycle = candidate?.evaluation?.metrics?.setup_lifecycle || candidate?.setup_lifecycle || null;
     const touched = lifecycle && Number.isFinite(Number(lifecycle.entry_touch_count_after_signal))
         ? Number(lifecycle.entry_touch_count_after_signal) > 0
@@ -8037,7 +8087,8 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
     const geometry = {
         entry: Number.isFinite(entry) ? entry : null,
         stop_loss: Number.isFinite(stop) ? stop : null,
-        tp1: Number.isFinite(Number(candidate?.tp1)) ? Number(candidate.tp1) : null,
+        tp1: Number.isFinite(Number(candidate?.tp1)) ? Number(candidate.tp1)
+            : Number.isFinite(objective) ? objective : null,
         tp2: Number.isFinite(Number(candidate?.tp2)) ? Number(candidate.tp2) : null,
         tp3: Number.isFinite(Number(candidate?.tp3)) ? Number(candidate.tp3) : null,
         objective: Number.isFinite(objective) ? objective : null
@@ -8097,7 +8148,15 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         entry_zone_source: zone.entry_region_source || zone.type || setup.primary || null,
         proposed_entry: geometry.entry,
         proposed_stop: geometry.stop_loss,
+        stop_source: candidate?.stop_source || derivedGeometry.stop_source,
+        stop_ref: candidate?.structural_invalidation?.id || candidate?.structural_invalidation?.ref || derivedGeometry.stop_ref,
+        stop_basis_price: Number.isFinite(Number(candidate?.structural_invalidation?.level))
+            ? Number(candidate.structural_invalidation.level) : derivedGeometry.stop_basis_price,
+        structural_invalidation_valid: Number.isFinite(Number(candidate?.structural_invalidation?.level))
+            || derivedGeometry.structural_invalidation_valid ? 'YES' : 'NO',
         proposed_objective: geometry.objective,
+        target_source: candidate?.tp1_source || derivedGeometry.target_source,
+        target_ref: candidate?.target_map?.[0]?.target_id || derivedGeometry.target_ref,
         tp1: geometry.tp1,
         tp2: geometry.tp2,
         tp3: geometry.tp3,
@@ -8110,6 +8169,11 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         entry_zone_retraced: retraced == null ? 'UNKNOWN' : retraced ? 'YES' : 'NO',
         entry_zone_freshness: zone.freshness || setup.freshness || candidate?.freshness || 'UNKNOWN',
         entry_zone_touch_required_for_qualification: pending ? 'NO' : 'YES',
+        setup_formation_state: setup.setup_formation_state || (setup.execution_confirmed === true ? 'CONFIRMED' : 'WAITING_FOR_CONFIRMATION'),
+        setup_formation_confirmed: setup.setup_formation_confirmed === true || setup.execution_confirmed === true ? 'YES' : 'NO',
+        formation_evidence_refs: setup.setup_formation_evidence || setup.structural_evidence_ids || [],
+        post_touch_confirmation_required: setup.post_touch_confirmation_required === true ? 'YES' : 'NO',
+        post_touch_confirmation_state: setup.post_touch_confirmation_required === true ? 'REQUIRED' : 'NOT_REQUIRED',
         next_required_event: nextRequiredEvent,
         pending_limit_geometry_complete: geometryComplete ? 'YES' : 'NO',
         pending_limit_candidate_state: state,
@@ -8160,13 +8224,14 @@ function buildMarketMechanicsFormingSetupStates(strategySetups = [], marketPlan 
         } else if (pendingDiagnostics.candidate_authority === 'LIVE') {
             state = 'PENDING_UNFILLED';
             blocker = 'NONE';
-        } else if (pendingDiagnostics.entry_zone_touch_required_for_qualification === 'NO'
-            && pendingDiagnostics.pending_limit_candidate_state) {
-            state = pendingDiagnostics.pending_limit_candidate_state;
-            blocker = pendingDiagnostics.blocker || 'PENDING_LIMIT_NOT_READY';
+        } else if (pendingDiagnostics.entry_zone_touch_required_for_qualification === 'NO') {
+            state = pendingDiagnostics.pending_limit_candidate_state
+                || (pendingDiagnostics.pending_limit_geometry_complete === 'YES' ? 'WAITING_FOR_QUALIFICATION' : 'WAITING_FOR_PENDING_GEOMETRY');
+            blocker = pendingDiagnostics.blocker
+                || (pendingDiagnostics.pending_limit_geometry_complete === 'YES' ? 'CANDIDATE_NOT_CONSTRUCTED' : 'PENDING_LIMIT_NOT_READY');
         } else if (confirmationComplete || String(setup.entry_model_state || '').toUpperCase() === 'WAITING_FOR_RETRACE') {
-            state = 'WAITING_FOR_RETRACE';
-            blocker = pendingDiagnostics.blocker || 'ENTRY_ZONE_NOT_RETRACED';
+            state = 'WAITING_FOR_CONFIRMATION';
+            blocker = pendingDiagnostics.blocker || 'POST_TOUCH_CONFIRMATION_REQUIRED';
         }
         const refs = group.members.map(item => item.crt_ref || item.id).filter(Boolean);
         const primaryRef = setup.crt_ref || setup.id || null;
@@ -8191,7 +8256,12 @@ function buildMarketMechanicsFormingSetupStates(strategySetups = [], marketPlan 
             prospective_poi_ref: poiRelationship.execution_poi_valid ? null : (setupPoi?.id || primaryRef),
             liquidity_event_ref: setup.liquidity_event_ref || null,
             confirmation_state: confirmationComplete ? 'CONFIRMED' : 'WAITING',
-            retrace_state: state === 'WAITING_FOR_RETRACE' ? 'WAITING' : state === 'PENDING_UNFILLED' ? 'PENDING_UNFILLED' : 'NOT_STARTED',
+            setup_formation_state: setup.setup_formation_state || (confirmationComplete ? 'CONFIRMED' : 'WAITING_FOR_CONFIRMATION'),
+            setup_formation_confirmed: setup.setup_formation_confirmed === true || confirmationComplete,
+            formation_evidence_refs: setup.setup_formation_evidence || setup.structural_evidence_ids || [],
+            post_touch_confirmation_required: setup.post_touch_confirmation_required === true ? 'YES' : 'NO',
+            post_touch_confirmation_state: setup.post_touch_confirmation_required === true ? 'REQUIRED' : 'NOT_REQUIRED',
+            retrace_state: state === 'PENDING_UNFILLED' ? 'NOT_STARTED' : state === 'WAITING_FOR_CONFIRMATION' ? 'NOT_STARTED' : 'NOT_STARTED',
             blocker,
             primary_ref: primaryRef,
             alternate_crt_refs: refs.filter(ref => ref !== primaryRef),
@@ -9953,10 +10023,10 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const dataQuality = marketContext?.data_quality || validateMarketDataQuality(historyCache, price);
     if (!dataQuality.valid) {
         for (const seed of seedDiagnostics) {
-            for (const reason of dataQuality.reasons) failSeed(seed, /missing|insufficient/i.test(reason) ? 'MISSING_TIMEFRAME_DATA' : 'INVALID_MARKET_DATA', reason);
+            for (const reason of dataQuality.reasons) failSeed(seed, marketDataQualityReasonCode(reason), reason);
         }
         const result = { raw_candidates: [], valid_candidates: [], all_valid_candidates: [], selectable_candidates: [], future_watch_candidates: [], low_quality_candidates: [], seed_diagnostics: seedDiagnostics,
-            rejected_candidates: dataQuality.reasons.map(reason => ({ id: 'DATA_QUALITY', rejection_code: 'DATA_QUALITY', rejection_reasons: [reason] })) };
+            rejected_candidates: dataQuality.reasons.map(reason => ({ id: 'DATA_QUALITY', rejection_code: marketDataQualityReasonCode(reason), rejection_reasons: [reason] })) };
         console.log('RAW SETUP CANDIDATES', result.raw_candidates);
         console.log('VALID SETUP CANDIDATES', result.valid_candidates);
         console.log('REJECTED SETUP CANDIDATES', result.rejected_candidates);
@@ -9997,6 +10067,29 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price));
         if (Array.isArray(strategySetups) && (!strategySetup || !hasExecutableOpportunityBacking(strategySetup))) { failSeed(seed, 'NO_EXECUTABLE_OPPORTUNITY_BACKING'); continue; }
         const setupModel = String(strategySetup?.opportunity_thesis?.execution_model || strategySetup?.execution_model || strategySetup?.entry_model || zone.execution_model || '').toUpperCase();
+        if (strategySetup && String(marketContext?.strategy_mode || '').toUpperCase() === 'MARKET_MECHANICS') {
+            const requiredTimeframes = marketMechanicsRequiredTimeframes(strategySetup, zone);
+            const modelDataQuality = validateMarketDataQuality(historyCache, price, null,
+                normalizeTimestampUTC(marketContext?.as_of_time || marketContext?.as_of_ms || marketContext?.scan_as_of_ms) || Date.now(),
+                requiredTimeframes, { check_optional: false });
+            if (!modelDataQuality.valid) {
+                const modelReasons = [...new Set(modelDataQuality.reasons)];
+                for (const reason of modelReasons) failSeed(seed, marketDataQualityReasonCode(reason), reason);
+                rejectedCandidates.push({
+                    id: zone.id || seed.seed_id,
+                    candidate_id: zone.id || seed.seed_id,
+                    direction: zone.direction,
+                    timeframe: zone.timeframe || '1H',
+                    execution_model: setupModel,
+                    rejection_code: marketDataQualityReasonCode(modelReasons[0] || 'required timeframe unavailable'),
+                    rejection_reasons: modelReasons,
+                    failed_stage: 'MARKET_DATA',
+                    failed_rule: 'All timeframes used by this pending setup must be closed, ordered, and current',
+                    required_timeframes: requiredTimeframes
+                });
+                continue;
+            }
+        }
         const poiRelationship = strategySetup?.poi_relationship
             || (String(marketContext?.strategy_mode || '').toUpperCase() === 'MARKET_MECHANICS'
                 ? marketMechanicsPoiRelationship({ ...strategySetup, execution_zone: zone, entry_model: setupModel }, marketContext.market_plan)
@@ -10040,6 +10133,23 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         if (!Number.isFinite(zone.low) || !Number.isFinite(zone.high) || zone.high < zone.low) {
             failSeed(seed, 'INVALID_ENTRY_REGION'); continue;
         }
+        const authoritativeInvalidation = getAuthoritativeStructuralInvalidation(zone, strategySetup);
+        if (strategySetup && String(marketContext?.strategy_mode || '').toUpperCase() === 'MARKET_MECHANICS'
+            && (!authoritativeInvalidation || !Number.isFinite(Number(authoritativeInvalidation.level)))) {
+            failSeed(seed, 'NO_STRUCTURAL_STOP', 'No model-owned closed-candle invalidation is available for this pending setup');
+            rejectedCandidates.push({
+                id: zone.id || seed.seed_id,
+                candidate_id: zone.id || seed.seed_id,
+                direction: zone.direction,
+                timeframe: zone.timeframe || '1H',
+                execution_model: setupModel,
+                rejection_code: 'NO_STRUCTURAL_STOP',
+                rejection_reasons: ['No model-owned closed-candle invalidation is available for this pending setup'],
+                failed_stage: 'STRUCTURAL_INVALIDATION',
+                failed_rule: 'Pending Market Mechanics orders require a deterministic model-owned invalidation'
+            });
+            continue;
+        }
         const atrData = getClosedHistory(historyCache, tf === '4H' ? '4H' : '1H');
         const atrVal = atrData.length >= 15 ? atr(atrData, 14) : 0;
         const safeAtr = Number.isFinite(atrVal) && atrVal > 0 ? atrVal : 0;
@@ -10060,7 +10170,6 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 const rawId = `${seedPrefix}${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${createdKey || zone.created_index || rawCandidates.length + 1}-${rawCandidates.length + 1}`;
                 const risk = Math.abs(entry - stop.stop_loss);
                 const atrContext = getCandidateATRContext({ timeframe: tf }, historyCache, pair, price, symbolMetadata);
-                const authoritativeInvalidation = getAuthoritativeStructuralInvalidation(zone, strategySetup);
                 const rawCandidate = {
                     id: rawId,
                     direction,
@@ -10724,7 +10833,25 @@ function latestCandleTimestamp(data, timeframe) {
     return data.reduce((latest, candle, index) => Math.max(latest, candleTimestamp(candle, index, timeframe)), -Infinity);
 }
 
-function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, asOfMs = Date.now(), requiredTimeframes = ['4H', '1H']) {
+function marketDataQualityReasonCode(reason = '') {
+    const text = String(reason || '').toLowerCase();
+    if (text.includes('quote data is stale') || text.includes('candle data is stale')) return 'MARKET_DATA_STALE';
+    if (text.includes('future') || text.includes('open candle') || text.includes('timestamps are not ordered')
+        || text.includes('duplicate candle timestamps') || text.includes('non-finite') || text.includes('impossible ohlc')) return 'MARKET_DATA_INCOMPLETE';
+    if (text.includes('insufficient') || text.includes('unavailable or invalid') || text.includes('timestamp is unavailable')) return 'MARKET_DATA_INCOMPLETE';
+    if (text.includes('current price is invalid')) return 'INVALID_MARKET_DATA';
+    return 'INVALID_MARKET_DATA';
+}
+
+function marketMechanicsRequiredTimeframes(setup = {}, zone = {}) {
+    const values = [
+        setup.setup_timeframe || setup.timeframe || zone.timeframe,
+        setup.execution_timeframe || zone.execution_timeframe || setup.timeframe || zone.timeframe
+    ];
+    return [...new Set(values.map(value => String(value || '').toUpperCase()).filter(value => ['1D', '4H', '1H', '15M', '5M'].includes(value)))];
+}
+
+function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, asOfMs = Date.now(), requiredTimeframes = ['4H', '1H'], options = {}) {
     const reasons = [];
     if (!ictFiniteNumber(price) || price <= 0) reasons.push('current price is invalid');
     const quoteTime = normalizeTimestampUTC(quoteSnapshot?.provider_timestamp ?? quoteSnapshot?.provider_timestamp_utc);
@@ -10737,7 +10864,10 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
     const requiredSet = new Set(Array.isArray(requiredTimeframes) ? requiredTimeframes : ['4H', '1H']);
     const minimumCandles = tf => ['1D', '4H', '1H'].includes(tf) ? 50 : 20;
     const availableTimeframes = ['1W', '1D', '4H', '1H', '15M', '5M', '1M'].filter(tf => Array.isArray(historyCache?.[tf]));
-    for (const tf of [...new Set([...requiredSet, ...availableTimeframes])]) {
+    const timeframesToInspect = options.check_optional === false
+        ? [...requiredSet]
+        : [...new Set([...requiredSet, ...availableTimeframes])];
+    for (const tf of timeframesToInspect) {
         const data = historyCache?.[tf];
         const required = requiredSet.has(tf);
         if (!Array.isArray(data) || (required && data.length < minimumCandles(tf))) {
@@ -12027,7 +12157,7 @@ function evaluateTodayOpportunityPlan({ setup, zone, pair: pairLocal = pair, cur
     const truePendingLimit = isPendingLimitExecutionModel(rawExecutionModel);
     const lifecycle = setup?.evaluation?.metrics?.setup_lifecycle || setup?.setup_lifecycle || {};
     const state = setup?.narrative_state || setup?.narrativeState || setup?.strategy_state;
-    const hardDataCodes = ['DATA_TIME_INCONSISTENT', 'DATA_QUALITY', 'INVALID_MARKET_DATA', 'MISSING_TIMEFRAME_DATA', 'ENGINE_INVARIANT_FAILURE'];
+    const hardDataCodes = ['DATA_TIME_INCONSISTENT', 'DATA_QUALITY', 'MARKET_DATA_STALE', 'MARKET_DATA_INCOMPLETE', 'INVALID_MARKET_DATA', 'MISSING_TIMEFRAME_DATA', 'ENGINE_INVARIANT_FAILURE'];
     const detail = { ...(candidateDiagnostics?.rejection_detail || {}), ...(candidateDiagnostics?.seed_failure_counts || {}) };
     const hardDataFailure = hardDataCodes.find(code => Number(detail[code]) > 0);
     if (hardDataFailure) return fail(hardDataFailure, 'The scan contains a hard market-data or engine-integrity failure.');
@@ -12304,6 +12434,22 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         terminal_parent_opportunities: [], fresh_current_market_opportunities: [], future_watch_candidates: (futureWatchCandidates || []).map(candidate => candidate.id).filter(Boolean),
         low_quality_candidates: (lowQualityCandidates || []).map(candidate => candidate.id).filter(Boolean)
     };
+    // The live planner owns the required-timeframe data verdict.  A failed
+    // baseline snapshot must stop the public opportunity projection before it
+    // can turn an otherwise developing narrative into TODAY_OPPORTUNITY.
+    // Market Mechanics deliberately validates optional execution feeds at the
+    // model level, so this gate only reflects the required data quality already
+    // calculated on marketContext.
+    if (isMarketMechanicsMode(marketContext) && marketContext.data_quality?.valid === false) {
+        const primaryDataReason = marketContext.data_quality.reasons?.[0] || 'required market data is unavailable';
+        state.reason_code = marketDataQualityReasonCode(primaryDataReason);
+        state.rejected_reason = state.reason_code;
+        state.primary_blocker = state.reason_code;
+        state.all_blockers = [...new Set((marketContext.data_quality.reasons || []).map(marketDataQualityReasonCode))];
+        state.failed_stage = 'MARKET_DATA';
+        state.reason = `Market Mechanics evaluation is blocked by ${state.reason_code}: ${primaryDataReason}`;
+        return state;
+    }
     // A candidate can pass numeric geometry while still being unsuitable for
     // an order now (for example, an old zone or a limit entry outside the
     // remaining trading window). Do not promote those candidates to
@@ -13258,12 +13404,18 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     pair = normalizeCanonicalMarketSymbol(pair);
     const symbolMetadata = getSymbolMetadata(pair, quote_snapshot?.symbol_metadata || {});
     const settings = getMarketSettings(pair, symbolMetadata);
+    const strategyMode = rawTextV2StrategyMode();
     const prec = settings.prec;
     const now = new Date(Number.isFinite(as_of_ms) ? as_of_ms : Date.now());
     const session = getSession(now);
     const sessionCheck = shouldTradeSession(now);
     const marketState = getMarketOpenState(pair, { ...(quote_snapshot || {}), as_of_ms });
-    const dataQuality = validateMarketDataQuality(historyCache, price, quote_snapshot, as_of_ms || Date.now(), ['1D', '4H', '1H', '15M', '5M']);
+    const requiredDataTimeframes = strategyMode === 'MARKET_MECHANICS'
+        ? ['1D', '4H', '1H']
+        : ['1D', '4H', '1H', '15M', '5M'];
+    const dataQuality = validateMarketDataQuality(historyCache, price, quote_snapshot, as_of_ms || Date.now(), requiredDataTimeframes, {
+        check_optional: strategyMode !== 'MARKET_MECHANICS'
+    });
     const snapshotCompleteness = snapshot_completeness || assessMarketSnapshotCompleteness({ historyCache, price });
     const realVolume = hasRealVolume(pair, symbolMetadata);
     const closed4h = getClosedHistory(historyCache, '4H');
@@ -13441,7 +13593,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const strategyStartedAt = scanClock();
     marketContext.timeframe_context = buildTimeframeContext({ historyCache, structure, price, zones, liquidity: liquidityFacts });
     marketContext.daily_bias = buildDailyTradingBias(marketContext.timeframe_context, targetCandidates, price, now.getTime());
-    const strategyMode = rawTextV2StrategyMode();
+    marketContext.strategy_mode = strategyMode;
     const marketPlan = buildMarketMechanicsPlan({ historyCache, price, structure, zones, targetCandidates,
         marketContext, pair, symbolMetadata, asOfMs: now.getTime() });
     const informationalMarketMechanicsSetups = buildMarketMechanicsSetups({ historyCache, timeframeContext: marketContext.timeframe_context,
@@ -13613,7 +13765,9 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             current_price: price,
             quote_snapshot,
             pair,
-            symbol_metadata: symbolMetadata
+            symbol_metadata: symbolMetadata,
+            history_cache: historyCache,
+            zones: validationZones
         });
     }
     const allStrategySetups = [...strategySetups, ...currentRegeneration.setups];
@@ -17056,6 +17210,11 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             'PROSPECTIVE_POI_REF=' + String(setup.prospective_poi_ref || ''),
             'LIQUIDITY_EVENT_REF=' + String(setup.liquidity_event_ref || ''),
             'CONFIRMATION_STATE=' + String(setup.confirmation_state || ''),
+            'SETUP_FORMATION_STATE=' + String(setup.setup_formation_state || 'UNKNOWN'),
+            'SETUP_FORMATION_CONFIRMED=' + String(setup.setup_formation_confirmed || 'NO'),
+            'FORMATION_EVIDENCE_REFS=' + ((setup.formation_evidence_refs || []).join('|') || 'NONE'),
+            'POST_TOUCH_CONFIRMATION_REQUIRED=' + String(setup.post_touch_confirmation_required || 'NO'),
+            'POST_TOUCH_CONFIRMATION_STATE=' + String(setup.post_touch_confirmation_state || 'NOT_REQUIRED'),
             'RETRACE_STATE=' + String(setup.retrace_state || ''),
             'ENTRY_ZONE_LOW=' + (setup.entry_zone_low == null ? 'NONE' : rawTextPacketFormatNumber(setup.entry_zone_low, precision)),
             'ENTRY_ZONE_HIGH=' + (setup.entry_zone_high == null ? 'NONE' : rawTextPacketFormatNumber(setup.entry_zone_high, precision)),
@@ -17063,7 +17222,13 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             'ENTRY_ZONE_SOURCE=' + String(setup.entry_zone_source || 'NONE'),
             'PROPOSED_ENTRY=' + (setup.proposed_entry == null ? 'NONE' : rawTextPacketFormatNumber(setup.proposed_entry, precision)),
             'PROPOSED_STOP=' + (setup.proposed_stop == null ? 'NONE' : rawTextPacketFormatNumber(setup.proposed_stop, precision)),
-             'PROPOSED_OBJECTIVE=' + (setup.proposed_objective == null ? 'NONE' : rawTextPacketFormatNumber(setup.proposed_objective, precision)),
+            'STOP_SOURCE=' + String(setup.stop_source || 'NONE'),
+            'STOP_REF=' + String(setup.stop_ref || 'NONE'),
+            'STOP_BASIS_PRICE=' + (setup.stop_basis_price == null ? 'NONE' : rawTextPacketFormatNumber(setup.stop_basis_price, precision)),
+            'STRUCTURAL_INVALIDATION_VALID=' + String(setup.structural_invalidation_valid || 'NO'),
+            'PROPOSED_OBJECTIVE=' + (setup.proposed_objective == null ? 'NONE' : rawTextPacketFormatNumber(setup.proposed_objective, precision)),
+            'TARGET_SOURCE=' + String(setup.target_source || 'NONE'),
+            'TARGET_REF=' + String(setup.target_ref || 'NONE'),
              'CURRENT_PRICE_RELATION_TO_ENTRY_ZONE=' + String(setup.current_price_relation_to_entry_zone || 'UNKNOWN'),
              'CURRENT_PRICE_RELATION_TO_ENTRY=' + String(setup.current_price_relation_to_entry || 'UNKNOWN'),
             'ENTRY_ZONE_TOUCHED=' + String(setup.entry_zone_touched || 'UNKNOWN'),
@@ -17072,6 +17237,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             'ENTRY_ZONE_TOUCH_REQUIRED_FOR_QUALIFICATION=' + String(setup.entry_zone_touch_required_for_qualification || 'UNKNOWN'),
              'PENDING_LIMIT_GEOMETRY_COMPLETE=' + String(setup.pending_limit_geometry_complete || 'NO'),
              'PENDING_LIMIT_VALID=' + String(setup.pending_limit_valid || 'NO'),
+             'PENDING_LIMIT_SIDE_VALID=' + String(setup.pending_limit_valid || 'NO'),
              'LIFECYCLE_STATE=' + String(setup.state || 'FORMING'),
              'NEXT_REQUIRED_EVENT=' + String(setup.next_required_event || 'NONE'),
             'STATE=' + String(setup.state || 'FORMING'),
