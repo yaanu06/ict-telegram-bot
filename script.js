@@ -8356,6 +8356,11 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         pending_limit_reference_price: Number.isFinite(pendingReference.price) ? pendingReference.price : null,
         pending_limit_reference_source: pendingReference.source,
         pending_limit_valid: pendingLimitValid ? 'YES' : 'NO',
+        historical_only: rejected?.historical_only === true ? 'YES' : 'NO',
+        entry_crossed_after_signal: lifecycle?.entry_crossed_after_signal === true ? 'YES' : 'NO',
+        entry_first_crossed_time: lifecycle?.entry_first_crossed_time || null,
+        initial_pending_side_valid: lifecycle?.initial_pending_side_valid === false ? 'NO'
+            : lifecycle?.initial_pending_side_valid === true ? 'YES' : 'UNKNOWN',
         entry_zone_touched: touched == null ? 'UNKNOWN' : touched ? 'YES' : 'NO',
         entry_zone_retraced: retraced == null ? 'UNKNOWN' : retraced ? 'YES' : 'NO',
         entry_zone_freshness: zone.freshness || setup.freshness || candidate?.freshness || 'UNKNOWN',

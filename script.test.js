@@ -9548,6 +9548,21 @@ describe('live AI market context and prompt', () => {
         expect(ctx.selectFutureLimitLocation('SELL', [passed, future], [], 100, 'EUR/USD').id).toBe('future-sell-zone');
     });
 
+    it('projects a passed wrong-side setup as historical-only diagnostics', () => {
+        const ctx = getContext();
+        const setup = { id: 'PASSED-SETUP', direction: 'SELL', timeframe: '1H', entry_model: 'CRT_AGGRESSIVE',
+            execution_model: 'FRESH_RETRACEMENT_LIMIT', execution_confirmed: true,
+            execution_zone: { id: 'PASSED-ZONE', type: 'CRT', direction: 'SELL', low: 94, high: 96, freshness: 'FRESH' } };
+        const state = ctx.buildMarketMechanicsFormingSetupStates([setup], {
+            valid_context: true, active_swing_range_id: 'RANGE-PASSED', active_poi: { id: 'PASSED-ZONE', low: 94, high: 96 }
+        }, {
+            pair: 'EUR/USD', current_price: 100,
+            candidate_result: { rejected_candidates: [{ id: 'PASSED-SETUP', rejection_code: 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT',
+                historical_only: true, pending_side_eligible: 'NO', pending_limit_valid: 'NO' }] }
+        });
+        expect(state[0]).toEqual(expect.objectContaining({ state: 'BLOCKED_PENDING_SIDE', historical_only: 'YES', pending_side_eligible: 'NO' }));
+    });
+
     it('uses an explicitly remaining partial zone for pending-side selection', () => {
         const ctx = getContext();
         const partial = { id: 'partial-sell-zone', type: 'FVG', direction: 'SELL', timeframe: '1H', low: 98, high: 105,
