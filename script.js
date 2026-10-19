@@ -12349,7 +12349,9 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     // narrative index and expires while the zone is still actionable.
     const executionEventTime = normalizeTimestampUTC(candidate.execution_event_time ?? candidate.execution_zone_created_time
         ?? candidate.zone?.created_time ?? candidate.zone?.created_time_ms
-        ?? setup.execution_event_time ?? setup.execution_zone_created_time ?? setup.execution_zone?.created_time);
+        ?? candidate.first_knowable_time ?? candidate.formation_time ?? candidate.formation_first_knowable_time
+        ?? setup.execution_event_time ?? setup.execution_zone_created_time ?? setup.execution_zone?.created_time
+        ?? setup.first_knowable_time ?? setup.formation_time ?? setup.formation_first_knowable_time);
     const executionEventIndex = Number.isInteger(candidate.execution_event_index)
         ? candidate.execution_event_index
         : Number.isInteger(setup.execution_event_index)
@@ -12362,7 +12364,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     let index = setup.primary === 'MSNR'
         ? (setup.entry_model === 'ROLE_REVERSAL_RETEST' ? setup.break_index : setup.departure_confirmed_index)
         : (setup.reclaim_bar_index ?? setup.reclaim_index ?? setup.evidence?.reclaim_bar);
-    const eventTime = setup.primary === 'MSNR' ? setup.event_time : (setup.reclaim_time ?? setup.event_time);
+    const eventTime = setup.primary === 'MSNR' ? (setup.event_time ?? setup.first_knowable_time ?? setup.formation_time) : (setup.reclaim_time ?? setup.event_time ?? setup.first_knowable_time ?? setup.formation_time);
     const normalizedEventTime = Number.isFinite(executionEventTime) ? executionEventTime : normalizeTimestampUTC(eventTime);
     let strategyEventIndex = Number.isInteger(index) ? index : null;
     let executionEventIndexResolved = executionEventIndex;
