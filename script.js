@@ -4886,7 +4886,7 @@ function ictBuildRealZones(data, price, direction, pairLocal, timeframe = null, 
         }
     }
 
-    const msnr = calculateMSNR(data, price, null, pairLocal, symbolMetadata);
+    const msnr = calculateMSNR(data, price, timeframe, pairLocal, symbolMetadata);
     const levels = (msnr.structural_levels || []).filter(level => level.direction === direction);
     for (const meta of levels) {
         const level = meta.level;
@@ -7745,11 +7745,10 @@ function marketMechanicsDrawFields(draw = null, precision = 2) {
 
 function marketMechanicsClosed(data, timeframe, asOfMs = null) {
     const rows = getClosedHistory({ [timeframe]: Array.isArray(data) ? data : [] }, timeframe);
-    if (!Number.isFinite(Number(asOfMs))) return rows;
-    return rows.filter(candle => {
-        const timestamp = normalizeTimestampUTC(candle?.t ?? candle?.timestamp ?? candle?.time);
-        return !Number.isFinite(timestamp) || timestamp <= Number(asOfMs) + STRATEGY_SPEC.TIME.futureToleranceMs;
-    });
+    const closed = asOfMs == null || !Number.isFinite(Number(asOfMs)) ? rows
+        : rows.filter(candle => candleIsClosedAtEvaluation(candle, timeframe, Number(asOfMs), feedTimestampSemantics(data)));
+    if (data?.provider_metadata) Object.defineProperty(closed, 'provider_metadata', { value: data.provider_metadata, enumerable: false });
+    return closed;
 }
 
 function buildMarketMechanicsLiquidityMap({ historyCache = {}, price = null, structure = {}, targetCandidates = {}, marketContext = {}, asOfMs = null, pairLocal = pair, symbolMetadata = {} } = {}) {
@@ -8110,6 +8109,98 @@ function marketMechanicsPoiRelationship(setup = {}, marketPlan = null) {
     return result;
 }
 
+// Detector timestamps identify provider candles. A formation is actionable
+// only after its confirming candle closes, on the timeframe that owns it.
+function marketMechanicsFormationChronology(setup, historyCache = {}) {
+    const zone = setup.execution_zone || {};
+    const tf = setup.formation_timeframe || zone.timeframe || setup.timeframe;
+    const history = historyCache[tf] || [];
+    const semantics = feedTimestampSemantics(history);
+    const time = [zone.first_knowable_time, zone.confirmation_time, zone.created_time,
+        setup.execution_event_time, setup.first_knowable_time, setup.event_time]
+        .map(normalizeTimestampUTC).find(Number.isFinite);
+    if (!Number.isFinite(time)) return { status: 'UNKNOWN', timeframe: tf, reason: 'FORMATION_TIMESTAMP_MISSING' };
+    const index = history.findIndex(bar => normalizeTimestampUTC(bar.t) === time);
+    if (index < 0) return { status: 'UNKNOWN', timeframe: tf, confirmation_time: time, reason: 'FORMATION_CANDLE_OUTSIDE_HISTORY' };
+    const closeTime = time + (semantics === 'CLOSE' ? 0 : timeframeDurationMs(tf));
+    const shiftTime = normalizeTimestampUTC(setup.event_time);
+    const shiftTf = setup.setup_timeframe || setup.timeframe || tf;
+    const shiftHistory = historyCache[shiftTf] || [];
+    const shiftClose = Number.isFinite(shiftTime)
+        ? shiftTime + (feedTimestampSemantics(shiftHistory) === 'CLOSE' ? 0 : timeframeDurationMs(shiftTf)) : closeTime;
+    const actionableCandle = shiftClose > closeTime
+        ? shiftHistory.find(bar => normalizeTimestampUTC(bar.t) === shiftTime) : history[index];
+    if (!actionableCandle || !Number.isFinite(Number(actionableCandle.c))) {
+        return { status: 'UNKNOWN', timeframe: tf, confirmation_time: time, reason: 'ACTIONABLE_CONFIRMATION_CANDLE_MISSING' };
+    }
+    return { status: 'MAPPED', timeframe: tf, confirmation_time: time, candle_index: index,
+        timestamp_semantics: semantics, first_actionable_time: Math.max(closeTime, shiftClose),
+        confirmation_close: Number(actionableCandle.c), source: 'DETECTOR_CONFIRMATION_CANDLE' };
+}
+
+// Cover chronology with owner-timeframe history and finer recent intervals.
+// Missing open-session intervals remain unknown; a bare index proves nothing.
+function marketMechanicsEntryChronology(setup, context = {}) {
+    const formation = setup.formation_chronology || {};
+    const asOf = normalizeTimestampUTC(context.as_of_time ?? context.as_of_ms ?? context.market_context?.as_of_time);
+    const action = formation.first_actionable_time;
+    if (formation.status !== 'MAPPED' || !Number.isFinite(asOf) || action > asOf) {
+        return { known: false, formation, observations: [], reason: action > asOf ? 'FORMATION_NOT_CLOSED' : formation.reason || 'EVALUATION_TIME_MISSING' };
+    }
+    const history = context.historyCache || {};
+    const intervals = [];
+    for (const tf of ['4H', '1H', '15M', '5M', '1M']) {
+        const bars = history[tf] || [];
+        const semantics = feedTimestampSemantics(bars);
+        bars.forEach((bar, index) => {
+            const time = normalizeTimestampUTC(bar.t);
+            const duration = timeframeDurationMs(tf);
+            const start = time - (semantics === 'CLOSE' ? duration : 0);
+            const end = start + duration;
+            const validOhlc = ['o', 'h', 'l', 'c'].every(key => bar[key] != null && Number.isFinite(Number(bar[key])))
+                && Number(bar.h) >= Math.max(Number(bar.o), Number(bar.c), Number(bar.l))
+                && Number(bar.l) <= Math.min(Number(bar.o), Number(bar.c));
+            if (validOhlc && Number.isFinite(start) && start >= action && end <= asOf && candleIsClosedAtEvaluation(bar, tf, asOf, semantics)) {
+                intervals.push({ ...bar, t: start, _close_time: end, _timeframe: tf, _source_index: index });
+            }
+        });
+    }
+    const metadata = getSymbolMetadata(context.pair || pair, context.symbol_metadata || {});
+    const calendarType = sessionCalendarType(metadata.asset_class, metadata.session);
+    const schedule = buildSessionSchedule({ assetClass: metadata.asset_class, calendarType, sessionCalendar: metadata.session,
+        history: history[formation.timeframe] || [], timeframe: formation.timeframe });
+    const horizon = Math.floor(asOf / 300000) * 300000;
+    // Partition, never overlap: use fine bars only when they cover the whole
+    // observed coarse interval. Otherwise retain that interval's OHLC proof.
+    const refine = bar => {
+        const parts = [];
+        let point = bar.t;
+        while (point < bar._close_time) {
+            const part = intervals.filter(value => value.t === point
+                && value._close_time <= bar._close_time
+                && value._close_time - value.t < bar._close_time - bar.t)
+                .sort((a, b) => b._close_time - a._close_time)[0];
+            if (!part) return [bar];
+            parts.push(...refine(part));
+            point = part._close_time;
+        }
+        return parts;
+    };
+    let cursor = action;
+    const observations = [];
+    while (cursor < horizon) {
+        const next = intervals.filter(bar => bar.t === cursor && bar._close_time <= horizon)
+            .sort((a, b) => b._close_time - a._close_time)[0];
+        if (next) { observations.push(...refine(next)); cursor = next._close_time; continue; }
+        if (!isScheduledSessionBarStart(cursor, { assetClass: metadata.asset_class, calendarType,
+            timeframe: '5M', sessionCalendar: metadata.session, sessionSchedule: schedule })) {
+            cursor = Math.min(horizon, cursor + 300000); continue;
+        }
+        return { known: false, formation, observations, reason: 'POST_FORMATION_HISTORY_GAP', missing_from: cursor, verified_through: cursor };
+    }
+    return { known: true, formation, observations, verified_through: cursor, reason: null };
+}
+
 function buildMarketMechanicsStrategySetups(args = {}) {
     const cutoff = Number(args.marketPlan?.data_cutoff_ms ?? args.asOfMs);
     const scopedHistoryCache = Number.isFinite(cutoff)
@@ -8162,6 +8253,7 @@ function buildMarketMechanicsStrategySetups(args = {}) {
                 primary: 'CRT', label: 'CRT', direction: event.direction, timeframe,
                 setup_timeframe: timeframe, execution_timeframe: timeframe === '4H' ? '1H' : '5M',
                 event_time: firstKnowable, execution_event_time: conservative ? confirmationTime : firstKnowable,
+                formation_timeframe: conservative ? '15M' : timeframe,
                 narrative_state: 'ACTIVE', execution_zone: zone,
                 execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: model,
                 market_mechanics_verified: true, execution_confirmed: true,
@@ -8177,16 +8269,25 @@ function buildMarketMechanicsStrategySetups(args = {}) {
     }
     const allBase = [...base, ...crtSetups];
     const setups = allBase.filter(setup => {
+        setup.formation_chronology = marketMechanicsFormationChronology(setup, scopedHistoryCache);
+        setup.first_actionable_time = setup.formation_chronology.first_actionable_time || null;
+        setup.first_knowable_time = setup.first_actionable_time;
         const explicitModel = String(setup.entry_model || '').toUpperCase();
         const model = MARKET_MECHANICS_ENTRY_MODELS.includes(explicitModel) ? explicitModel : marketMechanicsEntryModelForSetup(setup);
         const directionAllowed = !plan?.direction || setup.direction === plan.direction || plan.narrative === 'REVERSAL';
         const poiRelationship = marketMechanicsPoiRelationship({ ...setup, entry_model: model }, plan);
         const hasPoi = poiRelationship.market_plan_poi_valid && poiRelationship.execution_poi_valid;
-        const hasCausalConfirmation = setup.execution_confirmed === true || setup.execution_model === 'CONFIRMATION_ENTRY' || (setup.structural_evidence_ids || []).some(ref => String(ref).includes('SHIFT:'));
+        const hasCausalConfirmation = setup.execution_confirmed === true || (setup.structural_evidence_ids || []).some(ref => String(ref).includes('SHIFT:'));
         setup.entry_model = model;
         const pendingModel = isPendingLimitExecutionModel(setup.execution_model || setup.entry_model);
         setup.setup_formation_state = hasCausalConfirmation ? 'CONFIRMED' : 'WAITING_FOR_CONFIRMATION';
         setup.setup_formation_confirmed = hasCausalConfirmation;
+        setup.setup_lifecycle = evaluateSetupLifecycle({ strategy_setup: setup, zone: setup.execution_zone,
+            direction: setup.direction, execution_model: setup.execution_model,
+            entry: setup.execution_zone?.pending_entry ?? setup.execution_zone?.midpoint,
+            zone_low: setup.execution_zone?.low, zone_high: setup.execution_zone?.high,
+            tp1: setup.primary_objective }, { pair: args.pair, price: args.price, historyCache: scopedHistoryCache,
+            symbol_metadata: args.symbolMetadata, strategy_mode: 'MARKET_MECHANICS', as_of_time: cutoff });
         setup.setup_formation_evidence = [...new Set([
             ...(setup.structural_evidence_ids || []),
             setup.crt_ref,
@@ -8218,6 +8319,8 @@ function buildMarketMechanicsStrategySetups(args = {}) {
         return plan?.valid_context === true && directionAllowed && hasPoi && setup.model_mechanics_complete;
     });
     Object.defineProperty(setups, 'detection_stats', { value: { strategy_narratives: setups.length, active_narratives: setups.length, entry_models: setups.reduce((out, setup) => { out[setup.entry_model] = (out[setup.entry_model] || 0) + 1; return out; }, {}) }, enumerable: false });
+    Object.defineProperty(setups, 'manual_model_setups', { value: allBase.filter(setup => setup.setup_formation_confirmed === true
+        && MARKET_MECHANICS_ENTRY_MODELS.includes(setup.entry_model) && setup.execution_zone), enumerable: false });
     if (discovery) Object.defineProperty(setups, 'discovery', { value: discovery, enumerable: false });
     return setups;
 }
@@ -8340,8 +8443,22 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         ? Number(candidate.tp1)
         : Number.isFinite(Number(setup.primary_objective)) ? Number(setup.primary_objective)
             : Number.isFinite(Number(derivedGeometry.target?.level)) ? Number(derivedGeometry.target.level) : NaN;
-    const lifecycle = candidate?.evaluation?.metrics?.setup_lifecycle || candidate?.setup_lifecycle || null;
-    const touched = lifecycle && Number.isFinite(Number(lifecycle.entry_touch_count_after_signal))
+    // Keep a price and its provenance together. The nearest derived target
+    // can differ from the plan's proposed objective; it is not its source.
+    const objectiveEvidence = (setup.target_candidates || []).find(target =>
+        Number.isFinite(objective) && Number(target.level) === objective);
+    const diagnosticStop = { direction: setup.direction, timeframe: setup.timeframe,
+        entry, stop_loss: stop, structural_invalidation: { level: derivedGeometry.stop_basis_price,
+            source: derivedGeometry.stop_source } };
+    const stopReview = Number.isFinite(entry) && Number.isFinite(stop)
+        ? evaluateStructuralStop(diagnosticStop, getCandidateATRContext(diagnosticStop,
+            options.history_cache || {}, pairLocal, options.current_price, options.symbol_metadata),
+            pairLocal, options.symbol_metadata) : null;
+    const lifecycle = candidate?.evaluation?.metrics?.setup_lifecycle || candidate?.setup_lifecycle
+        || rejected?.setup_lifecycle || setup.setup_lifecycle || null;
+    const chronologyVerified = lifecycle?.lifecycle_diagnostics?.timestamp_chronology_available === 'YES'
+        || (lifecycle && !setup.formation_chronology && lifecycle.rejection_code !== 'CHRONOLOGY_UNKNOWN');
+    const touched = chronologyVerified && Number.isFinite(Number(lifecycle.entry_touch_count_after_signal))
         ? Number(lifecycle.entry_touch_count_after_signal) > 0
         : relation === 'INSIDE' ? true : null;
     const retraced = lifecycle && Number.isFinite(Number(lifecycle.entry_touch_count_after_signal))
@@ -8351,6 +8468,7 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         || rejected?.data_quality || rejected?.market_data_quality
         || options.data_quality || options.market_context?.data_quality || {};
     const rejectionCodes = [...new Set([
+        lifecycle?.rejection_code,
         rejected?.rejection_code,
         ...(Array.isArray(rejected?.rejection_reasons) ? rejected.rejection_reasons : []),
         rejected?.primary_blocker,
@@ -8453,6 +8571,15 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
             : blocker ? MARKET_MECHANICS_BLOCKER_RULES[blocker]?.rule || blocker : 'Candidate did not reach live authority')
         : null;
     return {
+        source_setup_id: setup.id || null,
+        formation_time: setup.formation_chronology?.confirmation_time ?? setup.event_time ?? null,
+        first_actionable_time: setup.first_actionable_time ?? lifecycle?.first_actionable_time ?? null,
+        formation_chronology: setup.formation_chronology || null,
+        setup_lifecycle: lifecycle,
+        lifecycle_diagnostics: lifecycle?.lifecycle_diagnostics || null,
+        lifecycle_classification: lifecycle?.lifecycle_classification || 'CHRONOLOGY_UNKNOWN',
+        entry_consumed: lifecycle?.entry_consumed === true ? 'YES' : chronologyVerified ? 'NO' : 'UNKNOWN',
+        first_entry_touch_time: lifecycle?.entry_first_touch_time ?? null,
         entry_zone_low: Number.isFinite(Number(zone.low)) ? Number(zone.low) : null,
         entry_zone_high: Number.isFinite(Number(zone.high)) ? Number(zone.high) : null,
         entry_zone_ref: zone.id || null,
@@ -8469,11 +8596,13 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         stop_ref: candidate?.structural_invalidation?.id || candidate?.structural_invalidation?.ref || derivedGeometry.stop_ref,
         stop_basis_price: Number.isFinite(Number(candidate?.structural_invalidation?.level))
             ? Number(candidate.structural_invalidation.level) : derivedGeometry.stop_basis_price,
+        stop_quality_warning: stopReview?.status !== 'VALID_STRUCTURAL_STOP' ? stopReview?.status || 'NO_STRUCTURAL_STOP' : null,
         structural_invalidation_valid: Number.isFinite(Number(candidate?.structural_invalidation?.level))
             || derivedGeometry.structural_invalidation_valid ? 'YES' : 'NO',
         proposed_objective: geometry.objective,
-        target_source: candidate?.tp1_source || derivedGeometry.target_source,
-        target_ref: candidate?.target_map?.[0]?.target_id || derivedGeometry.target_ref,
+        target_source: candidate?.tp1_source || objectiveEvidence?.source || null,
+        target_ref: candidate?.target_map?.[0]?.target_id || objectiveEvidence?.id || objectiveEvidence?.ref || null,
+        target_candidates: derivedGeometry.targets.map(target => ({ ...target, review_status: 'REQUIRES_TARGET_LIFECYCLE_AND_PATH_REVIEW' })),
         tp1: geometry.tp1,
         tp2: geometry.tp2,
         tp3: geometry.tp3,
@@ -8549,7 +8678,7 @@ function buildMarketMechanicsFormingSetupStates(strategySetups = [], marketPlan 
                 : !poiRelationship.execution_poi_valid ? 'EXECUTION_POI_INVALID'
                     : ['COMPATIBLE_OVERLAP', 'INDEPENDENT_CONTEXT_COMPATIBLE'].includes(poiRelationship.poi_relationship_status)
                         ? 'ACTIVE' : 'CONFLICTING';
-        const confirmationComplete = setup.execution_confirmed === true || setup.execution_model === 'CONFIRMATION_ENTRY';
+        const confirmationComplete = setup.execution_confirmed === true || setup.setup_formation_confirmed === true;
         const pendingDiagnostics = buildMarketMechanicsPendingDiagnostics(setup, options);
         let state = 'WAITING_FOR_CONFIRMATION';
         let blocker = 'CONFIRMATION_NOT_COMPLETE';
@@ -10726,6 +10855,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 if (strategySetup) {
                     const lifecycle = evaluateSetupLifecycle(rawCandidate, deterministicValidationContext);
                     Object.assign(rawCandidate, lifecycle);
+                    rawCandidate.setup_lifecycle = lifecycle;
                     if (lifecycle.rejection_code) {
                         const qualification = attachMarketMechanicsQualification(rawCandidate, {
                             valid: false,
@@ -11901,7 +12031,7 @@ function marketMechanicsCanonicalBlocker(reason = '') {
     if (/ENTRY_ALREADY_CONSUMED|consumed/i.test(text)) return 'ENTRY_ALREADY_CONSUMED';
     if (/SETUP_ALREADY_COMPLETED|target already|completed/i.test(text)) return 'SETUP_ALREADY_COMPLETED';
     if (/MARKET_DATA_STALE|candle data is stale|quote data is stale/i.test(text)) return 'MARKET_DATA_STALE';
-    if (/MARKET_DATA_INCOMPLETE|Insufficient .* data|open candle|non-finite|impossible OHLC/i.test(text)) return 'MARKET_DATA_INCOMPLETE';
+    if (/MARKET_DATA_INCOMPLETE|Insufficient .* data|open candle|non-finite|impossible OHLC|quote timestamp is unavailable/i.test(text)) return 'MARKET_DATA_INCOMPLETE';
     if (/INVALID_MARKET_DATA|current price is invalid/i.test(text)) return 'INVALID_MARKET_DATA';
     return text || 'QUALIFICATION_BLOCKED';
 }
@@ -12337,6 +12467,7 @@ function candidateToAIResult(candidate) {
 
 function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const setup = candidate.strategy_setup || candidate;
+    const chronology = setup.formation_chronology ? marketMechanicsEntryChronology(setup, marketContext) : null;
     const setupTf = setup.setup_timeframe || setup.timeframe || candidate.timeframe;
     const executionTf = setup.execution_timeframe || candidate.execution_timeframe || setupTf;
     const data = marketContext.historyCache?.[setupTf] || [];
@@ -12413,7 +12544,9 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const formationEvidenceIndex = Number.isInteger(index) && index >= 0 && index < eventData.length
         ? index
         : mappedEventIndex;
-    const formationCandle = Number.isInteger(formationEvidenceIndex) && formationEvidenceIndex >= 0
+    const formationCandle = chronology?.formation?.status === 'MAPPED'
+        ? { c: chronology.formation.confirmation_close }
+        : Number.isInteger(formationEvidenceIndex) && formationEvidenceIndex >= 0
         ? eventData[formationEvidenceIndex]
         : null;
     const formationClose = Number.isFinite(Number(formationCandle?.c)) ? Number(formationCandle.c) : null;
@@ -12570,7 +12703,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const parentAgeExpired = !standingPendingEvidence && Number.isFinite(parentEventAgeHours)
         ? parentEventAgeHours > parentMaxAgeHours
         : false;
-    const indexAgeExpired = !Number.isFinite(executionEventTime)
+    const indexAgeExpired = !chronology && !Number.isFinite(executionEventTime)
         && validLifecycleIndex
         && (lifecycleData.length - 1 - index > maxAge);
     const hasExplicitExecutionTimes = executionData.some(bar => Number.isFinite(parseCandleTimeUTC(bar?.t)));
@@ -12582,7 +12715,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         && hasExplicitExecutionTimes
         && Number.isFinite(firstExecutionTime)
         && firstExecutionTime <= resolvedEventTime + STRATEGY_SPEC.TIME.futureToleranceMs;
-    const chronologyUnknown = !validLifecycleIndex && !chronologyCoveredByTimestamp && !Number.isInteger(executionEventIndex);
+    const chronologyUnknown = chronology ? !chronology.known : !validLifecycleIndex && !chronologyCoveredByTimestamp;
     // Missing index mapping is not expiration evidence. A setup is expired
     // only for invalid geometry or a documented age rule evaluated from a
     // resolved index. Timestamp-backed pending setups are evaluated by the
@@ -12600,12 +12733,16 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
             || (candidate.direction === 'BUY' && zonePriceStatus.pricePosition === 'ABOVE_ZONE'));
     const targetLifecycleState = String(candidate.target_lifecycle_state || candidate.target_map?.[0]?.target_lifecycle_state || '').toUpperCase();
     const pendingTargetRemains = pendingLimitModel && ['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(targetLifecycleState);
-    if ((Number.isInteger(index) && index >= 0 && index < lifecycleData.length) || eventCutoff != null) {
-        for (let i = 0; i < executionData.length; i++) {
-            const bar = executionData[i];
+    const touchHistory = chronology ? chronology.observations : executionData;
+    if (chronology || (Number.isInteger(index) && index >= 0 && index < lifecycleData.length) || eventCutoff != null) {
+        for (let i = 0; i < touchHistory.length; i++) {
+            const bar = touchHistory[i];
             const barHasExplicitTime = Number.isFinite(parseCandleTimeUTC(bar?.t));
             const barTime = candleTimestamp(bar, i, executionTf);
-            if (eventCutoff != null) {
+            if (chronology) {
+                // Observations already start at the first actionable close
+                // and are bounded by the scan timestamp.
+            } else if (eventCutoff != null) {
                 if (barHasExplicitTime && barTime <= eventCutoff) continue;
                 if (!barHasExplicitTime && Number.isInteger(index) && executionTf === setupTf && i <= index) continue;
                 if (!barHasExplicitTime && executionTf !== setupTf && hasExplicitExecutionTimes) continue;
@@ -12656,6 +12793,21 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
             ? new Date(resolvedEventTime + maxAge * timeframeDurationMs(ageTimeframe)).toISOString()
             : null
     };
+    if (chronology) {
+        Object.assign(result.lifecycle_diagnostics, {
+            execution_event_index: chronology.formation.candle_index ?? null,
+            execution_event_index_resolved: chronology.formation.status === 'MAPPED' ? 'YES' : 'NO',
+            execution_event_index_source: chronology.formation.source || 'UNRESOLVED',
+            index_timeframe: chronology.formation.timeframe,
+            timestamp_chronology_available: chronology.known ? 'YES' : 'NO',
+            chronology_reason: chronology.reason,
+            verified_through: chronology.verified_through ?? null,
+            missing_from: chronology.missing_from ?? null,
+            observation_timeframes: [...new Set(chronology.observations.map(bar => bar._timeframe))]
+        });
+        result.first_actionable_time = chronology.formation.first_actionable_time ?? null;
+        result.formation_first_knowable_time = result.first_actionable_time;
+    }
     result.execution_zone_consumed = result.entry_consumed;
     const currentReached = Number.isFinite(tp1) && !pendingRetracementLocation
         && (candidate.direction === 'BUY' ? price >= tp1 : price <= tp1);
@@ -12676,7 +12828,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         ? (candidate.direction === 'BUY' ? (Number(value) - entry) / (tp1 - entry) : (entry - Number(value)) / (entry - tp1))
         : null;
     const formationProgressRaw = progressAtPrice(formationPrice);
-    const postFormationBars = executionData.filter((bar, barIndex) => {
+    const postFormationBars = chronology ? chronology.observations : executionData.filter((bar, barIndex) => {
         const barHasExplicitTime = Number.isFinite(parseCandleTimeUTC(bar?.t));
         const barTime = candleTimestamp(bar, barIndex, executionTf);
         if (eventCutoff != null) return barHasExplicitTime ? barTime > eventCutoff : (Number.isInteger(index) && executionTf === setupTf ? barIndex > index : false);
@@ -12715,7 +12867,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     // for a still-fresh pending limit.  A standing pending setup is allowed
     // to survive across sessions/days until its own zone lifecycle, entry
     // chronology, invalidation, or objective evidence makes it ineligible.
-    const staleByAge = !standingPendingEvidence
+    const staleByAge = !(standingPendingEvidence || (chronology?.known && pendingLimitModel))
         && (!Number.isFinite(eventAgeHours) || eventAgeHours > maxEventAgeHours || parentAgeExpired);
     const deliveryAdvanced = (deliveryCrossedAfterFormation || (result.remaining_reward_fraction != null
             && result.remaining_reward_fraction < freshnessSpec.minRemainingRewardFraction
@@ -12765,6 +12917,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
                             : result.entry_consumed ? 'CONSUMED_OR_FILLED'
                                 : 'ACTIVE_UNTOUCHED';
     result.setup_lifecycle_status = result.lifecycle_state = result.opportunity_status;
+    result.lifecycle_diagnostics.lifecycle_classification = result.lifecycle_classification;
     return result;
 }
 
@@ -15224,6 +15377,16 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const strategyMode = rawTextV2StrategyMode();
     const prec = settings.prec;
     const now = new Date(Number.isFinite(as_of_ms) ? as_of_ms : Date.now());
+    if (strategyMode === 'MARKET_MECHANICS') {
+        const closedHistory = Object.fromEntries(Object.entries(historyCache || {}).map(([tf, bars]) =>
+            [tf, Array.isArray(bars) ? marketMechanicsClosed(bars, tf, now.getTime()) : bars]));
+        const removed = Object.keys(closedHistory).some(tf => Array.isArray(closedHistory[tf])
+            && closedHistory[tf].length !== (historyCache[tf] || []).length);
+        historyCache = closedHistory;
+        // Caller-supplied patterns may have been computed before the cutoff.
+        // Do not retain them if their candle input included a future/open bar.
+        if (removed) patterns = buildReplayPatterns(historyCache, price, pair);
+    }
     const session = getSession(now);
     const sessionCheck = shouldTradeSession(now);
     const marketState = getMarketOpenState(pair, { ...(quote_snapshot || {}), as_of_ms });
@@ -15609,6 +15772,11 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             rejected_candidates: candidateCatalog.rejected_candidates,
             search_counts: candidateCatalog.search_counts
         };
+        marketContext.market_mechanics.manual_model_states = (detectedStrategySetups.manual_model_setups || strategySetups)
+            .flatMap(setup => buildMarketMechanicsFormingSetupStates([setup], marketPlan, {
+                candidate_result: adaptiveSetupResult, current_price: price, quote_snapshot,
+                pair, symbol_metadata: symbolMetadata, history_cache: historyCache, zones: validationZones, data_quality: dataQuality
+            }));
         marketContext.market_mechanics.model_funnel = buildMarketMechanicsModelFunnel(strategySetups, candidateCatalog);
         marketContext.market_mechanics.raw_execution_zone_count = candidateCatalog.search_counts.raw_execution_zone_count || strategyExecutionZones.length;
         marketContext.market_mechanics.search_counts = candidateCatalog.search_counts;
@@ -16796,7 +16964,7 @@ function parseRawMarketAnalysisDecision(raw) {
     }
 }
 
-const RAW_TEXT_PACKET_TIMEFRAMES = Object.freeze(['4H', '1H', '15M', '5M', '1M']);
+const RAW_TEXT_PACKET_TIMEFRAMES = Object.freeze(['1D', '4H', '1H', '15M', '5M', '1M']);
 const RAW_TEXT_PRIMARY_SETUP_TIMEFRAMES = Object.freeze(['4H', '1H']);
 const RAW_TEXT_OUTPUT_CONTRACT = [
     '=== OUTPUT CONTRACT ===',
@@ -16831,15 +16999,15 @@ const MARKET_MECHANICS_RAW_TEXT_OUTPUT_CONTRACT = [
     'Reply ONLY in this format. No prose. No markdown.',
     '',
     'ACTION: BUY_LIMIT | SELL_LIMIT | NO_TRADE',
-    'SETUP: <exact canonical setup components supplied by the selected live candidate, or NONE>',
-    'ENTRY: <exact supplied candidate entry, or 0>',
-    'STOP_LOSS: <exact supplied candidate stop, or 0>',
-    'TP1: <exact supplied candidate TP1, or 0>',
-    'TP2: <exact supplied candidate TP2, or 0>',
-    'TP3: <exact supplied candidate TP3, or 0>',
-    'CONFIDENCE: <exact supplied candidate confidence, or 0%>',
-    'TIMEFRAME_USED: <exact supplied candidate timeframe; 4h or 1h for a trade; NONE for NO_TRADE>',
-    'REASON: <concise supplied Market Mechanics state or blocker>',
+    'SETUP: <evidenced setup components of the selected active opportunity, or NONE>',
+    'ENTRY: <supported price inside its verified untouched zone, or 0>',
+    'STOP_LOSS: <supplied structural invalidation with evidence references, or 0>',
+    'TP1: <available supplied directional liquidity objective, or 0>',
+    'TP2: <additional evidenced target, NONE if unavailable; 0 for NO_TRADE>',
+    'TP3: <additional evidenced target, NONE if unavailable; 0 for NO_TRADE>',
+    'CONFIDENCE: <evidence-explained setup quality 0-100%; 0% for NO_TRADE, not win probability>',
+    'TIMEFRAME_USED: <selected primary timeframe; 4h or 1h for a trade; NONE for NO_TRADE>',
+    'REASON: <OPPORTUNITY_ID plus exact structural evidence references, comparative quality and warnings, or precise NO_TRADE reason>',
     '',
     'This is a MANUAL DEEPSEEK REVIEW packet. Select only an exact opportunity from === ACTIVE PENDING-LIMIT OPPORTUNITIES — FOR DEEPSEEK ANALYSIS ===, or return NO_TRADE.',
     'Do not select legacy diagnostics, terminal historical rows, expired setups, consumed entries, invalidated zones, or incomplete formations.',
@@ -16876,9 +17044,13 @@ function manualMarketMechanicsFormationConfirmed(item = {}) {
 }
 
 function manualMarketMechanicsTerminal(item = {}) {
+    const nested = item.setup_lifecycle || item.evaluation?.metrics?.setup_lifecycle;
+    if (nested && nested !== item && manualMarketMechanicsTerminal(nested)) return true;
     const state = String(item.lifecycle_state || item.state || item.opportunity_status || '').toUpperCase();
     const blocker = marketMechanicsCanonicalBlocker(item.primary_blocker || item.blocker || item.rejection_code || '');
     return item.historical_only === true
+        || item.invalidated === true || item.zone?.invalidated === true || item.execution_zone?.invalidated === true
+        || item.zone?.consumed === true || item.execution_zone?.consumed === true
         || String(item.historical_only || '').toUpperCase() === 'YES'
         || item.entry_consumed === true
         || String(item.entry_consumed || '').toUpperCase() === 'YES'
@@ -16887,12 +17059,13 @@ function manualMarketMechanicsTerminal(item = {}) {
         || MANUAL_MARKET_MECHANICS_TERMINAL_STATES.has(state)
         || ['SETUP_EXPIRED', 'SETUP_STALE', 'SETUP_ALREADY_COMPLETED', 'SETUP_INVALIDATED',
             'ENTRY_ALREADY_CONSUMED', 'ENTRY_ALREADY_CROSSED', 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT',
-            'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT'].includes(blocker);
+            'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT', 'SETUP_DELIVERY_ALREADY_ADVANCED', 'INITIAL_PENDING_SIDE_INVALID'].includes(blocker);
 }
 
 function manualMarketMechanicsSources(source = {}) {
     const catalog = source.market_mechanics?.candidate_catalog || {};
     return [
+        ...(Array.isArray(source.market_mechanics?.manual_model_states) ? source.market_mechanics.manual_model_states : []),
         ...(Array.isArray(source.forming_market_mechanics_candidates) ? source.forming_market_mechanics_candidates : []),
         ...(Array.isArray(source.market_mechanics?.model_states) ? source.market_mechanics.model_states : []),
         ...(Array.isArray(catalog.forming_candidates) ? catalog.forming_candidates : []),
@@ -16924,11 +17097,13 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         ...(Array.isArray(item.quality_warnings) ? item.quality_warnings : []),
         ...(Array.isArray(item.warnings) ? item.warnings : []),
         ...(Array.isArray(item.all_blockers) ? item.all_blockers : []),
+        ...(item.stop_quality_warning ? [item.stop_quality_warning] : []),
         ...(item.primary_blocker && !['NONE', 'NO_LIVE_CANDIDATE'].includes(String(item.primary_blocker).toUpperCase()) ? [item.primary_blocker] : []),
         ...(item.blocker && !['NONE', 'NO_LIVE_CANDIDATE'].includes(String(item.blocker).toUpperCase()) ? [item.blocker] : []),
         ...(lifecycleRejection && !['NONE', 'NO_LIVE_CANDIDATE'].includes(String(lifecycleRejection).toUpperCase()) ? [lifecycleRejection] : []),
         ...(item.market_plan_poi_valid === 'NO' || item.market_plan_poi_valid === false ? ['PARENT_POI_CONTEXT_LIMITED'] : []),
-        ...(String(item.entry_zone_touched || '').toUpperCase() === 'UNKNOWN' ? ['ENTRY_TOUCH_CHRONOLOGY_UNKNOWN'] : [])
+        ...(String(item.entry_zone_touched || '').toUpperCase() === 'UNKNOWN' ? ['ENTRY_TOUCH_CHRONOLOGY_UNKNOWN'] : []),
+        ...(source.market_plan?.direction && direction !== source.market_plan.direction ? ['PREFERRED_MARKET_PLAN_DIRECTION_CONFLICT'] : [])
     ])];
     const lifecycle = String(item.lifecycle_state || item.state || item.opportunity_status || 'ACTIVE').toUpperCase();
     const firstTouch = item.first_entry_touch_after_formation || item.first_entry_touch_time
@@ -16937,11 +17112,12 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         || (Number(lifecycleMetrics.entry_touch_count_after_signal) > 0 ? 'YES' : 'UNKNOWN');
     return {
         opportunity_id: item.opportunity_id || item.id || item.candidate_id || item.execution_poi_id || null,
+        source_setup_id: item.source_setup_id || item.strategy_setup?.id || null,
         symbol: normalizeCanonicalMarketSymbol(source.pair || source.symbol || ''),
         direction: direction || null,
         model: item.entry_model || item.model || item.execution_model || null,
         primary_timeframe: item.timeframe || item.primary_tf || item.setup_timeframe || null,
-        formation_first_knowable_time: item.first_actionable_time || item.formation_time || item.first_knowable_time || item.event_time
+        formation_first_knowable_time: item.first_actionable_time || item.first_knowable_time || item.formation_time || item.event_time
             || lifecycleMetrics.event_time_utc || null,
         formation_status: manualMarketMechanicsFormationConfirmed(item) ? 'CONFIRMED' : 'INCOMPLETE',
         market_structure_direction: item.market_structure_direction || item.htf_trend || source.market_plan?.htf_trend || null,
@@ -16972,14 +17148,19 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         pending_side_eligible: side,
         first_entry_touch_after_formation: firstTouch,
         entry_touched: touched,
-        entry_consumed: item.entry_consumed || (lifecycleMetrics.entry_consumed ? 'YES' : 'NO'),
+        entry_consumed: item.entry_consumed || (lifecycleMetrics.entry_consumed ? 'YES' : 'UNKNOWN'),
         expiry_status: item.expiry_status || (MANUAL_MARKET_MECHANICS_TERMINAL_STATES.has(lifecycle) ? lifecycle : 'ACTIVE'),
         lifecycle_state: lifecycle,
         recomputed_lifecycle_status: item.lifecycle_classification || lifecycleMetrics.lifecycle_classification || lifecycle,
         original_rejection: item.original_rejection || item.rejection_code || item.primary_blocker || null,
         matched_candle_index: lifecycleDiagnostics.execution_event_index ?? item.execution_event_index ?? item.execution_zone_created_index ?? null,
         matched_candle_index_source: lifecycleDiagnostics.execution_event_index_source || null,
+        matched_candle_index_timeframe: lifecycleDiagnostics.index_timeframe || null,
         index_mapping_status: lifecycleDiagnostics.execution_event_index_resolved || null,
+        chronology_verified_through: lifecycleDiagnostics.verified_through || null,
+        chronology_missing_from: lifecycleDiagnostics.missing_from || null,
+        chronology_reason: lifecycleDiagnostics.chronology_reason || null,
+        chronology_observation_timeframes: lifecycleDiagnostics.observation_timeframes || [],
         first_invalidation: item.first_invalidation || item.invalidation_time || null,
         explicit_expiry_rule: lifecycleDiagnostics.expiry_rule || item.expiry_rule || null,
         expiry_time: lifecycleDiagnostics.expiry_time_utc || item.expiry_time || null,
@@ -16997,10 +17178,15 @@ function buildManualMarketMechanicsOpportunityShortlist(source = {}, currentPric
     const seen = new Set();
     const rows = [];
     for (const item of manualMarketMechanicsSources(source)) {
-        if (!item || manualMarketMechanicsTerminal(item) || !manualMarketMechanicsFormationConfirmed(item)) continue;
+        if (!item) continue;
         const row = manualMarketMechanicsOpportunityRecord(item, source, currentPrice);
-        if (!row.opportunity_id || seen.has(row.opportunity_id)) continue;
-        seen.add(row.opportunity_id);
+        const identity = row.source_setup_id || row.opportunity_id;
+        if (!identity || seen.has(identity)) continue;
+        // Canonical model states come first. A less complete duplicate cannot
+        // revive their terminal result or overwrite verified chronology.
+        seen.add(identity);
+        if (!row.opportunity_id || manualMarketMechanicsTerminal(item)
+            || !manualMarketMechanicsFormationConfirmed(item) || row.pending_side_eligible === 'NO') continue;
         rows.push(row);
     }
     return rows;
@@ -19163,12 +19349,13 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         lines.push('');
     }
     const dailyCandles = rawTextPacketClosedCandles(source, '1D', asOfMs);
+    const contextBlocks = dailyCandles.length && !blocks.some(block => block.timeframe === '1D')
+        ? [...blocks, { timeframe: '1D', candles: dailyCandles }] : blocks;
     const roleAudit = buildRawTextTimeframeRoleAudit(
-        dailyCandles.length ? [...blocks, { timeframe: '1D', candles: dailyCandles }] : blocks,
+        contextBlocks,
         precision
     );
     lines.push(...roleAudit.lines, '');
-    const contextBlocks = dailyCandles.length ? [...blocks, { timeframe: '1D', candles: dailyCandles }] : blocks;
     const crtAudit = buildRawTextDeterministicCrtAudit(blocks, symbol, metadata, precision);
     const tbsAudit = buildRawTextDeterministicTbsAudit(blocks, symbol, metadata, precision);
     const msnrAudit = buildRawTextDeterministicMsnrAudit(blocks, price, symbol, metadata, precision);
@@ -19413,6 +19600,22 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
                 + ' LIFECYCLE_STATE=' + String(opportunity.lifecycle_state)
                 + ' DATA_FRESHNESS=' + String(opportunity.data_freshness));
             lines.push('OPPORTUNITY_EVIDENCE=' + JSON.stringify(opportunity));
+        }
+        lines.push('');
+        lines.push('=== MANUAL FORMATION LIFECYCLE AUDIT — DIAGNOSTIC ONLY ===');
+        for (const item of source.market_mechanics?.manual_model_states || []) {
+            const row = manualMarketMechanicsOpportunityRecord(item, source, price);
+            lines.push('FORMATION_LIFECYCLE=' + JSON.stringify({ source_setup_id: row.source_setup_id,
+                model: row.model, direction: row.direction, zone: row.execution_poi,
+                first_actionable_time: row.formation_first_knowable_time,
+                index: row.matched_candle_index, index_timeframe: row.matched_candle_index_timeframe,
+                index_source: row.matched_candle_index_source, mapping: row.index_mapping_status,
+                verified_through: row.chronology_verified_through, missing_from: row.chronology_missing_from,
+                first_touch: row.first_entry_touch_after_formation, consumed: row.entry_consumed,
+                expiry_rule: row.explicit_expiry_rule, expiry_time: row.expiry_time,
+                lifecycle: row.recomputed_lifecycle_status, rejection: item.setup_lifecycle?.rejection_code || null,
+                manual_shortlisted: manualMarketMechanicsOpportunities.some(active => active.source_setup_id === row.source_setup_id)
+            }));
         }
         lines.push('');
         lines.push('=== FORMING MARKET MECHANICS SETUPS ===');
