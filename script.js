@@ -16,8 +16,15 @@ const APP_BUILD_ID = INJECTED_APP_BUILD_ID
     && !INJECTED_BUILD_TOKEN_PATTERN.test(String(INJECTED_APP_BUILD_ID).trim())
     ? String(INJECTED_APP_BUILD_ID)
     : 'development';
+const APP_GIT_COMMIT = (typeof window !== 'undefined' && window.__ICT_GIT_COMMIT__
+    && !INJECTED_BUILD_TOKEN_PATTERN.test(String(window.__ICT_GIT_COMMIT__).trim()))
+    ? String(window.__ICT_GIT_COMMIT__)
+    : APP_BUILD_ID;
+const ENGINE_SCHEMA_VERSION = 'V2_MARKET_MECHANICS_PENDING_PIPELINE_V1';
+const STRATEGY_ENGINE = 'MARKET_MECHANICS';
 const CLIPBOARD_SERIALIZER_ID = 'CURRENT_SCAN_ARTIFACT_V2';
 if (typeof window !== 'undefined') window.__ICT_APP_BUILD_ID__ = APP_BUILD_ID;
+if (typeof window !== 'undefined') window.__ICT_GIT_COMMIT__ = APP_GIT_COMMIT;
 if (typeof window !== 'undefined') window.__ICT_CLIPBOARD_SERIALIZER_ID__ = CLIPBOARD_SERIALIZER_ID;
 let lastDisplayedPublicSignal = null;
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
@@ -8281,6 +8288,7 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         ? geometry.entry === pendingReference.price ? 'AT_MARKET'
             : geometry.entry < pendingReference.price ? 'BELOW_MARKET' : 'ABOVE_MARKET'
         : 'UNKNOWN';
+    const pendingSideEvaluable = pending && Number.isFinite(geometry.entry) && Number.isFinite(pendingReference.price);
     const pendingLimitValid = !pending || (Number.isFinite(geometry.entry) && Number.isFinite(pendingReference.price)
         && (setup.direction === 'BUY' ? geometry.entry < pendingReference.price
             : setup.direction === 'SELL' ? geometry.entry > pendingReference.price : false));
@@ -8293,6 +8301,11 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
             : setup.direction === 'SELL'
                 ? geometry.stop_loss > geometry.entry && geometry.entry > geometry.tp1
                 : false);
+    const sideBlocker = setup.direction === 'BUY'
+        ? 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT'
+        : setup.direction === 'SELL'
+            ? 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT'
+            : 'INVALID_ENTRY_SIDE';
     const liveCandidate = Boolean(valid
         && String(valid.TRADE_QUALIFIED || '').toUpperCase() === 'YES'
         && valid.trade_qualified !== false
@@ -8313,6 +8326,10 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
                 : blocker === 'ENTRY_ALREADY_CONSUMED' ? 'CONSUMED'
                     : ['SETUP_ALREADY_COMPLETED', 'SETUP_DELIVERY_ALREADY_ADVANCED'].includes(blocker) ? 'DELIVERED'
                         : candidateRejected ? 'WAITING_FOR_QUALIFICATION' : 'WAITING_FOR_PENDING_GEOMETRY';
+        } else if (pendingSideEvaluable && !pendingLimitValid) {
+            blocker = sideBlocker;
+            nextRequiredEvent = pendingLimitValid ? 'NONE' : 'REBUILD_PENDING_ENTRY_AT_VALID_MARKET_SIDE';
+            state = 'BLOCKED_PENDING_SIDE';
         } else if (!geometryComplete) {
             blocker = !Number.isFinite(geometry.entry) ? 'NO_VALID_ENTRY_PRICE'
                 : !Number.isFinite(geometry.stop_loss) ? 'NO_STRUCTURAL_STOP'
@@ -8326,6 +8343,18 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         }
     }
     const qualificationState = qualification || {};
+    const blocked = !liveCandidate;
+    const meaningful = value => value != null && String(value).trim() !== '' && String(value).toUpperCase() !== 'NONE';
+    const failedStage = blocked
+        ? (meaningful(qualificationState.failed_stage)
+            ? qualificationState.failed_stage
+            : blocker ? MARKET_MECHANICS_BLOCKER_RULES[blocker]?.stage || 'AUTHORITY' : 'AUTHORITY')
+        : null;
+    const failedRule = blocked
+        ? (meaningful(qualificationState.failed_rule)
+            ? qualificationState.failed_rule
+            : blocker ? MARKET_MECHANICS_BLOCKER_RULES[blocker]?.rule || blocker : 'Candidate did not reach live authority')
+        : null;
     return {
         entry_zone_low: Number.isFinite(Number(zone.low)) ? Number(zone.low) : null,
         entry_zone_high: Number.isFinite(Number(zone.high)) ? Number(zone.high) : null,
@@ -8356,7 +8385,7 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         pending_limit_reference_price: Number.isFinite(pendingReference.price) ? pendingReference.price : null,
         pending_limit_reference_source: pendingReference.source,
         pending_limit_valid: pendingLimitValid ? 'YES' : 'NO',
-        historical_only: rejected?.historical_only === true ? 'YES' : 'NO',
+        historical_only: rejected?.historical_only === true || (!liveCandidate && pendingSideEvaluable && !pendingLimitValid) ? 'YES' : 'NO',
         entry_crossed_after_signal: lifecycle?.entry_crossed_after_signal === true ? 'YES' : 'NO',
         entry_first_crossed_time: lifecycle?.entry_first_crossed_time || null,
         initial_pending_side_valid: lifecycle?.initial_pending_side_valid === false ? 'NO'
@@ -8378,8 +8407,8 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         all_blockers: [...new Set([blocker, ...(qualificationState.all_blockers || []), ...rejectionCodes.map(marketMechanicsCanonicalBlocker)].filter(Boolean))],
         qualification_stage: qualificationState.qualification_stage || (liveCandidate ? 'AUTHORITY' : blocker ? MARKET_MECHANICS_BLOCKER_RULES[blocker]?.stage || 'AUTHORITY' : null),
         qualification_result: qualificationState.qualification_result || (liveCandidate ? 'PASS' : 'BLOCKED'),
-        failed_stage: qualificationState.failed_stage || (liveCandidate ? null : blocker ? MARKET_MECHANICS_BLOCKER_RULES[blocker]?.stage || 'AUTHORITY' : null),
-        failed_rule: qualificationState.failed_rule || (liveCandidate ? null : blocker ? MARKET_MECHANICS_BLOCKER_RULES[blocker]?.rule || blocker : null),
+        failed_stage: failedStage,
+        failed_rule: failedRule,
         next_required_event: qualificationState.next_required_event || nextRequiredEvent,
         entry_valid: qualificationState.entry_valid || (Number.isFinite(geometry.entry) ? 'YES' : 'NO'),
         stop_valid: qualificationState.stop_valid || (Number.isFinite(geometry.stop_loss) ? 'YES' : 'NO'),
@@ -11448,15 +11477,23 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
     const requiredSet = new Set(Array.isArray(requiredTimeframes) ? requiredTimeframes : ['4H', '1H']);
     const minimumCandles = tf => ['1D', '4H', '1H'].includes(tf) ? 50 : 20;
     const availableTimeframes = ['1W', '1D', '4H', '1H', '15M', '5M', '1M'].filter(tf => Array.isArray(historyCache?.[tf]));
-    const timeframesToInspect = options.check_optional === false
-        ? [...requiredSet]
+    // In Market Mechanics mode some lower timeframes are optional for a
+    // particular model, but their quality still needs to be observable in the
+    // live packet.  `report_timeframes` therefore controls diagnostics while
+    // `requiredSet` continues to control whether the overall result is valid.
+    const reportedTimeframes = Array.isArray(options.report_timeframes)
+        ? options.report_timeframes.map(tf => String(tf).toUpperCase())
         : [...new Set([...requiredSet, ...availableTimeframes])];
+    const timeframesToInspect = [...new Set([...requiredSet, ...reportedTimeframes])];
     for (const tf of timeframesToInspect) {
         const data = historyCache?.[tf];
         const required = requiredSet.has(tf);
         timeframeStatus[tf] = 'FRESH';
         if (!Array.isArray(data) || (required && data.length < minimumCandles(tf))) {
-            if (!required && !data) continue;
+            if (!required && !data) {
+                timeframeStatus[tf] = 'UNKNOWN';
+                continue;
+            }
             reasons.push(`Insufficient ${tf} data for reliable ATR/structure analysis (minimum ${minimumCandles(tf)} closed candles)`);
             timeframeStatus[tf] = 'INCOMPLETE';
             continue;
@@ -11466,12 +11503,12 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
         let latestTimedCandle = null;
         for (const c of data) {
             if (!ictFiniteNumber(c.o) || !ictFiniteNumber(c.h) || !ictFiniteNumber(c.l) || !ictFiniteNumber(c.c)) {
-                reasons.push(`${tf} contains non-finite OHLC values`);
+                if (required || options.check_optional !== false) reasons.push(`${tf} contains non-finite OHLC values`);
                 timeframeStatus[tf] = 'MALFORMED';
                 break;
             }
             if (c.h < Math.max(c.o, c.c) || c.l > Math.min(c.o, c.c) || c.h < c.l) {
-                reasons.push(`${tf} contains impossible OHLC geometry`);
+                if (required || options.check_optional !== false) reasons.push(`${tf} contains impossible OHLC geometry`);
                 timeframeStatus[tf] = 'MALFORMED';
                 break;
             }
@@ -11479,13 +11516,13 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
                 const t = parseCandleTimeUTC(c.t);
                 if (Number.isFinite(t)) {
                     if (seenTimes.has(t)) {
-                        reasons.push(`${tf} contains duplicate candle timestamps`);
+                        if (required || options.check_optional !== false) reasons.push(`${tf} contains duplicate candle timestamps`);
                         timeframeStatus[tf] = 'INCOMPLETE';
                         break;
                     }
                     seenTimes.add(t);
                     if (prevTime !== null && t <= prevTime) {
-                        reasons.push(`${tf} timestamps are not ordered`);
+                        if (required || options.check_optional !== false) reasons.push(`${tf} timestamps are not ordered`);
                         timeframeStatus[tf] = 'INCOMPLETE';
                         break;
                     }
@@ -11494,7 +11531,7 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
                 }
             }
             if (c.is_closed === false) {
-                reasons.push(`${tf} latest structure data contains an open candle`);
+                if (required || options.check_optional !== false) reasons.push(`${tf} latest structure data contains an open candle`);
                 timeframeStatus[tf] = 'INCOMPLETE';
                 break;
             }
@@ -11502,15 +11539,15 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
         if (Number.isFinite(latestTimedCandle)) {
             const timeframeMs = timeframeDurationMs(tf);
             if (latestTimedCandle > Number(asOfMs) + 5 * 60 * 1000) {
-                reasons.push(`${tf} contains a future candle timestamp`);
+                if (required || options.check_optional !== false) reasons.push(`${tf} contains a future candle timestamp`);
                 timeframeStatus[tf] = 'INCOMPLETE';
             }
             const staleLimit = ['1D', '1W'].includes(tf) ? 3 * 24 * 60 * 60 * 1000 : timeframeMs * 3;
             if (Number(asOfMs) - latestTimedCandle > staleLimit) {
                 const age = Number(asOfMs) - latestTimedCandle;
-                reasons.push(`${tf} candle data is stale`);
+                if (required || options.check_optional !== false) reasons.push(`${tf} candle data is stale`);
                 timeframeStatus[tf] = 'STALE';
-                staleDetails.push({ timeframe: tf, latest_required_closed_time: latestTimedCandle, expected_latest_closed_time: Number(asOfMs), age_ms: age, max_allowed_age_ms: staleLimit });
+                if (required || options.check_optional !== false) staleDetails.push({ timeframe: tf, latest_required_closed_time: latestTimedCandle, expected_latest_closed_time: Number(asOfMs), age_ms: age, max_allowed_age_ms: staleLimit });
             }
         }
         if (required) {
@@ -13929,6 +13966,97 @@ function marketMechanicsAuthoritySummary(source = {}) {
     };
 }
 
+function isHistoricalMarketMechanicsCandidate(candidate = {}) {
+    const code = marketMechanicsCanonicalBlocker(candidate.rejection_code
+        || candidate.primary_blocker
+        || candidate.blocker
+        || candidate.qualification?.primary_blocker
+        || '');
+    return candidate.historical_only === true
+        || String(candidate.historical_only || '').toUpperCase() === 'YES'
+        || ['INITIAL_PENDING_SIDE_INVALID', 'ENTRY_ALREADY_CONSUMED', 'SETUP_EXPIRED', 'SETUP_STALE',
+            'SETUP_ALREADY_COMPLETED', 'SETUP_DELIVERY_ALREADY_ADVANCED', 'ENTRY_ALREADY_CROSSED',
+            'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT', 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT'].includes(code);
+}
+
+function partitionMarketMechanicsCandidateResult(result = {}) {
+    const rejected = Array.isArray(result.rejected_candidates) ? result.rejected_candidates : [];
+    const historical = rejected.filter(isHistoricalMarketMechanicsCandidate);
+    const activeRejected = rejected.filter(candidate => !isHistoricalMarketMechanicsCandidate(candidate));
+    return {
+        ...result,
+        historical_candidates: historical,
+        rejected_candidates: activeRejected,
+        all_rejected_candidates: rejected,
+        raw_candidates: Array.isArray(result.raw_candidates) ? result.raw_candidates : [],
+        forming_candidates: Array.isArray(result.forming_candidates) ? result.forming_candidates : [],
+        live_candidates: Array.isArray(result.selectable_candidates) ? result.selectable_candidates : []
+    };
+}
+
+function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySetups = [], marketPlan = null, currentPrice = null, quoteSnapshot = null, pair: pairLocal = null, symbolMetadata = {}, historyCache = {}, zones = [] } = {}) {
+    const authority = marketMechanicsAuthoritySummary({
+        strategy_mode: 'MARKET_MECHANICS',
+        market_plan: marketPlan,
+        adaptive_setup_candidates: result.all_valid_candidates || result.valid_candidates || []
+    });
+    const states = buildMarketMechanicsFormingSetupStates(strategySetups, marketPlan, {
+        candidate_result: result,
+        current_price: currentPrice,
+        quote_snapshot: quoteSnapshot,
+        pair: pairLocal,
+        symbol_metadata: symbolMetadata,
+        history_cache: historyCache,
+        zones
+    });
+    const terminalBlockers = new Set([
+        'INITIAL_PENDING_SIDE_INVALID', 'ENTRY_ALREADY_CONSUMED', 'ENTRY_ALREADY_CROSSED',
+        'SETUP_EXPIRED', 'SETUP_STALE', 'SETUP_ALREADY_COMPLETED',
+        'SETUP_DELIVERY_ALREADY_ADVANCED', 'SETUP_INVALIDATED',
+        'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT', 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT'
+    ]);
+    const historicalStates = states.filter(state => state.historical_only === 'YES'
+        || ['BLOCKED_PENDING_SIDE', 'EXPIRED', 'CONSUMED', 'DELIVERED', 'INVALIDATED'].includes(String(state.state || '').toUpperCase())
+        || terminalBlockers.has(marketMechanicsCanonicalBlocker(state.primary_blocker || state.blocker))
+        || state.entry_crossed_after_signal === 'YES'
+        || state.initial_pending_side_valid === 'NO');
+    const formingStates = states.filter(state => !historicalStates.includes(state));
+    const partitioned = partitionMarketMechanicsCandidateResult(result);
+    const recordsById = new Map();
+    for (const candidate of [
+        ...partitioned.raw_candidates,
+        ...partitioned.all_rejected_candidates,
+        ...(result.all_valid_candidates || result.valid_candidates || [])
+    ]) {
+        const id = candidate?.id || candidate?.candidate_id || `candidate-${recordsById.size + 1}`;
+        if (!recordsById.has(id)) recordsById.set(id, candidate);
+    }
+    const candidateRecords = [...recordsById.values()];
+    const isYes = value => value === true || String(value || '').toUpperCase() === 'YES';
+    const isFiniteNumber = value => Number.isFinite(Number(value));
+    const searchCounts = {
+        raw_execution_zone_count: strategySetups.reduce((count, setup) => count + (setup.execution_zone ? 1 : 0), 0),
+        structurally_valid_zone_count: candidateRecords.filter(candidate => isYes(candidate.poi_structural_valid) || isYes(candidate.structurally_valid)).length,
+        correct_side_zone_count: candidateRecords.filter(candidate => isYes(candidate.pending_side_eligible) || isYes(candidate.pending_limit_side_valid)).length,
+        untouched_zone_count: candidateRecords.filter(candidate => !isYes(candidate.entry_crossed_after_signal) && !isYes(candidate.entry_consumed) && !['CONSUMED', 'FILLED', 'EXPIRED', 'INVALIDATED', 'DELIVERED'].includes(String(candidate.lifecycle_state || '').toUpperCase())).length,
+        reachable_zone_count: candidateRecords.filter(candidate => candidate.entry_reachable_today !== false && candidate.reachability?.reachable !== false).length,
+        stop_ready_zone_count: candidateRecords.filter(candidate => isFiniteNumber(candidate.stop_loss) || isFiniteNumber(candidate.proposed_stop)).length,
+        target_ready_zone_count: candidateRecords.filter(candidate => isFiniteNumber(candidate.tp1) || isFiniteNumber(candidate.proposed_objective)).length,
+        forming_count: formingStates.length,
+        live_count: authority.live_candidates.length,
+        historical_count: partitioned.historical_candidates.length + historicalStates.length
+    };
+    return {
+        ...partitioned,
+        authority,
+        live_candidates: authority.live_candidates,
+        forming_candidates: formingStates,
+        historical_model_states: historicalStates,
+        historical_candidates: [...partitioned.historical_candidates, ...historicalStates],
+        search_counts: searchCounts
+    };
+}
+
 function buildModelRouterStateSnapshot({ historyCache = {}, crtAudit = {}, tbsAudit = {}, msnrAudit = {}, modelAuthority = {}, asOfMs = null } = {}) {
     const atOrBefore = value => {
         const time = rawTextPacketTimestamp(value);
@@ -14062,7 +14190,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         ? ['1D', '4H', '1H']
         : ['1D', '4H', '1H', '15M', '5M'];
     const dataQuality = validateMarketDataQuality(historyCache, price, quote_snapshot, as_of_ms || Date.now(), requiredDataTimeframes, {
-        check_optional: strategyMode !== 'MARKET_MECHANICS'
+        check_optional: strategyMode !== 'MARKET_MECHANICS',
+        report_timeframes: ['1D', '4H', '1H', '15M', '5M']
     });
     const snapshotCompleteness = snapshot_completeness || assessMarketSnapshotCompleteness({ historyCache, price });
     const realVolume = hasRealVolume(pair, symbolMetadata);
@@ -14385,11 +14514,18 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         marketContext.model_router = null;
         marketContext.model_router_state = buildModelRouterStateCompleteness(historyCache, now.getTime());
         marketContext.model_router_state_snapshot = buildModelRouterStateSnapshot({ historyCache, modelAuthority: { current_records: [] }, asOfMs: now.getTime() });
-        const authority = marketMechanicsAuthoritySummary({
-            strategy_mode: 'MARKET_MECHANICS',
-            market_plan: marketPlan,
-            adaptive_setup_candidates: adaptiveSetupResult.all_valid_candidates || []
+        const canonicalCatalog = buildCanonicalMarketMechanicsCandidateCatalog({
+            result: adaptiveSetupResult,
+            strategySetups,
+            marketPlan,
+            currentPrice: price,
+            quoteSnapshot: quote_snapshot,
+            pair,
+            symbolMetadata,
+            historyCache,
+            zones: validationZones
         });
+        const authority = canonicalCatalog.authority;
         // The legacy candidate arrays remain available for auditability, but
         // only the normalized LIVE subset is allowed to reach the selector.
         adaptiveSetupResult.selectable_candidates = authority.live_candidates;
@@ -14408,15 +14544,27 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         // deterministic rejection that prevented an order from being built.
         // This does not change qualification; the adaptive candidate builder
         // remains the sole source of live authority.
-        marketContext.market_mechanics.model_states = buildMarketMechanicsFormingSetupStates(strategySetups, marketPlan, {
-            candidate_result: adaptiveSetupResult,
-            current_price: price,
-            quote_snapshot,
-            pair,
-            symbol_metadata: symbolMetadata,
-            history_cache: historyCache,
-            zones: validationZones
-        });
+        // The canonical catalog is the only source for live, forming, and
+        // historical Market Mechanics projections. A wrong-side or terminal
+        // candidate remains inspectable but cannot remain an active forming
+        // opportunity.
+        const historicalModelStates = canonicalCatalog.historical_model_states;
+        const formingModelStates = canonicalCatalog.forming_candidates;
+        const candidateCatalog = canonicalCatalog;
+        marketContext.market_mechanics.model_states = formingModelStates;
+        marketContext.market_mechanics.historical_model_states = historicalModelStates;
+        marketContext.market_mechanics.candidate_catalog = {
+            raw_candidates: candidateCatalog.raw_candidates,
+            historical_candidates: candidateCatalog.historical_candidates,
+            forming_candidates: formingModelStates,
+            live_candidates: authority.live_candidates,
+            rejected_candidates: candidateCatalog.rejected_candidates,
+            search_counts: candidateCatalog.search_counts
+        };
+        marketContext.market_mechanics.raw_execution_zone_count = candidateCatalog.search_counts.raw_execution_zone_count || strategyExecutionZones.length;
+        marketContext.market_mechanics.search_counts = candidateCatalog.search_counts;
+        marketContext.market_mechanics.historical_candidate_count = candidateCatalog.historical_candidates.length;
+        marketContext.market_mechanics.forming_candidate_count = formingModelStates.length;
     }
     const allStrategySetups = [...strategySetups, ...currentRegeneration.setups];
     const allStrategyExecutionZones = getStrategyExecutionZones(allStrategySetups);
@@ -14502,6 +14650,10 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         strategy_mode: rawTextV2StrategyMode(),
         market_plan: marketContext.market_plan || null,
         market_mechanics: marketContext.market_mechanics || null,
+        raw_market_mechanics_candidates: marketContext.market_mechanics?.candidate_catalog?.raw_candidates || [],
+        historical_market_mechanics_candidates: marketContext.market_mechanics?.candidate_catalog?.historical_candidates || [],
+        forming_market_mechanics_candidates: marketContext.market_mechanics?.candidate_catalog?.forming_candidates || [],
+        rejected_market_mechanics_candidates: marketContext.market_mechanics?.candidate_catalog?.rejected_candidates || [],
         live_market_mechanics_candidates: strategyMode === 'MARKET_MECHANICS'
             ? adaptiveSetupResult.selectable_candidates || [] : [],
         legacy_diagnostic_candidates: strategyMode === 'MARKET_MECHANICS'
@@ -14655,6 +14807,9 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
     if (!liveMarketContext?.pair || !liveMarketContext.historyCache) throw new Error('No completed live scan is available for replay capture');
     const replay = sanitizeScanReplayValue({
         schema_version: 1,
+        app_git_commit: APP_GIT_COMMIT,
+        engine_schema_version: ENGINE_SCHEMA_VERSION,
+        strategy_engine: STRATEGY_ENGINE,
         pair: liveMarketContext.pair,
         strategy_mode: liveMarketContext.strategy_mode || liveMarketContext.market_context?.strategy_mode || rawTextV2StrategyMode(),
         authority_mode: liveMarketContext.strategy_mode || liveMarketContext.market_context?.strategy_mode || rawTextV2StrategyMode(),
@@ -14678,8 +14833,17 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         volatility: liveMarketContext.volatility || null,
         premium_discount: liveMarketContext.premium_discount || null,
         daily_bias: liveMarketContext.daily_bias || null,
+        // Preserve the exact quality verdict used by the live candidate
+        // builder.  RAW packet generation consumes this replay, so omitting
+        // it here silently changed a computed FRESH/STALE result into an
+        // UNKNOWN presentation value.
+        data_quality: liveMarketContext.data_quality || liveMarketContext.market_context?.data_quality || null,
         market_plan: liveMarketContext.market_plan || liveMarketContext.market_context?.market_plan || null,
         market_mechanics: liveMarketContext.market_mechanics || liveMarketContext.market_context?.market_mechanics || null,
+        raw_market_mechanics_candidates: liveMarketContext.raw_market_mechanics_candidates || [],
+        historical_market_mechanics_candidates: liveMarketContext.historical_market_mechanics_candidates || [],
+        forming_market_mechanics_candidates: liveMarketContext.forming_market_mechanics_candidates || [],
+        rejected_market_mechanics_candidates: liveMarketContext.rejected_market_mechanics_candidates || [],
         live_market_mechanics_candidates: liveMarketContext.live_market_mechanics_candidates || [],
         legacy_diagnostic_candidates: liveMarketContext.legacy_diagnostic_candidates || [],
         market_regime: liveMarketContext.market_regime || null,
@@ -14985,6 +15149,9 @@ function buildRawMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             scan_id: signal.scan_id || source.scan_id || null,
             snapshot_as_of: source.scan_as_of || null,
             app_build_id: signal.app_build_id || signal.app_build || source.app_build_id || APP_BUILD_ID,
+            app_git_commit: signal.app_git_commit || source.app_git_commit || APP_GIT_COMMIT,
+            engine_schema_version: signal.engine_schema_version || source.engine_schema_version || ENGINE_SCHEMA_VERSION,
+            strategy_engine: signal.strategy_engine || source.strategy_engine || STRATEGY_ENGINE,
             generated_at: new Date().toISOString(),
             closed_only: true,
             semantic_timeframes: [...AI_SEMANTIC_TIMEFRAMES]
@@ -17668,14 +17835,29 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     })).filter(block => block.candles.length > 0);
     const smallest = [...blocks].reverse().find(block => block.candles.length > 0) || null;
     const latestSmallest = smallest?.candles.at(-1) || null;
-    const price = latestSmallest?.c;
+    const quote = rawMarketAnalysisQuote(source);
+    // The pending-side decision is made against the observed quote.  The
+    // latest closed candle is only a fallback when a replay genuinely has no
+    // quote, never the primary current-price source.
+    const price = Number.isFinite(Number(quote.current_price)) ? Number(quote.current_price) : latestSmallest?.c;
     const precision = rawTextPacketPrecision(symbol, metadata, price);
     const generatedAt = new Date().toISOString();
     const marketMechanicsMode = isMarketMechanicsMode(source);
     const authoritySource = marketMechanicsMode
         ? { ...source, strategy_mode: 'MARKET_MECHANICS', adaptive_setup_candidates: source.live_market_mechanics_candidates || source.valid_candidates || [] }
         : source;
-    const authority = marketMechanicsMode ? marketMechanicsAuthoritySummary(authoritySource) : null;
+    const storedAuthority = marketMechanicsMode ? source.market_mechanics?.authority_summary : null;
+    const authority = marketMechanicsMode
+        ? storedAuthority
+            ? {
+                ...storedAuthority,
+                live_candidates: source.live_market_mechanics_candidates || source.valid_candidates || [],
+                live_candidate_ids: storedAuthority.live_candidate_ids || (source.live_market_mechanics_candidates || source.valid_candidates || []).map(candidate => candidate.id).filter(Boolean),
+                active_authority_count: storedAuthority.active_authority_count ?? 1,
+                invariants: storedAuthority.authority_invariants || storedAuthority.invariants || 'FAIL'
+            }
+            : marketMechanicsAuthoritySummary(authoritySource)
+        : null;
     const lines = [
         '=== AI TRADING PACKET ===',
         'SYMBOL: ' + symbol,
@@ -17684,6 +17866,9 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         'GENERATED AT: ' + generatedAt,
         ...(marketMechanicsMode ? [
             'V2_STRATEGY_MODE=MARKET_MECHANICS',
+            'APP_GIT_COMMIT=' + String(source.app_git_commit || source.packet_identity?.app_git_commit || APP_GIT_COMMIT),
+            'ENGINE_SCHEMA_VERSION=' + String(source.engine_schema_version || source.packet_identity?.engine_schema_version || ENGINE_SCHEMA_VERSION),
+            'STRATEGY_ENGINE=' + String(source.strategy_engine || source.packet_identity?.strategy_engine || STRATEGY_ENGINE),
             'LIVE_AUTHORITY=MARKET_MECHANICS',
             'LEGACY_TRADE_AUTHORITY=DISABLED',
             'ACTIVE_AUTHORITY_COUNT=' + String(authority.active_authority_count)
@@ -17747,10 +17932,16 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         supply_demand_records: supplyDemandAudit,
         strategy_mode: marketMechanicsMode ? 'MARKET_MECHANICS' : rawTextV2StrategyMode()
     }, marketContext.context, roleAudit);
+    const canonicalFormingCandidates = source.forming_market_mechanics_candidates;
     const formingMarketMechanicsSetups = marketMechanicsMode
-        ? (source.market_mechanics?.model_states || source.forming_market_mechanics_setups || [])
-            .map(setup => normalizeMarketMechanicsFormingState(setup, source.market_plan || source.market_context?.market_plan || null))
+        ? (Array.isArray(canonicalFormingCandidates)
+            ? canonicalFormingCandidates
+            : (source.market_mechanics?.model_states || source.forming_market_mechanics_setups || [])
+                .map(setup => normalizeMarketMechanicsFormingState(setup, source.market_plan || source.market_context?.market_plan || null)))
             .filter(setup => setup.selectable !== true)
+        : [];
+    const historicalMarketMechanicsCandidates = marketMechanicsMode
+        ? (source.historical_market_mechanics_candidates || source.market_mechanics?.historical_model_states || [])
         : [];
     const visibleLegacyDiagnosticCount = marketMechanicsMode
         ? countRawLegacyDiagnosticCandidates([...highProbabilityZones.current_lines, ...highProbabilityZones.lines])
@@ -17810,6 +18001,14 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             + ' POI_REJECTED_COUNT=' + String(plan.poi_rejected_count ?? 0)
             + ' SELECTED_MARKET_PLAN_POI_ID=' + String(plan.selected_market_plan_poi_id || activePoi?.id || 'NONE')
             + ' SELECTED_MARKET_PLAN_POI_REASON=' + String(plan.selected_market_plan_poi_reason || 'NONE'));
+        const searchCounts = source.market_mechanics?.search_counts || source.market_mechanics?.candidate_catalog?.search_counts || {};
+        lines.push('RAW_EXECUTION_ZONE_COUNT=' + String(searchCounts.raw_execution_zone_count ?? 'NONE')
+            + ' STRUCTURALLY_VALID_ZONE_COUNT=' + String(searchCounts.structurally_valid_zone_count ?? 'NONE')
+            + ' CORRECT_SIDE_ZONE_COUNT=' + String(searchCounts.correct_side_zone_count ?? 'NONE')
+            + ' UNTOUCHED_ZONE_COUNT=' + String(searchCounts.untouched_zone_count ?? 'NONE')
+            + ' REACHABLE_ZONE_COUNT=' + String(searchCounts.reachable_zone_count ?? 'NONE')
+            + ' STOP_READY_ZONE_COUNT=' + String(searchCounts.stop_ready_zone_count ?? 'NONE')
+            + ' TARGET_READY_ZONE_COUNT=' + String(searchCounts.target_ready_zone_count ?? 'NONE'));
         lines.push('MARKET_PLAN_FAILED_STAGE=' + String(plan.market_plan_failed_stage || 'NONE')
             + ' MARKET_PLAN_FAILED_RULE=' + String(plan.market_plan_failed_rule || 'NONE')
             + ' MARKET_PLAN_PRIMARY_BLOCKER=' + String(plan.market_plan_primary_blocker || 'NONE')
@@ -17937,6 +18136,27 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         lines.push('');
         lines.push('=== LEGACY DIAGNOSTICS — NOT TRADE AUTHORITY ===');
         lines.push('CANDIDATE_AUTHORITY=DIAGNOSTIC_ONLY MODEL_QUALIFIED=NO TRADE_QUALIFIED=NO');
+        lines.push('=== HISTORICAL MARKET MECHANICS CANDIDATES — NOT TRADE AUTHORITY ===');
+        if (!historicalMarketMechanicsCandidates.length) lines.push('NONE');
+        for (const candidate of historicalMarketMechanicsCandidates) {
+            const blocker = candidate.primary_blocker || candidate.blocker || candidate.rejection_code || 'QUALIFICATION_BLOCKED';
+            lines.push([
+                'HISTORICAL_CANDIDATE',
+                'CANDIDATE_ID=' + String(candidate.id || candidate.candidate_id || 'NONE'),
+                'DIRECTION=' + String(candidate.direction || 'NONE'),
+                'PRIMARY_TF=' + String(candidate.timeframe || candidate.setup_timeframe || 'NONE'),
+                'ENTRY_MODEL=' + String(candidate.entry_model || candidate.execution_model || candidate.model || 'NONE'),
+                'ENTRY=' + (candidate.entry == null && candidate.proposed_entry == null ? 'NONE' : rawTextPacketFormatNumber(candidate.entry ?? candidate.proposed_entry, precision)),
+                'PENDING_SIDE_ELIGIBLE=' + String(candidate.pending_side_eligible || candidate.pending_limit_side_valid || 'NO'),
+                'HISTORICAL_ONLY=YES',
+                'PRIMARY_BLOCKER=' + String(blocker),
+                'FAILED_STAGE=' + String(candidate.failed_stage || 'PENDING_SIDE'),
+                'CANDIDATE_AUTHORITY=DIAGNOSTIC_ONLY',
+                'MODEL_QUALIFIED=NO',
+                'TRADE_QUALIFIED=NO'
+            ].join(' '));
+        }
+        lines.push('');
         const diagnosticLines = [...highProbabilityZones.current_lines, ...highProbabilityZones.lines].map(line => [
             'CANDIDATE_AUTHORITY=DIAGNOSTIC_ONLY',
             String(line)
@@ -17947,7 +18167,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
                 .replace(/TODAY_OPPORTUNITY=YES/g, 'TODAY_OPPORTUNITY=NO')
         ].join(' '));
         lines.push(...(diagnosticLines.length ? diagnosticLines : ['NONE']));
-        lines.push('DIAGNOSTIC_ONLY_CANDIDATE_COUNT=' + visibleLegacyDiagnosticCount);
+        lines.push('DIAGNOSTIC_ONLY_CANDIDATE_COUNT=' + (visibleLegacyDiagnosticCount + historicalMarketMechanicsCandidates.length));
         lines.push('');
     } else {
         lines.push('=== CURRENT OPPORTUNITIES ===');
@@ -18023,7 +18243,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         lines.push('FORMING_SETUP_COUNT=' + formingMarketMechanicsSetups.length);
         lines.push('FORMING_CAMPAIGN_COUNT=' + new Set(formingMarketMechanicsSetups.map(setup => setup.campaign_id || setup.id)).size);
         lines.push('SELECTABLE_CANDIDATE_IDS=' + (authority.live_candidate_ids.join('|') || 'NONE'));
-        lines.push('DIAGNOSTIC_ONLY_CANDIDATE_COUNT=' + visibleLegacyDiagnosticCount);
+        lines.push('DIAGNOSTIC_ONLY_CANDIDATE_COUNT=' + (visibleLegacyDiagnosticCount + historicalMarketMechanicsCandidates.length));
         lines.push('AUTHORITY_INVARIANTS=' + authority.invariants);
         if (authority.invariant_violation) lines.push('BLOCKER=' + authority.invariant_violation);
         lines.push('');
@@ -21363,6 +21583,47 @@ function rebuildCandidatesWithAiSetups(liveMarketContext, strategySetups) {
         rejection_detail: summarizeCandidateRejectionDetails(result.rejected_candidates)
     };
     liveMarketContext.candidate_pipeline = buildCandidatePipelineAudit(strategySetups, result.raw_candidates, result.rejected_candidates, result.valid_candidates, result.seed_diagnostics);
+    if (isMarketMechanicsMode(liveMarketContext)) {
+        const canonical = buildCanonicalMarketMechanicsCandidateCatalog({
+            result,
+            strategySetups,
+            marketPlan: liveMarketContext.market_plan || liveMarketContext.market_context?.market_plan || null,
+            currentPrice: liveMarketContext.current_price,
+            quoteSnapshot: liveMarketContext.quote_snapshot,
+            pair: liveMarketContext.pair,
+            symbolMetadata: liveMarketContext.symbol_metadata || {},
+            historyCache: liveMarketContext.historyCache || {},
+            zones: liveMarketContext.context_ict_zones || liveMarketContext.real_ict_zones || []
+        });
+        liveMarketContext.adaptive_setup_candidates = canonical.authority.live_candidates;
+        liveMarketContext.valid_deterministic_candidates = canonical.all_valid_candidates || [];
+        liveMarketContext.historical_market_mechanics_candidates = canonical.historical_candidates;
+        liveMarketContext.forming_market_mechanics_candidates = canonical.forming_candidates;
+        liveMarketContext.rejected_market_mechanics_candidates = canonical.rejected_candidates;
+        liveMarketContext.market_mechanics = {
+            ...(liveMarketContext.market_mechanics || {}),
+            model_states: canonical.forming_candidates,
+            historical_model_states: canonical.historical_model_states,
+            candidate_catalog: {
+                raw_candidates: canonical.raw_candidates,
+                historical_candidates: canonical.historical_candidates,
+                forming_candidates: canonical.forming_candidates,
+                live_candidates: canonical.authority.live_candidates,
+                rejected_candidates: canonical.rejected_candidates,
+                search_counts: canonical.search_counts
+            },
+            search_counts: canonical.search_counts,
+            authority_summary: {
+                active_authority_count: canonical.authority.active_authority_count,
+                active_authority_modes: canonical.authority.active_authority_modes,
+                live_candidate_ids: canonical.authority.live_candidate_ids,
+                live_candidate_count: canonical.authority.live_candidates.length,
+                diagnostic_candidate_count: canonical.authority.diagnostic_candidate_count,
+                authority_invariants: canonical.authority.invariants,
+                invariant_violation: canonical.authority.invariant_violation
+            }
+        };
+    }
     return result;
 }
 

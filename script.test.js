@@ -3876,6 +3876,76 @@ describe('Market Mechanics packet authority', () => {
         expect(text).not.toContain('MARKET_DATA_STATUS=STALE');
     });
 
+    test('production replay preserves computed data quality and quote price at the RAW boundary', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const asOfMs = Date.parse('2026-10-19T10:00:00Z');
+        const durations = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 };
+        const historyCache = Object.fromEntries(Object.entries(durations).map(([timeframe, duration]) => [timeframe,
+            candles(timeframe === '1D' || timeframe === '4H' || timeframe === '1H' ? 60 : 30, 100, 0.05, 'up')
+                .map((bar, index, rows) => ({ ...bar, t: asOfMs - duration - (rows.length - 1 - index) * duration, is_closed: true }))
+        ]));
+        const live = ctx.buildLiveMarketContext({
+            pair: 'AUD/USD', price: 103.25, historyCache, indicators: { '4H': {}, '1H': {} }, patterns: {},
+            enhancedAnalysis: { phase: { phase: 'UNKNOWN' } }, holistic: {}, entryContext: null,
+            as_of_ms: asOfMs,
+            quote_snapshot: { price: 103.25, bid: 103.24, ask: 103.26, provider_timestamp_utc: new Date(asOfMs - 60000).toISOString(), symbol_metadata: { asset_class: 'FOREX' } }
+        });
+        expect(live.data_quality.status).toBe('FRESH');
+        expect(live.data_quality.timeframe_status).toEqual(expect.objectContaining({ '1D': 'FRESH', '4H': 'FRESH', '1H': 'FRESH', '15M': 'FRESH', '5M': 'FRESH' }));
+        const replay = ctx.createScanReplay(live, { pair: 'AUD/USD', status: 'NO_TRADE' });
+        expect(replay.data_quality).toEqual(expect.objectContaining({ status: 'FRESH' }));
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('CURRENT PRICE: 103.25000');
+        expect(text).toContain('MARKET_DATA_STATUS=FRESH');
+        expect(text).toContain('DATA_1D_STATUS=FRESH');
+        expect(text).toContain('DATA_4H_STATUS=FRESH');
+        expect(text).toContain('DATA_1H_STATUS=FRESH');
+        expect(text).toContain('DATA_15M_STATUS=FRESH');
+        expect(text).toContain('DATA_5M_STATUS=FRESH');
+    });
+
+    test('canonical Market Mechanics presentation excludes wrong-side historical rows from forming output', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const historical = {
+            id: 'CRT-SELL-PAST', direction: 'SELL', timeframe: '1H', entry: 0.69588,
+            rejection_code: 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT', historical_only: true,
+            pending_side_eligible: 'NO', MODEL_QUALIFIED: 'NO', TRADE_QUALIFIED: 'NO'
+        };
+        const catalog = ctx.buildCanonicalMarketMechanicsCandidateCatalog({
+            result: { raw_candidates: [], valid_candidates: [], all_valid_candidates: [], selectable_candidates: [], rejected_candidates: [historical] },
+            strategySetups: [], marketPlan: { valid_context: true, market_plan_complete: true, direction: 'SELL' },
+            currentPrice: 0.69725, pair: 'AUD/USD', symbolMetadata: {}, historyCache: {}, zones: []
+        });
+        expect(catalog.historical_candidates).toEqual(expect.arrayContaining([historical]));
+        expect(catalog.forming_candidates).toEqual([]);
+        expect(catalog.live_candidates).toEqual([]);
+    });
+
+    test('production candidate catalog moves a wrong-side CRT setup to historical diagnostics with an exact stage', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const setup = {
+            id: 'CRT-SELL-PAST', direction: 'SELL', timeframe: '1H', entry_model: 'CRT_AGGRESSIVE',
+            execution_confirmed: true,
+            execution_zone: { id: 'CRT-SELL-PAST-ZONE', type: 'CRT', timeframe: '1H', low: 94, high: 96, freshness: 'FRESH' }
+        };
+        const catalog = ctx.buildCanonicalMarketMechanicsCandidateCatalog({
+            result: { raw_candidates: [], valid_candidates: [], all_valid_candidates: [], selectable_candidates: [], rejected_candidates: [{
+                id: setup.id, rejection_code: 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT', historical_only: true
+            }] },
+            strategySetups: [setup],
+            marketPlan: { valid_context: true, market_plan_complete: true, direction: 'SELL', active_swing_range_id: 'RANGE-1' },
+            currentPrice: 100, pair: 'AUD/USD', symbolMetadata: ctx.getSymbolMetadata('AUD/USD'),
+            historyCache: { '1H': candles(20, 100, 0.1, 'up') }, zones: []
+        });
+        const state = catalog.historical_model_states[0];
+        expect(state).toEqual(expect.objectContaining({
+            state: 'BLOCKED_PENDING_SIDE', primary_blocker: 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT',
+            failed_stage: 'PENDING_SIDE', selectable: false, historical_only: 'YES'
+        }));
+        expect(catalog.forming_candidates).toHaveLength(0);
+        expect(catalog.live_candidates).toHaveLength(0);
+    });
+
     test('prints pending-limit geometry and next event for forming Market Mechanics states', () => {
         const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
         const replay = completeReplay({
@@ -3895,9 +3965,9 @@ describe('Market Mechanics packet authority', () => {
             valid_candidates: [], history: {}
         });
         const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(text).toContain('ENTRY_ZONE_LOW=81302.20000000 ENTRY_ZONE_HIGH=81459.10000000');
-        expect(text).toContain('PROPOSED_ENTRY=81380.65000000 PROPOSED_STOP=NONE');
-        expect(text).toContain('PROPOSED_OBJECTIVE=81995.97000000');
+        expect(text).toContain('ENTRY_ZONE_LOW=81302.20 ENTRY_ZONE_HIGH=81459.10');
+        expect(text).toContain('PROPOSED_ENTRY=81380.65 PROPOSED_STOP=NONE');
+        expect(text).toContain('PROPOSED_OBJECTIVE=81995.97');
         expect(text).toContain('ENTRY_ZONE_TOUCH_REQUIRED_FOR_QUALIFICATION=NO');
         expect(text).toContain('NEXT_REQUIRED_EVENT=NO_STRUCTURAL_STOP');
         expect(text).toContain('STATE=WAITING_FOR_PENDING_GEOMETRY');
@@ -4306,7 +4376,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
             is_closed: true
         }));
         const text = getContext().buildRawTextMarketAnalysisPacket({ replay });
-        expect(text).toContain('CURRENT PRICE: 1.10050');
+        expect(text).toContain('CURRENT PRICE: 250.00000');
         expect(text.indexOf('======== TIMEFRAME: 4h ========')).toBeLessThan(text.indexOf('======== TIMEFRAME: 1h ========'));
         expect(text.indexOf('======== TIMEFRAME: 1h ========')).toBeLessThan(text.indexOf('======== TIMEFRAME: 15m ========'));
         expect(text.indexOf('======== TIMEFRAME: 15m ========')).toBeLessThan(text.indexOf('======== TIMEFRAME: 5m ========'));
@@ -4866,7 +4936,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('PENDING_CANDIDATE=SELL_LIMIT');
         expect(text).toContain('ENTRY_STATE=PENDING_UNFILLED DELIVERY_STATUS=DELIVERED_TP1');
         expect(text).toContain('PRE_ENTRY_MIN_LOW=4192.00');
-        expect(text).toContain('CURRENT_PRICE=4196.22 CURRENT_PRICE_RELATION=BELOW_REMAINING_ZONE');
+        expect(text).toContain('CURRENT_PRICE=250.00 CURRENT_PRICE_RELATION=BELOW_REMAINING_ZONE');
     });
 
     it('marks the older XAU/USD 4H bearish FVG fully traversed', () => {
