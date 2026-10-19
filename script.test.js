@@ -3974,7 +3974,8 @@ describe('Market Mechanics end-to-end qualification authority', () => {
             const rows = [];
             for (let timestamp = start; timestamp <= end; timestamp += step) {
                 const open = sessionStart(timestamp);
-                if (timestamp >= open && timestamp < open + 5 * 24 * 60 * 60000) {
+                const close = Date.UTC(new Date(open).getUTCFullYear(), new Date(open).getUTCMonth(), new Date(open).getUTCDate() + 5, timeframe === '4H' ? 22 : 21);
+                if (timestamp >= open && timestamp < close) {
                     rows.push({ t: new Date(timestamp).toISOString(), o: 100, h: 101, l: 99, c: 100, is_closed: true });
                 }
             }
@@ -4070,6 +4071,16 @@ describe('Market Mechanics end-to-end qualification authority', () => {
         expect(five.timeframe_diagnostics['5M'].expected_latest_closed).toBe(Date.parse('2026-10-19T11:20:00Z'));
     });
 
+    test('RAW packet closed-candle projection cannot trust a future is_closed flag', () => {
+        const ctx = getContext();
+        const candles = [
+            { t: '2026-10-19T11:00:00Z', o: 100, h: 101, l: 99, c: 100, is_closed: true },
+            { t: '2026-10-19T11:15:00Z', o: 100, h: 101, l: 99, c: 100, is_closed: true }
+        ];
+        const result = ctx.rawTextPacketClosedCandles({ history: { '15M': candles } }, '15M', Date.parse('2026-10-19T11:28:00Z'));
+        expect(result.map(candle => candle.t)).toEqual(['2026-10-19T11:00:00Z']);
+    });
+
     test('a missing completed intraday bucket is incomplete rather than silently fresh', () => {
         const ctx = getContext();
         const asOf = Date.parse('2026-10-19T11:28:00Z');
@@ -4119,6 +4130,66 @@ describe('Market Mechanics end-to-end qualification authority', () => {
         expect(result.data_calendar_type).toBe('METAL_OBSERVED_SESSION');
         expect(result.timeframe_diagnostics['1D'].actual_latest_closed).toBe(Date.parse('2026-10-15T21:00:00Z'));
         expect(result.timeframe_diagnostics['1D'].expected_latest_closed).toBe(Date.parse('2026-10-15T21:00:00Z'));
+    });
+
+    test('XAU repeated daily session breaks are not missing open-session candles', () => {
+        const ctx = getContext();
+        const asOf = Date.parse('2026-10-19T11:28:00Z');
+        const rows = [];
+        for (let timestamp = Date.parse('2026-10-12T00:00:00Z'); timestamp <= Date.parse('2026-10-19T10:00:00Z'); timestamp += 60 * 60000) {
+            const date = new Date(timestamp);
+            const sunday = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) - date.getUTCDay() * 24 * 60 * 60000;
+            const weeklyOpen = 22 * 60;
+            const weeklyClose = 21 * 60;
+            const weeklyStart = sunday + weeklyOpen * 60000;
+            const weeklyEnd = sunday + 5 * 24 * 60 * 60000 + weeklyClose * 60000;
+            const minute = date.getUTCHours() * 60 + date.getUTCMinutes();
+            const dailyBreak = minute >= 21 * 60 && minute < 22 * 60;
+            if (timestamp >= weeklyStart && timestamp < weeklyEnd && !dailyBreak) {
+                rows.push({ t: new Date(timestamp).toISOString(), o: 4100, h: 4110, l: 4090, c: 4105, is_closed: true });
+            }
+        }
+        const result = ctx.validateMarketDataQuality({ '1H': rows }, 4105, null, asOf, ['1H'], {
+            symbol: 'XAU/USD', asset_class: 'METAL', check_optional: false
+        });
+        expect(result.status).toBe('FRESH');
+        expect(result.timeframe_diagnostics['1H'].missing_candle_count).toBe(0);
+        expect(result.timeframe_diagnostics['1H'].daily_session_breaks).toEqual(expect.arrayContaining([
+            expect.objectContaining({ close_minutes: 1260, open_minutes: 1320 })
+        ]));
+    });
+
+    test('available production packet fixtures replay visible OHLC without weekend false gaps', () => {
+        const ctx = getContext();
+        const fixtureRoot = path.join(process.cwd(), 'packet', 'packets');
+        const fixtures = [
+            ['EURUSD_2026-10-19_112749Z_35819d2.txt', 'EUR/USD', 'FOREX', '2026-10-19T11:27:49.385Z', 1.12272],
+            ['XAUUSD_2026-10-19_112836Z_35819d2.txt', 'XAU/USD', 'METAL', '2026-10-19T11:28:36.802Z', 4172.91],
+            ['EURUSD_2026-10-19_121934Z_e93793c.txt', 'EUR/USD', 'FOREX', '2026-10-19T12:19:34.260Z', 1.12266]
+        ];
+        if (!fixtures.every(([name]) => fs.existsSync(path.join(fixtureRoot, name)))) return;
+        const parse = (file, timeframe) => {
+            const text = fs.readFileSync(file, 'utf8');
+            const start = text.indexOf(`======== TIMEFRAME: ${timeframe.toLowerCase()} ========`);
+            const end = text.indexOf(`======== END ${timeframe.toLowerCase()} ========`, start);
+            return text.slice(start, end).split(/\r?\n/).map(line => line.match(/^(2026-\d{2}-\d{2}T[^,]+),([^,]+),([^,]+),([^,]+),([^,]+)/))
+                .filter(Boolean).map(match => ({ t: match[1], o: Number(match[2]), h: Number(match[3]), l: Number(match[4]), c: Number(match[5]), is_closed: true }));
+        };
+        for (const [name, symbol, assetClass, evaluation, price] of fixtures) {
+            const file = path.join(fixtureRoot, name);
+            for (const timeframe of ['4H', '1H', '15M', '5M']) {
+                const result = ctx.validateMarketDataQuality({ [timeframe]: parse(file, timeframe) }, price, null, Date.parse(evaluation), [], {
+                    symbol, asset_class: assetClass, check_optional: false
+                });
+                expect(result.timeframe_diagnostics[timeframe].missing_candle_count).toBe(0);
+                if (name === 'EURUSD_2026-10-19_112749Z_35819d2.txt' && timeframe === '15M') {
+                    expect(result.timeframe_diagnostics[timeframe].expected_latest_closed).toBe(Date.parse('2026-10-19T11:00:00Z'));
+                }
+                if (name === 'EURUSD_2026-10-19_112749Z_35819d2.txt' && timeframe === '5M') {
+                    expect(result.timeframe_diagnostics[timeframe].expected_latest_closed).toBe(Date.parse('2026-10-19T11:20:00Z'));
+                }
+            }
+        }
     });
 
     test('observed weekly reopen changes are respected across a DST session transition', () => {
@@ -5411,6 +5482,12 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
     it('keeps a real XAU/USD 4H bearish FVG in the pre-NO_TRADE audit', () => {
         const replay = makeReplay(true, 'XAU/USD');
         replay.quote.symbol_metadata = { asset_class: 'METAL', price_precision: 2 };
+        // The third 4H bucket starts at 09:00 and closes at 13:00 under the
+        // open-timestamp contract.  Move the replay scan past that close so
+        // this fixture tests a completed FVG rather than relying on a stale
+        // is_closed flag to expose a future candle.
+        replay.scan_as_of = '2026-10-12T14:00:00Z';
+        replay.quote.quote_time = replay.scan_as_of;
         replay.history['4H'] = [
             { t: '2026-10-12T01:00:00Z', o: 4198.00, h: 4200.00, l: 4193.78, c: 4195.00, is_closed: true },
             { t: '2026-10-12T05:00:00Z', o: 4195.00, h: 4196.00, l: 4182.00, c: 4184.00, is_closed: true },
