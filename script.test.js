@@ -3556,6 +3556,108 @@ describe('TVKIT request attempt lifecycle', () => {
     });
 });
 
+describe('Market Mechanics end-to-end qualification authority', () => {
+    const directionalHistory = (direction, start, step) => {
+        let price = start;
+        return Array.from({ length: 80 }, (_, index) => {
+            const open = price;
+            const close = direction === 'up' ? price + step : price - step;
+            price = close;
+            return { o: open, h: Math.max(open, close) + Math.abs(step) * 0.3, l: Math.min(open, close) - Math.abs(step) * 0.3, c: close, is_closed: true };
+        });
+    };
+    const setupFor = (direction, id) => {
+        const sell = direction === 'SELL';
+        const zone = { id: `${id}-ZONE`, type: 'CRT', direction, timeframe: '1H', low: sell ? 101 : 98, high: sell ? 102 : 99, freshness: 'FRESH', primary_eligible: true,
+            structural_invalidation: { level: sell ? 102.5 : 97.5, source: 'CRT_SWEEP', ref: `${id}-STOP` }, created_index: 78 };
+        return { id, primary: 'CRT', label: 'CRT', direction, timeframe: '1H', setup_timeframe: '1H', execution_timeframe: '15M',
+            reclaim_bar_index: 78, execution_event_index: 78, event_time: null, execution_confirmed: true, market_mechanics_verified: true,
+            entry_model: 'CRT_AGGRESSIVE', execution_model: 'PENDING_LIMIT', execution_zone: zone,
+            structural_invalidation_detail: zone.structural_invalidation,
+            target_candidates: (sell ? [95, 90, 85] : [105, 110, 115]).map((level, index) => ({ id: `${id}-TP${index + 1}`, direction, level, source: 'STRUCTURAL_LIQUIDITY', origin: 'STRUCTURAL' })),
+            structural_evidence_ids: [`${id}-FORMATION`], setup_formation_confirmed: true };
+    };
+
+    const buildCandidate = (direction) => {
+        const sell = direction === 'SELL';
+        const history = directionalHistory(sell ? 'down' : 'up', sell ? 120 : 80, 0.25);
+        const setup = setupFor(direction, `E2E-${direction}`);
+        const planPoi = { id: `${setup.id}-ZONE`, type: 'CRT', direction, timeframe: '1H', low: setup.execution_zone.low, high: setup.execution_zone.high,
+            primary_eligible: true, freshness: 'FRESH' };
+        const result = getContext().buildAdaptiveSetupCandidates({
+            pair: 'BTC/USD', price: 100,
+            historyCache: { '1D': history, '4H': history, '1H': history, '15M': history, '5M': history },
+            zones: [planPoi], strategySetups: [setup],
+            targetCandidates: { all: setup.target_candidates, buy: setup.target_candidates.filter(t => t.direction === 'BUY'), sell: setup.target_candidates.filter(t => t.direction === 'SELL') },
+            riskConstraints: { minimum_rr: 2.5, minimum_sl_distance: sell ? 0.5 : 0.5, maximum_sl_distance: 30 },
+            marketRegime: { primary_regime: sell ? 'TRENDING_BEARISH' : 'TRENDING_BULLISH' },
+            structure: { '1D': { trend: sell ? 'BEARISH' : 'BULLISH' }, '4H': { trend: sell ? 'BEARISH' : 'BULLISH' }, '1H': { trend: sell ? 'BEARISH' : 'BULLISH' } },
+            marketContext: { strategy_mode: 'MARKET_MECHANICS', data_quality: { valid: true, status: 'FRESH', reasons: [] }, require_strategy_setup: true,
+                market_plan: { valid_context: true, market_plan_complete: true, direction, active_swing_low: 70, active_swing_high: 130, active_poi: planPoi } }
+        });
+        return result;
+    };
+
+    test.each(['BUY', 'SELL'])('complete untouched %s setup reaches LIVE-compatible candidate authority', direction => {
+        const ctx = getContext();
+        const result = buildCandidate(direction);
+        expect(result.all_valid_candidates.length).toBeGreaterThan(0);
+        const candidate = result.all_valid_candidates[0];
+        expect(candidate.qualification_result).toBe('PASS');
+        expect(candidate.pending_limit_valid).toBe(true);
+        expect(candidate.lifecycle_state).toBe('PENDING_UNFILLED');
+        const authority = ctx.normalizeMarketMechanicsAuthority(candidate, {
+            strategy_mode: 'MARKET_MECHANICS',
+            market_plan: { valid_context: true, market_plan_complete: true },
+            active_authority_count: 1
+        }, 'LIVE');
+        expect(authority.CANDIDATE_AUTHORITY).toBe('LIVE');
+        expect(authority.MODEL_QUALIFIED).toBe('YES');
+        expect(authority.TRADE_QUALIFIED).toBe('YES');
+    });
+
+    test('wrong-side pending setup has a precise PENDING_SIDE blocker, never MARKET_DATA_STALE', () => {
+        const ctx = getContext();
+        const result = ctx.resolveMarketMechanicsQualification({ direction: 'SELL', entry: 95, stop_loss: 110, tp1: 85, TRADE_QUALIFIED: 'YES' }, {
+            valid: false,
+            reasons: ['SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT'],
+            metrics: { pending_limit_valid: false }
+        });
+        expect(result.qualification_result).toBe('BLOCKED');
+        expect(result.primary_blocker).toBe('SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT');
+        expect(result.failed_stage).toBe('PENDING_SIDE');
+        expect(result.next_required_event).toBe('WAIT_FOR_NEW_VALID_SELL_LIMIT_GEOMETRY');
+        expect(result.primary_blocker).not.toBe('MARKET_DATA_STALE');
+    });
+
+    test('blocked candidates always expose a failed stage and rule', () => {
+        const ctx = getContext();
+        const result = ctx.resolveMarketMechanicsQualification({ id: 'missing-stop', direction: 'BUY', entry: 95, tp1: 105 }, {
+            valid: false, reasons: ['NO_STRUCTURAL_STOP']
+        });
+        expect(result.failed_stage).toBe('STOP');
+        expect(result.failed_rule).toMatch(/invalidation/i);
+        expect(result.primary_blocker).toBe('NO_STRUCTURAL_STOP');
+    });
+
+    test('market-data stale status is emitted only with timestamp evidence', () => {
+        const ctx = getContext();
+        const asOf = Date.parse('2026-10-19T00:00:00Z');
+        const stale = Array.from({ length: 50 }, (_, index) => ({
+            t: asOf - (50 - index) * 60 * 60 * 1000 - 48 * 60 * 60 * 1000,
+            o: 100, h: 101, l: 99, c: 100, is_closed: true
+        }));
+        const staleResult = ctx.validateMarketDataQuality({ '4H': stale, '1H': stale }, 100, null, asOf, ['4H', '1H'], { check_optional: false });
+        expect(staleResult.status).toBe('STALE');
+        expect(staleResult.stale_tf).toBe('4H');
+        expect(staleResult.age_ms).toBeGreaterThan(staleResult.max_allowed_age_ms);
+
+        const freshResult = ctx.validateMarketDataQuality({ '4H': stale.map(candle => ({ ...candle, t: undefined })), '1H': stale.map(candle => ({ ...candle, t: undefined })) }, 100, null, asOf, ['4H', '1H'], { check_optional: false });
+        expect(freshResult.status).toBe('FRESH');
+        expect(freshResult.stale_tf).toBeNull();
+    });
+});
+
 describe('Market Mechanics packet authority', () => {
     const { loadStrategyContext } = require('./backtest/strategy-adapter');
 
@@ -4046,10 +4148,11 @@ describe('Market Mechanics packet authority', () => {
             market_plan_poi_valid: 'YES',
             execution_poi_valid: 'YES',
             poi_relationship_status: 'INDEPENDENT_CONTEXT_COMPATIBLE',
-            state: 'INVALIDATED',
-            primary_blocker: 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT',
+            state: 'BLOCKED_PENDING_SIDE',
             pending_limit_valid: 'NO',
             pending_limit_geometry_complete: 'NO',
+            failed_stage: 'PENDING_SIDE',
+            primary_blocker: 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT',
             selectable: false
         }));
     });
