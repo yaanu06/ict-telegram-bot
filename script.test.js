@@ -3656,6 +3656,51 @@ describe('Market Mechanics end-to-end qualification authority', () => {
         expect(freshResult.status).toBe('FRESH');
         expect(freshResult.stale_tf).toBeNull();
     });
+
+    test('unproven stale tokens cannot override a real pending-side blocker', () => {
+        const ctx = getContext();
+        const result = ctx.resolveMarketMechanicsQualification({
+            id: 'AUD-UNKNOWN-DATA', direction: 'SELL', execution_model: 'PENDING_LIMIT',
+            entry: 0.69588, stop_loss: 0.69810, tp1: 0.69400
+        }, {
+            valid: false,
+            reasons: ['MARKET_DATA_STALE'],
+            metrics: { pending_limit_valid: false }
+        }, {
+            data_quality: {
+                status: 'UNKNOWN', stale_tf: 'NONE', latest_required_closed_time: null,
+                expected_latest_closed_time: null, age_ms: null, max_allowed_age_ms: null
+            }
+        });
+        expect(result.primary_blocker).toBe('SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT');
+        expect(result.failed_stage).toBe('PENDING_SIDE');
+        expect(result.primary_blocker).not.toBe('MARKET_DATA_STALE');
+        expect(result.all_blockers).not.toContain('MARKET_DATA_STALE');
+    });
+
+    test('unknown freshness is explicit when no more specific candidate blocker exists', () => {
+        const ctx = getContext();
+        const result = ctx.resolveMarketMechanicsQualification({
+            id: 'UNKNOWN-DATA', direction: 'SELL', execution_model: 'PENDING_LIMIT',
+            entry: 105, stop_loss: 110, tp1: 95
+        }, { valid: false, reasons: ['MARKET_DATA_STALE'] }, {
+            data_quality: { status: 'UNKNOWN', stale_tf: 'NONE' }
+        });
+        expect(result.primary_blocker).toBe('MARKET_DATA_STATUS_UNKNOWN');
+        expect(result.failed_stage).toBe('DATA');
+        expect(result.next_required_event).toBe('WAIT_FOR_MARKET_DATA_VALIDATION');
+    });
+
+    test('quote stale status includes complete stale evidence', () => {
+        const ctx = getContext();
+        const asOf = Date.parse('2026-10-19T12:00:00Z');
+        const result = ctx.validateMarketDataQuality({ '4H': candles(50, 100, 0.1, 'up'), '1H': candles(50, 100, 0.1, 'up') }, 105,
+            { provider_timestamp: asOf - 2 * 60 * 60 * 1000 }, asOf, ['4H', '1H'], { check_optional: false });
+        expect(result.status).toBe('STALE');
+        expect(result.quote_status).toBe('STALE');
+        expect(result.stale_tf).toBe('QUOTE');
+        expect(result.age_ms).toBeGreaterThan(result.max_allowed_age_ms);
+    });
 });
 
 describe('Market Mechanics packet authority', () => {
@@ -3815,6 +3860,20 @@ describe('Market Mechanics packet authority', () => {
         expect(text).toContain('STATE=WAITING_FOR_POI');
         expect(text).not.toContain('STATE=WAITING_FOR_RETRACE');
         expect(text).not.toContain('DAILY_BIAS=');
+    });
+
+    test('packet serialization does not emit stale without stale evidence', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay: {
+            pair: 'AUD/USD', strategy_mode: 'MARKET_MECHANICS', scan_as_of: '2026-10-19T10:00:00Z',
+            quote: { price: 0.69745, quote_time: '2026-10-19T10:00:00Z' },
+            data_quality: { valid: false, status: 'STALE', stale_tf: 'NONE', reasons: ['candle data is stale'] },
+            market_plan: { valid_context: true, market_plan_complete: true, direction: 'SELL' },
+            valid_candidates: [], history: {}
+        } });
+        expect(text).toContain('MARKET_DATA_STATUS=UNKNOWN');
+        expect(text).toContain('STALE_TF=NONE');
+        expect(text).not.toContain('MARKET_DATA_STATUS=STALE');
     });
 
     test('prints pending-limit geometry and next event for forming Market Mechanics states', () => {

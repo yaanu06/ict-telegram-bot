@@ -8138,6 +8138,7 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
     const retraced = lifecycle && Number.isFinite(Number(lifecycle.entry_touch_count_after_signal))
         ? Number(lifecycle.entry_touch_count_after_signal) > 0
         : null;
+    const dataQuality = candidate?.data_quality || rejected?.data_quality || options.data_quality || options.market_context?.data_quality || {};
     const rejectionCodes = [...new Set([
         rejected?.rejection_code,
         ...(Array.isArray(rejected?.rejection_reasons) ? rejected.rejection_reasons : []),
@@ -8152,7 +8153,7 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
             ? result.seed_diagnostics.filter(seed => String(seed.seed_id || '') === String(zone.id || setup.id || ''))
                 .flatMap(seed => seed.failure_reasons || [])
             : [])
-    ].filter(Boolean).map(String))];
+    ].filter(Boolean).map(reason => marketMechanicsReasonForContext(String(reason), dataQuality)))];
     const geometry = {
         entry: Number.isFinite(entry) ? entry : null,
         stop_loss: Number.isFinite(stop) ? stop : null,
@@ -10126,10 +10127,10 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const dataQuality = marketContext?.data_quality || validateMarketDataQuality(historyCache, price);
     if (!dataQuality.valid) {
         for (const seed of seedDiagnostics) {
-            for (const reason of dataQuality.reasons) failSeed(seed, marketDataQualityReasonCode(reason), reason);
+            for (const reason of dataQuality.reasons) failSeed(seed, marketMechanicsReasonForContext(reason, dataQuality), reason);
         }
         const rejected = dataQuality.reasons.map(reason => {
-            const code = marketDataQualityReasonCode(reason);
+            const code = marketMechanicsReasonForContext(reason, dataQuality);
             const qualification = resolveMarketMechanicsQualification({}, { valid: false, reasons: [code, reason] }, { data_quality: dataQuality });
             return { id: 'DATA_QUALITY', rejection_code: code, rejection_reasons: [reason], ...qualification, qualification: { ...qualification } };
         });
@@ -10159,6 +10160,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         symbol_metadata: symbolMetadata
     });
     deterministicValidationContext.market_mechanics_mode = String(marketContext?.strategy_mode || '').toUpperCase() === 'MARKET_MECHANICS';
+    deterministicValidationContext.data_quality = dataQuality;
 
     for (const [seedIndex, zone] of seedZones.entries()) {
         const seed = seedDiagnostics[seedIndex];
@@ -10183,8 +10185,8 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 requiredTimeframes, { check_optional: false });
             if (!modelDataQuality.valid) {
                 const modelReasons = [...new Set(modelDataQuality.reasons)];
-                for (const reason of modelReasons) failSeed(seed, marketDataQualityReasonCode(reason), reason);
-                const modelDataCode = marketDataQualityReasonCode(modelReasons[0] || 'required timeframe unavailable');
+                for (const reason of modelReasons) failSeed(seed, marketMechanicsReasonForContext(reason, modelDataQuality), reason);
+                const modelDataCode = marketMechanicsReasonForContext(modelReasons[0] || 'required timeframe unavailable', modelDataQuality);
                 const qualification = resolveMarketMechanicsQualification({ id: zone.id || seed.seed_id, direction: zone.direction }, {
                     valid: false,
                     reasons: [modelDataCode, ...modelReasons]
@@ -10980,12 +10982,48 @@ function latestCandleTimestamp(data, timeframe) {
 
 function marketDataQualityReasonCode(reason = '') {
     const text = String(reason || '').toLowerCase();
-    if (text.includes('quote data is stale') || text.includes('candle data is stale')) return 'MARKET_DATA_STALE';
+    if (text.includes('market_data_stale') || text.includes('quote data is stale') || text.includes('candle data is stale')) return 'MARKET_DATA_STALE';
     if (text.includes('future') || text.includes('open candle') || text.includes('timestamps are not ordered')
         || text.includes('duplicate candle timestamps') || text.includes('non-finite') || text.includes('impossible ohlc')) return 'MARKET_DATA_INCOMPLETE';
-    if (text.includes('insufficient') || text.includes('unavailable or invalid') || text.includes('timestamp is unavailable')) return 'MARKET_DATA_INCOMPLETE';
+    if (text.includes('insufficient') || text.includes('unavailable or invalid') || text.includes('timestamp is unavailable') || text.includes('required market data is unavailable')) return 'MARKET_DATA_INCOMPLETE';
     if (text.includes('current price is invalid')) return 'INVALID_MARKET_DATA';
-    return 'INVALID_MARKET_DATA';
+    return 'MARKET_DATA_STATUS_UNKNOWN';
+}
+
+// A stale-data blocker is stronger than every downstream candidate blocker,
+// so it must be backed by the same timestamp evidence that is exposed in the
+// packet. An old/stale token from a partial context object is not proof.
+function hasEvidenceBackedMarketDataStale(dataQuality = {}) {
+    const status = String(dataQuality?.status || '').toUpperCase();
+    const staleTf = String(dataQuality?.stale_tf || '').trim().toUpperCase();
+    const timestamp = value => Number.isFinite(Number(value)) ? Number(value) : normalizeTimestampUTC(value);
+    const latest = timestamp(dataQuality?.latest_required_closed_time);
+    const expected = timestamp(dataQuality?.expected_latest_closed_time);
+    const age = Number(dataQuality?.age_ms);
+    const maxAge = Number(dataQuality?.max_allowed_age_ms);
+    return status === 'STALE'
+        && staleTf !== ''
+        && staleTf !== 'NONE'
+        && Number.isFinite(latest)
+        && Number.isFinite(expected)
+        && Number.isFinite(age)
+        && Number.isFinite(maxAge)
+        && age > maxAge;
+}
+
+function marketMechanicsDataQualityFromContext(context = {}) {
+    return context?.data_quality
+        || context?.market_context?.data_quality
+        || context?.marketDataValidation
+        || context?.market_data_validation
+        || null;
+}
+
+function marketMechanicsReasonForContext(reason = '', dataQuality = null) {
+    const canonical = marketMechanicsCanonicalBlocker(reason);
+    return canonical === 'MARKET_DATA_STALE' && !hasEvidenceBackedMarketDataStale(dataQuality || {})
+        ? 'MARKET_DATA_STATUS_UNKNOWN'
+        : canonical;
 }
 
 const MARKET_MECHANICS_BLOCKER_RULES = Object.freeze({
@@ -11086,6 +11124,7 @@ const MARKET_MECHANICS_BLOCKER_RULES = Object.freeze({
     PATH_BLOCKED: { stage: 'PATH', rule: 'Path-quality protection blocks the route to the structural objective', next: 'WAIT_FOR_CLEAR_STRUCTURAL_PATH' },
     ENTRY_INSIDE_OPPOSING_4H: { stage: 'PATH', rule: 'Entry is inside opposing 4H structure', next: 'WAIT_FOR_CLEAR_STRUCTURAL_PATH' },
     MARKET_DATA_STALE: { stage: 'DATA', rule: 'A required closed-candle or quote timestamp is outside the allowed freshness window', next: 'WAIT_FOR_FRESH_MARKET_DATA' },
+    MARKET_DATA_STATUS_UNKNOWN: { stage: 'DATA', rule: 'Market-data freshness validation was not established for the required snapshot', next: 'WAIT_FOR_MARKET_DATA_VALIDATION' },
     MARKET_DATA_INCOMPLETE: { stage: 'DATA', rule: 'Required closed market data is incomplete or malformed', next: 'WAIT_FOR_COMPLETE_MARKET_DATA' },
     INVALID_MARKET_DATA: { stage: 'DATA', rule: 'Required market data contains an invalid numeric or structural value', next: 'WAIT_FOR_VALID_MARKET_DATA' },
     DATA_QUALITY: { stage: 'DATA', rule: 'Required market-data validation failed; inspect the attached data reasons', next: 'WAIT_FOR_VALID_MARKET_DATA' }
@@ -11110,12 +11149,16 @@ function marketMechanicsCanonicalBlocker(reason = '') {
 
 function resolveMarketMechanicsQualification(candidate = {}, evaluation = {}, context = {}) {
     const lifecycle = evaluation?.metrics?.setup_lifecycle || candidate?.evaluation?.metrics?.setup_lifecycle || {};
+    const dataQuality = marketMechanicsDataQualityFromContext(context) || candidate?.data_quality || evaluation?.data_quality || {};
+    const lifecycleReason = lifecycle.rejection_code
+        ? marketMechanicsReasonForContext(lifecycle.rejection_code, dataQuality)
+        : null;
     const rawReasons = [
         ...(Array.isArray(evaluation?.reasons) ? evaluation.reasons : []),
         ...(Array.isArray(candidate?.QUALIFICATION_BLOCKERS) ? candidate.QUALIFICATION_BLOCKERS : []),
         ...(Array.isArray(candidate?.qualification_blockers) ? candidate.qualification_blockers : [])
     ].filter(Boolean).map(String);
-    const reasons = [...new Set(rawReasons)];
+    const reasons = [...new Set(rawReasons.map(reason => marketMechanicsReasonForContext(reason, dataQuality)))];
     const candidatePathBlocked = candidate?.ENTRY_INSIDE_OPPOSING_4H === 'YES'
         || candidate?.entry_inside_opposing_4h === true
         || candidate?.TRADE_QUALIFIED === 'NO'
@@ -11123,14 +11166,21 @@ function resolveMarketMechanicsQualification(candidate = {}, evaluation = {}, co
     const pathReason = candidate?.ENTRY_INSIDE_OPPOSING_4H === 'YES' || candidate?.entry_inside_opposing_4h === true
         ? 'ENTRY_INSIDE_OPPOSING_4H'
         : candidatePathBlocked ? 'PATH_BLOCKED' : null;
+    const sideReason = isPendingLimitExecutionModel(candidate?.execution_model || candidate?.entry_model)
+        && evaluation?.metrics?.pending_limit_valid === false
+        ? candidate?.direction === 'BUY' ? 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT' : candidate?.direction === 'SELL' ? 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT' : 'INVALID_ENTRY_SIDE'
+        : null;
+    const provenDataReasons = reasons.filter(reason => reason === 'MARKET_DATA_STALE'
+        || reason === 'MARKET_DATA_INCOMPLETE'
+        || reason === 'INVALID_MARKET_DATA');
+    const nonDataReasons = reasons.filter(reason => !provenDataReasons.includes(reason));
     const orderedReasons = [
-        lifecycle.rejection_code,
-        ...reasons,
+        ...provenDataReasons,
+        lifecycleReason,
+        ...nonDataReasons.filter(reason => reason !== 'MARKET_DATA_STATUS_UNKNOWN'),
         pathReason,
-        isPendingLimitExecutionModel(candidate?.execution_model || candidate?.entry_model)
-            && evaluation?.metrics?.pending_limit_valid === false
-            ? candidate?.direction === 'BUY' ? 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT' : candidate?.direction === 'SELL' ? 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT' : 'INVALID_ENTRY_SIDE'
-            : null,
+        sideReason,
+        ...nonDataReasons.filter(reason => reason === 'MARKET_DATA_STATUS_UNKNOWN'),
         !Number.isFinite(Number(candidate?.entry)) ? 'NO_VALID_ENTRY_PRICE' : null,
         !Number.isFinite(Number(candidate?.stop_loss)) ? 'NO_STRUCTURAL_STOP' : null,
         !Number.isFinite(Number(candidate?.tp1 ?? candidate?.take_profit_1)) ? 'NO_STRUCTURAL_TARGET' : null
@@ -11164,7 +11214,7 @@ function resolveMarketMechanicsQualification(candidate = {}, evaluation = {}, co
         qualification_stage: passed ? 'AUTHORITY' : stage,
         qualification_result: passed ? 'PASS' : 'BLOCKED',
         primary_blocker: passed ? 'NONE' : primary,
-        all_blockers: passed ? [] : [...new Set([primary, ...reasons.map(marketMechanicsCanonicalBlocker)].filter(Boolean))],
+        all_blockers: passed ? [] : [...new Set([primary, ...reasons.map(reason => marketMechanicsReasonForContext(reason, dataQuality))].filter(Boolean))],
         failed_stage: passed ? null : stage,
         failed_rule: passed ? null : rule,
         next_required_event: passed ? 'NONE' : meta.next,
@@ -11179,7 +11229,8 @@ function resolveMarketMechanicsQualification(candidate = {}, evaluation = {}, co
         pending_limit_geometry_complete: entryValid && stopValid && targetValid && sideValid && priceOrderValid ? 'YES' : 'NO',
         selectable: passed,
         evidence_refs: [...new Set([candidate?.id, candidate?.execution_zone_id, candidate?.market_plan_poi_id, candidate?.execution_poi_id, ...(candidate?.source_evidence_ids || [])].filter(Boolean))],
-        data_status: context.data_quality?.status || null
+        data_status: dataQuality?.status || null,
+        stale_evidence: hasEvidenceBackedMarketDataStale(dataQuality)
     };
 }
 
@@ -11212,7 +11263,10 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
             : quoteAgeMs < -5 * 60 * 1000 ? 'INCOMPLETE' : 'FRESH';
     // A provider quote older than one hour cannot safely support a current
     // limit plan. Unknown timestamps remain unknown instead of being called fresh.
-    if (Number.isFinite(quoteAgeMs) && quoteAgeMs > 60 * 60 * 1000) reasons.push('quote data is stale');
+    if (Number.isFinite(quoteAgeMs) && quoteAgeMs > 60 * 60 * 1000) {
+        reasons.push('quote data is stale');
+        staleDetails.push({ timeframe: 'QUOTE', latest_required_closed_time: quoteTime, expected_latest_closed_time: Number(asOfMs), age_ms: quoteAgeMs, max_allowed_age_ms: 60 * 60 * 1000 });
+    }
     if (Number.isFinite(quoteAgeMs) && quoteAgeMs < -5 * 60 * 1000) reasons.push('quote timestamp is in the future');
     const requiredSet = new Set(Array.isArray(requiredTimeframes) ? requiredTimeframes : ['4H', '1H']);
     const minimumCandles = tf => ['1D', '4H', '1H'].includes(tf) ? 50 : 20;
@@ -11295,7 +11349,7 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
         : uniqueReasons.length ? uniqueReasons.some(reason => marketDataQualityReasonCode(reason) === 'INVALID_MARKET_DATA') ? 'MALFORMED' : 'INCOMPLETE'
             : 'FRESH';
     return { valid: uniqueReasons.length === 0, reasons: uniqueReasons, checked_timeframes: availableTimeframes,
-        status, timeframe_status: timeframeStatus, quote_status: Number.isFinite(quoteTime) ? (Number.isFinite(quoteAgeMs) && quoteAgeMs > 60 * 60 * 1000 ? 'STALE' : 'FRESH') : quoteStatus,
+        status, timeframe_status: timeframeStatus, quote_status: quoteStatus,
         stale_details: staleDetails,
         stale_tf: staleDetails[0]?.timeframe || null,
         latest_required_closed_time: staleDetails[0]?.latest_required_closed_time || null,
@@ -12194,7 +12248,7 @@ function classifyRejectionDetail(reason) {
     const canonical = MARKET_MECHANICS_BLOCKER_RULES[rawReason]
         ? marketMechanicsCanonicalBlocker(rawReason)
         : null;
-    if (['BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT', 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT', 'NO_STRUCTURAL_STOP', 'NO_STRUCTURAL_TARGET', 'SETUP_EXPIRED', 'SETUP_STALE', 'SETUP_ALREADY_COMPLETED', 'ENTRY_ALREADY_CONSUMED', 'SETUP_DELIVERY_ALREADY_ADVANCED', 'MARKET_DATA_STALE', 'MARKET_DATA_INCOMPLETE', 'INVALID_MARKET_DATA'].includes(canonical)) return canonical;
+    if (['BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT', 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT', 'NO_STRUCTURAL_STOP', 'NO_STRUCTURAL_TARGET', 'SETUP_EXPIRED', 'SETUP_STALE', 'SETUP_ALREADY_COMPLETED', 'ENTRY_ALREADY_CONSUMED', 'SETUP_DELIVERY_ALREADY_ADVANCED', 'MARKET_DATA_STALE', 'MARKET_DATA_STATUS_UNKNOWN', 'MARKET_DATA_INCOMPLETE', 'INVALID_MARKET_DATA'].includes(canonical)) return canonical;
     const integrityCode = rawReason.match(/\b(ENGINE_INVARIANT_FAILURE|DATA_TIME_INCONSISTENT|DETERMINISTIC_CONFIDENCE_MISSING)\b/);
     if (integrityCode) return integrityCode[1];
     if (/BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT|BUY limit must be below|BUY limit entry/i.test(rawReason)) return 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT';
@@ -12831,10 +12885,10 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
     // calculated on marketContext.
     if (isMarketMechanicsMode(marketContext) && marketContext.data_quality?.valid === false) {
         const primaryDataReason = marketContext.data_quality.reasons?.[0] || 'required market data is unavailable';
-        state.reason_code = marketDataQualityReasonCode(primaryDataReason);
+        state.reason_code = marketMechanicsReasonForContext(primaryDataReason, marketContext.data_quality);
         state.rejected_reason = state.reason_code;
         state.primary_blocker = state.reason_code;
-        state.all_blockers = [...new Set((marketContext.data_quality.reasons || []).map(marketDataQualityReasonCode))];
+        state.all_blockers = [...new Set((marketContext.data_quality.reasons || []).map(reason => marketMechanicsReasonForContext(reason, marketContext.data_quality)))];
         state.failed_stage = 'MARKET_DATA';
         state.reason = `Market Mechanics evaluation is blocked by ${state.reason_code}: ${primaryDataReason}`;
         return state;
@@ -17507,6 +17561,10 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     if (marketMechanicsMode) {
         const plan = source.market_plan || source.market_context?.market_plan || {};
         const dataQuality = source.data_quality || source.market_context?.data_quality || {};
+        const packetDataQuality = String(dataQuality.status || '').toUpperCase() === 'STALE'
+            && !hasEvidenceBackedMarketDataStale(dataQuality)
+            ? { ...dataQuality, status: 'UNKNOWN', stale_tf: null, latest_required_closed_time: null, expected_latest_closed_time: null, age_ms: null, max_allowed_age_ms: null }
+            : dataQuality;
         const macroBias = roleAudit.daily_bias || 'NEUTRAL';
         const planDirection = plan.direction || (plan.bias === 'BULLISH' ? 'BUY' : plan.bias === 'BEARISH' ? 'SELL' : 'NONE');
         const draw = marketMechanicsDrawFields(plan.primary_draw_on_liquidity || plan.primary_liquidity_target || null, precision);
@@ -17517,18 +17575,18 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             || activePoi.selectable_as_parent_poi === true
             || (activePoi.invalidated !== true && String(activePoi.status || activePoi.freshness || '').toUpperCase() !== 'INVALIDATED')));
         lines.push('=== MARKET PLAN / LIVE AUTHORITY ===');
-        lines.push('MARKET_DATA_STATUS=' + String(dataQuality.status || (dataQuality.valid === false ? 'INCOMPLETE' : 'UNKNOWN'))
-            + ' DATA_1D_STATUS=' + String(dataQuality.timeframe_status?.['1D'] || 'UNKNOWN')
-            + ' DATA_4H_STATUS=' + String(dataQuality.timeframe_status?.['4H'] || 'UNKNOWN')
-            + ' DATA_1H_STATUS=' + String(dataQuality.timeframe_status?.['1H'] || 'UNKNOWN')
-            + ' DATA_15M_STATUS=' + String(dataQuality.timeframe_status?.['15M'] || 'UNKNOWN')
-            + ' DATA_5M_STATUS=' + String(dataQuality.timeframe_status?.['5M'] || 'UNKNOWN')
-            + ' QUOTE_STATUS=' + String(dataQuality.quote_status || 'UNKNOWN')
-            + ' STALE_TF=' + String(dataQuality.stale_tf || 'NONE')
-            + ' LATEST_REQUIRED_CLOSED_TIME=' + String(dataQuality.latest_required_closed_time ? new Date(dataQuality.latest_required_closed_time).toISOString() : 'NONE')
-            + ' EXPECTED_LATEST_CLOSED_TIME=' + String(dataQuality.expected_latest_closed_time ? new Date(dataQuality.expected_latest_closed_time).toISOString() : 'NONE')
-            + ' AGE_MS=' + String(dataQuality.age_ms ?? 'NONE')
-            + ' MAX_ALLOWED_AGE_MS=' + String(dataQuality.max_allowed_age_ms ?? 'NONE'));
+        lines.push('MARKET_DATA_STATUS=' + String(packetDataQuality.status || (packetDataQuality.valid === false ? 'INCOMPLETE' : 'UNKNOWN'))
+            + ' DATA_1D_STATUS=' + String(packetDataQuality.timeframe_status?.['1D'] || 'UNKNOWN')
+            + ' DATA_4H_STATUS=' + String(packetDataQuality.timeframe_status?.['4H'] || 'UNKNOWN')
+            + ' DATA_1H_STATUS=' + String(packetDataQuality.timeframe_status?.['1H'] || 'UNKNOWN')
+            + ' DATA_15M_STATUS=' + String(packetDataQuality.timeframe_status?.['15M'] || 'UNKNOWN')
+            + ' DATA_5M_STATUS=' + String(packetDataQuality.timeframe_status?.['5M'] || 'UNKNOWN')
+            + ' QUOTE_STATUS=' + String(packetDataQuality.quote_status || 'UNKNOWN')
+            + ' STALE_TF=' + String(packetDataQuality.stale_tf || 'NONE')
+            + ' LATEST_REQUIRED_CLOSED_TIME=' + String(packetDataQuality.latest_required_closed_time ? new Date(packetDataQuality.latest_required_closed_time).toISOString() : 'NONE')
+            + ' EXPECTED_LATEST_CLOSED_TIME=' + String(packetDataQuality.expected_latest_closed_time ? new Date(packetDataQuality.expected_latest_closed_time).toISOString() : 'NONE')
+            + ' AGE_MS=' + String(packetDataQuality.age_ms ?? 'NONE')
+            + ' MAX_ALLOWED_AGE_MS=' + String(packetDataQuality.max_allowed_age_ms ?? 'NONE'));
         lines.push('AUTHORITY_MODE=MARKET_MECHANICS MARKET_PLAN_VALID=' + (plan.valid_context === true ? 'YES' : 'NO')
             + ' MARKET_PLAN_COMPLETE=' + (plan.market_plan_complete === true ? 'YES' : 'NO'));
         lines.push('MACRO_1D_BIAS=' + String(macroBias)
