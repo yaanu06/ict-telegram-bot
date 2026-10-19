@@ -11156,6 +11156,123 @@ function timeframeDurationMs(timeframe) {
     return ({ '5M': 5, '15M': 15, '1H': 60, '4H': 240, '1D': 1440 }[timeframe] || 60) * 60000;
 }
 
+function formatUtcSessionAnchor(anchorMinute) {
+    if (!Number.isFinite(Number(anchorMinute))) return null;
+    const minute = ((Math.round(Number(anchorMinute)) % 1440) + 1440) % 1440;
+    return `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}Z`;
+}
+
+function inferFeedSessionAnchor(data = [], timeframe = '1H') {
+    const duration = timeframeDurationMs(timeframe);
+    const buckets = new Map();
+    for (const candle of closedStructureCandles(data)) {
+        const timestamp = normalizeTimestampUTC(candle?.t ?? candle?.timestamp ?? candle?.time);
+        if (!Number.isFinite(timestamp)) continue;
+        const minute = Math.round((((timestamp % duration) + duration) % duration) / 60000);
+        buckets.set(minute, (buckets.get(minute) || 0) + 1);
+    }
+    if (!buckets.size) return null;
+    return [...buckets.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0] * 60000;
+}
+
+function sessionCalendarType(assetClass, sessionCalendar = null) {
+    if (sessionCalendar && typeof sessionCalendar === 'object') {
+        const explicit = sessionCalendar.calendar_type || sessionCalendar.calendarType || sessionCalendar.type;
+        if (explicit) return String(explicit).toUpperCase();
+    }
+    if (assetClass === 'CRYPTO') return 'CRYPTO_24_7';
+    if (assetClass === 'FOREX') return 'FX_WEEKEND_SESSION';
+    if (assetClass === 'METAL') return 'METAL_OBSERVED_SESSION';
+    return 'OBSERVED_SESSION';
+}
+
+function sessionWeekStartAtAnchor(timestamp, anchorMinute) {
+    const date = new Date(timestamp);
+    const midnight = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+    const day = date.getUTCDay();
+    let weekStart = midnight - day * 24 * 60 * 60000 + Number(anchorMinute);
+    if (timestamp < weekStart) weekStart -= 7 * 24 * 60 * 60000;
+    return weekStart;
+}
+
+function isScheduledSessionBarStart(start, { assetClass, calendarType, timeframe, anchorMinute, sessionCalendar } = {}) {
+    if (!Number.isFinite(start)) return false;
+    if (assetClass === 'CRYPTO' || calendarType === 'CRYPTO_24_7') return true;
+    if (calendarType === 'OBSERVED_SESSION' && !sessionCalendar) return true;
+    const date = new Date(start);
+    const day = date.getUTCDay();
+    if (calendarType === 'FX_WEEKEND_SESSION' || assetClass === 'FOREX') {
+        const weekStart = sessionWeekStartAtAnchor(start, anchorMinute);
+        // FX bars exist from the Sunday broker-session anchor through the
+        // Friday close. The Friday anchor itself starts the weekend gap and
+        // is therefore excluded.
+        return start >= weekStart && start < weekStart + 5 * 24 * 60 * 60000;
+    }
+    const configuredDays = Array.isArray(sessionCalendar?.open_days)
+        ? sessionCalendar.open_days.map(Number).filter(value => Number.isInteger(value) && value >= 0 && value <= 6)
+        : [1, 2, 3, 4, 5];
+    if (!configuredDays.includes(day)) return false;
+    return true;
+}
+
+function getExpectedLatestClosedBarTime({ symbol = null, assetClass = null, timeframe = '1H', evaluationTime, sessionCalendar = null, feedAlignment = null, history = [] } = {}) {
+    const evaluation = normalizeTimestampUTC(evaluationTime);
+    if (!Number.isFinite(evaluation)) return {
+        expected_latest_closed_time: null, next_expected_close: null,
+        session_anchor: null, calendar_type: sessionCalendarType(assetClass, sessionCalendar), session_open: null
+    };
+    const tf = String(timeframe || '1H').toUpperCase();
+    const duration = timeframeDurationMs(tf);
+    const inferred = inferFeedSessionAnchor(history, tf);
+    const suppliedAnchor = Number.isFinite(Number(feedAlignment?.anchor_ms))
+        ? Number(feedAlignment.anchor_ms)
+        : Number.isFinite(Number(feedAlignment?.session_anchor_minutes))
+            ? Number(feedAlignment.session_anchor_minutes) * 60000
+            : null;
+    const anchorMs = Number.isFinite(suppliedAnchor) ? suppliedAnchor : (inferred ?? 0);
+    const anchorMinute = ((anchorMs % (24 * 60 * 60000)) + 24 * 60 * 60000) % (24 * 60 * 60000) / 60000;
+    const metadataClass = assetClass || getAssetClass(symbol || pair);
+    const calendarType = sessionCalendarType(metadataClass, sessionCalendar);
+    const candidateIndex = Math.floor((evaluation - anchorMinute * 60000) / duration);
+    const maxLookbackSteps = Math.ceil((14 * 24 * 60 * 60000) / duration);
+    let latest = null;
+    let nextClose = null;
+    // A bounded search is sufficient for all supported bar sizes and avoids
+    // fabricating bars across a calendar gap. The latest expected closed bar
+    // must have completed by evaluationTime.
+    for (let offset = 0; offset <= maxLookbackSteps; offset++) {
+        const index = candidateIndex - offset;
+        const start = anchorMinute * 60000 + index * duration;
+        if (!isScheduledSessionBarStart(start, { assetClass: metadataClass, calendarType, timeframe: tf, anchorMinute, sessionCalendar })) continue;
+        if (start + duration <= evaluation + 5 * 60 * 1000) {
+            latest = start;
+            break;
+        }
+    }
+    for (let offset = 0; offset <= maxLookbackSteps; offset++) {
+        const index = candidateIndex + offset;
+        const start = anchorMinute * 60000 + index * duration;
+        if (!isScheduledSessionBarStart(start, { assetClass: metadataClass, calendarType, timeframe: tf, anchorMinute, sessionCalendar })) continue;
+        if (start + duration > evaluation + 5 * 60 * 1000) {
+            nextClose = start + duration;
+            break;
+        }
+    }
+    const sessionOpen = metadataClass === 'CRYPTO'
+        ? true
+        : isScheduledSessionBarStart(Math.floor(evaluation / duration) * duration, { assetClass: metadataClass, calendarType, timeframe: tf, anchorMinute, sessionCalendar });
+    return {
+        symbol: symbol || null,
+        timeframe: tf,
+        expected_latest_closed_time: latest,
+        next_expected_close: nextClose,
+        session_anchor: formatUtcSessionAnchor(anchorMinute),
+        session_anchor_minutes: anchorMinute,
+        calendar_type: calendarType,
+        session_open: sessionOpen
+    };
+}
+
 function findEventCandleIndex(data, eventTime, timeframe) {
     const normalizedEventTime = normalizeTimestampUTC(eventTime);
     if (!Array.isArray(data) || !Number.isFinite(normalizedEventTime)) return -1;
@@ -11459,6 +11576,14 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
     const reasons = [];
     const timeframeStatus = {};
     const staleDetails = [];
+    const timeframeDiagnostics = {};
+    const symbol = options.symbol || options.pair || null;
+    const symbolMetadata = options.symbol_metadata || options.symbolMetadata || {};
+    // Keep direct helper callers conservative when no instrument identity is
+    // supplied. Production always passes the symbol metadata; an anonymous
+    // fixture should retain the historical continuous-session semantics.
+    const assetClass = options.asset_class || symbolMetadata.asset_class || (symbol ? getAssetClass(symbol) : 'UNKNOWN');
+    const sessionCalendar = options.session_calendar || options.sessionCalendar || symbolMetadata.session || null;
     let quoteStatus = 'UNKNOWN';
     if (!ictFiniteNumber(price) || price <= 0) reasons.push('current price is invalid');
     const quoteTime = normalizeTimestampUTC(quoteSnapshot?.provider_timestamp ?? quoteSnapshot?.provider_timestamp_utc);
@@ -11489,7 +11614,10 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
         const data = historyCache?.[tf];
         const required = requiredSet.has(tf);
         timeframeStatus[tf] = 'FRESH';
-        if (!Array.isArray(data) || (required && data.length < minimumCandles(tf))) {
+        const closedDailyCount = Array.isArray(data)
+            ? data.filter(candle => candle?.is_closed !== false && candle?.closed !== false && candle?.is_forming !== true && candle?.forming !== true).length
+            : 0;
+        if (!Array.isArray(data) || (required && (tf === '1D' ? closedDailyCount : data.length) < minimumCandles(tf))) {
             if (!required && !data) {
                 timeframeStatus[tf] = 'UNKNOWN';
                 continue;
@@ -11498,10 +11626,17 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
             timeframeStatus[tf] = 'INCOMPLETE';
             continue;
         }
+        // The current daily session is expected to be open on a live FX
+        // snapshot (especially Sunday/Monday). It is not evidence of an
+        // incomplete required daily context; only closed candles participate
+        // in freshness and chronology checks for that timeframe.
+        const validationRows = tf === '1D'
+            ? data.filter(candle => candle?.is_closed !== false && candle?.closed !== false && candle?.is_forming !== true && candle?.forming !== true)
+            : data;
         let prevTime = null;
         const seenTimes = new Set();
         let latestTimedCandle = null;
-        for (const c of data) {
+        for (const c of validationRows) {
             if (!ictFiniteNumber(c.o) || !ictFiniteNumber(c.h) || !ictFiniteNumber(c.l) || !ictFiniteNumber(c.c)) {
                 if (required || options.check_optional !== false) reasons.push(`${tf} contains non-finite OHLC values`);
                 timeframeStatus[tf] = 'MALFORMED';
@@ -11530,24 +11665,56 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
                     latestTimedCandle = t;
                 }
             }
-            if (c.is_closed === false) {
+            if (tf !== '1D' && c.is_closed === false) {
                 if (required || options.check_optional !== false) reasons.push(`${tf} latest structure data contains an open candle`);
                 timeframeStatus[tf] = 'INCOMPLETE';
                 break;
             }
         }
+        const expected = getExpectedLatestClosedBarTime({
+            symbol,
+            assetClass,
+            timeframe: tf,
+            evaluationTime: asOfMs,
+            sessionCalendar,
+            feedAlignment: options.feed_alignment?.[tf] || options.feed_alignment || null,
+            history: validationRows
+        });
+        const actualLatestClosed = Number.isFinite(latestTimedCandle) ? latestTimedCandle : null;
+        timeframeDiagnostics[tf] = {
+            actual_latest_closed: actualLatestClosed,
+            expected_latest_closed: expected.expected_latest_closed_time,
+            next_expected_close: expected.next_expected_close,
+            session_anchor: expected.session_anchor,
+            calendar_type: expected.calendar_type,
+            session_open: expected.session_open
+        };
         if (Number.isFinite(latestTimedCandle)) {
-            const timeframeMs = timeframeDurationMs(tf);
             if (latestTimedCandle > Number(asOfMs) + 5 * 60 * 1000) {
                 if (required || options.check_optional !== false) reasons.push(`${tf} contains a future candle timestamp`);
                 timeframeStatus[tf] = 'INCOMPLETE';
             }
-            const staleLimit = ['1D', '1W'].includes(tf) ? 3 * 24 * 60 * 60 * 1000 : timeframeMs * 3;
-            if (Number(asOfMs) - latestTimedCandle > staleLimit) {
-                const age = Number(asOfMs) - latestTimedCandle;
+            // Freshness is measured against the latest bar that should have
+            // closed under the instrument's session calendar, never against
+            // wall-clock time. This prevents an FX weekend from aging the
+            // last completed daily candle into a false stale state.
+            const expectedLatest = expected.expected_latest_closed_time;
+            const providerLag = Math.max(5 * 60 * 1000, Math.min(timeframeDurationMs(tf) / 4, 6 * 60 * 60 * 1000));
+            const age = Number.isFinite(expectedLatest) ? expectedLatest - latestTimedCandle : null;
+            if (Number.isFinite(age) && age > providerLag) {
                 if (required || options.check_optional !== false) reasons.push(`${tf} candle data is stale`);
                 timeframeStatus[tf] = 'STALE';
-                if (required || options.check_optional !== false) staleDetails.push({ timeframe: tf, latest_required_closed_time: latestTimedCandle, expected_latest_closed_time: Number(asOfMs), age_ms: age, max_allowed_age_ms: staleLimit });
+                if (required || options.check_optional !== false) staleDetails.push({
+                    timeframe: tf,
+                    latest_required_closed_time: latestTimedCandle,
+                    expected_latest_closed_time: expectedLatest,
+                    age_ms: age,
+                    max_allowed_age_ms: providerLag,
+                    next_expected_close: expected.next_expected_close,
+                    session_anchor: expected.session_anchor,
+                    calendar_type: expected.calendar_type,
+                    session_open: expected.session_open
+                });
             }
         }
         if (required) {
@@ -11569,7 +11736,10 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
         latest_required_closed_time: staleDetails[0]?.latest_required_closed_time || null,
         expected_latest_closed_time: staleDetails[0]?.expected_latest_closed_time || null,
         age_ms: staleDetails[0]?.age_ms || null,
-        max_allowed_age_ms: staleDetails[0]?.max_allowed_age_ms || null };
+        max_allowed_age_ms: staleDetails[0]?.max_allowed_age_ms || null,
+        data_calendar_type: sessionCalendarType(assetClass, sessionCalendar),
+        session_open: Object.values(timeframeDiagnostics).some(item => item.session_open === true),
+        timeframe_diagnostics: timeframeDiagnostics };
 }
 
 function candidateToAIResult(candidate) {
@@ -14034,17 +14204,45 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
     const candidateRecords = [...recordsById.values()];
     const isYes = value => value === true || String(value || '').toUpperCase() === 'YES';
     const isFiniteNumber = value => Number.isFinite(Number(value));
+    const terminalLifecycleStates = new Set(['CONSUMED', 'FILLED', 'EXPIRED', 'INVALIDATED', 'DELIVERED', 'MISSED', 'INITIAL_PENDING_SIDE_INVALID']);
+    const structurallyValidCandidates = candidateRecords.filter(candidate =>
+        isYes(candidate.poi_structural_valid) || isYes(candidate.structurally_valid));
+    const lifecycleEligibleCandidates = structurallyValidCandidates.filter(candidate => {
+        const lifecycle = String(candidate.lifecycle_state || candidate.opportunity_status || '').toUpperCase();
+        return !isYes(candidate.historical_only)
+            && candidate.historical_only !== true
+            && !isYes(candidate.entry_crossed_after_signal)
+            && !isYes(candidate.entry_consumed)
+            && !terminalLifecycleStates.has(lifecycle);
+    });
+    const correctSideCandidates = lifecycleEligibleCandidates.filter(candidate =>
+        isYes(candidate.pending_side_eligible) || isYes(candidate.pending_limit_side_valid));
+    const untouchedCandidates = correctSideCandidates.filter(candidate =>
+        !isYes(candidate.entry_crossed_after_signal)
+        && !isYes(candidate.entry_consumed)
+        && !terminalLifecycleStates.has(String(candidate.lifecycle_state || '').toUpperCase()));
+    const reachableCandidates = untouchedCandidates.filter(candidate =>
+        candidate.entry_reachable_today !== false && candidate.reachability?.reachable !== false);
+    const stopReadyCandidates = reachableCandidates.filter(candidate =>
+        isFiniteNumber(candidate.stop_loss) || isFiniteNumber(candidate.proposed_stop));
+    const targetReadyCandidates = stopReadyCandidates.filter(candidate =>
+        isFiniteNumber(candidate.tp1) || isFiniteNumber(candidate.proposed_objective));
+    const historicalCandidateIds = new Set([
+        ...partitioned.historical_candidates,
+        ...historicalStates
+    ].map(candidate => candidate?.id || candidate?.candidate_id).filter(Boolean));
     const searchCounts = {
         raw_execution_zone_count: strategySetups.reduce((count, setup) => count + (setup.execution_zone ? 1 : 0), 0),
-        structurally_valid_zone_count: candidateRecords.filter(candidate => isYes(candidate.poi_structural_valid) || isYes(candidate.structurally_valid)).length,
-        correct_side_zone_count: candidateRecords.filter(candidate => isYes(candidate.pending_side_eligible) || isYes(candidate.pending_limit_side_valid)).length,
-        untouched_zone_count: candidateRecords.filter(candidate => !isYes(candidate.entry_crossed_after_signal) && !isYes(candidate.entry_consumed) && !['CONSUMED', 'FILLED', 'EXPIRED', 'INVALIDATED', 'DELIVERED'].includes(String(candidate.lifecycle_state || '').toUpperCase())).length,
-        reachable_zone_count: candidateRecords.filter(candidate => candidate.entry_reachable_today !== false && candidate.reachability?.reachable !== false).length,
-        stop_ready_zone_count: candidateRecords.filter(candidate => isFiniteNumber(candidate.stop_loss) || isFiniteNumber(candidate.proposed_stop)).length,
-        target_ready_zone_count: candidateRecords.filter(candidate => isFiniteNumber(candidate.tp1) || isFiniteNumber(candidate.proposed_objective)).length,
+        structurally_valid_zone_count: structurallyValidCandidates.length,
+        lifecycle_eligible_zone_count: lifecycleEligibleCandidates.length,
+        correct_side_zone_count: correctSideCandidates.length,
+        untouched_zone_count: untouchedCandidates.length,
+        reachable_zone_count: reachableCandidates.length,
+        stop_ready_zone_count: stopReadyCandidates.length,
+        target_ready_zone_count: targetReadyCandidates.length,
         forming_count: formingStates.length,
         live_count: authority.live_candidates.length,
-        historical_count: partitioned.historical_candidates.length + historicalStates.length
+        historical_count: historicalCandidateIds.size
     };
     return {
         ...partitioned,
@@ -14191,7 +14389,11 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         : ['1D', '4H', '1H', '15M', '5M'];
     const dataQuality = validateMarketDataQuality(historyCache, price, quote_snapshot, as_of_ms || Date.now(), requiredDataTimeframes, {
         check_optional: strategyMode !== 'MARKET_MECHANICS',
-        report_timeframes: ['1D', '4H', '1H', '15M', '5M']
+        report_timeframes: ['1D', '4H', '1H', '15M', '5M'],
+        symbol: pair,
+        asset_class: symbolMetadata.asset_class,
+        symbol_metadata: symbolMetadata,
+        session_calendar: symbolMetadata.session
     });
     const snapshotCompleteness = snapshot_completeness || assessMarketSnapshotCompleteness({ historyCache, price });
     const realVolume = hasRealVolume(pair, symbolMetadata);
@@ -17978,6 +18180,21 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             + ' EXPECTED_LATEST_CLOSED_TIME=' + String(packetDataQuality.expected_latest_closed_time ? new Date(packetDataQuality.expected_latest_closed_time).toISOString() : 'NONE')
             + ' AGE_MS=' + String(packetDataQuality.age_ms ?? 'NONE')
             + ' MAX_ALLOWED_AGE_MS=' + String(packetDataQuality.max_allowed_age_ms ?? 'NONE'));
+        lines.push('DATA_CALENDAR_TYPE=' + String(packetDataQuality.data_calendar_type || 'UNKNOWN')
+            + ' SESSION_OPEN=' + (packetDataQuality.session_open === true ? 'YES' : packetDataQuality.session_open === false ? 'NO' : 'UNKNOWN'));
+        const timeframeDiagnostics = packetDataQuality.timeframe_diagnostics || {};
+        for (const tf of ['1D', '4H', '1H', '15M', '5M']) {
+            const diagnostic = timeframeDiagnostics[tf] || {};
+            lines.push('DATA_' + tf + '_DIAGNOSTIC'
+                + ' ACTUAL_LATEST_CLOSED=' + (diagnostic.actual_latest_closed ? new Date(diagnostic.actual_latest_closed).toISOString() : 'NONE')
+                + ' EXPECTED_LATEST_CLOSED=' + (diagnostic.expected_latest_closed ? new Date(diagnostic.expected_latest_closed).toISOString() : 'NONE')
+                + ' NEXT_EXPECTED_CLOSE=' + (diagnostic.next_expected_close ? new Date(diagnostic.next_expected_close).toISOString() : 'NONE')
+                + ' SESSION_ANCHOR=' + String(diagnostic.session_anchor || 'NONE')
+                + ' CALENDAR_TYPE=' + String(diagnostic.calendar_type || 'UNKNOWN')
+                + ' SESSION_OPEN=' + (diagnostic.session_open === true ? 'YES' : diagnostic.session_open === false ? 'NO' : 'UNKNOWN'));
+        }
+        lines.push('TF_1D_SESSION_ANCHOR=' + String(timeframeDiagnostics['1D']?.session_anchor || 'NONE')
+            + ' TF_4H_SESSION_ANCHOR=' + String(timeframeDiagnostics['4H']?.session_anchor || 'NONE'));
         lines.push('AUTHORITY_MODE=MARKET_MECHANICS MARKET_PLAN_VALID=' + (plan.valid_context === true ? 'YES' : 'NO')
             + ' MARKET_PLAN_COMPLETE=' + (plan.market_plan_complete === true ? 'YES' : 'NO'));
         lines.push('MACRO_1D_BIAS=' + String(macroBias)
@@ -18004,6 +18221,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         const searchCounts = source.market_mechanics?.search_counts || source.market_mechanics?.candidate_catalog?.search_counts || {};
         lines.push('RAW_EXECUTION_ZONE_COUNT=' + String(searchCounts.raw_execution_zone_count ?? 'NONE')
             + ' STRUCTURALLY_VALID_ZONE_COUNT=' + String(searchCounts.structurally_valid_zone_count ?? 'NONE')
+            + ' LIFECYCLE_ELIGIBLE_ZONE_COUNT=' + String(searchCounts.lifecycle_eligible_zone_count ?? 'NONE')
             + ' CORRECT_SIDE_ZONE_COUNT=' + String(searchCounts.correct_side_zone_count ?? 'NONE')
             + ' UNTOUCHED_ZONE_COUNT=' + String(searchCounts.untouched_zone_count ?? 'NONE')
             + ' REACHABLE_ZONE_COUNT=' + String(searchCounts.reachable_zone_count ?? 'NONE')

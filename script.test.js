@@ -3701,6 +3701,80 @@ describe('Market Mechanics end-to-end qualification authority', () => {
         expect(result.stale_tf).toBe('QUOTE');
         expect(result.age_ms).toBeGreaterThan(result.max_allowed_age_ms);
     });
+
+    test('FX daily freshness uses the latest expected closed session across the weekend', () => {
+        const ctx = getContext();
+        const evaluationTimes = {
+            friday_after_close: '2026-10-16T23:00:00Z',
+            saturday: '2026-10-17T12:00:00Z',
+            sunday_before_open: '2026-10-18T20:00:00Z',
+            sunday_after_open: '2026-10-18T23:00:00Z',
+            monday_morning: '2026-10-19T07:05:00Z'
+        };
+        const daily = [];
+        for (let day = Date.parse('2026-08-02T22:00:00Z'); day <= Date.parse('2026-10-15T22:00:00Z'); day += 24 * 60 * 60 * 1000) {
+            const weekday = new Date(day).getUTCDay();
+            if (weekday >= 0 && weekday <= 4) daily.push({ t: new Date(day).toISOString(), o: 100, h: 101, l: 99, c: 100, is_closed: true });
+        }
+        daily.push({ t: '2026-10-18T22:00:00Z', o: 100, h: 101, l: 99, c: 100, is_closed: false });
+        for (const time of Object.values(evaluationTimes)) {
+            const result = ctx.validateMarketDataQuality({ '1D': daily }, 100, null, Date.parse(time), ['1D'], {
+                symbol: 'AUD/USD', asset_class: 'FOREX', check_optional: false
+            });
+            expect(result.status).toBe('FRESH');
+            expect(result.timeframe_status['1D']).toBe('FRESH');
+            expect(result.timeframe_diagnostics['1D'].actual_latest_closed).toBe(Date.parse('2026-10-15T22:00:00Z'));
+            expect(result.timeframe_diagnostics['1D'].expected_latest_closed).toBe(Date.parse('2026-10-15T22:00:00Z'));
+            expect(result.timeframe_diagnostics['1D'].calendar_type).toBe('FX_WEEKEND_SESSION');
+            expect(result.timeframe_diagnostics['1D'].session_anchor).toBe('22:00Z');
+        }
+    });
+
+    test('FX daily freshness becomes stale only after the next session close is expected and missing', () => {
+        const ctx = getContext();
+        const daily = Array.from({ length: 50 }, (_, index) => ({
+            t: new Date(Date.parse('2026-10-15T22:00:00Z') - (49 - index) * 24 * 60 * 60 * 1000).toISOString(),
+            o: 100, h: 101, l: 99, c: 100, is_closed: true
+        }));
+        const result = ctx.validateMarketDataQuality({ '1D': daily }, 100, null, Date.parse('2026-10-19T23:00:00Z'), ['1D'], {
+            symbol: 'AUD/USD', asset_class: 'FOREX', check_optional: false
+        });
+        expect(result.status).toBe('STALE');
+        expect(result.stale_tf).toBe('1D');
+        expect(result.latest_required_closed_time).toBe(Date.parse('2026-10-15T22:00:00Z'));
+        expect(result.expected_latest_closed_time).toBe(Date.parse('2026-10-18T22:00:00Z'));
+        expect(result.age_ms).toBeGreaterThan(result.max_allowed_age_ms);
+        expect(result.stale_details[0].calendar_type).toBe('FX_WEEKEND_SESSION');
+    });
+
+    test('crypto daily freshness remains continuous and does not use the FX weekend calendar', () => {
+        const ctx = getContext();
+        const daily = Array.from({ length: 50 }, (_, index) => ({
+            t: new Date(Date.parse('2026-10-18T00:00:00Z') - (49 - index) * 24 * 60 * 60 * 1000).toISOString(),
+            o: 100, h: 101, l: 99, c: 100, is_closed: true
+        }));
+        const result = ctx.validateMarketDataQuality({ '1D': daily }, 100, null, Date.parse('2026-10-19T07:05:00Z'), ['1D'], {
+            symbol: 'BTC/USD', asset_class: 'CRYPTO', check_optional: false
+        });
+        expect(result.status).toBe('FRESH');
+        expect(result.timeframe_diagnostics['1D'].calendar_type).toBe('CRYPTO_24_7');
+        expect(result.timeframe_diagnostics['1D'].expected_latest_closed).toBe(Date.parse('2026-10-18T00:00:00Z'));
+    });
+
+    test('feed alignment is inferred for a 4H schedule instead of assuming UTC midnight', () => {
+        const ctx = getContext();
+        const history = Array.from({ length: 50 }, (_, index) => ({
+            t: new Date(Date.parse('2026-10-19T02:00:00Z') - (49 - index) * 4 * 60 * 60 * 1000).toISOString(),
+            o: 100, h: 101, l: 99, c: 100, is_closed: true
+        }));
+        const expected = ctx.getExpectedLatestClosedBarTime({
+            symbol: 'AUD/USD', assetClass: 'FOREX', timeframe: '4H',
+            evaluationTime: Date.parse('2026-10-19T07:05:00Z'), history
+        });
+        expect(expected.session_anchor).toBe('02:00Z');
+        expect(expected.expected_latest_closed_time).toBe(Date.parse('2026-10-19T02:00:00Z'));
+        expect(expected.next_expected_close).toBe(Date.parse('2026-10-19T10:00:00Z'));
+    });
 });
 
 describe('Market Mechanics packet authority', () => {
@@ -3902,6 +3976,53 @@ describe('Market Mechanics packet authority', () => {
         expect(text).toContain('DATA_1H_STATUS=FRESH');
         expect(text).toContain('DATA_15M_STATUS=FRESH');
         expect(text).toContain('DATA_5M_STATUS=FRESH');
+    });
+
+    test('production entry point keeps the FX daily context fresh on Monday before the new daily close', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const asOfMs = Date.parse('2026-10-19T07:05:00Z');
+        const timed = (count, duration, lastOpen, start = 100) => Array.from({ length: count }, (_, index) => {
+            const close = start + index * 0.01;
+            return {
+                t: new Date(lastOpen - (count - 1 - index) * duration).toISOString(),
+                o: close, h: close + 0.02, l: close - 0.02, c: close, is_closed: true
+            };
+        });
+        const historyCache = {
+            '1D': [
+                ...timed(50, 86400000, Date.parse('2026-10-15T22:00:00Z')),
+                { t: '2026-10-18T22:00:00Z', o: 100.5, h: 100.6, l: 100.4, c: 100.5, is_closed: false }
+            ],
+            '4H': timed(50, 14400000, Date.parse('2026-10-19T02:00:00Z')),
+            '1H': timed(50, 3600000, Date.parse('2026-10-19T06:00:00Z')),
+            '15M': timed(30, 900000, Date.parse('2026-10-19T06:45:00Z')),
+            '5M': timed(30, 300000, Date.parse('2026-10-19T07:00:00Z'))
+        };
+        const live = ctx.buildLiveMarketContext({
+            pair: 'AUD/USD', price: 0.69794, historyCache,
+            indicators: { '4H': {}, '1H': {} }, patterns: {},
+            enhancedAnalysis: { phase: { phase: 'UNKNOWN' } }, holistic: {}, entryContext: null,
+            as_of_ms: asOfMs,
+            quote_snapshot: {
+                price: 0.69794, bid: 0.69793, ask: 0.69795,
+                provider_timestamp_utc: '2026-10-19T07:04:00Z',
+                symbol_metadata: { asset_class: 'FOREX' }
+            }
+        });
+        expect(live.data_quality.status).not.toBe('STALE');
+        expect(live.data_quality.timeframe_status['1D']).toBe('FRESH');
+        expect(live.data_quality.timeframe_diagnostics['1D']).toEqual(expect.objectContaining({
+            actual_latest_closed: Date.parse('2026-10-15T22:00:00Z'),
+            expected_latest_closed: Date.parse('2026-10-15T22:00:00Z'),
+            session_anchor: '22:00Z',
+            calendar_type: 'FX_WEEKEND_SESSION'
+        }));
+        const replay = ctx.createScanReplay(live, { pair: 'AUD/USD', status: 'NO_TRADE' });
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(packet).toContain('DATA_CALENDAR_TYPE=FX_WEEKEND_SESSION');
+        expect(packet).toContain('DATA_1D_STATUS=FRESH');
+        expect(packet).toContain('TF_1D_SESSION_ANCHOR=22:00Z');
+        expect(packet).not.toContain('MARKET_DATA_STATUS=STALE');
     });
 
     test('canonical Market Mechanics presentation excludes wrong-side historical rows from forming output', () => {
@@ -4340,6 +4461,49 @@ describe('Market Mechanics packet authority', () => {
         const semantic = ctx.buildCompactAISemanticPackage({ strategy_mode: mode, adaptive_setup_candidates: [legacyXauCandidate] }, {});
         expect(semantic.authority_mode).toBe(mode);
         expect(semantic.adaptive_setup_candidates).toHaveLength(1);
+    });
+
+    test('candidate search counts are one cumulative funnel', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const valid = {
+            id: 'AUD-FUTURE-SELL', direction: 'SELL', entry: 105, stop_loss: 108, tp1: 95,
+            poi_structural_valid: 'YES', pending_side_eligible: 'YES', pending_limit_side_valid: 'YES',
+            lifecycle_state: 'PENDING_UNFILLED', entry_reachable_today: true, historical_only: false,
+            trade_qualified: true, TRADE_QUALIFIED: 'YES', MODEL_QUALIFIED: 'YES', market_mechanics_verified: true
+        };
+        const wrongSide = {
+            id: 'AUD-PAST-SELL', direction: 'SELL', entry: 95, stop_loss: 100, tp1: 85,
+            poi_structural_valid: 'YES', pending_side_eligible: 'NO', pending_limit_side_valid: 'NO',
+            lifecycle_state: 'FORMING', historical_only: true, rejection_code: 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT'
+        };
+        const structuralInvalid = {
+            id: 'AUD-BROKEN-SELL', direction: 'SELL', entry: 106,
+            poi_structural_valid: 'NO', pending_side_eligible: 'YES', pending_limit_side_valid: 'YES',
+            lifecycle_state: 'FORMING'
+        };
+        const catalog = ctx.buildCanonicalMarketMechanicsCandidateCatalog({
+            result: {
+                raw_candidates: [valid, wrongSide, structuralInvalid],
+                all_valid_candidates: [valid], selectable_candidates: [valid],
+                valid_candidates: [valid], rejected_candidates: [wrongSide, structuralInvalid]
+            },
+            strategySetups: [
+                { id: 'ZONE-1', execution_zone: { id: 'Z1' } },
+                { id: 'ZONE-2', execution_zone: { id: 'Z2' } },
+                { id: 'ZONE-3', execution_zone: { id: 'Z3' } }
+            ],
+            marketPlan: { valid_context: true, market_plan_complete: true, direction: 'SELL' },
+            currentPrice: 100, pair: 'AUD/USD', symbolMetadata: ctx.getSymbolMetadata('AUD/USD')
+        });
+        const counts = catalog.search_counts;
+        expect(counts.raw_execution_zone_count).toBeGreaterThanOrEqual(counts.structurally_valid_zone_count);
+        expect(counts.structurally_valid_zone_count).toBeGreaterThanOrEqual(counts.lifecycle_eligible_zone_count);
+        expect(counts.lifecycle_eligible_zone_count).toBeGreaterThanOrEqual(counts.correct_side_zone_count);
+        expect(counts.correct_side_zone_count).toBeGreaterThanOrEqual(counts.untouched_zone_count);
+        expect(counts.untouched_zone_count).toBeGreaterThanOrEqual(counts.reachable_zone_count);
+        expect(counts.reachable_zone_count).toBeGreaterThanOrEqual(counts.stop_ready_zone_count);
+        expect(counts.stop_ready_zone_count).toBeGreaterThanOrEqual(counts.target_ready_zone_count);
+        expect(counts).toMatchObject({ structurally_valid_zone_count: 2, lifecycle_eligible_zone_count: 1, correct_side_zone_count: 1, stop_ready_zone_count: 1, target_ready_zone_count: 1 });
     });
 });
 
