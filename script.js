@@ -24612,11 +24612,32 @@ function validateAISetup(aiResult, price, historyCache, pairArg, deterministicVa
     return { valid: true, reason: null, adjustedConfidence: confidence, deterministicConfidence: confidence, localScore: confidence, aiConf: Number(aiResult.confidence), checks: { invariant: true }, factors: [], candidate, rr1: candidate.rr_tp1, htfMatch: candidate.htf_alignment || 0 };
 }
 
+function marketSnapshotHistoryEquivalent(leftCache = {}, rightCache = {}, asOfMs = null) {
+    const candleKey = candle => [
+        normalizeTimestampUTC(candle?.t ?? candle?.timestamp ?? candle?.time),
+        Number(candle?.o), Number(candle?.h), Number(candle?.l), Number(candle?.c),
+        candle?.v == null && candle?.volume == null ? null : Number(candle?.v ?? candle?.volume)
+    ];
+    return REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES.every(timeframe => {
+        const leftRaw = leftCache?.[timeframe];
+        const rightRaw = rightCache?.[timeframe];
+        if (!Array.isArray(leftRaw) || !Array.isArray(rightRaw)) return leftRaw === rightRaw;
+        const left = Number.isFinite(Number(asOfMs)) ? marketMechanicsClosed(leftRaw, timeframe, Number(asOfMs)) : leftRaw;
+        const right = Number.isFinite(Number(asOfMs)) ? marketMechanicsClosed(rightRaw, timeframe, Number(asOfMs)) : rightRaw;
+        return left.length === right.length
+            && left.every((candle, index) => JSON.stringify(candleKey(candle)) === JSON.stringify(candleKey(right[index])));
+    });
+}
+
 function buildManualExternalAIReviewOutput({ liveMarketContext = {}, pairLocal = pair, price, scanAsOfMs, historyCache = {} } = {}) {
     const canonicalSnapshotCompleteness = liveMarketContext.snapshot_completeness
         || assessMarketSnapshotCompleteness({ historyCache, price });
     const contextHistoryCache = liveMarketContext.historyCache;
-    const historyIdentityMatches = !contextHistoryCache || contextHistoryCache === historyCache;
+    // buildLiveMarketContext owns a closed-candle-only copy. Object identity is
+    // not evidence of snapshot identity: compare its canonical candle content
+    // with the caller cache after applying the same as-of closure boundary.
+    const historyIdentityMatches = !contextHistoryCache || contextHistoryCache === historyCache
+        || marketSnapshotHistoryEquivalent(contextHistoryCache, historyCache, scanAsOfMs);
     const canonicalCounts = canonicalSnapshotCompleteness.snapshot_input_counts || {};
     const currentCounts = historyCountSnapshot(historyCache);
     const countsMatchCanonical = REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES.every(timeframe =>

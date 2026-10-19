@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const vm = require('vm');
 const { loadStrategyContext } = require('./strategy-adapter');
 const { replayManualPacket } = require('./manual-packet-replay');
 
@@ -134,6 +135,44 @@ describe('production Market Mechanics formation chronology', () => {
         }
         source.market_mechanics.manual_model_states = [{ ...buy, setup_formation_confirmed: 'NO' }, { ...sell, proposed_entry: 90 }];
         expect(ctx.buildManualMarketMechanicsOpportunityShortlist(source, 100)).toHaveLength(0);
+    });
+
+    test('manual Copy button accepts an equivalent closed-candle cache with different object identity', async () => {
+        const asOf = Date.parse('2026-10-19T17:00:00Z');
+        const durations = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 };
+        const history = Object.fromEntries(Object.entries(durations).map(([tf, duration]) => [tf,
+            Array.from({ length: 60 }, (_, i) => {
+                const close = 100 + i * 0.02;
+                return { t: asOf - (60 - i) * duration, o: close - 0.01, h: close + 0.04,
+                    l: close - 0.04, c: close, is_closed: true };
+            })]));
+        const completeness = ctx.assessMarketSnapshotCompleteness({ historyCache: history, price: 102 });
+        expect(completeness.complete).toBe(true);
+        const live = ctx.buildLiveMarketContext({ pair: 'BTC/USD', price: 102, historyCache: history,
+            indicators: {}, patterns: ctx.buildReplayPatterns(history, 102, 'BTC/USD'), enhancedAnalysis: {}, holistic: {},
+            as_of_ms: asOf, snapshot_completeness: completeness,
+            quote_snapshot: { price: 102, provider_timestamp: asOf, timestamp: new Date(asOf).toISOString() } });
+        expect(live.historyCache).not.toBe(history);
+        expect(ctx.marketSnapshotHistoryEquivalent(live.historyCache, history, asOf)).toBe(true);
+        const output = ctx.buildManualExternalAIReviewOutput({ liveMarketContext: live, pairLocal: 'BTC/USD',
+            price: 102, scanAsOfMs: asOf, historyCache: history });
+        expect(output.trade_signal).toMatchObject({ status: 'MANUAL_EXTERNAL_AI_REVIEW',
+            snapshot_id: live.snapshot_id, snapshot_completeness: { complete: true } });
+        const replay = ctx.createScanReplay(live, output);
+        const publicSignal = ctx.buildPublicTradeSignal(output.trade_signal);
+        expect(ctx.buildRawMarketAnalysisPacket({ signal: publicSignal, replay })).toMatchObject({
+            packet_identity: { snapshot_id: live.snapshot_id },
+            snapshot_status: { complete: true, analysis_allowed: true }
+        });
+        ctx.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
+        ctx.__copyReplay = replay;
+        ctx.__copySignal = publicSignal;
+        vm.runInContext("pair = 'BTC/USD'; currentScanArtifact = { symbol: 'BTC/USD', signal: __copySignal, replay: __copyReplay }", ctx);
+        ctx.copyRawMarketAnalysisPacket();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(ctx.navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
+        expect(ctx.navigator.clipboard.writeText.mock.calls[0][0]).toContain('=== AI TRADING PACKET ===');
     });
 });
 

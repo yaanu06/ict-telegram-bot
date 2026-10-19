@@ -129,3 +129,17 @@ The user packet was neither copied into tracked fixtures nor edited. SHA256:
 `9AC9BFD4CDE29CBD021A991649A0E36A2D554FE8AB2C3C5FA4C7A7A342A4BEA9`.
 The real-file test explicitly skips when that private fixture is unavailable in
 CI; locally it ran. Set `MANUAL_PACKET_FIXTURE` to supply the same capture elsewhere.
+
+## Copy-button regression follow-up
+
+The closed-candle boundary added by this repair intentionally creates a
+canonical history object. The manual Copy gate still compared that object with
+the fetched cache using JavaScript reference identity. Consequently, two
+content-identical complete snapshots were treated as different and Copy showed
+`RAW market snapshot is incomplete or unavailable`.
+
+The gate now compares exact required-timeframe closed-candle content at the scan
+cutoff (timestamp and OHLCV), while retaining the snapshot ID, count and
+completeness checks. A production-path test covers analysis → replay → RAW
+packet → Copy clipboard. Real missing timeframes, mismatched candle content,
+missing snapshot IDs and incomplete snapshots remain blocked.
