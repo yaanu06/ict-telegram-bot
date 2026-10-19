@@ -462,6 +462,57 @@ describe('strategy entry lifecycle', () => {
         expect(result.still_actionable_today).toBe(false);
     });
 
+    it('keeps an older but fresh untouched Market Mechanics limit actionable', () => {
+        const ctx = getContext();
+        const t0 = Date.parse('2026-09-08T09:00:00Z');
+        const asOf = Date.parse('2026-09-11T11:00:00Z');
+        const zone = { id: 'standing-sell-zone', low: 109, high: 111, freshness: 'FRESH', invalidated: false, consumed: false };
+        const result = ctx.evaluateSetupLifecycle({
+            direction: 'SELL', execution_model: 'FRESH_RETRACEMENT_LIMIT', entry: 110,
+            zone_low: 109, zone_high: 111, tp1: 95, freshness: 'FRESH', zone,
+            execution_zone_created_time: t0,
+            strategy_setup: {
+                id: 'standing-sell', primary: 'LIQUIDITY_OB_FVG', timeframe: '1H',
+                execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'LIQUIDITY_OB_FVG',
+                market_mechanics_verified: true, execution_confirmed: true,
+                execution_event_time: t0, event_time: t0,
+                execution_zone: zone
+            }
+        }, {
+            pair: 'AUD/USD', price: 100, as_of_time: asOf, strategy_mode: 'MARKET_MECHANICS',
+            historyCache: { '1H': [
+                c(100, 102, 99, 100, '2026-09-08T09:00:00Z'),
+                c(100, 101, 99, 100, '2026-09-11T10:00:00Z'),
+                c(100, 101, 99, 100, '2026-09-11T11:00:00Z')
+            ] }
+        });
+        expect(result.rejection_code).toBeNull();
+        expect(result.opportunity_freshness).toBe('FRESH_PENDING');
+        expect(result.entry_consumed).toBe(false);
+        expect(result.still_actionable_today).toBe(true);
+    });
+
+    it('does not revive an older pending limit after its entry was crossed', () => {
+        const ctx = getContext();
+        const t0 = Date.parse('2026-09-08T09:00:00Z');
+        const result = ctx.evaluateSetupLifecycle({
+            direction: 'SELL', execution_model: 'FRESH_RETRACEMENT_LIMIT', entry: 110,
+            zone_low: 109, zone_high: 111, tp1: 95, freshness: 'FRESH',
+            zone: { id: 'crossed-sell-zone', low: 109, high: 111, freshness: 'FRESH' },
+            execution_zone_created_time: t0,
+            strategy_setup: { primary: 'LIQUIDITY_OB_FVG', timeframe: '1H', execution_model: 'FRESH_RETRACEMENT_LIMIT', execution_event_time: t0, event_time: t0, market_mechanics_verified: true, execution_confirmed: true }
+        }, {
+            pair: 'AUD/USD', price: 105, as_of_time: Date.parse('2026-09-11T11:00:00Z'), strategy_mode: 'MARKET_MECHANICS',
+            historyCache: { '1H': [
+                c(100, 102, 99, 100, '2026-09-08T09:00:00Z'),
+                c(100, 111, 99, 105, '2026-09-09T10:00:00Z'),
+                c(105, 106, 104, 105, '2026-09-11T11:00:00Z')
+            ] }
+        });
+        expect(result.entry_crossed_after_signal).toBe(true);
+        expect(result.rejection_code).toBe('ENTRY_ALREADY_CONSUMED');
+    });
+
     it('keeps poor pending-entry reachability separate from setup validity', () => {
         const ctx = getContext();
         const data = Array.from({ length: 20 }, (_, i) => c(100 + i * 0.1, 100.15 + i * 0.1, 99.95 + i * 0.1, 100.1 + i * 0.1, `2026-09-11 ${String(i).padStart(2, '0')}:00:00`));

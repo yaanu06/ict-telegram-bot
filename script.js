@@ -3498,7 +3498,13 @@ function evaluateStrategyNarrative(narrative, historyCache = {}, price) {
     const post = index >= 0 ? data.slice(index + 1) : [];
     const invalidated = Number.isFinite(invalidation) && ((narrative.direction === 'BUY' && ((Number(price) <= invalidation) || post.some(c => c.c <= invalidation))) || (narrative.direction === 'SELL' && ((Number(price) >= invalidation) || post.some(c => c.c >= invalidation))));
     const targetCompleted = Number.isFinite(objective) && ((narrative.direction === 'BUY' && ((Number(price) >= objective) || post.some(c => c.h >= objective))) || (narrative.direction === 'SELL' && ((Number(price) <= objective) || post.some(c => c.l <= objective))));
-    const stale = !Number.isFinite(ageHours) || ageHours > maxAgeHours;
+    // A pending-limit formation may remain actionable after the parent event's
+    // short intraday freshness window when a concrete, untouched execution
+    // zone has been found.  The zone's own lifecycle, invalidation, target
+    // delivery, and entry-crossing checks remain authoritative.  Confirmation
+    // entries retain the age limit because their entry is a future reaction.
+    const standingPendingZone = narrative.pending_limit_search === true;
+    const stale = (!Number.isFinite(ageHours) || ageHours > maxAgeHours) && !standingPendingZone;
     const state = futureEvent ? 'INVALIDATED' : invalidated ? 'INVALIDATED' : targetCompleted ? 'TARGET_COMPLETED' : stale ? 'STALE_NARRATIVE' : 'ACTIVE';
     return { state, rejection_code: futureEvent ? 'DATA_TIME_INCONSISTENT' : null, event_time: eventTime, event_time_utc: Number.isFinite(eventTime) ? new Date(eventTime).toISOString() : null, event_age_hours: ageHours, event_index: index, timestamp_source: timestampSource(eventTime, index >= 0 ? data[index] : null), structural_invalidation: invalidation, primary_objective: objective, original_entry_consumed: !!narrative.entry_consumed };
 }
@@ -8725,9 +8731,13 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
                         liquidity_event_ids: (timeframeContext?.[tf]?.evidence || []).filter(e => e.kind === 'LIQUIDITY_SWEEP').map(e => e.id),
                         structural_shift_ids: [`SHIFT:${tf}:${direction}:${eventTime}`], evidence_ids: [...classification.evidence_ids],
                         target_intent: targetPool[0]?.source || null, invalidation_intent: anchor, execution_requirement: 'FRESH_EXECUTION_ZONE' } };
-                const life = evaluateStrategyNarrative(narrative, historyCache, price);
-                if (life.state !== 'ACTIVE') { discoveryEvent.failure_reason = life.rejection_code || life.state || 'NARRATIVE_NOT_ACTIVE'; continue; }
+                // Enumerate the child zones before applying narrative age.
+                // This prevents an old-but-still-fresh pending zone from being
+                // discarded solely because the parent shift is older than the
+                // confirmation-entry freshness window.
                 const freshZones = buildFreshExecutionZonesForNarrative(narrative, historyCache, zones, pairLocal, price, symbolMetadata);
+                const life = evaluateStrategyNarrative({ ...narrative, pending_limit_search: freshZones.length > 0 }, historyCache, price);
+                if (life.state !== 'ACTIVE') { discoveryEvent.failure_reason = life.rejection_code || life.state || 'NARRATIVE_NOT_ACTIVE'; continue; }
                 if (freshZones.length === 0) {
                     setups.push({ ...narrative, narrative_state: 'ACTIVE', execution_zone: null, execution_model: classification.classification === 'HTF_VERIFIED_REVERSAL' ? 'CONFIRMATION_ENTRY' : 'PENDING_LIMIT',
                         entry_model: classification.classification === 'HTF_VERIFIED_REVERSAL' ? 'CONFIRMATION_ENTRY' : 'PENDING_LIMIT',
@@ -12113,7 +12123,22 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
                 ? freshnessSpec.max4hEventAgeHours
                 : freshnessSpec.max1hEventAgeHours;
     const pendingLimitModel = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model || setup.execution_model || setup.entry_model);
-    const parentAgeExpired = !(pendingLimitModel && Number.isFinite(executionEventTime)) && Number.isFinite(parentEventAgeHours)
+    const zoneFreshness = String(candidate.freshness ?? candidate.zone?.freshness ?? setup.freshness ?? '').toUpperCase();
+    const hasExecutionEvidence = Number.isFinite(executionEventTime)
+        || Number.isFinite(zoneCreatedTime)
+        || Number.isInteger(executionEventIndex);
+    const standingPendingEvidence = pendingLimitModel
+        && hasExecutionEvidence
+        && !['CONSUMED', 'USED', 'INVALIDATED', 'EXPIRED', 'DELIVERED', 'MITIGATED', 'BROKEN'].includes(zoneFreshness)
+        && Number.isFinite(entry)
+        && Number.isFinite(low)
+        && Number.isFinite(high)
+        && !candidate.execution_zone_consumed
+        && !candidate.original_strategy_entry_consumed
+        && candidate.zone?.invalidated !== true
+        && candidate.zone?.consumed !== true
+        && candidate.zone?.expired !== true;
+    const parentAgeExpired = !standingPendingEvidence && Number.isFinite(parentEventAgeHours)
         ? parentEventAgeHours > parentMaxAgeHours
         : false;
     const indexAgeExpired = !Number.isFinite(executionEventTime)
@@ -12229,7 +12254,12 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         : result.entry_consumed ? 'INVALIDATED'
             : deliveryCrossedAfterFormation ? 'STALE_DELIVERY'
                 : result.poi_freshness === 'FRESH' ? 'FRESH_PENDING' : 'ACTIVE_PENDING';
-    const staleByAge = !Number.isFinite(eventAgeHours) || eventAgeHours > maxEventAgeHours || parentAgeExpired;
+    // Age is a freshness signal for confirmation entries, not a hard expiry
+    // for a still-fresh pending limit.  A standing pending setup is allowed
+    // to survive across sessions/days until its own zone lifecycle, entry
+    // chronology, invalidation, or objective evidence makes it ineligible.
+    const staleByAge = !standingPendingEvidence
+        && (!Number.isFinite(eventAgeHours) || eventAgeHours > maxEventAgeHours || parentAgeExpired);
     const deliveryAdvanced = (deliveryCrossedAfterFormation || (result.remaining_reward_fraction != null
             && result.remaining_reward_fraction < freshnessSpec.minRemainingRewardFraction
             && !Number.isFinite(formationProgressRaw)));
@@ -13874,7 +13904,7 @@ function recoverTodayOpportunityAfterRejectedSelection(liveMarketContext, select
     return buildTodayOpportunity({
         ...scanArgs,
         marketContext: liveMarketContext.market_context,
-        strategySetups: (liveMarketContext.strategy_setups || []).filter(hasExecutableOpportunityBacking),
+        strategySetups: filterLiveStrategySetupsForAuthority(liveMarketContext.strategy_setups, liveMarketContext),
         aiAnalysis: liveMarketContext.ai_analysis,
         executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
         candidateDiagnostics: liveMarketContext.setup_candidate_audit,
@@ -14147,6 +14177,17 @@ function isMarketMechanicsMode(source = {}) {
     return String(mode).toUpperCase() === 'MARKET_MECHANICS';
 }
 
+// Public opportunity projections must use the same authority predicate as
+// candidate construction.  The older helper is intentionally retained for
+// legacy/AI diagnostics, but using it on a Market Mechanics context silently
+// removes valid non-CRT formations from the Mini App projection.
+function filterLiveStrategySetupsForAuthority(setups = [], source = {}) {
+    const predicate = isMarketMechanicsMode(source)
+        ? hasMarketMechanicsExecutionBacking
+        : hasExecutableOpportunityBacking;
+    return (Array.isArray(setups) ? setups : []).filter(predicate);
+}
+
 function normalizedAuthorityMode(value) {
     const mode = String(value || '').toUpperCase();
     if (mode === 'MARKET_MECHANICS') return 'MARKET_MECHANICS';
@@ -14369,13 +14410,24 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
     const terminalLifecycleStates = new Set(['CONSUMED', 'FILLED', 'EXPIRED', 'INVALIDATED', 'DELIVERED', 'MISSED', 'INITIAL_PENDING_SIDE_INVALID']);
     const structurallyValidCandidates = candidateRecords.filter(candidate =>
         isYes(candidate.poi_structural_valid) || isYes(candidate.structurally_valid));
+    const terminalRejectionCodes = new Set([
+        'INITIAL_PENDING_SIDE_INVALID', 'ENTRY_ALREADY_CONSUMED', 'ENTRY_ALREADY_CROSSED',
+        'SETUP_EXPIRED', 'SETUP_STALE', 'SETUP_ALREADY_COMPLETED',
+        'SETUP_DELIVERY_ALREADY_ADVANCED', 'SETUP_INVALIDATED',
+        'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT', 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT'
+    ]);
     const lifecycleEligibleCandidates = structurallyValidCandidates.filter(candidate => {
         const lifecycle = String(candidate.lifecycle_state || candidate.opportunity_status || '').toUpperCase();
+        const rejection = marketMechanicsCanonicalBlocker(candidate.rejection_code
+            || candidate.setup_lifecycle?.rejection_code
+            || candidate.qualification?.primary_blocker
+            || '');
         return !isYes(candidate.historical_only)
             && candidate.historical_only !== true
             && !isYes(candidate.entry_crossed_after_signal)
             && !isYes(candidate.entry_consumed)
-            && !terminalLifecycleStates.has(lifecycle);
+            && !terminalLifecycleStates.has(lifecycle)
+            && !terminalRejectionCodes.has(rejection);
     });
     const correctSideCandidates = lifecycleEligibleCandidates.filter(candidate =>
         isYes(candidate.pending_side_eligible) || isYes(candidate.pending_limit_side_valid));
@@ -14389,6 +14441,29 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
         isFiniteNumber(candidate.stop_loss) || isFiniteNumber(candidate.proposed_stop));
     const targetReadyCandidates = stopReadyCandidates.filter(candidate =>
         isFiniteNumber(candidate.tp1) || isFiniteNumber(candidate.proposed_objective));
+    const blockerPrecedence = [
+        'MARKET_DATA_STALE', 'MARKET_DATA_INCOMPLETE', 'INVALID_MARKET_DATA',
+        'MARKET_PLAN_INVALID', 'MARKET_PLAN_POI_INVALID', 'EXECUTION_POI_INVALID',
+        'SETUP_FORMATION_INCOMPLETE', 'INITIAL_PENDING_SIDE_INVALID',
+        'ENTRY_ALREADY_CONSUMED', 'SETUP_EXPIRED', 'SETUP_STALE',
+        'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT', 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT',
+        'NO_STRUCTURAL_STOP', 'NO_STRUCTURAL_TARGET', 'PATH_BLOCKED'
+    ];
+    const blockerCounts = {};
+    for (const candidate of candidateRecords) {
+        const rawBlocker = candidate.rejection_code
+            || candidate.setup_lifecycle?.rejection_code
+            || candidate.qualification?.primary_blocker
+            || candidate.primary_blocker;
+        if (!rawBlocker) continue;
+        const blocker = marketMechanicsCanonicalBlocker(rawBlocker);
+        blockerCounts[blocker] = (blockerCounts[blocker] || 0) + 1;
+    }
+    const finalPrimaryBlocker = authority.live_candidates.length
+        ? 'NONE'
+        : blockerPrecedence.find(blocker => blockerCounts[blocker] > 0)
+            || Object.entries(blockerCounts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0]
+            || 'NO_LIVE_CANDIDATE';
     const historicalCandidateIds = new Set([
         ...partitioned.historical_candidates,
         ...historicalStates
@@ -14399,16 +14474,24 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
         // below made the displayed funnel non-monotonic and obscured which
         // execution zones actually reached qualification.
         raw_execution_zone_count: candidateRecords.length,
+        raw_formation_count: strategySetups.length,
+        formation_confirmed_count: strategySetups.filter(setup => setup.setup_formation_confirmed === true || setup.execution_confirmed === true).length,
+        current_formation_eligible_count: lifecycleEligibleCandidates.length,
+        future_execution_zone_count: lifecycleEligibleCandidates.filter(candidate => Number.isFinite(Number(candidate.entry))).length,
         structurally_valid_zone_count: structurallyValidCandidates.length,
         lifecycle_eligible_zone_count: lifecycleEligibleCandidates.length,
         correct_side_zone_count: correctSideCandidates.length,
+        pending_side_valid_count: correctSideCandidates.length,
         untouched_zone_count: untouchedCandidates.length,
+        untouched_pending_count: untouchedCandidates.length,
         reachable_zone_count: reachableCandidates.length,
         stop_ready_zone_count: stopReadyCandidates.length,
         target_ready_zone_count: targetReadyCandidates.length,
         forming_count: formingStates.length,
         live_count: authority.live_candidates.length,
-        historical_count: historicalCandidateIds.size
+        historical_count: historicalCandidateIds.size,
+        blocker_counts: blockerCounts,
+        final_primary_blocker: finalPrimaryBlocker
     };
     return {
         ...partitioned,
@@ -15337,7 +15420,7 @@ function replayCapturedScan(replay) {
             provider_timestamp_utc: replay.runtime_state.quote_snapshot.provider_timestamp_utc || replay.runtime_state.quote_snapshot.timestamp || null
         } : null });
     const today = buildTodayOpportunity({ pair: replay.pair, currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
-        marketContext: live.market_context, strategySetups: (live.strategy_setups || []).filter(hasExecutableOpportunityBacking), executionZones: [...(live.strategy_execution_zones || []), ...(live.real_ict_zones || [])],
+        marketContext: live.market_context, strategySetups: filterLiveStrategySetupsForAuthority(live.strategy_setups, live), executionZones: [...(live.strategy_execution_zones || []), ...(live.real_ict_zones || [])],
         candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, futureWatchCandidates: live.future_watch_candidates, lowQualityCandidates: live.low_quality_candidates, targetCandidates: live.target_candidates,
         symbolMetadata: live.symbol_metadata,
         marketOpen: live.market_open });
@@ -18436,10 +18519,16 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             + ' SELECTED_MARKET_PLAN_POI_REASON=' + String(plan.selected_market_plan_poi_reason || 'NONE'));
         const searchCounts = source.market_mechanics?.search_counts || source.market_mechanics?.candidate_catalog?.search_counts || {};
         lines.push('RAW_EXECUTION_ZONE_COUNT=' + String(searchCounts.raw_execution_zone_count ?? 'NONE')
+            + ' RAW_FORMATION_COUNT=' + String(searchCounts.raw_formation_count ?? 'NONE')
+            + ' FORMATION_CONFIRMED_COUNT=' + String(searchCounts.formation_confirmed_count ?? 'NONE')
+            + ' CURRENT_FORMATION_ELIGIBLE_COUNT=' + String(searchCounts.current_formation_eligible_count ?? 'NONE')
+            + ' FUTURE_EXECUTION_ZONE_COUNT=' + String(searchCounts.future_execution_zone_count ?? 'NONE')
             + ' STRUCTURALLY_VALID_ZONE_COUNT=' + String(searchCounts.structurally_valid_zone_count ?? 'NONE')
             + ' LIFECYCLE_ELIGIBLE_ZONE_COUNT=' + String(searchCounts.lifecycle_eligible_zone_count ?? 'NONE')
             + ' CORRECT_SIDE_ZONE_COUNT=' + String(searchCounts.correct_side_zone_count ?? 'NONE')
+            + ' PENDING_SIDE_VALID_COUNT=' + String(searchCounts.pending_side_valid_count ?? 'NONE')
             + ' UNTOUCHED_ZONE_COUNT=' + String(searchCounts.untouched_zone_count ?? 'NONE')
+            + ' UNTOUCHED_PENDING_COUNT=' + String(searchCounts.untouched_pending_count ?? 'NONE')
             + ' REACHABLE_ZONE_COUNT=' + String(searchCounts.reachable_zone_count ?? 'NONE')
             + ' STOP_READY_ZONE_COUNT=' + String(searchCounts.stop_ready_zone_count ?? 'NONE')
             + ' TARGET_READY_ZONE_COUNT=' + String(searchCounts.target_ready_zone_count ?? 'NONE'));
@@ -18453,8 +18542,10 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             + ' FUTURE_ZONE_COUNT=' + String(searchCounts.correct_side_zone_count ?? 'NONE')
             + ' ELIGIBLE_PENDING_COUNT=' + String(searchCounts.target_ready_zone_count ?? 'NONE')
             + ' HISTORICAL_COUNT=' + String(searchCounts.historical_count ?? 'NONE')
-            + ' FINAL_FAILED_STAGE=' + String(plan.market_plan_failed_stage || (searchCounts.live_count ? 'NONE' : 'CANDIDATE'))
-            + ' FINAL_PRIMARY_BLOCKER=' + String(plan.market_plan_primary_blocker || (searchCounts.live_count ? 'NONE' : 'NO_LIVE_CANDIDATE')));
+            + ' FINAL_FAILED_STAGE=' + String(plan.market_plan_failed_stage
+                || MARKET_MECHANICS_BLOCKER_RULES[searchCounts.final_primary_blocker]?.stage
+                || (searchCounts.live_count ? 'NONE' : 'CANDIDATE'))
+            + ' FINAL_PRIMARY_BLOCKER=' + String(searchCounts.final_primary_blocker || plan.market_plan_primary_blocker || (searchCounts.live_count ? 'NONE' : 'NO_LIVE_CANDIDATE')));
         lines.push('MARKET_PLAN_FAILED_STAGE=' + String(plan.market_plan_failed_stage || 'NONE')
             + ' MARKET_PLAN_FAILED_RULE=' + String(plan.market_plan_failed_rule || 'NONE')
             + ' MARKET_PLAN_PRIMARY_BLOCKER=' + String(plan.market_plan_primary_blocker || 'NONE')
@@ -23251,7 +23342,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null, liveMa
             scanAsOfMs: Date.now(),
             histories: historyCache,
             marketContext: fallbackMarketContext,
-            strategySetups: (fallbackStrategySetups || []).filter(hasExecutableOpportunityBacking),
+            strategySetups: filterLiveStrategySetupsForAuthority(fallbackStrategySetups, fallbackMarketContext),
             executionZones: getStrategyExecutionZones(fallbackStrategySetups),
             candidateDiagnostics: {
                 raw_candidate_count: fallbackCandidateResult.raw_candidates?.length || 0,
@@ -23569,7 +23660,7 @@ function buildManualExternalAIReviewOutput({ liveMarketContext = {}, pairLocal =
         scanAsOfMs,
         histories: historyCache,
         marketContext: liveMarketContext.market_context || {},
-        strategySetups: (liveMarketContext.strategy_setups || []).filter(hasExecutableOpportunityBacking),
+        strategySetups: filterLiveStrategySetupsForAuthority(liveMarketContext.strategy_setups, liveMarketContext),
         aiAnalysis: null,
         executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
         candidateDiagnostics: liveMarketContext.setup_candidate_audit || {},
@@ -24084,7 +24175,7 @@ async function runAutoScan() {
             scanAsOfMs: scanAsOfMs,
             histories: historyCache,
             marketContext: liveMarketContext.market_context,
-            strategySetups: (liveMarketContext.strategy_setups || []).filter(hasExecutableOpportunityBacking),
+            strategySetups: filterLiveStrategySetupsForAuthority(liveMarketContext.strategy_setups, liveMarketContext),
             aiAnalysis: analystResult.diagnostics,
             executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
             candidateDiagnostics: liveMarketContext.setup_candidate_audit,
@@ -24120,7 +24211,7 @@ async function runAutoScan() {
         if (!hasPlanningCandidates) {
             const audit = liveMarketContext.setup_candidate_audit || {};
             const hasRaw = (audit.raw_candidate_count || 0) > 0;
-            const supportedStrategySetups = (liveMarketContext.strategy_setups || []).filter(hasExecutableOpportunityBacking);
+            const supportedStrategySetups = filterLiveStrategySetupsForAuthority(liveMarketContext.strategy_setups, liveMarketContext);
             const hasStrategySetups = supportedStrategySetups.length > 0;
             const decision = 'WAIT';
             const reason = !hasStrategySetups
@@ -24204,7 +24295,7 @@ async function runAutoScan() {
                     scanAsOfMs,
                     histories: historyCache,
                     marketContext: liveMarketContext.market_context,
-                    strategySetups: (liveMarketContext.strategy_setups || []).filter(hasExecutableOpportunityBacking),
+                    strategySetups: filterLiveStrategySetupsForAuthority(liveMarketContext.strategy_setups, liveMarketContext),
                     aiAnalysis: liveMarketContext.ai_analysis,
                     executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
                     candidateDiagnostics: liveMarketContext.setup_candidate_audit,
