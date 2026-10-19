@@ -298,12 +298,15 @@ describe('strategy entry lifecycle', () => {
         const { candidate, market } = fixture();
         expect(getContext().evaluateSetupLifecycle(candidate, market).entry_consumed).toBe(false);
     });
-    it('expires old and untraceable events even if their zones still exist', () => {
+    it('expires only a resolved old event and does not turn an untraceable index into expiry', () => {
         const ctx = getContext();
         const { candidate, market } = fixture('MSNR', Array.from({ length: 9 }, () => c(1.161, 1.1612, 1.1605, 1.161)));
         expect(ctx.evaluateSetupLifecycle(candidate, market).rejection_code).toBe('SETUP_EXPIRED');
         delete candidate.strategy_setup.departure_confirmed_index;
-        expect(ctx.evaluateSetupLifecycle(candidate, market).rejection_code).toBe('SETUP_EXPIRED');
+        const result = ctx.evaluateSetupLifecycle(candidate, market);
+        expect(result.rejection_code).toBe('CHRONOLOGY_UNKNOWN');
+        expect(result.lifecycle_classification).toBe('CHRONOLOGY_UNKNOWN');
+        expect(result.lifecycle_diagnostics.documented_age_rule_applied).toBe('NO');
     });
     it('does not reset a role reversal at its already consumed retest', () => {
         const { candidate, market } = fixture('MSNR', [c(1.1604, 1.161, 1.16, 1.1608)]);
@@ -318,7 +321,37 @@ describe('strategy entry lifecycle', () => {
         const result = getContext().evaluateSetupLifecycle(candidate, market);
         expect(result.rejection_code).toBe('ENTRY_ALREADY_CONSUMED');
         market.historyCache['1H'].shift();
-        expect(getContext().evaluateSetupLifecycle(candidate, market).rejection_code).toBe('SETUP_EXPIRED');
+        const remapped = getContext().evaluateSetupLifecycle(candidate, market);
+        expect(remapped.rejection_code).toBe('CHRONOLOGY_UNKNOWN');
+        expect(remapped.lifecycle_classification).toBe('CHRONOLOGY_UNKNOWN');
+    });
+
+    it('keeps a timestamp-backed untouched pending setup active when its execution index is absent', () => {
+        const ctx = getContext();
+        const eventTime = Date.parse('2026-10-19T11:00:00Z');
+        const fiveMinuteBars = [
+            c(1.1220, 1.1222, 1.1218, 1.1221, '2026-10-19T11:00:00Z'),
+            c(1.1221, 1.1223, 1.1219, 1.1222, '2026-10-19T11:05:00Z'),
+            c(1.1222, 1.1224, 1.1220, 1.1223, '2026-10-19T11:10:00Z'),
+            c(1.1223, 1.1225, 1.1221, 1.1224, '2026-10-19T11:15:00Z')
+        ];
+        const result = ctx.evaluateSetupLifecycle({
+            direction: 'BUY', execution_model: 'PENDING_LIMIT', entry: 1.12067,
+            zone_low: 1.12047, zone_high: 1.12087, tp1: 1.13,
+            execution_event_time: eventTime, execution_zone_created_time: eventTime,
+            strategy_setup: { primary: 'MSNR', timeframe: '1H', setup_timeframe: '1H', execution_timeframe: '5M',
+                event_time: eventTime, market_mechanics_verified: true, execution_confirmed: true }
+        }, {
+            pair: 'EUR/USD', price: 1.1218, as_of_time: '2026-10-19T11:20:00Z', strategy_mode: 'MARKET_MECHANICS',
+            historyCache: { '1H': [c(1.1218, 1.1226, 1.1216, 1.1224, '2026-10-19T11:00:00Z')], '5M': fiveMinuteBars }
+        });
+        expect(result.rejection_code).toBeNull();
+        expect(result.entry_touch_count_after_signal).toBe(0);
+        expect(result.entry_crossed_after_signal).toBe(false);
+        expect(result.lifecycle_classification).toBe('ACTIVE_UNTOUCHED');
+        expect(result.lifecycle_diagnostics.execution_event_index_resolved).toBe('YES');
+        expect(result.lifecycle_diagnostics.execution_event_index_source).toBe('TIMESTAMP');
+        expect(result.lifecycle_diagnostics.timestamp_chronology_available).toBe('YES');
     });
     it('uses identical overlap rules for SELL', () => {
         const { candidate, market } = fixture('TBS', [c(1.1604, 1.161, 1.16, 1.1608)]);
@@ -4388,7 +4421,7 @@ describe('Market Mechanics packet authority', () => {
         expect(text).not.toContain('OPPORTUNITY_ID=NZD-EXPIRED');
         expect(text).not.toContain('OPPORTUNITY_ID=NZD-INCOMPLETE');
         expect(text).toContain('This is a MANUAL DEEPSEEK REVIEW packet');
-        expect(text).toContain('LIVE MARKET MECHANICS CANDIDATES remain deterministic engine authority');
+        expect(text).toContain('In manual mode, the active shortlist is the review universe; LIVE rows are not required');
     });
 
     test('manual Market Mechanics decision validation fails closed on unknown touch chronology and missing structural evidence', () => {
@@ -4402,6 +4435,30 @@ describe('Market Mechanics packet authority', () => {
         expect(result.valid).toBe(false);
         expect(result.issues).toEqual(expect.arrayContaining(['MANUAL_ENTRY_TOUCH_NOT_VERIFIABLY_UNTOUCHED', 'MANUAL_STRUCTURAL_STOP_EVIDENCE_REQUIRED', 'MANUAL_STRUCTURAL_TARGET_EVIDENCE_REQUIRED']));
         expect(result.execution_allowed).toBe(false);
+    });
+
+    test('manual shortlist retains a confirmed nonterminal raw candidate rejected only by quality', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const shortlist = ctx.buildManualMarketMechanicsOpportunityShortlist({
+            pair: 'EUR/USD', current_price: 1.1224, data_quality: { status: 'FRESH' },
+            market_plan: { direction: 'BUY', narrative: 'PULLBACK' },
+            market_mechanics: { candidate_catalog: {
+                raw_candidates: [{
+                    id: 'EUR-MSNR-UNTOUCHED', direction: 'BUY', timeframe: '1H', entry_model: 'MARKET_SHIFT',
+                    strategy_setup: { execution_confirmed: true, setup_formation_confirmed: true },
+                    execution_zone: { id: 'MSNR-1.12047', type: 'MSNR', low: 1.12047, high: 1.12087 },
+                    entry: 1.12067, stop_loss: 1.1100, tp1: 1.1240, entry_zone_touched: 'NO', entry_consumed: 'NO',
+                    rejection_code: 'NO_STRUCTURAL_STOP', primary_blocker: 'NO_STRUCTURAL_STOP',
+                    stop_source: 'HTF_EXTREME', formation_evidence_refs: ['MSNR-EVIDENCE']
+                }], all_rejected_candidates: []
+            } }
+        }, 1.1224);
+        expect(shortlist).toHaveLength(1);
+        expect(shortlist[0]).toEqual(expect.objectContaining({
+            opportunity_id: 'EUR-MSNR-UNTOUCHED', formation_status: 'CONFIRMED',
+            lifecycle_state: 'ACTIVE', original_rejection: 'NO_STRUCTURAL_STOP'
+        }));
+        expect(shortlist[0].quality_warnings).toContain('NO_STRUCTURAL_STOP');
     });
 
     test('serializes Market Mechanics draw and bias fields without ambiguity or object coercion', () => {

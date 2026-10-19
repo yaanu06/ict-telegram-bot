@@ -9020,8 +9020,34 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
                 confirmation_mode: invalidationConfirmationMode
             };
         }
+        const lifecycleTimeframe = setup.execution_timeframe || setup.timeframe;
+        const lifecycleHistory = historyCache?.[lifecycleTimeframe] || historyCache?.[setup.timeframe] || [];
+        const lifecycleHistoryHasTimestamps = lifecycleHistory.some(candle => Number.isFinite(normalizeTimestampUTC(candle?.t)));
+        const executionZoneCreatedTime = lifecycleHistoryHasTimestamps
+            ? normalizeTimestampUTC(
+                executionZone.created_time ?? executionZone.created_time_ms ?? executionZone.created_at
+                    ?? setup.execution_zone_created_time ?? setup.execution_event_time
+                    ?? setup.first_knowable_time ?? setup.confirmation_time
+                    ?? (setup.primary === 'MSNR' ? setup.event_time : null)
+            )
+            : null;
+        const executionZoneCreatedIndex = Number.isInteger(executionZone.created_index)
+            ? executionZone.created_index
+            : Number.isInteger(executionZone.source_candle_index)
+                ? executionZone.source_candle_index
+                : Number.isInteger(setup.execution_zone_created_index)
+                    ? setup.execution_zone_created_index
+                    : null;
+        const lifecycleSetup = { ...setup, execution_zone: executionZone };
         Object.assign(setup, evaluateSetupLifecycle({
-            strategy_setup: setup, direction: setup.direction,
+            strategy_setup: lifecycleSetup,
+            zone: executionZone,
+            execution_zone: executionZone,
+            execution_event_time: executionZoneCreatedTime,
+            execution_event_index: executionZoneCreatedIndex,
+            execution_zone_created_time: executionZoneCreatedTime,
+            execution_zone_created_index: executionZoneCreatedIndex,
+            direction: setup.direction,
             entry: executionZone.midpoint, zone_low: executionZone.low, zone_high: executionZone.high
         }, { historyCache, price }));
         setups.push({
@@ -11689,6 +11715,19 @@ function findEventCandleIndex(data, eventTime, timeframe) {
     return -1;
 }
 
+function findExactEventCandleIndex(data, eventTime, timeframe) {
+    const normalizedEventTime = normalizeTimestampUTC(eventTime);
+    if (!Array.isArray(data) || !Number.isFinite(normalizedEventTime)) return -1;
+    const duration = timeframeDurationMs(timeframe);
+    for (let i = 0; i < data.length; i++) {
+        const candleTime = normalizeTimestampUTC(data[i]?.t);
+        if (!Number.isFinite(candleTime)) continue;
+        if (normalizedEventTime >= candleTime && normalizedEventTime < candleTime + duration) return i;
+        if (candleTime === normalizedEventTime) return i;
+    }
+    return -1;
+}
+
 function latestCandleTimestamp(data, timeframe) {
     if (!Array.isArray(data) || data.length === 0) return NaN;
     return data.reduce((latest, candle, index) => Math.max(latest, candleTimestamp(candle, index, timeframe)), -Infinity);
@@ -11824,6 +11863,7 @@ const MARKET_MECHANICS_BLOCKER_RULES = Object.freeze({
         next: 'WAIT_FOR_COMPLETE_MARKET_DATA',
         canonical: 'MARKET_DATA_INCOMPLETE'
     },
+    CHRONOLOGY_UNKNOWN: { stage: 'LIFECYCLE', rule: 'Formation-to-scan candle chronology could not be mapped without an exact timestamp or valid index', next: 'WAIT_FOR_VERIFIED_ENTRY_CHRONOLOGY' },
     SETUP_EXPIRED: { stage: 'LIFECYCLE', rule: 'The setup has exceeded its model-defined lifecycle window', next: 'NONE_TERMINAL' },
     SETUP_STALE: { stage: 'LIFECYCLE', rule: 'The setup is stale under its model-defined lifecycle rules', next: 'NONE_TERMINAL' },
     SETUP_ALREADY_COMPLETED: { stage: 'LIFECYCLE', rule: 'The structural objective was delivered before a new pending fill', next: 'NONE_TERMINAL' },
@@ -12326,11 +12366,23 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const normalizedEventTime = Number.isFinite(executionEventTime) ? executionEventTime : normalizeTimestampUTC(eventTime);
     let strategyEventIndex = Number.isInteger(index) ? index : null;
     let executionEventIndexResolved = executionEventIndex;
+    const strategyDataHasExplicitTimes = data.some(bar => Number.isFinite(normalizeTimestampUTC(bar?.t)));
+    const executionDataHasExplicitTimes = executionData.some(bar => Number.isFinite(normalizeTimestampUTC(bar?.t)));
     if (Number.isFinite(normalizedEventTime)) {
-        const matchedStrategy = findEventCandleIndex(data, normalizedEventTime, setupTf);
-        strategyEventIndex = matchedStrategy >= 0 ? matchedStrategy : strategyEventIndex;
-        const matchedExecution = findEventCandleIndex(executionData, normalizedEventTime, executionTf);
-        executionEventIndexResolved = matchedExecution >= 0 ? matchedExecution : executionEventIndexResolved;
+        // Real timestamped history requires an exact bucket match.  Synthetic
+        // or legacy index-only fixtures may still use the deterministic
+        // candleTimestamp mapping, but only when no provider timestamps exist.
+        const matchedStrategy = strategyDataHasExplicitTimes
+            ? findExactEventCandleIndex(data, normalizedEventTime, setupTf)
+            : findEventCandleIndex(data, normalizedEventTime, setupTf);
+        strategyEventIndex = matchedStrategy >= 0 ? matchedStrategy : strategyDataHasExplicitTimes ? null : strategyEventIndex;
+        const matchedExecution = executionDataHasExplicitTimes
+            ? findExactEventCandleIndex(executionData, normalizedEventTime, executionTf)
+            : findEventCandleIndex(executionData, normalizedEventTime, executionTf);
+        // If a timestamp is available, a supplied index is only usable when
+        // it maps to that timestamp. Retaining an unrelated rolling index
+        // would make an index mismatch look like a valid age/touch history.
+        executionEventIndexResolved = matchedExecution >= 0 ? matchedExecution : executionDataHasExplicitTimes ? null : executionEventIndexResolved;
     }
     index = Number.isFinite(executionEventTime) ? executionEventIndexResolved : strategyEventIndex;
     const low = candidate.entry_region_low ?? candidate.zone_low ?? setup.structural_entry_region?.low;
@@ -12351,8 +12403,16 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const resolvedEventTime = Number.isFinite(normalizedEventTime)
         ? normalizedEventTime
         : (Number.isInteger(index) ? candleTimestamp((executionEventTime ? executionData : data)[index], index, executionEventTime ? executionTf : setupTf) : null);
-    const formationCandle = Number.isInteger(index) && index >= 0
-        ? (executionEventTime ? executionData[index] : data[index])
+    const eventData = executionEventTime ? executionData : data;
+    const eventDataTimeframe = executionEventTime ? executionTf : setupTf;
+    const mappedEventIndex = Number.isFinite(resolvedEventTime)
+        ? findExactEventCandleIndex(eventData, resolvedEventTime, eventDataTimeframe)
+        : -1;
+    const formationEvidenceIndex = Number.isInteger(index) && index >= 0 && index < eventData.length
+        ? index
+        : mappedEventIndex;
+    const formationCandle = Number.isInteger(formationEvidenceIndex) && formationEvidenceIndex >= 0
+        ? eventData[formationEvidenceIndex]
         : null;
     const formationClose = Number.isFinite(Number(formationCandle?.c)) ? Number(formationCandle.c) : null;
     const initialPendingSideValid = hasExplicitTimes && Number.isFinite(formationClose) && Number.isFinite(Number(entry))
@@ -12416,9 +12476,9 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         event_time_utc: Number.isFinite(resolvedEventTime) ? new Date(resolvedEventTime).toISOString() : null,
         as_of_time_utc: Number.isFinite(asOfTime) ? new Date(asOfTime).toISOString() : null,
         zone_created_time_utc: Number.isFinite(zoneCreatedTime) ? new Date(zoneCreatedTime).toISOString() : null,
-        source_candle_time_utc: Number.isInteger(index) && (executionEventTime ? executionData[index] : data[index])
-            ? new Date(candleTimestamp((executionEventTime ? executionData : data)[index], index, executionEventTime ? executionTf : setupTf)).toISOString() : null,
-        timestamp_source: timestampSource(resolvedEventTime, Number.isInteger(index) ? (executionEventTime ? executionData : data)[index] : null),
+        source_candle_time_utc: Number.isInteger(formationEvidenceIndex) && eventData[formationEvidenceIndex]
+            ? new Date(candleTimestamp(eventData[formationEvidenceIndex], formationEvidenceIndex, eventDataTimeframe)).toISOString() : null,
+        timestamp_source: timestampSource(resolvedEventTime, Number.isInteger(formationEvidenceIndex) ? eventData[formationEvidenceIndex] : null),
         structure_data_cutoff: Number.isFinite(latestTimestamp) ? latestTimestamp : null,
         event_age_hours: eventAgeHours,
         event_age_bars: eventAgeBars,
@@ -12477,6 +12537,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     };
     const maxAge = STRATEGY_SPEC[setup.primary]?.maxEventAgeBars ?? spec.maxMSNREventAgeBars;
     const lifecycleData = executionEventTime ? executionData : data;
+    const validLifecycleIndex = Number.isInteger(index) && index >= 0 && index < lifecycleData.length;
     const executionOwnAgeExpired = Number.isFinite(executionEventTime)
         ? (!Number.isFinite(eventAgeHours) || eventAgeHours > maxEventAgeHours)
         : false;
@@ -12491,7 +12552,8 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const zoneFreshness = String(candidate.freshness ?? candidate.zone?.freshness ?? setup.freshness ?? '').toUpperCase();
     const hasExecutionEvidence = Number.isFinite(executionEventTime)
         || Number.isFinite(zoneCreatedTime)
-        || Number.isInteger(executionEventIndex);
+        || Number.isInteger(executionEventIndex)
+        || Number.isFinite(resolvedEventTime);
     const standingPendingEvidence = pendingLimitModel
         && hasExecutionEvidence
         && !['CONSUMED', 'USED', 'INVALIDATED', 'EXPIRED', 'DELIVERED', 'MITIGATED', 'BROKEN'].includes(zoneFreshness)
@@ -12507,10 +12569,23 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         ? parentEventAgeHours > parentMaxAgeHours
         : false;
     const indexAgeExpired = !Number.isFinite(executionEventTime)
+        && validLifecycleIndex
         && (lifecycleData.length - 1 - index > maxAge);
-    const expired = !Number.isInteger(index) || index < 0 || index >= lifecycleData.length ||
-        indexAgeExpired || !Number.isFinite(low) || !Number.isFinite(high);
     const hasExplicitExecutionTimes = executionData.some(bar => Number.isFinite(parseCandleTimeUTC(bar?.t)));
+    const executionTimes = executionData
+        .map(bar => normalizeTimestampUTC(bar?.t))
+        .filter(Number.isFinite);
+    const firstExecutionTime = executionTimes.length ? Math.min(...executionTimes) : null;
+    const chronologyCoveredByTimestamp = Number.isFinite(resolvedEventTime)
+        && hasExplicitExecutionTimes
+        && Number.isFinite(firstExecutionTime)
+        && firstExecutionTime <= resolvedEventTime + STRATEGY_SPEC.TIME.futureToleranceMs;
+    const chronologyUnknown = !validLifecycleIndex && !chronologyCoveredByTimestamp;
+    // Missing index mapping is not expiration evidence. A setup is expired
+    // only for invalid geometry or a documented age rule evaluated from a
+    // resolved index. Timestamp-backed pending setups are evaluated by the
+    // closed candles after their event time instead.
+    const expired = indexAgeExpired || !Number.isFinite(low) || !Number.isFinite(high);
     const eventCutoff = Number.isFinite(resolvedEventTime) && hasExplicitExecutionTimes ? resolvedEventTime : null;
     const zonePriceStatus = getZonePriceStatus(price, { low, high });
     // A future retracement limit can be created after price has already
@@ -12564,6 +12639,21 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     }
     result.entry_consumed = result.entry_touch_count_after_signal > spec.maxEntryTouches || result.entry_crossed_after_signal === true;
     result.initial_pending_side_invalid = initialPendingSideValid === false;
+    result.lifecycle_diagnostics = {
+        lifecycle_classification: chronologyUnknown ? 'CHRONOLOGY_UNKNOWN' : null,
+        execution_event_index: Number.isInteger(index) ? index : null,
+        execution_event_index_resolved: validLifecycleIndex ? 'YES' : 'NO',
+        execution_event_index_source: validLifecycleIndex
+            ? (Number.isInteger(executionEventIndex) ? 'SUPPLIED_OR_TIMESTAMP' : 'TIMESTAMP')
+            : 'UNRESOLVED',
+        timestamp_chronology_available: chronologyCoveredByTimestamp ? 'YES' : 'NO',
+        standing_pending_evidence: standingPendingEvidence ? 'YES' : 'NO',
+        documented_age_rule_applied: indexAgeExpired ? 'YES' : 'NO',
+        expiry_rule: indexAgeExpired ? `INDEX_AGE>${maxAge}_BARS` : null,
+        expiry_time_utc: indexAgeExpired && Number.isFinite(resolvedEventTime)
+            ? new Date(resolvedEventTime + maxAge * timeframeDurationMs(ageTimeframe)).toISOString()
+            : null
+    };
     result.execution_zone_consumed = result.entry_consumed;
     const currentReached = Number.isFinite(tp1) && !pendingRetracementLocation
         && (candidate.direction === 'BUY' ? price >= tp1 : price <= tp1);
@@ -12639,9 +12729,9 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     // session, but market closure must not erase a structurally valid setup.
     const closedPendingLimit = marketClosed && pendingLimitModel;
     result.actionable_next_session = closedPendingLimit;
-    result.still_actionable_today = result.timestamp_consistent && !expired && !staleByAge && !result.entry_consumed && !result.tp1_already_reached &&
+    result.still_actionable_today = result.timestamp_consistent && !chronologyUnknown && !expired && !staleByAge && !result.entry_consumed && !result.tp1_already_reached &&
         !deliveryAdvanced && !(entryTooFarForToday && !pendingLimitModel) && (!marketClosed || pendingLimitModel);
-    result.rejection_code = !result.timestamp_consistent ? 'DATA_TIME_INCONSISTENT' : expired ? 'SETUP_EXPIRED'
+    result.rejection_code = !result.timestamp_consistent ? 'DATA_TIME_INCONSISTENT' : chronologyUnknown ? 'CHRONOLOGY_UNKNOWN' : expired ? 'SETUP_EXPIRED'
         : result.tp1_already_reached ? 'SETUP_ALREADY_COMPLETED'
         : result.entry_consumed ? 'ENTRY_ALREADY_CONSUMED'
         : deliveryAdvanced ? 'SETUP_DELIVERY_ALREADY_ADVANCED'
@@ -12649,9 +12739,10 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         : staleByAge ? 'SETUP_STALE'
         : marketClosed && !pendingLimitModel ? 'MARKET_CLOSED'
             : entryTooFarForToday && !pendingLimitModel ? 'ENTRY_NOT_REACHABLE_TODAY' : null;
-    result.entry_freshness = expired ? 'EXPIRED' : result.entry_consumed ? 'CONSUMED' : result.entry_touch_count_after_signal ? 'TOUCHED' : 'FRESH';
+    result.entry_freshness = chronologyUnknown ? 'UNKNOWN' : expired ? 'EXPIRED' : result.entry_consumed ? 'CONSUMED' : result.entry_touch_count_after_signal ? 'TOUCHED' : 'FRESH';
     result.opportunity_status = result.rejection_code === 'SETUP_ALREADY_COMPLETED' ? 'COMPLETED'
         : result.rejection_code === 'SETUP_EXPIRED' ? 'EXPIRED'
+            : result.rejection_code === 'CHRONOLOGY_UNKNOWN' ? 'CHRONOLOGY_UNKNOWN'
             : result.rejection_code === 'ENTRY_ALREADY_CONSUMED' ? 'CONSUMED'
                 : result.rejection_code === 'SETUP_DELIVERY_ALREADY_ADVANCED' ? 'DELIVERY_ADVANCED'
         : result.rejection_code === 'MARKET_CLOSED' || closedPendingLimit ? 'FRESH_PENDING_LATER'
@@ -12661,7 +12752,16 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
                                 : entryTooFarForToday && pendingLimitModel ? 'FRESH_PENDING_LATER' : 'FRESH_PENDING_TODAY');
     if (result.rejection_code === 'SETUP_DELIVERY_ALREADY_ADVANCED') result.opportunity_freshness = 'STALE_DELIVERY';
     if (result.rejection_code === 'SETUP_ALREADY_COMPLETED') result.opportunity_freshness = 'TARGET_DELIVERED';
-    if (result.rejection_code && !['SETUP_DELIVERY_ALREADY_ADVANCED', 'SETUP_ALREADY_COMPLETED'].includes(result.rejection_code)) result.opportunity_freshness = 'INVALIDATED';
+    if (result.rejection_code === 'CHRONOLOGY_UNKNOWN') result.opportunity_freshness = 'CHRONOLOGY_UNKNOWN';
+    else if (result.rejection_code && !['SETUP_DELIVERY_ALREADY_ADVANCED', 'SETUP_ALREADY_COMPLETED'].includes(result.rejection_code)) result.opportunity_freshness = 'INVALIDATED';
+    result.lifecycle_classification = result.rejection_code === 'CHRONOLOGY_UNKNOWN' ? 'CHRONOLOGY_UNKNOWN'
+        : result.rejection_code === 'SETUP_EXPIRED' ? 'EXPIRED_BY_DOCUMENTED_RULE'
+            : result.rejection_code === 'ENTRY_ALREADY_CONSUMED' ? 'CONSUMED_OR_FILLED'
+                : result.rejection_code === 'SETUP_ALREADY_COMPLETED' || result.rejection_code === 'SETUP_DELIVERY_ALREADY_ADVANCED' ? 'OBJECTIVE_DELIVERED'
+                    : result.rejection_code === 'DATA_TIME_INCONSISTENT' ? 'CHRONOLOGY_UNKNOWN'
+                        : result.entry_touch_count_after_signal > 0 ? 'ACTIVE_PARTIAL'
+                            : result.entry_consumed ? 'CONSUMED_OR_FILLED'
+                                : 'ACTIVE_UNTOUCHED';
     result.setup_lifecycle_status = result.lifecycle_state = result.opportunity_status;
     return result;
 }
@@ -16742,7 +16842,7 @@ const MARKET_MECHANICS_RAW_TEXT_OUTPUT_CONTRACT = [
     'This is a MANUAL DEEPSEEK REVIEW packet. Select only an exact opportunity from === ACTIVE PENDING-LIMIT OPPORTUNITIES — FOR DEEPSEEK ANALYSIS ===, or return NO_TRADE.',
     'Do not select legacy diagnostics, terminal historical rows, expired setups, consumed entries, invalidated zones, or incomplete formations.',
     'You may reject an active opportunity for an evidence-backed stop, target, path, lifecycle or risk weakness, but do not invent prices or structures.',
-    'LIVE MARKET MECHANICS CANDIDATES remain deterministic engine authority; the manual shortlist is analysis input only.',
+    'In manual mode, the active shortlist is the review universe; LIVE rows are not required. DeepSeek must still use only supplied evidence and must not promote legacy or terminal records.',
     'If no active opportunity has defensible geometry after review, return ACTION: NO_TRADE with SETUP: NONE and zero geometry.'
 ].join('\n');
 
@@ -16761,15 +16861,16 @@ function manualMarketMechanicsNumber(...values) {
 }
 
 function manualMarketMechanicsFormationConfirmed(item = {}) {
-    return item.formation_confirmed === true
-        || String(item.formation_confirmed || '').toUpperCase() === 'YES'
-        || item.formation_complete === true
-        || String(item.formation_complete || '').toUpperCase() === 'YES'
-        || item.setup_formation_confirmed === true
-        || String(item.setup_formation_confirmed || '').toUpperCase() === 'YES'
-        || item.execution_confirmed === true
-        || String(item.execution_confirmed || '').toUpperCase() === 'YES'
-        || String(item.confirmation_state || item.setup_formation_state || '').toUpperCase() === 'CONFIRMED';
+    const sources = [item, item.strategy_setup || {}, item.qualification || {}];
+    return sources.some(source => source.formation_confirmed === true
+        || String(source.formation_confirmed || '').toUpperCase() === 'YES'
+        || source.formation_complete === true
+        || String(source.formation_complete || '').toUpperCase() === 'YES'
+        || source.setup_formation_confirmed === true
+        || String(source.setup_formation_confirmed || '').toUpperCase() === 'YES'
+        || source.execution_confirmed === true
+        || String(source.execution_confirmed || '').toUpperCase() === 'YES'
+        || String(source.confirmation_state || source.setup_formation_state || '').toUpperCase() === 'CONFIRMED');
 }
 
 function manualMarketMechanicsTerminal(item = {}) {
@@ -16793,6 +16894,8 @@ function manualMarketMechanicsSources(source = {}) {
         ...(Array.isArray(source.forming_market_mechanics_candidates) ? source.forming_market_mechanics_candidates : []),
         ...(Array.isArray(source.market_mechanics?.model_states) ? source.market_mechanics.model_states : []),
         ...(Array.isArray(catalog.forming_candidates) ? catalog.forming_candidates : []),
+        ...(Array.isArray(catalog.raw_candidates) ? catalog.raw_candidates : []),
+        ...(Array.isArray(catalog.all_rejected_candidates) ? catalog.all_rejected_candidates : []),
         ...(Array.isArray(source.valid_candidates) ? source.valid_candidates : []),
         ...(Array.isArray(source.live_market_mechanics_candidates) ? source.live_market_mechanics_candidates : [])
     ];
@@ -16812,23 +16915,32 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         : direction === 'SELL'
             ? (entry != null && current != null ? (entry > current ? 'YES' : 'NO') : 'UNKNOWN')
             : 'UNKNOWN';
+    const lifecycleMetrics = item.setup_lifecycle || item.evaluation?.metrics?.setup_lifecycle || {};
+    const lifecycleDiagnostics = lifecycleMetrics.lifecycle_diagnostics || item.lifecycle_diagnostics || {};
+    const lifecycleRejection = lifecycleMetrics.rejection_code || item.rejection_code || item.primary_blocker || item.blocker || null;
     const warnings = [...new Set([
         ...(Array.isArray(item.quality_warnings) ? item.quality_warnings : []),
         ...(Array.isArray(item.warnings) ? item.warnings : []),
         ...(Array.isArray(item.all_blockers) ? item.all_blockers : []),
         ...(item.primary_blocker && !['NONE', 'NO_LIVE_CANDIDATE'].includes(String(item.primary_blocker).toUpperCase()) ? [item.primary_blocker] : []),
         ...(item.blocker && !['NONE', 'NO_LIVE_CANDIDATE'].includes(String(item.blocker).toUpperCase()) ? [item.blocker] : []),
+        ...(lifecycleRejection && !['NONE', 'NO_LIVE_CANDIDATE'].includes(String(lifecycleRejection).toUpperCase()) ? [lifecycleRejection] : []),
         ...(item.market_plan_poi_valid === 'NO' || item.market_plan_poi_valid === false ? ['PARENT_POI_CONTEXT_LIMITED'] : []),
         ...(String(item.entry_zone_touched || '').toUpperCase() === 'UNKNOWN' ? ['ENTRY_TOUCH_CHRONOLOGY_UNKNOWN'] : [])
     ])];
     const lifecycle = String(item.lifecycle_state || item.state || item.opportunity_status || 'ACTIVE').toUpperCase();
+    const firstTouch = item.first_entry_touch_after_formation || item.first_entry_touch_time
+        || lifecycleMetrics.entry_first_touch_time || null;
+    const touched = item.entry_zone_touched || item.entry_touched
+        || (Number(lifecycleMetrics.entry_touch_count_after_signal) > 0 ? 'YES' : 'UNKNOWN');
     return {
         opportunity_id: item.opportunity_id || item.id || item.candidate_id || item.execution_poi_id || null,
         symbol: normalizeCanonicalMarketSymbol(source.pair || source.symbol || ''),
         direction: direction || null,
         model: item.entry_model || item.model || item.execution_model || null,
         primary_timeframe: item.timeframe || item.primary_tf || item.setup_timeframe || null,
-        formation_first_knowable_time: item.first_actionable_time || item.formation_time || item.first_knowable_time || item.event_time || null,
+        formation_first_knowable_time: item.first_actionable_time || item.formation_time || item.first_knowable_time || item.event_time
+            || lifecycleMetrics.event_time_utc || null,
         formation_status: manualMarketMechanicsFormationConfirmed(item) ? 'CONFIRMED' : 'INCOMPLETE',
         market_structure_direction: item.market_structure_direction || item.htf_trend || source.market_plan?.htf_trend || null,
         market_plan_direction: source.market_plan?.direction || null,
@@ -16856,11 +16968,20 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         current_price: current,
         correct_pending_order_side: direction === 'BUY' ? 'BUY_LIMIT' : direction === 'SELL' ? 'SELL_LIMIT' : null,
         pending_side_eligible: side,
-        first_entry_touch_after_formation: item.first_entry_touch_after_formation || item.first_entry_touch_time || null,
-        entry_touched: item.entry_zone_touched || item.entry_touched || 'UNKNOWN',
-        entry_consumed: item.entry_consumed || 'NO',
+        first_entry_touch_after_formation: firstTouch,
+        entry_touched: touched,
+        entry_consumed: item.entry_consumed || (lifecycleMetrics.entry_consumed ? 'YES' : 'NO'),
         expiry_status: item.expiry_status || (MANUAL_MARKET_MECHANICS_TERMINAL_STATES.has(lifecycle) ? lifecycle : 'ACTIVE'),
         lifecycle_state: lifecycle,
+        recomputed_lifecycle_status: item.lifecycle_classification || lifecycleMetrics.lifecycle_classification || lifecycle,
+        original_rejection: item.original_rejection || item.rejection_code || item.primary_blocker || null,
+        matched_candle_index: lifecycleDiagnostics.execution_event_index ?? item.execution_event_index ?? item.execution_zone_created_index ?? null,
+        matched_candle_index_source: lifecycleDiagnostics.execution_event_index_source || null,
+        index_mapping_status: lifecycleDiagnostics.execution_event_index_resolved || null,
+        first_invalidation: item.first_invalidation || item.invalidation_time || null,
+        explicit_expiry_rule: lifecycleDiagnostics.expiry_rule || item.expiry_rule || null,
+        expiry_time: lifecycleDiagnostics.expiry_time_utc || item.expiry_time || null,
+        objective_delivery_status: item.target_lifecycle_state || lifecycleMetrics.opportunity_freshness || null,
         data_freshness: source.data_quality?.status || source.market_context?.data_quality?.status || 'UNKNOWN',
         evidence_refs: [...new Set([...(item.formation_evidence_refs || []), ...(item.evidence_refs || []), item.poi_ref, item.execution_poi_id].filter(Boolean))],
         quality_warnings: warnings,
@@ -18910,7 +19031,7 @@ function buildRawTextMarketAnalysisInstruction(strategyModeOverride = null) {
             'Do not require price to touch the entry before publishing a pending limit. Formation evidence must be complete before the order; touch is a later lifecycle event.',
             'Verify formation chronology, remaining zone geometry, entry-touch chronology, structural invalidation, directional liquidity objectives, opposing structure and reward/risk from the closed candles supplied.',
             'If touch chronology is UNKNOWN, do not claim the setup is untouched or authorize it. If no active opportunity has defensible geometry, return NO_TRADE and explain the exact evidence-backed reason.',
-            'LIVE MARKET MECHANICS CANDIDATES remain deterministic engine authority. The manual shortlist is review input only; DeepSeek must not promote legacy or terminal records.',
+            'In manual mode, the active shortlist is the review universe; LIVE rows are not required. DeepSeek must not promote legacy or terminal records.',
             'Return only the existing final output contract.'
         ].join('\n');
     }
@@ -27795,7 +27916,7 @@ const MANUAL_EXTERNAL_AI_PACKET_CONTRACT = [
 
 const MARKET_MECHANICS_EXTERNAL_AI_PACKET_CONTRACT = [
     'AUTHORITY: deterministic V2 MARKET_MECHANICS remains the only automatic trade authority; this is a manual DeepSeek analysis packet.',
-    'Review only completed, active, nonterminal rows in ACTIVE PENDING-LIMIT OPPORTUNITIES — FOR DEEPSEEK ANALYSIS. LIVE rows are authoritative; the manual shortlist is review input only.',
+    'Review only completed, active, nonterminal rows in ACTIVE PENDING-LIMIT OPPORTUNITIES — FOR DEEPSEEK ANALYSIS. In manual mode, the active shortlist is the review universe; LIVE rows are not required.',
     'Do not select legacy diagnostics, incomplete formations, expired setups, consumed entries or invalidated zones.',
     'Stop, target, path, risk and confluence warnings are serious evidence to evaluate, not reasons to hide an active formation. Reject when supplied evidence cannot support a safe pending order.',
     'Do not invent or arbitrarily change direction, entry, stop, TP1, TP2, TP3, confidence, objective, timeframe or opportunity ID. Any changed level must be supported by exact supplied candle evidence.',
@@ -29221,8 +29342,9 @@ TVKit and the deterministic V2 MARKET_MECHANICS engine provide the market
 evidence and lifecycle facts. This is a manual packet; no DeepSeek API or
 automatic broker execution is used.
 Review only completed, active, nonterminal rows in ACTIVE PENDING-LIMIT
-OPPORTUNITIES — FOR DEEPSEEK ANALYSIS. LIVE rows are deterministic authority;
-the active shortlist is review input and is not automatic trade authority.
+OPPORTUNITIES — FOR DEEPSEEK ANALYSIS. In manual mode, the active shortlist is
+the review universe; LIVE rows are not required and this packet is not automatic
+trade authority.
 Do not select legacy diagnostics, incomplete formations, expired setups,
 consumed entries or invalidated zones. A stop/target/path/risk warning must be
 examined and may justify NO_TRADE, but it must not hide an active formation.
