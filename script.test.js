@@ -3989,6 +3989,78 @@ describe('Market Mechanics end-to-end qualification authority', () => {
         expect(expected.expected_latest_closed_time).toBe(Date.parse('2026-10-19T02:00:00Z'));
         expect(expected.next_expected_close).toBe(Date.parse('2026-10-19T10:00:00Z'));
     });
+
+    test('open-timestamped intraday bars use the last completed bucket, not the forming bucket', () => {
+        const ctx = getContext();
+        const asOf = Date.parse('2026-10-19T11:28:00Z');
+        const makeHistory = (start, step, count) => Array.from({ length: count }, (_, index) => ({
+            t: new Date(start + index * step).toISOString(),
+            o: 100 + index * 0.01, h: 101 + index * 0.01, l: 99 + index * 0.01, c: 100.5 + index * 0.01
+        }));
+        const fifteen = ctx.validateMarketDataQuality({
+            '15M': makeHistory(Date.parse('2026-10-19T06:15:00Z'), 15 * 60000, 20)
+        }, 101, null, asOf, ['15M'], { symbol: 'EUR/USD', asset_class: 'FOREX', check_optional: false });
+        const five = ctx.validateMarketDataQuality({
+            '5M': makeHistory(Date.parse('2026-10-19T09:45:00Z'), 5 * 60000, 20)
+        }, 101, null, asOf, ['5M'], { symbol: 'EUR/USD', asset_class: 'FOREX', check_optional: false });
+        expect(fifteen.status).toBe('FRESH');
+        expect(fifteen.timeframe_diagnostics['15M'].actual_latest_closed).toBe(Date.parse('2026-10-19T11:00:00Z'));
+        expect(fifteen.timeframe_diagnostics['15M'].expected_latest_closed).toBe(Date.parse('2026-10-19T11:00:00Z'));
+        expect(five.status).toBe('FRESH');
+        expect(five.timeframe_diagnostics['5M'].actual_latest_closed).toBe(Date.parse('2026-10-19T11:20:00Z'));
+        expect(five.timeframe_diagnostics['5M'].expected_latest_closed).toBe(Date.parse('2026-10-19T11:20:00Z'));
+    });
+
+    test('a missing completed intraday bucket is incomplete rather than silently fresh', () => {
+        const ctx = getContext();
+        const asOf = Date.parse('2026-10-19T11:28:00Z');
+        const history = Array.from({ length: 21 }, (_, index) => ({
+            t: new Date(Date.parse('2026-10-19T06:15:00Z') + index * 15 * 60000).toISOString(),
+            o: 100, h: 101, l: 99, c: 100
+        })).filter(candle => candle.t !== '2026-10-19T10:45:00.000Z');
+        const result = ctx.validateMarketDataQuality({ '15M': history }, 100, null, asOf, ['15M'], {
+            symbol: 'EUR/USD', asset_class: 'FOREX', check_optional: false
+        });
+        expect(result.valid).toBe(false);
+        expect(result.status).toBe('INCOMPLETE');
+        expect(result.timeframe_status['15M']).toBe('INCOMPLETE');
+        expect(result.timeframe_diagnostics['15M'].missing_candle_count).toBe(1);
+        expect(result.reasons.join(' ')).toMatch(/missing expected candle/);
+    });
+
+    test('close-timestamped feeds use their explicit completion convention', () => {
+        const ctx = getContext();
+        const asOf = Date.parse('2026-10-19T11:28:00Z');
+        const history = Array.from({ length: 20 }, (_, index) => ({
+            t: new Date(Date.parse('2026-10-19T06:30:00Z') + index * 15 * 60000).toISOString(),
+            o: 100, h: 101, l: 99, c: 100
+        }));
+        const expected = ctx.getExpectedLatestClosedBarTime({
+            symbol: 'EUR/USD', assetClass: 'FOREX', timeframe: '15M', evaluationTime: asOf,
+            feedAlignment: { timestamp_semantics: 'CLOSE' }, history
+        });
+        expect(expected.timestamp_semantics).toBe('CLOSE');
+        expect(expected.expected_latest_closed_time).toBe(Date.parse('2026-10-19T11:15:00Z'));
+    });
+
+    test('XAU observed daily session does not require a Friday-start bucket', () => {
+        const ctx = getContext();
+        const asOf = Date.parse('2026-10-19T11:28:00Z');
+        const daily = [];
+        for (let day = Date.parse('2026-08-03T21:00:00Z'); day <= Date.parse('2026-10-15T21:00:00Z'); day += 24 * 60 * 60 * 1000) {
+            const weekday = new Date(day).getUTCDay();
+            if (weekday >= 0 && weekday <= 4) daily.push({
+                t: new Date(day).toISOString(), o: 4100, h: 4110, l: 4090, c: 4105, is_closed: true
+            });
+        }
+        const result = ctx.validateMarketDataQuality({ '1D': daily }, 4105, null, asOf, ['1D'], {
+            symbol: 'XAU/USD', asset_class: 'METAL', check_optional: false
+        });
+        expect(result.status).toBe('FRESH');
+        expect(result.data_calendar_type).toBe('METAL_OBSERVED_SESSION');
+        expect(result.timeframe_diagnostics['1D'].actual_latest_closed).toBe(Date.parse('2026-10-15T21:00:00Z'));
+        expect(result.timeframe_diagnostics['1D'].expected_latest_closed).toBe(Date.parse('2026-10-15T21:00:00Z'));
+    });
 });
 
 describe('Market Mechanics packet authority', () => {
@@ -4802,8 +4874,8 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).toContain('still valid, partially mitigated, fully consumed or invalidated');
         expect(text).toContain('Return ACTION: NO_TRADE only after both directional searches, complete candidate-construction attempts and TODAY_PENDING_OPPORTUNITY filtering fail');
         expect(text).toContain('never say only "No setup found."');
-        expect(text).toContain('TIMEFRAME_USED must always be one supplied timeframe');
-        expect(text).toContain('never output TIMEFRAME_USED: NONE');
+        expect(text).toContain('TIMEFRAME_USED must be 4h or 1h for TRADE decisions and exactly NONE for NO_TRADE decisions.');
+        expect(text).toContain('TIMEFRAME_USED: <4h or 1h for TRADE; NONE for NO_TRADE>');
         expect(text).toContain('deterministic CE entry, formation-extreme structural stop and 1R/2R/3R');
         expect(text).toContain('three separate historical targets are not a mandatory gate');
         expect(text).toContain('inspect later supplied CLOSED lower-timeframe candles for post-formation penetration');

@@ -1781,6 +1781,7 @@ async function fetchHistoryUncached(tfStr, forPair, options = {}) {
                 timeframe: tfStr,
                 symbol: providerSymbol,
                 timestamp_contract: ['1D', '1W'].includes(tfStr) ? 'PERIOD_BUCKET' : 'INTRADAY_UTC',
+                timestamp_semantics: 'OPEN',
                 raw_count: rawValues.length,
                 closed_count: values.length,
                 open_candles_filtered: rawValues.length - values.length
@@ -8346,7 +8347,9 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
     const retraced = lifecycle && Number.isFinite(Number(lifecycle.entry_touch_count_after_signal))
         ? Number(lifecycle.entry_touch_count_after_signal) > 0
         : null;
-    const dataQuality = candidate?.data_quality || rejected?.data_quality || options.data_quality || options.market_context?.data_quality || {};
+    const dataQuality = candidate?.data_quality || candidate?.market_data_quality
+        || rejected?.data_quality || rejected?.market_data_quality
+        || options.data_quality || options.market_context?.data_quality || {};
     const rejectionCodes = [...new Set([
         rejected?.rejection_code,
         ...(Array.isArray(rejected?.rejection_reasons) ? rejected.rejection_reasons : []),
@@ -8437,6 +8440,7 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
     }
     const qualificationState = qualification || {};
     const blocked = !liveCandidate;
+    const dataStatus = String(dataQuality?.status || '').toUpperCase();
     const meaningful = value => value != null && String(value).trim() !== '' && String(value).toUpperCase() !== 'NONE';
     const failedStage = blocked
         ? (meaningful(qualificationState.failed_stage)
@@ -8510,6 +8514,14 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         price_order_valid: qualificationState.price_order_valid || 'UNKNOWN',
         geometry_complete: qualificationState.geometry_complete || (geometryComplete ? 'YES' : 'NO'),
         pending_limit_side_valid: pendingLimitValid ? 'YES' : 'NO',
+        market_data_status: dataStatus || 'UNKNOWN',
+        data_1d_status: dataQuality?.timeframe_status?.['1D'] || 'UNKNOWN',
+        data_4h_status: dataQuality?.timeframe_status?.['4H'] || 'UNKNOWN',
+        data_1h_status: dataQuality?.timeframe_status?.['1H'] || 'UNKNOWN',
+        data_15m_status: dataQuality?.timeframe_status?.['15M'] || 'UNKNOWN',
+        data_5m_status: dataQuality?.timeframe_status?.['5M'] || 'UNKNOWN',
+        quote_status: dataQuality?.quote_status || 'UNKNOWN',
+        data_timestamp_diagnostics: dataQuality?.timeframe_diagnostics || {},
         candidate_id: valid?.id || raw?.id || rejected?.id || null,
         candidate_authority: liveCandidate ? 'LIVE' : 'FORMING_ONLY',
         rejection_codes: rejectionCodes,
@@ -8567,7 +8579,10 @@ function buildMarketMechanicsFormingSetupStates(strategySetups = [], marketPlan 
         }
         if (pendingDiagnostics.qualification_result === 'BLOCKED' && pendingDiagnostics.primary_blocker) {
             blocker = pendingDiagnostics.primary_blocker;
-            state = pendingDiagnostics.pending_limit_candidate_state || state;
+            const failureStage = String(pendingDiagnostics.failed_stage || pendingDiagnostics.qualification_stage || '').toUpperCase();
+            state = failureStage === 'DATA' || String(blocker).startsWith('MARKET_DATA_')
+                ? 'WAITING_FOR_DATA'
+                : pendingDiagnostics.pending_limit_candidate_state || state;
         }
         const refs = group.members.map(item => item.crt_ref || item.id).filter(Boolean);
         const primaryRef = setup.crt_ref || setup.id || null;
@@ -10432,7 +10447,15 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
             const requiredTimeframes = marketMechanicsRequiredTimeframes(strategySetup, zone);
             const modelDataQuality = validateMarketDataQuality(historyCache, price, null,
                 normalizeTimestampUTC(marketContext?.as_of_time || marketContext?.as_of_ms || marketContext?.scan_as_of_ms) || Date.now(),
-                requiredTimeframes, { check_optional: false });
+                requiredTimeframes, {
+                    check_optional: false,
+                    symbol: pair,
+                    asset_class: symbolMetadata?.asset_class,
+                    symbol_metadata: symbolMetadata,
+                    session_calendar: symbolMetadata?.session,
+                    feed_alignment: marketContext?.feed_alignment || symbolMetadata?.feed_alignment || null,
+                    report_timeframes: requiredTimeframes
+                });
             if (!modelDataQuality.valid) {
                 const modelReasons = [...new Set(modelDataQuality.reasons)];
                 for (const reason of modelReasons) failSeed(seed, marketMechanicsReasonForContext(reason, modelDataQuality), reason);
@@ -11290,6 +11313,43 @@ function inferFeedSessionAnchor(data = [], timeframe = '1H') {
     return [...buckets.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0] * 60000;
 }
 
+// The history provider used by the live snapshot exposes bucket-start
+// timestamps.  Keep the convention explicit at the normalization boundary so
+// freshness never treats the currently forming bucket as the latest completed
+// candle.  A caller may supply CLOSE for a feed whose timestamps denote the
+// completed candle instead; PERIOD_BUCKET/INTRADAY_UTC are the provider's
+// documented open/bucket-start contracts.
+function normalizeTimestampSemantics(value, fallback = 'OPEN') {
+    const text = String(value || '').trim().toUpperCase();
+    if (text === 'CLOSE' || text === 'CLOSE_TIMESTAMP' || text === 'CANDLE_CLOSE') return 'CLOSE';
+    if (text === 'OPEN' || text === 'OPEN_TIMESTAMP' || text === 'BUCKET_START'
+        || text === 'PERIOD_BUCKET' || text === 'INTRADAY_UTC') return 'OPEN';
+    return fallback;
+}
+
+function feedTimestampSemantics(history = [], feedAlignment = null) {
+    const metadata = Array.isArray(history) ? history.provider_metadata || {} : {};
+    return normalizeTimestampSemantics(
+        feedAlignment?.timestamp_semantics
+            || feedAlignment?.timestamp_convention
+            || feedAlignment?.timestamp_contract
+            || metadata.timestamp_semantics
+            || metadata.timestamp_contract,
+        'OPEN'
+    );
+}
+
+function candleIsClosedAtEvaluation(candle, timeframe, evaluationTime, timestampSemantics = 'OPEN') {
+    if (!candle || candle.is_closed === false || candle.closed === false
+        || candle.is_forming === true || candle.forming === true) return false;
+    const timestamp = normalizeTimestampUTC(candle.t ?? candle.timestamp ?? candle.time);
+    if (!Number.isFinite(timestamp) || !Number.isFinite(evaluationTime)) return true;
+    const duration = timeframeDurationMs(timeframe);
+    return timestampSemantics === 'CLOSE'
+        ? timestamp <= evaluationTime
+        : timestamp + duration <= evaluationTime;
+}
+
 function sessionCalendarType(assetClass, sessionCalendar = null) {
     if (sessionCalendar && typeof sessionCalendar === 'object') {
         const explicit = sessionCalendar.calendar_type || sessionCalendar.calendarType || sessionCalendar.type;
@@ -11323,6 +11383,13 @@ function isScheduledSessionBarStart(start, { assetClass, calendarType, timeframe
         // is therefore excluded.
         return start >= weekStart && start < weekStart + 5 * 24 * 60 * 60000;
     }
+    if (calendarType === 'METAL_OBSERVED_SESSION' && !Array.isArray(sessionCalendar?.open_days)) {
+        // The observed XAU daily feed uses a Sunday-through-Thursday session
+        // sequence at its broker anchor. Friday's anchor would begin the
+        // weekend and is not an expected completed daily bucket.
+        const weekStart = sessionWeekStartAtAnchor(start, anchorMinute);
+        return start >= weekStart && start < weekStart + 5 * 24 * 60 * 60000;
+    }
     const configuredDays = Array.isArray(sessionCalendar?.open_days)
         ? sessionCalendar.open_days.map(Number).filter(value => Number.isInteger(value) && value >= 0 && value <= 6)
         : [1, 2, 3, 4, 5];
@@ -11334,10 +11401,12 @@ function getExpectedLatestClosedBarTime({ symbol = null, assetClass = null, time
     const evaluation = normalizeTimestampUTC(evaluationTime);
     if (!Number.isFinite(evaluation)) return {
         expected_latest_closed_time: null, next_expected_close: null,
-        session_anchor: null, calendar_type: sessionCalendarType(assetClass, sessionCalendar), session_open: null
+        session_anchor: null, calendar_type: sessionCalendarType(assetClass, sessionCalendar), session_open: null,
+        timestamp_semantics: feedTimestampSemantics(history, feedAlignment)
     };
     const tf = String(timeframe || '1H').toUpperCase();
     const duration = timeframeDurationMs(tf);
+    const timestampSemantics = feedTimestampSemantics(history, feedAlignment);
     const inferred = inferFeedSessionAnchor(history, tf);
     const suppliedAnchor = Number.isFinite(Number(feedAlignment?.anchor_ms))
         ? Number(feedAlignment.anchor_ms)
@@ -11359,7 +11428,8 @@ function getExpectedLatestClosedBarTime({ symbol = null, assetClass = null, time
         const index = candidateIndex - offset;
         const start = anchorMinute * 60000 + index * duration;
         if (!isScheduledSessionBarStart(start, { assetClass: metadataClass, calendarType, timeframe: tf, anchorMinute, sessionCalendar })) continue;
-        if (start + duration <= evaluation + 5 * 60 * 1000) {
+        const completed = timestampSemantics === 'CLOSE' ? start <= evaluation : start + duration <= evaluation;
+        if (completed) {
             latest = start;
             break;
         }
@@ -11368,14 +11438,17 @@ function getExpectedLatestClosedBarTime({ symbol = null, assetClass = null, time
         const index = candidateIndex + offset;
         const start = anchorMinute * 60000 + index * duration;
         if (!isScheduledSessionBarStart(start, { assetClass: metadataClass, calendarType, timeframe: tf, anchorMinute, sessionCalendar })) continue;
-        if (start + duration > evaluation + 5 * 60 * 1000) {
-            nextClose = start + duration;
+        const completion = timestampSemantics === 'CLOSE' ? start : start + duration;
+        if (completion > evaluation) {
+            nextClose = completion;
             break;
         }
     }
+    const currentIndex = Math.floor((evaluation - anchorMinute * 60000) / duration);
+    const currentStart = anchorMinute * 60000 + currentIndex * duration;
     const sessionOpen = metadataClass === 'CRYPTO'
         ? true
-        : isScheduledSessionBarStart(Math.floor(evaluation / duration) * duration, { assetClass: metadataClass, calendarType, timeframe: tf, anchorMinute, sessionCalendar });
+        : isScheduledSessionBarStart(currentStart, { assetClass: metadataClass, calendarType, timeframe: tf, anchorMinute, sessionCalendar });
     return {
         symbol: symbol || null,
         timeframe: tf,
@@ -11384,7 +11457,8 @@ function getExpectedLatestClosedBarTime({ symbol = null, assetClass = null, time
         session_anchor: formatUtcSessionAnchor(anchorMinute),
         session_anchor_minutes: anchorMinute,
         calendar_type: calendarType,
-        session_open: sessionOpen
+        session_open: sessionOpen,
+        timestamp_semantics: timestampSemantics
     };
 }
 
@@ -11421,7 +11495,8 @@ function marketDataQualityReasonCode(reason = '') {
     const text = String(reason || '').toLowerCase();
     if (text.includes('market_data_stale') || text.includes('quote data is stale') || text.includes('candle data is stale')) return 'MARKET_DATA_STALE';
     if (text.includes('future') || text.includes('open candle') || text.includes('timestamps are not ordered')
-        || text.includes('duplicate candle timestamps') || text.includes('non-finite') || text.includes('impossible ohlc')) return 'MARKET_DATA_INCOMPLETE';
+        || text.includes('duplicate candle timestamps') || text.includes('missing expected')
+        || text.includes('non-finite') || text.includes('impossible ohlc')) return 'MARKET_DATA_INCOMPLETE';
     if (text.includes('insufficient') || text.includes('unavailable or invalid') || text.includes('timestamp is unavailable') || text.includes('required market data is unavailable')) return 'MARKET_DATA_INCOMPLETE';
     if (text.includes('current price is invalid')) return 'INVALID_MARKET_DATA';
     return 'MARKET_DATA_STATUS_UNKNOWN';
@@ -11719,6 +11794,9 @@ function attachCanonicalMarketMechanicsCandidateState(candidate = {}, {
         || strategySetup?.formation_evidence
         || [];
     candidate.market_data_quality = dataQuality || candidate.market_data_quality || null;
+    // Keep one canonical object under both public diagnostic names while the
+    // older packet consumers migrate. Neither name is recomputed downstream.
+    candidate.data_quality = candidate.market_data_quality;
     candidate.market_plan = marketPlan || candidate.market_plan || null;
     candidate.market_plan_valid = marketPlan?.valid_context === true;
     candidate.market_plan_complete = marketPlan?.market_plan_complete === true;
@@ -11815,10 +11893,18 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
         const data = historyCache?.[tf];
         const required = requiredSet.has(tf);
         timeframeStatus[tf] = 'FRESH';
-        const closedDailyCount = Array.isArray(data)
-            ? data.filter(candle => candle?.is_closed !== false && candle?.closed !== false && candle?.is_forming !== true && candle?.forming !== true).length
-            : 0;
-        if (!Array.isArray(data) || (required && (tf === '1D' ? closedDailyCount : data.length) < minimumCandles(tf))) {
+        const feedAlignment = options.feed_alignment?.[tf] || options.feed_alignment || null;
+        const timestampSemantics = feedTimestampSemantics(data, feedAlignment);
+        const closedRows = Array.isArray(data)
+            ? data.filter(candle => candleIsClosedAtEvaluation(candle, tf, Number(asOfMs), timestampSemantics))
+            : [];
+        // Intraday callers may include the currently forming bucket so that
+        // the validator can explicitly report it; do not turn that useful
+        // diagnostic into a generic insufficient-history error before the
+        // open/future checks below run. Daily history is counted closed-only
+        // because a forming session bucket is common around reopen.
+        const availableForMinimum = tf === '1D' ? closedRows.length : data?.length || 0;
+        if (!Array.isArray(data) || (required && availableForMinimum < minimumCandles(tf))) {
             if (!required && !data) {
                 timeframeStatus[tf] = 'UNKNOWN';
                 continue;
@@ -11831,12 +11917,12 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
         // snapshot (especially Sunday/Monday). It is not evidence of an
         // incomplete required daily context; only closed candles participate
         // in freshness and chronology checks for that timeframe.
-        const validationRows = tf === '1D'
-            ? data.filter(candle => candle?.is_closed !== false && candle?.closed !== false && candle?.is_forming !== true && candle?.forming !== true)
-            : data;
+        const validationRows = data;
         let prevTime = null;
         const seenTimes = new Set();
         let latestTimedCandle = null;
+        let latestObservedCandle = null;
+        let futureClosedCandle = false;
         for (const c of validationRows) {
             if (!ictFiniteNumber(c.o) || !ictFiniteNumber(c.h) || !ictFiniteNumber(c.l) || !ictFiniteNumber(c.c)) {
                 if (required || options.check_optional !== false) reasons.push(`${tf} contains non-finite OHLC values`);
@@ -11863,7 +11949,10 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
                         break;
                     }
                     prevTime = t;
-                    latestTimedCandle = t;
+                    latestObservedCandle = t;
+                    if (t > Number(asOfMs) + 5 * 60 * 1000
+                        && (c.is_closed === true || c.closed === true)) futureClosedCandle = true;
+                    if (candleIsClosedAtEvaluation(c, tf, Number(asOfMs), timestampSemantics)) latestTimedCandle = t;
                 }
             }
             if (tf !== '1D' && c.is_closed === false) {
@@ -11879,8 +11968,30 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
             evaluationTime: asOfMs,
             sessionCalendar,
             feedAlignment: options.feed_alignment?.[tf] || options.feed_alignment || null,
-            history: validationRows
+            history: data
         });
+        const orderedTimes = [...seenTimes].sort((left, right) => left - right);
+        let missingCandleCount = 0;
+        if (orderedTimes.length > 1) {
+            const duration = timeframeDurationMs(tf);
+            for (let index = 1; index < orderedTimes.length; index += 1) {
+                for (let cursor = orderedTimes[index - 1] + duration; cursor < orderedTimes[index]; cursor += duration) {
+                    const completion = timestampSemantics === 'CLOSE' ? cursor : cursor + duration;
+                    if (completion > Number(asOfMs)) continue;
+                    if (isScheduledSessionBarStart(cursor, {
+                        assetClass,
+                        calendarType: expected.calendar_type,
+                        timeframe: tf,
+                        anchorMinute: expected.session_anchor_minutes,
+                        sessionCalendar
+                    })) missingCandleCount += 1;
+                }
+            }
+        }
+        if (missingCandleCount > 0) {
+            if (required || options.check_optional !== false) reasons.push(`${tf} has ${missingCandleCount} missing expected candle${missingCandleCount === 1 ? '' : 's'}`);
+            timeframeStatus[tf] = 'INCOMPLETE';
+        }
         const actualLatestClosed = Number.isFinite(latestTimedCandle) ? latestTimedCandle : null;
         timeframeDiagnostics[tf] = {
             actual_latest_closed: actualLatestClosed,
@@ -11888,10 +11999,13 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
             next_expected_close: expected.next_expected_close,
             session_anchor: expected.session_anchor,
             calendar_type: expected.calendar_type,
-            session_open: expected.session_open
+            session_open: expected.session_open,
+            timestamp_semantics: expected.timestamp_semantics,
+            latest_completed_candle_time: actualLatestClosed,
+            missing_candle_count: missingCandleCount
         };
-        if (Number.isFinite(latestTimedCandle)) {
-            if (latestTimedCandle > Number(asOfMs) + 5 * 60 * 1000) {
+        if (Number.isFinite(latestObservedCandle)) {
+            if (futureClosedCandle) {
                 if (required || options.check_optional !== false) reasons.push(`${tf} contains a future candle timestamp`);
                 timeframeStatus[tf] = 'INCOMPLETE';
             }
@@ -11914,7 +12028,8 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
                     next_expected_close: expected.next_expected_close,
                     session_anchor: expected.session_anchor,
                     calendar_type: expected.calendar_type,
-                    session_open: expected.session_open
+                    session_open: expected.session_open,
+                    timestamp_semantics: expected.timestamp_semantics
                 });
             }
         }
@@ -11939,6 +12054,7 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
         age_ms: staleDetails[0]?.age_ms || null,
         max_allowed_age_ms: staleDetails[0]?.max_allowed_age_ms || null,
         data_calendar_type: sessionCalendarType(assetClass, sessionCalendar),
+        timestamp_semantics: Object.values(timeframeDiagnostics).find(item => item?.timestamp_semantics)?.timestamp_semantics || 'OPEN',
         session_open: Object.values(timeframeDiagnostics).some(item => item.session_open === true),
         timeframe_diagnostics: timeframeDiagnostics };
 }
@@ -14462,7 +14578,7 @@ function partitionMarketMechanicsCandidateResult(result = {}) {
     };
 }
 
-function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySetups = [], marketPlan = null, currentPrice = null, quoteSnapshot = null, pair: pairLocal = null, symbolMetadata = {}, historyCache = {}, zones = [] } = {}) {
+function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySetups = [], marketPlan = null, currentPrice = null, quoteSnapshot = null, pair: pairLocal = null, symbolMetadata = {}, historyCache = {}, zones = [], dataQuality = null } = {}) {
     const authority = marketMechanicsAuthoritySummary({
         strategy_mode: 'MARKET_MECHANICS',
         market_plan: marketPlan,
@@ -14475,7 +14591,8 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
         pair: pairLocal,
         symbol_metadata: symbolMetadata,
         history_cache: historyCache,
-        zones
+        zones,
+        data_quality: dataQuality
     });
     const terminalBlockers = new Set([
         'INITIAL_PENDING_SIDE_INVALID', 'ENTRY_ALREADY_CONSUMED', 'ENTRY_ALREADY_CROSSED',
@@ -15136,7 +15253,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             pair,
             symbolMetadata,
             historyCache,
-            zones: validationZones
+            zones: validationZones,
+            dataQuality
         });
         const authority = canonicalCatalog.authority;
         // The legacy candidate arrays remain available for auditability, but
@@ -15290,7 +15408,10 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         market_open_source: marketState.source,
         provider_metadata: Object.fromEntries(Object.entries(historyCache || {}).map(([tf, data]) => [tf, data?.provider_metadata || null])),
         history_errors: historyCache?.fetch_errors || {},
-        last_closed_candle_time: Object.fromEntries(Object.entries(historyCache || {}).map(([tf, data]) => [tf, data?.filter(c => c.is_closed !== false).at(-1)?.t || null])),
+        last_closed_candle_time: Object.fromEntries(Object.entries(historyCache || {}).map(([tf]) => {
+            const closed = getClosedHistory(historyCache, tf);
+            return [tf, closed.length ? candleTimestamp(closed.at(-1), closed.length - 1, tf) : null];
+        })),
         structure_data_cutoff: now.getTime(),
         utc_time: now.toISOString(),
         session: sessionFacts,
@@ -16368,7 +16489,7 @@ const RAW_TEXT_OUTPUT_CONTRACT = [
     'TP2: <price>',
     'TP3: <price>',
     'CONFIDENCE: <integer 0-100>%',
-    'TIMEFRAME_USED: <4h or 1h for TRADE; one supplied timeframe for NO_TRADE>',
+    'TIMEFRAME_USED: <4h or 1h for TRADE; NONE for NO_TRADE>',
     'REASON: <concise structural explanation>',
     '',
     'SETUP uses only uppercase components FVG, OB, MSNR, CRT, TBS, SUPPLY, DEMAND, FLIP and BREAKER joined with + and no spaces; use NONE only for NO_TRADE.',
@@ -16396,7 +16517,7 @@ const MARKET_MECHANICS_RAW_TEXT_OUTPUT_CONTRACT = [
     'TP2: <exact supplied candidate TP2, or 0>',
     'TP3: <exact supplied candidate TP3, or 0>',
     'CONFIDENCE: <exact supplied candidate confidence, or 0%>',
-    'TIMEFRAME_USED: <exact supplied candidate timeframe; 4h or 1h for a trade>',
+    'TIMEFRAME_USED: <exact supplied candidate timeframe; 4h or 1h for a trade; NONE for NO_TRADE>',
     'REASON: <concise supplied Market Mechanics state or blocker>',
     '',
     'Select only an exact row from === LIVE MARKET MECHANICS CANDIDATES ===.',
@@ -18442,7 +18563,7 @@ function buildRawTextMarketAnalysisInstruction(strategyModeOverride = null) {
         '26A. Build REASON in this order: selected FVG and exact timeframe-qualified C1/C2/C3 and zone; exact linked CRT_REF; exact linked MSNR/OB/SUPPLY/DEMAND references; daily-bias relationship; current/today opportunity state; ATR distance and freshness; then stop/target geometry if useful. For FVG inequality, use the selected same-timeframe source candles only: bullish C1.high < C3.low and bearish C1.low > C3.high. Keep selected ENTRY, STOP, TP1, TP2 and TP3 unchanged.',
         '26B. Fail closed on evidence mismatch: if a named component reference is absent or cannot be found in its matching audit, omit that component from SETUP or return NO_TRADE when exact deterministic evidence is mandatory. Never invent a reference, candle value, timeframe or explanation to preserve a preferred label.',
         '27. Return ACTION: NO_TRADE only after both directional searches, complete candidate-construction attempts and TODAY_PENDING_OPPORTUNITY filtering fail. Do not fall back to an old/far HP zone merely to produce a trade. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker such as TP1 delivered before entry, entry touched, TOO_FAR, extreme age with no current relevance or no active higher-timeframe setup. Never use inactive session, lack of immediate price touch, normal pending geometry or absent exact-moment lower-TF confirmation as the sole blocker; never say only "No setup found."',
-        '28. TIMEFRAME_USED must always be one supplied timeframe; it must be 4h or 1h for TRADE decisions, while NO_TRADE uses one supplied timeframe actually evaluated; never output TIMEFRAME_USED: NONE.',
+        '28. TIMEFRAME_USED must be 4h or 1h for TRADE decisions and exactly NONE for NO_TRADE decisions.',
         'CONFIDENCE is setup quality only, not guaranteed win probability. Return exactly one final plain-text response and nothing else.'
     ].join('\n');
 }
@@ -18611,11 +18732,13 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
                 + ' EXPECTED_LATEST_CLOSED=' + (diagnostic.expected_latest_closed ? new Date(diagnostic.expected_latest_closed).toISOString() : 'NONE')
                 + ' NEXT_EXPECTED_CLOSE=' + (diagnostic.next_expected_close ? new Date(diagnostic.next_expected_close).toISOString() : 'NONE')
                 + ' SESSION_ANCHOR=' + String(diagnostic.session_anchor || 'NONE')
+                + ' TIMESTAMP_SEMANTICS=' + String(diagnostic.timestamp_semantics || 'UNKNOWN')
                 + ' CALENDAR_TYPE=' + String(diagnostic.calendar_type || 'UNKNOWN')
                 + ' SESSION_OPEN=' + (diagnostic.session_open === true ? 'YES' : diagnostic.session_open === false ? 'NO' : 'UNKNOWN'));
         }
         lines.push('TF_1D_SESSION_ANCHOR=' + String(timeframeDiagnostics['1D']?.session_anchor || 'NONE')
-            + ' TF_4H_SESSION_ANCHOR=' + String(timeframeDiagnostics['4H']?.session_anchor || 'NONE'));
+            + ' TF_4H_SESSION_ANCHOR=' + String(timeframeDiagnostics['4H']?.session_anchor || 'NONE')
+            + ' TIMESTAMP_SEMANTICS=' + String(packetDataQuality.timestamp_semantics || 'UNKNOWN'));
         lines.push('AUTHORITY_MODE=MARKET_MECHANICS MARKET_PLAN_VALID=' + (plan.valid_context === true ? 'YES' : 'NO')
             + ' MARKET_PLAN_COMPLETE=' + (plan.market_plan_complete === true ? 'YES' : 'NO'));
         lines.push('MACRO_1D_BIAS=' + String(macroBias)
