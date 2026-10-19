@@ -3961,6 +3961,65 @@ describe('Market Mechanics end-to-end qualification authority', () => {
         expect(result.stale_details[0].calendar_type).toBe('FX_WEEKEND_SESSION');
     });
 
+    test('FX intraday weekend gaps use the observed weekly reopen, not each timeframe grid anchor', () => {
+        const ctx = getContext();
+        const asOf = Date.parse('2026-10-19T07:05:00Z');
+        const sessionStart = timestamp => {
+            const date = new Date(timestamp);
+            const sunday = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) - date.getUTCDay() * 24 * 60 * 60000;
+            return sunday + 22 * 60 * 60000;
+        };
+        const makeHistory = (timeframe, start, end) => {
+            const step = ctx.timeframeDurationMs(timeframe);
+            const rows = [];
+            for (let timestamp = start; timestamp <= end; timestamp += step) {
+                const open = sessionStart(timestamp);
+                if (timestamp >= open && timestamp < open + 5 * 24 * 60 * 60000) {
+                    rows.push({ t: new Date(timestamp).toISOString(), o: 100, h: 101, l: 99, c: 100, is_closed: true });
+                }
+            }
+            return rows;
+        };
+        const cases = [
+            ['4H', Date.parse('2026-09-21T02:00:00Z'), Date.parse('2026-10-19T02:00:00Z')],
+            ['1H', Date.parse('2026-09-21T00:00:00Z'), Date.parse('2026-10-19T06:00:00Z')],
+            ['15M', Date.parse('2026-09-21T00:00:00Z'), Date.parse('2026-10-19T06:45:00Z')]
+        ];
+        for (const [timeframe, start, end] of cases) {
+            const result = ctx.validateMarketDataQuality({ [timeframe]: makeHistory(timeframe, start, end) }, 100, null, asOf, [timeframe], {
+                symbol: 'EUR/USD', asset_class: 'FOREX', check_optional: false
+            });
+            expect(result.status).toBe('FRESH');
+            expect(result.timeframe_status[timeframe]).toBe('FRESH');
+            expect(result.timeframe_diagnostics[timeframe].missing_candle_count).toBe(0);
+            expect(result.timeframe_diagnostics[timeframe].session_weekly_open).toBe('22:00Z');
+            expect(result.timeframe_diagnostics[timeframe].bar_grid_anchor).toBe(timeframe === '4H' ? '02:00Z' : '00:00Z');
+        }
+    });
+
+    test('a genuinely missing open-session Monday candle remains incomplete', () => {
+        const ctx = getContext();
+        const asOf = Date.parse('2026-10-19T07:05:00Z');
+        const start = Date.parse('2026-09-21T00:00:00Z');
+        const end = Date.parse('2026-10-19T06:00:00Z');
+        const rows = [];
+        for (let timestamp = start; timestamp <= end; timestamp += 60 * 60000) {
+            const date = new Date(timestamp);
+            const sunday = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) - date.getUTCDay() * 24 * 60 * 60000;
+            const open = sunday + 22 * 60 * 60000;
+            if (timestamp >= open && timestamp < open + 5 * 24 * 60 * 60000 && timestamp !== Date.parse('2026-10-19T05:00:00Z')) {
+                rows.push({ t: new Date(timestamp).toISOString(), o: 100, h: 101, l: 99, c: 100, is_closed: true });
+            }
+        }
+        const result = ctx.validateMarketDataQuality({ '1H': rows }, 100, null, asOf, ['1H'], {
+            symbol: 'EUR/USD', asset_class: 'FOREX', check_optional: false
+        });
+        expect(result.status).toBe('INCOMPLETE');
+        expect(result.timeframe_status['1H']).toBe('INCOMPLETE');
+        expect(result.timeframe_diagnostics['1H'].missing_candle_count).toBe(1);
+        expect(result.reasons.join(' ')).toMatch(/1H has 1 missing expected candle/);
+    });
+
     test('crypto daily freshness remains continuous and does not use the FX weekend calendar', () => {
         const ctx = getContext();
         const daily = Array.from({ length: 50 }, (_, index) => ({
@@ -4060,6 +4119,28 @@ describe('Market Mechanics end-to-end qualification authority', () => {
         expect(result.data_calendar_type).toBe('METAL_OBSERVED_SESSION');
         expect(result.timeframe_diagnostics['1D'].actual_latest_closed).toBe(Date.parse('2026-10-15T21:00:00Z'));
         expect(result.timeframe_diagnostics['1D'].expected_latest_closed).toBe(Date.parse('2026-10-15T21:00:00Z'));
+    });
+
+    test('observed weekly reopen changes are respected across a DST session transition', () => {
+        const ctx = getContext();
+        const asOf = Date.parse('2026-10-26T00:05:00Z');
+        const rows = [];
+        for (let timestamp = Date.parse('2026-10-19T00:00:00Z'); timestamp <= Date.parse('2026-10-26T00:00:00Z'); timestamp += 60 * 60000) {
+            const date = new Date(timestamp);
+            const sunday = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) - date.getUTCDay() * 24 * 60 * 60000;
+            const weeklyOpen = sunday === Date.parse('2026-10-18T00:00:00Z') ? 22 * 60 : 21 * 60;
+            const open = sunday + weeklyOpen * 60000;
+            if (timestamp >= open && timestamp < open + 5 * 24 * 60 * 60000) {
+                rows.push({ t: new Date(timestamp).toISOString(), o: 100, h: 101, l: 99, c: 100, is_closed: true });
+            }
+        }
+        const result = ctx.validateMarketDataQuality({ '1H': rows }, 100, null, asOf, ['1H'], {
+            symbol: 'EUR/USD', asset_class: 'FOREX', check_optional: false
+        });
+        expect(result.status).toBe('FRESH');
+        expect(result.timeframe_diagnostics['1H'].missing_candle_count).toBe(0);
+        expect(result.timeframe_diagnostics['1H'].session_schedule_source).toBe('OBSERVED_GAP');
+        expect(result.timeframe_diagnostics['1H'].session_weekly_open).toBe('21:00Z');
     });
 });
 

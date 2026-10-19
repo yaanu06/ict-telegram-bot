@@ -11365,19 +11365,124 @@ function sessionWeekStartAtAnchor(timestamp, anchorMinute) {
     const date = new Date(timestamp);
     const midnight = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
     const day = date.getUTCDay();
-    let weekStart = midnight - day * 24 * 60 * 60000 + Number(anchorMinute);
+    // The session anchor is expressed in UTC minutes; convert it to
+    // milliseconds here.  Bar-grid anchors and session anchors are separate
+    // concepts, but both use this minute-based API.
+    let weekStart = midnight - day * 24 * 60 * 60000 + Number(anchorMinute) * 60000;
     if (timestamp < weekStart) weekStart -= 7 * 24 * 60 * 60000;
     return weekStart;
 }
 
-function isScheduledSessionBarStart(start, { assetClass, calendarType, timeframe, anchorMinute, sessionCalendar } = {}) {
+function parseSessionMinute(value) {
+    if (Number.isFinite(Number(value))) {
+        const numeric = Number(value);
+        if (numeric >= 0 && numeric < 24 * 60) return numeric;
+        if (numeric >= 0 && numeric < 24 * 60 * 60 * 1000) return numeric / 60000;
+    }
+    if (typeof value === 'string') {
+        const match = value.trim().match(/^(\d{1,2}):([0-5]\d)(?::[0-5]\d)?(?:Z|\s*UTC)?$/i);
+        if (match) return Number(match[1]) * 60 + Number(match[2]);
+        const timestamp = normalizeTimestampUTC(value);
+        if (Number.isFinite(timestamp)) {
+            const date = new Date(timestamp);
+            return date.getUTCHours() * 60 + date.getUTCMinutes();
+        }
+    }
+    return null;
+}
+
+function sessionWeekKey(timestamp) {
+    const date = new Date(timestamp);
+    const midnight = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+    return midnight - date.getUTCDay() * 24 * 60 * 60000;
+}
+
+function inferObservedWeeklySessionOpens(history = [], timeframe = '1H') {
+    const duration = timeframeDurationMs(timeframe);
+    const times = closedStructureCandles(history)
+        .map(candle => normalizeTimestampUTC(candle?.t ?? candle?.timestamp ?? candle?.time))
+        .filter(Number.isFinite)
+        .sort((a, b) => a - b);
+    const observed = [];
+    for (let index = 1; index < times.length; index += 1) {
+        const previous = times[index - 1];
+        const next = times[index];
+        const gap = next - previous;
+        if (gap <= duration + 60 * 1000) continue;
+        const nextDate = new Date(next);
+        if (nextDate.getUTCDay() !== 0 && gap < 24 * 60 * 60 * 1000) continue;
+        observed.push({
+            week_key: sessionWeekKey(next),
+            open_minutes: nextDate.getUTCHours() * 60 + nextDate.getUTCMinutes(),
+            timestamp: next
+        });
+    }
+    return observed.filter((item, index, items) => items.findIndex(other => other.week_key === item.week_key) === index);
+}
+
+function sessionCalendarMinute(sessionCalendar, keys = []) {
+    for (const key of keys) {
+        const minute = parseSessionMinute(sessionCalendar?.[key]);
+        if (Number.isFinite(minute)) return minute;
+    }
+    return null;
+}
+
+function buildSessionSchedule({ assetClass, calendarType, sessionCalendar = null, history = [], timeframe = '1H' } = {}) {
+    const observed = inferObservedWeeklySessionOpens(history, timeframe);
+    const explicitOpen = sessionCalendarMinute(sessionCalendar, [
+        'weekly_open_utc', 'weekly_open', 'session_weekly_open_utc', 'session_weekly_open', 'session_open_utc', 'session_open'
+    ]);
+    const explicitClose = sessionCalendarMinute(sessionCalendar, [
+        'weekly_close_utc', 'weekly_close', 'session_weekly_close_utc', 'session_weekly_close', 'session_close_utc', 'session_close'
+    ]);
+    let fallbackOpen = null;
+    let source = 'CONTINUOUS';
+    if (calendarType === 'FX_WEEKEND_SESSION') {
+        // Metadata or observed session gaps take precedence. This documented
+        // fallback is only used when the feed supplies neither.
+        fallbackOpen = 22 * 60;
+        source = 'DOCUMENTED_FALLBACK';
+    } else if (calendarType === 'METAL_OBSERVED_SESSION') {
+        // XAU feeds commonly use a 21:00 UTC broker day; observed history is
+        // authoritative and can reflect a different feed/DST schedule.
+        fallbackOpen = 21 * 60;
+        source = 'DOCUMENTED_FALLBACK';
+    }
+    const defaultOpen = Number.isFinite(explicitOpen) ? explicitOpen : observed.at(-1)?.open_minutes ?? fallbackOpen;
+    if (Number.isFinite(explicitOpen)) source = 'METADATA';
+    else if (observed.length) source = 'OBSERVED_GAP';
+    const weeklyOpenMinutes = Number.isFinite(defaultOpen) ? defaultOpen : 0;
+    return {
+        calendar_type: calendarType,
+        bar_grid_anchor_minutes: null,
+        weekly_open_minutes: weeklyOpenMinutes,
+        weekly_close_minutes: Number.isFinite(explicitClose) ? explicitClose : weeklyOpenMinutes,
+        observed_weekly_opens: observed,
+        source
+    };
+}
+
+function sessionOpenMinuteForStart(start, sessionSchedule = null) {
+    const weekKey = sessionWeekKey(start);
+    const observed = Array.isArray(sessionSchedule?.observed_weekly_opens)
+        ? sessionSchedule.observed_weekly_opens.find(item => item.week_key === weekKey)
+        : null;
+    return Number.isFinite(Number(observed?.open_minutes))
+        ? Number(observed.open_minutes)
+        : Number.isFinite(Number(sessionSchedule?.weekly_open_minutes))
+            ? Number(sessionSchedule.weekly_open_minutes)
+            : 0;
+}
+
+function isScheduledSessionBarStart(start, { assetClass, calendarType, timeframe, anchorMinute, barGridAnchorMinute, sessionCalendar, sessionSchedule } = {}) {
     if (!Number.isFinite(start)) return false;
     if (assetClass === 'CRYPTO' || calendarType === 'CRYPTO_24_7') return true;
     if (calendarType === 'OBSERVED_SESSION' && !sessionCalendar) return true;
     const date = new Date(start);
     const day = date.getUTCDay();
     if (calendarType === 'FX_WEEKEND_SESSION' || assetClass === 'FOREX') {
-        const weekStart = sessionWeekStartAtAnchor(start, anchorMinute);
+        const weekStart = sessionWeekStartAtAnchor(start, sessionOpenMinuteForStart(start, sessionSchedule));
         // FX bars exist from the Sunday broker-session anchor through the
         // Friday close. The Friday anchor itself starts the weekend gap and
         // is therefore excluded.
@@ -11387,7 +11492,7 @@ function isScheduledSessionBarStart(start, { assetClass, calendarType, timeframe
         // The observed XAU daily feed uses a Sunday-through-Thursday session
         // sequence at its broker anchor. Friday's anchor would begin the
         // weekend and is not an expected completed daily bucket.
-        const weekStart = sessionWeekStartAtAnchor(start, anchorMinute);
+        const weekStart = sessionWeekStartAtAnchor(start, sessionOpenMinuteForStart(start, sessionSchedule));
         return start >= weekStart && start < weekStart + 5 * 24 * 60 * 60000;
     }
     const configuredDays = Array.isArray(sessionCalendar?.open_days)
@@ -11417,6 +11522,14 @@ function getExpectedLatestClosedBarTime({ symbol = null, assetClass = null, time
     const anchorMinute = ((anchorMs % (24 * 60 * 60000)) + 24 * 60 * 60000) % (24 * 60 * 60000) / 60000;
     const metadataClass = assetClass || getAssetClass(symbol || pair);
     const calendarType = sessionCalendarType(metadataClass, sessionCalendar);
+    const sessionSchedule = buildSessionSchedule({
+        assetClass: metadataClass,
+        calendarType,
+        sessionCalendar,
+        history,
+        timeframe: tf
+    });
+    sessionSchedule.bar_grid_anchor_minutes = anchorMinute;
     const candidateIndex = Math.floor((evaluation - anchorMinute * 60000) / duration);
     const maxLookbackSteps = Math.ceil((14 * 24 * 60 * 60000) / duration);
     let latest = null;
@@ -11427,7 +11540,7 @@ function getExpectedLatestClosedBarTime({ symbol = null, assetClass = null, time
     for (let offset = 0; offset <= maxLookbackSteps; offset++) {
         const index = candidateIndex - offset;
         const start = anchorMinute * 60000 + index * duration;
-        if (!isScheduledSessionBarStart(start, { assetClass: metadataClass, calendarType, timeframe: tf, anchorMinute, sessionCalendar })) continue;
+        if (!isScheduledSessionBarStart(start, { assetClass: metadataClass, calendarType, timeframe: tf, anchorMinute, barGridAnchorMinute: anchorMinute, sessionCalendar, sessionSchedule })) continue;
         const completed = timestampSemantics === 'CLOSE' ? start <= evaluation : start + duration <= evaluation;
         if (completed) {
             latest = start;
@@ -11437,7 +11550,7 @@ function getExpectedLatestClosedBarTime({ symbol = null, assetClass = null, time
     for (let offset = 0; offset <= maxLookbackSteps; offset++) {
         const index = candidateIndex + offset;
         const start = anchorMinute * 60000 + index * duration;
-        if (!isScheduledSessionBarStart(start, { assetClass: metadataClass, calendarType, timeframe: tf, anchorMinute, sessionCalendar })) continue;
+        if (!isScheduledSessionBarStart(start, { assetClass: metadataClass, calendarType, timeframe: tf, anchorMinute, barGridAnchorMinute: anchorMinute, sessionCalendar, sessionSchedule })) continue;
         const completion = timestampSemantics === 'CLOSE' ? start : start + duration;
         if (completion > evaluation) {
             nextClose = completion;
@@ -11448,7 +11561,7 @@ function getExpectedLatestClosedBarTime({ symbol = null, assetClass = null, time
     const currentStart = anchorMinute * 60000 + currentIndex * duration;
     const sessionOpen = metadataClass === 'CRYPTO'
         ? true
-        : isScheduledSessionBarStart(currentStart, { assetClass: metadataClass, calendarType, timeframe: tf, anchorMinute, sessionCalendar });
+        : isScheduledSessionBarStart(currentStart, { assetClass: metadataClass, calendarType, timeframe: tf, anchorMinute, barGridAnchorMinute: anchorMinute, sessionCalendar, sessionSchedule });
     return {
         symbol: symbol || null,
         timeframe: tf,
@@ -11456,6 +11569,11 @@ function getExpectedLatestClosedBarTime({ symbol = null, assetClass = null, time
         next_expected_close: nextClose,
         session_anchor: formatUtcSessionAnchor(anchorMinute),
         session_anchor_minutes: anchorMinute,
+        bar_grid_anchor: formatUtcSessionAnchor(anchorMinute),
+        session_weekly_open: formatUtcSessionAnchor(sessionSchedule.weekly_open_minutes),
+        session_weekly_close: formatUtcSessionAnchor(sessionSchedule.weekly_close_minutes),
+        session_schedule_source: sessionSchedule.source,
+        session_schedule: sessionSchedule,
         calendar_type: calendarType,
         session_open: sessionOpen,
         timestamp_semantics: timestampSemantics
@@ -11983,7 +12101,9 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
                         calendarType: expected.calendar_type,
                         timeframe: tf,
                         anchorMinute: expected.session_anchor_minutes,
-                        sessionCalendar
+                        barGridAnchorMinute: expected.session_anchor_minutes,
+                        sessionCalendar,
+                        sessionSchedule: expected.session_schedule
                     })) missingCandleCount += 1;
                 }
             }
@@ -11998,6 +12118,10 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
             expected_latest_closed: expected.expected_latest_closed_time,
             next_expected_close: expected.next_expected_close,
             session_anchor: expected.session_anchor,
+            bar_grid_anchor: expected.bar_grid_anchor,
+            session_weekly_open: expected.session_weekly_open,
+            session_weekly_close: expected.session_weekly_close,
+            session_schedule_source: expected.session_schedule_source,
             calendar_type: expected.calendar_type,
             session_open: expected.session_open,
             timestamp_semantics: expected.timestamp_semantics,
@@ -12027,6 +12151,10 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
                     max_allowed_age_ms: providerLag,
                     next_expected_close: expected.next_expected_close,
                     session_anchor: expected.session_anchor,
+                    bar_grid_anchor: expected.bar_grid_anchor,
+                    session_weekly_open: expected.session_weekly_open,
+                    session_weekly_close: expected.session_weekly_close,
+                    session_schedule_source: expected.session_schedule_source,
                     calendar_type: expected.calendar_type,
                     session_open: expected.session_open,
                     timestamp_semantics: expected.timestamp_semantics
@@ -18721,7 +18849,8 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             + ' LATEST_REQUIRED_CLOSED_TIME=' + String(packetDataQuality.latest_required_closed_time ? new Date(packetDataQuality.latest_required_closed_time).toISOString() : 'NONE')
             + ' EXPECTED_LATEST_CLOSED_TIME=' + String(packetDataQuality.expected_latest_closed_time ? new Date(packetDataQuality.expected_latest_closed_time).toISOString() : 'NONE')
             + ' AGE_MS=' + String(packetDataQuality.age_ms ?? 'NONE')
-            + ' MAX_ALLOWED_AGE_MS=' + String(packetDataQuality.max_allowed_age_ms ?? 'NONE'));
+            + ' MAX_ALLOWED_AGE_MS=' + String(packetDataQuality.max_allowed_age_ms ?? 'NONE')
+            + ' MISSING_CANDLE_COUNT=' + String(Object.values(packetDataQuality.timeframe_diagnostics || {}).reduce((sum, item) => sum + (Number(item?.missing_candle_count) || 0), 0)));
         lines.push('DATA_CALENDAR_TYPE=' + String(packetDataQuality.data_calendar_type || 'UNKNOWN')
             + ' SESSION_OPEN=' + (packetDataQuality.session_open === true ? 'YES' : packetDataQuality.session_open === false ? 'NO' : 'UNKNOWN'));
         const timeframeDiagnostics = packetDataQuality.timeframe_diagnostics || {};
@@ -18732,12 +18861,21 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
                 + ' EXPECTED_LATEST_CLOSED=' + (diagnostic.expected_latest_closed ? new Date(diagnostic.expected_latest_closed).toISOString() : 'NONE')
                 + ' NEXT_EXPECTED_CLOSE=' + (diagnostic.next_expected_close ? new Date(diagnostic.next_expected_close).toISOString() : 'NONE')
                 + ' SESSION_ANCHOR=' + String(diagnostic.session_anchor || 'NONE')
+                + ' BAR_GRID_ANCHOR=' + String(diagnostic.bar_grid_anchor || 'NONE')
+                + ' SESSION_WEEKLY_OPEN=' + String(diagnostic.session_weekly_open || 'NONE')
+                + ' SESSION_WEEKLY_CLOSE=' + String(diagnostic.session_weekly_close || 'NONE')
+                + ' SESSION_SCHEDULE_SOURCE=' + String(diagnostic.session_schedule_source || 'NONE')
+                + ' MISSING_CANDLE_COUNT=' + String(diagnostic.missing_candle_count ?? 'NONE')
                 + ' TIMESTAMP_SEMANTICS=' + String(diagnostic.timestamp_semantics || 'UNKNOWN')
                 + ' CALENDAR_TYPE=' + String(diagnostic.calendar_type || 'UNKNOWN')
                 + ' SESSION_OPEN=' + (diagnostic.session_open === true ? 'YES' : diagnostic.session_open === false ? 'NO' : 'UNKNOWN'));
         }
         lines.push('TF_1D_SESSION_ANCHOR=' + String(timeframeDiagnostics['1D']?.session_anchor || 'NONE')
             + ' TF_4H_SESSION_ANCHOR=' + String(timeframeDiagnostics['4H']?.session_anchor || 'NONE')
+            + ' TF_1D_BAR_GRID_ANCHOR=' + String(timeframeDiagnostics['1D']?.bar_grid_anchor || 'NONE')
+            + ' TF_4H_BAR_GRID_ANCHOR=' + String(timeframeDiagnostics['4H']?.bar_grid_anchor || 'NONE')
+            + ' TF_1D_SESSION_WEEKLY_OPEN=' + String(timeframeDiagnostics['1D']?.session_weekly_open || 'NONE')
+            + ' TF_4H_SESSION_WEEKLY_OPEN=' + String(timeframeDiagnostics['4H']?.session_weekly_open || 'NONE')
             + ' TIMESTAMP_SEMANTICS=' + String(packetDataQuality.timestamp_semantics || 'UNKNOWN'));
         lines.push('AUTHORITY_MODE=MARKET_MECHANICS MARKET_PLAN_VALID=' + (plan.valid_context === true ? 'YES' : 'NO')
             + ' MARKET_PLAN_COMPLETE=' + (plan.market_plan_complete === true ? 'YES' : 'NO'));
