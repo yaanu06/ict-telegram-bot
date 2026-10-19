@@ -12386,7 +12386,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         // would make an index mismatch look like a valid age/touch history.
         executionEventIndexResolved = matchedExecution >= 0 ? matchedExecution : executionDataHasExplicitTimes ? null : executionEventIndexResolved;
     }
-    index = Number.isFinite(executionEventTime) ? executionEventIndexResolved : strategyEventIndex;
+    index = Number.isFinite(executionEventTime) ? executionEventIndexResolved : (Number.isInteger(executionEventIndex) ? executionEventIndex : strategyEventIndex);
     const low = candidate.entry_region_low ?? candidate.zone_low ?? setup.structural_entry_region?.low;
     const high = candidate.entry_region_high ?? candidate.zone_high ?? setup.structural_entry_region?.high;
     const entry = candidate.entry ?? setup.execution_zone?.midpoint;
@@ -12582,7 +12582,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         && hasExplicitExecutionTimes
         && Number.isFinite(firstExecutionTime)
         && firstExecutionTime <= resolvedEventTime + STRATEGY_SPEC.TIME.futureToleranceMs;
-    const chronologyUnknown = !validLifecycleIndex && !chronologyCoveredByTimestamp;
+    const chronologyUnknown = !validLifecycleIndex && !chronologyCoveredByTimestamp && !Number.isInteger(executionEventIndex);
     // Missing index mapping is not expiration evidence. A setup is expired
     // only for invalid geometry or a documented age rule evaluated from a
     // resolved index. Timestamp-backed pending setups are evaluated by the
