@@ -3222,9 +3222,12 @@ function hasExecutableStrategyBacking(setup = {}) {
     return true;
 }
 
-// AI-verified market mechanics are executable only after the analyst has
-// referenced deterministic zones, invalidation, and target evidence. A plain
-// ICT/FVG/OB record never satisfies this predicate on its own.
+// Market Mechanics owns its own pre-candidate routing boundary.  This check
+// proves that a detector returned a formed, model-owned execution opportunity
+// with a concrete zone.  Stop/target completeness is deliberately evaluated
+// later by the canonical candidate qualifier so that missing geometry remains
+// observable as NO_STRUCTURAL_STOP / NO_STRUCTURAL_TARGET instead of silently
+// disappearing before qualification.
 function hasExecutableOpportunityBacking(setup = {}) {
     if (hasExecutableStrategyBacking(setup)) return true;
     const source = setup?.strategy_setup && typeof setup.strategy_setup === 'object'
@@ -7082,7 +7085,17 @@ function buildDeterministicValidationContext({ pair, price, historyCache, real_i
         quote_snapshot,
         symbol_metadata: symbol_metadata || quote_snapshot?.symbol_metadata || null,
         strategy_setups: strategy_setups || [],
-        require_strategy_setup: !!require_strategy_setup
+        require_strategy_setup: !!require_strategy_setup,
+        strategy_mode: market_context?.strategy_mode || null,
+        // Lifecycle and chronology must evaluate against the same snapshot
+        // timestamp as the production planner.  Previously this context did
+        // not carry the timestamp through, so the lifecycle helper fell back
+        // to an unrelated wall-clock value and could expire a fresh pending
+        // setup before qualification.
+        as_of_time: market_context?.as_of_time || market_context?.as_of_time_utc || null,
+        as_of_time_utc: market_context?.as_of_time_utc || market_context?.as_of_time || null,
+        as_of_ms: market_context?.as_of_ms ?? market_context?.scan_as_of_ms ?? null,
+        scan_as_of_ms: market_context?.scan_as_of_ms ?? market_context?.as_of_ms ?? null
     };
 }
 
@@ -7308,10 +7321,11 @@ function buildDailyTradingBias(timeframeContext, targets, price, asOfTime) {
     };
 }
 
-function selectFutureLimitLocation(direction, zones = [], locationPois = [], price, pairLocal = pair, symbolMetadata = {}) {
+function enumerateFutureLimitLocations(direction, zones = [], locationPois = [], price, pairLocal = pair, symbolMetadata = {}) {
     const timeframeScore = { '4H': 40, '1H': 24, '15M': 8 };
     const sourceScore = { MSNR: 22, OB: 20, FVG: 18, SUPPLY: 14, DEMAND: 14, FLIP: 12 };
     const settings = getMarketSettings(pairLocal, symbolMetadata);
+    const seen = new Set();
     return [...zones, ...locationPois]
         .filter(zone => zone?.direction === direction && ['4H', '1H', '15M'].includes(zone.timeframe))
         .filter(zone => Number.isFinite(Number(zone.low)) && Number.isFinite(Number(zone.high)) && Number(zone.high) >= Number(zone.low))
@@ -7323,6 +7337,9 @@ function selectFutureLimitLocation(direction, zones = [], locationPois = [], pri
         .filter(zone => selectPendingExecutionGeometry(zone, null, direction, { price, pair: pairLocal, symbol_metadata: symbolMetadata }, settings.prec).side_eligible)
         .filter(zone => zone.primary_eligible !== false || zone.location_only === true)
         .map(zone => {
+            const identity = marketMechanicsPoiId(zone, pairLocal) || strategyZoneKey(zone);
+            if (seen.has(identity)) return null;
+            seen.add(identity);
             const midpoint = (Number(zone.low) + Number(zone.high)) / 2;
             const distance = Math.abs(midpoint - Number(price));
             const score = (timeframeScore[zone.timeframe] || 0)
@@ -7333,7 +7350,14 @@ function selectFutureLimitLocation(direction, zones = [], locationPois = [], pri
                 - Math.min(20, distance / Math.max(Math.abs(Number(price)), 1) * 100);
             return { ...zone, future_limit_score: score, future_limit_distance: distance };
         })
-        .sort((a, b) => b.future_limit_score - a.future_limit_score || a.future_limit_distance - b.future_limit_distance)[0] || null;
+        .filter(Boolean)
+        .sort((a, b) => b.future_limit_score - a.future_limit_score
+            || a.future_limit_distance - b.future_limit_distance
+            || String(marketMechanicsPoiId(a, pairLocal) || a.id || '').localeCompare(String(marketMechanicsPoiId(b, pairLocal) || b.id || '')));
+}
+
+function selectFutureLimitLocation(direction, zones = [], locationPois = [], price, pairLocal = pair, symbolMetadata = {}) {
+    return enumerateFutureLimitLocations(direction, zones, locationPois, price, pairLocal, symbolMetadata)[0] || null;
 }
 
 function marketMechanicsPoiStatusTokens(poi = {}) {
@@ -7494,6 +7518,46 @@ const MARKET_MECHANICS_ENTRY_MODELS = Object.freeze([
     'CRT_AGGRESSIVE',
     'CRT_CONSERVATIVE'
 ]);
+
+const MARKET_MECHANICS_MODEL_REQUIREMENTS = Object.freeze({
+    MARKET_SHIFT: Object.freeze({ required_timeframes: Object.freeze(['1D', '4H', '1H', '15M']) }),
+    FLIP_ZONE: Object.freeze({ required_timeframes: Object.freeze(['4H', '1H', '15M']) }),
+    LIQUIDITY_OB_FVG: Object.freeze({ required_timeframes: Object.freeze(['4H', '1H']) }),
+    CRT_AGGRESSIVE: Object.freeze({ required_timeframes: Object.freeze(['4H', '1H']) }),
+    CRT_CONSERVATIVE: Object.freeze({ required_timeframes: Object.freeze(['4H', '1H', '15M']) })
+});
+
+function isMarketMechanicsExecutionModel(value) {
+    const model = String(value || '').toUpperCase();
+    return MARKET_MECHANICS_ENTRY_MODELS.includes(model)
+        || model === 'PENDING_LIMIT'
+        || model === 'FRESH_RETRACEMENT_LIMIT'
+        || model === 'STRUCTURAL_LIMIT';
+}
+
+function hasMarketMechanicsExecutionBacking(setup = {}) {
+    const source = setup?.strategy_setup && typeof setup.strategy_setup === 'object'
+        ? setup.strategy_setup
+        : setup;
+    const zone = source?.execution_zone || setup?.execution_zone;
+    const declaredModel = String(source?.entry_model || source?.execution_model || '').toUpperCase();
+    const model = marketMechanicsEntryModelForSetup({
+        ...source,
+        execution_zone: zone,
+        entry_model: source?.entry_model || source?.execution_model
+    });
+    const direction = String(source?.direction || '').toUpperCase();
+    const low = Number(zone?.low);
+    const high = Number(zone?.high);
+    return source?.market_mechanics_verified === true
+        && ['BUY', 'SELL'].includes(direction)
+        && declaredModel !== ''
+        && isMarketMechanicsExecutionModel(model)
+        && Number.isFinite(low)
+        && Number.isFinite(high)
+        && high >= low
+        && source?.execution_confirmed !== false;
+}
 
 function marketMechanicsDirectionFromTrend(value) {
     const trend = String(value || '').toUpperCase();
@@ -8091,7 +8155,6 @@ function buildMarketMechanicsStrategySetups(args = {}) {
         const directionAllowed = !plan?.direction || setup.direction === plan.direction || plan.narrative === 'REVERSAL';
         const poiRelationship = marketMechanicsPoiRelationship({ ...setup, entry_model: model }, plan);
         const hasPoi = poiRelationship.market_plan_poi_valid && poiRelationship.execution_poi_valid;
-        const hasTarget = (setup.target_candidates || []).some(target => Number.isFinite(Number(target.level)) && (setup.direction === 'BUY' ? Number(target.level) > Number(args.price) : Number(target.level) < Number(args.price)));
         const hasCausalConfirmation = setup.execution_confirmed === true || setup.execution_model === 'CONFIRMATION_ENTRY' || (setup.structural_evidence_ids || []).some(ref => String(ref).includes('SHIFT:'));
         setup.entry_model = model;
         const pendingModel = isPendingLimitExecutionModel(setup.execution_model || setup.entry_model);
@@ -8120,8 +8183,12 @@ function buildMarketMechanicsStrategySetups(args = {}) {
         setup.strategy_label = model;
         setup.setup_class = [setup.primary || 'POI', zoneTypeForSetup(setup)].filter(Boolean).join('+');
         setup.evidence_refs = [...new Set([...(setup.structural_evidence_ids || []), ...(plan?.evidence_refs || []), setup.execution_zone?.id].filter(Boolean))];
-        setup.model_mechanics_complete = plan?.valid_context === true && directionAllowed && hasPoi && hasTarget && hasCausalConfirmation && MARKET_MECHANICS_ENTRY_MODELS.includes(model);
-        return plan?.valid_context === true && directionAllowed && hasPoi && hasTarget && setup.model_mechanics_complete;
+        // Formation and execution-POI validity are prerequisites for routing
+        // into the canonical candidate engine.  Stop/target construction is
+        // deliberately left to that engine so a missing structural element
+        // is reported precisely instead of dropping the formation here.
+        setup.model_mechanics_complete = plan?.valid_context === true && directionAllowed && hasPoi && hasCausalConfirmation && MARKET_MECHANICS_ENTRY_MODELS.includes(model);
+        return plan?.valid_context === true && directionAllowed && hasPoi && setup.model_mechanics_complete;
     });
     Object.defineProperty(setups, 'detection_stats', { value: { strategy_narratives: setups.length, active_narratives: setups.length, entry_models: setups.reduce((out, setup) => { out[setup.entry_model] = (out[setup.entry_model] || 0) + 1; return out; }, {}) }, enumerable: false });
     if (discovery) Object.defineProperty(setups, 'discovery', { value: discovery, enumerable: false });
@@ -8565,47 +8632,46 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
         const wanted = direction === 'BUY' ? 'BULLISH' : 'BEARISH';
         const lead = timeframeContext?.['4H'];
         const leadTrend = lead?.effective_trend || lead?.structural_trend || lead?.bias;
-        if (leadTrend !== wanted && leadTrend !== `${wanted}_TRANSITION`) continue;
-        const location = selectFutureLimitLocation(direction, zones || [], locationPois, price, pairLocal, symbolMetadata);
+        const planDirection = String(marketPlan?.direction || '').toUpperCase();
+        if (leadTrend !== wanted && leadTrend !== `${wanted}_TRANSITION` && planDirection !== direction) continue;
+        const locations = enumerateFutureLimitLocations(direction, zones || [], locationPois, price, pairLocal, symbolMetadata);
         const targetPool = (targets?.all || []).filter(target => target.direction === direction && Number.isFinite(target.level)
             && (direction === 'BUY' ? target.level > price : target.level < price));
         const swings = direction === 'BUY' ? lead?.structure?.recent_swing_lows : lead?.structure?.recent_swing_highs;
-        const anchor = (swings || []).filter(s => Number.isFinite(s.level)
-            && (direction === 'BUY' ? s.level < Number(location?.low) : s.level > Number(location?.high))).at(-1);
-        if (!location || !targetPool.length || !anchor) continue;
-        const eventTime = location.created_time || location.created_time_ms || lead?.structure?.last_closed_candle_time || null;
-        const id = `ICT:CONTINUATION:${direction}:${location.id || strategyZoneKey(location)}`;
-        // The strategy narrative owns the direction and future objective. A
-        // location-only POI is still only a parent location; when it has a
-        // deterministic child FVG/OB/MSNR zone inside it, use that child as
-        // the pending-limit entry location. This keeps the strategy forecast
-        // intact without treating the parent POI itself as executable.
-        const nestedFutureExecution = location.location_only
-            ? selectFutureLimitLocation(direction, (zones || []).filter(zone => zone.id !== location.id && zone.location_only !== true && Number(zone.low) >= Number(location.low) && Number(zone.high) <= Number(location.high)), [], price, pairLocal, symbolMetadata)
-            : null;
-        // A validated HTF supply/demand location is usable as the order area
-        // when no narrower untouched child exists.  Do not make a new FVG a
-        // prerequisite for a future limit order.
-        const executionLocation = location.location_only
-            ? (nestedFutureExecution || { ...location, primary_eligible: true, entry_region_source: 'HTF_LOCATION' })
-            : location;
-        const pendingLimitZone = executionLocation ? {
-            ...executionLocation,
-            execution_model: 'PENDING_LIMIT',
-            entry_model: 'PENDING_LIMIT',
-            entry_reachable_today: true,
-            parent_location_id: location.id || null,
-            parent_location_type: location.type || null
-        } : null;
-        setups.push({ id, primary: 'ICT', label: 'MARKET_MECHANICS', direction,
-            timeframe: location.timeframe, setup_timeframe: location.timeframe, execution_timeframe: location.timeframe === '4H' ? '1H' : '15M',
-            event_time: eventTime, narrative_state: 'ACTIVE', execution_zone: pendingLimitZone, execution_model: 'PENDING_LIMIT', entry_model: 'PENDING_LIMIT',
-            structural_invalidation: anchor.level, structural_invalidation_detail: { level: anchor.level, source: 'HTF_STRUCTURE', timeframe: '4H' },
-            target_candidates: targetPool, primary_objective: targetPool[0].level,
-            opportunity_narrative: { id: `NARRATIVE:${id}`, state: 'DEVELOPING', location,
-                liquidity_event_ids: [], structural_shift_ids: [], evidence_ids: (lead?.structural_evidence_ids || []).slice(),
-                target_intent: targetPool[0].source, invalidation_intent: anchor.level, execution_requirement: 'RETRACE_TO_LOCATION' },
-            market_mechanics_verified: true, execution_confirmed: false, structural_evidence_ids: lead?.structural_evidence_ids || [], freshness: 'DEVELOPING', original_strategy_entry_consumed: false });
+        for (const location of locations) {
+            const anchor = (swings || []).filter(s => Number.isFinite(s.level)
+                && (direction === 'BUY' ? s.level < Number(location.low) : s.level > Number(location.high))).at(-1);
+            if (!anchor) continue;
+            const eventTime = location.created_time || location.created_time_ms || lead?.structure?.last_closed_candle_time || null;
+            const id = `ICT:CONTINUATION:${direction}:${location.id || strategyZoneKey(location)}`;
+            const nestedFutureExecution = location.location_only
+                ? enumerateFutureLimitLocations(direction, (zones || []).filter(zone => zone.id !== location.id && zone.location_only !== true && Number(zone.low) >= Number(location.low) && Number(zone.high) <= Number(location.high)), [], price, pairLocal, symbolMetadata)[0]
+                : null;
+            const executionLocation = location.location_only
+                ? (nestedFutureExecution || { ...location, primary_eligible: true, entry_region_source: 'HTF_LOCATION' })
+                : location;
+            const model = marketMechanicsEntryModelForSetup({ execution_zone: executionLocation });
+            const pendingLimitZone = {
+                ...executionLocation,
+                execution_model: 'PENDING_LIMIT',
+                entry_model: model,
+                entry_reachable_today: true,
+                parent_location_id: location.id || null,
+                parent_location_type: location.type || null
+            };
+            setups.push({ id, primary: 'ICT', label: model, direction,
+                timeframe: location.timeframe, setup_timeframe: location.timeframe, execution_timeframe: location.timeframe === '4H' ? '1H' : '15M',
+                event_time: eventTime, narrative_state: 'ACTIVE', execution_zone: pendingLimitZone, execution_model: 'PENDING_LIMIT', entry_model: model,
+                structural_invalidation: anchor.level, structural_invalidation_detail: { level: anchor.level, source: 'HTF_STRUCTURE', timeframe: '4H' },
+                target_candidates: targetPool, primary_objective: targetPool[0]?.level ?? null,
+                opportunity_narrative: { id: `NARRATIVE:${id}`, state: 'DEVELOPING', location,
+                    liquidity_event_ids: [], structural_shift_ids: (lead?.structural_evidence_ids || []).filter(Boolean), evidence_ids: (lead?.structural_evidence_ids || []).slice(),
+                    target_intent: targetPool[0]?.source || null, invalidation_intent: anchor.level, execution_requirement: 'RETRACE_TO_LOCATION' },
+                market_mechanics_verified: true, execution_confirmed: true,
+                formation_confirmation_type: 'SETUP_FORMATION',
+                structural_evidence_ids: [...new Set([...(lead?.structural_evidence_ids || []), location.id].filter(Boolean))],
+                freshness: 'FRESH', original_strategy_entry_consumed: false });
+        }
     }
     // A closed structure shift is the signal. Only later, qualified fresh zones can execute it.
     for (const tf of ['1H', '15M']) {
@@ -10223,8 +10289,11 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
     const rawCandidates = [];
     const validCandidates = [];
     const rejectedCandidates = [];
+    const marketMechanicsMode = String(marketContext?.strategy_mode || '').toUpperCase() === 'MARKET_MECHANICS';
     const supportedStrategySetups = Array.isArray(strategySetups)
-        ? strategySetups.filter(hasExecutableOpportunityBacking)
+        ? strategySetups.filter(setup => marketMechanicsMode
+            ? hasMarketMechanicsExecutionBacking(setup)
+            : hasExecutableOpportunityBacking(setup))
         : [];
     const strategyExecutionZones = Array.isArray(strategySetups) ? getStrategyExecutionZones(supportedStrategySetups) : [];
     const poiZones = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pair, symbolMetadata || {}));
@@ -10324,7 +10393,10 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         const marketMechanicsVerified = strategySetup?.market_mechanics_verified === true
             || (!Array.isArray(strategySetups) && !strategySetup
                 && hasDeterministicMarketMechanicsProof(zone, zone.direction, timeframeContext, targetCandidates, price));
-        if (Array.isArray(strategySetups) && (!strategySetup || !hasExecutableOpportunityBacking(strategySetup))) { failSeed(seed, 'NO_EXECUTABLE_OPPORTUNITY_BACKING'); continue; }
+        const executableBacking = String(marketContext?.strategy_mode || '').toUpperCase() === 'MARKET_MECHANICS'
+            ? hasMarketMechanicsExecutionBacking(strategySetup)
+            : hasExecutableOpportunityBacking(strategySetup);
+        if (Array.isArray(strategySetups) && (!strategySetup || !executableBacking)) { failSeed(seed, 'NO_EXECUTABLE_OPPORTUNITY_BACKING'); continue; }
         const setupModel = String(strategySetup?.opportunity_thesis?.execution_model || strategySetup?.execution_model || strategySetup?.entry_model || zone.execution_model || '').toUpperCase();
         if (strategySetup && String(marketContext?.strategy_mode || '').toUpperCase() === 'MARKET_MECHANICS') {
             const requiredTimeframes = marketMechanicsRequiredTimeframes(strategySetup, zone);
@@ -10830,6 +10902,14 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     setup_confidence: Math.max(0, Math.min(100, Math.round(score))),
                     score: ictRound(score, 2)
                 };
+                attachCanonicalMarketMechanicsCandidateState(candidate, {
+                    dataQuality,
+                    marketPlan: marketContext?.market_plan || null,
+                    strategySetup,
+                    pendingGeometry,
+                    zone,
+                    currentPrice: price
+                });
                 const pathQualityCandidate = apply4HPathQualityToCandidate(candidate, pathQualityRecords, pathQualityAsOfMs);
                 Object.assign(candidate, pathQualityCandidate, {
                     TRADE_QUALIFIED: pathQualityCandidate.trade_qualified ? 'YES' : 'NO',
@@ -11557,15 +11637,92 @@ function resolveMarketMechanicsQualification(candidate = {}, evaluation = {}, co
     };
 }
 
-function attachMarketMechanicsQualification(candidate = {}, evaluation = {}, context = {}) {
+function qualifyMarketMechanicsCandidate(candidate = {}, evaluation = {}, context = {}) {
     if (context.market_mechanics_mode === false) return {};
     const qualification = resolveMarketMechanicsQualification(candidate, evaluation, context);
-    Object.assign(candidate, qualification, { qualification: { ...qualification } });
+    const passed = qualification.qualification_result === 'PASS';
+    Object.assign(candidate, qualification, {
+        qualification: { ...qualification },
+        model_qualified: passed,
+        trade_qualified: passed,
+        MODEL_QUALIFIED: passed ? 'YES' : 'NO',
+        TRADE_QUALIFIED: passed ? 'YES' : 'NO',
+        candidate_authority: passed ? 'LIVE' : 'DIAGNOSTIC_ONLY',
+        CANDIDATE_AUTHORITY: passed ? 'LIVE' : 'DIAGNOSTIC_ONLY'
+    });
     return qualification;
 }
 
+// Compatibility name for older callers.  Authority still has one owner:
+// qualifyMarketMechanicsCandidate().
+function attachMarketMechanicsQualification(candidate = {}, evaluation = {}, context = {}) {
+    return qualifyMarketMechanicsCandidate(candidate, evaluation, context);
+}
+
+function attachCanonicalMarketMechanicsCandidateState(candidate = {}, {
+    dataQuality = null,
+    marketPlan = null,
+    strategySetup = null,
+    pendingGeometry = null,
+    zone = null,
+    currentPrice = null,
+    pathQuality = null
+} = {}) {
+    const originalZone = zone || candidate.zone || null;
+    const pendingRegion = pendingGeometry?.region || null;
+    const setupEvidence = strategySetup?.structural_evidence_ids
+        || strategySetup?.setup_formation_evidence
+        || strategySetup?.formation_evidence
+        || [];
+    candidate.market_data_quality = dataQuality || candidate.market_data_quality || null;
+    candidate.market_plan = marketPlan || candidate.market_plan || null;
+    candidate.market_plan_valid = marketPlan?.valid_context === true;
+    candidate.market_plan_complete = marketPlan?.market_plan_complete === true;
+    candidate.parent_poi = marketPlan?.active_poi || marketPlan?.primary_poi || null;
+    candidate.parent_poi_valid = candidate.market_plan_poi_valid === true
+        || candidate.MARKET_PLAN_POI_VALID === 'YES';
+    candidate.execution_poi = originalZone;
+    candidate.execution_poi_valid = candidate.execution_poi_valid === true
+        || candidate.EXECUTION_POI_VALID === 'YES';
+    candidate.formation = {
+        state: strategySetup?.setup_formation_state || (strategySetup?.execution_confirmed === true ? 'CONFIRMED' : 'INCOMPLETE'),
+        confirmed: strategySetup?.setup_formation_confirmed === true || strategySetup?.execution_confirmed === true,
+        evidence_refs: [...new Set(setupEvidence.filter(Boolean))],
+        confirmation_type: strategySetup?.formation_confirmation_type || 'SETUP_FORMATION'
+    };
+    candidate.formation_confirmed = candidate.formation.confirmed;
+    candidate.formation_time = strategySetup?.event_time || strategySetup?.execution_event_time || originalZone?.created_time || null;
+    candidate.first_actionable_time = strategySetup?.execution_event_time || originalZone?.created_time || candidate.formation_time || null;
+    candidate.entry_zone_original = originalZone && Number.isFinite(Number(originalZone.low)) && Number.isFinite(Number(originalZone.high))
+        ? { low: Number(originalZone.low), high: Number(originalZone.high), ref: originalZone.id || null }
+        : null;
+    candidate.entry_zone_remaining = pendingRegion
+        ? { low: pendingRegion.low, high: pendingRegion.high, source: pendingRegion.source || null }
+        : candidate.entry_zone_original;
+    candidate.entry_source = pendingGeometry?.entry_source || candidate.entry_source || null;
+    candidate.current_reference = pendingGeometry?.reference ?? candidate.pending_limit_reference_price ?? currentPrice ?? null;
+    candidate.current_reference_type = pendingGeometry?.reference_source || candidate.pending_limit_reference_source || 'OBSERVED';
+    candidate.pending_side_eligible = pendingGeometry ? pendingGeometry.side_eligible : candidate.pending_side_eligible;
+    candidate.entry = candidate.entry ?? pendingGeometry?.entry ?? null;
+    candidate.stop = candidate.stop ?? candidate.stop_loss ?? null;
+    candidate.stop_valid = Number.isFinite(Number(candidate.stop));
+    candidate.targets = candidate.targets || [candidate.tp1, candidate.tp2, candidate.tp3].filter(Number.isFinite).map(level => ({ level }));
+    candidate.target_valid = candidate.targets.length > 0;
+    candidate.reachability = candidate.reachability || candidate.target_reachability || null;
+    candidate.path_quality = pathQuality || candidate.path_quality || null;
+    return candidate;
+}
+
 function marketMechanicsRequiredTimeframes(setup = {}, zone = {}) {
+    const model = String(setup.opportunity_thesis?.execution_model
+        || setup.execution_model
+        || setup.entry_model
+        || zone.execution_model
+        || zone.entry_model
+        || '').toUpperCase();
+    const modelRequirements = MARKET_MECHANICS_MODEL_REQUIREMENTS[model]?.required_timeframes || [];
     const values = [
+        ...modelRequirements,
         setup.setup_timeframe || setup.timeframe || zone.timeframe,
         setup.execution_timeframe || zone.execution_timeframe || setup.timeframe || zone.timeframe
     ];
@@ -11969,7 +12126,9 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     // A future retracement limit can be created after price has already
     // crossed its eventual target while the order remains unfilled.
     const pendingRetracementLocation = pendingLimitModel
-        && hasExecutableOpportunityBacking(setup || candidate)
+        && (String(marketContext?.strategy_mode || '').toUpperCase() === 'MARKET_MECHANICS'
+            ? hasMarketMechanicsExecutionBacking(setup || candidate)
+            : hasExecutableOpportunityBacking(setup || candidate))
         && ((candidate.direction === 'SELL' && zonePriceStatus.pricePosition === 'BELOW_ZONE')
             || (candidate.direction === 'BUY' && zonePriceStatus.pricePosition === 'ABOVE_ZONE'));
     const targetLifecycleState = String(candidate.target_lifecycle_state || candidate.target_map?.[0]?.target_lifecycle_state || '').toUpperCase();
@@ -12244,7 +12403,10 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
         if (lifecycle.rejection_code) return { valid: false, checks, reasons: [lifecycle.rejection_code], metrics };
     }
     if (marketContext.require_strategy_setup) {
-        if (!hasExecutableOpportunityBacking(strategySetup || candidate)) {
+        const executableBacking = String(marketContext?.strategy_mode || '').toUpperCase() === 'MARKET_MECHANICS'
+            ? hasMarketMechanicsExecutionBacking(strategySetup || candidate)
+            : hasExecutableOpportunityBacking(strategySetup || candidate);
+        if (!executableBacking) {
             add('candidate is not backed by a verified executable opportunity');
         }
     }
@@ -14232,7 +14394,11 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
         ...historicalStates
     ].map(candidate => candidate?.id || candidate?.candidate_id).filter(Boolean));
     const searchCounts = {
-        raw_execution_zone_count: strategySetups.reduce((count, setup) => count + (setup.execution_zone ? 1 : 0), 0),
+        // Every stage below is calculated from the same candidate-record set.
+        // Counting strategy setups here while counting rejected/valid records
+        // below made the displayed funnel non-monotonic and obscured which
+        // execution zones actually reached qualification.
+        raw_execution_zone_count: candidateRecords.length,
         structurally_valid_zone_count: structurallyValidCandidates.length,
         lifecycle_eligible_zone_count: lifecycleEligibleCandidates.length,
         correct_side_zone_count: correctSideCandidates.length,
@@ -14253,6 +14419,53 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
         historical_candidates: [...partitioned.historical_candidates, ...historicalStates],
         search_counts: searchCounts
     };
+}
+
+function buildMarketMechanicsModelFunnel(strategySetups = [], candidateCatalog = {}) {
+    const allRecords = [
+        ...(candidateCatalog.raw_candidates || []),
+        ...(candidateCatalog.all_rejected_candidates || []),
+        ...(candidateCatalog.live_candidates || [])
+    ];
+    const byModel = Object.fromEntries(MARKET_MECHANICS_ENTRY_MODELS.map(model => [model, {
+        model,
+        raw: 0,
+        formation_complete: 0,
+        correct_side: 0,
+        lifecycle_eligible: 0,
+        stop_ready: 0,
+        target_ready: 0,
+        live: 0,
+        blockers: {}
+    }]));
+    const bumpBlocker = (record, bucket) => {
+        const model = String(record.entry_model || record.execution_model || '').toUpperCase();
+        const row = byModel[model];
+        if (!row) return;
+        const blocker = String(record.primary_blocker || record.rejection_code || record.qualification?.primary_blocker || 'NONE');
+        row.blockers[blocker] = (row.blockers[blocker] || 0) + 1;
+        if (bucket) row[bucket]++;
+    };
+    for (const setup of strategySetups) {
+        const model = String(setup.entry_model || setup.execution_model || '').toUpperCase();
+        const row = byModel[model];
+        if (row) {
+            row.raw++;
+            if (setup.setup_formation_confirmed === true || setup.execution_confirmed === true) row.formation_complete++;
+        }
+    }
+    for (const record of allRecords) {
+        const model = String(record.entry_model || record.execution_model || '').toUpperCase();
+        const row = byModel[model];
+        if (!row) continue;
+        if (record.pending_side_eligible === true || String(record.pending_side_eligible || '').toUpperCase() === 'YES') row.correct_side++;
+        if (!['EXPIRED', 'CONSUMED', 'FILLED', 'INVALIDATED', 'DELIVERED', 'MISSED'].includes(String(record.lifecycle_state || '').toUpperCase())) row.lifecycle_eligible++;
+        if (Number.isFinite(Number(record.stop_loss))) row.stop_ready++;
+        if (Number.isFinite(Number(record.tp1))) row.target_ready++;
+        if (record.CANDIDATE_AUTHORITY === 'LIVE' || record.candidate_authority === 'LIVE') row.live++;
+        if (record.primary_blocker || record.rejection_code) bumpBlocker(record);
+    }
+    return byModel;
 }
 
 function buildModelRouterStateSnapshot({ historyCache = {}, crtAudit = {}, tbsAudit = {}, msnrAudit = {}, modelAuthority = {}, asOfMs = null } = {}) {
@@ -14583,7 +14796,9 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         ? buildMarketMechanicsStrategySetups({ historyCache, timeframeContext: marketContext.timeframe_context,
             dailyBias: marketContext.daily_bias, targets: targetCandidates, zones, pair, price, symbolMetadata, marketPlan })
         : buildStrategySetups({ pair, price, historyCache, realZones: zones, marketContext, symbolMetadata });
-    const strategySetups = detectedStrategySetups.filter(hasExecutableStrategyBacking);
+    const strategySetups = detectedStrategySetups.filter(strategyMode === 'MARKET_MECHANICS'
+        ? hasMarketMechanicsExecutionBacking
+        : hasExecutableStrategyBacking);
     Object.defineProperty(strategySetups, 'detection_stats', {
         value: detectedStrategySetups.detection_stats || null,
         enumerable: false,
@@ -14763,6 +14978,7 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             rejected_candidates: candidateCatalog.rejected_candidates,
             search_counts: candidateCatalog.search_counts
         };
+        marketContext.market_mechanics.model_funnel = buildMarketMechanicsModelFunnel(strategySetups, candidateCatalog);
         marketContext.market_mechanics.raw_execution_zone_count = candidateCatalog.search_counts.raw_execution_zone_count || strategyExecutionZones.length;
         marketContext.market_mechanics.search_counts = candidateCatalog.search_counts;
         marketContext.market_mechanics.historical_candidate_count = candidateCatalog.historical_candidates.length;
@@ -18227,6 +18443,18 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             + ' REACHABLE_ZONE_COUNT=' + String(searchCounts.reachable_zone_count ?? 'NONE')
             + ' STOP_READY_ZONE_COUNT=' + String(searchCounts.stop_ready_zone_count ?? 'NONE')
             + ' TARGET_READY_ZONE_COUNT=' + String(searchCounts.target_ready_zone_count ?? 'NONE'));
+        const modelFunnel = source.market_mechanics?.model_funnel || {};
+        const modelStatus = Object.values(modelFunnel).map(row => {
+            const blockers = Object.entries(row.blockers || {}).sort((a, b) => b[1] - a[1]).map(([code, count]) => `${code}:${count}`).join(',');
+            return `${row.model}:RAW=${row.raw}:FORMED=${row.formation_complete}:SIDE=${row.correct_side}:STOP=${row.stop_ready}:TARGET=${row.target_ready}:LIVE=${row.live}${blockers ? `:BLOCKERS=${blockers}` : ''}`;
+        }).join('|');
+        lines.push('ENTRY_MODEL_STATUS=' + (modelStatus || 'NONE')
+            + ' FORMED_SETUP_COUNT=' + String(searchCounts.forming_count ?? 'NONE')
+            + ' FUTURE_ZONE_COUNT=' + String(searchCounts.correct_side_zone_count ?? 'NONE')
+            + ' ELIGIBLE_PENDING_COUNT=' + String(searchCounts.target_ready_zone_count ?? 'NONE')
+            + ' HISTORICAL_COUNT=' + String(searchCounts.historical_count ?? 'NONE')
+            + ' FINAL_FAILED_STAGE=' + String(plan.market_plan_failed_stage || (searchCounts.live_count ? 'NONE' : 'CANDIDATE'))
+            + ' FINAL_PRIMARY_BLOCKER=' + String(plan.market_plan_primary_blocker || (searchCounts.live_count ? 'NONE' : 'NO_LIVE_CANDIDATE')));
         lines.push('MARKET_PLAN_FAILED_STAGE=' + String(plan.market_plan_failed_stage || 'NONE')
             + ' MARKET_PLAN_FAILED_RULE=' + String(plan.market_plan_failed_rule || 'NONE')
             + ' MARKET_PLAN_PRIMARY_BLOCKER=' + String(plan.market_plan_primary_blocker || 'NONE')
@@ -22534,7 +22762,10 @@ function findSelectedLiveZone(aiResult, liveMarketContext) {
 function validateExecutableCandidateInvariant(candidate, marketState = {}) {
     const failures = [];
     if (!candidate || typeof candidate !== 'object') return { valid: false, invariant_code: 'CANDIDATE_MISSING', failures: ['candidate missing'] };
-    if (marketState.require_strategy_setup && !hasExecutableOpportunityBacking(candidate.strategy_setup || candidate)) {
+    const executableBacking = String(marketState?.strategy_mode || '').toUpperCase() === 'MARKET_MECHANICS'
+        ? hasMarketMechanicsExecutionBacking(candidate.strategy_setup || candidate)
+        : hasExecutableOpportunityBacking(candidate.strategy_setup || candidate);
+    if (marketState.require_strategy_setup && !executableBacking) {
         failures.push('EXECUTABLE_OPPORTUNITY_BACKING_MISSING');
     }
     const timeframeContext = marketState.timeframe_context || marketState.market_context?.timeframe_context;

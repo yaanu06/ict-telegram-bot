@@ -3556,6 +3556,122 @@ describe('TVKIT request attempt lifecycle', () => {
     });
 });
 
+describe('canonical Market Mechanics production routing', () => {
+    it('keeps non-CRT Market Mechanics formations executable without weakening legacy ownership', () => {
+        const ctx = getContext();
+        const zone = {
+            id: '4H-SELL-FVG-FUTURE', type: 'FVG', direction: 'SELL', timeframe: '4H',
+            low: 100.1, high: 100.2, freshness: 'FRESH', primary_eligible: true,
+            invalidated: false, consumed: false, created_time: Date.parse('2026-10-18T00:00:00Z')
+        };
+        const setup = {
+            primary: 'ICT', label: 'LIQUIDITY_OB_FVG', direction: 'SELL',
+            market_mechanics_verified: true, execution_model: 'PENDING_LIMIT',
+            execution_zone: zone,
+            structural_invalidation_detail: { level: 109, source: 'CAUSAL_OB_EXTREME' },
+            target_candidates: [{ direction: 'SELL', level: 95, source: 'SELL_SIDE_LIQUIDITY' }]
+        };
+        expect(ctx.hasExecutableStrategyBacking(setup)).toBe(false);
+        expect(ctx.hasExecutableOpportunityBacking(setup)).toBe(false);
+        expect(ctx.hasMarketMechanicsExecutionBacking(setup)).toBe(true);
+        expect(ctx.marketMechanicsEntryModelForSetup(setup)).toBe('LIQUIDITY_OB_FVG');
+    });
+
+    it('enumerates all correct-side future zones before constructing continuation setups', () => {
+        const ctx = getContext();
+        const zones = [
+            { id: 'passed', type: 'FVG', direction: 'SELL', timeframe: '1H', low: 94, high: 96, freshness: 'FRESH', primary_eligible: true },
+            { id: 'future-a', type: 'FVG', direction: 'SELL', timeframe: '1H', low: 104, high: 106, freshness: 'FRESH', primary_eligible: true },
+            { id: 'future-b', type: 'MSNR', direction: 'SELL', timeframe: '4H', low: 108, high: 110, freshness: 'FRESH', primary_eligible: true }
+        ];
+        const setups = ctx.buildMarketMechanicsSetups({
+            historyCache: { '4H': [], '1H': [], '15M': [] },
+            timeframeContext: {
+                '4H': {
+                    effective_trend: 'BEARISH', structural_trend: 'BEARISH', bias: 'BEARISH',
+                    structure: { recent_swing_highs: [{ level: 115 }], recent_swing_lows: [{ level: 90 }] },
+                    structural_evidence_ids: ['4H-BEARISH-BOS']
+                }
+            },
+            targets: { all: [{ direction: 'SELL', level: 90, source: 'SELL_SIDE_LIQUIDITY' }] },
+            zones, pair: 'EUR/USD', price: 100,
+            marketPlan: { direction: 'SELL', valid_context: true }
+        });
+        expect(setups.map(setup => setup.execution_zone?.id)).toEqual(expect.arrayContaining(['future-a', 'future-b']));
+        expect(setups.map(setup => setup.execution_zone?.id)).not.toContain('passed');
+        expect(setups.every(setup => setup.execution_model === 'PENDING_LIMIT')).toBe(true);
+        expect(setups.every(setup => setup.execution_confirmed === true)).toBe(true);
+    });
+
+    it('exposes the model funnel and keeps active production candidates on the pending side', () => {
+        const ctx = getContext();
+        ctx.window.__V2_STRATEGY_MODE__ = 'MARKET_MECHANICS';
+        const duration = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 };
+        const asOfMs = Date.parse('2026-10-19T10:00:00Z');
+        const base = candles(80, 100, 0.5, 'up');
+        const historyCache = Object.fromEntries(Object.entries(duration).map(([tf, stepMs]) => [tf,
+            base.map((bar, index) => ({ ...bar, t: new Date(asOfMs - (base.length - index) * stepMs).toISOString(), is_closed: true, timeframe: tf }))
+        ]));
+        const live = ctx.buildLiveMarketContext({
+            pair: 'AUD/USD', price: 140, historyCache, indicators: { '4H': {}, '1H': {} }, patterns: {},
+            enhancedAnalysis: { phase: ctx.analyzeMarketPhase(historyCache['4H'], false) },
+            holistic: { suggestedDirection: 'BUY', buyScore: 60, sellScore: 10 },
+            entryContext: null, as_of_ms: asOfMs,
+            quote_snapshot: { pair: 'AUD/USD', price: 140, provider: 'TVKIT', provider_timestamp_utc: new Date(asOfMs).toISOString(), symbol_metadata: ctx.getSymbolMetadata('AUD/USD') }
+        });
+        expect(live.market_mechanics).toHaveProperty('model_funnel');
+        expect(live.market_mechanics).toHaveProperty('candidate_catalog');
+        for (const candidate of live.forming_market_mechanics_candidates || []) {
+            if (candidate.direction === 'SELL' && Number.isFinite(Number(candidate.entry))) expect(Number(candidate.entry)).toBeGreaterThan(Number(live.current_price));
+            if (candidate.direction === 'BUY' && Number.isFinite(Number(candidate.entry))) expect(Number(candidate.entry)).toBeLessThan(Number(live.current_price));
+        }
+    });
+
+    it('routes a formed non-CRT Market Mechanics model through the live candidate builder', () => {
+        const ctx = getContext();
+        const history = candles(80, 100, 0.25, 'down');
+        const zone = {
+            id: 'MM-FUTURE-SELL-FVG', type: 'FVG', direction: 'SELL', timeframe: '1H',
+            low: 101, high: 102, freshness: 'FRESH', primary_eligible: true,
+            invalidated: false, consumed: false,
+            structural_invalidation: { level: 100.3, source: 'CAUSAL_OB_EXTREME' },
+            created_index: 78, created_time: '2026-10-19T07:00:00Z'
+        };
+        const setup = {
+            id: 'MM-LIQUIDITY-OB-FVG-1', primary: 'ICT', label: 'LIQUIDITY_OB_FVG',
+            direction: 'SELL', timeframe: '1H', setup_timeframe: '1H', execution_timeframe: '15M',
+            execution_zone: zone, execution_model: 'PENDING_LIMIT', entry_model: 'LIQUIDITY_OB_FVG',
+            execution_event_time: zone.created_time,
+            execution_event_index: 78, reclaim_bar_index: 78,
+            execution_confirmed: true, setup_formation_confirmed: true, market_mechanics_verified: true,
+            structural_invalidation_detail: { level: 100.3, source: 'CAUSAL_OB_EXTREME' },
+            structural_evidence_ids: ['SWEEP:1H:SELL:1', 'DISPLACEMENT:1H:SELL:1'],
+            target_candidates: [{ direction: 'SELL', level: 99.5, source: 'SELL_SIDE_LIQUIDITY' }]
+        };
+        const result = ctx.buildAdaptiveSetupCandidates({
+            pair: 'XAU/USD', price: 100,
+            historyCache: { '1D': history, '4H': history, '1H': history, '15M': history, '5M': history },
+            zones: [zone], strategySetups: [setup],
+            targetCandidates: { all: setup.target_candidates, buy: [], sell: setup.target_candidates },
+            riskConstraints: { minimum_rr: 2.5, minimum_sl_distance: 0.5, maximum_sl_distance: 30 },
+            marketRegime: { primary_regime: 'TRENDING_BEARISH' },
+            structure: { '1D': { trend: 'BEARISH' }, '4H': { trend: 'BEARISH' }, '1H': { trend: 'BEARISH' } },
+            marketContext: {
+                strategy_mode: 'MARKET_MECHANICS', require_strategy_setup: true,
+                as_of_time: '2026-10-19T08:00:00Z',
+                as_of_ms: Date.parse('2026-10-19T08:00:00Z'),
+                scan_as_of_ms: Date.parse('2026-10-19T08:00:00Z'),
+                data_quality: { valid: true, status: 'FRESH', reasons: [] },
+                market_plan: { valid_context: true, market_plan_complete: true, direction: 'SELL',
+                    active_poi: { id: zone.id, type: 'FVG', direction: 'SELL', timeframe: '1H', low: 101, high: 102, primary_eligible: true, freshness: 'FRESH' } }
+            }
+        });
+        expect(result.all_valid_candidates.length).toBeGreaterThan(0);
+        expect(result.all_valid_candidates[0].entry_model).toBe('LIQUIDITY_OB_FVG');
+        expect(result.all_valid_candidates[0].candidate_authority).toBe('LIVE');
+    });
+});
+
 describe('Market Mechanics end-to-end qualification authority', () => {
     const directionalHistory = (direction, start, step) => {
         let price = start;
