@@ -3848,6 +3848,67 @@ describe('Market Mechanics packet authority', () => {
         }));
     });
 
+    test.each(['EUR/USD', 'AUD/USD', 'GBP/JPY', 'XAU/USD', 'BTC/USD'])('rejects an invalid nearer parent POI and selects the valid eligible POI for %s', pair => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const result = ctx.rankMarketMechanicsPois([
+            { id: `${pair}-INVALID-NEAR`, type: 'MSNR', timeframe: '1H', direction: 'SELL', low: 99.90, high: 100.10, status: 'INVALIDATED', freshness: 'INVALIDATED' },
+            { id: `${pair}-VALID-SELL`, type: 'MSNR', timeframe: '1H', direction: 'SELL', low: 100.20, high: 100.40, status: 'VALID', freshness: 'FRESH', primary_eligible: true }
+        ], { pair, price: 100, direction: 'SELL', range_low: 99, range_high: 101, as_of_ms: Date.parse('2026-10-19T00:00:00Z') });
+        expect(result.selected.poiId).toBe(`${pair}-VALID-SELL`);
+        expect(result.selected.selectableAsParentPoi).toBe(true);
+        expect(result.rejected.find(item => item.poiId === `${pair}-INVALID-NEAR`).rejectionReasons).toContain('POI_INVALIDATED');
+    });
+
+    test('EUR/USD packet distinguishes a valid selected POI from an unresolved Market Plan', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = completeReplay({
+            pair: 'EUR/USD', strategy_mode: 'MARKET_MECHANICS', snapshot_id: 'MM-EUR-POI-REPAIR',
+            scan_as_of: '2026-10-19T00:00:00Z', quote: { price: 1.12266, bid: 1.12265, ask: 1.12267, quote_time: '2026-10-19T00:00:00Z' },
+            market_plan: {
+                valid_context: false, market_plan_complete: false, bias: 'NEUTRAL', direction: null, htf_trend: 'NEUTRAL', narrative: 'RANGE',
+                active_poi: { id: '1H-SELL-MSNR-1.12360-1.12403', type: 'MSNR', direction: 'SELL', timeframe: '1H', low: 1.12360, high: 1.12403, status: 'VALID', poi_qualification: { selectableAsParentPoi: true } },
+                poi_candidate_count: 2, poi_eligible_count: 1, poi_rejected_count: 1, selected_market_plan_poi_id: '1H-SELL-MSNR-1.12360-1.12403',
+                market_plan_failed_stage: 'MARKET_NARRATIVE', market_plan_primary_blocker: 'NARRATIVE_UNRESOLVED', market_plan_all_blockers: ['NARRATIVE_UNRESOLVED'],
+                no_poi_reason: null, poi_evaluations: [
+                    { poi_id: '1H-SELL-MSNR-1.12222-1.12264', status: 'INVALIDATED', selectable_as_parent_poi: 'NO', direction: 'SELL', relation_to_current: 'BELOW_MARKET', rejection_reason: 'POI_INVALIDATED', rank_score: '0' },
+                    { poi_id: '1H-SELL-MSNR-1.12360-1.12403', status: 'VALID', selectable_as_parent_poi: 'YES', direction: 'SELL', relation_to_current: 'ABOVE_MARKET', rejection_reason: 'NONE', rank_score: '100' }
+                ]
+            },
+            market_mechanics: { model_states: [] }, valid_candidates: [], history: {}
+        });
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(packet).toContain('ACTIVE_POI=1H-SELL-MSNR-1.12360-1.12403');
+        expect(packet).toContain('POI_VALID=YES MARKET_PLAN_POI_VALID=YES SELECTABLE_AS_PARENT_POI=YES');
+        expect(packet).toContain('MARKET_PLAN_VALID=NO MARKET_PLAN_COMPLETE=NO');
+        expect(packet).toContain('MARKET_PLAN_PRIMARY_BLOCKER=NARRATIVE_UNRESOLVED');
+        expect(packet).toContain('POI_REJECTION_REASON=POI_INVALIDATED');
+        expect(packet).toContain('POI_RELATION_TO_CURRENT=ABOVE_MARKET');
+    });
+
+    test.each([
+        ['SELL', 100, 100.20, 100.40, true],
+        ['BUY', 100, 99.60, 99.80, true],
+        ['SELL', 100, 99.60, 99.80, false],
+        ['BUY', 100, 100.20, 100.40, false]
+    ])('applies parent POI pending-side eligibility: %s %s-%s', (direction, price, low, high, expected) => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const result = ctx.qualifyMarketMechanicsPoi({ id: `SIDE-${direction}-${low}`, type: 'MSNR', timeframe: '1H', direction, low, high, status: 'VALID', freshness: 'FRESH' }, {
+            pair: 'EUR/USD', price, direction, range_low: 99, range_high: 101
+        });
+        expect(result.selectableAsParentPoi).toBe(expected);
+        if (!expected) expect(result.rejectionReasons.some(reason => reason.includes('POI_BELOW_CURRENT') || reason.includes('POI_ABOVE_CURRENT'))).toBe(true);
+    });
+
+    test('same-timestamp POIs retain distinct identities and deterministic tie-breaking', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const result = ctx.rankMarketMechanicsPois([
+            { id: 'MSNR-A', type: 'MSNR', timeframe: '1H', direction: 'SELL', low: 100.20, high: 100.40, status: 'VALID', freshness: 'FRESH', first_knowable_time: '2026-10-18T22:00:00Z' },
+            { id: 'MSNR-B', type: 'MSNR', timeframe: '1H', direction: 'SELL', low: 100.20, high: 100.40, status: 'VALID', freshness: 'FRESH', first_knowable_time: '2026-10-18T22:00:00Z' }
+        ], { pair: 'EUR/USD', price: 100, direction: 'SELL', range_low: 99, range_high: 101, as_of_ms: Date.parse('2026-10-19T00:00:00Z') });
+        expect(result.evaluations.map(item => item.poiId)).toEqual(['MSNR-A', 'MSNR-B']);
+        expect(result.selected.poiId).toBe('MSNR-A');
+    });
+
     test('rejects an execution POI outside the active range with a precise relationship blocker', () => {
         const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
         const relationship = ctx.marketMechanicsPoiRelationship({

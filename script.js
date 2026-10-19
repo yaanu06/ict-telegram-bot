@@ -7324,6 +7324,157 @@ function selectFutureLimitLocation(direction, zones = [], locationPois = [], pri
         .sort((a, b) => b.future_limit_score - a.future_limit_score || a.future_limit_distance - b.future_limit_distance)[0] || null;
 }
 
+function marketMechanicsPoiStatusTokens(poi = {}) {
+    return [
+        poi.status,
+        poi.lifecycle_status,
+        poi.state,
+        poi.freshness,
+        poi.lifecycle?.status,
+        poi.lifecycle_state
+    ].filter(Boolean).map(value => String(value).trim().toUpperCase());
+}
+
+function marketMechanicsPoiId(poi = {}, pairLocal = pair) {
+    return poi.id || poi.poi_id || poi.ref || poi.reference || (
+        poi.type && poi.timeframe && Number.isFinite(Number(poi.low)) && Number.isFinite(Number(poi.high))
+            ? `POI:${pairLocal}:${poi.timeframe}:${poi.type}:${poi.direction || 'NONE'}:${poi.low}:${poi.high}`
+            : null
+    );
+}
+
+function qualifyMarketMechanicsPoi(poi = {}, options = {}) {
+    const pairLocal = options.pair || pair;
+    const direction = String(options.direction || '').toUpperCase();
+    const poiDirection = String(poi.direction || '').toUpperCase();
+    const low = Number(poi.low ?? poi.zone_low);
+    const high = Number(poi.high ?? poi.zone_high);
+    const mid = Number.isFinite(low) && Number.isFinite(high) ? (low + high) / 2 : NaN;
+    const price = Number(options.price);
+    const rangeLow = Number(options.range_low);
+    const rangeHigh = Number(options.range_high);
+    const asOfMs = Number(options.as_of_ms);
+    const settings = getMarketSettings(pairLocal, options.symbol_metadata || {});
+    const reference = getPendingLimitReferencePrice(poiDirection || direction, {
+        price,
+        quote_snapshot: options.quote_snapshot,
+        bid: options.bid,
+        ask: options.ask
+    });
+    const id = marketMechanicsPoiId(poi, pairLocal);
+    const statusTokens = marketMechanicsPoiStatusTokens(poi);
+    const rejectionReasons = [];
+    const evidenceRefs = [...new Set([
+        id,
+        poi.source_ref,
+        poi.origin_ref,
+        poi.first_knowable_time,
+        ...(Array.isArray(poi.structural_evidence_ids) ? poi.structural_evidence_ids : []),
+        ...(Array.isArray(poi.evidence_refs) ? poi.evidence_refs : [])
+    ].filter(Boolean).map(String))];
+    const lifecycleIneligible = poi.invalidated === true || poi.consumed === true || poi.expired === true
+        || poi.delivered === true || poi.mitigated === true || poi.primary_eligible === false
+        || poi.selectable_as_parent_poi === false
+        || statusTokens.some(status => ['INVALIDATED', 'DELIVERED', 'CONSUMED', 'EXPIRED', 'MITIGATED', 'USED', 'BROKEN'].includes(status));
+    const lifecycleReason = statusTokens.find(status => ['INVALIDATED', 'DELIVERED', 'CONSUMED', 'EXPIRED', 'MITIGATED', 'USED', 'BROKEN'].includes(status))
+        || (poi.invalidated ? 'INVALIDATED' : poi.consumed ? 'CONSUMED' : poi.expired ? 'EXPIRED' : poi.delivered ? 'DELIVERED' : poi.mitigated ? 'MITIGATED' : poi.primary_eligible === false ? 'PRIMARY_INELIGIBLE' : null);
+    const firstKnowable = rawTextPacketTimestamp(poi.first_knowable_time || poi.confirmation_time || poi.created_time || poi.formation_time || poi.source_time);
+    const futureDerived = Number.isFinite(asOfMs) && Number.isFinite(firstKnowable)
+        && firstKnowable > asOfMs + STRATEGY_SPEC.TIME.futureToleranceMs;
+    const validNow = Number.isFinite(low) && Number.isFinite(high) && high >= low
+        && !futureDerived
+        && !lifecycleIneligible
+        && poi.valid_now !== false
+        && String(poi.poi_valid ?? poi.valid ?? 'YES').toUpperCase() !== 'NO';
+    const directionCompatible = !direction || poiDirection === direction;
+    const rangeAvailable = Number.isFinite(rangeLow) && Number.isFinite(rangeHigh) && rangeHigh > rangeLow;
+    const rangeCompatible = !rangeAvailable || (Number.isFinite(low) && Number.isFinite(high)
+        && high >= Math.min(rangeLow, rangeHigh) && low <= Math.max(rangeLow, rangeHigh));
+    const relationToCurrent = !Number.isFinite(price) || !Number.isFinite(low) || !Number.isFinite(high)
+        ? 'UNKNOWN'
+        : price < low ? 'ABOVE_MARKET' : price > high ? 'BELOW_MARKET' : 'INSIDE_MARKET';
+    const pendingSideCompatible = !Number.isFinite(price) || !['BUY', 'SELL'].includes(poiDirection)
+        || !Number.isFinite(reference.price)
+        || (poiDirection === 'BUY' ? low <= reference.price : high >= reference.price);
+    const rangePosition = rangeAvailable && Number.isFinite(mid)
+        ? (mid - Math.min(rangeLow, rangeHigh)) / (Math.max(rangeLow, rangeHigh) - Math.min(rangeLow, rangeHigh))
+        : null;
+    const locationCompatible = !Number.isFinite(rangePosition) || poiDirection === 'BUY'
+        ? !Number.isFinite(rangePosition) || rangePosition <= 0.66
+        : rangePosition >= 0.34;
+    if (!id) rejectionReasons.push('MISSING_POI_ID');
+    if (!validNow) rejectionReasons.push(futureDerived ? 'FUTURE_DERIVED_POI' : 'MALFORMED_OR_INVALID_POI');
+    if (lifecycleIneligible) rejectionReasons.push(`POI_${lifecycleReason || 'LIFECYCLE_INELIGIBLE'}`);
+    if (!directionCompatible) rejectionReasons.push('POI_DIRECTION_INCOMPATIBLE');
+    if (!rangeCompatible) rejectionReasons.push('POI_OUTSIDE_ACTIVE_RANGE');
+    if (!pendingSideCompatible) rejectionReasons.push(poiDirection === 'BUY' ? 'BUY_POI_ABOVE_CURRENT' : 'SELL_POI_BELOW_CURRENT');
+    const freshness = String(poi.freshness || poi.status || 'UNKNOWN').toUpperCase();
+    const timeframeWeight = { '4H': 40, '1H': 30, '15M': 15, '5M': 5 }[String(poi.timeframe || '').toUpperCase()] || 0;
+    const freshnessWeight = { FRESH: 20, UNTOUCHED: 20, VALID: 16, PARTIAL: 8, TESTED: 5 }[freshness] || 0;
+    const locationWeight = locationCompatible ? (Number.isFinite(rangePosition) && ((poiDirection === 'BUY' && rangePosition <= 0.34) || (poiDirection === 'SELL' && rangePosition >= 0.66) ? 24 : 10)) : 0;
+    const pendingWeight = pendingSideCompatible ? 15 : 0;
+    const structuralWeight = Math.min(20, Math.max(0, Number(poi.structural_score) || 0) / 5);
+    const distance = Number.isFinite(price) && Number.isFinite(mid) ? Math.abs(mid - price) : Infinity;
+    const rankScore = timeframeWeight + freshnessWeight + locationWeight + pendingWeight + structuralWeight
+        - (Number.isFinite(distance) ? distance / Math.max(Math.abs(price), settings.pipSize * 10, 1) : 1000);
+    const lifecycleEligible = !lifecycleIneligible && validNow;
+    const selectableAsParentPoi = lifecycleEligible && directionCompatible && rangeCompatible && pendingSideCompatible && rejectionReasons.length === 0;
+    return {
+        poiId: id,
+        poiType: poi.type || null,
+        timeframe: poi.timeframe || null,
+        direction: poiDirection || null,
+        zoneLow: Number.isFinite(low) ? low : null,
+        zoneHigh: Number.isFinite(high) ? high : null,
+        status: poi.status || poi.lifecycle_status || poi.freshness || null,
+        role: poi.role || null,
+        firstKnowableTime: Number.isFinite(firstKnowable) ? firstKnowable : null,
+        validNow,
+        lifecycleEligible,
+        directionCompatible,
+        rangeCompatible,
+        locationCompatible,
+        liquidityCompatible: poi.liquidity_compatible !== false,
+        narrativeCompatible: poi.narrative_compatible !== false,
+        pendingSideCompatible,
+        freshness,
+        relationToCurrent,
+        invalidationReason: lifecycleReason || null,
+        rejectionReasons: [...new Set(rejectionReasons)],
+        evidenceRefs,
+        rankInputs: { timeframeWeight, freshnessWeight, locationWeight, pendingWeight, structuralWeight, distance },
+        rankScore,
+        selectableAsParentPoi,
+        poi
+    };
+}
+
+function rankMarketMechanicsPois(pois = [], options = {}) {
+    const evaluations = (pois || []).map(poi => qualifyMarketMechanicsPoi(poi, options));
+    const byIdentity = new Map();
+    for (const evaluation of evaluations) {
+        const key = evaluation.poiId || `${evaluation.timeframe}|${evaluation.direction}|${evaluation.zoneLow}|${evaluation.zoneHigh}`;
+        const current = byIdentity.get(key);
+        if (!current || (evaluation.selectableAsParentPoi && !current.selectableAsParentPoi)
+            || (evaluation.selectableAsParentPoi === current.selectableAsParentPoi && evaluation.rankScore > current.rankScore)) {
+            byIdentity.set(key, evaluation);
+        }
+    }
+    const deduped = [...byIdentity.values()];
+    const eligible = deduped.filter(item => item.selectableAsParentPoi).sort((a, b) => b.rankScore - a.rankScore
+        || Number(b.rankInputs.timeframeWeight) - Number(a.rankInputs.timeframeWeight)
+        || Number(b.firstKnowableTime || 0) - Number(a.firstKnowableTime || 0)
+        || Number(a.rankInputs.distance || Infinity) - Number(b.rankInputs.distance || Infinity)
+        || String(a.poiId).localeCompare(String(b.poiId)));
+    const rejected = deduped.filter(item => !item.selectableAsParentPoi);
+    return {
+        evaluations: deduped,
+        eligible,
+        rejected,
+        selected: eligible[0] || null
+    };
+}
+
 const MARKET_MECHANICS_ENTRY_MODELS = Object.freeze([
     'MARKET_SHIFT',
     'FLIP_ZONE',
@@ -7476,23 +7627,46 @@ function buildMarketMechanicsPlan({ historyCache = {}, price = null, structure =
             invalidated: false, structural_invalidation: event.sweep_extreme,
             crt_ref: event.ref || null
         })));
-    const poiCatalog = [...(zones || []), ...derivedPois, ...crtPois];
-    const eligiblePois = poiCatalog.filter(zone => {
-        const direction = String(zone?.direction || '').toUpperCase();
-        if (!['BUY', 'SELL'].includes(direction) || !Number.isFinite(Number(zone.low)) || !Number.isFinite(Number(zone.high))) return false;
-        if (zone.invalidated || zone.consumed || zone.expired || ['USED', 'CONSUMED', 'INVALIDATED', 'EXPIRED'].includes(String(zone.freshness || '').toUpperCase())) return false;
-        if (targetDirection && direction !== targetDirection) return false;
-        const favorable = direction === 'BUY' ? location === 'DISCOUNT' : location === 'PREMIUM';
-        const atOrNear = Number(price) >= Number(zone.low) && Number(price) <= Number(zone.high)
-            || Number(zone.distance_in_atr) <= 3
-            || Number(zone.distance_pct) <= 1.5;
-        return favorable || atOrNear;
-    }).sort((a, b) => {
-        const freshness = { FRESH: 3, UNTOUCHED: 3, TOUCHED: 2, PARTIAL: 1 };
-        return (freshness[String(b.freshness || '').toUpperCase()] || 0) - (freshness[String(a.freshness || '').toUpperCase()] || 0)
-            || Number(a.distance_in_atr ?? Infinity) - Number(b.distance_in_atr ?? Infinity);
+    // Rebuild structural MSNR POIs from the same closed snapshot used by the
+    // plan.  The live-zone display is intentionally bounded; parent-POI
+    // authority must not inherit that display cap or stale ordering.
+    const structuralMsNRPois = ['4H', '1H'].flatMap(tf => {
+        const levels = calculateMSNR(scopedHistoryCache?.[tf] || [], price, tf, pairLocal, symbolMetadata).structural_levels || [];
+        return levels.map(level => ({
+            ...level,
+            id: level.id || `MSNR:${pairLocal}:${tf}:${level.direction}:${level.low}:${level.high}:${level.first_knowable_time || level.event_time || level.formation_time || level.source_candle_index}`,
+            type: 'MSNR',
+            timeframe: tf,
+            low: level.zone_low ?? level.low,
+            high: level.zone_high ?? level.high,
+            status: level.invalidated ? 'INVALIDATED' : level.freshness || 'VALID',
+            primary_eligible: level.primary_eligible !== false,
+            source_ref: level.id || null,
+            structural_evidence_ids: [level.id, level.source_time, level.confirmation_time].filter(Boolean)
+        }));
     });
-    const primaryPoi = eligiblePois[0] || null;
+    const poiCatalog = [...(zones || []), ...derivedPois, ...crtPois, ...structuralMsNRPois];
+    const poiRanking = rankMarketMechanicsPois(poiCatalog, {
+        pair: pairLocal,
+        price,
+        direction: targetDirection,
+        range_low: rangeLow,
+        range_high: rangeHigh,
+        as_of_ms: asOfMs,
+        quote_snapshot: marketContext.quote_snapshot,
+        symbol_metadata: symbolMetadata
+    });
+    const eligiblePois = poiRanking.eligible.map(item => ({
+        ...item.poi,
+        id: item.poiId,
+        poi_qualification: item
+    }));
+    const primaryPoiEvaluation = poiRanking.selected;
+    const primaryPoi = primaryPoiEvaluation ? {
+        ...primaryPoiEvaluation.poi,
+        id: primaryPoiEvaluation.poiId,
+        poi_qualification: primaryPoiEvaluation
+    } : null;
     const activeRangeId = validRange ? `ACTIVE_RANGE:4H:${latestLow.i}:${latestHigh.i}:${rangeLow}:${rangeHigh}` : null;
     const protectedLow = htfTrend === 'BUY' ? latestLow?.p ?? null : null;
     const protectedHigh = htfTrend === 'SELL' ? latestHigh?.p ?? null : null;
@@ -7503,6 +7677,17 @@ function buildMarketMechanicsPlan({ historyCache = {}, price = null, structure =
         primaryPoi?.id || null,
         primaryDraw?.liquidity_id || null
     ].filter(Boolean);
+    const planBlockers = [];
+    if (!validRange) planBlockers.push('NO_ACTIVE_SWING_RANGE');
+    if (!bias) planBlockers.push('NARRATIVE_UNRESOLVED');
+    if (!primaryPoi) planBlockers.push('NO_ELIGIBLE_PARENT_POI');
+    const planContextValid = validRange && Boolean(bias);
+    const planComplete = planContextValid && Boolean(primaryPoi);
+    const failedStage = planComplete ? null : !validRange ? 'HTF_STRUCTURE' : !bias ? 'MARKET_NARRATIVE' : 'MARKET_PLAN_POI';
+    const failedRule = planComplete ? null : !validRange
+        ? 'A confirmed active 4H swing range is required'
+        : !bias ? 'No directional HTF hypothesis is confirmed; POIs remain diagnostic only'
+            : !primaryPoi ? 'No eligible parent POI passed lifecycle, range, direction, and pending-side checks' : null;
     return {
         plan_id: `MARKET_PLAN:${pairLocal}:${asOfMs || 'NA'}:${activeRangeId || 'NONE'}`,
         bias: biasName,
@@ -7522,6 +7707,34 @@ function buildMarketMechanicsPlan({ historyCache = {}, price = null, structure =
         liquidity_below: liquidity.below.slice(0, 8),
         primary_draw_on_liquidity: primaryDraw,
         poi_candidates: eligiblePois.slice(0, 8),
+        poi_evaluations: poiRanking.evaluations.slice(0, 24).map(item => ({
+            poi_id: item.poiId,
+            poi_type: item.poiType,
+            timeframe: item.timeframe,
+            direction: item.direction,
+            zone_low: item.zoneLow,
+            zone_high: item.zoneHigh,
+            status: item.status,
+            relation_to_current: item.relationToCurrent,
+            valid_now: item.validNow ? 'YES' : 'NO',
+            lifecycle_eligible: item.lifecycleEligible ? 'YES' : 'NO',
+            selectable_as_parent_poi: item.selectableAsParentPoi ? 'YES' : 'NO',
+            rejection_reason: item.rejectionReasons.join('|') || 'NONE',
+            rank_score: Number.isFinite(item.rankScore) ? Number(item.rankScore.toFixed(6)) : null,
+            evidence_refs: item.evidenceRefs
+        })),
+        poi_candidate_count: poiRanking.evaluations.length,
+        poi_eligible_count: poiRanking.eligible.length,
+        poi_rejected_count: poiRanking.rejected.length,
+        selected_market_plan_poi_id: primaryPoi?.id || null,
+        selected_market_plan_poi_reason: primaryPoi ? 'Highest-ranked eligible parent POI after lifecycle and compatibility filtering' : null,
+        market_plan_complete: planComplete,
+        market_plan_failed_stage: failedStage,
+        market_plan_failed_rule: failedRule,
+        market_plan_primary_blocker: planBlockers[0] || null,
+        market_plan_all_blockers: [...new Set(planBlockers)],
+        market_plan_evidence_ref: primaryPoi?.id || poiRanking.rejected[0]?.poiId || null,
+        no_poi_reason: primaryPoi ? null : (poiRanking.rejected.length ? 'ALL_POI_CANDIDATES_REJECTED' : 'NO_POI_DISCOVERED'),
         active_poi: primaryPoi,
         invalidation: htfTrend === 'BUY' ? protectedLow : htfTrend === 'SELL' ? protectedHigh : null,
         state: primaryPoi ? 'AT_POI' : validRange ? 'WAITING_FOR_LOCATION' : 'PLAN_BUILDING',
@@ -7529,7 +7742,7 @@ function buildMarketMechanicsPlan({ historyCache = {}, price = null, structure =
         evidence_refs: evidenceRefs,
         data_cutoff_ms: Number.isFinite(Number(asOfMs)) ? Number(asOfMs) : null,
         source_bar_counts: { '1D': oneD.length, '4H': fourH.length, '1H': oneH.length },
-        valid_context: Boolean(validRange && bias),
+        valid_context: planContextValid,
         direction: bias
     };
 }
@@ -7575,7 +7788,9 @@ function marketMechanicsPoiRelationship(setup = {}, marketPlan = null) {
         return result;
     }
     if (!finiteZone(parent) || parent.invalidated || parent.consumed || parent.expired
-        || ['USED', 'CONSUMED', 'INVALIDATED', 'EXPIRED'].includes(String(parent.freshness || '').toUpperCase())) {
+        || parent.primary_eligible === false || parent.selectable_as_parent_poi === false
+        || parent.poi_qualification?.selectableAsParentPoi === false
+        || marketMechanicsPoiStatusTokens(parent).some(status => ['USED', 'CONSUMED', 'INVALIDATED', 'EXPIRED', 'MITIGATED', 'BROKEN'].includes(status))) {
         result.poi_relationship_status = 'MARKET_PLAN_POI_INVALID';
         result.failed_stage = 'MARKET_PLAN_POI';
         result.failed_rule = 'Active Market Plan POI is invalidated, consumed, expired, or malformed';
@@ -7589,7 +7804,8 @@ function marketMechanicsPoiRelationship(setup = {}, marketPlan = null) {
         return result;
     }
     if (!finiteZone(execution) || execution.invalidated || execution.consumed || execution.expired
-        || ['USED', 'CONSUMED', 'INVALIDATED', 'EXPIRED'].includes(String(execution.freshness || '').toUpperCase())) {
+        || execution.primary_eligible === false
+        || marketMechanicsPoiStatusTokens(execution).some(status => ['USED', 'CONSUMED', 'INVALIDATED', 'EXPIRED', 'MITIGATED', 'BROKEN'].includes(status))) {
         result.poi_relationship_status = 'EXECUTION_POI_INVALID';
         result.failed_stage = 'EXECUTION_POI';
         result.failed_rule = 'Execution POI is invalidated, consumed, expired, or malformed';
@@ -11311,10 +11527,23 @@ function buildLiveZonesForTf(data, tf, price, pairLocal, atrVal, limitPerDirecti
             });
         }
     }
-    return ['BUY', 'SELL'].flatMap(direction => zones
-        .filter(z => z.direction === direction)
-        .sort((a, b) => (a.distance_in_atr ?? a.distance_pct) - (b.distance_in_atr ?? b.distance_pct))
-        .slice(0, limitPerDirection));
+    return ['BUY', 'SELL'].flatMap(direction => {
+        const side = zones.filter(z => z.direction === direction);
+        const ineligible = zone => {
+            const statuses = marketMechanicsPoiStatusTokens(zone);
+            return zone.invalidated === true || zone.consumed === true || zone.expired === true
+                || statuses.some(status => ['INVALIDATED', 'DELIVERED', 'CONSUMED', 'EXPIRED', 'MITIGATED', 'USED', 'BROKEN'].includes(status));
+        };
+        const order = (a, b) => (a.distance_in_atr ?? a.distance_pct) - (b.distance_in_atr ?? b.distance_pct)
+            || String(a.id || '').localeCompare(String(b.id || ''));
+        // Lifecycle-ineligible zones remain available for diagnostics, but
+        // receive a separate bounded diagnostic allowance and never evict a
+        // valid zone from the authority discovery budget.
+        return [
+            ...side.filter(zone => !ineligible(zone)).sort(order).slice(0, limitPerDirection),
+            ...side.filter(ineligible).sort(order).slice(0, limitPerDirection)
+        ];
+    });
 }
 
 function buildTargetCandidates(historyCache, price, pairLocal, symbolMetadata = {}) {
@@ -16734,8 +16963,13 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         const draw = marketMechanicsDrawFields(plan.primary_draw_on_liquidity || plan.primary_liquidity_target || null, precision);
         const activePoi = plan.active_poi || plan.primary_poi || null;
         const prospectivePoi = !activePoi ? (plan.poi_candidates || [])[0] || null : null;
+        const activePoiQualification = activePoi?.poi_qualification || null;
+        const activePoiValid = Boolean(activePoi && (activePoiQualification?.selectableAsParentPoi === true
+            || activePoi.selectable_as_parent_poi === true
+            || (activePoi.invalidated !== true && String(activePoi.status || activePoi.freshness || '').toUpperCase() !== 'INVALIDATED')));
         lines.push('=== MARKET PLAN / LIVE AUTHORITY ===');
-        lines.push('AUTHORITY_MODE=MARKET_MECHANICS MARKET_PLAN_VALID=' + (plan.valid_context === true ? 'YES' : 'NO'));
+        lines.push('AUTHORITY_MODE=MARKET_MECHANICS MARKET_PLAN_VALID=' + (plan.valid_context === true ? 'YES' : 'NO')
+            + ' MARKET_PLAN_COMPLETE=' + (plan.market_plan_complete === true ? 'YES' : 'NO'));
         lines.push('MACRO_1D_BIAS=' + String(macroBias)
             + ' MARKET_PLAN_DIRECTION=' + String(planDirection)
             + ' HTF_TREND=' + String(plan.htf_trend || plan.htf_context || '')
@@ -16747,9 +16981,33 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             + ' PRIMARY_DRAW_STATUS=' + String(draw.status || ''));
         lines.push('ACTIVE_POI=' + String(activePoi?.id || activePoi?.ref || 'NONE')
             + ' POI_TYPE=' + String(activePoi?.type || '')
-            + ' POI_VALID=' + (plan.valid_context === true && activePoi ? 'YES' : 'NO'));
+            + ' POI_VALID=' + (activePoiValid ? 'YES' : 'NO')
+            + ' MARKET_PLAN_POI_VALID=' + (activePoiValid ? 'YES' : 'NO')
+            + ' SELECTABLE_AS_PARENT_POI=' + (activePoiQualification?.selectableAsParentPoi === true || activePoi?.selectable_as_parent_poi === true ? 'YES' : 'NO'));
         lines.push('PROSPECTIVE_POI=' + String(prospectivePoi?.id || prospectivePoi?.ref || 'NONE')
             + ' PROSPECTIVE_POI_STATE=' + (prospectivePoi ? 'WAITING' : 'NONE'));
+        lines.push('POI_CANDIDATE_COUNT=' + String(plan.poi_candidate_count ?? (plan.poi_evaluations || []).length)
+            + ' POI_ELIGIBLE_COUNT=' + String(plan.poi_eligible_count ?? (plan.poi_candidates || []).length)
+            + ' POI_REJECTED_COUNT=' + String(plan.poi_rejected_count ?? 0)
+            + ' SELECTED_MARKET_PLAN_POI_ID=' + String(plan.selected_market_plan_poi_id || activePoi?.id || 'NONE')
+            + ' SELECTED_MARKET_PLAN_POI_REASON=' + String(plan.selected_market_plan_poi_reason || 'NONE'));
+        lines.push('MARKET_PLAN_FAILED_STAGE=' + String(plan.market_plan_failed_stage || 'NONE')
+            + ' MARKET_PLAN_FAILED_RULE=' + String(plan.market_plan_failed_rule || 'NONE')
+            + ' MARKET_PLAN_PRIMARY_BLOCKER=' + String(plan.market_plan_primary_blocker || 'NONE')
+            + ' MARKET_PLAN_ALL_BLOCKERS=' + ((plan.market_plan_all_blockers || []).join('|') || 'NONE')
+            + ' MARKET_PLAN_EVIDENCE_REF=' + String(plan.market_plan_evidence_ref || 'NONE')
+            + ' NO_POI_REASON=' + String(plan.no_poi_reason || 'NONE'));
+        const poiDiagnostics = Array.isArray(plan.poi_evaluations) ? plan.poi_evaluations : [];
+        for (const poi of poiDiagnostics) lines.push([
+            'POI_EVALUATION',
+            'POI_ID=' + String(poi.poi_id || 'NONE'),
+            'POI_STATUS=' + String(poi.status || 'UNKNOWN'),
+            'POI_SELECTABLE_AS_PARENT=' + String(poi.selectable_as_parent_poi || 'NO'),
+            'POI_DIRECTION=' + String(poi.direction || 'NONE'),
+            'POI_RELATION_TO_CURRENT=' + String(poi.relation_to_current || 'UNKNOWN'),
+            'POI_REJECTION_REASON=' + String(poi.rejection_reason || 'NONE'),
+            'POI_RANK=' + String(poi.rank_score ?? 'NONE')
+        ].join(' '));
         lines.push('');
         lines.push('=== LIVE MARKET MECHANICS CANDIDATES ===');
         if (!authority.live_candidates.length) lines.push('LIVE_CANDIDATES=NONE');
