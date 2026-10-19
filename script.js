@@ -7492,6 +7492,44 @@ function marketMechanicsDirectionFromTrend(value) {
     return null;
 }
 
+// Structural snapshots deliberately preserve non-directional states such as
+// MIXED and NEUTRAL.  Those are useful diagnostics, but they must not hide a
+// directional effective trend when the caller has explicitly provided one.
+// The Market Mechanics planner historically used `structural_trend ||
+// effective_trend`, which treats those diagnostic sentinel strings as a
+// successful fallback and silently discarded the effective direction.
+function marketMechanicsDirectionalContext(snapshot = {}, fallback = null) {
+    for (const value of [snapshot?.structural_trend, snapshot?.effective_trend, fallback]) {
+        const direction = marketMechanicsDirectionFromTrend(value);
+        if (direction) return direction;
+    }
+    return null;
+}
+
+function buildMarketMechanicsDirectionHypothesis(direction, { htfTrend = null, dailyDirection = null, validRange = false, liquidity = {}, poiRanking = null } = {}) {
+    const side = String(direction || '').toUpperCase();
+    const contextCompatible = htfTrend === side || (!htfTrend && dailyDirection === side);
+    const draw = side === 'BUY' ? liquidity.buy_side?.[0] : liquidity.sell_side?.[0];
+    const eligible = (poiRanking?.eligible || []).filter(item => item.direction === side);
+    const blocker = !contextCompatible ? 'HTF_DIRECTION_UNRESOLVED'
+        : !validRange ? 'NO_ACTIVE_SWING_RANGE'
+            : !draw ? 'NO_LIQUIDITY_DRAW'
+                : !eligible.length ? 'NO_ELIGIBLE_PARENT_POI' : null;
+    return {
+        direction: side,
+        status: blocker ? 'BLOCKED' : 'AVAILABLE',
+        htf_structure_compatible: contextCompatible ? 'YES' : 'NO',
+        liquidity_draw_available: draw ? 'YES' : 'NO',
+        liquidity_draw: draw || null,
+        eligible_parent_poi_count: eligible.length,
+        best_parent_poi: eligible[0]?.poiId || null,
+        setup_model_status: blocker ? 'NOT_EVALUATED_UNTIL_PLAN' : 'ENTRY_MODEL_EVALUATION_REQUIRED',
+        structural_stop_status: 'NOT_EVALUATED_UNTIL_ENTRY_MODEL',
+        structural_target_status: draw ? 'AVAILABLE' : 'UNAVAILABLE',
+        primary_blocker: blocker
+    };
+}
+
 function marketMechanicsDrawFields(draw = null, precision = 2) {
     if (!draw) return { type: 'NONE', price: null, timeframe: null, ref: null, status: null };
     if (typeof draw === 'string') return { type: draw, price: null, timeframe: null, ref: null, status: null };
@@ -7594,19 +7632,16 @@ function buildMarketMechanicsPlan({ historyCache = {}, price = null, structure =
     const lows = fourHSwings.L || [];
     const latestHigh = highs.at(-1) || null;
     const latestLow = lows.at(-1) || null;
-    const htfTrend = marketMechanicsDirectionFromTrend(
-        scopedStructure?.['4H']?.structural_trend || scopedStructure?.['4H']?.effective_trend || fourHState.state
-    );
+    const htfTrend = marketMechanicsDirectionalContext(scopedStructure?.['4H'], fourHState.state);
     const rangeHigh = latestHigh?.p ?? null;
     const rangeLow = latestLow?.p ?? null;
     const validRange = Number.isFinite(Number(rangeHigh)) && Number.isFinite(Number(rangeLow)) && Number(rangeHigh) > Number(rangeLow);
     const equilibrium = validRange ? (Number(rangeHigh) + Number(rangeLow)) / 2 : null;
     const position = validRange ? (Number(price) - Number(rangeLow)) / (Number(rangeHigh) - Number(rangeLow)) : null;
     const location = !Number.isFinite(position) ? 'UNKNOWN' : position >= 0.66 ? 'PREMIUM' : position <= 0.34 ? 'DISCOUNT' : 'EQUILIBRIUM';
-    const internalDirection = marketMechanicsDirectionFromTrend(
-        scopedStructure?.['1H']?.structural_trend || scopedStructure?.['1H']?.effective_trend
-    );
-    const bias = htfTrend || marketMechanicsDirectionFromTrend(scopedStructure?.['1D']?.structural_trend || scopedStructure?.['1D']?.effective_trend);
+    const internalDirection = marketMechanicsDirectionalContext(scopedStructure?.['1H']);
+    const dailyDirection = marketMechanicsDirectionalContext(scopedStructure?.['1D']);
+    const bias = htfTrend || dailyDirection;
     const biasName = bias === 'BUY' ? 'BULLISH' : bias === 'SELL' ? 'BEARISH' : 'NEUTRAL';
     let narrative = 'UNRESOLVED';
     if (bias === 'BUY') narrative = internalDirection === 'SELL' ? 'PULLBACK' : internalDirection === 'BUY' ? 'CONTINUATION' : 'UNRESOLVED';
@@ -7658,6 +7693,23 @@ function buildMarketMechanicsPlan({ historyCache = {}, price = null, structure =
         quote_snapshot: marketContext.quote_snapshot,
         symbol_metadata: symbolMetadata
     });
+    // Directional shadow hypotheses are diagnostic only.  They deliberately
+    // run through the same hard POI eligibility/ranking code, but never grant
+    // authority or bypass the selected Market Plan direction.
+    const directionalPoiRankings = Object.fromEntries(['BUY', 'SELL'].map(direction => [direction, rankMarketMechanicsPois(poiCatalog, {
+        pair: pairLocal,
+        price,
+        direction,
+        range_low: rangeLow,
+        range_high: rangeHigh,
+        as_of_ms: asOfMs,
+        quote_snapshot: marketContext.quote_snapshot,
+        symbol_metadata: symbolMetadata
+    })]));
+    const directionHypotheses = {
+        BUY: buildMarketMechanicsDirectionHypothesis('BUY', { htfTrend, dailyDirection, validRange, liquidity, poiRanking: directionalPoiRankings.BUY }),
+        SELL: buildMarketMechanicsDirectionHypothesis('SELL', { htfTrend, dailyDirection, validRange, liquidity, poiRanking: directionalPoiRankings.SELL })
+    };
     const eligiblePois = poiRanking.eligible.map(item => ({
         ...item.poi,
         id: item.poiId,
@@ -7737,6 +7789,17 @@ function buildMarketMechanicsPlan({ historyCache = {}, price = null, structure =
         market_plan_all_blockers: [...new Set(planBlockers)],
         market_plan_evidence_ref: primaryPoi?.id || poiRanking.rejected[0]?.poiId || null,
         no_poi_reason: primaryPoi ? null : (poiRanking.rejected.length ? 'ALL_POI_CANDIDATES_REJECTED' : 'NO_POI_DISCOVERED'),
+        direction_hypothesis_count: Object.values(directionHypotheses).filter(hypothesis => hypothesis.status === 'AVAILABLE').length,
+        direction_hypotheses: directionHypotheses,
+        buy_hypothesis_status: directionHypotheses.BUY.status,
+        buy_hypothesis_blocker: directionHypotheses.BUY.primary_blocker,
+        sell_hypothesis_status: directionHypotheses.SELL.status,
+        sell_hypothesis_blocker: directionHypotheses.SELL.primary_blocker,
+        liquidity_draw_status: primaryDraw ? 'AVAILABLE' : 'NONE',
+        parent_poi_status: primaryPoi ? 'AVAILABLE' : poiRanking.eligible.length ? 'ELIGIBLE_NOT_SELECTED' : 'NONE',
+        setup_model_status: planComplete ? 'ENTRY_MODEL_EVALUATION_REQUIRED' : 'NOT_EVALUATED_UNTIL_PLAN',
+        structural_stop_status: 'NOT_EVALUATED_UNTIL_ENTRY_MODEL',
+        structural_target_status: primaryDraw ? 'AVAILABLE' : 'UNAVAILABLE',
         active_poi: primaryPoi,
         invalidation: htfTrend === 'BUY' ? protectedLow : htfTrend === 'SELL' ? protectedHigh : null,
         state: primaryPoi ? 'AT_POI' : validRange ? 'WAITING_FOR_LOCATION' : 'PLAN_BUILDING',
@@ -17151,6 +17214,16 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             + ' MARKET_PLAN_ALL_BLOCKERS=' + ((plan.market_plan_all_blockers || []).join('|') || 'NONE')
             + ' MARKET_PLAN_EVIDENCE_REF=' + String(plan.market_plan_evidence_ref || 'NONE')
             + ' NO_POI_REASON=' + String(plan.no_poi_reason || 'NONE'));
+        lines.push('DIRECTION_HYPOTHESIS_COUNT=' + String(plan.direction_hypothesis_count ?? 0)
+            + ' BUY_HYPOTHESIS_STATUS=' + String(plan.buy_hypothesis_status || 'UNKNOWN')
+            + ' BUY_HYPOTHESIS_BLOCKER=' + String(plan.buy_hypothesis_blocker || 'NONE')
+            + ' SELL_HYPOTHESIS_STATUS=' + String(plan.sell_hypothesis_status || 'UNKNOWN')
+            + ' SELL_HYPOTHESIS_BLOCKER=' + String(plan.sell_hypothesis_blocker || 'NONE')
+            + ' LIQUIDITY_DRAW_STATUS=' + String(plan.liquidity_draw_status || 'UNKNOWN')
+            + ' PARENT_POI_STATUS=' + String(plan.parent_poi_status || 'UNKNOWN')
+            + ' SETUP_MODEL_STATUS=' + String(plan.setup_model_status || 'UNKNOWN')
+            + ' STRUCTURAL_STOP_STATUS=' + String(plan.structural_stop_status || 'UNKNOWN')
+            + ' STRUCTURAL_TARGET_STATUS=' + String(plan.structural_target_status || 'UNKNOWN'));
         const poiDiagnostics = Array.isArray(plan.poi_evaluations) ? plan.poi_evaluations : [];
         for (const poi of poiDiagnostics) lines.push([
             'POI_EVALUATION',

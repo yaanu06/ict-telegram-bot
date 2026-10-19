@@ -8738,6 +8738,53 @@ describe('getQuoteDirection', () => {
     });
 });
 
+describe('Market Mechanics directional context gating', () => {
+    test('uses directional effective context when structural context is MIXED', () => {
+        const ctx = getContext();
+        expect(ctx.marketMechanicsDirectionalContext({
+            structural_trend: 'MIXED',
+            effective_trend: 'BULLISH_TRANSITION'
+        })).toBe('BUY');
+        expect(ctx.marketMechanicsDirectionalContext({
+            structural_trend: 'NEUTRAL',
+            effective_trend: 'BEARISH'
+        })).toBe('SELL');
+    });
+
+    test('preserves unresolved context when every directional source is neutral', () => {
+        const ctx = getContext();
+        expect(ctx.marketMechanicsDirectionalContext({
+            structural_trend: 'MIXED',
+            effective_trend: 'NEUTRAL'
+        }, 'MIXED')).toBeNull();
+    });
+
+    test('does not let an unresolved structural sentinel hide a directional fallback', () => {
+        const ctx = getContext();
+        expect(ctx.marketMechanicsDirectionalContext({ structural_trend: 'MIXED' }, 'BULLISH')).toBe('BUY');
+        expect(ctx.marketMechanicsDirectionalContext({ structural_trend: 'NEUTRAL' }, 'BEARISH_TRANSITION')).toBe('SELL');
+    });
+
+    test('shadow hypotheses remain diagnostic and expose the first shared blocker', () => {
+        const ctx = getContext();
+        const result = ctx.buildMarketMechanicsDirectionHypothesis('SELL', {
+            htfTrend: null,
+            dailyDirection: null,
+            validRange: true,
+            liquidity: { sell_side: [{ price: 99 }] },
+            poiRanking: { eligible: [{ direction: 'SELL', poiId: 'SELL-POI' }] }
+        });
+        expect(result).toEqual(expect.objectContaining({
+            status: 'BLOCKED',
+            htf_structure_compatible: 'NO',
+            liquidity_draw_available: 'YES',
+            eligible_parent_poi_count: 1,
+            best_parent_poi: 'SELL-POI',
+            primary_blocker: 'HTF_DIRECTION_UNRESOLVED'
+        }));
+    });
+});
+
 describe('analyzeMarketPhase (AMD)', () => {
     it('returns UNKNOWN for insufficient data', () => {
         const ctx = getContext();
