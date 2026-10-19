@@ -3443,7 +3443,9 @@ function buildFreshExecutionZonesForNarrative(narrative, historyCache = {}, exis
         } else dedupe.set(key, { ...zone, confluence: [zone.type] });
     }
     const dedupedZones = [...dedupe.values()];
-    const directionalZones = dedupedZones.filter(zone => direction === 'BUY' ? (!Number.isFinite(price) || zone.midpoint <= price) : (!Number.isFinite(price) || zone.midpoint >= price));
+    const directionalZones = dedupedZones.filter(zone => selectPendingExecutionGeometry(zone, null, direction, {
+        price, pair: pairLocal, symbol_metadata: symbolMetadata
+    }, prec).side_eligible);
     executionZoneStats.wrong_side = dedupedZones.length - directionalZones.length;
     const result = directionalZones
         .sort((a, b) => (b.displacement_confirmed - a.displacement_confirmed) || ((b.departure_strength || 0) - (a.departure_strength || 0)) || (b.created_index - a.created_index))
@@ -7299,18 +7301,19 @@ function buildDailyTradingBias(timeframeContext, targets, price, asOfTime) {
     };
 }
 
-function selectFutureLimitLocation(direction, zones = [], locationPois = [], price) {
-    const wantedSide = direction === 'BUY' ? 'BELOW' : 'ABOVE';
+function selectFutureLimitLocation(direction, zones = [], locationPois = [], price, pairLocal = pair, symbolMetadata = {}) {
     const timeframeScore = { '4H': 40, '1H': 24, '15M': 8 };
     const sourceScore = { MSNR: 22, OB: 20, FVG: 18, SUPPLY: 14, DEMAND: 14, FLIP: 12 };
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
     return [...zones, ...locationPois]
         .filter(zone => zone?.direction === direction && ['4H', '1H', '15M'].includes(zone.timeframe))
         .filter(zone => Number.isFinite(Number(zone.low)) && Number.isFinite(Number(zone.high)) && Number(zone.high) >= Number(zone.low))
         .filter(zone => !zone.invalidated && !zone.consumed && !zone.entry_consumed && !zone.mitigated)
         .filter(zone => !['CONSUMED', 'USED', 'INVALIDATED', 'EXPIRED', 'TESTED'].includes(String(zone.freshness || '').toUpperCase()))
-        // A true future retracement limit must be beyond current price in its
-        // fill direction.  A passed zone cannot be revived as an order.
-        .filter(zone => wantedSide === 'BELOW' ? Number(zone.high) < Number(price) : Number(zone.low) > Number(price))
+        // A true future retracement limit must have a usable entry beyond
+        // current price in its fill direction. Filter on the actual
+        // deterministic entry, not only the outer zone boundary.
+        .filter(zone => selectPendingExecutionGeometry(zone, null, direction, { price, pair: pairLocal, symbol_metadata: symbolMetadata }, settings.prec).side_eligible)
         .filter(zone => zone.primary_eligible !== false || zone.location_only === true)
         .map(zone => {
             const midpoint = (Number(zone.low) + Number(zone.high)) / 2;
@@ -7490,6 +7493,104 @@ function marketMechanicsDirectionFromTrend(value) {
     if (trend.includes('BULL')) return 'BUY';
     if (trend.includes('BEAR')) return 'SELL';
     return null;
+}
+
+function getPendingExecutionRegion(zone = {}, direction = '', prec = 8) {
+    const baseLow = Number(zone.low ?? zone.zone_low);
+    const baseHigh = Number(zone.high ?? zone.zone_high);
+    if (!Number.isFinite(baseLow) || !Number.isFinite(baseHigh) || baseHigh < baseLow) return null;
+
+    // Some detectors expose the genuinely untraded part of a partially
+    // mitigated zone.  Use it only when it is explicitly supplied and is a
+    // bounded subset of the original zone; never invent a remaining segment
+    // from the current quote alone.
+    let remainingLow = Number(zone.pending_zone_low ?? zone.remaining_low ?? zone.remaining_lower);
+    let remainingHigh = Number(zone.pending_zone_high ?? zone.remaining_high ?? zone.remaining_upper);
+    const geometric = zone.geometric_remaining_zone;
+    if ((!Number.isFinite(remainingLow) || !Number.isFinite(remainingHigh)) && geometric && typeof geometric === 'object') {
+        remainingLow = Number(geometric.low ?? geometric.lower ?? geometric.remaining_low ?? geometric.remaining_lower);
+        remainingHigh = Number(geometric.high ?? geometric.upper ?? geometric.remaining_high ?? geometric.remaining_upper);
+    }
+    if ((!Number.isFinite(remainingLow) || !Number.isFinite(remainingHigh)) && Array.isArray(geometric) && geometric.length >= 2) {
+        remainingLow = Number(geometric[0]);
+        remainingHigh = Number(geometric[1]);
+    }
+    const hasRemaining = Number.isFinite(remainingLow) && Number.isFinite(remainingHigh)
+        && remainingHigh >= remainingLow
+        && remainingLow >= baseLow
+        && remainingHigh <= baseHigh
+        && (remainingLow > baseLow || remainingHigh < baseHigh);
+    const low = hasRemaining ? remainingLow : baseLow;
+    const high = hasRemaining ? remainingHigh : baseHigh;
+    return {
+        low: ictRound(low, prec),
+        high: ictRound(high, prec),
+        source: hasRemaining ? 'EXPLICIT_REMAINING_ZONE' : 'ORIGINAL_ZONE',
+        original_low: ictRound(baseLow, prec),
+        original_high: ictRound(baseHigh, prec),
+        direction: String(direction || zone.direction || '').toUpperCase()
+    };
+}
+
+function selectPendingExecutionGeometry(zone = {}, strategySetup = null, direction = '', currentContext = {}, prec = 8) {
+    const side = String(direction || zone.direction || strategySetup?.direction || '').toUpperCase();
+    const region = getPendingExecutionRegion(zone, side, prec);
+    if (!region || !['BUY', 'SELL'].includes(side)) {
+        return { side_eligible: false, relation: 'UNKNOWN', rejection_code: 'NO_VALID_ENTRY_PRICE', region, entry: null, reference: null };
+    }
+    const effectiveZone = { ...zone, low: region.low, high: region.high };
+    let entry = getSemanticEntryCandidate(effectiveZone, strategySetup, side, prec);
+    const reference = getPendingLimitReferencePrice(side, currentContext);
+    const settings = getMarketSettings(currentContext.pair || pair, currentContext.symbol_metadata || {});
+    const tick = Number(settings.pipSize) > 0 ? Number(settings.pipSize) : Math.max(Math.abs(reference.price || 0) * 1e-10, 1e-12);
+    const tolerance = tick * 0.5;
+    let entrySource = 'ZONE_SEMANTIC_ENTRY';
+    let sideEligible = Number.isFinite(entry) && Number.isFinite(reference.price)
+        && (side === 'BUY' ? entry < reference.price - tolerance : entry > reference.price + tolerance);
+    // A partially mitigated zone may still contain a fresh, untraded segment
+    // on the required side even when its original/semantic midpoint is behind
+    // the current quote.  Only use this refinement when the detector supplied
+    // an explicit bounded remaining region; never clip an untouched original
+    // zone from the current quote alone.
+    if (!sideEligible && region.source === 'EXPLICIT_REMAINING_ZONE' && Number.isFinite(reference.price)) {
+        if (side === 'SELL' && region.high > reference.price + tolerance) {
+            const lower = Math.max(region.low, reference.price + tolerance * 2);
+            if (lower < region.high) {
+                entry = ictRound((lower + region.high) / 2, prec);
+                entrySource = 'REMAINING_CORRECT_SIDE';
+                sideEligible = entry > reference.price + tolerance;
+            }
+        } else if (side === 'BUY' && region.low < reference.price - tolerance) {
+            const upper = Math.min(region.high, reference.price - tolerance * 2);
+            if (region.low < upper) {
+                entry = ictRound((region.low + upper) / 2, prec);
+                entrySource = 'REMAINING_CORRECT_SIDE';
+                sideEligible = entry < reference.price - tolerance;
+            }
+        }
+    }
+    const current = Number(currentContext.price ?? currentContext.current_price);
+    const relation = !Number.isFinite(current) || !Number.isFinite(region.low) || !Number.isFinite(region.high)
+        ? 'UNKNOWN'
+        : current < region.low ? 'ABOVE_MARKET'
+            : current > region.high ? 'BELOW_MARKET' : 'INSIDE_MARKET';
+    return {
+        side,
+        entry: Number.isFinite(entry) ? entry : null,
+        region,
+        reference: Number.isFinite(reference.price) ? reference.price : null,
+        reference_source: reference.source,
+        entry_source: entrySource,
+        tolerance,
+        side_eligible: sideEligible,
+        relation,
+        pending_relationship_status: !Number.isFinite(entry) ? 'INCOMPLETE'
+            : sideEligible && relation === 'INSIDE_MARKET' ? 'CURRENTLY_INSIDE_COMPATIBLE'
+                : sideEligible ? 'FUTURE_RETRACE_COMPATIBLE' : 'PASSED_WRONG_SIDE',
+        rejection_code: sideEligible ? null : side === 'BUY'
+            ? 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT'
+            : 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT'
+    };
 }
 
 // Structural snapshots deliberately preserve non-directional states such as
@@ -7951,6 +8052,13 @@ function buildMarketMechanicsStrategySetups(args = {}) {
                 structural_evidence_ids: [event.ref, confirmation?.structure_event_id].filter(Boolean),
                 entry_model: model, execution_model: 'FRESH_RETRACEMENT_LIMIT'
             };
+            const pendingGeometry = selectPendingExecutionGeometry(zone, null, event.direction, {
+                price: args.price, pair: args.pair, symbol_metadata: args.symbolMetadata || {}
+            }, getMarketSettings(args.pair || pair, args.symbolMetadata || {}).prec);
+            zone.pending_side_eligible = pendingGeometry.side_eligible;
+            zone.pending_relationship_status = pendingGeometry.pending_relationship_status;
+            zone.pending_entry = pendingGeometry.entry;
+            zone.pending_reference_price = pendingGeometry.reference;
             crtSetups.push({
                 id: `MARKET_PLAN:${model}:${timeframe}:${event.direction}:${firstKnowable}`,
                 primary: 'CRT', label: 'CRT', direction: event.direction, timeframe,
@@ -8223,6 +8331,12 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         entry_zone_high: Number.isFinite(Number(zone.high)) ? Number(zone.high) : null,
         entry_zone_ref: zone.id || null,
         entry_zone_source: zone.entry_region_source || zone.type || setup.primary || null,
+        pending_side_eligible: candidate?.pending_side_eligible || (pending ? (pendingLimitValid ? 'YES' : 'NO') : 'NOT_APPLICABLE'),
+        poi_structural_valid: candidate?.poi_structural_valid || 'UNKNOWN',
+        poi_pending_relationship_status: candidate?.pending_relationship_status || (pending
+            ? (pendingLimitValid ? 'FUTURE_RETRACE_COMPATIBLE' : 'PASSED_WRONG_SIDE') : 'NOT_APPLICABLE'),
+        original_entry_zone_low: Number.isFinite(Number(candidate?.zone?.original_zone_low)) ? Number(candidate.zone.original_zone_low) : null,
+        original_entry_zone_high: Number.isFinite(Number(candidate?.zone?.original_zone_high)) ? Number(candidate.zone.original_zone_high) : null,
         proposed_entry: geometry.entry,
         proposed_stop: geometry.stop_loss,
         stop_source: candidate?.stop_source || derivedGeometry.stop_source,
@@ -8418,7 +8532,7 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
         const lead = timeframeContext?.['4H'];
         const leadTrend = lead?.effective_trend || lead?.structural_trend || lead?.bias;
         if (leadTrend !== wanted && leadTrend !== `${wanted}_TRANSITION`) continue;
-        const location = selectFutureLimitLocation(direction, zones || [], locationPois, price);
+        const location = selectFutureLimitLocation(direction, zones || [], locationPois, price, pairLocal, symbolMetadata);
         const targetPool = (targets?.all || []).filter(target => target.direction === direction && Number.isFinite(target.level)
             && (direction === 'BUY' ? target.level > price : target.level < price));
         const swings = direction === 'BUY' ? lead?.structure?.recent_swing_lows : lead?.structure?.recent_swing_highs;
@@ -8433,7 +8547,7 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
         // the pending-limit entry location. This keeps the strategy forecast
         // intact without treating the parent POI itself as executable.
         const nestedFutureExecution = location.location_only
-            ? selectFutureLimitLocation(direction, (zones || []).filter(zone => zone.id !== location.id && zone.location_only !== true && Number(zone.low) >= Number(location.low) && Number(zone.high) <= Number(location.high)), [], price)
+            ? selectFutureLimitLocation(direction, (zones || []).filter(zone => zone.id !== location.id && zone.location_only !== true && Number(zone.low) >= Number(location.low) && Number(zone.high) <= Number(location.high)), [], price, pairLocal, symbolMetadata)
             : null;
         // A validated HTF supply/demand location is usable as the order area
         // when no narrower untouched child exists.  Do not make a new FVG a
@@ -10272,10 +10386,60 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
         const atrData = getClosedHistory(historyCache, tf === '4H' ? '4H' : '1H');
         const atrVal = atrData.length >= 15 ? atr(atrData, 14) : 0;
         const safeAtr = Number.isFinite(atrVal) && atrVal > 0 ? atrVal : 0;
-        const semanticEntry = getSemanticEntryCandidate(zone, strategySetup, direction, prec);
+        const pendingLimitModel = isPendingLimitExecutionModel(strategySetup?.opportunity_thesis?.execution_model
+            || strategySetup?.execution_model || strategySetup?.entry_model || zone.execution_model || zone.entry_model);
+        const pendingGeometry = pendingLimitModel
+            ? selectPendingExecutionGeometry(zone, strategySetup, direction, {
+                price,
+                pair,
+                symbol_metadata: symbolMetadata,
+                quote_snapshot: marketContext?.quote_snapshot,
+                bid: marketContext?.bid,
+                ask: marketContext?.ask
+            }, prec)
+            : { entry: getSemanticEntryCandidate(zone, strategySetup, direction, prec), side_eligible: true, region: { low: zone.low, high: zone.high }, pending_relationship_status: 'NOT_APPLICABLE' };
+        const semanticEntry = pendingGeometry.entry;
         const entries = semanticEntry == null ? [] : [semanticEntry];
         seed.semantic_entries = entries.length;
         if (!entries.length) failSeed(seed, 'NO_VALID_ENTRY_PRICE');
+        if (pendingLimitModel && semanticEntry != null && !pendingGeometry.side_eligible) {
+            const sideCode = pendingGeometry.rejection_code;
+            const diagnosticId = strategySetup?.id || zone.id || seed.seed_id;
+            failSeed(seed, sideCode, `Execution zone is structurally valid but its deterministic entry is not on the pending ${direction} side of the executable reference.`);
+            rejectedCandidates.push({
+                id: diagnosticId,
+                candidate_id: diagnosticId,
+                strategy_setup_id: strategySetup?.id || null,
+                execution_zone_id: zone.id || null,
+                direction,
+                timeframe: tf,
+                zone_type: zone.type,
+                zone_low: pendingGeometry.region?.low ?? zone.low,
+                zone_high: pendingGeometry.region?.high ?? zone.high,
+                entry: semanticEntry,
+                zone: { ...zone, low: pendingGeometry.region?.low ?? zone.low, high: pendingGeometry.region?.high ?? zone.high },
+                poi_structural_valid: 'YES',
+                pending_side_eligible: 'NO',
+                pending_relationship_status: pendingGeometry.pending_relationship_status,
+                pending_limit_reference_price: pendingGeometry.reference,
+                pending_limit_reference_source: pendingGeometry.reference_source,
+                pending_limit_valid: 'NO',
+                rejection_code: sideCode,
+                rejection_reasons: [sideCode],
+                failed_stage: 'PENDING_SIDE',
+                failed_rule: sideCode === 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT'
+                    ? 'BUY_LIMIT entry must be below the executable buy-side reference'
+                    : 'SELL_LIMIT entry must be above the executable sell-side reference',
+                next_required_event: sideCode === 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT'
+                    ? 'WAIT_FOR_NEW_VALID_BUY_LIMIT_GEOMETRY'
+                    : 'WAIT_FOR_NEW_VALID_SELL_LIMIT_GEOMETRY',
+                historical_only: true,
+                selectable: false,
+                TRADE_QUALIFIED: 'NO',
+                MODEL_QUALIFIED: 'NO'
+            });
+            continue;
+        }
         for (const entry of entries) {
             const stops = getAdaptiveStopCandidates(zone, direction, entry, data, zones, safeAtr, settings, prec)
                 .slice(0, STRATEGY_SPEC.EXECUTION.maxStopsPerZone);
@@ -10286,7 +10450,8 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                 }
                 const seedPrefix = zone.candidate_id_prefix || (zone.execution_model === 'FRESH_RETRACEMENT_LIMIT' ? 'FRESH-' : '');
                 const createdKey = normalizeTimestampUTC(zone.created_time);
-                const rawId = `${seedPrefix}${tf}-${zone.type}-${direction}-${ictRound(zone.low, prec)}-${ictRound(zone.high, prec)}-${createdKey || zone.created_index || rawCandidates.length + 1}-${rawCandidates.length + 1}`;
+                const entryRegion = pendingGeometry.region || { low: zone.low, high: zone.high };
+                const rawId = `${seedPrefix}${tf}-${zone.type}-${direction}-${ictRound(entryRegion.low, prec)}-${ictRound(entryRegion.high, prec)}-${createdKey || zone.created_index || rawCandidates.length + 1}-${rawCandidates.length + 1}`;
                 const risk = Math.abs(entry - stop.stop_loss);
                 const atrContext = getCandidateATRContext({ timeframe: tf }, historyCache, pair, price, symbolMetadata);
                 const rawCandidate = {
@@ -10295,9 +10460,12 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     timeframe: tf,
                     zone_type: zone.type,
                     zone_origin: zone.origin,
-                    zone_low: zone.low,
-                    zone_high: zone.high,
-                    zone,
+                    zone_low: entryRegion.low,
+                    zone_high: entryRegion.high,
+                    zone: { ...zone, low: entryRegion.low, high: entryRegion.high, midpoint: (entryRegion.low + entryRegion.high) / 2,
+                        pending_entry_zone_source: entryRegion.source || 'ORIGINAL_ZONE',
+                        original_zone_low: entryRegion.original_low ?? zone.low,
+                        original_zone_high: entryRegion.original_high ?? zone.high },
                     entry,
                     stop_loss: stop.stop_loss,
                     stop_reason: authoritativeInvalidation
@@ -10328,6 +10496,11 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                         position_size_adjustment_required: true
                     },
                     freshness: zone.freshness,
+                    poi_structural_valid: 'YES',
+                    pending_side_eligible: 'YES',
+                    pending_relationship_status: pendingGeometry.pending_relationship_status,
+                    pending_limit_reference_price: pendingGeometry.reference,
+                    pending_limit_reference_source: pendingGeometry.reference_source,
                     htf_alignment: ['1D', '4H', '1H']
                         .map(t => structure?.[t]?.effective_trend || structure?.[t]?.structural_trend || structure?.[t]?.trend)
                         .filter(v => v === (direction === 'BUY' ? 'BULLISH' : 'BEARISH')).length,
@@ -10514,8 +10687,6 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     continue;
                 }
                 const rr = calculateRRMetrics(direction, entry, stop.stop_loss, targets.tp1.level, minimumRR);
-                const pendingLimitModel = isPendingLimitExecutionModel(strategySetup?.opportunity_thesis?.execution_model
-                    || strategySetup?.execution_model || strategySetup?.entry_model || zone.execution_model || zone.entry_model);
                 const primaryTargetLifecycle = targets.tp1.target_lifecycle || null;
                 const archetype = classifySetupArchetype(rawCandidate, historyCache, price, structure);
                 const htfAlignment = ['1D', '4H', '1H']
@@ -11113,6 +11284,7 @@ const MARKET_MECHANICS_BLOCKER_RULES = Object.freeze({
     SETUP_STALE: { stage: 'LIFECYCLE', rule: 'The setup is stale under its model-defined lifecycle rules', next: 'NONE_TERMINAL' },
     SETUP_ALREADY_COMPLETED: { stage: 'LIFECYCLE', rule: 'The structural objective was delivered before a new pending fill', next: 'NONE_TERMINAL' },
     ENTRY_ALREADY_CONSUMED: { stage: 'LIFECYCLE', rule: 'The entry zone has already been consumed', next: 'NONE_TERMINAL' },
+    INITIAL_PENDING_SIDE_INVALID: { stage: 'LIFECYCLE', rule: 'The setup was not on the valid pending-limit side when it became actionable', next: 'NONE_TERMINAL' },
     SETUP_DELIVERY_ALREADY_ADVANCED: { stage: 'LIFECYCLE', rule: 'Delivery advanced too far after formation for a new pending order', next: 'NONE_TERMINAL' },
     MARKET_PLAN_INVALID: { stage: 'PLAN', rule: 'A valid complete Market Plan is required', next: 'WAIT_FOR_MARKET_PLAN' },
     MARKET_PLAN_POI_INVALID: { stage: 'PARENT_POI', rule: 'The selected parent POI is not lifecycle eligible', next: 'WAIT_FOR_VALID_PARENT_POI' },
@@ -11435,6 +11607,17 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const resolvedEventTime = Number.isFinite(normalizedEventTime)
         ? normalizedEventTime
         : (Number.isInteger(index) ? candleTimestamp((executionEventTime ? executionData : data)[index], index, executionEventTime ? executionTf : setupTf) : null);
+    const formationCandle = Number.isInteger(index) && index >= 0
+        ? (executionEventTime ? executionData[index] : data[index])
+        : null;
+    const formationClose = Number.isFinite(Number(formationCandle?.c)) ? Number(formationCandle.c) : null;
+    const initialPendingSideValid = hasExplicitTimes && Number.isFinite(formationClose) && Number.isFinite(Number(entry))
+        // Equality at the formation close is not enough evidence to declare
+        // that the limit was already passed.  A strict opposite-side close
+        // is the deterministic historical invalidation; later wick/crossing
+        // evidence is handled separately below.
+        ? (candidate.direction === 'BUY' ? formationClose >= Number(entry) : formationClose <= Number(entry))
+        : null;
     const parentEventTime = normalizeTimestampUTC(eventTime ?? getStrategyEventTime(setup));
     const parentEventAgeHours = Number.isFinite(asOfTime) && Number.isFinite(parentEventTime)
         ? (asOfTime - parentEventTime) / 3600000 : null;
@@ -11509,7 +11692,10 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         still_actionable_today: false,
         entry_region_low: low, entry_region_high: high,
         entry_consumed: false, entry_first_touch_index: null, entry_first_touch_time: null,
-        entry_touch_count_after_signal: 0, entry_freshness: 'FRESH',
+        entry_touch_count_after_signal: 0, entry_crossed_after_signal: false,
+        entry_first_crossed_index: null, entry_first_crossed_time: null,
+        initial_pending_side_valid: initialPendingSideValid,
+        entry_freshness: 'FRESH',
         tp1_already_reached: false, tp1_first_reached_index: null, tp1_first_reached_time: null,
         nominal_reward_after_fill: Number.isFinite(tp1) && Number.isFinite(entry) ? Math.abs(tp1 - entry) : null,
         entry_retracement_distance: Number.isFinite(entry) && Number.isFinite(price) ? Math.abs(price - entry) : null,
@@ -11595,6 +11781,16 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
                     result.entry_first_touch_time = barTime;
                 }
             }
+            const entryCrossed = candidate.direction === 'BUY'
+                ? Number(bar.l) <= Number(entry)
+                : Number(bar.h) >= Number(entry);
+            if (entryCrossed) {
+                result.entry_crossed_after_signal = true;
+                if (result.entry_first_crossed_index == null) {
+                    result.entry_first_crossed_index = i;
+                    result.entry_first_crossed_time = barTime;
+                }
+            }
             if (Number.isFinite(tp1) && (!pendingRetracementLocation || result.entry_touch_count_after_signal > 0)
                 && (candidate.direction === 'BUY' ? bar.h >= tp1 : bar.l <= tp1)) {
                 result.tp1_already_reached = true;
@@ -11605,7 +11801,8 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
             }
         }
     }
-    result.entry_consumed = result.entry_touch_count_after_signal > spec.maxEntryTouches;
+    result.entry_consumed = result.entry_touch_count_after_signal > spec.maxEntryTouches || result.entry_crossed_after_signal === true;
+    result.initial_pending_side_invalid = initialPendingSideValid === false;
     result.execution_zone_consumed = result.entry_consumed;
     const currentReached = Number.isFinite(tp1) && !pendingRetracementLocation
         && (candidate.direction === 'BUY' ? price >= tp1 : price <= tp1);
@@ -11621,9 +11818,6 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         result.target_lifecycle_state = targetLifecycleState;
     }
     const deliveryThreshold = 1 - freshnessSpec.minRemainingRewardFraction;
-    const formationCandle = Number.isInteger(index) && index >= 0
-        ? (executionEventTime ? executionData[index] : data[index])
-        : null;
     const formationPrice = Number.isFinite(Number(formationCandle?.c)) ? Number(formationCandle.c) : null;
     const progressAtPrice = value => Number.isFinite(tp1) && Number.isFinite(entry) && Math.abs(tp1 - entry) > 0 && Number.isFinite(Number(value))
         ? (candidate.direction === 'BUY' ? (Number(value) - entry) / (tp1 - entry) : (entry - Number(value)) / (entry - tp1))
@@ -11685,6 +11879,7 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
         : result.tp1_already_reached ? 'SETUP_ALREADY_COMPLETED'
         : result.entry_consumed ? 'ENTRY_ALREADY_CONSUMED'
         : deliveryAdvanced ? 'SETUP_DELIVERY_ALREADY_ADVANCED'
+        : result.initial_pending_side_invalid ? 'INITIAL_PENDING_SIDE_INVALID'
         : staleByAge ? 'SETUP_STALE'
         : marketClosed && !pendingLimitModel ? 'MARKET_CLOSED'
             : entryTooFarForToday && !pendingLimitModel ? 'ENTRY_NOT_REACHABLE_TODAY' : null;
@@ -12254,7 +12449,7 @@ function classifyRejectionDetail(reason) {
     if (/BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT|BUY limit must be below|BUY limit entry/i.test(rawReason)) return 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT';
     if (/SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT|SELL limit must be above|SELL limit entry/i.test(rawReason)) return 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT';
     if (/MARKET_PLAN_POI_MISSING|MARKET_PLAN_INVALID|MARKET_PLAN_POI_INVALID|EXECUTION_POI_MISSING|EXECUTION_POI_INVALID|CONFLICTING_POI_DIRECTION|INCOMPATIBLE_EXECUTION_POI/i.test(rawReason)) return rawReason;
-    if (/^(ENTRY_ALREADY_CONSUMED|SETUP_ALREADY_COMPLETED|SETUP_DELIVERY_ALREADY_ADVANCED|SETUP_EXPIRED|SETUP_STALE|MARKET_CLOSED|ENTRY_NOT_REACHABLE_TODAY)$/.test(rawReason)) return rawReason;
+    if (/^(ENTRY_ALREADY_CONSUMED|INITIAL_PENDING_SIDE_INVALID|SETUP_ALREADY_COMPLETED|SETUP_DELIVERY_ALREADY_ADVANCED|SETUP_EXPIRED|SETUP_STALE|MARKET_CLOSED|ENTRY_NOT_REACHABLE_TODAY)$/.test(rawReason)) return rawReason;
     if (/SL_INSIDE_STRUCTURAL_INVALIDATION|authoritative strategy invalidation/i.test(rawReason)) return 'SL_INSIDE_STRUCTURAL_INVALIDATION';
     if (/BUY stop|SELL stop|STRUCTURALLY_INVALID/i.test(rawReason)) return 'STOP_STRUCTURAL_INVALID';
     if (/EXTREME_TOO_TIGHT|extreme volatility anomaly|below .*minimum|below .*ATR|too tight/i.test(rawReason)) return 'EXTREME_TOO_TIGHT';

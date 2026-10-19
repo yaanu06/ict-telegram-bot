@@ -9537,6 +9537,56 @@ describe('live AI market context and prompt', () => {
         expect(setup.execution_zone).toEqual(expect.objectContaining({ id: 'future-1H-fvg', execution_model: 'PENDING_LIMIT' }));
     });
 
+    it('filters wrong-side execution zones before pending-limit ranking', () => {
+        const ctx = getContext();
+        const passed = { id: 'passed-sell-zone', type: 'MSNR', direction: 'SELL', timeframe: '1H', low: 94, high: 96, freshness: 'FRESH', primary_eligible: true };
+        const future = { id: 'future-sell-zone', type: 'FVG', direction: 'SELL', timeframe: '1H', low: 104, high: 106, freshness: 'FRESH', primary_eligible: true };
+        const passedGeometry = ctx.selectPendingExecutionGeometry(passed, null, 'SELL', { pair: 'EUR/USD', price: 100 }, 5);
+        const futureGeometry = ctx.selectPendingExecutionGeometry(future, null, 'SELL', { pair: 'EUR/USD', price: 100 }, 5);
+        expect(passedGeometry).toEqual(expect.objectContaining({ side_eligible: false, pending_relationship_status: 'PASSED_WRONG_SIDE' }));
+        expect(futureGeometry).toEqual(expect.objectContaining({ side_eligible: true, pending_relationship_status: 'FUTURE_RETRACE_COMPATIBLE' }));
+        expect(ctx.selectFutureLimitLocation('SELL', [passed, future], [], 100, 'EUR/USD').id).toBe('future-sell-zone');
+    });
+
+    it('uses an explicitly remaining partial zone for pending-side selection', () => {
+        const ctx = getContext();
+        const partial = { id: 'partial-sell-zone', type: 'FVG', direction: 'SELL', timeframe: '1H', low: 98, high: 105,
+            remaining_lower: 101, remaining_upper: 105, freshness: 'PARTIAL', primary_eligible: true };
+        const geometry = ctx.selectPendingExecutionGeometry(partial, null, 'SELL', { pair: 'EUR/USD', price: 100 }, 5);
+        expect(geometry.side_eligible).toBe(true);
+        expect(geometry.region).toEqual(expect.objectContaining({ low: 101, high: 105, source: 'EXPLICIT_REMAINING_ZONE' }));
+        expect(geometry.entry).toBeGreaterThan(100);
+        const insideGeometry = ctx.selectPendingExecutionGeometry(partial, null, 'SELL', { pair: 'EUR/USD', price: 104 }, 5);
+        expect(insideGeometry.side_eligible).toBe(true);
+        expect(insideGeometry.entry_source).toBe('REMAINING_CORRECT_SIDE');
+        expect(insideGeometry.entry).toBeGreaterThan(104);
+        const partialBuy = { id: 'partial-buy-zone', type: 'FVG', direction: 'BUY', timeframe: '1H', low: 95, high: 102,
+            remaining_lower: 95, remaining_upper: 99, freshness: 'PARTIAL', primary_eligible: true };
+        const buyInsideGeometry = ctx.selectPendingExecutionGeometry(partialBuy, null, 'BUY', { pair: 'EUR/USD', price: 96 }, 5);
+        expect(buyInsideGeometry.side_eligible).toBe(true);
+        expect(buyInsideGeometry.entry_source).toBe('REMAINING_CORRECT_SIDE');
+        expect(buyInsideGeometry.entry).toBeLessThan(96);
+    });
+
+    it('marks a pending entry crossed after formation as consumed rather than reusable', () => {
+        const ctx = getContext();
+        const result = ctx.evaluateSetupLifecycle({
+            direction: 'SELL', execution_model: 'PENDING_LIMIT', entry: 105, zone_low: 104, zone_high: 106, tp1: 95,
+            strategy_setup: { primary: 'ICT', timeframe: '1H', reclaim_bar_index: 0 }
+        }, {
+            pair: 'EUR/USD', price: 100, as_of_time: '2026-10-19T11:00:00Z', market_open: true,
+            historyCache: { '1H': [
+                c(100, 101, 99, 100, '2026-10-19T09:00:00Z'),
+                c(100, 106, 99, 102, '2026-10-19T10:00:00Z'),
+                c(102, 103, 98, 100, '2026-10-19T11:00:00Z')
+            ] }
+        });
+        expect(result.entry_crossed_after_signal).toBe(true);
+        expect(result.entry_first_crossed_index).toBe(1);
+        expect(result.entry_consumed).toBe(true);
+        expect(result.rejection_code).toBe('ENTRY_ALREADY_CONSUMED');
+    });
+
     it('uses a nested executable zone for a location-only strategy narrative', () => {
         const ctx = getContext();
         const history = candles(40, 100, 0.1, 'down');
