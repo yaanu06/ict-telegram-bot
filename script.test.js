@@ -3721,6 +3721,53 @@ describe('canonical Market Mechanics production routing', () => {
         expect(result.all_valid_candidates[0].entry_model).toBe('LIQUIDITY_OB_FVG');
         expect(result.all_valid_candidates[0].candidate_authority).toBe('LIVE');
     });
+
+    it('builds the target-ready funnel from the same completed records used for LIVE authority', () => {
+        const ctx = getContext();
+        const makeCandidate = id => ({
+            id, direction: 'BUY', timeframe: '4H', entry_model: 'LIQUIDITY_OB_FVG', execution_model: 'PENDING_LIMIT',
+            market_mechanics_verified: true, market_plan_valid: true, market_plan_poi_valid: true,
+            execution_poi_valid: true, structurally_valid: true, poi_structural_valid: true,
+            pending_side_eligible: true, pending_limit_side_valid: true, pending_limit_valid: true,
+            pending_limit_geometry_complete: 'YES', lifecycle_state: 'PENDING_UNFILLED',
+            entry: 95, stop_loss: 90, tp1: 105, tp2: 110, tp3: 115,
+            trade_qualified: true, TRADE_QUALIFIED: 'YES', model_qualified: true, MODEL_QUALIFIED: 'YES',
+            qualification_result: 'PASS', setup_formation_confirmed: true, setup_confidence: 72, entry_reachable_today: true,
+            path_quality: { path_evaluated: 'YES', path_status: 'CLEAR', path_quality_result: 'PASS', qualification_blockers: [] }
+        });
+        const result = { raw_candidates: ['A', 'B', 'C'].map(id => ({ id, structurally_valid: true })), all_valid_candidates: ['A', 'B', 'C'].map(makeCandidate), rejected_candidates: [] };
+        const catalog = ctx.buildCanonicalMarketMechanicsCandidateCatalog({
+            result,
+            strategySetups: [],
+            marketPlan: { valid_context: true, market_plan_complete: true },
+            currentPrice: 100,
+            pair: 'AUD/USD'
+        });
+        expect(catalog.search_counts.target_ready_zone_count).toBe(3);
+        expect(catalog.search_counts.live_count).toBe(3);
+        expect(catalog.live_candidates).toHaveLength(3);
+    });
+
+    it('does not authorize a candidate with incomplete target, geometry, path, or confidence evidence', () => {
+        const ctx = getContext();
+        const base = {
+            id: 'incomplete-live', direction: 'BUY', entry_model: 'LIQUIDITY_OB_FVG', execution_model: 'PENDING_LIMIT',
+            market_mechanics_verified: true, market_plan_valid: true, market_plan_poi_valid: true,
+            execution_poi_valid: true, structurally_valid: true, pending_side_eligible: true,
+            pending_limit_side_valid: true, pending_limit_valid: true, trade_qualified: true,
+            TRADE_QUALIFIED: 'YES', model_qualified: true, MODEL_QUALIFIED: 'YES', entry: 95, stop_loss: 90
+        };
+        const targetBlocked = ctx.normalizeMarketMechanicsAuthority({ ...base, tp1: null, pending_limit_geometry_complete: 'NO', qualification_result: 'BLOCKED', primary_blocker: 'NO_STRUCTURAL_TARGET' }, {
+            strategy_mode: 'MARKET_MECHANICS', market_plan: { valid_context: true, market_plan_complete: true }
+        }, 'LIVE');
+        expect(targetBlocked.CANDIDATE_AUTHORITY).toBe('DIAGNOSTIC_ONLY');
+        expect(targetBlocked.QUALIFICATION_BLOCKERS).toContain('NO_STRUCTURAL_TARGET');
+        const pathBlocked = ctx.normalizeMarketMechanicsAuthority({ ...base, tp1: 105, pending_limit_geometry_complete: 'YES', qualification_result: 'PASS', setup_confidence: 72, path_quality: { path_evaluated: 'YES', path_status: 'BLOCKED', path_quality_result: 'FAIL', qualification_blockers: [] } }, {
+            strategy_mode: 'MARKET_MECHANICS', market_plan: { valid_context: true, market_plan_complete: true }
+        }, 'LIVE');
+        expect(pathBlocked.CANDIDATE_AUTHORITY).toBe('DIAGNOSTIC_ONLY');
+        expect(pathBlocked.QUALIFICATION_BLOCKERS).toContain('PATH_BLOCKED');
+    });
 });
 
 describe('Market Mechanics end-to-end qualification authority', () => {
@@ -3981,6 +4028,13 @@ describe('Market Mechanics packet authority', () => {
         trade_qualified: true,
         TRADE_QUALIFIED: 'YES',
         MODEL_QUALIFIED: 'YES',
+        qualification_result: 'PASS',
+        setup_formation_confirmed: true,
+        pending_limit_geometry_complete: 'YES',
+        structural_stop_valid: 'YES',
+        structural_target_valid: 'YES',
+        setup_confidence: 70,
+        path_quality: { path_evaluated: 'YES', path_status: 'CLEAR', path_quality_result: 'PASS', qualification_blockers: [] },
         opportunity_status: 'FRESH_PENDING_TODAY',
         lifecycle_state: 'FRESH_PENDING_TODAY',
         still_actionable_today: true

@@ -6834,6 +6834,25 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
     const executionModel = String(reachabilityContext.executionModel || reachabilityContext.entryModel || reachabilityContext.strategySetup?.execution_model || '').toUpperCase();
     const isPendingLimit = executionModel === 'PENDING_LIMIT' || executionModel === 'FRESH_RETRACEMENT_LIMIT';
     const lifecycleDiagnostics = [];
+    const targetCandidateDiagnostics = sourceTargets.map(c => {
+        const lifecycle = assessTargetLifecycle(c, reachabilityContext.historyCache || {}, { timeframe: c.timeframe });
+        const level = Number(c.level);
+        const directional = direction === 'BUY' ? level > entry : direction === 'SELL' ? level < entry : false;
+        const rr = calculateRRMetrics(direction, entry, stopLoss, level, minimumRR);
+        const rrQualified = directional && (direction === 'BUY' ? level + 1e-9 >= entry + rr.required_reward : level - 1e-9 <= entry - rr.required_reward);
+        return {
+            target_id: c.id || null,
+            source: c.source || c.target_type || null,
+            timeframe: c.timeframe || null,
+            level,
+            lifecycle_state: lifecycle.lifecycle_state,
+            lifecycle_reason: lifecycle.reason,
+            directional,
+            rr: Number.isFinite(rr.actualRR) ? Number(rr.actualRR.toFixed(4)) : null,
+            rr_qualified: rrQualified,
+            candidate_status: !directional ? 'WRONG_DIRECTION' : !lifecycle.eligible ? 'DELIVERED_OR_UNAVAILABLE' : !rrQualified ? 'RR_TOO_LOW' : 'ELIGIBLE'
+        };
+    });
     const targets = sourceTargets
         .map(c => ({ ...c, level: ictRound(Number(c.level), prec), distance_from_entry: ictRound(Math.abs(Number(c.level) - entry), prec) }))
         .filter(c => direction === 'BUY' ? c.level > entry : c.level < entry)
@@ -6887,6 +6906,7 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
         best_target_rr: diagnosticBest?.actual_rr || null,
         best_target_reachability_score: diagnosticBest?.reachability_score || null,
         target_lifecycle: lifecycleDiagnostics,
+        target_candidate_diagnostics: targetCandidateDiagnostics,
         consumed_target_count: lifecycleDiagnostics.filter(t => ['CONSUMED', 'INVALIDATED'].includes(t.lifecycle_state)).length,
         unfulfilled_target_count: lifecycleDiagnostics.filter(t => ['UNFULFILLED', 'PARTIALLY_DELIVERED'].includes(t.lifecycle_state)).length,
         failure_code: !rawSourceTargets.length ? 'TARGET_POOL_EMPTY' : !provenanceValid.length ? 'TARGET_PROVENANCE_INVALID' : !directionalTargets
@@ -11157,7 +11177,12 @@ function applyAdaptiveCandidateToAIResult(aiResult, liveMarketContext) {
     aiResult.delivery_fraction = candidate.delivery_fraction ?? candidate.current_opportunity_relevance?.delivery_fraction ?? null;
     aiResult.remaining_reward_fraction_at_scan = candidate.remaining_reward_fraction_at_scan ?? candidate.current_opportunity_relevance?.remaining_reward_fraction ?? null;
     aiResult.continuation_state = candidate.continuation_state || candidate.current_opportunity_relevance?.continuation_state || null;
-    aiResult.setup_confidence = getDeterministicCandidateConfidence(candidate);
+    const deterministicConfidence = getDeterministicCandidateConfidence(candidate);
+    aiResult.setup_confidence = deterministicConfidence;
+    // The AI response is a projection of the deterministic candidate.  Never
+    // retain a stale/default zero when the live candidate carries its quality
+    // score, and never fabricate a score when the candidate lacks one.
+    aiResult.confidence = Number.isFinite(deterministicConfidence) ? deterministicConfidence : null;
     aiResult.strategy_setup = candidate.strategy_setup || null;
     aiResult.strategy_label = getDisplayStrategyLabel(candidate, candidate.zone_type);
     aiResult.strategy_narrative = {
@@ -11535,6 +11560,9 @@ const MARKET_MECHANICS_BLOCKER_RULES = Object.freeze({
     SETUP_FORMATION_INCOMPLETE: { stage: 'FORMATION', rule: 'Required pre-entry setup-formation evidence is incomplete', next: 'WAIT_FOR_SETUP_FORMATION' },
     ENTRY_MODEL_MISSING: { stage: 'ENTRY_MODEL', rule: 'No complete Market Mechanics entry model is attached', next: 'WAIT_FOR_ENTRY_MODEL' },
     PATH_BLOCKED: { stage: 'PATH', rule: 'Path-quality protection blocks the route to the structural objective', next: 'WAIT_FOR_CLEAR_STRUCTURAL_PATH' },
+    PATH_INCOMPLETE: { stage: 'PATH', rule: 'Path quality was not evaluated for the complete candidate geometry', next: 'WAIT_FOR_CLEAR_STRUCTURAL_PATH' },
+    INVALID_PENDING_LIMIT_GEOMETRY: { stage: 'ENTRY_GEOMETRY', rule: 'The pending-limit entry, stop, target, and side geometry is incomplete', next: 'WAIT_FOR_VALID_ENTRY_GEOMETRY' },
+    DETERMINISTIC_CONFIDENCE_MISSING: { stage: 'AUTHORITY', rule: 'No deterministic setup-quality confidence is attached to the candidate', next: 'WAIT_FOR_DETERMINISTIC_CONFIDENCE' },
     ENTRY_INSIDE_OPPOSING_4H: { stage: 'PATH', rule: 'Entry is inside opposing 4H structure', next: 'WAIT_FOR_CLEAR_STRUCTURAL_PATH' },
     MARKET_DATA_STALE: { stage: 'DATA', rule: 'A required closed-candle or quote timestamp is outside the allowed freshness window', next: 'WAIT_FOR_FRESH_MARKET_DATA' },
     MARKET_DATA_STATUS_UNKNOWN: { stage: 'DATA', rule: 'Market-data freshness validation was not established for the required snapshot', next: 'WAIT_FOR_MARKET_DATA_VALIDATION' },
@@ -11572,13 +11600,18 @@ function resolveMarketMechanicsQualification(candidate = {}, evaluation = {}, co
         ...(Array.isArray(candidate?.qualification_blockers) ? candidate.qualification_blockers : [])
     ].filter(Boolean).map(String);
     const reasons = [...new Set(rawReasons.map(reason => marketMechanicsReasonForContext(reason, dataQuality)))];
+    const pathQuality = candidate?.path_quality || {};
+    const pathStatus = String(candidate?.path_status || pathQuality.path_status || '').toUpperCase();
+    const pathResult = String(candidate?.path_quality_result || pathQuality.path_quality_result || '').toUpperCase();
     const candidatePathBlocked = candidate?.ENTRY_INSIDE_OPPOSING_4H === 'YES'
         || candidate?.entry_inside_opposing_4h === true
-        || candidate?.TRADE_QUALIFIED === 'NO'
-        || candidate?.trade_qualified === false;
+        || pathStatus === 'BLOCKED'
+        || pathResult === 'FAIL'
+        || (Array.isArray(pathQuality.qualification_blockers) && pathQuality.qualification_blockers.includes('PATH_BLOCKED'));
     const pathReason = candidate?.ENTRY_INSIDE_OPPOSING_4H === 'YES' || candidate?.entry_inside_opposing_4h === true
         ? 'ENTRY_INSIDE_OPPOSING_4H'
         : candidatePathBlocked ? 'PATH_BLOCKED' : null;
+    const explicitTradeFailed = candidate?.TRADE_QUALIFIED === 'NO' || candidate?.trade_qualified === false;
     const sideReason = isPendingLimitExecutionModel(candidate?.execution_model || candidate?.entry_model)
         && evaluation?.metrics?.pending_limit_valid === false
         ? candidate?.direction === 'BUY' ? 'BUY_LIMIT_ENTRY_NOT_BELOW_CURRENT' : candidate?.direction === 'SELL' ? 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT' : 'INVALID_ENTRY_SIDE'
@@ -11592,6 +11625,7 @@ function resolveMarketMechanicsQualification(candidate = {}, evaluation = {}, co
         lifecycleReason,
         ...nonDataReasons.filter(reason => reason !== 'MARKET_DATA_STATUS_UNKNOWN'),
         pathReason,
+        explicitTradeFailed && !candidatePathBlocked ? 'QUALIFICATION_BLOCKED' : null,
         sideReason,
         ...nonDataReasons.filter(reason => reason === 'MARKET_DATA_STATUS_UNKNOWN'),
         !Number.isFinite(Number(candidate?.entry)) ? 'NO_VALID_ENTRY_PRICE' : null,
@@ -11601,7 +11635,7 @@ function resolveMarketMechanicsQualification(candidate = {}, evaluation = {}, co
     const rawPrimary = orderedReasons[0] || null;
     const primary = rawPrimary ? marketMechanicsCanonicalBlocker(rawPrimary) : (evaluation?.valid && !candidatePathBlocked ? 'NONE' : 'QUALIFICATION_BLOCKED');
     const meta = MARKET_MECHANICS_BLOCKER_RULES[primary] || { stage: 'AUTHORITY', rule: 'The deterministic candidate did not satisfy a required Market Mechanics stage', next: 'WAIT_FOR_QUALIFICATION' };
-    const blocked = !evaluation?.valid || Boolean(candidatePathBlocked) || Boolean(rawPrimary);
+    const blocked = !evaluation?.valid || Boolean(candidatePathBlocked) || explicitTradeFailed || Boolean(rawPrimary);
     const stage = blocked ? meta.stage : 'AUTHORITY';
     const rule = blocked
         ? (rawPrimary && !MARKET_MECHANICS_BLOCKER_RULES[primary] ? rawPrimary : meta.rule)
@@ -12371,7 +12405,10 @@ function calculateCandidateConfidence(candidate, context = {}) {
 }
 
 function getDeterministicCandidateConfidence(candidate) {
-    const value = Number(candidate?.quality?.final_confidence ?? candidate?.confidence_breakdown?.final_score);
+    const value = Number(candidate?.quality?.final_confidence
+        ?? candidate?.confidence_breakdown?.final_score
+        ?? candidate?.setup_confidence
+        ?? candidate?.confidence);
     return Number.isFinite(value) ? value : NaN;
 }
 
@@ -14232,8 +14269,15 @@ function normalizeMarketMechanicsAuthority(candidate = {}, source = {}, requeste
             || (candidate.POI_VALID == null && candidate.poi_valid == null && !!(candidate.strategy_setup?.execution_zone || candidate.execution_zone));
     const marketPlanPoiValid = explicitPlanPoiValid != null
         ? isYes(explicitPlanPoiValid)
-        : planValid;
+        : planValid && !!(candidate.parent_poi || marketPlan?.active_poi || marketPlan?.primary_poi);
     const entryModel = candidate.ENTRY_MODEL || candidate.entry_model || candidate.strategy_setup?.entry_model || null;
+    const formationConfirmed = candidate.formation_confirmed === true
+        || candidate.setup_formation_confirmed === true
+        || candidate.execution_confirmed === true
+        || candidate.strategy_setup?.formation_confirmed === true
+        || candidate.strategy_setup?.setup_formation_confirmed === true
+        || candidate.strategy_setup?.execution_confirmed === true;
+    const formationMissing = requestedAuthority === 'LIVE' && !formationConfirmed;
     const mechanicallyVerified = candidate.market_mechanics_verified === true
         || candidate.strategy_setup?.market_mechanics_verified === true
         || candidate.market_mechanics?.model_mechanics_complete === true;
@@ -14242,13 +14286,41 @@ function normalizeMarketMechanicsAuthority(candidate = {}, source = {}, requeste
     const pendingLimitValid = pendingLimitEvidence == null
         ? true
         : pendingLimitEvidence !== false && String(pendingLimitEvidence).toUpperCase() !== 'NO';
+    const qualificationResult = String(candidate.qualification_result ?? candidate.qualification?.qualification_result ?? '').toUpperCase();
+    const qualificationBlocked = qualificationResult === 'BLOCKED';
+    const qualificationPassed = qualificationResult === 'PASS';
+    const explicitStopValid = candidate.structural_stop_valid ?? candidate.stop_valid ?? candidate.evaluation?.metrics?.stop_valid;
+    const explicitTargetValid = candidate.structural_target_valid ?? candidate.target_valid ?? candidate.evaluation?.metrics?.target_valid;
+    const explicitGeometryValid = candidate.pending_limit_geometry_complete ?? candidate.geometry_complete;
+    const stopBlocked = explicitStopValid === false || String(explicitStopValid ?? '').toUpperCase() === 'NO'
+        || !Number.isFinite(Number(candidate.stop_loss));
+    const targetBlocked = explicitTargetValid === false || String(explicitTargetValid ?? '').toUpperCase() === 'NO'
+        || !Number.isFinite(Number(candidate.tp1 ?? candidate.take_profit_1));
+    const targetLifecycle = String(candidate.target_lifecycle_state
+        || candidate.target_lifecycle?.lifecycle_state
+        || candidate.target_map?.[0]?.target_lifecycle_state
+        || '').toUpperCase();
+    const targetDelivered = ['DELIVERED', 'COMPLETED', 'CONSUMED', 'INVALIDATED', 'EXPIRED'].includes(targetLifecycle);
+    const geometryBlocked = explicitGeometryValid === false || String(explicitGeometryValid ?? '').toUpperCase() === 'NO';
+    const pathQuality = candidate.path_quality || {};
+    const entryInsideOpposing = candidate.ENTRY_INSIDE_OPPOSING_4H === 'YES' || candidate.entry_inside_opposing_4h === true;
+    const pathStatus = String(candidate.path_status || pathQuality.path_status || '').toUpperCase();
+    const pathResult = String(candidate.path_quality_result || pathQuality.path_quality_result || '').toUpperCase();
+    const pathIncomplete = (candidate.path_evaluated === 'NO' || pathQuality.path_evaluated === 'NO')
+        || (requestedAuthority === 'LIVE' && !candidate.path_quality && !candidate.path_status && !candidate.path_quality_result);
+    const pathBlocked = entryInsideOpposing || pathStatus === 'BLOCKED' || pathResult === 'FAIL'
+        || (Array.isArray(pathQuality.qualification_blockers) && pathQuality.qualification_blockers.includes('PATH_BLOCKED'));
+    const confidence = getDeterministicCandidateConfidence(candidate);
+    const confidenceMissing = requestedAuthority === 'LIVE' && !Number.isFinite(confidence);
+    const lifecycleState = String(candidate.lifecycle_state || candidate.opportunity_status || '').toUpperCase();
+    const lifecycleTerminal = ['CONSUMED', 'FILLED', 'EXPIRED', 'INVALIDATED', 'DELIVERED', 'MISSED', 'INITIAL_PENDING_SIDE_INVALID'].includes(lifecycleState)
+        || candidate.entry_crossed_after_signal === true || String(candidate.entry_crossed_after_signal || '').toUpperCase() === 'YES'
+        || candidate.entry_consumed === true || String(candidate.entry_consumed || '').toUpperCase() === 'YES';
     const modelQualified = explicitModel != null
         ? isYes(explicitModel) && planValid && marketPlanPoiValid && poiValid && !!entryModel && (!pendingLimit || pendingLimitValid)
         : mechanicallyVerified && planValid && marketPlanPoiValid && poiValid && !!entryModel && (!pendingLimit || pendingLimitValid);
-    const pathBlocked = explicitTrade != null && isNo(explicitTrade);
     const contradictoryAuthority = isNo(explicitModel) && isYes(explicitTrade);
-    const qualificationBlocked = String(candidate.qualification_result || candidate.qualification?.qualification_result || '').toUpperCase() === 'BLOCKED';
-    const entryInsideOpposing = candidate.ENTRY_INSIDE_OPPOSING_4H === 'YES' || candidate.entry_inside_opposing_4h === true;
+    const explicitTradeBlocked = explicitTrade != null && isNo(explicitTrade);
     const blockers = [...new Set([
         ...(Array.isArray(candidate.QUALIFICATION_BLOCKERS) ? candidate.QUALIFICATION_BLOCKERS : []),
         ...(Array.isArray(candidate.qualification_blockers) ? candidate.qualification_blockers : []),
@@ -14262,14 +14334,33 @@ function normalizeMarketMechanicsAuthority(candidate = {}, source = {}, requeste
         ...(authorityConflict ? ['AUTHORITY_MODE_CONFLICT'] : []),
         ...(entryInsideOpposing ? ['ENTRY_INSIDE_OPPOSING_4H'] : []),
         ...(pathBlocked ? ['PATH_BLOCKED'] : []),
-        ...(qualificationBlocked ? [candidate.primary_blocker || candidate.qualification?.primary_blocker || 'QUALIFICATION_BLOCKED'] : [])
+        ...(pathIncomplete ? ['PATH_INCOMPLETE'] : []),
+        ...(explicitTradeBlocked && !pathBlocked ? ['QUALIFICATION_BLOCKED'] : []),
+        ...(qualificationBlocked ? [candidate.primary_blocker || candidate.qualification?.primary_blocker || 'QUALIFICATION_BLOCKED'] : []),
+        ...(formationMissing ? ['SETUP_FORMATION_INCOMPLETE'] : []),
+        ...(stopBlocked ? ['NO_STRUCTURAL_STOP'] : []),
+        ...(targetBlocked ? ['NO_STRUCTURAL_TARGET'] : []),
+        ...(targetDelivered ? ['SETUP_ALREADY_COMPLETED'] : []),
+        ...(lifecycleTerminal ? ['ENTRY_ALREADY_CONSUMED'] : []),
+        ...(geometryBlocked ? ['INVALID_PENDING_LIMIT_GEOMETRY'] : []),
+        ...(confidenceMissing ? ['DETERMINISTIC_CONFIDENCE_MISSING'] : [])
     ])];
     const live = requestedAuthority === 'LIVE'
         && planValid && marketPlanPoiValid && poiValid && modelQualified && (!pendingLimit || pendingLimitValid)
         && !pathBlocked && !entryInsideOpposing
+        && !pathIncomplete
         && !qualificationBlocked
+        && (!qualificationResult || qualificationPassed)
+        && !formationMissing
+        && !stopBlocked
+        && !targetBlocked
+        && !targetDelivered
+        && !lifecycleTerminal
+        && !geometryBlocked
+        && !confidenceMissing
         && !contradictoryAuthority
         && !authorityConflict
+        && !explicitTradeBlocked
         && !isNo(candidate.trade_qualified) && !isNo(candidate.TRADE_QUALIFIED);
     return {
         ...candidate,
@@ -14288,6 +14379,10 @@ function normalizeMarketMechanicsAuthority(candidate = {}, source = {}, requeste
         TRADE_QUALIFIED: live ? 'YES' : 'NO',
         trade_qualified: live,
         pending_limit_valid: pendingLimitValid,
+        confidence: Number.isFinite(confidence) ? confidence : null,
+        PATH_STATUS: pathStatus || (pathIncomplete ? 'INCOMPLETE' : pathBlocked ? 'BLOCKED' : 'UNKNOWN'),
+        PATH_EVALUATED: pathIncomplete ? 'NO' : 'YES',
+        PATH_QUALITY_RESULT: pathResult || (pathIncomplete ? 'INCOMPLETE' : pathBlocked ? 'FAIL' : 'UNKNOWN'),
         QUALIFICATION_BLOCKERS: blockers
     };
 }
@@ -14396,13 +14491,21 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
     const formingStates = states.filter(state => !historicalStates.includes(state));
     const partitioned = partitionMarketMechanicsCandidateResult(result);
     const recordsById = new Map();
+    const mergeCandidateRecord = (previous, current) => ({
+        ...(previous || {}),
+        ...(current || {}),
+        quality: { ...(previous?.quality || {}), ...(current?.quality || {}) },
+        confidence_breakdown: { ...(previous?.confidence_breakdown || {}), ...(current?.confidence_breakdown || {}) },
+        evaluation: { ...(previous?.evaluation || {}), ...(current?.evaluation || {}) },
+        qualification: { ...(previous?.qualification || {}), ...(current?.qualification || {}) }
+    });
     for (const candidate of [
         ...partitioned.raw_candidates,
         ...partitioned.all_rejected_candidates,
         ...(result.all_valid_candidates || result.valid_candidates || [])
     ]) {
         const id = candidate?.id || candidate?.candidate_id || `candidate-${recordsById.size + 1}`;
-        if (!recordsById.has(id)) recordsById.set(id, candidate);
+        recordsById.set(id, mergeCandidateRecord(recordsById.get(id), candidate));
     }
     const candidateRecords = [...recordsById.values()];
     const isYes = value => value === true || String(value || '').toUpperCase() === 'YES';
@@ -14438,9 +14541,18 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
     const reachableCandidates = untouchedCandidates.filter(candidate =>
         candidate.entry_reachable_today !== false && candidate.reachability?.reachable !== false);
     const stopReadyCandidates = reachableCandidates.filter(candidate =>
-        isFiniteNumber(candidate.stop_loss) || isFiniteNumber(candidate.proposed_stop));
+        (candidate.structural_stop_valid !== false && String(candidate.structural_stop_valid ?? '').toUpperCase() !== 'NO')
+        && (isFiniteNumber(candidate.stop_loss) || isFiniteNumber(candidate.proposed_stop)));
     const targetReadyCandidates = stopReadyCandidates.filter(candidate =>
-        isFiniteNumber(candidate.tp1) || isFiniteNumber(candidate.proposed_objective));
+        (candidate.structural_target_valid !== false && String(candidate.structural_target_valid ?? '').toUpperCase() !== 'NO')
+        && !['DELIVERED', 'COMPLETED', 'CONSUMED', 'INVALIDATED', 'EXPIRED'].includes(String(candidate.target_lifecycle_state || candidate.target_lifecycle?.lifecycle_state || '').toUpperCase())
+        && (isFiniteNumber(candidate.tp1) || isFiniteNumber(candidate.proposed_objective)));
+    const pathReadyCandidates = targetReadyCandidates.filter(candidate => {
+        const path = candidate.path_quality || {};
+        const status = String(candidate.path_status || path.path_status || '').toUpperCase();
+        const result = String(candidate.path_quality_result || path.path_quality_result || '').toUpperCase();
+        return status !== 'BLOCKED' && result !== 'FAIL';
+    });
     const blockerPrecedence = [
         'MARKET_DATA_STALE', 'MARKET_DATA_INCOMPLETE', 'INVALID_MARKET_DATA',
         'MARKET_PLAN_INVALID', 'MARKET_PLAN_POI_INVALID', 'EXECUTION_POI_INVALID',
@@ -14487,6 +14599,7 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
         reachable_zone_count: reachableCandidates.length,
         stop_ready_zone_count: stopReadyCandidates.length,
         target_ready_zone_count: targetReadyCandidates.length,
+        path_ready_zone_count: pathReadyCandidates.length,
         forming_count: formingStates.length,
         live_count: authority.live_candidates.length,
         historical_count: historicalCandidateIds.size,
@@ -17880,6 +17993,9 @@ function build4HPathQualityAudit(candidate = {}, structureRecords = [], asOfMs =
     const distanceR = nearest && !entryInside && risk > 0 ? nearest.distance / risk : nearest && entryInside ? 0 : null;
     const penalty = fourHPathPenalty(distanceR, entryInside);
     const blockers = entryInside ? ['ENTRY_INSIDE_OPPOSING_4H'] : [];
+    const pathEvaluated = Number.isFinite(entry) && Number.isFinite(stop) && Number.isFinite(tp1) && risk > 0;
+    const pathStatus = !pathEvaluated ? 'INCOMPLETE' : entryInside ? 'BLOCKED' : barrierBeforeTp1 ? 'CONSTRAINED' : 'CLEAR';
+    const pathQualityResult = !pathEvaluated ? 'INCOMPLETE' : entryInside ? 'FAIL' : barrierBeforeTp1 ? 'PASS_WITH_PENALTY' : 'PASS';
     return {
         entry_inside_opposing_4h: entryInside ? 'YES' : 'NO',
         opposing_4h_barrier_before_tp1: barrierBeforeTp1 ? 'YES' : 'NO',
@@ -17888,6 +18004,9 @@ function build4HPathQualityAudit(candidate = {}, structureRecords = [], asOfMs =
         nearest_opposing_4h_zone: nearest ? `${nearest.zone.low}-${nearest.zone.high}` : 'NONE',
         barrier_distance_r: Number.isFinite(distanceR) ? Number(distanceR.toFixed(4)) : null,
         clear_path_to_tp1: barrierBeforeTp1 ? 'NO' : 'YES',
+        path_evaluated: pathEvaluated ? 'YES' : 'NO',
+        path_status: pathStatus,
+        path_quality_result: pathQualityResult,
         path_quality_penalty: penalty,
         path_quality_distance_bin: fourHPathDistanceBin(distanceR, entryInside),
         trade_qualified: blockers.length === 0,
@@ -17911,6 +18030,9 @@ function apply4HPathQualityToCandidate(candidate = {}, structureRecords = [], as
         nearest_opposing_4h_zone: path.nearest_opposing_4h_zone,
         barrier_distance_r: path.barrier_distance_r,
         clear_path_to_tp1: path.clear_path_to_tp1,
+        path_evaluated: path.path_evaluated,
+        path_status: path.path_status,
+        path_quality_result: path.path_quality_result,
         path_quality_penalty: path.path_quality_penalty,
         trade_qualified: path.trade_qualified && candidate.trade_qualified !== false,
         qualification_blockers: blockers,
@@ -18531,7 +18653,8 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             + ' UNTOUCHED_PENDING_COUNT=' + String(searchCounts.untouched_pending_count ?? 'NONE')
             + ' REACHABLE_ZONE_COUNT=' + String(searchCounts.reachable_zone_count ?? 'NONE')
             + ' STOP_READY_ZONE_COUNT=' + String(searchCounts.stop_ready_zone_count ?? 'NONE')
-            + ' TARGET_READY_ZONE_COUNT=' + String(searchCounts.target_ready_zone_count ?? 'NONE'));
+            + ' TARGET_READY_ZONE_COUNT=' + String(searchCounts.target_ready_zone_count ?? 'NONE')
+            + ' PATH_READY_ZONE_COUNT=' + String(searchCounts.path_ready_zone_count ?? 'NONE'));
         const modelFunnel = source.market_mechanics?.model_funnel || {};
         const modelStatus = Object.values(modelFunnel).map(row => {
             const blockers = Object.entries(row.blockers || {}).sort((a, b) => b[1] - a[1]).map(([code, count]) => `${code}:${count}`).join(',');
@@ -18589,6 +18712,11 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
                 'TP1=' + rawTextPacketFormatNumber(candidate.tp1, precision),
                 'TP2=' + rawTextPacketFormatNumber(candidate.tp2, precision),
                 'TP3=' + rawTextPacketFormatNumber(candidate.tp3, precision),
+                'CONFIDENCE=' + (Number.isFinite(getDeterministicCandidateConfidence(candidate)) ? `${getDeterministicCandidateConfidence(candidate)}%` : 'NONE'),
+                'TP1_SOURCE=' + String(candidate.tp1_source || candidate.target_map?.[0]?.primary_target_source || 'NONE'),
+                'TP1_STATUS=' + String(candidate.target_map?.[0]?.target_lifecycle_state || candidate.target_lifecycle_state || 'UNKNOWN'),
+                'TP2_SOURCE=' + String(candidate.target_map?.[1]?.primary_target_source || 'NONE'),
+                'TP3_SOURCE=' + String(candidate.target_map?.[2]?.primary_target_source || 'NONE'),
                 'AUTHORITY_MODE=MARKET_MECHANICS',
                 'CANDIDATE_AUTHORITY=LIVE',
                 'MARKET_PLAN_VALID=YES',
@@ -18596,6 +18724,12 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
                 'MODEL_QUALIFIED=YES',
                 'TRADE_QUALIFIED=YES',
                 'CLEAR_PATH=' + String(candidate.CLEAR_PATH_TO_TP1 || (candidate.clear_path_to_tp1 ? 'YES' : 'NO')),
+                'PATH_STATUS=' + String(candidate.PATH_STATUS || candidate.path_status || candidate.path_quality?.path_status || 'UNKNOWN'),
+                'PATH_EVALUATED=' + String(candidate.PATH_EVALUATED || candidate.path_evaluated || candidate.path_quality?.path_evaluated || 'NO'),
+                'PATH_QUALITY_RESULT=' + String(candidate.PATH_QUALITY_RESULT || candidate.path_quality_result || candidate.path_quality?.path_quality_result || 'UNKNOWN'),
+                'TARGET_VALID=' + String(candidate.target_valid ?? candidate.structural_target_valid ?? 'UNKNOWN'),
+                'STOP_VALID=' + String(candidate.stop_valid ?? candidate.structural_stop_valid ?? 'UNKNOWN'),
+                'QUALIFICATION_RESULT=' + String(candidate.qualification_result || candidate.qualification?.qualification_result || 'UNKNOWN'),
                 'BLOCKERS=' + (candidate.QUALIFICATION_BLOCKERS?.join('|') || 'NONE')
             ].join(' '));
         }
