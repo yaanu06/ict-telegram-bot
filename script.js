@@ -8214,6 +8214,7 @@ function marketMechanicsEntryChronology(setup, context = {}) {
 }
 
 function buildMarketMechanicsStrategySetups(args = {}) {
+    const precision = getMarketSettings(args.pair || pair, args.symbolMetadata || {}).prec;
     const cutoff = Number(args.marketPlan?.data_cutoff_ms ?? args.asOfMs);
     const scopedHistoryCache = Number.isFinite(cutoff)
         ? Object.fromEntries(Object.entries(args.historyCache || {}).map(([timeframe, candles]) => [timeframe, marketMechanicsClosed(candles, timeframe, cutoff)]))
@@ -8261,7 +8262,7 @@ function buildMarketMechanicsStrategySetups(args = {}) {
             zone.pending_entry = pendingGeometry.entry;
             zone.pending_reference_price = pendingGeometry.reference;
             crtSetups.push({
-                id: `MARKET_PLAN:${model}:${timeframe}:${event.direction}:${firstKnowable}:${ictRound(low, prec)}:${ictRound(high, prec)}:${event.ref || 'NO_REF'}`,
+                id: `MARKET_PLAN:${model}:${timeframe}:${event.direction}:${firstKnowable}:${ictRound(low, precision)}:${ictRound(high, precision)}:${event.ref || 'NO_REF'}`,
                 primary: 'CRT', label: 'CRT', direction: event.direction, timeframe,
                 setup_timeframe: timeframe, execution_timeframe: timeframe === '4H' ? '1H' : '5M',
                 event_time: firstKnowable, execution_event_time: conservative ? confirmationTime : firstKnowable,

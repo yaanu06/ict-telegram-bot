@@ -3879,6 +3879,30 @@ describe('canonical Market Mechanics production routing', () => {
         expect(shortlist.every(item => item.suggested_entry >= item.entry_zone_low && item.suggested_entry <= item.entry_zone_high)).toBe(true);
     });
 
+    it('uses defined symbol precision while building CRT setup IDs on the production detector path', () => {
+        const ctx = getContext();
+        const firstKnowable = Date.parse('2026-10-20T05:00:00Z');
+        ctx.testCrtEvents = [{
+            detected: true, invalidated: false, direction: 'SELL', range_low: 4123.53,
+            range_high: 4146.89, sweep_extreme: 4146.89, first_knowable_time: firstKnowable,
+            event_time: firstKnowable, ref: 'CRT:SELL:PRODUCTION-REGRESSION'
+        }];
+        ctx.testCrtCalls = 0;
+        vm.runInContext('detectCRTEvents = () => { testCrtCalls += 1; return testCrtEvents; }; detectConfirmedStructuralBreak = () => null;', ctx);
+        const bar = { t: firstKnowable, o: 4140, h: 4147, l: 4123, c: 4130, is_closed: true };
+        const result = ctx.buildMarketMechanicsStrategySetups({
+            pair: 'XAU/USD', price: 4120.66,
+            historyCache: { '4H': [bar], '1H': [bar], '15M': [], '5M': [] },
+            marketPlan: { valid_context: true, direction: 'SELL', data_cutoff_ms: firstKnowable + 4 * 3600000,
+                active_poi: { id: 'PARENT', type: 'MSNR', direction: 'SELL', timeframe: '4H', low: 4181, high: 4186, primary_eligible: true } },
+            targets: { all: [{ direction: 'SELL', level: 4100, source: 'SELL_SIDE_LIQUIDITY' }] },
+            zones: [], symbolMetadata: { asset_class: 'METAL', price_precision: 2 },
+            asOfMs: firstKnowable + 4 * 3600000
+        });
+        expect(Array.isArray(result)).toBe(true);
+        expect(ctx.testCrtCalls).toBeGreaterThan(0);
+    });
+
     it('rejects LIVE authority when the serialized entry belongs to a different execution zone', () => {
         const ctx = getContext();
         const normalized = ctx.normalizeMarketMechanicsAuthority({
