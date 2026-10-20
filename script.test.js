@@ -1612,8 +1612,9 @@ describe('fresh execution downstream validation', () => {
 
     it('keeps the effective stop floor at 75% of the configured ATR rule', () => {
         const ctx = getContext();
-        expect(ctx.getPreferredStopAtrMultiplier({ minSLMultiplier: 2 })).toBe(1.5);
-        expect(ctx.getPreferredStopAtrMultiplier({ minSLMultiplier: 1.5 })).toBe(1.125);
+        expect(ctx.getPreferredStopAtrMultiplier({ minSLMultiplier: 2 })).toBe(2);
+        expect(ctx.getPreferredStopAtrMultiplier({ minSLMultiplier: 1.5 })).toBe(1.5);
+        expect(ctx.getPreferredStopAtrMultiplier({ minSLMultiplier: 5 })).toBe(3);
     });
 
     it('keeps a structurally valid 2.1 pip FX stop as tight quality, not extreme', () => {
@@ -7032,14 +7033,14 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
 
     it('separates structural validation from READY execution suitability for a supported FVG', () => {
         const metadata = { asset_class: 'FOREX', tick_size: 0.01, price_precision: 2, minimum_price_distance: 0.01, maximum_spread: 0.25 };
-        const { result } = makeRawFvgExecutionCase({ gapHigh: 155, entry: 152.5, stop: 150, symbolMetadata: metadata });
+        const { result } = makeRawFvgExecutionCase({ gapHigh: 157, entry: 153.5, stop: 150, symbolMetadata: metadata });
         expect(result.status).toBe('VALIDATED');
         expect(result.execution_risk.status).toBe('READY');
         expect(result.execution_risk.execution_ready).toBe(true);
         expect(result.execution_ready).toBe(true);
         expect(result.execution_risk.structural_anchor_type).toBe('ZONE_FAR_EDGE');
         expect(result.execution_risk.stop_execution_mode).toBe('MODEL_DEFINED');
-        expect(result.execution_risk.risk_distance).toBe(2.5);
+        expect(result.execution_risk.risk_distance).toBe(3.5);
     });
 
     it('keeps a structurally valid but volatility-fragile stop out of READY status', () => {
@@ -7058,7 +7059,7 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
     it('reports UNKNOWN execution readiness when quote or spread evidence is unavailable', () => {
         const metadata = { asset_class: 'FOREX', tick_size: 0.01, price_precision: 2, minimum_price_distance: 0.01, maximum_spread: 0.25 };
         const { result } = makeRawFvgExecutionCase({
-            gapHigh: 155, entry: 152.5, stop: 150, symbolMetadata: metadata,
+            gapHigh: 157, entry: 153.5, stop: 150, symbolMetadata: metadata,
             quoteFreshness: 'UNKNOWN', quoteOverrides: { bid: null, ask: null, spread: null }
         });
         expect(result.status).toBe('VALIDATED');
@@ -11667,7 +11668,7 @@ describe('live AI market context and prompt', () => {
             price: 1.10100,
             historyCache: trendCache('up', 1.08000, 0.00030),
             zones: [
-                { type: 'OB', direction: 'BUY', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 1.09900, high: 1.10000, freshness: 'FRESH' }
+                { type: 'OB', direction: 'BUY', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 1.09800, high: 1.10000, freshness: 'FRESH' }
             ],
             targetCandidates: {
                 buy: [
@@ -11738,9 +11739,9 @@ describe('live AI market context and prompt', () => {
     it('keeps adaptive setup construction pair-scale independent', () => {
         const ctx = getContext();
         const cases = [
-            { pair: 'EUR/USD', direction: 'BUY', price: 1.10100, low: 1.09900, high: 1.10000, min: 0.00030, max: 0.01000, step: 0.00030, targets: [1.10400, 1.10500, 1.10600] },
-            { pair: 'GBP/JPY', direction: 'SELL', price: 190.300, low: 190.500, high: 190.700, min: 0.100, max: 2.000, step: 0.050, targets: [189.900, 189.700, 189.500] },
-            { pair: 'XAU/USD', direction: 'BUY', price: 4382.00, low: 4375.00, high: 4380.00, min: 3.00, max: 30.00, step: 1.00, targets: [4395.00, 4405.00, 4415.00] },
+            { pair: 'EUR/USD', direction: 'BUY', price: 1.10100, low: 1.09800, high: 1.10000, min: 0.00030, max: 0.01000, step: 0.00030, targets: [1.10400, 1.10500, 1.10600] },
+            { pair: 'GBP/JPY', direction: 'SELL', price: 190.300, low: 190.500, high: 190.750, min: 0.100, max: 2.000, step: 0.050, targets: [189.900, 189.700, 189.500] },
+            { pair: 'XAU/USD', direction: 'BUY', price: 4382.00, low: 4373.00, high: 4380.00, min: 3.00, max: 30.00, step: 1.00, targets: [4395.00, 4405.00, 4415.00] },
             { pair: 'BTC/USD', direction: 'SELL', price: 65450, low: 65500, high: 65700, min: 30, max: 3000, step: 30, targets: [64000, 63500, 63000] }
         ];
 
@@ -11972,7 +11973,7 @@ describe('live AI market context and prompt', () => {
     it('valid candidates pass final evaluator with the same deterministic context', () => {
         const ctx = getContext();
         const historyCache = trendCache('up', 1.08000, 0.00030);
-        const zones = [{ type: 'FVG', direction: 'BUY', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 1.09900, high: 1.10000, freshness: 'FRESH' }];
+        const zones = [{ type: 'FVG', direction: 'BUY', timeframe: '1H', origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, low: 1.09800, high: 1.10000, freshness: 'FRESH' }];
         const riskConstraints = { minimum_rr: 2.5, minimum_sl_distance: 0.00030, maximum_sl_distance: 0.01000, atr_rule_reference: 0.00030 };
         const structure = { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } };
         const deterministicContext = ctx.buildDeterministicValidationContext({
@@ -12877,7 +12878,7 @@ describe('engine contract completion', () => {
         const result = ctx.buildAdaptiveSetupCandidates({
             pair: 'EUR/USD', price: 1.102, historyCache: { '4H': data, '1H': data, '1D': data, '15M': data, '5M': data },
             zones: [{ type: 'FVG', direction: 'BUY', timeframe: '1H', origin: 'STRUCTURAL',
-                low: 1.1, high: 1.101, freshness: 'FRESH', primary_eligible: true }],
+                low: 1.0995, high: 1.1015, freshness: 'FRESH', primary_eligible: true }],
             targetCandidates: { buy: [{ direction: 'BUY', level: 1.11, source: 'SWING_HIGH', origin: 'STRUCTURAL' }] },
             riskConstraints: { minimum_rr: 2.5 },
             structure: { '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } }

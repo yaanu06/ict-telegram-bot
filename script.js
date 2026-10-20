@@ -784,11 +784,19 @@ function getMarketSettings(p, metadata = {}) {
 }
 
 function getPreferredStopAtrMultiplier(settings = {}) {
+    // The old implementation applied a 0.75 factor and then capped at 1.5,
+    // which silently made the metal floor effectively 1.5 ATR instead of
+    // the configured 2.0 ATR. That is where most of the "stop hit on
+    // every setup" behavior came from, because normal wicks through the
+    // entry zone were wide enough to trigger the shrunken stop.
+    // Honor the full configured minSLMultiplier up to a 3.0 ATR ceiling.
+    // Because minSLMultiplier is defined per asset class in
+    // getMarketSettings(), this automatically applies to every supported
+    // pair (metals -> 2.0 ATR, crypto -> 2.0 ATR, FX -> 1.5 ATR,
+    // equity/index -> 1.5 ATR).
     const configured = Number(settings.minSLMultiplier);
-    // Keep structural invalidation authoritative, but leave more room for
-    // ordinary volatility. The old 50% reduction made metal stops especially
-    // fragile: the configured 2 ATR floor became only 1 ATR in production.
-    return Math.max(0.75, Math.min(1.5, (Number.isFinite(configured) && configured > 0 ? configured : 1.5) * 0.75));
+    const base = Number.isFinite(configured) && configured > 0 ? configured : 1.5;
+    return Math.max(0.75, Math.min(3.0, base));
 }
 
 function getPrec(p, metadata = {}) { return getMarketSettings(p, metadata).prec; }
@@ -7867,13 +7875,23 @@ function buildMarketMechanicsPlan({ historyCache = {}, price = null, structure =
     const internalDirection = marketMechanicsDirectionalContext(scopedStructure?.['1H']);
     const dailyDirection = marketMechanicsDirectionalContext(scopedStructure?.['1D']);
     const bias = htfTrend || dailyDirection;
-    const biasName = bias === 'BUY' ? 'BULLISH' : bias === 'SELL' ? 'BEARISH' : 'NEUTRAL';
+    // A confirmed 4H swing range is a legitimate structure even when the
+    // structural bias is MIXED or NEUTRAL. The previous gate required BOTH
+    // a directional bias AND a range, which discarded every range-bound or
+    // transition market on every pair. Derive a working direction from the
+    // dealing-range position so location setups can still form; a genuine
+    // directional bias, when present, still overrides this fallback.
+    const rangePositionBias = Number.isFinite(position)
+        ? (position <= 0.34 ? 'BUY' : position >= 0.66 ? 'SELL' : null)
+        : null;
+    const effectiveBias = bias || rangePositionBias;
+    const biasName = effectiveBias === 'BUY' ? 'BULLISH' : effectiveBias === 'SELL' ? 'BEARISH' : 'NEUTRAL';
     let narrative = 'UNRESOLVED';
-    if (bias === 'BUY') narrative = internalDirection === 'SELL' ? 'PULLBACK' : internalDirection === 'BUY' ? 'CONTINUATION' : 'UNRESOLVED';
-    if (bias === 'SELL') narrative = internalDirection === 'BUY' ? 'PULLBACK' : internalDirection === 'SELL' ? 'CONTINUATION' : 'UNRESOLVED';
+    if (effectiveBias === 'BUY') narrative = internalDirection === 'SELL' ? 'PULLBACK' : internalDirection === 'BUY' ? 'CONTINUATION' : 'UNRESOLVED';
+    if (effectiveBias === 'SELL') narrative = internalDirection === 'BUY' ? 'PULLBACK' : internalDirection === 'SELL' ? 'CONTINUATION' : 'UNRESOLVED';
     if (biasName === 'NEUTRAL') narrative = validRange ? 'RANGE' : 'UNRESOLVED';
     const liquidity = buildMarketMechanicsLiquidityMap({ historyCache, price, structure: scopedStructure, targetCandidates, marketContext, asOfMs, pairLocal, symbolMetadata });
-    const targetDirection = bias || null;
+    const targetDirection = effectiveBias || null;
     const primaryDraw = targetDirection
         ? (targetDirection === 'BUY' ? liquidity.buy_side : liquidity.sell_side).filter(pool => targetDirection === 'BUY' ? pool.price > Number(price) : pool.price < Number(price))[0] || null
         : null;
@@ -7958,19 +7976,21 @@ function buildMarketMechanicsPlan({ historyCache = {}, price = null, structure =
     ].filter(Boolean);
     const planBlockers = [];
     if (!validRange) planBlockers.push('NO_ACTIVE_SWING_RANGE');
-    if (!bias) planBlockers.push('NARRATIVE_UNRESOLVED');
+    if (!effectiveBias) planBlockers.push('NARRATIVE_UNRESOLVED');
     if (!primaryPoi) planBlockers.push('NO_ELIGIBLE_PARENT_POI');
-    const planContextValid = validRange && Boolean(bias);
+    const planContextValid = validRange && Boolean(effectiveBias);
     const planComplete = planContextValid && Boolean(primaryPoi);
-    const failedStage = planComplete ? null : !validRange ? 'HTF_STRUCTURE' : !bias ? 'MARKET_NARRATIVE' : 'MARKET_PLAN_POI';
+    const failedStage = planComplete ? null : !validRange ? 'HTF_STRUCTURE' : !effectiveBias ? 'MARKET_NARRATIVE' : 'MARKET_PLAN_POI';
     const failedRule = planComplete ? null : !validRange
         ? 'A confirmed active 4H swing range is required'
-        : !bias ? 'No directional HTF hypothesis is confirmed; POIs remain diagnostic only'
+        : !effectiveBias ? 'No directional HTF hypothesis is confirmed; POIs remain diagnostic only'
             : !primaryPoi ? 'No eligible parent POI passed lifecycle, range, direction, and pending-side checks' : null;
     return {
         plan_id: `MARKET_PLAN:${pairLocal}:${asOfMs || 'NA'}:${activeRangeId || 'NONE'}`,
         bias: biasName,
-        bias_state: biasName === 'BULLISH' ? 'BULLISH_CONTINUATION' : biasName === 'BEARISH' ? 'BEARISH_CONTINUATION' : validRange ? 'RANGE' : 'NEUTRAL',
+        bias_state: effectiveBias === 'BUY' ? 'BULLISH_CONTINUATION'
+            : effectiveBias === 'SELL' ? 'BEARISH_CONTINUATION'
+            : validRange ? 'RANGE' : 'NEUTRAL',
         htf_trend: htfTrend ? (htfTrend === 'BUY' ? 'BULLISH' : 'BEARISH') : 'NEUTRAL',
         active_swing_low: validRange ? Number(rangeLow) : null,
         active_swing_high: validRange ? Number(rangeHigh) : null,
@@ -8033,7 +8053,7 @@ function buildMarketMechanicsPlan({ historyCache = {}, price = null, structure =
         data_cutoff_ms: Number.isFinite(Number(asOfMs)) ? Number(asOfMs) : null,
         source_bar_counts: { '1D': oneD.length, '4H': fourH.length, '1H': oneH.length },
         valid_context: planContextValid,
-        direction: bias
+        direction: effectiveBias
     };
 }
 
@@ -8963,7 +8983,19 @@ function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias,
         const lead = timeframeContext?.['4H'];
         const leadTrend = lead?.effective_trend || lead?.structural_trend || lead?.bias;
         const planDirection = String(marketPlan?.direction || '').toUpperCase();
-        if (leadTrend !== wanted && leadTrend !== `${wanted}_TRANSITION` && planDirection !== direction) continue;
+        // Only block a direction when the 4H trend is CLEARLY OPPOSED and the
+        // plan does not authorize it. NEUTRAL / MIXED / undefined means the 4H
+        // structure does not forbid either direction, so both sides may form
+        // pending-limit setups. This makes the fix apply to every pair — it is
+        // driven by each pair's own 4H structure snapshot.
+        const leadTrendNormalized = String(leadTrend || '').toUpperCase();
+        const trendSupportsDirection = leadTrend === wanted || leadTrend === `${wanted}_TRANSITION`;
+        const trendIsNeutral = !leadTrend
+            || leadTrendNormalized === 'NEUTRAL'
+            || leadTrendNormalized === 'MIXED'
+            || leadTrendNormalized === '';
+        const planAuthorizesDirection = planDirection === direction;
+        if (!trendSupportsDirection && !trendIsNeutral && !planAuthorizesDirection) continue;
         const locations = enumerateFutureLimitLocations(direction, zones || [], locationPois, price, pairLocal, symbolMetadata);
         const executionEvidenceZones = [...(zones || []), ...locationPois];
         const targetPool = (targets?.all || []).filter(target => target.direction === direction && Number.isFinite(target.level)
@@ -15931,6 +15963,55 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
     const strategySetups = detectedStrategySetups.filter(strategyMode === 'MARKET_MECHANICS'
         ? hasMarketMechanicsExecutionBacking
         : hasExecutableStrategyBacking);
+    // Range / transition fallback: on mixed or neutral-trend markets the
+    // MARKET_MECHANICS plan can legitimately produce zero executable setups.
+    // Rather than send DeepSeek an empty packet, surface the best fresh POI
+    // in each direction as WATCH-ONLY material. These are never promoted to
+    // LIVE candidates (market_mechanics_verified is false), so they cannot
+    // become TRADE_READY — they exist purely so the manual external-AI packet
+    // contains reviewable evidence. This is pair-agnostic: it uses the same
+    // enumerateFutureLimitLocations() the live path uses, per-pair zones,
+    // per-pair ATR, per-pair symbol metadata.
+    if (strategyMode === 'MARKET_MECHANICS' && strategySetups.length === 0) {
+        const fallbackWatch = [];
+        for (const fallbackDirection of ['BUY', 'SELL']) {
+            const bestZone = enumerateFutureLimitLocations(
+                fallbackDirection, zones, [], price, pair, symbolMetadata
+            )[0];
+            if (!bestZone) continue;
+            if (!Number.isFinite(Number(bestZone.low)) || !Number.isFinite(Number(bestZone.high))) continue;
+            fallbackWatch.push({
+                id: `WATCH_FALLBACK:${fallbackDirection}:${bestZone.id || strategyZoneKey(bestZone)}`,
+                primary: 'ICT',
+                label: 'CURRENT_STRUCTURE',
+                direction: fallbackDirection,
+                timeframe: bestZone.timeframe,
+                setup_timeframe: bestZone.timeframe,
+                execution_timeframe: bestZone.timeframe,
+                event_time: bestZone.created_time || bestZone.created_time_ms || null,
+                narrative_state: 'ACTIVE',
+                freshness: 'WATCH',
+                execution_zone: {
+                    ...bestZone,
+                    execution_model: 'FRESH_RETRACEMENT_LIMIT',
+                    entry_model: 'FRESH_RETRACEMENT_LIMIT'
+                },
+                execution_model: 'FRESH_RETRACEMENT_LIMIT',
+                entry_model: 'FRESH_RETRACEMENT_LIMIT',
+                market_mechanics_verified: false,
+                execution_confirmed: false,
+                _watch_only: true
+            });
+        }
+        if (fallbackWatch.length) {
+            informationalMarketMechanicsSetups.push(...fallbackWatch);
+            marketContext.informational_setup_count = (informationalMarketMechanicsSetups.length);
+            marketContext.discovery_funnel = {
+                ...(marketContext.discovery_funnel || {}),
+                fallback_watch_candidates: fallbackWatch.length
+            };
+        }
+    }
     Object.defineProperty(strategySetups, 'detection_stats', {
         value: detectedStrategySetups.detection_stats || null,
         enumerable: false,
