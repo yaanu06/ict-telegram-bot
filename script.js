@@ -6933,12 +6933,24 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
         target.target_type = target.target_type || target.source;
         target.target_confluence = target.target_confluence || [{ source: target.source || target.target_type, target_type: target.target_type || target.source, timeframe: target.timeframe || null, level: target.level }];
     }
-    const valid = lifecycleEligibleTargets
+    const allowBelowPreferredRR = reachabilityContext.allowBelowPreferredRR === true;
+    const rrQualifiedValid = lifecycleEligibleTargets
         .filter(c => direction === 'BUY' ? c.level + 1e-9 >= threshold : c.level - 1e-9 <= threshold)
         .filter(c => !c.target_reachability.hard_unreachable)
         .sort((a, b) => a.distance_from_entry - b.distance_from_entry || Number(b.strategy_native) - Number(a.strategy_native) || (b.structural_priority || 0) - (a.structural_priority || 0) || b.reachability_score - a.reachability_score);
+    const structuralValid = lifecycleEligibleTargets
+        .filter(c => !c.target_reachability.hard_unreachable)
+        .sort((a, b) => b.actual_rr - a.actual_rr || b.reachability_score - a.reachability_score || (b.structural_priority || 0) - (a.structural_priority || 0) || a.distance_from_entry - b.distance_from_entry);
+    const valid = rrQualifiedValid.length || !allowBelowPreferredRR ? rrQualifiedValid : structuralValid;
     const tp1 = valid[0];
     if (!tp1) return null;
+    const selectedBelowPreferredRR = allowBelowPreferredRR && rrQualifiedValid.length === 0;
+    diagnostics.rr_policy = allowBelowPreferredRR ? 'STRUCTURAL_FIRST' : 'PREFERRED_MINIMUM';
+    diagnostics.selected_below_preferred_rr = selectedBelowPreferredRR;
+    diagnostics.preferred_rr_met = Number(tp1.actual_rr) >= minimumRR;
+    diagnostics.selected_target_level = tp1.level;
+    diagnostics.selected_target_rr = Number.isFinite(tp1.actual_rr) ? tp1.actual_rr : null;
+    selectAdaptiveTargets.lastDiagnostics = diagnostics;
     const farther = valid.filter(c => direction === 'BUY' ? c.level > tp1.level : c.level < tp1.level);
     const ladder = [tp1, ...farther].filter((c, i, arr) => arr.findIndex(x => x.level === c.level) === i).slice(0, 3);
     const rr = calculateRRMetrics(direction, entry, stopLoss, ladder[0].level, minimumRR);
@@ -6948,6 +6960,9 @@ function selectAdaptiveTargets(direction, entry, stopLoss, targetCandidates, min
         tp3: ladder[2] || null,
         rr_tp1: rr.actualRR,
         required_reward: requiredReward,
+        rr_policy: allowBelowPreferredRR ? 'STRUCTURAL_FIRST' : 'PREFERRED_MINIMUM',
+        preferred_rr_met: Number(tp1.actual_rr) >= minimumRR,
+        rr_shortfall: Math.max(0, minimumRR - Number(tp1.actual_rr || 0)),
         minimum_valid_tp1_price: direction === 'BUY' ? ictRound(threshold, prec) : null,
         maximum_valid_tp1_price: direction === 'SELL' ? ictRound(threshold, prec) : null
     };
@@ -10647,7 +10662,7 @@ function mergeAdaptiveSetupCandidateResults(results = [], price = null, asOfTime
     };
 }
 
-function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, targetCandidates, riskConstraints, marketRegime, structure, marketContext, strategySetups, symbolMetadata = null }) {
+function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, targetCandidates, riskConstraints, marketRegime, structure, marketContext, strategySetups, symbolMetadata = null, targetPolicy = 'PREFERRED_MINIMUM' }) {
     const timeframeContext = marketContext?.timeframe_context || buildTimeframeContext({ historyCache, structure, price, strategySetups, zones });
     const settings = getMarketSettings(pair, symbolMetadata || {});
     const prec = settings.prec;
@@ -11123,6 +11138,7 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     zones: validationZones,
                     liquidity: marketContext?.liquidity?.[tf] || mapLiquidity(data || []),
                     strategySetup,
+                    allowBelowPreferredRR: targetPolicy === 'STRUCTURAL_FIRST',
                     executionModel: strategySetup?.opportunity_thesis?.execution_model
                         || strategySetup?.execution_model
                         || strategySetup?.entry_model
@@ -11202,6 +11218,9 @@ function buildAdaptiveSetupCandidates({ pair, price, historyCache, zones, target
                     target_reachability: targets.tp1.target_reachability,
                     actual_rr: ictRound(rr.actualRR, 2),
                     rr_tp1: ictRound(rr.actualRR, 2),
+                    rr_policy: targets.rr_policy || 'PREFERRED_MINIMUM',
+                    preferred_rr_met: targets.preferred_rr_met !== false,
+                    rr_quality_status: targets.preferred_rr_met === false ? 'BELOW_PREFERRED' : 'PASS',
                     required_reward: ictRound(targets.required_reward, prec),
                     freshness: zone.freshness,
                     htf_alignment: htfAlignment,
@@ -13384,7 +13403,16 @@ function evaluateSetupCandidate(candidate, marketContext = {}, options = {}) {
     metrics.rr = rr.actualRR;
     metrics.slDistance = rr.risk;
     const minRR = Number(marketContext.risk_constraints?.minimum_rr) || settings.targetRR || 2.5;
-    if (!Number.isFinite(rr.actualRR) || rr.actualRR < minRR) add(`real RR ${Number.isFinite(rr.actualRR) ? rr.actualRR.toFixed(2) : 'invalid'} below ${minRR.toFixed(2)} minimum`);
+    // Market Mechanics uses minimum_rr as a preferred quality benchmark.
+    // A genuine structural target is tradeable at whatever RR the market
+    // offers; the shortfall is reported as a quality warning, not a reason to
+    // erase an otherwise valid setup.
+    const structuralFirstRR = String(candidate.rr_policy || '').toUpperCase() === 'STRUCTURAL_FIRST';
+    metrics.minimum_rr = minRR;
+    metrics.rr_qualified = Number.isFinite(rr.actualRR) && rr.actualRR >= minRR;
+    if (!structuralFirstRR && (!Number.isFinite(rr.actualRR) || rr.actualRR < minRR)) {
+        add(`real RR ${Number.isFinite(rr.actualRR) ? rr.actualRR.toFixed(2) : 'invalid'} below ${minRR.toFixed(2)} minimum`);
+    }
 
     const fourH = historyCache?.['4H'] || [];
     const oneH = historyCache?.['1H'] || [];
@@ -14603,7 +14631,12 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
                     buy: [...(setup.target_candidates || []), ...(pendingTargetCatalog.length ? pendingTargetCatalog.filter(t => t.direction === 'BUY') : (targetCandidates?.buy || []))],
                     sell: [...(setup.target_candidates || []), ...(pendingTargetCatalog.length ? pendingTargetCatalog.filter(t => t.direction === 'SELL') : (targetCandidates?.sell || []))]
                 };
-                const selectedTargets = selectAdaptiveTargets(setup.direction, entry, stop.stop_loss, pool, minimumRR, settings.prec, { currentPrice, executionModel: plan.execution_model, strategySetup: setup });
+                const selectedTargets = selectAdaptiveTargets(setup.direction, entry, stop.stop_loss, pool, minimumRR, settings.prec, {
+                    currentPrice,
+                    executionModel: plan.execution_model,
+                    strategySetup: setup,
+                    allowBelowPreferredRR: String(marketContext?.strategy_mode || rawTextV2StrategyMode()).toUpperCase() === 'MARKET_MECHANICS'
+                });
                 if (selectedTargets?.tp1) pendingGeometry = { entry, stop_loss: stop.stop_loss, tp1: selectedTargets.tp1.level,
                     tp2: selectedTargets.tp2?.level ?? null, tp3: selectedTargets.tp3?.level ?? null,
                     target: selectedTargets.tp1, rr: selectedTargets.tp1.rr };
@@ -15947,7 +15980,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         structure,
         marketContext,
         strategySetups,
-        symbolMetadata
+        symbolMetadata,
+        targetPolicy: strategyMode === 'MARKET_MECHANICS' ? 'STRUCTURAL_FIRST' : 'PREFERRED_MINIMUM'
     });
     // Historical strategy records are not the complete current-opportunity
     // universe. If their locations are consumed/expired, derive fresh
@@ -15981,7 +16015,8 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             structure,
             marketContext,
             strategySetups: currentRegeneration.setups,
-            symbolMetadata
+            symbolMetadata,
+            targetPolicy: strategyMode === 'MARKET_MECHANICS' ? 'STRUCTURAL_FIRST' : 'PREFERRED_MINIMUM'
         });
     }
     let adaptiveSetupResult = mergeAdaptiveSetupCandidateResults(
@@ -23631,7 +23666,9 @@ function rebuildCandidatesWithAiSetups(liveMarketContext, strategySetups) {
         structure: liveMarketContext.structure,
         marketContext: liveMarketContext.market_context,
         strategySetups,
-        symbolMetadata: liveMarketContext.symbol_metadata || null
+        symbolMetadata: liveMarketContext.symbol_metadata || null,
+        targetPolicy: String(liveMarketContext.market_context?.strategy_mode || liveMarketContext.strategy_mode || '').toUpperCase() === 'MARKET_MECHANICS'
+            ? 'STRUCTURAL_FIRST' : 'PREFERRED_MINIMUM'
     });
     liveMarketContext.strategy_setups = strategySetups;
     if (liveMarketContext.deterministic_validation_context) {
@@ -24653,7 +24690,9 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null, liveMa
             structure: fallbackStructure,
             marketContext: fallbackMarketContext,
             strategySetups: fallbackStrategySetups,
-            symbolMetadata: fallbackMetadata
+            symbolMetadata: fallbackMetadata,
+            targetPolicy: String(fallbackMarketContext?.strategy_mode || rawTextV2StrategyMode()).toUpperCase() === 'MARKET_MECHANICS'
+                ? 'STRUCTURAL_FIRST' : 'PREFERRED_MINIMUM'
         });
         fallbackValidationContext = buildDeterministicValidationContext({
             pair,

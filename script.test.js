@@ -1688,6 +1688,24 @@ describe('fresh execution downstream validation', () => {
         expect(ctx.selectAdaptiveTargets.lastDiagnostics.directional_target_count).toBe(1);
     });
 
+    it('uses the best genuine structural target when the market does not offer the preferred RR', () => {
+        const ctx = getContext();
+        const result = ctx.selectAdaptiveTargets('SELL', 4154.18, 4191.66, { sell: [
+            { direction: 'SELL', level: 4083.65, source: 'OPPOSING_MSNR', origin: 'STRUCTURAL_MSNR', timeframe: '4H', structural_priority: 88 },
+            { direction: 'SELL', level: 4066.53, source: 'SELL_SIDE_LIQUIDITY', origin: 'STRUCTURAL', timeframe: '4H', structural_priority: 82 }
+        ], buy: [] }, 2.5, 2, {
+            currentPrice: 4120.48, executionModel: 'FRESH_RETRACEMENT_LIMIT',
+            historyCache: { '4H': candles(40, 4120, 1, 'down') }, zones: [], liquidity: { above: [], below: [] },
+            strategySetup: { target_candidates: [] }, allowBelowPreferredRR: true
+        });
+        expect(result).not.toBeNull();
+        expect(result.tp1.level).toBe(4066.53);
+        expect(result.rr_policy).toBe('STRUCTURAL_FIRST');
+        expect(result.preferred_rr_met).toBe(false);
+        expect(result.rr_tp1).toBeCloseTo(2.3386, 3);
+        expect(ctx.selectAdaptiveTargets.lastDiagnostics.failure_code).toBe('TARGETS_EXIST_BUT_RR_TOO_LOW');
+    });
+
     it('marks a target consumed only after closed-candle delivery crosses its source level', () => {
         const ctx = getContext();
         const history = [
@@ -2864,6 +2882,29 @@ describe('strategy pipeline integration rules', () => {
         });
         expect(result.valid_candidates).toEqual([]);
         expect(result.rejected_candidates.some(r => r.rejection_code === 'NO_VALID_TP1')).toBe(true);
+    });
+
+    it('constructs the Market Mechanics candidate from the best available structural target when preferred RR is unavailable', () => {
+        const ctx = getContext();
+        const zone = { id: 'crt-buy', type: 'CRT', direction: 'BUY', timeframe: '1H', low: 1.0995, high: 1.1, origin: 'STRUCTURAL', primary_eligible: true, invalidated: false, freshness: 'FRESH', structural_invalidation: 1.099 };
+        const setup = { id: 'crt-buy', primary: 'CRT', label: 'CRT', direction: 'BUY', timeframe: '1H', execution_zone: zone, structural_invalidation: 1.099, strategy_evidence: { CRT: { range_high: 1.1005, range_low: 1.0995 } }, target_candidates: [{ direction: 'BUY', level: 1.1005, source: 'CRT_OPPOSITE_RANGE', origin: 'STRUCTURAL' }] };
+        setup.reclaim_bar_index = 79;
+        const result = ctx.buildAdaptiveSetupCandidates({
+            pair: 'EUR/USD',
+            price: 1.1002,
+            historyCache: { '4H': candles(80, 1.08, 0.0002, 'up'), '1H': candles(80, 1.08, 0.0002, 'up'), '1D': candles(80, 1.08, 0.0002, 'up') },
+            zones: [zone],
+            targetCandidates: { buy: [], sell: [] },
+            riskConstraints: { minimum_rr: 2.5 },
+            marketRegime: {},
+            structure: { '1D': { trend: 'BULLISH' }, '4H': { trend: 'BULLISH' }, '1H': { trend: 'BULLISH' } },
+            strategySetups: [setup],
+            targetPolicy: 'STRUCTURAL_FIRST'
+        });
+        expect(result.valid_candidates).toHaveLength(1);
+        expect(result.valid_candidates[0].tp1).toBe(1.1005);
+        expect(result.valid_candidates[0].preferred_rr_met).toBe(false);
+        expect(result.valid_candidates[0].rr_policy).toBe('STRUCTURAL_FIRST');
     });
 
     it('produces zero valid deterministic candidates when no strategy setup exists', () => {
