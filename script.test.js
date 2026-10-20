@@ -4838,6 +4838,27 @@ describe('Market Mechanics packet authority', () => {
         expect(replay.history['1H'][0].canonical_close_time).toBeLessThanOrEqual(Date.parse(asOf));
     });
 
+    test('production replay capture omits detector back-references instead of losing the Copy artifact', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const asOf = '2026-10-20T07:52:00.000Z';
+        const historyCache = {};
+        const durations = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 };
+        for (const [timeframe, duration] of Object.entries(durations)) {
+            const rows = [{ t: Date.parse(asOf) - duration, o: 100, h: 102, l: 99, c: 101, is_closed: true }];
+            Object.defineProperty(rows, 'provider_metadata', { value: { provider: 'TVKIT', timestamp_semantics: 'OPEN', interval_ms: duration }, enumerable: false });
+            historyCache[timeframe] = rows;
+        }
+        const candidate = { id: 'CYCLIC-CANDIDATE', direction: 'BUY' };
+        candidate.detector_back_reference = candidate;
+        const replay = ctx.createScanReplay({
+            pair: 'EUR/USD', strategy_mode: 'MARKET_MECHANICS', snapshot_id: 'CYCLIC-SNAPSHOT',
+            as_of_time_utc: asOf, current_price: 101, quote_snapshot: { price: 101 }, historyCache,
+            snapshot_completeness: { complete: true }, market_mechanics: { candidate_catalog: { raw_candidates: [candidate] } }
+        });
+        expect(replay.snapshot_id).toBe('CYCLIC-SNAPSHOT');
+        expect(replay.market_mechanics.candidate_catalog.raw_candidates[0]).toEqual({ id: 'CYCLIC-CANDIDATE', direction: 'BUY' });
+    });
+
     test('production entry point keeps the FX daily context fresh on Monday before the new daily close', () => {
         const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
         const asOfMs = Date.parse('2026-10-19T07:05:00Z');

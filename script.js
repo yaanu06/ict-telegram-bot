@@ -16253,16 +16253,28 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
 const REPLAY_SECRET_KEY_PATTERN = /(api[_-]?key|authorization|bearer|token|password|secret|pat|credential|twilio|telegram[_-]?(user|session|auth))/i;
 const REPLAY_SECRET_TEXT_PATTERN = /(TWELVE_DATA_KEY|DEEPSEEK_API_KEY|GITHUB_PAT|authorization\s*[:=]|bearer\s+[A-Za-z0-9._-]+|[?&](?:apikey|api_key|token|key)=)/i;
 
-function sanitizeScanReplayValue(value, key = '') {
+function sanitizeScanReplayValue(value, key = '', ancestors = new WeakSet()) {
     if (REPLAY_SECRET_KEY_PATTERN.test(key)) return undefined;
     if (typeof value === 'string') return REPLAY_SECRET_TEXT_PATTERN.test(value) ? '[REDACTED]' : value;
-    if (Array.isArray(value)) return value.map(item => sanitizeScanReplayValue(item)).filter(item => item !== undefined);
+    if (typeof value === 'bigint') return value.toString();
     if (!value || typeof value !== 'object') return value;
+    // Production candidate records can share nested evidence objects and a
+    // detector may occasionally retain a back-reference.  A replay is a
+    // value snapshot, so omit only an actual ancestor cycle instead of
+    // failing the entire Analyze -> Copy handoff.
+    if (ancestors.has(value)) return undefined;
+    ancestors.add(value);
+    if (Array.isArray(value)) {
+        const result = value.map(item => sanitizeScanReplayValue(item, '', ancestors)).filter(item => item !== undefined);
+        ancestors.delete(value);
+        return result;
+    }
     const result = {};
     for (const [childKey, childValue] of Object.entries(value)) {
-        const safe = sanitizeScanReplayValue(childValue, childKey);
+        const safe = sanitizeScanReplayValue(childValue, childKey, ancestors);
         if (safe !== undefined) result[childKey] = safe;
     }
+    ancestors.delete(value);
     return result;
 }
 
@@ -20226,9 +20238,37 @@ async function writePlainTextToClipboard(packetText) {
 }
 
 function copyRawMarketAnalysisPacket() {
-    const artifact = currentScanArtifact;
+    if (scanInProgress) {
+        showNotif('Analysis is still finishing; wait for Scan complete', 'warning');
+        return;
+    }
+    let artifact = currentScanArtifact;
     const activePair = normalizeCanonicalMarketSymbol(pair);
-    const artifactPair = normalizeCanonicalMarketSymbol(artifact?.symbol || artifact?.replay?.pair || '');
+    let artifactPair = normalizeCanonicalMarketSymbol(artifact?.symbol || artifact?.replay?.pair || '');
+    // Recover only from the exact current scan/symbol.  This handles a
+    // production replay-capture failure without ever inheriting another
+    // symbol's packet or reconstructing authority from the displayed UI.
+    if (artifact?.signal && !artifact?.replay && lastLiveMarketContextForReplay
+        && normalizeCanonicalMarketSymbol(lastLiveMarketContextForReplay.pair) === activePair) {
+        try {
+            const recoveredReplay = createScanReplay(lastLiveMarketContextForReplay, { trade_signal: artifact.signal });
+            artifact = publishCurrentScanArtifact({ signal: artifact.signal, replay: recoveredReplay });
+            window.__ICT_LAST_SCAN_REPLAY__ = recoveredReplay;
+            lastLiveMarketContextForReplay = null;
+            artifactPair = normalizeCanonicalMarketSymbol(artifact?.symbol || recoveredReplay.pair || '');
+        } catch (error) {
+            console.error('[COPY] current scan replay recovery failed', error);
+        }
+    }
+    if (artifact?.signal && !artifact?.replay && window.__ICT_LAST_SCAN_REPLAY__) {
+        const retainedReplay = window.__ICT_LAST_SCAN_REPLAY__;
+        const retainedPair = normalizeCanonicalMarketSymbol(retainedReplay.pair || '');
+        const signalSnapshot = artifact.signal.snapshot_id || null;
+        if (retainedPair === activePair && signalSnapshot && retainedReplay.snapshot_id === signalSnapshot) {
+            artifact = publishCurrentScanArtifact({ signal: artifact.signal, replay: retainedReplay });
+            artifactPair = retainedPair;
+        }
+    }
     if (!artifact?.replay || !artifactPair || !activePair || artifactPair !== activePair) {
         showNotif('Run a current-symbol analysis first', 'warning');
         return;
@@ -25241,12 +25281,14 @@ async function runAutoScan() {
     // replay, or saved setup artifact.
     clearCurrentScanArtifact();
     const btn = document.getElementById('analyzeBtn');
+    const copyRawBtn = document.getElementById('copyRawMarketBtn');
     const scanStatus = document.getElementById('scanStatus');
     const scanText = document.getElementById('scanText');
     const scanFill = document.getElementById('scanProgressFill');
     
     btn.classList.add('loading');
     btn.disabled = true;
+    if (copyRawBtn) copyRawBtn.disabled = true;
     scanStatus.classList.remove('hidden');
     scanTrace('START', scanStartedAt, { pair, timestamp: new Date().toISOString() });
     
@@ -26341,6 +26383,7 @@ async function runAutoScan() {
     } finally {
         btn.classList.remove('loading');
         btn.disabled = false;
+        if (copyRawBtn) copyRawBtn.disabled = false;
         scanStatus.classList.add('hidden');
         if (scanText) scanText.textContent = 'Scan complete';
         if (scanFill) scanFill.style.width = '100%';
@@ -27709,7 +27752,10 @@ function setJsonOutput(obj, { publishArtifact = true } = {}) {
         window.__ICT_LAST_SCAN_REPLAY__ = replay;
     }
     if (publishArtifact) publishCurrentScanArtifact({ signal: publicSignal, replay, output: obj });
-    if (lastLiveMarketContextForReplay) lastLiveMarketContextForReplay = null;
+    // Keep the same-symbol context available only when replay capture failed,
+    // allowing Copy to retry the canonical capture.  Successful scans release
+    // the heavyweight context immediately.
+    if (replay && lastLiveMarketContextForReplay) lastLiveMarketContextForReplay = null;
 }
 
 function getTradeSummaryModel(signal = {}) {
