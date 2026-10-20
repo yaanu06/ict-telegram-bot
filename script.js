@@ -8586,6 +8586,47 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
             ? qualificationState.failed_rule
             : blocker ? MARKET_MECHANICS_BLOCKER_RULES[blocker]?.rule || blocker : 'Candidate did not reach live authority')
         : null;
+    // The candidate builder can fail to resolve a *preferred-RR* TP1 and emit
+    // NO_STRUCTURAL_TARGET even when the setup carries a genuine structural
+    // objective in derived geometry.  Re-label that as the accurate
+    // "targets exist but RR is below the preferred benchmark" so the packet
+    // does not simultaneously claim an objective is present (PROPOSED_OBJECTIVE,
+    // PENDING_LIMIT_GEOMETRY_COMPLETE=YES) and absent (NO_STRUCTURAL_TARGET).
+    const diagnosticSettings = getMarketSettings(pairLocal, options.symbol_metadata || {});
+    const preferredMinimumRR = Number(qualificationState.minimum_rr)
+        || Number(options.market_context?.risk_constraints?.minimum_rr)
+        || Number(options.risk_constraints?.minimum_rr)
+        || Number(diagnosticSettings.targetRR) || 2.5;
+    const candidateTargetLevel = Number(candidate?.tp1 ?? candidate?.take_profit_1);
+    const hasDerivedStructuralObjective = Number.isFinite(Number(geometry.objective)) && !Number.isFinite(candidateTargetLevel);
+    const diagnosticRiskDistance = Number.isFinite(geometry.entry) && Number.isFinite(geometry.stop_loss)
+        ? Math.abs(geometry.entry - geometry.stop_loss) : NaN;
+    const derivedRewardRisk = hasDerivedStructuralObjective && diagnosticRiskDistance > 0
+        ? Math.abs(geometry.entry - Number(geometry.objective)) / diagnosticRiskDistance : NaN;
+    const derivedTargetBelowPreferredRR = hasDerivedStructuralObjective && geometryComplete
+        && Number.isFinite(derivedRewardRisk) && derivedRewardRisk < preferredMinimumRR;
+    const staleStructuralTargetBlocker = String(blocker || '').toUpperCase() === 'NO_STRUCTURAL_TARGET'
+        && derivedTargetBelowPreferredRR;
+    const effectiveBlocker = staleStructuralTargetBlocker ? 'TARGETS_EXIST_BUT_RR_TOO_LOW' : (blocker || (liveCandidate ? 'NONE' : null));
+    const effectiveTargetValid = staleStructuralTargetBlocker ? 'YES'
+        : (qualificationState.target_valid || (Number.isFinite(geometry.tp1) ? 'YES' : 'NO'));
+    const effectivePriceOrderValid = staleStructuralTargetBlocker && geometryComplete ? 'YES'
+        : (qualificationState.price_order_valid || 'UNKNOWN');
+    const effectiveFailedStage = staleStructuralTargetBlocker ? 'TARGET' : failedStage;
+    const effectiveFailedRule = staleStructuralTargetBlocker
+        ? MARKET_MECHANICS_BLOCKER_RULES.TARGETS_EXIST_BUT_RR_TOO_LOW.rule : failedRule;
+    const effectiveNextRequiredEvent = staleStructuralTargetBlocker
+        ? MARKET_MECHANICS_BLOCKER_RULES.TARGETS_EXIST_BUT_RR_TOO_LOW.next : nextRequiredEvent;
+    const entryProvablyUntouched = touched === 'NO' || lifecycle?.entry_consumed === false;
+    const staleLifecycleBlocker = code => /ENTRY_ALREADY_CONSUMED|SETUP_ALREADY_COMPLETED|SETUP_DELIVERY_ALREADY_ADVANCED/i.test(String(code || ''));
+    const reconcileBlockerCode = code => staleStructuralTargetBlocker && marketMechanicsCanonicalBlocker(code) === 'NO_STRUCTURAL_TARGET'
+        ? 'TARGETS_EXIST_BUT_RR_TOO_LOW' : code;
+    const effectiveRejectionCodes = [...new Set(rejectionCodes.map(marketMechanicsCanonicalBlocker))]
+        .map(reconcileBlockerCode)
+        .filter(code => !(entryProvablyUntouched && staleLifecycleBlocker(code)));
+    const effectiveAllBlockers = [...new Set([effectiveBlocker, ...(qualificationState.all_blockers || []), ...effectiveRejectionCodes].filter(Boolean))]
+        .map(reconcileBlockerCode)
+        .filter(code => !(entryProvablyUntouched && staleLifecycleBlocker(code)));
     return {
         source_setup_id: setup.id || null,
         formation_time: setup.formation_chronology?.confirmation_time ?? setup.event_time ?? null,
@@ -8644,19 +8685,19 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         next_required_event: nextRequiredEvent,
         pending_limit_geometry_complete: geometryComplete ? 'YES' : 'NO',
         pending_limit_candidate_state: state,
-        blocker: blocker || (liveCandidate ? 'NONE' : null),
-        primary_blocker: blocker || (liveCandidate ? 'NONE' : null),
-        all_blockers: [...new Set([blocker, ...(qualificationState.all_blockers || []), ...rejectionCodes.map(marketMechanicsCanonicalBlocker)].filter(Boolean))],
+        blocker: effectiveBlocker,
+        primary_blocker: effectiveBlocker,
+        all_blockers: effectiveAllBlockers,
         qualification_stage: qualificationState.qualification_stage || (liveCandidate ? 'AUTHORITY' : blocker ? MARKET_MECHANICS_BLOCKER_RULES[blocker]?.stage || 'AUTHORITY' : null),
         qualification_result: qualificationState.qualification_result || (liveCandidate ? 'PASS' : 'BLOCKED'),
-        failed_stage: failedStage,
-        failed_rule: failedRule,
-        next_required_event: qualificationState.next_required_event || nextRequiredEvent,
+        failed_stage: effectiveFailedStage,
+        failed_rule: effectiveFailedRule,
+        next_required_event: staleStructuralTargetBlocker ? effectiveNextRequiredEvent : (qualificationState.next_required_event || nextRequiredEvent),
         entry_valid: qualificationState.entry_valid || (Number.isFinite(geometry.entry) ? 'YES' : 'NO'),
         stop_valid: qualificationState.stop_valid || (Number.isFinite(geometry.stop_loss) ? 'YES' : 'NO'),
-        target_valid: qualificationState.target_valid || (Number.isFinite(geometry.tp1) ? 'YES' : 'NO'),
+        target_valid: effectiveTargetValid,
         side_valid: qualificationState.side_valid || (pendingLimitValid ? 'YES' : 'NO'),
-        price_order_valid: qualificationState.price_order_valid || 'UNKNOWN',
+        price_order_valid: effectivePriceOrderValid,
         geometry_complete: qualificationState.geometry_complete || (geometryComplete ? 'YES' : 'NO'),
         pending_limit_side_valid: pendingLimitValid ? 'YES' : 'NO',
         market_data_status: dataStatus || 'UNKNOWN',
@@ -8669,7 +8710,7 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         data_timestamp_diagnostics: dataQuality?.timeframe_diagnostics || {},
         candidate_id: valid?.id || raw?.id || rejected?.id || null,
         candidate_authority: liveCandidate ? 'LIVE' : 'FORMING_ONLY',
-        rejection_codes: rejectionCodes,
+        rejection_codes: effectiveRejectionCodes,
         candidate_rejected: candidateRejected,
         candidate_present: Boolean(candidate)
     };
@@ -12122,8 +12163,8 @@ const MARKET_MECHANICS_BLOCKER_RULES = Object.freeze({
     },
     TARGETS_EXIST_BUT_RR_TOO_LOW: {
         stage: 'TARGET',
-        rule: 'Available structural targets do not satisfy the minimum structural reward requirement',
-        next: 'WAIT_FOR_STRUCTURAL_OBJECTIVE'
+        rule: 'A genuine structural objective exists, but its reward-to-risk is below the preferred minimum benchmark',
+        next: 'ACCEPT_BEST_STRUCTURAL_OBJECTIVE_BELOW_PREFERRED_RR'
     },
     STOP_STRUCTURAL_INVALID: {
         stage: 'STOP',
@@ -17435,6 +17476,23 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
     const lifecycleMetrics = item.setup_lifecycle || item.evaluation?.metrics?.setup_lifecycle || {};
     const lifecycleDiagnostics = lifecycleMetrics.lifecycle_diagnostics || item.lifecycle_diagnostics || {};
     const lifecycleRejection = lifecycleMetrics.rejection_code || item.rejection_code || item.primary_blocker || item.blocker || null;
+    const lifecycle = String(item.lifecycle_state || item.state || item.opportunity_status || 'ACTIVE').toUpperCase();
+    const firstTouch = item.first_entry_touch_after_formation || item.first_entry_touch_time
+        || lifecycleMetrics.entry_first_touch_time || null;
+    const touched = String(item.entry_zone_touched || item.entry_touched
+        || (Number(lifecycleMetrics.entry_touch_count_after_signal) > 0 ? 'YES' : 'UNKNOWN')).toUpperCase();
+    const consumed = String(item.entry_consumed
+        || (lifecycleMetrics.entry_consumed === true ? 'YES' : lifecycleMetrics.entry_consumed === false ? 'NO' : 'UNKNOWN')).toUpperCase();
+    // A stale upstream summary can label a setup NO_STRUCTURAL_TARGET or
+    // ENTRY_ALREADY_CONSUMED after a builder stage that could not resolve the
+    // preferred-RR target, even though the packet carries a finite structural
+    // objective and the entry zone is provably untouched.  Do not forward those
+    // self-contradicting labels to review; keep the real quality warning
+    // (below-preferred RR) and let the reviewer see the geometry it refers to.
+    const hasReviewableObjective = objective != null && targetRewardRisk.length > 0;
+    const staleTargetLabel = value => /NO_STRUCTURAL_TARGET|NO_VALID_TP1|TARGET_POOL_EMPTY|NO_TARGETS_DIRECTIONALLY_AHEAD|TARGETS_EXIST_BUT_RR_TOO_LOW/i.test(String(value || ''));
+    const staleLifecycleLabel = value => /ENTRY_ALREADY_CONSUMED|SETUP_ALREADY_COMPLETED|SETUP_DELIVERY_ALREADY_ADVANCED/i.test(String(value || ''));
+    const entryProvablyUntouched = touched === 'NO' && consumed !== 'YES';
     const warnings = [...new Set([
         ...(Array.isArray(item.quality_warnings) ? item.quality_warnings : []),
         ...(Array.isArray(item.warnings) ? item.warnings : []),
@@ -17444,16 +17502,20 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         ...(item.blocker && !['NONE', 'NO_LIVE_CANDIDATE'].includes(String(item.blocker).toUpperCase()) ? [item.blocker] : []),
         ...(lifecycleRejection && !['NONE', 'NO_LIVE_CANDIDATE'].includes(String(lifecycleRejection).toUpperCase()) ? [lifecycleRejection] : []),
         ...(item.market_plan_poi_valid === 'NO' || item.market_plan_poi_valid === false ? ['PARENT_POI_CONTEXT_LIMITED'] : []),
-        ...(String(item.entry_zone_touched || '').toUpperCase() === 'UNKNOWN' ? ['ENTRY_TOUCH_CHRONOLOGY_UNKNOWN'] : []),
+        ...(touched === 'UNKNOWN' ? ['ENTRY_TOUCH_CHRONOLOGY_UNKNOWN'] : []),
         ...(source.market_plan?.direction && direction !== source.market_plan.direction ? ['PREFERRED_MARKET_PLAN_DIRECTION_CONFLICT'] : []),
-        ...(rrQualityStatus === 'FAIL' ? ['ALL_SUPPLIED_TARGETS_BELOW_PREFERRED_MINIMUM_RR'] : []),
+        ...(hasReviewableObjective && rrQualityStatus === 'FAIL' ? ['ALL_SUPPLIED_TARGETS_BELOW_PREFERRED_MINIMUM_RR'] : []),
         ...requiredDataFailures.map(item => `REQUIRED_MODEL_DATA_${item.status}:${item.timeframe}`)
-    ])];
-    const lifecycle = String(item.lifecycle_state || item.state || item.opportunity_status || 'ACTIVE').toUpperCase();
-    const firstTouch = item.first_entry_touch_after_formation || item.first_entry_touch_time
-        || lifecycleMetrics.entry_first_touch_time || null;
-    const touched = item.entry_zone_touched || item.entry_touched
-        || (Number(lifecycleMetrics.entry_touch_count_after_signal) > 0 ? 'YES' : 'UNKNOWN');
+    ].filter(warning => {
+        if (hasReviewableObjective && staleTargetLabel(warning)) return false;
+        if (entryProvablyUntouched && staleLifecycleLabel(warning)) return false;
+        return true;
+    }))];
+    const rawOriginalRejection = item.original_rejection || item.rejection_code || item.primary_blocker || null;
+    const originalRejection = (hasReviewableObjective && staleTargetLabel(rawOriginalRejection))
+        || (entryProvablyUntouched && staleLifecycleLabel(rawOriginalRejection))
+        ? (hasReviewableObjective && rrQualityStatus === 'FAIL' ? 'RR_BELOW_PREFERRED_MINIMUM' : null)
+        : rawOriginalRejection;
     return {
         opportunity_id: item.opportunity_id || item.id || item.candidate_id || item.execution_poi_id || null,
         source_setup_id: item.source_setup_id || item.strategy_setup?.id || null,
@@ -17496,11 +17558,11 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         pending_side_eligible: side,
         first_entry_touch_after_formation: firstTouch,
         entry_touched: touched,
-        entry_consumed: item.entry_consumed || (lifecycleMetrics.entry_consumed ? 'YES' : 'UNKNOWN'),
+        entry_consumed: consumed,
         expiry_status: item.expiry_status || (MANUAL_MARKET_MECHANICS_TERMINAL_STATES.has(lifecycle) ? lifecycle : 'ACTIVE'),
         lifecycle_state: lifecycle,
         recomputed_lifecycle_status: item.lifecycle_classification || lifecycleMetrics.lifecycle_classification || lifecycle,
-        original_rejection: item.original_rejection || item.rejection_code || item.primary_blocker || null,
+        original_rejection: originalRejection,
         matched_candle_index: lifecycleDiagnostics.execution_event_index ?? item.execution_event_index ?? item.execution_zone_created_index ?? null,
         matched_candle_index_source: lifecycleDiagnostics.execution_event_index_source || null,
         matched_candle_index_timeframe: lifecycleDiagnostics.index_timeframe || null,
@@ -19884,7 +19946,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         const modelFunnel = source.market_mechanics?.model_funnel || {};
         const modelStatus = Object.values(modelFunnel).map(row => {
             const blockers = Object.entries(row.blockers || {}).sort((a, b) => b[1] - a[1]).map(([code, count]) => `${code}:${count}`).join(',');
-            return `${row.model}:RAW=${row.raw}:FORMED=${row.formation_complete}:SIDE=${row.correct_side}:REACHABLE=${row.reachable}:STOP=${row.stop_ready}:TARGET=${row.target_ready}:PATH=${row.path_ready}:LIVE=${row.live}${blockers ? `:BLOCKERS=${blockers}` : ''}`;
+            return `${row.model}:RAW=${row.raw}:FORMED=${row.formation_complete}:SIDE=${row.correct_side}:REACHABLE=${row.reachable}:STOP=${row.stop_ready}:TARGET=${row.target_ready}:PATH=${row.path_ready ?? 'NO'}:LIVE=${row.live}${blockers ? `:BLOCKERS=${blockers}` : ''}`;
         }).join('|');
         lines.push('ENTRY_MODEL_STATUS=' + (modelStatus || 'NONE')
             + ' FORMED_SETUP_COUNT=' + String(searchCounts.forming_count ?? 'NONE')
@@ -22519,7 +22581,7 @@ function buildProfessionalManualMarketPacket({ semantic = {}, pair = null, provi
                 'Use supplied deterministic facts only; never invent entry, stop, target, or market data.',
                 'Reason in order: CURRENT MARKET STATE -> RECENT DELIVERY / CHRONOLOGY -> MULTI-TIMEFRAME CONTEXT -> LIQUIDITY MAP -> CURRENT PHASE -> DIRECTION -> LOCATION -> MODEL / EXECUTION -> INVALIDATION -> OBJECTIVE -> EXACT RR.',
                 'A stop must be a supplied structural invalidation belonging to the thesis; an objective must be a genuine remaining neutral market fact.',
-                'Consumed, invalidated, or unusable objectives cannot be used. minimum_rr is a preferred quality benchmark; it does not authorize target fabrication or invalidate a structurally coherent opportunity with a lower realistic RR.',
+                'Consumed, invalidated, or unusable objectives cannot be used. minimum_rr is a preferred quality benchmark; it does not authorize target fabrication or invalidate a structurally coherent opportunity with a lower realistic RR. If every genuine supplied target is below minimum_rr but a finite structural objective exists, do not return NO_TRADE or claim that no target exists solely because of the RR shortfall: select the best structural target, report its actual RR, and state the below-benchmark warning.',
                 'PENDING_LIMIT may be away from current price and does not require 5M/15M confirmation unless supplied setup semantics require it. CONFIRMATION_ENTRY requires supplied confirmation.',
                 'Freshness is not opportunity relevance, distance alone is not rejection, and confidence never makes invalid geometry valid.',
                 'Combined setup labels require same-opportunity components with compatible chronology, location, direction, and evidence.',

@@ -5089,6 +5089,40 @@ describe('Market Mechanics packet authority', () => {
         expect(state[0].entry_zone_touch_required_for_qualification).toBe('NO');
     });
 
+    test('reconciles a below-preferred-RR structural objective instead of reporting NO_STRUCTURAL_TARGET', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const setup = {
+            id: 'CRT-SELL-LOW-RR', direction: 'SELL', timeframe: '1H', entry_model: 'CRT_AGGRESSIVE',
+            execution_model: 'FRESH_RETRACEMENT_LIMIT', execution_confirmed: true,
+            execution_zone: { id: 'CRT-ZONE-LOW-RR', type: 'CRT', low: 108, high: 110, freshness: 'FRESH',
+                structural_invalidation: { level: 112, source: 'CRT_SWEEP' } },
+            target_candidates: [{ level: 104, direction: 'SELL', source: 'SWING_LOW' }]
+        };
+        const state = ctx.buildMarketMechanicsFormingSetupStates([setup], {
+            valid_context: true, active_swing_range_id: 'RANGE-LOW-RR',
+            active_poi: { id: 'CRT-ZONE-LOW-RR', low: 108, high: 110 }
+        }, {
+            pair: 'EUR/USD', current_price: 100,
+            candidate_result: { all_valid_candidates: [], raw_candidates: [], rejected_candidates: [{
+                id: 'SAME-OPPORTUNITY', direction: 'SELL', entry: 109, stop_loss: 112,
+                strategy_setup: setup, zone: setup.execution_zone,
+                qualification: { target_valid: 'NO', primary_blocker: 'NO_STRUCTURAL_TARGET',
+                    qualification_result: 'BLOCKED', qualification_stage: 'TARGET',
+                    failed_stage: 'TARGET', failed_rule: 'No deterministic structural or liquidity objective is available' }
+            }] }
+        });
+        expect(state[0]).toEqual(expect.objectContaining({
+            proposed_objective: 104,
+            target_valid: 'YES',
+            price_order_valid: 'YES',
+            pending_limit_geometry_complete: 'YES',
+            primary_blocker: 'TARGETS_EXIST_BUT_RR_TOO_LOW',
+            failed_stage: 'TARGET',
+            next_required_event: 'ACCEPT_BEST_STRUCTURAL_OBJECTIVE_BELOW_PREFERRED_RR'
+        }));
+        expect(state[0].all_blockers).not.toContain('NO_STRUCTURAL_TARGET');
+    });
+
     test('XAU CRT aggressive exposes complete pre-entry SELL geometry before touch', () => {
         const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
         const setup = {
