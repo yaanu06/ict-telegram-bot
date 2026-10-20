@@ -3801,6 +3801,84 @@ describe('canonical Market Mechanics production routing', () => {
         expect(pathBlocked.CANDIDATE_AUTHORITY).toBe('DIAGNOSTIC_ONLY');
         expect(pathBlocked.QUALIFICATION_BLOCKERS).toContain('PATH_BLOCKED');
     });
+
+    it('requires an explicit evaluated path before LIVE authority and accepts a documented constrained path', () => {
+        const ctx = getContext();
+        const base = {
+            id: 'path-authority', direction: 'SELL', entry_model: 'LIQUIDITY_OB_FVG', execution_model: 'PENDING_LIMIT',
+            market_mechanics_verified: true, market_plan_valid: true, market_plan_poi_valid: true,
+            execution_poi_valid: true, pending_limit_valid: true, pending_limit_geometry_complete: 'YES',
+            setup_formation_confirmed: true, entry: 105, stop_loss: 110, tp1: 90,
+            qualification_result: 'PASS', setup_confidence: 72, MODEL_QUALIFIED: 'YES', TRADE_QUALIFIED: 'YES'
+        };
+        const source = { strategy_mode: 'MARKET_MECHANICS', market_plan: { valid_context: true, market_plan_complete: true } };
+        const unknown = ctx.normalizeMarketMechanicsAuthority({ ...base,
+            PATH_EVALUATED: 'NO', PATH_STATUS: 'UNKNOWN', PATH_QUALITY_RESULT: 'UNKNOWN' }, source, 'LIVE');
+        expect(unknown.CANDIDATE_AUTHORITY).toBe('DIAGNOSTIC_ONLY');
+        expect(unknown.PATH_EVALUATED).toBe('NO');
+        expect(unknown.PATH_STATUS).toBe('INCOMPLETE');
+        expect(unknown.QUALIFICATION_BLOCKERS).toContain('PATH_INCOMPLETE');
+
+        const constrained = ctx.normalizeMarketMechanicsAuthority({ ...base,
+            PATH_EVALUATED: 'YES', PATH_STATUS: 'CONSTRAINED', PATH_QUALITY_RESULT: 'PASS_WITH_PENALTY' }, source, 'LIVE');
+        expect(constrained.CANDIDATE_AUTHORITY).toBe('LIVE');
+        expect(constrained.TRADE_QUALIFIED).toBe('YES');
+    });
+
+    it('does not serialize absent path evidence as an implicit clear-path pass', () => {
+        const ctx = getContext();
+        const compact = ctx.compactAiPathQuality({ TRADE_QUALIFIED: 'YES' });
+        expect(compact.trade_qualified).toBe(false);
+        expect(compact.clear_path_to_tp1).toBe('UNKNOWN');
+        expect(compact.qualification_blockers).toContain('PATH_INCOMPLETE');
+    });
+
+    it('links an untouched FVG to its same-episode causal OB extreme instead of a distant HTF stop', () => {
+        const ctx = getContext();
+        const fvg = {
+            id: '1H-SELL-FVG-4155.44-4158.81', type: 'FVG', direction: 'SELL', timeframe: '1H',
+            low: 4155.44, high: 4158.81, midpoint: 4157.125,
+            created_time: '2026-10-19T14:00:00Z', created_index: 106, freshness: 'FRESH'
+        };
+        const causalOb = {
+            id: '1H-SELL-OB-4158.81-4170.23', type: 'OB', direction: 'SELL', timeframe: '1H',
+            low: 4158.81, high: 4170.23, created_time: '2026-10-19T13:00:00Z', created_index: 105,
+            freshness: 'FRESH', primary_eligible: true
+        };
+        const unrelatedOb = {
+            id: '1H-SELL-OB-4181-4199', type: 'OB', direction: 'SELL', timeframe: '1H',
+            low: 4181, high: 4199, created_time: '2026-10-19T13:00:00Z', created_index: 105,
+            freshness: 'FRESH', primary_eligible: true
+        };
+        const invalidation = ctx.deriveCausalOrderBlockInvalidation(fvg, [unrelatedOb, causalOb], 'SELL', 'XAU/USD', ctx.getSymbolMetadata('XAU/USD'));
+        expect(invalidation).toEqual(expect.objectContaining({
+            level: 4170.23,
+            source: 'CAUSAL_OB_EXTREME',
+            source_location_id: causalOb.id,
+            relationship_status: 'SAME_DISPLACEMENT_LINEAGE'
+        }));
+        expect(invalidation.evidence_refs).toEqual([fvg.id, causalOb.id]);
+    });
+
+    it('deduplicates model-funnel records so LIVE cannot exceed cumulative target-ready records', () => {
+        const ctx = getContext();
+        const record = {
+            id: 'ONE-CANONICAL-CANDIDATE', entry_model: 'LIQUIDITY_OB_FVG', direction: 'SELL',
+            lifecycle_state: 'PENDING_UNFILLED', pending_side_eligible: 'YES', entry_reachable_today: true,
+            stop_loss: 110, tp1: 90, structural_stop_valid: 'YES', structural_target_valid: 'YES',
+            PATH_EVALUATED: 'YES', PATH_STATUS: 'CLEAR', PATH_QUALITY_RESULT: 'PASS',
+            CANDIDATE_AUTHORITY: 'LIVE'
+        };
+        const funnel = ctx.buildMarketMechanicsModelFunnel([
+            { entry_model: 'LIQUIDITY_OB_FVG', setup_formation_confirmed: true }
+        ], {
+            raw_candidates: [record], all_rejected_candidates: [{ ...record, rejection_code: null }], live_candidates: [record]
+        });
+        expect(funnel.LIQUIDITY_OB_FVG).toEqual(expect.objectContaining({
+            raw: 1, formation_complete: 1, lifecycle_eligible: 1, correct_side: 1,
+            stop_ready: 1, target_ready: 1, live: 1
+        }));
+    });
 });
 
 describe('Market Mechanics end-to-end qualification authority', () => {
@@ -4441,6 +4519,28 @@ describe('Market Mechanics packet authority', () => {
         expect(text).not.toContain('1R/2R/3R');
         expect(text).toContain('AUTHORITY_INVARIANTS=FAIL');
         expect(text).toContain('AUTHORITY_INVARIANT_VIOLATION');
+    });
+
+    test('raw packet preserves lowercase NO clear-path evidence instead of reversing it through truthiness', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const constrained = {
+            ...qualifiedMarketMechanicsCandidate,
+            clear_path_to_tp1: 'NO',
+            path_quality: {
+                path_evaluated: 'YES', path_status: 'CONSTRAINED',
+                path_quality_result: 'PASS_WITH_PENALTY', qualification_blockers: []
+            }
+        };
+        const replay = completeReplay({
+            pair: 'XAU/USD', strategy_mode: 'MARKET_MECHANICS', scan_as_of: '2026-10-18T10:00:00Z',
+            quote: { price: 4185, quote_time: '2026-10-18T10:00:00Z' },
+            market_plan: { valid_context: true, market_plan_complete: true, direction: 'SELL', primary_poi: { id: 'POI-1' } },
+            valid_candidates: [constrained], history: {}
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('LIVE_CANDIDATE OPPORTUNITY_ID=MM-MARKET-SHIFT-1');
+        expect(text).toContain('CLEAR_PATH=NO PATH_STATUS=CONSTRAINED PATH_EVALUATED=YES PATH_QUALITY_RESULT=PASS_WITH_PENALTY');
+        expect(text).not.toContain('CLEAR_PATH=YES PATH_STATUS=CONSTRAINED');
     });
 
     test('manual Market Mechanics packet exposes active completed opportunities even when deterministic quality gates warn', () => {
