@@ -1,299 +1,192 @@
-# Session Context — AI-First Setup Generation (2026-08-19) + Entry Filters (2026-09-03) + Direction Compare (2026-09-03) + Holistic Evidence + Raw Candles + Decision Hierarchy (2026-09-06) + AI Validation Layer (2026-09-06)
+# Current Engineering Handoff — Market Mechanics Pending Engine
 
-> Read this file when resuming work on this project. It records what was done
-> in the last sessions so we can pick up where we left off.
+Updated: 2026-10-20
 
-## Project
-- **ICT Pro Trader Bot** — Telegram mini app trading XAU/USD (and other pairs)
-- Folder: `D:\telegram mini app` | Repo: `github.com/yaanu06/ict-telegram-bot` (branch `main`)
-- Stack: plain HTML/CSS/JS (`index.html`, `style.css`, `script.js`), jest tests (`script.test.js`), data in `data/`
-- Run tests: `npx jest` | Syntax check: `node --check script.js`
+Read this file before making further changes. It records the current verified
+repository state, the latest production-packet diagnosis, and the remaining
+work. Do not treat older chat summaries or historical packet results as current.
 
----
+## Repository and safety
 
-## What was done in the 2026-09-03 session (most recent)
+- Repository: `C:\Users\hassa\ict-telegram-bot`
+- Remote: `yaanu06/ict-telegram-bot`
+- Branch: `main`
+- Current pushed HEAD before this handoff update:
+  `1fd9898a077ec4a12ab352ebe156fe0612bd75df`
+- Production strategy: `V2 MARKET_MECHANICS`
+- Legacy trade authority must remain disabled.
+- Kronos remains informational only.
+- There is no DeepSeek API and no automatic broker execution. The user copies
+  the RAW packet into DeepSeek manually.
+- `packet/` is untracked user diagnostic data. It is read-only: never modify,
+  delete, rename, stage, commit, or push it. Never use `git add -A`.
 
-### 1. Repo review + pull from remote
-- Working tree was clean, `origin/main` was 1 commit ahead (auto-record `1e4a56b`).
-- `git pull --rebase` brought in 13 auto-recorded setup JSONs in `data/setups/` (XAU, EUR, BTC, AUD). No code changes from remote.
-- No new local commits before this session.
+## Last implemented and pushed repair
 
-### 2. Enhanced AI intelligence (commit `d610c72` → pushed)
-Added 6 new analysis functions AFTER the existing `runAutoScan` block, before the JSON OUTPUT section:
+Commit `1fd9898` (`fix(market-mechanics): enforce causal risk and path authority`)
+implemented:
 
-1. `analyzeMarketPhase(data)` — script.js:3124ish — AMD (Accumulation / Manipulation / Distribution) with confidence, volatility, volume ratio, sweep detection.
-2. `detectDivergence(data, indicator, lookback)` — RSI & MACD regular + hidden divergences.
-3. `mapLiquidity(data)` — swing-based liquidity pools above/below + equal highs/lows.
-4. `analyzeVolumeProfile(data)` — POC, VAH, VAL (70% value area).
-5. `analyzeSentiment(data)` — composite RSI + trend + volume + MACD score (0–100). **Fixed divide-by-zero** in the original `(recentVolume/avgVolume).toFixed(2)` by guarding `avgVolume > 0`.
-6. `trackAIPerformance()` + `getPatternPerformance()` — localStorage self-learning keyed by setup id.
+- causal same-timeframe OB invalidation for LIQUIDITY_OB_FVG execution zones;
+- explicit path evaluation for deterministic LIVE authority;
+- UNKNOWN/INCOMPLETE path cannot pass the canonical LIVE normalizer;
+- constrained path can pass only as `CONSTRAINED/PASS_WITH_PENALTY`;
+- model-funnel record deduplication;
+- AI compact-path defaults fail closed instead of defaulting to clear;
+- RAW LIVE serialization preserves lowercase `clear_path_to_tp1="NO"` rather
+  than reversing it through JavaScript truthiness.
 
-Wired into `runAutoScan`:
-- Right after `await updateMTFDisplay(historyCache)` (script.js:2651), computes all 5 analyses on 4H (sentiment also on 1H) into an `enhancedAnalysis` object.
-- New prompt section "🧠 ENHANCED AI INTELLIGENCE" injected into `scanTextData` (script.js:~2803).
-- After AI returns, `getPatternPerformance` is applied to nudge confidence (only when `sampleSize >= 5` and `|adjustment| >= 1`).
+Validation at that commit:
 
-Wired self-learning:
-- `markRecentOutcome()` (script.js:3025) now calls `trackAIPerformance` on Win/Loss with patterns, confidence, and parsed RR.
+- Jest: 23 suites passed; 952 passed, 3 skipped, 955 total.
+- Python: 7 tests passed with `python -m unittest discover -s tools -p "test_*.py"`.
+- `node --check script.js`: passed.
+- `git diff --check`: passed.
+- Production health endpoint returned HTTP 200.
+- `HEAD == origin/main` was verified.
 
-### 3. 4 Entry Filters (commit `b259044` → pushed `a99bd7c`)
+## Latest packet inspected after that commit
 
-User reported SL hits → asked for entry confirmation, smart SL, phase-based entry, session filter.
+Read-only packet: `packet/xauusd new.txt`
 
-**Decisions taken (user answered multi-choice):**
-- **SL**: keep current `calcStopLoss` (2.0x ATR for XAU, 1.5x others) — proposed version was *tighter* (0.5x buffer + 1.5x/1.8x min), not wider. Reject.
-- **Integration**: AI prompt only (not `analyzeTimeframe`) — the legacy wrapper is unused by the AI-first flow.
-- **Session logic**: ICT canonical windows — drop the non-existent 3rd silver bullet.
-- **Confirmation**: advisory only — surface signals to AI, don't hard-block (limit orders at zone price must still fire).
+- Packet commit: `1fd9898a077ec4a12ab352ebe156fe0612bd75df`
+- Generated: `2026-10-20T06:16:17.205Z`
+- Symbol: XAU/USD
+- Current price: `4120.66`
+- Data quality: FRESH on 1D/4H/1H/15M/5M and quote; missing count zero.
+- Market Plan: SELL / BEARISH / CONTINUATION.
+- Primary draw: 1H sell-side liquidity at `4115.57`.
 
-**4 new functions + aggregator** (script.js:3263+):
-1. `shouldTradeSession(now)` — London KZ 7–10, NY KZ 12–15, Lon-close 15–17, Asian 0–4, silver bullet 8:30–9 and 15–16 UTC. Returns `priority` (MAX/HIGH/LOW), `shouldTrade`, `multiplier`, `isKillzone/isSilverBullet/isAsian/isOffHours`. **Fixed** the `shouldTrade = priority !== 'LOW' || isSilverBullet` short-circuit → now `priority === 'MAX' || priority === 'HIGH'`.
-2. `shouldEnterBasedOnPhase(phase, direction, price, data)` — ACCUMULATION allow; MANIPULATION block until sweep; DISTRIBUTION block until displacement; NEUTRAL default.
-3. `checkEntryConfirmation(data, zone, direction)` — price-action on LTF (15M/5M). Scores 9 signals (engulfing, pin bar, momentum, EMA alignment, sweep, BOS, close outside zone, volume spike) only when price is *at* the zone. Threshold: 25.
-4. `buildEntryContext(sessionCheck, marketPhase, phaseDecision, entryConfirmation)` — aggregator → `allOk`, formatted `lines` for prompt, `summary`.
+### Critical contradictions in the packet
 
-**Wired into the AI-first flow (runAutoScan):**
-- Context computed right after `enhancedAnalysis` (script.js:~2676).
-- New prompt section "🎯 ENTRY FILTERS (SESSION / PHASE / CONFIRMATION)" with explicit AI rules.
-- **Hard client-side safety net** (script.js:~2979): if filters block but AI returned `enter_now`, override to `wait_for_reaction` and set `aiResult.filterOverride = entryContext.summary`. Execute button also disabled when `sessionCheck.priority === 'LOW'`.
-- Limit orders at zone price still work: when price is not at zone, `isAtZone: false` and the filter is informational (won't block).
+The canonical funnel reports:
 
-### Tests
-- 19 → **30 passing** (+11 for the 3 filters + aggregator).
-- `node --check script.js` clean.
-- File changes: `script.js` +359, `script.test.js` +99.
+- RAW=33
+- lifecycle eligible=4
+- correct side=4
+- reachable=0
+- stop ready=0
+- target ready=0
+- path ready=NONE
 
-### Git
-- Both commits rebased onto auto-record commits, pushed to `origin/main`.
-- Local HEAD after session: `a99bd7c` (push of `b259044`).
+But the packet simultaneously reports two LIVE CRT candidates:
 
-### 4. AI compares BOTH directions (commit `e039098`)
+1. zone `4133.28-4140.415`, entry `4136.85`, stop `4151.21`;
+2. zone `4134.4175-4139.465`, entry `4136.94`, stop `4151.30`.
 
-User reported: AI was finding the first setup (e.g. Turtle Soup BUY) and outputting it without comparing to the opposite (e.g. Hidden Bearish Divergence → SELL). Missed opportunities.
+Both LIVE rows say:
 
-**Fix:** added a new prompt section "⚖️ CRITICAL: COMPARE BOTH DIRECTIONS" (script.js:~2860) right before "🎯 YOUR TASK". It tells the AI to:
-- Build a BUY setup AND a SELL setup independently
-- Compare them on confidence / RR / patterns / HTF alignment / probability
-- Output only the winner (or `skip` if both < 58 confidence)
-- Include `reasoning.why_best` and `opposite_setup.{direction,confidence,why_rejected}` in the JSON
+- `PATH_STATUS=INCOMPLETE`
+- `PATH_EVALUATED=NO`
+- `PATH_QUALITY_RESULT=INCOMPLETE`
+- `CANDIDATE_AUTHORITY=LIVE`
+- `BLOCKERS=NONE`
 
-**New function `normalizeOppositeSetup(input, chosenDirection)`** (script.js:2422) — extracted to module scope for testability. Fills defaults when AI omits the field:
-- `direction` → opposite of chosen
-- `confidence` → 0 (or coerced to number if AI sent string)
-- `why_rejected` → 'Not provided by AI'
+This violates the intended authority invariant and proves that a downstream
+packet path bypasses the canonical normalizer.
 
-Called from `askAIToFindSetup` (script.js:~2498) after the reasoning defaults block.
+### Verified code-level bypass
 
-**Wired into trade_signal output** (script.js:~2953): added `opposite_setup: aiResult.opposite_setup` to the out object, so the field is visible in the JSON tab and persisted to `data/setups/*.json` via `syncSetupToGitHub`.
+In `buildRawTextMarketAnalysisPacket`, when
+`source.market_mechanics.authority_summary` exists, the code constructs
+`authority` by copying:
 
-**NOT done (intentionally):**
-- Did NOT make `opposite_setup` required — would break the build if DeepSeek omits it.
-- Did NOT add a client-side BUY-vs-SELL re-comparison — the AI is the right place.
-
-**Tests:** 30 → **35 passing** (+5 for `normalizeOppositeSetup`: null, direction flip, partial, non-numeric confidence, full input).
-
-**File changes:** `script.js` +74, `script.test.js` +57.
-
-### 5. Holistic BUY vs SELL evidence scoring (commit `3f0f004` → pushed `5c887a9`)
-
-User reported: AI was finding one pattern (e.g. Turtle Soup) and running with it, ignoring contradictory evidence. Needed to force the AI to weigh ALL evidence first.
-
-**Two new pure functions (script.js:2437, 2559):**
-
-1. `computeHolisticEvidence({ dailyDir, h4Dir, h1Dir, candles, indicators, patterns, phase, rsiDiv, macdDiv })` — scores 10 BUY and 10 SELL signals (1D/4H/1H trend, HH/LL, above/below EMAs, FVG/OB by direction, Turtle Soup, divergence, phase). Returns `{ flags, buyScore, sellScore, diff, suggestedDirection }`. `suggestedDirection === 'NEUTRAL'` when `|diff| < 20`.
-
-2. `buildHolisticPromptBlock({ evidence, dailyDir, h4Dir, h1Dir })` — formats the exact "### BUY EVIDENCE" / "### SELL EVIDENCE" table with `✅ +pts` / `❌ 0` lines.
-
-**Scoring weights:**
-- 1D direction: 30 | 4H: 20 | 1H: 15
-- HH/LL price action: 25
-- Above/below all 4 key EMAs: 15
-- Bull/Bear FVG: 10 | Bull/Bear OB: 10
-- Turtle Soup BUY/SELL: 20
-- Bull/Bear Divergence (RSI or MACD): 15
-- Accumulation/Distribution: 10
-
-**Wired into `runAutoScan` (script.js:~2906):**
-- Computed right after the dirs.
-- New prompt section "📊 HOLISTIC EVIDENCE ANALYSIS (BUY vs SELL)" injected between entry filters and direction-compare. Tells AI: "Do NOT anchor on a single pattern."
-
-**Client-side safety net (script.js:~3166):** if `holistic.suggestedDirection === 'NEUTRAL'` but AI said `enter_now`, override to `wait_for_reaction` and set `aiResult.filterOverride = 'Holistic score too close (BUY X vs SELL Y, diff Z)'`. Execute button disabled.
-
-**Tests:** 35 → 40 passing (+5: NEUTRAL empty, BUY dominates, SELL dominates, NEUTRAL when within 20, prompt block format).
-
-**File changes:** `script.js` +213, `script.test.js` +99.
-
-### 6. Raw OHLC candle data in AI prompt (commit `d93a303` → pushed `ad66511`)
-
-User reported: AI was only seeing summarized data, not actual candles. Wanted to give the AI raw price action.
-
-**New pure function `buildCandleData(historyCache, count = 10)`** (script.js:2560) — iterates `['1D', '4H', '1H', '15M', '5M']`, skips TFs with < 10 candles, formats each as:
-```
-### 4H CANDLES (Last 10):
-  220: O:4280.50 H:4295.20 L:4278.10 C:4290.30 V:12345
-  ...
-```
-Volume included, indices are absolute (not relative), OHLC 2-decimal fixed.
-
-**Wired into `runAutoScan` (script.js:~2915):** computed right after `holistic`, then injected as new prompt section "📊 RAW CANDLE DATA (YOU CAN SEE EVERYTHING)" between holistic block and direction-compare. Includes 6-bullet guidance: engulfing, pin bars, price action at zones, momentum shifts, market structure, professional judgments.
-
-**Token budget kept at 2000** (per user). 10 candles × 5 TFs ≈ 3.5KB. Fits well in 8K context.
-
-**Tests:** 40 → 43 passing (+3: empty input, full format with 50 lines across 5 TFs, partial input where 4H too short is skipped). **Note:** I actually added 3 tests, not the planned 2 — the 3rd (partial input skip) was a freebie that caught a real edge case.
-
-**File changes:** `script.js` +50, `script.test.js` +43.
-
-### 7. Decision Hierarchy - 5-Step Ghost Machine Matrix (commit `9bde799` → pushed)
-
-User reported: AI prompt was getting too long and the AI was still making inconsistent decisions. Asked for a SIMPLER, more decisive hierarchy: trend → zone → confirmation → session → RR.
-
-**Prompt section added (script.js:3058-3099)** — between `CRITICAL: COMPARE BOTH DIRECTIONS` and `🎯 YOUR TASK`:
-```
-🎯 DECISION HIERARCHY - GHOST MACHINE STYLE
-1️⃣ TREND (1D/4H) — aligned = direction, conflict = SKIP
-2️⃣ ZONE — FVG/OB/MSNR in trend direction, within 3x ATR, entry AT zone
-3️⃣ CONFIRMATION — CRT / Turtle Soup / Zone Reaction (need 1+)
-4️⃣ SESSION — Killzone/Silver Bullet = GOOD, off-hours = SKIP
-5️⃣ RISK/REWARD — must be > 2.5, else SKIP
-
-📋 DECISION MATRIX (5 checkboxes)
-If ALL 5 checked → enter_now
-If ANY missing → wait_for_reaction or skip
+```js
+live_candidates: source.live_market_mechanics_candidates
+    || source.valid_candidates
+    || []
 ```
 
-**JSON schema additions (script.js:3150-3157):** new `decision_matrix` field with self-reported booleans:
-- `trend_aligned`, `zone_found`, `confirmation` (CRT/TBS/Reaction/None), `good_session`, `rr_good`, `all_conditions_pass`.
+Those stored rows are not passed through `marketMechanicsLiveCandidates()` or
+`normalizeMarketMechanicsAuthority()` again. This is why commit `1fd9898`
+correctly tightened the canonical normalizer but the RAW packet still printed
+stored path-incomplete candidates as LIVE.
 
-**Other changes:**
-- Bumped RR floor from `1:1.5` → `1:2.5` (script.js:3165) — hard rule from hierarchy step 5.
-- Added closing rule: "BE DECISIVE: If all 5 conditions pass → enter_now. If any fail → wait_for_reaction or skip. NO 'maybe' decisions." (script.js:3185).
+The packet serializer is now honest about the path state; the remaining defect
+is that the stored-authority branch still calls those candidates LIVE.
 
-**Why this matters:**
-- Forces the AI to a 5-step checklist, not free-form reasoning.
-- Decision matrix field gives us a quick diagnostic: when the AI says enter_now but `all_conditions_pass: false`, we know to override client-side.
-- RR floor of 2.5 (vs 1.5) means winners cover losers with bigger buffer.
+### CRT identity collision and geometry mixing
 
-**Tests:** stayed at 43 (no new tests — the hierarchy is a prompt change, not new pure functions).
-**File changes:** `script.js` +56, -2.
+Several distinct CRT execution zones share the same setup ID:
 
-### 8. AI Validation/Reconciliation Layer + Volume Gating + Auto Outcome Detection (commit `bf42a47` → pushed)
+`MARKET_PLAN:CRT_AGGRESSIVE:1H:SELL:1792472400000`
 
-User reported structural bug: the AI setup path (`askAIToFindSetup` / DeepSeek) was never validated against the deterministic rule engine (`evaluateSetup`'s CHoCH gate, HTF direction gate, zone freshness, loss protection, trade gap, EV gate, RR minimum). The rule engine only ran inside `runFallbackScan()`, which only fires if the AI call fails outright. So in normal operation none of the rules applied to AI setups. Plus asked for synthetic-volume gating, auto outcome detection, and minor bug fixes.
+The ID includes timeframe, direction and event time, but not zone boundaries or
+the CRT reference. Distinct zones therefore collide during candidate/manual
+shortlist matching and deduplication.
 
-**A. NEW FUNCTION: `validateAISetup(aiResult, price, historyCache, pair)` (script.js:2941)**
-Runs the deterministic rule engine against the AI's claim. 6 hard checks:
-1. **Zone reconciliation** — recompute `findPatternZone` on 4H/1H; reject if `aiResult.entry` is > 0.15% from any real zone and not within zone low/high.
-2. **RR recompute** — recompute from `aiResult.entry`/`stop_loss`/`take_profit_1`; reject if < 1.5x regardless of what `aiResult.risk_reward` claims.
-3. **CHoCH gate** — `detectCHoCH` on 4H/1H; reject if true.
-4. **1D direction gate** — `getDirectionBias` + `calculateADX`; reject if AI direction fights 1D bias with ADX > 20.
-5. **Loss protection + trade gap** — `checkLossProtection()` and `checkTradeGap(2)`.
-6. **Zone freshness** — `checkZoneFreshness` on matched zone; reject if touches > `MAX_ZONE_TOUCHES`.
+The clearest corruption in the packet is:
 
-**Independent confidence scoring (script.js:2993):** 60% local (HTF match 0-3, ADX strength, freshness, pattern count, **detectMSS** +/-6, ATR distance, RR quality) + 40% AI claim. `aiResult.confidence` is now ONE input, not the source of truth.
+- displayed manual zone: `4123.53-4131.485`;
+- suggested entry: `4136.85`;
+- entry `4136.85` actually belongs to the different CRT zone
+  `4133.28-4140.415`.
 
-**Wired into `runAutoScan` (script.js:3617):** between the AI return and the tradeable gate. If invalid: `ai_decision` forced to `wait_for_reaction`, `filterOverride` set, validation block attached to JSON output, execute button disabled, notif surfaces the reason. NOT silently overwritten by `runFallbackScan`. If valid: `aiResult.confidence` replaced by `adjustedConfidence`, factors logged.
+The same manual row says `ACTIVE_UNTOUCHED`, `ENTRY_TOUCHED=NO`, and
+`ENTRY_CONSUMED=NO`, but its warnings include `ENTRY_ALREADY_CONSUMED` and
+`LIFECYCLE_REJECTED`. These warnings were merged from a different record with
+the colliding setup identity.
 
-**B. VOLUME GATING (`hasRealVolume`, script.js:32)**
-- New per-pair flag: `REAL_VOLUME_PAIRS = new Set(['BTC/USD'])` — Twelve Data returns synthetic volume (the `v: +c.volume || 1e6` fallback in `getHistory`) for forex/metals. Fake volume was being scored as real confirmation.
-- `analyzeVolumeTruth`, `analyzeSentiment`, `analyzeMarketPhase` all accept `realVolume` arg. When false: volumeSurge/fake/dryUp → all false; volumeSentiment → 0; volumeRatio → 1.0 (neutral, can't trigger ACCUMULATION).
-- All 3 callers in `runAutoScan`/`evaluateSetup` updated to pass `hasRealVolume(pair)`.
+This contradiction caused manual DeepSeek to reject the newer CRT by treating
+pre-actionable/other-zone price traversal as consumption.
 
-**C. AUTO OUTCOME DETECTION (pendingFills queue)**
-- `enqueuePendingFill(order, fillPrice)` (script.js:882) — called inside `startMonitor` when a limit fills. Pushes to `localStorage['pendingFills']`.
-- `resolvePendingFill(fill, candles)` (script.js:912) — pure function for tests. Walks post-fill 5M candles, finds the earliest SL or TP1 wick. Returns `{ resolved, outcome: 'WIN'|'LOSS'|null, reason }`.
-- `checkPendingFills()` (script.js:956) — called every 6 ticks in `startMonitor` (~12s). Resolves each pending fill, calls `recordTradeResult(isWin, r)`, shows notif. Drops fills >7 days old. Keeps unresolved ones in queue.
-- The Win/Loss buttons in the Recent UI (`handleRecentClick` → `markRecentOutcome`) are still wired as a manual override.
+### Opportunity interpretation
 
-**D. MINOR BUG FIXES**
-- `calcStopLoss` (script.js:1190): `sl` was assigned without `let`/`const`. Added.
-- `findPatternZone` (script.js:1452): removed dead duplicate branch — both `distPct <= 1.0` and `distPct > 1.0` resolved to `entry = direction === 'BUY' ? best.high : best.low`. Single branch now (kept the explanatory comment).
-- `detectMSS` (script.js:632): was defined but never called. Wired into `validateAISetup` as +/-6 scoring factor based on whether the recent MSS direction matches `aiResult.direction`.
+The 4H FVG at `4149.55-4158.81` and the 1H MSNR at `4145.47-4147.03` are active
+and above current price, but their proposed HTF stops near `4191` produce poor
+reward/risk under the configured 2.5R minimum. They should not be forced LIVE.
 
-**E. Tests**
-- 43 → **59 passing** (+16):
-  - `hasRealVolume` + 3 volume-gating tests (analyzeVolumeTruth surge zeroed on synth, analyzeMarketPhase ACCUMULATION blocked, analyzeSentiment volumeSentiment zeroed)
-  - `validateAISetup`: 5 cases (valid setup structure, bad direction, missing fields, low RR, blend confidence)
-  - `resolvePendingFill`: 6 cases (LOSS first, WIN first, unresolved, SHORT symmetric, empty candles, bad date)
-  - `pendingFills`: enqueue/load/clear round-trip
-- `node --check script.js` clean.
+The two newer CRT SELL zones may be genuine pending opportunities because their
+lifecycle audits say they became actionable at `1792476000000` and remained
+untouched afterward. However, they cannot be authorized yet because path was not
+evaluated. A fresh opposing 4H BUY FVG/demand at `4106.70-4136.20` begins almost
+immediately below the proposed entries and lies before targets around `4092`.
+The canonical path audit must determine whether this is constrained or blocked.
 
-**NOT done (intentionally):**
-- Did NOT make the existing Win/Loss buttons in the Recent UI more visually prominent — the user spec asked for that OR auto-detection; we did auto and kept the buttons.
-- Did NOT re-test the full `runAutoScan` flow against the real DeepSeek API (would require keys + manual UI run).
-- Did NOT add server-side rate-limiting on `syncSetupToGitHub` for the new `validation` field.
+Therefore the manual DeepSeek `NO_TRADE` response was prudent, but its claim that
+the newest CRT was definitely consumed is not supported by the packet's own
+post-formation lifecycle audit. The packet is too contradictory to make a safe
+trade decision.
 
----
+## Remaining repair — do this next
 
-## Earlier session (2026-08-19) — still relevant
+1. Remove the stored-authority bypass in `buildRawTextMarketAnalysisPacket`.
+   Always recompute packet LIVE rows with `marketMechanicsAuthoritySummary()`
+   from canonical candidate records. A stored summary may provide diagnostics,
+   but may not supply unnormalized LIVE rows.
+2. Make missing/incomplete path evidence fail LIVE in every projection: canonical
+   catalog, stored context, RAW packet, compact semantic package, public UI and
+   manual packet.
+3. Generate unique CRT setup/campaign/candidate IDs using at least event time,
+   direction, timeframe, zone low, zone high and source CRT reference.
+4. Match manual opportunities by unique candidate/zone ID, never only by the
+   non-unique source setup ID.
+5. Enforce `entry` inside the exact execution zone associated with the candidate.
+   Do not serialize mixed geometry.
+6. Keep lifecycle and warning provenance candidate-specific. An
+   `ENTRY_ALREADY_CONSUMED` record from one CRT zone must never contaminate a
+   sibling zone.
+7. Recompute path quality for the exact two CRT candidates using the 4H opposing
+   zone `4106.70-4136.20`; expose nearest barrier and distance in R.
+8. Build all funnel counts and LIVE count from one deduplicated cumulative
+   candidate population. Enforce:
+   `LIVE <= PATH_READY <= TARGET_READY <= STOP_READY <= REACHABLE`.
+9. In `buildMarketMechanicsModelFunnel`, count LIVE only when that exact record
+   also passed the cumulative target and path stages; do not count membership in
+   a stale `liveIds` set by itself.
+10. Add an end-to-end regression using the latest XAU packet facts and the
+    stored-authority branch. The test must fail if a row is serialized LIVE with
+    `PATH_EVALUATED=NO`, if entry lies outside its zone, or if sibling lifecycle
+    warnings are merged.
 
-### Core change: AI now creates the COMPLETE setup from scratch
-Previously the bot used rule-based logic to find setups and AI only reviewed the decision.
-Now the AI (DeepSeek) is the **primary analyst** and builds the entire setup.
+## Acceptance conditions for the next commit
 
-Files changed: `script.js` only.
-
-New functions added BEFORE `runAutoScan()`:
-1. `askAIToFindSetup(marketData, price)` — script.js:2422
-2. `runFallbackScan(price, historyCache)` — script.js:2533
-3. `runAutoScan()` — script.js:2618 (fully replaced)
-   - Flow: getPrice → 5M/15M/1H/4H/1D/1W history → MTF display → indicators → patterns → session+news → quote direction → big prompt → `askAIToFindSetup` → build `trade_signal`, `lastSetupSummary`, `analysis`, `syncSetupToGitHub`, enable execute button with `🤖 AI Setup: <dir>` label, purple gradient.
-   - Tradeable gate (now strengthened in 2026-09-03 session): `ai_decision !== 'skip' && confidence >= 58 && sessionCheck.priority !== 'LOW'`.
-4. `handleLimit()` — script.js:3232 — `source: 'AI-Generated' | 'Rule-Based'`.
-
-### AI advisory mode
-- `AI_ADVISORY_ONLY = true` (script.js:41) still defined but **unused** by the new flow.
-- The old `getAIExecutionDecision()` function was removed at some point (grep returns no matches now).
-
-### Encoding gotcha (IMPORTANT for future edits)
-- File is UTF-8 **without BOM**, CRLF line endings.
-- NEVER edit script.js via PowerShell `Get-Content`/`Set-Content`. Use Edit/Write tools, or `[System.IO.File]::ReadAllLines(path, [System.Text.Encoding]::UTF8)` + `WriteAllLines(path, lines, New-Object System.Text.UTF8Encoding($false))`.
-
-## Verification
-- `node --check script.js` — SYNTAX OK
-- `npx jest` — 62/62 tests pass
-
-## Git notes
-- The bot auto-pushes "🤖 Auto-record ICT setup" commits to `data/` frequently → always `git pull --rebase` (or fetch+rebase) before pushing.
-- **Current local HEAD:** `5da5317` (push of validateAISetup fixes)
-- **Recent commits this session (in order):**
-  - `d610c72` — feat: enhanced AI intelligence (AMD, divergence, liquidity, volume profile, sentiment, self-learning)
-  - `b259044` — feat: 4 entry filters (session, phase, confirmation, build entry context)
-  - `190be6e` → `3e4cd67` — docs: update SESSION_CONTEXT
-  - `e039098` — feat: AI compares both directions, returns opposite_setup + why_best
-  - `f2ea3d1` — docs: update SESSION_CONTEXT
-  - `3f0f004` → `5c887a9` — feat: holistic BUY vs SELL evidence scoring
-  - `d93a303` → `ad66511` — feat: feed raw OHLC candle data to AI
-  - `9bde799` — feat: simplify AI decision hierarchy (5-step ghost-machine matrix)
-  - `bf42a47` — feat: AI setup validation/reconciliation + volume gating + auto outcome detection
-  - `d561055` — docs: update SESSION_CONTEXT with validation layer
-  - `5da5317` — fix: validateAISetup zone hard-reject, MSS agreement, HTF trend consistency, independent outcome poller
-
-## Possible follow-ups (not done)
-- **No ground-truth trade outcomes are stored** — `data/journal/` and `data/trade_history/` don't exist. Without user marking recents as Win/Loss, self-learning never gets data. Consider adding automatic TP-hit/SL-hit detection by polling live price.
-- **Filter override is silent** — only sets `aiResult.filterOverride` field. Consider showing a UI notification "Trade blocked: Off-hours" (or "Holistic score too close") so the user knows why the execute button is disabled.
-- **Add client-side sanity check on direction** — the AI now claims to compare, but we could cross-check `aiResult.direction` against the dominant HTF trend (1D/4H/1H) from `getQuoteDirection` and downgrade confidence if they conflict.
-- **Expose `opposite_setup` in the UI** — currently only visible in the JSON tab. Could add a "Why not the other direction?" expandable section in the analysis panel.
-- **Expose `holistic` scores in the UI** — currently buried in the prompt. Would help the user see WHY the AI picked (or didn't pick) a direction.
-- **No server-side sanitization**; keys stored client-side (known limitation, IMPROVEMENTS.md)
-- **`scanFill` progress bar** is fetched in new runAutoScan but no longer updated — could remove or wire up.
-- **Fallback `runFallbackScan`** in the catch block may get undefined `price`/`historyCache` if the error happens before they're set.
-
-### 9. validateAISetup 4 Corrective Fixes (commit `5da5317` -> pushed)
-
-User reported 4 issues with the validation layer added in commit `bf42a47`.
-
-**Fix 1: CHECK 1 zone reconciliation now hard-rejects.** Previously `validateAISetup` only pushed a reason to `lastScanRejections` when no zone matched, but did NOT `return reject(...)` — so the setup still passed overall. Now consistent with the RR/CHoCH/daily-direction/loss-protection checks.
-
-**Fix 2: detectMSS direction-agreement scoring.** Was called `detectMSS(historyCache['4H'], direction)` but `detectMSS(d)` only takes one arg — `direction` was silently ignored, so it always +6'd whenever any MSS existed (and `mssOk === false` was dead code since detectMSS never returns false). Now calls `detectMSS(historyCache['4H'])` and compares `mss.type` ('BULL'/'BEAR') against `aiResult.direction` ourselves: +6 when they agree, -3 when they disagree.
-
-**Fix 3: independent outcome poller.** `checkPendingFills()` was only called inside `startMonitor()`'s `setInterval`, gated behind `limitOrder` being active. But `clearLimit()` tears down the interval at the exact moment an order fills and gets enqueued — so resolution only happened if the user placed ANOTHER order. Fixed by adding an immediate call + `setInterval(..., 60000)` in `init()`. Removed the now-redundant `tickCount % 6` trigger from `startMonitor`.
-
-**Fix 4: HTF alignment uses detectTrend, not getDirectionBias.** `validateAISetup` was computing HTF alignment via `getDirectionBias()` on each timeframe, but the AI prompt and `evaluateSetup` both derive `dailyDir/h4Dir/h1Dir` via `getQuoteDirection() -> detectTrend()`. These can disagree on the same candles, so the HTF match the AI was shown could differ from the one used to score it. Now `validateAISetup` uses `detectTrend()` directly (matching `getQuoteDirection`'s logic) for consistency. (CHECK 4's daily-direction gate intentionally still uses `getDirectionBias + ADX`.)
-- **No ground-truth trade outcomes are stored** — `data/journal/` and `data/trade_history/` don't exist. Without user marking recents as Win/Loss, self-learning never gets data. Consider adding automatic TP-hit/SL-hit detection by polling live price.
-- **Filter override is silent** — only sets `aiResult.filterOverride` field. Consider showing a UI notification "Trade blocked: Off-hours" (or "Holistic score too close") so the user knows why the execute button is disabled.
-- **Add client-side sanity check on direction** — the AI now claims to compare, but we could cross-check `aiResult.direction` against the dominant HTF trend (1D/4H/1H) from `getQuoteDirection` and downgrade confidence if they conflict.
-- **Expose `opposite_setup` in the UI** — currently only visible in the JSON tab. Could add a "Why not the other direction?" expandable section in the analysis panel.
-- **Expose `holistic` scores in the UI** — currently buried in the prompt. Would help the user see WHY the AI picked (or didn't pick) a direction.
-- **No server-side sanitization**; keys stored client-side (known limitation, IMPROVEMENTS.md)
-- **`scanFill` progress bar** is fetched in new runAutoScan but no longer updated — could remove or wire up.
-- **Fallback `runFallbackScan`** in the catch block may get undefined `price`/`historyCache` if the error happens before they're set.
+- Packet cannot contain a LIVE row with incomplete/unknown path.
+- The two CRT zones have distinct stable IDs.
+- Each CRT entry is inside its own serialized zone.
+- Active untouched lifecycle remains distinct from consumed sibling zones.
+- Funnel counts are cumulative and cannot contradict LIVE count.
+- Manual shortlist may expose active formations with warnings, but cannot mix
+  geometry or lifecycle evidence.
+- No threshold relaxation, no forced trade, and no post-touch confirmation.
+- Full Jest, Python, syntax, packet replay, production-path and diff checks pass.
+- Stage only explicit tracked files; `packet/` remains untouched/untracked.
