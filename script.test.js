@@ -2891,9 +2891,9 @@ describe('Analyze scan lifecycle', () => {
         return candles(60, 100, 0.1, 'up').map((candle, index) => ({ o: 100, c: 100, h: 100.03, l: 99.97, v: candle.v, t: end - (59 - index) * duration, is_closed: true, timeframe }));
     };
     const baseLiveContext = (candidates, pairLocal = 'EUR/USD', scanHistoryCache = null) => ({
-        pair: pairLocal, snapshot_id: `TVKIT:${pairLocal.replace('/', '_')}:test`, current_price: 100, as_of_time_utc: '2026-09-29T10:00:00Z',
+        pair: pairLocal, snapshot_id: `TVKIT:${pairLocal.replace('/', '_')}:test`, current_price: 100, as_of_time_utc: new Date(Date.now()).toISOString(),
         historyCache: scanHistoryCache || Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, historyFixture(tf)])),
-        quote_snapshot: { price: 100, timestamp: '2026-09-29T09:59:00Z', provider: 'TVKIT' },
+        quote_snapshot: { price: 100, timestamp: new Date(Date.now() - 60000).toISOString(), provider: 'TVKIT' },
         provider_metadata: { provider: 'TVKIT' },
         session: { name: 'TEST' },
         market_regime: { primary_regime: 'RANGING' },
@@ -3833,6 +3833,67 @@ describe('canonical Market Mechanics production routing', () => {
         expect(compact.qualification_blockers).toContain('PATH_INCOMPLETE');
     });
 
+    it('revalidates stored packet authority and cannot print a path-incomplete row as LIVE', () => {
+        const ctx = getContext();
+        const candidate = {
+            id: 'XAU-CRT-STORED', direction: 'SELL', entry_model: 'CRT_AGGRESSIVE', execution_model: 'PENDING_LIMIT',
+            market_mechanics_verified: true, setup_formation_confirmed: true,
+            execution_zone: { id: 'CRT-ZONE-4133', low: 4133.28, high: 4140.415 },
+            entry: 4136.85, stop_loss: 4151.21, tp1: 4092.76,
+            pending_limit_valid: true, pending_limit_geometry_complete: 'YES',
+            structural_stop_valid: 'YES', structural_target_valid: 'YES', setup_confidence: 56,
+            MODEL_QUALIFIED: 'YES', TRADE_QUALIFIED: 'YES', trade_qualified: true,
+            qualification_result: 'PASS', PATH_EVALUATED: 'NO', PATH_STATUS: 'INCOMPLETE', PATH_QUALITY_RESULT: 'INCOMPLETE'
+        };
+        const replay = completeReplay({
+            pair: 'XAU/USD', strategy_mode: 'MARKET_MECHANICS', snapshot_id: 'XAU-STORED-AUTHORITY',
+            scan_as_of: '2026-10-20T06:16:17Z', quote: { price: 4120.66, bid: 4120.60, ask: 4120.72 },
+            market_plan: { valid_context: true, market_plan_complete: true, direction: 'SELL', primary_poi: { id: 'POI-XAU', type: 'MSNR', low: 4181, high: 4186 } },
+            market_mechanics: {
+                authority_summary: { live_candidate_count: 1, live_candidate_ids: [candidate.id], authority_invariants: 'PASS' },
+                candidate_catalog: { live_candidates: [candidate], raw_candidates: [], rejected_candidates: [] }
+            },
+            live_market_mechanics_candidates: [candidate], valid_candidates: [candidate], history: {}
+        });
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(packet).toContain('LIVE_CANDIDATES=NONE');
+        expect(packet).not.toContain('LIVE_CANDIDATE OPPORTUNITY_ID=XAU-CRT-STORED');
+        expect(packet).toContain('AUTHORITY_INVARIANTS=FAIL');
+    });
+
+    it('binds candidate matching and manual deduplication to the exact execution zone', () => {
+        const ctx = getContext();
+        expect(ctx.marketMechanicsSetupCandidateMatch(
+            { strategy_setup_id: 'SHARED-CRT', zone: { id: 'CRT-ZONE-B' } },
+            { id: 'SHARED-CRT', execution_zone: { id: 'CRT-ZONE-A' } }
+        )).toBe(false);
+        const shortlist = ctx.buildManualMarketMechanicsOpportunityShortlist({
+            pair: 'XAU/USD', quote: { price: 4120.66 }, data_quality: { status: 'FRESH' },
+            market_mechanics: { model_states: [
+                { id: 'CRT-OPPORTUNITY-A', source_setup_id: 'SHARED-CRT', direction: 'SELL', model: 'CRT_AGGRESSIVE', timeframe: '1H', confirmation_state: 'CONFIRMED', entry_zone_low: 4133.28, entry_zone_high: 4140.415, proposed_entry: 4136.85, entry_zone_touched: 'NO', entry_consumed: 'NO' },
+                { id: 'CRT-OPPORTUNITY-B', source_setup_id: 'SHARED-CRT', direction: 'SELL', model: 'CRT_AGGRESSIVE', timeframe: '1H', confirmation_state: 'CONFIRMED', entry_zone_low: 4134.4175, entry_zone_high: 4139.465, proposed_entry: 4136.94, entry_zone_touched: 'NO', entry_consumed: 'NO' }
+            ] }
+        }, 4120.66);
+        expect(shortlist).toHaveLength(2);
+        expect(shortlist.map(item => item.opportunity_id)).toEqual(['CRT-OPPORTUNITY-A', 'CRT-OPPORTUNITY-B']);
+        expect(shortlist.every(item => item.suggested_entry >= item.entry_zone_low && item.suggested_entry <= item.entry_zone_high)).toBe(true);
+    });
+
+    it('rejects LIVE authority when the serialized entry belongs to a different execution zone', () => {
+        const ctx = getContext();
+        const normalized = ctx.normalizeMarketMechanicsAuthority({
+            id: 'MIXED-CRT-GEOMETRY', direction: 'SELL', entry_model: 'CRT_AGGRESSIVE', execution_model: 'PENDING_LIMIT',
+            market_mechanics_verified: true, setup_formation_confirmed: true,
+            execution_zone: { id: 'CRT-ZONE-OLD', low: 4123.53, high: 4131.485 },
+            entry: 4136.85, stop_loss: 4151.21, tp1: 4092.76,
+            pending_limit_valid: true, pending_limit_geometry_complete: 'YES', setup_confidence: 60,
+            MODEL_QUALIFIED: 'YES', TRADE_QUALIFIED: 'YES', qualification_result: 'PASS',
+            path_quality: { path_evaluated: 'YES', path_status: 'CLEAR', path_quality_result: 'PASS', qualification_blockers: [] }
+        }, { strategy_mode: 'MARKET_MECHANICS', market_plan: { valid_context: true, market_plan_complete: true, primary_poi: { id: 'PARENT' } } }, 'LIVE');
+        expect(normalized.CANDIDATE_AUTHORITY).toBe('DIAGNOSTIC_ONLY');
+        expect(normalized.QUALIFICATION_BLOCKERS).toContain('ENTRY_OUTSIDE_EXECUTION_ZONE');
+    });
+
     it('links an untouched FVG to its same-episode causal OB extreme instead of a distant HTF stop', () => {
         const ctx = getContext();
         const fvg = {
@@ -4716,6 +4777,65 @@ describe('Market Mechanics packet authority', () => {
         expect(text).toContain('DATA_1H_STATUS=FRESH');
         expect(text).toContain('DATA_15M_STATUS=FRESH');
         expect(text).toContain('DATA_5M_STATUS=FRESH');
+    });
+
+    test('scan replay exports one canonical timestamped snapshot with completeness and quote sides', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const asOf = '2026-10-20T06:16:17.000Z';
+        const historyCache = {};
+        const durations = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 };
+        for (const timeframe of ['1D', '4H', '1H', '15M', '5M']) {
+            const duration = durations[timeframe];
+            const rows = [{ t: Date.parse(asOf) - duration, o: 100, h: 102, l: 99, c: 101, v: 1, is_closed: true }];
+            Object.defineProperty(rows, 'provider_metadata', { value: {
+                provider: 'TVKIT', timestamp_semantics: 'OPEN', interval_ms: duration,
+                provider_timezone: 'UTC', symbol: 'OANDA:XAUUSD'
+            }, enumerable: false });
+            historyCache[timeframe] = rows;
+        }
+        const completeness = { complete: true, required_timeframes: ['1D', '4H', '1H', '15M', '5M'], missing_timeframes: [] };
+        const replay = ctx.createScanReplay({
+            pair: 'XAU/USD', strategy_mode: 'MARKET_MECHANICS', snapshot_id: 'SNAP-CANONICAL-1',
+            as_of_time_utc: asOf, current_price: 101,
+            quote_snapshot: { price: 101, bid: 100.9, ask: 101.1, provider_timestamp: Date.parse(asOf), quote_source: 'QUOTE' },
+            symbol_metadata: { asset_class: 'METAL' }, historyCache, snapshot_completeness: completeness,
+            provider_metadata: Object.fromEntries(Object.entries(historyCache).map(([timeframe, rows]) => [timeframe, rows.provider_metadata]))
+        });
+        expect(replay.snapshot_contract_version).toBe('CANONICAL_MARKET_SNAPSHOT_V1');
+        expect(replay.snapshot_completeness).toEqual(completeness);
+        expect(replay.quote).toEqual(expect.objectContaining({ bid: 100.9, ask: 101.1, quote_source: 'QUOTE' }));
+        expect(replay.history['1H'][0]).toEqual(expect.objectContaining({
+            timestamp_semantics: 'OPEN',
+            canonical_open_time: Date.parse(asOf) - durations['1H'],
+            canonical_close_time: Date.parse(asOf),
+            closed_at_scan: true
+        }));
+    });
+
+    test('canonical snapshot and replay reject a provider-flagged candle that closes after scan time', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const asOf = '2026-10-20T07:52:00.000Z';
+        const duration = 3_600_000;
+        const historyCache = {};
+        for (const timeframe of ['1D', '4H', '1H', '15M', '5M']) {
+            const tfDuration = { '1D': 86400000, '4H': 14400000, '1H': duration, '15M': 900000, '5M': 300000 }[timeframe];
+            const rows = [
+                { t: Date.parse(asOf) - tfDuration, o: 100, h: 102, l: 99, c: 101, is_closed: true },
+                { t: timeframe === '1H' ? Date.parse('2026-10-20T07:00:00.000Z') : Date.parse(asOf), o: 101, h: 103, l: 100, c: 102, is_closed: true }
+            ];
+            Object.defineProperty(rows, 'provider_metadata', { value: {
+                provider: 'TVKIT', timestamp_semantics: 'OPEN', interval_ms: tfDuration
+            }, enumerable: false });
+            historyCache[timeframe] = rows;
+        }
+        const replay = ctx.createScanReplay({
+            pair: 'XAU/USD', strategy_mode: 'MARKET_MECHANICS', snapshot_id: 'NO-FUTURE-CANDLE',
+            as_of_time_utc: asOf, current_price: 101, quote_snapshot: { price: 101 }, historyCache,
+            provider_metadata: Object.fromEntries(Object.entries(historyCache).map(([tf, rows]) => [tf, rows.provider_metadata])),
+            snapshot_completeness: { complete: true }
+        });
+        expect(replay.history['1H']).toHaveLength(1);
+        expect(replay.history['1H'][0].canonical_close_time).toBeLessThanOrEqual(Date.parse(asOf));
     });
 
     test('production entry point keeps the FX daily context fresh on Monday before the new daily close', () => {

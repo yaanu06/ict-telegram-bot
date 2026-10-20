@@ -128,6 +128,10 @@ def response_bar(bar: Any, interval: str, interval_ms: int) -> dict[str, Any]:
     result = {
         "datetime": iso(ts),
         "timestamp": ts,
+        "provider_timestamp": ts,
+        "open_time": iso(ts),
+        "close_time": iso(ts + interval_ms),
+        "timestamp_semantics": "OPEN",
         "open": float(value(bar, "open")),
         "high": float(value(bar, "high")),
         "low": float(value(bar, "low")),
@@ -142,6 +146,44 @@ def response_bar(bar: Any, interval: str, interval_ms: int) -> dict[str, Any]:
             pass
     result["is_closed"] = ts + interval_ms <= int(datetime.now(tz=timezone.utc).timestamp() * 1000)
     return result
+
+
+def quote_market_fields(quote: Any) -> dict[str, Any]:
+    """Return safe provider quote facts without account/session credentials."""
+    info = value(quote, "symbol_info")
+    if not isinstance(info, dict):
+        info = value(quote, "quote_data")
+    info = info if isinstance(info, dict) else {}
+
+    def finite_number(*names: str) -> float | None:
+        for name in names:
+            raw = info.get(name)
+            if raw is None:
+                continue
+            try:
+                number = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(number) and number > 0:
+                return number
+        return None
+
+    safe_metadata_keys = (
+        "exchange", "listed_exchange", "type", "currency_code", "timezone",
+        "session", "current_session", "market_status", "pricescale", "minmov",
+        "minmove2", "fractional",
+    )
+    metadata = {key: info[key] for key in safe_metadata_keys if info.get(key) is not None}
+    bid = finite_number("bid", "bid_price")
+    ask = finite_number("ask", "ask_price")
+    return {
+        "bid": bid,
+        "ask": ask,
+        "spread": ask - bid if bid is not None and ask is not None and ask >= bid else None,
+        "tradeable": info.get("tradeable") if isinstance(info.get("tradeable"), bool) else None,
+        "market_status": info.get("market_status") or info.get("current_session"),
+        "symbol_metadata": metadata,
+    }
 
 
 async def fetch_time_series(symbol: str, interval: str, outputsize: int) -> dict[str, Any]:
@@ -166,6 +208,11 @@ async def fetch_time_series(symbol: str, interval: str, outputsize: int) -> dict
             "provider_symbol": provider_symbol,
             "interval": interval,
             "timezone": "UTC",
+            "timestamp_semantics": "OPEN",
+            "timestamp_unit": "MILLISECONDS",
+            "bar_time_meaning": "BAR_OPEN_TIME",
+            "interval_ms": interval_ms,
+            "fetched_at": iso(int(datetime.now(tz=timezone.utc).timestamp() * 1000)),
             "raw_count": len(values),
         },
     }
@@ -190,6 +237,7 @@ async def fetch_quote(symbol: str) -> dict[str, Any]:
                 "timestamp": iso(provider_timestamp) if provider_timestamp is not None else None,
                 "symbol": provider_symbol,
                 "provider": "TVKIT",
+                **quote_market_fields(quote),
             }
     raise RuntimeError(f"tvkit returned no quote for {provider_symbol}")
 

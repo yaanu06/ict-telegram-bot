@@ -1507,8 +1507,8 @@ function getMarketOpenState(forPair = pair, scanSnapshot = {}) {
 async function fetchMarketQuoteSnapshotUncached(forPair = pair, options = {}) {
     const p = normalizeCanonicalMarketSymbol(forPair || pair);
     const forceRefresh = options?.forceRefresh === true;
-    const symbolMetadata = getSymbolMetadata(p);
-    const assetClass = symbolMetadata.asset_class;
+    let symbolMetadata = getSymbolMetadata(p);
+    let assetClass = symbolMetadata.asset_class;
     try {
         const providerSymbol = getMarketDataProvider() === 'TVKIT' ? getTvkitSymbol(p) : getProviderSymbol(p);
         const quote = await fetchTD('/quote?symbol=' + encodeURIComponent(providerSymbol));
@@ -1519,6 +1519,8 @@ async function fetchMarketQuoteSnapshotUncached(forPair = pair, options = {}) {
         const providerTimestamp = normalizeTimestampUTC(quote.timestamp ?? quote.datetime ?? quote.last_update);
         const providerOpen = parseProviderMarketOpen(quote.is_market_open ?? quote.market_open ?? quote.market_status);
         if (Number.isFinite(quotePrice) && quotePrice > 0) {
+            symbolMetadata = getSymbolMetadata(p, quote.symbol_metadata || {});
+            assetClass = symbolMetadata.asset_class;
             calls++;
             return {
                 pair: p,
@@ -1529,6 +1531,8 @@ async function fetchMarketQuoteSnapshotUncached(forPair = pair, options = {}) {
                 provider_timestamp: providerTimestamp,
                 provider_timestamp_utc: Number.isFinite(providerTimestamp) ? new Date(providerTimestamp).toISOString() : null,
                 is_market_open: providerOpen,
+                tradeable: quote.tradeable ?? null,
+                provider_market_status: quote.market_status ?? null,
                 asset_class: assetClass,
                 symbol_metadata: symbolMetadata,
                 source: getMarketDataProvider(),
@@ -1714,6 +1718,10 @@ async function fetchHistoryUncached(tfStr, forPair, options = {}) {
             calls++;
             const rawValues = d.values.map(c => ({
                 t: normalizeTimestampUTC(c?.datetime ?? c?.timestamp ?? c?.time ?? c?.date ?? c?.t),
+                provider_timestamp: normalizeTimestampUTC(c?.provider_timestamp ?? c?.timestamp ?? c?.datetime ?? c?.time ?? c?.date ?? c?.t),
+                provider_open_time: c?.open_time || null,
+                provider_close_time: c?.close_time || null,
+                provider_timestamp_semantics: c?.timestamp_semantics || d.meta?.timestamp_semantics || null,
                 o: +c.open,
                 h: +c.high,
                 l: +c.low,
@@ -1780,8 +1788,12 @@ async function fetchHistoryUncached(tfStr, forPair, options = {}) {
                 requested_timezone: 'UTC',
                 timeframe: tfStr,
                 symbol: providerSymbol,
-                timestamp_contract: ['1D', '1W'].includes(tfStr) ? 'PERIOD_BUCKET' : 'INTRADAY_UTC',
-                timestamp_semantics: 'OPEN',
+                timestamp_contract: d.meta?.bar_time_meaning
+                    || (['1D', '1W'].includes(tfStr) ? 'PERIOD_BUCKET' : 'INTRADAY_UTC'),
+                timestamp_semantics: d.meta?.timestamp_semantics || 'OPEN',
+                timestamp_unit: d.meta?.timestamp_unit || 'MILLISECONDS',
+                interval_ms: Number(d.meta?.interval_ms) || TIMEFRAME_MS[tfStr] || null,
+                provider_fetched_at: d.meta?.fetched_at || null,
                 raw_count: rawValues.length,
                 closed_count: values.length,
                 open_candles_filtered: rawValues.length - values.length
@@ -8249,7 +8261,7 @@ function buildMarketMechanicsStrategySetups(args = {}) {
             zone.pending_entry = pendingGeometry.entry;
             zone.pending_reference_price = pendingGeometry.reference;
             crtSetups.push({
-                id: `MARKET_PLAN:${model}:${timeframe}:${event.direction}:${firstKnowable}`,
+                id: `MARKET_PLAN:${model}:${timeframe}:${event.direction}:${firstKnowable}:${ictRound(low, prec)}:${ictRound(high, prec)}:${event.ref || 'NO_REF'}`,
                 primary: 'CRT', label: 'CRT', direction: event.direction, timeframe,
                 setup_timeframe: timeframe, execution_timeframe: timeframe === '4H' ? '1H' : '5M',
                 event_time: firstKnowable, execution_event_time: conservative ? confirmationTime : firstKnowable,
@@ -8357,8 +8369,11 @@ function marketMechanicsSetupCandidateMatch(candidate = {}, setup = {}) {
     const candidateSetupId = String(candidate.strategy_setup?.id || candidate.strategy_setup_id || '');
     const candidateZoneId = String(candidate.zone?.id || candidate.execution_zone?.id || candidate.execution_zone_id || '');
     const candidateId = String(candidate.id || candidate.candidate_id || '');
-    return (setupId && (candidateSetupId === setupId || candidateId === setupId))
-        || (zoneId && (candidateZoneId === zoneId || candidateId === zoneId));
+    // Execution-zone identity is stronger than a parent setup identity.
+    // One CRT event may expose multiple independently-lived refinements.
+    if (zoneId && candidateZoneId) return candidateZoneId === zoneId;
+    if (zoneId) return candidateId === zoneId;
+    return setupId && (candidateSetupId === setupId || candidateId === setupId);
 }
 
 function marketMechanicsEntryZoneRelation(price, zone = {}) {
@@ -15083,6 +15098,13 @@ function normalizeMarketMechanicsAuthority(candidate = {}, source = {}, requeste
         || '').toUpperCase();
     const targetDelivered = ['DELIVERED', 'COMPLETED', 'CONSUMED', 'INVALIDATED', 'EXPIRED'].includes(targetLifecycle);
     const geometryBlocked = explicitGeometryValid === false || String(explicitGeometryValid ?? '').toUpperCase() === 'NO';
+    const entry = Number(candidate.entry ?? candidate.proposed_entry);
+    const zoneLow = Number(candidate.zone_low ?? candidate.entry_zone_low
+        ?? candidate.execution_zone?.low ?? candidate.zone?.low);
+    const zoneHigh = Number(candidate.zone_high ?? candidate.entry_zone_high
+        ?? candidate.execution_zone?.high ?? candidate.zone?.high);
+    const zoneGeometryKnown = [entry, zoneLow, zoneHigh].every(Number.isFinite) && zoneHigh >= zoneLow;
+    const entryOutsideExecutionZone = zoneGeometryKnown && (entry < zoneLow || entry > zoneHigh);
     const path = marketMechanicsPathEvaluation(candidate);
     const entryInsideOpposing = path.entry_inside_opposing_4h;
     const pathStatus = path.status;
@@ -15122,6 +15144,7 @@ function normalizeMarketMechanicsAuthority(candidate = {}, source = {}, requeste
         ...(targetDelivered ? ['SETUP_ALREADY_COMPLETED'] : []),
         ...(lifecycleTerminal ? ['ENTRY_ALREADY_CONSUMED'] : []),
         ...(geometryBlocked ? ['INVALID_PENDING_LIMIT_GEOMETRY'] : []),
+        ...(entryOutsideExecutionZone ? ['ENTRY_OUTSIDE_EXECUTION_ZONE'] : []),
         ...(confidenceMissing ? ['DETERMINISTIC_CONFIDENCE_MISSING'] : [])
     ])];
     const live = requestedAuthority === 'LIVE'
@@ -15136,6 +15159,7 @@ function normalizeMarketMechanicsAuthority(candidate = {}, source = {}, requeste
         && !targetDelivered
         && !lifecycleTerminal
         && !geometryBlocked
+        && !entryOutsideExecutionZone
         && !confidenceMissing
         && !contradictoryAuthority
         && !authorityConflict
@@ -15330,6 +15354,20 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
     const pathReadyCandidates = targetReadyCandidates.filter(candidate => {
         return marketMechanicsPathEvaluation(candidate).pass;
     });
+    const pathReadyIds = new Set(pathReadyCandidates
+        .map(candidate => candidate?.id || candidate?.candidate_id).filter(Boolean));
+    const canonicalLiveCandidates = authority.live_candidates.filter(candidate =>
+        pathReadyIds.has(candidate?.id || candidate?.candidate_id));
+    const canonicalAuthority = {
+        ...authority,
+        live_candidates: canonicalLiveCandidates,
+        live_candidate_ids: canonicalLiveCandidates
+            .map(candidate => candidate?.id || candidate?.candidate_id).filter(Boolean),
+        invariants: authority.invariants === 'PASS'
+            && canonicalLiveCandidates.length === authority.live_candidates.length ? 'PASS' : 'FAIL',
+        invariant_violation: canonicalLiveCandidates.length === authority.live_candidates.length
+            ? authority.invariant_violation : 'CANDIDATE_FUNNEL_INVARIANT_VIOLATION'
+    };
     const blockerPrecedence = [
         'MARKET_DATA_STALE', 'MARKET_DATA_INCOMPLETE', 'INVALID_MARKET_DATA',
         'MARKET_PLAN_INVALID', 'MARKET_PLAN_POI_INVALID', 'EXECUTION_POI_INVALID',
@@ -15348,7 +15386,7 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
         const blocker = marketMechanicsCanonicalBlocker(rawBlocker);
         blockerCounts[blocker] = (blockerCounts[blocker] || 0) + 1;
     }
-    const finalPrimaryBlocker = authority.live_candidates.length
+    const finalPrimaryBlocker = canonicalAuthority.live_candidates.length
         ? 'NONE'
         : blockerPrecedence.find(blocker => blockerCounts[blocker] > 0)
             || Object.entries(blockerCounts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0]
@@ -15378,15 +15416,15 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
         target_ready_zone_count: targetReadyCandidates.length,
         path_ready_zone_count: pathReadyCandidates.length,
         forming_count: formingStates.length,
-        live_count: authority.live_candidates.length,
+        live_count: canonicalAuthority.live_candidates.length,
         historical_count: historicalCandidateIds.size,
         blocker_counts: blockerCounts,
         final_primary_blocker: finalPrimaryBlocker
     };
     return {
         ...partitioned,
-        authority,
-        live_candidates: authority.live_candidates,
+        authority: canonicalAuthority,
+        live_candidates: canonicalAuthority.live_candidates,
         forming_candidates: formingStates,
         historical_model_states: historicalStates,
         historical_candidates: [...partitioned.historical_candidates, ...historicalStates],
@@ -15414,8 +15452,10 @@ function buildMarketMechanicsModelFunnel(strategySetups = [], candidateCatalog =
         formation_complete: 0,
         correct_side: 0,
         lifecycle_eligible: 0,
+        reachable: 0,
         stop_ready: 0,
         target_ready: 0,
+        path_ready: 0,
         live: 0,
         blockers: {}
     }]));
@@ -15451,11 +15491,14 @@ function buildMarketMechanicsModelFunnel(strategySetups = [], candidateCatalog =
         const targetReady = stopReady && Number.isFinite(Number(record.tp1))
             && record.structural_target_valid !== false && String(record.structural_target_valid ?? '').toUpperCase() !== 'NO'
             && !['DELIVERED', 'COMPLETED', 'CONSUMED', 'INVALIDATED', 'EXPIRED'].includes(String(record.target_lifecycle_state || record.target_lifecycle?.lifecycle_state || '').toUpperCase());
+        const pathReady = targetReady && marketMechanicsPathEvaluation(record).pass;
         if (lifecycleEligible) row.lifecycle_eligible++;
         if (sideEligible) row.correct_side++;
+        if (reachable) row.reachable++;
         if (stopReady) row.stop_ready++;
         if (targetReady) row.target_ready++;
-        if (liveIds.has(record.id || record.candidate_id)) row.live++;
+        if (pathReady) row.path_ready++;
+        if (pathReady && liveIds.has(record.id || record.candidate_id)) row.live++;
         if (record.primary_blocker || record.rejection_code) bumpBlocker(record);
     }
     return byModel;
@@ -16235,8 +16278,36 @@ function assertScanReplaySafe(value, path = 'replay') {
 
 function createScanReplay(liveMarketContext, finalOutput = null) {
     if (!liveMarketContext?.pair || !liveMarketContext.historyCache) throw new Error('No completed live scan is available for replay capture');
+    const scanAsOfMs = normalizeTimestampUTC(liveMarketContext.as_of_time_utc);
+    const replayHistory = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(timeframe => {
+        const metadata = liveMarketContext.historyCache[timeframe]?.provider_metadata || {};
+        const semantics = String(metadata.timestamp_semantics || 'OPEN').toUpperCase();
+        const duration = TIMEFRAME_MS[timeframe] || 60 * 60000;
+        const candles = (liveMarketContext.historyCache[timeframe] || [])
+            .filter(candle => candle && candle.is_closed !== false)
+            .map(candle => {
+                const providerTime = normalizeTimestampUTC(candle.provider_timestamp ?? candle.t);
+                const canonicalOpen = semantics === 'CLOSE' ? providerTime - duration : providerTime;
+                return {
+                    ...candle,
+                    provider_timestamp: Number.isFinite(providerTime) ? providerTime : null,
+                    timestamp_semantics: semantics,
+                    canonical_open_time: Number.isFinite(canonicalOpen) ? canonicalOpen : null,
+                    canonical_close_time: Number.isFinite(canonicalOpen) ? canonicalOpen + duration : null,
+                    closed_at_scan: Number.isFinite(canonicalOpen) && Number.isFinite(scanAsOfMs)
+                        ? canonicalOpen + duration <= scanAsOfMs + STRATEGY_SPEC.TIME.futureToleranceMs
+                        : candle.is_closed !== false
+                };
+            })
+            // The provider's closed flag is supporting metadata, not an
+            // override for evaluation-time chronology.  Captures contain
+            // only candles that were actually closed at the scan boundary.
+            .filter(candle => candle.closed_at_scan === true);
+        return [timeframe, candles];
+    }));
     const replay = sanitizeScanReplayValue({
         schema_version: 1,
+        snapshot_contract_version: 'CANONICAL_MARKET_SNAPSHOT_V1',
         app_git_commit: APP_GIT_COMMIT,
         engine_schema_version: ENGINE_SCHEMA_VERSION,
         strategy_engine: STRATEGY_ENGINE,
@@ -16247,9 +16318,13 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         captured_at: new Date().toISOString(),
         scan_as_of: liveMarketContext.as_of_time_utc,
         quote: { price: liveMarketContext.current_price, quote_time: liveMarketContext.quote_snapshot?.timestamp || liveMarketContext.provider_timestamp_utc || liveMarketContext.as_of_time_utc,
+            provider_timestamp: liveMarketContext.quote_snapshot?.provider_timestamp ?? null,
             bid: liveMarketContext.quote_snapshot?.bid ?? null, ask: liveMarketContext.quote_snapshot?.ask ?? null,
-            spread: liveMarketContext.quote_snapshot?.spread ?? null, symbol_metadata: liveMarketContext.symbol_metadata || liveMarketContext.quote_snapshot?.symbol_metadata || null },
-        history: Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, (liveMarketContext.historyCache[tf] || []).filter(c => c && c.is_closed !== false)])),
+            spread: liveMarketContext.quote_snapshot?.spread ?? null,
+            tradeable: liveMarketContext.quote_snapshot?.tradeable ?? null,
+            quote_source: liveMarketContext.quote_snapshot?.quote_source || liveMarketContext.quote_snapshot?.source || null,
+            symbol_metadata: liveMarketContext.symbol_metadata || liveMarketContext.quote_snapshot?.symbol_metadata || null },
+        history: replayHistory,
         indicators: liveMarketContext.indicators || {},
         holistic: liveMarketContext.holistic || liveMarketContext.multi_timeframe_direction?.holistic || {},
         structure: liveMarketContext.structure || {},
@@ -16258,6 +16333,7 @@ function createScanReplay(liveMarketContext, finalOutput = null) {
         poi_zones: liveMarketContext.poi_zones || [],
         target_candidates: liveMarketContext.target_candidates || {},
         provider_metadata: liveMarketContext.provider_metadata || null,
+        snapshot_completeness: liveMarketContext.snapshot_completeness || null,
         asset_class: liveMarketContext.asset_class || liveMarketContext.symbol_metadata?.asset_class || null,
         session: liveMarketContext.session || null,
         volatility: liveMarketContext.volatility || null,
@@ -16338,15 +16414,29 @@ function replayCapturedScan(replay) {
     const price = Number(replay.quote?.price);
     const asOfMs = normalizeTimestampUTC(replay.scan_as_of);
     if (!replay.pair || !Number.isFinite(price) || !Number.isFinite(asOfMs)) throw new Error('Replay pair, price, and scan_as_of are required');
-    const historyCache = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => [tf, (replay.history?.[tf] || []).filter(c => c && c.is_closed !== false).map(c => ({ ...c }))]));
+    const historyCache = Object.fromEntries(['1D', '4H', '1H', '15M', '5M'].map(tf => {
+        const rows = (replay.history?.[tf] || [])
+            .filter(c => c && c.is_closed !== false && c.closed_at_scan !== false)
+            .map(c => ({ ...c }));
+        Object.defineProperty(rows, 'provider_metadata', {
+            value: replay.provider_metadata?.[tf] || {}, enumerable: false
+        });
+        return [tf, rows];
+    }));
     const symbolMetadata = replay.quote?.symbol_metadata || replay.runtime_state?.quote_snapshot?.symbol_metadata || {};
     const patterns = buildReplayPatterns(historyCache, price, replay.pair, symbolMetadata);
     const live = buildLiveMarketContext({ pair: replay.pair, price, historyCache, indicators: replay.indicators || {}, patterns,
         enhancedAnalysis: { phase: { phase: replay.market_regime?.phase || 'UNKNOWN' } }, holistic: replay.holistic || {}, entryContext: null,
-        as_of_ms: asOfMs, quote_snapshot: replay.runtime_state?.quote_snapshot ? {
-            ...replay.runtime_state.quote_snapshot,
-            provider_timestamp: replay.runtime_state.quote_snapshot.provider_timestamp ?? normalizeTimestampUTC(replay.runtime_state.quote_snapshot.provider_timestamp_utc),
-            provider_timestamp_utc: replay.runtime_state.quote_snapshot.provider_timestamp_utc || replay.runtime_state.quote_snapshot.timestamp || null
+        as_of_ms: asOfMs, quote_snapshot: replay.quote ? {
+            ...replay.quote,
+            ...(replay.runtime_state?.quote_snapshot || {}),
+            provider_timestamp: replay.runtime_state?.quote_snapshot?.provider_timestamp
+                ?? replay.quote.provider_timestamp
+                ?? normalizeTimestampUTC(replay.quote.quote_time),
+            provider_timestamp_utc: replay.runtime_state?.quote_snapshot?.provider_timestamp_utc
+                || replay.runtime_state?.quote_snapshot?.timestamp
+                || replay.quote.quote_time || null,
+            source: replay.quote.quote_source || replay.runtime_state?.quote_snapshot?.source || null
         } : null });
     const today = buildTodayOpportunity({ pair: replay.pair, currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
         marketContext: live.market_context, strategySetups: filterLiveStrategySetupsForAuthority(live.strategy_setups, live), executionZones: [...(live.strategy_execution_zones || []), ...(live.real_ict_zones || [])],
@@ -17427,7 +17517,10 @@ function buildManualMarketMechanicsOpportunityShortlist(source = {}, currentPric
     for (const item of manualMarketMechanicsSources(source)) {
         if (!item) continue;
         const row = manualMarketMechanicsOpportunityRecord(item, source, currentPrice);
-        const identity = row.source_setup_id || row.opportunity_id;
+        // Geometry and lifecycle belong to the exact execution opportunity.
+        // A shared parent setup/event is supporting evidence, not identity.
+        const identity = row.opportunity_id
+            || [row.source_setup_id, row.execution_poi, row.entry_zone_low, row.entry_zone_high].join('|');
         if (!identity || seen.has(identity)) continue;
         // Canonical model states come first. A less complete duplicate cannot
         // revive their terminal result or overwrite verified chronology.
@@ -19566,21 +19659,23 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const precision = rawTextPacketPrecision(symbol, metadata, price);
     const generatedAt = new Date().toISOString();
     const marketMechanicsMode = isMarketMechanicsMode(source);
+    const packetCandidateSources = marketMechanicsMode ? [
+        ...(source.market_mechanics?.candidate_catalog?.live_candidates || []),
+        ...(source.live_market_mechanics_candidates || []),
+        ...(source.valid_candidates || [])
+    ] : [];
+    const packetCandidatesById = new Map();
+    for (const candidate of packetCandidateSources) {
+        const id = candidate?.id || candidate?.candidate_id;
+        if (!id) continue;
+        packetCandidatesById.set(id, { ...(packetCandidatesById.get(id) || {}), ...candidate });
+    }
     const authoritySource = marketMechanicsMode
-        ? { ...source, strategy_mode: 'MARKET_MECHANICS', adaptive_setup_candidates: source.live_market_mechanics_candidates || source.valid_candidates || [] }
+        ? { ...source, strategy_mode: 'MARKET_MECHANICS', adaptive_setup_candidates: [...packetCandidatesById.values()] }
         : source;
-    const storedAuthority = marketMechanicsMode ? source.market_mechanics?.authority_summary : null;
-    const authority = marketMechanicsMode
-        ? storedAuthority
-            ? {
-                ...storedAuthority,
-                live_candidates: source.live_market_mechanics_candidates || source.valid_candidates || [],
-                live_candidate_ids: storedAuthority.live_candidate_ids || (source.live_market_mechanics_candidates || source.valid_candidates || []).map(candidate => candidate.id).filter(Boolean),
-                active_authority_count: storedAuthority.active_authority_count ?? 1,
-                invariants: storedAuthority.authority_invariants || storedAuthority.invariants || 'FAIL'
-            }
-            : marketMechanicsAuthoritySummary(authoritySource)
-        : null;
+    // Stored summaries are diagnostics only. Every printed LIVE row is
+    // revalidated so stale packet state cannot bypass canonical safeguards.
+    const authority = marketMechanicsMode ? marketMechanicsAuthoritySummary(authoritySource) : null;
     const lines = [
         '=== AI TRADING PACKET ===',
         'SYMBOL: ' + symbol,
@@ -19589,6 +19684,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         'GENERATED AT: ' + generatedAt,
         ...(marketMechanicsMode ? [
             'V2_STRATEGY_MODE=MARKET_MECHANICS',
+            'SNAPSHOT_CONTRACT_VERSION=' + String(source.snapshot_contract_version || 'LEGACY_REPLAY'),
             'APP_GIT_COMMIT=' + String(source.app_git_commit || source.packet_identity?.app_git_commit || APP_GIT_COMMIT),
             'ENGINE_SCHEMA_VERSION=' + String(source.engine_schema_version || source.packet_identity?.engine_schema_version || ENGINE_SCHEMA_VERSION),
             'STRATEGY_ENGINE=' + String(source.strategy_engine || source.packet_identity?.strategy_engine || STRATEGY_ENGINE),
@@ -19775,7 +19871,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         const modelFunnel = source.market_mechanics?.model_funnel || {};
         const modelStatus = Object.values(modelFunnel).map(row => {
             const blockers = Object.entries(row.blockers || {}).sort((a, b) => b[1] - a[1]).map(([code, count]) => `${code}:${count}`).join(',');
-            return `${row.model}:RAW=${row.raw}:FORMED=${row.formation_complete}:SIDE=${row.correct_side}:STOP=${row.stop_ready}:TARGET=${row.target_ready}:LIVE=${row.live}${blockers ? `:BLOCKERS=${blockers}` : ''}`;
+            return `${row.model}:RAW=${row.raw}:FORMED=${row.formation_complete}:SIDE=${row.correct_side}:REACHABLE=${row.reachable}:STOP=${row.stop_ready}:TARGET=${row.target_ready}:PATH=${row.path_ready}:LIVE=${row.live}${blockers ? `:BLOCKERS=${blockers}` : ''}`;
         }).join('|');
         lines.push('ENTRY_MODEL_STATUS=' + (modelStatus || 'NONE')
             + ' FORMED_SETUP_COUNT=' + String(searchCounts.forming_count ?? 'NONE')
@@ -20159,6 +20255,27 @@ function copyRawMarketAnalysisPacket() {
     });
 }
 
+function buildCurrentCanonicalMarketSnapshotJson() {
+    const replay = currentScanArtifact?.replay;
+    if (!replay || replay.snapshot_contract_version !== 'CANONICAL_MARKET_SNAPSHOT_V1') {
+        throw new Error('Run a new completed analysis before exporting the canonical snapshot');
+    }
+    assertScanReplaySafe(replay);
+    return JSON.stringify(replay, null, 2);
+}
+
+async function copyCurrentCanonicalMarketSnapshot() {
+    try {
+        const copied = await writePlainTextToClipboard(buildCurrentCanonicalMarketSnapshotJson());
+        if (!copied) throw new Error('Clipboard unavailable');
+        showToast('Canonical market snapshot copied');
+        return true;
+    } catch (error) {
+        showNotif(error?.message || 'Canonical snapshot unavailable', 'warning');
+        return false;
+    }
+}
+
 if (typeof window !== 'undefined') {
     window.buildRawMarketAnalysisPacket = buildRawMarketAnalysisPacket;
     window.buildRawTextMarketAnalysisPacket = buildRawTextMarketAnalysisPacket;
@@ -20167,6 +20284,8 @@ if (typeof window !== 'undefined') {
     window.validateRawMarketAnalysisDecision = validateRawMarketAnalysisDecision;
     window.parseRawMarketAnalysisDecision = parseRawMarketAnalysisDecision;
     window.copyRawMarketAnalysisPacket = copyRawMarketAnalysisPacket;
+    window.buildCurrentCanonicalMarketSnapshotJson = buildCurrentCanonicalMarketSnapshotJson;
+    window.copyCurrentCanonicalMarketSnapshot = copyCurrentCanonicalMarketSnapshot;
 }
 
 function aiUtf8ByteLength(value) {
