@@ -4770,6 +4770,72 @@ describe('Market Mechanics packet authority', () => {
         expect(shortlist[0].quality_warnings).toContain('NO_STRUCTURAL_STOP');
     });
 
+    test('manual shortlist deduplicates a verified forming opportunity over an UNKNOWN-touch raw copy', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const forming = {
+            id: 'FORMING-4H-FVG', source_setup_id: 'ICT:CONTINUATION:SELL:4H-SELL-FVG-4149.55-4158.81',
+            direction: 'SELL', timeframe: '4H', entry_model: 'LIQUIDITY_OB_FVG',
+            execution_poi_id: '4H-SELL-FVG-4149.55-4158.81',
+            setup_formation_confirmed: true, state: 'PENDING_UNFILLED',
+            entry_zone_low: 4149.55, entry_zone_high: 4158.81, proposed_entry: 4154.18,
+            proposed_stop: 4191.66, proposed_objective: 4066.53, stop_source: 'HTF_STRUCTURE',
+            entry_zone_touched: 'NO', entry_consumed: 'NO', pending_limit_geometry_complete: 'YES',
+            CANDIDATE_AUTHORITY: 'LIVE', rr_policy: 'STRUCTURAL_FIRST', preferred_rr_met: false, minimum_rr: 2.5,
+            directional_liquidity_targets: [{ level: 4066.53, source: 'SELL_SIDE_LIQUIDITY' }],
+            target_candidates: [{ level: 4066.53, source: 'SELL_SIDE_LIQUIDITY' }],
+            quality_warnings: ['NONE', 'ALL_SUPPLIED_TARGETS_BELOW_PREFERRED_MINIMUM_RR']
+        };
+        const raw = {
+            id: '4H-FVG-RAW', source_setup_id: forming.source_setup_id,
+            direction: 'SELL', timeframe: '4H', entry_model: 'LIQUIDITY_OB_FVG',
+            execution_poi_id: forming.execution_poi_id, formation_confirmed: true,
+            entry_zone_low: 4149.55, entry_zone_high: 4158.81, proposed_entry: 4154.18,
+            proposed_stop: 4191.66, tp1: 4066.53, entry_zone_touched: 'UNKNOWN', entry_consumed: 'NO',
+            CANDIDATE_AUTHORITY: 'DIAGNOSTIC_ONLY'
+        };
+        const shortlist = ctx.buildManualMarketMechanicsOpportunityShortlist({
+            pair: 'XAU/USD', current_price: 4120.70, quote: { price: 4120.70 }, data_quality: { status: 'FRESH' },
+            market_mechanics: { candidate_catalog: {
+                forming_candidates: [forming], raw_candidates: [raw], all_rejected_candidates: []
+            } }
+        }, 4120.70);
+        expect(shortlist).toHaveLength(1);
+        expect(shortlist[0]).toEqual(expect.objectContaining({
+            opportunity_id: 'FORMING-4H-FVG', entry_touched: 'NO',
+            rr_policy: 'STRUCTURAL_FIRST', preferred_rr_met: false,
+            rr_quality_status: 'BELOW_PREFERRED'
+        }));
+        expect(shortlist[0].quality_warnings).toContain('ALL_SUPPLIED_TARGETS_BELOW_PREFERRED_MINIMUM_RR');
+        expect(shortlist[0].quality_warnings).not.toContain('NONE');
+    });
+
+    test('manual Market Mechanics contract accepts the best structural target below preferred RR without demanding confirmation', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = completeReplay({
+            pair: 'XAU/USD', strategy_mode: 'MARKET_MECHANICS', scan_as_of: '2026-10-20T14:33:00Z',
+            quote: { price: 4120.70, quote_time: '2026-10-20T14:33:00Z' },
+            data_quality: { status: 'FRESH' },
+            market_plan: { valid_context: true, direction: 'SELL', htf_trend: 'BEARISH', narrative: 'CONTINUATION' },
+            market_mechanics: { model_states: [{
+                id: 'XAU-4H-FVG-PENDING', direction: 'SELL', timeframe: '4H', model: 'LIQUIDITY_OB_FVG',
+                setup_formation_confirmed: true, state: 'PENDING_UNFILLED', market_plan_poi_valid: 'YES',
+                entry_zone_low: 4149.55, entry_zone_high: 4158.81, proposed_entry: 4154.18,
+                proposed_stop: 4191.66, proposed_objective: 4066.53, stop_source: 'HTF_STRUCTURE',
+                entry_zone_touched: 'NO', entry_consumed: 'NO',
+                CANDIDATE_AUTHORITY: 'LIVE', rr_policy: 'STRUCTURAL_FIRST', preferred_rr_met: false,
+                minimum_rr: 2.5, formation_evidence_refs: ['FVG-4H-EVIDENCE']
+            }] },
+            valid_candidates: [], history: {}
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('RR_QUALITY_STATUS=BELOW_PREFERRED');
+        expect(text).toContain('RR_POLICY=STRUCTURAL_FIRST PREFERRED_RR_MET=NO');
+        expect(text).not.toContain('RR_QUALITY_STATUS=FAIL');
+        expect(text).toContain('DECISION RULE: select the highest-quality active pending limit');
+        expect(text).toContain('Below-preferred RR with the best genuine structural target is acceptable');
+        expect(text).not.toContain('least-bad active opportunity');
+    });
+
     test('serializes Market Mechanics draw and bias fields without ambiguity or object coercion', () => {
         const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
         const replay = {

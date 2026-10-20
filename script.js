@@ -8711,6 +8711,8 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
         entry_valid: qualificationState.entry_valid || (Number.isFinite(geometry.entry) ? 'YES' : 'NO'),
         stop_valid: qualificationState.stop_valid || (Number.isFinite(geometry.stop_loss) ? 'YES' : 'NO'),
         target_valid: effectiveTargetValid,
+        rr_policy: candidate?.rr_policy || (candidate?.preferred_rr_met === false ? 'STRUCTURAL_FIRST' : 'PREFERRED_MINIMUM'),
+        preferred_rr_met: candidate?.preferred_rr_met === undefined ? null : candidate.preferred_rr_met,
         side_valid: qualificationState.side_valid || (pendingLimitValid ? 'YES' : 'NO'),
         price_order_valid: effectivePriceOrderValid,
         geometry_complete: qualificationState.geometry_complete || (geometryComplete ? 'YES' : 'NO'),
@@ -15461,7 +15463,14 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
         const blocker = marketMechanicsCanonicalBlocker(rawBlocker);
         blockerCounts[blocker] = (blockerCounts[blocker] || 0) + 1;
     }
-    const finalPrimaryBlocker = canonicalAuthority.live_candidates.length
+    const activePendingStates = formingStates.filter(state =>
+        String(state.state || '').toUpperCase() === 'PENDING_UNFILLED'
+        && String(state.entry_zone_touched || '').toUpperCase() === 'NO'
+        && String(state.entry_consumed || '').toUpperCase() !== 'YES'
+        && String(state.pending_limit_geometry_complete || '').toUpperCase() === 'YES');
+    // Historical consumed setups must not supply the summary blocker when a
+    // current, untouched pending formation is selectable for manual review.
+    const finalPrimaryBlocker = canonicalAuthority.live_candidates.length || activePendingStates.length
         ? 'NONE'
         : blockerPrecedence.find(blocker => blockerCounts[blocker] > 0)
             || Object.entries(blockerCounts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0]
@@ -15491,6 +15500,8 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
         target_ready_zone_count: targetReadyCandidates.length,
         path_ready_zone_count: pathReadyCandidates.length,
         forming_count: formingStates.length,
+        active_pending_state_count: activePendingStates.length,
+        eligible_pending_count: Math.max(targetReadyCandidates.length, activePendingStates.length),
         live_count: canonicalAuthority.live_candidates.length,
         historical_count: historicalCandidateIds.size,
         blocker_counts: blockerCounts,
@@ -17399,11 +17410,11 @@ const MARKET_MECHANICS_RAW_TEXT_OUTPUT_CONTRACT = [
     'REASON: <OPPORTUNITY_ID plus exact structural evidence references, comparative quality and warnings, or precise NO_TRADE reason>',
     '',
     'This is a MANUAL DEEPSEEK REVIEW packet. Select only an exact opportunity from === ACTIVE PENDING-LIMIT OPPORTUNITIES — FOR DEEPSEEK ANALYSIS ===, or return NO_TRADE.',
-    'Do not select legacy diagnostics, terminal historical rows, expired setups, consumed entries, invalidated zones, or incomplete formations.',
-    'You may reject an active opportunity for an evidence-backed stop, target, path, lifecycle or risk weakness, but do not invent prices or structures.',
-    'In manual mode, the active shortlist is the review universe; LIVE rows are not required. DeepSeek must still use only supplied evidence and must not promote legacy or terminal records.',
-    'CONSISTENCY RULE: BUY_LIMIT or SELL_LIMIT asserts that the selected opportunity is defensible. If your own REASON says risk, path, required data, stop, target, or geometry is insufficient for authorization, not defensible, unacceptable, or blocked, you MUST return NO_TRADE instead. Never output a trade merely to describe the best available but unacceptable candidate.',
-    'If no active opportunity has defensible geometry after review, return ACTION: NO_TRADE with SETUP: NONE and zero geometry.'
+    'Do not select legacy diagnostics, terminal historical rows, expired setups, consumed entries, invalidated zones, or incomplete formations. Legacy DIAGNOSTIC_ONLY delivery, freshness, RR and touch values are not evidence for an active opportunity.',
+    'The active shortlist is authoritative. Select the highest-quality active setup; a stop, target, path, risk or context warning is disclosed in REASON, not an automatic rejection.',
+    'Do not reject a pending limit solely for below-preferred RR, absent current micro confirmation, or price not yet touching the entry. Do not select a row whose touch chronology is UNKNOWN when a verified duplicate exists.',
+    'DECISION RULE: a BUY_LIMIT or SELL_LIMIT is valid when formation is confirmed, entry is on the correct side, stop is a supplied structural invalidation, and a supplied directional objective yields positive RR. Below-preferred RR with the best genuine structural target is acceptable and must be disclosed as a warning.',
+    'If every active opportunity fails formation, side, stop, target or touch verification, return ACTION: NO_TRADE with SETUP: NONE and zero geometry.'
 ].join('\n');
 
 const MANUAL_MARKET_MECHANICS_TERMINAL_STATES = new Set([
@@ -17491,8 +17502,14 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         item.minimum_rr, item.min_rr, source.risk_constraints?.minimum_rr, source.market_context?.risk_constraints?.minimum_rr,
         typeof settings !== 'undefined' ? settings.targetRR : null
     );
+    const structuralFirstRRPolicy = String(item.rr_policy || item.candidate_rr_policy || item.target_policy || '').toUpperCase() === 'STRUCTURAL_FIRST';
+    const rrBelowPreferred = preferredMinimumRR != null && targetRewardRisk.length > 0
+        && !targetRewardRisk.some(target => target.rr >= preferredMinimumRR);
+    // A below-preferred structural objective is an explicit, reviewable warning
+    // for POLICY=STRUCTURAL_FIRST. It is not a failed setup and must not be
+    // serialized as FAIL, which reviewers correctly treat as a hard veto.
     const rrQualityStatus = !(riskDistance > 0) || !targetRewardRisk.length ? 'UNKNOWN'
-        : preferredMinimumRR != null && !targetRewardRisk.some(target => target.rr >= preferredMinimumRR) ? 'FAIL'
+        : rrBelowPreferred ? (structuralFirstRRPolicy ? 'BELOW_PREFERRED' : 'FAIL')
             : 'PASS';
     const requiredDataTimeframes = marketMechanicsRequiredTimeframes({
         entry_model: model, setup_timeframe: item.timeframe || item.primary_tf || item.setup_timeframe,
@@ -17539,17 +17556,20 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         ...(item.market_plan_poi_valid === 'NO' || item.market_plan_poi_valid === false ? ['PARENT_POI_CONTEXT_LIMITED'] : []),
         ...(touched === 'UNKNOWN' ? ['ENTRY_TOUCH_CHRONOLOGY_UNKNOWN'] : []),
         ...(source.market_plan?.direction && direction !== source.market_plan.direction ? ['PREFERRED_MARKET_PLAN_DIRECTION_CONFLICT'] : []),
-        ...(hasReviewableObjective && rrQualityStatus === 'FAIL' ? ['ALL_SUPPLIED_TARGETS_BELOW_PREFERRED_MINIMUM_RR'] : []),
+        ...(hasReviewableObjective && rrBelowPreferred ? ['ALL_SUPPLIED_TARGETS_BELOW_PREFERRED_MINIMUM_RR'] : []),
         ...requiredDataFailures.map(item => `REQUIRED_MODEL_DATA_${item.status}:${item.timeframe}`)
     ].filter(warning => {
-        if (hasReviewableObjective && staleTargetLabel(warning)) return false;
-        if (entryProvablyUntouched && staleLifecycleLabel(warning)) return false;
+        if (warning == null) return false;
+        const code = String(warning).trim();
+        if (!code || code.toUpperCase() === 'NONE') return false;
+        if (hasReviewableObjective && staleTargetLabel(code)) return false;
+        if (entryProvablyUntouched && staleLifecycleLabel(code)) return false;
         return true;
     }))];
     const rawOriginalRejection = item.original_rejection || item.rejection_code || item.primary_blocker || null;
     const originalRejection = (hasReviewableObjective && staleTargetLabel(rawOriginalRejection))
         || (entryProvablyUntouched && staleLifecycleLabel(rawOriginalRejection))
-        ? (hasReviewableObjective && rrQualityStatus === 'FAIL' ? 'RR_BELOW_PREFERRED_MINIMUM' : null)
+        ? (hasReviewableObjective && rrBelowPreferred ? 'RR_BELOW_PREFERRED_MINIMUM' : null)
         : rawOriginalRejection;
     return {
         opportunity_id: item.opportunity_id || item.id || item.candidate_id || item.execution_poi_id || null,
@@ -17585,6 +17605,8 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         risk_distance: riskDistance,
         supported_target_reward_risk: targetRewardRisk,
         preferred_minimum_rr: preferredMinimumRR,
+        rr_policy: structuralFirstRRPolicy ? 'STRUCTURAL_FIRST' : 'PREFERRED_MINIMUM',
+        preferred_rr_met: targetRewardRisk.length ? !rrBelowPreferred : null,
         rr_quality_status: rrQualityStatus,
         opposing_structure: item.opposing_structure || item.path_quality?.nearest_opposing_barrier || item.nearest_opposing_barrier || null,
         confluence: item.confluence || item.confluence_refs || item.strategy_confluence || [],
@@ -17621,6 +17643,19 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
     };
 }
 
+function manualMarketMechanicsOpportunityCompleteness(row = {}) {
+    let score = 0;
+    if (String(row.deterministic_live_authority || '').toUpperCase() === 'LIVE') score += 8;
+    if (String(row.entry_touched || '').toUpperCase() === 'NO') score += 4;
+    else if (String(row.entry_touched || '').toUpperCase() === 'YES') score += 2;
+    if (String(row.entry_consumed || '').toUpperCase() === 'NO') score += 2;
+    if (Number.isFinite(Number(row.proposed_objective))) score += 2;
+    if (String(row.pending_limit_geometry_complete || '').toUpperCase() === 'YES') score += 2;
+    if (String(row.rr_policy || '').toUpperCase() === 'STRUCTURAL_FIRST') score += 1;
+    if ((row.quality_warnings || []).includes('ENTRY_TOUCH_CHRONOLOGY_UNKNOWN')) score -= 4;
+    return score;
+}
+
 function buildManualMarketMechanicsOpportunityShortlist(source = {}, currentPrice = null) {
     const seen = new Set();
     const rows = [];
@@ -17639,7 +17674,20 @@ function buildManualMarketMechanicsOpportunityShortlist(source = {}, currentPric
             || !manualMarketMechanicsFormationConfirmed(item) || row.pending_side_eligible === 'NO') continue;
         rows.push(row);
     }
-    return rows;
+    // The same execution zone can arrive once as a canonical forming state and
+    // again as a raw candidate. Reviewing both inflates the shortlist and lets
+    // an UNKNOWN-touch raw duplicate veto the verified forming row.
+    const uniqueByGeometry = new Map();
+    for (const row of rows) {
+        const geometryKey = [row.source_setup_id || row.opportunity_id, row.direction, row.model,
+            row.execution_poi, row.entry_zone_low, row.entry_zone_high].join('|');
+        const previous = uniqueByGeometry.get(geometryKey);
+        if (!previous || manualMarketMechanicsOpportunityCompleteness(row)
+            > manualMarketMechanicsOpportunityCompleteness(previous)) {
+            uniqueByGeometry.set(geometryKey, row);
+        }
+    }
+    return [...uniqueByGeometry.values()];
 }
 
 // Validates a manually returned DeepSeek decision against the same active
@@ -19690,14 +19738,15 @@ function buildRawTextMarketAnalysisInstruction(strategyModeOverride = null) {
             'TVKit and the deterministic engine provide market evidence and lifecycle facts. This packet is for manual DeepSeek analysis; it is not an API integration and it does not place broker orders.',
             'Analyze only the completed, nonterminal opportunities in === ACTIVE PENDING-LIMIT OPPORTUNITIES — FOR DEEPSEEK ANALYSIS ===.',
             'Do not select legacy diagnostics, expired setups, consumed or filled entries, invalidated zones, or incomplete formations.',
-            'A stop, target, path, risk, confluence or context warning is a serious review warning, not proof that the active formation should be hidden. Reject it when the supplied evidence cannot support a safe pending order.',
+            'A stop, target, path, risk, confluence or context warning is a review qualification, not an automatic veto. Do not reject a complete pending-limit formation solely because RR is below the preferred benchmark, price has not yet approached or touched the entry, or lower-timeframe confirmation is absent.',
+            'The ACTIVE PENDING-LIMIT OPPORTUNITIES shortlist is authoritative for opportunity identity, geometry, touch state and RR. Legacy diagnostic rows (CANDIDATE_AUTHORITY=DIAGNOSTIC_ONLY) are background only; never import their DELIVERY_STATUS, FRESHNESS, RR, TP or touch values into an active opportunity.',
             'You may choose a different entry, stop or target only when the exact supplied candle evidence and chronology support it. Never invent a structure, price, target, stop or candle.',
             'For BUY_LIMIT ENTRY must be below the current executable reference and STOP_LOSS below ENTRY. For SELL_LIMIT ENTRY must be above the current executable reference and STOP_LOSS above ENTRY.',
             'Do not require price to touch the entry before publishing a pending limit. Formation evidence must be complete before the order; touch is a later lifecycle event.',
             'Verify formation chronology, remaining zone geometry, entry-touch chronology, structural invalidation, directional liquidity objectives, opposing structure and reward/risk from the closed candles supplied.',
-            'If touch chronology is UNKNOWN, do not claim the setup is untouched or authorize it. If no active opportunity has defensible geometry, return NO_TRADE and explain the exact evidence-backed reason.',
+            'If touch chronology is UNKNOWN for a row, do not claim it is untouched and do not select that row; if a verified duplicate with known touch exists, use the verified row. Do not return NO_TRADE solely because a warning is present.',
             'In manual mode, the active shortlist is the review universe; LIVE rows are not required. DeepSeek must not promote legacy or terminal records.',
-            'CONSISTENCY RULE: a BUY_LIMIT or SELL_LIMIT asserts that the setup is defensible. If your own conclusion says risk, path, required data, stop, target, or geometry is insufficient for authorization, not defensible, unacceptable, or blocked, return NO_TRADE with zero geometry. Never emit a trade merely because it is the least-bad active opportunity.',
+            'DECISION RULE: select the highest-quality active pending limit whose formation is confirmed, entry is on the correct side, stop is a supplied structural invalidation, and at least one supplied directional objective yields positive RR. Below-preferred RR with the best genuine structural target is acceptable and must be disclosed as a warning. Absent current micro confirmation or an untested path is not a rejection reason for a pending limit. Return NO_TRADE only when every active opportunity fails formation, side, stop, target or touch verification.',
             'Return only the existing final output contract.'
         ].join('\n');
     }
@@ -19986,11 +20035,11 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         lines.push('ENTRY_MODEL_STATUS=' + (modelStatus || 'NONE')
             + ' FORMED_SETUP_COUNT=' + String(searchCounts.forming_count ?? 'NONE')
             + ' FUTURE_ZONE_COUNT=' + String(searchCounts.correct_side_zone_count ?? 'NONE')
-            + ' ELIGIBLE_PENDING_COUNT=' + String(searchCounts.target_ready_zone_count ?? 'NONE')
+            + ' ELIGIBLE_PENDING_COUNT=' + String(searchCounts.eligible_pending_count ?? searchCounts.target_ready_zone_count ?? 'NONE')
             + ' HISTORICAL_COUNT=' + String(searchCounts.historical_count ?? 'NONE')
             + ' FINAL_FAILED_STAGE=' + String(plan.market_plan_failed_stage
                 || MARKET_MECHANICS_BLOCKER_RULES[searchCounts.final_primary_blocker]?.stage
-                || (searchCounts.live_count ? 'NONE' : 'CANDIDATE'))
+                || (searchCounts.live_count || searchCounts.active_pending_state_count ? 'NONE' : 'CANDIDATE'))
             + ' FINAL_PRIMARY_BLOCKER=' + String(searchCounts.final_primary_blocker || plan.market_plan_primary_blocker || (searchCounts.live_count ? 'NONE' : 'NO_LIVE_CANDIDATE')));
         lines.push('MARKET_PLAN_FAILED_STAGE=' + String(plan.market_plan_failed_stage || 'NONE')
             + ' MARKET_PLAN_FAILED_RULE=' + String(plan.market_plan_failed_rule || 'NONE')
@@ -20088,6 +20137,8 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
                 + ' REQUIRED_DATA_FAILURES=' + (opportunity.required_data_failures?.map(item => `${item.timeframe}:${item.status}`).join('|') || 'NONE')
                 + ' RISK_DISTANCE=' + (opportunity.risk_distance == null ? 'NONE' : rawTextPacketFormatNumber(opportunity.risk_distance, precision))
                 + ' PREFERRED_MINIMUM_RR=' + String(opportunity.preferred_minimum_rr ?? 'NONE')
+                + ' RR_POLICY=' + String(opportunity.rr_policy || 'PREFERRED_MINIMUM')
+                + ' PREFERRED_RR_MET=' + (opportunity.preferred_rr_met == null ? 'UNKNOWN' : opportunity.preferred_rr_met ? 'YES' : 'NO')
                 + ' RR_QUALITY_STATUS=' + String(opportunity.rr_quality_status || 'UNKNOWN'));
             lines.push('OPPORTUNITY_EVIDENCE=' + JSON.stringify(opportunity));
         }
