@@ -4679,7 +4679,7 @@ describe('Market Mechanics packet authority', () => {
             market_plan: { valid_context: true, direction: 'BUY', htf_trend: 'BULLISH', narrative: 'PULLBACK' },
             market_mechanics: { model_states: [
                 { id: 'NZD-15M-DEMAND', direction: 'BUY', timeframe: '15M', model: 'LIQUIDITY_OB_FVG',
-                    setup_formation_confirmed: 'YES', state: 'WAITING_FOR_QUALIFICATION', market_plan_poi_valid: 'NO',
+                    setup_formation_confirmed: 'YES', state: 'PENDING_UNFILLED', market_plan_poi_valid: 'NO',
                     entry_zone_low: 0.56624, entry_zone_high: 0.56642, proposed_entry: 0.56633,
                     proposed_stop: 0.55633, proposed_objective: 0.56750, stop_source: 'HTF_EXTREME',
                     blocker: 'NO_STRUCTURAL_STOP', entry_zone_touched: 'NO', entry_consumed: 'NO',
@@ -5513,7 +5513,7 @@ describe('Market Mechanics packet authority', () => {
             scan_as_of: '2026-10-19T10:00:00Z', quote: { price: 0.5668, quote_time: '2026-10-19T10:00:00Z' },
             market_plan: { valid_context: true, direction: 'BUY', narrative: 'PULLBACK' },
             market_mechanics: { model_states: [{ id: 'NZD-ACTIVE-COPY', direction: 'BUY', timeframe: '15M', model: 'DEMAND',
-                confirmation_state: 'CONFIRMED', state: 'WAITING_FOR_QUALIFICATION', entry_zone_low: 0.5662,
+                confirmation_state: 'CONFIRMED', state: 'PENDING_UNFILLED', entry_zone_low: 0.5662,
                 entry_zone_high: 0.5665, proposed_entry: 0.5663, proposed_stop: 0.5563,
                 proposed_objective: 0.5675, stop_source: 'STRUCTURAL_SWING', entry_zone_touched: 'NO' }] },
             valid_candidates: [], history: {}

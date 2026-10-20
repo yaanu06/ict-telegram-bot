@@ -17706,6 +17706,36 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         entry_consumed: consumed,
         expiry_status: item.expiry_status || (MANUAL_MARKET_MECHANICS_TERMINAL_STATES.has(lifecycle) ? lifecycle : 'ACTIVE'),
         lifecycle_state: lifecycle,
+        formation_age_hours: (() => {
+            const formed = normalizeTimestampUTC(
+                item.first_actionable_time
+                || item.first_knowable_time
+                || item.formation_time
+                || item.event_time
+            );
+            const asOf = normalizeTimestampUTC(
+                source.scan_as_of
+                || source.as_of
+                || source.scan_as_of_ms
+            );
+            if (!Number.isFinite(formed) || !Number.isFinite(asOf)) return null;
+            return Math.max(0, (asOf - formed) / 3600000);
+        })(),
+        poi_rejection_reason: (() => {
+            // Prefer an explicit qualification field if the caller supplied one.
+            const qualification = item.poi_qualification
+                || item.market_plan_poi_qualification
+                || item.execution_poi_qualification;
+            if (qualification) {
+                const reasons = Array.isArray(qualification.rejectionReasons)
+                    ? qualification.rejectionReasons
+                    : Array.isArray(qualification.rejection_reasons)
+                        ? qualification.rejection_reasons
+                        : [];
+                if (reasons.length) return reasons.join('|');
+            }
+            return null;
+        })(),
         recomputed_lifecycle_status: item.lifecycle_classification || lifecycleMetrics.lifecycle_classification || lifecycle,
         original_rejection: originalRejection,
         matched_candle_index: lifecycleDiagnostics.execution_event_index ?? item.execution_event_index ?? item.execution_zone_created_index ?? null,
@@ -17750,6 +17780,18 @@ function manualMarketMechanicsOpportunityCompleteness(row = {}) {
 function buildManualMarketMechanicsOpportunityShortlist(source = {}, currentPrice = null) {
     const seen = new Set();
     const rows = [];
+    const planPoiEvaluations = (source.market_plan?.poi_evaluations)
+        || (source.market_context?.market_plan?.poi_evaluations)
+        || (source.market_mechanics?.plan?.poi_evaluations)
+        || [];
+    const poiRejectionBySetupId = new Map();
+    for (const poi of planPoiEvaluations) {
+        const setupId = poi?.poi_id || poi?.poiId || poi?.id;
+        const reason = poi?.rejection_reason;
+        if (setupId && reason && String(reason).toUpperCase() !== 'NONE') {
+            poiRejectionBySetupId.set(String(setupId), String(reason));
+        }
+    }
     for (const item of manualMarketMechanicsSources(source)) {
         if (!item) continue;
         const row = manualMarketMechanicsOpportunityRecord(item, source, currentPrice);
@@ -17763,6 +17805,24 @@ function buildManualMarketMechanicsOpportunityShortlist(source = {}, currentPric
         seen.add(identity);
         if (!row.opportunity_id || manualMarketMechanicsTerminal(item)
             || !manualMarketMechanicsFormationConfirmed(item) || row.pending_side_eligible === 'NO') continue;
+
+        // Manual review requires a constructed candidate; CANDIDATE_NOT_CONSTRUCTED
+        // means the engine could not build geometry, so there is nothing to review.
+        if (String(row.original_rejection || '').toUpperCase() === 'CANDIDATE_NOT_CONSTRUCTED') continue;
+
+        // A candidate still waiting on qualification is not a completed opportunity.
+        const shortlistLifecycle = String(row.lifecycle_state || '').toUpperCase();
+        if (['WAITING_FOR_QUALIFICATION', 'WAITING_FOR_CONFIRMATION', 'FORMING', 'PENDING_CANDIDATE'].includes(shortlistLifecycle)) continue;
+
+        // Reject if the selected execution POI was rejected by the plan for being
+        // outside the active swing range or malformed.
+        const executionPoiId = String(row.execution_poi || '').toUpperCase();
+        if (executionPoiId && poiRejectionBySetupId.has(executionPoiId)) continue;
+
+        // Intraday manual review only retains opportunities formed within the
+        // last 48 hours. Stale zones are historical, not current opportunities.
+        if (Number.isFinite(row.formation_age_hours) && row.formation_age_hours > 48) continue;
+
         rows.push(row);
     }
     // The same execution zone can arrive once as a canonical forming state and
