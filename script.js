@@ -18767,6 +18767,15 @@ function rawTextModelBuildCandidate(model, zoneMatch, direction, blocks, marketC
     if (!geometry.valid) return geometry;
     const path = build4HPathQualityAudit({ direction, entry: candidate.entry, stop_loss: candidate.stop_loss, tp1: candidate.tp1 }, pathRecords, asOfMs);
     if (!path.trade_qualified) return { valid: false, reason: 'ENTRY_INSIDE_OPPOSING_4H', path };
+    Object.assign(candidate, {
+        path_quality: path,
+        path_evaluated: path.path_evaluated,
+        path_status: path.path_status,
+        path_quality_result: path.path_quality_result,
+        clear_path_to_tp1: path.clear_path_to_tp1,
+        path_quality_penalty: path.path_quality_penalty,
+        qualification_blockers: path.qualification_blockers
+    });
     const routed = {
         ...zoneMatch.record,
         candidate,
