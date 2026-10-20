@@ -11661,6 +11661,33 @@ function buildSessionSchedule({ assetClass, calendarType, sessionCalendar = null
     };
 }
 
+function observedCrossTimeframeSessionBreaks(historyCache = {}) {
+    const merged = new Map();
+    for (const timeframe of ['4H', '1H', '15M', '5M']) {
+        const history = historyCache?.[timeframe];
+        if (!Array.isArray(history)) continue;
+        for (const item of inferObservedSessionBreaks(history, timeframe)) {
+            const closeMinute = parseSessionMinute(item?.close_minutes);
+            const openMinute = parseSessionMinute(item?.open_minutes);
+            if (!Number.isFinite(closeMinute) || !Number.isFinite(openMinute)) continue;
+            const key = `${closeMinute}|${openMinute}`;
+            const existing = merged.get(key) || {
+                days: new Set(), close_minutes: closeMinute, open_minutes: openMinute,
+                evidence_timeframes: new Set()
+            };
+            for (const day of Array.isArray(item?.days) ? item.days : []) existing.days.add(Number(day));
+            existing.evidence_timeframes.add(timeframe);
+            merged.set(key, existing);
+        }
+    }
+    return [...merged.values()].map(item => ({
+        days: [...item.days].filter(Number.isInteger).sort((a, b) => a - b),
+        close_minutes: item.close_minutes,
+        open_minutes: item.open_minutes,
+        evidence_timeframes: [...item.evidence_timeframes]
+    }));
+}
+
 function sessionOpenMinuteForStart(start, sessionSchedule = null) {
     const weekKey = sessionWeekKey(start);
     const observed = Array.isArray(sessionSchedule?.observed_weekly_opens)
@@ -12235,7 +12262,19 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
     // supplied. Production always passes the symbol metadata; an anonymous
     // fixture should retain the historical continuous-session semantics.
     const assetClass = options.asset_class || symbolMetadata.asset_class || (symbol ? getAssetClass(symbol) : 'UNKNOWN');
-    const sessionCalendar = options.session_calendar || options.sessionCalendar || symbolMetadata.session || null;
+    const suppliedSessionCalendar = options.session_calendar || options.sessionCalendar || symbolMetadata.session || null;
+    const explicitDailyBreaks = Array.isArray(suppliedSessionCalendar?.daily_breaks)
+        || Array.isArray(suppliedSessionCalendar?.intraday_breaks);
+    const sharedObservedBreaks = assetClass === 'METAL' && !explicitDailyBreaks
+        ? observedCrossTimeframeSessionBreaks(historyCache)
+        : [];
+    // A short 5M/15M window may contain only one normal daily metal break,
+    // which is deliberately insufficient to infer a schedule by itself.
+    // Reuse repeated evidence from this snapshot's longer 1H/4H history.
+    // Explicit provider/session metadata remains authoritative.
+    const sessionCalendar = sharedObservedBreaks.length
+        ? { ...(suppliedSessionCalendar || {}), daily_breaks: sharedObservedBreaks }
+        : suppliedSessionCalendar;
     let quoteStatus = 'UNKNOWN';
     if (!ictFiniteNumber(price) || price <= 0) reasons.push('current price is invalid');
     const quoteTime = normalizeTimestampUTC(quoteSnapshot?.provider_timestamp ?? quoteSnapshot?.provider_timestamp_utc);
@@ -12394,9 +12433,18 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
             // wall-clock time. This prevents an FX weekend from aging the
             // last completed daily candle into a false stale state.
             const expectedLatest = expected.expected_latest_closed_time;
-            const providerLag = Math.max(5 * 60 * 1000, Math.min(timeframeDurationMs(tf) / 4, 6 * 60 * 60 * 1000));
+            const providerLag = Math.max(5 * 60 * 1000, Math.min(timeframeDurationMs(tf) / 4, 30 * 60 * 1000));
             const age = Number.isFinite(expectedLatest) ? expectedLatest - latestTimedCandle : null;
-            if (Number.isFinite(age) && age > providerLag) {
+            const expectedCompletion = Number.isFinite(expectedLatest)
+                ? expected.timestamp_semantics === 'CLOSE' ? expectedLatest : expectedLatest + timeframeDurationMs(tf)
+                : null;
+            const providerDelay = Number.isFinite(expectedCompletion) ? Number(asOfMs) - expectedCompletion : null;
+            // `age` compares candle identities (normally one full interval),
+            // whereas provider lag is elapsed time after that candle closed.
+            // Comparing those two directly falsely marked the previous candle
+            // stale seconds after a new bucket completed. Require the newer
+            // completed candle only after its allowed delivery lag elapsed.
+            if (Number.isFinite(age) && age > 0 && Number.isFinite(providerDelay) && providerDelay > providerLag) {
                 if (required || options.check_optional !== false) reasons.push(`${tf} candle data is stale`);
                 timeframeStatus[tf] = 'STALE';
                 if (required || options.check_optional !== false) staleDetails.push({
@@ -12405,6 +12453,7 @@ function validateMarketDataQuality(historyCache, price, quoteSnapshot = null, as
                     expected_latest_closed_time: expectedLatest,
                     age_ms: age,
                     max_allowed_age_ms: providerLag,
+                    provider_delay_ms: providerDelay,
                     next_expected_close: expected.next_expected_close,
                     session_anchor: expected.session_anchor,
                     bar_grid_anchor: expected.bar_grid_anchor,
@@ -17013,6 +17062,7 @@ const MARKET_MECHANICS_RAW_TEXT_OUTPUT_CONTRACT = [
     'Do not select legacy diagnostics, terminal historical rows, expired setups, consumed entries, invalidated zones, or incomplete formations.',
     'You may reject an active opportunity for an evidence-backed stop, target, path, lifecycle or risk weakness, but do not invent prices or structures.',
     'In manual mode, the active shortlist is the review universe; LIVE rows are not required. DeepSeek must still use only supplied evidence and must not promote legacy or terminal records.',
+    'CONSISTENCY RULE: BUY_LIMIT or SELL_LIMIT asserts that the selected opportunity is defensible. If your own REASON says risk, path, required data, stop, target, or geometry is insufficient for authorization, not defensible, unacceptable, or blocked, you MUST return NO_TRADE instead. Never output a trade merely to describe the best available but unacceptable candidate.',
     'If no active opportunity has defensible geometry after review, return ACTION: NO_TRADE with SETUP: NONE and zero geometry.'
 ].join('\n');
 
@@ -17079,12 +17129,40 @@ function manualMarketMechanicsSources(source = {}) {
 function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentPrice = null) {
     const zone = item.execution_zone || item.entry_zone || item.zone || {};
     const direction = String(item.direction || '').toUpperCase();
+    const model = item.entry_model || item.model || item.execution_model || null;
     const entry = manualMarketMechanicsNumber(item.proposed_entry, item.entry, item.entry_price, zone.midpoint, zone.ce);
     const low = manualMarketMechanicsNumber(item.entry_zone_low, zone.low, item.zone_low);
     const high = manualMarketMechanicsNumber(item.entry_zone_high, zone.high, item.zone_high);
     const stop = manualMarketMechanicsNumber(item.proposed_stop, item.stop_loss, item.stop);
     const objective = manualMarketMechanicsNumber(item.proposed_objective, item.tp1, item.take_profit_1);
     const current = manualMarketMechanicsNumber(currentPrice, source.quote?.price, source.current_price);
+    const directionalTargets = item.target_candidates || item.targets || (objective == null ? [] : [{ level: objective, source: item.target_source || null }]);
+    const riskDistance = entry != null && stop != null ? Math.abs(stop - entry) : null;
+    const targetRewardRisk = (Array.isArray(directionalTargets) ? directionalTargets : [])
+        .map(target => {
+            const level = manualMarketMechanicsNumber(target?.level, target?.price, target);
+            if (level == null || !(riskDistance > 0)) return null;
+            const reward = direction === 'BUY' ? level - entry : direction === 'SELL' ? entry - level : null;
+            if (!Number.isFinite(reward) || reward <= 0) return null;
+            return { level, source: target?.source || target?.target_type || null, reward, rr: reward / riskDistance };
+        })
+        .filter(Boolean);
+    const preferredMinimumRR = manualMarketMechanicsNumber(
+        item.minimum_rr, item.min_rr, source.risk_constraints?.minimum_rr, source.market_context?.risk_constraints?.minimum_rr,
+        typeof settings !== 'undefined' ? settings.targetRR : null
+    );
+    const rrQualityStatus = !(riskDistance > 0) || !targetRewardRisk.length ? 'UNKNOWN'
+        : preferredMinimumRR != null && !targetRewardRisk.some(target => target.rr >= preferredMinimumRR) ? 'FAIL'
+            : 'PASS';
+    const requiredDataTimeframes = marketMechanicsRequiredTimeframes({
+        entry_model: model, setup_timeframe: item.timeframe || item.primary_tf || item.setup_timeframe,
+        execution_timeframe: item.execution_timeframe
+    }, zone);
+    const dataQuality = source.data_quality || source.market_context?.data_quality || {};
+    const timeframeStatus = dataQuality.timeframe_status || {};
+    const requiredDataFailures = requiredDataTimeframes
+        .filter(timeframe => timeframeStatus[timeframe] && String(timeframeStatus[timeframe]).toUpperCase() !== 'FRESH')
+        .map(timeframe => ({ timeframe, status: String(timeframeStatus[timeframe]).toUpperCase() }));
     const side = direction === 'BUY'
         ? (entry != null && current != null ? (entry < current ? 'YES' : 'NO') : 'UNKNOWN')
         : direction === 'SELL'
@@ -17103,7 +17181,9 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         ...(lifecycleRejection && !['NONE', 'NO_LIVE_CANDIDATE'].includes(String(lifecycleRejection).toUpperCase()) ? [lifecycleRejection] : []),
         ...(item.market_plan_poi_valid === 'NO' || item.market_plan_poi_valid === false ? ['PARENT_POI_CONTEXT_LIMITED'] : []),
         ...(String(item.entry_zone_touched || '').toUpperCase() === 'UNKNOWN' ? ['ENTRY_TOUCH_CHRONOLOGY_UNKNOWN'] : []),
-        ...(source.market_plan?.direction && direction !== source.market_plan.direction ? ['PREFERRED_MARKET_PLAN_DIRECTION_CONFLICT'] : [])
+        ...(source.market_plan?.direction && direction !== source.market_plan.direction ? ['PREFERRED_MARKET_PLAN_DIRECTION_CONFLICT'] : []),
+        ...(rrQualityStatus === 'FAIL' ? ['ALL_SUPPLIED_TARGETS_BELOW_PREFERRED_MINIMUM_RR'] : []),
+        ...requiredDataFailures.map(item => `REQUIRED_MODEL_DATA_${item.status}:${item.timeframe}`)
     ])];
     const lifecycle = String(item.lifecycle_state || item.state || item.opportunity_status || 'ACTIVE').toUpperCase();
     const firstTouch = item.first_entry_touch_after_formation || item.first_entry_touch_time
@@ -17115,7 +17195,7 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         source_setup_id: item.source_setup_id || item.strategy_setup?.id || null,
         symbol: normalizeCanonicalMarketSymbol(source.pair || source.symbol || ''),
         direction: direction || null,
-        model: item.entry_model || item.model || item.execution_model || null,
+        model,
         primary_timeframe: item.timeframe || item.primary_tf || item.setup_timeframe || null,
         formation_first_knowable_time: item.first_actionable_time || item.first_knowable_time || item.formation_time || item.event_time
             || lifecycleMetrics.event_time_utc || null,
@@ -17136,11 +17216,15 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         stop_basis: item.stop_basis_price ?? item.stop_basis ?? null,
         stop_quality_warning: item.stop_quality_warning || (String(item.primary_blocker || item.blocker || '').toUpperCase().includes('STOP') ? item.primary_blocker || item.blocker : null),
         nearby_structural_invalidation_alternatives: item.structural_invalidation_alternatives || item.stop_alternatives || [],
-        directional_liquidity_targets: item.target_candidates || item.targets || (objective == null ? [] : [{ level: objective, source: item.target_source || null }]),
+        directional_liquidity_targets: directionalTargets,
         target_sources: item.target_source || item.target_ref || null,
         target_lifecycle: item.target_lifecycle_state || null,
         proposed_objective: objective,
         reward_risk_for_supported_combinations: item.reward_risk_for_supported_combinations || item.risk_reward_combinations || item.rr || null,
+        risk_distance: riskDistance,
+        supported_target_reward_risk: targetRewardRisk,
+        preferred_minimum_rr: preferredMinimumRR,
+        rr_quality_status: rrQualityStatus,
         opposing_structure: item.opposing_structure || item.path_quality?.nearest_opposing_barrier || item.nearest_opposing_barrier || null,
         confluence: item.confluence || item.confluence_refs || item.strategy_confluence || [],
         current_price: current,
@@ -17165,7 +17249,9 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         explicit_expiry_rule: lifecycleDiagnostics.expiry_rule || item.expiry_rule || null,
         expiry_time: lifecycleDiagnostics.expiry_time_utc || item.expiry_time || null,
         objective_delivery_status: item.target_lifecycle_state || lifecycleMetrics.opportunity_freshness || null,
-        data_freshness: source.data_quality?.status || source.market_context?.data_quality?.status || 'UNKNOWN',
+        data_freshness: dataQuality.status || 'UNKNOWN',
+        required_data_timeframes: requiredDataTimeframes,
+        required_data_failures: requiredDataFailures,
         evidence_refs: [...new Set([...(item.formation_evidence_refs || []), ...(item.evidence_refs || []), item.poi_ref, item.execution_poi_id].filter(Boolean))],
         quality_warnings: warnings,
         pending_limit_geometry_complete: item.pending_limit_geometry_complete || item.geometry_complete || 'UNKNOWN',
@@ -17197,12 +17283,14 @@ function buildManualMarketMechanicsOpportunityShortlist(source = {}, currentPric
 // it never places an order or changes deterministic Market Mechanics state.
 function validateManualMarketMechanicsDecision(decision = {}, replay = {}) {
     const issues = [];
+    const warnings = [];
     const add = code => { if (!issues.includes(code)) issues.push(code); };
+    const warn = code => { if (!warnings.includes(code)) warnings.push(code); };
     const action = String(decision.action || decision.ACTION || decision.direction || '').toUpperCase();
     const opportunities = Array.isArray(replay.manual_analysis_opportunities)
         ? replay.manual_analysis_opportunities
         : buildManualMarketMechanicsOpportunityShortlist(replay, replay.quote?.price ?? replay.current_price);
-    if (action === 'NO_TRADE') return { valid: true, execution_allowed: false, issues: [], action, opportunities_count: opportunities.length };
+    if (action === 'NO_TRADE') return { valid: true, execution_allowed: false, issues: [], warnings: [], action, opportunities_count: opportunities.length };
     if (!['BUY_LIMIT', 'SELL_LIMIT'].includes(action)) add('MANUAL_ACTION_INVALID');
     const opportunityId = decision.opportunity_id || decision.OPPORTUNITY_ID
         || String(decision.reason || decision.REASON || '').match(/OPPORTUNITY_ID=([^\s,;]+)/i)?.[1];
@@ -17217,11 +17305,27 @@ function validateManualMarketMechanicsDecision(decision = {}, replay = {}) {
     if (opportunity && String(opportunity.entry_touched).toUpperCase() !== 'NO') add('MANUAL_ENTRY_TOUCH_NOT_VERIFIABLY_UNTOUCHED');
     if (opportunity && String(opportunity.entry_consumed).toUpperCase() === 'YES') add('MANUAL_ENTRY_CONSUMED');
     if (opportunity && String(opportunity.expiry_status).toUpperCase() !== 'ACTIVE') add('MANUAL_OPPORTUNITY_TERMINAL');
+    if (opportunity && Array.isArray(opportunity.required_data_failures) && opportunity.required_data_failures.length) add('MANUAL_REQUIRED_MODEL_DATA_NOT_FRESH');
     if (stop == null || !opportunity?.stop_source) add('MANUAL_STRUCTURAL_STOP_EVIDENCE_REQUIRED');
     if (tp1 == null || !Array.isArray(opportunity?.directional_liquidity_targets) || !opportunity.directional_liquidity_targets.length) add('MANUAL_STRUCTURAL_TARGET_EVIDENCE_REQUIRED');
     if (opportunity && action === 'BUY_LIMIT' && !(entry < opportunity.current_price && stop < entry && tp1 > entry)) add('MANUAL_BUY_GEOMETRY_INVALID');
     if (opportunity && action === 'SELL_LIMIT' && !(entry > opportunity.current_price && stop > entry && tp1 < entry)) add('MANUAL_SELL_GEOMETRY_INVALID');
-    return { valid: issues.length === 0, execution_allowed: false, issues, action, opportunity: opportunity || null, opportunities_count: opportunities.length };
+    const risk = entry != null && stop != null ? Math.abs(stop - entry) : null;
+    const reward = opportunity && entry != null && tp1 != null
+        ? action === 'BUY_LIMIT' ? tp1 - entry : action === 'SELL_LIMIT' ? entry - tp1 : null
+        : null;
+    const calculatedRR = risk > 0 && reward > 0 ? reward / risk : null;
+    const minimumRR = manualMarketMechanicsNumber(opportunity?.preferred_minimum_rr);
+    if (calculatedRR != null && minimumRR != null && calculatedRR < minimumRR) warn('MANUAL_RR_BELOW_PREFERRED_MINIMUM');
+    const reason = String(decision.reason || decision.REASON || '');
+    if (/insufficient\s+for\s+authorization|cannot\s+authorize|not\s+authorized|no\s+defensible\s+(?:trade|geometry)|unacceptable\s+(?:risk|path|geometry)|should\s+be\s+rejected/i.test(reason)) {
+        add('MANUAL_TRADE_REASON_SELF_REJECTS');
+    }
+    return {
+        valid: issues.length === 0, execution_allowed: false, issues, warnings, action,
+        opportunity: opportunity || null, opportunities_count: opportunities.length,
+        calculated_risk_reward: calculatedRR, preferred_minimum_rr: minimumRR
+    };
 }
 
 function countRawLegacyDiagnosticCandidates(lines = []) {
@@ -19220,6 +19324,7 @@ function buildRawTextMarketAnalysisInstruction(strategyModeOverride = null) {
             'Verify formation chronology, remaining zone geometry, entry-touch chronology, structural invalidation, directional liquidity objectives, opposing structure and reward/risk from the closed candles supplied.',
             'If touch chronology is UNKNOWN, do not claim the setup is untouched or authorize it. If no active opportunity has defensible geometry, return NO_TRADE and explain the exact evidence-backed reason.',
             'In manual mode, the active shortlist is the review universe; LIVE rows are not required. DeepSeek must not promote legacy or terminal records.',
+            'CONSISTENCY RULE: a BUY_LIMIT or SELL_LIMIT asserts that the setup is defensible. If your own conclusion says risk, path, required data, stop, target, or geometry is insufficient for authorization, not defensible, unacceptable, or blocked, return NO_TRADE with zero geometry. Never emit a trade merely because it is the least-bad active opportunity.',
             'Return only the existing final output contract.'
         ].join('\n');
     }
@@ -19598,7 +19703,11 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
                 + ' ENTRY_TOUCHED=' + String(opportunity.entry_touched)
                 + ' ENTRY_CONSUMED=' + String(opportunity.entry_consumed)
                 + ' LIFECYCLE_STATE=' + String(opportunity.lifecycle_state)
-                + ' DATA_FRESHNESS=' + String(opportunity.data_freshness));
+                + ' DATA_FRESHNESS=' + String(opportunity.data_freshness)
+                + ' REQUIRED_DATA_FAILURES=' + (opportunity.required_data_failures?.map(item => `${item.timeframe}:${item.status}`).join('|') || 'NONE')
+                + ' RISK_DISTANCE=' + (opportunity.risk_distance == null ? 'NONE' : rawTextPacketFormatNumber(opportunity.risk_distance, precision))
+                + ' PREFERRED_MINIMUM_RR=' + String(opportunity.preferred_minimum_rr ?? 'NONE')
+                + ' RR_QUALITY_STATUS=' + String(opportunity.rr_quality_status || 'UNKNOWN'));
             lines.push('OPPORTUNITY_EVIDENCE=' + JSON.stringify(opportunity));
         }
         lines.push('');

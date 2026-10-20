@@ -4104,6 +4104,27 @@ describe('Market Mechanics end-to-end qualification authority', () => {
         expect(five.timeframe_diagnostics['5M'].expected_latest_closed).toBe(Date.parse('2026-10-19T11:20:00Z'));
     });
 
+    test('newly closed candle remains within provider delivery lag before becoming stale', () => {
+        const ctx = getContext();
+        const history = Array.from({ length: 20 }, (_, index) => ({
+            t: new Date(Date.parse('2026-10-19T21:00:00Z') + index * 15 * 60000).toISOString(),
+            o: 100, h: 101, l: 99, c: 100
+        }));
+        const withinLag = ctx.validateMarketDataQuality({ '15M': history }, 100, null,
+            Date.parse('2026-10-20T02:16:00Z'), ['15M'], {
+                symbol: 'BTC/USD', asset_class: 'CRYPTO', check_optional: false
+            });
+        const beyondLag = ctx.validateMarketDataQuality({ '15M': history }, 100, null,
+            Date.parse('2026-10-20T02:21:00Z'), ['15M'], {
+                symbol: 'BTC/USD', asset_class: 'CRYPTO', check_optional: false
+            });
+        expect(withinLag.timeframe_status['15M']).toBe('FRESH');
+        expect(beyondLag.timeframe_status['15M']).toBe('STALE');
+        expect(beyondLag.stale_details[0]).toEqual(expect.objectContaining({
+            timeframe: '15M', provider_delay_ms: 6 * 60000
+        }));
+    });
+
     test('RAW packet closed-candle projection cannot trust a future is_closed flag', () => {
         const ctx = getContext();
         const candles = [
@@ -4188,6 +4209,46 @@ describe('Market Mechanics end-to-end qualification authority', () => {
         expect(result.status).toBe('FRESH');
         expect(result.timeframe_diagnostics['1H'].missing_candle_count).toBe(0);
         expect(result.timeframe_diagnostics['1H'].daily_session_breaks).toEqual(expect.arrayContaining([
+            expect.objectContaining({ close_minutes: 1260, open_minutes: 1320 })
+        ]));
+    });
+
+    test('XAU session break inferred from 1H is shared with short 15M and 5M windows', () => {
+        const ctx = getContext();
+        const asOf = Date.parse('2026-10-20T02:16:29Z');
+        const candle = timestamp => ({ t: new Date(timestamp).toISOString(), o: 4130, h: 4132, l: 4128, c: 4131, is_closed: true });
+        const oneHour = [];
+        for (let timestamp = Date.parse('2026-10-12T22:00:00Z'); timestamp <= Date.parse('2026-10-20T01:00:00Z'); timestamp += 60 * 60000) {
+            const date = new Date(timestamp);
+            const day = date.getUTCDay();
+            const minute = date.getUTCHours() * 60 + date.getUTCMinutes();
+            if ((day === 5 && minute >= 21 * 60) || day === 6 || (day === 0 && minute < 22 * 60)) continue;
+            if (minute >= 21 * 60 && minute < 22 * 60) continue;
+            oneHour.push(candle(timestamp));
+        }
+        const makeShortHistory = duration => {
+            const rows = [];
+            for (let timestamp = Date.parse('2026-10-19T15:00:00Z'); timestamp <= Date.parse('2026-10-20T02:00:00Z'); timestamp += duration) {
+                const date = new Date(timestamp);
+                const minute = date.getUTCHours() * 60 + date.getUTCMinutes();
+                if (minute >= 21 * 60 && minute < 22 * 60) continue;
+                rows.push(candle(timestamp));
+            }
+            return rows;
+        };
+        const result = ctx.validateMarketDataQuality({
+            '1H': oneHour,
+            '15M': makeShortHistory(15 * 60000),
+            '5M': makeShortHistory(5 * 60000)
+        }, 4133.97, null, asOf, ['15M', '5M'], {
+            symbol: 'XAU/USD', asset_class: 'METAL', check_optional: false
+        });
+        expect(result.timeframe_diagnostics['15M'].missing_candle_count).toBe(0);
+        expect(result.timeframe_diagnostics['5M'].missing_candle_count).toBe(0);
+        expect(result.timeframe_diagnostics['15M'].daily_session_breaks).toEqual(expect.arrayContaining([
+            expect.objectContaining({ close_minutes: 1260, open_minutes: 1320 })
+        ]));
+        expect(result.timeframe_diagnostics['5M'].daily_session_breaks).toEqual(expect.arrayContaining([
             expect.objectContaining({ close_minutes: 1260, open_minutes: 1320 })
         ]));
     });
@@ -4435,6 +4496,28 @@ describe('Market Mechanics packet authority', () => {
         expect(result.valid).toBe(false);
         expect(result.issues).toEqual(expect.arrayContaining(['MANUAL_ENTRY_TOUCH_NOT_VERIFIABLY_UNTOUCHED', 'MANUAL_STRUCTURAL_STOP_EVIDENCE_REQUIRED', 'MANUAL_STRUCTURAL_TARGET_EVIDENCE_REQUIRED']));
         expect(result.execution_allowed).toBe(false);
+    });
+
+    test('manual Market Mechanics decision rejects a trade whose own reason says it is unauthorized', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const opportunityId = 'XAU-FLIP-4137.53-4140.49';
+        const replay = { manual_analysis_opportunities: [{
+            opportunity_id: opportunityId,
+            symbol: 'XAU/USD', direction: 'SELL', correct_pending_order_side: 'SELL_LIMIT',
+            entry_zone_low: 4137.53, entry_zone_high: 4140.49, current_price: 4133.97,
+            entry_touched: 'NO', entry_consumed: 'NO', expiry_status: 'ACTIVE',
+            stop_source: 'HTF_STRUCTURE', proposed_stop: 4190.94,
+            directional_liquidity_targets: [{ level: 4130.24, source: 'SELL_SIDE_LIQUIDITY' }],
+            preferred_minimum_rr: 2.5, required_data_failures: []
+        }] };
+        const result = ctx.validateManualMarketMechanicsDecision({
+            action: 'SELL_LIMIT', opportunity_id: opportunityId, entry: 4139.01, stop_loss: 4190.94, tp1: 4130.24,
+            reason: 'Path quality, risk, and data completeness are insufficient for authorization.'
+        }, replay);
+        expect(result.valid).toBe(false);
+        expect(result.issues).toContain('MANUAL_TRADE_REASON_SELF_REJECTS');
+        expect(result.warnings).toContain('MANUAL_RR_BELOW_PREFERRED_MINIMUM');
+        expect(result.calculated_risk_reward).toBeCloseTo(8.77 / 51.93, 6);
     });
 
     test('manual shortlist retains a confirmed nonterminal raw candidate rejected only by quality', () => {
@@ -10238,7 +10321,10 @@ describe('live AI market context and prompt', () => {
         expect(live.strategy_setups.length).toBeGreaterThan(0);
         expect(live.production_trace.funnel.raw_setups).toBe(live.strategy_setups.length);
         expect(output.state).toBe('NO_TRADE_TODAY');
-        expect(output.reason_code).toBe('MARKET_DATA_STALE');
+        // This fixture deliberately reuses hourly timestamps for every
+        // declared timeframe, so the canonical result is incomplete cadence,
+        // not an evidence-backed stale timestamp.
+        expect(output.reason_code).toBe('MARKET_DATA_INCOMPLETE');
     });
 
     it('returns a safe no-opportunity result through the same raw-history production path', () => {
