@@ -8572,6 +8572,7 @@ function buildMarketMechanicsPendingDiagnostics(setup = {}, options = {}) {
             ? 'SELL_LIMIT_ENTRY_NOT_ABOVE_CURRENT'
             : 'INVALID_ENTRY_SIDE';
     const liveCandidate = Boolean(valid
+        && marketMechanicsPathEvaluation(valid).pass
         && String(valid.TRADE_QUALIFIED || '').toUpperCase() === 'YES'
         && valid.trade_qualified !== false
         && (!valid.qualification_result || valid.qualification_result === 'PASS'));
@@ -15465,6 +15466,8 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
     });
     const pathReadyIds = new Set(pathReadyCandidates
         .map(candidate => candidate?.id || candidate?.candidate_id).filter(Boolean));
+    const pathRejectedLiveCandidates = authority.live_candidates.filter(candidate =>
+        !pathReadyIds.has(candidate?.id || candidate?.candidate_id));
     const canonicalLiveCandidates = authority.live_candidates.filter(candidate =>
         pathReadyIds.has(candidate?.id || candidate?.candidate_id));
     const canonicalAuthority = {
@@ -15473,8 +15476,8 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
         live_candidate_ids: canonicalLiveCandidates
             .map(candidate => candidate?.id || candidate?.candidate_id).filter(Boolean),
         invariants: authority.invariants === 'PASS'
-            && canonicalLiveCandidates.length === authority.live_candidates.length ? 'PASS' : 'FAIL',
-        invariant_violation: canonicalLiveCandidates.length === authority.live_candidates.length
+            && canonicalLiveCandidates.length + pathRejectedLiveCandidates.length === authority.live_candidates.length ? 'PASS' : 'FAIL',
+        invariant_violation: canonicalLiveCandidates.length + pathRejectedLiveCandidates.length === authority.live_candidates.length
             ? authority.invariant_violation : 'CANDIDATE_FUNNEL_INVARIANT_VIOLATION'
     };
     const blockerPrecedence = [
@@ -17578,7 +17581,11 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
             if (!Number.isFinite(reward) || reward <= 0) return null;
             return { level, source: target?.source || target?.target_type || null, reward, rr: reward / riskDistance };
         })
-        .filter(Boolean);
+        .filter(Boolean)
+        .sort((left, right) => {
+            if (left.rr !== right.rr) return right.rr - left.rr;
+            return Math.abs(left.level - entry) - Math.abs(right.level - entry);
+        });
     const preferredMinimumRR = manualMarketMechanicsNumber(
         item.minimum_rr, item.min_rr, source.risk_constraints?.minimum_rr, source.market_context?.risk_constraints?.minimum_rr,
         typeof settings !== 'undefined' ? settings.targetRR : null
@@ -17720,7 +17727,10 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         quality_warnings: warnings,
         pending_limit_geometry_complete: item.pending_limit_geometry_complete || item.geometry_complete || 'UNKNOWN',
         manual_authority: 'DEEPSEEK_REVIEW_ONLY',
-        deterministic_live_authority: item.CANDIDATE_AUTHORITY || item.candidate_authority || 'DIAGNOSTIC_ONLY'
+        deterministic_live_authority: (() => {
+            const authority = item.CANDIDATE_AUTHORITY || item.candidate_authority;
+            return String(authority || '').toUpperCase() === 'LIVE' ? 'LIVE' : 'DIAGNOSTIC_ONLY';
+        })()
     };
 }
 

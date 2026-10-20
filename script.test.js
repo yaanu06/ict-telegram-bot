@@ -5147,6 +5147,7 @@ describe('Market Mechanics packet authority', () => {
             candidate_result: {
                 all_valid_candidates: [{ id: 'LIVE-BUY', direction: 'BUY', entry: 101, stop_loss: 98,
                     tp1: 106, tp2: 108, tp3: 109, execution_model: 'FRESH_RETRACEMENT_LIMIT',
+                    PATH_EVALUATED: 'YES', PATH_STATUS: 'CLEAR', PATH_QUALITY_RESULT: 'PASS',
                     TRADE_QUALIFIED: 'YES', trade_qualified: true,
                     strategy_setup: setup, zone: setup.execution_zone }]
             }
@@ -5190,7 +5191,9 @@ describe('Market Mechanics packet authority', () => {
             pair: 'EUR/USD', current_price: 100,
             candidate_result: { all_valid_candidates: [{ id: 'LIVE-SELL', direction: 'SELL', entry: 109,
                 stop_loss: 112, tp1: 104, execution_model: 'FRESH_RETRACEMENT_LIMIT',
-                TRADE_QUALIFIED: 'YES', trade_qualified: true, strategy_setup: setup, zone: setup.execution_zone }] }
+                TRADE_QUALIFIED: 'YES', trade_qualified: true, strategy_setup: setup,
+                PATH_EVALUATED: 'YES', PATH_STATUS: 'CLEAR', PATH_QUALITY_RESULT: 'PASS',
+                zone: setup.execution_zone }] }
         });
         expect(state[0].state).toBe('PENDING_UNFILLED');
         expect(state[0].current_price_relation_to_entry_zone).toBe('BELOW');
