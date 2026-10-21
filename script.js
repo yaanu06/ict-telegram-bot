@@ -13156,9 +13156,25 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     const postFormationProgressRaw = postFormationProgressValues.length ? Math.max(...postFormationProgressValues) : null;
     const formationOrderingAvailable = Number.isFinite(formationPrice) || Number.isFinite(resolvedEventTime) || Number.isInteger(index);
     const formationWasAlreadyAdvanced = Number.isFinite(formationProgressRaw) && formationProgressRaw >= deliveryThreshold;
-    const deliveryCrossedAfterFormation = Number.isFinite(postFormationProgressRaw)
-        ? (!formationWasAlreadyAdvanced && postFormationProgressRaw > deliveryThreshold)
-        : (!formationOrderingAvailable && Number.isFinite(result.progress_to_tp1_fraction_raw) && result.progress_to_tp1_fraction_raw > deliveryThreshold);
+    const pendingLimitModelForDelivery = isPendingLimitExecutionModel(
+        candidate.execution_model || candidate.entry_model
+        || setup.execution_model || setup.entry_model
+    );
+    const entryTouchedForDelivery = Number(result.entry_touch_count_after_signal) > 0
+        || result.entry_crossed_after_signal === true;
+    const targetAlreadyConsumed = Number.isFinite(tp1) && Number.isFinite(price)
+        && (candidate.direction === 'BUY' ? price >= tp1 : price <= tp1);
+
+    // For an untouched pending limit, movement from the formation price is
+    // irrelevant. The limit is waiting at a fixed price. Only reject if the
+    // target has already been fully consumed by the market.
+    const deliveryCrossedAfterFormation = pendingLimitModelForDelivery && !entryTouchedForDelivery
+        ? targetAlreadyConsumed
+        : Number.isFinite(postFormationProgressRaw)
+            ? (!formationWasAlreadyAdvanced && postFormationProgressRaw > deliveryThreshold)
+            : (!formationOrderingAvailable
+                && Number.isFinite(result.progress_to_tp1_fraction_raw)
+                && result.progress_to_tp1_fraction_raw > deliveryThreshold);
     result.formation_price = formationPrice;
     result.formation_progress_to_tp1_fraction = Number.isFinite(formationProgressRaw) ? Math.max(0, Math.min(1, formationProgressRaw)) : null;
     result.post_formation_delivery_progress = Number.isFinite(postFormationProgressRaw) ? Math.max(0, Math.min(1, postFormationProgressRaw)) : null;
@@ -13173,7 +13189,11 @@ function evaluateSetupLifecycle(candidate, marketContext = {}) {
     // for a still-fresh pending limit.  A standing pending setup is allowed
     // to survive across sessions/days until its own zone lifecycle, entry
     // chronology, invalidation, or objective evidence makes it ineligible.
-    const staleByAge = !(standingPendingEvidence || (chronology?.known && pendingLimitModel))
+    // A pending limit remains valid as long as the target is unfulfilled and
+    // the structural invalidation hasn't been breached. Do not expire pending
+    // limits based on time.
+    const staleByAge = !pendingLimitModel
+        && (!standingPendingEvidence || !pendingLimitModel)
         && (!Number.isFinite(eventAgeHours) || eventAgeHours > maxEventAgeHours || parentAgeExpired);
     const deliveryAdvanced = (deliveryCrossedAfterFormation || (result.remaining_reward_fraction != null
             && result.remaining_reward_fraction < freshnessSpec.minRemainingRewardFraction
@@ -17756,6 +17776,30 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         evidence_refs: [...new Set([...(item.formation_evidence_refs || []), ...(item.evidence_refs || []), item.poi_ref, item.execution_poi_id].filter(Boolean))],
         quality_warnings: warnings,
         pending_limit_geometry_complete: item.pending_limit_geometry_complete || item.geometry_complete || 'UNKNOWN',
+        today_viability: (() => {
+            const price = Number(item.current_price || source.quote?.price || source.current_price);
+            const entry = Number(item.entry ?? item.proposed_entry);
+            const tp3 = Number(item.tp3 ?? item.take_profit_3 ?? item.proposed_objective);
+            if (![price, entry, tp3].every(Number.isFinite)) return 'UNKNOWN';
+
+            // Required path: current to entry + entry to TP3
+            const requiredPath = Math.abs(entry - price) + Math.abs(tp3 - entry);
+
+            // Today's realized volatility (Daily High - Daily Low from source)
+            const dailyData = source.history?.['1D'] || [];
+            const todayCandle = dailyData[dailyData.length - 1];
+            let todayRange = 0;
+            if (todayCandle) {
+                todayRange = Math.abs(Number(todayCandle.h) - Number(todayCandle.l));
+            }
+
+            // If we don't have daily range, fallback to a generous 2.5x current 4H ATR
+            // (which represents a strong trend day for Gold).
+            const atr4h = Number(source.market_context?.volatility?.atr_4h) || 20;
+            const expectedDayRange = todayRange > 0 ? todayRange : (atr4h * 2.5);
+
+            return requiredPath <= expectedDayRange ? 'HIGH' : 'LOW';
+        })(),
         manual_authority: 'DEEPSEEK_REVIEW_ONLY',
         deterministic_live_authority: (() => {
             const authority = item.CANDIDATE_AUTHORITY || item.candidate_authority;
