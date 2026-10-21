@@ -15229,12 +15229,19 @@ function normalizeMarketMechanicsAuthority(candidate = {}, source = {}, requeste
     const targetDelivered = ['DELIVERED', 'COMPLETED', 'CONSUMED', 'INVALIDATED', 'EXPIRED'].includes(targetLifecycle);
     const geometryBlocked = explicitGeometryValid === false || String(explicitGeometryValid ?? '').toUpperCase() === 'NO';
     const entry = Number(candidate.entry ?? candidate.proposed_entry);
+    const stop = Number(candidate.stop_loss ?? candidate.proposed_stop ?? candidate.stop);
+    const currentPrice = Number(source.current_price ?? source.quote?.price);
+    const direction = String(candidate.direction || '').toUpperCase();
     const zoneLow = Number(candidate.zone_low ?? candidate.entry_zone_low
         ?? candidate.execution_zone?.low ?? candidate.zone?.low);
     const zoneHigh = Number(candidate.zone_high ?? candidate.entry_zone_high
         ?? candidate.execution_zone?.high ?? candidate.zone?.high);
     const zoneGeometryKnown = [entry, zoneLow, zoneHigh].every(Number.isFinite) && zoneHigh >= zoneLow;
     const entryOutsideExecutionZone = zoneGeometryKnown && (entry < zoneLow || entry > zoneHigh);
+    const entrySideBlocked = Number.isFinite(entry) && Number.isFinite(currentPrice)
+        && ((direction === 'SELL' && !(entry > currentPrice)) || (direction === 'BUY' && !(entry < currentPrice)));
+    const stopSideBlocked = Number.isFinite(entry) && Number.isFinite(stop)
+        && ((direction === 'SELL' && !(stop > entry)) || (direction === 'BUY' && !(stop < entry)));
     const path = marketMechanicsPathEvaluation(candidate);
     const entryInsideOpposing = path.entry_inside_opposing_4h;
     const pathStatus = path.status;
@@ -15275,6 +15282,8 @@ function normalizeMarketMechanicsAuthority(candidate = {}, source = {}, requeste
         ...(lifecycleTerminal ? ['ENTRY_ALREADY_CONSUMED'] : []),
         ...(geometryBlocked ? ['INVALID_PENDING_LIMIT_GEOMETRY'] : []),
         ...(entryOutsideExecutionZone ? ['ENTRY_OUTSIDE_EXECUTION_ZONE'] : []),
+        ...(entrySideBlocked ? ['INVALID_ENTRY_SIDE'] : []),
+        ...(stopSideBlocked ? ['INVALID_STOP_SIDE'] : []),
         ...(confidenceMissing ? ['DETERMINISTIC_CONFIDENCE_MISSING'] : [])
     ])];
     const live = requestedAuthority === 'LIVE'
@@ -15290,6 +15299,8 @@ function normalizeMarketMechanicsAuthority(candidate = {}, source = {}, requeste
         && !lifecycleTerminal
         && !geometryBlocked
         && !entryOutsideExecutionZone
+        && !entrySideBlocked
+        && !stopSideBlocked
         && !confidenceMissing
         && !contradictoryAuthority
         && !authorityConflict
@@ -17708,7 +17719,6 @@ function manualMarketMechanicsSources(source = {}) {
         ...(Array.isArray(catalog.raw_candidates) ? catalog.raw_candidates : []),
         ...(Array.isArray(catalog.all_rejected_candidates) ? catalog.all_rejected_candidates : []),
         ...(Array.isArray(source.valid_candidates) ? source.valid_candidates : []),
-        ...(Array.isArray(source.adaptive_setup_candidates) ? source.adaptive_setup_candidates : []),
         ...(Array.isArray(source.live_market_mechanics_candidates) ? source.live_market_mechanics_candidates : [])
     ];
 }
@@ -17766,13 +17776,6 @@ function marketMechanicsExpectedDailyRange(source = {}) {
     return ranges.length ? Math.max(...ranges) : null;
 }
 
-function marketMechanicsTargetRR(level, entry, stop, direction) {
-    const risk = entry != null && stop != null ? Math.abs(stop - entry) : null;
-    if (!(risk > 0)) return null;
-    const reward = direction === 'BUY' ? level - entry : direction === 'SELL' ? entry - level : null;
-    return Number.isFinite(reward) && reward > 0 ? reward / risk : null;
-}
-
 function marketMechanicsTradeableToday({ direction, entry, stop, objective, supportedTargets = [], currentPrice, expectedDailyRange, config = DETERMINISTIC_SELECTION_CONFIG } = {}) {
     const entryPath = entry != null && currentPrice != null ? Math.abs(entry - currentPrice) : null;
     const floor = Number(config.FALLBACK_RR_FLOOR ?? DETERMINISTIC_SELECTION_CONFIG.FALLBACK_RR_FLOOR);
@@ -17787,14 +17790,9 @@ function marketMechanicsTradeableToday({ direction, entry, stop, objective, supp
         .filter(Boolean)
         .sort((left, right) => Math.abs(left.level - entry) - Math.abs(right.level - entry));
     const expectedRange = Number(expectedDailyRange);
-    const plannedTarget = deterministicSelectionNumber(objective);
-    const plannedCorrectSide = plannedTarget != null
-        && (direction === 'SELL' ? plannedTarget < entry : direction === 'BUY' ? plannedTarget > entry : false);
     const nearest = acceptableTargets[0] || null;
-    const targetLevel = plannedCorrectSide ? plannedTarget : nearest?.level ?? null;
-    const targetRR = targetLevel == null ? null
-        : acceptableTargets.find(target => Math.abs(target.level - targetLevel) <= 1e-9)?.rr
-            ?? marketMechanicsTargetRR(targetLevel, entry, stop, direction);
+    const targetLevel = nearest?.level ?? null;
+    const targetRR = nearest?.rr ?? null;
     const deliveryPath = targetLevel != null && entry != null ? Math.abs(targetLevel - entry) : null;
     const totalPath = entryPath != null && deliveryPath != null ? entryPath + deliveryPath : null;
     const entryReachable = expectedRange > 0 && entryPath != null
@@ -17806,6 +17804,11 @@ function marketMechanicsTradeableToday({ direction, entry, stop, objective, supp
         : !entryReachable ? 'ENTRY_TOO_FAR'
             : !totalReachable ? 'PATH_TOO_LONG'
                 : !rrEligible ? 'RR_TOO_LOW' : 'OK';
+    const fullTpTarget = deterministicSelectionNumber(objective);
+    const fullTpDeliveryPath = fullTpTarget != null && entry != null ? Math.abs(fullTpTarget - entry) : null;
+    const fullTpTotalPath = entryPath != null && fullTpDeliveryPath != null ? entryPath + fullTpDeliveryPath : null;
+    const fullTpReachableToday = expectedRange > 0 && fullTpTotalPath != null
+        && fullTpTotalPath <= Number(config.TOTAL_PATH_FRACTION ?? DETERMINISTIC_SELECTION_CONFIG.TOTAL_PATH_FRACTION) * expectedRange;
     return {
         tradeable_today: reason === 'OK' ? 'TRUE' : 'FALSE',
         tradeable_today_reason: reason,
@@ -17817,7 +17820,10 @@ function marketMechanicsTradeableToday({ direction, entry, stop, objective, supp
         reachable_target_rr: targetRR,
         entry_reachable: entryReachable ? 'TRUE' : 'FALSE',
         total_reachable: totalReachable ? 'TRUE' : 'FALSE',
-        rr_eligible: rrEligible ? 'TRUE' : 'FALSE'
+        rr_eligible: rrEligible ? 'TRUE' : 'FALSE',
+        full_tp_delivery_path: fullTpDeliveryPath,
+        full_tp_total_path: fullTpTotalPath,
+        full_tp_reachable_today: fullTpReachableToday ? 'TRUE' : 'FALSE'
     };
 }
 
@@ -18099,7 +18105,8 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
             }
             return null;
         })(),
-        recomputed_lifecycle_status: item.lifecycle_classification || lifecycleMetrics.lifecycle_classification || lifecycle,
+        recomputed_lifecycle_status: item.lifecycle_classification || item.recomputed_lifecycle_status
+            || lifecycleMetrics.lifecycle_classification || lifecycle,
         original_rejection: originalRejection,
         matched_candle_index: lifecycleDiagnostics.execution_event_index ?? item.execution_event_index ?? item.execution_zone_created_index ?? null,
         matched_candle_index_source: lifecycleDiagnostics.execution_event_index_source || null,
@@ -20367,8 +20374,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const packetCandidateSources = marketMechanicsMode ? [
         ...(source.market_mechanics?.candidate_catalog?.live_candidates || []),
         ...(source.live_market_mechanics_candidates || []),
-        ...(source.valid_candidates || []),
-        ...(source.adaptive_setup_candidates || [])
+        ...(source.valid_candidates || [])
     ] : [];
     const packetCandidatesById = new Map();
     for (const candidate of packetCandidateSources) {
@@ -20703,7 +20709,10 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
                 + ' REACHABLE_TARGET_RR=' + (opportunity.reachable_target_rr == null ? 'NA' : Number(opportunity.reachable_target_rr).toFixed(2))
                 + ' ENTRY_REACHABLE=' + String(opportunity.entry_reachable || 'FALSE')
                 + ' TOTAL_REACHABLE=' + String(opportunity.total_reachable || 'FALSE')
-                + ' RR_ELIGIBLE=' + String(opportunity.rr_eligible || 'FALSE'));
+                + ' RR_ELIGIBLE=' + String(opportunity.rr_eligible || 'FALSE')
+                + ' FULL_TP_DELIVERY_PATH=' + rawTextPacketOptionalNumber(opportunity.full_tp_delivery_path, precision)
+                + ' FULL_TP_TOTAL_PATH=' + rawTextPacketOptionalNumber(opportunity.full_tp_total_path, precision)
+                + ' FULL_TP_REACHABLE_TODAY=' + String(opportunity.full_tp_reachable_today || 'FALSE'));
             lines.push('OPPORTUNITY_EVIDENCE=' + JSON.stringify(opportunity));
         }
         lines.push('');
@@ -20923,7 +20932,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         lines.push('FALLBACK_WARNING=' + (deterministicSelection.fallback_warning || 'NONE'));
         const selectionBlocker = deterministicSelection.blocker
             || (authority.invariants === 'PASS' ? null : authority.blocker);
-        if (selectionBlocker) lines.push('BLOCKER=' + selectionBlocker);
+        lines.push('BLOCKER=' + (selectionBlocker || 'NONE'));
         lines.push('');
     }
     lines.push(
@@ -30999,8 +31008,8 @@ Return only the existing compact JSON output contract.
             'PRIMARY_REJECTED_ID=' + (deterministicSelection.primary_rejected_id || 'NONE'),
             'PRIMARY_REJECT_REASON=' + (deterministicSelection.primary_reject_reason || 'NONE'),
             'FALLBACK_WARNING=' + (deterministicSelection.fallback_warning || 'NONE'),
-            ...((deterministicSelection.blocker || (packetAuthority?.invariants === 'PASS' ? null : packetAuthority?.blocker))
-                ? ['BLOCKER=' + (deterministicSelection.blocker || packetAuthority.blocker)] : [])
+            'BLOCKER=' + (deterministicSelection.blocker
+                || (packetAuthority?.invariants === 'PASS' ? null : packetAuthority?.blocker) || 'NONE')
         ] : []),
         '',
         externalAIClipboardTask

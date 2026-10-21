@@ -4542,8 +4542,8 @@ describe('Market Mechanics packet authority', () => {
         entry_model: 'MARKET_SHIFT',
         execution_model: 'PENDING_LIMIT',
         market_mechanics_verified: true,
-        execution_zone: { id: 'POI-1', low: 4177, high: 4180 },
-        entry: 4177.5,
+        execution_zone: { id: 'POI-1', low: 4177, high: 4190 },
+        entry: 4190,
         stop_loss: 4199.09,
         tp1: 4154.97,
         tp2: 4132.91,
@@ -4749,6 +4749,46 @@ describe('Market Mechanics packet authority', () => {
         expect(semantic.authority_invariants).toBe('FAIL');
         expect(ctx.marketMechanicsAuthoritySummary(source).invariant_failed).toBe('SELECTABLE_IDS_COUNT_MISMATCH');
         expect(ctx.marketMechanicsAuthoritySummary(source).invariant_classification).toBe('HARD_SAFETY');
+    });
+
+    test('wrong-side entry, wrong-side stop and consumed selections keep named hard failures', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const wrongStop = ctx.marketMechanicsAuthoritySummary(marketContext([{
+            ...qualifiedMarketMechanicsCandidate, id: 'MM-HARD-WRONG-STOP', selectable: true,
+            structural_stop_valid: 'NO'
+        }]));
+        expect(wrongStop.invariants).toBe('FAIL');
+        expect(wrongStop.invariant_failed).toBe('SELECTABLE_AUTHORITY_NOT_LIVE');
+        expect(wrongStop.invariant_classification).toBe('HARD_SAFETY');
+        const wrongEntry = ctx.marketMechanicsAuthoritySummary(marketContext([{
+            ...qualifiedMarketMechanicsCandidate, id: 'MM-HARD-WRONG-ENTRY', selectable: true,
+            entry: 4180, execution_zone: { id: 'POI-1', low: 4177, high: 4180 }
+        }]));
+        expect(wrongEntry.invariants).toBe('FAIL');
+        expect(wrongEntry.invariant_failed).toBe('SELECTABLE_AUTHORITY_NOT_LIVE');
+        expect(wrongEntry.invariant_classification).toBe('HARD_SAFETY');
+        const consumed = ctx.marketMechanicsAuthoritySummary(marketContext([{
+            ...qualifiedMarketMechanicsCandidate, id: 'MM-HARD-CONSUMED', selectable: true,
+            entry_consumed: 'YES'
+        }]));
+        expect(consumed.invariants).toBe('FAIL');
+        expect(consumed.invariant_failed).toBe('SELECTABLE_AUTHORITY_NOT_LIVE');
+        expect(consumed.invariant_classification).toBe('HARD_SAFETY');
+    });
+
+    test('count mismatch prints a named packet diagnostic', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = completeReplay({
+            pair: 'XAU/USD', strategy_mode: 'MARKET_MECHANICS', scan_as_of: '2026-10-21T04:21:28.378Z',
+            quote: { price: 4124.59, quote_time: '2026-10-21T04:21:28.378Z' },
+            market_plan: { valid_context: true, market_plan_complete: true, direction: 'SELL', primary_poi: { id: 'POI-1' } },
+            selectable_candidate_ids: ['MM-PHANTOM'], history: {}
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('AUTHORITY_INVARIANTS=FAIL');
+        expect(text).toContain('AUTHORITY_INVARIANT_FAILED=SELECTABLE_IDS_COUNT_MISMATCH');
+        expect(text).toContain('AUTHORITY_INVARIANT_CLASSIFICATION=HARD_SAFETY');
+        expect(text).toContain('AUTHORITY_INVARIANT_REASON=SELECTABLE_CANDIDATE_IDS does not match normalized live candidate IDs');
     });
 
     test('reviewed untouched pending-limit lifecycle remains live without being consumed', () => {
@@ -5752,35 +5792,66 @@ describe('deterministic viability selection', () => {
         expect(text).toContain('SELECTABLE_CANDIDATE_IDS=BENCH-1');
     });
 
-    test('quiet-day shortlist stays complete and reports no tradeable opportunity', () => {
+    const replayOriginalPacket = () => {
+        const text = fs.readFileSync('packet/xauusd new.txt', 'utf8');
+        const rows = text.split(/\r?\n/).filter(line => line.startsWith('OPPORTUNITY_EVIDENCE='))
+            .map(line => JSON.parse(line.slice('OPPORTUNITY_EVIDENCE='.length)));
+        const history = {};
+        for (const block of text.matchAll(/======== TIMEFRAME: (\w+) ========([\s\S]*?)======== END \w+ ========/g)) {
+            const timeframe = block[1].toUpperCase();
+            history[timeframe] = block[2].split(/\r?\n/).filter(line => /^\d{4}-\d\d-\d\dT[^,]+,/.test(line))
+                .map(line => {
+                    const [t, o, h, l, c, v] = line.split(',');
+                    return { t, o: Number(o), h: Number(h), l: Number(l), c: Number(c), v: Number(v), is_closed: true };
+                });
+        }
+        const states = rows.map(row => ({
+            ...row,
+            proposed_entry: row.suggested_entry,
+            setup_formation_confirmed: row.formation_status === 'CONFIRMED' ? 'YES' : 'NO',
+            confirmation_state: 'CONFIRMED',
+            target_candidates: (row.supported_target_reward_risk || []).map(target => ({ level: target.level, source: target.source })),
+            entry_zone_touched: row.entry_touched,
+            entry_consumed: row.entry_consumed
+        }));
+        return {
+            pair: 'XAU/USD', strategy_mode: 'MARKET_MECHANICS', scan_as_of: '2026-10-21T04:21:28.378Z',
+            quote: { price: 4124.59, quote_time: '2026-10-21T04:21:28.378Z' },
+            market_plan: { valid_context: true, market_plan_complete: true, direction: 'SELL', primary_poi: { id: 'POI-1' } },
+            market_context: { volatility: { atr_4h: 21.46 } },
+            market_mechanics: { model_states: states },
+            history, valid_candidates: [], live_market_mechanics_candidates: [],
+            data_quality: { valid: true, status: 'FRESH', timeframe_status: { '1D': 'FRESH', '4H': 'FRESH', '1H': 'FRESH', '15M': 'FRESH', '5M': 'FRESH' } }
+        };
+    };
+
+    test('quiet-day regression accepts only the FLIP TP1 path and preserves lifecycle', () => {
         const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
-        const rows = [
-            { id: 'QUIET-1', entry: 4144.01, stop: 4191.49, objective: 4066.53, timeframe: '4H' },
-            { id: 'QUIET-2', entry: 4183.81, stop: 4226.73, objective: 4073.55, timeframe: '4H' },
-            { id: 'QUIET-3', entry: 4168.50, stop: 4211.42, objective: 4066.53, timeframe: '4H' },
-            { id: 'QUIET-4', entry: 4143.20, stop: 4191.04, objective: 4066.53, timeframe: '1H' },
-            { id: 'QUIET-5', entry: 4146.25, stop: 4191.04, objective: 4066.53, timeframe: '1H' },
-            { id: 'QUIET-6', entry: 4157.13, stop: 4182.12, objective: 4080.49, timeframe: '4H' },
-            { id: 'QUIET-7', entry: 4161.83, stop: 4191.04, objective: 4080.49, timeframe: '1H' },
-            { id: 'QUIET-8', entry: 4169.82, stop: 4194.81, objective: 4080.49, timeframe: '1H' },
-            { id: 'QUIET-9', entry: 4184.77, stop: 4209.76, objective: 4111.68, timeframe: '1H' },
-            { id: 'QUIET-10', entry: 4164.52, stop: 4189.51, objective: 4080.49, timeframe: '1H' }
-        ].map(row => manualOpportunity(row));
-        const replay = selectionReplay({ price: 4124.59, high: 4155.57, low: 4111.68, atr: 21.46, rows });
-        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay: replayOriginalPacket() });
         const evidence = opportunityEvidence(text);
         expect(evidence).toHaveLength(10);
-        expect(evidence.every(row => row.tradeable_today === 'FALSE')).toBe(true);
-        expect(evidence.every(row => row.tradeable_today_reason !== 'OK')).toBe(true);
+        const flip = evidence.find(row => String(row.opportunity_id).includes('FLIP-4H-SELL-4153.76-4159.03'));
+        const nonFlip = evidence.filter(row => row !== flip);
+        expect(flip.tradeable_today).toBe('TRUE');
+        expect(flip.tradeable_today_reason).toBe('OK');
+        expect(flip.entry_path).toBeCloseTo(32.54, 6);
+        expect(flip.delivery_path).toBeCloseTo(39.69, 6);
+        expect(flip.total_path).toBeCloseTo(72.23, 6);
+        expect(flip.reachable_target_level).toBeCloseTo(4117.44, 2);
+        expect(flip.reachable_target_rr).toBeCloseTo(39.69 / 24.99, 6);
+        expect(nonFlip.every(row => row.tradeable_today === 'FALSE' && row.tradeable_today_reason !== 'OK')).toBe(true);
         expect(evidence.every(row => Math.abs(row.expected_daily_range - 53.65) < 1e-9)).toBe(true);
         expect(text).toContain('MANUAL_ACTIVE_OPPORTUNITY_COUNT=10');
-        expect(text).toContain('DETERMINISTIC_SELECTION_POLICY=NO_TRADEABLE_TODAY');
-        expect(text).toContain('DETERMINISTIC_SELECTED_ID=NONE');
-        expect(text).toContain('LIVE_CANDIDATE_COUNT=0');
-        expect(text).toContain('SELECTABLE_CANDIDATE_IDS=NONE');
-        expect(text).toContain('BLOCKER=NO_TRADEABLE_TODAY');
-        expect(text).toContain('OPPORTUNITY_ID=QUIET-6');
-        const reviewed = text.split(/\r?\n/).find(line => line.startsWith('MANUAL_ACTIVE_OPPORTUNITY OPPORTUNITY_ID=QUIET-6'));
+        expect(text).toContain('DETERMINISTIC_SELECTION_POLICY=VIABILITY_FALLBACK');
+        expect(text).toContain('DETERMINISTIC_SELECTED_ID=' + flip.opportunity_id);
+        expect(text).toContain('LIVE_CANDIDATE_COUNT=1');
+        expect(text).toContain('SELECTABLE_CANDIDATE_IDS=' + flip.opportunity_id);
+        expect(text).toContain('BLOCKER=NONE');
+        expect(flip.lifecycle_state).toBe('PENDING_UNFILLED');
+        expect(flip.entry_touched).toBe('NO');
+        expect(flip.entry_consumed).toBe('NO');
+        expect(flip.recomputed_lifecycle_status).toBe('ACTIVE_UNTOUCHED');
+        const reviewed = text.split(/\r?\n/).find(line => line.startsWith('MANUAL_ACTIVE_OPPORTUNITY OPPORTUNITY_ID=' + flip.opportunity_id));
         expect(reviewed).toContain('LIFECYCLE_STATE=PENDING_UNFILLED');
         expect(reviewed).toContain('ENTRY_TOUCHED=NO');
         expect(reviewed).toContain('ENTRY_CONSUMED=NO');
@@ -5855,6 +5926,108 @@ describe('deterministic viability selection', () => {
         expect(reviewed).toContain('ENTRY_CONSUMED=NO');
         expect(opportunityEvidence(text)[0].recomputed_lifecycle_status).toBe('ACTIVE_UNTOUCHED');
         expect(text).toContain('DETERMINISTIC_SELECTED_ID=PENDING-1');
+    });
+
+    test('Oct 19 benchmark selects TP1 4115 rather than TP3 4005', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = selectionReplay({
+            price: 4124.59, high: 4190.42, low: 4111.68, atr: 21.46,
+            rows: [manualOpportunity({
+                id: 'OCT19-BENCH-4115', entry: 4157.13, stop: 4182.12, objective: 4005,
+                overrides: {
+                    target_candidates: [
+                        { level: 4115, source: 'TP1_LIQUIDITY' },
+                        { level: 4005, source: 'TP3_LIQUIDITY' }
+                    ]
+                }
+            })]
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const row = opportunityEvidence(text)[0];
+        expect(row.tradeable_today).toBe('TRUE');
+        expect(row.tradeable_today_reason).toBe('OK');
+        expect(row.entry_path).toBeCloseTo(32.54, 6);
+        expect(row.delivery_path).toBeCloseTo(42.13, 6);
+        expect(row.total_path).toBeCloseTo(74.67, 6);
+        expect(row.reachable_target_level).toBeCloseTo(4115, 6);
+        expect(row.reachable_target_rr).toBeCloseTo(42.13 / 24.99, 6);
+        expect(row.full_tp_delivery_path).toBeCloseTo(152.13, 6);
+        expect(row.full_tp_total_path).toBeCloseTo(184.67, 6);
+        expect(row.full_tp_reachable_today).toBe('FALSE');
+        expect(text).toContain('DETERMINISTIC_SELECTION_POLICY=STRUCTURAL_PRIMARY');
+        expect(text).toContain('DETERMINISTIC_SELECTED_ID=OCT19-BENCH-4115');
+        expect(text).toContain('PRIMARY_REJECTED_ID=NONE');
+        expect(text).toContain('FALLBACK_WARNING=NONE');
+        expect(text).toContain('LIVE_CANDIDATE_COUNT=1');
+        expect(text).toContain('SELECTABLE_CANDIDATE_IDS=OCT19-BENCH-4115');
+        expect(text).toContain('BLOCKER=NONE');
+    });
+
+    test('full TP disclosure cannot change selection or tradeability', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const packetFor = objective => ctx.buildRawTextMarketAnalysisPacket({
+            replay: selectionReplay({
+                price: 4178, high: 4233, low: 4178, atr: 22,
+                rows: [manualOpportunity({
+                    id: 'DISCLOSURE-1', entry: 4190, stop: 4220, objective,
+                    overrides: {
+                        target_candidates: [
+                            { level: 4135, source: 'TP1_LIQUIDITY' },
+                            { level: objective, source: 'TP3_LIQUIDITY' }
+                        ]
+                    }
+                })]
+            })
+        });
+        const near = packetFor(4100);
+        const far = packetFor(3900);
+        const nearRow = opportunityEvidence(near)[0];
+        const farRow = opportunityEvidence(far)[0];
+        expect(nearRow.full_tp_total_path).not.toBeCloseTo(farRow.full_tp_total_path, 6);
+        expect(nearRow.tradeable_today).toBe(farRow.tradeable_today);
+        expect(nearRow.tradeable_today_reason).toBe(farRow.tradeable_today_reason);
+        expect(nearRow.reachable_target_level).toBeCloseTo(farRow.reachable_target_level, 6);
+        expect(nearRow.delivery_path).toBeCloseTo(farRow.delivery_path, 6);
+        expect(near).toContain('DETERMINISTIC_SELECTION_POLICY=STRUCTURAL_PRIMARY');
+        expect(far).toContain('DETERMINISTIC_SELECTION_POLICY=STRUCTURAL_PRIMARY');
+        expect(near).toContain('DETERMINISTIC_SELECTED_ID=DISCLOSURE-1');
+        expect(far).toContain('DETERMINISTIC_SELECTED_ID=DISCLOSURE-1');
+        expect(near).toContain('BLOCKER=NONE');
+        expect(far).toContain('BLOCKER=NONE');
+    });
+
+    test('fallback RR matches supported target RR and reward/risk arithmetic', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = selectionReplay({
+            price: 4178, high: 4233, low: 4178, atr: 22,
+            rows: [
+                manualOpportunity({
+                    id: 'PARITY-1', entry: 4190, stop: 4220, objective: 4050,
+                    overrides: { target_candidates: [
+                        { level: 4135, source: 'TP1_LIQUIDITY' },
+                        { level: 4050, source: 'TP3_LIQUIDITY' }
+                    ] }
+                }),
+                manualOpportunity({
+                    id: 'PARITY-2', entry: 4195, stop: 4230, objective: 4055,
+                    overrides: { target_candidates: [
+                        { level: 4125, source: 'TP1_LIQUIDITY' },
+                        { level: 4055, source: 'TP3_LIQUIDITY' }
+                    ] }
+                })
+            ]
+        });
+        const evidence = opportunityEvidence(ctx.buildRawTextMarketAnalysisPacket({ replay }));
+        expect(evidence).toHaveLength(2);
+        for (const row of evidence) {
+            const target = row.supported_target_reward_risk
+                .find(item => Math.abs(item.level - row.reachable_target_level) <= 1e-9);
+            expect(target).toBeTruthy();
+            expect(row.reachable_target_rr).toBeCloseTo(target.rr, 12);
+            expect(target.rr).toBeCloseTo(
+                Math.abs(target.level - row.suggested_entry) / Math.abs(row.proposed_stop - row.suggested_entry), 12
+            );
+        }
     });
 });
 
