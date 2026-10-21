@@ -721,6 +721,37 @@ describe('market-thesis opportunity invariants', () => {
         expect(result.primary_opportunity).toMatchObject({ id: 'low-quality-sell', entry_price: 101.5, stop_loss: 103, take_profit_1: 97, watch_only: false });
     });
 
+    it('projects the exact deterministic selected candidate instead of the higher-ranked unselected candidate', () => {
+        const ctx = getContext();
+        const candidate = (id, entry) => ({
+            id, direction: 'SELL', timeframe: '1H', zone_type: 'FVG', execution_model: 'PENDING_LIMIT',
+            zone_low: entry - 0.2, zone_high: entry + 0.2, entry, stop_loss: entry + 1, tp1: entry - 3,
+            rr_tp1: 3, score: 90, setup_confidence: 90,
+            still_actionable_today: true, entry_reachable_today: true,
+            zone: { id: `${id}-zone`, type: 'FVG', timeframe: '1H', low: entry - 0.2, high: entry + 0.2 }
+        });
+        const unselected = candidate('ranked-first', 100.4);
+        const selected = candidate('deterministic-choice', 100.8);
+        const result = ctx.buildTodayOpportunity({
+            pair: 'XAU/USD', currentPrice: 100, marketOpen: true,
+            validCandidates: [unselected, selected],
+            deterministicLiveCandidates: [unselected, selected],
+            deterministicSelectedId: selected.id
+        });
+        expect(result.state).toBe('TRADE_READY');
+        expect(result.primary_opportunity.id).toBe(selected.id);
+        expect(result.primary_opportunity.entry_price).toBe(selected.entry);
+        const noTrade = ctx.buildTodayOpportunity({
+            pair: 'XAU/USD', currentPrice: 100, marketOpen: true,
+            validCandidates: [unselected, selected],
+            deterministicLiveCandidates: [unselected, selected],
+            deterministicSelectedId: 'NONE'
+        });
+        expect(noTrade.state).toBe('NO_TRADE_TODAY');
+        expect(noTrade.reason_code).toBe('NO_TRADEABLE_TODAY');
+        expect(noTrade.primary_opportunity).toBeUndefined();
+    });
+
     it.each([59, 60, 61, 69, 70, 71, 90])('does not turn a hard-valid pending limit into WAIT at confidence %i', confidence => {
         const ctx = getContext();
         const result = ctx.buildTodayOpportunity({
@@ -4810,6 +4841,9 @@ describe('Market Mechanics packet authority', () => {
         const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
         const constrained = {
             ...qualifiedMarketMechanicsCandidate,
+            entry_touched: 'NO',
+            entry_consumed: 'NO',
+            entry_zone_touched: 'NO',
             clear_path_to_tp1: 'NO',
             path_quality: {
                 path_evaluated: 'YES', path_status: 'CONSTRAINED',

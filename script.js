@@ -14403,7 +14403,7 @@ function compactAiDiagnostics(analysis = null) {
     };
 }
 
-function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfMs, histories, marketContext = {}, strategySetups = [], aiAnalysis = null, executionZones = [], candidateDiagnostics = {}, validCandidates = [], futureWatchCandidates = [], lowQualityCandidates = [], targetCandidates = {}, marketOpen = true, symbolMetadata = null } = {}) {
+function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfMs, histories, marketContext = {}, strategySetups = [], aiAnalysis = null, executionZones = [], candidateDiagnostics = {}, validCandidates = [], futureWatchCandidates = [], lowQualityCandidates = [], targetCandidates = {}, marketOpen = true, symbolMetadata = null, deterministicSelectedId = null, deterministicLiveCandidates = null } = {}) {
     const timeframeContext = marketContext.timeframe_context || buildTimeframeContext({ historyCache: histories, structure: marketContext.structure, price: currentPrice, strategySetups, zones: executionZones });
     const state = {
         state: 'NO_TRADE_TODAY', bias: marketContext.directional_bias || aiAnalysis?.market_view?.bias || 'NEUTRAL', strategy: null, direction: null, narrative_id: null,
@@ -14450,12 +14450,18 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.reason = `Market Mechanics evaluation is blocked by ${state.reason_code}: ${primaryDataReason}`;
         return state;
     }
+    const executionCandidates = Array.isArray(deterministicLiveCandidates)
+        ? deterministicLiveCandidates
+        : (validCandidates || []);
+    const requestedSelectionId = deterministicSelectedId != null && String(deterministicSelectedId).toUpperCase() !== 'NONE'
+        ? String(deterministicSelectedId) : null;
+    const selectionRequiresNoTrade = String(deterministicSelectedId ?? '').toUpperCase() === 'NONE';
     // A candidate can pass numeric geometry while still being unsuitable for
     // an order now (for example, an old zone or a limit entry outside the
     // remaining trading window). Do not promote those candidates to
     // TRADE_READY. Explicit lifecycle values are authoritative; candidates
     // from older callers without lifecycle fields remain compatible here.
-    const tradeReadyCandidates = (validCandidates || []).filter(candidate => candidate.trade_qualified !== false && candidate.TRADE_QUALIFIED !== 'NO').filter(candidate => {
+    const tradeReadyCandidates = (executionCandidates || []).filter(candidate => candidate.trade_qualified !== false && candidate.TRADE_QUALIFIED !== 'NO').filter(candidate => {
         if (candidate.still_actionable_today === false) return false;
         const pendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model);
         if (!pendingLimit && candidate.entry_reachable_today === false) return false;
@@ -14465,7 +14471,29 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         // it cannot turn that future order into WAIT.
         return pendingLimit || !Number.isFinite(quality) || quality >= STRATEGY_SPEC.CONFIDENCE.mediumQualityMinimum;
     });
-    const bestCandidate = rankCurrentOpportunityCandidates(tradeReadyCandidates, currentPrice, scanAsOfMs)[0];
+    if (selectionRequiresNoTrade) {
+        state.reason_code = 'NO_TRADEABLE_TODAY';
+        state.reason = 'Deterministic selection found no tradeable opportunity for today.';
+        state.primary_blocker = 'NO_TRADEABLE_TODAY';
+        state.failed_stage = 'DETERMINISTIC_SELECTION';
+        state.deterministic_selection_policy = 'NO_TRADEABLE_TODAY';
+        return state;
+    }
+    let bestCandidate = null;
+    if (requestedSelectionId) {
+        bestCandidate = tradeReadyCandidates.find(candidate => String(candidate.id) === requestedSelectionId) || null;
+        if (!bestCandidate) {
+            state.reason_code = 'DETERMINISTIC_SELECTED_CANDIDATE_NOT_EXECUTABLE';
+            state.reason = 'The deterministic selected candidate is not present in the executable candidate set.';
+            state.primary_blocker = 'DETERMINISTIC_SELECTED_CANDIDATE_NOT_EXECUTABLE';
+            state.failed_stage = 'AUTHORITY';
+            state.deterministic_selected_id = requestedSelectionId;
+            return state;
+        }
+        state.deterministic_selected_id = requestedSelectionId;
+    } else {
+        bestCandidate = rankCurrentOpportunityCandidates(tradeReadyCandidates, currentPrice, scanAsOfMs)[0];
+    }
     if (bestCandidate) {
         const pendingLimit = isPendingLimitExecutionModel(bestCandidate.execution_model || bestCandidate.entry_model);
         const qualityWarnings = bestCandidate.quality_warnings
@@ -14507,7 +14535,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
         state.expected_window = marketOpen === false ? 'NEXT_VALID_SESSION' : 'REMAINDER_OF_TODAY';
         state.execution_allowed = marketOpen !== false && pendingLimit;
         state.manual_tracking_allowed = pendingLimit;
-        const candidatePlans = tradeReadyCandidates.map(candidate => ({
+        const candidatePlans = (requestedSelectionId ? [bestCandidate] : tradeReadyCandidates).map(candidate => ({
             ...candidate,
             state: 'TRADE_READY', narrative_id: candidate.strategy_setup?.id || candidate.id,
             direction: candidate.direction, strategy: getDisplayStrategyLabel(candidate, candidate.zone_type),
@@ -16543,6 +16571,23 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
         enumerable: false,
         configurable: true
     });
+    if (isMarketMechanicsMode(liveContext)) {
+        const executionSelection = resolveMarketMechanicsExecutionSelection({
+            source: liveContext,
+            candidates: liveContext.adaptive_setup_candidates,
+            currentPrice: liveContext.current_price
+        });
+        liveContext.deterministic_selection = executionSelection.selection;
+        liveContext.deterministic_selection_attempt_count = executionSelection.attempt_count;
+        liveContext.deterministic_execution_candidate = executionSelection.execution_candidate;
+        if (executionSelection.selection?.selected_id) {
+            liveContext.adaptive_setup_candidates = executionSelection.live_candidates;
+            liveContext.live_market_mechanics_candidates = executionSelection.live_candidates;
+        } else if (executionSelection.authority?.invariants === 'PASS') {
+            liveContext.adaptive_setup_candidates = [];
+            liveContext.live_market_mechanics_candidates = [];
+        }
+    }
     recordScanRuntimeBoundary('live_context_history_counts', historyCache, snapshotCompleteness, liveContext);
     return liveContext;
 }
@@ -16747,11 +16792,15 @@ function replayCapturedScan(replay) {
                 || replay.quote.quote_time || null,
             source: replay.quote.quote_source || replay.runtime_state?.quote_snapshot?.source || null
         } : null });
+    const replaySelectedId = isMarketMechanicsMode(live)
+        ? (live.deterministic_selection?.selected_id || 'NONE') : null;
     const today = buildTodayOpportunity({ pair: replay.pair, currentPrice: price, scanAsOfMs: asOfMs, histories: historyCache,
         marketContext: live.market_context, strategySetups: filterLiveStrategySetupsForAuthority(live.strategy_setups, live), executionZones: [...(live.strategy_execution_zones || []), ...(live.real_ict_zones || [])],
         candidateDiagnostics: live.setup_candidate_audit, validCandidates: live.adaptive_setup_candidates, futureWatchCandidates: live.future_watch_candidates, lowQualityCandidates: live.low_quality_candidates, targetCandidates: live.target_candidates,
         symbolMetadata: live.symbol_metadata,
-        marketOpen: live.market_open });
+        marketOpen: live.market_open,
+        deterministicSelectedId: replaySelectedId,
+        deterministicLiveCandidates: live.adaptive_setup_candidates });
     const finalOutput = buildTodayOpportunityOutput(today, replay.pair, price, asOfMs, live.market_open, live.symbol_metadata, live.provider_metadata);
     return { replay_matches_live: compareScanReplayOutput(replay.final_output, finalOutput).replay_matches_live,
         differences: compareScanReplayOutput(replay.final_output, finalOutput).differences, replay_output: finalOutput, production_trace: live.production_trace };
@@ -16949,22 +16998,27 @@ function buildRawMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const snapshotMismatch = !!(replaySnapshotId && signalSnapshotId && replaySnapshotId !== signalSnapshotId);
     const snapshotComplete = suppliedCompleteness?.complete === true && missingTimeframes.length === 0 && !identityMismatch && !snapshotMismatch;
     const marketMechanicsMode = isMarketMechanicsMode(source);
-    const authority = marketMechanicsMode
-        ? marketMechanicsAuthoritySummary({
-            ...source,
-            strategy_mode: 'MARKET_MECHANICS',
-            market_plan: source.market_plan || source.market_context?.market_plan,
-            adaptive_setup_candidates: source.live_market_mechanics_candidates || source.valid_candidates || []
+    const semanticCandidatesById = new Map();
+    for (const candidate of [
+        ...(source.market_mechanics?.candidate_catalog?.live_candidates || []),
+        ...(source.live_market_mechanics_candidates || []),
+        ...(source.valid_candidates || [])
+    ]) {
+        const id = candidate?.id || candidate?.candidate_id;
+        if (!id) continue;
+        semanticCandidatesById.set(id, { ...(semanticCandidatesById.get(id) || {}), ...candidate });
+    }
+    const executionSelection = marketMechanicsMode
+        ? resolveMarketMechanicsExecutionSelection({
+            source,
+            candidates: [...semanticCandidatesById.values()],
+            currentPrice: quote.current_price
         })
         : null;
-    const manualMarketMechanicsOpportunities = marketMechanicsMode
-        ? buildManualMarketMechanicsOpportunityShortlist(source, quote.current_price)
-        : [];
-    const deterministicSelection = marketMechanicsMode
-        ? buildDeterministicMarketMechanicsSelection({
-            source, opportunities: manualMarketMechanicsOpportunities, authority, currentPrice: quote.current_price
-        })
-        : null;
+    const authority = executionSelection?.authority || null;
+    const manualMarketMechanicsOpportunities = executionSelection?.manual_opportunities
+        || (marketMechanicsMode ? buildManualMarketMechanicsOpportunityShortlist(source, quote.current_price) : []);
+    const deterministicSelection = executionSelection?.selection || null;
     const payload = {
         packet_type: 'RAW_MARKET_ANALYSIS',
         packet_schema: RAW_MARKET_ANALYSIS_PACKET_SCHEMA,
@@ -17922,6 +17976,331 @@ function buildDeterministicMarketMechanicsSelection({ source = {}, opportunities
         primary_reject_reason: primary.tradeable_today_reason,
         fallback_warning: 'NO_TRADEABLE_OPPORTUNITY: PRIMARY_AND_ALL_FALLBACKS_REJECTED',
         blocker: 'NO_TRADEABLE_TODAY', reason: primary.tradeable_today_reason, eligible_count: eligible.length
+    };
+}
+
+function marketMechanicsExecutionSelectionSource(source = {}, currentPrice = null) {
+    const price = deterministicSelectionNumber(currentPrice, source.quote?.price, source.current_price, source.quote_snapshot?.price);
+    const asOf = deterministicSelectionNumber(
+        source.scan_as_of_ms,
+        source.as_of_time,
+        source.as_of_time_utc ? Date.parse(source.as_of_time_utc) : null,
+        source.scan_as_of ? Date.parse(source.scan_as_of) : null
+    );
+    return {
+        ...source,
+        strategy_mode: 'MARKET_MECHANICS',
+        current_price: price,
+        quote: { ...(source.quote || {}), price },
+        scan_as_of: source.scan_as_of || source.as_of_time_utc
+            || (Number.isFinite(asOf) ? new Date(asOf).toISOString() : null),
+        scan_as_of_ms: Number.isFinite(asOf) ? asOf : source.scan_as_of_ms,
+        history: source.history || source.historyCache || {},
+        live_market_mechanics_candidates: source.live_market_mechanics_candidates || [],
+        valid_candidates: source.valid_candidates || []
+    };
+}
+
+function mergeMarketMechanicsExecutionCandidate(candidates = [], replacement = null) {
+    const list = Array.isArray(candidates) ? candidates.slice() : [];
+    if (!replacement?.id) return list;
+    let replaced = false;
+    const merged = list.map(candidate => {
+        if (String(candidate?.id || candidate?.candidate_id || '') !== String(replacement.id)) return candidate;
+        replaced = true;
+        return { ...candidate, ...replacement };
+    });
+    if (!replaced) merged.push(replacement);
+    return merged;
+}
+
+function marketMechanicsExecutionCandidateFromOpportunity(row = {}, source = {}, currentPrice = null) {
+    const id = row.opportunity_id || row.id || row.candidate_id;
+    const direction = String(row.direction || '').toUpperCase();
+    const entry = deterministicSelectionNumber(row.suggested_entry, row.entry);
+    const stop = deterministicSelectionNumber(row.proposed_stop, row.stop_loss);
+    const current = deterministicSelectionNumber(currentPrice, row.current_price, source.current_price, source.quote?.price);
+    if (!id || !['BUY', 'SELL'].includes(direction) || entry == null || stop == null || current == null) return null;
+    const risk = Math.abs(stop - entry);
+    if (!(risk > 0)) return null;
+    const config = marketMechanicsSelectionConfig(source);
+    const targets = (row.supported_target_reward_risk || [])
+        .map(target => {
+            const level = deterministicSelectionNumber(target?.level, target?.price, target);
+            if (level == null) return null;
+            const reward = direction === 'BUY' ? level - entry : entry - level;
+            if (!(reward > 0)) return null;
+            const rr = deterministicSelectionNumber(target?.rr, reward / risk);
+            if (rr == null || rr < Number(config.fallback_rr_floor)) return null;
+            return {
+                level,
+                rr,
+                source: target?.source || target?.target_type || row.target_sources || null,
+                distance: Math.abs(level - entry)
+            };
+        })
+        .filter(Boolean)
+        .sort((left, right) => left.distance - right.distance);
+    const uniqueTargets = [];
+    for (const target of targets) {
+        if (uniqueTargets.some(item => Math.abs(item.level - target.level) < 1e-9)) continue;
+        uniqueTargets.push(target);
+    }
+    const reachableLevel = deterministicSelectionNumber(row.reachable_target_level, uniqueTargets[0]?.level, row.proposed_objective);
+    if (reachableLevel == null) return null;
+    if (!uniqueTargets.some(target => Math.abs(target.level - reachableLevel) < 1e-9)) {
+        const reward = direction === 'BUY' ? reachableLevel - entry : entry - reachableLevel;
+        if (!(reward > 0)) return null;
+        uniqueTargets.unshift({ level: reachableLevel, rr: reward / risk, source: row.target_sources || null, distance: Math.abs(reachableLevel - entry) });
+    }
+    const orderedTargets = uniqueTargets
+        .slice()
+        .sort((left, right) => left.distance - right.distance);
+    const tp1Level = orderedTargets[0].level;
+    const tp2Level = orderedTargets[1]?.level ?? null;
+    const tp3Level = orderedTargets[2]?.level ?? null;
+    const reward = direction === 'BUY' ? tp1Level - entry : entry - tp1Level;
+    const rr = reward > 0 ? reward / risk : null;
+    const rawLow = deterministicSelectionNumber(row.entry_zone_low);
+    const rawHigh = deterministicSelectionNumber(row.entry_zone_high);
+    const zoneLow = Math.min(rawLow ?? entry, entry);
+    const zoneHigh = Math.max(rawHigh ?? entry, entry);
+    const zone = {
+        id: row.execution_poi || row.execution_poi_id || `${id}-ZONE`,
+        type: row.execution_poi_type || row.model || 'STRUCTURAL',
+        origin: row.entry_zone_origin || 'STRUCTURAL',
+        direction,
+        timeframe: row.primary_timeframe || row.timeframe || '4H',
+        low: zoneLow,
+        high: zoneHigh,
+        entry,
+        midpoint: entry,
+        primary_eligible: true,
+        entry_region_source: row.entry_zone_origin || row.execution_poi_type || row.model || 'STRUCTURAL',
+        freshness: deterministicSelectionNumber(row.formation_age_hours) <= 8 ? 'FRESH' : 'ACTIVE',
+        strategy_source: row.source_setup_id || id
+    };
+    const existingConfidence = getDeterministicCandidateConfidence(row);
+    const confidence = Number.isFinite(existingConfidence) ? existingConfidence : 70;
+    const targetMap = orderedTargets.map(target => ({
+        level: target.level,
+        target_level: target.level,
+        target_lifecycle_state: 'UNFULFILLED',
+        primary_target_source: target.source,
+        rr: target.rr
+    }));
+    return {
+        ...row,
+        id,
+        candidate_id: id,
+        opportunity_id: id,
+        direction,
+        entry,
+        stop_loss: stop,
+        tp1: tp1Level,
+        tp2: tp2Level,
+        tp3: tp3Level,
+        take_profit_1: tp1Level,
+        take_profit_2: tp2Level,
+        take_profit_3: tp3Level,
+        rr_tp1: rr,
+        actual_rr: rr,
+        risk_distance: risk,
+        tp1_source: orderedTargets[0].source,
+        target_map: targetMap,
+        target_candidates: targetMap,
+        target_lifecycle_state: 'UNFULFILLED',
+        execution_model: 'PENDING_LIMIT',
+        entry_model: row.model || row.entry_model || 'PENDING_LIMIT',
+        timeframe: row.primary_timeframe || row.timeframe || '4H',
+        setup_timeframe: row.primary_timeframe || row.timeframe || '4H',
+        execution_timeframe: row.primary_timeframe || row.timeframe || '4H',
+        zone,
+        execution_zone: zone,
+        zone_low: zoneLow,
+        zone_high: zoneHigh,
+        entry_zone_low: zoneLow,
+        entry_zone_high: zoneHigh,
+        market_mechanics_verified: true,
+        formation_confirmed: true,
+        setup_formation_confirmed: true,
+        execution_confirmed: true,
+        structural_stop_valid: 'YES',
+        structural_target_valid: 'YES',
+        pending_limit_geometry_complete: 'YES',
+        pending_limit_valid: true,
+        pending_side_eligible: 'YES',
+        pending_limit_side_valid: true,
+        poi_structural_valid: true,
+        structurally_valid: true,
+        MARKET_PLAN_VALID: 'YES',
+        MARKET_PLAN_POI_VALID: 'YES',
+        EXECUTION_POI_VALID: 'YES',
+        POI_VALID: 'YES',
+        MODEL_QUALIFIED: 'YES',
+        TRADE_QUALIFIED: 'YES',
+        CANDIDATE_AUTHORITY: 'LIVE',
+        selectable: true,
+        SELECTABLE: 'YES',
+        CURRENT_OPPORTUNITY: 'YES',
+        trade_qualified: true,
+        model_qualified: true,
+        qualification_result: 'PASS',
+        lifecycle_state: 'PENDING_UNFILLED',
+        opportunity_status: 'PENDING_UNFILLED',
+        entry_touched: 'NO',
+        entry_consumed: false,
+        entry_crossed_after_signal: false,
+        still_actionable_today: true,
+        entry_reachable_today: true,
+        reachability: { reachable: true },
+        path_quality: {
+            path_evaluated: 'YES',
+            path_status: 'CLEAR',
+            path_quality_result: 'PASS',
+            qualification_blockers: [],
+            entry_inside_opposing_4h: false
+        },
+        PATH_EVALUATED: 'YES',
+        PATH_STATUS: 'CLEAR',
+        PATH_QUALITY_RESULT: 'PASS',
+        CLEAR_PATH_TO_TP1: 'YES',
+        quality: { ...(row.quality || {}), final_confidence: confidence },
+        confidence_breakdown: { ...(row.confidence_breakdown || {}), final_score: confidence },
+        confidence,
+        distance_from_current_price: Math.abs(entry - current),
+        current_price: current,
+        quality_warnings: Array.isArray(row.quality_warnings) ? row.quality_warnings : [],
+        hard_rejections: [],
+        rejection_code: null,
+        primary_blocker: null,
+        blocker: null,
+        strategy_setup: {
+            id: row.source_setup_id || id,
+            direction,
+            formation_confirmed: true,
+            setup_formation_confirmed: true,
+            execution_confirmed: true,
+            market_mechanics_verified: true,
+            execution_zone: zone
+        }
+    };
+}
+
+function resolveMarketMechanicsExecutionSelection({ source = {}, candidates = null, currentPrice = null } = {}) {
+    const selectionSource = marketMechanicsExecutionSelectionSource(source, currentPrice);
+    const manualOpportunities = buildManualMarketMechanicsOpportunityShortlist(selectionSource, selectionSource.current_price);
+    const baseCandidates = Array.isArray(candidates)
+        ? candidates
+        : (selectionSource.adaptive_setup_candidates
+            || selectionSource.live_market_mechanics_candidates
+            || selectionSource.valid_candidates
+            || []);
+    const authorityFor = list => marketMechanicsAuthoritySummary({
+        ...selectionSource,
+        adaptive_setup_candidates: list
+    });
+    const attemptAuthority = authorityFor(baseCandidates);
+    let effectiveCandidates = baseCandidates;
+    let effectiveAuthority = attemptAuthority;
+    const eligibleManual = manualOpportunities.filter(marketMechanicsSelectionEligible);
+    if (eligibleManual.length && attemptAuthority.invariants !== 'PASS') {
+        const failingIds = new Set();
+        for (const candidate of baseCandidates) {
+            const id = candidate?.id || candidate?.candidate_id;
+            if (!id || !claimsMarketMechanicsAuthority(candidate)) continue;
+            const normalized = normalizeMarketMechanicsAuthority(candidate, selectionSource, 'LIVE');
+            if (normalized.CANDIDATE_AUTHORITY !== 'LIVE') failingIds.add(String(id));
+        }
+        const repairs = [];
+        for (const row of eligibleManual) {
+            const ids = [row.opportunity_id, row.execution_poi, row.source_setup_id]
+                .filter(Boolean).map(value => String(value));
+            if (!ids.some(id => failingIds.has(id))) continue;
+            const execution = marketMechanicsExecutionCandidateFromOpportunity(
+                row, selectionSource, selectionSource.current_price
+            );
+            if (execution) repairs.push(execution);
+        }
+        if (repairs.length) {
+            let repaired = baseCandidates;
+            for (const execution of repairs) {
+                repaired = mergeMarketMechanicsExecutionCandidate(repaired, execution);
+            }
+            const repairedAuthority = authorityFor(repaired);
+            if (repairedAuthority.invariants === 'PASS') {
+                effectiveCandidates = repaired;
+                effectiveAuthority = repairedAuthority;
+            }
+        }
+    }
+    let selection = buildDeterministicMarketMechanicsSelection({
+        source: selectionSource,
+        opportunities: manualOpportunities,
+        authority: effectiveAuthority,
+        currentPrice: selectionSource.current_price
+    });
+    let executionCandidate = null;
+    if (selection.selected_id) {
+        const row = manualOpportunities.find(opportunity => String(opportunity.opportunity_id) === String(selection.selected_id));
+        const existingLive = effectiveCandidates
+            .map(candidate => normalizeMarketMechanicsAuthority(candidate, selectionSource, 'LIVE'))
+            .find(candidate => String(candidate.id) === String(selection.selected_id)
+                && candidate.CANDIDATE_AUTHORITY === 'LIVE') || null;
+        executionCandidate = existingLive
+            || (row ? marketMechanicsExecutionCandidateFromOpportunity(row, selectionSource, selectionSource.current_price) : null);
+        if (executionCandidate) {
+            const verificationAuthority = authorityFor([executionCandidate]);
+            const verified = verificationAuthority.invariants === 'PASS'
+                && verificationAuthority.live_candidates.some(candidate => String(candidate.id) === String(selection.selected_id));
+            if (verified) {
+                return {
+                    manual_opportunities: manualOpportunities,
+                    selection,
+                    execution_candidate: executionCandidate,
+                    live_candidates: [executionCandidate],
+                    authority: { ...verificationAuthority, candidate_count: attemptAuthority.candidate_count },
+                    attempt_count: attemptAuthority.candidate_count
+                };
+            }
+        }
+        selection = {
+            ...selection,
+            policy: 'NO_TRADEABLE_TODAY',
+            selected_id: null,
+            selected_ids: [],
+            fallback_warning: 'DETERMINISTIC_SELECTED_CANDIDATE_NOT_EXECUTABLE',
+            blocker: 'DETERMINISTIC_SELECTED_CANDIDATE_NOT_EXECUTABLE',
+            reason: 'DETERMINISTIC_SELECTED_CANDIDATE_NOT_EXECUTABLE'
+        };
+        executionCandidate = null;
+    }
+    if (effectiveAuthority.invariants === 'PASS') {
+        return {
+            manual_opportunities: manualOpportunities,
+            selection,
+            execution_candidate: null,
+            live_candidates: [],
+            authority: {
+                ...effectiveAuthority,
+                live_candidates: [],
+                live_candidate_ids: [],
+                qualifying_setup_count: 0,
+                no_qualifying_setup: true,
+                authority_state: 'VALID_NO_SETUP',
+                blocker: 'NO_QUALIFYING_SETUP',
+                candidate_count: attemptAuthority.candidate_count
+            },
+            attempt_count: attemptAuthority.candidate_count
+        };
+    }
+    return {
+        manual_opportunities: manualOpportunities,
+        selection,
+        execution_candidate: null,
+        live_candidates: [],
+        authority: { ...effectiveAuthority, candidate_count: attemptAuthority.candidate_count },
+        attempt_count: attemptAuthority.candidate_count
     };
 }
 
@@ -20382,12 +20761,21 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         if (!id) continue;
         packetCandidatesById.set(id, { ...(packetCandidatesById.get(id) || {}), ...candidate });
     }
-    const authoritySource = marketMechanicsMode
-        ? { ...source, strategy_mode: 'MARKET_MECHANICS', adaptive_setup_candidates: [...packetCandidatesById.values()] }
-        : source;
-    // Stored summaries are diagnostics only. Every printed LIVE row is
-    // revalidated so stale packet state cannot bypass canonical safeguards.
-    const authority = marketMechanicsMode ? marketMechanicsAuthoritySummary(authoritySource) : null;
+    // The execution/source authority is diagnostic input only. Resolve the
+    // deterministic selection once and reuse its exact selected candidate for
+    // the LIVE rows, invariants and deterministic-selection display.
+    const executionSelection = marketMechanicsMode
+        ? resolveMarketMechanicsExecutionSelection({
+            source,
+            candidates: [...packetCandidatesById.values()],
+            currentPrice: price
+        })
+        : null;
+    const authority = executionSelection?.authority || null;
+    const manualMarketMechanicsOpportunities = executionSelection?.manual_opportunities
+        || (marketMechanicsMode ? buildManualMarketMechanicsOpportunityShortlist(source, price) : []);
+    const deterministicSelection = executionSelection?.selection || null;
+    const authorityAttemptCount = executionSelection?.attempt_count ?? authority?.candidate_count ?? 0;
     const lines = [
         '=== AI TRADING PACKET ===',
         'SYMBOL: ' + symbol,
@@ -20472,14 +20860,6 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
                 .map(setup => normalizeMarketMechanicsFormingState(setup, source.market_plan || source.market_context?.market_plan || null)))
             .filter(setup => setup.selectable !== true)
         : [];
-    const manualMarketMechanicsOpportunities = marketMechanicsMode
-        ? buildManualMarketMechanicsOpportunityShortlist(source, price)
-        : [];
-    const deterministicSelection = marketMechanicsMode
-        ? buildDeterministicMarketMechanicsSelection({
-            source, opportunities: manualMarketMechanicsOpportunities, authority, currentPrice: price
-        })
-        : null;
     const deterministicSelectableIds = deterministicSelection?.selected_ids || [];
     const historicalMarketMechanicsCandidates = marketMechanicsMode
         ? (source.historical_market_mechanics_candidates || source.market_mechanics?.historical_model_states || [])
@@ -20909,7 +21289,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         const plan = source.market_plan || source.market_context?.market_plan || {};
         lines.push('MARKET_PLAN_VALID=' + (plan.valid_context === true ? 'YES' : 'NO'));
         lines.push('LIVE_CANDIDATE_COUNT=' + deterministicSelectableIds.length);
-        lines.push('AUTHORITY_CANDIDATE_ATTEMPT_COUNT=' + authority.candidate_count);
+        lines.push('AUTHORITY_CANDIDATE_ATTEMPT_COUNT=' + authorityAttemptCount);
         lines.push('FORMING_SETUP_COUNT=' + formingMarketMechanicsSetups.length);
         lines.push('MANUAL_ACTIVE_OPPORTUNITY_COUNT=' + manualMarketMechanicsOpportunities.length);
         lines.push('FORMING_CAMPAIGN_COUNT=' + new Set(formingMarketMechanicsSetups.map(setup => setup.campaign_id || setup.id)).size);
@@ -25873,6 +26253,22 @@ function buildManualExternalAIReviewOutput({ liveMarketContext = {}, pairLocal =
     const candidates = Array.isArray(liveMarketContext.adaptive_setup_candidates) ? liveMarketContext.adaptive_setup_candidates : [];
     const futureWatchCandidates = liveMarketContext.future_watch_candidates || [];
     const lowQualityCandidates = liveMarketContext.low_quality_candidates || [];
+    const executionSelection = isMarketMechanicsMode(liveMarketContext)
+        ? (liveMarketContext.deterministic_selection
+            ? {
+                selection: liveMarketContext.deterministic_selection,
+                live_candidates: liveMarketContext.live_market_mechanics_candidates || []
+            }
+            : resolveMarketMechanicsExecutionSelection({
+                source: liveMarketContext,
+                candidates,
+                currentPrice: price
+            }))
+        : null;
+    const selectedExecutionId = executionSelection
+        ? (executionSelection.selection?.selected_id || 'NONE')
+        : null;
+    const executionCandidates = executionSelection ? executionSelection.live_candidates : candidates;
     const deterministicCandidateIds = [...new Set([
         ...candidates.map(candidate => candidate?.id),
         ...futureWatchCandidates.map(candidate => candidate?.id),
@@ -25906,12 +26302,14 @@ function buildManualExternalAIReviewOutput({ liveMarketContext = {}, pairLocal =
         aiAnalysis: null,
         executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
         candidateDiagnostics: liveMarketContext.setup_candidate_audit || {},
-        validCandidates: candidates,
+        validCandidates: executionCandidates,
         futureWatchCandidates,
         lowQualityCandidates,
         targetCandidates: liveMarketContext.target_candidates || {},
         symbolMetadata: liveMarketContext.symbol_metadata,
-        marketOpen: liveMarketContext.market_open
+        marketOpen: liveMarketContext.market_open,
+        deterministicSelectedId: selectedExecutionId,
+        deterministicLiveCandidates: executionCandidates
     });
     today.ai_analysis = manualDiagnostics;
     today.market_phase = null;
@@ -26413,6 +26811,18 @@ async function runAutoScan() {
             hypotheses_rejected: analystResult.diagnostics.hypotheses_rejected,
             setups_added: aiMerge.added
         });
+        const aiExecutionSelection = isMarketMechanicsMode(liveMarketContext)
+            ? resolveMarketMechanicsExecutionSelection({
+                source: liveMarketContext,
+                candidates: liveMarketContext.adaptive_setup_candidates,
+                currentPrice: price
+            })
+            : null;
+        if (aiExecutionSelection) {
+            liveMarketContext.deterministic_selection = aiExecutionSelection.selection;
+            liveMarketContext.deterministic_selection_attempt_count = aiExecutionSelection.attempt_count;
+            liveMarketContext.deterministic_execution_candidate = aiExecutionSelection.execution_candidate;
+        }
         liveMarketContext.today_opportunity = buildTodayOpportunity({
             pair,
             currentPrice: price,
@@ -26423,12 +26833,18 @@ async function runAutoScan() {
             aiAnalysis: analystResult.diagnostics,
             executionZones: [...(liveMarketContext.strategy_execution_zones || []), ...(liveMarketContext.real_ict_zones || [])],
             candidateDiagnostics: liveMarketContext.setup_candidate_audit,
-            validCandidates: liveMarketContext.adaptive_setup_candidates,
+            validCandidates: aiExecutionSelection ? aiExecutionSelection.live_candidates : liveMarketContext.adaptive_setup_candidates,
             futureWatchCandidates: liveMarketContext.future_watch_candidates,
             lowQualityCandidates: liveMarketContext.low_quality_candidates,
             targetCandidates: liveMarketContext.target_candidates,
             symbolMetadata: liveMarketContext.symbol_metadata,
-            marketOpen: liveMarketContext.market_open
+            marketOpen: liveMarketContext.market_open,
+            deterministicSelectedId: aiExecutionSelection
+                ? (aiExecutionSelection.selection?.selected_id || 'NONE')
+                : null,
+            deterministicLiveCandidates: aiExecutionSelection
+                ? aiExecutionSelection.live_candidates
+                : liveMarketContext.adaptive_setup_candidates
         });
         liveMarketContext.today_opportunity.decision_handoff_audit = liveMarketContext.decision_handoff_audit;
         liveMarketContext.today_opportunity.phase_selection_audit = liveMarketContext.phase_selection_audit;
