@@ -15331,6 +15331,23 @@ function marketMechanicsLiveCandidates(source = {}) {
             && candidate.TRADE_QUALIFIED === 'YES');
 }
 
+function claimsMarketMechanicsAuthority(candidate = {}) {
+    const authority = String(candidate.CANDIDATE_AUTHORITY ?? candidate.candidate_authority ?? '').toUpperCase();
+    const selectable = candidate.SELECTABLE ?? candidate.selectable;
+    const currentOpportunity = candidate.CURRENT_OPPORTUNITY ?? candidate.current_opportunity;
+    return authority === 'LIVE'
+        || selectable === true || String(selectable ?? '').toUpperCase() === 'YES'
+        || currentOpportunity === true || String(currentOpportunity ?? '').toUpperCase() === 'YES';
+}
+
+function selectableCandidateIdsMismatch(source = {}, live = []) {
+    const declared = source.selectable_candidate_ids ?? source.SELECTABLE_CANDIDATE_IDS;
+    if (!Array.isArray(declared)) return false;
+    const expected = [...new Set(declared.map(value => String(value)).filter(Boolean))].sort();
+    const actual = [...new Set(live.map(candidate => candidate.id).filter(Boolean).map(value => String(value)))].sort();
+    return expected.length !== actual.length || expected.some((value, index) => value !== actual[index]);
+}
+
 function marketMechanicsAuthoritySummary(source = {}) {
     const all = Array.isArray(source.adaptive_setup_candidates)
         ? source.adaptive_setup_candidates
@@ -15339,19 +15356,55 @@ function marketMechanicsAuthoritySummary(source = {}) {
     const diagnostics = all
         .map(candidate => normalizeMarketMechanicsAuthority(candidate, source, 'DIAGNOSTIC_ONLY'))
         .filter(candidate => !live.some(item => item.id && item.id === candidate.id));
-    const contradictory = all.some(candidate => {
+    const authorityModes = activeAuthorityModes(source);
+    const authorityConflict = authorityModes.length !== 1;
+    const claimedCandidates = all.filter(claimsMarketMechanicsAuthority);
+    const contradictory = claimedCandidates.some(candidate => {
         const model = candidate.MODEL_QUALIFIED ?? candidate.model_qualified;
         const trade = candidate.TRADE_QUALIFIED ?? candidate.trade_qualified;
         return String(model || '').toUpperCase() === 'NO' && (trade === true || String(trade || '').toUpperCase() === 'YES');
     });
-    const invalidTradeAuthority = all.some(candidate => {
-        const explicitTrade = candidate.TRADE_QUALIFIED ?? candidate.trade_qualified;
-        if (!(explicitTrade === true || String(explicitTrade || '').toUpperCase() === 'YES')) return false;
+    const invalidClaimAuthority = claimedCandidates.some(candidate => {
         const normalized = normalizeMarketMechanicsAuthority(candidate, source, 'LIVE');
         return normalized.CANDIDATE_AUTHORITY !== 'LIVE';
     });
-    const authorityModes = activeAuthorityModes(source);
-    const authorityConflict = authorityModes.length !== 1;
+    const invalidTradeAuthority = all.some(candidate => {
+        const trade = candidate.TRADE_QUALIFIED ?? candidate.trade_qualified;
+        if (!(trade === true || String(trade ?? '').toUpperCase() === 'YES')) return false;
+        const model = candidate.MODEL_QUALIFIED ?? candidate.model_qualified;
+        const declaresModelQualified = model === true || String(model ?? '').toUpperCase() === 'YES';
+        if (!declaresModelQualified && !claimsMarketMechanicsAuthority(candidate)) return false;
+        return normalizeMarketMechanicsAuthority(candidate, source, 'LIVE').CANDIDATE_AUTHORITY !== 'LIVE';
+    });
+    const liveQualificationFailure = live.some(candidate => candidate.MODEL_QUALIFIED !== 'YES' || candidate.TRADE_QUALIFIED !== 'YES');
+    const selectableIdsMismatch = selectableCandidateIdsMismatch(source, live);
+    const failures = [];
+    if (authorityConflict) failures.push({
+        id: 'AUTHORITY_MODE_CONFLICT', classification: 'HARD_SAFETY',
+        reason: 'Multiple authority modes are active: ' + authorityModes.join(', ')
+    });
+    if (contradictory) failures.push({
+        id: 'CONTRADICTORY_SELECTABLE_QUALIFICATION', classification: 'HARD_SAFETY',
+        reason: 'A selectable/current candidate declares MODEL_QUALIFIED=NO while TRADE_QUALIFIED=YES'
+    });
+    if (invalidClaimAuthority) failures.push({
+        id: 'SELECTABLE_AUTHORITY_NOT_LIVE', classification: 'HARD_SAFETY',
+        reason: 'A selectable/current candidate does not survive live authority normalization'
+    });
+    if (invalidTradeAuthority) failures.push({
+        id: 'TRADE_AUTHORITY_NOT_LIVE', classification: 'HARD_SAFETY',
+        reason: 'A model-qualified or selectable candidate declares TRADE_QUALIFIED=YES but does not survive live authority normalization'
+    });
+    if (liveQualificationFailure) failures.push({
+        id: 'LIVE_CANDIDATE_NOT_TRADE_QUALIFIED', classification: 'HARD_SAFETY',
+        reason: 'A normalized live candidate is not both model-qualified and trade-qualified'
+    });
+    if (selectableIdsMismatch) failures.push({
+        id: 'SELECTABLE_IDS_COUNT_MISMATCH', classification: 'HARD_SAFETY',
+        reason: 'SELECTABLE_CANDIDATE_IDS does not match normalized live candidate IDs'
+    });
+    const firstFailure = failures[0] || null;
+    const noQualifyingSetup = !firstFailure && live.length === 0;
     return {
         mode: 'MARKET_MECHANICS',
         active_authority_count: authorityModes.length,
@@ -15359,11 +15412,21 @@ function marketMechanicsAuthoritySummary(source = {}) {
         live_candidates: live,
         diagnostic_candidates: diagnostics,
         live_candidate_ids: live.map(candidate => candidate.id).filter(Boolean),
+        candidate_count: all.length,
         diagnostic_candidate_count: diagnostics.length,
-        invariants: !authorityConflict && !contradictory && !invalidTradeAuthority && live.every(candidate => candidate.MODEL_QUALIFIED === 'YES' && candidate.TRADE_QUALIFIED === 'YES') ? 'PASS' : 'FAIL',
+        qualifying_setup_count: live.length,
+        no_qualifying_setup: noQualifyingSetup,
+        authority_state: firstFailure ? 'INVALID' : live.length ? 'VALID_WITH_SETUP' : 'VALID_NO_SETUP',
+        invariants: firstFailure ? 'FAIL' : 'PASS',
+        invariant_failed: firstFailure ? firstFailure.id : null,
+        invariant_classification: firstFailure ? firstFailure.classification : null,
+        invariant_reason: firstFailure ? firstFailure.reason : null,
         invariant_violation: authorityConflict
             ? 'AUTHORITY_MODE_CONFLICT'
-            : contradictory || invalidTradeAuthority ? 'AUTHORITY_INVARIANT_VIOLATION' : null
+            : firstFailure ? 'AUTHORITY_INVARIANT_VIOLATION' : null,
+        blocker: firstFailure
+            ? (authorityConflict ? 'AUTHORITY_MODE_CONFLICT' : 'AUTHORITY_INVARIANT_VIOLATION')
+            : noQualifyingSetup ? 'NO_QUALIFYING_SETUP' : null
     };
 }
 
@@ -15490,15 +15553,38 @@ function buildCanonicalMarketMechanicsCandidateCatalog({ result = {}, strategySe
         !pathReadyIds.has(candidate?.id || candidate?.candidate_id));
     const canonicalLiveCandidates = authority.live_candidates.filter(candidate =>
         pathReadyIds.has(candidate?.id || candidate?.candidate_id));
+    const candidateFunnelComplete = canonicalLiveCandidates.length + pathRejectedLiveCandidates.length === authority.live_candidates.length;
+    const canonicalFailure = !candidateFunnelComplete
+        ? {
+            id: 'CANDIDATE_FUNNEL_INVARIANT_VIOLATION', classification: 'HARD_SAFETY',
+            reason: 'Canonical live and path-rejected candidates do not reconcile to the pre-filter live count'
+        }
+        : authority.invariant_failed
+            ? {
+                id: authority.invariant_failed, classification: authority.invariant_classification,
+                reason: authority.invariant_reason
+            }
+            : null;
+    const canonicalNoQualifyingSetup = !canonicalFailure && canonicalLiveCandidates.length === 0;
     const canonicalAuthority = {
         ...authority,
         live_candidates: canonicalLiveCandidates,
         live_candidate_ids: canonicalLiveCandidates
             .map(candidate => candidate?.id || candidate?.candidate_id).filter(Boolean),
-        invariants: authority.invariants === 'PASS'
-            && canonicalLiveCandidates.length + pathRejectedLiveCandidates.length === authority.live_candidates.length ? 'PASS' : 'FAIL',
-        invariant_violation: canonicalLiveCandidates.length + pathRejectedLiveCandidates.length === authority.live_candidates.length
-            ? authority.invariant_violation : 'CANDIDATE_FUNNEL_INVARIANT_VIOLATION'
+        qualifying_setup_count: canonicalLiveCandidates.length,
+        no_qualifying_setup: canonicalNoQualifyingSetup,
+        authority_state: canonicalFailure ? 'INVALID' : canonicalLiveCandidates.length ? 'VALID_WITH_SETUP' : 'VALID_NO_SETUP',
+        invariants: canonicalFailure ? 'FAIL' : 'PASS',
+        invariant_failed: canonicalFailure ? canonicalFailure.id : null,
+        invariant_classification: canonicalFailure ? canonicalFailure.classification : null,
+        invariant_reason: canonicalFailure ? canonicalFailure.reason : null,
+        invariant_violation: !candidateFunnelComplete
+            ? 'CANDIDATE_FUNNEL_INVARIANT_VIOLATION'
+            : canonicalFailure ? authority.invariant_violation : null,
+        blocker: !candidateFunnelComplete
+            ? 'CANDIDATE_FUNNEL_INVARIANT_VIOLATION'
+            : canonicalFailure ? authority.blocker
+                : canonicalNoQualifyingSetup ? 'NO_QUALIFYING_SETUP' : null
     };
     const blockerPrecedence = [
         'MARKET_DATA_STALE', 'MARKET_DATA_INCOMPLETE', 'INVALID_MARKET_DATA',
@@ -16191,9 +16277,17 @@ function buildLiveMarketContext({ pair, price, historyCache, indicators, pattern
             active_authority_modes: authority.active_authority_modes,
             live_candidate_ids: authority.live_candidate_ids,
             live_candidate_count: authority.live_candidates.length,
+            candidate_count: authority.candidate_count,
             diagnostic_candidate_count: authority.diagnostic_candidate_count,
+            qualifying_setup_count: authority.qualifying_setup_count,
+            no_qualifying_setup: authority.no_qualifying_setup,
+            authority_state: authority.authority_state,
             authority_invariants: authority.invariants,
-            invariant_violation: authority.invariant_violation
+            authority_invariant_failed: authority.invariant_failed,
+            authority_invariant_classification: authority.invariant_classification,
+            authority_invariant_reason: authority.invariant_reason,
+            invariant_violation: authority.invariant_violation,
+            authority_blocker: authority.blocker
         };
         // Rebuild the presentation states after candidate construction so a
         // forming setup can expose the exact pending-limit geometry or the
@@ -16852,6 +16946,14 @@ function buildRawMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             adaptive_setup_candidates: source.live_market_mechanics_candidates || source.valid_candidates || []
         })
         : null;
+    const manualMarketMechanicsOpportunities = marketMechanicsMode
+        ? buildManualMarketMechanicsOpportunityShortlist(source, quote.current_price)
+        : [];
+    const deterministicSelection = marketMechanicsMode
+        ? buildDeterministicMarketMechanicsSelection({
+            source, opportunities: manualMarketMechanicsOpportunities, authority, currentPrice: quote.current_price
+        })
+        : null;
     const payload = {
         packet_type: 'RAW_MARKET_ANALYSIS',
         packet_schema: RAW_MARKET_ANALYSIS_PACKET_SCHEMA,
@@ -16861,12 +16963,41 @@ function buildRawMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
             legacy_trade_authority: 'DISABLED',
             active_authority_count: authority.active_authority_count,
             live_candidate_ids: authority.live_candidate_ids,
+            candidate_count: authority.candidate_count,
             diagnostic_only_candidate_count: authority.diagnostic_candidate_count,
-            invariants: authority.invariants
+            qualifying_setup_count: authority.qualifying_setup_count,
+            no_qualifying_setup: authority.no_qualifying_setup,
+            authority_state: authority.authority_state,
+            invariants: authority.invariants,
+            invariant_failed: authority.invariant_failed,
+            invariant_classification: authority.invariant_classification,
+            invariant_reason: authority.invariant_reason,
+            blocker: authority.blocker,
+            deterministic_selection_policy: deterministicSelection.policy,
+            deterministic_selected_id: deterministicSelection.selected_id,
+            primary_candidate_id: deterministicSelection.primary_candidate_id,
+            primary_rejected_id: deterministicSelection.primary_rejected_id,
+            primary_reject_reason: deterministicSelection.primary_reject_reason,
+            fallback_warning: deterministicSelection.fallback_warning,
+            selectable_candidate_ids: deterministicSelection.selected_ids,
+            live_candidate_count: deterministicSelection.selected_ids.length,
+            deterministic_blocker: deterministicSelection.blocker
         } : { mode: rawTextV2StrategyMode(source), live_authority: rawTextV2StrategyMode(source) },
         ...(marketMechanicsMode ? {
-            manual_analysis_opportunities: buildManualMarketMechanicsOpportunityShortlist(source, quote.current_price),
-            manual_analysis_authority: 'DEEPSEEK_REVIEW_ONLY'
+            manual_analysis_opportunities: manualMarketMechanicsOpportunities,
+            manual_analysis_authority: 'DEEPSEEK_REVIEW_ONLY',
+            deterministic_selection: {
+                policy: deterministicSelection.policy,
+                selected_id: deterministicSelection.selected_id,
+                primary_candidate_id: deterministicSelection.primary_candidate_id,
+                primary_rejected_id: deterministicSelection.primary_rejected_id,
+                primary_reject_reason: deterministicSelection.primary_reject_reason,
+                fallback_warning: deterministicSelection.fallback_warning,
+                blocker: deterministicSelection.blocker,
+                selected_ids: deterministicSelection.selected_ids,
+                eligible_count: deterministicSelection.eligible_count,
+                config: deterministicSelection.config
+            }
         } : {}),
         packet_identity: {
             pair: pairValue,
@@ -17577,8 +17708,215 @@ function manualMarketMechanicsSources(source = {}) {
         ...(Array.isArray(catalog.raw_candidates) ? catalog.raw_candidates : []),
         ...(Array.isArray(catalog.all_rejected_candidates) ? catalog.all_rejected_candidates : []),
         ...(Array.isArray(source.valid_candidates) ? source.valid_candidates : []),
+        ...(Array.isArray(source.adaptive_setup_candidates) ? source.adaptive_setup_candidates : []),
         ...(Array.isArray(source.live_market_mechanics_candidates) ? source.live_market_mechanics_candidates : [])
     ];
+}
+
+const DETERMINISTIC_SELECTION_CONFIG = Object.freeze({
+    SELECTION_POLICY: 'STRUCTURAL_FIRST_WITH_VIABILITY_FALLBACK',
+    ENTRY_REACHABLE_FRACTION: 0.75,
+    TOTAL_PATH_FRACTION: 1.5,
+    FALLBACK_RR_FLOOR: 1.5
+});
+
+function deterministicSelectionNumber(...values) {
+    for (const value of values) {
+        if (value === null || value === undefined || value === '') continue;
+        const number = Number(value);
+        if (Number.isFinite(number)) return number;
+    }
+    return null;
+}
+
+function marketMechanicsSelectionConfig(source = {}) {
+    const explicit = source.deterministic_selection_config || {};
+    const policy = String(explicit.selection_policy || DETERMINISTIC_SELECTION_CONFIG.SELECTION_POLICY).toUpperCase();
+    return {
+        selection_policy: policy === 'STRUCTURAL_FIRST_ONLY'
+            ? 'STRUCTURAL_FIRST_ONLY' : DETERMINISTIC_SELECTION_CONFIG.SELECTION_POLICY,
+        entry_reachable_fraction: deterministicSelectionNumber(explicit.entry_reachable_fraction)
+            ?? DETERMINISTIC_SELECTION_CONFIG.ENTRY_REACHABLE_FRACTION,
+        total_path_fraction: deterministicSelectionNumber(explicit.total_path_fraction)
+            ?? DETERMINISTIC_SELECTION_CONFIG.TOTAL_PATH_FRACTION,
+        fallback_rr_floor: deterministicSelectionNumber(explicit.fallback_rr_floor)
+            ?? DETERMINISTIC_SELECTION_CONFIG.FALLBACK_RR_FLOOR
+    };
+}
+
+function marketMechanicsExpectedDailyRange(source = {}) {
+    const daily = Array.isArray(source.history?.['1D']) ? source.history['1D']
+        : Array.isArray(source.historyCache?.['1D']) ? source.historyCache['1D'] : [];
+    const today = daily.at(-1) || {};
+    const high = deterministicSelectionNumber(
+        today.h, today.high, source.today_high, source.market_context?.today_high,
+        source.market_context?.pdh, source.pdh
+    );
+    const low = deterministicSelectionNumber(
+        today.l, today.low, source.today_low, source.market_context?.today_low,
+        source.market_context?.pdl, source.pdl
+    );
+    const atr4h = deterministicSelectionNumber(
+        source.market_context?.volatility?.atr_4h, source.volatility?.atr_4h,
+        source.market_context?.atr_4h, source.atr_4h
+    ) ?? 20;
+    const ranges = [];
+    if (high != null && low != null && high > low) ranges.push(high - low);
+    if (atr4h > 0) ranges.push(2.5 * atr4h);
+    return ranges.length ? Math.max(...ranges) : null;
+}
+
+function marketMechanicsTargetRR(level, entry, stop, direction) {
+    const risk = entry != null && stop != null ? Math.abs(stop - entry) : null;
+    if (!(risk > 0)) return null;
+    const reward = direction === 'BUY' ? level - entry : direction === 'SELL' ? entry - level : null;
+    return Number.isFinite(reward) && reward > 0 ? reward / risk : null;
+}
+
+function marketMechanicsTradeableToday({ direction, entry, stop, objective, supportedTargets = [], currentPrice, expectedDailyRange, config = DETERMINISTIC_SELECTION_CONFIG } = {}) {
+    const entryPath = entry != null && currentPrice != null ? Math.abs(entry - currentPrice) : null;
+    const floor = Number(config.FALLBACK_RR_FLOOR ?? DETERMINISTIC_SELECTION_CONFIG.FALLBACK_RR_FLOOR);
+    const acceptableTargets = (Array.isArray(supportedTargets) ? supportedTargets : [])
+        .map(target => {
+            const level = deterministicSelectionNumber(target?.level, target?.price, target);
+            const rr = deterministicSelectionNumber(target?.rr);
+            if (level == null || rr == null || rr < floor) return null;
+            const correctSide = direction === 'SELL' ? level < entry : direction === 'BUY' ? level > entry : false;
+            return correctSide ? { level, rr } : null;
+        })
+        .filter(Boolean)
+        .sort((left, right) => Math.abs(left.level - entry) - Math.abs(right.level - entry));
+    const expectedRange = Number(expectedDailyRange);
+    const plannedTarget = deterministicSelectionNumber(objective);
+    const plannedCorrectSide = plannedTarget != null
+        && (direction === 'SELL' ? plannedTarget < entry : direction === 'BUY' ? plannedTarget > entry : false);
+    const nearest = acceptableTargets[0] || null;
+    const targetLevel = plannedCorrectSide ? plannedTarget : nearest?.level ?? null;
+    const targetRR = targetLevel == null ? null
+        : acceptableTargets.find(target => Math.abs(target.level - targetLevel) <= 1e-9)?.rr
+            ?? marketMechanicsTargetRR(targetLevel, entry, stop, direction);
+    const deliveryPath = targetLevel != null && entry != null ? Math.abs(targetLevel - entry) : null;
+    const totalPath = entryPath != null && deliveryPath != null ? entryPath + deliveryPath : null;
+    const entryReachable = expectedRange > 0 && entryPath != null
+        && entryPath <= Number(config.ENTRY_REACHABLE_FRACTION ?? DETERMINISTIC_SELECTION_CONFIG.ENTRY_REACHABLE_FRACTION) * expectedRange;
+    const totalReachable = expectedRange > 0 && totalPath != null
+        && totalPath <= Number(config.TOTAL_PATH_FRACTION ?? DETERMINISTIC_SELECTION_CONFIG.TOTAL_PATH_FRACTION) * expectedRange;
+    const rrEligible = targetRR != null && targetRR >= floor;
+    const reason = !acceptableTargets.length ? 'NO_ACCEPTABLE_TARGET'
+        : !entryReachable ? 'ENTRY_TOO_FAR'
+            : !totalReachable ? 'PATH_TOO_LONG'
+                : !rrEligible ? 'RR_TOO_LOW' : 'OK';
+    return {
+        tradeable_today: reason === 'OK' ? 'TRUE' : 'FALSE',
+        tradeable_today_reason: reason,
+        entry_path: entryPath,
+        delivery_path: deliveryPath,
+        total_path: totalPath,
+        expected_daily_range: expectedRange > 0 ? expectedRange : null,
+        reachable_target_level: targetLevel,
+        reachable_target_rr: targetRR,
+        entry_reachable: entryReachable ? 'TRUE' : 'FALSE',
+        total_reachable: totalReachable ? 'TRUE' : 'FALSE',
+        rr_eligible: rrEligible ? 'TRUE' : 'FALSE'
+    };
+}
+
+function marketMechanicsSelectionEligible(row = {}) {
+    if (!row || !['BUY', 'SELL'].includes(String(row.direction || '').toUpperCase())) return false;
+    if (String(row.entry_touched || '').toUpperCase() !== 'NO') return false;
+    if (String(row.entry_consumed || '').toUpperCase() === 'YES') return false;
+    if (String(row.pending_side_eligible || '').toUpperCase() === 'NO') return false;
+    if (String(row.formation_status || '').toUpperCase() === 'INCOMPLETE') return false;
+    if (String(row.structural_stop_valid || '').toUpperCase() === 'NO') return false;
+    if (String(row.structural_target_valid || '').toUpperCase() === 'NO') return false;
+    if (manualMarketMechanicsTerminal(row)) return false;
+    const entry = deterministicSelectionNumber(row.suggested_entry);
+    const stop = deterministicSelectionNumber(row.proposed_stop);
+    const objective = deterministicSelectionNumber(row.proposed_objective);
+    const current = deterministicSelectionNumber(row.current_price);
+    if (![entry, stop, objective, current].every(value => value != null)) return false;
+    return String(row.direction).toUpperCase() === 'SELL'
+        ? entry > current && stop > entry && objective < entry
+        : entry < current && stop < entry && objective > entry;
+}
+
+function marketMechanicsSelectionCandidate(row = {}) {
+    const risk = row.suggested_entry != null && row.proposed_stop != null
+        ? Math.abs(Number(row.proposed_stop) - Number(row.suggested_entry)) : null;
+    const rr = risk > 0 ? Math.abs(Number(row.proposed_objective) - Number(row.suggested_entry)) / risk : null;
+    return {
+        ...row,
+        id: row.opportunity_id,
+        entry: row.suggested_entry,
+        stop_loss: row.proposed_stop,
+        tp1: row.proposed_objective,
+        rr_tp1: rr,
+        target_map: (row.supported_target_reward_risk || []).map(target => ({
+            target_level: target.level,
+            target_lifecycle_state: row.target_lifecycle || 'UNFULFILLED'
+        })),
+        distance_from_current_price: Math.abs(Number(row.suggested_entry) - Number(row.current_price)),
+        freshness: Number(row.formation_age_hours) <= 8 ? 'FRESH' : 'ACTIVE',
+        score: (String(row.parent_poi_status || '').toUpperCase() === 'YES' ? 200 : 0)
+            + (row.rr_quality_status === 'PASS' ? 100 : 0)
+            + Math.max(0, 48 - (Number(row.formation_age_hours) || 48))
+    };
+}
+
+function buildDeterministicMarketMechanicsSelection({ source = {}, opportunities = [], authority = null, currentPrice = null } = {}) {
+    const config = marketMechanicsSelectionConfig(source);
+    const invariantsPass = authority?.invariants === 'PASS';
+    const eligible = (Array.isArray(opportunities) ? opportunities : []).filter(marketMechanicsSelectionEligible);
+    if (!invariantsPass) return {
+        invariants_pass: false, config, policy: 'NO_TRADEABLE_TODAY', selected_id: null, selected_ids: [],
+        primary_candidate_id: null, primary_rejected_id: null, primary_reject_reason: null,
+        fallback_warning: 'AUTHORITY_INVARIANTS_NOT_PASS: FALLBACK_SELECTION_DISABLED',
+        blocker: 'AUTHORITY_INVARIANT_VIOLATION', reason: authority?.invariant_failed || 'AUTHORITY_INVARIANT_VIOLATION',
+        eligible_count: eligible.length
+    };
+    if (!eligible.length) return {
+        invariants_pass: true, config, policy: 'NO_TRADEABLE_TODAY', selected_id: null, selected_ids: [],
+        primary_candidate_id: null, primary_rejected_id: null, primary_reject_reason: null,
+        fallback_warning: 'NO_ELIGIBLE_OPPORTUNITY', blocker: 'NO_QUALIFYING_SETUP',
+        reason: 'NO_QUALIFYING_SETUP', eligible_count: 0
+    };
+    const asOf = deterministicSelectionNumber(source.scan_as_of_ms, Date.parse(source.scan_as_of || '')) || null;
+    const orderedCandidates = rankCurrentOpportunityCandidates(
+        eligible.map(marketMechanicsSelectionCandidate),
+        deterministicSelectionNumber(currentPrice, eligible[0]?.current_price),
+        asOf
+    );
+    const byId = new Map(eligible.map(row => [row.opportunity_id, row]));
+    const ranked = orderedCandidates.map(candidate => byId.get(candidate.id)).filter(Boolean);
+    const primary = ranked[0] || null;
+    const fallback = ranked.slice(1).find(row => row.tradeable_today === 'TRUE') || null;
+    if (config.selection_policy === 'STRUCTURAL_FIRST_ONLY') return {
+        invariants_pass: true, config, policy: 'STRUCTURAL_PRIMARY', selected_id: primary.opportunity_id,
+        selected_ids: [primary.opportunity_id], primary_candidate_id: primary.opportunity_id,
+        primary_rejected_id: null, primary_reject_reason: null, fallback_warning: null,
+        blocker: null, reason: primary.tradeable_today_reason, eligible_count: eligible.length
+    };
+    if (primary.tradeable_today === 'TRUE') return {
+        invariants_pass: true, config, policy: 'STRUCTURAL_PRIMARY', selected_id: primary.opportunity_id,
+        selected_ids: [primary.opportunity_id], primary_candidate_id: primary.opportunity_id,
+        primary_rejected_id: null, primary_reject_reason: null, fallback_warning: null,
+        blocker: null, reason: 'OK', eligible_count: eligible.length
+    };
+    if (fallback) return {
+        invariants_pass: true, config, policy: 'VIABILITY_FALLBACK', selected_id: fallback.opportunity_id,
+        selected_ids: [fallback.opportunity_id], primary_candidate_id: primary.opportunity_id,
+        primary_rejected_id: primary.opportunity_id,
+        primary_reject_reason: primary.tradeable_today_reason,
+        fallback_warning: `PRIMARY_NOT_TRADEABLE_TODAY:${primary.tradeable_today_reason}; SELECTED_TRADEABLE_FALLBACK:${fallback.opportunity_id}`,
+        blocker: null, reason: 'OK', eligible_count: eligible.length
+    };
+    return {
+        invariants_pass: true, config, policy: 'NO_TRADEABLE_TODAY', selected_id: null, selected_ids: [],
+        primary_candidate_id: primary.opportunity_id, primary_rejected_id: primary.opportunity_id,
+        primary_reject_reason: primary.tradeable_today_reason,
+        fallback_warning: 'NO_TRADEABLE_OPPORTUNITY: PRIMARY_AND_ALL_FALLBACKS_REJECTED',
+        blocker: 'NO_TRADEABLE_TODAY', reason: primary.tradeable_today_reason, eligible_count: eligible.length
+    };
 }
 
 function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentPrice = null) {
@@ -17679,6 +18017,11 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         || (entryProvablyUntouched && staleLifecycleLabel(rawOriginalRejection))
         ? (hasReviewableObjective && rrBelowPreferred ? 'RR_BELOW_PREFERRED_MINIMUM' : null)
         : rawOriginalRejection;
+    const tradeableToday = marketMechanicsTradeableToday({
+        direction, entry, stop, objective, supportedTargets: targetRewardRisk,
+        currentPrice: current, expectedDailyRange: marketMechanicsExpectedDailyRange(source),
+        config: marketMechanicsSelectionConfig(source)
+    });
     return {
         opportunity_id: item.opportunity_id || item.id || item.candidate_id || item.execution_poi_id || null,
         source_setup_id: item.source_setup_id || item.strategy_setup?.id || null,
@@ -17800,6 +18143,9 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
 
             return requiredPath <= expectedDayRange ? 'HIGH' : 'LOW';
         })(),
+        structural_stop_valid: item.structural_stop_valid ?? item.stop_valid ?? 'UNKNOWN',
+        structural_target_valid: item.structural_target_valid ?? item.target_valid ?? 'UNKNOWN',
+        ...tradeableToday,
         manual_authority: 'DEEPSEEK_REVIEW_ONLY',
         deterministic_live_authority: (() => {
             const authority = item.CANDIDATE_AUTHORITY || item.candidate_authority;
@@ -18002,6 +18348,10 @@ function rawTextPacketClosedCandles(source = {}, timeframe, asOfMs = Date.now())
 function rawTextPacketFormatNumber(value, precision) {
     const number = Number(value);
     return Number.isFinite(number) ? number.toFixed(precision) : '';
+}
+
+function rawTextPacketOptionalNumber(value, precision) {
+    return value == null || !Number.isFinite(Number(value)) ? 'NA' : Number(value).toFixed(precision);
 }
 
 function buildRawTextTimeframeRoleAudit(blocks = [], precision = 2) {
@@ -19989,6 +20339,7 @@ function buildRawTextMarketAnalysisInstruction(strategyModeOverride = null) {
         '26A. Build REASON in this order: selected FVG and exact timeframe-qualified C1/C2/C3 and zone; exact linked CRT_REF; exact linked MSNR/OB/SUPPLY/DEMAND references; daily-bias relationship; current/today opportunity state; ATR distance and freshness; then stop/target geometry if useful. For FVG inequality, use the selected same-timeframe source candles only: bullish C1.high < C3.low and bearish C1.low > C3.high. Keep selected ENTRY, STOP, TP1, TP2 and TP3 unchanged.',
         '26B. Fail closed on evidence mismatch: if a named component reference is absent or cannot be found in its matching audit, omit that component from SETUP or return NO_TRADE when exact deterministic evidence is mandatory. Never invent a reference, candle value, timeframe or explanation to preserve a preferred label.',
         '27. Return ACTION: NO_TRADE only after both directional searches, complete candidate-construction attempts and TODAY_PENDING_OPPORTUNITY filtering fail. Do not fall back to an old/far HP zone merely to produce a trade. If a formation exists but is blocked, REASON must name the model, timeframe, zone or source candles and exact blocker such as TP1 delivered before entry, entry touched, TOO_FAR, extreme age with no current relevance or no active higher-timeframe setup. Never use inactive session, lack of immediate price touch, normal pending geometry or absent exact-moment lower-TF confirmation as the sole blocker; never say only "No setup found."',
+        'The deterministic engine publishes DETERMINISTIC_SELECTED_ID and DETERMINISTIC_SELECTION_POLICY. DeepSeek reviews the deterministic selection. DeepSeek may select a different opportunity from the active shortlist only with explicit, evidence-cited justification in REASON.',
         '28. TIMEFRAME_USED must be 4h or 1h for TRADE decisions and exactly NONE for NO_TRADE decisions.',
         'CONFIDENCE is setup quality only, not guaranteed win probability. Return exactly one final plain-text response and nothing else.'
     ].join('\n');
@@ -20016,7 +20367,8 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const packetCandidateSources = marketMechanicsMode ? [
         ...(source.market_mechanics?.candidate_catalog?.live_candidates || []),
         ...(source.live_market_mechanics_candidates || []),
-        ...(source.valid_candidates || [])
+        ...(source.valid_candidates || []),
+        ...(source.adaptive_setup_candidates || [])
     ] : [];
     const packetCandidatesById = new Map();
     for (const candidate of packetCandidateSources) {
@@ -20117,6 +20469,12 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const manualMarketMechanicsOpportunities = marketMechanicsMode
         ? buildManualMarketMechanicsOpportunityShortlist(source, price)
         : [];
+    const deterministicSelection = marketMechanicsMode
+        ? buildDeterministicMarketMechanicsSelection({
+            source, opportunities: manualMarketMechanicsOpportunities, authority, currentPrice: price
+        })
+        : null;
+    const deterministicSelectableIds = deterministicSelection?.selected_ids || [];
     const historicalMarketMechanicsCandidates = marketMechanicsMode
         ? (source.historical_market_mechanics_candidates || source.market_mechanics?.historical_model_states || [])
         : [];
@@ -20334,7 +20692,18 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
                 + ' PREFERRED_MINIMUM_RR=' + String(opportunity.preferred_minimum_rr ?? 'NONE')
                 + ' RR_POLICY=' + String(opportunity.rr_policy || 'PREFERRED_MINIMUM')
                 + ' PREFERRED_RR_MET=' + (opportunity.preferred_rr_met == null ? 'UNKNOWN' : opportunity.preferred_rr_met ? 'YES' : 'NO')
-                + ' RR_QUALITY_STATUS=' + String(opportunity.rr_quality_status || 'UNKNOWN'));
+                + ' RR_QUALITY_STATUS=' + String(opportunity.rr_quality_status || 'UNKNOWN')
+                + ' TRADEABLE_TODAY=' + String(opportunity.tradeable_today || 'FALSE')
+                + ' TRADEABLE_TODAY_REASON=' + String(opportunity.tradeable_today_reason || 'NO_ACCEPTABLE_TARGET')
+                + ' ENTRY_PATH=' + rawTextPacketOptionalNumber(opportunity.entry_path, precision)
+                + ' DELIVERY_PATH=' + rawTextPacketOptionalNumber(opportunity.delivery_path, precision)
+                + ' TOTAL_PATH=' + rawTextPacketOptionalNumber(opportunity.total_path, precision)
+                + ' EXPECTED_DAILY_RANGE=' + rawTextPacketOptionalNumber(opportunity.expected_daily_range, precision)
+                + ' REACHABLE_TARGET_LEVEL=' + rawTextPacketOptionalNumber(opportunity.reachable_target_level, precision)
+                + ' REACHABLE_TARGET_RR=' + (opportunity.reachable_target_rr == null ? 'NA' : Number(opportunity.reachable_target_rr).toFixed(2))
+                + ' ENTRY_REACHABLE=' + String(opportunity.entry_reachable || 'FALSE')
+                + ' TOTAL_REACHABLE=' + String(opportunity.total_reachable || 'FALSE')
+                + ' RR_ELIGIBLE=' + String(opportunity.rr_eligible || 'FALSE'));
             lines.push('OPPORTUNITY_EVIDENCE=' + JSON.stringify(opportunity));
         }
         lines.push('');
@@ -20530,14 +20899,31 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         lines.push('ACTIVE_AUTHORITY_COUNT=' + authority.active_authority_count);
         const plan = source.market_plan || source.market_context?.market_plan || {};
         lines.push('MARKET_PLAN_VALID=' + (plan.valid_context === true ? 'YES' : 'NO'));
-        lines.push('LIVE_CANDIDATE_COUNT=' + authority.live_candidates.length);
+        lines.push('LIVE_CANDIDATE_COUNT=' + deterministicSelectableIds.length);
+        lines.push('AUTHORITY_CANDIDATE_ATTEMPT_COUNT=' + authority.candidate_count);
         lines.push('FORMING_SETUP_COUNT=' + formingMarketMechanicsSetups.length);
         lines.push('MANUAL_ACTIVE_OPPORTUNITY_COUNT=' + manualMarketMechanicsOpportunities.length);
         lines.push('FORMING_CAMPAIGN_COUNT=' + new Set(formingMarketMechanicsSetups.map(setup => setup.campaign_id || setup.id)).size);
-        lines.push('SELECTABLE_CANDIDATE_IDS=' + (authority.live_candidate_ids.join('|') || 'NONE'));
+        lines.push('SELECTABLE_CANDIDATE_IDS=' + (deterministicSelectableIds.join('|') || 'NONE'));
         lines.push('DIAGNOSTIC_ONLY_CANDIDATE_COUNT=' + (visibleLegacyDiagnosticCount + historicalMarketMechanicsCandidates.length));
+        lines.push('QUALIFYING_SETUP_COUNT=' + authority.qualifying_setup_count);
+        lines.push('AUTHORITY_STATE=' + authority.authority_state);
+        lines.push('NO_QUALIFYING_SETUP=' + (authority.no_qualifying_setup ? 'YES' : 'NO'));
         lines.push('AUTHORITY_INVARIANTS=' + authority.invariants);
-        if (authority.invariant_violation) lines.push('BLOCKER=' + authority.invariant_violation);
+        if (authority.invariant_failed) {
+            lines.push('AUTHORITY_INVARIANT_FAILED=' + authority.invariant_failed);
+            lines.push('AUTHORITY_INVARIANT_CLASSIFICATION=' + authority.invariant_classification);
+            lines.push('AUTHORITY_INVARIANT_REASON=' + String(authority.invariant_reason || '').replace(/\s+/g, ' ').slice(0, 300));
+        }
+        lines.push('DETERMINISTIC_SELECTION_POLICY=' + deterministicSelection.policy);
+        lines.push('DETERMINISTIC_SELECTED_ID=' + (deterministicSelection.selected_id || 'NONE'));
+        lines.push('PRIMARY_CANDIDATE_ID=' + (deterministicSelection.primary_candidate_id || 'NONE'));
+        lines.push('PRIMARY_REJECTED_ID=' + (deterministicSelection.primary_rejected_id || 'NONE'));
+        lines.push('PRIMARY_REJECT_REASON=' + (deterministicSelection.primary_reject_reason || 'NONE'));
+        lines.push('FALLBACK_WARNING=' + (deterministicSelection.fallback_warning || 'NONE'));
+        const selectionBlocker = deterministicSelection.blocker
+            || (authority.invariants === 'PASS' ? null : authority.blocker);
+        if (selectionBlocker) lines.push('BLOCKER=' + selectionBlocker);
         lines.push('');
     }
     lines.push(
@@ -23971,9 +24357,17 @@ function rebuildCandidatesWithAiSetups(liveMarketContext, strategySetups) {
                 active_authority_modes: canonical.authority.active_authority_modes,
                 live_candidate_ids: canonical.authority.live_candidate_ids,
                 live_candidate_count: canonical.authority.live_candidates.length,
+                candidate_count: canonical.authority.candidate_count,
                 diagnostic_candidate_count: canonical.authority.diagnostic_candidate_count,
+                qualifying_setup_count: canonical.authority.qualifying_setup_count,
+                no_qualifying_setup: canonical.authority.no_qualifying_setup,
+                authority_state: canonical.authority.authority_state,
                 authority_invariants: canonical.authority.invariants,
-                invariant_violation: canonical.authority.invariant_violation
+                authority_invariant_failed: canonical.authority.invariant_failed,
+                authority_invariant_classification: canonical.authority.invariant_classification,
+                authority_invariant_reason: canonical.authority.invariant_reason,
+                invariant_violation: canonical.authority.invariant_violation,
+                authority_blocker: canonical.authority.blocker
             }
         };
     }
@@ -29768,6 +30162,15 @@ function buildExternalAIClipboardPacket({ signal = {}, replay = null } = {}) {
     const manualMarketMechanicsOpportunities = marketMechanicsMode
         ? buildManualMarketMechanicsOpportunityShortlist(source, source.quote?.price ?? result.current_price)
         : [];
+    const deterministicSelection = marketMechanicsMode
+        ? buildDeterministicMarketMechanicsSelection({
+            source,
+            opportunities: manualMarketMechanicsOpportunities,
+            authority: packetAuthority,
+            currentPrice: source.quote?.price ?? result.current_price
+        })
+        : null;
+    const deterministicSelectableIds = deterministicSelection?.selected_ids || [];
     const marketMechanicsDiagnosticCount = marketMechanicsMode
         ? countDiagnosticCandidateRecords(semantic?.legacy_diagnostic_candidates || source.legacy_diagnostic_candidates || [])
         : 0;
@@ -30454,8 +30857,15 @@ Return only the existing compact JSON output contract.
                 live_authority: semantic.live_authority,
                 market_plan: semantic.market_plan || null,
                 market_mechanics: semantic.market_mechanics || null,
+                authority_state: packetAuthority?.authority_state || null,
                 authority_invariants: semantic.authority_invariants,
-                authority_invariant_violation: semantic.authority_invariant_violation || null
+                authority_invariant_failed: packetAuthority?.invariant_failed || null,
+                authority_invariant_classification: packetAuthority?.invariant_classification || null,
+                authority_invariant_reason: packetAuthority?.invariant_reason || null,
+                authority_invariant_violation: semantic.authority_invariant_violation || null,
+                authority_blocker: packetAuthority?.blocker || null,
+                no_qualifying_setup: packetAuthority?.no_qualifying_setup === true,
+                qualifying_setup_count: packetAuthority?.qualifying_setup_count ?? null
             }, null, 2) : 'UNAVAILABLE'
         ] : []),
         '',
@@ -30567,14 +30977,30 @@ Return only the existing compact JSON output contract.
             'MODE=MARKET_MECHANICS',
             'ACTIVE_AUTHORITY_COUNT=' + String(packetAuthority?.active_authority_count || 0),
             'MARKET_PLAN_VALID=' + (marketMechanicsPlan.valid_context === true ? 'YES' : 'NO'),
-            'LIVE_CANDIDATE_COUNT=' + candidates.length,
+            'LIVE_CANDIDATE_COUNT=' + deterministicSelectableIds.length,
+            'AUTHORITY_CANDIDATE_ATTEMPT_COUNT=' + (packetAuthority?.candidate_count ?? candidates.length),
              'FORMING_SETUP_COUNT=' + marketMechanicsFormingSetups.length,
              'MANUAL_ACTIVE_OPPORTUNITY_COUNT=' + manualMarketMechanicsOpportunities.length,
             'FORMING_CAMPAIGN_COUNT=' + new Set(marketMechanicsFormingSetups.map(setup => setup.campaign_id || setup.id)).size,
-            'SELECTABLE_CANDIDATE_IDS=' + (candidates.map(candidate => candidate.candidate_id).join('|') || 'NONE'),
+            'SELECTABLE_CANDIDATE_IDS=' + (deterministicSelectableIds.join('|') || 'NONE'),
             'DIAGNOSTIC_ONLY_CANDIDATE_COUNT=' + marketMechanicsDiagnosticCount,
+            'QUALIFYING_SETUP_COUNT=' + (packetAuthority?.qualifying_setup_count ?? candidates.length),
+            'AUTHORITY_STATE=' + (packetAuthority?.authority_state || 'INVALID'),
+            'NO_QUALIFYING_SETUP=' + (packetAuthority?.no_qualifying_setup ? 'YES' : 'NO'),
             'AUTHORITY_INVARIANTS=' + (packetAuthority?.invariants || 'FAIL'),
-            ...(packetAuthority?.invariant_violation ? ['BLOCKER=' + packetAuthority.invariant_violation] : [])
+            ...(packetAuthority?.invariant_failed ? [
+                'AUTHORITY_INVARIANT_FAILED=' + packetAuthority.invariant_failed,
+                'AUTHORITY_INVARIANT_CLASSIFICATION=' + packetAuthority.invariant_classification,
+                'AUTHORITY_INVARIANT_REASON=' + String(packetAuthority.invariant_reason || '').replace(/\s+/g, ' ').slice(0, 300)
+            ] : []),
+            'DETERMINISTIC_SELECTION_POLICY=' + deterministicSelection.policy,
+            'DETERMINISTIC_SELECTED_ID=' + (deterministicSelection.selected_id || 'NONE'),
+            'PRIMARY_CANDIDATE_ID=' + (deterministicSelection.primary_candidate_id || 'NONE'),
+            'PRIMARY_REJECTED_ID=' + (deterministicSelection.primary_rejected_id || 'NONE'),
+            'PRIMARY_REJECT_REASON=' + (deterministicSelection.primary_reject_reason || 'NONE'),
+            'FALLBACK_WARNING=' + (deterministicSelection.fallback_warning || 'NONE'),
+            ...((deterministicSelection.blocker || (packetAuthority?.invariants === 'PASS' ? null : packetAuthority?.blocker))
+                ? ['BLOCKER=' + (deterministicSelection.blocker || packetAuthority.blocker)] : [])
         ] : []),
         '',
         externalAIClipboardTask

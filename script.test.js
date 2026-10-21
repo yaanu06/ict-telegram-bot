@@ -4648,6 +4648,124 @@ describe('Market Mechanics packet authority', () => {
         expect(text).toContain('AUTHORITY_INVARIANT_VIOLATION');
     });
 
+    const blockedQuietDayCandidate = {
+        id: 'MM-QUIET-FORMING-STOP-BLOCKED',
+        direction: 'SELL', strategy_label: 'MARKET_SHIFT',
+        entry_model: 'MARKET_SHIFT', execution_model: 'PENDING_LIMIT',
+        market_mechanics_verified: true,
+        execution_zone: { id: 'POI-1', low: 4124.46, high: 4128.77 },
+        entry: 4126.61, stop_loss: 4191.04, tp1: 4111.68,
+        trade_qualified: true, TRADE_QUALIFIED: 'YES',
+        MARKET_PLAN_VALID: 'YES', MARKET_PLAN_POI_VALID: 'YES', EXECUTION_POI_VALID: 'YES',
+        MODEL_QUALIFIED: 'NO', qualification_result: 'BLOCKED',
+        setup_formation_confirmed: true, pending_limit_valid: true,
+        structural_stop_valid: 'NO', structural_target_valid: 'NO',
+        blocker: 'NO_STRUCTURAL_STOP', primary_blocker: 'NO_STRUCTURAL_STOP',
+        entry_touched: 'NO', entry_consumed: 'NO', lifecycle_state: 'PENDING_UNFILLED',
+        today_viability: 'LOW', manual_authority: 'DEEPSEEK_REVIEW_ONLY',
+        deterministic_live_authority: 'LIVE'
+    };
+
+    test('quiet-day plan-valid zero-live authority is a valid no-qualifying-setup state', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const source = marketContext([blockedQuietDayCandidate]);
+        const semantic = ctx.buildCompactAISemanticPackage(source, {});
+        const authority = ctx.marketMechanicsAuthoritySummary(source);
+        expect(semantic.live_market_mechanics_candidates).toEqual([]);
+        expect(semantic.authority_invariants).toBe('PASS');
+        expect(authority.invariant_failed).toBeNull();
+        expect(authority.blocker).toBe('NO_QUALIFYING_SETUP');
+        expect(authority.authority_state).toBe('VALID_NO_SETUP');
+        expect(authority.no_qualifying_setup).toBe(true);
+        expect(authority.qualifying_setup_count).toBe(0);
+    });
+
+    test('quiet-day raw packet reports no qualifying setup without an invariant violation', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = completeReplay({
+            pair: 'XAU/USD', strategy_mode: 'MARKET_MECHANICS', scan_as_of: '2026-10-21T04:21:28.378Z',
+            quote: { price: 4124.59, quote_time: '2026-10-21T04:21:28.378Z' },
+            market_plan: { valid_context: true, market_plan_complete: true, direction: 'SELL', primary_poi: { id: 'POI-1' } },
+            valid_candidates: [blockedQuietDayCandidate], history: {}
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('LIVE_CANDIDATES=NONE');
+        expect(text).toContain('AUTHORITY_CANDIDATE_ATTEMPT_COUNT=1');
+        expect(text).toContain('QUALIFYING_SETUP_COUNT=0');
+        expect(text).toContain('AUTHORITY_STATE=VALID_NO_SETUP');
+        expect(text).toContain('NO_QUALIFYING_SETUP=YES');
+        expect(text).toContain('AUTHORITY_INVARIANTS=PASS');
+        expect(text).toContain('BLOCKER=NO_QUALIFYING_SETUP');
+        expect(text).not.toContain('AUTHORITY_INVARIANT_FAILED=');
+    });
+
+    test('hard authority invariants still fail for selectable wrong-side or consumed claims', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const wrongSideSource = marketContext([{
+            ...qualifiedMarketMechanicsCandidate, id: 'MM-WRONG-SIDE', selectable: true,
+            structural_stop_valid: 'NO'
+        }]);
+        const wrongSide = ctx.buildCompactAISemanticPackage(wrongSideSource, {});
+        const wrongSideAuthority = ctx.marketMechanicsAuthoritySummary(wrongSideSource);
+        expect(wrongSide.live_market_mechanics_candidates).toEqual([]);
+        expect(wrongSide.authority_invariants).toBe('FAIL');
+        expect(wrongSideAuthority.invariant_failed).toBe('SELECTABLE_AUTHORITY_NOT_LIVE');
+        expect(wrongSideAuthority.invariant_classification).toBe('HARD_SAFETY');
+        expect(wrongSideAuthority.blocker).toBe('AUTHORITY_INVARIANT_VIOLATION');
+        const consumedSource = marketContext([{
+            ...qualifiedMarketMechanicsCandidate, id: 'MM-CONSUMED', CURRENT_OPPORTUNITY: 'YES',
+            entry_consumed: 'YES'
+        }]);
+        const consumed = ctx.buildCompactAISemanticPackage(consumedSource, {});
+        expect(consumed.live_market_mechanics_candidates).toEqual([]);
+        expect(consumed.authority_invariants).toBe('FAIL');
+        expect(ctx.marketMechanicsAuthoritySummary(consumedSource).invariant_classification).toBe('HARD_SAFETY');
+    });
+
+    test('raw packet prints the named hard-safety invariant and reason', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = completeReplay({
+            pair: 'XAU/USD', strategy_mode: 'MARKET_MECHANICS', scan_as_of: '2026-10-21T04:21:28.378Z',
+            quote: { price: 4124.59, quote_time: '2026-10-21T04:21:28.378Z' },
+            market_plan: { valid_context: true, market_plan_complete: true, direction: 'SELL', primary_poi: { id: 'POI-1' } },
+            valid_candidates: [{
+                ...qualifiedMarketMechanicsCandidate, id: 'MM-WRONG-SIDE-PACKET', selectable: true,
+                structural_stop_valid: 'NO'
+            }], history: {}
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('AUTHORITY_INVARIANTS=FAIL');
+        expect(text).toContain('AUTHORITY_INVARIANT_FAILED=SELECTABLE_AUTHORITY_NOT_LIVE');
+        expect(text).toContain('AUTHORITY_INVARIANT_CLASSIFICATION=HARD_SAFETY');
+        expect(text).toContain('AUTHORITY_INVARIANT_REASON=A selectable/current candidate does not survive live authority normalization');
+        expect(text).toContain('BLOCKER=AUTHORITY_INVARIANT_VIOLATION');
+    });
+
+    test('selectable candidate ID count mismatch fails closed', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const source = marketContext([]);
+        source.selectable_candidate_ids = ['MM-PHANTOM'];
+        const semantic = ctx.buildCompactAISemanticPackage(source, {});
+        expect(semantic.authority_invariants).toBe('FAIL');
+        expect(ctx.marketMechanicsAuthoritySummary(source).invariant_failed).toBe('SELECTABLE_IDS_COUNT_MISMATCH');
+        expect(ctx.marketMechanicsAuthoritySummary(source).invariant_classification).toBe('HARD_SAFETY');
+    });
+
+    test('reviewed untouched pending-limit lifecycle remains live without being consumed', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const source = marketContext([{
+            ...qualifiedMarketMechanicsCandidate, id: 'MM-PENDING-UNTOUCHED',
+            lifecycle_state: 'PENDING_UNFILLED', opportunity_status: 'PENDING_UNFILLED',
+            entry_touched: 'NO', entry_consumed: 'NO', ENTRY_TOUCHED: 'NO', ENTRY_CONSUMED: 'NO'
+        }]);
+        const semantic = ctx.buildCompactAISemanticPackage(source, {});
+        expect(semantic.live_market_mechanics_candidates).toHaveLength(1);
+        expect(semantic.authority_invariants).toBe('PASS');
+        expect(ctx.marketMechanicsAuthoritySummary(source).authority_state).toBe('VALID_WITH_SETUP');
+        expect(ctx.marketMechanicsAuthoritySummary(source).no_qualifying_setup).toBe(false);
+        expect(ctx.marketMechanicsAuthoritySummary(source).blocker).toBeNull();
+    });
+
     test('raw packet preserves lowercase NO clear-path evidence instead of reversing it through truthiness', () => {
         const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
         const constrained = {
@@ -5574,6 +5692,169 @@ describe('Market Mechanics packet authority', () => {
         expect(counts.reachable_zone_count).toBeGreaterThanOrEqual(counts.stop_ready_zone_count);
         expect(counts.stop_ready_zone_count).toBeGreaterThanOrEqual(counts.target_ready_zone_count);
         expect(counts).toMatchObject({ structurally_valid_zone_count: 2, lifecycle_eligible_zone_count: 1, correct_side_zone_count: 1, stop_ready_zone_count: 1, target_ready_zone_count: 1 });
+    });
+});
+
+describe('deterministic viability selection', () => {
+    const { loadStrategyContext } = require('./backtest/strategy-adapter');
+
+    const manualOpportunity = ({ id, entry, stop, objective, timeframe = '4H', model = 'MARKET_SHIFT', overrides = {} }) => ({
+        id, direction: 'SELL', timeframe, model, entry_model: model, execution_model: 'PENDING_LIMIT',
+        setup_formation_confirmed: 'YES', confirmation_state: 'CONFIRMED',
+        state: 'PENDING_UNFILLED', lifecycle_state: 'PENDING_UNFILLED',
+        lifecycle_classification: 'ACTIVE_UNTOUCHED',
+        entry_zone_low: entry - 0.4, entry_zone_high: entry + 0.4,
+        proposed_entry: entry, proposed_stop: stop, proposed_objective: objective,
+        stop_source: 'CAUSAL_OB_EXTREME',
+        target_candidates: [{ level: objective, source: 'OPPOSING_MSNR' }],
+        structural_stop_valid: 'YES', structural_target_valid: 'YES',
+        entry_zone_touched: 'NO', entry_consumed: 'NO', pending_limit_geometry_complete: 'YES',
+        market_plan_poi_valid: 'YES', rr_policy: 'STRUCTURAL_FIRST',
+        formation_first_knowable_time: '2026-10-21T02:00:00Z', formation_evidence_refs: [id],
+        ...overrides
+    });
+
+    const selectionReplay = ({ price, high, low, atr, rows, overrides = {} }) => completeReplay({
+        pair: 'XAU/USD', strategy_mode: 'MARKET_MECHANICS', scan_as_of: '2026-10-21T04:21:28.378Z',
+        quote: { price, quote_time: '2026-10-21T04:21:28.378Z' },
+        market_plan: { valid_context: true, market_plan_complete: true, direction: 'SELL', primary_poi: { id: 'POI-1' } },
+        market_context: { volatility: { atr_4h: atr } },
+        market_mechanics: { model_states: rows },
+        history: { '1D': [{ t: '2026-10-20T21:00:00Z', o: low, h: high, l: low, c: price, is_closed: true }] },
+        valid_candidates: [],
+        ...overrides
+    });
+
+    const opportunityEvidence = text => text.split(/\r?\n/)
+        .filter(line => line.startsWith('OPPORTUNITY_EVIDENCE='))
+        .map(line => JSON.parse(line.slice('OPPORTUNITY_EVIDENCE='.length)));
+
+    test('Oct 19 benchmark keeps the structural primary and does not engage fallback', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = selectionReplay({
+            price: 4178, high: 4200, low: 4145, atr: 20,
+            rows: [manualOpportunity({ id: 'BENCH-1', entry: 4190, stop: 4202, objective: 4135 })]
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const row = opportunityEvidence(text)[0];
+        expect(row.tradeable_today).toBe('TRUE');
+        expect(row.tradeable_today_reason).toBe('OK');
+        expect(row.entry_path).toBeCloseTo(12, 6);
+        expect(row.delivery_path).toBeCloseTo(55, 6);
+        expect(row.total_path).toBeCloseTo(67, 6);
+        expect(row.reachable_target_rr).toBeCloseTo(55 / 12, 6);
+        expect(text).toContain('DETERMINISTIC_SELECTION_POLICY=STRUCTURAL_PRIMARY');
+        expect(text).toContain('DETERMINISTIC_SELECTED_ID=BENCH-1');
+        expect(text).toContain('PRIMARY_CANDIDATE_ID=BENCH-1');
+        expect(text).toContain('PRIMARY_REJECTED_ID=NONE');
+        expect(text).toContain('FALLBACK_WARNING=NONE');
+        expect(text).toContain('LIVE_CANDIDATE_COUNT=1');
+        expect(text).toContain('SELECTABLE_CANDIDATE_IDS=BENCH-1');
+    });
+
+    test('quiet-day shortlist stays complete and reports no tradeable opportunity', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const rows = [
+            { id: 'QUIET-1', entry: 4144.01, stop: 4191.49, objective: 4066.53, timeframe: '4H' },
+            { id: 'QUIET-2', entry: 4183.81, stop: 4226.73, objective: 4073.55, timeframe: '4H' },
+            { id: 'QUIET-3', entry: 4168.50, stop: 4211.42, objective: 4066.53, timeframe: '4H' },
+            { id: 'QUIET-4', entry: 4143.20, stop: 4191.04, objective: 4066.53, timeframe: '1H' },
+            { id: 'QUIET-5', entry: 4146.25, stop: 4191.04, objective: 4066.53, timeframe: '1H' },
+            { id: 'QUIET-6', entry: 4157.13, stop: 4182.12, objective: 4080.49, timeframe: '4H' },
+            { id: 'QUIET-7', entry: 4161.83, stop: 4191.04, objective: 4080.49, timeframe: '1H' },
+            { id: 'QUIET-8', entry: 4169.82, stop: 4194.81, objective: 4080.49, timeframe: '1H' },
+            { id: 'QUIET-9', entry: 4184.77, stop: 4209.76, objective: 4111.68, timeframe: '1H' },
+            { id: 'QUIET-10', entry: 4164.52, stop: 4189.51, objective: 4080.49, timeframe: '1H' }
+        ].map(row => manualOpportunity(row));
+        const replay = selectionReplay({ price: 4124.59, high: 4155.57, low: 4111.68, atr: 21.46, rows });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const evidence = opportunityEvidence(text);
+        expect(evidence).toHaveLength(10);
+        expect(evidence.every(row => row.tradeable_today === 'FALSE')).toBe(true);
+        expect(evidence.every(row => row.tradeable_today_reason !== 'OK')).toBe(true);
+        expect(evidence.every(row => Math.abs(row.expected_daily_range - 53.65) < 1e-9)).toBe(true);
+        expect(text).toContain('MANUAL_ACTIVE_OPPORTUNITY_COUNT=10');
+        expect(text).toContain('DETERMINISTIC_SELECTION_POLICY=NO_TRADEABLE_TODAY');
+        expect(text).toContain('DETERMINISTIC_SELECTED_ID=NONE');
+        expect(text).toContain('LIVE_CANDIDATE_COUNT=0');
+        expect(text).toContain('SELECTABLE_CANDIDATE_IDS=NONE');
+        expect(text).toContain('BLOCKER=NO_TRADEABLE_TODAY');
+        expect(text).toContain('OPPORTUNITY_ID=QUIET-6');
+        const reviewed = text.split(/\r?\n/).find(line => line.startsWith('MANUAL_ACTIVE_OPPORTUNITY OPPORTUNITY_ID=QUIET-6'));
+        expect(reviewed).toContain('LIFECYCLE_STATE=PENDING_UNFILLED');
+        expect(reviewed).toContain('ENTRY_TOUCHED=NO');
+        expect(reviewed).toContain('ENTRY_CONSUMED=NO');
+    });
+
+    test('entry-too-far primary selects a tradeable fallback and records the rejection', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = selectionReplay({
+            price: 100, high: 120, low: 100, atr: 5,
+            rows: [
+                manualOpportunity({ id: 'PRIMARY-1', entry: 115, stop: 125, objective: 60, timeframe: '4H' }),
+                manualOpportunity({ id: 'FALLBACK-1', entry: 106, stop: 110, objective: 90, timeframe: '1H' })
+            ]
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const evidence = opportunityEvidence(text);
+        expect(evidence.find(row => row.opportunity_id === 'PRIMARY-1').tradeable_today_reason).toBe('PATH_TOO_LONG');
+        expect(evidence.find(row => row.opportunity_id === 'FALLBACK-1').tradeable_today).toBe('TRUE');
+        expect(text).toContain('DETERMINISTIC_SELECTION_POLICY=VIABILITY_FALLBACK');
+        expect(text).toContain('DETERMINISTIC_SELECTED_ID=FALLBACK-1');
+        expect(text).toContain('PRIMARY_CANDIDATE_ID=PRIMARY-1');
+        expect(text).toContain('PRIMARY_REJECTED_ID=PRIMARY-1');
+        expect(text).toContain('PRIMARY_REJECT_REASON=PATH_TOO_LONG');
+        expect(text).toContain('FALLBACK_WARNING=PRIMARY_NOT_TRADEABLE_TODAY:PATH_TOO_LONG');
+        expect(text).toContain('LIVE_CANDIDATE_COUNT=1');
+        expect(text).toContain('SELECTABLE_CANDIDATE_IDS=FALLBACK-1');
+    });
+
+    test('authority invariant failure disables fallback selection', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = selectionReplay({
+            price: 100, high: 120, low: 100, atr: 5,
+            rows: [manualOpportunity({ id: 'BLOCKED-FALLBACK', entry: 106, stop: 110, objective: 90 })],
+            overrides: { selectable_candidate_ids: ['PHANTOM'] }
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('AUTHORITY_INVARIANTS=FAIL');
+        expect(text).toContain('DETERMINISTIC_SELECTION_POLICY=NO_TRADEABLE_TODAY');
+        expect(text).toContain('DETERMINISTIC_SELECTED_ID=NONE');
+        expect(text).toContain('SELECTABLE_CANDIDATE_IDS=NONE');
+        expect(text).toContain('FALLBACK_WARNING=AUTHORITY_INVARIANTS_NOT_PASS');
+        expect(text).toContain('BLOCKER=AUTHORITY_INVARIANT_VIOLATION');
+        expect(text).not.toContain('VIABILITY_FALLBACK');
+    });
+
+    test('tradeable flags cannot rescue a stop on the wrong side of entry', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = selectionReplay({
+            price: 100, high: 120, low: 100, atr: 5,
+            rows: [manualOpportunity({ id: 'ADVERSARIAL-1', entry: 104, stop: 90, objective: 80 })]
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const row = opportunityEvidence(text)[0];
+        expect(row.tradeable_today).toBe('TRUE');
+        expect(text).toContain('AUTHORITY_INVARIANTS=PASS');
+        expect(text).toContain('DETERMINISTIC_SELECTION_POLICY=NO_TRADEABLE_TODAY');
+        expect(text).toContain('DETERMINISTIC_SELECTED_ID=NONE');
+        expect(text).toContain('SELECTABLE_CANDIDATE_IDS=NONE');
+        expect(text).not.toContain('DETERMINISTIC_SELECTED_ID=ADVERSARIAL-1');
+    });
+
+    test('untouched pending-limit lifecycle remains intact through selection', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = selectionReplay({
+            price: 100, high: 120, low: 100, atr: 5,
+            rows: [manualOpportunity({ id: 'PENDING-1', entry: 104, stop: 110, objective: 85 })]
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const reviewed = text.split(/\r?\n/).find(line => line.startsWith('MANUAL_ACTIVE_OPPORTUNITY OPPORTUNITY_ID=PENDING-1'));
+        expect(reviewed).toContain('LIFECYCLE_STATE=PENDING_UNFILLED');
+        expect(reviewed).toContain('ENTRY_TOUCHED=NO');
+        expect(reviewed).toContain('ENTRY_CONSUMED=NO');
+        expect(opportunityEvidence(text)[0].recomputed_lifecycle_status).toBe('ACTIVE_UNTOUCHED');
+        expect(text).toContain('DETERMINISTIC_SELECTED_ID=PENDING-1');
     });
 });
 
