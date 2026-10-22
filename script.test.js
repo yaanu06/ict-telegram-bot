@@ -5860,6 +5860,94 @@ describe('deterministic viability selection', () => {
         expect(row.pending_side_eligible).toBe('YES');
     });
 
+    test('unfilled parent POI still allows a mid-move 15M supply continuation at 4118', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const asOf = Date.parse('2026-10-21T04:00:00Z');
+        const candle = (t, o, h, l, c) => ({ t: new Date(t).toISOString(), o, h, l, c, v: 1, is_closed: true });
+        const history15 = [];
+        const start15 = asOf - 30 * 15 * 60000;
+        for (let i = 0; i < 20; i++) history15.push(candle(start15 + i * 15 * 60000, 4126, 4128, 4124, 4126));
+        [
+            [4119, 4120, 4118, 4120],
+            [4120, 4121, 4114, 4115],
+            [4116, 4117, 4108, 4110],
+            [4111, 4114, 4106, 4108],
+            [4109, 4112, 4104, 4106],
+            [4107, 4111, 4105, 4109],
+            [4110, 4113, 4107, 4110],
+            [4111, 4114, 4108, 4112],
+            [4112, 4115, 4109, 4111],
+            [4112, 4115, 4108, 4110]
+        ].forEach((bar, index) => history15.push(candle(start15 + (20 + index) * 15 * 60000, ...bar)));
+        const history1H = Array.from({ length: 30 }, (_, index) => {
+            const t = asOf - (30 - index) * 3600000;
+            return candle(t, 4130 - index * 0.7, 4131 - index * 0.7, 4128 - index * 0.7, 4129 - index * 0.7);
+        });
+        const marketPlan = {
+            plan_id: 'MID-MOVE-PLAN', valid_context: true, market_plan_complete: true, direction: 'SELL',
+            active_poi: {
+                id: 'PARENT-4131', type: 'SUPPLY', direction: 'SELL', timeframe: '4H',
+                low: 4130.5, high: 4132, primary_eligible: true, freshness: 'FRESH', touch_count: 0
+            },
+            active_swing_low: 4070, active_swing_high: 4200,
+            primary_draw_on_liquidity: { price: 4073, type: 'SELL_SIDE_LIQUIDITY' },
+            data_cutoff_ms: asOf
+        };
+        const targets = {
+            all: [{ direction: 'SELL', level: 4073, source: 'SELL_SIDE_LIQUIDITY' }],
+            buy: [],
+            sell: [{ direction: 'SELL', level: 4073, source: 'SELL_SIDE_LIQUIDITY' }]
+        };
+        const args = {
+            historyCache: { '15M': history15, '1H': history1H, '4H': history1H, '1D': history1H },
+            timeframeContext: {
+                '4H': {
+                    effective_trend: 'BEARISH', structural_trend: 'BEARISH', bias: 'BEARISH',
+                    structure: { recent_swing_highs: [{ level: 4131 }], recent_swing_lows: [{ level: 4073 }] },
+                    structural_evidence_ids: ['4BOS']
+                }
+            },
+            dailyBias: { direction: 'SELL' }, targets, zones: [], pair: 'XAU/USD', price: 4110,
+            symbolMetadata: { asset_class: 'METAL', price_precision: 2 }, marketPlan
+        };
+        const setups = ctx.buildMarketMechanicsSetups(args);
+        const supply = setups.find(setup => setup.entry_model === 'CONTINUATION_MID_MOVE'
+            && Number(setup.execution_zone?.low) === 4118 && Number(setup.execution_zone?.high) === 4120);
+        expect(supply).toBeDefined();
+        expect(supply.timeframe).toBe('15M');
+        expect(supply.direction).toBe('SELL');
+        expect(supply.target_candidates.map(target => target.level)).toContain(4073);
+
+        const strategy = ctx.buildMarketMechanicsStrategySetups({ ...args, asOfMs: asOf });
+        const candidates = ctx.buildAdaptiveSetupCandidates({
+            pair: 'XAU/USD', price: 4110, historyCache: args.historyCache, zones: [], targetCandidates: targets,
+            riskConstraints: { minimum_rr: 1.5, minimum_sl_distance: 0.1, maximum_sl_distance: 100 },
+            marketRegime: { primary_regime: 'TRENDING_BEARISH' },
+            structure: { '1D': { trend: 'BEARISH' }, '4H': { trend: 'BEARISH' }, '1H': { trend: 'BEARISH' } },
+            marketContext: {
+                strategy_mode: 'MARKET_MECHANICS', require_strategy_setup: true,
+                as_of_time: asOf, as_of_ms: asOf, scan_as_of_ms: asOf,
+                data_quality: { valid: true, status: 'FRESH', reasons: [] }, market_plan: marketPlan
+            },
+            strategySetups: strategy, symbolMetadata: { asset_class: 'METAL', price_precision: 2 }
+        });
+        const continuation = candidates.all_valid_candidates.find(candidate => candidate.entry_model === 'CONTINUATION_MID_MOVE'
+            && Math.abs(Number(candidate.entry) - 4118.06) < 0.02);
+        expect(continuation).toBeDefined();
+        expect(continuation.tp1).toBeCloseTo(4073, 2);
+        expect(continuation.stop_loss).toBeGreaterThan(4120);
+
+        const shortlist = ctx.buildManualMarketMechanicsOpportunityShortlist({
+            pair: 'XAU/USD', quote: { price: 4110 }, market_mechanics: { model_states: strategy }
+        }, 4110);
+        const row = shortlist.find(item => item.model === 'CONTINUATION_MID_MOVE'
+            && Math.abs(Number(item.entry_zone_low) - 4118) < 0.001);
+        expect(row).toBeDefined();
+        expect(row.correct_pending_order_side).toBe('SELL_LIMIT');
+        expect(row.suggested_entry).toBeGreaterThan(4118);
+        expect(row.suggested_entry).toBeLessThan(4120);
+    });
+
     test('EUR/USD selected pending limit survives unrelated invalid execution authority', () => {
         const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
         const eurusdId = '1H-BUY-MSNR-1.12279-1.12322';

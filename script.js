@@ -743,7 +743,7 @@ const LIMIT_ORDER_MAX_DIST_ATR = 6.0;
 function isPendingLimitExecutionModel(model) {
     return ['PENDING_LIMIT', 'FRESH_RETRACEMENT_LIMIT', 'STRUCTURAL_LIMIT',
         'MARKET_SHIFT', 'FLIP_ZONE', 'LIQUIDITY_OB_FVG', 'CRT_AGGRESSIVE',
-        'CRT_CONSERVATIVE'].includes(String(model || '').toUpperCase());
+        'CRT_CONSERVATIVE', 'CONTINUATION_MID_MOVE'].includes(String(model || '').toUpperCase());
 }
 function getCandidateExecutionQualityMinimum(candidate = {}) {
     const fullyAlignedPendingLimit = isPendingLimitExecutionModel(candidate.execution_model || candidate.entry_model)
@@ -7622,7 +7622,8 @@ const MARKET_MECHANICS_ENTRY_MODELS = Object.freeze([
     'FLIP_ZONE',
     'LIQUIDITY_OB_FVG',
     'CRT_AGGRESSIVE',
-    'CRT_CONSERVATIVE'
+    'CRT_CONSERVATIVE',
+    'CONTINUATION_MID_MOVE'
 ]);
 
 const MARKET_MECHANICS_MODEL_REQUIREMENTS = Object.freeze({
@@ -7630,7 +7631,8 @@ const MARKET_MECHANICS_MODEL_REQUIREMENTS = Object.freeze({
     FLIP_ZONE: Object.freeze({ required_timeframes: Object.freeze(['4H', '1H', '15M']) }),
     LIQUIDITY_OB_FVG: Object.freeze({ required_timeframes: Object.freeze(['4H', '1H']) }),
     CRT_AGGRESSIVE: Object.freeze({ required_timeframes: Object.freeze(['4H', '1H']) }),
-    CRT_CONSERVATIVE: Object.freeze({ required_timeframes: Object.freeze(['4H', '1H', '15M']) })
+    CRT_CONSERVATIVE: Object.freeze({ required_timeframes: Object.freeze(['4H', '1H', '15M']) }),
+    CONTINUATION_MID_MOVE: Object.freeze({ required_timeframes: Object.freeze(['1H', '15M']) })
 });
 
 function isMarketMechanicsExecutionModel(value) {
@@ -8105,6 +8107,7 @@ function buildMarketMechanicsPlan({ historyCache = {}, price = null, structure =
 function marketMechanicsEntryModelForSetup(setup = {}) {
     const zoneType = String(setup.execution_zone?.type || setup.opportunity_narrative?.location?.type || '').toUpperCase();
     const explicit = String(setup.entry_model || setup.execution_model || '').toUpperCase();
+    if (explicit === 'CONTINUATION_MID_MOVE') return 'CONTINUATION_MID_MOVE';
     if (zoneType === 'FLIP' || zoneType === 'BREAKER' || explicit.includes('FLIP') || explicit.includes('BREAKER')) return 'FLIP_ZONE';
     if (zoneType === 'CRT' || setup.crt_ref || setup.crt_id) return setup.execution_confirmed === true ? 'CRT_CONSERVATIVE' : 'CRT_AGGRESSIVE';
     if (setup.liquidity_event_ids?.length || setup.tbs_ref || zoneType === 'FVG' || zoneType === 'OB' || zoneType === 'OB+FVG') return 'LIQUIDITY_OB_FVG';
@@ -8189,7 +8192,7 @@ function marketMechanicsPoiRelationship(setup = {}, marketPlan = null) {
         && executionMid <= Math.max(rangeLow, rangeHigh);
     const lowerTimeframeRefinement = String(execution.timeframe || setup.timeframe || '').toUpperCase() !== '4H'
         || String(parent.timeframe || '').toUpperCase() === '4H';
-    const independentModels = new Set(['MARKET_SHIFT', 'FLIP_ZONE', 'LIQUIDITY_OB_FVG', 'CRT_AGGRESSIVE', 'CRT_CONSERVATIVE']);
+    const independentModels = new Set(['MARKET_SHIFT', 'FLIP_ZONE', 'LIQUIDITY_OB_FVG', 'CRT_AGGRESSIVE', 'CRT_CONSERVATIVE', 'CONTINUATION_MID_MOVE']);
     if (independentModels.has(model) && inActiveRange && lowerTimeframeRefinement) {
         result.poi_relationship_status = 'INDEPENDENT_CONTEXT_COMPATIBLE';
         return result;
@@ -9017,10 +9020,214 @@ function deriveCausalOrderBlockInvalidation(executionZone = {}, candidateZones =
     };
 }
 
-function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias, targets, zones, pair: pairLocal, price, symbolMetadata = {}, marketPlan = null }) {
+function buildMidMoveContinuationZones(historyCache = {}, timeframe, price, pairLocal = pair, symbolMetadata = {}) {
+    const data = getClosedHistory(historyCache, timeframe);
+    if (!data || data.length < 20) return [];
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
+    const prec = settings.prec;
+    const zones = buildSupplyDemandAndFlipPOIs(data, timeframe, price, pairLocal, symbolMetadata);
+    for (const fvg of detectFVG(data, pairLocal, symbolMetadata)) {
+        const direction = fvg.type === 'bull' ? 'BUY' : 'SELL';
+        const low = Number(fvg.l);
+        const high = Number(fvg.h);
+        if (!Number.isFinite(low) || !Number.isFinite(high) || high <= low) continue;
+        const createdTime = fvg.first_knowable_time || fvg.formation_time || fvg.confirmation_time || null;
+        const lifecycle = checkZoneFreshness(data, {
+            low, high, created_time: createdTime,
+            source_candle_index: fvg.formation_index
+        }, direction);
+        const freshness = lifecycle.violations > 0 ? 'INVALIDATED'
+            : lifecycle.touches === 0 ? 'FRESH'
+                : lifecycle.touches > 1 ? 'CONSUMED' : 'TOUCHED';
+        zones.push({
+            id: `${timeframe}-${direction}-FVG-${ictRound(low, prec)}-${ictRound(high, prec)}-${normalizeTimestampUTC(createdTime) || fvg.formation_index}`,
+            type: 'FVG', direction, timeframe,
+            low: ictRound(low, prec), high: ictRound(high, prec), midpoint: ictRound((low + high) / 2, prec),
+            created_time: createdTime, created_index: fvg.formation_index,
+            source_candle_index: fvg.formation_index,
+            freshness, touch_count: lifecycle.touches || 0,
+            mitigated: (lifecycle.touches || 0) > 0, consumed: freshness === 'CONSUMED',
+            invalidated: freshness === 'INVALIDATED', primary_eligible: false,
+            structural_evidence_ids: [`FVG:${timeframe}:${fvg.formation_index}`],
+            location_only: true, source: 'THREE_CANDLE_FVG'
+        });
+    }
+    return zones;
+}
+
+// A parent POI does not expire merely because price leaves it without a fill.
+// When price displaces toward the original draw, fresh lower-timeframe OB/FVG
+// zones between price and the parent become the continuation entry instead of
+// forcing the bot to keep stalking the original, now-distant level.
+function buildMidMoveContinuationSetups({ historyCache = {}, marketPlan = null, zones = [], targets = {},
+    price = null, pair: pairLocal = pair, symbolMetadata = {} } = {}) {
+    const parent = marketPlan?.active_poi || marketPlan?.primary_poi || null;
+    const direction = String(marketPlan?.direction || parent?.direction || '').toUpperCase();
+    const current = Number(price);
+    if (marketPlan?.valid_context !== true || !parent || !['BUY', 'SELL'].includes(direction) || !Number.isFinite(current)) return [];
+    const parentLow = Number(parent.low ?? parent.zone_low);
+    const parentHigh = Number(parent.high ?? parent.zone_high);
+    if (!Number.isFinite(parentLow) || !Number.isFinite(parentHigh) || parentHigh < parentLow) return [];
+    const parentStatus = String(parent.freshness || parent.status || parent.lifecycle_status || 'FRESH').toUpperCase();
+    if (parent.invalidated === true || parent.consumed === true || parent.mitigated === true || parent.expired === true
+        || parent.primary_eligible === false || Number(parent.touch_count || 0) > 0
+        || ['USED', 'CONSUMED', 'INVALIDATED', 'EXPIRED', 'MITIGATED', 'BROKEN'].includes(parentStatus)) return [];
+    const parentMid = (parentLow + parentHigh) / 2;
+    const awayFromParent = direction === 'SELL' ? current < parentLow : current > parentHigh;
+    if (!awayFromParent) return [];
+    const settings = getMarketSettings(pairLocal, symbolMetadata);
+    const fifteenMinuteData = getClosedHistory(historyCache, '15M');
+    const atr15m = fifteenMinuteData.length >= 15 ? atr(fifteenMinuteData, 14) : 0;
+    const minimumMove = Math.max(settings.pipSize * 2, atr15m * 0.25);
+    if (Math.abs(parentMid - current) < minimumMove) return [];
+
+    const planDraw = marketPlan?.primary_draw_on_liquidity || null;
+    const planDrawLevel = Number(planDraw?.price ?? planDraw?.level ?? planDraw?.target_level);
+    const targetPool = (Array.isArray(targets?.all) ? targets.all : [])
+        .filter(target => String(target?.direction || direction).toUpperCase() === direction)
+        .map(target => ({ ...target, level: Number(target.level ?? target.price) }))
+        .filter(target => Number.isFinite(target.level));
+    const targetAhead = level => direction === 'SELL' ? level < current : level > current;
+    let originalTarget = null;
+    if (Number.isFinite(planDrawLevel) && targetAhead(planDrawLevel)) {
+        originalTarget = {
+            ...planDraw, direction, level: planDrawLevel,
+            source: planDraw.source || planDraw.type || 'ORIGINAL_MARKET_PLAN_TARGET',
+            original_market_plan_target: true
+        };
+    } else {
+        originalTarget = targetPool.filter(target => targetAhead(target.level))
+            .sort((left, right) => Math.abs(left.level - current) - Math.abs(right.level - current))[0] || null;
+    }
+    if (!originalTarget) return [];
+    const targetCandidates = [
+        originalTarget,
+        ...targetPool.filter(target => targetAhead(target.level)
+            && Math.abs(target.level - originalTarget.level) > settings.pipSize * 0.5)
+            .sort((left, right) => Math.abs(left.level - current) - Math.abs(right.level - current))
+    ].slice(0, 4);
+
+    const sourceZones = [
+        ...['1H', '15M'].flatMap(timeframe => buildMidMoveContinuationZones(historyCache, timeframe, current, pairLocal, symbolMetadata)),
+        ...(Array.isArray(zones) ? zones : []).filter(zone => ['1H', '15M'].includes(String(zone?.timeframe || '').toUpperCase()))
+    ];
     const setups = [];
+    const seen = new Set();
+    for (const zone of sourceZones) {
+        if (!zone || String(zone.direction || '').toUpperCase() !== direction) continue;
+        const timeframe = String(zone.timeframe || '').toUpperCase();
+        if (!['1H', '15M'].includes(timeframe)) continue;
+        const low = Number(zone.low);
+        const high = Number(zone.high);
+        if (!Number.isFinite(low) || !Number.isFinite(high) || high <= low) continue;
+        const freshness = String(zone.freshness || zone.status || 'FRESH').toUpperCase();
+        if (zone.invalidated === true || zone.consumed === true || zone.mitigated === true || zone.expired === true
+            || Number(zone.touch_count || 0) > 0
+            || ['USED', 'CONSUMED', 'INVALIDATED', 'EXPIRED', 'MITIGATED', 'BROKEN', 'TOUCHED', 'TESTED'].includes(freshness)) continue;
+        if (direction === 'SELL') {
+            if (!(low > current && low > originalTarget.level && high < parentLow)) continue;
+        } else if (!(high < current && high < originalTarget.level && low > parentHigh)) continue;
+        const geometry = selectPendingExecutionGeometry(zone, null, direction, {
+            price: current, pair: pairLocal, symbol_metadata: symbolMetadata
+        }, settings.prec);
+        const entry = Number(geometry.entry);
+        if (!geometry.side_eligible || !Number.isFinite(entry)) continue;
+        if (direction === 'SELL' ? entry <= current : entry >= current) continue;
+        const reward = direction === 'SELL' ? entry - originalTarget.level : originalTarget.level - entry;
+        const zoneWidth = high - low;
+        if (!(reward > Math.max(zoneWidth, settings.pipSize) * 1.5)) continue;
+        const key = strategyZoneKey(zone);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const invalidationLevel = direction === 'SELL' ? high : low;
+        const executionInvalidation = {
+            strategy: 'CONTINUATION_MID_MOVE', direction,
+            level: invalidationLevel,
+            source: 'MID_MOVE_ZONE_FAR_EDGE',
+            timeframe,
+            source_time: zone.created_time || zone.created_time_ms || null,
+            source_location_id: zone.id || null,
+            source_model: 'CONTINUATION_MID_MOVE',
+            source_event_id: zone.id || null,
+            invalidation_basis: 'FRESH_RETRACEMENT_ZONE_FAR_EDGE',
+            confirmation_mode: 'HARD_PRICE',
+            relationship_status: 'EXECUTION_POI_OWN_INVALIDATION',
+            evidence_refs: [parent.id, zone.id].filter(Boolean)
+        };
+        const executionZone = {
+            ...zone,
+            id: zone.id || strategyZoneKey(zone),
+            primary_eligible: true,
+            selectable_as_parent_poi: true,
+            execution_model: 'PENDING_LIMIT',
+            entry_model: 'CONTINUATION_MID_MOVE',
+            entry_reachable_today: true,
+            pending_entry: entry,
+            pending_relationship_status: geometry.pending_relationship_status,
+            parent_location_id: parent.id || null,
+            parent_location_type: parent.type || null,
+            execution_structural_invalidation: executionInvalidation,
+            causal_invalidation_zone_id: zone.id || null,
+            causal_relationship_status: executionInvalidation.relationship_status,
+            continuation_mid_move: true
+        };
+        const id = `ICT:CONTINUATION_MID_MOVE:${direction}:${parent.id || 'PARENT'}:${zone.id || key}`;
+        setups.push({
+            id, primary: 'ICT', label: 'CONTINUATION_MID_MOVE',
+            direction, timeframe, setup_timeframe: timeframe, execution_timeframe: timeframe,
+            event_time: zone.created_time || zone.created_time_ms || null,
+            first_knowable_time: zone.created_time || zone.created_time_ms || null,
+            narrative_state: 'ACTIVE', execution_zone: executionZone,
+            execution_model: 'PENDING_LIMIT', entry_model: 'CONTINUATION_MID_MOVE',
+            continuation_mid_move: true, continuation_model: 'CONTINUATION_MID_MOVE',
+            continuation_parent_poi_id: parent.id || null,
+            continuation_parent_poi_low: parentLow,
+            continuation_parent_poi_high: parentHigh,
+            continuation_trigger_price: current,
+            structural_invalidation: invalidationLevel,
+            structural_invalidation_detail: {
+                level: invalidationLevel, source: 'MID_MOVE_ZONE_FAR_EDGE',
+                timeframe, source_time: zone.created_time || zone.created_time_ms || null
+            },
+            target_candidates: targetCandidates,
+            primary_objective: originalTarget.level,
+            opportunity_narrative: {
+                id: `NARRATIVE:${id}`, state: 'DEVELOPING', location: executionZone,
+                liquidity_event_ids: [],
+                structural_shift_ids: [],
+                evidence_ids: [parent.id, zone.id].filter(Boolean),
+                target_intent: originalTarget.source || null,
+                invalidation_intent: invalidationLevel,
+                execution_requirement: 'RETRACE_TO_NEW_CONTINUATION_ZONE'
+            },
+            market_mechanics_verified: true, execution_confirmed: true,
+            setup_formation_confirmed: true, formation_confirmation_type: 'SETUP_FORMATION',
+            structural_evidence_ids: [...new Set([parent.id, zone.id, ...(zone.structural_evidence_ids || [])].filter(Boolean))],
+            freshness: 'FRESH', original_strategy_entry_consumed: false
+        });
+    }
+    const zoneTypeRank = zone => ['SUPPLY', 'DEMAND', 'OB', 'OB+FVG'].includes(String(zone?.type || '').toUpperCase()) ? 2
+        : String(zone?.type || '').toUpperCase() === 'FVG' ? 1 : 0;
+    return setups.sort((left, right) => {
+        const leftType = zoneTypeRank(left.execution_zone);
+        const rightType = zoneTypeRank(right.execution_zone);
+        const leftTimeframe = left.timeframe === '15M' ? 1 : 0;
+        const rightTimeframe = right.timeframe === '15M' ? 1 : 0;
+        return rightType - leftType
+            || rightTimeframe - leftTimeframe
+            || Math.abs(Number(left.execution_zone?.pending_entry) - current) - Math.abs(Number(right.execution_zone?.pending_entry) - current)
+            || String(left.id).localeCompare(String(right.id));
+    });
+}
+
+function buildMarketMechanicsSetups({ historyCache, timeframeContext, dailyBias, targets, zones, pair: pairLocal, price, symbolMetadata = {}, marketPlan = null }) {
+    const continuationSetups = buildMidMoveContinuationSetups({
+        historyCache, marketPlan, zones, targets, price, pair: pairLocal, symbolMetadata
+    });
+    const setups = [...continuationSetups];
     const discovery = { discovery_buy_events: 0, discovery_sell_events: 0, discovery_structure_shifts: 0,
-        discovery_liquidity_events: 0, discovery_pois: 0, discovery_reversal_candidates: 0, discovery_continuation_candidates: 0, discovery_events: [] };
+        discovery_liquidity_events: 0, discovery_pois: 0, discovery_reversal_candidates: 0,
+        discovery_continuation_candidates: continuationSetups.length, discovery_events: [] };
     const locationPois = ['4H', '1H', '15M'].flatMap(tf => buildSupplyDemandAndFlipPOIs(historyCache?.[tf] || [], tf, price, pairLocal, symbolMetadata));
     // Build the pending-limit narrative from the current HTF map first. A
     // confirmation shift is required only by confirmation-entry models; it
