@@ -2158,7 +2158,7 @@ describe('current opportunity regeneration', () => {
         expect(result.selectable_candidates).toEqual(expect.arrayContaining([
             expect.objectContaining({ candidate_role: 'FRESH_CONTINUATION_POI', execution_model: 'PENDING_LIMIT' })
         ]));
-        expect(result.selectable_candidates[0].entry).toBe(101.75);
+        expect(result.selectable_candidates[0].entry).toBeCloseTo(101.50008, 6);
         expect(result.selectable_candidates[0].target_lifecycle_state).toBe('UNFULFILLED');
 
         const compact = ctx.compactAIContext({
@@ -3803,7 +3803,7 @@ describe('canonical Market Mechanics production routing', () => {
             execution_confirmed: true, setup_formation_confirmed: true, market_mechanics_verified: true,
             structural_invalidation_detail: { level: 100.3, source: 'CAUSAL_OB_EXTREME' },
             structural_evidence_ids: ['SWEEP:1H:SELL:1', 'DISPLACEMENT:1H:SELL:1'],
-            target_candidates: [{ direction: 'SELL', level: 99.5, source: 'SELL_SIDE_LIQUIDITY' }]
+            target_candidates: [{ direction: 'SELL', level: 99, source: 'SELL_SIDE_LIQUIDITY' }]
         };
         const result = ctx.buildAdaptiveSetupCandidates({
             pair: 'XAU/USD', price: 100,
@@ -5813,10 +5813,10 @@ describe('deterministic viability selection', () => {
         const row = opportunityEvidence(text)[0];
         expect(row.tradeable_today).toBe('TRUE');
         expect(row.tradeable_today_reason).toBe('OK');
-        expect(row.entry_path).toBeCloseTo(12, 6);
-        expect(row.delivery_path).toBeCloseTo(55, 6);
-        expect(row.total_path).toBeCloseTo(67, 6);
-        expect(row.reachable_target_rr).toBeCloseTo(55 / 12, 6);
+        expect(row.entry_path).toBeCloseTo(11.62, 6);
+        expect(row.delivery_path).toBeCloseTo(54.62, 6);
+        expect(row.total_path).toBeCloseTo(66.24, 6);
+        expect(row.reachable_target_rr).toBeCloseTo(54.62 / 12.38, 6);
         expect(text).toContain('DETERMINISTIC_SELECTION_POLICY=STRUCTURAL_PRIMARY');
         expect(text).toContain('DETERMINISTIC_SELECTED_ID=BENCH-1');
         expect(text).toContain('PRIMARY_CANDIDATE_ID=BENCH-1');
@@ -5824,6 +5824,26 @@ describe('deterministic viability selection', () => {
         expect(text).toContain('FALLBACK_WARNING=NONE');
         expect(text).toContain('LIVE_CANDIDATE_COUNT=1');
         expect(text).toContain('SELECTABLE_CANDIDATE_IDS=BENCH-1');
+    });
+
+    test('pending-limit entry uses the near zone edge instead of the midpoint', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const replay = selectionReplay({
+            price: 4130, high: 4200, low: 4100, atr: 20,
+            rows: [manualOpportunity({
+                id: 'EDGE-1', entry: 4143.20, stop: 4160, objective: 4100,
+                overrides: {
+                    entry_zone_low: 4141.92, entry_zone_high: 4144.48,
+                    proposed_entry: 4143.20
+                }
+            })]
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const row = opportunityEvidence(text)[0];
+        expect(row.suggested_entry).toBeCloseTo(4142.00, 2);
+        expect(row.suggested_entry).toBeGreaterThan(4141.92);
+        expect(row.suggested_entry).toBeLessThanOrEqual(4144.48);
+        expect(row.pending_side_eligible).toBe('YES');
     });
 
     const replayOriginalPacket = () => {
@@ -5868,11 +5888,11 @@ describe('deterministic viability selection', () => {
         const nonFlip = evidence.filter(row => row !== flip);
         expect(flip.tradeable_today).toBe('TRUE');
         expect(flip.tradeable_today_reason).toBe('OK');
-        expect(flip.entry_path).toBeCloseTo(32.54, 6);
-        expect(flip.delivery_path).toBeCloseTo(39.69, 6);
-        expect(flip.total_path).toBeCloseTo(72.23, 6);
-        expect(flip.reachable_target_level).toBeCloseTo(4117.44, 2);
-        expect(flip.reachable_target_rr).toBeCloseTo(39.69 / 24.99, 6);
+        expect(flip.entry_path).toBeCloseTo(30.93, 6);
+        expect(flip.delivery_path).toBeCloseTo(39.95, 6);
+        expect(flip.total_path).toBeCloseTo(70.88, 6);
+        expect(flip.reachable_target_level).toBeCloseTo(4115.57, 2);
+        expect(flip.reachable_target_rr).toBeCloseTo(39.95 / 26.6, 6);
         expect(nonFlip.every(row => row.tradeable_today === 'FALSE' && row.tradeable_today_reason !== 'OK')).toBe(true);
         expect(evidence.every(row => Math.abs(row.expected_daily_range - 53.65) < 1e-9)).toBe(true);
         expect(text).toContain('MANUAL_ACTIVE_OPPORTUNITY_COUNT=10');
@@ -5980,13 +6000,13 @@ describe('deterministic viability selection', () => {
         const row = opportunityEvidence(text)[0];
         expect(row.tradeable_today).toBe('TRUE');
         expect(row.tradeable_today_reason).toBe('OK');
-        expect(row.entry_path).toBeCloseTo(32.54, 6);
-        expect(row.delivery_path).toBeCloseTo(42.13, 6);
-        expect(row.total_path).toBeCloseTo(74.67, 6);
+        expect(row.entry_path).toBeCloseTo(32.16, 6);
+        expect(row.delivery_path).toBeCloseTo(41.75, 6);
+        expect(row.total_path).toBeCloseTo(73.91, 6);
         expect(row.reachable_target_level).toBeCloseTo(4115, 6);
-        expect(row.reachable_target_rr).toBeCloseTo(42.13 / 24.99, 6);
-        expect(row.full_tp_delivery_path).toBeCloseTo(152.13, 6);
-        expect(row.full_tp_total_path).toBeCloseTo(184.67, 6);
+        expect(row.reachable_target_rr).toBeCloseTo(41.75 / 25.37, 6);
+        expect(row.full_tp_delivery_path).toBeCloseTo(151.75, 6);
+        expect(row.full_tp_total_path).toBeCloseTo(183.91, 6);
         expect(row.full_tp_reachable_today).toBe('FALSE');
         expect(text).toContain('DETERMINISTIC_SELECTION_POLICY=STRUCTURAL_PRIMARY');
         expect(text).toContain('DETERMINISTIC_SELECTED_ID=OCT19-BENCH-4115');
@@ -13344,7 +13364,7 @@ describe('engine contract completion', () => {
         expect(ctx.getSemanticEntryCandidate(zone, { entry: 9, reclaim_level: 8 }, 'BUY', 5)).toBe(1.1007);
         expect(ctx.getSemanticEntryCandidate({ low: 1.1, high: 1.101, price: 1.1004 }, {}, 'BUY', 5)).toBe(1.1004);
         expect(ctx.getSemanticEntryCandidate({ low: 1.1, high: 1.101, execution_model: 'FRESH_RETRACEMENT_LIMIT' },
-            { reclaim_level: 1.1001 }, 'BUY', 5)).toBe(1.1005);
+            { reclaim_level: 1.1001 }, 'BUY', 5)).toBe(1.10097);
         expect(ctx.getAdaptiveEntryCandidates({ low: NaN, high: 1.101 }, 'BUY', 5)).toEqual([]);
     });
 

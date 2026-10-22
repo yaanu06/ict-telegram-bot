@@ -6598,7 +6598,38 @@ function getAdaptiveEntryCandidates(zone, direction, prec) {
     return entry == null ? [] : [entry];
 }
 
-function getSemanticEntryCandidate(zone, strategySetup, direction, prec) {
+// A pending limit should wait at the near boundary of its zone, not at the
+// midpoint. The midpoint forces price to trade through most of the zone before
+// the order exists, which can miss a reversal at the first edge. Keep the
+// buffer small (eight price ticks, capped at 3% of zone width) so the limit is
+// still unequivocally inside the evidenced zone.
+const PENDING_ENTRY_EDGE_BUFFER_TICKS = 8;
+function pendingLimitEdgeEntry({ low, high, direction, prec = 5, currentPrice = null } = {}) {
+    const zoneLow = Number(low);
+    const zoneHigh = Number(high);
+    const side = String(direction || '').toUpperCase();
+    if (!Number.isFinite(zoneLow) || !Number.isFinite(zoneHigh) || zoneHigh < zoneLow
+        || !['BUY', 'SELL'].includes(side)) return null;
+    const tick = 10 ** -Math.max(0, Math.min(12, Number(prec) || 0));
+    const width = zoneHigh - zoneLow;
+    const buffer = Math.min(tick * PENDING_ENTRY_EDGE_BUFFER_TICKS, width * 0.03);
+    let entry = side === 'SELL' ? zoneLow + buffer : zoneHigh - buffer;
+    const current = currentPrice == null || currentPrice === '' ? NaN : Number(currentPrice);
+    if (Number.isFinite(current)) {
+        const sideGap = tick * 0.5;
+        if (side === 'SELL' && !(entry > current + sideGap)) {
+            if (!(zoneHigh > current + sideGap)) return null;
+            entry = zoneHigh;
+        } else if (side === 'BUY' && !(entry < current - sideGap)) {
+            if (!(zoneLow < current - sideGap)) return null;
+            entry = zoneLow;
+        }
+    }
+    entry = Math.min(zoneHigh, Math.max(zoneLow, entry));
+    return ictRound(entry, prec);
+}
+
+function getSemanticEntryCandidate(zone, strategySetup, direction, prec, currentPrice = null) {
     const low = Number(zone.low);
     const high = Number(zone.high);
     if (!Number.isFinite(low) || !Number.isFinite(high) || high < low) return null;
@@ -6606,12 +6637,25 @@ function getSemanticEntryCandidate(zone, strategySetup, direction, prec) {
     const levels = [zone.entry, strategySetup?.execution_entry, strategySetup?.entry, strategySetup?.ai_geometry?.entry,
         model === 'RECLAIM_RETEST' ? strategySetup?.reclaim_level : null,
         zone.semantic_entry, zone.entry_level, zone.price, zone.midpoint, (low + high) / 2];
+    const midpoint = (low + high) / 2;
+    const tick = 10 ** -Math.max(0, Math.min(12, Number(prec) || 0));
+    let explicitEntry = null;
     for (const level of levels) {
         if (typeof level !== 'number' || !Number.isFinite(level) || level < low || level > high) continue;
         const entry = ictRound(level, prec);
-        if (entry >= low && entry <= high) return entry;
+        if (entry >= low && entry <= high) {
+            explicitEntry = explicitEntry == null ? entry : explicitEntry;
+            break;
+        }
     }
-    return null;
+    if (isPendingLimitExecutionModel(model)) {
+        const edgeEntry = pendingLimitEdgeEntry({ low, high, direction, prec, currentPrice });
+        // Preserve deliberate execution evidence that already targets an edge;
+        // only replace the generic midpoint/fallback with the near edge.
+        if (explicitEntry != null && Math.abs(explicitEntry - midpoint) > tick * 0.5 + tick * 1e-6) return explicitEntry;
+        if (edgeEntry != null) return edgeEntry;
+    }
+    return explicitEntry;
 }
 
 function getAuthoritativeStructuralInvalidation(zone, strategySetup = null) {
@@ -7672,7 +7716,8 @@ function selectPendingExecutionGeometry(zone = {}, strategySetup = null, directi
         return { side_eligible: false, relation: 'UNKNOWN', rejection_code: 'NO_VALID_ENTRY_PRICE', region, entry: null, reference: null };
     }
     const effectiveZone = { ...zone, low: region.low, high: region.high };
-    let entry = getSemanticEntryCandidate(effectiveZone, strategySetup, side, prec);
+    let entry = getSemanticEntryCandidate(effectiveZone, strategySetup, side, prec,
+        currentContext.price ?? currentContext.current_price);
     const reference = getPendingLimitReferencePrice(side, currentContext);
     const settings = getMarketSettings(currentContext.pair || pair, currentContext.symbol_metadata || {});
     const tick = Number(settings.pipSize) > 0 ? Number(settings.pipSize) : Math.max(Math.abs(reference.price || 0) * 1e-10, 1e-12);
@@ -8428,7 +8473,8 @@ function deriveMarketMechanicsPendingGeometry(setup = {}, options = {}) {
     const symbolMetadata = options.symbol_metadata || {};
     const settings = getMarketSettings(pairLocal, symbolMetadata);
     const direction = String(setup.direction || '').toUpperCase();
-    const entry = getSemanticEntryCandidate(zone, setup, direction, settings.prec);
+    const entry = getSemanticEntryCandidate(zone, setup, direction, settings.prec,
+        options.current_price ?? options.price);
     const setupTf = setup.setup_timeframe || setup.timeframe || zone.timeframe;
     const data = options.history_cache?.[setupTf] || options.history_cache?.[zone.timeframe] || [];
     const atrData = data.length >= 15 ? data : (options.history_cache?.['1H'] || []);
@@ -14701,7 +14747,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
             const executionData = getClosedHistory(histories, executionTimeframe);
             const executionAtr = executionData.length >= 15 ? atr(executionData, 14) : 0;
             const geometryZone = { ...zone, strategy_setup: setup };
-            const entry = getSemanticEntryCandidate(geometryZone, setup, setup.direction, settings.prec);
+            const entry = getSemanticEntryCandidate(geometryZone, setup, setup.direction, settings.prec, currentPrice);
             const stops = entry == null ? [] : getAdaptiveStopCandidates(geometryZone, setup.direction, entry, executionData, executionZones, executionAtr, settings, settings.prec);
             const stop = stops.find(candidate => Number.isFinite(candidate.stop_loss));
             if (Number.isFinite(entry) && stop) {
@@ -18308,12 +18354,21 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
     const zone = item.execution_zone || item.entry_zone || item.zone || {};
     const direction = String(item.direction || '').toUpperCase();
     const model = item.entry_model || item.model || item.execution_model || null;
-    const entry = manualMarketMechanicsNumber(item.proposed_entry, item.entry, item.entry_price, zone.midpoint, zone.ce);
     const low = manualMarketMechanicsNumber(item.entry_zone_low, zone.low, item.zone_low);
     const high = manualMarketMechanicsNumber(item.entry_zone_high, zone.high, item.zone_high);
     const stop = manualMarketMechanicsNumber(item.proposed_stop, item.stop_loss, item.stop);
     const objective = manualMarketMechanicsNumber(item.proposed_objective, item.tp1, item.take_profit_1);
     const current = manualMarketMechanicsNumber(currentPrice, source.quote?.price, source.current_price);
+    let entry = manualMarketMechanicsNumber(item.proposed_entry, item.entry, item.entry_price, zone.midpoint, zone.ce);
+    if (isPendingLimitExecutionModel(model) && low != null && high != null) {
+        const precision = getPrec(source.pair || source.symbol || pair, source.symbol_metadata || {});
+        const tick = 10 ** -Math.max(0, Math.min(12, precision));
+        const midpoint = (low + high) / 2;
+        if (entry == null || Math.abs(entry - midpoint) <= tick * 0.5 + tick * 1e-6) {
+            const edgeEntry = pendingLimitEdgeEntry({ low, high, direction, prec: precision, currentPrice: current });
+            if (edgeEntry != null) entry = edgeEntry;
+        }
+    }
     const directionalTargets = item.target_candidates || item.targets || (objective == null ? [] : [{ level: objective, source: item.target_source || null }]);
     const riskDistance = entry != null && stop != null ? Math.abs(stop - entry) : null;
     const targetRewardRisk = (Array.isArray(directionalTargets) ? directionalTargets : [])
