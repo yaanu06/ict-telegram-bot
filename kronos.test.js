@@ -70,12 +70,11 @@ describe('official Kronos adapter contract', () => {
         expect(key).toContain('NeoQuasar/Kronos-small|400|12|10|42');
     });
 
-    test('RAW instructions describe Kronos as confluence, not a probability or hard veto', () => {
+    test('RAW instructions disable deterministic confluence and require the ACTION contract', () => {
         const source = fs.readFileSync(path.join(__dirname, 'script.js'), 'utf8');
-        expect(source).toContain('KRONOS_TP1_PATH_SUPPORT');
-        expect(source).toContain('not calibrated probabilities');
-        expect(source).toContain('conflict alone is not an automatic NO_TRADE veto');
-        expect(source).toContain('======== KRONOS FORECAST ========');
+        expect(source).toContain('DETERMINISTIC_POI_ENGINE=DISABLED');
+        expect(source).toContain('CANDIDATE_LIST_ENGINE=DISABLED');
+        expect(source).toContain('=== OUTPUT CONTRACT ===');
         expect(source).toContain('ACTION: BUY_LIMIT | SELL_LIMIT | NO_TRADE');
     });
 });
