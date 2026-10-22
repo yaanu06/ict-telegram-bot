@@ -6335,6 +6335,76 @@ describe('RAW_MARKET_ANALYSIS experimental packet', () => {
         expect(text).not.toContain('three distinct remaining evidence-supported targets before returning a pending limit');
     });
 
+    it('emits raw-only CSV candles and Ghost Machine discovery instructions in RAW_CANDLE_AI mode', () => {
+        const replay = makeReplay(true, 'XAU/USD');
+        const asOf = Date.parse('2026-10-21T04:00:00Z');
+        const candle = (t, o, h, l, c, v = 1000) => ({ t: new Date(t).toISOString(), o, h, l, c, v, is_closed: true });
+        const history15 = Array.from({ length: 60 }, (_, index) => {
+            const t = asOf - (60 - index) * 15 * 60000;
+            return candle(t, 4100 + index * 0.1, 4102 + index * 0.1, 4099 + index * 0.1, 4101 + index * 0.1);
+        });
+        history15[50] = candle(asOf - 9 * 15 * 60000, 4114, 4120, 4112, 4118);
+        history15[55] = candle(asOf - 4 * 15 * 60000, 4114, 4120, 4112, 4118);
+        history15[56] = candle(asOf - 3 * 15 * 60000, 4114, 4121, 4110, 4114);
+        history15[57] = candle(asOf - 2 * 15 * 60000, 4112, 4115, 4108, 4110);
+        history15[58] = candle(asOf - 1 * 15 * 60000, 4109, 4112, 4106, 4108);
+        history15[59] = candle(asOf, 4108, 4111, 4105, 4107);
+        const history1H = Array.from({ length: 60 }, (_, index) => {
+            const t = asOf - (60 - index) * 3600000;
+            return candle(t, 4100 + index * 0.1, 4102 + index * 0.1, 4099 + index * 0.1, 4101 + index * 0.1);
+        });
+        const history5M = Array.from({ length: 60 }, (_, index) => {
+            const t = asOf - (60 - index) * 5 * 60000;
+            return candle(t, 4100 + index * 0.05, 4101 + index * 0.05, 4099 + index * 0.05, 4100.5 + index * 0.05);
+        });
+        replay.strategy_mode = 'RAW_CANDLE_AI';
+        replay.market_context = { strategy_mode: 'RAW_CANDLE_AI' };
+        replay.scan_as_of = '2026-10-21T04:00:00Z';
+        replay.quote = { price: 4107, quote_time: '2026-10-21T04:00:00Z', symbol_metadata: { asset_class: 'METAL', price_precision: 2 } };
+        replay.history = {
+            '1D': Array.from({ length: 60 }, (_, index) => candle(Date.parse('2026-08-01T00:00:00Z') + index * 86400000, 4050 + index, 4070 + index, 4040 + index, 4060 + index)),
+            '1H': history1H, '15M': history15, '5M': history5M
+        };
+
+        const text = getContext().buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('=== AI TRADING PACKET: RAW CANDLE AI ===');
+        expect(text).toContain('V2_STRATEGY_MODE=RAW_CANDLE_AI');
+        expect(text).toContain('DETERMINISTIC_POI_ENGINE=DISABLED');
+        expect(text).toContain('DETERMINISTIC_FVG_ENGINE=DISABLED');
+        expect(text).toContain('DETERMINISTIC_ZONE_ENGINE=DISABLED');
+        expect(text).toContain('CANDIDATE_LIST_ENGINE=DISABLED');
+        expect(text).toContain('DAILY_BIAS=');
+        expect(text).toContain('CURRENT PRICE: 4107.00');
+        expect(text.indexOf('======== TIMEFRAME: 1h ========')).toBeLessThan(text.indexOf('======== TIMEFRAME: 15m ========'));
+        expect(text.indexOf('======== TIMEFRAME: 15m ========')).toBeLessThan(text.indexOf('======== TIMEFRAME: 5m ========'));
+        expect(text).toContain('FORMAT: time,open,high,low,close,volume');
+        expect(text).toContain(',4121.00,4110.00,4114.00,');
+        const block15 = text.split('======== TIMEFRAME: 15m ========')[1].split('======== END 15m ========')[0]
+            .split(/\r?\n/).filter(line => /^\d{4}-\d\d-\d\dT/.test(line));
+        expect(block15).toHaveLength(50);
+        expect(text).toContain('=== GHOST MACHINE STRATEGY RULES ===');
+        expect(text).toContain('SWING HIGHS AND LOWS');
+        expect(text).toContain('LIQUIDITY SWEEP');
+        expect(text).toContain('FAIR VALUE GAP');
+        expect(text).toContain('ORDER BLOCK');
+        expect(text).toContain('Analyze the raw candles independently.');
+        expect(text).toContain('Identify the highest-quality pending limit order');
+        expect(text).toContain('Ensure the entry is on the correct side of the current price');
+        expect(text).toContain('Place the Stop Loss behind a clear structural swing high/low.');
+        expect(text).toContain('Place the Take Profit at the next major opposing liquidity pool.');
+        expect(text).toContain('Output the exact ACTION contract with Entry, SL, TP1, TP2, TP3 and REASON');
+        expect(text).toContain('=== OUTPUT CONTRACT ===');
+        expect(text).toContain('ACTION: BUY_LIMIT | SELL_LIMIT | NO_TRADE');
+        expect(text).toContain('REASON: <raw-candle evidence');
+        expect(text).not.toContain('=== DETERMINISTIC FVG AUDIT ===');
+        expect(text).not.toContain('=== DETERMINISTIC SUPPLY DEMAND AUDIT ===');
+        expect(text).not.toContain('=== HIGH PROBABILITY ZONES ===');
+        expect(text).not.toContain('=== CURRENT OPPORTUNITIES ===');
+        expect(text).not.toContain('=== MARKET PLAN / LIVE AUTHORITY ===');
+        expect(text).not.toContain('CURRENT_OPPORTUNITY:');
+        expect(text).not.toContain('deterministic CE entry');
+    });
+
     it('permits evidence-backed multi-model setup confluence without forcing extra labels', () => {
         const replay = makeReplay(true, 'XAU/USD');
         const text = getContext().buildRawTextMarketAnalysisPacket({ replay });

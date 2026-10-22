@@ -37,6 +37,9 @@ const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 // window override to AUTO_AI only when re-enabling the existing automatic
 // analyst/selector workflow for controlled testing or a future rollout.
 const DEFAULT_ANALYSIS_MODE = 'MANUAL_EXTERNAL_AI';
+const STRATEGY_MODE_STORAGE_KEY = 'ict_strategy_mode';
+const STRATEGY_MODE_DETERMINISTIC = 'MARKET_MECHANICS';
+const STRATEGY_MODE_RAW_CANDLE_AI = 'RAW_CANDLE_AI';
 const REQUIRED_MARKET_SNAPSHOT_TIMEFRAMES = Object.freeze(['1D', '4H', '1H', '15M', '5M']);
 const MARKET_SNAPSHOT_MINIMUM_CANDLES = Object.freeze({ '1D': 50, '4H': 50, '1H': 50, '15M': 20, '5M': 20 });
 let GITHUB_PAT = '', GITHUB_REPO = 'yaanu06/ict-telegram-bot';
@@ -1061,12 +1064,55 @@ if(document.readyState === 'loading') {
     startApp();
 }
 
+function strategyModeSelectionValue(mode = configuredStrategyMode()) {
+    return normalizeStrategyMode(mode) === STRATEGY_MODE_RAW_CANDLE_AI
+        ? STRATEGY_MODE_RAW_CANDLE_AI : 'DETERMINISTIC';
+}
+
+function applyStrategyModeSelection(value, { persist = true } = {}) {
+    const mode = normalizeStrategyMode(value);
+    if (typeof window !== 'undefined') window.__V2_STRATEGY_MODE__ = mode;
+    if (typeof globalThis !== 'undefined') globalThis.__V2_STRATEGY_MODE__ = mode;
+    if (persist) {
+        try {
+            localStorage.setItem(STRATEGY_MODE_STORAGE_KEY, mode);
+        } catch (_) {
+            // Storage can be unavailable in a restricted WebView.
+        }
+    }
+    const select = typeof document !== 'undefined' ? document.getElementById('strategyModeSelect') : null;
+    if (select) select.value = strategyModeSelectionValue(mode);
+    const hint = typeof document !== 'undefined' ? document.getElementById('strategyModeHint') : null;
+    if (hint) {
+        hint.textContent = mode === STRATEGY_MODE_RAW_CANDLE_AI
+            ? 'DeepSeek reads the raw 1H/15M/5M closed candles; deterministic POIs/FVGs/zones are disabled in the prompt.'
+            : 'Deterministic Market Mechanics remains the live authority; the raw-candle reader is disabled.';
+    }
+    return mode;
+}
+
+function initStrategyModeToggle() {
+    const select = typeof document !== 'undefined' ? document.getElementById('strategyModeSelect') : null;
+    if (!select) return;
+    applyStrategyModeSelection(configuredStrategyMode(), { persist: false });
+    select.addEventListener('change', event => {
+        const previous = configuredStrategyMode();
+        const next = applyStrategyModeSelection(event.target.value);
+        if (previous !== next) {
+            showNotif(next === STRATEGY_MODE_RAW_CANDLE_AI
+                ? 'RAW CANDLE AI enabled - run a new scan to rebuild the packet'
+                : 'DETERMINISTIC Market Mechanics enabled - run a new scan', 'info');
+        }
+    });
+}
+
 function init() {
     console.log('📋 Initializing...');
     updateTime();
     setInterval(updateTime, 1000);
 
     const el = (id) => document.getElementById(id);
+    initStrategyModeToggle();
     if(el('analyzeBtn')) el('analyzeBtn').addEventListener('click', runAutoScan);
     if(el('executeBtn')) el('executeBtn').addEventListener('click', handleLimit);
     if(el('cancelLimitBtn')) el('cancelLimitBtn').addEventListener('click', cancelLimit);
@@ -15434,6 +15480,7 @@ function filterLiveStrategySetupsForAuthority(setups = [], source = {}) {
 
 function normalizedAuthorityMode(value) {
     const mode = String(value || '').toUpperCase();
+    if (mode === 'RAW_CANDLE_AI') return 'RAW_CANDLE_AI';
     if (mode === 'MARKET_MECHANICS') return 'MARKET_MECHANICS';
     if (mode === 'MODEL_ROUTER' || mode === 'MODEL_ROUTER_LEGACY') return 'MODEL_ROUTER';
     if (mode === 'LEGACY' || mode === 'LEGACY_FVG') return 'LEGACY';
@@ -17970,6 +18017,29 @@ const MARKET_MECHANICS_RAW_TEXT_OUTPUT_CONTRACT = [
     'If every active opportunity fails formation, side, stop, target or touch verification, return ACTION: NO_TRADE with SETUP: NONE and zero geometry.'
 ].join('\n');
 
+const RAW_CANDLE_AI_TIMEFRAMES = Object.freeze(['1H', '15M', '5M']);
+const RAW_CANDLE_AI_CANDLE_LIMIT = 50;
+const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
+    '=== OUTPUT CONTRACT ===',
+    'Reply ONLY with the ACTION contract. No prose before or after it. No markdown fences.',
+    '',
+    'ACTION: BUY_LIMIT | SELL_LIMIT | NO_TRADE',
+    'SETUP: <OB | FVG | SUPPLY | DEMAND | FLIP | BREAKER | SWEEP | combined with +, or NONE>',
+    'ENTRY: <price>',
+    'STOP_LOSS: <price>',
+    'TP1: <price>',
+    'TP2: <price>',
+    'TP3: <price>',
+    'CONFIDENCE: <integer 0-100>%',
+    'TIMEFRAME_USED: <1h | 15m | 5m | NONE>',
+    'REASON: <raw-candle evidence: swing, sweep, OB/FVG, invalidation and liquidity target>',
+    '',
+    'BUY_LIMIT requires ENTRY < CURRENT PRICE, STOP_LOSS < ENTRY and ENTRY < TP1 < TP2 < TP3.',
+    'SELL_LIMIT requires ENTRY > CURRENT PRICE, STOP_LOSS > ENTRY and ENTRY > TP1 > TP2 > TP3.',
+    'Every price must come from the supplied CSV candles and the Ghost Machine rules. Never invent a level.',
+    'Return ACTION: NO_TRADE, SETUP: NONE, ENTRY: 0, STOP_LOSS: 0, TP1: 0, TP2: 0, TP3: 0, CONFIDENCE: 0% and TIMEFRAME_USED: NONE when no valid pending limit exists.'
+].join('\n');
+
 const MANUAL_MARKET_MECHANICS_TERMINAL_STATES = new Set([
     'EXPIRED', 'CONSUMED', 'FILLED', 'INVALIDATED', 'DELIVERED', 'MISSED',
     'BLOCKED_PENDING_SIDE', 'INITIAL_PENDING_SIDE_INVALID'
@@ -19914,15 +19984,43 @@ function rawTextExecutionSupport(candidateRecord, blocks = [], crtRecords = [], 
 // execution zone created after that model's confirmation may be admitted.
 // This is a V2 authority layer, not a new strategy or a score replacement.
 
-function rawTextV2StrategyMode(strategyAudits = {}) {
-    const configured = strategyAudits.strategy_mode
-        || (typeof window !== 'undefined' ? window.__V2_STRATEGY_MODE__ : null)
-        || (typeof globalThis !== 'undefined' ? globalThis.__V2_STRATEGY_MODE__ : null)
-        || 'LEGACY';
-    const mode = String(configured).toUpperCase();
-    if (mode === 'MARKET_MECHANICS') return 'MARKET_MECHANICS';
+function normalizeStrategyMode(value) {
+    const mode = String(value || '').toUpperCase();
+    if (mode === STRATEGY_MODE_RAW_CANDLE_AI) return STRATEGY_MODE_RAW_CANDLE_AI;
+    if (mode === STRATEGY_MODE_DETERMINISTIC || mode === 'DETERMINISTIC') return STRATEGY_MODE_DETERMINISTIC;
     if (mode === 'MODEL_ROUTER' || mode === 'MODEL_ROUTER_LEGACY') return 'MODEL_ROUTER';
     return mode === 'LEGACY' ? 'LEGACY' : 'LEGACY';
+}
+
+function configuredStrategyMode() {
+    let stored = null;
+    try {
+        stored = typeof localStorage !== 'undefined' ? localStorage.getItem(STRATEGY_MODE_STORAGE_KEY) : null;
+    } catch (_) {
+        stored = null;
+    }
+    return normalizeStrategyMode(
+        (typeof window !== 'undefined' ? window.__V2_STRATEGY_MODE__ : null)
+        || (typeof globalThis !== 'undefined' ? globalThis.__V2_STRATEGY_MODE__ : null)
+        || stored
+        || 'LEGACY'
+    );
+}
+
+function rawTextV2StrategyMode(strategyAudits = {}) {
+    return normalizeStrategyMode(strategyAudits.strategy_mode
+        || strategyAudits.strategyMode
+        || configuredStrategyMode());
+}
+
+function isRawCandleAiMode(source = {}) {
+    if (configuredStrategyMode() === STRATEGY_MODE_RAW_CANDLE_AI) return true;
+    const mode = source.strategy_mode
+        || source.strategyMode
+        || source.AUTHORITY_MODE
+        || source.market_context?.strategy_mode
+        || source.market_mechanics?.authority_mode;
+    return normalizeStrategyMode(mode) === STRATEGY_MODE_RAW_CANDLE_AI;
 }
 
 function rawTextModelEventTime(record = {}) {
@@ -20931,7 +21029,132 @@ function buildRawTextFvgAudit(blocks = [], currentPrice = null, precision = 2, s
     return records;
 }
 
+function buildRawCandleAiDailyBias(candles = []) {
+    const last = candles.at(-1) || null;
+    const previous = candles.at(-2) || null;
+    if (!last) return { bias: 'NEUTRAL', reason: 'NO_CLOSED_1D_CANDLES', last: null, previous: null };
+    const open = Number(last.o);
+    const close = Number(last.c);
+    const priorClose = previous ? Number(previous.c) : null;
+    let bias = close > open ? 'BULLISH' : close < open ? 'BEARISH' : 'NEUTRAL';
+    if (bias === 'BULLISH' && Number.isFinite(priorClose) && close < priorClose) bias = 'NEUTRAL';
+    if (bias === 'BEARISH' && Number.isFinite(priorClose) && close > priorClose) bias = 'NEUTRAL';
+    return {
+        bias,
+        reason: bias === 'NEUTRAL' ? 'MIXED_BODY_AND_PRIOR_CLOSE' : 'LAST_CLOSED_DAILY_BODY_AND_PRIOR_CLOSE',
+        last, previous
+    };
+}
+
+function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), precision = 2) {
+    const candles = rawTextPacketClosedCandles(source, timeframe, asOfMs).slice(-RAW_CANDLE_AI_CANDLE_LIMIT);
+    const lines = [
+        '======== TIMEFRAME: ' + timeframe.toLowerCase() + ' ========',
+        'CANDLE_COUNT=' + String(candles.length),
+        'CANDLE_POLICY=CLOSED_ONLY',
+        'FORMAT: time,open,high,low,close,volume'
+    ];
+    for (const candle of candles) {
+        const timestamp = rawTextPacketTimestamp(candle.t ?? candle.time ?? candle.timestamp);
+        const volumeValue = Number(candle.v ?? candle.volume);
+        lines.push([
+            Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : '',
+            rawTextPacketFormatNumber(candle.o, precision),
+            rawTextPacketFormatNumber(candle.h, precision),
+            rawTextPacketFormatNumber(candle.l, precision),
+            rawTextPacketFormatNumber(candle.c, precision),
+            Number.isFinite(volumeValue) ? String(volumeValue) : ''
+        ].join(','));
+    }
+    lines.push('======== END ' + timeframe.toLowerCase() + ' ========');
+    return lines;
+}
+
+function buildRawCandleAiGhostRules() {
+    return [
+        '=== GHOST MACHINE STRATEGY RULES ===',
+        'You are the Ghost Machine. Read the raw closed candles yourself. No deterministic POI, FVG, order-block, MSNR, supply/demand, zone or candidate list is supplied or authoritative.',
+        'UNIVERSE: use only the CSV candles in this packet. The 1H, 15M and 5M blocks each contain the last 50 closed candles. Never invent a candle, price, timestamp, volume or level.',
+        'MACRO CONTEXT: use DAILY_BIAS and CURRENT_PRICE only as context. The 1H/15M/5M candle data owns structure, formation and execution.',
+        '1. SWING HIGHS AND LOWS: a swing high is a candle whose high is greater than the highs of the candles immediately before and after it. A swing low is a candle whose low is lower than the lows of the candles immediately before and after it. Prefer confirmed 3-candle pivots.',
+        '2. LIQUIDITY SWEEP: a sweep occurs when a wick trades beyond a prior swing high, swing low, equal-high cluster or equal-low cluster by at least one price increment and then closes back inside the prior structure. The rejection close, not the wick alone, proves the sweep.',
+        '3. FAIR VALUE GAP: use three chronological same-timeframe candles. Bullish FVG: candle 1 high < candle 3 low; the gap is candle 1 high to candle 3 low. Bearish FVG: candle 1 low > candle 3 high; the gap is candle 3 high to candle 1 low. The middle candle must show displacement.',
+        '4. ORDER BLOCK: identify the last opposite-direction candle before a displacement leg that breaks a swing or creates the FVG. For a bullish OB use the last bearish candle before the up-displacement; for a bearish OB use the last bullish candle before the down-displacement. The OB zone is the source candle body or full high-low range used by the displacement.',
+        '5. MARKET STRUCTURE: identify BOS, MSS/CHoCH and displacement from closed-candle breaks. A sweep plus rejection plus displacement in the opposite direction is stronger than a sweep alone.',
+        '6. CONFLUENCE: prefer a setup where a liquidity sweep, an OB or FVG, and the higher-timeframe daily bias agree. Do not force a trade when the raw candles conflict.',
+        '7. PENDING LIMIT SIDE: for BUY_LIMIT, ENTRY must be below CURRENT_PRICE and the setup should be a demand OB/FVG or bullish sweep-reclaim. For SELL_LIMIT, ENTRY must be above CURRENT_PRICE and the setup should be a supply OB/FVG or bearish sweep-rejection.',
+        '8. STOP LOSS: place STOP_LOSS behind a clear structural swing low for BUY or swing high for SELL, beyond the OB/FVG far edge and beyond the wick that created the sweep. Do not place the stop inside the noise of the source candle.',
+        '9. TAKE PROFIT: use the next major opposing liquidity pool. TP1 is the nearest opposing pool, TP2 is the next pool, and TP3 is the next major pool. Targets must be ahead of the entry and must remain unused in the supplied history.',
+        '10. RISK/REWARD: calculate risk and reward from the exact entry, stop and targets. Prefer at least 1.5R to TP1, but do not move the structural stop or invent a target merely to improve RR.',
+        '11. ENTRY PRICE: choose a price inside the OB/FVG or at the sweep-reclaim boundary. Do not use a price outside the identified zone. A pending limit may wait for a retracement; it does not need current price to touch the zone.',
+        '12. NO_TRADE: return NO_TRADE when the raw candles do not contain a clear swing, sweep, OB/FVG, structural stop and opposing liquidity target in the same directional thesis.',
+        '13. EVIDENCE: REASON must name the source timestamps and levels for the sweep, OB/FVG, stop and target. Do not expose chain-of-thought; summarize the factual evidence.',
+        '14. OUTPUT: return exactly the ACTION contract below. Do not return JSON, Markdown, prose outside the contract or a candidate ID.'
+    ];
+}
+
+function buildRawCandleAiInstruction() {
+    return [
+        '=== RAW CANDLE AI REVIEW INSTRUCTION ===',
+        'Analyze the raw candles independently. The deterministic engine is disabled in this mode and supplies no POI, FVG, zone, candidate or entry list.',
+        'Identify the highest-quality pending limit order (Buy or Sell).',
+        'Identify the highest-quality pending limit order, BUY or SELL, from your own reading of the 1H, 15M and 5M closed candles.',
+        'Ensure the entry is on the correct side of the current price: BUY_LIMIT below current price, SELL_LIMIT above current price.',
+        'Place the Stop Loss behind a clear structural swing high/low. Keep it beyond the source OB/FVG boundary.',
+        'Place the Take Profit at the next major opposing liquidity pool. Use the following opposing pools for TP2 and TP3.',
+        'Calculate risk/reward from the exact values you return. Do not use any hidden deterministic level.',
+        'If the raw data supports both directions, choose the setup with the clearest sweep, displacement, OB/FVG and liquidity path.',
+        'If no qualifying setup exists, return ACTION: NO_TRADE with the zero-geometry contract.',
+        'Output the exact ACTION contract with Entry, SL, TP1, TP2, TP3 and REASON based entirely on your own reading of the raw data.',
+        'Output the exact ACTION contract (Entry, SL, TP1, TP2, TP3, REASON) based entirely on its own reading of the raw data.'
+    ];
+}
+
+function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asOfMs = Date.now(), quote = {} } = {}) {
+    const dailyCandles = rawTextPacketClosedCandles(source, '1D', asOfMs);
+    const dailyBias = buildRawCandleAiDailyBias(dailyCandles);
+    const daily = dailyBias.last;
+    const lines = [
+        '=== AI TRADING PACKET: RAW CANDLE AI ===',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V1',
+        'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
+        'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
+        'DETERMINISTIC_POI_ENGINE=DISABLED',
+        'DETERMINISTIC_FVG_ENGINE=DISABLED',
+        'DETERMINISTIC_ZONE_ENGINE=DISABLED',
+        'CANDIDATE_LIST_ENGINE=DISABLED',
+        'SYMBOL: ' + symbol,
+        'CURRENT PRICE: ' + rawTextPacketFormatNumber(price, precision),
+        'QUOTE TIME: ' + String(quote.quote_time || quote.current_price_time || 'UNKNOWN'),
+        'AS OF: ' + new Date(asOfMs).toISOString(),
+        'LAST CLOSED CANDLE TIME: ' + (daily ? new Date(rawTextPacketTimestamp(daily.t)).toISOString() : ''),
+        'GENERATED AT: ' + new Date().toISOString(),
+        '',
+        '=== MACRO CONTEXT ===',
+        'DAILY_BIAS=' + dailyBias.bias,
+        'DAILY_BIAS_METHOD=' + dailyBias.reason,
+        'DAILY_LAST_OPEN=' + (daily ? rawTextPacketFormatNumber(daily.o, precision) : 'NONE'),
+        'DAILY_LAST_HIGH=' + (daily ? rawTextPacketFormatNumber(daily.h, precision) : 'NONE'),
+        'DAILY_LAST_LOW=' + (daily ? rawTextPacketFormatNumber(daily.l, precision) : 'NONE'),
+        'DAILY_LAST_CLOSE=' + (daily ? rawTextPacketFormatNumber(daily.c, precision) : 'NONE'),
+        'CURRENT_PRICE=' + rawTextPacketFormatNumber(price, precision),
+        'RAW_TIMEFRAMES=1H,15M,5M',
+        'CANDLE_LIMIT_PER_TIMEFRAME=' + String(RAW_CANDLE_AI_CANDLE_LIMIT),
+        ''
+    ];
+    for (const timeframe of RAW_CANDLE_AI_TIMEFRAMES) {
+        lines.push(...buildRawCandleAiCsvLines(source, timeframe, asOfMs, precision), '');
+    }
+    lines.push(...buildRawCandleAiGhostRules(), '');
+    lines.push(...buildRawCandleAiInstruction(), '');
+    lines.push(RAW_CANDLE_AI_OUTPUT_CONTRACT);
+    return lines.join('\n');
+}
+
 function buildRawTextMarketAnalysisInstruction(strategyModeOverride = null) {
+    if (normalizeStrategyMode(strategyModeOverride || rawTextV2StrategyMode()) === STRATEGY_MODE_RAW_CANDLE_AI) {
+        return buildRawCandleAiInstruction().join('\n');
+    }
     if (String(strategyModeOverride || rawTextV2StrategyMode()).toUpperCase() === 'MARKET_MECHANICS') {
         return [
             'MARKET MECHANICS MANUAL DEEPSEEK REVIEW CONTRACT',
@@ -21017,6 +21240,9 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     // quote, never the primary current-price source.
     const price = Number.isFinite(Number(quote.current_price)) ? Number(quote.current_price) : latestSmallest?.c;
     const precision = rawTextPacketPrecision(symbol, metadata, price);
+    if (isRawCandleAiMode(source)) {
+        return buildRawCandleAiPacket({ source, symbol, price, precision, asOfMs, quote });
+    }
     const generatedAt = new Date().toISOString();
     const marketMechanicsMode = isMarketMechanicsMode(source);
     const packetCandidateSources = marketMechanicsMode ? [
@@ -21661,14 +21887,16 @@ function copyRawMarketAnalysisPacket() {
         showNotif('Run a current-symbol analysis first', 'warning');
         return;
     }
-    const packet = buildRawMarketAnalysisPacket({ signal: artifact.signal, replay: artifact.replay });
-    if (packet.snapshot_status?.complete !== true || packet.snapshot_status?.analysis_allowed !== true || !packet.packet_identity?.snapshot_id) {
-        showNotif('RAW market snapshot is incomplete or unavailable', 'warning');
-        return;
-    }
-    if (packet.packet_identity.pair !== activePair) {
-        showNotif('RAW packet symbol does not match the current symbol', 'warning');
-        return;
+    if (!isRawCandleAiMode(artifact.replay)) {
+        const packet = buildRawMarketAnalysisPacket({ signal: artifact.signal, replay: artifact.replay });
+        if (packet.snapshot_status?.complete !== true || packet.snapshot_status?.analysis_allowed !== true || !packet.packet_identity?.snapshot_id) {
+            showNotif('RAW market snapshot is incomplete or unavailable', 'warning');
+            return;
+        }
+        if (packet.packet_identity.pair !== activePair) {
+            showNotif('RAW packet symbol does not match the current symbol', 'warning');
+            return;
+        }
     }
     const textPacket = buildRawTextMarketAnalysisPacket({ signal: artifact.signal, replay: artifact.replay });
     writePlainTextToClipboard(textPacket).then(copied => {

@@ -38,6 +38,16 @@
             <button id="updateKeysBtn" class="settings-btn">⚙️ Update API Keys</button>
         </div>
 
+        <!-- Strategy Mode -->
+        <div class="section">
+            <h3>dY"? Strategy Mode</h3>
+            <select id="strategyModeSelect" class="input-field">
+                <option value="DETERMINISTIC">DETERMINISTIC - Market Mechanics</option>
+                <option value="RAW_CANDLE_AI">RAW_CANDLE_AI - Ghost Machine</option>
+            </select>
+            <p id="strategyModeHint" class="subtitle" style="margin-top:8px; text-align:left;">Deterministic Market Mechanics remains the live authority; the raw-candle reader is disabled.</p>
+        </div>
+
         <!-- Market Selection -->
         <div class="section">
             <h3>🔄 Market</h3>
@@ -157,7 +167,13 @@
 <script>
 window.__ICT_PROXY_BASE_URL__ = 'https://ict-telegram-bot-temf.onrender.com';
 window.__ICT_APP_BUILD_ID__ = '__ICT_BUILD_VERSION__';
-window.__V2_STRATEGY_MODE__ = 'MARKET_MECHANICS';
+window.__V2_STRATEGY_MODE__ = (() => {
+    try {
+        return localStorage.getItem('ict_strategy_mode') === 'RAW_CANDLE_AI' ? 'RAW_CANDLE_AI' : 'MARKET_MECHANICS';
+    } catch (_) {
+        return 'MARKET_MECHANICS';
+    }
+})();
 </script>
 <script src="kronos-client.js?v=__ICT_BUILD_VERSION__"></script>
 <script src="script.js?v=__ICT_BUILD_VERSION__"></script>
