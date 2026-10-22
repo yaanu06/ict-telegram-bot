@@ -741,6 +741,20 @@ describe('market-thesis opportunity invariants', () => {
         expect(result.state).toBe('TRADE_READY');
         expect(result.primary_opportunity.id).toBe(selected.id);
         expect(result.primary_opportunity.entry_price).toBe(selected.entry);
+        const filteredSelected = {
+            ...selected, id: 'deterministic-filtered-choice',
+            still_actionable_today: false, entry_reachable_today: false,
+            confidence: 0, quality: { final_confidence: 0, quality_breakdown: { quality_band: 'LOW' } }
+        };
+        const bypass = ctx.buildTodayOpportunity({
+            pair: 'XAU/USD', currentPrice: 100, marketOpen: true,
+            validCandidates: [unselected, filteredSelected],
+            deterministicLiveCandidates: [unselected, filteredSelected],
+            deterministicSelectedId: filteredSelected.id
+        });
+        expect(bypass.state).toBe('TRADE_READY');
+        expect(bypass.selected_candidate_id).toBe(filteredSelected.id);
+        expect(bypass.primary_opportunity.id).toBe(filteredSelected.id);
         const noTrade = ctx.buildTodayOpportunity({
             pair: 'XAU/USD', currentPrice: 100, marketOpen: true,
             validCandidates: [unselected, selected],
@@ -5844,6 +5858,46 @@ describe('deterministic viability selection', () => {
         expect(row.suggested_entry).toBeGreaterThan(4141.92);
         expect(row.suggested_entry).toBeLessThanOrEqual(4144.48);
         expect(row.pending_side_eligible).toBe('YES');
+    });
+
+    test('EUR/USD selected pending limit survives unrelated invalid execution authority', () => {
+        const ctx = loadStrategyContext({ strategyMode: 'MARKET_MECHANICS' });
+        const eurusdId = '1H-BUY-MSNR-1.12279-1.12322';
+        const eurusd = manualOpportunity({
+            id: eurusdId, entry: 1.12321, stop: 1.12122, objective: 1.12767, timeframe: '1H', model: 'MSNR',
+            overrides: {
+                direction: 'BUY', entry_zone_low: 1.12279, entry_zone_high: 1.12322,
+                target_candidates: [
+                    { level: 1.12645, source: 'SELL_SIDE_LIQUIDITY' },
+                    { level: 1.12767, source: 'SELL_SIDE_LIQUIDITY' }
+                ]
+            }
+        });
+        const rogue = {
+            id: 'EUR-UNRELATED-INVALID-AUTHORITY', direction: 'BUY', timeframe: '3M',
+            entry_model: 'MARKET_SHIFT', execution_model: 'PENDING_LIMIT',
+            execution_zone: { id: 'ROGUE-ZONE', low: 1.1228, high: 1.1232 },
+            entry: 1.1230, stop_loss: 1.1240, tp1: 1.1180,
+            selectable: true, trade_qualified: true, TRADE_QUALIFIED: 'YES', MODEL_QUALIFIED: 'YES',
+            setup_formation_confirmed: true, market_mechanics_verified: true, structural_stop_valid: 'NO'
+        };
+        const replay = selectionReplay({
+            price: 1.12499, high: 1.12608, low: 1.12137, atr: 0.003,
+            rows: [eurusd],
+            overrides: {
+                pair: 'EUR/USD',
+                market_plan: { valid_context: true, market_plan_complete: true, direction: 'BUY', primary_poi: { id: 'EUR-POI' } },
+                valid_candidates: [rogue]
+            }
+        });
+        const text = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(text).toContain('AUTHORITY_INVARIANTS=PASS');
+        expect(text).not.toContain('AUTHORITY_INVARIANT_FAILED=');
+        expect(text).toContain('LIVE_CANDIDATE_COUNT=1');
+        expect(text).toContain('SELECTABLE_CANDIDATE_IDS=' + eurusdId);
+        expect(text).toContain('DETERMINISTIC_SELECTED_ID=' + eurusdId);
+        expect(text).toContain('LIVE_CANDIDATE OPPORTUNITY_ID=' + eurusdId);
+        expect(text).not.toContain('LIVE_CANDIDATE OPPORTUNITY_ID=' + rogue.id);
     });
 
     const replayOriginalPacket = () => {

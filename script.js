@@ -14527,7 +14527,7 @@ function buildTodayOpportunity({ pair: pairLocal = pair, currentPrice, scanAsOfM
     }
     let bestCandidate = null;
     if (requestedSelectionId) {
-        bestCandidate = tradeReadyCandidates.find(candidate => String(candidate.id) === requestedSelectionId) || null;
+        bestCandidate = (executionCandidates || []).find(candidate => String(candidate.id) === requestedSelectionId) || null;
         if (!bestCandidate) {
             state.reason_code = 'DETERMINISTIC_SELECTED_CANDIDATE_NOT_EXECUTABLE';
             state.reason = 'The deterministic selected candidate is not present in the executable candidate set.';
@@ -18251,25 +18251,32 @@ function resolveMarketMechanicsExecutionSelection({ source = {}, candidates = nu
     let effectiveAuthority = attemptAuthority;
     const eligibleManual = manualOpportunities.filter(marketMechanicsSelectionEligible);
     if (eligibleManual.length && attemptAuthority.invariants !== 'PASS') {
+        const isYes = value => value === true || String(value ?? '').toUpperCase() === 'YES';
         const failingIds = new Set();
         for (const candidate of baseCandidates) {
             const id = candidate?.id || candidate?.candidate_id;
-            if (!id || !claimsMarketMechanicsAuthority(candidate)) continue;
+            if (!id) continue;
+            const modelQualified = candidate.MODEL_QUALIFIED ?? candidate.model_qualified;
+            const tradeQualified = candidate.TRADE_QUALIFIED ?? candidate.trade_qualified;
+            if (!claimsMarketMechanicsAuthority(candidate) && !(isYes(modelQualified) && isYes(tradeQualified))) continue;
             const normalized = normalizeMarketMechanicsAuthority(candidate, selectionSource, 'LIVE');
             if (normalized.CANDIDATE_AUTHORITY !== 'LIVE') failingIds.add(String(id));
         }
-        const repairs = [];
-        for (const row of eligibleManual) {
-            const ids = [row.opportunity_id, row.execution_poi, row.source_setup_id]
-                .filter(Boolean).map(value => String(value));
-            if (!ids.some(id => failingIds.has(id))) continue;
-            const execution = marketMechanicsExecutionCandidateFromOpportunity(
-                row, selectionSource, selectionSource.current_price
-            );
-            if (execution) repairs.push(execution);
-        }
-        if (repairs.length) {
-            let repaired = baseCandidates;
+        if (failingIds.size) {
+            const repairs = [];
+            for (const row of eligibleManual) {
+                const ids = [row.opportunity_id, row.execution_poi, row.source_setup_id]
+                    .filter(Boolean).map(value => String(value));
+                if (!ids.some(id => failingIds.has(id))) continue;
+                const execution = marketMechanicsExecutionCandidateFromOpportunity(
+                    row, selectionSource, selectionSource.current_price
+                );
+                if (execution) repairs.push(execution);
+            }
+            let repaired = baseCandidates.filter(candidate => {
+                const id = candidate?.id || candidate?.candidate_id;
+                return !id || !failingIds.has(String(id));
+            });
             for (const execution of repairs) {
                 repaired = mergeMarketMechanicsExecutionCandidate(repaired, execution);
             }
@@ -26309,16 +26316,11 @@ function buildManualExternalAIReviewOutput({ liveMarketContext = {}, pairLocal =
     const futureWatchCandidates = liveMarketContext.future_watch_candidates || [];
     const lowQualityCandidates = liveMarketContext.low_quality_candidates || [];
     const executionSelection = isMarketMechanicsMode(liveMarketContext)
-        ? (liveMarketContext.deterministic_selection
-            ? {
-                selection: liveMarketContext.deterministic_selection,
-                live_candidates: liveMarketContext.live_market_mechanics_candidates || []
-            }
-            : resolveMarketMechanicsExecutionSelection({
-                source: liveMarketContext,
-                candidates,
-                currentPrice: price
-            }))
+        ? resolveMarketMechanicsExecutionSelection({
+            source: liveMarketContext,
+            candidates,
+            currentPrice: price
+        })
         : null;
     const selectedExecutionId = executionSelection
         ? (executionSelection.selection?.selected_id || 'NONE')
