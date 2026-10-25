@@ -10730,3 +10730,96 @@ describe('fallback presentation regressions', () => {
         expect(ctx.getDisplayStrategyLabel({ strategy_label: 'CRT+ICT+FVG' })).toBe('CRT');
     });
 });
+
+describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
+    const asOf = Date.parse('2026-10-06T12:00:00Z');
+    const durations = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 };
+    const counts = { '1D': 20, '4H': 35, '1H': 120, '15M': 120, '5M': 120 };
+    const limits = { '1D': 15, '4H': 30, '1H': 50, '15M': 50, '5M': 50 };
+    const history = () => Object.fromEntries(Object.entries(counts).map(([timeframe, count]) => {
+        const duration = durations[timeframe];
+        const lastOpen = asOf - duration;
+        const bars = Array.from({ length: count }, (_, index) => {
+            const t = lastOpen - (count - 1 - index) * duration;
+            const hour = new Date(t).getUTCHours();
+            const base = hour >= 12 ? 104 : hour >= 7 ? 102 : 100;
+            return { t, o: base, h: base + 1, l: base - 1, c: base + 0.5, v: 1000, is_closed: true };
+        });
+        return [timeframe, bars];
+    }));
+    const rawReplay = () => {
+        const bars = history();
+        const lastDaily = bars['1D'].at(-1);
+        return {
+            pair: 'XAU/USD', scan_as_of: new Date(asOf).toISOString(),
+            quote: { price: 103, quote_time: new Date(asOf).toISOString() },
+            history: bars,
+            _lastDaily: lastDaily
+        };
+    };
+
+    it('sends 1D, 4H, 1H, 15M and 5M candles with per-timeframe limits', () => {
+        const ctx = getContext();
+        const replay = rawReplay();
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2');
+        expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
+        expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
+        for (const [timeframe, limit] of Object.entries(limits)) {
+            const section = packet.split('======== TIMEFRAME: ' + timeframe.toLowerCase() + ' ========')[1]
+                .split('======== END ' + timeframe.toLowerCase() + ' ========')[0];
+            expect(section).toContain('CANDLE_LIMIT=' + limit);
+            expect(section).toContain('FORMAT: time,open,high,low,close,volume');
+            expect(section).toContain('CANDLE_COUNT=' + limit);
+            expect(section).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z,/);
+        }
+    });
+
+    it('prints factual previous-day and completed session liquidity levels', () => {
+        const ctx = getContext();
+        const replay = rawReplay();
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const levels = ctx.buildRawCandleAiMacroLevels(replay, asOf);
+        expect(levels.previous_day_high).toBe(replay._lastDaily.h);
+        expect(levels.previous_day_low).toBe(replay._lastDaily.l);
+        expect(packet).toContain('PREVIOUS_DAY_HIGH=' + replay._lastDaily.h.toFixed(2));
+        expect(packet).toContain('PREVIOUS_DAY_LOW=' + replay._lastDaily.l.toFixed(2));
+        for (const name of ['ASIA_HIGH', 'ASIA_LOW', 'LONDON_HIGH', 'LONDON_LOW', 'NEW_YORK_HIGH', 'NEW_YORK_LOW']) {
+            expect(packet).toMatch(new RegExp(name + '=\\d+\\.\\d{2}'));
+        }
+        expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
+    });
+
+    it('includes the original 14 rules plus HTF alignment and MTF confluence', () => {
+        const ctx = getContext();
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
+        for (let rule = 1; rule <= 14; rule += 1) {
+            expect(packet).toMatch(new RegExp('^' + rule + '\\. ', 'm'));
+        }
+        expect(packet).toContain('15. HTF ALIGNMENT: You are provided raw 1D and 4H candles.');
+        expect(packet).toContain('16. MTF CONFLUENCE: Use the 4H candles to identify the dominant direction');
+        expect(packet).toContain('TIMEFRAME_USED: <1d | 4h | 1h | 15m | 5m | NONE>');
+    });
+
+    it('logs RAW_PACKET_DIAGNOSTIC counts, token estimate, levels and rule coverage', () => {
+        const ctx = getContext();
+        ctx.console.log = jest.fn();
+        ctx.RAW_PACKET_DIAGNOSTIC(true);
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
+        const diagnostic = ctx.console.log.mock.calls
+            .filter(call => call[0] === 'RAW_PACKET_DIAGNOSTIC' && call[1] && typeof call[1] === 'object')
+            .at(-1)[1];
+        expect(diagnostic.candle_counts).toEqual(limits);
+        expect(diagnostic.candle_limits).toEqual(limits);
+        expect(diagnostic.total_candles).toBe(195);
+        expect(diagnostic.estimated_tokens).toBe(Math.ceil(packet.length / 4));
+        expect(diagnostic.macro_context_levels.map(level => level.name)).toEqual([
+            'PREVIOUS_DAY_HIGH', 'PREVIOUS_DAY_LOW', 'ASIA_HIGH', 'ASIA_LOW',
+            'LONDON_HIGH', 'LONDON_LOW', 'NEW_YORK_HIGH', 'NEW_YORK_LOW'
+        ]);
+        expect(diagnostic.ghost_rules).toEqual({
+            original_14_included: true, total_rules: 16,
+            htf_alignment_included: true, mtf_confluence_included: true
+        });
+    });
+});
