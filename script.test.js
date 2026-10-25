@@ -10822,4 +10822,77 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             htf_alignment_included: true, mtf_confluence_included: true
         });
     });
+
+    it('auto-sorts reversed SELL_LIMIT targets into descending order', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse([
+            'ACTION: SELL_LIMIT',
+            'SETUP: FVG',
+            'ENTRY: 110.00',
+            'STOP_LOSS: 112.00',
+            'TP1: 100.00',
+            'TP2: 104.00',
+            'TP3: 108.00',
+            'CONFIDENCE: 72%',
+            'TIMEFRAME_USED: 15M',
+            'REASON: Bearish FVG with prior-day low as the final target.'
+        ].join('\n'));
+        expect(parsed.valid).toBe(true);
+        expect(parsed.target_order_normalized).toBe(true);
+        expect([parsed.tp1, parsed.tp2, parsed.tp3]).toEqual([108, 104, 100]);
+    });
+
+    it('auto-sorts reversed BUY_LIMIT targets into ascending order', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse([
+            'ACTION: BUY_LIMIT',
+            'SETUP: OB+FVG',
+            'ENTRY: 100.00',
+            'STOP_LOSS: 98.00',
+            'TP1: 110.00',
+            'TP2: 104.00',
+            'TP3: 102.00',
+            'CONFIDENCE: 68%',
+            'TIMEFRAME_USED: 1H',
+            'REASON: Bullish OB/FVG overlap targeting the prior high.'
+        ].join('\n'));
+        expect(parsed.valid).toBe(true);
+        expect(parsed.target_order_normalized).toBe(true);
+        expect([parsed.tp1, parsed.tp2, parsed.tp3]).toEqual([102, 104, 110]);
+    });
+
+    it('sorts target prices together with their objective IDs before validation', () => {
+        const ctx = getContext();
+        const evidence = {
+            manual_external_ai: true,
+            strategy_contract: { minimum_rr: 1.5 },
+            current_market_state: { current_price: 98 },
+            current_actionable_location_catalogue: [{
+                location_id: 'LOC-BUY', type: 'FVG', source_orientation: 'BUY',
+                zone_low: 99, zone_high: 101, midpoint_if_defined: 100, origin_evidence_ids: ['FVG-BUY']
+            }],
+            structural_invalidation_catalogue: [{ invalidation_id: 'INV-BUY', level: 98, state: 'ACTIVE' }],
+            current_liquidity_objective_map: {
+                above_current_price: [
+                    { objective_id: 'T102', level: 102, direction: 'BUY', lifecycle_state: 'UNFULFILLED' },
+                    { objective_id: 'T104', level: 104, direction: 'BUY', lifecycle_state: 'UNFULFILLED' },
+                    { objective_id: 'T106', level: 106, direction: 'BUY', lifecycle_state: 'UNFULFILLED' }
+                ],
+                below_current_price: []
+            },
+            model_setup_evidence: { FVG: [{ event_id: 'FVG-BUY', event_type: 'FVG', direction: 'BUY', evidence_ids: ['FVG-BUY'] }] }
+        };
+        const result = ctx.validateExternalAITradeDecision({
+            decision: 'TRADE', direction: 'BUY', trade_type: 'PENDING_LIMIT', setup: 'FVG', market_phase: 'RETRACEMENT',
+            confidence: 75, selected_candidate_id: null, location_id: 'LOC-BUY', entry_zone: [99, 101], entry: 100,
+            invalidation_id: 'INV-BUY', stop_loss: 98,
+            tp1: 102, tp2: 106, tp3: 104,
+            tp1_objective_id: 'T102', tp2_objective_id: 'T106', tp3_objective_id: 'T104',
+            evidence_ids: ['FVG-BUY']
+        }, evidence);
+        expect(result.valid).toBe(true);
+        expect(result.warnings).toContain('TARGET_ORDER_AUTO_SORTED');
+        expect([result.normalized_decision.tp1, result.normalized_decision.tp2, result.normalized_decision.tp3]).toEqual([102, 104, 106]);
+        expect([result.normalized_decision.tp1_objective_id, result.normalized_decision.tp2_objective_id, result.normalized_decision.tp3_objective_id]).toEqual(['T102', 'T104', 'T106']);
+    });
 });

@@ -17168,6 +17168,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '',
     'BUY_LIMIT requires ENTRY < CURRENT PRICE, STOP_LOSS < ENTRY and ENTRY < TP1 < TP2 < TP3.',
     'SELL_LIMIT requires ENTRY > CURRENT PRICE, STOP_LOSS > ENTRY and ENTRY > TP1 > TP2 > TP3.',
+    'TP order is mandatory: TP1 is the nearest target, TP2 the next and TP3 the furthest. If your levels are reversed, reorder them before replying.',
     'Every price must come from the supplied CSV candles and the Ghost Machine rules. Never invent a level.',
     'Return ACTION: NO_TRADE, SETUP: NONE, ENTRY: 0, STOP_LOSS: 0, TP1: 0, TP2: 0, TP3: 0, CONFIDENCE: 0% and TIMEFRAME_USED: NONE when no valid pending limit exists.'
 ].join('\n');
@@ -18096,6 +18097,13 @@ function validateManualMarketMechanicsDecision(decision = {}, replay = {}) {
     const warnings = [];
     const add = code => { if (!issues.includes(code)) issues.push(code); };
     const warn = code => { if (!warnings.includes(code)) warnings.push(code); };
+    if (typeof decision === 'string') decision = parseRawCandleAIActionResponse(decision);
+    const targetNormalization = normalizePendingLimitTargetOrder(
+        decision && typeof decision === 'object' ? decision : {},
+        decision?.action || decision?.ACTION || decision?.direction || null
+    );
+    decision = targetNormalization.decision;
+    if (targetNormalization.changed) warn('TARGET_ORDER_AUTO_SORTED');
     const action = String(decision.action || decision.ACTION || decision.direction || '').toUpperCase();
     const opportunities = Array.isArray(replay.manual_analysis_opportunities)
         ? replay.manual_analysis_opportunities
@@ -18110,6 +18118,8 @@ function validateManualMarketMechanicsDecision(decision = {}, replay = {}) {
     const entry = manualMarketMechanicsNumber(decision.entry, decision.ENTRY, decision.price);
     const stop = manualMarketMechanicsNumber(decision.stop_loss, decision.STOP_LOSS, decision.stop);
     const tp1 = manualMarketMechanicsNumber(decision.tp1, decision.TP1, decision.target);
+    const tp2 = manualMarketMechanicsNumber(decision.tp2, decision.TP2);
+    const tp3 = manualMarketMechanicsNumber(decision.tp3, decision.TP3);
     if (!opportunity || entry == null || opportunity.entry_zone_low == null || opportunity.entry_zone_high == null
         || entry < opportunity.entry_zone_low || entry > opportunity.entry_zone_high) add('MANUAL_ENTRY_OUTSIDE_EVIDENCED_ZONE');
     if (opportunity && String(opportunity.entry_touched).toUpperCase() !== 'NO') add('MANUAL_ENTRY_TOUCH_NOT_VERIFIABLY_UNTOUCHED');
@@ -18134,7 +18144,9 @@ function validateManualMarketMechanicsDecision(decision = {}, replay = {}) {
     return {
         valid: issues.length === 0, execution_allowed: false, issues, warnings, action,
         opportunity: opportunity || null, opportunities_count: opportunities.length,
-        calculated_risk_reward: calculatedRR, preferred_minimum_rr: minimumRR
+        calculated_risk_reward: calculatedRR, preferred_minimum_rr: minimumRR,
+        normalized_decision: { ...decision, action, tp1, tp2, tp3 },
+        target_order_normalized: targetNormalization.changed
     };
 }
 
@@ -20500,6 +20512,8 @@ async function copyCurrentCanonicalMarketSnapshot() {
 
 if (typeof window !== 'undefined') {
     window.buildRawTextMarketAnalysisPacket = buildRawTextMarketAnalysisPacket;
+    window.parseRawCandleAIActionResponse = parseRawCandleAIActionResponse;
+    window.normalizePendingLimitTargetOrder = normalizePendingLimitTargetOrder;
     window.RAW_PACKET_DIAGNOSTIC = RAW_PACKET_DIAGNOSTIC;
     window.setRawPacketDiagnostic = RAW_PACKET_DIAGNOSTIC;
     window.buildManualMarketMechanicsOpportunityShortlist = buildManualMarketMechanicsOpportunityShortlist;
@@ -28841,6 +28855,102 @@ function externalPacketNumber(value) {
     return Number.isFinite(number) ? number : null;
 }
 
+// Pending-limit targets are directional: BUY_LIMIT targets ascend from entry
+// and SELL_LIMIT targets descend.  AI responses occasionally return the same
+// correct levels in the wrong TP slots.  Sort the complete TP1/TP2/TP3 tuples
+// (price plus objective id) so downstream validation sees the intended ladder.
+function normalizePendingLimitTargetOrder(decision = {}, action = null) {
+    const source = decision && typeof decision === 'object' ? decision : {};
+    const sideText = [action, source.action, source.ACTION, source.trade_type, source.tradeType, source.direction]
+        .filter(value => value !== null && value !== undefined)
+        .join(' ')
+        .toUpperCase();
+    const side = sideText.includes('SELL') ? 'SELL' : sideText.includes('BUY') ? 'BUY' : null;
+    const targets = [
+        { key: 'tp1', upper: 'TP1' },
+        { key: 'tp2', upper: 'TP2' },
+        { key: 'tp3', upper: 'TP3' }
+    ].map(target => ({
+        ...target,
+        price: externalPacketNumber(source[target.key] ?? source[target.upper]),
+        id: source[target.key + '_objective_id'] ?? source[target.upper + '_OBJECTIVE_ID'],
+        hasUpperId: Object.prototype.hasOwnProperty.call(source, target.upper + '_OBJECTIVE_ID')
+    }));
+    if (!side || !targets.every(target => Number.isFinite(target.price))) {
+        return { side, decision: source, changed: false };
+    }
+    const sorted = [...targets].sort((left, right) => side === 'SELL'
+        ? right.price - left.price
+        : left.price - right.price);
+    const changed = sorted.some((target, index) => target.price !== targets[index].price);
+    if (!changed) return { side, decision: source, changed: false };
+    const normalized = { ...source };
+    sorted.forEach((target, index) => {
+        const slot = targets[index];
+        normalized[slot.key] = target.price;
+        if (Object.prototype.hasOwnProperty.call(source, slot.upper)) normalized[slot.upper] = target.price;
+        if (target.id === undefined || target.id === null) return;
+        normalized[slot.key + '_objective_id'] = target.id;
+        if (target.hasUpperId) normalized[slot.upper + '_OBJECTIVE_ID'] = target.id;
+    });
+    return { side, decision: normalized, changed: true };
+}
+
+function parseRawCandleAIActionResponse(rawResponse = '') {
+    const text = String(rawResponse ?? '').replace(/```[a-z]*|```/gi, '');
+    const fields = {};
+    for (const line of text.split(/\r?\n/)) {
+        const match = line.trim().match(/^([A-Z][A-Z0-9_]*)\s*:\s*(.*?)\s*$/);
+        if (match && fields[match[1]] === undefined) fields[match[1]] = match[2];
+    }
+    const number = value => {
+        const parsed = Number(String(value ?? '').replace(/[%,\s]/g, ''));
+        return Number.isFinite(parsed) ? parsed : null;
+    };
+    const action = String(fields.ACTION || '').trim().toUpperCase();
+    const parsed = {
+        action,
+        setup: fields.SETUP ? fields.SETUP.trim().toUpperCase() : null,
+        entry: number(fields.ENTRY),
+        stop_loss: number(fields.STOP_LOSS),
+        tp1: number(fields.TP1),
+        tp2: number(fields.TP2),
+        tp3: number(fields.TP3),
+        confidence: number(fields.CONFIDENCE),
+        timeframe_used: fields.TIMEFRAME_USED ? fields.TIMEFRAME_USED.trim().toUpperCase() : null,
+        reason: fields.REASON || null,
+        raw_fields: fields
+    };
+    if (action === 'NO_TRADE') {
+        return { ...parsed, valid: true, execution_allowed: false, issues: [], target_order_normalized: false };
+    }
+    if (!['BUY_LIMIT', 'SELL_LIMIT'].includes(action)) {
+        return { ...parsed, valid: false, execution_allowed: false, issues: ['RAW_ACTION_INVALID'], target_order_normalized: false };
+    }
+    const normalizedTargets = normalizePendingLimitTargetOrder(parsed, action);
+    const normalized = normalizedTargets.decision;
+    const issues = [];
+    const entry = normalized.entry;
+    const stop = normalized.stop_loss;
+    const targetPrices = [normalized.tp1, normalized.tp2, normalized.tp3];
+    if (![entry, stop, ...targetPrices].every(Number.isFinite)) issues.push('RAW_ENTRY_STOP_TARGETS_REQUIRED');
+    if (action === 'BUY_LIMIT') {
+        if (!(stop < entry && entry < normalized.tp1 && normalized.tp1 < normalized.tp2 && normalized.tp2 < normalized.tp3)) {
+            issues.push('RAW_BUY_GEOMETRY_INVALID');
+        }
+    } else if (!(stop > entry && entry > normalized.tp1 && normalized.tp1 > normalized.tp2 && normalized.tp2 > normalized.tp3)) {
+        issues.push('RAW_SELL_GEOMETRY_INVALID');
+    }
+    return {
+        ...normalized,
+        target_prices: targetPrices,
+        valid: issues.length === 0,
+        execution_allowed: false,
+        issues,
+        target_order_normalized: normalizedTargets.changed
+    };
+}
+
 function calculateTradeRiskReward(direction, entry, stop, targets = {}) {
     const side = String(direction || '').toUpperCase();
     const entryValue = externalPacketNumber(entry);
@@ -28897,7 +29007,12 @@ function isObjectiveRemainingForFutureEntry({ direction, tradeType, entry, curre
 function validateExternalAITradeDecision(decision = {}, evidence = {}) {
     const issues = [];
     const warnings = [];
-    const normalizedDecision = decision && typeof decision === 'object' ? decision : {};
+    const targetNormalization = normalizePendingLimitTargetOrder(
+        decision && typeof decision === 'object' ? decision : {},
+        decision?.trade_type || decision?.direction || null
+    );
+    const normalizedDecision = targetNormalization.decision;
+    if (targetNormalization.changed) warnings.push('TARGET_ORDER_AUTO_SORTED');
     const outcome = String(normalizedDecision.decision || '').toUpperCase();
     const manualExternalAI = evidence.manual_external_ai === true
         || evidence.analysis_mode === DEFAULT_ANALYSIS_MODE
