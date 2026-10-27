@@ -10790,15 +10790,44 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the original 14 rules plus HTF alignment and MTF confluence', () => {
+    it('includes the full rule set with 2.0R, deeper entry, and killzone penalty rules', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
-        for (let rule = 1; rule <= 14; rule += 1) {
+        for (let rule = 1; rule <= 17; rule += 1) {
             expect(packet).toMatch(new RegExp('^' + rule + '\\. ', 'm'));
         }
         expect(packet).toContain('15. HTF ALIGNMENT: You are provided raw 1D and 4H candles.');
         expect(packet).toContain('16. MTF CONFLUENCE: Use the 4H candles to identify the dominant direction');
+        expect(packet).toContain('17. KILLZONE CONFIDENCE PENALTY: If the current server time is OUTSIDE the London (02:00-05:00 EST) or New York (07:00-10:00 EST) Killzones');
+        expect(packet).toContain('TP1 must target a major 1H or 4H opposing liquidity pool.');
+        expect(packet).toContain('The distance from Entry to TP1 must provide a Risk-to-Reward ratio of at least 2.0.');
+        expect(packet).toContain('place the entry deeper inside the OB/FVG');
         expect(packet).toContain('TIMEFRAME_USED: <1d | 4h | 1h | 15m | 5m | NONE>');
+        expect(packet).toContain("MANAGEMENT: <Text instruction: e.g., 'Take 50% at TP1, move SL to BE'>");
+    });
+
+    it('injects OUTSIDE_KILLZONE only when server time is outside London and New York', () => {
+        const ctx = getContext();
+        const inside = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
+        expect(inside).not.toContain('WARNING: OUTSIDE_KILLZONE');
+        expect(inside).toContain('KILLZONE_STATUS=NEW_YORK');
+        const outsideReplay = { ...rawReplay(), scan_as_of: '2026-10-06T18:00:00Z' };
+        const outside = ctx.buildRawTextMarketAnalysisPacket({ replay: outsideReplay });
+        expect(outside.split('\n').slice(0, 2)).toEqual([
+            '=== AI TRADING PACKET: RAW CANDLE AI ===',
+            'WARNING: OUTSIDE_KILLZONE'
+        ]);
+        expect(outside).toContain('KILLZONE_STATUS=OUTSIDE');
+    });
+
+    it('classifies EST killzone boundaries from UTC server time', () => {
+        const ctx = getContext();
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T07:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'LONDON', inside_killzone: true, outside_killzone: false }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T09:59:00Z'))).toEqual(expect.objectContaining({ killzone: 'LONDON', inside_killzone: true }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T10:00:00Z'))).toEqual(expect.objectContaining({ killzone: null, inside_killzone: false, outside_killzone: true }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T12:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'NEW_YORK', inside_killzone: true }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T14:59:00Z'))).toEqual(expect.objectContaining({ killzone: 'NEW_YORK', inside_killzone: true }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T15:00:00Z'))).toEqual(expect.objectContaining({ killzone: null, outside_killzone: true }));
     });
 
     it('logs RAW_PACKET_DIAGNOSTIC counts, token estimate, levels and rule coverage', () => {
@@ -10817,9 +10846,13 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             'PREVIOUS_DAY_HIGH', 'PREVIOUS_DAY_LOW', 'ASIA_HIGH', 'ASIA_LOW',
             'LONDON_HIGH', 'LONDON_LOW', 'NEW_YORK_HIGH', 'NEW_YORK_LOW'
         ]);
+        expect(diagnostic.killzone).toEqual(expect.objectContaining({
+            active: 'NEW_YORK', inside_killzone: true, outside_killzone: false, warning_injected: false
+        }));
         expect(diagnostic.ghost_rules).toEqual({
-            original_14_included: true, total_rules: 16,
-            htf_alignment_included: true, mtf_confluence_included: true
+            original_14_included: true, total_rules: 17,
+            htf_alignment_included: true, mtf_confluence_included: true,
+            killzone_penalty_included: true
         });
     });
 
@@ -10835,11 +10868,13 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             'TP3: 108.00',
             'CONFIDENCE: 72%',
             'TIMEFRAME_USED: 15M',
+            "MANAGEMENT: Take 50% at TP1, move SL to BE",
             'REASON: Bearish FVG with prior-day low as the final target.'
         ].join('\n'));
         expect(parsed.valid).toBe(true);
         expect(parsed.target_order_normalized).toBe(true);
         expect([parsed.tp1, parsed.tp2, parsed.tp3]).toEqual([108, 104, 100]);
+        expect(parsed.management).toBe('Take 50% at TP1, move SL to BE');
     });
 
     it('auto-sorts reversed BUY_LIMIT targets into ascending order', () => {

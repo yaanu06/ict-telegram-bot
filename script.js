@@ -17164,14 +17164,39 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     'TP3: <price>',
     'CONFIDENCE: <integer 0-100>%',
     'TIMEFRAME_USED: <1d | 4h | 1h | 15m | 5m | NONE>',
+    "MANAGEMENT: <Text instruction: e.g., 'Take 50% at TP1, move SL to BE'>",
     'REASON: <raw-candle evidence: swing, sweep, OB/FVG, invalidation and liquidity target>',
     '',
     'BUY_LIMIT requires ENTRY < CURRENT PRICE, STOP_LOSS < ENTRY and ENTRY < TP1 < TP2 < TP3.',
     'SELL_LIMIT requires ENTRY > CURRENT PRICE, STOP_LOSS > ENTRY and ENTRY > TP1 > TP2 > TP3.',
     'TP order is mandatory: TP1 is the nearest target, TP2 the next and TP3 the furthest. If your levels are reversed, reorder them before replying.',
+    'TP1 must provide at least 2.0R from ENTRY against STOP_LOSS before TP2 and TP3 are considered.',
     'Every price must come from the supplied CSV candles and the Ghost Machine rules. Never invent a level.',
-    'Return ACTION: NO_TRADE, SETUP: NONE, ENTRY: 0, STOP_LOSS: 0, TP1: 0, TP2: 0, TP3: 0, CONFIDENCE: 0% and TIMEFRAME_USED: NONE when no valid pending limit exists.'
+    'Return ACTION: NO_TRADE, SETUP: NONE, ENTRY: 0, STOP_LOSS: 0, TP1: 0, TP2: 0, TP3: 0, CONFIDENCE: 0%, TIMEFRAME_USED: NONE and MANAGEMENT: NONE when no valid pending limit exists.'
 ].join('\n');
+
+const RAW_CANDLE_AI_KILLZONES = Object.freeze([
+    Object.freeze({ name: 'LONDON', start_minutes: 2 * 60, end_minutes: 5 * 60 }),
+    Object.freeze({ name: 'NEW_YORK', start_minutes: 7 * 60, end_minutes: 10 * 60 })
+]);
+
+function rawCandleAiServerClock(nowMs = Date.now()) {
+    const timestamp = Number(nowMs);
+    const date = new Date(Number.isFinite(timestamp) ? timestamp : Date.now());
+    const utcMinutes = date.getUTCHours() * 60 + date.getUTCMinutes();
+    const estMinutes = ((utcMinutes - 5 * 60) % (24 * 60) + 24 * 60) % (24 * 60);
+    const killzone = RAW_CANDLE_AI_KILLZONES.find(zone => estMinutes >= zone.start_minutes && estMinutes < zone.end_minutes) || null;
+    const estHour = Math.floor(estMinutes / 60);
+    const estMinute = estMinutes % 60;
+    return {
+        utc: date.toISOString(),
+        est: String(estHour).padStart(2, '0') + ':' + String(estMinute).padStart(2, '0') + ' EST',
+        est_minutes: estMinutes,
+        killzone: killzone?.name || null,
+        inside_killzone: !!killzone,
+        outside_killzone: !killzone
+    };
+}
 
 const MANUAL_MARKET_MECHANICS_TERMINAL_STATES = new Set([
     'EXPIRED', 'CONSUMED', 'FILLED', 'INVALIDATED', 'DELIVERED', 'MISSED',
@@ -20266,14 +20291,15 @@ function buildRawCandleAiGhostRules() {
         '6. CONFLUENCE: prefer a setup where a liquidity sweep, an OB or FVG, and the 1D/4H structure agree. Do not force a trade when the raw candles conflict.',
         '7. PENDING LIMIT SIDE: for BUY_LIMIT, ENTRY must be below CURRENT_PRICE and the setup should be a demand OB/FVG or bullish sweep-reclaim. For SELL_LIMIT, ENTRY must be above CURRENT_PRICE and the setup should be a supply OB/FVG or bearish sweep-rejection.',
         '8. STOP LOSS: place STOP_LOSS behind a clear structural swing low for BUY or swing high for SELL, beyond the OB/FVG far edge and beyond the wick that created the sweep. Do not place the stop inside the noise of the source candle.',
-        '9. TAKE PROFIT: use the next major opposing liquidity pool, including PREVIOUS_DAY_HIGH/LOW and completed session highs/lows. TP1 is the nearest opposing pool, TP2 is the next pool, and TP3 is the next major pool. Targets must be ahead of the entry and must remain unused in the supplied history.',
-        '10. RISK/REWARD: calculate risk and reward from the exact entry, stop and targets. Prefer at least 1.5R to TP1, but do not move the structural stop or invent a target merely to improve RR.',
-        '11. ENTRY PRICE: choose a price inside the OB/FVG or at the sweep-reclaim boundary. Do not use a price outside the identified zone. A pending limit may wait for a retracement; it does not need current price to touch the zone.',
+        '9. TAKE PROFIT: TP1 must target a major 1H or 4H opposing liquidity pool. The distance from Entry to TP1 must provide a Risk-to-Reward ratio of at least 2.0. TP2 and TP3 extend to the next major pools, including PREVIOUS_DAY_HIGH/LOW and completed session highs/lows. Targets must be ahead of the entry and must remain unused in the supplied history.',
+        '10. RISK/REWARD: calculate risk and reward from the exact entry, stop and targets. TP1 must be at least 2.0R; do not move the structural stop or invent a target merely to improve RR.',
+        '11. ENTRY PRICE: Because this is a pending limit order, you have the flexibility to place the entry deeper inside the OB/FVG (e.g., at the 50% equilibrium level or closer to the Stop Loss) to mathematically ensure a 2.0+ RR to TP1, as long as the entry remains structurally valid. Do not use a price outside the identified zone. A pending limit may wait for a retracement; it does not need current price to touch the zone.',
         '12. NO_TRADE: return NO_TRADE when the raw candles do not contain a clear swing, sweep, OB/FVG, structural stop and opposing liquidity target in the same directional thesis.',
         '13. EVIDENCE: REASON must name the source timestamps and levels for the sweep, OB/FVG, stop and target. Do not expose chain-of-thought; summarize the factual evidence.',
         '14. OUTPUT: return exactly the ACTION contract below. Do not return JSON, Markdown, prose outside the contract or a candidate ID.',
         '15. HTF ALIGNMENT: You are provided raw 1D and 4H candles. You must identify the major 1D/4H Order Blocks and Fair Value Gaps. DO NOT take a 15M or 5M execution setup that is running directly into a major opposing 1D/4H zone. The HTF zones act as the ultimate Take Profit targets and the ultimate barriers for Stop Losses.',
-        '16. MTF CONFLUENCE: Use the 4H candles to identify the dominant direction and major Order Blocks. Only take 15M/5M setups that align with the 4H structure. Do not take a 15M BUY if the 4H is currently in a massive supply zone.'
+        '16. MTF CONFLUENCE: Use the 4H candles to identify the dominant direction and major Order Blocks. Only take 15M/5M setups that align with the 4H structure. Do not take a 15M BUY if the 4H is currently in a massive supply zone.',
+        '17. KILLZONE CONFIDENCE PENALTY: If the current server time is OUTSIDE the London (02:00-05:00 EST) or New York (07:00-10:00 EST) Killzones, you must deduct 25% from your final CONFIDENCE score. Do not return NO_TRADE solely for being outside the Killzone.'
     ];
 }
 
@@ -20284,11 +20310,13 @@ function buildRawCandleAiInstruction() {
         'First identify the dominant 1D/4H structure and major HTF zones. Then identify the highest-quality pending limit order, BUY or SELL, from your own reading of the 1D, 4H, 1H, 15M and 5M closed candles.',
         'Ensure the entry is on the correct side of the current price: BUY_LIMIT below current price, SELL_LIMIT above current price.',
         'Place the Stop Loss behind a clear structural swing high/low. Keep it beyond the source OB/FVG boundary.',
-        'Place the Take Profit at the next major opposing liquidity pool. Use the following opposing pools for TP2 and TP3.',
+        'Place TP1 at a major 1H or 4H opposing liquidity pool that provides at least 2.0R from entry. Use the following opposing pools for TP2 and TP3.',
         'Calculate risk/reward from the exact values you return. Do not use any hidden deterministic level.',
+        'Because this is a pending limit, prefer a deeper structurally valid entry inside the OB/FVG when needed to secure at least 2.0R to TP1.',
         'If the raw data supports both directions, choose the setup with the clearest sweep, displacement, OB/FVG and liquidity path.',
         'If no qualifying setup exists, return ACTION: NO_TRADE with the zero-geometry contract.',
-        'Output the exact ACTION contract (Entry, SL, TP1, TP2, TP3, REASON) based entirely on its own reading of the raw data.'
+        'Include a concrete MANAGEMENT instruction for the completed trade.',
+        'Output the exact ACTION contract (Entry, SL, TP1, TP2, TP3, CONFIDENCE, MANAGEMENT, REASON) based entirely on its own reading of the raw data.'
     ];
 }
 
@@ -20318,6 +20346,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     const daily = dailyBias.last;
     const macroLevels = buildRawCandleAiMacroLevels(source, asOfMs);
     const ghostRules = buildRawCandleAiGhostRules();
+    const serverClock = rawCandleAiServerClock(asOfMs);
     const candleCounts = Object.fromEntries(RAW_CANDLE_AI_TIMEFRAMES.map(timeframe => [
         timeframe,
         rawTextPacketClosedCandles(source, timeframe, asOfMs).slice(-rawCandleAiCandleLimit(timeframe)).length
@@ -20335,6 +20364,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     ];
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
+        ...(serverClock.outside_killzone ? ['WARNING: OUTSIDE_KILLZONE'] : []),
         'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
@@ -20346,6 +20376,9 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
         'CURRENT PRICE: ' + rawTextPacketFormatNumber(price, precision),
         'QUOTE TIME: ' + String(quote.quote_time || quote.current_price_time || 'UNKNOWN'),
         'AS OF: ' + new Date(asOfMs).toISOString(),
+        'SERVER_TIME_UTC: ' + serverClock.utc,
+        'SERVER_TIME_EST: ' + serverClock.est,
+        'KILLZONE_STATUS=' + (serverClock.inside_killzone ? serverClock.killzone : 'OUTSIDE'),
         'LAST CLOSED CANDLE TIME: ' + (daily ? new Date(rawTextPacketTimestamp(daily.t)).toISOString() : ''),
         'GENERATED AT: ' + new Date().toISOString(),
         '',
@@ -20382,11 +20415,20 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
         estimated_tokens: Math.ceil(packetText.length / 4),
         macro_context_levels: macroContextLevels,
         macro_levels_source: macroLevels.previous_day_source,
+        killzone: {
+            server_time_utc: serverClock.utc,
+            server_time_est: serverClock.est,
+            active: serverClock.killzone,
+            inside_killzone: serverClock.inside_killzone,
+            outside_killzone: serverClock.outside_killzone,
+            warning_injected: serverClock.outside_killzone
+        },
         ghost_rules: {
             original_14_included: numberedRules.slice(0, 14).length === 14,
             total_rules: numberedRules.length,
             htf_alignment_included: numberedRules.some(rule => rule.startsWith('15. HTF ALIGNMENT')),
-            mtf_confluence_included: numberedRules.some(rule => rule.startsWith('16. MTF CONFLUENCE'))
+            mtf_confluence_included: numberedRules.some(rule => rule.startsWith('16. MTF CONFLUENCE')),
+            killzone_penalty_included: numberedRules.some(rule => rule.startsWith('17. KILLZONE CONFIDENCE PENALTY'))
         }
     };
     if (rawPacketDiagnosticEnabled()) console.log('RAW_PACKET_DIAGNOSTIC', lastRawPacketDiagnostic);
@@ -28918,6 +28960,7 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
         tp3: number(fields.TP3),
         confidence: number(fields.CONFIDENCE),
         timeframe_used: fields.TIMEFRAME_USED ? fields.TIMEFRAME_USED.trim().toUpperCase() : null,
+        management: fields.MANAGEMENT || null,
         reason: fields.REASON || null,
         raw_fields: fields
     };
