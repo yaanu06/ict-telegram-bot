@@ -10790,18 +10790,35 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the full rule set with 2.0R, deeper entry, and killzone penalty rules', () => {
+    it('includes the V2.1 audit, patched rules, hard gates, and amended output contract', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         for (let rule = 1; rule <= 17; rule += 1) {
             expect(packet).toMatch(new RegExp('^' + rule + '\\. ', 'm'));
         }
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V2.1 (PATCHED)');
+        expect(packet).toContain('=== SECTION A: MANDATORY PRE-OUTPUT SELF-AUDIT ===');
+        expect(packet).toContain('GATE_5  RR: Compute R = |ENTRY - STOP_LOSS| and Reward = |TP1 - ENTRY|.');
+        expect(packet).toContain('=== SECTION B: RULE 4 (REPLACED) - ORDER BLOCK DEFINITION ===');
+        expect(packet).toContain('The OB zone is that candle\'s BODY (open-to-close).');
+        expect(packet).toContain('=== SECTION C: RULE 8 (REPLACED) - STOP LOSS MUST BE THE NEAREST INVALIDATION ===');
+        expect(packet).toContain('=== SECTION D: RULE 10 (REPLACED) - RR IS A HARD GATE ===');
+        expect(packet).toContain('RR_TP1 must be >= 2.00.');
+        expect(packet).toContain('=== SECTION E: RULE 11 (REPLACED) - ENTRY DEPTH IS BOUNDED ===');
+        expect(packet).toContain('=== SECTION F: NEW RULE - DIRECTIONAL PRIORITY ===');
+        expect(packet).toContain('=== SECTION G: NO_TRADE HARD GATES (ANY ONE TRIGGERS NO_TRADE) ===');
+        expect(packet).toContain('N1. RR_TP1 < 2.00 from the nearest valid stop.');
+        expect(packet).toContain('=== SECTION H: CONFIDENCE CALIBRATION ===');
+        expect(packet).toContain('Never report > 75% on a setup that required any Rule 11 adjustment');
+        expect(packet).toContain('=== SECTION I: WORKED REJECTION EXAMPLE (DO NOT REPEAT THIS ERROR) ===');
+        expect(packet).toContain('CORRECT OUTPUT in that situation is NO_TRADE, never a caveated ACTION.');
         expect(packet).toContain('15. HTF ALIGNMENT: You are provided raw 1D and 4H candles.');
         expect(packet).toContain('16. MTF CONFLUENCE: Use the 4H candles to identify the dominant direction');
         expect(packet).toContain('17. KILLZONE CONFIDENCE PENALTY: If the current server time is OUTSIDE the London (02:00-05:00 EST) or New York (07:00-10:00 EST) Killzones');
         expect(packet).toContain('TP1 must target a major 1H or 4H opposing liquidity pool.');
         expect(packet).toContain('The distance from Entry to TP1 must provide a Risk-to-Reward ratio of at least 2.0.');
-        expect(packet).toContain('place the entry deeper inside the OB/FVG');
+        expect(packet).toContain('RISK: <ENTRY to STOP_LOSS, two decimals>');
+        expect(packet).toContain('RR_TP1: <REWARD/RISK, two decimals - must be >= 2.00>');
         expect(packet).toContain('TIMEFRAME_USED: <1d | 4h | 1h | 15m | 5m | NONE>');
         expect(packet).toContain("MANAGEMENT: <Text instruction: e.g., 'Take 50% at TP1, move SL to BE'>");
     });
@@ -10850,9 +10867,19 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             active: 'NEW_YORK', inside_killzone: true, outside_killzone: false, warning_injected: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
+            version: 'V2.1',
             original_14_included: true, total_rules: 17,
             htf_alignment_included: true, mtf_confluence_included: true,
-            killzone_penalty_included: true
+            killzone_penalty_included: true,
+            self_audit_included: true,
+            body_ob_rule_included: true,
+            nearest_invalidation_rule_included: true,
+            hard_rr_gate_included: true,
+            bounded_entry_rule_included: true,
+            directional_priority_included: true,
+            no_trade_hard_gates_included: true,
+            confidence_calibration_included: true,
+            worked_rejection_example_included: true
         });
     });
 

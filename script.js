@@ -17162,17 +17162,20 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     'TP1: <price>',
     'TP2: <price>',
     'TP3: <price>',
+    'RISK: <ENTRY to STOP_LOSS, two decimals>',
+    'RR_TP1: <REWARD/RISK, two decimals - must be >= 2.00>',
     'CONFIDENCE: <integer 0-100>%',
     'TIMEFRAME_USED: <1d | 4h | 1h | 15m | 5m | NONE>',
     "MANAGEMENT: <Text instruction: e.g., 'Take 50% at TP1, move SL to BE'>",
-    'REASON: <raw-candle evidence: swing, sweep, OB/FVG, invalidation and liquidity target>',
+    'REASON: <sweep timestamps, OB body range, nearest-invalidation stop, TP pools, RR_CHECK: RISK=x REWARD=y RR=z, bias/MSS justification>',
     '',
     'BUY_LIMIT requires ENTRY < CURRENT PRICE, STOP_LOSS < ENTRY and ENTRY < TP1 < TP2 < TP3.',
     'SELL_LIMIT requires ENTRY > CURRENT PRICE, STOP_LOSS > ENTRY and ENTRY > TP1 > TP2 > TP3.',
     'TP order is mandatory: TP1 is the nearest target, TP2 the next and TP3 the furthest. If your levels are reversed, reorder them before replying.',
     'TP1 must provide at least 2.0R from ENTRY against STOP_LOSS before TP2 and TP3 are considered.',
+    'RISK and RR_TP1 are descriptive only; the JS engine ignores them but they must be truthful.',
     'Every price must come from the supplied CSV candles and the Ghost Machine rules. Never invent a level.',
-    'Return ACTION: NO_TRADE, SETUP: NONE, ENTRY: 0, STOP_LOSS: 0, TP1: 0, TP2: 0, TP3: 0, CONFIDENCE: 0%, TIMEFRAME_USED: NONE and MANAGEMENT: NONE when no valid pending limit exists.'
+    'Return ACTION: NO_TRADE, SETUP: NONE, ENTRY: 0, STOP_LOSS: 0, TP1: 0, TP2: 0, TP3: 0, RISK: 0.00, RR_TP1: 0.00, CONFIDENCE: 0%, TIMEFRAME_USED: NONE and MANAGEMENT: NONE when no valid pending limit exists.'
 ].join('\n');
 
 const RAW_CANDLE_AI_KILLZONES = Object.freeze([
@@ -20279,27 +20282,110 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 
 function buildRawCandleAiGhostRules() {
     return [
-        '=== GHOST MACHINE STRATEGY RULES ===',
+        '=== GHOST MACHINE STRATEGY RULES === V2.1 (PATCHED)',
         'You are the Ghost Machine. Read the raw closed candles yourself. No deterministic POI, FVG, order-block, MSNR, supply/demand zone or candidate list is supplied or authoritative. Deterministic macro liquidity levels are supplied only as context.',
         'UNIVERSE: use only the CSV candles in this packet. The 1D, 4H, 1H, 15M and 5M blocks use the per-timeframe limits shown in each section. Never invent a candle, price, timestamp, volume or level.',
         'MACRO CONTEXT: DAILY_BIAS, daily OHLC, PREVIOUS_DAY_HIGH/LOW and the completed ASIA, LONDON and NEW_YORK highs/lows are context only. The raw 1D/4H candles own higher-timeframe structure; 1H/15M/5M own intraday formation and execution.',
+        '',
+        '=== SECTION A: MANDATORY PRE-OUTPUT SELF-AUDIT ===',
+        'Before writing the ACTION contract, silently verify ALL of the following. If ANY check fails, the ONLY permitted output is ACTION: NO_TRADE with the zero-geometry contract. Do not return a live ACTION "with a caveat" in REASON. A failed check is never a downgrade - it is a rejection.',
+        'GATE_1  DIRECTION: Does the setup direction agree with DAILY_BIAS? If not, a completed 4H MSS/CHoCH in the opposite direction must exist AND be named with its timestamp. Otherwise NO_TRADE.',
+        'GATE_2  SWEEP: Is there a closed candle whose wick exceeded a named prior swing/equal-high/equal-low by >= 1 increment AND closed back inside prior structure? Name the timestamps.',
+        'GATE_3  OB VALIDITY: Is the entry inside the BODY of the last opposite-direction candle before the displacement leg? (See Rule 4 and SECTION B.) A wick is never an Order Block.',
+        'GATE_4  STOP TIGHTNESS: Is STOP_LOSS the NEAREST structural invalidation? (See Rule 8 and SECTION C.) Not the furthest.',
+        'GATE_5  RR: Compute R = |ENTRY - STOP_LOSS| and Reward = |TP1 - ENTRY|. RR = Reward / R. Is RR >= 2.00? State the numbers.',
+        'GATE_6  TP SANITY: Is TP1 a major unused 1H/4H opposing pool, and is it the NEAREST such pool? Do not skip a nearer pool to widen RR.',
+        'GATE_7  KILLZONE: Apply the 25% penalty if outside London/NY.',
+        '',
+        '=== BASE RULE INDEX (SECTIONS B-E REPLACE RULES 4, 8, 10 AND 11) ===',
         '1. SWING HIGHS AND LOWS: a swing high is a candle whose high is greater than the highs of the candles immediately before and after it. A swing low is a candle whose low is lower than the lows of the candles immediately before and after it. Prefer confirmed 3-candle pivots.',
         '2. LIQUIDITY SWEEP: a sweep occurs when a wick trades beyond a prior swing high, swing low, equal-high cluster or equal-low cluster by at least one price increment and then closes back inside the prior structure. The rejection close, not the wick alone, proves the sweep.',
         '3. FAIR VALUE GAP: use three chronological same-timeframe candles. Bullish FVG: candle 1 high < candle 3 low; the gap is candle 1 high to candle 3 low. Bearish FVG: candle 1 low > candle 3 high; the gap is candle 3 high to candle 1 low. The middle candle must show displacement.',
-        '4. ORDER BLOCK: identify the last opposite-direction candle before a displacement leg that breaks a swing or creates the FVG. For a bullish OB use the last bearish candle before the up-displacement; for a bearish OB use the last bullish candle before the down-displacement. The OB zone is the source candle body or full high-low range used by the displacement.',
+        '4. ORDER BLOCK: See SECTION B. The OB zone is the source candle BODY only; the sweep/rejection wick is never the OB.',
         '5. MARKET STRUCTURE: identify BOS, MSS/CHoCH and displacement from closed-candle breaks. A sweep plus rejection plus displacement in the opposite direction is stronger than a sweep alone.',
         '6. CONFLUENCE: prefer a setup where a liquidity sweep, an OB or FVG, and the 1D/4H structure agree. Do not force a trade when the raw candles conflict.',
         '7. PENDING LIMIT SIDE: for BUY_LIMIT, ENTRY must be below CURRENT_PRICE and the setup should be a demand OB/FVG or bullish sweep-reclaim. For SELL_LIMIT, ENTRY must be above CURRENT_PRICE and the setup should be a supply OB/FVG or bearish sweep-rejection.',
-        '8. STOP LOSS: place STOP_LOSS behind a clear structural swing low for BUY or swing high for SELL, beyond the OB/FVG far edge and beyond the wick that created the sweep. Do not place the stop inside the noise of the source candle.',
+        '8. STOP LOSS: See SECTION C. Use the NEAREST structural invalidation plus a small buffer; never widen to distant HTF levels.',
         '9. TAKE PROFIT: TP1 must target a major 1H or 4H opposing liquidity pool. The distance from Entry to TP1 must provide a Risk-to-Reward ratio of at least 2.0. TP2 and TP3 extend to the next major pools, including PREVIOUS_DAY_HIGH/LOW and completed session highs/lows. Targets must be ahead of the entry and must remain unused in the supplied history.',
-        '10. RISK/REWARD: calculate risk and reward from the exact entry, stop and targets. TP1 must be at least 2.0R; do not move the structural stop or invent a target merely to improve RR.',
-        '11. ENTRY PRICE: Because this is a pending limit order, you have the flexibility to place the entry deeper inside the OB/FVG (e.g., at the 50% equilibrium level or closer to the Stop Loss) to mathematically ensure a 2.0+ RR to TP1, as long as the entry remains structurally valid. Do not use a price outside the identified zone. A pending limit may wait for a retracement; it does not need current price to touch the zone.',
+        '10. RISK/REWARD: See SECTION D. RR_TP1 is a hard gate at 2.00; below 2.00 is NO_TRADE, never a caveated ACTION.',
+        '11. ENTRY PRICE: See SECTION E. Entry may deepen inside the OB/FVG toward equilibrium or the stop side, but must remain inside the zone and on the correct side of CURRENT_PRICE.',
         '12. NO_TRADE: return NO_TRADE when the raw candles do not contain a clear swing, sweep, OB/FVG, structural stop and opposing liquidity target in the same directional thesis.',
         '13. EVIDENCE: REASON must name the source timestamps and levels for the sweep, OB/FVG, stop and target. Do not expose chain-of-thought; summarize the factual evidence.',
         '14. OUTPUT: return exactly the ACTION contract below. Do not return JSON, Markdown, prose outside the contract or a candidate ID.',
         '15. HTF ALIGNMENT: You are provided raw 1D and 4H candles. You must identify the major 1D/4H Order Blocks and Fair Value Gaps. DO NOT take a 15M or 5M execution setup that is running directly into a major opposing 1D/4H zone. The HTF zones act as the ultimate Take Profit targets and the ultimate barriers for Stop Losses.',
         '16. MTF CONFLUENCE: Use the 4H candles to identify the dominant direction and major Order Blocks. Only take 15M/5M setups that align with the 4H structure. Do not take a 15M BUY if the 4H is currently in a massive supply zone.',
-        '17. KILLZONE CONFIDENCE PENALTY: If the current server time is OUTSIDE the London (02:00-05:00 EST) or New York (07:00-10:00 EST) Killzones, you must deduct 25% from your final CONFIDENCE score. Do not return NO_TRADE solely for being outside the Killzone.'
+        '17. KILLZONE CONFIDENCE PENALTY: If the current server time is OUTSIDE the London (02:00-05:00 EST) or New York (07:00-10:00 EST) Killzones, you must deduct 25% from your final CONFIDENCE score. Do not return NO_TRADE solely for being outside the Killzone.',
+        '',
+        '=== SECTION B: RULE 4 (REPLACED) - ORDER BLOCK DEFINITION ===',
+        'An Order Block is the last opposite-direction candle before the displacement leg that breaks a swing or creates the FVG.',
+        '- For a bearish OB: the last BULLISH candle (close > open) before the down leg.',
+        '- For a bullish OB: the last BEARISH candle (close < open) before the up leg.',
+        "The OB zone is that candle's BODY (open-to-close). The full high-low range may be cited only as a secondary reference, never as the entry zone.",
+        'PROHIBITED: using the wick of the sweep/rejection candle itself as the OB. The sweep candle is the confirmation, not the zone.',
+        'If the last opposite-direction candle is itself the displacement candle, the OB does not exist - return NO_TRADE or find a different timeframe.',
+        '',
+        '=== SECTION C: RULE 8 (REPLACED) - STOP LOSS MUST BE THE NEAREST INVALIDATION ===',
+        'Place STOP_LOSS just beyond the structural level that, if taken, proves the setup wrong. For a SELL that is: the sweep wick high and the OB far edge - whichever is closer - plus a small buffer. For a BUY: the sweep wick low and the OB far edge, plus a small buffer.',
+        '- Buffer guidance (XAU/USD): 0.50-2.00 above/below the invalidation level. Scale proportionally for other symbols.',
+        '- DO NOT widen the stop to swallow distant HTF swing highs/lows, previous-day extremes, or round numbers unless that level IS the immediate invalidation of this specific setup. Distant HTF levels are context, not stop anchors.',
+        '- RATIONALE: an inflated stop is the single largest destroyer of RR. The nearest-valid-stop is mandatory. If the nearest valid stop still yields RR < 2.00, the setup is dead - see Rule 10.',
+        '',
+        '=== SECTION D: RULE 10 (REPLACED) - RR IS A HARD GATE ===',
+        'Compute explicitly and include in REASON:',
+        'RISK = |ENTRY - STOP_LOSS|',
+        'REWARD_TP1 = |TP1 - ENTRY|',
+        'RR_TP1 = REWARD_TP1 / RISK (two decimals)',
+        'RR_TP1 must be >= 2.00.',
+        '- Never move the stop inward past a valid invalidation to fix RR.',
+        '- Never inflate TP1 past the nearest major pool to fix RR.',
+        '- Never invent a target.',
+        '- If RR_TP1 < 2.00 after applying Rule 8 (nearest stop) and Rule 11 (entry depth within the zone), the ONLY output is NO_TRADE.',
+        '- Stating "RR is below 2.0" or "setup downgraded" in REASON while still returning a live ACTION is a contract violation.',
+        '',
+        '=== SECTION E: RULE 11 (REPLACED) - ENTRY DEPTH IS BOUNDED ===',
+        'You may place ENTRY deeper inside the OB/FVG (toward the equilibrium / toward the stop side) to improve RR, subject to ALL of:',
+        '(a) ENTRY remains strictly inside the OB body or FVG gap.',
+        '(b) ENTRY does not cross the far edge of the zone.',
+        '(c) ENTRY is on the correct side of CURRENT_PRICE (BUY below, SELL above).',
+        '(d) The stop remains the NEAREST structural invalidation from Rule 8.',
+        'If the 2.0R requirement can only be met by placing ENTRY outside the zone, or by widening the stop, then NO qualifying setup exists -> NO_TRADE.',
+        '"Adjusted entry would exceed structural zone" is a NO_TRADE condition, not a reason to return the unadjusted trade anyway.',
+        '',
+        '=== SECTION F: NEW RULE - DIRECTIONAL PRIORITY ===',
+        '1. If DAILY_BIAS is BULLISH, a BUY setup is the primary thesis. A SELL_LIMIT requires a completed 4H bearish MSS (closed break of a named 4H swing low, timestamp cited) plus a bearish sweep. Absent that -> BUY only, or NO_TRADE.',
+        '2. If DAILY_BIAS is BEARISH, mirror the above.',
+        '3. When a session low/high sweep occurs (Asia/London/NY), the reclaim direction is the higher-probability thesis. Do not fade a session sweep against bias.',
+        '4. When two valid setups exist, choose the one aligned with DAILY_BIAS. Only override when the counter-bias setup has a 4H MSS AND a higher RR.',
+        '',
+        '=== SECTION G: NO_TRADE HARD GATES (ANY ONE TRIGGERS NO_TRADE) ===',
+        'N1. RR_TP1 < 2.00 from the nearest valid stop.',
+        'N2. Entry requires leaving the OB body / FVG gap to reach 2.0R.',
+        'N3. Counter-bias direction without a named 4H MSS.',
+        'N4. No genuine sweep (wick beyond structure + rejection close).',
+        'N5. The identified "OB" is the sweep candle wick.',
+        'N6. TP1 is not the nearest unused major 1H/4H opposing pool.',
+        'N7. Raw candles conflict and no clean thesis exists.',
+        'N8. Any self-audit GATE_1..GATE_6 fails.',
+        '',
+        '=== SECTION H: CONFIDENCE CALIBRATION ===',
+        'Start at 100% and subtract:',
+        '-25% outside London/NY Killzone',
+        '-15% setup relies on 15M/5M only (no 1H/4H confluence)',
+        '-15% minor liquidity pool used for TP1 instead of a major HTF pool',
+        '-10% sweep is a single-candle wick with no displacement follow-through',
+        '-10% entry at the near edge of the zone rather than equilibrium',
+        '-10% HTF (1D/4H) structure only weakly supports the direction',
+        'Report CONFIDENCE: 0% when NO_TRADE. Never report > 75% on a setup that required any Rule 11 adjustment, and never report > 60% outside Killzone.',
+        '',
+        '=== SECTION I: WORKED REJECTION EXAMPLE (DO NOT REPEAT THIS ERROR) ===',
+        'Case: SELL_LIMIT, ENTRY 4022.50, SL 4034.50, TP1 4000.50.',
+        'RISK 12.00, REWARD 22.00, RR 1.83 -> fails Rule 10.',
+        'The stop was widened to 4034.50 to sit beyond a 4H swing high and PDH, when the nearest invalidation was the 1H sweep wick at 4025.63.',
+        'With a valid stop at ~4026.80 the trade would have passed, but the AI did not apply Rule 8.',
+        'The AI then wrote "RR below 2.0, setup downgraded" and still returned the live ACTION.',
+        'CORRECT OUTPUT in that situation is NO_TRADE, never a caveated ACTION.',
+        '',
+        'SECTION J: See the amended OUTPUT CONTRACT at the end of this packet.'
     ];
 }
 
@@ -20309,14 +20395,15 @@ function buildRawCandleAiInstruction() {
         'Analyze the raw candles independently. The deterministic POI/FVG/zone/candidate engines are disabled; only the factual macro liquidity levels are supplied.',
         'First identify the dominant 1D/4H structure and major HTF zones. Then identify the highest-quality pending limit order, BUY or SELL, from your own reading of the 1D, 4H, 1H, 15M and 5M closed candles.',
         'Ensure the entry is on the correct side of the current price: BUY_LIMIT below current price, SELL_LIMIT above current price.',
-        'Place the Stop Loss behind a clear structural swing high/low. Keep it beyond the source OB/FVG boundary.',
-        'Place TP1 at a major 1H or 4H opposing liquidity pool that provides at least 2.0R from entry. Use the following opposing pools for TP2 and TP3.',
-        'Calculate risk/reward from the exact values you return. Do not use any hidden deterministic level.',
-        'Because this is a pending limit, prefer a deeper structurally valid entry inside the OB/FVG when needed to secure at least 2.0R to TP1.',
-        'If the raw data supports both directions, choose the setup with the clearest sweep, displacement, OB/FVG and liquidity path.',
+        'Place the Stop Loss at the NEAREST structural invalidation, not a distant HTF swing, previous-day extreme or round number.',
+        'Place TP1 at the nearest unused major 1H or 4H opposing liquidity pool that provides at least 2.0R from entry. Use the following opposing pools for TP2 and TP3.',
+        'Run the SECTION A self-audit before writing the contract. If any gate fails, return NO_TRADE with zero geometry.',
+        'Calculate RISK, REWARD_TP1 and RR_TP1 from the exact values you return. RR_TP1 must be at least 2.00; never return a live ACTION with a caveat when it is lower.',
+        'Because this is a pending limit, you may deepen the entry inside the OB/FVG toward equilibrium or the stop side, but never outside the zone.',
+        'If the raw data supports both directions, choose the setup aligned with DAILY_BIAS or the one with a named 4H MSS and higher RR.',
         'If no qualifying setup exists, return ACTION: NO_TRADE with the zero-geometry contract.',
         'Include a concrete MANAGEMENT instruction for the completed trade.',
-        'Output the exact ACTION contract (Entry, SL, TP1, TP2, TP3, CONFIDENCE, MANAGEMENT, REASON) based entirely on its own reading of the raw data.'
+        'Output the exact ACTION contract (Entry, SL, TP1, TP2, TP3, RISK, RR_TP1, CONFIDENCE, MANAGEMENT, REASON) based entirely on its own reading of the raw data.'
     ];
 }
 
@@ -20403,7 +20490,11 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     lines.push(...buildRawCandleAiInstruction(), '');
     lines.push(RAW_CANDLE_AI_OUTPUT_CONTRACT);
     const packetText = lines.join('\n');
-    const numberedRules = ghostRules.filter(rule => /^\d+\.\s/.test(rule));
+    const baseRuleStart = ghostRules.findIndex(rule => rule.startsWith('=== BASE RULE INDEX'));
+    const baseRuleEnd = ghostRules.findIndex((rule, index) => index > baseRuleStart && rule.startsWith('=== SECTION B'));
+    const numberedRules = ghostRules
+        .slice(baseRuleStart + 1, baseRuleEnd > baseRuleStart ? baseRuleEnd : undefined)
+        .filter(rule => /^\d+\.\s/.test(rule));
     lastRawPacketDiagnostic = {
         packet: 'RAW_PACKET_DIAGNOSTIC',
         symbol,
@@ -20424,11 +20515,21 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             warning_injected: serverClock.outside_killzone
         },
         ghost_rules: {
+            version: 'V2.1',
             original_14_included: numberedRules.slice(0, 14).length === 14,
             total_rules: numberedRules.length,
             htf_alignment_included: numberedRules.some(rule => rule.startsWith('15. HTF ALIGNMENT')),
             mtf_confluence_included: numberedRules.some(rule => rule.startsWith('16. MTF CONFLUENCE')),
-            killzone_penalty_included: numberedRules.some(rule => rule.startsWith('17. KILLZONE CONFIDENCE PENALTY'))
+            killzone_penalty_included: numberedRules.some(rule => rule.startsWith('17. KILLZONE CONFIDENCE PENALTY')),
+            self_audit_included: ghostRules.some(rule => rule.startsWith('=== SECTION A: MANDATORY PRE-OUTPUT SELF-AUDIT')),
+            body_ob_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION B: RULE 4 (REPLACED)')),
+            nearest_invalidation_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION C: RULE 8 (REPLACED)')),
+            hard_rr_gate_included: ghostRules.some(rule => rule.startsWith('=== SECTION D: RULE 10 (REPLACED)')),
+            bounded_entry_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION E: RULE 11 (REPLACED)')),
+            directional_priority_included: ghostRules.some(rule => rule.startsWith('=== SECTION F: NEW RULE - DIRECTIONAL PRIORITY')),
+            no_trade_hard_gates_included: ghostRules.some(rule => rule.startsWith('=== SECTION G: NO_TRADE HARD GATES')),
+            confidence_calibration_included: ghostRules.some(rule => rule.startsWith('=== SECTION H: CONFIDENCE CALIBRATION')),
+            worked_rejection_example_included: ghostRules.some(rule => rule.startsWith('=== SECTION I: WORKED REJECTION EXAMPLE'))
         }
     };
     if (rawPacketDiagnosticEnabled()) console.log('RAW_PACKET_DIAGNOSTIC', lastRawPacketDiagnostic);
@@ -28958,6 +29059,8 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
         tp1: number(fields.TP1),
         tp2: number(fields.TP2),
         tp3: number(fields.TP3),
+        risk: number(fields.RISK),
+        rr_tp1: number(fields.RR_TP1),
         confidence: number(fields.CONFIDENCE),
         timeframe_used: fields.TIMEFRAME_USED ? fields.TIMEFRAME_USED.trim().toUpperCase() : null,
         management: fields.MANAGEMENT || null,
