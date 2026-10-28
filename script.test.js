@@ -10799,8 +10799,10 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         for (let step = 1; step <= 9; step += 1) {
             expect(packet).toContain('STEP ' + step + '.');
         }
-        expect(packet).toContain('STEP 8. VERIFY ARITHMETIC TWICE:');
-        expect(packet).toContain('STEP 9. Emit the JSON object. No prose. No commentary. No markdown fences.');
+        expect(packet).toContain('STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles.');
+        expect(packet).toContain('STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3. You MUST align this setup with the current context from STEP 6.');
+        expect(packet).toContain('STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.');
+        expect(packet).toContain('STEP 9. Emit the JSON object.');
         expect(packet).toContain('=== SECTION L: DAILY BIAS ===');
         expect(packet).toContain('D1 = the LAST row. D2 = the row');
         expect(packet).toContain('CONTIGUOUS - no rows between them may be skipped.');
@@ -10824,6 +10826,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('Outside all three = OUTSIDE, apply');
         expect(packet).toContain('Do not return NO_TRADE solely for being outside killzone.');
         expect(packet).toContain('=== SETUP CONSTRUCTION ===');
+        expect(packet).toContain('=== MARKET CONTEXT & REACTION ===');
+        expect(packet).toContain('Do not blindly pick old Order Blocks. Read how the market is reacting TODAY.');
+        expect(packet).toContain('If the market is strongly TRENDING today, only take setups that align with the trend continuation.');
+        expect(packet).toContain('If the market is RANGING today (e.g., price bouncing between Asia High and Asia Low), look for sweep-rejections at the edges of the range.');
+        expect(packet).toContain('Favor Order Blocks and sweeps that were created TODAY (or in the most recent session) over 2-day-old zones.');
         expect(packet).toContain('The OB is the last opposite-direction candle before the displacement leg.');
         expect(packet).toContain('The OB zone is that candle\'s BODY (open-to-close). The wick is never the OB.');
         expect(packet).toContain('Place stop_loss at the NEAREST structural invalidation:');
@@ -10837,6 +10844,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('WRONG TP1: 4054.53 (already body-broken). This is a contract violation.');
         expect(packet).toContain('=== OUTPUT CONTRACT ===');
         expect(packet).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",');
+        expect(packet).toContain('"current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",');
         expect(packet).toContain('"audit": {');
         expect(packet).toContain('"breaks": [');
         expect(packet).toContain('"killzone": {');
@@ -10900,6 +10908,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             mandatory_sweep_scan_included: true,
             utc_killzone_rule_included: true,
             setup_construction_included: true,
+            market_context_rule_included: true,
             order_block_rule_included: true,
             nearest_invalidation_rule_included: true,
             target_relocation_rule_included: true,
@@ -10946,6 +10955,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
     const jsonResponse = overrides => ({
         action: 'BUY_LIMIT',
         setup: 'SWEEP+OB',
+        current_market_context: 'TRENDING_BULLISH',
         entry: 4034,
         stop_loss: 4027.5,
         tp1: 4065.7,
@@ -10968,6 +10978,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.source_format).toBe('JSON');
         expect(parsed.issues).toEqual([]);
         expect(parsed.action).toBe('BUY_LIMIT');
+        expect(parsed.current_market_context).toBe('TRENDING_BULLISH');
         expect([parsed.entry, parsed.stop_loss, parsed.tp1, parsed.tp2, parsed.tp3]).toEqual([4034, 4027.5, 4065.7, 4070.84, 4088.37]);
         expect(parsed.audit.sweeps).toHaveLength(5);
         expect(parsed.audit.breaks).toHaveLength(2);
@@ -11010,6 +11021,13 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_AUDIT_SWEEPS_INVALID');
         expect(parsed.issues).toContain('RAW_AUDIT_BREAKS_INVALID');
         expect(parsed.issues).toContain('RAW_AUDIT_KILLZONE_INVALID');
+    });
+
+    it('rejects an invalid current market context', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ current_market_context: 'BULLISH' })));
+        expect(parsed.valid).toBe(false);
+        expect(parsed.issues).toContain('RAW_CURRENT_MARKET_CONTEXT_INVALID');
     });
 
     it('rejects extra fields outside the V2.4 schema', () => {

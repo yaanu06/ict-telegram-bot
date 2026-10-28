@@ -808,21 +808,21 @@ function getPrec(p, metadata = {}) { return getMarketSettings(p, metadata).prec;
 // ============================================
 async function loadKeys() {
     const s = localStorage.getItem('ict_bot_keys');
-    if (s) { 
-        try { 
-            const k = JSON.parse(s); 
-            TWELVE_DATA_KEY = k.twelveData||''; 
-            DEEPSEEK_API_KEY = k.deepseek||''; 
-            DEEPSEEK_API_URL = k.deepseekUrl || 'https://api.deepseek.com/chat/completions'; 
+    if (s) {
+        try {
+            const k = JSON.parse(s);
+            TWELVE_DATA_KEY = k.twelveData||'';
+            DEEPSEEK_API_KEY = k.deepseek||'';
+            DEEPSEEK_API_URL = k.deepseekUrl || 'https://api.deepseek.com/chat/completions';
             GITHUB_PAT = k.githubPat || '';
             GITHUB_REPO = k.githubRepo || 'yaanu06/ict-telegram-bot';
-            return true; 
-        } catch(e) {} 
+            return true;
+        } catch(e) {}
     }
     return false;
 }
 
-async function saveKeys(tk, dk, du, ghToken, ghRepo) { 
+async function saveKeys(tk, dk, du, ghToken, ghRepo) {
     GITHUB_PAT = ghToken || '';
     GITHUB_REPO = ghRepo || 'yaanu06/ict-telegram-bot';
     localStorage.setItem('ict_bot_keys', JSON.stringify({
@@ -831,18 +831,18 @@ async function saveKeys(tk, dk, du, ghToken, ghRepo) {
         deepseekUrl: du,
         githubPat: GITHUB_PAT,
         githubRepo: GITHUB_REPO
-    })); 
-    TWELVE_DATA_KEY = tk; DEEPSEEK_API_KEY = dk; 
-    DEEPSEEK_API_URL = du || 'https://api.deepseek.com/chat/completions'; 
-    updateKeyStatus(); 
+    }));
+    TWELVE_DATA_KEY = tk; DEEPSEEK_API_KEY = dk;
+    DEEPSEEK_API_URL = du || 'https://api.deepseek.com/chat/completions';
+    updateKeyStatus();
 }
 
-function clearKeys() { 
-    localStorage.removeItem('ict_bot_keys'); 
+function clearKeys() {
+    localStorage.removeItem('ict_bot_keys');
     TWELVE_DATA_KEY=''; DEEPSEEK_API_KEY=''; GITHUB_PAT=''; GITHUB_REPO='yaanu06/ict-telegram-bot';
-    DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions'; 
-    updateKeyStatus(); 
-    showNotif('🗑️ Keys removed','warning'); 
+    DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
+    updateKeyStatus();
+    showNotif('🗑️ Keys removed','warning');
 }
 
 function updateKeyStatus() {
@@ -869,7 +869,7 @@ function updateKeyStatus() {
 }
 
 function showSetup() {
-    const ex = document.getElementById('setupOverlay'); 
+    const ex = document.getElementById('setupOverlay');
     if(ex) ex.remove();
     document.body.insertAdjacentHTML('beforeend', `
         <div class="setup-overlay" id="setupOverlay">
@@ -1110,7 +1110,7 @@ function init() {
 
 function updateTime() {
     const n = new Date();
-    document.getElementById('liveTime').innerHTML = 
+    document.getElementById('liveTime').innerHTML =
         `${n.toLocaleDateString('en-US', {month:'short', day:'numeric'})} ${n.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', second:'2-digit'})}`;
 }
 
@@ -1120,7 +1120,7 @@ function updatePairs(cat) {
         forex: ['EUR/USD','GBP/USD','USD/JPY','AUD/USD','USD/CAD','USD/CHF','NZD/USD','EUR/GBP','EUR/JPY','GBP/JPY'],
         metals: ['XAU/USD','XAG/USD']
     };
-    document.getElementById('pairSelect').innerHTML = p[cat].map(x => 
+    document.getElementById('pairSelect').innerHTML = p[cat].map(x =>
         `<option value="${x}">${getPairDisplayName(x)}</option>`
     ).join('');
     pair = p[cat][0];
@@ -2115,7 +2115,7 @@ function detectFVG(d, pairLocal = pair, symbolMetadata = {}) {
         const formationData = d.slice(0, i + 2);
         const formationAtr = formationData.length >= 15 ? atr(formationData, 14) : 0;
         const thresh = Math.max(settings.pipSize, formationAtr * 0.02, Math.abs(curr.c) * 0.00005);
-        
+
         if(prev.h < next.l && next.l - prev.h > thresh) {
             // The gap is confirmed by `next`. Keep its source index so the
             // market map can give the zone a canonical creation time. Without
@@ -2734,7 +2734,7 @@ function detectOrderBlocks(data, direction) {
     for(let i = 2; i < data.length - 1; i++) {
         const curr = data[i];
         const next = data[i + 1];
-        
+
         if(direction === 'BUY') {
             if(curr.c < curr.o && next.c > next.o && next.h > curr.h) {
                 obs.push({
@@ -4540,12 +4540,12 @@ function calcStopLoss(data, direction, entry, zone, msnr, tf, customATR = null, 
     const settings = getMarketSettings(p, symbolMetadata);
     const prec = settings.prec;
     const factor = Math.pow(10, prec);
-    
+
     // Ensure SL is at least 2x ATR away from entry (min) and 3x ATR for max
     const minMultiplier = settings.minSLMultiplier || 1.5;
     const minSLDist = atrVal * minMultiplier;
     const maxSLDist = Math.max(minSLDist, atrVal * 3.0);
-    
+
     let slDist;
     let sl;
     const zoneLow = zone ? (zone.low || zone.p * 0.9995) : entry * 0.995;
@@ -4591,9 +4591,9 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
     const settings = getMarketSettings(pairLocal, symbolMetadata);
     const prec = settings.prec;
     const factor = Math.pow(10, prec);
-    
+
     let candidates = [];
-    
+
     // 1. MSNR Levels (Tighter ±0.05% boundaries)
     if(direction === 'BUY') {
         for(const sup of msnr.allSupports) {
@@ -4626,7 +4626,7 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
             }
         }
     }
-    
+
     // 2. FVG (Exact FVG low and high boundaries)
     for(const fvg of fvgs) {
         const distPct = Math.abs(price - fvg.m) / price * 100;
@@ -4653,7 +4653,7 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
             });
         }
     }
-    
+
     // 3. Order Blocks (Exact OB low and high boundaries)
     for(const ob of obs) {
         const mid = (ob.low + ob.high) / 2;
@@ -4681,7 +4681,7 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
             });
         }
     }
-    
+
     // 4. Swing Levels (Exact swing high/low price with tight ±0.05% boundaries)
     if(direction === 'BUY') {
         for(const low of swings.L) {
@@ -4714,7 +4714,7 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
             }
         }
     }
-    
+
     // 5. Turtle Soup
     if(tbs.detected && tbs.type === direction) {
         const distPct = Math.abs(price - tbs.keyLevel) / price * 100;
@@ -4730,7 +4730,7 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
     }
 
     if(candidates.length === 0) return null;
-    
+
     // Calculate Quality Score for each candidate (Freshness + Pattern Base)
     // STRUCTURAL: a fresh liquidity sweep or breakout-retest at the candidate level
     // boosts its ranking so it wins over plain MSNR/FVG zones.
@@ -4753,13 +4753,13 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
         }
         c.qualityScore = q;
     }
-    
+
     // REACHABILITY FILTER: A limit order entry must be within ~3x ATR of price,
     // otherwise price will rarely reach it and the setup never triggers.
     const maxEntryDist = Math.max(atrVal * LIMIT_ORDER_MAX_DIST_ATR, settings.pipSize * 10);
     const maxDistPct = (maxEntryDist / price) * 100;
     const reachable = candidates.filter(c => (c.distancePct || 0) <= maxDistPct);
-    
+
     if(reachable.length === 0) {
         const nearestPct = Math.min(...candidates.map(c => c.distancePct)).toFixed(2);
         console.log(`  ⚠️ All zones beyond ${LIMIT_ORDER_MAX_DIST_ATR}x ATR (nearest ${nearestPct}%) — using nearest zone anyway (fill probability lower)`);
@@ -4768,10 +4768,10 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
         const nearest = candidates.sort((a, b) => a.distancePct - b.distancePct)[0];
         reachable.push(nearest);
     }
-    
+
     // Sort by QUALITY SCORE within reachable zones (highest quality first)
     reachable.sort((a, b) => b.qualityScore - a.qualityScore || a.distancePct - b.distancePct);
-    
+
     const best = reachable[0];
 
     // GHOST MACHINE ENTRY PLACEMENT: Use zone edge CLOSEST to current price for
@@ -4786,7 +4786,7 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
     } else {
         entry = best.price;
     }
-    
+
     const msnrLevels = direction === 'BUY' ? msnr.allSupports : msnr.allResistances;
     if(msnrLevels && msnrLevels.length > 0) {
         let nearestMsnr = msnrLevels[0];
@@ -4804,14 +4804,14 @@ function findPatternZone(data, price, direction, customATR = null, pairLocal = p
     }
 
     entry = Math.round(entry * factor) / factor;
-    
+
     // STOP LOSS PRECISION: Keep current SL (1.5% max, 2.5x ATR max, DO NOT WIDEN SL)
     const slRes = calcStopLoss(data, direction, entry, best, msnr, null, atrVal, pairLocal, symbolMetadata);
     const sl = slRes.price;
-    
+
     // ZONE-LEVEL INDICATOR IDENTIFICATION: does the zone sit at an oversold/overbought/discount/premium extreme?
     const zoneIndicators = evaluateZoneIndicators(data, best, direction);
-    
+
     return {
         entry: entry,
         sl: sl,
@@ -5018,21 +5018,21 @@ function getSession(now = new Date()) {
     const hour = now.getUTCHours();
     const min = now.getUTCMinutes();
     const time = hour + min / 60;
-    
+
     let s = { session: 'OFF-HOURS', multiplier: 0.5, emoji: '🌙', isKillzone: false, isSilverBullet: false };
-    
+
     if(time >= 0 && time < 4) s = { ...s, session: 'ASIA KZ', multiplier: 0.8, emoji: '🌏', isKillzone: true };
     else if(time >= 7 && time < 10) s = { ...s, session: 'LONDON KZ', multiplier: 1.3, emoji: '🇬🇧', isKillzone: true };
     else if(time >= 12 && time < 15) s = { ...s, session: 'NEW_YORK KZ', multiplier: 1.2, emoji: '🇺🇸', isKillzone: true };
     else if(time >= 15 && time < 17) s = { ...s, session: 'LON-CLOSE KZ', multiplier: 0.9, emoji: '🌆', isKillzone: true };
-    
+
     if((time >= 8.5 && time < 9) || (time >= 15 && time < 16) || (time >= 19 && time < 20)) {
         s.isSilverBullet = true;
         s.multiplier += 0.2;
         s.emoji = '🏹';
         s.session += ' + SB';
     }
-    
+
     return s;
 }
 
@@ -5082,7 +5082,7 @@ async function updateMTFDisplay(historyCache = {}) {
                 tr = getCanonicalDisplayedTrend(snapshot);
             }
         } catch(e) { /* ignore */ }
-        
+
         let el = document.getElementById(`trend${t}`);
         if(el) {
             el.innerHTML = tr === 'BULLISH' ? '🟢 Bull' : (tr === 'BEARISH' ? '🔴 Bear' : '⚪ Neut');
@@ -5103,9 +5103,9 @@ async function getAIExecutionDecision(best, price, htfData) {
     if(!hasAiAccess()) {
         return getSimpleDecision(best, price);
     }
-    
+
     const session = getSession();
-    
+
     const riskAmount = best.entry && best.sl ? Math.abs(best.entry - best.sl) : 0;
     const tpDistances = [
         best.entry && best.tp1 ? Math.abs(best.tp1 - best.entry) : 0,
@@ -5151,7 +5151,7 @@ Return ONLY JSON:
         });
 
         const content = data.choices?.[0]?.message?.content;
-        
+
         if(content) {
             try {
                 const parsed = JSON.parse(content);
@@ -5178,7 +5178,7 @@ Return ONLY JSON:
 function getSimpleDecision(best, price) {
     const confidence = best.confidence || 0;
     const distance = Math.abs(best.entryDistancePct !== undefined ? parseFloat(best.entryDistancePct) : (best.distancePct || 100));
-    
+
     if(confidence < MIN_CONFIDENCE) {
         return {
             decision: 'skip',
@@ -5189,7 +5189,7 @@ function getSimpleDecision(best, price) {
             skip_reason: `Confidence ${confidence}% < ${MIN_CONFIDENCE}%`
         };
     }
-    
+
     if(distance <= 1.0) {
         return {
             decision: 'enter_now',
@@ -5200,7 +5200,7 @@ function getSimpleDecision(best, price) {
             skip_reason: null
         };
     }
-    
+
     return {
         decision: 'wait_for_reaction',
         confidence: confidence,
@@ -5775,14 +5775,14 @@ function isPremiumDiscount(data, price) {
 
 async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now = new Date(), pairLocal = pair, symbolMetadata = {}) {
     console.log(`🔍 Analyzing ${tfToAnalyze} on ${pairLocal}...`);
-    
+
     try {
         const entryData = htfData[tfToAnalyze] || await getHistory(tfToAnalyze);
         if(!entryData || entryData.length < 20) {
             console.log(`  ❌ Not enough data for ${tfToAnalyze}`);
             return null;
         }
-        
+
         // 1. ADX Trend Strength — now a CONFIDENCE factor, NOT a whole-timeframe blocker.
         // Weak/ranging trend (like gold's regular chop) no longer deletes the chart; it
         // just lowers confidence. Strong ADX still gets a bonus (below). This lets valid
@@ -5804,19 +5804,19 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
 
         const twelveIndicators = indicators || {};
         const entryATR = twelveIndicators?.atr_api || atr(entryData, 14);
-        
+
         // Get HTF trends
         const dailyDir = await getQuoteDirection('1D', htfData['1D']);
         const h4Dir = await getQuoteDirection('4H', htfData['4H']);
         const h1Dir = await getQuoteDirection('1H', htfData['1H']);
-        
+
         let allSetups = [];
         let session = getSession(now);
-        
+
         // Check BOTH directions
         for(const dir of ['BUY', 'SELL']) {
             console.log(`  → Checking ${dir}...`);
-            
+
             // 4. Confirmation Candle Rating
             const candleCheck = checkConfirmationCandle(entryData, dir);
 
@@ -5840,14 +5840,14 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
                 sl = ltfRefine.sl;
                 console.log(`  🎯 LTF ENTRY TIMED: ${patternResult.zoneType} 4H/1H setup, entry refined ${ltfRefine.baseEntry} → ${entry} on ${ltfRefine.tf}`);
             }
-            
+
             // QUANTUM INTELLIGENCE CHECKS (v8/v9 strategy layer)
             const volTruth = analyzeVolumeTruth(entryData, hasRealVolume(pairLocal, symbolMetadata));
             const sweep = detectLiquiditySweep(entryData, price, dir);
             const displaced = detectDisplacement(entryData, dir);
             const breakoutRetest = detectBreakoutRetest(entryData, price, dir, pairLocal, symbolMetadata);
             const pdZone = isPremiumDiscount(entryData, price);
-            
+
             // Fake / dry volume: now soft confidence penalties (used to hard-reject).
             // Quiet tapes are still tradable in ICT; fake-volume patterns are scored
             // down rather than killed outright.
@@ -5936,7 +5936,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
                 }
             }
             let totalPatternCount = rawPatterns.length;
-            
+
             // Check freshness
             const freshness = checkZoneFreshness(entryData, zone, dir);
             if(freshness.touches > MAX_ZONE_TOUCHES) {
@@ -5945,13 +5945,13 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
                 lastScanRejections.push(msg);
                 continue;
             }
-            
+
             // Calculate TP using MSNR levels
             const risk = Math.abs(entry - sl);
             const settings = getMarketSettings(pairLocal, symbolMetadata);
             const prec = settings.prec;
             const factor = Math.pow(10, prec);
-            
+
             const tps = calcTakeProfits(dir, entry, sl, patternResult.msnr, pairLocal, symbolMetadata);
             let tp1 = tps.tp1;
             let tp2 = tps.tp2;
@@ -5976,44 +5976,44 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             }
 
             const usePartialProfits = totalRR > 4.0 || rr1 > 4.0;
-            
+
             // ============================================
             // CONFIDENCE SCORING
             // ============================================
             let confidence = 0;
             let reasons = [];
-            
+
             // 1. Pattern Score
             let typeScore = patternResult.zone.score || 70;
             confidence += typeScore * 0.25;
             reasons.push(`${patternResult.zoneType} (${typeScore}%)`);
-            
+
             // 2. Distance bonus / Limit Order zone rating
             if(entryDistancePct < 0.5) { confidence += 15; reasons.push('Direct zone'); }
             else if(entryDistancePct <= 1.5) { confidence += 10; reasons.push('Near Limit zone'); }
             else if(entryDistancePct <= 3.0) { confidence += 5; reasons.push('Ghost Limit zone'); }
-            
+
             // 3. Pattern Count
             confidence += Math.min(totalPatternCount * 5, 15);
             reasons.push(`${totalPatternCount} patterns`);
-            
+
             // 4. Freshness (fresh +15, lightly used +3, worn -5)
             if(freshness.fresh) { confidence += 15; reasons.push('Fresh zone'); }
             else if(freshness.partiallyUsed && freshness.touches <= 3) { confidence += 3; reasons.push('Lightly used (+3)'); }
             else { confidence -= 5; reasons.push('Worn zone (-5)'); }
-            
+
             // 5. HTF Alignment Scoring
             if(htfMatch === 3) { confidence += 15; reasons.push(`HTF 3/3 (+15)`); }
             else if(htfMatch === 2) { confidence += 10; reasons.push(`HTF 2/3 (+10)`); }
             else if(htfMatch === 1) { confidence += 5; reasons.push(`HTF 1/3 (+5)`); }
             else { confidence += 0; reasons.push(`HTF 0/3 (+0)`); }
-            
+
             // 6. TBS Bonus
             if(patternResult.tbsDetected) {
                 confidence += 10;
                 reasons.push('TBS confirmed');
             }
-            
+
             // 7. CRT Bonus
             if(patternResult.crtState === 'EXPANDING') {
                 confidence += 5;
@@ -6034,7 +6034,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             if(volTruth.surge) { confidence += 10; reasons.push('Volume surge (+10)'); }
             if(fakeVolume) { confidence -= 8; reasons.push('FAKE breakout volume (-8)'); }
             if(dryVolume) { confidence -= 5; reasons.push('Volume dry (-5)'); }
-            
+
             // 11. Liquidity Sweep (sweep then reclaim = institutional)
             if(sweep) {
                 confidence += 10;
@@ -6043,20 +6043,20 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
 
             // 10b. Compression (soft bonus when present — pullback/continuation zone)
             if(compressed) { confidence += 6; reasons.push('Compression (+6)'); }
-            
+
             // 12. Displacement (strong directional body)
             if(displaced) { confidence += 8; reasons.push('Displacement (+8)'); }
-            
+
             // 13. Breakout-Retest (price back at broken level)
             if(breakoutRetest) {
                 confidence += 10;
                 reasons.push(`Breakout retest @${breakoutRetest.level.toFixed(settings.prec)} (+10)`);
             }
-            
+
             // 13. Premium/Discount (discount buy, premium sell)
             if(dir === 'BUY' && pdZone.zone === 'discount') { confidence += 5; reasons.push('Discounted zone (+5)'); }
             if(dir === 'SELL' && pdZone.zone === 'premium') { confidence += 5; reasons.push('Premium zone (+5)'); }
-            
+
             // 14. Path Clearance (obstacles between entry and TP reduce confidence)
             const clearance = checkPathClearance(entryData, entry, tp1, dir);
             if(!clearance.clear) {
@@ -6075,9 +6075,9 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
                 confidence += 10;
                 reasons.push('Fib confirmed (+10)');
             }
-            
+
             confidence = Math.min(confidence, 100);
-            
+
             // STRUCTURAL PATTERNS: Pin bar, Engulfing, Inside Bar
             const atr14 = atr(entryData, 14);
             const pinBar = detectPinBar(entryData, price, dir, atr14);
@@ -6086,13 +6086,13 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             if(pinBar) { confidence += 5; reasons.push('Pin bar (+5)'); }
             if(engulfing) { confidence += 5; reasons.push('Engulfing (+5)'); }
             if(insideBar) { confidence += 2; reasons.push('Inside bar (+2)'); }
-            
+
             // Equal highs/lows liquidity pools
             const pools = detectLiquidityPools(entryData);
             if((dir === 'BUY' && pools.equalLows.length) || (dir === 'SELL' && pools.equalHighs.length)) {
                 confidence += 5; reasons.push('Equal H/L liquidity (+5)');
             }
-            
+
             // Market structure sequence
             const structure = analyzeMarketStructure(entryData);
             if(structure.length) { confidence += 3; reasons.push(`Structure: ${structure.join('/')} (+3)`); }
@@ -6244,18 +6244,18 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
                 lastScanRejections.push(msg);
                 continue;
             }
-            
+
             console.log(`  → ${dir} confidence: ${confidence.toFixed(0)}% (${reasons.join(', ')})`);
             console.log(`  → [CONFIDENCE BREAKDOWN] Total: ${confidence.toFixed(1)}% | ATR: ${entryATR ? entryATR.toFixed(4) : 'N/A'} | Reasons: ${reasons.join(' | ')}`);
             console.log(`  → Entry: ${entry}, SL: ${sl}, TP1: ${tp1}, TP2: ${tp2}, TP3: ${tp3}, RR: 1:${totalRR.toFixed(1)}, PartialProfits: ${usePartialProfits}`);
-            
+
             if(confidence < MIN_CONFIDENCE) {
                 const msg = `${tfToAnalyze} ${dir}: Confidence ${confidence.toFixed(0)}% < ${MIN_CONFIDENCE}% minimum threshold`;
                 console.log(`  ❌ ${msg}`);
                 lastScanRejections.push(msg);
                 continue;
             }
-            
+
             const dynamicRisk = getDynamicRiskPercent(confidence);
             const tmRules = getTradeManagementRules(confidence);
 
@@ -6289,12 +6289,12 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
                 zoneIndicators: zi
             });
         }
-        
+
         if(allSetups.length === 0) return null;
-        
+
         allSetups.sort((a, b) => b.confidence - a.confidence);
         const best = allSetups[0];
-        
+
         return {
             timeframe: tfToAnalyze,
             direction: best.dir,
@@ -6331,7 +6331,7 @@ async function evaluateSetup(tfToAnalyze, price, htfData, indicators = {}, now =
             zone_condition_detail: best.zoneIndicators ? best.zoneIndicators.detail : '',
             setupScore: best.confidence
         };
-        
+
     } catch(e) {
         console.error(`❌ Error in ${tfToAnalyze}:`, e);
         return null;
@@ -17159,6 +17159,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '{',
     '  "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",',
     '  "setup": "<OB|FVG|SUPPLY|DEMAND|FLIP|BREAKER|SWEEP|combined with +, or NONE>",',
+    '  "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",',
     '  "entry": <number>,',
     '  "stop_loss": <number>,',
     '  "tp1": <number>,',
@@ -20359,23 +20360,15 @@ MACRO CONTEXT: DAILY_BIAS, daily OHLC, PDH/PDL and completed session highs/lows 
 === DEEPSEEK REASONING PROTOCOL (READ FIRST) ===
 You are running in THINK MODE. Follow this exact sequence:
 
-STEP 1. Derive the Section L bias from the last three contiguous closed 1D
-        candles. Write down D3, D2, D1 highs and lows. State the bias.
-STEP 2. Identify the last completed 4H MSS. Note the timestamp.
-STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps. Note
-        every sweep found (timeframe, timestamp, level, direction, tier).
-STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS
-        from the sweep list. These are momentum evidence, not sweeps.
-STEP 5. Compute the killzone from SERVER_TIME_UTC using fixed UTC windows.
-STEP 6. Select the primary thesis (Section M directional priority).
-STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
-STEP 8. VERIFY ARITHMETIC TWICE:
-         - RISK = |entry - stop_loss| (recompute)
-         - REWARD = |tp1 - entry| (recompute)
-         - RR = REWARD / RISK (round to 2 decimals, verify again)
-         If RR < 2.00, relocate TP1 to the next unused pool and recompute.
-         Only if RR still < 2.00 after relocation -> NO_TRADE.
-STEP 9. Emit the JSON object. No prose. No commentary. No markdown fences.
+STEP 1. Derive the Section L bias from the last three contiguous closed 1D candles.
+STEP 2. Identify the last completed 4H MSS.
+STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps.
+STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS from the sweep list.
+STEP 5. Compute the killzone from SERVER_TIME_UTC.
+STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles. Is price currently TRENDING (making clean higher highs/higher lows), RANGING (stuck between a clear high and low), or CONSOLIDATING (tight chop)?
+STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3. You MUST align this setup with the current context from STEP 6. If ranging, target the range boundaries. If trending, target liquidity continuation.
+STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.
+STEP 9. Emit the JSON object.
 
 The JSON object is the only permitted output.
 
@@ -20436,6 +20429,12 @@ Inside any window = INSIDE, no penalty. Outside all three = OUTSIDE, apply
 The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === SETUP CONSTRUCTION ===
+
+=== MARKET CONTEXT & REACTION ===
+Do not blindly pick old Order Blocks. Read how the market is reacting TODAY.
+- If the market is strongly TRENDING today, only take setups that align with the trend continuation.
+- If the market is RANGING today (e.g., price bouncing between Asia High and Asia Low), look for sweep-rejections at the edges of the range.
+- Favor Order Blocks and sweeps that were created TODAY (or in the most recent session) over 2-day-old zones.
 
 ORDER BLOCK:
 The OB is the last opposite-direction candle before the displacement leg.
@@ -20503,7 +20502,7 @@ function buildRawCandleAiInstruction() {
         'Follow the DEEPSEEK REASONING PROTOCOL in order. Derive the Section L bias from the last three contiguous closed 1D candles; Section L overrides the packet label.',
         'Identify the last completed 4H MSS, then enumerate both the most recent bullish and bearish sweep on every timeframe. Separate BREAKDOWN, BREAKOUT, FAILED_BREAKDOWN and FAILED_BREAKOUT events from the sweep list.',
         'Compute killzone per Section N from SERVER_TIME_UTC using the fixed UTC windows (London 07:00-11:00, Overlap 11:00-12:00, NY 12:00-15:00); do not apply DST adjustments.',
-        'Select the primary thesis using Section M directional priority and construct the candidate: OB body, entry, stop, TP1/TP2/TP3.',
+        'Read the current 1H/15M market context (TRENDING_BULLISH, TRENDING_BEARISH, RANGING or CONSOLIDATING), then select the primary thesis using Section M directional priority and construct a candidate aligned to that context: OB body, entry, stop, TP1/TP2/TP3.',
         'Ensure the entry is on the correct side of current price: BUY_LIMIT below current price, SELL_LIMIT above current price.',
         'Place stop_loss at the NEAREST structural invalidation, not a distant HTF swing, previous-day extreme or round number.',
         'Place TP1 at the nearest opposing 1H/4H pool that has not been body-closed through. Wick taps do not disqualify a pool. If TP1 is used, relocate to the next unused pool and recompute RR.',
@@ -20625,12 +20624,13 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             mandatory_sweep_scan_included: ghostRules.some(rule => rule.startsWith('=== SECTION M: SWEEP SCAN ===')),
             utc_killzone_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION N: KILLZONE ===')),
             setup_construction_included: ghostRules.some(rule => rule.startsWith('=== SETUP CONSTRUCTION ===')),
+            market_context_rule_included: ghostRules.some(rule => rule.startsWith('=== MARKET CONTEXT & REACTION ===')),
             order_block_rule_included: ghostRules.some(rule => rule.startsWith('ORDER BLOCK:')),
             nearest_invalidation_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS:')),
             target_relocation_rule_included: ghostRules.some(rule => rule.includes('relocate TP1 to the next unused pool')),
             hard_rr_gate_included: ghostRules.some(rule => rule.includes('RR_TP1 must be >= 2.00')),
             worked_acceptance_example_included: ghostRules.some(rule => rule.startsWith('=== WORKED ACCEPTANCE EXAMPLE ===')),
-            strict_json_schema_included: ghostRules.some(rule => rule.includes('No prose. No commentary. No markdown fences.'))
+            strict_json_schema_included: ghostRules.some(rule => rule.includes('The JSON object is the only permitted output.'))
         }
     };
     if (rawPacketDiagnosticEnabled()) console.log('RAW_PACKET_DIAGNOSTIC', lastRawPacketDiagnostic);
@@ -24330,12 +24330,12 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         }
         console.log('[SCAN] AI parsed', { provider: getAIProvider(), model: getAIModel(), elapsed_ms: Math.round((scanClock() - requestStartedAt) * 100) / 100 });
         const content = data.choices?.[0]?.message?.content;
-        
+
         if (!content) {
             console.error('No content from AI');
             return retryInvalidAI('AI response contained no content');
         }
-        
+
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         if (!jsonMatch) {
             console.error('No JSON found in AI response');
@@ -24486,7 +24486,7 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
             result.ai_decision = 'wait_for_reaction';
             result.wait_condition = result.wait_condition || 'Pending limit setup valid; immediate entry is not active. The limit fills when market price trades at the order price.';
         }
-        
+
         const required = ['direction', 'entry', 'entry_zone', 'stop_loss', 'take_profit_1', 'confidence', 'reasoning'];
         for (const field of required) {
             if (!result[field]) {
@@ -24494,12 +24494,12 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
                 return null;
             }
         }
-        
+
         if (!ictFiniteNumber(result.entry_zone.low) || !ictFiniteNumber(result.entry_zone.high) || result.entry_zone.high < result.entry_zone.low) {
             console.error('AI entry zone is missing or invalid; refusing to invent geometry');
             return null;
         }
-        
+
         if (!result.reasoning.primary) {
             result.reasoning.primary = 'AI analysis completed';
         }
@@ -24519,7 +24519,7 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         if (!result.patterns || !Array.isArray(result.patterns)) {
             result.patterns = [result.entry_zone.source || 'AI Identified'];
         }
-        
+
         if (!result.ai_decision) {
             result.ai_decision = result.confidence >= 70 ? 'enter_now' : 'wait_for_reaction';
         }
@@ -24528,15 +24528,15 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         if (!result.decision || result.decision === result.direction) {
             result.decision = result.direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT';
         }
-        
+
         if (!result.probability) {
             result.probability = result.confidence >= 70 ? 'HIGH' : (result.confidence >= 55 ? 'MEDIUM' : 'LOW');
         }
-        
+
         if (!result.zone_quality) {
             result.zone_quality = result.confidence >= 75 ? 'A' : (result.confidence >= 60 ? 'B' : 'C');
         }
-        
+
         const rrMetrics = calculateRRMetrics(
             result.direction,
             Number(result.entry),
@@ -24558,14 +24558,14 @@ async function askAIToFindSetup(marketData, price, systemPrompt = null, liveMark
         if (Number.isFinite(rrMetrics.actualRR)) {
             result.risk_reward = '1:' + rrMetrics.actualRR.toFixed(2);
         }
-        
+
         if (!result.stop_loss_reason) {
             result.stop_loss_reason = 'Structural level identified by AI';
         }
-        
+
         console.log('✅ AI Setup Generated:', result);
         return result;
-        
+
     } catch (e) {
         const timedOut = e?.name === 'AbortError';
         const transportDiagnostic = e?.transport_diagnostic || null;
@@ -24934,7 +24934,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null, liveMa
     console.log('[SCAN] fallback start', { pair, timestamp: new Date().toISOString() });
     console.log('🔄 Running fallback rule-based scan...');
     showNotif('🔄 Using rule-based fallback...', 'info');
-    
+
     let best = null;
     let bestEvaluation = null;
     let bestCandidate = null;
@@ -25140,11 +25140,11 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null, liveMa
         scanTrace('fallback complete', fallbackStartedAt, { result: 'WAIT', rejected_candidates: rejectedFallbacks.length });
         return;
     }
-    
+
     const st = best.direction === 'BUY' ? 'LONG' : 'SHORT';
     const risk = Math.abs(best.entry - best.sl);
     const rrDisplay = risk > 0 ? (Math.abs(best.tp1 - best.entry) / risk).toFixed(1) : '0.0';
-    
+
     const out = {
         trade_signal: {
             date: new Date().toISOString().split('T')[0],
@@ -25296,11 +25296,11 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null, liveMa
             });
         }
     }
-    
+
     setJsonOutput(out);
     lastSetupSummary = buildSetupSummary(best, st, best.entry, price);
     lastSetupOut = out;
-    
+
     analysis = {
         signalType: st,
         idealEntry: best.entry,
@@ -25323,7 +25323,7 @@ async function runFallbackScan(price, historyCache, quoteSnapshot = null, liveMa
         isFresh: best.isFresh || false,
         distancePct: Math.abs(best.distancePct || 0)
     };
-    
+
     document.getElementById('executeBtn').disabled = false;
     showNotif(`🎯 ${best.timeframe} ${st} | Conf: ${best.confidence}% | ${best.zoneType}`, 'success');
     scanTrace('fallback complete', fallbackStartedAt, { result: best.direction, selected_candidate_id: bestCandidate?.id || null });
@@ -25749,13 +25749,13 @@ async function runAutoScan() {
     const scanStatus = document.getElementById('scanStatus');
     const scanText = document.getElementById('scanText');
     const scanFill = document.getElementById('scanProgressFill');
-    
+
     btn.classList.add('loading');
     btn.disabled = true;
     if (copyRawBtn) copyRawBtn.disabled = true;
     scanStatus.classList.remove('hidden');
     scanTrace('START', scanStartedAt, { pair, timestamp: new Date().toISOString() });
-    
+
     try {
         if (!hasMarketDataAccess()) {
             scanStage = `missing ${getMarketDataProviderLabel()} access`;
@@ -25785,7 +25785,7 @@ async function runAutoScan() {
         if (!Number.isFinite(Number(price))) {
             throw new Error(`${getMarketDataProviderLabel()} returned no usable live price`);
         }
-        
+
         // The live decision path requires these five closed timeframes. Keep
         // 1W available through getHistory()/explicit analysis, but do not
         // spend a provider request on it during every scan when no consumer
@@ -25889,7 +25889,7 @@ async function runAutoScan() {
         }
         scanStage = 'MTF display';
         await updateMTFDisplay(historyCache);
-        
+
         // ============================================
         // ENHANCED AI INTELLIGENCE - Compute on 4H
         // ============================================
@@ -25924,10 +25924,10 @@ async function runAutoScan() {
         const entryContext = buildPreSelectionEntryContext(sessionCheck, marketPhase);
         // eslint-disable-next-line no-console
         console.log('🎯 Entry filters:', entryContext.summary);
-        
+
         const settings = getMarketSettings(pair, quoteSnapshot?.symbol_metadata || {});
         document.getElementById('currentPrice').innerHTML = `$${price.toFixed(settings.prec)}`;
-        
+
         if (lastPrice) {
             const ch = ((price - lastPrice) / lastPrice * 100).toFixed(2);
             const ce = document.getElementById('priceChange');
@@ -25935,13 +25935,13 @@ async function runAutoScan() {
             ce.className = `price-change ${ch >= 0 ? 'up' : 'down'}`;
         }
         lastPrice = price;
-        
+
         scanText.innerHTML = '📈 Analyzing indicators...';
         const indicators = {};
         for (const tf of ['4H', '1H']) {
             indicators[tf] = await getTechnicalIndicators(tf, historyCache[tf] || null, pair);
         }
-        
+
         scanText.innerHTML = '🔍 Detecting patterns...';
         const patterns = {};
         for (const tf of ['4H', '1H', '15M', '5M']) {
@@ -25959,10 +25959,10 @@ async function runAutoScan() {
                 };
             }
         }
-        
+
         const session = getSession(new Date(scanAsOfMs));
         const newsCheck = checkHighImpactNews(pair);
-        
+
         const dailyDir = await getQuoteDirection('1D', historyCache['1D']);
         const h4Dir = await getQuoteDirection('4H', historyCache['4H']);
         const h1Dir = await getQuoteDirection('1H', historyCache['1H']);
@@ -26383,11 +26383,11 @@ async function runAutoScan() {
             scanTrace('final result rendered', scanStartedAt, { result: 'AI_INCONSISTENT_OUTPUT' });
             return;
         }
-        
+
         const st = aiResult.direction === 'BUY' ? 'LONG' : 'SHORT';
         const risk = Math.abs(aiResult.entry - aiResult.stop_loss);
         const rrDisplay = risk > 0 ? (Math.abs(aiResult.take_profit_1 - aiResult.entry) / risk).toFixed(1) : '0.0';
-        
+
         const out = {
             trade_signal: {
                 date: new Date().toISOString().split('T')[0],
@@ -26474,7 +26474,7 @@ async function runAutoScan() {
                 source: `${getMarketDataProviderLabel()} + DeepSeek Analyst + Deterministic Validator`
             }
         };
-        
+
         setJsonOutput(out);
         lastSetupSummary = {
             id: Date.now(),
@@ -26704,7 +26704,7 @@ async function runAutoScan() {
         out.trade_signal.decision_handoff_audit = liveMarketContext.decision_handoff_audit;
         setJsonOutput(out);
         if (publishableTrade) syncSetupToGitHub(out.trade_signal, 'ai_scan');
-        
+
         analysis = {
             signalType: st,
             symbol_metadata: liveMarketContext.symbol_metadata,
@@ -26731,21 +26731,21 @@ async function runAutoScan() {
             isFresh: true,
             distancePct: Math.abs(price - aiResult.entry) / price * 100
         };
-        
+
         document.getElementById('executeBtn').disabled = !tradeable && !manualTrackingAllowed;
-        
+
         // Update button to show AI source
         const btnExecute = document.getElementById('executeBtn');
         if (btnExecute && analysis) {
             btnExecute.innerHTML = `Track Manual ${st}`;
             btnExecute.style.background = 'linear-gradient(135deg, #5856d6, #007aff)';
         }
-        
+
         const decisionEmoji = effectiveDecision === 'enter_now' ? '✅' : (['wait_for_reaction', 'pending_limit'].includes(effectiveDecision) ? '⏳' : '🚫');
         const validationTag = validation.valid ? '✓' : '✗';
         showNotif(`🤖 AI Setup [val:${validationTag}] ${st} ${decisionEmoji} | Conf: ${aiResult.confidence}% | ${aiResult.entry_zone.source} | ${aiResult.patterns.join(', ')}`, tradeable ? 'success' : 'warning');
         scanTrace('final result rendered', scanStartedAt, { result: tradeable ? aiResult.decision : 'WAIT/VALIDATION_BLOCKED', validation: validation.valid });
-        
+
     } catch(e) {
         console.error('[SCAN] FAILED', { stage: scanStage, error: e?.message, stack: e?.stack });
         showNotif('Error: ' + (e?.message || 'scan failed'), 'error');
@@ -28903,7 +28903,7 @@ function startMonitor() {
         if(orderPair === pair) {
             document.getElementById('currentPrice').innerHTML = `$${p.toFixed(settings.prec)}`;
         }
-        
+
         const lifecycle = evaluatePendingPaperOrder(limitOrder, p, Date.now());
         if(lifecycle.status === 'EXPIRED') {
             recordPaperOrderEvent(limitOrder, lifecycle.status, lifecycle.reason, p);
@@ -28917,15 +28917,15 @@ function startMonitor() {
             showNotif('❌ Order INVALIDATED — structural invalidation was breached', 'warning');
             return;
         }
-        
-        const distToEntry = limitOrder.signalType === 'LONG' 
+
+        const distToEntry = limitOrder.signalType === 'LONG'
             ? ((p - limitOrder.idealEntry) / p * 100)
             : ((limitOrder.idealEntry - p) / p * 100);
-        
+
         if(distToEntry <= ZONE_PROXIMITY_ALERT_PCT && distToEntry > 0) {
             showNotif(`🎯 PRICE APPROACHING ZONE! ${limitOrder.pair||''} ${limitOrder.signalType} — ${distToEntry.toFixed(2)}% away`, 'info');
         }
-        
+
         if(lifecycle.status === 'FILLED') {
             const filled = limitOrder;
             recordPaperOrderEvent(filled, lifecycle.status, lifecycle.reason, filled.idealEntry);
@@ -29179,7 +29179,7 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
     if (json) {
         const issues = [];
         const add = issue => { if (!issues.includes(issue)) issues.push(issue); };
-        const required = ['action', 'setup', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
+        const required = ['action', 'setup', 'current_market_context', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
             'confidence', 'timeframe_used', 'management', 'audit', 'reason'];
         if (required.some(key => lookup(json, key) === undefined)) add('RAW_JSON_FIELDS_MISSING');
         const allowedTopLevel = new Set(required);
@@ -29189,6 +29189,7 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
         const parsed = {
             action,
             setup: text(lookup(json, 'setup'))?.toUpperCase() || null,
+            current_market_context: text(lookup(json, 'current_market_context'))?.toUpperCase() || null,
             entry: number(lookup(json, 'entry')),
             stop_loss: number(lookup(json, 'stop_loss')),
             tp1: number(lookup(json, 'tp1')),
@@ -29244,6 +29245,9 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
         }
         if (!['BUY_LIMIT', 'SELL_LIMIT', 'NO_TRADE'].includes(action)) {
             add('RAW_ACTION_INVALID');
+        }
+        if (!['TRENDING_BULLISH', 'TRENDING_BEARISH', 'RANGING', 'CONSOLIDATING'].includes(parsed.current_market_context)) {
+            add('RAW_CURRENT_MARKET_CONTEXT_INVALID');
         }
         if (action === 'NO_TRADE') {
             if (!Number.isFinite(parsed.confidence) || parsed.confidence !== 0) add('RAW_NO_TRADE_CONFIDENCE_INVALID');
