@@ -10762,7 +10762,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.3.1');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.3.2');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10790,14 +10790,14 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V2.3.1 daily-bias, sweep-scan, UTC-killzone and patched rule set', () => {
+    it('includes the V2.3.2 daily-bias, sweep-scan, UTC-killzone and patched rule set', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         for (let rule = 1; rule <= 17; rule += 1) {
             expect(packet).toMatch(new RegExp('^' + rule + '\\. ', 'm'));
         }
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V2.3.1 (PATCHED)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V2.3.2 (PATCHED)');
         expect(packet).toContain('=== SECTION L: DAILY BIAS');
         expect(packet).toContain('SECTION L — CANDLE SELECTION (MANDATORY):');
         expect(packet).toContain('The 1D block is ordered oldest-to-newest, one row per line');
@@ -10845,24 +10845,33 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('(a) The most recent BULLISH sweep on that timeframe, or "NONE"');
         expect(packet).toContain('(b) The most recent BEARISH sweep on that timeframe, or "NONE"');
         expect(packet).toContain('Skipping the bullish (or bearish) direction on a timeframe is a');
-        expect(packet).toContain('M3 discards a sweep from consideration as the trade');
         expect(packet).toContain('REASON must list for EACH timeframe both the most recent BULLISH and BEARISH');
         expect(packet).toContain('every BREAKDOWN/BREAKOUT and FAILED BREAKDOWN/FAILED BREAKOUT separately.');
         expect(packet).toContain('Omission of a found sweep is a contract violation.');
         expect(packet).toContain('=== SECTION N: KILLZONE');
-        expect(packet).toContain('LONDON:    07:00-10:00 UTC');
-        expect(packet).toContain('NEW YORK:  12:00-15:00 UTC');
+        expect(packet).toContain('LONDON:       07:00-11:00 UTC');
+        expect(packet).toContain('LONDON/NY OVERLAP: 11:00-12:00 UTC');
+        expect(packet).toContain('NEW YORK:     12:00-15:00 UTC');
+        expect(packet).toContain('All three windows are KILLZONE=INSIDE.');
+        expect(packet).toContain('Outside ALL three windows');
         expect(packet).toContain('Do NOT apply daylight-saving adjustments');
         expect(packet).toContain('=== SECTION A: MANDATORY PRE-OUTPUT SELF-AUDIT ===');
         const sectionAIndex = packet.indexOf('=== SECTION A: MANDATORY PRE-OUTPUT SELF-AUDIT ===');
         expect(packet.indexOf('=== SECTION L: DAILY BIAS')).toBeLessThan(sectionAIndex);
         expect(packet.indexOf('=== SECTION M: MANDATORY SWEEP SCAN')).toBeLessThan(sectionAIndex);
         expect(packet.indexOf('=== SECTION N: KILLZONE')).toBeLessThan(sectionAIndex);
-        expect(packet).toContain('GATE_1  DIRECTION: Does the setup direction agree with the bias derived in Section L?');
+        expect(packet).toContain('GATE_0  CANDIDATE CONSTRUCTION (RUN THIS FIRST, BEFORE ANY OTHER GATE):');
+        expect(packet).toContain('You MUST fill ENTRY, STOP_LOSS, TP1, RISK, RR_TP1');
+        expect(packet).toContain('"GATE_0 CANDIDATE: DIR=<BUY|SELL> ENTRY=<p> SL=<p> TP1=<p>');
+        expect(packet).toContain('"No qualifying setup exists" without a constructed GATE_0');
+        expect(packet).toContain('GATE_1  DIRECTION: Does the GATE_0 candidate direction agree with the bias derived in Section L?');
         expect(packet).toContain('GATE_1b SWEEP: Did you run Section M across all five timeframes');
         expect(packet).toContain('GATE_2b OB SCAN COMPLETENESS: If the contract REASON contains the phrase');
         expect(packet).toContain('at least three candidate OBs of that direction that were evaluated and rejected');
+        expect(packet).toContain('GATE_3  OB VALIDITY: Is the GATE_0 ENTRY inside the BODY');
+        expect(packet).toContain('GATE_4  STOP TIGHTNESS: Is GATE_0 STOP_LOSS the NEAREST structural');
         expect(packet).toContain('GATE_5  RR: Compute R = |ENTRY - STOP_LOSS| and Reward = |TP1 - ENTRY|.');
+        expect(packet).toContain('"Unused" means NOT body-broken on the entry side.');
         expect(packet).toContain('GATE_6b SUPPLY-AWARE TP: If TP1 would land inside a bearish OB (for BUY)');
         expect(packet).toContain('Only if RR_TP1 < 2.00 after relocation does the setup fail.');
         expect(packet).toContain('GATE_7  KILLZONE: Compute killzone per Section N from SERVER_TIME_UTC');
@@ -10876,21 +10885,32 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('F1. If Section L returns RANGE and no 4H MSS supplies direction: NO_TRADE.');
         expect(packet).toContain('F5. Never fade a completed-session sweep against the confirmed bias without');
         expect(packet).toContain('=== SECTION G: NO_TRADE HARD GATES (ANY ONE TRIGGERS NO_TRADE) ===');
-        expect(packet).toContain('N1. RR_TP1 < 2.00 from the nearest valid stop.');
-        expect(packet).toContain('N8. Any self-audit gate fails (GATE_1 through GATE_7, including GATE_1b).');
+        expect(packet).toContain('N1. RR_TP1 < 2.00 from the nearest valid stop on the GATE_0 candidate.');
+        expect(packet).toContain('N8. Any self-audit gate fails (GATE_0 through GATE_7).');
+        expect(packet).toContain('N9. REASON contains "no qualifying setup exists" WITHOUT a constructed');
         expect(packet).toContain('=== SECTION H: CONFIDENCE CALIBRATION ===');
+        expect(packet).toContain('-25% outside ALL Section N killzone windows');
         expect(packet).toContain('Never report > 75% on a setup that required any Rule 11 adjustment');
         expect(packet).toContain('=== SECTION I: WORKED REJECTION EXAMPLE (DO NOT REPEAT THIS ERROR) ===');
         expect(packet).toContain('CORRECT OUTPUT in that situation is NO_TRADE, never a caveated ACTION.');
+        expect(packet).toContain('=== SECTION I-BIS: WORKED ACCEPTANCE EXAMPLE (TARGET BEHAVIOR) ===');
+        expect(packet).toContain('GATE_0 CANDIDATE: DIR=BUY ENTRY=4034.00 SL=4027.50 TP1=4054.53');
+        expect(packet).toContain('CORRECT OUTPUT is BUY_LIMIT, NOT NO_TRADE.');
+        expect(packet).toContain('"Used" means BODY-CLOSED through on the entry side.');
         expect(packet).toContain('15. HTF ALIGNMENT: You are provided raw 1D and 4H candles.');
         expect(packet).toContain('16. MTF CONFLUENCE: Use the 4H candles to identify the dominant direction');
+        expect(packet).toContain('12. NO_TRADE: return NO_TRADE when the raw candles do not contain a clear swing');
+        expect(packet).toContain('A NO_TRADE requires a GATE_0 candidate that fails a named gate.');
         expect(packet).toContain('17. KILLZONE CONFIDENCE PENALTY: Compute killzone per SECTION N from SERVER_TIME_UTC');
+        expect(packet).toContain('London 07:00-11:00 UTC, Overlap 11:00-12:00 UTC, New York 12:00-15:00 UTC');
         expect(packet).toContain('TP1 must target a major 1H or 4H opposing liquidity pool.');
         expect(packet).toContain('The distance from Entry to TP1 must provide a Risk-to-Reward ratio of at least 2.0.');
         expect(packet).toContain('RISK: <ENTRY to STOP_LOSS, two decimals>');
         expect(packet).toContain('RR_TP1: <REWARD/RISK, two decimals - must be >= 2.00>');
         expect(packet).toContain('TIMEFRAME_USED: <1d | 4h | 1h | 15m | 5m | NONE>');
         expect(packet).toContain("MANAGEMENT: <Text instruction: e.g., 'Take 50% at TP1, move SL to BE'>");
+        expect(packet).toContain('REASON: <MUST start with: GATE_0 CANDIDATE: DIR=<BUY|SELL>');
+        expect(packet).toContain('and if NO_TRADE then the specific gate that failed with the candidate\'s numbers>');
     });
 
     it('injects OUTSIDE_KILLZONE only when server time is outside London and New York', () => {
@@ -10907,11 +10927,12 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(outside).toContain('KILLZONE_STATUS=OUTSIDE');
     });
 
-    it('classifies EST killzone boundaries from UTC server time', () => {
+    it('classifies UTC killzone boundaries including the London/NY overlap', () => {
         const ctx = getContext();
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T07:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'LONDON', inside_killzone: true, outside_killzone: false }));
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T09:59:00Z'))).toEqual(expect.objectContaining({ killzone: 'LONDON', inside_killzone: true }));
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T10:00:00Z'))).toEqual(expect.objectContaining({ killzone: null, inside_killzone: false, outside_killzone: true }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T10:59:00Z'))).toEqual(expect.objectContaining({ killzone: 'LONDON', inside_killzone: true }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T11:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'OVERLAP', inside_killzone: true }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T11:59:00Z'))).toEqual(expect.objectContaining({ killzone: 'OVERLAP', inside_killzone: true }));
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T12:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'NEW_YORK', inside_killzone: true }));
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T14:59:00Z'))).toEqual(expect.objectContaining({ killzone: 'NEW_YORK', inside_killzone: true }));
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T15:00:00Z'))).toEqual(expect.objectContaining({ killzone: null, outside_killzone: true }));
@@ -10937,7 +10958,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             active: 'NEW_YORK', inside_killzone: true, outside_killzone: false, warning_injected: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V2.3.1',
+            version: 'V2.3.2',
             original_14_included: true, total_rules: 17,
             htf_alignment_included: true, mtf_confluence_included: true,
             killzone_penalty_included: true,
