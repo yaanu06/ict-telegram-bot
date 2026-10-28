@@ -17152,10 +17152,9 @@ const RAW_CANDLE_AI_CANDLE_LIMITS = Object.freeze({
 });
 let lastRawPacketDiagnostic = null;
 const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
-    '=== OUTPUT CONTRACT (JSON) ===',
-    'Reply with a SINGLE JSON object. No prose before or after. No markdown',
-    'fences. No commentary outside the JSON. Every field below is MANDATORY.',
-    'Missing fields = contract violation.',
+    '=== OUTPUT CONTRACT ===',
+    'Reply with a SINGLE JSON object. No prose before or after. No markdown fences.',
+    'No commentary. Every field below is MANDATORY. Missing fields = contract violation.',
     '',
     '{',
     '  "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",',
@@ -17170,18 +17169,6 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "confidence": <integer 0-100>,',
     '  "timeframe_used": "1d|4h|1h|15m|5m|NONE",',
     '  "management": "<text instruction or NONE>",',
-    '  "gate_0_candidate": {',
-    '    "direction": "BUY|SELL",',
-    '    "entry": <number>,',
-    '    "stop_loss": <number>,',
-    '    "tp1": <number>,',
-    '    "risk": <number>,',
-    '    "reward": <number>,',
-    '    "rr": <number>,',
-    '    "timeframe": "<tf>",',
-    '    "sweep": "<tf timestamp level direction>",',
-    '    "ob": "<tf timestamp body-low-body-high>"',
-    '  },',
     '  "audit": {',
     '    "daily_bias": {',
     '      "direction": "BULLISH|BEARISH|RANGE",',
@@ -17191,49 +17178,69 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '      "four_hour_mss": "<timestamp or NONE>"',
     '    },',
     '    "sweeps": [',
-    '      {"tf": "1d",  "bullish": "<timestamp or NONE>", "bearish": "<timestamp or NONE>"},',
-    '      {"tf": "4h",  "bullish": "<timestamp or NONE>", "bearish": "<timestamp or NONE>"},',
-    '      {"tf": "1h",  "bullish": "<timestamp or NONE>", "bearish": "<timestamp or NONE>"},',
-    '      {"tf": "15m", "bullish": "<timestamp or NONE>", "bearish": "<timestamp or NONE>"},',
-    '      {"tf": "5m",  "bullish": "<timestamp or NONE>", "bearish": "<timestamp or NONE>"}',
+    '      {"tf": "1d",  "bullish": "<tf ts level direction tier>", "bearish": "<tf ts level direction tier>"},',
+    '      {"tf": "4h",  "bullish": "...", "bearish": "..."},',
+    '      {"tf": "1h",  "bullish": "...", "bearish": "..."},',
+    '      {"tf": "15m", "bullish": "...", "bearish": "..."},',
+    '      {"tf": "5m",  "bullish": "...", "bearish": "..."}',
     '    ],',
-    '    "breakdowns": ["<tf timestamp level>", "..."],',
-    '    "breakouts": ["<tf timestamp level>", "..."],',
-    '    "failed_breakdowns": ["<tf timestamp level>", "..."],',
-    '    "failed_breakouts": ["<tf timestamp level>", "..."],',
+    '    "breaks": [',
+    '      "<BREAKOUT: tf ts level>",',
+    '      "<BREAKDOWN: tf ts level>",',
+    '      "<FAILED_BREAKOUT: tf ts level>",',
+    '      "<FAILED_BREAKDOWN: tf ts level>"',
+    '    ],',
     '    "killzone": {',
     '      "server_time_utc": "<timestamp>",',
     '      "computed_window": "LONDON|OVERLAP|NEW_YORK|NONE",',
-    '      "inside": true|false',
-    '    },',
-    '    "gates": {',
-    '      "gate_0":  "PASS|<reason>",',
-    '      "gate_1":  "PASS|<reason>",',
-    '      "gate_1b": "PASS|<reason>",',
-    '      "gate_2":  "PASS|<reason>",',
-    '      "gate_2b": "PASS|<reason>",',
-    '      "gate_3":  "PASS|<reason>",',
-    '      "gate_4":  "PASS|<reason>",',
-    '      "gate_5":  "PASS|<reason with numbers>",',
-    '      "gate_6":  "PASS|<reason>",',
-    '      "gate_6b": "PASS|<reason>",',
-    '      "gate_7":  "PASS|<reason>"',
+    '      "inside": true',
     '    }',
     '  },',
-    '  "reason": "<concise evidence: sweep timestamps, OB body, nearest-invalidation stop, TP pools, RR check, bias justification>"',
+    '  "reason": "<evidence: sweep ts + level, OB body range, nearest-invalidation stop, TP1 pool + why unused, RR calc, bias justification>"',
     '}',
     '',
-    'VALIDATION RULES:',
-    '- BUY_LIMIT requires entry < current_price, stop_loss < entry, entry < tp1 < tp2 < tp3.',
-    '- SELL_LIMIT requires entry > current_price, stop_loss > entry, entry > tp1 > tp2 > tp3.',
-    '- TP order is mandatory: tp1 is the nearest target, tp2 next, tp3 furthest.',
-    '- rr_tp1 must equal (|tp1 - entry| / |entry - stop_loss|) computed to two decimals.',
-    '- rr_tp1 must be >= 2.00 for BUY_LIMIT or SELL_LIMIT. If rr_tp1 < 2.00, action MUST be "NO_TRADE".',
-    '- Every price must come from the supplied CSV candles. Never invent a level.',
-    '- audit.sweeps MUST contain exactly 5 entries (1d, 4h, 1h, 15m, 5m). No omissions.',
-    '- audit.gates MUST contain all 11 keys (gate_0 through gate_7 plus 1b, 2b, 6b). No omissions.',
-    '- If action = "NO_TRADE": entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 MUST be 0; confidence MUST be 0; timeframe_used MUST be "NONE"; management MUST be "NONE". gate_0_candidate MUST still be fully populated with the rejected candidate\'s actual numbers, and audit.gates MUST cite the specific failing gate in its reason string.',
-    '- If action = "BUY_LIMIT" or "SELL_LIMIT": gate_0_candidate MUST equal the top-level fields (same entry, stop_loss, tp1, risk, rr, timeframe).'
+    'VALIDATION RULES (the parser will enforce these - do not violate):',
+    '- BUY_LIMIT: entry < current_price, stop_loss < entry, entry < tp1 < tp2 < tp3',
+    '- SELL_LIMIT: entry > current_price, stop_loss > entry, entry > tp1 > tp2 > tp3',
+    '- rr_tp1 must equal (|tp1 - entry| / |entry - stop_loss|) to two decimals',
+    '- rr_tp1 must be >= 2.00 for BUY_LIMIT or SELL_LIMIT',
+    '- audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)',
+    '- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0;',
+    '  confidence = 0; timeframe_used = "NONE"; management = "NONE";',
+    '  reason must still describe the candidate considered and why it failed',
+    '- On BUY_LIMIT/SELL_LIMIT: every price in the JSON must trace to a candle in',
+    '  the supplied blocks. Never invent a level.',
+    '- Do NOT include extra fields (no "execution_status", no "audit_note", no',
+    '  "gate_checks"). The schema above is exhaustive.',
+    '',
+    'EXAMPLE OUTPUT SHAPE (for reference - not the answer to this packet):',
+    '{',
+    '  "action": "BUY_LIMIT",',
+    '  "setup": "SWEEP+OB",',
+    '  "entry": 4034.00,',
+    '  "stop_loss": 4027.50,',
+    '  "tp1": 4065.70,',
+    '  "tp2": 4070.84,',
+    '  "tp3": 4088.37,',
+    '  "risk": 6.50,',
+    '  "rr_tp1": 4.88,',
+    '  "confidence": 75,',
+    '  "timeframe_used": "1h",',
+    '  "management": "50% at TP1, move SL to BE after TP1, trail remainder to TP2/TP3",',
+    '  "audit": {',
+    '    "daily_bias": {"direction": "BULLISH", "d3_h": 4034.09, "d3_l": 3975.65, "d2_h": 4030.07, "d2_l": 3978.18, "d1_h": 4065.70, "d1_l": 3989.16, "four_hour_mss": "2026-10-27T13:00:00.000Z"},',
+    '    "sweeps": [',
+    '      {"tf": "1d",  "bullish": "NONE", "bearish": "NONE"},',
+    '      {"tf": "4h",  "bullish": "NONE", "bearish": "2026-10-27T21:00:00.000Z PDH 4065.70 BEARISH TIER_1"},',
+    '      {"tf": "1h",  "bullish": "2026-10-28T06:00:00.000Z LONDON_LOW 4028.20 BULLISH TIER_1", "bearish": "2026-10-28T00:00:00.000Z PDH 4065.70 BEARISH TIER_1"},',
+    '      {"tf": "15m", "bullish": "2026-10-28T06:30:00.000Z LONDON_LOW 4028.20 BULLISH TIER_1", "bearish": "NONE"},',
+    '      {"tf": "5m",  "bullish": "2026-10-28T07:00:00.000Z LONDON_LOW 4028.20 BULLISH TIER_1", "bearish": "NONE"}',
+    '    ],',
+    '    "breaks": ["BREAKDOWN: 1h 2026-10-28T04:00:00.000Z ASIA_LOW 4042.73", "FAILED_BREAKDOWN: 1h 2026-10-28T07:00:00.000Z ASIA_LOW 4042.73"],',
+    '    "killzone": {"server_time_utc": "2026-10-28T12:12:50.000Z", "computed_window": "NEW_YORK", "inside": true}',
+    '  },',
+    '  "reason": "BULLISH bias (D1 H 4065.70 > D3 H 4034.09; D1 L 3989.16 > D3 L 3975.65). 4H MSS 2026-10-27T13:00 confirms. Bullish TIER_1 sweep 1H 2026-10-28T06:00 (wick 4028.19 below LONDON_LOW 4028.20, close 4030.82). Bullish OB 1H 2026-10-28T05:00 body 4030.37-4036.68. Entry 4034.00 inside OB, stop 4027.50 below sweep wick (0.69 buffer). TP1 4065.70 PDH - wick-tapped but never body-closed above (USED status: NO). RISK=6.50 REWARD=31.70 RR=4.88. Killzone NEW_YORK INSIDE. Counter-bias PDH bearish sweep at 1H 00:00 discarded (no bearish 4H MSS)."',
+    '}'
 ].join('\n');
 
 const RAW_CANDLE_AI_KILLZONES = Object.freeze([
@@ -20344,336 +20351,167 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return [
-        '=== GHOST MACHINE STRATEGY RULES === V2.3.3 (JSON OUTPUT)',
-        'You are the Ghost Machine. Read the raw closed candles yourself. No deterministic POI, FVG, order-block, MSNR, supply/demand zone or candidate list is supplied or authoritative. Deterministic macro liquidity levels are supplied only as context.',
-        'UNIVERSE: use only the CSV candles in this packet. The 1D, 4H, 1H, 15M and 5M blocks use the per-timeframe limits shown in each section. Never invent a candle, price, timestamp, volume or level.',
-        'MACRO CONTEXT: DAILY_BIAS, daily OHLC, PREVIOUS_DAY_HIGH/LOW and the completed ASIA, LONDON and NEW_YORK highs/lows are context only. The raw 1D/4H candles own higher-timeframe structure; 1H/15M/5M own intraday formation and execution.',
-        '',
-        '=== SECTION L: DAILY BIAS (AUTHORITATIVE — OVERRIDES PACKET LABEL) ===',
-        "The packet's DAILY_BIAS field is advisory. Derive bias yourself from the last",
-        'three CLOSED 1D candles as follows.',
-        '',
-        'SECTION L — CANDLE SELECTION (MANDATORY):',
-        'The 1D block is ordered oldest-to-newest, one row per line, in',
-        'the format: timestamp,open,high,low,close,volume.',
-        'D1 = the LAST row of the 1D block.',
-        'D2 = the row immediately ABOVE D1 (the second-to-last row).',
-        'D3 = the row immediately ABOVE D2 (the third-to-last row).',
-        'D1, D2, D3 are CONTIGUOUS. No row between them may be skipped.',
-        'If any candle in the 1D block is not selected for D1/D2/D3, it must',
-        'not be used in the Section L calculation.',
-        '',
-        'Worked example (from a prior packet):',
-        '  1D block ends with rows:',
-        '    2026-10-22T21:00, 4027.50, 4034.09, 3975.65, 3995.81',
-        '    2026-10-25T21:00, 3998.03, 4030.07, 3978.18, 4017.19',
-        '    2026-10-26T21:00, 4016.08, 4065.70, 3989.16, 4060.33',
-        '  Then:',
-        '    D3 = 2026-10-22 row  (H=4034.09, L=3975.65)',
-        '    D2 = 2026-10-25 row  (H=4030.07, L=3978.18)',
-        '    D1 = 2026-10-26 row  (H=4065.70, L=3989.16)',
-        '  H1=4065.70 > H3=4034.09 AND L1=3989.16 > L3=3975.65 → BULLISH.',
-        'Selecting 2026-10-20 or 2026-10-21 for D3/D2 is a CONTRACT VIOLATION.',
-        '',
-        'Compare highs and lows:',
-        '  BULLISH  iff  H1 > H3  AND  L1 > L3   (higher high AND higher low over window)',
-        '  BEARISH  iff  H1 < H3  AND  L1 < L3   (lower high AND lower low over window)',
-        '  RANGE    otherwise',
-        "If Section L's bias disagrees with the packet's DAILY_BIAS label, use Section L",
-        'and note the disagreement in REASON.',
-        'Tiebreaker — 4H confirmation: identify the last completed 4H MSS (a closed 4H',
-        'candle body-break of a named 4H swing high or low). If that MSS direction',
-        'agrees with Section L, the bias is CONFIRMED. If it disagrees, treat as RANGE',
-        'unless the MSS occurred within the last 3 closed 4H candles in the direction',
-        'of Section L.',
-        'RANGE = no directional pending limit unless a named 4H MSS supplies direction.',
-        'REASON must state: D3.H, D2.H, D1.H, D3.L, D2.L, D1.L and the 4H MSS timestamp',
-        '(or NONE).',
-        '',
-        '=== SECTION M: MANDATORY SWEEP SCAN (RUN FIRST) ===',
-        'Before selecting ANY setup, scan all five timeframes (1D, 4H, 1H, 15M, 5M) for',
-        'liquidity sweeps. A sweep = a closed candle whose wick exceeded a named prior',
-        'swing, equal-high/equal-low cluster, or session/PDH/PDL level by >= 1 increment',
-        'AND closed back inside prior structure.',
-        'Classify every sweep found by the liquidity it tapped:',
-        '  TIER_1:  completed ASIA/LONDON/NEW_YORK high or low, or PREVIOUS_DAY_HIGH/LOW',
-        '  TIER_2:  named 4H or 1H swing high/low',
-        '  TIER_3:  unclassified intraday swing (15M/5M only)',
-        'Selection rules:',
-        '  M1. If any TIER_1 sweep exists, it is the PRIMARY thesis. A TIER_2 or TIER_3',
-        '      sweep in the opposite direction cannot override it.',
-        '  M2. A TIER_1 sweep in the direction of the confirmed bias (Section L) is the',
-        '      trade. No further qualifying check is needed to select it.',
-        '  M3. A TIER_1 sweep that is counter-bias requires a named 4H MSS in the sweep',
-        '      direction (per Section F) or it is DISCARDED. A discarded sweep does NOT',
-        '      block the bias-aligned thesis.',
-        '  M4. If NO sweep exists on any timeframe, return NO_TRADE.',
-        '  M5. SWEEP DIRECTION SEMANTICS (MANDATORY):',
-        '      A LOW sweep (wick below prior swing low / session low / PDL, close back',
-        '      ABOVE it) is a BULLISH reversal signal �?" sell-side liquidity grabbed.',
-        '      A HIGH sweep (wick above prior swing high / session high / PDH, close',
-        '      back BELOW it) is a BEARISH reversal signal �?" buy-side liquidity grabbed.',
-        '  M6. SWEEP vs BREAKDOWN:',
-        '      A candle that wicks beyond a level and CLOSES BEYOND the same level on',
-        '      the same side is a BREAKDOWN / BREAKOUT, not a sweep. Cite it separately',
-        '      as "BREAKDOWN/BREAKOUT: <tf> <ts> closed <price> beyond <level>."',
-        '  M7. MACRO SWEEP CHECKLIST (RUN BEFORE ANY OTHER SCAN):',
-        '      For EVERY macro level (ASIA_HIGH, ASIA_LOW, LONDON_HIGH, LONDON_LOW,',
-        '      NEW_YORK_HIGH, NEW_YORK_LOW, PDH, PDL), scan all five timeframes for a',
-        '      closed candle that wicked beyond the level and closed back through it.',
-        '      Report EVERY hit as TIER_1. Skipping this checklist is a contract violation.',
-        '  M7b. CLOSE-SIDE VERIFICATION:',
-        '       - Bullish sweep: low < L AND close > L',
-        '       - Bearish sweep: high > L AND close < L',
-        '       If close is on the SAME side as the wick, it is a BREAKOUT / BREAKDOWN,',
-        '       not a sweep �?" reclassify via M6.',
-        '  M8. BREAKDOWN / BREAKOUT CHECKLIST (RUN AFTER M7):',
-        '      For EVERY macro level, scan all five timeframes for a closed candle',
-        '      whose BODY CLOSE lies on the far side. Report every hit as:',
-        '      "BREAKDOWN/BREAKOUT: <tf> <ts> closed <price> beyond <level>."',
-        '  M8b. FAILED BREAKOUT / FAILED BREAKDOWN:',
-        '      If a level was broken and a LATER closed candle BODY-CLOSES back through',
-        '      the level in the original direction, classify as FAILED BREAKDOWN',
-        '      (bullish, bear trap) or FAILED BREAKOUT (bearish, bull trap). Failed',
-        '      breaks are HIGHER priority than the original break.',
-        '  M9. BIDIRECTIONAL SCAN COMPLETENESS (MANDATORY):',
-        '      Section M scan is NOT complete until you have listed, for EACH',
-        '      timeframe, BOTH the most recent BULLISH sweep and the most recent',
-        '      BEARISH sweep (or "NONE"). Skipping either direction on any timeframe',
-        '      is a contract violation.',
-        '',
-        '=== SECTION N: KILLZONE (UTC-AUTHORITATIVE — OVERRIDES PACKET LABEL) ===',
-        "Ignore the packet's KILLZONE_STATUS field. Compute killzone from",
-        'SERVER_TIME_UTC directly using these fixed UTC windows:',
-        '  LONDON:       07:00-11:00 UTC',
-        '  LONDON/NY OVERLAP: 11:00-12:00 UTC',
-        '  NEW YORK:     12:00-15:00 UTC',
-        'All three windows are KILLZONE=INSIDE. The overlap window is the highest-',
-        'liquidity window in the XAU/USD session and MUST be treated as INSIDE —',
-        'do not penalize.',
-        'Outside ALL three windows -> KILLZONE=OUTSIDE, apply -25% per Section H.',
-        'Do NOT apply daylight-saving adjustments — the UTC windows are the',
-        'contract regardless of DST.',
-        "If the packet's KILLZONE_STATUS field disagrees with this computation, use",
-        'this computation and note the disagreement in REASON.',
-        'REASON must state: SERVER_TIME_UTC, computed window (LONDON / OVERLAP /',
-        'NEW YORK / NONE), and INSIDE or OUTSIDE.',
-        '',
-        '=== SECTION A: MANDATORY PRE-OUTPUT SELF-AUDIT ===',
-        'Before writing the JSON contract, silently verify ALL of the following. If',
-        'ANY check fails, the action field MUST be "NO_TRADE" with the zero-geometry',
-        'values, and the specific failing gate must be cited in audit.gates with the',
-        "candidate's actual numbers. A failed check is never a downgrade - it is a",
-        'rejection.',
-        'NOTE ON COUNTER-BIAS SWEEPS: A counter-bias TIER_1 sweep without a named 4H',
-        'MSS in its direction is DISCARDED by M3. "Discarded" means it does not block',
-        'the bias-aligned trade �?" it is listed in audit.sweeps for completeness and',
-        'then set aside. M3 and F2 are consistent. GATE_1b fires ONLY when the',
-        'counter-bias sweep has a 4H MSS in its direction.',
-        '',
-        'GATE_0  CANDIDATE CONSTRUCTION (RUN FIRST, BEFORE ANY OTHER GATE):',
-        '        Construct the best available pending-limit candidate from the raw',
-        '        data. You MUST fill entry, stop_loss, tp1, risk, and rr_tp1 in',
-        '        gate_0_candidate even if you intend to reject it. A valid candidate',
-        '        has:',
-        '        - Direction matching the confirmed Section L bias',
-        '        - A named sweep (any tier, direction matching the trade)',
-        '        - An OB/FVG body containing entry',
-        '        - STOP at the nearest structural invalidation (Section C)',
-        '        - TP1 at the nearest 1H/4H pool that has NOT been body-broken on',
-        '          the entry side. Wick-taps do NOT disqualify a TP1 pool.',
-        '        THEN apply GATE_1 through GATE_7 against this candidate.',
-        '        "No qualifying setup exists" without a constructed gate_0_candidate',
-        '        is a CONTRACT VIOLATION.',
-        '',
-        'GATE_1  DIRECTION: Does the candidate direction agree with the Section L',
-        '        bias? If not, a completed 4H MSS/CHoCH in the opposite direction',
-        '        must exist AND be named with its timestamp. Otherwise NO_TRADE.',
-        'GATE_1b SWEEP: If the selected setup ignores a TIER_1 sweep in the opposite',
-        '        direction that has NOT been discarded by M3 (i.e., that sweep HAS a',
-        '        named 4H MSS in its direction), NO_TRADE. A counter-bias TIER_1',
-        '        sweep without a 4H MSS in its direction is DISCARDED by M3 and does',
-        '        NOT trigger this gate.',
-        'GATE_2  SWEEP: Is there a closed candle whose wick exceeded a named prior',
-        '        swing/equal-high/equal-low by >= 1 increment AND closed back inside',
-        '        prior structure? Name the timestamps.',
-        'GATE_2b OB SCAN COMPLETENESS: If REASON contains "no valid [bullish/bearish]',
-        '        OB exists," you MUST have listed at least three rejected candidate',
-        '        OBs of that direction with reasons.',
-        'GATE_3  OB VALIDITY: Is entry inside the BODY of the last opposite-direction',
-        '        candle before the displacement leg? (See Section B.) A wick is never',
-        '        an OB.',
-        'GATE_4  STOP TIGHTNESS: Is stop_loss the NEAREST structural invalidation?',
-        '        (See Section C.)',
-        'GATE_5  RR: Compute R = |entry - stop_loss| and Reward = |tp1 - entry|.',
-        '        RR = Reward / R. Is RR >= 2.00? State the numbers in',
-        '        audit.gates.gate_5.',
-        'GATE_6  TP SANITY: Is TP1 a major unused 1H/4H opposing pool, and is it the',
-        '        NEAREST such pool? "Unused" means NOT body-broken on the entry side.',
-        '        Wick-taps do NOT disqualify a TP1 pool when the sweep that caused',
-        "        them is the setup's own trigger.",
-        'GATE_6b SUPPLY-AWARE TP: If TP1 would land inside a bearish OB (for BUY) or',
-        '        bullish OB (for SELL), relocate TP1 to the near edge of that zone',
-        '        and recompute RR. Only if RR < 2.00 after relocation does the',
-        '        setup fail.',
-        'GATE_7  KILLZONE: Compute killzone per Section N from SERVER_TIME_UTC',
-        '        (fixed UTC windows, no DST). Apply -25% if OUTSIDE.',
-        '',
-        '=== BASE RULE INDEX (SECTIONS B-E REPLACE RULES 4, 8, 10 AND 11) ===',
-        '1. SWING HIGHS AND LOWS: a swing high is a candle whose high is greater than the highs of the candles immediately before and after it. A swing low is a candle whose low is lower than the lows of the candles immediately before and after it. Prefer confirmed 3-candle pivots.',
-        '2. LIQUIDITY SWEEP: a sweep occurs when a wick trades beyond a prior swing high, swing low, equal-high cluster or equal-low cluster by at least one price increment and then closes back inside the prior structure. The rejection close, not the wick alone, proves the sweep.',
-        '3. FAIR VALUE GAP: use three chronological same-timeframe candles. Bullish FVG: candle 1 high < candle 3 low; the gap is candle 1 high to candle 3 low. Bearish FVG: candle 1 low > candle 3 high; the gap is candle 3 high to candle 1 low. The middle candle must show displacement.',
-        '4. ORDER BLOCK: See SECTION B. The OB zone is the source candle BODY only; the sweep/rejection wick is never the OB.',
-        '5. MARKET STRUCTURE: identify BOS, MSS/CHoCH and displacement from closed-candle breaks. A sweep plus rejection plus displacement in the opposite direction is stronger than a sweep alone.',
-        '6. CONFLUENCE: prefer a setup where a liquidity sweep, an OB or FVG, and the 1D/4H structure agree. Do not force a trade when the raw candles conflict.',
-        '7. PENDING LIMIT SIDE: for BUY_LIMIT, ENTRY must be below CURRENT_PRICE and the setup should be a demand OB/FVG or bullish sweep-reclaim. For SELL_LIMIT, ENTRY must be above CURRENT_PRICE and the setup should be a supply OB/FVG or bearish sweep-rejection.',
-        '8. STOP LOSS: See SECTION C. Use the NEAREST structural invalidation plus a small buffer; never widen to distant HTF levels.',
-        '9. TAKE PROFIT: TP1 must target a major 1H or 4H opposing liquidity pool. The distance from Entry to TP1 must provide a Risk-to-Reward ratio of at least 2.0. TP2 and TP3 extend to the next major pools, including PREVIOUS_DAY_HIGH/LOW and completed session highs/lows. Targets must be ahead of the entry and must remain unused in the supplied history.',
-        '10. RISK/REWARD: See SECTION D. RR_TP1 is a hard gate at 2.00; below 2.00 is NO_TRADE, never a caveated ACTION.',
-        '11. ENTRY PRICE: See SECTION E. Entry may deepen inside the OB/FVG toward equilibrium or the stop side, but must remain inside the zone and on the correct side of CURRENT_PRICE.',
-        '12. NO_TRADE: return NO_TRADE when the raw candles do not contain a clear swing, sweep, OB/FVG, structural stop and opposing liquidity target in the same directional thesis. A NO_TRADE requires a constructed gate_0_candidate that fails a named gate.',
-        '13. EVIDENCE: the reason field must name the source timestamps and levels for the sweep, OB/FVG, stop and target. Do not expose chain-of-thought.',
-        '14. OUTPUT: return exactly the JSON object defined in the OUTPUT CONTRACT section. No prose, no markdown fences, no commentary outside the JSON.',
-        '15. HTF ALIGNMENT: identify the major 1D/4H Order Blocks and Fair Value Gaps. DO NOT take a 15M or 5M execution setup that is running directly into a major opposing 1D/4H zone. HTF zones are the ultimate TP targets and stop barriers.',
-        '16. MTF CONFLUENCE: use the 4H candles to identify the dominant direction and major Order Blocks. Only take 15M/5M setups aligned with the 4H structure.',
-        '17. KILLZONE CONFIDENCE PENALTY: Compute killzone per SECTION N from SERVER_TIME_UTC using the fixed UTC windows (London 07:00-11:00 UTC, Overlap 11:00-12:00 UTC, New York 12:00-15:00 UTC; no DST). If OUTSIDE all three, deduct 25% from CONFIDENCE. Do not return NO_TRADE solely for being outside the Killzone.',
-        '',
-        '=== SECTION B: RULE 4 (REPLACED) - ORDER BLOCK DEFINITION ===',
-        'An Order Block is the last opposite-direction candle before the displacement',
-        'leg that breaks a swing or creates the FVG.',
-        '- For a bearish OB: the last BULLISH candle (close > open) before the down leg.',
-        '- For a bullish OB: the last BEARISH candle (close < open) before the up leg.',
-        "The OB zone is that candle's BODY (open-to-close). The full high-low range",
-        'may be cited only as a secondary reference, never as the entry zone.',
-        'PROHIBITED: using the wick of the sweep/rejection candle itself as the OB.',
-        'The sweep candle is the confirmation, not the zone.',
-        'If the last opposite-direction candle is itself the displacement candle, the',
-        'OB does not exist �?" return NO_TRADE or find a different timeframe.',
-        '',
-        '=== SECTION C: RULE 8 (REPLACED) - STOP LOSS MUST BE THE NEAREST INVALIDATION ===',
-        'Place stop_loss just beyond the structural level that, if taken, proves the',
-        'setup wrong. For a SELL: the sweep wick high and the OB far edge �?" whichever',
-        'is closer �?" plus a small buffer. For a BUY: the sweep wick low and the OB far',
-        'edge �?" whichever is closer �?" plus a small buffer.',
-        '- Buffer guidance (XAU/USD): 0.50-2.00 above/below the invalidation level.',
-        '- DO NOT widen the stop to swallow distant HTF swing highs/lows, previous-day',
-        '  extremes, or round numbers unless that level IS the immediate invalidation',
-        '  of this specific setup. Distant HTF levels are context, not stop anchors.',
-        '- If the nearest valid stop still yields RR < 2.00, the setup is dead.',
-        '',
-        '=== SECTION D: RULE 10 (REPLACED) - RR IS A HARD GATE ===',
-        'Compute explicitly in audit.gates.gate_5:',
-        'RISK = |entry - stop_loss|',
-        'REWARD_TP1 = |tp1 - entry|',
-        'RR_TP1 = REWARD_TP1 / RISK (two decimals)',
-        'RR_TP1 must be >= 2.00.',
-        '- Never move the stop inward past a valid invalidation to fix RR.',
-        '- Never inflate TP1 past the nearest major pool to fix RR.',
-        '- Never invent a target.',
-        '- If RR_TP1 < 2.00 after applying Rule 8 (nearest stop) and Rule 11 (entry',
-        '  depth within the zone), the ONLY output is NO_TRADE.',
-        '- Writing "RR below 2.0, setup downgraded" while still returning a live',
-        '  action is a contract violation.',
-        '',
-        '=== SECTION E: RULE 11 (REPLACED) - ENTRY DEPTH IS BOUNDED ===',
-        'You may place entry deeper inside the OB/FVG (toward the equilibrium / toward',
-        'the stop side) to improve RR, subject to ALL of:',
-        '(a) entry remains strictly inside the OB body or FVG gap.',
-        '(b) entry does not cross the far edge of the zone.',
-        '(c) entry is on the correct side of current price (BUY below, SELL above).',
-        '(d) the stop remains the NEAREST structural invalidation from Rule 8.',
-        'If 2.0R can only be met by placing entry outside the zone, or by widening the',
-        'stop, then NO qualifying setup exists -> NO_TRADE.',
-        '"Adjusted entry would exceed structural zone" is a NO_TRADE condition, not a',
-        'reason to return the unadjusted trade anyway.',
-        '',
-        '=== SECTION F: DIRECTIONAL PRIORITY (TIED TO SECTIONS L + M) ===',
-        '  F1. If Section L returns RANGE and no 4H MSS supplies direction: NO_TRADE.',
-        '  F2. If a TIER_1 sweep exists (Section M), it is the primary thesis:',
-        '        - Same direction as confirmed bias  -> this is the trade.',
-        '        - Counter-bias                       -> per M3, DISCARDED if no',
-        '                                                named 4H MSS in sweep',
-        '                                                direction. A discarded',
-        '                                                sweep does NOT block the',
-        '                                                bias-aligned thesis.',
-        '  F3. If only TIER_2 or TIER_3 sweeps exist:',
-        '        - Setup direction must match confirmed bias (Section L).',
-        '        - Counter-bias TIER_2/3 requires a named 4H MSS. Otherwise NO_TRADE.',
-        '  F4. When two qualifying setups exist, choose the one whose direction matches',
-        '      the confirmed bias AND whose TP1 pool is the nearest unused major HTF',
-        '      pool. Never choose a farther TP to inflate RR.',
-        '  F5. Never fade a completed-session sweep against the confirmed bias without',
-        '      a 4H MSS.',
-        '',
-        '=== SECTION G: NO_TRADE HARD GATES (ANY ONE TRIGGERS NO_TRADE) ===',
-        'N1. RR_TP1 < 2.00 from the nearest valid stop on the gate_0_candidate.',
-        'N2. gate_0_candidate entry requires leaving the OB body / FVG gap to reach 2.0R.',
-        'N3. Counter-bias direction without a named 4H MSS.',
-        'N4. No genuine sweep (wick beyond structure + rejection close).',
-        'N5. The identified "OB" is the sweep candle wick.',
-        'N6. TP1 is not the nearest unused major 1H/4H opposing pool.',
-        'N7. Raw candles conflict and no clean thesis exists.',
-        'N8. Any self-audit gate fails (GATE_0 through GATE_7).',
-        'N9. action = "NO_TRADE" WITHOUT a fully populated gate_0_candidate object.',
-        '',
-        '=== SECTION H: CONFIDENCE CALIBRATION ===',
-        'Start at 100% and subtract:',
-        '-25% outside ALL Section N killzone windows',
-        '-15% setup relies on 15M/5M only (no 1H/4H confluence)',
-        '-15% minor liquidity pool used for TP1 instead of a major HTF pool',
-        '-10% sweep is a single-candle wick with no displacement follow-through',
-        '-10% entry at the near edge of the zone rather than equilibrium',
-        '-10% HTF (1D/4H) structure only weakly supports the direction',
-        'Report confidence: 0 when action = "NO_TRADE". Never report > 75 on a setup that required any Rule 11 adjustment, and never report > 60 outside killzone.',
-        '',
-        '=== SECTION I: WORKED REJECTION EXAMPLE (DO NOT REPEAT THIS ERROR) ===',
-        'Case: SELL_LIMIT, ENTRY 4022.50, SL 4034.50, TP1 4000.50.',
-        'RISK 12.00, REWARD 22.00, RR 1.83 -> fails Rule 10.',
-        'The stop was widened to 4034.50 to sit beyond a 4H swing high and PDH, when the nearest invalidation was the 1H sweep wick at 4025.63.',
-        'With a valid stop at ~4026.80 the trade would have passed, but the AI did not apply Rule 8.',
-        'CORRECT OUTPUT in that situation is NO_TRADE, never a caveated action.',
-        '',
-        '=== SECTION I-BIS: WORKED ACCEPTANCE EXAMPLE (TARGET BEHAVIOR) ===',
-        'Case (from a prior packet): BULLISH Section L bias confirmed, London-low',
-        'TIER_1 sweep at 1H 2026-10-28T06:00 (wick 4028.19 below LONDON_LOW 4028.20,',
-        'close 4030.82 above). Bullish OB at 1H 2026-10-28T05:00 (body 4030.37-4036.68).',
-        'gate_0_candidate: DIR=BUY ENTRY=4034.00 SL=4027.50 TP1=4054.53',
-        'RISK=6.50 REWARD=20.53 RR=3.16 TIMEFRAME=1H.',
-        'This candidate PASSES all gates (GATE_1 BULLISH bias; GATE_1b all sweeps',
-        'listed; GATE_2 bullish sweep confirmed; GATE_3 entry inside OB body; GATE_4',
-        'stop below sweep wick; GATE_5 RR 3.16 >= 2.00; GATE_6 TP1 NY_HIGH is nearest',
-        'major pool not body-broken; GATE_7 killzone computed per Section N).',
-        'CORRECT OUTPUT is BUY_LIMIT, NOT NO_TRADE.',
-        '',
-        'The refusal reason "all pools are used" is INVALID if the pools were only',
-        'wick-tapped, not body-broken on the entry side. Wick-taps do NOT invalidate',
-        "a TP1 target when the sweep that caused them is the setup's own trigger.",
-        '"Used" means BODY-CLOSED through on the entry side.',
-        '',
-        'If a gate_0_candidate has RR >= 2.00, a valid OB, a nearest-invalidation',
-        'stop, and a sweep matching bias �?" the setup EXISTS. Your job is to return',
-        'BUY_LIMIT or SELL_LIMIT.'
-    ];
+    return `=== GHOST MACHINE STRATEGY RULES === V2.4 (DEEPSEEK JSON)
+You are the Ghost Machine. Read the raw closed candles yourself. No deterministic POI, FVG, order-block, MSNR, supply/demand zone or candidate list is supplied or authoritative. Deterministic macro liquidity levels are supplied only as context.
+UNIVERSE: use only the CSV candles in this packet. Never invent a candle, price, timestamp, volume or level.
+MACRO CONTEXT: DAILY_BIAS, daily OHLC, PDH/PDL and completed session highs/lows are context only. The raw 1D/4H candles own higher-timeframe structure; 1H/15M/5M own intraday formation and execution.
+
+=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===
+You are running in THINK MODE. Follow this exact sequence:
+
+STEP 1. Derive the Section L bias from the last three contiguous closed 1D
+        candles. Write down D3, D2, D1 highs and lows. State the bias.
+STEP 2. Identify the last completed 4H MSS. Note the timestamp.
+STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps. Note
+        every sweep found (timeframe, timestamp, level, direction, tier).
+STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS
+        from the sweep list. These are momentum evidence, not sweeps.
+STEP 5. Compute the killzone from SERVER_TIME_UTC using fixed UTC windows.
+STEP 6. Select the primary thesis (Section M directional priority).
+STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
+STEP 8. VERIFY ARITHMETIC TWICE:
+         - RISK = |entry - stop_loss| (recompute)
+         - REWARD = |tp1 - entry| (recompute)
+         - RR = REWARD / RISK (round to 2 decimals, verify again)
+         If RR < 2.00, relocate TP1 to the next unused pool and recompute.
+         Only if RR still < 2.00 after relocation -> NO_TRADE.
+STEP 9. Emit the JSON object. No prose. No commentary. No markdown fences.
+
+The JSON object is the only permitted output.
+
+=== SECTION L: DAILY BIAS ===
+The 1D block is ordered oldest-to-newest. D1 = the LAST row. D2 = the row
+immediately above D1. D3 = the row immediately above D2. D1, D2, D3 are
+CONTIGUOUS - no rows between them may be skipped.
+
+  BULLISH  iff  D1.high > D3.high AND D1.low > D3.low
+  BEARISH  iff  D1.high < D3.high AND D1.low < D3.low
+  RANGE    otherwise
+
+4H MSS tiebreaker: identify the last completed 4H body-close break of a named
+4H swing high or low. If that MSS agrees with Section L, the bias is
+CONFIRMED. If it disagrees, treat as RANGE unless the MSS occurred within the
+last 3 closed 4H candles in the direction of Section L.
+RANGE = no directional trade unless a named 4H MSS supplies direction.
+The packet's DAILY_BIAS label is advisory. If Section L disagrees, use Section L.
+
+=== SECTION M: SWEEP SCAN ===
+Scan all five timeframes (1D, 4H, 1H, 15M, 5M) for liquidity sweeps. A sweep
+= a closed candle whose wick exceeded a named prior swing, equal-high/equal-
+low cluster, or session/PDH/PDL level by >= 1 increment AND closed back inside
+prior structure.
+
+Direction semantics:
+  LOW sweep  (wick below level, close ABOVE) = BULLISH signal (sell-side grab)
+  HIGH sweep (wick above level, close BELOW) = BEARISH signal (buy-side grab)
+
+Candle wicks beyond a level AND closes beyond the same side = BREAKDOWN or
+BREAKOUT, not a sweep. List separately. A FAILED BREAKDOWN is a low wick
+below a level + a later candle body-closing back above (bullish trap reversal).
+A FAILED BREAKOUT is the mirror (bearish trap reversal).
+
+Tier classification:
+  TIER_1:  completed ASIA/LONDON/NEW_YORK high or low, or PDH/PDL
+  TIER_2:  named 4H or 1H swing high/low
+  TIER_3:  unclassified intraday swing (15M/5M only)
+
+MANDATORY per-timeframe enumeration: for EACH timeframe, list BOTH the most
+recent BULLISH sweep and the most recent BEARISH sweep (or NONE). Skipping
+either direction on any timeframe is a contract violation.
+
+Directional priority:
+  - A TIER_1 sweep in the direction of the confirmed bias is the primary thesis.
+  - A counter-bias TIER_1 sweep is DISCARDED unless a named 4H MSS exists in
+    that sweep's direction. A discarded sweep is listed for completeness but
+    does NOT block the bias-aligned trade.
+  - If no sweep exists on any timeframe, return NO_TRADE.
+
+=== SECTION N: KILLZONE ===
+Compute from SERVER_TIME_UTC using fixed UTC windows. No DST adjustments.
+  LONDON:            07:00-11:00 UTC
+  LONDON/NY OVERLAP: 11:00-12:00 UTC   (highest liquidity - INSIDE)
+  NEW YORK:          12:00-15:00 UTC
+Inside any window = INSIDE, no penalty. Outside all three = OUTSIDE, apply
+-25% to confidence. Do not return NO_TRADE solely for being outside killzone.
+The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
+
+=== SETUP CONSTRUCTION ===
+
+ORDER BLOCK:
+The OB is the last opposite-direction candle before the displacement leg.
+  - Bullish OB: the last BEARISH candle (close < open) before the up leg.
+  - Bearish OB: the last BULLISH candle (close > open) before the down leg.
+The OB zone is that candle's BODY (open-to-close). The wick is never the OB.
+Using the sweep candle itself as the OB is a contract violation.
+
+STOP LOSS:
+Place stop_loss at the NEAREST structural invalidation:
+  - BUY:  the sweep wick low and the OB far edge - whichever is closer - plus
+          0.50-2.00 buffer (XAU) or proportional buffer for other symbols.
+  - SELL: the sweep wick high and the OB far edge - whichever is closer -
+          plus the same buffer.
+Never widen the stop to swallow distant HTF swing highs/lows, PDH/PDL, or
+round numbers unless that level IS the immediate invalidation of this setup.
+
+TAKE PROFIT:
+TP1 = the NEAREST opposing 1H/4H pool that has NOT been body-closed through
+in the direction of the trade. "Unused" means no closed candle body-closed
+beyond the level. WICK-TAPS do NOT disqualify a pool - a 5-point wick above
+a level is not a body-close through it.
+If the nearest candidate TP1 IS body-broken, DO NOT reject the trade -
+relocate TP1 to the next unused pool above (BUY) or below (SELL) and
+recompute RR. Only if RR still < 2.00 after relocation does the setup fail.
+TP2 and TP3 extend to the next unused pools. Never inflate TP to improve RR.
+
+ENTRY:
+BUY_LIMIT:  entry below current price, inside the OB/FVG body.
+SELL_LIMIT: entry above current price, inside the OB/FVG body.
+Entry may deepen toward equilibrium to improve RR, but must remain strictly
+inside the OB body / FVG gap and on the correct side of current price.
+
+RISK/REWARD:
+  RISK = |entry - stop_loss|            (compute twice)
+  REWARD = |tp1 - entry|                (compute twice)
+  RR_TP1 = REWARD / RISK                (two decimals, verify)
+RR_TP1 must be >= 2.00. Below 2.00 after nearest-stop + entry-inside-zone
+= NO_TRADE. Never fabricate a target or tighten the stop past a valid
+invalidation to fix RR.
+
+=== WORKED ACCEPTANCE EXAMPLE ===
+BULLISH Section L bias. London-low TIER_1 bullish sweep at 1H 2026-10-28T06:00
+(wick 4028.19 below LONDON_LOW 4028.20, close 4030.82 above).
+Bullish OB at 1H 2026-10-28T05:00 (body 4030.37-4036.68).
+
+TP1 candidates above entry (BUY):
+  NY_HIGH 4054.53 - body-broken on 1H 2026-10-27T15:00 (close 4063.53) - USED.
+  LONDON_HIGH 4058.30 - wick-tapped but never body-broken - UNUSED but minor.
+  PDH 4065.70 - wick-tapped twice but NEVER body-closed above - UNUSED, MAJOR.
+
+Correct TP1: 4065.70 (nearest unused MAJOR pool).
+Result: ENTRY=4034.00  SL=4027.50  TP1=4065.70
+        RISK=6.50  REWARD=31.70  RR=4.88
+
+WRONG TP1: 4054.53 (already body-broken). This is a contract violation.
+Relocate to 4065.70. Do NOT reject the trade.
+If the output uses a body-broken TP1, the response is invalid.`.split('\n');
 }
 
 function buildRawCandleAiInstruction() {
     return [
         '=== RAW CANDLE AI REVIEW INSTRUCTION ===',
         'Analyze the raw candles independently. The deterministic POI/FVG/zone/candidate engines are disabled; only the factual macro liquidity levels are supplied.',
-        'First identify the dominant 1D/4H structure and major HTF zones. Derive DAILY_BIAS per Section L from the last three closed 1D candles; Section L overrides the packet label. Then run the Section M sweep scan across all five timeframes before selecting any setup.',
-        'Run gate_0_candidate construction FIRST: construct the best available pending-limit candidate (entry inside an OB/FVG, stop at nearest invalidation, TP1 at nearest 1H/4H pool not body-broken on entry side) with all fields filled. Then apply GATE_1 through GATE_7 against the candidate.',
-        'Ensure the entry is on the correct side of the current price: BUY_LIMIT below current price, SELL_LIMIT above current price.',
-        'Place the Stop Loss at the NEAREST structural invalidation, not a distant HTF swing, previous-day extreme or round number.',
-        'Place TP1 at the nearest unused major 1H or 4H opposing liquidity pool that provides at least 2.0R from entry. Use the following opposing pools for TP2 and TP3.',
-        'Run the SECTION A self-audit before writing the JSON. If the gate_0_candidate fails any gate, return NO_TRADE with zero geometry AND cite the failing gate in audit.gates with the candidate\'s actual numbers.',
+        'Follow the DEEPSEEK REASONING PROTOCOL in order. Derive the Section L bias from the last three contiguous closed 1D candles; Section L overrides the packet label.',
+        'Identify the last completed 4H MSS, then enumerate both the most recent bullish and bearish sweep on every timeframe. Separate BREAKDOWN, BREAKOUT, FAILED_BREAKDOWN and FAILED_BREAKOUT events from the sweep list.',
         'Compute killzone per Section N from SERVER_TIME_UTC using the fixed UTC windows (London 07:00-11:00, Overlap 11:00-12:00, NY 12:00-15:00); do not apply DST adjustments.',
-        'Calculate risk, reward and rr_tp1 from the exact values you return. rr_tp1 must be at least 2.00; never return a live action with a caveat when it is lower.',
+        'Select the primary thesis using Section M directional priority and construct the candidate: OB body, entry, stop, TP1/TP2/TP3.',
+        'Ensure the entry is on the correct side of current price: BUY_LIMIT below current price, SELL_LIMIT above current price.',
+        'Place stop_loss at the NEAREST structural invalidation, not a distant HTF swing, previous-day extreme or round number.',
+        'Place TP1 at the nearest opposing 1H/4H pool that has not been body-closed through. Wick taps do not disqualify a pool. If TP1 is used, relocate to the next unused pool and recompute RR.',
+        'VERIFY ARITHMETIC TWICE: recompute risk, reward and rr_tp1 from the exact returned values. rr_tp1 must be at least 2.00; below 2.00 after nearest-stop and entry-inside-zone is NO_TRADE.',
         'Because this is a pending limit, you may deepen the entry inside the OB/FVG toward equilibrium or the stop side, but never outside the zone.',
-        'If the raw data supports both directions, apply Section F and choose the setup aligned with the confirmed Section L bias and nearest unused major HTF pool.',
-        'If no qualifying setup exists after gate_0_candidate construction, return action "NO_TRADE" with zero geometry.',
+        'If no qualifying setup exists, return action "NO_TRADE" with zero geometry and a reason describing the candidate considered and why it failed.',
         'Include a concrete management instruction for the completed trade.',
-        'Output the exact JSON object defined in the OUTPUT CONTRACT, based entirely on your own reading of the raw data.'
+        'Output the exact JSON object defined in the OUTPUT CONTRACT. No prose, no markdown, no extra fields.'
     ];
 }
 
@@ -20722,7 +20560,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
         ...(serverClock.outside_killzone ? ['WARNING: OUTSIDE_KILLZONE'] : []),
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.3.3',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.4',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20760,11 +20598,6 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     lines.push(...buildRawCandleAiInstruction(), '');
     lines.push(RAW_CANDLE_AI_OUTPUT_CONTRACT);
     const packetText = lines.join('\n');
-    const baseRuleStart = ghostRules.findIndex(rule => rule.startsWith('=== BASE RULE INDEX'));
-    const baseRuleEnd = ghostRules.findIndex((rule, index) => index > baseRuleStart && rule.startsWith('=== SECTION B'));
-    const numberedRules = ghostRules
-        .slice(baseRuleStart + 1, baseRuleEnd > baseRuleStart ? baseRuleEnd : undefined)
-        .filter(rule => /^\d+\.\s/.test(rule));
     lastRawPacketDiagnostic = {
         packet: 'RAW_PACKET_DIAGNOSTIC',
         symbol,
@@ -20785,26 +20618,19 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             warning_injected: serverClock.outside_killzone
         },
         ghost_rules: {
-            version: 'V2.3.3',
+            version: 'V2.4',
             output_format: 'JSON',
-            original_14_included: numberedRules.slice(0, 14).length === 14,
-            total_rules: numberedRules.length,
-            htf_alignment_included: numberedRules.some(rule => rule.startsWith('15. HTF ALIGNMENT')),
-            mtf_confluence_included: numberedRules.some(rule => rule.startsWith('16. MTF CONFLUENCE')),
-            killzone_penalty_included: numberedRules.some(rule => rule.startsWith('17. KILLZONE CONFIDENCE PENALTY')),
-            daily_bias_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION L: DAILY BIAS')),
-            mandatory_sweep_scan_included: ghostRules.some(rule => rule.startsWith('=== SECTION M: MANDATORY SWEEP SCAN')),
-            utc_killzone_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION N: KILLZONE')),
-            self_audit_included: ghostRules.some(rule => rule.startsWith('=== SECTION A: MANDATORY PRE-OUTPUT SELF-AUDIT')),
-            sweep_gate_included: ghostRules.some(rule => rule.startsWith('GATE_1b SWEEP:')),
-            body_ob_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION B: RULE 4 (REPLACED)')),
-            nearest_invalidation_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION C: RULE 8 (REPLACED)')),
-            hard_rr_gate_included: ghostRules.some(rule => rule.startsWith('=== SECTION D: RULE 10 (REPLACED)')),
-            bounded_entry_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION E: RULE 11 (REPLACED)')),
-            directional_priority_included: ghostRules.some(rule => rule.startsWith('=== SECTION F: DIRECTIONAL PRIORITY')),
-            no_trade_hard_gates_included: ghostRules.some(rule => rule.startsWith('=== SECTION G: NO_TRADE HARD GATES')),
-            confidence_calibration_included: ghostRules.some(rule => rule.startsWith('=== SECTION H: CONFIDENCE CALIBRATION')),
-            worked_rejection_example_included: ghostRules.some(rule => rule.startsWith('=== SECTION I: WORKED REJECTION EXAMPLE'))
+            reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===')),
+            daily_bias_included: ghostRules.some(rule => rule.startsWith('=== SECTION L: DAILY BIAS ===')),
+            mandatory_sweep_scan_included: ghostRules.some(rule => rule.startsWith('=== SECTION M: SWEEP SCAN ===')),
+            utc_killzone_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION N: KILLZONE ===')),
+            setup_construction_included: ghostRules.some(rule => rule.startsWith('=== SETUP CONSTRUCTION ===')),
+            order_block_rule_included: ghostRules.some(rule => rule.startsWith('ORDER BLOCK:')),
+            nearest_invalidation_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS:')),
+            target_relocation_rule_included: ghostRules.some(rule => rule.includes('relocate TP1 to the next unused pool')),
+            hard_rr_gate_included: ghostRules.some(rule => rule.includes('RR_TP1 must be >= 2.00')),
+            worked_acceptance_example_included: ghostRules.some(rule => rule.startsWith('=== WORKED ACCEPTANCE EXAMPLE ===')),
+            strict_json_schema_included: ghostRules.some(rule => rule.includes('No prose. No commentary. No markdown fences.'))
         }
     };
     if (rawPacketDiagnosticEnabled()) console.log('RAW_PACKET_DIAGNOSTIC', lastRawPacketDiagnostic);
@@ -29354,23 +29180,11 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
         const issues = [];
         const add = issue => { if (!issues.includes(issue)) issues.push(issue); };
         const required = ['action', 'setup', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
-            'confidence', 'timeframe_used', 'management', 'gate_0_candidate', 'audit', 'reason'];
+            'confidence', 'timeframe_used', 'management', 'audit', 'reason'];
         if (required.some(key => lookup(json, key) === undefined)) add('RAW_JSON_FIELDS_MISSING');
+        const allowedTopLevel = new Set(required);
+        if (Object.keys(json).some(key => !allowedTopLevel.has(key.toLowerCase()))) add('RAW_JSON_EXTRA_FIELDS');
         const action = String(lookup(json, 'action') ?? '').trim().toUpperCase();
-        const rawCandidate = lookup(json, 'gate_0_candidate');
-        const candidate = isObject(rawCandidate) ? {
-            ...rawCandidate,
-            direction: String(lookup(rawCandidate, 'direction') ?? '').trim().toUpperCase() || null,
-            entry: number(lookup(rawCandidate, 'entry')),
-            stop_loss: number(lookup(rawCandidate, 'stop_loss')),
-            tp1: number(lookup(rawCandidate, 'tp1')),
-            risk: number(lookup(rawCandidate, 'risk')),
-            reward: number(lookup(rawCandidate, 'reward')),
-            rr: number(lookup(rawCandidate, 'rr')),
-            timeframe: text(lookup(rawCandidate, 'timeframe')),
-            sweep: text(lookup(rawCandidate, 'sweep')),
-            ob: text(lookup(rawCandidate, 'ob'))
-        } : null;
         const audit = isObject(lookup(json, 'audit')) ? lookup(json, 'audit') : null;
         const parsed = {
             action,
@@ -29385,38 +29199,47 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
             confidence: number(lookup(json, 'confidence')),
             timeframe_used: text(lookup(json, 'timeframe_used'))?.toUpperCase() || null,
             management: text(lookup(json, 'management')),
-            gate_0_candidate: candidate,
             audit,
             reason: text(lookup(json, 'reason')),
             raw_fields: json,
             raw_json: json,
             source_format: 'JSON'
         };
-        if (!candidate) {
-            add('RAW_GATE_0_CANDIDATE_REQUIRED');
-        } else {
-            const numericCandidate = ['entry', 'stop_loss', 'tp1', 'risk', 'reward', 'rr'].every(key => Number.isFinite(candidate[key]));
-            if (!['BUY', 'SELL'].includes(candidate.direction) || !numericCandidate
-                || !candidate.timeframe || !candidate.sweep || !candidate.ob) {
-                add('RAW_GATE_0_CANDIDATE_INCOMPLETE');
-            }
-        }
         if (!audit) {
             add('RAW_AUDIT_REQUIRED');
         } else {
+            const allowedAudit = new Set(['daily_bias', 'sweeps', 'breaks', 'killzone']);
+            if (Object.keys(audit).some(key => !allowedAudit.has(key.toLowerCase()))) add('RAW_AUDIT_EXTRA_FIELDS');
+            const dailyBias = lookup(audit, 'daily_bias');
+            if (!isObject(dailyBias)) {
+                add('RAW_AUDIT_DAILY_BIAS_INVALID');
+            } else {
+                const biasFields = ['direction', 'd3_h', 'd3_l', 'd2_h', 'd2_l', 'd1_h', 'd1_l', 'four_hour_mss'];
+                const biasNumbers = ['d3_h', 'd3_l', 'd2_h', 'd2_l', 'd1_h', 'd1_l'].every(key => Number.isFinite(number(lookup(dailyBias, key))));
+                const biasDirection = String(lookup(dailyBias, 'direction') ?? '').toUpperCase();
+                if (biasFields.some(key => lookup(dailyBias, key) === undefined)
+                    || !biasNumbers || !['BULLISH', 'BEARISH', 'RANGE'].includes(biasDirection)
+                    || !text(lookup(dailyBias, 'four_hour_mss'))) {
+                    add('RAW_AUDIT_DAILY_BIAS_INVALID');
+                }
+            }
             const sweeps = lookup(audit, 'sweeps');
             const expectedSweeps = ['1d', '4h', '1h', '15m', '5m'];
             const sweepTimeframes = Array.isArray(sweeps)
                 ? sweeps.map(item => String(lookup(item, 'tf') ?? '').toLowerCase())
                 : [];
-            if (!Array.isArray(sweeps) || sweeps.length !== 5
-                || expectedSweeps.some(timeframe => !sweepTimeframes.includes(timeframe))) {
-                add('RAW_AUDIT_SWEEPS_INVALID');
-            }
-            const gates = lookup(audit, 'gates');
-            const gateKeys = ['gate_0', 'gate_1', 'gate_1b', 'gate_2', 'gate_2b', 'gate_3', 'gate_4', 'gate_5', 'gate_6', 'gate_6b', 'gate_7'];
-            if (!isObject(gates) || gateKeys.some(key => !Object.prototype.hasOwnProperty.call(gates, key))) {
-                add('RAW_AUDIT_GATES_INVALID');
+            const sweepsComplete = Array.isArray(sweeps) && sweeps.length === 5
+                && expectedSweeps.every(timeframe => sweepTimeframes.includes(timeframe))
+                && sweeps.every(item => lookup(item, 'bullish') !== undefined && lookup(item, 'bearish') !== undefined);
+            if (!sweepsComplete) add('RAW_AUDIT_SWEEPS_INVALID');
+            if (!Array.isArray(lookup(audit, 'breaks'))) add('RAW_AUDIT_BREAKS_INVALID');
+            const killzone = lookup(audit, 'killzone');
+            const killzoneWindow = String(lookup(killzone, 'computed_window') ?? '').toUpperCase();
+            if (!isObject(killzone)
+                || !text(lookup(killzone, 'server_time_utc'))
+                || !['LONDON', 'OVERLAP', 'NEW_YORK', 'NONE'].includes(killzoneWindow)
+                || typeof lookup(killzone, 'inside') !== 'boolean') {
+                add('RAW_AUDIT_KILLZONE_INVALID');
             }
         }
         if (!['BUY_LIMIT', 'SELL_LIMIT', 'NO_TRADE'].includes(action)) {
@@ -29429,10 +29252,7 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
             if (['entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1'].some(key => parsed[key] !== 0)) {
                 add('RAW_NO_TRADE_ZERO_GEOMETRY_INVALID');
             }
-            const gates = lookup(audit, 'gates');
-            const hasFailedGate = isObject(gates)
-                && Object.values(gates).some(value => !String(value ?? '').toUpperCase().startsWith('PASS'));
-            if (!hasFailedGate) add('RAW_AUDIT_FAILED_GATE_REQUIRED');
+            if (!parsed.reason) add('RAW_REASON_REQUIRED');
             return {
                 ...parsed,
                 valid: issues.length === 0,
@@ -29472,23 +29292,6 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
                 add('RAW_RR_CALCULATION_MISMATCH');
             }
             if (calculatedRR === null || calculatedRR < 2) add('RAW_RR_BELOW_MINIMUM');
-        }
-        if (candidate) {
-            const normalizedCandidate = normalizedTargets.changed
-                ? { ...candidate, tp1: normalized.tp1 }
-                : candidate;
-            normalized.gate_0_candidate = normalizedCandidate;
-            const same = (left, right) => Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) < 0.0000001;
-            const sameTimeframe = String(normalizedCandidate.timeframe ?? '').toLowerCase()
-                === String(normalized.timeframe_used ?? '').toLowerCase();
-            if (!same(normalizedCandidate.entry, normalized.entry)
-                || !same(normalizedCandidate.stop_loss, normalized.stop_loss)
-                || !same(normalizedCandidate.tp1, normalized.tp1)
-                || !same(normalizedCandidate.risk, normalized.risk)
-                || !same(normalizedCandidate.rr, normalized.rr_tp1)
-                || !sameTimeframe) {
-                add('RAW_GATE_0_CANDIDATE_MISMATCH');
-            }
         }
         return {
             ...normalized,
