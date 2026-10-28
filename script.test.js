@@ -10762,7 +10762,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.2');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10790,31 +10790,55 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V2.1 audit, patched rules, hard gates, and amended output contract', () => {
+    it('includes the V2.2 daily-bias, sweep-scan, UTC-killzone and patched rule set', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         for (let rule = 1; rule <= 17; rule += 1) {
             expect(packet).toMatch(new RegExp('^' + rule + '\\. ', 'm'));
         }
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V2.1 (PATCHED)');
+        expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V2.2 (PATCHED)');
+        expect(packet).toContain('=== SECTION L: DAILY BIAS');
+        expect(packet).toContain('BULLISH  iff  H1 > H3  AND  L1 > L3');
+        expect(packet).toContain('BEARISH  iff  H1 < H3  AND  L1 < L3');
+        expect(packet).toContain('RANGE = no directional pending limit unless a named 4H MSS supplies direction.');
+        expect(packet).toContain('REASON must state: D3.H, D2.H, D1.H, D3.L, D2.L, D1.L');
+        expect(packet).toContain('=== SECTION M: MANDATORY SWEEP SCAN (RUN FIRST) ===');
+        expect(packet).toContain('TIER_1:  completed ASIA/LONDON/NEW_YORK high or low, or PREVIOUS_DAY_HIGH/LOW');
+        expect(packet).toContain('M4. If NO sweep exists on any timeframe, return NO_TRADE.');
+        expect(packet).toContain('Omission of a found sweep is a');
+        expect(packet).toContain('=== SECTION N: KILLZONE');
+        expect(packet).toContain('LONDON:    07:00-10:00 UTC');
+        expect(packet).toContain('NEW YORK:  12:00-15:00 UTC');
+        expect(packet).toContain('Do NOT apply daylight-saving adjustments');
         expect(packet).toContain('=== SECTION A: MANDATORY PRE-OUTPUT SELF-AUDIT ===');
+        const sectionAIndex = packet.indexOf('=== SECTION A: MANDATORY PRE-OUTPUT SELF-AUDIT ===');
+        expect(packet.indexOf('=== SECTION L: DAILY BIAS')).toBeLessThan(sectionAIndex);
+        expect(packet.indexOf('=== SECTION M: MANDATORY SWEEP SCAN')).toBeLessThan(sectionAIndex);
+        expect(packet.indexOf('=== SECTION N: KILLZONE')).toBeLessThan(sectionAIndex);
+        expect(packet).toContain('GATE_1  DIRECTION: Does the setup direction agree with the bias derived in Section L?');
+        expect(packet).toContain('GATE_1b SWEEP: Did you run Section M across all five timeframes');
         expect(packet).toContain('GATE_5  RR: Compute R = |ENTRY - STOP_LOSS| and Reward = |TP1 - ENTRY|.');
+        expect(packet).toContain('GATE_7  KILLZONE: Compute killzone per Section N from SERVER_TIME_UTC');
         expect(packet).toContain('=== SECTION B: RULE 4 (REPLACED) - ORDER BLOCK DEFINITION ===');
         expect(packet).toContain('The OB zone is that candle\'s BODY (open-to-close).');
         expect(packet).toContain('=== SECTION C: RULE 8 (REPLACED) - STOP LOSS MUST BE THE NEAREST INVALIDATION ===');
         expect(packet).toContain('=== SECTION D: RULE 10 (REPLACED) - RR IS A HARD GATE ===');
         expect(packet).toContain('RR_TP1 must be >= 2.00.');
         expect(packet).toContain('=== SECTION E: RULE 11 (REPLACED) - ENTRY DEPTH IS BOUNDED ===');
-        expect(packet).toContain('=== SECTION F: NEW RULE - DIRECTIONAL PRIORITY ===');
+        expect(packet).toContain('=== SECTION F: DIRECTIONAL PRIORITY');
+        expect(packet).toContain('F1. If Section L returns RANGE and no 4H MSS supplies direction: NO_TRADE.');
+        expect(packet).toContain('F5. Never fade a completed-session sweep against the confirmed bias without');
         expect(packet).toContain('=== SECTION G: NO_TRADE HARD GATES (ANY ONE TRIGGERS NO_TRADE) ===');
         expect(packet).toContain('N1. RR_TP1 < 2.00 from the nearest valid stop.');
+        expect(packet).toContain('N8. Any self-audit gate fails (GATE_1 through GATE_7, including GATE_1b).');
         expect(packet).toContain('=== SECTION H: CONFIDENCE CALIBRATION ===');
         expect(packet).toContain('Never report > 75% on a setup that required any Rule 11 adjustment');
         expect(packet).toContain('=== SECTION I: WORKED REJECTION EXAMPLE (DO NOT REPEAT THIS ERROR) ===');
         expect(packet).toContain('CORRECT OUTPUT in that situation is NO_TRADE, never a caveated ACTION.');
         expect(packet).toContain('15. HTF ALIGNMENT: You are provided raw 1D and 4H candles.');
         expect(packet).toContain('16. MTF CONFLUENCE: Use the 4H candles to identify the dominant direction');
-        expect(packet).toContain('17. KILLZONE CONFIDENCE PENALTY: If the current server time is OUTSIDE the London (02:00-05:00 EST) or New York (07:00-10:00 EST) Killzones');
+        expect(packet).toContain('17. KILLZONE CONFIDENCE PENALTY: Compute killzone per SECTION N from SERVER_TIME_UTC');
         expect(packet).toContain('TP1 must target a major 1H or 4H opposing liquidity pool.');
         expect(packet).toContain('The distance from Entry to TP1 must provide a Risk-to-Reward ratio of at least 2.0.');
         expect(packet).toContain('RISK: <ENTRY to STOP_LOSS, two decimals>');
@@ -10867,11 +10891,15 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             active: 'NEW_YORK', inside_killzone: true, outside_killzone: false, warning_injected: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V2.1',
+            version: 'V2.2',
             original_14_included: true, total_rules: 17,
             htf_alignment_included: true, mtf_confluence_included: true,
             killzone_penalty_included: true,
+            daily_bias_rule_included: true,
+            mandatory_sweep_scan_included: true,
+            utc_killzone_rule_included: true,
             self_audit_included: true,
+            sweep_gate_included: true,
             body_ob_rule_included: true,
             nearest_invalidation_rule_included: true,
             hard_rr_gate_included: true,
@@ -10881,6 +10909,26 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             confidence_calibration_included: true,
             worked_rejection_example_included: true
         });
+    });
+
+    it('derives DAILY_BIAS from the last three closed 1D structure', () => {
+        const ctx = getContext();
+        const daily = (high, low) => ({ o: 100, h: high, l: low, c: 100 });
+        expect(ctx.buildRawCandleAiDailyBias([
+            daily(10, 5), daily(11, 6), daily(12, 7)
+        ])).toEqual(expect.objectContaining({
+            bias: 'BULLISH', reason: 'LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L'
+        }));
+        expect(ctx.buildRawCandleAiDailyBias([
+            daily(12, 7), daily(11, 6), daily(10, 5)
+        ])).toEqual(expect.objectContaining({
+            bias: 'BEARISH', reason: 'LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L'
+        }));
+        expect(ctx.buildRawCandleAiDailyBias([
+            daily(12, 5), daily(11, 6), daily(10, 7)
+        ])).toEqual(expect.objectContaining({
+            bias: 'NEUTRAL', reason: 'LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L'
+        }));
     });
 
     it('auto-sorts reversed SELL_LIMIT targets into descending order', () => {
