@@ -10860,12 +10860,17 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet.indexOf('=== SECTION L: DAILY BIAS')).toBeLessThan(sectionAIndex);
         expect(packet.indexOf('=== SECTION M: MANDATORY SWEEP SCAN')).toBeLessThan(sectionAIndex);
         expect(packet.indexOf('=== SECTION N: KILLZONE')).toBeLessThan(sectionAIndex);
+        expect(packet).toContain('NOTE ON COUNTER-BIAS SWEEPS: A counter-bias TIER_1 sweep without a');
+        expect(packet).toContain('it does not block the bias-aligned trade');
+        expect(packet).toContain('GATE_1b fires ONLY when the counter-bias sweep has a');
         expect(packet).toContain('GATE_0  CANDIDATE CONSTRUCTION (RUN THIS FIRST, BEFORE ANY OTHER GATE):');
         expect(packet).toContain('You MUST fill ENTRY, STOP_LOSS, TP1, RISK, RR_TP1');
         expect(packet).toContain('"GATE_0 CANDIDATE: DIR=<BUY|SELL> ENTRY=<p> SL=<p> TP1=<p>');
         expect(packet).toContain('"No qualifying setup exists" without a constructed GATE_0');
         expect(packet).toContain('GATE_1  DIRECTION: Does the GATE_0 candidate direction agree with the bias derived in Section L?');
         expect(packet).toContain('GATE_1b SWEEP: Did you run Section M across all five timeframes');
+        expect(packet).toContain('that has NOT been discarded by M3');
+        expect(packet).toContain('DISCARDED by M3 and does NOT trigger this gate.');
         expect(packet).toContain('GATE_2b OB SCAN COMPLETENESS: If the contract REASON contains the phrase');
         expect(packet).toContain('at least three candidate OBs of that direction that were evaluated and rejected');
         expect(packet).toContain('GATE_3  OB VALIDITY: Is the GATE_0 ENTRY inside the BODY');
@@ -10883,6 +10888,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('=== SECTION E: RULE 11 (REPLACED) - ENTRY DEPTH IS BOUNDED ===');
         expect(packet).toContain('=== SECTION F: DIRECTIONAL PRIORITY');
         expect(packet).toContain('F1. If Section L returns RANGE and no 4H MSS supplies direction: NO_TRADE.');
+        expect(packet).toContain('F2. If a TIER_1 sweep exists (Section M), it is the primary thesis:');
+        expect(packet).toContain('per M3, DISCARDED if no');
+        expect(packet).toContain('does NOT block the bias-aligned');
         expect(packet).toContain('F5. Never fade a completed-session sweep against the confirmed bias without');
         expect(packet).toContain('=== SECTION G: NO_TRADE HARD GATES (ANY ONE TRIGGERS NO_TRADE) ===');
         expect(packet).toContain('N1. RR_TP1 < 2.00 from the nearest valid stop on the GATE_0 candidate.');
