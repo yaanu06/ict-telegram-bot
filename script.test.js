@@ -10762,7 +10762,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.2');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.3');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10790,15 +10790,25 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V2.2 daily-bias, sweep-scan, UTC-killzone and patched rule set', () => {
+    it('includes the V2.3 daily-bias, sweep-scan, UTC-killzone and patched rule set', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         for (let rule = 1; rule <= 17; rule += 1) {
             expect(packet).toMatch(new RegExp('^' + rule + '\\. ', 'm'));
         }
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V2.2 (PATCHED)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V2.3 (PATCHED)');
         expect(packet).toContain('=== SECTION L: DAILY BIAS');
+        expect(packet).toContain('SECTION L — CANDLE SELECTION (MANDATORY):');
+        expect(packet).toContain('The 1D block is ordered oldest-to-newest, one row per line');
+        expect(packet).toContain('D1 = the LAST row of the 1D block.');
+        expect(packet).toContain('D2 = the row immediately ABOVE D1 (the second-to-last row).');
+        expect(packet).toContain('D3 = the row immediately ABOVE D2 (the third-to-last row).');
+        expect(packet).toContain('D1, D2, D3 are CONTIGUOUS. No row between them may be skipped.');
+        expect(packet).toContain('2026-10-26T21:00, 4016.08, 4065.70, 3989.16, 4060.33');
+        expect(packet).toContain('D1 = 2026-10-26 row  (H=4065.70, L=3989.16)');
+        expect(packet).toContain('H1=4065.70 > H3=4034.09 AND L1=3989.16 > L3=3975.65 → BULLISH.');
+        expect(packet).toContain('Selecting 2026-10-20 or 2026-10-21 for D3/D2 is a CONTRACT VIOLATION.');
         expect(packet).toContain('BULLISH  iff  H1 > H3  AND  L1 > L3');
         expect(packet).toContain('BEARISH  iff  H1 < H3  AND  L1 < L3');
         expect(packet).toContain('RANGE = no directional pending limit unless a named 4H MSS supplies direction.');
@@ -10820,7 +10830,14 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('closed candle whose BODY CLOSE lies on the far side of the level from');
         expect(packet).toContain('"BREAKDOWN/BREAKOUT: <tf> <ts> closed <price> beyond <level>."');
         expect(packet).toContain('a broken level becomes the NEXT valid TP pool in the break');
-        expect(packet).toContain('every BREAKDOWN/BREAKOUT separately. Omission of a found sweep is a contract violation.');
+        expect(packet).toContain('M8b. FAILED BREAKOUT / FAILED BREAKDOWN:');
+        expect(packet).toContain('"FAILED BREAKDOWN: <tf> <ts> reclaimed above <level>"');
+        expect(packet).toContain('"FAILED BREAKOUT: <tf> <ts> reclaimed below <level>"');
+        expect(packet).toContain('A failed breakdown is a BULLISH reversal signal (bear trap).');
+        expect(packet).toContain('A failed breakout is a BEARISH reversal signal (bull trap).');
+        expect(packet).toContain('Failed breaks are HIGHER priority than the original break');
+        expect(packet).toContain('every BREAKDOWN/BREAKOUT and FAILED BREAKDOWN/FAILED BREAKOUT separately.');
+        expect(packet).toContain('Omission of a found sweep is a contract violation.');
         expect(packet).toContain('=== SECTION N: KILLZONE');
         expect(packet).toContain('LONDON:    07:00-10:00 UTC');
         expect(packet).toContain('NEW YORK:  12:00-15:00 UTC');
@@ -10905,7 +10922,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             active: 'NEW_YORK', inside_killzone: true, outside_killzone: false, warning_injected: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V2.2',
+            version: 'V2.3',
             original_14_included: true, total_rules: 17,
             htf_alignment_included: true, mtf_confluence_included: true,
             killzone_penalty_included: true,
