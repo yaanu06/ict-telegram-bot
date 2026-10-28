@@ -10806,7 +10806,16 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('=== SECTION M: MANDATORY SWEEP SCAN (RUN FIRST) ===');
         expect(packet).toContain('TIER_1:  completed ASIA/LONDON/NEW_YORK high or low, or PREVIOUS_DAY_HIGH/LOW');
         expect(packet).toContain('M4. If NO sweep exists on any timeframe, return NO_TRADE.');
-        expect(packet).toContain('Omission of a found sweep is a');
+        expect(packet).toContain('M5. SWEEP DIRECTION SEMANTICS (MANDATORY):');
+        expect(packet).toContain('A LOW sweep (wick below prior swing low / session low / PDL, close back');
+        expect(packet).toContain('Classify every sweep as BULLISH or BEARISH in REASON before tier.');
+        expect(packet).toContain('M6. SWEEP vs BREAKDOWN:');
+        expect(packet).toContain('it separately as "BREAKDOWN: <tf> <ts> closed <price> beyond <level>."');
+        expect(packet).toContain('M7. MACRO SWEEP CHECKLIST (RUN BEFORE ANY OTHER SCAN):');
+        expect(packet).toContain('PREVIOUS_DAY_HIGH, PREVIOUS_DAY_LOW)');
+        expect(packet).toContain('Named example: 4H 2026-10-27T21:00 wicked 4070.84 above PDH 4065.70');
+        expect(packet).toContain('and MUST be listed.');
+        expect(packet).toContain('every BREAKDOWN separately. Omission of a found sweep is a contract violation.');
         expect(packet).toContain('=== SECTION N: KILLZONE');
         expect(packet).toContain('LONDON:    07:00-10:00 UTC');
         expect(packet).toContain('NEW YORK:  12:00-15:00 UTC');
