@@ -17160,7 +17160,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "setup": "<OB|FVG|SUPPLY|DEMAND|FLIP|BREAKER|SWEEP|combined with +, or NONE>",',
     '  "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",',
     '  "crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",',
-    '  "sniper_zone_justification": "<1 sentence proving the entry is at the proximal edge of an FVG/OB and the displacement was aggressive>",',
+    '  "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",',
     '  "entry": <number>,',
     '  "stop_loss": <number>,',
     '  "tp1": <number>,',
@@ -17212,7 +17212,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '- If computed_window is NONE: action MUST be NO_TRADE.',
     '- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0; confidence = 0; timeframe_used = "NONE"; management = "NONE".',
     '- On BUY_LIMIT/SELL_LIMIT: every price must trace to a candle in the supplied blocks. Never invent a level.',
-    '- sniper_zone_justification must explicitly mention the proximal edge or FVG.',
+    '- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.',
     '- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.',
     '- Do NOT include extra fields.'
 ].join('\n');
@@ -20343,15 +20343,11 @@ STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps.
 STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS from the sweep list.
 STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE. No Asian session trades.
 STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles. Is price currently TRENDING, RANGING, or CONSOLIDATING?
-STEP 7. Construct the SNIPER candidate: OB body, entry, stop, TP1/TP2/TP3.
+STEP 7. Construct the candidate for TODAY'S session: OB body, entry, stop, TP1/TP2/TP3.
         You MUST align this setup with the current context from STEP 6.
         HIGH-PROBABILITY FILTER: Prioritize zones where the HTF Candle Range (CRT)
         sweep, the MSNR retail trap, and the 1H/15M Order Block all overlap.
-        SNIPER ENTRY RULE: Only select zones where the displacement leg left an
-        FVG (Fair Value Gap) or a clear imbalance. The entry MUST be at the
-        proximal edge (the closest edge to current price) of the OB or FVG, NOT
-        deep inside the zone. If the market has already moved too far from the zone,
-        return NO_TRADE.
+        Focus on capturing the immediate intraday liquidity pools (session highs/lows, PDH/PDL). Do not force a multi-day target if a 1H/15M pool is closer.
 STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.
 STEP 9. Emit the JSON object.
 
@@ -20414,14 +20410,11 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === SETUP CONSTRUCTION ===
 
-=== SNIPER ENTRY & DISPLACEMENT ===
-1. AGGRESSIVE DISPLACEMENT: The leg leaving the Order Block must be violent (large candle bodies, minimal wicks). If the market slowly grinded out of the zone, it is not a sniper entry. Do not trade it.
-2. PROXIMAL EDGE ENTRY: Do not place the entry at the 50% equilibrium or the distal (far) edge. Place the entry at the proximal edge of the OB or the top/bottom of the FVG. You want the price to tap the zone and immediately react.
-3. NO CHASING: If the current price is already more than 2.0 points (XAU) or 10 pips (Forex) away from the proximal edge, the sniper entry is missed. Return NO_TRADE.
-
-ENTRY:
-BUY_LIMIT:  entry at the proximal edge of the bullish OB/FVG, below current price.
-SELL_LIMIT: entry at the proximal edge of the bearish OB/FVG, above current price.
+=== CURRENT OPPORTUNITY & SNIPER ENTRY ===
+1. AGGRESSIVE DISPLACEMENT: The leg leaving the Order Block must be violent. If the market slowly grinded out, do not trade it.
+2. PROXIMAL EDGE OR FVG: If current price is ABOVE the zone, place the entry at the proximal edge (top of Bullish OB).
+   HOWEVER, if current price is ALREADY INSIDE the Order Block, do NOT return NO_TRADE. Find the nearest FVG (Fair Value Gap) or imbalance inside or just below current price, and place the limit order there.
+3. NO CHASING: If current price is already more than 2.0 points (XAU) away from the zone in the wrong direction, return NO_TRADE.
 
 === MARKET CONTEXT & REACTION ===
 === CRT & MSNR LOGIC ===
@@ -20490,7 +20483,7 @@ function buildRawCandleAiInstruction() {
         'Compute killzone per Section N. If outside, RETURN NO_TRADE.',
         'Read the current market context. Select the primary thesis using Section M directional priority.',
         'Construct the sniper candidate: OB body, entry, stop, TP1/TP2/TP3.',
-        'Prioritize CRT and MSNR traps. Enter only at the proximal edge of an FVG/OB after aggressive displacement; do not chase a missed zone.',
+        'Prioritize CRT and MSNR traps. Enter at the proximal edge, or use the nearest FVG/imbalance if price is already inside the OB; do not chase a missed zone.',
         'ENFORCE THE 4.50 POINT MINIMUM STOP LOSS FOR GOLD.',
         'VERIFY ARITHMETIC TWICE.',
         'If no qualifying setup exists, return action "NO_TRADE" with zero geometry.',
@@ -20610,8 +20603,8 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             no_asia_session_rule_included: ghostRules.some(rule => rule.includes('No Asian session trades.')),
             killzone_none_forces_no_trade_included: ghostRules.some(rule => rule.includes('strictly FORBIDDEN from returning a trade')),
             setup_construction_included: ghostRules.some(rule => rule.startsWith('=== SETUP CONSTRUCTION ===')),
-            sniper_entry_rule_included: ghostRules.some(rule => rule.includes('SNIPER ENTRY RULE:')),
-            proximal_edge_rule_included: ghostRules.some(rule => rule.includes('PROXIMAL EDGE ENTRY:')),
+            sniper_entry_rule_included: ghostRules.some(rule => rule.includes('ALREADY INSIDE the Order Block')),
+            proximal_edge_rule_included: ghostRules.some(rule => rule.includes('PROXIMAL EDGE OR FVG:')),
             no_chasing_rule_included: ghostRules.some(rule => rule.includes('NO CHASING:')),
             market_context_rule_included: ghostRules.some(rule => rule.startsWith('=== MARKET CONTEXT & REACTION ===')),
             crt_msnr_logic_included: ghostRules.some(rule => rule.startsWith('=== CRT & MSNR LOGIC ===')),
@@ -29250,7 +29243,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         if (!parsed.crt_msnr_confirmation) add('RAW_CRT_MSNR_CONFIRMATION_REQUIRED');
         if (!parsed.sniper_zone_justification) {
             add('RAW_SNIPER_ZONE_JUSTIFICATION_REQUIRED');
-        } else if (!/\b(PROXIMAL|FVG|FAIR VALUE GAP)\b/i.test(parsed.sniper_zone_justification)) {
+        } else if (!/\b(PROXIMAL|FVG|FAIR VALUE GAP|IMBALANCE)\b/i.test(parsed.sniper_zone_justification)) {
             add('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
         }
         if (action === 'NO_TRADE') {

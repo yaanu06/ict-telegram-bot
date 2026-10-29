@@ -10801,12 +10801,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         }
         expect(packet).toContain('STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE. No Asian session trades.');
         expect(packet).toContain('STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles.');
-        expect(packet).toContain('STEP 7. Construct the SNIPER candidate: OB body, entry, stop, TP1/TP2/TP3.');
+        expect(packet).toContain("STEP 7. Construct the candidate for TODAY'S session: OB body, entry, stop, TP1/TP2/TP3.");
         expect(packet).toContain('You MUST align this setup with the current context from STEP 6.');
         expect(packet).toContain('HIGH-PROBABILITY FILTER: Prioritize zones where the HTF Candle Range (CRT)');
         expect(packet).toContain('sweep, the MSNR retail trap, and the 1H/15M Order Block all overlap.');
-        expect(packet).toContain('SNIPER ENTRY RULE: Only select zones where the displacement leg left an');
-        expect(packet).toContain('proximal edge (the closest edge to current price) of the OB or FVG, NOT');
+        expect(packet).toContain('Focus on capturing the immediate intraday liquidity pools (session highs/lows, PDH/PDL). Do not force a multi-day target if a 1H/15M pool is closer.');
         expect(packet).toContain('STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.');
         expect(packet).toContain('STEP 9. Emit the JSON object.');
         expect(packet).toContain('=== SECTION L: DAILY BIAS ===');
@@ -10832,12 +10831,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('CRITICAL RULE: If the computed window is "NONE" (Outside Killzone), you are strictly FORBIDDEN from returning a trade.');
         expect(packet).toContain('You must return action "NO_TRADE". Do not trade the Asian session.');
         expect(packet).toContain('=== SETUP CONSTRUCTION ===');
-        expect(packet).toContain('=== SNIPER ENTRY & DISPLACEMENT ===');
-        expect(packet).toContain('1. AGGRESSIVE DISPLACEMENT: The leg leaving the Order Block must be violent (large candle bodies, minimal wicks).');
-        expect(packet).toContain('2. PROXIMAL EDGE ENTRY: Do not place the entry at the 50% equilibrium or the distal (far) edge.');
-        expect(packet).toContain('3. NO CHASING: If the current price is already more than 2.0 points (XAU) or 10 pips (Forex) away from the proximal edge, the sniper entry is missed. Return NO_TRADE.');
-        expect(packet).toContain('BUY_LIMIT:  entry at the proximal edge of the bullish OB/FVG, below current price.');
-        expect(packet).toContain('SELL_LIMIT: entry at the proximal edge of the bearish OB/FVG, above current price.');
+        expect(packet).toContain('=== CURRENT OPPORTUNITY & SNIPER ENTRY ===');
+        expect(packet).toContain('1. AGGRESSIVE DISPLACEMENT: The leg leaving the Order Block must be violent.');
+        expect(packet).toContain('2. PROXIMAL EDGE OR FVG: If current price is ABOVE the zone, place the entry at the proximal edge (top of Bullish OB).');
+        expect(packet).toContain('HOWEVER, if current price is ALREADY INSIDE the Order Block, do NOT return NO_TRADE.');
+        expect(packet).toContain('3. NO CHASING: If current price is already more than 2.0 points (XAU) away from the zone in the wrong direction, return NO_TRADE.');
         expect(packet).toContain('=== MARKET CONTEXT & REACTION ===');
         expect(packet).toContain('=== CRT & MSNR LOGIC ===');
         expect(packet).toContain('1. CRT (Candle Range Theory): Look for price sweeping the high/low of the');
@@ -10861,7 +10859,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",');
         expect(packet).toContain('"current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",');
         expect(packet).toContain('"crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",');
-        expect(packet).toContain('"sniper_zone_justification": "<1 sentence proving the entry is at the proximal edge of an FVG/OB and the displacement was aggressive>",');
+        expect(packet).toContain('"sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",');
         expect(packet).toContain('"audit": {');
         expect(packet).toContain('"breaks": [');
         expect(packet).toContain('"killzone": {');
@@ -10869,7 +10867,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('- For XAU/USD, (|entry - stop_loss|) must be >= 4.50');
         expect(packet).toContain('- audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)');
         expect(packet).toContain('- If computed_window is NONE: action MUST be NO_TRADE.');
-        expect(packet).toContain('- sniper_zone_justification must explicitly mention the proximal edge or FVG.');
+        expect(packet).toContain('- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.');
         expect(packet).toContain('- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.');
         expect(packet).toContain('- Do NOT include extra fields');
         expect(packet).toContain('- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0;');
@@ -11093,7 +11091,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_CRT_MSNR_CONFIRMATION_REQUIRED');
     });
 
-    it('requires a sniper justification naming the proximal edge or FVG', () => {
+    it('requires a sniper justification naming the proximal edge, FVG, or imbalance', () => {
         const ctx = getContext();
         const missing = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ sniper_zone_justification: '' })));
         expect(missing.valid).toBe(false);
@@ -11103,6 +11101,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(invalid.issues).toContain('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
         const fairValueGap = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ sniper_zone_justification: 'Entry taps the top of the fair value gap after displacement.' })));
         expect(fairValueGap.issues).not.toContain('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
+        const imbalance = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ sniper_zone_justification: 'Entry uses the nearest imbalance inside the order block after displacement.' })));
+        expect(imbalance.issues).not.toContain('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
     });
 
     it('rejects extra fields outside the V2.6 schema', () => {
