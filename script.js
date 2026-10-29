@@ -17161,6 +17161,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",',
     '  "crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",',
     '  "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",',
+    '  "price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike on the sweep>",',
     '  "entry": <number>,',
     '  "stop_loss": <number>,',
     '  "tp1": <number>,',
@@ -17214,6 +17215,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '- On BUY_LIMIT/SELL_LIMIT: every price must trace to a candle in the supplied blocks. Never invent a level.',
     '- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.',
     '- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.',
+    '- price_action_confirmation must mention the candle body/wick ratio and volume spikes.',
     '- Do NOT include extra fields.'
 ].join('\n');
 
@@ -20427,6 +20429,11 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 3. TBS (Time-Based Supply): Only trade these zones when the session timing
    aligns (London or NY Killzones).
 
+=== PRECISION PRICE ACTION & VOLUME ===
+1. REJECTION WICKS: The sweep candle must show clear rejection. A valid sweep has a long wick (at least 2x the size of its body) and a small body, closing back inside the range. Do not trade if the sweep candle has a large body closing near the extreme.
+2. VOLUME CLIMAX: Check the 'volume' column in the CSV. The sweep candle and the immediate displacement candle must show a spike in volume compared to the previous 3 candles. High volume = institutional participation.
+3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement). If the price grinds slowly back to the OB over many candles, the momentum is dead, and it is likely to break through the zone. Do not trade slow grinds.
+
 ORDER BLOCK:
 The OB is the last opposite-direction candle before the displacement leg.
   - Bullish OB: the last BEARISH candle (close < open) before the up leg.
@@ -20487,6 +20494,7 @@ function buildRawCandleAiInstruction() {
         'Read the current market context. Select the primary thesis using Section M directional priority.',
         'Construct the sniper candidate: OB body, entry, stop, TP1/TP2/TP3.',
         'Prioritize CRT and MSNR traps. Enter at the proximal edge, or use the nearest FVG/imbalance if price is already inside the OB; do not chase a missed zone.',
+        'Confirm the sweep rejection wick (body/wick ratio) and the volume spike versus the previous 3 candles.',
         'ENFORCE THE 4.50 POINT MINIMUM STOP LOSS FOR GOLD.',
         'VERIFY ARITHMETIC TWICE.',
         'If no qualifying setup exists, return action "NO_TRADE" with zero geometry.',
@@ -20611,6 +20619,10 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             no_chasing_rule_included: ghostRules.some(rule => rule.includes('NO CHASING:')),
             market_context_rule_included: ghostRules.some(rule => rule.startsWith('=== MARKET CONTEXT & REACTION ===')),
             crt_msnr_logic_included: ghostRules.some(rule => rule.startsWith('=== CRT & MSNR LOGIC ===')),
+            precision_price_action_included: ghostRules.some(rule => rule.startsWith('=== PRECISION PRICE ACTION & VOLUME ===')),
+            rejection_wick_rule_included: ghostRules.some(rule => rule.includes('REJECTION WICKS:')),
+            volume_climax_rule_included: ghostRules.some(rule => rule.includes('VOLUME CLIMAX:')),
+            sharp_pullback_rule_included: ghostRules.some(rule => rule.includes('SHARP PULLBACK:')),
             order_block_rule_included: ghostRules.some(rule => rule.startsWith('ORDER BLOCK:')),
             nearest_invalidation_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS')),
             dynamic_stop_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS (DYNAMIC & VOLATILITY-AWARE):')),
@@ -29168,7 +29180,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
     if (json) {
         const issues = [];
         const add = issue => { if (!issues.includes(issue)) issues.push(issue); };
-        const required = ['action', 'setup', 'current_market_context', 'crt_msnr_confirmation', 'sniper_zone_justification', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
+        const required = ['action', 'setup', 'current_market_context', 'crt_msnr_confirmation', 'sniper_zone_justification', 'price_action_confirmation', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
             'confidence', 'timeframe_used', 'management', 'audit', 'reason'];
         if (required.some(key => lookup(json, key) === undefined)) add('RAW_JSON_FIELDS_MISSING');
         const allowedTopLevel = new Set(required);
@@ -29181,6 +29193,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             current_market_context: text(lookup(json, 'current_market_context'))?.toUpperCase() || null,
             crt_msnr_confirmation: text(lookup(json, 'crt_msnr_confirmation')),
             sniper_zone_justification: text(lookup(json, 'sniper_zone_justification')),
+            price_action_confirmation: text(lookup(json, 'price_action_confirmation')),
             entry: number(lookup(json, 'entry')),
             stop_loss: number(lookup(json, 'stop_loss')),
             tp1: number(lookup(json, 'tp1')),
@@ -29248,6 +29261,13 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             add('RAW_SNIPER_ZONE_JUSTIFICATION_REQUIRED');
         } else if (!/\b(PROXIMAL|FVG|FAIR VALUE GAP|IMBALANCE)\b/i.test(parsed.sniper_zone_justification)) {
             add('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
+        }
+        if (!parsed.price_action_confirmation) {
+            add('RAW_PRICE_ACTION_CONFIRMATION_REQUIRED');
+        } else if (!/\bbody\b/i.test(parsed.price_action_confirmation)
+            || !/\bwick\b/i.test(parsed.price_action_confirmation)
+            || !/\bvolume\b/i.test(parsed.price_action_confirmation)) {
+            add('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
         }
         if (action === 'NO_TRADE') {
             if (!Number.isFinite(parsed.confidence) || parsed.confidence !== 0) add('RAW_NO_TRADE_CONFIDENCE_INVALID');

@@ -10841,6 +10841,10 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('1. CRT (Candle Range Theory): Look for price sweeping the high/low of the');
         expect(packet).toContain('2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders');
         expect(packet).toContain('3. TBS (Time-Based Supply): Only trade these zones when the session timing');
+        expect(packet).toContain('=== PRECISION PRICE ACTION & VOLUME ===');
+        expect(packet).toContain('1. REJECTION WICKS: The sweep candle must show clear rejection. A valid sweep has a long wick (at least 2x the size of its body) and a small body, closing back inside the range.');
+        expect(packet).toContain("2. VOLUME CLIMAX: Check the 'volume' column in the CSV.");
+        expect(packet).toContain('3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement).');
         expect(packet).toContain('The OB is the last opposite-direction candle before the displacement leg.');
         expect(packet).toContain('The OB zone is that candle\'s BODY (open-to-close). The wick is never the OB.');
         expect(packet).toContain('STOP LOSS (DYNAMIC & VOLATILITY-AWARE):');
@@ -10863,6 +10867,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('"current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",');
         expect(packet).toContain('"crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",');
         expect(packet).toContain('"sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",');
+        expect(packet).toContain('"price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike on the sweep>",');
         expect(packet).toContain('"audit": {');
         expect(packet).toContain('"breaks": [');
         expect(packet).toContain('"killzone": {');
@@ -10872,6 +10877,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('- If computed_window is NONE: action MUST be NO_TRADE.');
         expect(packet).toContain('- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.');
         expect(packet).toContain('- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.');
+        expect(packet).toContain('- price_action_confirmation must mention the candle body/wick ratio and volume spikes.');
         expect(packet).toContain('- Do NOT include extra fields');
         expect(packet).toContain('- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0;');
         expect(packet).not.toContain('gate_0_candidate');
@@ -10937,6 +10943,10 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             no_chasing_rule_included: true,
             market_context_rule_included: true,
             crt_msnr_logic_included: true,
+            precision_price_action_included: true,
+            rejection_wick_rule_included: true,
+            volume_climax_rule_included: true,
+            sharp_pullback_rule_included: true,
             order_block_rule_included: true,
             nearest_invalidation_rule_included: true,
             dynamic_stop_rule_included: true,
@@ -10988,6 +10998,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         current_market_context: 'TRENDING_BULLISH',
         crt_msnr_confirmation: '1H swept the prior daily low at 4028.20 and reversed, trapping retail sellers before displacement.',
         sniper_zone_justification: 'Entry is at the proximal edge of the bullish FVG left by aggressive displacement.',
+        price_action_confirmation: 'Sweep wick is 2.7x the body and volume is 2.1x the previous three candles.',
         entry: 4034,
         stop_loss: 4027.5,
         tp1: 4065.7,
@@ -11013,6 +11024,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.current_market_context).toBe('TRENDING_BULLISH');
         expect(parsed.crt_msnr_confirmation).toContain('trapping retail sellers');
         expect(parsed.sniper_zone_justification).toContain('proximal edge');
+        expect(parsed.price_action_confirmation).toContain('volume');
         expect([parsed.entry, parsed.stop_loss, parsed.tp1, parsed.tp2, parsed.tp3]).toEqual([4034, 4027.5, 4065.7, 4070.84, 4088.37]);
         expect(parsed.audit.sweeps).toHaveLength(5);
         expect(parsed.audit.breaks).toHaveLength(2);
@@ -11106,6 +11118,16 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(fairValueGap.issues).not.toContain('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
         const imbalance = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ sniper_zone_justification: 'Entry uses the nearest imbalance inside the order block after displacement.' })));
         expect(imbalance.issues).not.toContain('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
+    });
+
+    it('requires price-action confirmation of body/wick ratio and volume', () => {
+        const ctx = getContext();
+        const missing = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ price_action_confirmation: '' })));
+        expect(missing.valid).toBe(false);
+        expect(missing.issues).toContain('RAW_PRICE_ACTION_CONFIRMATION_REQUIRED');
+        const invalid = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ price_action_confirmation: 'The setup looks strong.' })));
+        expect(invalid.valid).toBe(false);
+        expect(invalid.issues).toContain('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
     });
 
     it('rejects extra fields outside the V2.7.1 schema', () => {
