@@ -17160,6 +17160,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",',
     '  "setup": "<OB|FVG|SUPPLY|DEMAND|FLIP|BREAKER|SWEEP|combined with +, or NONE>",',
     '  "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",',
+    '  "crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",',
     '  "entry": <number>,',
     '  "stop_loss": <number>,',
     '  "tp1": <number>,',
@@ -17205,6 +17206,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '- SELL_LIMIT: entry > current_price, stop_loss > entry, entry > tp1 > tp2 > tp3',
     '- rr_tp1 must equal (|tp1 - entry| / |entry - stop_loss|) to two decimals',
     '- rr_tp1 must be >= 2.00 for BUY_LIMIT or SELL_LIMIT',
+    '- crt_msnr_confirmation must name both the CRT sweep and the MSNR retail trap',
     '- audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)',
     '- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0;',
     '  confidence = 0; timeframe_used = "NONE"; management = "NONE";',
@@ -17218,6 +17220,8 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '{',
     '  "action": "BUY_LIMIT",',
     '  "setup": "SWEEP+OB",',
+    '  "current_market_context": "TRENDING_BULLISH",',
+    '  "crt_msnr_confirmation": "1H swept the prior daily low at 4028.20 and reversed, trapping retail sellers below the range before the displacement leg.",',
     '  "entry": 4034.00,',
     '  "stop_loss": 4027.50,',
     '  "tp1": 4065.70,',
@@ -20366,7 +20370,13 @@ STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps.
 STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS from the sweep list.
 STEP 5. Compute the killzone from SERVER_TIME_UTC.
 STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles. Is price currently TRENDING (making clean higher highs/higher lows), RANGING (stuck between a clear high and low), or CONSOLIDATING (tight chop)?
-STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3. You MUST align this setup with the current context from STEP 6. If ranging, target the range boundaries. If trending, target liquidity continuation.
+STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
+        You MUST align this setup with the current context from STEP 6.
+        HIGH-PROBABILITY FILTER: Prioritize zones where the HTF Candle Range (CRT)
+        sweep, the MSNR retail trap, and the 1H/15M Order Block all overlap.
+        If the market is TRENDING, use a DYNAMIC STOP LOSS (placed below the recent
+        structural swing low/high, not just the tight OB edge) to give the trade room to breathe.
+        If RANGING, the tight OB edge is acceptable.
 STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.
 STEP 9. Emit the JSON object.
 
@@ -20431,6 +20441,16 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 === SETUP CONSTRUCTION ===
 
 === MARKET CONTEXT & REACTION ===
+=== CRT & MSNR LOGIC ===
+1. CRT (Candle Range Theory): Look for price sweeping the high/low of the
+   previous Daily or 4H candle range. When the 15M or 1H chart sweeps that HTF
+   extreme and immediately reverses, this is a CRT play.
+2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders
+   are trapped. A high-probability zone is one where the sweep clearly grabbed
+   retail stop-losses before the displacement leg.
+3. TBS (Time-Based Supply): Only trade these zones when the session timing
+   aligns (London or NY Killzones) unless the sweep is exceptionally aggressive.
+
 Do not blindly pick old Order Blocks. Read how the market is reacting TODAY.
 - If the market is strongly TRENDING today, only take setups that align with the trend continuation.
 - If the market is RANGING today (e.g., price bouncing between Asia High and Asia Low), look for sweep-rejections at the edges of the range.
@@ -20443,14 +20463,16 @@ The OB is the last opposite-direction candle before the displacement leg.
 The OB zone is that candle's BODY (open-to-close). The wick is never the OB.
 Using the sweep candle itself as the OB is a contract violation.
 
-STOP LOSS:
-Place stop_loss at the NEAREST structural invalidation:
-  - BUY:  the sweep wick low and the OB far edge - whichever is closer - plus
-          0.50-2.00 buffer (XAU) or proportional buffer for other symbols.
-  - SELL: the sweep wick high and the OB far edge - whichever is closer -
-          plus the same buffer.
+STOP LOSS (DYNAMIC):
+Place stop_loss at the NEAREST structural invalidation based on the MARKET CONTEXT:
+- If TRENDING_BULLISH / TRENDING_BEARISH: Place the stop BEYOND the recent
+  structural swing low/high that caused the displacement. Do NOT put it on the
+  tight OB edge. Give the trade 2.0-3.0 points (XAU) or proportional buffer to
+  survive volatility.
+- If RANGING / CONSOLIDATING: You may place the stop strictly at the OB far
+  edge + standard buffer.
 Never widen the stop to swallow distant HTF swing highs/lows, PDH/PDL, or
-round numbers unless that level IS the immediate invalidation of this setup.
+round numbers unless that level IS the immediate structural invalidation.
 
 TAKE PROFIT:
 TP1 = the NEAREST opposing 1H/4H pool that has NOT been body-closed through
@@ -20503,6 +20525,7 @@ function buildRawCandleAiInstruction() {
         'Identify the last completed 4H MSS, then enumerate both the most recent bullish and bearish sweep on every timeframe. Separate BREAKDOWN, BREAKOUT, FAILED_BREAKDOWN and FAILED_BREAKOUT events from the sweep list.',
         'Compute killzone per Section N from SERVER_TIME_UTC using the fixed UTC windows (London 07:00-11:00, Overlap 11:00-12:00, NY 12:00-15:00); do not apply DST adjustments.',
         'Read the current 1H/15M market context (TRENDING_BULLISH, TRENDING_BEARISH, RANGING or CONSOLIDATING), then select the primary thesis using Section M directional priority and construct a candidate aligned to that context: OB body, entry, stop, TP1/TP2/TP3.',
+        'Prioritize zones where the HTF CRT sweep, MSNR retail trap, and 1H/15M order block overlap. In a trend, place the stop beyond the recent structural swing that caused the displacement; in a range, the tight OB edge is acceptable.',
         'Ensure the entry is on the correct side of current price: BUY_LIMIT below current price, SELL_LIMIT above current price.',
         'Place stop_loss at the NEAREST structural invalidation, not a distant HTF swing, previous-day extreme or round number.',
         'Place TP1 at the nearest opposing 1H/4H pool that has not been body-closed through. Wick taps do not disqualify a pool. If TP1 is used, relocate to the next unused pool and recompute RR.',
@@ -20625,8 +20648,10 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             utc_killzone_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION N: KILLZONE ===')),
             setup_construction_included: ghostRules.some(rule => rule.startsWith('=== SETUP CONSTRUCTION ===')),
             market_context_rule_included: ghostRules.some(rule => rule.startsWith('=== MARKET CONTEXT & REACTION ===')),
+            crt_msnr_logic_included: ghostRules.some(rule => rule.startsWith('=== CRT & MSNR LOGIC ===')),
             order_block_rule_included: ghostRules.some(rule => rule.startsWith('ORDER BLOCK:')),
-            nearest_invalidation_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS:')),
+            nearest_invalidation_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS')),
+            dynamic_stop_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS (DYNAMIC):')),
             target_relocation_rule_included: ghostRules.some(rule => rule.includes('relocate TP1 to the next unused pool')),
             hard_rr_gate_included: ghostRules.some(rule => rule.includes('RR_TP1 must be >= 2.00')),
             worked_acceptance_example_included: ghostRules.some(rule => rule.startsWith('=== WORKED ACCEPTANCE EXAMPLE ===')),
@@ -29179,7 +29204,7 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
     if (json) {
         const issues = [];
         const add = issue => { if (!issues.includes(issue)) issues.push(issue); };
-        const required = ['action', 'setup', 'current_market_context', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
+        const required = ['action', 'setup', 'current_market_context', 'crt_msnr_confirmation', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
             'confidence', 'timeframe_used', 'management', 'audit', 'reason'];
         if (required.some(key => lookup(json, key) === undefined)) add('RAW_JSON_FIELDS_MISSING');
         const allowedTopLevel = new Set(required);
@@ -29190,6 +29215,7 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
             action,
             setup: text(lookup(json, 'setup'))?.toUpperCase() || null,
             current_market_context: text(lookup(json, 'current_market_context'))?.toUpperCase() || null,
+            crt_msnr_confirmation: text(lookup(json, 'crt_msnr_confirmation')),
             entry: number(lookup(json, 'entry')),
             stop_loss: number(lookup(json, 'stop_loss')),
             tp1: number(lookup(json, 'tp1')),
@@ -29249,6 +29275,7 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
         if (!['TRENDING_BULLISH', 'TRENDING_BEARISH', 'RANGING', 'CONSOLIDATING'].includes(parsed.current_market_context)) {
             add('RAW_CURRENT_MARKET_CONTEXT_INVALID');
         }
+        if (!parsed.crt_msnr_confirmation) add('RAW_CRT_MSNR_CONFIRMATION_REQUIRED');
         if (action === 'NO_TRADE') {
             if (!Number.isFinite(parsed.confidence) || parsed.confidence !== 0) add('RAW_NO_TRADE_CONFIDENCE_INVALID');
             if (parsed.timeframe_used !== 'NONE') add('RAW_NO_TRADE_TIMEFRAME_INVALID');

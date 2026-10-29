@@ -10800,7 +10800,12 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             expect(packet).toContain('STEP ' + step + '.');
         }
         expect(packet).toContain('STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles.');
-        expect(packet).toContain('STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3. You MUST align this setup with the current context from STEP 6.');
+        expect(packet).toContain('STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.');
+        expect(packet).toContain('You MUST align this setup with the current context from STEP 6.');
+        expect(packet).toContain('HIGH-PROBABILITY FILTER: Prioritize zones where the HTF Candle Range (CRT)');
+        expect(packet).toContain('sweep, the MSNR retail trap, and the 1H/15M Order Block all overlap.');
+        expect(packet).toContain('If the market is TRENDING, use a DYNAMIC STOP LOSS (placed below the recent');
+        expect(packet).toContain('If RANGING, the tight OB edge is acceptable.');
         expect(packet).toContain('STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.');
         expect(packet).toContain('STEP 9. Emit the JSON object.');
         expect(packet).toContain('=== SECTION L: DAILY BIAS ===');
@@ -10827,13 +10832,20 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('Do not return NO_TRADE solely for being outside killzone.');
         expect(packet).toContain('=== SETUP CONSTRUCTION ===');
         expect(packet).toContain('=== MARKET CONTEXT & REACTION ===');
+        expect(packet).toContain('=== CRT & MSNR LOGIC ===');
+        expect(packet).toContain('1. CRT (Candle Range Theory): Look for price sweeping the high/low of the');
+        expect(packet).toContain('2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders');
+        expect(packet).toContain('3. TBS (Time-Based Supply): Only trade these zones when the session timing');
         expect(packet).toContain('Do not blindly pick old Order Blocks. Read how the market is reacting TODAY.');
         expect(packet).toContain('If the market is strongly TRENDING today, only take setups that align with the trend continuation.');
         expect(packet).toContain('If the market is RANGING today (e.g., price bouncing between Asia High and Asia Low), look for sweep-rejections at the edges of the range.');
         expect(packet).toContain('Favor Order Blocks and sweeps that were created TODAY (or in the most recent session) over 2-day-old zones.');
         expect(packet).toContain('The OB is the last opposite-direction candle before the displacement leg.');
         expect(packet).toContain('The OB zone is that candle\'s BODY (open-to-close). The wick is never the OB.');
-        expect(packet).toContain('Place stop_loss at the NEAREST structural invalidation:');
+        expect(packet).toContain('STOP LOSS (DYNAMIC):');
+        expect(packet).toContain('Place stop_loss at the NEAREST structural invalidation based on the MARKET CONTEXT:');
+        expect(packet).toContain('If TRENDING_BULLISH / TRENDING_BEARISH: Place the stop BEYOND the recent');
+        expect(packet).toContain('If RANGING / CONSOLIDATING: You may place the stop strictly at the OB far');
         expect(packet).toContain('TP1 = the NEAREST opposing 1H/4H pool that has NOT been body-closed through');
         expect(packet).toContain('If the nearest candidate TP1 IS body-broken, DO NOT reject the trade -');
         expect(packet).toContain('relocate TP1 to the next unused pool above (BUY) or below (SELL) and');
@@ -10845,6 +10857,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('=== OUTPUT CONTRACT ===');
         expect(packet).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",');
         expect(packet).toContain('"current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",');
+        expect(packet).toContain('"crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",');
         expect(packet).toContain('"audit": {');
         expect(packet).toContain('"breaks": [');
         expect(packet).toContain('"killzone": {');
@@ -10909,8 +10922,10 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             utc_killzone_rule_included: true,
             setup_construction_included: true,
             market_context_rule_included: true,
+            crt_msnr_logic_included: true,
             order_block_rule_included: true,
             nearest_invalidation_rule_included: true,
+            dynamic_stop_rule_included: true,
             target_relocation_rule_included: true,
             hard_rr_gate_included: true,
             worked_acceptance_example_included: true,
@@ -10956,6 +10971,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         action: 'BUY_LIMIT',
         setup: 'SWEEP+OB',
         current_market_context: 'TRENDING_BULLISH',
+        crt_msnr_confirmation: '1H swept the prior daily low at 4028.20 and reversed, trapping retail sellers before displacement.',
         entry: 4034,
         stop_loss: 4027.5,
         tp1: 4065.7,
@@ -10979,6 +10995,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toEqual([]);
         expect(parsed.action).toBe('BUY_LIMIT');
         expect(parsed.current_market_context).toBe('TRENDING_BULLISH');
+        expect(parsed.crt_msnr_confirmation).toContain('trapping retail sellers');
         expect([parsed.entry, parsed.stop_loss, parsed.tp1, parsed.tp2, parsed.tp3]).toEqual([4034, 4027.5, 4065.7, 4070.84, 4088.37]);
         expect(parsed.audit.sweeps).toHaveLength(5);
         expect(parsed.audit.breaks).toHaveLength(2);
@@ -11028,6 +11045,13 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ current_market_context: 'BULLISH' })));
         expect(parsed.valid).toBe(false);
         expect(parsed.issues).toContain('RAW_CURRENT_MARKET_CONTEXT_INVALID');
+    });
+
+    it('requires CRT and MSNR confirmation for every JSON response', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ crt_msnr_confirmation: '' })));
+        expect(parsed.valid).toBe(false);
+        expect(parsed.issues).toContain('RAW_CRT_MSNR_CONFIRMATION_REQUIRED');
     });
 
     it('rejects extra fields outside the V2.4 schema', () => {
