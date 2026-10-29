@@ -17154,13 +17154,13 @@ let lastRawPacketDiagnostic = null;
 const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '=== OUTPUT CONTRACT ===',
     'Reply with a SINGLE JSON object. No prose before or after. No markdown fences.',
-    'No commentary. Every field below is MANDATORY. Missing fields = contract violation.',
     '',
     '{',
     '  "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",',
     '  "setup": "<OB|FVG|SUPPLY|DEMAND|FLIP|BREAKER|SWEEP|combined with +, or NONE>",',
     '  "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",',
     '  "crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",',
+    '  "sniper_zone_justification": "<1 sentence proving the entry is at the proximal edge of an FVG/OB and the displacement was aggressive>",',
     '  "entry": <number>,',
     '  "stop_loss": <number>,',
     '  "tp1": <number>,',
@@ -17201,51 +17201,20 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "reason": "<evidence: sweep ts + level, OB body range, nearest-invalidation stop, TP1 pool + why unused, RR calc, bias justification>"',
     '}',
     '',
-    'VALIDATION RULES (the parser will enforce these - do not violate):',
+    'VALIDATION RULES (the parser will enforce these):',
     '- BUY_LIMIT: entry < current_price, stop_loss < entry, entry < tp1 < tp2 < tp3',
     '- SELL_LIMIT: entry > current_price, stop_loss > entry, entry > tp1 > tp2 > tp3',
     '- rr_tp1 must equal (|tp1 - entry| / |entry - stop_loss|) to two decimals',
     '- rr_tp1 must be >= 2.00 for BUY_LIMIT or SELL_LIMIT',
+    '- For XAU/USD, (|entry - stop_loss|) must be >= 4.50',
     '- crt_msnr_confirmation must name both the CRT sweep and the MSNR retail trap',
     '- audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)',
-    '- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0;',
-    '  confidence = 0; timeframe_used = "NONE"; management = "NONE";',
-    '  reason must still describe the candidate considered and why it failed',
-    '- On BUY_LIMIT/SELL_LIMIT: every price in the JSON must trace to a candle in',
-    '  the supplied blocks. Never invent a level.',
-    '- Do NOT include extra fields (no "execution_status", no "audit_note", no',
-    '  "gate_checks"). The schema above is exhaustive.',
-    '',
-    'EXAMPLE OUTPUT SHAPE (for reference - not the answer to this packet):',
-    '{',
-    '  "action": "BUY_LIMIT",',
-    '  "setup": "SWEEP+OB",',
-    '  "current_market_context": "TRENDING_BULLISH",',
-    '  "crt_msnr_confirmation": "1H swept the prior daily low at 4028.20 and reversed, trapping retail sellers below the range before the displacement leg.",',
-    '  "entry": 4034.00,',
-    '  "stop_loss": 4027.50,',
-    '  "tp1": 4065.70,',
-    '  "tp2": 4070.84,',
-    '  "tp3": 4088.37,',
-    '  "risk": 6.50,',
-    '  "rr_tp1": 4.88,',
-    '  "confidence": 75,',
-    '  "timeframe_used": "1h",',
-    '  "management": "50% at TP1, move SL to BE after TP1, trail remainder to TP2/TP3",',
-    '  "audit": {',
-    '    "daily_bias": {"direction": "BULLISH", "d3_h": 4034.09, "d3_l": 3975.65, "d2_h": 4030.07, "d2_l": 3978.18, "d1_h": 4065.70, "d1_l": 3989.16, "four_hour_mss": "2026-10-27T13:00:00.000Z"},',
-    '    "sweeps": [',
-    '      {"tf": "1d",  "bullish": "NONE", "bearish": "NONE"},',
-    '      {"tf": "4h",  "bullish": "NONE", "bearish": "2026-10-27T21:00:00.000Z PDH 4065.70 BEARISH TIER_1"},',
-    '      {"tf": "1h",  "bullish": "2026-10-28T06:00:00.000Z LONDON_LOW 4028.20 BULLISH TIER_1", "bearish": "2026-10-28T00:00:00.000Z PDH 4065.70 BEARISH TIER_1"},',
-    '      {"tf": "15m", "bullish": "2026-10-28T06:30:00.000Z LONDON_LOW 4028.20 BULLISH TIER_1", "bearish": "NONE"},',
-    '      {"tf": "5m",  "bullish": "2026-10-28T07:00:00.000Z LONDON_LOW 4028.20 BULLISH TIER_1", "bearish": "NONE"}',
-    '    ],',
-    '    "breaks": ["BREAKDOWN: 1h 2026-10-28T04:00:00.000Z ASIA_LOW 4042.73", "FAILED_BREAKDOWN: 1h 2026-10-28T07:00:00.000Z ASIA_LOW 4042.73"],',
-    '    "killzone": {"server_time_utc": "2026-10-28T12:12:50.000Z", "computed_window": "NEW_YORK", "inside": true}',
-    '  },',
-    '  "reason": "BULLISH bias (D1 H 4065.70 > D3 H 4034.09; D1 L 3989.16 > D3 L 3975.65). 4H MSS 2026-10-27T13:00 confirms. Bullish TIER_1 sweep 1H 2026-10-28T06:00 (wick 4028.19 below LONDON_LOW 4028.20, close 4030.82). Bullish OB 1H 2026-10-28T05:00 body 4030.37-4036.68. Entry 4034.00 inside OB, stop 4027.50 below sweep wick (0.69 buffer). TP1 4065.70 PDH - wick-tapped but never body-closed above (USED status: NO). RISK=6.50 REWARD=31.70 RR=4.88. Killzone NEW_YORK INSIDE. Counter-bias PDH bearish sweep at 1H 00:00 discarded (no bearish 4H MSS)."',
-    '}'
+    '- If computed_window is NONE: action MUST be NO_TRADE.',
+    '- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0; confidence = 0; timeframe_used = "NONE"; management = "NONE".',
+    '- On BUY_LIMIT/SELL_LIMIT: every price must trace to a candle in the supplied blocks. Never invent a level.',
+    '- sniper_zone_justification must explicitly mention the proximal edge or FVG.',
+    '- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.',
+    '- Do NOT include extra fields.'
 ].join('\n');
 
 const RAW_CANDLE_AI_KILLZONES = Object.freeze([
@@ -18197,7 +18166,11 @@ function validateManualMarketMechanicsDecision(decision = {}, replay = {}) {
     const warnings = [];
     const add = code => { if (!issues.includes(code)) issues.push(code); };
     const warn = code => { if (!warnings.includes(code)) warnings.push(code); };
-    if (typeof decision === 'string') decision = parseRawCandleAIActionResponse(decision);
+    if (typeof decision === 'string') {
+        decision = parseRawCandleAIActionResponse(decision, {
+            symbol: replay.pair || replay.symbol || replay.quote?.symbol || replay.quote?.symbol_metadata?.symbol
+        });
+    }
     const targetNormalization = normalizePendingLimitTargetOrder(
         decision && typeof decision === 'object' ? decision : {},
         decision?.action || decision?.ACTION || decision?.direction || null
@@ -20356,7 +20329,7 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V2.4 (DEEPSEEK JSON)
+    return `=== GHOST MACHINE STRATEGY RULES === V2.6 (DEEPSEEK JSON)
 You are the Ghost Machine. Read the raw closed candles yourself. No deterministic POI, FVG, order-block, MSNR, supply/demand zone or candidate list is supplied or authoritative. Deterministic macro liquidity levels are supplied only as context.
 UNIVERSE: use only the CSV candles in this packet. Never invent a candle, price, timestamp, volume or level.
 MACRO CONTEXT: DAILY_BIAS, daily OHLC, PDH/PDL and completed session highs/lows are context only. The raw 1D/4H candles own higher-timeframe structure; 1H/15M/5M own intraday formation and execution.
@@ -20368,15 +20341,17 @@ STEP 1. Derive the Section L bias from the last three contiguous closed 1D candl
 STEP 2. Identify the last completed 4H MSS.
 STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps.
 STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS from the sweep list.
-STEP 5. Compute the killzone from SERVER_TIME_UTC.
-STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles. Is price currently TRENDING (making clean higher highs/higher lows), RANGING (stuck between a clear high and low), or CONSOLIDATING (tight chop)?
-STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
+STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE. No Asian session trades.
+STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles. Is price currently TRENDING, RANGING, or CONSOLIDATING?
+STEP 7. Construct the SNIPER candidate: OB body, entry, stop, TP1/TP2/TP3.
         You MUST align this setup with the current context from STEP 6.
         HIGH-PROBABILITY FILTER: Prioritize zones where the HTF Candle Range (CRT)
         sweep, the MSNR retail trap, and the 1H/15M Order Block all overlap.
-        If the market is TRENDING, use a DYNAMIC STOP LOSS (placed below the recent
-        structural swing low/high, not just the tight OB edge) to give the trade room to breathe.
-        If RANGING, the tight OB edge is acceptable.
+        SNIPER ENTRY RULE: Only select zones where the displacement leg left an
+        FVG (Fair Value Gap) or a clear imbalance. The entry MUST be at the
+        proximal edge (the closest edge to current price) of the OB or FVG, NOT
+        deep inside the zone. If the market has already moved too far from the zone,
+        return NO_TRADE.
 STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.
 STEP 9. Emit the JSON object.
 
@@ -20425,8 +20400,7 @@ either direction on any timeframe is a contract violation.
 Directional priority:
   - A TIER_1 sweep in the direction of the confirmed bias is the primary thesis.
   - A counter-bias TIER_1 sweep is DISCARDED unless a named 4H MSS exists in
-    that sweep's direction. A discarded sweep is listed for completeness but
-    does NOT block the bias-aligned trade.
+    that sweep's direction.
   - If no sweep exists on any timeframe, return NO_TRADE.
 
 === SECTION N: KILLZONE ===
@@ -20434,11 +20408,20 @@ Compute from SERVER_TIME_UTC using fixed UTC windows. No DST adjustments.
   LONDON:            07:00-11:00 UTC
   LONDON/NY OVERLAP: 11:00-12:00 UTC   (highest liquidity - INSIDE)
   NEW YORK:          12:00-15:00 UTC
-Inside any window = INSIDE, no penalty. Outside all three = OUTSIDE, apply
--25% to confidence. Do not return NO_TRADE solely for being outside killzone.
+
+CRITICAL RULE: If the computed window is "NONE" (Outside Killzone), you are strictly FORBIDDEN from returning a trade. You must return action "NO_TRADE". Do not trade the Asian session. The thin liquidity causes unpredictable stop hunts.
 The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === SETUP CONSTRUCTION ===
+
+=== SNIPER ENTRY & DISPLACEMENT ===
+1. AGGRESSIVE DISPLACEMENT: The leg leaving the Order Block must be violent (large candle bodies, minimal wicks). If the market slowly grinded out of the zone, it is not a sniper entry. Do not trade it.
+2. PROXIMAL EDGE ENTRY: Do not place the entry at the 50% equilibrium or the distal (far) edge. Place the entry at the proximal edge of the OB or the top/bottom of the FVG. You want the price to tap the zone and immediately react.
+3. NO CHASING: If the current price is already more than 2.0 points (XAU) or 10 pips (Forex) away from the proximal edge, the sniper entry is missed. Return NO_TRADE.
+
+ENTRY:
+BUY_LIMIT:  entry at the proximal edge of the bullish OB/FVG, below current price.
+SELL_LIMIT: entry at the proximal edge of the bearish OB/FVG, above current price.
 
 === MARKET CONTEXT & REACTION ===
 === CRT & MSNR LOGIC ===
@@ -20449,12 +20432,7 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
    are trapped. A high-probability zone is one where the sweep clearly grabbed
    retail stop-losses before the displacement leg.
 3. TBS (Time-Based Supply): Only trade these zones when the session timing
-   aligns (London or NY Killzones) unless the sweep is exceptionally aggressive.
-
-Do not blindly pick old Order Blocks. Read how the market is reacting TODAY.
-- If the market is strongly TRENDING today, only take setups that align with the trend continuation.
-- If the market is RANGING today (e.g., price bouncing between Asia High and Asia Low), look for sweep-rejections at the edges of the range.
-- Favor Order Blocks and sweeps that were created TODAY (or in the most recent session) over 2-day-old zones.
+   aligns (London or NY Killzones).
 
 ORDER BLOCK:
 The OB is the last opposite-direction candle before the displacement leg.
@@ -20463,40 +20441,31 @@ The OB is the last opposite-direction candle before the displacement leg.
 The OB zone is that candle's BODY (open-to-close). The wick is never the OB.
 Using the sweep candle itself as the OB is a contract violation.
 
-STOP LOSS (DYNAMIC):
+STOP LOSS (DYNAMIC & VOLATILITY-AWARE):
 Place stop_loss at the NEAREST structural invalidation based on the MARKET CONTEXT:
 - If TRENDING_BULLISH / TRENDING_BEARISH: Place the stop BEYOND the recent
-  structural swing low/high that caused the displacement. Do NOT put it on the
-  tight OB edge. Give the trade 2.0-3.0 points (XAU) or proportional buffer to
-  survive volatility.
-- If RANGING / CONSOLIDATING: You may place the stop strictly at the OB far
-  edge + standard buffer.
+  structural swing low/high that caused the displacement.
+- If RANGING / CONSOLIDATING: Place the stop at the OB far edge + standard buffer.
+
+CRITICAL XAU/USD RULE: For Gold (XAU/USD), the stop loss distance from entry must NEVER be less than 4.50 points. Even in a tight range, Gold volatility requires a minimum 4.50 point buffer to survive spreads and liquidity grabs. If the structural stop is closer than 4.50 points, you MUST widen it to 4.50 points.
+
 Never widen the stop to swallow distant HTF swing highs/lows, PDH/PDL, or
 round numbers unless that level IS the immediate structural invalidation.
 
 TAKE PROFIT:
 TP1 = the NEAREST opposing 1H/4H pool that has NOT been body-closed through
 in the direction of the trade. "Unused" means no closed candle body-closed
-beyond the level. WICK-TAPS do NOT disqualify a pool - a 5-point wick above
-a level is not a body-close through it.
+beyond the level. WICK-TAPS do NOT disqualify a pool.
 If the nearest candidate TP1 IS body-broken, DO NOT reject the trade -
 relocate TP1 to the next unused pool above (BUY) or below (SELL) and
 recompute RR. Only if RR still < 2.00 after relocation does the setup fail.
 TP2 and TP3 extend to the next unused pools. Never inflate TP to improve RR.
 
-ENTRY:
-BUY_LIMIT:  entry below current price, inside the OB/FVG body.
-SELL_LIMIT: entry above current price, inside the OB/FVG body.
-Entry may deepen toward equilibrium to improve RR, but must remain strictly
-inside the OB body / FVG gap and on the correct side of current price.
-
 RISK/REWARD:
-  RISK = |entry - stop_loss|            (compute twice)
-  REWARD = |tp1 - entry|                (compute twice)
-  RR_TP1 = REWARD / RISK                (two decimals, verify)
-RR_TP1 must be >= 2.00. Below 2.00 after nearest-stop + entry-inside-zone
-= NO_TRADE. Never fabricate a target or tighten the stop past a valid
-invalidation to fix RR.
+  RISK = |entry - stop_loss|
+  REWARD = |tp1 - entry|
+  RR_TP1 = REWARD / RISK (two decimals, verify)
+RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE. Never fabricate a target or tighten the stop past a valid invalidation to fix RR.
 
 === WORKED ACCEPTANCE EXAMPLE ===
 BULLISH Section L bias. London-low TIER_1 bullish sweep at 1H 2026-10-28T06:00
@@ -20504,35 +20473,27 @@ BULLISH Section L bias. London-low TIER_1 bullish sweep at 1H 2026-10-28T06:00
 Bullish OB at 1H 2026-10-28T05:00 (body 4030.37-4036.68).
 
 TP1 candidates above entry (BUY):
-  NY_HIGH 4054.53 - body-broken on 1H 2026-10-27T15:00 (close 4063.53) - USED.
-  LONDON_HIGH 4058.30 - wick-tapped but never body-broken - UNUSED but minor.
+  NY_HIGH 4054.53 - body-broken on 1H 2026-10-27T15:00 - USED.
+  LONDON_HIGH 4058.30 - wick-tapped but never body-broken - UNUSED.
   PDH 4065.70 - wick-tapped twice but NEVER body-closed above - UNUSED, MAJOR.
 
 Correct TP1: 4065.70 (nearest unused MAJOR pool).
 Result: ENTRY=4034.00  SL=4027.50  TP1=4065.70
-        RISK=6.50  REWARD=31.70  RR=4.88
-
-WRONG TP1: 4054.53 (already body-broken). This is a contract violation.
-Relocate to 4065.70. Do NOT reject the trade.
-If the output uses a body-broken TP1, the response is invalid.`.split('\n');
+        RISK=6.50  REWARD=31.70  RR=4.88`.split('\n');
 }
 
 function buildRawCandleAiInstruction() {
     return [
         '=== RAW CANDLE AI REVIEW INSTRUCTION ===',
-        'Analyze the raw candles independently. The deterministic POI/FVG/zone/candidate engines are disabled; only the factual macro liquidity levels are supplied.',
-        'Follow the DEEPSEEK REASONING PROTOCOL in order. Derive the Section L bias from the last three contiguous closed 1D candles; Section L overrides the packet label.',
-        'Identify the last completed 4H MSS, then enumerate both the most recent bullish and bearish sweep on every timeframe. Separate BREAKDOWN, BREAKOUT, FAILED_BREAKDOWN and FAILED_BREAKOUT events from the sweep list.',
-        'Compute killzone per Section N from SERVER_TIME_UTC using the fixed UTC windows (London 07:00-11:00, Overlap 11:00-12:00, NY 12:00-15:00); do not apply DST adjustments.',
-        'Read the current 1H/15M market context (TRENDING_BULLISH, TRENDING_BEARISH, RANGING or CONSOLIDATING), then select the primary thesis using Section M directional priority and construct a candidate aligned to that context: OB body, entry, stop, TP1/TP2/TP3.',
-        'Prioritize zones where the HTF CRT sweep, MSNR retail trap, and 1H/15M order block overlap. In a trend, place the stop beyond the recent structural swing that caused the displacement; in a range, the tight OB edge is acceptable.',
-        'Ensure the entry is on the correct side of current price: BUY_LIMIT below current price, SELL_LIMIT above current price.',
-        'Place stop_loss at the NEAREST structural invalidation, not a distant HTF swing, previous-day extreme or round number.',
-        'Place TP1 at the nearest opposing 1H/4H pool that has not been body-closed through. Wick taps do not disqualify a pool. If TP1 is used, relocate to the next unused pool and recompute RR.',
-        'VERIFY ARITHMETIC TWICE: recompute risk, reward and rr_tp1 from the exact returned values. rr_tp1 must be at least 2.00; below 2.00 after nearest-stop and entry-inside-zone is NO_TRADE.',
-        'Because this is a pending limit, you may deepen the entry inside the OB/FVG toward equilibrium or the stop side, but never outside the zone.',
-        'If no qualifying setup exists, return action "NO_TRADE" with zero geometry and a reason describing the candidate considered and why it failed.',
-        'Include a concrete management instruction for the completed trade.',
+        'Analyze the raw candles independently. Follow the DEEPSEEK REASONING PROTOCOL in order.',
+        'Derive the Section L bias. Identify the 4H MSS. Enumerate all sweeps.',
+        'Compute killzone per Section N. If outside, RETURN NO_TRADE.',
+        'Read the current market context. Select the primary thesis using Section M directional priority.',
+        'Construct the sniper candidate: OB body, entry, stop, TP1/TP2/TP3.',
+        'Prioritize CRT and MSNR traps. Enter only at the proximal edge of an FVG/OB after aggressive displacement; do not chase a missed zone.',
+        'ENFORCE THE 4.50 POINT MINIMUM STOP LOSS FOR GOLD.',
+        'VERIFY ARITHMETIC TWICE.',
+        'If no qualifying setup exists, return action "NO_TRADE" with zero geometry.',
         'Output the exact JSON object defined in the OUTPUT CONTRACT. No prose, no markdown, no extra fields.'
     ];
 }
@@ -20582,7 +20543,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
         ...(serverClock.outside_killzone ? ['WARNING: OUTSIDE_KILLZONE'] : []),
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.4',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.6',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20640,18 +20601,24 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             warning_injected: serverClock.outside_killzone
         },
         ghost_rules: {
-            version: 'V2.4',
+            version: 'V2.6',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('=== SECTION L: DAILY BIAS ===')),
             mandatory_sweep_scan_included: ghostRules.some(rule => rule.startsWith('=== SECTION M: SWEEP SCAN ===')),
             utc_killzone_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION N: KILLZONE ===')),
+            no_asia_session_rule_included: ghostRules.some(rule => rule.includes('No Asian session trades.')),
+            killzone_none_forces_no_trade_included: ghostRules.some(rule => rule.includes('strictly FORBIDDEN from returning a trade')),
             setup_construction_included: ghostRules.some(rule => rule.startsWith('=== SETUP CONSTRUCTION ===')),
+            sniper_entry_rule_included: ghostRules.some(rule => rule.includes('SNIPER ENTRY RULE:')),
+            proximal_edge_rule_included: ghostRules.some(rule => rule.includes('PROXIMAL EDGE ENTRY:')),
+            no_chasing_rule_included: ghostRules.some(rule => rule.includes('NO CHASING:')),
             market_context_rule_included: ghostRules.some(rule => rule.startsWith('=== MARKET CONTEXT & REACTION ===')),
             crt_msnr_logic_included: ghostRules.some(rule => rule.startsWith('=== CRT & MSNR LOGIC ===')),
             order_block_rule_included: ghostRules.some(rule => rule.startsWith('ORDER BLOCK:')),
             nearest_invalidation_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS')),
-            dynamic_stop_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS (DYNAMIC):')),
+            dynamic_stop_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS (DYNAMIC & VOLATILITY-AWARE):')),
+            gold_minimum_stop_included: ghostRules.some(rule => rule.includes('minimum 4.50 point buffer')),
             target_relocation_rule_included: ghostRules.some(rule => rule.includes('relocate TP1 to the next unused pool')),
             hard_rr_gate_included: ghostRules.some(rule => rule.includes('RR_TP1 must be >= 2.00')),
             worked_acceptance_example_included: ghostRules.some(rule => rule.startsWith('=== WORKED ACCEPTANCE EXAMPLE ===')),
@@ -29165,8 +29132,9 @@ function normalizePendingLimitTargetOrder(decision = {}, action = null) {
     return { side, decision: normalized, changed: true };
 }
 
-function parseRawCandleAIActionResponse(rawResponse = '') {
+function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
     const source = String(rawResponse ?? '').replace(/```[a-z]*|```/gi, '').trim();
+    const isGold = /XAU/i.test(String(options.symbol || pair || ''));
     const number = value => {
         if (value === null || value === undefined || value === '') return null;
         const parsed = Number(String(value).replace(/[%,\s]/g, ''));
@@ -29204,7 +29172,7 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
     if (json) {
         const issues = [];
         const add = issue => { if (!issues.includes(issue)) issues.push(issue); };
-        const required = ['action', 'setup', 'current_market_context', 'crt_msnr_confirmation', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
+        const required = ['action', 'setup', 'current_market_context', 'crt_msnr_confirmation', 'sniper_zone_justification', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
             'confidence', 'timeframe_used', 'management', 'audit', 'reason'];
         if (required.some(key => lookup(json, key) === undefined)) add('RAW_JSON_FIELDS_MISSING');
         const allowedTopLevel = new Set(required);
@@ -29216,6 +29184,7 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
             setup: text(lookup(json, 'setup'))?.toUpperCase() || null,
             current_market_context: text(lookup(json, 'current_market_context'))?.toUpperCase() || null,
             crt_msnr_confirmation: text(lookup(json, 'crt_msnr_confirmation')),
+            sniper_zone_justification: text(lookup(json, 'sniper_zone_justification')),
             entry: number(lookup(json, 'entry')),
             stop_loss: number(lookup(json, 'stop_loss')),
             tp1: number(lookup(json, 'tp1')),
@@ -29268,6 +29237,9 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
                 || typeof lookup(killzone, 'inside') !== 'boolean') {
                 add('RAW_AUDIT_KILLZONE_INVALID');
             }
+            if (killzoneWindow === 'NONE' && action !== 'NO_TRADE') {
+                add('RAW_KILLZONE_NONE_REQUIRES_NO_TRADE');
+            }
         }
         if (!['BUY_LIMIT', 'SELL_LIMIT', 'NO_TRADE'].includes(action)) {
             add('RAW_ACTION_INVALID');
@@ -29276,6 +29248,11 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
             add('RAW_CURRENT_MARKET_CONTEXT_INVALID');
         }
         if (!parsed.crt_msnr_confirmation) add('RAW_CRT_MSNR_CONFIRMATION_REQUIRED');
+        if (!parsed.sniper_zone_justification) {
+            add('RAW_SNIPER_ZONE_JUSTIFICATION_REQUIRED');
+        } else if (!/\b(PROXIMAL|FVG|FAIR VALUE GAP)\b/i.test(parsed.sniper_zone_justification)) {
+            add('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
+        }
         if (action === 'NO_TRADE') {
             if (!Number.isFinite(parsed.confidence) || parsed.confidence !== 0) add('RAW_NO_TRADE_CONFIDENCE_INVALID');
             if (parsed.timeframe_used !== 'NONE') add('RAW_NO_TRADE_TIMEFRAME_INVALID');
@@ -29304,6 +29281,9 @@ function parseRawCandleAIActionResponse(rawResponse = '') {
             }
         } else if (!(stop > entry && entry > normalized.tp1 && normalized.tp1 > normalized.tp2 && normalized.tp2 > normalized.tp3)) {
             add('RAW_SELL_GEOMETRY_INVALID');
+        }
+        if (isGold && Number.isFinite(entry) && Number.isFinite(stop) && Math.abs(entry - stop) < 4.5 - 1e-9) {
+            add('RAW_GOLD_STOP_BELOW_MINIMUM');
         }
         if (!Number.isInteger(parsed.confidence) || parsed.confidence < 0 || parsed.confidence > 100) {
             add('RAW_CONFIDENCE_INVALID');
