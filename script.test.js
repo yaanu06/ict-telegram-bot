@@ -10762,7 +10762,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.7.1');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.7');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10790,11 +10790,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V2.7.1 DeepSeek reasoning protocol and strict JSON contract', () => {
+    it('includes the V2.7 DeepSeek reasoning protocol and strict JSON contract', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V2.7.1 (DEEPSEEK JSON)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V2.7 (DEEPSEEK JSON)');
         expect(packet).toContain('=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===');
         for (let step = 1; step <= 9; step += 1) {
             expect(packet).toContain('STEP ' + step + '.');
@@ -10838,13 +10838,15 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('3. NO CHASING: If current price is already more than 2.0 points (XAU) away from the zone in the wrong direction, return NO_TRADE.');
         expect(packet).toContain('=== MARKET CONTEXT & REACTION ===');
         expect(packet).toContain('=== CRT & MSNR LOGIC ===');
-        expect(packet).toContain('1. CRT (Candle Range Theory): Look for price sweeping the high/low of the');
-        expect(packet).toContain('2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders');
-        expect(packet).toContain('3. TBS (Time-Based Supply): Only trade these zones when the session timing');
+        expect(packet).toContain('1. CRT (Candle Range Theory): Look for price sweeping the high/low of the previous Daily or 4H candle range.');
+        expect(packet).toContain('2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders are trapped.');
+        expect(packet).toContain('3. TBS (Time-Based Supply): Only trade these zones when the session timing aligns (London or NY Killzones).');
         expect(packet).toContain('=== PRECISION PRICE ACTION & VOLUME ===');
         expect(packet).toContain('1. REJECTION WICKS: The sweep candle must show clear rejection. A valid sweep has a long wick (at least 2x the size of its body) and a small body, closing back inside the range.');
         expect(packet).toContain("2. VOLUME CLIMAX: Check the 'volume' column in the CSV.");
         expect(packet).toContain('3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement).');
+        expect(packet).toContain('Verify Price Action: require a long rejection wick and a volume spike on the sweep candle. Do not trade slow grinds.');
+        expect(packet).toContain('ENFORCE THE DYNAMIC STOP LOSS: Place the stop safely beyond the sweep wick + 0.50 buffer. Enforce the 4.50 point absolute minimum.');
         expect(packet).toContain('The OB is the last opposite-direction candle before the displacement leg.');
         expect(packet).toContain('The OB zone is that candle\'s BODY (open-to-close). The wick is never the OB.');
         expect(packet).toContain('STOP LOSS (DYNAMIC & VOLATILITY-AWARE):');
@@ -10878,7 +10880,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.');
         expect(packet).toContain('- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.');
         expect(packet).toContain('- price_action_confirmation must mention the candle body/wick ratio and volume spikes.');
-        expect(packet).toContain('- Do NOT include extra fields');
+        expect(packet).toContain('- Do NOT include extra fields.');
+        expect(packet).toContain('- FORMATTING: Output the JSON object with standard indentation and line breaks (pretty-print). Do not minify the JSON.');
         expect(packet).toContain('- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0;');
         expect(packet).not.toContain('gate_0_candidate');
         expect(packet).not.toContain('"gates"');
@@ -10929,7 +10932,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             active: 'NEW_YORK', inside_killzone: true, outside_killzone: false, warning_injected: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V2.7.1',
+            version: 'V2.7',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
@@ -11014,7 +11017,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         ...overrides
     });
 
-    it('parses and validates the V2.7.1 strict JSON output contract', () => {
+    it('parses and validates the V2.7 strict JSON output contract', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11130,7 +11133,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(invalid.issues).toContain('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
     });
 
-    it('rejects extra fields outside the V2.7.1 schema', () => {
+    it('rejects extra fields outside the V2.7 schema', () => {
         const ctx = getContext();
         const response = jsonResponse({ gate_0_candidate: { entry: 4034 } });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));

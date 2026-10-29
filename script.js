@@ -17216,7 +17216,8 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.',
     '- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.',
     '- price_action_confirmation must mention the candle body/wick ratio and volume spikes.',
-    '- Do NOT include extra fields.'
+    '- Do NOT include extra fields.',
+    '- FORMATTING: Output the JSON object with standard indentation and line breaks (pretty-print). Do not minify the JSON.'
 ].join('\n');
 
 const RAW_CANDLE_AI_KILLZONES = Object.freeze([
@@ -20331,7 +20332,7 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V2.7.1 (DEEPSEEK JSON)
+    return `=== GHOST MACHINE STRATEGY RULES === V2.7 (DEEPSEEK JSON)
 You are the Ghost Machine. Read the raw closed candles yourself. No deterministic POI, FVG, order-block, MSNR, supply/demand zone or candidate list is supplied or authoritative. Deterministic macro liquidity levels are supplied only as context.
 UNIVERSE: use only the CSV candles in this packet. Never invent a candle, price, timestamp, volume or level.
 MACRO CONTEXT: DAILY_BIAS, daily OHLC, PDH/PDL and completed session highs/lows are context only. The raw 1D/4H candles own higher-timeframe structure; 1H/15M/5M own intraday formation and execution.
@@ -20420,14 +20421,9 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === MARKET CONTEXT & REACTION ===
 === CRT & MSNR LOGIC ===
-1. CRT (Candle Range Theory): Look for price sweeping the high/low of the
-   previous Daily or 4H candle range. When the 15M or 1H chart sweeps that HTF
-   extreme and immediately reverses, this is a CRT play.
-2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders
-   are trapped. A high-probability zone is one where the sweep clearly grabbed
-   retail stop-losses before the displacement leg.
-3. TBS (Time-Based Supply): Only trade these zones when the session timing
-   aligns (London or NY Killzones).
+1. CRT (Candle Range Theory): Look for price sweeping the high/low of the previous Daily or 4H candle range. When the 15M or 1H chart sweeps that HTF extreme and immediately reverses, this is a CRT play.
+2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders are trapped. A high-probability zone is one where the sweep clearly grabbed retail stop-losses before the displacement leg.
+3. TBS (Time-Based Supply): Only trade these zones when the session timing aligns (London or NY Killzones).
 
 === PRECISION PRICE ACTION & VOLUME ===
 1. REJECTION WICKS: The sweep candle must show clear rejection. A valid sweep has a long wick (at least 2x the size of its body) and a small body, closing back inside the range. Do not trade if the sweep candle has a large body closing near the extreme.
@@ -20494,8 +20490,8 @@ function buildRawCandleAiInstruction() {
         'Read the current market context. Select the primary thesis using Section M directional priority.',
         'Construct the sniper candidate: OB body, entry, stop, TP1/TP2/TP3.',
         'Prioritize CRT and MSNR traps. Enter at the proximal edge, or use the nearest FVG/imbalance if price is already inside the OB; do not chase a missed zone.',
-        'Confirm the sweep rejection wick (body/wick ratio) and the volume spike versus the previous 3 candles.',
-        'ENFORCE THE 4.50 POINT MINIMUM STOP LOSS FOR GOLD.',
+        'Verify Price Action: require a long rejection wick and a volume spike on the sweep candle. Do not trade slow grinds.',
+        'ENFORCE THE DYNAMIC STOP LOSS: Place the stop safely beyond the sweep wick + 0.50 buffer. Enforce the 4.50 point absolute minimum.',
         'VERIFY ARITHMETIC TWICE.',
         'If no qualifying setup exists, return action "NO_TRADE" with zero geometry.',
         'Output the exact JSON object defined in the OUTPUT CONTRACT. No prose, no markdown, no extra fields.'
@@ -20547,7 +20543,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
         ...(serverClock.outside_killzone ? ['WARNING: OUTSIDE_KILLZONE'] : []),
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.7.1',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.7',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20605,7 +20601,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             warning_injected: serverClock.outside_killzone
         },
         ghost_rules: {
-            version: 'V2.7.1',
+            version: 'V2.7',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('=== SECTION L: DAILY BIAS ===')),
