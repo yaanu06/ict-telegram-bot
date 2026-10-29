@@ -20329,7 +20329,7 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V2.6 (DEEPSEEK JSON)
+    return `=== GHOST MACHINE STRATEGY RULES === V2.7.1 (DEEPSEEK JSON)
 You are the Ghost Machine. Read the raw closed candles yourself. No deterministic POI, FVG, order-block, MSNR, supply/demand zone or candidate list is supplied or authoritative. Deterministic macro liquidity levels are supplied only as context.
 UNIVERSE: use only the CSV candles in this packet. Never invent a candle, price, timestamp, volume or level.
 MACRO CONTEXT: DAILY_BIAS, daily OHLC, PDH/PDL and completed session highs/lows are context only. The raw 1D/4H candles own higher-timeframe structure; 1H/15M/5M own intraday formation and execution.
@@ -20440,7 +20440,10 @@ Place stop_loss at the NEAREST structural invalidation based on the MARKET CONTE
   structural swing low/high that caused the displacement.
 - If RANGING / CONSOLIDATING: Place the stop at the OB far edge + standard buffer.
 
-CRITICAL XAU/USD RULE: For Gold (XAU/USD), the stop loss distance from entry must NEVER be less than 4.50 points. Even in a tight range, Gold volatility requires a minimum 4.50 point buffer to survive spreads and liquidity grabs. If the structural stop is closer than 4.50 points, you MUST widen it to 4.50 points.
+CRITICAL XAU/USD STOP LOSS RULE: For Gold (XAU/USD), the stop loss must ALWAYS be placed safely BEYOND the actual structural sweep wick with a minimum 0.50 buffer.
+- DO NOT place the stop loss INSIDE the sweep wick.
+- The absolute minimum risk distance is 4.50 points. If the structural wick is closer than 4.50 points, you MUST widen the stop to 4.50 points.
+- If the structural wick is further than 4.50 points, you MUST place the stop beyond the wick (e.g., if the wick is 6.0 points away, the stop must be at 6.5 points).
 
 Never widen the stop to swallow distant HTF swing highs/lows, PDH/PDL, or
 round numbers unless that level IS the immediate structural invalidation.
@@ -20536,7 +20539,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
         ...(serverClock.outside_killzone ? ['WARNING: OUTSIDE_KILLZONE'] : []),
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.6',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.7.1',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20594,7 +20597,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             warning_injected: serverClock.outside_killzone
         },
         ghost_rules: {
-            version: 'V2.6',
+            version: 'V2.7.1',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('=== SECTION L: DAILY BIAS ===')),
@@ -20611,7 +20614,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             order_block_rule_included: ghostRules.some(rule => rule.startsWith('ORDER BLOCK:')),
             nearest_invalidation_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS')),
             dynamic_stop_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS (DYNAMIC & VOLATILITY-AWARE):')),
-            gold_minimum_stop_included: ghostRules.some(rule => rule.includes('minimum 4.50 point buffer')),
+            gold_minimum_stop_included: ghostRules.some(rule => rule.includes('absolute minimum risk distance is 4.50 points')),
             target_relocation_rule_included: ghostRules.some(rule => rule.includes('relocate TP1 to the next unused pool')),
             hard_rr_gate_included: ghostRules.some(rule => rule.includes('RR_TP1 must be >= 2.00')),
             worked_acceptance_example_included: ghostRules.some(rule => rule.startsWith('=== WORKED ACCEPTANCE EXAMPLE ===')),

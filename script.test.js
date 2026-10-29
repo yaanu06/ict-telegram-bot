@@ -10762,7 +10762,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.6');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.7.1');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10790,11 +10790,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V2.6 DeepSeek reasoning protocol and strict JSON contract', () => {
+    it('includes the V2.7.1 DeepSeek reasoning protocol and strict JSON contract', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V2.6 (DEEPSEEK JSON)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V2.7.1 (DEEPSEEK JSON)');
         expect(packet).toContain('=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===');
         for (let step = 1; step <= 9; step += 1) {
             expect(packet).toContain('STEP ' + step + '.');
@@ -10847,7 +10847,10 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('Place stop_loss at the NEAREST structural invalidation based on the MARKET CONTEXT:');
         expect(packet).toContain('If TRENDING_BULLISH / TRENDING_BEARISH: Place the stop BEYOND the recent');
         expect(packet).toContain('If RANGING / CONSOLIDATING: Place the stop at the OB far edge + standard buffer.');
-        expect(packet).toContain('CRITICAL XAU/USD RULE: For Gold (XAU/USD), the stop loss distance from entry must NEVER be less than 4.50 points.');
+        expect(packet).toContain('CRITICAL XAU/USD STOP LOSS RULE: For Gold (XAU/USD), the stop loss must ALWAYS be placed safely BEYOND the actual structural sweep wick with a minimum 0.50 buffer.');
+        expect(packet).toContain('- DO NOT place the stop loss INSIDE the sweep wick.');
+        expect(packet).toContain('- The absolute minimum risk distance is 4.50 points. If the structural wick is closer than 4.50 points, you MUST widen the stop to 4.50 points.');
+        expect(packet).toContain('- If the structural wick is further than 4.50 points, you MUST place the stop beyond the wick (e.g., if the wick is 6.0 points away, the stop must be at 6.5 points).');
         expect(packet).toContain('TP1 = the NEAREST opposing 1H/4H pool that has NOT been body-closed through');
         expect(packet).toContain('If the nearest candidate TP1 IS body-broken, DO NOT reject the trade -');
         expect(packet).toContain('relocate TP1 to the next unused pool above (BUY) or below (SELL) and');
@@ -10920,7 +10923,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             active: 'NEW_YORK', inside_killzone: true, outside_killzone: false, warning_injected: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V2.6',
+            version: 'V2.7.1',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
@@ -11000,7 +11003,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         ...overrides
     });
 
-    it('parses and validates the V2.6 strict JSON output contract', () => {
+    it('parses and validates the V2.7.1 strict JSON output contract', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11105,7 +11108,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(imbalance.issues).not.toContain('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
     });
 
-    it('rejects extra fields outside the V2.6 schema', () => {
+    it('rejects extra fields outside the V2.7.1 schema', () => {
         const ctx = getContext();
         const response = jsonResponse({ gate_0_candidate: { entry: 4034 } });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
