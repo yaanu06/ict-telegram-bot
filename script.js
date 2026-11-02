@@ -17162,6 +17162,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",',
     '  "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",',
     '  "price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike on the sweep>",',
+    '  "session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly for the current session\'s ATR>",',
     '  "entry": <number>,',
     '  "stop_loss": <number>,',
     '  "tp1": <number>,',
@@ -17195,7 +17196,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '    ],',
     '    "killzone": {',
     '      "server_time_utc": "<timestamp>",',
-    '      "computed_window": "LONDON|OVERLAP|NEW_YORK|NONE",',
+    '      "computed_window": "ASIA|LONDON|OVERLAP|NEW_YORK|NONE",',
     '      "inside": true',
     '    }',
     '  },',
@@ -17216,11 +17217,13 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.',
     '- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.',
     '- price_action_confirmation must mention the candle body/wick ratio and volume spikes.',
+    '- session_volatility_check must state whether the SL and TP are sized correctly for the current session ATR.',
     '- Do NOT include extra fields.',
     '- FORMATTING: Output the JSON object with standard indentation and line breaks (pretty-print). Do not minify the JSON.'
 ].join('\n');
 
 const RAW_CANDLE_AI_KILLZONES = Object.freeze([
+    Object.freeze({ name: 'ASIA', start_minutes: 0, end_minutes: 7 * 60 }),
     Object.freeze({ name: 'LONDON', start_minutes: 7 * 60, end_minutes: 11 * 60 }),
     Object.freeze({ name: 'OVERLAP', start_minutes: 11 * 60, end_minutes: 12 * 60 }),
     Object.freeze({ name: 'NEW_YORK', start_minutes: 12 * 60, end_minutes: 15 * 60 })
@@ -20344,13 +20347,18 @@ STEP 1. Derive the Section L bias from the last three contiguous closed 1D candl
 STEP 2. Identify the last completed 4H MSS.
 STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps.
 STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS from the sweep list.
-STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE. No Asian session trades.
+STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE. Asian-session setups are permitted only under the STEP 7 Asia rules.
 STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles. Is price currently TRENDING, RANGING, or CONSOLIDATING?
-STEP 7. Construct the candidate for TODAY'S session: OB body, entry, stop, TP1/TP2/TP3.
-        You MUST align this setup with the current context from STEP 6.
-        HIGH-PROBABILITY FILTER: Prioritize zones where the HTF Candle Range (CRT)
-        sweep, the MSNR retail trap, and the 1H/15M Order Block all overlap.
-        Focus on capturing the immediate intraday liquidity pools (session highs/lows, PDH/PDL). Do not force a multi-day target if a 1H/15M pool is closer.
+STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
+        You MUST align this setup with the current session context:
+
+        - IF LONDON or NEW YORK: Look for the standard 2.0+ RR. You can target the opposite session high/low (PDH/PDL). Stop loss can be tight (but never inside the sweep wick).
+
+        - IF ASIA SESSION:
+          1. The Asian range usually forms between 00:00 and 07:00 UTC.
+          2. Do NOT target far-away 1H/4H pools. Your TP1 MUST be the opposite edge of the Asian Range (Asia High or Asia Low).
+          3. You MUST use a wider stop loss (minimum 7.00 points for XAU) because Asian liquidity is thin and stop-hunts are common.
+          4. If the RR to the opposite edge of the Asian range is less than 2.00, you MUST return NO_TRADE. (Do not force a trade if the range is too tight).
 STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.
 STEP 9. Emit the JSON object.
 
@@ -20404,11 +20412,12 @@ Directional priority:
 
 === SECTION N: KILLZONE ===
 Compute from SERVER_TIME_UTC using fixed UTC windows. No DST adjustments.
+  ASIA:              00:00-07:00 UTC   (thin liquidity - enforce the STEP 7 Asia rules)
   LONDON:            07:00-11:00 UTC
   LONDON/NY OVERLAP: 11:00-12:00 UTC   (highest liquidity - INSIDE)
   NEW YORK:          12:00-15:00 UTC
 
-CRITICAL RULE: If the computed window is "NONE" (Outside Killzone), you are strictly FORBIDDEN from returning a trade. You must return action "NO_TRADE". Do not trade the Asian session. The thin liquidity causes unpredictable stop hunts.
+CRITICAL RULE: If the computed window is "NONE" (Outside Killzone), you are strictly FORBIDDEN from returning a trade. You must return action "NO_TRADE". Asian-session setups are permitted only under the STEP 7 Asia rules.
 The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === SETUP CONSTRUCTION ===
@@ -20470,6 +20479,7 @@ RISK/REWARD:
   REWARD = |tp1 - entry|
   RR_TP1 = REWARD / RISK (two decimals, verify)
 RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE. Never fabricate a target or tighten the stop past a valid invalidation to fix RR.
+- ASIAN RANGE RULE: During the Asia session, you are forbidden from targeting the PDH/PDL or London High/Low unless they are inside the Asian Range. You must target the opposite side of the Asian Range. If price is already near the middle of the Asian range, return NO_TRADE.
 
 === WORKED ACCEPTANCE EXAMPLE ===
 BULLISH Section L bias. London-low TIER_1 bullish sweep at 1H 2026-10-28T06:00
@@ -20612,7 +20622,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             daily_bias_included: ghostRules.some(rule => rule.startsWith('=== SECTION L: DAILY BIAS ===')),
             mandatory_sweep_scan_included: ghostRules.some(rule => rule.startsWith('=== SECTION M: SWEEP SCAN ===')),
             utc_killzone_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION N: KILLZONE ===')),
-            no_asia_session_rule_included: ghostRules.some(rule => rule.includes('No Asian session trades.')),
+            no_asia_session_rule_included: ghostRules.some(rule => rule.includes('Asian-session setups are permitted only under the STEP 7 Asia rules')),
             killzone_none_forces_no_trade_included: ghostRules.some(rule => rule.includes('strictly FORBIDDEN from returning a trade')),
             setup_construction_included: ghostRules.some(rule => rule.startsWith('=== SETUP CONSTRUCTION ===')),
             sniper_entry_rule_included: ghostRules.some(rule => rule.includes('ALREADY INSIDE the Order Block')),
@@ -29181,7 +29191,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
     if (json) {
         const issues = [];
         const add = issue => { if (!issues.includes(issue)) issues.push(issue); };
-        const required = ['action', 'setup', 'current_market_context', 'crt_msnr_confirmation', 'sniper_zone_justification', 'price_action_confirmation', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
+        const required = ['action', 'setup', 'current_market_context', 'crt_msnr_confirmation', 'sniper_zone_justification', 'price_action_confirmation', 'session_volatility_check', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
             'confidence', 'timeframe_used', 'management', 'audit', 'reason'];
         if (required.some(key => lookup(json, key) === undefined)) add('RAW_JSON_FIELDS_MISSING');
         const allowedTopLevel = new Set(required);
@@ -29195,6 +29205,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             crt_msnr_confirmation: text(lookup(json, 'crt_msnr_confirmation')),
             sniper_zone_justification: text(lookup(json, 'sniper_zone_justification')),
             price_action_confirmation: text(lookup(json, 'price_action_confirmation')),
+            session_volatility_check: text(lookup(json, 'session_volatility_check')),
             entry: number(lookup(json, 'entry')),
             stop_loss: number(lookup(json, 'stop_loss')),
             tp1: number(lookup(json, 'tp1')),
@@ -29243,7 +29254,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             const killzoneWindow = String(lookup(killzone, 'computed_window') ?? '').toUpperCase();
             if (!isObject(killzone)
                 || !text(lookup(killzone, 'server_time_utc'))
-                || !['LONDON', 'OVERLAP', 'NEW_YORK', 'NONE'].includes(killzoneWindow)
+                || !['ASIA', 'LONDON', 'OVERLAP', 'NEW_YORK', 'NONE'].includes(killzoneWindow)
                 || typeof lookup(killzone, 'inside') !== 'boolean') {
                 add('RAW_AUDIT_KILLZONE_INVALID');
             }
@@ -29269,6 +29280,13 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             || !/\bwick\b/i.test(parsed.price_action_confirmation)
             || !/\bvolume\b/i.test(parsed.price_action_confirmation)) {
             add('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
+        }
+        if (!parsed.session_volatility_check) {
+            add('RAW_SESSION_VOLATILITY_CHECK_REQUIRED');
+        } else if (!/\b(ATR|VOLATIL)/i.test(parsed.session_volatility_check)
+            || !/\b(STOP|SL)\b/i.test(parsed.session_volatility_check)
+            || !/\b(TP\d*|TARGET)\b/i.test(parsed.session_volatility_check)) {
+            add('RAW_SESSION_VOLATILITY_CHECK_INVALID');
         }
         if (action === 'NO_TRADE') {
             if (!Number.isFinite(parsed.confidence) || parsed.confidence !== 0) add('RAW_NO_TRADE_CONFIDENCE_INVALID');

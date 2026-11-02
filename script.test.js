@@ -10799,13 +10799,16 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         for (let step = 1; step <= 9; step += 1) {
             expect(packet).toContain('STEP ' + step + '.');
         }
-        expect(packet).toContain('STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE. No Asian session trades.');
+        expect(packet).toContain('STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE. Asian-session setups are permitted only under the STEP 7 Asia rules.');
         expect(packet).toContain('STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles.');
-        expect(packet).toContain("STEP 7. Construct the candidate for TODAY'S session: OB body, entry, stop, TP1/TP2/TP3.");
-        expect(packet).toContain('You MUST align this setup with the current context from STEP 6.');
-        expect(packet).toContain('HIGH-PROBABILITY FILTER: Prioritize zones where the HTF Candle Range (CRT)');
-        expect(packet).toContain('sweep, the MSNR retail trap, and the 1H/15M Order Block all overlap.');
-        expect(packet).toContain('Focus on capturing the immediate intraday liquidity pools (session highs/lows, PDH/PDL). Do not force a multi-day target if a 1H/15M pool is closer.');
+        expect(packet).toContain('STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.');
+        expect(packet).toContain('You MUST align this setup with the current session context:');
+        expect(packet).toContain('- IF LONDON or NEW YORK: Look for the standard 2.0+ RR. You can target the opposite session high/low (PDH/PDL). Stop loss can be tight (but never inside the sweep wick).');
+        expect(packet).toContain('- IF ASIA SESSION:');
+        expect(packet).toContain('1. The Asian range usually forms between 00:00 and 07:00 UTC.');
+        expect(packet).toContain('2. Do NOT target far-away 1H/4H pools. Your TP1 MUST be the opposite edge of the Asian Range (Asia High or Asia Low).');
+        expect(packet).toContain('3. You MUST use a wider stop loss (minimum 7.00 points for XAU) because Asian liquidity is thin and stop-hunts are common.');
+        expect(packet).toContain('4. If the RR to the opposite edge of the Asian range is less than 2.00, you MUST return NO_TRADE. (Do not force a trade if the range is too tight).');
         expect(packet).toContain('STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.');
         expect(packet).toContain('STEP 9. Emit the JSON object.');
         expect(packet).toContain('=== SECTION L: DAILY BIAS ===');
@@ -10829,7 +10832,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('LONDON/NY OVERLAP: 11:00-12:00 UTC   (highest liquidity - INSIDE)');
         expect(packet).toContain('NEW YORK:          12:00-15:00 UTC');
         expect(packet).toContain('CRITICAL RULE: If the computed window is "NONE" (Outside Killzone), you are strictly FORBIDDEN from returning a trade.');
-        expect(packet).toContain('You must return action "NO_TRADE". Do not trade the Asian session.');
+        expect(packet).toContain('Asian-session setups are permitted only under the STEP 7 Asia rules.');
         expect(packet).toContain('=== SETUP CONSTRUCTION ===');
         expect(packet).toContain('=== CURRENT OPPORTUNITY & SNIPER ENTRY ===');
         expect(packet).toContain('1. AGGRESSIVE DISPLACEMENT: The leg leaving the Order Block must be violent.');
@@ -10870,6 +10873,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('"crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",');
         expect(packet).toContain('"sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",');
         expect(packet).toContain('"price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike on the sweep>",');
+        expect(packet).toContain('"session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly for the current session\'s ATR>",');
         expect(packet).toContain('"audit": {');
         expect(packet).toContain('"breaks": [');
         expect(packet).toContain('"killzone": {');
@@ -10880,6 +10884,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.');
         expect(packet).toContain('- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.');
         expect(packet).toContain('- price_action_confirmation must mention the candle body/wick ratio and volume spikes.');
+        expect(packet).toContain('- session_volatility_check must state whether the SL and TP are sized correctly for the current session ATR.');
         expect(packet).toContain('- Do NOT include extra fields.');
         expect(packet).toContain('- FORMATTING: Output the JSON object with standard indentation and line breaks (pretty-print). Do not minify the JSON.');
         expect(packet).toContain('- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0;');
@@ -10887,7 +10892,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).not.toContain('"gates"');
     });
 
-    it('injects OUTSIDE_KILLZONE only when server time is outside London and New York', () => {
+    it('injects OUTSIDE_KILLZONE only when server time is outside Asia, London and New York', () => {
         const ctx = getContext();
         const inside = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(inside).not.toContain('WARNING: OUTSIDE_KILLZONE');
@@ -10903,6 +10908,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
 
     it('classifies UTC killzone boundaries including the London/NY overlap', () => {
         const ctx = getContext();
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T00:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'ASIA', inside_killzone: true, outside_killzone: false }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T06:59:00Z'))).toEqual(expect.objectContaining({ killzone: 'ASIA', inside_killzone: true }));
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T07:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'LONDON', inside_killzone: true, outside_killzone: false }));
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T10:59:00Z'))).toEqual(expect.objectContaining({ killzone: 'LONDON', inside_killzone: true }));
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T11:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'OVERLAP', inside_killzone: true }));
@@ -11002,6 +11009,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         crt_msnr_confirmation: '1H swept the prior daily low at 4028.20 and reversed, trapping retail sellers before displacement.',
         sniper_zone_justification: 'Entry is at the proximal edge of the bullish FVG left by aggressive displacement.',
         price_action_confirmation: 'Sweep wick is 2.7x the body and volume is 2.1x the previous three candles.',
+        session_volatility_check: 'The 7.00 point stop and 31.70 point TP1 match the current Asian session ATR of 6.5 points.',
         entry: 4034,
         stop_loss: 4027.5,
         tp1: 4065.7,
@@ -11028,6 +11036,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.crt_msnr_confirmation).toContain('trapping retail sellers');
         expect(parsed.sniper_zone_justification).toContain('proximal edge');
         expect(parsed.price_action_confirmation).toContain('volume');
+        expect(parsed.session_volatility_check).toContain('ATR');
         expect([parsed.entry, parsed.stop_loss, parsed.tp1, parsed.tp2, parsed.tp3]).toEqual([4034, 4027.5, 4065.7, 4070.84, 4088.37]);
         expect(parsed.audit.sweeps).toHaveLength(5);
         expect(parsed.audit.breaks).toHaveLength(2);
@@ -11131,6 +11140,16 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const invalid = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ price_action_confirmation: 'The setup looks strong.' })));
         expect(invalid.valid).toBe(false);
         expect(invalid.issues).toContain('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
+    });
+
+    it('requires a session volatility check of SL and TP sizing', () => {
+        const ctx = getContext();
+        const missing = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ session_volatility_check: '' })));
+        expect(missing.valid).toBe(false);
+        expect(missing.issues).toContain('RAW_SESSION_VOLATILITY_CHECK_REQUIRED');
+        const invalid = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ session_volatility_check: 'The setup looks strong.' })));
+        expect(invalid.valid).toBe(false);
+        expect(invalid.issues).toContain('RAW_SESSION_VOLATILITY_CHECK_INVALID');
     });
 
     it('rejects extra fields outside the V2.7.2 schema', () => {
