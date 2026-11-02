@@ -20422,11 +20422,10 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === SETUP CONSTRUCTION ===
 
-=== CURRENT OPPORTUNITY & SNIPER ENTRY ===
-1. AGGRESSIVE DISPLACEMENT: The leg leaving the Order Block must be violent. If the market slowly grinded out, do not trade it.
-2. PROXIMAL EDGE OR FVG: If current price is ABOVE the zone, place the entry at the proximal edge (top of Bullish OB).
-   HOWEVER, if current price is ALREADY INSIDE the Order Block, do NOT return NO_TRADE. Find the nearest FVG (Fair Value Gap) or imbalance inside or just below current price, and place the limit order there.
-3. NO CHASING: If current price is already more than 2.0 points (XAU) away from the zone in the wrong direction, return NO_TRADE.
+=== PENDING LIMIT & PROXIMAL EDGE ===
+1. AGGRESSIVE DISPLACEMENT: The leg leaving the OB must be violent.
+2. PROXIMAL EDGE: Because we are placing a PENDING LIMIT order, the distance from current price to the Order Block does NOT matter. You MUST place the limit order at the proximal edge of the OB/FVG. Do not reject a trade just because current price is far away from the zone. The market will come to us.
+3. NO CHASING ONLY APPLIES TO MARKET ENTRIES: If you are placing a pending limit, you are not chasing. Only reject the trade if the OB is mathematically invalid.
 
 === MARKET CONTEXT & REACTION ===
 === CRT & MSNR LOGIC ===
@@ -20440,7 +20439,7 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
    aligns (London or NY Killzones).
 
 === PRECISION PRICE ACTION & VOLUME ===
-1. REJECTION WICKS: The sweep candle must show clear rejection. A valid sweep has a long wick (at least 2x the size of its body) and a small body, closing back inside the range. Do not trade if the sweep candle has a large body closing near the extreme.
+1. REJECTION CLOSE: The sweep candle must close back inside the prior range (a valid rejection). A 2x wick-to-body ratio is NOT required for 1H/4H/1D timeframes. Instead, require that the candle closes in the top 30% (for bullish sweeps) or bottom 30% (for bearish sweeps) of its total range.
 2. VOLUME CLIMAX: Check the 'volume' column in the CSV. The sweep candle and the immediate displacement candle must show a spike in volume compared to the previous 3 candles. High volume = institutional participation.
 3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement). If the price grinds slowly back to the OB over many candles, the momentum is dead, and it is likely to break through the zone. Do not trade slow grinds.
 
@@ -20504,7 +20503,7 @@ function buildRawCandleAiInstruction() {
         'Compute killzone per Section N. If outside, RETURN NO_TRADE.',
         'Read the current market context. Select the primary thesis using Section M directional priority.',
         'Construct the sniper candidate: OB body, entry, stop, TP1/TP2/TP3.',
-        'Prioritize CRT and MSNR traps. Enter at the proximal edge, or use the nearest FVG/imbalance if price is already inside the OB; do not chase a missed zone.',
+        'Prioritize CRT and MSNR traps. Place the pending limit at the proximal edge of the OB/FVG regardless of distance from current price; only reject a mathematically invalid OB.',
         'Confirm the sweep rejection wick (body/wick ratio) and the volume spike versus the previous 3 candles.',
         'ENFORCE THE DYNAMIC STOP LOSS: Place the stop safely beyond the sweep wick + 0.50 buffer. Enforce the 4.50 point absolute minimum.',
         'VERIFY ARITHMETIC TWICE.',
@@ -20625,13 +20624,13 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             no_asia_session_rule_included: ghostRules.some(rule => rule.includes('Asian-session setups are permitted only under the STEP 7 Asia rules')),
             killzone_none_forces_no_trade_included: ghostRules.some(rule => rule.includes('strictly FORBIDDEN from returning a trade')),
             setup_construction_included: ghostRules.some(rule => rule.startsWith('=== SETUP CONSTRUCTION ===')),
-            sniper_entry_rule_included: ghostRules.some(rule => rule.includes('ALREADY INSIDE the Order Block')),
-            proximal_edge_rule_included: ghostRules.some(rule => rule.includes('PROXIMAL EDGE OR FVG:')),
-            no_chasing_rule_included: ghostRules.some(rule => rule.includes('NO CHASING:')),
+            sniper_entry_rule_included: ghostRules.some(rule => rule.includes('Do not reject a trade just because current price is far away from the zone.')),
+            proximal_edge_rule_included: ghostRules.some(rule => rule.includes('PROXIMAL EDGE:')),
+            no_chasing_rule_included: ghostRules.some(rule => rule.includes('NO CHASING ONLY APPLIES TO MARKET ENTRIES:')),
             market_context_rule_included: ghostRules.some(rule => rule.startsWith('=== MARKET CONTEXT & REACTION ===')),
             crt_msnr_logic_included: ghostRules.some(rule => rule.startsWith('=== CRT & MSNR LOGIC ===')),
             precision_price_action_included: ghostRules.some(rule => rule.startsWith('=== PRECISION PRICE ACTION & VOLUME ===')),
-            rejection_wick_rule_included: ghostRules.some(rule => rule.includes('REJECTION WICKS:')),
+            rejection_wick_rule_included: ghostRules.some(rule => rule.includes('REJECTION CLOSE:')),
             volume_climax_rule_included: ghostRules.some(rule => rule.includes('VOLUME CLIMAX:')),
             sharp_pullback_rule_included: ghostRules.some(rule => rule.includes('SHARP PULLBACK:')),
             order_block_rule_included: ghostRules.some(rule => rule.startsWith('ORDER BLOCK:')),
