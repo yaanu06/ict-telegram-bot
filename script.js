@@ -17161,7 +17161,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",',
     '  "crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",',
     '  "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",',
-    '  "price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike on the sweep>",',
+    '  "price_action_confirmation": "<1 sentence explaining the rejection wick size AND if there was momentum divergence on the sweep>",',
     '  "session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly for the current session\'s ATR>",',
     '  "entry": <number>,',
     '  "stop_loss": <number>,',
@@ -17216,7 +17216,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '- On BUY_LIMIT/SELL_LIMIT: every price must trace to a candle in the supplied blocks. Never invent a level.',
     '- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.',
     '- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.',
-    '- price_action_confirmation must mention the candle body/wick ratio and volume spikes.',
+    '- price_action_confirmation must mention the rejection wick size and the momentum divergence check.',
     '- session_volatility_check must state whether the SL and TP are sized correctly for the current session ATR.',
     '- Do NOT include extra fields.',
     '- FORMATTING: Output the JSON object with standard indentation and line breaks (pretty-print). Do not minify the JSON.'
@@ -20424,8 +20424,8 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === PENDING LIMIT & PROXIMAL EDGE ===
 1. AGGRESSIVE DISPLACEMENT: The leg leaving the OB must be violent.
-2. PROXIMAL EDGE: Because we are placing a PENDING LIMIT order, the distance from current price to the Order Block does NOT matter. You MUST place the limit order at the proximal edge of the OB/FVG. Do not reject a trade just because current price is far away from the zone. The market will come to us.
-3. NO CHASING ONLY APPLIES TO MARKET ENTRIES: If you are placing a pending limit, you are not chasing. Only reject the trade if the OB is mathematically invalid.
+2. PROXIMAL EDGE OR CURRENT PRICE: Because we are placing a PENDING LIMIT order, place the limit at the proximal edge of the OB/FVG. HOWEVER, if the current price is already within 2.0 points of the proximal edge, DO NOT wait for a deep pullback. You must place the entry at or very near the CURRENT PRICE to guarantee the fill before the displacement continues.
+3. NO CHASING ONLY APPLIES TO DISTANT ZONES: If the OB is more than 2.0 points away, place the limit and wait. If the OB is right at current price, enter immediately.
 
 === MARKET CONTEXT & REACTION ===
 === CRT & MSNR LOGIC ===
@@ -20442,6 +20442,7 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 1. REJECTION CLOSE: The sweep candle must close back inside the prior range (a valid rejection). A 2x wick-to-body ratio is NOT required for 1H/4H/1D timeframes. Instead, require that the candle closes in the top 30% (for bullish sweeps) or bottom 30% (for bearish sweeps) of its total range.
 2. VOLUME CLIMAX: Check the 'volume' column in the CSV. The sweep candle and the immediate displacement candle must show a spike in volume compared to the previous 3 candles. High volume = institutional participation.
 3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement). If the price grinds slowly back to the OB over many candles, the momentum is dead, and it is likely to break through the zone. Do not trade slow grinds.
+4. DIVERGENCE (MOMENTUM SHIFT): Look for bullish/bearish divergence (e.g., price makes a lower low, but the body of the candle is much smaller than the previous drop, or it closes in the top 50% of the sweep). Divergence confirms that banks are absorbing the liquidity.
 
 ORDER BLOCK:
 The OB is the last opposite-direction candle before the displacement leg.
@@ -20503,8 +20504,8 @@ function buildRawCandleAiInstruction() {
         'Compute killzone per Section N. If outside, RETURN NO_TRADE.',
         'Read the current market context. Select the primary thesis using Section M directional priority.',
         'Construct the sniper candidate: OB body, entry, stop, TP1/TP2/TP3.',
-        'Prioritize CRT and MSNR traps. Place the pending limit at the proximal edge of the OB/FVG regardless of distance from current price; only reject a mathematically invalid OB.',
-        'Confirm the sweep rejection wick (body/wick ratio) and the volume spike versus the previous 3 candles.',
+        'Prioritize CRT and MSNR traps. Place the pending limit at the proximal edge of the OB/FVG, or at/very near current price when it is already within 2.0 points of that edge.',
+        'Confirm the sweep rejection wick (body/wick ratio), the volume spike versus the previous 3 candles, and any momentum divergence on the sweep.',
         'ENFORCE THE DYNAMIC STOP LOSS: Place the stop safely beyond the sweep wick + 0.50 buffer. Enforce the 4.50 point absolute minimum.',
         'VERIFY ARITHMETIC TWICE.',
         'If no qualifying setup exists, return action "NO_TRADE" with zero geometry.',
@@ -20624,9 +20625,9 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             no_asia_session_rule_included: ghostRules.some(rule => rule.includes('Asian-session setups are permitted only under the STEP 7 Asia rules')),
             killzone_none_forces_no_trade_included: ghostRules.some(rule => rule.includes('strictly FORBIDDEN from returning a trade')),
             setup_construction_included: ghostRules.some(rule => rule.startsWith('=== SETUP CONSTRUCTION ===')),
-            sniper_entry_rule_included: ghostRules.some(rule => rule.includes('Do not reject a trade just because current price is far away from the zone.')),
-            proximal_edge_rule_included: ghostRules.some(rule => rule.includes('PROXIMAL EDGE:')),
-            no_chasing_rule_included: ghostRules.some(rule => rule.includes('NO CHASING ONLY APPLIES TO MARKET ENTRIES:')),
+            sniper_entry_rule_included: ghostRules.some(rule => rule.includes('DO NOT wait for a deep pullback')),
+            proximal_edge_rule_included: ghostRules.some(rule => rule.includes('PROXIMAL EDGE OR CURRENT PRICE:')),
+            no_chasing_rule_included: ghostRules.some(rule => rule.includes('NO CHASING ONLY APPLIES TO DISTANT ZONES:')),
             market_context_rule_included: ghostRules.some(rule => rule.startsWith('=== MARKET CONTEXT & REACTION ===')),
             crt_msnr_logic_included: ghostRules.some(rule => rule.startsWith('=== CRT & MSNR LOGIC ===')),
             precision_price_action_included: ghostRules.some(rule => rule.startsWith('=== PRECISION PRICE ACTION & VOLUME ===')),
@@ -29277,7 +29278,8 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             add('RAW_PRICE_ACTION_CONFIRMATION_REQUIRED');
         } else if (!/\bbody\b/i.test(parsed.price_action_confirmation)
             || !/\bwick\b/i.test(parsed.price_action_confirmation)
-            || !/\bvolume\b/i.test(parsed.price_action_confirmation)) {
+            || !/\bvolume\b/i.test(parsed.price_action_confirmation)
+            || !/\bdivergen(ce|t)\b/i.test(parsed.price_action_confirmation)) {
             add('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
         }
         if (!parsed.session_volatility_check) {

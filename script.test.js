@@ -10836,8 +10836,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('=== SETUP CONSTRUCTION ===');
         expect(packet).toContain('=== PENDING LIMIT & PROXIMAL EDGE ===');
         expect(packet).toContain('1. AGGRESSIVE DISPLACEMENT: The leg leaving the OB must be violent.');
-        expect(packet).toContain('2. PROXIMAL EDGE: Because we are placing a PENDING LIMIT order, the distance from current price to the Order Block does NOT matter. You MUST place the limit order at the proximal edge of the OB/FVG. Do not reject a trade just because current price is far away from the zone. The market will come to us.');
-        expect(packet).toContain('3. NO CHASING ONLY APPLIES TO MARKET ENTRIES: If you are placing a pending limit, you are not chasing. Only reject the trade if the OB is mathematically invalid.');
+        expect(packet).toContain('2. PROXIMAL EDGE OR CURRENT PRICE: Because we are placing a PENDING LIMIT order, place the limit at the proximal edge of the OB/FVG. HOWEVER, if the current price is already within 2.0 points of the proximal edge, DO NOT wait for a deep pullback. You must place the entry at or very near the CURRENT PRICE to guarantee the fill before the displacement continues.');
+        expect(packet).toContain('3. NO CHASING ONLY APPLIES TO DISTANT ZONES: If the OB is more than 2.0 points away, place the limit and wait. If the OB is right at current price, enter immediately.');
         expect(packet).toContain('=== MARKET CONTEXT & REACTION ===');
         expect(packet).toContain('=== CRT & MSNR LOGIC ===');
         expect(packet).toContain('1. CRT (Candle Range Theory): Look for price sweeping the high/low of the');
@@ -10847,7 +10847,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('1. REJECTION CLOSE: The sweep candle must close back inside the prior range (a valid rejection). A 2x wick-to-body ratio is NOT required for 1H/4H/1D timeframes. Instead, require that the candle closes in the top 30% (for bullish sweeps) or bottom 30% (for bearish sweeps) of its total range.');
         expect(packet).toContain("2. VOLUME CLIMAX: Check the 'volume' column in the CSV.");
         expect(packet).toContain('3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement).');
-        expect(packet).toContain('Confirm the sweep rejection wick (body/wick ratio) and the volume spike versus the previous 3 candles.');
+        expect(packet).toContain('4. DIVERGENCE (MOMENTUM SHIFT): Look for bullish/bearish divergence');
+        expect(packet).toContain('Divergence confirms that banks are absorbing the liquidity.');
+        expect(packet).toContain('Confirm the sweep rejection wick (body/wick ratio), the volume spike versus the previous 3 candles, and any momentum divergence on the sweep.');
         expect(packet).toContain('ENFORCE THE DYNAMIC STOP LOSS: Place the stop safely beyond the sweep wick + 0.50 buffer. Enforce the 4.50 point absolute minimum.');
         expect(packet).toContain('The OB is the last opposite-direction candle before the displacement leg.');
         expect(packet).toContain('The OB zone is that candle\'s BODY (open-to-close). The wick is never the OB.');
@@ -10871,7 +10873,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('"current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",');
         expect(packet).toContain('"crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",');
         expect(packet).toContain('"sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",');
-        expect(packet).toContain('"price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike on the sweep>",');
+        expect(packet).toContain('"price_action_confirmation": "<1 sentence explaining the rejection wick size AND if there was momentum divergence on the sweep>",');
         expect(packet).toContain('"session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly for the current session\'s ATR>",');
         expect(packet).toContain('"audit": {');
         expect(packet).toContain('"breaks": [');
@@ -10882,7 +10884,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('- If computed_window is NONE: action MUST be NO_TRADE.');
         expect(packet).toContain('- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.');
         expect(packet).toContain('- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.');
-        expect(packet).toContain('- price_action_confirmation must mention the candle body/wick ratio and volume spikes.');
+        expect(packet).toContain('- price_action_confirmation must mention the rejection wick size and the momentum divergence check.');
         expect(packet).toContain('- session_volatility_check must state whether the SL and TP are sized correctly for the current session ATR.');
         expect(packet).toContain('- Do NOT include extra fields.');
         expect(packet).toContain('- FORMATTING: Output the JSON object with standard indentation and line breaks (pretty-print). Do not minify the JSON.');
@@ -11007,7 +11009,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         current_market_context: 'TRENDING_BULLISH',
         crt_msnr_confirmation: '1H swept the prior daily low at 4028.20 and reversed, trapping retail sellers before displacement.',
         sniper_zone_justification: 'Entry is at the proximal edge of the bullish FVG left by aggressive displacement.',
-        price_action_confirmation: 'Sweep wick is 2.7x the body and volume is 2.1x the previous three candles.',
+        price_action_confirmation: 'Sweep wick is 2.7x the body, volume is 2.1x the previous three candles, and bullish divergence shows the lower low with a smaller body.',
         session_volatility_check: 'The 7.00 point stop and 31.70 point TP1 match the current Asian session ATR of 6.5 points.',
         entry: 4034,
         stop_loss: 4027.5,
@@ -11131,7 +11133,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(imbalance.issues).not.toContain('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
     });
 
-    it('requires price-action confirmation of body/wick ratio and volume', () => {
+    it('requires price-action confirmation of body/wick ratio, volume, and divergence', () => {
         const ctx = getContext();
         const missing = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ price_action_confirmation: '' })));
         expect(missing.valid).toBe(false);
@@ -11139,6 +11141,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const invalid = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ price_action_confirmation: 'The setup looks strong.' })));
         expect(invalid.valid).toBe(false);
         expect(invalid.issues).toContain('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
+        const noDivergence = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ price_action_confirmation: 'Sweep wick is 2.7x the body and volume is 2.1x the previous three candles.' })));
+        expect(noDivergence.valid).toBe(false);
+        expect(noDivergence.issues).toContain('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
     });
 
     it('requires a session volatility check of SL and TP sizing', () => {

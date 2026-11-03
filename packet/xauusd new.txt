@@ -7,14 +7,14 @@ DETERMINISTIC_FVG_ENGINE=DISABLED
 DETERMINISTIC_ZONE_ENGINE=DISABLED
 CANDIDATE_LIST_ENGINE=DISABLED
 SYMBOL: XAU/USD
-CURRENT PRICE: 3907.20
-QUOTE TIME: 2026-11-02T07:29:57.000Z
-AS OF: 2026-11-02T07:30:26.452Z
-SERVER_TIME_UTC: 2026-11-02T07:30:26.452Z
-SERVER_TIME_EST: 02:30 EST
+CURRENT PRICE: 3900.74
+QUOTE TIME: 2026-11-02T09:41:47.000Z
+AS OF: 2026-11-02T09:42:33.538Z
+SERVER_TIME_UTC: 2026-11-02T09:42:33.538Z
+SERVER_TIME_EST: 04:42 EST
 KILLZONE_STATUS=LONDON
 LAST CLOSED CANDLE TIME: 2026-10-29T21:00:00.000Z
-GENERATED AT: 2026-11-02T07:30:41.966Z
+GENERATED AT: 2026-11-02T09:42:49.827Z
 
 === MACRO CONTEXT ===
 DAILY_BIAS=BEARISH
@@ -23,7 +23,7 @@ DAILY_LAST_OPEN=4024.03
 DAILY_LAST_HIGH=4026.55
 DAILY_LAST_LOW=3870.32
 DAILY_LAST_CLOSE=3875.64
-CURRENT_PRICE=3907.20
+CURRENT_PRICE=3900.74
 MACRO_LEVELS_SOURCE=CLOSED_1D
 PREVIOUS_DAY_HIGH=4026.55
 PREVIOUS_DAY_LOW=3870.32
@@ -76,9 +76,9 @@ FORMAT: time,open,high,low,close,volume
 2026-10-27T21:00:00.000Z,4061.24,4070.84,4057.70,4061.93,32825
 2026-10-28T01:00:00.000Z,4061.93,4064.39,4035.93,4036.71,62132
 2026-10-28T05:00:00.000Z,4036.68,4058.30,4028.19,4052.97,67175
-2026-10-28T09:00:00.000Z,4053.02,4060.17,4043.09,4053.41,56029
+2026-10-28T09:00:00.000Z,4053.02,4060.17,4043.09,4053.41,56038
 2026-10-28T13:00:00.000Z,4053.47,4057.94,4036.13,4042.49,91989
-2026-10-28T17:00:00.000Z,4042.47,4082.82,4024.66,4067.29,262848
+2026-10-28T17:00:00.000Z,4042.47,4082.82,4024.66,4067.29,262969
 2026-10-28T21:00:00.000Z,4065.82,4068.09,4036.40,4037.01,43104
 2026-10-29T01:00:00.000Z,4036.95,4068.88,4035.82,4038.16,112176
 2026-10-29T05:00:00.000Z,4038.20,4046.45,4015.76,4024.25,96142
@@ -100,10 +100,8 @@ CANDLE_COUNT=50
 CANDLE_LIMIT=50
 CANDLE_POLICY=CLOSED_ONLY
 FORMAT: time,open,high,low,close,volume
-2026-10-29T02:00:00.000Z,4062.58,4064.95,4039.80,4047.76,30937
-2026-10-29T03:00:00.000Z,4047.71,4048.38,4036.95,4038.30,24895
 2026-10-29T04:00:00.000Z,4038.34,4041.68,4035.82,4038.16,12451
-2026-10-29T05:00:00.000Z,4038.20,4046.45,4022.18,4024.87,23626
+2026-10-29T05:00:00.000Z,4038.20,4046.45,4022.18,4024.87,23694
 2026-10-29T06:00:00.000Z,4024.95,4035.51,4024.14,4034.80,25009
 2026-10-29T07:00:00.000Z,4034.89,4037.84,4022.57,4023.13,19436
 2026-10-29T08:00:00.000Z,4023.07,4035.24,4015.76,4024.25,28003
@@ -150,6 +148,8 @@ FORMAT: time,open,high,low,close,volume
 2026-11-02T04:00:00.000Z,3902.34,3909.16,3898.17,3901.11,12429
 2026-11-02T05:00:00.000Z,3901.04,3919.51,3900.99,3913.38,17930
 2026-11-02T06:00:00.000Z,3913.36,3916.68,3903.74,3906.72,23666
+2026-11-02T07:00:00.000Z,3906.64,3910.21,3896.83,3903.47,22450
+2026-11-02T08:00:00.000Z,3903.59,3905.74,3891.26,3897.72,28946
 ======== END 1h ========
 
 ======== TIMEFRAME: 15m ========
@@ -157,14 +157,6 @@ CANDLE_COUNT=50
 CANDLE_LIMIT=50
 CANDLE_POLICY=CLOSED_ONLY
 FORMAT: time,open,high,low,close,volume
-2026-10-30T17:00:00.000Z,3896.53,3897.01,3888.64,3889.22,6697
-2026-10-30T17:15:00.000Z,3889.27,3894.03,3886.16,3889.61,7809
-2026-10-30T17:30:00.000Z,3889.66,3890.46,3879.97,3883.98,7249
-2026-10-30T17:45:00.000Z,3883.95,3884.90,3879.39,3883.76,7746
-2026-10-30T18:00:00.000Z,3883.75,3883.86,3877.78,3880.31,7011
-2026-10-30T18:15:00.000Z,3880.33,3881.74,3876.39,3879.64,6381
-2026-10-30T18:30:00.000Z,3879.64,3884.28,3878.53,3882.16,6753
-2026-10-30T18:45:00.000Z,3882.16,3884.00,3877.52,3880.01,9556
 2026-10-30T19:00:00.000Z,3880.05,3880.93,3876.43,3878.72,10069
 2026-10-30T19:15:00.000Z,3878.76,3881.07,3875.02,3875.93,9801
 2026-10-30T19:30:00.000Z,3875.86,3879.34,3870.61,3870.77,9532
@@ -207,6 +199,14 @@ FORMAT: time,open,high,low,close,volume
 2026-11-02T06:45:00.000Z,3904.97,3909.03,3903.74,3906.72,6576
 2026-11-02T07:00:00.000Z,3906.64,3910.21,3905.59,3906.90,5340
 2026-11-02T07:15:00.000Z,3906.95,3909.01,3905.11,3907.68,5720
+2026-11-02T07:30:00.000Z,3907.68,3907.78,3899.93,3900.49,6169
+2026-11-02T07:45:00.000Z,3900.55,3904.72,3896.83,3903.47,5221
+2026-11-02T08:00:00.000Z,3903.59,3905.47,3896.63,3897.86,5889
+2026-11-02T08:15:00.000Z,3897.91,3898.28,3891.26,3895.48,7103
+2026-11-02T08:30:00.000Z,3895.51,3900.45,3892.87,3899.66,7162
+2026-11-02T08:45:00.000Z,3899.64,3905.74,3896.76,3897.72,8792
+2026-11-02T09:00:00.000Z,3897.72,3904.55,3896.82,3902.24,9913
+2026-11-02T09:15:00.000Z,3902.24,3903.58,3898.36,3899.47,5065
 ======== END 15m ========
 
 ======== TIMEFRAME: 5m ========
@@ -214,32 +214,6 @@ CANDLE_COUNT=50
 CANDLE_LIMIT=50
 CANDLE_POLICY=CLOSED_ONLY
 FORMAT: time,open,high,low,close,volume
-2026-11-02T03:20:00.000Z,3898.52,3900.53,3898.41,3899.53,2225
-2026-11-02T03:25:00.000Z,3899.51,3901.91,3899.05,3900.88,1650
-2026-11-02T03:30:00.000Z,3900.95,3903.74,3899.82,3902.76,1363
-2026-11-02T03:35:00.000Z,3902.71,3906.14,3902.53,3905.98,1226
-2026-11-02T03:40:00.000Z,3906.06,3906.91,3904.53,3906.79,1062
-2026-11-02T03:45:00.000Z,3906.84,3907.32,3904.34,3904.78,1093
-2026-11-02T03:50:00.000Z,3904.73,3904.73,3901.38,3902.59,1051
-2026-11-02T03:55:00.000Z,3902.57,3902.86,3900.88,3902.43,1025
-2026-11-02T04:00:00.000Z,3902.34,3906.52,3902.17,3903.49,1882
-2026-11-02T04:05:00.000Z,3903.55,3908.49,3903.55,3908.20,1073
-2026-11-02T04:10:00.000Z,3908.30,3909.16,3904.66,3905.36,1375
-2026-11-02T04:15:00.000Z,3905.27,3907.95,3905.09,3906.49,898
-2026-11-02T04:20:00.000Z,3906.46,3906.72,3905.04,3906.05,818
-2026-11-02T04:25:00.000Z,3906.06,3907.09,3903.99,3904.11,916
-2026-11-02T04:30:00.000Z,3904.16,3904.24,3901.76,3902.89,932
-2026-11-02T04:35:00.000Z,3902.83,3902.83,3901.19,3901.20,757
-2026-11-02T04:40:00.000Z,3901.16,3902.36,3900.30,3902.03,716
-2026-11-02T04:45:00.000Z,3901.99,3901.99,3898.82,3899.20,759
-2026-11-02T04:50:00.000Z,3899.24,3899.59,3898.38,3898.93,907
-2026-11-02T04:55:00.000Z,3898.93,3901.27,3898.17,3901.11,1396
-2026-11-02T05:00:00.000Z,3901.04,3903.71,3900.99,3902.54,1278
-2026-11-02T05:05:00.000Z,3902.53,3906.95,3902.45,3906.39,1073
-2026-11-02T05:10:00.000Z,3906.30,3906.95,3905.30,3906.57,675
-2026-11-02T05:15:00.000Z,3906.47,3907.59,3905.72,3906.06,614
-2026-11-02T05:20:00.000Z,3905.99,3908.35,3905.96,3908.20,683
-2026-11-02T05:25:00.000Z,3908.15,3909.91,3906.24,3909.70,785
 2026-11-02T05:30:00.000Z,3909.60,3912.93,3908.24,3912.55,2647
 2026-11-02T05:35:00.000Z,3912.59,3916.13,3911.69,3914.88,2340
 2026-11-02T05:40:00.000Z,3914.91,3919.51,3914.26,3916.64,1870
@@ -264,6 +238,32 @@ FORMAT: time,open,high,low,close,volume
 2026-11-02T07:15:00.000Z,3906.95,3907.74,3905.68,3906.70,1654
 2026-11-02T07:20:00.000Z,3906.70,3908.10,3905.20,3906.72,1584
 2026-11-02T07:25:00.000Z,3906.72,3909.01,3905.11,3907.68,2482
+2026-11-02T07:30:00.000Z,3907.68,3907.78,3902.18,3902.34,2184
+2026-11-02T07:35:00.000Z,3902.32,3903.87,3901.49,3902.91,2329
+2026-11-02T07:40:00.000Z,3902.87,3904.74,3899.93,3900.49,1656
+2026-11-02T07:45:00.000Z,3900.55,3900.70,3896.83,3900.01,1950
+2026-11-02T07:50:00.000Z,3900.03,3904.10,3899.74,3902.61,1749
+2026-11-02T07:55:00.000Z,3902.60,3904.72,3901.86,3903.47,1522
+2026-11-02T08:00:00.000Z,3903.59,3905.47,3902.56,3903.41,1759
+2026-11-02T08:05:00.000Z,3903.47,3903.89,3898.93,3899.42,1991
+2026-11-02T08:10:00.000Z,3899.46,3899.70,3896.63,3897.86,2139
+2026-11-02T08:15:00.000Z,3897.91,3898.28,3891.91,3891.91,2235
+2026-11-02T08:20:00.000Z,3891.96,3897.03,3891.39,3894.57,2478
+2026-11-02T08:25:00.000Z,3894.58,3895.97,3891.26,3895.48,2390
+2026-11-02T08:30:00.000Z,3895.51,3897.57,3892.87,3896.57,1952
+2026-11-02T08:35:00.000Z,3896.61,3900.45,3894.86,3899.93,2408
+2026-11-02T08:40:00.000Z,3899.92,3900.17,3897.35,3899.66,2802
+2026-11-02T08:45:00.000Z,3899.64,3903.91,3899.39,3903.91,2765
+2026-11-02T08:50:00.000Z,3904.01,3905.74,3900.44,3900.91,3138
+2026-11-02T08:55:00.000Z,3900.99,3900.99,3896.76,3897.72,2889
+2026-11-02T09:00:00.000Z,3897.72,3902.07,3896.82,3900.24,3828
+2026-11-02T09:05:00.000Z,3900.20,3903.58,3898.85,3902.43,3181
+2026-11-02T09:10:00.000Z,3902.45,3904.55,3901.36,3902.24,2904
+2026-11-02T09:15:00.000Z,3902.24,3903.58,3900.30,3900.62,1754
+2026-11-02T09:20:00.000Z,3900.53,3902.30,3899.64,3901.16,1993
+2026-11-02T09:25:00.000Z,3901.15,3901.47,3898.36,3899.47,1318
+2026-11-02T09:30:00.000Z,3899.52,3900.29,3897.03,3897.94,2123
+2026-11-02T09:35:00.000Z,3897.93,3900.78,3896.82,3900.18,2194
 ======== END 5m ========
 
 === GHOST MACHINE STRATEGY RULES === V2.7.2 (DEEPSEEK JSON)
@@ -355,8 +355,8 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === PENDING LIMIT & PROXIMAL EDGE ===
 1. AGGRESSIVE DISPLACEMENT: The leg leaving the OB must be violent.
-2. PROXIMAL EDGE: Because we are placing a PENDING LIMIT order, the distance from current price to the Order Block does NOT matter. You MUST place the limit order at the proximal edge of the OB/FVG. Do not reject a trade just because current price is far away from the zone. The market will come to us.
-3. NO CHASING ONLY APPLIES TO MARKET ENTRIES: If you are placing a pending limit, you are not chasing. Only reject the trade if the OB is mathematically invalid.
+2. PROXIMAL EDGE OR CURRENT PRICE: Because we are placing a PENDING LIMIT order, place the limit at the proximal edge of the OB/FVG. HOWEVER, if the current price is already within 2.0 points of the proximal edge, DO NOT wait for a deep pullback. You must place the entry at or very near the CURRENT PRICE to guarantee the fill before the displacement continues.
+3. NO CHASING ONLY APPLIES TO DISTANT ZONES: If the OB is more than 2.0 points away, place the limit and wait. If the OB is right at current price, enter immediately.
 
 === MARKET CONTEXT & REACTION ===
 === CRT & MSNR LOGIC ===
@@ -373,6 +373,7 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 1. REJECTION CLOSE: The sweep candle must close back inside the prior range (a valid rejection). A 2x wick-to-body ratio is NOT required for 1H/4H/1D timeframes. Instead, require that the candle closes in the top 30% (for bullish sweeps) or bottom 30% (for bearish sweeps) of its total range.
 2. VOLUME CLIMAX: Check the 'volume' column in the CSV. The sweep candle and the immediate displacement candle must show a spike in volume compared to the previous 3 candles. High volume = institutional participation.
 3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement). If the price grinds slowly back to the OB over many candles, the momentum is dead, and it is likely to break through the zone. Do not trade slow grinds.
+4. DIVERGENCE (MOMENTUM SHIFT): Look for bullish/bearish divergence (e.g., price makes a lower low, but the body of the candle is much smaller than the previous drop, or it closes in the top 50% of the sweep). Divergence confirms that banks are absorbing the liquidity.
 
 ORDER BLOCK:
 The OB is the last opposite-direction candle before the displacement leg.
@@ -431,8 +432,8 @@ Derive the Section L bias. Identify the 4H MSS. Enumerate all sweeps.
 Compute killzone per Section N. If outside, RETURN NO_TRADE.
 Read the current market context. Select the primary thesis using Section M directional priority.
 Construct the sniper candidate: OB body, entry, stop, TP1/TP2/TP3.
-Prioritize CRT and MSNR traps. Place the pending limit at the proximal edge of the OB/FVG regardless of distance from current price; only reject a mathematically invalid OB.
-Confirm the sweep rejection wick (body/wick ratio) and the volume spike versus the previous 3 candles.
+Prioritize CRT and MSNR traps. Place the pending limit at the proximal edge of the OB/FVG, or at/very near current price when it is already within 2.0 points of that edge.
+Confirm the sweep rejection wick (body/wick ratio), the volume spike versus the previous 3 candles, and any momentum divergence on the sweep.
 ENFORCE THE DYNAMIC STOP LOSS: Place the stop safely beyond the sweep wick + 0.50 buffer. Enforce the 4.50 point absolute minimum.
 VERIFY ARITHMETIC TWICE.
 If no qualifying setup exists, return action "NO_TRADE" with zero geometry.
@@ -447,7 +448,7 @@ Reply with a SINGLE JSON object. No prose before or after. No markdown fences.
   "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",
   "crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",
   "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",
-  "price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike on the sweep>",
+  "price_action_confirmation": "<1 sentence explaining the rejection wick size AND if there was momentum divergence on the sweep>",
   "session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly for the current session's ATR>",
   "entry": <number>,
   "stop_loss": <number>,
@@ -502,7 +503,7 @@ VALIDATION RULES (the parser will enforce these):
 - On BUY_LIMIT/SELL_LIMIT: every price must trace to a candle in the supplied blocks. Never invent a level.
 - sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.
 - If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.
-- price_action_confirmation must mention the candle body/wick ratio and volume spikes.
+- price_action_confirmation must mention the rejection wick size and the momentum divergence check.
 - session_volatility_check must state whether the SL and TP are sized correctly for the current session ATR.
 - Do NOT include extra fields.
 - FORMATTING: Output the JSON object with standard indentation and line breaks (pretty-print). Do not minify the JSON.
