@@ -18,6 +18,8 @@ import json
 import math
 import os
 import sys
+import tempfile
+import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -182,10 +184,19 @@ def _interval_enum(interval_name: str) -> Any:
     return getattr(Interval, interval_name)
 
 
+_TOKEN_CACHE_PATH = Path(tempfile.gettempdir()) / "ict-tv-auth-token.json"
+_TOKEN_CACHE_LOCK = threading.Lock()
+_TOKEN_CACHE_VALUE: str | None = None
+
+
 def auth_token() -> str:
     """Return the TradingView auth token, failing loudly when it is missing."""
     load_env_file()
     token = str(os.environ.get("TV_AUTH_TOKEN") or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {'"', "'"}:
+        token = token[1:-1].strip()
     if not token:
         raise RuntimeError(
             "TV_AUTH_TOKEN is not set; refusing to fall back to username/password login"
@@ -193,18 +204,52 @@ def auth_token() -> str:
     return token
 
 
-def _create_client() -> Any:
-    """Create a tvdatafeed-enhanced client authenticated with TV_AUTH_TOKEN.
+def _token_cache_file(token: str) -> Path:
+    """Write the token where tvdatafeed-enhanced's cache loader can read it.
 
-    tvdatafeed-enhanced 2.2.1 does not expose an ``auth_token`` constructor
-    argument (it only accepts username, password or a token cache file), so
-    inject the token onto the client instead of logging in.
+    tvdatafeed-enhanced 2.2.1 has no ``auth_token`` constructor argument. Its
+    supported token path is ``token_cache_file``: ``__init__`` loads
+    ``{"token": ...}`` from that JSON file, validates the JWT ``exp`` claim and
+    assigns ``self.token``, which ``get_hist`` then sends to TradingView as the
+    ``set_auth_token`` WebSocket message. Writing the cache prevents the
+    constructor from taking its anonymous-access branch.
     """
+    global _TOKEN_CACHE_VALUE
+    with _TOKEN_CACHE_LOCK:
+        if _TOKEN_CACHE_VALUE != token:
+            _TOKEN_CACHE_PATH.write_text(json.dumps({"token": token}), encoding="utf-8")
+            try:
+                _TOKEN_CACHE_PATH.chmod(0o600)
+            except OSError:
+                pass
+            _TOKEN_CACHE_VALUE = token
+    return _TOKEN_CACHE_PATH
+
+
+def _create_client() -> Any:
+    """Create a tvdatafeed-enhanced client authenticated with TV_AUTH_TOKEN."""
     from tvDatafeed import TvDatafeed
 
-    client = TvDatafeed()
-    client.token = auth_token()
+    token = auth_token()
+    client = TvDatafeed(token_cache_file=_token_cache_file(token))
+    # The cache loader rejects tokens that are not JWTs with an ``exp`` claim.
+    # Keep an explicit assignment as a fallback so such a token still
+    # authenticates the WebSocket session instead of silently going anonymous.
+    if getattr(client, "token", None) != token:
+        client.token = token
     return client
+
+
+def verify_auth() -> None:
+    """Confirm the client loaded TV_AUTH_TOKEN instead of anonymous access."""
+    token = auth_token()
+    client = _create_client()
+    if getattr(client, "token", None) != token:
+        raise RuntimeError("tvdatafeed-enhanced did not accept TV_AUTH_TOKEN")
+    print(
+        f"TradingView auth: using TV_AUTH_TOKEN ({len(token)} chars), not anonymous access",
+        flush=True,
+    )
 
 
 def _get_hist(symbol: str, exchange: str, interval: Any, n_bars: int) -> Any:
@@ -581,8 +626,8 @@ def verify_provider_import() -> None:
 def main() -> None:
     load_env_file()
     verify_provider_import()
-    auth_token()
     print("Connecting to TradingView using TV_AUTH_TOKEN...", flush=True)
+    verify_auth()
     host = os.environ.get("TVKIT_HOST", "0.0.0.0")
     port = int(os.environ.get("TVKIT_PORT", "8790"))
     # ThreadingHTTPServer lets the five scan requests run concurrently while
