@@ -20,6 +20,12 @@ services:
         sync: false
       - key: PROXY_CORS_ORIGIN
         value: https://yaanu06.github.io
+      - key: TVKIT_HOST
+        value: 0.0.0.0
+      - key: TVKIT_PORT
+        value: "8790"
+      - key: TVKIT_BASE_URL
+        value: http://127.0.0.1:8790
       - key: TV_USERNAME
         sync: false
       - key: TV_PASSWORD

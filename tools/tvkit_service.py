@@ -545,16 +545,38 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[tvdatafeed] {self.address_string()} - {format % args}", file=sys.stderr)
 
 
+def verify_provider_import() -> None:
+    """Fail fast with a clear log if tvdatafeed-enhanced cannot be imported.
+
+    The package declares ``websockets`` but its code imports ``websocket``
+    (websocket-client). Without that explicit dependency the lazy per-request
+    import raises ModuleNotFoundError and every market query returns 502.
+    """
+    try:
+        from tvDatafeed import Interval, TvDatafeed  # noqa: F401
+    except Exception as error:
+        print(
+            f"FATAL: tvdatafeed-enhanced import failed: {error}. "
+            "Install its dependencies with: python -m pip install -r requirements-render.txt",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
+    print("tvdatafeed-enhanced import OK", file=sys.stderr, flush=True)
+
+
 def main() -> None:
     load_env_file()
-    host = os.environ.get("TVKIT_HOST", "127.0.0.1")
+    verify_provider_import()
+    host = os.environ.get("TVKIT_HOST", "0.0.0.0")
     port = int(os.environ.get("TVKIT_PORT", "8790"))
     # ThreadingHTTPServer lets the five scan requests run concurrently while
     # each tvdatafeed-enhanced call executes in its own worker thread. This is
     # the latency fix requested for Render; the old serial server forced every
     # TradingView session to wait for the previous one.
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"tvdatafeed-enhanced service listening on http://{host}:{port}")
+    print(f"tvdatafeed-enhanced service listening on http://{host}:{port}", flush=True)
+    print(f"Python TVDatafeed service running on port {port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

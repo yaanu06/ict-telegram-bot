@@ -19,12 +19,13 @@ RUN git clone https://github.com/shiyu-coder/Kronos.git /opt/kronos \
     && rm -rf .git
 
 COPY requirements-render.txt ./
-RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements-render.txt
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements-render.txt \
+    && python3 -c "from tvDatafeed import TvDatafeed, Interval; import pandas, websocket; print('tvdatafeed-enhanced dependencies OK')"
 
 COPY . .
 
 ENV HOST=0.0.0.0
-ENV TVKIT_HOST=127.0.0.1
+ENV TVKIT_HOST=0.0.0.0
 ENV TVKIT_PORT=8790
 ENV TVKIT_BASE_URL=http://127.0.0.1:8790
 ENV KRONOS_REPO_PATH=/opt/kronos
