@@ -53,6 +53,8 @@ SNAPSHOT_TIMEFRAMES = (
     ("15M", "in_15_minute", 50),
     ("5M", "in_5_minute", 50),
 )
+FETCH_ATTEMPTS = 3
+FETCH_RETRY_DELAY_SECONDS = 2
 
 
 def load_env_file() -> None:
@@ -203,8 +205,40 @@ def _get_hist(symbol: str, exchange: str, interval: Any, n_bars: int) -> Any:
 
 
 async def fetch_tf(symbol: str, exchange: str, interval: Any, n_bars: int) -> Any:
-    """Fetch one timeframe in a worker thread so the event loop stays free."""
-    return await asyncio.to_thread(_get_hist, symbol, exchange, interval, n_bars)
+    """Fetch one timeframe with bounded retries.
+
+    tvdatafeed-enhanced returns ``None`` (or an empty frame) when TradingView
+    rejects or drops a session. Render sees that intermittently, so retry up to
+    ``FETCH_ATTEMPTS`` times. A missing frame is returned as ``None``; the
+    formatting paths turn it into an explicit zero-candle block so the AI never
+    mistakes the timeframe for fresh data.
+    """
+    interval_label = getattr(interval, "name", str(interval))
+    for attempt in range(FETCH_ATTEMPTS):
+        provider_error = False
+        try:
+            df = await asyncio.to_thread(_get_hist, symbol, exchange, interval, n_bars)
+        except Exception as error:  # provider/socket failures are retryable
+            print(
+                f"TradingView fetch error for {symbol} {interval_label} "
+                f"(attempt {attempt + 1}/{FETCH_ATTEMPTS}): {error}",
+                file=sys.stderr,
+                flush=True,
+            )
+            df = None
+            provider_error = True
+        if df is not None and not df.empty:
+            return df
+        if not provider_error:
+            print(
+                f"TradingView returned None for {symbol} {interval_label} "
+                f"(attempt {attempt + 1}/{FETCH_ATTEMPTS})",
+                file=sys.stderr,
+                flush=True,
+            )
+        if attempt < FETCH_ATTEMPTS - 1:
+            await asyncio.sleep(FETCH_RETRY_DELAY_SECONDS)
+    return None
 
 
 async def fetch_all(symbol: str, exchange: str) -> list[Any]:
@@ -232,7 +266,15 @@ def strip_timezone(df: Any) -> Any:
 
 def format_df_to_csv(df: Any, tf_name: str, limit: int) -> str:
     if df is None or df.empty:
-        return f"======== TIMEFRAME: {tf_name.lower()} ========\nCANDLE_COUNT=0\n======== END {tf_name.lower()} ========\n"
+        return "\n".join([
+            f"======== TIMEFRAME: {tf_name.lower()} ========",
+            "CANDLE_COUNT=0",
+            f"CANDLE_LIMIT={limit}",
+            "CANDLE_POLICY=CLOSED_ONLY",
+            "DATA_STATUS=UNAVAILABLE",
+            f"======== END {tf_name.lower()} ========",
+            "",
+        ])
 
     # Strip timezone to ensure raw string formatting.
     df = strip_timezone(df)
@@ -377,6 +419,7 @@ async def fetch_time_series(symbol: str, interval: str, outputsize: int) -> dict
             "interval_ms": interval_ms,
             "fetched_at": iso(int(datetime.now(tz=timezone.utc).timestamp() * 1000)),
             "raw_count": len(values),
+            "data_status": "OK" if values else "UNAVAILABLE",
         },
     }
 
@@ -403,6 +446,7 @@ async def fetch_snapshot(symbol: str) -> dict[str, Any]:
                 "interval": interval_key,
                 "interval_ms": interval_ms,
                 "raw_count": 0 if df is None or df.empty else len(df),
+                "data_status": "UNAVAILABLE" if df is None or df.empty else "OK",
             },
         }
         csv_blocks[tf_name] = format_df_to_csv(df, tf_name, limit)
@@ -421,7 +465,10 @@ async def fetch_quote(symbol: str) -> dict[str, Any]:
     df = await fetch_tf(tv_symbol_value, exchange, _interval_enum("in_5_minute"), 2)
     bar = latest_closed_bar(df, INTERVALS["5min"][1])
     if bar is None:
-        raise RuntimeError(f"tvdatafeed-enhanced returned no quote for {exchange}:{tv_symbol_value}")
+        raise RuntimeError(
+            f"TradingView returned no 5min data for {exchange}:{tv_symbol_value} "
+            f"after {FETCH_ATTEMPTS} attempts"
+        )
     ts = bar["timestamp"]
     return {
         "price": float(bar["close"]),

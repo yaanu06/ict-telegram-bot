@@ -1,12 +1,14 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pandas as pd
 
 from tools.tvkit_service import (
+    FETCH_ATTEMPTS,
     fetch_quote,
+    fetch_tf,
     format_df_to_csv,
     provider_symbol,
     quote_market_fields,
@@ -34,6 +36,19 @@ class FakeClient:
     def get_hist(self, symbol, exchange, interval, n_bars):
         self.last_request = (symbol, exchange, interval, n_bars)
         return frame(["2026-10-09T19:55:00", "2026-10-09T20:00:00"], [4179.0, 4179.15])
+
+
+class SequenceClient:
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = 0
+
+    def get_hist(self, **kwargs):
+        self.calls += 1
+        result = self.results.pop(0) if self.results else None
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 class TvdatafeedQuoteTests(unittest.TestCase):
@@ -104,8 +119,47 @@ class TvdatafeedMappingTests(unittest.TestCase):
         text = format_df_to_csv(None, "1D", 15)
         self.assertEqual(
             text,
-            "======== TIMEFRAME: 1d ========\nCANDLE_COUNT=0\n======== END 1d ========\n",
+            "======== TIMEFRAME: 1d ========\n"
+            "CANDLE_COUNT=0\n"
+            "CANDLE_LIMIT=15\n"
+            "CANDLE_POLICY=CLOSED_ONLY\n"
+            "DATA_STATUS=UNAVAILABLE\n"
+            "======== END 1d ========\n",
         )
+
+
+class TvdatafeedRetryTests(unittest.TestCase):
+    def test_retries_none_and_empty_frames_before_succeeding(self):
+        good = frame(["2026-10-09T20:00:00"], [4179.15])
+        client = SequenceClient([None, pd.DataFrame(), good])
+        with patch("tools.tvkit_service._create_client", return_value=client), \
+                patch("tools.tvkit_service.asyncio.sleep", new=AsyncMock()) as sleep:
+            result = asyncio.run(fetch_tf("XAUUSD", "OANDA", "in_5_minute", 50))
+
+        self.assertIs(result, good)
+        self.assertEqual(client.calls, 3)
+        self.assertEqual(sleep.await_count, 2)
+
+    def test_returns_none_after_all_retries_and_does_not_sleep_after_last(self):
+        client = SequenceClient([None, None, None])
+        with patch("tools.tvkit_service._create_client", return_value=client), \
+                patch("tools.tvkit_service.asyncio.sleep", new=AsyncMock()) as sleep:
+            result = asyncio.run(fetch_tf("XAUUSD", "OANDA", "in_5_minute", 50))
+
+        self.assertIsNone(result)
+        self.assertEqual(client.calls, FETCH_ATTEMPTS)
+        self.assertEqual(sleep.await_count, FETCH_ATTEMPTS - 1)
+
+    def test_treats_provider_exception_as_retryable(self):
+        good = frame(["2026-10-09T20:00:00"], [4179.15])
+        client = SequenceClient([RuntimeError("socket closed"), good])
+        with patch("tools.tvkit_service._create_client", return_value=client), \
+                patch("tools.tvkit_service.asyncio.sleep", new=AsyncMock()) as sleep:
+            result = asyncio.run(fetch_tf("XAUUSD", "OANDA", "in_5_minute", 50))
+
+        self.assertIs(result, good)
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(sleep.await_count, 1)
 
 
 if __name__ == "__main__":
