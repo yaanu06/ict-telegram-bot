@@ -20,6 +20,10 @@ services:
         sync: false
       - key: PROXY_CORS_ORIGIN
         value: https://yaanu06.github.io
+      - key: TV_USERNAME
+        sync: false
+      - key: TV_PASSWORD
+        sync: false
       - key: PROXY_TVKIT_MAX_REQUESTS
         value: "120"
       - key: PROXY_UPSTREAM_TIMEOUT_MS

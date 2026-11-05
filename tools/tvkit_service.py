@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Small read-only HTTP adapter that exposes tvkit to the Mini App.
+"""Read-only HTTP adapter that exposes tvdatafeed-enhanced to the Mini App.
 
 The browser app already understands quote and time_series responses. This
-service translates those requests to tvkit/TradingView and returns the same
-small JSON shape without exposing credentials or adding any order capability.
+service translates those requests to tvdatafeed-enhanced/TradingView and
+returns the same small JSON shape without exposing credentials or adding any
+order capability.
+
+The engine was swapped from tvkit to ``tvdatafeed-enhanced`` to remove the
+per-request WebSocket latency and improve reliability on Render. The HTTP
+contract, the candle schema and the downstream V2.7.2 packet remain unchanged.
 """
 
 from __future__ import annotations
@@ -14,29 +19,68 @@ import math
 import os
 import sys
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-
+# Query interval -> (tvdatafeed Interval attribute, timeframe duration, bars).
 INTERVALS = {
-    "1min": ("1", 60_000),
-    "5min": ("5", 300_000),
-    "15min": ("15", 900_000),
-    "1h": ("60", 3_600_000),
-    "4h": ("240", 14_400_000),
-    "1day": ("1D", 86_400_000),
+    "1min": ("in_1_minute", 60_000, 50),
+    "5min": ("in_5_minute", 300_000, 50),
+    "15min": ("in_15_minute", 900_000, 50),
+    "1h": ("in_1_hour", 3_600_000, 50),
+    "4h": ("in_4_hour", 14_400_000, 30),
+    "1day": ("in_daily", 86_400_000, 15),
 }
 
-SYMBOLS = {
-    "XAU/USD": "OANDA:XAUUSD",
-    "XAG/USD": "OANDA:XAGUSD",
-    "BTC/USD": "BINANCE:BTCUSDT",
+# Canonical pair -> (tvdatafeed symbol, exchange).
+PAIRS = {
+    "XAU/USD": ("XAUUSD", "OANDA"),
+    "EUR/USD": ("EURUSD", "OANDA"),
+    "USD/JPY": ("USDJPY", "OANDA"),
+    "XAG/USD": ("XAGUSD", "OANDA"),
+    "BTC/USD": ("BTCUSDT", "BINANCE"),
 }
 FIAT_CURRENCY_CODES = {
     "USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "HKD",
     "SGD", "NOK", "SEK", "CNH", "CNY", "MXN", "ZAR", "TRY", "PLN",
 }
+SNAPSHOT_TIMEFRAMES = (
+    ("1D", "in_daily", 15),
+    ("4H", "in_4_hour", 30),
+    ("1H", "in_1_hour", 50),
+    ("15M", "in_15_minute", 50),
+    ("5M", "in_5_minute", 50),
+)
+
+
+def load_env_file() -> None:
+    """Load TV_USERNAME/TV_PASSWORD from a local .env when present.
+
+    Render injects the variables directly into the process environment. The
+    local Mini App has no dotenv dependency, so this small read-only loader
+    keeps the documented username/password fallback working without adding a
+    package or committing credentials.
+    """
+    candidates = [Path(".env"), Path("server") / ".env"]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            for raw_line in path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key not in {"TV_USERNAME", "TV_PASSWORD"}:
+                    continue
+                if os.environ.get(key):
+                    continue
+                os.environ[key] = value.strip().strip('"').strip("'")
+        except OSError:
+            continue
 
 
 def value(item: Any, name: str) -> Any:
@@ -68,43 +112,53 @@ def iso(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def tv_symbol(symbol: str) -> str:
+def normalize_symbol_pair(symbol: str) -> str:
     normalized = str(symbol or "").strip().upper().replace(" ", "")
     if ":" in normalized:
-        return normalized
-    aliases = {"XAUUSD": "XAU/USD", "XAGUSD": "XAG/USD", "BTCUSD": "BTC/USD"}
-    normalized = aliases.get(normalized, normalized)
-    if normalized in SYMBOLS:
-        return SYMBOLS[normalized]
-    instrument = normalized.replace("/", "")
-    if len(instrument) == 6 and instrument[:3] in FIAT_CURRENCY_CODES and instrument[3:] in FIAT_CURRENCY_CODES:
-        return f"FX_IDC:{instrument}"
-    if "/" in normalized:
-        return f"FX_IDC:{instrument}"
-    return normalized
+        normalized = normalized.split(":", 1)[1]
+    return normalized.replace("-", "/")
+
+
+def provider_symbol(symbol: str) -> tuple[str, str]:
+    """Return ``(tv_symbol, exchange)`` using the documented OANDA mapping."""
+    raw = str(symbol or "").strip().upper().replace(" ", "")
+    pair = normalize_symbol_pair(raw)
+    if pair in PAIRS:
+        return PAIRS[pair]
+    if ":" in raw:
+        exchange, tv_symbol = raw.split(":", 1)
+        canonical = normalize_symbol_pair(tv_symbol)
+        if canonical in PAIRS:
+            return PAIRS[canonical]
+        if len(tv_symbol) == 6 and tv_symbol[:3] in FIAT_CURRENCY_CODES and tv_symbol[3:] in FIAT_CURRENCY_CODES:
+            return tv_symbol, "OANDA"
+        return tv_symbol, exchange
+    if "/" in pair:
+        instrument = pair.replace("/", "")
+        if len(instrument) == 6 and instrument[:3] in FIAT_CURRENCY_CODES and instrument[3:] in FIAT_CURRENCY_CODES:
+            return instrument, "OANDA"
+        return instrument, "OANDA"
+    return pair, "OANDA"
+
+
+def tv_symbol(symbol: str) -> str:
+    """Compatibility helper retained for callers that expect OANDA:XAUUSD."""
+    tv_symbol_value, exchange = provider_symbol(symbol)
+    return f"{exchange}:{tv_symbol_value}"
 
 
 def quote_provider_timestamp_ms(quote: Any) -> int | None:
     """Return the timestamp belonging to the provider's last-price update.
 
-    TVKit's quote model exposes TradingView's quote payload through
-    ``symbol_info``.  The adapter must not use local receipt time as market
-    data time: doing so makes a stale weekend quote look fresh to the browser.
-    ``lp_time`` is TradingView's last-price timestamp; the other keys are
-    compatibility fallbacks for provider/model variants.
+    tvdatafeed-enhanced quotes are derived from the latest closed candle, so
+    this helper accepts either a candle-like object or a dict with a timestamp.
+    Missing provider time is never replaced by local receipt time.
     """
-    info = value(quote, "symbol_info")
-    if not isinstance(info, dict):
-        info = value(quote, "quote_data")
-    info = info if isinstance(info, dict) else {}
     candidates = [
         value(quote, "timestamp"),
         value(quote, "datetime"),
         value(quote, "last_update"),
-        info.get("lp_time"),
-        info.get("timestamp"),
-        info.get("time"),
-        info.get("last_update"),
+        value(quote, "lp_time"),
     ]
     for candidate in candidates:
         if candidate is None:
@@ -120,10 +174,87 @@ def params(query: dict[str, list[str]], key: str, default: str = "") -> str:
     return str(query.get(key, [default])[0] or default).strip()
 
 
+def _interval_enum(interval_name: str) -> Any:
+    from tvDatafeed import Interval
+
+    return getattr(Interval, interval_name)
+
+
+def _create_client() -> Any:
+    """Create a tvdatafeed-enhanced client, using credentials when supplied."""
+    load_env_file()
+    from tvDatafeed import TvDatafeed
+
+    username = str(os.environ.get("TV_USERNAME") or "").strip()
+    password = str(os.environ.get("TV_PASSWORD") or "").strip()
+    if username and password:
+        return TvDatafeed(username, password)
+    return TvDatafeed()
+
+
+def _get_hist(symbol: str, exchange: str, interval: Any, n_bars: int) -> Any:
+    client = _create_client()
+    return client.get_hist(
+        symbol=symbol,
+        exchange=exchange,
+        interval=interval,
+        n_bars=n_bars,
+    )
+
+
+async def fetch_tf(symbol: str, exchange: str, interval: Any, n_bars: int) -> Any:
+    """Fetch one timeframe in a worker thread so the event loop stays free."""
+    return await asyncio.to_thread(_get_hist, symbol, exchange, interval, n_bars)
+
+
+async def fetch_all(symbol: str, exchange: str) -> list[Any]:
+    """Fetch the five scan timeframes concurrently.
+
+    Returns the DataFrames in ``SNAPSHOT_TIMEFRAMES`` order: 1D, 4H, 1H, 15M,
+    5M. This is the latency fix: one concurrent batch instead of five serial
+    TradingView sessions.
+    """
+    tasks = []
+    for _tf_name, interval_name, n_bars in SNAPSHOT_TIMEFRAMES:
+        tasks.append(fetch_tf(symbol, exchange, _interval_enum(interval_name), n_bars))
+    return list(await asyncio.gather(*tasks))
+
+
+def strip_timezone(df: Any) -> Any:
+    if df is None or df.empty:
+        return df
+    try:
+        df.index = df.index.tz_localize(None)
+    except (AttributeError, TypeError):
+        df.index = df.index.tz_convert("UTC").tz_localize(None)
+    return df
+
+
+def format_df_to_csv(df: Any, tf_name: str, limit: int) -> str:
+    if df is None or df.empty:
+        return f"======== TIMEFRAME: {tf_name.lower()} ========\nCANDLE_COUNT=0\n======== END {tf_name.lower()} ========\n"
+
+    # Strip timezone to ensure raw string formatting.
+    df = strip_timezone(df)
+
+    lines = [f"======== TIMEFRAME: {tf_name.lower()} ========"]
+    lines.append(f"CANDLE_COUNT={len(df)}")
+    lines.append(f"CANDLE_LIMIT={limit}")
+    lines.append("CANDLE_POLICY=CLOSED_ONLY")
+    lines.append("FORMAT: time,open,high,low,close,volume")
+
+    for index, row in df.iterrows():
+        time_str = index.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        lines.append(f"{time_str},{row['open']},{row['high']},{row['low']},{row['close']},{row['volume']}")
+
+    lines.append(f"======== END {tf_name.lower()} ========\n")
+    return "\n".join(lines)
+
+
 def response_bar(bar: Any, interval: str, interval_ms: int) -> dict[str, Any]:
     raw_timestamp = value(bar, "timestamp")
     if raw_timestamp is None:
-        raise ValueError("tvkit candle has no timestamp")
+        raise ValueError("candle has no timestamp")
     ts = timestamp_ms(raw_timestamp)
     result = {
         "datetime": iso(ts),
@@ -146,6 +277,28 @@ def response_bar(bar: Any, interval: str, interval_ms: int) -> dict[str, Any]:
             pass
     result["is_closed"] = ts + interval_ms <= int(datetime.now(tz=timezone.utc).timestamp() * 1000)
     return result
+
+
+def dataframe_bars(df: Any, interval: str, interval_ms: int) -> list[dict[str, Any]]:
+    if df is None or df.empty:
+        return []
+    df = strip_timezone(df)
+    bars = []
+    for index, row in df.iterrows():
+        bars.append(response_bar(
+            {
+                "timestamp": index,
+                "open": row["open"],
+                "high": row["high"],
+                "low": row["low"],
+                "close": row["close"],
+                "volume": row.get("volume"),
+            },
+            interval,
+            interval_ms,
+        ))
+    bars.sort(key=lambda item: item["timestamp"], reverse=True)
+    return bars
 
 
 def quote_market_fields(quote: Any) -> dict[str, Any]:
@@ -186,26 +339,36 @@ def quote_market_fields(quote: Any) -> dict[str, Any]:
     }
 
 
+def latest_closed_bar(df: Any, interval_ms: int) -> dict[str, Any] | None:
+    if df is None or df.empty:
+        return None
+    df = strip_timezone(df)
+    now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+    closed = [index for index in df.index if timestamp_ms(index) + interval_ms <= now_ms]
+    index = closed[-1] if closed else df.index[-1]
+    row = df.loc[index]
+    return {
+        "timestamp": timestamp_ms(index),
+        "open": row["open"],
+        "high": row["high"],
+        "low": row["low"],
+        "close": row["close"],
+        "volume": row.get("volume"),
+    }
+
+
 async def fetch_time_series(symbol: str, interval: str, outputsize: int) -> dict[str, Any]:
-    try:
-        from tvkit.api.chart.ohlcv import OHLCV
-    except ModuleNotFoundError as error:
-        raise RuntimeError("tvkit is not installed; run: python -m pip install tvkit") from error
-    tv_interval, interval_ms = INTERVALS[interval]
-    provider_symbol = tv_symbol(symbol)
-    async with OHLCV() as client:
-        bars = await client.get_historical_ohlcv(
-            exchange_symbol=provider_symbol,
-            interval=tv_interval,
-            bars_count=outputsize,
-        )
-    values = [response_bar(bar, interval, interval_ms) for bar in bars]
-    values.sort(key=lambda item: item["timestamp"], reverse=True)
+    interval_name, interval_ms, _default_bars = INTERVALS[interval]
+    tv_symbol_value, exchange = provider_symbol(symbol)
+    df = await fetch_tf(tv_symbol_value, exchange, _interval_enum(interval_name), outputsize)
+    values = dataframe_bars(df, interval, interval_ms)
     return {
         "values": values,
         "meta": {
             "provider": "TVKIT",
-            "provider_symbol": provider_symbol,
+            "engine": "tvdatafeed-enhanced",
+            "provider_symbol": f"{exchange}:{tv_symbol_value}",
+            "exchange": exchange,
             "interval": interval,
             "timezone": "UTC",
             "timestamp_semantics": "OPEN",
@@ -218,28 +381,61 @@ async def fetch_time_series(symbol: str, interval: str, outputsize: int) -> dict
     }
 
 
-async def fetch_quote(symbol: str) -> dict[str, Any]:
-    try:
-        from tvkit.api.chart.ohlcv import OHLCV
-    except ModuleNotFoundError as error:
-        raise RuntimeError("tvkit is not installed; run: python -m pip install tvkit") from error
-    provider_symbol = tv_symbol(symbol)
-    async with OHLCV() as client:
-        async for quote in client.get_quote_data(provider_symbol, interval="1", bars_count=1):
-            raw_price = value(quote, "current_price")
-            if raw_price is None:
-                raw_price = value(quote, "price")
-            if raw_price is None:
-                continue
-            provider_timestamp = quote_provider_timestamp_ms(quote)
-            return {
-                "price": float(raw_price),
-                "timestamp": iso(provider_timestamp) if provider_timestamp is not None else None,
-                "symbol": provider_symbol,
+async def fetch_snapshot(symbol: str) -> dict[str, Any]:
+    """One concurrent batch for all five scan timeframes."""
+    tv_symbol_value, exchange = provider_symbol(symbol)
+    frames = await fetch_all(tv_symbol_value, exchange)
+    timeframes = {}
+    csv_blocks = {}
+    for (tf_name, _interval_name, limit), df in zip(SNAPSHOT_TIMEFRAMES, frames):
+        interval_key = {
+            "1D": "1day", "4H": "4h", "1H": "1h", "15M": "15min", "5M": "5min",
+        }[tf_name]
+        interval_ms = INTERVALS[interval_key][1]
+        timeframes[tf_name] = {
+            "values": dataframe_bars(df, interval_key, interval_ms),
+            "meta": {
                 "provider": "TVKIT",
-                **quote_market_fields(quote),
-            }
-    raise RuntimeError(f"tvkit returned no quote for {provider_symbol}")
+                "engine": "tvdatafeed-enhanced",
+                "provider_symbol": f"{exchange}:{tv_symbol_value}",
+                "exchange": exchange,
+                "timeframe": tf_name,
+                "interval": interval_key,
+                "interval_ms": interval_ms,
+                "raw_count": 0 if df is None or df.empty else len(df),
+            },
+        }
+        csv_blocks[tf_name] = format_df_to_csv(df, tf_name, limit)
+    return {
+        "provider": "TVKIT",
+        "engine": "tvdatafeed-enhanced",
+        "symbol": f"{exchange}:{tv_symbol_value}",
+        "exchange": exchange,
+        "timeframes": timeframes,
+        "csv_blocks": csv_blocks,
+    }
+
+
+async def fetch_quote(symbol: str) -> dict[str, Any]:
+    tv_symbol_value, exchange = provider_symbol(symbol)
+    df = await fetch_tf(tv_symbol_value, exchange, _interval_enum("in_5_minute"), 2)
+    bar = latest_closed_bar(df, INTERVALS["5min"][1])
+    if bar is None:
+        raise RuntimeError(f"tvdatafeed-enhanced returned no quote for {exchange}:{tv_symbol_value}")
+    ts = bar["timestamp"]
+    return {
+        "price": float(bar["close"]),
+        "timestamp": iso(ts),
+        "symbol": f"{exchange}:{tv_symbol_value}",
+        "provider": "TVKIT",
+        "engine": "tvdatafeed-enhanced",
+        "bid": None,
+        "ask": None,
+        "spread": None,
+        "tradeable": None,
+        "market_status": None,
+        "symbol_metadata": {"exchange": exchange, "timezone": "Etc/UTC"},
+    }
 
 
 def json_bytes(payload: Any) -> bytes:
@@ -247,7 +443,7 @@ def json_bytes(payload: Any) -> bytes:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ict-tvkit-service/1.0"
+    server_version = "ict-tvdatafeed-service/2.0"
 
     def send_json(self, status: int, payload: Any) -> None:
         body = json_bytes(payload)
@@ -270,17 +466,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/health":
-            self.send_json(200, {"ok": True, "provider": "TVKIT"})
+            self.send_json(200, {"ok": True, "provider": "TVKIT", "engine": "tvdatafeed-enhanced"})
             return
         query = parse_qs(parsed.query)
         try:
             symbol = params(query, "symbol")
             if not symbol or len(symbol) > 64:
                 raise ValueError("symbol is required")
-            if parsed.path == "/quote":
-                self.send_json(200, asyncio.run(fetch_quote(symbol)))
-                return
-            if parsed.path == "/price":
+            if parsed.path in ("/quote", "/price"):
                 self.send_json(200, asyncio.run(fetch_quote(symbol)))
                 return
             if parsed.path == "/time_series":
@@ -292,6 +485,9 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("outputsize is invalid")
                 self.send_json(200, asyncio.run(fetch_time_series(symbol, interval, outputsize)))
                 return
+            if parsed.path == "/snapshot":
+                self.send_json(200, asyncio.run(fetch_snapshot(symbol)))
+                return
             self.send_json(404, {"error": "route not found"})
         except ValueError as error:
             self.send_json(400, {"error": str(error)})
@@ -299,18 +495,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(502, {"error": str(error)[:500]})
 
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"[tvkit] {self.address_string()} - {format % args}", file=sys.stderr)
+        print(f"[tvdatafeed] {self.address_string()} - {format % args}", file=sys.stderr)
 
 
 def main() -> None:
+    load_env_file()
     host = os.environ.get("TVKIT_HOST", "127.0.0.1")
     port = int(os.environ.get("TVKIT_PORT", "8790"))
-    # tvkit opens an async WebSocket connection. On Windows its connection
-    # stack is more reliable when asyncio.run executes on the main thread;
-    # keep this small provider adapter serial and let the browser reuse its
-    # normal request cache/in-flight handling.
-    server = HTTPServer((host, port), Handler)
-    print(f"tvkit service listening on http://{host}:{port}")
+    # ThreadingHTTPServer lets the five scan requests run concurrently while
+    # each tvdatafeed-enhanced call executes in its own worker thread. This is
+    # the latency fix requested for Render; the old serial server forced every
+    # TradingView session to wait for the previous one.
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"tvdatafeed-enhanced service listening on http://{host}:{port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

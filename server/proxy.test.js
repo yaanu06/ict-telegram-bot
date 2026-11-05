@@ -134,7 +134,28 @@ describe('market and AI proxy boundary', () => {
         }
     });
 
-    test('serializes concurrent TVKit history requests to protect TradingView sessions', async () => {
+    test('forwards the optional tvkit snapshot batch route', async () => {
+        const urls = [];
+        const fetchImpl = jest.fn(async url => {
+            urls.push(String(url));
+            return { status: 200, text: async () => JSON.stringify({ csv: {} }) };
+        });
+        const server = createProxyServer({
+            env: { TVKIT_BASE_URL: 'http://127.0.0.1:8790', PROXY_MAX_REQUESTS: '20', PROXY_TVKIT_MAX_REQUESTS: '20' },
+            fetchImpl
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const response = await request(server, 'GET', '/api/tvkit/snapshot?symbol=OANDA%3AXAUUSD');
+            expect(response.status).toBe(200);
+            expect(new URL(urls[0]).pathname).toBe('/snapshot');
+            expect(new URL(urls[0]).searchParams.get('symbol')).toBe('OANDA:XAUUSD');
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
+    test('forwards concurrent TVKit history requests in parallel for lower latency', async () => {
         let active = 0;
         let maxActive = 0;
         const urls = [];
@@ -169,7 +190,7 @@ describe('market and AI proxy boundary', () => {
                 request(server, 'GET', '/api/tvkit/time_series?symbol=FX_IDC%3AEURUSD&interval=5min&outputsize=200')
             ]);
             expect(responses.map(response => response.status)).toEqual([200, 200, 200, 200, 200]);
-            expect(maxActive).toBe(1);
+            expect(maxActive).toBe(5);
             expect(urls).toHaveLength(5);
             expect(urls.every(url => new URL(url).searchParams.get('symbol') === 'FX_IDC:EURUSD')).toBe(true);
         } finally {

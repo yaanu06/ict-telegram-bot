@@ -19,8 +19,7 @@ RUN git clone https://github.com/shiyu-coder/Kronos.git /opt/kronos \
     && rm -rf .git
 
 COPY requirements-render.txt ./
-RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements-render.txt \
-    && python3 -m pip install --no-cache-dir --break-system-packages tvkit
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements-render.txt
 
 COPY . .
 

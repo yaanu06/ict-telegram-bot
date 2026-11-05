@@ -308,7 +308,7 @@ function getTvkitBaseUrl() {
 }
 
 function getMarketDataProviderLabel() {
-    return getMarketDataProvider() === 'TVKIT' ? 'TradingView/tvkit' : 'Twelve Data';
+    return getMarketDataProvider() === 'TVKIT' ? 'TradingView/tvdatafeed-enhanced' : 'Twelve Data';
 }
 
 function getTvkitSymbol(forPair = pair) {
@@ -878,7 +878,7 @@ function showSetup() {
                 <p class="setup-desc">Enter your API keys & GitHub repository access</p>
                 <label>📡 Twelve Data Key (optional fallback):</label>
                 <input type="password" id="twInput" class="setup-input" value="${TWELVE_DATA_KEY}">
-                <p class="setup-note">Primary market source: TradingView/tvkit. Start <code>python tools/tvkit_service.py</code>, then configure <code>setMarketDataProvider('TVKIT','http://127.0.0.1:8790')</code> in the browser console. Use <code>setMarketDataProvider('TWELVE_DATA')</code> only when you want the paid fallback.</p>
+                <p class="setup-note">Primary market source: TradingView/tvdatafeed-enhanced. Start <code>python tools/tvkit_service.py</code>, then configure <code>setMarketDataProvider('TVKIT','http://127.0.0.1:8790')</code> in the browser console. Use <code>setMarketDataProvider('TWELVE_DATA')</code> only when you want the paid fallback.</p>
                 <label>🤖 DeepSeek Key:</label>
                 <input type="password" id="dsInput" class="setup-input" value="${DEEPSEEK_API_KEY}">
                 <label>🌐 Custom AI URL:</label>
@@ -25801,21 +25801,17 @@ async function runAutoScan() {
         // 1W available through getHistory()/explicit analysis, but do not
         // spend a provider request on it during every scan when no consumer
         // uses weekly candles for the current opportunity decision.
-        // Render serializes TVKit work. Start each TVKit request only when the
-        // previous one has completed so its client timeout measures the
-        // request itself rather than time spent behind the server queue.
+        // tvdatafeed-enhanced fetches each timeframe in a worker thread and
+        // the provider service is threaded, so request all scan timeframes
+        // together. This removes the old serial TVKit wait chain.
         const tfs = getMarketDataProvider() === 'TVKIT'
             ? ['1D', '4H', '1H', '15M', '5M', '1M']
             : ['1M', '5M', '15M', '1H', '4H', '1D'];
         scanText.innerHTML = '📊 Collecting market data...';
         scanStage = 'history requests';
-        if (getMarketDataProvider() === 'TVKIT') {
-            for (const timeframe of tfs) historyCache[timeframe] = await getHistory(timeframe, pair, providerFetchOptions);
-        } else {
-            await Promise.all(tfs.map(async (t) => {
-                historyCache[t] = await getHistory(t, pair, providerFetchOptions);
-            }));
-        }
+        await Promise.all(tfs.map(async (t) => {
+            historyCache[t] = await getHistory(t, pair, providerFetchOptions);
+        }));
         for (const tf of tfs) historyCache[tf] = canonicalizeHistory(historyCache[tf], tf, scanAsOfMs);
         recordScanRuntimeBoundary('history_counts_after_load', historyCache);
         const refreshedQuoteSnapshot = refreshStaleQuoteFromClosedCandle(quoteSnapshot, historyCache, scanAsOfMs, '5M');
