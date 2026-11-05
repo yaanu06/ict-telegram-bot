@@ -26,9 +26,7 @@ services:
         value: "8790"
       - key: TVKIT_BASE_URL
         value: http://127.0.0.1:8790
-      - key: TV_USERNAME
-        sync: false
-      - key: TV_PASSWORD
+      - key: TV_AUTH_TOKEN
         sync: false
       - key: PROXY_TVKIT_MAX_REQUESTS
         value: "120"

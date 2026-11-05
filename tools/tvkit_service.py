@@ -58,12 +58,12 @@ FETCH_RETRY_DELAY_SECONDS = 2
 
 
 def load_env_file() -> None:
-    """Load TV_USERNAME/TV_PASSWORD from a local .env when present.
+    """Load TV_AUTH_TOKEN from a local .env when present.
 
-    Render injects the variables directly into the process environment. The
+    Render injects the variable directly into the process environment. The
     local Mini App has no dotenv dependency, so this small read-only loader
-    keeps the documented username/password fallback working without adding a
-    package or committing credentials.
+    keeps the documented token flow working without adding a package or
+    committing credentials.
     """
     candidates = [Path(".env"), Path("server") / ".env"]
     for path in candidates:
@@ -76,7 +76,7 @@ def load_env_file() -> None:
                     continue
                 key, value = line.split("=", 1)
                 key = key.strip()
-                if key not in {"TV_USERNAME", "TV_PASSWORD"}:
+                if key != "TV_AUTH_TOKEN":
                     continue
                 if os.environ.get(key):
                     continue
@@ -182,16 +182,29 @@ def _interval_enum(interval_name: str) -> Any:
     return getattr(Interval, interval_name)
 
 
-def _create_client() -> Any:
-    """Create a tvdatafeed-enhanced client, using credentials when supplied."""
+def auth_token() -> str:
+    """Return the TradingView auth token, failing loudly when it is missing."""
     load_env_file()
+    token = str(os.environ.get("TV_AUTH_TOKEN") or "").strip()
+    if not token:
+        raise RuntimeError(
+            "TV_AUTH_TOKEN is not set; refusing to fall back to username/password login"
+        )
+    return token
+
+
+def _create_client() -> Any:
+    """Create a tvdatafeed-enhanced client authenticated with TV_AUTH_TOKEN.
+
+    tvdatafeed-enhanced 2.2.1 does not expose an ``auth_token`` constructor
+    argument (it only accepts username, password or a token cache file), so
+    inject the token onto the client instead of logging in.
+    """
     from tvDatafeed import TvDatafeed
 
-    username = str(os.environ.get("TV_USERNAME") or "").strip()
-    password = str(os.environ.get("TV_PASSWORD") or "").strip()
-    if username and password:
-        return TvDatafeed(username, password)
-    return TvDatafeed()
+    client = TvDatafeed()
+    client.token = auth_token()
+    return client
 
 
 def _get_hist(symbol: str, exchange: str, interval: Any, n_bars: int) -> Any:
@@ -568,6 +581,8 @@ def verify_provider_import() -> None:
 def main() -> None:
     load_env_file()
     verify_provider_import()
+    auth_token()
+    print("Connecting to TradingView using TV_AUTH_TOKEN...", flush=True)
     host = os.environ.get("TVKIT_HOST", "0.0.0.0")
     port = int(os.environ.get("TVKIT_PORT", "8790"))
     # ThreadingHTTPServer lets the five scan requests run concurrently while

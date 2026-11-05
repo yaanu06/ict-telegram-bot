@@ -18,18 +18,17 @@ execution endpoint.
 
 ## Authentication
 
-Anonymous access is used by default:
+The service authenticates with the TradingView auth token in `TV_AUTH_TOKEN`,
+read from the process environment or a local `.env` / `server/.env`:
 
 ```python
-TvDatafeed()
+tv = TvDatafeed()
+tv.token = os.environ["TV_AUTH_TOKEN"]
 ```
 
-If `TV_USERNAME` and `TV_PASSWORD` exist in the process environment or in a
-local `.env` / `server/.env`, the service falls back to:
-
-```python
-TvDatafeed(username, password)
-```
+`tvdatafeed-enhanced` 2.2.1 has no `auth_token` constructor argument, so the
+token is assigned to the client. Username/password login is not supported and
+does not exist as a fallback; a missing token fails at startup instead.
 
 Never commit the populated `.env` file.
 
