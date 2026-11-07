@@ -20349,6 +20349,7 @@ STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps.
 STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS from the sweep list.
 STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE. Asian-session setups are permitted only under the STEP 7 Asia rules.
 STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles. Is price currently TRENDING, RANGING, or CONSOLIDATING?
+        If the current time is between 12:00 and 14:00 UTC (NY Open), ASSUME THE FIRST SWEEP IS A TRAP. Look for the opposite side: if it sweeps a low and fails to break structure, prepare for a massive SELL_LIMIT back down.
 STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
         You MUST align this setup with the current session context:
 
@@ -20437,12 +20438,19 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
    retail stop-losses before the displacement leg.
 3. TBS (Time-Based Supply): Only trade these zones when the session timing
    aligns (London or NY Killzones).
+4. FAKEOUT FILTER (Judas Swing): The first sweep of a session high/low
+   (especially at the NY open 12:00-15:00 UTC) is often a fakeout to grab early
+   liquidity. Do NOT trade the first sweep if it lacks a massive displacement
+   leg. You must wait for the price to sweep, reverse, and LEAVE A CLEAR FVG
+   (Fair Value Gap) in the opposite direction. If the reversal is just choppy
+   grinding, it is a trap. Return NO_TRADE.
 
 === PRECISION PRICE ACTION & VOLUME ===
 1. REJECTION CLOSE: The sweep candle must close back inside the prior range (a valid rejection). A 2x wick-to-body ratio is NOT required for 1H/4H/1D timeframes. Instead, require that the candle closes in the top 30% (for bullish sweeps) or bottom 30% (for bearish sweeps) of its total range.
 2. VOLUME CLIMAX: Check the 'volume' column in the CSV. The sweep candle and the immediate displacement candle must show a spike in volume compared to the previous 3 candles. High volume = institutional participation.
 3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement). If the price grinds slowly back to the OB over many candles, the momentum is dead, and it is likely to break through the zone. Do not trade slow grinds.
 4. DIVERGENCE (MOMENTUM SHIFT): Look for bullish/bearish divergence (e.g., price makes a lower low, but the body of the candle is much smaller than the previous drop, or it closes in the top 50% of the sweep). Divergence confirms that banks are absorbing the liquidity.
+5. DISPLACEMENT REQUIREMENT: A valid sweep MUST be followed by an aggressive displacement leg that breaks the most recent 5M or 15M swing high/low. If the price sweeps a level but fails to break local structure within 3 candles, the setup is invalid.
 
 ORDER BLOCK:
 The OB is the last opposite-direction candle before the displacement leg.
@@ -20482,18 +20490,21 @@ RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE. Never fabricate a target or tight
 - ASIAN RANGE RULE: During the Asia session, you are forbidden from targeting the PDH/PDL or London High/Low unless they are inside the Asian Range. You must target the opposite side of the Asian Range. If price is already near the middle of the Asian range, return NO_TRADE.
 
 === WORKED ACCEPTANCE EXAMPLE ===
-BULLISH Section L bias. London-low TIER_1 bullish sweep at 1H 2026-10-28T06:00
-(wick 4028.19 below LONDON_LOW 4028.20, close 4030.82 above).
-Bullish OB at 1H 2026-10-28T05:00 (body 4030.37-4036.68).
+BEARISH Section L bias. NY-open TIER_1 high sweep (Judas Swing) at 15M
+2026-11-05T13:15 (wick 4128.40 above NY_HIGH 4128.19, close 4125.90 below).
+The first sweep is a fakeout: it lacks displacement. A later 15M candle
+reverses lower and leaves a clear bearish FVG (4126.10-4127.20) while breaking
+the prior 15M swing low at 4124.80, confirming the displacement leg.
+Bearish OB at 15M 2026-11-05T13:15 (body 4126.00-4127.50).
 
-TP1 candidates above entry (BUY):
-  NY_HIGH 4054.53 - body-broken on 1H 2026-10-27T15:00 - USED.
-  LONDON_HIGH 4058.30 - wick-tapped but never body-broken - UNUSED.
-  PDH 4065.70 - wick-tapped twice but NEVER body-closed above - UNUSED, MAJOR.
+TP1 candidates below entry (SELL):
+  NY_LOW 4108.40 - body-broken on 1H 2026-11-05T08:00 - USED.
+  LONDON_LOW 4102.75 - wick-tapped but never body-broken - UNUSED.
+  PDL 4095.30 - wick-tapped once but NEVER body-closed below - UNUSED, MAJOR.
 
-Correct TP1: 4065.70 (nearest unused MAJOR pool).
-Result: ENTRY=4034.00  SL=4027.50  TP1=4065.70
-        RISK=6.50  REWARD=31.70  RR=4.88`.split('\n');
+Correct TP1: 4102.75 (nearest unused pool below entry).
+Result: ENTRY=4126.50  SL=4131.00  TP1=4102.75
+        RISK=4.50  REWARD=23.75  RR=5.28`.split('\n');
 }
 
 function buildRawCandleAiInstruction() {
