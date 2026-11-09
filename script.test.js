@@ -10762,7 +10762,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.7.2');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V3.0');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10790,103 +10790,84 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V2.7.2 DeepSeek reasoning protocol and strict JSON contract', () => {
+    it('includes the V3.0 liquidity-first reasoning protocol and strict JSON contract', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V2.7.2 (DEEPSEEK JSON)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V3.0 (LIQUIDITY-FIRST)');
         expect(packet).toContain('=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===');
         for (let step = 1; step <= 9; step += 1) {
             expect(packet).toContain('STEP ' + step + '.');
         }
-        expect(packet).toContain('STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE. Asian-session setups are permitted only under the STEP 7 Asia rules.');
-        expect(packet).toContain('STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles.');
+        expect(packet).toContain('STEP 3. MAP THE LIQUIDITY (CRITICAL): Identify all Weak Highs/Lows');
+        expect(packet).toContain('The market\'s primary objective is to draw toward Weak Liquidity. State explicitly: "The nearest major Weak High is [Price]. The nearest major Weak Low is [Price]."');
+        expect(packet).toContain('STEP 4. Scan all five timeframes for BOTH bullish and bearish sweeps. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS.');
+        expect(packet).toContain('STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE.');
+        expect(packet).toContain('STEP 6. READ THE CURRENT INTRADAY CONTEXT: Is price currently TRENDING, RANGING, or CONSOLIDATING?');
         expect(packet).toContain('STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.');
-        expect(packet).toContain('You MUST align this setup with the current session context:');
-        expect(packet).toContain('- IF LONDON or NEW YORK: Look for the standard 2.0+ RR. You can target the opposite session high/low (PDH/PDL). Stop loss can be tight (but never inside the sweep wick).');
-        expect(packet).toContain('- IF ASIA SESSION:');
-        expect(packet).toContain('1. The Asian range usually forms between 00:00 and 07:00 UTC.');
-        expect(packet).toContain('2. Do NOT target far-away 1H/4H pools. Your TP1 MUST be the opposite edge of the Asian Range (Asia High or Asia Low).');
-        expect(packet).toContain('3. You MUST use a wider stop loss (minimum 7.00 points for XAU) because Asian liquidity is thin and stop-hunts are common.');
-        expect(packet).toContain('4. If the RR to the opposite edge of the Asian range is less than 2.00, you MUST return NO_TRADE. (Do not force a trade if the range is too tight).');
+        expect(packet).toContain('- You MUST align this setup with the Draw on Liquidity from Step 3.');
+        expect(packet).toContain('- FAKEOUT FILTER: If price sweeps a local level (e.g., London Low) but a major Weak Low (e.g., Asian Low) is still below, this is a fakeout. Do NOT buy. Wait for price to sweep the true Weak Low.');
+        expect(packet).toContain('- SNIPER ENTRY: Place the limit at the proximal edge of the OB/FVG. If current price is within 2.0 points of the proximal edge, enter at current price.');
         expect(packet).toContain('STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.');
         expect(packet).toContain('STEP 9. Emit the JSON object.');
         expect(packet).toContain('=== SECTION L: DAILY BIAS ===');
-        expect(packet).toContain('D1 = the LAST row. D2 = the row');
-        expect(packet).toContain('CONTIGUOUS - no rows between them may be skipped.');
-        expect(packet).toContain('BULLISH  iff  D1.high > D3.high AND D1.low > D3.low');
-        expect(packet).toContain('BEARISH  iff  D1.high < D3.high AND D1.low < D3.low');
-        expect(packet).toContain('4H MSS tiebreaker: identify the last completed 4H body-close break of a named');
-        expect(packet).toContain('RANGE = no directional trade unless a named 4H MSS supplies direction.');
+        expect(packet).toContain('D1 = the LAST row. D2 = the row immediately above D1.');
+        expect(packet).toContain('BULLISH iff D1.high > D3.high AND D1.low > D3.low.');
+        expect(packet).toContain('BEARISH iff D1.high < D3.high AND D1.low < D3.low.');
+        expect(packet).toContain('4H MSS tiebreaker: identify the last completed 4H body-close break. If it agrees with Section L, bias is CONFIRMED.');
         expect(packet).toContain('=== SECTION M: SWEEP SCAN ===');
-        expect(packet).toContain('LOW sweep  (wick below level, close ABOVE) = BULLISH signal (sell-side grab)');
-        expect(packet).toContain('HIGH sweep (wick above level, close BELOW) = BEARISH signal (buy-side grab)');
-        expect(packet).toContain('A FAILED BREAKDOWN is a low wick');
-        expect(packet).toContain('A FAILED BREAKOUT is the mirror (bearish trap reversal).');
-        expect(packet).toContain('TIER_1:  completed ASIA/LONDON/NEW_YORK high or low, or PDH/PDL');
-        expect(packet).toContain('MANDATORY per-timeframe enumeration: for EACH timeframe, list BOTH the most');
-        expect(packet).toContain('A counter-bias TIER_1 sweep is DISCARDED unless a named 4H MSS exists in');
-        expect(packet).toContain('If no sweep exists on any timeframe, return NO_TRADE.');
+        expect(packet).toContain('LOW sweep (close ABOVE) = BULLISH signal.');
+        expect(packet).toContain('HIGH sweep (close BELOW) = BEARISH signal.');
+        expect(packet).toContain('MANDATORY: For EACH timeframe, list BOTH the most recent BULLISH sweep and the most recent BEARISH sweep (or NONE).');
         expect(packet).toContain('=== SECTION N: KILLZONE ===');
-        expect(packet).toContain('LONDON:            07:00-11:00 UTC');
-        expect(packet).toContain('LONDON/NY OVERLAP: 11:00-12:00 UTC   (highest liquidity - INSIDE)');
-        expect(packet).toContain('NEW YORK:          12:00-15:00 UTC');
-        expect(packet).toContain('CRITICAL RULE: If the computed window is "NONE" (Outside Killzone), you are strictly FORBIDDEN from returning a trade.');
-        expect(packet).toContain('Asian-session setups are permitted only under the STEP 7 Asia rules.');
+        expect(packet).toContain('ASIA: 00:00-07:00 UTC. LONDON: 07:00-11:00 UTC. OVERLAP: 11:00-12:00 UTC. NEW YORK: 12:00-15:00 UTC.');
+        expect(packet).toContain('CRITICAL RULE: If computed window is "NONE", you are strictly FORBIDDEN from returning a trade. Return action "NO_TRADE".');
         expect(packet).toContain('=== SETUP CONSTRUCTION ===');
+        expect(packet).toContain('=== LIQUIDITY & DRAW ON LIQUIDITY ===');
+        expect(packet).toContain('The Order Block is NOT the trade. The liquidity pool is the trade. An OB is just the entry vehicle toward the target.');
+        expect(packet).toContain('- If the nearest Weak Liquidity is ABOVE, only look for BUY setups.');
+        expect(packet).toContain('- If the nearest Weak Liquidity is BELOW, only look for SELL setups.');
+        expect(packet).toContain('- If the market sweeps a level but fails to break structure toward the Weak Liquidity, it is a fakeout. Do not trade it.');
         expect(packet).toContain('=== PENDING LIMIT & PROXIMAL EDGE ===');
         expect(packet).toContain('1. AGGRESSIVE DISPLACEMENT: The leg leaving the OB must be violent.');
-        expect(packet).toContain('2. PROXIMAL EDGE OR CURRENT PRICE: Because we are placing a PENDING LIMIT order, place the limit at the proximal edge of the OB/FVG. HOWEVER, if the current price is already within 2.0 points of the proximal edge, DO NOT wait for a deep pullback. You must place the entry at or very near the CURRENT PRICE to guarantee the fill before the displacement continues.');
-        expect(packet).toContain('3. NO CHASING ONLY APPLIES TO DISTANT ZONES: If the OB is more than 2.0 points away, place the limit and wait. If the OB is right at current price, enter immediately.');
-        expect(packet).toContain('=== MARKET CONTEXT & REACTION ===');
+        expect(packet).toContain('2. PROXIMAL EDGE OR CURRENT PRICE: Place the limit at the proximal edge of the OB/FVG. If current price is within 2.0 points of the proximal edge, enter immediately at current price.');
+        expect(packet).toContain('3. NO CHASING: If the OB is more than 2.0 points away, place the limit and wait.');
         expect(packet).toContain('=== CRT & MSNR LOGIC ===');
-        expect(packet).toContain('1. CRT (Candle Range Theory): Look for price sweeping the high/low of the');
-        expect(packet).toContain('2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders');
-        expect(packet).toContain('3. TBS (Time-Based Supply): Only trade these zones when the session timing');
+        expect(packet).toContain('1. CRT (Candle Range Theory): Look for price sweeping the high/low of the previous Daily or 4H candle range.');
+        expect(packet).toContain('2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders are trapped.');
+        expect(packet).toContain('3. FAKEOUT FILTER (Judas Swing): The first sweep of a session high/low is often a fakeout. Do NOT trade the first sweep if it lacks a massive displacement leg. Wait for structure to shift.');
         expect(packet).toContain('=== PRECISION PRICE ACTION & VOLUME ===');
-        expect(packet).toContain('1. REJECTION CLOSE: The sweep candle must close back inside the prior range (a valid rejection). A 2x wick-to-body ratio is NOT required for 1H/4H/1D timeframes. Instead, require that the candle closes in the top 30% (for bullish sweeps) or bottom 30% (for bearish sweeps) of its total range.');
-        expect(packet).toContain("2. VOLUME CLIMAX: Check the 'volume' column in the CSV.");
-        expect(packet).toContain('3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement).');
-        expect(packet).toContain('4. DIVERGENCE (MOMENTUM SHIFT): Look for bullish/bearish divergence');
-        expect(packet).toContain('Divergence confirms that banks are absorbing the liquidity.');
-        expect(packet).toContain('Confirm the sweep rejection wick (body/wick ratio), the volume spike versus the previous 3 candles, and any momentum divergence on the sweep.');
-        expect(packet).toContain('ENFORCE THE DYNAMIC STOP LOSS: Place the stop safely beyond the sweep wick + 0.50 buffer. Enforce the 4.50 point absolute minimum.');
-        expect(packet).toContain('The OB is the last opposite-direction candle before the displacement leg.');
-        expect(packet).toContain('The OB zone is that candle\'s BODY (open-to-close). The wick is never the OB.');
+        expect(packet).toContain('1. REJECTION CLOSE: The sweep candle must close in the top 30% (bullish) or bottom 30% (bearish) of its range.');
+        expect(packet).toContain('2. VOLUME CLIMAX: The sweep candle must show a volume spike versus the prior 3 candles.');
+        expect(packet).toContain('3. DIVERGENCE (MOMENTUM SHIFT): Look for momentum divergence on the sweep.');
+        expect(packet).toContain('4. DISPLACEMENT REQUIREMENT: A valid sweep MUST be followed by an aggressive displacement leg that breaks the most recent 5M or 15M swing high/low.');
+        expect(packet).toContain('The OB is the last opposite-direction candle before the displacement leg. The OB zone is that candle\'s BODY (open-to-close). The wick is never the OB.');
         expect(packet).toContain('STOP LOSS (DYNAMIC & VOLATILITY-AWARE):');
-        expect(packet).toContain('Place stop_loss at the NEAREST structural invalidation based on the MARKET CONTEXT:');
-        expect(packet).toContain('If TRENDING_BULLISH / TRENDING_BEARISH: Place the stop BEYOND the recent');
-        expect(packet).toContain('If RANGING / CONSOLIDATING: Place the stop at the OB far edge + standard buffer.');
-        expect(packet).toContain('CRITICAL XAU/USD STOP LOSS RULE: For Gold (XAU/USD), the stop loss must ALWAYS be placed safely BEYOND the actual structural sweep wick with a minimum 0.50 buffer.');
-        expect(packet).toContain('- DO NOT place the stop loss INSIDE the sweep wick.');
-        expect(packet).toContain('- The absolute minimum risk distance is 4.50 points. If the structural wick is closer than 4.50 points, you MUST widen the stop to 4.50 points.');
-        expect(packet).toContain('- If the structural wick is further than 4.50 points, you MUST place the stop beyond the wick (e.g., if the wick is 6.0 points away, the stop must be at 6.5 points).');
-        expect(packet).toContain('TP1 = the NEAREST opposing 1H/4H pool that has NOT been body-closed through');
-        expect(packet).toContain('If the nearest candidate TP1 IS body-broken, DO NOT reject the trade -');
-        expect(packet).toContain('relocate TP1 to the next unused pool above (BUY) or below (SELL) and');
+        expect(packet).toContain('CRITICAL XAU/USD STOP LOSS RULE: For Gold, the stop loss must ALWAYS be placed safely BEYOND the actual structural sweep wick with a minimum 0.50 buffer.');
+        expect(packet).toContain('The absolute minimum risk distance is 4.50 points. If the structural wick is further, place the stop beyond the wick.');
+        expect(packet).toContain('TP1 = the NEAREST opposing 1H/4H Weak Liquidity pool that has NOT been body-closed through.');
+        expect(packet).toContain('If TP1 is body-broken, relocate to the next unused pool and recompute RR.');
         expect(packet).toContain('RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE.');
-        expect(packet).toContain('=== WORKED ACCEPTANCE EXAMPLE ===');
-        expect(packet).toContain('Correct TP1: 4065.70 (nearest unused MAJOR pool).');
-        expect(packet).toContain('RISK=6.50  REWARD=31.70  RR=4.88');
+        expect(packet).toContain('- ASIAN RANGE RULE: During Asia, targets must be the opposite edge of the Asian Range.');
         expect(packet).toContain('=== OUTPUT CONTRACT ===');
         expect(packet).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",');
         expect(packet).toContain('"current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",');
+        expect(packet).toContain('"liquidity_map": "<1 sentence stating the nearest major Weak High and Weak Low>",');
         expect(packet).toContain('"crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",');
         expect(packet).toContain('"sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",');
-        expect(packet).toContain('"price_action_confirmation": "<1 sentence explaining the rejection wick size AND if there was momentum divergence on the sweep>",');
-        expect(packet).toContain('"session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly for the current session\'s ATR>",');
+        expect(packet).toContain('"price_action_confirmation": "<1 sentence explaining the rejection wick size and the momentum divergence check>",');
+        expect(packet).toContain('"session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly>",');
         expect(packet).toContain('"audit": {');
         expect(packet).toContain('"breaks": [');
         expect(packet).toContain('"killzone": {');
         expect(packet).toContain('"reason": "<evidence:');
         expect(packet).toContain('- For XAU/USD, (|entry - stop_loss|) must be >= 4.50');
+        expect(packet).toContain('- liquidity_map must state the nearest major Weak High and Weak Low');
         expect(packet).toContain('- audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)');
         expect(packet).toContain('- If computed_window is NONE: action MUST be NO_TRADE.');
         expect(packet).toContain('- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.');
-        expect(packet).toContain('- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.');
         expect(packet).toContain('- price_action_confirmation must mention the rejection wick size and the momentum divergence check.');
-        expect(packet).toContain('- session_volatility_check must state whether the SL and TP are sized correctly for the current session ATR.');
-        expect(packet).toContain('- Do NOT include extra fields.');
+        expect(packet).toContain('- session_volatility_check must state whether the SL and TP are sized correctly.');
         expect(packet).toContain('- FORMATTING: Output the JSON object with standard indentation and line breaks (pretty-print). Do not minify the JSON.');
         expect(packet).toContain('- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0;');
         expect(packet).not.toContain('gate_0_candidate');
@@ -10940,12 +10921,14 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             active: 'NEW_YORK', inside_killzone: true, outside_killzone: false, warning_injected: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V2.7.2',
+            version: 'V3.0',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
             mandatory_sweep_scan_included: true,
             utc_killzone_rule_included: true,
+            liquidity_first_rule_included: true,
+            liquidity_map_contract_included: true,
             no_asia_session_rule_included: true,
             killzone_none_forces_no_trade_included: true,
             setup_construction_included: true,
@@ -10964,7 +10947,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             gold_minimum_stop_included: true,
             target_relocation_rule_included: true,
             hard_rr_gate_included: true,
-            worked_acceptance_example_included: true,
+            worked_acceptance_example_included: false,
             strict_json_schema_included: true
         });
     });
@@ -11007,6 +10990,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         action: 'BUY_LIMIT',
         setup: 'SWEEP+OB',
         current_market_context: 'TRENDING_BULLISH',
+        liquidity_map: 'The nearest major Weak High is 4065.70 and the nearest major Weak Low is 4028.20.',
         crt_msnr_confirmation: '1H swept the prior daily low at 4028.20 and reversed, trapping retail sellers before displacement.',
         sniper_zone_justification: 'Entry is at the proximal edge of the bullish FVG left by aggressive displacement.',
         price_action_confirmation: 'Sweep wick is 2.7x the body, volume is 2.1x the previous three candles, and bullish divergence shows the lower low with a smaller body.',
@@ -11026,7 +11010,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         ...overrides
     });
 
-    it('parses and validates the V2.7.2 strict JSON output contract', () => {
+    it('parses and validates the V3.0 strict JSON output contract', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11042,6 +11026,34 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.audit.sweeps).toHaveLength(5);
         expect(parsed.audit.breaks).toHaveLength(2);
         expect(parsed.audit.killzone.computed_window).toBe('NEW_YORK');
+        expect(parsed.liquidity_map).toContain('Weak High');
+        expect(parsed.liquidity_map).toContain('Weak Low');
+    });
+
+    it('accepts the V3.0 liquidity_map field', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
+        expect(parsed.valid).toBe(true);
+        expect(parsed.issues).not.toContain('RAW_LIQUIDITY_MAP_REQUIRED');
+        expect(parsed.issues).not.toContain('RAW_LIQUIDITY_MAP_INVALID');
+    });
+
+    it('rejects a JSON response missing liquidity_map', () => {
+        const ctx = getContext();
+        const response = jsonResponse();
+        delete response.liquidity_map;
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
+        expect(parsed.valid).toBe(false);
+        expect(parsed.issues).toContain('RAW_LIQUIDITY_MAP_REQUIRED');
+    });
+
+    it('rejects a liquidity_map that omits the Weak High or Weak Low', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            liquidity_map: 'The nearest major level is 4065.70.'
+        })));
+        expect(parsed.valid).toBe(false);
+        expect(parsed.issues).toContain('RAW_LIQUIDITY_MAP_INVALID');
     });
 
     it('accepts a JSON NO_TRADE with zero geometry and an evidence reason', () => {
@@ -11156,7 +11168,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(invalid.issues).toContain('RAW_SESSION_VOLATILITY_CHECK_INVALID');
     });
 
-    it('rejects extra fields outside the V2.7.2 schema', () => {
+    it('rejects extra fields outside the V3.0 schema', () => {
         const ctx = getContext();
         const response = jsonResponse({ gate_0_candidate: { entry: 4034 } });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
