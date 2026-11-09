@@ -20335,7 +20335,7 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V3.0 (LIQUIDITY-FIRST)
+    return `=== GHOST MACHINE STRATEGY RULES === V3.1 (LIQUIDITY-FIRST)
 You are the Ghost Machine. Read the raw closed candles yourself. No deterministic POI, FVG, order-block, MSNR, supply/demand zone or candidate list is supplied or authoritative. Deterministic macro liquidity levels are supplied only as context.
 UNIVERSE: use only the CSV candles in this packet. Never invent a candle, price, timestamp, volume or level.
 MACRO CONTEXT: DAILY_BIAS, daily OHLC, PDH/PDL and completed session highs/lows are context only. The raw 1D/4H candles own higher-timeframe structure; 1H/15M/5M own intraday formation and execution.
@@ -20354,6 +20354,7 @@ STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
         - You MUST align this setup with the Draw on Liquidity from Step 3.
         - FAKEOUT FILTER: If price sweeps a local level (e.g., London Low) but a major Weak Low (e.g., Asian Low) is still below, this is a fakeout. Do NOT buy. Wait for price to sweep the true Weak Low.
         - SNIPER ENTRY: Place the limit at the proximal edge of the OB/FVG. If current price is within 2.0 points of the proximal edge, enter at current price.
+        - Because we are using PENDING LIMIT ORDERS, you are not chasing the breakout. Your job is to anticipate the displacement and place the limit at the Order Block. If the sweep is valid, place the limit order even if the 5M/15M structure hasn't fully broken yet.
 STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.
 STEP 9. Emit the JSON object.
 
@@ -20398,7 +20399,7 @@ The Order Block is NOT the trade. The liquidity pool is the trade. An OB is just
 1. REJECTION CLOSE: The sweep candle must close in the top 30% (bullish) or bottom 30% (bearish) of its range.
 2. VOLUME CLIMAX: The sweep candle must show a volume spike versus the prior 3 candles.
 3. DIVERGENCE (MOMENTUM SHIFT): Look for momentum divergence on the sweep.
-4. DISPLACEMENT REQUIREMENT: A valid sweep MUST be followed by an aggressive displacement leg that breaks the most recent 5M or 15M swing high/low.
+4. DISPLACEMENT & LIMIT ORDERS: You do not need to wait for the displacement leg to fully break the 5M or 15M swing high/low before placing a pending limit order. If you see a valid sweep with a rejection wick and the immediate reaction candle shows intent, place the PENDING LIMIT at the OB/FVG. The limit order acts as the confirmation; the market will come back to fill it.
 
 ORDER BLOCK:
 The OB is the last opposite-direction candle before the displacement leg. The OB zone is that candle's BODY (open-to-close). The wick is never the OB.
@@ -20480,7 +20481,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
         ...(serverClock.outside_killzone ? ['WARNING: OUTSIDE_KILLZONE'] : []),
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V3.0',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V3.1',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20538,7 +20539,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             warning_injected: serverClock.outside_killzone
         },
         ghost_rules: {
-            version: 'V3.0',
+            version: 'V3.1',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('=== SECTION L: DAILY BIAS ===')),

@@ -10762,7 +10762,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V3.0');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V3.1');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10790,11 +10790,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V3.0 liquidity-first reasoning protocol and strict JSON contract', () => {
+    it('includes the V3.1 liquidity-first reasoning protocol and strict JSON contract', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V3.0 (LIQUIDITY-FIRST)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V3.1 (LIQUIDITY-FIRST)');
         expect(packet).toContain('=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===');
         for (let step = 1; step <= 9; step += 1) {
             expect(packet).toContain('STEP ' + step + '.');
@@ -10808,6 +10808,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('- You MUST align this setup with the Draw on Liquidity from Step 3.');
         expect(packet).toContain('- FAKEOUT FILTER: If price sweeps a local level (e.g., London Low) but a major Weak Low (e.g., Asian Low) is still below, this is a fakeout. Do NOT buy. Wait for price to sweep the true Weak Low.');
         expect(packet).toContain('- SNIPER ENTRY: Place the limit at the proximal edge of the OB/FVG. If current price is within 2.0 points of the proximal edge, enter at current price.');
+        expect(packet).toContain("- Because we are using PENDING LIMIT ORDERS, you are not chasing the breakout. Your job is to anticipate the displacement and place the limit at the Order Block. If the sweep is valid, place the limit order even if the 5M/15M structure hasn't fully broken yet.");
         expect(packet).toContain('STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.');
         expect(packet).toContain('STEP 9. Emit the JSON object.');
         expect(packet).toContain('=== SECTION L: DAILY BIAS ===');
@@ -10840,7 +10841,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('1. REJECTION CLOSE: The sweep candle must close in the top 30% (bullish) or bottom 30% (bearish) of its range.');
         expect(packet).toContain('2. VOLUME CLIMAX: The sweep candle must show a volume spike versus the prior 3 candles.');
         expect(packet).toContain('3. DIVERGENCE (MOMENTUM SHIFT): Look for momentum divergence on the sweep.');
-        expect(packet).toContain('4. DISPLACEMENT REQUIREMENT: A valid sweep MUST be followed by an aggressive displacement leg that breaks the most recent 5M or 15M swing high/low.');
+        expect(packet).toContain('4. DISPLACEMENT & LIMIT ORDERS: You do not need to wait for the displacement leg to fully break the 5M or 15M swing high/low before placing a pending limit order. If you see a valid sweep with a rejection wick and the immediate reaction candle shows intent, place the PENDING LIMIT at the OB/FVG. The limit order acts as the confirmation; the market will come back to fill it.');
         expect(packet).toContain('The OB is the last opposite-direction candle before the displacement leg. The OB zone is that candle\'s BODY (open-to-close). The wick is never the OB.');
         expect(packet).toContain('STOP LOSS (DYNAMIC & VOLATILITY-AWARE):');
         expect(packet).toContain('CRITICAL XAU/USD STOP LOSS RULE: For Gold, the stop loss must ALWAYS be placed safely BEYOND the actual structural sweep wick with a minimum 0.50 buffer.');
@@ -10921,7 +10922,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             active: 'NEW_YORK', inside_killzone: true, outside_killzone: false, warning_injected: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V3.0',
+            version: 'V3.1',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
@@ -11010,7 +11011,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         ...overrides
     });
 
-    it('parses and validates the V3.0 strict JSON output contract', () => {
+    it('parses and validates the V3.1 strict JSON output contract', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11030,7 +11031,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.liquidity_map).toContain('Weak Low');
     });
 
-    it('accepts the V3.0 liquidity_map field', () => {
+    it('accepts the V3.1 liquidity_map field', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11168,7 +11169,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(invalid.issues).toContain('RAW_SESSION_VOLATILITY_CHECK_INVALID');
     });
 
-    it('rejects extra fields outside the V3.0 schema', () => {
+    it('rejects extra fields outside the V3.1 schema', () => {
         const ctx = getContext();
         const response = jsonResponse({ gate_0_candidate: { entry: 4034 } });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
