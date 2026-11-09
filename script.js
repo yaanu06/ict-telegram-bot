@@ -17159,7 +17159,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",',
     '  "setup": "<OB|FVG|SUPPLY|DEMAND|FLIP|BREAKER|SWEEP|combined with +, or NONE>",',
     '  "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",',
-    '  "liquidity_map": "<1 sentence stating the nearest major Weak High and Weak Low>",',
+    '  "htf_context": "<State the HTF DOL (Weak High/Low) and the HTF POI (1H/4H OB/FVG) where the LTF entry will occur>",',
     '  "crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",',
     '  "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",',
     '  "price_action_confirmation": "<1 sentence explaining the rejection wick size and the momentum divergence check>",',
@@ -17201,7 +17201,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '      "inside": true',
     '    }',
     '  },',
-    '  "reason": "<evidence: sweep ts + level, OB body range, nearest-invalidation stop, TP1 pool + why unused, RR calc, bias justification>"',
+    '  "reason": "<evidence: HTF POI (1H/4H Order Block) before stating the LTF entry, sweep ts + level, OB body range, nearest-invalidation stop, TP1 pool + why unused, RR calc, bias justification>"',
     '}',
     '',
     'VALIDATION RULES (the parser will enforce these):',
@@ -17211,7 +17211,8 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '- rr_tp1 must be >= 2.00 for BUY_LIMIT or SELL_LIMIT',
     '- For XAU/USD, (|entry - stop_loss|) must be >= 4.50',
     '- crt_msnr_confirmation must name both the CRT sweep and the MSNR retail trap',
-    '- liquidity_map must state the nearest major Weak High and Weak Low',
+    '- htf_context must state the HTF DOL (Weak High/Low) and the HTF POI (1H/4H OB/FVG) where the LTF entry will occur',
+    '- reason must state the HTF POI (1H/4H Order Block) before stating the LTF entry.',
     '- audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)',
     '- If computed_window is NONE: action MUST be NO_TRADE.',
     '- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0; confidence = 0; timeframe_used = "NONE"; management = "NONE".',
@@ -20335,7 +20336,7 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V3.1 (LIQUIDITY-FIRST)
+    return `=== GHOST MACHINE STRATEGY RULES === V3.3 (HTF CONTEXT & LTF EXECUTION)
 You are the Ghost Machine. Read the raw closed candles yourself. No deterministic POI, FVG, order-block, MSNR, supply/demand zone or candidate list is supplied or authoritative. Deterministic macro liquidity levels are supplied only as context.
 UNIVERSE: use only the CSV candles in this packet. Never invent a candle, price, timestamp, volume or level.
 MACRO CONTEXT: DAILY_BIAS, daily OHLC, PDH/PDL and completed session highs/lows are context only. The raw 1D/4H candles own higher-timeframe structure; 1H/15M/5M own intraday formation and execution.
@@ -20344,13 +20345,12 @@ MACRO CONTEXT: DAILY_BIAS, daily OHLC, PDH/PDL and completed session highs/lows 
 You are running in THINK MODE. Follow this exact sequence:
 
 STEP 1. Derive the Section L bias from the last three contiguous closed 1D candles.
-STEP 2. Identify the last completed 4H MSS.
-STEP 3. MAP THE LIQUIDITY (CRITICAL): Identify all Weak Highs/Lows (untapped liquidity like unbroken swing highs/lows, PDH/PDL, Session Highs/Lows) and Strong Highs/Lows (already broken structure).
-        The market's primary objective is to draw toward Weak Liquidity. State explicitly: "The nearest major Weak High is [Price]. The nearest major Weak Low is [Price]."
-STEP 4. Scan all five timeframes for BOTH bullish and bearish sweeps. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS.
+STEP 2: Identify the HTF Draw on Liquidity (DOL) from the 1D and 4H charts. Where is the nearest major Weak High/Low?
+STEP 3: Identify the HTF Point of Interest (POI). Find the 1H or 4H Order Block or FVG that will be the launchpad for the move to the DOL.
+STEP 4: Scan the 15M and 5M charts for a sweep of a local low/high INSIDE the HTF POI. This LTF sweep is the confirmation that the banks have finished accumulating inside the HTF zone.
 STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE.
 STEP 6. READ THE CURRENT INTRADAY CONTEXT: Is price currently TRENDING, RANGING, or CONSOLIDATING?
-STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
+STEP 7: Construct the candidate at the HTF Order Block (1H or 4H). The entry is the proximal edge of this HTF OB. The Stop Loss is placed safely below the HTF OB far edge. You do not need to wait for current price to enter the zone.
         - You MUST align this setup with the Draw on Liquidity from Step 3.
         - FAKEOUT FILTER: If price sweeps a local level (e.g., London Low) but a major Weak Low (e.g., Asian Low) is still below, this is a fakeout. Do NOT buy. Wait for price to sweep the true Weak Low.
         - SNIPER ENTRY: Place the limit at the proximal edge of the OB/FVG. If current price is within 2.0 points of the proximal edge, enter at current price.
@@ -20385,6 +20385,10 @@ The Order Block is NOT the trade. The liquidity pool is the trade. An OB is just
 - If the nearest Weak Liquidity is BELOW, only look for SELL setups.
 - If the market sweeps a level but fails to break structure toward the Weak Liquidity, it is a fakeout. Do not trade it.
 
+HTF/LTF CONFLUENCE: The 1D/4H charts provide the Context (where the market is going). The 1H/4H charts provide the POI (Point of Interest / Order Block). The 15M/5M charts provide the Execution (Stop Loss).
+
+If current price is 4117, and the nearest HTF Order Block is at 4085, you MUST output a PENDING LIMIT ORDER at 4085. Do NOT return NO_TRADE just because the price hasn't reached the zone yet. We are placing a pending limit order to catch the retracement.
+
 === PENDING LIMIT & PROXIMAL EDGE ===
 1. AGGRESSIVE DISPLACEMENT: The leg leaving the OB must be violent.
 2. PROXIMAL EDGE OR CURRENT PRICE: Place the limit at the proximal edge of the OB/FVG. If current price is within 2.0 points of the proximal edge, enter immediately at current price.
@@ -20415,15 +20419,25 @@ TP2 and TP3 extend to the next unused pools.
 RISK/REWARD:
 RISK = |entry - stop_loss|. REWARD = |tp1 - entry|. RR_TP1 = REWARD / RISK.
 RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE.
-- ASIAN RANGE RULE: During Asia, targets must be the opposite edge of the Asian Range.`.split('\n');
+- ASIAN RANGE RULE: During Asia, targets must be the opposite edge of the Asian Range.
+
+=== THE ONLY REASONS TO RETURN NO_TRADE ===
+Return NO_TRADE ONLY IF:
+
+There is no clear HTF Order Block.
+
+The RR to the nearest Weak Liquidity is less than 2.00.
+
+The Killzone is NONE.
+Do NOT return NO_TRADE simply because the current price is far away from the HTF Order Block. That is exactly what pending limit orders are for.`.split('\n');
 }
 
 function buildRawCandleAiInstruction() {
     return [
         '=== RAW CANDLE AI REVIEW INSTRUCTION ===',
         'Analyze the raw candles independently. Follow the DEEPSEEK REASONING PROTOCOL in order.',
-        'Map Weak and Strong liquidity first. State the nearest major Weak High and Weak Low.',
-        'Derive the Section L bias. Identify the 4H MSS. Enumerate all sweeps on all five timeframes.',
+        'Identify the HTF DOL (nearest major Weak High/Low) and the HTF POI (1H/4H OB/FVG) before dropping to the LTF.',
+        'Derive the Section L bias. Enumerate the 15M/5M sweeps INSIDE the HTF POI only.',
         'Compute killzone per Section N. If outside, RETURN NO_TRADE.',
         'Reject any local sweep that fails to reach the true Weak Liquidity (fakeout).',
         'Construct the liquidity-first sniper candidate: OB body, entry, stop, TP1/TP2/TP3.',
@@ -20481,7 +20495,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
         ...(serverClock.outside_killzone ? ['WARNING: OUTSIDE_KILLZONE'] : []),
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V3.1',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V3.3',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20539,14 +20553,16 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             warning_injected: serverClock.outside_killzone
         },
         ghost_rules: {
-            version: 'V3.1',
+            version: 'V3.3',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('=== SECTION L: DAILY BIAS ===')),
             mandatory_sweep_scan_included: ghostRules.some(rule => rule.startsWith('=== SECTION M: SWEEP SCAN ===')),
             utc_killzone_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION N: KILLZONE ===')),
             liquidity_first_rule_included: ghostRules.some(rule => rule.startsWith('=== LIQUIDITY & DRAW ON LIQUIDITY ===')),
-            liquidity_map_contract_included: RAW_CANDLE_AI_OUTPUT_CONTRACT.includes('"liquidity_map":'),
+            htf_context_contract_included: RAW_CANDLE_AI_OUTPUT_CONTRACT.includes('"htf_context":'),
+            htf_ltf_confluence_included: ghostRules.some(rule => rule.includes('HTF/LTF CONFLUENCE:')),
+            no_trade_reasons_included: ghostRules.some(rule => rule.includes('=== THE ONLY REASONS TO RETURN NO_TRADE ===')),
             no_asia_session_rule_included: ghostRules.some(rule => rule.includes('ASIAN RANGE RULE')),
             killzone_none_forces_no_trade_included: ghostRules.some(rule => rule.includes('strictly FORBIDDEN from returning a trade')),
             setup_construction_included: ghostRules.some(rule => rule.startsWith('=== SETUP CONSTRUCTION ===')),
@@ -29112,7 +29128,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
     if (json) {
         const issues = [];
         const add = issue => { if (!issues.includes(issue)) issues.push(issue); };
-        const required = ['action', 'setup', 'current_market_context', 'liquidity_map', 'crt_msnr_confirmation', 'sniper_zone_justification', 'price_action_confirmation', 'session_volatility_check', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
+        const required = ['action', 'setup', 'current_market_context', 'htf_context', 'crt_msnr_confirmation', 'sniper_zone_justification', 'price_action_confirmation', 'session_volatility_check', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
             'confidence', 'timeframe_used', 'management', 'audit', 'reason'];
         if (required.some(key => lookup(json, key) === undefined)) add('RAW_JSON_FIELDS_MISSING');
         const allowedTopLevel = new Set(required);
@@ -29123,7 +29139,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             action,
             setup: text(lookup(json, 'setup'))?.toUpperCase() || null,
             current_market_context: text(lookup(json, 'current_market_context'))?.toUpperCase() || null,
-            liquidity_map: text(lookup(json, 'liquidity_map')),
+            htf_context: text(lookup(json, 'htf_context')),
             crt_msnr_confirmation: text(lookup(json, 'crt_msnr_confirmation')),
             sniper_zone_justification: text(lookup(json, 'sniper_zone_justification')),
             price_action_confirmation: text(lookup(json, 'price_action_confirmation')),
@@ -29190,10 +29206,10 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         if (!['TRENDING_BULLISH', 'TRENDING_BEARISH', 'RANGING', 'CONSOLIDATING'].includes(parsed.current_market_context)) {
             add('RAW_CURRENT_MARKET_CONTEXT_INVALID');
         }
-        if (!parsed.liquidity_map) {
-            add('RAW_LIQUIDITY_MAP_REQUIRED');
-        } else if (!/\bWEAK\s+HIGH\b/i.test(parsed.liquidity_map) || !/\bWEAK\s+LOW\b/i.test(parsed.liquidity_map)) {
-            add('RAW_LIQUIDITY_MAP_INVALID');
+        if (!parsed.htf_context) {
+            add('RAW_HTF_CONTEXT_REQUIRED');
+        } else if (!/\bWEAK\s+(HIGH|LOW)\b/i.test(parsed.htf_context) || !/\b(OB|FVG|ORDER\s+BLOCK)\b/i.test(parsed.htf_context)) {
+            add('RAW_HTF_CONTEXT_INVALID');
         }
         if (!parsed.crt_msnr_confirmation) add('RAW_CRT_MSNR_CONFIRMATION_REQUIRED');
         if (!parsed.sniper_zone_justification) {

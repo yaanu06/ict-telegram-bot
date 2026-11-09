@@ -10762,7 +10762,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V3.1');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V3.3');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10790,21 +10790,21 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V3.1 liquidity-first reasoning protocol and strict JSON contract', () => {
+    it('includes the V3.3 HTF context and LTF execution reasoning protocol and strict JSON contract', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V3.1 (LIQUIDITY-FIRST)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V3.3 (HTF CONTEXT & LTF EXECUTION)');
         expect(packet).toContain('=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===');
-        for (let step = 1; step <= 9; step += 1) {
+        for (const step of [1, 5, 6, 8, 9]) {
             expect(packet).toContain('STEP ' + step + '.');
         }
-        expect(packet).toContain('STEP 3. MAP THE LIQUIDITY (CRITICAL): Identify all Weak Highs/Lows');
-        expect(packet).toContain('The market\'s primary objective is to draw toward Weak Liquidity. State explicitly: "The nearest major Weak High is [Price]. The nearest major Weak Low is [Price]."');
-        expect(packet).toContain('STEP 4. Scan all five timeframes for BOTH bullish and bearish sweeps. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS.');
+        expect(packet).toContain('STEP 2: Identify the HTF Draw on Liquidity (DOL) from the 1D and 4H charts. Where is the nearest major Weak High/Low?');
+        expect(packet).toContain('STEP 3: Identify the HTF Point of Interest (POI). Find the 1H or 4H Order Block or FVG that will be the launchpad for the move to the DOL.');
+        expect(packet).toContain('STEP 4: Scan the 15M and 5M charts for a sweep of a local low/high INSIDE the HTF POI. This LTF sweep is the confirmation that the banks have finished accumulating inside the HTF zone.');
         expect(packet).toContain('STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE.');
         expect(packet).toContain('STEP 6. READ THE CURRENT INTRADAY CONTEXT: Is price currently TRENDING, RANGING, or CONSOLIDATING?');
-        expect(packet).toContain('STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.');
+        expect(packet).toContain('STEP 7: Construct the candidate at the HTF Order Block (1H or 4H). The entry is the proximal edge of this HTF OB. The Stop Loss is placed safely below the HTF OB far edge. You do not need to wait for current price to enter the zone.');
         expect(packet).toContain('- You MUST align this setup with the Draw on Liquidity from Step 3.');
         expect(packet).toContain('- FAKEOUT FILTER: If price sweeps a local level (e.g., London Low) but a major Weak Low (e.g., Asian Low) is still below, this is a fakeout. Do NOT buy. Wait for price to sweep the true Weak Low.');
         expect(packet).toContain('- SNIPER ENTRY: Place the limit at the proximal edge of the OB/FVG. If current price is within 2.0 points of the proximal edge, enter at current price.');
@@ -10829,6 +10829,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('- If the nearest Weak Liquidity is ABOVE, only look for BUY setups.');
         expect(packet).toContain('- If the nearest Weak Liquidity is BELOW, only look for SELL setups.');
         expect(packet).toContain('- If the market sweeps a level but fails to break structure toward the Weak Liquidity, it is a fakeout. Do not trade it.');
+        expect(packet).toContain('HTF/LTF CONFLUENCE: The 1D/4H charts provide the Context (where the market is going). The 1H/4H charts provide the POI (Point of Interest / Order Block). The 15M/5M charts provide the Execution (Stop Loss).');
+        expect(packet).toContain("If current price is 4117, and the nearest HTF Order Block is at 4085, you MUST output a PENDING LIMIT ORDER at 4085. Do NOT return NO_TRADE just because the price hasn't reached the zone yet. We are placing a pending limit order to catch the retracement.");
         expect(packet).toContain('=== PENDING LIMIT & PROXIMAL EDGE ===');
         expect(packet).toContain('1. AGGRESSIVE DISPLACEMENT: The leg leaving the OB must be violent.');
         expect(packet).toContain('2. PROXIMAL EDGE OR CURRENT PRICE: Place the limit at the proximal edge of the OB/FVG. If current price is within 2.0 points of the proximal edge, enter immediately at current price.');
@@ -10850,10 +10852,16 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('If TP1 is body-broken, relocate to the next unused pool and recompute RR.');
         expect(packet).toContain('RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE.');
         expect(packet).toContain('- ASIAN RANGE RULE: During Asia, targets must be the opposite edge of the Asian Range.');
+        expect(packet).toContain('=== THE ONLY REASONS TO RETURN NO_TRADE ===');
+        expect(packet).toContain('Return NO_TRADE ONLY IF:');
+        expect(packet).toContain('There is no clear HTF Order Block.');
+        expect(packet).toContain('The RR to the nearest Weak Liquidity is less than 2.00.');
+        expect(packet).toContain('The Killzone is NONE.');
+        expect(packet).toContain('Do NOT return NO_TRADE simply because the current price is far away from the HTF Order Block. That is exactly what pending limit orders are for.');
         expect(packet).toContain('=== OUTPUT CONTRACT ===');
         expect(packet).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",');
         expect(packet).toContain('"current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",');
-        expect(packet).toContain('"liquidity_map": "<1 sentence stating the nearest major Weak High and Weak Low>",');
+        expect(packet).toContain('"htf_context": "<State the HTF DOL (Weak High/Low) and the HTF POI (1H/4H OB/FVG) where the LTF entry will occur>",');
         expect(packet).toContain('"crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",');
         expect(packet).toContain('"sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",');
         expect(packet).toContain('"price_action_confirmation": "<1 sentence explaining the rejection wick size and the momentum divergence check>",');
@@ -10863,7 +10871,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('"killzone": {');
         expect(packet).toContain('"reason": "<evidence:');
         expect(packet).toContain('- For XAU/USD, (|entry - stop_loss|) must be >= 4.50');
-        expect(packet).toContain('- liquidity_map must state the nearest major Weak High and Weak Low');
+        expect(packet).toContain('- htf_context must state the HTF DOL (Weak High/Low) and the HTF POI (1H/4H OB/FVG) where the LTF entry will occur');
+        expect(packet).toContain('- reason must state the HTF POI (1H/4H Order Block) before stating the LTF entry.');
         expect(packet).toContain('- audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)');
         expect(packet).toContain('- If computed_window is NONE: action MUST be NO_TRADE.');
         expect(packet).toContain('- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.');
@@ -10922,14 +10931,16 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             active: 'NEW_YORK', inside_killzone: true, outside_killzone: false, warning_injected: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V3.1',
+            version: 'V3.3',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
             mandatory_sweep_scan_included: true,
             utc_killzone_rule_included: true,
             liquidity_first_rule_included: true,
-            liquidity_map_contract_included: true,
+            htf_context_contract_included: true,
+            htf_ltf_confluence_included: true,
+            no_trade_reasons_included: true,
             no_asia_session_rule_included: true,
             killzone_none_forces_no_trade_included: true,
             setup_construction_included: true,
@@ -10991,7 +11002,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         action: 'BUY_LIMIT',
         setup: 'SWEEP+OB',
         current_market_context: 'TRENDING_BULLISH',
-        liquidity_map: 'The nearest major Weak High is 4065.70 and the nearest major Weak Low is 4028.20.',
+        htf_context: 'The HTF DOL is the Weak High at 4065.70 and the Weak Low at 4028.20. The HTF POI is the 1H bullish OB at 4034.',
         crt_msnr_confirmation: '1H swept the prior daily low at 4028.20 and reversed, trapping retail sellers before displacement.',
         sniper_zone_justification: 'Entry is at the proximal edge of the bullish FVG left by aggressive displacement.',
         price_action_confirmation: 'Sweep wick is 2.7x the body, volume is 2.1x the previous three candles, and bullish divergence shows the lower low with a smaller body.',
@@ -11011,7 +11022,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         ...overrides
     });
 
-    it('parses and validates the V3.1 strict JSON output contract', () => {
+    it('parses and validates the V3.3 strict JSON output contract', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11027,34 +11038,35 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.audit.sweeps).toHaveLength(5);
         expect(parsed.audit.breaks).toHaveLength(2);
         expect(parsed.audit.killzone.computed_window).toBe('NEW_YORK');
-        expect(parsed.liquidity_map).toContain('Weak High');
-        expect(parsed.liquidity_map).toContain('Weak Low');
+        expect(parsed.htf_context).toContain('Weak High');
+        expect(parsed.htf_context).toContain('Weak Low');
+        expect(parsed.htf_context).toContain('OB');
     });
 
-    it('accepts the V3.1 liquidity_map field', () => {
+    it('accepts the V3.3 htf_context field', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
-        expect(parsed.issues).not.toContain('RAW_LIQUIDITY_MAP_REQUIRED');
-        expect(parsed.issues).not.toContain('RAW_LIQUIDITY_MAP_INVALID');
+        expect(parsed.issues).not.toContain('RAW_HTF_CONTEXT_REQUIRED');
+        expect(parsed.issues).not.toContain('RAW_HTF_CONTEXT_INVALID');
     });
 
-    it('rejects a JSON response missing liquidity_map', () => {
+    it('rejects a JSON response missing htf_context', () => {
         const ctx = getContext();
         const response = jsonResponse();
-        delete response.liquidity_map;
+        delete response.htf_context;
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
         expect(parsed.valid).toBe(false);
-        expect(parsed.issues).toContain('RAW_LIQUIDITY_MAP_REQUIRED');
+        expect(parsed.issues).toContain('RAW_HTF_CONTEXT_REQUIRED');
     });
 
-    it('rejects a liquidity_map that omits the Weak High or Weak Low', () => {
+    it('rejects an htf_context that omits the HTF DOL or HTF POI', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
-            liquidity_map: 'The nearest major level is 4065.70.'
+            htf_context: 'The nearest major level is 4065.70.'
         })));
         expect(parsed.valid).toBe(false);
-        expect(parsed.issues).toContain('RAW_LIQUIDITY_MAP_INVALID');
+        expect(parsed.issues).toContain('RAW_HTF_CONTEXT_INVALID');
     });
 
     it('accepts a JSON NO_TRADE with zero geometry and an evidence reason', () => {
@@ -11169,7 +11181,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(invalid.issues).toContain('RAW_SESSION_VOLATILITY_CHECK_INVALID');
     });
 
-    it('rejects extra fields outside the V3.1 schema', () => {
+    it('rejects extra fields outside the V3.3 schema', () => {
         const ctx = getContext();
         const response = jsonResponse({ gate_0_candidate: { entry: 4034 } });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
