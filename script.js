@@ -17153,17 +17153,18 @@ const RAW_CANDLE_AI_CANDLE_LIMITS = Object.freeze({
 let lastRawPacketDiagnostic = null;
 const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '=== OUTPUT CONTRACT ===',
-    'Reply with a SINGLE JSON object. No prose before or after. No markdown fences.',
-    '',
     '{',
     '  "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",',
     '  "setup": "<OB|FVG|SUPPLY|DEMAND|FLIP|BREAKER|SWEEP|combined with +, or NONE>",',
-    '  "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",',
-    '  "htf_context": "<State the HTF DOL (Weak High/Low) and the HTF POI (1H/4H OB/FVG) where the LTF entry will occur>",',
-    '  "crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",',
-    '  "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",',
-    '  "price_action_confirmation": "<1 sentence explaining the rejection wick size and the momentum divergence check>",',
-    '  "session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly>",',
+    '  "htf_bias": "BULLISH|BEARISH|RANGE",',
+    '  "htf_zone": "PREMIUM|DISCOUNT|MID_RANGE",',
+    '  "choch_detected": true|false,',
+    '  "current_market_context": "<TRENDING|RANGING|CONSOLIDATING>",',
+    '  "htf_context": "<State the HTF POI and the Liquidity draw>",',
+    '  "crt_msnr_confirmation": "<State the sweep and the retail trap>",',
+    '  "sniper_zone_justification": "<State the proximal edge and displacement>",',
+    '  "price_action_confirmation": "<State the rejection wick size and volume>",',
+    '  "session_volatility_check": "<State SL and TP sizing>",',
     '  "entry": <number>,',
     '  "stop_loss": <number>,',
     '  "tp1": <number>,',
@@ -17174,53 +17175,8 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "confidence": <integer 0-100>,',
     '  "timeframe_used": "1d|4h|1h|15m|5m|NONE",',
     '  "management": "<text instruction or NONE>",',
-    '  "audit": {',
-    '    "daily_bias": {',
-    '      "direction": "BULLISH|BEARISH|RANGE",',
-    '      "d3_h": <number>, "d3_l": <number>,',
-    '      "d2_h": <number>, "d2_l": <number>,',
-    '      "d1_h": <number>, "d1_l": <number>,',
-    '      "four_hour_mss": "<timestamp or NONE>"',
-    '    },',
-    '    "sweeps": [',
-    '      {"tf": "1d",  "bullish": "<tf ts level direction tier>", "bearish": "<tf ts level direction tier>"},',
-    '      {"tf": "4h",  "bullish": "...", "bearish": "..."},',
-    '      {"tf": "1h",  "bullish": "...", "bearish": "..."},',
-    '      {"tf": "15m", "bullish": "...", "bearish": "..."},',
-    '      {"tf": "5m",  "bullish": "...", "bearish": "..."}',
-    '    ],',
-    '    "breaks": [',
-    '      "<BREAKOUT: tf ts level>",',
-    '      "<BREAKDOWN: tf ts level>",',
-    '      "<FAILED_BREAKOUT: tf ts level>",',
-    '      "<FAILED_BREAKDOWN: tf ts level>"',
-    '    ],',
-    '    "killzone": {',
-    '      "server_time_utc": "<timestamp>",',
-    '      "computed_window": "ASIA|LONDON|OVERLAP|NEW_YORK|NONE",',
-    '      "inside": true',
-    '    }',
-    '  },',
-    '  "reason": "<evidence: HTF POI (1H/4H Order Block) before stating the LTF entry, sweep ts + level, OB body range, nearest-invalidation stop, TP1 pool + why unused, RR calc, bias justification>"',
-    '}',
-    '',
-    'VALIDATION RULES (the parser will enforce these):',
-    '- BUY_LIMIT: entry < current_price, stop_loss < entry, entry < tp1 < tp2 < tp3',
-    '- SELL_LIMIT: entry > current_price, stop_loss > entry, entry > tp1 > tp2 > tp3',
-    '- rr_tp1 must equal (|tp1 - entry| / |entry - stop_loss|) to two decimals',
-    '- rr_tp1 must be >= 2.00 for BUY_LIMIT or SELL_LIMIT',
-    '- For XAU/USD, (|entry - stop_loss|) must be >= 4.50',
-    '- crt_msnr_confirmation must name both the CRT sweep and the MSNR retail trap',
-    '- htf_context must state the HTF DOL (Weak High/Low) and the HTF POI (1H/4H OB/FVG) where the LTF entry will occur',
-    '- reason must state the HTF POI (1H/4H Order Block) before stating the LTF entry.',
-    '- audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)',
-    '- If computed_window is NONE: action MUST be NO_TRADE.',
-    '- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0; confidence = 0; timeframe_used = "NONE"; management = "NONE".',
-    '- On BUY_LIMIT/SELL_LIMIT: every price must trace to a candle in the supplied blocks.',
-    '- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.',
-    '- price_action_confirmation must mention the rejection wick size and the momentum divergence check.',
-    '- session_volatility_check must state whether the SL and TP are sized correctly.',
-    '- FORMATTING: Output the JSON object with standard indentation and line breaks (pretty-print). Do not minify the JSON.'
+    '  "reason": "<Full justification. If NO_TRADE, state exactly why (e.g., \'Price is in DISCOUNT zone, trend is BEARISH, no CHoCH detected\').>"',
+    '}'
 ].join('\n');
 
 const RAW_CANDLE_AI_KILLZONES = Object.freeze([
@@ -18175,7 +18131,8 @@ function validateManualMarketMechanicsDecision(decision = {}, replay = {}) {
     const warn = code => { if (!warnings.includes(code)) warnings.push(code); };
     if (typeof decision === 'string') {
         decision = parseRawCandleAIActionResponse(decision, {
-            symbol: replay.pair || replay.symbol || replay.quote?.symbol || replay.quote?.symbol_metadata?.symbol
+            symbol: replay.pair || replay.symbol || replay.quote?.symbol || replay.quote?.symbol_metadata?.symbol,
+            allowText: true
         });
     }
     const targetNormalization = normalizePendingLimitTargetOrder(
@@ -20336,118 +20293,54 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V3.3 (HTF CONTEXT & LTF EXECUTION)
-You are the Ghost Machine. Read the raw closed candles yourself. No deterministic POI, FVG, order-block, MSNR, supply/demand zone or candidate list is supplied or authoritative. Deterministic macro liquidity levels are supplied only as context.
-UNIVERSE: use only the CSV candles in this packet. Never invent a candle, price, timestamp, volume or level.
-MACRO CONTEXT: DAILY_BIAS, daily OHLC, PDH/PDL and completed session highs/lows are context only. The raw 1D/4H candles own higher-timeframe structure; 1H/15M/5M own intraday formation and execution.
+    return `=== GHOST MACHINE STRATEGY RULES === V4.0 (PREMIUM/DISCOUNT & CHoCH)
+You are the Ghost Machine. Read the raw closed candles yourself. No deterministic POI, FVG, order-block, MSNR, supply/demand zone or candidate list is supplied or authoritative.
 
-=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===
-You are running in THINK MODE. Follow this exact sequence:
+=== STRICT OUTPUT RULE ===
+You MUST output ONLY a single, raw JSON object. Do not write "Here is the analysis". Do not use markdown code blocks (\`\`\`json). Start your response immediately with { and end with }. If you output any conversational text, the parser will fail.
 
-STEP 1. Derive the Section L bias from the last three contiguous closed 1D candles.
-STEP 2: Identify the HTF Draw on Liquidity (DOL) from the 1D and 4H charts. Where is the nearest major Weak High/Low?
-STEP 3: Identify the HTF Point of Interest (POI). Find the 1H or 4H Order Block or FVG that will be the launchpad for the move to the DOL.
-STEP 4: Scan the 15M and 5M charts for a sweep of a local low/high INSIDE the HTF POI. This LTF sweep is the confirmation that the banks have finished accumulating inside the HTF zone.
-STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE.
-STEP 6. READ THE CURRENT INTRADAY CONTEXT: Is price currently TRENDING, RANGING, or CONSOLIDATING?
-STEP 7: Construct the candidate at the HTF Order Block (1H or 4H). The entry is the proximal edge of this HTF OB. The Stop Loss is placed safely below the HTF OB far edge. You do not need to wait for current price to enter the zone.
-        - You MUST align this setup with the Draw on Liquidity from Step 3.
-        - FAKEOUT FILTER: If price sweeps a local level (e.g., London Low) but a major Weak Low (e.g., Asian Low) is still below, this is a fakeout. Do NOT buy. Wait for price to sweep the true Weak Low.
-        - SNIPER ENTRY: Place the limit at the proximal edge of the OB/FVG. If current price is within 2.0 points of the proximal edge, enter at current price.
-        - Because we are using PENDING LIMIT ORDERS, you are not chasing the breakout. Your job is to anticipate the displacement and place the limit at the Order Block. If the sweep is valid, place the limit order even if the 5M/15M structure hasn't fully broken yet.
-STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.
-STEP 9. Emit the JSON object.
+=== THE REASONING PROTOCOL ===
+STEP 1. HTF BIAS (1D): Derive the bias from the last three contiguous closed 1D candles. (BULLISH if D1.high > D3.high AND D1.low > D3.low).
 
-The JSON object is the only permitted output.
+STEP 2. PREMIUM/DISCOUNT ARRAY (4H): Find the most recent major 4H swing high and swing low. Calculate the range.
+- If current price is in the TOP 30% of this range -> PREMIUM zone.
+- If current price is in the BOTTOM 30% of this range -> DISCOUNT zone.
+- If current price is in the middle 40% -> MID-RANGE.
 
-=== SECTION L: DAILY BIAS ===
-The 1D block is ordered oldest-to-newest. D1 = the LAST row. D2 = the row immediately above D1. D3 = the row immediately above D2. D1, D2, D3 are CONTIGUOUS.
-BULLISH iff D1.high > D3.high AND D1.low > D3.low.
-BEARISH iff D1.high < D3.high AND D1.low < D3.low.
-RANGE otherwise.
-4H MSS tiebreaker: identify the last completed 4H body-close break. If it agrees with Section L, bias is CONFIRMED.
+STEP 3. LIQUIDITY MAP: Identify the nearest major Weak High and Weak Low (PDH, PDL, Session Highs/Lows).
 
-=== SECTION M: SWEEP SCAN ===
-Scan all five timeframes for liquidity sweeps. A sweep = a closed candle whose wick exceeded a named prior swing, equal-high/equal-low cluster, or session/PDH/PDL level by >= 1 increment AND closed back inside prior structure.
-LOW sweep (close ABOVE) = BULLISH signal. HIGH sweep (close BELOW) = BEARISH signal.
-Candle wicks beyond a level AND closes beyond the same side = BREAKDOWN or BREAKOUT.
-MANDATORY: For EACH timeframe, list BOTH the most recent BULLISH sweep and the most recent BEARISH sweep (or NONE).
+STEP 4. THE CHoCH REQUIREMENT:
+- If HTF bias is BULLISH and price is in PREMIUM, you MUST see a confirmed Bearish CHoCH (1H/4H candle body-closing below the most recent swing low) to sell.
+- If HTF bias is BEARISH and price is in DISCOUNT, you MUST see a confirmed Bullish CHoCH (1H/4H candle body-closing above the most recent swing high) to buy.
+- If there is NO CHoCH, the market is in freefall. Return NO_TRADE.
 
-=== SECTION N: KILLZONE ===
-Compute from SERVER_TIME_UTC using fixed UTC windows. No DST adjustments.
-ASIA: 00:00-07:00 UTC. LONDON: 07:00-11:00 UTC. OVERLAP: 11:00-12:00 UTC. NEW YORK: 12:00-15:00 UTC.
-CRITICAL RULE: If computed window is "NONE", you are strictly FORBIDDEN from returning a trade. Return action "NO_TRADE".
+STEP 5. LIQUIDITY SWEEPS (15M/5M): Scan for CRT sweeps inside the valid HTF zone (e.g., a sweep of a local low inside a 1H Discount FVG).
 
-=== SETUP CONSTRUCTION ===
-=== LIQUIDITY & DRAW ON LIQUIDITY ===
-The Order Block is NOT the trade. The liquidity pool is the trade. An OB is just the entry vehicle toward the target.
-- If the nearest Weak Liquidity is ABOVE, only look for BUY setups.
-- If the nearest Weak Liquidity is BELOW, only look for SELL setups.
-- If the market sweeps a level but fails to break structure toward the Weak Liquidity, it is a fakeout. Do not trade it.
+STEP 6. KILLZONE: Compute from SERVER_TIME_UTC. (ASIA: 00:00-07:00, LONDON: 07:00-11:00, OVERLAP: 11:00-12:00, NY: 12:00-15:00). If NONE, return NO_TRADE.
 
-HTF/LTF CONFLUENCE: The 1D/4H charts provide the Context (where the market is going). The 1H/4H charts provide the POI (Point of Interest / Order Block). The 15M/5M charts provide the Execution (Stop Loss).
+STEP 7. EXECUTION: Construct the candidate at the proximal edge of the HTF Order Block or FVG.
 
-If current price is 4117, and the nearest HTF Order Block is at 4085, you MUST output a PENDING LIMIT ORDER at 4085. Do NOT return NO_TRADE just because the price hasn't reached the zone yet. We are placing a pending limit order to catch the retracement.
+=== DIRECTIONAL ALIGNMENT (STRICT GATES) ===
+- You are FORBIDDEN from BUYING if the price is in a PREMIUM zone.
+- You are FORBIDDEN from SELLING if the price is in a DISCOUNT zone.
+- You are FORBIDDEN from trading if the price is in MID-RANGE.
+- If the trade goes against the HTF Bias, it MUST have a CHoCH.
 
-=== PENDING LIMIT & PROXIMAL EDGE ===
-1. AGGRESSIVE DISPLACEMENT: The leg leaving the OB must be violent.
-2. PROXIMAL EDGE OR CURRENT PRICE: Place the limit at the proximal edge of the OB/FVG. If current price is within 2.0 points of the proximal edge, enter immediately at current price.
-3. NO CHASING: If the OB is more than 2.0 points away, place the limit and wait.
+=== SETUP CONSTRUCTION & RISK ===
+- ENTRY: Proximal edge of the HTF OB/FVG. If current price is within 2.0 points of the edge, enter at current price. Otherwise, place a PENDING LIMIT.
+- STOP LOSS: Must be beyond the structural sweep wick with a minimum 0.50 buffer. Minimum risk distance for Gold is 4.50 points.
+- TAKE PROFIT: TP1 must be the nearest opposing HTF liquidity pool.
+- RR must be >= 2.00.
 
-=== CRT & MSNR LOGIC ===
-1. CRT (Candle Range Theory): Look for price sweeping the high/low of the previous Daily or 4H candle range.
-2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders are trapped.
-3. FAKEOUT FILTER (Judas Swing): The first sweep of a session high/low is often a fakeout. Do NOT trade the first sweep if it lacks a massive displacement leg. Wait for structure to shift.
+${RAW_CANDLE_AI_OUTPUT_CONTRACT}
 
-=== PRECISION PRICE ACTION & VOLUME ===
-1. REJECTION CLOSE: The sweep candle must close in the top 30% (bullish) or bottom 30% (bearish) of its range.
-2. VOLUME CLIMAX: The sweep candle must show a volume spike versus the prior 3 candles.
-3. DIVERGENCE (MOMENTUM SHIFT): Look for momentum divergence on the sweep.
-4. DISPLACEMENT & LIMIT ORDERS: You do not need to wait for the displacement leg to fully break the 5M or 15M swing high/low before placing a pending limit order. If you see a valid sweep with a rejection wick and the immediate reaction candle shows intent, place the PENDING LIMIT at the OB/FVG. The limit order acts as the confirmation; the market will come back to fill it.
-
-ORDER BLOCK:
-The OB is the last opposite-direction candle before the displacement leg. The OB zone is that candle's BODY (open-to-close). The wick is never the OB.
-
-STOP LOSS (DYNAMIC & VOLATILITY-AWARE):
-Place stop_loss at the NEAREST structural invalidation.
-CRITICAL XAU/USD STOP LOSS RULE: For Gold, the stop loss must ALWAYS be placed safely BEYOND the actual structural sweep wick with a minimum 0.50 buffer. DO NOT place the stop loss INSIDE the sweep wick. The absolute minimum risk distance is 4.50 points. If the structural wick is further, place the stop beyond the wick.
-
-TAKE PROFIT:
-TP1 = the NEAREST opposing 1H/4H Weak Liquidity pool that has NOT been body-closed through. If TP1 is body-broken, relocate to the next unused pool and recompute RR.
-TP2 and TP3 extend to the next unused pools.
-
-RISK/REWARD:
-RISK = |entry - stop_loss|. REWARD = |tp1 - entry|. RR_TP1 = REWARD / RISK.
-RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE.
-- ASIAN RANGE RULE: During Asia, targets must be the opposite edge of the Asian Range.
-
-=== THE ONLY REASONS TO RETURN NO_TRADE ===
-Return NO_TRADE ONLY IF:
-
-There is no clear HTF Order Block.
-
-The RR to the nearest Weak Liquidity is less than 2.00.
-
-The Killzone is NONE.
-Do NOT return NO_TRADE simply because the current price is far away from the HTF Order Block. That is exactly what pending limit orders are for.`.split('\n');
-}
-
-function buildRawCandleAiInstruction() {
-    return [
-        '=== RAW CANDLE AI REVIEW INSTRUCTION ===',
-        'Analyze the raw candles independently. Follow the DEEPSEEK REASONING PROTOCOL in order.',
-        'Identify the HTF DOL (nearest major Weak High/Low) and the HTF POI (1H/4H OB/FVG) before dropping to the LTF.',
-        'Derive the Section L bias. Enumerate the 15M/5M sweeps INSIDE the HTF POI only.',
-        'Compute killzone per Section N. If outside, RETURN NO_TRADE.',
-        'Reject any local sweep that fails to reach the true Weak Liquidity (fakeout).',
-        'Construct the liquidity-first sniper candidate: OB body, entry, stop, TP1/TP2/TP3.',
-        'Place the pending limit at the proximal edge of the OB/FVG, or at/very near current price when it is already within 2.0 points of that edge.',
-        'Confirm the sweep rejection wick, the volume spike versus the previous 3 candles, aggressive displacement, and any momentum divergence on the sweep.',
-        'ENFORCE THE DYNAMIC STOP LOSS: Place the stop safely beyond the sweep wick + 0.50 buffer. Enforce the 4.50 point absolute minimum.',
-        'VERIFY ARITHMETIC TWICE.',
-        'If no qualifying setup exists, return action "NO_TRADE" with zero geometry.',
-        'Output the exact JSON object defined in the OUTPUT CONTRACT. No prose, no markdown, no extra fields.'
-    ];
+=== NO_TRADE RULES ===
+Return NO_TRADE if:
+1. Price is in MID-RANGE.
+2. Price is in DISCOUNT but trend is BEARISH without a Bullish CHoCH.
+3. Price is in PREMIUM but trend is BULLISH without a Bearish CHoCH.
+4. Killzone is NONE.
+5. RR is < 2.00.`.split('\n');
 }
 
 function rawPacketDiagnosticEnabled() {
@@ -20495,7 +20388,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
         ...(serverClock.outside_killzone ? ['WARNING: OUTSIDE_KILLZONE'] : []),
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V3.3',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V4.0',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20529,9 +20422,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     for (const timeframe of RAW_CANDLE_AI_TIMEFRAMES) {
         lines.push(...buildRawCandleAiCsvLines(source, timeframe, asOfMs, precision), '');
     }
-    lines.push(...ghostRules, '');
-    lines.push(...buildRawCandleAiInstruction(), '');
-    lines.push(RAW_CANDLE_AI_OUTPUT_CONTRACT);
+    lines.push(...ghostRules);
     const packetText = lines.join('\n');
     lastRawPacketDiagnostic = {
         packet: 'RAW_PACKET_DIAGNOSTIC',
@@ -20553,36 +20444,25 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             warning_injected: serverClock.outside_killzone
         },
         ghost_rules: {
-            version: 'V3.3',
+            version: 'V4.0',
             output_format: 'JSON',
-            reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===')),
-            daily_bias_included: ghostRules.some(rule => rule.startsWith('=== SECTION L: DAILY BIAS ===')),
-            mandatory_sweep_scan_included: ghostRules.some(rule => rule.startsWith('=== SECTION M: SWEEP SCAN ===')),
-            utc_killzone_rule_included: ghostRules.some(rule => rule.startsWith('=== SECTION N: KILLZONE ===')),
-            liquidity_first_rule_included: ghostRules.some(rule => rule.startsWith('=== LIQUIDITY & DRAW ON LIQUIDITY ===')),
+            reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== THE REASONING PROTOCOL ===')),
+            daily_bias_included: ghostRules.some(rule => rule.startsWith('STEP 1. HTF BIAS (1D):')),
+            premium_discount_rule_included: ghostRules.some(rule => rule.startsWith('STEP 2. PREMIUM/DISCOUNT ARRAY (4H):')),
+            liquidity_map_rule_included: ghostRules.some(rule => rule.startsWith('STEP 3. LIQUIDITY MAP:')),
+            choch_rule_included: ghostRules.some(rule => rule.startsWith('STEP 4. THE CHoCH REQUIREMENT:')),
+            mandatory_sweep_scan_included: ghostRules.some(rule => rule.startsWith('STEP 5. LIQUIDITY SWEEPS (15M/5M):')),
+            utc_killzone_rule_included: ghostRules.some(rule => rule.startsWith('STEP 6. KILLZONE:')),
+            directional_gates_included: ghostRules.some(rule => rule.startsWith('=== DIRECTIONAL ALIGNMENT (STRICT GATES) ===')),
             htf_context_contract_included: RAW_CANDLE_AI_OUTPUT_CONTRACT.includes('"htf_context":'),
-            htf_ltf_confluence_included: ghostRules.some(rule => rule.includes('HTF/LTF CONFLUENCE:')),
-            no_trade_reasons_included: ghostRules.some(rule => rule.includes('=== THE ONLY REASONS TO RETURN NO_TRADE ===')),
-            no_asia_session_rule_included: ghostRules.some(rule => rule.includes('ASIAN RANGE RULE')),
-            killzone_none_forces_no_trade_included: ghostRules.some(rule => rule.includes('strictly FORBIDDEN from returning a trade')),
-            setup_construction_included: ghostRules.some(rule => rule.startsWith('=== SETUP CONSTRUCTION ===')),
-            sniper_entry_rule_included: ghostRules.some(rule => rule.includes('SNIPER ENTRY:')),
-            proximal_edge_rule_included: ghostRules.some(rule => rule.includes('PROXIMAL EDGE OR CURRENT PRICE:')),
-            no_chasing_rule_included: ghostRules.some(rule => rule.includes('NO CHASING:')),
-            market_context_rule_included: ghostRules.some(rule => rule.includes('READ THE CURRENT INTRADAY CONTEXT')),
-            crt_msnr_logic_included: ghostRules.some(rule => rule.startsWith('=== CRT & MSNR LOGIC ===')),
-            precision_price_action_included: ghostRules.some(rule => rule.startsWith('=== PRECISION PRICE ACTION & VOLUME ===')),
-            rejection_wick_rule_included: ghostRules.some(rule => rule.includes('REJECTION CLOSE:')),
-            volume_climax_rule_included: ghostRules.some(rule => rule.includes('VOLUME CLIMAX:')),
-            sharp_pullback_rule_included: ghostRules.some(rule => rule.includes('AGGRESSIVE DISPLACEMENT:')),
-            order_block_rule_included: ghostRules.some(rule => rule.startsWith('ORDER BLOCK:')),
-            nearest_invalidation_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS')),
-            dynamic_stop_rule_included: ghostRules.some(rule => rule.startsWith('STOP LOSS (DYNAMIC & VOLATILITY-AWARE):')),
-            gold_minimum_stop_included: ghostRules.some(rule => rule.includes('absolute minimum risk distance is 4.50 points')),
-            target_relocation_rule_included: ghostRules.some(rule => rule.includes('relocate to the next unused pool')),
-            hard_rr_gate_included: ghostRules.some(rule => rule.includes('RR_TP1 must be >= 2.00')),
-            worked_acceptance_example_included: ghostRules.some(rule => rule.startsWith('=== WORKED ACCEPTANCE EXAMPLE ===')),
-            strict_json_schema_included: ghostRules.some(rule => rule.includes('The JSON object is the only permitted output.'))
+            new_fields_included: ['"htf_bias":', '"htf_zone":', '"choch_detected":']
+                .every(field => RAW_CANDLE_AI_OUTPUT_CONTRACT.includes(field)),
+            no_trade_reasons_included: ghostRules.some(rule => rule.includes('=== NO_TRADE RULES ===')),
+            setup_construction_included: ghostRules.some(rule => rule.startsWith('=== SETUP CONSTRUCTION & RISK ===')),
+            proximal_edge_rule_included: ghostRules.some(rule => rule.includes('ENTRY: Proximal edge')),
+            gold_minimum_stop_included: ghostRules.some(rule => rule.includes('Minimum risk distance for Gold is 4.50 points')),
+            hard_rr_gate_included: ghostRules.some(rule => rule.includes('RR must be >= 2.00')),
+            strict_json_schema_included: ghostRules.some(rule => rule.startsWith('=== STRICT OUTPUT RULE ==='))
         }
     };
     if (rawPacketDiagnosticEnabled()) console.log('RAW_PACKET_DIAGNOSTIC', lastRawPacketDiagnostic);
@@ -29089,7 +28969,7 @@ function normalizePendingLimitTargetOrder(decision = {}, action = null) {
 }
 
 function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
-    const source = String(rawResponse ?? '').replace(/```[a-z]*|```/gi, '').trim();
+    const source = String(rawResponse ?? '').trim();
     const isGold = /XAU/i.test(String(options.symbol || pair || ''));
     const number = value => {
         if (value === null || value === undefined || value === '') return null;
@@ -29119,118 +28999,126 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         }
     };
     let json = parseJson(source);
-    if (!json) {
-        const start = source.indexOf('{');
-        const end = source.lastIndexOf('}');
-        if (start >= 0 && end > start) json = parseJson(source.slice(start, end + 1));
+    if (!json && options.allowText !== true) {
+        return {
+            action: '',
+            valid: false,
+            execution_allowed: false,
+            issues: ['RAW_JSON_ONLY_REQUIRED'],
+            raw_fields: null,
+            raw_json: null,
+            source_format: 'INVALID',
+            target_order_normalized: false
+        };
     }
 
     if (json) {
         const issues = [];
         const add = issue => { if (!issues.includes(issue)) issues.push(issue); };
-        const required = ['action', 'setup', 'current_market_context', 'htf_context', 'crt_msnr_confirmation', 'sniper_zone_justification', 'price_action_confirmation', 'session_volatility_check', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1',
-            'confidence', 'timeframe_used', 'management', 'audit', 'reason'];
-        if (required.some(key => lookup(json, key) === undefined)) add('RAW_JSON_FIELDS_MISSING');
+        const required = [
+            'action', 'setup', 'htf_bias', 'htf_zone', 'choch_detected', 'current_market_context',
+            'htf_context', 'crt_msnr_confirmation', 'sniper_zone_justification',
+            'price_action_confirmation', 'session_volatility_check', 'entry', 'stop_loss',
+            'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1', 'confidence', 'timeframe_used',
+            'management', 'reason'
+        ];
+        if (required.some(key => !Object.prototype.hasOwnProperty.call(json, key))) add('RAW_JSON_FIELDS_MISSING');
         const allowedTopLevel = new Set(required);
-        if (Object.keys(json).some(key => !allowedTopLevel.has(key.toLowerCase()))) add('RAW_JSON_EXTRA_FIELDS');
-        const action = String(lookup(json, 'action') ?? '').trim().toUpperCase();
-        const audit = isObject(lookup(json, 'audit')) ? lookup(json, 'audit') : null;
+        if (Object.keys(json).some(key => !allowedTopLevel.has(key))) add('RAW_JSON_EXTRA_FIELDS');
+        const action = String(json.action ?? '').trim().toUpperCase();
         const parsed = {
             action,
-            setup: text(lookup(json, 'setup'))?.toUpperCase() || null,
-            current_market_context: text(lookup(json, 'current_market_context'))?.toUpperCase() || null,
-            htf_context: text(lookup(json, 'htf_context')),
-            crt_msnr_confirmation: text(lookup(json, 'crt_msnr_confirmation')),
-            sniper_zone_justification: text(lookup(json, 'sniper_zone_justification')),
-            price_action_confirmation: text(lookup(json, 'price_action_confirmation')),
-            session_volatility_check: text(lookup(json, 'session_volatility_check')),
-            entry: number(lookup(json, 'entry')),
-            stop_loss: number(lookup(json, 'stop_loss')),
-            tp1: number(lookup(json, 'tp1')),
-            tp2: number(lookup(json, 'tp2')),
-            tp3: number(lookup(json, 'tp3')),
-            risk: number(lookup(json, 'risk')),
-            rr_tp1: number(lookup(json, 'rr_tp1')),
-            confidence: number(lookup(json, 'confidence')),
-            timeframe_used: text(lookup(json, 'timeframe_used'))?.toUpperCase() || null,
-            management: text(lookup(json, 'management')),
-            audit,
-            reason: text(lookup(json, 'reason')),
+            setup: text(json.setup)?.toUpperCase() || null,
+            htf_bias: text(json.htf_bias)?.toUpperCase() || null,
+            htf_zone: text(json.htf_zone)?.toUpperCase() || null,
+            choch_detected: json.choch_detected,
+            current_market_context: text(json.current_market_context)?.toUpperCase() || null,
+            htf_context: text(json.htf_context),
+            crt_msnr_confirmation: text(json.crt_msnr_confirmation),
+            sniper_zone_justification: text(json.sniper_zone_justification),
+            price_action_confirmation: text(json.price_action_confirmation),
+            session_volatility_check: text(json.session_volatility_check),
+            entry: typeof json.entry === 'number' && Number.isFinite(json.entry) ? json.entry : null,
+            stop_loss: typeof json.stop_loss === 'number' && Number.isFinite(json.stop_loss) ? json.stop_loss : null,
+            tp1: typeof json.tp1 === 'number' && Number.isFinite(json.tp1) ? json.tp1 : null,
+            tp2: typeof json.tp2 === 'number' && Number.isFinite(json.tp2) ? json.tp2 : null,
+            tp3: typeof json.tp3 === 'number' && Number.isFinite(json.tp3) ? json.tp3 : null,
+            risk: typeof json.risk === 'number' && Number.isFinite(json.risk) ? json.risk : null,
+            rr_tp1: typeof json.rr_tp1 === 'number' && Number.isFinite(json.rr_tp1) ? json.rr_tp1 : null,
+            confidence: typeof json.confidence === 'number' && Number.isFinite(json.confidence) ? json.confidence : null,
+            timeframe_used: text(json.timeframe_used)?.toUpperCase() || null,
+            management: text(json.management),
+            reason: text(json.reason),
             raw_fields: json,
             raw_json: json,
             source_format: 'JSON'
         };
-        if (!audit) {
-            add('RAW_AUDIT_REQUIRED');
-        } else {
-            const allowedAudit = new Set(['daily_bias', 'sweeps', 'breaks', 'killzone']);
-            if (Object.keys(audit).some(key => !allowedAudit.has(key.toLowerCase()))) add('RAW_AUDIT_EXTRA_FIELDS');
-            const dailyBias = lookup(audit, 'daily_bias');
-            if (!isObject(dailyBias)) {
-                add('RAW_AUDIT_DAILY_BIAS_INVALID');
-            } else {
-                const biasFields = ['direction', 'd3_h', 'd3_l', 'd2_h', 'd2_l', 'd1_h', 'd1_l', 'four_hour_mss'];
-                const biasNumbers = ['d3_h', 'd3_l', 'd2_h', 'd2_l', 'd1_h', 'd1_l'].every(key => Number.isFinite(number(lookup(dailyBias, key))));
-                const biasDirection = String(lookup(dailyBias, 'direction') ?? '').toUpperCase();
-                if (biasFields.some(key => lookup(dailyBias, key) === undefined)
-                    || !biasNumbers || !['BULLISH', 'BEARISH', 'RANGE'].includes(biasDirection)
-                    || !text(lookup(dailyBias, 'four_hour_mss'))) {
-                    add('RAW_AUDIT_DAILY_BIAS_INVALID');
-                }
-            }
-            const sweeps = lookup(audit, 'sweeps');
-            const expectedSweeps = ['1d', '4h', '1h', '15m', '5m'];
-            const sweepTimeframes = Array.isArray(sweeps)
-                ? sweeps.map(item => String(lookup(item, 'tf') ?? '').toLowerCase())
-                : [];
-            const sweepsComplete = Array.isArray(sweeps) && sweeps.length === 5
-                && expectedSweeps.every(timeframe => sweepTimeframes.includes(timeframe))
-                && sweeps.every(item => lookup(item, 'bullish') !== undefined && lookup(item, 'bearish') !== undefined);
-            if (!sweepsComplete) add('RAW_AUDIT_SWEEPS_INVALID');
-            if (!Array.isArray(lookup(audit, 'breaks'))) add('RAW_AUDIT_BREAKS_INVALID');
-            const killzone = lookup(audit, 'killzone');
-            const killzoneWindow = String(lookup(killzone, 'computed_window') ?? '').toUpperCase();
-            if (!isObject(killzone)
-                || !text(lookup(killzone, 'server_time_utc'))
-                || !['ASIA', 'LONDON', 'OVERLAP', 'NEW_YORK', 'NONE'].includes(killzoneWindow)
-                || typeof lookup(killzone, 'inside') !== 'boolean') {
-                add('RAW_AUDIT_KILLZONE_INVALID');
-            }
-            if (killzoneWindow === 'NONE' && action !== 'NO_TRADE') {
-                add('RAW_KILLZONE_NONE_REQUIRES_NO_TRADE');
-            }
+        const stringFields = [
+            'action', 'setup', 'htf_bias', 'htf_zone', 'current_market_context', 'htf_context',
+            'crt_msnr_confirmation', 'sniper_zone_justification', 'price_action_confirmation',
+            'session_volatility_check', 'timeframe_used', 'management', 'reason'
+        ];
+        const numericFields = ['entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1', 'confidence'];
+        if (stringFields.some(field => typeof json[field] !== 'string')) add('RAW_STRING_FIELDS_INVALID');
+        if (numericFields.some(field => typeof json[field] !== 'number' || !Number.isFinite(json[field]))) {
+            add('RAW_NUMERIC_FIELDS_INVALID');
         }
         if (!['BUY_LIMIT', 'SELL_LIMIT', 'NO_TRADE'].includes(action)) {
             add('RAW_ACTION_INVALID');
         }
-        if (!['TRENDING_BULLISH', 'TRENDING_BEARISH', 'RANGING', 'CONSOLIDATING'].includes(parsed.current_market_context)) {
+        if (!['BULLISH', 'BEARISH', 'RANGE'].includes(parsed.htf_bias)) add('RAW_HTF_BIAS_INVALID');
+        if (!['PREMIUM', 'DISCOUNT', 'MID_RANGE'].includes(parsed.htf_zone)) add('RAW_HTF_ZONE_INVALID');
+        if (typeof parsed.choch_detected !== 'boolean') add('RAW_CHOCH_DETECTED_INVALID');
+        if (!['TRENDING', 'RANGING', 'CONSOLIDATING'].includes(parsed.current_market_context)) {
             add('RAW_CURRENT_MARKET_CONTEXT_INVALID');
         }
         if (!parsed.htf_context) {
             add('RAW_HTF_CONTEXT_REQUIRED');
-        } else if (!/\bWEAK\s+(HIGH|LOW)\b/i.test(parsed.htf_context) || !/\b(OB|FVG|ORDER\s+BLOCK)\b/i.test(parsed.htf_context)) {
+        } else if (!/\b(POI|OB|FVG|ORDER\s+BLOCK)\b/i.test(parsed.htf_context)
+            || !/\b(LIQUID|DRAW|WEAK\s+(HIGH|LOW))\b/i.test(parsed.htf_context)) {
             add('RAW_HTF_CONTEXT_INVALID');
         }
-        if (!parsed.crt_msnr_confirmation) add('RAW_CRT_MSNR_CONFIRMATION_REQUIRED');
+        if (!parsed.crt_msnr_confirmation) {
+            add('RAW_CRT_MSNR_CONFIRMATION_REQUIRED');
+        } else if (!/\bSWEEP/i.test(parsed.crt_msnr_confirmation)
+            || !/\b(RETAIL|TRAP)/i.test(parsed.crt_msnr_confirmation)) {
+            add('RAW_CRT_MSNR_CONFIRMATION_INVALID');
+        }
         if (!parsed.sniper_zone_justification) {
             add('RAW_SNIPER_ZONE_JUSTIFICATION_REQUIRED');
-        } else if (!/\b(PROXIMAL|FVG|FAIR VALUE GAP|IMBALANCE)\b/i.test(parsed.sniper_zone_justification)) {
+        } else if (!/\bPROXIMAL\b/i.test(parsed.sniper_zone_justification)
+            || !/\bDISPLACEMENT\b/i.test(parsed.sniper_zone_justification)) {
             add('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
         }
         if (!parsed.price_action_confirmation) {
             add('RAW_PRICE_ACTION_CONFIRMATION_REQUIRED');
-        } else if (!/\bbody\b/i.test(parsed.price_action_confirmation)
-            || !/\bwick\b/i.test(parsed.price_action_confirmation)
-            || !/\bvolume\b/i.test(parsed.price_action_confirmation)
-            || !/\bdivergen(ce|t)\b/i.test(parsed.price_action_confirmation)) {
+        } else if (!/\bWICK\b/i.test(parsed.price_action_confirmation)
+            || !/\bVOLUME\b/i.test(parsed.price_action_confirmation)) {
             add('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
         }
         if (!parsed.session_volatility_check) {
             add('RAW_SESSION_VOLATILITY_CHECK_REQUIRED');
-        } else if (!/\b(ATR|VOLATIL)/i.test(parsed.session_volatility_check)
-            || !/\b(STOP|SL)\b/i.test(parsed.session_volatility_check)
+        } else if (!/\b(STOP|SL)\b/i.test(parsed.session_volatility_check)
             || !/\b(TP\d*|TARGET)\b/i.test(parsed.session_volatility_check)) {
             add('RAW_SESSION_VOLATILITY_CHECK_INVALID');
+        }
+        const setupTokens = String(parsed.setup || '').split('+').map(token => token.trim()).filter(Boolean);
+        const allowedSetups = new Set(['OB', 'FVG', 'SUPPLY', 'DEMAND', 'FLIP', 'BREAKER', 'SWEEP']);
+        if (action === 'NO_TRADE') {
+            if (parsed.setup !== 'NONE') add('RAW_NO_TRADE_SETUP_INVALID');
+        } else if (!setupTokens.length || setupTokens.includes('NONE')
+            || setupTokens.some(token => !allowedSetups.has(token))
+            || new Set(setupTokens).size !== setupTokens.length) {
+            add('RAW_SETUP_INVALID');
+        }
+        if (action !== 'NO_TRADE' && parsed.htf_zone === 'MID_RANGE') add('RAW_MID_RANGE_REQUIRES_NO_TRADE');
+        if (action === 'BUY_LIMIT' && parsed.htf_zone === 'PREMIUM') add('RAW_BUY_IN_PREMIUM_FORBIDDEN');
+        if (action === 'SELL_LIMIT' && parsed.htf_zone === 'DISCOUNT') add('RAW_SELL_IN_DISCOUNT_FORBIDDEN');
+        if (action === 'SELL_LIMIT' && parsed.htf_bias === 'BULLISH' && parsed.choch_detected !== true) {
+            add('RAW_COUNTERTREND_SELL_REQUIRES_CHOCH');
+        }
+        if (action === 'BUY_LIMIT' && parsed.htf_bias === 'BEARISH' && parsed.choch_detected !== true) {
+            add('RAW_COUNTERTREND_BUY_REQUIRES_CHOCH');
         }
         if (action === 'NO_TRADE') {
             if (!Number.isFinite(parsed.confidence) || parsed.confidence !== 0) add('RAW_NO_TRADE_CONFIDENCE_INVALID');
@@ -29239,7 +29127,11 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             if (['entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1'].some(key => parsed[key] !== 0)) {
                 add('RAW_NO_TRADE_ZERO_GEOMETRY_INVALID');
             }
-            if (!parsed.reason) add('RAW_REASON_REQUIRED');
+            if (!parsed.reason) {
+                add('RAW_REASON_REQUIRED');
+            } else if (!/\b(MID[-_ ]?RANGE|CHOCH|KILLZONE|RR|RISK[-_ ]?REWARD)\b/i.test(parsed.reason)) {
+                add('RAW_NO_TRADE_REASON_INVALID');
+            }
             return {
                 ...parsed,
                 valid: issues.length === 0,
@@ -29248,17 +29140,15 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
                 target_order_normalized: false
             };
         }
-        const normalizedTargets = normalizePendingLimitTargetOrder(parsed, action);
-        const normalized = normalizedTargets.decision;
-        const entry = normalized.entry;
-        const stop = normalized.stop_loss;
-        const targetPrices = [normalized.tp1, normalized.tp2, normalized.tp3];
+        const entry = parsed.entry;
+        const stop = parsed.stop_loss;
+        const targetPrices = [parsed.tp1, parsed.tp2, parsed.tp3];
         if (![entry, stop, ...targetPrices].every(Number.isFinite)) add('RAW_ENTRY_STOP_TARGETS_REQUIRED');
         if (action === 'BUY_LIMIT') {
-            if (!(stop < entry && entry < normalized.tp1 && normalized.tp1 < normalized.tp2 && normalized.tp2 < normalized.tp3)) {
+            if (!(stop < entry && entry < parsed.tp1 && parsed.tp1 < parsed.tp2 && parsed.tp2 < parsed.tp3)) {
                 add('RAW_BUY_GEOMETRY_INVALID');
             }
-        } else if (!(stop > entry && entry > normalized.tp1 && normalized.tp1 > normalized.tp2 && normalized.tp2 > normalized.tp3)) {
+        } else if (!(stop > entry && entry > parsed.tp1 && parsed.tp1 > parsed.tp2 && parsed.tp2 > parsed.tp3)) {
             add('RAW_SELL_GEOMETRY_INVALID');
         }
         if (isGold && Number.isFinite(entry) && Number.isFinite(stop) && Math.abs(entry - stop) < 4.5 - 1e-9) {
@@ -29268,12 +29158,11 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             add('RAW_CONFIDENCE_INVALID');
         }
         if (!['1D', '4H', '1H', '15M', '5M'].includes(parsed.timeframe_used)) add('RAW_TIMEFRAME_INVALID');
-        if (!parsed.setup || parsed.setup === 'NONE') add('RAW_SETUP_REQUIRED');
         if (!parsed.management) add('RAW_MANAGEMENT_REQUIRED');
         if (!parsed.reason) add('RAW_REASON_REQUIRED');
-        if (Number.isFinite(entry) && Number.isFinite(stop) && Number.isFinite(normalized.tp1) && stop !== entry) {
+        if (Number.isFinite(entry) && Number.isFinite(stop) && Number.isFinite(parsed.tp1) && stop !== entry) {
             const calculatedRisk = Math.abs(entry - stop);
-            const calculatedReward = Math.abs(normalized.tp1 - entry);
+            const calculatedReward = Math.abs(parsed.tp1 - entry);
             const calculatedRR = calculatedRisk > 0 ? Number((calculatedReward / calculatedRisk).toFixed(2)) : null;
             if (Number.isFinite(parsed.risk) && Math.abs(parsed.risk - calculatedRisk) > 0.011) {
                 add('RAW_RISK_CALCULATION_MISMATCH');
@@ -29284,12 +29173,12 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             if (calculatedRR === null || calculatedRR < 2) add('RAW_RR_BELOW_MINIMUM');
         }
         return {
-            ...normalized,
+            ...parsed,
             target_prices: targetPrices,
             valid: issues.length === 0,
             execution_allowed: false,
             issues,
-            target_order_normalized: normalizedTargets.changed
+            target_order_normalized: false
         };
     }
 

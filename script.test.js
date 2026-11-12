@@ -10762,7 +10762,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V3.3');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V4.0');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10790,96 +10790,23 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V3.3 HTF context and LTF execution reasoning protocol and strict JSON contract', () => {
+    it('includes the V4.0 premium/discount and CHoCH master prompt with the strict JSON contract', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V3.3 (HTF CONTEXT & LTF EXECUTION)');
-        expect(packet).toContain('=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===');
-        for (const step of [1, 5, 6, 8, 9]) {
-            expect(packet).toContain('STEP ' + step + '.');
-        }
-        expect(packet).toContain('STEP 2: Identify the HTF Draw on Liquidity (DOL) from the 1D and 4H charts. Where is the nearest major Weak High/Low?');
-        expect(packet).toContain('STEP 3: Identify the HTF Point of Interest (POI). Find the 1H or 4H Order Block or FVG that will be the launchpad for the move to the DOL.');
-        expect(packet).toContain('STEP 4: Scan the 15M and 5M charts for a sweep of a local low/high INSIDE the HTF POI. This LTF sweep is the confirmation that the banks have finished accumulating inside the HTF zone.');
-        expect(packet).toContain('STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE.');
-        expect(packet).toContain('STEP 6. READ THE CURRENT INTRADAY CONTEXT: Is price currently TRENDING, RANGING, or CONSOLIDATING?');
-        expect(packet).toContain('STEP 7: Construct the candidate at the HTF Order Block (1H or 4H). The entry is the proximal edge of this HTF OB. The Stop Loss is placed safely below the HTF OB far edge. You do not need to wait for current price to enter the zone.');
-        expect(packet).toContain('- You MUST align this setup with the Draw on Liquidity from Step 3.');
-        expect(packet).toContain('- FAKEOUT FILTER: If price sweeps a local level (e.g., London Low) but a major Weak Low (e.g., Asian Low) is still below, this is a fakeout. Do NOT buy. Wait for price to sweep the true Weak Low.');
-        expect(packet).toContain('- SNIPER ENTRY: Place the limit at the proximal edge of the OB/FVG. If current price is within 2.0 points of the proximal edge, enter at current price.');
-        expect(packet).toContain("- Because we are using PENDING LIMIT ORDERS, you are not chasing the breakout. Your job is to anticipate the displacement and place the limit at the Order Block. If the sweep is valid, place the limit order even if the 5M/15M structure hasn't fully broken yet.");
-        expect(packet).toContain('STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.');
-        expect(packet).toContain('STEP 9. Emit the JSON object.');
-        expect(packet).toContain('=== SECTION L: DAILY BIAS ===');
-        expect(packet).toContain('D1 = the LAST row. D2 = the row immediately above D1.');
-        expect(packet).toContain('BULLISH iff D1.high > D3.high AND D1.low > D3.low.');
-        expect(packet).toContain('BEARISH iff D1.high < D3.high AND D1.low < D3.low.');
-        expect(packet).toContain('4H MSS tiebreaker: identify the last completed 4H body-close break. If it agrees with Section L, bias is CONFIRMED.');
-        expect(packet).toContain('=== SECTION M: SWEEP SCAN ===');
-        expect(packet).toContain('LOW sweep (close ABOVE) = BULLISH signal.');
-        expect(packet).toContain('HIGH sweep (close BELOW) = BEARISH signal.');
-        expect(packet).toContain('MANDATORY: For EACH timeframe, list BOTH the most recent BULLISH sweep and the most recent BEARISH sweep (or NONE).');
-        expect(packet).toContain('=== SECTION N: KILLZONE ===');
-        expect(packet).toContain('ASIA: 00:00-07:00 UTC. LONDON: 07:00-11:00 UTC. OVERLAP: 11:00-12:00 UTC. NEW YORK: 12:00-15:00 UTC.');
-        expect(packet).toContain('CRITICAL RULE: If computed window is "NONE", you are strictly FORBIDDEN from returning a trade. Return action "NO_TRADE".');
-        expect(packet).toContain('=== SETUP CONSTRUCTION ===');
-        expect(packet).toContain('=== LIQUIDITY & DRAW ON LIQUIDITY ===');
-        expect(packet).toContain('The Order Block is NOT the trade. The liquidity pool is the trade. An OB is just the entry vehicle toward the target.');
-        expect(packet).toContain('- If the nearest Weak Liquidity is ABOVE, only look for BUY setups.');
-        expect(packet).toContain('- If the nearest Weak Liquidity is BELOW, only look for SELL setups.');
-        expect(packet).toContain('- If the market sweeps a level but fails to break structure toward the Weak Liquidity, it is a fakeout. Do not trade it.');
-        expect(packet).toContain('HTF/LTF CONFLUENCE: The 1D/4H charts provide the Context (where the market is going). The 1H/4H charts provide the POI (Point of Interest / Order Block). The 15M/5M charts provide the Execution (Stop Loss).');
-        expect(packet).toContain("If current price is 4117, and the nearest HTF Order Block is at 4085, you MUST output a PENDING LIMIT ORDER at 4085. Do NOT return NO_TRADE just because the price hasn't reached the zone yet. We are placing a pending limit order to catch the retracement.");
-        expect(packet).toContain('=== PENDING LIMIT & PROXIMAL EDGE ===');
-        expect(packet).toContain('1. AGGRESSIVE DISPLACEMENT: The leg leaving the OB must be violent.');
-        expect(packet).toContain('2. PROXIMAL EDGE OR CURRENT PRICE: Place the limit at the proximal edge of the OB/FVG. If current price is within 2.0 points of the proximal edge, enter immediately at current price.');
-        expect(packet).toContain('3. NO CHASING: If the OB is more than 2.0 points away, place the limit and wait.');
-        expect(packet).toContain('=== CRT & MSNR LOGIC ===');
-        expect(packet).toContain('1. CRT (Candle Range Theory): Look for price sweeping the high/low of the previous Daily or 4H candle range.');
-        expect(packet).toContain('2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders are trapped.');
-        expect(packet).toContain('3. FAKEOUT FILTER (Judas Swing): The first sweep of a session high/low is often a fakeout. Do NOT trade the first sweep if it lacks a massive displacement leg. Wait for structure to shift.');
-        expect(packet).toContain('=== PRECISION PRICE ACTION & VOLUME ===');
-        expect(packet).toContain('1. REJECTION CLOSE: The sweep candle must close in the top 30% (bullish) or bottom 30% (bearish) of its range.');
-        expect(packet).toContain('2. VOLUME CLIMAX: The sweep candle must show a volume spike versus the prior 3 candles.');
-        expect(packet).toContain('3. DIVERGENCE (MOMENTUM SHIFT): Look for momentum divergence on the sweep.');
-        expect(packet).toContain('4. DISPLACEMENT & LIMIT ORDERS: You do not need to wait for the displacement leg to fully break the 5M or 15M swing high/low before placing a pending limit order. If you see a valid sweep with a rejection wick and the immediate reaction candle shows intent, place the PENDING LIMIT at the OB/FVG. The limit order acts as the confirmation; the market will come back to fill it.');
-        expect(packet).toContain('The OB is the last opposite-direction candle before the displacement leg. The OB zone is that candle\'s BODY (open-to-close). The wick is never the OB.');
-        expect(packet).toContain('STOP LOSS (DYNAMIC & VOLATILITY-AWARE):');
-        expect(packet).toContain('CRITICAL XAU/USD STOP LOSS RULE: For Gold, the stop loss must ALWAYS be placed safely BEYOND the actual structural sweep wick with a minimum 0.50 buffer.');
-        expect(packet).toContain('The absolute minimum risk distance is 4.50 points. If the structural wick is further, place the stop beyond the wick.');
-        expect(packet).toContain('TP1 = the NEAREST opposing 1H/4H Weak Liquidity pool that has NOT been body-closed through.');
-        expect(packet).toContain('If TP1 is body-broken, relocate to the next unused pool and recompute RR.');
-        expect(packet).toContain('RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE.');
-        expect(packet).toContain('- ASIAN RANGE RULE: During Asia, targets must be the opposite edge of the Asian Range.');
-        expect(packet).toContain('=== THE ONLY REASONS TO RETURN NO_TRADE ===');
-        expect(packet).toContain('Return NO_TRADE ONLY IF:');
-        expect(packet).toContain('There is no clear HTF Order Block.');
-        expect(packet).toContain('The RR to the nearest Weak Liquidity is less than 2.00.');
-        expect(packet).toContain('The Killzone is NONE.');
-        expect(packet).toContain('Do NOT return NO_TRADE simply because the current price is far away from the HTF Order Block. That is exactly what pending limit orders are for.');
-        expect(packet).toContain('=== OUTPUT CONTRACT ===');
-        expect(packet).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",');
-        expect(packet).toContain('"current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",');
-        expect(packet).toContain('"htf_context": "<State the HTF DOL (Weak High/Low) and the HTF POI (1H/4H OB/FVG) where the LTF entry will occur>",');
-        expect(packet).toContain('"crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",');
-        expect(packet).toContain('"sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",');
-        expect(packet).toContain('"price_action_confirmation": "<1 sentence explaining the rejection wick size and the momentum divergence check>",');
-        expect(packet).toContain('"session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly>",');
-        expect(packet).toContain('"audit": {');
-        expect(packet).toContain('"breaks": [');
-        expect(packet).toContain('"killzone": {');
-        expect(packet).toContain('"reason": "<evidence:');
-        expect(packet).toContain('- For XAU/USD, (|entry - stop_loss|) must be >= 4.50');
-        expect(packet).toContain('- htf_context must state the HTF DOL (Weak High/Low) and the HTF POI (1H/4H OB/FVG) where the LTF entry will occur');
-        expect(packet).toContain('- reason must state the HTF POI (1H/4H Order Block) before stating the LTF entry.');
-        expect(packet).toContain('- audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)');
-        expect(packet).toContain('- If computed_window is NONE: action MUST be NO_TRADE.');
-        expect(packet).toContain('- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.');
-        expect(packet).toContain('- price_action_confirmation must mention the rejection wick size and the momentum divergence check.');
-        expect(packet).toContain('- session_volatility_check must state whether the SL and TP are sized correctly.');
-        expect(packet).toContain('- FORMATTING: Output the JSON object with standard indentation and line breaks (pretty-print). Do not minify the JSON.');
-        expect(packet).toContain('- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0;');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V4.0 (PREMIUM/DISCOUNT & CHoCH)');
+        expect(packet).toContain('=== STRICT OUTPUT RULE ===');
+        expect(packet).toContain('STEP 2. PREMIUM/DISCOUNT ARRAY (4H):');
+        expect(packet).toContain('STEP 4. THE CHoCH REQUIREMENT:');
+        expect(packet).toContain('=== DIRECTIONAL ALIGNMENT (STRICT GATES) ===');
+        expect(packet).toContain('- You are FORBIDDEN from BUYING if the price is in a PREMIUM zone.');
+        expect(packet).toContain('- You are FORBIDDEN from SELLING if the price is in a DISCOUNT zone.');
+        expect(packet).toContain('- You are FORBIDDEN from trading if the price is in MID-RANGE.');
+        expect(packet).toContain('"htf_bias": "BULLISH|BEARISH|RANGE"');
+        expect(packet).toContain('"htf_zone": "PREMIUM|DISCOUNT|MID_RANGE"');
+        expect(packet).toContain('"choch_detected": true|false');
+        expect(packet).not.toContain('"audit": {');
+        expect(packet).not.toContain('=== RAW CANDLE AI REVIEW INSTRUCTION ===');
         expect(packet).not.toContain('gate_0_candidate');
         expect(packet).not.toContain('"gates"');
     });
@@ -10931,35 +10858,23 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             active: 'NEW_YORK', inside_killzone: true, outside_killzone: false, warning_injected: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V3.3',
+            version: 'V4.0',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
+            premium_discount_rule_included: true,
+            liquidity_map_rule_included: true,
+            choch_rule_included: true,
             mandatory_sweep_scan_included: true,
             utc_killzone_rule_included: true,
-            liquidity_first_rule_included: true,
+            directional_gates_included: true,
             htf_context_contract_included: true,
-            htf_ltf_confluence_included: true,
+            new_fields_included: true,
             no_trade_reasons_included: true,
-            no_asia_session_rule_included: true,
-            killzone_none_forces_no_trade_included: true,
             setup_construction_included: true,
-            sniper_entry_rule_included: true,
             proximal_edge_rule_included: true,
-            no_chasing_rule_included: true,
-            market_context_rule_included: true,
-            crt_msnr_logic_included: true,
-            precision_price_action_included: true,
-            rejection_wick_rule_included: true,
-            volume_climax_rule_included: true,
-            sharp_pullback_rule_included: true,
-            order_block_rule_included: true,
-            nearest_invalidation_rule_included: true,
-            dynamic_stop_rule_included: true,
             gold_minimum_stop_included: true,
-            target_relocation_rule_included: true,
             hard_rr_gate_included: true,
-            worked_acceptance_example_included: false,
             strict_json_schema_included: true
         });
     });
@@ -10984,29 +10899,18 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         }));
     });
 
-    const jsonAudit = () => ({
-        daily_bias: {
-            direction: 'BULLISH', d3_h: 4034.09, d3_l: 3975.65,
-            d2_h: 4030.07, d2_l: 3978.18, d1_h: 4065.70, d1_l: 3989.16,
-            four_hour_mss: '2026-10-28T04:00'
-        },
-        sweeps: ['1d', '4h', '1h', '15m', '5m'].map(tf => ({
-            tf,
-            bullish: tf === '1h' ? '2026-10-28T06:00 LONDON_LOW 4028.20 BULLISH TIER_1' : 'NONE',
-            bearish: 'NONE'
-        })),
-        breaks: ['BREAKDOWN: 1h 2026-10-28T04:00 ASIA_LOW 4042.73', 'FAILED_BREAKDOWN: 1h 2026-10-28T07:00 ASIA_LOW 4042.73'],
-        killzone: { server_time_utc: '2026-10-28T12:12:50.000Z', computed_window: 'NEW_YORK', inside: true }
-    });
     const jsonResponse = overrides => ({
         action: 'BUY_LIMIT',
         setup: 'SWEEP+OB',
-        current_market_context: 'TRENDING_BULLISH',
-        htf_context: 'The HTF DOL is the Weak High at 4065.70 and the Weak Low at 4028.20. The HTF POI is the 1H bullish OB at 4034.',
-        crt_msnr_confirmation: '1H swept the prior daily low at 4028.20 and reversed, trapping retail sellers before displacement.',
+        htf_bias: 'BULLISH',
+        htf_zone: 'DISCOUNT',
+        choch_detected: false,
+        current_market_context: 'TRENDING',
+        htf_context: 'The HTF POI is the 1H bullish OB at 4034 and the liquidity draw is the Weak High at 4065.70.',
+        crt_msnr_confirmation: 'The CRT sweep of the prior daily low trapped retail sellers before displacement.',
         sniper_zone_justification: 'Entry is at the proximal edge of the bullish FVG left by aggressive displacement.',
-        price_action_confirmation: 'Sweep wick is 2.7x the body, volume is 2.1x the previous three candles, and bullish divergence shows the lower low with a smaller body.',
-        session_volatility_check: 'The 7.00 point stop and 31.70 point TP1 match the current Asian session ATR of 6.5 points.',
+        price_action_confirmation: 'The rejection wick is 2.7x the body and volume is 2.1x the previous three candles.',
+        session_volatility_check: 'The 6.50 point SL and 31.70 point TP1 are correctly sized.',
         entry: 4034,
         stop_loss: 4027.5,
         tp1: 4065.7,
@@ -11015,35 +10919,33 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         risk: 6.5,
         rr_tp1: 4.88,
         confidence: 75,
-        timeframe_used: '1H',
+        timeframe_used: '1h',
         management: '50% at TP1, move SL to BE, trail to TP2/TP3',
-        audit: jsonAudit(),
         reason: 'Bullish TIER_1 London-low sweep; entry in OB body; TP1 PDH is unused; RR=4.88.',
         ...overrides
     });
 
-    it('parses and validates the V3.3 strict JSON output contract', () => {
+    it('parses and validates the V4.0 strict JSON output contract', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
         expect(parsed.source_format).toBe('JSON');
         expect(parsed.issues).toEqual([]);
         expect(parsed.action).toBe('BUY_LIMIT');
-        expect(parsed.current_market_context).toBe('TRENDING_BULLISH');
-        expect(parsed.crt_msnr_confirmation).toContain('trapping retail sellers');
+        expect(parsed.htf_bias).toBe('BULLISH');
+        expect(parsed.htf_zone).toBe('DISCOUNT');
+        expect(parsed.choch_detected).toBe(false);
+        expect(parsed.current_market_context).toBe('TRENDING');
+        expect(parsed.crt_msnr_confirmation).toContain('trapped retail sellers');
         expect(parsed.sniper_zone_justification).toContain('proximal edge');
         expect(parsed.price_action_confirmation).toContain('volume');
-        expect(parsed.session_volatility_check).toContain('ATR');
+        expect(parsed.session_volatility_check).toContain('TP1');
         expect([parsed.entry, parsed.stop_loss, parsed.tp1, parsed.tp2, parsed.tp3]).toEqual([4034, 4027.5, 4065.7, 4070.84, 4088.37]);
-        expect(parsed.audit.sweeps).toHaveLength(5);
-        expect(parsed.audit.breaks).toHaveLength(2);
-        expect(parsed.audit.killzone.computed_window).toBe('NEW_YORK');
         expect(parsed.htf_context).toContain('Weak High');
-        expect(parsed.htf_context).toContain('Weak Low');
         expect(parsed.htf_context).toContain('OB');
     });
 
-    it('accepts the V3.3 htf_context field', () => {
+    it('accepts the V4.0 htf_context field', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11074,12 +10976,12 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const response = jsonResponse({
             action: 'NO_TRADE', setup: 'NONE', entry: 0, stop_loss: 0, tp1: 0, tp2: 0, tp3: 0,
             risk: 0, rr_tp1: 0, confidence: 0, timeframe_used: 'NONE', management: 'NONE',
-            reason: 'Candidate considered but RR remained 1.83 after TP1 relocation.'
+            htf_zone: 'MID_RANGE',
+            reason: 'Price is in MID-RANGE, so the directional gate requires NO_TRADE.'
         });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
         expect(parsed.valid).toBe(true);
         expect(parsed.action).toBe('NO_TRADE');
-        expect(parsed.audit.killzone.inside).toBe(true);
     });
 
     it('rejects JSON live actions whose RR is below the hard gate', () => {
@@ -11090,34 +10992,43 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_RR_BELOW_MINIMUM');
     });
 
-    it('reports missing JSON audit sweep, break and killzone coverage', () => {
+    it('requires the V4.0 bias, zone, and boolean CHoCH fields', () => {
         const ctx = getContext();
-        const response = jsonResponse({
-            audit: {
-                ...jsonAudit(),
-                sweeps: [],
-                breaks: null,
-                killzone: { server_time_utc: '', computed_window: 'SYDNEY', inside: 'yes' }
-            }
-        });
+        const response = jsonResponse();
+        delete response.htf_bias;
+        delete response.htf_zone;
+        delete response.choch_detected;
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
         expect(parsed.valid).toBe(false);
-        expect(parsed.issues).toContain('RAW_AUDIT_SWEEPS_INVALID');
-        expect(parsed.issues).toContain('RAW_AUDIT_BREAKS_INVALID');
-        expect(parsed.issues).toContain('RAW_AUDIT_KILLZONE_INVALID');
+        expect(parsed.issues).toContain('RAW_JSON_FIELDS_MISSING');
+        expect(parsed.issues).toContain('RAW_HTF_BIAS_INVALID');
+        expect(parsed.issues).toContain('RAW_HTF_ZONE_INVALID');
+        expect(parsed.issues).toContain('RAW_CHOCH_DETECTED_INVALID');
     });
 
-    it('requires NO_TRADE when the computed killzone is NONE', () => {
+    it('enforces premium, discount, mid-range, and counter-trend CHoCH gates', () => {
         const ctx = getContext();
-        const response = jsonResponse({
-            audit: {
-                ...jsonAudit(),
-                killzone: { server_time_utc: '2026-10-28T18:00:00.000Z', computed_window: 'NONE', inside: false }
-            }
+        const buyPremium = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ htf_zone: 'PREMIUM' })));
+        expect(buyPremium.issues).toContain('RAW_BUY_IN_PREMIUM_FORBIDDEN');
+        const buyMidRange = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ htf_zone: 'MID_RANGE' })));
+        expect(buyMidRange.issues).toContain('RAW_MID_RANGE_REQUIRES_NO_TRADE');
+        const countertrendBuy = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            htf_bias: 'BEARISH', htf_zone: 'DISCOUNT', choch_detected: false
+        })));
+        expect(countertrendBuy.issues).toContain('RAW_COUNTERTREND_BUY_REQUIRES_CHOCH');
+        const confirmedCountertrendBuy = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            htf_bias: 'BEARISH', htf_zone: 'DISCOUNT', choch_detected: true
+        })));
+        expect(confirmedCountertrendBuy.issues).not.toContain('RAW_COUNTERTREND_BUY_REQUIRES_CHOCH');
+        const sell = jsonResponse({
+            action: 'SELL_LIMIT', htf_bias: 'BULLISH', htf_zone: 'PREMIUM', choch_detected: false,
+            entry: 4065.7, stop_loss: 4072.2, tp1: 4034, tp2: 4028, tp3: 4010,
+            risk: 6.5, rr_tp1: 4.88
         });
-        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
-        expect(parsed.valid).toBe(false);
-        expect(parsed.issues).toContain('RAW_KILLZONE_NONE_REQUIRES_NO_TRADE');
+        const countertrendSell = ctx.parseRawCandleAIActionResponse(JSON.stringify(sell));
+        expect(countertrendSell.issues).toContain('RAW_COUNTERTREND_SELL_REQUIRES_CHOCH');
+        const sellDiscount = ctx.parseRawCandleAIActionResponse(JSON.stringify({ ...sell, htf_zone: 'DISCOUNT', choch_detected: true }));
+        expect(sellDiscount.issues).toContain('RAW_SELL_IN_DISCOUNT_FORBIDDEN');
     });
 
     it('enforces the 4.50 point minimum stop distance for XAU/USD', () => {
@@ -11144,7 +11055,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_CRT_MSNR_CONFIRMATION_REQUIRED');
     });
 
-    it('requires a sniper justification naming the proximal edge, FVG, or imbalance', () => {
+    it('requires a sniper justification naming the proximal edge and displacement', () => {
         const ctx = getContext();
         const missing = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ sniper_zone_justification: '' })));
         expect(missing.valid).toBe(false);
@@ -11152,13 +11063,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const invalid = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ sniper_zone_justification: 'Entry is deep inside the order block at equilibrium.' })));
         expect(invalid.valid).toBe(false);
         expect(invalid.issues).toContain('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
-        const fairValueGap = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ sniper_zone_justification: 'Entry taps the top of the fair value gap after displacement.' })));
-        expect(fairValueGap.issues).not.toContain('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
-        const imbalance = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ sniper_zone_justification: 'Entry uses the nearest imbalance inside the order block after displacement.' })));
-        expect(imbalance.issues).not.toContain('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
+        const valid = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ sniper_zone_justification: 'Entry uses the proximal edge after aggressive displacement.' })));
+        expect(valid.issues).not.toContain('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
     });
 
-    it('requires price-action confirmation of body/wick ratio, volume, and divergence', () => {
+    it('requires price-action confirmation of rejection wick size and volume', () => {
         const ctx = getContext();
         const missing = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ price_action_confirmation: '' })));
         expect(missing.valid).toBe(false);
@@ -11166,9 +11075,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const invalid = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ price_action_confirmation: 'The setup looks strong.' })));
         expect(invalid.valid).toBe(false);
         expect(invalid.issues).toContain('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
-        const noDivergence = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ price_action_confirmation: 'Sweep wick is 2.7x the body and volume is 2.1x the previous three candles.' })));
-        expect(noDivergence.valid).toBe(false);
-        expect(noDivergence.issues).toContain('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
+        const valid = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ price_action_confirmation: 'The rejection wick is 2.7x the body and volume is 2.1x the previous three candles.' })));
+        expect(valid.issues).not.toContain('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
     });
 
     it('requires a session volatility check of SL and TP sizing', () => {
@@ -11181,7 +11089,20 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(invalid.issues).toContain('RAW_SESSION_VOLATILITY_CHECK_INVALID');
     });
 
-    it('rejects extra fields outside the V3.3 schema', () => {
+    it('rejects wrong JSON value types for strict string, number, and boolean fields', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            htf_bias: 1,
+            choch_detected: 'false',
+            entry: '4034'
+        })));
+        expect(parsed.valid).toBe(false);
+        expect(parsed.issues).toContain('RAW_STRING_FIELDS_INVALID');
+        expect(parsed.issues).toContain('RAW_CHOCH_DETECTED_INVALID');
+        expect(parsed.issues).toContain('RAW_NUMERIC_FIELDS_INVALID');
+    });
+
+    it('rejects extra fields outside the V4.0 schema', () => {
         const ctx = getContext();
         const response = jsonResponse({ gate_0_candidate: { entry: 4034 } });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
@@ -11189,44 +11110,24 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_JSON_EXTRA_FIELDS');
     });
 
-    it('auto-sorts reversed SELL_LIMIT targets into descending order', () => {
+    it('rejects prose, markdown fences, and legacy text instead of extracting JSON', () => {
         const ctx = getContext();
-        const parsed = ctx.parseRawCandleAIActionResponse([
-            'ACTION: SELL_LIMIT',
-            'SETUP: FVG',
-            'ENTRY: 110.00',
-            'STOP_LOSS: 112.00',
-            'TP1: 100.00',
-            'TP2: 104.00',
-            'TP3: 108.00',
-            'CONFIDENCE: 72%',
-            'TIMEFRAME_USED: 15M',
-            "MANAGEMENT: Take 50% at TP1, move SL to BE",
-            'REASON: Bearish FVG with prior-day low as the final target.'
-        ].join('\n'));
-        expect(parsed.valid).toBe(true);
-        expect(parsed.target_order_normalized).toBe(true);
-        expect([parsed.tp1, parsed.tp2, parsed.tp3]).toEqual([108, 104, 100]);
-        expect(parsed.management).toBe('Take 50% at TP1, move SL to BE');
+        const raw = JSON.stringify(jsonResponse());
+        for (const response of ['Here is the analysis: ' + raw, '```json\n' + raw + '\n```', 'ACTION: NO_TRADE']) {
+            const parsed = ctx.parseRawCandleAIActionResponse(response);
+            expect(parsed.valid).toBe(false);
+            expect(parsed.issues).toContain('RAW_JSON_ONLY_REQUIRED');
+        }
     });
 
-    it('auto-sorts reversed BUY_LIMIT targets into ascending order', () => {
+    it('rejects reversed targets instead of silently reordering the strict JSON', () => {
         const ctx = getContext();
-        const parsed = ctx.parseRawCandleAIActionResponse([
-            'ACTION: BUY_LIMIT',
-            'SETUP: OB+FVG',
-            'ENTRY: 100.00',
-            'STOP_LOSS: 98.00',
-            'TP1: 110.00',
-            'TP2: 104.00',
-            'TP3: 102.00',
-            'CONFIDENCE: 68%',
-            'TIMEFRAME_USED: 1H',
-            'REASON: Bullish OB/FVG overlap targeting the prior high.'
-        ].join('\n'));
-        expect(parsed.valid).toBe(true);
-        expect(parsed.target_order_normalized).toBe(true);
-        expect([parsed.tp1, parsed.tp2, parsed.tp3]).toEqual([102, 104, 110]);
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            tp1: 4088.37, tp2: 4070.84, tp3: 4065.7
+        })));
+        expect(parsed.valid).toBe(false);
+        expect(parsed.issues).toContain('RAW_BUY_GEOMETRY_INVALID');
+        expect(parsed.target_order_normalized).toBe(false);
     });
 
     it('sorts target prices together with their objective IDs before validation', () => {
