@@ -20295,7 +20295,10 @@ function buildRawCandleAiGhostRules() {
 You are the Ghost Machine. Read the raw closed candles yourself.
 
 === STRICT OUTPUT RULE ===
-You MUST output ONLY a single, raw JSON object. Start immediately with { and end with }. Do not write any text outside the JSON.
+You MUST output ONLY a single, raw JSON object.
+1. Do NOT write any conversational text before or after the JSON (No "Here is the analysis", No "Thought for...").
+2. Do NOT wrap the JSON in markdown code blocks. Do NOT use triple backticks (\`\`\`json).
+3. Start your response immediately with { and end it immediately with }.
 
 === REASONING PROTOCOL ===
 

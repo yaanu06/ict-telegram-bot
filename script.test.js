@@ -10796,6 +10796,10 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
         expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V5.0 (QUANTUM TREND & RETEST)');
         expect(packet).toContain('=== STRICT OUTPUT RULE ===');
+        expect(packet).toContain('You MUST output ONLY a single, raw JSON object.');
+        expect(packet).toContain('1. Do NOT write any conversational text before or after the JSON (No "Here is the analysis", No "Thought for...").');
+        expect(packet).toContain('2. Do NOT wrap the JSON in markdown code blocks. Do NOT use triple backticks (```json).');
+        expect(packet).toContain('3. Start your response immediately with { and end it immediately with }.');
         expect(packet).toContain('STEP 2. MOMENTUM & VOLUME CHECK (1H):');
         expect(packet).toContain('SCENARIO A (TREND RETEST - HIGHEST PROBABILITY)');
         expect(packet).toContain('SCENARIO B (LIQUIDITY SWEEP REVERSAL)');
