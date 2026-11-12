@@ -10762,7 +10762,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V4.0');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.0');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10790,28 +10790,29 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V4.0 premium/discount and CHoCH master prompt with the strict JSON contract', () => {
+    it('includes the V5.0 Quantum Trend & Retest master prompt with the strict JSON contract', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V4.0 (PREMIUM/DISCOUNT & CHoCH)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V5.0 (QUANTUM TREND & RETEST)');
         expect(packet).toContain('=== STRICT OUTPUT RULE ===');
-        expect(packet).toContain('STEP 2. PREMIUM/DISCOUNT ARRAY (4H):');
-        expect(packet).toContain('STEP 4. THE CHoCH REQUIREMENT:');
-        expect(packet).toContain('=== DIRECTIONAL ALIGNMENT (STRICT GATES) ===');
-        expect(packet).toContain('- You are FORBIDDEN from BUYING if the price is in a PREMIUM zone.');
-        expect(packet).toContain('- You are FORBIDDEN from SELLING if the price is in a DISCOUNT zone.');
-        expect(packet).toContain('- You are FORBIDDEN from trading if the price is in MID-RANGE.');
+        expect(packet).toContain('STEP 2. MOMENTUM & VOLUME CHECK (1H):');
+        expect(packet).toContain('SCENARIO A (TREND RETEST - HIGHEST PROBABILITY)');
+        expect(packet).toContain('SCENARIO B (LIQUIDITY SWEEP REVERSAL)');
+        expect(packet).toContain('PREMIUM/DISCOUNT OVERRIDE:');
+        expect(packet).toContain('you are ALLOWED to sell in a Discount zone or buy in a Premium zone');
         expect(packet).toContain('"htf_bias": "BULLISH|BEARISH|RANGE"');
-        expect(packet).toContain('"htf_zone": "PREMIUM|DISCOUNT|MID_RANGE"');
+        expect(packet).toContain('"momentum_check": "STRONG_IMPULSE|WEAK_RANGE"');
         expect(packet).toContain('"choch_detected": true|false');
+        expect(packet).toContain('"setup": "<OB_RETEST|FVG_FILL|LIQUIDITY_SWEEP>"');
+        expect(packet).not.toContain('"htf_zone":');
         expect(packet).not.toContain('"audit": {');
         expect(packet).not.toContain('=== RAW CANDLE AI REVIEW INSTRUCTION ===');
         expect(packet).not.toContain('gate_0_candidate');
         expect(packet).not.toContain('"gates"');
     });
 
-    it('injects OUTSIDE_KILLZONE only when server time is outside Asia, London and New York', () => {
+    it('injects OUTSIDE_KILLZONE when server time is outside London, overlap and New York', () => {
         const ctx = getContext();
         const inside = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(inside).not.toContain('WARNING: OUTSIDE_KILLZONE');
@@ -10825,10 +10826,10 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(outside).toContain('KILLZONE_STATUS=OUTSIDE');
     });
 
-    it('classifies UTC killzone boundaries including the London/NY overlap', () => {
+    it('classifies V5 UTC killzone boundaries including the London/NY overlap', () => {
         const ctx = getContext();
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T00:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'ASIA', inside_killzone: true, outside_killzone: false }));
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T06:59:00Z'))).toEqual(expect.objectContaining({ killzone: 'ASIA', inside_killzone: true }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T00:00:00Z'))).toEqual(expect.objectContaining({ killzone: null, inside_killzone: false, outside_killzone: true }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T06:59:00Z'))).toEqual(expect.objectContaining({ killzone: null, outside_killzone: true }));
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T07:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'LONDON', inside_killzone: true, outside_killzone: false }));
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T10:59:00Z'))).toEqual(expect.objectContaining({ killzone: 'LONDON', inside_killzone: true }));
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T11:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'OVERLAP', inside_killzone: true }));
@@ -10858,16 +10859,16 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             active: 'NEW_YORK', inside_killzone: true, outside_killzone: false, warning_injected: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V4.0',
+            version: 'V5.0',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
-            premium_discount_rule_included: true,
-            liquidity_map_rule_included: true,
-            choch_rule_included: true,
-            mandatory_sweep_scan_included: true,
+            momentum_volume_rule_included: true,
+            liquidity_poi_rule_included: true,
+            trend_retest_rule_included: true,
+            sweep_reversal_rule_included: true,
             utc_killzone_rule_included: true,
-            directional_gates_included: true,
+            premium_discount_override_included: true,
             htf_context_contract_included: true,
             new_fields_included: true,
             no_trade_reasons_included: true,
@@ -10901,16 +10902,15 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
 
     const jsonResponse = overrides => ({
         action: 'BUY_LIMIT',
-        setup: 'SWEEP+OB',
+        setup: 'OB_RETEST',
         htf_bias: 'BULLISH',
-        htf_zone: 'DISCOUNT',
+        momentum_check: 'STRONG_IMPULSE',
         choch_detected: false,
-        current_market_context: 'TRENDING',
         htf_context: 'The HTF POI is the 1H bullish OB at 4034 and the liquidity draw is the Weak High at 4065.70.',
-        crt_msnr_confirmation: 'The CRT sweep of the prior daily low trapped retail sellers before displacement.',
+        crt_msnr_confirmation: 'The POI retest trapped retail sellers before trend continuation.',
         sniper_zone_justification: 'Entry is at the proximal edge of the bullish FVG left by aggressive displacement.',
         price_action_confirmation: 'The rejection wick is 2.7x the body and volume is 2.1x the previous three candles.',
-        session_volatility_check: 'The 6.50 point SL and 31.70 point TP1 are correctly sized.',
+        session_volatility_check: 'The 6.50 point SL uses 1.5x ATR and TP1 is correctly sized.',
         entry: 4034,
         stop_loss: 4027.5,
         tp1: 4065.7,
@@ -10925,7 +10925,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         ...overrides
     });
 
-    it('parses and validates the V4.0 strict JSON output contract', () => {
+    it('parses and validates the V5.0 strict JSON output contract', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -10933,9 +10933,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toEqual([]);
         expect(parsed.action).toBe('BUY_LIMIT');
         expect(parsed.htf_bias).toBe('BULLISH');
-        expect(parsed.htf_zone).toBe('DISCOUNT');
+        expect(parsed.momentum_check).toBe('STRONG_IMPULSE');
         expect(parsed.choch_detected).toBe(false);
-        expect(parsed.current_market_context).toBe('TRENDING');
         expect(parsed.crt_msnr_confirmation).toContain('trapped retail sellers');
         expect(parsed.sniper_zone_justification).toContain('proximal edge');
         expect(parsed.price_action_confirmation).toContain('volume');
@@ -10945,7 +10944,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.htf_context).toContain('OB');
     });
 
-    it('accepts the V4.0 htf_context field', () => {
+    it('accepts the V5.0 htf_context field', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -10974,10 +10973,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
     it('accepts a JSON NO_TRADE with zero geometry and an evidence reason', () => {
         const ctx = getContext();
         const response = jsonResponse({
-            action: 'NO_TRADE', setup: 'NONE', entry: 0, stop_loss: 0, tp1: 0, tp2: 0, tp3: 0,
+            action: 'NO_TRADE', setup: 'OB_RETEST', entry: 0, stop_loss: 0, tp1: 0, tp2: 0, tp3: 0,
             risk: 0, rr_tp1: 0, confidence: 0, timeframe_used: 'NONE', management: 'NONE',
-            htf_zone: 'MID_RANGE',
-            reason: 'Price is in MID-RANGE, so the directional gate requires NO_TRADE.'
+            reason: 'There is no clear 1H POI to retest, so the setup is NO_TRADE.'
         });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
         expect(parsed.valid).toBe(true);
@@ -10992,43 +10990,35 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_RR_BELOW_MINIMUM');
     });
 
-    it('requires the V4.0 bias, zone, and boolean CHoCH fields', () => {
+    it('requires the V5.0 bias, momentum, and boolean CHoCH fields', () => {
         const ctx = getContext();
         const response = jsonResponse();
         delete response.htf_bias;
-        delete response.htf_zone;
+        delete response.momentum_check;
         delete response.choch_detected;
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
         expect(parsed.valid).toBe(false);
         expect(parsed.issues).toContain('RAW_JSON_FIELDS_MISSING');
         expect(parsed.issues).toContain('RAW_HTF_BIAS_INVALID');
-        expect(parsed.issues).toContain('RAW_HTF_ZONE_INVALID');
+        expect(parsed.issues).toContain('RAW_MOMENTUM_CHECK_INVALID');
         expect(parsed.issues).toContain('RAW_CHOCH_DETECTED_INVALID');
     });
 
-    it('enforces premium, discount, mid-range, and counter-trend CHoCH gates', () => {
+    it('allows strong trend retests without CHoCH and enforces Scenario B reversal confirmation', () => {
         const ctx = getContext();
-        const buyPremium = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ htf_zone: 'PREMIUM' })));
-        expect(buyPremium.issues).toContain('RAW_BUY_IN_PREMIUM_FORBIDDEN');
-        const buyMidRange = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ htf_zone: 'MID_RANGE' })));
-        expect(buyMidRange.issues).toContain('RAW_MID_RANGE_REQUIRES_NO_TRADE');
-        const countertrendBuy = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
-            htf_bias: 'BEARISH', htf_zone: 'DISCOUNT', choch_detected: false
+        const continuation = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ choch_detected: false })));
+        expect(continuation.valid).toBe(true);
+        expect(continuation.issues).not.toContain('RAW_SWEEP_REVERSAL_REQUIRES_CHOCH');
+        const weakRetest = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ momentum_check: 'WEAK_RANGE' })));
+        expect(weakRetest.issues).toContain('RAW_TREND_RETEST_REQUIRES_STRONG_IMPULSE');
+        const reversal = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            setup: 'LIQUIDITY_SWEEP', htf_bias: 'RANGE', momentum_check: 'WEAK_RANGE', choch_detected: false
         })));
-        expect(countertrendBuy.issues).toContain('RAW_COUNTERTREND_BUY_REQUIRES_CHOCH');
-        const confirmedCountertrendBuy = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
-            htf_bias: 'BEARISH', htf_zone: 'DISCOUNT', choch_detected: true
+        expect(reversal.issues).toContain('RAW_SWEEP_REVERSAL_REQUIRES_CHOCH');
+        const confirmedReversal = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            setup: 'LIQUIDITY_SWEEP', htf_bias: 'RANGE', momentum_check: 'WEAK_RANGE', choch_detected: true
         })));
-        expect(confirmedCountertrendBuy.issues).not.toContain('RAW_COUNTERTREND_BUY_REQUIRES_CHOCH');
-        const sell = jsonResponse({
-            action: 'SELL_LIMIT', htf_bias: 'BULLISH', htf_zone: 'PREMIUM', choch_detected: false,
-            entry: 4065.7, stop_loss: 4072.2, tp1: 4034, tp2: 4028, tp3: 4010,
-            risk: 6.5, rr_tp1: 4.88
-        });
-        const countertrendSell = ctx.parseRawCandleAIActionResponse(JSON.stringify(sell));
-        expect(countertrendSell.issues).toContain('RAW_COUNTERTREND_SELL_REQUIRES_CHOCH');
-        const sellDiscount = ctx.parseRawCandleAIActionResponse(JSON.stringify({ ...sell, htf_zone: 'DISCOUNT', choch_detected: true }));
-        expect(sellDiscount.issues).toContain('RAW_SELL_IN_DISCOUNT_FORBIDDEN');
+        expect(confirmedReversal.issues).not.toContain('RAW_SWEEP_REVERSAL_REQUIRES_CHOCH');
     });
 
     it('enforces the 4.50 point minimum stop distance for XAU/USD', () => {
@@ -11041,11 +11031,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(forex.issues).not.toContain('RAW_GOLD_STOP_BELOW_MINIMUM');
     });
 
-    it('rejects an invalid current market context', () => {
+    it('rejects an invalid momentum classification', () => {
         const ctx = getContext();
-        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ current_market_context: 'BULLISH' })));
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ momentum_check: 'AVERAGE' })));
         expect(parsed.valid).toBe(false);
-        expect(parsed.issues).toContain('RAW_CURRENT_MARKET_CONTEXT_INVALID');
+        expect(parsed.issues).toContain('RAW_MOMENTUM_CHECK_INVALID');
     });
 
     it('requires CRT and MSNR confirmation for every JSON response', () => {
@@ -11102,7 +11092,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_NUMERIC_FIELDS_INVALID');
     });
 
-    it('rejects extra fields outside the V4.0 schema', () => {
+    it('rejects extra fields outside the V5.0 schema', () => {
         const ctx = getContext();
         const response = jsonResponse({ gate_0_candidate: { entry: 4034 } });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
@@ -11110,14 +11100,26 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_JSON_EXTRA_FIELDS');
     });
 
-    it('rejects prose, markdown fences, and legacy text instead of extracting JSON', () => {
+    it('extracts JSON from conversational text and markdown fences', () => {
         const ctx = getContext();
         const raw = JSON.stringify(jsonResponse());
-        for (const response of ['Here is the analysis: ' + raw, '```json\n' + raw + '\n```', 'ACTION: NO_TRADE']) {
+        for (const response of [
+            'Here is the analysis: ' + raw,
+            '```json\n' + raw + '\n```',
+            'Analysis follows.\n' + raw + '\nLet me know if you need anything else.'
+        ]) {
             const parsed = ctx.parseRawCandleAIActionResponse(response);
-            expect(parsed.valid).toBe(false);
-            expect(parsed.issues).toContain('RAW_JSON_ONLY_REQUIRED');
+            expect(parsed.valid).toBe(true);
+            expect(parsed.action).toBe('BUY_LIMIT');
+            expect(parsed.source_format).toBe('JSON');
         }
+    });
+
+    it('rejects responses that contain no JSON object', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse('ACTION: NO_TRADE');
+        expect(parsed.valid).toBe(false);
+        expect(parsed.issues).toContain('RAW_JSON_ONLY_REQUIRED');
     });
 
     it('rejects reversed targets instead of silently reordering the strict JSON', () => {
