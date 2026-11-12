@@ -10762,7 +10762,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.0');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.1');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10790,25 +10790,39 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V5.0 Quantum Trend & Retest master prompt with the strict JSON contract', () => {
+    it('includes the V5.1 Quantum Trend & Retest master prompt with the strict JSON contract', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V5.0 (QUANTUM TREND & RETEST)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V5.1 (QUANTUM TREND & RETEST)');
         expect(packet).toContain('=== STRICT OUTPUT RULE ===');
         expect(packet).toContain('You MUST output ONLY a single, raw JSON object.');
-        expect(packet).toContain('1. Do NOT write any conversational text before or after the JSON (No "Here is the analysis", No "Thought for...").');
-        expect(packet).toContain('2. Do NOT wrap the JSON in markdown code blocks. Do NOT use triple backticks (```json).');
+        expect(packet).toContain('1. Do NOT write any conversational text before or after the JSON');
+        expect(packet).toContain('(No "Here is the analysis", No "Thought for...").');
+        expect(packet).toContain('2. Do NOT wrap the JSON in markdown code blocks. Do NOT use triple backticks.');
         expect(packet).toContain('3. Start your response immediately with { and end it immediately with }.');
+        expect(packet).toContain('=== CORE PRINCIPLE ===');
+        expect(packet).toContain('A valid setup is never suppressed because of the clock.');
         expect(packet).toContain('STEP 2. MOMENTUM & VOLUME CHECK (1H):');
-        expect(packet).toContain('SCENARIO A (TREND RETEST - HIGHEST PROBABILITY)');
+        expect(packet).toContain('SCENARIO A (TREND RETEST — HIGHEST PROBABILITY)');
         expect(packet).toContain('SCENARIO B (LIQUIDITY SWEEP REVERSAL)');
+        expect(packet).toContain('STEP 5. SESSION QUALITY (CONFIDENCE MODIFIER — NEVER A VETO):');
+        expect(packet).toContain('- SHOULDER:     06:00-07:00, 15:00-17:00 UTC.');
+        expect(packet).toContain('"armed_off_session", and set expires_at to the next PRIME');
+        expect(packet).toContain('reason "price_at_poi_off_session"');
+        expect(packet).toContain('Session quality is NEVER, by itself, a reason to return NO_TRADE.');
         expect(packet).toContain('PREMIUM/DISCOUNT OVERRIDE:');
-        expect(packet).toContain('you are ALLOWED to sell in a Discount zone or buy in a Premium zone');
-        expect(packet).toContain('"htf_bias": "BULLISH|BEARISH|RANGE"');
-        expect(packet).toContain('"momentum_check": "STRONG_IMPULSE|WEAK_RANGE"');
-        expect(packet).toContain('"choch_detected": true|false');
-        expect(packet).toContain('"setup": "<OB_RETEST|FVG_FILL|LIQUIDITY_SWEEP>"');
+        expect(packet).toContain('ALLOWED to sell in a Discount zone or buy in a Premium zone');
+        expect(packet).toContain('"htf_bias": "BULLISH" | "BEARISH" | "RANGE"');
+        expect(packet).toContain('"momentum_check": "STRONG_IMPULSE" | "WEAK_RANGE"');
+        expect(packet).toContain('"choch_detected": true | false');
+        expect(packet).toContain('"session_quality": "PRIME" | "SHOULDER" | "OFF_SESSION"');
+        expect(packet).toContain('"order_tag": "prime" | "shoulder" | "armed_off_session" | "none"');
+        expect(packet).toContain('"expires_at": "<ISO8601 UTC or null>"');
+        expect(packet).toContain('nearest 1H FVG [low]-[high]');
+        expect(packet).toContain('=== CONFIDENCE GUIDANCE ===');
+        expect(packet).toContain('base_confidence is derivable from:');
+        expect(packet).toContain('"setup": "OB_RETEST" | "FVG_FILL" | "LIQUIDITY_SWEEP" | "NONE"');
         expect(packet).not.toContain('"htf_zone":');
         expect(packet).not.toContain('"audit": {');
         expect(packet).not.toContain('=== RAW CANDLE AI REVIEW INSTRUCTION ===');
@@ -10816,31 +10830,30 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).not.toContain('"gates"');
     });
 
-    it('injects OUTSIDE_KILLZONE when server time is outside London, overlap and New York', () => {
+    it('reports session quality without treating non-prime sessions as a veto', () => {
         const ctx = getContext();
-        const inside = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
-        expect(inside).not.toContain('WARNING: OUTSIDE_KILLZONE');
-        expect(inside).toContain('KILLZONE_STATUS=NEW_YORK');
-        const outsideReplay = { ...rawReplay(), scan_as_of: '2026-10-06T18:00:00Z' };
-        const outside = ctx.buildRawTextMarketAnalysisPacket({ replay: outsideReplay });
-        expect(outside.split('\n').slice(0, 2)).toEqual([
-            '=== AI TRADING PACKET: RAW CANDLE AI ===',
-            'WARNING: OUTSIDE_KILLZONE'
-        ]);
-        expect(outside).toContain('KILLZONE_STATUS=OUTSIDE');
+        const prime = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
+        expect(prime).not.toContain('WARNING: OUTSIDE_KILLZONE');
+        expect(prime).toContain('SESSION_QUALITY=PRIME');
+        expect(prime).toContain('SESSION_WINDOW=NEW_YORK');
+        const offReplay = { ...rawReplay(), scan_as_of: '2026-10-06T18:00:00Z' };
+        const offSession = ctx.buildRawTextMarketAnalysisPacket({ replay: offReplay });
+        expect(offSession).not.toContain('WARNING: OUTSIDE_KILLZONE');
+        expect(offSession).toContain('SESSION_QUALITY=OFF_SESSION');
+        expect(offSession).toContain('SESSION_WINDOW=OFF_SESSION');
     });
 
-    it('classifies V5 UTC killzone boundaries including the London/NY overlap', () => {
+    it('classifies PRIME, SHOULDER, and OFF_SESSION UTC boundaries', () => {
         const ctx = getContext();
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T00:00:00Z'))).toEqual(expect.objectContaining({ killzone: null, inside_killzone: false, outside_killzone: true }));
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T06:59:00Z'))).toEqual(expect.objectContaining({ killzone: null, outside_killzone: true }));
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T07:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'LONDON', inside_killzone: true, outside_killzone: false }));
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T10:59:00Z'))).toEqual(expect.objectContaining({ killzone: 'LONDON', inside_killzone: true }));
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T11:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'OVERLAP', inside_killzone: true }));
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T11:59:00Z'))).toEqual(expect.objectContaining({ killzone: 'OVERLAP', inside_killzone: true }));
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T12:00:00Z'))).toEqual(expect.objectContaining({ killzone: 'NEW_YORK', inside_killzone: true }));
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T14:59:00Z'))).toEqual(expect.objectContaining({ killzone: 'NEW_YORK', inside_killzone: true }));
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T15:00:00Z'))).toEqual(expect.objectContaining({ killzone: null, outside_killzone: true }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T00:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'OFF_SESSION', session_window: 'OFF_SESSION' }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T06:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'SHOULDER', session_window: 'PRE_LONDON' }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T06:59:00Z'))).toEqual(expect.objectContaining({ session_quality: 'SHOULDER' }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T07:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'PRIME', session_window: 'LONDON' }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T11:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'PRIME', session_window: 'OVERLAP' }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T12:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'PRIME', session_window: 'NEW_YORK' }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T15:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'SHOULDER', session_window: 'POST_NEW_YORK' }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T16:59:00Z'))).toEqual(expect.objectContaining({ session_quality: 'SHOULDER' }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T17:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'OFF_SESSION' }));
     });
 
     it('logs RAW_PACKET_DIAGNOSTIC counts, token estimate, levels and rule coverage', () => {
@@ -10859,11 +10872,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             'PREVIOUS_DAY_HIGH', 'PREVIOUS_DAY_LOW', 'ASIA_HIGH', 'ASIA_LOW',
             'LONDON_HIGH', 'LONDON_LOW', 'NEW_YORK_HIGH', 'NEW_YORK_LOW'
         ]);
-        expect(diagnostic.killzone).toEqual(expect.objectContaining({
-            active: 'NEW_YORK', inside_killzone: true, outside_killzone: false, warning_injected: false
+        expect(diagnostic.session_quality).toEqual(expect.objectContaining({
+            quality: 'PRIME', window: 'NEW_YORK', prime: true, veto: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V5.0',
+            version: 'V5.1',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
@@ -10871,10 +10884,12 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             liquidity_poi_rule_included: true,
             trend_retest_rule_included: true,
             sweep_reversal_rule_included: true,
-            utc_killzone_rule_included: true,
+            session_quality_rule_included: true,
             premium_discount_override_included: true,
             htf_context_contract_included: true,
             new_fields_included: true,
+            htf_context_enumeration_included: true,
+            confidence_guidance_included: true,
             no_trade_reasons_included: true,
             setup_construction_included: true,
             proximal_edge_rule_included: true,
@@ -10904,17 +10919,29 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         }));
     });
 
+    const enumeratedHtfContext = (distance = 25, armed = false) => [
+        'nearest 1H FVG [4030]-[4032]',
+        'nearest 4H FVG NONE',
+        'nearest 1H OB [4033]-[4035]',
+        'nearest 4H OB NONE',
+        `proximal edge of the primary POI vs CURRENT_PRICE distance ${distance} points`,
+        'nearest opposing HTF liquidity pool Weak High 4065.70',
+        armed ? 'armed off-session setup' : null
+    ].filter(Boolean).join('; ');
     const jsonResponse = overrides => ({
         action: 'BUY_LIMIT',
         setup: 'OB_RETEST',
         htf_bias: 'BULLISH',
         momentum_check: 'STRONG_IMPULSE',
         choch_detected: false,
-        htf_context: 'The HTF POI is the 1H bullish OB at 4034 and the liquidity draw is the Weak High at 4065.70.',
+        session_quality: 'PRIME',
+        order_tag: 'prime',
+        expires_at: null,
+        htf_context: enumeratedHtfContext(),
         crt_msnr_confirmation: 'The POI retest trapped retail sellers before trend continuation.',
         sniper_zone_justification: 'Entry is at the proximal edge of the bullish FVG left by aggressive displacement.',
         price_action_confirmation: 'The rejection wick is 2.7x the body and volume is 2.1x the previous three candles.',
-        session_volatility_check: 'The 6.50 point SL uses 1.5x ATR and TP1 is correctly sized.',
+        session_volatility_check: 'The 6.50 point SL uses 1.5x ATR, TP1 is correctly sized, and the PRIME session multiplier is applied.',
         entry: 4034,
         stop_loss: 4027.5,
         tp1: 4065.7,
@@ -10929,7 +10956,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         ...overrides
     });
 
-    it('parses and validates the V5.0 strict JSON output contract', () => {
+    it('parses and validates the V5.1 strict JSON output contract', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -10939,16 +10966,19 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.htf_bias).toBe('BULLISH');
         expect(parsed.momentum_check).toBe('STRONG_IMPULSE');
         expect(parsed.choch_detected).toBe(false);
+        expect(parsed.session_quality).toBe('PRIME');
+        expect(parsed.order_tag).toBe('prime');
+        expect(parsed.expires_at).toBeNull();
         expect(parsed.crt_msnr_confirmation).toContain('trapped retail sellers');
         expect(parsed.sniper_zone_justification).toContain('proximal edge');
         expect(parsed.price_action_confirmation).toContain('volume');
         expect(parsed.session_volatility_check).toContain('TP1');
         expect([parsed.entry, parsed.stop_loss, parsed.tp1, parsed.tp2, parsed.tp3]).toEqual([4034, 4027.5, 4065.7, 4070.84, 4088.37]);
         expect(parsed.htf_context).toContain('Weak High');
-        expect(parsed.htf_context).toContain('OB');
+        expect(parsed.htf_context).toContain('nearest 4H OB NONE');
     });
 
-    it('accepts the V5.0 htf_context field', () => {
+    it('accepts the V5.1 htf_context field', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -10977,8 +11007,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
     it('accepts a JSON NO_TRADE with zero geometry and an evidence reason', () => {
         const ctx = getContext();
         const response = jsonResponse({
-            action: 'NO_TRADE', setup: 'OB_RETEST', entry: 0, stop_loss: 0, tp1: 0, tp2: 0, tp3: 0,
+            action: 'NO_TRADE', setup: 'NONE', entry: 0, stop_loss: 0, tp1: 0, tp2: 0, tp3: 0,
             risk: 0, rr_tp1: 0, confidence: 0, timeframe_used: 'NONE', management: 'NONE',
+            order_tag: 'none', expires_at: null,
             reason: 'There is no clear 1H POI to retest, so the setup is NO_TRADE.'
         });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
@@ -10994,18 +11025,23 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_RR_BELOW_MINIMUM');
     });
 
-    it('requires the V5.0 bias, momentum, and boolean CHoCH fields', () => {
+    it('requires the V5.1 bias, momentum, CHoCH, and session fields', () => {
         const ctx = getContext();
         const response = jsonResponse();
         delete response.htf_bias;
         delete response.momentum_check;
         delete response.choch_detected;
+        delete response.session_quality;
+        delete response.order_tag;
+        delete response.expires_at;
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
         expect(parsed.valid).toBe(false);
         expect(parsed.issues).toContain('RAW_JSON_FIELDS_MISSING');
         expect(parsed.issues).toContain('RAW_HTF_BIAS_INVALID');
         expect(parsed.issues).toContain('RAW_MOMENTUM_CHECK_INVALID');
         expect(parsed.issues).toContain('RAW_CHOCH_DETECTED_INVALID');
+        expect(parsed.issues).toContain('RAW_SESSION_QUALITY_INVALID');
+        expect(parsed.issues).toContain('RAW_ORDER_TAG_INVALID');
     });
 
     it('allows strong trend retests without CHoCH and enforces Scenario B reversal confirmation', () => {
@@ -11014,7 +11050,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(continuation.valid).toBe(true);
         expect(continuation.issues).not.toContain('RAW_SWEEP_REVERSAL_REQUIRES_CHOCH');
         const weakRetest = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ momentum_check: 'WEAK_RANGE' })));
-        expect(weakRetest.issues).toContain('RAW_TREND_RETEST_REQUIRES_STRONG_IMPULSE');
+        expect(weakRetest.valid).toBe(true);
         const reversal = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
             setup: 'LIQUIDITY_SWEEP', htf_bias: 'RANGE', momentum_check: 'WEAK_RANGE', choch_detected: false
         })));
@@ -11023,6 +11059,68 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             setup: 'LIQUIDITY_SWEEP', htf_bias: 'RANGE', momentum_check: 'WEAK_RANGE', choch_detected: true
         })));
         expect(confirmedReversal.issues).not.toContain('RAW_SWEEP_REVERSAL_REQUIRES_CHOCH');
+    });
+
+    it('enforces PRIME and SHOULDER order handling and confidence caps', () => {
+        const ctx = getContext();
+        const prime = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
+        expect(prime.valid).toBe(true);
+        const shoulder = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            session_quality: 'SHOULDER',
+            order_tag: 'shoulder',
+            confidence: 70,
+            session_volatility_check: 'The 6.50 point SL uses 1.5x ATR, TP1 is correctly sized, and the SHOULDER session modifier is applied.'
+        })));
+        expect(shoulder.valid).toBe(true);
+        const aboveCap = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            session_quality: 'SHOULDER',
+            order_tag: 'shoulder',
+            confidence: 71,
+            session_volatility_check: 'The 6.50 point SL uses 1.5x ATR, TP1 is correctly sized, and the SHOULDER session modifier is applied.'
+        })));
+        expect(aboveCap.issues).toContain('RAW_SHOULDER_CONFIDENCE_ABOVE_CAP');
+    });
+
+    it('accepts armed OFF_SESSION orders and rejects a POI inside the 20 point exclusion', () => {
+        const ctx = getContext();
+        const armed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            session_quality: 'OFF_SESSION',
+            order_tag: 'armed_off_session',
+            expires_at: '2026-10-07T07:00:00Z',
+            confidence: 50,
+            htf_context: enumeratedHtfContext(25, true),
+            session_volatility_check: 'The 6.50 point SL uses 1.5x ATR, TP1 is correctly sized, and the OFF_SESSION cap is applied.',
+            reason: 'Armed off-session bullish POI retest with valid structure and RR.'
+        })));
+        expect(armed.valid).toBe(true);
+        const tooClose = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            session_quality: 'OFF_SESSION',
+            order_tag: 'armed_off_session',
+            expires_at: '2026-10-07T07:00:00Z',
+            confidence: 50,
+            htf_context: enumeratedHtfContext(10, true),
+            session_volatility_check: 'The 6.50 point SL uses 1.5x ATR, TP1 is correctly sized, and the OFF_SESSION cap is applied.',
+            reason: 'Armed off-session bullish POI retest with valid structure and RR.'
+        })));
+        expect(tooClose.issues).toContain('RAW_OFF_SESSION_POI_TOO_CLOSE');
+    });
+
+    it('requires mandatory HTF enumeration and a valid expiry for armed orders', () => {
+        const ctx = getContext();
+        const incomplete = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            htf_context: 'nearest 1H FVG [4030]-[4032]; nearest opposing HTF liquidity pool Weak High 4065.70'
+        })));
+        expect(incomplete.issues).toContain('RAW_HTF_CONTEXT_INVALID');
+        const invalidExpiry = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            session_quality: 'OFF_SESSION',
+            order_tag: 'armed_off_session',
+            expires_at: 'tomorrow',
+            confidence: 50,
+            htf_context: enumeratedHtfContext(25, true),
+            session_volatility_check: 'The 6.50 point SL uses 1.5x ATR, TP1 is correctly sized, and the OFF_SESSION cap is applied.',
+            reason: 'Armed off-session bullish POI retest with valid structure and RR.'
+        })));
+        expect(invalidExpiry.issues).toContain('RAW_EXPIRES_AT_INVALID');
     });
 
     it('enforces the 4.50 point minimum stop distance for XAU/USD', () => {
@@ -11096,7 +11194,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_NUMERIC_FIELDS_INVALID');
     });
 
-    it('rejects extra fields outside the V5.0 schema', () => {
+    it('rejects extra fields outside the V5.1 schema', () => {
         const ctx = getContext();
         const response = jsonResponse({ gate_0_candidate: { entry: 4034 } });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
