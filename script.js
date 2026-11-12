@@ -17162,29 +17162,37 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "session_quality": "PRIME" | "SHOULDER" | "OFF_SESSION",',
     '  "order_tag": "prime" | "shoulder" | "armed_off_session" | "none",',
     '  "expires_at": "<ISO8601 UTC or null>",',
-    '  "htf_context": "<MUST enumerate explicitly: nearest 1H FVG [low]-[high];',
-    '                   nearest 4H FVG [low]-[high]; nearest 1H OB [low]-[high];',
-    '                   nearest 4H OB [low]-[high]; proximal edge of the primary',
-    '                   POI vs CURRENT_PRICE (distance in points); nearest',
-    '                   opposing HTF liquidity pool. If a zone does not exist,',
-    '                   write NONE for that field. NEVER describe a FVG or OB',
-    '                   as \'liquidity\'.>",',
-    '  "crt_msnr_confirmation": "<State the sweep/retest and the retail trap>",',
-    '  "sniper_zone_justification": "<State the proximal edge and displacement>",',
-    '  "price_action_confirmation": "<State the rejection wick size and volume>",',
-    '  "session_volatility_check": "<State SL and TP sizing based on ATR, and',
-    '                                session quality modifier applied>",',
-    '  "entry": <number>,',
-    '  "stop_loss": <number>,',
-    '  "tp1": <number>,',
-    '  "tp2": <number>,',
-    '  "tp3": <number>,',
-    '  "risk": <number>,',
-    '  "rr_tp1": <number>,',
+    '  "fvg_scan": "<MANDATORY arithmetic audit. List every 3-candle gap',
+    '                found in the last 20 x 1H and 15 x 4H candles using the',
+    '                format in STEP 3. End with CONFLUENCE POI line and',
+    '                distance from CURRENT_PRICE. If truly no gaps, state',
+    '                \'SCANNED 18 x 1H triples and 13 x 4H triples, no gaps',
+    '                found\' and show 3 representative triples as proof.>",',
+    '  "htf_context": "<Derived from fvg_scan. State primary POI, its type',
+    '                   (FVG/OB/confluence), proximal edge, distance from',
+    '                   CURRENT_PRICE in points, mitigation state, and nearest',
+    '                   opposing HTF liquidity pool. NEVER describe an FVG or',
+    '                   OB as \'liquidity\'. NEVER claim NONE if fvg_scan shows',
+    '                   a zone.>",',
+    '  "crt_msnr_confirmation": "<sweep/retest and retail trap>",',
+    '  "sniper_zone_justification": "<proximal edge and displacement>",',
+    '  "price_action_confirmation": "<rejection wick size and volume>",',
+    '  "sl_method": "structural far-edge + max(4.50,0.5xATR)",',
+    '  "session_volatility_check": "<ATR values used, SL buffer, session modifier>",',
+    '  "entry": <number|null>,',
+    '  "stop_loss": <number|null>,',
+    '  "tp1": <number|null>,',
+    '  "tp2": <number|null>,',
+    '  "tp3": <number|null>,',
+    '  "risk": <number|null>,',
+    '  "rr_tp1": <number|null>,',
     '  "confidence": <integer 0-100>,',
     '  "timeframe_used": "1d" | "4h" | "1h" | "15m" | "5m" | "NONE",',
-    '  "management": "<text instruction or NONE>",',
-    '  "reason": "<Full justification.>"',
+    '  "management": "<text or NONE>",',
+    '  "reason": "<Full justification. If NO_TRADE, name the specific failure',
+    '             (no valid POI / RR < 2.00 with computed RR / price at POI',
+    '             off-session / no valid scenario). NEVER cite a false absence',
+    '             of FVGs when fvg_scan shows one.>"',
     '}'
 ].join('\n');
 
@@ -20310,21 +20318,20 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V5.1 (QUANTUM TREND & RETEST)
+    return `=== GHOST MACHINE STRATEGY RULES === V5.2 (QUANTUM TREND & RETEST)
 You are the Ghost Machine. Read the raw closed candles yourself.
 
 === STRICT OUTPUT RULE ===
 You MUST output ONLY a single, raw JSON object.
-1. Do NOT write any conversational text before or after the JSON
-   (No "Here is the analysis", No "Thought for...").
-2. Do NOT wrap the JSON in markdown code blocks. Do NOT use triple backticks.
+1. Do NOT write any conversational text before or after the JSON.
+2. Do NOT wrap the JSON in markdown code blocks. No triple backticks.
 3. Start your response immediately with { and end it immediately with }.
 
 === CORE PRINCIPLE ===
-Your job is to OFFER every high-quality setup the raw candles support.
-A valid setup is never suppressed because of the clock. Session timing
+Offer every high-quality setup the raw candles support. Session timing
 modulates CONFIDENCE and ORDER HANDLING only. Return NO_TRADE only when
-there is genuinely no quality setup to offer.
+there is genuinely no quality setup to offer, AND your fvg_scan proves
+you actually looked.
 
 === REASONING PROTOCOL ===
 
@@ -20337,33 +20344,58 @@ STEP 2. MOMENTUM & VOLUME CHECK (1H):
 - If the last 3 candles have >150% of that average AND large bodies,
   the market is in an IMPULSE phase.
 - If IMPULSE, you MUST look for TREND CONTINUATION setups (Scenario A).
-- If WEAK_RANGE, only a POI retest or a confirmed sweep (Scenario B) qualifies.
+- If WEAK_RANGE, only a POI retest or a confirmed sweep qualifies.
 
-STEP 3. LIQUIDITY & POI (4H/1H):
-- Identify the nearest major Weak High and Weak Low.
-- Identify the 1H and 4H Order Blocks and FVGs.
-- The POI is the 1H/4H FVG or OB that caused the most recent aggressive
-  displacement in the direction of the HTF bias. State the proximal edge.
-- If 1H and 4H zones overlap, that confluence is the highest-quality POI.
+STEP 3. FVG & POI DETECTION (MANDATORY ARITHMETIC — DO NOT SKIP):
+
+You MUST scan the last 20 closed 1H candles and the last 15 closed 4H
+candles for Fair Value Gaps using the exact 3-candle rule below. You
+must SHOW the arithmetic in fvg_scan. Do not summarize. Do not skip
+candles. Do not say "NONE" unless you have evaluated every triple.
+
+FVG RULE (label candles in time order as A, B, C — B is the middle):
+  BEARISH FVG:  IF A.low > C.high  THEN gap exists.
+                Zone = [C.high (low edge), A.low (high edge)].
+                Width = A.low - C.high.
+  BULLISH FVG:  IF A.high < C.low  THEN gap exists.
+                Zone = [A.high (low edge), C.low (high edge)].
+                Width = C.low - A.high.
+
+For EACH gap found, state:
+  "<TF>_<BEARISH|BULLISH>_FVG: [low]-[high] | width=<w> pts |
+   formed=<time of C> | mitigated=<YES|NO|PARTIAL>"
+
+Mitigation: for a bearish FVG, mitigated=YES if any later candle high
+>= zone low edge; PARTIAL if any later candle high is inside the zone
+but not through it; NO if price never re-entered. Same logic inverted
+for bullish FVG.
+
+After the scan, state explicitly:
+  "CONFLUENCE POI: [low]-[high] (overlap of <which TFs>) | distance from
+   CURRENT_PRICE = <pts> (proximal edge) | mitigated=<state>"
+If no overlap, state "CONFLUENCE POI: NONE" and list the single best
+unmitigated zone as primary POI.
+
+Also identify nearest 1H and 4H Order Blocks (last opposing candle
+before the displacement leg). State zone bounds.
+
+FORBIDDEN: writing "nearest 1H FVG: NONE" or "nearest 4H FVG: NONE"
+without the fvg_scan arithmetic above having been performed and shown.
 
 STEP 4. ENTRY LOGIC (2 SCENARIOS):
 - SCENARIO A (TREND RETEST — HIGHEST PROBABILITY):
   If HTF trend is strongly BULLISH/BEARISH, do NOT wait for a CHoCH.
-  Wait for price to retrace into the 1H/4H POI. Place a PENDING LIMIT at
-  the proximal edge of the POI in the direction of the HTF trend.
+  Wait for price to retrace into the primary POI. Place a PENDING LIMIT
+  at the proximal edge of the POI in the direction of the HTF trend.
 - SCENARIO B (LIQUIDITY SWEEP REVERSAL):
   If the market is RANGING, wait for a sweep of a major High/Low,
   followed by a strong rejection candle and a confirmed CHoCH.
-- If neither scenario is structurally valid, NO_TRADE (see rules).
 
 STEP 5. SESSION QUALITY (CONFIDENCE MODIFIER — NEVER A VETO):
-Compute from SERVER_TIME_UTC. Sessions are:
+Compute from SERVER_TIME_UTC.
 - PRIME:        London 07:00-11:00, Overlap 11:00-12:00, NY 12:00-15:00 UTC.
 - SHOULDER:     06:00-07:00, 15:00-17:00 UTC.
 - OFF_SESSION:  all other hours.
-
-Session quality does NOT block analysis and does NOT block order
-generation. It modulates confidence and order handling ONLY:
 
 - PRIME:        confidence multiplier 1.00. Full order placement.
                 order_tag = "prime".
@@ -20372,44 +20404,44 @@ generation. It modulates confidence and order handling ONLY:
                 order_tag = "shoulder".
 - OFF_SESSION:  confidence capped at 50. Order is ARMED, not suppressed:
                 place the pending limit at the POI, tag it
-                "armed_off_session", and set expires_at to the next PRIME
-                session open (UTC ISO8601).
-                EXCEPTION — if CURRENT_PRICE is already inside or within
-                20 points of the POI proximal edge outside PRIME, do NOT
-                arm: you would be entering an active retest into thin
-                liquidity. Return NO_TRADE with
-                reason "price_at_poi_off_session".
+                "armed_off_session", set expires_at to next PRIME open
+                (UTC ISO8601).
+                EXCEPTION: if CURRENT_PRICE is inside or within 20 pts of
+                the POI proximal edge outside PRIME, do NOT arm: return
+                NO_TRADE with reason "price_at_poi_off_session".
 
-A structurally valid setup outside PRIME is NOT "no setup." It is an
-armed setup with reduced confidence. State it explicitly.
+A valid setup outside PRIME is an ARMED setup, not "no setup."
 
 STEP 6. EXECUTION & RISK:
-- Entry: proximal edge of the POI (limit only — never market).
-- Stop Loss: 1.5x ATR beyond the structural wick, with a minimum
-  4.50 point buffer for Gold. Never place SL inside the wick.
-- Take Profit: TP1 = nearest opposing HTF liquidity pool.
-  Minimum RR at TP1 is 2.00.
+
+Entry: proximal edge of the POI (limit only — never market).
+
+STOP LOSS: Place the Stop Loss safely beyond the structural wick (the far edge of the Order Block). For Gold, use a buffer of 0.5x ATR, with a minimum absolute buffer of 4.50 points. DO NOT add 1.5x ATR on top of the OB edge; just use the structural invalidation plus the 0.5x ATR buffer.
+
+Take Profit:
+  TP1 = nearest opposing HTF liquidity pool (state which).
+  TP2, TP3 = next pools beyond TP1.
+  Minimum RR at TP1 = 2.00. If RR(TP1) < 2.00 after correct SL sizing,
+  return NO_TRADE with reason that names the computed RR.
 
 === STRICT RULES ===
-1. VOLUME TRUTH: A valid breakout or retest requires a volume spike.
-   If volume is weak, do NOT trade an IMPULSE continuation — but a
-   structural POI retest with valid RR may still be armed at reduced
-   confidence.
-2. NO CHASING: Never market buy/sell. Limit orders only at the POI.
-   Never enter a POI that price is already inside outside PRIME.
-3. PREMIUM/DISCOUNT OVERRIDE: In a strong IMPULSE (Scenario A), you are
-   ALLOWED to sell in a Discount zone or buy in a Premium zone,
-   PROVIDED you are entering on a retest of the POI in the direction
-   of the HTF trend.
-4. QUALITY OVER TIMING: A high-quality setup is always offered, with
-   confidence and order_tag reflecting session quality. Session timing
-   is never, on its own, a reason to return NO_TRADE.
+1. VOLUME TRUTH: A breakout/retest requires a volume spike. Weak volume
+   means no IMPULSE continuation. A structural POI retest with valid RR
+   may still be armed at reduced confidence.
+2. NO CHASING: Limit orders only at the POI. Never enter a POI that
+   price is already inside outside PRIME.
+3. PREMIUM/DISCOUNT OVERRIDE: In a strong IMPULSE (Scenario A), selling
+   in Discount or buying in Premium is allowed IF entering on a retest
+   of the POI in the HTF-trend direction.
+4. QUALITY OVER TIMING: Session timing is never, on its own, a reason to
+   return NO_TRADE.
+5. SCAN BEFORE YOU SPEAK: No "NONE" claim about FVGs/OBs without the
+   fvg_scan arithmetic above being present in the JSON.
 
 ${RAW_CANDLE_AI_OUTPUT_CONTRACT}
 
 === CONFIDENCE GUIDANCE ===
-Compute base_confidence first, then apply the Step 5 session modifier.
-base_confidence is derivable from:
+Compute base_confidence first, then apply session modifier.
 - HTF bias alignment:        0-30
 - Momentum strength:         0-30
 - POI quality / confluence:  0-25
@@ -20417,18 +20449,16 @@ base_confidence is derivable from:
 Caps: OFF_SESSION <= 50, SHOULDER <= 70. PRIME uncapped.
 
 === NO_TRADE RULES ===
-Return NO_TRADE ONLY IF one of the following is true:
-1. No clear 1H/4H POI exists within 200 points of CURRENT_PRICE
-   (no FVG, no OB to retest).
-2. RR at TP1 < 2.00.
-3. Neither Scenario A nor Scenario B is structurally valid on the raw
-   candles (no impulse continuation, no sweep + CHoCH).
-4. CURRENT_PRICE is already inside or within 20 points of the POI
-   proximal edge outside PRIME (reason: "price_at_poi_off_session").
+Return NO_TRADE ONLY IF:
+1. fvg_scan shows no valid POI within 200 pts of CURRENT_PRICE AND no
+   Order Block qualifies. (You must have performed the scan.)
+2. RR at TP1 < 2.00 after correct SL sizing — state the computed RR.
+3. Neither Scenario A nor Scenario B is structurally valid.
+4. CURRENT_PRICE is inside or within 20 pts of the POI proximal edge
+   outside PRIME (reason: "price_at_poi_off_session").
 
-Session quality is NEVER, by itself, a reason to return NO_TRADE.
-Outside PRIME, a valid setup is ARMED with order_tag
-"armed_off_session" and a populated expires_at.`.split('\n');
+Session quality alone is NEVER a NO_TRADE reason. Outside PRIME, a valid
+setup is ARMED with order_tag "armed_off_session" and populated expires_at.`.split('\n');
 }
 
 function rawPacketDiagnosticEnabled() {
@@ -20476,7 +20506,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     ];
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.1',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.2',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20535,27 +20565,28 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             veto: false
         },
         ghost_rules: {
-            version: 'V5.1',
+            version: 'V5.2',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== REASONING PROTOCOL ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('STEP 1. HTF MACRO BIAS (1D/4H):')),
             momentum_volume_rule_included: ghostRules.some(rule => rule.startsWith('STEP 2. MOMENTUM & VOLUME CHECK (1H):')),
-            liquidity_poi_rule_included: ghostRules.some(rule => rule.startsWith('STEP 3. LIQUIDITY & POI (4H/1H):')),
+            liquidity_poi_rule_included: ghostRules.some(rule => rule.startsWith('STEP 3. FVG & POI DETECTION')),
             trend_retest_rule_included: ghostRules.some(rule => rule.includes('SCENARIO A (TREND RETEST')),
             sweep_reversal_rule_included: ghostRules.some(rule => rule.includes('SCENARIO B (LIQUIDITY SWEEP REVERSAL)')),
             session_quality_rule_included: ghostRules.some(rule => rule.startsWith('STEP 5. SESSION QUALITY')),
             premium_discount_override_included: ghostRules.some(rule => rule.includes('PREMIUM/DISCOUNT OVERRIDE:')),
             htf_context_contract_included: RAW_CANDLE_AI_OUTPUT_CONTRACT.includes('"htf_context":'),
             new_fields_included: ['"htf_bias":', '"momentum_check":', '"choch_detected":',
-                '"session_quality":', '"order_tag":', '"expires_at":']
+                '"session_quality":', '"order_tag":', '"expires_at":', '"fvg_scan":', '"sl_method":']
                 .every(field => RAW_CANDLE_AI_OUTPUT_CONTRACT.includes(field)),
-            htf_context_enumeration_included: RAW_CANDLE_AI_OUTPUT_CONTRACT.includes('nearest 1H FVG'),
-            confidence_guidance_included: ghostRulesText.includes('base_confidence is derivable from:'),
+            fvg_scan_contract_included: RAW_CANDLE_AI_OUTPUT_CONTRACT.includes('"fvg_scan":'),
+            sl_method_contract_included: RAW_CANDLE_AI_OUTPUT_CONTRACT.includes('"sl_method":'),
+            confidence_guidance_included: ghostRulesText.includes('Compute base_confidence first'),
             no_trade_reasons_included: ghostRules.some(rule => rule.includes('=== NO_TRADE RULES ===')),
             setup_construction_included: ghostRules.some(rule => rule.startsWith('STEP 6. EXECUTION & RISK:')),
             proximal_edge_rule_included: ghostRulesText.includes('Entry: proximal edge of the POI'),
-            gold_minimum_stop_included: ghostRulesText.includes('minimum\n  4.50 point buffer for Gold'),
-            hard_rr_gate_included: ghostRules.some(rule => rule.includes('Minimum RR at TP1 is 2.00')),
+            gold_minimum_stop_included: ghostRulesText.includes('minimum absolute buffer of 4.50 points'),
+            hard_rr_gate_included: ghostRules.some(rule => rule.includes('Minimum RR at TP1 = 2.00')),
             strict_json_schema_included: ghostRules.some(rule => rule.startsWith('=== STRICT OUTPUT RULE ==='))
         }
     };
@@ -29113,9 +29144,9 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         const add = issue => { if (!issues.includes(issue)) issues.push(issue); };
         const required = [
             'action', 'setup', 'htf_bias', 'momentum_check', 'choch_detected',
-            'session_quality', 'order_tag', 'expires_at',
+            'session_quality', 'order_tag', 'expires_at', 'fvg_scan',
             'htf_context', 'crt_msnr_confirmation', 'sniper_zone_justification',
-            'price_action_confirmation', 'session_volatility_check', 'entry', 'stop_loss',
+            'price_action_confirmation', 'sl_method', 'session_volatility_check', 'entry', 'stop_loss',
             'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1', 'confidence', 'timeframe_used',
             'management', 'reason'
         ];
@@ -29132,10 +29163,12 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             session_quality: text(json.session_quality)?.toUpperCase() || null,
             order_tag: text(json.order_tag)?.toLowerCase() || null,
             expires_at: json.expires_at === null ? null : text(json.expires_at),
+            fvg_scan: text(json.fvg_scan),
             htf_context: text(json.htf_context),
             crt_msnr_confirmation: text(json.crt_msnr_confirmation),
             sniper_zone_justification: text(json.sniper_zone_justification),
             price_action_confirmation: text(json.price_action_confirmation),
+            sl_method: text(json.sl_method),
             session_volatility_check: text(json.session_volatility_check),
             entry: typeof json.entry === 'number' && Number.isFinite(json.entry) ? json.entry : null,
             stop_loss: typeof json.stop_loss === 'number' && Number.isFinite(json.stop_loss) ? json.stop_loss : null,
@@ -29153,14 +29186,20 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             source_format: 'JSON'
         };
         const stringFields = [
-            'action', 'setup', 'htf_bias', 'momentum_check', 'session_quality', 'order_tag', 'htf_context',
+            'action', 'setup', 'htf_bias', 'momentum_check', 'session_quality', 'order_tag', 'fvg_scan', 'htf_context',
             'crt_msnr_confirmation', 'sniper_zone_justification', 'price_action_confirmation',
-            'session_volatility_check', 'timeframe_used', 'management', 'reason'
+            'sl_method', 'session_volatility_check', 'timeframe_used', 'management', 'reason'
         ];
-        const numericFields = ['entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1', 'confidence'];
+        const nullableGeometryFields = ['entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1'];
         if (stringFields.some(field => typeof json[field] !== 'string')) add('RAW_STRING_FIELDS_INVALID');
         if (json.expires_at !== null && typeof json.expires_at !== 'string') add('RAW_EXPIRES_AT_INVALID');
-        if (numericFields.some(field => typeof json[field] !== 'number' || !Number.isFinite(json[field]))) {
+        if (typeof json.confidence !== 'number' || !Number.isFinite(json.confidence)
+            || nullableGeometryFields.some(field => json[field] !== null
+                && (typeof json[field] !== 'number' || !Number.isFinite(json[field])))) {
+            add('RAW_NUMERIC_FIELDS_INVALID');
+        }
+        if (action !== 'NO_TRADE'
+            && nullableGeometryFields.some(field => typeof json[field] !== 'number' || !Number.isFinite(json[field]))) {
             add('RAW_NUMERIC_FIELDS_INVALID');
         }
         if (!['BUY_LIMIT', 'SELL_LIMIT', 'NO_TRADE'].includes(action)) {
@@ -29176,23 +29215,49 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
                 || !Number.isFinite(Date.parse(parsed.expires_at)))) {
             add('RAW_EXPIRES_AT_INVALID');
         }
-        const htfZonePatterns = [
-            /nearest\s+1H\s+FVG\s*(?::|=)?\s*(?:NONE|\[[^\]]+\]\s*-\s*\[[^\]]+\]|\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?)/i,
-            /nearest\s+4H\s+FVG\s*(?::|=)?\s*(?:NONE|\[[^\]]+\]\s*-\s*\[[^\]]+\]|\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?)/i,
-            /nearest\s+1H\s+OB\s*(?::|=)?\s*(?:NONE|\[[^\]]+\]\s*-\s*\[[^\]]+\]|\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?)/i,
-            /nearest\s+4H\s+OB\s*(?::|=)?\s*(?:NONE|\[[^\]]+\]\s*-\s*\[[^\]]+\]|\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?)/i
-        ];
+        const fvgGapPattern = /\b(1H|4H)_(BEARISH|BULLISH)_FVG:\s*\[(-?\d+(?:\.\d+)?)\]\s*-\s*\[(-?\d+(?:\.\d+)?)\]\s*\|\s*width\s*=\s*(\d+(?:\.\d+)?)\s*pts\s*\|\s*formed\s*=\s*[^|]+\|\s*mitigated\s*=\s*(YES|NO|PARTIAL)\b/gi;
+        const fvgGaps = parsed.fvg_scan ? [...parsed.fvg_scan.matchAll(fvgGapPattern)] : [];
+        const fullNoGapProof = /SCANNED\s+18\s*x\s*1H\s+triples\s+and\s+13\s*x\s*4H\s+triples,\s*no\s+gaps\s+found/i.test(parsed.fvg_scan || '');
+        const oneHourNoGapProof = fullNoGapProof || /SCANNED\s+18\s*x\s*1H\s+triples,\s*no\s+gaps\s+found/i.test(parsed.fvg_scan || '');
+        const fourHourNoGapProof = fullNoGapProof || /SCANNED\s+13\s*x\s*4H\s+triples,\s*no\s+gaps\s+found/i.test(parsed.fvg_scan || '');
+        const oneHourScanShown = fvgGaps.some(gap => gap[1].toUpperCase() === '1H') || oneHourNoGapProof;
+        const fourHourScanShown = fvgGaps.some(gap => gap[1].toUpperCase() === '4H') || fourHourNoGapProof;
+        const representativeTriples = (parsed.fvg_scan?.match(/\bA\.(?:high|low)\b/gi) || []).length;
+        const confluenceLine = parsed.fvg_scan?.match(/CONFLUENCE\s+POI:\s*(?:NONE|\[(-?\d+(?:\.\d+)?)\]\s*-\s*\[(-?\d+(?:\.\d+)?)\][^\n]*(?:distance\s+from\s+CURRENT_PRICE|CURRENT_PRICE)\s*=\s*(-?\d+(?:\.\d+)?)\s*(?:points|pts)[^\n]*mitigated\s*=\s*(YES|NO|PARTIAL))/i);
+        if (!parsed.fvg_scan) {
+            add('RAW_FVG_SCAN_REQUIRED');
+        } else {
+            if (!oneHourScanShown || !fourHourScanShown) add('RAW_FVG_SCAN_TIMEFRAMES_INCOMPLETE');
+            if (fvgGaps.length === 0 && !fullNoGapProof) add('RAW_FVG_SCAN_ARITHMETIC_INVALID');
+            if (fullNoGapProof && representativeTriples < 3) add('RAW_FVG_SCAN_PROOF_INCOMPLETE');
+            if (!confluenceLine) add('RAW_FVG_SCAN_CONFLUENCE_MISSING');
+        }
+        const fvgScanShowsZone = fvgGaps.length > 0;
         const poiDistanceMatch = parsed.htf_context?.match(/proximal\s+edge[\s\S]{0,120}?CURRENT_PRICE[\s\S]{0,80}?(\d+(?:\.\d+)?)\s*(?:points|pts)\b/i);
         const poiDistance = poiDistanceMatch ? Number(poiDistanceMatch[1]) : null;
+        const primaryPoiMatch = parsed.htf_context?.match(/primary\s+POI\s*(?::|=)?\s*\[(-?\d+(?:\.\d+)?)\]\s*-\s*\[(-?\d+(?:\.\d+)?)\]/i);
+        const primaryPoiBounds = primaryPoiMatch
+            ? [Number(primaryPoiMatch[1]), Number(primaryPoiMatch[2])].sort((a, b) => a - b)
+            : null;
         if (!parsed.htf_context) {
             add('RAW_HTF_CONTEXT_REQUIRED');
-        } else if (!htfZonePatterns.every(pattern => pattern.test(parsed.htf_context))
-            || !/nearest\s+opposing\s+HTF\s+liquidity\s+pool/i.test(parsed.htf_context)
-            || !Number.isFinite(poiDistance)) {
-            add('RAW_HTF_CONTEXT_INVALID');
+        } else {
+            const noPrimaryPoi = /primary\s+POI\s*(?::|=)?\s*NONE/i.test(parsed.htf_context);
+            const validPrimaryPoi = !!primaryPoiBounds
+                && /\btype\s*(?::|=)?\s*(?:FVG|OB|CONFLUENCE)\b/i.test(parsed.htf_context)
+                && /\bmitigat(?:ed|ion)\s*(?::|=)?\s*(?:YES|NO|PARTIAL)\b/i.test(parsed.htf_context)
+                && Number.isFinite(poiDistance);
+            if ((!validPrimaryPoi && !(action === 'NO_TRADE' && noPrimaryPoi && !fvgScanShowsZone))
+                || !/nearest\s+opposing\s+HTF\s+liquidity\s+pool/i.test(parsed.htf_context)) {
+                add('RAW_HTF_CONTEXT_INVALID');
+            }
+            if (fvgScanShowsZone && noPrimaryPoi) add('RAW_FALSE_FVG_ABSENCE');
         }
         if (/\b(?:FVG|OB|ORDER\s+BLOCK)\b[^.;]{0,60}\b(?:is|as)\s+(?:a\s+)?liquidity\b/i.test(parsed.htf_context || '')) {
             add('RAW_HTF_CONTEXT_ZONE_AS_LIQUIDITY');
+        }
+        if (fvgScanShowsZone && /\b(?:no|none|without)\s+(?:valid\s+)?FVGs?\b/i.test(parsed.reason || '')) {
+            add('RAW_FALSE_FVG_ABSENCE');
         }
         if (!parsed.crt_msnr_confirmation) {
             add('RAW_CRT_MSNR_CONFIRMATION_REQUIRED');
@@ -29212,13 +29277,22 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             || !/\bVOLUME\b/i.test(parsed.price_action_confirmation)) {
             add('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
         }
+        if (parsed.sl_method !== 'structural far-edge + max(4.50,0.5xATR)') {
+            add('RAW_SL_METHOD_INVALID');
+        }
+        const atrMatch = parsed.session_volatility_check?.match(/\bATR(?:\([^)]*\))?\s*(?:=|:|is)\s*(\d+(?:\.\d+)?)/i);
+        const atrValue = atrMatch ? Number(atrMatch[1]) : null;
         if (!parsed.session_volatility_check) {
             add('RAW_SESSION_VOLATILITY_CHECK_REQUIRED');
         } else if (!/\bATR\b/i.test(parsed.session_volatility_check)
             || !/\b(STOP|SL)\b/i.test(parsed.session_volatility_check)
-            || !/\b(TP\d*|TARGET)\b/i.test(parsed.session_volatility_check)
+            || !/\bBUFFER\b/i.test(parsed.session_volatility_check)
+            || !Number.isFinite(atrValue)
             || !/\b(PRIME|SHOULDER|OFF_SESSION|SESSION)\b/i.test(parsed.session_volatility_check)) {
             add('RAW_SESSION_VOLATILITY_CHECK_INVALID');
+        }
+        if (/\b1\.5\s*x\s*ATR\b/i.test(parsed.session_volatility_check || '')) {
+            add('RAW_SL_METHOD_INVALID');
         }
         const continuationSetup = ['OB_RETEST', 'FVG_FILL'].includes(parsed.setup);
         const reversalSetup = parsed.setup === 'LIQUIDITY_SWEEP';
@@ -29264,13 +29338,17 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             if (!Number.isFinite(parsed.confidence) || parsed.confidence !== 0) add('RAW_NO_TRADE_CONFIDENCE_INVALID');
             if (parsed.timeframe_used !== 'NONE') add('RAW_NO_TRADE_TIMEFRAME_INVALID');
             if (String(parsed.management ?? '').toUpperCase() !== 'NONE') add('RAW_NO_TRADE_MANAGEMENT_INVALID');
-            if (['entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1'].some(key => parsed[key] !== 0)) {
-                add('RAW_NO_TRADE_ZERO_GEOMETRY_INVALID');
+            if (nullableGeometryFields.some(key => parsed[key] !== null)) {
+                add('RAW_NO_TRADE_NULL_GEOMETRY_INVALID');
             }
             if (!parsed.reason) {
                 add('RAW_REASON_REQUIRED');
             } else if (!/\b(POI|ORDER\s+BLOCK|FVG|RR|RISK[-_ ]?REWARD|SCENARIO|IMPULSE|SWEEP|CHOCH|price_at_poi_off_session)\b/i.test(parsed.reason)) {
                 add('RAW_NO_TRADE_REASON_INVALID');
+            }
+            if (/\bRR\b/i.test(parsed.reason || '')
+                && !/\bRR\s*(?:\([^)]*\))?\s*(?:=|is|of)\s*\d+(?:\.\d+)?/i.test(parsed.reason || '')) {
+                add('RAW_NO_TRADE_COMPUTED_RR_REQUIRED');
             }
             return {
                 ...parsed,
@@ -29293,6 +29371,14 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         }
         if (isGold && Number.isFinite(entry) && Number.isFinite(stop) && Math.abs(entry - stop) < 4.5 - 1e-9) {
             add('RAW_GOLD_STOP_BELOW_MINIMUM');
+        }
+        if (isGold && primaryPoiBounds && Number.isFinite(entry) && Number.isFinite(stop) && Number.isFinite(atrValue)) {
+            const [poiLow, poiHigh] = primaryPoiBounds;
+            const buffer = Math.max(4.5, 0.5 * atrValue);
+            const expectedEntry = action === 'BUY_LIMIT' ? poiHigh : poiLow;
+            const expectedStop = action === 'BUY_LIMIT' ? poiLow - buffer : poiHigh + buffer;
+            if (Math.abs(entry - expectedEntry) > 0.011) add('RAW_ENTRY_NOT_AT_PROXIMAL_EDGE');
+            if (Math.abs(stop - expectedStop) > 0.011) add('RAW_STOP_METHOD_MISMATCH');
         }
         if (!Number.isInteger(parsed.confidence) || parsed.confidence < 0 || parsed.confidence > 100) {
             add('RAW_CONFIDENCE_INVALID');

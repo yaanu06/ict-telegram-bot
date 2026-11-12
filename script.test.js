@@ -10762,7 +10762,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.1');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.2');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10790,38 +10790,42 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V5.1 Quantum Trend & Retest master prompt with the strict JSON contract', () => {
+    it('includes the V5.2 Quantum Trend & Retest master prompt with the strict JSON contract', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V5.1 (QUANTUM TREND & RETEST)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V5.2 (QUANTUM TREND & RETEST)');
         expect(packet).toContain('=== STRICT OUTPUT RULE ===');
         expect(packet).toContain('You MUST output ONLY a single, raw JSON object.');
-        expect(packet).toContain('1. Do NOT write any conversational text before or after the JSON');
-        expect(packet).toContain('(No "Here is the analysis", No "Thought for...").');
-        expect(packet).toContain('2. Do NOT wrap the JSON in markdown code blocks. Do NOT use triple backticks.');
+        expect(packet).toContain('1. Do NOT write any conversational text before or after the JSON.');
+        expect(packet).toContain('2. Do NOT wrap the JSON in markdown code blocks. No triple backticks.');
         expect(packet).toContain('3. Start your response immediately with { and end it immediately with }.');
         expect(packet).toContain('=== CORE PRINCIPLE ===');
-        expect(packet).toContain('A valid setup is never suppressed because of the clock.');
+        expect(packet).toContain('AND your fvg_scan proves');
+        expect(packet).toContain('STEP 3. FVG & POI DETECTION (MANDATORY ARITHMETIC — DO NOT SKIP):');
+        expect(packet).toContain('BEARISH FVG:  IF A.low > C.high');
+        expect(packet).toContain('BULLISH FVG:  IF A.high < C.low');
         expect(packet).toContain('STEP 2. MOMENTUM & VOLUME CHECK (1H):');
         expect(packet).toContain('SCENARIO A (TREND RETEST — HIGHEST PROBABILITY)');
         expect(packet).toContain('SCENARIO B (LIQUIDITY SWEEP REVERSAL)');
         expect(packet).toContain('STEP 5. SESSION QUALITY (CONFIDENCE MODIFIER — NEVER A VETO):');
         expect(packet).toContain('- SHOULDER:     06:00-07:00, 15:00-17:00 UTC.');
-        expect(packet).toContain('"armed_off_session", and set expires_at to the next PRIME');
+        expect(packet).toContain('"armed_off_session", set expires_at to next PRIME open');
         expect(packet).toContain('reason "price_at_poi_off_session"');
-        expect(packet).toContain('Session quality is NEVER, by itself, a reason to return NO_TRADE.');
+        expect(packet).toContain('Session quality alone is NEVER a NO_TRADE reason.');
         expect(packet).toContain('PREMIUM/DISCOUNT OVERRIDE:');
-        expect(packet).toContain('ALLOWED to sell in a Discount zone or buy in a Premium zone');
+        expect(packet).toContain('selling\n   in Discount or buying in Premium is allowed');
         expect(packet).toContain('"htf_bias": "BULLISH" | "BEARISH" | "RANGE"');
         expect(packet).toContain('"momentum_check": "STRONG_IMPULSE" | "WEAK_RANGE"');
         expect(packet).toContain('"choch_detected": true | false');
         expect(packet).toContain('"session_quality": "PRIME" | "SHOULDER" | "OFF_SESSION"');
         expect(packet).toContain('"order_tag": "prime" | "shoulder" | "armed_off_session" | "none"');
         expect(packet).toContain('"expires_at": "<ISO8601 UTC or null>"');
-        expect(packet).toContain('nearest 1H FVG [low]-[high]');
+        expect(packet).toContain('"fvg_scan": "<MANDATORY arithmetic audit.');
+        expect(packet).toContain('"sl_method": "structural far-edge + max(4.50,0.5xATR)"');
+        expect(packet).toContain('DO NOT add 1.5x ATR on top of the OB edge');
         expect(packet).toContain('=== CONFIDENCE GUIDANCE ===');
-        expect(packet).toContain('base_confidence is derivable from:');
+        expect(packet).toContain('Compute base_confidence first, then apply session modifier.');
         expect(packet).toContain('"setup": "OB_RETEST" | "FVG_FILL" | "LIQUIDITY_SWEEP" | "NONE"');
         expect(packet).not.toContain('"htf_zone":');
         expect(packet).not.toContain('"audit": {');
@@ -10876,7 +10880,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             quality: 'PRIME', window: 'NEW_YORK', prime: true, veto: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V5.1',
+            version: 'V5.2',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
@@ -10888,7 +10892,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             premium_discount_override_included: true,
             htf_context_contract_included: true,
             new_fields_included: true,
-            htf_context_enumeration_included: true,
+            fvg_scan_contract_included: true,
+            sl_method_contract_included: true,
             confidence_guidance_included: true,
             no_trade_reasons_included: true,
             setup_construction_included: true,
@@ -10919,12 +10924,24 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         }));
     });
 
+    const auditedFvgScan = distance => [
+        '1H_BULLISH_FVG: [4032]-[4034] | width=2 pts | formed=2026-10-06T08:00:00Z | mitigated=NO',
+        '4H_BULLISH_FVG: [4032]-[4034] | width=2 pts | formed=2026-10-06T08:00:00Z | mitigated=NO',
+        `CONFLUENCE POI: [4032]-[4034] (overlap of 1H and 4H) | distance from CURRENT_PRICE = ${distance} pts (proximal edge) | mitigated=NO`,
+        'nearest 1H OB [4032]-[4034]; nearest 4H OB [4030]-[4034]'
+    ].join('\n');
+    const noGapFvgScan = [
+        'SCANNED 18 x 1H triples and 13 x 4H triples, no gaps found',
+        'representative triple 1: A.high=4030, C.low=4029',
+        'representative triple 2: A.high=4031, C.low=4030',
+        'representative triple 3: A.high=4032, C.low=4031',
+        'CONFLUENCE POI: NONE'
+    ].join('\n');
     const enumeratedHtfContext = (distance = 25, armed = false) => [
-        'nearest 1H FVG [4030]-[4032]',
-        'nearest 4H FVG NONE',
-        'nearest 1H OB [4033]-[4035]',
-        'nearest 4H OB NONE',
-        `proximal edge of the primary POI vs CURRENT_PRICE distance ${distance} points`,
+        'primary POI: [4032]-[4034]',
+        'type=CONFLUENCE',
+        `proximal edge 4034 vs CURRENT_PRICE distance ${distance} points`,
+        'mitigated=NO',
         'nearest opposing HTF liquidity pool Weak High 4065.70',
         armed ? 'armed off-session setup' : null
     ].filter(Boolean).join('; ');
@@ -10937,11 +10954,13 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         session_quality: 'PRIME',
         order_tag: 'prime',
         expires_at: null,
+        fvg_scan: auditedFvgScan(25),
         htf_context: enumeratedHtfContext(),
         crt_msnr_confirmation: 'The POI retest trapped retail sellers before trend continuation.',
         sniper_zone_justification: 'Entry is at the proximal edge of the bullish FVG left by aggressive displacement.',
         price_action_confirmation: 'The rejection wick is 2.7x the body and volume is 2.1x the previous three candles.',
-        session_volatility_check: 'The 6.50 point SL uses 1.5x ATR, TP1 is correctly sized, and the PRIME session multiplier is applied.',
+        sl_method: 'structural far-edge + max(4.50,0.5xATR)',
+        session_volatility_check: 'ATR(1H)=4.00; SL buffer=max(4.50,0.5xATR)=4.50; PRIME session modifier applied.',
         entry: 4034,
         stop_loss: 4027.5,
         tp1: 4065.7,
@@ -10956,7 +10975,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         ...overrides
     });
 
-    it('parses and validates the V5.1 strict JSON output contract', () => {
+    it('parses and validates the V5.2 strict JSON output contract', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -10972,13 +10991,13 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.crt_msnr_confirmation).toContain('trapped retail sellers');
         expect(parsed.sniper_zone_justification).toContain('proximal edge');
         expect(parsed.price_action_confirmation).toContain('volume');
-        expect(parsed.session_volatility_check).toContain('TP1');
+        expect(parsed.session_volatility_check).toContain('SL buffer');
         expect([parsed.entry, parsed.stop_loss, parsed.tp1, parsed.tp2, parsed.tp3]).toEqual([4034, 4027.5, 4065.7, 4070.84, 4088.37]);
         expect(parsed.htf_context).toContain('Weak High');
-        expect(parsed.htf_context).toContain('nearest 4H OB NONE');
+        expect(parsed.fvg_scan).toContain('CONFLUENCE POI');
     });
 
-    it('accepts the V5.1 htf_context field', () => {
+    it('accepts the V5.2 htf_context field', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11004,12 +11023,36 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_HTF_CONTEXT_INVALID');
     });
 
-    it('accepts a JSON NO_TRADE with zero geometry and an evidence reason', () => {
+    it('requires an arithmetic FVG audit across both mandatory timeframes', () => {
+        const ctx = getContext();
+        const missing = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ fvg_scan: '' })));
+        expect(missing.issues).toContain('RAW_FVG_SCAN_REQUIRED');
+        const oneTimeframe = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            fvg_scan: [
+                '1H_BULLISH_FVG: [4032]-[4034] | width=2 pts | formed=2026-10-06T08:00:00Z | mitigated=NO',
+                'CONFLUENCE POI: NONE'
+            ].join('\n')
+        })));
+        expect(oneTimeframe.issues).toContain('RAW_FVG_SCAN_TIMEFRAMES_INCOMPLETE');
+    });
+
+    it('rejects a false FVG absence claim when the arithmetic scan found a zone', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            htf_context: 'primary POI: NONE; nearest opposing HTF liquidity pool Weak High 4065.70',
+            reason: 'There are no valid FVGs, so there is no setup.'
+        })));
+        expect(parsed.issues).toContain('RAW_FALSE_FVG_ABSENCE');
+    });
+
+    it('accepts a JSON NO_TRADE with null geometry and an audited no-gap reason', () => {
         const ctx = getContext();
         const response = jsonResponse({
-            action: 'NO_TRADE', setup: 'NONE', entry: 0, stop_loss: 0, tp1: 0, tp2: 0, tp3: 0,
-            risk: 0, rr_tp1: 0, confidence: 0, timeframe_used: 'NONE', management: 'NONE',
+            action: 'NO_TRADE', setup: 'NONE', entry: null, stop_loss: null, tp1: null, tp2: null, tp3: null,
+            risk: null, rr_tp1: null, confidence: 0, timeframe_used: 'NONE', management: 'NONE',
             order_tag: 'none', expires_at: null,
+            fvg_scan: noGapFvgScan,
+            htf_context: 'primary POI: NONE; nearest opposing HTF liquidity pool NONE',
             reason: 'There is no clear 1H POI to retest, so the setup is NO_TRADE.'
         });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
@@ -11025,7 +11068,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_RR_BELOW_MINIMUM');
     });
 
-    it('requires the V5.1 bias, momentum, CHoCH, and session fields', () => {
+    it('requires the V5.2 bias, momentum, CHoCH, session, scan, and SL fields', () => {
         const ctx = getContext();
         const response = jsonResponse();
         delete response.htf_bias;
@@ -11034,6 +11077,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         delete response.session_quality;
         delete response.order_tag;
         delete response.expires_at;
+        delete response.fvg_scan;
+        delete response.sl_method;
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
         expect(parsed.valid).toBe(false);
         expect(parsed.issues).toContain('RAW_JSON_FIELDS_MISSING');
@@ -11042,6 +11087,29 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_CHOCH_DETECTED_INVALID');
         expect(parsed.issues).toContain('RAW_SESSION_QUALITY_INVALID');
         expect(parsed.issues).toContain('RAW_ORDER_TAG_INVALID');
+        expect(parsed.issues).toContain('RAW_FVG_SCAN_REQUIRED');
+        expect(parsed.issues).toContain('RAW_SL_METHOD_INVALID');
+    });
+
+    it('enforces structural far-edge plus max(4.50, 0.5xATR) stop sizing', () => {
+        const ctx = getContext();
+        const atrDominates = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            session_volatility_check: 'ATR(1H)=12.00; SL buffer=max(4.50,0.5xATR)=6.00; PRIME session modifier applied.',
+            stop_loss: 4026,
+            risk: 8,
+            rr_tp1: 3.96
+        })));
+        expect(atrDominates.valid).toBe(true);
+        const wrongStop = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            stop_loss: 4025,
+            risk: 9,
+            rr_tp1: 3.52
+        })));
+        expect(wrongStop.issues).toContain('RAW_STOP_METHOD_MISMATCH');
+        const legacyAtr = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            session_volatility_check: 'ATR(1H)=4.00; SL buffer=6.00 using 1.5x ATR; PRIME session modifier applied.'
+        })));
+        expect(legacyAtr.issues).toContain('RAW_SL_METHOD_INVALID');
     });
 
     it('allows strong trend retests without CHoCH and enforces Scenario B reversal confirmation', () => {
@@ -11069,14 +11137,14 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             session_quality: 'SHOULDER',
             order_tag: 'shoulder',
             confidence: 70,
-            session_volatility_check: 'The 6.50 point SL uses 1.5x ATR, TP1 is correctly sized, and the SHOULDER session modifier is applied.'
+            session_volatility_check: 'ATR(1H)=4.00; SL buffer=max(4.50,0.5xATR)=4.50; SHOULDER session modifier applied.'
         })));
         expect(shoulder.valid).toBe(true);
         const aboveCap = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
             session_quality: 'SHOULDER',
             order_tag: 'shoulder',
             confidence: 71,
-            session_volatility_check: 'The 6.50 point SL uses 1.5x ATR, TP1 is correctly sized, and the SHOULDER session modifier is applied.'
+            session_volatility_check: 'ATR(1H)=4.00; SL buffer=max(4.50,0.5xATR)=4.50; SHOULDER session modifier applied.'
         })));
         expect(aboveCap.issues).toContain('RAW_SHOULDER_CONFIDENCE_ABOVE_CAP');
     });
@@ -11088,8 +11156,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             order_tag: 'armed_off_session',
             expires_at: '2026-10-07T07:00:00Z',
             confidence: 50,
+            fvg_scan: auditedFvgScan(25),
             htf_context: enumeratedHtfContext(25, true),
-            session_volatility_check: 'The 6.50 point SL uses 1.5x ATR, TP1 is correctly sized, and the OFF_SESSION cap is applied.',
+            session_volatility_check: 'ATR(1H)=4.00; SL buffer=max(4.50,0.5xATR)=4.50; OFF_SESSION cap applied.',
             reason: 'Armed off-session bullish POI retest with valid structure and RR.'
         })));
         expect(armed.valid).toBe(true);
@@ -11098,8 +11167,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             order_tag: 'armed_off_session',
             expires_at: '2026-10-07T07:00:00Z',
             confidence: 50,
+            fvg_scan: auditedFvgScan(10),
             htf_context: enumeratedHtfContext(10, true),
-            session_volatility_check: 'The 6.50 point SL uses 1.5x ATR, TP1 is correctly sized, and the OFF_SESSION cap is applied.',
+            session_volatility_check: 'ATR(1H)=4.00; SL buffer=max(4.50,0.5xATR)=4.50; OFF_SESSION cap applied.',
             reason: 'Armed off-session bullish POI retest with valid structure and RR.'
         })));
         expect(tooClose.issues).toContain('RAW_OFF_SESSION_POI_TOO_CLOSE');
@@ -11116,8 +11186,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             order_tag: 'armed_off_session',
             expires_at: 'tomorrow',
             confidence: 50,
+            fvg_scan: auditedFvgScan(25),
             htf_context: enumeratedHtfContext(25, true),
-            session_volatility_check: 'The 6.50 point SL uses 1.5x ATR, TP1 is correctly sized, and the OFF_SESSION cap is applied.',
+            session_volatility_check: 'ATR(1H)=4.00; SL buffer=max(4.50,0.5xATR)=4.50; OFF_SESSION cap applied.',
             reason: 'Armed off-session bullish POI retest with valid structure and RR.'
         })));
         expect(invalidExpiry.issues).toContain('RAW_EXPIRES_AT_INVALID');
@@ -11171,7 +11242,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(valid.issues).not.toContain('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
     });
 
-    it('requires a session volatility check of SL and TP sizing', () => {
+    it('requires a session volatility check with numeric ATR and SL buffer sizing', () => {
         const ctx = getContext();
         const missing = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ session_volatility_check: '' })));
         expect(missing.valid).toBe(false);
@@ -11194,7 +11265,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_NUMERIC_FIELDS_INVALID');
     });
 
-    it('rejects extra fields outside the V5.1 schema', () => {
+    it('rejects extra fields outside the V5.2 schema', () => {
         const ctx = getContext();
         const response = jsonResponse({ gate_0_candidate: { entry: 4034 } });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
