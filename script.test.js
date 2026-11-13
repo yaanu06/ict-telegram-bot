@@ -11144,6 +11144,29 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).not.toContain('RAW_HTF_CONTEXT_INVALID');
     });
 
+    it('accepts a directionally verified nearest unused low liquidity pool in sell context', () => {
+        const ctx = getContext();
+        const response = jsonResponse({
+            action: 'SELL_LIMIT', setup: 'FVG_FILL', htf_bias: 'BEARISH', momentum_check: 'WEAK_RANGE',
+            session_quality: 'OFF_SESSION', order_tag: 'armed_off_session',
+            expires_at: '2026-11-16T07:00:00.000Z',
+            quote_price_echo: 4000, quote_time_echo: '2026-11-13T19:45:00.000Z',
+            valid_until: '2026-11-13T20:00:00.000Z', entry_distance: 34,
+            cancel_level: 3980, cancel_distance: 20, fill_before_cancel: false,
+            fvg_scan: auditedFvgScan([34, 50, 70]),
+            htf_context: 'Selected POI 1 at 4034 which is 34 pts away; nearest unused low liquidity pool below CURRENT_PRICE is the 1H swing low at 3980.00.',
+            sniper_zone_justification: 'Entry is at the proximal edge of bearish FVG displacement.',
+            session_volatility_check: 'ATR(1H)=4.00; SL buffer=max(4.50,0.5xATR)=4.50; OFF_SESSION cap applied.',
+            entry: 4034, stop_loss: 4038.5, tp1: 3980, tp2: 3970, tp3: 3960,
+            tp1_pool_type: 'LOW', tp2_pool_type: 'LOW', tp3_pool_type: 'LOW',
+            risk: 4.5, rr_tp1: 12, confidence: 45,
+            reason: 'Bearish continuation at a valid POI; nearest unused low liquidity target gives RR 12.00.'
+        });
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
+        expect(parsed.valid).toBe(true);
+        expect(parsed.issues).toEqual([]);
+    });
+
     const structuredAudit = decision => ({
         daily_bias: { direction: decision.htf_bias, candles: [] },
         structure: { bos: { direction: 'NONE', time: null, level: null }, choch: { confirmed: decision.choch_detected, time: null, level: null, evidence: 'NONE' } },

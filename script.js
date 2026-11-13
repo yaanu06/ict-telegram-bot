@@ -29688,9 +29688,11 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             add('RAW_HTF_CONTEXT_REQUIRED');
         } else {
             const noSelectedPoi = /(?:selected\s+POI\s*(?::|=)?\s*NONE|NO\s+POI\s+SELECTED)/i.test(parsed.htf_context);
+            const mentionsNearestLiquidityPool = /nearest\s+opposing\s+(?:(?:HTF|downside|upside|buy-side|sell-side|target-side)\s+)*liquidity\s+pool/i.test(parsed.htf_context)
+                || /nearest\s+(?:(?:unused|confirmed)\s+)*(?:low|high|downside|upside|buy-side|sell-side|target-side|below|above)(?:\s+(?:HTF|1H|4H))?\s+liquidity\s+pool/i.test(parsed.htf_context);
             if ((action !== 'NO_TRADE' && (!selectedCandidate || !selectedCandidate.valid || selectedCandidate.none))
                 || (action === 'NO_TRADE' && !noSelectedPoi)
-                || !/nearest\s+opposing\s+(?:(?:HTF|downside|upside|buy-side|sell-side|target-side)\s+)*liquidity\s+pool/i.test(parsed.htf_context)) {
+                || !mentionsNearestLiquidityPool) {
                 add('RAW_HTF_CONTEXT_INVALID');
             }
             if (action !== 'NO_TRADE' && selectedCandidate?.valid) {
