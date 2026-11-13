@@ -17268,6 +17268,9 @@ function rawCandleAiAuditDiagnostics(json, decision, policy) {
             : sweep.direction === 'BEARISH' && sweep.high > sweep.level && sweep.close < sweep.level);
         if (!breached || !Number.isFinite(Date.parse(sweep.time))) warn('AUDIT_SWEEP_UNSUPPORTED');
     }
+    if (Array.isArray(audit.sweeps) && ['1d', '4h', '1h', '15m', '5m'].some(tf =>
+        ['BULLISH', 'BEARISH'].some(direction => !audit.sweeps.some(sweep => object(sweep)
+            && sweep.tf === tf && sweep.direction === direction)))) warn('AUDIT_SWEEP_COVERAGE_INCOMPLETE');
     if (Array.isArray(audit.pois)) {
         const selected = audit.pois.find(poi => object(poi) && poi.rank === audit.selected_poi?.rank);
         if (decision.action !== 'NO_TRADE' && (!selected || selected.disposition !== 'SELECTED'
@@ -20426,6 +20429,9 @@ FVG RULE:
   PARTIAL = entered but did not reach the far edge; YES = reached/passed the far edge.
   A bearish gap is touched when later high >= low edge and filled when high >= high edge.
   A bullish gap is touched when later low <= high edge and filled when low <= low edge.
+  Check EVERY later closed candle on that timeframe, not just the first later bar
+  or CURRENT_PRICE. The direction of the FVG determines which wick to check.
+  List ALL found gaps, including fully filled YES gaps; do not omit filled zones.
 
 For EACH gap found, state:
   "<TF>_<BEARISH|BULLISH>_FVG: [low]-[high] | width=<w> pts | mitigated=<YES|NO|PARTIAL>"
@@ -20491,6 +20497,12 @@ ATR(1H,14)=<number>; SL buffer=<number>; session modifier in session_volatility_
 Take Profit: TP1 = nearest opposing HTF liquidity pool.
 Targets must be evidenced candle highs/lows, unused after formation, ordered outward:
 BUY entry<TP1<TP2<TP3; SELL entry>TP1>TP2>TP3. Never invent targets to meet RR.
+TP1 is mandatory for a trade. TP2/TP3 are optional: use null when no further
+evidenced unused pool exists. Enforce outward ordering only for supplied targets.
+In audit_report.liquidity_pools, enumerate nearer opposing HTF pool candidates
+with source timeframe/time and UNUSED/SWEPT/UNKNOWN status. For SWEPT pools cite
+the later sweep candle in htf_context. Choose the nearest qualifying UNUSED pool;
+never assume a macro-header level is unused or skip a nearer valid pool to boost RR.
 For sweeps/rejections cite candle times and actual wick/body sizes. A high that merely
 equals an earlier high is NOT proof of a sweep. No invented confirmations.
 Upper wick=high-max(open,close); lower wick=min(open,close)-low; body=abs(close-open).
@@ -20510,6 +20522,7 @@ Show daily_bias.candles for all last three Daily candles, structure/BOS/CHoCH,
 bullish and bearish sweep records for EACH 1d/4h/1h/15m/5m timeframe, break events
 separately from sweeps, liquidity pools separately from POIs, ranked POIs with reasons,
 selected_poi, CRT/MSNR evidence, risk arithmetic and session handling.
+Supply ten sweep summary records: one BULLISH and one BEARISH per timeframe.
 Use NOT_CONFIRMED with null prices/times for unconfirmed records; use [] when no
 break events or liquidity pools exist. Do not invent evidence to fill the audit.
 selected_poi.rank is null for NO_TRADE. The risk and session audit must agree with
@@ -29280,7 +29293,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             add('RAW_NUMERIC_FIELDS_INVALID');
         }
         if (action !== 'NO_TRADE'
-            && nullableGeometryFields.some(field => typeof json[field] !== 'number' || !Number.isFinite(json[field]))) {
+            && ['entry', 'stop_loss', 'tp1', 'risk', 'rr_tp1'].some(field => typeof json[field] !== 'number' || !Number.isFinite(json[field]))) {
             add('RAW_NUMERIC_FIELDS_INVALID');
         }
         if (!['BUY_LIMIT', 'SELL_LIMIT', 'NO_TRADE'].includes(action)) {
@@ -29514,13 +29527,15 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         }
         const entry = parsed.entry;
         const stop = parsed.stop_loss;
-        const targetPrices = [parsed.tp1, parsed.tp2, parsed.tp3];
-        if (![entry, stop, ...targetPrices].every(Number.isFinite)) add('RAW_ENTRY_STOP_TARGETS_REQUIRED');
+        const targetPrices = [parsed.tp1, parsed.tp2, parsed.tp3].filter(Number.isFinite);
+        if (![entry, stop, parsed.tp1].every(Number.isFinite)) add('RAW_ENTRY_STOP_TARGETS_REQUIRED');
         if (action === 'BUY_LIMIT') {
-            if (!(stop < entry && entry < parsed.tp1 && parsed.tp1 < parsed.tp2 && parsed.tp2 < parsed.tp3)) {
+            if (!(stop < entry && entry < parsed.tp1)
+                || targetPrices.some((target, index) => index > 0 && target <= targetPrices[index - 1])) {
                 add('RAW_BUY_GEOMETRY_INVALID');
             }
-        } else if (!(stop > entry && entry > parsed.tp1 && parsed.tp1 > parsed.tp2 && parsed.tp2 > parsed.tp3)) {
+        } else if (!(stop > entry && entry > parsed.tp1)
+            || targetPrices.some((target, index) => index > 0 && target >= targetPrices[index - 1])) {
             add('RAW_SELL_GEOMETRY_INVALID');
         }
         if (isGold && Number.isFinite(entry) && Number.isFinite(stop) && Math.abs(entry - stop) < 4.5 - 1e-9) {

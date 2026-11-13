@@ -1,0 +1,74 @@
+{
+"action": "SELL_LIMIT",
+"setup": "FVG_FILL",
+"htf_bias": "BEARISH",
+"momentum_check": "WEAK_RANGE",
+"choch_detected": false,
+"session_quality": "PRIME",
+"order_tag": "prime",
+"expires_at": null,
+"fvg_scan": "4H_BEARISH_FVG: 3909.28-3924.68 | width=15.4 pts | mitigated=NO\n4H_BEARISH_FVG: 3955.76-3969.81 | width=14.05 pts | mitigated=NO\n4H_BEARISH_FVG: 4038.37-4046.51 | width=8.14 pts | mitigated=NO\n4H_BEARISH_FVG: 3995.22-4032.18 | width=36.96 pts | mitigated=PARTIAL\n1H_BEARISH_FVG: 3909.28-3932.13 | width=22.85 pts | mitigated=NO\n1H_BEARISH_FVG: 3873.47-3885.01 | width=11.54 pts | mitigated=PARTIAL\n1H_BEARISH_FVG: 3904.37-3907.62 | width=3.25 pts | mitigated=PARTIAL\n1H_BULLISH_FVG: 3891.79-3904.74 | width=12.95 pts | mitigated=NO\n1H_BULLISH_FVG: 3878.16-3879.26 | width=1.1 pts | mitigated=NO\n4H_BULLISH_FVG: 3887.63-3891.84 | width=4.21 pts | mitigated=NO\nPOI 1: 3909.28-3924.68 | type=FVG | proximal edge=3909.28 | distance from CURRENT_PRICE=16.89 pts | mitigated=NO\nPOI 2: 3955.76-3969.81 | type=FVG | proximal edge=3955.76 | distance from CURRENT_PRICE=63.37 pts | mitigated=NO\nPOI 3: 4038.37-4046.51 | type=FVG | proximal edge=4038.37 | distance from CURRENT_PRICE=145.98 pts | mitigated=NO",
+"htf_context": "POI 1 was 16.89 pts away, so discarded. Selected POI 2 at 3955.76 which is 63.37 pts away. Nearest opposing HTF liquidity pool is the previous day low at 3852.58.",
+"crt_msnr_confirmation": "CRT: NOT_CONFIRMED | Evidence: No closed reference candle with a strict sweep and body close back inside has formed relative to the selected 4H bearish FVG; price has not yet reached the zone.\nMSNR: NOT_CONFIRMED | Evidence: No support/resistance level has been broken and retested with rejection that aligns with the selected POI; the zone remains distant.\nLIQUIDITY: NOT_CONFIRMED | Evidence: Previous day low at 3852.58 is an unused liquidity pool but has not been swept; no confirmed sweep of highs or lows that would serve as immediate confirmation for this setup.",
+"sniper_zone_justification": "Proximal edge 3955.76 is the low of a 4H bearish FVG formed after a strong displacement candle (2026-11-12T02:00 to 10:00) that broke structure; the zone is unmitigated and sits above current price in a bearish HTF trend.",
+"price_action_confirmation": "No rejection wick at the zone yet because price has not reached it; bearish momentum is evidenced by the 4H candle 2026-11-12T10:00 closing at 3890.28 after opening at 3943.88, with a large body and above-average volume.",
+"sl_method": "structural far-edge + max(4.50,0.5xATR)",
+"session_volatility_check": "ATR(1H,14)=14.26; SL buffer=7.13; session modifier=Full confidence (PRIME)",
+"entry": 3955.76,
+"stop_loss": 3976.94,
+"tp1": 3852.58,
+"tp2": null,
+"tp3": null,
+"risk": 21.18,
+"rr_tp1": 4.87,
+"confidence": 75,
+"timeframe_used": "4h",
+"management": "Trail stop to breakeven at 1:2 RR. Take partial profits at TP1.",
+"reason": "Daily bias is bearish (lower highs and lower lows on the last three closed Daily candles). The 4H bearish FVG at 3955.76-3969.81 is the nearest unmitigated zone beyond the 20-point cascade filter (POI 1 at 3909.28-3924.68 is only 16.89 pts away and discarded). Entry at the proximal low edge (3955.76) aligns with the HTF trend direction. Stop loss is placed above the high edge (3969.81) plus a buffer of 7.13 (0.5xATR), giving risk of 21.18. TP1 is the previous day low at 3852.58, an unused liquidity pool, yielding RR of 4.87. No CRT or MSNR confirmation is present, but the trend-aligned FVG retest does not require CHoCH. Session is PRIME (London), allowing full confidence.",
+"instrument_policy": {
+"symbol": "XAU/USD",
+"distance_basis": "RAW_PRICE",
+"distance_units": "PRICE_UNITS",
+"min_distance": 20,
+"max_distance": 200,
+"calibration_status": "FROZEN_GOLD_BASELINE"
+},
+"audit_report": {
+"daily_bias": {
+"direction": "BEARISH",
+"candles": [
+{ "time": "2026-11-09T22:00:00.000Z", "high": 4146.74, "low": 4013.64 },
+{ "time": "2026-11-10T22:00:00.000Z", "high": 4067.10, "low": 3982.68 },
+{ "time": "2026-11-11T22:00:00.000Z", "high": 4000.73, "low": 3852.58 }
+]
+},
+"structure": {
+"bos": { "direction": "BEARISH", "time": "2026-11-11T22:00:00.000Z", "level": 3982.68 },
+"choch": { "confirmed": false, "time": null, "level": null, "evidence": "NONE" }
+},
+"sweeps": [
+{ "tf": "1d", "direction": "BEARISH", "status": "NOT_CONFIRMED", "time": null, "level": null, "high": null, "low": null, "close": null },
+{ "tf": "4h", "direction": "BEARISH", "status": "NOT_CONFIRMED", "time": null, "level": null, "high": null, "low": null, "close": null },
+{ "tf": "1h", "direction": "BEARISH", "status": "NOT_CONFIRMED", "time": null, "level": null, "high": null, "low": null, "close": null },
+{ "tf": "15m", "direction": "BEARISH", "status": "NOT_CONFIRMED", "time": null, "level": null, "high": null, "low": null, "close": null },
+{ "tf": "5m", "direction": "BEARISH", "status": "NOT_CONFIRMED", "time": null, "level": null, "high": null, "low": null, "close": null }
+],
+"breaks": [
+{ "tf": "1d", "type": "BREAKDOWN", "time": "2026-11-11T22:00:00.000Z", "level": 3982.68 }
+],
+"liquidity_pools": [
+{ "name": "Previous Day Low", "tf": "1d", "price": 3852.58, "time": "2026-11-11T22:00:00.000Z", "status": "UNUSED" },
+{ "name": "Asia High", "tf": "1h", "price": 3923.09, "time": "2026-11-13T03:00:00.000Z", "status": "UNUSED" }
+],
+"pois": [
+{ "rank": 1, "tf": "4h", "type": "FVG", "low": 3909.28, "high": 3924.68, "proximal": 3909.28, "distance": 16.89, "mitigated": "NO", "disposition": "DISCARDED", "reason": "Less than 20 pts from current price." },
+{ "rank": 2, "tf": "4h", "type": "FVG", "low": 3955.76, "high": 3969.81, "proximal": 3955.76, "distance": 63.37, "mitigated": "NO", "disposition": "SELECTED", "reason": "First valid POI beyond 20 pts in bearish trend direction." },
+{ "rank": 3, "tf": "4h", "type": "FVG", "low": 4038.37, "high": 4046.51, "proximal": 4038.37, "distance": 145.98, "mitigated": "NO", "disposition": "NOT_NEEDED", "reason": "Further unmitigated zone beyond selected POI." }
+],
+"selected_poi": { "rank": 2, "state": "DISTANT" },
+"crt": { "status": "NOT_CONFIRMED", "tf": null, "time": null, "level": null, "evidence": "NONE" },
+"msnr": { "status": "NOT_CONFIRMED", "tf": null, "time": null, "level": null, "evidence": "NONE" },
+"risk": { "entry": 3955.76, "stop_loss": 3976.94, "tp1": 3852.58, "risk": 21.18, "rr_tp1": 4.87 },
+"session": { "quality": "PRIME", "order_tag": "prime", "modifier": "Full confidence" }
+}
+}

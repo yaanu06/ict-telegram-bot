@@ -11011,7 +11011,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
     const structuredAudit = decision => ({
         daily_bias: { direction: decision.htf_bias, candles: [] },
         structure: { bos: { direction: 'NONE', time: null, level: null }, choch: { confirmed: decision.choch_detected, time: null, level: null, evidence: 'NONE' } },
-        sweeps: [], breaks: [], liquidity_pools: [],
+        sweeps: ['1d', '4h', '1h', '15m', '5m'].flatMap(tf => ['BULLISH', 'BEARISH'].map(direction => ({ tf, direction, status: 'NOT_CONFIRMED', time: null, level: null, high: null, low: null, close: null }))),
+        breaks: [], liquidity_pools: [],
         pois: decision.action === 'NO_TRADE' ? [] : [{ rank: 1, type: 'OB', low: 4032, high: 4034, proximal: decision.entry, mitigated: 'NO', disposition: 'SELECTED' }],
         selected_poi: { rank: decision.action === 'NO_TRADE' ? null : 1, state: decision.action === 'NO_TRADE' ? 'NONE' : 'DISTANT' },
         crt: { status: 'NOT_CONFIRMED', tf: null, time: null, level: null, evidence: 'NONE' },
@@ -11136,6 +11137,31 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.crt_msnr_confirmation).toContain('MSNR: NOT_CONFIRMED');
         expect(parsed.risk).toBe(21.18);
         expect(parsed.rr_tp1).toBe(3.18);
+    });
+
+    it('accepts nullable secondary targets in the captured audit response without certifying candle truth', () => {
+        const ctx = getContext();
+        const response = fs.readFileSync(path.join(__dirname, 'test-fixtures/v54-browser-response-audit.json'), 'utf8');
+        const parsed = ctx.parseRawCandleAIActionResponse(response, { symbol: 'XAU/USD' });
+        expect(parsed.valid).toBe(true);
+        expect(parsed.execution_allowed).toBe(false);
+        expect(parsed.issues).toEqual([]);
+        expect(parsed.tp2).toBeNull();
+        expect(parsed.tp3).toBeNull();
+        expect(parsed.target_prices).toEqual([3852.58]);
+        expect(parsed.risk).toBe(21.18);
+        expect(parsed.rr_tp1).toBe(4.87);
+        expect(parsed.validation_diagnostics).toContain('AUDIT_SWEEP_COVERAGE_INCOMPLETE');
+    });
+
+    it('requires TP1 and validates every supplied secondary target while allowing absent further pools', () => {
+        const ctx = getContext();
+        for (const targets of [{ tp2: null, tp3: null }, { tp2: null, tp3: 4080 }, { tp2: 4070, tp3: null }]) {
+            expect(ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse(targets))).valid).toBe(true);
+        }
+        for (const targets of [{ tp1: null }, { tp2: '4040' }, { tp2: 4030, tp3: null }, { tp2: 4040, tp3: 4039 }]) {
+            expect(ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse(targets))).valid).toBe(false);
+        }
     });
 
     it('rejects reversed, zero-width, and arithmetically inconsistent zone bounds', () => {
