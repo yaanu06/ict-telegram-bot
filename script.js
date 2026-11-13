@@ -17177,6 +17177,9 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "cancel_distance": <absolute points from quote to cancel_level, or null>,',
     '  "fill_before_cancel": true | false (distance heuristic only; never a trade veto),',
     '  "tp1_is_nearest_unused": true | false,',
+    '  "tp1_pool_type": "LOW" | "HIGH" | null,',
+    '  "tp2_pool_type": "LOW" | "HIGH" | null,',
+    '  "tp3_pool_type": "LOW" | "HIGH" | null,',
     '  "rejected_nearer": ["<pool/POI and exact reason>", ...],',
     '  "rescan_if": "<specific invalidation/expiry event or NONE>",',
     '  "fvg_scan": "<MANDATORY arithmetic. List gaps and create the Ranked Candidate List of POIs (POI 1, POI 2, POI 3) with distances from current price.>",',
@@ -17203,7 +17206,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '    "structure": { "bos": { "direction": "<direction or NONE>", "time": null, "level": null }, "choch": { "confirmed": <boolean>, "time": null, "level": null, "evidence": "<text or NONE>" } },',
     '    "sweeps": [{ "tf": "1d|4h|1h|15m|5m", "direction": "BULLISH|BEARISH", "status": "CONFIRMED|NOT_CONFIRMED", "time": null, "level": null, "high": null, "low": null, "close": null }],',
     '    "breaks": [{ "tf": "<timeframe>", "type": "BREAKOUT|BREAKDOWN|FAILED_BREAKOUT|FAILED_BREAKDOWN", "time": "<UTC>", "level": <number> }],',
-    '    "liquidity_pools": [{ "name": "<pool type>", "tf": "<timeframe>", "price": <number>, "time": "<source candle open UTC>", "known_at": "<confirmation/period close UTC>", "status": "UNUSED|SWEPT|UNKNOWN", "swept_at": "<later candle open UTC or null>" }],',
+    '    "liquidity_pools": [{ "name": "<source pool>", "type": "LOW|HIGH", "tf": "<timeframe>", "price": <number>, "time": "<source candle open UTC>", "known_at": "<confirmation/period close UTC>", "status": "UNUSED|SWEPT|UNKNOWN", "swept_at": "<later candle open UTC or null>" }],',
     '    "pois": [{ "rank": <integer>, "tf": "1h|4h", "type": "OB|FVG", "low": <number>, "high": <number>, "proximal": <number>, "distance": <number>, "mitigated": "NO|PARTIAL|YES", "disposition": "SELECTED|DISCARDED|NOT_NEEDED", "reason": "<text>" }],',
     '    "selected_poi": { "rank": <integer|null>, "state": "DISTANT|NEARBY|INSIDE|NONE" },',
     '    "crt": { "status": "CONFIRMED|NOT_CONFIRMED", "tf": null, "time": null, "level": null, "evidence": "<text or NONE>" },',
@@ -20408,7 +20411,7 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V6.1 (ACTIONABLE RETEST & LIQUIDITY)
+    return `=== GHOST MACHINE STRATEGY RULES === V6.2 (DIRECTIONAL LIQUIDITY TARGETS)
 ===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===
 1. OUTPUT FORMAT: STRICT_JSON.
 2. CONVERSATIONAL TEXT: FORBIDDEN. Do NOT write "Here is the analysis".
@@ -20615,17 +20618,32 @@ chronology is insufficient. A later bar before known_at never consumes the pool.
 Enumerate every eligible opposing pool from ENTRY through and including the
 furthest proposed target in audit_report.liquidity_pools, including closer pools
 that were reached or otherwise excluded. Deduplicate identical prices at packet
-precision; retain all source types/timeframes in the pool name. Do not omit a
+precision; retain all source types/timeframes in the pool name. Every pool record
+must include type=LOW or HIGH, independently of its source name. Do not omit a
 level because another timeframe reports the same price.
 
-Target ladder: for SELL, consider UNUSED pool prices strictly below ENTRY and
-sort from highest to lowest. For BUY, consider UNUSED pool prices strictly above
-ENTRY and sort from lowest to highest. TP1 is the nearest eligible price, TP2
-the next distinct eligible price, TP3 the next. Never skip an UNUSED intermediate
-pool to reach a farther target or improve RR. If fewer than three eligible pools
-exist, set the remaining TP fields to null. If the nearest TP1 yields RR < 2.00,
-reject this POI and follow the existing POI cascade; do not skip TP1. Never invent
-targets. For SWEPT pools cite swept_at and the candle evidence in htf_context.
+TARGET LIQUIDITY SIDE IS A HARD GATE:
+- For SELL_LIMIT, valid targets are UNUSED LOW pools (swing lows, session lows,
+  previous-day low, or equal lows) strictly below ENTRY. Set tpN_pool_type=LOW.
+- For BUY_LIMIT, valid targets are UNUSED HIGH pools (swing highs, session highs,
+  previous-day high, or equal highs) strictly above ENTRY. Set tpN_pool_type=HIGH.
+- A swing/session HIGH below a SELL entry is NOT a target. A swing/session LOW
+  above a BUY entry is NOT a target. Do not use an opposite-side pool just because
+  its numeric price lies between entry and quote. Continue to the nearest eligible
+  pool of the correct type. Keep excluded opposite-side pools in the audit with
+  their true type; never relabel them.
+- For each target, top-level tpN_pool_type must match an UNUSED audit pool at that
+  exact price. For null TP fields, tpN_pool_type must be null. For NO_TRADE, all
+  tpN_pool_type fields must be null.
+
+Within the correct pool type only, sort SELL lows from highest to lowest below
+ENTRY, and BUY highs from lowest to highest above ENTRY. TP1 is the nearest
+eligible price, TP2 the next distinct eligible price, TP3 the next. Never skip an
+UNUSED intermediate eligible pool to reach a farther target or improve RR. If
+fewer than three eligible pools exist, set the remaining TP fields and their
+pool-type fields to null. If the nearest valid TP1 yields RR < 2.00, reject this
+POI and follow the existing POI cascade; do not skip TP1. Never invent targets.
+For SWEPT pools cite swept_at and the candle evidence in htf_context.
 The ladder must be strictly outward: BUY entry<TP1<TP2<TP3; SELL entry>TP1>TP2>TP3.
 For sweeps/rejections cite candle times and actual wick/body sizes. A high that merely
 equals an earlier high is NOT proof of a sweep. No invented confirmations.
@@ -20666,6 +20684,9 @@ Return NO_TRADE ONLY IF:
 Session quality alone is NEVER a NO_TRADE reason.
 For NO_TRADE use setup=NONE, order_tag=none, expires_at=null, confidence=0,
 timeframe_used=NONE, management=NONE, and all entry/stop/target/risk/RR fields=null.
+Set tp1_pool_type, tp2_pool_type, and tp3_pool_type to null. Set
+sniper_zone_justification to "NONE - no selected entry POI" and
+price_action_confirmation to "NONE - no execution trigger; wick/volume not applicable".
 In htf_context write Selected POI: NONE, state why every candidate failed, and
 state nearest opposing HTF liquidity pool (or NONE). For a trade, write
 Selected POI N at <proximal price> which is <distance> pts away, and explain
@@ -20717,7 +20738,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     ];
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.1',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.2',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20779,7 +20800,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             veto: false
         },
         ghost_rules: {
-            version: 'V6.1',
+            version: 'V6.2',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== REASONING PROTOCOL ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('STEP 1. HTF MACRO BIAS (1D/4H):')),
@@ -20792,7 +20813,8 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             cascade_rule_included: ghostRulesText.includes('CASCADING LIMIT ORDERS'),
             htf_context_contract_included: RAW_CANDLE_AI_OUTPUT_CONTRACT.includes('"htf_context":'),
             new_fields_included: ['"htf_bias":', '"momentum_check":', '"choch_detected":',
-                '"session_quality":', '"order_tag":', '"expires_at":', '"fvg_scan":', '"sl_method":']
+                '"session_quality":', '"order_tag":', '"expires_at":', '"fvg_scan":', '"sl_method":',
+                '"tp1_pool_type":', '"tp2_pool_type":', '"tp3_pool_type":']
                 .every(field => RAW_CANDLE_AI_OUTPUT_CONTRACT.includes(field)),
             fvg_scan_contract_included: RAW_CANDLE_AI_OUTPUT_CONTRACT.includes('"fvg_scan":'),
             sl_method_contract_included: RAW_CANDLE_AI_OUTPUT_CONTRACT.includes('"sl_method":'),
@@ -20800,7 +20822,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             setup_construction_included: ghostRules.some(rule => rule.startsWith('STEP 6. EXECUTION & RISK:')),
             proximal_edge_rule_included: ghostRulesText.includes('Entry: proximal edge of the SELECTED POI'),
             target_pool_definition_included: ghostRulesText.includes('Swing definition: in each timeframe\'s chronological CLOSED candle rows'),
-            target_ladder_completeness_included: ghostRulesText.includes('Never skip an UNUSED intermediate'),
+            target_ladder_completeness_included: ghostRulesText.replace(/\s+/g, ' ').includes('Never skip an UNUSED intermediate'),
             gold_minimum_stop_included: ghostRulesText.includes('max(4.50, 0.5xATR)'),
             hard_rr_gate_included: ghostRules.some(rule => rule.includes('Minimum RR at TP1 = 2.00')),
             strict_json_schema_included: ghostRules.some(rule => rule.startsWith('===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ==='))
@@ -29368,7 +29390,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             'action', 'setup', 'htf_bias', 'momentum_check', 'choch_detected',
             'session_quality', 'order_tag', 'expires_at', 'quote_price_echo', 'quote_time_echo',
             'valid_until', 'entry_distance', 'cancel_level', 'cancel_distance',
-            'fill_before_cancel', 'tp1_is_nearest_unused', 'rejected_nearer', 'rescan_if', 'fvg_scan',
+            'fill_before_cancel', 'tp1_is_nearest_unused', 'tp1_pool_type', 'tp2_pool_type', 'tp3_pool_type', 'rejected_nearer', 'rescan_if', 'fvg_scan',
             'htf_context', 'crt_msnr_confirmation', 'sniper_zone_justification',
             'price_action_confirmation', 'sl_method', 'session_volatility_check', 'entry',
             'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1', 'confidence',
@@ -29445,14 +29467,14 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             'action', 'setup', 'htf_bias', 'momentum_check', 'choch_detected',
             'session_quality', 'order_tag', 'expires_at', 'quote_price_echo', 'quote_time_echo',
             'valid_until', 'entry_distance', 'cancel_level', 'cancel_distance',
-            'fill_before_cancel', 'tp1_is_nearest_unused', 'rejected_nearer', 'rescan_if', 'fvg_scan',
+            'fill_before_cancel', 'tp1_is_nearest_unused', 'tp1_pool_type', 'tp2_pool_type', 'tp3_pool_type', 'rejected_nearer', 'rescan_if', 'fvg_scan',
             'htf_context', 'crt_msnr_confirmation', 'sniper_zone_justification',
             'price_action_confirmation', 'sl_method', 'session_volatility_check', 'entry', 'stop_loss',
             'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1', 'confidence', 'timeframe_used',
             'management', 'reason'
         ];
         if (required.some(key => !Object.prototype.hasOwnProperty.call(json, key))) add('RAW_JSON_FIELDS_MISSING');
-        // Structured evidence is optional; V6.1 quote/reachability fields remain mandatory.
+        // Structured evidence is optional; V6.2 quote/reachability and target-side fields remain mandatory.
         const allowedTopLevel = new Set([...required, 'audit_report', 'instrument_policy']);
         if (Object.keys(json).some(key => !allowedTopLevel.has(key))) add('RAW_JSON_EXTRA_FIELDS');
         const action = String(json.action ?? '').trim().toUpperCase();
@@ -29473,6 +29495,9 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             cancel_distance: typeof json.cancel_distance === 'number' && Number.isFinite(json.cancel_distance) ? json.cancel_distance : null,
             fill_before_cancel: json.fill_before_cancel,
             tp1_is_nearest_unused: json.tp1_is_nearest_unused,
+            tp1_pool_type: json.tp1_pool_type === null ? null : text(json.tp1_pool_type)?.toUpperCase() || null,
+            tp2_pool_type: json.tp2_pool_type === null ? null : text(json.tp2_pool_type)?.toUpperCase() || null,
+            tp3_pool_type: json.tp3_pool_type === null ? null : text(json.tp3_pool_type)?.toUpperCase() || null,
             rejected_nearer: Array.isArray(json.rejected_nearer) ? json.rejected_nearer : null,
             rescan_if: text(json.rescan_if),
             fvg_scan: text(json.fvg_scan),
@@ -29526,6 +29551,10 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             || typeof json.rescan_if !== 'string' || !json.rescan_if.trim()) {
             add('RAW_REACHABILITY_FIELDS_INVALID');
         }
+        if (['tp1_pool_type', 'tp2_pool_type', 'tp3_pool_type'].some(field =>
+            json[field] !== null && typeof json[field] !== 'string')) {
+            add('RAW_TARGET_POOL_TYPE_INVALID');
+        }
         if (typeof json.confidence !== 'number' || !Number.isFinite(json.confidence)
             || nullableGeometryFields.some(field => json[field] !== null
                 && (typeof json[field] !== 'number' || !Number.isFinite(json[field])))) {
@@ -29537,6 +29566,52 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         }
         if (!['BUY_LIMIT', 'SELL_LIMIT', 'NO_TRADE'].includes(action)) {
             add('RAW_ACTION_INVALID');
+        }
+        const requiredTargetPoolType = action === 'SELL_LIMIT' ? 'LOW' : 'HIGH';
+        const targetPoolFields = [
+            ['tp1', 'tp1_pool_type'], ['tp2', 'tp2_pool_type'], ['tp3', 'tp3_pool_type']
+        ];
+        for (const [targetField, typeField] of targetPoolFields) {
+            const targetPrice = parsed[targetField];
+            const poolType = parsed[typeField];
+            if (action === 'NO_TRADE') {
+                if (poolType !== null) add('RAW_NO_TRADE_POOL_TYPE_INVALID');
+            } else if (Number.isFinite(targetPrice)) {
+                if (!['LOW', 'HIGH'].includes(poolType)) add('RAW_TARGET_POOL_TYPE_INVALID');
+                else if (poolType !== requiredTargetPoolType) add('RAW_TARGET_POOL_SIDE_INVALID');
+            } else if (poolType !== null) {
+                add('RAW_TARGET_POOL_TYPE_INVALID');
+            }
+        }
+        const auditedPools = parsed.audit_report?.liquidity_pools;
+        if (Array.isArray(auditedPools) && auditedPools.some(pool => !isObject(pool)
+            || !['LOW', 'HIGH'].includes(String(pool.type ?? '').toUpperCase()))) {
+            add('RAW_LIQUIDITY_POOL_TYPE_INVALID');
+        }
+        if (action !== 'NO_TRADE' && Array.isArray(auditedPools) && auditedPools.length > 0) {
+            const sidePools = auditedPools.filter(pool => isObject(pool)
+                && String(pool.type ?? '').toUpperCase() === requiredTargetPoolType
+                && String(pool.status ?? '').toUpperCase() === 'UNUSED'
+                && typeof pool.price === 'number' && Number.isFinite(pool.price)
+                && (action === 'SELL_LIMIT' ? pool.price < parsed.entry : pool.price > parsed.entry));
+            const orderedPrices = [...new Set(sidePools.map(pool => pool.price))]
+                .sort((left, right) => action === 'SELL_LIMIT' ? right - left : left - right)
+                .slice(0, 3);
+            for (const [index, [targetField]] of targetPoolFields.entries()) {
+                const targetPrice = parsed[targetField];
+                if (Number.isFinite(targetPrice)) {
+                    const matchingPool = auditedPools.some(pool => isObject(pool)
+                        && typeof pool.price === 'number' && Math.abs(pool.price - targetPrice) <= 0.011
+                        && String(pool.type ?? '').toUpperCase() === requiredTargetPoolType
+                        && String(pool.status ?? '').toUpperCase() === 'UNUSED');
+                    if (!matchingPool) add('RAW_TARGET_POOL_AUDIT_INVALID');
+                    if (orderedPrices[index] === undefined || Math.abs(orderedPrices[index] - targetPrice) > 0.011) {
+                        add('RAW_TARGET_LADDER_INVALID');
+                    }
+                } else if (orderedPrices[index] !== undefined) {
+                    add('RAW_TARGET_LADDER_INCOMPLETE');
+                }
+            }
         }
         if (!['BULLISH', 'BEARISH', 'RANGE'].includes(parsed.htf_bias)) add('RAW_HTF_BIAS_INVALID');
         if (!['STRONG_IMPULSE', 'WEAK_RANGE'].includes(parsed.momentum_check)) add('RAW_MOMENTUM_CHECK_INVALID');
@@ -29650,14 +29725,18 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         }
         if (!parsed.sniper_zone_justification) {
             add('RAW_SNIPER_ZONE_JUSTIFICATION_REQUIRED');
-        } else if (!/\bPROXIMAL\b/i.test(parsed.sniper_zone_justification)
-            || !/\bDISPLACEMENT\b/i.test(parsed.sniper_zone_justification)) {
+        } else if (action === 'NO_TRADE'
+            ? !/^(?:NONE|N\/A|NOT\s+APPLICABLE)\b/i.test(parsed.sniper_zone_justification)
+            : (!/\bPROXIMAL\b/i.test(parsed.sniper_zone_justification)
+                || !/\bDISPLACEMENT\b/i.test(parsed.sniper_zone_justification))) {
             add('RAW_SNIPER_ZONE_JUSTIFICATION_INVALID');
         }
         if (!parsed.price_action_confirmation) {
             add('RAW_PRICE_ACTION_CONFIRMATION_REQUIRED');
-        } else if (!/\bWICK\b/i.test(parsed.price_action_confirmation)
-            || !/\bVOLUME\b/i.test(parsed.price_action_confirmation)) {
+        } else if (action === 'NO_TRADE'
+            ? !/^(?:NONE|N\/A|NOT\s+APPLICABLE)\b/i.test(parsed.price_action_confirmation)
+            : (!/\bWICK\b/i.test(parsed.price_action_confirmation)
+                || !/\bVOLUME\b/i.test(parsed.price_action_confirmation))) {
             add('RAW_PRICE_ACTION_CONFIRMATION_INVALID');
         }
         if (parsed.sl_method !== 'structural far-edge + max(4.50,0.5xATR)') {
@@ -29774,7 +29853,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             }
             const armableCandidates = numericCandidates.filter(candidate => candidate.distance >= 20 && candidate.distance <= 200);
             if (armableCandidates.length > 0
-                && !/\b(?:ALL\s+(?:available\s+)?POIs?\s+(?:fail|failed)[^\n.]*RR|ALL\s+(?:available\s+)?POIs?\s+(?:fail|failed)[^\n.]*fill_before_cancel|inside\s+EVERY\s+zone|STALE_PACKET_RESCAN|CONDITIONAL_SWING)\b/i.test(parsed.reason || '')) {
+                && !/\b(?:ALL\s+(?:(?:available|ranked)\s+)?POIs?\s+(?:fail|failed)[^\n.]*RR|ALL\s+(?:(?:available|ranked)\s+)?POIs?\s+(?:fail|failed)[^\n.]*fill_before_cancel|inside\s+EVERY\s+zone|STALE_PACKET_RESCAN|CONDITIONAL_SWING)\b/i.test(parsed.reason || '')) {
                 add('RAW_NO_TRADE_CASCADE_INCOMPLETE');
             }
             return {

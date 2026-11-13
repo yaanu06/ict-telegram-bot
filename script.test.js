@@ -10814,7 +10814,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.1');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.2');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10842,11 +10842,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V6.1 raw-candle reachability and current-session prompt', () => {
+    it('includes the V6.2 raw-candle reachability and directional target prompt', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V6.1 (ACTIONABLE RETEST & LIQUIDITY)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V6.2 (DIRECTIONAL LIQUIDITY TARGETS)');
         expect(packet).toContain('SELL_LIMIT: choose the nearest UNUSED LOW liquidity pool strictly BELOW');
         expect(packet).toContain('BUY_LIMIT: choose the nearest UNUSED HIGH liquidity pool strictly ABOVE');
         expect(packet).toContain('===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===');
@@ -10892,7 +10892,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('mark the pivot UNKNOWN unless a closed');
         expect(packet).toContain('audit_report.liquidity_pools.time is the source');
         expect(packet).toContain('Deduplicate identical prices at packet');
-        expect(packet).toContain('Never skip an UNUSED intermediate');
+        expect(packet).toMatch(/Never skip an\s+UNUSED intermediate/);
+        expect(packet).toContain('A swing/session HIGH below a SELL entry is NOT a target.');
+        expect(packet).toContain('"tp1_pool_type": "LOW" | "HIGH" | null');
         expect(packet).toContain('"known_at": "<confirmation/period close UTC>"');
         expect(packet).not.toContain('3872.20');
         expect(packet).toContain('If ALL POIs fail RR, return NO_TRADE.');
@@ -10950,7 +10952,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             quality: 'PRIME', window: 'NEW_YORK', prime: true, veto: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V6.1',
+            version: 'V6.2',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
@@ -11039,6 +11041,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         cancel_distance: 41,
         fill_before_cancel: true,
         tp1_is_nearest_unused: true,
+        tp1_pool_type: 'HIGH',
+        tp2_pool_type: 'HIGH',
+        tp3_pool_type: 'HIGH',
         rejected_nearer: [],
         rescan_if: 'At the next 1H close or if the cancel pool is swept.',
         fvg_scan: auditedFvgScan(),
@@ -11062,7 +11067,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         ...overrides
     });
 
-    it('parses and validates the V6.1 strict JSON output contract', () => {
+    it('parses and validates the V6.2 strict JSON output contract', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11084,6 +11089,36 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.fvg_scan).toContain('POI 3:');
     });
 
+    it('rejects target pools on the wrong liquidity side for the trade', () => {
+        const ctx = getContext();
+        const wrongTopLevelType = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            tp1_pool_type: 'LOW'
+        })));
+        expect(wrongTopLevelType.issues).toContain('RAW_TARGET_POOL_SIDE_INVALID');
+
+        const audit = structuredAudit(jsonResponse());
+        audit.liquidity_pools = [
+            { name: '1H swing low', type: 'LOW', tf: '1h', price: 4065.7, status: 'UNUSED' },
+            { name: '1H swing high', type: 'HIGH', tf: '1h', price: 4070.84, status: 'UNUSED' },
+            { name: '4H swing high', type: 'HIGH', tf: '4h', price: 4088.37, status: 'UNUSED' }
+        ];
+        const wrongAuditedType = ctx.parseRawCandleAIActionResponse(JSON.stringify({
+            ...jsonResponse(), audit_report: audit
+        }));
+        expect(wrongAuditedType.issues).toContain('RAW_TARGET_POOL_AUDIT_INVALID');
+
+        const validAudit = structuredAudit(jsonResponse());
+        validAudit.liquidity_pools = [
+            { name: '1H swing high', type: 'HIGH', tf: '1h', price: 4065.7, status: 'UNUSED' },
+            { name: '1H swing high', type: 'HIGH', tf: '1h', price: 4070.84, status: 'UNUSED' },
+            { name: '4H swing high', type: 'HIGH', tf: '4h', price: 4088.37, status: 'UNUSED' }
+        ];
+        const validAuditedTargets = ctx.parseRawCandleAIActionResponse(JSON.stringify({
+            ...jsonResponse(), audit_report: validAudit
+        }));
+        expect(validAuditedTargets.valid).toBe(true);
+    });
+
     it('requires packet freshness and checks fill-before-cancel as a diagnostic', () => {
         const ctx = getContext();
         const missingEcho = jsonResponse();
@@ -11101,7 +11136,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(falseDiagnostic.issues).toEqual([]);
     });
 
-    it('accepts the V6.1 selected-POI htf_context field', () => {
+    it('accepts the V6.2 selected-POI htf_context field', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11184,8 +11219,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             action: 'NO_TRADE', setup: 'NONE', entry: null, stop_loss: null, tp1: null, tp2: null, tp3: null,
             risk: null, rr_tp1: null, confidence: 0, timeframe_used: 'NONE', management: 'NONE',
             order_tag: 'none', expires_at: null, fill_before_cancel: false,
-            tp1_is_nearest_unused: false, cancel_level: null, cancel_distance: null,
+            tp1_is_nearest_unused: false, tp1_pool_type: null, tp2_pool_type: null, tp3_pool_type: null,
+            cancel_level: null, cancel_distance: null,
             entry_distance: null, rescan_if: 'No POI qualifies; rescan after next 1H close.', fvg_scan: noGapFvgScan,
+            sniper_zone_justification: 'NONE - no selected entry POI',
+            price_action_confirmation: 'NONE - no execution trigger; wick/volume not applicable',
             htf_context: 'Selected POI: NONE; nearest opposing HTF liquidity pool NONE', reason: 'No unmitigated POI exists.'
         });
         const result = ctx.parseRawCandleAIActionResponse(JSON.stringify({ ...response, audit_report: structuredAudit(response) }));
@@ -11259,7 +11297,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
 
     it('requires TP1 and validates every supplied secondary target while allowing absent further pools', () => {
         const ctx = getContext();
-        for (const targets of [{ tp2: null, tp3: null }, { tp2: null, tp3: 4080 }, { tp2: 4070, tp3: null }]) {
+        for (const targets of [
+            { tp2: null, tp3: null, tp2_pool_type: null, tp3_pool_type: null },
+            { tp2: null, tp3: 4080, tp2_pool_type: null, tp3_pool_type: 'HIGH' },
+            { tp2: 4070, tp3: null, tp2_pool_type: 'HIGH', tp3_pool_type: null }
+        ]) {
             expect(ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse(targets))).valid).toBe(true);
         }
         for (const targets of [{ tp1: null }, { tp2: '4040' }, { tp2: 4030, tp3: null }, { tp2: 4040, tp3: 4039 }]) {
@@ -11356,9 +11398,12 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             action: 'NO_TRADE', setup: 'NONE', entry: null, stop_loss: null, tp1: null, tp2: null, tp3: null,
             risk: null, rr_tp1: null, confidence: 0, timeframe_used: 'NONE', management: 'NONE',
             order_tag: 'none', expires_at: null, fill_before_cancel: false,
-            tp1_is_nearest_unused: false, cancel_level: null, cancel_distance: null,
+            tp1_is_nearest_unused: false, tp1_pool_type: null, tp2_pool_type: null, tp3_pool_type: null,
+            cancel_level: null, cancel_distance: null,
             entry_distance: null, rescan_if: 'No FVG/OB qualifies; rescan after next 1H close.',
             fvg_scan: noGapFvgScan,
+            sniper_zone_justification: 'NONE - no selected entry POI',
+            price_action_confirmation: 'NONE - no execution trigger; wick/volume not applicable',
             htf_context: 'Selected POI: NONE; nearest opposing HTF liquidity pool NONE',
             reason: 'There is no clear 1H POI to retest, so the setup is NO_TRADE.'
         });
@@ -11418,7 +11463,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_RR_BELOW_MINIMUM');
     });
 
-    it('requires the V6.1 bias, momentum, CHoCH, session, scan, and SL fields', () => {
+    it('requires the V6.2 bias, momentum, CHoCH, session, scan, and SL fields', () => {
         const ctx = getContext();
         const response = jsonResponse();
         delete response.htf_bias;
@@ -11429,6 +11474,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         delete response.expires_at;
         delete response.fvg_scan;
         delete response.sl_method;
+        delete response.tp1_pool_type;
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
         expect(parsed.valid).toBe(false);
         expect(parsed.issues).toContain('RAW_JSON_FIELDS_MISSING');
@@ -11605,8 +11651,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             action: 'NO_TRADE', setup: 'NONE', entry: null, stop_loss: null, tp1: null, tp2: null, tp3: null,
             risk: null, rr_tp1: null, confidence: 0, timeframe_used: 'NONE', management: 'NONE',
             order_tag: 'none', expires_at: null,
-            fill_before_cancel: false, tp1_is_nearest_unused: false, cancel_level: null,
+            fill_before_cancel: false, tp1_is_nearest_unused: false,
+            tp1_pool_type: null, tp2_pool_type: null, tp3_pool_type: null, cancel_level: null,
             cancel_distance: null, entry_distance: null, rescan_if: 'Rescan after the next 1H close.',
+            sniper_zone_justification: 'NONE - no selected entry POI',
+            price_action_confirmation: 'NONE - no execution trigger; wick/volume not applicable',
             htf_context: 'Selected POI: NONE; nearest opposing HTF liquidity pool Weak High 4065.70'
         };
         const premature = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
@@ -11616,7 +11665,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(premature.issues).toContain('RAW_NO_TRADE_CASCADE_INCOMPLETE');
         const exhausted = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
             ...base,
-            reason: 'ALL available POIs failed RR >= 2.00.'
+            reason: 'All ranked POIs failed RR >= 2.00.'
         })));
         expect(exhausted.valid).toBe(true);
     });
@@ -11711,7 +11760,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_NUMERIC_FIELDS_INVALID');
     });
 
-    it('rejects extra fields outside the V6.1 schema', () => {
+    it('rejects extra fields outside the V6.2 schema', () => {
         const ctx = getContext();
         const response = jsonResponse({ gate_0_candidate: { entry: 4034 } });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
