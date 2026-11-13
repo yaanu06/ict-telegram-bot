@@ -17156,7 +17156,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '=== JSON CONTRACT ===',
     '{',
     '  "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",',
-    '  "setup": "OB_RETEST" | "FVG_FILL" | "LIQUIDITY_SWEEP" | "NONE",',
+    '  "setup": "<OB_RETEST|FVG_FILL|LIQUIDITY_SWEEP, optionally same-POI +CRT and/or +MSNR; overlapping OB_RETEST+FVG_FILL allowed; or NONE>",',
     '  "htf_bias": "BULLISH" | "BEARISH" | "RANGE",',
     '  "momentum_check": "STRONG_IMPULSE" | "WEAK_RANGE",',
     '  "choch_detected": true | false,',
@@ -17165,7 +17165,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "expires_at": "<ISO8601 UTC or null>",',
     '  "fvg_scan": "<MANDATORY arithmetic. List gaps and create the Ranked Candidate List of POIs (POI 1, POI 2, POI 3) with distances from current price.>",',
     '  "htf_context": "<State which POI was selected from the Candidate List and why (e.g. \'POI 1 was 10 pts away, so discarded. Selected POI 2 at 3941.91 which is 42 pts away.\'). State nearest opposing liquidity pool.>",',
-    '  "crt_msnr_confirmation": "<sweep/retest and retail trap>",',
+    '  "crt_msnr_confirmation": "<CRT: CONFIRMED|NOT_CONFIRMED | Evidence: timeframe, candle time, reference range, strict sweep and body close back inside; MSNR: CONFIRMED|NOT_CONFIRMED | Evidence: level, prior touches, closed break, retest/rejection; LIQUIDITY: CONFIRMED|NOT_CONFIRMED | Evidence: named pool, level, time and swept/untouched status. Separate audits with JSON-escaped newlines.>",',
     '  "sniper_zone_justification": "<proximal edge and displacement>",',
     '  "price_action_confirmation": "<rejection wick size and volume>",',
     '  "sl_method": "structural far-edge + max(4.50,0.5xATR)",',
@@ -20312,6 +20312,9 @@ function buildRawCandleAiGhostRules() {
 2. CONVERSATIONAL TEXT: FORBIDDEN. Do NOT write "Here is the analysis".
 3. MARKDOWN: FORBIDDEN. Do NOT use \`\`\`json or backticks.
 4. Start your response EXACTLY with { and end EXACTLY with }.
+=== FORMATTING MANDATE ===
+5. PRETTY-PRINT the JSON object using two-space indentation, with every top-level
+   field on its own physical line. Do NOT minify the object into one paragraph.
 Use double-quoted JSON keys and string delimiters. Inside narrative values use
 single quotes or escape embedded double quotes. Encode string newlines as \\n.
 Never output literal line breaks inside a JSON string or a second explanation.
@@ -20355,10 +20358,28 @@ POI 1: [low]-[high] | type=FVG or OB | proximal edge=<number> | distance from CU
 Repeat for POI 2 and POI 3. Use POI N: NONE when fewer than three exist.
 Rank ONLY unmitigated zones, by increasing absolute distance. PARTIAL and YES zones
 remain in the gap audit but MUST NOT enter the ranked list. Never invent a third POI.
+Include close zones in the ranked list BEFORE applying the 20-point cascade filter.
+Do not silently remove a nearer zone just because it will be discarded at Step 4.
 For SELL_LIMIT above current price, proximal=LOW edge, far=HIGH edge.
 For BUY_LIMIT below current price, proximal=HIGH edge, far=LOW edge.
 
 STEP 4. ENTRY LOGIC (CASCADING LIMIT ORDERS):
+Evaluate CRT, MSNR and liquidity on EVERY run and explicitly mark each CONFIRMED
+or NOT_CONFIRMED with evidence in crt_msnr_confirmation. Missing evidence means
+NOT_CONFIRMED. Retail-trap claims require an evidenced sweep or failed breakout.
+CRT: name a closed reference candle and its high/low range, then a later closed
+15M/5M candle that strictly sweeps one boundary and body-closes back inside.
+MSNR: name a support/resistance level and prior touches, a closed break through
+it, then a subsequent 15M/5M retest and rejection showing the role flip.
+LIQUIDITY: identify equal highs/lows, session or previous-day pools separately
+from the OB/FVG. State level, source candle/session and whether later price swept it.
+FVG/OB zones are POIs, never liquidity pools. LTF evidence confirms the setup;
+it cannot replace the selected 1H/4H proximal entry or structural stop.
+setup must describe the actual primary POI, plus only CONFIRMED same-POI modifiers:
+FVG_FILL+CRT, OB_RETEST+MSNR, FVG_FILL+CRT+MSNR, or overlapping OB_RETEST+FVG_FILL.
+Do not add CRT/MSNR just because they occur elsewhere or write NOT_CONFIRMED in setup.
+Standalone LIQUIDITY_SWEEP reversals require RANGE and a confirmed CHoCH.
+Trend-aligned FVG/OB retests, including CRT/MSNR confluence, do not require CHoCH.
 Because we use LIMIT ORDERS, we arm the order BEFORE price arrives.
 - SCENARIO A (TREND RETEST):
   Select the BEST POI from your Candidate List that is >= 20 points away
@@ -20389,6 +20410,7 @@ Targets must be evidenced candle highs/lows, unused after formation, ordered out
 BUY entry<TP1<TP2<TP3; SELL entry>TP1>TP2>TP3. Never invent targets to meet RR.
 For sweeps/rejections cite candle times and actual wick/body sizes. A high that merely
 equals an earlier high is NOT proof of a sweep. No invented confirmations.
+Upper wick=high-max(open,close); lower wick=min(open,close)-low; body=abs(close-open).
 STRONG_IMPULSE requires all last 3 closed 1H volumes >1.5 times the last-20 average
 and large bodies; otherwise use WEAK_RANGE. Web search must not replace packet candles.
 Minimum RR at TP1 = 2.00. If RR < 2.00, discard this POI and cascade
@@ -29218,7 +29240,8 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             }
         }
         const fvgScanShowsZone = fvgGaps.length > 0;
-        const selectedPoiIndexMatch = parsed.htf_context?.match(/selected\s+POI\s*([123])\b/i);
+        const selectedPoiIndexMatch = parsed.htf_context?.match(/selected\s+POI\s*([123])\b/i)
+            || parsed.htf_context?.match(/POI\s*([123])\b[^;\n]{0,240}?\b(?:is|was)\s+selected\b/i);
         const selectedPoiIndex = selectedPoiIndexMatch ? Number(selectedPoiIndexMatch[1]) : null;
         const selectedCandidate = Number.isInteger(selectedPoiIndex)
             ? candidateLines[selectedPoiIndex - 1]
@@ -29231,11 +29254,11 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             const noSelectedPoi = /(?:selected\s+POI\s*(?::|=)?\s*NONE|NO\s+POI\s+SELECTED)/i.test(parsed.htf_context);
             if ((action !== 'NO_TRADE' && (!selectedCandidate || !selectedCandidate.valid || selectedCandidate.none))
                 || (action === 'NO_TRADE' && !noSelectedPoi)
-                || !/nearest\s+opposing\s+(?:HTF\s+)?liquidity\s+pool/i.test(parsed.htf_context)) {
+                || !/nearest\s+opposing\s+(?:(?:HTF|downside|upside)\s+)*liquidity\s+pool/i.test(parsed.htf_context)) {
                 add('RAW_HTF_CONTEXT_INVALID');
             }
             if (action !== 'NO_TRADE' && selectedCandidate?.valid) {
-                const selectedExplanation = parsed.htf_context.match(new RegExp('selected\\s+POI\\s*' + selectedPoiIndex + '\\b([^\\n;]{0,240})', 'i'))?.[1] || '';
+                const selectedExplanation = parsed.htf_context.match(new RegExp('(?:selected\\s+)?POI\\s*' + selectedPoiIndex + '\\b([^\\n;]{0,240})', 'i'))?.[1] || '';
                 const explainedDistances = [...selectedExplanation.matchAll(/(\d+(?:\.\d+)?)\s*(?:points|pts)\b/gi)].map(match => Number(match[1]));
                 if (!explainedDistances.some(distance => Math.abs(distance - selectedCandidate.distance) <= 0.011)) {
                     add('RAW_SELECTED_POI_JUSTIFICATION_INVALID');
@@ -29259,8 +29282,9 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         }
         if (!parsed.crt_msnr_confirmation) {
             add('RAW_CRT_MSNR_CONFIRMATION_REQUIRED');
-        } else if (!/\b(SWEEP|RETEST)/i.test(parsed.crt_msnr_confirmation)
-            || !/\b(RETAIL|TRAP)/i.test(parsed.crt_msnr_confirmation)) {
+        } else if (!/\b(?:CRT|MSNR|LIQUIDITY):\s*(?:CONFIRMED|NOT_CONFIRMED)\b/i.test(parsed.crt_msnr_confirmation)
+            && (!/\b(SWEEP|SWEPT|RETEST)/i.test(parsed.crt_msnr_confirmation)
+                || !/\b(RETAIL|TRAP)/i.test(parsed.crt_msnr_confirmation))) {
             add('RAW_CRT_MSNR_CONFIRMATION_INVALID');
         }
         if (!parsed.sniper_zone_justification) {
@@ -29292,8 +29316,32 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         if (/\b1\.5\s*x\s*ATR\b/i.test(parsed.session_volatility_check || '')) {
             add('RAW_SL_METHOD_INVALID');
         }
-        const continuationSetup = ['OB_RETEST', 'FVG_FILL'].includes(parsed.setup);
-        const reversalSetup = parsed.setup === 'LIQUIDITY_SWEEP';
+        const setupTokens = String(parsed.setup || '').split('+').map(token => token.trim());
+        const setupTokenSet = new Set(setupTokens);
+        const allowedSetupTokens = ['OB_RETEST', 'FVG_FILL', 'LIQUIDITY_SWEEP', 'CRT', 'MSNR', 'NONE'];
+        if (setupTokens.some(token => !allowedSetupTokens.includes(token))
+            || setupTokens.length !== setupTokenSet.size
+            || (setupTokenSet.has('NONE') && setupTokens.length > 1)
+            || (setupTokenSet.has('LIQUIDITY_SWEEP') && (setupTokenSet.has('OB_RETEST') || setupTokenSet.has('FVG_FILL')))) {
+            add('RAW_SETUP_INVALID');
+        }
+        const continuationSetup = setupTokenSet.has('OB_RETEST') || setupTokenSet.has('FVG_FILL');
+        const reversalSetup = setupTokenSet.has('LIQUIDITY_SWEEP');
+        const strategyAudit = name => parsed.crt_msnr_confirmation?.match(new RegExp('(?:^|[;\\n])\\s*' + name + ':\\s*(CONFIRMED|NOT_CONFIRMED)\\s*\\|\\s*Evidence:\\s*([^;\\n]+)', 'i'));
+        for (const modifier of ['CRT', 'MSNR']) {
+            if (!setupTokenSet.has(modifier)) continue;
+            const audit = strategyAudit(modifier);
+            if (!audit || audit[1].toUpperCase() !== 'CONFIRMED') {
+                add('RAW_' + modifier + '_CONFIRMATION_REQUIRED');
+                continue;
+            }
+            const evidence = audit[2];
+            const timedLtf = /\b(?:5M|15M)\b/i.test(evidence) && /\b\d{2}:\d{2}\b/.test(evidence);
+            const evidenced = modifier === 'CRT'
+                ? /\brange\b/i.test(evidence) && /\b(?:sweep|swept)\b/i.test(evidence) && /\bclose[ds]?\b/i.test(evidence) && /\binside\b/i.test(evidence)
+                : /\btouches\b/i.test(evidence) && /\b(?:break|broke|broken)\b/i.test(evidence) && /\b(?:retest|rejection)\b/i.test(evidence) && /\d+(?:\.\d+)?/.test(evidence);
+            if (!timedLtf || !evidenced) add('RAW_' + modifier + '_EVIDENCE_INVALID');
+        }
         const noSetup = parsed.setup === 'NONE';
         if (!continuationSetup && !reversalSetup && !noSetup) add('RAW_SETUP_INVALID');
         if (action === 'NO_TRADE' && !noSetup) add('RAW_NO_TRADE_SETUP_INVALID');

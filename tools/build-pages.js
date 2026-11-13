@@ -5,7 +5,7 @@ const path = require('node:path');
 
 const REPOSITORY_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_OUTPUT_DIR = path.join(REPOSITORY_ROOT, '.pages-artifact');
-const FRONTEND_FILES = ['index.html', 'script.js', 'style.css'];
+const FRONTEND_FILES = ['index.html', 'kronos-client.js', 'script.js', 'style.css'];
 const BUILD_TOKEN = '__ICT_BUILD_VERSION__';
 
 function validateBuildId(value) {

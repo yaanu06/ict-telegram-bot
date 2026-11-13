@@ -10,14 +10,16 @@ describe('GitHub Pages frontend artifact', () => {
         const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ict-pages-'));
         try {
             const result = buildPages({ outputDir, buildId: 'pages-test-123' });
-            expect(result.files.sort()).toEqual(['.nojekyll', 'index.html', 'script.js', 'style.css']);
-            expect(fs.readdirSync(outputDir).sort()).toEqual(['.nojekyll', 'index.html', 'script.js', 'style.css']);
+            expect(result.files.sort()).toEqual(['.nojekyll', 'index.html', 'kronos-client.js', 'script.js', 'style.css']);
+            expect(fs.readdirSync(outputDir).sort()).toEqual(['.nojekyll', 'index.html', 'kronos-client.js', 'script.js', 'style.css']);
 
             const index = fs.readFileSync(path.join(outputDir, 'index.html'), 'utf8');
             const script = fs.readFileSync(path.join(outputDir, 'script.js'), 'utf8');
             expect(index).toContain("window.__ICT_PROXY_BASE_URL__ = 'https://ict-telegram-bot-temf.onrender.com'");
             expect(index).toContain("window.__ICT_APP_BUILD_ID__ = 'pages-test-123'");
             expect(index).toContain('script.js?v=pages-test-123');
+            expect(index).toContain('kronos-client.js?v=pages-test-123');
+            expect(fs.readFileSync(path.join(outputDir, 'kronos-client.js'), 'utf8')).toContain('Kronos');
             expect(index).toContain('href="style.css"');
             expect(index).not.toMatch(/(?:src|href)="\/(?:script\.js|style\.css)/);
             expect(script).toContain('window.__ICT_APP_BUILD_ID__');

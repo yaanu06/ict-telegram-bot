@@ -10824,7 +10824,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('"sl_method": "structural far-edge + max(4.50,0.5xATR)"');
         expect(packet).toContain('STOP LOSS: Structural far edge of the POI + max(4.50, 0.5xATR).');
         expect(packet).toContain('If ALL POIs fail RR, return NO_TRADE.');
-        expect(packet).toContain('"setup": "OB_RETEST" | "FVG_FILL" | "LIQUIDITY_SWEEP" | "NONE"');
+        expect(packet).toContain('optionally same-POI +CRT and/or +MSNR');
         expect(packet).not.toContain('"htf_zone":');
         expect(packet).not.toContain('"audit": {');
         expect(packet).not.toContain('=== RAW CANDLE AI REVIEW INSTRUCTION ===');
@@ -11032,6 +11032,17 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.valid).toBe(false);
     });
 
+    it('accepts equivalent selection and sweep wording from the second browser run', () => {
+        const ctx = getContext();
+        const response = fs.readFileSync(path.join(__dirname, 'test-fixtures/v54-browser-response-second.json'), 'utf8');
+        const parsed = ctx.parseRawCandleAIActionResponse(response, { symbol: 'XAU/USD' });
+        expect(parsed.issues).toEqual([]);
+        expect(parsed.valid).toBe(true);
+        expect(parsed.action).toBe('SELL_LIMIT');
+        expect(parsed.risk).toBe(21.43);
+        expect(parsed.rr_tp1).toBe(3.14);
+    });
+
     it('accepts numeric ATR14 and approximate ATR notation observed in DeepSeek output', () => {
         const ctx = getContext();
         for (const atrText of ['1H ATR14=4.00', 'ATR(1H,14) ≈ 4.00', 'ATR(1H,14)=4.00']) {
@@ -11185,6 +11196,37 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             setup: 'LIQUIDITY_SWEEP', htf_bias: 'RANGE', momentum_check: 'WEAK_RANGE', choch_detected: true
         })));
         expect(confirmedReversal.issues).not.toContain('RAW_SWEEP_REVERSAL_REQUIRES_CHOCH');
+    });
+
+    it('accepts CRT/MSNR setup modifiers only with explicit timed LTF evidence', () => {
+        const ctx = getContext();
+        const evidence = [
+            'CRT: CONFIRMED | Evidence: 5M 07:10 swept reference range [4020]-[4030] low at 4019 then body closed back inside at 4025',
+            'MSNR: CONFIRMED | Evidence: level 4030 prior touches at 06:00 and 06:30, closed break at 07:00 then 15M 07:15 retest rejection',
+            'LIQUIDITY: NOT_CONFIRMED | Evidence: no separate swept pool confirmed'
+        ].join('\n');
+        const valid = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            setup: 'FVG_FILL+CRT+MSNR', choch_detected: false, crt_msnr_confirmation: evidence
+        })));
+        expect(valid.issues).toEqual([]);
+        const falseLabel = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            setup: 'FVG_FILL+CRT', crt_msnr_confirmation: evidence.replace('CRT: CONFIRMED', 'CRT: NOT_CONFIRMED')
+        })));
+        expect(falseLabel.issues).toContain('RAW_CRT_CONFIRMATION_REQUIRED');
+        const incomplete = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            setup: 'OB_RETEST+MSNR', crt_msnr_confirmation: 'MSNR: CONFIRMED | Evidence: it looks good'
+        })));
+        expect(incomplete.issues).toContain('RAW_MSNR_EVIDENCE_INVALID');
+    });
+
+    it('accepts same-POI OB and FVG confluence while rejecting unrecognized setup labels', () => {
+        const ctx = getContext();
+        expect(ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            setup: 'OB_RETEST+FVG_FILL'
+        }))).valid).toBe(true);
+        expect(ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            setup: 'FVG_FILL+MAGIC'
+        }))).issues).toContain('RAW_SETUP_INVALID');
     });
 
     it('enforces PRIME and SHOULDER order handling and confidence caps', () => {
