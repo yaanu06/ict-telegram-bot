@@ -1233,6 +1233,20 @@ describe('top-down trade context', () => {
         expect(html).not.toContain('Scan Replay</button>');
     });
 
+    it('keeps raw packet copy disabled until a current replay exists', () => {
+        const { context, elements } = getScanContext();
+        context.clearCurrentScanArtifact();
+        const button = elements.get('copyRawMarketBtn');
+        expect(button.disabled).toBe(true);
+        context.publishCurrentScanArtifact({
+            signal: { pair: 'XAU/USD' },
+            replay: { pair: 'XAU/USD' }
+        });
+        expect(button.disabled).toBe(false);
+        context.clearCurrentScanArtifact();
+        expect(button.disabled).toBe(true);
+    });
+
     it('carries reversal classification through the planner and analyst evidence catalog without changing entry models', () => {
         const ctx = getContext();
         const tf = context(ctx, 'BEARISH', 'BEARISH', 'MIXED', true);

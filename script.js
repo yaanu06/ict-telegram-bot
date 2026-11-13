@@ -27018,7 +27018,10 @@ async function runAutoScan() {
     } finally {
         btn.classList.remove('loading');
         btn.disabled = false;
-        if (copyRawBtn) copyRawBtn.disabled = false;
+        if (copyRawBtn) {
+            const artifactPair = normalizeCanonicalMarketSymbol(currentScanArtifact?.symbol || currentScanArtifact?.replay?.pair || '');
+            copyRawBtn.disabled = !currentScanArtifact?.replay || artifactPair !== normalizeCanonicalMarketSymbol(pair);
+        }
         scanStatus.classList.add('hidden');
         if (scanText) scanText.textContent = 'Scan complete';
         if (scanFill) scanFill.style.width = '100%';
@@ -28624,6 +28627,8 @@ function clearCurrentScanArtifact() {
     lastSetupOut = null;
     lastLiveMarketContextForReplay = null;
     if (typeof window !== 'undefined') window.__ICT_LAST_SCAN_REPLAY__ = null;
+    const copyRawBtn = typeof document !== 'undefined' ? document.getElementById('copyRawMarketBtn') : null;
+    if (copyRawBtn) copyRawBtn.disabled = true;
 }
 
 function publishCurrentScanArtifact({ signal = {}, replay = null, output = null } = {}) {
@@ -28644,6 +28649,11 @@ function publishCurrentScanArtifact({ signal = {}, replay = null, output = null 
         signal,
         replay
     };
+    const copyRawBtn = typeof document !== 'undefined' ? document.getElementById('copyRawMarketBtn') : null;
+    if (copyRawBtn) {
+        copyRawBtn.disabled = !replay
+            || normalizeCanonicalMarketSymbol(currentScanArtifact.symbol || '') !== normalizeCanonicalMarketSymbol(pair);
+    }
     return currentScanArtifact;
 }
 
