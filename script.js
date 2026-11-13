@@ -1073,6 +1073,7 @@ function init() {
     if(el('executeBtn')) el('executeBtn').addEventListener('click', handleLimit);
     if(el('cancelLimitBtn')) el('cancelLimitBtn').addEventListener('click', cancelLimit);
     if(el('copyRawMarketBtn')) el('copyRawMarketBtn').addEventListener('click', copyRawMarketAnalysisPacket);
+    if(el('downloadRawMarketBtn')) el('downloadRawMarketBtn').addEventListener('click', downloadRawMarketAnalysisPacket);
     if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click', showSetup);
     if(el('saveSetupBtn')) el('saveSetupBtn').addEventListener('click', saveCurrentSetup);
     if(el('recentList')) el('recentList').addEventListener('click', handleRecentClick);
@@ -20879,10 +20880,10 @@ async function writePlainTextToClipboard(packetText) {
     return fallbackCopyPlainText(packetText);
 }
 
-function copyRawMarketAnalysisPacket() {
+function getCurrentRawMarketAnalysisPacket() {
     if (scanInProgress) {
         showNotif('Analysis is still finishing; wait for Scan complete', 'warning');
-        return;
+        return null;
     }
     let artifact = currentScanArtifact;
     const activePair = normalizeCanonicalMarketSymbol(pair);
@@ -20913,10 +20914,18 @@ function copyRawMarketAnalysisPacket() {
     }
     if (!artifact?.replay || !artifactPair || !activePair || artifactPair !== activePair) {
         showNotif('Run a current-symbol analysis first', 'warning');
-        return;
+        return null;
     }
-    const textPacket = buildRawTextMarketAnalysisPacket({ signal: artifact.signal, replay: artifact.replay });
-    writePlainTextToClipboard(textPacket).then(copied => {
+    return {
+        text: buildRawTextMarketAnalysisPacket({ signal: artifact.signal, replay: artifact.replay }),
+        symbol: activePair
+    };
+}
+
+function copyRawMarketAnalysisPacket() {
+    const packet = getCurrentRawMarketAnalysisPacket();
+    if (!packet) return;
+    writePlainTextToClipboard(packet.text).then(copied => {
         if (!copied) {
             showNotif('Clipboard unavailable', 'error');
             return;
@@ -20926,6 +20935,28 @@ function copyRawMarketAnalysisPacket() {
         }
         showToast('Copied to clipboard');
     });
+}
+
+function downloadRawMarketAnalysisPacket() {
+    const packet = getCurrentRawMarketAnalysisPacket();
+    if (!packet) return;
+    if (typeof document === 'undefined' || typeof URL?.createObjectURL !== 'function' || typeof Blob === 'undefined') {
+        showNotif('File download is unavailable in this browser', 'error');
+        return;
+    }
+    const safeSymbol = packet.symbol.replace(/[^A-Z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'market';
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const file = new Blob([packet.text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(file);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `ict-raw-market-analysis-${safeSymbol}-${timestamp}.txt`;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast('Packet downloaded');
 }
 
 function buildCurrentCanonicalMarketSnapshotJson() {
@@ -25941,6 +25972,7 @@ async function runAutoScan() {
     clearCurrentScanArtifact();
     const btn = document.getElementById('analyzeBtn');
     const copyRawBtn = document.getElementById('copyRawMarketBtn');
+    const downloadRawBtn = document.getElementById('downloadRawMarketBtn');
     const scanStatus = document.getElementById('scanStatus');
     const scanText = document.getElementById('scanText');
     const scanFill = document.getElementById('scanProgressFill');
@@ -25948,6 +25980,7 @@ async function runAutoScan() {
     btn.classList.add('loading');
     btn.disabled = true;
     if (copyRawBtn) copyRawBtn.disabled = true;
+    if (downloadRawBtn) downloadRawBtn.disabled = true;
     scanStatus.classList.remove('hidden');
     scanTrace('START', scanStartedAt, { pair, timestamp: new Date().toISOString() });
 
@@ -27063,6 +27096,10 @@ async function runAutoScan() {
         if (copyRawBtn) {
             const artifactPair = normalizeCanonicalMarketSymbol(currentScanArtifact?.symbol || currentScanArtifact?.replay?.pair || '');
             copyRawBtn.disabled = !currentScanArtifact?.replay || artifactPair !== normalizeCanonicalMarketSymbol(pair);
+        }
+        if (downloadRawBtn) {
+            const artifactPair = normalizeCanonicalMarketSymbol(currentScanArtifact?.symbol || currentScanArtifact?.replay?.pair || '');
+            downloadRawBtn.disabled = !currentScanArtifact?.replay || artifactPair !== normalizeCanonicalMarketSymbol(pair);
         }
         scanStatus.classList.add('hidden');
         if (scanText) scanText.textContent = 'Scan complete';
@@ -28670,7 +28707,9 @@ function clearCurrentScanArtifact() {
     lastLiveMarketContextForReplay = null;
     if (typeof window !== 'undefined') window.__ICT_LAST_SCAN_REPLAY__ = null;
     const copyRawBtn = typeof document !== 'undefined' ? document.getElementById('copyRawMarketBtn') : null;
+    const downloadRawBtn = typeof document !== 'undefined' ? document.getElementById('downloadRawMarketBtn') : null;
     if (copyRawBtn) copyRawBtn.disabled = true;
+    if (downloadRawBtn) downloadRawBtn.disabled = true;
 }
 
 function publishCurrentScanArtifact({ signal = {}, replay = null, output = null } = {}) {
@@ -28692,8 +28731,13 @@ function publishCurrentScanArtifact({ signal = {}, replay = null, output = null 
         replay
     };
     const copyRawBtn = typeof document !== 'undefined' ? document.getElementById('copyRawMarketBtn') : null;
+    const downloadRawBtn = typeof document !== 'undefined' ? document.getElementById('downloadRawMarketBtn') : null;
     if (copyRawBtn) {
         copyRawBtn.disabled = !replay
+            || normalizeCanonicalMarketSymbol(currentScanArtifact.symbol || '') !== normalizeCanonicalMarketSymbol(pair);
+    }
+    if (downloadRawBtn) {
+        downloadRawBtn.disabled = !replay
             || normalizeCanonicalMarketSymbol(currentScanArtifact.symbol || '') !== normalizeCanonicalMarketSymbol(pair);
     }
     return currentScanArtifact;
