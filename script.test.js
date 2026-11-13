@@ -10762,7 +10762,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.2');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.3');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10790,16 +10790,19 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V5.2 Quantum Trend & Retest master prompt with the strict JSON contract', () => {
+    it('includes the V5.3 Quantum Trend & Retest master prompt with the absolute JSON-only override', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V5.2 (QUANTUM TREND & RETEST)');
-        expect(packet).toContain('=== STRICT OUTPUT RULE ===');
-        expect(packet).toContain('You MUST output ONLY a single, raw JSON object.');
-        expect(packet).toContain('1. Do NOT write any conversational text before or after the JSON.');
-        expect(packet).toContain('2. Do NOT wrap the JSON in markdown code blocks. No triple backticks.');
-        expect(packet).toContain('3. Start your response immediately with { and end it immediately with }.');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V5.3 (QUANTUM TREND & RETEST)');
+        expect(packet).toContain('===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===');
+        expect(packet).toContain('You are an API endpoint, not a chatbot.');
+        expect(packet).toContain('1. OUTPUT FORMAT: STRICT_JSON.');
+        expect(packet).toContain('2. CONVERSATIONAL TEXT: FORBIDDEN.');
+        expect(packet).toContain('3. MARKDOWN: FORBIDDEN. Do NOT use ```json or any backticks.');
+        expect(packet).toContain('4. ENGLISH EXPLANATION: FORBIDDEN.');
+        expect(packet).toContain('5. FAILURE TO COMPLY:');
+        expect(packet).toContain('Start your response EXACTLY with { and end EXACTLY with }.');
         expect(packet).toContain('=== CORE PRINCIPLE ===');
         expect(packet).toContain('AND your fvg_scan proves');
         expect(packet).toContain('STEP 3. FVG & POI DETECTION (MANDATORY ARITHMETIC — DO NOT SKIP):');
@@ -10880,7 +10883,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             quality: 'PRIME', window: 'NEW_YORK', prime: true, veto: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V5.2',
+            version: 'V5.3',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
@@ -10975,7 +10978,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         ...overrides
     });
 
-    it('parses and validates the V5.2 strict JSON output contract', () => {
+    it('parses and validates the V5.3 strict JSON output contract', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -10997,7 +11000,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.fvg_scan).toContain('CONFLUENCE POI');
     });
 
-    it('accepts the V5.2 htf_context field', () => {
+    it('accepts the V5.3 htf_context field', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11068,7 +11071,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_RR_BELOW_MINIMUM');
     });
 
-    it('requires the V5.2 bias, momentum, CHoCH, session, scan, and SL fields', () => {
+    it('requires the V5.3 bias, momentum, CHoCH, session, scan, and SL fields', () => {
         const ctx = getContext();
         const response = jsonResponse();
         delete response.htf_bias;
@@ -11265,7 +11268,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_NUMERIC_FIELDS_INVALID');
     });
 
-    it('rejects extra fields outside the V5.2 schema', () => {
+    it('rejects extra fields outside the V5.3 schema', () => {
         const ctx = getContext();
         const response = jsonResponse({ gate_0_candidate: { entry: 4034 } });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));

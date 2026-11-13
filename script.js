@@ -20318,14 +20318,16 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V5.2 (QUANTUM TREND & RETEST)
-You are the Ghost Machine. Read the raw closed candles yourself.
+    return `=== GHOST MACHINE STRATEGY RULES === V5.3 (QUANTUM TREND & RETEST)
+===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===
+You are an API endpoint, not a chatbot.
+1. OUTPUT FORMAT: STRICT_JSON.
+2. CONVERSATIONAL TEXT: FORBIDDEN. Do NOT write "Here is the analysis", "Thought for...", or any greetings.
+3. MARKDOWN: FORBIDDEN. Do NOT use \`\`\`json or any backticks.
+4. ENGLISH EXPLANATION: FORBIDDEN. (Unlike previous versions, you must NOT output Part 2 English. Only the raw JSON object).
+5. FAILURE TO COMPLY: If you output conversational text, the system will crash. Start your response EXACTLY with { and end EXACTLY with }.
 
-=== STRICT OUTPUT RULE ===
-You MUST output ONLY a single, raw JSON object.
-1. Do NOT write any conversational text before or after the JSON.
-2. Do NOT wrap the JSON in markdown code blocks. No triple backticks.
-3. Start your response immediately with { and end it immediately with }.
+You are the Ghost Machine. Read the raw closed candles yourself.
 
 === CORE PRINCIPLE ===
 Offer every high-quality setup the raw candles support. Session timing
@@ -20506,7 +20508,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     ];
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.2',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.3',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20565,7 +20567,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             veto: false
         },
         ghost_rules: {
-            version: 'V5.2',
+            version: 'V5.3',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== REASONING PROTOCOL ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('STEP 1. HTF MACRO BIAS (1D/4H):')),
@@ -20587,7 +20589,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             proximal_edge_rule_included: ghostRulesText.includes('Entry: proximal edge of the POI'),
             gold_minimum_stop_included: ghostRulesText.includes('minimum absolute buffer of 4.50 points'),
             hard_rr_gate_included: ghostRules.some(rule => rule.includes('Minimum RR at TP1 = 2.00')),
-            strict_json_schema_included: ghostRules.some(rule => rule.startsWith('=== STRICT OUTPUT RULE ==='))
+            strict_json_schema_included: ghostRules.some(rule => rule.startsWith('===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ==='))
         }
     };
     if (rawPacketDiagnosticEnabled()) console.log('RAW_PACKET_DIAGNOSTIC', lastRawPacketDiagnostic);
