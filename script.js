@@ -20402,7 +20402,7 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V5.6 (CURRENT-SESSION VALIDITY & LIQUIDITY)
+    return `=== GHOST MACHINE STRATEGY RULES === V5.7 (CLOSED-BAR TIMESTAMP SEMANTICS & LIQUIDITY)
 ===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===
 1. OUTPUT FORMAT: STRICT_JSON.
 2. CONVERSATIONAL TEXT: FORBIDDEN. Do NOT write "Here is the analysis".
@@ -20479,12 +20479,24 @@ For BUY_LIMIT below current price, proximal=HIGH edge, far=LOW edge.
 STEP 4. ENTRY LOGIC (CASCADING LIMIT ORDERS):
 QUOTE FRESHNESS AND CURRENT-SESSION HORIZON:
 Use only packet CURRENT PRICE, QUOTE TIME, SERVER_TIME_UTC and closed candles.
-Search must not replace any market price. If QUOTE TIME is older than one 5M
-interval relative to SERVER_TIME_UTC, if a later closed 5M candle exists after the
-quote time, or any required timeframe is missing/stale, return NO_TRADE with
-reason STALE_PACKET_RESCAN. Echo CURRENT PRICE and QUOTE TIME exactly. valid_until
-is the earlier of current UTC session end or next 1H candle close; rescan_if states
-the event or expiry that invalidates the analysis.
+Search must not replace any market price. Echo CURRENT PRICE and QUOTE TIME exactly.
+Timestamp semantics are mandatory:
+- If QUOTE_SOURCE=CANDLE_CLOSE_FALLBACK and DATA_STATUS=CLOSED_5M_REFERENCE,
+  QUOTE TIME is the open-time label of the closed 5M candle whose CLOSE supplies
+  CURRENT PRICE. Compute effective_quote_time = QUOTE TIME + 5 minutes. Verify the
+  5M row at QUOTE TIME has close equal to CURRENT PRICE. Do not treat the open-time
+  label itself as the time the close became available.
+- For every other quote source, QUOTE TIME is the quote event time and is used
+  directly as effective_quote_time.
+For both cases, return NO_TRADE with reason STALE_PACKET_RESCAN if the matching
+price row is absent or inconsistent, SERVER_TIME_UTC - effective_quote_time is
+greater than one 5M interval, a later 5M candle is closed by SERVER_TIME_UTC, or
+any required timeframe is missing/stale. For a fallback candle, a later candle is
+closed when its open-time label + 5 minutes is <= SERVER_TIME_UTC; compare candle
+labels using that same open-time convention. For a provider quote, a later closed
+5M candle must have a close time later than the quote event time to invalidate it.
+valid_until is the earlier of current UTC session end or next 1H candle close;
+rescan_if states the event or expiry that invalidates the analysis.
 
 Report entry_distance for every POI. Keep the existing 20-point Gold minimum as
 the no-chase floor; a POI touched by any later closed candle is consumed for a new
@@ -20685,7 +20697,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     ];
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.6',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.7',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20747,7 +20759,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             veto: false
         },
         ghost_rules: {
-            version: 'V5.6',
+            version: 'V5.7',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== REASONING PROTOCOL ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('STEP 1. HTF MACRO BIAS (1D/4H):')),
@@ -29360,7 +29372,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             'management', 'reason'
         ];
         if (required.some(key => !Object.prototype.hasOwnProperty.call(json, key))) add('RAW_JSON_FIELDS_MISSING');
-        // Structured evidence is optional; V5.6 quote/reachability fields remain mandatory.
+        // Structured evidence is optional; V5.7 quote/reachability fields remain mandatory.
         const allowedTopLevel = new Set([...required, 'audit_report', 'instrument_policy']);
         if (Object.keys(json).some(key => !allowedTopLevel.has(key))) add('RAW_JSON_EXTRA_FIELDS');
         const action = String(json.action ?? '').trim().toUpperCase();
