@@ -1627,8 +1627,9 @@ function refreshStaleQuoteFromClosedCandle(quoteSnapshot, historyCache, asOfMs =
     return {
         ...quoteSnapshot,
         price: Number(latest.c),
-        provider_timestamp: candleTime,
-        provider_timestamp_utc: new Date(candleTime).toISOString(),
+        provider_timestamp: candleTime + timeframeDurationMs(timeframe),
+        provider_timestamp_utc: new Date(candleTime + timeframeDurationMs(timeframe)).toISOString(),
+        provider_open_time_utc: new Date(candleTime).toISOString(),
         quote_source: 'CANDLE_CLOSE_FALLBACK',
         quote_fallback_reason: 'STALE_QUOTE_ENDPOINT'
     };
@@ -20402,7 +20403,7 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V5.7 (CLOSED-BAR TIMESTAMP SEMANTICS & LIQUIDITY)
+    return `=== GHOST MACHINE STRATEGY RULES === V5.8 (QUOTE CLOSE-TIME & LIQUIDITY)
 ===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===
 1. OUTPUT FORMAT: STRICT_JSON.
 2. CONVERSATIONAL TEXT: FORBIDDEN. Do NOT write "Here is the analysis".
@@ -20482,19 +20483,21 @@ Use only packet CURRENT PRICE, QUOTE TIME, SERVER_TIME_UTC and closed candles.
 Search must not replace any market price. Echo CURRENT PRICE and QUOTE TIME exactly.
 Timestamp semantics are mandatory:
 - If QUOTE_SOURCE=CANDLE_CLOSE_FALLBACK and DATA_STATUS=CLOSED_5M_REFERENCE,
-  QUOTE TIME is the open-time label of the closed 5M candle whose CLOSE supplies
-  CURRENT PRICE. Compute effective_quote_time = QUOTE TIME + 5 minutes. Verify the
-  5M row at QUOTE TIME has close equal to CURRENT PRICE. Do not treat the open-time
-  label itself as the time the close became available.
-- For every other quote source, QUOTE TIME is the quote event time and is used
-  directly as effective_quote_time.
+  QUOTE TIME is the close time of the closed 5M candle whose CLOSE supplies
+  CURRENT PRICE. Verify the row with open-time label QUOTE TIME - 5 minutes has
+  close equal to CURRENT PRICE.
+- For QUOTE_SOURCE=QUOTE, QUOTE TIME is the provider's price-update time. The TVKIT
+  quote adapter derives this price from the latest closed 5M bar and stamps the
+  quote at that bar's close time, not its open-time label.
+In both cases, use QUOTE TIME directly as effective_quote_time; do not add another
+5 minutes to it. Candle rows are open-time labeled, so a row's close time is its
+timestamp + 5 minutes.
 For both cases, return NO_TRADE with reason STALE_PACKET_RESCAN if the matching
-price row is absent or inconsistent, SERVER_TIME_UTC - effective_quote_time is
-greater than one 5M interval, a later 5M candle is closed by SERVER_TIME_UTC, or
-any required timeframe is missing/stale. For a fallback candle, a later candle is
-closed when its open-time label + 5 minutes is <= SERVER_TIME_UTC; compare candle
-labels using that same open-time convention. For a provider quote, a later closed
-5M candle must have a close time later than the quote event time to invalidate it.
+fallback price row is absent or inconsistent, SERVER_TIME_UTC - effective_quote_time
+is greater than one 5M interval, a later 5M candle is closed by SERVER_TIME_UTC, or
+any required timeframe is missing/stale. A later 5M candle is closed when its
+open-time label + 5 minutes is <= SERVER_TIME_UTC; it invalidates the quote only
+when its close time is later than QUOTE TIME.
 valid_until is the earlier of current UTC session end or next 1H candle close;
 rescan_if states the event or expiry that invalidates the analysis.
 
@@ -20697,7 +20700,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     ];
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.7',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.8',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20759,7 +20762,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             veto: false
         },
         ghost_rules: {
-            version: 'V5.7',
+            version: 'V5.8',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== REASONING PROTOCOL ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('STEP 1. HTF MACRO BIAS (1D/4H):')),
@@ -29382,7 +29385,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             'management', 'reason'
         ];
         if (required.some(key => !Object.prototype.hasOwnProperty.call(json, key))) add('RAW_JSON_FIELDS_MISSING');
-        // Structured evidence is optional; V5.7 quote/reachability fields remain mandatory.
+        // Structured evidence is optional; V5.8 quote/reachability fields remain mandatory.
         const allowedTopLevel = new Set([...required, 'audit_report', 'instrument_policy']);
         if (Object.keys(json).some(key => !allowedTopLevel.has(key))) add('RAW_JSON_EXTRA_FIELDS');
         const action = String(json.action ?? '').trim().toUpperCase();

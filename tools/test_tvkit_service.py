@@ -69,7 +69,11 @@ class TvdatafeedQuoteTests(unittest.TestCase):
             result = asyncio.run(fetch_quote("XAU/USD"))
 
         self.assertEqual(result["price"], 4179.15)
-        self.assertEqual(result["timestamp"], "2026-10-09T20:00:00Z")
+        self.assertEqual(result["timestamp"], "2026-10-09T20:05:00Z")
+        self.assertEqual(result["provider_timestamp"], 1791576300000)
+        self.assertEqual(result["open_time"], "2026-10-09T20:00:00Z")
+        self.assertEqual(result["close_time"], "2026-10-09T20:05:00Z")
+        self.assertEqual(result["timestamp_semantics"], "CLOSE")
         self.assertEqual(result["symbol"], "OANDA:XAUUSD")
         self.assertEqual(result["engine"], "tvdatafeed-enhanced")
 

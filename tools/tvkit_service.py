@@ -528,9 +528,16 @@ async def fetch_quote(symbol: str) -> dict[str, Any]:
             f"after {FETCH_ATTEMPTS} attempts"
         )
     ts = bar["timestamp"]
+    close_ts = ts + INTERVALS["5min"][1]
     return {
         "price": float(bar["close"]),
-        "timestamp": iso(ts),
+        # Quotes are derived from a CLOSED candle. Publish when its close
+        # became available, not the candle's open-time label.
+        "timestamp": iso(close_ts),
+        "provider_timestamp": close_ts,
+        "open_time": iso(ts),
+        "close_time": iso(close_ts),
+        "timestamp_semantics": "CLOSE",
         "symbol": f"{exchange}:{tv_symbol_value}",
         "provider": "TVKIT",
         "engine": "tvdatafeed-enhanced",

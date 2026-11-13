@@ -10349,7 +10349,13 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         }, {
             '5M': [{ t: Date.parse('2026-09-19T05:55:00Z'), c: 81055, is_closed: true }]
         }, asOf, '5M');
-        expect(refreshed).toMatchObject({ price: 81055, provider_timestamp: Date.parse('2026-09-19T05:55:00Z'), quote_source: 'CANDLE_CLOSE_FALLBACK' });
+        expect(refreshed).toMatchObject({
+            price: 81055,
+            provider_timestamp: Date.parse('2026-09-19T06:00:00Z'),
+            provider_timestamp_utc: '2026-09-19T06:00:00.000Z',
+            provider_open_time_utc: '2026-09-19T05:55:00.000Z',
+            quote_source: 'CANDLE_CLOSE_FALLBACK'
+        });
     });
 
     it('uses supplied UTC symbol-session metadata before generic asset calendar fallback', () => {
@@ -10790,7 +10796,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.7');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.8');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10818,11 +10824,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V5.7 raw-candle reachability and current-session prompt', () => {
+    it('includes the V5.8 raw-candle reachability and current-session prompt', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V5.7 (CLOSED-BAR TIMESTAMP SEMANTICS & LIQUIDITY)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V5.8 (QUOTE CLOSE-TIME & LIQUIDITY)');
         expect(packet).toContain('===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===');
         expect(packet).toContain('1. OUTPUT FORMAT: STRICT_JSON.');
         expect(packet).toContain('2. CONVERSATIONAL TEXT: FORBIDDEN.');
@@ -10833,8 +10839,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('PARTIAL FVG CANDIDATE RULE:');
         expect(packet).toContain('compare it with the full realized range');
         expect(packet).toContain('reason STALE_PACKET_RESCAN');
-        expect(packet).toContain('effective_quote_time = QUOTE TIME + 5 minutes');
-        expect(packet).toContain('Do not treat the open-time');
+        expect(packet).toContain('QUOTE TIME directly as effective_quote_time; do not add another');
+        expect(packet).toContain('bar\'s close time, not its open-time label.');
         expect(packet).toContain('STEP 3. FVG & POI DETECTION (MANDATORY ARITHMETIC):');
         expect(packet).toContain('BEARISH FVG:  IF A.low > C.high');
         expect(packet).toContain('BULLISH FVG:  IF A.high < C.low');
@@ -10922,7 +10928,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             quality: 'PRIME', window: 'NEW_YORK', prime: true, veto: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V5.7',
+            version: 'V5.8',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
@@ -11034,7 +11040,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         ...overrides
     });
 
-    it('parses and validates the V5.7 strict JSON output contract', () => {
+    it('parses and validates the V5.8 strict JSON output contract', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11056,7 +11062,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.fvg_scan).toContain('POI 3:');
     });
 
-    it('requires packet freshness and fill-before-cancel fields in the V5.7 contract', () => {
+    it('requires packet freshness and fill-before-cancel fields in the V5.8 contract', () => {
         const ctx = getContext();
         const missingEcho = jsonResponse();
         delete missingEcho.quote_time_echo;
@@ -11068,7 +11074,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(falseGate.issues).toContain('RAW_FILL_BEFORE_CANCEL_FAIL');
     });
 
-    it('accepts the V5.7 selected-POI htf_context field', () => {
+    it('accepts the V5.8 selected-POI htf_context field', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11356,7 +11362,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_RR_BELOW_MINIMUM');
     });
 
-    it('requires the V5.7 bias, momentum, CHoCH, session, scan, and SL fields', () => {
+    it('requires the V5.8 bias, momentum, CHoCH, session, scan, and SL fields', () => {
         const ctx = getContext();
         const response = jsonResponse();
         delete response.htf_bias;
@@ -11649,7 +11655,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_NUMERIC_FIELDS_INVALID');
     });
 
-    it('rejects extra fields outside the V5.7 schema', () => {
+    it('rejects extra fields outside the V5.8 schema', () => {
         const ctx = getContext();
         const response = jsonResponse({ gate_0_candidate: { entry: 4034 } });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));
