@@ -17163,6 +17163,16 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "session_quality": "PRIME" | "SHOULDER" | "OFF_SESSION",',
     '  "order_tag": "prime" | "shoulder" | "armed_off_session" | "none",',
     '  "expires_at": "<ISO8601 UTC or null>",',
+    '  "quote_price_echo": <number copied exactly from CURRENT PRICE>,',
+    '  "quote_time_echo": "<exact QUOTE TIME from packet>",',
+    '  "valid_until": "<ISO8601 UTC>",',
+    '  "entry_distance": <absolute points from packet quote to proposed entry>,',
+    '  "cancel_level": <nearest unused opposing pool between quote and trade direction, or null>,',
+    '  "cancel_distance": <absolute points from quote to cancel_level, or null>,',
+    '  "fill_before_cancel": true | false,',
+    '  "tp1_is_nearest_unused": true | false,',
+    '  "rejected_nearer": ["<pool/POI and exact reason>", ...],',
+    '  "rescan_if": "<specific invalidation/expiry event or NONE>",',
     '  "fvg_scan": "<MANDATORY arithmetic. List gaps and create the Ranked Candidate List of POIs (POI 1, POI 2, POI 3) with distances from current price.>",',
     '  "htf_context": "<State which POI was selected from the Candidate List and why (e.g. \'POI 1 was 10 pts away, so discarded. Selected POI 2 at 3941.91 which is 42 pts away.\'). State nearest opposing liquidity pool.>",',
     '  "crt_msnr_confirmation": "<CRT: CONFIRMED|NOT_CONFIRMED | Evidence: timeframe, candle time, reference range, strict sweep and body close back inside; MSNR: CONFIRMED|NOT_CONFIRMED | Evidence: level, prior touches, closed break, retest/rejection; LIQUIDITY: CONFIRMED|NOT_CONFIRMED | Evidence: named pool, level, time and swept/untouched status. Separate audits with JSON-escaped newlines.>",',
@@ -20392,7 +20402,7 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V5.5 (QUANTUM TREND & RETEST — COMPLETE LIQUIDITY LADDER)
+    return `=== GHOST MACHINE STRATEGY RULES === V5.6 (CURRENT-SESSION VALIDITY & LIQUIDITY)
 ===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===
 1. OUTPUT FORMAT: STRICT_JSON.
 2. CONVERSATIONAL TEXT: FORBIDDEN. Do NOT write "Here is the analysis".
@@ -20406,9 +20416,10 @@ single quotes or escape embedded double quotes. Encode string newlines as \\n.
 Never output literal line breaks inside a JSON string or a second explanation.
 
 === CORE PRINCIPLE ===
-Offer every high-quality setup. If the nearest POI is too close to current
-price (invalidating the RR), you MUST cascade to the next available POI
-up/down the structure. Return NO_TRADE only if NO valid POI exists.
+Offer the best genuinely actionable limit setup supported by this packet.
+Never present a conditional swing order as today's active opportunity. Use only
+this packet's quote and closed candles; Search cannot replace the packet's prices.
+Do not guarantee a setup exists. Return NO_TRADE when the hard gates fail.
 
 === REASONING PROTOCOL ===
 
@@ -20436,6 +20447,18 @@ FVG RULE:
 For EACH gap found, state:
   "<TF>_<BEARISH|BULLISH>_FVG: [low]-[high] | width=<w> pts | mitigated=<YES|NO|PARTIAL>"
 
+PARTIAL FVG CANDIDATE RULE:
+For a bearish FVG [low,high], inspect every later closed candle on that timeframe.
+If later highs entered the zone but every later high remains strictly below high,
+the unfilled remainder is [maximum later high, high]. Any later high >= high fully
+consumes the gap, regardless of close. For bullish FVGs, mirror this: if later lows
+entered the zone but remain strictly above low, remainder=[low, minimum later low];
+any later low <= low consumes it. Equality counts as fully mitigated. State the penetration candle time,
+original bounds, residual bounds and residual width. A zero-width residual or a
+body close through the far edge is CONSUMED and not a candidate. Candidate bounds
+and proximal edge for PARTIAL must use the verified remainder, not the original
+untouched edge.
+
 Identify nearest Order Blocks (OB).
 YOU MUST CREATE A RANKED CANDIDATE LIST OF POIs:
   - POI 1: The nearest unmitigated zone (FVG or OB) in the HTF trend direction.
@@ -20443,16 +20466,48 @@ YOU MUST CREATE A RANKED CANDIDATE LIST OF POIs:
   - POI 3: The NEXT unmitigated zone further away.
 State the exact proximal edge and distance from CURRENT_PRICE for each.
 Use this exact line format in fvg_scan, one candidate per line (JSON-escaped \\n):
-POI 1: [low]-[high] | type=FVG or OB | proximal edge=<number> | distance from CURRENT_PRICE=<number> pts | mitigated=NO
+POI 1: [low]-[high] | type=FVG or OB | proximal edge=<number> | distance from CURRENT_PRICE=<number> pts | mitigated=NO or PARTIAL | residual_verified=YES for PARTIAL
 Repeat for POI 2 and POI 3. Use POI N: NONE when fewer than three exist.
-Rank ONLY unmitigated zones, by increasing absolute distance. PARTIAL and YES zones
-remain in the gap audit but MUST NOT enter the ranked list. Never invent a third POI.
+Rank unmitigated zones and PARTIAL zones with a positive verified residual, by
+increasing absolute distance. Fully mitigated/consumed zones MUST NOT enter the
+ranked list. Never invent a third POI.
 Include close zones in the ranked list BEFORE applying the 20-point cascade filter.
 Do not silently remove a nearer zone just because it will be discarded at Step 4.
 For SELL_LIMIT above current price, proximal=LOW edge, far=HIGH edge.
 For BUY_LIMIT below current price, proximal=HIGH edge, far=LOW edge.
 
 STEP 4. ENTRY LOGIC (CASCADING LIMIT ORDERS):
+QUOTE FRESHNESS AND CURRENT-SESSION HORIZON:
+Use only packet CURRENT PRICE, QUOTE TIME, SERVER_TIME_UTC and closed candles.
+Search must not replace any market price. If QUOTE TIME is older than one 5M
+interval relative to SERVER_TIME_UTC, if a later closed 5M candle exists after the
+quote time, or any required timeframe is missing/stale, return NO_TRADE with
+reason STALE_PACKET_RESCAN. Echo CURRENT PRICE and QUOTE TIME exactly. valid_until
+is the earlier of current UTC session end or next 1H candle close; rescan_if states
+the event or expiry that invalidates the analysis.
+
+Report entry_distance for every POI. Keep the existing 20-point Gold minimum as
+the no-chase floor; a POI touched by any later closed candle is consumed for a new
+pending entry. Do not skip a valid residual due to rounding. State entry_distance
+and compare it with the full realized range of the current UTC session from packet
+candles. If entry_distance exceeds that range, label the order CONDITIONAL_SWING,
+state the required move, and do not describe it as an active current-session setup.
+This is descriptive only until a distance cutoff is calibrated from historical
+fills; do not invent ATR distance thresholds.
+
+FILL-BEFORE-CANCEL HARD GATE:
+For SELL_LIMIT above CURRENT PRICE, cancel_level is the nearest UNUSED opposing
+liquidity pool below CURRENT PRICE. For BUY_LIMIT below CURRENT PRICE, it is the
+nearest UNUSED opposing pool above CURRENT PRICE. Determine pool status from later
+closed candle wicks; equality counts as swept. If no such pool exists, set
+cancel_level and cancel_distance null and fill_before_cancel=false (unknown is not
+a pass). Compute entry_distance=abs(entry-CURRENT PRICE) and
+cancel_distance=abs(cancel_level-CURRENT PRICE). fill_before_cancel=true only if
+entry_distance is strictly less than cancel_distance and entry remains on the
+pending side of CURRENT PRICE. If false, discard that candidate and cascade; if
+all candidates fail, return NO_TRADE. This is a conservative reachability gate,
+not a guarantee about future price path.
+
 Evaluate CRT, MSNR and liquidity on EVERY run and explicitly mark each CONFIRMED
 or NOT_CONFIRMED with evidence in crt_msnr_confirmation. Missing evidence means
 NOT_CONFIRMED. Retail-trap claims require an evidenced sweep or failed breakout.
@@ -20471,7 +20526,7 @@ Standalone LIQUIDITY_SWEEP reversals require RANGE and a confirmed CHoCH.
 Trend-aligned FVG/OB retests, including CRT/MSNR confluence, do not require CHoCH.
 Because we use LIMIT ORDERS, we arm the order BEFORE price arrives.
 - SCENARIO A (TREND RETEST):
-  Select the BEST POI from your Candidate List that is >= 20 points away
+  Select the nearest valid POI from your Candidate List that is >= 20 points away
   from CURRENT_PRICE. Place the PENDING LIMIT at the proximal edge of this zone.
 - If POI 1 is < 20 points away, DISCARD POI 1 and move to POI 2.
 - If POI 2 is < 20 points away, DISCARD POI 2 and move to POI 3.
@@ -20569,9 +20624,13 @@ are explicitly UNTESTED_LEGACY; do not introduce ATR-based distance defaults.
 
 === NO_TRADE RULES ===
 Return NO_TRADE ONLY IF:
-1. There are NO unmitigated POIs within 200 pts of CURRENT_PRICE.
+1. There are NO unmitigated or positive-width verified residual POIs within
+   200 pts of CURRENT_PRICE.
 2. ALL available POIs fail the RR >= 2.00 test.
-3. Current price is inside EVERY zone (no distant zones to arm).
+3. Every candidate fails fill_before_cancel, has already been consumed, is too
+   close to place a pending order without chasing, or only a conditional swing
+   setup remains for a later session.
+4. The packet is stale or internally inconsistent (reason STALE_PACKET_RESCAN).
 Session quality alone is NEVER a NO_TRADE reason.
 For NO_TRADE use setup=NONE, order_tag=none, expires_at=null, confidence=0,
 timeframe_used=NONE, management=NONE, and all entry/stop/target/risk/RR fields=null.
@@ -20626,7 +20685,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     ];
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.5',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.6',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20688,7 +20747,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             veto: false
         },
         ghost_rules: {
-            version: 'V5.5',
+            version: 'V5.6',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== REASONING PROTOCOL ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('STEP 1. HTF MACRO BIAS (1D/4H):')),
@@ -29292,14 +29351,16 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         const add = issue => { if (!issues.includes(issue)) issues.push(issue); };
         const required = [
             'action', 'setup', 'htf_bias', 'momentum_check', 'choch_detected',
-            'session_quality', 'order_tag', 'expires_at', 'fvg_scan',
+            'session_quality', 'order_tag', 'expires_at', 'quote_price_echo', 'quote_time_echo',
+            'valid_until', 'entry_distance', 'cancel_level', 'cancel_distance',
+            'fill_before_cancel', 'tp1_is_nearest_unused', 'rejected_nearer', 'rescan_if', 'fvg_scan',
             'htf_context', 'crt_msnr_confirmation', 'sniper_zone_justification',
             'price_action_confirmation', 'sl_method', 'session_volatility_check', 'entry', 'stop_loss',
             'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1', 'confidence', 'timeframe_used',
             'management', 'reason'
         ];
         if (required.some(key => !Object.prototype.hasOwnProperty.call(json, key))) add('RAW_JSON_FIELDS_MISSING');
-        // Optional evidence blocks preserve compatibility with captured V5.4 decisions.
+        // Structured evidence is optional; V5.6 quote/reachability fields remain mandatory.
         const allowedTopLevel = new Set([...required, 'audit_report', 'instrument_policy']);
         if (Object.keys(json).some(key => !allowedTopLevel.has(key))) add('RAW_JSON_EXTRA_FIELDS');
         const action = String(json.action ?? '').trim().toUpperCase();
@@ -29312,6 +29373,16 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             session_quality: text(json.session_quality)?.toUpperCase() || null,
             order_tag: text(json.order_tag)?.toLowerCase() || null,
             expires_at: json.expires_at === null ? null : text(json.expires_at),
+            quote_price_echo: typeof json.quote_price_echo === 'number' && Number.isFinite(json.quote_price_echo) ? json.quote_price_echo : null,
+            quote_time_echo: text(json.quote_time_echo),
+            valid_until: text(json.valid_until),
+            entry_distance: typeof json.entry_distance === 'number' && Number.isFinite(json.entry_distance) ? json.entry_distance : null,
+            cancel_level: typeof json.cancel_level === 'number' && Number.isFinite(json.cancel_level) ? json.cancel_level : null,
+            cancel_distance: typeof json.cancel_distance === 'number' && Number.isFinite(json.cancel_distance) ? json.cancel_distance : null,
+            fill_before_cancel: json.fill_before_cancel,
+            tp1_is_nearest_unused: json.tp1_is_nearest_unused,
+            rejected_nearer: Array.isArray(json.rejected_nearer) ? json.rejected_nearer : null,
+            rescan_if: text(json.rescan_if),
             fvg_scan: text(json.fvg_scan),
             htf_context: text(json.htf_context),
             crt_msnr_confirmation: text(json.crt_msnr_confirmation),
@@ -29345,6 +29416,24 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         const nullableGeometryFields = ['entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1'];
         if (stringFields.some(field => typeof json[field] !== 'string')) add('RAW_STRING_FIELDS_INVALID');
         if (json.expires_at !== null && typeof json.expires_at !== 'string') add('RAW_EXPIRES_AT_INVALID');
+        const isoUtc = value => typeof value === 'string'
+            && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)
+            && Number.isFinite(Date.parse(value));
+        if (!isoUtc(json.quote_time_echo)) add('RAW_QUOTE_TIME_ECHO_INVALID');
+        if (!isoUtc(json.valid_until)) add('RAW_VALID_UNTIL_INVALID');
+        if (isoUtc(json.quote_time_echo) && isoUtc(json.valid_until)
+            && Date.parse(json.valid_until) <= Date.parse(json.quote_time_echo)) add('RAW_VALIDITY_WINDOW_INVALID');
+        if (typeof json.quote_price_echo !== 'number' || !Number.isFinite(json.quote_price_echo)
+            || (json.entry_distance !== null && (typeof json.entry_distance !== 'number' || !Number.isFinite(json.entry_distance) || json.entry_distance < 0))
+            || (json.cancel_level !== null && (typeof json.cancel_level !== 'number' || !Number.isFinite(json.cancel_level)))
+            || (json.cancel_distance !== null && (typeof json.cancel_distance !== 'number' || !Number.isFinite(json.cancel_distance) || json.cancel_distance < 0))) {
+            add('RAW_REACHABILITY_NUMERIC_FIELDS_INVALID');
+        }
+        if (typeof json.fill_before_cancel !== 'boolean' || typeof json.tp1_is_nearest_unused !== 'boolean'
+            || !Array.isArray(json.rejected_nearer) || json.rejected_nearer.some(item => typeof item !== 'string')
+            || typeof json.rescan_if !== 'string' || !json.rescan_if.trim()) {
+            add('RAW_REACHABILITY_FIELDS_INVALID');
+        }
         if (typeof json.confidence !== 'number' || !Number.isFinite(json.confidence)
             || nullableGeometryFields.some(field => json[field] !== null
                 && (typeof json[field] !== 'number' || !Number.isFinite(json[field])))) {
@@ -29387,7 +29476,8 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
                 index,
                 present: true,
                 none: false,
-                valid: !!zoneBounds && zoneBounds[1] > zoneBounds[0] && !!proximal && !!distance && !!type && mitigation === 'NO',
+                valid: !!zoneBounds && zoneBounds[1] > zoneBounds[0] && !!proximal && !!distance && !!type
+                    && (mitigation === 'NO' || (mitigation === 'PARTIAL' && /residual_verified\s*=\s*YES/i.test(line))),
                 bounds: zoneBounds,
                 proximal: proximal ? Number(proximal[1]) : null,
                 distance: distance ? Number(distance[1]) : null,
@@ -29555,6 +29645,20 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         if (action !== 'NO_TRADE') {
             if (!Number.isFinite(poiDistance) || poiDistance < 20) add('RAW_SELECTED_POI_TOO_CLOSE');
             if (Number.isFinite(poiDistance) && poiDistance > 200) add('RAW_SELECTED_POI_OUT_OF_RANGE');
+            const computedEntryDistance = Number.isFinite(parsed.entry) && Number.isFinite(parsed.quote_price_echo)
+                ? Math.abs(parsed.entry - parsed.quote_price_echo) : null;
+            const computedCancelDistance = Number.isFinite(parsed.cancel_level) && Number.isFinite(parsed.quote_price_echo)
+                ? Math.abs(parsed.cancel_level - parsed.quote_price_echo) : null;
+            if (parsed.fill_before_cancel !== true || parsed.tp1_is_nearest_unused !== true
+                || parsed.cancel_level === null || parsed.cancel_distance === null
+                || computedEntryDistance === null || computedCancelDistance === null
+                || computedEntryDistance >= computedCancelDistance
+                || (action === 'BUY_LIMIT' && !(parsed.entry < parsed.quote_price_echo && parsed.cancel_level > parsed.quote_price_echo))
+                || (action === 'SELL_LIMIT' && !(parsed.entry > parsed.quote_price_echo && parsed.cancel_level < parsed.quote_price_echo))
+                || Math.abs(parsed.entry_distance - computedEntryDistance) > 0.011
+                || Math.abs(parsed.cancel_distance - computedCancelDistance) > 0.011) {
+                add('RAW_FILL_BEFORE_CANCEL_FAIL');
+            }
         }
         if (action === 'NO_TRADE') {
             if (parsed.order_tag !== 'none') add('RAW_NO_TRADE_ORDER_TAG_INVALID');
@@ -29567,12 +29671,12 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             }
             if (!parsed.reason) {
                 add('RAW_REASON_REQUIRED');
-            } else if (!/\b(POI|ORDER\s+BLOCK|FVG|RR|RISK[-_ ]?REWARD|SCENARIO|IMPULSE|SWEEP|CHOCH|price_at_poi_off_session)\b/i.test(parsed.reason)) {
+            } else if (!/\b(POI|ORDER\s+BLOCK|FVG|RR|RISK[-_ ]?REWARD|SCENARIO|IMPULSE|SWEEP|CHOCH|STALE_PACKET_RESCAN|fill_before_cancel|CONDITIONAL_SWING|price_at_poi_off_session)\b/i.test(parsed.reason)) {
                 add('RAW_NO_TRADE_REASON_INVALID');
             }
             const armableCandidates = numericCandidates.filter(candidate => candidate.distance >= 20 && candidate.distance <= 200);
             if (armableCandidates.length > 0
-                && !/\b(?:ALL\s+(?:available\s+)?POIs?\s+(?:fail|failed)[^\n.]*RR|inside\s+EVERY\s+zone)\b/i.test(parsed.reason || '')) {
+                && !/\b(?:ALL\s+(?:available\s+)?POIs?\s+(?:fail|failed)[^\n.]*RR|ALL\s+(?:available\s+)?POIs?\s+(?:fail|failed)[^\n.]*fill_before_cancel|inside\s+EVERY\s+zone|STALE_PACKET_RESCAN|CONDITIONAL_SWING)\b/i.test(parsed.reason || '')) {
                 add('RAW_NO_TRADE_CASCADE_INCOMPLETE');
             }
             return {
