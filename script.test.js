@@ -11043,6 +11043,29 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.rr_tp1).toBe(3.14);
     });
 
+    it('validates the final multiline live response with unbracketed numeric ranges', () => {
+        const ctx = getContext();
+        const response = fs.readFileSync(path.join(__dirname, 'test-fixtures/v54-browser-response-final.json'), 'utf8');
+        const parsed = ctx.parseRawCandleAIActionResponse(response, { symbol: 'XAU/USD' });
+        expect(parsed.issues).toEqual([]);
+        expect(parsed.valid).toBe(true);
+        expect(parsed.setup).toBe('FVG_FILL');
+        expect(parsed.crt_msnr_confirmation).toContain('CRT: NOT_CONFIRMED');
+        expect(parsed.crt_msnr_confirmation).toContain('MSNR: NOT_CONFIRMED');
+        expect(parsed.risk).toBe(21.18);
+        expect(parsed.rr_tp1).toBe(3.18);
+    });
+
+    it('rejects reversed, zero-width, and arithmetically inconsistent zone bounds', () => {
+        const ctx = getContext();
+        for (const bounds of ['[4034]-[4032]', '4034-4034']) {
+            const response = jsonResponse({ fvg_scan: auditedFvgScan().replace('POI 1: [4032]-[4034]', 'POI 1: ' + bounds) });
+            expect(ctx.parseRawCandleAIActionResponse(JSON.stringify(response)).issues).toContain('RAW_POI_CANDIDATE_INVALID');
+        }
+        const response = jsonResponse({ fvg_scan: auditedFvgScan().replace('width=2 pts', 'width=20 pts') });
+        expect(ctx.parseRawCandleAIActionResponse(JSON.stringify(response)).issues).toContain('RAW_FVG_SCAN_ARITHMETIC_INVALID');
+    });
+
     it('accepts numeric ATR14 and approximate ATR notation observed in DeepSeek output', () => {
         const ctx = getContext();
         for (const atrText of ['1H ATR14=4.00', 'ATR(1H,14) ≈ 4.00', 'ATR(1H,14)=4.00']) {

@@ -29192,28 +29192,28 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
                 || !Number.isFinite(Date.parse(parsed.expires_at)))) {
             add('RAW_EXPIRES_AT_INVALID');
         }
-        const fvgGapPattern = /\b(1H|4H)_(BEARISH|BULLISH)_FVG:\s*\[(-?\d+(?:\.\d+)?)\]\s*-\s*\[(-?\d+(?:\.\d+)?)\]\s*\|\s*width\s*=\s*(\d+(?:\.\d+)?)\s*pts\s*(?:\|\s*formed\s*=\s*[^|]+)?\|\s*mitigated\s*=\s*(YES|NO|PARTIAL)\b/gi;
+        const fvgGapPattern = /\b(1H|4H)_(BEARISH|BULLISH)_FVG:\s*\[?(-?\d+(?:\.\d+)?)\]?\s*-\s*\[?(-?\d+(?:\.\d+)?)\]?\s*\|\s*width\s*=\s*(\d+(?:\.\d+)?)\s*pts\s*(?:\|\s*formed\s*=\s*[^|]+)?\|\s*mitigated\s*=\s*(YES|NO|PARTIAL)\b/gi;
         const fvgGaps = parsed.fvg_scan ? [...parsed.fvg_scan.matchAll(fvgGapPattern)] : [];
         const candidateLines = [1, 2, 3].map(index => {
             const line = parsed.fvg_scan?.match(new RegExp('(?:^|\\n)\\s*(?:-\\s*)?POI\\s*' + index + '\\s*:\\s*([^\\n]+)', 'i'))?.[1]?.trim() || null;
             if (!line) return { index, present: false, none: false, valid: false };
             if (/^NONE\b/i.test(line)) return { index, present: true, none: true, valid: true };
-            const bounds = line.match(/\[(-?\d+(?:\.\d+)?)\]\s*-\s*\[(-?\d+(?:\.\d+)?)\]/);
+            const bounds = line.match(/\[?(-?\d+(?:\.\d+)?)\]?\s*-\s*\[?(-?\d+(?:\.\d+)?)\]?/);
             const proximal = line.match(/proximal(?:\s+edge|_edge)\s*(?:=|:)?\s*(-?\d+(?:\.\d+)?)/i);
             const distance = line.match(/distance(?:\s+from\s+CURRENT_PRICE)?\s*(?:=|:)?\s*(\d+(?:\.\d+)?)\s*(?:points|pts)/i);
             const type = line.match(/\b(FVG|OB)\b/i)?.[1]?.toUpperCase() || null;
             const mitigation = /\bUNMITIGATED\b/i.test(line)
                 ? 'NO'
                 : line.match(/mitigated\s*(?:=|:)?\s*(YES|NO|PARTIAL)/i)?.[1]?.toUpperCase() || null;
-            const sortedBounds = bounds
-                ? [Number(bounds[1]), Number(bounds[2])].sort((a, b) => a - b)
+            const zoneBounds = bounds
+                ? [Number(bounds[1]), Number(bounds[2])]
                 : null;
             return {
                 index,
                 present: true,
                 none: false,
-                valid: !!sortedBounds && !!proximal && !!distance && !!type && mitigation === 'NO',
-                bounds: sortedBounds,
+                valid: !!zoneBounds && zoneBounds[1] > zoneBounds[0] && !!proximal && !!distance && !!type && mitigation === 'NO',
+                bounds: zoneBounds,
                 proximal: proximal ? Number(proximal[1]) : null,
                 distance: distance ? Number(distance[1]) : null,
                 type,
@@ -29222,6 +29222,10 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             };
         });
         const numericCandidates = candidateLines.filter(candidate => candidate.valid && !candidate.none);
+        if (fvgGaps.some(gap => Number(gap[4]) <= Number(gap[3])
+            || Math.abs(Number(gap[4]) - Number(gap[3]) - Number(gap[5])) > 0.011)) {
+            add('RAW_FVG_SCAN_ARITHMETIC_INVALID');
+        }
         if (!parsed.fvg_scan) {
             add('RAW_FVG_SCAN_REQUIRED');
         } else {
