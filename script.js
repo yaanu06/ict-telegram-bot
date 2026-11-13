@@ -28928,6 +28928,19 @@ function evaluatePendingPaperOrder(order = {}, currentPrice, nowMs = Date.now())
     if (Number.isFinite(invalidation) && ((order.signalType === 'LONG' && price <= invalidation) || (order.signalType === 'SHORT' && price >= invalidation))) {
         return { status: 'INVALIDATED', reason: 'STRUCTURAL_INVALIDATION_BREACHED', price };
     }
+    const target = Number(order.takeProfit1);
+    const targetConsumedBeforeEntry = order.signalType === 'LONG'
+        ? Number.isFinite(target) && price >= target
+        : order.signalType === 'SHORT' && Number.isFinite(target) && price <= target;
+    if (order.takeProfit1ConsumedBeforeEntry === true || targetConsumedBeforeEntry) {
+        return {
+            status: 'TARGET_INVALIDATED',
+            reason: 'TP1_CONSUMED_BEFORE_ENTRY',
+            price,
+            target,
+            requires_external_order_cancel: order.execution_mode === 'MANUAL'
+        };
+    }
     const filled = order.signalType === 'LONG' ? price <= Number(order.idealEntry) : price >= Number(order.idealEntry);
     return filled ? { status: 'FILLED', reason: 'LIMIT_TOUCHED', price } : { status: 'ORDER_PENDING', reason: 'WAITING_FOR_LIMIT_TOUCH', price };
 }
@@ -28952,6 +28965,12 @@ function startMonitor() {
             recordPaperOrderEvent(limitOrder, lifecycle.status, lifecycle.reason, p);
             clearLimit();
             showNotif(`⏰ Order EXPIRED after ${LIMIT_ORDER_EXPIRY_HOURS}h — zone became stale`, 'warning');
+            return;
+        }
+        if(lifecycle.status === 'TARGET_INVALIDATED') {
+            recordPaperOrderEvent(limitOrder, lifecycle.status, lifecycle.reason, p);
+            clearLimit();
+            showNotif(`Pending setup invalid: TP1 $${Number(lifecycle.target).toFixed(settings.prec)} was reached before entry. Cancel any matching broker limit and rescan.`, 'warning');
             return;
         }
         if(lifecycle.status === 'INVALIDATED') {

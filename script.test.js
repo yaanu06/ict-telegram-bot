@@ -9912,6 +9912,20 @@ describe('provider, calendar, lifecycle, and public output contracts', () => {
         expect(ctx.evaluatePendingPaperOrder(base, 101, created + 4 * 60 * 60000)).toMatchObject({ status: 'EXPIRED' });
     });
 
+    it('invalidates an unfilled pending setup when its TP1 is consumed first', () => {
+        const ctx = getContext();
+        const created = Date.parse('2026-09-18T10:00:00Z');
+        const short = { signalType: 'SHORT', idealEntry: 120, stopLoss: 125, takeProfit1: 100, createdAt: new Date(created).toISOString() };
+        expect(ctx.evaluatePendingPaperOrder(short, 101, created + 1000)).toMatchObject({ status: 'ORDER_PENDING' });
+        expect(ctx.evaluatePendingPaperOrder(short, 100, created + 2000)).toMatchObject({
+            status: 'TARGET_INVALIDATED', reason: 'TP1_CONSUMED_BEFORE_ENTRY', target: 100
+        });
+        const long = { signalType: 'LONG', idealEntry: 80, stopLoss: 75, takeProfit1: 100, createdAt: new Date(created).toISOString() };
+        expect(ctx.evaluatePendingPaperOrder(long, 100, created + 2000)).toMatchObject({
+            status: 'TARGET_INVALIDATED', reason: 'TP1_CONSUMED_BEFORE_ENTRY', target: 100
+        });
+    });
+
     it('records paper-order lifecycle events without secrets', () => {
         const ctx = getContext();
         let stored = null;
