@@ -20838,13 +20838,24 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const symbol = normalizeCanonicalMarketSymbol(source.pair || signal.pair || pair);
     const metadata = source.quote?.symbol_metadata || source.runtime_state?.quote_snapshot?.symbol_metadata || source.symbol_metadata || {};
     const asOfMs = rawTextPacketTimestamp(source.scan_as_of || source.quote?.quote_time) || Date.now();
-    const quote = rawMarketAnalysisQuote(source);
-    const latestClosed = RAW_CANDLE_AI_TIMEFRAMES
-        .flatMap(timeframe => rawTextPacketClosedCandles(source, timeframe, asOfMs))
-        .sort((left, right) => rawTextPacketTimestamp(right.t) - rawTextPacketTimestamp(left.t))[0] || null;
-    const price = Number.isFinite(Number(quote.current_price)) ? Number(quote.current_price) : latestClosed?.c;
-    const precision = rawTextPacketPrecision(symbol, metadata, price);
-    return buildRawCandleAiPacket({ source, symbol, price, precision, asOfMs, quote });
+    const latestClosed = rawTextPacketClosedCandles(source, '5M', asOfMs).at(-1) || null;
+    const precision = rawTextPacketPrecision(symbol, metadata, latestClosed?.c);
+    const serverClock = rawCandleAiServerClock(asOfMs);
+    const lines = [
+        '=== TIMEFRAME DATA ONLY ===',
+        'SYMBOL=' + symbol,
+        'SERVER_TIME_UTC=' + serverClock.utc,
+        'SESSION_QUALITY=' + serverClock.session_quality,
+        'SESSION_WINDOW=' + serverClock.session_window,
+        'TIMEFRAME_ORDER=' + RAW_CANDLE_AI_TIMEFRAMES.join(','),
+        'CANDLE_POLICY=CLOSED_ONLY',
+        'CANDLE_FORMAT=time,open,high,low,close,volume',
+        ''
+    ];
+    for (const timeframe of RAW_CANDLE_AI_TIMEFRAMES) {
+        lines.push(...buildRawCandleAiCsvLines(source, timeframe, asOfMs, precision), '');
+    }
+    return lines.join('\n');
 }
 
 function fallbackCopyPlainText(packetText) {
@@ -20933,7 +20944,7 @@ function copyRawMarketAnalysisPacket() {
         if (typeof window !== 'undefined') {
             window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success');
         }
-        showToast('Copied to clipboard');
+        showToast('Candle data copied');
     });
 }
 
@@ -20950,13 +20961,13 @@ function downloadRawMarketAnalysisPacket() {
     const url = URL.createObjectURL(file);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `ict-raw-market-analysis-${safeSymbol}-${timestamp}.txt`;
+    link.download = `ict-timeframe-data-session-${safeSymbol}-${timestamp}.txt`;
     link.style.display = 'none';
     document.body.appendChild(link);
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    showToast('Packet downloaded');
+    showToast('Candle data downloaded');
 }
 
 function buildCurrentCanonicalMarketSnapshotJson() {
