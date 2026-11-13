@@ -11008,6 +11008,57 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).not.toContain('RAW_HTF_CONTEXT_INVALID');
     });
 
+    it('accepts decimal prices and equivalent decimal distances in selection explanations', () => {
+        const ctx = getContext();
+        const response = jsonResponse({
+            htf_context: 'Selected POI 1 at 4034.00 which is 25.00 pts away; nearest opposing HTF liquidity pool Weak High 4065.70'
+        });
+        expect(ctx.parseRawCandleAIActionResponse(JSON.stringify(response)).issues).toEqual([]);
+        const wrongDistance = ctx.parseRawCandleAIActionResponse(JSON.stringify({
+            ...response, htf_context: response.htf_context.replace('25.00 pts', '250.00 pts')
+        }));
+        expect(wrongDistance.issues).toContain('RAW_SELECTED_POI_JUSTIFICATION_INVALID');
+    });
+
+    it('extracts the live DeepThink JSON but rejects its unsupported candidate contract', () => {
+        const ctx = getContext();
+        const response = fs.readFileSync(path.join(__dirname, 'test-fixtures/v54-browser-response.json'), 'utf8');
+        const parsed = ctx.parseRawCandleAIActionResponse(response, { symbol: 'XAU/USD' });
+        expect(parsed.source_format).toBe('JSON');
+        expect(parsed.action).toBe('SELL_LIMIT');
+        expect(parsed.issues).toContain('RAW_POI_CANDIDATE_LIST_INCOMPLETE');
+        expect(parsed.issues).not.toContain('RAW_JSON_ONLY_REQUIRED');
+        expect(parsed.issues).not.toContain('RAW_SESSION_VOLATILITY_CHECK_INVALID');
+        expect(parsed.valid).toBe(false);
+    });
+
+    it('accepts numeric ATR14 and approximate ATR notation observed in DeepSeek output', () => {
+        const ctx = getContext();
+        for (const atrText of ['1H ATR14=4.00', 'ATR(1H,14) ≈ 4.00', 'ATR(1H,14)=4.00']) {
+            const result = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+                session_volatility_check: atrText + '; SL buffer=4.50; PRIME session modifier applied.'
+            })));
+            expect(result.issues).toEqual([]);
+        }
+    });
+
+    it('rejects partially mitigated candidates even when their price geometry is valid', () => {
+        const ctx = getContext();
+        const response = jsonResponse({
+            fvg_scan: auditedFvgScan().replace(/(POI 1:[^\n]*mitigated=)NO/, '$1PARTIAL')
+        });
+        expect(ctx.parseRawCandleAIActionResponse(JSON.stringify(response)).issues).toContain('RAW_POI_CANDIDATE_INVALID');
+    });
+
+    it('preserves the closed-candle price source in the exported packet', () => {
+        const ctx = getContext();
+        const replay = rawReplay();
+        replay.quote.quote_source = 'CANDLE_CLOSE_FALLBACK';
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(packet).toContain('QUOTE_SOURCE=CANDLE_CLOSE_FALLBACK');
+        expect(packet).toContain('DATA_STATUS=CLOSED_5M_REFERENCE');
+    });
+
     it('rejects a JSON response missing htf_context', () => {
         const ctx = getContext();
         const response = jsonResponse();

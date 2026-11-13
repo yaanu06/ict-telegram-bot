@@ -17075,6 +17075,7 @@ function rawMarketAnalysisQuote(source = {}) {
     const metadata = quote.symbol_metadata || source.symbol_metadata || {};
     const result = {
         current_price: rawMarketAnalysisNumber(quote.price ?? source.current_price),
+        quote_source: quote.quote_source || quote.source || null,
         quote_time: quote.quote_time || quote.provider_timestamp_utc || quote.timestamp || source.quote_time || null,
         quote_freshness: source.snapshot_freshness?.quote_freshness
             || source.snapshot_completeness?.quote_freshness
@@ -20311,6 +20312,9 @@ function buildRawCandleAiGhostRules() {
 2. CONVERSATIONAL TEXT: FORBIDDEN. Do NOT write "Here is the analysis".
 3. MARKDOWN: FORBIDDEN. Do NOT use \`\`\`json or backticks.
 4. Start your response EXACTLY with { and end EXACTLY with }.
+Use double-quoted JSON keys and string delimiters. Inside narrative values use
+single quotes or escape embedded double quotes. Encode string newlines as \\n.
+Never output literal line breaks inside a JSON string or a second explanation.
 
 === CORE PRINCIPLE ===
 Offer every high-quality setup. If the nearest POI is too close to current
@@ -20328,8 +20332,14 @@ Compute the average volume of the last 20 closed 1H candles.
 STEP 3. FVG & POI DETECTION (MANDATORY ARITHMETIC):
 Scan the last 20 x 1H and 15 x 4H candles for Fair Value Gaps.
 FVG RULE:
+  A, B, C are three consecutive CLOSED candles in oldest-to-newest order.
+  Compare A and C wicks only. Opens, closes and adjacent-candle gaps are NOT FVG boundaries.
   BEARISH FVG:  IF A.low > C.high -> Zone = [C.high, A.low]
   BULLISH FVG:  IF A.high < C.low -> Zone = [A.high, C.low]
+  Mitigation uses later CLOSED candles on the SAME timeframe: NO = never touched;
+  PARTIAL = entered but did not reach the far edge; YES = reached/passed the far edge.
+  A bearish gap is touched when later high >= low edge and filled when high >= high edge.
+  A bullish gap is touched when later low <= high edge and filled when low <= low edge.
 
 For EACH gap found, state:
   "<TF>_<BEARISH|BULLISH>_FVG: [low]-[high] | width=<w> pts | mitigated=<YES|NO|PARTIAL>"
@@ -20340,6 +20350,13 @@ YOU MUST CREATE A RANKED CANDIDATE LIST OF POIs:
   - POI 2: The NEXT unmitigated zone further away.
   - POI 3: The NEXT unmitigated zone further away.
 State the exact proximal edge and distance from CURRENT_PRICE for each.
+Use this exact line format in fvg_scan, one candidate per line (JSON-escaped \\n):
+POI 1: [low]-[high] | type=FVG or OB | proximal edge=<number> | distance from CURRENT_PRICE=<number> pts | mitigated=NO
+Repeat for POI 2 and POI 3. Use POI N: NONE when fewer than three exist.
+Rank ONLY unmitigated zones, by increasing absolute distance. PARTIAL and YES zones
+remain in the gap audit but MUST NOT enter the ranked list. Never invent a third POI.
+For SELL_LIMIT above current price, proximal=LOW edge, far=HIGH edge.
+For BUY_LIMIT below current price, proximal=HIGH edge, far=LOW edge.
 
 STEP 4. ENTRY LOGIC (CASCADING LIMIT ORDERS):
 Because we use LIMIT ORDERS, we arm the order BEFORE price arrives.
@@ -20363,7 +20380,17 @@ Step 4 cascade).
 STEP 6. EXECUTION & RISK:
 Entry: proximal edge of the SELECTED POI (from Step 4).
 STOP LOSS: Structural far edge of the POI + max(4.50, 0.5xATR).
+For Gold use ATR(1H,14), the arithmetic mean of the last 14 closed 1H true ranges:
+TR=max(high-low,abs(high-previous_close),abs(low-previous_close)).
+SELL stop=high edge+buffer; BUY stop=low edge-buffer. Report
+ATR(1H,14)=<number>; SL buffer=<number>; session modifier in session_volatility_check.
 Take Profit: TP1 = nearest opposing HTF liquidity pool.
+Targets must be evidenced candle highs/lows, unused after formation, ordered outward:
+BUY entry<TP1<TP2<TP3; SELL entry>TP1>TP2>TP3. Never invent targets to meet RR.
+For sweeps/rejections cite candle times and actual wick/body sizes. A high that merely
+equals an earlier high is NOT proof of a sweep. No invented confirmations.
+STRONG_IMPULSE requires all last 3 closed 1H volumes >1.5 times the last-20 average
+and large bodies; otherwise use WEAK_RANGE. Web search must not replace packet candles.
 Minimum RR at TP1 = 2.00. If RR < 2.00, discard this POI and cascade
 to the next POI. If ALL POIs fail RR, return NO_TRADE.
 
@@ -20374,7 +20401,13 @@ Return NO_TRADE ONLY IF:
 1. There are NO unmitigated POIs within 200 pts of CURRENT_PRICE.
 2. ALL available POIs fail the RR >= 2.00 test.
 3. Current price is inside EVERY zone (no distant zones to arm).
-Session quality alone is NEVER a NO_TRADE reason.`.split('\n');
+Session quality alone is NEVER a NO_TRADE reason.
+For NO_TRADE use setup=NONE, order_tag=none, expires_at=null, confidence=0,
+timeframe_used=NONE, management=NONE, and all entry/stop/target/risk/RR fields=null.
+In htf_context write Selected POI: NONE, state why every candidate failed, and
+state nearest opposing HTF liquidity pool (or NONE). For a trade, write
+Selected POI N at <proximal price> which is <distance> pts away, and explain
+each earlier discarded candidate with its distance or computed RR failure.`.split('\n');
 }
 
 function rawPacketDiagnosticEnabled() {
@@ -20432,6 +20465,8 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
         'SYMBOL: ' + symbol,
         'CURRENT PRICE: ' + rawTextPacketFormatNumber(price, precision),
         'QUOTE TIME: ' + String(quote.quote_time || quote.current_price_time || 'UNKNOWN'),
+        'QUOTE_SOURCE=' + String(quote.quote_source || 'UNKNOWN'),
+        'DATA_STATUS=' + (quote.quote_source === 'CANDLE_CLOSE_FALLBACK' ? 'CLOSED_5M_REFERENCE' : 'PROVIDER_QUOTE'),
         'AS OF: ' + new Date(asOfMs).toISOString(),
         'SERVER_TIME_UTC: ' + serverClock.utc,
         'SERVER_TIME_EST: ' + serverClock.est,
@@ -25682,6 +25717,10 @@ async function runAutoScan() {
             price = quoteSnapshot.price;
             scanTrace('quote refreshed from closed candle', scanStartedAt, { timeframe: '5M', quote_source: quoteSnapshot.quote_source });
         }
+        if (quoteSnapshot?.quote_source === 'CANDLE_CLOSE_FALLBACK') {
+            const quoteBadge = document.getElementById('apiSource');
+            if (quoteBadge) quoteBadge.textContent = '🕒 Closed 5M reference';
+        }
         Object.defineProperty(historyCache, 'fetch_errors', {
             value: Object.fromEntries([...historyFetchErrors.entries()]
                 .filter(([key]) => key.startsWith(`${pair}|`))
@@ -29196,7 +29235,9 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
                 add('RAW_HTF_CONTEXT_INVALID');
             }
             if (action !== 'NO_TRADE' && selectedCandidate?.valid) {
-                if (!new RegExp('selected\\s+POI\\s*' + selectedPoiIndex + '[^\\n.]{0,160}?' + selectedCandidate.distance + '\\s*(?:points|pts)', 'i').test(parsed.htf_context)) {
+                const selectedExplanation = parsed.htf_context.match(new RegExp('selected\\s+POI\\s*' + selectedPoiIndex + '\\b([^\\n;]{0,240})', 'i'))?.[1] || '';
+                const explainedDistances = [...selectedExplanation.matchAll(/(\d+(?:\.\d+)?)\s*(?:points|pts)\b/gi)].map(match => Number(match[1]));
+                if (!explainedDistances.some(distance => Math.abs(distance - selectedCandidate.distance) <= 0.011)) {
                     add('RAW_SELECTED_POI_JUSTIFICATION_INVALID');
                 }
                 for (let prior = 1; prior < selectedPoiIndex; prior += 1) {
@@ -29237,11 +29278,11 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         if (parsed.sl_method !== 'structural far-edge + max(4.50,0.5xATR)') {
             add('RAW_SL_METHOD_INVALID');
         }
-        const atrMatch = parsed.session_volatility_check?.match(/\bATR(?:\([^)]*\))?\s*(?:=|:|is)\s*(\d+(?:\.\d+)?)/i);
+        const atrMatch = parsed.session_volatility_check?.match(/\bATR(?:\([^)]*\)|\s*14)?\s*(?:=|:|is|≈|approx(?:imately)?\s*)\s*(\d+(?:\.\d+)?)/i);
         const atrValue = atrMatch ? Number(atrMatch[1]) : null;
         if (!parsed.session_volatility_check) {
             add('RAW_SESSION_VOLATILITY_CHECK_REQUIRED');
-        } else if (!/\bATR\b/i.test(parsed.session_volatility_check)
+        } else if (!/\bATR(?:14)?\b/i.test(parsed.session_volatility_check)
             || !/\b(STOP|SL)\b/i.test(parsed.session_volatility_check)
             || !/\bBUFFER\b/i.test(parsed.session_volatility_check)
             || !Number.isFinite(atrValue)
