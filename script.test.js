@@ -10776,7 +10776,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.4');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.5');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10804,11 +10804,11 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V5.4 cascading POI master prompt with the absolute JSON-only override', () => {
+    it('includes the V5.5 raw-candle liquidity audit and cascading POI prompt', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V5.4 (QUANTUM TREND & RETEST)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V5.5 (QUANTUM TREND & RETEST — COMPLETE LIQUIDITY LADDER)');
         expect(packet).toContain('===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===');
         expect(packet).toContain('1. OUTPUT FORMAT: STRICT_JSON.');
         expect(packet).toContain('2. CONVERSATIONAL TEXT: FORBIDDEN.');
@@ -10837,6 +10837,15 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('"fvg_scan": "<MANDATORY arithmetic. List gaps and create the Ranked Candidate List');
         expect(packet).toContain('"sl_method": "structural far-edge + max(4.50,0.5xATR)"');
         expect(packet).toContain('STOP LOSS: Structural far edge of the POI + max(4.50, 0.5xATR).');
+        expect(packet).toContain('Eligible pool classes are: previous-day high/low; completed Asia, London and');
+        expect(packet).toContain('low[n] < low[n-1] AND low[n] < low[n+1]');
+        expect(packet).toContain('If the timestamps have a gap');
+        expect(packet).toContain('mark the pivot UNKNOWN unless a closed');
+        expect(packet).toContain('audit_report.liquidity_pools.time is the source');
+        expect(packet).toContain('Deduplicate identical prices at packet');
+        expect(packet).toContain('Never skip an UNUSED intermediate');
+        expect(packet).toContain('"known_at": "<confirmation/period close UTC>"');
+        expect(packet).not.toContain('3872.20');
         expect(packet).toContain('If ALL POIs fail RR, return NO_TRADE.');
         expect(packet).toContain('optionally same-POI +CRT and/or +MSNR');
         expect(packet).not.toContain('"htf_zone":');
@@ -10892,7 +10901,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             quality: 'PRIME', window: 'NEW_YORK', prime: true, veto: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V5.4',
+            version: 'V5.5',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
@@ -10910,6 +10919,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             no_trade_reasons_included: true,
             setup_construction_included: true,
             proximal_edge_rule_included: true,
+            target_pool_definition_included: true,
+            target_ladder_completeness_included: true,
             gold_minimum_stop_included: true,
             hard_rr_gate_included: true,
             strict_json_schema_included: true

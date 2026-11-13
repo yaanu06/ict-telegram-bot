@@ -17187,7 +17187,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '    "structure": { "bos": { "direction": "<direction or NONE>", "time": null, "level": null }, "choch": { "confirmed": <boolean>, "time": null, "level": null, "evidence": "<text or NONE>" } },',
     '    "sweeps": [{ "tf": "1d|4h|1h|15m|5m", "direction": "BULLISH|BEARISH", "status": "CONFIRMED|NOT_CONFIRMED", "time": null, "level": null, "high": null, "low": null, "close": null }],',
     '    "breaks": [{ "tf": "<timeframe>", "type": "BREAKOUT|BREAKDOWN|FAILED_BREAKOUT|FAILED_BREAKDOWN", "time": "<UTC>", "level": <number> }],',
-    '    "liquidity_pools": [{ "name": "<pool>", "tf": "<timeframe>", "price": <number>, "time": "<formation UTC>", "status": "UNUSED|SWEPT|UNKNOWN" }],',
+    '    "liquidity_pools": [{ "name": "<pool type>", "tf": "<timeframe>", "price": <number>, "time": "<source candle open UTC>", "known_at": "<confirmation/period close UTC>", "status": "UNUSED|SWEPT|UNKNOWN", "swept_at": "<later candle open UTC or null>" }],',
     '    "pois": [{ "rank": <integer>, "tf": "1h|4h", "type": "OB|FVG", "low": <number>, "high": <number>, "proximal": <number>, "distance": <number>, "mitigated": "NO|PARTIAL|YES", "disposition": "SELECTED|DISCARDED|NOT_NEEDED", "reason": "<text>" }],',
     '    "selected_poi": { "rank": <integer|null>, "state": "DISTANT|NEARBY|INSIDE|NONE" },',
     '    "crt": { "status": "CONFIRMED|NOT_CONFIRMED", "tf": null, "time": null, "level": null, "evidence": "<text or NONE>" },',
@@ -20392,7 +20392,7 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V5.4 (QUANTUM TREND & RETEST)
+    return `=== GHOST MACHINE STRATEGY RULES === V5.5 (QUANTUM TREND & RETEST — COMPLETE LIQUIDITY LADDER)
 ===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===
 1. OUTPUT FORMAT: STRICT_JSON.
 2. CONVERSATIONAL TEXT: FORBIDDEN. Do NOT write "Here is the analysis".
@@ -20494,15 +20494,52 @@ For Gold use ATR(1H,14), the arithmetic mean of the last 14 closed 1H true range
 TR=max(high-low,abs(high-previous_close),abs(low-previous_close)).
 SELL stop=high edge+buffer; BUY stop=low edge-buffer. Report
 ATR(1H,14)=<number>; SL buffer=<number>; session modifier in session_volatility_check.
-Take Profit: TP1 = nearest opposing HTF liquidity pool.
-Targets must be evidenced candle highs/lows, unused after formation, ordered outward:
-BUY entry<TP1<TP2<TP3; SELL entry>TP1>TP2>TP3. Never invent targets to meet RR.
-TP1 is mandatory for a trade. TP2/TP3 are optional: use null when no further
-evidenced unused pool exists. Enforce outward ordering only for supplied targets.
-In audit_report.liquidity_pools, enumerate nearer opposing HTF pool candidates
-with source timeframe/time and UNUSED/SWEPT/UNKNOWN status. For SWEPT pools cite
-the later sweep candle in htf_context. Choose the nearest qualifying UNUSED pool;
-never assume a macro-header level is unused or skip a nearer valid pool to boost RR.
+=== LIQUIDITY POOL AND TARGET AUDIT (MANDATORY, DERIVE FROM RAW CANDLES) ===
+Do not use a supplied candidate list; derive the pools from the closed candles.
+Eligible pool classes are: previous-day high/low; completed Asia, London and
+New York session highs/lows; and confirmed 1H and 4H swing highs/lows.
+Verify every macro-header level against its source candle/session. Do not call
+an OB or FVG a liquidity pool. Equal highs/lows are admissible only when the
+printed prices are exactly equal at packet precision; do not invent a tolerance.
+
+Swing definition: in each timeframe's chronological CLOSED candle rows, candle n
+is a swing low only when low[n] < low[n-1] AND low[n] < low[n+1]; it is a swing
+high only when high[n] > high[n-1] AND high[n] > high[n+1]. Use the immediately
+neighboring available closed rows in that same timeframe. Never fabricate a
+missing candle or silently skip a supplied row. If the timestamps have a gap
+between n and n+1, disclose the gap and mark the pivot UNKNOWN unless a closed
+parent-timeframe candle fully covers that gap and its relevant extreme confirms
+the pivot was not breached. In that case set known_at to the later of the right
+neighbor close and parent-candle close, and explain the parent-bar confirmation.
+Otherwise known_at is the right-neighbor close. A pivot is not known before
+known_at. For a daily/session pool, known_at is the close of its source day/session.
+
+For every pool considered, audit_report.liquidity_pools.time is the source
+candle/session open time and known_at is when the level became knowable. Evaluate
+status only with CLOSED candles whose open time is >= known_at; exclude the source
+candle, the confirmation candle, and lower-timeframe bars nested inside either.
+For a low pool, a later low <= the level marks status SWEPT; for a high pool, a
+later high >= the level marks status SWEPT. Equality counts as reached. Set
+swept_at to the first qualifying later candle open time. Use UNUSED and
+swept_at=null only when the supplied post-confirmation candles show no reach.
+Use UNKNOWN, never UNUSED, when source, confirmation, or post-confirmation
+chronology is insufficient. A later bar before known_at never consumes the pool.
+
+Enumerate every eligible opposing pool from ENTRY through and including the
+furthest proposed target in audit_report.liquidity_pools, including closer pools
+that were reached or otherwise excluded. Deduplicate identical prices at packet
+precision; retain all source types/timeframes in the pool name. Do not omit a
+level because another timeframe reports the same price.
+
+Target ladder: for SELL, consider UNUSED pool prices strictly below ENTRY and
+sort from highest to lowest. For BUY, consider UNUSED pool prices strictly above
+ENTRY and sort from lowest to highest. TP1 is the nearest eligible price, TP2
+the next distinct eligible price, TP3 the next. Never skip an UNUSED intermediate
+pool to reach a farther target or improve RR. If fewer than three eligible pools
+exist, set the remaining TP fields to null. If the nearest TP1 yields RR < 2.00,
+reject this POI and follow the existing POI cascade; do not skip TP1. Never invent
+targets. For SWEPT pools cite swept_at and the candle evidence in htf_context.
+The ladder must be strictly outward: BUY entry<TP1<TP2<TP3; SELL entry>TP1>TP2>TP3.
 For sweeps/rejections cite candle times and actual wick/body sizes. A high that merely
 equals an earlier high is NOT proof of a sweep. No invented confirmations.
 Upper wick=high-max(open,close); lower wick=min(open,close)-low; body=abs(close-open).
@@ -20589,7 +20626,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     ];
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.4',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.5',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20651,7 +20688,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             veto: false
         },
         ghost_rules: {
-            version: 'V5.4',
+            version: 'V5.5',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== REASONING PROTOCOL ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('STEP 1. HTF MACRO BIAS (1D/4H):')),
@@ -20671,6 +20708,8 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             no_trade_reasons_included: ghostRules.some(rule => rule.includes('=== NO_TRADE RULES ===')),
             setup_construction_included: ghostRules.some(rule => rule.startsWith('STEP 6. EXECUTION & RISK:')),
             proximal_edge_rule_included: ghostRulesText.includes('Entry: proximal edge of the SELECTED POI'),
+            target_pool_definition_included: ghostRulesText.includes('Swing definition: in each timeframe\'s chronological CLOSED candle rows'),
+            target_ladder_completeness_included: ghostRulesText.includes('Never skip an UNUSED intermediate'),
             gold_minimum_stop_included: ghostRulesText.includes('max(4.50, 0.5xATR)'),
             hard_rr_gate_included: ghostRules.some(rule => rule.includes('Minimum RR at TP1 = 2.00')),
             strict_json_schema_included: ghostRules.some(rule => rule.startsWith('===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ==='))
