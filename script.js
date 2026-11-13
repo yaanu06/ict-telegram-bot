@@ -1614,10 +1614,15 @@ async function getMarketQuoteSnapshot(forPair = pair, options = {}) {
 function refreshStaleQuoteFromClosedCandle(quoteSnapshot, historyCache, asOfMs = Date.now(), timeframe = '5M') {
     if (!quoteSnapshot || !Array.isArray(historyCache?.[timeframe])) return quoteSnapshot;
     const quoteTime = normalizeTimestampUTC(quoteSnapshot.provider_timestamp ?? quoteSnapshot.provider_timestamp_utc);
-    const quoteFresh = Number.isFinite(quoteTime) && Number(asOfMs) - quoteTime <= 60 * 60 * 1000;
+    const quoteFresh = Number.isFinite(quoteTime)
+        && quoteTime <= Number(asOfMs)
+        && Number(asOfMs) - quoteTime <= 60 * 60 * 1000;
     if (quoteFresh) return quoteSnapshot;
     const candles = historyCache[timeframe]
-        .filter(candle => candle?.is_closed !== false && Number.isFinite(Number(candle?.t)) && Number.isFinite(Number(candle?.c)) && Number(candle.c) > 0)
+        .filter(candle => candle?.is_closed !== false
+            && Number.isFinite(Number(candle?.t))
+            && Number(candle?.t) + timeframeDurationMs(timeframe) <= Number(asOfMs)
+            && Number.isFinite(Number(candle?.c)) && Number(candle.c) > 0)
         .sort((left, right) => Number(left.t) - Number(right.t));
     const latest = candles.at(-1);
     const candleTime = Number(latest?.t);
@@ -20403,7 +20408,7 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V5.8 (QUOTE CLOSE-TIME & LIQUIDITY)
+    return `=== GHOST MACHINE STRATEGY RULES === V5.9 (QUOTE CLOSE-TIME & LIQUIDITY)
 ===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===
 1. OUTPUT FORMAT: STRICT_JSON.
 2. CONVERSATIONAL TEXT: FORBIDDEN. Do NOT write "Here is the analysis".
@@ -20491,7 +20496,8 @@ Timestamp semantics are mandatory:
   quote at that bar's close time, not its open-time label.
 In both cases, use QUOTE TIME directly as effective_quote_time; do not add another
 5 minutes to it. Candle rows are open-time labeled, so a row's close time is its
-timestamp + 5 minutes.
+timestamp + 5 minutes. QUOTE TIME later than SERVER_TIME_UTC is internally
+inconsistent: return NO_TRADE with reason STALE_PACKET_RESCAN.
 For both cases, return NO_TRADE with reason STALE_PACKET_RESCAN if the matching
 fallback price row is absent or inconsistent, SERVER_TIME_UTC - effective_quote_time
 is greater than one 5M interval, a later 5M candle is closed by SERVER_TIME_UTC, or
@@ -20700,7 +20706,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     ];
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.8',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.9',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20762,7 +20768,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             veto: false
         },
         ghost_rules: {
-            version: 'V5.8',
+            version: 'V5.9',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== REASONING PROTOCOL ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('STEP 1. HTF MACRO BIAS (1D/4H):')),
@@ -29385,7 +29391,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             'management', 'reason'
         ];
         if (required.some(key => !Object.prototype.hasOwnProperty.call(json, key))) add('RAW_JSON_FIELDS_MISSING');
-        // Structured evidence is optional; V5.8 quote/reachability fields remain mandatory.
+        // Structured evidence is optional; V5.9 quote/reachability fields remain mandatory.
         const allowedTopLevel = new Set([...required, 'audit_report', 'instrument_policy']);
         if (Object.keys(json).some(key => !allowedTopLevel.has(key))) add('RAW_JSON_EXTRA_FIELDS');
         const action = String(json.action ?? '').trim().toUpperCase();
