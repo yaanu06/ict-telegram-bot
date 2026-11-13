@@ -11390,6 +11390,15 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toEqual([]);
     });
 
+    it('accepts target-side wording for the nearest opposing liquidity pool', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            htf_context: 'Selected POI 1 at 4034.00 which is 25.00 pts away; nearest opposing target-side liquidity pool Weak Low 3980.00'
+        })));
+        expect(parsed.valid).toBe(true);
+        expect(parsed.issues).toEqual([]);
+    });
+
     it('still rejects a prefill pool on the wrong side of the quote', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
