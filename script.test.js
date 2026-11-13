@@ -11008,6 +11008,88 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).not.toContain('RAW_HTF_CONTEXT_INVALID');
     });
 
+    const structuredAudit = decision => ({
+        daily_bias: { direction: decision.htf_bias, candles: [] },
+        structure: { bos: { direction: 'NONE', time: null, level: null }, choch: { confirmed: decision.choch_detected, time: null, level: null, evidence: 'NONE' } },
+        sweeps: [], breaks: [], liquidity_pools: [],
+        pois: decision.action === 'NO_TRADE' ? [] : [{ rank: 1, type: 'OB', low: 4032, high: 4034, proximal: decision.entry, mitigated: 'NO', disposition: 'SELECTED' }],
+        selected_poi: { rank: decision.action === 'NO_TRADE' ? null : 1, state: decision.action === 'NO_TRADE' ? 'NONE' : 'DISTANT' },
+        crt: { status: 'NOT_CONFIRMED', tf: null, time: null, level: null, evidence: 'NONE' },
+        msnr: { status: 'NOT_CONFIRMED', tf: null, time: null, level: null, evidence: 'NONE' },
+        risk: Object.fromEntries(['entry', 'stop_loss', 'tp1', 'risk', 'rr_tp1'].map(key => [key, decision[key]])),
+        session: { quality: decision.session_quality, order_tag: decision.order_tag, modifier: 'NONE' }
+    });
+
+    it('preserves identical decision validation with and without a structured audit', () => {
+        const ctx = getContext();
+        const response = jsonResponse();
+        const baseline = ctx.parseRawCandleAIActionResponse(JSON.stringify(response), { symbol: 'XAU/USD' });
+        const audited = ctx.parseRawCandleAIActionResponse(JSON.stringify({
+            ...response,
+            instrument_policy: ctx.rawCandleAiInstrumentPolicy('XAU/USD'),
+            audit_report: structuredAudit(response)
+        }), { symbol: 'XAU/USD' });
+        for (const key of ['action', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1', 'confidence', 'valid', 'execution_allowed']) {
+            expect(audited[key]).toEqual(baseline[key]);
+        }
+        expect(audited.issues).toEqual(baseline.issues);
+        expect(audited.validation_diagnostics).toEqual([]);
+        expect(baseline.validation_diagnostics).toContain('AUDIT_REPORT_NOT_SUPPLIED');
+        expect(audited.audit_report.crt.status).toBe('NOT_CONFIRMED');
+    });
+
+    it('flags contradictory or unsupported audits without changing the trade decision', () => {
+        const ctx = getContext();
+        const response = jsonResponse();
+        const audit = structuredAudit(response);
+        audit.daily_bias.direction = 'BEARISH';
+        audit.risk.entry = 1;
+        audit.crt = { status: 'CONFIRMED', tf: null, time: null, level: null, evidence: 'NONE' };
+        audit.sweeps = [{ direction: 'BEARISH', status: 'CONFIRMED', time: '2026-11-13T07:00:00Z', level: 4030, high: 4030, low: 4025, close: 4028 }];
+        const result = ctx.parseRawCandleAIActionResponse(JSON.stringify({ ...response, audit_report: audit }));
+        expect(result.valid).toBe(true);
+        expect(result.entry).toBe(response.entry);
+        expect(result.issues).toEqual([]);
+        expect(result.validation_diagnostics).toEqual(expect.arrayContaining([
+            'AUDIT_BIAS_CONTRADICTION', 'AUDIT_RISK_CONTRADICTION: entry',
+            'AUDIT_STRATEGY_EVIDENCE_MISSING: crt', 'AUDIT_SWEEP_UNSUPPORTED'
+        ]));
+        const malformed = ctx.parseRawCandleAIActionResponse(JSON.stringify({ ...response, audit_report: [] }));
+        expect(malformed.valid).toBe(true);
+        expect(malformed.validation_diagnostics).toContain('AUDIT_REPORT_INVALID');
+    });
+
+    it('discloses frozen Gold and untested legacy instrument distances without ATR defaults', () => {
+        const ctx = getContext();
+        const gold = ctx.rawCandleAiInstrumentPolicy('XAU/USD');
+        const forex = ctx.rawCandleAiInstrumentPolicy('EUR/USD');
+        expect(gold).toMatchObject({ min_distance: 20, max_distance: 200, distance_basis: 'RAW_PRICE', calibration_status: 'FROZEN_GOLD_BASELINE' });
+        expect(forex).toMatchObject({ min_distance: 20, max_distance: 200, distance_basis: 'RAW_PRICE', calibration_status: 'UNTESTED_LEGACY' });
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
+        expect(packet).toContain('INSTRUMENT_POLICY=' + JSON.stringify(gold));
+        expect(packet).toContain('"audit_report": {');
+        const response = ctx.parseRawCandleAIActionResponse(JSON.stringify({
+            ...jsonResponse(), instrument_policy: { ...gold, min_distance: 1 }
+        }), { symbol: 'XAU/USD' });
+        expect(response.valid).toBe(true);
+        expect(response.instrument_policy.min_distance).toBe(20);
+        expect(response.validation_diagnostics).toContain('AUDIT_INSTRUMENT_POLICY_MISMATCH');
+    });
+
+    it('keeps NO_TRADE validation unchanged when the audit has no selected POI', () => {
+        const ctx = getContext();
+        const response = jsonResponse({
+            action: 'NO_TRADE', setup: 'NONE', entry: null, stop_loss: null, tp1: null, tp2: null, tp3: null,
+            risk: null, rr_tp1: null, confidence: 0, timeframe_used: 'NONE', management: 'NONE',
+            order_tag: 'none', expires_at: null, fvg_scan: noGapFvgScan,
+            htf_context: 'Selected POI: NONE; nearest opposing HTF liquidity pool NONE', reason: 'No unmitigated POI exists.'
+        });
+        const result = ctx.parseRawCandleAIActionResponse(JSON.stringify({ ...response, audit_report: structuredAudit(response) }));
+        expect(result.valid).toBe(true);
+        expect(result.action).toBe('NO_TRADE');
+        expect(result.validation_diagnostics).toEqual([]);
+    });
+
     it('accepts decimal prices and equivalent decimal distances in selection explanations', () => {
         const ctx = getContext();
         const response = jsonResponse({

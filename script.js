@@ -17180,7 +17180,21 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "confidence": <integer 0-100>,',
     '  "timeframe_used": "1d" | "4h" | "1h" | "15m" | "5m" | "NONE",',
     '  "management": "<text or NONE>",',
-    '  "reason": "<Full justification.>"',
+    '  "reason": "<Full justification.>",',
+    '  "instrument_policy": { "symbol": "<copy from INSTRUMENT_POLICY>", "distance_basis": "RAW_PRICE", "distance_units": "PRICE_UNITS", "min_distance": 20, "max_distance": 200, "calibration_status": "<copy from INSTRUMENT_POLICY>" },',
+    '  "audit_report": {',
+    '    "daily_bias": { "direction": "BULLISH|BEARISH|RANGE", "candles": [{ "time": "<UTC>", "high": <number>, "low": <number> }] },',
+    '    "structure": { "bos": { "direction": "<direction or NONE>", "time": null, "level": null }, "choch": { "confirmed": <boolean>, "time": null, "level": null, "evidence": "<text or NONE>" } },',
+    '    "sweeps": [{ "tf": "1d|4h|1h|15m|5m", "direction": "BULLISH|BEARISH", "status": "CONFIRMED|NOT_CONFIRMED", "time": null, "level": null, "high": null, "low": null, "close": null }],',
+    '    "breaks": [{ "tf": "<timeframe>", "type": "BREAKOUT|BREAKDOWN|FAILED_BREAKOUT|FAILED_BREAKDOWN", "time": "<UTC>", "level": <number> }],',
+    '    "liquidity_pools": [{ "name": "<pool>", "tf": "<timeframe>", "price": <number>, "time": "<formation UTC>", "status": "UNUSED|SWEPT|UNKNOWN" }],',
+    '    "pois": [{ "rank": <integer>, "tf": "1h|4h", "type": "OB|FVG", "low": <number>, "high": <number>, "proximal": <number>, "distance": <number>, "mitigated": "NO|PARTIAL|YES", "disposition": "SELECTED|DISCARDED|NOT_NEEDED", "reason": "<text>" }],',
+    '    "selected_poi": { "rank": <integer|null>, "state": "DISTANT|NEARBY|INSIDE|NONE" },',
+    '    "crt": { "status": "CONFIRMED|NOT_CONFIRMED", "tf": null, "time": null, "level": null, "evidence": "<text or NONE>" },',
+    '    "msnr": { "status": "CONFIRMED|NOT_CONFIRMED", "tf": null, "time": null, "level": null, "evidence": "<text or NONE>" },',
+    '    "risk": { "entry": <number|null>, "stop_loss": <number|null>, "tp1": <number|null>, "risk": <number|null>, "rr_tp1": <number|null> },',
+    '    "session": { "quality": "PRIME|SHOULDER|OFF_SESSION", "order_tag": "<same as top-level>", "modifier": "<applied confidence adjustment>" }',
+    '  }',
     '}'
 ].join('\n');
 
@@ -17193,6 +17207,75 @@ const RAW_CANDLE_AI_SHOULDER_WINDOWS = Object.freeze([
     Object.freeze({ name: 'PRE_LONDON', start_minutes: 6 * 60, end_minutes: 7 * 60 }),
     Object.freeze({ name: 'POST_NEW_YORK', start_minutes: 15 * 60, end_minutes: 17 * 60 })
 ]);
+
+function rawCandleAiInstrumentPolicy(symbol = '') {
+    return {
+        symbol: String(symbol),
+        distance_basis: 'RAW_PRICE',
+        distance_units: 'PRICE_UNITS',
+        min_distance: 20,
+        max_distance: 200,
+        calibration_status: /XAU/i.test(String(symbol)) ? 'FROZEN_GOLD_BASELINE' : 'UNTESTED_LEGACY'
+    };
+}
+
+// Report-only checks never select a trade, repair prices, or add execution gates.
+function rawCandleAiAuditDiagnostics(json, decision, policy) {
+    const diagnostics = [];
+    const warn = code => { if (!diagnostics.includes(code)) diagnostics.push(code); };
+    const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+    if (json.instrument_policy !== undefined) {
+        if (!object(json.instrument_policy)
+            || Object.keys(policy).some(key => json.instrument_policy[key] !== policy[key])) warn('AUDIT_INSTRUMENT_POLICY_MISMATCH');
+    }
+    const audit = json.audit_report;
+    if (audit === undefined) return [...diagnostics, 'AUDIT_REPORT_NOT_SUPPLIED'];
+    if (!object(audit)) return [...diagnostics, 'AUDIT_REPORT_INVALID'];
+    for (const key of ['daily_bias', 'structure', 'selected_poi', 'crt', 'msnr', 'risk', 'session']) {
+        if (!object(audit[key])) warn('AUDIT_SECTION_INVALID: ' + key);
+    }
+    for (const key of ['sweeps', 'breaks', 'liquidity_pools', 'pois']) {
+        if (!Array.isArray(audit[key])) warn('AUDIT_SECTION_INVALID: ' + key);
+    }
+    if (audit.daily_bias?.direction !== undefined && audit.daily_bias.direction !== decision.htf_bias) warn('AUDIT_BIAS_CONTRADICTION');
+    if (audit.structure?.choch?.confirmed !== undefined && audit.structure.choch.confirmed !== decision.choch_detected) warn('AUDIT_CHOCH_CONTRADICTION');
+    if (audit.session?.quality !== undefined && audit.session.quality !== decision.session_quality) warn('AUDIT_SESSION_CONTRADICTION');
+    if (audit.session?.order_tag !== undefined && audit.session.order_tag !== decision.order_tag) warn('AUDIT_ORDER_TAG_CONTRADICTION');
+    if (object(audit.risk)) {
+        for (const key of ['entry', 'stop_loss', 'tp1', 'risk', 'rr_tp1']) {
+            const reported = audit.risk[key];
+            const actual = decision[key];
+            if (reported !== actual && !(typeof reported === 'number' && Number.isFinite(reported)
+                && typeof actual === 'number' && Math.abs(reported - actual) <= 0.011)) warn('AUDIT_RISK_CONTRADICTION: ' + key);
+        }
+    }
+    for (const name of ['crt', 'msnr']) {
+        const record = audit[name];
+        if (!object(record)) continue;
+        if (!['CONFIRMED', 'NOT_CONFIRMED'].includes(record.status)) warn('AUDIT_STRATEGY_STATUS_INVALID: ' + name);
+        if (record.status === 'CONFIRMED' && (!['5m', '15m'].includes(String(record.tf).toLowerCase())
+            || !Number.isFinite(Date.parse(record.time)) || typeof record.level !== 'number'
+            || !Number.isFinite(record.level) || typeof record.evidence !== 'string'
+            || !record.evidence.trim() || record.evidence.toUpperCase() === 'NONE')) warn('AUDIT_STRATEGY_EVIDENCE_MISSING: ' + name);
+    }
+    if (Array.isArray(audit.sweeps)) for (const sweep of audit.sweeps) {
+        if (!object(sweep)) { warn('AUDIT_SWEEP_INVALID'); continue; }
+        if (sweep.status !== 'CONFIRMED') continue;
+        const prices = [sweep.level, sweep.high, sweep.low, sweep.close];
+        const numeric = prices.every(value => typeof value === 'number' && Number.isFinite(value));
+        const breached = numeric && (sweep.direction === 'BULLISH'
+            ? sweep.low < sweep.level && sweep.close > sweep.level
+            : sweep.direction === 'BEARISH' && sweep.high > sweep.level && sweep.close < sweep.level);
+        if (!breached || !Number.isFinite(Date.parse(sweep.time))) warn('AUDIT_SWEEP_UNSUPPORTED');
+    }
+    if (Array.isArray(audit.pois)) {
+        const selected = audit.pois.find(poi => object(poi) && poi.rank === audit.selected_poi?.rank);
+        if (decision.action !== 'NO_TRADE' && (!selected || selected.disposition !== 'SELECTED'
+            || selected.mitigated !== 'NO' || typeof selected.proximal !== 'number'
+            || Math.abs(selected.proximal - decision.entry) > 0.011)) warn('AUDIT_SELECTED_POI_CONTRADICTION');
+    }
+    return diagnostics;
+}
 
 function rawCandleAiServerClock(nowMs = Date.now()) {
     const timestamp = Number(nowMs);
@@ -20418,6 +20501,22 @@ to the next POI. If ALL POIs fail RR, return NO_TRADE.
 
 ${RAW_CANDLE_AI_OUTPUT_CONTRACT}
 
+=== STRUCTURED AUDIT (REPORT ONLY) ===
+Populate audit_report from the SAME closed candles and decision already selected.
+It exposes evidence; it MUST NOT introduce new entry vetoes or change action, prices,
+risk, confidence or the existing Scenario A/Scenario B rules. Missing CRT/MSNR does
+not block a valid FVG/OB continuation. Existing setup-label evidence gates remain.
+Show daily_bias.candles for all last three Daily candles, structure/BOS/CHoCH,
+bullish and bearish sweep records for EACH 1d/4h/1h/15m/5m timeframe, break events
+separately from sweeps, liquidity pools separately from POIs, ranked POIs with reasons,
+selected_poi, CRT/MSNR evidence, risk arithmetic and session handling.
+Use NOT_CONFIRMED with null prices/times for unconfirmed records; use [] when no
+break events or liquidity pools exist. Do not invent evidence to fill the audit.
+selected_poi.rank is null for NO_TRADE. The risk and session audit must agree with
+top-level values. Copy INSTRUMENT_POLICY exactly: it discloses existing distance
+rules only. Gold stays at the current 20/200 raw-price baseline. Other instruments
+are explicitly UNTESTED_LEGACY; do not introduce ATR-based distance defaults.
+
 === NO_TRADE RULES ===
 Return NO_TRADE ONLY IF:
 1. There are NO unmitigated POIs within 200 pts of CURRENT_PRICE.
@@ -20485,6 +20584,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
         'DETERMINISTIC_ZONE_ENGINE=DISABLED',
         'CANDIDATE_LIST_ENGINE=DISABLED',
         'SYMBOL: ' + symbol,
+        'INSTRUMENT_POLICY=' + JSON.stringify(rawCandleAiInstrumentPolicy(symbol)),
         'CURRENT PRICE: ' + rawTextPacketFormatNumber(price, precision),
         'QUOTE TIME: ' + String(quote.quote_time || quote.current_price_time || 'UNKNOWN'),
         'QUOTE_SOURCE=' + String(quote.quote_source || 'UNKNOWN'),
@@ -29128,7 +29228,8 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             'management', 'reason'
         ];
         if (required.some(key => !Object.prototype.hasOwnProperty.call(json, key))) add('RAW_JSON_FIELDS_MISSING');
-        const allowedTopLevel = new Set(required);
+        // Optional evidence blocks preserve compatibility with captured V5.4 decisions.
+        const allowedTopLevel = new Set([...required, 'audit_report', 'instrument_policy']);
         if (Object.keys(json).some(key => !allowedTopLevel.has(key))) add('RAW_JSON_EXTRA_FIELDS');
         const action = String(json.action ?? '').trim().toUpperCase();
         const parsed = {
@@ -29162,6 +29263,9 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             raw_json: json,
             source_format: 'JSON'
         };
+        parsed.audit_report = isObject(json.audit_report) ? json.audit_report : null;
+        parsed.instrument_policy = rawCandleAiInstrumentPolicy(options.symbol || pair || '');
+        parsed.validation_diagnostics = rawCandleAiAuditDiagnostics(json, parsed, parsed.instrument_policy);
         const stringFields = [
             'action', 'setup', 'htf_bias', 'momentum_check', 'session_quality', 'order_tag', 'fvg_scan', 'htf_context',
             'crt_msnr_confirmation', 'sniper_zone_justification', 'price_action_confirmation',
