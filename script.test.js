@@ -10814,7 +10814,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.9');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.0');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
         for (const [timeframe, limit] of Object.entries(limits)) {
@@ -10842,18 +10842,19 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('MACRO_LEVELS_SOURCE=CLOSED_1D');
     });
 
-    it('includes the V5.9 raw-candle reachability and current-session prompt', () => {
+    it('includes the V6.0 raw-candle reachability and current-session prompt', () => {
         const ctx = getContext();
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
-        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V5.9 (QUOTE CLOSE-TIME & LIQUIDITY)');
+        expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V6.0 (ACTIONABLE RETEST & LIQUIDITY)');
         expect(packet).toContain('===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===');
         expect(packet).toContain('1. OUTPUT FORMAT: STRICT_JSON.');
         expect(packet).toContain('2. CONVERSATIONAL TEXT: FORBIDDEN.');
         expect(packet).toContain('3. MARKDOWN: FORBIDDEN. Do NOT use ```json or backticks.');
         expect(packet).toContain('Start your response EXACTLY with { and end EXACTLY with }.');
         expect(packet).toContain('=== CORE PRINCIPLE ===');
-        expect(packet).toContain('FILL-BEFORE-CANCEL HARD GATE:');
+        expect(packet).toContain('PENDING-ORDER PATH AND PRE-FILL LIQUIDITY RISK (DIAGNOSTIC, NOT A VETO):');
+        expect(packet).toContain('A false value MUST NOT discard a valid');
         expect(packet).toContain('PARTIAL FVG CANDIDATE RULE:');
         expect(packet).toContain('compare it with the full realized range');
         expect(packet).toContain('reason STALE_PACKET_RESCAN');
@@ -10947,7 +10948,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             quality: 'PRIME', window: 'NEW_YORK', prime: true, veto: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V5.9',
+            version: 'V6.0',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
@@ -11059,7 +11060,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         ...overrides
     });
 
-    it('parses and validates the V5.9 strict JSON output contract', () => {
+    it('parses and validates the V6.0 strict JSON output contract', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11081,7 +11082,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.fvg_scan).toContain('POI 3:');
     });
 
-    it('requires packet freshness and fill-before-cancel fields in the V5.9 contract', () => {
+    it('requires packet freshness and checks fill-before-cancel as a diagnostic', () => {
         const ctx = getContext();
         const missingEcho = jsonResponse();
         delete missingEcho.quote_time_echo;
@@ -11089,11 +11090,16 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             .toContain('RAW_JSON_FIELDS_MISSING');
         const invalidExpiry = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ valid_until: 'not-a-time' })));
         expect(invalidExpiry.issues).toContain('RAW_VALID_UNTIL_INVALID');
-        const falseGate = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({ fill_before_cancel: false })));
-        expect(falseGate.issues).toContain('RAW_FILL_BEFORE_CANCEL_FAIL');
+        const falseDiagnostic = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
+            fill_before_cancel: false,
+            cancel_level: 4079,
+            cancel_distance: 20
+        })));
+        expect(falseDiagnostic.valid).toBe(true);
+        expect(falseDiagnostic.issues).toEqual([]);
     });
 
-    it('accepts the V5.9 selected-POI htf_context field', () => {
+    it('accepts the V6.0 selected-POI htf_context field', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse()));
         expect(parsed.valid).toBe(true);
@@ -11215,7 +11221,6 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const response = fs.readFileSync(path.join(__dirname, 'test-fixtures/v54-browser-response-second.json'), 'utf8');
         const parsed = ctx.parseRawCandleAIActionResponse(response, { symbol: 'XAU/USD' });
         expect(parsed.issues).toContain('RAW_JSON_FIELDS_MISSING');
-        expect(parsed.issues).toContain('RAW_FILL_BEFORE_CANCEL_FAIL');
         expect(parsed.valid).toBe(false);
         expect(parsed.action).toBe('SELL_LIMIT');
         expect(parsed.risk).toBe(21.43);
@@ -11227,7 +11232,6 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const response = fs.readFileSync(path.join(__dirname, 'test-fixtures/v54-browser-response-final.json'), 'utf8');
         const parsed = ctx.parseRawCandleAIActionResponse(response, { symbol: 'XAU/USD' });
         expect(parsed.issues).toContain('RAW_JSON_FIELDS_MISSING');
-        expect(parsed.issues).toContain('RAW_FILL_BEFORE_CANCEL_FAIL');
         expect(parsed.valid).toBe(false);
         expect(parsed.setup).toBe('FVG_FILL');
         expect(parsed.crt_msnr_confirmation).toContain('CRT: NOT_CONFIRMED');
@@ -11243,7 +11247,6 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.valid).toBe(false);
         expect(parsed.execution_allowed).toBe(false);
         expect(parsed.issues).toContain('RAW_JSON_FIELDS_MISSING');
-        expect(parsed.issues).toContain('RAW_FILL_BEFORE_CANCEL_FAIL');
         expect(parsed.tp2).toBeNull();
         expect(parsed.tp3).toBeNull();
         expect(parsed.target_prices).toEqual([3852.58]);
@@ -11362,15 +11365,16 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.action).toBe('NO_TRADE');
     });
 
-    it('rejects a limit when the opposing liquidity pool is closer than the proposed entry', () => {
+    it('allows a valid limit when the opposing target pool is closer than the proposed entry', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
             cancel_level: 4065,
             cancel_distance: 6,
-            entry_distance: 25
+            entry_distance: 25,
+            fill_before_cancel: false
         })));
-        expect(parsed.valid).toBe(false);
-        expect(parsed.issues).toContain('RAW_FILL_BEFORE_CANCEL_FAIL');
+        expect(parsed.valid).toBe(true);
+        expect(parsed.issues).toEqual([]);
     });
 
     it('rejects JSON live actions whose RR is below the hard gate', () => {
@@ -11381,7 +11385,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_RR_BELOW_MINIMUM');
     });
 
-    it('requires the V5.9 bias, momentum, CHoCH, session, scan, and SL fields', () => {
+    it('requires the V6.0 bias, momentum, CHoCH, session, scan, and SL fields', () => {
         const ctx = getContext();
         const response = jsonResponse();
         delete response.htf_bias;
@@ -11674,7 +11678,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.issues).toContain('RAW_NUMERIC_FIELDS_INVALID');
     });
 
-    it('rejects extra fields outside the V5.9 schema', () => {
+    it('rejects extra fields outside the V6.0 schema', () => {
         const ctx = getContext();
         const response = jsonResponse({ gate_0_candidate: { entry: 4034 } });
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(response));

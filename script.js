@@ -17173,9 +17173,9 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
     '  "quote_time_echo": "<exact QUOTE TIME from packet>",',
     '  "valid_until": "<ISO8601 UTC>",',
     '  "entry_distance": <absolute points from packet quote to proposed entry>,',
-    '  "cancel_level": <nearest unused opposing pool between quote and trade direction, or null>,',
+    '  "cancel_level": <nearest unused opposing liquidity pool on the target side of CURRENT PRICE, or null>,',
     '  "cancel_distance": <absolute points from quote to cancel_level, or null>,',
-    '  "fill_before_cancel": true | false,',
+    '  "fill_before_cancel": true | false (distance heuristic only; never a trade veto),',
     '  "tp1_is_nearest_unused": true | false,',
     '  "rejected_nearer": ["<pool/POI and exact reason>", ...],',
     '  "rescan_if": "<specific invalidation/expiry event or NONE>",',
@@ -20408,7 +20408,7 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 }
 
 function buildRawCandleAiGhostRules() {
-    return `=== GHOST MACHINE STRATEGY RULES === V5.9 (QUOTE CLOSE-TIME & LIQUIDITY)
+    return `=== GHOST MACHINE STRATEGY RULES === V6.0 (ACTIONABLE RETEST & LIQUIDITY)
 ===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===
 1. OUTPUT FORMAT: STRICT_JSON.
 2. CONVERSATIONAL TEXT: FORBIDDEN. Do NOT write "Here is the analysis".
@@ -20516,18 +20516,23 @@ state the required move, and do not describe it as an active current-session set
 This is descriptive only until a distance cutoff is calibrated from historical
 fills; do not invent ATR distance thresholds.
 
-FILL-BEFORE-CANCEL HARD GATE:
-For SELL_LIMIT above CURRENT PRICE, cancel_level is the nearest UNUSED opposing
-liquidity pool below CURRENT PRICE. For BUY_LIMIT below CURRENT PRICE, it is the
-nearest UNUSED opposing pool above CURRENT PRICE. Determine pool status from later
-closed candle wicks; equality counts as swept. If no such pool exists, set
-cancel_level and cancel_distance null and fill_before_cancel=false (unknown is not
-a pass). Compute entry_distance=abs(entry-CURRENT PRICE) and
-cancel_distance=abs(cancel_level-CURRENT PRICE). fill_before_cancel=true only if
-entry_distance is strictly less than cancel_distance and entry remains on the
-pending side of CURRENT PRICE. If false, discard that candidate and cascade; if
-all candidates fail, return NO_TRADE. This is a conservative reachability gate,
-not a guarantee about future price path.
+PENDING-ORDER PATH AND PRE-FILL LIQUIDITY RISK (DIAGNOSTIC, NOT A VETO):
+For SELL_LIMIT above CURRENT PRICE, price must rise to fill the order. For
+BUY_LIMIT below CURRENT PRICE, price must fall to fill it. Report the nearest
+unused opposing liquidity pool on the target side of CURRENT PRICE in cancel_level
+and its distance in cancel_distance; this is a target-side pool reference, not an
+automatic order-cancellation barrier. Determine pool status from later closed
+candle wicks; equality counts as swept. If no such pool exists, set both fields
+null and fill_before_cancel=false. Compute entry_distance=abs(entry-CURRENT PRICE).
+Set fill_before_cancel=true only when both distances are known and entry_distance
+is strictly less than cancel_distance; otherwise set it false. This comparison is
+an informational proximity heuristic only. A false value MUST NOT discard a valid
+candidate, cascade to another POI, or cause NO_TRADE: entry and pool are on opposite
+sides of CURRENT PRICE, so the comparison alone cannot establish which event price
+will reach first. If the referenced pool is swept before the pending order fills,
+rescan and update the target ladder before execution. Select candidates using the
+structural gates: fresh unconsumed POI, correct pending side, the 20-200 point
+distance rules, valid structural stop, and RR >= 2.00 to the nearest unused target.
 
 Evaluate CRT, MSNR and liquidity on EVERY run and explicitly mark each CONFIRMED
 or NOT_CONFIRMED with evidence in crt_msnr_confirmation. Missing evidence means
@@ -20648,9 +20653,9 @@ Return NO_TRADE ONLY IF:
 1. There are NO unmitigated or positive-width verified residual POIs within
    200 pts of CURRENT_PRICE.
 2. ALL available POIs fail the RR >= 2.00 test.
-3. Every candidate fails fill_before_cancel, has already been consumed, is too
-   close to place a pending order without chasing, or only a conditional swing
-   setup remains for a later session.
+3. Every candidate has already been consumed, is too close to place a pending
+   order without chasing, or only a conditional swing setup remains for a later
+   session. fill_before_cancel=false alone is never a NO_TRADE reason.
 4. The packet is stale or internally inconsistent (reason STALE_PACKET_RESCAN).
 Session quality alone is NEVER a NO_TRADE reason.
 For NO_TRADE use setup=NONE, order_tag=none, expires_at=null, confidence=0,
@@ -20706,7 +20711,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     ];
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V5.9',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.0',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20768,7 +20773,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             veto: false
         },
         ghost_rules: {
-            version: 'V5.9',
+            version: 'V6.0',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== REASONING PROTOCOL ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('STEP 1. HTF MACRO BIAS (1D/4H):')),
@@ -29441,7 +29446,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             'management', 'reason'
         ];
         if (required.some(key => !Object.prototype.hasOwnProperty.call(json, key))) add('RAW_JSON_FIELDS_MISSING');
-        // Structured evidence is optional; V5.9 quote/reachability fields remain mandatory.
+        // Structured evidence is optional; V6.0 quote/reachability fields remain mandatory.
         const allowedTopLevel = new Set([...required, 'audit_report', 'instrument_policy']);
         if (Object.keys(json).some(key => !allowedTopLevel.has(key))) add('RAW_JSON_EXTRA_FIELDS');
         const action = String(json.action ?? '').trim().toUpperCase();
@@ -29728,18 +29733,24 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
             if (Number.isFinite(poiDistance) && poiDistance > 200) add('RAW_SELECTED_POI_OUT_OF_RANGE');
             const computedEntryDistance = Number.isFinite(parsed.entry) && Number.isFinite(parsed.quote_price_echo)
                 ? Math.abs(parsed.entry - parsed.quote_price_echo) : null;
-            const computedCancelDistance = Number.isFinite(parsed.cancel_level) && Number.isFinite(parsed.quote_price_echo)
+            const hasCancelLevel = Number.isFinite(parsed.cancel_level);
+            const hasCancelDistance = Number.isFinite(parsed.cancel_distance);
+            const computedCancelDistance = hasCancelLevel && Number.isFinite(parsed.quote_price_echo)
                 ? Math.abs(parsed.cancel_level - parsed.quote_price_echo) : null;
-            if (parsed.fill_before_cancel !== true || parsed.tp1_is_nearest_unused !== true
-                || parsed.cancel_level === null || parsed.cancel_distance === null
-                || computedEntryDistance === null || computedCancelDistance === null
-                || computedEntryDistance >= computedCancelDistance
-                || (action === 'BUY_LIMIT' && !(parsed.entry < parsed.quote_price_echo && parsed.cancel_level > parsed.quote_price_echo))
-                || (action === 'SELL_LIMIT' && !(parsed.entry > parsed.quote_price_echo && parsed.cancel_level < parsed.quote_price_echo))
+            const expectedFillBeforeCancel = computedEntryDistance !== null && computedCancelDistance !== null
+                && computedEntryDistance < computedCancelDistance;
+            const cancelOnTargetSide = action === 'BUY_LIMIT'
+                ? parsed.cancel_level > parsed.quote_price_echo
+                : parsed.cancel_level < parsed.quote_price_echo;
+            if (computedEntryDistance === null || !Number.isFinite(parsed.entry_distance)
                 || Math.abs(parsed.entry_distance - computedEntryDistance) > 0.011
-                || Math.abs(parsed.cancel_distance - computedCancelDistance) > 0.011) {
-                add('RAW_FILL_BEFORE_CANCEL_FAIL');
+                || hasCancelLevel !== hasCancelDistance
+                || (hasCancelLevel && (!cancelOnTargetSide
+                    || Math.abs(parsed.cancel_distance - computedCancelDistance) > 0.011))
+                || parsed.fill_before_cancel !== expectedFillBeforeCancel) {
+                add('RAW_FILL_BEFORE_CANCEL_DIAGNOSTIC_INVALID');
             }
+            if (parsed.tp1_is_nearest_unused !== true) add('RAW_TP1_NOT_NEAREST_UNUSED');
         }
         if (action === 'NO_TRADE') {
             if (parsed.order_tag !== 'none') add('RAW_NO_TRADE_ORDER_TAG_INVALID');
