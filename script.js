@@ -29353,10 +29353,60 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
     const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
     const parseJson = candidate => {
         const response = String(candidate ?? '');
-        const jsonStr = response.match(/\{[\s\S]*\}/)[0];
-        const data = JSON.parse(jsonStr);
-        if (!isObject(data)) throw new Error('AI response JSON must be an object');
-        return data;
+        const requiredKeys = [
+            'action', 'setup', 'htf_bias', 'momentum_check', 'choch_detected',
+            'session_quality', 'order_tag', 'expires_at', 'quote_price_echo', 'quote_time_echo',
+            'valid_until', 'entry_distance', 'cancel_level', 'cancel_distance',
+            'fill_before_cancel', 'tp1_is_nearest_unused', 'rejected_nearer', 'rescan_if', 'fvg_scan',
+            'htf_context', 'crt_msnr_confirmation', 'sniper_zone_justification',
+            'price_action_confirmation', 'sl_method', 'session_volatility_check', 'entry',
+            'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1', 'confidence',
+            'timeframe_used', 'management', 'reason'
+        ];
+        const candidates = [];
+        let start = -1;
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        for (let index = 0; index < response.length; index += 1) {
+            const character = response[index];
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (character === '\\') escaped = true;
+                else if (character === '"') inString = false;
+                continue;
+            }
+            if (character === '"') {
+                inString = true;
+                continue;
+            }
+            if (character === '{') {
+                if (depth === 0) start = index;
+                depth += 1;
+            } else if (character === '}' && depth > 0) {
+                depth -= 1;
+                if (depth === 0 && start >= 0) {
+                    candidates.push(response.slice(start, index + 1));
+                    start = -1;
+                }
+            }
+        }
+        const parsedCandidates = [];
+        for (let index = candidates.length - 1; index >= 0; index -= 1) {
+            try {
+                const data = JSON.parse(candidates[index]);
+                if (isObject(data)) parsedCandidates.push(data);
+            } catch (_) {
+                // Earlier reasoning may contain brace-like fragments; skip them.
+            }
+        }
+        // DeepThink can contain JSON-shaped examples before the actual answer.
+        // Prefer the last object that has the complete current contract.
+        const contractObject = parsedCandidates.find(data => requiredKeys.every(key =>
+            Object.prototype.hasOwnProperty.call(data, key)));
+        if (contractObject) return contractObject;
+        if (parsedCandidates.length) return parsedCandidates[0];
+        throw new Error('No complete JSON object found in AI response');
     };
     let json = null;
     try {
@@ -29364,7 +29414,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
     } catch (_) {
         json = null;
     }
-    if (!json && options.allowText !== true) {
+    if (!json) {
         return {
             action: '',
             valid: false,
