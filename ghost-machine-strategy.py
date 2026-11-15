@@ -472,8 +472,6 @@ in the packet. Return exactly this compact JSON shape, selecting only a
 candidate ID present in `candidate_math`:
 {
   "action": "BUY_LIMIT|SELL_LIMIT|NO_TRADE",
-  "selected_candidate_id": "<candidate_math id or null>",
-  "symbol": "<packet symbol>",
   "entry": <number|null>,
   "stop_loss": <number|null>,
   "tp1": <number|null>,
@@ -481,18 +479,23 @@ candidate ID present in `candidate_math`:
   "tp3": null,
   "risk": <number|null>,
   "rr_tp1": <number|null>,
+  "confidence": <integer 0-100>,
+  "analysis": "<maximum 240 characters; factual setup/no-trade explanation>",
+  "selected_candidate_id": "<candidate_math id or null>",
+  "symbol": "<packet symbol>",
   "htf_bias": "BULLISH|BEARISH|RANGE|UNCLEAR",
   "setup": "FVG_FILL|OB_RETEST|LIQUIDITY_SWEEP|NONE",
-  "confidence": <integer 0-100>,
   "session_quality": "PRIME|SHOULDER|OFF_SESSION|UNKNOWN",
   "order_tag": "prime|shoulder|armed_off_session|none",
   "expires_at": "<ISO8601 UTC or null>",
-  "reason": "<maximum 240 characters; cite selected candidate ID and only factual structural rationale>"
+  "reason": "<same concise factual text as analysis>"
 }
 For BUY_LIMIT or SELL_LIMIT, copy entry, stop_loss, tp1, risk and rr_tp1
 exactly from the selected verified candidate as JSON numbers, never quoted
 strings. Confidence is also a JSON integer. For NO_TRADE, use null numeric
-trade fields and selected_candidate_id=null. Return only one raw JSON object:
+trade fields and selected_candidate_id=null. `analysis` is the user-facing
+short explanation; `reason` must repeat it for compatibility with existing
+parsers. Return fields in the exact order shown. Return only one raw JSON object:
 start with { and end with }. Do not use Markdown, backticks, or text before
 or after the object.
 """
