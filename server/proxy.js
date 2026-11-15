@@ -172,7 +172,7 @@ function validateTelegramInitData(initData, botToken, nowMs = Date.now(), maxAge
 function telegramDocumentMultipart({ chatId, document, filename, caption = '', contentType = 'application/pdf' } = {}) {
     const boundary = `----ghost-machine-${crypto.randomBytes(12).toString('hex')}`;
     const isText = String(contentType).toLowerCase().startsWith('text/');
-    const fallbackFilename = isText ? 'ghost-machine-market-pack.txt' : 'ghost-machine-market-pack.pdf';
+    const fallbackFilename = isText ? 'ghost-machine-market-pack.md' : 'ghost-machine-market-pack.pdf';
     const safeFilename = String(filename || fallbackFilename)
         .replace(/[^A-Za-z0-9._-]+/g, '-')
         .slice(0, 120) || fallbackFilename;
@@ -592,56 +592,24 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                 try { body = JSON.parse(raw || '{}'); } catch { return jsonResponse(res, 400, { error: 'request body must be valid JSON' }, origin); }
                 const auth = validateTelegramInitData(body?.init_data, telegramBotToken, now());
                 if (!auth.valid) return jsonResponse(res, 401, { error: auth.reason }, origin);
-                const filename = body?.document_filename || body?.filename;
-                const encoded = String(body?.document_base64 || body?.pdf_base64 || '').replace(/^data:[^;]+;base64,/, '');
+                const encoded = String(body?.document_base64 || '').replace(/^data:text\/markdown(?:;charset=utf-8)?;base64,/, '');
                 if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
-                    return jsonResponse(res, 400, { error: 'a valid document is required' }, origin);
+                    return jsonResponse(res, 400, { error: 'a valid Markdown document is required' }, origin);
                 }
                 const document = Buffer.from(encoded, 'base64');
-                const requestedMime = String(body?.document_mime || (body?.pdf_base64 ? 'application/pdf' : '')).toLowerCase();
-                const isDocx = requestedMime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || /\.docx$/i.test(String(filename || ''));
-                const documentMime = isDocx ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'application/pdf';
-                if (documentMime === 'application/pdf') {
-                    if (document.length < 8 || document.subarray(0, 5).toString('ascii') !== '%PDF-') {
-                        return jsonResponse(res, 400, { error: 'the uploaded document is not a PDF' }, origin);
-                    }
-                } else if (document.length < 4 || document.subarray(0, 4).toString('hex') !== '504b0304') {
-                    return jsonResponse(res, 400, { error: 'the uploaded document is not a DOCX file' }, origin);
+                if (!document.length || document.length > 8 * 1024 * 1024) {
+                    return jsonResponse(res, 413, { error: 'Markdown document exceeds the delivery limit' }, origin);
                 }
-                if (document.length > 20 * 1024 * 1024) return jsonResponse(res, 413, { error: 'document exceeds the Telegram delivery limit' }, origin);
-
-                const encodedText = String(body?.text_base64 || '').replace(/^data:text\/plain;base64,/, '');
-                let textPacket = null;
-                if (encodedText) {
-                    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encodedText)) {
-                        return jsonResponse(res, 400, { error: 'a valid text packet is required' }, origin);
-                    }
-                    textPacket = Buffer.from(encodedText, 'base64');
-                    if (textPacket.length === 0) return jsonResponse(res, 400, { error: 'the text packet is empty' }, origin);
-                    if (textPacket.length > 5 * 1024 * 1024) return jsonResponse(res, 413, { error: 'text packet exceeds the Telegram delivery limit' }, origin);
-                }
-
-                const documentResult = await sendTelegramDocument(fetchImpl, telegramBotToken, {
+                const result = await sendTelegramDocument(fetchImpl, telegramBotToken, {
                     chatId: auth.chat_id,
                     document,
-                    filename,
-                    caption: body?.caption,
-                    contentType: documentMime
+                    filename: body?.filename,
+                    contentType: 'text/markdown; charset=utf-8',
+                    caption: body?.caption
                 });
-                let textResult = null;
-                if (textPacket) {
-                    textResult = await sendTelegramDocument(fetchImpl, telegramBotToken, {
-                        chatId: auth.chat_id,
-                        document: textPacket,
-                        filename: body?.text_filename,
-                        caption: `DeepSeek AI packet - ${body?.symbol || 'market'}. Upload this TXT to DeepSeek.`,
-                        contentType: 'text/plain'
-                    });
-                }
                 return jsonResponse(res, 200, {
                     sent: true,
-                    message_id: documentResult?.result?.message_id || null,
-                    text_message_id: textResult?.result?.message_id || null,
+                    message_id: result?.result?.message_id || null,
                     chat_id: auth.chat_id
                 }, origin);
             }

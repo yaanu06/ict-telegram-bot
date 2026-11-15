@@ -21514,27 +21514,34 @@ function buildMarketPackChart(replay, symbol, generatedAt) {
 async function buildCurrentAiMarketPack() {
     const packet = getCurrentRawMarketAnalysisPacket();
     if (!packet) return null;
-    const replay = currentScanArtifact?.replay;
-    if (!replay) throw new Error('Run a completed scan before building the AI Market Pack');
     const strategyResponse = await fetch(`ghost-machine-strategy.py?v=${encodeURIComponent(APP_BUILD_ID || 'current')}`, { cache: 'no-store' });
     if (!strategyResponse.ok) throw new Error('The embedded Ghost Machine strategy could not be loaded');
     const strategyText = await strategyResponse.text();
     const generatedAt = new Date().toISOString();
-    const canvas = buildMarketPackChart(replay, packet.symbol, generatedAt);
-    const chartJpeg = marketPackJpegBytes(canvas.toDataURL('image/jpeg', 0.84));
-    const document = buildMarketPackDocx({
-        chartJpeg,
-        strategyText,
-        packetText: packet.text,
-        symbol: packet.symbol,
-        generatedAt
-    });
     const safeSymbol = packet.symbol.replace(/[^A-Z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'market';
     const timestamp = generatedAt.replace(/[:.]/g, '-');
     return {
-        document,
-        filename: `ghost-machine-market-pack-${safeSymbol}-${timestamp}.docx`,
-        mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        markdown: [
+            '# Ghost Machine AI Market Pack',
+            '',
+            `- Symbol: ${packet.symbol}`,
+            `- Generated UTC: ${generatedAt}`,
+            '- Candle policy: CLOSED_ONLY',
+            '',
+            '## Current Ghost Machine Strategy',
+            '',
+            '~~~python',
+            strategyText.trim(),
+            '~~~',
+            '',
+            '## Raw Closed Timeframe Data',
+            '',
+            '~~~text',
+            packet.text.trim(),
+            '~~~',
+            ''
+        ].join('\n'),
+        filename: `ghost-machine-market-pack-${safeSymbol}-${timestamp}.md`,
         symbol: packet.symbol
     };
 }
@@ -21549,27 +21556,24 @@ function marketPackBase64(bytes) {
 }
 
 function downloadAiMarketPack(pack) {
-    const download = (bytes, type, filename) => {
-        const blob = new Blob([bytes], { type });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = filename;
-        link.style.display = 'none';
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-    };
-    download(pack.document, pack.mime, pack.filename);
+    const blob = new Blob([pack.markdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = pack.filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function sendAiMarketPackToTelegram() {
     const button = document.getElementById('sendAiPackBtn');
-    const originalLabel = button?.textContent || 'Send AI PDF to Telegram';
+    const originalLabel = button?.textContent || 'Send AI Markdown to Telegram';
     if (button) {
         button.disabled = true;
-        button.textContent = 'Building AI PDF...';
+        button.textContent = 'Building AI Markdown...';
     }
     try {
         const pack = await buildCurrentAiMarketPack();
@@ -21577,7 +21581,7 @@ async function sendAiMarketPackToTelegram() {
         const initData = String(window.Telegram?.WebApp?.initData || '');
         if (!initData) {
             downloadAiMarketPack(pack);
-            showNotif('Opened outside Telegram, so the AI Market Pack DOCX was downloaded instead', 'info');
+            showNotif('Opened outside Telegram, so the one-file AI Markdown was downloaded instead', 'info');
             return;
         }
         if (button) button.textContent = 'Sending to Telegram...';
@@ -21586,16 +21590,14 @@ async function sendAiMarketPackToTelegram() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 init_data: initData,
-                document_base64: marketPackBase64(pack.document),
-                document_filename: pack.filename,
-                document_mime: pack.mime,
-                symbol: pack.symbol,
-                caption: `Ghost Machine AI Market Pack - ${pack.symbol}. Upload this DOCX to DeepSeek; the chart and exact data are in one file.`
+                document_base64: marketPackBase64(new TextEncoder().encode(pack.markdown)),
+                filename: pack.filename,
+                caption: `Ghost Machine AI Market Pack - ${pack.symbol}. Upload this single Markdown file to DeepSeek.`
             })
         });
         let result = {};
         try { result = await response.json(); } catch (_) { result = {}; }
-        if (!response.ok || result.sent !== true) throw new Error(result.error || 'Telegram could not deliver the AI PDF');
+        if (!response.ok || result.sent !== true) throw new Error(result.error || 'Telegram could not deliver the AI Markdown file');
         window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success');
         showToast('AI Market Pack sent to your Telegram chat');
     } catch (error) {
