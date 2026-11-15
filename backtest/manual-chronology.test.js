@@ -161,7 +161,7 @@ describe('production Market Mechanics formation chronology', () => {
         const replay = ctx.createScanReplay(live, output);
         const publicSignal = ctx.buildPublicTradeSignal(output.trade_signal);
         expect(ctx.buildRawTextMarketAnalysisPacket({ signal: publicSignal, replay }))
-            .toContain('=== AI TRADING PACKET: RAW CANDLE AI ===');
+            .toContain('=== TIMEFRAME DATA ONLY ===');
         ctx.navigator = { clipboard: { writeText: jest.fn(() => Promise.resolve()) } };
         ctx.__copyReplay = replay;
         ctx.__copySignal = publicSignal;
@@ -170,7 +170,7 @@ describe('production Market Mechanics formation chronology', () => {
         await Promise.resolve();
         await Promise.resolve();
         expect(ctx.navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
-        expect(ctx.navigator.clipboard.writeText.mock.calls[0][0]).toContain('=== AI TRADING PACKET: RAW CANDLE AI ===');
+        expect(ctx.navigator.clipboard.writeText.mock.calls[0][0]).toContain('=== TIMEFRAME DATA ONLY ===');
     });
 });
 

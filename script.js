@@ -20842,12 +20842,16 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const latestClosed = rawTextPacketClosedCandles(source, '5M', asOfMs).at(-1) || null;
     const precision = rawTextPacketPrecision(symbol, metadata, latestClosed?.c);
     const serverClock = rawCandleAiServerClock(asOfMs);
+    const quote = source.quote || signal.quote || {};
     const lines = [
         '=== TIMEFRAME DATA ONLY ===',
         'SYMBOL=' + symbol,
         'SERVER_TIME_UTC=' + serverClock.utc,
         'SESSION_QUALITY=' + serverClock.session_quality,
         'SESSION_WINDOW=' + serverClock.session_window,
+        'QUOTE_TIME=' + String(quote.quote_time || quote.current_price_time || 'UNKNOWN'),
+        'QUOTE_SOURCE=' + String(quote.quote_source || 'UNKNOWN'),
+        'DATA_STATUS=' + (quote.quote_source === 'CANDLE_CLOSE_FALLBACK' ? 'CLOSED_5M_REFERENCE' : 'PROVIDER_QUOTE'),
         'TIMEFRAME_ORDER=' + RAW_CANDLE_AI_TIMEFRAMES.join(','),
         'CANDLE_POLICY=CLOSED_ONLY',
         'CANDLE_FORMAT=time,open,high,low,close,volume',

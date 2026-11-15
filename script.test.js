@@ -5065,7 +5065,7 @@ describe('professional manual decision packet and external decision validation',
         expect(packetData.institutional_activity_evidence).toEqual(expect.objectContaining({ source_class: 'PRICE_ACTION' }));
         const replay = completeReplay({ pair: 'EUR/USD', snapshot_id: 'PACKET-REGRESSION', scan_as_of: '2026-10-05T10:00:00Z', quote: { price: 100 }, provider_metadata: { provider: 'TVKIT' }, market_evidence_package: semantic, target_candidates: { buy: [], sell: [] }, risk_constraints: { minimum_rr: 2.5 } });
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('=== AI TRADING PACKET: RAW CANDLE AI ===');
+        expect(packet).toContain('=== TIMEFRAME DATA ONLY ===');
         expect(packet).toContain('EUR/USD');
         expect(packet).not.toContain('CURRENT_MARKET_STATE');
         expect(packet).not.toContain('CURRENT SELECTABLE CANDIDATES');
@@ -6208,7 +6208,7 @@ describe('professional manual decision packet and external decision validation',
         expect(semanticLocationIds).toContain(sourceZone.id);
 
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('=== AI TRADING PACKET: RAW CANDLE AI ===');
+        expect(packet).toContain('=== TIMEFRAME DATA ONLY ===');
         expect(packet).toContain('XAU/USD');
         expect(packet).not.toContain('"buy_locations"');
         expect(packet).not.toContain('"sell_locations"');
@@ -6291,7 +6291,7 @@ describe('multi-symbol snapshot completeness and provider boundary', () => {
             live.holistic = { suggestedDirection: 'NEUTRAL', buyScore: 0, sellScore: 0 };
             const replay = ctx.createScanReplay(live, { pair, status: 'MANUAL_EXTERNAL_AI_REVIEW' });
             const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-            expect(packet).toContain('=== AI TRADING PACKET: RAW CANDLE AI ===');
+            expect(packet).toContain('=== TIMEFRAME DATA ONLY ===');
             expect(packet).toContain(pair);
             expect(packet).not.toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
         }
@@ -6394,7 +6394,7 @@ describe('multi-symbol snapshot completeness and provider boundary', () => {
         live.market_evidence_package = evidencePackage;
         const replay = ctx.createScanReplay(live, { pair: 'EUR/USD', status: 'MANUAL_EXTERNAL_AI_REVIEW' });
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('=== AI TRADING PACKET: RAW CANDLE AI ===');
+        expect(packet).toContain('=== TIMEFRAME DATA ONLY ===');
         expect(packet).toContain('EUR/USD');
         expect(packet).toContain('FORMAT: time,open,high,low,close,volume');
         expect(packet).not.toContain('MARKET DATA AVAILABILITY DIAGNOSTIC');
@@ -10836,11 +10836,19 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             _lastDaily: lastDaily
         };
     };
+    const aiPacketForReplay = (ctx, replay = rawReplay()) => ctx.buildRawCandleAiPacket({
+        source: replay,
+        symbol: replay.pair,
+        price: replay.quote.price,
+        precision: 2,
+        asOfMs: asOf,
+        quote: replay.quote
+    });
 
     it('sends 1D, 4H, 1H, 15M and 5M candles with per-timeframe limits', () => {
         const ctx = getContext();
         const replay = rawReplay();
-        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const packet = aiPacketForReplay(ctx, replay);
         expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.2');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
@@ -10857,7 +10865,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
     it('prints factual previous-day and completed session liquidity levels', () => {
         const ctx = getContext();
         const replay = rawReplay();
-        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const packet = aiPacketForReplay(ctx, replay);
         const levels = ctx.buildRawCandleAiMacroLevels(replay, asOf);
         expect(levels.previous_day_high).toBe(replay._lastDaily.h);
         expect(levels.previous_day_low).toBe(replay._lastDaily.l);
@@ -10871,7 +10879,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
 
     it('includes the V6.2 raw-candle reachability and directional target prompt', () => {
         const ctx = getContext();
-        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
+        const packet = aiPacketForReplay(ctx);
         expect(packet).toContain('DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L');
         expect(packet).toContain('=== GHOST MACHINE STRATEGY RULES === V6.2 (DIRECTIONAL LIQUIDITY TARGETS)');
         expect(packet).toContain('SELL_LIMIT: choose the nearest UNUSED LOW liquidity pool strictly BELOW');
@@ -10963,7 +10971,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         ctx.console.log = jest.fn();
         ctx.RAW_PACKET_DIAGNOSTIC(true);
-        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
+        const packet = aiPacketForReplay(ctx);
         const diagnostic = ctx.console.log.mock.calls
             .filter(call => call[0] === 'RAW_PACKET_DIAGNOSTIC' && call[1] && typeof call[1] === 'object')
             .at(-1)[1];
@@ -11252,7 +11260,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const forex = ctx.rawCandleAiInstrumentPolicy('EUR/USD');
         expect(gold).toMatchObject({ min_distance: 20, max_distance: 200, distance_basis: 'RAW_PRICE', calibration_status: 'FROZEN_GOLD_BASELINE' });
         expect(forex).toMatchObject({ min_distance: 20, max_distance: 200, distance_basis: 'RAW_PRICE', calibration_status: 'UNTESTED_LEGACY' });
-        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
+        const packet = aiPacketForReplay(ctx);
         expect(packet).toContain('INSTRUMENT_POLICY=' + JSON.stringify(gold));
         expect(packet).toContain('"audit_report": {');
         const response = ctx.parseRawCandleAIActionResponse(JSON.stringify({
