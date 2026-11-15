@@ -98,9 +98,11 @@ Every cited price must identify an actual timeframe and row timestamp.
 Never combine a 1H or 15M high with a nonexistent 4H candle.
 
 STRICT RESPONSE FORMAT
-Return exactly one raw, valid JSON object. Start with { and end with }.
-Do not use Markdown, code fences, headings, prose, or citations outside the
-object. Double-quoted strings; real null for missing values, not "null".
+Return exactly one valid JSON object inside one Markdown fenced code block
+labeled `json`. The opening fence must be ```json and the closing fence must
+follow immediately after the object. Do not add headings, prose, citations or
+any text before or after that one code block. Double-quoted strings; real null
+for missing values, not "null".
 Keep explanations concise factual summaries, not private reasoning.
 
 1. DIRECTION, VOLATILITY AND VOLUME
@@ -495,9 +497,8 @@ exactly from the selected verified candidate as JSON numbers, never quoted
 strings. Confidence is also a JSON integer. For NO_TRADE, use null numeric
 trade fields and selected_candidate_id=null. `analysis` is the user-facing
 short explanation; `reason` must repeat it for compatibility with existing
-parsers. Return fields in the exact order shown. Return only one raw JSON object:
-start with { and end with }. Do not use Markdown, backticks, or text before
-or after the object.
+parsers. Return fields in the exact order shown. Return only one ```json code
+block, with the JSON object inside it, and no text outside the block.
 """
 
 
