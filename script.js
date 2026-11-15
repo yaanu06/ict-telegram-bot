@@ -20870,6 +20870,118 @@ function rawTextMarketPackMarketStatus(referenceAudit = {}) {
     return open === true ? 'OPEN' : open === false ? 'CLOSED' : 'UNKNOWN';
 }
 
+// Mechanical facts for the external-AI packet.  These are deliberately
+// calculated from the same closed rows we export so an LLM does not have to
+// hand-add ATRs or enumerate every overlapping FVG triple.  They are facts,
+// not an internal signal: the external analyst still decides whether a
+// verified candidate makes sense in its structural context.
+function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, asOfMs) {
+    const primary = ['4H', '1H'].map(timeframe => ({
+        timeframe,
+        candles: rawTextPacketClosedCandles(source, timeframe, asOfMs)
+            .slice(-rawCandleAiCandleLimit(timeframe))
+    })).filter(block => block.candles.length >= 3);
+    const atr = Object.fromEntries(primary.map(block => [block.timeframe, calculateRawTextAtr(block.candles, 14)]));
+    const atr1h = Number(atr['1H']);
+    const daily = rawTextPacketClosedCandles(source, '1D', asOfMs);
+    const dailyBias = buildRawCandleAiDailyBias(daily).bias;
+    const fvgRows = primary.flatMap(block => detectRawTextFvgs(block.candles, block.timeframe).map(fvg => {
+        const a = block.candles[fvg.formation_index];
+        const c = block.candles[fvg.formation_index + 2];
+        const signedTest = fvg.type === 'BEARISH'
+            ? Number(a?.l) - Number(c?.h)
+            : Number(c?.l) - Number(a?.h);
+        return {
+            id: `${block.timeframe}-${fvg.type}-${fvg.formation_index}`,
+            timeframe: block.timeframe,
+            direction: fvg.type,
+            formation_time: rawTextAuditTimestamp(fvg.c3),
+            signed_test: rawTextPacketRoundPrice(signedTest, precision),
+            signed_test_rule: fvg.type === 'BEARISH' ? 'A.low-C.high>0' : 'C.low-A.high>0',
+            zone_low: rawTextPacketRoundPrice(fvg.lower, precision),
+            zone_high: rawTextPacketRoundPrice(fvg.upper, precision),
+            width: rawTextPacketRoundPrice(Number(fvg.upper) - Number(fvg.lower), precision),
+            lifecycle: fvg.status,
+            remaining_low: rawTextPacketRoundPrice(fvg.remaining_lower, precision),
+            remaining_high: rawTextPacketRoundPrice(fvg.remaining_upper, precision)
+        };
+    }));
+    const pools = primary.flatMap(block => {
+        const swings = findSwings(block.candles, 2);
+        const buildPool = (swing, type) => {
+            const level = Number(swing.p);
+            const confirmedAt = rawTextPacketTimestamp(swing.confirmation_time);
+            const later = block.candles.filter(candle => rawTextPacketTimestamp(candle.t) > confirmedAt);
+            const consumed = type === 'HIGH'
+                ? later.some(candle => Number(candle.h) >= level)
+                : later.some(candle => Number(candle.l) <= level);
+            return {
+                id: `${block.timeframe}-${type}-${swing.i}`,
+                timeframe: block.timeframe,
+                type,
+                level: rawTextPacketRoundPrice(level, precision),
+                source_time: rawTextAuditTimestamp(block.candles[swing.i]?.t),
+                confirmation_time: rawTextAuditTimestamp(swing.confirmation_time),
+                lifecycle: consumed ? 'CONSUMED' : 'UNUSED'
+            };
+        };
+        return [...(swings.H || []).map(swing => buildPool(swing, 'HIGH')), ...(swings.L || []).map(swing => buildPool(swing, 'LOW'))];
+    });
+    const price = Number(referencePrice);
+    const minDistance = Number.isFinite(atr1h) ? atr1h * 0.10 : null;
+    const maxDistance = Number.isFinite(atr1h) ? atr1h * 3.0 : null;
+    const candidates = fvgRows
+        .filter(fvg => ['UNTOUCHED', 'PARTIAL'].includes(fvg.lifecycle) && Number(fvg.signed_test) > 0)
+        .map(fvg => {
+            const buy = fvg.direction === 'BULLISH';
+            // A PARTIAL lifecycle records a prior touch, not a replacement
+            // entry zone.  The pending retest stays at the original proximal
+            // edge; otherwise a partial bearish gap would be incorrectly
+            // shifted upward and no longer represent the POI that formed it.
+            const entry = buy ? Number(fvg.zone_high) : Number(fvg.zone_low);
+            const farEdge = buy ? Number(fvg.zone_low) : Number(fvg.zone_high);
+            const setupAtr = Number(atr[fvg.timeframe]);
+            const buffer = Number.isFinite(setupAtr) ? Math.max(symbol === 'XAU/USD' ? 4.5 : 0, setupAtr * 0.5) : null;
+            const stop = Number.isFinite(buffer) ? (buy ? farEdge - buffer : farEdge + buffer) : null;
+            const target = pools.filter(pool => pool.lifecycle === 'UNUSED' && (buy ? pool.type === 'HIGH' && pool.level > entry : pool.type === 'LOW' && pool.level < entry))
+                .sort((left, right) => Math.abs(left.level - entry) - Math.abs(right.level - entry))[0] || null;
+            const risk = Number.isFinite(stop) ? Math.abs(entry - stop) : null;
+            const reward = target && Number.isFinite(risk) ? Math.abs(entry - target.level) : null;
+            const rr = Number.isFinite(reward) && risk > 0 ? reward / risk : null;
+            const distance = Math.abs(entry - price);
+            const correctSide = buy ? entry < price : entry > price;
+            return {
+                id: `CANDIDATE-${fvg.id}`,
+                fvg_id: fvg.id,
+                action: buy ? 'BUY_LIMIT' : 'SELL_LIMIT',
+                htf_aligned: dailyBias === (buy ? 'BULLISH' : 'BEARISH'),
+                entry: rawTextPacketRoundPrice(entry, precision),
+                stop_loss: rawTextPacketRoundPrice(stop, precision),
+                stop_buffer: rawTextPacketRoundPrice(buffer, precision),
+                target_pool_id: target?.id || null,
+                tp1: rawTextPacketRoundPrice(target?.level, precision),
+                risk: rawTextPacketRoundPrice(risk, precision),
+                rr_tp1: rawTextPacketRoundPrice(rr, 2),
+                entry_distance: rawTextPacketRoundPrice(distance, precision),
+                distance_gate_pass: correctSide && Number.isFinite(minDistance) && distance >= minDistance && distance <= maxDistance,
+                rr_gate_pass: Number.isFinite(rr) && rr >= 2
+            };
+        })
+        .sort((left, right) => left.entry_distance - right.entry_distance)
+        .slice(0, 12);
+    return {
+        contract: 'LOCAL_VERIFIED_MATH_V1',
+        authority: 'ARITHMETIC_AND_LIFECYCLE_ONLY',
+        reference_price: rawTextPacketRoundPrice(price, precision),
+        daily_bias: dailyBias,
+        atr: { '1H': rawTextPacketRoundPrice(atr['1H'], precision), '4H': rawTextPacketRoundPrice(atr['4H'], precision) },
+        entry_distance_gate: { min: rawTextPacketRoundPrice(minDistance, precision), max: rawTextPacketRoundPrice(maxDistance, precision) },
+        fvg_scan: fvgRows,
+        liquidity_pools: pools.filter(pool => pool.lifecycle === 'UNUSED'),
+        candidate_math: candidates
+    };
+}
+
 function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const source = replay || {};
     const symbol = normalizeCanonicalMarketSymbol(source.pair || signal.pair || pair);
@@ -20886,6 +20998,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     ]));
     const isoOrUnknown = value => value != null && Number.isFinite(Number(value))
         ? new Date(Number(value)).toISOString() : 'UNKNOWN';
+    const verifiedMath = buildVerifiedMathFacts(source, symbol, latestClosed?.c, precision, asOfMs);
     const lines = [
         '=== TIMEFRAME DATA ONLY ===',
         'SYMBOL=' + symbol,
@@ -20909,6 +21022,12 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         'CANDLE_FORMAT=time,open,high,low,close,volume',
         ''
     ];
+    lines.push(
+        '=== LOCAL VERIFIED MATH FACTS ===',
+        'These values were calculated locally from the CLOSED rows below. They are authoritative for ATR, FVG signed tests/bounds/lifecycle, confirmed-swing pool lifecycle, candidate stop arithmetic, distance and RR. Do not recalculate or contradict them; use them to select and explain a setup.',
+        JSON.stringify(verifiedMath),
+        ''
+    );
     for (const timeframe of RAW_CANDLE_AI_TIMEFRAMES) {
         lines.push(...buildRawCandleAiCsvLines(source, timeframe, asOfMs, precision), '');
     }

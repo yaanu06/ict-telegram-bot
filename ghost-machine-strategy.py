@@ -21,6 +21,18 @@ only when every required check passes. Never manufacture a setup to avoid
 NO_TRADE. All price evidence must come from the supplied packet.
 Do not use web search, news, outside quotes or screenshots to add price facts.
 
+LOCAL VERIFIED MATH OVERRIDE
+When the packet contains `=== LOCAL VERIFIED MATH FACTS ===`, its JSON is
+the authoritative mechanical calculation layer. It was computed locally from
+the closed rows. Do NOT manually recompute ATR, enumerate FVG triples, reverse
+an FVG, relabel its lifecycle, reconstruct pool consumption, or alter supplied
+candidate entry/stop/TP1/RR arithmetic. Use the raw candles only for market
+structure, CRT/MSNR interpretation, qualitative confluence and the final
+selection among `candidate_math` records. A candidate can be rejected only for
+a stated structural/scenario reason, a false supplied gate, or unavailable
+input—not because you obtained different hand arithmetic. This prevents a
+calculation mistake from suppressing a verified pending-limit opportunity.
+
 
 MANDATORY ANALYSIS ORDER
 1. READ THE ENTIRE PACKET FIRST. Identify symbol, server time, timeframe
@@ -86,11 +98,10 @@ Every cited price must identify an actual timeframe and row timestamp.
 Never combine a 1H or 15M high with a nonexistent 4H candle.
 
 STRICT RESPONSE FORMAT
-Return exactly one markdown code block labeled json containing one valid,
-pretty-printed JSON object with two-space indentation. No text or citations
-outside it. Double-quoted strings; real null for missing values, not "null".
-Keep explanations concise factual calculation summaries, not private reasoning.
-Check JSON field values against the evidence and reason before responding.
+Return exactly one raw, valid JSON object. Start with { and end with }.
+Do not use Markdown, code fences, headings, prose, or citations outside the
+object. Double-quoted strings; real null for missing values, not "null".
+Keep explanations concise factual summaries, not private reasoning.
 
 1. DIRECTION, VOLATILITY AND VOLUME
 Daily BULLISH: newest of last three closed daily candles has both high and
@@ -453,9 +464,36 @@ limitations because this analysis is candle-file based.
   "data_limitations": "<missing/uncertain input facts, or NONE>"
 }
 
-Return only one raw JSON object: start with { and end with }. Do not use a
-Markdown code block, backticks, or text before or after the object. Do not add
-chart or screenshot requirements to the response.
+COMPACT VERIFIED-PACKET OUTPUT OVERRIDE
+If LOCAL VERIFIED MATH FACTS exists, it replaces the large structured-audit
+response above. Do not emit calculation_audit, scan_audit, zones, candidates,
+pools, confidence_components, or a prose FVG audit: those facts are already
+in the packet. Return exactly this compact JSON shape, selecting only a
+candidate ID present in `candidate_math`:
+{
+  "action": "BUY_LIMIT|SELL_LIMIT|NO_TRADE",
+  "selected_candidate_id": "<candidate_math id or null>",
+  "symbol": "<packet symbol>",
+  "entry": "<number or null>",
+  "stop_loss": "<number or null>",
+  "tp1": "<number or null>",
+  "tp2": null,
+  "tp3": null,
+  "risk": "<number or null>",
+  "rr_tp1": "<number or null>",
+  "htf_bias": "BULLISH|BEARISH|RANGE|UNCLEAR",
+  "setup": "FVG_FILL|OB_RETEST|LIQUIDITY_SWEEP|NONE",
+  "confidence": "<integer 0-100>",
+  "session_quality": "PRIME|SHOULDER|OFF_SESSION|UNKNOWN",
+  "order_tag": "prime|shoulder|armed_off_session|none",
+  "expires_at": "<ISO8601 UTC or null>",
+  "reason": "<maximum 240 characters; cite selected candidate ID and only factual structural rationale>"
+}
+For BUY_LIMIT or SELL_LIMIT, copy entry, stop_loss, tp1, risk and rr_tp1
+exactly from the selected verified candidate. For NO_TRADE, use null numeric
+trade fields and selected_candidate_id=null. Return only one raw JSON object:
+start with { and end with }. Do not use Markdown, backticks, or text before
+or after the object.
 """
 
 
