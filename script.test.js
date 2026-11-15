@@ -702,11 +702,13 @@ describe('one-file AI Market Pack', () => {
             generatedAt: '2026-11-15T10:00:00.000Z'
         });
         const body = Buffer.from(pdf);
+        const pdfText = body.toString('latin1');
         expect(body.subarray(0, 8).toString('ascii')).toBe('%PDF-1.4');
-        expect(body.toString('latin1')).toContain('EMBEDDED GHOST MACHINE STRATEGY SOURCE');
-        expect(body.toString('latin1')).toContain('TIMEFRAME DATA ONLY');
-        expect(body.toString('latin1')).toContain('/Subtype /Image');
-        expect(body.toString('latin1')).toContain('%%EOF');
+        expect(pdfText).toContain('EMBEDDED GHOST MACHINE STRATEGY SOURCE');
+        expect(pdfText).toContain('TIMEFRAME DATA ONLY');
+        expect(pdfText.indexOf('TIMEFRAME DATA ONLY')).toBeLessThan(pdfText.indexOf('EMBEDDED GHOST MACHINE STRATEGY SOURCE'));
+        expect(pdfText).toContain('/Subtype /Image');
+        expect(pdfText).toContain('%%EOF');
     });
 });
 
@@ -10945,6 +10947,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const prime = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(prime).not.toContain('WARNING: OUTSIDE_KILLZONE');
+        expect(prime).toContain('MARKET_STATUS=OPEN');
+        expect(prime).toContain('DATA_COUNTS=1D:15,4H:30,1H:50,15M:50,5M:50');
         expect(prime).toContain('SESSION_QUALITY=PRIME');
         expect(prime).toContain('SESSION_WINDOW=NEW_YORK');
         const offReplay = { ...rawReplay(), scan_as_of: '2026-10-06T18:00:00Z' };
@@ -10952,6 +10956,43 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(offSession).not.toContain('WARNING: OUTSIDE_KILLZONE');
         expect(offSession).toContain('SESSION_QUALITY=OFF_SESSION');
         expect(offSession).toContain('SESSION_WINDOW=OFF_SESSION');
+    });
+
+    it('reports the data manifest and keeps a closed-market reference aligned', () => {
+        const ctx = getContext();
+        const weekendAsOf = Date.parse('2026-11-15T05:21:43Z');
+        const lastOpens = {
+            '1D': Date.parse('2026-11-12T22:00:00Z'),
+            '4H': Date.parse('2026-11-13T18:00:00Z'),
+            '1H': Date.parse('2026-11-13T21:00:00Z'),
+            '15M': Date.parse('2026-11-13T21:45:00Z'),
+            '5M': Date.parse('2026-11-13T21:55:00Z')
+        };
+        const weekendHistory = Object.fromEntries(Object.entries(counts).map(([timeframe, count]) => {
+            const duration = durations[timeframe];
+            const lastOpen = lastOpens[timeframe];
+            const bars = Array.from({ length: count }, (_, index) => {
+                const t = lastOpen - (count - 1 - index) * duration;
+                return { t, o: 100, h: 101, l: 99, c: 100.5, v: 1000, is_closed: true };
+            });
+            return [timeframe, bars];
+        }));
+        const last5m = weekendHistory['5M'].at(-1);
+        const replay = {
+            pair: 'XAU/USD',
+            scan_as_of: new Date(weekendAsOf).toISOString(),
+            quote: { price: last5m.c, quote_time: '2026-11-13T22:00:00.000Z', quote_source: 'QUOTE' },
+            history: weekendHistory,
+            symbol_metadata: { asset_class: 'METAL', session: { weekly_open_utc: '22:00', weekly_close_utc: '22:00' } },
+            runtime_state: { market_open: false, market_open_source: 'ASSET_CALENDAR' }
+        };
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(packet).toContain('DATA_COUNTS=1D:15,4H:30,1H:50,15M:50,5M:50');
+        expect(packet).toContain('MARKET_STATUS=CLOSED');
+        expect(packet).toContain('LATEST_5M_OPEN_UTC=2026-11-13T21:55:00.000Z');
+        expect(packet).toContain('EXPECTED_LATEST_5M_UTC=2026-11-13T21:55:00.000Z');
+        expect(packet).toContain('LATEST_5M_CLOSE=100.50');
+        expect(packet).toContain('REFERENCE_FRESHNESS=ALIGNED');
     });
 
     it('classifies PRIME, SHOULDER, and OFF_SESSION UTC boundaries', () => {

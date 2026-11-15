@@ -5,13 +5,13 @@ contains factual multi-timeframe charts and the exact closed OHLCV rows.
 """
 
 STRATEGY_NAME = "Ghost Machine - Raw Candle Edition"
-STRATEGY_VERSION = "V6.5-ADAPTIVE-RAW-CANDLE"
-PROMPT_CONTRACT_VERSION = "GHOST_MACHINE_ADAPTIVE_RAW_CANDLE_V4"
+STRATEGY_VERSION = "V6.6-ADAPTIVE-RAW-CANDLE"
+PROMPT_CONTRACT_VERSION = "GHOST_MACHINE_ADAPTIVE_RAW_CANDLE_V5"
 REQUIRED_TIMEFRAMES = ("1D", "4H", "1H", "15M", "5M")
 
 STRATEGY_PROMPT = r"""
-=== GHOST MACHINE STRATEGY RULES === V6.5 ADAPTIVE RAW CANDLE EDITION
-PROMPT_CONTRACT_VERSION=GHOST_MACHINE_ADAPTIVE_RAW_CANDLE_V4
+=== GHOST MACHINE STRATEGY RULES === V6.6 ADAPTIVE RAW CANDLE EDITION
+PROMPT_CONTRACT_VERSION=GHOST_MACHINE_ADAPTIVE_RAW_CANDLE_V5
 
 ROLE AND INPUTS
 Analyze the attached raw closed OHLCV data using these rules. This is a
@@ -69,8 +69,17 @@ Reference = close of the newest valid closed 5M row. Report its open and
 close timestamps. This is a CLOSED_5M_REFERENCE, not a live executable quote.
 If a supplied reference header disagrees with that row, report the mismatch
 and use the row. Missing valid 5M reference or server timestamp means NO_TRADE.
-A reference older than 15 minutes at packet server time is stale for arming:
-map the structure but return NO_TRADE with stale_reference.
+Use DATA_COUNTS, MARKET_STATUS, EXPECTED_LATEST_5M_UTC, LATEST_5M_OPEN_UTC,
+LATEST_5M_CLOSE_UTC, LATEST_5M_CLOSE and REFERENCE_FRESHNESS as authoritative.
+If MARKET_STATUS=CLOSED and REFERENCE_FRESHNESS=ALIGNED, the reference is the
+final closed candle of the last session, not a stale quote. Map the structure
+and allow a pending plan; do not return NO_TRADE merely because SERVER_TIME_UTC
+is later. If MARKET_STATUS=OPEN and the reference is older than 15 minutes, or
+REFERENCE_FRESHNESS=LAGGING, return NO_TRADE with stale_reference. For a closed
+market execution_status=REFERENCE_ONLY; an armed plan uses
+order_tag=armed_off_session and expires at the next applicable PRIME open.
+Never report a timeframe as zero rows when DATA_COUNTS is nonzero. If the text
+parser cannot read a supplied section, report parse_error, not missing data.
 Record actual row counts and latest open/close time per timeframe.
 A daily candle still forming is correctly absent; do not call it missing.
 Every cited price must identify an actual timeframe and row timestamp.
@@ -294,9 +303,10 @@ FINAL AUDIT AND NO_TRADE
 NO_TRADE is valid when no supported candidate survives the defined checks,
 or required reference/ATR/source evidence is missing. State actual failures.
 Before responding verify: latest 5M reference exact; every cited row exists;
-no open HTF candle imported; all triples scanned; all candidate decisions
-accounted for; momentum enum agrees with its numeric test; price ordering
-and RR correct; correct instrument profile and calendar applied.
+DATA_COUNTS matches the timeframe sections; a supplied timeframe is never
+reported as zero; no open HTF candle imported; all triples scanned; all
+candidate decisions accounted for; momentum enum agrees with its numeric test;
+price ordering and RR correct; correct instrument profile and calendar applied.
 Lack of screenshots or computed indicators is not a failure.
 Keep packet inputs factual: candles, symbol/source, times, session and optional
 volume/tick/quote metadata. Do not require precomputed POIs, SL, TP or setups.

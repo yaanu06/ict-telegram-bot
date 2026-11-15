@@ -20834,6 +20834,42 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     return packetText;
 }
 
+function rawTextMarketPackReferenceAudit(source = {}, symbol, metadata = {}, asOfMs = Date.now()) {
+    const assetClass = metadata.asset_class || getAssetClass(symbol);
+    const quoteSnapshot = source.quote || {};
+    const marketState = getMarketOpenState(symbol, {
+        ...quoteSnapshot,
+        ...(source.runtime_state?.quote_snapshot || {}),
+        as_of_ms: asOfMs,
+        market_open: source.market_open ?? source.runtime_state?.market_open,
+        asset_class: assetClass
+    });
+    const expected = getExpectedLatestClosedBarTime({
+        symbol,
+        assetClass,
+        timeframe: '5M',
+        evaluationTime: asOfMs,
+        sessionCalendar: metadata.session || null,
+        feedAlignment: source.feed_alignment?.['5M'] || source.feed_alignment || null,
+        history: source.history?.['5M'] || source.history?.['1H'] || []
+    });
+    const latest5m = rawTextPacketClosedCandles(source, '5M', asOfMs).at(-1) || null;
+    const latest5mOpen = latest5m ? rawTextPacketTimestamp(latest5m.t) : null;
+    const latest5mClose = Number.isFinite(latest5mOpen) ? latest5mOpen + (TIMEFRAME_MS['5M'] || 300000) : null;
+    const expected5m = Number.isFinite(Number(expected?.expected_latest_closed_time))
+        ? Number(expected.expected_latest_closed_time) : null;
+    const expected5mClose = Number.isFinite(expected5m) ? expected5m + (TIMEFRAME_MS['5M'] || 300000) : null;
+    const referenceFreshness = Number.isFinite(latest5mOpen) && Number.isFinite(expected5m)
+        ? (latest5mOpen >= expected5m ? 'ALIGNED' : 'LAGGING')
+        : 'UNKNOWN';
+    return { marketState, expected, latest5m, latest5mOpen, latest5mClose, expected5m, expected5mClose, referenceFreshness };
+}
+
+function rawTextMarketPackMarketStatus(referenceAudit = {}) {
+    const open = referenceAudit.marketState?.is_market_open;
+    return open === true ? 'OPEN' : open === false ? 'CLOSED' : 'UNKNOWN';
+}
+
 function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const source = replay || {};
     const symbol = normalizeCanonicalMarketSymbol(source.pair || signal.pair || pair);
@@ -20843,15 +20879,31 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const precision = rawTextPacketPrecision(symbol, metadata, latestClosed?.c);
     const serverClock = rawCandleAiServerClock(asOfMs);
     const quote = source.quote || signal.quote || {};
+    const referenceAudit = rawTextMarketPackReferenceAudit(source, symbol, metadata, asOfMs);
+    const candleCounts = Object.fromEntries(RAW_CANDLE_AI_TIMEFRAMES.map(timeframe => [
+        timeframe,
+        rawTextPacketClosedCandles(source, timeframe, asOfMs).slice(-rawCandleAiCandleLimit(timeframe)).length
+    ]));
+    const isoOrUnknown = value => value != null && Number.isFinite(Number(value))
+        ? new Date(Number(value)).toISOString() : 'UNKNOWN';
     const lines = [
         '=== TIMEFRAME DATA ONLY ===',
         'SYMBOL=' + symbol,
         'SERVER_TIME_UTC=' + serverClock.utc,
+        'MARKET_STATUS=' + rawTextMarketPackMarketStatus(referenceAudit),
+        'MARKET_STATUS_SOURCE=' + String(referenceAudit.marketState?.source || 'UNKNOWN'),
         'SESSION_QUALITY=' + serverClock.session_quality,
         'SESSION_WINDOW=' + serverClock.session_window,
         'QUOTE_TIME=' + String(quote.quote_time || quote.current_price_time || 'UNKNOWN'),
         'QUOTE_SOURCE=' + String(quote.quote_source || 'UNKNOWN'),
         'DATA_STATUS=' + (quote.quote_source === 'CANDLE_CLOSE_FALLBACK' ? 'CLOSED_5M_REFERENCE' : 'PROVIDER_QUOTE'),
+        'DATA_COUNTS=' + RAW_CANDLE_AI_TIMEFRAMES.map(timeframe => timeframe + ':' + candleCounts[timeframe]).join(','),
+        'EXPECTED_LATEST_5M_UTC=' + isoOrUnknown(referenceAudit.expected5m),
+        'EXPECTED_LATEST_5M_CLOSE_UTC=' + isoOrUnknown(referenceAudit.expected5mClose),
+        'LATEST_5M_OPEN_UTC=' + isoOrUnknown(referenceAudit.latest5mOpen),
+        'LATEST_5M_CLOSE_UTC=' + isoOrUnknown(referenceAudit.latest5mClose),
+        'LATEST_5M_CLOSE=' + (latestClosed ? rawTextPacketFormatNumber(latestClosed.c, precision) : 'UNKNOWN'),
+        'REFERENCE_FRESHNESS=' + referenceAudit.referenceFreshness,
         'TIMEFRAME_ORDER=' + RAW_CANDLE_AI_TIMEFRAMES.join(','),
         'CANDLE_POLICY=CLOSED_ONLY',
         'CANDLE_FORMAT=time,open,high,low,close,volume',
@@ -21007,6 +21059,30 @@ function marketPackWrappedLines(text, width = 112) {
     return output;
 }
 
+function marketPackTextPages(lines = [], linesPerPage = 104) {
+    const pages = [];
+    for (let index = 0; index < lines.length; index += linesPerPage) {
+        pages.push(lines.slice(index, index + linesPerPage));
+    }
+    return pages;
+}
+
+function marketPackDataPages(lines = [], linesPerPage = 104) {
+    const sections = [];
+    let current = [];
+    for (const line of lines) {
+        if (line.startsWith('======== TIMEFRAME:') && current.length) {
+            sections.push(current);
+            current = [];
+        }
+        current.push(line);
+    }
+    if (current.length) sections.push(current);
+    const pages = [];
+    for (const section of sections) pages.push(...marketPackTextPages(section, linesPerPage));
+    return pages;
+}
+
 function marketPackPdfEscape(value) {
     return marketPackAscii(value).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
 }
@@ -21035,24 +21111,25 @@ function marketPackJpegBytes(dataUrl) {
 }
 
 function buildMarketPackPdf({ chartJpeg, chartWidth, chartHeight, strategyText, packetText, symbol, generatedAt }) {
-    const textLines = marketPackWrappedLines([
+    const linesPerPage = 104;
+    const dataHeaderLines = marketPackWrappedLines([
         'GHOST MACHINE AI MARKET PACK',
         `SYMBOL: ${symbol}`,
         `GENERATED_UTC: ${generatedAt}`,
-        'CONTENTS: embedded strategy source, factual multi-timeframe charts, exact closed OHLCV rows.',
+        'CONTENTS: exact closed OHLCV rows first; embedded strategy source follows.',
         'The chart contains no predicted entry, stop, target, POI, FVG or order-block overlays.',
         '',
-        '=== EMBEDDED GHOST MACHINE STRATEGY SOURCE ===',
-        strategyText,
-        '',
-        '=== EXACT RAW CLOSED TIMEFRAME DATA ===',
-        packetText
+        '=== EXACT RAW CLOSED TIMEFRAME DATA ==='
     ].join('\n'), 112);
-    const linesPerPage = 104;
-    const textPages = [];
-    for (let index = 0; index < textLines.length; index += linesPerPage) {
-        textPages.push(textLines.slice(index, index + linesPerPage));
-    }
+    const dataPages = marketPackDataPages([
+        ...dataHeaderLines,
+        ...marketPackWrappedLines(packetText, 112)
+    ], linesPerPage);
+    const strategyPages = marketPackTextPages(marketPackWrappedLines([
+        '=== EMBEDDED GHOST MACHINE STRATEGY SOURCE ===',
+        strategyText
+    ].join('\n'), 112), linesPerPage);
+    const textPages = [...dataPages, ...strategyPages];
     const objects = new Map();
     const setTextObject = (id, text) => objects.set(id, marketPackBytes(text));
     const setStreamObject = (id, dictionary, bytes) => objects.set(id, marketPackConcat([
