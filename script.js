@@ -1630,7 +1630,16 @@ function refreshStaleQuoteFromClosedCandle(quoteSnapshot, historyCache, asOfMs =
     const candleTime = Number(latest?.t);
     const candleAge = Number(asOfMs) - candleTime;
     const maxAge = timeframeDurationMs(timeframe) * 3;
-    if (!latest || !Number.isFinite(candleTime) || candleAge < -5 * 60 * 1000 || candleAge > maxAge) return quoteSnapshot;
+    const marketState = getMarketOpenState(quoteSnapshot.pair || pair, {
+        ...quoteSnapshot,
+        as_of_ms: asOfMs
+    });
+    // A metal/forex market can be closed for many hours over a weekend.  Its
+    // last completed 5M candle remains the correct reference for mapping a
+    // pending plan; the normal short freshness cap applies only while open.
+    const closedSessionReference = marketState.is_market_open === false;
+    if (!latest || !Number.isFinite(candleTime) || candleAge < -5 * 60 * 1000
+        || (candleAge > maxAge && !closedSessionReference)) return quoteSnapshot;
     return {
         ...quoteSnapshot,
         price: Number(latest.c),
@@ -1638,7 +1647,8 @@ function refreshStaleQuoteFromClosedCandle(quoteSnapshot, historyCache, asOfMs =
         provider_timestamp_utc: new Date(candleTime + timeframeDurationMs(timeframe)).toISOString(),
         provider_open_time_utc: new Date(candleTime).toISOString(),
         quote_source: 'CANDLE_CLOSE_FALLBACK',
-        quote_fallback_reason: 'STALE_QUOTE_ENDPOINT'
+        quote_fallback_reason: closedSessionReference ? 'CLOSED_SESSION_REFERENCE' : 'STALE_QUOTE_ENDPOINT',
+        is_market_open: marketState.is_market_open
     };
 }
 
@@ -26788,7 +26798,10 @@ async function runAutoScan() {
         quoteSnapshot = await getMarketQuoteSnapshot(pair, providerFetchOptions);
         price = quoteSnapshot?.price;
         if (!Number.isFinite(Number(price))) {
-            throw new Error(`${getMarketDataProviderLabel()} returned no usable live price`);
+            // Continue to closed-candle history.  A provider can omit a live
+            // quote during a closed metal/forex session while still serving a
+            // complete, valid multi-timeframe history snapshot.
+            scanTrace('quote unavailable; awaiting closed-candle fallback', scanStartedAt, { pair, quote_source: quoteSnapshot?.quote_source || null });
         }
 
         // The live decision path requires these five closed timeframes. Keep
