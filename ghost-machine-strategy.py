@@ -497,7 +497,9 @@ exactly from the selected verified candidate as JSON numbers, never quoted
 strings. Confidence is also a JSON integer. For NO_TRADE, use null numeric
 trade fields and selected_candidate_id=null. `analysis` is the user-facing
 short explanation; `reason` must repeat it for compatibility with existing
-parsers. Return fields in the exact order shown. Return only one ```json code
+parsers. Confidence is final session-adjusted confidence, never a raw evidence
+score: SHOULDER must be <=70 and OFF_SESSION must be <=50. This is a hard
+output rule, including in the compact response. Return fields in the exact order shown. Return only one ```json code
 block, with the JSON object inside it, and no text outside the block.
 """
 

@@ -11015,6 +11015,44 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('REFERENCE_FRESHNESS=ALIGNED');
     });
 
+    it('keeps verified FVG facts aligned with the exported candle precision and C-close time', () => {
+        const ctx = getContext();
+        const t0 = Date.UTC(2026, 10, 13, 0, 0, 0);
+        const makeRows = (timeframe, count, duration) => Array.from({ length: count }, (_, index) => ({
+            t: t0 + (index * duration), o: 100, h: 101, l: 99, c: 100, v: 1000, is_closed: true
+        }));
+        const oneHour = makeRows('1H', 18, 3600000);
+        // A=00:00 low 102 and C=02:00 high 100 form [100, 102]. A later
+        // high at 03:00 is a half-tick value, so the packet must round it
+        // consistently in both the CSV and verified facts.
+        oneHour[0] = { ...oneHour[0], h: 103, l: 102, c: 102.5 };
+        oneHour[1] = { ...oneHour[1], h: 102, l: 99, c: 100.5 };
+        oneHour[2] = { ...oneHour[2], h: 100, l: 98, c: 99 };
+        oneHour[3] = { ...oneHour[3], h: 101.005, l: 98, c: 99 };
+        const fiveMinute = makeRows('5M', 18, 300000);
+        fiveMinute[17] = { ...fiveMinute[17], c: 100.005 };
+        const replay = {
+            pair: 'XAU/USD',
+            scan_as_of: new Date(t0 + (20 * 3600000)).toISOString(),
+            history: { '1H': oneHour, '5M': fiveMinute },
+            quote: { price: 100.005, quote_time: new Date(t0 + (20 * 3600000)).toISOString() },
+            runtime_state: { market_open: false, market_open_source: 'TEST' }
+        };
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const factsText = packet.match(/=== LOCAL VERIFIED MATH FACTS ===\n[^\n]*\n([\s\S]*?)\n\n======== TIMEFRAME: 1d ========/);
+        expect(factsText).toBeTruthy();
+        const facts = JSON.parse(factsText[1]);
+        const fvg = facts.fvg_scan.find(item => item.id === '1H-BEARISH-0');
+        expect(facts.reference_price).toBe(100.01);
+        expect(packet).toContain('LATEST_5M_CLOSE=100.01');
+        expect(fvg).toEqual(expect.objectContaining({
+            formation_time: new Date(t0 + (3 * 3600000)).toISOString(),
+            lifecycle: 'PARTIAL',
+            remaining_low: 101.01,
+            remaining_high: 102
+        }));
+    });
+
     it('classifies PRIME, SHOULDER, and OFF_SESSION UTC boundaries', () => {
         const ctx = getContext();
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T00:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'OFF_SESSION', session_window: 'OFF_SESSION' }));

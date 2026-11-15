@@ -18382,8 +18382,8 @@ function rawTextPacketClosedCandles(source = {}, timeframe, asOfMs = Date.now())
 }
 
 function rawTextPacketFormatNumber(value, precision) {
-    const number = Number(value);
-    return Number.isFinite(number) ? number.toFixed(precision) : '';
+    const rounded = rawTextPacketRoundPrice(value, precision);
+    return rounded == null ? '' : rounded.toFixed(precision);
 }
 
 function rawTextPacketOptionalNumber(value, precision) {
@@ -20905,7 +20905,12 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
             id: `${block.timeframe}-${fvg.type}-${fvg.formation_index}`,
             timeframe: block.timeframe,
             direction: fvg.type,
-            formation_time: rawTextAuditTimestamp(fvg.c3),
+            // A three-candle FVG is knowable only when candle C has closed.
+            // The candle timestamp denotes its open, so add the timeframe
+            // duration instead of publishing C's open time as formation time.
+            formation_time: rawTextAuditTimestamp(
+                rawTextPacketTimestamp(fvg.c3) + (TIMEFRAME_MS[block.timeframe] || 0)
+            ),
             signed_test: rawTextPacketRoundPrice(signedTest, precision),
             signed_test_rule: fvg.type === 'BEARISH' ? 'A.low-C.high>0' : 'C.low-A.high>0',
             zone_low: rawTextPacketRoundPrice(fvg.lower, precision),
@@ -21008,7 +21013,11 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     ]));
     const isoOrUnknown = value => value != null && Number.isFinite(Number(value))
         ? new Date(Number(value)).toISOString() : 'UNKNOWN';
-    const verifiedMath = buildVerifiedMathFacts(source, symbol, latestClosed?.c, precision, asOfMs);
+    // Use the exact same rounded close in the header, exported 5M row, and
+    // verified facts.  This prevents a binary floating-point half-tick from
+    // yielding a different reference price in two sections of one packet.
+    const canonicalReferencePrice = rawTextPacketRoundPrice(latestClosed?.c, precision);
+    const verifiedMath = buildVerifiedMathFacts(source, symbol, canonicalReferencePrice, precision, asOfMs);
     const lines = [
         '=== TIMEFRAME DATA ONLY ===',
         'SYMBOL=' + symbol,
@@ -21025,7 +21034,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         'EXPECTED_LATEST_5M_CLOSE_UTC=' + isoOrUnknown(referenceAudit.expected5mClose),
         'LATEST_5M_OPEN_UTC=' + isoOrUnknown(referenceAudit.latest5mOpen),
         'LATEST_5M_CLOSE_UTC=' + isoOrUnknown(referenceAudit.latest5mClose),
-        'LATEST_5M_CLOSE=' + (latestClosed ? rawTextPacketFormatNumber(latestClosed.c, precision) : 'UNKNOWN'),
+        'LATEST_5M_CLOSE=' + (canonicalReferencePrice != null ? rawTextPacketFormatNumber(canonicalReferencePrice, precision) : 'UNKNOWN'),
         'REFERENCE_FRESHNESS=' + referenceAudit.referenceFreshness,
         'TIMEFRAME_ORDER=' + RAW_CANDLE_AI_TIMEFRAMES.join(','),
         'CANDLE_POLICY=CLOSED_ONLY',
