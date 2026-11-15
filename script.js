@@ -1074,6 +1074,7 @@ function init() {
     if(el('cancelLimitBtn')) el('cancelLimitBtn').addEventListener('click', cancelLimit);
     if(el('copyRawMarketBtn')) el('copyRawMarketBtn').addEventListener('click', copyRawMarketAnalysisPacket);
     if(el('downloadRawMarketBtn')) el('downloadRawMarketBtn').addEventListener('click', downloadRawMarketAnalysisPacket);
+    if(el('sendAiPackBtn')) el('sendAiPackBtn').addEventListener('click', sendAiMarketPackToTelegram);
     if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click', showSetup);
     if(el('saveSetupBtn')) el('saveSetupBtn').addEventListener('click', saveCurrentSetup);
     if(el('recentList')) el('recentList').addEventListener('click', handleRecentClick);
@@ -20970,6 +20971,355 @@ function downloadRawMarketAnalysisPacket() {
     showToast('Candle data downloaded');
 }
 
+function marketPackAscii(value) {
+    return String(value ?? '')
+        .replace(/\r\n?/g, '\n')
+        .replace(/[“”]/g, '"')
+        .replace(/[‘’]/g, "'")
+        .replace(/[—–]/g, '-')
+        .replace(/×/g, 'x')
+        .replace(/≥/g, '>=')
+        .replace(/≤/g, '<=')
+        .replace(/→/g, '->')
+        .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '?');
+}
+
+function marketPackWrappedLines(text, width = 112) {
+    const output = [];
+    for (const sourceLine of marketPackAscii(text).split('\n')) {
+        if (!sourceLine.length) {
+            output.push('');
+            continue;
+        }
+        let remaining = sourceLine;
+        while (remaining.length > width) {
+            let splitAt = remaining.lastIndexOf(' ', width);
+            if (splitAt < Math.floor(width * 0.55)) splitAt = width;
+            output.push(remaining.slice(0, splitAt));
+            remaining = remaining.slice(splitAt).replace(/^\s+/, '');
+        }
+        output.push(remaining);
+    }
+    return output;
+}
+
+function marketPackPdfEscape(value) {
+    return marketPackAscii(value).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+}
+
+function marketPackBytes(value) {
+    return new TextEncoder().encode(String(value));
+}
+
+function marketPackConcat(chunks = []) {
+    const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const result = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+        result.set(chunk, offset);
+        offset += chunk.length;
+    }
+    return result;
+}
+
+function marketPackJpegBytes(dataUrl) {
+    const encoded = String(dataUrl || '').split(',')[1] || '';
+    const binary = atob(encoded);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+}
+
+function buildMarketPackPdf({ chartJpeg, chartWidth, chartHeight, strategyText, packetText, symbol, generatedAt }) {
+    const textLines = marketPackWrappedLines([
+        'GHOST MACHINE AI MARKET PACK',
+        `SYMBOL: ${symbol}`,
+        `GENERATED_UTC: ${generatedAt}`,
+        'CONTENTS: embedded strategy source, factual multi-timeframe charts, exact closed OHLCV rows.',
+        'The chart contains no predicted entry, stop, target, POI, FVG or order-block overlays.',
+        '',
+        '=== EMBEDDED GHOST MACHINE STRATEGY SOURCE ===',
+        strategyText,
+        '',
+        '=== EXACT RAW CLOSED TIMEFRAME DATA ===',
+        packetText
+    ].join('\n'), 112);
+    const linesPerPage = 104;
+    const textPages = [];
+    for (let index = 0; index < textLines.length; index += linesPerPage) {
+        textPages.push(textLines.slice(index, index + linesPerPage));
+    }
+    const objects = new Map();
+    const setTextObject = (id, text) => objects.set(id, marketPackBytes(text));
+    const setStreamObject = (id, dictionary, bytes) => objects.set(id, marketPackConcat([
+        marketPackBytes(`<< ${dictionary} /Length ${bytes.length} >>\nstream\n`),
+        bytes,
+        marketPackBytes('\nendstream')
+    ]));
+    const pageIds = [6];
+    const chartContentId = 7;
+    let nextId = 8;
+    const textPageRecords = textPages.map(lines => {
+        const record = { pageId: nextId, contentId: nextId + 1, lines };
+        nextId += 2;
+        pageIds.push(record.pageId);
+        return record;
+    });
+    setTextObject(1, '<< /Type /Catalog /Pages 2 0 R >>');
+    setTextObject(2, `<< /Type /Pages /Count ${pageIds.length} /Kids [${pageIds.map(id => `${id} 0 R`).join(' ')}] >>`);
+    setTextObject(3, '<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>');
+    setTextObject(4, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>');
+    setStreamObject(5, `/Type /XObject /Subtype /Image /Width ${chartWidth} /Height ${chartHeight} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode`, chartJpeg);
+    const maxChartWidth = 555;
+    const maxChartHeight = 782;
+    const chartScale = Math.min(maxChartWidth / chartWidth, maxChartHeight / chartHeight);
+    const drawWidth = chartWidth * chartScale;
+    const drawHeight = chartHeight * chartScale;
+    const drawX = (595 - drawWidth) / 2;
+    const drawY = (842 - drawHeight) / 2;
+    setTextObject(6, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /XObject << /Im1 5 0 R >> /Font << /F2 4 0 R >> >> /Contents ${chartContentId} 0 R >>`);
+    setStreamObject(chartContentId, '', marketPackBytes(
+        `BT /F2 10 Tf 24 820 Td (GHOST MACHINE - FACTUAL MARKET CHARTS) Tj ET\nq ${drawWidth.toFixed(2)} 0 0 ${drawHeight.toFixed(2)} ${drawX.toFixed(2)} ${drawY.toFixed(2)} cm /Im1 Do Q`
+    ));
+    for (const record of textPageRecords) {
+        setTextObject(record.pageId, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents ${record.contentId} 0 R >>`);
+        const content = [
+            'BT /F1 6.2 Tf 7.35 TL 24 816 Td',
+            ...record.lines.map((line, index) => `${index ? '' : ''}(${marketPackPdfEscape(line)}) Tj T*`),
+            'ET'
+        ].join('\n');
+        setStreamObject(record.contentId, '', marketPackBytes(content));
+    }
+    const header = marketPackBytes('%PDF-1.4\n%GhostMachine\n');
+    const chunks = [header];
+    const offsets = [0];
+    let offset = header.length;
+    for (let id = 1; id < nextId; id += 1) {
+        const object = objects.get(id);
+        const prefix = marketPackBytes(`${id} 0 obj\n`);
+        const suffix = marketPackBytes('\nendobj\n');
+        offsets[id] = offset;
+        chunks.push(prefix, object, suffix);
+        offset += prefix.length + object.length + suffix.length;
+    }
+    const xrefOffset = offset;
+    const xref = [
+        `xref\n0 ${nextId}\n`,
+        '0000000000 65535 f \n',
+        ...offsets.slice(1).map(value => `${String(value).padStart(10, '0')} 00000 n \n`),
+        `trailer\n<< /Size ${nextId} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
+    ].join('');
+    chunks.push(marketPackBytes(xref));
+    return marketPackConcat(chunks);
+}
+
+function marketPackCandleValue(candle, shortKey, longKey) {
+    const value = Number(candle?.[shortKey] ?? candle?.[longKey]);
+    return Number.isFinite(value) ? value : null;
+}
+
+function drawMarketPackPanel(ctx, { candles, timeframe, x, y, width, height, precision }) {
+    ctx.fillStyle = '#111827';
+    ctx.fillRect(x, y, width, height);
+    ctx.strokeStyle = '#334155';
+    ctx.strokeRect(x, y, width, height);
+    const valid = candles.map(candle => ({
+        time: rawTextPacketTimestamp(candle?.t ?? candle?.datetime ?? candle?.time),
+        open: marketPackCandleValue(candle, 'o', 'open'),
+        high: marketPackCandleValue(candle, 'h', 'high'),
+        low: marketPackCandleValue(candle, 'l', 'low'),
+        close: marketPackCandleValue(candle, 'c', 'close'),
+        volume: Math.max(0, marketPackCandleValue(candle, 'v', 'volume') || 0)
+    })).filter(candle => candle.time != null && [candle.open, candle.high, candle.low, candle.close].every(Number.isFinite));
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.fillText(`${timeframe} - ${valid.length} closed candles`, x + 14, y + 28);
+    if (!valid.length) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '18px sans-serif';
+        ctx.fillText('No valid closed candles', x + 14, y + 62);
+        return;
+    }
+    const chartTop = y + 42;
+    const chartBottom = y + height - 74;
+    const volumeTop = chartBottom + 8;
+    const volumeBottom = y + height - 26;
+    const priceMin = Math.min(...valid.map(candle => candle.low));
+    const priceMax = Math.max(...valid.map(candle => candle.high));
+    const priceRange = Math.max(priceMax - priceMin, Math.abs(priceMax) * 0.000001, 1e-9);
+    const maxVolume = Math.max(...valid.map(candle => candle.volume), 1);
+    ctx.strokeStyle = '#243244';
+    ctx.lineWidth = 1;
+    for (let grid = 0; grid <= 4; grid += 1) {
+        const gy = chartTop + ((chartBottom - chartTop) * grid / 4);
+        ctx.beginPath();
+        ctx.moveTo(x + 8, gy);
+        ctx.lineTo(x + width - 78, gy);
+        ctx.stroke();
+        const price = priceMax - priceRange * grid / 4;
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '14px monospace';
+        ctx.fillText(price.toFixed(precision), x + width - 72, gy + 4);
+    }
+    const plotWidth = width - 98;
+    const slot = plotWidth / valid.length;
+    const bodyWidth = Math.max(2, Math.min(11, slot * 0.65));
+    valid.forEach((candle, index) => {
+        const cx = x + 10 + slot * index + slot / 2;
+        const py = price => chartTop + (priceMax - price) / priceRange * (chartBottom - chartTop);
+        const rising = candle.close >= candle.open;
+        const color = rising ? '#22c55e' : '#ef4444';
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(cx, py(candle.high));
+        ctx.lineTo(cx, py(candle.low));
+        ctx.stroke();
+        const bodyTop = Math.min(py(candle.open), py(candle.close));
+        const bodyHeight = Math.max(1.5, Math.abs(py(candle.open) - py(candle.close)));
+        ctx.fillRect(cx - bodyWidth / 2, bodyTop, bodyWidth, bodyHeight);
+        const volumeHeight = candle.volume / maxVolume * (volumeBottom - volumeTop);
+        ctx.globalAlpha = 0.55;
+        ctx.fillRect(cx - bodyWidth / 2, volumeBottom - volumeHeight, bodyWidth, volumeHeight);
+        ctx.globalAlpha = 1;
+    });
+    const formatTime = value => new Date(value).toISOString().replace('T', ' ').slice(0, 16);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '14px monospace';
+    ctx.fillText(formatTime(valid[0].time), x + 10, y + height - 8);
+    const endLabel = formatTime(valid[valid.length - 1].time);
+    ctx.fillText(endLabel, x + width - 78 - endLabel.length * 8.4, y + height - 8);
+}
+
+function buildMarketPackChart(replay, symbol, generatedAt) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1500;
+    canvas.height = 2000;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Chart rendering is unavailable');
+    ctx.fillStyle = '#07101f';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = 'bold 34px sans-serif';
+    ctx.fillText(`GHOST MACHINE MARKET MAP - ${symbol}`, 38, 50);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '18px monospace';
+    ctx.fillText(`Generated UTC: ${generatedAt} | CLOSED CANDLES ONLY | no AI-drawn levels`, 38, 82);
+    const asOfMs = rawTextPacketTimestamp(replay?.scan_as_of || replay?.quote?.quote_time) || Date.now();
+    const limits = { '1D': 60, '4H': 80, '1H': 100, '15M': 120, '5M': 120 };
+    const panelHeight = 360;
+    RAW_CANDLE_AI_TIMEFRAMES.forEach((timeframe, index) => {
+        const all = rawTextPacketClosedCandles(replay, timeframe, asOfMs);
+        const candles = all.slice(-limits[timeframe]);
+        const reference = candles[candles.length - 1];
+        const precision = rawTextPacketPrecision(symbol, replay?.symbol_metadata || {}, marketPackCandleValue(reference, 'c', 'close'));
+        drawMarketPackPanel(ctx, {
+            candles,
+            timeframe,
+            x: 34,
+            y: 104 + index * 374,
+            width: 1432,
+            height: panelHeight,
+            precision
+        });
+    });
+    return canvas;
+}
+
+async function buildCurrentAiMarketPack() {
+    const packet = getCurrentRawMarketAnalysisPacket();
+    if (!packet) return null;
+    const replay = currentScanArtifact?.replay;
+    if (!replay) throw new Error('Run a completed scan before building the AI Market Pack');
+    const strategyResponse = await fetch(`ghost-machine-strategy.py?v=${encodeURIComponent(APP_BUILD_ID || 'current')}`, { cache: 'no-store' });
+    if (!strategyResponse.ok) throw new Error('The embedded Ghost Machine strategy could not be loaded');
+    const strategyText = await strategyResponse.text();
+    const generatedAt = new Date().toISOString();
+    const canvas = buildMarketPackChart(replay, packet.symbol, generatedAt);
+    const chartJpeg = marketPackJpegBytes(canvas.toDataURL('image/jpeg', 0.84));
+    const pdf = buildMarketPackPdf({
+        chartJpeg,
+        chartWidth: canvas.width,
+        chartHeight: canvas.height,
+        strategyText,
+        packetText: packet.text,
+        symbol: packet.symbol,
+        generatedAt
+    });
+    const safeSymbol = packet.symbol.replace(/[^A-Z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'market';
+    return {
+        pdf,
+        filename: `ghost-machine-market-pack-${safeSymbol}-${generatedAt.replace(/[:.]/g, '-')}.pdf`,
+        symbol: packet.symbol
+    };
+}
+
+function marketPackBase64(bytes) {
+    let output = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        output += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    return btoa(output);
+}
+
+function downloadAiMarketPack(pack) {
+    const blob = new Blob([pack.pdf], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = pack.filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function sendAiMarketPackToTelegram() {
+    const button = document.getElementById('sendAiPackBtn');
+    const originalLabel = button?.textContent || 'Send AI PDF to Telegram';
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Building AI PDF...';
+    }
+    try {
+        const pack = await buildCurrentAiMarketPack();
+        if (!pack) return;
+        const initData = String(window.Telegram?.WebApp?.initData || '');
+        if (!initData) {
+            downloadAiMarketPack(pack);
+            showNotif('Opened outside Telegram, so the one-file AI PDF was downloaded instead', 'info');
+            return;
+        }
+        if (button) button.textContent = 'Sending to Telegram...';
+        const response = await fetch(`${getProxyBaseUrl()}/api/telegram/send-ai-pack`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                init_data: initData,
+                pdf_base64: marketPackBase64(pack.pdf),
+                filename: pack.filename,
+                caption: `Ghost Machine AI Market Pack - ${pack.symbol}. Upload this single PDF to DeepSeek.`
+            })
+        });
+        let result = {};
+        try { result = await response.json(); } catch (_) { result = {}; }
+        if (!response.ok || result.sent !== true) throw new Error(result.error || 'Telegram could not deliver the AI PDF');
+        window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success');
+        showToast('AI Market Pack sent to your Telegram chat');
+    } catch (error) {
+        console.error('[AI MARKET PACK]', error);
+        showNotif(error?.message || 'AI Market Pack could not be sent', 'error');
+    } finally {
+        if (button) {
+            button.textContent = originalLabel;
+            button.disabled = !currentScanArtifact?.replay;
+        }
+    }
+}
+
 function buildCurrentCanonicalMarketSnapshotJson() {
     const replay = currentScanArtifact?.replay;
     if (!replay || replay.snapshot_contract_version !== 'CANONICAL_MARKET_SNAPSHOT_V1') {
@@ -21000,6 +21350,9 @@ if (typeof window !== 'undefined') {
     window.buildManualMarketMechanicsOpportunityShortlist = buildManualMarketMechanicsOpportunityShortlist;
     window.validateManualMarketMechanicsDecision = validateManualMarketMechanicsDecision;
     window.copyRawMarketAnalysisPacket = copyRawMarketAnalysisPacket;
+    window.buildCurrentAiMarketPack = buildCurrentAiMarketPack;
+    window.sendAiMarketPackToTelegram = sendAiMarketPackToTelegram;
+    window.buildMarketPackPdf = buildMarketPackPdf;
     window.buildCurrentCanonicalMarketSnapshotJson = buildCurrentCanonicalMarketSnapshotJson;
     window.copyCurrentCanonicalMarketSnapshot = copyCurrentCanonicalMarketSnapshot;
 }
@@ -25984,6 +26337,7 @@ async function runAutoScan() {
     const btn = document.getElementById('analyzeBtn');
     const copyRawBtn = document.getElementById('copyRawMarketBtn');
     const downloadRawBtn = document.getElementById('downloadRawMarketBtn');
+    const sendAiPackBtn = document.getElementById('sendAiPackBtn');
     const scanStatus = document.getElementById('scanStatus');
     const scanText = document.getElementById('scanText');
     const scanFill = document.getElementById('scanProgressFill');
@@ -25992,6 +26346,7 @@ async function runAutoScan() {
     btn.disabled = true;
     if (copyRawBtn) copyRawBtn.disabled = true;
     if (downloadRawBtn) downloadRawBtn.disabled = true;
+    if (sendAiPackBtn) sendAiPackBtn.disabled = true;
     scanStatus.classList.remove('hidden');
     scanTrace('START', scanStartedAt, { pair, timestamp: new Date().toISOString() });
 
@@ -28719,8 +29074,10 @@ function clearCurrentScanArtifact() {
     if (typeof window !== 'undefined') window.__ICT_LAST_SCAN_REPLAY__ = null;
     const copyRawBtn = typeof document !== 'undefined' ? document.getElementById('copyRawMarketBtn') : null;
     const downloadRawBtn = typeof document !== 'undefined' ? document.getElementById('downloadRawMarketBtn') : null;
+    const sendAiPackBtn = typeof document !== 'undefined' ? document.getElementById('sendAiPackBtn') : null;
     if (copyRawBtn) copyRawBtn.disabled = true;
     if (downloadRawBtn) downloadRawBtn.disabled = true;
+    if (sendAiPackBtn) sendAiPackBtn.disabled = true;
 }
 
 function publishCurrentScanArtifact({ signal = {}, replay = null, output = null } = {}) {
@@ -28743,12 +29100,17 @@ function publishCurrentScanArtifact({ signal = {}, replay = null, output = null 
     };
     const copyRawBtn = typeof document !== 'undefined' ? document.getElementById('copyRawMarketBtn') : null;
     const downloadRawBtn = typeof document !== 'undefined' ? document.getElementById('downloadRawMarketBtn') : null;
+    const sendAiPackBtn = typeof document !== 'undefined' ? document.getElementById('sendAiPackBtn') : null;
     if (copyRawBtn) {
         copyRawBtn.disabled = !replay
             || normalizeCanonicalMarketSymbol(currentScanArtifact.symbol || '') !== normalizeCanonicalMarketSymbol(pair);
     }
     if (downloadRawBtn) {
         downloadRawBtn.disabled = !replay
+            || normalizeCanonicalMarketSymbol(currentScanArtifact.symbol || '') !== normalizeCanonicalMarketSymbol(pair);
+    }
+    if (sendAiPackBtn) {
+        sendAiPackBtn.disabled = !replay
             || normalizeCanonicalMarketSymbol(currentScanArtifact.symbol || '') !== normalizeCanonicalMarketSymbol(pair);
     }
     return currentScanArtifact;

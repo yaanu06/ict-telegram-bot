@@ -3,6 +3,7 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { URL } = require('node:url');
 const { createAuditStore } = require('./audit-store');
 const { createGhostMcpNodeHandler } = require('./ghost-mcp');
@@ -27,7 +28,8 @@ const PUBLIC_ASSETS = {
     '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
     '/kronos-client.js': { file: 'kronos-client.js', type: 'application/javascript; charset=utf-8' },
     '/script.js': { file: 'script.js', type: 'application/javascript; charset=utf-8' },
-    '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' }
+    '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' },
+    '/ghost-machine-strategy.py': { file: 'ghost-machine-strategy.py', type: 'text/x-python; charset=utf-8' }
 };
 
 function normalizeSymbol(value) {
@@ -134,6 +136,78 @@ function readBody(req) {
         req.on('end', () => { if (!rejected) resolve(Buffer.concat(chunks).toString('utf8')); });
         req.on('error', reject);
     });
+}
+
+function validateTelegramInitData(initData, botToken, nowMs = Date.now(), maxAgeSeconds = 86_400) {
+    const raw = String(initData || '').trim();
+    const token = String(botToken || '').trim();
+    if (!raw || !token) return { valid: false, reason: 'telegram authentication is unavailable' };
+    const params = new URLSearchParams(raw);
+    const suppliedHash = String(params.get('hash') || '').toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(suppliedHash)) return { valid: false, reason: 'telegram authentication hash is invalid' };
+    params.delete('hash');
+    const dataCheckString = [...params.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => `${key}=${value}`)
+        .join('\n');
+    const secret = crypto.createHmac('sha256', 'WebAppData').update(token).digest();
+    const expectedHash = crypto.createHmac('sha256', secret).update(dataCheckString).digest('hex');
+    const expected = Buffer.from(expectedHash, 'hex');
+    const supplied = Buffer.from(suppliedHash, 'hex');
+    if (expected.length !== supplied.length || !crypto.timingSafeEqual(expected, supplied)) {
+        return { valid: false, reason: 'telegram authentication failed' };
+    }
+    const authDate = Number(params.get('auth_date'));
+    const nowSeconds = Math.floor(Number(nowMs) / 1000);
+    if (!Number.isFinite(authDate) || authDate <= 0 || Math.abs(nowSeconds - authDate) > maxAgeSeconds) {
+        return { valid: false, reason: 'telegram authentication has expired' };
+    }
+    let user;
+    try { user = JSON.parse(params.get('user') || '{}'); } catch { return { valid: false, reason: 'telegram user is invalid' }; }
+    const chatId = Number(user?.id);
+    if (!Number.isSafeInteger(chatId) || chatId <= 0) return { valid: false, reason: 'telegram user is unavailable' };
+    return { valid: true, chat_id: chatId, user };
+}
+
+function telegramDocumentMultipart({ chatId, pdf, filename, caption = '' } = {}) {
+    const boundary = `----ghost-machine-${crypto.randomBytes(12).toString('hex')}`;
+    const safeFilename = String(filename || 'ghost-machine-market-pack.pdf')
+        .replace(/[^A-Za-z0-9._-]+/g, '-')
+        .slice(0, 120) || 'ghost-machine-market-pack.pdf';
+    const chunks = [];
+    const field = (name, value) => {
+        chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`, 'utf8'));
+    };
+    field('chat_id', String(chatId));
+    if (caption) field('caption', String(caption).slice(0, 900));
+    chunks.push(Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${safeFilename}"\r\nContent-Type: application/pdf\r\n\r\n`,
+        'utf8'
+    ));
+    chunks.push(pdf);
+    chunks.push(Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8'));
+    return {
+        body: Buffer.concat(chunks),
+        contentType: `multipart/form-data; boundary=${boundary}`
+    };
+}
+
+async function sendTelegramDocument(fetchImpl, botToken, payload) {
+    const multipart = telegramDocumentMultipart(payload);
+    const response = await fetchImpl(`https://api.telegram.org/bot${botToken}/sendDocument`, {
+        method: 'POST',
+        headers: { 'Content-Type': multipart.contentType },
+        body: multipart.body
+    });
+    const text = await response.text();
+    let result;
+    try { result = text ? JSON.parse(text) : {}; } catch { result = {}; }
+    if (response.status < 200 || response.status >= 300 || result.ok !== true) {
+        const error = new Error('Telegram could not deliver the AI Market Pack');
+        error.statusCode = 502;
+        throw error;
+    }
+    return result;
 }
 
 function upstreamHeaders(apiKey) {
@@ -300,6 +374,7 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
     const deepSeekKey = String(env.DEEPSEEK_API_KEY || '').trim();
     const aiProvider = normalizeAIProvider(env.AI_PROVIDER);
     const geminiKey = String(env.GEMINI_API_KEY || '').trim();
+    const telegramBotToken = String(env.TELEGRAM_BOT_TOKEN || env.BOT_TOKEN || '').trim();
     const geminiModel = String(env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
     const twelveBase = String(env.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com').replace(/\/$/, '');
     const tvkitBase = String(env.TVKIT_BASE_URL || '').trim().replace(/\/$/, '');
@@ -408,6 +483,7 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                 ai_provider: aiProvider,
                 ai_model: aiProvider === 'GEMINI' ? geminiModel : 'deepseek-chat',
                 ai_provider_configured: aiProvider === 'GEMINI' ? !!geminiKey : !!deepSeekKey,
+                telegram_delivery_configured: !!telegramBotToken,
                 kronos_enabled: kronos.enabled,
                 kronos_model: kronos.model,
                 kronos_device: kronos.device,
@@ -507,6 +583,34 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                     ? { ...result.payload, provider: 'DEEPSEEK', model: 'deepseek-chat' }
                     : result.payload, origin);
             }
+            if (req.method === 'POST' && requestUrl.pathname === '/api/telegram/send-ai-pack') {
+                if (!telegramBotToken) return jsonResponse(res, 503, { error: 'Telegram delivery is not configured' }, origin);
+                const raw = await readBody(req);
+                let body;
+                try { body = JSON.parse(raw || '{}'); } catch { return jsonResponse(res, 400, { error: 'request body must be valid JSON' }, origin); }
+                const auth = validateTelegramInitData(body?.init_data, telegramBotToken, now());
+                if (!auth.valid) return jsonResponse(res, 401, { error: auth.reason }, origin);
+                const encoded = String(body?.pdf_base64 || '').replace(/^data:application\/pdf;base64,/, '');
+                if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+                    return jsonResponse(res, 400, { error: 'a valid PDF is required' }, origin);
+                }
+                const pdf = Buffer.from(encoded, 'base64');
+                if (pdf.length < 8 || pdf.subarray(0, 5).toString('ascii') !== '%PDF-') {
+                    return jsonResponse(res, 400, { error: 'the uploaded document is not a PDF' }, origin);
+                }
+                if (pdf.length > 20 * 1024 * 1024) return jsonResponse(res, 413, { error: 'PDF exceeds the Telegram delivery limit' }, origin);
+                const result = await sendTelegramDocument(fetchImpl, telegramBotToken, {
+                    chatId: auth.chat_id,
+                    pdf,
+                    filename: body?.filename,
+                    caption: body?.caption
+                });
+                return jsonResponse(res, 200, {
+                    sent: true,
+                    message_id: result?.result?.message_id || null,
+                    chat_id: auth.chat_id
+                }, origin);
+            }
             if ((req.method === 'POST' || req.method === 'GET') && requestUrl.pathname === '/api/audit') {
                 const expectedToken = req.method === 'GET' ? configuredAuditReadToken : configuredAuditToken;
                 if (!store || !expectedToken || req.headers['x-audit-token'] !== expectedToken) return jsonResponse(res, 401, { error: 'audit authentication required' }, origin);
@@ -537,4 +641,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { MAX_BODY_BYTES, DEFAULT_UPSTREAM_TIMEOUT_MS, MAX_UPSTREAM_TIMEOUT_MS, DEFAULT_AI_PROVIDER, DEFAULT_GEMINI_MODEL, DEFAULT_KRONOS_MODEL, TIMEFRAME_INTERVALS, normalizeSymbol, normalizeAIProvider, geminiContents, geminiRequestBody, normalizeGeminiResponse, sanitizeProviderError, validateMarketRequest, createRateLimiter, createProxyServer };
+module.exports = { MAX_BODY_BYTES, DEFAULT_UPSTREAM_TIMEOUT_MS, MAX_UPSTREAM_TIMEOUT_MS, DEFAULT_AI_PROVIDER, DEFAULT_GEMINI_MODEL, DEFAULT_KRONOS_MODEL, TIMEFRAME_INTERVALS, normalizeSymbol, normalizeAIProvider, geminiContents, geminiRequestBody, normalizeGeminiResponse, sanitizeProviderError, validateMarketRequest, validateTelegramInitData, telegramDocumentMultipart, sendTelegramDocument, createRateLimiter, createProxyServer };

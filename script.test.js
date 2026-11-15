@@ -33,6 +33,9 @@ const getContext = () => {
         Date,
         Math,
         JSON,
+        TextEncoder,
+        Uint8Array,
+        atob: (s) => Buffer.from(s, 'base64').toString('binary'),
         btoa: (s) => Buffer.from(s, 'binary').toString('base64')
     };
     vm.createContext(context);
@@ -81,6 +84,9 @@ const getScanContext = () => {
         Date,
         Math,
         JSON,
+        TextEncoder,
+        Uint8Array,
+        atob: s => Buffer.from(s, 'base64').toString('binary'),
         performance,
         btoa: s => Buffer.from(s, 'binary').toString('base64')
     };
@@ -680,6 +686,27 @@ describe('strategy entry lifecycle', () => {
             remaining_reward_fraction: 0.8, entry_reachable_today: true, ai_decision: 'pending_limit', limit_order_setup: { eligible: true }, immediate_entry: { eligible: false, confirmation: { isAtZone: false } },
             limitZoneStatus: { insideZone: false }, source: 'Deterministic Candidate Engine + AI Selector' }, { adaptive_setup_candidates: [candidate] });
         expect(valid.valid).toBe(true);
+    });
+});
+
+describe('one-file AI Market Pack', () => {
+    test('builds a PDF containing chart imagery, strategy text, and raw timeframe data', () => {
+        const ctx = getContext();
+        const pdf = ctx.window.buildMarketPackPdf({
+            chartJpeg: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+            chartWidth: 1500,
+            chartHeight: 2000,
+            strategyText: 'STRATEGY_VERSION=TEST\nReturn strict JSON.',
+            packetText: '=== TIMEFRAME DATA ONLY ===\nSYMBOL=BTC/USD\n1h,100,110,90,105,20',
+            symbol: 'BTC/USD',
+            generatedAt: '2026-11-15T10:00:00.000Z'
+        });
+        const body = Buffer.from(pdf);
+        expect(body.subarray(0, 8).toString('ascii')).toBe('%PDF-1.4');
+        expect(body.toString('latin1')).toContain('EMBEDDED GHOST MACHINE STRATEGY SOURCE');
+        expect(body.toString('latin1')).toContain('TIMEFRAME DATA ONLY');
+        expect(body.toString('latin1')).toContain('/Subtype /Image');
+        expect(body.toString('latin1')).toContain('%%EOF');
     });
 });
 

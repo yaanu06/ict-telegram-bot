@@ -4,7 +4,8 @@ const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { validateMarketRequest, createRateLimiter, createProxyServer } = require('./proxy');
+const crypto = require('node:crypto');
+const { validateMarketRequest, validateTelegramInitData, createRateLimiter, createProxyServer } = require('./proxy');
 const { createAuditStore } = require('./audit-store');
 
 function request(server, method, pathname, headers = {}, body = '') {
@@ -23,6 +24,21 @@ function request(server, method, pathname, headers = {}, body = '') {
         req.on('error', reject);
         req.end(body);
     });
+}
+
+function telegramInitData(botToken, nowMs, userId = 123456) {
+    const params = new URLSearchParams({
+        auth_date: String(Math.floor(nowMs / 1000)),
+        query_id: 'test-query',
+        user: JSON.stringify({ id: userId, first_name: 'Test' })
+    });
+    const check = [...params.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => `${key}=${value}`)
+        .join('\n');
+    const secret = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+    params.set('hash', crypto.createHmac('sha256', secret).update(check).digest('hex'));
+    return params.toString();
 }
 
 describe('market and AI proxy boundary', () => {
@@ -70,6 +86,42 @@ describe('market and AI proxy boundary', () => {
         expect(allow('client').allowed).toBe(false);
         now += 100;
         expect(allow('client')).toMatchObject({ allowed: true, remaining: 1 });
+    });
+
+    test('validates Telegram Mini App identity and delivers the PDF only to that user chat', async () => {
+        const nowMs = Date.parse('2026-11-15T10:00:00Z');
+        const botToken = '123456:test-token';
+        const initData = telegramInitData(botToken, nowMs, 778899);
+        expect(validateTelegramInitData(initData, botToken, nowMs)).toMatchObject({ valid: true, chat_id: 778899 });
+        expect(validateTelegramInitData(initData.replace(/.$/, '0'), botToken, nowMs).valid).toBe(false);
+
+        const fetchImpl = jest.fn(async () => ({
+            status: 200,
+            text: async () => JSON.stringify({ ok: true, result: { message_id: 42 } })
+        }));
+        const server = createProxyServer({
+            env: { TELEGRAM_BOT_TOKEN: botToken, PROXY_MAX_REQUESTS: '20' },
+            fetchImpl,
+            now: () => nowMs
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const body = JSON.stringify({
+                init_data: initData,
+                pdf_base64: Buffer.from('%PDF-1.4\nmarket-pack').toString('base64'),
+                filename: 'ghost-machine-test.pdf',
+                caption: 'Market pack'
+            });
+            const response = await request(server, 'POST', '/api/telegram/send-ai-pack', { 'content-type': 'application/json' }, body);
+            expect(response).toMatchObject({ status: 200, body: { sent: true, message_id: 42, chat_id: 778899 } });
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
+            const [url, options] = fetchImpl.mock.calls[0];
+            expect(url).toBe(`https://api.telegram.org/bot${botToken}/sendDocument`);
+            expect(options.body.includes(Buffer.from('%PDF-1.4\nmarket-pack'))).toBe(true);
+            expect(options.body.toString('utf8')).toContain('778899');
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
     });
 
     test('applies a separate Twelve Data budget below the provider plan limit', async () => {

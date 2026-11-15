@@ -104,3 +104,7 @@
 .custom-symbol-row { display: flex; gap: 8px; margin-top: 8px; }
 .custom-symbol-row .input-field { flex: 1; min-width: 0; }
 .custom-symbol-row .settings-btn { width: auto; white-space: nowrap; padding: 10px 12px; }
+.json-header { flex-wrap: wrap; gap: 6px; }
+.json-header h3 { flex: 0 0 100%; }
+.json-header .copy-json-btn { flex: 1 1 130px; }
+.copy-json-btn:disabled { opacity: 0.45; cursor: not-allowed; }
