@@ -710,6 +710,26 @@ describe('one-file AI Market Pack', () => {
         expect(pdfText).toContain('/Subtype /Image');
         expect(pdfText).toContain('%%EOF');
     });
+
+    test('builds a DOCX containing chart imagery, strategy text, and raw timeframe data', () => {
+        const ctx = getContext();
+        const docx = ctx.window.buildMarketPackDocx({
+            chartJpeg: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+            strategyText: 'STRATEGY_VERSION=TEST\nReturn strict JSON.',
+            packetText: '=== TIMEFRAME DATA ONLY ===\nSYMBOL=BTC/USD\n1h,100,110,90,105,20',
+            symbol: 'BTC/USD',
+            generatedAt: '2026-11-15T10:00:00.000Z'
+        });
+        const body = Buffer.from(docx);
+        const text = body.toString('utf8');
+        expect(body.subarray(0, 4).toString('hex')).toBe('504b0304');
+        expect(text).toContain('word/document.xml');
+        expect(text).toContain('word/media/chart.jpeg');
+        expect(text).toContain('rIdChart');
+        expect(text).toContain('TIMEFRAME DATA ONLY');
+        expect(text).toContain('EMBEDDED GHOST MACHINE STRATEGY SOURCE');
+        expect(text.indexOf('TIMEFRAME DATA ONLY')).toBeLessThan(text.indexOf('EMBEDDED GHOST MACHINE STRATEGY SOURCE'));
+    });
 });
 
 describe('market-thesis opportunity invariants', () => {

@@ -21110,6 +21110,209 @@ function marketPackJpegBytes(dataUrl) {
     return bytes;
 }
 
+function buildMarketPackTextFile({ strategyText, packetText, symbol, generatedAt }) {
+    return [
+        'GHOST MACHINE AI MARKET PACK',
+        `SYMBOL: ${symbol}`,
+        `GENERATED_UTC: ${generatedAt}`,
+        'CONTENTS: factual chart image first; exact closed OHLCV rows and embedded strategy source follow.',
+        '',
+        '=== EXACT RAW CLOSED TIMEFRAME DATA ===',
+        String(packetText || '').trim(),
+        '',
+        '=== EMBEDDED GHOST MACHINE STRATEGY SOURCE ===',
+        String(strategyText || '').trim(),
+        ''
+    ].join('\n');
+}
+
+function marketPackXmlEscape(value) {
+    return marketPackAscii(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+}
+
+function marketPackCrc32(bytes) {
+    if (!marketPackCrc32.table) {
+        const table = new Uint32Array(256);
+        for (let index = 0; index < 256; index += 1) {
+            let value = index;
+            for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xEDB88320 ^ (value >>> 1) : value >>> 1;
+            table[index] = value >>> 0;
+        }
+        marketPackCrc32.table = table;
+    }
+    let crc = 0xFFFFFFFF;
+    for (const byte of bytes) crc = marketPackCrc32.table[(crc ^ byte) & 0xFF] ^ (crc >>> 8);
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function marketPackZip(entries, generatedAt) {
+    const date = new Date(generatedAt);
+    const validDate = Number.isFinite(date.getTime()) ? date : new Date();
+    const dosTime = (validDate.getUTCHours() << 11) | (validDate.getUTCMinutes() << 5) | (validDate.getUTCSeconds() >> 1);
+    const dosDate = ((Math.max(1980, validDate.getUTCFullYear()) - 1980) << 9) | ((validDate.getUTCMonth() + 1) << 5) | validDate.getUTCDate();
+    const localChunks = [];
+    const centralChunks = [];
+    let offset = 0;
+    for (const entry of entries) {
+        const name = marketPackBytes(entry.name);
+        const data = entry.data;
+        const crc = marketPackCrc32(data);
+        const local = new Uint8Array(30 + name.length);
+        const localView = new DataView(local.buffer);
+        localView.setUint32(0, 0x04034B50, true);
+        localView.setUint16(4, 20, true);
+        localView.setUint16(6, 0x0800, true);
+        localView.setUint16(8, 0, true);
+        localView.setUint16(10, dosTime, true);
+        localView.setUint16(12, dosDate, true);
+        localView.setUint32(14, crc, true);
+        localView.setUint32(18, data.length, true);
+        localView.setUint32(22, data.length, true);
+        localView.setUint16(26, name.length, true);
+        localView.setUint16(28, 0, true);
+        local.set(name, 30);
+        localChunks.push(local, data);
+        const central = new Uint8Array(46 + name.length);
+        const centralView = new DataView(central.buffer);
+        centralView.setUint32(0, 0x02014B50, true);
+        centralView.setUint16(4, 20, true);
+        centralView.setUint16(6, 20, true);
+        centralView.setUint16(8, 0x0800, true);
+        centralView.setUint16(10, 0, true);
+        centralView.setUint16(12, dosTime, true);
+        centralView.setUint16(14, dosDate, true);
+        centralView.setUint32(16, crc, true);
+        centralView.setUint32(20, data.length, true);
+        centralView.setUint32(24, data.length, true);
+        centralView.setUint16(28, name.length, true);
+        centralView.setUint16(30, 0, true);
+        centralView.setUint16(32, 0, true);
+        centralView.setUint16(34, 0, true);
+        centralView.setUint16(36, 0, true);
+        centralView.setUint32(38, 0, true);
+        centralView.setUint32(42, offset, true);
+        central.set(name, 46);
+        centralChunks.push(central);
+        offset += local.length + data.length;
+    }
+    const centralSize = centralChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const eocd = new Uint8Array(22);
+    const eocdView = new DataView(eocd.buffer);
+    eocdView.setUint32(0, 0x06054B50, true);
+    eocdView.setUint16(4, 0, true);
+    eocdView.setUint16(6, 0, true);
+    eocdView.setUint16(8, entries.length, true);
+    eocdView.setUint16(10, entries.length, true);
+    eocdView.setUint32(12, centralSize, true);
+    eocdView.setUint32(16, offset, true);
+    eocdView.setUint16(20, 0, true);
+    return marketPackConcat([...localChunks, ...centralChunks, eocd]);
+}
+
+function marketPackDocxParagraph(line, { bold = false, size = 16, align = null } = {}) {
+    const escaped = marketPackXmlEscape(line);
+    const properties = [
+        align ? `<w:jc w:val="${align}"/>` : '',
+        '<w:spacing w:after="0" w:line="200" w:lineRule="exact"/>'
+    ].join('');
+    return `<w:p><w:pPr>${properties}</w:pPr><w:r><w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/>${bold ? '<w:b/>' : ''}<w:sz w:val="${size}"/><w:szCs w:val="${size}"/></w:rPr><w:t xml:space="preserve">${escaped}</w:t></w:r></w:p>`;
+}
+
+function buildMarketPackDocx({ chartJpeg, strategyText, packetText, symbol, generatedAt }) {
+    const text = buildMarketPackTextFile({ strategyText, packetText, symbol, generatedAt });
+    const lines = marketPackWrappedLines(text, 112);
+    const chartWidthEmu = 5486400;
+    const chartHeightEmu = 7315200;
+    const chartDrawing = [
+        '<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:after="120"/></w:pPr><w:r><w:drawing>',
+        '<wp:inline distT="0" distB="0" distL="0" distR="0">',
+        `<wp:extent cx="${chartWidthEmu}" cy="${chartHeightEmu}"/>`,
+        '<wp:effectExtent l="0" t="0" r="0" b="0"/>',
+        '<wp:docPr id="1" name="Ghost Machine factual chart"/>',
+        '<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>',
+        '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">',
+        '<pic:pic><pic:nvPicPr><pic:cNvPr id="1" name="chart.jpeg"/><pic:cNvPicPr/></pic:nvPicPr>',
+        '<pic:blipFill><a:blip r:embed="rIdChart"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>',
+        `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${chartWidthEmu}" cy="${chartHeightEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>`,
+        '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>'
+    ].join('');
+    const documentXml = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">',
+        '<w:body>',
+        marketPackDocxParagraph('GHOST MACHINE - FACTUAL MARKET CHARTS', { bold: true, size: 20, align: 'center' }),
+        chartDrawing,
+        '<w:p><w:r><w:br w:type="page"/></w:r></w:p>',
+        ...lines.map(line => marketPackDocxParagraph(line)),
+        '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/></w:sectPr>',
+        '</w:body></w:document>'
+    ].join('');
+    const contentTypes = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+        '<Default Extension="xml" ContentType="application/xml"/>',
+        '<Default Extension="jpeg" ContentType="image/jpeg"/>',
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>',
+        '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>',
+        '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>',
+        '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>',
+        '</Types>'
+    ].join('');
+    const rootRels = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>',
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>',
+        '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>',
+        '</Relationships>'
+    ].join('');
+    const documentRels = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+        '<Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/chart.jpeg"/>',
+        '<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>',
+        '</Relationships>'
+    ].join('');
+    const styles = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+        '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr></w:rPrDefault>',
+        '<w:pPrDefault><w:pPr><w:spacing w:after="0" w:line="200" w:lineRule="exact"/></w:pPr></w:pPrDefault></w:docDefaults>',
+        '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>',
+        '</w:styles>'
+    ].join('');
+    const core = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">',
+        '<dc:title>Ghost Machine AI Market Pack</dc:title><dc:creator>Ghost Machine</dc:creator>',
+        `<dcterms:created xsi:type="dcterms:W3CDTF">${marketPackXmlEscape(generatedAt)}</dcterms:created>`,
+        `<dcterms:modified xsi:type="dcterms:W3CDTF">${marketPackXmlEscape(generatedAt)}</dcterms:modified>`,
+        '</cp:coreProperties>'
+    ].join('');
+    const app = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">',
+        '<Application>Ghost Machine</Application>',
+        '</Properties>'
+    ].join('');
+    return marketPackZip([
+        { name: '[Content_Types].xml', data: marketPackBytes(contentTypes) },
+        { name: '_rels/.rels', data: marketPackBytes(rootRels) },
+        { name: 'docProps/core.xml', data: marketPackBytes(core) },
+        { name: 'docProps/app.xml', data: marketPackBytes(app) },
+        { name: 'word/document.xml', data: marketPackBytes(documentXml) },
+        { name: 'word/_rels/document.xml.rels', data: marketPackBytes(documentRels) },
+        { name: 'word/styles.xml', data: marketPackBytes(styles) },
+        { name: 'word/media/chart.jpeg', data: chartJpeg }
+    ], generatedAt);
+}
+
 function buildMarketPackPdf({ chartJpeg, chartWidth, chartHeight, strategyText, packetText, symbol, generatedAt }) {
     const linesPerPage = 104;
     const dataHeaderLines = marketPackWrappedLines([
@@ -21319,19 +21522,19 @@ async function buildCurrentAiMarketPack() {
     const generatedAt = new Date().toISOString();
     const canvas = buildMarketPackChart(replay, packet.symbol, generatedAt);
     const chartJpeg = marketPackJpegBytes(canvas.toDataURL('image/jpeg', 0.84));
-    const pdf = buildMarketPackPdf({
+    const document = buildMarketPackDocx({
         chartJpeg,
-        chartWidth: canvas.width,
-        chartHeight: canvas.height,
         strategyText,
         packetText: packet.text,
         symbol: packet.symbol,
         generatedAt
     });
     const safeSymbol = packet.symbol.replace(/[^A-Z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'market';
+    const timestamp = generatedAt.replace(/[:.]/g, '-');
     return {
-        pdf,
-        filename: `ghost-machine-market-pack-${safeSymbol}-${generatedAt.replace(/[:.]/g, '-')}.pdf`,
+        document,
+        filename: `ghost-machine-market-pack-${safeSymbol}-${timestamp}.docx`,
+        mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         symbol: packet.symbol
     };
 }
@@ -21346,16 +21549,19 @@ function marketPackBase64(bytes) {
 }
 
 function downloadAiMarketPack(pack) {
-    const blob = new Blob([pack.pdf], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = pack.filename;
-    link.style.display = 'none';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const download = (bytes, type, filename) => {
+        const blob = new Blob([bytes], { type });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+    download(pack.document, pack.mime, pack.filename);
 }
 
 async function sendAiMarketPackToTelegram() {
@@ -21371,7 +21577,7 @@ async function sendAiMarketPackToTelegram() {
         const initData = String(window.Telegram?.WebApp?.initData || '');
         if (!initData) {
             downloadAiMarketPack(pack);
-            showNotif('Opened outside Telegram, so the one-file AI PDF was downloaded instead', 'info');
+            showNotif('Opened outside Telegram, so the AI Market Pack DOCX was downloaded instead', 'info');
             return;
         }
         if (button) button.textContent = 'Sending to Telegram...';
@@ -21380,9 +21586,11 @@ async function sendAiMarketPackToTelegram() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 init_data: initData,
-                pdf_base64: marketPackBase64(pack.pdf),
-                filename: pack.filename,
-                caption: `Ghost Machine AI Market Pack - ${pack.symbol}. Upload this single PDF to DeepSeek.`
+                document_base64: marketPackBase64(pack.document),
+                document_filename: pack.filename,
+                document_mime: pack.mime,
+                symbol: pack.symbol,
+                caption: `Ghost Machine AI Market Pack - ${pack.symbol}. Upload this DOCX to DeepSeek; the chart and exact data are in one file.`
             })
         });
         let result = {};
@@ -21434,6 +21642,7 @@ if (typeof window !== 'undefined') {
     window.buildCurrentAiMarketPack = buildCurrentAiMarketPack;
     window.sendAiMarketPackToTelegram = sendAiMarketPackToTelegram;
     window.buildMarketPackPdf = buildMarketPackPdf;
+    window.buildMarketPackDocx = buildMarketPackDocx;
     window.buildCurrentCanonicalMarketSnapshotJson = buildCurrentCanonicalMarketSnapshotJson;
     window.copyCurrentCanonicalMarketSnapshot = copyCurrentCanonicalMarketSnapshot;
 }

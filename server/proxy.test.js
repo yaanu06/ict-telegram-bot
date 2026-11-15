@@ -88,16 +88,17 @@ describe('market and AI proxy boundary', () => {
         expect(allow('client')).toMatchObject({ allowed: true, remaining: 1 });
     });
 
-    test('validates Telegram Mini App identity and delivers the PDF only to that user chat', async () => {
+    test('validates Telegram Mini App identity and delivers the DOCX and optional TXT only to that user chat', async () => {
         const nowMs = Date.parse('2026-11-15T10:00:00Z');
         const botToken = '123456:test-token';
         const initData = telegramInitData(botToken, nowMs, 778899);
         expect(validateTelegramInitData(initData, botToken, nowMs)).toMatchObject({ valid: true, chat_id: 778899 });
         expect(validateTelegramInitData(initData.replace(/.$/, '0'), botToken, nowMs).valid).toBe(false);
 
+        let messageId = 42;
         const fetchImpl = jest.fn(async () => ({
             status: 200,
-            text: async () => JSON.stringify({ ok: true, result: { message_id: 42 } })
+            text: async () => JSON.stringify({ ok: true, result: { message_id: messageId++ } })
         }));
         const server = createProxyServer({
             env: { TELEGRAM_BOT_TOKEN: botToken, PROXY_MAX_REQUESTS: '20' },
@@ -108,17 +109,27 @@ describe('market and AI proxy boundary', () => {
         try {
             const body = JSON.stringify({
                 init_data: initData,
-                pdf_base64: Buffer.from('%PDF-1.4\nmarket-pack').toString('base64'),
-                filename: 'ghost-machine-test.pdf',
+                document_base64: Buffer.from('PK\x03\x04docx-market-pack').toString('base64'),
+                document_filename: 'ghost-machine-test.docx',
+                document_mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                text_base64: Buffer.from('=== EXACT RAW CLOSED TIMEFRAME DATA ===\nXAU/USD 15M rows').toString('base64'),
+                text_filename: 'ghost-machine-test.txt',
+                symbol: 'XAU/USD',
                 caption: 'Market pack'
             });
             const response = await request(server, 'POST', '/api/telegram/send-ai-pack', { 'content-type': 'application/json' }, body);
-            expect(response).toMatchObject({ status: 200, body: { sent: true, message_id: 42, chat_id: 778899 } });
-            expect(fetchImpl).toHaveBeenCalledTimes(1);
-            const [url, options] = fetchImpl.mock.calls[0];
-            expect(url).toBe(`https://api.telegram.org/bot${botToken}/sendDocument`);
-            expect(options.body.includes(Buffer.from('%PDF-1.4\nmarket-pack'))).toBe(true);
-            expect(options.body.toString('utf8')).toContain('778899');
+            expect(response).toMatchObject({ status: 200, body: { sent: true, message_id: 42, text_message_id: 43, chat_id: 778899 } });
+            expect(fetchImpl).toHaveBeenCalledTimes(2);
+            const [docxCall, textCall] = fetchImpl.mock.calls;
+            expect(docxCall[0]).toBe(`https://api.telegram.org/bot${botToken}/sendDocument`);
+            expect(docxCall[1].body.includes(Buffer.from('PK\x03\x04docx-market-pack'))).toBe(true);
+            expect(docxCall[1].body.toString('utf8')).toContain('778899');
+            expect(docxCall[1].body.toString('utf8')).toContain('Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+            expect(docxCall[1].body.toString('utf8')).toContain('ghost-machine-test.docx');
+            expect(textCall[0]).toBe(`https://api.telegram.org/bot${botToken}/sendDocument`);
+            expect(textCall[1].body.includes(Buffer.from('=== EXACT RAW CLOSED TIMEFRAME DATA ===\nXAU/USD 15M rows'))).toBe(true);
+            expect(textCall[1].body.toString('utf8')).toContain('Content-Type: text/plain');
+            expect(textCall[1].body.toString('utf8')).toContain('ghost-machine-test.txt');
         } finally {
             await new Promise(resolve => server.close(resolve));
         }
