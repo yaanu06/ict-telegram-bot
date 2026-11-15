@@ -329,6 +329,23 @@ For each valid consecutive triple i,i+1,i+2 record:
 A positive fourth number means bearish gap; positive fifth means bullish.
 Zero means no gap. Do not invert inequalities. Include EVERY triple, even
 when no gap exists. Triple count alone is not evidence of a completed scan.
+FVG ARITHMETIC INVARIANTS (HARD GATE):
+- A BEARISH FVG exists ONLY when bearish_test = A.low - C.high is strictly
+  greater than 0. Its exact zone is low=C.high, high=A.low, and
+  width=A.low-C.high. Therefore low < high and width > 0 must both hold.
+- A BULLISH FVG exists ONLY when bullish_test = C.low - A.high is strictly
+  greater than 0. Its exact zone is low=A.high, high=C.low, and
+  width=C.low-A.high. Therefore low < high and width > 0 must both hold.
+- If the applicable signed test is less than or equal to 0, record NO_FVG
+  for that direction. Never use abs(), reverse the zone edges, swap A/C
+  values, or relabel a negative test as a gap to manufacture a positive width.
+- Before a zone may enter zones, candidates, fvg_scan, poi_candidate_review,
+  a target calculation, or reason, re-check its signed formation test,
+  low < high, and width > 0. Discard it completely if any check fails.
+For every FVG reported in fvg_scan and zones, include the signed formation
+test as `A.low - C.high = <value>` (bearish) or
+`C.low - A.high = <value>` (bullish), alongside the ordered [low, high]
+bounds. A negative comparison is proof of NO_FVG, never evidence of a gap.
 Each positive difference MUST have a corresponding zone record, even if
 that zone is later filled, invalidated or outside the candidate distance band.
 Do not confuse detected_gap_count with eligible_candidate_count.
@@ -353,7 +370,10 @@ unknown/uncomputed numeric values are null, never fabricated zeros.
   triples (arrays defined above), skipped_triples (indices and gap reason),
   detected_gap_count. With continuous N rows triples must contain N-2 entries.
 - zones: array of objects with id, timeframe, type, direction, source_indices,
-  formation_time_utc (ISO8601 string), formation_price (number), low, high, width, lifecycle, lifecycle_evidence
+  formation_time_utc (ISO8601 string), formation_price (number), low, high, width,
+  formation_test (number for FVG; null for OB), lifecycle, lifecycle_evidence.
+  Every FVG must have formation_test > 0, low < high, width > 0, and width
+  equal to formation_test; otherwise it must not be included as a zone.
   (source timeframe/time/high/low/close for relevant touches or rejection).
   Include every detected FVG and every supported OB.
 - candidates: array with one object per evaluated zone: zone_id, scenario,
@@ -433,8 +453,9 @@ limitations because this analysis is candle-file based.
   "data_limitations": "<missing/uncertain input facts, or NONE>"
 }
 
-Return only the single JSON code block. Do not add chart or screenshot
-requirements to the response.
+Return only one raw JSON object: start with { and end with }. Do not use a
+Markdown code block, backticks, or text before or after the object. Do not add
+chart or screenshot requirements to the response.
 """
 
 
