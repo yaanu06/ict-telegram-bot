@@ -474,23 +474,24 @@ candidate ID present in `candidate_math`:
   "action": "BUY_LIMIT|SELL_LIMIT|NO_TRADE",
   "selected_candidate_id": "<candidate_math id or null>",
   "symbol": "<packet symbol>",
-  "entry": "<number or null>",
-  "stop_loss": "<number or null>",
-  "tp1": "<number or null>",
+  "entry": <number|null>,
+  "stop_loss": <number|null>,
+  "tp1": <number|null>,
   "tp2": null,
   "tp3": null,
-  "risk": "<number or null>",
-  "rr_tp1": "<number or null>",
+  "risk": <number|null>,
+  "rr_tp1": <number|null>,
   "htf_bias": "BULLISH|BEARISH|RANGE|UNCLEAR",
   "setup": "FVG_FILL|OB_RETEST|LIQUIDITY_SWEEP|NONE",
-  "confidence": "<integer 0-100>",
+  "confidence": <integer 0-100>,
   "session_quality": "PRIME|SHOULDER|OFF_SESSION|UNKNOWN",
   "order_tag": "prime|shoulder|armed_off_session|none",
   "expires_at": "<ISO8601 UTC or null>",
   "reason": "<maximum 240 characters; cite selected candidate ID and only factual structural rationale>"
 }
 For BUY_LIMIT or SELL_LIMIT, copy entry, stop_loss, tp1, risk and rr_tp1
-exactly from the selected verified candidate. For NO_TRADE, use null numeric
+exactly from the selected verified candidate as JSON numbers, never quoted
+strings. Confidence is also a JSON integer. For NO_TRADE, use null numeric
 trade fields and selected_candidate_id=null. Return only one raw JSON object:
 start with { and end with }. Do not use Markdown, backticks, or text before
 or after the object.
