@@ -27,8 +27,8 @@ the authoritative mechanical calculation layer. It was computed locally from
 the closed rows. Do NOT manually recompute ATR, enumerate FVG triples, reverse
 an FVG, relabel its lifecycle, reconstruct pool consumption, or alter supplied
 candidate entry/stop/TP1/RR arithmetic. Use the raw candles only for market
-structure, CRT/MSNR interpretation, qualitative confluence and the final
-selection among `candidate_math` records. A candidate can be rejected only for
+structure, qualitative confluence and the final selection among the verified
+multi-model `candidate_math` records (FVG, OB, CRT and MSNR). A candidate can be rejected only for
 a stated structural/scenario reason, a false supplied gate, or unavailable
 input—not because you obtained different hand arithmetic. This prevents a
 calculation mistake from suppressing a verified pending-limit opportunity.
@@ -484,9 +484,11 @@ candidate ID present in `candidate_math`:
   "confidence": <integer 0-100>,
   "analysis": "<maximum 240 characters; factual setup/no-trade explanation>",
   "selected_candidate_id": "<candidate_math id or null>",
+  "opportunity_status": "FRESH_OPPORTUNITY|ESTABLISHED_PENDING_ZONE|NO_TRADE",
+  "setup_fingerprint": "<selected candidate setup_fingerprint or null>",
   "symbol": "<packet symbol>",
   "htf_bias": "BULLISH|BEARISH|RANGE|UNCLEAR",
-  "setup": "FVG_FILL|OB_RETEST|LIQUIDITY_SWEEP|NONE",
+  "setup": "FVG_FILL|OB_RETEST|CRT_SWEEP|MSNR_RETEST|LIQUIDITY_SWEEP|NONE",
   "session_quality": "PRIME|SHOULDER|OFF_SESSION|UNKNOWN",
   "order_tag": "prime|shoulder|armed_off_session|none",
   "expires_at": "<ISO8601 UTC or null>",
@@ -501,6 +503,20 @@ parsers. Confidence is final session-adjusted confidence, never a raw evidence
 score: SHOULDER must be <=70 and OFF_SESSION must be <=50. This is a hard
 output rule, including in the compact response. Return fields in the exact order shown. Return only one ```json code
 block, with the JSON object inside it, and no text outside the block.
+
+CURRENT-OPPORTUNITY SELECTION
+`candidate_math` is ranked with passing gates first, then freshness, structural
+quality/confluence and distance. Evaluate every passing candidate; do not assume
+rank 1 without checking its structural context. Prefer a passing
+FRESH_OPPORTUNITY over an ESTABLISHED_PENDING_ZONE when direction and evidence
+quality are comparable. An established zone may remain a valid pending plan,
+but it is not a new opportunity and must be labelled honestly. Never call an
+unchanged old zone fresh. Treat `setup_fingerprint` as the stable identity of
+the plan across scans. A target_before_entry_risk=true candidate is lower
+priority because its target may be consumed before the limit fills; select it
+only when no stronger passing current candidate exists and say so in analysis.
+Limit orders expand the searchable map; they do not prove that every scan has a
+fresh high-quality trade. Never manufacture a candidate merely to return one.
 """
 
 

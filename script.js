@@ -20895,6 +20895,7 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
     const atr1h = Number(atr['1H']);
     const daily = rawTextPacketClosedCandles(source, '1D', asOfMs);
     const dailyBias = buildRawCandleAiDailyBias(daily).bias;
+    const symbolMetadata = source.quote?.symbol_metadata || source.runtime_state?.quote_snapshot?.symbol_metadata || source.symbol_metadata || {};
     const fvgRows = primary.flatMap(block => detectRawTextFvgs(block.candles, block.timeframe).map(fvg => {
         const a = block.candles[fvg.formation_index];
         const c = block.candles[fvg.formation_index + 2];
@@ -20903,6 +20904,7 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
             : Number(c?.l) - Number(a?.h);
         return {
             id: `${block.timeframe}-${fvg.type}-${fvg.formation_index}`,
+            poi_type: 'FVG',
             timeframe: block.timeframe,
             direction: fvg.type,
             // A three-candle FVG is knowable only when candle C has closed.
@@ -20918,9 +20920,78 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
             width: rawTextPacketRoundPrice(Number(fvg.upper) - Number(fvg.lower), precision),
             lifecycle: fvg.status,
             remaining_low: rawTextPacketRoundPrice(fvg.remaining_lower, precision),
-            remaining_high: rawTextPacketRoundPrice(fvg.remaining_upper, precision)
+            remaining_high: rawTextPacketRoundPrice(fvg.remaining_upper, precision),
+            formation_index: fvg.formation_index
         };
     }));
+    const orderBlockRows = primary.flatMap(block => ['BUY', 'SELL'].flatMap(direction =>
+        detectOrderBlocks(block.candles, direction).map((ob, index) => {
+            const low = Number(ob.low);
+            const high = Number(ob.high);
+            const formationIndex = Number(ob.formation_index);
+            const later = Number.isInteger(formationIndex) ? block.candles.slice(formationIndex + 1) : [];
+            const invalidated = direction === 'BUY'
+                ? later.some(candle => Number(candle.c) < low)
+                : later.some(candle => Number(candle.c) > high);
+            const touches = later.filter(candle => Number(candle.h) >= low && Number(candle.l) <= high);
+            return {
+                id: `${block.timeframe}-${direction}-OB-${formationIndex}-${index}`,
+                poi_type: 'OB',
+                timeframe: block.timeframe,
+                direction: direction === 'BUY' ? 'BULLISH' : 'BEARISH',
+                formation_time: rawTextAuditTimestamp(
+                    rawTextPacketTimestamp(block.candles[formationIndex]?.t) + (TIMEFRAME_MS[block.timeframe] || 0)
+                ),
+                zone_low: rawTextPacketRoundPrice(low, precision),
+                zone_high: rawTextPacketRoundPrice(high, precision),
+                lifecycle: invalidated ? 'INVALIDATED' : touches.length ? 'RETESTED' : 'UNTOUCHED',
+                touch_count: touches.length,
+                last_touch_time: touches.length ? rawTextAuditTimestamp(touches.at(-1)?.t) : null,
+                formation_index: formationIndex
+            };
+        })
+    ));
+    const crtRows = primary.flatMap(block => detectCRTEvents(block.candles, block.timeframe, symbol, symbolMetadata)
+        .filter(event => event.detected && !event.invalidated)
+        .map((event, index) => ({
+            id: `${block.timeframe}-${event.direction}-CRT-${event.reclaim_bar_index}-${index}`,
+            poi_type: 'CRT',
+            timeframe: block.timeframe,
+            direction: event.direction === 'BUY' ? 'BULLISH' : 'BEARISH',
+            formation_time: rawTextAuditTimestamp(
+                rawTextPacketTimestamp(block.candles[event.reclaim_bar_index]?.t) + (TIMEFRAME_MS[block.timeframe] || 0)
+            ),
+            zone_low: rawTextPacketRoundPrice(Math.min(Number(event.reclaim_level), Number(event.sweep_extreme)), precision),
+            zone_high: rawTextPacketRoundPrice(Math.max(Number(event.reclaim_level), Number(event.sweep_extreme)), precision),
+            lifecycle: 'VALID',
+            formation_index: Number(event.reclaim_bar_index),
+            event_age_bars: Number(event.event_age_bars),
+            sweep_extreme: rawTextPacketRoundPrice(event.sweep_extreme, precision),
+            reclaim_level: rawTextPacketRoundPrice(event.reclaim_level, precision)
+        })));
+    const msnrRows = primary.flatMap(block => {
+        try {
+            return (calculateMSNR(block.candles, Number(referencePrice), block.timeframe, symbol, symbolMetadata).executable_setups || [])
+                .filter(level => level && !level.invalidated && Number.isFinite(Number(level.zone_low)) && Number.isFinite(Number(level.zone_high)))
+                .map((level, index) => ({
+                    id: `${block.timeframe}-${level.direction}-MSNR-${level.formation_index ?? index}-${index}`,
+                    poi_type: 'MSNR',
+                    timeframe: block.timeframe,
+                    direction: level.direction === 'BUY' ? 'BULLISH' : 'BEARISH',
+                    formation_time: rawTextAuditTimestamp(level.first_knowable_time || level.event_time || level.formation_time),
+                    zone_low: rawTextPacketRoundPrice(Math.min(Number(level.zone_low), Number(level.zone_high)), precision),
+                    zone_high: rawTextPacketRoundPrice(Math.max(Number(level.zone_low), Number(level.zone_high)), precision),
+                    lifecycle: 'VALID',
+                    formation_index: Number.isInteger(level.formation_index) ? level.formation_index : null,
+                    event_age_bars: Number(level.event_age_bars),
+                    structural_score: Number(level.structural_score)
+                }));
+        } catch (_) {
+            return [];
+        }
+    });
+    const poiRows = [...fvgRows, ...orderBlockRows, ...crtRows, ...msnrRows]
+        .filter(poi => Number.isFinite(Number(poi.zone_low)) && Number.isFinite(Number(poi.zone_high)) && Number(poi.zone_low) < Number(poi.zone_high));
     const pools = primary.flatMap(block => {
         const swings = findSwings(block.candles, 2);
         const buildPool = (swing, type) => {
@@ -20945,17 +21016,18 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
     const price = Number(referencePrice);
     const minDistance = Number.isFinite(atr1h) ? atr1h * 0.10 : null;
     const maxDistance = Number.isFinite(atr1h) ? atr1h * 3.0 : null;
-    const candidates = fvgRows
-        .filter(fvg => ['UNTOUCHED', 'PARTIAL'].includes(fvg.lifecycle) && Number(fvg.signed_test) > 0)
-        .map(fvg => {
-            const buy = fvg.direction === 'BULLISH';
+    const candidates = poiRows
+        .filter(poi => ['UNTOUCHED', 'PARTIAL', 'RETESTED', 'VALID'].includes(poi.lifecycle)
+            && (poi.poi_type !== 'FVG' || Number(poi.signed_test) > 0))
+        .map(poi => {
+            const buy = poi.direction === 'BULLISH';
             // A PARTIAL lifecycle records a prior touch, not a replacement
             // entry zone.  The pending retest stays at the original proximal
             // edge; otherwise a partial bearish gap would be incorrectly
             // shifted upward and no longer represent the POI that formed it.
-            const entry = buy ? Number(fvg.zone_high) : Number(fvg.zone_low);
-            const farEdge = buy ? Number(fvg.zone_low) : Number(fvg.zone_high);
-            const setupAtr = Number(atr[fvg.timeframe]);
+            const entry = buy ? Number(poi.zone_high) : Number(poi.zone_low);
+            const farEdge = buy ? Number(poi.zone_low) : Number(poi.zone_high);
+            const setupAtr = Number(atr[poi.timeframe]);
             const buffer = Number.isFinite(setupAtr) ? Math.max(symbol === 'XAU/USD' ? 4.5 : 0, setupAtr * 0.5) : null;
             const stop = Number.isFinite(buffer) ? (buy ? farEdge - buffer : farEdge + buffer) : null;
             const target = pools.filter(pool => pool.lifecycle === 'UNUSED' && (buy ? pool.type === 'HIGH' && pool.level > entry : pool.type === 'LOW' && pool.level < entry))
@@ -20965,11 +21037,44 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
             const rr = Number.isFinite(reward) && risk > 0 ? reward / risk : null;
             const distance = Math.abs(entry - price);
             const correctSide = buy ? entry < price : entry > price;
+            const block = primary.find(item => item.timeframe === poi.timeframe);
+            const derivedAge = Number.isInteger(poi.formation_index) && block
+                ? Math.max(0, block.candles.length - 1 - poi.formation_index) : Number(poi.event_age_bars);
+            const ageBars = Number.isFinite(derivedAge) ? derivedAge : null;
+            const freshLimit = poi.timeframe === '4H' ? 3 : 12;
+            const recentLimit = poi.timeframe === '4H' ? 12 : 48;
+            const freshness = ageBars == null ? 'UNKNOWN' : ageBars <= freshLimit ? 'FRESH' : ageBars <= recentLimit ? 'RECENT' : 'LEGACY';
+            const confluence = poiRows.filter(other => other.id !== poi.id
+                && other.direction === poi.direction
+                && Number(other.zone_low) <= Number(poi.zone_high)
+                && Number(other.zone_high) >= Number(poi.zone_low))
+                .map(other => `${other.timeframe}_${other.poi_type}`);
+            const targetBeforeEntryRisk = !!target && Math.abs(Number(target.level) - price) < distance;
+            const modelPoints = poi.poi_type === 'CRT' ? 18 : poi.poi_type === 'MSNR' ? 16 : poi.poi_type === 'OB' ? 14 : 10;
+            const freshnessPoints = freshness === 'FRESH' ? 25 : freshness === 'RECENT' ? 15 : freshness === 'LEGACY' ? 4 : 8;
+            const lifecyclePoints = poi.lifecycle === 'UNTOUCHED' ? 12 : poi.lifecycle === 'VALID' ? 10 : 7;
+            const qualityScore = Math.max(0, Math.min(100,
+                (dailyBias === (buy ? 'BULLISH' : 'BEARISH') ? 30 : dailyBias === 'RANGE' ? 10 : 0)
+                + modelPoints + freshnessPoints + lifecyclePoints + Math.min(15, confluence.length * 5)
+                - (targetBeforeEntryRisk ? 10 : 0)
+            ));
+            const fingerprint = [symbol, poi.timeframe, poi.poi_type, buy ? 'BUY' : 'SELL',
+                rawTextPacketRoundPrice(poi.zone_low, precision), rawTextPacketRoundPrice(poi.zone_high, precision),
+                poi.formation_time || 'UNKNOWN'].join('|');
             return {
-                id: `CANDIDATE-${fvg.id}`,
-                fvg_id: fvg.id,
+                id: `CANDIDATE-${poi.id}`,
+                poi_id: poi.id,
+                poi_type: poi.poi_type,
                 action: buy ? 'BUY_LIMIT' : 'SELL_LIMIT',
                 htf_aligned: dailyBias === (buy ? 'BULLISH' : 'BEARISH'),
+                formation_time: poi.formation_time || null,
+                age_bars: ageBars,
+                freshness,
+                opportunity_status: freshness === 'FRESH' ? 'FRESH_OPPORTUNITY' : 'ESTABLISHED_PENDING_ZONE',
+                setup_fingerprint: fingerprint,
+                lifecycle: poi.lifecycle,
+                confluence,
+                quality_score: qualityScore,
                 entry: rawTextPacketRoundPrice(entry, precision),
                 stop_loss: rawTextPacketRoundPrice(stop, precision),
                 stop_buffer: rawTextPacketRoundPrice(buffer, precision),
@@ -20978,12 +21083,22 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
                 risk: rawTextPacketRoundPrice(risk, precision),
                 rr_tp1: rawTextPacketRoundPrice(rr, 2),
                 entry_distance: rawTextPacketRoundPrice(distance, precision),
+                target_before_entry_risk: targetBeforeEntryRisk,
                 distance_gate_pass: correctSide && Number.isFinite(minDistance) && distance >= minDistance && distance <= maxDistance,
                 rr_gate_pass: Number.isFinite(rr) && rr >= 2
             };
         })
-        .sort((left, right) => left.entry_distance - right.entry_distance)
-        .slice(0, 12);
+        .sort((left, right) => {
+            const leftPass = left.distance_gate_pass && left.rr_gate_pass ? 1 : 0;
+            const rightPass = right.distance_gate_pass && right.rr_gate_pass ? 1 : 0;
+            const freshnessRank = value => value === 'FRESH' ? 3 : value === 'RECENT' ? 2 : value === 'UNKNOWN' ? 1 : 0;
+            return rightPass - leftPass
+                || freshnessRank(right.freshness) - freshnessRank(left.freshness)
+                || right.quality_score - left.quality_score
+                || left.entry_distance - right.entry_distance;
+        })
+        .slice(0, 20)
+        .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
     return {
         contract: 'LOCAL_VERIFIED_MATH_V1',
         authority: 'ARITHMETIC_AND_LIFECYCLE_ONLY',
@@ -20992,6 +21107,11 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
         atr: { '1H': rawTextPacketRoundPrice(atr['1H'], precision), '4H': rawTextPacketRoundPrice(atr['4H'], precision) },
         entry_distance_gate: { min: rawTextPacketRoundPrice(minDistance, precision), max: rawTextPacketRoundPrice(maxDistance, precision) },
         fvg_scan: fvgRows,
+        poi_scan: {
+            order_blocks: orderBlockRows,
+            crt: crtRows,
+            msnr: msnrRows
+        },
         liquidity_pools: pools.filter(pool => pool.lifecycle === 'UNUSED'),
         candidate_math: candidates
     };

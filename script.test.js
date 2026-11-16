@@ -11029,6 +11029,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         oneHour[1] = { ...oneHour[1], h: 102, l: 99, c: 100.5 };
         oneHour[2] = { ...oneHour[2], h: 100, l: 98, c: 99 };
         oneHour[3] = { ...oneHour[3], h: 101.005, l: 98, c: 99 };
+        oneHour[4] = { ...oneHour[4], o: 99, h: 101, l: 98.5, c: 100 };
+        oneHour[5] = { ...oneHour[5], o: 100, h: 100.5, l: 97, c: 98 };
         const fiveMinute = makeRows('5M', 18, 300000);
         fiveMinute[17] = { ...fiveMinute[17], c: 100.005 };
         const replay = {
@@ -11050,6 +11052,12 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             lifecycle: 'PARTIAL',
             remaining_low: 101.01,
             remaining_high: 102
+        }));
+        expect(facts.poi_scan.order_blocks.length).toBeGreaterThan(0);
+        expect(facts.candidate_math.some(candidate => candidate.poi_type === 'OB')).toBe(true);
+        expect(facts.candidate_math.find(candidate => candidate.poi_type === 'FVG')).toEqual(expect.objectContaining({
+            opportunity_status: 'ESTABLISHED_PENDING_ZONE',
+            setup_fingerprint: expect.stringContaining('XAU/USD|1H|FVG|SELL|100|102|')
         }));
     });
 
