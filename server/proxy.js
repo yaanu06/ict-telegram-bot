@@ -600,6 +600,29 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                 if (!document.length || document.length > 8 * 1024 * 1024) {
                     return jsonResponse(res, 413, { error: 'Markdown document exceeds the delivery limit' }, origin);
                 }
+                const images = Array.isArray(body?.images) ? body.images : [];
+                const requiredTimeframes = ['1D', '4H', '1H'];
+                if (images.length !== requiredTimeframes.length
+                    || images.some((image, index) => String(image?.timeframe || '').toUpperCase() !== requiredTimeframes[index])) {
+                    return jsonResponse(res, 400, { error: 'exactly three ordered 1D, 4H and 1H chart images are required' }, origin);
+                }
+                const chartPayloads = [];
+                for (const image of images) {
+                    const imageEncoded = String(image?.image_base64 || '').replace(/^data:image\/png;base64,/, '');
+                    if (!imageEncoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(imageEncoded)) {
+                        return jsonResponse(res, 400, { error: `a valid ${image.timeframe} PNG chart is required` }, origin);
+                    }
+                    const photo = Buffer.from(imageEncoded, 'base64');
+                    if (!photo.length || photo.length > 5 * 1024 * 1024
+                        || photo[0] !== 0x89 || photo[1] !== 0x50 || photo[2] !== 0x4E || photo[3] !== 0x47) {
+                        return jsonResponse(res, 413, { error: `${image.timeframe} chart is invalid or exceeds the delivery limit` }, origin);
+                    }
+                    chartPayloads.push({
+                        photo,
+                        filename: image.filename,
+                        caption: image.caption || `${image.timeframe} closed-candle chart`
+                    });
+                }
                 const result = await sendTelegramDocument(fetchImpl, telegramBotToken, {
                     chatId: auth.chat_id,
                     document,
@@ -607,9 +630,20 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                     contentType: 'text/markdown; charset=utf-8',
                     caption: body?.caption
                 });
+                const chartResults = [];
+                for (const chart of chartPayloads) {
+                    chartResults.push(await sendTelegramDocument(fetchImpl, telegramBotToken, {
+                        chatId: auth.chat_id,
+                        document: chart.photo,
+                        filename: chart.filename,
+                        caption: chart.caption,
+                        contentType: 'image/png'
+                    }));
+                }
                 return jsonResponse(res, 200, {
                     sent: true,
                     message_id: result?.result?.message_id || null,
+                    chart_message_ids: chartResults.map(chart => chart?.result?.message_id || null),
                     chat_id: auth.chat_id
                 }, origin);
             }

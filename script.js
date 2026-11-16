@@ -21133,11 +21133,8 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     ]));
     const isoOrUnknown = value => value != null && Number.isFinite(Number(value))
         ? new Date(Number(value)).toISOString() : 'UNKNOWN';
-    // Use the exact same rounded close in the header, exported 5M row, and
-    // verified facts.  This prevents a binary floating-point half-tick from
-    // yielding a different reference price in two sections of one packet.
+    // Use the exact same rounded close in the header and exported 5M row.
     const canonicalReferencePrice = rawTextPacketRoundPrice(latestClosed?.c, precision);
-    const verifiedMath = buildVerifiedMathFacts(source, symbol, canonicalReferencePrice, precision, asOfMs);
     const lines = [
         '=== TIMEFRAME DATA ONLY ===',
         'SYMBOL=' + symbol,
@@ -21161,12 +21158,6 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         'CANDLE_FORMAT=time,open,high,low,close,volume',
         ''
     ];
-    lines.push(
-        '=== LOCAL VERIFIED MATH FACTS ===',
-        'These values were calculated locally from the CLOSED rows below. They are authoritative for ATR, FVG signed tests/bounds/lifecycle, confirmed-swing pool lifecycle, candidate stop arithmetic, distance and RR. Do not recalculate or contradict them; use them to select and explain a setup.',
-        JSON.stringify(verifiedMath),
-        ''
-    );
     for (const timeframe of RAW_CANDLE_AI_TIMEFRAMES) {
         lines.push(...buildRawCandleAiCsvLines(source, timeframe, asOfMs, precision), '');
     }
@@ -21244,7 +21235,8 @@ function getCurrentRawMarketAnalysisPacket() {
     }
     return {
         text: buildRawTextMarketAnalysisPacket({ signal: artifact.signal, replay: artifact.replay }),
-        symbol: activePair
+        symbol: activePair,
+        replay: artifact.replay
     };
 }
 
@@ -21769,6 +21761,40 @@ function buildMarketPackChart(replay, symbol, generatedAt) {
     return canvas;
 }
 
+function buildMarketPackTimeframeChart(replay, symbol, generatedAt, timeframe) {
+    const supported = { '1D': 60, '4H': 60, '1H': 80 };
+    if (!Object.prototype.hasOwnProperty.call(supported, timeframe)) {
+        throw new Error(`Unsupported AI chart timeframe: ${timeframe}`);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = 1500;
+    canvas.height = 900;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Chart rendering is unavailable');
+    ctx.fillStyle = '#07101f';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = 'bold 34px sans-serif';
+    ctx.fillText(`GHOST MACHINE MARKET CHART - ${symbol} - ${timeframe}`, 38, 50);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '18px monospace';
+    ctx.fillText(`Generated UTC: ${generatedAt} | CLOSED CANDLES ONLY | factual chart`, 38, 82);
+    const asOfMs = rawTextPacketTimestamp(replay?.scan_as_of || replay?.quote?.quote_time) || Date.now();
+    const candles = rawTextPacketClosedCandles(replay, timeframe, asOfMs).slice(-supported[timeframe]);
+    const reference = candles[candles.length - 1];
+    const precision = rawTextPacketPrecision(symbol, replay?.symbol_metadata || {}, marketPackCandleValue(reference, 'c', 'close'));
+    drawMarketPackPanel(ctx, {
+        candles,
+        timeframe,
+        x: 34,
+        y: 104,
+        width: 1432,
+        height: 760,
+        precision
+    });
+    return canvas;
+}
+
 async function buildCurrentAiMarketPack() {
     const packet = getCurrentRawMarketAnalysisPacket();
     if (!packet) return null;
@@ -21778,6 +21804,16 @@ async function buildCurrentAiMarketPack() {
     const generatedAt = new Date().toISOString();
     const safeSymbol = packet.symbol.replace(/[^A-Z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'market';
     const timestamp = generatedAt.replace(/[:.]/g, '-');
+    const chartImages = ['1D', '4H', '1H'].map(timeframe => {
+        const canvas = buildMarketPackTimeframeChart(packet.replay, packet.symbol, generatedAt, timeframe);
+        const dataUrl = canvas.toDataURL('image/png');
+        return {
+            timeframe,
+            filename: `ghost-machine-${safeSymbol}-${timeframe}-${timestamp}.png`,
+            data_url: dataUrl,
+            image_base64: String(dataUrl).split(',')[1] || ''
+        };
+    });
     return {
         markdown: [
             '# Ghost Machine AI Market Pack',
@@ -21800,7 +21836,8 @@ async function buildCurrentAiMarketPack() {
             ''
         ].join('\n'),
         filename: `ghost-machine-market-pack-${safeSymbol}-${timestamp}.md`,
-        symbol: packet.symbol
+        symbol: packet.symbol,
+        images: chartImages
     };
 }
 
@@ -21824,14 +21861,23 @@ function downloadAiMarketPack(pack) {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    for (const image of pack.images || []) {
+        const imageLink = document.createElement('a');
+        imageLink.href = image.data_url;
+        imageLink.download = image.filename;
+        imageLink.style.display = 'none';
+        document.body.appendChild(imageLink);
+        imageLink.click();
+        imageLink.remove();
+    }
 }
 
 async function sendAiMarketPackToTelegram() {
     const button = document.getElementById('sendAiPackBtn');
-    const originalLabel = button?.textContent || 'Send AI Markdown to Telegram';
+    const originalLabel = button?.textContent || 'Send AI Pack to Telegram';
     if (button) {
         button.disabled = true;
-        button.textContent = 'Building AI Markdown...';
+        button.textContent = 'Building AI Pack...';
     }
     try {
         const pack = await buildCurrentAiMarketPack();
@@ -21839,7 +21885,7 @@ async function sendAiMarketPackToTelegram() {
         const initData = String(window.Telegram?.WebApp?.initData || '');
         if (!initData) {
             downloadAiMarketPack(pack);
-            showNotif('Opened outside Telegram, so the one-file AI Markdown was downloaded instead', 'info');
+            showNotif('Opened outside Telegram, so the Markdown and three charts were downloaded instead', 'info');
             return;
         }
         if (button) button.textContent = 'Sending to Telegram...';
@@ -21850,14 +21896,20 @@ async function sendAiMarketPackToTelegram() {
                 init_data: initData,
                 document_base64: marketPackBase64(new TextEncoder().encode(pack.markdown)),
                 filename: pack.filename,
-                caption: `Ghost Machine AI Market Pack - ${pack.symbol}. Upload this single Markdown file to DeepSeek.`
+                caption: `Ghost Machine AI Market Pack - ${pack.symbol}. Upload this Markdown and the three following chart images together to DeepSeek.`,
+                images: pack.images.map(image => ({
+                    timeframe: image.timeframe,
+                    filename: image.filename,
+                    image_base64: image.image_base64,
+                    caption: `${pack.symbol} ${image.timeframe} closed-candle chart`
+                }))
             })
         });
         let result = {};
         try { result = await response.json(); } catch (_) { result = {}; }
-        if (!response.ok || result.sent !== true) throw new Error(result.error || 'Telegram could not deliver the AI Markdown file');
+        if (!response.ok || result.sent !== true) throw new Error(result.error || 'Telegram could not deliver the AI Market Pack');
         window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success');
-        showToast('AI Market Pack sent to your Telegram chat');
+        showToast('Markdown and 3 charts sent to your Telegram chat');
     } catch (error) {
         console.error('[AI MARKET PACK]', error);
         showNotif(error?.message || 'AI Market Pack could not be sent', 'error');

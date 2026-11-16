@@ -36,7 +36,7 @@ Routes:
 - `POST /api/deepseek/chat`
 - `POST /api/gemini/chat` (server-side Gemini provider)
 - `POST /api/ai/chat` (routes to `AI_PROVIDER`)
-- `POST /api/telegram/send-ai-pack` (validated Telegram Mini App identity; sends the generated Markdown file only to that user's private bot chat)
+- `POST /api/telegram/send-ai-pack` (validated Telegram Mini App identity; sends the generated Markdown plus factual 1D, 4H and 1H PNG charts to that user's private bot chat)
 - `POST /api/kronos/forecast` (resident official Kronos adapter; returns typed `UNAVAILABLE` when not installed)
 - `GET|POST|DELETE /mcp` (read-only ICT Ghost Streamable HTTP MCP endpoint; standards-compliant remote MCP clients may use the SDK-supported methods on this path)
 - `POST /api/audit` (requires `AUDIT_WRITE_TOKEN` and `X-Audit-Token`)
