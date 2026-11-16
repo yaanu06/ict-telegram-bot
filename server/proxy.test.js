@@ -88,17 +88,16 @@ describe('market and AI proxy boundary', () => {
         expect(allow('client')).toMatchObject({ allowed: true, remaining: 1 });
     });
 
-    test('validates Telegram Mini App identity and delivers Markdown plus three charts to that user chat', async () => {
+    test('validates Telegram Mini App identity and delivers Markdown only to that user chat', async () => {
         const nowMs = Date.parse('2026-11-15T10:00:00Z');
         const botToken = '123456:test-token';
         const initData = telegramInitData(botToken, nowMs, 778899);
         expect(validateTelegramInitData(initData, botToken, nowMs)).toMatchObject({ valid: true, chat_id: 778899 });
         expect(validateTelegramInitData(initData.replace(/.$/, '0'), botToken, nowMs).valid).toBe(false);
 
-        let messageId = 42;
         const fetchImpl = jest.fn(async () => ({
             status: 200,
-            text: async () => JSON.stringify({ ok: true, result: { message_id: messageId++ } })
+            text: async () => JSON.stringify({ ok: true, result: { message_id: 42 } })
         }));
         const server = createProxyServer({
             env: { TELEGRAM_BOT_TOKEN: botToken, PROXY_MAX_REQUESTS: '20' },
@@ -107,37 +106,20 @@ describe('market and AI proxy boundary', () => {
         });
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
         try {
-            const png = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3]).toString('base64');
             const body = JSON.stringify({
                 init_data: initData,
                 document_base64: Buffer.from('# Ghost Machine\n\nRaw closed candles').toString('base64'),
                 filename: 'ghost-machine-test.md',
-                caption: 'Market pack',
-                images: ['1D', '4H', '1H'].map(timeframe => ({
-                    timeframe,
-                    filename: `ghost-machine-test-${timeframe}.png`,
-                    image_base64: png,
-                    caption: `XAU/USD ${timeframe} closed-candle chart`
-                }))
+                caption: 'Market pack'
             });
             const response = await request(server, 'POST', '/api/telegram/send-ai-pack', { 'content-type': 'application/json' }, body);
-            expect(response).toMatchObject({
-                status: 200,
-                body: { sent: true, message_id: 42, chart_message_ids: [43, 44, 45], chat_id: 778899 }
-            });
-            expect(fetchImpl).toHaveBeenCalledTimes(4);
+            expect(response).toMatchObject({ status: 200, body: { sent: true, message_id: 42, chat_id: 778899 } });
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
             const [url, options] = fetchImpl.mock.calls[0];
             expect(url).toBe(`https://api.telegram.org/bot${botToken}/sendDocument`);
             expect(options.body.includes(Buffer.from('# Ghost Machine\n\nRaw closed candles'))).toBe(true);
             expect(options.body.toString('utf8')).toContain('778899');
             expect(options.body.toString('utf8')).toContain('Content-Type: text/markdown; charset=utf-8');
-            for (const [index, timeframe] of ['1D', '4H', '1H'].entries()) {
-                const [chartUrl, chartOptions] = fetchImpl.mock.calls[index + 1];
-                expect(chartUrl).toBe(`https://api.telegram.org/bot${botToken}/sendDocument`);
-                expect(chartOptions.body.subarray(0).includes(Buffer.from([0x89, 0x50, 0x4E, 0x47]))).toBe(true);
-                expect(chartOptions.body.toString('utf8')).toContain(`${timeframe} closed-candle chart`);
-                expect(chartOptions.body.toString('utf8')).toContain('Content-Type: image/png');
-            }
         } finally {
             await new Promise(resolve => server.close(resolve));
         }

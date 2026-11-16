@@ -10884,31 +10884,6 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         }
     });
 
-    it('renders genuine closed-candle 1D, 4H and 1H chart canvases for the Telegram pack', () => {
-        const ctx = getContext();
-        const drawnText = [];
-        const drawingContext = {
-            fillRect: jest.fn(), strokeRect: jest.fn(), fillText: jest.fn(text => drawnText.push(String(text))),
-            beginPath: jest.fn(), moveTo: jest.fn(), lineTo: jest.fn(), stroke: jest.fn(),
-            fillStyle: '', strokeStyle: '', font: '', lineWidth: 1, globalAlpha: 1
-        };
-        const canvases = [];
-        ctx.document.createElement = jest.fn(tag => {
-            expect(tag).toBe('canvas');
-            const canvas = { width: 0, height: 0, getContext: () => drawingContext };
-            canvases.push(canvas);
-            return canvas;
-        });
-        for (const timeframe of ['1D', '4H', '1H']) {
-            const canvas = ctx.buildMarketPackTimeframeChart(rawReplay(), 'XAU/USD', new Date(asOf).toISOString(), timeframe);
-            expect(canvas).toMatchObject({ width: 1500, height: 900 });
-            expect(drawnText).toContain(`GHOST MACHINE MARKET CHART - XAU/USD - ${timeframe}`);
-        }
-        expect(canvases).toHaveLength(3);
-        expect(drawingContext.fillRect).toHaveBeenCalled();
-        expect(drawingContext.beginPath).toHaveBeenCalled();
-    });
-
     it('prints factual previous-day and completed session liquidity levels', () => {
         const ctx = getContext();
         const replay = rawReplay();
@@ -11040,7 +11015,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('REFERENCE_FRESHNESS=ALIGNED');
     });
 
-    it('exports raw timeframe data without local pre-calculated facts', () => {
+    it('exports raw timeframe data with local verified math facts', () => {
         const ctx = getContext();
         const t0 = Date.UTC(2026, 10, 13, 0, 0, 0);
         const makeRows = (timeframe, count, duration) => Array.from({ length: count }, (_, index) => ({
@@ -11067,10 +11042,55 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         };
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
         expect(packet).toContain('LATEST_5M_CLOSE=100.01');
-        expect(packet).not.toContain('=== LOCAL VERIFIED MATH FACTS ===');
-        expect(packet).not.toContain('"candidate_math"');
+        expect(packet).toContain('=== LOCAL VERIFIED MATH FACTS ===');
+        expect(packet).toContain('"candidate_math"');
+        expect(packet).toContain('"age_ms"');
         expect(packet).toContain('======== TIMEFRAME: 1d ========');
         expect(packet).toContain('======== TIMEFRAME: 1h ========');
+    });
+
+    it('keeps only fresh candidates in the verified math facts and ranks newest formation first', () => {
+        const ctx = getContext();
+        const t0 = Date.UTC(2026, 10, 13, 0, 0, 0);
+        const makeRows = timeframe => Array.from({ length: 30 }, (_, index) => ({
+            t: t0 + (index * 3600000), o: 100, h: 101, l: 99, c: 100, v: 1000, is_closed: true
+        }));
+        const oneHour = makeRows('1H');
+        // Stale bearish FVG at rows 0-2 forms the zone [101.5, 103]; later
+        // default candles stay below its low so the lifecycle stays untouched.
+        oneHour[0] = { ...oneHour[0], h: 104, l: 103, c: 103.5 };
+        oneHour[1] = { ...oneHour[1], h: 103, l: 100, c: 101 };
+        oneHour[2] = { ...oneHour[2], h: 101.5, l: 99, c: 100.5 };
+        // Fresh bearish FVG at rows 27-29 forms the same zone shape.
+        oneHour[27] = { ...oneHour[27], h: 104, l: 103, c: 103.5 };
+        oneHour[28] = { ...oneHour[28], h: 103, l: 100, c: 101 };
+        oneHour[29] = { ...oneHour[29], h: 101.5, l: 99, c: 100.5 };
+        const fiveMinute = makeRows('5M').map((row, index) => ({
+            ...row, t: t0 + (index * 300000), h: 99.5, l: 98.5
+        }));
+        const asOf = t0 + (31 * 3600000);
+        const replay = {
+            pair: 'XAU/USD',
+            scan_as_of: new Date(asOf).toISOString(),
+            history: { '1H': oneHour, '5M': fiveMinute },
+            quote: { price: 100.005, quote_time: new Date(asOf).toISOString() },
+            runtime_state: { market_open: false, market_open_source: 'TEST' }
+        };
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const lines = packet.split('\n');
+        const factsIndex = lines.indexOf('=== LOCAL VERIFIED MATH FACTS ===');
+        expect(factsIndex).toBeGreaterThan(-1);
+        const facts = JSON.parse(lines[factsIndex + 2]);
+        const candidates = facts.candidate_math;
+        expect(candidates).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'CANDIDATE-1H-BEARISH-27' })
+        ]));
+        expect(candidates.map(candidate => candidate.id)).not.toContain('CANDIDATE-1H-BEARISH-0');
+        for (const candidate of candidates) {
+            expect(candidate.age_ms).toBeLessThanOrEqual(24 * 3600000);
+        }
+        const newest = Math.max(...candidates.map(candidate => Date.parse(candidate.formation_time_utc)));
+        expect(Date.parse(candidates[0].formation_time_utc)).toBe(newest);
     });
 
     it('classifies PRIME, SHOULDER, and OFF_SESSION UTC boundaries', () => {
