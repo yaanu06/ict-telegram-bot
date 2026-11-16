@@ -11022,15 +11022,13 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             t: t0 + (index * duration), o: 100, h: 101, l: 99, c: 100, v: 1000, is_closed: true
         }));
         const oneHour = makeRows('1H', 18, 3600000);
-        // A=00:00 low 102 and C=02:00 high 100 form [100, 102]. A later
-        // high at 03:00 is a half-tick value, so the packet must round it
-        // consistently in both the CSV and verified facts.
-        oneHour[0] = { ...oneHour[0], h: 103, l: 102, c: 102.5 };
-        oneHour[1] = { ...oneHour[1], h: 102, l: 99, c: 100.5 };
-        oneHour[2] = { ...oneHour[2], h: 100, l: 98, c: 99 };
-        oneHour[3] = { ...oneHour[3], h: 101.005, l: 98, c: 99 };
-        oneHour[4] = { ...oneHour[4], o: 99, h: 101, l: 98.5, c: 100 };
-        oneHour[5] = { ...oneHour[5], o: 100, h: 100.5, l: 97, c: 98 };
+        // Swing LOW at row 13 (94) is the unused target pool for the bearish
+        // FVG.  The FVG itself forms at rows 15-17 (A.low 102, C.high 100 =
+        // zone [100, 102]) with no later candles, so it stays untouched and
+        // actionable.
+        oneHour[13] = { ...oneHour[13], o: 100, h: 100.5, l: 94, c: 96 };
+        oneHour[15] = { ...oneHour[15], o: 103, h: 103.5, l: 102, c: 102.5 };
+        oneHour[17] = { ...oneHour[17], o: 100, h: 100, l: 98, c: 99 };
         const fiveMinute = makeRows('5M', 18, 300000);
         fiveMinute[17] = { ...fiveMinute[17], c: 100.005 };
         const replay = {
@@ -11042,37 +11040,71 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         };
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
         expect(packet).toContain('LATEST_5M_CLOSE=100.01');
-        expect(packet).toContain('=== LOCAL VERIFIED MATH FACTS ===');
-        expect(packet).toContain('"candidate_math"');
-        expect(packet).toContain('"age_ms"');
         expect(packet).toContain('======== TIMEFRAME: 1d ========');
         expect(packet).toContain('======== TIMEFRAME: 1h ========');
+        const lines = packet.split('\n');
+        const factsIndex = lines.indexOf('=== LOCAL VERIFIED MATH FACTS ===');
+        expect(factsIndex).toBeGreaterThan(-1);
+        const facts = JSON.parse(lines[factsIndex + 2]);
+        expect(Array.isArray(facts.candidate_math)).toBe(true);
+        expect(facts.candidate_math).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'CANDIDATE-1H-BEARISH-15', target_pool_fresh: true })
+        ]));
+        for (const candidate of facts.candidate_math) {
+            expect(candidate).toEqual(expect.objectContaining({
+                crt_confirmed: expect.any(Boolean),
+                msnr_confirmed: expect.any(Boolean),
+                ob_confirmed: expect.any(Boolean),
+                confluence_score: expect.any(Number),
+                valid_until: expect.any(String)
+            }));
+        }
+        expect(facts.rejection_counts).toEqual(expect.any(Object));
+        for (const pool of facts.liquidity_pools) {
+            expect(['UNUSED', 'CONSUMED']).toContain(pool.lifecycle);
+            expect(pool).toHaveProperty('consumed_at');
+            expect(pool).toHaveProperty('last_touch_utc');
+        }
     });
 
     it('keeps only fresh candidates in the verified math facts and ranks newest formation first', () => {
         const ctx = getContext();
         const t0 = Date.UTC(2026, 10, 13, 0, 0, 0);
-        const makeRows = timeframe => Array.from({ length: 30 }, (_, index) => ({
-            t: t0 + (index * 3600000), o: 100, h: 101, l: 99, c: 100, v: 1000, is_closed: true
+        const makeRows = (timeframe, duration) => Array.from({ length: 30 }, (_, index) => ({
+            t: t0 + (index * duration), o: 100, h: 101, l: 99, c: 100, v: 1000, is_closed: true
         }));
-        const oneHour = makeRows('1H');
+        const oneHour = makeRows('1H', 3600000);
+        // 4H history carries an old BUY OB (rows 2-3) that stays valid but is
+        // far older than 24h, so it must be filtered out with a rejection
+        // count.  A swing HIGH at row 4 keeps it from also failing the
+        // target-pool gate, so the age rule is what removes it.
+        const fourHour = makeRows('4H', 14400000);
+        fourHour[2] = { ...fourHour[2], o: 101, h: 101.5, l: 98, c: 99 };
+        fourHour[3] = { ...fourHour[3], o: 99, h: 103, l: 98.5, c: 102.5 };
+        fourHour[4] = { ...fourHour[4], o: 103, h: 105, l: 102, c: 104 };
         // Stale bearish FVG at rows 0-2 forms the zone [101.5, 103]; later
         // default candles stay below its low so the lifecycle stays untouched.
         oneHour[0] = { ...oneHour[0], h: 104, l: 103, c: 103.5 };
         oneHour[1] = { ...oneHour[1], h: 103, l: 100, c: 101 };
         oneHour[2] = { ...oneHour[2], h: 101.5, l: 99, c: 100.5 };
-        // Fresh bearish FVG at rows 27-29 forms the same zone shape.
+        // Fresh bearish FVG at rows 27-29 forms the same zone shape.  A
+        // swing LOW at row 26 (95) is the unused target pool that keeps the
+        // fresh candidates actionable.
+        oneHour[26] = { ...oneHour[26], o: 100, h: 100.5, l: 95, c: 97 };
         oneHour[27] = { ...oneHour[27], h: 104, l: 103, c: 103.5 };
         oneHour[28] = { ...oneHour[28], h: 103, l: 100, c: 101 };
         oneHour[29] = { ...oneHour[29], h: 101.5, l: 99, c: 100.5 };
-        const fiveMinute = makeRows('5M').map((row, index) => ({
+        const fiveMinute = makeRows('5M', 300000).map((row, index) => ({
             ...row, t: t0 + (index * 300000), h: 99.5, l: 98.5
         }));
-        const asOf = t0 + (31 * 3600000);
+        // All 30 four-hour bars (last one closes at t0 + 120h) must be
+        // closed for the 4H block to be evaluated; the 1H/5M arrays are
+        // likewise fully closed well before this time.
+        const asOf = t0 + (121 * 3600000);
         const replay = {
             pair: 'XAU/USD',
             scan_as_of: new Date(asOf).toISOString(),
-            history: { '1H': oneHour, '5M': fiveMinute },
+            history: { '4H': fourHour, '1H': oneHour, '5M': fiveMinute },
             quote: { price: 100.005, quote_time: new Date(asOf).toISOString() },
             runtime_state: { market_open: false, market_open_source: 'TEST' }
         };
@@ -11083,14 +11115,18 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const facts = JSON.parse(lines[factsIndex + 2]);
         const candidates = facts.candidate_math;
         expect(candidates).toEqual(expect.arrayContaining([
-            expect.objectContaining({ id: 'CANDIDATE-1H-BEARISH-27' })
+            expect.objectContaining({ id: 'CANDIDATE-1H-BEARISH-27', target_pool_fresh: true })
         ]));
         expect(candidates.map(candidate => candidate.id)).not.toContain('CANDIDATE-1H-BEARISH-0');
+        expect(Number(facts.rejection_counts.AGE_OVER_24H || 0)).toBeGreaterThanOrEqual(1);
         for (const candidate of candidates) {
             expect(candidate.age_ms).toBeLessThanOrEqual(24 * 3600000);
+            expect(candidate.entry_consumed).toBe(false);
+            expect(candidate.chase_target).toBe(false);
+            expect(candidate.valid_until).toEqual(expect.any(String));
         }
-        const newest = Math.max(...candidates.map(candidate => Date.parse(candidate.formation_time_utc)));
-        expect(Date.parse(candidates[0].formation_time_utc)).toBe(newest);
+        const newest = Math.max(...candidates.map(candidate => Date.parse(candidate.formation_time)));
+        expect(Date.parse(candidates[0].formation_time)).toBe(newest);
     });
 
     it('classifies PRIME, SHOULDER, and OFF_SESSION UTC boundaries', () => {

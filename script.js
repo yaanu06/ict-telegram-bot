@@ -20880,6 +20880,43 @@ function rawTextMarketPackMarketStatus(referenceAudit = {}) {
     return open === true ? 'OPEN' : open === false ? 'CLOSED' : 'UNKNOWN';
 }
 
+// Next 17:00 America/New_York after `fromMs`, used as the per-candidate
+// session expiry for pending-limit setups.  Falls back to +24h when the
+// zone database lacks the New York calendar.
+function rawTextPackNySessionCloseUtc(fromMs) {
+    const fallback = Number(fromMs) + 24 * 3600000;
+    if (!Number.isFinite(Number(fromMs)) || typeof Intl?.DateTimeFormat !== 'function') return fallback;
+    try {
+        const fmt = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York', hour12: false, hour: '2-digit', minute: '2-digit'
+        });
+        for (let offsetHours = 1; offsetHours <= 30; offsetHours++) {
+            const t = Number(fromMs) + offsetHours * 3600000;
+            const parts = fmt.formatToParts(new Date(t));
+            const hour = Number(parts.find(part => part.type === 'hour')?.value) % 24;
+            const minute = Number(parts.find(part => part.type === 'minute')?.value);
+            if (hour === 17 && minute === 0) return t;
+        }
+    } catch (_) { /* fall through */ }
+    return fallback;
+}
+
+function rawTextPackEntryConsumed(poi, block, zoneLow, zoneHigh) {
+    const buy = poi.direction === 'BULLISH';
+    let startIndex = null;
+    if (Number.isInteger(poi.formation_index)) {
+        // FVG becomes knowable only when candle C closes (A = index, C = index + 2);
+        // every other POI is knowable from the bar after its own formation bar.
+        startIndex = poi.poi_type === 'FVG' ? poi.formation_index + 2 : poi.formation_index + 1;
+    } else if (Number.isFinite(Number(poi.event_age_bars)) && block) {
+        startIndex = Math.max(0, block.candles.length - Math.floor(Number(poi.event_age_bars)));
+    }
+    if (!block || !Number.isInteger(startIndex)) return false;
+    return block.candles.slice(startIndex).some(candle => buy
+        ? Number(candle.l) < zoneLow
+        : Number(candle.h) > zoneHigh);
+}
+
 // Mechanical facts for the external-AI packet.  These are deliberately
 // calculated from the same closed rows we export so an LLM does not have to
 // hand-add ATRs or enumerate every overlapping FVG triple.  They are facts,
@@ -20994,13 +21031,15 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
         .filter(poi => Number.isFinite(Number(poi.zone_low)) && Number.isFinite(Number(poi.zone_high)) && Number(poi.zone_low) < Number(poi.zone_high));
     const pools = primary.flatMap(block => {
         const swings = findSwings(block.candles, 2);
+        const closeTimestamp = candle => rawTextPacketTimestamp(candle.t) + (TIMEFRAME_MS[block.timeframe] || 0);
         const buildPool = (swing, type) => {
             const level = Number(swing.p);
             const confirmedAt = rawTextPacketTimestamp(swing.confirmation_time);
             const later = block.candles.filter(candle => rawTextPacketTimestamp(candle.t) > confirmedAt);
-            const consumed = type === 'HIGH'
-                ? later.some(candle => Number(candle.h) >= level)
-                : later.some(candle => Number(candle.l) <= level);
+            const crossings = later.filter(candle => type === 'HIGH'
+                ? Number(candle.h) >= level
+                : Number(candle.l) <= level);
+            const consumed = crossings.length > 0;
             return {
                 id: `${block.timeframe}-${type}-${swing.i}`,
                 timeframe: block.timeframe,
@@ -21008,7 +21047,9 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
                 level: rawTextPacketRoundPrice(level, precision),
                 source_time: rawTextAuditTimestamp(block.candles[swing.i]?.t),
                 confirmation_time: rawTextAuditTimestamp(swing.confirmation_time),
-                lifecycle: consumed ? 'CONSUMED' : 'UNUSED'
+                lifecycle: consumed ? 'CONSUMED' : 'UNUSED',
+                consumed_at: consumed ? rawTextAuditTimestamp(closeTimestamp(crossings[0])) : null,
+                last_touch_utc: consumed ? rawTextAuditTimestamp(closeTimestamp(crossings.at(-1))) : null
             };
         };
         return [...(swings.H || []).map(swing => buildPool(swing, 'HIGH')), ...(swings.L || []).map(swing => buildPool(swing, 'LOW'))];
@@ -21016,6 +21057,8 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
     const price = Number(referencePrice);
     const minDistance = Number.isFinite(atr1h) ? atr1h * 0.10 : null;
     const maxDistance = Number.isFinite(atr1h) ? atr1h * 3.0 : null;
+    const rejectionCounts = {};
+    const noteRejection = reason => { rejectionCounts[reason] = (rejectionCounts[reason] || 0) + 1; };
     const candidates = poiRows
         .filter(poi => ['UNTOUCHED', 'PARTIAL', 'RETESTED', 'VALID'].includes(poi.lifecycle)
             && (poi.poi_type !== 'FVG' || Number(poi.signed_test) > 0))
@@ -21030,6 +21073,9 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
             const setupAtr = Number(atr[poi.timeframe]);
             const buffer = Number.isFinite(setupAtr) ? Math.max(symbol === 'XAU/USD' ? 4.5 : 0, setupAtr * 0.5) : null;
             const stop = Number.isFinite(buffer) ? (buy ? farEdge - buffer : farEdge + buffer) : null;
+            // Targets may only come from pools that no later candle has
+            // swept.  A consumed pool is dead liquidity, so the TP1 search
+            // cascades to the nearest still-unused pool instead.
             const target = pools.filter(pool => pool.lifecycle === 'UNUSED' && (buy ? pool.type === 'HIGH' && pool.level > entry : pool.type === 'LOW' && pool.level < entry))
                 .sort((left, right) => Math.abs(left.level - entry) - Math.abs(right.level - entry))[0] || null;
             const risk = Number.isFinite(stop) ? Math.abs(entry - stop) : null;
@@ -21045,12 +21091,31 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
             const freshLimit = poi.timeframe === '4H' ? 3 : 12;
             const recentLimit = poi.timeframe === '4H' ? 12 : 48;
             const freshness = ageBars == null ? 'UNKNOWN' : ageBars <= freshLimit ? 'FRESH' : ageBars <= recentLimit ? 'RECENT' : 'LEGACY';
-            const confluence = poiRows.filter(other => other.id !== poi.id
+            const overlapsSameDirection = other => other.id !== poi.id
                 && other.direction === poi.direction
                 && Number(other.zone_low) <= Number(poi.zone_high)
-                && Number(other.zone_high) >= Number(poi.zone_low))
+                && Number(other.zone_high) >= Number(poi.zone_low);
+            const confluence = poiRows.filter(overlapsSameDirection)
                 .map(other => `${other.timeframe}_${other.poi_type}`);
+            const crtConfirmed = crtRows.some(overlapsSameDirection);
+            const msnrConfirmed = msnrRows.some(overlapsSameDirection);
+            const obConfirmed = orderBlockRows.some(overlapsSameDirection);
+            const confluenceScore = 10
+                + (crtConfirmed ? 5 : 0)
+                + (msnrConfirmed ? 5 : 0)
+                + (obConfirmed ? 5 : 0);
             const targetBeforeEntryRisk = !!target && Math.abs(Number(target.level) - price) < distance;
+            // A zone price has already traded through is a post-mortem, not a
+            // pending opportunity; and a target whose reward is already gone
+            // (price at/near TP1) is a chase.  Both make the setup unusable.
+            const entryConsumed = rawTextPackEntryConsumed(poi, block, Number(poi.zone_low), Number(poi.zone_high));
+            const remainingReward = target ? (buy ? Number(target.level) - price : price - Number(target.level)) : null;
+            const chaseTarget = !!target && Number.isFinite(remainingReward)
+                && remainingReward < 0.10 * Math.abs(Number(target.level) - entry);
+            const formationMs = Date.parse(String(poi.formation_time || ''));
+            const validUntilMs = Number.isFinite(formationMs)
+                ? Math.min(formationMs + 24 * 3600000, rawTextPackNySessionCloseUtc(formationMs))
+                : null;
             const modelPoints = poi.poi_type === 'CRT' ? 18 : poi.poi_type === 'MSNR' ? 16 : poi.poi_type === 'OB' ? 14 : 10;
             const freshnessPoints = freshness === 'FRESH' ? 25 : freshness === 'RECENT' ? 15 : freshness === 'LEGACY' ? 4 : 8;
             const lifecyclePoints = poi.lifecycle === 'UNTOUCHED' ? 12 : poi.lifecycle === 'VALID' ? 10 : 7;
@@ -21076,24 +21141,44 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
                 setup_fingerprint: fingerprint,
                 lifecycle: poi.lifecycle,
                 confluence,
+                crt_confirmed: crtConfirmed,
+                msnr_confirmed: msnrConfirmed,
+                ob_confirmed: obConfirmed,
+                confluence_score: confluenceScore,
                 quality_score: qualityScore,
                 entry: rawTextPacketRoundPrice(entry, precision),
                 stop_loss: rawTextPacketRoundPrice(stop, precision),
                 stop_buffer: rawTextPacketRoundPrice(buffer, precision),
                 target_pool_id: target?.id || null,
                 tp1: rawTextPacketRoundPrice(target?.level, precision),
+                target_pool_fresh: !!target,
+                pool_last_touch_utc: target?.last_touch_utc || null,
                 risk: rawTextPacketRoundPrice(risk, precision),
                 rr_tp1: rawTextPacketRoundPrice(rr, 2),
                 entry_distance: rawTextPacketRoundPrice(distance, precision),
                 target_before_entry_risk: targetBeforeEntryRisk,
                 distance_gate_pass: correctSide && Number.isFinite(minDistance) && distance >= minDistance && distance <= maxDistance,
-                rr_gate_pass: Number.isFinite(rr) && rr >= 2
+                rr_gate_pass: Number.isFinite(rr) && rr >= 2,
+                entry_consumed: entryConsumed,
+                chase_target: chaseTarget,
+                valid_until: validUntilMs != null ? rawTextAuditTimestamp(validUntilMs) : null,
+                _rejections: [
+                    ...(!(Number.isFinite(ageMs) && ageMs <= 24 * 3600000) ? ['AGE_OVER_24H'] : []),
+                    ...(!target ? ['NO_UNUSED_TARGET_POOL'] : []),
+                    ...(entryConsumed ? ['ENTRY_CONSUMED'] : []),
+                    ...(chaseTarget ? ['PRICE_AT_TARGET'] : [])
+                ]
             };
-        })
-        // A stale zone must never be armed merely because it is the nearest
-        // eligible one.  Only setups knowable as at most 24 hours old remain;
-        // when nothing is fresh this array is intentionally empty.
-        .filter(candidate => Number.isFinite(candidate.age_ms) && candidate.age_ms <= 24 * 3600000)
+        });
+    const actionable = candidates
+        .filter(candidate => {
+            if (candidate._rejections.length) {
+                candidate._rejections.forEach(noteRejection);
+                return false;
+            }
+            return true;
+        });
+    const ranked = actionable
         .sort((left, right) => {
             const leftPass = left.distance_gate_pass && left.rr_gate_pass ? 1 : 0;
             const rightPass = right.distance_gate_pass && right.rr_gate_pass ? 1 : 0;
@@ -21102,13 +21187,21 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
                 const time = Date.parse(String(value || ''));
                 return Number.isFinite(time) ? time : -Infinity;
             };
+            // Final selection weighting: freshness first, then distance, then
+            // confluence.  Confluence only breaks ties between candidates that
+            // are equally fresh and comparably near.
             return rightPass - leftPass
                 || freshnessRank(right.freshness) - freshnessRank(left.freshness)
                 || formationRank(right.formation_time) - formationRank(left.formation_time)
-                || right.quality_score - left.quality_score
-                || left.entry_distance - right.entry_distance;
+                || left.entry_distance - right.entry_distance
+                || right.confluence_score - left.confluence_score
+                || right.quality_score - left.quality_score;
         })
         .slice(0, 20)
+        .map(candidate => {
+            const { _rejections, ...clean } = candidate;
+            return clean;
+        })
         .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
     return {
         contract: 'LOCAL_VERIFIED_MATH_V1',
@@ -21123,8 +21216,9 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
             crt: crtRows,
             msnr: msnrRows
         },
-        liquidity_pools: pools.filter(pool => pool.lifecycle === 'UNUSED'),
-        candidate_math: candidates
+        liquidity_pools: pools,
+        rejection_counts: rejectionCounts,
+        candidate_math: ranked
     };
 }
 

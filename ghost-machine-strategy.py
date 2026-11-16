@@ -1,16 +1,16 @@
 """Ghost Machine strategy embedded in the Mini App's AI Market Pack PDF.
 
-This is a prompt document, not an executable trading bot. The PDF also
-contains factual multi-timeframe charts and the exact closed OHLCV rows.
+This is a prompt document, not an executable trading bot. The Markdown also
+contains the exact closed OHLCV rows and locally verified math facts.
 """
 
 STRATEGY_NAME = "Ghost Machine - Raw Candle Edition"
-STRATEGY_VERSION = "V6.6-ADAPTIVE-RAW-CANDLE"
+STRATEGY_VERSION = "V6.7-ADAPTIVE-RAW-CANDLE"
 PROMPT_CONTRACT_VERSION = "GHOST_MACHINE_ADAPTIVE_RAW_CANDLE_V5"
 REQUIRED_TIMEFRAMES = ("1D", "4H", "1H", "15M", "5M")
 
 STRATEGY_PROMPT = r"""
-=== GHOST MACHINE STRATEGY RULES === V6.6 ADAPTIVE RAW CANDLE EDITION
+=== GHOST MACHINE STRATEGY RULES === V6.7 ADAPTIVE RAW CANDLE EDITION
 PROMPT_CONTRACT_VERSION=GHOST_MACHINE_ADAPTIVE_RAW_CANDLE_V5
 
 ROLE AND INPUTS
@@ -32,6 +32,12 @@ multi-model `candidate_math` records (FVG, OB, CRT and MSNR). A candidate can be
 a stated structural/scenario reason, a false supplied gate, or unavailable
 input—not because you obtained different hand arithmetic. This prevents a
 calculation mistake from suppressing a verified pending-limit opportunity.
+`candidate_math` contains only today-actionable pending-limit setups: fresh
+age, unconsumed entry, unused target pool, no chase, inside the distance
+gate, each with `crt_confirmed`, `msnr_confirmed`, `ob_confirmed`,
+`confluence_score`, `target_pool_fresh` and a `valid_until` expiry. Zones
+that failed those checks are not in the array; `rejection_counts` reports
+how many were filtered locally and why.
 
 
 MANDATORY ANALYSIS ORDER
@@ -240,24 +246,39 @@ definition. CRT/MSNR are confluence evidence, not mandatory gates on every
 Scenario A setup. Use NOT_VISIBLE for insufficient coverage and
 NOT_CONFIRMED when coverage exists but the defined sequence does not qualify.
 
-CRITICAL FRESHNESS RULE
-Prioritize the newest `formation_time_utc`/`formation_time` first. `candidate_math`
-already excludes any candidate older than 24 hours. If that array is empty,
-return NO_TRADE for absence of a fresh eligible setup; do not reach back to an
-expired zone to manufacture a trade. Do NOT select an older, closer zone merely
-because it is nearer to price. If the nearest fresh zone fails RR or structure,
-and all other fresh zones fail, return NO_TRADE.
+CRITICAL FRESHNESS AND ACTIONABILITY RULE
+`candidate_math` contains ONLY setups that are actionable right now as pending
+limit orders. Every candidate was verified locally to be:
+- fresh: age <= 24 hours from `formation_time` (age_ms is supplied);
+- entry-unconsumed: price has NOT already traded through the zone since it
+  formed, so the limit can still be placed at the listed entry;
+- target-unconsumed: `tp1` comes from a liquidity pool whose lifecycle is
+  UNUSED (`consumed_at` is null); consumed pools are dead liquidity and were
+  already cascaded past locally;
+- not a chase: current price is not already at or within the final stretch of
+  `tp1` (the reward is still available);
+- inside the `entry_distance_gate` and expiring at `valid_until`
+  (min(formation + 24h, next New York session close)).
+If `candidate_math` is empty, return NO_TRADE for absence of a fresh,
+actionable setup today. Do NOT reach back to an expired or consumed zone to
+manufacture a trade, and never narrate historical zones: absence from
+`candidate_math` means the setup is expired. Do NOT select an older, closer
+zone merely because it is nearer to price. If the nearest fresh zone fails RR
+or structure and all other fresh zones fail, return NO_TRADE.
 
-Evaluate EVERY eligible fresh zone in the distance range, newest formation
-first; use nearer proximal edge, then confluence to break freshness ties.
+SELECTION RULE
+You are provided with a `candidate_math` array in which every candidate has
+already been verified as a fresh, actionable, un-consumed pending limit that
+can be placed today. Select the best candidate from this array using this
+final weighting: 1. FRESHNESS (newest `formation_time` first), 2. DISTANCE
+(nearest `entry_distance`), 3. CONFLUENCE (higher `confluence_score` breaks
+ties only between candidates that are equally fresh and comparably near).
 SELL_LIMIT above reference enters at zone low; BUY_LIMIT below enters at high.
-Reject wrong side, reference inside zone, ineligible lifecycle, scenario failure or RR
-failure; evaluate all candidates and record outcomes. Select the first
-passing candidate under the stated ordering after the full review.
-Do not stop after three failed candidates. Summarize best three in prose,
-but report total evaluated and the rejection reason for every candidate.
-Select the first passing candidate under this ordering. Never fabricate
-additional zones or extend distance limits to avoid NO_TRADE.
+`crt_confirmed` and `msnr_confirmed` are bonus evidence, never requirements:
+do not reject a fresh candidate just because CRT/MSNR is absent. If every
+candidate fails the session rules or RR >= 2.00, return NO_TRADE. Never
+fabricate additional zones, never search for your own zones outside
+`candidate_math`, and never extend distance limits to avoid NO_TRADE.
 
 5. LIQUIDITY, STOP AND RR
 Liquidity sources: confirmed swings, equal highs/lows (difference <=0.05*
@@ -513,18 +534,22 @@ output rule, including in the compact response. Return fields in the exact order
 block, with the JSON object inside it, and no text outside the block.
 
 CURRENT-OPPORTUNITY SELECTION
-`candidate_math` is ranked with passing gates first, then freshness, structural
-quality/confluence and distance. Evaluate every passing candidate; do not assume
-rank 1 without checking its structural context. Prefer a passing
-FRESH_OPPORTUNITY over an ESTABLISHED_PENDING_ZONE when direction and evidence
-quality are comparable. An established zone may remain a valid pending plan,
-but it is not a new opportunity and must be labelled honestly. Never call an
-unchanged old zone fresh. Treat `setup_fingerprint` as the stable identity of
-the plan across scans. A target_before_entry_risk=true candidate is lower
-priority because its target may be consumed before the limit fills; select it
-only when no stronger passing current candidate exists and say so in analysis.
-Limit orders expand the searchable map; they do not prove that every scan has a
-fresh high-quality trade. Never manufacture a candidate merely to return one.
+`candidate_math` already contains only today-actionable setups; the local
+math engine filtered out stale age, consumed entries, consumed target pools
+and chases before you saw the packet. Evaluate the listed candidates; do not
+assume rank 1 without checking its structural context. FRESH_OPPORTUNITY is
+guaranteed by the filter; every listed candidate can be placed now as a
+pending limit and expires at its `valid_until`. Treat `setup_fingerprint` as
+the stable identity of the plan across scans and re-validate any previously
+returned plan against the newest packet before acting on it. When two
+candidates tie on freshness and distance, prefer the higher
+`confluence_score` (CRT/MSNR/OB overlap). A target_before_entry_risk=true
+candidate is lower priority because its target may be consumed before the
+limit fills; select it only when no stronger passing current candidate exists
+and say so in analysis. `rejection_counts` shows how many zones were filtered
+out locally and why; cite it when explaining a NO_TRADE. Limit orders expand
+the searchable map; they do not prove that every scan has a fresh
+high-quality trade. Never manufacture a candidate merely to return one.
 """
 
 
