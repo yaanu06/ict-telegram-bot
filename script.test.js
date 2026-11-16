@@ -11015,7 +11015,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('REFERENCE_FRESHNESS=ALIGNED');
     });
 
-    it('exports raw timeframe data with local verified math facts', () => {
+    it('exports raw timeframe data without local pre-calculated facts', () => {
         const ctx = getContext();
         const t0 = Date.UTC(2026, 10, 13, 0, 0, 0);
         const makeRows = (timeframe, count, duration) => Array.from({ length: count }, (_, index) => ({
@@ -11042,10 +11042,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('LATEST_5M_CLOSE=100.01');
         expect(packet).toContain('======== TIMEFRAME: 1d ========');
         expect(packet).toContain('======== TIMEFRAME: 1h ========');
-        const lines = packet.split('\n');
-        const factsIndex = lines.indexOf('=== LOCAL VERIFIED MATH FACTS ===');
-        expect(factsIndex).toBeGreaterThan(-1);
-        const facts = JSON.parse(lines[factsIndex + 2]);
+        expect(packet).not.toContain('=== LOCAL VERIFIED MATH FACTS ===');
+        expect(packet).not.toContain('"candidate_math"');
+        const facts = ctx.buildVerifiedMathFacts(replay, 'XAU/USD', 100.005, 2, t0 + (20 * 3600000));
         expect(Array.isArray(facts.candidate_math)).toBe(true);
         expect(facts.candidate_math).toEqual(expect.arrayContaining([
             expect.objectContaining({ id: 'CANDIDATE-1H-BEARISH-15', target_pool_fresh: true })
@@ -11108,11 +11107,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             quote: { price: 100.005, quote_time: new Date(asOf).toISOString() },
             runtime_state: { market_open: false, market_open_source: 'TEST' }
         };
-        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        const lines = packet.split('\n');
-        const factsIndex = lines.indexOf('=== LOCAL VERIFIED MATH FACTS ===');
-        expect(factsIndex).toBeGreaterThan(-1);
-        const facts = JSON.parse(lines[factsIndex + 2]);
+        const facts = ctx.buildVerifiedMathFacts(replay, 'XAU/USD', 100.005, 2, replay.scan_as_of ? Date.parse(replay.scan_as_of) : undefined);
         const candidates = facts.candidate_math;
         expect(candidates).toEqual(expect.arrayContaining([
             expect.objectContaining({ id: 'CANDIDATE-1H-BEARISH-27', target_pool_fresh: true })

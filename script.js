@@ -21238,11 +21238,10 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     ]));
     const isoOrUnknown = value => value != null && Number.isFinite(Number(value))
         ? new Date(Number(value)).toISOString() : 'UNKNOWN';
-    // Use the exact same rounded close in the header, exported 5M row, and
-    // verified facts.  This prevents a binary floating-point half-tick from
-    // yielding a different reference price in two sections of one packet.
+    // Use the exact same rounded close in the header and the exported 5M row
+    // so both sections agree on the reference price.  The 5M close is the only
+    // price reference published; everything else is left to the analyst.
     const canonicalReferencePrice = rawTextPacketRoundPrice(latestClosed?.c, precision);
-    const verifiedMath = buildVerifiedMathFacts(source, symbol, canonicalReferencePrice, precision, asOfMs);
     const lines = [
         '=== TIMEFRAME DATA ONLY ===',
         'SYMBOL=' + symbol,
@@ -21266,12 +21265,6 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         'CANDLE_FORMAT=time,open,high,low,close,volume',
         ''
     ];
-    lines.push(
-        '=== LOCAL VERIFIED MATH FACTS ===',
-        'These values were calculated locally from the CLOSED rows below. They are authoritative for ATR, FVG signed tests/bounds/lifecycle, confirmed-swing pool lifecycle, candidate stop arithmetic, distance and RR. Do not recalculate or contradict them; use them to select and explain a setup.',
-        JSON.stringify(verifiedMath),
-        ''
-    );
     for (const timeframe of RAW_CANDLE_AI_TIMEFRAMES) {
         lines.push(...buildRawCandleAiCsvLines(source, timeframe, asOfMs, precision), '');
     }
@@ -22006,6 +21999,7 @@ if (typeof window !== 'undefined') {
     window.validateManualMarketMechanicsDecision = validateManualMarketMechanicsDecision;
     window.copyRawMarketAnalysisPacket = copyRawMarketAnalysisPacket;
     window.buildCurrentAiMarketPack = buildCurrentAiMarketPack;
+    window.buildVerifiedMathFacts = buildVerifiedMathFacts;
     window.sendAiMarketPackToTelegram = sendAiMarketPackToTelegram;
     window.buildMarketPackPdf = buildMarketPackPdf;
     window.buildMarketPackDocx = buildMarketPackDocx;
