@@ -1,506 +1,114 @@
-"""Ghost Machine strategy embedded in the Mini App's AI Market Pack PDF.
+"""Ghost Machine strategy for RAW CANDLE NATIVE mode (ChatGPT/DeepSeek test).
 
-This is a prompt document, not an executable trading bot. The Markdown also
-contains the exact closed OHLCV rows and locally verified math facts.
+This is a prompt document, not an executable trading bot. The model receives
+raw closed OHLCV rows ONLY and must perform the full mechanical audit itself:
+ATR, FVG triples, order blocks, CRT/MSNR, liquidity pools, distance and RR.
+No locally pre-calculated facts are supplied.
 """
 
-STRATEGY_NAME = "Ghost Machine - Raw Candle Edition"
-STRATEGY_VERSION = "V6.7-ADAPTIVE-RAW-CANDLE"
-PROMPT_CONTRACT_VERSION = "GHOST_MACHINE_ADAPTIVE_RAW_CANDLE_V5"
+STRATEGY_NAME = "Ghost Machine - Raw Native Edition"
+STRATEGY_VERSION = "RAW-NATIVE-V1"
+PROMPT_CONTRACT_VERSION = "GHOST_MACHINE_RAW_CANDLE_NATIVE_V1"
 REQUIRED_TIMEFRAMES = ("1D", "4H", "1H", "15M", "5M")
 
 STRATEGY_PROMPT = r"""
-=== GHOST MACHINE STRATEGY RULES === V6.7 ADAPTIVE RAW CANDLE EDITION
-PROMPT_CONTRACT_VERSION=GHOST_MACHINE_ADAPTIVE_RAW_CANDLE_V5
+=== GHOST MACHINE STRATEGY RULES === RAW CANDLE NATIVE EDITION
+PROMPT_CONTRACT_VERSION=GHOST_MACHINE_RAW_CANDLE_NATIVE_V1
 
 ROLE AND INPUTS
 Analyze the attached raw closed OHLCV data using these rules. This is a
 pending-limit strategy, not a guarantee that a trade exists every scan.
-Map supported zones, evaluate their entry/stop/targets, and offer a candidate
-only when every required check passes. Never manufacture a setup to avoid
-NO_TRADE. All price evidence must come from the supplied packet.
+All price evidence must come from the supplied CLOSED rows only.
 Do not use web search, news, outside quotes or screenshots to add price facts.
+CANDLE_FORMAT=time,open,high,low,close,volume per row. Rows are in
+chronological order and every listed row is closed.
 
-LOCAL VERIFIED MATH OVERRIDE
-When the packet contains `=== LOCAL VERIFIED MATH FACTS ===`, its JSON is
-the authoritative mechanical calculation layer. It was computed locally from
-the closed rows. Do NOT manually recompute ATR, enumerate FVG triples, reverse
-an FVG, relabel its lifecycle, reconstruct pool consumption, or alter supplied
-candidate entry/stop/TP1/RR arithmetic. Use the raw candles only for market
-structure, qualitative confluence and the final selection among the verified
-multi-model `candidate_math` records (FVG, OB, CRT and MSNR). A candidate can be rejected only for
-a stated structural/scenario reason, a false supplied gate, or unavailable
-input—not because you obtained different hand arithmetic. This prevents a
-calculation mistake from suppressing a verified pending-limit opportunity.
-`candidate_math` contains only today-actionable pending-limit setups: fresh
-age, unconsumed entry, unused target pool, no chase, inside the distance
-gate, each with `crt_confirmed`, `msnr_confirmed`, `ob_confirmed`,
-`confluence_score`, `target_pool_fresh` and a `valid_until` expiry. Zones
-that failed those checks are not in the array; `rejection_counts` reports
-how many were filtered locally and why.
-
-
-MANDATORY ANALYSIS ORDER
+MANDATORY ANALYSIS ORDER (do this explicitly, then output only JSON)
 1. READ THE ENTIRE PACKET FIRST. Identify symbol, server time, timeframe
-boundaries, row ordering and available coverage. Validate rows and select the
-latest truly closed 5M reference. Do not select a trade before reading data.
-2. UNDERSTAND MARKET STRUCTURE. Apply the daily bias rule, then map confirmed
-4H and 1H swings, trend or range, breaks and conflicts. Distinguish a current
-retracement from the prevailing trend. Record swing source and confirmation
-timestamps; a swing requiring two following bars is known only at the second
-following bar's close. Do not infer structure from a majority timeframe vote.
-3. MAP LIQUIDITY. Locate eligible HIGH/LOW pools and check their lifecycle.
-Identify the potential directional draw without assuming that a trade exists.
-4. CALCULATE VOLATILITY AND MOMENTUM from the correct indexed rows.
-5. SCAN EVERY 1H/4H TRIPLE AND MAP SUPPORTED OBs. Establish bounds, formation
-timestamps, lifecycle, displacement and any CRT/MSNR confluence.
-6. EVALUATE ALL CANDIDATES. Apply the same scenario and distance rules for
-every supported symbol, calculate structural stops and nearest eligible
-targets, and compute RR. Cascade according to the defined ordering.
-7. APPLY SESSION HANDLING AND VALIDATE OUTPUT. Produce the required JSON
-only after factual arrays and top-level fields agree. Missing computations
-mean INCOMPLETE, not a verified claim of no setup.
-These steps define the analysis sequence, not a request for private reasoning.
-Report concise findings and source/calculation evidence in the JSON.
+boundaries, row ordering and available coverage. Do not select a trade
+before reading data. Report row coverage per timeframe.
+2. UNDERSTAND MARKET STRUCTURE. Apply the daily bias rule: compare the
+last closed daily candle against the third-newest closed daily candle
+(lower high + lower low = BEARISH; higher high + higher low = BULLISH;
+otherwise RANGE). Then map confirmed 4H and 1H swings with a two-bar
+fractal (a swing high is a high strictly greater than the two highs on
+each side; a swing low is a low strictly less than the two lows on each
+side). Do not infer structure from a timeframe vote.
+3. CALCULATE ATR(14) for 4H and 1H using Wilder's smoothing over the CLOSED
+rows of each timeframe. State the ATR values in your workings.
+4. SCAN EVERY 1H/4H CANDLE TRIPLE for Fair Value Gaps.
+   BEARISH FVG (gap down): A.low > C.high -> Zone = [C.high, A.low].
+   BULLISH FVG (gap up):   C.low > A.high -> Zone = [A.high, C.low].
+   Only wick extremes count. List every FVG with: timeframe, direction,
+   zone bounds [low, high], formation_time (close of candle C in UTC).
+   Classify lifecycle of each FVG from later candles: UNTOUCHED (no later
+   candle traded into the zone), PARTIAL (touched but not fully crossed),
+   FULLY_TRAVERSED (later candle traded through the full zone). A FVG
+   whose lifecycle is FULLY_TRAVERSED is dead and must never be armed.
+5. SCAN FOR ORDER BLOCKS. A BUY OB is a down candle followed by an up
+candle whose high exceeds the down candle's high. A SELL OB is an up
+candle followed by a down candle whose low undercuts the up candle's low.
+Lifecycle: INVALIDATED if a later candle closes beyond the OB far edge;
+otherwise RETESTED (later candles touched it) or UNTOUCHED.
+6. CRT AND MSNR (optional confluence only). On 1H or 15M, CRT = reference
+candle A closed, candle B sweeps one edge of A and closes back inside A's
+range, a later closed C breaks B's opposite high/low in the reversal
+direction. MSNR = a previously confirmed swing level is body-close broken,
+then a later candle retests that level and closes on the breakout side.
+If coverage is insufficient or the sequence does not qualify, mark
+NOT_VISIBLE / NOT_CONFIRMED. Never fabricate either.
+7. MAP LIQUIDITY. Confirmed swings are pools. For every pool, list:
+timeframe, type HIGH/LOW, level, source time, confirmation time (the close
+of the second bar after the swing extreme - a swing is knowable only then),
+lifecycle UNUSED or CONSUMED. A pool is CONSUMED if any candle after its
+confirmation closed with a high at or above (HIGH pool) or a low at or
+below (LOW pool) the level. Equal highs/lows within 0.05*ATR on their
+timeframe and separated by at least three bars count as one pool; report
+both source times.
+8. EVALUATE EVERY CANDIDATE POI (FVG or OB, plus CRT/MSNR confluence if
+any). For each candidate compute:
+   entry = proximal edge (BUY_LIMIT: zone_high / SELL_LIMIT: zone_low);
+   action = BUY_LIMIT only if entry < reference price, else SELL_LIMIT;
+   stop beyond the far edge with buffer max(3.0, 0.5*ATR(POI timeframe));
+   stop must be a structural far-edge + buffer, not a round number;
+   target = NEAREST pool with lifecycle UNUSED (skip CONSUMED pools; never
+   target a consumed pool, dead liquidity is not a target);
+   risk = |entry - stop|; reward = |entry - TP1|; RR = reward / risk;
+   entry_distance = |entry - reference|;
+   age = bars from formation_time to scan time * timeframe duration.
+Reject any candidate that fails one of these hard filters:
+   - age > 24 hours (stale);
+   - lifecycle FULLY_TRAVERSED / INVALIDATED (already played out - the
+     setup is a post-mortem, never arm it);
+   - entry already consumed: for a sell, any candle after formation closed
+     with high > zone_high; for a buy, any candle after formation closed
+     with low < zone_low (price already went through the zone);
+   - TP1 pool CONSUMED or no UNUSED pool remains on the profitable side;
+   - chase: current price already at or within 10% of the remaining reward
+     to TP1 (the edge is gone);
+   - entry_distance < 0.25*ATR(1H) or entry_distance > 3.0*ATR(1H)
+     (minimum distance and maximum distance);
+   - RR after rounding to 2 decimals < 2.00;
+   - worthless direction (BUY above reference or SELL below it).
+Rank surviving candidates by: 1) FRESHNESS (newest formation first),
+2) DISTANCE (nearest entry first), 3) CONFLUENCE (same-direction FVG +
+OB/CRT/MSNR overlap). Never pick a stale candidate just because it is
+closer; if every candidate fails, return NO_TRADE.
 
-SUPPORTED SYMBOLS
-Crypto: BTC/USD only (Bitcoin). No ETH or other crypto.
-Metals: XAU/USD (Gold), XAG/USD (Silver).
-Forex: EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CAD, USD/CHF, NZD/USD,
-EUR/GBP, EUR/JPY, GBP/JPY.
-Retain the packet symbol exactly. If an exact provider symbol is supplied,
-report it separately. BTC/USD must not be silently relabeled BTCUSDT:
-if provider_symbol=BINANCE:BTCUSDT is supplied, state that the candles are
-Binance BTC/USDT underlying the app's BTC/USD label. Do not invent a venue.
-An unsupported custom symbol has no configured profile: return NO_TRADE with
-reason unsupported_symbol instead of borrowing Gold or BTC parameters.
+SESSION HANDLING
+Sessions (UTC): PRIME = london open 07:00-11:00 and new_york 13:00-15:00
+(overlap counts as PRIME); SHOULDER = pre-london 06:00-07:00,
+non-prime 11:00-13:00, post-new_york 15:00-17:00; OFF_SESSION = everything
+else. A setup in SHOULDER caps confidence at 70 and OFF_SESSION caps it at
+50. PRIME has no confidence cap. Session never vetoes a trade; it only
+caps confidence and sets order_tag ("prime" / "shoulder" /
+"armed_off_session").
 
-INPUT VALIDATION AND REFERENCE
-Rows are time,open,high,low,close,volume, chronological, UTC bar-open times.
-Verify finite OHLC values, high >= max(open,close), low <= min(open,close),
-high >= low, nonnegative volume, ascending unique times and interval spacing.
-A row is closed only if bar-open + timeframe duration <= SERVER_TIME_UTC.
-For UTC daily candles use the next UTC midnight. Reject unclosed rows even
-if a header calls them CLOSED_ONLY. Report exclusions/gaps. Do not bridge
-missing bars to form a three-candle FVG. Do not fabricate missing candles.
-Reference = close of the newest valid closed 5M row. Report its open and
-close timestamps. This is a CLOSED_5M_REFERENCE, not a live executable quote.
-If a supplied reference header disagrees with that row, report the mismatch
-and use the row. Missing valid 5M reference or server timestamp means NO_TRADE.
-Use DATA_COUNTS, MARKET_STATUS, EXPECTED_LATEST_5M_UTC, LATEST_5M_OPEN_UTC,
-LATEST_5M_CLOSE_UTC, LATEST_5M_CLOSE and REFERENCE_FRESHNESS as authoritative.
-If MARKET_STATUS=CLOSED and REFERENCE_FRESHNESS=ALIGNED, the reference is the
-final closed candle of the last session, not a stale quote. Map the structure
-and allow a pending plan; do not return NO_TRADE merely because SERVER_TIME_UTC
-is later. If MARKET_STATUS=OPEN and the reference is older than 15 minutes, or
-REFERENCE_FRESHNESS=LAGGING, return NO_TRADE with stale_reference. For a closed
-market execution_status=REFERENCE_ONLY; an armed plan uses
-order_tag=armed_off_session and expires at the next applicable PRIME open.
-Never report a timeframe as zero rows when DATA_COUNTS is nonzero. If the text
-parser cannot read a supplied section, report parse_error, not missing data.
-Record actual row counts and latest open/close time per timeframe.
-A daily candle still forming is correctly absent; do not call it missing.
-Every cited price must identify an actual timeframe and row timestamp.
-Never combine a 1H or 15M high with a nonexistent 4H candle.
-
-STRICT RESPONSE FORMAT
-Return exactly one valid JSON object inside one Markdown fenced code block
-labeled `json`. The opening fence must be ```json and the closing fence must
-follow immediately after the object. Do not add headings, prose, citations or
-any text before or after that one code block. Double-quoted strings; real null
-for missing values, not "null".
-Keep explanations concise factual summaries, not private reasoning.
-
-1. DIRECTION, VOLATILITY AND VOLUME
-Daily BULLISH: newest of last three closed daily candles has both high and
-low above third-newest. BEARISH: both below. Otherwise RANGE.
-Confirm with 4H structure; report conflicts rather than changing the daily
-test silently. A confirmed swing high exceeds the highs of two preceding and
-two following closed candles; invert for swing lows. Equal values form an
-equal-level pool rather than a strict pivot. Two rising confirmed highs and
-lows imply an uptrend; two falling highs and lows imply a downtrend.
-If insufficient confirmed swings, report UNCLEAR, do not invent them.
-Describe TRENDING, RETRACING, RANGING or TRANSITIONING from this evidence.
-
-ATR convention for this entire strategy: arithmetic mean of the newest
-14 true ranges, TR=max(high-low,abs(high-previousClose),abs(low-previousClose)).
-Requires 15 consecutive closed candles. This is SMA ATR, not Wilder ATR.
-Compute ATR separately for 1H and 4H where needed. No arbitrary fallback stop
-if required ATR cannot be calculated: reject that candidate for missing ATR.
-
-Volume baseline = mean of the 20 closed 1H candles immediately preceding
-the newest three closed 1H candles (23 candles required).
-STRONG_IMPULSE requires each of those three volumes >1.5*baseline, each body
-abs(close-open) >=0.6*its range, and each body >= the mean absolute body of
-the baseline 20 candles. All three bodies must point in the trend direction.
-If complete evidence fails any condition, momentum_check=WEAK_RANGE; this
-label means impulse test failed, not that the broader trend must be ranging.
-Missing/nonpositive/unusable volume baseline means UNKNOWN.
-Report baseline, three volumes and ratios. Never label STRONG_IMPULSE after
-a failed test. A normal structural trend retest can qualify without the
-three-candle impulse test. State this explicitly and reduce confidence.
-Volume is relative within one instrument/feed; do not compare volume units
-across symbols. If volume type is absent, say unspecified, not tick/real.
-
-2. MARKET-ADAPTIVE DISTANCE AND STOP PROFILES
-All distances are absolute quote-price units, never broker "points".
-Use these explicit profiles; do not improvise different multipliers:
-BTC/USD: minimum entry distance=0.10*ATR(1H); maximum=3.0*ATR(1H).
-XAU/USD: minimum=0.10*ATR(1H); maximum=3.0*ATR(1H).
-XAG/USD: minimum=0.10*ATR(1H); maximum=3.0*ATR(1H).
-All listed forex pairs: minimum=0.10*ATR(1H); maximum=3.0*ATR(1H).
-These are configurable strategy design parameters, not proven profitable
-thresholds. There is no universal 20-200 price-unit gate.
-Report the actual ATR and numeric permitted distance range every analysis.
-Never change a threshold after seeing a candidate in order to force a trade.
-The candidate must be outside the zone, on the correct side of reference,
-and within this distance range at the reference timestamp.
-For a 1H POI use ATR(1H); for a 4H POI use ATR(4H) for stop sizing.
-ALL supported symbols use the SAME buffer formula:
-buffer=0.5*POI-timeframe ATR, floored at one verified tick if supplied.
-There is no Gold-only absolute floor. This deliberately replaces the old
-Gold 4.50 rule: volatility scaling, not symbol name, determines the buffer.
-The SAME scenarios, FVG/OB rules, RR threshold, candidate ordering and
-confidence rules apply to every symbol. Only its own candles, price scale,
-verified tick size and trading calendar change the calculated values.
-Entry distance ALWAYS uses ATR(1H), even for a 4H POI. Stop buffer uses the
-POI timeframe ATR. Never substitute the 4H ATR in the entry-distance gate.
-For display, retain source price precision; do not invent execution tick size.
-Absent bid/ask/spread or venue order rules does not prevent a reference-based
-analysis, but execution must recheck price, spread, precision and order rules.
-
-3. COMPLETE FVG AND ORDER BLOCK MAP
-Scan ALL consecutive triples in supplied closed 1H and 4H rows, in time order
-A,B,C. BEARISH if A.low>C.high: zone [C.high,A.low], width=A.low-C.high.
-BULLISH if A.high<C.low: zone [A.high,C.low], width=C.low-A.high.
-Record triple timestamps, compared values, bounds and width.
-formation_time_utc is the ISO8601 timestamp at which C CLOSES, computed as
-C open timestamp + timeframe duration. formation_price is C's numeric close.
-For OBs, formation_time_utc is displacement candle close TIME; formation_price
-is displacement candle close PRICE. Never use a price as a timestamp.
-All later references to formation mean formation_time_utc.
-For each zone examine valid closed candles whose OPEN time is >= formation
-close time. Equality is included: the first bar opening at formation close
-is a subsequent bar. Use finer timeframe rows to cover time since the latest
-closed HTF candle. Do not use bars opening before formation to infer a touch.
-Coverage ends at the latest supplied closed 5M close, not at server time;
-the ordinary unfinished 5M interval is not a missing-data gap.
-Never count the formation candles as a subsequent mitigation.
-Bearish lifecycle: UNTOUCHED if all later highs < low edge; PARTIAL if any
-later high >= low edge but none >= high edge; FILLED if any >= high edge.
-Bullish: UNTOUCHED if all later lows > high edge; PARTIAL if any <= high edge
-but none <= low edge; FILLED if any <= low edge.
-INVALIDATED takes precedence when a later closed candle on the POI timeframe
-closes beyond its far edge (above high for bearish, below low for bullish).
-Evaluate ALL later POI-timeframe closes before assigning final lifecycle.
-Precedence: INVALIDATED > FILLED > PARTIAL > UNTOUCHED. Do not stop at the
-first touch and overlook later invalidation. Record first touch/fill and the
-first invalidating close timestamps separately where applicable.
-Missing post-formation coverage means UNKNOWN, not proven UNTOUCHED.
-At the formation close with no elapsed later interval, UNTOUCHED is valid.
-UNTOUCHED zones can arm. PARTIAL zones can qualify for a repeat retest only
-if price has subsequently closed back OUTSIDE the proximal edge toward the
-intended trade direction, with a closed POI-timeframe rejection candle whose
-body points in that direction, and no subsequent far-edge fill/invalidation.
-Entry remains the ORIGINAL proximal edge, stop beyond ORIGINAL far edge;
-do not invent a narrower zone or move entry to force RR. Label repeat_retest
-and record touch/rejection timestamps. A zone currently containing reference
-cannot arm. FILLED, INVALIDATED and UNKNOWN zones cannot arm.
-Do not use "mitigated" as an ambiguous synonym for all lifecycle states.
-
-Order Block definition: last opposite-direction candle in the three bars
-preceding a displacement candle on 1H/4H. Displacement body >=1.0*the prior
-14-bar SMA ATR, body/range >=0.6, and close beyond the extreme of the three
-closed candles immediately preceding displacement (above their highest high
-for bullish, below their lowest low for bearish). Record those three rows.
-A break of an already confirmed swing adds confluence but is not an
-additional mandatory OB gate. An unavailable prerequisite means
-NOT_CONFIRMED. Use the opposing candle's full high-low bounds. Formation is
-the displacement close timestamp (with its closing price stored separately). Apply the same touch/fill/invalidation lifecycle.
-Map overlapping zones as confluence without creating unsupported new bounds.
-List ALL detected gaps and supported OBs with source timestamps; include
-triple counts (N-2 for contiguous N rows), including rejected/filled zones.
-A "NONE" claim must be supported by completed scan counts.
-
-4. SCENARIOS, CRT/MSNR AND CANDIDATE CASCADE
-Scenario A: trend-aligned displacement POI awaiting an eligible retest;
-CHoCH not required. A historic displacement can remain valid when current
-impulse volume has cooled. An impulse label alone does not qualify a POI.
-Scenario B: range-edge liquidity sweep and a closed structure shift;
-countertrend orders require this evidence and must be labeled reversal.
-Bullish sweep: candle low below a previously established low pool and close
-back above it; bearish inverse. CHoCH: subsequent closed 1H or 4H body closes
-beyond an already confirmed opposing swing. Cite the swing and break times.
-Use 15M/5M for confirmation/refinement only; eligible POIs remain 1H/4H.
-Do not silently create a lower-timeframe strategy to produce an order.
-
-Operational CRT definition here: on 1H or 15M, a closed reference candle A,
-followed by B that sweeps one edge of A and closes back inside A's range;
-a later closed C breaks B's opposite high/low in the reversal direction
-without first closing beyond the swept extreme. Cite A/B/C and levels.
-Operational MSNR definition here: on 1H or 15M, a previously confirmed swing
-level is body-close broken, then a later candle retests that level and closes
-on the breakout side. Cite the confirmed swing, breakout and retest.
-These are explicit conventions for this file; do not imply a universal
-definition. CRT/MSNR are confluence evidence, not mandatory gates on every
-Scenario A setup. Use NOT_VISIBLE for insufficient coverage and
-NOT_CONFIRMED when coverage exists but the defined sequence does not qualify.
-
-CRITICAL FRESHNESS AND ACTIONABILITY RULE
-`candidate_math` contains ONLY setups that are actionable right now as pending
-limit orders. Every candidate was verified locally to be:
-- fresh: age <= 24 hours from `formation_time` (age_ms is supplied);
-- entry-unconsumed: price has NOT already traded through the zone since it
-  formed, so the limit can still be placed at the listed entry;
-- target-unconsumed: `tp1` comes from a liquidity pool whose lifecycle is
-  UNUSED (`consumed_at` is null); consumed pools are dead liquidity and were
-  already cascaded past locally;
-- not a chase: current price is not already at or within the final stretch of
-  `tp1` (the reward is still available);
-- inside the `entry_distance_gate` and expiring at `valid_until`
-  (min(formation + 24h, next New York session close)).
-If `candidate_math` is empty, return NO_TRADE for absence of a fresh,
-actionable setup today. Do NOT reach back to an expired or consumed zone to
-manufacture a trade, and never narrate historical zones: absence from
-`candidate_math` means the setup is expired. Do NOT select an older, closer
-zone merely because it is nearer to price. If the nearest fresh zone fails RR
-or structure and all other fresh zones fail, return NO_TRADE.
-
-SELECTION RULE
-You are provided with a `candidate_math` array in which every candidate has
-already been verified as a fresh, actionable, un-consumed pending limit that
-can be placed today. Select the best candidate from this array using this
-final weighting: 1. FRESHNESS (newest `formation_time` first), 2. DISTANCE
-(nearest `entry_distance`), 3. CONFLUENCE (higher `confluence_score` breaks
-ties only between candidates that are equally fresh and comparably near).
-SELL_LIMIT above reference enters at zone low; BUY_LIMIT below enters at high.
-`crt_confirmed` and `msnr_confirmed` are bonus evidence, never requirements:
-do not reject a fresh candidate just because CRT/MSNR is absent. If every
-candidate fails the session rules or RR >= 2.00, return NO_TRADE. Never
-fabricate additional zones, never search for your own zones outside
-`candidate_math`, and never extend distance limits to avoid NO_TRADE.
-
-5. LIQUIDITY, STOP AND RR
-Liquidity sources: confirmed swings, equal highs/lows (difference <=0.05*
-ATR on their timeframe), closed prior-day high/low, and session extremes only
-where complete session coverage is supplied. FVGs/OBs are not liquidity.
-An equal-level pool requires two distinct confirmed pivot touches within
-the tolerance, separated by at least three bars. Establish it at the second
-pivot confirmation; those two defining touches do not consume their own
-pool. Later touches consume it. Report both source times and confirmation.
-A newly confirmed swing pool must be evaluated using candles after its source
-extreme; its formation candle touching its own price is not a later sweep.
-For a HIGH pool, a later high >= level consumes it; LOW pool, later low <=
-level consumes it. Record source and touch timestamps; missing lifecycle
-coverage means UNKNOWN. Never claim a forming daily candle is prior-day data.
-SELL targets are UNUSED LOW pools below entry; BUY targets UNUSED HIGH pools
-above entry. Compare target side to ENTRY, not reference. A pool between
-reference and pending entry may be eligible only if still unused; explain
-that subsequent price movement before fill can consume it and cancel setup.
-Select nearest eligible pool in trade direction for TP1, next distinct pools
-for TP2/TP3; never skip nearest merely to manufacture RR.
-Stop for SELL=POI high+buffer; for BUY=POI low-buffer.
-Risk=abs(entry-stop); reward=abs(entry-TP1); RR=reward/risk. Require correct
-directional ordering, positive risk/reward and RR>=2.00 after rounding.
-If no confirmed unused target, reject with missing_eligible_liquidity.
-Report each rejected candidate's calculated RR where calculation is possible.
-PRE-SUBMISSION LIMIT CHECK (not a post-fill cancellation rule):
-SELL_LIMIT is pending/nonmarketable when live BID < entry. It is immediately
-marketable when BID >= entry. A price BELOW sell entry does NOT trigger
-cancellation for marketability.
-BUY_LIMIT is pending/nonmarketable when live ASK > entry. It is immediately
-marketable when ASK <= entry. A price ABOVE buy entry does NOT trigger
-cancellation for marketability.
-If bid/ask are absent, execution status is UNKNOWN until a fresh quote;
-reference-only checks use reference < sell entry or reference > buy entry
-for analysis, never claim a live fill or executable quote.
-Before submission, do not submit a marketable limit under this pending-only
-strategy; rescan. Once a pending order is resting, price reaching entry is
-its intended fill event, not automatically a reason to cancel. Check broker
-fill status before issuing any cancellation. Cancel only unfilled orders for
-target consumption, zone invalidation or expiry; filled trades require their
-own stop/target management. Never apply pending expiry to a filled position.
-A scan cannot promise that a distant zone will fill today.
-
-6. SESSION, EXPIRY AND CONFIDENCE
-UTC daily windows: PRIME 07:00-15:00; SHOULDER 06:00-07:00 and 15:00-17:00;
-OFF_SESSION otherwise. Verify header against SERVER_TIME_UTC.
-BTC uses these liquidity/confidence windows seven days a week; next PRIME
-can be Saturday/Sunday. Metals/forex PRIME means Monday-Friday; weekends are
-OFF_SESSION. Broker holidays/hours remain unknown unless explicitly supplied.
-If header conflicts with this symbol calendar, report both and apply this
-explicit calendar. Do not invent broker holidays.
-PRIME: normal confidence, order_tag=prime, expiry at the next applicable PRIME open strictly after server time.
-SHOULDER: subtract 15, cap70, order_tag=shoulder; arm only with the latest
-closed 15M volume >1.5 times preceding 20 closed 15M mean. State values.
-OFF_SESSION: cap50, order_tag=armed_off_session, expiry=next applicable PRIME
-open. Use the same ATR distance gate; no separate Gold 20-point veto.
-Session UNKNOWN alone need not erase a structural map; do not invent expiry.
-A missing valid server timestamp prevents order arming.
-Compute evidence score explicitly: bias alignment 0-30, momentum 0-30,
-POI quality 0-25, volume confirmation 0-15, then session modifier.
-It is an evidence score, not a probability or profit claim.
-
-FINAL AUDIT AND NO_TRADE
-NO_TRADE is valid when no supported candidate survives the defined checks,
-or required reference/ATR/source evidence is missing. State actual failures.
-Before responding verify: latest 5M reference exact; every cited row exists;
-DATA_COUNTS matches the timeframe sections; a supplied timeframe is never
-reported as zero; no open HTF candle imported; all triples scanned; all
-candidate decisions accounted for; momentum enum agrees with its numeric test;
-price ordering and RR correct; correct instrument profile and calendar applied.
-Lack of screenshots or computed indicators is not a failure.
-Keep packet inputs factual: candles, symbol/source, times, session and optional
-volume/tick/quote metadata. Do not require precomputed POIs, SL, TP or setups.
-If source/volume/tick metadata is absent, disclose it, do not fabricate it.
-
-
-CALCULATION PROTOCOL (REQUIRED BEFORE SETUP SELECTION)
-Index valid rows separately per timeframe from zero, oldest first.
-Use full ISO timestamps including dates; bare T16 or "latest" is not a source.
-If code execution is available, parse the attachment and calculate with it.
-If unavailable, calculate from rows; never claim a tool was used or verified.
-For N 1H rows, ATR uses rows N-14 through N-1 with prior close row N-15.
-There are EXACTLY 14 TR values and 15 source candles. Sum TR then divide by14.
-Apply the same indexing independently to 4H. Keep full precision internally.
-Volume baseline uses rows N-23 through N-4 inclusive (20 rows); newest three
-are N-3,N-2,N-1. Baseline and tested rows MUST NOT overlap.
-Body direction is sign(close-open); a bearish candle aligns with bearish bias.
-For each valid consecutive triple i,i+1,i+2 record:
-[i,i+1,i+2,A.low-C.high,C.low-A.high].
-A positive fourth number means bearish gap; positive fifth means bullish.
-Zero means no gap. Do not invert inequalities. Include EVERY triple, even
-when no gap exists. Triple count alone is not evidence of a completed scan.
-FVG ARITHMETIC INVARIANTS (HARD GATE):
-- A BEARISH FVG exists ONLY when bearish_test = A.low - C.high is strictly
-  greater than 0. Its exact zone is low=C.high, high=A.low, and
-  width=A.low-C.high. Therefore low < high and width > 0 must both hold.
-- A BULLISH FVG exists ONLY when bullish_test = C.low - A.high is strictly
-  greater than 0. Its exact zone is low=A.high, high=C.low, and
-  width=C.low-A.high. Therefore low < high and width > 0 must both hold.
-- If the applicable signed test is less than or equal to 0, record NO_FVG
-  for that direction. Never use abs(), reverse the zone edges, swap A/C
-  values, or relabel a negative test as a gap to manufacture a positive width.
-- Before a zone may enter zones, candidates, fvg_scan, poi_candidate_review,
-  a target calculation, or reason, re-check its signed formation test,
-  low < high, and width > 0. Discard it completely if any check fails.
-For every FVG reported in fvg_scan and zones, include the signed formation
-test as `A.low - C.high = <value>` (bearish) or
-`C.low - A.high = <value>` (bullish), alongside the ordered [low, high]
-bounds. A negative comparison is proof of NO_FVG, never evidence of a gap.
-Each positive difference MUST have a corresponding zone record, even if
-that zone is later filled, invalidated or outside the candidate distance band.
-Do not confuse detected_gap_count with eligible_candidate_count.
-If the scan/calculation cannot be completed, use audit_status=INCOMPLETE,
-action=NO_TRADE, reason=analysis_incomplete, and report the exact limitation.
-This is an unavailable analysis, not a market claim that no setup exists.
-Never claim completed verification when evidence arrays are absent.
-
-STRUCTURED EVIDENCE CONTRACT
-In addition to the summary fields, include these JSON fields with real arrays
-and objects (not strings containing JSON). Empty arrays mean checked and none;
-unknown/uncomputed numeric values are null, never fabricated zeros.
-- audit_status: COMPLETE or INCOMPLETE.
-- calculation_audit: object with atr_1h and atr_4h objects. Each contains
-  timeframe, source_times (15 ISO open timestamps), true_ranges (14 numbers),
-  tr_sum, period=14, value. Include volume_1h object with baseline_times
-  (20 ISO timestamps), baseline_values (20 numbers), sum, mean, test_times
-  (3 timestamps), test_values, ratios, body_values, body_range_ratios,
-  baseline_body_mean, aligned_directions (3 booleans), impulse_pass.
-- scan_audit: array of two objects, one per 1H/4H timeframe, each with
-  timeframe, row_count, row_times (ISO timestamps in index order),
-  triples (arrays defined above), skipped_triples (indices and gap reason),
-  detected_gap_count. With continuous N rows triples must contain N-2 entries.
-- zones: array of objects with id, timeframe, type, direction, source_indices,
-  formation_time_utc (ISO8601 string), formation_price (number), low, high, width,
-  formation_test (number for FVG; null for OB), lifecycle, lifecycle_evidence.
-  Every FVG must have formation_test > 0, low < high, width > 0, and width
-  equal to formation_test; otherwise it must not be included as a zone.
-  (source timeframe/time/high/low/close for relevant touches or rejection).
-  Include every detected FVG and every supported OB.
-- candidates: array with one object per evaluated zone: zone_id, scenario,
-  retest_type, entry, distance, min_distance, max_distance, stop, buffer,
-  target_pool_id, tp1, risk, reward, rr, eligible, rejection_reason.
-  Preserve failed-candidate calculations even for NO_TRADE; top-level trade
-  prices remain null in NO_TRADE. Missing target means null RR, not zero.
-- pools: array of id, type HIGH/LOW, level, source_timeframe, source_times,
-  confirmation_time, lifecycle UNUSED/CONSUMED/UNKNOWN, consumed_at.
-- confidence_components: bias, momentum, poi, volume, base, session_adjusted.
-Candidate count must equal candidates array length. Every selected zone and
-target must reference a zones/pools entry. COMPLETE means the numerical audit
-and source coverage are complete, not that a trade passes.
-All summary strings and top-level fields MUST agree with these arrays.
-The structured audit is calculation evidence, not private chain of thought.
-
-JSON CONTRACT
-Return every field below PLUS every structured evidence field defined above.
-Required top-level evidence keys: audit_status, structure_audit,
-calculation_audit, scan_audit, zones, candidates, pools, confidence_components.
-Never omit audit_status. Validate its presence before sending.
-In this candle-only workflow execution_status=REFERENCE_ONLY unless actual
-timestamped bid/ask are supplied; only those quotes support NONMARKETABLE or
-MARKETABLE. PENDING_QUOTE_CHECK means a specifically requested execution check
-could not be completed.
-formation_time_utc must parse as UTC ISO8601 and formation_price must be numeric.
-Do not emit the old ambiguous formation_close key.
-COMPLETE is allowed only if all requested calculations and scans are accounted
-for; a skipped OB scan or unsupported lifecycle means INCOMPLETE. For NO_TRADE, set action-specific prices, risk, and
-RR to null; setup to NONE; poi_timeframe to NONE; order_tag to none; confidence
-to 0; and explain the actual failure. Use data_limitations instead of visual
-limitations because this analysis is candle-file based.
-{
-  "audit_status": "COMPLETE" | "INCOMPLETE",
-  "structure_audit": "<daily test, confirmed 4H/1H swings with full timestamps, trend/range and conflicts>",
-  "execution_status": "REFERENCE_ONLY" | "PENDING_QUOTE_CHECK" | "NONMARKETABLE" | "MARKETABLE",
-  "input_audit": "<row counts, latest times, exclusions and source metadata>",
-  "instrument_profile": "<symbol, ATRs, distance limits, buffer and calendar>",
-  "reference_close_time": <UTC ISO8601 string|null>,
-  "volume_audit": "<baseline, volumes, ratios and impulse test>",
-  "candidate_count_evaluated": <integer>,
-  "management": "<expiry and prefill cancellation conditions or NONE>",
-  "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",
-  "symbol": "<symbol from packet>",
-  "reference_price": <number|null>,
-  "price_read_quality": "CLOSED_5M_REFERENCE" | "UNAVAILABLE",
-  "htf_bias": "BULLISH" | "BEARISH" | "RANGE" | "UNCLEAR",
-  "market_phase": "TRENDING" | "RETRACING" | "RANGING" | "TRANSITIONING" | "UNCLEAR",
-  "momentum_check": "STRONG_IMPULSE" | "WEAK_RANGE" | "UNKNOWN",
-  "setup": "OB_RETEST" | "FVG_FILL" | "LIQUIDITY_SWEEP" | "NONE",
-  "poi_timeframe": "4H" | "1H" | "NONE",
-  "poi_low": <number|null>,
-  "poi_high": <number|null>,
-  "proximal_edge": <number|null>,
-  "entry_distance": <number|null>,
-  "entry": <number|null>,
-  "stop_loss": <number|null>,
-  "tp1": <number|null>,
-  "tp2": <number|null>,
-  "tp3": <number|null>,
-  "risk": <number|null>,
-  "rr_tp1": <number|null>,
-  "tp1_pool_type": "LOW" | "HIGH" | null,
-  "session_quality": "PRIME" | "SHOULDER" | "OFF_SESSION" | "UNKNOWN",
-  "order_tag": "prime" | "shoulder" | "armed_off_session" | "none",
-  "expires_at": <ISO8601 UTC string|null>,
-  "choch_detected": true | false | null,
-  "fvg_scan": "<auditable 1H/4H FVG arithmetic and mitigation>",
-  "poi_candidate_review": "<ranked POIs, bounds, proximal edges, distances, and cascade decisions>",
-  "liquidity_pool_audit": "<typed candidate pools, lifecycle, selected target, and skipped pools>",
-  "crt_status": "CONFIRMED" | "NOT_CONFIRMED" | "NOT_VISIBLE",
-  "msnr_status": "CONFIRMED" | "NOT_CONFIRMED" | "NOT_VISIBLE",
-  "liquidity_draw": "<nearest eligible opposing liquidity pool and lifecycle, or UNKNOWN>",
-  "stop_method": "<symbol-specific structural buffer with POI-timeframe SMA ATR evidence>",
-  "confidence": <integer 0-100>,
-  "reason": "<concise evidence-based justification>",
-  "data_limitations": "<missing/uncertain input facts, or NONE>"
-}
-
-COMPACT VERIFIED-PACKET OUTPUT OVERRIDE
-If LOCAL VERIFIED MATH FACTS exists, it replaces the large structured-audit
-response above. Do not emit calculation_audit, scan_audit, zones, candidates,
-pools, confidence_components, or a prose FVG audit: those facts are already
-in the packet. Return exactly this compact JSON shape, selecting only a
-candidate ID present in `candidate_math`:
+OUTPUT CONTRACT
+If NO candidate passes every hard filter, output action=NO_TRADE with all
+trade fields null and a factual explanation in reason. Otherwise select
+ONE candidate and output only this single JSON block and no text outside
+it:
 {
   "action": "BUY_LIMIT|SELL_LIMIT|NO_TRADE",
   "entry": <number|null>,
@@ -512,9 +120,9 @@ candidate ID present in `candidate_math`:
   "rr_tp1": <number|null>,
   "confidence": <integer 0-100>,
   "analysis": "<maximum 240 characters; factual setup/no-trade explanation>",
-  "selected_candidate_id": "<candidate_math id or null>",
+  "selected_candidate_id": "<candidate id or null>",
   "opportunity_status": "FRESH_OPPORTUNITY|ESTABLISHED_PENDING_ZONE|NO_TRADE",
-  "setup_fingerprint": "<selected candidate setup_fingerprint or null>",
+  "setup_fingerprint": "<symbol|timeframe|poi_type|action|zone_low|zone_high|formation_time or null>",
   "symbol": "<packet symbol>",
   "htf_bias": "BULLISH|BEARISH|RANGE|UNCLEAR",
   "setup": "FVG_FILL|OB_RETEST|CRT_SWEEP|MSNR_RETEST|LIQUIDITY_SWEEP|NONE",
@@ -523,42 +131,15 @@ candidate ID present in `candidate_math`:
   "expires_at": "<ISO8601 UTC or null>",
   "reason": "<same concise factual text as analysis>"
 }
-For BUY_LIMIT or SELL_LIMIT, copy entry, stop_loss, tp1, risk and rr_tp1
-exactly from the selected verified candidate as JSON numbers, never quoted
-strings. Confidence is also a JSON integer. For NO_TRADE, use null numeric
-trade fields and selected_candidate_id=null. `analysis` is the user-facing
-short explanation; `reason` must repeat it for compatibility with existing
-parsers. Confidence is final session-adjusted confidence, never a raw evidence
-score: SHOULDER must be <=70 and OFF_SESSION must be <=50. This is a hard
-output rule, including in the compact response. Return fields in the exact order shown. Return only one ```json code
-block, with the JSON object inside it, and no text outside the block.
-
-CURRENT-OPPORTUNITY SELECTION
-`candidate_math` already contains only today-actionable setups; the local
-math engine filtered out stale age, consumed entries, consumed target pools
-and chases before you saw the packet. Evaluate the listed candidates; do not
-assume rank 1 without checking its structural context. FRESH_OPPORTUNITY is
-guaranteed by the filter; every listed candidate can be placed now as a
-pending limit and expires at its `valid_until`. Treat `setup_fingerprint` as
-the stable identity of the plan across scans and re-validate any previously
-returned plan against the newest packet before acting on it. When two
-candidates tie on freshness and distance, prefer the higher
-`confluence_score` (CRT/MSNR/OB overlap). A target_before_entry_risk=true
-candidate is lower priority because its target may be consumed before the
-limit fills; select it only when no stronger passing current candidate exists
-and say so in analysis. `rejection_counts` shows how many zones were filtered
-out locally and why; cite it when explaining a NO_TRADE. Limit orders expand
-the searchable map; they do not prove that every scan has a fresh
-high-quality trade. Never manufacture a candidate merely to return one.
+Copy entry, stop_loss, tp1, risk and rr_tp1 exactly from your own computed
+candidate as JSON numbers. Confidence caps above are hard output rules.
+Return ONLY one ```json code block with this object inside it.
+Name candidates "CANDIDATE-<TF>-<TYPE>-<index>", e.g. CANDIDATE-1H-BEARISH-27.
+Do NOT output an array of candidates; output only the selected one.
+Never manufacture a trade to avoid NO_TRADE.
 """
 
 
 def get_strategy_prompt() -> str:
-    """Return the raw-candle strategy prompt for file upload."""
+    """Return the raw-candle native strategy prompt for file upload."""
     return STRATEGY_PROMPT.strip()
-
-
-if __name__ == "__main__":
-    print(get_strategy_prompt())
-
-
