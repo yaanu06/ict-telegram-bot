@@ -116,7 +116,7 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
    aligns (London or NY Killzones).
 
 === PRECISION PRICE ACTION & VOLUME ===
-1. REJECTION WICKS: The sweep candle must show clear rejection. A valid sweep has a long wick (at least 2x the size of its body) and a small body, closing back inside the range. Do not trade if the sweep candle has a large body closing near the extreme.
+1. REJECTION WICKS (HISTORICAL vs LIVE): For a PENDING LIMIT at an untouched zone, the rejection wick belongs to the DISPLACEMENT candle that formed the zone (in the past). Do NOT reject a zone just because the CURRENT price has not reached it yet. Only if price has ALREADY reached the zone (live retest) must the current sweep candle show the 2x wick rejection.
 2. VOLUME CLIMAX: Check the 'volume' column in the CSV. The sweep candle and the immediate displacement candle must show a spike in volume compared to the previous 3 candles. High volume = institutional participation.
 3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement). If the price grinds slowly back to the OB over many candles, the momentum is dead, and it is likely to break through the zone. Do not trade slow grinds.
 
@@ -193,7 +193,7 @@ Reply with a SINGLE JSON object. No prose before or after. No markdown fences.
   "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",
   "crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",
   "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",
-  "price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike on the sweep>",
+  "price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike of the DISPLACEMENT candle that formed the OB/FVG. If price is currently inside the zone, cite the live reaction wick instead.>",
   "session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly for the current session's ATR>",
   "entry": <number>,
   "stop_loss": <number>,
@@ -241,7 +241,7 @@ VALIDATION RULES (the parser will enforce these):
 - rr_tp1 must equal (|tp1 - entry| / |entry - stop_loss|) to two decimals
 - rr_tp1 must be >= 2.00 for BUY_LIMIT or SELL_LIMIT
 - For XAU/USD, (|entry - stop_loss|) must be >= 4.50
-- crt_msnr_confirmation must name both the CRT sweep and the MSNR retail trap
+- crt_msnr_confirmation must name the CRT sweep and MSNR trap that formed the zone. A live sweep at the current price is NOT required for a pending limit at an untouched zone.
 - audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)
 - If computed_window is NONE: action MUST be NO_TRADE.
 - On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0; confidence = 0; timeframe_used = "NONE"; management = "NONE".
