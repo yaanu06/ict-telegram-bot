@@ -182,10 +182,14 @@ Confirm the sweep rejection wick (body/wick ratio) and the volume spike versus t
 ENFORCE THE DYNAMIC STOP LOSS: Place the stop safely beyond the sweep wick + 0.50 buffer. Enforce the 4.50 point absolute minimum.
 VERIFY ARITHMETIC TWICE.
 If no qualifying setup exists, return action "NO_TRADE" with zero geometry.
-Output the exact JSON object defined in the OUTPUT CONTRACT. No prose, no markdown, no extra fields.
+Output the exact JSON object defined in the FINAL OUTPUT FORMAT. No prose, no markdown outside the code block, no extra fields.
 
-=== OUTPUT CONTRACT ===
-Reply with a SINGLE JSON object. No prose before or after. No markdown fences.
+=== FINAL OUTPUT FORMAT (STRICT) ===
+Reply with ONLY a single JSON object.
+You MUST wrap the entire JSON object inside a standard Markdown code block using the language identifier `json`.
+Start with ```json and end with ```.
+Do NOT write any conversational prose, explanations, or text before or after the code block.
+Do NOT use your platform's native JSON viewer; output the raw Markdown fenced block exactly as requested.
 
 {
   "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",
