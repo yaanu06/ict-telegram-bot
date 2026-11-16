@@ -28,14 +28,14 @@ STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M ca
 STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
         You MUST align this setup with the current session context:
 
-        - IF LONDON or NEW YORK: Look for the standard 2.0+ RR. You can target the opposite session high/low (PDH/PDL). Stop loss can be tight (but never inside the sweep wick).
+        - IF LONDON or NEW YORK: Look for the standard 1.5+ RR. You can target the opposite session high/low (PDH/PDL). Stop loss can be tight (but never inside the sweep wick).
 
         - IF ASIA SESSION:
           1. The Asian range usually forms between 00:00 and 07:00 UTC.
           2. Do NOT target far-away 1H/4H pools. Your TP1 MUST be the opposite edge of the Asian Range (Asia High or Asia Low).
           3. You MUST use a wider stop loss (minimum 7.00 points for XAU) because Asian liquidity is thin and stop-hunts are common.
-          4. If the RR to the opposite edge of the Asian range is less than 2.00, you MUST return NO_TRADE. (Do not force a trade if the range is too tight).
-STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.
+          4. If the RR to the opposite edge of the Asian range is less than 1.50, you MUST return NO_TRADE. (Do not force a trade if the range is too tight).
+STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 1.50.
 STEP 9. Emit the JSON object.
 
 The JSON object is the only permitted output.
@@ -147,14 +147,14 @@ in the direction of the trade. "Unused" means no closed candle body-closed
 beyond the level. WICK-TAPS do NOT disqualify a pool.
 If the nearest candidate TP1 IS body-broken, DO NOT reject the trade -
 relocate TP1 to the next unused pool above (BUY) or below (SELL) and
-recompute RR. Only if RR still < 2.00 after relocation does the setup fail.
+recompute RR. Only if RR still < 1.50 after relocation does the setup fail.
 TP2 and TP3 extend to the next unused pools. Never inflate TP to improve RR.
 
 RISK/REWARD:
   RISK = |entry - stop_loss|
   REWARD = |tp1 - entry|
   RR_TP1 = REWARD / RISK (two decimals, verify)
-RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE. Never fabricate a target or tighten the stop past a valid invalidation to fix RR.
+RR_TP1 must be >= 1.50. Below 1.50 = NO_TRADE. Never fabricate a target or tighten the stop past a valid invalidation to fix RR.
 - ASIAN RANGE RULE: During the Asia session, you are forbidden from targeting the PDH/PDL or London High/Low unless they are inside the Asian Range. You must target the opposite side of the Asian Range. If price is already near the middle of the Asian range, return NO_TRADE.
 
 === WORKED ACCEPTANCE EXAMPLE ===
@@ -243,7 +243,7 @@ VALIDATION RULES (the parser will enforce these):
 - BUY_LIMIT: entry < current_price, stop_loss < entry, entry < tp1 < tp2 < tp3
 - SELL_LIMIT: entry > current_price, stop_loss > entry, entry > tp1 > tp2 > tp3
 - rr_tp1 must equal (|tp1 - entry| / |entry - stop_loss|) to two decimals
-- rr_tp1 must be >= 2.00 for BUY_LIMIT or SELL_LIMIT
+- rr_tp1 must be >= 1.50 for BUY_LIMIT or SELL_LIMIT
 - For XAU/USD, (|entry - stop_loss|) must be >= 4.50
 - crt_msnr_confirmation must name the CRT sweep and MSNR trap that formed the zone. A live sweep at the current price is NOT required for a pending limit at an untouched zone.
 - audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)

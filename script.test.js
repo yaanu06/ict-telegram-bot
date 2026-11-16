@@ -11351,14 +11351,14 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.valid).toBe(false);
     });
 
-    it('enforces the 2dp RR arithmetic and the 2.00 RR floor', () => {
+    it('enforces the 2dp RR arithmetic and the 1.50 RR floor', () => {
         const ctx = getContext();
         const wrongRr = ctx.parseRawCandleAIActionResponse(JSON.stringify(auditResponse({ rr_tp1: 4.87 })));
         expect(wrongRr.issues).toContain('AUDIT_RR_ARITHMETIC_INVALID');
         const weakRr = ctx.parseRawCandleAIActionResponse(JSON.stringify(auditResponse({
             tp1: 4034.5, rr_tp1: 0.08
         })));
-        expect(weakRr.issues).toContain('AUDIT_RR_BELOW_2');
+        expect(weakRr.issues).toContain('AUDIT_RR_BELOW_1_5');
     });
 
     it('enforces the 4.50 point gold minimum risk on trades', () => {
