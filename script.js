@@ -21242,6 +21242,21 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     // so both sections agree on the reference price.  The 5M close is the only
     // price reference published; everything else is left to the analyst.
     const canonicalReferencePrice = rawTextPacketRoundPrice(latestClosed?.c, precision);
+    const dailyCandles = rawTextPacketClosedCandles(source, '1D', asOfMs);
+    const dailyBias = buildRawCandleAiDailyBias(dailyCandles);
+    const daily = dailyBias.last;
+    const macroLevels = buildRawCandleAiMacroLevels(source, asOfMs);
+    const macroContextLevels = [
+        { name: 'PREVIOUS_DAY_HIGH', value: macroLevels.previous_day_high },
+        { name: 'PREVIOUS_DAY_LOW', value: macroLevels.previous_day_low },
+        { name: 'ASIA_HIGH', value: macroLevels.asia_high },
+        { name: 'ASIA_LOW', value: macroLevels.asia_low },
+        { name: 'LONDON_HIGH', value: macroLevels.london_high },
+        { name: 'LONDON_LOW', value: macroLevels.london_low },
+        { name: 'NEW_YORK_HIGH', value: macroLevels.new_york_high },
+        { name: 'NEW_YORK_LOW', value: macroLevels.new_york_low }
+    ];
+    const levelValue = value => value == null ? 'NONE' : rawTextPacketFormatNumber(value, precision);
     const lines = [
         '=== TIMEFRAME DATA ONLY ===',
         'SYMBOL=' + symbol,
@@ -21263,6 +21278,19 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         'TIMEFRAME_ORDER=' + RAW_CANDLE_AI_TIMEFRAMES.join(','),
         'CANDLE_POLICY=CLOSED_ONLY',
         'CANDLE_FORMAT=time,open,high,low,close,volume',
+        '',
+        '=== MACRO CONTEXT ===',
+        'DAILY_BIAS=' + dailyBias.bias,
+        'DAILY_BIAS_METHOD=' + dailyBias.reason,
+        'DAILY_LAST_OPEN=' + (daily ? rawTextPacketFormatNumber(daily.o, precision) : 'NONE'),
+        'DAILY_LAST_HIGH=' + (daily ? rawTextPacketFormatNumber(daily.h, precision) : 'NONE'),
+        'DAILY_LAST_LOW=' + (daily ? rawTextPacketFormatNumber(daily.l, precision) : 'NONE'),
+        'DAILY_LAST_CLOSE=' + (daily ? rawTextPacketFormatNumber(daily.c, precision) : 'NONE'),
+        'CURRENT_PRICE=' + (canonicalReferencePrice != null ? rawTextPacketFormatNumber(canonicalReferencePrice, precision) : 'UNKNOWN'),
+        'MACRO_LEVELS_SOURCE=' + macroLevels.previous_day_source,
+        ...macroContextLevels.map(level => level.name + '=' + levelValue(level.value)),
+        'RAW_TIMEFRAMES=' + RAW_CANDLE_AI_TIMEFRAMES.join(','),
+        'CANDLE_LIMIT_PER_TIMEFRAME=' + rawCandleAiLimitSummary(),
         ''
     ];
     for (const timeframe of RAW_CANDLE_AI_TIMEFRAMES) {
@@ -30434,6 +30462,190 @@ function normalizePendingLimitTargetOrder(decision = {}, action = null) {
     return { side, decision: normalized, changed: true };
 }
 
+// V2.7.2 audit contract (friend's raw-candle strategy). Accepts the exact
+// JSON the V2.7.2 prompt produces and enforces the VALIDATION RULES it ships:
+// ordering, RR>=2 at 2dp, 4.50 minimum risk for gold, five per-timeframe
+// sweeps with both directions, killzone NONE => NO_TRADE, zero geometry on
+// NO_TRADE. Kept alongside the legacy validator because both contracts exist
+// in the field; the legacy path stays byte-for-byte compatible.
+function normalizeV272AuditJson(json, options = {}) {
+    const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+    const isIso = value => typeof value === 'string'
+        && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)
+        && Number.isFinite(Date.parse(value));
+    const number = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const string = value => typeof value === 'string' ? value : null;
+    const issues = [];
+    const add = issue => { if (!issues.includes(issue)) issues.push(issue); };
+    const required = [
+        'action', 'setup', 'current_market_context', 'crt_msnr_confirmation',
+        'sniper_zone_justification', 'price_action_confirmation', 'session_volatility_check',
+        'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1', 'confidence',
+        'timeframe_used', 'management', 'audit', 'reason'
+    ];
+    const missing = required.filter(key => !Object.prototype.hasOwnProperty.call(json, key));
+    if (missing.length) add('AUDIT_REQUIRED_FIELDS_MISSING');
+    if (Object.keys(json).some(key => !required.includes(key))) add('AUDIT_EXTRA_FIELDS');
+    const action = String(json.action ?? '').trim().toUpperCase();
+    if (!['BUY_LIMIT', 'SELL_LIMIT', 'NO_TRADE'].includes(action)) add('AUDIT_ACTION_INVALID');
+    const expectedMarketContext = ['TRENDING_BULLISH', 'TRENDING_BEARISH', 'RANGING', 'CONSOLIDATING'];
+    if (!expectedMarketContext.includes(String(json.current_market_context ?? '').toUpperCase())) {
+        add('AUDIT_MARKET_CONTEXT_INVALID');
+    }
+    if (string(json.setup) === null || string(json.setup).trim() === '') add('AUDIT_SETUP_INVALID');
+    if (expectedMarketContext.length && !string(json.crt_msnr_confirmation)) add('AUDIT_CRT_MSNR_REQUIRED');
+    if (!/\bCRT\b/i.test(String(json.crt_msnr_confirmation || ''))
+        || !/\bMSNR\b/i.test(String(json.crt_msnr_confirmation || ''))) {
+        add('AUDIT_CRT_MSNR_INVALID');
+    }
+    if (!/\b(?:FVG|IMBALANCE|PROXIMAL\s+EDGE)\b/i.test(String(json.sniper_zone_justification || ''))) {
+        add('AUDIT_SNIPER_ZONE_INVALID');
+    }
+    if (!/\b(?:WICK|REJECTION)\b/i.test(String(json.price_action_confirmation || ''))
+        || !/\bVOLUME\b/i.test(String(json.price_action_confirmation || ''))) {
+        add('AUDIT_PRICE_ACTION_INVALID');
+    }
+    if (!/\b(?:ATR|VOLATIL)/i.test(String(json.session_volatility_check || ''))
+        || !/\b(?:STOP|SL)\b/i.test(String(json.session_volatility_check || ''))
+        || !/\b(?:TP\d*|TARGET)\b/i.test(String(json.session_volatility_check || ''))) {
+        add('AUDIT_SESSION_VOLATILITY_INVALID');
+    }
+    if (string(json.management) === null && action !== 'NO_TRADE') add('AUDIT_MANAGEMENT_INVALID');
+    if (string(json.reason) === null || String(json.reason).trim() === '') add('AUDIT_REASON_INVALID');
+    if (string(json.timeframe_used) === null
+        || !['1d', '4h', '1h', '15m', '5m', 'NONE'].includes(String(json.timeframe_used))) {
+        add('AUDIT_TIMEFRAME_INVALID');
+    }
+    const confidence = number(json.confidence);
+    if (confidence === null || confidence < 0 || confidence > 100) add('AUDIT_CONFIDENCE_INVALID');
+    const entry = number(json.entry);
+    const stop = number(json.stop_loss);
+    const tp1 = number(json.tp1);
+    const tp2 = number(json.tp2);
+    const tp3 = number(json.tp3);
+    const risk = number(json.risk);
+    const rr = number(json.rr_tp1);
+    if (action !== 'NO_TRADE' && [entry, stop, tp1, tp2, tp3, risk, rr].some(value => value === null)) {
+        add('AUDIT_NUMERIC_FIELDS_INVALID');
+    }
+    if (action === 'BUY_LIMIT') {
+        if (!(stop < entry && entry < tp1 && tp1 < tp2 && tp2 < tp3)) add('AUDIT_PRICE_ORDERING_INVALID');
+    } else if (action === 'SELL_LIMIT') {
+        if (!(stop > entry && entry > tp1 && tp1 > tp2 && tp2 > tp3)) add('AUDIT_PRICE_ORDERING_INVALID');
+    } else if (action === 'NO_TRADE') {
+        const zeroed = [entry, stop, tp1, tp2, tp3, risk, rr].every(value => value === 0);
+        if (!zeroed || confidence !== 0
+            || String(json.timeframe_used).toUpperCase() !== 'NONE'
+            || String(json.management).toUpperCase() !== 'NONE') {
+            add('AUDIT_NO_TRADE_ZERO_GEOMETRY_INVALID');
+        }
+    }
+    if (action !== 'NO_TRADE' && entry !== null && stop !== null && tp1 !== null && risk !== null && rr !== null) {
+        const computedRr = (Math.abs(tp1 - entry) / Math.abs(entry - stop)).toFixed(2);
+        if (Math.abs(computedRr - rr) > 0.005) add('AUDIT_RR_ARITHMETIC_INVALID');
+        if (rr < 2) add('AUDIT_RR_BELOW_2');
+    }
+    if (String(options.symbol || '').match(/XAU/i) && action !== 'NO_TRADE' && risk !== null && Math.abs(risk) < 4.5) {
+        add('AUDIT_XAU_MIN_RISK');
+    }
+    const audit = json.audit;
+    if (!isObject(audit)) {
+        add('AUDIT_OBJECT_INVALID');
+    } else {
+        const dailyBias = audit.daily_bias;
+        if (!isObject(dailyBias)) {
+            add('AUDIT_DAILY_BIAS_INVALID');
+        } else {
+            if (!['BULLISH', 'BEARISH', 'RANGE'].includes(String(dailyBias.direction ?? '').toUpperCase())) {
+                add('AUDIT_DAILY_BIAS_INVALID');
+            }
+            for (const key of ['d3_h', 'd3_l', 'd2_h', 'd2_l', 'd1_h', 'd1_l']) {
+                if (number(dailyBias[key]) === null) add('AUDIT_DAILY_BIAS_INVALID');
+            }
+            if (string(dailyBias.four_hour_mss) === null || String(dailyBias.four_hour_mss).trim() === '') {
+                add('AUDIT_DAILY_BIAS_INVALID');
+            }
+        }
+        const sweeps = Array.isArray(audit.sweeps) ? audit.sweeps : null;
+        const tfs = ['1d', '4h', '1h', '15m', '5m'];
+        if (!sweeps || sweeps.length !== 5) {
+            add('AUDIT_SWEEPS_INVALID');
+        } else {
+            const seen = new Set();
+            for (const swing of sweeps) {
+                if (!isObject(swing)) { add('AUDIT_SWEEPS_INVALID'); continue; }
+                const tf = String(swing.tf ?? '').toLowerCase();
+                if (!tfs.includes(tf) || seen.has(tf)) { add('AUDIT_SWEEPS_INVALID'); continue; }
+                if (typeof swing.bullish !== 'string' || typeof swing.bearish !== 'string'
+                    || !swing.bullish.trim() || !swing.bearish.trim()) {
+                    add('AUDIT_SWEEPS_INVALID');
+                }
+                seen.add(tf);
+            }
+            if (seen.size !== 5) add('AUDIT_SWEEPS_INVALID');
+        }
+        if (!Array.isArray(audit.breaks) || audit.breaks.some(item => typeof item !== 'string')) {
+            add('AUDIT_BREAKS_INVALID');
+        }
+        const killzone = audit.killzone;
+        if (!isObject(killzone)) {
+            add('AUDIT_KILLZONE_INVALID');
+        } else {
+            const windowName = String(killzone.computed_window ?? '').toUpperCase();
+            if (!['ASIA', 'LONDON', 'OVERLAP', 'NEW_YORK', 'NONE'].includes(windowName)) {
+                add('AUDIT_KILLZONE_INVALID');
+            } else if (windowName === 'NONE' && action !== 'NO_TRADE') {
+                add('AUDIT_KILLZONE_NONE_REQUIRES_NO_TRADE');
+            }
+            if (!isIso(killzone.server_time_utc)) add('AUDIT_KILLZONE_INVALID');
+            if (typeof killzone.inside !== 'boolean') add('AUDIT_KILLZONE_INVALID');
+        }
+    }
+    const parsed = {
+        action,
+        setup: string(json.setup)?.toUpperCase() || null,
+        current_market_context: string(json.current_market_context)?.toUpperCase() || null,
+        htf_bias: isObject(audit) && isObject(audit.daily_bias)
+            ? String(audit.daily_bias.direction ?? '').toUpperCase() || null
+            : null,
+        crt_msnr_confirmation: string(json.crt_msnr_confirmation),
+        sniper_zone_justification: string(json.sniper_zone_justification),
+        price_action_confirmation: string(json.price_action_confirmation),
+        session_volatility_check: string(json.session_volatility_check),
+        entry, stop_loss: stop, tp1, tp2, tp3, risk, rr_tp1: rr,
+        confidence,
+        timeframe_used: string(json.timeframe_used),
+        management: string(json.management),
+        reason: string(json.reason),
+        audit: isObject(audit) ? audit : null,
+        htf_context: null,
+        momentum_check: null,
+        choch_detected: null,
+        session_quality: null,
+        order_tag: null,
+        expires_at: null,
+        quote_price_echo: null,
+        quote_time_echo: null,
+        valid_until: null,
+        entry_distance: null,
+        cancel_level: null,
+        cancel_distance: null,
+        fill_before_cancel: null,
+        tp1_is_nearest_unused: null,
+        valid: issues.length === 0,
+        execution_allowed: issues.length === 0,
+        issues,
+        raw_fields: json,
+        raw_json: json,
+        source_format: 'JSON',
+        target_order_normalized: false
+    };
+    parsed.instrument_policy = typeof rawCandleAiInstrumentPolicy === 'function'
+        ? rawCandleAiInstrumentPolicy(options.symbol || '')
+        : null;
+    return parsed;
+}
+
 function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
     const source = String(rawResponse ?? '').trim();
     const isGold = /XAU/i.test(String(options.symbol || pair || ''));
@@ -30516,6 +30728,9 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         json = parseJson(source);
     } catch (_) {
         json = null;
+    }
+    if (json && isObject(json.audit)) {
+        return normalizeV272AuditJson(json, options);
     }
     if (!json) {
         return {

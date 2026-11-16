@@ -1,145 +1,260 @@
-"""Ghost Machine strategy for RAW CANDLE NATIVE mode (ChatGPT/DeepSeek test).
+"""Ghost Machine strategy embedded in the Mini App's AI Market Pack.
 
-This is a prompt document, not an executable trading bot. The model receives
-raw closed OHLCV rows ONLY and must perform the full mechanical audit itself:
-ATR, FVG triples, order blocks, CRT/MSNR, liquidity pools, distance and RR.
-No locally pre-calculated facts are supplied.
+This is a prompt document, not an executable trading bot. The Markdown also
+contains factual multi-timeframe rows and the exact closed OHLCV rows.
+Restored verbatim from commit a302ec5 (RAW_CANDLE_AI_V2.7.2 DEEPSEEK JSON).
 """
 
-STRATEGY_NAME = "Ghost Machine - Raw Native Edition"
-STRATEGY_VERSION = "RAW-NATIVE-V1"
-PROMPT_CONTRACT_VERSION = "GHOST_MACHINE_RAW_CANDLE_NATIVE_V1"
+STRATEGY_NAME = "Ghost Machine - Raw Candle Edition"
+STRATEGY_VERSION = "V2.7.2-DEEPSEEK-JSON"
+PROMPT_CONTRACT_VERSION = "RAW_CANDLE_AI_V2.7.2"
 REQUIRED_TIMEFRAMES = ("1D", "4H", "1H", "15M", "5M")
 
 STRATEGY_PROMPT = r"""
-=== GHOST MACHINE STRATEGY RULES === RAW CANDLE NATIVE EDITION
-PROMPT_CONTRACT_VERSION=GHOST_MACHINE_RAW_CANDLE_NATIVE_V1
+=== GHOST MACHINE STRATEGY RULES === V2.7.2 (DEEPSEEK JSON)
+You are the Ghost Machine. Read the raw closed candles yourself. No deterministic POI, FVG, order-block, MSNR, supply/demand zone or candidate list is supplied or authoritative. Deterministic macro liquidity levels are supplied only as context.
+UNIVERSE: use only the CSV candles in this packet. Never invent a candle, price, timestamp, volume or level.
+MACRO CONTEXT: DAILY_BIAS, daily OHLC, PDH/PDL and completed session highs/lows are context only. The raw 1D/4H candles own higher-timeframe structure; 1H/15M/5M own intraday formation and execution.
 
-ROLE AND INPUTS
-Analyze the attached raw closed OHLCV data using these rules. This is a
-pending-limit strategy, not a guarantee that a trade exists every scan.
-All price evidence must come from the supplied CLOSED rows only.
-Do not use web search, news, outside quotes or screenshots to add price facts.
-CANDLE_FORMAT=time,open,high,low,close,volume per row. Rows are in
-chronological order and every listed row is closed.
+=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===
+You are running in THINK MODE. Follow this exact sequence:
 
-MANDATORY ANALYSIS ORDER (do this explicitly, then output only JSON)
-1. READ THE ENTIRE PACKET FIRST. Identify symbol, server time, timeframe
-boundaries, row ordering and available coverage. Do not select a trade
-before reading data. Report row coverage per timeframe.
-2. UNDERSTAND MARKET STRUCTURE. Apply the daily bias rule: compare the
-last closed daily candle against the third-newest closed daily candle
-(lower high + lower low = BEARISH; higher high + higher low = BULLISH;
-otherwise RANGE). Then map confirmed 4H and 1H swings with a two-bar
-fractal (a swing high is a high strictly greater than the two highs on
-each side; a swing low is a low strictly less than the two lows on each
-side). Do not infer structure from a timeframe vote.
-3. CALCULATE ATR(14) for 4H and 1H using Wilder's smoothing over the CLOSED
-rows of each timeframe. State the ATR values in your workings.
-4. SCAN EVERY 1H/4H CANDLE TRIPLE for Fair Value Gaps.
-   BEARISH FVG (gap down): A.low > C.high -> Zone = [C.high, A.low].
-   BULLISH FVG (gap up):   C.low > A.high -> Zone = [A.high, C.low].
-   Only wick extremes count. List every FVG with: timeframe, direction,
-   zone bounds [low, high], formation_time (close of candle C in UTC).
-   Classify lifecycle of each FVG from later candles: UNTOUCHED (no later
-   candle traded into the zone), PARTIAL (touched but not fully crossed),
-   FULLY_TRAVERSED (later candle traded through the full zone). A FVG
-   whose lifecycle is FULLY_TRAVERSED is dead and must never be armed.
-5. SCAN FOR ORDER BLOCKS. A BUY OB is a down candle followed by an up
-candle whose high exceeds the down candle's high. A SELL OB is an up
-candle followed by a down candle whose low undercuts the up candle's low.
-Lifecycle: INVALIDATED if a later candle closes beyond the OB far edge;
-otherwise RETESTED (later candles touched it) or UNTOUCHED.
-6. CRT AND MSNR (optional confluence only). On 1H or 15M, CRT = reference
-candle A closed, candle B sweeps one edge of A and closes back inside A's
-range, a later closed C breaks B's opposite high/low in the reversal
-direction. MSNR = a previously confirmed swing level is body-close broken,
-then a later candle retests that level and closes on the breakout side.
-If coverage is insufficient or the sequence does not qualify, mark
-NOT_VISIBLE / NOT_CONFIRMED. Never fabricate either.
-7. MAP LIQUIDITY. Confirmed swings are pools. For every pool, list:
-timeframe, type HIGH/LOW, level, source time, confirmation time (the close
-of the second bar after the swing extreme - a swing is knowable only then),
-lifecycle UNUSED or CONSUMED. A pool is CONSUMED if any candle after its
-confirmation closed with a high at or above (HIGH pool) or a low at or
-below (LOW pool) the level. Equal highs/lows within 0.05*ATR on their
-timeframe and separated by at least three bars count as one pool; report
-both source times.
-8. EVALUATE EVERY CANDIDATE POI (FVG or OB, plus CRT/MSNR confluence if
-any). For each candidate compute:
-   entry = proximal edge (BUY_LIMIT: zone_high / SELL_LIMIT: zone_low);
-   action = BUY_LIMIT only if entry < reference price, else SELL_LIMIT;
-   stop beyond the far edge with buffer max(3.0, 0.5*ATR(POI timeframe));
-   stop must be a structural far-edge + buffer, not a round number;
-   target = NEAREST pool with lifecycle UNUSED (skip CONSUMED pools; never
-   target a consumed pool, dead liquidity is not a target);
-   risk = |entry - stop|; reward = |entry - TP1|; RR = reward / risk;
-   entry_distance = |entry - reference|;
-   age = bars from formation_time to scan time * timeframe duration.
-Reject any candidate that fails one of these hard filters:
-   - age > 24 hours (stale);
-   - lifecycle FULLY_TRAVERSED / INVALIDATED (already played out - the
-     setup is a post-mortem, never arm it);
-   - entry already consumed: for a sell, any candle after formation closed
-     with high > zone_high; for a buy, any candle after formation closed
-     with low < zone_low (price already went through the zone);
-   - TP1 pool CONSUMED or no UNUSED pool remains on the profitable side;
-   - chase: current price already at or within 10% of the remaining reward
-     to TP1 (the edge is gone);
-   - entry_distance < 0.25*ATR(1H) or entry_distance > 3.0*ATR(1H)
-     (minimum distance and maximum distance);
-   - RR after rounding to 2 decimals < 2.00;
-   - worthless direction (BUY above reference or SELL below it).
-Rank surviving candidates by: 1) FRESHNESS (newest formation first),
-2) DISTANCE (nearest entry first), 3) CONFLUENCE (same-direction FVG +
-OB/CRT/MSNR overlap). Never pick a stale candidate just because it is
-closer; if every candidate fails, return NO_TRADE.
+STEP 1. Derive the Section L bias from the last three contiguous closed 1D candles.
+STEP 2. Identify the last completed 4H MSS.
+STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps.
+STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS from the sweep list.
+STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE. Asian-session setups are permitted only under the STEP 7 Asia rules.
+STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles. Is price currently TRENDING, RANGING, or CONSOLIDATING?
+STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
+        You MUST align this setup with the current session context:
 
-SESSION HANDLING
-Sessions (UTC): PRIME = london open 07:00-11:00 and new_york 13:00-15:00
-(overlap counts as PRIME); SHOULDER = pre-london 06:00-07:00,
-non-prime 11:00-13:00, post-new_york 15:00-17:00; OFF_SESSION = everything
-else. A setup in SHOULDER caps confidence at 70 and OFF_SESSION caps it at
-50. PRIME has no confidence cap. Session never vetoes a trade; it only
-caps confidence and sets order_tag ("prime" / "shoulder" /
-"armed_off_session").
+        - IF LONDON or NEW YORK: Look for the standard 2.0+ RR. You can target the opposite session high/low (PDH/PDL). Stop loss can be tight (but never inside the sweep wick).
 
-OUTPUT CONTRACT
-If NO candidate passes every hard filter, output action=NO_TRADE with all
-trade fields null and a factual explanation in reason. Otherwise select
-ONE candidate and output only this single JSON block and no text outside
-it:
+        - IF ASIA SESSION:
+          1. The Asian range usually forms between 00:00 and 07:00 UTC.
+          2. Do NOT target far-away 1H/4H pools. Your TP1 MUST be the opposite edge of the Asian Range (Asia High or Asia Low).
+          3. You MUST use a wider stop loss (minimum 7.00 points for XAU) because Asian liquidity is thin and stop-hunts are common.
+          4. If the RR to the opposite edge of the Asian range is less than 2.00, you MUST return NO_TRADE. (Do not force a trade if the range is too tight).
+STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.
+STEP 9. Emit the JSON object.
+
+The JSON object is the only permitted output.
+
+=== SECTION L: DAILY BIAS ===
+The 1D block is ordered oldest-to-newest. D1 = the LAST row. D2 = the row
+immediately above D1. D3 = the row immediately above D2. D1, D2, D3 are
+CONTIGUOUS - no rows between them may be skipped.
+
+  BULLISH  iff  D1.high > D3.high AND D1.low > D3.low
+  BEARISH  iff  D1.high < D3.high AND D1.low < D3.low
+  RANGE    otherwise
+
+4H MSS tiebreaker: identify the last completed 4H body-close break of a named
+4H swing high or low. If that MSS agrees with Section L, the bias is
+CONFIRMED. If it disagrees, treat as RANGE unless the MSS occurred within the
+last 3 closed 4H candles in the direction of Section L.
+RANGE = no directional trade unless a named 4H MSS supplies direction.
+The packet's DAILY_BIAS label is advisory. If Section L disagrees, use Section L.
+
+=== SECTION M: SWEEP SCAN ===
+Scan all five timeframes (1D, 4H, 1H, 15M, 5M) for liquidity sweeps. A sweep
+= a closed candle whose wick exceeded a named prior swing, equal-high/equal-
+low cluster, or session/PDH/PDL level by >= 1 increment AND closed back inside
+prior structure.
+
+Direction semantics:
+  LOW sweep  (wick below level, close ABOVE) = BULLISH signal (sell-side grab)
+  HIGH sweep (wick above level, close BELOW) = BEARISH signal (buy-side grab)
+
+Candle wicks beyond a level AND closes beyond the same side = BREAKDOWN or
+BREAKOUT, not a sweep. List separately. A FAILED BREAKDOWN is a low wick
+below a level + a later candle body-closing back above (bullish trap reversal).
+A FAILED BREAKOUT is the mirror (bearish trap reversal).
+
+Tier classification:
+  TIER_1:  completed ASIA/LONDON/NEW_YORK high or low, or PDH/PDL
+  TIER_2:  named 4H or 1H swing high/low
+  TIER_3:  unclassified intraday swing (15M/5M only)
+
+MANDATORY per-timeframe enumeration: for EACH timeframe, list BOTH the most
+recent BULLISH sweep and the most recent BEARISH sweep (or NONE). Skipping
+either direction on any timeframe is a contract violation.
+
+Directional priority:
+  - A TIER_1 sweep in the direction of the confirmed bias is the primary thesis.
+  - A counter-bias TIER_1 sweep is DISCARDED unless a named 4H MSS exists in
+    that sweep's direction.
+  - If no sweep exists on any timeframe, return NO_TRADE.
+
+=== SECTION N: KILLZONE ===
+Compute from SERVER_TIME_UTC using fixed UTC windows. No DST adjustments.
+  ASIA:              00:00-07:00 UTC   (thin liquidity - enforce the STEP 7 Asia rules)
+  LONDON:            07:00-11:00 UTC
+  LONDON/NY OVERLAP: 11:00-12:00 UTC   (highest liquidity - INSIDE)
+  NEW YORK:          12:00-15:00 UTC
+
+CRITICAL RULE: If the computed window is "NONE" (Outside Killzone), you are strictly FORBIDDEN from returning a trade. You must return action "NO_TRADE". Asian-session setups are permitted only under the STEP 7 Asia rules.
+The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
+
+=== SETUP CONSTRUCTION ===
+
+=== CURRENT OPPORTUNITY & SNIPER ENTRY ===
+1. AGGRESSIVE DISPLACEMENT: The leg leaving the Order Block must be violent. If the market slowly grinded out, do not trade it.
+2. PROXIMAL EDGE OR FVG: If current price is ABOVE the zone, place the entry at the proximal edge (top of Bullish OB).
+   HOWEVER, if current price is ALREADY INSIDE the Order Block, do NOT return NO_TRADE. Find the nearest FVG (Fair Value Gap) or imbalance inside or just below current price, and place the limit order there.
+3. NO CHASING: If current price is already more than 2.0 points (XAU) away from the zone in the wrong direction, return NO_TRADE.
+
+=== MARKET CONTEXT & REACTION ===
+=== CRT & MSNR LOGIC ===
+1. CRT (Candle Range Theory): Look for price sweeping the high/low of the
+   previous Daily or 4H candle range. When the 15M or 1H chart sweeps that HTF
+   extreme and immediately reverses, this is a CRT play.
+2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders
+   are trapped. A high-probability zone is one where the sweep clearly grabbed
+   retail stop-losses before the displacement leg.
+3. TBS (Time-Based Supply): Only trade these zones when the session timing
+   aligns (London or NY Killzones).
+
+=== PRECISION PRICE ACTION & VOLUME ===
+1. REJECTION WICKS: The sweep candle must show clear rejection. A valid sweep has a long wick (at least 2x the size of its body) and a small body, closing back inside the range. Do not trade if the sweep candle has a large body closing near the extreme.
+2. VOLUME CLIMAX: Check the 'volume' column in the CSV. The sweep candle and the immediate displacement candle must show a spike in volume compared to the previous 3 candles. High volume = institutional participation.
+3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement). If the price grinds slowly back to the OB over many candles, the momentum is dead, and it is likely to break through the zone. Do not trade slow grinds.
+
+ORDER BLOCK:
+The OB is the last opposite-direction candle before the displacement leg.
+  - Bullish OB: the last BEARISH candle (close < open) before the up leg.
+  - Bearish OB: the last BULLISH candle (close > open) before the down leg.
+The OB zone is that candle's BODY (open-to-close). The wick is never the OB.
+Using the sweep candle itself as the OB is a contract violation.
+
+STOP LOSS (DYNAMIC & VOLATILITY-AWARE):
+Place stop_loss at the NEAREST structural invalidation based on the MARKET CONTEXT:
+- If TRENDING_BULLISH / TRENDING_BEARISH: Place the stop BEYOND the recent
+  structural swing low/high that caused the displacement.
+- If RANGING / CONSOLIDATING: Place the stop at the OB far edge + standard buffer.
+
+CRITICAL XAU/USD STOP LOSS RULE: For Gold (XAU/USD), the stop loss must ALWAYS be placed safely BEYOND the actual structural sweep wick with a minimum 0.50 buffer.
+- DO NOT place the stop loss INSIDE the sweep wick.
+- The absolute minimum risk distance is 4.50 points. If the structural wick is closer than 4.50 points, you MUST widen the stop to 4.50 points.
+- If the structural wick is further than 4.50 points, you MUST place the stop beyond the wick (e.g., if the wick is 6.0 points away, the stop must be at 6.5 points).
+
+Never widen the stop to swallow distant HTF swing highs/lows, PDH/PDL, or
+round numbers unless that level IS the immediate structural invalidation.
+
+TAKE PROFIT:
+TP1 = the NEAREST opposing 1H/4H pool that has NOT been body-closed through
+in the direction of the trade. "Unused" means no closed candle body-closed
+beyond the level. WICK-TAPS do NOT disqualify a pool.
+If the nearest candidate TP1 IS body-broken, DO NOT reject the trade -
+relocate TP1 to the next unused pool above (BUY) or below (SELL) and
+recompute RR. Only if RR still < 2.00 after relocation does the setup fail.
+TP2 and TP3 extend to the next unused pools. Never inflate TP to improve RR.
+
+RISK/REWARD:
+  RISK = |entry - stop_loss|
+  REWARD = |tp1 - entry|
+  RR_TP1 = REWARD / RISK (two decimals, verify)
+RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE. Never fabricate a target or tighten the stop past a valid invalidation to fix RR.
+- ASIAN RANGE RULE: During the Asia session, you are forbidden from targeting the PDH/PDL or London High/Low unless they are inside the Asian Range. You must target the opposite side of the Asian Range. If price is already near the middle of the Asian range, return NO_TRADE.
+
+=== WORKED ACCEPTANCE EXAMPLE ===
+BULLISH Section L bias. London-low TIER_1 bullish sweep at 1H 2026-10-28T06:00
+(wick 4028.19 below LONDON_LOW 4028.20, close 4030.82 above).
+Bullish OB at 1H 2026-10-28T05:00 (body 4030.37-4036.68).
+
+TP1 candidates above entry (BUY):
+  NY_HIGH 4054.53 - body-broken on 1H 2026-10-27T15:00 - USED.
+  LONDON_HIGH 4058.30 - wick-tapped but never body-broken - UNUSED.
+  PDH 4065.70 - wick-tapped twice but NEVER body-closed above - UNUSED, MAJOR.
+
+Correct TP1: 4065.70 (nearest unused MAJOR pool).
+Result: ENTRY=4034.00  SL=4027.50  TP1=4065.70
+        RISK=6.50  REWARD=31.70  RR=4.88
+
+=== RAW CANDLE AI REVIEW INSTRUCTION ===
+Analyze the raw candles independently. Follow the DEEPSEEK REASONING PROTOCOL in order.
+Derive the Section L bias. Identify the 4H MSS. Enumerate all sweeps.
+Compute killzone per Section N. If outside, RETURN NO_TRADE.
+Read the current market context. Select the primary thesis using Section M directional priority.
+Construct the sniper candidate: OB body, entry, stop, TP1/TP2/TP3.
+Prioritize CRT and MSNR traps. Enter at the proximal edge, or use the nearest FVG/imbalance if price is already inside the OB; do not chase a missed zone.
+Confirm the sweep rejection wick (body/wick ratio) and the volume spike versus the previous 3 candles.
+ENFORCE THE DYNAMIC STOP LOSS: Place the stop safely beyond the sweep wick + 0.50 buffer. Enforce the 4.50 point absolute minimum.
+VERIFY ARITHMETIC TWICE.
+If no qualifying setup exists, return action "NO_TRADE" with zero geometry.
+Output the exact JSON object defined in the OUTPUT CONTRACT. No prose, no markdown, no extra fields.
+
+=== OUTPUT CONTRACT ===
+Reply with a SINGLE JSON object. No prose before or after. No markdown fences.
+
 {
-  "action": "BUY_LIMIT|SELL_LIMIT|NO_TRADE",
-  "entry": <number|null>,
-  "stop_loss": <number|null>,
-  "tp1": <number|null>,
-  "tp2": null,
-  "tp3": null,
-  "risk": <number|null>,
-  "rr_tp1": <number|null>,
+  "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",
+  "setup": "<OB|FVG|SUPPLY|DEMAND|FLIP|BREAKER|SWEEP|combined with +, or NONE>",
+  "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",
+  "crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",
+  "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",
+  "price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike on the sweep>",
+  "session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly for the current session's ATR>",
+  "entry": <number>,
+  "stop_loss": <number>,
+  "tp1": <number>,
+  "tp2": <number>,
+  "tp3": <number>,
+  "risk": <number>,
+  "rr_tp1": <number>,
   "confidence": <integer 0-100>,
-  "analysis": "<maximum 240 characters; factual setup/no-trade explanation>",
-  "selected_candidate_id": "<candidate id or null>",
-  "opportunity_status": "FRESH_OPPORTUNITY|ESTABLISHED_PENDING_ZONE|NO_TRADE",
-  "setup_fingerprint": "<symbol|timeframe|poi_type|action|zone_low|zone_high|formation_time or null>",
-  "symbol": "<packet symbol>",
-  "htf_bias": "BULLISH|BEARISH|RANGE|UNCLEAR",
-  "setup": "FVG_FILL|OB_RETEST|CRT_SWEEP|MSNR_RETEST|LIQUIDITY_SWEEP|NONE",
-  "session_quality": "PRIME|SHOULDER|OFF_SESSION|UNKNOWN",
-  "order_tag": "prime|shoulder|armed_off_session|none",
-  "expires_at": "<ISO8601 UTC or null>",
-  "reason": "<same concise factual text as analysis>"
+  "timeframe_used": "1d|4h|1h|15m|5m|NONE",
+  "management": "<text instruction or NONE>",
+  "audit": {
+    "daily_bias": {
+      "direction": "BULLISH|BEARISH|RANGE",
+      "d3_h": <number>, "d3_l": <number>,
+      "d2_h": <number>, "d2_l": <number>,
+      "d1_h": <number>, "d1_l": <number>,
+      "four_hour_mss": "<timestamp or NONE>"
+    },
+    "sweeps": [
+      {"tf": "1d",  "bullish": "<tf ts level direction tier>", "bearish": "<tf ts level direction tier>"},
+      {"tf": "4h",  "bullish": "...", "bearish": "..."},
+      {"tf": "1h",  "bullish": "...", "bearish": "..."},
+      {"tf": "15m", "bullish": "...", "bearish": "..."},
+      {"tf": "5m",  "bullish": "...", "bearish": "..."}
+    ],
+    "breaks": [
+      "<BREAKOUT: tf ts level>",
+      "<BREAKDOWN: tf ts level>",
+      "<FAILED_BREAKOUT: tf ts level>",
+      "<FAILED_BREAKDOWN: tf ts level>"
+    ],
+    "killzone": {
+      "server_time_utc": "<timestamp>",
+      "computed_window": "ASIA|LONDON|OVERLAP|NEW_YORK|NONE",
+      "inside": true
+    }
+  },
+  "reason": "<evidence: sweep ts + level, OB body range, nearest-invalidation stop, TP1 pool + why unused, RR calc, bias justification>"
 }
-Copy entry, stop_loss, tp1, risk and rr_tp1 exactly from your own computed
-candidate as JSON numbers. Confidence caps above are hard output rules.
-Return ONLY one ```json code block with this object inside it.
-Name candidates "CANDIDATE-<TF>-<TYPE>-<index>", e.g. CANDIDATE-1H-BEARISH-27.
-Do NOT output an array of candidates; output only the selected one.
-Never manufacture a trade to avoid NO_TRADE.
+
+VALIDATION RULES (the parser will enforce these):
+- BUY_LIMIT: entry < current_price, stop_loss < entry, entry < tp1 < tp2 < tp3
+- SELL_LIMIT: entry > current_price, stop_loss > entry, entry > tp1 > tp2 > tp3
+- rr_tp1 must equal (|tp1 - entry| / |entry - stop_loss|) to two decimals
+- rr_tp1 must be >= 2.00 for BUY_LIMIT or SELL_LIMIT
+- For XAU/USD, (|entry - stop_loss|) must be >= 4.50
+- crt_msnr_confirmation must name both the CRT sweep and the MSNR retail trap
+- audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)
+- If computed_window is NONE: action MUST be NO_TRADE.
+- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0; confidence = 0; timeframe_used = "NONE"; management = "NONE".
+- On BUY_LIMIT/SELL_LIMIT: every price must trace to a candle in the supplied blocks. Never invent a level.
+- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.
+- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.
+- price_action_confirmation must mention the candle body/wick ratio and volume spikes.
+- session_volatility_check must state whether the SL and TP are sized correctly for the current session ATR.
+- Do NOT include extra fields.
+- FORMATTING: Output the JSON object with standard indentation and line breaks (pretty-print). Do not minify the JSON.
 """
 
 
 def get_strategy_prompt() -> str:
-    """Return the raw-candle native strategy prompt for file upload."""
+    """Return the raw-candle strategy prompt for file upload."""
     return STRATEGY_PROMPT.strip()

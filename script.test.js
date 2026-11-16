@@ -11294,6 +11294,109 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.fvg_scan).toContain('POI 3:');
     });
 
+    const auditResponse = (overrides = {}) => ({
+        action: 'BUY_LIMIT',
+        setup: 'OB+FVG',
+        current_market_context: 'TRENDING_BULLISH',
+        crt_msnr_confirmation: 'CRT sweep of the London low confirmed; MSNR trapped retail sellers under the OB.',
+        sniper_zone_justification: 'Entry at the proximal edge of the bullish FVG left by aggressive displacement.',
+        price_action_confirmation: 'Rejection wick 2.1x body and volume 2.3x the previous 3 candles.',
+        session_volatility_check: 'ATR(1H)=4.00; SL buffer and TP ladder sized to session ATR.',
+        entry: 4034,
+        stop_loss: 4027.5,
+        tp1: 4065.7,
+        tp2: 4070.84,
+        tp3: 4088.37,
+        risk: 6.5,
+        rr_tp1: 4.88,
+        confidence: 75,
+        timeframe_used: '1h',
+        management: '50% at TP1, move SL to BE, trail to TP2/TP3',
+        audit: {
+            daily_bias: { direction: 'BULLISH', d3_h: 4075.91, d3_l: 4019.84, d2_h: 4081.78, d2_l: 4026.97, d1_h: 4064.33, d1_l: 4029.89, four_hour_mss: '2026-10-27T22:00:00.000Z' },
+            sweeps: [
+                { tf: '1d', bullish: '2026-10-27T22:00:00.000Z 4019.84 bullish TIER_2', bearish: 'none' },
+                { tf: '4h', bullish: '2026-10-27T18:00:00.000Z 4026.90 bullish TIER_2', bearish: 'none' },
+                { tf: '1h', bullish: '2026-10-28T06:00:00.000Z 4028.19 bullish TIER_1', bearish: 'none' },
+                { tf: '15m', bullish: 'none', bearish: 'none' },
+                { tf: '5m', bullish: 'none', bearish: 'none' }
+            ],
+            breaks: ['BREAKOUT: 1h 2026-10-28T06:00:00.000Z 4030.00'],
+            killzone: { server_time_utc: '2026-10-28T08:00:00.000Z', computed_window: 'LONDON', inside: true }
+        },
+        reason: 'Bullish TIER_1 London-low sweep at 1H; entry in OB body; TP1 unused PDH; RR=4.88.',
+        ...overrides
+    });
+
+    it('parses and validates the V2.7.2 audit JSON contract', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(auditResponse()));
+        expect(parsed.valid).toBe(true);
+        expect(parsed.execution_allowed).toBe(true);
+        expect(parsed.issues).toEqual([]);
+        expect(parsed.action).toBe('BUY_LIMIT');
+        expect(parsed.htf_bias).toBe('BULLISH');
+        expect(parsed.rr_tp1).toBe(4.88);
+        expect(parsed.timeframe_used).toBe('1h');
+        expect(parsed.audit.sweeps).toHaveLength(5);
+        expect(parsed.audit.killzone.computed_window).toBe('LONDON');
+    });
+
+    it('rejects an audit response with killzone NONE and a non-NO_TRADE action', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(auditResponse({
+            audit: { ...auditResponse().audit, killzone: { server_time_utc: '2026-10-28T22:00:00.000Z', computed_window: 'NONE', inside: false } }
+        })));
+        expect(parsed.issues).toContain('AUDIT_KILLZONE_NONE_REQUIRES_NO_TRADE');
+        expect(parsed.valid).toBe(false);
+    });
+
+    it('enforces the 2dp RR arithmetic and the 2.00 RR floor', () => {
+        const ctx = getContext();
+        const wrongRr = ctx.parseRawCandleAIActionResponse(JSON.stringify(auditResponse({ rr_tp1: 4.87 })));
+        expect(wrongRr.issues).toContain('AUDIT_RR_ARITHMETIC_INVALID');
+        const weakRr = ctx.parseRawCandleAIActionResponse(JSON.stringify(auditResponse({
+            tp1: 4034.5, rr_tp1: 0.08
+        })));
+        expect(weakRr.issues).toContain('AUDIT_RR_BELOW_2');
+    });
+
+    it('enforces the 4.50 point gold minimum risk on trades', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(auditResponse({
+            stop_loss: 4030, risk: 4
+        })), { symbol: 'XAU/USD' });
+        expect(parsed.issues).toContain('AUDIT_XAU_MIN_RISK');
+    });
+
+    it('requires exactly five per-timeframe sweeps with both directions', () => {
+        const ctx = getContext();
+        const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(auditResponse({
+            audit: { ...auditResponse().audit, sweeps: auditResponse().audit.sweeps.slice(0, 4) }
+        })));
+        expect(parsed.issues).toContain('AUDIT_SWEEPS_INVALID');
+    });
+
+    it('accepts a zero-geometry NO_TRADE and rejects a non-zero one', () => {
+        const ctx = getContext();
+        const zeroed = auditResponse({
+            action: 'NO_TRADE',
+            setup: 'NONE',
+            current_market_context: 'RANGING',
+            entry: 0, stop_loss: 0, tp1: 0, tp2: 0, tp3: 0, risk: 0, rr_tp1: 0,
+            confidence: 0, timeframe_used: 'NONE', management: 'NONE',
+            audit: {
+                ...auditResponse().audit,
+                killzone: { server_time_utc: '2026-10-28T22:00:00.000Z', computed_window: 'NONE', inside: false }
+            }
+        });
+        const valid = ctx.parseRawCandleAIActionResponse(JSON.stringify(zeroed));
+        expect(valid.valid).toBe(true);
+        const leaked = auditResponse({ ...zeroed, entry: 4034 });
+        const invalid = ctx.parseRawCandleAIActionResponse(JSON.stringify(leaked));
+        expect(invalid.issues).toContain('AUDIT_NO_TRADE_ZERO_GEOMETRY_INVALID');
+    });
+
     it('rejects target pools on the wrong liquidity side for the trade', () => {
         const ctx = getContext();
         const wrongTopLevelType = ctx.parseRawCandleAIActionResponse(JSON.stringify(jsonResponse({
