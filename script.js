@@ -20552,7 +20552,7 @@ cancel_distance; otherwise set it false. This comparison is informational only.
 A false value MUST NOT discard a valid candidate, cascade to another POI, or cause
 NO_TRADE. It does not predict which side price will reach first.
 Select candidates using the structural gates: fresh unconsumed POI, correct pending
-side, the 20-200 point distance rules, valid structural stop, and RR >= 1.50 to the
+side, the 20-200 point distance rules, valid structural stop, and RR >= 2.00 to the
 nearest unused target.
 
 Evaluate CRT, MSNR and liquidity on EVERY run and explicitly mark each CONFIRMED
@@ -20653,7 +20653,7 @@ ENTRY, and BUY highs from lowest to highest above ENTRY. TP1 is the nearest
 eligible price, TP2 the next distinct eligible price, TP3 the next. Never skip an
 UNUSED intermediate eligible pool to reach a farther target or improve RR. If
 fewer than three eligible pools exist, set the remaining TP fields and their
-pool-type fields to null. If the nearest valid TP1 yields RR < 1.50, reject this
+pool-type fields to null. If the nearest valid TP1 yields RR < 2.00, reject this
 POI and follow the existing POI cascade; do not skip TP1. Never invent targets.
 For SWEPT pools cite swept_at and the candle evidence in htf_context.
 The ladder must be strictly outward: BUY entry<TP1<TP2<TP3; SELL entry>TP1>TP2>TP3.
@@ -20662,7 +20662,7 @@ equals an earlier high is NOT proof of a sweep. No invented confirmations.
 Upper wick=high-max(open,close); lower wick=min(open,close)-low; body=abs(close-open).
 STRONG_IMPULSE requires all last 3 closed 1H volumes >1.5 times the last-20 average
 and large bodies; otherwise use WEAK_RANGE. Web search must not replace packet candles.
-Minimum RR at TP1 = 1.50. If RR < 1.50, discard this POI and cascade
+Minimum RR at TP1 = 2.00. If RR < 2.00, discard this POI and cascade
 to the next POI. If ALL POIs fail RR, return NO_TRADE.
 
 ${RAW_CANDLE_AI_OUTPUT_CONTRACT}
@@ -20688,7 +20688,7 @@ are explicitly UNTESTED_LEGACY; do not introduce ATR-based distance defaults.
 Return NO_TRADE ONLY IF:
 1. There are NO unmitigated or positive-width verified residual POIs within
    200 pts of CURRENT_PRICE.
-2. ALL available POIs fail the RR >= 1.50 test.
+2. ALL available POIs fail the RR >= 2.00 test.
 3. Every candidate has already been consumed, is too close to place a pending
    order without chasing, or only a conditional swing setup remains for a later
    session. fill_before_cancel=false alone is never a NO_TRADE reason.
@@ -20836,7 +20836,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             target_pool_definition_included: ghostRulesText.includes('Swing definition: in each timeframe\'s chronological CLOSED candle rows'),
             target_ladder_completeness_included: ghostRulesText.replace(/\s+/g, ' ').includes('Never skip an UNUSED intermediate'),
             gold_minimum_stop_included: ghostRulesText.includes('max(4.50, 0.5xATR)'),
-            hard_rr_gate_included: ghostRules.some(rule => rule.includes('Minimum RR at TP1 = 1.50')),
+            hard_rr_gate_included: ghostRules.some(rule => rule.includes('Minimum RR at TP1 = 2.00')),
             strict_json_schema_included: ghostRules.some(rule => rule.startsWith('===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ==='))
         }
     };
@@ -30465,7 +30465,7 @@ function normalizePendingLimitTargetOrder(decision = {}, action = null) {
 // V2.7.2 audit contract (friend's raw-candle strategy). Accepts the exact
 // JSON the V2.7.2 prompt produces and enforces the VALIDATION RULES it ships:
 // ordering, RR>=2 at 2dp, 4.50 minimum risk for gold, five per-timeframe
-// sweeps with both directions, killzone NONE => NO_TRADE, zero geometry on
+// sweeps with both directions, killzone informational (never a veto), zero geometry on
 // NO_TRADE. Kept alongside the legacy validator because both contracts exist
 // in the field; the legacy path stays byte-for-byte compatible.
 function normalizeV272AuditJson(json, options = {}) {
@@ -30543,7 +30543,7 @@ function normalizeV272AuditJson(json, options = {}) {
     if (action !== 'NO_TRADE' && entry !== null && stop !== null && tp1 !== null && risk !== null && rr !== null) {
         const computedRr = (Math.abs(tp1 - entry) / Math.abs(entry - stop)).toFixed(2);
         if (Math.abs(computedRr - rr) > 0.005) add('AUDIT_RR_ARITHMETIC_INVALID');
-        if (rr < 1.5) add('AUDIT_RR_BELOW_1_5');
+        if (rr < 2) add('AUDIT_RR_BELOW_2');
     }
     if (String(options.symbol || '').match(/XAU/i) && action !== 'NO_TRADE' && risk !== null && Math.abs(risk) < 4.5) {
         add('AUDIT_XAU_MIN_RISK');
@@ -30588,14 +30588,12 @@ function normalizeV272AuditJson(json, options = {}) {
             add('AUDIT_BREAKS_INVALID');
         }
         const killzone = audit.killzone;
-        if (!isObject(killzone)) {
+            if (!isObject(killzone)) {
             add('AUDIT_KILLZONE_INVALID');
         } else {
             const windowName = String(killzone.computed_window ?? '').toUpperCase();
             if (!['ASIA', 'LONDON', 'OVERLAP', 'NEW_YORK', 'NONE'].includes(windowName)) {
                 add('AUDIT_KILLZONE_INVALID');
-            } else if (windowName === 'NONE' && action !== 'NO_TRADE') {
-                add('AUDIT_KILLZONE_NONE_REQUIRES_NO_TRADE');
             }
             if (!isIso(killzone.server_time_utc)) add('AUDIT_KILLZONE_INVALID');
             if (typeof killzone.inside !== 'boolean') add('AUDIT_KILLZONE_INVALID');

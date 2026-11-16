@@ -23,19 +23,19 @@ STEP 1. Derive the Section L bias from the last three contiguous closed 1D candl
 STEP 2. Identify the last completed 4H MSS.
 STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps.
 STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS from the sweep list.
-STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE. Asian-session setups are permitted only under the STEP 7 Asia rules.
+STEP 5. Compute the killzone from SERVER_TIME_UTC and report it in the audit object. The killzone is information, never a veto — NONE does NOT force NO_TRADE. Asian-session setups are permitted only under the STEP 7 Asia rules.
 STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles. Is price currently TRENDING, RANGING, or CONSOLIDATING?
 STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
         You MUST align this setup with the current session context:
 
-        - IF LONDON or NEW YORK: Look for the standard 1.5+ RR. You can target the opposite session high/low (PDH/PDL). Stop loss can be tight (but never inside the sweep wick).
+        - IF LONDON or NEW YORK: Look for the standard 2.0+ RR. You can target the opposite session high/low (PDH/PDL). Stop loss can be tight (but never inside the sweep wick).
 
         - IF ASIA SESSION:
           1. The Asian range usually forms between 00:00 and 07:00 UTC.
           2. Do NOT target far-away 1H/4H pools. Your TP1 MUST be the opposite edge of the Asian Range (Asia High or Asia Low).
           3. You MUST use a wider stop loss (minimum 7.00 points for XAU) because Asian liquidity is thin and stop-hunts are common.
-          4. If the RR to the opposite edge of the Asian range is less than 1.50, you MUST return NO_TRADE. (Do not force a trade if the range is too tight).
-STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 1.50.
+          4. If the RR to the opposite edge of the Asian range is less than 2.00, you MUST return NO_TRADE. (Do not force a trade if the range is too tight).
+STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.
 STEP 9. Emit the JSON object.
 
 The JSON object is the only permitted output.
@@ -93,7 +93,10 @@ Compute from SERVER_TIME_UTC using fixed UTC windows. No DST adjustments.
   LONDON/NY OVERLAP: 11:00-12:00 UTC   (highest liquidity - INSIDE)
   NEW YORK:          12:00-15:00 UTC
 
-CRITICAL RULE: If the computed window is "NONE" (Outside Killzone), you are strictly FORBIDDEN from returning a trade. You must return action "NO_TRADE". Asian-session setups are permitted only under the STEP 7 Asia rules.
+KILLZONE REPORTING (NO VETO): The killzone is informational only. If the computed window is
+"NONE" (Outside Killzone), the trade MAY still be taken; report the window honestly and lower
+the confidence accordingly (OFF_SESSION-style cap, confidence <= 50). The killzone never forces
+NO_TRADE by itself. Asian-session setups are permitted only under the STEP 7 Asia rules.
 The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === SETUP CONSTRUCTION ===
@@ -117,7 +120,7 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === PRECISION PRICE ACTION & VOLUME ===
 1. REJECTION WICKS (HISTORICAL vs LIVE): For a PENDING LIMIT at an untouched zone, the rejection wick belongs to the DISPLACEMENT candle that formed the zone (in the past). Do NOT reject a zone just because the CURRENT price has not reached it yet. Only if price has ALREADY reached the zone (live retest) must the current sweep candle show the 2x wick rejection.
-2. VOLUME CLIMAX: Check the 'volume' column in the CSV. The sweep candle and the immediate displacement candle must show a spike in volume compared to the previous 3 candles. High volume = institutional participation.
+2. VOLUME CLIMAX (HISTORICAL vs LIVE): Check the 'volume' column in the CSV. For a PENDING LIMIT at an untouched zone, the volume spike belongs to the DISPLACEMENT candle that formed the zone (in the past) — check its volume versus the 3 candles before it. Do NOT reject a fresh zone just because the current live candle lacks a volume spike. If price is currently reacting inside the zone, then cite the live reaction candle's volume versus the previous 3 candles.
 3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement). If the price grinds slowly back to the OB over many candles, the momentum is dead, and it is likely to break through the zone. Do not trade slow grinds.
 
 ORDER BLOCK:
@@ -147,14 +150,14 @@ in the direction of the trade. "Unused" means no closed candle body-closed
 beyond the level. WICK-TAPS do NOT disqualify a pool.
 If the nearest candidate TP1 IS body-broken, DO NOT reject the trade -
 relocate TP1 to the next unused pool above (BUY) or below (SELL) and
-recompute RR. Only if RR still < 1.50 after relocation does the setup fail.
+recompute RR. Only if RR still < 2.00 after relocation does the setup fail.
 TP2 and TP3 extend to the next unused pools. Never inflate TP to improve RR.
 
 RISK/REWARD:
   RISK = |entry - stop_loss|
   REWARD = |tp1 - entry|
   RR_TP1 = REWARD / RISK (two decimals, verify)
-RR_TP1 must be >= 1.50. Below 1.50 = NO_TRADE. Never fabricate a target or tighten the stop past a valid invalidation to fix RR.
+RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE. Never fabricate a target or tighten the stop past a valid invalidation to fix RR.
 - ASIAN RANGE RULE: During the Asia session, you are forbidden from targeting the PDH/PDL or London High/Low unless they are inside the Asian Range. You must target the opposite side of the Asian Range. If price is already near the middle of the Asian range, return NO_TRADE.
 
 === WORKED ACCEPTANCE EXAMPLE ===
@@ -174,7 +177,7 @@ Result: ENTRY=4034.00  SL=4027.50  TP1=4065.70
 === RAW CANDLE AI REVIEW INSTRUCTION ===
 Analyze the raw candles independently. Follow the DEEPSEEK REASONING PROTOCOL in order.
 Derive the Section L bias. Identify the 4H MSS. Enumerate all sweeps.
-Compute killzone per Section N. If outside, RETURN NO_TRADE.
+Compute killzone per Section N. Report it; it is information, never a veto.
 Read the current market context. Select the primary thesis using Section M directional priority.
 Construct the sniper candidate: OB body, entry, stop, TP1/TP2/TP3.
 Prioritize CRT and MSNR traps. Enter at the proximal edge, or use the nearest FVG/imbalance if price is already inside the OB; do not chase a missed zone.
@@ -243,11 +246,11 @@ VALIDATION RULES (the parser will enforce these):
 - BUY_LIMIT: entry < current_price, stop_loss < entry, entry < tp1 < tp2 < tp3
 - SELL_LIMIT: entry > current_price, stop_loss > entry, entry > tp1 > tp2 > tp3
 - rr_tp1 must equal (|tp1 - entry| / |entry - stop_loss|) to two decimals
-- rr_tp1 must be >= 1.50 for BUY_LIMIT or SELL_LIMIT
+- rr_tp1 must be >= 2.00 for BUY_LIMIT or SELL_LIMIT
 - For XAU/USD, (|entry - stop_loss|) must be >= 4.50
 - crt_msnr_confirmation must name the CRT sweep and MSNR trap that formed the zone. A live sweep at the current price is NOT required for a pending limit at an untouched zone.
 - audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)
-- If computed_window is NONE: action MUST be NO_TRADE.
+- Killzone is informational only: NONE may NOT force NO_TRADE. A NONE window caps confidence at 50 (OFF_SESSION style) and MUST be reported; otherwise nothing else changes.
 - On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0; confidence = 0; timeframe_used = "NONE"; management = "NONE".
 - On BUY_LIMIT/SELL_LIMIT: every price must trace to a candle in the supplied blocks. Never invent a level.
 - sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.

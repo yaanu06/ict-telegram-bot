@@ -11342,23 +11342,23 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.audit.killzone.computed_window).toBe('LONDON');
     });
 
-    it('rejects an audit response with killzone NONE and a non-NO_TRADE action', () => {
+    it('accepts an audit response with killzone NONE and a non-NO_TRADE action (NONE is informational)', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(auditResponse({
             audit: { ...auditResponse().audit, killzone: { server_time_utc: '2026-10-28T22:00:00.000Z', computed_window: 'NONE', inside: false } }
         })));
-        expect(parsed.issues).toContain('AUDIT_KILLZONE_NONE_REQUIRES_NO_TRADE');
-        expect(parsed.valid).toBe(false);
+        expect(parsed.issues).not.toContain('AUDIT_KILLZONE_NONE_REQUIRES_NO_TRADE');
+        expect(parsed.valid).toBe(true);
     });
 
-    it('enforces the 2dp RR arithmetic and the 1.50 RR floor', () => {
+    it('enforces the 2dp RR arithmetic and the 2.00 RR floor', () => {
         const ctx = getContext();
         const wrongRr = ctx.parseRawCandleAIActionResponse(JSON.stringify(auditResponse({ rr_tp1: 4.87 })));
         expect(wrongRr.issues).toContain('AUDIT_RR_ARITHMETIC_INVALID');
         const weakRr = ctx.parseRawCandleAIActionResponse(JSON.stringify(auditResponse({
             tp1: 4034.5, rr_tp1: 0.08
         })));
-        expect(weakRr.issues).toContain('AUDIT_RR_BELOW_1_5');
+        expect(weakRr.issues).toContain('AUDIT_RR_BELOW_2');
     });
 
     it('enforces the 4.50 point gold minimum risk on trades', () => {
