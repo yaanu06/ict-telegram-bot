@@ -148,15 +148,39 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
    NO_TRADE is valid only when NO zone satisfies these rules.
 
 === MARKET CONTEXT & REACTION ===
-=== CRT & MSNR LOGIC ===
-1. CRT (Candle Range Theory): Look for price sweeping the high/low of the
-   previous Daily or 4H candle range. When the 15M or 1H chart sweeps that HTF
-   extreme and immediately reverses, this is a CRT play.
-2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders
+=== CRT, MSNR & TBS LOGIC ===
+1. CRT (Candle Range Theory - sweep + reclaim bar): a MECHANICAL, three-candle
+   sequence on ANY timeframe, most commonly Daily or 4H reference candles:
+   a. REFERENCE CANDLE (A): the most recent CLOSED Daily or 4H candle whose
+      high/low defines the reference range.
+   b. SWEEP (B): the next CLOSED candle B wicks beyond A's high or A's low
+      and closes BACK INSIDE A's range. If B closes BEYOND A's edge, that is
+      a breakout, not a CRT sweep.
+   c. RECLAIM (C): a later CLOSED candle C breaks B's opposite high/low in
+      the reversal direction WITHOUT first closing beyond the swept extreme.
+   A CRT play is A (reference) -> B (sweep) -> C (reclaim/confirmation);
+   cite A, B, C with timestamps and levels. Entry belongs at the proximal
+   edge of the CRT-derived FVG/OB on the reversal leg. CRT is confluence,
+   never mandatory.
+2. MSNR (Market Structure Neo-Retail): identify exactly where retail traders
    are trapped. A high-probability zone is one where the sweep clearly grabbed
    retail stop-losses before the displacement leg.
-3. TBS (Time-Based Supply): Only trade these zones when the session timing
-   aligns (London or NY Killzones).
+3. TBS (Time-Based Supply - classic ICT, pre-session boundary pool):
+   a. POOLS: the Asia high and Asia low (levels included in the packet's
+      MACRO CONTEXT) are the pre-session liquidity pools London/NY runs to.
+   b. SWEEP THEN REVERSE: when the LONDON or NEW YORK killzone wicks beyond
+      the Asia high (sweeping sell-side buys/stop hunt above) and closes
+      BACK INSIDE the Asia range, OR wicks beyond the Asia low and closes
+      back inside - the session swept TBS and a reversal is in play.
+   c. ENTRY: short at/below the sweep wick after a bearish TBS sweep of the
+      Asia high, or long at/above the sweep wick after a bullish TBS sweep
+      of the Asia low. LIMIT entry only, in the Tier 1 bias direction, with
+      stop beyond the sweep wick; target the opposite edge of the Asia range.
+   d. TBS applies ONLY during London/New York killzones (07:00-15:00 UTC,
+      including the 11:00-12:00 overlap). Outside those windows TBS is
+      information only, not a trigger.
+   e. TBS is confluence, never mandatory. If no TBS pool was swept, report
+      TBS as not present; do NOT force it.
 
 === PRECISION PRICE ACTION & VOLUME ===
 1. REJECTION WICKS (HISTORICAL vs LIVE): For a PENDING LIMIT at an untouched zone, the rejection wick belongs to the DISPLACEMENT candle that formed the zone (in the past). Do NOT reject a zone just because the CURRENT price has not reached it yet. Only if price has ALREADY reached the zone (live retest) must the current sweep candle show the 2x wick rejection.
