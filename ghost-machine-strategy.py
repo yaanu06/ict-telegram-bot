@@ -137,6 +137,14 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 2. PROXIMAL EDGE OR FVG: If current price is ABOVE the zone, place the entry at the proximal edge (top of Bullish OB).
    HOWEVER, if current price is ALREADY INSIDE the Order Block, do NOT return NO_TRADE. Find the nearest FVG (Fair Value Gap) or imbalance inside or just below current price, and place the limit order there.
 3. NO CHASING: If current price is already more than 2.0 points (XAU) away from the zone in the wrong direction, return NO_TRADE.
+4. PENDING LIMIT (NO LIVE CONFIRMATION): We are placing a PENDING LIMIT at a FRESH, UNTOUCHED zone - price will NOT fill now, it fills WHEN price reaches the zone. Do NOT require a live retest, a live rejection wick, or a live volume spike at the CURRENT price to validate the zone. The zone is valid when ALL of these hold:
+   - it is fresh and unmitigated (no full traversal since formation);
+   - the DISPLACEMENT at formation was genuine (wick + volume on the displacement leg, not on the current candle);
+   - an unused opposing liquidity pool is available as TP1 with RR >= 2.00;
+   - stop is structural beyond the zone, at least 4.50 points (XAU);
+   - entry at the proximal edge in the bias direction (above reference for SELL, below for BUY).
+   Intraday recovery against the bias does NOT veto a SELL_LIMIT at a fresh bearish zone above reference; it IS the counter-move a bearish trader waits for.
+   NO_TRADE is valid only when NO zone satisfies these rules.
 
 === MARKET CONTEXT & REACTION ===
 === CRT & MSNR LOGIC ===
@@ -286,6 +294,7 @@ VALIDATION RULES (the parser will enforce these):
 - On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0; confidence = 0; timeframe_used = "NONE"; management = "NONE".
 - On BUY_LIMIT/SELL_LIMIT: every price must trace to a candle in the supplied blocks. Never invent a level.
 - sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.
+- A pending-limit position requires NO live retest at the current price. Requiring live price confirmation to validate an untouched zone is a contract violation.
 - If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.
 - price_action_confirmation must mention the candle body/wick ratio and volume spikes.
 - session_volatility_check must state whether the SL and TP are sized correctly for the current session ATR.
