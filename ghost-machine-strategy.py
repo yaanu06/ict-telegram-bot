@@ -23,18 +23,18 @@ STEP 1. Derive the Section L bias from the last three contiguous closed 1D candl
 STEP 2. Identify the last completed 4H MSS.
 STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps.
 STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS from the sweep list.
-STEP 5. Compute the killzone from SERVER_TIME_UTC and report it in the audit object. The killzone is information, never a veto — NONE does NOT force NO_TRADE. Asian-session setups are permitted only under the STEP 7 Asia rules.
+STEP 5. Compute the killzone from SERVER_TIME_UTC and report it in the audit object. The killzone is information, never a veto — NONE does NOT force NO_TRADE. Asian-session setups follow the STEP 7 session guidance.
 STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles. Is price currently TRENDING, RANGING, or CONSOLIDATING?
 STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
         You MUST align this setup with the current session context:
 
         - IF LONDON or NEW YORK: Look for the standard 2.0+ RR. You can target the opposite session high/low (PDH/PDL). Stop loss can be tight (but never inside the sweep wick).
 
-        - IF ASIA SESSION:
-          1. The Asian range usually forms between 00:00 and 07:00 UTC.
-          2. Do NOT target far-away 1H/4H pools. Your TP1 MUST be the opposite edge of the Asian Range (Asia High or Asia Low).
-          3. You MUST use a wider stop loss (minimum 7.00 points for XAU) because Asian liquidity is thin and stop-hunts are common.
-          4. If the RR to the opposite edge of the Asian range is less than 2.00, you MUST return NO_TRADE. (Do not force a trade if the range is too tight).
+        - IF ASIA SESSION (00:00-07:00 UTC, thin liquidity):
+          1. Evaluate candidates under the SAME rules as London/New York: entry at the proximal edge, nearest opposing unused pool as TP1, RR measured against that pool, RR >= 2.00 required, normal freshness and displacement rules.
+          2. Minimum stop loss for XAU during Asia is 7.00 points because Asian liquidity is thin and stop-hunts are common (both directions).
+          3. Asian-range targeting (TP at the opposite edge of the developing Asian Range) is permitted ONLY when that range is complete and offers at least as good an RR as the normal candidate; never mandatory, never a veto.
+          4. If no genuine compliant setup exists on that scan, return NO_TRADE; never fabricate one.
 STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.
 STEP 9. Emit the JSON object.
 
@@ -88,7 +88,7 @@ Directional priority:
 
 === SECTION N: KILLZONE ===
 Compute from SERVER_TIME_UTC using fixed UTC windows. No DST adjustments.
-  ASIA:              00:00-07:00 UTC   (thin liquidity - enforce the STEP 7 Asia rules)
+  ASIA:              00:00-07:00 UTC   (thin liquidity - STEP 7 guidance applies, not a veto)
   LONDON:            07:00-11:00 UTC
   LONDON/NY OVERLAP: 11:00-12:00 UTC   (highest liquidity - INSIDE)
   NEW YORK:          12:00-15:00 UTC
@@ -96,7 +96,7 @@ Compute from SERVER_TIME_UTC using fixed UTC windows. No DST adjustments.
 KILLZONE REPORTING (NO VETO): The killzone is informational only. If the computed window is
 "NONE" (Outside Killzone), the trade MAY still be taken; report the window honestly and lower
 the confidence accordingly (OFF_SESSION-style cap, confidence <= 50). The killzone never forces
-NO_TRADE by itself. Asian-session setups are permitted only under the STEP 7 Asia rules.
+NO_TRADE by itself. Asian-session setups follow the STEP 7 normal-session rules with the 7.00-point Asia stop floor.
 The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === SETUP CONSTRUCTION ===
@@ -158,7 +158,7 @@ RISK/REWARD:
   REWARD = |tp1 - entry|
   RR_TP1 = REWARD / RISK (two decimals, verify)
 RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE. Never fabricate a target or tighten the stop past a valid invalidation to fix RR.
-- ASIAN RANGE RULE: During the Asia session, you are forbidden from targeting the PDH/PDL or London High/Low unless they are inside the Asian Range. You must target the opposite side of the Asian Range. If price is already near the middle of the Asian range, return NO_TRADE.
+- ASIAN RANGE RULE: Asian-range TP targeting (opposite edge of the developing Asian Range) is allowed and preferred only when the range is complete and offers the better RR; it is never mandatory and never a veto. Otherwise treat Asia like any London/New York session under the normal candidate rules. If price is mid-range, fall back to normal candidates; do NOT force NO_TRADE solely because the Asia range is incomplete.
 
 === WORKED ACCEPTANCE EXAMPLE ===
 BULLISH Section L bias. London-low TIER_1 bullish sweep at 1H 2026-10-28T06:00
