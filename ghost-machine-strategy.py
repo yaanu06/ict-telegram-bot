@@ -19,6 +19,12 @@ candle, price, timestamp, volume or level. The levels in MACRO CONTEXT are
 context only. The raw 1D/4H/1H/15M/5M rows are the only price facts.
 
 RM/2. PENDING-LIMIT SEMANTICS (read first): this is a PENDING-LIMIT strategy.
+RM/3. DATA FRESHNESS (mandatory gate): the packet prints MARKET_STATUS
+and REFERENCE_FRESHNESS. If MARKET_STATUS is not OPEN, or
+REFERENCE_FRESHNESS is not ALIGNED (latest closed 5M candle is not
+the expected one - the feed is lagging or the market is closed), the
+packet is STALE - return NO_TRADE. Do not arm limit orders on a
+stale or closed market.
 Entry sits AHEAD of the current price and fills only when price reaches the
 zone. Do NOT require any live confirmation at the current tick. Zone-interest
 must be evaluated from (a) the candle pattern that formed the zone, (b) fresh
@@ -232,6 +238,7 @@ VALIDATION RULES (the parser will enforce these):
 - crt_msnr_confirmation must name the CRT A/B/C, the TBS sweep, or the confirmed 4H MSS and MSNR trap (or 'MSNR: NOT_CONFIRMED')
 - Trend Continuation requires a confirmed 4H MSS in the Tier 1 bias direction; counter-bias setups without it are invalid
 - audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)
+- MARKET_STATUS must be OPEN and REFERENCE_FRESHNESS must be ALIGNED before a trade can be armed; otherwise NO_TRADE
 - 5M timeframe is NOT allowed for entry zones; nested entry is 15M preferred or 1H only
 - A nested zone must NOT have had its far edge wicked through; such a zone is invalid
 - Trend Continuation / counter-bias entries require the confirming 4H MSS
