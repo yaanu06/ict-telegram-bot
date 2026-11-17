@@ -74,9 +74,11 @@ TIER 2 - TRIGGERS (two co-equal families — find them, then find the zone insid
      sweep. TBS tightness rule: the sweep of the Asia boundary and the
      close back inside MUST occur within 2 consecutive 1H candles; if
      price meanders for hours before reclaiming, it is a breakout/consolidation,
-     not a TBS sweep. TBS freshness: if the TBS sweep occurred more than 3 closed
-     1H candles ago, the setup is STALE and must be rejected — TBS is a
-     momentum strategy, it cannot be armed 5 hours after the session open.
+      not a TBS sweep. TBS freshness: if the TBS sweep occurred more than 6
+      closed 1H candles ago, the setup is STALE and must be rejected — TBS
+      remains a morning momentum strategy. Within 6 closed 1H candles of
+      the sweep, the setup is still current; entry may be placed at the
+      proximal edge of the nested zone.
 
   C. TREND CONTINUATION (fresh FVG/OB in the daily-bias direction):
      Allowed ONLY when the 4H MSS is confirmed IN THE DIRECTION OF THE TIER
@@ -205,7 +207,7 @@ Do NOT write any prose outside the code block.
   "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",
   "crt_msnr_confirmation": "<1 sentence naming the CRT trigger (A/B/C timestamps) or the TBS sweep, and the MSNR trap that formed the zone; write 'MSNR: NOT_CONFIRMED' when absent>",
   "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or the proximal edge of the CRT/TBS displacement leg, and the displacement was aggressive>",
-  "price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike (>= 1.0x the average of the prior 3 candles, OR a displacement body/range ratio above 0.70 for a strong close) of the DISPLACEMENT candle>",
+  "price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the displacement validation: either volume >= 1.0x the average of the prior 3 candles, OR body/range > 0.70 (strong close) which is full displacement validity REGARDLESS of volume. Do NOT require both. Do NOT apply a 2x, 1.2x, or any other extra multiplier. State which branch was used.>",
   "session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly for the current session's ATR>",
   "entry": <number|null>,
   "stop_loss": <number|null>,
