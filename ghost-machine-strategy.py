@@ -59,7 +59,6 @@ TIER 2 - TRIGGERS (two co-equal families — find them, then find the zone insid
      A CRT trigger = A -> B -> C. Cite A, B, C with timestamps and levels.
      Zone isolation: the tradeable zone is the FIRST imbalance (FVG or
      OB) created by the displacement leg immediately after the sweep wick
-     OB) created by the displacement leg immediately after the sweep wick
      B. Do NOT arm zones formed before the sweep or from older
      displacements. The nested entry zone must be on the 15M or the 1H
      timeframe; 5M is NOT allowed. Entry must sit ahead of the current
@@ -71,7 +70,10 @@ TIER 2 - TRIGGERS (two co-equal families — find them, then find the zone insid
      BACK INSIDE the Asia range, that session swept TBS. The tradeable zone
      is the FVG or OB created by that session's reversal leg, again the
      FIRST imbalance formed by the displacement immediately following the
-     sweep. TBS freshness: if the TBS sweep occurred more than 3 closed
+     sweep. TBS tightness rule: the sweep of the Asia boundary and the
+     close back inside MUST occur within 2 consecutive 1H candles; if
+     price meanders for hours before reclaiming, it is a breakout/consolidation,
+     not a TBS sweep. TBS freshness: if the TBS sweep occurred more than 3 closed
      1H candles ago, the setup is STALE and must be rejected — TBS is a
      momentum strategy, it cannot be armed 5 hours after the session open.
 
@@ -143,6 +145,8 @@ For each surviving trigger, compute:
   - Nested zone fully traversed/filled before entry: skip.
   - Any candle has WICKED THROUGH the far edge of the nested zone, even
     without closing through: the liquidity is consumed. Invalid. Skip.
+  - TBS sweep not contained in 2 consecutive 1H candles: not a TBS sweep;
+    it is a breakout or consolidation. Reject this candidate.
   - 4H/1H CHoCH or MSS flips to the opposite direction: all active triggers
     are invalid. Skip.
   - 4H MSS that confirms Trend Continuation is later body-closed back through
@@ -187,7 +191,7 @@ Do NOT write any prose outside the code block.
   "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",
   "crt_msnr_confirmation": "<1 sentence naming the CRT trigger (A/B/C timestamps) or the TBS sweep, and the MSNR trap that formed the zone; write 'MSNR: NOT_CONFIRMED' when absent>",
   "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or the proximal edge of the CRT/TBS displacement leg, and the displacement was aggressive>",
-  "price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike (>= 1.2x the average of the prior 3 candles) of the DISPLACEMENT candle>",
+  "price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike (>= 1.0x the average of the prior 3 candles, OR a displacement body/range ratio above 0.70 for a strong close) of the DISPLACEMENT candle>",
   "session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly for the current session's ATR>",
   "entry": <number|null>,
   "stop_loss": <number|null>,
@@ -249,7 +253,7 @@ VALIDATION RULES (the parser will enforce these):
 - On BUY_LIMIT/SELL_LIMIT: every price must trace to a candle in the supplied blocks. Never invent a level
 - sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge
 - If entry is at the 50% equilibrium or distal edge, it is a contract violation
-- price_action_confirmation must mention the candle body/wick ratio and volume spikes
+- price_action_confirmation must mention the candle body/wick ratio and volume spikes (>= 1.0x of prior 3 candles, or displacement body/range > 0.70)
 - session_volatility_check must state whether the SL and TP are sized correctly for the current session ATR
 - Do NOT include extra fields
 """
