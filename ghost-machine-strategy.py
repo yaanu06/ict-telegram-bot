@@ -32,6 +32,13 @@ TIER 1 - DIRECTION (1D, then 4H):
   tiebreaker confirms or downgrades to RANGE. A confirmed bias is mandatory.
   RANGE means no directional trade unless a named 4H MSS supplies direction.
 
+=== MSS DEFINITION ===
+A valid 4H MSS (used for Trend Continuation and for counter-bias CHoCH
+confirmation) MUST be a CLOSE of a 4H BODY beyond a confirmed 4H swing high
+or low. A confirmed 4H swing = a high/low strictly above/below the two 4H
+candles on each side (2 preceding and 2 following). Do NOT use 1H or 15M
+swings for MSS confirmation; lower-timeframe flips are noise.
+
 TIER 2 - TRIGGERS (two co-equal families — find them, then find the zone inside):
 
   A. CRT (Candle Range Theory - sweep + reclaim bar):
@@ -44,8 +51,11 @@ TIER 2 - TRIGGERS (two co-equal families — find them, then find the zone insid
      3. RECLAIM (C): a later CLOSED candle C breaks B's opposite high/low in
         the reversal direction WITHOUT first closing beyond the swept extreme.
      A CRT trigger = A -> B -> C. Cite A, B, C with timestamps and levels.
-     The tradeable zone is the FVG or OB created by the displacement leg C;
-     it is the FIRST imbalance formed immediately after the sweep wick B.
+     Zone isolation: the tradeable zone is the FIRST imbalance (FVG or
+     OB) created by the displacement leg immediately after the sweep wick
+     B. Do NOT arm zones formed before the sweep or from older
+     displacements. Entry must sit ahead of the current price (bullish:
+     below reference; bearish: above reference).
 
   B. TBS (Time-Based Supply - classic ICT pre-session boundary pool):
      Pools = ASIA_HIGH / ASIA_LOW (in MACRO CONTEXT). When the LONDON or
@@ -56,14 +66,16 @@ TIER 2 - TRIGGERS (two co-equal families — find them, then find the zone insid
 
   C. TREND CONTINUATION (fresh FVG/OB in the daily-bias direction):
      Allowed ONLY when the 4H MSS is confirmed IN THE DIRECTION OF THE TIER
-     1 BIAS (e.g., bearish bias requires a confirmed 4H MSS to the downside,
-     not a bullish one). Price must be CURRENTLY PULLING BACK INTO an OB/FVG
-     formed in the bias direction, nested or otherwise; this happens without
-     a CRT/TBS sweep or reclaim. Construction rules:
-     1. 4H MSS confirmed in Tier 1 bias direction (body-close break of a
-        confirmed 4H swing; the MSS must still be valid — not invalidated by a
+     1 BIAS (see MSS DEFINITION above). Price must be CURRENTLY PULLING BACK
+     INTO an OB/FVG formed in the bias direction by THE SAME displacement
+     leg THAT CAUSED the MSS. Construction rules:
+     1. 4H MSS confirmed in Tier 1 bias direction (see MSS DEFINITION above;
+        must still be valid — not invalidated by a
         later body-close back through the broken level).
-     2. Fresh FVG/OB in the bias direction — formed AFTER the confirming MSS.
+     2. Fresh FVG/OB in the bias direction — formed by THE SAME
+        displacement leg THAT CAUSED the MSS. The nested 15M/5M FVG must
+        be the FIRST imbalance of that displacement; an FVG hours later,
+        or an older adjacent zone, is an ORPHANED ZONE and must be rejected.
         Never exhausted, never fully traversed.
      3. Entry at the proximal edge of that OB/FVG (bullish: zone high;
         bearish: zone low), currently ahead of current price.
@@ -120,8 +132,12 @@ For each surviving trigger, compute:
 
 === SELECTION & RANKING ===
   1. Tier 1 bias alignment is mandatory (counter-bias CRT/TBS are valid ONLY
-     when a named 4H/1H MSS/CHoCH confirms the reversal; counter-bias
-     Trend Continuation is ALWAYS invalid).
+     when a named 4H/1H MSS/CHoCH confirms the reversal, as defined in
+     the MSS DEFINITION above; counter-bias Trend Continuation is
+     ALWAYS invalid). Counter-bias entries must sit at the FVG/OB left
+     by THAT same confirmed MSS/CHoCH break. If price has already
+     body-closed through that nested zone, the counter-bias setup is
+     invalid — never chase the break.
   2. Trigger freshness: prefer the trigger formed in the last few candles
      (1H/15M/5M) - a CRT/TBS already many candles old has dead momentum.
   3. Distance: nearest proximal edge.
@@ -198,6 +214,9 @@ VALIDATION RULES (the parser will enforce these):
 - crt_msnr_confirmation must name the CRT A/B/C, the TBS sweep, or the confirmed 4H MSS and MSNR trap (or 'MSNR: NOT_CONFIRMED')
 - Trend Continuation requires a confirmed 4H MSS in the Tier 1 bias direction; counter-bias setups without it are invalid
 - audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)
+- Trend Continuation / counter-bias entries require the confirming 4H MSS
+  and the nested zone untraversed; price already body-closed through the
+  nested zone is invalid
 - Killzone is informational only; NONE caps confidence at 50, never forces NO_TRADE
 - On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0; confidence = 0; timeframe_used = "NONE"; management = "NONE"
 - On BUY_LIMIT/SELL_LIMIT: every price must trace to a candle in the supplied blocks. Never invent a level
