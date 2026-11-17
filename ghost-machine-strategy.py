@@ -2,13 +2,14 @@
 
 This is a prompt document, not an executable trading bot. The Markdown also
 contains factual multi-timeframe OHLCV rows and the MACRO CONTEXT levels.
-Design: CRT/TBS-FIRST PENDING-LIMIT. The model hunts a CRT/TBS trigger,
-then maps the FVG/OB inside it as the trade. Raw candles only.
+Design: CRT/TBS/CONTINUATION PENDING-LIMIT. The model hunts a CRT, TBS or
+Trend Continuation trigger, then maps the FVG/OB inside it as the trade.
+Raw candles only.
 """
 
-STRATEGY_NAME = "Ghost Machine - CRT/TBS First Edition"
-STRATEGY_VERSION = "V3.0-CRT-TBS-FIRST"
-PROMPT_CONTRACT_VERSION = "CRT_TBS_CLEAR_V1"
+STRATEGY_NAME = "Ghost Machine - CRT/TBS/Continuation Pending-Limit"
+STRATEGY_VERSION = "V3.1-CRT-TBS-CONTINUATION"
+PROMPT_CONTRACT_VERSION = "CRT_TBS_CONTINUATION_V1"
 REQUIRED_TIMEFRAMES = ("1D", "4H", "1H", "15M", "5M")
 
 STRATEGY_PROMPT = r"""
@@ -31,8 +32,7 @@ TIER 1 - DIRECTION (1D, then 4H):
   tiebreaker confirms or downgrades to RANGE. A confirmed bias is mandatory.
   RANGE means no directional trade unless a named 4H MSS supplies direction.
 
-TIER 2 - TRIGGERS (find the CRT/TBS FIRST, then the zone inside it):
-  The bot uses ONLY these as triggers:
+TIER 2 - TRIGGERS (two co-equal families — find them, then find the zone inside):
 
   A. CRT (Candle Range Theory - sweep + reclaim bar):
      1. REFERENCE CANDLE (A): the most recent CLOSED 4H or 1D candle whose
@@ -54,11 +54,32 @@ TIER 2 - TRIGGERS (find the CRT/TBS FIRST, then the zone inside it):
      is the FVG or OB created by that session's reversal leg, again the
      FIRST imbalance formed by the displacement.
 
-  Co-plan: Once a CRT or TBS trigger is located, map the nested FVG/OB
-  INSIDE that displacement leg - those zones are the trade; a bare FVG/OB
-  with NO CRT/TBS parent is NOT a setup. If a trigger exists but every
-  nested zone is exhausted/misoriented/too far/RR<2, or none exists at all,
-  return NO_TRADE.
+  C. TREND CONTINUATION (fresh FVG/OB in the daily-bias direction):
+     Allowed ONLY when the 4H MSS is confirmed IN THE DIRECTION OF THE TIER
+     1 BIAS (e.g., bearish bias requires a confirmed 4H MSS to the downside,
+     not a bullish one). Price must be CURRENTLY PULLING BACK INTO an OB/FVG
+     formed in the bias direction, nested or otherwise; this happens without
+     a CRT/TBS sweep or reclaim. Construction rules:
+     1. 4H MSS confirmed in Tier 1 bias direction (body-close break of a
+        confirmed 4H swing; the MSS must still be valid — not invalidated by a
+        later body-close back through the broken level).
+     2. Fresh FVG/OB in the bias direction — formed AFTER the confirming MSS.
+        Never exhausted, never fully traversed.
+     3. Entry at the proximal edge of that OB/FVG (bullish: zone high;
+        bearish: zone low), currently ahead of current price.
+     4. Nested 15M/5M imbalance inside the 4H/1H zone required when one
+        exists; otherwise the 4H/1H proximal edge.
+     5. Stop beyond the most recent structural swing that bracketed the
+        pullback (opposite edge of the pullback leg), minimum 4.50 XAU.
+     6. TP1 = nearest unused opposing liquidity pool. RR >= 2.00 required.
+     A Trend Continuation setup is INVALID without the confirmed 4H MSS or
+     if the 4H structure flips to an opposite MSS later.
+
+  Co-plan: Once a CRT, TBS or Trend Continuation trigger is located, map the
+  nested FVG/OB INSIDE that displacement leg - those zones are the trade.
+  If triggers exist but every nested zone is exhausted/misoriented/too far/
+  RR<2, or none exists at all (and no confirmed 4H MSS for
+  Trend Continuation), return NO_TRADE.
 
 TIER 3 - ENTRY (15M and 5M preferred inside the nested zone):
   The pending-limit entry belongs at the proximal edge of the nested zone:
@@ -90,13 +111,17 @@ For each surviving trigger, compute:
   - Price retraced ALL the way back to the sweep wick B after the reclaim
     before moving to target: the trap is played out. Skip.
   - Nested zone fully traversed/filled before entry: skip.
-  - 4H/1H CHoCH or MSS invalidates the reference: skip.
+  - 4H/1H CHoCH or MSS flips to the opposite direction: all active triggers
+    are invalid. Skip.
+  - 4H MSS that confirms Trend Continuation is later body-closed back through
+    the broken level: the continuation structure is invalid. Skip.
   - If price has already entered the nested zone completely (no proximal
     edge remains): skip that entry candidate.
 
 === SELECTION & RANKING ===
   1. Tier 1 bias alignment is mandatory (counter-bias CRT/TBS are valid ONLY
-     when a named 4H/1H MSS/CHoCH confirms the reversal).
+     when a named 4H/1H MSS/CHoCH confirms the reversal; counter-bias
+     Trend Continuation is ALWAYS invalid).
   2. Trigger freshness: prefer the trigger formed in the last few candles
      (1H/15M/5M) - a CRT/TBS already many candles old has dead momentum.
   3. Distance: nearest proximal edge.
@@ -118,7 +143,7 @@ Do NOT write any prose outside the code block.
 
 {
   "action": "BUY_LIMIT|SELL_LIMIT|NO_TRADE",
-  "setup": "CANDLE_RANGE_SWEEP|FVG_FILL|OB_RETEST|TBS_SWEEP|LIQUIDITY_SWEEP|NONE",
+  "setup": "CANDLE_RANGE_SWEEP|FVG_CONTINUATION|OB_CONTINUATION|TBS_SWEEP|LIQUIDITY_SWEEP|NONE",
   "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",
   "crt_msnr_confirmation": "<1 sentence naming the CRT trigger (A/B/C timestamps) or the TBS sweep, and the MSNR trap that formed the zone; write 'MSNR: NOT_CONFIRMED' when absent>",
   "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or the proximal edge of the CRT/TBS displacement leg, and the displacement was aggressive>",
@@ -161,7 +186,7 @@ Do NOT write any prose outside the code block.
       "inside": true
     }
   },
-  "reason": "<evidence: A/B/C or Asia sweep ts + levels, nested-zone bounds, stop, TP1 pool why unused, RR calc, bias justification>"
+  "reason": "<evidence: A/B/C, Asia sweep or 4H MSS ts + levels, nested-zone bounds, stop, TP1 pool why unused, RR calc, bias justification>"
 }
 
 VALIDATION RULES (the parser will enforce these):
@@ -170,7 +195,8 @@ VALIDATION RULES (the parser will enforce these):
 - rr_tp1 must equal (|tp1 - entry| / |entry - stop_loss|) to two decimals
 - rr_tp1 must be >= 2.00 for BUY_LIMIT or SELL_LIMIT
 - For XAU/USD, |entry - stop_loss| must be >= 4.50
-- crt_msnr_confirmation must name the CRT A/B/C or the TBS sweep and the MSNR trap (or 'MSNR: NOT_CONFIRMED')
+- crt_msnr_confirmation must name the CRT A/B/C, the TBS sweep, or the confirmed 4H MSS and MSNR trap (or 'MSNR: NOT_CONFIRMED')
+- Trend Continuation requires a confirmed 4H MSS in the Tier 1 bias direction; counter-bias setups without it are invalid
 - audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)
 - Killzone is informational only; NONE caps confidence at 50, never forces NO_TRADE
 - On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0; confidence = 0; timeframe_used = "NONE"; management = "NONE"
