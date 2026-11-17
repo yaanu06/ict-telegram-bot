@@ -11342,13 +11342,13 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.audit.killzone.computed_window).toBe('LONDON');
     });
 
-    it('rejects an audit response with killzone NONE and a non-NO_TRADE action', () => {
+    it('accepts an audit response with killzone NONE and a non-NO_TRADE action (NONE is informational)', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(auditResponse({
             audit: { ...auditResponse().audit, killzone: { server_time_utc: '2026-10-28T22:00:00.000Z', computed_window: 'NONE', inside: false } }
         })));
-        expect(parsed.issues).toContain('AUDIT_KILLZONE_NONE_REQUIRES_NO_TRADE');
-        expect(parsed.valid).toBe(false);
+        expect(parsed.issues).not.toContain('AUDIT_KILLZONE_NONE_REQUIRES_NO_TRADE');
+        expect(parsed.valid).toBe(true);
     });
 
     it('enforces the 2dp RR arithmetic and the 2.00 RR floor', () => {

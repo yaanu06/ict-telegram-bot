@@ -30465,7 +30465,7 @@ function normalizePendingLimitTargetOrder(decision = {}, action = null) {
 // V2.7.2 audit contract (friend's raw-candle strategy). Accepts the exact
 // JSON the V2.7.2 prompt produces and enforces the VALIDATION RULES it ships:
 // ordering, RR>=2 at 2dp, 4.50 minimum risk for gold, five per-timeframe
-// sweeps with both directions, killzone NONE => NO_TRADE, zero geometry on
+// sweeps with both directions, killzone informational (never a veto), zero geometry on
 // NO_TRADE. Kept alongside the legacy validator because both contracts exist
 // in the field; the legacy path stays byte-for-byte compatible.
 function normalizeV272AuditJson(json, options = {}) {
@@ -30588,14 +30588,12 @@ function normalizeV272AuditJson(json, options = {}) {
             add('AUDIT_BREAKS_INVALID');
         }
         const killzone = audit.killzone;
-        if (!isObject(killzone)) {
+            if (!isObject(killzone)) {
             add('AUDIT_KILLZONE_INVALID');
         } else {
             const windowName = String(killzone.computed_window ?? '').toUpperCase();
             if (!['ASIA', 'LONDON', 'OVERLAP', 'NEW_YORK', 'NONE'].includes(windowName)) {
                 add('AUDIT_KILLZONE_INVALID');
-            } else if (windowName === 'NONE' && action !== 'NO_TRADE') {
-                add('AUDIT_KILLZONE_NONE_REQUIRES_NO_TRADE');
             }
             if (!isIso(killzone.server_time_utc)) add('AUDIT_KILLZONE_INVALID');
             if (typeof killzone.inside !== 'boolean') add('AUDIT_KILLZONE_INVALID');

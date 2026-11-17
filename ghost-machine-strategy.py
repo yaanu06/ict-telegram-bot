@@ -16,6 +16,32 @@ You are the Ghost Machine. Read the raw closed candles yourself. No deterministi
 UNIVERSE: use only the CSV candles in this packet. Never invent a candle, price, timestamp, volume or level.
 MACRO CONTEXT: DAILY_BIAS, daily OHLC, PDH/PDL and completed session highs/lows are context only. The raw 1D/4H candles own higher-timeframe structure; 1H/15M/5M own intraday formation and execution.
 
+=== TOP-DOWN CASCADE (direction -> analysis -> entry) ===
+This strategy is applied as a strict three-tier cascade. Each tier only
+informs the next; no tier authorizes a trade by itself.
+
+TIER 1 - DIRECTION (1D, then 4H):
+  Section L daily bias from the last three contiguous closed 1D candles; the
+  4H MSS tiebreaker confirms or downgrades to RANGE. A confirmed bias is
+  mandatory. A counter-bias trade is rejected unless a named 4H MSS exists
+  in that sweep's direction (Section M directional priority). RANGE means no
+  directional trade unless a named 4H MSS supplies direction.
+
+TIER 2 - ANALYSIS & LIQUIDITY (4H and 1H):
+  Map confirmed swings, PDH/PDL, session highs/lows and FVG/OB/CRT/MSNR
+  zones and their lifecycles on the 4H and 1H blocks. Only zones aligned
+  with the Tier 1 direction are candidates. This tier decides WHERE a
+  setup lives; it does not decide the entry price.
+
+TIER 3 - ENTRY (15M and 5M preferred inside the winning Tier 2 zone):
+  the pending-limit entry belongs to the 15M or 5M imbalance/OB nested
+  inside the chosen 1H/4H zone. Prefer the nested LTF proximal edge; if no
+  usable nested LTF zone exists, fall back to the proximal edge of the
+  chosen 1H/4H zone itself. Either way, the limit sits at the proximal
+  edge of ONE influencing zone. Entry must be in the Tier 1 direction;
+  never trade against it. A nested 15M/5M zone aligned with both the Tier 1
+  bias and a Tier 2 zone is the highest-quality setup.
+
 === DEEPSEEK REASONING PROTOCOL (READ FIRST) ===
 You are running in THINK MODE. Follow this exact sequence:
 
@@ -23,18 +49,18 @@ STEP 1. Derive the Section L bias from the last three contiguous closed 1D candl
 STEP 2. Identify the last completed 4H MSS.
 STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps.
 STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS from the sweep list.
-STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE. Asian-session setups are permitted only under the STEP 7 Asia rules.
+STEP 5. Compute the killzone from SERVER_TIME_UTC and report it in the audit object. The killzone is information, never a veto — NONE does NOT force NO_TRADE. Asian-session setups follow the STEP 7 session guidance.
 STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles. Is price currently TRENDING, RANGING, or CONSOLIDATING?
-STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
+STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3. Apply the TOP-DOWN CASCADE: (1) Tier 1 fixes direction; (2) Tier 2 maps the 4H/1H zone; (3) Tier 3 picks the entry - prefer a 15M/5M imbalance nested inside it, otherwise fall back to the 1H/4H proximal edge. A trade against the Tier 1 direction is invalid.
         You MUST align this setup with the current session context:
 
         - IF LONDON or NEW YORK: Look for the standard 2.0+ RR. You can target the opposite session high/low (PDH/PDL). Stop loss can be tight (but never inside the sweep wick).
 
-        - IF ASIA SESSION:
-          1. The Asian range usually forms between 00:00 and 07:00 UTC.
-          2. Do NOT target far-away 1H/4H pools. Your TP1 MUST be the opposite edge of the Asian Range (Asia High or Asia Low).
-          3. You MUST use a wider stop loss (minimum 7.00 points for XAU) because Asian liquidity is thin and stop-hunts are common.
-          4. If the RR to the opposite edge of the Asian range is less than 2.00, you MUST return NO_TRADE. (Do not force a trade if the range is too tight).
+        - IF ASIA SESSION (00:00-07:00 UTC, thin liquidity):
+          1. Evaluate candidates under the SAME rules as London/New York: entry at the proximal edge, nearest opposing unused pool as TP1, RR measured against that pool, RR >= 2.00 required, normal freshness and displacement rules.
+          2. Minimum stop loss for XAU during Asia is 7.00 points because Asian liquidity is thin and stop-hunts are common (both directions).
+          3. Asian-range targeting (TP at the opposite edge of the developing Asian Range) is permitted ONLY when that range is complete and offers at least as good an RR as the normal candidate; never mandatory, never a veto.
+          4. If no genuine compliant setup exists on that scan, return NO_TRADE; never fabricate one.
 STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.
 STEP 9. Emit the JSON object.
 
@@ -88,21 +114,38 @@ Directional priority:
 
 === SECTION N: KILLZONE ===
 Compute from SERVER_TIME_UTC using fixed UTC windows. No DST adjustments.
-  ASIA:              00:00-07:00 UTC   (thin liquidity - enforce the STEP 7 Asia rules)
+  ASIA:              00:00-07:00 UTC   (thin liquidity - STEP 7 guidance applies, not a veto)
   LONDON:            07:00-11:00 UTC
   LONDON/NY OVERLAP: 11:00-12:00 UTC   (highest liquidity - INSIDE)
   NEW YORK:          12:00-15:00 UTC
 
-CRITICAL RULE: If the computed window is "NONE" (Outside Killzone), you are strictly FORBIDDEN from returning a trade. You must return action "NO_TRADE". Asian-session setups are permitted only under the STEP 7 Asia rules.
+KILLZONE REPORTING (NO VETO): The killzone is informational only. If the computed window is
+"NONE" (Outside Killzone), the trade MAY still be taken; report the window honestly and lower
+the confidence accordingly (OFF_SESSION-style cap, confidence <= 50). The killzone never forces
+NO_TRADE by itself. Asian-session setups follow the STEP 7 normal-session rules with the 7.00-point Asia stop floor.
 The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === SETUP CONSTRUCTION ===
+1. Apply the TOP-DOWN CASCADE: Tier 1 fixes direction; Tier 2 locates the
+   4H/1H zone; Tier 3 prefers a 15M/5M entry nested inside it. A trade
+   against the Tier 1 direction is invalid. A nested 15M/5M imbalance inside
+   a 1H/4H zone is the highest-quality candidate; the bare 1H/4H proximal
+   edge is the fallback candidate.
 
 === CURRENT OPPORTUNITY & SNIPER ENTRY ===
 1. AGGRESSIVE DISPLACEMENT: The leg leaving the Order Block must be violent. If the market slowly grinded out, do not trade it.
-2. PROXIMAL EDGE OR FVG: If current price is ABOVE the zone, place the entry at the proximal edge (top of Bullish OB).
+2. PROXIMAL EDGE, EXPLICIT: For a BUY_LIMIT (bullish OB/FVG below price) the proximal edge is the BOTTOM edge; for a SELL_LIMIT (bearish OB/FVG above price) the proximal edge is the TOP edge. The pending-limit entry sits at the proximal edge, never at the far/distal edge. An entry on the wrong side of current price is a contract violation.
+   PROXIMAL EDGE OR FVG: If current price is ABOVE the zone, place the entry at the proximal edge (top of Bullish OB).
    HOWEVER, if current price is ALREADY INSIDE the Order Block, do NOT return NO_TRADE. Find the nearest FVG (Fair Value Gap) or imbalance inside or just below current price, and place the limit order there.
 3. NO CHASING: If current price is already more than 2.0 points (XAU) away from the zone in the wrong direction, return NO_TRADE.
+4. PENDING LIMIT (NO LIVE CONFIRMATION): We are placing a PENDING LIMIT at a FRESH, UNTOUCHED zone - price will NOT fill now, it fills WHEN price reaches the zone. Do NOT require a live retest, a live rejection wick, or a live volume spike at the CURRENT price to validate the zone. The zone is valid when ALL of these hold:
+   - it is fresh and unmitigated (no full traversal since formation);
+   - the DISPLACEMENT at formation was genuine (wick + volume on the displacement leg, not on the current candle);
+   - an unused opposing liquidity pool is available as TP1 with RR >= 2.00;
+   - stop is structural beyond the zone, at least 4.50 points (XAU);
+   - entry at the proximal edge in the bias direction (above reference for SELL, below for BUY).
+   Intraday recovery against the bias does NOT veto a SELL_LIMIT at a fresh bearish zone above reference; it IS the counter-move a bearish trader waits for.
+   NO_TRADE is valid only when NO zone satisfies these rules.
 
 === MARKET CONTEXT & REACTION ===
 === CRT & MSNR LOGIC ===
@@ -116,8 +159,8 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
    aligns (London or NY Killzones).
 
 === PRECISION PRICE ACTION & VOLUME ===
-1. REJECTION WICKS: The sweep candle must show clear rejection. A valid sweep has a long wick (at least 2x the size of its body) and a small body, closing back inside the range. Do not trade if the sweep candle has a large body closing near the extreme.
-2. VOLUME CLIMAX: Check the 'volume' column in the CSV. The sweep candle and the immediate displacement candle must show a spike in volume compared to the previous 3 candles. High volume = institutional participation.
+1. REJECTION WICKS (HISTORICAL vs LIVE): For a PENDING LIMIT at an untouched zone, the rejection wick belongs to the DISPLACEMENT candle that formed the zone (in the past). Do NOT reject a zone just because the CURRENT price has not reached it yet. Only if price has ALREADY reached the zone (live retest) must the current sweep candle show the 2x wick rejection.
+2. VOLUME CLIMAX (HISTORICAL vs LIVE): Check the 'volume' column in the CSV. The displacement candle at formation must show a spike to at least 1.2x the average volume of the 3 candles before it. Do NOT invent a higher threshold. A 1.2x-2.0x volume reading is a valid spike; only below-average or flat volume disqualifies. For a PENDING LIMIT at an untouched zone, the spike belongs to the DISPLACEMENT candle (past), not the current candle. If price is currently reacting inside the zone, cite the live reaction candle's volume versus the previous 3 candles instead.
 3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement). If the price grinds slowly back to the OB over many candles, the momentum is dead, and it is likely to break through the zone. Do not trade slow grinds.
 
 ORDER BLOCK:
@@ -155,7 +198,7 @@ RISK/REWARD:
   REWARD = |tp1 - entry|
   RR_TP1 = REWARD / RISK (two decimals, verify)
 RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE. Never fabricate a target or tighten the stop past a valid invalidation to fix RR.
-- ASIAN RANGE RULE: During the Asia session, you are forbidden from targeting the PDH/PDL or London High/Low unless they are inside the Asian Range. You must target the opposite side of the Asian Range. If price is already near the middle of the Asian range, return NO_TRADE.
+- ASIAN RANGE RULE: Asian-range TP targeting (opposite edge of the developing Asian Range) is allowed and preferred only when the range is complete and offers the better RR; it is never mandatory and never a veto. Otherwise treat Asia like any London/New York session under the normal candidate rules. If price is mid-range, fall back to normal candidates; do NOT force NO_TRADE solely because the Asia range is incomplete.
 
 === WORKED ACCEPTANCE EXAMPLE ===
 BULLISH Section L bias. London-low TIER_1 bullish sweep at 1H 2026-10-28T06:00
@@ -174,7 +217,7 @@ Result: ENTRY=4034.00  SL=4027.50  TP1=4065.70
 === RAW CANDLE AI REVIEW INSTRUCTION ===
 Analyze the raw candles independently. Follow the DEEPSEEK REASONING PROTOCOL in order.
 Derive the Section L bias. Identify the 4H MSS. Enumerate all sweeps.
-Compute killzone per Section N. If outside, RETURN NO_TRADE.
+Compute killzone per Section N. Report it; it is information, never a veto.
 Read the current market context. Select the primary thesis using Section M directional priority.
 Construct the sniper candidate: OB body, entry, stop, TP1/TP2/TP3.
 Prioritize CRT and MSNR traps. Enter at the proximal edge, or use the nearest FVG/imbalance if price is already inside the OB; do not chase a missed zone.
@@ -182,10 +225,14 @@ Confirm the sweep rejection wick (body/wick ratio) and the volume spike versus t
 ENFORCE THE DYNAMIC STOP LOSS: Place the stop safely beyond the sweep wick + 0.50 buffer. Enforce the 4.50 point absolute minimum.
 VERIFY ARITHMETIC TWICE.
 If no qualifying setup exists, return action "NO_TRADE" with zero geometry.
-Output the exact JSON object defined in the OUTPUT CONTRACT. No prose, no markdown, no extra fields.
+Output the exact JSON object defined in the FINAL OUTPUT FORMAT. No prose, no markdown outside the code block, no extra fields.
 
-=== OUTPUT CONTRACT ===
-Reply with a SINGLE JSON object. No prose before or after. No markdown fences.
+=== FINAL OUTPUT FORMAT (STRICT) ===
+Reply with ONLY a single JSON object.
+You MUST wrap the entire JSON object inside a standard Markdown code block using the language identifier `json`.
+Start with ```json and end with ```.
+Do NOT write any conversational prose, explanations, or text before or after the code block.
+Do NOT use your platform's native JSON viewer; output the raw Markdown fenced block exactly as requested.
 
 {
   "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",
@@ -193,7 +240,7 @@ Reply with a SINGLE JSON object. No prose before or after. No markdown fences.
   "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",
   "crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",
   "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",
-  "price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike on the sweep>",
+  "price_action_confirmation": "<1 sentence explaining the rejection wick size (body vs wick) and the volume spike of the DISPLACEMENT candle that formed the OB/FVG. If price is currently inside the zone, cite the live reaction wick instead.>",
   "session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly for the current session's ATR>",
   "entry": <number>,
   "stop_loss": <number>,
@@ -241,12 +288,14 @@ VALIDATION RULES (the parser will enforce these):
 - rr_tp1 must equal (|tp1 - entry| / |entry - stop_loss|) to two decimals
 - rr_tp1 must be >= 2.00 for BUY_LIMIT or SELL_LIMIT
 - For XAU/USD, (|entry - stop_loss|) must be >= 4.50
-- crt_msnr_confirmation must name both the CRT sweep and the MSNR retail trap
+- crt_msnr_confirmation must name the CRT sweep and MSNR trap that formed the zone. A live sweep at the current price is NOT required for a pending limit at an untouched zone.
+- Cascade tiers must be applied in order: Tier 1 fixes direction, Tier 2 maps the zone, Tier 3 picks the entry. A candidate that ignores the Tier 1 direction or ignores nesting preference is a contract violation.
 - audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)
-- If computed_window is NONE: action MUST be NO_TRADE.
+- Killzone is informational only: NONE may NOT force NO_TRADE. A NONE window caps confidence at 50 (OFF_SESSION style) and MUST be reported; otherwise nothing else changes.
 - On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0; confidence = 0; timeframe_used = "NONE"; management = "NONE".
 - On BUY_LIMIT/SELL_LIMIT: every price must trace to a candle in the supplied blocks. Never invent a level.
 - sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.
+- A pending-limit position requires NO live retest at the current price. Requiring live price confirmation to validate an untouched zone is a contract violation.
 - If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.
 - price_action_confirmation must mention the candle body/wick ratio and volume spikes.
 - session_volatility_check must state whether the SL and TP are sized correctly for the current session ATR.
