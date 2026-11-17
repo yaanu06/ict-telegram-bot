@@ -66,8 +66,9 @@ TIER 2 - TRIGGERS (two co-equal families — find them, then find the zone insid
 
   B. TBS (Time-Based Supply - classic ICT pre-session boundary pool):
      Pools = ASIA_HIGH / ASIA_LOW (in MACRO CONTEXT). When the LONDON or
-     NEW YORK killzone wicks beyond the Asia high (or Asia low) and closes
-     BACK INSIDE the Asia range, that session swept TBS. The tradeable zone
+     PRE-LONDON window (05:00-07:00 UTC), the LONDON or NEW YORK killzone wicks
+     beyond the Asia high (or Asia low) and closes BACK INSIDE the Asia range,
+     that session swept TBS. The tradeable zone
      is the FVG or OB created by that session's reversal leg, again the
      FIRST imbalance formed by the displacement immediately following the
      sweep. TBS tightness rule: the sweep of the Asia boundary and the
@@ -186,7 +187,7 @@ CONFIDENCE MODIFIERS:
   Never select an exhausted trigger. Never fabricate a candidate.
 
 === SESSIONS ===
-  - LONDON 07:00-11:00 UTC, OVERLAP 11:00-12:00, NEW YORK 12:00-15:00.
+  - PRE-LONDON 05:00-07:00 UTC (valid TBS sweep window), LONDON 07:00-11:00 UTC, OVERLAP 11:00-12:00, NEW YORK 12:00-15:00.
   - Killzone is informational only: NONE never blocks a trade. If NONE,
     confidence <= 50 and the window is reported in audit.killzone.
   - ASIA (00:00-07:00 UTC): same rules as London/NY, minimum 7.00-point XAU
@@ -239,7 +240,7 @@ Do NOT write any prose outside the code block.
     ],
     "killzone": {
       "server_time_utc": "<timestamp>",
-      "computed_window": "ASIA|LONDON|OVERLAP|NEW_YORK|NONE",
+      "computed_window": "ASIA|PRE_LONDON|LONDON|OVERLAP|NEW_YORK|NONE",
       "inside": true
     }
   },

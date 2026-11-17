@@ -30592,7 +30592,7 @@ function normalizeV272AuditJson(json, options = {}) {
             add('AUDIT_KILLZONE_INVALID');
         } else {
             const windowName = String(killzone.computed_window ?? '').toUpperCase();
-            if (!['ASIA', 'LONDON', 'OVERLAP', 'NEW_YORK', 'NONE'].includes(windowName)) {
+            if (!['ASIA', 'PRE_LONDON', 'LONDON', 'OVERLAP', 'NEW_YORK', 'NONE'].includes(windowName)) {
                 add('AUDIT_KILLZONE_INVALID');
             }
             if (!isIso(killzone.server_time_utc)) add('AUDIT_KILLZONE_INVALID');
