@@ -11325,9 +11325,6 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             killzone: { server_time_utc: '2026-10-28T08:00:00.000Z', computed_window: 'LONDON', inside: true }
         },
         reason: 'Bullish TIER_1 London-low sweep at 1H; entry in OB body; TP1 unused PDH; RR=4.88.',
-        candidates_evaluated: [
-            { id: 'CANDIDATE-1H-BULLISH-28', trigger: 'CRT', zone: '4026.90-4030.40', entry: 4034, rr: 4.88, rejection_reason: null }
-        ],
         ...overrides
     });
 
@@ -11345,13 +11342,13 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(parsed.audit.killzone.computed_window).toBe('LONDON');
     });
 
-    it('accepts an audit response with killzone NONE and a non-NO_TRADE action (NONE is informational)', () => {
+    it('rejects an audit response with killzone NONE and a non-NO_TRADE action', () => {
         const ctx = getContext();
         const parsed = ctx.parseRawCandleAIActionResponse(JSON.stringify(auditResponse({
             audit: { ...auditResponse().audit, killzone: { server_time_utc: '2026-10-28T22:00:00.000Z', computed_window: 'NONE', inside: false } }
         })));
-        expect(parsed.issues).not.toContain('AUDIT_KILLZONE_NONE_REQUIRES_NO_TRADE');
-        expect(parsed.valid).toBe(true);
+        expect(parsed.issues).toContain('AUDIT_KILLZONE_NONE_REQUIRES_NO_TRADE');
+        expect(parsed.valid).toBe(false);
     });
 
     it('enforces the 2dp RR arithmetic and the 2.00 RR floor', () => {
