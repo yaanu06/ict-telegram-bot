@@ -53,16 +53,21 @@ TIER 2 - TRIGGERS (two co-equal families — find them, then find the zone insid
      A CRT trigger = A -> B -> C. Cite A, B, C with timestamps and levels.
      Zone isolation: the tradeable zone is the FIRST imbalance (FVG or
      OB) created by the displacement leg immediately after the sweep wick
+     OB) created by the displacement leg immediately after the sweep wick
      B. Do NOT arm zones formed before the sweep or from older
-     displacements. Entry must sit ahead of the current price (bullish:
-     below reference; bearish: above reference).
+     displacements. The nested entry zone must be on the 15M or the 1H
+     timeframe; 5M is NOT allowed. Entry must sit ahead of the current
+     price (bullish: below reference; bearish: above reference).
 
   B. TBS (Time-Based Supply - classic ICT pre-session boundary pool):
      Pools = ASIA_HIGH / ASIA_LOW (in MACRO CONTEXT). When the LONDON or
      NEW YORK killzone wicks beyond the Asia high (or Asia low) and closes
      BACK INSIDE the Asia range, that session swept TBS. The tradeable zone
      is the FVG or OB created by that session's reversal leg, again the
-     FIRST imbalance formed by the displacement.
+     FIRST imbalance formed by the displacement immediately following the
+     sweep. TBS freshness: if the TBS sweep occurred more than 3 closed
+     1H candles ago, the setup is STALE and must be rejected — TBS is a
+     momentum strategy, it cannot be armed 5 hours after the session open.
 
   C. TREND CONTINUATION (fresh FVG/OB in the daily-bias direction):
      Allowed ONLY when the 4H MSS is confirmed IN THE DIRECTION OF THE TIER
@@ -73,33 +78,40 @@ TIER 2 - TRIGGERS (two co-equal families — find them, then find the zone insid
         must still be valid — not invalidated by a
         later body-close back through the broken level).
      2. Fresh FVG/OB in the bias direction — formed by THE SAME
-        displacement leg THAT CAUSED the MSS. The nested 15M/5M FVG must
-        be the FIRST imbalance of that displacement; an FVG hours later,
-        or an older adjacent zone, is an ORPHANED ZONE and must be rejected.
+        displacement leg THAT CAUSED the MSS. The nested imbalance inside
+        that gap must be on the 15M or the 1H timeframe - never 5M. The
+        15M imbalance inside a 1H gap is the PREFERRED entry (tighter stop);
+        otherwise the 1H edge. an FVG hours later, or an older adjacent zone,
+        is an ORPHANED ZONE and must be rejected.
         Never exhausted, never fully traversed.
      3. Entry at the proximal edge of that OB/FVG (bullish: zone high;
         bearish: zone low), currently ahead of current price.
-     4. Nested 15M/5M imbalance inside the 4H/1H zone required when one
-        exists; otherwise the 4H/1H proximal edge.
+     4. Nested imbalance inside the 4H/1H zone must be on the 15M or the 1H
+        timeframe. Do NOT use 5M imbalances for the entry zone. If a 15M
+        imbalance sits inside the 1H gap, use the 15M proximal edge
+        (tighter stop); if the 1H displacement left the gap without a
+        15M imbalance, use the 1H proximal edge. 5M zones are noise.
      5. Stop beyond the most recent structural swing that bracketed the
         pullback (opposite edge of the pullback leg), minimum 4.50 XAU.
      6. TP1 = nearest unused opposing liquidity pool. RR >= 2.00 required.
      A Trend Continuation setup is INVALID without the confirmed 4H MSS or
      if the 4H structure flips to an opposite MSS later.
 
-  Co-plan: Once a CRT, TBS or Trend Continuation trigger is located, map the
-  nested FVG/OB INSIDE that displacement leg - those zones are the trade.
-  If triggers exist but every nested zone is exhausted/misoriented/too far/
-  RR<2, or none exists at all (and no confirmed 4H MSS for
+  Co-plan: Once a CRT, TBS or Trend Continuation trigger is located, map
+  the nested FVG/OB INSIDE that displacement leg - those zones are the
+  trade. Entry nesting is 15M (preferred) or 1H; 5M is NOT a valid entry
+  zone. If triggers exist but every nested zone is exhausted/misoriented/
+  too far/RR<2, or none exists at all (and no confirmed 4H MSS for
   Trend Continuation), return NO_TRADE.
 
-TIER 3 - ENTRY (15M and 5M preferred inside the nested zone):
+TIER 3 - ENTRY (15M preferred inside the nested zone; 1H allowed; 5M banned):
   The pending-limit entry belongs at the proximal edge of the nested zone:
-  for BUY_LIMIT the BOTTOM (proximal) edge of a bullish zone; for SELL_LIMIT
-  the TOP (proximal) edge of a bearish zone. If price is already inside the
-  HTF zone (FVG or OB), find the nested 15M/5M imbalance inside or just
-  below/above it (whichever the direction requires) and use that as the
-  pending candidate. Fallback: the proximal edge of the HTF zone itself.
+  for BUY_LIMIT the BOTTOM (proximal) edge of a bullish zone; for
+  SELL_LIMIT the TOP (proximal) edge of a bearish zone. The entry zone is
+  ALWAYS on the 15M or the 1H timeframe. If price is already inside the
+  HTF zone (FVG or OB), find the nested 15M imbalance inside or just
+  below/above it (whichever the direction requires); if none, use the
+  1H proximal edge. Fallback: the proximal edge of the HTF zone itself.
 
 === CANDIDATE CONSTRUCTION ===
 For each surviving trigger, compute:
@@ -123,6 +135,8 @@ For each surviving trigger, compute:
   - Price retraced ALL the way back to the sweep wick B after the reclaim
     before moving to target: the trap is played out. Skip.
   - Nested zone fully traversed/filled before entry: skip.
+  - Any candle has WICKED THROUGH the far edge of the nested zone, even
+    without closing through: the liquidity is consumed. Invalid. Skip.
   - 4H/1H CHoCH or MSS flips to the opposite direction: all active triggers
     are invalid. Skip.
   - 4H MSS that confirms Trend Continuation is later body-closed back through
@@ -132,14 +146,18 @@ For each surviving trigger, compute:
 
 === SELECTION & RANKING ===
   1. Tier 1 bias alignment is mandatory (counter-bias CRT/TBS are valid ONLY
-     when a named 4H/1H MSS/CHoCH confirms the reversal, as defined in
-     the MSS DEFINITION above; counter-bias Trend Continuation is
-     ALWAYS invalid). Counter-bias entries must sit at the FVG/OB left
+     when a named 4H(or 1D) MSS/CHoCH confirms the reversal, as defined
+     in the MSS DEFINITION above; counter-bias Trend Continuation is
+     ALWAYS invalid). A counter-bias CRT is valid only when B (the sweep)
+     took out a confirmed 4H or 1D swing. A sweep of a 1H swing is NOT
+     sufficient. The sweep + reclaim of the 4H/1D level IS the
+     structural shift for that trade; no separate 4H MSS is required
+     when the trigger is a 4H/1D-scale CRT. Counter-bias entries must sit at the FVG/OB left
      by THAT same confirmed MSS/CHoCH break. If price has already
      body-closed through that nested zone, the counter-bias setup is
      invalid — never chase the break.
   2. Trigger freshness: prefer the trigger formed in the last few candles
-     (1H/15M/5M) - a CRT/TBS already many candles old has dead momentum.
+     (1H/15M) - a CRT/TBS already many candles old has dead momentum.
   3. Distance: nearest proximal edge.
   4. RR: highest wins ties.
   Never select an exhausted trigger. Never fabricate a candidate.
@@ -214,6 +232,8 @@ VALIDATION RULES (the parser will enforce these):
 - crt_msnr_confirmation must name the CRT A/B/C, the TBS sweep, or the confirmed 4H MSS and MSNR trap (or 'MSNR: NOT_CONFIRMED')
 - Trend Continuation requires a confirmed 4H MSS in the Tier 1 bias direction; counter-bias setups without it are invalid
 - audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)
+- 5M timeframe is NOT allowed for entry zones; nested entry is 15M preferred or 1H only
+- A nested zone must NOT have had its far edge wicked through; such a zone is invalid
 - Trend Continuation / counter-bias entries require the confirming 4H MSS
   and the nested zone untraversed; price already body-closed through the
   nested zone is invalid
