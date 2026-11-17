@@ -170,6 +170,19 @@ For each surviving trigger, compute:
      (1H/15M) - a CRT/TBS already many candles old has dead momentum.
   3. Distance: nearest proximal edge.
   4. RR: highest wins ties.
+
+OVERLAP PREFERENCE (FVG vs OB):
+  If a displacement leg leaves BOTH a valid OB and a valid nested FVG, and
+  they overlap, select the entry that yields the HIGHEST RR (usually the
+  proximal edge closest to the current price). However, if the FVG sits
+  strictly inside the OB bounds, label the setup FVG_OB_CONFLUENCE and use
+  the FVG proximal edge for the entry and the OB far edge for the stop loss.
+
+CONFIDENCE MODIFIERS:
+  Base confidence: 70.
+  +10 if a TBS/CRT trigger aligns with a 1H/4H MSS.
+  +10 if the nested FVG is inside an OB.
+  -10 if the killzone is NONE or the volume is exactly 1.0x (marginal close).
   Never select an exhausted trigger. Never fabricate a candidate.
 
 === SESSIONS ===
@@ -187,7 +200,7 @@ Do NOT write any prose outside the code block.
 
 {
   "action": "BUY_LIMIT|SELL_LIMIT|NO_TRADE",
-  "setup": "CANDLE_RANGE_SWEEP|FVG_CONTINUATION|OB_CONTINUATION|TBS_SWEEP|LIQUIDITY_SWEEP|NONE",
+  "setup": "CANDLE_RANGE_SWEEP|FVG_CONTINUATION|OB_CONTINUATION|TBS_SWEEP|LIQUIDITY_SWEEP|FVG_OB_CONFLUENCE|NONE",
   "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",
   "crt_msnr_confirmation": "<1 sentence naming the CRT trigger (A/B/C timestamps) or the TBS sweep, and the MSNR trap that formed the zone; write 'MSNR: NOT_CONFIRMED' when absent>",
   "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or the proximal edge of the CRT/TBS displacement leg, and the displacement was aggressive>",
@@ -242,6 +255,8 @@ VALIDATION RULES (the parser will enforce these):
 - crt_msnr_confirmation must name the CRT A/B/C, the TBS sweep, or the confirmed 4H MSS and MSNR trap (or 'MSNR: NOT_CONFIRMED')
 - Trend Continuation requires a confirmed 4H MSS in the Tier 1 bias direction; counter-bias setups without it are invalid
 - audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)
+- Overlap: if the nested FVG is strictly inside the OB bounds, the setup MUST be labeled FVG_OB_CONFLUENCE, entry at the FVG proximal edge, SL at the OB far edge
+- Confidence must follow the modifiers, not be invented: base 70, +10 TBS/CRT aligned with MSS, +10 nested FVG inside OB, -10 NONE killzone or exactly 1.0x volume
 - MARKET_STATUS must be OPEN and REFERENCE_FRESHNESS must be ALIGNED before a trade can be armed; otherwise NO_TRADE
 - 5M timeframe is NOT allowed for entry zones; nested entry is 15M preferred or 1H only
 - A nested zone must NOT have had its far edge wicked through; such a zone is invalid
