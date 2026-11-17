@@ -18,6 +18,33 @@ RM/1. UNIVERSE: use only the CSV candles in this packet. Never invent a
 candle, price, timestamp, volume or level. The levels in MACRO CONTEXT are
 context only. The raw 1D/4H/1H/15M/5M rows are the only price facts.
 
+=== 4-STAGE PIPELINE (apply in order, do NOT skip Stage 2) ===
+
+STAGE 1 - CONTEXT: read daily bias from the last three contiguous closed 1D
+candles; derive the 4H MSS (or note NONE); read session/killzone/ATR from
+the packet's SERVER_TIME_UTC/SESSION lines. No trade decisions yet.
+
+STAGE 2 - DETECTION: list EVERY plausible trigger found in the packet. Do
+NOT reject a trigger just because its entry zone is not found yet. Your
+list may include: CRT (A->B->C), TBS (Asia boundary swept with close back
+inside within 2 consecutive 1H candles or less), and Trend Continuation
+(a fresh 4H/1H OB/FVG in the bias direction formed by the same
+displacement that caused the 4H MSS). For each trigger, note the
+timeframe, timestamps and the imbalance or OB it left behind.
+
+STAGE 3 - ENTRY CONSTRUCTION: for each detected trigger, locate the
+nested zone (15M or 1H; NOT 5M). Compute entry (proximal edge), stop
+(beyond the sweep wick/pullback bracket), TP1 (opposite A/Asia boundary
+or nearest unused pool), risk, RR, distance to reference price, lifecycle
+(untouched or already traversed) and age.
+
+STAGE 4 - QUALIFICATION: only approve candidates that pass ALL gates.
+Report the rest with a REJECTION reason: e.g., COUNTER_BIAS,
+NO_PARENT_TRIGGER, EXHAUSTED_ZONE, CONFIRMED_4H_MSS_ABSENT,
+INELIGIBLE_PARAMETERS (RR/distance), STOP_TOO_TIGHT, TARGET_TOO_FAR.
+Output this audit inside the "candidates_evaluated" field on EVERY reply --
+even NO_TRADE.
+
 RM/2. PENDING-LIMIT SEMANTICS (read first): this is a PENDING-LIMIT strategy.
 RM/3. DATA FRESHNESS (mandatory gate): the packet prints MARKET_STATUS
 and REFERENCE_FRESHNESS. If MARKET_STATUS is not OPEN, or
@@ -202,6 +229,11 @@ the language identifier `json`. Start with ```json and end with ```.
 Do NOT write any prose outside the code block.
 
 {
+  "candidates_evaluated": [
+    {"id": "<candidate id or null>", "trigger": "CRT|TBS|CONTINUATION|<null when none>",
+     "zone": "<zone bounds or null>", "entry": <number|null>, "rr": <number|null>,
+     "rejection_reason": "<reason or null when approved>"}
+  ],
   "action": "BUY_LIMIT|SELL_LIMIT|NO_TRADE",
   "setup": "CANDLE_RANGE_SWEEP|FVG_CONTINUATION|OB_CONTINUATION|TBS_SWEEP|LIQUIDITY_SWEEP|FVG_OB_CONFLUENCE|NONE",
   "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",
@@ -258,6 +290,7 @@ VALIDATION RULES (the parser will enforce these):
 - crt_msnr_confirmation must name the CRT A/B/C, the TBS sweep, or the confirmed 4H MSS and MSNR trap (or 'MSNR: NOT_CONFIRMED')
 - Trend Continuation requires a confirmed 4H MSS in the Tier 1 bias direction; counter-bias setups without it are invalid
 - audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)
+- candidates_evaluated must be present on every reply (including NO_TRADE), listing every candidate considered and its rejection_reason (or null when it won)
 - Overlap: if the nested FVG is strictly inside the OB bounds, the setup MUST be labeled FVG_OB_CONFLUENCE, entry at the FVG proximal edge, SL at the OB far edge
 - Confidence must follow the modifiers, not be invented: base 70, +10 TBS/CRT aligned with MSS, +10 nested FVG inside OB, -10 NONE killzone or exactly 1.0x volume
 - MARKET_STATUS must be OPEN and REFERENCE_FRESHNESS must be ALIGNED before a trade can be armed; otherwise NO_TRADE

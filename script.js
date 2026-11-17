@@ -30481,10 +30481,24 @@ function normalizeV272AuditJson(json, options = {}) {
         'action', 'setup', 'current_market_context', 'crt_msnr_confirmation',
         'sniper_zone_justification', 'price_action_confirmation', 'session_volatility_check',
         'entry', 'stop_loss', 'tp1', 'tp2', 'tp3', 'risk', 'rr_tp1', 'confidence',
-        'timeframe_used', 'management', 'audit', 'reason'
+        'timeframe_used', 'management', 'audit', 'reason', 'candidates_evaluated'
     ];
+    const candidatesEvaluated = Array.isArray(json.candidates_evaluated) ? json.candidates_evaluated : null;
+    // Candidates audit: mandatory on every reply so NO_TRADE always brings its
+    // own debug data (counts reasons per candidate rather than one-shot prose).
+    if (candidatesEvaluated !== null) {
+        if (candidatesEvaluated.length > 40) add('AUDIT_CANDIDATES_EVALUATED_INVALID');
+        else for (const candidate of candidatesEvaluated) {
+            if (!isObject(candidate)) add('AUDIT_CANDIDATES_EVALUATED_INVALID');
+            else if (candidate.trigger !== undefined && candidate.trigger !== null
+                && !['CRT', 'TBS', 'CONTINUATION', 'REVERSAL', 'MSNR', 'LIQUIDITY_SWEEP'].includes(String(candidate.trigger).toUpperCase())) {
+                add('AUDIT_CANDIDATES_EVALUATED_INVALID');
+            }
+        }
+    }
     const missing = required.filter(key => !Object.prototype.hasOwnProperty.call(json, key));
     if (missing.length) add('AUDIT_REQUIRED_FIELDS_MISSING');
+    if (candidatesEvaluated === null) add('AUDIT_CANDIDATES_EVALUATED_INVALID');
     if (Object.keys(json).some(key => !required.includes(key))) add('AUDIT_EXTRA_FIELDS');
     const action = String(json.action ?? '').trim().toUpperCase();
     if (!['BUY_LIMIT', 'SELL_LIMIT', 'NO_TRADE'].includes(action)) add('AUDIT_ACTION_INVALID');
@@ -30630,6 +30644,7 @@ function normalizeV272AuditJson(json, options = {}) {
         cancel_distance: null,
         fill_before_cancel: null,
         tp1_is_nearest_unused: null,
+        candidates_evaluated: candidatesEvaluated,
         valid: issues.length === 0,
         execution_allowed: issues.length === 0,
         issues,
@@ -30760,7 +30775,7 @@ function parseRawCandleAIActionResponse(rawResponse = '', options = {}) {
         // Structured evidence is optional; V6.2 quote/reachability and target-side fields remain mandatory.
         const allowedTopLevel = new Set([...required, 'audit_report', 'instrument_policy']);
         if (Object.keys(json).some(key => !allowedTopLevel.has(key))) add('RAW_JSON_EXTRA_FIELDS');
-        const action = String(json.action ?? '').trim().toUpperCase();
+    const action = String(json.action ?? '').trim().toUpperCase();
         const parsed = {
             action,
             setup: text(json.setup)?.toUpperCase() || null,

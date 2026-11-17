@@ -11325,6 +11325,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             killzone: { server_time_utc: '2026-10-28T08:00:00.000Z', computed_window: 'LONDON', inside: true }
         },
         reason: 'Bullish TIER_1 London-low sweep at 1H; entry in OB body; TP1 unused PDH; RR=4.88.',
+        candidates_evaluated: [
+            { id: 'CANDIDATE-1H-BULLISH-28', trigger: 'CRT', zone: '4026.90-4030.40', entry: 4034, rr: 4.88, rejection_reason: null }
+        ],
         ...overrides
     });
 
