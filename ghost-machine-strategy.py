@@ -28,7 +28,7 @@ TIER 1 - DIRECTION (1D, then 4H):
   directional trade unless a named 4H MSS supplies direction.
 
 TIER 2 - ANALYSIS & LIQUIDITY (4H and 1H):
-  Map confirmed swings, PDH/PDL, session highs/lows and FVG/OB/CRT/MSNR
+  Map confirmed swings, PDH/PDL, session highs/lows and FVG/OB/CRT/TBS/MSNR
   zones and their lifecycles on the 4H and 1H blocks. Only zones aligned
   with the Tier 1 direction are candidates. This tier decides WHERE a
   setup lives; it does not decide the entry price.
@@ -159,9 +159,12 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
    c. RECLAIM (C): a later CLOSED candle C breaks B's opposite high/low in
       the reversal direction WITHOUT first closing beyond the swept extreme.
    A CRT play is A (reference) -> B (sweep) -> C (reclaim/confirmation);
-   cite A, B, C with timestamps and levels. Entry belongs at the proximal
-   edge of the CRT-derived FVG/OB on the reversal leg. CRT is confluence,
-   never mandatory.
+   cite A, B, C with timestamps and levels. The CRT setup IS the trade: entry
+   at the proximal edge of the CRT-derived FVG/OB on the reversal leg, stop
+   beyond B's swept extreme + standard buffer, TP1 at the opposite edge of
+   the reference range A (or nearest unused opposing pool, whichever offers
+   the better RR). RR >= 2.00 required. CRT is a full setup, equal in standing
+   to FVG and OB — not merely supporting evidence.
 2. MSNR (Market Structure Neo-Retail): identify exactly where retail traders
    are trapped. A high-probability zone is one where the sweep clearly grabbed
    retail stop-losses before the displacement leg.
@@ -175,12 +178,15 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
    c. ENTRY: short at/below the sweep wick after a bearish TBS sweep of the
       Asia high, or long at/above the sweep wick after a bullish TBS sweep
       of the Asia low. LIMIT entry only, in the Tier 1 bias direction, with
-      stop beyond the sweep wick; target the opposite edge of the Asia range.
+      stop beyond the sweep wick; target the opposite edge of the Asia range
+      or nearest unused opposing pool, whichever offers the better RR. RR >=
+      2.00 required. The TBS sweep + reversal IS the trade setup — it does
+      not need an OB or FVG to exist first; it is a standalone entry candidate
+      equal in standing to FVG, OB and CRT setups.
    d. TBS applies ONLY during London/New York killzones (07:00-15:00 UTC,
-      including the 11:00-12:00 overlap). Outside those windows TBS is
-      information only, not a trigger.
-   e. TBS is confluence, never mandatory. If no TBS pool was swept, report
-      TBS as not present; do NOT force it.
+      including the 11:00-12:00 overlap). Outside those windows TBS is not a
+      qualifying setup at all.
+   e. If no TBS pool was swept, report TBS as not present; do NOT force it.
 
 === PRECISION PRICE ACTION & VOLUME ===
 1. REJECTION WICKS (HISTORICAL vs LIVE): For a PENDING LIMIT at an untouched zone, the rejection wick belongs to the DISPLACEMENT candle that formed the zone (in the past). Do NOT reject a zone just because the CURRENT price has not reached it yet. Only if price has ALREADY reached the zone (live retest) must the current sweep candle show the 2x wick rejection.
@@ -244,7 +250,7 @@ Derive the Section L bias. Identify the 4H MSS. Enumerate all sweeps.
 Compute killzone per Section N. Report it; it is information, never a veto.
 Read the current market context. Select the primary thesis using Section M directional priority.
 Construct the sniper candidate: OB body, entry, stop, TP1/TP2/TP3.
-Prioritize CRT and MSNR traps. Enter at the proximal edge, or use the nearest FVG/imbalance if price is already inside the OB; do not chase a missed zone.
+Prioritize CRT, TBS and MSNR traps. Enter at the proximal edge, or use the nearest FVG/imbalance if price is already inside the OB; do not chase a missed zone.
 Confirm the sweep rejection wick (body/wick ratio) and the volume spike versus the previous 3 candles.
 ENFORCE THE DYNAMIC STOP LOSS: Place the stop safely beyond the sweep wick + 0.50 buffer. Enforce the 4.50 point absolute minimum.
 VERIFY ARITHMETIC TWICE.
