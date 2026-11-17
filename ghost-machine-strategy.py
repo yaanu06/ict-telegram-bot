@@ -134,7 +134,8 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === CURRENT OPPORTUNITY & SNIPER ENTRY ===
 1. AGGRESSIVE DISPLACEMENT: The leg leaving the Order Block must be violent. If the market slowly grinded out, do not trade it.
-2. PROXIMAL EDGE OR FVG: If current price is ABOVE the zone, place the entry at the proximal edge (top of Bullish OB).
+2. PROXIMAL EDGE, EXPLICIT: For a BUY_LIMIT (bullish OB/FVG below price) the proximal edge is the BOTTOM edge; for a SELL_LIMIT (bearish OB/FVG above price) the proximal edge is the TOP edge. The pending-limit entry sits at the proximal edge, never at the far/distal edge. An entry on the wrong side of current price is a contract violation.
+   PROXIMAL EDGE OR FVG: If current price is ABOVE the zone, place the entry at the proximal edge (top of Bullish OB).
    HOWEVER, if current price is ALREADY INSIDE the Order Block, do NOT return NO_TRADE. Find the nearest FVG (Fair Value Gap) or imbalance inside or just below current price, and place the limit order there.
 3. NO CHASING: If current price is already more than 2.0 points (XAU) away from the zone in the wrong direction, return NO_TRADE.
 4. PENDING LIMIT (NO LIVE CONFIRMATION): We are placing a PENDING LIMIT at a FRESH, UNTOUCHED zone - price will NOT fill now, it fills WHEN price reaches the zone. Do NOT require a live retest, a live rejection wick, or a live volume spike at the CURRENT price to validate the zone. The zone is valid when ALL of these hold:
@@ -159,7 +160,7 @@ The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
 
 === PRECISION PRICE ACTION & VOLUME ===
 1. REJECTION WICKS (HISTORICAL vs LIVE): For a PENDING LIMIT at an untouched zone, the rejection wick belongs to the DISPLACEMENT candle that formed the zone (in the past). Do NOT reject a zone just because the CURRENT price has not reached it yet. Only if price has ALREADY reached the zone (live retest) must the current sweep candle show the 2x wick rejection.
-2. VOLUME CLIMAX (HISTORICAL vs LIVE): Check the 'volume' column in the CSV. For a PENDING LIMIT at an untouched zone, the volume spike belongs to the DISPLACEMENT candle that formed the zone (in the past) — check its volume versus the 3 candles before it. Do NOT reject a fresh zone just because the current live candle lacks a volume spike. If price is currently reacting inside the zone, then cite the live reaction candle's volume versus the previous 3 candles.
+2. VOLUME CLIMAX (HISTORICAL vs LIVE): Check the 'volume' column in the CSV. The displacement candle at formation must show a spike to at least 1.2x the average volume of the 3 candles before it. Do NOT invent a higher threshold. A 1.2x-2.0x volume reading is a valid spike; only below-average or flat volume disqualifies. For a PENDING LIMIT at an untouched zone, the spike belongs to the DISPLACEMENT candle (past), not the current candle. If price is currently reacting inside the zone, cite the live reaction candle's volume versus the previous 3 candles instead.
 3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement). If the price grinds slowly back to the OB over many candles, the momentum is dead, and it is likely to break through the zone. Do not trade slow grinds.
 
 ORDER BLOCK:
