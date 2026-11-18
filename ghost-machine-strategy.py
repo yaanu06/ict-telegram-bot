@@ -121,7 +121,7 @@ either direction on any timeframe is a contract violation.
 
 Directional priority:
   - A TIER_1 sweep in the direction of the confirmed bias is the primary thesis.
-  - A counter-bias TIER_1 sweep is NOT auto-discarded. A counter-bias reversal
+  - A counter-bias sweep (TIER_1, TIER_2 **or TIER_3**, in any session, including Asia) is NOT auto-discarded. A counter-bias reversal
     setup is allowed when a FRESH sweep (wick beyond a named prior swing,
     session boundary, or PDH/PDL level within the last 6 closed 1H candles)
     closed back inside AND a displacement candle following it displaced with
