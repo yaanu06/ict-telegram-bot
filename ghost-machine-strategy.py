@@ -20,12 +20,23 @@ MACRO CONTEXT: DAILY_BIAS, daily OHLC, PDH/PDL and completed session highs/lows 
 This strategy is applied as a strict three-tier cascade. Each tier only
 informs the next; no tier authorizes a trade by itself.
 
-TIER 1 - DIRECTION (1D, then 4H):
-  Section L daily bias from the last three contiguous closed 1D candles; the
-  4H MSS tiebreaker confirms or downgrades to RANGE. A confirmed bias is
-  mandatory. A counter-bias trade is rejected unless a named 4H MSS exists
-  in that sweep's direction (Section M directional priority). RANGE means no
-  directional trade unless a named 4H MSS supplies direction.
+TIER 1 - DIRECTION (1D, then 4H, then 1H):
+  Section L daily bias from the last three contiguous closed 1D candles; a
+  confirmed STRUCTURAL SHIFT (see STRUCTURAL SHIFT DEFINITION) on the 4H or
+  1H confirms or downgrades to RANGE. A confirmed bias is mandatory. A
+  counter-bias trade is rejected unless a named structural shift exists in
+  that sweep's direction (Section M directional priority). RANGE means no
+  directional trade unless a named structural shift supplies direction.
+
+=== STRUCTURAL SHIFT DEFINITION (1H- or 4H-scale body-close break) ===
+A STRUCTURAL SHIFT is any CLOSE of an open candle body BEYOND a confirmed
+swing on either the 4H or 1H timeframe. A confirmed 4H swing = high/low
+strictly above/below the two 4H candles on each side (2 preceding + 2
+following). A confirmed 1H swing = high/low strictly above/below the two 1H
+candles on each side (2 preceding + 2 following). RANGE requires a named 1H or
+4H structural shift in the wanted direction — without it, no bias is
+confirmed and no direction is issued. The audit JSON field 'four_hour_mss'
+carries this timestamp or NONE.
 
 TIER 2 - ANALYSIS & LIQUIDITY (4H and 1H):
   Map confirmed swings, PDH/PDL, session highs/lows and FVG/OB/CRT/MSNR
@@ -46,7 +57,7 @@ TIER 3 - ENTRY (15M and 5M preferred inside the winning Tier 2 zone):
 You are running in THINK MODE. Follow this exact sequence:
 
 STEP 1. Derive the Section L bias from the last three contiguous closed 1D candles.
-STEP 2. Identify the last completed 4H MSS.
+STEP 2. Identify the last completed structural shift (1H CHoCH or 4H MSS).
 STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps.
 STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS from the sweep list.
 STEP 5. Compute the killzone from SERVER_TIME_UTC and report it in the audit object. The killzone is information, never a veto — NONE does NOT force NO_TRADE. Asian-session setups follow the STEP 7 session guidance.
@@ -75,11 +86,12 @@ CONTIGUOUS - no rows between them may be skipped.
   BEARISH  iff  D1.high < D3.high AND D1.low < D3.low
   RANGE    otherwise
 
-4H MSS tiebreaker: identify the last completed 4H body-close break of a named
-4H swing high or low. If that MSS agrees with Section L, the bias is
-CONFIRMED. If it disagrees, treat as RANGE unless the MSS occurred within the
-last 3 closed 4H candles in the direction of Section L.
-RANGE = no directional trade unless a named 4H MSS supplies direction.
+STRUCTURAL SHIFT tiebreaker: identify the last completed body-close break of
+a confirmed swing (4H swing for a STRUCTURAL SHIFT, or a confirmed 1H swing).
+If that shift agrees with Section L, the bias is CONFIRMED. If it disagrees,
+treat as RANGE unless the shift occurred within the last 6 closed 1H candles
+in the direction of Section L.
+RANGE = no directional trade unless a named STRUCTURAL SHIFT supplies direction.
 The packet's DAILY_BIAS label is advisory. If Section L disagrees, use Section L.
 
 === SECTION M: SWEEP SCAN ===
@@ -108,8 +120,8 @@ either direction on any timeframe is a contract violation.
 
 Directional priority:
   - A TIER_1 sweep in the direction of the confirmed bias is the primary thesis.
-  - A counter-bias TIER_1 sweep is DISCARDED unless a named 4H MSS exists in
-    that sweep's direction.
+  - A counter-bias TIER_1 sweep is DISCARDED unless a named structural shift
+    (1H CHoCH or 4H MSS) exists in that sweep's direction.
   - If no sweep exists on any timeframe, return NO_TRADE.
 
 === SECTION N: KILLZONE ===
@@ -216,7 +228,7 @@ Result: ENTRY=4034.00  SL=4027.50  TP1=4065.70
 
 === RAW CANDLE AI REVIEW INSTRUCTION ===
 Analyze the raw candles independently. Follow the DEEPSEEK REASONING PROTOCOL in order.
-Derive the Section L bias. Identify the 4H MSS. Enumerate all sweeps.
+Derive the Section L bias. Identify the last structural shift (1H CHoCH or 4H MSS). Enumerate all sweeps.
 Compute killzone per Section N. Report it; it is information, never a veto.
 Read the current market context. Select the primary thesis using Section M directional priority.
 Construct the sniper candidate: OB body, entry, stop, TP1/TP2/TP3.
