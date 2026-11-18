@@ -24,9 +24,10 @@ TIER 1 - DIRECTION (1D, then 4H, then 1H):
   Section L daily bias from the last three contiguous closed 1D candles; a
   confirmed STRUCTURAL SHIFT (see STRUCTURAL SHIFT DEFINITION) on the 4H or
   1H confirms or downgrades to RANGE. A confirmed bias is mandatory. A
-  counter-bias trade is rejected unless a named structural shift exists in
-  that sweep's direction (Section M directional priority). RANGE means no
-  directional trade unless a named structural shift supplies direction.
+  counter-bias trade is accepted when a fresh sweep + displacement triggers
+  within the last 6 closed 1H candles (Section M directional priority).
+  RANGE means no directional trade unless a named structural shift supplies
+  direction.
 
 === STRUCTURAL SHIFT DEFINITION (1H- or 4H-scale body-close break) ===
 A STRUCTURAL SHIFT is any CLOSE of an open candle body BEYOND a confirmed
@@ -120,8 +121,16 @@ either direction on any timeframe is a contract violation.
 
 Directional priority:
   - A TIER_1 sweep in the direction of the confirmed bias is the primary thesis.
-  - A counter-bias TIER_1 sweep is DISCARDED unless a named structural shift
-    (1H CHoCH or 4H MSS) exists in that sweep's direction.
+  - A counter-bias TIER_1 sweep is NOT auto-discarded. A counter-bias reversal
+    setup is allowed when a FRESH sweep (wick beyond a named prior swing,
+    session boundary, or PDH/PDL level within the last 6 closed 1H candles)
+    closed back inside AND a displacement candle following it displaced with
+    volume >= 1.0x the prior 3 candles, OR body/range > 0.70 (strong close).
+    In that case the sweep+displacement IS the structural shift and no separate
+    1H/4H structural-shift confirmation is required. The pending-limit entry
+    sits at the proximal edge of the nested FVG/OB. If price has already
+    body-closed through every nested zone available, the setup is invalid even
+    if sweep evidence is present.
   - If no sweep exists on any timeframe, return NO_TRADE.
 
 === SECTION N: KILLZONE ===
