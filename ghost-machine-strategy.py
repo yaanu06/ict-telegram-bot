@@ -53,6 +53,15 @@ TIER 3 - ENTRY (15M and 5M preferred inside the winning Tier 2 zone):
   edge of ONE influencing zone. Entry must be in the Tier 1 direction;
   never trade against it. A nested 15M/5M zone aligned with both the Tier 1
   bias and a Tier 2 zone is the highest-quality setup.
+  FALLBACK RULE: if every 1H/4H zone in the bias direction has been fully
+  traversed or its far edge wicked through (so no Tier 2 zone is available
+  for nesting), a fresh 15M/5M imbalance/OB formed by a fresh sweep + fresh
+  displacement candle IS a valid Tier 3 candidate when: (i) the Tier 3
+  zone is aligned with Tier 1 direction, (ii) proximal edge is ahead of
+  reference price, (iii) it contains the displacement leg of a TIER_1 or
+  TIER_2 sweep (session/PDH/PDL/1H/4H level) within the last 6 closed 1H
+  candles, (iv) RR >= 2.00 and distance within the gate. Without the
+  Tier 1/Tier 2 sweep anchor, this fallback does not qualify.
 
 === DEEPSEEK REASONING PROTOCOL (READ FIRST) ===
 You are running in THINK MODE. Follow this exact sequence:
