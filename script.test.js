@@ -10927,11 +10927,13 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('YOU MUST CREATE A RANKED CANDIDATE LIST OF POIs:');
         expect(packet).toContain('STEP 4. ENTRY LOGIC (CASCADING LIMIT ORDERS):');
         expect(packet).toContain('SCENARIO A (TREND RETEST):');
-        expect(packet).toContain('If POI 1 is < 20 points away, DISCARD POI 1 and move to POI 2.');
+        expect(packet).toContain('Only discard when it is consumed (body close through the far edge).');
         expect(packet).toContain('STEP 5. SESSION QUALITY (CONFIDENCE MODIFIER — NEVER A VETO):');
         expect(packet).toContain('Outside PRIME, if you arm an order, set order_tag = "armed_off_session"');
         expect(packet).toContain('No 20-point abort rule here—just use');
-        expect(packet).toContain('Session quality alone is NEVER a NO_TRADE reason.');
+        expect(packet).toContain('Session quality, killzone, missing sweep, weak displacement, low volume, zone');
+        expect(packet).toContain('If at least one');
+        expect(packet).toContain('bias-aligned POI and one unused target pool exist, you MUST return a trade.');
         expect(packet).toContain('"htf_bias": "BULLISH" | "BEARISH" | "RANGE"');
         expect(packet).toContain('"momentum_check": "STRONG_IMPULSE" | "WEAK_RANGE"');
         expect(packet).toContain('"choch_detected": true | false');
@@ -10954,7 +10956,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('"tp1_pool_type": "LOW" | "HIGH" | null');
         expect(packet).toContain('"known_at": "<confirmation/period close UTC>"');
         expect(packet).not.toContain('3872.20');
-        expect(packet).toContain('If ALL POIs fail RR, return NO_TRADE.');
+        expect(packet).toContain('Preferred RR at TP1 = 2.00.');
+        expect(packet).toContain('If all POIs');
+        expect(packet).toContain('are below 1.00, relocate TP1 to the farthest unused pool, then arm if possible.');
         expect(packet).toContain('optionally same-POI +CRT and/or +MSNR');
         expect(packet).not.toContain('"htf_zone":');
         expect(packet).not.toContain('"audit": {');
@@ -11066,7 +11070,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         }
     });
 
-    it('keeps only fresh candidates in the verified math facts and ranks newest formation first', () => {
+    it('keeps aged but valid candidates in the verified math facts and ranks fresh actionable ones first', () => {
         const ctx = getContext();
         const t0 = Date.UTC(2026, 10, 13, 0, 0, 0);
         const makeRows = (timeframe, duration) => Array.from({ length: 30 }, (_, index) => ({
@@ -11110,18 +11114,19 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const facts = ctx.buildVerifiedMathFacts(replay, 'XAU/USD', 100.005, 2, replay.scan_as_of ? Date.parse(replay.scan_as_of) : undefined);
         const candidates = facts.candidate_math;
         expect(candidates).toEqual(expect.arrayContaining([
-            expect.objectContaining({ id: 'CANDIDATE-1H-BEARISH-27', target_pool_fresh: true })
+            expect.objectContaining({ id: 'CANDIDATE-1H-BEARISH-27', target_pool_fresh: true }),
+            expect.objectContaining({ id: 'CANDIDATE-4H-BEARISH-4', age_bucket: 'ESTABLISHED' })
         ]));
-        expect(candidates.map(candidate => candidate.id)).not.toContain('CANDIDATE-1H-BEARISH-0');
-        expect(Number(facts.rejection_counts.AGE_OVER_24H || 0)).toBeGreaterThanOrEqual(1);
+        expect(Number(facts.rejection_counts.AGE_OVER_24H || 0)).toBe(0);
         for (const candidate of candidates) {
-            expect(candidate.age_ms).toBeLessThanOrEqual(24 * 3600000);
+            expect(['FRESH', 'RECENT', 'ESTABLISHED', 'UNKNOWN']).toContain(candidate.age_bucket);
             expect(candidate.entry_consumed).toBe(false);
             expect(candidate.chase_target).toBe(false);
             expect(candidate.valid_until).toEqual(expect.any(String));
         }
-        const newest = Math.max(...candidates.map(candidate => Date.parse(candidate.formation_time)));
-        expect(Date.parse(candidates[0].formation_time)).toBe(newest);
+        const freshRank = candidates.find(candidate => candidate.id === 'CANDIDATE-1H-BEARISH-27').rank;
+        const agedRank = candidates.find(candidate => candidate.id === 'CANDIDATE-4H-BEARISH-4').rank;
+        expect(freshRank).toBeLessThan(agedRank);
     });
 
     it('classifies PRIME, SHOULDER, and OFF_SESSION UTC boundaries', () => {
@@ -11178,7 +11183,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             target_pool_definition_included: true,
             target_ladder_completeness_included: true,
             gold_minimum_stop_included: true,
-            hard_rr_gate_included: true,
+            rr_floor_documented_included: true,
             strict_json_schema_included: true
         });
     });
