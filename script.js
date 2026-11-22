@@ -20424,22 +20424,6 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 
 function buildRawCandleAiGhostRules() {
     return `=== GHOST MACHINE STRATEGY RULES === V6.2 (DIRECTIONAL LIQUIDITY TARGETS)
-=== MANDATORY ORDER OF OPERATIONS (READ FIRST) ===
-1. UNDERSTAND MARKET STRUCTURE FIRST: read the whole packet, then map
-   confirmed swings, BOS/CHoCH, the dealing range (premium/discount),
-   PDH/PDL, completed session highs/lows and the nearest unused pools.
-2. GET DIRECTION FROM THE 1D CANDLES: apply Section L to the last three
-   contiguous closed 1D candles. 1D decides BULLISH/BEARISH; if RANGE, use
-   the last 4H/1H body-close shift, then the nearer zone cluster. A 4H/1H
-   shift only confirms or downgrades confidence; it does not override 1D.
-3. ANALYZE WITH 4H AND 1H: list FVG/OB/CRT/MSNR zones with lifecycle and
-   name the level ("CRT setup at <level>", "1H bearish FVG at <low>-<high>").
-   A zone is dead only on a later body close through the far edge.
-4. PROVIDE ONE LEGIT PENDING LIMIT: choose one zone aligned with step 2 and
-   output BUY_LIMIT or SELL_LIMIT at its proximal edge. This is a FUTURE
-   entry: do NOT require a live retest, rejection wick, volume spike or
-   confirmation candle at current price. NO_TRADE only if no zone, no
-   target, wrong-side entry, or no reachable positive RR.
 ===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===
 1. OUTPUT FORMAT: STRICT_JSON.
 2. CONVERSATIONAL TEXT: FORBIDDEN. Do NOT write "Here is the analysis".
@@ -20453,15 +20437,10 @@ single quotes or escape embedded double quotes. Encode string newlines as \\n.
 Never output literal line breaks inside a JSON string or a second explanation.
 
 === CORE PRINCIPLE ===
-Offer the best actionable limit setup supported by this packet. This is a
-PENDING-LIMIT strategy: if a bias-aligned unmitigated POI and one opposing
-unused pool exist, ARM the best candidate instead of defaulting to NO_TRADE.
+Offer the best genuinely actionable limit setup supported by this packet.
 Never present a conditional swing order as today's active opportunity. Use only
 this packet's quote and closed candles; Search cannot replace the packet's prices.
-Quality gates rank candidates. They do not veto every setup. An old but
-untouched or partially intact zone remains a valid pending limit; only a
-consumed or fully traversed zone is dead. Return NO_TRADE only under the
-NO_TRADE RULES below.
+Do not guarantee a setup exists. Return NO_TRADE when the hard gates fail.
 
 === REASONING PROTOCOL ===
 
@@ -20543,11 +20522,9 @@ when its close time is later than QUOTE TIME.
 valid_until is the earlier of current UTC session end or next 1H candle close;
 rescan_if states the event or expiry that invalidates the analysis.
 
-Report entry_distance for every POI. Use an ATR(1H)-relative no-chase band:
-accept 0 < entry_distance <= 3.0*ATR(1H). Do not reject a zone for being
-older than 24h, for a wick touch, or for a PARTIAL lifecycle with a positive
-verified residual; only a body close through the far edge consumes it.
-Do not skip a valid residual due to rounding. State entry_distance
+Report entry_distance for every POI. Keep the existing 20-point Gold minimum as
+the no-chase floor; a POI touched by any later closed candle is consumed for a new
+pending entry. Do not skip a valid residual due to rounding. State entry_distance
 and compare it with the full realized range of the current UTC session from packet
 candles. If entry_distance exceeds that range, label the order CONDITIONAL_SWING,
 state the required move, and do not describe it as an active current-session setup.
@@ -20574,10 +20551,9 @@ when both distances are known and entry_distance is strictly less than
 cancel_distance; otherwise set it false. This comparison is informational only.
 A false value MUST NOT discard a valid candidate, cascade to another POI, or cause
 NO_TRADE. It does not predict which side price will reach first.
-Select candidates using the structural gates: unconsumed POI (FRESH, UNTOUCHED,
-PARTIAL or ESTABLISHED), correct pending side, entry_distance <= 3.0*ATR(1H),
-and a valid structural stop. RR >= 2.00 is preferred but not a veto: a valid
-candidate with RR >= 1.00 is armed at reduced confidence.
+Select candidates using the structural gates: fresh unconsumed POI, correct pending
+side, the 20-200 point distance rules, valid structural stop, and RR >= 2.00 to the
+nearest unused target.
 
 Evaluate CRT, MSNR and liquidity on EVERY run and explicitly mark each CONFIRMED
 or NOT_CONFIRMED with evidence in crt_msnr_confirmation. Missing evidence means
@@ -20597,14 +20573,12 @@ Standalone LIQUIDITY_SWEEP reversals require RANGE and a confirmed CHoCH.
 Trend-aligned FVG/OB retests, including CRT/MSNR confluence, do not require CHoCH.
 Because we use LIMIT ORDERS, we arm the order BEFORE price arrives.
 - SCENARIO A (TREND RETEST):
-  Select the nearest valid POI from your Candidate List whose entry_distance is
-  within 0 < distance <= 3.0*ATR(1H). Place the PENDING LIMIT at the proximal
-  edge of this zone.
-- Do NOT discard a valid POI merely because it is close, old, or wick-touched.
-  Only discard when it is consumed (body close through the far edge).
-- Do NOT market order. Do NOT chase a zone already closed through.
-- Arm the first valid POI in the direction of the HTF trend. If the nearest is
-  consumed, cascade to the next; if all are consumed, use NO_TRADE rules.
+  Select the nearest valid POI from your Candidate List that is >= 20 points away
+  from CURRENT_PRICE. Place the PENDING LIMIT at the proximal edge of this zone.
+- If POI 1 is < 20 points away, DISCARD POI 1 and move to POI 2.
+- If POI 2 is < 20 points away, DISCARD POI 2 and move to POI 3.
+- Do NOT market order. Do NOT chase. Arm the limit at the first valid,
+  distant POI in the direction of the HTF trend.
 
 STEP 5. SESSION QUALITY (CONFIDENCE MODIFIER — NEVER A VETO):
 - PRIME (London 07-11, Overlap 11-12, NY 12-15 UTC): Full confidence.
@@ -20679,9 +20653,8 @@ ENTRY, and BUY highs from lowest to highest above ENTRY. TP1 is the nearest
 eligible price, TP2 the next distinct eligible price, TP3 the next. Never skip an
 UNUSED intermediate eligible pool to reach a farther target or improve RR. If
 fewer than three eligible pools exist, set the remaining TP fields and their
-pool-type fields to null. If the nearest valid TP1 yields RR < 2.00, keep the
-POI and report the real RR at reduced confidence (cap 60). Only relocate TP1
-when it is truly consumed; do not skip a live TP1. Never invent targets.
+pool-type fields to null. If the nearest valid TP1 yields RR < 2.00, reject this
+POI and follow the existing POI cascade; do not skip TP1. Never invent targets.
 For SWEPT pools cite swept_at and the candle evidence in htf_context.
 The ladder must be strictly outward: BUY entry<TP1<TP2<TP3; SELL entry>TP1>TP2>TP3.
 For sweeps/rejections cite candle times and actual wick/body sizes. A high that merely
@@ -20689,9 +20662,8 @@ equals an earlier high is NOT proof of a sweep. No invented confirmations.
 Upper wick=high-max(open,close); lower wick=min(open,close)-low; body=abs(close-open).
 STRONG_IMPULSE requires all last 3 closed 1H volumes >1.5 times the last-20 average
 and large bodies; otherwise use WEAK_RANGE. Web search must not replace packet candles.
-Preferred RR at TP1 = 2.00. If RR < 2.00 but >= 1.00, arm the POI at reduced
-confidence; do not cascade away from a structurally valid zone. If all POIs
-are below 1.00, relocate TP1 to the farthest unused pool, then arm if possible.
+Minimum RR at TP1 = 2.00. If RR < 2.00, discard this POI and cascade
+to the next POI. If ALL POIs fail RR, return NO_TRADE.
 
 ${RAW_CANDLE_AI_OUTPUT_CONTRACT}
 
@@ -20714,16 +20686,14 @@ are explicitly UNTESTED_LEGACY; do not introduce ATR-based distance defaults.
 
 === NO_TRADE RULES ===
 Return NO_TRADE ONLY IF:
-1. There is NO unmitigated or positive-width residual POI in either direction.
-2. NO unused opposing pool exists on the profitable side of every POI.
-3. Every candidate would place the limit on the wrong side of CURRENT_PRICE
-   (BUY above price or SELL below price), or every candidate is consumed by a
-   body close through the far edge. fill_before_cancel=false alone is never a
-   NO_TRADE reason, and neither is a wick-only touch.
+1. There are NO unmitigated or positive-width verified residual POIs within
+   200 pts of CURRENT_PRICE.
+2. ALL available POIs fail the RR >= 2.00 test.
+3. Every candidate has already been consumed, is too close to place a pending
+   order without chasing, or only a conditional swing setup remains for a later
+   session. fill_before_cancel=false alone is never a NO_TRADE reason.
 4. The packet is stale or internally inconsistent (reason STALE_PACKET_RESCAN).
-Session quality, killzone, missing sweep, weak displacement, low volume, zone
-age, and RR < 2.00 are NEVER NO_TRADE reasons by themselves. If at least one
-bias-aligned POI and one unused target pool exist, you MUST return a trade.
+Session quality alone is NEVER a NO_TRADE reason.
 For NO_TRADE use setup=NONE, order_tag=none, expires_at=null, confidence=0,
 timeframe_used=NONE, management=NONE, and all entry/stop/target/risk/RR fields=null.
 Set tp1_pool_type, tp2_pool_type, and tp3_pool_type to null. Set
@@ -20866,7 +20836,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             target_pool_definition_included: ghostRulesText.includes('Swing definition: in each timeframe\'s chronological CLOSED candle rows'),
             target_ladder_completeness_included: ghostRulesText.replace(/\s+/g, ' ').includes('Never skip an UNUSED intermediate'),
             gold_minimum_stop_included: ghostRulesText.includes('max(4.50, 0.5xATR)'),
-            rr_floor_documented_included: ghostRules.some(rule => rule.includes('Preferred RR at TP1 = 2.00')),
+            hard_rr_gate_included: ghostRules.some(rule => rule.includes('Minimum RR at TP1 = 2.00')),
             strict_json_schema_included: ghostRules.some(rule => rule.startsWith('===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ==='))
         }
     };
@@ -20942,12 +20912,9 @@ function rawTextPackEntryConsumed(poi, block, zoneLow, zoneHigh) {
         startIndex = Math.max(0, block.candles.length - Math.floor(Number(poi.event_age_bars)));
     }
     if (!block || !Number.isInteger(startIndex)) return false;
-    // A pending limit is consumed only by a body close through the far edge.
-    // A wick that pierces the zone is a touch, not a fill, and must not kill
-    // an otherwise valid untouched or partially intact zone.
     return block.candles.slice(startIndex).some(candle => buy
-        ? Number(candle.c) < zoneLow
-        : Number(candle.c) > zoneHigh);
+        ? Number(candle.l) < zoneLow
+        : Number(candle.h) > zoneHigh);
 }
 
 // Mechanical facts for the external-AI packet.  These are deliberately
@@ -21195,45 +21162,45 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
                 entry_consumed: entryConsumed,
                 chase_target: chaseTarget,
                 valid_until: validUntilMs != null ? rawTextAuditTimestamp(validUntilMs) : null,
-                // Age is advisory. A pending limit at an untouched zone does
-                // not expire just because the zone is older than 24h; only a
-                // consumed or fully traversed zone is dead.
-                age_bucket: !Number.isFinite(ageMs) ? 'UNKNOWN'
-                    : ageMs <= 8 * 3600000 ? 'FRESH'
-                    : ageMs <= 24 * 3600000 ? 'RECENT' : 'ESTABLISHED',
                 _rejections: [
-                    ...(!correctSide ? ['WRONG_SIDE'] : []),
+                    ...(!(Number.isFinite(ageMs) && ageMs <= 24 * 3600000) ? ['AGE_OVER_24H'] : []),
                     ...(!target ? ['NO_UNUSED_TARGET_POOL'] : []),
                     ...(entryConsumed ? ['ENTRY_CONSUMED'] : []),
                     ...(chaseTarget ? ['PRICE_AT_TARGET'] : [])
                 ]
             };
         });
-    const annotated = candidates.map(candidate => {
-        candidate._rejections.forEach(noteRejection);
-        return { ...candidate, actionable: candidate._rejections.length === 0 };
-    });
-    const rankScore = candidate => (candidate.actionable ? 4 : 0)
-        + (candidate.htf_aligned ? 2 : 0)
-        + (candidate.freshness === 'FRESH' ? 1 : 0)
-        + (candidate.rr_gate_pass ? 1 : 0)
-        + (candidate.distance_gate_pass ? 1 : 0);
-    const ranked = annotated
+    const actionable = candidates
+        .filter(candidate => {
+            if (candidate._rejections.length) {
+                candidate._rejections.forEach(noteRejection);
+                return false;
+            }
+            return true;
+        });
+    const ranked = actionable
         .sort((left, right) => {
-            const numeric = value => Number.isFinite(Number(value)) ? Number(value) : -Infinity;
-            // Actionable, bias-aligned candidates always lead. Within the same
-            // tier, reward quality beats age because an old but unused pool is
-            // still a valid pending limit.
-            return rankScore(right) - rankScore(left)
-                || numeric(right.rr_tp1) - numeric(left.rr_tp1)
+            const leftPass = left.distance_gate_pass && left.rr_gate_pass ? 1 : 0;
+            const rightPass = right.distance_gate_pass && right.rr_gate_pass ? 1 : 0;
+            const freshnessRank = value => value === 'FRESH' ? 3 : value === 'RECENT' ? 2 : value === 'UNKNOWN' ? 1 : 0;
+            const formationRank = value => {
+                const time = Date.parse(String(value || ''));
+                return Number.isFinite(time) ? time : -Infinity;
+            };
+            // Final selection weighting: freshness first, then distance, then
+            // confluence.  Confluence only breaks ties between candidates that
+            // are equally fresh and comparably near.
+            return rightPass - leftPass
+                || freshnessRank(right.freshness) - freshnessRank(left.freshness)
+                || formationRank(right.formation_time) - formationRank(left.formation_time)
                 || left.entry_distance - right.entry_distance
                 || right.confluence_score - left.confluence_score
                 || right.quality_score - left.quality_score;
         })
-        .slice(0, 40)
+        .slice(0, 20)
         .map(candidate => {
             const { _rejections, ...clean } = candidate;
-            return { ...clean, rejection_reasons: _rejections };
+            return clean;
         })
         .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
     return {
@@ -21290,42 +21257,8 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         { name: 'NEW_YORK_LOW', value: macroLevels.new_york_low }
     ];
     const levelValue = value => value == null ? 'NONE' : rawTextPacketFormatNumber(value, precision);
-    const pendingLimitHeader = [
-        '=== GHOST MACHINE PENDING-LIMIT ORDER OF OPERATIONS (READ FIRST) ===',
-        'You are the Ghost Machine. This packet is raw closed-candle data for a',
-        'PENDING-LIMIT decision. Follow these four steps in order and output ONE',
-        'pending limit order.',
-        '',
-        '1. UNDERSTAND MARKET STRUCTURE FIRST. Read the whole packet. Map confirmed',
-        '   swing highs/lows, BOS/CHoCH, the dealing range (premium/discount),',
-        '   PDH/PDL, completed session highs/lows, and the nearest unused liquidity',
-        '   pools above and below price. State the structure before choosing a level.',
-        '2. GET DIRECTION FROM THE 1D CANDLES. Apply Section L to the last three',
-        '   contiguous closed 1D candles. 1D decides BULLISH/BEARISH. If RANGE, use',
-        '   the last 4H/1H body-close shift, then the nearer unmitigated zone cluster.',
-        '   The 4H/1H shift only confirms or downgrades confidence, never overrides 1D.',
-        '3. ANALYZE WITH 4H AND 1H. List FVG, OB, CRT and MSNR zones with lifecycle.',
-        '   Name each level explicitly: "CRT setup at <level>", "1H bearish FVG at',
-        '   <low>-<high>", "4H OB at <low>-<high>". A zone is dead only when a later',
-        '   body close goes through its far edge; a wick touch does not consume it.',
-        '   Pick the nearest unused opposing pool for TP1/TP2/TP3. Compute ATR(14).',
-        '4. PROVIDE ONE LEGIT PENDING LIMIT ORDER. Choose ONE zone aligned with step 2.',
-        '   Output BUY_LIMIT or SELL_LIMIT at its proximal edge. This is a FUTURE',
-        '   ENTRY: do NOT wait for a live retest, rejection wick, volume spike or',
-        '   confirmation candle at current price. The formation evidence (sweep +',
-        '   displacement + CRT/MSNR) validates the zone. If steps 1-3 found a valid',
-        '   zone and an unused target pool, you MUST output the trade. NO_TRADE is',
-        '   only for no zone, no target, wrong-side entry, or RR < 1.00.',
-        '',
-        'OUTPUT: one json block with action (BUY_LIMIT|SELL_LIMIT|NO_TRADE), setup,',
-        'current_market_context, crt_msnr_confirmation, sniper_zone_justification,',
-        'entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1, confidence, timeframe_used,',
-        'management and reason. Copy prices exactly from the closed rows.',
-        '',
-        '=== TIMEFRAME DATA ONLY ==='
-    ];
     const lines = [
-        ...pendingLimitHeader,
+        '=== TIMEFRAME DATA ONLY ===',
         'SYMBOL=' + symbol,
         'SERVER_TIME_UTC=' + serverClock.utc,
         'MARKET_STATUS=' + rawTextMarketPackMarketStatus(referenceAudit),
@@ -21969,72 +21902,33 @@ async function buildCurrentAiMarketPack() {
     const strategyResponse = await fetch(`ghost-machine-strategy.py?v=${encodeURIComponent(APP_BUILD_ID || 'current')}`, { cache: 'no-store' });
     if (!strategyResponse.ok) throw new Error('The embedded Ghost Machine strategy could not be loaded');
     const strategyText = await strategyResponse.text();
-    const verifiedFacts = buildCurrentVerifiedMathFacts(packet);
     const generatedAt = new Date().toISOString();
     const safeSymbol = packet.symbol.replace(/[^A-Z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'market';
     const timestamp = generatedAt.replace(/[:.]/g, '-');
-    const sections = [
-        '# Ghost Machine AI Market Pack',
-        '',
-        `- Symbol: ${packet.symbol}`,
-        `- Generated UTC: ${generatedAt}`,
-        '- Candle policy: CLOSED_ONLY',
-        '- Mandate: pending-limit first. If a bias-aligned unmitigated zone and one opposing unused pool exist, arm the best candidate. Do not default to NO_TRADE.',
-        '',
-        '## Current Ghost Machine Strategy',
-        '',
-        '~~~python',
-        strategyText.trim(),
-        '~~~',
-        '',
-        '## Raw Closed Timeframe Data',
-        '',
-        '~~~text',
-        packet.text.trim(),
-        '~~~',
-        ''
-    ];
-    if (verifiedFacts) {
-        sections.push(
-            '## Verified Arithmetic Context (ADVISORY - trust zone bounds, lifecycle, pools and RR)',
+    return {
+        markdown: [
+            '# Ghost Machine AI Market Pack',
             '',
-            'This block is computed locally from the same closed candles. Evaluate its',
-            'candidate_math rows before inventing a zone. A row with actionable=true and',
-            'bias_aligned=true is the default trade unless a candle fact contradicts it.',
-            'An age-only omission is not a rejection: ESTABLISHED untouched/partial zones',
-            'remain valid pending limits.',
+            `- Symbol: ${packet.symbol}`,
+            `- Generated UTC: ${generatedAt}`,
+            '- Candle policy: CLOSED_ONLY',
             '',
-            '~~~json',
-            JSON.stringify(verifiedFacts, null, 2),
+            '## Current Ghost Machine Strategy',
+            '',
+            '~~~python',
+            strategyText.trim(),
+            '~~~',
+            '',
+            '## Raw Closed Timeframe Data',
+            '',
+            '~~~text',
+            packet.text.trim(),
             '~~~',
             ''
-        );
-    }
-    return {
-        markdown: sections.join('\n'),
+        ].join('\n'),
         filename: `ghost-machine-market-pack-${safeSymbol}-${timestamp}.md`,
         symbol: packet.symbol
     };
-}
-
-function buildCurrentVerifiedMathFacts(packet) {
-    try {
-        const source = packet?.replay || {};
-        const symbol = normalizeCanonicalMarketSymbol(packet?.symbol || source.pair || '');
-        if (!symbol) return null;
-        const metadata = source.quote?.symbol_metadata
-            || source.runtime_state?.quote_snapshot?.symbol_metadata
-            || source.symbol_metadata || {};
-        const asOfMs = rawTextPacketTimestamp(source.scan_as_of || source.quote?.quote_time) || Date.now();
-        const latestClosed = rawTextPacketClosedCandles(source, '5M', asOfMs).at(-1) || null;
-        const precision = rawTextPacketPrecision(symbol, metadata, latestClosed?.c);
-        const referencePrice = rawTextPacketRoundPrice(latestClosed?.c, precision);
-        if (!Number.isFinite(Number(referencePrice))) return null;
-        return buildVerifiedMathFacts(source, symbol, referencePrice, precision, asOfMs);
-    } catch (error) {
-        console.warn('[AI MARKET PACK] verified math context unavailable', error);
-        return null;
-    }
 }
 
 function marketPackBase64(bytes) {
