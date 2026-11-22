@@ -17167,7 +17167,7 @@ const MARKET_MECHANICS_RAW_TEXT_OUTPUT_CONTRACT = [
 
 const RAW_CANDLE_AI_TIMEFRAMES = Object.freeze(['1D', '4H', '1H', '15M', '5M']);
 const RAW_CANDLE_AI_CANDLE_LIMITS = Object.freeze({
-    '1D': 15, '4H': 30, '1H': 50, '15M': 50, '5M': 50
+    '1D': 60, '4H': 120, '1H': 120, '15M': 96, '5M': 96
 });
 let lastRawPacketDiagnostic = null;
 const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
@@ -20445,7 +20445,10 @@ Do not guarantee a setup exists. Return NO_TRADE when the hard gates fail.
 === REASONING PROTOCOL ===
 
 STEP 1. HTF MACRO BIAS (1D/4H):
+Read the SWING MAP first to locate structure, then verify the cited swings against the raw candles. If they disagree, the candles win and you must say so.
 Determine trend bias from the last 3 closed Daily candles.
+Use code-supplied SESSION_NAME and SESSION_WINDOW_UTC; do not calculate a session. Read date-labelled session levels with their dates.
+If QUOTE_STALE=YES, return NO_TRADE with reason_code DATA_STALE. Volume is optional when VOLUME_RELIABLE=NO. Size structural stops with the applicable closed-candle ATR.
 
 STEP 2. MOMENTUM & VOLUME CHECK (1H):
 Compute the average volume of the last 20 closed 1H candles.
@@ -20726,6 +20729,7 @@ function RAW_PACKET_DIAGNOSTIC(enabled) {
 }
 
 function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asOfMs = Date.now(), quote = {} } = {}) {
+    const metadata = quote.symbol_metadata || source.symbol_metadata || {};
     const dailyCandles = rawTextPacketClosedCandles(source, '1D', asOfMs);
     const dailyBias = buildRawCandleAiDailyBias(dailyCandles);
     const daily = dailyBias.last;
@@ -20750,7 +20754,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     ];
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.2',
+        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.3',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -20783,7 +20787,9 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
         ...macroContextLevels.map(level => level.name + '=' + levelValue(level.value)),
         'RAW_TIMEFRAMES=' + RAW_CANDLE_AI_TIMEFRAMES.join(','),
         'CANDLE_LIMIT_PER_TIMEFRAME=' + rawCandleAiLimitSummary(),
-        ''
+        '',
+        ...buildRawCandleAiFacts({ ...source, quote: { ...(source.quote || {}), ...quote } }, symbol, metadata, asOfMs, precision, price),
+        ...buildRawCandleAiSwingMap(source, asOfMs, precision, price)
     ];
     for (const timeframe of RAW_CANDLE_AI_TIMEFRAMES) {
         lines.push(...buildRawCandleAiCsvLines(source, timeframe, asOfMs, precision), '');
@@ -20812,7 +20818,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
             veto: false
         },
         ghost_rules: {
-            version: 'V6.2',
+            version: 'V6.3',
             output_format: 'JSON',
             reasoning_protocol_included: ghostRules.some(rule => rule.startsWith('=== REASONING PROTOCOL ===')),
             daily_bias_included: ghostRules.some(rule => rule.startsWith('STEP 1. HTF MACRO BIAS (1D/4H):')),
@@ -21222,6 +21228,106 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
     };
 }
 
+function rawCandleAiFactValue(value, precision = 2) {
+    return Number.isFinite(Number(value)) ? rawTextPacketFormatNumber(value, precision) : 'UNKNOWN';
+}
+
+function rawCandleAiFactDate(value) {
+    const timestamp = rawTextPacketTimestamp(value);
+    return Number.isFinite(timestamp) ? new Date(timestamp).toISOString().slice(0, 10) : 'UNKNOWN';
+}
+
+function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date.now(), precision = 2, canonicalReferencePrice = null) {
+    const quote = source.quote || {};
+    const history = Object.fromEntries(RAW_CANDLE_AI_TIMEFRAMES.map(timeframe => [timeframe, rawTextPacketClosedCandles(source, timeframe, asOfMs)]));
+    const quoteTimeMs = rawTextPacketTimestamp(quote.quote_time || quote.current_price_time || quote.time);
+    const generatedAt = new Date(asOfMs).toISOString();
+    const quoteAge = Number.isFinite(quoteTimeMs) ? Math.max(0, Math.floor((asOfMs - quoteTimeMs) / 1000)) : null;
+    const sessions = buildRawTextSessionLevels(history['1H'], asOfMs, precision);
+    const dailyGroups = rawTextPeriodGroups(history['1D'], rawTextUtcWeekKey, asOfMs);
+    const currentWeek = rawTextUtcWeekKey(asOfMs);
+    const previousWeekKey = [...dailyGroups.keys()].filter(key => key < currentWeek).sort().at(-1);
+    const previousWeek = rawTextPeriodStats(dailyGroups.get(previousWeekKey) || []);
+    const macro = buildRawCandleAiMacroLevels(source, asOfMs);
+    const clock = rawCandleAiServerClock(asOfMs);
+    const settings = getMarketSettings(symbol, metadata || {});
+    const provider = getMarketDataProvider();
+    const providerSymbol = provider === 'TVKIT' ? getTvkitSymbol(symbol) : (typeof getProviderSymbol === 'function' ? getProviderSymbol(symbol) : 'UNKNOWN');
+    const news = checkHighImpactNews(symbol);
+    const newsActive = news?.inNewsWindow === true;
+    const newsKnown = news && typeof news === 'object' && (news.warning || news.event || news.name || news.time);
+    const bid = quote.bid ?? quote.b;
+    const ask = quote.ask ?? quote.a;
+    const spread = quote.spread ?? (Number.isFinite(Number(bid)) && Number.isFinite(Number(ask)) ? Math.abs(Number(ask) - Number(bid)) : null);
+    const atrValue = timeframe => {
+        const candles = history[timeframe] || [];
+        return candles.length >= 15 ? atr(candles, 14) : null;
+    };
+    const level = (name, value, date, window) => name + '=' + rawCandleAiFactValue(value, precision) + ' (' + (date || 'UNKNOWN') + ', ' + window + ')';
+    return [
+        '=== FACTS — CLOSED-CANDLE DERIVED ===',
+        'GENERATED_AT=' + generatedAt,
+        'QUOTE_TIME=' + (Number.isFinite(quoteTimeMs) ? new Date(quoteTimeMs).toISOString() : 'UNKNOWN'),
+        'QUOTE_AGE_SECONDS=' + (quoteAge == null ? 'UNKNOWN' : quoteAge),
+        'QUOTE_STALE=' + (quoteAge == null ? 'UNKNOWN' : quoteAge > 60 ? 'YES' : 'NO'),
+        'CURRENT_PRICE_FIELD=CLOSED_5M_CLOSE',
+        'CURRENT_PRICE=' + rawCandleAiFactValue(canonicalReferencePrice, precision),
+        'DATA_PROVIDER=' + provider,
+        'PROVIDER_SYMBOL=' + (providerSymbol || 'UNKNOWN'),
+        'VOLUME_RELIABLE=' + (hasRealVolume(symbol, metadata) ? 'YES' : 'NO'),
+        'PRICE_PRECISION=' + (Number.isFinite(Number(settings?.prec)) ? settings.prec : 'UNKNOWN'),
+        'TICK_SIZE=' + rawCandleAiFactValue(settings?.pipSize, precision),
+        'BID=' + rawCandleAiFactValue(bid, precision),
+        'ASK=' + rawCandleAiFactValue(ask, precision),
+        'SPREAD=' + rawCandleAiFactValue(spread, precision),
+        'NEWS_WINDOW=' + (newsActive ? 'ACTIVE' : newsKnown ? 'NONE' : 'UNKNOWN') + (newsActive || newsKnown ? ' (' + String(news?.event || news?.name || news?.warning || 'UNKNOWN') + ', ' + String(news?.time || news?.event_time || 'UNKNOWN') + ')' : ''),
+        'SESSION_NAME=' + clock.session_window,
+        'SESSION_WINDOW_UTC=' + clock.session_window,
+        'ATR_1D=' + rawCandleAiFactValue(atrValue('1D'), precision) + ' (closed-candle ATR, period 14)',
+        'ATR_4H=' + rawCandleAiFactValue(atrValue('4H'), precision) + ' (closed-candle ATR, period 14)',
+        'ATR_1H=' + rawCandleAiFactValue(atrValue('1H'), precision) + ' (closed-candle ATR, period 14)',
+        'ATR_15M=' + rawCandleAiFactValue(atrValue('15M'), precision) + ' (closed-candle ATR, period 14)',
+        'ATR_5M=' + rawCandleAiFactValue(atrValue('5M'), precision) + ' (closed-candle ATR, period 14)',
+        level('ASIA_HIGH', macro.asia_high, sessions.ASIA?.day, '00:00-04:00 UTC'),
+        level('ASIA_LOW', macro.asia_low, sessions.ASIA?.day, '00:00-04:00 UTC'),
+        level('LONDON_HIGH', macro.london_high, sessions.LONDON?.day, '07:00-10:00 UTC'),
+        level('LONDON_LOW', macro.london_low, sessions.LONDON?.day, '07:00-10:00 UTC'),
+        level('NEW_YORK_HIGH', macro.new_york_high, sessions.NY?.day, '12:00-15:00 UTC'),
+        level('NEW_YORK_LOW', macro.new_york_low, sessions.NY?.day, '12:00-15:00 UTC'),
+        level('PREVIOUS_DAY_HIGH', macro.previous_day_high, rawCandleAiFactDate(history['1D'].at(-1)?.t), '1D UTC'),
+        level('PREVIOUS_DAY_LOW', macro.previous_day_low, rawCandleAiFactDate(history['1D'].at(-1)?.t), '1D UTC'),
+        level('PREVIOUS_WEEK_HIGH', previousWeek?.high, previousWeekKey, 'week UTC'),
+        level('PREVIOUS_WEEK_LOW', previousWeek?.low, previousWeekKey, 'week UTC'),
+        'GAP_NOTE=Gaps at 22:00-23:00 UTC and weekends are broker rollover or market closure, not missing data.',
+        ''
+    ];
+}
+
+function buildRawCandleAiSwingMap(source = {}, asOfMs = Date.now(), precision = 2, currentPrice = null) {
+    const lines = ['SWING MAP — INFORMATIONAL DERIVED FACTS. Not a candidate list. Verify every level against the raw candles below. Raw candles are authoritative.'];
+    for (const timeframe of RAW_CANDLE_AI_TIMEFRAMES) {
+        const candles = rawTextPacketClosedCandles(source, timeframe, asOfMs);
+        const swings = findSwings(candles, 2);
+        const records = [...(swings.H || []).map(swing => ({ ...swing, type: 'HIGH' })), ...(swings.L || []).map(swing => ({ ...swing, type: 'LOW' }))]
+            .sort((left, right) => left.i - right.i).slice(-8);
+        lines.push('TF=' + timeframe);
+        for (const swing of records) {
+            const later = candles.slice(swing.i + 1);
+            const breakCandle = later.find(candle => swing.type === 'HIGH' ? Number(candle.c) > Number(swing.p) : Number(candle.c) < Number(swing.p));
+            const breakTime = breakCandle ? rawTextPacketTimestamp(breakCandle.t ?? breakCandle.time ?? breakCandle.timestamp) : NaN;
+            lines.push('SWING | TF=' + timeframe + ' | TYPE=' + swing.type + ' | PRICE=' + rawCandleAiFactValue(swing.p, precision) + ' | CANDLE_TIME=' + (swing.pivot_bar_time || 'UNKNOWN') + ' | STATE=' + (breakCandle ? 'BROKEN' : 'UNBROKEN') + ' | BROKEN_BY_CLOSE_TIME=' + (Number.isFinite(breakTime) ? new Date(breakTime).toISOString() : 'NONE'));
+        }
+        const high = (swings.H || []).at(-1);
+        const low = (swings.L || []).at(-1);
+        const midpoint = high && low ? (Number(high.p) + Number(low.p)) / 2 : null;
+        const location = isPremiumDiscount(candles, currentPrice)?.zone || 'UNKNOWN';
+        lines.push('STRUCTURE_SEQUENCE=' + (analyzeMarketStructure(candles).join('/') || 'UNKNOWN'));
+        lines.push('DEALING_RANGE=HIGH:' + rawCandleAiFactValue(high?.p, precision) + ' LOW:' + rawCandleAiFactValue(low?.p, precision) + ' MIDPOINT:' + rawCandleAiFactValue(midpoint, precision) + ' LOCATION:' + String(location).toUpperCase());
+    }
+    lines.push('');
+    return lines;
+}
+
 function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const source = replay || {};
     const symbol = normalizeCanonicalMarketSymbol(source.pair || signal.pair || pair);
@@ -21259,6 +21365,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const levelValue = value => value == null ? 'NONE' : rawTextPacketFormatNumber(value, precision);
     const lines = [
         '=== TIMEFRAME DATA ONLY ===',
+          'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.3',
         'SYMBOL=' + symbol,
         'SERVER_TIME_UTC=' + serverClock.utc,
         'MARKET_STATUS=' + rawTextMarketPackMarketStatus(referenceAudit),
@@ -21291,7 +21398,9 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         ...macroContextLevels.map(level => level.name + '=' + levelValue(level.value)),
         'RAW_TIMEFRAMES=' + RAW_CANDLE_AI_TIMEFRAMES.join(','),
         'CANDLE_LIMIT_PER_TIMEFRAME=' + rawCandleAiLimitSummary(),
-        ''
+          '',
+          ...buildRawCandleAiFacts(source, symbol, metadata, asOfMs, precision, canonicalReferencePrice),
+          ...buildRawCandleAiSwingMap(source, asOfMs, precision, canonicalReferencePrice)
     ];
     for (const timeframe of RAW_CANDLE_AI_TIMEFRAMES) {
         lines.push(...buildRawCandleAiCsvLines(source, timeframe, asOfMs, precision), '');

@@ -10836,7 +10836,8 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
     const asOf = Date.parse('2026-10-06T12:00:00Z');
     const durations = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 };
     const counts = { '1D': 20, '4H': 35, '1H': 120, '15M': 120, '5M': 120 };
-    const limits = { '1D': 15, '4H': 30, '1H': 50, '15M': 50, '5M': 50 };
+    const limits = { '1D': 60, '4H': 120, '1H': 120, '15M': 96, '5M': 96 };
+    const exportedCounts = { '1D': 20, '4H': 35, '1H': 120, '15M': 96, '5M': 96 };
     const history = () => Object.fromEntries(Object.entries(counts).map(([timeframe, count]) => {
         const duration = durations[timeframe];
         const lastOpen = asOf - duration;
@@ -10871,15 +10872,15 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = aiPacketForReplay(ctx, replay);
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.2');
+        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.3');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
-        expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50');
+        expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:60,4H:120,1H:120,15M:96,5M:96');
         for (const [timeframe, limit] of Object.entries(limits)) {
             const section = packet.split('======== TIMEFRAME: ' + timeframe.toLowerCase() + ' ========')[1]
                 .split('======== END ' + timeframe.toLowerCase() + ' ========')[0];
             expect(section).toContain('CANDLE_LIMIT=' + limit);
             expect(section).toContain('FORMAT: time,open,high,low,close,volume');
-            expect(section).toContain('CANDLE_COUNT=' + limit);
+            expect(section).toContain('CANDLE_COUNT=' + exportedCounts[timeframe]);
             expect(section).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z,/);
         }
     });
@@ -10968,7 +10969,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const prime = ctx.buildRawTextMarketAnalysisPacket({ replay: rawReplay() });
         expect(prime).not.toContain('WARNING: OUTSIDE_KILLZONE');
         expect(prime).toContain('MARKET_STATUS=OPEN');
-        expect(prime).toContain('DATA_COUNTS=1D:15,4H:30,1H:50,15M:50,5M:50');
+        expect(prime).toContain('DATA_COUNTS=1D:20,4H:35,1H:120,15M:96,5M:96');
         expect(prime).toContain('SESSION_QUALITY=PRIME');
         expect(prime).toContain('SESSION_WINDOW=NEW_YORK');
         const offReplay = { ...rawReplay(), scan_as_of: '2026-10-06T18:00:00Z' };
@@ -11007,7 +11008,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             runtime_state: { market_open: false, market_open_source: 'ASSET_CALENDAR' }
         };
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        expect(packet).toContain('DATA_COUNTS=1D:15,4H:30,1H:50,15M:50,5M:50');
+        expect(packet).toContain('DATA_COUNTS=1D:20,4H:35,1H:120,15M:96,5M:96');
         expect(packet).toContain('MARKET_STATUS=CLOSED');
         expect(packet).toContain('LATEST_5M_OPEN_UTC=2026-11-13T21:55:00.000Z');
         expect(packet).toContain('EXPECTED_LATEST_5M_UTC=2026-11-13T21:55:00.000Z');
@@ -11145,9 +11146,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const diagnostic = ctx.console.log.mock.calls
             .filter(call => call[0] === 'RAW_PACKET_DIAGNOSTIC' && call[1] && typeof call[1] === 'object')
             .at(-1)[1];
-        expect(diagnostic.candle_counts).toEqual(limits);
+        expect(diagnostic.candle_counts).toEqual(exportedCounts);
         expect(diagnostic.candle_limits).toEqual(limits);
-        expect(diagnostic.total_candles).toBe(195);
+        expect(diagnostic.total_candles).toBe(367);
         expect(diagnostic.estimated_tokens).toBe(Math.ceil(packet.length / 4));
         expect(diagnostic.macro_context_levels.map(level => level.name)).toEqual([
             'PREVIOUS_DAY_HIGH', 'PREVIOUS_DAY_LOW', 'ASIA_HIGH', 'ASIA_LOW',
@@ -11157,7 +11158,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
             quality: 'PRIME', window: 'NEW_YORK', prime: true, veto: false
         }));
         expect(diagnostic.ghost_rules).toEqual({
-            version: 'V6.2',
+            version: 'V6.3',
             output_format: 'JSON',
             reasoning_protocol_included: true,
             daily_bias_included: true,
