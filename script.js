@@ -20424,6 +20424,22 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 
 function buildRawCandleAiGhostRules() {
     return `=== GHOST MACHINE STRATEGY RULES === V6.2 (DIRECTIONAL LIQUIDITY TARGETS)
+=== MANDATORY ORDER OF OPERATIONS (READ FIRST) ===
+1. UNDERSTAND MARKET STRUCTURE FIRST: read the whole packet, then map
+   confirmed swings, BOS/CHoCH, the dealing range (premium/discount),
+   PDH/PDL, completed session highs/lows and the nearest unused pools.
+2. GET DIRECTION FROM THE 1D CANDLES: apply Section L to the last three
+   contiguous closed 1D candles. 1D decides BULLISH/BEARISH; if RANGE, use
+   the last 4H/1H body-close shift, then the nearer zone cluster. A 4H/1H
+   shift only confirms or downgrades confidence; it does not override 1D.
+3. ANALYZE WITH 4H AND 1H: list FVG/OB/CRT/MSNR zones with lifecycle and
+   name the level ("CRT setup at <level>", "1H bearish FVG at <low>-<high>").
+   A zone is dead only on a later body close through the far edge.
+4. PROVIDE ONE LEGIT PENDING LIMIT: choose one zone aligned with step 2 and
+   output BUY_LIMIT or SELL_LIMIT at its proximal edge. This is a FUTURE
+   entry: do NOT require a live retest, rejection wick, volume spike or
+   confirmation candle at current price. NO_TRADE only if no zone, no
+   target, wrong-side entry, or no reachable positive RR.
 ===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===
 1. OUTPUT FORMAT: STRICT_JSON.
 2. CONVERSATIONAL TEXT: FORBIDDEN. Do NOT write "Here is the analysis".
@@ -21274,8 +21290,42 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         { name: 'NEW_YORK_LOW', value: macroLevels.new_york_low }
     ];
     const levelValue = value => value == null ? 'NONE' : rawTextPacketFormatNumber(value, precision);
+    const pendingLimitHeader = [
+        '=== GHOST MACHINE PENDING-LIMIT ORDER OF OPERATIONS (READ FIRST) ===',
+        'You are the Ghost Machine. This packet is raw closed-candle data for a',
+        'PENDING-LIMIT decision. Follow these four steps in order and output ONE',
+        'pending limit order.',
+        '',
+        '1. UNDERSTAND MARKET STRUCTURE FIRST. Read the whole packet. Map confirmed',
+        '   swing highs/lows, BOS/CHoCH, the dealing range (premium/discount),',
+        '   PDH/PDL, completed session highs/lows, and the nearest unused liquidity',
+        '   pools above and below price. State the structure before choosing a level.',
+        '2. GET DIRECTION FROM THE 1D CANDLES. Apply Section L to the last three',
+        '   contiguous closed 1D candles. 1D decides BULLISH/BEARISH. If RANGE, use',
+        '   the last 4H/1H body-close shift, then the nearer unmitigated zone cluster.',
+        '   The 4H/1H shift only confirms or downgrades confidence, never overrides 1D.',
+        '3. ANALYZE WITH 4H AND 1H. List FVG, OB, CRT and MSNR zones with lifecycle.',
+        '   Name each level explicitly: "CRT setup at <level>", "1H bearish FVG at',
+        '   <low>-<high>", "4H OB at <low>-<high>". A zone is dead only when a later',
+        '   body close goes through its far edge; a wick touch does not consume it.',
+        '   Pick the nearest unused opposing pool for TP1/TP2/TP3. Compute ATR(14).',
+        '4. PROVIDE ONE LEGIT PENDING LIMIT ORDER. Choose ONE zone aligned with step 2.',
+        '   Output BUY_LIMIT or SELL_LIMIT at its proximal edge. This is a FUTURE',
+        '   ENTRY: do NOT wait for a live retest, rejection wick, volume spike or',
+        '   confirmation candle at current price. The formation evidence (sweep +',
+        '   displacement + CRT/MSNR) validates the zone. If steps 1-3 found a valid',
+        '   zone and an unused target pool, you MUST output the trade. NO_TRADE is',
+        '   only for no zone, no target, wrong-side entry, or RR < 1.00.',
+        '',
+        'OUTPUT: one json block with action (BUY_LIMIT|SELL_LIMIT|NO_TRADE), setup,',
+        'current_market_context, crt_msnr_confirmation, sniper_zone_justification,',
+        'entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1, confidence, timeframe_used,',
+        'management and reason. Copy prices exactly from the closed rows.',
+        '',
+        '=== TIMEFRAME DATA ONLY ==='
+    ];
     const lines = [
-        '=== TIMEFRAME DATA ONLY ===',
+        ...pendingLimitHeader,
         'SYMBOL=' + symbol,
         'SERVER_TIME_UTC=' + serverClock.utc,
         'MARKET_STATUS=' + rawTextMarketPackMarketStatus(referenceAudit),

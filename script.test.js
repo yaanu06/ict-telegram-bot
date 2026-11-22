@@ -5087,6 +5087,11 @@ describe('professional manual decision packet and external decision validation',
         expect(packetData.institutional_activity_evidence).toEqual(expect.objectContaining({ source_class: 'PRICE_ACTION' }));
         const replay = completeReplay({ pair: 'EUR/USD', snapshot_id: 'PACKET-REGRESSION', scan_as_of: '2026-10-05T10:00:00Z', quote: { price: 100 }, provider_metadata: { provider: 'TVKIT' }, market_evidence_package: semantic, target_candidates: { buy: [], sell: [] }, risk_constraints: { minimum_rr: 2.5 } });
         const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(packet.startsWith('=== GHOST MACHINE PENDING-LIMIT ORDER OF OPERATIONS (READ FIRST) ===')).toBe(true);
+        expect(packet).toContain('1. UNDERSTAND MARKET STRUCTURE FIRST.');
+        expect(packet).toContain('2. GET DIRECTION FROM THE 1D CANDLES.');
+        expect(packet).toContain('3. ANALYZE WITH 4H AND 1H.');
+        expect(packet).toContain('4. PROVIDE ONE LEGIT PENDING LIMIT ORDER.');
         expect(packet).toContain('=== TIMEFRAME DATA ONLY ===');
         expect(packet).toContain('EUR/USD');
         expect(packet).not.toContain('CURRENT_MARKET_STATE');

@@ -28,6 +28,58 @@ UNIVERSE: use only the CSV candles, MACRO CONTEXT and any VERIFIED ARITHMETIC
 CONTEXT in this packet. Never invent a candle, price, timestamp, volume, zone
 or level.
 
+=== MANDATORY ORDER OF OPERATIONS (DO 1 -> 2 -> 3 -> 4, IN THIS ORDER) ===
+Every scan must walk these four steps in sequence. Do not jump to an entry
+before steps 1-3 are complete, and do not reorder them.
+
+STEP 1. UNDERSTAND MARKET STRUCTURE FIRST.
+  Read the whole packet before selecting anything. Identify the symbol,
+  server time, timeframe coverage and row ordering. Then map, on 1D/4H/1H:
+  - confirmed swing highs and lows (two-bar fractal on each side);
+  - break of structure (BOS) and change of character (CHoCH);
+  - the current dealing range and whether price sits at premium, discount
+    or equilibrium;
+  - PDH/PDL, completed Asia/London/New York highs and lows;
+  - the nearest unused liquidity pools above and below price.
+  State the market structure in one sentence before moving on.
+
+STEP 2. GET DIRECTION FROM THE 1D CANDLES.
+  Apply Section L to the last three contiguous closed 1D candles. The 1D
+  result is the direction: BULLISH, BEARISH, or RANGE.
+  - The 4H/1H structural shift only confirms or downgrades confidence.
+  - If 1D is RANGE, derive direction from the last 4H/1H body-close shift,
+    then from the nearer unmitigated zone cluster. Never stop at "RANGE" and
+    refuse to trade; RANGE still produces a pending limit.
+  - Do not take direction from a 15M/5M candle, a session label, or the
+    packet's DAILY_BIAS label. Section L wins.
+
+STEP 3. ANALYZE WITH 4H AND 1H.
+  With the direction fixed, scan 4H and 1H for:
+  - FVG, OB, CRT and MSNR zones and their lifecycle (FRESH/UNTOUCHED/
+    PARTIAL/ESTABLISHED valid; FULLY_TRAVERSED/INVALIDATED dead);
+  - whether price already closed through a zone (body close = consumed,
+    wick = not consumed);
+  - the nearest unused opposing pool for TP1/TP2/TP3;
+  - ATR(14) on 4H and 1H for the stop buffer and distance gate.
+  For every zone you keep, say explicitly what structure it is:
+  "CRT setup at <level>", "1H bearish FVG at <low>-<high>", "4H OB at
+  <low>-<high>". Name the level; do not describe a vague "zone".
+
+STEP 4. PROVIDE ONE LEGIT PENDING LIMIT ORDER.
+  Select ONE zone from step 3 that agrees with the step 2 direction. Output
+  BUY_LIMIT or SELL_LIMIT at its proximal edge:
+  - BUY_LIMIT at the upper edge of a bullish zone below price;
+  - SELL_LIMIT at the lower edge of a bearish zone above price.
+  This is a FUTURE entry. Do NOT wait for price to reach the zone, do NOT
+  require a live retest, a live rejection wick, a live volume spike, or a
+  confirmation candle at CURRENT_PRICE. The evidence that validates the
+  order is the formation history (sweep + displacement + CRT/MSNR), not the
+  current candle. Price arriving later is the fill, not a requirement to
+  trade.
+  If step 3 produced any valid zone and any unused target pool, you MUST
+  output BUY_LIMIT or SELL_LIMIT. NO_TRADE is only for the four literal
+  failures listed under STEP 4 CORE POLICY.
+
 INPUT PRIORITY:
 1. VERIFIED ARITHMETIC CONTEXT (when present) is factual and authoritative for
    ATR, zone bounds, lifecycle, pool levels, entry-consumption and computed RR.
@@ -37,7 +89,7 @@ INPUT PRIORITY:
 3. MACRO CONTEXT (DAILY_BIAS, PDH/PDL, session highs/lows) is context only.
    Recompute Section L from the 1D rows; Section L wins over the label.
 
-=== CORE POLICY (READ BEFORE ANYTHING ELSE) ===
+=== STEP 4 CORE POLICY: WHEN TO ARM ===
 A trade is ARMED when ALL of these are true:
   A. A direction exists (see TIER 1). RANGE is a bias, not a ban.
   B. At least one zone in that direction is not fully traversed or invalidated.
@@ -46,7 +98,7 @@ A trade is ARMED when ALL of these are true:
   D. At least one unused opposing liquidity pool exists on the profitable side.
   E. The pending-limit entry is on the correct side of reference price.
 
-If A-D hold, you MUST output the best available candidate as BUY_LIMIT or
+If A-E hold, you MUST output the best available candidate as BUY_LIMIT or
 SELL_LIMIT. There is NO optional extra gate. In particular:
 
   - A sweep is CONFLUENCE, not a prerequisite. No sweep = lower confidence,
@@ -79,6 +131,22 @@ NO_TRADE is permitted ONLY when one of these is literally true:
      inside the invalidation wick.
 When NO_TRADE fires, state which of the four conditions failed. "No A+ setup"
 is not a valid reason.
+
+=== PENDING LIMIT IS A FUTURE ENTRY (NO LIVE CONFIRMATION) ===
+This strategy arms a limit order before price arrives. Therefore:
+  - Do NOT require a live retest at CURRENT_PRICE.
+  - Do NOT require a live rejection wick at CURRENT_PRICE.
+  - Do NOT require a live volume spike at CURRENT_PRICE.
+  - Do NOT require a confirmation candle after the zone has formed.
+  - Do NOT wait for the current scan to show the reversal. The future fill is
+    the trade.
+A zone is valid from its FORMATION evidence only: the sweep that created it,
+the displacement leg that left it, and the CRT/MSNR sequence at that level.
+If a CRT setup exists at a level, name it exactly, for example:
+  "CRT setup at 3904.37: reference 1H candle 08:00, sweep of 3907.2,
+   reclaim and break of 3901.5 at 09:00."
+Then arm the pending limit at that CRT/FVG/OB level. Absence of a live
+confirmation today must NEVER turn a valid pending limit into NO_TRADE.
 
 === TOP-DOWN CASCADE (direction -> zone -> entry) ===
 TIER 1 - DIRECTION (1D, then 4H, then 1H):
@@ -147,14 +215,16 @@ OB:
   Bearish OB = last bullish candle before the down displacement leg.
   Zone = that candle's body (open-to-close). Never use the wick as the OB.
   Never use the sweep candle itself as the OB.
-CRT / MSNR (optional confluence, never fabricated):
+CRT / MSNR (confluence; name the level when it exists):
   CRT = reference candle A closed; candle B sweeps one edge and closes back
   inside A; a later closed C breaks B's opposite edge in the reversal
-  direction.
+  direction. Report it as "CRT setup at <level>" and state A/B/C times.
   MSNR = a confirmed swing is body-close broken, then retested and closed on
-  the breakout side.
+  the breakout side. Report it as "MSNR setup at <level>".
   If coverage is insufficient, write NOT_VISIBLE / NOT_CONFIRMED in the audit.
-  Never invent CRT or MSNR.
+  Never invent CRT or MSNR. But when one exists, do not hide it behind a
+  generic "FVG zone" label: name the CRT/MSNR level and arm the limit there.
+  A CRT/MSNR level is a first-class pending-limit location, not a tie-breaker.
 
 Lifecycle of every zone:
   FRESH            = never touched after formation.
@@ -236,24 +306,24 @@ best non-actionable row only after explaining which rejection can be
 overridden by the rules above (for example, a wick-only consume or an
 age-only rejection). Never contradict supplied zone bounds or pool levels.
 
-=== DEEPSEEK REASONING PROTOCOL ===
-STEP 1. Read the entire packet: symbol, server time, timeframes, coverage.
-STEP 2. Derive Section L bias.
-STEP 3. Identify the last completed 4H/1H structural shift (or NONE).
-STEP 4. Scan all five timeframes for bullish and bearish sweeps; classify
-        breakouts, breakdowns and failed breaks.
-STEP 5. Compute the killzone; report it, never veto on it.
-STEP 6. Classify current context: TRENDING_BULLISH, TRENDING_BEARISH,
-        RANGING or CONSOLIDATING.
-STEP 7. Map every FVG/OB/CRT/MSNR zone and its lifecycle on 4H/1H/15M/5M.
-STEP 8. If VERIFIED ARITHMETIC CONTEXT is present, merge its candidate_math
-        with your own scan. Drop only zones marked fully traversed or
-        consumed by a body close.
-STEP 9. For each surviving candidate compute entry, stop, TP1/TP2/TP3, risk,
-        reward and RR. Check the limit sits on the correct side of price.
-STEP 10. Rank and select the best. If at least one candidate is armed, output
-         BUY_LIMIT or SELL_LIMIT. NO_TRADE only under the four conditions.
-STEP 11. Verify arithmetic twice and emit the JSON.
+=== DEEPSEEK REASONING PROTOCOL (SAME 1-2-3-4 ORDER) ===
+STEP 1. MARKET STRUCTURE: read the whole packet; map confirmed swings,
+        BOS/CHoCH, dealing range, premium/discount, PDH/PDL, session
+        highs/lows and nearest unused liquidity pools. State it.
+STEP 2. DIRECTION FROM 1D: apply Section L to the last three contiguous
+        closed 1D candles. 1D decides BULLISH/BEARISH; RANGE falls back to
+        the last 4H/1H body-close shift, then to the nearer zone cluster.
+        The 4H/1H shift only confirms or downgrades confidence.
+STEP 3. 4H/1H ANALYSIS: list every FVG/OB/CRT/MSNR zone with lifecycle,
+        name the level ("CRT setup at <level>", "1H bearish FVG at
+        <low>-<high>"), drop only zones consumed by a body close, and pick
+        the nearest unused opposing pool for TP1/TP2/TP3. Compute ATR(14).
+STEP 4. PENDING LIMIT: pick ONE zone aligned with step 2 and arm BUY_LIMIT
+        or SELL_LIMIT at its proximal edge. No live confirmation, retest,
+        wick or volume spike is required because this is a future entry.
+        Then rank candidates, verify arithmetic twice and emit the JSON.
+If steps 1-3 produce at least one valid zone and one unused target pool,
+step 4 MUST output a trade. NO_TRADE only for the four literal failures.
 
 === WORKED ACCEPTANCE EXAMPLE ===
 BULLISH Section L bias. No sweep on the current scan. A fresh 1H bullish OB
@@ -272,9 +342,9 @@ No prose, no extra fields, no text outside the block.
   "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",
   "setup": "<OB|FVG|SUPPLY|DEMAND|FLIP|BREAKER|SWEEP|CRT|MSNR|combined with +, or NONE>",
   "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",
-  "crt_msnr_confirmation": "<1 sentence on CRT sweep and MSNR trap, or NOT_CONFIRMED>",
+  "crt_msnr_confirmation": "<name the CRT/MSNR level and the historical sweep/reclaim, or NOT_CONFIRMED. Live confirmation at current price is NOT required.>",
   "sniper_zone_justification": "<1 sentence proving the entry is a proximal FVG/imbalance edge and its lifecycle>",
-  "price_action_confirmation": "<1 sentence on displacement candle body/wick and volume, or NOT_CONFIRMED>",
+  "price_action_confirmation": "<formation candle body/wick and volume, or NOT_CONFIRMED. This is historical evidence for a future entry, not a live trigger.>",
   "session_volatility_check": "<1 sentence on SL/TP sizing versus session ATR>",
   "entry": <number>,
   "stop_loss": <number>,
@@ -325,7 +395,9 @@ No prose, no extra fields, no text outside the block.
 - XAU/USD risk >= 4.50; Asia XAU risk >= 7.00.
 - For XAU: stop must sit beyond the invalidation wick, not inside it.
 - crt_msnr_confirmation must name the trap or say NOT_CONFIRMED. It is never
-  a reason to force NO_TRADE.
+  a reason to force NO_TRADE. crt_msnr_confirmation and
+  price_action_confirmation describe the FORMATION history of the zone; they
+  do not require a live confirmation candle at CURRENT_PRICE.
 - audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m).
 - Killzone NONE caps confidence at 50 and is reported, never a veto.
 - On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0;
