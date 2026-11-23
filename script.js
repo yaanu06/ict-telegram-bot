@@ -21452,6 +21452,26 @@ function appendManualScanLog(record) {
     } catch (error) { console.warn('[MANUAL_SCAN_LOG]', error); return false; }
 }
 
+async function appendScanObservation(signal = {}, replay = {}) {
+    const scanId = String(signal.scan_id || replay.scan_id || replay.snapshot_id || `scan-${Date.now()}`);
+    if (readManualScanLog().some(record => record.scan_id === scanId)) return;
+    try {
+        const symbol = normalizeCanonicalMarketSymbol(replay.pair || signal.pair || pair);
+        const packet = buildRawTextMarketAnalysisPacket({ signal, replay });
+        const facts = buildRawCandleAiFacts(replay, symbol, replay.symbol_metadata || {}, rawTextPacketTimestamp(replay.scan_as_of) || Date.now());
+        const fact = name => String(facts.find(line => String(line).startsWith(name + '=')) || '').slice(name.length + 1).split(' ')[0] || null;
+        appendManualScanLog({
+            scan_id: scanId, generated_at: new Date().toISOString(), symbol, provider: getMarketDataProvider(), asset_class: getAssetClass(symbol),
+            prompt_contract_version: 'RAW_CANDLE_AI_V4.0', packet_sha256: await sha256Text(packet),
+            quote_age_seconds: fact('QUOTE_AGE_SECONDS'), quote_stale: fact('QUOTE_STALE'), reference_price: fact('REFERENCE_PRICE'),
+            session_name: fact('SESSION_NAME'), news_window: fact('NEWS_WINDOW'), atr_1h: fact('ATR_1H'), atr_4h: fact('ATR_4H'),
+            action: 'UNREVIEWED', reason_code: null, entry: null, stop_loss: null, tp1: null, tp2: null, tp3: null,
+            risk: null, rr_tp1: null, confidence: null, poi_zone_low: null, poi_zone_high: null, dol_level: null,
+            expiry_hours: 24, citations_verified: 'UNSET', notes: null, outcome: 'PENDING'
+        });
+    } catch (error) { console.warn('[MANUAL_SCAN_LOG] scan observation failed', error); }
+}
+
 async function sha256Text(text) {
     if (!globalThis.crypto?.subtle || typeof TextEncoder === 'undefined') return 'UNKNOWN';
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text || '')));
@@ -29765,6 +29785,7 @@ function setJsonOutput(obj, { publishArtifact = true } = {}) {
         window.__ICT_LAST_SCAN_REPLAY__ = replay;
     }
     if (publishArtifact) publishCurrentScanArtifact({ signal: publicSignal, replay, output: obj });
+    if (replay) void appendScanObservation(publicSignal, replay);
     // Keep the same-symbol context available only when replay capture failed,
     // allowing Copy to retry the canonical capture.  Successful scans release
     // the heavyweight context immediately.
